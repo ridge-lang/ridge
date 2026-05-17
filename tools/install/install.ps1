@@ -238,7 +238,7 @@ catch {
 
 # ── Step 7: Verify binary works ───────────────────────────────────────────────
 Write-Information 'Verifying installation ...'
-$ExpectedVersion = 'ridge 0.2.0-rc1'
+$ExpectedVersion = 'ridge 0.2.0-rc2'
 try {
     $ridgeOut = & ridge --version 2>&1
     if ($LASTEXITCODE -ne 0) { throw "ridge --version exited $LASTEXITCODE" }

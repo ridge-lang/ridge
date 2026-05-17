@@ -1409,14 +1409,14 @@ checksum = "dc897dd8d9e8bd1ed8cdad82b5966c3e0ecae09fb1907d58efaa013543185d0a"
 
 [[package]]
 name = "ridge-ast"
-version = "0.2.0-rc1"
+version = "0.2.0-rc2"
 dependencies = [
  "ridge-lexer",
 ]
 
 [[package]]
 name = "ridge-cli"
-version = "0.2.0-rc1"
+version = "0.2.0-rc2"
 dependencies = [
  "assert_cmd",
  "clap",
@@ -1435,7 +1435,7 @@ dependencies = [
 
 [[package]]
 name = "ridge-codegen-erl"
-version = "0.2.0-rc1"
+version = "0.2.0-rc2"
 dependencies = [
  "insta",
  "ridge-ast",
@@ -1456,15 +1456,15 @@ dependencies = [
 
 [[package]]
 name = "ridge-codegen-llvm"
-version = "0.2.0-rc1"
+version = "0.2.0-rc2"
 
 [[package]]
 name = "ridge-codegen-wasm"
-version = "0.2.0-rc1"
+version = "0.2.0-rc2"
 
 [[package]]
 name = "ridge-diagnostics"
-version = "0.2.0-rc1"
+version = "0.2.0-rc2"
 dependencies = [
  "ariadne",
  "is-terminal",
@@ -1478,7 +1478,7 @@ dependencies = [
 
 [[package]]
 name = "ridge-driver"
-version = "0.2.0-rc1"
+version = "0.2.0-rc2"
 dependencies = [
  "ridge-ast",
  "ridge-codegen-erl",
@@ -1500,7 +1500,7 @@ dependencies = [
 
 [[package]]
 name = "ridge-fmt"
-version = "0.2.0-rc1"
+version = "0.2.0-rc2"
 dependencies = [
  "ridge-ast",
  "ridge-lexer",
@@ -1510,7 +1510,7 @@ dependencies = [
 
 [[package]]
 name = "ridge-ir"
-version = "0.2.0-rc1"
+version = "0.2.0-rc2"
 dependencies = [
  "ridge-ast",
  "ridge-resolve",
@@ -1520,7 +1520,7 @@ dependencies = [
 
 [[package]]
 name = "ridge-lexer"
-version = "0.2.0-rc1"
+version = "0.2.0-rc2"
 dependencies = [
  "ariadne",
  "insta",
@@ -1530,7 +1530,7 @@ dependencies = [
 
 [[package]]
 name = "ridge-lower"
-version = "0.2.0-rc1"
+version = "0.2.0-rc2"
 dependencies = [
  "insta",
  "ridge-ast",
@@ -1543,7 +1543,7 @@ dependencies = [
 
 [[package]]
 name = "ridge-lsp"
-version = "0.2.0-rc1"
+version = "0.2.0-rc2"
 dependencies = [
  "ridge-diagnostics",
  "ridge-driver",
@@ -1560,7 +1560,7 @@ dependencies = [
 
 [[package]]
 name = "ridge-manifest"
-version = "0.2.0-rc1"
+version = "0.2.0-rc2"
 dependencies = [
  "globset",
  "ridge-ast",
@@ -1572,7 +1572,7 @@ dependencies = [
 
 [[package]]
 name = "ridge-parser"
-version = "0.2.0-rc1"
+version = "0.2.0-rc2"
 dependencies = [
  "insta",
  "ridge-ast",
@@ -1582,7 +1582,7 @@ dependencies = [
 
 [[package]]
 name = "ridge-pkg"
-version = "0.2.0-rc1"
+version = "0.2.0-rc2"
 dependencies = [
  "directories",
  "ridge-manifest",
@@ -1593,7 +1593,7 @@ dependencies = [
 
 [[package]]
 name = "ridge-resolve"
-version = "0.2.0-rc1"
+version = "0.2.0-rc2"
 dependencies = [
  "globset",
  "insta",
@@ -1609,7 +1609,7 @@ dependencies = [
 
 [[package]]
 name = "ridge-stdlib"
-version = "0.2.0-rc1"
+version = "0.2.0-rc2"
 dependencies = [
  "assert_cmd",
  "ridge-ast",
@@ -1624,7 +1624,7 @@ dependencies = [
 
 [[package]]
 name = "ridge-typecheck"
-version = "0.2.0-rc1"
+version = "0.2.0-rc2"
 dependencies = [
  "ena",
  "insta",
@@ -1639,7 +1639,7 @@ dependencies = [
 
 [[package]]
 name = "ridge-types"
-version = "0.2.0-rc1"
+version = "0.2.0-rc2"
 dependencies = [
  "ridge-ast",
  "rustc-hash",

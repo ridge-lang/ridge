@@ -344,9 +344,9 @@ fn compile_forbid_rule_violation() {
         artefacts.diagnostics
     );
 
-    // T-R013 PR-2 smoke: the R013 diagnostic must carry a real source_id
+    // Smoke: the R013 diagnostic must carry a real source_id
     // (workspace-relative file path) instead of "<unknown>".  This verifies
-    // that resolve errors are now attributed to the importing module's file.
+    // that resolve errors are attributed to the importing module's file.
     let r013_diag = artefacts
         .diagnostics
         .iter()
@@ -355,7 +355,7 @@ fn compile_forbid_rule_violation() {
     let sid = r013_diag.source_id.as_str();
     assert!(
         !sid.contains("<unknown>"),
-        "T-R013 PR-2: R013 diagnostic must NOT carry <unknown> source_id; got: {sid:?}"
+        "R013 diagnostic must NOT carry <unknown> source_id; got: {sid:?}"
     );
     // Ridge source files always have the `.rg` extension (lower-case by
     // convention).  Use a path-based check to satisfy clippy's
@@ -365,7 +365,7 @@ fn compile_forbid_rule_violation() {
         .is_some_and(|e| e.eq_ignore_ascii_case("rg"));
     assert!(
         path_ok,
-        "T-R013 PR-2: R013 diagnostic source_id should be a .rg file path; got: {sid:?}"
+        "R013 diagnostic source_id should be a .rg file path; got: {sid:?}"
     );
 }
 

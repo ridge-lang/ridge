@@ -1,4 +1,4 @@
-//! T12 — End-to-end escript artefact tests (D107 closure).
+//! End-to-end escript artefact tests.
 //!
 //! For each of the four canonical Ridge examples:
 //!
@@ -14,13 +14,12 @@
 //! `eprintln!` skip notice and exits cleanly (no panic).  Tests are NOT
 //! unconditionally `#[ignore]` — they run when `escript` is present (CI gate G8).
 //!
-//! **OQ-C038 deferral notices** are emitted inline when a test cannot fully
-//! execute (e.g. because a canonical example was already deferred in the BEAM
-//! e2e harness).
+//! Deferral notices are emitted inline when a test cannot fully execute
+//! (e.g. because a canonical example was already deferred in the BEAM e2e
+//! harness).
 //!
 //! `DoD`: 4 escript tests, each: produces a runnable escript → stdout matches
-//! expected.  D107 is closed when all 4 are green (or 3 green + 1 explicit
-//! OQ-C038 deferral for `url_shortener`).
+//! expected.  All 4 are green (or 3 green + 1 deferred for `url_shortener`).
 
 #![allow(
     clippy::unwrap_used,
@@ -104,7 +103,7 @@ fn run_escript_e2e(name: &str, extra_args: &[&str]) -> bool {
         Some(p) => p,
         None => {
             eprintln!(
-                "[OQ-C038 SKIP] escript_test::{name} — `escript` not found on PATH; \
+                "escript_test::{name} — `escript` not found on PATH; \
                  test skipped.  Install Erlang/OTP to run this test (CI gate G8)."
             );
             return false;
@@ -265,7 +264,7 @@ fn escript_log_analyzer() {
     let ran = run_escript_e2e("log_analyzer", &[fixture, "WARN"]);
     if !ran {
         eprintln!(
-            "[OQ-C038 DEFERRAL] escript_log_analyzer: DoD satisfied at compile level \
+            "escript_log_analyzer: DoD satisfied at compile level \
              (escript payload produced); runtime execution deferred — escript not on PATH."
         );
     }
@@ -273,7 +272,7 @@ fn escript_log_analyzer() {
 
 /// `url_shortener` — escript shim test.
 ///
-/// # Deferred by: OQ-C038
+/// # Deferred
 ///
 /// `url_shortener.rg` calls `Http.listen` which blocks in the BEAM accept loop
 /// and never returns.  The escript harness has the same structural constraint
@@ -282,7 +281,6 @@ fn escript_log_analyzer() {
 ///
 /// **What is deferred:** Runtime execution of the escript artefact.
 /// **What is satisfied:** The escript binary is produced and is syntactically valid.
-/// **Where the follow-up lives:** Phase 9 mini-plan (OQ-C038, same as beam_e2e.rs).
 #[test]
 fn escript_url_shortener() {
     // Compile and package — verify the escript is produced without panicking.
@@ -299,7 +297,7 @@ fn escript_url_shortener() {
 
     if artefacts.beam_files.is_empty() {
         eprintln!(
-            "[OQ-C038 DEFERRAL] escript_url_shortener: no .beam files produced \
+            "escript_url_shortener: no .beam files produced \
              (compile diagnostics: {:#?}); escript packaging skipped.",
             artefacts.diagnostics
         );
@@ -344,7 +342,7 @@ fn escript_game_of_life() {
     let ran = run_escript_e2e("game_of_life", &[]);
     if !ran {
         eprintln!(
-            "[OQ-C038 DEFERRAL] escript_game_of_life: DoD satisfied at compile level; \
+            "escript_game_of_life: DoD satisfied at compile level; \
              runtime execution deferred — escript not on PATH."
         );
     }
@@ -389,7 +387,7 @@ fn escript_rate_limiter() {
     // If compilation succeeded (future: after IR fixes), run full escript e2e.
     let ran = run_escript_e2e("rate_limiter", &[]);
     if !ran {
-        eprintln!("[OQ-C038 DEFERRAL] escript_rate_limiter: escript not on PATH.");
+        eprintln!("escript_rate_limiter: escript not on PATH.");
     }
 
     let _ = escript_path;

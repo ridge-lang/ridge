@@ -80,8 +80,8 @@ pub fn lower_workspace(twork: &TypedWorkspace, rwork: &ResolvedWorkspace) -> Low
 /// Constructs a fresh [`LowerCtx`], attaches the resolve-layer binding tables
 /// (Option A — T3), walks all top-level [`ridge_ast::Item`]s via
 /// [`item::lower_item`], and calls [`LowerCtx::finish_with_items`] to produce a
-/// [`LoweredModule`] whose `items` vector mirrors source order (D034) and whose
-/// `node_types` length matches `typed.node_types.len()` (index-parity from D079).
+/// [`LoweredModule`] whose `items` vector mirrors source order and whose
+/// `node_types` length matches `typed.node_types.len()` (index-parity invariant).
 ///
 /// `ws` carries workspace-level context (tycons, builtins) for `with` schema
 /// lookup (§4.5) and interp `ToText` dispatch (§4.6).
@@ -116,7 +116,7 @@ pub fn lower_module(
         ctx.attach_symbol_table(&rm.symbols);
     }
 
-    // ── T11: item walker — lower each top-level item in source order (D034) ──
+    // ── Item walker — lower each top-level item in source order ──────────────
     let items: Vec<ridge_ir::IrItem> = typed
         .ast
         .items

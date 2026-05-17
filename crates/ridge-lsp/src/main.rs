@@ -1,7 +1,7 @@
 //! `ridge-lsp` binary entry point.
 //!
 //! Wires [`RidgeLanguageServer`] to the stdio LSP transport via
-//! `tower_lsp::Server`.  Transport is stdio only (OQ-C001 — no `--tcp`,
+//! `tower_lsp::Server`.  Transport is stdio only (no `--tcp`,
 //! no named pipe, no Unix socket).
 //!
 //! # Usage

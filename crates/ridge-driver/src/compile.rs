@@ -3,8 +3,7 @@
 //! Wires `ridge-resolve → ridge-typecheck → ridge-lower → ridge-codegen-erl`
 //! per workspace member and accumulates artefacts.
 //!
-//! D106 — output directory: `<workspace_root>/target/ridge/<profile>/beam/`.
-//! OQ-C006 / D147 — profile handling.
+//! Output directory: `<workspace_root>/target/ridge/<profile>/beam/`.
 
 use rustc_hash::FxHashMap;
 use std::path::PathBuf;
@@ -30,7 +29,7 @@ use crate::sources::WorkspaceSourceCache;
 ///
 /// Sparse — synthesised IR nodes (e.g. interpolation-emitted `ToText` calls)
 /// have no upstream [`NodeId`] and are absent.  Used by the LSP to map
-/// codegen-level errors back to source spans (D087).
+/// codegen-level errors back to source spans.
 pub type SourceMap = FxHashMap<IrNodeId, NodeId>;
 
 /// Artefacts produced by a successful [`compile_workspace`] call.
@@ -53,7 +52,7 @@ pub struct CompileArtefacts {
     pub diagnostics: Vec<Diagnostic>,
     /// Source cache for rendering [`diagnostics`](Self::diagnostics).
     pub sources: WorkspaceSourceCache,
-    /// Per-module source maps for the LSP (D087).
+    /// Per-module source maps for the LSP (maps IR node ids to AST node ids).
     pub source_maps: FxHashMap<ModuleId, SourceMap>,
 }
 
@@ -164,8 +163,7 @@ pub fn compile_workspace(options: CompileOptions) -> Result<CompileArtefacts, Co
     let source_maps = collect_source_maps(&lowered.modules);
 
     // ── 4. Codegen ───────────────────────────────────────────────────────────
-    // D106: output root is `<workspace_root>/target/ridge/<profile>/`.
-    // OQ-C006 / D147: profile mapping.
+    // Output root is `<workspace_root>/target/ridge/<profile>/`.
     let out_root = options
         .workspace_root
         .join("target")
@@ -189,7 +187,7 @@ pub fn compile_workspace(options: CompileOptions) -> Result<CompileArtefacts, Co
     let codegen_out_root = codegen_opts.out_root.clone();
     let codegen_result = codegen_workspace(&lowered, codegen_opts);
 
-    // ── 4b. Stdlib `.beam` distribution (OQ-C019 / D169 / D170) ─────────────
+    // ── 4b. Stdlib `.beam` distribution ──────────────────────────────────────
     // Compile the Ridge stdlib sources into `<out_root>/beam/` so that
     // `BridgeTarget::RidgeStdlibLocal` callers (e.g. `call 'std.list':head(1)`)
     // can find their BEAM modules at runtime.
@@ -274,7 +272,7 @@ pub fn compile_workspace(options: CompileOptions) -> Result<CompileArtefacts, Co
 ///
 /// Idempotent: returns early if `beam_dir/std.list.beam` already exists.
 ///
-/// Per D170 / OQ-C019: the fix lives in the user-facing build pipeline
+/// The stdlib compilation lives in the user-facing build pipeline
 /// (`compile_workspace`), NOT in a test-only harness shim.
 ///
 /// # Errors

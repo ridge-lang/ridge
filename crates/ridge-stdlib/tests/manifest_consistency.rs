@@ -1,4 +1,4 @@
-//! T12 — Manifest regression test (§6.2).
+//! Manifest regression test (§6.2).
 //!
 //! Proves bidirectional consistency between the live stdlib `.rg` sources and
 //! the generated manifest (`BUILTINS`) and signature table (`stdlib_signature`).
@@ -21,7 +21,7 @@
 //! Entries whose signature body is `Type::Error` are explicitly allowed
 //! (Phase-7 stubs annotated `// TODO Phase 7 (OQ-T012)`).
 //!
-//! **Closes OQ-R006 / D078** definitionally: drift between source and
+//! Definitionally ensures that drift between source and
 //! manifest/signature tables causes this test to fail the build.
 //!
 //! ## Note on parse errors
@@ -72,14 +72,14 @@ fn stdlib_dir() -> std::path::PathBuf {
 /// Symbols that appear in `BUILTINS[i].exports` but are NOT declared as top-level
 /// `pub fn` or `pub type` in the corresponding `.rg` file.
 ///
-/// These are language-prelude re-exports (OQ-R013): the type / constructor is
+/// These are language-prelude re-exports: the type / constructor is
 /// declared in the compiler prelude and re-exported through the stdlib module's
 /// name in the resolver.  There is no `pub type Option a = ...` declaration in
 /// `option.rg` — the `Option` type is built into the language.  The manifest
 /// lists these to enable qualified resolution (e.g. `std.option.Some`).
 ///
-/// The "formal prelude-re-export declaration mechanism" planned for Phase 7 /
-/// T12 will replace this whitelist with an annotation in the `.rg` source.
+/// The "formal prelude-re-export declaration mechanism" planned for a future
+/// phase will replace this whitelist with an annotation in the `.rg` source.
 /// Until then, we skip the manifest→source direction check for these entries.
 const PRELUDE_REEXPORTS: &[(&str, &str)] = &[
     // std.option: Option, Some, None are prelude constructors / the Option type.

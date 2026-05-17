@@ -28,7 +28,7 @@
 //!
 //! ## Both `?>` and `!` clauses (OQ-E005)
 //!
-//! Per resolved OQ-E005 (§8.2, D103): every handler appears in **both**
+//! Per resolved OQ-E005 (§8.2): every handler appears in **both**
 //! `handle_call/3` and `handle_cast/2`.  `!` vs `?>` is a call-site decision;
 //! constraining at codegen would break compilation when one call-site changes.
 //!
@@ -53,7 +53,7 @@
 #![allow(clippy::too_many_lines)]
 // lower_actor and its private helpers are exercised through tests and via
 // lower_module_all; dead_code lint fires because lower_module_all itself is
-// only reachable from future T10 wiring.
+// only reachable from the actor module assembly path.
 #![allow(dead_code)]
 
 use crate::core_ast::{
@@ -126,7 +126,7 @@ pub(crate) fn lower_actor(
     ];
 
     // ── Attributes ────────────────────────────────────────────────────────────
-    // §6: capabilities emitted as metadata comment only (D018 Model B).
+    // §6: capabilities emitted as metadata comment only (Model B erasure).
     // No runtime capability-gating attributes emitted.
     let attributes = vec![];
 
@@ -234,7 +234,7 @@ fn emit_start_link(actor_beam_name: &str, n_params: usize) -> Result<CErlFn, Cod
 /// # Init failure (OQ-E006)
 /// If the init body raises, `gen_server:start_link/3` propagates the failure.
 /// `ridge_rt:spawn_actor/3` re-raises it (BEAM-crash).  This is the deliberate
-/// language-level asymmetry (D104, §4.29).
+/// language-level asymmetry (§4.29).
 fn emit_init(actor: &IrActor) -> Result<CErlFn, CodegenError> {
     // §4.29: the init body lowering handles both the default-map case and the
     // user-body case.

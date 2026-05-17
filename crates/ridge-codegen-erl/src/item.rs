@@ -1,6 +1,6 @@
 //! §4.26–§4.27 — Lower `IrItem::Fn` and `IrItem::Const` to `CErlFn`.
 //!
-//! Top-level item lowering is the final piece before module assembly in T8.
+//! Top-level item lowering is the final piece before module assembly.
 //! Each `IrFn` becomes a quoted Core Erlang function with span/caps annotations;
 //! each `IrConst` becomes a 0-arity function whose body returns the constant
 //! value (Core Erlang has no top-level `const` form).
@@ -44,7 +44,7 @@ use rustc_hash::FxHashMap;
 ///
 /// ## Caps (§4.26 + §6)
 /// Capabilities are emitted **only** as a `%% Caps: …` `CErlAnn` annotation —
-/// never as runtime code (D018 Model B erasure).
+/// never as runtime code (Model B capability erasure).
 pub(crate) fn lower_fn(
     fn_: &IrFn,
     ws: &LoweredWorkspace,
@@ -156,7 +156,7 @@ pub(crate) fn lower_fn_with_module_name(
 /// emitted as runtime code (type erasure, §4.27).
 ///
 /// Call sites for consts use `call '<own_module>':'<name>' ()` (0-arity call);
-/// that lowering is T6's job (§4.27 note).
+/// that lowering is handled by the call lowering path (§4.27 note).
 pub(crate) fn lower_const(
     c: &IrConst,
     _ws: &LoweredWorkspace,

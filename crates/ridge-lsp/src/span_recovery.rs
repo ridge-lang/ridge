@@ -1,4 +1,4 @@
-//! D087 span recovery for synthesised IR nodes.
+//! Span recovery for synthesised IR nodes.
 //!
 //! When a `ridge_diagnostics::Diagnostic` carries a `primary_span` that
 //! corresponds to a synthesised IR node (one absent from
@@ -8,7 +8,7 @@
 //! 2. If the span is zero-width (a sentinel from a synthesised node), fall back
 //!    to `(line 0, col 0)` — file-line-1 in LSP terms.
 //!
-//! The full D087 parent-chain walk requires the IR tree to be present.
+//! The full parent-chain walk requires the IR tree to be present.
 //! For the LSP use-case, the `primary_span` in the `Diagnostic` is already
 //! resolved to a `Span` (byte offsets) by the driver's diagnostic adapters.
 //! So "recovery" here means: if the span is degenerate (zero-width at offset 0),
@@ -32,15 +32,15 @@
 use ridge_lexer::{LineMap, Span};
 use tower_lsp::lsp_types::{Position, Range};
 
-/// Convert a byte-offset `Span` to an LSP `Range` with D087 fallback.
+/// Convert a byte-offset `Span` to an LSP `Range` with synthesised-node fallback.
 ///
-/// If `span` is zero-width AND at offset 0 (the D087 "no span" sentinel),
-/// the fallback `Range` covering the first character of the file is returned.
-/// Otherwise, the span is converted normally via [`LineMap`].
+/// If `span` is zero-width AND at offset 0 (the "no span" sentinel for a
+/// synthesised node), the fallback `Range` covering the first character of the
+/// file is returned.  Otherwise, the span is converted normally via [`LineMap`].
 #[must_use]
 pub fn resolve_span_to_lsp(span: Span, src: &str) -> Range {
     if span.start == 0 && span.end == 0 {
-        // D087 fallback: fully-synthetic node — anchor to file start.
+        // Fully-synthetic node — anchor to file start.
         return file_line1_range();
     }
 
@@ -67,7 +67,7 @@ pub fn resolve_span_to_lsp(span: Span, src: &str) -> Range {
     }
 }
 
-/// The D087 "no source" fallback range: file line 1, character 1 (0-indexed: 0, 0).
+/// The "no source" fallback range: file line 1, character 1 (0-indexed: 0, 0).
 #[must_use]
 pub const fn file_line1_range() -> Range {
     Range {
@@ -88,7 +88,7 @@ pub const fn file_line1_range() -> Range {
 mod tests {
     use super::*;
 
-    // Test 1 (§3.10 D087-1): synthesised ToText interpolation node
+    // Test 1: synthesised ToText interpolation node
     // Span::point(0) → zero-width at offset 0 → file-line-1 fallback.
     #[test]
     fn d087_synthesised_totext_recovers_to_file_line1() {
@@ -100,7 +100,7 @@ mod tests {
         assert_eq!(range.start.character, 0);
     }
 
-    // Test 2 (§3.10 D087-2): IrExpr::Call with stdlib synthesis
+    // Test 2: IrExpr::Call with stdlib synthesis
     // Span points at a real call-site; verify it resolves to the correct line/col.
     #[test]
     fn d087_ir_call_stdlib_synthesis_recovers_to_call_site() {
@@ -120,7 +120,7 @@ mod tests {
         );
     }
 
-    // Test 3 (§3.10 D087-3): fully-synthetic prelude node
+    // Test 3: fully-synthetic prelude node
     // Prelude nodes always use Span::point(0) — must anchor to file-line-1.
     #[test]
     fn d087_fully_synthetic_prelude_node_recovers_to_file_line1() {

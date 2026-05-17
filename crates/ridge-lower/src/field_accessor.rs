@@ -76,8 +76,8 @@ pub fn lower_field_accessor(ctx: &mut LowerCtx<'_>, field: &Ident, span: Span) -
         span,
     });
 
-    // PHASE45-T3: look up the field-accessor lambda type from node_types
-    // via `(span, NodeKind::Expr)` and lift `params[0]` as the synthetic
+    // Look up the field-accessor lambda type from node_types via
+    // `(span, NodeKind::Expr)` and lift `params[0]` as the synthetic
     // parameter type. Falls back to `Type::Error` when the mapping is absent
     // (test scaffolding, or no node_id_map attached).
     let param_ty = ctx

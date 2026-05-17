@@ -3,8 +3,8 @@
 //! Compiles the workspace then invokes the BEAM runtime:
 //! `erl -noshell -pa <beam_dir> -s <module> start -s init stop`.
 //!
-//! OQ-C006 — BEAM invocation via `erl`, not `escript`.
-//! D106 — beam dir: `<workspace_root>/target/ridge/<profile>/beam/`.
+//! BEAM invocation via `erl`, not `escript`.
+//! Beam dir: `<workspace_root>/target/ridge/<profile>/beam/`.
 
 use std::io::Read;
 use std::path::Path;
@@ -23,7 +23,7 @@ const ERL_TIMEOUT_SECS: u64 = 60;
 ///
 /// 1. Call [`compile_workspace`] with a [`CompileOptions`] derived from
 ///    `options`.
-/// 2. Probe `erl` via `PATH`; surface `C004` if not found.  // OQ-C004
+/// 2. Probe `erl` via `PATH`; surface `C004` if not found.
 /// 3. Resolve the BEAM module name from `options.main_module` or the first
 ///    `.beam` file produced.
 /// 4. Invoke `erl -noshell -pa <beam_dir> -s <module> start -s init stop`.
@@ -50,7 +50,7 @@ pub fn run_workspace(options: RunOptions) -> Result<ProcessExitCode, RunError> {
     let artefacts = compile_workspace(compile_opts)?;
 
     // ── 2. Probe erl ─────────────────────────────────────────────────────────
-    // OQ-C004: C004 ErlangNotFound probed once here, not in compile_workspace
+    // C004 ErlangNotFound is probed once here, not in compile_workspace
     // (compile does not need `erl`; run does).
     let erl_path = probe_erl()?;
 
@@ -59,7 +59,7 @@ pub fn run_workspace(options: RunOptions) -> Result<ProcessExitCode, RunError> {
         return Err(RunError::NoBeamModule);
     }
 
-    // D106: all beam files land in `<workspace_root>/target/ridge/<profile>/beam/`.
+    // All beam files land in `<workspace_root>/target/ridge/<profile>/beam/`.
     let beam_file = &artefacts.beam_files[0];
     let beam_dir = beam_file
         .parent()

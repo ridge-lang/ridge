@@ -87,7 +87,7 @@ fn build_map() -> BridgeMap {
     // B to cover every `pub fn` in stdlib `.rg` files.
     //
     // Only cat-A entries remain: `std.op.*` — emitted by `ridge-lower::operators`
-    // (D092) with no Ridge surface; they have no `.rg` body or `@ffi` annotation.
+    // with no Ridge surface; they have no `.rg` body or `@ffi` annotation.
     // These six entries are permanent.
     //
     // Cat-B (pure-Ridge, no @ffi) retired in T11.5 (now served by path B):
@@ -104,7 +104,7 @@ fn build_map() -> BridgeMap {
 
     let entries: &[(&'static str, &'static str, BridgeTarget)] = &[
         // ── std.op (polymorphic comparison operators) (cat A — permanent) ────
-        // Emitted by ridge-lower::operators (D092); no Ridge surface, no @ffi stub.
+        // Emitted by ridge-lower::operators; no Ridge surface, no @ffi stub.
         // The plan uses "neq" but the lower phase emits "ne" (see operators.rs BinOp::Ne).
         (
             "std.op",
@@ -175,7 +175,7 @@ fn build_map() -> BridgeMap {
 
 static BRIDGE_MAP: OnceLock<BridgeMap> = OnceLock::new();
 
-// ── Seam adapter (T14.5.3 / OQ-T14.5-03 / D141) ──────────────────────────────
+// ── Seam adapter ──────────────────────────────────────────────────────────────
 //
 // Adapts `ridge_stdlib::ffi_targets::StdlibFfiTarget` (target-neutral) into
 // `BridgeTarget::RidgeStdlibLocal` (BEAM-specific).  The adapter map is
@@ -206,20 +206,20 @@ static STDLIB_LOCAL_MAP: OnceLock<BridgeMap> = OnceLock::new();
 /// Returns `None` when no bridge entry exists — the caller should emit
 /// `CodegenError::StdlibBridgeMissing` (E002).
 ///
-/// ## Phase 7 path-B / path-A (D118 / §7.2 / T11.5 / T14.5.3)
+/// ## Lookup strategy: path B then path A
 ///
-/// Path B — consult the canonical Ridge stdlib FFI table first (T11.5-widened
-/// to cover both `@ffi`-decorated stubs and pure-Ridge `pub fn` bodies).
+/// Path B — consult the canonical Ridge stdlib FFI table first (covers both
+/// `@ffi`-decorated stubs and pure-Ridge `pub fn` bodies).
 /// `ridge_stdlib::ffi_targets::lookup` returns `Some(&'static StdlibFfiTarget)`;
 /// the seam adapter converts this into `BridgeTarget::RidgeStdlibLocal` via
-/// `STDLIB_LOCAL_MAP` (OQ-T14.5-03, D141).
+/// `STDLIB_LOCAL_MAP`.
 ///
 /// Path A fallback — `BRIDGE_MAP` is the minimal kept set: exactly six
 /// `std.op.*` entries (`eq, ne, lt, gt, le, ge`) emitted by
-/// `ridge-lower::operators` (D092) with no Ridge surface.  G3 satisfied.
+/// `ridge-lower::operators` with no Ridge surface.
 #[must_use]
 pub fn lookup(module: &str, name: &str) -> Option<&'static BridgeTarget> {
-    // Path B — consult the canonical stdlib FFI table (D141). // OQ-T14.5-03
+    // Path B — consult the canonical stdlib FFI table.
     if ridge_stdlib::ffi_targets::lookup(module, name).is_some() {
         let map: &'static BridgeMap = STDLIB_LOCAL_MAP.get_or_init(build_stdlib_local_map);
         let key = format!("{module}::{name}");
@@ -329,7 +329,7 @@ mod tests {
 
     #[test]
     fn lookup_op_eq_is_erlang_op() {
-        // std.op.eq is still path A (retained — emitted by ridge-lower::operators D092).
+        // std.op.eq is still path A (retained — emitted by ridge-lower::operators).
         match lookup("std.op", "eq") {
             Some(BridgeTarget::BeamStdlib {
                 module,

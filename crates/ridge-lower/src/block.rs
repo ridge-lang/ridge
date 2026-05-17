@@ -115,7 +115,7 @@ pub fn lower_assign(ctx: &mut LowerCtx<'_>, target: &Expr, value: &Expr, span: S
     // the ident name appears in `ctx.current_state_fields`, this is a state-field
     // assignment (`<-` targeting a declared `state` field).  `ridge-resolve` has
     // no `Binding::StateField` variant; the classification is done here using the
-    // actor-body context populated by `actor_lower` (R8 / §4.14 / T10).
+    // actor-body context populated by `actor_lower` (R8 / §4.14).
     //
     // For all other cases, fall back to `AssignTarget::Local`.
     let is_state_field = ctx.in_actor_body
@@ -385,7 +385,7 @@ mod tests {
         LowerCtx::new(ModuleId(0), &[])
     }
 
-    // ── T6-1: Simple let-then-expr ────────────────────────────────────────────
+    // ── Simple let-then-expr ─────────────────────────────────────────────────────
     //
     // Block { stmts: [Let { pat: x, value: 1 }, Ident(x)] }
     // → LetIn { pat: Bind(x), value: Lit(Int 1), body: Local(x) }
@@ -470,7 +470,7 @@ mod tests {
         }
     }
 
-    // ── T6-2: Let-only block (final stmt is Let) → LetIn with Unit body ───────
+    // ── Let-only block (final stmt is Let) → LetIn with Unit body ───────────────
     #[test]
     fn block_let_only_produces_let_in_with_unit_body() {
         let let_span = sp_at(0, 10);
@@ -513,7 +513,7 @@ mod tests {
         }
     }
 
-    // ── T6-3: Var-then-expr → VarIn ──────────────────────────────────────────
+    // ── Var-then-expr → VarIn ────────────────────────────────────────────────────
     #[test]
     fn block_var_then_expr_produces_var_in() {
         let var_span = sp_at(0, 10);
@@ -577,7 +577,7 @@ mod tests {
         }
     }
 
-    // ── T6-4: Multi-stmt non-let → right-folded Block ─────────────────────────
+    // ── Multi-stmt non-let → right-folded Block ──────────────────────────────────
     //
     // Block { stmts: [Unit, Unit] }
     // → IrExpr::Block { stmts: [Lit Unit, Lit Unit], .. }
@@ -604,7 +604,7 @@ mod tests {
         }
     }
 
-    // ── T6-5: Mixed: [Let, expr_stmt, Ident] → LetIn { body: Block { ... } } ──
+    // ── Mixed: [Let, expr_stmt, Ident] → LetIn { body: Block { ... } } ──────────
     #[test]
     fn block_mixed_let_then_two_stmts() {
         let let_span = sp_at(0, 10);
@@ -645,7 +645,7 @@ mod tests {
         }
     }
 
-    // ── T6-6: Empty block (defensive) → Lit Unit, no panic ───────────────────
+    // ── Empty block (defensive) → IrShapeMalformed error, no panic ──────────────
     //
     // Phase 4 rejects empty blocks (P014); we must not panic if one arrives.
     #[test]
@@ -667,7 +667,7 @@ mod tests {
         // No panic, no assertion about errors — the parse-level error already covers this.
     }
 
-    // ── T6-7: Assign on Local ─────────────────────────────────────────────────
+    // ── Assign on Local → promoted to Let binding in block sequence ──────────────
     //
     // Build a Local binding for ident `x`, then
     // Expr::Assign { target: Ident(x), value: Lit(2) }
@@ -724,7 +724,7 @@ mod tests {
         }
     }
 
-    // ── T6-8: Bare Expr::Let outside Block → defensive error in dispatcher ────
+    // ── Bare Expr::Let outside Block → defensive error in dispatcher ─────────────
     //
     // A top-level `Expr::Let { .. }` passed to `lower_expr` should emit a
     // `L999` error and return a `Unit` stub (see core.rs defensive arm).

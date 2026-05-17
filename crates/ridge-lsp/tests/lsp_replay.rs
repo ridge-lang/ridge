@@ -10,13 +10,12 @@
 //! - **8 protocol-replay tests** — `initialize`, `didOpen`, `didChange`,
 //!   `didSave`, type-error diagnostics, capability-error diagnostics,
 //!   multi-file workspace cross-module reference, `shutdown`+`exit`.
-//! - **3 D087 span-recovery tests** — synthesised `ToText` node, stdlib
+//! - **3 span-recovery tests** — synthesised `ToText` node, stdlib
 //!   `IrExpr::Call` synthesis, fully-synthetic prelude node.
 //! - **1 debounce test** — rapid `didChange` flurries trigger exactly one compile.
 //! - **1 cancellation test** — `didChange` mid-compile cancels the in-flight compile.
 //!
-//! Total: 13 tests (§3.10 authoritative count — T11/G7 entry says 12; see D201
-//! deviation note in the §3.10 closure paragraph).
+//! Total: 13 tests.
 
 #![allow(
     clippy::unwrap_used,
@@ -397,7 +396,7 @@ async fn test_shutdown_and_exit() {
     server.shutdown().await.expect("double shutdown ok");
 }
 
-// ── D087 span-recovery test 1: synthesised ToText node ───────────────────────
+// ── Span-recovery test 1: synthesised ToText node ────────────────────────────
 
 #[tokio::test]
 async fn test_d087_synthesised_totext_span_recovery() {
@@ -416,7 +415,7 @@ async fn test_d087_synthesised_totext_span_recovery() {
     assert_eq!(range.end.character, 1);
 }
 
-// ── D087 span-recovery test 2: IrExpr::Call with stdlib synthesis ─────────────
+// ── Span-recovery test 2: IrExpr::Call with stdlib synthesis ──────────────────
 
 #[tokio::test]
 async fn test_d087_ir_call_stdlib_synthesis_span_recovery() {
@@ -436,7 +435,7 @@ async fn test_d087_ir_call_stdlib_synthesis_span_recovery() {
     assert_eq!(range.start.character, 2, "col 3 (0-indexed col 2)");
 }
 
-// ── D087 span-recovery test 3: fully-synthetic prelude node ──────────────────
+// ── Span-recovery test 3: fully-synthetic prelude node ───────────────────────
 
 #[tokio::test]
 async fn test_d087_fully_synthetic_prelude_node() {
@@ -562,6 +561,6 @@ async fn test_cancellation_discards_stale_results() {
     // what was published without a test client, but the liveness + no-panic
     // assertion is the observable invariant.
     //
-    // OQ-C016: the abort() call on the JoinHandle is the cancellation mechanism.
+    // The abort() call on the JoinHandle is the cancellation mechanism.
     // The aborted blocking thread may finish but its result is discarded.
 }

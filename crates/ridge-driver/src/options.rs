@@ -10,7 +10,7 @@ use std::path::PathBuf;
 /// Controls the output subdirectory (`target/ridge/debug/` vs
 /// `target/ridge/release/`) and BEAM optimisation flags passed to `erlc`.
 ///
-/// OQ-C006 / D147 — `--release` profile handling.
+/// Controls output subdirectory and `erlc` flags for debug vs release builds.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 #[non_exhaustive]
 pub enum Profile {
@@ -68,7 +68,7 @@ impl EmitArtefacts {
 
 /// Options for [`crate::compile_workspace`].
 ///
-/// D106 — output directory: `<workspace_root>/target/ridge/<profile>/<member>/`.
+/// Output directory: `<workspace_root>/target/ridge/<profile>/<member>/`.
 #[derive(Debug, Clone)]
 #[non_exhaustive]
 pub struct CompileOptions {

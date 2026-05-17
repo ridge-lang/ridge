@@ -5,8 +5,7 @@
 //! function is called from `expr.rs` during `IrExpr::LetIn` (destructuring)
 //! and `IrExpr::Match` (arm patterns) lowering.
 
-// T4 helpers are consumed by expr.rs.  Until T8 wires the top-level pipeline
-// these items are only exercised from the test suite.
+// These helpers are consumed by expr.rs and are also exercised from the test suite.
 #![allow(dead_code)]
 // pub(crate) on items in a pub(crate) module is redundant per clippy; we keep
 // it for explicitness per plan §2.2.
@@ -80,7 +79,7 @@ pub(crate) fn lower_pat(pat: &IrPat) -> Result<CErlPat, CodegenError> {
         _ => Err(CodegenError::IrShapeMalformed {
             variant: "IrPat",
             span: Span::point(0),
-            detail: "T4: unrecognised IrPat variant — pending future lowering task".into(),
+            detail: "unrecognised IrPat variant — no lowering arm defined".into(),
         }),
     }
 }
@@ -141,7 +140,7 @@ fn lower_ctor_pat(
         _ => Err(CodegenError::IrShapeMalformed {
             variant: "IrPat::Ctor",
             span,
-            detail: "T4: unexpected SymbolRef variant in constructor pattern".into(),
+            detail: "unexpected SymbolRef variant in constructor pattern".into(),
         }),
     }
 }
@@ -159,7 +158,7 @@ fn lower_prelude_pat(
             let inner = args.first().ok_or_else(|| CodegenError::IrShapeMalformed {
                 variant: "IrPat::Ctor(Prelude::Some)",
                 span,
-                detail: "T4: Some pattern expects exactly one argument".into(),
+                detail: "Some pattern expects exactly one argument".into(),
             })?;
             Ok(CErlPat::Tuple(vec![
                 CErlPat::Lit(CErlLit::Atom(CErlAtom("some".into()))),
@@ -175,7 +174,7 @@ fn lower_prelude_pat(
             let inner = args.first().ok_or_else(|| CodegenError::IrShapeMalformed {
                 variant: "IrPat::Ctor(Prelude::Ok)",
                 span,
-                detail: "T4: Ok pattern expects exactly one argument".into(),
+                detail: "Ok pattern expects exactly one argument".into(),
             })?;
             Ok(CErlPat::Tuple(vec![
                 CErlPat::Lit(CErlLit::Atom(CErlAtom("ok".into()))),
@@ -187,7 +186,7 @@ fn lower_prelude_pat(
             let inner = args.first().ok_or_else(|| CodegenError::IrShapeMalformed {
                 variant: "IrPat::Ctor(Prelude::Err)",
                 span,
-                detail: "T4: Err pattern expects exactly one argument".into(),
+                detail: "Err pattern expects exactly one argument".into(),
             })?;
             Ok(CErlPat::Tuple(vec![
                 CErlPat::Lit(CErlLit::Atom(CErlAtom("error".into()))),
@@ -197,7 +196,7 @@ fn lower_prelude_pat(
         other => Err(CodegenError::IrShapeMalformed {
             variant: "IrPat::Ctor(Prelude)",
             span,
-            detail: format!("T4: unknown Prelude constructor pattern '{other}'"),
+            detail: format!("unknown Prelude constructor pattern '{other}'"),
         }),
     }
 }

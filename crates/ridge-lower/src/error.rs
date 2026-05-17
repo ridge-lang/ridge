@@ -16,7 +16,7 @@
 //! Each variant's [`std::fmt::Display`] impl produces a human-readable message
 //! prefixed with its code, e.g. `"[L001] malformed pipe RHS: …"`.
 
-// TODO(T12): impl HasErrorCode for LowerError once the diagnostics rendering
+// TODO: impl HasErrorCode for LowerError once the diagnostics rendering
 // pipeline (ridge-diagnostics) is wired to Phase 5.
 
 use ridge_ast::Span;

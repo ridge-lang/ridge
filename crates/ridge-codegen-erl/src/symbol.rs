@@ -34,15 +34,14 @@ use ridge_ir::SymbolRef;
 use ridge_resolve::ModuleId;
 use rustc_hash::FxHashMap;
 
-/// B-D009 hotfix v3 Wave 2: emit a lambda that captures `arity` parameters
-/// and forwards them to the BEAM target, so the stdlib symbol used as a
-/// value behaves as a true function reference rather than a 0-arg call.
+/// Emit a lambda that captures `arity` parameters and forwards them to the
+/// BEAM target, so the stdlib symbol used as a value behaves as a true
+/// function reference rather than a 0-arg call.
 ///
-/// Pre-fix, `lower_symbol` for a `SymbolRef::Stdlib` used as a value emitted
-/// `call 'M':'F' ()` — a zero-argument call to the target.  At runtime that
-/// invoked the BEAM function with no arguments, which is `undef` for every
-/// arity-1+ stdlib fn.  `List.map Text.byteSize lns` crashed with
-/// `erlang:byte_size/0 undef`.
+/// `lower_symbol` for a `SymbolRef::Stdlib` used as a value previously
+/// emitted `call 'M':'F' ()` — a zero-argument call to the target.  At
+/// runtime that invoked the BEAM function with no arguments, which is `undef`
+/// for every arity-1+ stdlib fn.
 ///
 /// The fix emits `fun (V_X0, ..., V_XN) -> call 'M':'F' (V_X0, ..., V_XN)`,
 /// which is a regular Erlang fun reference of the correct arity that callers
@@ -141,10 +140,9 @@ pub(crate) fn lower_symbol(
                     name: name.clone(),
                     span,
                 }),
-                // B-D009 hotfix v3 Wave 2: emit a fun reference that captures
-                // the bridge target's arity, not a 0-arg call.  The previous
-                // 0-arg call produced `erlang:byte_size/0 undef` whenever a
-                // stdlib fn was passed as a HOF argument.
+                // Emit a fun reference that captures the bridge target's arity,
+                // not a 0-arg call.  A 0-arg call produces `undef` whenever a
+                // stdlib fn is passed as a HOF argument.
                 Some(
                     BridgeTarget::BeamStdlib {
                         module: m,
@@ -167,8 +165,8 @@ pub(crate) fn lower_symbol(
                     CErlAtom((*fn_name).into()),
                     *arity,
                 )),
-                // Phase 7: RidgeStdlibLocal — emit a fun reference to the BEAM
-                // target with the recorded arity (same B-D009 fix as above).
+                // RidgeStdlibLocal — emit a fun reference to the BEAM target
+                // with the recorded arity (same as BeamStdlib above).
                 Some(BridgeTarget::RidgeStdlibLocal {
                     beam_module,
                     fn_name,
@@ -330,11 +328,10 @@ mod tests {
 
     #[test]
     fn symbol_stdlib_known_emits_fun_ref() {
-        // B-D009 hotfix v3 Wave 2: a known stdlib symbol used as a value
-        // emits a `fun (params) -> call 'M':'F' (params)` wrapper of the
-        // correct arity.  The earlier behaviour (0-arg Call) was broken —
-        // it crashed at runtime with `undef` for every arity-1+ stdlib fn
-        // passed as a HOF argument.
+        // A known stdlib symbol used as a value emits a
+        // `fun (params) -> call 'M':'F' (params)` wrapper of the correct
+        // arity.  A 0-arg Call crashes at runtime with `undef` for every
+        // arity-1+ stdlib fn passed as a HOF argument.
         let sym = SymbolRef::Stdlib {
             module: "std.list".into(),
             name: "map".into(),

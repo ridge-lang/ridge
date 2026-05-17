@@ -3,9 +3,8 @@
 //! Literals are the simplest lowering form: each Ridge literal maps to exactly
 //! one Core Erlang literal without any context requirements.
 
-// T3 helpers are consumed by lower_expr (expr.rs) and wired into the
-// module-level entry points in T8.  Until T8 ships they are only exercised
-// from within this module's test suite and from expr.rs.
+// These helpers are consumed by lower_expr (expr.rs) and by the module-level
+// entry points.  They are also exercised from this module's test suite.
 #![allow(dead_code)]
 // pub(crate) on items in a pub(crate) module is redundant per clippy; we keep
 // it anyway for explicitness per plan §2.2 — suppress the lint here.
@@ -56,7 +55,7 @@ pub(crate) fn lower_lit(lit: &IrLit, span: Span) -> Result<CErlLit, CodegenError
         _ => Err(CodegenError::IrShapeMalformed {
             variant: "IrLit",
             span,
-            detail: "T3: unrecognised IrLit variant — pending future lowering task".into(),
+            detail: "unrecognised IrLit variant — no lowering arm defined".into(),
         }),
     }
 }

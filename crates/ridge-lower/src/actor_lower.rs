@@ -38,7 +38,7 @@
 //! - `caps_from_ast` returns `CapabilitySet::PURE`; actual inference wiring
 //!   is T17 (see `inferred_caps` side-table).
 //! - `IrActor.origin` and `IrHandler.origin` are `NodeId(0)` placeholders;
-//!   `ActorDecl` items carry no `NodeId` per the D079 side-table convention.
+//!   `ActorDecl` items carry no `NodeId` per the side-table convention.
 
 #![deny(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 #![cfg_attr(
@@ -126,7 +126,7 @@ pub fn lower_actor(ctx: &mut LowerCtx<'_>, decl: &ActorDecl) -> IrActor {
         state_fields,
         init,
         dispatch,
-        // ActorDecl items carry no NodeId per the D079 side-table convention.
+        // ActorDecl items carry no NodeId per the side-table convention.
         origin: NodeId(0),
         span: decl.span,
         is_pub: matches!(decl.vis, ridge_ast::Visibility::Pub),
@@ -185,7 +185,7 @@ fn lower_init_decl(
     ctx.current_state_fields = saved_state_fields;
 
     IrInit {
-        // PHASE45-T3: bare-param types use structural lookup via init span.
+        // Bare-param types use structural lookup via init span.
         params: i
             .params
             .iter()
@@ -228,7 +228,7 @@ fn lower_on_handler(
     ctx.in_actor_body = saved_in_actor_body;
     ctx.current_state_fields = saved_state_fields;
 
-    // PHASE45-T3+OQ-004: resolve ret_ty from declared annotation when present;
+    // Resolve ret_ty from declared annotation when present;
     // when absent read the body's inferred type from node_types.
     let ret_ty = if let Some(ast_ty) = &h.ret {
         lower_ast_type(ctx, ast_ty)
@@ -254,7 +254,7 @@ fn lower_on_handler(
 
     IrHandler {
         message_name: h.name.text.clone(),
-        // PHASE45-T3: bare-param types use structural lookup via handler span.
+        // Bare-param types use structural lookup via handler span.
         params: h
             .params
             .iter()
@@ -264,7 +264,7 @@ fn lower_on_handler(
         ret_ty,
         caps: caps_from_ast_decl(&h.caps),
         body,
-        // OnHandler items carry no NodeId per the D079 side-table convention.
+        // OnHandler items carry no NodeId per the side-table convention.
         origin: NodeId(0),
         span: h.span,
         doc: h.doc.as_ref().map(|d| d.text.clone()),
@@ -281,7 +281,7 @@ fn lower_on_handler(
 /// (not a `Fn`), so this falls back to `Type::Error` — but uses the correct
 /// structural pattern (same as lambdas in `crate::core`).
 ///
-/// PHASE45-T3: bare param type lifted from enclosing decl's `Type::Fn` (structural pattern).
+/// Bare param type lifted from enclosing decl's `Type::Fn` (structural pattern).
 fn param_to_ir_param(
     ctx: &mut LowerCtx<'_>,
     decl_span: Span,
@@ -290,7 +290,7 @@ fn param_to_ir_param(
 ) -> IrParam {
     match param {
         Param::Bare(ident) => {
-            // PHASE45-T3: look up the decl's Type::Fn from (decl_span, NodeKind::Expr)
+            // Look up the decl's Type::Fn from (decl_span, NodeKind::Expr)
             // and extract params[param_idx].  Actor handler/init decl spans do not
             // store a Type::Fn in node_types, so this falls back to Type::Error.
             let ty = ctx
@@ -381,7 +381,7 @@ mod tests {
         })
     }
 
-    // ── T10-a: actor with no init, all-default state fields, single handler ────
+    // ── actor with no init, all-default state fields, single handler ────────────
     //
     // actor Counter =
     //     state count: Int = 0
@@ -453,7 +453,7 @@ mod tests {
         );
     }
 
-    // ── T10-b: actor with init block + multi-arg state ────────────────────────
+    // ── actor with init block + multi-arg state ──────────────────────────────────
     //
     // actor RateLimiter =
     //     state capacity: Int
@@ -533,7 +533,7 @@ mod tests {
         assert!(ctx.current_state_fields.is_none());
     }
 
-    // ── T10-c: actor with multiple handlers (multi-handler dispatch shape) ─────
+    // ── actor with multiple handlers (multi-handler dispatch shape) ──────────────
     //
     // actor Counter =
     //     state count: Int = 0
@@ -611,7 +611,7 @@ mod tests {
         );
     }
 
-    // ── T10-d: state-field assignment classifies as AssignTarget::StateField ───
+    // ── state-field assignment classifies as AssignTarget::StateField ────────────
     //
     // Actor with `state count: Int = 0` and handler body `count <- 1`.
     // The assignment target `count` must become AssignTarget::StateField.

@@ -22,7 +22,7 @@
 //! declaration order** (not the source order of the `with` clause).  For each
 //! field:
 //! - If the field is in the update set and has an explicit value: `lower_expr(v)`.
-//! - If the field is in the update set and is shorthand (D053):
+//! - If the field is in the update set and is shorthand (no explicit value):
 //!   `IrExpr::Local { name: fd.name }` (pulls from local environment).
 //! - Otherwise: `IrExpr::Field { base: Local("__with_base_N"), field: fd.name }`.
 //!
@@ -132,7 +132,7 @@ pub fn lower_with(ctx: &mut LowerCtx<'_>, base: &Expr, fields: &[FieldInit], spa
                         name: fname,
                         span: fspan,
                     }) => {
-                        // Shorthand (D053) — pull from local environment, not from base.
+                        // Shorthand field — pull from local environment, not from base.
                         let id = ctx.fresh_id(None);
                         IrExpr::Local {
                             id,

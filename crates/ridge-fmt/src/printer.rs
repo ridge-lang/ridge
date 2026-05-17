@@ -3,7 +3,7 @@
 //! [`print`] takes a [`ridge_parser::ParseResultWithTrivia`] and produces
 //! a normalised Ridge source string.
 //!
-//! # Strategy (§2.3 / OQ-C007)
+//! # Strategy (§2.3)
 //!
 //! The trivia-preserving round-trip works in three phases:
 //!
@@ -15,8 +15,8 @@
 //!    consecutive non-import top-level declarations and zero blank lines
 //!    between consecutive import statements at the file head.
 //! 3. **Comment re-attachment** — line comments that were on the same line as
-//!    code are re-attached per OQ-C008 (same-line if ≤ 80 chars, else
-//!    preceding line).
+//!    code are re-attached per the trailing-comment placement rule
+//!    (same-line if ≤ 80 chars, else preceding line).
 //!
 //! The printer does NOT rewrite expression syntax, does NOT reorder imports,
 //! and does NOT reflow long lines.  See `README.md` for the transitional
@@ -204,13 +204,12 @@ pub fn print(parsed: &ParseResultWithTrivia) -> String {
         let gap_start = item_start_lines[i] + 1;
         let gap_end = next_start; // exclusive
 
-        // B-D010 #3 hotfix: when the gap between two top-level items
-        // contains ANY line-comment, the printer is hands-off about
-        // blank lines in that gap.  The user's blank-line layout around
-        // a standalone or leading comment is intentional and the
-        // "keep only the first blank" rule was silently eating the
-        // blank between a comment and the following declaration (or,
-        // for leading-doc comments above an item, the blank between
+        // When the gap between two top-level items contains ANY line-comment,
+        // the printer is hands-off about blank lines in that gap.  The user's
+        // blank-line layout around a standalone or leading comment is
+        // intentional and the "keep only the first blank" rule was silently
+        // eating the blank between a comment and the following declaration
+        // (or, for leading-doc comments above an item, the blank between
         // the previous item and the comment block).  Doc-comment
         // markers (`---`) are NOT line-comments and don't trigger this
         // branch.
@@ -285,9 +284,8 @@ pub fn print(parsed: &ParseResultWithTrivia) -> String {
 
 /// Emit a single source line to the output buffer.
 ///
-/// Applies trailing comment re-attachment per OQ-C008: if the line has a
-/// trailing comment, decide whether to put it on the same line or the
-/// preceding line.
+/// Applies trailing comment re-attachment: if the line has a trailing
+/// comment, decide whether to put it on the same line or the preceding line.
 fn emit_line(out: &mut String, idx: usize, line: &str, trailing_comments: &[Option<String>]) {
     let comment = trailing_comments.get(idx).and_then(|c| c.as_deref());
 

@@ -42,7 +42,7 @@
 #![allow(clippy::redundant_pub_crate)]
 // Init lowering functions are called from actor.rs (lower_actor → emit_init →
 // lower_init_body).  dead_code fires because lower_actor itself is only reachable
-// from lower_module_all, which is wired in T10.
+// from lower_module_all in the actor module assembly path.
 #![allow(dead_code)]
 
 use crate::core_ast::{CErlAtom, CErlClause, CErlExpr, CErlLit, CErlPat, CErlVar};
@@ -515,7 +515,7 @@ fn lower_expr_in_actor_context_w(
         // Recursive inner-fn fix: if `value` is a Lambda whose body references
         // `name` (self-recursive closure), emit `LetRec` instead of `Let` so that
         // `V_Name` is in scope inside the lambda body.  Same logic as the
-        // `LetIn` recursive path in `expr.rs` (OQ-L012 / T6).
+        // `LetIn` recursive path in `expr.rs` (OQ-L012).
         IrExpr::VarIn {
             name, value, body, ..
         } => {

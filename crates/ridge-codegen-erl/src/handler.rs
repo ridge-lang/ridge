@@ -42,7 +42,7 @@
 #![allow(clippy::redundant_pub_crate)]
 // Handler lowering functions are exercised via actor.rs's tests and through the
 // actor module pipeline.  dead_code fires because lower_actor (their sole
-// non-test caller) is itself only reachable from future T10 wiring.
+// non-test caller) is itself only reachable from the actor module pipeline.
 #![allow(dead_code)]
 
 use crate::core_ast::{CErlAtom, CErlClause, CErlExpr, CErlLit, CErlPat, CErlVar};

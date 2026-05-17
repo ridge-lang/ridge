@@ -114,7 +114,7 @@ pub(crate) fn lower_ask(
             return Err(CodegenError::IrShapeMalformed {
                 variant: "IrTimeout",
                 span,
-                detail: "T9: unrecognised IrTimeout variant — pending future lowering task".into(),
+                detail: "unrecognised IrTimeout variant — no lowering arm defined".into(),
             });
         }
     };
@@ -155,7 +155,7 @@ pub(crate) fn lower_spawn(
             variant: "IrExpr::Spawn",
             span,
             detail: format!(
-                "T9: Spawn actor field is not SymbolRef::ActorType — got {actor:?} (Phase 5 invariant violated)"
+                "Spawn actor field is not SymbolRef::ActorType — got {actor:?} (Phase 5 invariant violated)"
             ),
         });
     };
@@ -212,7 +212,7 @@ fn build_message_tuple(
             variant: "IrExpr::Send/Ask",
             span,
             detail: format!(
-                "T9: message field is not SymbolRef::Handler — got {message:?} (Phase 5 invariant violated)"
+                "Send message field is not SymbolRef::Handler — got {message:?} (Phase 5 invariant violated)"
             ),
         });
     };
@@ -238,8 +238,8 @@ fn build_message_tuple(
 /// emitted by `lower_actor` with the full mangled name (e.g.
 /// `ridge_examples_url_shortener_store`); the Spawn site must use the same name.
 ///
-/// For the four example actors (`Limiter`, `Store`), T13/T14 will verify the
-/// name round-trips correctly via snapshot tests.
+/// For the four example actors (`Limiter`, `Store`), snapshot tests will
+/// verify the name round-trips correctly.
 pub(crate) fn derive_actor_beam_module(module_id: u32, actor_name: &str) -> String {
     // Lowercase the actor name for idiomatic Erlang atom.
     let name_lc = actor_name.to_lowercase();

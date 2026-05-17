@@ -27,7 +27,7 @@
 //! types are now looked up from `node_types`; `IrFn.scheme` is now looked up
 //! from `TypedModule.schemes` keyed by body `NodeId`.
 //!
-//! # `is_main` detection (D059)
+//! # `is_main` detection
 //!
 //! A top-level `fn main` with no parameters (after the resolver strips any
 //! capability annotations) is marked `is_main = true`.  The resolver already
@@ -133,7 +133,7 @@ pub fn lower_item(ctx: &mut LowerCtx<'_>, item: &Item) -> Option<IrItem> {
 /// Per §4.2, the fn's return type is pushed onto `propagation_scope_stack`
 /// before lowering the body, and popped after.
 ///
-/// # `is_main` (D059)
+/// # `is_main`
 ///
 /// A fn named `"main"` at module top level is marked `is_main = true`.
 pub fn lower_fn(ctx: &mut LowerCtx<'_>, decl: &FnDecl) -> IrFn {
@@ -210,7 +210,7 @@ pub fn lower_fn(ctx: &mut LowerCtx<'_>, decl: &FnDecl) -> IrFn {
         caps,
         scheme,
         body,
-        // FnDecl items have no NodeId in the D079 side-table; NodeId(0) is the
+        // FnDecl items have no NodeId in the origin side-table; NodeId(0) is the
         // canonical placeholder (same as actor_lower uses for ActorDecl.origin).
         origin: NodeId(0),
         span: decl.span,
@@ -231,7 +231,7 @@ pub fn lower_const(ctx: &mut LowerCtx<'_>, decl: &ConstDecl) -> IrConst {
         name: decl.name.text.clone(),
         ty,
         value,
-        // ConstDecl items have no NodeId in the D079 side-table; placeholder.
+        // ConstDecl items have no NodeId in the origin side-table; placeholder.
         origin: NodeId(0),
         span: decl.span,
         is_pub: matches!(decl.vis, Visibility::Pub),

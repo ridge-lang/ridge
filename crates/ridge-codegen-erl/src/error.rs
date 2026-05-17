@@ -83,15 +83,14 @@ pub const ALLOWED_ERROR_SITES: &[AllowedErrorSite] = &[
 ///
 /// # Note on current coverage
 ///
-/// As of T11, codegen does not yet observe `Type::Error` via `node_types[id]`
-/// lookups — most codegen paths erase types structurally (§3.10, type-erasure
-/// decision).  The audit call-sites are wired at `IrPat::Wild` (pat.rs) because
-/// that is the only codegen path that explicitly encounters a typed IR node
-/// whose type could legitimately be `Type::Error`.  Other paths use field
-/// access (`fn_.ret_ty`, `param.ty`) but swallow the value silently because
-/// Core Erlang is dynamically typed.  The allow-list and this function document
-/// the contract so T13 can assert each site is within-list when the four
-/// example snapshots are shipped.
+/// Codegen does not yet observe `Type::Error` via `node_types[id]` lookups
+/// — most codegen paths erase types structurally (§3.10, type-erasure
+/// decision).  The audit call-sites are wired at `IrPat::Wild` (pat.rs)
+/// because that is the only codegen path that explicitly encounters a typed
+/// IR node whose type could legitimately be `Type::Error`.  Other paths use
+/// field access (`fn_.ret_ty`, `param.ty`) but swallow the value silently
+/// because Core Erlang is dynamically typed.  The allow-list and this
+/// function document the contract for future snapshot assertions.
 #[must_use]
 pub fn audit_type_error_at(
     ty: &Type,
@@ -401,7 +400,7 @@ mod tests {
         };
     }
 
-    // ── T11: audit_type_error_at — allow-list tests ───────────────────────────
+    // ── audit_type_error_at — allow-list tests ────────────────────────────────
 
     /// Test 3 (DoD): allowed sites with `Type::Error` must return `None` (no E007).
     #[test]

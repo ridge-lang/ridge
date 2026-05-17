@@ -19,12 +19,12 @@ use std::path::PathBuf;
 /// Absolute path to the `stdlib/` source directory embedded at compile time.
 ///
 /// Consumed by `ridge-driver`'s `compile_workspace` to locate the Ridge stdlib
-/// sources for on-demand `.beam` compilation (per OQ-C019 / D169 / D170).
+/// sources for on-demand `.beam` compilation.
 /// The path is always valid on the machine that compiled `ridge-stdlib`.
 ///
-/// For D170 / A.4 (case iii): the driver calls this function, compiles the
-/// stdlib sources into the user's `target/ridge/<profile>/beam/` directory, and
-/// therefore makes `'std.list'`, `'std.option'`, etc. available at BEAM runtime.
+/// The driver calls this function, compiles the stdlib sources into the user's
+/// `target/ridge/<profile>/beam/` directory, and therefore makes
+/// `'std.list'`, `'std.option'`, etc. available at BEAM runtime.
 #[must_use]
 pub fn stdlib_sources_dir() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("stdlib")

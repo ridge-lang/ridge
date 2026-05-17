@@ -1,6 +1,9 @@
 # Ridge Install Scripts
 
-Scripts for installing the Ridge toolchain (`ridge-cli` + `ridge-lsp`) from source.
+Scripts for installing the Ridge toolchain (`ridge-cli` + `ridge-lsp`).
+By default both scripts download a pre-built binary from GitHub Releases.
+If no binary is available for your platform, they fall back to building from
+source via `cargo install`.
 
 ## Quick install
 
@@ -20,6 +23,29 @@ If PowerShell script execution is blocked, run first:
 
 ```powershell
 Set-ExecutionPolicy -Scope Process Bypass
+```
+
+## Install behavior
+
+Both scripts follow a binary-first approach:
+
+1. **Binary install (default)** — downloads the pre-built archive for your
+   platform from GitHub Releases, verifies its SHA256 checksum, and extracts
+   `ridge` + `ridge-lsp` to `$INSTALL_DIR`.  This is the fastest path (~10 s).
+2. **Source install (fallback)** — if binary download fails or the platform
+   has no pre-built artifact, the script falls back to
+   `cargo install --git <repo> ridge-cli` and `cargo install … ridge-lsp`.
+   This requires Rust ≥ 1.88 and takes 3–5 minutes.
+
+To skip the binary path and always build from source:
+
+```bash
+RIDGE_FORCE_SOURCE=1 sh install.sh
+```
+
+```powershell
+$env:RIDGE_FORCE_SOURCE = "1"
+.\install.ps1
 ```
 
 ## Files
@@ -134,16 +160,51 @@ Invoke-ScriptAnalyzer tools/install/install.ps1 -EnableExit
 
 Installing the tools locally is recommended but not required.  The CI is the authoritative gate for both linters.
 
-## Environment overrides (`RIDGE_REPO` / `RIDGE_BRANCH`)
+## Environment variables
 
-Both scripts honour two environment variables that override the repository URL and branch passed to `cargo install --git`:
+### Binary install controls
+
+| Variable | Default | Purpose |
+|----------|---------|---------|
+| `RIDGE_VERSION` | _(latest GitHub release)_ | Pin a specific release tag, e.g. `RIDGE_VERSION=v0.2.0-rc2` |
+| `RIDGE_INSTALL_DIR` | `~/.cargo/bin` (Linux/macOS) / `%USERPROFILE%\.cargo\bin` (Windows) | Directory where `ridge` and `ridge-lsp` are placed |
+| `RIDGE_FORCE_SOURCE` | `0` | Set to `1` to skip the binary path and always build from source |
+
+**Examples:**
+
+```bash
+# Install a specific version
+RIDGE_VERSION=v0.2.0-rc2 sh install.sh
+
+# Install to a custom directory
+RIDGE_INSTALL_DIR=/usr/local/bin sh install.sh
+
+# Force source build (requires Rust)
+RIDGE_FORCE_SOURCE=1 sh install.sh
+```
+
+```powershell
+# Install a specific version
+$env:RIDGE_VERSION = 'v0.2.0-rc2'
+.\install.ps1
+
+# Install to a custom directory
+$env:RIDGE_INSTALL_DIR = 'C:\tools\ridge'
+.\install.ps1
+
+# Force source build (requires Rust)
+$env:RIDGE_FORCE_SOURCE = '1'
+.\install.ps1
+```
+
+### Source install controls (`cargo install --git`)
 
 | Variable | Default | Purpose |
 |----------|---------|---------|
 | `RIDGE_REPO` | `https://github.com/ridge-lang/ridge` | Git repository URL |
 | `RIDGE_BRANCH` | `main` | Git branch / ref |
 
-This is the lever the CI matrix uses to pin installs to the transient public mirror (`https://github.com/ridge-lang/ridge`) until the canonical `ridge-lang/ridge` repository opens.
+These are used only when the source-install path runs (fallback or `RIDGE_FORCE_SOURCE=1`).  This is the lever the CI matrix uses to pin installs to the transient public mirror until the canonical `ridge-lang/ridge` repository opens.
 
 **Example — Linux / macOS:**
 
@@ -165,10 +226,29 @@ $env:RIDGE_BRANCH = 'main'
 
 **Snapshot determinism.** The CI `--snapshot` / `-Snapshot` mode is environment-independent on purpose: it always emits the literal canonical default (`https://github.com/ridge-lang/ridge` / `main`) regardless of whether the env vars are set.  This keeps `expected_dryrun.txt` byte-identical across runners and prevents env leakage from breaking the snapshot diff.
 
+## Advisory codes
+
+The binary install path emits structured advisory messages to stderr when a non-fatal issue occurs.  These are prefixed `advisory <CODE>:` and allow callers to detect specific failure modes programmatically.
+
+| Code | Trigger | Meaning |
+|------|---------|---------|
+| R051 | Download failed | Could not fetch the release archive or SHA256 sidecar from GitHub. Check network connectivity and that the release tag exists. |
+| R052 | SHA256 mismatch | The downloaded archive's checksum does not match the `.sha256` sidecar. The file may be corrupt or tampered with; do not use it. |
+| R053 | Unsupported platform | No pre-built binary exists for this OS / architecture combination.  The script falls back to the source install path automatically. |
+| R054 | Extract failed | The archive could not be extracted to `INSTALL_DIR`.  Check available disk space and write permissions. |
+
+When any of R051–R054 fires, the binary path returns failure and the script falls back to `cargo install` automatically (unless `RIDGE_FORCE_SOURCE=1`, in which case the source path was already the primary path).
+
 ## Edge cases
 
 | Scenario | Behaviour |
 |----------|-----------|
+| GitHub API unreachable | R051 emitted; falls back to source install |
+| Release tag not found | R051 emitted; falls back to source install |
+| SHA256 mismatch | R052 emitted; aborts binary install, falls back to source |
+| Linux aarch64 | R053 emitted (no artifact yet); falls back to source install |
+| Windows ARM64 | R053 emitted (no artifact yet); falls back to source install |
+| Extraction fails | R054 emitted; falls back to source install |
 | Rust missing | Exit 1 with `curl … sh.rustup.rs` / `rustup-init.exe` hint |
 | Rust < 1.88 | Exit 1 with `rustup update stable` hint |
 | Erlang missing | Exit 1 with `apt` / `brew` / `choco` hint |

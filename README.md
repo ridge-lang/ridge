@@ -3,7 +3,7 @@
 [![CI](https://github.com/ridge-lang/ridge/actions/workflows/ci.yml/badge.svg)](https://github.com/ridge-lang/ridge/actions/workflows/ci.yml)
 [![Latest release](https://img.shields.io/github/v/release/ridge-lang/ridge?include_prereleases&label=latest)](https://github.com/ridge-lang/ridge/releases)
 [![License](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
-[![Rust](https://img.shields.io/badge/rust-1.85+-orange.svg)](https://www.rust-lang.org/)
+[![Rust](https://img.shields.io/badge/rust-1.88+-orange.svg)](https://www.rust-lang.org/)
 [![BEAM](https://img.shields.io/badge/BEAM-OTP%2026+-purple.svg)](https://www.erlang.org/)
 
 > A general-purpose typed functional language for the BEAM, built around

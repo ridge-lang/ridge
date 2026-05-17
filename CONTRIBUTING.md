@@ -9,7 +9,7 @@ deliberate update — never a silent drift.
 
 ## Prerequisites
 
-- Rust **1.85** or newer (`rustc --version`)
+- Rust **1.88** or newer (`rustc --version`)
 - Erlang/OTP **26** or newer (`erl -version`)
 - Git
 

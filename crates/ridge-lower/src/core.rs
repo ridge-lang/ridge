@@ -1205,10 +1205,7 @@ fn lower_ident(ctx: &mut LowerCtx<'_>, ident: &Ident) -> IrExpr {
             let id = ctx.fresh_id(None);
             ctx.errors.push(LowerError::InternalLoweringError {
                 span,
-                message: format!(
-                    "unrecognised binding variant for ident `{}`",
-                    ident.text
-                ),
+                message: format!("unrecognised binding variant for ident `{}`", ident.text),
             });
             IrExpr::Lit {
                 id,
@@ -1372,9 +1369,7 @@ fn lower_qualified(ctx: &mut LowerCtx<'_>, qname: &QualifiedName) -> IrExpr {
             let id = ctx.fresh_id(None);
             ctx.errors.push(LowerError::InternalLoweringError {
                 span,
-                message: format!(
-                    "unrecognised binding variant for qualified name `{name_text}`"
-                ),
+                message: format!("unrecognised binding variant for qualified name `{name_text}`"),
             });
             IrExpr::Lit {
                 id,

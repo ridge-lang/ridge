@@ -161,9 +161,7 @@ fn generate_ffi_targets(stdlib_dir: &Path, out_path: &Path) -> Result<usize, Str
                 );
             }
             None => {
-                println!(
-                    "cargo:warning=constructor {module}::{name} missing from FFI table"
-                );
+                println!("cargo:warning=constructor {module}::{name} missing from FFI table");
                 panic!(
                     "constructor {module}::{name} missing from FFI table but invariant requires it to be \
                      present at arity 0"

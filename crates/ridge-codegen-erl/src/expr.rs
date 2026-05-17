@@ -911,8 +911,7 @@ fn lower_static_call(
         _ => Err(CodegenError::IrShapeMalformed {
             variant: "IrExpr::Call",
             span,
-            detail: "unrecognised SymbolRef variant as Call callee"
-                .into(),
+            detail: "unrecognised SymbolRef variant as Call callee".into(),
         }),
     }
 }

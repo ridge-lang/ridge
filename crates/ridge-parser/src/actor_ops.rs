@@ -1,4 +1,4 @@
-﻿//! Lambda, spawn, record-construction, field-init, and interpolation parsers
+//! Lambda, spawn, record-construction, field-init, and interpolation parsers
 //! (grammar §§6.13, 6.16, 6.18, 6.19, 6.20).
 //!
 //! Entry points:

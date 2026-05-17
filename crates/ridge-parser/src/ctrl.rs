@@ -1,4 +1,4 @@
-﻿//! Control-flow and binding expression parsers (T7, grammar §§6.1–6.7).
+//! Control-flow and binding expression parsers (T7, grammar §§6.1–6.7).
 //!
 //! This module implements:
 //!

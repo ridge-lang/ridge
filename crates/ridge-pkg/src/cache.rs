@@ -31,8 +31,8 @@ use crate::error::PkgError;
 /// determined.
 pub fn cache_root() -> Result<PathBuf, PkgError> {
     // Per-user, shared cache so the same dep across workspaces is fetched only once.
-    let dirs = ProjectDirs::from("org", "Ridge", "ridge")
-        .ok_or(PkgError::PkgCacheRootUnavailable)?;
+    let dirs =
+        ProjectDirs::from("org", "Ridge", "ridge").ok_or(PkgError::PkgCacheRootUnavailable)?;
     Ok(dirs.cache_dir().to_owned())
 }
 

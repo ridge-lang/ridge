@@ -1,0 +1,86 @@
+---
+source: crates/ridge-lower/tests/lowering.rs
+expression: rendered
+---
+module: m0
+items_count: 1
+items:
+  - kind: fn
+    name: inner_fn_recursive
+    pub: false
+    main: false
+    caps: CapabilitySet(0)
+    ret_ty: Con(0)
+    params:
+      - name: n
+        ty: Con(0)
+    body:
+      LetIn(n0):
+        pat:
+          Bind: fib
+        value:
+          Lambda(n1):
+            caps: CapabilitySet(0)
+            params:
+              - name: k
+                ty: Con(0)
+            body:
+              Match(n2):
+                scrutinee:
+                  Call(n3):
+                    callee:
+                      Symbol(n4): Stdlib(std.op.le)
+                    args:
+                      -
+                        Local(n5): k
+                      -
+                        Lit(n6): Int(1)
+                arms:
+                  -
+                    pat:
+                      Lit: Bool(true)
+                    body:
+                      Local(n7): k
+                  -
+                    pat:
+                      Lit: Bool(false)
+                    body:
+                      Call(n8):
+                        callee:
+                          Symbol(n9): Stdlib(std.int.add)
+                        args:
+                          -
+                            Call(n10):
+                              callee:
+                                Local(n11): fib
+                              args:
+                                -
+                                  Call(n12):
+                                    callee:
+                                      Symbol(n13): Stdlib(std.int.sub)
+                                    args:
+                                      -
+                                        Local(n14): k
+                                      -
+                                        Lit(n15): Int(1)
+                          -
+                            Call(n16):
+                              callee:
+                                Local(n17): fib
+                              args:
+                                -
+                                  Call(n18):
+                                    callee:
+                                      Symbol(n19): Stdlib(std.int.sub)
+                                    args:
+                                      -
+                                        Local(n20): k
+                                      -
+                                        Lit(n21): Int(2)
+        body:
+          Call(n22):
+            callee:
+              Local(n23): fib
+            args:
+              -
+                Local(n24): n

@@ -1,0 +1,5 @@
+[project]
+name = "lib"
+kind = "lib"
+
+[capabilities]

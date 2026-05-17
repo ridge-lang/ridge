@@ -1,0 +1,247 @@
+---
+source: crates/ridge-codegen-erl/tests/core_ast_snapshot.rs
+expression: "&cerl_module"
+---
+CErlModule {
+    name: CErlAtom(
+        "ridge_module_0",
+    ),
+    exports: [],
+    attributes: [],
+    fns: [
+        CErlFn {
+            name: CErlAtom(
+                "inner_fn_recursive",
+            ),
+            arity: 1,
+            anns: [
+                CErlAnn(
+                    "%% File: <source>, Offset: 0",
+                ),
+                CErlAnn(
+                    "%% Caps: {}",
+                ),
+            ],
+            body: Fun {
+                params: [
+                    CErlVar(
+                        "V_N",
+                    ),
+                ],
+                body: LetRec {
+                    defs: [
+                        (
+                            CErlAtom(
+                                "fib",
+                            ),
+                            1,
+                            Fun {
+                                params: [
+                                    CErlVar(
+                                        "V_K",
+                                    ),
+                                ],
+                                body: Let {
+                                    var: CErlVar(
+                                        "V_Anf0",
+                                    ),
+                                    value: Call {
+                                        module: CErlAtom(
+                                            "erlang",
+                                        ),
+                                        fn_name: CErlAtom(
+                                            "=<",
+                                        ),
+                                        args: [
+                                            Var(
+                                                CErlVar(
+                                                    "V_K",
+                                                ),
+                                            ),
+                                            Lit(
+                                                Int(
+                                                    1,
+                                                ),
+                                            ),
+                                        ],
+                                    },
+                                    body: Case {
+                                        scrutinee: Var(
+                                            CErlVar(
+                                                "V_Anf0",
+                                            ),
+                                        ),
+                                        clauses: [
+                                            CErlClause {
+                                                pattern: Lit(
+                                                    Atom(
+                                                        CErlAtom(
+                                                            "true",
+                                                        ),
+                                                    ),
+                                                ),
+                                                guard: Lit(
+                                                    Atom(
+                                                        CErlAtom(
+                                                            "true",
+                                                        ),
+                                                    ),
+                                                ),
+                                                body: Var(
+                                                    CErlVar(
+                                                        "V_K",
+                                                    ),
+                                                ),
+                                            },
+                                            CErlClause {
+                                                pattern: Lit(
+                                                    Atom(
+                                                        CErlAtom(
+                                                            "false",
+                                                        ),
+                                                    ),
+                                                ),
+                                                guard: Lit(
+                                                    Atom(
+                                                        CErlAtom(
+                                                            "true",
+                                                        ),
+                                                    ),
+                                                ),
+                                                body: Let {
+                                                    var: CErlVar(
+                                                        "V_Anf2",
+                                                    ),
+                                                    value: Let {
+                                                        var: CErlVar(
+                                                            "V_Anf1",
+                                                        ),
+                                                        value: Call {
+                                                            module: CErlAtom(
+                                                                "erlang",
+                                                            ),
+                                                            fn_name: CErlAtom(
+                                                                "-",
+                                                            ),
+                                                            args: [
+                                                                Var(
+                                                                    CErlVar(
+                                                                        "V_K",
+                                                                    ),
+                                                                ),
+                                                                Lit(
+                                                                    Int(
+                                                                        1,
+                                                                    ),
+                                                                ),
+                                                            ],
+                                                        },
+                                                        body: Apply {
+                                                            callee: LocalFnRef {
+                                                                name: CErlAtom(
+                                                                    "fib",
+                                                                ),
+                                                                arity: 1,
+                                                            },
+                                                            args: [
+                                                                Var(
+                                                                    CErlVar(
+                                                                        "V_Anf1",
+                                                                    ),
+                                                                ),
+                                                            ],
+                                                        },
+                                                    },
+                                                    body: Let {
+                                                        var: CErlVar(
+                                                            "V_Anf4",
+                                                        ),
+                                                        value: Let {
+                                                            var: CErlVar(
+                                                                "V_Anf3",
+                                                            ),
+                                                            value: Call {
+                                                                module: CErlAtom(
+                                                                    "erlang",
+                                                                ),
+                                                                fn_name: CErlAtom(
+                                                                    "-",
+                                                                ),
+                                                                args: [
+                                                                    Var(
+                                                                        CErlVar(
+                                                                            "V_K",
+                                                                        ),
+                                                                    ),
+                                                                    Lit(
+                                                                        Int(
+                                                                            2,
+                                                                        ),
+                                                                    ),
+                                                                ],
+                                                            },
+                                                            body: Apply {
+                                                                callee: LocalFnRef {
+                                                                    name: CErlAtom(
+                                                                        "fib",
+                                                                    ),
+                                                                    arity: 1,
+                                                                },
+                                                                args: [
+                                                                    Var(
+                                                                        CErlVar(
+                                                                            "V_Anf3",
+                                                                        ),
+                                                                    ),
+                                                                ],
+                                                            },
+                                                        },
+                                                        body: Call {
+                                                            module: CErlAtom(
+                                                                "erlang",
+                                                            ),
+                                                            fn_name: CErlAtom(
+                                                                "+",
+                                                            ),
+                                                            args: [
+                                                                Var(
+                                                                    CErlVar(
+                                                                        "V_Anf2",
+                                                                    ),
+                                                                ),
+                                                                Var(
+                                                                    CErlVar(
+                                                                        "V_Anf4",
+                                                                    ),
+                                                                ),
+                                                            ],
+                                                        },
+                                                    },
+                                                },
+                                            },
+                                        ],
+                                    },
+                                },
+                            },
+                        ),
+                    ],
+                    body: Apply {
+                        callee: LocalFnRef {
+                            name: CErlAtom(
+                                "fib",
+                            ),
+                            arity: 1,
+                        },
+                        args: [
+                            Var(
+                                CErlVar(
+                                    "V_N",
+                                ),
+                            ),
+                        ],
+                    },
+                },
+            },
+        },
+    ],
+}

@@ -1,0 +1,109 @@
+-- Private helpers for std.map test suite.
+-- FFI bridges + pure-Ridge helpers replicate map.rg (T17+ deferred).
+@ffi("maps", "new", 0)
+fn _mapsNew () -> Map k v
+
+@ffi("maps", "from_list", 1)
+fn _fromList (xs: List (k, v)) -> Map k v
+
+@ffi("maps", "to_list", 1)
+fn _toList (m: Map k v) -> List (k, v)
+
+@ffi("maps", "put", 3)
+fn _insert (k: k) (v: v) (m: Map k v) -> Map k v
+
+@ffi("maps", "remove", 2)
+fn _remove (k: k) (m: Map k v) -> Map k v
+
+@ffi("maps", "is_key", 2)
+fn _isKey (k: k) (m: Map k v) -> Bool
+
+@ffi("maps", "get", 2)
+fn _rawGet (k: k) (m: Map k v) -> v
+
+fn _get (k: k) (m: Map k v) -> Option v =
+    if _isKey k m then Some (_rawGet k m)
+    else None
+
+@ffi("maps", "is_key", 2)
+fn _contains (k: k) (m: Map k v) -> Bool
+
+@ffi("maps", "keys", 1)
+fn _keys (m: Map k v) -> List k
+
+@ffi("maps", "values", 1)
+fn _values (m: Map k v) -> List v
+
+fn _filterPairs (p: fn k -> v -> Bool) (xs: List (k, v)) -> List (k, v) =
+    match xs
+        [] -> []
+        (k, v) :: rest ->
+            let pk = p k
+            if pk v then (k, v) :: _filterPairs p rest
+            else _filterPairs p rest
+
+fn _filter (p: fn k -> v -> Bool) (m: Map k v) -> Map k v =
+    _fromList (_filterPairs p (_toList m))
+
+@ffi("maps", "size", 1)
+fn _size (m: Map k v) -> Int
+
+@ffi("maps", "merge", 2)
+fn _merge (a: Map k v) (b: Map k v) -> Map k v
+
+fn _update (k: k) (f: fn (Option v) -> v) (m: Map k v) -> Map k v =
+    let current = _get k m
+    _insert k (f current) m
+
+@ffi("erlang", "length", 1)
+fn _listLength (xs: List a) -> Int
+
+pub fn test_smoke_map () -> Result Unit Text = Ok ()
+
+pub fn test_empty_size_zero () -> Result Unit Text =
+    if _size Map.empty == 0 then Ok ()
+    else Err "Map.empty size should be 0"
+
+pub fn test_fromList_round_trip () -> Result Unit Text =
+    if _size (_fromList [("a", 1), ("b", 2)]) == 2 then Ok ()
+    else Err "Map.fromList [a,b] size should be 2"
+
+pub fn test_insert_then_get () -> Result Unit Text =
+    if _get "k" (_insert "k" 42 Map.empty) == Some 42 then Ok ()
+    else Err "Map.insert then get should return Some 42"
+
+pub fn test_get_absent_is_none () -> Result Unit Text =
+    if _get "missing" Map.empty == None then Ok ()
+    else Err "Map.get missing should be None"
+
+pub fn test_remove_decrements () -> Result Unit Text =
+    if _size (_remove "a" (_fromList [("a", 1)])) == 0 then Ok ()
+    else Err "Map.remove a from singleton should give size 0"
+
+pub fn test_contains_present () -> Result Unit Text =
+    if _contains "a" (_fromList [("a", 1)]) then Ok ()
+    else Err "Map.contains a should be true"
+
+pub fn test_keys_count_matches_size () -> Result Unit Text =
+    if _listLength (_keys (_fromList [("a", 1), ("b", 2)])) == 2 then Ok ()
+    else Err "Map.keys count should match size"
+
+pub fn test_values_count_matches_size () -> Result Unit Text =
+    if _listLength (_values (_fromList [("a", 1)])) == 1 then Ok ()
+    else Err "Map.values count should match size"
+
+pub fn test_filter_keeps_matching () -> Result Unit Text =
+    if _size (_filter (fn _ -> fn v -> v > 1) (_fromList [("a", 1), ("b", 2)])) == 1 then Ok ()
+    else Err "Map.filter v > 1 should keep 1 entry"
+
+pub fn test_size_basic () -> Result Unit Text =
+    if _size (_fromList [("a", 1), ("b", 2), ("c", 3)]) == 3 then Ok ()
+    else Err "Map.size fromList 3 should be 3"
+
+pub fn test_merge_overrides () -> Result Unit Text =
+    if _get "k" (_merge (_fromList [("k", 1)]) (_fromList [("k", 2)])) == Some 2 then Ok ()
+    else Err "Map.merge b takes priority over a"
+
+pub fn test_update_inserts_when_absent () -> Result Unit Text =
+    if _get "k" (_update "k" (fn _ -> 99) Map.empty) == Some 99 then Ok ()
+    else Err "Map.update absent key should insert 99"

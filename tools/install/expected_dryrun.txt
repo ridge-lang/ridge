@@ -1,0 +1,18 @@
+### install.sh --dry-run (snapshot mode) ###
+[dry-run] uname -s  # => <OS>
+[dry-run] uname -m  # => <ARCH>
+[dry-run] cargo --version
+[dry-run] erl -noshell -eval 'io:put_chars(erlang:system_info(otp_release)),init:stop().'
+[dry-run] git --version
+[dry-run] cargo install --git https://github.com/ridge-lang/ridge --branch main ridge-cli
+[dry-run] cargo install --git https://github.com/ridge-lang/ridge --branch main ridge-lsp
+[dry-run] ridge --version
+### install.ps1 -DryRun (snapshot mode) ###
+[dry-run] $env:PROCESSOR_ARCHITECTURE  # => <ARCH>
+[dry-run] $env:OS  # => <OS>
+[dry-run] cargo --version
+[dry-run] erl -noshell -eval 'io:put_chars(erlang:system_info(otp_release)),init:stop().'
+[dry-run] git --version
+[dry-run] cargo install --git https://github.com/ridge-lang/ridge --branch main ridge-cli
+[dry-run] cargo install --git https://github.com/ridge-lang/ridge --branch main ridge-lsp
+[dry-run] ridge --version

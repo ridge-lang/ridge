@@ -1,0 +1,167 @@
+---
+source: crates/ridge-codegen-erl/tests/core_ast_snapshot.rs
+assertion_line: 41
+expression: "&cerl_module"
+---
+CErlModule {
+    name: CErlAtom(
+        "ridge_module_0",
+    ),
+    exports: [],
+    attributes: [],
+    fns: [
+        CErlFn {
+            name: CErlAtom(
+                "inner_fn_basic",
+            ),
+            arity: 1,
+            anns: [
+                CErlAnn(
+                    "%% File: <source>, Offset: 0",
+                ),
+                CErlAnn(
+                    "%% Caps: {}",
+                ),
+            ],
+            body: Fun {
+                params: [
+                    CErlVar(
+                        "V_Xs",
+                    ),
+                ],
+                body: LetRec {
+                    defs: [
+                        (
+                            CErlAtom(
+                                "sum",
+                            ),
+                            2,
+                            Fun {
+                                params: [
+                                    CErlVar(
+                                        "V_Acc",
+                                    ),
+                                    CErlVar(
+                                        "V_Rest",
+                                    ),
+                                ],
+                                body: Case {
+                                    scrutinee: Var(
+                                        CErlVar(
+                                            "V_Rest",
+                                        ),
+                                    ),
+                                    clauses: [
+                                        CErlClause {
+                                            pattern: Lit(
+                                                Nil,
+                                            ),
+                                            guard: Lit(
+                                                Atom(
+                                                    CErlAtom(
+                                                        "true",
+                                                    ),
+                                                ),
+                                            ),
+                                            body: Var(
+                                                CErlVar(
+                                                    "V_Acc",
+                                                ),
+                                            ),
+                                        },
+                                        CErlClause {
+                                            pattern: Cons {
+                                                head: Var(
+                                                    CErlVar(
+                                                        "V_X",
+                                                    ),
+                                                ),
+                                                tail: Var(
+                                                    CErlVar(
+                                                        "V_Tl",
+                                                    ),
+                                                ),
+                                            },
+                                            guard: Lit(
+                                                Atom(
+                                                    CErlAtom(
+                                                        "true",
+                                                    ),
+                                                ),
+                                            ),
+                                            body: Let {
+                                                var: CErlVar(
+                                                    "V_Anf0",
+                                                ),
+                                                value: Call {
+                                                    module: CErlAtom(
+                                                        "erlang",
+                                                    ),
+                                                    fn_name: CErlAtom(
+                                                        "+",
+                                                    ),
+                                                    args: [
+                                                        Var(
+                                                            CErlVar(
+                                                                "V_Acc",
+                                                            ),
+                                                        ),
+                                                        Var(
+                                                            CErlVar(
+                                                                "V_X",
+                                                            ),
+                                                        ),
+                                                    ],
+                                                },
+                                                body: Apply {
+                                                    callee: LocalFnRef {
+                                                        name: CErlAtom(
+                                                            "sum",
+                                                        ),
+                                                        arity: 2,
+                                                    },
+                                                    args: [
+                                                        Var(
+                                                            CErlVar(
+                                                                "V_Anf0",
+                                                            ),
+                                                        ),
+                                                        Var(
+                                                            CErlVar(
+                                                                "V_Tl",
+                                                            ),
+                                                        ),
+                                                    ],
+                                                },
+                                            },
+                                        },
+                                    ],
+                                },
+                            },
+                        ),
+                    ],
+                    body: Apply {
+                        callee: LocalFnRef {
+                            name: CErlAtom(
+                                "sum",
+                            ),
+                            arity: 2,
+                        },
+                        args: [
+                            Lit(
+                                Int(
+                                    0,
+                                ),
+                            ),
+                            Var(
+                                CErlVar(
+                                    "V_Xs",
+                                ),
+                            ),
+                        ],
+                    },
+                },
+            },
+        },
+    ],
+}

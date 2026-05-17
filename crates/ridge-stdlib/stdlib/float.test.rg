@@ -1,0 +1,109 @@
+-- Private helpers for std.float test suite.
+-- FFI bridges replicate float.rg declarations in local scope (T17+ deferred).
+-- Pure-Ridge helpers replicate float.rg bodies (floor, ceil).
+@ffi("ridge_rt", "float_to_text", 1)
+fn _toText (f: Float) -> Text
+
+@ffi("erlang", "binary_to_float", 1)
+fn _parseRaw (s: Text) -> Float
+
+fn _parse (s: Text) -> Option Float = Some (_parseRaw s)
+
+@ffi("erlang", "float", 1)
+fn _fromInt (n: Int) -> Float
+
+@ffi("erlang", "round", 1)
+fn _round (f: Float) -> Int
+
+@ffi("erlang", "trunc", 1)
+fn _truncate (f: Float) -> Int
+
+fn _floor (f: Float) -> Int =
+    let t = _truncate f
+    if f >= 0.0 then t
+    else
+        let ft = _fromInt t
+        if ft == f then t else t - 1
+
+fn _ceil (f: Float) -> Int =
+    let t = _truncate f
+    if f <= 0.0 then t
+    else
+        let ft = _fromInt t
+        if ft == f then t else t + 1
+
+@ffi("math", "sqrt", 1)
+fn _sqrt (f: Float) -> Float
+
+@ffi("erlang", "abs", 1)
+fn _abs (f: Float) -> Float
+
+@ffi("erts_internal", "cmp_term", 2)
+fn _totalCompare (a: Float) (b: Float) -> Int
+
+@ffi("erlang", "byte_size", 1)
+fn _byteSize (s: Text) -> Int
+
+@ffi("binary", "part", 3)
+fn _binaryPart (s: Text) (start: Int) (len: Int) -> Text
+
+fn _eqFloat (a: Float) (b: Float) -> Bool = _totalCompare a b == 0
+
+fn _scanContains (needle: Text) (s: Text) (nLen: Int) (sLen: Int) (i: Int) -> Bool =
+    if (i + nLen) > sLen then false
+    else if _binaryPart s i nLen == needle then true
+    else _scanContains needle s nLen sLen (i + 1)
+
+fn _textContainsChar (needle: Text) (s: Text) -> Bool =
+    let nLen = _byteSize needle
+    let sLen = _byteSize s
+    _scanContains needle s nLen sLen 0
+
+pub fn test_smoke_float () -> Result Unit Text = Ok ()
+
+pub fn test_toText_integer_value () -> Result Unit Text =
+    let out = _toText 3.0
+    if _textContainsChar "3" out then Ok ()
+    else Err "Float.toText 3.0 should contain 3"
+
+pub fn test_parse_round_trip () -> Result Unit Text =
+    if _parse "3.14" == None then Err "Float.parse 3.14 should be Some"
+    else Ok ()
+
+pub fn test_fromInt () -> Result Unit Text =
+    if _eqFloat (_fromInt 5) 5.0 then Ok ()
+    else Err "Float.fromInt 5 should equal 5.0"
+
+pub fn test_round_half_away_from_zero () -> Result Unit Text =
+    if _round 1.5 == 2 then Ok ()
+    else Err "Float.round 1.5 should be 2"
+
+pub fn test_floor_negative () -> Result Unit Text =
+    let neg1_5 = 0.0 - 1.5
+    if _floor neg1_5 == -2 then Ok ()
+    else Err "Float.floor (-1.5) should be -2"
+
+pub fn test_floor_exact_integer () -> Result Unit Text =
+    let neg2_0 = 0.0 - 2.0
+    if _floor neg2_0 == -2 then Ok ()
+    else Err "Float.floor (-2.0) should be -2"
+
+pub fn test_ceil_positive () -> Result Unit Text =
+    if _ceil 1.5 == 2 then
+        if _ceil 2.0 == 2 then Ok ()
+        else Err "Float.ceil 2.0 should be 2"
+    else Err "Float.ceil 1.5 should be 2"
+
+pub fn test_sqrt_perfect_square () -> Result Unit Text =
+    if _eqFloat (_sqrt 4.0) 2.0 then Ok ()
+    else Err "Float.sqrt 4.0 should equal 2.0"
+
+pub fn test_abs_negative () -> Result Unit Text =
+    let neg3_0 = 0.0 - 3.0
+    if _eqFloat (_abs neg3_0) 3.0 then Ok ()
+    else Err "Float.abs (-3.0) should equal 3.0"
+
+pub fn test_arithmetic_round_trip () -> Result Unit Text =
+    let result = ((1.0 + 1.0) * 3.0 - 2.0) / 2.0
+    if _eqFloat result 2.0 then Ok ()
+    else Err "((1.0 + 1.0) * 3.0 - 2.0) / 2.0 should equal 2.0"

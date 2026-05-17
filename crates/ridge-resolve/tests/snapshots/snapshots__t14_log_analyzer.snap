@@ -1,0 +1,28 @@
+---
+source: crates/ridge-resolve/tests/snapshots.rs
+expression: snap
+---
+ResolvedSnapshot {
+    errors: [],
+    nid_count: 648,
+    stamped_bindings: 156,
+    binding_kind_counts: {
+        "Constructor": 7,
+        "Local": 88,
+        "ModuleSymbol": 11,
+        "StdlibSymbol": 50,
+    },
+    import_aliases: [
+        "<bare> -> BuiltinStdlib(0)",
+        "<bare> -> BuiltinStdlib(3)",
+        "<bare> -> BuiltinStdlib(7)",
+        "<bare> -> BuiltinStdlib(8)",
+        "Cli -> BuiltinStdlib(14)",
+        "Env -> BuiltinStdlib(13)",
+        "Fs -> BuiltinStdlib(10)",
+        "Io -> BuiltinStdlib(9)",
+        "List -> BuiltinStdlib(4)",
+        "Map -> BuiltinStdlib(5)",
+        "Option -> BuiltinStdlib(7)",
+    ],
+}

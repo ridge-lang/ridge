@@ -1,0 +1,8 @@
+[project]
+name = "acme.gateway"
+version = "0.1.0"
+kind = "service"
+entry = "src/Gateway.rg"
+
+[capabilities]
+allow = ["net", "io"]

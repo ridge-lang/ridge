@@ -1,0 +1,49 @@
+[package]
+name         = "ridge-stdlib"
+description  = "Ridge standard library — Ridge sources and compiled artefacts"
+version.workspace      = true
+edition.workspace      = true
+license.workspace      = true
+authors.workspace      = true
+publish.workspace      = true
+repository.workspace   = true
+rust-version.workspace = true
+
+[dependencies]
+# Runtime facade dependencies.
+ridge-ast = { path = "../ridge-ast" }
+# Pipeline crates needed by build_driver (compiled into the lib so that
+# the smoke test can call ridge_stdlib::build_driver::build_all directly).
+# Per §11.4 the preferred location is [build-dependencies], but because
+# `pub mod build_driver` must be accessible at lib-test time, placing them
+# here is the only way to satisfy both the `include!` constraint and the
+# smoke-test call site.  See build_driver.rs top-level comment.
+ridge-lexer     = { path = "../ridge-lexer" }
+ridge-parser    = { path = "../ridge-parser" }
+ridge-resolve   = { path = "../ridge-resolve" }
+ridge-typecheck = { path = "../ridge-typecheck" }
+ridge-lower     = { path = "../ridge-lower" }
+
+[build-dependencies]
+# Keep the same pipeline crates available to build.rs, which uses
+# include!("src/build_driver.rs") to share the driver code.
+ridge-lexer     = { path = "../ridge-lexer" }
+ridge-parser    = { path = "../ridge-parser" }
+ridge-resolve   = { path = "../ridge-resolve" }
+ridge-typecheck = { path = "../ridge-typecheck" }
+ridge-lower     = { path = "../ridge-lower" }
+
+[dev-dependencies]
+assert_cmd  = "2"
+tempfile    = "3"
+ridge-types = { path = "../ridge-types" }
+
+[features]
+default = []
+# Enables the slow-CI lane integration test that compiles stdlib `.test.rg`
+# files and runs them via the `ridge` binary.  Gated to keep `cargo test --all`
+# fast on a per-PR basis.
+stdlib-e2e = []
+
+[lints]
+workspace = true

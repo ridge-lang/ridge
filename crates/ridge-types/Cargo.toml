@@ -1,0 +1,18 @@
+[package]
+name         = "ridge-types"
+description  = "Pure data types for the Ridge type system (types, schemes, capabilities, substitutions)"
+version.workspace     = true
+edition.workspace     = true
+license.workspace     = true
+authors.workspace     = true
+publish.workspace     = true
+repository.workspace  = true
+rust-version.workspace = true
+
+[dependencies]
+ridge-ast    = { path = "../ridge-ast" }
+rustc-hash.workspace = true
+thiserror.workspace  = true
+
+[lints]
+workspace = true

@@ -1,0 +1,9 @@
+2024-01-15 08:00:00 INFO Server started
+2024-01-15 08:01:00 INFO Listening on port 8080
+2024-01-15 08:02:30 WARN High memory usage detected
+2024-01-15 08:03:00 INFO Request received
+2024-01-15 08:03:01 ERROR Database connection failed
+2024-01-15 08:03:02 WARN Retrying connection
+2024-01-15 08:03:05 INFO Connection restored
+2024-01-15 08:04:00 ERROR Disk space low
+2024-01-15 08:05:00 INFO Backup completed

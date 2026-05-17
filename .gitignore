@@ -1,0 +1,53 @@
+# Rust / Cargo
+/target/
+**/*.rs.bk
+Cargo.lock.bak
+
+# IDE / editors
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Ridge build artifacts (future)
+*.beam
+*.core
+/build/
+/out/
+
+# Erlang/BEAM debug artifacts (left behind by failed erl runs)
+erl_crash.dump
+*.S
+
+.claude/
+
+logs_*/
+
+# Public-cutover additions
+# Secrets / credentials
+.env
+.env.*
+*.pem
+*.key
+*.p12
+*.pfx
+
+# Logs (flat files, beyond logs_*/ directories)
+*.log
+# Test fixtures may legitimately use .log extension
+!**/tests/fixtures/**/*.log
+
+# Scratch / abandoned workspaces
+ridge-smoke/
+
+# Engram local data (if a sibling dir is ever created)
+engram*
+
+# Dogfood — per-app ridge target/ caches.  Never check in.
+dogfood/*/target/

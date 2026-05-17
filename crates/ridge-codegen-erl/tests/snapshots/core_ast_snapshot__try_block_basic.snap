@@ -1,0 +1,41 @@
+---
+source: crates/ridge-codegen-erl/tests/core_ast_snapshot.rs
+expression: "&cerl_module"
+---
+CErlModule {
+    name: CErlAtom(
+        "ridge_module_0",
+    ),
+    exports: [],
+    attributes: [],
+    fns: [
+        CErlFn {
+            name: CErlAtom(
+                "parse_int",
+            ),
+            arity: 1,
+            anns: [
+                CErlAnn(
+                    "%% File: <source>, Offset: 0",
+                ),
+                CErlAnn(
+                    "%% Caps: {}",
+                ),
+            ],
+            body: Fun {
+                params: [
+                    CErlVar(
+                        "V_S",
+                    ),
+                ],
+                body: Lit(
+                    Atom(
+                        CErlAtom(
+                            "none",
+                        ),
+                    ),
+                ),
+            },
+        },
+    ],
+}

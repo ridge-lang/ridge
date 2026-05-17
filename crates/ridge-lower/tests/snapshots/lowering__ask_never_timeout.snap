@@ -1,0 +1,49 @@
+---
+source: crates/ridge-lower/tests/lowering.rs
+expression: rendered
+---
+module: m0
+items_count: 2
+items:
+  - kind: actor
+    name: Counter
+    pub: false
+    state_fields:
+      - name: count
+        ty: Con(0)
+    init:
+      caps: CapabilitySet(0)
+      params:
+        - name: start
+          ty: Con(0)
+      body:
+        Assign(n0) -> StateField(count):
+          Local(n1): start
+    handlers:
+      - message: get_count
+        caps: CapabilitySet(0)
+        ret_ty: Con(0)
+        params: []
+        body:
+          Field(n2).count:
+            Local(n3): __state
+  - kind: fn
+    name: main
+    pub: false
+    main: true
+    caps: CapabilitySet(0)
+    ret_ty: Con(0)
+    params: []
+    body:
+      LetIn(n4):
+        pat:
+          Bind: c
+        value:
+          Spawn(n5) ActorType(Counter @ m0):
+            args:
+              Lit(n6): Int(0)
+        body:
+          Ask(n7) ?> Handler(m0..get_count):
+            handle:
+              Local(n8): c
+            timeout: never

@@ -1,0 +1,18 @@
+[workspace]
+name = "acme-platform"
+version = "0.1.0"
+members = ["apps/*", "libs/*"]
+
+[workspace.dependencies]
+json = { version = "1.0" }
+http = { version = "2.3" }
+postgres = { git = "github.com/ridge-lang/postgres", tag = "v0.2" }
+
+[workspace.rules]
+forbid = [
+  { from = "acme.domain.*", to = "acme.infra.*" },
+  { from = "acme.shared.*", to = "acme.*" },
+]
+
+[workspace.capabilities]
+deny = ["ffi"]

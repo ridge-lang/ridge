@@ -1,0 +1,38 @@
+-- Private FFI bridges for std.proc test suite.
+-- These replicate proc.rg FFI declarations in local scope because cross-module
+-- calls are unsupported (T17+ deferred).
+--
+-- ProcOutput = { stdout: Text, stderr: Text, exitCode: Int }
+-- Error      = { code: Text, message: Text }
+@ffi("ridge_rt", "proc_run", 2)
+fn _procRun (cmd: Text) (args: List Text) -> Result ProcOutput Error
+
+pub fn test_smoke_proc () -> Result Unit Text = Ok ()
+
+-- proc.run "erl" ["-version"] succeeds with exitCode 0 or non-zero but Ok.
+-- erl is guaranteed present (it spawned us). Some OTP builds write version to
+-- stderr with exitCode 0; others with exitCode != 0. We only assert Ok _ (no crash).
+pub fn proc test_run_erl_version_succeeds () -> Result Unit Text =
+    match _procRun "erl" ["-version"]
+        Err _ -> Err "proc.run erl -version should return Ok"
+        Ok _ -> Ok ()
+
+-- proc.run of a nonexistent command returns Err.
+pub fn proc test_run_nonexistent_returns_err () -> Result Unit Text =
+    match _procRun "this_command_does_not_exist_ridge_test" []
+        Err _ -> Ok ()
+        Ok _ -> Err "proc.run nonexistent should return Err"
+
+-- proc.run captures non-zero exit codes.
+-- Uses `erl -noshell -eval 'halt(1).'` rather than an unknown-flag pattern:
+-- on macOS (Homebrew erl) an unknown flag exits non-zero immediately, but on
+-- Linux (esl-erlang .deb) the same flag drops into an interactive shell that
+-- reads stdin and hangs (observed in ADO #212 Linux container). `-noshell` +
+-- `-eval 'halt(1).'` is deterministic across all erl builds and avoids any
+-- inner-quote argument that PowerShell 5.1 (Windows) would strip.
+pub fn proc test_run_captures_stderr () -> Result Unit Text =
+    match _procRun "erl" ["-noshell", "-eval", "halt(1)."]
+        Err _ -> Err "spawn erl -noshell -eval halt(1) shouldn't fail"
+        Ok out ->
+            if out.exitCode != 0 then Ok ()
+            else Err "erl halt(1) should exit non-zero"

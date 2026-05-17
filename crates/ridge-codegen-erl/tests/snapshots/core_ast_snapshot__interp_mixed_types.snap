@@ -1,0 +1,221 @@
+---
+source: crates/ridge-codegen-erl/tests/core_ast_snapshot.rs
+expression: "&cerl_module"
+---
+CErlModule {
+    name: CErlAtom(
+        "ridge_module_0",
+    ),
+    exports: [],
+    attributes: [],
+    fns: [
+        CErlFn {
+            name: CErlAtom(
+                "interp_mixed_types",
+            ),
+            arity: 3,
+            anns: [
+                CErlAnn(
+                    "%% File: <source>, Offset: 0",
+                ),
+                CErlAnn(
+                    "%% Caps: {}",
+                ),
+            ],
+            body: Fun {
+                params: [
+                    CErlVar(
+                        "V_Name",
+                    ),
+                    CErlVar(
+                        "V_Age",
+                    ),
+                    CErlVar(
+                        "V_Active",
+                    ),
+                ],
+                body: Let {
+                    var: CErlVar(
+                        "V_Anf4",
+                    ),
+                    value: Let {
+                        var: CErlVar(
+                            "V_Anf3",
+                        ),
+                        value: Let {
+                            var: CErlVar(
+                                "V_Anf1",
+                            ),
+                            value: Let {
+                                var: CErlVar(
+                                    "V_Anf0",
+                                ),
+                                value: Call {
+                                    module: CErlAtom(
+                                        "std.text",
+                                    ),
+                                    fn_name: CErlAtom(
+                                        "concat",
+                                    ),
+                                    args: [
+                                        Lit(
+                                            Binary(
+                                                [
+                                                    85,
+                                                    115,
+                                                    101,
+                                                    114,
+                                                    32,
+                                                ],
+                                            ),
+                                        ),
+                                        Var(
+                                            CErlVar(
+                                                "V_Name",
+                                            ),
+                                        ),
+                                    ],
+                                },
+                                body: Call {
+                                    module: CErlAtom(
+                                        "std.text",
+                                    ),
+                                    fn_name: CErlAtom(
+                                        "concat",
+                                    ),
+                                    args: [
+                                        Var(
+                                            CErlVar(
+                                                "V_Anf0",
+                                            ),
+                                        ),
+                                        Lit(
+                                            Binary(
+                                                [
+                                                    32,
+                                                    97,
+                                                    103,
+                                                    101,
+                                                    32,
+                                                ],
+                                            ),
+                                        ),
+                                    ],
+                                },
+                            },
+                            body: Let {
+                                var: CErlVar(
+                                    "V_Anf2",
+                                ),
+                                value: Call {
+                                    module: CErlAtom(
+                                        "erlang",
+                                    ),
+                                    fn_name: CErlAtom(
+                                        "integer_to_binary",
+                                    ),
+                                    args: [
+                                        Var(
+                                            CErlVar(
+                                                "V_Age",
+                                            ),
+                                        ),
+                                    ],
+                                },
+                                body: Call {
+                                    module: CErlAtom(
+                                        "std.text",
+                                    ),
+                                    fn_name: CErlAtom(
+                                        "concat",
+                                    ),
+                                    args: [
+                                        Var(
+                                            CErlVar(
+                                                "V_Anf1",
+                                            ),
+                                        ),
+                                        Var(
+                                            CErlVar(
+                                                "V_Anf2",
+                                            ),
+                                        ),
+                                    ],
+                                },
+                            },
+                        },
+                        body: Call {
+                            module: CErlAtom(
+                                "std.text",
+                            ),
+                            fn_name: CErlAtom(
+                                "concat",
+                            ),
+                            args: [
+                                Var(
+                                    CErlVar(
+                                        "V_Anf3",
+                                    ),
+                                ),
+                                Lit(
+                                    Binary(
+                                        [
+                                            32,
+                                            97,
+                                            99,
+                                            116,
+                                            105,
+                                            118,
+                                            101,
+                                            32,
+                                        ],
+                                    ),
+                                ),
+                            ],
+                        },
+                    },
+                    body: Let {
+                        var: CErlVar(
+                            "V_Anf5",
+                        ),
+                        value: Call {
+                            module: CErlAtom(
+                                "ridge_rt",
+                            ),
+                            fn_name: CErlAtom(
+                                "bool_to_text",
+                            ),
+                            args: [
+                                Var(
+                                    CErlVar(
+                                        "V_Active",
+                                    ),
+                                ),
+                            ],
+                        },
+                        body: Call {
+                            module: CErlAtom(
+                                "std.text",
+                            ),
+                            fn_name: CErlAtom(
+                                "concat",
+                            ),
+                            args: [
+                                Var(
+                                    CErlVar(
+                                        "V_Anf4",
+                                    ),
+                                ),
+                                Var(
+                                    CErlVar(
+                                        "V_Anf5",
+                                    ),
+                                ),
+                            ],
+                        },
+                    },
+                },
+            },
+        },
+    ],
+}

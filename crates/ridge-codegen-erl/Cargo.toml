@@ -1,0 +1,38 @@
+[package]
+name         = "ridge-codegen-erl"
+description  = "Codegen: IR to Core Erlang"
+version.workspace     = true
+edition.workspace     = true
+license.workspace     = true
+authors.workspace     = true
+publish.workspace     = true
+repository.workspace  = true
+rust-version.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+ridge-ir          = { path = "../ridge-ir" }
+ridge-resolve     = { path = "../ridge-resolve" }
+ridge-stdlib      = { path = "../ridge-stdlib" }
+ridge-types       = { path = "../ridge-types" }
+ridge-ast         = { path = "../ridge-ast" }
+ridge-diagnostics = { path = "../ridge-diagnostics" }
+rustc-hash        = { workspace = true }
+which             = "8"
+ryu               = "1"
+zip               = "8"
+
+[features]
+## Gate for tests that require a real OTP installation (`erlc` on PATH).
+## Run with `cargo test --features beam-runtime` on machines with OTP installed.
+beam-runtime = []
+
+[dev-dependencies]
+insta             = { workspace = true }
+tempfile          = "3"
+ridge-resolve     = { path = "../ridge-resolve" }
+ridge-typecheck   = { path = "../ridge-typecheck" }
+ridge-lower       = { path = "../ridge-lower" }
+ridge-driver      = { path = "../ridge-driver" }

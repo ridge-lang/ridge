@@ -1,0 +1,83 @@
+---
+source: crates/ridge-lower/tests/lowering.rs
+expression: rendered
+---
+module: m0
+items_count: 2
+items:
+  - kind: fn
+    name: sum_pairs
+    pub: false
+    main: false
+    caps: CapabilitySet(0)
+    ret_ty: Con(6) [Con(0)]
+    params:
+      - name: pairs
+        ty: Con(6) [Type]
+    body:
+      Call(n0):
+        callee:
+          Symbol(n1): Stdlib(std.list.map)
+        args:
+          -
+            Lambda(n2):
+              caps: CapabilitySet(0)
+              params:
+                - name: __tuple_param_0
+                  ty: c
+              body:
+                Match(n3):
+                  scrutinee:
+                    Local(n4): __tuple_param_0
+                  arms:
+                    -
+                      pat:
+                        Tuple:
+                          Bind: a
+                          Bind: b
+                      body:
+                        Call(n5):
+                          callee:
+                            Symbol(n6): Stdlib(std.int.add)
+                          args:
+                            -
+                              Local(n7): a
+                            -
+                              Local(n8): b
+          -
+            Local(n9): pairs
+  - kind: fn
+    name: first_of_triple
+    pub: false
+    main: false
+    caps: CapabilitySet(0)
+    ret_ty: Con(6) [Con(0)]
+    params:
+      - name: triples
+        ty: Con(6) [Type]
+    body:
+      Call(n10):
+        callee:
+          Symbol(n11): Stdlib(std.list.map)
+        args:
+          -
+            Lambda(n12):
+              caps: CapabilitySet(0)
+              params:
+                - name: __tuple_param_1
+                  ty: i
+              body:
+                Match(n13):
+                  scrutinee:
+                    Local(n14): __tuple_param_1
+                  arms:
+                    -
+                      pat:
+                        Tuple:
+                          Bind: x
+                          Wild
+                          Wild
+                      body:
+                        Local(n15): x
+          -
+            Local(n16): triples

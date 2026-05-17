@@ -1,0 +1,43 @@
+[workspace]
+resolver = "2"
+members  = ["crates/*"]
+
+[workspace.package]
+version     = "0.1.0"
+edition     = "2021"
+license     = "Apache-2.0"
+authors     = ["The Ridge Language Authors"]
+publish     = false
+repository  = "https://github.com/ridge-lang/ridge"
+rust-version = "1.88"
+
+[workspace.dependencies]
+logos     = { version = "0.16",  default-features = false, features = ["export_derive"] }
+thiserror = { version = "2" }
+insta     = { version = "1.47",  features = ["ron", "yaml"] }
+ariadne      = { version = "0.6", default-features = false }
+is-terminal  = { version = "0.4" }
+yansi        = { version = "1.0" }
+toml      = { version = "1.1" }
+serde     = { version = "1",     features = ["derive"] }
+rustc-hash = { version = "2" }
+globset   = { version = "0.4" }
+ena       = { version = "0.14" }
+
+[workspace.lints.rust]
+# `deny` (not `forbid`) so individual call-sites can opt-in via
+# `#[allow(unsafe_code, reason = "...")]` when std lacks a safe alternative
+# (e.g. `libc::kill` for graceful SIGTERM in the cli-watch loop).
+# Workspace-wide audit: `rg "allow\(unsafe_code"`.
+unsafe_code = "deny"
+
+[workspace.lints.clippy]
+pedantic                 = { level = "warn", priority = -1 }
+nursery                  = { level = "warn", priority = -1 }
+unwrap_used              = "warn"
+expect_used              = "warn"
+panic                    = "warn"
+todo                     = "allow"
+missing_errors_doc       = "allow"
+missing_panics_doc       = "allow"
+module_name_repetitions  = "allow"

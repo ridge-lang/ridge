@@ -1,0 +1,69 @@
+---
+source: crates/ridge-lower/tests/lowering.rs
+expression: rendered
+---
+module: m0
+items_count: 1
+items:
+  - kind: fn
+    name: guard_multi
+    pub: false
+    main: false
+    caps: CapabilitySet(0)
+    ret_ty: Con(0)
+    params:
+      - name: x
+        ty: Con(0)
+      - name: y
+        ty: Con(0)
+    body:
+      Match(n0):
+        scrutinee:
+          Call(n1):
+            callee:
+              Symbol(n2): Stdlib(std.op.gt)
+            args:
+              -
+                Local(n3): x
+              -
+                Lit(n4): Int(0)
+        arms:
+          -
+            pat:
+              Lit: Bool(true)
+            body:
+              Match(n5):
+                scrutinee:
+                  Call(n6):
+                    callee:
+                      Symbol(n7): Stdlib(std.op.gt)
+                    args:
+                      -
+                        Local(n8): y
+                      -
+                        Lit(n9): Int(0)
+                arms:
+                  -
+                    pat:
+                      Lit: Bool(true)
+                    body:
+                      Call(n10):
+                        callee:
+                          Symbol(n11): Stdlib(std.int.add)
+                        args:
+                          -
+                            Local(n12): x
+                          -
+                            Local(n13): y
+                  -
+                    pat:
+                      Lit: Bool(false)
+                    body:
+                      Return(n14):
+                        Lit(n15): Int(0)
+          -
+            pat:
+              Lit: Bool(false)
+            body:
+              Return(n16):
+                Lit(n17): Int(0)

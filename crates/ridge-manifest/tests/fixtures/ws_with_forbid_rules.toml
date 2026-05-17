@@ -1,0 +1,10 @@
+[workspace]
+name = "acme-clean"
+version = "0.1.0"
+members = ["libs/*"]
+
+[workspace.rules]
+forbid = [
+  { from = "acme.domain.*", to = "acme.infra.*" },
+  { from = "acme.shared.*", to = "acme.*" },
+]

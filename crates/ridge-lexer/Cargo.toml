@@ -1,0 +1,21 @@
+[package]
+name         = "ridge-lexer"
+description  = "Tokenization and layout algorithm"
+version.workspace     = true
+edition.workspace     = true
+license.workspace     = true
+authors.workspace     = true
+publish.workspace     = true
+repository.workspace  = true
+rust-version.workspace = true
+
+[dependencies]
+logos.workspace     = true
+thiserror.workspace = true
+
+[dev-dependencies]
+insta.workspace   = true
+ariadne.workspace = true
+
+[lints]
+workspace = true

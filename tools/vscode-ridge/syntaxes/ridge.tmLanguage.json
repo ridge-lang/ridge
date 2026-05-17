@@ -1,0 +1,145 @@
+{
+  "$schema": "https://raw.githubusercontent.com/martinring/tmlanguage/master/tmlanguage.json",
+  "name": "Ridge",
+  "scopeName": "source.ridge",
+  "fileTypes": ["rg"],
+  "patterns": [
+    { "include": "#block-comment" },
+    { "include": "#line-comment" },
+    { "include": "#string" },
+    { "include": "#interp-string" },
+    { "include": "#attribute" },
+    { "include": "#keyword-boolean" },
+    { "include": "#keyword-control" },
+    { "include": "#keyword-other" },
+    { "include": "#number" },
+    { "include": "#type-ident" },
+    { "include": "#operator" },
+    { "include": "#punctuation" }
+  ],
+  "repository": {
+    "block-comment": {
+      "comment": "Block/doc comment --- ... ---. Must appear before line-comment to win priority.",
+      "begin": "^---\\s*$",
+      "end": "^---\\s*$",
+      "name": "comment.block.documentation.ridge"
+    },
+    "line-comment": {
+      "comment": "Line comment starting with -- but NOT ---, which is a block comment opener.",
+      "match": "--(?!-).*$",
+      "name": "comment.line.double-dash.ridge"
+    },
+    "string": {
+      "comment": "Plain double-quoted string literal.",
+      "begin": "\"",
+      "end": "\"",
+      "name": "string.quoted.double.ridge",
+      "patterns": [
+        {
+          "match": "\\\\(?:[nrt\"\\\\]|u\\{[0-9a-fA-F]+\\})",
+          "name": "constant.character.escape.ridge"
+        }
+      ]
+    },
+    "interp-string": {
+      "comment": "Interpolated string literal starting with $\".",
+      "begin": "\\$\"",
+      "end": "\"",
+      "name": "string.quoted.double.ridge",
+      "patterns": [
+        {
+          "begin": "\\$\\{",
+          "end": "\\}",
+          "beginCaptures": {
+            "0": { "name": "punctuation.definition.template-expression.begin.ridge" }
+          },
+          "endCaptures": {
+            "0": { "name": "punctuation.definition.template-expression.end.ridge" }
+          },
+          "patterns": [
+            { "include": "$self" }
+          ]
+        },
+        {
+          "match": "\\\\(?:[nrt\"\\\\]|u\\{[0-9a-fA-F]+\\})",
+          "name": "constant.character.escape.ridge"
+        }
+      ]
+    },
+    "attribute": {
+      "comment": "@ffi(...) and other @ attributes.",
+      "match": "@[a-z_][a-zA-Z0-9_]*",
+      "name": "entity.name.tag.ridge"
+    },
+    "keyword-boolean": {
+      "comment": "Boolean literals: true, false.",
+      "match": "\\b(true|false)\\b",
+      "name": "constant.language.boolean.ridge"
+    },
+    "keyword-control": {
+      "comment": "Control-flow keywords.",
+      "match": "\\b(catch|else|guard|if|in|match|on|return|then|try|when|where|with)\\b",
+      "name": "keyword.control.ridge"
+    },
+    "keyword-other": {
+      "comment": "Declaration and modifier keywords.",
+      "match": "\\b(actor|as|class|const|deriving|fn|import|init|instance|let|pub|spawn|state|type|var)\\b",
+      "name": "keyword.other.ridge"
+    },
+    "number": {
+      "patterns": [
+        {
+          "comment": "Hexadecimal integer literal.",
+          "match": "\\b0x[0-9a-fA-F][0-9a-fA-F_]*\\b",
+          "name": "constant.numeric.integer.hex.ridge"
+        },
+        {
+          "comment": "Binary integer literal.",
+          "match": "\\b0b[01][01_]*\\b",
+          "name": "constant.numeric.integer.binary.ridge"
+        },
+        {
+          "comment": "Octal integer literal.",
+          "match": "\\b0o[0-7][0-7_]*\\b",
+          "name": "constant.numeric.integer.octal.ridge"
+        },
+        {
+          "comment": "Float literal.",
+          "match": "\\b[0-9][0-9_]*\\.[0-9][0-9_]*(?:[eE][+-]?[0-9][0-9_]*)?\\b",
+          "name": "constant.numeric.float.ridge"
+        },
+        {
+          "comment": "Decimal integer literal.",
+          "match": "\\b[0-9][0-9_]*\\b",
+          "name": "constant.numeric.integer.decimal.ridge"
+        }
+      ]
+    },
+    "type-ident": {
+      "comment": "Uppercase identifiers: type names and constructors.",
+      "match": "\\b[A-Z][a-zA-Z0-9_]*\\b",
+      "name": "entity.name.type.ridge"
+    },
+    "operator": {
+      "comment": "Operators from the Ridge lexer.",
+      "match": "\\|>|<-|\\?>|\\?|!|::|\\+\\+|->|=>|\\.\\.|\\.(?!\\.)|==|!=|<=|>=|<|>|&&|\\|\\||\\|(?!>)|\\+|-|\\*|/|%|\\^|=(?!=)|@",
+      "name": "keyword.operator.ridge"
+    },
+    "punctuation": {
+      "patterns": [
+        {
+          "match": "[()\\[\\]{}]",
+          "name": "punctuation.bracket.ridge"
+        },
+        {
+          "match": ",",
+          "name": "punctuation.separator.comma.ridge"
+        },
+        {
+          "match": ":",
+          "name": "punctuation.separator.colon.ridge"
+        }
+      ]
+    }
+  }
+}

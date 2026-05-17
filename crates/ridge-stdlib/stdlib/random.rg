@@ -1,0 +1,26 @@
+-- std.random — Pseudo-random number generation (Tier 3, imports std.list, std.option).
+--
+-- All functions require the `random` capability.
+-- §3.13: BEAM `rand` module keeps state in the process dictionary.
+-- OQ-S008: process-local RNG model documented.
+
+-- Return a uniformly-distributed random integer in [lo, hi] (inclusive).
+@ffi("ridge_rt", "random_int", 2)
+pub fn random int (lo: Int) (hi: Int) -> Int
+
+-- Return a uniformly-distributed random float in [0.0, 1.0).
+@ffi("ridge_rt", "random_float", 1)
+pub fn random float (_unit: Unit) -> Float
+
+-- Return a random alphanumeric Text of exactly n characters.
+-- Bridge delegates to ridge_rt:random_alphanumeric/1.
+@ffi("ridge_rt", "random_alphanumeric", 1)
+pub fn random alphanumeric (n: Int) -> Text
+
+-- Return a random element from a list, or None if the list is empty.
+@ffi("ridge_rt", "random_choice", 1)
+pub fn random choice (xs: List a) -> Option a
+
+-- Seed the RNG with an integer (for deterministic sequences).
+@ffi("ridge_rt", "random_seed", 1)
+pub fn random seed (s: Int) -> Unit

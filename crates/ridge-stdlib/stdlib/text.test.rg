@@ -1,0 +1,212 @@
+-- Private helpers for std.text test suite.
+-- FFI bridges + pure-Ridge helpers replicate text.rg (T17+ deferred).
+@ffi("erlang", "byte_size", 1)
+fn _byteSize (s: Text) -> Int
+
+@ffi("erlang", "iolist_to_binary", 1)
+fn _iolistToBin (l: List Text) -> Text
+
+fn _concat (a: Text) (b: Text) -> Text = _iolistToBin [a, b]
+
+@ffi("ridge_rt", "text_split_all", 2)
+fn _split (sep: Text) (s: Text) -> List Text
+
+fn _take (n: Int) (xs: List a) -> List a =
+    if n <= 0 then []
+    else
+        match xs
+            [] -> []
+            x :: rest -> x :: _take (n - 1) rest
+
+fn _splitN (n: Int) (sep: Text) (s: Text) -> List Text =
+    let parts = _split sep s
+    _take n parts
+
+fn _appendLists (xs: List a) (ys: List a) -> List a =
+    match xs
+        [] -> ys
+        x :: rest -> x :: _appendLists rest ys
+
+fn _flatMapSplit (sep: Text) (xs: List Text) -> List Text =
+    match xs
+        [] -> []
+        x :: rest -> _appendLists (_split sep x) (_flatMapSplit sep rest)
+
+fn _splitAnyAcc (seps: List Text) (acc: List Text) -> List Text =
+    match seps
+        [] -> acc
+        sep :: rest -> _splitAnyAcc rest (_flatMapSplit sep acc)
+
+fn _splitAny (seps: List Text) (s: Text) -> List Text = _splitAnyAcc seps [s]
+
+@ffi("binary", "part", 3)
+fn _binaryPart (s: Text) (start: Int) (len: Int) -> Text
+
+fn _stripTrailingCr (s: Text) -> Text =
+    let n = _byteSize s
+    if n > 0 then
+        let last = _binaryPart s (n - 1) 1
+        if last == "\r" then _binaryPart s 0 (n - 1)
+        else s
+    else s
+
+fn _stripCrAll (xs: List Text) -> List Text =
+    match xs
+        [] -> []
+        x :: rest -> _stripTrailingCr x :: _stripCrAll rest
+
+fn _lines (s: Text) -> List Text =
+    let parts = _split "\n" s
+    _stripCrAll parts
+
+@ffi("string", "trim", 1)
+fn _trim (s: Text) -> Text
+
+@ffi("string", "uppercase", 1)
+fn _toUpper (s: Text) -> Text
+
+@ffi("string", "lowercase", 1)
+fn _toLower (s: Text) -> Text
+
+fn _startsWith (prefix: Text) (s: Text) -> Bool =
+    let pLen = _byteSize prefix
+    let sLen = _byteSize s
+    if pLen > sLen then false
+    else _binaryPart s 0 pLen == prefix
+
+fn _endsWith (suffix: Text) (s: Text) -> Bool =
+    let sufLen = _byteSize suffix
+    let sLen = _byteSize s
+    if sufLen > sLen then false
+    else _binaryPart s (sLen - sufLen) sufLen == suffix
+
+fn _moreThanOne (xs: List a) -> Bool =
+    match xs
+        [] -> false
+        _ :: [] -> false
+        _ :: _ :: _ -> true
+
+fn _contains (needle: Text) (s: Text) -> Bool =
+    let parts = _split needle s
+    _moreThanOne parts
+
+@ffi("ridge_rt", "text_replace_all", 3)
+fn _replace (from: Text) (to: Text) (s: Text) -> Text
+
+@ffi("binary", "copy", 2)
+fn _binaryCopy (s: Text) (n: Int) -> Text
+
+fn _padLeft (n: Int) (pad: Text) (s: Text) -> Text =
+    let current = _byteSize s
+    if current >= n then s
+    else _concat (_binaryCopy pad (n - current)) s
+
+fn _padRight (n: Int) (pad: Text) (s: Text) -> Text =
+    let current = _byteSize s
+    if current >= n then s
+    else _concat s (_binaryCopy pad (n - current))
+
+fn _isEmpty (s: Text) -> Bool = _byteSize s == 0
+
+@ffi("erlang", "length", 1)
+fn _listLength (xs: List a) -> Int
+
+fn _listHead (xs: List a) -> Option a =
+    match xs
+        [] -> None
+        x :: _ -> Some x
+
+pub fn test_smoke_text () -> Result Unit Text = Ok ()
+
+pub fn test_byteSize_empty () -> Result Unit Text =
+    if _byteSize "" == 0 then Ok ()
+    else Err "Text.byteSize empty should be 0"
+
+pub fn test_byteSize_ascii () -> Result Unit Text =
+    if _byteSize "hello" == 5 then Ok ()
+    else Err "Text.byteSize hello should be 5"
+
+pub fn test_concat_basic () -> Result Unit Text =
+    if _concat "foo" "bar" == "foobar" then Ok ()
+    else Err "Text.concat foo bar should be foobar"
+
+pub fn test_split_simple () -> Result Unit Text =
+    let parts = _split "," "a,b,c"
+    if _listLength parts == 3 then
+        if _listHead parts == Some "a" then Ok ()
+        else Err "Text.split head should be a"
+    else Err "Text.split simple should have length 3"
+
+pub fn test_split_no_match () -> Result Unit Text =
+    let parts = _split "x" "abc"
+    if _listLength parts == 1 then
+        if _listHead parts == Some "abc" then Ok ()
+        else Err "Text.split no match head should be abc"
+    else Err "Text.split no match should have length 1"
+
+pub fn test_splitN_caps_at_n () -> Result Unit Text =
+    let parts = _splitN 2 "," "a,b,c,d"
+    if _listLength parts == 2 then Ok ()
+    else Err "Text.splitN 2 should return 2 parts"
+
+pub fn test_splitAny_multiple_seps () -> Result Unit Text =
+    let parts = _splitAny [",", ";"] "a,b;c"
+    if _listLength parts == 3 then Ok ()
+    else Err "Text.splitAny multiple seps should return 3 parts"
+
+pub fn test_lines_single_segment () -> Result Unit Text =
+    let ls = _lines "hello"
+    if _listLength ls == 1 then
+        if _listHead ls == Some "hello" then Ok ()
+        else Err "Text.lines hello should have head hello"
+    else Err "Text.lines hello should have 1 line"
+
+pub fn test_trim_removes_whitespace () -> Result Unit Text =
+    if _trim "  hi  " == "hi" then Ok ()
+    else Err "Text.trim should remove surrounding whitespace"
+
+pub fn test_toUpper_ascii () -> Result Unit Text =
+    if _toUpper "abc" == "ABC" then Ok ()
+    else Err "Text.toUpper abc should be ABC"
+
+pub fn test_toLower_ascii () -> Result Unit Text =
+    if _toLower "ABC" == "abc" then Ok ()
+    else Err "Text.toLower ABC should be abc"
+
+pub fn test_startsWith_true () -> Result Unit Text =
+    if _startsWith "foo" "foobar" then Ok ()
+    else Err "Text.startsWith foo foobar should be true"
+
+pub fn test_startsWith_false () -> Result Unit Text =
+    if _startsWith "bar" "foo" then Err "Text.startsWith bar foo should be false"
+    else Ok ()
+
+pub fn test_endsWith_true () -> Result Unit Text =
+    if _endsWith "bar" "foobar" then Ok ()
+    else Err "Text.endsWith bar foobar should be true"
+
+pub fn test_contains_present () -> Result Unit Text =
+    if _contains "oba" "foobar" then Ok ()
+    else Err "Text.contains oba in foobar should be true"
+
+pub fn test_contains_absent () -> Result Unit Text =
+    if _contains "xyz" "foo" then Err "Text.contains xyz in foo should be false"
+    else Ok ()
+
+pub fn test_replace_all () -> Result Unit Text =
+    if _replace "a" "X" "banana" == "bXnXnX" then Ok ()
+    else Err "Text.replace a X banana should be bXnXnX"
+
+pub fn test_padLeft_short () -> Result Unit Text =
+    if _padLeft 5 "0" "12" == "00012" then Ok ()
+    else Err "Text.padLeft 5 0 12 should be 00012"
+
+pub fn test_padRight_already_long () -> Result Unit Text =
+    if _padRight 2 "0" "abc" == "abc" then Ok ()
+    else Err "Text.padRight 2 0 abc should be abc (no truncation)"
+
+pub fn test_isEmpty () -> Result Unit Text =
+    if _isEmpty "" then
+        if _isEmpty "x" then Err "Text.isEmpty x should be false"
+        else Ok ()
+    else Err "Text.isEmpty empty should be true"

@@ -1,0 +1,4 @@
+[workspace]
+name = "acme-platform"
+version = "0.1.0"
+members = ["apps/*", "libs/*", "tests/*"]

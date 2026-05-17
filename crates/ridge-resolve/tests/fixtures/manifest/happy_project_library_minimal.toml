@@ -1,0 +1,4 @@
+[project]
+name = "acme.domain"
+version = "0.1.0"
+kind = "library"

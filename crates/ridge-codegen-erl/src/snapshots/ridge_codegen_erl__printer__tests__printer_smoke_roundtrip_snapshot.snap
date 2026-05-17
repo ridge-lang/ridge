@@ -1,0 +1,16 @@
+---
+source: crates/ridge-codegen-erl/src/printer.rs
+expression: printed
+---
+module 'ridge_smoke' ['main'/1, 'helper'/0]
+  attributes [{'file',['smoke.rg']}]
+  -| []
+'main'/1 =
+    ( fun (Args) ->
+          let Result = call 'erlang':'length' (Args) in Result
+      -| [] )
+'helper'/0 =
+    ( fun () ->
+          'ok'
+      -| [] )
+end

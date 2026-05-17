@@ -1,0 +1,64 @@
+---
+source: crates/ridge-lower/tests/lowering.rs
+expression: rendered
+---
+module: m0
+items_count: 4
+items:
+  - kind: fn
+    name: wrap_ok
+    pub: false
+    main: false
+    caps: CapabilitySet(0)
+    ret_ty: Con(10) [Con(0), Con(3)]
+    params:
+      - name: x
+        ty: Con(0)
+    body:
+      Call(n0):
+        callee:
+          Symbol(n1): Prelude(Ok)
+        args:
+          -
+            Local(n2): x
+  - kind: fn
+    name: wrap_err
+    pub: false
+    main: false
+    caps: CapabilitySet(0)
+    ret_ty: Con(10) [Con(0), Con(3)]
+    params:
+      - name: msg
+        ty: Con(3)
+    body:
+      Call(n3):
+        callee:
+          Symbol(n4): Prelude(Err)
+        args:
+          -
+            Local(n5): msg
+  - kind: fn
+    name: wrap_some
+    pub: false
+    main: false
+    caps: CapabilitySet(0)
+    ret_ty: Con(9) [Con(0)]
+    params:
+      - name: v
+        ty: Con(0)
+    body:
+      Call(n6):
+        callee:
+          Symbol(n7): Prelude(Some)
+        args:
+          -
+            Local(n8): v
+  - kind: fn
+    name: wrap_none
+    pub: false
+    main: false
+    caps: CapabilitySet(0)
+    ret_ty: Con(9) [Con(0)]
+    params: []
+    body:
+      Symbol(n9): Prelude(None)

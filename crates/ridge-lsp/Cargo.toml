@@ -1,0 +1,37 @@
+[package]
+name         = "ridge-lsp"
+description  = "Ridge Language Server Protocol implementation (stdio transport)"
+version.workspace     = true
+edition.workspace     = true
+license.workspace     = true
+authors.workspace     = true
+publish.workspace     = true
+repository.workspace  = true
+rust-version.workspace = true
+
+[lib]
+name = "ridge_lsp"
+path = "src/lib.rs"
+
+[[bin]]
+name = "ridge-lsp"
+path = "src/main.rs"
+
+[dependencies]
+tower-lsp        = { version = "0.20" }
+tokio            = { version = "1", features = ["rt-multi-thread", "macros", "io-std", "time", "sync"] }
+serde_json       = { version = "1" }
+tracing          = { version = "0.1" }
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+ridge-driver     = { path = "../ridge-driver" }
+ridge-diagnostics = { path = "../ridge-diagnostics" }
+ridge-ir         = { path = "../ridge-ir" }
+ridge-manifest   = { path = "../ridge-manifest" }
+ridge-lexer      = { path = "../ridge-lexer" }
+
+[dev-dependencies]
+tempfile = "3"
+tokio    = { version = "1", features = ["rt-multi-thread", "macros", "io-std", "time", "sync"] }
+
+[lints]
+workspace = true

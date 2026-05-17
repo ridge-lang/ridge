@@ -1,0 +1,34 @@
+---
+source: crates/ridge-resolve/tests/workspace.rs
+expression: snap
+---
+WorkspaceSnapshot {
+    module_fqns: [
+        "acme.domain.RegisterUser",
+        "acme.infra.Postgres",
+    ],
+    errors: [
+        "R013: ForbidViolation importer=\"acme.domain.RegisterUser\" target=\"acme.infra.Postgres\" rule=\"from = \\\"acme.domain.**\\\" to = \\\"acme.infra.**\\\"\" span=0..34",
+    ],
+    forbid_violations: [
+        ForbidViolationView {
+            importer: "acme.domain.RegisterUser",
+            target: "acme.infra.Postgres",
+            rule: "from = \"acme.domain.**\" to = \"acme.infra.**\"",
+            span: "0..34",
+        },
+    ],
+    import_summary: {
+        "acme.domain.RegisterUser": [
+            "<bare> -> BuiltinStdlib(0)",
+            "<bare> -> BuiltinStdlib(7)",
+            "<bare> -> BuiltinStdlib(8)",
+            "Pg -> WorkspaceModule(acme.infra.Postgres)",
+        ],
+        "acme.infra.Postgres": [
+            "<bare> -> BuiltinStdlib(0)",
+            "<bare> -> BuiltinStdlib(7)",
+            "<bare> -> BuiltinStdlib(8)",
+        ],
+    },
+}

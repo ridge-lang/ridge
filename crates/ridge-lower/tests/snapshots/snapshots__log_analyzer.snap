@@ -1,0 +1,963 @@
+---
+source: crates/ridge-lower/tests/snapshots.rs
+expression: rendered
+---
+module: m0
+items_count: 9
+items:
+  - kind: fn
+    name: levelRank
+    pub: false
+    main: false
+    caps: CapabilitySet(0)
+    ret_ty: Con(0)
+    params:
+      - name: l
+        ty: Con(17)
+    body:
+      Match(n0):
+        scrutinee:
+          Local(n1): l
+        arms:
+          -
+            pat:
+              Ctor: Ctor(Variant:Info owner=17)
+            body:
+              Lit(n2): Int(0)
+          -
+            pat:
+              Ctor: Ctor(Variant:Warn owner=17)
+            body:
+              Lit(n3): Int(1)
+          -
+            pat:
+              Ctor: Ctor(Variant:Error owner=17)
+            body:
+              Lit(n4): Int(2)
+  - kind: fn
+    name: parseLevel
+    pub: false
+    main: false
+    caps: CapabilitySet(0)
+    ret_ty: Con(9) [Con(17)]
+    params:
+      - name: s
+        ty: Con(3)
+    body:
+      Match(n5):
+        scrutinee:
+          Local(n6): s
+        arms:
+          -
+            pat:
+              Lit: Text("INFO")
+            body:
+              Call(n7):
+                callee:
+                  Symbol(n8): Prelude(Some)
+                args:
+                  -
+                    Construct(n9):
+                      ctor: Ctor(Variant:Info owner=17)
+                      fields: []
+          -
+            pat:
+              Lit: Text("WARN")
+            body:
+              Call(n10):
+                callee:
+                  Symbol(n11): Prelude(Some)
+                args:
+                  -
+                    Construct(n12):
+                      ctor: Ctor(Variant:Warn owner=17)
+                      fields: []
+          -
+            pat:
+              Lit: Text("ERROR")
+            body:
+              Call(n13):
+                callee:
+                  Symbol(n14): Prelude(Some)
+                args:
+                  -
+                    Construct(n15):
+                      ctor: Ctor(Variant:Error owner=17)
+                      fields: []
+          -
+            pat:
+              Wild
+            body:
+              Symbol(n16): Prelude(None)
+  - kind: fn
+    name: parseLine
+    pub: false
+    main: false
+    caps: CapabilitySet(0)
+    ret_ty: Con(9) [Con(18)]
+    params:
+      - name: raw
+        ty: Con(3)
+    body:
+      LetIn(n17):
+        pat:
+          Bind: parts
+        value:
+          Call(n18):
+            callee:
+              Symbol(n19): Stdlib(std.text.split)
+            args:
+              -
+                Lit(n20): Text(" ")
+              -
+                Local(n21): raw
+        body:
+          LetIn(n22):
+            pat:
+              Bind: date
+            value:
+              Match(n23):
+                scrutinee:
+                  Call(n24):
+                    callee:
+                      Symbol(n25): Stdlib(std.list.head)
+                    args:
+                      -
+                        Local(n26): parts
+                arms:
+                  -
+                    pat:
+                      Ctor: Prelude(Some)
+                        args:
+                          Bind: __prop_some_0
+                    body:
+                      Local(n27): __prop_some_0
+                  -
+                    pat:
+                      Ctor: Prelude(None)
+                    body:
+                      Return(n28):
+                        Construct(n29):
+                          ctor: Prelude(None)
+                          fields: []
+            body:
+              LetIn(n30):
+                pat:
+                  Bind: timePart
+                value:
+                  Match(n31):
+                    scrutinee:
+                      Call(n32):
+                        callee:
+                          Symbol(n33): Stdlib(std.list.head)
+                        args:
+                          -
+                            Call(n34):
+                              callee:
+                                Symbol(n35): Stdlib(std.list.drop)
+                              args:
+                                -
+                                  Lit(n36): Int(1)
+                                -
+                                  Local(n37): parts
+                    arms:
+                      -
+                        pat:
+                          Ctor: Prelude(Some)
+                            args:
+                              Bind: __prop_some_1
+                        body:
+                          Local(n38): __prop_some_1
+                      -
+                        pat:
+                          Ctor: Prelude(None)
+                        body:
+                          Return(n39):
+                            Construct(n40):
+                              ctor: Prelude(None)
+                              fields: []
+                body:
+                  LetIn(n41):
+                    pat:
+                      Bind: levelStr
+                    value:
+                      Match(n42):
+                        scrutinee:
+                          Call(n43):
+                            callee:
+                              Symbol(n44): Stdlib(std.list.head)
+                            args:
+                              -
+                                Call(n45):
+                                  callee:
+                                    Symbol(n46): Stdlib(std.list.drop)
+                                  args:
+                                    -
+                                      Lit(n47): Int(2)
+                                    -
+                                      Local(n48): parts
+                        arms:
+                          -
+                            pat:
+                              Ctor: Prelude(Some)
+                                args:
+                                  Bind: __prop_some_2
+                            body:
+                              Local(n49): __prop_some_2
+                          -
+                            pat:
+                              Ctor: Prelude(None)
+                            body:
+                              Return(n50):
+                                Construct(n51):
+                                  ctor: Prelude(None)
+                                  fields: []
+                    body:
+                      LetIn(n52):
+                        pat:
+                          Bind: msgParts
+                        value:
+                          Call(n53):
+                            callee:
+                              Symbol(n54): Stdlib(std.list.drop)
+                            args:
+                              -
+                                Lit(n55): Int(3)
+                              -
+                                Local(n56): parts
+                        body:
+                          LetIn(n57):
+                            pat:
+                              Bind: level
+                            value:
+                              Match(n58):
+                                scrutinee:
+                                  Call(n59):
+                                    callee:
+                                      Symbol(n60): Local(parseLevel @ m0)
+                                    args:
+                                      -
+                                        Local(n61): levelStr
+                                arms:
+                                  -
+                                    pat:
+                                      Ctor: Prelude(Some)
+                                        args:
+                                          Bind: __prop_some_3
+                                    body:
+                                      Local(n62): __prop_some_3
+                                  -
+                                    pat:
+                                      Ctor: Prelude(None)
+                                    body:
+                                      Return(n63):
+                                        Construct(n64):
+                                          ctor: Prelude(None)
+                                          fields: []
+                            body:
+                              LetIn(n65):
+                                pat:
+                                  Bind: hourStr
+                                value:
+                                  Match(n66):
+                                    scrutinee:
+                                      Call(n67):
+                                        callee:
+                                          Symbol(n68): Stdlib(std.list.head)
+                                        args:
+                                          -
+                                            Call(n69):
+                                              callee:
+                                                Symbol(n70): Stdlib(std.text.split)
+                                              args:
+                                                -
+                                                  Lit(n71): Text(":")
+                                                -
+                                                  Local(n72): timePart
+                                    arms:
+                                      -
+                                        pat:
+                                          Ctor: Prelude(Some)
+                                            args:
+                                              Bind: __prop_some_4
+                                        body:
+                                          Local(n73): __prop_some_4
+                                      -
+                                        pat:
+                                          Ctor: Prelude(None)
+                                        body:
+                                          Return(n74):
+                                            Construct(n75):
+                                              ctor: Prelude(None)
+                                              fields: []
+                                body:
+                                  LetIn(n76):
+                                    pat:
+                                      Bind: hour
+                                    value:
+                                      Match(n77):
+                                        scrutinee:
+                                          Call(n78):
+                                            callee:
+                                              Symbol(n79): Stdlib(std.int.parse)
+                                            args:
+                                              -
+                                                Local(n80): hourStr
+                                        arms:
+                                          -
+                                            pat:
+                                              Ctor: Prelude(Some)
+                                                args:
+                                                  Bind: __prop_some_5
+                                            body:
+                                              Local(n81): __prop_some_5
+                                          -
+                                            pat:
+                                              Ctor: Prelude(None)
+                                            body:
+                                              Return(n82):
+                                                Construct(n83):
+                                                  ctor: Prelude(None)
+                                                  fields: []
+                                    body:
+                                      Call(n84):
+                                        callee:
+                                          Symbol(n85): Prelude(Some)
+                                        args:
+                                          -
+                                            Construct(n86):
+                                              ctor: Ctor(Record:LogEntry owner=18)
+                                              fields:
+                                                date:
+                                                  Local(n87): date
+                                                hour:
+                                                  Local(n88): hour
+                                                level:
+                                                  Local(n89): level
+                                                message:
+                                                  Call(n90):
+                                                    callee:
+                                                      Symbol(n91): Stdlib(std.list.fold)
+                                                    args:
+                                                      -
+                                                        Lambda(n92):
+                                                          caps: CapabilitySet(0)
+                                                          params:
+                                                            - name: a
+                                                              ty: k1
+                                                            - name: b
+                                                              ty: l1
+                                                          body:
+                                                            Call(n93):
+                                                              callee:
+                                                                Symbol(n94): Stdlib(std.text.concat)
+                                                              args:
+                                                                -
+                                                                  Call(n95):
+                                                                    callee:
+                                                                      Symbol(n96): Stdlib(std.text.concat)
+                                                                    args:
+                                                                      -
+                                                                        Local(n97): a
+                                                                      -
+                                                                        Lit(n98): Text(" ")
+                                                                -
+                                                                  Local(n99): b
+                                                      -
+                                                        Lit(n100): Text("")
+                                                      -
+                                                        Local(n101): msgParts
+  - kind: fn
+    name: meetsThreshold
+    pub: false
+    main: false
+    caps: CapabilitySet(0)
+    ret_ty: Con(2)
+    params:
+      - name: threshold
+        ty: Con(17)
+      - name: entry
+        ty: Con(18)
+    body:
+      Call(n102):
+        callee:
+          Symbol(n103): Stdlib(std.op.ge)
+        args:
+          -
+            Call(n104):
+              callee:
+                Symbol(n105): Local(levelRank @ m0)
+              args:
+                -
+                  Field(n106).level:
+                    Local(n107): entry
+          -
+            Call(n108):
+              callee:
+                Symbol(n109): Local(levelRank @ m0)
+              args:
+                -
+                  Local(n110): threshold
+  - kind: fn
+    name: tally
+    pub: false
+    main: false
+    caps: CapabilitySet(0)
+    ret_ty: Con(7) [Con(0), Con(0)]
+    params:
+      - name: k
+        ty: Con(0)
+      - name: acc
+        ty: Con(7) [Con(0), Con(0)]
+    body:
+      LetIn(n111):
+        pat:
+          Bind: current
+        value:
+          Call(n112):
+            callee:
+              Symbol(n113): Stdlib(std.option.withDefault)
+            args:
+              -
+                Lit(n114): Int(0)
+              -
+                Call(n115):
+                  callee:
+                    Symbol(n116): Stdlib(std.map.get)
+                  args:
+                    -
+                      Local(n117): k
+                    -
+                      Local(n118): acc
+        body:
+          Call(n119):
+            callee:
+              Symbol(n120): Stdlib(std.map.insert)
+            args:
+              -
+                Local(n121): k
+              -
+                Call(n122):
+                  callee:
+                    Symbol(n123): Stdlib(std.int.add)
+                  args:
+                    -
+                      Local(n124): current
+                    -
+                      Lit(n125): Int(1)
+              -
+                Local(n126): acc
+  - kind: fn
+    name: buildHistogram
+    pub: false
+    main: false
+    caps: CapabilitySet(0)
+    ret_ty: Con(7) [Con(0), Con(0)]
+    params:
+      - name: entries
+        ty: Con(6) [Con(18)]
+    body:
+      Call(n127):
+        callee:
+          Symbol(n128): Stdlib(std.list.fold)
+        args:
+          -
+            Lambda(n129):
+              caps: CapabilitySet(0)
+              params:
+                - name: acc
+                  ty: a2
+                - name: e
+                  ty: b2
+              body:
+                Call(n130):
+                  callee:
+                    Symbol(n131): Local(tally @ m0)
+                  args:
+                    -
+                      Field(n132).hour:
+                        Local(n133): e
+                    -
+                      Local(n134): acc
+          -
+            Symbol(n135): Stdlib(std.map.empty)
+          -
+            Local(n136): entries
+  - kind: fn
+    name: renderBar
+    pub: false
+    main: false
+    caps: CapabilitySet(0)
+    ret_ty: Con(3)
+    params:
+      - name: hour
+        ty: Con(0)
+      - name: count
+        ty: Con(0)
+    body:
+      LetIn(n137):
+        pat:
+          Bind: hourLabel
+        value:
+          Call(n138):
+            callee:
+              Symbol(n139): Stdlib(std.text.padLeft)
+            args:
+              -
+                Lit(n140): Int(2)
+              -
+                Lit(n141): Text(" ")
+              -
+                Call(n142):
+                  callee:
+                    Symbol(n143): Stdlib(std.int.toText)
+                  args:
+                    -
+                      Local(n144): hour
+        body:
+          LetIn(n145):
+            pat:
+              Bind: bar
+            value:
+              Call(n146):
+                callee:
+                  Symbol(n147): Stdlib(std.list.fold)
+                args:
+                  -
+                    Lambda(n148):
+                      caps: CapabilitySet(0)
+                      params:
+                        - name: a
+                          ty: k2
+                        - name: b
+                          ty: l2
+                      body:
+                        Call(n149):
+                          callee:
+                            Symbol(n150): Stdlib(std.text.concat)
+                          args:
+                            -
+                              Local(n151): a
+                            -
+                              Local(n152): b
+                  -
+                    Lit(n153): Text("")
+                  -
+                    Call(n154):
+                      callee:
+                        Symbol(n155): Stdlib(std.list.map)
+                      args:
+                        -
+                          Lambda(n156):
+                            caps: CapabilitySet(0)
+                            params:
+                              - name: _
+                                ty: o2
+                            body:
+                              Lit(n157): Text("█")
+                        -
+                          Call(n158):
+                            callee:
+                              Symbol(n159): Stdlib(std.list.range)
+                            args:
+                              -
+                                Lit(n160): Int(1)
+                              -
+                                Local(n161): count
+            body:
+              Call(n162):
+                callee:
+                  Symbol(n163): Stdlib(std.text.concat)
+                args:
+                  -
+                    Call(n164):
+                      callee:
+                        Symbol(n165): Stdlib(std.text.concat)
+                      args:
+                        -
+                          Call(n166):
+                            callee:
+                              Symbol(n167): Stdlib(std.text.concat)
+                            args:
+                              -
+                                Call(n168):
+                                  callee:
+                                    Symbol(n169): Stdlib(std.text.concat)
+                                  args:
+                                    -
+                                      Call(n170):
+                                        callee:
+                                          Symbol(n171): Stdlib(std.text.concat)
+                                        args:
+                                          -
+                                            Call(n172):
+                                              callee:
+                                                Symbol(n173): Stdlib(std.text.concat)
+                                              args:
+                                                -
+                                                  Lit(n174): Text(" ")
+                                                -
+                                                  Local(n175): hourLabel
+                                          -
+                                            Lit(n176): Text(" | ")
+                                    -
+                                      Local(n177): bar
+                              -
+                                Lit(n178): Text(" (")
+                        -
+                          Call(n179):
+                            callee:
+                              Symbol(n180): Stdlib(std.int.toText)
+                            args:
+                              -
+                                Local(n181): count
+                  -
+                    Lit(n182): Text(")")
+  - kind: fn
+    name: printHistogram
+    pub: false
+    main: false
+    caps: CapabilitySet(1)
+    ret_ty: Con(4)
+    params:
+      - name: histogram
+        ty: Con(7) [Con(0), Con(0)]
+    body:
+      LetIn(n183):
+        pat:
+          Bind: pairs
+        value:
+          Call(n184):
+            callee:
+              Symbol(n185): Stdlib(std.list.sortBy)
+            args:
+              -
+                Lambda(n186):
+                  caps: CapabilitySet(0)
+                  params:
+                    - name: __tuple_param_6
+                      ty: u2
+                  body:
+                    Match(n187):
+                      scrutinee:
+                        Local(n188): __tuple_param_6
+                      arms:
+                        -
+                          pat:
+                            Tuple:
+                              Bind: k
+                              Wild
+                          body:
+                            Local(n189): k
+              -
+                Call(n190):
+                  callee:
+                    Symbol(n191): Stdlib(std.map.toList)
+                  args:
+                    -
+                      Local(n192): histogram
+        body:
+          Block(n193):
+            Call(n194):
+              callee:
+                Symbol(n195): Stdlib(std.io.println)
+              args:
+                -
+                  Lit(n196): Text("Hour | Entries")
+            Block(n197):
+              Call(n198):
+                callee:
+                  Symbol(n199): Stdlib(std.io.println)
+                args:
+                  -
+                    Lit(n200): Text("-----+---------")
+              Call(n201):
+                callee:
+                  Symbol(n202): Stdlib(std.list.forEach)
+                args:
+                  -
+                    Lambda(n203):
+                      caps: CapabilitySet(0)
+                      params:
+                        - name: __tuple_param_7
+                          ty: e3
+                      body:
+                        Match(n204):
+                          scrutinee:
+                            Local(n205): __tuple_param_7
+                          arms:
+                            -
+                              pat:
+                                Tuple:
+                                  Bind: h
+                                  Bind: c
+                              body:
+                                Call(n206):
+                                  callee:
+                                    Symbol(n207): Stdlib(std.io.println)
+                                  args:
+                                    -
+                                      Call(n208):
+                                        callee:
+                                          Symbol(n209): Local(renderBar @ m0)
+                                        args:
+                                          -
+                                            Local(n210): h
+                                          -
+                                            Local(n211): c
+                  -
+                    Local(n212): pairs
+  - kind: fn
+    name: main
+    pub: false
+    main: true
+    caps: CapabilitySet(35)
+    ret_ty: Con(10) [Con(4), Con(3)]
+    params: []
+    body:
+      LetIn(n213):
+        pat:
+          Bind: args
+        value:
+          Call(n214):
+            callee:
+              Symbol(n215): Stdlib(std.cli.args)
+            args:
+              -
+                Lit(n216): Unit
+        body:
+          Match(n217):
+            scrutinee:
+              Call(n218):
+                callee:
+                  Symbol(n219): Stdlib(std.op.ge)
+                args:
+                  -
+                    Call(n220):
+                      callee:
+                        Symbol(n221): Stdlib(std.list.length)
+                      args:
+                        -
+                          Local(n222): args
+                  -
+                    Lit(n223): Int(2)
+            arms:
+              -
+                pat:
+                  Lit: Bool(true)
+                body:
+                  LetIn(n224):
+                    pat:
+                      Bind: path
+                    value:
+                      Call(n225):
+                        callee:
+                          Symbol(n226): Stdlib(std.option.withDefault)
+                        args:
+                          -
+                            Lit(n227): Text("")
+                          -
+                            Call(n228):
+                              callee:
+                                Symbol(n229): Stdlib(std.list.head)
+                              args:
+                                -
+                                  Local(n230): args
+                    body:
+                      LetIn(n231):
+                        pat:
+                          Bind: levelArg
+                        value:
+                          Call(n232):
+                            callee:
+                              Symbol(n233): Stdlib(std.option.withDefault)
+                            args:
+                              -
+                                Lit(n234): Text("WARN")
+                              -
+                                Call(n235):
+                                  callee:
+                                    Symbol(n236): Stdlib(std.list.head)
+                                  args:
+                                    -
+                                      Call(n237):
+                                        callee:
+                                          Symbol(n238): Stdlib(std.list.drop)
+                                        args:
+                                          -
+                                            Lit(n239): Int(1)
+                                          -
+                                            Local(n240): args
+                        body:
+                          LetIn(n241):
+                            pat:
+                              Bind: threshold
+                            value:
+                              Call(n242):
+                                callee:
+                                  Symbol(n243): Stdlib(std.option.withDefault)
+                                args:
+                                  -
+                                    Construct(n244):
+                                      ctor: Ctor(Variant:Warn owner=17)
+                                      fields: []
+                                  -
+                                    Call(n245):
+                                      callee:
+                                        Symbol(n246): Local(parseLevel @ m0)
+                                      args:
+                                        -
+                                          Local(n247): levelArg
+                            body:
+                              LetIn(n248):
+                                pat:
+                                  Bind: rawLines
+                                value:
+                                  Match(n249):
+                                    scrutinee:
+                                      Call(n250):
+                                        callee:
+                                          Symbol(n251): Stdlib(std.fs.lines)
+                                        args:
+                                          -
+                                            Local(n252): path
+                                    arms:
+                                      -
+                                        pat:
+                                          Ctor: Prelude(Ok)
+                                            args:
+                                              Bind: __prop_ok_8
+                                        body:
+                                          Local(n253): __prop_ok_8
+                                      -
+                                        pat:
+                                          Ctor: Prelude(Err)
+                                            args:
+                                              Bind: __prop_err_9
+                                        body:
+                                          Return(n254):
+                                            Construct(n255):
+                                              ctor: Prelude(Err)
+                                              fields:
+                                                $0:
+                                                  Local(n256): __prop_err_9
+                                body:
+                                  LetIn(n257):
+                                    pat:
+                                      Bind: entries
+                                    value:
+                                      Call(n258):
+                                        callee:
+                                          Symbol(n259): Stdlib(std.list.filter)
+                                        args:
+                                          -
+                                            Lambda(n260):
+                                              caps: CapabilitySet(0)
+                                              params:
+                                                - name: __pa_10
+                                                  ty: Con(18)
+                                              body:
+                                                Call(n261):
+                                                  callee:
+                                                    Symbol(n262): Local(meetsThreshold @ m0)
+                                                  args:
+                                                    -
+                                                      Local(n263): threshold
+                                                    -
+                                                      Local(n264): __pa_10
+                                          -
+                                            Call(n265):
+                                              callee:
+                                                Symbol(n266): Stdlib(std.list.filterMap)
+                                              args:
+                                                -
+                                                  Symbol(n267): Local(parseLine @ m0)
+                                                -
+                                                  Local(n268): rawLines
+                                    body:
+                                      LetIn(n269):
+                                        pat:
+                                          Bind: histogram
+                                        value:
+                                          Call(n270):
+                                            callee:
+                                              Symbol(n271): Local(buildHistogram @ m0)
+                                            args:
+                                              -
+                                                Local(n272): entries
+                                        body:
+                                          Block(n273):
+                                            Call(n274):
+                                              callee:
+                                                Symbol(n275): Stdlib(std.io.println)
+                                              args:
+                                                -
+                                                  Call(n276):
+                                                    callee:
+                                                      Symbol(n277): Stdlib(std.text.concat)
+                                                    args:
+                                                      -
+                                                        Lit(n278): Text("Log analysis â\u{80}\u{94} threshold: ")
+                                                      -
+                                                        Local(n279): levelArg
+                                            Block(n280):
+                                              Call(n281):
+                                                callee:
+                                                  Symbol(n282): Stdlib(std.io.println)
+                                                args:
+                                                  -
+                                                    Lit(n283): Text("")
+                                              Block(n284):
+                                                Match(n285):
+                                                  scrutinee:
+                                                    Call(n286):
+                                                      callee:
+                                                        Symbol(n287): Stdlib(std.list.length)
+                                                      args:
+                                                        -
+                                                          Local(n288): entries
+                                                  arms:
+                                                    -
+                                                      pat:
+                                                        Lit: Int(0)
+                                                      body:
+                                                        Call(n289):
+                                                          callee:
+                                                            Symbol(n290): Stdlib(std.io.println)
+                                                          args:
+                                                            -
+                                                              Lit(n291): Text("No entries match the given threshold.")
+                                                    -
+                                                      pat:
+                                                        Wild
+                                                      body:
+                                                        Call(n292):
+                                                          callee:
+                                                            Symbol(n293): Local(printHistogram @ m0)
+                                                          args:
+                                                            -
+                                                              Local(n294): histogram
+                                                Call(n295):
+                                                  callee:
+                                                    Symbol(n296): Prelude(Ok)
+                                                  args:
+                                                    -
+                                                      Lit(n297): Unit
+              -
+                pat:
+                  Lit: Bool(false)
+                body:
+                  Block(n298):
+                    Call(n299):
+                      callee:
+                        Symbol(n300): Stdlib(std.io.eprintln)
+                      args:
+                        -
+                          Lit(n301): Text("Usage: log_analyzer <file> <MIN_LEVEL>")
+                    Return(n302):
+                      Call(n303):
+                        callee:
+                          Symbol(n304): Prelude(Err)
+                        args:
+                          -
+                            Lit(n305): Text("missing arguments")

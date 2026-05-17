@@ -1,0 +1,70 @@
+{
+  "name": "vscode-ridge",
+  "displayName": "Ridge",
+  "description": "VS Code language support for Ridge (scaffold)",
+  "version": "0.1.0",
+  "publisher": "ridge-lang",
+  "icon": "images/icon.png",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/ridge-lang/ridge"
+  },
+  "engines": {
+    "vscode": "^1.85.0"
+  },
+  "categories": [
+    "Programming Languages"
+  ],
+  "activationEvents": [
+    "onLanguage:ridge"
+  ],
+  "main": "./out/extension.js",
+  "contributes": {
+    "languages": [
+      {
+        "id": "ridge",
+        "aliases": [
+          "Ridge",
+          "ridge"
+        ],
+        "extensions": [
+          ".rg"
+        ],
+        "configuration": "./language-configuration.json"
+      }
+    ],
+    "configuration": {
+      "title": "Ridge",
+      "properties": {
+        "ridge.lspPath": {
+          "type": "string",
+          "default": "",
+          "description": "Absolute path to the ridge-lsp binary. Leave empty to auto-resolve (tries `~/.cargo/bin/ridge-lsp` first, then walks PATH). Set this when the binary lives in a non-standard location."
+        }
+      }
+    },
+    "grammars": [
+      {
+        "language": "ridge",
+        "scopeName": "source.ridge",
+        "path": "./syntaxes/ridge.tmLanguage.json"
+      }
+    ]
+  },
+  "scripts": {
+    "compile": "tsc -p ./",
+    "watch": "tsc -watch -p ./",
+    "bundle": "esbuild src/extension.ts --bundle --outfile=out/extension.js --external:vscode --format=cjs --platform=node --target=node18",
+    "vscode:prepublish": "pnpm run bundle"
+  },
+  "packageManager": "pnpm@11.1.1",
+  "dependencies": {
+    "vscode-languageclient": "~9.0"
+  },
+  "devDependencies": {
+    "@types/vscode": "^1.85.0",
+    "@types/node": "^20.0.0",
+    "esbuild-wasm": "^0.21.0",
+    "typescript": "^5.3.0"
+  }
+}

@@ -1,0 +1,41 @@
+-- Private FFI bridges for std.env test suite.
+-- These replicate env.rg FFI declarations in local scope because cross-module
+-- calls are unsupported (T17+ deferred).
+@ffi("ridge_rt", "env_get", 1)
+fn _envGet (name: Text) -> Option Text
+
+@ffi("ridge_rt", "env_set", 2)
+fn _envSet (name: Text) (value: Text) -> Unit
+
+@ffi("ridge_rt", "env_all", 1)
+fn _envAll (_unit: Unit) -> Map Text Text
+
+@ffi("maps", "is_key", 2)
+fn _mapContains (key: Text) (m: Map Text Text) -> Bool
+
+pub fn test_smoke_env () -> Result Unit Text = Ok ()
+
+-- env.set then env.get round-trips the value.
+pub fn env test_set_then_get_round_trip () -> Result Unit Text =
+    let _ = _envSet "RIDGE_TEST_FOO" "bar"
+    if _envGet "RIDGE_TEST_FOO" == Some "bar" then Ok ()
+    else Err "env.get RIDGE_TEST_FOO should be Some bar"
+
+-- env.get of an unset variable returns None.
+pub fn env test_get_unset_is_none () -> Result Unit Text =
+    if _envGet "RIDGE_TEST_DEFINITELY_UNSET_XYZ123" == None then Ok ()
+    else Err "env.get of unset var should be None"
+
+-- env.all includes a variable set in the same test.
+pub fn env test_all_includes_set_var () -> Result Unit Text =
+    let _ = _envSet "RIDGE_TEST_X" "y"
+    let m = _envAll ()
+    if _mapContains "RIDGE_TEST_X" m then Ok ()
+    else Err "env.all should contain RIDGE_TEST_X after set"
+
+-- env.set overwrites a previously-set value.
+pub fn env test_set_overwrite () -> Result Unit Text =
+    let _ = _envSet "RIDGE_TEST_K" "1"
+    let _ = _envSet "RIDGE_TEST_K" "2"
+    if _envGet "RIDGE_TEST_K" == Some "2" then Ok ()
+    else Err "env.get RIDGE_TEST_K should be Some 2 after overwrite"

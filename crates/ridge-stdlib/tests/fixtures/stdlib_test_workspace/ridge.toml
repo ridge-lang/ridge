@@ -1,0 +1,4 @@
+[workspace]
+name = "stdlib-e2e"
+version = "0.1.0"
+members = ["std"]

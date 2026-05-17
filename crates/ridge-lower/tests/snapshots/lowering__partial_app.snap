@@ -1,0 +1,82 @@
+---
+source: crates/ridge-lower/tests/lowering.rs
+expression: rendered
+---
+module: m0
+items_count: 3
+items:
+  - kind: fn
+    name: add
+    pub: false
+    main: false
+    caps: CapabilitySet(0)
+    ret_ty: Con(0)
+    params:
+      - name: x
+        ty: Con(0)
+      - name: y
+        ty: Con(0)
+    body:
+      Call(n0):
+        callee:
+          Symbol(n1): Stdlib(std.int.add)
+        args:
+          -
+            Local(n2): x
+          -
+            Local(n3): y
+  - kind: fn
+    name: add5
+    pub: false
+    main: false
+    caps: CapabilitySet(0)
+    ret_ty: Type
+    params: []
+    body:
+      Lambda(n4):
+        caps: CapabilitySet(0)
+        params:
+          - name: __pa_0
+            ty: Con(0)
+        body:
+          Call(n5):
+            callee:
+              Symbol(n6): Local(add @ m0)
+            args:
+              -
+                Lit(n7): Int(5)
+              -
+                Local(n8): __pa_0
+  - kind: fn
+    name: map_add
+    pub: false
+    main: false
+    caps: CapabilitySet(0)
+    ret_ty: Con(6) [Con(0)]
+    params:
+      - name: n
+        ty: Con(0)
+      - name: xs
+        ty: Con(6) [Con(0)]
+    body:
+      Call(n9):
+        callee:
+          Symbol(n10): Stdlib(std.list.map)
+        args:
+          -
+            Lambda(n11):
+              caps: CapabilitySet(0)
+              params:
+                - name: __pa_1
+                  ty: Con(0)
+              body:
+                Call(n12):
+                  callee:
+                    Symbol(n13): Local(add @ m0)
+                  args:
+                    -
+                      Local(n14): n
+                    -
+                      Local(n15): __pa_1
+          -
+            Local(n16): xs

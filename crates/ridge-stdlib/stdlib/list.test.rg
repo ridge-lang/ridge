@@ -1,0 +1,192 @@
+-- Private helpers for std.list test suite.
+-- FFI bridges + pure-Ridge helpers replicate list.rg (T17+ deferred).
+@ffi("erlang", "length", 1)
+fn _length (xs: List a) -> Int
+
+@ffi("erlang", "rem", 2)
+fn _rem (a: Int) (b: Int) -> Int
+
+fn _isEmpty (xs: List a) -> Bool =
+    match xs
+        [] -> true
+        _ :: _ -> false
+
+fn _head (xs: List a) -> Option a =
+    match xs
+        [] -> None
+        x :: _ -> Some x
+
+fn _tail (xs: List a) -> Option (List a) =
+    match xs
+        [] -> None
+        _ :: rest -> Some rest
+
+@ffi("lists", "map", 2)
+fn _map (f: fn a -> b) (xs: List a) -> List b
+
+@ffi("lists", "filter", 2)
+fn _filter (p: fn a -> Bool) (xs: List a) -> List a
+
+fn _filterMap (f: fn a -> Option b) (xs: List a) -> List b =
+    match xs
+        [] -> []
+        x :: rest ->
+            match f x
+                Some v -> v :: _filterMap f rest
+                None -> _filterMap f rest
+
+fn _fold (f: fn b -> fn a -> b) (acc: b) (xs: List a) -> b =
+    match xs
+        [] -> acc
+        x :: rest ->
+            let facc = f acc
+            let newAcc = facc x
+            _fold f newAcc rest
+
+fn _foldRight (f: fn a -> fn b -> b) (acc: b) (xs: List a) -> b =
+    match xs
+        [] -> acc
+        x :: rest ->
+            let tail = _foldRight f acc rest
+            let fx = f x
+            fx tail
+
+@ffi("lists", "reverse", 1)
+fn _reverse (xs: List a) -> List a
+
+@ffi("lists", "sort", 1)
+fn _sort (xs: List a) -> List a
+
+fn _take (n: Int) (xs: List a) -> List a =
+    if n <= 0 then []
+    else
+        match xs
+            [] -> []
+            x :: rest -> x :: _take (n - 1) rest
+
+@ffi("lists", "nthtail", 2)
+fn _nthtail (n: Int) (xs: List a) -> List a
+
+fn _drop (n: Int) (xs: List a) -> List a =
+    let len = _length xs
+    if n <= 0 then xs
+    else if n >= len then []
+    else _nthtail n xs
+
+fn _zip (xs: List a) (ys: List b) -> List (a, b) =
+    match xs
+        [] -> []
+        x :: xrest ->
+            match ys
+                [] -> []
+                y :: yrest -> (x, y) :: _zip xrest yrest
+
+@ffi("lists", "member", 2)
+fn _contains (x: a) (xs: List a) -> Bool
+
+fn _find (p: fn a -> Bool) (xs: List a) -> Option a =
+    match xs
+        [] -> None
+        x :: rest ->
+            if p x then Some x
+            else _find p rest
+
+@ffi("lists", "any", 2)
+fn _any (p: fn a -> Bool) (xs: List a) -> Bool
+
+@ffi("lists", "seq", 2)
+fn _range (lo: Int) (hi: Int) -> List Int
+
+pub fn test_smoke_list () -> Result Unit Text = Ok ()
+
+pub fn test_empty_has_length_zero () -> Result Unit Text =
+    if _length [] == 0 then Ok ()
+    else Err "List.empty length should be 0"
+
+pub fn test_length_basic () -> Result Unit Text =
+    if _length [1, 2, 3] == 3 then Ok ()
+    else Err "List.length [1,2,3] should be 3"
+
+pub fn test_isEmpty_true_for_empty () -> Result Unit Text =
+    if _isEmpty [] then Ok ()
+    else Err "List.isEmpty [] should be true"
+
+pub fn test_isEmpty_false_for_singleton () -> Result Unit Text =
+    if _isEmpty [1] then Err "List.isEmpty [1] should be false"
+    else Ok ()
+
+pub fn test_head_returns_some () -> Result Unit Text =
+    if _head [1, 2] == Some 1 then Ok ()
+    else Err "List.head [1,2] should be Some 1"
+
+pub fn test_head_empty_is_none () -> Result Unit Text =
+    if _head [] == None then Ok ()
+    else Err "List.head [] should be None"
+
+pub fn test_tail_returns_some () -> Result Unit Text =
+    if _tail [1, 2, 3] == Some [2, 3] then Ok ()
+    else Err "List.tail [1,2,3] should be Some [2,3]"
+
+pub fn test_map_doubles () -> Result Unit Text =
+    if _map (fn x -> x * 2) [1, 2, 3] == [2, 4, 6] then Ok ()
+    else Err "List.map double [1,2,3] should be [2,4,6]"
+
+pub fn test_filter_keeps_evens () -> Result Unit Text =
+    if _filter (fn x -> _rem x 2 == 0) [1, 2, 3, 4] == [2, 4] then Ok ()
+    else Err "List.filter evens [1,2,3,4] should be [2,4]"
+
+pub fn test_filterMap_extracts_some () -> Result Unit Text =
+    let result = _filterMap (fn x -> if x > 1 then Some x else None) [1, 2, 3]
+    if result == [2, 3] then Ok ()
+    else Err "List.filterMap > 1 [1,2,3] should be [2,3]"
+
+pub fn test_fold_sums () -> Result Unit Text =
+    if _fold (fn a -> fn b -> a + b) 0 [1, 2, 3] == 6 then Ok ()
+    else Err "List.fold sum [1,2,3] should be 6"
+
+pub fn test_foldRight_constructs () -> Result Unit Text =
+    if _foldRight (fn x -> fn acc -> x :: acc) [] [1, 2, 3] == [1, 2, 3] then Ok ()
+    else Err "List.foldRight cons [] [1,2,3] should be [1,2,3]"
+
+pub fn test_reverse_basic () -> Result Unit Text =
+    if _reverse [1, 2, 3] == [3, 2, 1] then Ok ()
+    else Err "List.reverse [1,2,3] should be [3,2,1]"
+
+pub fn test_sort_ascending () -> Result Unit Text =
+    if _sort [3, 1, 2] == [1, 2, 3] then Ok ()
+    else Err "List.sort [3,1,2] should be [1,2,3]"
+
+pub fn test_take_caps_at_length () -> Result Unit Text =
+    if _take 5 [1, 2] == [1, 2] then Ok ()
+    else Err "List.take 5 [1,2] should be [1,2]"
+
+pub fn test_drop_zero_keeps_all () -> Result Unit Text =
+    if _drop 0 [1, 2, 3] == [1, 2, 3] then Ok ()
+    else Err "List.drop 0 [1,2,3] should keep all"
+
+pub fn test_drop_past_end_is_empty () -> Result Unit Text =
+    if _drop 10 [1, 2] == [] then Ok ()
+    else Err "List.drop 10 [1,2] should be []"
+
+pub fn test_zip_truncates_to_shorter () -> Result Unit Text =
+    if _length (_zip [1, 2, 3] [10, 20]) == 2 then Ok ()
+    else Err "List.zip truncates to shorter length"
+
+pub fn test_contains_present () -> Result Unit Text =
+    if _contains 2 [1, 2, 3] then Ok ()
+    else Err "List.contains 2 [1,2,3] should be true"
+
+pub fn test_find_first_match () -> Result Unit Text =
+    if _find (fn x -> x > 1) [1, 2, 3] == Some 2 then Ok ()
+    else Err "List.find > 1 [1,2,3] should be Some 2"
+
+pub fn test_any_at_least_one () -> Result Unit Text =
+    if _any (fn x -> x > 2) [1, 2, 3] then Ok ()
+    else Err "List.any > 2 [1,2,3] should be true"
+
+pub fn test_range_inclusive () -> Result Unit Text =
+    let r = _range 1 5
+    if _length r == 5 then
+        if _head r == Some 1 then Ok ()
+        else Err "List.range 1 5 head should be 1"
+    else Err "List.range 1 5 should have length 5"

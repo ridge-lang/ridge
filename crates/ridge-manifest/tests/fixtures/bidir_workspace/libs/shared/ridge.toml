@@ -1,0 +1,4 @@
+[project]
+name = "bidir.shared"
+version = "0.1.0"
+kind = "library"

@@ -1,0 +1,199 @@
+---
+source: crates/ridge-codegen-erl/tests/core_ast_snapshot.rs
+expression: "&cerl_module"
+---
+CErlModule {
+    name: CErlAtom(
+        "ridge_module_0",
+    ),
+    exports: [],
+    attributes: [],
+    fns: [
+        CErlFn {
+            name: CErlAtom(
+                "guard_multi",
+            ),
+            arity: 2,
+            anns: [
+                CErlAnn(
+                    "%% File: <source>, Offset: 0",
+                ),
+                CErlAnn(
+                    "%% Caps: {}",
+                ),
+            ],
+            body: Fun {
+                params: [
+                    CErlVar(
+                        "V_X",
+                    ),
+                    CErlVar(
+                        "V_Y",
+                    ),
+                ],
+                body: Let {
+                    var: CErlVar(
+                        "V_Anf0",
+                    ),
+                    value: Call {
+                        module: CErlAtom(
+                            "erlang",
+                        ),
+                        fn_name: CErlAtom(
+                            ">",
+                        ),
+                        args: [
+                            Var(
+                                CErlVar(
+                                    "V_X",
+                                ),
+                            ),
+                            Lit(
+                                Int(
+                                    0,
+                                ),
+                            ),
+                        ],
+                    },
+                    body: Case {
+                        scrutinee: Var(
+                            CErlVar(
+                                "V_Anf0",
+                            ),
+                        ),
+                        clauses: [
+                            CErlClause {
+                                pattern: Lit(
+                                    Atom(
+                                        CErlAtom(
+                                            "true",
+                                        ),
+                                    ),
+                                ),
+                                guard: Lit(
+                                    Atom(
+                                        CErlAtom(
+                                            "true",
+                                        ),
+                                    ),
+                                ),
+                                body: Let {
+                                    var: CErlVar(
+                                        "V_Anf1",
+                                    ),
+                                    value: Call {
+                                        module: CErlAtom(
+                                            "erlang",
+                                        ),
+                                        fn_name: CErlAtom(
+                                            ">",
+                                        ),
+                                        args: [
+                                            Var(
+                                                CErlVar(
+                                                    "V_Y",
+                                                ),
+                                            ),
+                                            Lit(
+                                                Int(
+                                                    0,
+                                                ),
+                                            ),
+                                        ],
+                                    },
+                                    body: Case {
+                                        scrutinee: Var(
+                                            CErlVar(
+                                                "V_Anf1",
+                                            ),
+                                        ),
+                                        clauses: [
+                                            CErlClause {
+                                                pattern: Lit(
+                                                    Atom(
+                                                        CErlAtom(
+                                                            "true",
+                                                        ),
+                                                    ),
+                                                ),
+                                                guard: Lit(
+                                                    Atom(
+                                                        CErlAtom(
+                                                            "true",
+                                                        ),
+                                                    ),
+                                                ),
+                                                body: Call {
+                                                    module: CErlAtom(
+                                                        "erlang",
+                                                    ),
+                                                    fn_name: CErlAtom(
+                                                        "+",
+                                                    ),
+                                                    args: [
+                                                        Var(
+                                                            CErlVar(
+                                                                "V_X",
+                                                            ),
+                                                        ),
+                                                        Var(
+                                                            CErlVar(
+                                                                "V_Y",
+                                                            ),
+                                                        ),
+                                                    ],
+                                                },
+                                            },
+                                            CErlClause {
+                                                pattern: Lit(
+                                                    Atom(
+                                                        CErlAtom(
+                                                            "false",
+                                                        ),
+                                                    ),
+                                                ),
+                                                guard: Lit(
+                                                    Atom(
+                                                        CErlAtom(
+                                                            "true",
+                                                        ),
+                                                    ),
+                                                ),
+                                                body: Lit(
+                                                    Int(
+                                                        0,
+                                                    ),
+                                                ),
+                                            },
+                                        ],
+                                    },
+                                },
+                            },
+                            CErlClause {
+                                pattern: Lit(
+                                    Atom(
+                                        CErlAtom(
+                                            "false",
+                                        ),
+                                    ),
+                                ),
+                                guard: Lit(
+                                    Atom(
+                                        CErlAtom(
+                                            "true",
+                                        ),
+                                    ),
+                                ),
+                                body: Lit(
+                                    Int(
+                                        0,
+                                    ),
+                                ),
+                            },
+                        ],
+                    },
+                },
+            },
+        },
+    ],
+}

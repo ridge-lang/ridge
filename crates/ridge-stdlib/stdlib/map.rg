@@ -1,0 +1,75 @@
+-- std.map — Map (key-value) utilities (Tier 2).
+--
+-- Map k v is a language built-in (prelude). This module provides helper
+-- functions; the type itself does not need to be declared here.
+-- D041: HOF capability transparency (cap vars written without [c] syntax).
+
+-- Return an empty map (wraps maps:new/0 behind a Unit arg per the calling
+-- convention for 0-arg constructors).
+@ffi("maps", "new", 0)
+fn _mapsNew () -> Map k v
+
+pub fn empty -> Map k v = _mapsNew ()
+
+-- Construct a map from a list of (key, value) pairs.
+@ffi("maps", "from_list", 1)
+pub fn fromList (xs: List (k, v)) -> Map k v
+
+-- Convert a map to a list of (key, value) pairs.
+@ffi("maps", "to_list", 1)
+pub fn toList (m: Map k v) -> List (k, v)
+
+-- Insert or update a key-value pair, returning the new map.
+@ffi("maps", "put", 3)
+pub fn insert (k: k) (v: v) (m: Map k v) -> Map k v
+
+-- Remove a key from the map, returning the new map.
+@ffi("maps", "remove", 2)
+pub fn remove (k: k) (m: Map k v) -> Map k v
+
+-- Private bridge: raw get (throws if key absent).
+@ffi("maps", "get", 2)
+fn _rawGet (k: k) (m: Map k v) -> v
+
+-- Private bridge: check whether a key is present.
+@ffi("maps", "is_key", 2)
+fn _isKey (k: k) (m: Map k v) -> Bool
+
+-- Look up a key, returning Some(value) or None.
+pub fn get (k: k) (m: Map k v) -> Option v =
+    if _isKey k m then Some (_rawGet k m)
+    else None
+
+-- Return true if the key is present in the map.
+@ffi("maps", "is_key", 2)
+pub fn contains (k: k) (m: Map k v) -> Bool
+
+-- Return a list of all keys.
+@ffi("maps", "keys", 1)
+pub fn keys (m: Map k v) -> List k
+
+-- Return a list of all values.
+@ffi("maps", "values", 1)
+pub fn values (m: Map k v) -> List v
+
+-- Apply a function to each value, returning a new map with the same keys.
+@ffi("maps", "map", 2)
+pub fn map (f: fn k -> v -> w) (m: Map k v) -> Map k w
+
+-- Keep entries for which the predicate returns true.
+@ffi("maps", "filter", 2)
+pub fn filter (p: fn k -> v -> Bool) (m: Map k v) -> Map k v
+
+-- Return the number of entries in the map.
+@ffi("maps", "size", 1)
+pub fn size (m: Map k v) -> Int
+
+-- Merge two maps; entries from `b` take priority over entries from `a`.
+@ffi("maps", "merge", 2)
+pub fn merge (a: Map k v) (b: Map k v) -> Map k v
+
+-- Update the value at a key using a function that receives Option(current).
+-- If the key is absent, the function receives None.
+pub fn update (k: k) (f: fn (Option v) -> v) (m: Map k v) -> Map k v =
+    let current = get k m
+    insert k (f current) m

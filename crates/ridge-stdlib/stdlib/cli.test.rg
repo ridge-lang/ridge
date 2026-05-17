@@ -1,0 +1,23 @@
+-- Private FFI bridges for std.cli test suite.
+-- These replicate cli.rg FFI declarations in local scope because cross-module
+-- calls are unsupported (T17+ deferred).
+@ffi("ridge_rt", "cli_args", 1)
+fn _cliArgs (_unit: Unit) -> List Text
+
+@ffi("erlang", "length", 1)
+fn _listLength (xs: List Text) -> Int
+
+pub fn test_smoke_cli () -> Result Unit Text = Ok ()
+
+-- cli.args returns a List Text; its length is >= 0.
+pub fn env test_args_returns_list_text () -> Result Unit Text =
+    let args = _cliArgs ()
+    if _listLength args >= 0 then Ok ()
+    else Err "cli.args should return a list with non-negative length"
+
+-- Two consecutive cli.args calls return the same length.
+pub fn env test_args_consistent_across_calls () -> Result Unit Text =
+    let a = _listLength (_cliArgs ())
+    let b = _listLength (_cliArgs ())
+    if a == b then Ok ()
+    else Err "cli.args length should be consistent across calls"

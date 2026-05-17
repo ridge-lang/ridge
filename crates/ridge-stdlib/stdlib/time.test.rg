@@ -1,0 +1,61 @@
+-- Private FFI bridges for std.time test suite.
+-- These replicate time.rg FFI declarations in local scope because cross-module
+-- calls are unsupported (T17+ deferred).
+@ffi("ridge_rt", "time_now", 1)
+fn _timeNow (_unit: Unit) -> Timestamp
+
+@ffi("ridge_rt", "time_diff_ms", 2)
+fn _diffMs (a: Timestamp) (b: Timestamp) -> Int
+
+@ffi("ridge_rt", "time_from_iso", 1)
+fn _fromIso (s: Text) -> Result Timestamp Error
+
+@ffi("ridge_rt", "time_iso", 1)
+fn _iso (t: Timestamp) -> Text
+
+@ffi("timer", "sleep", 1)
+fn _sleep (ms: Int) -> Unit
+
+@ffi("erlang", "byte_size", 1)
+fn _byteSize (s: Text) -> Int
+
+@ffi("binary", "part", 3)
+fn _binaryPart (s: Text) (start: Int) (len: Int) -> Text
+
+fn _startsWith (prefix: Text) (s: Text) -> Bool =
+    let pLen = _byteSize prefix
+    let sLen = _byteSize s
+    if pLen > sLen then false
+    else _binaryPart s 0 pLen == prefix
+
+pub fn test_smoke_time () -> Result Unit Text = Ok ()
+
+-- time.diffMs of two consecutive now() calls is in 0..60000 ms.
+-- _diffMs a b = (a - b) / 1000; pass t2 first so diff = t2 - t1 >= 0.
+pub fn time test_now_diffMs_is_nonnegative () -> Result Unit Text =
+    let t1 = _timeNow ()
+    let t2 = _timeNow ()
+    let diff = _diffMs t2 t1
+    if diff >= 0 then
+        if diff <= 60000 then Ok ()
+        else Err "time.diffMs should be <= 60000 ms"
+    else Err "time.diffMs should be >= 0"
+
+-- time.fromIso round-trips the ISO-8601 string.
+pub fn test_fromIso_round_trip () -> Result Unit Text =
+    match _fromIso "2020-01-01T00:00:00Z"
+        Err _ -> Err "time.fromIso should succeed for valid ISO string"
+        Ok ts ->
+            let s = _iso ts
+            if _startsWith "2020-01-01T00:00:00" s then Ok ()
+            else Err "time.iso should start with 2020-01-01T00:00:00"
+
+-- time.sleep does not crash and monotonicity holds.
+-- _diffMs a b = (a - b) / 1000; pass the later timestamp first for >= 0.
+pub fn time test_sleep_advances_clock () -> Result Unit Text =
+    let t1 = _timeNow ()
+    let _ = _sleep 50
+    let t2 = _timeNow ()
+    let diff = _diffMs t2 t1
+    if diff >= 0 then Ok ()
+    else Err "time.diffMs (later - earlier) after sleep should be >= 0 (monotonicity)"

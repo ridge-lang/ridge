@@ -1,0 +1,24 @@
+[package]
+name         = "ridge-pkg"
+description  = "Package manager — path and git dependency resolver"
+version.workspace     = true
+edition.workspace     = true
+license.workspace     = true
+authors.workspace     = true
+publish.workspace     = true
+repository.workspace  = true
+rust-version.workspace = true
+
+[dependencies]
+ridge-manifest = { path = "../ridge-manifest" }
+thiserror.workspace = true
+# XDG-compliant cache root resolution (D144, OQ-C003)
+directories = "6"
+# Git binary discovery via PATH lookup (R4 — Windows git.exe detection)
+which = "8"
+
+[dev-dependencies]
+tempfile = "3"
+
+[lints]
+workspace = true

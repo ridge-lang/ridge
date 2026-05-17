@@ -1,0 +1,87 @@
+---
+source: crates/ridge-parser/tests/snapshots.rs
+expression: result.module
+---
+Module {
+    items: [
+        Fn(
+            FnDecl {
+                vis: Pub,
+                caps: [],
+                name: Ident {
+                    text: "add",
+                    span: Span {
+                        start: 30,
+                        end: 33,
+                    },
+                },
+                params: [
+                    Annotated {
+                        name: Ident {
+                            text: "a",
+                            span: Span {
+                                start: 35,
+                                end: 36,
+                            },
+                        },
+                        ty: Primitive {
+                            name: Int,
+                            span: Span {
+                                start: 38,
+                                end: 41,
+                            },
+                        },
+                        span: Span {
+                            start: 34,
+                            end: 42,
+                        },
+                    },
+                    Annotated {
+                        name: Ident {
+                            text: "b",
+                            span: Span {
+                                start: 44,
+                                end: 45,
+                            },
+                        },
+                        ty: Primitive {
+                            name: Int,
+                            span: Span {
+                                start: 47,
+                                end: 50,
+                            },
+                        },
+                        span: Span {
+                            start: 43,
+                            end: 51,
+                        },
+                    },
+                ],
+                ret: Some(
+                    Primitive {
+                        name: Int,
+                        span: Span {
+                            start: 55,
+                            end: 58,
+                        },
+                    },
+                ),
+                body: Ffi {
+                    module: "erlang",
+                    name: "+",
+                    arity: 2,
+                },
+                span: Span {
+                    start: 0,
+                    end: 58,
+                },
+                doc: None,
+            },
+        ),
+    ],
+    doc: [],
+    span: Span {
+        start: 0,
+        end: 59,
+    },
+}

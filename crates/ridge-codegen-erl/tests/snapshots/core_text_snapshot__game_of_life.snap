@@ -1,0 +1,70 @@
+---
+source: crates/ridge-codegen-erl/tests/core_text_snapshot.rs
+expression: "&core_text"
+---
+module 'ridge_module_0' ['main'/0]
+  attributes []
+  %% File: <source>, Offset: 795
+  %% Caps: {}
+'cellAt'/3 =
+    ( fun (V_Grid, V_R, V_C) ->
+          let V_Anf8 = let V_Anf0 = call 'erlang':'>=' (V_R, 0) in let V_Anf7 = let V_Anf2 = let V_Anf1 = call 'maps':'get' ('rows', V_Grid) in call 'erlang':'<' (V_R, V_Anf1) in let V_Anf6 = let V_Anf3 = call 'erlang':'>=' (V_C, 0) in let V_Anf5 = let V_Anf4 = call 'maps':'get' ('cols', V_Grid) in call 'erlang':'<' (V_C, V_Anf4) in call 'erlang':'and' (V_Anf3, V_Anf5) in call 'erlang':'and' (V_Anf2, V_Anf6) in call 'erlang':'and' (V_Anf0, V_Anf7) in case V_Anf8 of <'true'> when 'true' -> let V_Row = let V_Anf9 = [] in let V_Anf12 = let V_Anf11 = let V_Anf10 = call 'maps':'get' ('cells', V_Grid) in call 'std.list':'drop' (V_R, V_Anf10) in call 'std.list':'head' (V_Anf11) in call 'std.option':'withDefault' (V_Anf9, V_Anf12) in let V_Anf14 = let V_Anf13 = call 'std.list':'drop' (V_C, V_Row) in call 'std.list':'head' (V_Anf13) in call 'std.option':'withDefault' ('false', V_Anf14) <'false'> when 'true' -> 'false' end
+      -| [] )
+  %% File: <source>, Offset: 1078
+  %% Caps: {}
+'liveNeighbours'/3 =
+    ( fun (V_Grid, V_R, V_C) ->
+          let V_Deltas = let V_Anf17 = let V_Anf15 = call 'erlang':'-' (1) in let V_Anf16 = call 'erlang':'-' (1) in {V_Anf15, V_Anf16} in let V_Anf19 = let V_Anf18 = call 'erlang':'-' (1) in {V_Anf18, 0} in let V_Anf21 = let V_Anf20 = call 'erlang':'-' (1) in {V_Anf20, 1} in let V_Anf23 = let V_Anf22 = call 'erlang':'-' (1) in {0, V_Anf22} in let V_Anf24 = {0, 1} in let V_Anf26 = let V_Anf25 = call 'erlang':'-' (1) in {1, V_Anf25} in let V_Anf27 = {1, 0} in let V_Anf28 = {1, 1} in [V_Anf17, V_Anf19, V_Anf21, V_Anf23, V_Anf24, V_Anf26, V_Anf27, V_Anf28] in let V_Anf29 = ( fun (V_A, V_B) -> call 'erlang':'+' (V_A, V_B) -| [] ) in let V_Anf34 = let V_Anf33 = ( fun (V_TupleParam0) -> case V_TupleParam0 of <{V_Dr, V_Dc}> when 'true' -> let V_Anf32 = let V_Anf30 = call 'erlang':'+' (V_R, V_Dr) in let V_Anf31 = call 'erlang':'+' (V_C, V_Dc) in apply 'cellAt'/3 (V_Grid, V_Anf30, V_Anf31) in case V_Anf32 of <'true'> when 'true' -> 1 <'false'> when 'true' -> 0 end end -| [] ) in call 'lists':'map' (V_Anf33, V_Deltas) in call 'ridge_rt':'list_fold' (V_Anf29, 0, V_Anf34)
+      -| [] )
+  %% File: <source>, Offset: 1339
+  %% Caps: {}
+'nextCell'/3 =
+    ( fun (V_Grid, V_R, V_C) ->
+          let V_Alive = apply 'cellAt'/3 (V_Grid, V_R, V_C) in let V_Anf36 = let V_Anf35 = apply 'liveNeighbours'/3 (V_Grid, V_R, V_C) in {V_Alive, V_Anf35} in case V_Anf36 of <{'true', 2}> when 'true' -> 'true' <{'true', 3}> when 'true' -> 'true' <{'false', 3}> when 'true' -> 'true' <_Wc0> when 'true' -> 'false' end
+      -| [] )
+  %% File: <source>, Offset: 1619
+  %% Caps: {}
+'step'/1 =
+    ( fun (V_Grid) ->
+          let V_NewCells = let V_Anf41 = ( fun (V_R) -> let V_Anf37 = ( fun (V_C) -> apply 'nextCell'/3 (V_Grid, V_R, V_C) -| [] ) in let V_Anf40 = let V_Anf39 = let V_Anf38 = call 'maps':'get' ('cols', V_Grid) in call 'erlang':'-' (V_Anf38, 1) in call 'lists':'seq' (0, V_Anf39) in call 'lists':'map' (V_Anf37, V_Anf40) -| [] ) in let V_Anf44 = let V_Anf43 = let V_Anf42 = call 'maps':'get' ('rows', V_Grid) in call 'erlang':'-' (V_Anf42, 1) in call 'lists':'seq' (0, V_Anf43) in call 'lists':'map' (V_Anf41, V_Anf44) in let V_WithBase1 = V_Grid in ~{'cells'=>V_NewCells|V_WithBase1}~
+      -| [] )
+  %% File: <source>, Offset: 1850
+  %% Caps: {io}
+'renderGrid'/1 =
+    ( fun (V_Grid) ->
+          let V_Border = let V_Anf45 = ( fun (V_A, V_B) -> call 'std.text':'concat' (V_A, V_B) -| [] ) in let V_Anf50 = let V_Anf46 = ( fun (V_) -> #{#<45>(8,1,'integer',['unsigned'|['big']])}# -| [] ) in let V_Anf49 = let V_Anf48 = let V_Anf47 = call 'maps':'get' ('cols', V_Grid) in call 'erlang':'+' (V_Anf47, 2) in call 'lists':'seq' (1, V_Anf48) in call 'lists':'map' (V_Anf46, V_Anf49) in call 'ridge_rt':'list_fold' (V_Anf45, #{}#, V_Anf50) in do let V_Anf52 = let V_Anf51 = call 'std.text':'concat' (#{#<43>(8,1,'integer',['unsigned'|['big']])}#, V_Border) in call 'std.text':'concat' (V_Anf51, #{#<43>(8,1,'integer',['unsigned'|['big']])}#) in call 'ridge_rt':'println' (V_Anf52) do let V_Anf58 = ( fun (V_Row) -> let V_Line = let V_Anf53 = ( fun (V_A, V_B) -> call 'std.text':'concat' (V_A, V_B) -| [] ) in let V_Anf55 = let V_Anf54 = ( fun (V_Alive) -> case V_Alive of <'true'> when 'true' -> #{#<35>(8,1,'integer',['unsigned'|['big']])}# <'false'> when 'true' -> #{#<32>(8,1,'integer',['unsigned'|['big']])}# end -| [] ) in call 'lists':'map' (V_Anf54, V_Row) in call 'ridge_rt':'list_fold' (V_Anf53, #{}#, V_Anf55) in let V_Anf57 = let V_Anf56 = call 'std.text':'concat' (#{#<124>(8,1,'integer',['unsigned'|['big']]),#<32>(8,1,'integer',['unsigned'|['big']])}#, V_Line) in call 'std.text':'concat' (V_Anf56, #{#<32>(8,1,'integer',['unsigned'|['big']]),#<124>(8,1,'integer',['unsigned'|['big']])}#) in call 'ridge_rt':'println' (V_Anf57) -| [] ) in let V_Anf59 = call 'maps':'get' ('cells', V_Grid) in call 'lists':'foreach' (V_Anf58, V_Anf59) let V_Anf61 = let V_Anf60 = call 'std.text':'concat' (#{#<43>(8,1,'integer',['unsigned'|['big']])}#, V_Border) in call 'std.text':'concat' (V_Anf60, #{#<43>(8,1,'integer',['unsigned'|['big']])}#) in call 'ridge_rt':'println' (V_Anf61)
+      -| [] )
+  %% File: <source>, Offset: 2260
+  %% Caps: {}
+'makeEmptyGrid'/2 =
+    ( fun (V_R, V_C) ->
+          let V_EmptyRow = let V_Anf62 = ( fun (V_) -> 'false' -| [] ) in let V_Anf63 = call 'lists':'seq' (1, V_C) in call 'lists':'map' (V_Anf62, V_Anf63) in let V_Anf66 = let V_Anf64 = ( fun (V_) -> V_EmptyRow -| [] ) in let V_Anf65 = call 'lists':'seq' (1, V_R) in call 'lists':'map' (V_Anf64, V_Anf65) in ~{'rows'=>V_R, 'cols'=>V_C, 'cells'=>V_Anf66}~
+      -| [] )
+  %% File: <source>, Offset: 2532
+  %% Caps: {}
+'setCell'/3 =
+    ( fun (V_TargetRow, V_TargetCol, V_Grid) ->
+          let V_NewCells = let V_Anf74 = ( fun (V_TupleParam2) -> case V_TupleParam2 of <{V_Ri, V_Row}> when 'true' -> let V_Anf67 = call 'erlang':'=:=' (V_Ri, V_TargetRow) in case V_Anf67 of <'true'> when 'true' -> let V_Anf69 = ( fun (V_TupleParam3) -> case V_TupleParam3 of <{V_Ci, V_V}> when 'true' -> let V_Anf68 = call 'erlang':'=:=' (V_Ci, V_TargetCol) in case V_Anf68 of <'true'> when 'true' -> 'true' <'false'> when 'true' -> V_V end end -| [] ) in let V_Anf73 = let V_Anf72 = let V_Anf71 = let V_Anf70 = call 'maps':'get' ('cols', V_Grid) in call 'erlang':'-' (V_Anf70, 1) in call 'lists':'seq' (0, V_Anf71) in call 'lists':'zip' (V_Anf72, V_Row) in call 'lists':'map' (V_Anf69, V_Anf73) <'false'> when 'true' -> V_Row end end -| [] ) in let V_Anf79 = let V_Anf77 = let V_Anf76 = let V_Anf75 = call 'maps':'get' ('rows', V_Grid) in call 'erlang':'-' (V_Anf75, 1) in call 'lists':'seq' (0, V_Anf76) in let V_Anf78 = call 'maps':'get' ('cells', V_Grid) in call 'lists':'zip' (V_Anf77, V_Anf78) in call 'lists':'map' (V_Anf74, V_Anf79) in let V_WithBase4 = V_Grid in ~{'cells'=>V_NewCells|V_WithBase4}~
+      -| [] )
+  %% File: <source>, Offset: 2990
+  %% Caps: {}
+'gliderGrid'/2 =
+    ( fun (V_Rows, V_Cols) ->
+          let V_Anf84 = let V_Anf83 = let V_Anf82 = let V_Anf81 = let V_Anf80 = apply 'makeEmptyGrid'/2 (V_Rows, V_Cols) in apply 'setCell'/3 (0, 1, V_Anf80) in apply 'setCell'/3 (1, 2, V_Anf81) in apply 'setCell'/3 (2, 0, V_Anf82) in apply 'setCell'/3 (2, 1, V_Anf83) in apply 'setCell'/3 (2, 2, V_Anf84)
+      -| [] )
+  %% Const: defaultGenerations: Con(TyConId(0), [])
+'defaultGenerations'/0 =
+    ( fun () ->
+          30
+      -| [] )
+  %% File: <source>, Offset: 3257
+  %% Caps: {io time env}
+  %% Warning: main/0 — canonical main should have arity 1 (§4.26)
+'main'/0 =
+    ( fun () ->
+          let V_Args = call 'ridge_rt':'cli_args' ('ok') in let V_Generations = let V_Anf85 = apply 'defaultGenerations'/0 () in let V_Anf88 = let V_Anf86 = ( fun (V_X0) -> call 'ridge_rt':'int_parse' (V_X0) -| [] ) in let V_Anf87 = call 'std.list':'head' (V_Args) in call 'std.option':'flatMap' (V_Anf86, V_Anf87) in call 'std.option':'withDefault' (V_Anf85, V_Anf88) in letrec 'loop'/2 =
+        ( fun (V_Gen, V_Grid) ->
+              let V_Anf89 = call 'erlang':'>' (V_Gen, 0) in case V_Anf89 of <'true'> when 'true' -> do call 'ridge_rt':'print' (#{#<27>(8,1,'integer',['unsigned'|['big']]),#<91>(8,1,'integer',['unsigned'|['big']]),#<50>(8,1,'integer',['unsigned'|['big']]),#<74>(8,1,'integer',['unsigned'|['big']]),#<27>(8,1,'integer',['unsigned'|['big']]),#<91>(8,1,'integer',['unsigned'|['big']]),#<72>(8,1,'integer',['unsigned'|['big']])}#) do let V_Anf96 = let V_Anf94 = let V_Anf93 = let V_Anf92 = let V_Anf91 = let V_Anf90 = call 'erlang':'-' (V_Generations, V_Gen) in call 'erlang':'+' (V_Anf90, 1) in call 'erlang':'integer_to_binary' (V_Anf91) in call 'std.text':'concat' (#{#<71>(8,1,'integer',['unsigned'|['big']]),#<101>(8,1,'integer',['unsigned'|['big']]),#<110>(8,1,'integer',['unsigned'|['big']]),#<101>(8,1,'integer',['unsigned'|['big']]),#<114>(8,1,'integer',['unsigned'|['big']]),#<97>(8,1,'integer',['unsigned'|['big']]),#<116>(8,1,'integer',['unsigned'|['big']]),#<105>(8,1,'integer',['unsigned'|['big']]),#<111>(8,1,'integer',['unsigned'|['big']]),#<110>(8,1,'integer',['unsigned'|['big']]),#<32>(8,1,'integer',['unsigned'|['big']])}#, V_Anf92) in call 'std.text':'concat' (V_Anf93, #{#<32>(8,1,'integer',['unsigned'|['big']]),#<47>(8,1,'integer',['unsigned'|['big']]),#<32>(8,1,'integer',['unsigned'|['big']])}#) in let V_Anf95 = call 'erlang':'integer_to_binary' (V_Generations) in call 'std.text':'concat' (V_Anf94, V_Anf95) in call 'ridge_rt':'println' (V_Anf96) do apply 'renderGrid'/1 (V_Grid) do call 'timer':'sleep' (200) let V_Anf97 = call 'erlang':'-' (V_Gen, 1) in let V_Anf98 = apply 'step'/1 (V_Grid) in apply 'loop'/2 (V_Anf97, V_Anf98) <'false'> when 'true' -> 'ok' end
+          -| [] ) in do let V_Anf99 = apply 'gliderGrid'/2 (20, 40) in apply 'loop'/2 (V_Generations, V_Anf99) {'ok', 'ok'}
+      -| [] )
+end

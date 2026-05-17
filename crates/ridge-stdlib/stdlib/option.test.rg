@@ -1,0 +1,73 @@
+-- Private helpers for std.option test suite.
+-- Pure-Ridge helpers replicate option.rg (T17+ deferred; no FFI needed since
+-- all option.rg functions are pure Ridge).
+fn _withDefault (d: a) (o: Option a) -> a =
+    match o
+        Some v -> v
+        None -> d
+
+fn _optMap (f: fn a -> b) (o: Option a) -> Option b =
+    match o
+        Some v -> Some (f v)
+        None -> None
+
+fn _flatMap (f: fn a -> Option b) (o: Option a) -> Option b =
+    match o
+        Some v -> f v
+        None -> None
+
+fn _orElse (alt: Option a) (o: Option a) -> Option a =
+    match o
+        Some _ -> o
+        None -> alt
+
+fn _isSome (o: Option a) -> Bool =
+    match o
+        Some _ -> true
+        None -> false
+
+fn _isNone (o: Option a) -> Bool =
+    match o
+        Some _ -> false
+        None -> true
+
+fn _discard (o: Option a) -> Unit =
+    match o
+        Some _ -> ()
+        None -> ()
+
+pub fn test_smoke_option () -> Result Unit Text = Ok ()
+
+pub fn test_withDefault_some () -> Result Unit Text =
+    if _withDefault 0 (Some 5) == 5 then Ok ()
+    else Err "Option.withDefault 0 (Some 5) should be 5"
+
+pub fn test_withDefault_none () -> Result Unit Text =
+    if _withDefault 0 None == 0 then Ok ()
+    else Err "Option.withDefault 0 None should be 0"
+
+pub fn test_map_some () -> Result Unit Text =
+    if _optMap (fn x -> x + 1) (Some 5) == Some 6 then Ok ()
+    else Err "Option.map (+1) (Some 5) should be Some 6"
+
+pub fn test_map_none () -> Result Unit Text =
+    if _optMap (fn x -> x + 1) None == None then Ok ()
+    else Err "Option.map (+1) None should be None"
+
+pub fn test_flatMap_some_some () -> Result Unit Text =
+    if _flatMap (fn x -> Some (x * 2)) (Some 5) == Some 10 then Ok ()
+    else Err "Option.flatMap (*2) (Some 5) should be Some 10"
+
+pub fn test_orElse_picks_first () -> Result Unit Text =
+    if _orElse (Some 1) (Some 2) == Some 2 then Ok ()
+    else Err "Option.orElse alt (Some 2) should return Some 2 (self takes priority)"
+
+pub fn test_isSome_isNone () -> Result Unit Text =
+    if _isSome (Some 1) then
+        if _isNone None then Ok ()
+        else Err "Option.isNone None should be true"
+    else Err "Option.isSome (Some 1) should be true"
+
+pub fn test_discard_returns_unit () -> Result Unit Text =
+    let _ = _discard (Some 5)
+    Ok ()

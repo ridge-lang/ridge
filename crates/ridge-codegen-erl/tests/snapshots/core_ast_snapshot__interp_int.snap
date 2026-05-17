@@ -1,0 +1,89 @@
+---
+source: crates/ridge-codegen-erl/tests/core_ast_snapshot.rs
+expression: "&cerl_module"
+---
+CErlModule {
+    name: CErlAtom(
+        "ridge_module_0",
+    ),
+    exports: [],
+    attributes: [],
+    fns: [
+        CErlFn {
+            name: CErlAtom(
+                "interp_int",
+            ),
+            arity: 1,
+            anns: [
+                CErlAnn(
+                    "%% File: <source>, Offset: 0",
+                ),
+                CErlAnn(
+                    "%% Caps: {}",
+                ),
+            ],
+            body: Fun {
+                params: [
+                    CErlVar(
+                        "V_N",
+                    ),
+                ],
+                body: Let {
+                    var: CErlVar(
+                        "V_Anf0",
+                    ),
+                    value: Call {
+                        module: CErlAtom(
+                            "erlang",
+                        ),
+                        fn_name: CErlAtom(
+                            "integer_to_binary",
+                        ),
+                        args: [
+                            Var(
+                                CErlVar(
+                                    "V_N",
+                                ),
+                            ),
+                        ],
+                    },
+                    body: Call {
+                        module: CErlAtom(
+                            "std.text",
+                        ),
+                        fn_name: CErlAtom(
+                            "concat",
+                        ),
+                        args: [
+                            Lit(
+                                Binary(
+                                    [
+                                        84,
+                                        104,
+                                        101,
+                                        32,
+                                        97,
+                                        110,
+                                        115,
+                                        119,
+                                        101,
+                                        114,
+                                        32,
+                                        105,
+                                        115,
+                                        32,
+                                    ],
+                                ),
+                            ),
+                            Var(
+                                CErlVar(
+                                    "V_Anf0",
+                                ),
+                            ),
+                        ],
+                    },
+                },
+            },
+        },
+    ],
+}

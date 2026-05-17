@@ -1,0 +1,7 @@
+[workspace]
+name = "acme"
+version = "0.1.0"
+members = ["libs/*"]
+
+[workspace.rules]
+forbid = [{ from = "acme.api.**", to = "acme.infra.**" }]

@@ -1,0 +1,71 @@
+---
+source: crates/ridge-lower/tests/lowering.rs
+assertion_line: 39
+expression: rendered
+---
+module: m0
+items_count: 1
+items:
+  - kind: fn
+    name: inner_fn_basic
+    pub: false
+    main: false
+    caps: CapabilitySet(0)
+    ret_ty: Con(0)
+    params:
+      - name: xs
+        ty: Con(6) [Con(0)]
+    body:
+      LetIn(n0):
+        pat:
+          Bind: sum
+        value:
+          Lambda(n1):
+            caps: CapabilitySet(0)
+            params:
+              - name: acc
+                ty: Con(0)
+              - name: rest
+                ty: Con(6) [Con(0)]
+            body:
+              Match(n2):
+                scrutinee:
+                  Local(n3): rest
+                arms:
+                  -
+                    pat:
+                      Nil
+                    body:
+                      Local(n4): acc
+                  -
+                    pat:
+                      Cons:
+                        head:
+                          Bind: x
+                        tail:
+                          Bind: tl
+                    body:
+                      Call(n5):
+                        callee:
+                          Local(n6): sum
+                        args:
+                          -
+                            Call(n7):
+                              callee:
+                                Symbol(n8): Stdlib(std.int.add)
+                              args:
+                                -
+                                  Local(n9): acc
+                                -
+                                  Local(n10): x
+                          -
+                            Local(n11): tl
+        body:
+          Call(n12):
+            callee:
+              Local(n13): sum
+            args:
+              -
+                Lit(n14): Int(0)
+              -
+                Local(n15): xs

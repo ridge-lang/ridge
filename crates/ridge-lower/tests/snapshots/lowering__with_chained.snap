@@ -1,0 +1,56 @@
+---
+source: crates/ridge-lower/tests/lowering.rs
+expression: rendered
+---
+module: m0
+items_count: 1
+items:
+  - kind: fn
+    name: with_chained
+    pub: false
+    main: false
+    caps: CapabilitySet(0)
+    ret_ty: Con(16)
+    params:
+      - name: p
+        ty: Con(16)
+    body:
+      LetIn(n0):
+        pat:
+          Bind: p1
+        value:
+          LetIn(n1):
+            pat:
+              Bind: __with_base_0
+            value:
+              Local(n2): p
+            body:
+              Construct(n3):
+                ctor: Ctor(Record:Point owner=16)
+                fields:
+                  x:
+                    Lit(n4): Int(1)
+                  y:
+                    Field(n5).y:
+                      Local(n6): __with_base_0
+                  z:
+                    Field(n7).z:
+                      Local(n8): __with_base_0
+        body:
+          LetIn(n9):
+            pat:
+              Bind: __with_base_1
+            value:
+              Local(n10): p1
+            body:
+              Construct(n11):
+                ctor: Ctor(Record:Point owner=16)
+                fields:
+                  x:
+                    Field(n12).x:
+                      Local(n13): __with_base_1
+                  y:
+                    Lit(n14): Int(2)
+                  z:
+                    Field(n15).z:
+                      Local(n16): __with_base_1

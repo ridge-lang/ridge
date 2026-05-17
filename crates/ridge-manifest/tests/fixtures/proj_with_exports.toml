@@ -1,0 +1,8 @@
+[project]
+name = "acme.shared"
+version = "0.1.0"
+kind = "library"
+
+[project.exports]
+public   = ["Types.*", "Utils.*"]
+internal = ["Internal.*"]

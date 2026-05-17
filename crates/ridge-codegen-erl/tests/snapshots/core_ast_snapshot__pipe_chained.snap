@@ -1,0 +1,212 @@
+---
+source: crates/ridge-codegen-erl/tests/core_ast_snapshot.rs
+expression: "&cerl_module"
+---
+CErlModule {
+    name: CErlAtom(
+        "ridge_module_0",
+    ),
+    exports: [],
+    attributes: [],
+    fns: [
+        CErlFn {
+            name: CErlAtom(
+                "add1",
+            ),
+            arity: 1,
+            anns: [
+                CErlAnn(
+                    "%% File: <source>, Offset: 0",
+                ),
+                CErlAnn(
+                    "%% Caps: {}",
+                ),
+            ],
+            body: Fun {
+                params: [
+                    CErlVar(
+                        "V_X",
+                    ),
+                ],
+                body: Call {
+                    module: CErlAtom(
+                        "erlang",
+                    ),
+                    fn_name: CErlAtom(
+                        "+",
+                    ),
+                    args: [
+                        Var(
+                            CErlVar(
+                                "V_X",
+                            ),
+                        ),
+                        Lit(
+                            Int(
+                                1,
+                            ),
+                        ),
+                    ],
+                },
+            },
+        },
+        CErlFn {
+            name: CErlAtom(
+                "double",
+            ),
+            arity: 1,
+            anns: [
+                CErlAnn(
+                    "%% File: <source>, Offset: 33",
+                ),
+                CErlAnn(
+                    "%% Caps: {}",
+                ),
+            ],
+            body: Fun {
+                params: [
+                    CErlVar(
+                        "V_X",
+                    ),
+                ],
+                body: Call {
+                    module: CErlAtom(
+                        "erlang",
+                    ),
+                    fn_name: CErlAtom(
+                        "*",
+                    ),
+                    args: [
+                        Var(
+                            CErlVar(
+                                "V_X",
+                            ),
+                        ),
+                        Lit(
+                            Int(
+                                2,
+                            ),
+                        ),
+                    ],
+                },
+            },
+        },
+        CErlFn {
+            name: CErlAtom(
+                "negate",
+            ),
+            arity: 1,
+            anns: [
+                CErlAnn(
+                    "%% File: <source>, Offset: 68",
+                ),
+                CErlAnn(
+                    "%% Caps: {}",
+                ),
+            ],
+            body: Fun {
+                params: [
+                    CErlVar(
+                        "V_X",
+                    ),
+                ],
+                body: Call {
+                    module: CErlAtom(
+                        "erlang",
+                    ),
+                    fn_name: CErlAtom(
+                        "-",
+                    ),
+                    args: [
+                        Lit(
+                            Int(
+                                0,
+                            ),
+                        ),
+                        Var(
+                            CErlVar(
+                                "V_X",
+                            ),
+                        ),
+                    ],
+                },
+            },
+        },
+        CErlFn {
+            name: CErlAtom(
+                "pipe_chained",
+            ),
+            arity: 1,
+            anns: [
+                CErlAnn(
+                    "%% File: <source>, Offset: 103",
+                ),
+                CErlAnn(
+                    "%% Caps: {}",
+                ),
+            ],
+            body: Fun {
+                params: [
+                    CErlVar(
+                        "V_X",
+                    ),
+                ],
+                body: Let {
+                    var: CErlVar(
+                        "V_Anf1",
+                    ),
+                    value: Let {
+                        var: CErlVar(
+                            "V_Anf0",
+                        ),
+                        value: Apply {
+                            callee: LocalFnRef {
+                                name: CErlAtom(
+                                    "add1",
+                                ),
+                                arity: 1,
+                            },
+                            args: [
+                                Var(
+                                    CErlVar(
+                                        "V_X",
+                                    ),
+                                ),
+                            ],
+                        },
+                        body: Apply {
+                            callee: LocalFnRef {
+                                name: CErlAtom(
+                                    "double",
+                                ),
+                                arity: 1,
+                            },
+                            args: [
+                                Var(
+                                    CErlVar(
+                                        "V_Anf0",
+                                    ),
+                                ),
+                            ],
+                        },
+                    },
+                    body: Apply {
+                        callee: LocalFnRef {
+                            name: CErlAtom(
+                                "negate",
+                            ),
+                            arity: 1,
+                        },
+                        args: [
+                            Var(
+                                CErlVar(
+                                    "V_Anf1",
+                                ),
+                            ),
+                        ],
+                    },
+                },
+            },
+        },
+    ],
+}

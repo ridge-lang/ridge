@@ -1,0 +1,1155 @@
+(* ============================================================================
+   Ridge Language — Formal EBNF Grammar
+   Version:  0.1.0 (2026-04-23)
+   Source:   Derived from docs/spec.md §4, cross-referenced with §3 and §6.
+   Author:   Derived from the Ridge language specification (Angel, 2026-04)
+   Changelog (2026-04-23): Incorporated decisions D044–D061.
+     D044 — ! is actor-send only (logical-not removed)
+     D045 — ?> is ask; ? is propagate-only; AskExpr added
+     D046 — Numeric base prefixes 0b/0o/0x + _ separators (closes Q-019)
+     D047 — Multi-line/raw strings deferred to 0.2.0 (closes Q-017)
+     D048 — No Timestamp literal; std.time only
+     D049 — IDENT is ASCII-only
+     D050 — '..' reserved; no productions in 0.1.0
+     D051 — Constructor name always required in record patterns/construction
+     D052 — Full Pattern in let/lambda; top-level Param per D037
+     D053 — Shorthand field binding in FieldPattern and FieldInit
+     D054 — UnionType: optional leading |, trailing | forbidden, min 1 alt
+     D055 — WithExpr LHS is arbitrary Expr
+     D056 — 'do' removed from grammar entirely
+     D057 — Capability variables are compiler-internal only
+     D058 — Inner fn is an expression form (InnerFnExpr)
+     D059 — Canonical main type noted in preamble
+     D060 — try is a value-producing expression
+     D061 — Actor init block added; SpawnExpr accepts init args
+   ============================================================================
+
+   LAYOUT TOKENS — PREAMBLE NOTE
+   ─────────────────────────────
+   Ridge uses significant indentation (the "offside rule"), similar to
+   Haskell/F#/Elm.  The layout rule is implemented in the lexer as a
+   post-processing pass BEFORE the token stream is handed to the parser.
+   It is NOT expressible in pure EBNF; the algorithm is described here for
+   reference only.
+
+   The lexer maintains an indentation stack.  After tokenising each physical
+   line it emits synthetic layout tokens:
+
+     NEWLINE  — emitted when a new line begins at the SAME indentation level
+                as the current block.
+     INDENT   — emitted when a new line begins at a STRICTLY DEEPER level than
+                the current block.  The new level is pushed onto the stack.
+     DEDENT   — emitted (possibly multiple times) when a new line begins at a
+                SHALLOWER level; one DEDENT per level popped off the stack.
+
+   A layout block is opened by any of:  "="  "->"  "then"  "else"
+   appearing at the end of a logical line.  All physical lines in a block must
+   share the same indentation column.  Tabs are forbidden (lexer error).
+   (* NOTE: "do" was previously listed as a block introducer but has been
+      removed from the language entirely per D056. *)
+
+   In the grammar below, wherever "block" or "indented body" is required, the
+   parser consumes INDENT … DEDENT surrounding the productions.  NEWLINE
+   separates siblings within a block.  For compactness, the grammar elides
+   explicit INDENT / DEDENT / NEWLINE from most rules and instead uses prose
+   or the annotation "{ ... NEWLINE ... }" to indicate that siblings are
+   newline-separated within an indented block.
+
+   (* D062 (revised — OQ-R014 option A): While bracket-nesting depth (open
+      "(", "[", "{" not yet matched) is > 0, INDENT and DEDENT are never
+      emitted.  A NEWLINE token IS emitted when a logical line begins at column
+      ≤ the baseline column established by the first continuation line inside
+      the bracket.  This marks statement boundaries inside parenthesised lambda
+      bodies.  Full layout (INDENT/DEDENT) resumes when depth returns to 0. *)
+
+   (* D070: Operator-leading lines are joined into the preceding logical line;
+      layout tokens (NEWLINE / INDENT / DEDENT) are suppressed for the
+      boundary.  A physical line whose first token is one of the binary infix
+      operators |>, ||, &&, ==, !=, <, >, <=, >=, ++, ::, +, -, *, /, %, ^,
+      with, . is merged into the preceding non-empty logical line before the
+      layout comparison runs.  "=", "->", "then", "else" are NOT in the set;
+      those introduce new blocks. *)
+
+   ─────────────────────────────────────────────────────────────────────────────
+   ENTRY POINT TYPE (D059)
+   ─────────────────────────────────────────────────────────────────────────────
+   (* Canonical entry point type: fn {caps} main () -> Result Unit Error;
+      runtime maps Err to non-zero exit code (D059). *)
+
+   ─────────────────────────────────────────────────────────────────────────────
+   EBNF METALANGUAGE LEGEND
+   ─────────────────────────────────────────────────────────────────────────────
+     Rule   ::= ...            production definition
+     A B                       concatenation (A then B)
+     A | B                     alternation (A or B)
+     [ A ]                     optional (zero or one)
+     { A }                     repetition (zero or more)
+     ( A )                     grouping
+     "text"                    literal terminal (exact characters)
+     UPPERCASE                 token class produced by the lexer
+     (* comment *)             grammar annotation / comment
+
+   ─────────────────────────────────────────────────────────────────────────────
+   SIMPLIFYING ASSUMPTIONS
+   ─────────────────────────────────────────────────────────────────────────────
+   1. INDENT / DEDENT / NEWLINE are omitted from most productions; their
+      placement follows from the layout preamble above.
+   2. Operator precedence (§4.4) is factored into a precedence-stratified
+      grammar (Expr1 … Expr12) rather than expressed as a flat ambiguous rule.
+   3. Capability polymorphism (D041/D057) appears only in stdlib HOF signatures
+      at the type-system level; no user-facing surface syntax in 0.1.0.
+      Capability variables are compiler-internal.
+   4. Multi-line string literals and raw strings are deferred to 0.2.0 (D047).
+      Only single-line TEXT_LIT and $"…" interpolated forms are defined here.
+   5. Binary, hex, and octal numeric literal forms are defined in §1.5 (D046).
+   6. "class" and "instance" are reserved keywords per §4.1 but have no
+      productions in 0.1.0 (typeclasses deferred to 0.2.0, D010); they are
+      listed in the keyword table only.
+   7. "deriving" is a reserved keyword; no deriving syntax is defined in 0.1.0.
+   8. "in", "catch", "where" are reserved keywords without syntax in 0.1.0.
+   ============================================================================ *)
+
+
+(* ============================================================================
+   §1  LEXICAL GRAMMAR
+   ============================================================================ *)
+
+(* === 1.1  Character sets === *)
+
+DIGIT         ::= "0" | "1" | "2" | "3" | "4" | "5" | "6" | "7" | "8" | "9" ;
+LOWER         ::= "a" | "b" | "c" | "d" | "e" | "f" | "g" | "h" | "i" | "j"
+               |  "k" | "l" | "m" | "n" | "o" | "p" | "q" | "r" | "s" | "t"
+               |  "u" | "v" | "w" | "x" | "y" | "z" ;
+UPPER         ::= "A" | "B" | "C" | "D" | "E" | "F" | "G" | "H" | "I" | "J"
+               |  "K" | "L" | "M" | "N" | "O" | "P" | "Q" | "R" | "S" | "T"
+               |  "U" | "V" | "W" | "X" | "Y" | "Z" ;
+LETTER        ::= LOWER | UPPER ;
+ALNUM         ::= LETTER | DIGIT ;
+ID_CHAR       ::= ALNUM | "_" ;
+
+(* Hex digit alphabet (used in HEX_LIT — D046) *)
+HEX_DIGIT     ::= DIGIT | "a" | "b" | "c" | "d" | "e" | "f"
+               |          "A" | "B" | "C" | "D" | "E" | "F" ;
+BIN_DIGIT     ::= "0" | "1" ;
+OCT_DIGIT     ::= "0" | "1" | "2" | "3" | "4" | "5" | "6" | "7" ;
+
+
+(* === 1.2  Reserved keywords === *)
+
+(* The following identifiers are unconditionally reserved and may not be used
+   as identifiers in any context.
+
+     actor    as       catch    class     const     deriving  else
+     false    fn       guard    if        import    in        init
+     instance let      match    on        pub       return    spawn
+     state    then     true     try       type      var       when
+     where    with
+
+   "class", "instance", "deriving", "where", "catch", "in" are reserved
+   but have no productions in 0.1.0 (see simplifying assumption 6-8).
+   "do" was previously reserved but has been removed entirely per D056.       *)
+
+KEYWORD       ::= "actor"    | "as"       | "catch"    | "class"
+               |  "const"    | "deriving" | "else"     | "false"
+               |  "fn"       | "guard"    | "if"       | "import"
+               |  "in"       | "init"     | "instance" | "let"
+               |  "match"    | "on"       | "pub"      | "return"
+               |  "spawn"    | "state"    | "then"     | "true"
+               |  "try"      | "type"     | "var"      | "when"
+               |  "where"    | "with" ;
+
+
+(* === 1.3  Capability keywords (contextual / soft-reserved) === *)
+
+(* These tokens are ordinary lowercase identifiers in most positions.
+   They are treated as capability keywords ONLY when they appear between
+   "fn" (or "on") and the function/handler name — i.e., in capability prefix
+   position.  The lexer emits them as IDENT; the parser interprets them as
+   Capability when in that position.
+
+     io    fs    net    time    random    env    proc    spawn    ffi
+
+   NOTE: "spawn" also appears as a top-level keyword (spawn expression).
+   The parser disambiguates by syntactic position (see SpawnExpr).          *)
+
+CAPABILITY_KW ::= "io" | "fs" | "net" | "time" | "random"
+               |  "env" | "proc" | "spawn" | "ffi" ;
+
+
+(* === 1.4  Identifiers === *)
+
+(* Identifiers are ASCII-only per D049.
+   The regex for the base form is: [a-zA-Z][a-zA-Z0-9_]*
+   Unicode letters are NOT permitted in identifiers in 0.1.0.                *)
+
+(* Lowercase-starting: values, functions, local bindings, type variables,
+   capability keywords (as ordinary idents outside capability position).     *)
+LOWER_IDENT   ::= ( LOWER | "_" ALNUM ) ID_CHAR* ;
+               (* Underscore-only "_" is the wildcard token, not an IDENT. *)
+
+(* Uppercase-starting: types, constructors, modules.                        *)
+UPPER_IDENT   ::= UPPER ID_CHAR* ;
+
+(* Generic identifier for productions that accept either case.              *)
+IDENT         ::= LOWER_IDENT | UPPER_IDENT ;
+
+(* Private/file-level identifier: leading underscore followed by at least
+   one alphanumeric character.  The underscore alone "_" is the wildcard.   *)
+PRIV_IDENT    ::= "_" ALNUM ID_CHAR* ;
+
+
+(* === 1.5  Literals === *)
+
+(* --- Integer literals (D046) ---
+   Supports decimal, binary (0b/0B), octal (0o/0O), and hex (0x/0X) forms.
+   Underscore "_" may be used as a digit-group separator (e.g. 1_000_000).
+   Rules: no leading "_", no trailing "_", prefix letters are case-insensitive.
+   A leading minus sign "-" is parsed as unary minus in expressions, not
+   as part of the literal token.                                              *)
+INT_LIT       ::= DEC_LIT | BIN_LIT | OCT_LIT | HEX_LIT ;
+
+DEC_LIT       ::= DIGIT { DIGIT | "_" } ;
+               (* e.g. 0  42  1_000_000                                      *)
+
+BIN_LIT       ::= "0" ( "b" | "B" ) BIN_DIGIT { BIN_DIGIT | "_" } ;
+               (* e.g. 0b1010  0B1111_0000                                   *)
+
+OCT_LIT       ::= "0" ( "o" | "O" ) OCT_DIGIT { OCT_DIGIT | "_" } ;
+               (* e.g. 0o755  0O777                                          *)
+
+HEX_LIT       ::= "0" ( "x" | "X" ) HEX_DIGIT { HEX_DIGIT | "_" } ;
+               (* e.g. 0xFF  0x1_DEAD_BEEF                                   *)
+
+(* --- Float literals --- *)
+(* Exponent form (e.g. 1.5e10) supported; no base-prefixed floats.
+   A leading minus sign is parsed as unary minus in expressions.             *)
+FLOAT_LIT     ::= DIGIT { DIGIT | "_" } "." DIGIT { DIGIT | "_" }
+                  [ ( "e" | "E" ) [ "+" | "-" ] DIGIT { DIGIT } ] ;
+
+(* --- Bool literals --- *)
+BOOL_LIT      ::= "true" | "false" ;
+
+(* --- Unit literal --- *)
+UNIT_LIT      ::= "()" ;
+
+(* --- Text (string) literals --- *)
+(* Plain string: double-quoted, single-line, supports escape sequences
+   \n \t \" \\
+   Triple-quoted and raw string forms are deferred to 0.2.0 (D047).         *)
+TEXT_CHAR     ::= (* any Unicode scalar value except '"' and '\' *)
+               |  "\\" ( "n" | "t" | "\"" | "\\" ) ;
+TEXT_LIT      ::= '"' { TEXT_CHAR } '"' ;
+
+(* Interpolated string: begins with "$"                                     *)
+(* The lexer tokenises $"..." by splitting it into a sequence of segments:
+     INTERP_START   "$\""
+     INTERP_TEXT    run of characters up to "${" or closing '"'
+     INTERP_EXPR_START  "${"
+     INTERP_EXPR_END    "}"
+     INTERP_END     '"' (the closing quote)
+   This allows the parser to embed arbitrary Expr inside ${…} segments.
+   See §1.8 (string interpolation) for the parser-level production.         *)
+INTERP_START      ::= "$\"" ;
+INTERP_TEXT       ::= { TEXT_CHAR } ;   (* runs of non-interpolation text *)
+INTERP_EXPR_START ::= "${" ;
+INTERP_EXPR_END   ::= "}" ;
+INTERP_END        ::= '"' ;
+
+(* --- Timestamp ---
+   (* Timestamp has no surface syntax; obtained via std.time per D048 *)
+   No TIMESTAMP_LIT token is defined or emitted.                             *)
+
+(* --- Reserved token ---
+   (* '..' is reserved in the lexer for future range/rest-pattern syntax
+      (D050); no productions use '..' in 0.1.0 *)                            *)
+
+
+(* === 1.6  Comments === *)
+
+(* Line comment: from "--" to end of line.
+   Note: "---" that begins a doc comment is matched first (longer prefix).  *)
+LINE_COMMENT  ::= "--" (* any characters to end of line *) ;
+
+(* Doc comment: delimited block, supports markdown.
+   Content between opening "---" and closing "---" on its own line.         *)
+DOC_COMMENT   ::= "---" NEWLINE
+                  { (* any line not consisting solely of "---" *) NEWLINE }
+                  "---" ;
+
+(* Both comment forms are skipped (not emitted as tokens to the parser)
+   except that doc comments may be preserved as AST attributes for tooling. *)
+
+
+(* === 1.7  Punctuation and operator tokens === *)
+
+(*  |>    pipe                                                               *)
+(*  <-    mutation assignment                                                *)
+(*  ?>    ask (actor request/reply) — added D045                            *)
+(*  ?     propagate only (postfix) — D045; no longer binary/ask             *)
+(*  !     actor send (binary) — D044; NOT logical-not                       *)
+(*  ::    list cons                                                          *)
+(*  ++    concatenation                                                      *)
+(*  ->    function type arrow / match arm arrow                             *)
+(*  =>    reserved, unused in 0.1.0                                         *)
+(*  @     as-pattern binder                                                  *)
+(*  ..    reserved for future range/rest-pattern syntax (D050)              *)
+(*  =     definition / field assignment                                      *)
+(*  :     type annotation separator                                          *)
+(*  ,     separator in lists, tuples, record fields                         *)
+(*  .     field access / qualified name separator                           *)
+(*  (     grouping / tuple / param open                                     *)
+(*  )     grouping / tuple / param close                                     *)
+(*  [     list literal open                                                  *)
+(*  ]     list literal close                                                 *)
+(*  {     record literal / type open                                         *)
+(*  }     record literal / type close / interp-expr close                  *)
+(*  |     union type alternation / match arm separator                      *)
+(*  +  -  *  /  %  ^  &&  ||  ==  !=  <  >  <=  >=                         *)
+
+
+(* ============================================================================
+   §2  MODULE STRUCTURE
+   ============================================================================ *)
+
+(* === 2.1  Top-level program === *)
+
+Program       ::= { TopLevel } ;
+
+TopLevel      ::= ImportDecl
+               |  ConstDecl
+               |  TypeDecl
+               |  FnDecl
+               |  ActorDecl
+               (* ClassDecl and InstanceDecl reserved for 0.2.0 *) ;
+
+
+(* === 2.2  Import declarations === *)
+
+ImportDecl    ::= "import" ModulePath
+                  [ "as" UPPER_IDENT ]
+                  [ "(" ImportList ")" ] ;
+
+ModulePath    ::= UPPER_IDENT { "." UPPER_IDENT }
+               |  LOWER_IDENT { "." ( LOWER_IDENT | UPPER_IDENT ) }
+               (* e.g. std.list, acme.domain.Users, acme.infra.Postgres *) ;
+
+ImportList    ::= ImportItem { "," ImportItem } ;
+ImportItem    ::= LOWER_IDENT | UPPER_IDENT ;
+
+(* Examples:
+     import std.list as List
+     import std.map (get, insert)
+     import std.net.http (Request, Response, listen, respond) as Http
+     import acme.infra.Postgres as Pg
+
+   D072 (2026-04-25): ImportItem accepts UPPER_IDENT so types/constructors
+   can be imported unqualified, matching Haskell / Elm / Rust idioms.        *)
+
+
+(* === 2.3  Visibility markers === *)
+
+(* Visibility is expressed as a modifier prefix on top-level declarations.  *)
+Visibility    ::= "pub"
+               |  "pub" "(" "internal" ")"
+               (* No modifier = project-private (visible within project).   *)
+               (* "_"-prefixed name = file-private (see PRIV_IDENT).        *) ;
+
+
+(* === 2.4  Constant declarations === *)
+
+ConstDecl     ::= [ Visibility ] "const" LOWER_IDENT ":" Type "=" Expr ;
+
+(* Example:
+     const maxRetries: Int = 3                                               *)
+
+
+(* ============================================================================
+   §3  TYPE DECLARATIONS
+   ============================================================================ *)
+
+(* === 3.1  Type declaration === *)
+
+TypeDecl      ::= [ Visibility ] "type" UPPER_IDENT { TypeParam } "=" TypeBody ;
+
+TypeParam     ::= LOWER_IDENT ;   (* lowercase type variable *)
+
+TypeBody      ::= RecordType
+               |  UnionType
+               |  Type           (* type alias *) ;
+
+
+(* === 3.2  Record types === *)
+
+RecordType    ::= "{" FieldDecl { "," FieldDecl } [ "," ] "}" ;
+
+FieldDecl     ::= LOWER_IDENT ":" Type ;
+
+(* Example:
+     type User = { name: Text, email: Text, age: Int }                      *)
+
+
+(* === 3.3  Union types === *)
+
+(* D054: Leading "|" is optional; trailing "|" is prohibited; minimum one
+   alternative is required (the mandatory Constructor before any { ... }
+   ensures this — a zero-alternative union is a parse error).               *)
+UnionType     ::= [ "|" ] Constructor { "|" Constructor } ;
+
+Constructor   ::= UPPER_IDENT { Type }   (* positional data *)
+               |  UPPER_IDENT RecordType  (* inline record payload *) ;
+
+(* Capability polymorphism (D041/D057) appears only in stdlib HOF signatures
+   at the type-system level; no user-facing surface syntax in 0.1.0.        *)
+
+(* Examples:
+     type Shape =
+         | Circle Float
+         | Rectangle Float Float
+         | Triangle Float Float Float
+
+     type Event =
+         | Login  { userId: Int, at: Timestamp }
+         | Logout { userId: Int, reason: Text }
+
+     type Option a = Some a | None
+     type Result a e = Ok a | Err e                                          *)
+
+
+(* === 3.4  Types === *)
+
+Type          ::= FunctionType
+               |  TypeAtom ;
+
+FunctionType  ::= CapFunctionType
+               |  PlainFunctionType ;
+
+(* Function type with capability annotation (used in type positions for HOFs) *)
+CapFunctionType ::= "fn" { Capability } TypeAtom { TypeAtom } "->" Type ;
+               (* e.g., fn c a -> Unit  or  fn io Text -> Unit              *)
+
+PlainFunctionType ::= TypeAtom "->" Type ;
+               (* e.g., Int -> Text  (pure function type)                  *)
+
+TypeAtom      ::= PrimitiveType
+               |  TupleType
+               |  ListTypeApply
+               |  TypeApp
+               |  "(" Type ")" ;
+
+PrimitiveType ::= "Int" | "Float" | "Bool" | "Text" | "Unit"
+               |  "Timestamp"
+               |  UPPER_IDENT   (* named type / constructor *) ;
+
+(* Type application: a type constructor applied to arguments                *)
+TypeApp       ::= UPPER_IDENT { TypeAtom } ;
+               (* e.g., Option Int, Result Text Error, List a, Map k v     *)
+
+(* Tuple type                                                                *)
+TupleType     ::= "(" Type "," Type { "," Type } ")" ;
+               (* e.g., (Int, Text, Float)  — at least two elements        *)
+
+(* List sugar: [a] is syntactic sugar for List a                            *)
+ListTypeApply ::= "[" Type "]" ;
+
+(* Generic type variable (lowercase, used inside TypeDecl bodies)           *)
+TypeVariable  ::= LOWER_IDENT ;
+
+(* Capability prefix as used in function/handler/type annotations.
+   Capability polymorphism (D041/D057) is compiler-internal; users may only
+   use these concrete capability names in capability-prefix position.        *)
+Capability    ::= "io" | "fs" | "net" | "time" | "random"
+               |  "env" | "proc" | "spawn" | "ffi" ;
+
+
+(* ============================================================================
+   §4  FUNCTION DECLARATIONS
+   ============================================================================ *)
+
+(* === 4.1  Function declaration === *)
+
+FnDecl        ::= [ Visibility ] "fn" { Capability } FnName { Param } [ "->" Type ] "=" Body ;
+
+FnName        ::= LOWER_IDENT | PRIV_IDENT ;
+
+(* Top-level function parameters (D037 / D052 / D069):
+   At the top-level fn declaration, Param is a bare name or an annotated
+   name only.  Full patterns (tuples, constructors) are NOT allowed in
+   top-level Param position; use a let-binding in the body instead.
+   Lambda params (see LambdaExpr §6.16) DO allow full Pattern.
+   "()" is the zero-param marker (D069) — used canonically for `main`
+   per D059 (e.g. `fn {caps} main () -> Result Unit Error`).  Semantically
+   equivalent to omitting params; the parser consumes the token pair and
+   produces an empty parameter list.                                        *)
+Param         ::= LOWER_IDENT
+               |  PRIV_IDENT
+               |  "()"                                   (* zero-param marker (D069) *)
+               |  "(" LOWER_IDENT ":" Type ")" ;
+
+(* Function body: a single expression, possibly in an indented block.       *)
+Body          ::= Expr ;
+
+(* Examples:
+     fn greet (name: Text) -> Text =
+         $"Hello, ${name}"
+
+     fn io log (msg: Text) -> Unit =
+         Io.println msg
+
+     fn fs net syncConfig (url: Text) -> Result Unit Error =
+         let remote = Http.get url ?
+         Fs.write "config.toml" remote ?
+         Ok ()
+
+     pub fn add (x: Int) (y: Int) -> Int = x + y                           *)
+
+
+(* ============================================================================
+   §5  ACTOR DECLARATIONS
+   ============================================================================ *)
+
+(* === 5.1  Actor declaration === *)
+
+ActorDecl     ::= [ Visibility ] "actor" UPPER_IDENT "=" ActorBody ;
+
+ActorBody     ::= INDENT { ActorMember NEWLINE } DEDENT ;
+
+(* ActorBody may contain at most one InitDecl; that is a semantic constraint,
+   not a grammar constraint (D061).                                          *)
+ActorMember   ::= StateDecl
+               |  InitDecl
+               |  OnHandler ;
+
+
+(* === 5.2  State declarations === *)
+
+StateDecl     ::= "state" LOWER_IDENT ":" Type "=" Expr ;
+
+(* Example:
+     state count: Int = 0                                                    *)
+
+
+(* === 5.3  Init block (D061) === *)
+
+(* InitDecl defines an actor's initialisation handler.  At most one InitDecl
+   is allowed per actor body (semantic rule).  The CapList and ParamList
+   shapes match those of FnDecl and OnHandler.                               *)
+InitDecl      ::= "init" [ CapList ] "(" [ ParamList ] ")" "=" Block ;
+
+CapList       ::= { Capability } ;   (* zero or more capability names *)
+
+ParamList     ::= Param { Param } ;  (* one or more params *)
+
+Block         ::= INDENT { Expr NEWLINE } DEDENT ;
+
+
+(* === 5.4  On-handlers === *)
+
+OnHandler     ::= "on" { Capability } HandlerName { Param } [ "->" Type ] "=" Body ;
+
+HandlerName   ::= LOWER_IDENT ;
+
+(* Examples:
+     on increment =
+         count <- count + 1
+
+     on get -> Int =
+         count
+
+     on fs time get (key: Text) -> Option Text = ...                        *)
+
+(* Actor full example:
+     actor Counter =
+         state count: Int = 0
+
+         init () =
+             count <- 0
+
+         on increment =
+             count <- count + 1
+
+         on decrement =
+             count <- count - 1
+
+         on get -> Int =
+             count                                                           *)
+
+
+(* ============================================================================
+   §6  EXPRESSIONS
+   ============================================================================ *)
+
+(* Expressions are stratified by operator precedence (low to high, §4.4).
+   Precedence levels (1 = lowest, 12 = highest):
+     1   |>          left associative
+     2   ||          right associative
+     3   &&          right associative
+     4   == !=       non-associative
+     5   < > <= >=   non-associative
+     6   ++ ::       right associative
+     7   + -         left associative
+     8   * / %       left associative
+     9   ^           right associative
+     10  unary -     (prefix; logical-not "!" removed per D044 — use Bool.not)
+     11  function application   left associative
+         "with" record update   tighter than comparisons, looser than
+                                application (D055; between levels 5 and 11)
+     12  . (field access)       left associative
+         ?>  (ask)              level 12 binary (D045)
+         !   (send)             level 12 binary (D044)
+         ?   (propagate)        postfix, tighter than application            *)
+
+Expr          ::= LetExpr
+               |  VarDecl
+               |  IfExpr
+               |  MatchExpr
+               |  TryExpr
+               |  GuardExpr
+               |  ReturnExpr
+               |  AssignExpr
+               |  Expr1 ;
+
+(* Note: LetExpr, VarDecl, AssignExpr, GuardExpr, ReturnExpr produce Unit
+   and are only meaningful in a sequenced block context.                    *)
+
+
+(* === 6.1  Let and var declarations === *)
+
+(* D052: LetExpr binds a full Pattern on the left-hand side, not just a
+   bare IDENT.  This enables tuple and constructor destructuring in let.    *)
+LetExpr       ::= "let" Pattern [ ":" Type ] "=" Expr ;
+               (* Shadowing allowed: a new binding, old is unreachable.     *)
+
+VarDecl       ::= "var" LOWER_IDENT [ ":" Type ] "=" Expr ;
+               (* Mutable binding; mutation via AssignExpr.                 *)
+
+(* Examples:
+     let name = "Angel"
+     let age: Int = 30
+     let (x, y) = point
+     let Ok result = compute ()
+     var counter = 0                                                         *)
+
+
+(* === 6.2  Assignment (mutation) === *)
+
+AssignExpr    ::= Expr12 "<-" Expr ;
+               (* Left side must be a var-bound name or actor state field.
+                  "<-" has lower precedence than all binary operators.      *)
+
+(* Example:
+     counter <- counter + 1                                                  *)
+
+
+(* === 6.3  if / then / else === *)
+
+IfExpr        ::= "if" Expr "then" Body
+                  [ "else" Body ] ;
+
+(* Note: "else" is optional syntactically; the type checker requires it
+   when the then-branch is non-Unit.                                        *)
+
+(* Example:
+     if user.active then
+         processUser user
+     else
+         Err (Inactive user.id)                                             *)
+
+
+(* === 6.4  match expression === *)
+
+MatchExpr     ::= "match" Expr
+                  INDENT { MatchArm NEWLINE } DEDENT ;
+
+MatchArm      ::= Pattern [ "when" Expr ] "->" Body ;
+
+(* Example:
+     match shape
+         Circle r          -> 3.14159 * r * r
+         Rectangle w h     -> w * h
+         Triangle a b c    ->
+             let s = (a + b + c) / 2
+             Float.sqrt (s * (s-a) * (s-b) * (s-c))
+
+     match age
+         n when n < 18  -> "Minor"
+         n when n < 65  -> "Adult"
+         _              -> "Senior"                                          *)
+
+
+(* === 6.5  try block === *)
+
+(* try is a value-producing expression per D060; it evaluates its block and
+   returns a Result or Option.  Unused non-Unit results trigger a
+   discarded_result warning.  "?" inside a try block propagates to the try
+   scope, not the enclosing function (D039).                                *)
+TryExpr       ::= "try" Block ;
+
+(* Example:
+     try
+         let order = fetchOrder orderId ?
+         let user  = fetchUser order.userId ?
+         Ok { order = order, payment = payment }                            *)
+
+
+(* === 6.6  guard clause === *)
+
+GuardExpr     ::= "guard" Expr "else" Body ;
+
+(* "else" branch must return from the enclosing function; typically via
+   "return <expr>". Per D066, Body may be either a single-line Expr or a
+   multi-statement indented Block (which is itself an Expr form via layout);
+   side-effecting statements followed by `return` are permitted.            *)
+
+(* Examples:
+     guard user.active else return Err (Inactive user.id)
+
+     guard (List.length args >= 2) else
+         Io.eprintln "Usage: log_analyzer <file> <MIN_LEVEL>"
+         return Err (Error.text "missing arguments")                         *)
+
+
+(* === 6.7  return === *)
+
+ReturnExpr    ::= "return" Expr ;
+
+
+(* === 6.8  Operator precedence-stratified expression grammar === *)
+
+(* Level 1: pipe |>  (left) *)
+Expr1         ::= Expr2 { "|>" Expr2 } ;
+
+(* Level 2: logical or ||  (right) *)
+Expr2         ::= Expr3 { "||" Expr3 } ;
+
+(* Level 3: logical and &&  (right) *)
+Expr3         ::= Expr4 { "&&" Expr4 } ;
+
+(* Level 4: equality/inequality  (non-associative) *)
+Expr4         ::= Expr5 [ ( "==" | "!=" ) Expr5 ] ;
+
+(* Level 5: relational  (non-associative) *)
+Expr5         ::= Expr6 [ ( "<" | ">" | "<=" | ">=" ) Expr6 ] ;
+
+(* Level 6: concat ++ and cons ::  (right) *)
+Expr6         ::= Expr7 [ ( "++" | "::" ) Expr6 ] ;
+
+(* Level 7: additive + -  (left) *)
+Expr7         ::= Expr8 { ( "+" | "-" ) Expr8 } ;
+
+(* Level 8: multiplicative * / %  (left) *)
+Expr8         ::= Expr9 { ( "*" | "/" | "%" ) Expr9 } ;
+
+(* Level 9: power ^  (right) *)
+Expr9         ::= Expr10 [ "^" Expr9 ] ;
+
+(* Level 10: unary -  (prefix)
+   NOTE: logical-not "!" has been removed per D044.  Logical negation is
+   expressed as Bool.not expr (a stdlib function call).                     *)
+Expr10        ::= "-" Expr10
+               |  Expr11 ;
+
+(* Level 11: function application  (left, juxtaposition) *)
+Expr11        ::= Expr12 { Expr12 }
+               (* zero-or-more additional arguments; Expr12 { Expr12 } where
+                  the first Expr12 is the function and the rest are args.   *) ;
+
+(* Level 12: field access, ask ?>, send !, and atoms  (left) *)
+Expr12        ::= ExprAtom { "." LOWER_IDENT }
+               |  ExprAtom "?>" IDENT { ExprAtom }   (* ask: handle ?> msgName args  D045 *)
+               |  ExprAtom "!" ExprAtom               (* send: handle ! msgName        D044 *) ;
+
+(* Note on "?>" and "!":
+   - "?>" (ask) is binary-plus: handle ?> messageName optionalPositionalArgs
+     It is the request/reply form; the handle is on the left, the message
+     name (IDENT) and optional positional args follow.
+   - "!" (send) is binary: handle ! message — fire-and-forget actor send.
+   - "?" (propagate) is a POSTFIX operator on ExprAtom (see PropagateExpr
+     §6.19); it is now unambiguous because the ask role has moved to "?>".  *)
+
+
+(* === 6.9  Atomic expressions === *)
+
+ExprAtom      ::= Literal
+               |  UnitLiteral
+               |  ListLiteral
+               |  TupleLiteral
+               |  InterpolatedText
+               |  FieldAccessorFn
+               |  QualifiedName
+               |  LOWER_IDENT
+               |  PRIV_IDENT
+               |  LambdaExpr
+               |  InnerFnExpr
+               |  RecordConstruct
+               |  WithExpr
+               |  SpawnExpr
+               |  AskExpr
+               |  PropagateExpr
+               |  "(" Expr ")" ;
+
+
+(* === 6.10  Literals as expressions === *)
+
+Literal       ::= INT_LIT | FLOAT_LIT | BOOL_LIT | TEXT_LIT ;
+UnitLiteral   ::= UNIT_LIT ;
+
+
+(* === 6.11  List literal === *)
+
+ListLiteral   ::= "[" [ ExprList ] "]" ;
+ExprList      ::= Expr { "," Expr } [ "," ] ;
+
+
+(* === 6.12  Tuple literal === *)
+
+TupleLiteral  ::= "(" Expr "," Expr { "," Expr } ")" ;
+               (* At least two elements to distinguish from grouped Expr.   *)
+
+
+(* === 6.13  Interpolated string === *)
+
+InterpolatedText ::= INTERP_START
+                     { INTERP_TEXT | INTERP_EXPR_START Expr INTERP_EXPR_END }
+                     INTERP_END ;
+
+(* The interpolated expressions must evaluate to one of: Int, Float, Bool,
+   Text, Timestamp (0.1.0 closed set; D038).                                *)
+
+(* Example:
+     $"User ${user.name} has ${user.age} years"
+     $"Total: ${items |> List.map (.price) |> List.sum}"                   *)
+
+
+(* === 6.14  Field accessor as function === *)
+
+(* "(.name)" is a first-class function that extracts field "name".          *)
+FieldAccessorFn ::= "(" "." LOWER_IDENT ")" ;
+
+(* Example:
+     users |> List.map (.name)                                              *)
+
+
+(* === 6.15  Qualified names === *)
+
+(* Module-qualified identifier, e.g., List.map, Io.println, User.toText     *)
+QualifiedName ::= UPPER_IDENT "." LOWER_IDENT { "." LOWER_IDENT }
+               |  UPPER_IDENT "." UPPER_IDENT { "." ( LOWER_IDENT | UPPER_IDENT ) } ;
+
+
+(* === 6.16  Lambda expression === *)
+
+(* D052: Lambda params allow full Pattern (unlike top-level FnDecl Param
+   which is restricted to bare names/annotated names per D037).
+   LambdaParam encompasses the full Pattern production.                     *)
+LambdaExpr    ::= "fn" { LambdaParam } "->" Body ;
+
+LambdaParam   ::= Pattern
+               |  "(" Pattern ":" Type ")" ;   (* annotated lambda pattern *)
+
+(* Examples:
+     fn x -> x * 2
+     fn x y -> x + y
+     fn (x: Int) (y: Int) -> x + y
+     fn (x, y) -> x + y                  (* tuple destructure in lambda *)
+     fn Ok v -> v                         (* constructor pattern in lambda *) *)
+
+
+(* === 6.17  Inner function expression (D058) === *)
+
+(* An inner fn is a FnDecl used as an expression.  Its capabilities must be
+   a subset of the enclosing function's capabilities (semantic rule, not
+   grammar).                                                                 *)
+InnerFnExpr   ::= FnDecl ;
+
+
+(* === 6.18  Record construction and update === *)
+
+(* D051: Constructor (UPPER_IDENT) is REQUIRED in record construction.
+   Bare record construction without a type name is not permitted.           *)
+RecordConstruct ::= UPPER_IDENT "{" FieldInit { "," FieldInit } [ "," ] "}" ;
+
+(* D053: FieldInit supports shorthand — bare IDENT uses the local binding
+   of the same name; "name = expr" is the explicit form.                    *)
+FieldInit     ::= LOWER_IDENT "=" Expr   (* explicit field initialisation *)
+               |  LOWER_IDENT            (* shorthand: uses local of same name *) ;
+
+(* D055: WithExpr LHS is an arbitrary Expr (not restricted to ExprAtom).
+   Precedence: "with" binds tighter than comparisons (level 5) but looser
+   than function application (level 11).  In the stratified grammar this is
+   best expressed at the ExprAtom / Expr11 boundary; "with" is parsed as
+   part of ExprAtom so that it can appear in application arguments.         *)
+WithExpr      ::= Expr "with" "{" FieldInit { "," FieldInit } [ "," ] "}" ;
+
+(* Examples:
+     User { name = "Angel", email = "a@b.com", age = 30 }
+     User { name, email, age = 30 }          (* shorthand D053 *)
+     u with { age = 31 }
+     (fetchUser id ?) with { active = true } (* arbitrary Expr LHS D055 *)  *)
+
+
+(* === 6.19  Spawn expression === *)
+
+(* D061: SpawnExpr may pass positional arguments that correspond to the
+   actor's init handler parameters.  Alignment with the init signature is
+   a semantic (type-checker) constraint.                                     *)
+SpawnExpr     ::= "spawn" UPPER_IDENT { Expr } ;
+
+(* Note: "spawn" is both a keyword (spawn expression) and a capability
+   keyword (fn spawn …).  The parser disambiguates:
+   - After "fn" or "on" in capability position → Capability token
+   - At expression level → SpawnExpr                                        *)
+
+(* Example:
+     let c = spawn Counter
+     let c = spawn Counter 42 "hello"   (* with init args *)                *)
+
+
+(* === 6.20  Ask expression (D045) === *)
+
+(* AskExpr sends a request to an actor handle and awaits a reply.
+   The handle is an arbitrary Expr; the message name is an IDENT; optional
+   positional args follow as zero or more ExprAtom.                         *)
+AskExpr       ::= Expr "?>" IDENT { ExprAtom } ;
+
+(* Examples:
+     cache ?> get key
+     counter ?> increment
+     myActor ?> compute 1 2 3                                               *)
+
+
+(* === 6.21  Propagate (?) postfix operator === *)
+
+(* "?" as a postfix on an expression propagates None or Err upward from
+   the enclosing Result/Option-returning context (D039).
+   It binds tighter than function application.
+   Now unambiguous: "?>" handles ask, so bare "?" is propagation only
+   (D045).                                                                   *)
+PropagateExpr ::= ExprAtom "?" ;
+
+(* Examples:
+     let user = fetchUser userId ?
+     let email = user.email ?                                                *)
+
+
+(* ============================================================================
+   §7  PATTERNS
+   ============================================================================ *)
+
+Pattern       ::= AsPattern
+               |  PatternAtom ;
+
+AsPattern     ::= LOWER_IDENT "@" PatternAtom ;
+               (* Binds the whole value to the name AND matches the inner
+                  pattern.  § spec uses "@" as the binder (not "as").       *)
+
+(* Example:
+     admin @ User { role = Admin } -> handleAdmin admin                     *)
+
+PatternAtom   ::= WildcardPattern
+               |  LiteralPattern
+               |  VarPattern
+               |  ConstructorPattern
+               |  TuplePattern
+               |  ListConsPattern
+               |  "(" Pattern ")" ;
+               (* RecordPattern folded into ConstructorPattern per D051 /
+                  OQ-G016 resolution: both started with UPPER_IDENT and the
+                  record-body form is already an optional arm of
+                  ConstructorPattern.                                         *)
+
+
+(* === 7.1  Wildcard pattern === *)
+
+WildcardPattern ::= "_" ;
+
+
+(* === 7.2  Literal pattern === *)
+
+LiteralPattern ::= INT_LIT | FLOAT_LIT | BOOL_LIT | TEXT_LIT | UNIT_LIT ;
+
+
+(* === 7.3  Variable pattern === *)
+
+VarPattern    ::= LOWER_IDENT ;
+               (* Binds the matched value to the given name.                *)
+
+
+(* === 7.4  Constructor pattern === *)
+
+(* D051: Constructor name (UPPER_IDENT) is REQUIRED.  There is no bare
+   record pattern alternative starting with "{" without a leading type name.*)
+ConstructorPattern ::= UPPER_IDENT [ "{" FieldPatternList "}" ] [ PatternArg { PatternArg } ] ;
+
+PatternArg    ::= PatternAtom ;   (* a single atom-level pattern as an arg *)
+
+FieldPatternList ::= FieldPattern { "," FieldPattern } [ "," ] ;
+
+(* Examples:
+     Circle r
+     Some value
+     Ok result
+     None
+     User { role = Admin }
+     Login { userId, at }   (* shorthand FieldPattern D053 *)               *)
+
+
+(* === 7.5  Record pattern (folded into ConstructorPattern) === *)
+
+(* OQ-G016 resolution: after D051 required UPPER_IDENT on both forms, the
+   record-body pattern is indistinguishable from a ConstructorPattern whose
+   optional "{ ... }" arm is present.  The separate RecordPattern production
+   is removed.  See ConstructorPattern §7.4 for the record-body form.        *)
+
+(* D053: FieldPattern supports shorthand — bare IDENT binds the field to a
+   local variable of the same name.                                          *)
+FieldPattern  ::= LOWER_IDENT "=" Pattern   (* explicit field match *)
+               |  LOWER_IDENT               (* shorthand: binds field to same name D053 *) ;
+
+(* Example:
+     User { role = Admin }
+     Login { userId, at }                                                    *)
+
+
+(* === 7.6  Tuple pattern === *)
+
+TuplePattern  ::= "(" Pattern "," Pattern { "," Pattern } ")" ;
+
+(* Example:
+     (x, y)
+     (1, "two", 3.0)                                                        *)
+
+
+(* === 7.7  List cons pattern === *)
+
+ListConsPattern ::= PatternAtom "::" Pattern ;
+
+(* Example:
+     head :: tail
+     x :: y :: rest                                                         *)
+
+
+(* === 7.8  Guard in match arm === *)
+
+(* Guards are expressed on the MatchArm rule (§6.4):
+     MatchArm ::= Pattern [ "when" Expr ] "->" Body
+   The "when" clause is only valid on a MatchArm, not as a standalone
+   pattern form.  A pattern by itself does not carry a guard.              *)
+
+
+(* ============================================================================
+   §8  OPERATOR TABLE (informational, not executable EBNF)
+   ============================================================================ *)
+
+(*
+   Precedence  Operator(s)          Associativity   Notes
+   ──────────────────────────────────────────────────────────────────────────
+   1           |>                   left            pipe
+   2           ||                   right           logical or
+   3           &&                   right           logical and
+   4           == !=                none            equality
+   5           < > <= >=            none            relational
+                 (with binds here — tighter than relational, looser than app)
+   6           ++ ::                right           concat / cons
+   7           + -                  left            additive
+   8           * / %                left            multiplicative
+   9           ^                    right           exponentiation
+   10          - (unary)            n/a             prefix; NOTE: "!" is NOT
+                                                    logical-not (D044); use Bool.not
+   11          (application)        left            juxtaposition
+   12          . (field access)     left            member access
+               ?> (ask)             n/a             level 12 binary (D045)
+               !  (send)            n/a             level 12 binary (D044)
+               ?  (postfix prop)    n/a             tighter than application,
+                                                    unambiguous — ask is ?> (D045)
+*)
+
+
+(* ============================================================================
+   §9  COMPLETE GRAMMAR SUMMARY (index of all non-terminals)
+   ============================================================================
+
+   Lexical tokens:   DIGIT LOWER UPPER LETTER ALNUM ID_CHAR
+                     HEX_DIGIT BIN_DIGIT OCT_DIGIT
+                     LOWER_IDENT UPPER_IDENT IDENT PRIV_IDENT
+                     KEYWORD CAPABILITY_KW
+                     INT_LIT DEC_LIT BIN_LIT OCT_LIT HEX_LIT
+                     FLOAT_LIT BOOL_LIT UNIT_LIT
+                     TEXT_LIT TEXT_CHAR
+                     INTERP_START INTERP_TEXT INTERP_EXPR_START
+                     INTERP_EXPR_END INTERP_END
+                     LINE_COMMENT DOC_COMMENT
+                     NEWLINE INDENT DEDENT  (layout — synthesised by lexer)
+
+   Program-level:    Program TopLevel
+
+   Declarations:     ImportDecl ModulePath ImportList
+                     Visibility
+                     ConstDecl
+                     TypeDecl TypeParam TypeBody
+                     RecordType FieldDecl
+                     UnionType Constructor
+                     FnDecl FnName Param Body
+                     ActorDecl ActorBody ActorMember
+                     StateDecl InitDecl CapList ParamList Block
+                     OnHandler HandlerName
+
+   Types:            Type FunctionType CapFunctionType PlainFunctionType
+                     TypeAtom PrimitiveType TypeApp TupleType ListTypeApply
+                     TypeVariable Capability
+
+   Expressions:      Expr LetExpr VarDecl AssignExpr
+                     IfExpr MatchExpr MatchArm
+                     TryExpr GuardExpr ReturnExpr
+                     Expr1 … Expr12 ExprAtom
+                     Literal UnitLiteral ListLiteral TupleLiteral
+                     InterpolatedText FieldAccessorFn QualifiedName
+                     LambdaExpr LambdaParam InnerFnExpr
+                     RecordConstruct FieldInit WithExpr
+                     SpawnExpr AskExpr PropagateExpr
+                     ExprList
+
+   Patterns:         Pattern AsPattern PatternAtom
+                     WildcardPattern LiteralPattern VarPattern
+                     ConstructorPattern PatternArg FieldPatternList
+                     FieldPattern
+                     TuplePattern ListConsPattern
+
+   ============================================================================ *)
+
+
+(* ============================================================================
+   CLOSED QUESTIONS
+   ============================================================================ *)
+
+(* OQ-G001 (!, logical-not)                 -> closed by D044 (! is actor-send only) *)
+(* OQ-G002 (? dual role)                    -> closed by D045 (?> for ask; ? propagate only) *)
+(* OQ-G003 (numeric base prefixes)          -> closed by D046 (0b/0o/0x + _ separators); also closes Q-019 *)
+(* OQ-G004 (multi-line / raw strings)       -> closed by D047 (deferred to 0.2.0); also closes Q-017 *)
+(* OQ-G005 (bare record pattern)            -> closed by D051 (constructor name always required) *)
+(* OQ-G006 (tuple destructure in let/fn)    -> closed by D052 (full patterns in let/lambda; D037 for top-level fn) *)
+(* OQ-G007 (spawn dual role)                -> resolved: position-disambiguated by existing grammar *)
+(* OQ-G008 (capability variable syntax)     -> closed by D057 (compiler-internal only) *)
+(* OQ-G009 (record shorthand)               -> closed by D053 (shorthand { name } supported) *)
+(* OQ-G010 (leading | in unions)            -> closed by D054 (optional leading |, trailing | forbidden) *)
+(* OQ-G011 (with LHS)                       -> closed by D055 (arbitrary Expr on LHS) *)
+(* OQ-G012 (Timestamp literal)              -> closed by D048 (no literal; std.time only) *)
+(* OQ-G013 (orphan `do` keyword)            -> closed by D056 (removed from grammar) *)
+(* OQ-G014 (Unicode identifiers)            -> closed by D049 (ASCII-only in 0.1.0) *)
+(* OQ-G015 (orphan `..` token)              -> closed by D050 (reserved; no productions in 0.1.0) *)
+(* OQ-G016 (RecordPattern subsumed)         -> resolved in-line: RecordPattern production removed; use ConstructorPattern *)
+
+
+(* ============================================================================
+   PARSER IMPLEMENTATION NOTES (not open language questions)
+   ============================================================================ *)
+
+(* PN-1  WithExpr precedence and left-recursion
+   WithExpr ::= Expr "with" "{" ... "}" has a full Expr on the LHS, and Expr
+   eventually reaches ExprAtom, which lists WithExpr.  The EBNF expresses the
+   intended language — "expr with fields" — but combinator parsers need
+   explicit precedence handling.  Recommendation for the chumsky parser
+   (Phase 2): handle "with" via a precedence-climbing / Pratt table entry
+   at the band documented in §8 (between comparison and function-application
+   precedence).  This is a parser-engineering concern, not a language design
+   question.                                                                 *)
+

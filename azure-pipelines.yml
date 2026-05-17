@@ -1,0 +1,860 @@
+# Ridge CI — Azure DevOps Pipelines
+# Source of truth: github.com/ridge-lang/ridge (PR builds via GitHub service connection).
+
+trigger:
+  branches:
+    include:
+      - main
+  paths:
+    exclude:
+      - docs/*
+      - README.md
+      - CONTRIBUTING.md
+      - LICENSE
+
+pr:
+  branches:
+    include:
+      - main
+
+variables:
+  RUST_VERSION: '1.88.0'
+  CARGO_TERM_COLOR: 'always'
+  RUSTFLAGS: '-D warnings'
+
+stages:
+  - stage: Validate
+    displayName: 'Build, test, lint'
+    jobs:
+      - job: check
+        displayName: 'Cargo check'
+        strategy:
+          matrix:
+            linux:
+              imageName: 'ubuntu-latest'
+            windows:
+              imageName: 'windows-latest'
+        pool:
+          vmImage: $(imageName)
+        steps:
+          # ── Cache: split per path so multi-line `path:` doesn't trip the
+          #    Cache@2 v2.198.0 multi-arg tar bug (post-job save fed a single
+          #    `-C` arg containing newlines -> `tar: could not chdir`).  We also
+          #    branch by OS because the home-dir variable differs ($HOME on
+          #    Linux/macOS vs USERPROFILE on Windows).
+          - task: Cache@2
+            displayName: 'Cache .cargo (Linux/macOS)'
+            condition: ne(variables['Agent.OS'], 'Windows_NT')
+            inputs:
+              key: 'cargo-home | "$(Agent.OS)" | Cargo.lock'
+              path: $(HOME)/.cargo
+              restoreKeys: cargo-home | "$(Agent.OS)"
+
+          - task: Cache@2
+            displayName: 'Cache target (Linux/macOS)'
+            condition: ne(variables['Agent.OS'], 'Windows_NT')
+            inputs:
+              key: 'cargo-target | "$(Agent.OS)" | Cargo.lock'
+              path: $(Build.SourcesDirectory)/target
+              restoreKeys: cargo-target | "$(Agent.OS)"
+
+          - task: Cache@2
+            displayName: 'Cache .cargo (Windows)'
+            condition: eq(variables['Agent.OS'], 'Windows_NT')
+            inputs:
+              key: 'cargo-home | "$(Agent.OS)" | Cargo.lock'
+              path: $(USERPROFILE)\.cargo
+              restoreKeys: cargo-home | "$(Agent.OS)"
+
+          - task: Cache@2
+            displayName: 'Cache target (Windows)'
+            condition: eq(variables['Agent.OS'], 'Windows_NT')
+            inputs:
+              key: 'cargo-target | "$(Agent.OS)" | Cargo.lock'
+              path: $(Build.SourcesDirectory)\target
+              restoreKeys: cargo-target | "$(Agent.OS)"
+
+          - script: |
+              curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --default-toolchain $(RUST_VERSION) --profile minimal --component rustfmt --component clippy
+              echo "##vso[task.prependpath]$HOME/.cargo/bin"
+            displayName: 'Install Rust (Linux/macOS)'
+            condition: ne(variables['Agent.OS'], 'Windows_NT')
+
+          - powershell: |
+              Invoke-WebRequest -Uri 'https://win.rustup.rs/x86_64' -OutFile 'rustup-init.exe'
+              ./rustup-init.exe -y --default-toolchain $(RUST_VERSION) --profile minimal --component rustfmt --component clippy
+              Write-Host "##vso[task.prependpath]$env:USERPROFILE\.cargo\bin"
+            displayName: 'Install Rust (Windows)'
+            condition: eq(variables['Agent.OS'], 'Windows_NT')
+
+          - script: rustc --version && cargo --version
+            displayName: 'Toolchain versions'
+
+          - script: cargo fmt --all -- --check
+            displayName: 'cargo fmt --check'
+
+          - script: cargo clippy --all-targets --all-features -- -D warnings
+            displayName: 'cargo clippy'
+
+          - script: cargo build --all --verbose
+            displayName: 'cargo build --all'
+
+          - script: cargo test --all --verbose
+            displayName: 'cargo test --all'
+
+          # T14 DoD gates — traceability steps (Phase 7 §11.2 G7 / G8).
+          # The workspace-level clippy step above already covers ridge-stdlib,
+          # but these named steps provide per-gate traceability in the CI log.
+          - script: cargo clippy -p ridge-stdlib --all-targets -- -D warnings
+            displayName: 'T14 DoD G7 — ridge-stdlib clippy clean'
+
+          - script: cargo doc -p ridge-stdlib --no-deps
+            displayName: 'T14 DoD G8 — ridge-stdlib doc clean'
+
+  # ── Slow-CI lane — nightly only (G4: ≥ 151 stdlib tests passing) ───────────
+  # Slow-CI lane: requires at least 151 stdlib tests passing (G4 gate).
+  # Runs on nightly schedule only — NOT on per-PR push/pull_request triggers.
+  # Three runners (Linux / macOS / Windows) mirror the per-PR Validate stage.
+  - stage: SlowCI_Stdlib
+    displayName: 'Slow-CI: stdlib e2e (≥ 151 tests, nightly)'
+    condition: eq(variables['Build.Reason'], 'Schedule')
+    dependsOn: Validate
+    jobs:
+      - job: stdlib_e2e_linux
+        displayName: 'stdlib e2e — Linux'
+        pool:
+          vmImage: 'ubuntu-latest'
+        steps:
+          - task: Cache@2
+            displayName: 'Cache .cargo'
+            inputs:
+              key: 'cargo-home | "$(Agent.OS)" | Cargo.lock'
+              path: $(HOME)/.cargo
+              restoreKeys: cargo-home | "$(Agent.OS)"
+
+          - task: Cache@2
+            displayName: 'Cache target'
+            inputs:
+              key: 'cargo-target | "$(Agent.OS)" | Cargo.lock'
+              path: $(Build.SourcesDirectory)/target
+              restoreKeys: cargo-target | "$(Agent.OS)"
+
+          - script: |
+              curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --default-toolchain $(RUST_VERSION) --profile minimal
+              echo "##vso[task.prependpath]$HOME/.cargo/bin"
+            displayName: 'Install Rust'
+
+          - script: rustc --version && cargo --version
+            displayName: 'Toolchain versions'
+
+          - script: |
+              sudo apt-get update -y
+              sudo apt-get install -y erlang
+              erl -version
+            displayName: 'Install Erlang/OTP'
+
+          - script: cargo test -p ridge-stdlib --features stdlib-e2e --release
+            displayName: 'Slow-CI: stdlib end-to-end (≥ 151 tests)'
+
+      - job: stdlib_e2e_macos
+        displayName: 'stdlib e2e — macOS'
+        pool:
+          vmImage: 'macOS-latest'
+        steps:
+          - task: Cache@2
+            displayName: 'Cache .cargo'
+            inputs:
+              key: 'cargo-home | "$(Agent.OS)" | Cargo.lock'
+              path: $(HOME)/.cargo
+              restoreKeys: cargo-home | "$(Agent.OS)"
+
+          - task: Cache@2
+            displayName: 'Cache target'
+            inputs:
+              key: 'cargo-target | "$(Agent.OS)" | Cargo.lock'
+              path: $(Build.SourcesDirectory)/target
+              restoreKeys: cargo-target | "$(Agent.OS)"
+
+          - script: |
+              curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --default-toolchain $(RUST_VERSION) --profile minimal
+              echo "##vso[task.prependpath]$HOME/.cargo/bin"
+            displayName: 'Install Rust'
+
+          - script: rustc --version && cargo --version
+            displayName: 'Toolchain versions'
+
+          - script: |
+              brew install erlang
+              erl -version
+            displayName: 'Install Erlang/OTP'
+
+          - script: cargo test -p ridge-stdlib --features stdlib-e2e --release
+            displayName: 'Slow-CI: stdlib end-to-end (≥ 151 tests)'
+
+      - job: stdlib_e2e_windows
+        displayName: 'stdlib e2e — Windows'
+        pool:
+          vmImage: 'windows-latest'
+        steps:
+          - task: Cache@2
+            displayName: 'Cache .cargo'
+            inputs:
+              key: 'cargo-home | "$(Agent.OS)" | Cargo.lock'
+              path: $(USERPROFILE)\.cargo
+              restoreKeys: cargo-home | "$(Agent.OS)"
+
+          - task: Cache@2
+            displayName: 'Cache target'
+            inputs:
+              key: 'cargo-target | "$(Agent.OS)" | Cargo.lock'
+              path: $(Build.SourcesDirectory)\target
+              restoreKeys: cargo-target | "$(Agent.OS)"
+
+          - powershell: |
+              Invoke-WebRequest -Uri 'https://win.rustup.rs/x86_64' -OutFile 'rustup-init.exe'
+              ./rustup-init.exe -y --default-toolchain $(RUST_VERSION) --profile minimal
+              Write-Host "##vso[task.prependpath]$env:USERPROFILE\.cargo\bin"
+            displayName: 'Install Rust'
+
+          - script: rustc --version && cargo --version
+            displayName: 'Toolchain versions'
+
+          - powershell: |
+              # Install Erlang/OTP via the official installer (silent mode).
+              $otpVersion = '27.3'
+              $installer = "otp_win64_$otpVersion.exe"
+              $url = "https://github.com/erlang/otp/releases/download/OTP-$otpVersion/$installer"
+              Invoke-WebRequest -Uri $url -OutFile $installer
+              Start-Process -FilePath ".\$installer" -ArgumentList '/S' -Wait
+              Write-Host "##vso[task.prependpath]C:\Program Files\erl-$otpVersion\bin"
+            displayName: 'Install Erlang/OTP'
+
+          - powershell: erl -version
+            displayName: 'Verify erl on PATH'
+
+          - script: cargo test -p ridge-stdlib --features stdlib-e2e --release
+            displayName: 'Slow-CI: stdlib end-to-end (≥ 151 tests)'
+
+  # ── T13: Install-script lint lane (every PR) ────────────────────────────────
+  # OQ-C014 layer 1: static lint via shellcheck (sh) and PSScriptAnalyzer (ps1).
+  # Runs on all push/PR triggers — no schedule gate.
+  # Install-script static lint lane — runs on every PR.
+  - stage: install_lint
+    displayName: 'Install scripts — static lint (T13)'
+    dependsOn: []
+    condition: succeeded()
+    jobs:
+      - job: shellcheck_linux
+        displayName: 'shellcheck install.sh (Linux)'
+        pool:
+          vmImage: 'ubuntu-latest'
+        steps:
+          - script: |
+              if ! command -v shellcheck >/dev/null 2>&1; then
+                sudo apt-get update -y
+                sudo apt-get install -y shellcheck
+              fi
+              shellcheck tools/install/install.sh --severity=warning
+            displayName: 'shellcheck install.sh --severity=warning'
+
+      - job: psscriptanalyzer_windows
+        displayName: 'PSScriptAnalyzer install.ps1 (Windows)'
+        pool:
+          vmImage: 'windows-latest'
+        steps:
+          - powershell: |
+              if (-not (Get-Module -ListAvailable -Name PSScriptAnalyzer)) {
+                Install-Module -Name PSScriptAnalyzer -Force -SkipPublisherCheck -Scope CurrentUser
+              }
+              Invoke-ScriptAnalyzer tools/install/install.ps1 -EnableExit
+            displayName: 'Invoke-ScriptAnalyzer install.ps1 -EnableExit'
+
+  # ── T13: Install-script dry-run snapshot lane (every PR) ────────────────────
+  # OQ-C014 layer 2: assert --dry-run output is byte-identical to the snapshot.
+  # Runs on all push/PR triggers — no schedule gate.
+  # R18: edit script -> run --dry-run -> diff -> commit both files together.
+  - stage: install_dryrun_snapshot
+    displayName: 'Install scripts — dry-run snapshot (T13)'
+    dependsOn: install_lint
+    condition: succeeded()
+    jobs:
+      - job: dryrun_snapshot_linux
+        displayName: 'Dry-run snapshot — Linux (install.sh)'
+        pool:
+          vmImage: 'ubuntu-latest'
+        steps:
+          - script: |
+              set -eu
+              SH_OUT="$(bash tools/install/install.sh --snapshot 2>&1)"
+              LIVE_SECTION="$(printf '%s\n%s' '### install.sh --dry-run (snapshot mode) ###' "$SH_OUT")"
+              # Extract the sh section from expected_dryrun.txt (lines up to the ps1 header)
+              EXPECTED_SECTION="$(sed -n '/^### install.sh/,/^### install.ps1/ { /^### install.ps1/d; p }' tools/install/expected_dryrun.txt)"
+              if [ "$LIVE_SECTION" = "$EXPECTED_SECTION" ]; then
+                echo "install.sh snapshot: MATCH"
+              else
+                echo "install.sh snapshot: MISMATCH"
+                echo "Update tools/install/expected_dryrun.txt per the R18 update flow in tools/install/README.md"
+                diff <(echo "$EXPECTED_SECTION") <(echo "$LIVE_SECTION") || true
+                exit 1
+              fi
+            displayName: 'Diff install.sh --snapshot against expected_dryrun.txt'
+
+      - job: dryrun_snapshot_windows
+        displayName: 'Dry-run snapshot — Windows (install.ps1)'
+        pool:
+          vmImage: 'windows-latest'
+        steps:
+          - powershell: |
+              Set-StrictMode -Version Latest
+              $ErrorActionPreference = 'Stop'
+
+              $liveLines = (& powershell -NoProfile -NonInteractive -Command `
+                "& 'tools/install/install.ps1' -DryRun -Snapshot" 2>&1)
+              # Strip CR so comparison uses LF-only lines matching the snapshot file
+              $live = ($liveLines -join "`n") -replace "`r", ""
+
+              $snapshotRaw = (Get-Content tools/install/expected_dryrun.txt -Raw) -replace "`r", ""
+              $allLines = $snapshotRaw -split "`n"
+
+              # Find the ps1 section header index (0-based)
+              $hdr = ($allLines | Select-String -Pattern '^### install.ps1').LineNumber - 1
+              $psSection = ($allLines | Select-Object -Skip $hdr) -join "`n"
+              $psSection = $psSection.TrimEnd("`n")
+
+              $liveSection = "### install.ps1 -DryRun (snapshot mode) ###`n" + $live.TrimEnd("`n")
+
+              if ($liveSection -eq $psSection) {
+                Write-Host "install.ps1 snapshot: MATCH"
+              } else {
+                Write-Error "install.ps1 snapshot: MISMATCH"
+                Write-Host "Update tools/install/expected_dryrun.txt per the R18 update flow in tools/install/README.md"
+                Write-Host "--- expected ---"; Write-Host $psSection
+                Write-Host "--- live ---";     Write-Host $liveSection
+                exit 1
+              }
+            displayName: 'Diff install.ps1 -DryRun -Snapshot against expected_dryrun.txt'
+
+  # ── T15 Stage 3: BuildTestMatrix — full install-from-zero + test on three
+  #    platforms.  Replaces the "manual on three VMs" half of OQ-C014 (D155
+  #    rewrite, 2026-05-06) with an automated matrix.  Each job:
+  #      1. installs Rust / Erlang / git from scratch via the per-platform
+  #         setup script under `.azure-pipelines/`,
+  #      2. runs `cargo test --workspace` and `cargo build --workspace --release`,
+  #      3. exercises the install scripts pinned to RIDGE_REPO=ridge-lang/ridge
+  #         (transient public mirror until ridge-lang/ridge opens in Phase 9),
+  #      4. asserts the install completed in < 5 min (G2 timing assertion),
+  #      5. runs `ridge --version`, `ridge new my-app && ridge build`, then
+  #         `ridge build|run|check|fmt --check` against the four canonical
+  #         examples (G2 + G3 + G6 + DoD scope #2 from §3.16).
+  #
+  #    Asserts G1, G2, G3, G6, G8 of §11.2.  Stage 4 ReleaseGate provides the
+  #    human sign-off layer that the original manual VM disposition required.
+  - stage: BuildTestMatrix
+    displayName: 'T15 — Build + test + install (G1/G2/G3/G6/G8)'
+    dependsOn:
+      - install_lint
+      - install_dryrun_snapshot
+    condition: succeeded()
+    variables:
+      RIDGE_REPO: 'https://github.com/ridge-lang/ridge'
+      RIDGE_BRANCH: 'main'
+    jobs:
+      - job: build_test_linux
+        displayName: 'Build + test + install — Linux'
+        # Bumped 60 -> 90 temporarily to give the `Diagnose Erlang startup`
+        # step (and G4 stdlib_e2e) room to produce diagnostic logs even when
+        # BEAM hangs.  Revert to 60 once the Linux container hang is fixed.
+        timeoutInMinutes: 90
+        pool:
+          vmImage: 'ubuntu-latest'
+        steps:
+          # Hosted Ubuntu agents ship with ~14 GB free of 84 GB; Rust target/
+          # + apt cache + esl-erlang quickly push past the 5 %-free warning
+          # threshold (observed at 95-96 % used during Cargo check in run
+          # #208).  Reclaim ~40-50 GB by purging preinstalled SDKs Ridge does
+          # not use.  Linux-only: macOS/Windows agents have headroom.
+          - script: |
+              set -eu
+              echo '=== df -h BEFORE cleanup ==='
+              df -h /
+              for d in \
+                /usr/share/dotnet \
+                /usr/local/lib/android \
+                /opt/ghc \
+                /opt/hostedtoolcache/CodeQL \
+                /opt/hostedtoolcache/Java_Temurin-Hotspot_jdk \
+                /opt/hostedtoolcache/Java_Adopt_jdk \
+                /opt/hostedtoolcache/Java_Zulu_jdk \
+                /usr/local/share/boost \
+                /usr/local/share/chromium \
+                /usr/local/share/powershell \
+                /opt/microsoft/powershell \
+                /opt/google/chrome \
+                /usr/local/.ghcup \
+                /usr/local/julia* \
+                /usr/local/n \
+              ; do
+                if [ -e "$d" ]; then
+                  echo "removing $d"
+                  sudo rm -rf "$d" || true
+                fi
+              done
+              echo '=== df -h AFTER cleanup ==='
+              df -h /
+            displayName: 'Free disk space (purge unused SDKs)'
+
+          - task: Cache@2
+            displayName: 'Cache .cargo'
+            inputs:
+              key: 'cargo-t15-home | "$(Agent.OS)" | Cargo.lock'
+              path: $(HOME)/.cargo
+              restoreKeys: cargo-t15-home | "$(Agent.OS)"
+
+          - task: Cache@2
+            displayName: 'Cache target'
+            inputs:
+              key: 'cargo-t15-target | "$(Agent.OS)" | Cargo.lock'
+              path: $(Build.SourcesDirectory)/target
+              restoreKeys: cargo-t15-target | "$(Agent.OS)"
+
+          - script: bash .azure-pipelines/setup-toolchain-linux.sh
+            displayName: 'Setup toolchain (Rust + Erlang + git from zero)'
+
+          # Linux hosted agents are containers (not VMs like macOS); BEAM
+          # startup can hang on epmd port-bind, hostname resolution
+          # (`inet_gethost_native`), or crypto driver loading.  This step
+          # surfaces the root cause within ~10 s instead of waiting for the
+          # G4 stdlib_e2e timeout cascade (per-test 60 s * 60+ tests = 60+
+          # min job-level timeout, observed in ADO #209).
+          - script: |
+              set -x
+              echo '=== hostname ==='
+              hostname
+              echo '=== /etc/hosts ==='
+              cat /etc/hosts
+              echo '=== epmd status (pre-erl) ==='
+              epmd -names 2>&1 || true
+              echo '=== timed erl noop (should be < 1s) ==='
+              time erl -noshell -eval 'init:stop().'
+              echo '=== timed erl version dump ==='
+              time erl -noshell -eval 'io:put_chars(erlang:system_info(otp_release)),init:stop().'
+              echo '=== epmd status (post-erl) ==='
+              epmd -names 2>&1 || true
+              echo '=== erlc --version ==='
+              erlc -version 2>&1 || true
+            displayName: 'Diagnose Erlang startup (Linux)'
+
+          - script: cargo test --workspace
+            displayName: 'G1 — cargo test --workspace'
+
+          - script: cargo build --workspace --release
+            displayName: 'cargo build --workspace --release'
+
+          - script: |
+              set -eu
+              # G2 — install-from-source flow against the ridge-lang mirror,
+              # asserted to complete in < 5 min.
+              #
+              # CARGO_TARGET_DIR is pointed at the cached workspace target so
+              # `cargo install --git` reuses dep artefacts already compiled by
+              # `cargo test --workspace` + `cargo build --workspace --release`
+              # earlier in this job.  Without this, cargo install builds in a
+              # private temp dir and the 5-min budget is unattainable on a
+              # 2-vCPU Microsoft-hosted agent.
+              start_ts=$(date +%s)
+              bash tools/install/install.sh
+              end_ts=$(date +%s)
+              elapsed=$(( end_ts - start_ts ))
+              bash .azure-pipelines/assert-install-timing.sh "$elapsed"
+            displayName: 'G2 — install.sh from-zero (< 5 min, RIDGE_REPO=ridge-lang)'
+            env:
+              RIDGE_REPO: $(RIDGE_REPO)
+              RIDGE_BRANCH: $(RIDGE_BRANCH)
+              CARGO_TARGET_DIR: $(Build.SourcesDirectory)/target
+
+          - script: |
+              set -eu
+              ridge --version | grep -F 'ridge 0.1.0'
+            displayName: 'G2 — ridge --version reports 0.1.0'
+
+          - script: |
+              set -eu
+              tmp=$(mktemp -d)
+              cd "$tmp"
+              ridge new my-app
+              cd my-app
+              ridge build
+            displayName: 'G2 — ridge new my-app && ridge build'
+
+          - script: |
+              set -eu
+              # G3 + G6 + DoD scope #2 — exercise the four canonical examples
+              # via the existing CLI integration tests (which use
+              # make_example_workspace + ridge build/run/check/fmt --check).
+              cargo test -p ridge-cli --test check
+              cargo test -p ridge-cli --test build
+              cargo test -p ridge-cli --test fmt
+              cargo test -p ridge-cli --test run
+            displayName: 'G3 + G6 — examples build/run/check/fmt --check'
+
+          - script: |
+              set -eu
+              # G3 — fmt idempotency: run twice, assert no diff between passes.
+              cargo run -p ridge-cli --release -- fmt examples/ || true
+              cp -R examples /tmp/examples_after_first_pass
+              cargo run -p ridge-cli --release -- fmt examples/ || true
+              diff -ru /tmp/examples_after_first_pass examples
+            displayName: 'G3 — ridge fmt idempotency on examples/'
+
+          # ── Pre-G4 live diagnostic ────────────────────────────────────────
+          # G4 wraps `ridge test` in `Command::output()`, which captures stdout
+          # and stderr in memory and only returns them once the child exits.
+          # On Linux containers `ridge test` hangs (observed in ADO #209/#210)
+          # but we see ZERO output because of the capture; the test framework
+          # only prints "running for over 60 seconds" and then nothing.
+          #
+          # This step replays the same workspace assembly that
+          # stdlib_e2e_runs_all_tests does in Rust, then invokes `ridge test`
+          # directly so its stdout/stderr stream live to the pipeline log.
+          # `timeout 300` enforces a 5-min hard cap; `continueOnError: true`
+          # ensures G4 still runs after (for symmetry with macOS) and we get
+          # both data points in one run.
+          - script: |
+              set -eux
+              WORK="$(mktemp -d)"
+              cd "$WORK"
+              STDLIB_DIR="$(Build.SourcesDirectory)/crates/ridge-stdlib/stdlib"
+              echo "workspace=$WORK"
+              echo "stdlib=$STDLIB_DIR"
+              ls -la "$STDLIB_DIR" | head -20
+              cat >ridge.toml <<'EOF'
+              [workspace]
+              name = "stdlib-e2e-diag"
+              version = "0.1.0"
+              members = ["std"]
+              EOF
+              mkdir -p std
+              cat >std/ridge.toml <<EOF
+              [project]
+              name = "std"
+              version = "0.1.0"
+              kind = "library"
+
+              [project.src]
+              root = "$STDLIB_DIR"
+
+              [project.exports]
+              public = ["std.**"]
+              EOF
+              echo '=== launching ridge test (live, 5-min cap) ==='
+              # `timeout --foreground` lets SIGINT propagate; `2>&1` merges
+              # streams so order is preserved; line buffering via `stdbuf`
+              # if available, else accept block buffering.
+              if command -v stdbuf >/dev/null 2>&1; then
+                  timeout --foreground 300 stdbuf -oL -eL \
+                      "$(Build.SourcesDirectory)/target/release/ridge" test 2>&1 \
+                      || echo "[diag] ridge test exit=$?"
+              else
+                  timeout --foreground 300 \
+                      "$(Build.SourcesDirectory)/target/release/ridge" test 2>&1 \
+                      || echo "[diag] ridge test exit=$?"
+              fi
+              echo '=== ridge test finished (or timed out at 5 min) ==='
+            displayName: 'Diagnose ridge test stdlib (live, 5min cap)'
+            continueOnError: true
+            timeoutInMinutes: 8
+
+          - script: cargo test -p ridge-stdlib --features stdlib-e2e --release
+            displayName: 'G4 — ridge test stdlib (>= 151 tests)'
+
+          - script: cargo test -p ridge-codegen-erl --test escript_test
+            displayName: 'G8 — escript shim end-to-end'
+
+          - script: cargo test -p ridge-pkg
+            displayName: 'G5 — git-dep resolver tests'
+
+          - publish: $(Build.SourcesDirectory)/target/release
+            artifact: ridge-release-linux
+            displayName: 'Publish ridge-release-linux artefact'
+
+      - job: build_test_macos
+        displayName: 'Build + test + install — macOS'
+        timeoutInMinutes: 60
+        pool:
+          vmImage: 'macOS-latest'
+        steps:
+          - task: Cache@2
+            displayName: 'Cache .cargo'
+            inputs:
+              key: 'cargo-t15-home | "$(Agent.OS)" | Cargo.lock'
+              path: $(HOME)/.cargo
+              restoreKeys: cargo-t15-home | "$(Agent.OS)"
+
+          - task: Cache@2
+            displayName: 'Cache target'
+            inputs:
+              key: 'cargo-t15-target | "$(Agent.OS)" | Cargo.lock'
+              path: $(Build.SourcesDirectory)/target
+              restoreKeys: cargo-t15-target | "$(Agent.OS)"
+
+          - script: bash .azure-pipelines/setup-toolchain-macos.sh
+            displayName: 'Setup toolchain (Rust + Erlang via brew)'
+
+          - script: cargo test --workspace
+            displayName: 'G1 — cargo test --workspace'
+
+          - script: cargo build --workspace --release
+            displayName: 'cargo build --workspace --release'
+
+          - script: |
+              set -eu
+              # CARGO_TARGET_DIR reuse — see Linux job for rationale.
+              start_ts=$(date +%s)
+              bash tools/install/install.sh
+              end_ts=$(date +%s)
+              elapsed=$(( end_ts - start_ts ))
+              bash .azure-pipelines/assert-install-timing.sh "$elapsed"
+            displayName: 'G2 — install.sh from-zero (< 5 min, RIDGE_REPO=ridge-lang)'
+            env:
+              RIDGE_REPO: $(RIDGE_REPO)
+              RIDGE_BRANCH: $(RIDGE_BRANCH)
+              CARGO_TARGET_DIR: $(Build.SourcesDirectory)/target
+
+          - script: ridge --version | grep -F 'ridge 0.1.0'
+            displayName: 'G2 — ridge --version reports 0.1.0'
+
+          - script: |
+              set -eu
+              tmp=$(mktemp -d)
+              cd "$tmp"
+              ridge new my-app
+              cd my-app
+              ridge build
+            displayName: 'G2 — ridge new my-app && ridge build'
+
+          - script: |
+              set -eu
+              cargo test -p ridge-cli --test check
+              cargo test -p ridge-cli --test build
+              cargo test -p ridge-cli --test fmt
+              cargo test -p ridge-cli --test run
+            displayName: 'G3 + G6 — examples build/run/check/fmt --check'
+
+          - script: |
+              set -eu
+              # G3 — fmt idempotency: run twice, assert no diff between passes.
+              # Cross-platform parity with the Linux job (post-2026-05-07 fix).
+              cargo run -p ridge-cli --release -- fmt examples/ || true
+              cp -R examples /tmp/examples_after_first_pass
+              cargo run -p ridge-cli --release -- fmt examples/ || true
+              diff -ru /tmp/examples_after_first_pass examples
+            displayName: 'G3 — ridge fmt idempotency on examples/'
+
+          - script: cargo test -p ridge-stdlib --features stdlib-e2e --release
+            displayName: 'G4 — ridge test stdlib (>= 151 tests)'
+
+          - script: cargo test -p ridge-codegen-erl --test escript_test
+            displayName: 'G8 — escript shim end-to-end'
+
+          - publish: $(Build.SourcesDirectory)/target/release
+            artifact: ridge-release-macos
+            displayName: 'Publish ridge-release-macos artefact'
+
+      - job: build_test_windows
+        displayName: 'Build + test + install — Windows'
+        timeoutInMinutes: 60
+        pool:
+          vmImage: 'windows-latest'
+        steps:
+          - task: Cache@2
+            displayName: 'Cache .cargo'
+            inputs:
+              key: 'cargo-t15-home | "$(Agent.OS)" | Cargo.lock'
+              path: $(USERPROFILE)\.cargo
+              restoreKeys: cargo-t15-home | "$(Agent.OS)"
+
+          - task: Cache@2
+            displayName: 'Cache target'
+            inputs:
+              key: 'cargo-t15-target | "$(Agent.OS)" | Cargo.lock'
+              path: $(Build.SourcesDirectory)\target
+              restoreKeys: cargo-t15-target | "$(Agent.OS)"
+
+          - powershell: ./.azure-pipelines/setup-toolchain-windows.ps1
+            displayName: 'Setup toolchain (Rust + Erlang via choco)'
+
+          # Independent post-toolchain sanity check: confirms erl is on the
+          # agent-managed PATH (the `##vso[task.prependpath]` emitted by the
+          # previous step) BEFORE we burn ~10 min on G1/build/release only to
+          # hit `erl not found` at G2.  Dumps PATH on failure for diagnostics.
+          # We intentionally do NOT invoke `erl -eval ...` here: PowerShell 5.1
+          # (Windows Server 2025 agents) strips inner `"` chars when marshaling
+          # native command args, so any io:format with a quoted format string
+          # turns into an Erlang parse error at runtime.  Get-Command alone is
+          # enough to prove erl.exe is reachable; downstream steps surface any
+          # runtime issue.
+          - powershell: |
+              Set-StrictMode -Version Latest
+              $ErrorActionPreference = 'Stop'
+              $erlCmd = Get-Command erl -ErrorAction SilentlyContinue
+              if ($null -eq $erlCmd) {
+                  Write-Host 'FATAL: erl.exe not on agent PATH after toolchain setup.'
+                  Write-Host 'Current $env:Path (one entry per line):'
+                  foreach ($p in $env:Path -split ';') {
+                      if ($p) { Write-Host "  $p" }
+                  }
+                  Write-Error 'Erlang/OTP unreachable -- subsequent steps will fail.'
+                  exit 1
+              }
+              Write-Host "erl resolved to: $($erlCmd.Source)"
+            displayName: 'Verify Erlang on PATH'
+
+          - script: cargo test --workspace
+            displayName: 'G1 — cargo test --workspace'
+
+          - script: cargo build --workspace --release
+            displayName: 'cargo build --workspace --release'
+
+          - powershell: |
+              Set-StrictMode -Version Latest
+              $ErrorActionPreference = 'Stop'
+              $env:RIDGE_REPO   = '$(RIDGE_REPO)'
+              $env:RIDGE_BRANCH = '$(RIDGE_BRANCH)'
+              # CARGO_TARGET_DIR reuse so `cargo install --git` reuses the
+              # workspace target compiled by earlier steps.  See Linux job for
+              # rationale; without this the 5-min G2 budget is unattainable.
+              $env:CARGO_TARGET_DIR = '$(Build.SourcesDirectory)\target'
+              $duration = Measure-Command { & ./tools/install/install.ps1 }
+              $elapsed = [int]$duration.TotalSeconds
+              & ./.azure-pipelines/assert-install-timing.ps1 -Elapsed $elapsed
+            displayName: 'G2 — install.ps1 from-zero (< 5 min, RIDGE_REPO=ridge-lang)'
+
+          - powershell: |
+              $out = & ridge --version
+              if ($out -notlike '*ridge 0.1.0*') {
+                Write-Error "expected 'ridge 0.1.0', got '$out'"
+                exit 1
+              }
+            displayName: 'G2 — ridge --version reports 0.1.0'
+
+          - powershell: |
+              Set-StrictMode -Version Latest
+              $ErrorActionPreference = 'Stop'
+              $tmp = Join-Path $env:TEMP "ridge-new-smoke-$(Get-Random)"
+              New-Item -ItemType Directory -Path $tmp | Out-Null
+              Push-Location $tmp
+              & ridge new my-app
+              Set-Location my-app
+              & ridge build
+              Pop-Location
+            displayName: 'G2 — ridge new my-app && ridge build'
+
+          - script: |
+              cargo test -p ridge-cli --test check && ^
+              cargo test -p ridge-cli --test build && ^
+              cargo test -p ridge-cli --test fmt && ^
+              cargo test -p ridge-cli --test run
+            displayName: 'G3 + G6 — examples build/run/check/fmt --check'
+
+          - powershell: |
+              # G3 — fmt idempotency: run twice, assert no diff between passes.
+              # Cross-platform parity with the Linux/macOS jobs (post-2026-05-07 fix).
+              #
+              # Diagnostic output: when pass 1 != pass 2, we use `git diff
+              # --no-index` (git is on PATH thanks to the choco install in
+              # Setup toolchain) to dump a unified diff byte-by-byte BEFORE
+              # failing the step.  The previous version printed only "differs"
+              # with no per-file detail (Write-Error under Stop terminates
+              # before the subsequent diff dump), so reproducing the bug
+              # required local repro.  Now the Windows agent surfaces the
+              # offending file + bytes directly in the pipeline log.
+              Set-StrictMode -Version Latest
+              $ErrorActionPreference = 'Stop'
+
+              Write-Host '=== first fmt pass ==='
+              & cargo run -p ridge-cli --release -- fmt examples/
+              if ($LASTEXITCODE -ne 0) { Write-Error 'first fmt pass failed'; exit 1 }
+
+              $snapshot = Join-Path $env:TEMP 'examples_after_first_pass'
+              if (Test-Path $snapshot) { Remove-Item -Recurse -Force $snapshot }
+              Copy-Item -Recurse examples $snapshot
+
+              Write-Host '=== second fmt pass ==='
+              & cargo run -p ridge-cli --release -- fmt examples/
+              if ($LASTEXITCODE -ne 0) { Write-Error 'second fmt pass failed'; exit 1 }
+
+              Write-Host '=== git diff --no-index snapshot vs examples ==='
+              # `git diff --no-index` works on any two trees, prints a unified
+              # diff, and exits 0 if identical / 1 if different.  We override
+              # ErrorActionPreference here so a non-zero exit from git does
+              # NOT trigger a NativeCommandError before we get to inspect it.
+              $prevPref = $ErrorActionPreference
+              $ErrorActionPreference = 'Continue'
+              & git --no-pager diff --no-index --stat -- $snapshot examples
+              & git --no-pager diff --no-index --unified=3 -- $snapshot examples
+              $diffExit = $LASTEXITCODE
+              $ErrorActionPreference = $prevPref
+
+              if ($diffExit -ne 0) {
+                  # Also dump a per-file byte length comparison for cases
+                  # where the diff is just trailing whitespace / line endings
+                  # that `git diff` collapses visually.
+                  Write-Host ''
+                  Write-Host '=== per-file byte-length comparison ==='
+                  foreach ($f in Get-ChildItem -Recurse $snapshot -File) {
+                      $rel = $f.FullName.Substring($snapshot.Length)
+                      $cur = Join-Path (Resolve-Path examples).Path $rel
+                      if (Test-Path $cur) {
+                          $aBytes = (Get-Item $f.FullName).Length
+                          $bBytes = (Get-Item $cur).Length
+                          $marker = if ($aBytes -eq $bBytes) { '   ' } else { 'DIF' }
+                          Write-Host ("{0} {1,8} -> {2,8}  {3}" -f $marker, $aBytes, $bBytes, $rel)
+                      }
+                  }
+                  Write-Error 'examples/ differs after second fmt pass (ridge fmt is non-idempotent on Windows)'
+                  exit 1
+              }
+              Write-Host 'fmt idempotency OK on examples/'
+            displayName: 'G3 — ridge fmt idempotency on examples/'
+
+          - script: cargo test -p ridge-stdlib --features stdlib-e2e --release
+            displayName: 'G4 — ridge test stdlib (>= 151 tests)'
+
+          - script: cargo test -p ridge-codegen-erl --test escript_test
+            displayName: 'G8 — escript shim end-to-end'
+
+          - publish: $(Build.SourcesDirectory)\target\release
+            artifact: ridge-release-windows
+            displayName: 'Publish ridge-release-windows artefact'
+
+  # ── T15 Stage 4: ReleaseGate — Azure DevOps Environment with manual
+  #    approval.  Preserves the "human in the loop" property of the original
+  #    OQ-C014 manual-VM disposition (D155 rewrite, 2026-05-06).
+  #
+  #    Setup (once, by the user, in the Azure DevOps web UI):
+  #      1. Pipelines → Environments → New environment → name "ridge-release".
+  #      2. Approvals and checks → Add → Approvals → add per-platform
+  #         reviewers.  The pipeline pauses here until each approver signs off.
+  #      3. The signed-off Environment record IS the T16 attestation —
+  #         transcribe the approver/timestamp/run-id into
+  #         tools/install/ATTESTATIONS.md.
+  #
+  #    See `.azure-pipelines/README.md` for the full sign-off flow.
+  - stage: ReleaseGate
+    displayName: 'T15 — Release gate (per-platform human sign-off)'
+    dependsOn: BuildTestMatrix
+    condition: and(succeeded(), eq(variables['Build.SourceBranch'], 'refs/heads/main'))
+    jobs:
+      - deployment: release_signoff
+        displayName: 'Per-platform sign-off on published artefacts'
+        environment: 'ridge-release'   # User attaches Approvals to this Environment.
+        pool:
+          vmImage: 'ubuntu-latest'
+        strategy:
+          runOnce:
+            deploy:
+              steps:
+                - script: |
+                    echo "BuildTestMatrix passed; awaiting human sign-off on ridge-release Environment."
+                    echo "Reviewer: transcribe approver + run-id + timestamp into tools/install/ATTESTATIONS.md per T16."
+                  displayName: 'Sign-off marker'

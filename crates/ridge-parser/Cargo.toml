@@ -1,0 +1,21 @@
+[package]
+name         = "ridge-parser"
+description  = "Parser: tokens to AST"
+version.workspace     = true
+edition.workspace     = true
+license.workspace     = true
+authors.workspace     = true
+publish.workspace     = true
+repository.workspace  = true
+rust-version.workspace = true
+
+[dependencies]
+ridge-ast   = { path = "../ridge-ast" }
+ridge-lexer = { path = "../ridge-lexer" }
+thiserror.workspace = true
+
+[dev-dependencies]
+insta.workspace = true
+
+[lints]
+workspace = true

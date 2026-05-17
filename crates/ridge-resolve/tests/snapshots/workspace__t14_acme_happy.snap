@@ -1,0 +1,26 @@
+---
+source: crates/ridge-resolve/tests/workspace.rs
+assertion_line: 252
+expression: snap
+---
+WorkspaceSnapshot {
+    module_fqns: [
+        "acme.domain.RegisterUser",
+        "acme.infra.Postgres",
+    ],
+    errors: [],
+    forbid_violations: [],
+    import_summary: {
+        "acme.domain.RegisterUser": [
+            "<bare> -> BuiltinStdlib(0)",
+            "<bare> -> BuiltinStdlib(7)",
+            "<bare> -> BuiltinStdlib(8)",
+            "Pg -> WorkspaceModule(acme.infra.Postgres)",
+        ],
+        "acme.infra.Postgres": [
+            "<bare> -> BuiltinStdlib(0)",
+            "<bare> -> BuiltinStdlib(7)",
+            "<bare> -> BuiltinStdlib(8)",
+        ],
+    },
+}

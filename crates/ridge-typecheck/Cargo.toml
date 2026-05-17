@@ -1,0 +1,26 @@
+[package]
+name         = "ridge-typecheck"
+description  = "Type inference, capability checking, and exhaustiveness for Ridge"
+version.workspace     = true
+edition.workspace     = true
+license.workspace     = true
+authors.workspace     = true
+publish.workspace     = true
+repository.workspace  = true
+rust-version.workspace = true
+
+[dependencies]
+ridge-ast         = { path = "../ridge-ast" }
+ridge-diagnostics = { path = "../ridge-diagnostics" }
+ridge-resolve     = { path = "../ridge-resolve" }
+ridge-types       = { path = "../ridge-types" }
+thiserror.workspace  = true
+rustc-hash.workspace = true
+ena.workspace        = true
+
+[dev-dependencies]
+insta.workspace = true
+tempfile = "3"
+
+[lints]
+workspace = true

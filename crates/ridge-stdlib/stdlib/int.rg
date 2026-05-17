@@ -1,0 +1,74 @@
+-- std.int — Integer utilities (Tier 1, no stdlib imports).
+--
+-- Direct @ffi wrappers delegate to BEAM erlang:* and ridge_rt:*.
+-- Pure Ridge functions use if/then/else expressions.
+-- Hybrid functions combine a raw @ffi with a Ridge wrapper.
+--
+-- D029: Int is fixed 64-bit signed in the Ridge model.
+-- D032: wrappingAdd / saturatingAdd provided for overflow-safe arithmetic.
+
+-- Convert an integer to its decimal text representation.
+@ffi("erlang", "integer_to_binary", 1)
+pub fn toText (n: Int) -> Text
+
+-- Parse a text string as a decimal integer.
+-- Delegates to ridge_rt:int_parse/1 which returns Option-shaped value
+-- ({ok, N} on success, error on failure — bridged as Option Int at runtime).
+@ffi("ridge_rt", "int_parse", 1)
+pub fn parse (s: Text) -> Option Int
+
+-- Absolute value.
+@ffi("erlang", "abs", 1)
+pub fn abs (n: Int) -> Int
+
+-- Smaller of two integers.
+pub fn min (a: Int) (b: Int) -> Int =
+    if a <= b then a else b
+
+-- Larger of two integers.
+pub fn max (a: Int) (b: Int) -> Int =
+    if a >= b then a else b
+
+-- Addition.
+@ffi("erlang", "+", 2)
+pub fn add (a: Int) (b: Int) -> Int
+
+-- Subtraction.
+@ffi("erlang", "-", 2)
+pub fn sub (a: Int) (b: Int) -> Int
+
+-- Multiplication.
+@ffi("erlang", "*", 2)
+pub fn mul (a: Int) (b: Int) -> Int
+
+-- Integer division (truncates toward zero, Erlang div semantics).
+@ffi("erlang", "div", 2)
+pub fn div (a: Int) (b: Int) -> Int
+
+-- Negate an integer.
+@ffi("erlang", "-", 1)
+pub fn neg (n: Int) -> Int
+
+-- Wrapping addition — result is masked to the 64-bit signed range.
+-- Erlang integers are arbitrary-precision, so we simulate 64-bit wrap
+-- by subtracting / adding the 64-bit modulus when the result overflows.
+-- D032: this function is the safe alternative to plain add for code that
+-- must not crash on overflow.
+pub fn wrappingAdd (a: Int) (b: Int) -> Int =
+    let s = a + b
+    let maxVal = 9223372036854775807
+    let minVal = -9223372036854775808
+    let modulus = 18446744073709551616
+    if s > maxVal then s - modulus
+    else if s < minVal then s + modulus
+    else s
+
+-- Saturating addition — result is clamped to [Int64.min, Int64.max].
+-- D032: use this when you want a bounded result instead of wrapping.
+pub fn saturatingAdd (a: Int) (b: Int) -> Int =
+    let s = a + b
+    let maxVal = 9223372036854775807
+    let minVal = -9223372036854775808
+    if s > maxVal then maxVal
+    else if s < minVal then minVal
+    else s

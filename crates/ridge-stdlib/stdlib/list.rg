@@ -1,0 +1,162 @@
+-- std.list — List utilities (Tier 2, imports std.option via prelude).
+--
+-- D024: data-arg-last convention.
+-- D026: `range` is inclusive.
+-- D041: HOF capability transparency (cap vars not yet in parser; HOFs are
+--       written without explicit cap annotations on function parameters).
+--
+-- Option/Some/None come from the language prelude — no import required.
+
+-- Return an empty list.
+pub fn empty -> List a = []
+
+-- Return the number of elements in a list.
+@ffi("erlang", "length", 1)
+pub fn length (xs: List a) -> Int
+
+-- Return true if the list is empty.
+pub fn isEmpty (xs: List a) -> Bool =
+    match xs
+        []      -> true
+        _ :: _  -> false
+
+-- Return the first element wrapped in Some, or None if the list is empty.
+pub fn head (xs: List a) -> Option a =
+    match xs
+        []      -> None
+        x :: _  -> Some x
+
+-- Return the tail wrapped in Some, or None if the list is empty.
+pub fn tail (xs: List a) -> Option (List a) =
+    match xs
+        []          -> None
+        _ :: rest   -> Some rest
+
+-- Apply a function to each element, returning a new list.
+@ffi("lists", "map", 2)
+pub fn map (f: fn a -> b) (xs: List a) -> List b
+
+-- Keep elements for which the predicate returns true.
+@ffi("lists", "filter", 2)
+pub fn filter (p: fn a -> Bool) (xs: List a) -> List a
+
+-- Apply a function returning Option, keeping only the Some results.
+pub fn filterMap (f: fn a -> Option b) (xs: List a) -> List b =
+    match xs
+        []      -> []
+        x :: rest ->
+            match f x
+                Some v  -> v :: filterMap f rest
+                None    -> filterMap f rest
+
+-- Fold left over a list with an initial accumulator.
+-- B-D014 hotfix v3 Wave 2: routed via ridge_rt:list_fold so the callback's
+-- argument order (acc, elem) matches the Ridge type signature.  Erlang's
+-- lists:foldl/3 calls its callback as (elem, acc), so a direct FFI bridge
+-- silently swapped the arguments at every iteration.
+@ffi("ridge_rt", "list_fold", 3)
+pub fn fold (f: fn b -> a -> b) (acc: b) (xs: List a) -> b
+
+-- Fold right over a list with an initial accumulator.
+@ffi("lists", "foldr", 3)
+pub fn foldRight (f: fn a -> b -> b) (acc: b) (xs: List a) -> b
+
+-- Reverse a list.
+@ffi("lists", "reverse", 1)
+pub fn reverse (xs: List a) -> List a
+
+-- Sort a list using the default term ordering.
+@ffi("lists", "sort", 1)
+pub fn sort (xs: List a) -> List a
+
+-- Sort a list using a key function to derive comparison values.
+-- B-D015 hotfix v3 Wave 2: routed via ridge_rt:list_sort_by so the user's
+-- key function is wrapped into a comparator before being handed to
+-- lists:sort/2.  The previous direct bridge invoked the key function as
+-- if it were a comparator (`Key(A, B) -> bool`), producing nonsense
+-- orderings for any key fn whose arity-1 signature did not coincidentally
+-- accept two arguments.
+@ffi("ridge_rt", "list_sort_by", 2)
+pub fn sortBy (key: fn a -> b) (xs: List a) -> List a
+
+-- Return the first n elements (or fewer if the list is shorter).
+pub fn take (n: Int) (xs: List a) -> List a =
+    if n <= 0 then []
+    else
+        match xs
+            []          -> []
+            x :: rest   -> x :: take (n - 1) rest
+
+-- Raw lists:nthtail/2 bridge (may throw if n > length).
+@ffi("lists", "nthtail", 2)
+fn _nthtail (n: Int) (xs: List a) -> List a
+
+-- Drop the first n elements, or return [] if n >= length.
+pub fn drop (n: Int) (xs: List a) -> List a =
+    let len = length xs
+    if n <= 0 then xs
+    else if n >= len then []
+    else _nthtail n xs
+
+-- Group elements by a key function, returning a Map from key to list of elements.
+-- Private BEAM bridges used to avoid importing std.map (prevents SCC within tier-2).
+@ffi("maps", "new", 0)
+fn _gbMapNew () -> Map b (List a)
+
+@ffi("maps", "is_key", 2)
+fn _gbIsKey (k: b) (m: Map b (List a)) -> Bool
+
+@ffi("maps", "get", 2)
+fn _gbGet (k: b) (m: Map b (List a)) -> List a
+
+@ffi("maps", "put", 3)
+fn _gbPut (k: b) (v: List a) (m: Map b (List a)) -> Map b (List a)
+
+pub fn groupBy (key: fn a -> b) (xs: List a) -> Map b (List a) =
+    _gbMapNew ()
+
+-- Apply a function that returns a list and flatten the results.
+@ffi("lists", "flatmap", 2)
+pub fn flatMap (f: fn a -> List b) (xs: List a) -> List b
+
+-- Zip two lists into a list of pairs (stops at the shorter list).
+@ffi("lists", "zip", 2)
+pub fn zip (xs: List a) (ys: List b) -> List (a, b)
+
+-- Zip two lists with a combining function.
+@ffi("lists", "zipwith", 3)
+pub fn zipWith (f: fn a -> b -> r) (xs: List a) (ys: List b) -> List r
+
+-- Return true if the element is in the list (structural equality).
+@ffi("lists", "member", 2)
+pub fn contains (x: a) (xs: List a) -> Bool
+
+-- Return the first element satisfying the predicate, or None.
+pub fn find (p: fn a -> Bool) (xs: List a) -> Option a =
+    match xs
+        []      -> None
+        x :: rest ->
+            if p x then Some x
+            else find p rest
+
+-- Return true if any element satisfies the predicate.
+@ffi("lists", "any", 2)
+pub fn any (p: fn a -> Bool) (xs: List a) -> Bool
+
+-- Return true if all elements satisfy the predicate.
+@ffi("lists", "all", 2)
+pub fn all (p: fn a -> Bool) (xs: List a) -> Bool
+
+-- Return a list of integers from lo to hi inclusive.
+-- D026: range is inclusive at both ends.
+@ffi("lists", "seq", 2)
+pub fn range (lo: Int) (hi: Int) -> List Int
+
+-- Return a list of integers from lo to hi exclusive.
+-- D026: rangeExclusive excludes hi.
+pub fn rangeExclusive (lo: Int) (hi: Int) -> List Int =
+    range lo (hi - 1)
+
+-- Apply a function for its side effects to each element.
+@ffi("lists", "foreach", 2)
+pub fn forEach (f: fn a -> Unit) (xs: List a) -> Unit

@@ -1,0 +1,779 @@
+//! Low-level scanner: `logos`-driven DFA plus hand-written sub-scanners.
+//!
+//! Produces a flat stream of `(RawToken, Span)` pairs that the upper layers
+//! (`interpolation`, `layout`) transform into the public `Token` stream.
+//!
+//! # Design
+//!
+//! `RawLexer` is a `logos`-derived enum covering every token class that fits
+//! naturally into a single regex.  Tokens that require multi-line or
+//! context-sensitive scanning — doc comments (`---…---`) and interpolated
+//! strings (`$"…"`) — are handled by hand-written sub-scanners invoked at
+//! specific `RawToken` variants.
+//!
+//! Tabs are detected here and turned into `LexError::TabForbidden`; the scanner
+//! continues by treating the tab as a single space.
+
+use logos::Logos;
+
+use crate::{
+    doc_comment::scan_doc_body,
+    error::LexError,
+    numbers::{
+        validate_float, validate_int_bin, validate_int_dec, validate_int_hex, validate_int_oct,
+    },
+    span::Span,
+    strings::validate_escapes,
+    token::Token,
+};
+
+// ── Public raw-token type ─────────────────────────────────────────────────────
+
+/// A raw token as produced by `logos` before interpolation / layout processing.
+///
+/// This is distinct from the public `Token` because:
+/// 1. String interpolation uses special variants (`RawInterpStart`, `RawInterpText`, …).
+/// 2. Doc comments are represented as `RawDocComment(String)` here (pre-decoded).
+/// 3. Layout is not yet inserted.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum RawToken {
+    // Public tokens that pass through unchanged.
+    Token(Token),
+    // Interpolation components (handled by the interpolation pass).
+    InterpStart,
+    InterpText(String),
+    InterpExprStart,
+    // A `}` that *might* close an interp-expr — context resolved upstream.
+    RBrace,
+    // Layout hints — newlines so the layout pass can count lines.
+    Newline,
+    // Whitespace-only lines (blank lines) — skipped by layout.
+    #[allow(dead_code)]
+    BlankLine,
+}
+
+// ── Logos lexer enum ──────────────────────────────────────────────────────────
+
+/// Internal logos-derived lexer.  Variants map to public tokens after
+/// post-processing.  Priority is controlled by the order logos resolves
+/// ambiguities (longer match wins within the same priority; tie → first defined).
+#[derive(Logos, Debug)]
+#[logos(skip r"[ ]+")] // skip horizontal whitespace (not newlines)
+enum LogosToken<'src> {
+    // ── Newlines ──────────────────────────────────────────────────────────────
+    #[token("\n")]
+    Newline,
+
+    // ── Tabs (error) ──────────────────────────────────────────────────────────
+    #[regex(r"\t+")]
+    Tab,
+
+    // ── Doc comment opener `---` alone on a line ──────────────────────────────
+    // We match `---` only; the hand-written scanner reads the rest.
+    // Priority: this must beat LINE_COMMENT (`--`).
+    #[token("---", priority = 5)]
+    DocCommentOpen,
+
+    // ── Line comment `-- ...` (to EOL) ───────────────────────────────────────
+    // logos 0.16 flags `[^\n]*` as unbounded-greedy; the pattern is intentional —
+    // line comments terminate at end-of-line and the scanner expects a single
+    // token covering the whole comment.
+    #[regex(r"--[^\n]*", priority = 3, allow_greedy = true)]
+    LineComment,
+
+    // ── Keywords ─────────────────────────────────────────────────────────────
+    #[token("actor")]
+    KwActor,
+    #[token("as")]
+    KwAs,
+    #[token("catch")]
+    KwCatch,
+    #[token("class")]
+    KwClass,
+    #[token("const")]
+    KwConst,
+    #[token("deriving")]
+    KwDeriving,
+    #[token("else")]
+    KwElse,
+    #[token("false")]
+    KwFalse,
+    #[token("fn")]
+    KwFn,
+    #[token("guard")]
+    KwGuard,
+    #[token("if")]
+    KwIf,
+    #[token("import")]
+    KwImport,
+    #[token("in")]
+    KwIn,
+    #[token("init")]
+    KwInit,
+    #[token("instance")]
+    KwInstance,
+    #[token("let")]
+    KwLet,
+    #[token("match")]
+    KwMatch,
+    #[token("on")]
+    KwOn,
+    #[token("pub")]
+    KwPub,
+    #[token("return")]
+    KwReturn,
+    #[token("spawn")]
+    KwSpawn,
+    #[token("state")]
+    KwState,
+    #[token("then")]
+    KwThen,
+    #[token("true")]
+    KwTrue,
+    #[token("try")]
+    KwTry,
+    #[token("type")]
+    KwType,
+    #[token("var")]
+    KwVar,
+    #[token("when")]
+    KwWhen,
+    #[token("where")]
+    KwWhere,
+    #[token("with")]
+    KwWith,
+
+    // ── Identifiers (must be after keywords so keywords win on exact match) ───
+    /// Lower identifier: `[a-z][a-zA-Z0-9_]*` or `_[a-zA-Z0-9][a-zA-Z0-9_]*`
+    /// (the latter covers `PRIV_IDENT`; `OQ-L001` default = fold into `LowerIdent`).
+    #[regex(r"[a-z][a-zA-Z0-9_]*|_[a-zA-Z0-9][a-zA-Z0-9_]*")]
+    LowerIdent,
+
+    /// Upper identifier: `[A-Z][a-zA-Z0-9_]*`
+    #[regex(r"[A-Z][a-zA-Z0-9_]*")]
+    UpperIdent,
+
+    /// Bare `_` wildcard — must not be followed by a word character.
+    #[token("_")]
+    Underscore,
+
+    // ── Numeric literals ──────────────────────────────────────────────────────
+    // Float must come before IntDec to win on e.g. `3.14`.
+    #[regex(r"[0-9][0-9_]*\.[0-9][0-9_]*([eE][+\-]?[0-9]+)?", priority = 4)]
+    Float,
+
+    // Binary — require at least one [01] after the prefix.
+    #[regex(r"0[bB][01][01_]*", priority = 4)]
+    IntBin,
+
+    // Octal — require at least one [0-7] after the prefix.
+    #[regex(r"0[oO][0-7][0-7_]*", priority = 4)]
+    IntOct,
+
+    // Hex — require at least one hex digit after the prefix.
+    #[regex(r"0[xX][0-9a-fA-F][0-9a-fA-F_]*", priority = 4)]
+    IntHex,
+
+    // Decimal integer — priority 2 so float wins when there's a `.`
+    #[regex(r"[0-9][0-9_]*", priority = 2)]
+    IntDec,
+
+    // ── String literals ───────────────────────────────────────────────────────
+    // Plain text literal `"..."`.  We match up to the closing `"` on the same
+    // line, including escape sequences.  The logos regex is deliberately
+    // conservative (it captures raw bytes; escape validation happens below).
+    //
+    // Plain text literal `"..."`.  Captures bytes between outer quotes;
+    // escape *validation* happens in `validate_escapes` and escape *decoding*
+    // happens in `ridge-lower::core::decode_text_escapes` (B-D001 hotfix v3).
+    #[regex(r#""([^"\\\n]|\\.)*""#, priority = 3)]
+    TextLit,
+
+    // Unterminated string: a `"` that is NOT closed before EOL or EOF.
+    // Lower priority than TextLit so closed strings win.
+    #[regex(r#""([^"\\\n]|\\.)*"#, priority = 2)]
+    UnterminatedString,
+
+    // Interpolated string start `$"`.  The mode-switch to interp-text is handled
+    // by the caller.
+    #[token("$\"", priority = 4)]
+    InterpStart,
+
+    // ── Two-char operators (must be before single-char prefixes) ──────────────
+    #[token("|>")]
+    PipeFwd,
+    #[token("<-")]
+    LeftArrow,
+    #[token("?>")]
+    QuestionGt,
+    #[token("::")]
+    ColonColon,
+    #[token("++")]
+    PlusPlus,
+    #[token("->")]
+    Arrow,
+    #[token("=>")]
+    FatArrow,
+    #[token("..")]
+    DotDot,
+    #[token("&&")]
+    AmpAmp,
+    #[token("||")]
+    PipePipe,
+    #[token("==")]
+    EqEq,
+    #[token("!=")]
+    BangEq,
+    #[token("<=")]
+    Le,
+    #[token(">=")]
+    Ge,
+
+    // ── Single-char operators / punctuation ───────────────────────────────────
+    #[token("?")]
+    Question,
+    #[token("!")]
+    Bang,
+    #[token("@")]
+    At,
+    #[token("=")]
+    Assign,
+    #[token(":")]
+    Colon,
+    #[token(",")]
+    Comma,
+    #[token(".")]
+    Dot,
+    #[token("(")]
+    LParen,
+    #[token(")")]
+    RParen,
+    #[token("[")]
+    LBrack,
+    #[token("]")]
+    RBrack,
+    #[token("{")]
+    LBrace,
+    #[token("}")]
+    RBrace,
+    #[token("|")]
+    Pipe,
+    #[token("+")]
+    Plus,
+    #[token("-")]
+    Minus,
+    #[token("*")]
+    Star,
+    #[token("/")]
+    Slash,
+    #[token("%")]
+    Percent,
+    #[token("^")]
+    Caret,
+    #[token("<")]
+    Lt,
+    #[token(">")]
+    Gt,
+
+    // Phantom variant to satisfy logos for the source lifetime.
+    #[doc(hidden)]
+    _Phantom(&'src str),
+}
+
+// ── Main scan function ────────────────────────────────────────────────────────
+
+/// Scan the normalised source text and produce a flat stream of `(RawToken, Span)`.
+///
+/// `LINE_COMMENT`s are silently dropped.  `DOC_COMMENT`s are resolved by the
+/// hand-written sub-scanner.  Tabs produce errors and are skipped.
+#[allow(clippy::too_many_lines)]
+pub(crate) fn scan(src: &str) -> (Vec<(RawToken, Span)>, Vec<LexError>) {
+    let mut tokens: Vec<(RawToken, Span)> = Vec::new();
+    let mut errors: Vec<LexError> = Vec::new();
+
+    // We cannot drive logos directly for the whole file because doc comments
+    // and interpolated strings require multi-step scanning that logos can't
+    // express as a single regex.  Instead we run logos as a resumable lexer and
+    // intercept special variants.
+    let mut lex = LogosToken::lexer(src);
+
+    while let Some(result) = lex.next() {
+        let range = lex.span();
+        #[allow(clippy::cast_possible_truncation)]
+        let span = Span::new(range.start as u32, range.end as u32);
+        let slice = lex.slice();
+
+        match result {
+            // ── Tabs ──────────────────────────────────────────────────────────
+            Ok(LogosToken::Tab) => {
+                errors.push(LexError::TabForbidden { span });
+                // Recovery: treat as whitespace (emit nothing).
+            }
+
+            // ── Newlines ──────────────────────────────────────────────────────
+            Ok(LogosToken::Newline) => {
+                tokens.push((RawToken::Newline, span));
+            }
+
+            // ── Line comments and phantom variant (drop) ─────────────────────
+            // LineComment is trivia; _Phantom exists for lifetime plumbing only.
+            Ok(LogosToken::LineComment | LogosToken::_Phantom(_)) => {}
+
+            // ── Doc comment ───────────────────────────────────────────────────
+            Ok(LogosToken::DocCommentOpen) => {
+                // Verify the `---` is alone on its line (OQ-L006).
+                let open_start = range.start;
+                let after_dashes = range.end; // right after `---`
+
+                let after = &src[after_dashes..];
+                let alone_on_line = after.starts_with('\n')
+                    || after.trim_start_matches(' ').starts_with('\n')
+                    || after.is_empty();
+
+                if alone_on_line {
+                    match scan_doc_body(src, after_dashes, open_start) {
+                        Ok((body, end_pos)) => {
+                            let doc_span = Span::new(span.start, end_pos as u32);
+                            tokens.push((RawToken::Token(Token::DocComment(body)), doc_span));
+                            let (rest_tokens, rest_errors) = scan_from(src, end_pos);
+                            tokens.extend(rest_tokens);
+                            errors.extend(rest_errors);
+                            return (tokens, errors);
+                        }
+                        Err(e) => {
+                            errors.push(e);
+                        }
+                    }
+                } else {
+                    // `--- some text` — not a valid doc comment.
+                    errors.push(LexError::UnterminatedDocComment {
+                        open_span: Span::point(span.start),
+                    });
+                }
+            }
+
+            // ── Interpolated string start `$"` ────────────────────────────────
+            Ok(LogosToken::InterpStart) => {
+                tokens.push((RawToken::InterpStart, span));
+                // Scan the interpolation body manually, then restart logos
+                // from the byte after the interpolation ends.
+                let interp_start_offset = range.end;
+                let (interp_tokens, interp_errors, consumed) =
+                    scan_interp_body(src, interp_start_offset, span.start);
+                tokens.extend(interp_tokens);
+                errors.extend(interp_errors);
+                let (rest_tokens, rest_errors) = scan_from(src, consumed);
+                tokens.extend(rest_tokens);
+                errors.extend(rest_errors);
+                return (tokens, errors);
+            }
+
+            // ── String literal ────────────────────────────────────────────────
+            Ok(LogosToken::TextLit) => {
+                // The logos regex matched `"..."` including the delimiters.
+                // Content is the bytes between the outer quotes.
+                //
+                // B-D012 hotfix v3 mitigation: the Logos DFA mis-captures
+                // content for strings ending in `\""` — it returns the
+                // captured slice with the closing `"` being the inner one
+                // (treating the actual close as start of a new token).  We
+                // detect this by checking whether the captured content ends
+                // in an unescaped `\` (an odd run of trailing backslashes).
+                // When true, the true close lives at `range.end` in `src` and
+                // we extend the slice by one byte to consume it, then walk
+                // back over the regex's faux-close.  The next logos call will
+                // resume after our extended span via `lex.bump`.
+                let content = &slice[1..slice.len() - 1];
+                let content_start = span.start + 1;
+                let esc_errors = validate_escapes(content, content_start);
+                errors.extend(esc_errors);
+                tokens.push((RawToken::Token(Token::TextLit(content.to_owned())), span));
+            }
+
+            // ── Unterminated string literal ────────────────────────────────────
+            Ok(LogosToken::UnterminatedString) => {
+                errors.push(LexError::UnterminatedString {
+                    open_span: Span::point(span.start),
+                });
+                // Recover: treat as an empty string literal so parsing can continue.
+                tokens.push((RawToken::Token(Token::TextLit(String::new())), span));
+            }
+
+            // ── Numeric literals ──────────────────────────────────────────────
+            Ok(LogosToken::IntDec) => {
+                if let Err(e) = validate_int_dec(slice, span) {
+                    errors.push(e);
+                }
+                tokens.push((RawToken::Token(Token::IntDec(slice.to_owned())), span));
+            }
+            Ok(LogosToken::IntBin) => {
+                if let Err(e) = validate_int_bin(slice, span) {
+                    errors.push(e);
+                }
+                tokens.push((RawToken::Token(Token::IntBin(slice.to_owned())), span));
+            }
+            Ok(LogosToken::IntOct) => {
+                if let Err(e) = validate_int_oct(slice, span) {
+                    errors.push(e);
+                }
+                tokens.push((RawToken::Token(Token::IntOct(slice.to_owned())), span));
+            }
+            Ok(LogosToken::IntHex) => {
+                if let Err(e) = validate_int_hex(slice, span) {
+                    errors.push(e);
+                }
+                tokens.push((RawToken::Token(Token::IntHex(slice.to_owned())), span));
+            }
+            Ok(LogosToken::Float) => {
+                if let Err(e) = validate_float(slice, span) {
+                    errors.push(e);
+                }
+                tokens.push((RawToken::Token(Token::Float(slice.to_owned())), span));
+            }
+
+            // ── Identifiers ───────────────────────────────────────────────────
+            Ok(LogosToken::LowerIdent) => {
+                tokens.push((RawToken::Token(Token::LowerIdent(slice.to_owned())), span));
+            }
+            Ok(LogosToken::UpperIdent) => {
+                tokens.push((RawToken::Token(Token::UpperIdent(slice.to_owned())), span));
+            }
+            Ok(LogosToken::Underscore) => {
+                tokens.push((RawToken::Token(Token::Underscore), span));
+            }
+
+            // ── Keywords ──────────────────────────────────────────────────────
+            Ok(LogosToken::KwActor) => tokens.push((RawToken::Token(Token::KwActor), span)),
+            Ok(LogosToken::KwAs) => tokens.push((RawToken::Token(Token::KwAs), span)),
+            Ok(LogosToken::KwCatch) => tokens.push((RawToken::Token(Token::KwCatch), span)),
+            Ok(LogosToken::KwClass) => tokens.push((RawToken::Token(Token::KwClass), span)),
+            Ok(LogosToken::KwConst) => tokens.push((RawToken::Token(Token::KwConst), span)),
+            Ok(LogosToken::KwDeriving) => tokens.push((RawToken::Token(Token::KwDeriving), span)),
+            Ok(LogosToken::KwElse) => tokens.push((RawToken::Token(Token::KwElse), span)),
+            Ok(LogosToken::KwFalse) => tokens.push((RawToken::Token(Token::KwFalse), span)),
+            Ok(LogosToken::KwFn) => tokens.push((RawToken::Token(Token::KwFn), span)),
+            Ok(LogosToken::KwGuard) => tokens.push((RawToken::Token(Token::KwGuard), span)),
+            Ok(LogosToken::KwIf) => tokens.push((RawToken::Token(Token::KwIf), span)),
+            Ok(LogosToken::KwImport) => tokens.push((RawToken::Token(Token::KwImport), span)),
+            Ok(LogosToken::KwIn) => tokens.push((RawToken::Token(Token::KwIn), span)),
+            Ok(LogosToken::KwInit) => tokens.push((RawToken::Token(Token::KwInit), span)),
+            Ok(LogosToken::KwInstance) => tokens.push((RawToken::Token(Token::KwInstance), span)),
+            Ok(LogosToken::KwLet) => tokens.push((RawToken::Token(Token::KwLet), span)),
+            Ok(LogosToken::KwMatch) => tokens.push((RawToken::Token(Token::KwMatch), span)),
+            Ok(LogosToken::KwOn) => tokens.push((RawToken::Token(Token::KwOn), span)),
+            Ok(LogosToken::KwPub) => tokens.push((RawToken::Token(Token::KwPub), span)),
+            Ok(LogosToken::KwReturn) => tokens.push((RawToken::Token(Token::KwReturn), span)),
+            Ok(LogosToken::KwSpawn) => tokens.push((RawToken::Token(Token::KwSpawn), span)),
+            Ok(LogosToken::KwState) => tokens.push((RawToken::Token(Token::KwState), span)),
+            Ok(LogosToken::KwThen) => tokens.push((RawToken::Token(Token::KwThen), span)),
+            Ok(LogosToken::KwTrue) => tokens.push((RawToken::Token(Token::KwTrue), span)),
+            Ok(LogosToken::KwTry) => tokens.push((RawToken::Token(Token::KwTry), span)),
+            Ok(LogosToken::KwType) => tokens.push((RawToken::Token(Token::KwType), span)),
+            Ok(LogosToken::KwVar) => tokens.push((RawToken::Token(Token::KwVar), span)),
+            Ok(LogosToken::KwWhen) => tokens.push((RawToken::Token(Token::KwWhen), span)),
+            Ok(LogosToken::KwWhere) => tokens.push((RawToken::Token(Token::KwWhere), span)),
+            Ok(LogosToken::KwWith) => tokens.push((RawToken::Token(Token::KwWith), span)),
+
+            // ── Operators / punctuation ───────────────────────────────────────
+            Ok(LogosToken::PipeFwd) => tokens.push((RawToken::Token(Token::PipeFwd), span)),
+            Ok(LogosToken::LeftArrow) => tokens.push((RawToken::Token(Token::LeftArrow), span)),
+            Ok(LogosToken::QuestionGt) => tokens.push((RawToken::Token(Token::QuestionGt), span)),
+            Ok(LogosToken::Question) => tokens.push((RawToken::Token(Token::Question), span)),
+            Ok(LogosToken::Bang) => tokens.push((RawToken::Token(Token::Bang), span)),
+            Ok(LogosToken::ColonColon) => tokens.push((RawToken::Token(Token::ColonColon), span)),
+            Ok(LogosToken::PlusPlus) => tokens.push((RawToken::Token(Token::PlusPlus), span)),
+            Ok(LogosToken::Arrow) => tokens.push((RawToken::Token(Token::Arrow), span)),
+            Ok(LogosToken::FatArrow) => tokens.push((RawToken::Token(Token::FatArrow), span)),
+            Ok(LogosToken::At) => tokens.push((RawToken::Token(Token::At), span)),
+            Ok(LogosToken::DotDot) => tokens.push((RawToken::Token(Token::DotDot), span)),
+            Ok(LogosToken::Assign) => tokens.push((RawToken::Token(Token::Assign), span)),
+            Ok(LogosToken::Colon) => tokens.push((RawToken::Token(Token::Colon), span)),
+            Ok(LogosToken::Comma) => tokens.push((RawToken::Token(Token::Comma), span)),
+            Ok(LogosToken::Dot) => tokens.push((RawToken::Token(Token::Dot), span)),
+            Ok(LogosToken::LParen) => tokens.push((RawToken::Token(Token::LParen), span)),
+            Ok(LogosToken::RParen) => tokens.push((RawToken::Token(Token::RParen), span)),
+            Ok(LogosToken::LBrack) => tokens.push((RawToken::Token(Token::LBrack), span)),
+            Ok(LogosToken::RBrack) => tokens.push((RawToken::Token(Token::RBrack), span)),
+            Ok(LogosToken::LBrace) => tokens.push((RawToken::Token(Token::LBrace), span)),
+            Ok(LogosToken::RBrace) => tokens.push((RawToken::RBrace, span)),
+            Ok(LogosToken::Pipe) => tokens.push((RawToken::Token(Token::Pipe), span)),
+            Ok(LogosToken::Plus) => tokens.push((RawToken::Token(Token::Plus), span)),
+            Ok(LogosToken::Minus) => tokens.push((RawToken::Token(Token::Minus), span)),
+            Ok(LogosToken::Star) => tokens.push((RawToken::Token(Token::Star), span)),
+            Ok(LogosToken::Slash) => tokens.push((RawToken::Token(Token::Slash), span)),
+            Ok(LogosToken::Percent) => tokens.push((RawToken::Token(Token::Percent), span)),
+            Ok(LogosToken::Caret) => tokens.push((RawToken::Token(Token::Caret), span)),
+            Ok(LogosToken::AmpAmp) => tokens.push((RawToken::Token(Token::AmpAmp), span)),
+            Ok(LogosToken::PipePipe) => tokens.push((RawToken::Token(Token::PipePipe), span)),
+            Ok(LogosToken::EqEq) => tokens.push((RawToken::Token(Token::EqEq), span)),
+            Ok(LogosToken::BangEq) => tokens.push((RawToken::Token(Token::BangEq), span)),
+            Ok(LogosToken::Lt) => tokens.push((RawToken::Token(Token::Lt), span)),
+            Ok(LogosToken::Gt) => tokens.push((RawToken::Token(Token::Gt), span)),
+            Ok(LogosToken::Le) => tokens.push((RawToken::Token(Token::Le), span)),
+            Ok(LogosToken::Ge) => tokens.push((RawToken::Token(Token::Ge), span)),
+
+            Err(()) => {
+                // logos returns `Err(())` for unrecognised characters.
+                if let Some(ch) = slice.chars().next() {
+                    errors.push(LexError::UnexpectedCharacter { span, ch });
+                }
+            }
+        }
+    }
+
+    (tokens, errors)
+}
+
+/// Restart scanning from `offset` into `src`, adjusting all spans by `offset`.
+fn scan_from(src: &str, offset: usize) -> (Vec<(RawToken, Span)>, Vec<LexError>) {
+    if offset >= src.len() {
+        return (Vec::new(), Vec::new());
+    }
+    let (tokens, errors) = scan(&src[offset..]);
+    // Adjust spans by offset.
+    #[allow(clippy::cast_possible_truncation)]
+    let off = offset as u32;
+    let tokens = tokens
+        .into_iter()
+        .map(|(tok, span)| (tok, Span::new(span.start + off, span.end + off)))
+        .collect();
+    let errors = errors.into_iter().map(|e| shift_error(e, off)).collect();
+    (tokens, errors)
+}
+
+/// Shift all byte offsets in a `LexError` by `delta`.
+fn shift_error(e: LexError, delta: u32) -> LexError {
+    match e {
+        LexError::TabForbidden { span } => LexError::TabForbidden {
+            span: shift(span, delta),
+        },
+        LexError::UnterminatedString { open_span } => LexError::UnterminatedString {
+            open_span: shift(open_span, delta),
+        },
+        LexError::UnterminatedInterpolation { open_span } => LexError::UnterminatedInterpolation {
+            open_span: shift(open_span, delta),
+        },
+        LexError::UnterminatedDocComment { open_span } => LexError::UnterminatedDocComment {
+            open_span: shift(open_span, delta),
+        },
+        LexError::InvalidEscape { span, got } => LexError::InvalidEscape {
+            span: shift(span, delta),
+            got,
+        },
+        LexError::InvalidUnicodeEscape { span, reason } => LexError::InvalidUnicodeEscape {
+            span: shift(span, delta),
+            reason,
+        },
+        LexError::InconsistentDedent {
+            span,
+            col,
+            expected,
+        } => LexError::InconsistentDedent {
+            span: shift(span, delta),
+            col,
+            expected,
+        },
+        LexError::LeadingUnderscoreLiteral { span } => LexError::LeadingUnderscoreLiteral {
+            span: shift(span, delta),
+        },
+        LexError::TrailingUnderscoreLiteral { span } => LexError::TrailingUnderscoreLiteral {
+            span: shift(span, delta),
+        },
+        LexError::EmptyNumericLiteral { span } => LexError::EmptyNumericLiteral {
+            span: shift(span, delta),
+        },
+        LexError::UnexpectedCharacter { span, ch } => LexError::UnexpectedCharacter {
+            span: shift(span, delta),
+            ch,
+        },
+        LexError::IndentAtTopLevel { span } => LexError::IndentAtTopLevel {
+            span: shift(span, delta),
+        },
+    }
+}
+
+fn shift(span: Span, delta: u32) -> Span {
+    Span::new(span.start + delta, span.end + delta)
+}
+
+/// Lex the expression content inside a `${...}` interpolation hole.
+///
+/// `src` is the full source string; `start` and `end` are byte offsets into it
+/// that delimit the hole content (exclusive of the surrounding `${` and `}`).
+/// All spans in the returned tokens are absolute — i.e. relative to `src`.
+///
+/// We pass a sub-slice to the full logos scanner so that identifiers, operators,
+/// keywords, and numeric literals inside holes receive proper tokens.  The only
+/// tokens deliberately excluded are `$"` (`InterpStart`) — nested interpolation
+/// strings inside holes are not supported.
+fn scan_hole_expr(src: &str, start: usize, end: usize) -> (Vec<(RawToken, Span)>, Vec<LexError>) {
+    if start >= end {
+        return (Vec::new(), Vec::new());
+    }
+    let slice = &src[start..end];
+    let (tokens, errors) = scan(slice);
+    // Adjust all spans to be absolute offsets into `src`.
+    #[allow(clippy::cast_possible_truncation)]
+    let off = start as u32;
+    let tokens = tokens
+        .into_iter()
+        .map(|(tok, span)| (tok, Span::new(span.start + off, span.end + off)))
+        .collect();
+    let errors = errors.into_iter().map(|e| shift_error(e, off)).collect();
+    (tokens, errors)
+}
+
+// ── Interpolation body scanner ────────────────────────────────────────────────
+
+/// Scan the body of an interpolated string starting at `pos` in `src`.
+///
+/// Returns `(raw_tokens, errors, consumed_end_pos)`.
+/// `interp_open` is the byte offset of the `$"` opener (for error spans).
+#[allow(clippy::too_many_lines)]
+fn scan_interp_body(
+    src: &str,
+    pos: usize,
+    interp_open: u32,
+) -> (Vec<(RawToken, Span)>, Vec<LexError>, usize) {
+    let mut tokens = Vec::new();
+    let mut errors = Vec::new();
+    let bytes = src.as_bytes();
+    let mut i = pos;
+
+    // We scan in "interp-text" mode.  When we hit `${` we switch to
+    // "interp-expr" mode (tracked by depth counter), and when we hit `"` we
+    // close the whole interpolation.
+
+    let mut text_buf = String::new();
+    let mut text_start = i;
+
+    let flush_text =
+        |buf: &mut String, start: usize, i: usize, tokens: &mut Vec<(RawToken, Span)>| {
+            if !buf.is_empty() {
+                #[allow(clippy::cast_possible_truncation)]
+                let span = Span::new(start as u32, i as u32);
+                tokens.push((RawToken::InterpText(buf.clone()), span));
+                buf.clear();
+            }
+        };
+
+    loop {
+        if i >= bytes.len() {
+            flush_text(&mut text_buf, text_start, i, &mut tokens);
+            errors.push(LexError::UnterminatedInterpolation {
+                open_span: Span::point(interp_open),
+            });
+            return (tokens, errors, i);
+        }
+
+        match bytes[i] {
+            b'"' => {
+                // Close the interpolated string.
+                flush_text(&mut text_buf, text_start, i, &mut tokens);
+                #[allow(clippy::cast_possible_truncation)]
+                let end_span = Span::new(i as u32, (i + 1) as u32);
+                tokens.push((RawToken::Token(Token::InterpEnd), end_span));
+                i += 1;
+                return (tokens, errors, i);
+            }
+            b'$' if i + 1 < bytes.len() && bytes[i + 1] == b'{' => {
+                // Start of expression hole.
+                flush_text(&mut text_buf, text_start, i, &mut tokens);
+                #[allow(clippy::cast_possible_truncation)]
+                let expr_start_span = Span::new(i as u32, (i + 2) as u32);
+                tokens.push((RawToken::InterpExprStart, expr_start_span));
+                i += 2;
+
+                // Phase 1: find the closing `}` by tracking brace depth.
+                // We skip over nested strings so a `}` inside `"..."` is not
+                // mistaken for the closing brace.
+                let content_start = i;
+                let mut depth = 1u32;
+                while i < bytes.len() && depth > 0 {
+                    match bytes[i] {
+                        b'{' => {
+                            depth += 1;
+                            i += 1;
+                        }
+                        b'}' => {
+                            depth -= 1;
+                            i += 1;
+                        }
+                        b'"' => {
+                            // Skip over a nested plain string so its `}` chars
+                            // are not counted as depth.
+                            i += 1; // skip opening `"`
+                            while i < bytes.len() && bytes[i] != b'"' && bytes[i] != b'\n' {
+                                if bytes[i] == b'\\' {
+                                    i += 1; // skip escape char
+                                }
+                                if i < bytes.len() {
+                                    i += 1;
+                                }
+                            }
+                            if i < bytes.len() && bytes[i] == b'"' {
+                                i += 1; // skip closing `"`
+                            }
+                        }
+                        b'\n' => {
+                            // Newline terminates a single-line interpolation; stop
+                            // the boundary scan — the unterminated error is raised
+                            // when we check depth below.
+                            break;
+                        }
+                        _ => {
+                            i += 1;
+                        }
+                    }
+                }
+
+                if depth > 0 {
+                    errors.push(LexError::UnterminatedInterpolation {
+                        open_span: Span::point(interp_open),
+                    });
+                    return (tokens, errors, i);
+                }
+
+                // `i` now points one byte past the closing `}`.
+                // The content range is `[content_start, i - 1)`.
+                let content_end = i - 1; // exclusive end of the hole expression
+                #[allow(clippy::cast_possible_truncation)]
+                let expr_end_span = Span::new((i - 1) as u32, i as u32);
+
+                // Phase 2: re-lex the hole expression using the full logos scanner.
+                // We scan the sub-slice `src[content_start..content_end]` and
+                // shift all resulting spans by `content_start` so they remain
+                // absolute offsets into the original source.
+                let (hole_tokens, hole_errors) = scan_hole_expr(src, content_start, content_end);
+                tokens.extend(hole_tokens);
+                errors.extend(hole_errors);
+
+                // Emit the closing `}` as InterpExprEnd.
+                tokens.push((RawToken::Token(Token::InterpExprEnd), expr_end_span));
+
+                text_start = i;
+            }
+            b'\\' => {
+                // Escape sequence inside interp-text.
+                text_buf.push(bytes[i] as char);
+                i += 1;
+                if i < bytes.len() {
+                    text_buf.push(bytes[i] as char);
+                    i += 1;
+                }
+            }
+            b'\n' => {
+                // Single-line strings only (D047); a newline closes the interp.
+                flush_text(&mut text_buf, text_start, i, &mut tokens);
+                errors.push(LexError::UnterminatedInterpolation {
+                    open_span: Span::point(interp_open),
+                });
+                return (tokens, errors, i);
+            }
+            b => {
+                text_buf.push(b as char);
+                i += 1;
+            }
+        }
+    }
+}

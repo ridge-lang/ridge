@@ -1,0 +1,70 @@
+---
+source: crates/ridge-lower/tests/lowering.rs
+expression: rendered
+---
+module: m0
+items_count: 2
+items:
+  - kind: fn
+    name: safe_head
+    pub: false
+    main: false
+    caps: CapabilitySet(0)
+    ret_ty: Con(9) [Con(0)]
+    params:
+      - name: xs
+        ty: Con(6) [Con(0)]
+    body:
+      Symbol(n0): Prelude(None)
+  - kind: fn
+    name: propagate_option
+    pub: false
+    main: false
+    caps: CapabilitySet(0)
+    ret_ty: Con(9) [Con(0)]
+    params:
+      - name: xs
+        ty: Con(6) [Con(0)]
+    body:
+      LetIn(n1):
+        pat:
+          Bind: h
+        value:
+          Match(n2):
+            scrutinee:
+              Call(n3):
+                callee:
+                  Symbol(n4): Local(safe_head @ m0)
+                args:
+                  -
+                    Local(n5): xs
+            arms:
+              -
+                pat:
+                  Ctor: Prelude(Some)
+                    args:
+                      Bind: __prop_some_0
+                body:
+                  Local(n6): __prop_some_0
+              -
+                pat:
+                  Ctor: Prelude(None)
+                body:
+                  Return(n7):
+                    Construct(n8):
+                      ctor: Prelude(None)
+                      fields: []
+        body:
+          Call(n9):
+            callee:
+              Symbol(n10): Prelude(Some)
+            args:
+              -
+                Call(n11):
+                  callee:
+                    Symbol(n12): Stdlib(std.int.add)
+                  args:
+                    -
+                      Local(n13): h
+                    -
+                      Lit(n14): Int(1)

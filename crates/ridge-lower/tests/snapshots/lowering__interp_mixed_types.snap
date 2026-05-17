@@ -1,0 +1,67 @@
+---
+source: crates/ridge-lower/tests/lowering.rs
+expression: rendered
+---
+module: m0
+items_count: 1
+items:
+  - kind: fn
+    name: interp_mixed_types
+    pub: false
+    main: false
+    caps: CapabilitySet(0)
+    ret_ty: Con(3)
+    params:
+      - name: name
+        ty: Con(3)
+      - name: age
+        ty: Con(0)
+      - name: active
+        ty: Con(2)
+    body:
+      Call(n0):
+        callee:
+          Symbol(n1): Stdlib(std.text.concat)
+        args:
+          -
+            Call(n2):
+              callee:
+                Symbol(n3): Stdlib(std.text.concat)
+              args:
+                -
+                  Call(n4):
+                    callee:
+                      Symbol(n5): Stdlib(std.text.concat)
+                    args:
+                      -
+                        Call(n6):
+                          callee:
+                            Symbol(n7): Stdlib(std.text.concat)
+                          args:
+                            -
+                              Call(n8):
+                                callee:
+                                  Symbol(n9): Stdlib(std.text.concat)
+                                args:
+                                  -
+                                    Lit(n10): Text("User ")
+                                  -
+                                    Local(n11): name
+                            -
+                              Lit(n12): Text(" age ")
+                      -
+                        Call(n13):
+                          callee:
+                            Symbol(n14): Stdlib(std.int.toText)
+                          args:
+                            -
+                              Local(n15): age
+                -
+                  Lit(n16): Text(" active ")
+          -
+            Call(n17):
+              callee:
+                Symbol(n18): Stdlib(std.bool.toText)
+              args:
+                -
+                  Local(n19): active

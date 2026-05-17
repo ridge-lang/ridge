@@ -1,0 +1,63 @@
+---
+source: crates/ridge-lower/tests/lowering.rs
+expression: rendered
+---
+module: m0
+items_count: 2
+items:
+  - kind: fn
+    name: parse_int
+    pub: false
+    main: false
+    caps: CapabilitySet(0)
+    ret_ty: Con(9) [Con(0)]
+    params:
+      - name: s
+        ty: Con(3)
+    body:
+      Symbol(n0): Prelude(None)
+  - kind: fn
+    name: propagate_result
+    pub: false
+    main: false
+    caps: CapabilitySet(0)
+    ret_ty: Con(9) [Con(0)]
+    params:
+      - name: s
+        ty: Con(3)
+    body:
+      LetIn(n1):
+        pat:
+          Bind: n
+        value:
+          Match(n2):
+            scrutinee:
+              Call(n3):
+                callee:
+                  Symbol(n4): Local(parse_int @ m0)
+                args:
+                  -
+                    Local(n5): s
+            arms:
+              -
+                pat:
+                  Ctor: Prelude(Some)
+                    args:
+                      Bind: __prop_some_0
+                body:
+                  Local(n6): __prop_some_0
+              -
+                pat:
+                  Ctor: Prelude(None)
+                body:
+                  Return(n7):
+                    Construct(n8):
+                      ctor: Prelude(None)
+                      fields: []
+        body:
+          Call(n9):
+            callee:
+              Symbol(n10): Prelude(Some)
+            args:
+              -
+                Local(n11): n

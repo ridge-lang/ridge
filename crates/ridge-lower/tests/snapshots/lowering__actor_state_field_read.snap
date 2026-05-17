@@ -1,0 +1,37 @@
+---
+source: crates/ridge-lower/tests/lowering.rs
+expression: rendered
+---
+module: m0
+items_count: 1
+items:
+  - kind: actor
+    name: Counter
+    pub: false
+    state_fields:
+      - name: count
+        ty: Con(0)
+    init: null
+    handlers:
+      - message: get_count
+        caps: CapabilitySet(0)
+        ret_ty: Con(0)
+        params: []
+        body:
+          Field(n0).count:
+            Local(n1): __state
+      - message: increment
+        caps: CapabilitySet(0)
+        ret_ty: Con(4)
+        params: []
+        body:
+          Assign(n2) -> StateField(count):
+            Call(n3):
+              callee:
+                Symbol(n4): Stdlib(std.int.add)
+              args:
+                -
+                  Field(n5).count:
+                    Local(n6): __state
+                -
+                  Lit(n7): Int(1)

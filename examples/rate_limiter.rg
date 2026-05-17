@@ -1,0 +1,116 @@
+---
+Token-bucket rate limiter implemented as an actor.  The Limiter actor holds
+capacity, a floating-point token count, a refill rate (tokens per second), and
+the timestamp of the last refill.  On each `allow` request it refills tokens
+proportional to elapsed time, then grants or denies the request.
+Five worker actors each send 20 requests at random sub-second delays; after all
+workers finish they send their tallies to a Collector actor, which prints totals.
+---
+
+import std.io   as Io
+import std.time as Time
+import std.list as List
+import std.option as Option
+import std.random as Random
+
+-- ── Limiter actor ─────────────────────────────────────────────────────────
+-- D061: non-defaultable state initialised via init block.
+-- Spawn: `spawn Limiter 10 2.0` passes cap=10, rate=2.0.
+actor Limiter =
+    state capacity:   Int
+    state tokens:     Float
+    state refillRate: Float
+    state lastRefill: Timestamp
+
+    init (cap: Int) (rate: Float) =
+        capacity <- cap
+        tokens <- Float.fromInt cap
+        refillRate <- rate
+        lastRefill <- Time.epoch ()
+    -- `on time allow` — refill then consume one token.
+    -- Returns true when a token is available, false when the bucket is empty.
+    on time allow () -> Bool =
+        let now      = Time.now ()
+        -- Int, milliseconds since last refill
+        let elapsedMs = Time.diffMs lastRefill now
+        -- T11.5 emit-site rename: diffSeconds → diffMs (std.time exports diffMs, not diffSeconds).
+        -- refillRate is tokens-per-second; convert ms → seconds as Float for token accumulation.
+        let elapsed  = Float.fromInt elapsedMs / 1000.0
+        let refilled = tokens + elapsed * refillRate
+        let capped   = if refilled > Float.fromInt capacity then Float.fromInt capacity else refilled
+        -- NOTE: Float.fromInt converts Int -> Float (plausible companion to Float.round).
+        lastRefill <- now
+        if capped >= 1.0 then
+            tokens <- capped - 1.0
+            true
+        else
+            tokens <- capped
+            false
+-- ── Collector actor ───────────────────────────────────────────────────────
+-- Workers send their (allowed, denied) counts here; once all 5 have reported
+-- the collector prints totals.
+actor Collector =
+    state received:      Int = 0
+    state totalAllowed:  Int = 0
+    state totalDenied:   Int = 0
+
+    on io report (allowed: Int) (denied: Int) -> Unit =
+        totalAllowed <- totalAllowed + allowed
+        totalDenied <- totalDenied + denied
+        received <- received + 1
+        if received == 5 then
+            Io.println $"── Rate limiter results ──────────────"
+            Io.println $"  Allowed : ${totalAllowed}"
+            Io.println $"  Denied  : ${totalDenied}"
+            Io.println $"  Total   : ${totalAllowed + totalDenied}"
+        else
+            ()
+-- ── Worker actor ──────────────────────────────────────────────────────────
+const requestsPerWorker: Int = 20
+
+-- D061: state is non-defaultable; init block receives id, limiter handle, collector handle.
+-- Spawn: `spawn Worker id limiterHandle collectorHandle`.
+actor Worker =
+    state workerId:  Int
+    state limiter:   Handle Limiter
+    state collector: Handle Collector
+
+    init (id: Int) (l: Handle Limiter) (col: Handle Collector) =
+        workerId <- id
+        limiter <- l
+        collector <- col
+    on time random io run () -> Unit =
+        -- D058: inner fn with capability prefixes is explicitly allowed.
+        fn time random io sendRequests (remaining: Int) (allowed: Int) (denied: Int) -> Unit =
+            guard (remaining > 0) else
+                return (collector ! report allowed denied)
+            let delayMs = Random.int 0 50  -- 0–50 ms random delay
+            Time.sleep delayMs
+            -- D045: ask operator changed from ? to ?>.
+            let granted = limiter ?> allow ()
+            if granted then
+                sendRequests (remaining - 1) (allowed + 1) denied
+            else
+                sendRequests (remaining - 1) allowed (denied + 1)
+        sendRequests requestsPerWorker 0 0
+-- ── Main ──────────────────────────────────────────────────────────────────
+-- D059: main returns Result Unit Error.
+fn spawn io time main () -> Result Unit Error =
+    -- D061: Limiter is now parametrised via init: capacity=10, refillRate=2.0.
+    let limiter   = spawn Limiter 10 2.0
+    let collector = spawn Collector
+
+    -- D061: Worker init takes (id, limiterHandle, collectorHandle).
+    let workers =
+        List.range 1 5
+ |> List.map (fn id -> spawn Worker id limiter collector)
+
+    -- Kick off each worker.
+    workers |> List.forEach (fn w -> w ! run ())
+
+    -- The collector will print results once all 5 workers have reported.
+    -- We sleep long enough to let them finish (5 workers × 20 requests × 50ms max = 5s).
+    -- In production this would use a supervisor or a ?> reply from collector.
+    Time.sleep 6_000
+    Io.println "Done."
+    Ok ()

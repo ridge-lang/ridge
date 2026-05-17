@@ -1,0 +1,7 @@
+[workspace]
+name = "acme-secure"
+version = "0.1.0"
+members = ["libs/*"]
+
+[workspace.capabilities]
+deny = ["ffi", "proc"]

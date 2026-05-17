@@ -1,0 +1,9 @@
+[workspace]
+name = "acme-deps"
+version = "0.2.0"
+members = ["libs/*"]
+
+[workspace.dependencies]
+json = { version = "1.0" }
+postgres = { git = "github.com/ridge-lang/postgres", tag = "v0.2" }
+helpers = { path = "../helpers" }

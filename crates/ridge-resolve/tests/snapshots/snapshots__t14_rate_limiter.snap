@@ -1,0 +1,25 @@
+---
+source: crates/ridge-resolve/tests/snapshots.rs
+expression: snap
+---
+ResolvedSnapshot {
+    errors: [],
+    nid_count: 464,
+    stamped_bindings: 120,
+    binding_kind_counts: {
+        "ActorName": 3,
+        "Local": 97,
+        "ModuleSymbol": 1,
+        "StdlibSymbol": 19,
+    },
+    import_aliases: [
+        "<bare> -> BuiltinStdlib(0)",
+        "<bare> -> BuiltinStdlib(7)",
+        "<bare> -> BuiltinStdlib(8)",
+        "Io -> BuiltinStdlib(9)",
+        "List -> BuiltinStdlib(4)",
+        "Option -> BuiltinStdlib(7)",
+        "Random -> BuiltinStdlib(12)",
+        "Time -> BuiltinStdlib(11)",
+    ],
+}

@@ -1,0 +1,127 @@
+---
+source: crates/ridge-codegen-erl/tests/core_ast_snapshot.rs
+expression: "&cerl_module"
+---
+CErlModule {
+    name: CErlAtom(
+        "ridge_module_0",
+    ),
+    exports: [
+        CErlExport {
+            name: CErlAtom(
+                "main",
+            ),
+            arity: 0,
+        },
+    ],
+    attributes: [],
+    fns: [
+        CErlFn {
+            name: CErlAtom(
+                "main",
+            ),
+            arity: 0,
+            anns: [
+                CErlAnn(
+                    "%% File: <source>, Offset: 130",
+                ),
+                CErlAnn(
+                    "%% Caps: {}",
+                ),
+                CErlAnn(
+                    "%% Warning: main/0 — canonical main should have arity 1 (§4.26)",
+                ),
+            ],
+            body: Fun {
+                params: [],
+                body: Let {
+                    var: CErlVar(
+                        "V_C",
+                    ),
+                    value: Let {
+                        var: CErlVar(
+                            "V_Anf0",
+                        ),
+                        value: ListLit(
+                            [
+                                Lit(
+                                    Int(
+                                        0,
+                                    ),
+                                ),
+                            ],
+                        ),
+                        body: Call {
+                            module: CErlAtom(
+                                "ridge_rt",
+                            ),
+                            fn_name: CErlAtom(
+                                "spawn_actor",
+                            ),
+                            args: [
+                                Lit(
+                                    Atom(
+                                        CErlAtom(
+                                            "ridge_module_0_counter",
+                                        ),
+                                    ),
+                                ),
+                                Var(
+                                    CErlVar(
+                                        "V_Anf0",
+                                    ),
+                                ),
+                                Lit(
+                                    Nil,
+                                ),
+                            ],
+                        },
+                    },
+                    body: Let {
+                        var: CErlVar(
+                            "V_Anf1",
+                        ),
+                        value: Tuple(
+                            [
+                                Lit(
+                                    Atom(
+                                        CErlAtom(
+                                            "get_count",
+                                        ),
+                                    ),
+                                ),
+                            ],
+                        ),
+                        body: Call {
+                            module: CErlAtom(
+                                "ridge_rt",
+                            ),
+                            fn_name: CErlAtom(
+                                "ask",
+                            ),
+                            args: [
+                                Var(
+                                    CErlVar(
+                                        "V_C",
+                                    ),
+                                ),
+                                Var(
+                                    CErlVar(
+                                        "V_Anf1",
+                                    ),
+                                ),
+                                Lit(
+                                    Atom(
+                                        CErlAtom(
+                                            "infinity",
+                                        ),
+                                    ),
+                                ),
+                            ],
+                        },
+                    },
+                },
+            },
+        },
+    ],
+}

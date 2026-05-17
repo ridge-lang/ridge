@@ -1,0 +1,15 @@
+# tools/vscode-ridge-test/ridge.toml — workspace root manifest for the G7
+# manual VS Code attestation fixture.
+#
+# The forbid rule below makes std.fs unreachable from the g7fixture.* project,
+# triggering R013 ForbidViolation when src/Sample.rg imports it.
+
+[workspace]
+name    = "g7-fixture-ws"
+version = "0.1.0"
+members = ["apps/*"]
+
+[workspace.rules]
+forbid = [
+  { from = "g7fixture.**", to = "std.fs" },
+]

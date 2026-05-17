@@ -1,0 +1,52 @@
+-- std.time — Time and duration utilities (Tier 3, imports std.text).
+--
+-- Timestamp is a language built-in primitive (D048).
+-- Duration is a pre-allocated built-in record { ms: Int } (§3.12).
+-- Error is a pre-allocated built-in record { code: Text, message: Text } (§3.11).
+-- §3.12: pure functions have no capability requirement;
+--        functions that read the system clock require `time`.
+
+-- A time duration, expressed in whole milliseconds.
+-- Pre-allocated in BuiltinTyCons (§3.12 / plan line 349).
+pub type Duration = { ms: Int }
+
+-- Return the current system time as a Timestamp.
+@ffi("ridge_rt", "time_now", 1)
+pub fn time now (_unit: Unit) -> Timestamp
+
+-- Return the Unix epoch (1970-01-01T00:00:00Z) as a Timestamp.
+@ffi("ridge_rt", "time_epoch", 1)
+pub fn epoch (_unit: Unit) -> Timestamp
+
+-- Parse an ISO-8601 text into a Timestamp.
+-- Returns Ok(Timestamp) on success, Err(Error) on invalid input.
+-- Bridge: ridge_rt:time_from_iso/1 returns {ok, Ts} | {error, ErrorRecord}.
+@ffi("ridge_rt", "time_from_iso", 1)
+pub fn fromIso (s: Text) -> Result Timestamp Error
+
+-- Compute the difference between two timestamps, returning a Duration.
+-- Bridge: ridge_rt:time_diff_ms/2 returns the ms count; wrapped into Duration on the Ridge side.
+@ffi("ridge_rt", "time_diff", 2)
+pub fn diff (a: Timestamp) (b: Timestamp) -> Duration
+
+-- Compute the difference between two timestamps in milliseconds.
+@ffi("ridge_rt", "time_diff_ms", 2)
+pub fn diffMs (a: Timestamp) (b: Timestamp) -> Int
+
+-- Return milliseconds elapsed since the given timestamp.
+-- Requires `time` to read the current clock.
+@ffi("ridge_rt", "time_since_ms", 1)
+pub fn time sinceMs (t: Timestamp) -> Int
+
+-- Pause the current process for the given number of milliseconds.
+@ffi("timer", "sleep", 1)
+pub fn time sleep (ms: Int) -> Unit
+
+-- Alias for fromIso — spec §9.2 surface compatibility.
+-- Returns Ok(Timestamp) on success, Err(Error) on invalid input.
+@ffi("ridge_rt", "time_from_iso", 1)
+pub fn parse (s: Text) -> Result Timestamp Error
+
+-- Format a Timestamp as an ISO-8601 text representation.
+@ffi("ridge_rt", "time_iso", 1)
+pub fn iso (t: Timestamp) -> Text

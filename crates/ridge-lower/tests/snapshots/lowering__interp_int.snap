@@ -1,0 +1,30 @@
+---
+source: crates/ridge-lower/tests/lowering.rs
+expression: rendered
+---
+module: m0
+items_count: 1
+items:
+  - kind: fn
+    name: interp_int
+    pub: false
+    main: false
+    caps: CapabilitySet(0)
+    ret_ty: Con(3)
+    params:
+      - name: n
+        ty: Con(0)
+    body:
+      Call(n0):
+        callee:
+          Symbol(n1): Stdlib(std.text.concat)
+        args:
+          -
+            Lit(n2): Text("The answer is ")
+          -
+            Call(n3):
+              callee:
+                Symbol(n4): Stdlib(std.int.toText)
+              args:
+                -
+                  Local(n5): n

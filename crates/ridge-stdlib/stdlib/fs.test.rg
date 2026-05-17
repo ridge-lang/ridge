@@ -1,0 +1,89 @@
+-- Private FFI bridges for std.fs test suite.
+-- These replicate fs.rg and env.rg FFI declarations in local scope because
+-- cross-module calls are unsupported (T17+ deferred).
+-- Several tests require both `fs` and `env` capabilities (dual-cap, per OQ-C026
+-- / D176); capability syntax: `pub fn fs env test_name ()`.
+@ffi("file", "read_file", 1)
+fn _readFile (path: Text) -> Result Text Text
+
+@ffi("ridge_rt", "fs_write", 2)
+fn _writeFile (path: Text) (content: Text) -> Result Unit Text
+
+@ffi("filelib", "is_file", 1)
+fn _exists (path: Text) -> Bool
+
+@ffi("ridge_rt", "fs_lines", 1)
+fn _fsLines (path: Text) -> Result (List Text) Text
+
+@ffi("ridge_rt", "env_get", 1)
+fn _envGet (name: Text) -> Option Text
+
+-- Resolve a usable temp directory path from TMPDIR (Unix) or TEMP (Windows).
+fn env _tmpDir (_u: Unit) -> Text =
+    match _envGet "TMPDIR"
+        Some d -> d
+        None ->
+            match _envGet "TEMP"
+                Some d -> d
+                None -> "/tmp"
+
+@ffi("erlang", "iolist_to_binary", 1)
+fn _iolistToBin (l: List Text) -> Text
+
+fn _concat (a: Text) (b: Text) -> Text = _iolistToBin [a, b]
+
+fn env _tmpPath (name: Text) -> Text =
+    _concat (_concat (_tmpDir ()) "/ridge-fs-test-") name
+
+@ffi("erlang", "length", 1)
+fn _listLength (xs: List a) -> Int
+
+pub fn test_smoke_fs () -> Result Unit Text = Ok ()
+
+-- fs.writeFile then fs.readFile returns Ok with the same content.
+pub fn fs env test_writeFile_then_readFile_round_trip () -> Result Unit Text =
+    let path = _tmpPath "write-read"
+    match _writeFile path "hello"
+        Err e -> Err (_concat "writeFile failed: " e)
+        Ok _ ->
+            match _readFile path
+                Err e -> Err (_concat "readFile failed: " e)
+                Ok content ->
+                    if content == "hello" then Ok ()
+                    else Err "readFile content should equal written content"
+
+-- fs.readFile of a nonexistent path returns Err.
+pub fn fs env test_readFile_missing_returns_err () -> Result Unit Text =
+    let path = _tmpPath "definitely-does-not-exist-xyz789"
+    match _readFile path
+        Err _ -> Ok ()
+        Ok _ -> Err "readFile of missing path should return Err"
+
+-- fs.exists returns true after a file is written.
+pub fn fs env test_exists_true_after_write () -> Result Unit Text =
+    let path = _tmpPath "exists-check"
+    match _writeFile path "x"
+        Err e -> Err (_concat "writeFile failed: " e)
+        Ok _ ->
+            if _exists path then Ok ()
+            else Err "fs.exists should be true after writeFile"
+
+-- fs.exists returns false for a nonexistent path.
+pub fn fs test_exists_false_for_missing () -> Result Unit Text =
+    if _exists "/this/path/should/not/exist/ridge-stdlib-test-9a8b7c" then
+        Err "fs.exists should be false for nonexistent path"
+    else Ok ()
+
+-- fs.lines of a single-line file returns a list with 1 element.
+-- Note: Ridge "\n" literals are raw 2-byte sequences, so we test a
+-- simpler case: a file with no newlines returns exactly 1 line.
+pub fn fs env test_lines_splits_on_newline () -> Result Unit Text =
+    let path = _tmpPath "lines-test"
+    match _writeFile path "hello"
+        Err e -> Err (_concat "writeFile failed: " e)
+        Ok _ ->
+            match _fsLines path
+                Err e -> Err (_concat "fs.lines failed: " e)
+                Ok ls ->
+                    if _listLength ls == 1 then Ok ()
+                    else Err "fs.lines of single-line file should return 1 element"

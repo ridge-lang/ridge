@@ -1,0 +1,13 @@
+[package]
+name         = "ridge-codegen-llvm"
+description  = "Codegen: IR to LLVM IR (0.4.0+)"
+version.workspace     = true
+edition.workspace     = true
+license.workspace     = true
+authors.workspace     = true
+publish.workspace     = true
+repository.workspace  = true
+rust-version.workspace = true
+
+[lints]
+workspace = true

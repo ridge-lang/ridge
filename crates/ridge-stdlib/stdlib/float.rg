@@ -1,0 +1,85 @@
+-- std.float — Floating-point utilities (Tier 1, no stdlib imports).
+--
+-- Direct @ffi wrappers delegate to BEAM erlang:*, math:*, ridge_rt:*, erts_internal:*.
+-- Hybrid functions combine a raw @ffi with a Ridge wrapper.
+--
+-- D030: Float follows IEEE 754 double precision.
+-- Float.totalCompare provides a NaN-aware total ordering via erts_internal:cmp_term/2.
+
+-- Convert a float to its text representation.
+@ffi("ridge_rt", "float_to_text", 1)
+pub fn toText (f: Float) -> Text
+
+-- Raw BEAM binary_to_float — may throw on invalid input; used by parse wrapper.
+@ffi("erlang", "binary_to_float", 1)
+pub fn parseRaw (s: Text) -> Float
+
+-- Parse a text string as a float.
+-- Wraps parseRaw in Some; runtime exception handling is deferred to Phase 7 T11.
+pub fn parse (s: Text) -> Option Float =
+    Some (parseRaw s)
+
+-- Convert an integer to a float.
+@ffi("erlang", "float", 1)
+pub fn fromInt (n: Int) -> Float
+
+-- Round to nearest integer (Erlang round/1 semantics: half rounds away from zero).
+@ffi("erlang", "round", 1)
+pub fn round (f: Float) -> Int
+
+-- Raw BEAM truncation (rounds toward zero).
+@ffi("erlang", "trunc", 1)
+pub fn truncate (f: Float) -> Int
+
+-- Floor: greatest integer <= f.
+-- BEAM erlang:trunc/1 rounds toward zero, so for negatives we subtract 1
+-- unless f is exactly an integer.
+pub fn floor (f: Float) -> Int =
+    let t = truncate f
+    if f >= 0.0 then t
+    else
+        let ft = fromInt t
+        if ft == f then t else t - 1
+
+-- Ceiling: smallest integer >= f.
+-- Symmetric with floor: for positives, add 1 unless f is exactly an integer.
+pub fn ceil (f: Float) -> Int =
+    let t = truncate f
+    if f <= 0.0 then t
+    else
+        let ft = fromInt t
+        if ft == f then t else t + 1
+
+-- Square root.
+@ffi("math", "sqrt", 1)
+pub fn sqrt (f: Float) -> Float
+
+-- Absolute value.
+@ffi("erlang", "abs", 1)
+pub fn abs (f: Float) -> Float
+
+-- Addition.
+@ffi("erlang", "+", 2)
+pub fn add (a: Float) (b: Float) -> Float
+
+-- Subtraction.
+@ffi("erlang", "-", 2)
+pub fn sub (a: Float) (b: Float) -> Float
+
+-- Multiplication.
+@ffi("erlang", "*", 2)
+pub fn mul (a: Float) (b: Float) -> Float
+
+-- Division.
+@ffi("erlang", "/", 2)
+pub fn div (a: Float) (b: Float) -> Float
+
+-- Negate a float.
+@ffi("erlang", "-", 1)
+pub fn neg (f: Float) -> Float
+
+-- Total ordering comparison for IEEE-754 floats (D030).
+-- Uses erts_internal:cmp_term/2 which provides a NaN-aware total order.
+-- Returns negative when a < b, 0 when a == b, positive when a > b.
+@ffi("erts_internal", "cmp_term", 2)
+pub fn totalCompare (a: Float) (b: Float) -> Int

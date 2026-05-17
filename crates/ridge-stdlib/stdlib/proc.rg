@@ -1,0 +1,28 @@
+-- std.proc — External process execution (Tier 3, imports std.text, std.list, std.result).
+--
+-- §3.16 / OQ-S007 / D123: only `run` is shipped; `exec` was rejected.
+-- All functions require the `proc` capability.
+-- `run` separates the command from its argument list to prevent injection.
+-- Users who need shell semantics: proc.run "sh" ["-c", cmd].
+--
+-- ProcOutput is a pre-allocated built-in record (§3.16):
+--   { stdout: Text, stderr: Text, exitCode: Int }
+-- Error is a pre-allocated built-in record (§3.11):
+--   { code: Text, message: Text }
+
+-- The output record of a completed process.
+-- Pre-allocated in BuiltinTyCons (§3.16 / OQ-S007 / D123).
+pub type ProcOutput = { stdout: Text, stderr: Text, exitCode: Int }
+
+-- Run an external command with the given argument list.
+-- Returns Ok(ProcOutput) on success, Err(Error) on spawn/timeout failure.
+-- §3.16: the unsafety of proc.exec (passing a raw Text command) is avoided
+-- by keeping cmd and args separated — OQ-S007 signed off 2026-04-29.
+-- Bridge: ridge_rt:proc_run/2 returns
+--   {ok, #{stdout => Stdout, stderr => Stderr, exitCode => Code}}
+--   or {error, {error_record, Code, Message}}.
+-- The ok shape is a map (not a tagged tuple) so it matches ProcOutput's
+-- record→map codegen lowering — field access `.exitCode` compiles to
+-- erlang:map_get.
+@ffi("ridge_rt", "proc_run", 2)
+pub fn proc run (cmd: Text) (args: List Text) -> Result ProcOutput Error

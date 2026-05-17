@@ -1,0 +1,171 @@
+# .azure-pipelines/diagnose-linux.yml
+#
+# Standalone diagnostic pipeline for the Linux G4 stdlib_e2e hang
+# (observed in ADO #209/#210; root cause TBD).  Builds the `ridge`
+# binary and runs `ridge test` against the canonical stdlib with live
+# output streaming so we see exactly where the hang happens, then
+# exits.
+#
+# Why a separate pipeline:
+#   The main `azure-pipelines.yml` runs ~60 min end-to-end across 3
+#   OS jobs; iterating a Linux-only hypothesis there is wasteful.
+#   This pipeline runs only the Linux job, only the steps strictly
+#   required to reproduce the hang, and uses the same cache keys so
+#   warm runs are ~8-10 min.
+#
+# How to use:
+#   1. Register once in Azure DevOps UI: Pipelines -> New pipeline ->
+#      Existing YAML file -> .azure-pipelines/diagnose-linux.yml.
+#   2. Run on demand via the UI ("Run pipeline").
+#   3. Inspect the `Diagnose ridge test stdlib (live, 5min cap)` step
+#      output to see the last line `ridge test` produced before the
+#      hang.  That tells us which phase (typecheck / erlc / spawn /
+#      test exec) is stuck.
+#
+# Remove this file once the hang is fixed in the main pipeline.
+
+trigger: none          # manual-only; never auto-triggered on push
+pr: none
+
+pool:
+  vmImage: 'ubuntu-latest'
+
+jobs:
+  - job: diagnose_linux
+    displayName: 'Diagnose Linux ridge test hang'
+    timeoutInMinutes: 20
+
+    steps:
+      # Free ~40 GB by purging unused preinstalled SDKs — same logic
+      # as the main pipeline build_test_linux job.
+      - script: |
+          set -eu
+          echo '=== df -h BEFORE cleanup ==='
+          df -h /
+          for d in \
+            /usr/share/dotnet \
+            /usr/local/lib/android \
+            /opt/ghc \
+            /opt/hostedtoolcache/CodeQL \
+            /opt/hostedtoolcache/Java_Temurin-Hotspot_jdk \
+            /opt/hostedtoolcache/Java_Adopt_jdk \
+            /opt/hostedtoolcache/Java_Zulu_jdk \
+            /usr/local/share/boost \
+            /usr/local/share/chromium \
+            /usr/local/share/powershell \
+            /opt/microsoft/powershell \
+            /opt/google/chrome \
+            /usr/local/.ghcup \
+            /usr/local/julia* \
+            /usr/local/n \
+          ; do
+            if [ -e "$d" ]; then
+              sudo rm -rf "$d" || true
+            fi
+          done
+          echo '=== df -h AFTER cleanup ==='
+          df -h /
+        displayName: 'Free disk space (purge unused SDKs)'
+
+      # Reuse the same cache keys as the main pipeline so a warm
+      # main-pipeline run primes this diagnostic pipeline (and vice
+      # versa).  On a fresh cache both .cargo and target restore
+      # take ~1 min combined.
+      - task: Cache@2
+        displayName: 'Cache .cargo'
+        inputs:
+          key: 'cargo-t15-home | "$(Agent.OS)" | Cargo.lock'
+          path: $(HOME)/.cargo
+          restoreKeys: cargo-t15-home | "$(Agent.OS)"
+
+      - task: Cache@2
+        displayName: 'Cache target'
+        inputs:
+          key: 'cargo-t15-target | "$(Agent.OS)" | Cargo.lock'
+          path: $(Build.SourcesDirectory)/target
+          restoreKeys: cargo-t15-target | "$(Agent.OS)"
+
+      - script: bash .azure-pipelines/setup-toolchain-linux.sh
+        displayName: 'Setup toolchain (Rust + Erlang + git from zero)'
+
+      # Raw-erl sanity check (same shape as the main pipeline's
+      # equivalent step).  Should print "1.x s" for both timed
+      # invocations; if it prints minutes the hang is in BEAM
+      # startup itself and the live diagnostic below is moot.
+      - script: |
+          set -x
+          echo '=== hostname ==='
+          hostname
+          echo '=== /etc/hosts ==='
+          cat /etc/hosts
+          echo '=== timed erl noop (should be < 2s) ==='
+          time erl -noshell -eval 'init:stop().'
+          echo '=== timed erl version dump ==='
+          time erl -noshell -eval 'io:put_chars(erlang:system_info(otp_release)),init:stop().'
+          echo '=== timed erlc compile of hello.erl ==='
+          TMPC="$(mktemp -d)"
+          cat >"$TMPC/hello.erl" <<'EOF'
+          -module(hello).
+          -export([main/1]).
+          main(_) -> io:format("hello~n", []).
+          EOF
+          time erlc -o "$TMPC" "$TMPC/hello.erl"
+          ls -la "$TMPC"
+          echo '=== timed erl invoking hello.beam ==='
+          time erl -noshell -pa "$TMPC" -s hello main hello -s init stop
+          rm -rf "$TMPC"
+        displayName: 'Diagnose Erlang startup (Linux)'
+
+      # Only build what the diagnostic needs: the `ridge` binary.
+      # Other crates (ridge-lsp, ridge-pkg, ridge-fmt, etc.) are
+      # irrelevant for the stdlib_e2e hang reproduction.
+      - script: cargo build -p ridge-cli --release
+        displayName: 'cargo build -p ridge-cli --release'
+
+      # The actual repro: replay stdlib_e2e_runs_all_tests by hand
+      # so `ridge test` stdout/stderr stream LIVE to the pipeline
+      # log (the Rust test uses Command::output() which captures in
+      # memory and only returns on child exit — hence the silent
+      # hang in #209/#210).  5-min hard timeout via `timeout
+      # --foreground` so a hang can't drain the whole job.
+      - script: |
+          set -eux
+          WORK="$(mktemp -d)"
+          cd "$WORK"
+          STDLIB_DIR="$(Build.SourcesDirectory)/crates/ridge-stdlib/stdlib"
+          echo "workspace=$WORK"
+          echo "stdlib=$STDLIB_DIR"
+          ls -la "$STDLIB_DIR" | head -20
+          cat >ridge.toml <<'EOF'
+          [workspace]
+          name = "stdlib-e2e-diag"
+          version = "0.1.0"
+          members = ["std"]
+          EOF
+          mkdir -p std
+          cat >std/ridge.toml <<EOF
+          [project]
+          name = "std"
+          version = "0.1.0"
+          kind = "library"
+
+          [project.src]
+          root = "$STDLIB_DIR"
+
+          [project.exports]
+          public = ["std.**"]
+          EOF
+          echo '=== launching ridge test (live, 5-min cap) ==='
+          if command -v stdbuf >/dev/null 2>&1; then
+              timeout --foreground 300 stdbuf -oL -eL \
+                  "$(Build.SourcesDirectory)/target/release/ridge" test 2>&1 \
+                  || echo "[diag] ridge test exit=$?"
+          else
+              timeout --foreground 300 \
+                  "$(Build.SourcesDirectory)/target/release/ridge" test 2>&1 \
+                  || echo "[diag] ridge test exit=$?"
+          fi
+          echo '=== ridge test finished (or timed out at 5 min) ==='
+        displayName: 'Diagnose ridge test stdlib (live, 5min cap)'
+        continueOnError: true
+        timeoutInMinutes: 8

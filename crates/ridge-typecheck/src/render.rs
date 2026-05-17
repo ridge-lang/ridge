@@ -1,5 +1,5 @@
 //! `Display` + `std::error::Error` for [`TypeError`], plus the [`emit_internal`]
-//! helper for T999 (OQ-T016).
+//! helper for T999.
 //!
 //! # Rendering format
 //!
@@ -16,7 +16,7 @@
 //! *prose* portion only — suitable for tests, tracing logs, and simple
 //! terminal output without source context.
 //!
-//! # T999 / OQ-T016
+//! # T999
 //!
 //! [`emit_internal`] is the canonical emit site for `T999 InternalTypeError`.
 //! In debug builds it fires a `debug_assert!` panic to surface invariant
@@ -222,7 +222,7 @@ impl fmt::Display for TypeError {
             //     Missing cases:
             //       Triangle _ _ _
             //
-            // OQ-T009: when total_missing > witnesses.len(), append
+            // When total_missing > witnesses.len(), append
             //   `... and N more`
             Self::NonExhaustiveMatch {
                 scrutinee_ty,
@@ -415,7 +415,7 @@ impl HasErrorCode for TypeError {
     }
 
     fn severity(&self) -> Severity {
-        // OQ-T013 resolved: T017 RedundantPattern and T022 DiscardedResult are
+        // T017 RedundantPattern and T022 DiscardedResult are
         // Warning-level; all other T### variants are hard errors.
         match self {
             Self::RedundantPattern { .. } | Self::DiscardedResult { .. } => Severity::Warning,
@@ -424,7 +424,7 @@ impl HasErrorCode for TypeError {
     }
 }
 
-// ── emit_internal — T999 helper (OQ-T016) ────────────────────────────────────
+// ── emit_internal — T999 helper ──────────────────────────────────────────────
 
 /// Emit a `T999 InternalTypeError` diagnostic (soft-error, no panic).
 ///
@@ -433,7 +433,7 @@ impl HasErrorCode for TypeError {
 ///
 /// For **true invariant-violation** sites where reaching the code path
 /// indicates a compiler bug, use [`emit_internal_strict`] instead — it adds a
-/// `debug_assert!` that panics in debug builds (OQ-T016).
+/// `debug_assert!` that panics in debug builds.
 ///
 /// # Usage
 ///
@@ -444,7 +444,7 @@ impl HasErrorCode for TypeError {
 /// ```
 /// Whether to panic on T999 in debug builds.
 ///
-/// OQ-T016: `emit_internal` panics in debug when this flag is set.
+/// `emit_internal` panics in debug when this flag is set.
 /// Production callers that want the panic-on-T999 behaviour (for catching
 /// true invariant violations) use [`emit_internal_strict`].  Scaffolding
 /// stubs that deliberately emit T999 for deferred code paths use this
@@ -458,7 +458,7 @@ pub fn emit_internal(ctx: &mut InferCtx, msg: impl Into<String>, span: Span) -> 
     ridge_types::Type::Error
 }
 
-/// Strict variant of [`emit_internal`] that panics in debug builds (OQ-T016).
+/// Strict variant of [`emit_internal`] that panics in debug builds.
 ///
 /// Use this at **true invariant-violation** sites — places where reaching the
 /// code path indicates a compiler bug. Scaffolding deferred-path stubs should
@@ -571,7 +571,7 @@ mod tests {
         assert!(!s.contains("more"), "should not truncate: {s}");
     }
 
-    // ── T016 Display — OQ-T009 "and N more" suffix ────────────────────────────
+    // ── T016 Display — "and N more" suffix ───────────────────────────────────
 
     #[test]
     fn display_t016_nonexhaustivematch_truncated() {

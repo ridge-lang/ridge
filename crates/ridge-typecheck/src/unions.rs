@@ -627,7 +627,7 @@ mod tests {
     // The test demonstrates the error-construction shape for T008; the actual
     // wiring that triggers T008 from live code is part of T17 (full pipeline).
     #[test]
-    #[ignore = "T008 path is defensive: unreachable from real Ridge code because Phase 3 R-codes catch unknown constructors before reaching T9; verified manually"]
+    #[ignore = "T008 path is defensive: unreachable from real Ridge code because resolve-phase R-codes catch unknown constructors before reaching T9; verified manually"]
     fn infer_unknown_constructor_t008() {
         // Direct construction of the T008 variant to confirm shape.
         let err = TypeError::UnknownConstructor {
@@ -763,10 +763,10 @@ mod tests {
     }
 
     // ── Test 11: pattern_unknown_ctor_T008 ───────────────────────────────────
-    // Same as test 7: Phase 3 catches unknown ctors as R-codes; T9's T008 is
+    // Same as test 7: the resolve phase catches unknown ctors as R-codes; T9's T008 is
     // a defensive path that is not reachable from real Ridge code.
     #[test]
-    #[ignore = "T008 defensive path — unreachable from real Ridge code; Phase 3 R-codes catch unknown constructors before T9; verified manually"]
+    #[ignore = "T008 defensive path — unreachable from real Ridge code; resolve-phase R-codes catch unknown constructors before T9; verified manually"]
     fn pattern_unknown_ctor_t008() {
         let err = TypeError::UnknownConstructor {
             name: "Bogus".to_string(),

@@ -11,7 +11,7 @@
 //! this pass every top-level type name is resolvable via
 //! `ctx.tycon_names[name]` (or a side-table passed to `ast_type_to_type`).
 //!
-//! # Alias resolution (OQ-T015)
+//! # Alias resolution
 //!
 //! Aliases are interned as `TyConKind::Alias(body)` where `body` is the
 //! eagerly-resolved RHS.  Because we may see aliases before the types they
@@ -261,7 +261,7 @@ fn build_type_kind_fresh(
         }
 
         TypeBody::Alias(alias_ty) => {
-            // OQ-T015: eager resolution.
+            // Eager alias resolution.
             let body = ast_type_to_ridge_type(b, ctx, alias_ty, names, &param_name_map);
             TyConKind::Alias(body)
         }

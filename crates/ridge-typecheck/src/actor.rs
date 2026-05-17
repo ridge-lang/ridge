@@ -13,9 +13,9 @@
 //!
 //! # Capability Model B (§8.4, D018)
 //!
-//! - `Send` contributes PURE to the caller's cap set (OQ-T004).
-//! - `Ask`  contributes `{time}` to the caller's cap set (OQ-T005).
-//! - `Spawn` contributes `{spawn}` to the caller's cap set (OQ-T006).
+//! - `Send` contributes PURE to the caller's cap set.
+//! - `Ask`  contributes `{time}` to the caller's cap set.
+//! - `Spawn` contributes `{spawn}` to the caller's cap set.
 //!
 //! The handler's own caps NEVER flow into the caller (Model B encapsulation).
 //! T13 (`caps_infer.rs`) implements this; T15 verifies it is not regressed.

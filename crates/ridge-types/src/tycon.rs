@@ -113,7 +113,7 @@ pub enum TyConKind {
     Record(RecordSchema),
     /// User-defined union type (including built-in `Option` / `Result`).
     Union(UnionSchema),
-    /// A type alias, eagerly resolved to its RHS (OQ-T015).
+    /// A type alias, eagerly resolved to its RHS.
     ///
     /// Use-sites carry `Type::Alias { name, body }` for diagnostic naming; the
     /// `body` here is the expanded RHS.
@@ -130,10 +130,10 @@ pub enum TyConKind {
 
 /// Schema for a record type constructor.
 ///
-/// **`fields` is `pub(crate)`, not `pub`** (OQ-T002 matiz). External readers
+/// **`fields` is `pub(crate)`, not `pub`**. External readers
 /// use the `record_fields()` accessor on the `ridge-types` crate root.
 ///
-/// # Rationale (OQ-T002)
+/// # Rationale
 ///
 /// 0.1.0 records are closed (no row polymorphism); 0.2.0 will introduce a row
 /// variable on `Type::Con(record_tycon, ..)`. Routing reads through the accessor
@@ -150,7 +150,7 @@ impl RecordSchema {
     /// Constructs a new `RecordSchema` from type params and declared fields.
     ///
     /// This is the only stable API for constructing a `RecordSchema` from
-    /// outside the `ridge-types` crate (OQ-T002 forward-compat accessor).
+    /// outside the `ridge-types` crate (forward-compat accessor).
     /// Direct field access to `fields` is `pub(crate)` only.
     #[must_use]
     pub const fn new(params: Vec<TyVid>, fields: Vec<RecordField>) -> Self {
@@ -160,7 +160,7 @@ impl RecordSchema {
     /// Returns a slice over the declared record fields.
     ///
     /// This is the only stable API for reading field definitions from outside
-    /// the `ridge-types` crate (OQ-T002 forward-compat accessor).
+    /// the `ridge-types` crate (forward-compat accessor).
     #[must_use]
     pub fn record_fields(&self) -> &[RecordField] {
         &self.fields

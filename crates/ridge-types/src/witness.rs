@@ -36,7 +36,7 @@ pub enum WitnessKind {
 ///
 /// Rendered by `ridge-typecheck::render` (T16) as a human-readable string;
 /// for now each variant carries the minimal structural information needed for
-/// the OQ-T009 capped witness set (`MAX_WITNESSES = 3`).
+/// the capped witness set (`MAX_WITNESSES = 3`).
 #[derive(Debug, Clone)]
 pub enum WitnessPat {
     /// A wildcard `_`.

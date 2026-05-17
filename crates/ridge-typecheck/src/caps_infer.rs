@@ -108,11 +108,11 @@ pub fn infer_caps(ctx: &mut InferCtx, b: &BuiltinTyCons, expr: &Expr) -> Capabil
         }
 
         // ── Ask ───────────────────────────────────────────────────────────────
-        // §8.1 / D018 Model B / OQ-T005: Ask absorbs only {time}.
+        // §8.1 / D018 Model B: Ask absorbs only {time}.
         Expr::Ask { .. } => CapabilitySet::singleton(Capability::Time),
 
         // ── Spawn ─────────────────────────────────────────────────────────────
-        // §8.1 / D061 / OQ-T006: Spawn absorbs only {spawn}.
+        // §8.1 / D061: Spawn absorbs only {spawn}.
         Expr::Spawn { .. } => CapabilitySet::singleton(Capability::Spawn),
 
         // ── Try block / Block ──────────────────────────────────────────────────

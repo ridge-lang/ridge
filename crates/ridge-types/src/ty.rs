@@ -42,15 +42,14 @@ pub enum CapRow {
 /// - [`Type::Con`] — a fully-applied type constructor `C args…`.
 /// - [`Type::Fn`] — a function type with capability annotation.
 /// - [`Type::Tuple`] — a structural tuple (unnamed positional fields).
-/// - [`Type::Alias`] — diagnostic-naming wrapper for an eagerly-resolved alias
-///   (OQ-T015).
+/// - [`Type::Alias`] — diagnostic-naming wrapper for an eagerly-resolved alias.
 /// - [`Type::Error`] — the absorbing error type; see below.
 ///
 /// # Closed records
 ///
 /// Spec §5.1 reserves row polymorphism for post-0.1.0. In Phase 4 a record type
 /// is exactly its `TyCon::Record(RecordSchema)` — no row-extension variable.
-/// See OQ-T002 for the explicit freeze.
+/// Records are closed with no row polymorphism in this release.
 ///
 /// # `Type::Error` — absorbing semantics
 ///
@@ -58,7 +57,7 @@ pub enum CapRow {
 /// `Type::Error` succeeds silently (no further `T###` diagnostic is emitted).
 /// Any expression typed `Error` propagates `Error` upward through inference,
 /// so a single upstream error never cascades into many. Mirrors `Binding::Error`
-/// from `ridge-resolve` (spec §5 / OQ-R011 pattern).
+/// from `ridge-resolve` (spec §5).
 #[non_exhaustive]
 #[derive(Debug, Clone)]
 pub enum Type {
@@ -77,7 +76,7 @@ pub enum Type {
     },
     /// A structural tuple type.
     Tuple(Vec<Self>),
-    /// Diagnostic-naming wrapper for an eagerly-resolved type alias (OQ-T015).
+    /// Diagnostic-naming wrapper for an eagerly-resolved type alias.
     ///
     /// Behaviorally transparent: `shallow_resolve`, unification, occurs-check,
     /// and `Subst::apply_to_ty` walk through it and operate on `body`. The
@@ -149,7 +148,7 @@ impl fmt::Display for Type {
                 }
                 write!(f, ")")
             }
-            // OQ-T015: prefer the alias name over the expanded body.
+            // Prefer the alias name over the expanded body.
             Self::Alias { name, .. } => write!(f, "#{}", name.0),
             Self::Error => write!(f, "<error>"),
         }
@@ -272,7 +271,7 @@ mod tests {
 
     #[test]
     fn alias_display_prefers_name_over_body() {
-        // OQ-T015: Type::Alias renders as the alias name, not the expanded body.
+        // Type::Alias renders as the alias name, not the expanded body.
         let alias = Type::Alias {
             name: cid(7),
             body: Box::new(Type::Con(cid(3), vec![])),

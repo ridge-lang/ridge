@@ -205,7 +205,7 @@ pub enum TypeError {
     NonExhaustiveMatch {
         /// String representation of the scrutinee type.
         scrutinee_ty: String,
-        /// Example missing patterns (capped at 3 per OQ-T009).
+        /// Example missing patterns (capped at 3).
         witnesses: Vec<String>,
         /// Total number of missing patterns (may exceed `witnesses.len()`).
         total_missing: usize,

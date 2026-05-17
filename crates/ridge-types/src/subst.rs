@@ -77,7 +77,7 @@ impl Subst {
     /// - All other variants are walked structurally.
     /// - [`Type::Error`] is returned unchanged.
     /// - [`Type::Alias`] is transparent — the body is substituted and the alias
-    ///   wrapper is preserved (OQ-T015).
+    ///   wrapper is preserved.
     ///
     /// The function is idempotent on already-applied substitutions (since after
     /// applying, free `TyVid`s are gone). No occurs-check — that is T5's job.
@@ -112,7 +112,7 @@ impl Subst {
                 }
             }
             Type::Tuple(ts) => Type::Tuple(ts.iter().map(|t| self.apply_to_ty(t)).collect()),
-            // OQ-T015: Alias is transparent — substitute the body, keep the wrapper.
+            // Alias is transparent — substitute the body, keep the wrapper.
             Type::Alias { name, body } => Type::Alias {
                 name: *name,
                 body: Box::new(self.apply_to_ty(body)),

@@ -1,11 +1,11 @@
-//! Escape validation for string literals and interpolated text segments (D047).
+//! Escape validation for string literals and interpolated text segments.
 //!
-//! The valid escape set per spec line 497 / D047:
+//! The valid escape set per spec line 497:
 //! `\n`, `\t`, `\"`, `\\`, `\r`, `\0`, `\u{HHHH}`
 //!
-//! The lexer validates escapes **eagerly** (OQ-L005 default).  The raw source
-//! bytes are preserved in the token; decoding to a concrete character value
-//! is a parser/type-checker concern.
+//! The lexer validates escapes eagerly.  The raw source bytes are preserved
+//! in the token; decoding to a concrete character value is a
+//! parser/type-checker concern.
 
 use crate::{
     error::{LexError, UnicodeEscapeError},

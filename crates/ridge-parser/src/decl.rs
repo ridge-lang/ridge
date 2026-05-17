@@ -1,4 +1,4 @@
-//! Declaration parsers (T10, grammar §§2–5).
+//! Declaration parsers (grammar §§2–5).
 //!
 //! Entry points:
 //!
@@ -14,21 +14,21 @@
 //! - [`parse_init_decl`]    — grammar §5.3.
 //! - [`parse_on_handler`]   — grammar §5.4.
 //! - [`parse_cap_list`]     — `{ Capability }` (zero or more).
-//! - [`parse_param_top`]    — D037-enforcing top-level parameter.
+//! - [`parse_param_top`]    — top-level parameter (bare or annotated only).
 //!
-//! # D037 enforcement
+//! # Top-level parameter enforcement
 //!
 //! [`parse_param_top`] rejects tuple/constructor patterns with `P012
 //! TopLevelPatternParam`.  Only `LOWER_IDENT` bare params and
 //! `(LOWER_IDENT : Type)` annotated params are accepted at top-level fn /
 //! on / init position.
 //!
-//! # doc-comment attachment (T10 note)
+//! # Doc-comment attachment
 //!
-//! All `doc` fields are set to `None` in T10.  T11 will own the
-//! `DocComment` token peeling and attach comments to declarations.
-//! Each `parse_*` function accepts an explicit `doc: Option<DocComment>`
-//! argument so the signature is already T11-ready.
+//! All `doc` fields are set to `None` during declaration parsing.  A later
+//! pass owns the `DocComment` token peeling and attaches comments to
+//! declarations.  Each `parse_*` function accepts an explicit
+//! `doc: Option<DocComment>` argument so the signature is ready for that pass.
 
 #![allow(dead_code)]
 #![allow(clippy::redundant_pub_crate)]
@@ -406,9 +406,9 @@ fn peek_capability(cur: &Cursor<'_>) -> Option<Capability> {
 
 // ── parse_param_top ───────────────────────────────────────────────────────────
 
-/// Parse a single top-level function parameter, enforcing D037.
+/// Parse a single top-level function parameter.
 ///
-/// D037: at the top-level fn declaration, `Param` is a bare name or an
+/// At the top-level fn declaration, `Param` is a bare name or an
 /// annotated name only.  Full patterns (tuples, constructors) are **not**
 /// allowed; use a `let` binding in the body instead.
 ///
@@ -459,7 +459,7 @@ pub(crate) fn parse_param_top(cur: &mut Cursor<'_>) -> Result<Param, ParseError>
                             })
                         }
                         _ => {
-                            // Not `name:` — it's a pattern (D037 violation).
+                            // Not `name:` — it's a pattern (P012 violation).
                             Err(ParseError::TopLevelPatternParam {
                                 span: start.merge(cur.span()),
                             })
@@ -499,12 +499,12 @@ pub(crate) fn can_start_param(cur: &Cursor<'_>) -> bool {
 /// ModulePath ::= UPPER_IDENT { "." UPPER_IDENT }
 ///              | LOWER_IDENT { "." ( LOWER_IDENT | UPPER_IDENT ) }
 /// ImportList ::= ImportItem { "," ImportItem }
-/// ImportItem ::= LOWER_IDENT | UPPER_IDENT     -- D072 (2026-04-25)
+/// ImportItem ::= LOWER_IDENT | UPPER_IDENT
 /// ```
 ///
-/// Per D072 (resolves OQ-R016), `ImportItem` accepts both `LOWER_IDENT`
-/// (functions, constants) and `UPPER_IDENT` (types, constructors), aligning
-/// with Haskell / Elm / Rust import-list idioms.  Example:
+/// `ImportItem` accepts both `LOWER_IDENT` (functions, constants) and
+/// `UPPER_IDENT` (types, constructors), aligning with Haskell / Elm / Rust
+/// import-list idioms.  Example:
 /// `import std.net.http (Request, Response, listen, respond) as Http`.
 ///
 /// Precondition: `cur.peek() == &Token::KwImport`.
@@ -782,7 +782,7 @@ fn parse_type_body(cur: &mut Cursor<'_>) -> Result<TypeBody, ParseError> {
         Token::LBrace => Ok(TypeBody::Record(parse_record_type_body(cur)?)),
 
         // Union type: leading `|` (optional) or `UPPER_IDENT` starting a constructor.
-        // D054: `|` is optional at the start; trailing `|` is forbidden.
+        // Leading `|` is optional; trailing `|` is forbidden.
         Token::Pipe => Ok(TypeBody::Union(parse_union_type_body(cur)?)),
 
         // UPPER_IDENT can start a union (no leading `|`) or an alias type.
@@ -876,7 +876,7 @@ fn parse_record_type_body(cur: &mut Cursor<'_>) -> Result<RecordTypeBody, ParseE
 
 /// Parse a union type body (grammar §3.3 line 376).
 ///
-/// D054: leading `|` is optional; trailing `|` is forbidden; min 1 alternative.
+/// Leading `|` is optional; trailing `|` is forbidden; min 1 alternative.
 ///
 /// ```ebnf
 /// UnionType ::= [ "|" ] Constructor { "|" Constructor } ;
@@ -899,12 +899,12 @@ fn parse_union_type_body(cur: &mut Cursor<'_>) -> Result<UnionTypeBody, ParseErr
         let pipe_span = cur.span();
         cur.bump(); // consume `|`
 
-        // Trailing `|` is forbidden (D054).
+        // Trailing `|` is forbidden.
         match cur.peek() {
             Token::Newline | Token::Dedent | Token::Eof | Token::Assign => {
                 return Err(ParseError::UnexpectedToken {
                     span: pipe_span,
-                    description: "unexpected trailing `|` in union type (D054)".to_string(),
+                    description: "unexpected trailing `|` in union type".to_string(),
                 });
             }
             _ => {}
@@ -1015,7 +1015,7 @@ pub(crate) fn parse_fn_decl(
     };
 
     // Parameters: zero or more Params.
-    // D069: `()` is the zero-param marker; consume it and leave params empty.
+    // `()` is the zero-param marker; consume it and leave params empty.
     let mut params: Vec<Param> = Vec::new();
     if cur.peek() == &Token::LParen && cur.peek_n(1) == Some(&Token::RParen) {
         cur.bump(); // consume `(`
@@ -1281,7 +1281,7 @@ pub(crate) fn parse_state_decl(cur: &mut Cursor<'_>) -> Result<StateDecl, ParseE
 
 // ── parse_init_decl ───────────────────────────────────────────────────────────
 
-/// Parse an `init` declaration (grammar §5.3 line 511, D061).
+/// Parse an `init` declaration (grammar §5.3 line 511).
 ///
 /// Note: The grammar shows `"init" [ CapList ] "(" [ ParamList ] ")" "=" Block`,
 /// but the canonical example (`rate_limiter.rg`) uses separate annotated params
@@ -1296,7 +1296,7 @@ pub(crate) fn parse_init_decl(cur: &mut Cursor<'_>) -> Result<InitDecl, ParseErr
     let caps = parse_cap_list(cur);
 
     // Parameters: zero or more top-level params (same as fn).
-    // D069: `()` is the zero-param marker; consume it and leave params empty.
+    // `()` is the zero-param marker; consume it and leave params empty.
     let mut params: Vec<Param> = Vec::new();
     if cur.peek() == &Token::LParen && cur.peek_n(1) == Some(&Token::RParen) {
         cur.bump(); // consume `(`
@@ -1356,7 +1356,7 @@ pub(crate) fn parse_on_handler(
     };
 
     // Parameters.
-    // D069: `()` is the zero-param marker; consume it and leave params empty.
+    // `()` is the zero-param marker; consume it and leave params empty.
     let mut params: Vec<Param> = Vec::new();
     if cur.peek() == &Token::LParen && cur.peek_n(1) == Some(&Token::RParen) {
         cur.bump(); // consume `(`
@@ -1460,7 +1460,7 @@ mod tests {
     }
 
     // ─────────────────────────────────────────────────────────────────────────
-    // T10-1: parse_import_simple
+    // parse_import_simple
     // ─────────────────────────────────────────────────────────────────────────
     #[test]
     fn parse_import_simple() {
@@ -1473,7 +1473,7 @@ mod tests {
     }
 
     // ─────────────────────────────────────────────────────────────────────────
-    // T10-2: parse_import_with_items
+    // parse_import_with_items
     // ─────────────────────────────────────────────────────────────────────────
     #[test]
     fn parse_import_with_items() {
@@ -1486,7 +1486,7 @@ mod tests {
     }
 
     // ─────────────────────────────────────────────────────────────────────────
-    // T10-3: parse_import_with_alias
+    // parse_import_with_alias
     // ─────────────────────────────────────────────────────────────────────────
     #[test]
     fn parse_import_with_alias() {
@@ -1497,12 +1497,12 @@ mod tests {
     }
 
     // ─────────────────────────────────────────────────────────────────────────
-    // D072: ImportItem accepts both LOWER_IDENT and UPPER_IDENT
+    // ImportItem accepts both LOWER_IDENT and UPPER_IDENT
     // ─────────────────────────────────────────────────────────────────────────
     #[test]
     fn parse_import_with_mixed_case_items() {
-        // Per D072 (resolves OQ-R016), import lists may include UPPER_IDENT
-        // (types, constructors) alongside LOWER_IDENT (fns, consts).
+        // Import lists may include UPPER_IDENT (types, constructors) alongside
+        // LOWER_IDENT (fns, consts).
         // Grammar §2.2 puts `as Alias` BEFORE `(items)`.
         let imp = parse_imp("import std.net.http as Http (Request, Response, listen, respond)")
             .expect("should parse mixed-case import list");
@@ -1529,7 +1529,7 @@ mod tests {
     }
 
     // ─────────────────────────────────────────────────────────────────────────
-    // T10-4: parse_const_simple
+    // parse_const_simple
     // ─────────────────────────────────────────────────────────────────────────
     #[test]
     fn parse_const_simple() {
@@ -1547,7 +1547,7 @@ mod tests {
     }
 
     // ─────────────────────────────────────────────────────────────────────────
-    // T10-5: parse_const_pub
+    // parse_const_pub
     // ─────────────────────────────────────────────────────────────────────────
     #[test]
     fn parse_const_pub() {
@@ -1558,7 +1558,7 @@ mod tests {
     }
 
     // ─────────────────────────────────────────────────────────────────────────
-    // T10-6: parse_fn_simple
+    // parse_fn_simple
     // ─────────────────────────────────────────────────────────────────────────
     #[test]
     fn parse_fn_simple() {
@@ -1571,7 +1571,7 @@ mod tests {
     }
 
     // ─────────────────────────────────────────────────────────────────────────
-    // T10-7: parse_fn_with_caps
+    // parse_fn_with_caps
     // ─────────────────────────────────────────────────────────────────────────
     #[test]
     fn parse_fn_with_caps() {
@@ -1583,7 +1583,7 @@ mod tests {
     }
 
     // ─────────────────────────────────────────────────────────────────────────
-    // T10-8: parse_fn_with_params_and_ret
+    // parse_fn_with_params_and_ret
     // ─────────────────────────────────────────────────────────────────────────
     #[test]
     fn parse_fn_with_params_and_ret() {
@@ -1596,7 +1596,7 @@ mod tests {
     }
 
     // ─────────────────────────────────────────────────────────────────────────
-    // T10-9: parse_fn_reject_tuple_param_p012
+    // parse_fn_reject_tuple_param_p012
     // ─────────────────────────────────────────────────────────────────────────
     #[test]
     fn parse_fn_reject_tuple_param_p012() {
@@ -1622,7 +1622,7 @@ mod tests {
     }
 
     // ─────────────────────────────────────────────────────────────────────────
-    // T10-10: parse_type_alias
+    // parse_type_alias
     // ─────────────────────────────────────────────────────────────────────────
     #[test]
     fn parse_type_alias() {
@@ -1633,7 +1633,7 @@ mod tests {
     }
 
     // ─────────────────────────────────────────────────────────────────────────
-    // T10-11: parse_type_record
+    // parse_type_record
     // ─────────────────────────────────────────────────────────────────────────
     #[test]
     fn parse_type_record() {
@@ -1649,7 +1649,7 @@ mod tests {
     }
 
     // ─────────────────────────────────────────────────────────────────────────
-    // T10-12: parse_type_union_leading_bar
+    // parse_type_union_leading_bar
     // ─────────────────────────────────────────────────────────────────────────
     #[test]
     fn parse_type_union_leading_bar() {
@@ -1666,7 +1666,7 @@ mod tests {
     }
 
     // ─────────────────────────────────────────────────────────────────────────
-    // T10-13: parse_type_union_no_leading_bar (D054)
+    // parse_type_union_no_leading_bar
     // ─────────────────────────────────────────────────────────────────────────
     #[test]
     fn parse_type_union_no_leading_bar() {
@@ -1679,7 +1679,7 @@ mod tests {
     }
 
     // ─────────────────────────────────────────────────────────────────────────
-    // T10-14: parse_type_union_with_args
+    // parse_type_union_with_args
     // ─────────────────────────────────────────────────────────────────────────
     #[test]
     fn parse_type_union_with_args() {
@@ -1710,7 +1710,7 @@ mod tests {
     }
 
     // ─────────────────────────────────────────────────────────────────────────
-    // T10-15: parse_actor_without_init (url_shortener.rg Store shape)
+    // parse_actor_without_init (url_shortener.rg Store shape)
     // ─────────────────────────────────────────────────────────────────────────
     #[test]
     fn parse_actor_without_init() {
@@ -1723,7 +1723,7 @@ mod tests {
     }
 
     // ─────────────────────────────────────────────────────────────────────────
-    // T10-16: parse_actor_with_init (rate_limiter.rg Limiter shape)
+    // parse_actor_with_init (rate_limiter.rg Limiter shape)
     // ─────────────────────────────────────────────────────────────────────────
     #[test]
     fn parse_actor_with_init() {
@@ -1744,7 +1744,7 @@ mod tests {
     }
 
     // ─────────────────────────────────────────────────────────────────────────
-    // T10-17: parse_visibility_pub_internal
+    // parse_visibility_pub_internal
     // ─────────────────────────────────────────────────────────────────────────
     #[test]
     fn parse_visibility_pub_internal() {
@@ -1754,7 +1754,7 @@ mod tests {
     }
 
     // ─────────────────────────────────────────────────────────────────────────
-    // T10-18: parse_inner_fn_expr — InnerFn is tested in expr.rs (T10 note)
+    // parse_inner_fn_expr — InnerFn is also tested in expr.rs
     // This test verifies that parse_fn_decl itself works for inner fn shape.
     // ─────────────────────────────────────────────────────────────────────────
     #[test]
@@ -1769,10 +1769,10 @@ mod tests {
     }
 
     // ─────────────────────────────────────────────────────────────────────────
-    // T10: Example-program first-declaration tests
+    // Example-program first-declaration tests
     // ─────────────────────────────────────────────────────────────────────────
 
-    // T10-19: log_analyzer.rg — first import `import std.fs as Fs`
+    // log_analyzer.rg — first import `import std.fs as Fs`
     #[test]
     fn parse_log_analyzer_first_decl() {
         let imp = parse_imp("import std.fs as Fs").expect("should parse");
@@ -1781,7 +1781,7 @@ mod tests {
         assert_eq!(imp.alias.as_ref().map(|a| a.text.as_str()), Some("Fs"));
     }
 
-    // T10-20: url_shortener.rg — first import `import std.io as Io`
+    // url_shortener.rg — first import `import std.io as Io`
     #[test]
     fn parse_url_shortener_first_decl() {
         let imp = parse_imp("import std.io as Io").expect("should parse");
@@ -1789,7 +1789,7 @@ mod tests {
         assert_eq!(imp.alias.as_ref().map(|a| a.text.as_str()), Some("Io"));
     }
 
-    // T10-21: game_of_life.rg — first import `import std.io as Io`
+    // game_of_life.rg — first import `import std.io as Io`
     // and first declaration `type Grid = { rows: Int, cols: Int, cells: List (List Bool) }`
     #[test]
     fn parse_game_of_life_first_decl() {
@@ -1802,7 +1802,7 @@ mod tests {
         assert_eq!(body.fields.len(), 2);
     }
 
-    // T10-22: rate_limiter.rg — actor Limiter with init block
+    // rate_limiter.rg — actor Limiter with init block
     #[test]
     fn parse_rate_limiter_first_decl() {
         let src = "actor Limiter =\n    state capacity: Int\n    state tokens: Float\n    init (cap: Int) (rate: Float) =\n        capacity <- cap\n        tokens <- Float.fromInt cap\n";
@@ -1815,7 +1815,7 @@ mod tests {
     }
 
     // ─────────────────────────────────────────────────────────────────────────
-    // T10-23: parse_fn_no_params_no_ret
+    // parse_fn_no_params_no_ret
     // ─────────────────────────────────────────────────────────────────────────
     #[test]
     fn parse_fn_no_params_no_ret() {
@@ -1826,7 +1826,7 @@ mod tests {
     }
 
     // ─────────────────────────────────────────────────────────────────────────
-    // T10-24: parse_const_missing_colon_p005
+    // parse_const_missing_colon_p005
     // ─────────────────────────────────────────────────────────────────────────
     #[test]
     fn parse_const_missing_colon_p005() {
@@ -1839,7 +1839,7 @@ mod tests {
     }
 
     // ─────────────────────────────────────────────────────────────────────────
-    // T10-25: parse_type_record_multiline (grid type from game_of_life)
+    // parse_type_record_multiline (grid type from game_of_life)
     // ─────────────────────────────────────────────────────────────────────────
     #[test]
     fn parse_type_record_multiline() {
@@ -1856,7 +1856,7 @@ mod tests {
     }
 
     // ─────────────────────────────────────────────────────────────────────────
-    // T10-26: parse_on_handler_with_ret
+    // parse_on_handler_with_ret
     // ─────────────────────────────────────────────────────────────────────────
     #[test]
     fn parse_on_handler_with_ret() {
@@ -1870,7 +1870,7 @@ mod tests {
     }
 
     // ─────────────────────────────────────────────────────────────────────────
-    // T10-27: parse_on_handler_with_caps_and_params
+    // parse_on_handler_with_caps_and_params
     // ─────────────────────────────────────────────────────────────────────────
     #[test]
     fn parse_on_handler_with_caps_and_params() {
@@ -1884,7 +1884,7 @@ mod tests {
     }
 
     // ─────────────────────────────────────────────────────────────────────────
-    // T10-28: parse_state_decl_no_default
+    // parse_state_decl_no_default
     // ─────────────────────────────────────────────────────────────────────────
     #[test]
     fn parse_state_decl_no_default() {
@@ -1896,7 +1896,7 @@ mod tests {
     }
 
     // ─────────────────────────────────────────────────────────────────────────
-    // T10-29: parse_state_decl_with_default
+    // parse_state_decl_with_default
     // ─────────────────────────────────────────────────────────────────────────
     #[test]
     fn parse_state_decl_with_default() {
@@ -1908,7 +1908,7 @@ mod tests {
     }
 
     // ─────────────────────────────────────────────────────────────────────────
-    // T10-30: parse_visibility_pub_variants
+    // parse_visibility_pub_variants
     // ─────────────────────────────────────────────────────────────────────────
     #[test]
     fn parse_visibility_pub_variants() {
@@ -1921,7 +1921,7 @@ mod tests {
     }
 
     // ─────────────────────────────────────────────────────────────────────────
-    // T10-31: parse_import_text_items (std.text)
+    // parse_import_text_items (std.text)
     // ─────────────────────────────────────────────────────────────────────────
     #[test]
     fn parse_import_text_items() {
@@ -1935,7 +1935,7 @@ mod tests {
     }
 
     // ─────────────────────────────────────────────────────────────────────────
-    // D069-1: parse_fn_zero_params_paren
+    // parse_fn_zero_params_paren
     // `fn main () = 42` should parse to FnDecl { params: [], ... }
     // ─────────────────────────────────────────────────────────────────────────
     #[test]
@@ -1952,7 +1952,7 @@ mod tests {
     }
 
     // ─────────────────────────────────────────────────────────────────────────
-    // D069-2: parse_fn_zero_params_with_caps
+    // parse_fn_zero_params_with_caps
     // `fn io fs main () -> Result Unit Error = 42` parses cleanly.
     // ─────────────────────────────────────────────────────────────────────────
     #[test]
@@ -1969,7 +1969,7 @@ mod tests {
     }
 
     // ─────────────────────────────────────────────────────────────────────────
-    // D069-3: parse_fn_zero_params_with_caps_and_body_block
+    // parse_fn_zero_params_with_caps_and_body_block
     // Multi-line body version with `()` zero-param marker.
     // ─────────────────────────────────────────────────────────────────────────
     #[test]
@@ -1988,7 +1988,7 @@ mod tests {
     }
 
     // ─────────────────────────────────────────────────────────────────────────
-    // D069-4: parse_on_zero_params
+    // parse_on_zero_params
     // `on tick () = count` — on handler with zero-param marker.
     // ─────────────────────────────────────────────────────────────────────────
     #[test]
@@ -2006,7 +2006,7 @@ mod tests {
     }
 
     // ─────────────────────────────────────────────────────────────────────────
-    // T10-32: parse_deferred_class_keyword_p013
+    // parse_deferred_class_keyword_p013
     // ─────────────────────────────────────────────────────────────────────────
     #[test]
     fn parse_deferred_class_keyword_p013() {
@@ -2019,7 +2019,7 @@ mod tests {
     }
 
     // ─────────────────────────────────────────────────────────────────────────
-    // T13-spawn-1: parse_fn_with_spawn_capability
+    // parse_fn_with_spawn_capability
     // `fn spawn io time main () = 42` — `spawn` is emitted as KwSpawn by the
     // lexer; parse_cap_list must accept it alongside plain-LowerIdent caps.
     // ─────────────────────────────────────────────────────────────────────────
@@ -2051,7 +2051,7 @@ mod tests {
     }
 
     // ─────────────────────────────────────────────────────────────────────────
-    // T13-spawn-2: parse_fn_spawn_net_io_time_caps
+    // parse_fn_spawn_net_io_time_caps
     // `fn spawn net io time main () = 42` — 4-capability case from
     // url_shortener.rg / rate_limiter.rg main function.
     // ─────────────────────────────────────────────────────────────────────────

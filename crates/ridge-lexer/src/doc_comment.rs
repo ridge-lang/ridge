@@ -6,7 +6,7 @@
 //! ```
 //!
 //! Both the opening and closing `---` must be **alone on their line**
-//! (OQ-L006 default: strictly alone on the line per grammar lines 260–262).
+//! (strictly alone, per grammar lines 260–262).
 //!
 //! This scanner is called from `raw_scan` when it detects a line whose entire
 //! non-whitespace content is `---`, after already consuming the three dashes.

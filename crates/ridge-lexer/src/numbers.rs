@@ -1,7 +1,7 @@
-//! Validation helpers for numeric literals (D046).
+//! Validation helpers for numeric literals.
 //!
 //! `logos` captures the raw text of each numeric literal.  This module
-//! validates the D046 constraints:
+//! validates the following constraints:
 //! - No leading underscore on the digit run (e.g. `0b_1` is invalid).
 //! - No trailing underscore (e.g. `1_000_` is invalid).
 //! - Base-prefix literals must have at least one digit after the prefix

@@ -232,8 +232,8 @@ fn t7_acceptance_log_analyzer_imports_resolve() {
             res.alias
         );
     }
-    // log_analyzer has 8 user imports + 3 prelude IRs (OQ-R013 × 2 + OQ-R015 × 1) = 11.
-    // OQ-R015 aliases IR always added (user has List+Map suppressed → 6 remaining bindings).
+    // log_analyzer has 8 user imports + 3 prelude IRs (R013 × 2 + R015 × 1) = 11.
+    // R015 aliases IR always added (user has List+Map suppressed → 6 remaining bindings).
     assert_eq!(
         module_imports.len(),
         11,
@@ -263,9 +263,9 @@ fn t7_acceptance_url_shortener_imports_resolve() {
             "url_shortener: unresolved import"
         );
     }
-    // url_shortener has 7 user imports (added std.net.http as Http per OQ-R015 task C)
-    // + 3 prelude IRs (OQ-R013 × 2 + OQ-R015 × 1) = 10.
-    // OQ-R015 aliases IR has List+Map suppressed → 6 remaining bindings, still added.
+    // url_shortener has 7 user imports (including std.net.http as Http per R015)
+    // + 3 prelude IRs (R013 × 2 + R015 × 1) = 10.
+    // R015 aliases IR has List+Map suppressed → 6 remaining bindings, still added.
     assert_eq!(
         module_imports.len(),
         10,
@@ -295,8 +295,8 @@ fn t7_acceptance_game_of_life_imports_resolve() {
             "game_of_life: unresolved import"
         );
     }
-    // game_of_life has 5 user imports + 3 prelude IRs (OQ-R013 × 2 + OQ-R015 × 1) = 8.
-    // OQ-R015 aliases IR has List suppressed → 7 remaining bindings, still added.
+    // game_of_life has 5 user imports + 3 prelude IRs (R013 × 2 + R015 × 1) = 8.
+    // R015 aliases IR has List suppressed → 7 remaining bindings, still added.
     assert_eq!(
         module_imports.len(),
         8,
@@ -326,8 +326,8 @@ fn t7_acceptance_rate_limiter_imports_resolve() {
             "rate_limiter: unresolved import"
         );
     }
-    // rate_limiter has 5 user imports + 3 prelude IRs (OQ-R013 × 2 + OQ-R015 × 1) = 8.
-    // OQ-R015 aliases IR has List suppressed → 7 remaining bindings, still added.
+    // rate_limiter has 5 user imports + 3 prelude IRs (R013 × 2 + R015 × 1) = 8.
+    // R015 aliases IR has List suppressed → 7 remaining bindings, still added.
     assert_eq!(
         module_imports.len(),
         8,
@@ -336,7 +336,7 @@ fn t7_acceptance_rate_limiter_imports_resolve() {
     );
 }
 
-// ── T6 acceptance tests: collect_symbols over each example ────────────────────
+// ── collect_symbols acceptance tests over each example ───────────────────────
 
 /// Helper: parse the given example into a module graph and run `collect_symbols`
 /// on its (only) module.  Panics if the graph/parse fails.
@@ -483,9 +483,9 @@ fn count_b<F: Fn(&Binding) -> bool>(bindings: &[Option<Binding>], f: F) -> usize
 /// allowlist if a regression surfaces.
 ///
 /// Past entries — all closed:
-/// - `Some`/`None`/`Ok`/`Err` — closed by OQ-R013 (implicit prelude, 2026-04-24).
-/// - `line` — closed by OQ-R014 option A (D071 layout-in-brackets, 2026-04-24).
-/// - `Response` — closed by D072 (`ImportList` accepts `UPPER_IDENT`,
+/// - `Some`/`None`/`Ok`/`Err` — closed by R013 (implicit prelude, 2026-04-24).
+/// - `line` — closed by R014 option A (layout-in-brackets, 2026-04-24).
+/// - `Response` — closed by import-list upper-ident extension (`ImportList` accepts `UPPER_IDENT`,
 ///   2026-04-25); `examples/url_shortener.rg` now does
 ///   `import std.net.http as Http (Request, Response, listen, respond)` and
 ///   `BUILTINS[std.net.http]` exports include `Request`/`Response`.
@@ -493,7 +493,7 @@ fn count_b<F: Fn(&Binding) -> bool>(bindings: &[Option<Binding>], f: F) -> usize
 ///   (`crates/ridge-resolve/src/walker.rs::visit_send_message`, 2026-04-25);
 ///   handler names are treated as labels and skipped, mirroring `Expr::Ask`.
 ///
-/// Any name in this slice would be silently allowed by the T8/T9 acceptance
+/// Any name in this slice would be silently allowed by the walker acceptance
 /// tests; an empty slice means every R010 in the canonical examples is a
 /// regression.
 const fn r010_t9_scope_names() -> &'static [&'static str] {
@@ -672,10 +672,9 @@ fn t8_acceptance_rate_limiter() {
 // ── T9 acceptance tests: qualified-name resolution ────────────────────────────
 
 /// Qualified-name head segments that are known-unresolvable in the canonical
-/// examples and are therefore expected R012 sites.  T9 correctly emits R012
-/// for these.
+/// examples and are therefore expected R012 sites.
 ///
-/// After OQ-R015 (implicit prelude module aliases, resolved 2026-04-24) plus
+/// After R015 (implicit prelude module aliases, resolved 2026-04-24) plus
 /// the `log_analyzer.rg` `Error.text` fix (replaced with `Err "…"` over
 /// `Result Unit Text`), all qualified-name heads in the 4 canonical examples
 /// resolve cleanly.  Empty list — any future R012 in the examples is a
@@ -720,11 +719,11 @@ fn t9_acceptance_stdlib_qualified_names_bind() {
 /// must NOT appear in any R012 diagnostic.
 #[test]
 fn t9_acceptance_no_unexpected_r012() {
-    // These heads have proper import aliases (explicit or OQ-R015 prelude) and
+    // These heads have proper import aliases (explicit or R015 prelude) and
     // must never produce R012.
     let properly_aliased = &[
         "Io", "List", "Map", "Random", "Fs", "Env", "Cli", "Time", "Option",
-        // OQ-R015: now pre-bound as prelude ModuleAlias entries.
+        // R015: now pre-bound as prelude ModuleAlias entries.
         "Int", "Float", "Bool", "Text", "Set", "Json",
         // Http: url_shortener.rg now has explicit `import std.net.http as Http`.
         "Http",
@@ -898,9 +897,8 @@ fn t12_acceptance_acme_no_rules_emits_no_r013() {
 // The two workspace fixtures (`acme_happy/`, `acme_forbid/`) live in
 // `tests/workspace.rs` per the plan's file-touch list.
 //
-// **DoD §10 T14 + §14.4 satisfied**: every canonical example resolves
-// cleanly (zero R-errors) thanks to two recent decisions:
-// - **D072** (2026-04-25): `ImportList` accepts `UPPER_IDENT`, so
+// Every canonical example resolves cleanly (zero R-errors) thanks to two decisions:
+// - Import-list upper-ident extension (2026-04-25): `ImportList` accepts `UPPER_IDENT`, so
 //   `examples/url_shortener.rg` can `import std.net.http as Http (Request,
 //   Response, listen, respond)` and reference `Request` / `Response` directly.
 // - **`Expr::Send` walker arm** (`src/walker.rs::visit_send_message`,
@@ -909,7 +907,7 @@ fn t12_acceptance_acme_no_rules_emits_no_r013() {
 //   resolved against the lexical scope, mirroring how `Expr::Ask` already
 //   silently skips its `message: Ident` field.
 
-/// Deterministic, snapshot-friendly view of the post-T7..T13 resolver state
+/// Deterministic, snapshot-friendly view of the post-resolve-pipeline state
 /// for one example or workspace fixture.
 ///
 /// Field choices:
@@ -1069,9 +1067,9 @@ fn t14_snapshot_log_analyzer() {
 #[test]
 fn t14_snapshot_url_shortener() {
     let snap = snapshot_example("url_shortener");
-    // DoD §14.4: url_shortener resolves cleanly.  Closed by D072
-    // (`ImportList` accepts `UPPER_IDENT` so `Request` / `Response` are
-    // imported directly from `std.net.http`).
+    // DoD §14.4: url_shortener resolves cleanly.
+    // `ImportList` accepts `UPPER_IDENT` so `Request` / `Response` are
+    // imported directly from `std.net.http`.
     assert!(
         snap.errors.is_empty(),
         "url_shortener must resolve cleanly; errors: {:#?}",

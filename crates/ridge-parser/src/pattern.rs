@@ -22,13 +22,13 @@
 //! `As { name, inner }`.  That combined result then participates in any
 //! following `::` chain.
 //!
-//! # D051 / P018
+//! # P018 — Bare record pattern
 //!
 //! A bare `{` in pattern position (without a leading `UPPER_IDENT`) is
 //! rejected with [`ParseError::BareRecordPattern`] (P018).
 
 // These functions are called by tests in this file.  They will be called from
-// production code in T7+ (match/let/lambda).  Suppress dead_code until then.
+// production code (match/let/lambda).  Suppress dead_code until then.
 #![allow(dead_code)]
 #![allow(clippy::redundant_pub_crate)]
 
@@ -114,7 +114,7 @@ pub(crate) fn parse_pattern(cur: &mut Cursor<'_>) -> Result<Pattern, ParseError>
 /// | `_` | `Pattern::Wildcard` |
 /// | `LOWER_IDENT` | `Pattern::Var` |
 /// | literal tokens | `Pattern::Literal` |
-/// | `{` | `P018 BareRecordPattern` (D051) |
+/// | `{` | `P018 BareRecordPattern` |
 /// | `(` | tuple (≥2 elems), paren (1 elem), or P002 for `()` |
 /// | `UPPER_IDENT` | `Pattern::Constructor` |
 /// | anything else | `P002 UnexpectedToken` |
@@ -167,7 +167,7 @@ pub(crate) fn parse_pattern_atom(cur: &mut Cursor<'_>) -> Result<Pattern, ParseE
             })
         }
 
-        // ── Bare record pattern `{ … }` — D051 error ─────────────────────────
+        // ── Bare record pattern `{ … }` — P018 error ─────────────────────────
         Token::LBrace => Err(ParseError::BareRecordPattern { span }),
 
         // ── Parenthesised / tuple ─────────────────────────────────────────────
@@ -186,7 +186,7 @@ pub(crate) fn parse_pattern_atom(cur: &mut Cursor<'_>) -> Result<Pattern, ParseE
 
 // ── parse_constructor_pattern (internal) ─────────────────────────────────────
 
-/// Parse a constructor pattern (grammar §7.4, D051).
+/// Parse a constructor pattern (grammar §7.4).
 ///
 /// Syntax:
 /// ```ebnf
@@ -274,8 +274,7 @@ fn parse_field_pattern_list(cur: &mut Cursor<'_>) -> Result<Vec<FieldPattern>, P
 /// Parse a single `FieldPattern`:
 ///
 /// - Explicit: `LOWER_IDENT "=" Pattern`
-/// - Shorthand: `LOWER_IDENT` (D053) — binds the field to a variable of the
-///   same name.
+/// - Shorthand: `LOWER_IDENT` — binds the field to a variable of the same name.
 ///
 /// The `=` token in the lexer is `Token::Assign`.
 fn parse_field_pattern(cur: &mut Cursor<'_>) -> Result<FieldPattern, ParseError> {
@@ -408,7 +407,7 @@ mod tests {
         parse_pattern(&mut cur)
     }
 
-    // ── T5-1: wildcard ────────────────────────────────────────────────────────
+    // ── wildcard ────────────────────────────────────────────────────────
 
     #[test]
     fn parse_pattern_wildcard() {
@@ -420,7 +419,7 @@ mod tests {
         );
     }
 
-    // ── T5-2: literal integer ─────────────────────────────────────────────────
+    // ── literal integer ─────────────────────────────────────────────────
 
     #[test]
     fn parse_pattern_literal_int() {
@@ -438,7 +437,7 @@ mod tests {
         );
     }
 
-    // ── T5-3: literal text ────────────────────────────────────────────────────
+    // ── literal text ────────────────────────────────────────────────────
 
     #[test]
     fn parse_pattern_literal_text() {
@@ -456,7 +455,7 @@ mod tests {
         );
     }
 
-    // ── T5-4: variable ────────────────────────────────────────────────────────
+    // ── variable ────────────────────────────────────────────────────────
 
     #[test]
     fn parse_pattern_var() {
@@ -469,7 +468,7 @@ mod tests {
         }
     }
 
-    // ── T5-5: constructor zero args ───────────────────────────────────────────
+    // ── constructor zero args ───────────────────────────────────────────
 
     #[test]
     fn parse_pattern_constructor_positional_zero_args() {
@@ -487,7 +486,7 @@ mod tests {
         }
     }
 
-    // ── T5-6: constructor one positional arg ──────────────────────────────────
+    // ── constructor one positional arg ──────────────────────────────────
 
     #[test]
     fn parse_pattern_constructor_positional_one_arg() {
@@ -510,7 +509,7 @@ mod tests {
         }
     }
 
-    // ── T5-7: constructor record shorthand ────────────────────────────────────
+    // ── constructor record shorthand ────────────────────────────────────
 
     #[test]
     fn parse_pattern_constructor_record_shorthand() {
@@ -538,7 +537,7 @@ mod tests {
         }
     }
 
-    // ── T5-8: constructor record with explicit binding ────────────────────────
+    // ── constructor record with explicit binding ────────────────────────
 
     #[test]
     fn parse_pattern_constructor_record_with_binding() {
@@ -574,7 +573,7 @@ mod tests {
         }
     }
 
-    // ── T5-9: tuple ───────────────────────────────────────────────────────────
+    // ── tuple ───────────────────────────────────────────────────────────
 
     #[test]
     fn parse_pattern_tuple() {
@@ -589,7 +588,7 @@ mod tests {
         }
     }
 
-    // ── T5-10: paren ──────────────────────────────────────────────────────────
+    // ── paren ──────────────────────────────────────────────────────────
 
     #[test]
     fn parse_pattern_paren() {
@@ -606,7 +605,7 @@ mod tests {
         }
     }
 
-    // ── T5-11: right-associative cons ─────────────────────────────────────────
+    // ── right-associative cons ─────────────────────────────────────────
 
     #[test]
     fn parse_pattern_cons_right_assoc() {
@@ -643,7 +642,7 @@ mod tests {
         }
     }
 
-    // ── T5-12: `@` alias pattern ─────────────────────────────────────────────
+    // ── `@` alias pattern ─────────────────────────────────────────────
 
     #[test]
     fn parse_pattern_at() {
@@ -684,7 +683,7 @@ mod tests {
         }
     }
 
-    // ── T5-13: bare record pattern → P018 ─────────────────────────────────────
+    // ── bare record pattern → P018 ─────────────────────────────────────
 
     #[test]
     fn parse_pattern_bare_record_rejects_with_p018() {
@@ -700,7 +699,7 @@ mod tests {
         }
     }
 
-    // ── T5-14: `@` without leading var → P001 ────────────────────────────────
+    // ── `@` without leading var → P001 ────────────────────────────────
 
     #[test]
     fn parse_pattern_at_without_var() {
@@ -716,7 +715,7 @@ mod tests {
         }
     }
 
-    // ── T5-15: missing `}` in record pattern → P001 ───────────────────────────
+    // ── missing `}` in record pattern → P001 ───────────────────────────
 
     #[test]
     fn parse_pattern_missing_rbrace() {

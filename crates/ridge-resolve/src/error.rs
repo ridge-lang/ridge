@@ -10,8 +10,8 @@
 //! carries a [`Span`] pointing to the offending source location and a stable
 //! code returned by [`ResolveError::code`].
 //!
-//! R018 is **reserved** — the former variant was removed in DR-07 / D073
-//! (bare imports are unambiguous under the OQ-R001 qualified-namespace default).
+//! R018 is **reserved** — the former variant was removed (bare imports are
+//! unambiguous under the R001 qualified-namespace default).
 //! The slot is kept to prevent code reuse; no variant emits "R018".
 //!
 //! ## `ManifestError` (M001..M020)
@@ -36,8 +36,8 @@ use crate::ModuleId;
 /// variants are pushed into the same `Vec<ResolveError>`; downstream code
 /// inspects [`ResolveError::severity`] to filter or rank them.
 ///
-/// Resolved per OQ-R002 (cross-scope shadowing silent, same-scope duplicate
-/// is `R011` hard error) and OQ-R005 (state-field shadowing is warn-level).
+/// Resolved per R002 (cross-scope shadowing silent, same-scope duplicate
+/// is `R011` hard error) and R005 (state-field shadowing is warn-level).
 ///
 /// # Stability
 ///
@@ -144,7 +144,7 @@ pub enum ResolveError {
         /// The module that was searched.
         module: String,
         /// Up to three Levenshtein-close exported-item names from `module`,
-        /// pre-filtered for visibility from the importing project.  T13.
+        /// pre-filtered for visibility from the importing project.
         suggestions: Vec<String>,
         /// Span of the import item.
         span: Span,
@@ -189,7 +189,7 @@ pub enum ResolveError {
         /// The segments of the qualified name.
         segments: Vec<String>,
         /// Up to three Levenshtein-close fully-rendered qualified-name
-        /// candidates (e.g. `["List.map"]` for typo `Li.map`).  T13.
+        /// candidates (e.g. `["List.map"]` for typo `Li.map`).
         suggestions: Vec<String>,
         /// Span of the qualified name.
         span: Span,
@@ -278,8 +278,8 @@ pub enum ResolveError {
         field_span: Span,
     },
 
-    // R018 is RESERVED — the former variant was removed under DR-07 / D073.
-    // Bare imports are resolved unambiguously (OQ-R001 provisional default accepted
+    // R018 is RESERVED — the former variant was removed.
+    // Bare imports are resolved unambiguously (R001 provisional default accepted
     // 2026-04-25: bare `import foo.bar` exposes only a qualified namespace alias).
     // The numeric slot is kept reserved so existing diagnostic consumers that key
     // on "R018" see a gap rather than a repurposed code.
@@ -353,7 +353,7 @@ impl ResolveError {
             Self::CapabilityDenied { .. } => "R015",
             Self::CapabilityNotAllowed { .. } => "R016",
             Self::StateFieldShadowedByLocal { .. } => "R017",
-            // R018 reserved — slot removed under DR-07 / D073; see module-level rustdoc
+            // R018 reserved — slot removed; see module-level rustdoc
             Self::UnknownCapabilityKeyword { .. } => "R019",
             Self::CapabilityListOnWrongDecl { .. } => "R020",
             Self::ActorStateMissingDefaultOrInit { .. } => "R021",
@@ -364,7 +364,7 @@ impl ResolveError {
 
     /// Return the diagnostic severity for this error.
     ///
-    /// Per OQ-R005 (resolved 2026-04-25), `R017 StateFieldShadowedByLocal`
+    /// Per R005 (resolved 2026-04-25), `R017 StateFieldShadowedByLocal`
     /// is **warn-level** — actor-state shadowing by a local is legal but
     /// suspect, and a warning is preferred over a hard error.  All other
     /// variants are hard errors.
@@ -787,7 +787,7 @@ mod tests {
         assert_eq!(err.code(), "M011");
     }
 
-    // ── Severity (T11) ─────────────────────────────────────────────────────────
+    // ── Severity ────────────────────────────────────────────────────────────────
 
     #[test]
     fn r017_severity_is_warning() {

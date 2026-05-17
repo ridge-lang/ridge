@@ -1,4 +1,4 @@
-//! `NodeId` assignment pass (T8, plan §3.2 β).
+//! `NodeId` assignment pass (plan §3.2 β).
 //!
 //! [`NodeIdMap`] is a side-table that stamps a stable [`NodeId`] on every
 //! semantically significant AST position without touching the AST structs.
@@ -28,7 +28,7 @@ use crate::{error::ResolveError, NodeId};
 /// Two different `NodeKind`s at the same span do NOT collide: a `QualifiedName`
 /// and its constituent `Ident` segments legitimately share byte ranges.
 ///
-/// # Collision-avoidance rules (Phase 4.5 T1 — OQ-PHASE45-001/002)
+/// # Collision-avoidance rules
 ///
 /// Each variant is stamped at most once per unique span.  Variants that may
 /// occupy the same byte range are distinguished by kind:
@@ -53,8 +53,8 @@ use crate::{error::ResolveError, NodeId};
 /// The invariant: for any given `(span, NodeKind)` pair, at most one `NodeId`
 /// is ever stamped.  The `IdAssigner` visitor enforces this; `R999
 /// InternalNodeIdCollision` fires if a duplicate is detected.
-// OQ-PHASE45-001: one `NodeKind::Expr` variant (not per-shape) — write-back is uniform.
-// OQ-PHASE45-002: `NodeKind::Type` added proactively for type-position stamping.
+// One `NodeKind::Expr` variant (not per-shape) — write-back is uniform.
+// `NodeKind::Type` added proactively for type-position stamping.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum NodeKind {
     /// A bare identifier (`LOWER_IDENT` or `UPPER_IDENT`).
@@ -241,7 +241,7 @@ impl<'ast> Visit<'ast> for IdAssigner {
         walk_module(self, m);
     }
 
-    // Every Expr node gets a NodeKind::Expr stamp (T2 Phase 4.5).
+    // Every Expr node gets a NodeKind::Expr stamp.
     //
     // Collision-avoidance: `Expr::Block` and `Expr::Try` are structural wrappers
     // whose span may coincide with the span of their single inner statement.
@@ -249,9 +249,9 @@ impl<'ast> Visit<'ast> for IdAssigner {
     // inner stmt, we do NOT stamp `NodeKind::Expr` for `Expr::Block` or
     // `Expr::Try` — the block boundary is stamped with `NodeKind::Block`
     // (via `visit_block`) and the try boundary with `NodeKind::Try` instead.
-    // Per OQ-PHASE45-004, block/try types are keyed by those dedicated kinds.
+    // Block/try types are keyed by those dedicated kinds.
     //
-    // OQ-PHASE45-001: one Expr variant; stamp is uniform across all non-wrapper shapes.
+    // One Expr variant; stamp is uniform across all non-wrapper shapes.
     fn visit_expr(&mut self, e: &'ast Expr) {
         match e {
             // Expr::Block: block boundary is stamped by visit_block via walk_expr.
@@ -272,15 +272,15 @@ impl<'ast> Visit<'ast> for IdAssigner {
         walk_expr(self, e);
     }
 
-    // Every Block boundary gets a NodeKind::Block stamp (T2 Phase 4.5).
-    // OQ-PHASE45-004: block-level type recorded for try_block::resolve_block_type.
+    // Every Block boundary gets a NodeKind::Block stamp.
+    // Block-level type is recorded for try_block::resolve_block_type.
     fn visit_block(&mut self, b: &'ast Block) {
         self.try_assign(b.span, NodeKind::Block);
         walk_block(self, b);
     }
 
-    // Every type-position node gets a NodeKind::Type stamp (T2 Phase 4.5).
-    // OQ-PHASE45-002: Type variant added proactively; enables ast_type.rs:100 in sweep.
+    // Every type-position node gets a NodeKind::Type stamp.
+    // Type variant enables ast_type.rs type-position sweeps.
     fn visit_type(&mut self, t: &'ast ridge_ast::Type) {
         self.try_assign(t.span(), NodeKind::Type);
         walk_type(self, t);
@@ -421,9 +421,9 @@ mod tests {
         );
     }
 
-    // ── T2 new stamping tests ──────────────────────────────────────────────────
+    // ── NodeKind stamping tests ────────────────────────────────────────────────
 
-    // Test T2-a: an if expression with a block body stamps NodeKind::Block.
+    // Test: an if expression with a block body stamps NodeKind::Block.
     // The if-then branch is always an Expr::Block (per parser design).
     #[test]
     fn t2_if_body_block_stamped() {
@@ -442,7 +442,7 @@ mod tests {
         );
     }
 
-    // Test T2-b: nested if expressions produce multiple Block stamps.
+    // Test: nested if expressions produce multiple Block stamps.
     #[test]
     fn t2_nested_if_blocks_each_stamped() {
         // Two if expressions → at least two block bodies.
@@ -463,7 +463,7 @@ mod tests {
         );
     }
 
-    // Test T2-c: expressions get NodeKind::Expr stamps.
+    // Test: expressions get NodeKind::Expr stamps.
     #[test]
     fn t2_expr_positions_stamped() {
         let m = parse("fn foo = 1 + 2\n");
@@ -481,7 +481,7 @@ mod tests {
         );
     }
 
-    // Test T2-d: a type annotation stamps NodeKind::Type.
+    // Test: a type annotation stamps NodeKind::Type.
     #[test]
     fn t2_type_annotation_stamped() {
         let m = parse("fn foo (x: Int) = x\n");
@@ -498,7 +498,7 @@ mod tests {
         );
     }
 
-    // Test T2-e: fixture-driven density — fn with literal, ident, call has
+    // Test: fixture-driven density — fn with literal, ident, call has
     // meaningful Expr stamp count.
     #[test]
     fn t2_fixture_density_basic_fn() {
@@ -524,7 +524,7 @@ mod tests {
         );
     }
 
-    // Test T2-f: fixture-driven density — fn with call expression.
+    // Test: fixture-driven density — fn with call expression.
     #[test]
     fn t2_fixture_density_call() {
         let m = parse("fn bar = foo 42\n");
@@ -542,9 +542,9 @@ mod tests {
         );
     }
 
-    // ── T1 new-variant tests ───────────────────────────────────────────────────
+    // ── NodeId collision tests ─────────────────────────────────────────────────
 
-    // Test T1-a: two NodeKind::Expr stamps at the same span fail R999.
+    // Test: two NodeKind::Expr stamps at the same span fail R999.
     #[test]
     fn t1_same_span_same_expr_kind_collides() {
         let mut map = NodeIdMap::default();
@@ -560,19 +560,19 @@ mod tests {
         assert_eq!(err.code(), "R999");
     }
 
-    // Test T1-b: NodeKind::Expr and NodeKind::Ident at the same span do NOT collide.
+    // Test: NodeKind::Expr and NodeKind::Ident at the same span do NOT collide.
     #[test]
     fn t1_expr_and_ident_same_span_no_collision() {
         let mut map = NodeIdMap::default();
         let sp = Span::new(10, 15);
-        // OQ-PHASE45-001: Expr and Ident are different kinds — both may coexist.
+        // Expr and Ident are different kinds — both may coexist at the same span.
         let id_expr = map.assign(sp, NodeKind::Expr).expect("Expr assign ok");
         let id_ident = map.assign(sp, NodeKind::Ident).expect("Ident assign ok");
         assert_ne!(id_expr, id_ident, "different kinds yield distinct NodeIds");
         assert_eq!(map.len(), 2);
     }
 
-    // Test T1-c: NodeKind::Try and NodeKind::Block at byte-adjacent positions
+    // Test: NodeKind::Try and NodeKind::Block at byte-adjacent positions
     // do not collide because their spans differ.
     #[test]
     fn t1_try_and_block_adjacent_spans_no_collision() {

@@ -110,13 +110,13 @@ pub enum ParseError {
 
     /// P012 — a top-level function parameter was a tuple or constructor pattern.
     ///
-    /// D037: top-level `fn` parameters must be bare identifiers or annotated
+    /// Top-level `fn` parameters must be bare identifiers or annotated
     /// identifiers only.  Full patterns (tuples, constructors, `@` bindings)
     /// are only allowed in lambda parameters.  Use a `let` binding in the body
     /// instead.
     ///
     /// Example: `fn foo (x, y) = x` is invalid; write `fn foo pair = let (x, y) = pair …`.
-    #[error("tuple and constructor patterns are not allowed in top-level fn parameters (D037)")]
+    #[error("tuple and constructor patterns are not allowed in top-level fn parameters")]
     TopLevelPatternParam {
         /// Source location of the invalid pattern parameter.
         span: Span,
@@ -138,7 +138,7 @@ pub enum ParseError {
     },
 
     /// P018 — a record-body pattern `{ … }` was used without a constructor
-    /// name.  D051 mandates that a record pattern must start with
+    /// name.  A record pattern must start with
     /// `UPPER_IDENT`, e.g. `User { name }`.
     #[error("record patterns require a constructor name (e.g. `User {{ name }}`)")]
     BareRecordPattern {
@@ -150,9 +150,9 @@ pub enum ParseError {
     /// to any declaration (e.g., trailing at end of file after the last item,
     /// or as the sole content of a file that also has items).
     ///
-    /// Per D067 (§15 of spec.md): doc comments must immediately precede a
-    /// top-level declaration.  An orphan doc comment is a warning-level error
-    /// (the parser does not halt, but the comment is lost).
+    /// Doc comments must immediately precede a top-level declaration.  An
+    /// orphan doc comment is a warning-level error (the parser does not halt,
+    /// but the comment is lost).
     #[error("doc comment at invalid position — not attached to any declaration")]
     OrphanDocComment {
         /// Source location of the orphan doc comment.

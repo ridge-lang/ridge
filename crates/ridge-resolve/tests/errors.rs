@@ -18,9 +18,9 @@
 //!
 //! ## Codes intentionally not covered by fixtures
 //!
-//! - **R018** — RESERVED; the former variant was removed in DR-07 / D073
-//!   (bare imports are unambiguous per OQ-R001 provisional default accepted
-//!   2026-04-25).  The numeric slot is kept to prevent code reuse.
+//! - **R018** — RESERVED; the former variant was removed (bare imports are
+//!   unambiguous per R001 provisional default accepted 2026-04-25).
+//!   The numeric slot is kept to prevent code reuse.
 //! - **R019 `UnknownCapabilityKeyword`** — defensive; the parser maps every
 //!   recognised keyword to a closed `Capability` enum variant before this
 //!   pass, so R019 is unreachable from real Ridge source (`capabilities.rs`

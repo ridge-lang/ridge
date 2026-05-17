@@ -110,7 +110,7 @@ pub(crate) fn parse_expr(cur: &mut Cursor<'_>) -> Result<Expr, ParseError> {
         Token::KwTry => return ctrl::parse_try(cur),
         Token::KwGuard => return ctrl::parse_guard(cur),
         Token::KwReturn => return ctrl::parse_return(cur),
-        // D058: `fn name params = body` is InnerFn; `fn params -> body` is Lambda.
+        // `fn name params = body` is InnerFn; `fn params -> body` is Lambda.
         // Disambiguation: scan forward from current position to find whether
         // `->` (Arrow) or `=` (Assign) appears first at bracket depth 0.
         // Bracket depth is tracked to skip `(name: Type)` annotated params.
@@ -176,7 +176,7 @@ pub(crate) fn parse_expr_pratt(cur: &mut Cursor<'_>) -> Result<Expr, ParseError>
 fn parse_expr_bp(cur: &mut Cursor<'_>, min_bp: u8) -> Result<Expr, ParseError> {
     // ── Prefix / nud ─────────────────────────────────────────────────────────
     let mut lhs = if cur.peek() == &Token::Minus {
-        // Unary minus (D044 — only prefix operator). rbp = 19.
+        // Unary minus (only prefix operator). rbp = 19.
         let op_span = cur.span();
         cur.bump(); // consume `-`
         let operand = parse_expr_bp(cur, 19)?;
@@ -246,40 +246,33 @@ fn parse_expr_bp(cur: &mut Cursor<'_>, min_bp: u8) -> Result<Expr, ParseError> {
             continue;
         }
 
-        // ── Postfix operators `?>`, `!`, `?` (D068, level 12) ────────────────
+        // ── Postfix operators `?>`, `!`, `?` (level 12) ─────────────────────
         // These are placed AFTER juxta so that `fetchUser id ?` first builds
         // the juxta-call `Call(fetchUser, [id])`, then the `?` wraps the whole
         // Call in `Propagate`.
         //
-        // D068 single-site: after ONE postfix fires we `break` — the result is
+        // Single-site rule: after ONE postfix fires we `break` — the result is
         // returned to the caller.  Chaining (`a ?> m ?> n`) is not allowed
         // without parentheses; the caller that sees leftover `?> n` will either
         // consume it as an argument to a larger expression or produce a parse
         // error in context.
         //
-        // B-D011 hotfix v3 Wave 2: the postfix gate was `22 > min_bp` (using
-        // the same precedence as `.field`).  That bound `?` tighter than `|>`
-        // (which recurses with min_bp=2), so `xs |> List.head ?` parsed as
-        // `xs |> (List.head ?)` — `?` applied to the function value `List.head`,
-        // not to the piped call.  At runtime this extracted the constructor
-        // tag `ok` from `Some _` (silent data corruption).
-        //
-        // The fix lowers the postfix gate to 1 so `?`, `?>`, `!` bind
-        // LOOSER than `|>`.  The pipe completes first, then the postfix
-        // applies to the whole pipe result, which matches the obvious reading
-        // (`xs |> fetchUser ?` = `(fetchUser xs) ?`).  Tighter binary ops are
-        // unaffected — `a + b ?` still parses as `(a + b) ?`.
+        // The postfix gate is set to 1, so `?`, `?>`, `!` bind LOOSER than `|>`
+        // (which recurses with min_bp=2).  The pipe completes first, then the
+        // postfix applies to the whole pipe result, which matches the obvious
+        // reading (`xs |> fetchUser ?` = `(fetchUser xs) ?`).  Tighter binary
+        // ops are unaffected — `a + b ?` still parses as `(a + b) ?`.
         if 1 > min_bp {
             match cur.peek() {
                 Token::QuestionGt => {
                     // `handle ?> message arg* [timeout <ms|never>]` → Expr::Ask
                     //
-                    // Phase 6 T0 (OQ-E001): after collecting args, peek for the
-                    // contextual identifier `timeout`.  If present, consume it and
-                    // parse either the contextual identifier `never` (→ AskTimeout::Never)
-                    // or an expression (→ AskTimeout::Millis).  Both `timeout` and `never`
-                    // are kept as contextual identifiers (not reserved keywords) so that
-                    // they remain valid variable names elsewhere.
+                    // After collecting args, peek for the contextual identifier
+                    // `timeout`.  If present, consume it and parse either the
+                    // contextual identifier `never` (→ AskTimeout::Never) or an
+                    // expression (→ AskTimeout::Millis).  Both `timeout` and `never`
+                    // are kept as contextual identifiers (not reserved keywords) so
+                    // that they remain valid variable names elsewhere.
                     cur.bump(); // consume `?>`
                     let msg_span = cur.span();
                     let msg_text = match cur.peek().clone() {
@@ -337,7 +330,7 @@ fn parse_expr_bp(cur: &mut Cursor<'_>, min_bp: u8) -> Result<Expr, ParseError> {
                         args.push(parse_expr_atom12(cur)?);
                     }
 
-                    // ── Optional `timeout <ms|never>` postfix (T0, OQ-E001) ───
+                    // ── Optional `timeout <ms|never>` postfix ────────────────
                     // Single-token lookahead: only trigger when the very next token
                     // is the contextual identifier "timeout" (LowerIdent("timeout")).
                     // This ensures the postfix only fires immediately after the `?>`
@@ -377,7 +370,7 @@ fn parse_expr_bp(cur: &mut Cursor<'_>, min_bp: u8) -> Result<Expr, ParseError> {
                         timeout,
                         span,
                     };
-                    break; // D068: single-site — stop here
+                    break; // single-site — stop here
                 }
                 Token::Bang => {
                     // `handle ! message arg*` → Expr::Send
@@ -393,7 +386,7 @@ fn parse_expr_bp(cur: &mut Cursor<'_>, min_bp: u8) -> Result<Expr, ParseError> {
                         message: Box::new(message),
                         span,
                     };
-                    break; // D068: single-site — stop here
+                    break; // single-site — stop here
                 }
                 Token::Question => {
                     // `expr ?` → Expr::Propagate
@@ -404,7 +397,7 @@ fn parse_expr_bp(cur: &mut Cursor<'_>, min_bp: u8) -> Result<Expr, ParseError> {
                         inner: Box::new(lhs),
                         span,
                     };
-                    break; // D068: single-site — stop here
+                    break; // single-site — stop here
                 }
                 _ => {}
             }
@@ -569,7 +562,7 @@ pub(crate) fn parse_expr_atom(cur: &mut Cursor<'_>) -> Result<Expr, ParseError> 
             description: "bare `_` is a wildcard pattern, not an expression".to_string(),
         }),
 
-        // ── Lambda or InnerFn (D058 disambiguation) ──────────────────────────
+        // ── Lambda or InnerFn disambiguation ─────────────────────────────────
         // Rule: after `fn`, if peek_n(1) is a LowerIdent AND peek_n(2) is not
         // `->`, it is an InnerFn (the LowerIdent is the function name).
         // Otherwise it is a Lambda.
@@ -580,7 +573,7 @@ pub(crate) fn parse_expr_atom(cur: &mut Cursor<'_>) -> Result<Expr, ParseError> 
         //   fn foo x = x + 1       → InnerFn (peek_n(2) != Arrow)
         //   fn io log msg = body   → InnerFn (peek_n(2) == LowerIdent)
         Token::KwFn => {
-            // D058: use the same scan-forward rule as in parse_expr.
+            // Use the same scan-forward rule as in parse_expr.
             if fn_is_inner_fn(cur) {
                 let fn_decl =
                     crate::decl::parse_fn_decl(cur, ridge_ast::Visibility::Private, None)?;
@@ -627,7 +620,7 @@ pub(crate) fn parse_expr_atom(cur: &mut Cursor<'_>) -> Result<Expr, ParseError> 
             } else {
                 // Bare constructor in expression position — treat as zero-arg
                 // record construct with empty fields (e.g. `None`, `True`).
-                // D051 / grammar §6.18: Record { constructor, fields: [] }.
+                // Grammar §6.18: Record { constructor, fields: [] }.
                 let ctor_span = cur.span();
                 let ctor_text = match cur.bump() {
                     Token::UpperIdent(s) => s.clone(),
@@ -700,7 +693,7 @@ fn parse_paren_expr(cur: &mut Cursor<'_>) -> Result<Expr, ParseError> {
 
     // ── `(e)` or `(e, e, …)` — parse first expression, then decide ───────────
     // Increment bracket depth so that parse_branch_body knows it may apply the
-    // flat-block NEWLINE extension (OQ-R014).
+    // flat-block NEWLINE extension.
     cur.bracket_depth += 1;
     let result = parse_paren_inner(cur, start_span);
     cur.bracket_depth -= 1;
@@ -716,8 +709,8 @@ fn parse_paren_inner(
     let first = parse_expr(cur)?;
 
     // Skip trailing NEWLINE before `)` — can occur when the closing paren is
-    // on its own physical line and the OQ-R014 rule emitted a NEWLINE.
-    // Only skip if immediately followed by `)` to avoid hiding real errors.
+    // on its own physical line.  Only skip if immediately followed by `)` to
+    // avoid hiding real errors.
     if cur.peek() == &Token::Newline && cur.peek_n(1) == Some(&Token::RParen) {
         cur.bump(); // consume NEWLINE
     }
@@ -774,13 +767,9 @@ fn parse_list_literal(cur: &mut Cursor<'_>) -> Result<Expr, ParseError> {
 fn parse_list_inner(cur: &mut Cursor<'_>, start_span: ridge_ast::Span) -> Result<Expr, ParseError> {
     let mut elems: Vec<Expr> = Vec::new();
 
-    // B-D007 hotfix v3 Wave 2: the layout pass emits a NEWLINE inside `[...]`
-    // before every new sibling logical line (OQ-R014).  Pre-fix, those
-    // NEWLINEs caused parse_list_inner to fail at `expect(RBrack)`; the error
-    // was silently recovered, the const decl was dropped, and use-sites
-    // resolved to the `ok` atom fallback — a silent miscompile of any
-    // multi-line list literal.  We now skip NEWLINEs at every separator
-    // position so the list parser sees a clean `elem , elem , ... ]` stream.
+    // The layout pass may emit a NEWLINE inside `[...]` before each new
+    // sibling logical line.  Skip NEWLINEs at every separator position so the
+    // list parser sees a clean `elem , elem , ... ]` stream.
     cur.skip_newlines();
 
     // Empty list.
@@ -972,7 +961,7 @@ const fn op_static_str(op: BinOp) -> &'static str {
 
 // ── InnerFn / Lambda disambiguation ──────────────────────────────────────────
 
-/// Determine whether the current `fn` token begins an `InnerFnExpr` (D058) or
+/// Determine whether the current `fn` token begins an `InnerFnExpr` or
 /// a `LambdaExpr`, without consuming any tokens.
 ///
 /// Strategy:
@@ -1122,7 +1111,7 @@ mod tests {
             .unwrap_or_else(|| panic!("parse_expr({src:?}) expected Err, got Ok"))
     }
 
-    // ── T3-compatible literal tests (preserved) ───────────────────────────────
+    // ── Literal tests ─────────────────────────────────────────────────────────
 
     #[test]
     fn parse_literal_int_dec() {
@@ -1747,11 +1736,11 @@ mod tests {
         assert_eq!(r.unwrap_err().code(), "P001");
     }
 
-    // ── T10: InnerFn expression (D058) ───────────────────────────────────────
+    // ── InnerFn expression ────────────────────────────────────────────────────
 
     /// `fn foo x = x + 1` at expression position → `Expr::InnerFn`.
     ///
-    /// D058: scan-forward finds `=` before `->`, so `InnerFn` path is taken.
+    /// Scan-forward finds `=` before `->`, so `InnerFn` path is taken.
     #[test]
     fn parse_inner_fn_expr() {
         let e = ok("fn foo x = x");
@@ -1766,7 +1755,7 @@ mod tests {
 
     /// `fn x -> x + 1` at expression position → `Expr::Lambda` (not `InnerFn`).
     ///
-    /// D058: scan-forward finds `->` before `=`, so `LambdaExpr` path is taken.
+    /// Scan-forward finds `->` before `=`, so `LambdaExpr` path is taken.
     #[test]
     fn parse_lambda_not_inner_fn() {
         let e = ok("fn x -> x");
@@ -1786,12 +1775,11 @@ mod tests {
         );
     }
 
-    // ── T13: InnerFn disambiguation with return-type annotation (D058 fix) ───
+    // ── InnerFn disambiguation with return-type annotation ───────────────────
 
     /// `fn foo (x: Int) -> Int = x + 1` → `Expr::InnerFn` with return type.
     ///
-    /// Previously `fn_is_inner_fn` short-circuited on `->` and returned Lambda.
-    /// The fixed heuristic scans past `->` + Type and finds `=` → `InnerFn`.
+    /// `fn_is_inner_fn` scans past `->` + Type and finds `=` → `InnerFn`.
     #[test]
     fn inner_fn_with_return_type() {
         let e = ok("fn foo (x: Int) -> Int = x + 1");

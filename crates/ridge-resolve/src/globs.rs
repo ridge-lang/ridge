@@ -4,7 +4,7 @@
 //! This module provides [`GlobPattern`] which wraps a user-facing dotted glob
 //! string and compiles it into an efficient matcher.
 //!
-//! ## Glob semantics (OQ-R007)
+//! ## Glob semantics (R007)
 //!
 //! - `*` matches **exactly one** path segment (a non-empty run of characters
 //!   between dots).

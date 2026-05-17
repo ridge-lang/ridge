@@ -8,7 +8,7 @@
 //
 // For T10 the generated content is the original hand-curated module/export
 // table, augmented with exports discovered from `.rg` files.  The baseline
-// table preserves all prior entries (including prelude re-exports per OQ-R013)
+// table preserves all prior entries (including prelude re-exports per R013)
 // so that the existing API surface and all existing tests stay green.
 //
 // Future tasks (T12) will extend this into a full bidirectional consistency
@@ -63,7 +63,7 @@ const MODULE_ORDER: &[&str] = &[
 // This baseline replicates the hand-curated BUILTINS table that was previously
 // in stdlib_builtin.rs.  It includes:
 //   - `pub fn` exports that appear in the `.rg` files (ground truth from T5-T9)
-//   - Prelude re-exported constructors / type names (OQ-R013): Some, None,
+//   - Prelude re-exported constructors / type names (R013): Some, None,
 //     Option (std.option) and Ok, Err, Result (std.result)
 //   - Alias / compat entries documented in the plan (andThen, unwrapOr, etc.)
 //   - `pub type` entries that serve as re-export markers in the resolver
@@ -72,12 +72,12 @@ const MODULE_ORDER: &[&str] = &[
 // the `.rg` sources plus a formal prelude-re-export declaration mechanism.
 
 // T12 update: BASELINE_EXPORTS now derived from the actual .rg source files
-// (bidirectional consistency mandate, OQ-R006 / D078).  Entries that were in
+// (bidirectional consistency mandate, R006).  Entries that were in
 // the old hand-curated T10 table but are NOT in any .rg file have been
 // removed.  New symbols that appear in the .rg files but were absent from the
 // T10 table have been added.
 //
-// Special prelude re-exports (OQ-R013) — constructors/type names that are
+// Special prelude re-exports (R013) — constructors/type names that are
 // declared as part of a `pub type` body and re-exported by the prelude:
 //   std.option: Option, Some, None
 //   std.result: Result, Ok, Err
@@ -212,7 +212,7 @@ const BASELINE_EXPORTS: &[(&str, &[&str])] = &[
             "isSome",
             "isNone",
             "discard",
-            // Prelude-exported constructors and type name (OQ-R013).
+            // Prelude-exported constructors and type name (R013).
             "Option",
             "Some",
             "None",
@@ -228,7 +228,7 @@ const BASELINE_EXPORTS: &[(&str, &[&str])] = &[
             "isOk",
             "isErr",
             "discard",
-            // Prelude-exported constructors and type name (OQ-R013).
+            // Prelude-exported constructors and type name (R013).
             "Result",
             "Ok",
             "Err",
@@ -274,7 +274,7 @@ const BASELINE_EXPORTS: &[(&str, &[&str])] = &[
             "encodeInt",
             "encodeBool",
             "encodeText",
-            // B-D002 Wave 3: JsonValue construction shims (FFI bridges to
+            // JsonValue construction shims (FFI bridges to
             // ridge_rt:json_* — see crates/ridge-stdlib/stdlib/json.rg).
             // Cross-module `pub type` variant resolution lands in 0.2.0;
             // until then these are the supported constructor surface.
@@ -342,7 +342,7 @@ fn generate_manifest(stdlib_dir: &Path, out_path: &Path) -> Result<(), String> {
             continue;
         }
 
-        // Baseline exports for this module (API-stable, OQ-R013 compliant).
+        // Baseline exports for this module (API-stable, R013 compliant).
         let baseline: &[&str] = BASELINE_EXPORTS
             .iter()
             .find(|&(name, _)| *name == dotted)

@@ -1,4 +1,4 @@
-//! "Did you mean X?" suggestion engine (T13, plan §4.10).
+//! "Did you mean X?" suggestion engine (plan §4.10).
 //!
 //! Single concern: given a target string (a name the user typed that didn't
 //! resolve) and a set of candidate strings (the in-scope, visibility-filtered
@@ -190,7 +190,7 @@ mod tests {
 
     #[test]
     fn suggest_distance_one_hit() {
-        // Plan §10 T13 DoD: "Li.map suggests List.map but not List.empty".
+        // "Li.map suggests List.map but not List.empty".
         // Here we test the head-replacement piece: typo "Li" against the
         // candidate set ["List", "Map", "Set"], distance(Li, List) = 2 → hit;
         // distance(Li, Map) = 3 → reject; distance(Li, Set) = 3 → reject.

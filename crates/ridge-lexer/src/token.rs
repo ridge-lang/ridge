@@ -42,9 +42,9 @@ pub enum Token {
     KwWhere,
     KwWith,
 
-    // ── Identifiers (grammar §1.4, D049 ASCII-only) ───────────────────────────
-    /// Lower-case identifier.  Also covers `PRIV_IDENT` (leading `_`) per
-    /// OQ-L001 default: the parser detects the leading underscore from the text.
+    // ── Identifiers (grammar §1.4) ───────────────────────────
+    /// Lower-case identifier.  Also covers `PRIV_IDENT` (leading `_`);
+    /// the parser detects the leading underscore from the text.
     LowerIdent(String),
     /// Upper-case identifier: type names, constructors, module roots.
     UpperIdent(String),
@@ -52,7 +52,7 @@ pub enum Token {
     /// `UpperIdent`, not `Underscore`.
     Underscore,
 
-    // ── Numeric literals (grammar §1.5, D046) ────────────────────────────────
+    // ── Numeric literals (grammar §1.5) ────────────────────────────────
     /// Decimal integer literal (raw source text, e.g. `"1_000"`).
     IntDec(String),
     /// Binary integer literal (raw source text, e.g. `"0b1010"`).
@@ -64,12 +64,12 @@ pub enum Token {
     /// Floating-point literal (raw source text, e.g. `"3.14"`).
     Float(String),
 
-    // ── String literals (D047) ───────────────────────────────────────────────
+    // ── String literals ──────────────────────────────────────────────────────
     /// A plain `"..."` string literal.  Raw bytes between the outer quotes,
     /// escapes left un-decoded.
     TextLit(String),
 
-    // ── String interpolation tokens (grammar lines 228–241, D047) ────────────
+    // ── String interpolation tokens (grammar lines 228–241) ────────────
     /// `$"` — opens an interpolated string.
     InterpStart,
     /// Literal text segment inside an interpolated string.
@@ -102,7 +102,7 @@ pub enum Token {
     FatArrow,
     /// `@`
     At,
-    /// `..` (reserved, D050)
+    /// `..` (reserved)
     DotDot,
     /// `=`
     Assign,
@@ -157,8 +157,8 @@ pub enum Token {
 
     // ── Trivia we preserve in the stream ─────────────────────────────────────
     /// A block doc-comment `---\n...\n---`.  Content is the raw text between
-    /// the opening and closing `---` lines, including newlines.  Per D064,
-    /// this is a real token (not stripped); the parser decides attachment.
+    /// the opening and closing `---` lines, including newlines.
+    /// This is a real token (not stripped); the parser decides attachment.
     DocComment(String),
 
     // ── Synthesised layout tokens ─────────────────────────────────────────────

@@ -6,7 +6,7 @@
 //! - Literals, identifiers, qualified names
 //! - Lambda, call, let, var, assign
 //! - If, match (without exhaustiveness — T12), block
-//! - Return (OQ-T010 verbatim), inner-fn (D058)
+//! - Return (verbatim), inner-fn (D058)
 //! - Pattern: wildcard, var, literal, tuple, as, cons, paren, constructor
 //!
 //! # Deferred to later tasks
@@ -161,7 +161,7 @@ fn infer_expr_inner(ctx: &mut InferCtx, b: &BuiltinTyCons, expr: &Expr) -> Type 
                     LambdaParam::Pattern(p) => (p, None),
                     LambdaParam::Annotated { pat, ty, .. } => (pat, Some(ty)),
                 };
-                // Fresh type variable for this parameter (OQ-T007: monomorphic).
+                // Fresh type variable for this parameter (monomorphic).
                 let ty = if let Some(ann) = ann_ty {
                     // Annotated param — resolve the annotation to a Type.
                     ast_type_to_type(ctx, b, ann)
@@ -369,7 +369,7 @@ fn infer_expr_inner(ctx: &mut InferCtx, b: &BuiltinTyCons, expr: &Expr) -> Type 
         Expr::Block(block) => infer_block(ctx, b, block),
 
         // ── Return ────────────────────────────────────────────────────────────
-        // OQ-T010 verbatim: unify value with the enclosing fn's return type.
+        // Verbatim return: unify value with the enclosing fn's return type.
         Expr::Return { value, span } => {
             let val_ty = infer_expr(ctx, b, value);
             if let Some(fn_ret) = ctx.current_fn_ret.clone() {
@@ -399,7 +399,7 @@ fn infer_expr_inner(ctx: &mut InferCtx, b: &BuiltinTyCons, expr: &Expr) -> Type 
             }
 
             // T7: real let-generalisation (§4.7). Lambda params are still
-            // monoschemes (OQ-T007); only `let` boundaries generalise.
+            // monoschemes; only `let` boundaries generalise.
             let scheme = generalise(ctx, &val_ty);
             // Bind the pattern variables.
             bind_pattern_scheme(ctx, b, pat, &scheme);
@@ -549,7 +549,7 @@ fn infer_expr_inner(ctx: &mut InferCtx, b: &BuiltinTyCons, expr: &Expr) -> Type 
                 ctx.env.bind(param_name, monoscheme(ty.clone()));
             }
 
-            // Set the return type context (OQ-T010).
+            // Set the return type context.
             let saved_ret = ctx.current_fn_ret.take();
             ctx.current_fn_ret = Some(ret_ty_declared.clone());
 
@@ -699,11 +699,11 @@ fn infer_expr_inner(ctx: &mut InferCtx, b: &BuiltinTyCons, expr: &Expr) -> Type 
                     }
                 }
             } else {
-                // Not a user-defined TyCon. Check if it's a stdlib Phase 7 stub
+                // Not a user-defined TyCon. Check if it's a stdlib stub
                 // bound in the env (e.g. Response, Request from std.net.http).
                 // If the scheme has Type::Error, absorb silently.
                 if let Some(scheme) = ctx.env.lookup(ctor_name).cloned() {
-                    // If this is already Type::Error (Phase 7 stub), absorb without T999.
+                    // If this is already Type::Error (stub), absorb without T999.
                     instantiate(ctx, &scheme)
                 } else {
                     emit_internal(
@@ -803,7 +803,7 @@ fn build_arena_from_ctx(ctx: &InferCtx) -> ridge_types::TyConArena {
 /// Infers the type of a `Block` (sequence of statement-expressions).
 ///
 /// Each statement except the last is typed and checked for `T022
-/// DiscardedResult` (OQ-T013): if a non-last statement's type is not `Unit`
+/// DiscardedResult`: if a non-last statement's type is not `Unit`
 /// and the statement is not a `let`/`var` binding, `T022` is emitted.
 /// The block's type is the type of its final statement.
 /// An empty `stmts` vec is a parser-level error (`P014 EmptyBlock`);
@@ -841,7 +841,7 @@ pub fn infer_pattern(ctx: &mut InferCtx, b: &BuiltinTyCons, pat: &Pattern, expec
 
         // ── Variable binding ──────────────────────────────────────────────────
         Pattern::Var { name, .. } => {
-            // OQ-T007: lambda params are never polymorphic; same here.
+            // Lambda params are never polymorphic; same here.
             let scheme = monoscheme(expected_ty.clone());
             ctx.env.bind(name.text.clone(), scheme);
         }

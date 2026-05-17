@@ -5,8 +5,7 @@
 //! the lambda body to decide whether to emit `letrec` (self-referencing) or a
 //! plain `let` (non-recursive).
 
-// letrec_detect is consumed from expr.rs.  Until T8 wires the module-level entry
-// points the symbol only appears in tests.
+// letrec_detect is consumed from expr.rs and from the module-level entry points.
 #![allow(dead_code)]
 // pub(crate) on items in a pub(crate) module is redundant per clippy; we keep
 // it for explicitness per plan §2.2.

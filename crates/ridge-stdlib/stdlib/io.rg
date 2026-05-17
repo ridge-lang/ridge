@@ -1,7 +1,7 @@
 -- std.io — Console I/O utilities (Tier 3, imports std.text).
 --
 -- All functions require the `io` capability.
--- D047: single-line strings only in 0.1.0.
+-- Single-line strings only in 0.1.0.
 -- §3.10 / plan line 322: readLine returns Result Text Error.
 
 -- Write text to stdout without a trailing newline.

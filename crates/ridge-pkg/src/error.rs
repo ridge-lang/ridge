@@ -4,8 +4,8 @@
 //! - `P001`–`P099` — git-transport and path-resolution failures
 //! - `P101`–`P199` — manifest-parse failures within the package context
 //!
-//! `P004` is a **warning** (`PkgWarning`), not an error, because D160 marks
-//! floating-branch tracking as advisory-only.
+//! `P004` is a **warning** (`PkgWarning`), not an error — floating-branch
+//! tracking is advisory-only.
 
 use thiserror::Error;
 
@@ -50,20 +50,20 @@ pub enum PkgError {
     },
 
     /// `P003` — Git URL uses SSH scheme (`git@…` or `ssh://…`), which is
-    /// not supported in 0.1.0 (HTTPS-only, D153, OQ-C012).
+    /// not supported in 0.1.0 (HTTPS-only).
     ///
     /// # Example
     ///
     /// ```text
     /// P003 PkgGitSchemeUnsupported: SSH URLs are not supported; use HTTPS
     /// ```
-    #[error("P003 PkgGitSchemeUnsupported: SSH URL '{url}' is not supported in 0.1.0; use an HTTPS URL instead (D153)")]
+    #[error("P003 PkgGitSchemeUnsupported: SSH URL '{url}' is not supported in 0.1.0; use an HTTPS URL instead")]
     PkgGitSchemeUnsupported {
         /// The offending URL.
         url: String,
     },
 
-    // P004 is PkgWarning::FloatingBranchAdvisory (D160) — not an error.
+    // P004 is PkgWarning::FloatingBranchAdvisory — not an error.
     /// `P005` — `git` binary not found on `PATH`.
     ///
     /// # Example
@@ -225,7 +225,7 @@ impl PkgError {
 
 /// Non-fatal advisories emitted alongside dependency resolution.
 ///
-/// `P004 FloatingBranchAdvisory` (D160) is a **warning**, not an error —
+/// `P004 FloatingBranchAdvisory` is a **warning**, not an error —
 /// floating-branch tracking is allowed but degrades reproducibility.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum PkgWarning {
@@ -236,7 +236,7 @@ pub enum PkgWarning {
     ///
     /// ```text
     /// P004 FloatingBranchAdvisory: dep 'mylib' tracks branch 'main' which is
-    /// not pinned; build reproducibility is not guaranteed (D160)
+    /// not pinned; build reproducibility is not guaranteed
     /// ```
     FloatingBranchAdvisory {
         /// Local dependency name.
@@ -261,7 +261,7 @@ impl PkgWarning {
         match self {
             Self::FloatingBranchAdvisory { dep_name, branch } => format!(
                 "warning[P004]: dep '{dep_name}' tracks branch '{branch}' which is not pinned; \
-                 build reproducibility is not guaranteed (D160)"
+                 build reproducibility is not guaranteed"
             ),
         }
     }

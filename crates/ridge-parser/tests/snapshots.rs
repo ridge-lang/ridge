@@ -67,7 +67,7 @@ fn snapshot_rate_limiter() {
 // Both must parse with zero lex errors, zero parse errors, and produce a
 // `Body::Ffi { .. }` in the locked snapshot.
 
-/// T2-ffi-1: minimal `@ffi` with two annotated params and a return type.
+/// Minimal `@ffi` with two annotated params and a return type.
 ///
 /// Corresponds to §5.1's first example:
 /// ```ridge
@@ -102,7 +102,7 @@ fn snapshot_ffi_minimal() {
     insta::assert_debug_snapshot!("ffi_minimal", result.module);
 }
 
-/// T2-ffi-2: `@ffi` with capability annotation and HOF-style parameters.
+/// `@ffi` with capability annotation and HOF-style parameters.
 ///
 /// Corresponds to §5.1's second example:
 /// ```ridge

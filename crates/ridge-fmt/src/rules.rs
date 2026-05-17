@@ -6,9 +6,8 @@
 //!   whitespace from each line.
 //! - [`normalise_operator_spaces`] — ensure exactly one space on each side of
 //!   every binary operator.
-//! - [`trailing_comment_placement`] — per OQ-C008: emit a trailing comment on
-//!   the same line if the combined length ≤ 80 chars, otherwise on the
-//!   preceding line.
+//! - [`trailing_comment_placement`] — emit a trailing comment on the same
+//!   line if the combined length ≤ 80 chars, otherwise on the preceding line.
 //!
 //! The rules are stateless and pure; the printer ([`crate::printer`]) drives
 //! them in the correct order.
@@ -110,11 +109,11 @@ pub fn normalise_operator_spaces(line: &str) -> String {
         // so byte-level checks are safe; the body of the string contains
         // arbitrary UTF-8 and must round-trip via char-aware emission.
         //
-        // B-D010 #4 hotfix: when we're already inside a string/interpolation
-        // and see `\`, the next byte is part of an escape sequence (`\"`,
-        // `\\`, `\n`, …) and must be consumed verbatim.  Without this guard
-        // a literal `\"` toggles `in_string` off and the operator-spacing
-        // pass then mutates the rest of the string (observed on
+        // When we're already inside a string/interpolation and see `\`, the
+        // next byte is part of an escape sequence (`\"`, `\\`, `\n`, …) and
+        // must be consumed verbatim.  Without this guard a literal `\"` toggles
+        // `in_string` off and the operator-spacing pass then mutates the rest
+        // of the string (observed on
         // `"  ridge run -- add \"<title>\""` → `"… add \" < title > \""`).
         // Placed before the `"` toggle so it wins.
         if (in_string || in_interp) && bytes[i] == b'\\' && i + 1 < len {
@@ -195,13 +194,12 @@ pub fn normalise_operator_spaces(line: &str) -> String {
                 }
             }
 
-            // B-D010 #2 hotfix v3 Wave 3: when the operator is the FIRST
-            // non-whitespace token on the line (continuation form, e.g.
-            // `    |> List.map ...` under a multi-line pipeline), preserve
-            // the leading indent verbatim instead of collapsing it to a
-            // single space.  Pre-fix, every continuation-style `|>` / `?>`
-            // / `&&` line was dedented to column 1, breaking the visual
-            // alignment that the source author had written.
+            // When the operator is the FIRST non-whitespace token on the line
+            // (continuation form, e.g. `    |> List.map ...` under a multi-
+            // line pipeline), preserve the leading indent verbatim instead of
+            // collapsing it to a single space.  Without this, every
+            // continuation-style `|>` / `?>` / `&&` line would be dedented to
+            // column 1, breaking the visual alignment the author wrote.
             let out_trimmed = out.trim_end_matches(' ');
             let trimmed_len = out_trimmed.len();
             let at_line_start = trimmed_len == 0;
@@ -238,12 +236,12 @@ pub fn normalise_operator_spaces(line: &str) -> String {
     out.trim_end().to_string()
 }
 
-// ── Trailing comment placement (OQ-C008) ─────────────────────────────────────
+// ── Trailing comment placement ────────────────────────────────────────────────
 
 /// Decide how to emit a trailing line comment (`-- ...`) relative to its
 /// code line.
 ///
-/// Per OQ-C008:
+/// Placement rule:
 /// - If the code line + one space + the comment fits in ≤ 80 characters:
 ///   emit `code  -- comment` on a single line.
 /// - Otherwise: emit the comment on the preceding line (already indented to

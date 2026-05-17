@@ -55,7 +55,7 @@
    or the annotation "{ ... NEWLINE ... }" to indicate that siblings are
    newline-separated within an indented block.
 
-   (* D062 (revised — OQ-R014 option A): While bracket-nesting depth (open
+   (* D062 (revised): While bracket-nesting depth (open
       "(", "[", "{" not yet matched) is > 0, INDENT and DEDENT are never
       emitted.  A NEWLINE token IS emitted when a logical line begins at column
       ≤ the baseline column established by the first continuation line inside

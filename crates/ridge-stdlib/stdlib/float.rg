@@ -3,7 +3,7 @@
 -- Direct @ffi wrappers delegate to BEAM erlang:*, math:*, ridge_rt:*, erts_internal:*.
 -- Hybrid functions combine a raw @ffi with a Ridge wrapper.
 --
--- D030: Float follows IEEE 754 double precision.
+-- Float follows IEEE 754 double precision.
 -- Float.totalCompare provides a NaN-aware total ordering via erts_internal:cmp_term/2.
 
 -- Convert a float to its text representation.
@@ -78,7 +78,7 @@ pub fn div (a: Float) (b: Float) -> Float
 @ffi("erlang", "-", 1)
 pub fn neg (f: Float) -> Float
 
--- Total ordering comparison for IEEE-754 floats (D030).
+-- Total ordering comparison for IEEE-754 floats.
 -- Uses erts_internal:cmp_term/2 which provides a NaN-aware total order.
 -- Returns negative when a < b, 0 when a == b, positive when a > b.
 @ffi("erts_internal", "cmp_term", 2)

@@ -19,7 +19,7 @@
 //!    - `col < top` → pop while `top > col`, emit one `Dedent` per pop.
 //!      If after popping `top != col`, that is `InconsistentDedent`.
 //!
-//! ## Bracket suppression (§5.2, D062)
+//! ## Bracket suppression (§5.2)
 //!
 //! While `bracket_depth > 0` (any of `(`, `[`, `{` open), physical newlines
 //! and indentation changes produce **no** `INDENT` or `DEDENT` tokens.
@@ -30,7 +30,7 @@
 //! the bracket that starts on a different physical line from the opening bracket
 //! token.  Subsequent logical lines at column ≤ baseline are treated as new
 //! statements and emit a `NEWLINE` before their tokens.  This enables
-//! multi-statement lambda and let bodies inside parenthesised contexts (OQ-R014).
+//! multi-statement lambda and let bodies inside parenthesised contexts.
 //!
 //! `${` opens a logical bracket; the matching `}` closes it (tracked by the
 //! interpolation pass which emits `InterpExprEnd` for that `}`).
@@ -40,7 +40,7 @@
 //! Lines that contain only whitespace (i.e. a `Newline` with no preceding
 //! real token on that line) do not advance the layout state.
 //!
-//! ## Operator-leading continuation (§5.4, D070)
+//! ## Operator-leading continuation (§5.4)
 //!
 //! A physical newline immediately followed by one of the binary infix
 //! operators (`|>`, `||`, `&&`, `==`, `!=`, `<`, `>`, `<=`, `>=`, `++`,
@@ -65,7 +65,7 @@ use crate::{error::LexError, span::Span, token::Token};
 /// `tokens` are the real (non-Newline) tokens on the line.
 type LogicalLine = (u32, u32, Vec<(Token, Span)>);
 
-/// Per-bracket-frame state for the OQ-R014 "flat-block" NEWLINE rule.
+/// Per-bracket-frame state for the flat-block NEWLINE rule.
 ///
 /// When we open a bracket (`(`, `[`, `{`, `${`), we push a `BracketFrame`.
 /// We use it to emit `NEWLINE` tokens between sibling statements inside the
@@ -96,10 +96,10 @@ pub(crate) fn process(tokens: &[(Token, Span)]) -> (Vec<(Token, Span)>, Vec<LexE
 
     // Bracket depth: `(`, `[`, `{`, `${` (InterpExprStart) open brackets.
     // While depth > 0, INDENT/DEDENT are suppressed; NEWLINE may be emitted
-    // per the OQ-R014 block-baseline rule.
+    // per the block-baseline rule.
     let mut bracket_depth: u32 = 0;
 
-    // Stack of per-bracket frames for the OQ-R014 rule.
+    // Stack of per-bracket frames for the flat-block rule.
     let mut bracket_frames: Vec<BracketFrame> = Vec::new();
 
     // Whether any non-blank logical line has been emitted yet.
@@ -162,7 +162,7 @@ pub(crate) fn process(tokens: &[(Token, Span)]) -> (Vec<(Token, Span)>, Vec<LexE
                 }
             }
         } else {
-            // ── Inside brackets (OQ-R014 block-baseline rule) ─────────────────
+            // ── Inside brackets (block-baseline rule) ─────────────────
             // INDENT and DEDENT are never emitted here.
             // NEWLINE is emitted when col ≤ baseline (and baseline is established).
             if let Some(frame) = bracket_frames.last_mut() {
@@ -232,7 +232,7 @@ pub(crate) fn process(tokens: &[(Token, Span)]) -> (Vec<(Token, Span)>, Vec<LexE
 }
 
 /// Returns `true` if `tok` is a binary infix operator that may lead a
-/// continuation line (D070).  `=` and `->` are intentionally excluded; those
+/// continuation line.  `=` and `->` are intentionally excluded; those
 /// introduce new blocks.
 fn is_continuation_operator(tok: &Token) -> bool {
     matches!(
@@ -273,7 +273,7 @@ fn is_continuation_operator(tok: &Token) -> bool {
 /// Physical `Newline` tokens are consumed and not included in any line's token
 /// list.
 ///
-/// Per D070: physical lines whose first token is a continuation operator are
+/// Physical lines whose first token is a continuation operator are
 /// merged into the preceding non-empty logical line before the layout
 /// comparison runs.
 fn collect_logical_lines(tokens: &[(Token, Span)]) -> Vec<LogicalLine> {
@@ -299,7 +299,7 @@ fn collect_logical_lines(tokens: &[(Token, Span)]) -> Vec<LogicalLine> {
     let col = compute_col(&current_line, line_start_byte);
     physical_lines.push((col, line_start_byte, current_line));
 
-    // D070: merge continuation-operator-leading lines into their predecessor.
+    // Merge continuation-operator-leading lines into their predecessor.
     // A line is a continuation if its first (non-empty) token is in the
     // continuation set.  Blank lines are left in place (they will be skipped
     // by the caller) and do NOT interrupt a continuation chain.
@@ -410,7 +410,7 @@ mod tests {
     #[test]
     fn bracket_suppresses_layout() {
         // Newlines inside `(...)` must not produce INDENT/DEDENT.
-        // Updated for OQ-R014: NEWLINE may be emitted inside brackets when a
+        //  NEWLINE may be emitted inside brackets when a
         // logical line at col ≤ block baseline appears; INDENT/DEDENT are
         // still never emitted inside brackets.
         let src = "let x = (\n    1\n    )";
@@ -428,7 +428,7 @@ mod tests {
     #[test]
     fn bracket_suppresses_layout_list() {
         // Matches game_of_life.rg: `[(-1,-1), (-1,0), ...]` multi-line list.
-        // Updated for OQ-R014: NEWLINE may be emitted between items at same
+        //  NEWLINE may be emitted between items at same
         // column; INDENT/DEDENT are still never emitted inside brackets.
         let src = "let x = [\n    1\n    2\n    ]";
         let toks = tokens(src);
@@ -459,7 +459,7 @@ mod tests {
         );
     }
 
-    // ── D070: operator-leading continuation tests ─────────────────────────────
+    // ── Operator-leading continuation tests ─────────────────────────────
 
     /// A `|>` on its own line joins to the preceding line — no NEWLINE or
     /// INDENT before the pipe token.
@@ -633,7 +633,7 @@ mod tests {
         );
     }
 
-    // ── OQ-R014: NEWLINE inside brackets for multi-statement lambda bodies ────
+    // ── NEWLINE inside brackets for multi-statement lambda bodies ────
 
     /// A two-statement lambda body inside parens should emit exactly one NEWLINE
     /// between the two statements (after the first non-blank inside-paren line

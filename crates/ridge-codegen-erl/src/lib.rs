@@ -343,7 +343,7 @@ fn compile_module_if_requested(
 /// Lower a single stdlib module to a `.core` file and optionally a `.beam` file,
 /// using the Ridge fully-qualified name (e.g. `"std.list"`) as the BEAM module atom.
 ///
-/// This is the Phase 8 / D170 path for compiling stdlib `.rg` sources into
+/// This is the Phase 8 path for compiling stdlib `.rg` sources into
 /// distributable `.beam` artefacts whose module atom matches the name expected
 /// by `BridgeTarget::RidgeStdlibLocal` callers (e.g. `call 'std.list':head(1)`).
 ///
@@ -414,7 +414,7 @@ pub fn codegen_module_ast(
 /// This is the snapshot-test and LSP hot-path entry point.  It lowers the module
 /// through `module::lower_module` and returns the result with empty `core_path`
 /// and `beam_path`.  Errors during lowering produce a degenerate result with an
-/// empty `beam_module_name` (same as the pre-T10 stub behaviour).
+/// empty `beam_module_name`.
 ///
 /// `beam_module_name` is a stable placeholder derived from the module id
 /// (`"ridge_module_<n>"`).  A future task will replace it with the FQN from

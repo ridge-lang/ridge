@@ -2,7 +2,7 @@
 --
 -- Map k v is a language built-in (prelude). This module provides helper
 -- functions; the type itself does not need to be declared here.
--- D041: HOF capability transparency (cap vars written without [c] syntax).
+-- HOF capability transparency (cap vars written without [c] syntax).
 
 -- Return an empty map (wraps maps:new/0 behind a Unit arg per the calling
 -- convention for 0-arg constructors).

@@ -14,7 +14,7 @@ import std.option as Option
 import std.random as Random
 
 -- ── Limiter actor ─────────────────────────────────────────────────────────
--- D061: non-defaultable state initialised via init block.
+-- Non-defaultable state initialised via init block.
 -- Spawn: `spawn Limiter 10 2.0` passes cap=10, rate=2.0.
 actor Limiter =
     state capacity:   Int
@@ -68,7 +68,7 @@ actor Collector =
 -- ── Worker actor ──────────────────────────────────────────────────────────
 const requestsPerWorker: Int = 20
 
--- D061: state is non-defaultable; init block receives id, limiter handle, collector handle.
+-- State is non-defaultable; init block receives id, limiter handle, collector handle.
 -- Spawn: `spawn Worker id limiterHandle collectorHandle`.
 actor Worker =
     state workerId:  Int
@@ -80,13 +80,13 @@ actor Worker =
         limiter <- l
         collector <- col
     on time random io run () -> Unit =
-        -- D058: inner fn with capability prefixes is explicitly allowed.
+        -- Inner fn with capability prefixes is explicitly allowed.
         fn time random io sendRequests (remaining: Int) (allowed: Int) (denied: Int) -> Unit =
             guard (remaining > 0) else
                 return (collector ! report allowed denied)
             let delayMs = Random.int 0 50  -- 0–50 ms random delay
             Time.sleep delayMs
-            -- D045: ask operator changed from ? to ?>.
+            -- ask operator changed from ? to ?>.
             let granted = limiter ?> allow ()
             if granted then
                 sendRequests (remaining - 1) (allowed + 1) denied
@@ -94,13 +94,13 @@ actor Worker =
                 sendRequests (remaining - 1) allowed (denied + 1)
         sendRequests requestsPerWorker 0 0
 -- ── Main ──────────────────────────────────────────────────────────────────
--- D059: main returns Result Unit Error.
+-- main returns Result Unit Error.
 fn spawn io time main () -> Result Unit Error =
-    -- D061: Limiter is now parametrised via init: capacity=10, refillRate=2.0.
+    -- Limiter is now parametrised via init: capacity=10, refillRate=2.0.
     let limiter   = spawn Limiter 10 2.0
     let collector = spawn Collector
 
-    -- D061: Worker init takes (id, limiterHandle, collectorHandle).
+    -- Worker init takes (id, limiterHandle, collectorHandle).
     let workers =
         List.range 1 5
  |> List.map (fn id -> spawn Worker id limiter collector)

@@ -2,19 +2,19 @@
 //!
 //! # Transport
 //!
-//! Stdio only (OQ-C001).  The binary entry point in `main.rs` wires this via
+//! Stdio only.  The binary entry point in `main.rs` wires this via
 //! `tower_lsp::Server::new(stdin, stdout, socket).serve(service)`.
 //!
 //! # Workspace lifecycle
 //!
 //! 1. `initialize`: read `rootUri` / first `workspaceFolders` entry → set workspace root.
-//!    Extra workspace folders trigger one-time `L802 LspMultiRootUnsupported` warn (OQ-C015).
-//! 2. `textDocument/didChange`: debounce 250 ms (OQ-C013); on trigger, cancel any in-flight
+//!    Extra workspace folders trigger one-time `L802 LspMultiRootUnsupported` warn.
+//! 2. `textDocument/didChange`: debounce 250 ms; on trigger, cancel any in-flight
 //!    compile (by aborting the tokio task), then spawn a fresh `check_workspace` call.
 //! 3. `textDocument/didSave`: unconditional compile (no debounce).
 //! 4. Diagnostics published via `client.publish_diagnostics(...)`.
 //!
-//! # Cancellation (OQ-C016)
+//! # Cancellation
 //!
 //! The `check_workspace` driver function is synchronous.  We run it inside
 //! `tokio::task::spawn_blocking`.  Cancellation is achieved by calling
@@ -104,7 +104,7 @@ impl RidgeLanguageServer {
 
     /// Run a type-check of the workspace and publish diagnostics.
     ///
-    /// Cancels any currently-running compile by aborting its task (OQ-C016).
+    /// Cancels any currently-running compile by aborting its task.
     /// Then spawns a new `tokio::task::spawn_blocking` call to `check_workspace`.
     async fn trigger_compile(&self) {
         let state_arc = Arc::clone(&self.state);
@@ -140,7 +140,7 @@ impl RidgeLanguageServer {
 
             match result {
                 Err(_join_err) => {
-                    // Task was aborted (OQ-C016) or panicked; discard silently.
+                    // Task was aborted or panicked; discard silently.
                 }
                 Ok(Err(check_err)) => {
                     // Fatal driver error (e.g. workspace not found).
@@ -219,7 +219,7 @@ impl RidgeLanguageServer {
         *ch = Some(handle);
     }
 
-    /// Schedule a debounced compile (250 ms delay, OQ-C013).
+    /// Schedule a debounced compile (250 ms delay).
     ///
     /// Cancels any pending debounce timer and restarts it.  If a new
     /// `didChange` arrives before the 250 ms elapses, the previous timer
@@ -268,7 +268,7 @@ impl LanguageServer for RidgeLanguageServer {
                 .and_then(|folders| folders.first().map(|f| f.uri.clone()))
         });
 
-        // Warn if multiple workspace roots were provided (OQ-C015).
+        // Warn if multiple workspace roots were provided.
         if let Some(folders) = &params.workspace_folders {
             if folders.len() > 1 {
                 let mut snap = self.state.lock().await;
@@ -413,12 +413,12 @@ impl LanguageServer for RidgeLanguageServer {
                 }
             }
         }
-        // Debounced compile — 250 ms (OQ-C013).
+        // Debounced compile — 250 ms.
         self.schedule_debounced_compile().await;
     }
 
     async fn did_save(&self, params: DidSaveTextDocumentParams) {
-        // didSave is unconditional (OQ-C013) — no debounce.
+        // didSave is unconditional — no debounce.
         let uri = params.text_document.uri;
         tracing::debug!("didSave: {uri}");
         // Update doc if text was included (save.includeText = false so typically not).

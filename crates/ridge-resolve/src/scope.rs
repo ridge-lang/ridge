@@ -1,4 +1,4 @@
-//! Lexical scope stack for intra-module name resolution (T8, plan §3.3 / §4.5).
+//! Lexical scope stack for intra-module name resolution (plan §3.3 / §4.5).
 //!
 //! [`ScopeStack`] is a `Vec<Scope>` maintained by the [`crate::walker`] as it
 //! descends into function bodies, lambda expressions, match arms, actor blocks,

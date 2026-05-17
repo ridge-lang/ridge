@@ -23,7 +23,7 @@
 //! | `As { name, inner }` | `IrPat::Bind { name, inner: Some(lower_pattern_full(inner)) }` |
 //! | `Paren { inner }` | `lower_pattern_full(inner)` (paren erasure) |
 //!
-//! **Shorthand field expansion (D053).** `FieldPattern { name, pattern: None }` expands
+//! **Shorthand field expansion.** `FieldPattern { name, pattern: None }` expands
 //! to `(name, IrPat::Bind { name, inner: None })` — the IR carries no shorthand form.
 //!
 //! **`SymbolRef` for constructors.** The `BindingMap` maps the constructor name's
@@ -204,7 +204,7 @@ fn lower_constructor_pattern(
             // `Foo`) → UnionVariant.  Match-pattern lowering can use the syntax
             // form here because the field-vs-positional distinction is
             // syntactically clear in patterns; expression lowering cannot
-            // (B-D013) and must rely on the resolver's `is_record` flag.
+            // expression lowering cannot determine this syntactically and must rely on the resolver's `is_record` flag.
             let ctor_kind = if fields.is_some() {
                 CtorKind::Record
             } else {
@@ -220,7 +220,7 @@ fn lower_constructor_pattern(
         }
 
         // Prelude constructors (`Some`, `None`, `Ok`, `Err`) are bound by the
-        // resolve phase as `Binding::StdlibSymbol` (OQ-R013 / prelude contract).
+        // resolve phase as `Binding::StdlibSymbol` (prelude contract).
         // They are not `Binding::Constructor`; lower them directly to
         // `IrPat::Ctor { sym: SymbolRef::Prelude { name } }`.
         Some(Binding::StdlibSymbol { name: sym_name, .. }) => {
@@ -301,11 +301,11 @@ fn lower_constructor_pattern(
 
 /// Expand a `FieldPattern` to a `(field_name, IrPat)` pair.
 ///
-/// Shorthand fields (D053: `FieldPattern { pattern: None }`) expand to
+/// Shorthand fields (`FieldPattern { pattern: None }`) expand to
 /// `(name, IrPat::Bind { name, inner: None })` — the IR has no shorthand form.
 fn field_pattern_to_pair(ctx: &mut LowerCtx<'_>, fp: &FieldPattern) -> (String, IrPat) {
     let name = fp.name.text.clone();
-    // Shorthand fields (D053: `pattern: None`) expand to `(name, Bind { name, inner: None })`.
+    // Shorthand fields (`pattern: None`) expand to `(name, Bind { name, inner: None })`.
     let pat = fp.pattern.as_ref().map_or_else(
         || IrPat::Bind {
             name: name.clone(),
@@ -707,9 +707,9 @@ mod tests {
         }
     }
 
-    // ── T5-match-7: record shorthand field expansion (D053) ───────────────────
+    // ── Record shorthand field expansion ──────────────────────────────────────
     //
-    // arm `User { name } -> name`: D053 shorthand expands to
+    // arm `User { name } -> name`: shorthand expands to
     // fields: [("name", IrPat::Bind { name: "name", inner: None })]
 
     #[test]

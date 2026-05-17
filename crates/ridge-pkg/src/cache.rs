@@ -4,13 +4,13 @@
 //!
 //! Layout: `<cache_root>/git/<host>/<owner>/<repo>/<rev>/`
 //!
-//! Platform-specific roots (D144, OQ-C003):
+//! Platform-specific roots:
 //! - **Linux**: `$XDG_CACHE_HOME/ridge/git/…` (default `~/.cache/ridge/git/…`)
 //! - **macOS**: `~/Library/Caches/ridge/git/…`
 //! - **Windows**: `%LOCALAPPDATA%\Ridge\cache\git\…`
 //!
 //! Implemented via the `directories` crate — NOT `dirs` — to honour XDG
-//! semantics on Linux (OQ-C003, D144).
+//! semantics on Linux.
 
 use std::path::{Path, PathBuf};
 
@@ -23,18 +23,16 @@ use crate::error::PkgError;
 /// Return the platform-aware `ridge-pkg` cache root.
 ///
 /// Uses `directories::ProjectDirs` which honours `$XDG_CACHE_HOME` on Linux
-/// and uses the correct platform directories on macOS and Windows. (D144,
-/// OQ-C003)
+/// and uses the correct platform directories on macOS and Windows.
 ///
 /// # Errors
 ///
 /// Returns `P103 PkgCacheRootUnavailable` if the home directory cannot be
 /// determined.
 pub fn cache_root() -> Result<PathBuf, PkgError> {
-    // OQ-C003: per-user, shared cache so the same dep across workspaces is
-    // fetched only once. // OQ-C003
-    let dirs = ProjectDirs::from("org", "Ridge", "ridge") // D144
-        .ok_or(PkgError::PkgCacheRootUnavailable)?;
+    // Per-user, shared cache so the same dep across workspaces is fetched only once.
+    let dirs =
+        ProjectDirs::from("org", "Ridge", "ridge").ok_or(PkgError::PkgCacheRootUnavailable)?;
     Ok(dirs.cache_dir().to_owned())
 }
 

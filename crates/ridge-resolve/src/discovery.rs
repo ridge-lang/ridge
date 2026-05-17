@@ -4,7 +4,7 @@
 //!
 //! 1. Walk upward from `root` finding the `ridge.toml` that contains a
 //!    `[workspace]` table.  Emit R001 if none is found.
-//! 2. Parse the workspace manifest via T2's [`parse_workspace_manifest`].
+//! 2. Parse the workspace manifest via [`parse_workspace_manifest`].
 //! 3. Expand `members_globs` against the workspace root.  Emit M004 for any
 //!    matched directory that lacks a `ridge.toml`.
 //! 4. Detect duplicate project names — M010.
@@ -34,7 +34,7 @@ use crate::{DiscoveryResult, ModuleId, ModuleMetadata, ProjectId, WorkspaceGraph
 /// Walk the filesystem from `root`, locate the workspace manifest, expand
 /// members, and return a partially-populated [`WorkspaceGraph`].
 ///
-/// Module dependency edges (`deps`) are left empty — T4 fills those.
+/// Module dependency edges (`deps`) are left empty — the module-graph pass fills those.
 ///
 /// # Non-fatal policy
 ///
@@ -465,7 +465,7 @@ fn walk_src_root_inner(
                 depth + 1,
             );
         } else if file_type.is_file() || (file_type.is_symlink() && path.is_file()) {
-            // Only process `.rg` files (case-sensitive per OQ-R003).
+            // Only process `.rg` files (case-sensitive per R003).
             if path.extension().is_some_and(|ext| ext == "rg") {
                 let fqn = derive_module_fqn(project_name, src_root, &path);
                 let id = ModuleId(*next_id);
@@ -475,7 +475,7 @@ fn walk_src_root_inner(
                     project: project_id,
                     fully_qualified_name: fqn,
                     file_path: path,
-                    // T3 placeholder; T4 will set 0..eof after reading source.
+                    // Placeholder span; the module-graph pass will set 0..eof after reading source.
                     span_within_file: Span::point(0),
                 });
             }
@@ -596,7 +596,7 @@ root = "{src_root}"
         )
     }
 
-    // ── T1: find_workspace_root finds manifest in current dir ─────────────────
+    // ── find_workspace_root finds manifest in current dir ────────────────────
 
     #[test]
     fn t1_find_workspace_root_in_current_dir() {
@@ -608,7 +608,7 @@ root = "{src_root}"
         assert_eq!(found.unwrap(), canonical_dir);
     }
 
-    // ── T2: find_workspace_root walks upward ──────────────────────────────────
+    // ── find_workspace_root walks upward ─────────────────────────────────────
 
     #[test]
     fn t2_find_workspace_root_walks_upward() {
@@ -622,7 +622,7 @@ root = "{src_root}"
         assert_eq!(found.unwrap(), canonical_dir);
     }
 
-    // ── T3: find_workspace_root returns None → R001 ───────────────────────────
+    // ── find_workspace_root returns None → R001 ──────────────────────────────
 
     #[test]
     fn t3_r001_no_workspace_manifest() {
@@ -636,7 +636,7 @@ root = "{src_root}"
         );
     }
 
-    // ── T4: single-member workspace, 1 project, 1 module, correct FQN ─────────
+    // ── single-member workspace, 1 project, 1 module, correct FQN ───────────
 
     #[test]
     fn t4_single_member_single_module_correct_fqn() {
@@ -662,7 +662,7 @@ root = "{src_root}"
         assert_eq!(graph.modules[0].fully_qualified_name, "demo.Hello");
     }
 
-    // ── T5: two-member workspace with distinct projects ────────────────────────
+    // ── two-member workspace with distinct projects ───────────────────────────
 
     #[test]
     fn t5_two_member_workspace() {
@@ -704,7 +704,7 @@ root = "{src_root}"
         assert!(fqns.contains(&"server.Main"), "fqns: {fqns:?}");
     }
 
-    // ── T6: nested module path src/Models/User.rg → <project>.Models.User ──────
+    // ── nested module path src/Models/User.rg → <project>.Models.User ───────
 
     #[test]
     fn t6_nested_module_path() {
@@ -736,7 +736,7 @@ root = "{src_root}"
         );
     }
 
-    // ── T7: deeply nested path src/A/B/C/D.rg → <project>.A.B.C.D ───────────
+    // ── deeply nested path src/A/B/C/D.rg → <project>.A.B.C.D ──────────────
 
     #[test]
     fn t7_deeply_nested_path() {
@@ -760,7 +760,7 @@ root = "{src_root}"
         assert_eq!(graph.modules[0].fully_qualified_name, "acme.deep.A.B.C.D");
     }
 
-    // ── T8: file directly in src/ → <project>.<Name> ─────────────────────────
+    // ── file directly in src/ → <project>.<Name> ────────────────────────────
 
     #[test]
     fn t8_file_directly_in_src() {
@@ -784,7 +784,7 @@ root = "{src_root}"
         assert_eq!(graph.modules[0].fully_qualified_name, "myproject.Main");
     }
 
-    // ── T9: non-.rg files are ignored; .hidden.rg is ignored ─────────────────
+    // ── non-.rg files are ignored; .hidden.rg is ignored ────────────────────
 
     #[test]
     fn t9_non_rg_files_and_hidden_files_ignored() {
@@ -816,7 +816,7 @@ root = "{src_root}"
         assert_eq!(graph.modules[0].fully_qualified_name, "demo.Actual");
     }
 
-    // ── T10: hidden directories are skipped ───────────────────────────────────
+    // ── hidden directories are skipped ───────────────────────────────────────
 
     #[test]
     fn t10_hidden_directories_skipped() {
@@ -851,7 +851,7 @@ root = "{src_root}"
         assert_eq!(graph.modules[0].fully_qualified_name, "demo.Visible");
     }
 
-    // ── T11: M004 fires when member dir lacks ridge.toml ─────────────────────
+    // ── M004 fires when member dir lacks ridge.toml ──────────────────────────
 
     #[test]
     fn t11_m004_member_without_project_manifest() {
@@ -868,7 +868,7 @@ root = "{src_root}"
         );
     }
 
-    // ── T12: M010 fires when two member projects share a name ─────────────────
+    // ── M010 fires when two member projects share a name ─────────────────────
 
     #[test]
     fn t12_m010_duplicate_project_name() {
@@ -895,7 +895,7 @@ root = "{src_root}"
         );
     }
 
-    // ── T13: R002 fires when two projects produce overlapping FQNs ────────────
+    // ── R002 fires when two projects produce overlapping FQNs ────────────────
     //
     // Portable recipe (works on all platforms):
     //   project "acme"        with src/domain/Foo.rg  → "acme.domain.Foo"
@@ -924,7 +924,7 @@ root = "{src_root}"
         );
     }
 
-    // ── T14: non-default src_root = "source" is respected ────────────────────
+    // ── non-default src_root = "source" is respected ─────────────────────────
 
     #[test]
     fn t14_custom_src_root() {
@@ -953,7 +953,7 @@ root = "{src_root}"
         assert_eq!(graph.modules[0].fully_qualified_name, "demo.Config");
     }
 
-    // ── T15: canonical-example acceptance (DoD) ───────────────────────────────
+    // ── canonical-example acceptance ─────────────────────────────────────────
     //
     // Every .rg file in examples/ resolves to the correct FQN when placed in
     // a synthetic workspace with project.name = "demo".
@@ -1015,7 +1015,7 @@ root = "{src_root}"
         }
     }
 
-    // ── T16: M017 fires when path dependency escapes workspace root ───────────
+    // ── M017 fires when path dependency escapes workspace root ───────────────
 
     #[test]
     fn t16_m017_path_dep_escapes_workspace() {
@@ -1097,7 +1097,7 @@ outside = { path = "../../../outside" }
     /// `foo.rg` in the same directory producing the same FQN) is unreachable on
     /// Windows.
     ///
-    /// The portable R002 test (T13) covers the cross-project FQN collision case
+    /// The portable R002 test covers the cross-project FQN collision case
     /// which is reachable on all platforms.
     ///
     /// TODO: when running on Linux CI, add a `#[cfg(not(windows))]` test that
@@ -1110,7 +1110,7 @@ outside = { path = "../../../outside" }
         // directory cannot both exist.  This test documents that the Windows
         // behaviour is: only one file will be visible, so no R002 fires from
         // the FS collision path.  R002 is still exercised by the portable
-        // cross-project test (T13).
+        // cross-project test.
         // This test always passes — it is a documentation stub.
     }
 
@@ -1122,7 +1122,7 @@ outside = { path = "../../../outside" }
     #[test]
     fn r002_fs_collision_linux_same_project() {
         // On Linux (case-sensitive FS), Foo.rg and foo.rg are distinct files.
-        // FQN derivation is case-preserving (OQ-R003 resolution: case-sensitive),
+        // FQN derivation is case-preserving (R003 resolution: case-sensitive),
         // so Foo.rg → acme.Foo and foo.rg → acme.foo — DIFFERENT FQNs.
         // Therefore no R002 fires from within the same project, confirming that
         // R002 specifically targets identical FQNs, not merely case-differing ones.

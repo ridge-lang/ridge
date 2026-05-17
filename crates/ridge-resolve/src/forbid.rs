@@ -1,4 +1,4 @@
-//! Workspace `forbid` rule enforcement (T12, plan §4.9).
+//! Workspace `forbid` rule enforcement (plan §4.9).
 //!
 //! # Overview
 //!
@@ -11,7 +11,7 @@
 //! importing module.  `ResolveError::ForbidViolation::Display` renders the
 //! spec §8.6 multi-line output (file/line of the import, rule text, and
 //! suggestion) in-place.  No separate Phase-6 renderer pass is needed for
-//! this code (DR-02 / D075).
+//! this code.
 //!
 //! # Algorithm (plan §4.9)
 //!
@@ -26,13 +26,13 @@
 //!
 //! # What is skipped
 //!
-//! - **Synthetic prelude `ImportResolution`s** — the OQ-R013/OQ-R015 prelude
+//! - **Synthetic prelude `ImportResolution`s** — the R013/R015 prelude
 //!   is implicit, and the user did not write it.  These IRs are detected by
 //!   their empty span (`Span::point(0)`) and are silently skipped so they
 //!   cannot trigger a forbid violation.
 //! - **`ImportTarget::Unresolved`** — `R006` already fired and there is no
 //!   meaningful target FQN to match against.  Suppressing R013 here matches
-//!   the OQ-R011 cascading-error policy.
+//!   the R011 cascading-error policy.
 //!
 //! # Self-forbid rules
 //!
@@ -44,9 +44,9 @@
 //!
 //! # Integration
 //!
-//! T12 ships this pass as a standalone function.  Like [`check_capabilities`]
-//! (T10), wiring into the top-level `resolve_source` / `resolve_workspace`
-//! entry point is reserved for T14 once snapshot-tests pin the public API.
+//! This pass ships as a standalone function.  Like [`check_capabilities`],
+//! wiring into the top-level `resolve_source` / `resolve_workspace`
+//! entry point is deferred until snapshot-tests pin the public API.
 //!
 //! [`check_capabilities`]: crate::capabilities::check_capabilities
 //! [`ForbidRule`]: crate::manifest::ForbidRule

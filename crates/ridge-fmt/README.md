@@ -5,7 +5,7 @@ normalise Ridge source files.
 
 ## Algorithm (0.1.0 — Transitional)
 
-The 0.1.0 formatter implements a **trivia-preserving round-trip** (OQ-C007):
+The 0.1.0 formatter implements a **trivia-preserving round-trip**:
 
 1. Pre-normalise tabs (each `\t` → two spaces) so tab-indented files are
    accepted without error.
@@ -23,7 +23,7 @@ The 0.1.0 formatter implements a **trivia-preserving round-trip** (OQ-C007):
    - Zero blank lines between consecutive `import` statements.
    - Exactly one blank line between all other consecutive top-level
      declarations.
-5. Re-attach line comments per OQ-C008: same-line if combined length ≤ 80
+5. Re-attach line comments: same-line if combined length ≤ 80
    characters, otherwise on the preceding line.
 6. Doc-bracket comments (`---…---`) are preserved verbatim.
 

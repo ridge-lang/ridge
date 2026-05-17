@@ -1,39 +1,32 @@
 //! Central dispatch table for lowering `IrExpr` nodes to `CErlExpr`.
 //!
-//! T3 lands the following arms:
+//! Arms lowered here:
 //! - §4.1  `IrExpr::Lit`       → [`lower_lit`] in `lit.rs`
 //! - §4.2  `IrExpr::Local`     → `CErlExpr::Var` with [`name_to_erl_var`] mangling
 //! - §4.3  `IrExpr::Symbol`    → [`lower_symbol`] router in `symbol.rs`
-//! - §4.14 `IrExpr::ListLit`   → `CErlExpr::ListLit`
-//! - §4.15 `IrExpr::Tuple`     → `CErlExpr::Tuple`
-//! - §4.16 `IrExpr::Cons`      → `CErlExpr::Cons`
-//!
-//! T4 adds the following arms:
+//! - §4.4  `IrExpr::Call`      → [`lower_call`]: static `IrExpr::Symbol` callee
+//!   (Constructor dispatch; Prelude dispatch; Stdlib bridge map; Local/External)
+//!   and dynamic callee (anything else → `CErlExpr::Apply`). The `LetIn` recursive
+//!   inner-fn `letrec` path (OQ-L012) is live end-to-end with Lambda lowering.
+//! - §4.5  `IrExpr::Lambda`    → [`lower_lambda`]: `CErlExpr::Fun { params, body }`.
+//!   `caps` is erased (Model B capability erasure). Lambda body is lowered in a fresh per-lambda scope.
 //! - §4.6  `IrExpr::LetIn`     → `CErlExpr::Let` or `CErlExpr::Case` (destructuring)
 //! - §4.7  `IrExpr::VarIn`     → `CErlExpr::Let` with SSA-index-0 binding
 //! - §4.8  `IrExpr::Assign`    → handled inline by the Block lowerer
 //! - §4.9  `IrExpr::Return`    → throw form via `return_::lower_return`
 //! - §4.10 `IrExpr::Block`     → `CErlExpr::Do` chain (right-fold)
 //! - §4.11 `IrExpr::Match`     → `CErlExpr::Case`
-//!
-//! T5 adds the following arms:
 //! - §4.12 `IrExpr::Construct` → [`lower_construct`]: `MapLit` (Record) or `Tuple`/`Atom`
 //!   (UnionVariant/Prelude); OQ-CG004 `with` peephole emits `MapUpdate` instead of `MapLit`.
 //! - §4.13 `IrExpr::Field`     → [`lower_field`]: `call 'maps':'get'(Atom, Base)`.
+//! - §4.14 `IrExpr::ListLit`   → `CErlExpr::ListLit`
+//! - §4.15 `IrExpr::Tuple`     → `CErlExpr::Tuple`
+//! - §4.16 `IrExpr::Cons`      → `CErlExpr::Cons`
 //!
-//! T6 adds the following arms:
-//! - §4.5  `IrExpr::Lambda`    → [`lower_lambda`]: `CErlExpr::Fun { params, body }`.
-//!   `caps` is erased (D018 Model B). Lambda body is lowered in a fresh per-lambda scope.
-//! - §4.4  `IrExpr::Call`      → [`lower_call`]: two paths — static `IrExpr::Symbol`
-//!   callee (Constructor dispatch; Prelude dispatch; Stdlib → bridge map T7; Local/External deferred to T8)
-//!   and dynamic callee (anything else → `CErlExpr::Apply`). The `LetIn` recursive
-//!   inner-fn `letrec` path (OQ-L012) is now live end-to-end with Lambda lowering complete.
-//!
-//! All other `IrExpr` variants return a deferred `IrShapeMalformed` error;
-//! later tasks (T7..T9) add arms incrementally.
+//! All other `IrExpr` variants return a deferred `IrShapeMalformed` error.
 
-// T3/T4 helpers are wired into the module-level entry points in T8.  Until
-// then they are only exercised from within the test suites.
+// These helpers are exercised from test suites and from the module-level
+// entry points in the codegen pipeline.
 #![allow(dead_code)]
 // pub(crate) on items in a pub(crate) module is redundant per clippy; we keep
 // it anyway for explicitness per plan §2.2 — suppress the lint here.
@@ -76,7 +69,7 @@ use ridge_ir::{AssignTarget, CtorKind, IrExpr, IrParam, IrPat, SymbolRef};
 /// - `"__prop_ok"`   → `"V_PropOk"`
 /// - `"__with_base"` → `"V_WithBase"`
 ///
-/// SSA suffixes (`V_Count1`, `V_Count2`, …) are managed by `LocalScope` in T4
+/// SSA suffixes (`V_Count1`, `V_Count2`, …) are managed by `LocalScope`
 /// — this function only implements the base mangling.
 pub(crate) fn name_to_erl_var(name: &str) -> String {
     // 1. Strip leading underscores.
@@ -159,7 +152,7 @@ pub(crate) fn lower_expr_in_scope(
 
         // §4.3 — Symbol reference (top-level fn, stdlib, constructor, …).
         // Pass the fn-arity table from the scope so that SymbolRef::Local used
-        // as a value can be resolved to a LocalFnRef (T8 wiring).
+        // as a value can be resolved to a LocalFnRef.
         // B-6: also pass actor_parent so that parent-module symbol refs used as
         // values emit qualified calls instead of LocalFnRef (which would be
         // undefined in the actor's separate BEAM module).
@@ -195,14 +188,12 @@ pub(crate) fn lower_expr_in_scope(
             })
         }
 
-        // ── T4 arms ───────────────────────────────────────────────────────────
+        // ── LetIn, VarIn, Assign, Return, Block, Match ───────────────────────
 
         // §4.6 — LetIn: simple Bind(name, None) → Let; other patterns → Case.
         // OQ-L012 (Phase 5): recursive inner-fn detection: if value is Lambda
-        // and the lambda body references the bound name, we should emit LetRec.
-        // Lambda lowering is T6's job; for T4, we detect the structure but
-        // let lower_expr_in_scope(value, scope) return the T6-deferred error.
-        // PHASE6-T6: Lambda lowering completes the rec-inner-fn path.
+        // and the lambda body references the bound name, we emit LetRec.
+        // Lambda lowering completes the rec-inner-fn path.
         IrExpr::LetIn {
             pat, value, body, ..
         } => {
@@ -213,7 +204,7 @@ pub(crate) fn lower_expr_in_scope(
                 // Simple case: single-name bind, no as-pattern.
                 // Check for recursive inner-fn (OQ-L012) — if value is a
                 // Lambda and the lambda body references `name`, we should
-                // emit LetRec rather than Let.  T6 completes this path.
+                // emit LetRec rather than Let.
                 if let IrExpr::Lambda {
                     params: lambda_params,
                     body: lambda_body,
@@ -221,7 +212,7 @@ pub(crate) fn lower_expr_in_scope(
                 } = value.as_ref()
                 {
                     if body_references_local(lambda_body, name) {
-                        // PHASE6-T6: LetRec emission path.
+                        // LetRec emission path for recursive inner functions.
                         // 1. Determine arity from the lambda params.
                         #[allow(clippy::cast_possible_truncation)]
                         let arity = lambda_params.len() as u32;
@@ -290,13 +281,13 @@ pub(crate) fn lower_expr_in_scope(
             AssignTarget::StateField { .. } => Err(CodegenError::IrShapeMalformed {
                 variant: "IrExpr::Assign",
                 span: *span,
-                detail: "T4: StateField Assign requires actor-handler context (T9)".into(),
+                detail: "StateField Assign requires actor-handler context".into(),
             }),
         },
 
         // §4.9 — Return: emit the throw form at expression scope.
         // Tail-position elision and try/catch wrapping happen at fn-body level
-        // via return_::lower_fn_body (called by T8).
+        // via return_::lower_fn_body.
         IrExpr::Return { value, .. } => {
             let lowered_value = lower_expr_in_scope(value, scope)?;
             Ok(lower_return(lowered_value))
@@ -333,10 +324,10 @@ pub(crate) fn lower_expr_in_scope(
             })
         }
 
-        // ── T6 arms ───────────────────────────────────────────────────────────
+        // ── Lambda, Call, Construct, Field, Send, Ask, Spawn ─────────────────
 
         // §4.5 — Lambda: fun (P1, ..., PN) -> Body end.
-        // `caps` is erased (D018 Model B).
+        // `caps` is erased (Model B capability erasure).
         IrExpr::Lambda { params, body, .. } => lower_lambda(params, body, scope),
 
         // §4.4 — Call: static callee → dispatch by SymbolRef; dynamic → Apply.
@@ -381,7 +372,7 @@ pub(crate) fn lower_expr_in_scope(
         _ => Err(CodegenError::IrShapeMalformed {
             variant: "IrExpr",
             span: ridge_ast::Span::point(0),
-            detail: "T4: unrecognised IrExpr variant — pending future lowering task".into(),
+            detail: "unrecognised IrExpr variant — no lowering arm defined".into(),
         }),
     }
 }
@@ -428,7 +419,7 @@ fn lower_block_stmts(
                     })
                 }
 
-                // Assign(StateField) → deferred to T9.
+                // Assign(StateField) requires actor-handler context.
                 IrExpr::Assign {
                     target: AssignTarget::StateField { .. },
                     span: assign_span,
@@ -436,7 +427,7 @@ fn lower_block_stmts(
                 } => Err(CodegenError::IrShapeMalformed {
                     variant: "IrExpr::Assign",
                     span: *assign_span,
-                    detail: "T4: StateField Assign requires actor-handler context (T9)".into(),
+                    detail: "StateField Assign requires actor-handler context".into(),
                 }),
 
                 // LetIn/VarIn as a Block stmt: Phase 5 invariant violation.
@@ -683,7 +674,7 @@ fn lower_field(
 /// Each parameter is mangled via [`name_to_erl_var`] and wrapped in a
 /// [`CErlVar`].  The body is lowered in a **fresh per-lambda scope** (Erlang
 /// funs introduce their own variable scope; outer SSA indices must not leak
-/// in).  `caps` is erased per D018 Model B.
+/// in).  `caps` is erased (Model B capability erasure).
 fn lower_lambda(
     params: &[IrParam],
     body: &IrExpr,
@@ -726,9 +717,9 @@ fn lower_lambda(
 /// `CErlExpr::Apply` (dynamic callee) per §4.4.
 ///
 /// **Static path** — callee is `IrExpr::Symbol`:
-/// - `Local { name }` → T8-deferred `IrShapeMalformed`.
-/// - `Stdlib { .. }` → bridge map lookup via `lower_call_to_stdlib` (T7).
-/// - `External { .. }` → T7/T8-deferred `IrShapeMalformed`.
+/// - `Local { name }` → unqualified Apply or qualified cross-module Call.
+/// - `Stdlib { .. }` → bridge map lookup via `lower_call_to_stdlib`.
+/// - `External { .. }` → `IrShapeMalformed` (not yet supported).
 /// - `Constructor { UnionVariant, name }` with N args → `Tuple([Atom name, A1..AN])`.
 ///   Empty args → bare `Lit(Atom name)`.
 /// - `Constructor { Record, .. }` → defensive `IrShapeMalformed` (records are
@@ -849,15 +840,15 @@ fn lower_static_call(
             })
         }
 
-        // ── Stdlib call → bridge map lookup (T7). ────────────────────────────
+        // ── Stdlib call → bridge map lookup. ─────────────────────────────────
         SymbolRef::Stdlib { module, name } => lower_call_to_stdlib(module, name, args, span, scope),
 
-        // ── External call → T7/T8 will wire arity + module mangling. ─────────
+        // ── External call → not yet supported. ───────────────────────────────
         SymbolRef::External { name, .. } => Err(CodegenError::IrShapeMalformed {
             variant: "IrExpr::Call",
             span,
             detail: format!(
-                "T6: External-callee Call '{name}' routing pending T7/T8 (arity + module mangling)"
+                "External-callee Call '{name}' not yet supported (arity + module mangling needed)"
             ),
         }),
 
@@ -890,7 +881,7 @@ fn lower_static_call(
             variant: "IrExpr::Call",
             span,
             detail: format!(
-                "T6: Record constructor '{name}' appeared as Call callee; \
+                "Record constructor '{name}' appeared as Call callee; \
                  records are constructed via IrExpr::Construct (Phase 5 invariant violated)"
             ),
         }),
@@ -903,7 +894,7 @@ fn lower_static_call(
             variant: "IrExpr::Call",
             span,
             detail: format!(
-                "T6: Handler '{actor}/{handler}' appeared as a Call callee; \
+                "Handler '{actor}/{handler}' appeared as a Call callee; \
                  handlers go through IrExpr::Send/Ask (Phase 5 invariant violated)"
             ),
         }),
@@ -911,7 +902,7 @@ fn lower_static_call(
             variant: "IrExpr::Call",
             span,
             detail: format!(
-                "T6: ActorType '{name}' appeared as a Call callee; \
+                "ActorType '{name}' appeared as a Call callee; \
                  actor types go through IrExpr::Spawn (Phase 5 invariant violated)"
             ),
         }),
@@ -920,8 +911,7 @@ fn lower_static_call(
         _ => Err(CodegenError::IrShapeMalformed {
             variant: "IrExpr::Call",
             span,
-            detail: "T6: unrecognised SymbolRef variant as Call callee — pending future task"
-                .into(),
+            detail: "unrecognised SymbolRef variant as Call callee".into(),
         }),
     }
 }
@@ -939,7 +929,7 @@ fn lower_prelude_call(
                 return Err(CodegenError::IrShapeMalformed {
                     variant: "IrExpr::Call",
                     span,
-                    detail: format!("T6: Prelude 'None' call expects 0 args, got {}", args.len()),
+                    detail: format!("Prelude 'None' call expects 0 args, got {}", args.len()),
                 });
             }
             Ok(CErlExpr::Lit(CErlLit::Atom(CErlAtom("none".into()))))
@@ -949,7 +939,7 @@ fn lower_prelude_call(
                 return Err(CodegenError::IrShapeMalformed {
                     variant: "IrExpr::Call",
                     span,
-                    detail: format!("T6: Prelude 'Some' call expects 1 arg, got {}", args.len()),
+                    detail: format!("Prelude 'Some' call expects 1 arg, got {}", args.len()),
                 });
             }
             let inner = lower_expr_in_scope(&args[0], scope)?;
@@ -963,7 +953,7 @@ fn lower_prelude_call(
                 return Err(CodegenError::IrShapeMalformed {
                     variant: "IrExpr::Call",
                     span,
-                    detail: format!("T6: Prelude 'Ok' call expects 1 arg, got {}", args.len()),
+                    detail: format!("Prelude 'Ok' call expects 1 arg, got {}", args.len()),
                 });
             }
             let inner = lower_expr_in_scope(&args[0], scope)?;
@@ -977,7 +967,7 @@ fn lower_prelude_call(
                 return Err(CodegenError::IrShapeMalformed {
                     variant: "IrExpr::Call",
                     span,
-                    detail: format!("T6: Prelude 'Err' call expects 1 arg, got {}", args.len()),
+                    detail: format!("Prelude 'Err' call expects 1 arg, got {}", args.len()),
                 });
             }
             let inner = lower_expr_in_scope(&args[0], scope)?;
@@ -990,7 +980,7 @@ fn lower_prelude_call(
             variant: "IrExpr::Call",
             span,
             detail: format!(
-                "T6: Prelude '{other}' is not a valid Call callee — Phase 5 invariant violated"
+                "Prelude '{other}' is not a valid Call callee — Phase 5 invariant violated"
             ),
         }),
     }
@@ -1414,10 +1404,8 @@ mod tests {
         }
     }
 
-    // ── T6: Call with dynamic callee (Local) → Apply ────────────────────────
-    // T3 used to return IrShapeMalformed for all Call nodes.  T6 ships Call
-    // lowering: a dynamic callee (anything other than IrExpr::Symbol) now lowers
-    // to CErlExpr::Apply.
+    // ── Call with dynamic callee (Local) → Apply ─────────────────────────────
+    // A dynamic callee (anything other than IrExpr::Symbol) lowers to Apply.
 
     #[test]
     fn expr_call_dynamic_local_callee_emits_apply() {
@@ -1438,7 +1426,7 @@ mod tests {
         }
     }
 
-    // ── T4: LetIn (simple bind) ───────────────────────────────────────────────
+    // ── LetIn (simple bind) ───────────────────────────────────────────────────
 
     #[test]
     fn expr_let_in_simple_bind() {
@@ -1466,7 +1454,7 @@ mod tests {
         }
     }
 
-    // ── T4: LetIn (destructuring) ────────────────────────────────────────────
+    // ── LetIn (destructuring) ────────────────────────────────────────────────
 
     #[test]
     fn expr_let_in_destructuring() {
@@ -1516,7 +1504,7 @@ mod tests {
         }
     }
 
-    // ── T4: nested LetIn chain ────────────────────────────────────────────────
+    // ── Nested LetIn chain ────────────────────────────────────────────────────
 
     #[test]
     fn expr_let_in_nested() {
@@ -1581,7 +1569,7 @@ mod tests {
         }
     }
 
-    // ── T4: VarIn + Assign in Block ───────────────────────────────────────────
+    // ── VarIn + Assign in Block ───────────────────────────────────────────────
 
     #[test]
     fn expr_var_in_then_assign_in_block() {
@@ -1644,7 +1632,7 @@ mod tests {
         }
     }
 
-    // ── T4: Block Do sequencing ───────────────────────────────────────────────
+    // ── Block Do sequencing ───────────────────────────────────────────────────
 
     #[test]
     fn expr_block_do_sequencing() {
@@ -1679,7 +1667,7 @@ mod tests {
         }
     }
 
-    // ── T4: Match (two arms) ──────────────────────────────────────────────────
+    // ── Match (two arms) ──────────────────────────────────────────────────────
 
     #[test]
     fn expr_match_with_two_arms() {
@@ -1730,7 +1718,7 @@ mod tests {
         }
     }
 
-    // ── T4: Match over Record Ctor pattern ───────────────────────────────────
+    // ── Match over Record Ctor pattern ───────────────────────────────────────
 
     #[test]
     fn expr_match_over_record_ctor_pattern() {
@@ -1768,7 +1756,7 @@ mod tests {
         }
     }
 
-    // ── T4: Match over UnionVariant Ctor pattern ─────────────────────────────
+    // ── Match over UnionVariant Ctor pattern ─────────────────────────────────
 
     #[test]
     fn expr_match_over_union_variant_pattern() {
@@ -1815,7 +1803,7 @@ mod tests {
         }
     }
 
-    // ── T4: Return emits throw at expression scope ────────────────────────────
+    // ── Return emits throw at expression scope ────────────────────────────────
 
     #[test]
     fn expr_return_not_tail_emits_throw() {
@@ -1841,7 +1829,7 @@ mod tests {
         }
     }
 
-    // ── T4: Assign StateField is deferred ────────────────────────────────────
+    // ── Assign StateField requires actor-handler context ─────────────────────
 
     #[test]
     fn expr_assign_state_field_deferred() {
@@ -1858,7 +1846,7 @@ mod tests {
         match result {
             Err(CodegenError::IrShapeMalformed { detail, .. }) => {
                 assert!(
-                    detail.contains("T4: StateField Assign requires actor-handler context (T9)"),
+                    detail.contains("StateField Assign requires actor-handler context"),
                     "unexpected detail: {detail}"
                 );
             }
@@ -1866,7 +1854,7 @@ mod tests {
         }
     }
 
-    // ── T4: body_references_local detection (OQ-L012) ────────────────────────
+    // ── body_references_local detection (OQ-L012) ────────────────────────────
 
     #[test]
     fn body_references_local_detects_self_ref() {
@@ -1897,7 +1885,7 @@ mod tests {
         assert!(body_references_local(&body, "f"));
     }
 
-    // ── T5: IrExpr::Construct — Record → MapLit ───────────────────────────────
+    // ── IrExpr::Construct — Record → MapLit ──────────────────────────────────
 
     #[test]
     fn expr_construct_record_emits_map_lit() {
@@ -1931,7 +1919,7 @@ mod tests {
         }
     }
 
-    // ── T5: IrExpr::Construct — UnionVariant with payload → Tuple ────────────
+    // ── IrExpr::Construct — UnionVariant with payload → Tuple ────────────────
 
     #[test]
     fn expr_construct_union_with_payload_emits_tuple() {
@@ -1961,7 +1949,7 @@ mod tests {
         }
     }
 
-    // ── T5: IrExpr::Construct — UnionVariant zero payload → bare atom ─────────
+    // ── IrExpr::Construct — UnionVariant zero payload → bare atom ────────────
 
     #[test]
     fn expr_construct_union_zero_payload_emits_atom() {
@@ -1985,7 +1973,7 @@ mod tests {
         );
     }
 
-    // ── T5: IrExpr::Construct — Prelude "Some" → {some, v} ───────────────────
+    // ── IrExpr::Construct — Prelude "Some" → {some, v} ──────────────────────
 
     #[test]
     fn expr_construct_prelude_some_emits_tuple() {
@@ -2012,7 +2000,7 @@ mod tests {
         }
     }
 
-    // ── T5: IrExpr::Construct — Prelude "None" → none atom ───────────────────
+    // ── IrExpr::Construct — Prelude "None" → none atom ───────────────────────
 
     #[test]
     fn expr_construct_prelude_none_emits_atom() {
@@ -2032,7 +2020,7 @@ mod tests {
         );
     }
 
-    // ── T5: IrExpr::Construct — Prelude "Ok" → {ok, v} ──────────────────────
+    // ── IrExpr::Construct — Prelude "Ok" → {ok, v} ──────────────────────────
 
     #[test]
     fn expr_construct_prelude_ok_emits_tuple() {
@@ -2057,7 +2045,7 @@ mod tests {
         }
     }
 
-    // ── T5: IrExpr::Construct — Prelude "Err" → {error, v} ──────────────────
+    // ── IrExpr::Construct — Prelude "Err" → {error, v} ──────────────────────
 
     #[test]
     fn expr_construct_prelude_err_emits_tuple() {
@@ -2082,7 +2070,7 @@ mod tests {
         }
     }
 
-    // ── T5: IrExpr::Construct — Prelude "Some" arity mismatch → error ─────────
+    // ── IrExpr::Construct — Prelude "Some" arity mismatch → error ────────────
 
     #[test]
     fn expr_construct_prelude_some_arity_mismatch_errs() {
@@ -2110,7 +2098,7 @@ mod tests {
         }
     }
 
-    // ── T5: IrExpr::Field → call 'maps':'get'(Atom key, Base) ────────────────
+    // ── IrExpr::Field → call 'maps':'get'(Atom key, Base) ───────────────────
 
     #[test]
     fn expr_field_emits_maps_get_call() {
@@ -2149,7 +2137,7 @@ mod tests {
         }
     }
 
-    // ── T5: `with` peephole fires → MapUpdate ────────────────────────────────
+    // ── `with` peephole fires → MapUpdate ────────────────────────────────────
 
     #[test]
     fn expr_construct_with_peephole_record() {
@@ -2201,7 +2189,7 @@ mod tests {
         }
     }
 
-    // ── T5: peephole does NOT fire when all fields are fresh (no forwarding) ──
+    // ── Peephole does NOT fire when all fields are fresh (no forwarding) ──────
 
     #[test]
     fn expr_construct_no_peephole_when_all_fresh() {
@@ -2225,7 +2213,7 @@ mod tests {
         );
     }
 
-    // ── T6 helper ────────────────────────────────────────────────────────────
+    // ── Lambda lowering helper ────────────────────────────────────────────────
 
     fn ir_param(name: &str) -> IrParam {
         IrParam {
@@ -2245,7 +2233,7 @@ mod tests {
         }
     }
 
-    // ── T6 (a): zero-param lambda → Fun { params: [], body } ─────────────────
+    // ── Zero-param lambda → Fun { params: [], body } ─────────────────────────
 
     #[test]
     fn lambda_zero_params_emits_fun() {
@@ -2261,7 +2249,7 @@ mod tests {
         }
     }
 
-    // ── T6 (b): multi-param lambda → Fun with mangled params ─────────────────
+    // ── Multi-param lambda → Fun with mangled params ──────────────────────────
 
     #[test]
     fn lambda_multi_params_emits_fun_with_mangled_vars() {
@@ -2280,7 +2268,7 @@ mod tests {
         }
     }
 
-    // ── T6 (c): lambda body references an outer local (capture) ──────────────
+    // ── Lambda body references an outer local (capture) ──────────────────────
 
     #[test]
     fn lambda_body_captures_outer_local() {
@@ -2321,7 +2309,7 @@ mod tests {
         }
     }
 
-    // ── T6 (d): Call with Constructor UnionVariant callee → Tuple ─────────────
+    // ── Call with Constructor UnionVariant callee → Tuple ────────────────────
 
     #[test]
     fn call_union_variant_ctor_emits_tuple() {
@@ -2356,7 +2344,7 @@ mod tests {
         }
     }
 
-    // ── T6 (e): Call Prelude "Some" with 1 arg → {some, A0} ──────────────────
+    // ── Call Prelude "Some" with 1 arg → {some, A0} ──────────────────────────
 
     #[test]
     fn call_prelude_some_emits_some_tuple() {
@@ -2387,7 +2375,7 @@ mod tests {
         }
     }
 
-    // ── T7 (f): Call Stdlib callee — bridge map dispatch ─────────────────────
+    // ── Call Stdlib callee — bridge map dispatch ──────────────────────────────
 
     #[test]
     fn call_stdlib_unknown_module_emits_e002() {
@@ -2445,7 +2433,7 @@ mod tests {
         }
     }
 
-    // ── T6 (g): Call with dynamic callee (Lambda) → Apply ────────────────────
+    // ── Call with dynamic callee (Lambda) → Apply ────────────────────────────
 
     #[test]
     fn call_dynamic_lambda_callee_emits_apply() {
@@ -2472,7 +2460,7 @@ mod tests {
         }
     }
 
-    // ── T6 (h): LetRec end-to-end — recursive inner fn ───────────────────────
+    // ── LetRec end-to-end — recursive inner fn ───────────────────────────────
 
     #[test]
     fn letin_recursive_lambda_emits_letrec() {
@@ -2554,7 +2542,7 @@ mod tests {
         }
     }
 
-    // ── T6 extra: Call Handler callee → defensive IrShapeMalformed ───────────
+    // ── Call Handler callee → defensive IrShapeMalformed ─────────────────────
 
     #[test]
     fn call_handler_callee_returns_defensive_error() {

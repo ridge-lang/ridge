@@ -1,7 +1,7 @@
 # vscode-ridge
 
-> **Status: Phase 8 scaffold — not Marketplace-published.**
-> This extension provides the minimal VS Code integration to demonstrate M5 ("VS Code shows errors from Ridge files as they happen"). Phase 9 owns the full extension: TextMate grammar, syntax highlighting, and Marketplace publication.
+> **Status: initial scaffold — not Marketplace-published.**
+> This extension provides the minimal VS Code integration to demonstrate M5 ("VS Code shows errors from Ridge files as they happen"). A future release will deliver the full extension: TextMate grammar, syntax highlighting, and Marketplace publication.
 
 ## Prerequisites
 
@@ -35,9 +35,9 @@ Reload VS Code after installation (`Developer: Reload Window`).
 
 ## What it does NOT do
 
-- No syntax highlighting (no TextMate grammar) — that is Phase 9's deliverable.
+- No syntax highlighting (no TextMate grammar) — planned for a future release.
 - No completion, hover, go-to-definition, or other LSP features beyond what `ridge-lsp` exposes over the protocol.
-- Not published to the VS Code Marketplace — sideload only until Phase 9.
+- Not published to the VS Code Marketplace — sideload only for now.
 
 ## Manual test (M5 acceptance — 1 manual count)
 

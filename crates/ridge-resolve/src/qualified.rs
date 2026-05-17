@@ -1,4 +1,4 @@
-//! Qualified-name resolution (T9, plan §4.6).
+//! Qualified-name resolution (plan §4.6).
 //!
 //! [`resolve_qualified_name`] is the single public entry point.  The walker
 //! delegates every `Expr::Qualified` here; the walker only stamps the returned
@@ -18,7 +18,7 @@
 //!    same-module `Result.Ok`).
 //!
 //!    If still not found → `R012`.  Exception: if the head alias pointed at an
-//!    `Unresolved` target, suppress R012 (OQ-R011 sentinel).
+//!    `Unresolved` target, suppress R012 (R011 sentinel).
 //!
 //! 2. **`ModuleAlias` descent** — take the last segment as the symbol name.
 //!    - `BuiltinStdlib(sid)`: check `BUILTINS[sid].exports`.  Hit → `StdlibSymbol`.
@@ -94,7 +94,7 @@ pub fn resolve_qualified_record_constructor(
 /// # Suppression rules
 ///
 /// - If the head alias resolved to `ImportTarget::Unresolved` → silently return
-///   `Binding::Error` with no diagnostic (OQ-R011).
+///   `Binding::Error` with no diagnostic (R011).
 /// - If the head alias resolved to `ImportTarget::External` → same.
 #[must_use]
 pub fn resolve_qualified_name(
@@ -149,7 +149,7 @@ pub fn resolve_qualified_name(
                             name: last_text.clone(),
                         };
                     }
-                    // Miss — R014 with stdlib-export suggestions (T13).
+                    // Miss — R014 with stdlib-export suggestions.
                     let suggestions =
                         suggest::suggest(last_text, m.exports.iter().map(|s| (*s).to_owned()));
                     errors.push(ResolveError::UnknownStdlibSymbol {
@@ -162,8 +162,7 @@ pub fn resolve_qualified_name(
                 Binding::Error
             }
             // Any other kind (Local, Constructor, FieldAccessor, Error) at head
-            // position cannot be qualified — emit R012 with head-replacement
-            // suggestions (T13).
+            // position cannot be qualified — emit R012 with head-replacement suggestions.
             _ => {
                 let suggestions =
                     head_replacement_suggestions(head_text, qn, my_table, module_imports);
@@ -195,8 +194,7 @@ pub fn resolve_qualified_name(
                     );
                 }
                 _ => {
-                    // Non-type/actor in head position — R012 with head-replacement
-                    // suggestions (T13).
+                    // Non-type/actor in head position — R012 with head-replacement suggestions.
                     let suggestions =
                         head_replacement_suggestions(head_text, qn, my_table, module_imports);
                     errors.push(ResolveError::UnresolvedQualifiedName {
@@ -237,7 +235,7 @@ fn find_import_binding<'a>(
 /// Resolve the last segment in a module-alias target (step 2).
 ///
 /// `External` and `Unresolved` targets are silent (`Binding::Error` no
-/// diagnostic) per OQ-R011 suppression.
+/// diagnostic) per R011 suppression.
 fn resolve_in_target(
     target: &ImportTarget,
     qn: &QualifiedName,
@@ -258,7 +256,7 @@ fn resolve_in_target(
                         name: last_text.clone(),
                     };
                 }
-                // Unknown stdlib symbol — R014 with suggestions (T13).
+                // Unknown stdlib symbol — R014 with suggestions.
                 let suggestions =
                     suggest::suggest(last_text, m.exports.iter().map(|s| (*s).to_owned()));
                 errors.push(ResolveError::UnknownStdlibSymbol {
@@ -280,7 +278,7 @@ fn resolve_in_target(
                     };
                 }
                 // Symbol not found in workspace module — R012 with member-
-                // replacement suggestions (T13).  Note: we don't apply
+                // replacement suggestions.  Note: we don't apply
                 // visibility filtering here because reaching this branch
                 // means R007 / R009 didn't already gate the import; the
                 // ModuleAlias is fully visible and members of the alias's
@@ -301,7 +299,7 @@ fn resolve_in_target(
             });
             Binding::Error
         }
-        // External / Unresolved: R006 already fired — suppress cascade (OQ-R011).
+        // External / Unresolved: R006 already fired — suppress cascade (R011).
         ImportTarget::External { .. } | ImportTarget::Unresolved => Binding::Error,
     }
 }
@@ -310,7 +308,7 @@ fn resolve_in_target(
 ///
 /// For a `Type` head: search its constructors.
 /// For an `Actor` head: always R012 (no handler resolution at qualified sites
-/// per §4.5 OQ-R012).
+/// per §4.5 R012).
 fn resolve_type_actor_head(
     owner_module: ModuleId,
     head_sym_id: SymbolId,
@@ -354,7 +352,7 @@ fn resolve_type_actor_head(
                 }
             }
             // Constructor not found — R012 with constructor-name suggestions
-            // restricted to this Type's variants (T13).
+            // restricted to this Type's variants.
             let candidates = table.entries.iter().filter_map(|e| match &e.kind {
                 SymbolKind::Constructor { owner_type, .. } if *owner_type == head_sym_id => {
                     Some(e.name.clone())
@@ -370,7 +368,7 @@ fn resolve_type_actor_head(
             Binding::Error
         }
         Some(SymbolKind::Actor { .. }) => {
-            // Per §4.5 OQ-R012: actor heads at qualified-name sites → R012.
+            // Per §4.5 R012: actor heads at qualified-name sites → R012.
             // No qualified-handler resolution in 0.1.0; suggestions empty.
             errors.push(ResolveError::UnresolvedQualifiedName {
                 segments: all_segs.to_vec(),
@@ -390,7 +388,7 @@ fn resolve_type_actor_head(
     }
 }
 
-// ── Suggestion helpers (T13) ──────────────────────────────────────────────────
+// ── Suggestion helpers ────────────────────────────────────────────────────────
 
 /// Render a head-replacement suggestion: replace `qn.segments[0]` with
 /// `new_head` and rebuild the rest verbatim.
@@ -438,7 +436,7 @@ fn replace_member(qn: &QualifiedName, new_member: &str) -> String {
 /// plus every `Type` / `Actor` symbol name from `my_table`.  These are exactly
 /// the names that could legally appear at a qualified-name head position.
 ///
-/// Visibility: import effective bindings are pre-filtered by T7 (private items
+/// Visibility: import effective bindings are pre-filtered by import resolution (private items
 /// never make it into [`EffectiveBinding`]); `my_table` symbols are local to
 /// the module, all in scope.  Plan §11 risk R14 is satisfied at the call site.
 ///
@@ -846,7 +844,7 @@ mod tests {
             matches!(binding, Binding::Error),
             "expected Binding::Error, got {binding:?}"
         );
-        // OQ-R011 suppression: no diagnostic must be emitted.
+        // R011 suppression: no diagnostic must be emitted.
         assert!(
             errors.is_empty(),
             "expected no errors for Unresolved target; got {errors:?}"
@@ -886,8 +884,8 @@ mod tests {
         );
     }
 
-    // (T13 split: low-level Damerau-Levenshtein and "did-you-mean" engine
-    // tests now live in `crate::suggest::tests` after T13 extracted them.)
+    // Low-level Damerau-Levenshtein and "did-you-mean" engine
+    // tests live in `crate::suggest::tests`.
 
     // ── Test 15: StdlibSymbol head (prelude Option) → second stdlib export ───────
     //
@@ -935,12 +933,11 @@ mod tests {
         assert_eq!(errors[0].code(), "R012");
     }
 
-    // ── T13 acceptance: R012 head-replacement suggestion (plan §10 DoD) ───────
+    // ── R012 head-replacement suggestion ─────────────────────────────────────
     //
     // "Li.map" with `List` in scope must suggest `List.map` (head-replacement
-    // composing the rest of the path).  The DoD also asserts the suggestion
-    // does NOT include `List.empty` (unrelated stdlib member) — covered by
-    // the "exact path" check below.
+    // composing the rest of the path).  The suggestion must NOT include
+    // `List.empty` (unrelated stdlib member).
     #[test]
     fn t13_li_dot_map_suggests_list_dot_map() {
         let list_ir = alias_ir("List", ImportTarget::BuiltinStdlib(StdlibModuleId(4)));
@@ -960,17 +957,15 @@ mod tests {
         );
     }
 
-    // ── T8 new: resolve_qualified_record_constructor happy path ─────────────────
+    // ── resolve_qualified_record_constructor happy path ───────────────────────
     //
-    // Http.Response where Http is a local record type in the same module
-    // (same pattern as T7: Result.Ok via local my_table lookup).
+    // Http.Response where Http is a local record type in the same module.
     //
     // Expected: Binding::Constructor { owner_type: TypeId(0), variant: 0 }
     #[test]
     fn t_qualified_record_ctor_happy_path() {
         // Module 0 has: type Http with constructor Response (variant 0).
-        // (Uses the same resolution path as T7: head found in my_table as Type,
-        //  then resolve_type_actor_head finds the constructor.)
+        // head found in my_table as Type, then resolve_type_actor_head finds the constructor.
         let table = union_table(0, "Http", &["Response"]);
         let table2 = union_table(0, "Http", &["Response"]);
         let all = vec![table2];
@@ -990,7 +985,7 @@ mod tests {
         );
     }
 
-    // ── T13 acceptance: R012 member-replacement when the head DOES resolve ──
+    // ── R012 member-replacement when the head DOES resolve ───────────────────
     //
     // `Result.Okk` (typo of `Ok`) — head resolves to a Type, last segment
     // misses; suggestion should be `Result.Ok`.

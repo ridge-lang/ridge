@@ -1,12 +1,12 @@
 -- std.json — JSON encoding and decoding (Tier 4, imports std.text).
 --
--- §3.17 / OQ-S004 / D120: OTP-27 native `json` module chosen on security
+-- §3.17: OTP-27 native `json` module chosen on security
 -- grounds (hand-rolled parsers are a CVE-class surface).  The `decode`
 -- function bridges to `ridge_rt:json_decode/1` which wraps OTP 27's
 -- `json:decode/1` and maps the result into `Result JsonValue Error`.
 --
 -- JsonValue is the Ridge JSON value ADT (§3.17).
--- Records and generic-derive are out of scope for Phase 7 (OQ-S004 / D120).
+-- Records and generic-derive are out of scope for 0.2.0.
 -- Error is a pre-allocated built-in record (§3.11):
 --   { code: Text, message: Text }
 --
@@ -49,7 +49,7 @@ pub fn encodeBool (b: Bool) -> Text =
 pub fn encodeText (s: Text) -> Text =
     Text.concat (Text.concat "\"" s) "\""
 
--- ── B-D002 hotfix v3 Wave 3: JsonValue constructors via FFI shims. ────────────
+-- ── JsonValue constructors via FFI shims. ────────────────────────────────────
 --
 -- Cross-module resolution of type-variant constructors (e.g. `Json.JInt 42`)
 -- is deferred to 0.2.0: the resolver returns `Binding::StdlibSymbol`, the

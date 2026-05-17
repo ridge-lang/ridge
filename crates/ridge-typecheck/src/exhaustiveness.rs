@@ -10,7 +10,7 @@
 //! - Exhaustiveness: run `useful(arm-matrix, wildcard)` → `T016`.
 //! - Redundancy:   for each arm `i`, run `useful(P[0..i], arm[i])` → `T017`.
 //!
-//! # Witness cap (OQ-T009)
+//! # Witness cap
 //!
 //! Missing witnesses are capped at `MAX_WITNESSES = 3`.  `T016` carries
 //! `total_missing` (the true count) alongside the capped `witnesses` vec.
@@ -26,7 +26,7 @@ use ridge_types::{
 use crate::ctx::InferCtx;
 use crate::error::TypeError;
 
-/// Maximum number of witnesses stored in a `T016` diagnostic (OQ-T009).
+/// Maximum number of witnesses stored in a `T016` diagnostic.
 const MAX_WITNESSES: usize = 3;
 
 // ── Constructor ───────────────────────────────────────────────────────────────
@@ -876,10 +876,10 @@ pub fn check_exhaustiveness(
     span: Span,
 ) {
     // R5: cascade silently when the scrutinee type carries `Type::Error` from
-    // upstream (e.g. Phase 7 stubbed record types like `Request`/`Response` in
+    // upstream (e.g. stubbed record types like `Request`/`Response` in
     // `examples/url_shortener.rg`).  Firing T016/T017 on absorbed errors
     // drowns the user with cascading diagnostics.  The original error has
-    // already been emitted (or intentionally suppressed for Phase 7 stubs).
+    // already been emitted (or intentionally suppressed for stubs).
     if scrutinee_contains_error(scrutinee_ty) {
         return;
     }

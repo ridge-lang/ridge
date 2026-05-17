@@ -70,7 +70,7 @@ pub fn instantiate(ctx: &mut InferCtx, scheme: &Scheme) -> Type {
 
 /// Wraps a monomorphic type in a [`Scheme`] with no quantified variables.
 ///
-/// Used for lambda parameters (OQ-T007: lambda params are never polymorphic)
+/// Used for lambda parameters (lambda params are never polymorphic)
 /// and for any binding site that does not yet trigger generalisation.
 #[must_use]
 pub const fn monoscheme(ty: Type) -> Scheme {
@@ -88,7 +88,7 @@ pub const fn monoscheme(ty: Type) -> Scheme {
 ///    over those — they are still live in outer bindings).
 /// 4. Quantify over `free_in_ty - free_in_env`.
 ///
-/// Per OQ-T007: lambda parameters are bound as *monoschemes*; only
+/// Lambda parameters are bound as *monoschemes*; only
 /// `let`-binding sites and top-level decls call this function.
 #[must_use]
 pub fn generalise(ctx: &mut InferCtx, ty: &Type) -> Scheme {

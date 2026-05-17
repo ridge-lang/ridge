@@ -14,7 +14,7 @@
 //! - No `panic!` / `unwrap` / `expect` on user-input paths (§1.3 #4).
 //!   Every user-reachable error path returns a structured error.
 //! - Cross-platform paths via [`std::path::PathBuf::join`] only (§1.3 #5).
-//! - Output dir: `<workspace_root>/target/ridge/<profile>/` (D106).
+//! - Output dir: `<workspace_root>/target/ridge/<profile>/`.
 
 #![warn(missing_docs)]
 #![deny(clippy::unwrap_used, clippy::expect_used, clippy::panic)]

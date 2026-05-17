@@ -119,8 +119,8 @@ pub enum SymbolKind {
         /// Variant index.  Always 0 for record auto-constructors.  For union
         /// variants this is the source-order index — so the FIRST union variant
         /// is also 0, indistinguishable from a record on `variant` alone.  Use
-        /// `is_record` to discriminate.  See B-D013 (the bug that motivated
-        /// adding `is_record`): pre-fix, the lower used `variant == 0` as a
+        /// `is_record` to discriminate.  A prior bug motivated adding `is_record`:
+        /// pre-fix, the lower used `variant == 0` as a
         /// record-vs-union test, which silently miscompiled the first variant
         /// of every union type to an empty map.
         variant: u32,
@@ -940,7 +940,7 @@ mod tests {
         assert_eq!(table.entries.len(), 3);
     }
 
-    // Test 14: D051 — overlapping union constructor names
+    // Test 14: overlapping union constructor names
     #[test]
     fn t14_d051_overlapping_union_ctors() {
         let m = module_with(vec![

@@ -1,13 +1,13 @@
 //! Lambda, spawn, record-construction, field-init, and interpolation parsers
-//! (T8, grammar §§6.13, 6.16, 6.18, 6.19, 6.20).
+//! (grammar §§6.13, 6.16, 6.18, 6.19, 6.20).
 //!
 //! Entry points:
 //!
-//! - [`parse_lambda`]            — `fn Param+ -> Body` (D052)
-//! - [`parse_spawn`]             — `spawn UPPER_IDENT arg*` (D061)
-//! - [`parse_record_construct`]  — `Constructor { FieldInit* }` (D051)
-//! - [`parse_field_init_list`]   — comma-separated `name [= Expr]` list (D053)
-//! - [`parse_interp_full`]       — full `$"…"` with expression holes (T8)
+//! - [`parse_lambda`]            — `fn Param+ -> Body` (grammar §6.16)
+//! - [`parse_spawn`]             — `spawn UPPER_IDENT arg*` (grammar §6.19)
+//! - [`parse_record_construct`]  — `Constructor { FieldInit* }` (grammar §6.18)
+//! - [`parse_field_init_list`]   — comma-separated `name [= Expr]` list (shorthand form)
+//! - [`parse_interp_full`]       — full `$"…"` with expression holes
 //!
 //! All functions are `pub(crate)` and called from `expr.rs`.
 
@@ -24,7 +24,7 @@ use crate::{
 
 // ── parse_lambda ──────────────────────────────────────────────────────────────
 
-/// Parse a lambda expression `fn Param+ -> Body` (grammar §6.16, D052).
+/// Parse a lambda expression `fn Param+ -> Body` (grammar §6.16).
 ///
 /// Syntax:
 /// ```text
@@ -86,12 +86,12 @@ pub(crate) fn parse_lambda(cur: &mut Cursor<'_>) -> Result<Expr, ParseError> {
     }
 
     // Use parse_branch_body_flat so that both inline, INDENT-delimited block,
-    // and flat-NEWLINE-block (inside brackets, OQ-R014) forms are handled:
+    // and flat-NEWLINE-block (inside brackets, R014) forms are handled:
     //   fn x -> x + 1            ← single inline expression
     //   fn x ->                  ← block form (NEWLINE INDENT ... DEDENT)
     //       let y = x + 1
     //       y * 2
-    //   List.forEach (fn row ->  ← flat-block form inside parens (OQ-R014)
+    //   List.forEach (fn row ->  ← flat-block form inside parens (R014)
     //       let line = ...
     //       Io.println line)
     let body = parse_branch_body_flat(cur)?;
@@ -236,7 +236,7 @@ fn parse_pattern_from_cursor(cur: &mut Cursor<'_>) -> Result<Pattern, ParseError
 
 // ── parse_spawn ───────────────────────────────────────────────────────────────
 
-/// Parse a spawn expression `spawn UPPER_IDENT arg*` (D061, grammar §6.19).
+/// Parse a spawn expression `spawn UPPER_IDENT arg*` (grammar §6.19).
 ///
 /// ```text
 /// SpawnExpr ::= "spawn" UPPER_IDENT { ExprAtom } ;
@@ -281,7 +281,7 @@ pub(crate) fn parse_spawn(cur: &mut Cursor<'_>) -> Result<Expr, ParseError> {
 
 // ── parse_record_construct ────────────────────────────────────────────────────
 
-/// Parse the `{ FieldInit* }` body of a record-construction expression (D051).
+/// Parse the `{ FieldInit* }` body of a record-construction expression (grammar §6.18).
 ///
 /// The caller has already consumed the constructor token(s) and passed the
 /// resulting [`RecordCtor`] (bare or qualified).
@@ -357,7 +357,7 @@ pub(crate) fn parse_field_init_list(cur: &mut Cursor<'_>) -> Result<Vec<FieldIni
 /// Parse a single field initialiser `name [= Expr]`.
 ///
 /// - Explicit: `name = Expr` → `FieldInit { value: Some(expr) }`
-/// - Shorthand (D053): `name` → `FieldInit { value: None }`
+/// - Shorthand: `name` → `FieldInit { value: None }`
 fn parse_field_init(cur: &mut Cursor<'_>) -> Result<FieldInit, ParseError> {
     let name_span = cur.span();
 
@@ -520,7 +520,7 @@ mod tests {
             .unwrap_or_else(|| panic!("parse_expr({src:?}) expected Err, got Ok"))
     }
 
-    // ── T8-1: parse_lambda_single_param ──────────────────────────────────────
+    // ── parse_lambda_single_param ──────────────────────────────────────
 
     #[test]
     fn parse_lambda_single_param() {
@@ -547,7 +547,7 @@ mod tests {
         }
     }
 
-    // ── T8-2: parse_lambda_multi_param ───────────────────────────────────────
+    // ── parse_lambda_multi_param ───────────────────────────────────────
 
     #[test]
     fn parse_lambda_multi_param() {
@@ -565,7 +565,7 @@ mod tests {
         }
     }
 
-    // ── T8-3: parse_lambda_pattern_tuple (D052) ───────────────────────────────
+    // ── parse_lambda_pattern_tuple ───────────────────────────────────────
 
     #[test]
     fn parse_lambda_pattern_tuple() {
@@ -589,7 +589,7 @@ mod tests {
         }
     }
 
-    // ── T8-4: parse_lambda_annotated_param ───────────────────────────────────
+    // ── parse_lambda_annotated_param ───────────────────────────────────
 
     #[test]
     fn parse_lambda_annotated_param() {
@@ -624,7 +624,7 @@ mod tests {
         }
     }
 
-    // ── T8-5: parse_lambda_body_is_block ─────────────────────────────────────
+    // ── parse_lambda_body_is_block ─────────────────────────────────────
 
     #[test]
     fn parse_lambda_body_is_block() {
@@ -654,7 +654,7 @@ mod tests {
         }
     }
 
-    // ── T8-6: parse_with_single_field ────────────────────────────────────────
+    // ── parse_with_single_field ────────────────────────────────────────
 
     #[test]
     fn parse_with_single_field() {
@@ -673,7 +673,7 @@ mod tests {
         }
     }
 
-    // ── T8-7: parse_with_chained_left_assoc ──────────────────────────────────
+    // ── parse_with_chained_left_assoc ──────────────────────────────────
 
     #[test]
     fn parse_with_chained_left_assoc() {
@@ -709,7 +709,7 @@ mod tests {
         }
     }
 
-    // ── T8-8: parse_with_shorthand_field (D053) ──────────────────────────────
+    // ── parse_with_shorthand_field ──────────────────────────────────────
 
     #[test]
     fn parse_with_shorthand_field() {
@@ -726,7 +726,7 @@ mod tests {
         }
     }
 
-    // ── T8-9: parse_record_construct_empty ───────────────────────────────────
+    // ── parse_record_construct_empty ───────────────────────────────────
 
     #[test]
     fn parse_record_construct_empty() {
@@ -748,7 +748,7 @@ mod tests {
         }
     }
 
-    // ── T8-10: parse_record_construct_single_field ───────────────────────────
+    // ── parse_record_construct_single_field ───────────────────────────
 
     #[test]
     fn parse_record_construct_single_field() {
@@ -776,7 +776,7 @@ mod tests {
         }
     }
 
-    // ── T8-11: parse_record_construct_shorthand (D053) ───────────────────────
+    // ── parse_record_construct_shorthand ──────────────────────────────
 
     #[test]
     fn parse_record_construct_shorthand() {
@@ -792,7 +792,7 @@ mod tests {
         }
     }
 
-    // ── T8-12: parse_record_trailing_comma ───────────────────────────────────
+    // ── parse_record_trailing_comma ───────────────────────────────────
 
     #[test]
     fn parse_record_trailing_comma() {
@@ -805,7 +805,7 @@ mod tests {
         }
     }
 
-    // ── T8-13: parse_interp_single_hole ──────────────────────────────────────
+    // ── parse_interp_single_hole ──────────────────────────────────────
 
     #[test]
     fn parse_interp_single_hole() {
@@ -841,7 +841,7 @@ mod tests {
         }
     }
 
-    // ── T8-14: parse_interp_empty_text_between_holes ─────────────────────────
+    // ── parse_interp_empty_text_between_holes ─────────────────────────
 
     #[test]
     fn parse_interp_empty_text_between_holes() {
@@ -865,7 +865,7 @@ mod tests {
         }
     }
 
-    // ── T8-15: parse_interp_zero_holes ───────────────────────────────────────
+    // ── parse_interp_zero_holes ───────────────────────────────────────
 
     #[test]
     fn parse_interp_zero_holes() {
@@ -883,7 +883,7 @@ mod tests {
         }
     }
 
-    // ── T8-16: parse_ask_no_args ──────────────────────────────────────────────
+    // ── parse_ask_no_args ──────────────────────────────────────────────
 
     #[test]
     fn parse_ask_no_args() {
@@ -903,7 +903,7 @@ mod tests {
         }
     }
 
-    // ── T8-17: parse_ask_with_args ────────────────────────────────────────────
+    // ── parse_ask_with_args ────────────────────────────────────────────
 
     #[test]
     fn parse_ask_with_args() {
@@ -928,7 +928,7 @@ mod tests {
         }
     }
 
-    // ── T8-18: parse_send_simple ──────────────────────────────────────────────
+    // ── parse_send_simple ──────────────────────────────────────────────
 
     #[test]
     fn parse_send_simple() {
@@ -953,7 +953,7 @@ mod tests {
         );
     }
 
-    // ── T8-19: parse_spawn_no_args ────────────────────────────────────────────
+    // ── parse_spawn_no_args ────────────────────────────────────────────
 
     #[test]
     fn parse_spawn_no_args() {
@@ -966,11 +966,11 @@ mod tests {
         }
     }
 
-    // ── T8-20: parse_spawn_with_args ─────────────────────────────────────────
+    // ── parse_spawn_with_args ─────────────────────────────────────────
 
     #[test]
     fn parse_spawn_with_args() {
-        // `spawn Limiter 10 2.0` — D061 init args
+        // `spawn Limiter 10 2.0` — init args
         let e = ok("spawn Limiter 10 2.0");
         if let Expr::Spawn { actor, args, .. } = e {
             assert_eq!(actor.text, "Limiter");
@@ -990,7 +990,7 @@ mod tests {
         }
     }
 
-    // ── T8-21: parse_propagate ────────────────────────────────────────────────
+    // ── parse_propagate ────────────────────────────────────────────────
 
     #[test]
     fn parse_propagate() {
@@ -1018,7 +1018,7 @@ mod tests {
         }
     }
 
-    // ── T8-22: parse_pipe_chain_from_t6 ──────────────────────────────────────
+    // ── parse_pipe_chain_from_t6 ──────────────────────────────────────
 
     #[test]
     fn parse_pipe_chain_from_t6() {
@@ -1041,11 +1041,11 @@ mod tests {
         }
     }
 
-    // ── T8-23: parse_chained_ask_rejects (D068) ───────────────────────────────
+    // ── parse_chained_ask_rejects ───────────────────────────────────────
 
     #[test]
     fn parse_chained_ask_rejects() {
-        // `a ?> m ?> n` — D068 single-site; second `?>` should be rejected.
+        // `a ?> m ?> n` — single-site ask; second `?>` should be rejected.
         // After emitting Ask(a, m, []), the loop should NOT consume another `?>`.
         // The result should be an Err (P002) or the second `?>` triggers P002
         // when encountered in a context that doesn't allow it.
@@ -1075,12 +1075,12 @@ mod tests {
         if let Expr::Ask { handle, .. } = &e {
             assert!(
                 !matches!(handle.as_ref(), Expr::Ask { .. }),
-                "chained Ask is NOT allowed per D068; got nested Ask in handle"
+                "chained Ask is NOT allowed (single-site only); got nested Ask in handle"
             );
         }
     }
 
-    // ── T8-24: parse_lambda_missing_arrow → P001 ─────────────────────────────
+    // ── parse_lambda_missing_arrow → P001 ─────────────────────────────
 
     #[test]
     fn parse_lambda_missing_arrow() {
@@ -1094,7 +1094,7 @@ mod tests {
         );
     }
 
-    // ── T8-25: parse_with_missing_lbrace → P001 ──────────────────────────────
+    // ── parse_with_missing_lbrace → P001 ──────────────────────────────
 
     #[test]
     fn parse_with_missing_lbrace() {
@@ -1147,7 +1147,7 @@ mod tests {
         }
     }
 
-    // ── T0-P1: parse roundtrip — `?> h() timeout 1000` (Phase 6 T0, OQ-E001) ──
+    // ── parse roundtrip — `?> h() timeout 1000` ─────────────────────────────
     //
     // Verifies that the contextual `timeout <ms>` postfix parses cleanly and
     // produces `AskTimeout::Millis(IntDec(1000))` in the AST.
@@ -1186,7 +1186,7 @@ mod tests {
         }
     }
 
-    // ── T0-P2: parse roundtrip — `?> h() timeout never` (Phase 6 T0, OQ-E001) ──
+    // ── parse roundtrip — `?> h() timeout never` ─────────────────────────────
     //
     // Verifies that `timeout never` parses to `AskTimeout::Never`.
     #[test]

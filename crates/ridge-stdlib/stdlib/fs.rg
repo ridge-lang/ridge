@@ -2,18 +2,18 @@
 --
 -- All functions require the `fs` capability.
 -- §3.11: error values are Text (typecheck baseline: Result T Text).
--- D048: no filesystem paths as literals in 0.1.0.
+-- No filesystem paths as literals in 0.1.0.
 
 -- Read the entire contents of a file as Text.
 -- Returns Ok(contents) or Err(reason) on failure.
--- D-D004 (Phase 9 hotfix v3): bridges via ridge_rt:fs_read/1 so the Err side
+-- Bridges via ridge_rt:fs_read/1 so the Err side
 -- returns Text (atom_to_binary'd) rather than a raw atom.
 @ffi("ridge_rt", "fs_read", 1)
 pub fn fs readFile (path: Text) -> Result Text Text
 
 -- Write text content to a file, replacing its contents.
 -- Returns Ok(()) or Err(reason) on failure.
--- D-D004 (Phase 9 hotfix v3): bridges via ridge_rt:fs_write/2 so the Ok side
+-- Bridges via ridge_rt:fs_write/2 so the Ok side
 -- returns the Ridge Result shape `{ok, ok}` instead of the bare Erlang atom
 -- `ok` which crashed any `match ... with Ok _ | Err _` (`if_clause`).
 @ffi("ridge_rt", "fs_write", 2)

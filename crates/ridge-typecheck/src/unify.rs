@@ -8,7 +8,7 @@
 //!
 //! # Key invariants
 //!
-//! - Both operands are shallow-resolved before dispatch (OQ-T015: aliases are
+//! - Both operands are shallow-resolved before dispatch (aliases are
 //!   peeled transparently; see `InferCtx::shallow_resolve`).
 //! - `Type::Error` is the absorbing element — unifying with it always succeeds.
 //! - After `unify(a, b)` succeeds, `ctx.shallow_resolve(&Type::Var(v))` will
@@ -225,7 +225,7 @@ pub fn unify_caps(ctx: &mut InferCtx, a: &CapRow, b: &CapRow) -> Result<(), Type
 ///
 /// Both `Type::Var` lookup is done via `find` (root comparison), so path
 /// compression is respected. All structurally composite types are walked
-/// recursively. `Type::Alias` is traversed via its body (OQ-T015 transparent).
+/// recursively. `Type::Alias` is traversed via its body (transparent).
 pub fn occurs(ctx: &mut InferCtx, v: TyVid, t: &Type) -> bool {
     match t {
         Type::Var(w) => {
@@ -245,7 +245,7 @@ pub fn occurs(ctx: &mut InferCtx, v: TyVid, t: &Type) -> bool {
             params.iter().any(|p| occurs(ctx, v, p)) || occurs(ctx, v, ret)
         }
         Type::Tuple(ts) => ts.iter().any(|t| occurs(ctx, v, t)),
-        // OQ-T015: Alias is transparent; walk the body.
+        // Alias is transparent; walk the body.
         Type::Alias { body, .. } => occurs(ctx, v, body),
         // Type is #[non_exhaustive] — wildcard for forward-compat (including Error).
         _ => false,
@@ -504,7 +504,7 @@ mod tests {
     }
 
     // ─────────────────────────────────────────────────────────────────────────
-    // T14 — (Alias{Int}, Int) → unifies (transparent per OQ-T015)
+    // T14 — (Alias{Int}, Int) → unifies (transparent)
     // ─────────────────────────────────────────────────────────────────────────
     #[test]
     fn alias_int_vs_int_unifies() {

@@ -1,6 +1,6 @@
 -- std.set — Set utilities (Tier 2).
 --
--- D113: Set a is implemented as Map a Bool (Erlang map with `true` values).
+-- Set a is implemented as Map a Bool (Erlang map with `true` values).
 -- Set a is a language built-in (prelude). This module provides helper
 -- functions; the type itself does not need to be declared here.
 --

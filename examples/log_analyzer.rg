@@ -83,7 +83,7 @@ fn io printHistogram (histogram: Map Int Int) -> Unit =
     pairs |> List.forEach (fn (h, c) ->
         Io.println (renderBar h c))
 
--- D059: main now returns Result Unit Text; ? propagation flows naturally.
+-- main now returns Result Unit Text; ? propagation flows naturally.
 fn env io fs main () -> Result Unit Text =
     let args = Cli.args ()
     guard (List.length args >= 2) else

@@ -1,10 +1,9 @@
 //! Core expression and pattern dispatcher (`lower_expr` / `lower_pattern`).
 //!
-//! This module is the central dispatch table for Phase 5 lowering (T3).  Every
+//! This module is the central dispatch table for Phase 5 lowering.  Every
 //! `Expr::*` and `Pattern::*` variant has exactly one arm; atom variants
-//! produce correct IR immediately while non-atomic variants return a stub
-//! `IrExpr::Lit { Unit }` with the right span until their dedicated rule module
-//! lands (T4–T10).
+//! produce correct IR immediately while non-atomic variants are handled by
+//! their dedicated rule modules.
 //!
 //! # Atom variants lowered here
 //!
@@ -19,7 +18,7 @@
 //! | `Expr::Qualified` | `IrExpr::Symbol` via `BindingMap` |
 //! | `Expr::Interp` (text-only, 1 segment) | `IrExpr::Lit { IrLit::Text }` |
 //!
-//! # Direct AST→IR mappings wired here (T11)
+//! # Direct AST→IR mappings
 //!
 //! | AST variant | IR result |
 //! |---|---|
@@ -35,7 +34,7 @@
 //! | `Expr::Ask` | `IrExpr::Ask` (actor name resolved via binding-map Group B 3.1 path) |
 // PHASE45-Group-B: Send/Ask handler-name resolution now uses BindingMap-first precedence.
 //!
-//! # `BindingMap` wiring (Option A — T3)
+//! # `BindingMap` wiring
 //!
 //! `lower_expr` resolves `Ident` and `QualifiedName` nodes via the
 //! `BindingMap` attached to [`LowerCtx`] during [`crate::lower_module`].
@@ -85,7 +84,7 @@ use crate::with_update::lower_with;
 /// Atoms (`Literal`, `Unit`, `Ident`, `Qualified`, text-only `Interp`) produce
 /// their correct IR immediately.  Every other variant returns a stub
 /// `IrExpr::Lit { IrLit::Unit }` with the expression's span preserved; the
-/// stub is replaced once the corresponding rule module lands (T4–T11).
+/// stub is replaced once the corresponding rule module lands.
 ///
 /// On any defensive error the error is pushed to [`LowerCtx::errors`] and a
 /// `Unit` literal is returned (never panics on any input).
@@ -103,10 +102,11 @@ pub fn lower_expr(ctx: &mut LowerCtx<'_>, expr: &Expr) -> IrExpr {
         Expr::Qualified(qname) => lower_qualified(ctx, qname),
 
         // Text-only interpolation (single `Text` part, no holes): lower to a
-        // text literal.  Any other shape (multiple parts, or a hole part) is T9.
+        // text literal.  Any other shape (multiple parts, or a hole part) uses
+        // full interpolation lowering.
         Expr::Interp { parts, span } => lower_interp(ctx, parts, *span),
 
-        // ── T4 — Pipe, operators, field accessor, paren erasure ───────────────
+        // ── Pipe, operators, field accessor, paren erasure ────────────────────
 
         // `lhs |> rhs` — desugars to a flat Call (§4.1).
         Expr::Pipe { lhs, rhs, span } => lower_pipe(ctx, lhs, rhs, *span),
@@ -123,7 +123,7 @@ pub fn lower_expr(ctx: &mut LowerCtx<'_>, expr: &Expr) -> IrExpr {
         // `(expr)` — paren erasure: lower the inner expression directly (§1.3, §4.1).
         Expr::Paren { inner, .. } => lower_expr(ctx, inner),
 
-        // ── T5 — if and match ─────────────────────────────────────────────────
+        // ── Conditional and pattern matching ─────────────────────────────────
 
         // `if cond then then_branch [else else_branch]` — desugars to Match (§4.7).
         Expr::If {
@@ -140,7 +140,7 @@ pub fn lower_expr(ctx: &mut LowerCtx<'_>, expr: &Expr) -> IrExpr {
             span,
         } => lower_match(ctx, scrutinee, arms, *span),
 
-        // ── T6 — Block, Let, Var, Assign ─────────────────────────────────────
+        // ── Block, Let, Var, Assign ───────────────────────────────────────────
 
         // `{ stmts }` — lower via right-fold continuation (§4.9).
         Expr::Block(block) => lower_block(ctx, block),
@@ -184,7 +184,7 @@ pub fn lower_expr(ctx: &mut LowerCtx<'_>, expr: &Expr) -> IrExpr {
             }
         }
 
-        // ── T7 — Propagate (`?`) and Try ─────────────────────────────────────
+        // ── Propagate (`?`) and Try ───────────────────────────────────────────
 
         // `inner?` — desugar to Match over Result/Option (§4.2).
         Expr::Propagate { inner, span } => lower_propagate(ctx, inner, *span),
@@ -192,7 +192,7 @@ pub fn lower_expr(ctx: &mut LowerCtx<'_>, expr: &Expr) -> IrExpr {
         // `try { ... }` — push propagation scope, lower block, pop scope (§4.3).
         Expr::Try { block, span } => lower_try(ctx, block, *span),
 
-        // ── T8 — Guard and InnerFn (bare, outside block context) ─────────────
+        // ── Guard and InnerFn (bare, outside block context) ───────────────────
 
         // `guard cond else { ... }` appearing as a bare expression (not inside
         // a block fold) is a Phase 4 invariant violation.  Emit L006.
@@ -202,12 +202,12 @@ pub fn lower_expr(ctx: &mut LowerCtx<'_>, expr: &Expr) -> IrExpr {
         // block fold) is a Phase 4 invariant violation.  Emit L999.
         Expr::InnerFn { decl, span } => lower_inner_fn_bare(ctx, decl, *span),
 
-        // ── T9 — `with` update desugaring ────────────────────────────────────
+        // ── `with` update desugaring ──────────────────────────────────────────
 
         // `base with { f1 = v1, ... }` — lowers to LetIn + Construct (§4.5).
         Expr::With { base, fields, span } => lower_with(ctx, base, fields, *span),
 
-        // ── Unit (T3) ────────────────────────────────────────────────────────
+        // ── Unit literal ──────────────────────────────────────────────────────
         Expr::Unit(span) => {
             let id = ctx.fresh_id(None);
             IrExpr::Lit {
@@ -217,7 +217,7 @@ pub fn lower_expr(ctx: &mut LowerCtx<'_>, expr: &Expr) -> IrExpr {
             }
         }
 
-        // ── T11: Tuple ───────────────────────────────────────────────────────
+        // ── Tuple, List, Return, Lambda, Record, Field, Call, Spawn, Send, Ask ─
         //
         // `(e1, e2, …)` lowers to `IrExpr::Tuple` with each element lowered
         // in source order.  No desugaring needed.
@@ -231,11 +231,11 @@ pub fn lower_expr(ctx: &mut LowerCtx<'_>, expr: &Expr) -> IrExpr {
             }
         }
 
-        // ── T11: List ────────────────────────────────────────────────────────
+        // ── List literal ──────────────────────────────────────────────────────
         //
         // `[e1, e2, …]` lowers to `IrExpr::ListLit`.
-        // `IrExpr::ListLit` has no element-type field — no IR slot to fill.
-        // PHASE45-T3: element type rides on side-table; no IR slot.
+        // `IrExpr::ListLit` has no element-type field — element type rides on
+        // the side-table; no IR slot.
         Expr::List { elems, span } => {
             let id = ctx.fresh_id(None);
             let elems = elems.iter().map(|e| lower_expr(ctx, e)).collect();
@@ -246,7 +246,7 @@ pub fn lower_expr(ctx: &mut LowerCtx<'_>, expr: &Expr) -> IrExpr {
             }
         }
 
-        // ── T11: Return ──────────────────────────────────────────────────────
+        // ── Return ────────────────────────────────────────────────────────────
         //
         // `return e` lowers to `IrExpr::Return { value: lower(e) }`.
         // Per OQ-L011 (resolved §12): DO NOT wrap in Ok/Some; preserve verbatim.
@@ -260,13 +260,13 @@ pub fn lower_expr(ctx: &mut LowerCtx<'_>, expr: &Expr) -> IrExpr {
             }
         }
 
-        // ── T11: Lambda ──────────────────────────────────────────────────────
+        // ── Lambda ────────────────────────────────────────────────────────────
         //
         // `fn Param+ -> Body` lowers to `IrExpr::Lambda`.
         // Anonymous lambdas have no entry in the `inferred_caps` side-table
         // (Phase 4 only tracks top-level `fn` decls); caps default to PURE.
-        // PHASE45-T3: bare param types looked up from node_types via the
-        // parent lambda's Type::Fn (see lambda_param_to_ir_param).
+        // Bare param types are looked up from node_types via the parent
+        // lambda's Type::Fn (see lambda_param_to_ir_param).
         //
         // B-2 fix (Phase 5 followup): tuple-pattern lambda params (e.g.
         // `fn (dr, dc) -> body`) get a synthetic `__tuple_param_N` name and
@@ -382,7 +382,7 @@ pub fn lower_expr(ctx: &mut LowerCtx<'_>, expr: &Expr) -> IrExpr {
             }
         }
 
-        // ── T11: Record construction ─────────────────────────────────────────
+        // ── Record and union-variant construction ─────────────────────────────
         //
         // `Ctor { field = val, … }` or bare `Ctor` lowers to `IrExpr::Construct`.
         //
@@ -421,7 +421,7 @@ pub fn lower_expr(ctx: &mut LowerCtx<'_>, expr: &Expr) -> IrExpr {
             let ir_fields: Vec<(String, IrExpr)> = fields
                 .iter()
                 .map(|fi| {
-                    // D053 shorthand: `{ age }` means `{ age = age }`.
+                    // Record shorthand: `{ age }` means `{ age = age }`.
                     let val_expr = fi
                         .value
                         .as_ref()
@@ -468,11 +468,7 @@ pub fn lower_expr(ctx: &mut LowerCtx<'_>, expr: &Expr) -> IrExpr {
             }) = &binding
             {
                 // User constructor (record auto-ctor or union variant).
-                // B-D013 hotfix v3 Wave 2: previously this used
-                // `variant == 0` as a Record-vs-UnionVariant discriminator,
-                // which silently miscompiled the first variant of every union
-                // type (also at index 0) to a Record → empty MapLit.  We now
-                // read the `is_record` flag carried by `Binding::Constructor`
+                // Use the `is_record` flag carried by `Binding::Constructor`
                 // which the resolver sets accurately based on the type body.
                 let owner_type = ctx
                     .lookup_constructor_tycon(*sym_id)
@@ -512,7 +508,7 @@ pub fn lower_expr(ctx: &mut LowerCtx<'_>, expr: &Expr) -> IrExpr {
             }
         }
 
-        // ── T11: Field access ─────────────────────────────────────────────────
+        // ── Field access ──────────────────────────────────────────────────────
         //
         // `base.field` lowers to `IrExpr::Field { base, field: String }`.
         Expr::FieldAccess { base, field, span } => {
@@ -526,7 +522,7 @@ pub fn lower_expr(ctx: &mut LowerCtx<'_>, expr: &Expr) -> IrExpr {
             }
         }
 
-        // ── T11: Call ────────────────────────────────────────────────────────
+        // ── Function call ─────────────────────────────────────────────────────
         //
         // `f x y z` lowers to `IrExpr::Call` with args in strict L→R order.
         //
@@ -555,7 +551,7 @@ pub fn lower_expr(ctx: &mut LowerCtx<'_>, expr: &Expr) -> IrExpr {
             wrap_partial_application_if_needed(ctx, call, &ir_args, callee_node_type, *span)
         }
 
-        // ── T11: Spawn ───────────────────────────────────────────────────────
+        // ── Spawn actor ───────────────────────────────────────────────────────
         //
         // `spawn Actor arg*` lowers to `IrExpr::Spawn`.
         // OQ-PHASE45-006: actor module resolved via BindingMap → actor_module_cache
@@ -576,16 +572,16 @@ pub fn lower_expr(ctx: &mut LowerCtx<'_>, expr: &Expr) -> IrExpr {
             }
         }
 
-        // ── T11: Send ────────────────────────────────────────────────────────
+        // ── Send message to actor ─────────────────────────────────────────────
         //
         // `handle ! message` lowers to `IrExpr::Send`.
-        // The AST `message` is `Box<Expr>`; Phase 4 T15 resolved it to a handler
+        // The AST `message` is `Box<Expr>`; Phase 4 resolved it to a handler
         // reference.  We extract the handler name from the expression for the
         // SymbolRef::Handler best-effort construction.
         //
         // OQ-PHASE45-006: actor_module falls back to ctx.module_id (same-module
         // dominant case). Authoritative cross-module resolution requires the
-        // handle's typed binding (Phase 4.5 T3).
+        // handle's typed binding.
         Expr::Send {
             handle,
             message,
@@ -594,7 +590,7 @@ pub fn lower_expr(ctx: &mut LowerCtx<'_>, expr: &Expr) -> IrExpr {
             let id = ctx.fresh_id(None);
             // OQ-PHASE45-006: actor_module resolved via current-module fallback.
             // Authoritative lookup requires reading the handle's typed binding
-            // (Binding::Local + associated Handle X type) — deferred to Phase 4.5 T3.
+            // (Binding::Local + associated Handle X type).
             let actor_module = ctx.module_id;
             let handle = Box::new(lower_expr(ctx, handle));
             let handler_name = expr_as_handler_name(message);
@@ -616,12 +612,12 @@ pub fn lower_expr(ctx: &mut LowerCtx<'_>, expr: &Expr) -> IrExpr {
             }
         }
 
-        // ── T11: Ask ─────────────────────────────────────────────────────────
+        // ── Ask actor (synchronous request) ──────────────────────────────────
         //
         // `handle ?> message arg* [timeout <ms|never>]` lowers to `IrExpr::Ask`.
         // OQ-PHASE45-006: actor_module falls back to ctx.module_id (same-module
         // dominant case). Authoritative cross-module resolution requires typed
-        // binding access (Phase 4.5 T3).
+        // binding access.
         //
         // Phase 6 T0 (OQ-E001): the `timeout` field is lowered 1:1 from the AST.
         // Existing Phase 5 `Expr::Ask` nodes (without `timeout`) default to `None`
@@ -636,7 +632,7 @@ pub fn lower_expr(ctx: &mut LowerCtx<'_>, expr: &Expr) -> IrExpr {
             let id = ctx.fresh_id(None);
             // OQ-PHASE45-006: actor_module resolved via current-module fallback.
             // Authoritative lookup requires reading the handle's typed binding
-            // (Binding::Local + associated Handle X type) — deferred to Phase 4.5 T3.
+            // (Binding::Local + associated Handle X type).
             let actor_module = ctx.module_id;
             let handle = Box::new(lower_expr(ctx, handle));
             let args = args.iter().map(|a| lower_expr(ctx, a)).collect();
@@ -678,7 +674,7 @@ pub fn lower_expr(ctx: &mut LowerCtx<'_>, expr: &Expr) -> IrExpr {
 ///
 /// Delegates to [`lower_pattern_full`] from `match_lower` for all patterns,
 /// which handles the full lowering table (§4.8.1) including `Constructor`,
-/// `Tuple`, `Cons`, `As`, and `Paren` patterns added in T5.
+/// `Tuple`, `Cons`, `As`, and `Paren` patterns.
 pub fn lower_pattern(ctx: &mut LowerCtx<'_>, pat: &Pattern) -> IrPat {
     lower_pattern_full(ctx, pat)
 }
@@ -725,7 +721,7 @@ fn resolve_actor_module(ctx: &mut LowerCtx<'_>, actor_ident: &ridge_ast::Ident) 
     ctx.module_id
 }
 
-// ── T11 helpers ──────────────────────────────────────────────────────────────
+// ── Lambda, record, and call helpers ─────────────────────────────────────────
 
 /// Convert an AST [`LambdaParam`] to an [`IrParam`].
 ///
@@ -737,7 +733,7 @@ fn resolve_actor_module(ctx: &mut LowerCtx<'_>, actor_ident: &ridge_ast::Ident) 
 /// mapping is absent (test scaffolding or unannotated lambda not in the
 /// side-table).
 ///
-/// PHASE45-T3: bare param type lifted from parent lambda's `Type::Fn` params[i].
+/// Bare param type lifted from parent lambda's `Type::Fn` params[i].
 fn lambda_param_to_ir_param(
     ctx: &mut LowerCtx<'_>,
     lambda_span: Span,
@@ -751,7 +747,7 @@ fn lambda_param_to_ir_param(
                 Pattern::Var { name, .. } => (name.text.clone(), name.span),
                 other => ("_".to_owned(), other.span()),
             };
-            // PHASE45-T3: look up the parent lambda's Type::Fn from node_types via
+            // Look up the parent lambda's Type::Fn from node_types via
             // (lambda_span, NodeKind::Expr), then pick params[param_idx].
             // node_types is keyed by Expr positions only — param ident spans carry
             // no type entry; the correct source is the enclosing lambda's Fn type.
@@ -1153,8 +1149,7 @@ fn lower_ident(ctx: &mut LowerCtx<'_>, ident: &Ident) -> IrExpr {
             // lookup_tycon_by_name). Falls back to TyConId(0) when the symbol
             // table or workspace is absent (defensive; no L999 emitted).
             //
-            // B-D013 hotfix v3 Wave 2: use the resolver-supplied `is_record`
-            // flag instead of guessing the constructor kind.
+            // Use the resolver-supplied `is_record` flag to determine constructor kind.
             let id = ctx.fresh_id(None);
             let tycon_id = ctx
                 .lookup_constructor_tycon(*owner_type)
@@ -1177,12 +1172,14 @@ fn lower_ident(ctx: &mut LowerCtx<'_>, ident: &Ident) -> IrExpr {
         }
 
         Some(Binding::FieldAccessor { field }) => {
-            // Field-accessor shorthands `(.name)` lower to lambdas (T4).
+            // Field-accessor shorthands `(.name)` lower to lambdas in the
+            // field_accessor module; an ident binding to FieldAccessor is unexpected here.
             let id = ctx.fresh_id(None);
             ctx.errors.push(LowerError::InternalLoweringError {
                 span,
                 message: format!(
-                    "field accessor `{field}` encountered as ident in T3; field-accessor lowering is T4+"
+                    "field accessor `{field}` encountered as ident; \
+                     use Expr::FieldAccessorFn for field-accessor expressions"
                 ),
             });
             IrExpr::Lit {
@@ -1208,10 +1205,7 @@ fn lower_ident(ctx: &mut LowerCtx<'_>, ident: &Ident) -> IrExpr {
             let id = ctx.fresh_id(None);
             ctx.errors.push(LowerError::InternalLoweringError {
                 span,
-                message: format!(
-                    "unrecognised binding variant for ident `{}` in T3",
-                    ident.text
-                ),
+                message: format!("unrecognised binding variant for ident `{}`", ident.text),
             });
             IrExpr::Lit {
                 id,
@@ -1345,7 +1339,8 @@ fn lower_qualified(ctx: &mut LowerCtx<'_>, qname: &QualifiedName) -> IrExpr {
             ctx.errors.push(LowerError::InternalLoweringError {
                 span,
                 message: format!(
-                    "qualified constructor `{name_text}` (owner={owner_type:?}, variant={variant}) in T3; constructor lowering is T5+"
+                    "qualified constructor `{name_text}` (owner={owner_type:?}, variant={variant}) \
+                     encountered in ident lowering; use IrExpr::Construct for constructor expressions"
                 ),
             });
             IrExpr::Lit {
@@ -1374,9 +1369,7 @@ fn lower_qualified(ctx: &mut LowerCtx<'_>, qname: &QualifiedName) -> IrExpr {
             let id = ctx.fresh_id(None);
             ctx.errors.push(LowerError::InternalLoweringError {
                 span,
-                message: format!(
-                    "unrecognised binding variant for qualified name `{name_text}` in T3"
-                ),
+                message: format!("unrecognised binding variant for qualified name `{name_text}`"),
             });
             IrExpr::Lit {
                 id,
@@ -1393,7 +1386,7 @@ fn lower_qualified(ctx: &mut LowerCtx<'_>, qname: &QualifiedName) -> IrExpr {
 ///
 /// Single-part text-only interpolation lowers to a plain text literal.
 /// Any other shape (multiple parts, expression holes) dispatches to
-/// [`lower_interp_full`] from the `interp` module (§4.6 / T9).
+/// [`lower_interp_full`] from the `interp` module (§4.6).
 fn lower_interp(ctx: &mut LowerCtx<'_>, parts: &[InterpPart], span: Span) -> IrExpr {
     if let [InterpPart::Text { raw, .. }] = parts {
         // Single-part, text-only: no fold needed — emit a literal directly.
@@ -1505,7 +1498,7 @@ fn parse_float(ctx: &mut LowerCtx<'_>, raw: &str, span: Span) -> IrLit {
 /// content byte), `strip_suffix('"')` would chop off the legitimate trailing
 /// quote, leaving the orphan `\` and yielding `"hi\"` → `"hi\` on output.
 ///
-/// Today this function only decodes the validated escape sequences (D047).
+/// Today this function only decodes the validated escape sequences.
 /// The lexer validates escapes eagerly (see
 /// `crates/ridge-lexer/src/strings.rs`), so by the time we reach here every
 /// `\<char>` sequence is one of the spec-permitted forms (`\n`, `\t`, `\r`,
@@ -1521,8 +1514,7 @@ pub(crate) fn strip_text_quotes(raw: &str) -> String {
 /// Shared between `Literal::Text` lowering and `InterpPart::Text` lowering
 /// (see [`crate::interp`]).  Both call sites previously stored the raw source
 /// bytes (including backslashes), which silently produced strings that
-/// contained the literal escape sequences at runtime — every program that
-/// used `"\n"`, `"\""`, or `"C:\\path"` was affected (B-D001).
+/// contained the literal escape sequences at runtime.
 pub(crate) fn decode_text_escapes(s: &str) -> String {
     let mut out = String::with_capacity(s.len());
     let mut chars = s.chars();
@@ -1602,7 +1594,7 @@ mod tests {
         LowerCtx::new(ModuleId(0), &[])
     }
 
-    // ── T3-1: Literal::IntDec ─────────────────────────────────────────────────
+    // ── Literal::IntDec ───────────────────────────────────────────────────────
 
     #[test]
     fn lower_expr_literal_int() {
@@ -1632,7 +1624,7 @@ mod tests {
         }
     }
 
-    // ── T3-2: Literal::Bool ───────────────────────────────────────────────────
+    // ── Literal::Bool ─────────────────────────────────────────────────────────
 
     #[test]
     fn lower_expr_literal_bool() {
@@ -1656,7 +1648,7 @@ mod tests {
         }
     }
 
-    // ── T3-3: Literal::Text ───────────────────────────────────────────────────
+    // ── Literal::Text ─────────────────────────────────────────────────────────
 
     #[test]
     fn lower_expr_literal_text() {
@@ -1664,9 +1656,7 @@ mod tests {
         let span = sp();
         // The lexer's TextLit token carries the content between the quotes
         // (already stripped, see `raw_scan::scan`).  Lowering decodes any
-        // validated escape sequences but does not strip quotes a second time
-        // — pre-hotfix-v3 the function double-stripped, which truncated any
-        // string whose decoded content ended in `"` (B-D001 root cause).
+        // validated escape sequences but does not strip quotes a second time.
         let expr = Expr::Literal(Literal::Text {
             raw: "hi".into(),
             span,
@@ -1688,9 +1678,8 @@ mod tests {
         }
     }
 
-    /// Regression for B-D001 hotfix v3: a literal whose decoded content ends
-    /// in `"` (from a final `\"` escape) must NOT have the trailing byte
-    /// stripped by lowering.  Pre-fix this asserted equal to `"hi`.
+    /// Regression: a literal whose decoded content ends in `"` (from a final
+    /// `\"` escape) must NOT have the trailing byte stripped by lowering.
     #[test]
     fn lower_expr_literal_text_trailing_escaped_quote() {
         let mut ctx = fresh_ctx();
@@ -1716,8 +1705,8 @@ mod tests {
         }
     }
 
-    /// Regression for B-D001 hotfix v3: every spec-permitted escape must
-    /// decode to its actual character, not pass through verbatim.
+    /// Regression: every spec-permitted escape must decode to its actual
+    /// character, not pass through verbatim.
     #[test]
     fn lower_expr_literal_text_decodes_all_escapes() {
         let mut ctx = fresh_ctx();
@@ -1738,7 +1727,7 @@ mod tests {
         }
     }
 
-    // ── T3-4: Expr::Unit ─────────────────────────────────────────────────────
+    // ── Expr::Unit ────────────────────────────────────────────────────────────
 
     #[test]
     fn lower_expr_unit() {
@@ -1763,7 +1752,7 @@ mod tests {
         }
     }
 
-    // ── T3-5: Ident resolving to Local ────────────────────────────────────────
+    // ── Ident resolving to Local ──────────────────────────────────────────────
 
     #[test]
     fn lower_expr_ident_local() {
@@ -1802,7 +1791,7 @@ mod tests {
         }
     }
 
-    // ── T3-6: Ident resolving to Stdlib ──────────────────────────────────────
+    // ── Ident resolving to Stdlib ─────────────────────────────────────────────
 
     #[test]
     fn lower_expr_ident_stdlib() {
@@ -1844,9 +1833,9 @@ mod tests {
         }
     }
 
-    // ── T3-7 (updated for T4): Pipe now lowers to a Call, not a Unit stub ──────
+    // ── Pipe lowers to a Call ─────────────────────────────────────────────────
     //
-    // T4 replaced the stub for `Expr::Pipe`.  `xs |> f` where `rhs` is `Unit`
+    // `xs |> f` lowers to a `Call` node. `xs |> f` where `rhs` is `Unit`
     // (an invalid pipe shape) emits L002 and returns a Unit stub — but what we
     // really want to verify is that the *span* contract is still honoured.  Use
     // a bare-Ident RHS (which is a valid bare-callable shape) to get a proper
@@ -1875,27 +1864,27 @@ mod tests {
         }
     }
 
-    // ── T3-8: source_map provenance for atoms ────────────────────────────────
+    // ── source_map provenance for atoms ──────────────────────────────────────
     //
-    // T3 atoms call `ctx.fresh_id(None)` — no upstream NodeId is available
-    // because `Expr` nodes don't carry `NodeId` directly (D079 side-table
-    // convention).  Provenance wiring is a T6 concern.  This test asserts the
-    // current behaviour so a regression is flagged immediately.
+    // Atom lowering calls `ctx.fresh_id(None)` — no upstream NodeId is
+    // available because `Expr` nodes don't carry `NodeId` directly (side-table
+    // convention).  This test asserts the current behaviour so a regression
+    // is flagged immediately.
 
     #[test]
-    fn lower_expr_unit_no_provenance_in_t3() {
+    fn lower_expr_unit_no_provenance() {
         let mut ctx = fresh_ctx();
         let expr = Expr::Unit(sp());
         let _ir = lower_expr(&mut ctx, &expr);
-        // T3 passes None as origin — no source_map entry expected.
+        // Atom lowering passes None as origin — no source_map entry expected.
         assert!(
             ctx.source_map.is_empty(),
-            "T3 atoms do not record provenance yet; got {:?}",
+            "atom lowering must not record provenance; got {:?}",
             ctx.source_map
         );
     }
 
-    // ── T3-9: lower_pattern — wildcard ───────────────────────────────────────
+    // ── lower_pattern — wildcard ──────────────────────────────────────────────
 
     #[test]
     fn lower_pattern_wildcard() {
@@ -1906,7 +1895,7 @@ mod tests {
         assert!(matches!(ir_pat, IrPat::Wild { span: s } if s == span));
     }
 
-    // ── T3-10: lower_pattern — var binding ───────────────────────────────────
+    // ── lower_pattern — var binding ───────────────────────────────────────────
 
     #[test]
     fn lower_pattern_var() {
@@ -1928,7 +1917,7 @@ mod tests {
         }
     }
 
-    // ── T11-1: Tuple lowers to IrExpr::Tuple with correct element count ──────
+    // ── Tuple lowers to IrExpr::Tuple with correct element count ─────────────
 
     #[test]
     fn lower_expr_tuple_two_elems() {
@@ -1978,7 +1967,7 @@ mod tests {
         );
     }
 
-    // ── T11-2: List lowers to IrExpr::ListLit with correct element count ─────
+    // ── List lowers to IrExpr::ListLit with correct element count ────────────
 
     #[test]
     fn lower_expr_list_three_elems() {
@@ -2018,7 +2007,7 @@ mod tests {
         );
     }
 
-    // ── T11-3: Return lowers to IrExpr::Return with lowered value ────────────
+    // ── Return lowers to IrExpr::Return with lowered value ───────────────────
 
     #[test]
     fn lower_expr_return_int() {
@@ -2054,7 +2043,7 @@ mod tests {
         );
     }
 
-    // ── T11-4: Lambda lowers to IrExpr::Lambda with correct param count ──────
+    // ── Lambda lowers to IrExpr::Lambda with correct param count ─────────────
 
     #[test]
     fn lower_expr_lambda_one_param() {
@@ -2106,7 +2095,7 @@ mod tests {
         );
     }
 
-    // ── T11-5: FieldAccess lowers to IrExpr::Field ───────────────────────────
+    // ── FieldAccess lowers to IrExpr::Field ──────────────────────────────────
 
     #[test]
     fn lower_expr_field_access() {
@@ -2135,7 +2124,7 @@ mod tests {
         );
     }
 
-    // ── T11-6: Call lowers to IrExpr::Call with correct arg count ────────────
+    // ── Call lowers to IrExpr::Call with correct arg count ───────────────────
 
     #[test]
     fn lower_expr_call_two_args() {
@@ -2172,7 +2161,7 @@ mod tests {
         );
     }
 
-    // ── T11-7: Spawn lowers to IrExpr::Spawn with ActorType symbol ───────────
+    // ── Spawn lowers to IrExpr::Spawn with ActorType symbol ──────────────────
 
     #[test]
     fn lower_expr_spawn_actor_name() {
@@ -2215,7 +2204,7 @@ mod tests {
         );
     }
 
-    // ── T11-8: Send lowers to IrExpr::Send with Handler symbol ───────────────
+    // ── Send lowers to IrExpr::Send with Handler symbol ──────────────────────
 
     #[test]
     fn lower_expr_send_handler_name() {
@@ -2253,7 +2242,7 @@ mod tests {
         );
     }
 
-    // ── T11-9: Ask lowers to IrExpr::Ask with Handler symbol and args ────────
+    // ── Ask lowers to IrExpr::Ask with Handler symbol and args ───────────────
 
     #[test]
     fn lower_expr_ask_handler_with_args() {
@@ -2303,7 +2292,7 @@ mod tests {
         );
     }
 
-    // ── T11-10: Record lowers to IrExpr::Construct with field values ─────────
+    // ── Record lowers to IrExpr::Construct with field values ─────────────────
 
     #[test]
     fn lower_expr_record_two_fields() {
@@ -2371,7 +2360,7 @@ mod tests {
         );
     }
 
-    // ── B-1 unit tests (T1 — prelude constructor routing) ────────────────────
+    // ── Prelude constructor routing ───────────────────────────────────────────
 
     /// Build a NodeIdMap + BindingMap entry that resolves a single ident span to
     /// a given Binding. Returns both maps and the span used.
@@ -2566,7 +2555,7 @@ mod tests {
         }
     }
 
-    // ── B-2 unit tests (T2 — tuple-pattern lambda param destructuring) ────────
+    // ── Tuple-pattern lambda param destructuring ──────────────────────────────
 
     /// `fn (a, b) -> a` — tuple-pattern param gets a synthetic name and the
     /// body is wrapped in a Match that destructures (a, b).
@@ -2759,7 +2748,7 @@ mod tests {
         }
     }
 
-    // ── B-3 unit tests (T3 — partial application detection) ──────────────────
+    // ── Partial application detection ────────────────────────────────────────
 
     /// Build a ctx with a node_type entry for a given callee span.
     ///
@@ -2944,7 +2933,7 @@ mod tests {
         }
     }
 
-    // ── B-5 unit tests (T5 — state-field-read precedence in lower_ident) ─────
+    // ── State-field-read precedence in lower_ident ───────────────────────────
 
     /// Build a binding ctx (with NodeIdMap + BindingMap) for a single ident
     /// span, and also set `in_actor_body + current_state_fields`.

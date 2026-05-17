@@ -103,7 +103,7 @@ pub(crate) fn lower_module(
 /// Exposed as `pub(crate)` so that `lib.rs::codegen_stdlib_module_with_fqn`
 /// can compile stdlib modules with their dotted FQN (e.g. `"std.list"`) as the
 /// BEAM atom, bypassing the `ridge_*` name-mangling used for user modules
-/// (per OQ-C019 / D170).
+/// (the dotted FQN is used for stdlib module atoms, not `ridge_*` mangling).
 ///
 /// Returns the main `CErlModule`; actor sub-modules are emitted into the
 /// `fns` list as a documentation note (the full actor modules are returned

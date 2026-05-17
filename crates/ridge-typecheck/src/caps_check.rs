@@ -197,7 +197,7 @@ fn check_body(
             check_body(ctx, b, enclosing_name, enclosing_effective, rhs);
         }
 
-        // ── Send (no cap contribution per §8.1 / OQ-T004) ────────────────────
+        // ── Send (no cap contribution per §8.1) ──────────────────────────────
         Expr::Send {
             handle, message, ..
         } => {
@@ -226,7 +226,7 @@ fn check_body(
             }
         }
 
-        // ── Spawn ({spawn} contribution per §8.1 / D061 / OQ-T006) ──────────
+        // ── Spawn ({spawn} contribution per §8.1 / D061) ─────────────────────
         Expr::Spawn { args, span, .. } => {
             let spawn_caps = CapabilitySet::singleton(ridge_ast::Capability::Spawn);
             if !spawn_caps.is_subset(&enclosing_effective) {

@@ -215,7 +215,7 @@ fi
 # ── Step 6: Install ridge-cli and ridge-lsp ──────────────────────────────────
 # Repository / branch are overridable via env vars so CI matrices can pin to
 # the transient public mirror (`ridge-lang/ridge`) until `ridge-lang/ridge`
-# opens in Phase 9.  Defaults are deterministic and used by `--snapshot` mode.
+# opens publicly.  Defaults are deterministic and used by `--snapshot` mode.
 RIDGE_REPO="${RIDGE_REPO:-https://github.com/ridge-lang/ridge}"
 RIDGE_BRANCH="${RIDGE_BRANCH:-main}"
 

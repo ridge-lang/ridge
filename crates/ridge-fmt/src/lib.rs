@@ -7,7 +7,7 @@
 //!
 //! # Algorithm
 //!
-//! The formatter implements a *trivia-preserving round-trip* (§2.3, OQ-C007):
+//! The formatter implements a *trivia-preserving round-trip* (§2.3):
 //!
 //! 1. Parse with trivia preserved via
 //!    [`ridge_parser::parse_module_with_trivia`].
@@ -16,7 +16,7 @@
 //!    attached positions.
 //! 3. Re-emit the result as a `String`.
 //!
-//! See `crates/ridge-fmt/README.md` for the transitional notice (OQ-C007).
+//! See `crates/ridge-fmt/README.md` for the transitional notice.
 
 #![warn(missing_docs)]
 #![deny(clippy::unwrap_used, clippy::expect_used, clippy::panic)]

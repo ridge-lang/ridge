@@ -38,9 +38,9 @@ pub(crate) struct Cursor<'t> {
     ///
     /// Incremented by bracket-opening parse helpers; decremented by the
     /// matching closers.  Used by `parse_branch_body` to decide whether to
-    /// apply the flat-block NEWLINE extension (OQ-R014): that extension only
-    /// fires when we are inside at least one bracket, where the lexer emits
-    /// NEWLINE (not INDENT/DEDENT) at statement boundaries.
+    /// apply the flat-block NEWLINE extension: that extension only fires when
+    /// we are inside at least one bracket, where the lexer emits NEWLINE (not
+    /// INDENT/DEDENT) at statement boundaries.
     pub(crate) bracket_depth: u32,
     /// Line-map for column lookups in the nested-match offside rule (E2).
     ///

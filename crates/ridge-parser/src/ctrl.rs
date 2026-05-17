@@ -481,13 +481,13 @@ pub(crate) fn is_match_arm_start(cur: &Cursor<'_>) -> bool {
 
 // ── parse_let ─────────────────────────────────────────────────────────────────
 
-/// Parse a `let` binding expression (grammar §6.1, D052).
+/// Parse a `let` binding expression (grammar §6.1).
 ///
 /// ```text
 /// let <pat> [: <ty>] = <expr>
 /// ```
 ///
-/// The pattern can be any full `Pattern` (destructuring allowed per D052).
+/// The pattern can be any full `Pattern` (destructuring allowed).
 ///
 /// Precondition: `cur.peek() == &Token::KwLet`.
 pub(crate) fn parse_let(cur: &mut Cursor<'_>) -> Result<Expr, ParseError> {
@@ -569,14 +569,14 @@ pub(crate) fn parse_var_decl(cur: &mut Cursor<'_>) -> Result<Expr, ParseError> {
 
 // ── parse_try ─────────────────────────────────────────────────────────────────
 
-/// Parse a `try` expression (grammar §6.5, D060).
+/// Parse a `try` expression (grammar §6.5).
 ///
 /// ```text
 /// try
 ///     <block>
 /// ```
 ///
-/// Per D060, `try` introduces a do-block.  If no `INDENT` follows, the next
+/// `try` introduces a do-block.  If no `INDENT` follows, the next
 /// single expression is wrapped in a one-statement `Block`.
 ///
 /// Precondition: `cur.peek() == &Token::KwTry`.
@@ -607,7 +607,7 @@ pub(crate) fn parse_try(cur: &mut Cursor<'_>) -> Result<Expr, ParseError> {
 
 // ── parse_guard ───────────────────────────────────────────────────────────────
 
-/// Parse a `guard` expression (grammar §6.6, D066, OQ-Q022).
+/// Parse a `guard` expression (grammar §6.6).
 ///
 /// ```text
 /// guard <cond> else <else-branch>
@@ -615,7 +615,7 @@ pub(crate) fn parse_try(cur: &mut Cursor<'_>) -> Result<Expr, ParseError> {
 ///
 /// The `else-branch` is EITHER:
 /// - A single-line `Expr` → wrapped in `Block { stmts: [expr], span }`.
-/// - A multi-statement INDENT-delimited `Block` (per D066).
+/// - A multi-statement INDENT-delimited `Block`.
 ///
 /// `Guard::else_branch` is always a `Block`.  No divergence check is
 /// performed at parse time (the type checker enforces it).
@@ -652,7 +652,7 @@ pub(crate) fn parse_guard(cur: &mut Cursor<'_>) -> Result<Expr, ParseError> {
     }
 
     let else_branch = if cur.peek() == &Token::Indent {
-        // Multi-statement block form (D066).
+        // Multi-statement block form.
         parse_block(cur)?
     } else {
         // Single-expression form: use full parse_expr so that keywords like
@@ -732,7 +732,7 @@ pub(crate) fn parse_return(cur: &mut Cursor<'_>) -> Result<Expr, ParseError> {
 /// INDENT form → `Expr::Block(block)`
 /// Single expression → that expression directly.
 ///
-/// This variant does NOT apply the flat-block NEWLINE extension (OQ-R014).
+/// This variant does NOT apply the flat-block NEWLINE extension (R014).
 /// Use it for `if`/`then`/`else`, `let` values, `var` values, `guard` bodies,
 /// and any other position where the value is a sub-expression within a larger
 /// context — the NEWLINE in that position belongs to the enclosing block.
@@ -754,7 +754,7 @@ pub(crate) fn parse_branch_body(cur: &mut Cursor<'_>) -> Result<Expr, ParseError
 }
 
 /// Parse a lambda or match-arm body, applying the flat-block NEWLINE extension
-/// (OQ-R014) when inside a bracket context.
+/// (R014) when inside a bracket context.
 ///
 /// INDENT form  → `Expr::Block(block)`
 /// Flat form    → `Expr::Block(block)` when ≥2 stmts; single `Expr` when 1.
@@ -796,7 +796,7 @@ pub(crate) fn parse_branch_body_flat(cur: &mut Cursor<'_>) -> Result<Expr, Parse
 
     // Collect additional statements while a NEWLINE is followed by an
     // expression-starting token.  Operator-leading continuation lines are
-    // already merged by D070, so a NEWLINE here is a genuine statement
+    // already merged by the continuation rule, so a NEWLINE here is a genuine statement
     // boundary.
     while cur.peek() == &Token::Newline && cur.peek_n(1).is_some_and(can_start_expr_token) {
         cur.bump(); // consume NEWLINE
@@ -942,7 +942,7 @@ mod tests {
         None
     }
 
-    // ── T7-1: parse_if_single_line ────────────────────────────────────────────
+    // ── parse_if_single_line ────────────────────────────────────────────
 
     #[test]
     fn parse_if_single_line() {
@@ -969,7 +969,7 @@ mod tests {
         }
     }
 
-    // ── T7-2: parse_if_no_else ────────────────────────────────────────────────
+    // ── parse_if_no_else ────────────────────────────────────────────────
 
     #[test]
     fn parse_if_no_else() {
@@ -984,7 +984,7 @@ mod tests {
         }
     }
 
-    // ── T7-3: parse_if_multiline ──────────────────────────────────────────────
+    // ── parse_if_multiline ──────────────────────────────────────────────
     //
     // Source:
     //   if x then
@@ -1022,7 +1022,7 @@ mod tests {
         }
     }
 
-    // ── T7-4: parse_match_two_arms ────────────────────────────────────────────
+    // ── parse_match_two_arms ────────────────────────────────────────────
 
     #[test]
     fn parse_match_two_arms() {
@@ -1048,7 +1048,7 @@ mod tests {
         }
     }
 
-    // ── T7-5: parse_match_arm_with_guard ─────────────────────────────────────
+    // ── parse_match_arm_with_guard ─────────────────────────────────────
 
     #[test]
     fn parse_match_arm_with_guard() {
@@ -1070,7 +1070,7 @@ mod tests {
         }
     }
 
-    // ── T7-6: parse_let_simple ────────────────────────────────────────────────
+    // ── parse_let_simple ────────────────────────────────────────────────
 
     #[test]
     fn parse_let_simple() {
@@ -1084,7 +1084,7 @@ mod tests {
         }
     }
 
-    // ── T7-7: parse_let_with_type_annotation ─────────────────────────────────
+    // ── parse_let_with_type_annotation ─────────────────────────────────
 
     #[test]
     fn parse_let_with_type_annotation() {
@@ -1108,11 +1108,11 @@ mod tests {
         }
     }
 
-    // ── T7-8: parse_let_destructuring_tuple ──────────────────────────────────
+    // ── parse_let_destructuring_tuple ──────────────────────────────────
 
     #[test]
     fn parse_let_destructuring_tuple() {
-        // `let (x, y) = p` — D052 destructuring
+        // `let (x, y) = p` — destructuring pattern
         let e = ok("let (x, y) = p");
         if let Expr::Let { pat, .. } = e {
             if let Pattern::Tuple { elems, .. } = pat {
@@ -1127,7 +1127,7 @@ mod tests {
         }
     }
 
-    // ── T7-9: parse_let_destructuring_constructor ─────────────────────────────
+    // ── parse_let_destructuring_constructor ─────────────────────────────
 
     #[test]
     fn parse_let_destructuring_constructor() {
@@ -1146,7 +1146,7 @@ mod tests {
         }
     }
 
-    // ── T7-10: parse_var_decl ─────────────────────────────────────────────────
+    // ── parse_var_decl ─────────────────────────────────────────────────
 
     #[test]
     fn parse_var_decl() {
@@ -1173,7 +1173,7 @@ mod tests {
         }
     }
 
-    // ── T7-11: parse_assign ───────────────────────────────────────────────────
+    // ── parse_assign ───────────────────────────────────────────────────
 
     #[test]
     fn parse_assign() {
@@ -1196,7 +1196,7 @@ mod tests {
         }
     }
 
-    // ── T7-12: parse_try_single_stmt ─────────────────────────────────────────
+    // ── parse_try_single_stmt ─────────────────────────────────────────
 
     #[test]
     fn parse_try_single_stmt() {
@@ -1216,7 +1216,7 @@ mod tests {
         }
     }
 
-    // ── T7-13: parse_guard_single_line ───────────────────────────────────────
+    // ── parse_guard_single_line ───────────────────────────────────────
 
     #[test]
     fn parse_guard_single_line() {
@@ -1244,9 +1244,9 @@ mod tests {
         }
     }
 
-    // ── T7-14: parse_guard_multi_stmt (D066 block form) ──────────────────────
+    // ── parse_guard_multi_stmt (block form) ───────────────────────────
     //
-    // Per D066 (mirrors log_analyzer.rg:89–91):
+    // Multi-statement guard else block (mirrors log_analyzer.rg:89–91):
     //   guard (len >= 2) else
     //       Io.eprintln "usage"
     //       return Err e
@@ -1273,7 +1273,7 @@ mod tests {
         }
     }
 
-    // ── T7-15: parse_return_with_value ───────────────────────────────────────
+    // ── parse_return_with_value ───────────────────────────────────────
 
     #[test]
     fn parse_return_with_value() {
@@ -1285,7 +1285,7 @@ mod tests {
         }
     }
 
-    // ── T7-16: parse_return_without_value ────────────────────────────────────
+    // ── parse_return_without_value ────────────────────────────────────
 
     #[test]
     fn parse_return_without_value() {
@@ -1304,7 +1304,7 @@ mod tests {
         }
     }
 
-    // ── T7-17: parse_block_single_stmt ───────────────────────────────────────
+    // ── parse_block_single_stmt ───────────────────────────────────────
     //
     // A one-statement block inside an `if then` branch.
 
@@ -1326,7 +1326,7 @@ mod tests {
         }
     }
 
-    // ── T7-18: parse_block_multi_stmt ────────────────────────────────────────
+    // ── parse_block_multi_stmt ────────────────────────────────────────
     //
     // Block with 3 statements — verify count and ordering.
 
@@ -1352,7 +1352,7 @@ mod tests {
         }
     }
 
-    // ── T7-19: parse_block_empty_rejects (P014) ──────────────────────────────
+    // ── parse_block_empty_rejects (P014) ──────────────────────────────
     //
     // `parse_block` must reject an INDENT immediately followed by DEDENT.
     // We test via `parse_try` which calls `parse_block`.
@@ -1381,7 +1381,7 @@ mod tests {
         );
     }
 
-    // ── T7-20: parse_block_trailing_newline ──────────────────────────────────
+    // ── parse_block_trailing_newline ──────────────────────────────────
     //
     // Block with a trailing NEWLINE immediately before DEDENT: should still
     // parse cleanly and produce the correct statement count.
@@ -1407,7 +1407,7 @@ mod tests {
         }
     }
 
-    // ── D066/Cluster3: parse_guard_else_on_next_line_indented ────────────────
+    // ── parse_guard_else_on_next_line_indented ───────────────────────────────
     //
     // Mirrors game_of_life.rg:25-27:
     //   guard (r >= 0 && r < grid.rows)
@@ -1540,7 +1540,7 @@ mod tests {
         );
     }
 
-    // ── T7-21: parse_if_missing_then → P001 ──────────────────────────────────
+    // ── parse_if_missing_then → P001 ──────────────────────────────────
 
     #[test]
     fn parse_if_missing_then() {
@@ -1549,7 +1549,7 @@ mod tests {
         assert_eq!(e.code(), "P001", "expected P001, got {e:?}");
     }
 
-    // ── T7-22: parse_let_missing_assign → P001 ───────────────────────────────
+    // ── parse_let_missing_assign → P001 ───────────────────────────────
 
     #[test]
     fn parse_let_missing_assign() {
@@ -1558,7 +1558,7 @@ mod tests {
         assert_eq!(e.code(), "P001", "expected P001, got {e:?}");
     }
 
-    // ── T7-23: parse_match_arm_missing_arrow → P001 ───────────────────────────
+    // ── parse_match_arm_missing_arrow → P001 ───────────────────────────
 
     #[test]
     fn parse_match_arm_missing_arrow() {
@@ -1664,7 +1664,7 @@ mod tests {
     //           let b = 2
     //       B -> 3)
     //
-    // In no-layout mode, OQ-R014 only emits a NEWLINE when col ≤ baseline (col 4).
+    // In no-layout mode, R014 only emits a NEWLINE when col ≤ baseline (col 4).
     // Both `let` statements are at col 8 > 4 — no Newline between them.
     // The first `let` returns after parsing `= 1`, then `let b = 2` is the next
     // token. `KwLet` is NOT in `can_start_arg_atom`, so juxtaposition stops;

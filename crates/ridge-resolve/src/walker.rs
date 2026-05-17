@@ -267,7 +267,7 @@ impl ScopeWalker<'_> {
 
     /// Add a parameter (from Param) as a local in the current scope.
     ///
-    /// Per T11 / OQ-R005: handler and init params inside an actor body that
+    /// Per R005: handler and init params inside an actor body that
     /// collide with a state field fire `R017 StateFieldShadowedByLocal`
     /// (warn-level).  Top-level fn params naturally skip the check because
     /// `check_r017_state_shadow` early-returns when no actor state is in scope.
@@ -372,7 +372,7 @@ impl ScopeWalker<'_> {
                         if let Some(inner) = &fp.pattern {
                             self.bind_pattern(inner, kind);
                         } else {
-                            // D053 shorthand: `{ age }` binds `age` as a local.
+                            // Shorthand: `{ age }` binds `age` as a local.
                             self.check_r017_state_shadow(&fp.name);
                             self.add_local_binding(&fp.name, kind);
                         }
@@ -817,7 +817,7 @@ impl<'ast> Visit<'ast> for ScopeWalker<'_> {
         if let Some(val) = &fi.value {
             self.visit_expr(val);
         } else {
-            // D053 shorthand `{ age }` — the field name is also a use-site Ident.
+            // Shorthand `{ age }` — the field name is also a use-site Ident.
             self.resolve_ident(&fi.name);
         }
     }
@@ -1411,7 +1411,7 @@ mod tests {
         );
     }
 
-    // ── Test 28: D053 shorthand in record construction ────────────────────────
+    // ── Test 28: shorthand field initializer in record construction ──────────
 
     #[test]
     fn t28_record_shorthand_field_resolves_local() {
@@ -1429,20 +1429,19 @@ mod tests {
         );
     }
 
-    // ── T11: Shadowing + DuplicateLocal policy lock-in (≥ 6 tests) ────────────
+    // ── Shadowing + DuplicateLocal policy (§4.8) ─────────────────────────────
     //
-    // T11 finalises §4.8 of the plan:
-    //   • Cross-scope shadowing is permitted silently (OQ-R002).
+    //   • Cross-scope shadowing is permitted silently (R002).
     //   • Same-scope duplicate bindings are R011 DuplicateLocal — including
     //     duplicates within a single tuple/cons/match-arm pattern.
     //   • R017 StateFieldShadowedByLocal is warn-level for actor-state vs
-    //     handler-local shadowing (OQ-R005).
+    //     handler-local shadowing (R005).
     //   • The `_`-prefix convention (`_unused`) is just a name — same-scope
     //     duplicates of `_x` and `_x` still fire R011 (it is a same-scope
     //     bug, not "intentional shadowing").
     //   • Wildcard `_` patterns are NOT bindings — repeating `_` is fine.
 
-    // ── T11 test 1: R011 fires for duplicate vars in a single tuple pattern ───
+    // ── R011 fires for duplicate vars in a single tuple pattern ──────────────
 
     #[test]
     fn t11_r011_duplicate_var_in_tuple_pattern() {
@@ -1460,7 +1459,7 @@ mod tests {
         );
     }
 
-    // ── T11 test 2: R011 fires for duplicate vars in a single match arm ───────
+    // ── R011 fires for duplicate vars in a single match arm ──────────────────
 
     #[test]
     fn t11_r011_duplicate_var_in_match_arm_pattern() {
@@ -1477,11 +1476,11 @@ mod tests {
         );
     }
 
-    // ── T11 test 3: cross-scope shadowing of let → no R011 ────────────────────
+    // ── cross-scope shadowing of let → no R011 ───────────────────────────────
 
     #[test]
     fn t11_cross_scope_let_shadow_silent() {
-        // Inner block re-binds `x`; per OQ-R002 this is silent.
+        // Inner block re-binds `x`; per R002 this is silent.
         // We use the existing tuple-pattern lift trick: `let (x, _) = (1, 0)`
         // is in one Block, and the lambda body is a NEW scope.
         let src = "fn f =\n    let x = 1\n    (fn _y -> let x = 2 in x) 0\n";
@@ -1495,7 +1494,7 @@ mod tests {
         );
     }
 
-    // ── T11 test 4: R017 fires for `var` shadowing state field ────────────────
+    // ── R017 fires for `var` shadowing state field ───────────────────────────
 
     #[test]
     fn t11_r017_var_shadows_state_field() {
@@ -1511,7 +1510,7 @@ mod tests {
             "expected 1 R017 for var shadowing state field; got: {errors:?}"
         );
 
-        // R017 must be reported as warn-level severity (OQ-R005).
+        // R017 must be reported as warn-level severity (R005).
         let r017_warns = errors
             .iter()
             .filter(|e| {
@@ -1522,7 +1521,7 @@ mod tests {
         assert_eq!(r017_warns, 1, "R017 must carry Severity::Warning");
     }
 
-    // ── T11 test 5: R017 fires for handler-param shadowing state field ────────
+    // ── R017 fires for handler-param shadowing state field ───────────────────
 
     #[test]
     fn t11_r017_handler_param_shadows_state_field() {
@@ -1539,7 +1538,7 @@ mod tests {
         );
     }
 
-    // ── T11 test 6: R017 does NOT fire when locals do not name a state field ──
+    // ── R017 does NOT fire when locals do not name a state field ─────────────
 
     #[test]
     fn t11_r017_silent_when_no_actual_shadow() {
@@ -1555,9 +1554,9 @@ mod tests {
         );
     }
 
-    // ── T11 test 7: same-scope `_x`/`_x` duplicate is still R011 ──────────────
+    // ── same-scope `_x`/`_x` duplicate is still R011 ────────────────────────
     //
-    // The `_`-prefix convention (D049) is a marker for *intentional* shadowing
+    // The `_`-prefix convention is a marker for *intentional* shadowing
     // or unused bindings — it does NOT carve out R011, which catches genuine
     // same-scope duplicates that almost always indicate a typo.
 

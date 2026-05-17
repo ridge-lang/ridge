@@ -45,7 +45,7 @@ use globset::Glob as FsGlob;
 pub struct WorkspaceManifest {
     /// Workspace name.
     pub name: String,
-    /// Workspace version string (stored verbatim; not validated in T2).
+    /// Workspace version string (stored verbatim; not validated during manifest parsing).
     pub version: String,
     /// Raw member glob patterns (e.g. `["apps/*", "libs/*"]`).
     pub members_globs: Vec<String>,
@@ -107,7 +107,7 @@ pub struct ForbidRule {
     /// The "to" module-path pattern.
     pub to: GlobPattern,
     /// Byte-offset span within the workspace `ridge.toml` (always `Span::point(0)`
-    /// for T2 — full span tracking deferred to T3 when we have a TOML span API).
+    /// always `Span::point(0)` — full span tracking deferred until a TOML span API is available).
     pub source_span: ridge_ast::Span,
 }
 
@@ -849,20 +849,20 @@ mod tests {
         assert_eq!(err.code(), "M003");
     }
 
-    // ── M004 MemberWithoutProjectManifest — T3 deferred ──────────────────────
+    // ── M004 MemberWithoutProjectManifest — deferred to filesystem expansion ──
 
     #[test]
     fn m004_deferred_to_t3() {
-        // M004 fires during filesystem expansion (T3), not manifest parsing (T2).
-        // T2 never emits M004. This fixture documents that a well-formed workspace
-        // manifest with members globs parses successfully; T3 validates that each
-        // expanded member directory contains a ridge.toml.
+        // M004 fires during filesystem expansion, not manifest parsing.
+        // Manifest parsing never emits M004. This fixture documents that a well-formed
+        // workspace manifest with members globs parses successfully; filesystem
+        // expansion validates that each expanded member directory contains a ridge.toml.
         let toml =
             include_str!("../tests/fixtures/manifest/M004_deferred_member_without_manifest.toml");
         let result = parse_workspace_manifest(toml, wp());
         assert!(
             result.is_ok(),
-            "T2 must not emit M004; filesystem validation is T3's responsibility"
+            "manifest parsing must not emit M004; filesystem validation is deferred"
         );
     }
 
@@ -966,19 +966,19 @@ mod tests {
         assert_eq!(err.code(), "M009");
     }
 
-    // ── M010 DuplicateProjectName — T3 deferred ───────────────────────────────
+    // ── M010 DuplicateProjectName — deferred to workspace integration ─────────
 
     #[test]
     fn m010_deferred_to_t3() {
-        // M010 fires in the integration layer (T3) when multiple project manifests
-        // are collected and their names compared.  T2 validates only a single
-        // project manifest at a time and cannot detect duplicates.
+        // M010 fires in the workspace integration layer when multiple project manifests
+        // are collected and their names compared.  Manifest parsing validates only a
+        // single project manifest at a time and cannot detect duplicates.
         let toml =
             include_str!("../tests/fixtures/manifest/M010_deferred_duplicate_project_name.toml");
         let result = parse_project_manifest(toml, pp(), ProjectId(0));
         assert!(
             result.is_ok(),
-            "T2 must not emit M010; duplicate detection is T3's responsibility"
+            "manifest parsing must not emit M010; duplicate detection is deferred to workspace integration"
         );
     }
 
@@ -999,30 +999,30 @@ mod tests {
         assert_eq!(err.code(), "M011");
     }
 
-    // ── M012 CycleInDependencies — T7 deferred ───────────────────────────────
+    // ── M012 CycleInDependencies — deferred to import resolution ─────────────
 
     #[test]
     fn m012_deferred_to_t7() {
         // M012 requires the full workspace dependency graph to detect cycles.
-        // T2 only parses individual manifests and cannot detect cycles.
+        // Manifest parsing only handles individual manifests and cannot detect cycles.
         let toml = include_str!("../tests/fixtures/manifest/M012_deferred_dep_cycle.toml");
         let result = parse_project_manifest(toml, pp(), ProjectId(0));
         assert!(
             result.is_ok(),
-            "T2 must not emit M012; cycle detection is T7's responsibility"
+            "manifest parsing must not emit M012; cycle detection is deferred to import resolution"
         );
     }
 
-    // ── M013 UnknownWorkspaceMember — T7 deferred ────────────────────────────
+    // ── M013 UnknownWorkspaceMember — deferred to import resolution ───────────
 
     #[test]
     fn m013_deferred_to_t7() {
-        // M013 requires cross-project validation; T2 only parses single manifests.
+        // M013 requires cross-project validation; manifest parsing handles single manifests.
         let toml = include_str!("../tests/fixtures/manifest/M013_deferred_unknown_member.toml");
         let result = parse_project_manifest(toml, pp(), ProjectId(0));
         assert!(
             result.is_ok(),
-            "T2 must not emit M013; unknown-member validation is T7's responsibility"
+            "manifest parsing must not emit M013; unknown-member validation is deferred"
         );
     }
 
@@ -1035,18 +1035,18 @@ mod tests {
         assert_eq!(err.code(), "M014");
     }
 
-    // ── M015 WorkspaceDependencyAbsent — T7 deferred ─────────────────────────
+    // ── M015 WorkspaceDependencyAbsent — deferred to import resolution ────────
 
     #[test]
     fn m015_deferred_to_t7() {
         // M015 requires the workspace manifest to be available for cross-validation.
-        // T2 parses the project manifest in isolation.
+        // Manifest parsing handles the project manifest in isolation.
         let toml =
             include_str!("../tests/fixtures/manifest/M015_deferred_workspace_dep_absent.toml");
         let result = parse_project_manifest(toml, pp(), ProjectId(0));
         assert!(
             result.is_ok(),
-            "T2 must not emit M015; workspace-dep absence is T7's responsibility"
+            "manifest parsing must not emit M015; workspace-dep absence is deferred"
         );
     }
 
@@ -1063,14 +1063,14 @@ mod tests {
 
     #[test]
     fn m017_path_escaping_workspace_parses() {
-        // Full escape detection requires workspace-root context (T3/T7).
-        // T2 stores the path as-is; the emit-or-not decision is deferred.
+        // Full escape detection requires workspace-root context (filesystem expansion / import resolution).
+        // Manifest parsing stores the path as-is; the emit-or-not decision is deferred.
         let toml =
             include_str!("../tests/fixtures/manifest/M017_deferred_path_escapes_workspace.toml");
         let result = parse_project_manifest(toml, pp(), ProjectId(0));
         assert!(
             result.is_ok(),
-            "T2 does not emit M017 without workspace-root context"
+            "manifest parsing does not emit M017 without workspace-root context"
         );
     }
 

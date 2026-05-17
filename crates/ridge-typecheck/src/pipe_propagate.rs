@@ -33,7 +33,7 @@
 //! try-as-Option form; if the body contains Option `?` the unifier will produce
 //! a T001).
 //!
-//! # T022 `DiscardedResult` (OQ-T013, §4.10 final paragraph)
+//! # T022 `DiscardedResult` (§4.10 final paragraph)
 //!
 //! Type-based: fires at the end of each non-last statement in `infer_block` when
 //! the statement's type is not `Unit` and not `Type::Error` and the statement is

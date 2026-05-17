@@ -1,6 +1,6 @@
 -- std.proc — External process execution (Tier 3, imports std.text, std.list, std.result).
 --
--- §3.16 / OQ-S007 / D123: only `run` is shipped; `exec` was rejected.
+-- §3.16: only `run` is shipped; `exec` was rejected.
 -- All functions require the `proc` capability.
 -- `run` separates the command from its argument list to prevent injection.
 -- Users who need shell semantics: proc.run "sh" ["-c", cmd].
@@ -11,13 +11,13 @@
 --   { code: Text, message: Text }
 
 -- The output record of a completed process.
--- Pre-allocated in BuiltinTyCons (§3.16 / OQ-S007 / D123).
+-- Pre-allocated in BuiltinTyCons (§3.16).
 pub type ProcOutput = { stdout: Text, stderr: Text, exitCode: Int }
 
 -- Run an external command with the given argument list.
 -- Returns Ok(ProcOutput) on success, Err(Error) on spawn/timeout failure.
 -- §3.16: the unsafety of proc.exec (passing a raw Text command) is avoided
--- by keeping cmd and args separated — OQ-S007 signed off 2026-04-29.
+-- by keeping cmd and args separated (signed off 2026-04-29).
 -- Bridge: ridge_rt:proc_run/2 returns
 --   {ok, #{stdout => Stdout, stderr => Stderr, exitCode => Code}}
 --   or {error, {error_record, Code, Message}}.

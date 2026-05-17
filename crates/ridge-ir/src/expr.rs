@@ -249,7 +249,7 @@ pub enum IrExpr {
         span: Span,
     },
 
-    /// Early return (verbatim per OQ-T010 / spec §16.3 closing Q-021).
+    /// Early return (verbatim per spec §16.3).
     ///
     /// `return e` lowers to `Return { value: lower(e) }`. **No implicit
     /// `Ok`/`Err`/`Some`/`None` wrapping.**

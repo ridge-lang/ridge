@@ -9,9 +9,8 @@
 //! - the fresh-local counter for synthetic name generation (R6),
 //! - the accumulated [`LowerError`] vector.
 //!
-//! T2 provides the scaffold and helper methods.  T3+ will invoke
-//! `LowerCtx::fresh_id` and the scope-stack helpers as rule implementations
-//! are added.
+//! Lowering rules invoke `LowerCtx::fresh_id` and the scope-stack helpers
+//! as each rule module is implemented.
 
 use crate::error::LowerError;
 use ridge_ast::{Item, Span};
@@ -60,7 +59,7 @@ pub struct LowerCtx<'tw> {
     /// `true` when the lowerer is inside an actor handler or `init` body.
     ///
     /// Flips the `Assign` target classification to `StateField` vs. `Local`
-    /// (R8 / §4.14 / T10).
+    /// (R8 / §4.14).
     pub in_actor_body: bool,
     /// Names of the enclosing actor's state fields, when `in_actor_body == true`.
     ///
@@ -82,12 +81,12 @@ pub struct LowerCtx<'tw> {
     /// Non-empty only when the upstream `TypedWorkspace` was partial or
     /// contained unsolved type variables.  All variants have `Severity::Error`.
     pub errors: Vec<LowerError>,
-    /// Span-keyed `NodeId` map reconstructed from the module AST (Option A —
-    /// T3).  Used by [`crate::core`] to look up bindings for `Ident` and
-    /// `QualifiedName` nodes via `(span, kind) → NodeId`.
+    /// Span-keyed `NodeId` map reconstructed from the module AST.  Used by
+    /// [`crate::core`] to look up bindings for `Ident` and `QualifiedName`
+    /// nodes via `(span, kind) → NodeId`.
     ///
-    /// `None` for `LowerCtx`s constructed without an AST (e.g. unit tests that
-    /// pre-date T3 and pass no `ResolvedModule`).
+    /// `None` for `LowerCtx`s constructed without an AST (e.g. unit tests
+    /// that pass no `ResolvedModule`).
     pub node_id_map: Option<NodeIdMap>,
     /// Binding side-table from the upstream `ResolvedModule`, indexed by
     /// `NodeId.0`.
@@ -123,7 +122,7 @@ pub struct LowerCtx<'tw> {
     /// then resolved to a `TyConId` via [`LowerCtx::lookup_tycon_by_name`].
     ///
     /// `None` for `LowerCtx`s constructed without a `ResolvedModule` (e.g.
-    /// unit tests that pre-date T3). // OQ-PHASE45-007
+    /// unit tests that pass no `ResolvedModule`). // OQ-PHASE45-007
     pub symbol_table: Option<&'tw SymbolTable>,
 }
 
@@ -134,7 +133,7 @@ impl<'tw> LowerCtx<'tw> {
     /// `'tw`; all counters start at zero and all collections are empty.
     ///
     /// This constructor does NOT wire the `BindingMap` / `NodeIdMap` needed for
-    /// `Ident`/`Qualified` lowering.  Use `attach_bindings` (T3+) when
+    /// `Ident`/`Qualified` lowering.  Use `attach_bindings` when
     /// a `ResolvedModule` is available.
     #[must_use]
     pub fn new(module_id: ModuleId, node_types: &'tw [Option<Type>]) -> Self {
@@ -158,8 +157,7 @@ impl<'tw> LowerCtx<'tw> {
         }
     }
 
-    /// Attach the binding side-tables produced by the resolve pass (T3+,
-    /// Option A).
+    /// Attach the binding side-tables produced by the resolve pass.
     ///
     /// `node_id_map` is the `(Span, NodeKind) → NodeId` index reconstructed
     /// from the module AST; `binding_map` is the `BindingMap` from the
@@ -178,7 +176,7 @@ impl<'tw> LowerCtx<'tw> {
     /// `source_map` (§3.7 sparse-map contract).
     ///
     /// IDs are dense and start at 0 so that `IrNodeId.0` can be used directly
-    /// as a `Vec` index into `node_types` (D079).
+    /// as a `Vec` index into `node_types`.
     pub fn fresh_id(&mut self, origin: Option<NodeId>) -> IrNodeId {
         let id = IrNodeId(self.ir_node_id_counter);
         self.ir_node_id_counter += 1;
@@ -235,10 +233,9 @@ impl<'tw> LowerCtx<'tw> {
     /// init caps are stored in the `ActorSchema` inside the `TyConArena`, not in
     /// `inferred_caps`.  Lambda caps have no upstream entry at all.
     ///
-    /// Call sites pass `decl.span` (the whole declaration span); T5 dual-inserted
-    /// both real `NodeId` and proxy `NodeId(span.start)` keys, so the proxy key
-    /// remains the correct primary lookup during the sweep transition.
-    // PHASE45-T5: proxy key still valid; T5 dual-inserted real + proxy keys.
+    /// Call sites pass `decl.span` (the whole declaration span); both real
+    /// `NodeId` and proxy `NodeId(span.start)` keys are dual-inserted by the
+    /// resolve pass, so the proxy key is the correct primary lookup.
     #[must_use]
     pub fn lookup_inferred_caps(&self, decl_span: Span) -> CapabilitySet {
         let Some(caps_map) = self.inferred_caps else {
@@ -387,8 +384,8 @@ impl<'tw> LowerCtx<'tw> {
 
     /// Consume the context and return the accumulated `LoweredModule`.
     ///
-    /// T2 stub: returns an empty shell.  T3+ will populate `items` before
-    /// calling this method.
+    /// Returns an empty shell.  Callers should populate `items` before
+    /// calling this method or use `finish_with_items`.
     #[must_use]
     pub fn finish(self) -> LoweredModule {
         LoweredModule::empty(self.module_id, self.node_types.len())
@@ -396,18 +393,16 @@ impl<'tw> LowerCtx<'tw> {
 
     /// Consume the context and return a populated [`LoweredModule`].
     ///
-    /// Used by `lower_module` (T11+) once the item-walking driver has
-    /// accumulated the full `items` vector.  The `node_types` vector is
-    /// grown to at least `node_types.len()` entries (all `None`) — this
-    /// preserves index-parity with the upstream `TypedModule.node_types`
-    /// table while leaving the IR-side type slots empty until T17 wires
-    /// the resolved types in.
+    /// Used by `lower_module` once the item-walking driver has accumulated
+    /// the full `items` vector.  The `node_types` vector is grown to at
+    /// least `node_types.len()` entries (all `None`) — this preserves
+    /// index-parity with the upstream `TypedModule.node_types` table.
     #[must_use]
     pub fn finish_with_items(self, items: Vec<ridge_ir::IrItem>) -> LoweredModule {
         let node_type_capacity = self.node_types.len();
         let source_map = self.source_map;
         // Allocate an all-None type side-table sized to match the upstream
-        // TypedModule.node_types length (index-parity invariant from D079).
+        // TypedModule.node_types length (index-parity invariant).
         let ir_node_types: Vec<Option<ridge_types::Type>> = vec![None; node_type_capacity];
         LoweredModule::new(self.module_id, items, ir_node_types, source_map)
     }

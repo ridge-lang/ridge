@@ -38,9 +38,9 @@ pub struct BuiltinTyCons {
     pub timestamp: TyConId,
     /// `List a` — an ordered sequence.
     pub list: TyConId,
-    /// `Map k v` — an ordered key-value mapping (OQ-T011: ordered/deterministic).
+    /// `Map k v` — an ordered key-value mapping (ordered/deterministic).
     pub map: TyConId,
-    /// `Set a` — an ordered set (OQ-T011).
+    /// `Set a` — an ordered set.
     pub set: TyConId,
     /// `Option a` — an optional value.
     pub option: TyConId,

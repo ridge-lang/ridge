@@ -13,7 +13,7 @@ use crate::{Block, Capability, DocComment, Expr, Ident, Span, Type, Visibility};
 
 // ── FnBody ────────────────────────────────────────────────────────────────────
 
-/// The body of a function declaration (grammar §4.1 / Phase 7 T2).
+/// The body of a function declaration (grammar §4.1).
 ///
 /// Most functions have an ordinary expression body (`Body::Expr`).  Functions
 /// in the Ridge standard library that delegate directly to a BEAM built-in are

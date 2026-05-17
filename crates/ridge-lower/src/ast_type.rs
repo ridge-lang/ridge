@@ -97,7 +97,7 @@ pub(crate) fn lower_ast_type(ctx: &mut LowerCtx<'_>, ast_ty: &ridge_ast::Type) -
 
         // ── Type variables are unresolved at lowering time ───────────────────
         //
-        // PHASE45-T3 (OQ-PHASE45-002): look up the resolved type via
+        // Look up the resolved type via
         // `node_id_map.get(type_span, NodeKind::Type)`. Falls back to
         // `Type::Error` when no node_id_map is attached or the var has no entry.
         ridge_ast::Type::Var { span, .. } => ctx

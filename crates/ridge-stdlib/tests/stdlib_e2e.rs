@@ -56,7 +56,7 @@ fn stdlib_e2e_runs_all_tests() {
     // ── 2. Create a per-run tempdir holding only the two TOML manifests ──────
     // The `.rg` and `.test.rg` source files stay in their canonical on-disk
     // location; the driver reads them directly via the absolute `src_root`.
-    // Per OQ-C024 / D171 / D175: absolute-path indirection, no tempdir copy.
+    // Absolute-path indirection — source files stay in their on-disk location; no tempdir copy.
     let td = tempfile::TempDir::new().expect("create tempdir for stdlib-e2e workspace");
     let ws_root = td.path();
 

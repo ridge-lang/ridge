@@ -57,7 +57,7 @@ module 'ridge_module_0' ['main'/0]
     ( fun () ->
           30
       -| [] )
-  %% File: <source>, Offset: 3257
+  %% File: <source>, Offset: 3251
   %% Caps: {io time env}
   %% Warning: main/0 — canonical main should have arity 1 (§4.26)
 'main'/0 =

@@ -1,4 +1,4 @@
-//! Capability-keyword binding + project allow/deny enforcement (T10, plan §4.7).
+//! Capability-keyword binding + project allow/deny enforcement (plan §4.7).
 //!
 //! # Overview
 //!
@@ -32,7 +32,7 @@
 //! `Capability` is a plain `Copy` enum — it carries **no source span**.  The
 //! parallel `Vec<Capability>` stored on each declaration likewise has no
 //! per-element spans.  Rather than add a `Vec<Span>` to the AST (which would
-//! require modifying the parser, which is out of scope for T10), this pass uses
+//! require modifying the parser), this pass uses
 //! the enclosing declaration's span as the diagnostic span:
 //!
 //! - `FnDecl::name.span` for top-level functions.
@@ -46,8 +46,8 @@
 //!
 //! # Integration
 //!
-//! T10 ships this pass as a standalone function.  **It is not yet wired into
-//! `resolve_source`.** That integration happens in T14.
+//! This pass ships as a standalone function.  It is wired into
+//! `resolve_workspace` via the `check_capabilities` call per module.
 
 use ridge_ast::{ActorMember, Capability, FnType, Item, Module, Span, Type};
 

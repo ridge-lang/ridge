@@ -12,7 +12,7 @@ Install guide for Ridge 0.2.0-rc1.
 | Erlang/OTP | **26** | `erl -eval 'erlang:display(erlang:system_info(otp_release)), halt().'` |
 | git | **2.20** | `git --version` |
 
-These are the values `tools/install/install.ps1` enforces at lines 96, 137, and 173. Per D165.
+These are the values `tools/install/install.ps1` enforces at lines 96, 137, and 173.
 
 ---
 
@@ -27,7 +27,7 @@ cargo install --path crates/ridge-lsp
 
 ### Option B — Install from the mirror (second machine, no local clone)
 
-The canonical public org (`ridge-lang/ridge`) is squat-claimed but not yet public — it activates at 0.2.0 (T-R001). For dogfood, override to the current mirror:
+The canonical public org (`ridge-lang/ridge`) is not yet public. To install from the current mirror, override the defaults:
 
 ```powershell
 $env:RIDGE_REPO   = 'https://github.com/ridge-lang/ridge'
@@ -43,7 +43,7 @@ export RIDGE_BRANCH='main'
 curl -fsSL https://raw.githubusercontent.com/ridge-lang/ridge/main/tools/install/install.sh | bash
 ```
 
-**T12 (second machine) uses Option B**, or Option A if the repo is already cloned there.
+To validate on a second machine without a local clone, use Option B. Option A is available if the repo is already cloned there.
 
 ### Verify
 
@@ -140,7 +140,7 @@ Open the Problems panel (`Ctrl+Shift+M`). Confirm three diagnostics appear withi
 
 Also confirm syntax highlighting is active: keywords (`pub`, `fn`, `import`, `as`) should render in the keyword colour; string literals in string colour; `--` comments greyed out.
 
-### Known Limitation — D087 / D163 / D201
+### Known Limitation
 
 All three diagnostics will appear in the Problems panel attributed to **`<unknown>` file at line 1:1**. The error message text is correct; only the file attribution and line number are wrong.
 
@@ -148,7 +148,7 @@ Root cause: `crates/ridge-driver/src/check.rs` lines 106 and 112 hardcode `Works
 
 Fix: Strategy B (envelope `ModuleId` in the driver layer).
 
-**This is accepted for dogfood.** G3 explicitly accepts the `<unknown>:1:1` attribution. The diagnostic content is what matters for writing code; navigation will be fixed in 0.2.0.
+This is accepted behavior for 0.1.0. The diagnostic content is what matters for writing code; file attribution and navigation will be fixed in 0.2.0.
 
 ---
 

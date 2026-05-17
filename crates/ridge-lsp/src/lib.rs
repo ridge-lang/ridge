@@ -1,13 +1,13 @@
 //! Ridge Language Server Protocol implementation.
 //!
 //! This crate exposes a `tower-lsp`-based LSP server with stdio transport only
-//! (OQ-C001 — no `--tcp`, no named pipe, no Unix socket).
+//! (no `--tcp`, no named pipe, no Unix socket).
 //!
 //! # Architecture
 //!
 //! - [`server::RidgeLanguageServer`] — the core `tower_lsp::LanguageServer` impl.
 //! - [`diagnostics`] — `ridge_diagnostics::Diagnostic` → `lsp_types::Diagnostic` conversion.
-//! - [`span_recovery`] — D087 fallback walk for synthesised IR nodes.
+//! - [`span_recovery`] — fallback walk for synthesised IR nodes.
 //!
 //! # Edge cases documented
 //!
@@ -19,8 +19,8 @@
 //! # 0.1.0 ceiling
 //!
 //! Single-root only.  No incremental compilation.  Compile latency grows with
-//! workspace size; 0.2.0 introduces incremental.  See `README.md` for the
-//! OQ-C015 / OQ-C016 documented behaviour.
+//! workspace size; 0.2.0 introduces incremental.  See `README.md` for
+//! documented behaviour and known limitations.
 
 #![warn(missing_docs)]
 #![deny(clippy::unwrap_used, clippy::expect_used, clippy::panic)]

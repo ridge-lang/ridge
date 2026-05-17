@@ -2,8 +2,8 @@
 %%
 %% Invoked by `erl -s ridge_test_runner run <Mod> <Fn> -s init stop -noshell`.
 %% Dispatches `Mod:Fn()` (zero-arity — Ridge `pub fn test_*` with no params
-%% compiles to BEAM arity-0), maps the return value to pass / fail per
-%% OQ-C004 (signed off 2026-05-01):
+%% compiles to BEAM arity-0), maps the return value to pass / fail
+%% (signed off 2026-05-01):
 %%
 %%   {ok, _}                        -> halt(0)           (Result Unit Text, Ok branch)
 %%   {error, Msg} when is_binary(Msg) -> halt(1) + stderr  (Result Unit Text, Err branch)

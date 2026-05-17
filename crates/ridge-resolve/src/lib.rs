@@ -1,10 +1,10 @@
-//! Ridge name-resolution crate. Phase 3 (T1–T16) + Phase 3 drift remediation.
+//! Ridge name-resolution crate. Phase 3.
 //!
 //! Transforms in-memory [`ridge_ast::Module`]s produced by `ridge-parser`
 //! into a fully-resolved workspace in which every identifier, import, and
 //! architectural rule is bound (or carries a carried `R###` diagnostic).
 //!
-//! # Front-door entry points (DR-01)
+//! # Front-door entry points
 //!
 //! ```rust,ignore
 //! let disc = ridge_resolve::discover_workspace(root)?;
@@ -13,52 +13,49 @@
 //! for (mid, err) in &resolved.errors { /* render — mid identifies the source module */ }
 //! ```
 //!
-//! [`resolve_workspace`] orchestrates all T1–T13 passes in plan-spec order.
+//! [`resolve_workspace`] orchestrates all resolver passes in plan-spec order.
 //! [`resolve_module`] resolves a single module given an already-discovered
 //! workspace (for incremental / LSP use-cases).
 //!
-//! # Phase 3 status
+//! # Phase 3 modules
 //!
-//! T1 delivered: error taxonomy, opaque newtype IDs.
-//! T2 delivers: [`manifest`] and [`globs`] — workspace/project manifest parsing
+//! Error taxonomy and opaque newtype IDs.
+//! [`manifest`] and [`globs`] — workspace/project manifest parsing
 //! and compiled module-path glob patterns.
-//! T3 delivers: [`discovery`] — filesystem walk, module FQN derivation, and
-//! [`WorkspaceGraph`] construction (edges empty until T4).
-//! T4 delivers: [`module_graph`] — parse every module, collect tentative edges.
-//! T5 delivers: [`module_graph::detect_cycles`] — iterative Tarjan SCC.
-//! T6 delivers: [`symbol`] — per-module top-level symbol collection.
-//! T7 delivers: [`imports`] + [`stdlib_builtin`] — import resolution, visibility,
+//! [`discovery`] — filesystem walk, module FQN derivation, and
+//! [`WorkspaceGraph`] construction (edges populated by the module-graph pass).
+//! [`module_graph`] — parse every module, collect tentative edges.
+//! [`module_graph::detect_cycles`] — iterative Tarjan SCC.
+//! [`symbol`] — per-module top-level symbol collection.
+//! [`imports`] + [`stdlib_builtin`] — import resolution, visibility,
 //! manifest cross-validation (M013/M015), and authoritative cycle detection.
-//! T8 delivers: [`node_id`] + [`scope`] + [`walker`] — `NodeId` assignment,
+//! [`node_id`] + [`scope`] + [`walker`] — `NodeId` assignment,
 //! lexical scope stack, and intra-module use-site binding.
-//! T9 delivers: [`qualified`] — qualified-name resolution (`Mod.symbol`).
-//! T10 delivers: [`capabilities`] — capability-keyword allow/deny enforcement.
-//! T11 delivers: §4.8 shadowing policy lock-in — `R011 DuplicateLocal` for
+//! [`qualified`] — qualified-name resolution (`Mod.symbol`).
+//! [`capabilities`] — capability-keyword allow/deny enforcement.
+//! §4.8 shadowing policy — `R011 DuplicateLocal` for
 //! same-scope duplicates (incl. duplicates within a single pattern), and
 //! `R017 StateFieldShadowedByLocal` as a [`Severity::Warning`] for actor
 //! state vs handler-local shadowing.
-//! T12 delivers: [`forbid`] — workspace `[workspace.rules].forbid` rule
+//! [`forbid`] — workspace `[workspace.rules].forbid` rule
 //! enforcement (`R013 ForbidViolation`) over every resolved import edge.
-//! T13 delivers: [`suggest`] — Damerau-Levenshtein "did you mean?" engine
+//! [`suggest`] — Damerau-Levenshtein "did you mean?" engine
 //! wired into `R008`, `R010`, `R012`, and `R014` diagnostics so every
 //! name-resolution miss surfaces up to 3 distance-≤ 2 suggestions.
-//! T14 delivers: deterministic `insta` snapshot tests for the four canonical
+//! Deterministic `insta` snapshot tests for the four canonical
 //! example programs and the two synthetic `acme_*` workspace fixtures
-//! (`tests/snapshots.rs::t14_snapshot_*`, `tests/workspace.rs`).  Snapshots
+//! (`tests/snapshots.rs`, `tests/workspace.rs`).  Snapshots
 //! capture the post-pipeline `R-error` set, per-binding-kind counts, and
 //! import-alias summary so any drift in resolver behaviour is caught by
 //! `cargo insta test`.
-//! T15 delivers: per-`R###` negative-fixture harness in `tests/errors.rs`
+//! Per-`R###` negative-fixture harness in `tests/errors.rs`
 //! covering every reachable diagnostic from §5.1 of the plan, plus the
 //! `R021 ActorStateMissingDefaultOrInit` emitter wired into [`symbol`].
-//! T16 delivers: definition-of-done audit pass — clippy/fmt gates,
-//! deny-`unwrap`/`expect`/`panic` lint pragmas, full public-item rustdoc
-//! coverage, snapshot stability across OSes; no behaviour change.
-//! DR-01 delivers: [`resolve_workspace`] + [`resolve_module`] front-door API;
+//! [`resolve_workspace`] + [`resolve_module`] front-door API;
 //! [`ResolvedWorkspace`], [`ResolvedModule`], [`ModuleResolveResult`], and
 //! [`BindingMap`] / [`ScopeTree`] type aliases.
-//! DR-08 delivers: [`SymbolEntry::exported_externally`] flag, populated by
-//! [`apply_external_exports`] post-pass in [`resolve_workspace`] after T6;
+//! [`SymbolEntry::exported_externally`] flag, populated by
+//! [`apply_external_exports`] post-pass in [`resolve_workspace`];
 //! `M020 ExportNotFound` manifest error for non-`pub` export patterns.
 
 #![warn(missing_docs)]
@@ -115,7 +112,7 @@ pub use walker::resolve_module_uses;
 
 /// Bindings side-table for one module, indexed by `NodeId.0`.
 ///
-/// Produced by [`resolve_module_uses`] (T8/T9 walker pass).  `None` entries
+/// Produced by [`resolve_module_uses`] (walker pass).  `None` entries
 /// are AST positions that carry no resolvable name (e.g. literal tokens).
 /// Phase 4 (type checker) reads this table to locate every identifier's
 /// definition site.
@@ -129,11 +126,11 @@ pub type BindingMap = Vec<Option<imports::Binding>>;
 /// this to a proper newtype with parent-pointer traversal.
 pub type ScopeTree = Vec<scope::Scope>;
 
-// ── Workspace-level artefacts (T3) ───────────────────────────────────────────
+// ── Workspace-level artefacts ────────────────────────────────────────────────
 
 /// A fully-walked workspace: manifest, projects, modules, no import edges yet.
 ///
-/// `deps` is populated by T4 (module-graph edge construction).  T3 leaves it
+/// `deps` is populated by the module-graph pass.  Discovery leaves it
 /// as `vec![vec![]; modules.len()]`.
 #[derive(Debug)]
 pub struct WorkspaceGraph {
@@ -149,8 +146,8 @@ pub struct WorkspaceGraph {
     pub modules: Vec<ModuleMetadata>,
     /// Directed module-dependency edges: `deps[a]` = modules that `a` imports.
     ///
-    /// T3 initialises this as `vec![vec![]; modules.len()]`.
-    /// T4 fills the actual edges after import resolution.
+    /// Discovery initialises this as `vec![vec![]; modules.len()]`.
+    /// The module-graph pass fills the actual edges after import resolution.
     pub deps: Vec<Vec<ModuleId>>,
 }
 
@@ -167,8 +164,8 @@ pub struct ModuleMetadata {
     pub file_path: std::path::PathBuf,
     /// Byte span covering the entire module source.
     ///
-    /// T3 sets this to `Span::point(0)` (placeholder). T4 fills `0..eof` after
-    /// reading the source file.
+    /// Set to `Span::point(0)` (placeholder) by discovery. The module-graph pass
+    /// fills `0..eof` after reading the source file.
     pub span_within_file: ridge_ast::Span,
 }
 
@@ -225,7 +222,7 @@ pub struct WorkspaceResolveResult {
 
 // ── DR-01: Public API types ───────────────────────────────────────────────────
 
-/// The fully-resolved view of one module produced by the T6–T13 pipeline.
+/// The fully-resolved view of one module produced by the resolve pipeline.
 ///
 /// Phase 4 (type checker) reads `symbols`, `imports`, and `bindings` to locate
 /// definition sites; Phase 8 (LSP) reads them for hover / go-to-definition.
@@ -233,16 +230,16 @@ pub struct WorkspaceResolveResult {
 pub struct ResolvedModule {
     /// The module's stable index within the workspace.
     pub id: ModuleId,
-    /// Top-level symbol table built by the T6 collector.
+    /// Top-level symbol table built by the symbol collector.
     pub symbols: symbol::SymbolTable,
-    /// Resolved imports for this module (T7).
+    /// Resolved imports for this module.
     pub imports: Vec<imports::ImportResolution>,
-    /// Scope snapshot after the T8/T9 walker pass.
+    /// Scope snapshot after the walker pass.
     ///
     /// Currently empty — the walker's [`scope::ScopeStack`] is discarded after
     /// use.  TODO(Phase 4): retain for type-checker scope queries.
     pub scopes: ScopeTree,
-    /// Node-id–indexed binding side-table produced by the T8/T9 walker.
+    /// Node-id–indexed binding side-table produced by the walker.
     pub bindings: BindingMap,
 }
 
@@ -270,31 +267,31 @@ pub struct ResolvedWorkspace {
     pub graph: WorkspaceGraph,
     /// `M###` manifest-level diagnostics accumulated during resolution.
     pub manifest_errors: Vec<ManifestError>,
-    /// All `R###` diagnostics accumulated across every T6–T13 pass, paired with
+    /// All `R###` diagnostics accumulated across every resolver pass, paired with
     /// the originating [`ModuleId`] for source-file attribution in the driver.
     pub errors: Vec<(ModuleId, ResolveError)>,
     /// Parse errors per source module, captured from `ridge-parser` during
-    /// the T4 build-module-graph pass.  Surfaced here so downstream consumers
+    /// the module-graph pass.  Surfaced here so downstream consumers
     /// (driver, LSP) can render them — without this the parse-error path is
     /// silent and `ridge check` falsely reports success on syntactically
     /// invalid sources.
     pub parse_errors: Vec<(ModuleId, ridge_parser::ParseError)>,
     /// Lexer errors per source module, captured from `ridge-lexer` during
-    /// the T4 build-module-graph pass.  Same rationale as `parse_errors`.
+    /// the module-graph pass.  Same rationale as `parse_errors`.
     pub lex_errors: Vec<(ModuleId, ridge_lexer::LexError)>,
 }
 
 // ── DR-01: Public entry points ────────────────────────────────────────────────
 
-/// Resolve an entire workspace, running the full T6–T13 pass sequence.
+/// Resolve an entire workspace, running the full pass sequence.
 ///
 /// Pass sequence (plan §2.2):
-/// 1. T6 — `collect_symbols` (per module); then DR-08 `apply_external_exports`
-/// 2. T7 — `resolve_imports` (workspace-wide + M013/M015 cross-validation)
-/// 3. T5b — `detect_cycles_authoritative` (authoritative cycle detection)
-/// 4. T8/T9 — `assign_node_ids` + `resolve_module_uses` (per module)
-/// 5. T10 — `check_capabilities` (per module)
-/// 6. T12 — `check_forbid_rules` (workspace-wide)
+/// 1. `collect_symbols` (per module); then `apply_external_exports`
+/// 2. `resolve_imports` (workspace-wide + M013/M015 cross-validation)
+/// 3. `detect_cycles_authoritative` (authoritative cycle detection)
+/// 4. `assign_node_ids` + `resolve_module_uses` (per module)
+/// 5. `check_capabilities` (per module)
+/// 6. `check_forbid_rules` (workspace-wide)
 ///
 /// Returns a [`ResolvedWorkspace`] bundling all per-module results and
 /// accumulated diagnostics.  Never panics; all errors are returned in
@@ -304,7 +301,7 @@ pub fn resolve_workspace(ws: WorkspaceGraph) -> ResolvedWorkspace {
     let mut all_errors: Vec<(ModuleId, ResolveError)> = Vec::new();
     let mut all_manifest_errors: Vec<ManifestError> = Vec::new();
 
-    // T4: build module graph (parse source files, collect tentative edges).
+    // Build module graph (parse source files, collect tentative edges).
     let g = module_graph::build_module_graph(&ws);
 
     // Capture parse + lex errors per module.  These were silently dropped by
@@ -322,7 +319,7 @@ pub fn resolve_workspace(ws: WorkspaceGraph) -> ResolvedWorkspace {
         }
     }
 
-    // T6: collect top-level symbols for every module.
+    // Collect top-level symbols for every module.
     let mut symbol_tables: Vec<symbol::SymbolTable> = Vec::with_capacity(g.modules.len());
     for pm in &g.modules {
         let (mut table, errs) = symbol::collect_symbols(pm.id, &pm.ast);
@@ -341,18 +338,18 @@ pub fn resolve_workspace(ws: WorkspaceGraph) -> ResolvedWorkspace {
         symbol_tables.push(table);
     }
 
-    // T7: resolve imports (also validates M013/M015).
+    // Resolve imports (also validates M013/M015).
     let mut ws = ws;
     let import_result = imports::resolve_imports(&mut ws, &g, &symbol_tables);
     all_errors.extend(import_result.resolve_errors);
     all_manifest_errors.extend(import_result.manifest_errors);
 
-    // T5b: authoritative cycle detection over resolved import edges.
+    // Authoritative cycle detection over resolved import edges.
     // Returns Vec<(ModuleId, ResolveError)> — already in the right shape.
     let cycle_errors = imports::detect_cycles_authoritative(&ws, &import_result.imports);
     all_errors.extend(cycle_errors);
 
-    // T8/T9 + T10 + build ResolvedModule per module.
+    // NodeId assignment + walker + capability enforcement + build ResolvedModule per module.
     let mut resolved_modules: Vec<ResolvedModule> = Vec::with_capacity(g.modules.len());
     for pm in &g.modules {
         let (nid_map, nid_errors) = node_id::assign_node_ids(&pm.ast);
@@ -363,12 +360,12 @@ pub fn resolve_workspace(ws: WorkspaceGraph) -> ResolvedWorkspace {
             .get(pm.id.0 as usize)
             .map_or([].as_slice(), Vec::as_slice);
 
-        // T8/T9: walker + qualified-name resolution.
+        // Walker + qualified-name resolution.
         let (bindings, walker_errors) =
             walker::resolve_module_uses(pm.id, &pm.ast, &nid_map, &symbol_tables, module_imports);
         all_errors.extend(walker_errors.into_iter().map(|e| (pm.id, e)));
 
-        // T10: capability enforcement.
+        // Capability enforcement.
         let project_idx = ws.modules[pm.id.0 as usize].project.0 as usize;
         let project = &ws.projects[project_idx];
         let mut cap_errors = Vec::new();
@@ -393,7 +390,7 @@ pub fn resolve_workspace(ws: WorkspaceGraph) -> ResolvedWorkspace {
         });
     }
 
-    // T12: forbid-rule enforcement.
+    // Forbid-rule enforcement.
     let mut forbid_errors: Vec<(ModuleId, ResolveError)> = Vec::new();
     forbid::check_forbid_rules(&ws, &import_result.imports, &mut forbid_errors);
     all_errors.extend(forbid_errors);
@@ -410,9 +407,9 @@ pub fn resolve_workspace(ws: WorkspaceGraph) -> ResolvedWorkspace {
 
 /// Resolve a single module in the context of an already-resolved workspace.
 ///
-/// Runs T8/T9 (`assign_node_ids` + `resolve_module_uses`) and T10
-/// (`check_capabilities`) for the module identified by `id`.  Does **not**
-/// re-run T6/T7 (symbols and imports are pre-computed in `ws`).
+/// Runs `assign_node_ids` + `resolve_module_uses` and `check_capabilities`
+/// for the module identified by `id`.  Does **not**
+/// re-run symbol collection or import resolution (pre-computed in `ws`).
 ///
 /// Intended for incremental / LSP re-resolution of a single file after an
 /// edit.  For a full workspace resolution use [`resolve_workspace`].
@@ -420,7 +417,7 @@ pub fn resolve_workspace(ws: WorkspaceGraph) -> ResolvedWorkspace {
 pub fn resolve_module(ws: &WorkspaceGraph, id: ModuleId) -> ModuleResolveResult {
     let mut errors: Vec<ResolveError> = Vec::new();
 
-    // T4: parse the single module's source.
+    // Parse the single module's source.
     let g = module_graph::build_module_graph(ws);
 
     // Find the parsed module entry.
@@ -437,11 +434,11 @@ pub fn resolve_module(ws: &WorkspaceGraph, id: ModuleId) -> ModuleResolveResult 
         };
     };
 
-    // T6: collect symbols for this module only.
+    // Collect symbols for this module only.
     let (symbols, sym_errs) = symbol::collect_symbols(pm.id, &pm.ast);
     errors.extend(sym_errs);
 
-    // T8/T9: assign node ids + walker.
+    // Assign node ids + walker pass.
     let (nid_map, nid_errors) = node_id::assign_node_ids(&pm.ast);
     errors.extend(nid_errors);
 
@@ -461,7 +458,7 @@ pub fn resolve_module(ws: &WorkspaceGraph, id: ModuleId) -> ModuleResolveResult 
         module: ResolvedModule {
             id,
             symbols,
-            imports: Vec::new(), // No T7 context available in single-module mode
+            imports: Vec::new(), // No import-resolution context available in single-module mode
             scopes: Vec::new(),
             bindings,
         },

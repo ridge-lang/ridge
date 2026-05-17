@@ -60,7 +60,7 @@ pub struct LexOutput {
 /// # Normalisation
 ///
 /// `\r\n` is normalised to `\n`; bare `\r` is also normalised to `\n`
-/// (OQ-L008 default).  All spans in the output refer to offsets in the
+/// .  All spans in the output refer to offsets in the
 /// **normalised** string.
 ///
 /// # Errors
@@ -69,7 +69,7 @@ pub struct LexOutput {
 /// in [`LexOutput::errors`] rather than returned as a `Result`.  This lets
 /// downstream phases report multiple diagnostics in a single pass.
 pub fn tokenize(src: &str) -> LexOutput {
-    // OQ-L008: normalise CR/CRLF → LF.
+    // Normalise CR/CRLF → LF.
     let normalised: String = normalise_line_endings(src);
 
     let line_map = LineMap::new(&normalised);

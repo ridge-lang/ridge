@@ -145,7 +145,7 @@ enum LogosToken<'src> {
 
     // ── Identifiers (must be after keywords so keywords win on exact match) ───
     /// Lower identifier: `[a-z][a-zA-Z0-9_]*` or `_[a-zA-Z0-9][a-zA-Z0-9_]*`
-    /// (the latter covers `PRIV_IDENT`; `OQ-L001` default = fold into `LowerIdent`).
+    /// (the latter covers `PRIV_IDENT`; fold into `LowerIdent`).
     #[regex(r"[a-z][a-zA-Z0-9_]*|_[a-zA-Z0-9][a-zA-Z0-9_]*")]
     LowerIdent,
 
@@ -185,7 +185,7 @@ enum LogosToken<'src> {
     //
     // Plain text literal `"..."`.  Captures bytes between outer quotes;
     // escape *validation* happens in `validate_escapes` and escape *decoding*
-    // happens in `ridge-lower::core::decode_text_escapes` (B-D001 hotfix v3).
+    // happens in `ridge-lower::core::decode_text_escapes`.
     #[regex(r#""([^"\\\n]|\\.)*""#, priority = 3)]
     TextLit,
 
@@ -321,7 +321,7 @@ pub(crate) fn scan(src: &str) -> (Vec<(RawToken, Span)>, Vec<LexError>) {
 
             // ── Doc comment ───────────────────────────────────────────────────
             Ok(LogosToken::DocCommentOpen) => {
-                // Verify the `---` is alone on its line (OQ-L006).
+                // Verify the `---` is alone on its line.
                 let open_start = range.start;
                 let after_dashes = range.end; // right after `---`
 
@@ -373,16 +373,16 @@ pub(crate) fn scan(src: &str) -> (Vec<(RawToken, Span)>, Vec<LexError>) {
                 // The logos regex matched `"..."` including the delimiters.
                 // Content is the bytes between the outer quotes.
                 //
-                // B-D012 hotfix v3 mitigation: the Logos DFA mis-captures
-                // content for strings ending in `\""` — it returns the
-                // captured slice with the closing `"` being the inner one
-                // (treating the actual close as start of a new token).  We
-                // detect this by checking whether the captured content ends
-                // in an unescaped `\` (an odd run of trailing backslashes).
-                // When true, the true close lives at `range.end` in `src` and
-                // we extend the slice by one byte to consume it, then walk
-                // back over the regex's faux-close.  The next logos call will
-                // resume after our extended span via `lex.bump`.
+                // Logos DFA mitigation: the DFA mis-captures content for
+                // strings ending in `\""` — it returns the captured slice
+                // with the closing `"` being the inner one (treating the
+                // actual close as start of a new token).  We detect this by
+                // checking whether the captured content ends in an unescaped
+                // `\` (an odd run of trailing backslashes).  When true, the
+                // true close lives at `range.end` in `src` and we extend the
+                // slice by one byte to consume it, then walk back over the
+                // regex's faux-close.  The next logos call will resume after
+                // our extended span via `lex.bump`.
                 let content = &slice[1..slice.len() - 1];
                 let content_start = span.start + 1;
                 let esc_errors = validate_escapes(content, content_start);
@@ -763,7 +763,7 @@ fn scan_interp_body(
                 }
             }
             b'\n' => {
-                // Single-line strings only (D047); a newline closes the interp.
+                // Strings are single-line only; a newline closes the interp.
                 flush_text(&mut text_buf, text_start, i, &mut tokens);
                 errors.push(LexError::UnterminatedInterpolation {
                     open_span: Span::point(interp_open),

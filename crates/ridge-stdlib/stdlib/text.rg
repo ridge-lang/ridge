@@ -1,18 +1,18 @@
 -- std.text — Text (byte-string) utilities (Tier 2).
 --
--- D126: `byteSize` is the 0.1.0 surface name; `length` is reserved for
+-- `byteSize` is the 0.1.0 surface name; `length` is reserved for
 -- 0.2.0 codepoint-aware semantics.
--- D047: single-line strings only in 0.1.0.
--- D038: string interpolation set is closed.
+-- Single-line strings only in 0.1.0.
+-- String interpolation set is closed.
 -- All functions are pure (no capability required).
 
 -- Return the byte size of a text value.
--- D126: renamed from `length`; codepoint-aware `length` is deferred to 0.2.0.
+-- Renamed from `length`; codepoint-aware `length` is deferred to 0.2.0.
 @ffi("erlang", "byte_size", 1)
 pub fn byteSize (s: Text) -> Int
 
 -- Raw iolist-to-binary bridge (private — used by concat to avoid self-recursion).
--- D187: `a ++ b` in text.rg lowered to `std.text:concat(a,b)` by ridge-lower,
+-- `a ++ b` in text.rg lowered to `std.text:concat(a,b)` by ridge-lower,
 -- which is a self-call.  Use erlang:iolist_to_binary/1 as the canonical
 -- binary-concatenation primitive instead.
 @ffi("erlang", "iolist_to_binary", 1)
@@ -27,7 +27,7 @@ pub fn concat (a: Text) (b: Text) -> Text =
 @ffi("binary", "split", 3)
 fn _binarySplit3 (s: Text) (sep: Text) (opts: List Text) -> List Text
 
--- D-D005 (Phase 9 hotfix v3): split-all bridge via ridge_rt so we get
+-- Split-all bridge via ridge_rt so we get
 -- binary:split(_, _, [global]).  Passing the `global` Erlang atom from Ridge
 -- is fragile (no atom literals), so the runtime wrapper is the clean path.
 @ffi("ridge_rt", "text_split_all", 2)

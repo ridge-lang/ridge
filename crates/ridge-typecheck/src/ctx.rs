@@ -205,7 +205,7 @@ pub struct InferCtx {
     /// The declared/inferred return type of the innermost enclosing function.
     ///
     /// Set to `Some(ty)` when entering an fn-body; reset to the outer value
-    /// on exit.  Used by `Expr::Return` (OQ-T010 verbatim return — unify the
+    /// on exit.  Used by `Expr::Return` (verbatim return — unify the
     /// return value's type with this, not with `Result`/`Option`).
     pub current_fn_ret: Option<Type>,
 
@@ -322,7 +322,7 @@ impl InferCtx {
     ///   compression). If unbound, returns `Type::Var(v')` with the canonical
     ///   representative.
     /// - `Type::Alias { body, .. }` — **transparently peeks through** the
-    ///   alias (OQ-T015 matiz): returns `shallow_resolve(*body)`. Aliases are
+    ///   alias: returns `shallow_resolve(*body)`. Aliases are
     ///   never structural; they exist only for rendering.
     /// - All other variants — returned as-is.
     #[must_use]
@@ -337,7 +337,7 @@ impl InferCtx {
                     None => Type::Var(TyVid(root.0)),
                 }
             }
-            // OQ-T015: Alias is transparent — resolve the body.
+            // Alias is transparent — resolve the body.
             Type::Alias { body, .. } => self.shallow_resolve(body),
             other => other.clone(),
         }
@@ -511,7 +511,7 @@ mod tests {
         assert!(matches!(resolved, Type::Con(TyConId(0), _)));
     }
 
-    // ── shallow_resolve: Alias peels through to body (OQ-T015) ───────────────
+    // ── shallow_resolve: Alias peels through to body ─────────────────────────
 
     #[test]
     fn shallow_resolve_alias_transparent() {

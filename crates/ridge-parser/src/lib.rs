@@ -55,7 +55,7 @@ pub struct ParseResult {
 /// parser relies on the layout tokens (`Indent`/`Dedent`/`Newline`) and the
 /// invariant that `Eof` is always the last element.
 ///
-/// # Doc-comment attachment algorithm (D067, T11)
+/// # Doc-comment attachment algorithm
 ///
 /// 1. Consecutive `DocComment` tokens (separated only by `Newline`s) form a
 ///    *doc run*.
@@ -329,13 +329,10 @@ fn normalise_crlf(src: &str) -> String {
 fn extract_trivia(normalised: &str) -> Vec<Trivia> {
     let mut trivia = Vec::new();
     let mut byte_offset: u32 = 0;
-    // B-D010 #1 hotfix v3 Wave 3: track `---…---` doc-block depth across
-    // lines.  Pre-fix, the per-line scanner treated `--` inside a doc-comment
-    // body as a real line comment, so `ridge fmt` extracted it as trivia,
-    // stripped it from the source line, and the operator-spacing pass then
-    // mutated whatever code-shaped fragment remained — turning a doc body
-    // like `  ridge run -- <file>` into `  ridge run  -- <file>` (an extra
-    // space) and stripping `<file>` into a re-attached trailing comment.
+    // Track `---…---` doc-block depth across lines.  Without this, the
+    // per-line scanner would treat `--` inside a doc-comment body as a real
+    // line comment, causing `ridge fmt` to extract it as trivia and mutate
+    // code-shaped fragments inside the doc body.
     let mut in_doc_block = false;
 
     for (line_idx, line_text) in normalised.split('\n').enumerate() {
@@ -440,7 +437,7 @@ pub fn parse_source(src: &str) -> ParseResult {
 mod tests {
     use super::*;
 
-    // T2-required: empty input → empty Module, no errors.
+    // empty input → empty Module, no errors.
     #[test]
     fn empty_input_produces_empty_module() {
         let result = parse_source("");
@@ -458,7 +455,7 @@ mod tests {
         assert!(result.module.doc.is_empty());
     }
 
-    // T2-required: whitespace-only input → same as empty.
+    // whitespace-only input → same as empty.
     #[test]
     fn whitespace_only_input_produces_empty_module() {
         let result = parse_source("   ");
@@ -475,7 +472,7 @@ mod tests {
         assert!(result.module.items.is_empty());
     }
 
-    // T2-required: single NEWLINE input → consumed, empty Module, no errors.
+    // single NEWLINE input → consumed, empty Module, no errors.
     #[test]
     fn single_newline_input_produces_empty_module() {
         let result = parse_source("\n");
@@ -492,8 +489,7 @@ mod tests {
         assert!(result.module.items.is_empty());
     }
 
-    // T2-required: ParseError::code() returns stable strings for all four
-    // variants that must exist in T2.
+    // ParseError::code() returns stable strings for all error code variants.
     #[test]
     fn parse_error_codes_are_stable() {
         let span = Span::point(0);
@@ -533,9 +529,9 @@ mod tests {
         assert_eq!(e.span(), span);
     }
 
-    // ── T11: doc-comment attachment ───────────────────────────────────────────
+    // ── Doc-comment attachment ────────────────────────────────────────────────
 
-    // T11-1: empty input → empty Module with no doc comments.
+    // empty input → empty Module with no doc comments.
     #[test]
     fn parse_module_empty() {
         let result = parse_source("");
@@ -549,8 +545,8 @@ mod tests {
         assert_eq!(result.module.span, Span::new(0, 0));
     }
 
-    // T11-2: file contains only a doc comment and no items.
-    // Per D067: doc-only files store the comments in Module::doc.
+    // file contains only a doc comment and no items.
+    // Doc-only files store the comments in Module::doc.
     #[test]
     fn parse_module_zero_items_only_doc() {
         let src = "---\nfile-level doc\n---\n";
@@ -570,7 +566,7 @@ mod tests {
         );
     }
 
-    // T11-3: single doc comment immediately before an fn → attaches to Item::doc.
+    // single doc comment immediately before an fn → attaches to Item::doc.
     #[test]
     fn parse_module_one_item_with_doc() {
         let src = "---\ngreet people\n---\nfn greet x = x\n";
@@ -599,7 +595,7 @@ mod tests {
         }
     }
 
-    // T11-4: two items each with their own doc comment — both attach correctly.
+    // two items each with their own doc comment — both attach correctly.
     #[test]
     fn parse_module_two_items_with_docs() {
         let src = "---\ndoc for foo\n---\nfn foo x = x\n---\ndoc for bar\n---\nfn bar y = y\n";
@@ -637,7 +633,7 @@ mod tests {
         }
     }
 
-    // T11-5: trailing doc comment after the last item → P019 OrphanDocComment.
+    // trailing doc comment after the last item → P019 OrphanDocComment.
     #[test]
     fn parse_module_orphan_doc_at_eof() {
         let src = "fn foo x = x\n---\norphan comment\n---\n";
@@ -652,7 +648,7 @@ mod tests {
         );
     }
 
-    // T11-6: two items without any doc comments (regression — prior tests must still pass).
+    // two items without any doc comments (regression — prior tests must still pass).
     #[test]
     fn parse_module_two_items_plain() {
         let src = "fn foo x = x\nfn bar y = y\n";
@@ -676,7 +672,7 @@ mod tests {
         }
     }
 
-    // T11-7: multi-line doc run before an item → flattened into one DocComment.
+    // multi-line doc run before an item → flattened into one DocComment.
     #[test]
     fn parse_module_multiline_doc_run_attaches_as_one() {
         // Two consecutive doc blocks before a single fn.
@@ -708,7 +704,7 @@ mod tests {
         }
     }
 
-    // T11-8: parse_source returns correct ParseResult fields for empty vs non-empty.
+    // parse_source returns correct ParseResult fields for empty vs non-empty.
     #[test]
     fn parse_source_wrapper_empty_vs_non_empty() {
         let empty = parse_source("");
@@ -730,7 +726,7 @@ mod tests {
         assert_eq!(non_empty.module.items.len(), 1);
     }
 
-    // T11-9: P019 code and display are stable.
+    // P019 code and display are stable.
     #[test]
     fn p019_code_and_display() {
         let span = Span::point(10);

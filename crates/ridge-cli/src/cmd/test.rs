@@ -396,7 +396,7 @@ fn discover_tests(typed: &TypedWorkspace, graph: &WorkspaceGraph) -> Vec<Discove
 
 /// How a test function's declared return type maps to the runner contract.
 enum ReturnTypeKind {
-    /// `Result Unit Text` — canonical contract (OQ-C004).
+    /// `Result Unit Text` — canonical contract.
     ResultUnitText,
     /// `Bool` — transitional; accepted with C303 warning.
     Bool,

@@ -3,7 +3,7 @@
 // identifiers.  Mirrors `crates/ridge-parser/tests/errors.rs`.
 #![allow(clippy::doc_markdown)]
 
-//! T15 DoD acceptance — local-loop guard.
+//! DoD acceptance — local-loop guard.
 //!
 //! These tests assert the M5 / G2 / G3 / G6 deliverables are in place.
 //! They run as part of `cargo test --workspace` so a developer can validate
@@ -212,7 +212,7 @@ fn dod_fmt_idempotent() {
 // ── Test 4: docs/hot-reload-design.md exists with the four documented OQs ────
 
 /// `docs/hot-reload-design.md` exists and enumerates the four open-questions
-/// of OQ-C017 (T15 placeholder per §3.16 of the plan).
+/// of the hot-reload design.
 #[test]
 fn dod_hot_reload_doc_exists() {
     let doc_path = repo_root().join("docs").join("hot-reload-design.md");
@@ -225,8 +225,8 @@ fn dod_hot_reload_doc_exists() {
     let body = fs::read_to_string(&doc_path)
         .unwrap_or_else(|e| panic!("could not read {}: {e}", doc_path.display()));
 
-    // The four OQ-C017 placeholders.  Match on stable header words rather
-    // than full sentences so minor copy edits don't flake the test.
+    // Match on stable header words rather than full sentences so minor copy
+    // edits don't flake the test.
     let required_markers = &[
         "State migration",
         "Capability re-checking",

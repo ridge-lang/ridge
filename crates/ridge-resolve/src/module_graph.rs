@@ -1,11 +1,11 @@
 //! Module graph construction: parse every module, collect tentative import edges,
 //! and detect import cycles via iterative Tarjan SCC.
 //!
-//! This module implements T4 and T5 of Phase 3. T4 reads each source file,
-//! calls the parser, and records `TentativeEdge` entries for every `import`
-//! declaration. T5 adds `detect_cycles` (iterative Tarjan) that emits
-//! `R003 CyclicImport` and `R004 SelfImport`. Import-target `ModuleId`
-//! resolution to authoritative bindings happens later in T7.
+//! `build_module_graph` reads each source file, calls the parser, and records
+//! `TentativeEdge` entries for every `import` declaration. `detect_cycles`
+//! (iterative Tarjan) emits `R003 CyclicImport` and `R004 SelfImport`.
+//! Import-target `ModuleId` resolution to authoritative bindings happens during
+//! import resolution.
 
 use std::sync::Arc;
 
@@ -46,7 +46,7 @@ pub struct ParsedModule {
 
 /// A tentative import edge.
 ///
-/// Target `ModuleId` resolution happens in T7.
+/// Target `ModuleId` resolution happens during import resolution.
 #[derive(Debug, Clone)]
 pub struct TentativeEdge {
     /// The module that contains this import declaration.
@@ -63,7 +63,7 @@ pub struct TentativeEdge {
 
 /// The populated module graph.
 ///
-/// Edges are tentative — T7 resolves them to concrete `ModuleId` targets.
+/// Edges are tentative — import resolution resolves them to concrete `ModuleId` targets.
 #[derive(Debug)]
 pub struct ModuleGraph {
     /// One entry per module in `WorkspaceGraph.modules`, same index basis
@@ -168,7 +168,7 @@ fn collect_import_edges(module_id: ModuleId, module: &Module) -> Vec<TentativeEd
     edges
 }
 
-// ── T5: Cycle detection ───────────────────────────────────────────────────────
+// ── Cycle detection ───────────────────────────────────────────────────────────
 
 /// Build a workspace-only adjacency list from tentative edges.
 ///
@@ -622,10 +622,10 @@ mod tests {
     }
 
     // ═══════════════════════════════════════════════════════════════════════════
-    // T5 — Tarjan SCC algorithm tests (algorithm-level, synthetic adjacency)
+    // Tarjan SCC algorithm tests (algorithm-level, synthetic adjacency)
     // ═══════════════════════════════════════════════════════════════════════════
 
-    // ── Test T5-A1: empty graph → empty SCC list ──────────────────────────────
+    // ── Tarjan-A1: empty graph → empty SCC list ───────────────────────────────
 
     #[test]
     fn tarjan_empty_graph_yields_no_sccs() {
@@ -633,7 +633,7 @@ mod tests {
         assert!(sccs.is_empty(), "expected no SCCs for empty graph");
     }
 
-    // ── Test T5-A2: single node, no edges → 1 SCC of size 1 ──────────────────
+    // ── Tarjan-A2: single node, no edges → 1 SCC of size 1 ──────────────────
 
     #[test]
     fn tarjan_single_node_no_edges_one_scc() {
@@ -643,7 +643,7 @@ mod tests {
         assert_eq!(sccs[0], vec![0]);
     }
 
-    // ── Test T5-A3: two nodes, no edges → 2 SCCs of size 1 each ─────────────
+    // ── Tarjan-A3: two nodes, no edges → 2 SCCs of size 1 each ──────────────
 
     #[test]
     fn tarjan_two_nodes_no_edges_two_sccs() {
@@ -656,7 +656,7 @@ mod tests {
         }
     }
 
-    // ── Test T5-A4: linear chain 0→1→2→3 → 4 SCCs of size 1 ─────────────────
+    // ── Tarjan-A4: linear chain 0→1→2→3 → 4 SCCs of size 1 ──────────────────
 
     #[test]
     fn tarjan_linear_chain_four_singleton_sccs() {
@@ -673,7 +673,7 @@ mod tests {
         }
     }
 
-    // ── Test T5-A5: self-loop on node 0 → SCC of size 1 (self-loop ≠ 2-node SCC)
+    // ── Tarjan-A5: self-loop on node 0 → SCC of size 1 (self-loop ≠ 2-node SCC)
 
     #[test]
     fn tarjan_self_loop_gives_one_singleton_scc() {
@@ -685,7 +685,7 @@ mod tests {
         assert_eq!(sccs[0][0], 0);
     }
 
-    // ── Test T5-A6: two-cycle 0→1→0 → 1 SCC of size 2 ───────────────────────
+    // ── Tarjan-A6: two-cycle 0→1→0 → 1 SCC of size 2 ────────────────────────
 
     #[test]
     fn tarjan_two_cycle_gives_one_scc_of_size_two() {
@@ -699,7 +699,7 @@ mod tests {
         assert_eq!(nodes, vec![0, 1]);
     }
 
-    // ── Test T5-A7: three-cycle 0→1→2→0 → 1 SCC of size 3 ───────────────────
+    // ── Tarjan-A7: three-cycle 0→1→2→0 → 1 SCC of size 3 ────────────────────
 
     #[test]
     fn tarjan_three_cycle_gives_one_scc_of_size_three() {
@@ -713,7 +713,7 @@ mod tests {
         assert_eq!(nodes, vec![0, 1, 2]);
     }
 
-    // ── Test T5-A8: five-cycle 0→1→2→3→4→0 → 1 SCC of size 5 (DoD-required) ─
+    // ── Tarjan-A8: five-cycle 0→1→2→3→4→0 → 1 SCC of size 5 ────────────────
 
     #[test]
     fn tarjan_five_cycle_gives_one_scc_of_size_five() {
@@ -727,7 +727,7 @@ mod tests {
         assert_eq!(nodes, vec![0, 1, 2, 3, 4]);
     }
 
-    // ── Test T5-A9: diamond 0→1, 0→2, 1→3, 2→3 → 4 SCCs of size 1 ──────────
+    // ── Tarjan-A9: diamond 0→1, 0→2, 1→3, 2→3 → 4 SCCs of size 1 ───────────
 
     #[test]
     fn tarjan_diamond_no_cycle_four_singleton_sccs() {
@@ -741,7 +741,7 @@ mod tests {
         }
     }
 
-    // ── Test T5-A10: two disjoint cycles 0→1→0, 2→3→2 → 2 SCCs of size 2 ────
+    // ── Tarjan-A10: two disjoint cycles 0→1→0, 2→3→2 → 2 SCCs of size 2 ─────
 
     #[test]
     fn tarjan_two_disjoint_cycles_two_sccs_of_size_two() {
@@ -754,7 +754,7 @@ mod tests {
         }
     }
 
-    // ── Test T5-A11: SCC stability — same adjacency → same output ─────────────
+    // ── Tarjan-A11: SCC stability — same adjacency → same output ─────────────
 
     #[test]
     fn tarjan_deterministic_across_reruns() {
@@ -769,7 +769,7 @@ mod tests {
     }
 
     // ═══════════════════════════════════════════════════════════════════════════
-    // T5 — detect_cycles integration tests (synthetic WorkspaceGraph + ModuleGraph)
+    // detect_cycles integration tests (synthetic WorkspaceGraph + ModuleGraph)
     // ═══════════════════════════════════════════════════════════════════════════
 
     // Helper: build a synthetic WorkspaceGraph with `n` modules named
@@ -822,7 +822,7 @@ mod tests {
         });
     }
 
-    // ── Test T5-I12: no imports → no errors ──────────────────────────────────
+    // ── detect_cycles: no imports → no errors ────────────────────────────────
 
     #[test]
     fn detect_cycles_no_imports_no_errors() {
@@ -834,7 +834,7 @@ mod tests {
         );
     }
 
-    // ── Test T5-I13: self-import → exactly one R004, no R003 ─────────────────
+    // ── detect_cycles: self-import → exactly one R004, no R003 ──────────────
 
     #[test]
     fn detect_cycles_self_import_emits_r004_only() {
@@ -866,7 +866,7 @@ mod tests {
         }
     }
 
-    // ── Test T5-I14: two-module cycle → one R003, cycle.len() == 2 ───────────
+    // ── detect_cycles: two-module cycle → one R003, cycle.len() == 2 ─────────
 
     #[test]
     fn detect_cycles_two_module_cycle_emits_r003() {
@@ -910,7 +910,7 @@ mod tests {
         );
     }
 
-    // ── Test T5-I15: five-module cycle → one R003, cycle.len() == 5 ──────────
+    // ── detect_cycles: five-module cycle → one R003, cycle.len() == 5 ────────
 
     #[test]
     fn detect_cycles_five_module_cycle_emits_r003_with_five() {
@@ -946,7 +946,7 @@ mod tests {
         );
     }
 
-    // ── Test T5-I16: stdlib import not in workspace → no cycle ───────────────
+    // ── detect_cycles: stdlib import not in workspace → no cycle ─────────────
 
     #[test]
     fn detect_cycles_stdlib_import_does_not_contribute_to_cycle() {
@@ -964,7 +964,7 @@ mod tests {
         );
     }
 
-    // ── Test T5-I17: mixed — 3-module cycle + unrelated self-import ───────────
+    // ── detect_cycles: mixed — 3-module cycle + unrelated self-import ─────────
 
     #[test]
     fn detect_cycles_mixed_r003_and_r004() {

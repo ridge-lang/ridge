@@ -14,16 +14,16 @@
 //! - `InterpPart::Text { raw }` → `IrLit::Text(raw)`, or
 //! - `InterpPart::Expr { expr }` → `lower_expr(expr)` optionally wrapped in
 //!   `Call(SymbolRef::Stdlib { module: "std.<x>", name: "toText" }, [inner])`
-//!   for the closed `ToText` set from D038.
+//!   for the closed `ToText` set.
 //!
 //! # `ToText` dispatch
 //!
 //! The inner expression's type is looked up from `ctx.node_types` by `NodeId`.
-//! Because `node_types` is populated by Phase 4 which is T17-deferred,
+//! Because `node_types` is populated by Phase 4 which is deferred,
 //! type information may be absent.  When absent, `L007 ToTextLowering` is
 //! emitted defensively and the raw `inner` is returned unwrapped.
 //!
-//! The closed `ToText` set (D038) maps `TyConId` to stdlib module:
+//! The closed `ToText` set maps `TyConId` to stdlib module:
 //!
 //! | `TyConId` | Built-in type | Stdlib module         |
 //! |---------|---------------|----------------------|
@@ -89,7 +89,7 @@ const TIMESTAMP_TYCON: TyConId = TyConId(5);
 /// Called from `crate::core` for any interpolation that is not
 /// the single-text-part fast path.  Each [`InterpPart::Text`] lowers to a
 /// plain `IrLit::Text`; each [`InterpPart::Expr`] lowers to `lower_expr` then
-/// optionally wrapped in a `toText` call per D038.
+/// optionally wrapped in a `toText` call for the closed `ToText` set.
 ///
 /// The fold is strictly left-to-right (spec §7.1): `((p0 ++ p1) ++ p2) ++ …`.
 ///
@@ -134,16 +134,16 @@ pub fn lower_interp_full(ctx: &mut LowerCtx<'_>, parts: &[InterpPart], span: Spa
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
 /// Lower a single [`InterpPart`] to an [`IrExpr`], applying `toText` wrapping
-/// for `InterpPart::Expr` holes per D038.
+/// for `InterpPart::Expr` holes (applying `toText` for the closed set of convertible types).
 fn lower_part(ctx: &mut LowerCtx<'_>, part: &InterpPart, _span: Span) -> IrExpr {
     match part {
         InterpPart::Text {
             raw,
             span: text_span,
         } => {
-            // B-D001 hotfix v3: decode validated escape sequences (\n, \t, \", \\,
-            // \r, \0, \u{HHHH}, \$) inside interpolated text segments.  Without this
-            // the runtime saw the raw source bytes with literal backslashes.
+            // Decode validated escape sequences (\n, \t, \", \\, \r, \0, \u{HHHH}, \$)
+            // inside interpolated text segments.  Without this the runtime saw the
+            // raw source bytes with literal backslashes.
             let id = ctx.fresh_id(None);
             IrExpr::Lit {
                 id,
@@ -187,7 +187,7 @@ fn lookup_expr_type(ctx: &LowerCtx<'_>, expr: &Expr) -> Option<Type> {
 /// built-in type, or return `inner` unchanged for `Text` / `Error` / unknown.
 ///
 /// Emits `L007 ToTextLowering` when the type is non-`Error` and not in the
-/// D038 closed set.
+/// closed `ToText` set.
 ///
 /// `ty` is cloned from `ctx.node_types` before this call (required to release
 /// the immutable borrow on `ctx` so this function can mutably borrow it for
@@ -219,9 +219,9 @@ fn wrap_to_text(ctx: &mut LowerCtx<'_>, inner: IrExpr, ty: Option<Type>, span: S
         // ── Type::Error — absorbing; pass through without wrapping ────────────
         Some(Type::Error) => inner,
 
-        // ── Type not available (T17 deferred) or not in closed set ────────────
-        // When None: node_types is empty (T17); emit L007 defensively and pass
-        // inner through.  Phase 4 D038 guarantees this cannot fire on valid input.
+        // ── Type not available or not in closed set ───────────────────────────
+        // When None: node_types is empty; emit L007 defensively and pass
+        // inner through.  The type-checker guarantees this cannot fire on valid input.
         None | Some(_) => {
             ctx.errors.push(LowerError::ToTextLowering { span });
             inner

@@ -1,5 +1,5 @@
 //! Hard-coded built-in stdlib manifest. Phase 7 will replace with a
-//! generated table from the real stdlib (see OQ-R006).
+//! generated table from the real stdlib (see R006).
 //!
 //! Export lists are derived from spec §9.1–9.2 (lines 1000–1037).
 //! The table is provisional — Phase 7 generates it from the actual stdlib
@@ -37,7 +37,7 @@ pub struct BuiltinStdlibModule {
 /// `crates/ridge-stdlib/src/codegen_manifest.rs` (tier-ordered); the
 /// numeric id is what code should key on, not the name's sort position.
 ///
-/// # T10 — Generated table
+/// # Generated table
 ///
 /// This slice is generated at build time by `crates/ridge-resolve/build.rs`,
 /// which walks `../ridge-stdlib/stdlib/**/*.rg` and extracts every `pub fn`

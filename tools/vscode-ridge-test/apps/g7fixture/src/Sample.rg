@@ -1,6 +1,6 @@
 -- tools/vscode-ridge-test/apps/g7fixture/src/Sample.rg
 --
--- G7 manual attestation fixture (T15 / OQ-C014 (D155) / §3.16).  Open this
+-- G7 manual attestation fixture.  Open this
 -- file in VS Code with the Ridge extension installed (see
 -- ../../../docs/T15_G7_MANUAL_ATTESTATION.md) and verify three diagnostics
 -- appear in the Problems panel within ~250 ms.

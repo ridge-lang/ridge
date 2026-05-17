@@ -4,21 +4,21 @@
 //
 // Stdlib signature table: maps `(StdlibModuleId, symbol-name) -> Scheme`.
 //
-// # Phase 4 contract (T3, OQ-T012)
+// # Phase 4 contract
 //
 // This file is hand-curated for Phase 4 (≈ 163 entries across 18 modules).
-// Phase 7 replaces it with a generated table derived from the actual stdlib
-// source (see OQ-T012 and R2 risk in §11 of the plan).
+// It will be replaced with a generated table derived from the actual stdlib
+// source.
 //
-// # Capability variables (D041, D057, OQ-T003)
+// # Capability variables (D041, D057)
 //
 // Only stdlib HOFs that accept a callback may carry `CapRow::Var(CapVid)`.
 // User-written functions never introduce `CapVids`; instantiation in T6
 // replaces them with fresh `CapVids` at each call site.
 //
-// # Phase-7 stubs
+// # Stubs
 //
-// Entries annotated `// TODO Phase 7 (OQ-T012): hand-curated stub` return a
+// Entries annotated `// TODO: hand-curated stub` return a
 // monomorphic `Scheme { vars: vec![], cap_vars: vec![], ty: Type::Error }`.
 // The property test checks that every BUILTINS export resolves to `Some(Scheme)`.
 
@@ -133,7 +133,7 @@ fn ty_fn_caps(params: Vec<Type>, ret: Type, caps: CapabilitySet) -> Type {
 }
 /// Capability-polymorphic function type: the callback argument uses `CapRow::Var(c)`.
 /// The outer function re-uses the same `CapVid` so the call site absorbs whatever
-/// capability the user-supplied callback requires (D041 / OQ-T003).
+/// capability the user-supplied callback requires (D041).
 #[inline]
 fn ty_fn_cap_var(params: Vec<Type>, ret: Type, c: CapVid) -> Type {
     Type::Fn {
@@ -169,10 +169,10 @@ const fn mono(ty: Type) -> Scheme {
     }
 }
 
-/// Phase-7 stub: returns `Type::Error` wrapped in a monomorphic scheme.
+/// Stub: returns `Type::Error` wrapped in a monomorphic scheme.
 ///
-/// Used for entries whose exact signature is deferred to Phase 7 auto-generation
-/// (OQ-T012). The property test checks every BUILTINS export resolves to
+/// Used for entries whose exact signature is pending auto-generation.
+/// The property test checks every BUILTINS export resolves to
 /// `Some(Scheme)`, so stubs return `Some` (not `None`).
 #[inline]
 #[expect(
@@ -180,7 +180,7 @@ const fn mono(ty: Type) -> Scheme {
     reason = "uniform Option<Scheme> signature for caller compatibility"
 )]
 const fn stub_phase7() -> Option<Scheme> {
-    // TODO Phase 7 (OQ-T012): hand-curated stub — replace with generated table.
+    // TODO: hand-curated stub — replace with generated table.
     Some(mono(Type::Error))
 }
 
@@ -203,7 +203,7 @@ const CAP_C: CapVid = CapVid(0);
 /// `b` provides stable `TyConId`s for the 12 built-in types (T3).
 ///
 /// Every export listed in [`ridge_resolve::stdlib_builtin::BUILTINS`] is covered: entries either carry a
-/// real `Scheme` or a `Type::Error` stub annotated `// TODO Phase 7 (OQ-T012)`.
+/// real `Scheme` or a `Type::Error` stub annotated `// TODO: hand-curated stub`.
 #[must_use]
 #[expect(clippy::too_many_lines, reason = "one match arm per stdlib symbol")]
 pub fn stdlib_signature(module: StdlibModuleId, name: &str, b: &BuiltinTyCons) -> Option<Scheme> {
@@ -286,7 +286,7 @@ pub fn stdlib_signature(module: StdlibModuleId, name: &str, b: &BuiltinTyCons) -
         // HOFs (map, filter, filterMap, fold, foldRight, sortBy, groupBy,
         // flatMap, zipWith, find, any, all, forEach) use CapRow::Var(CAP_C)
         // on the callback so capability inference absorbs the user's callback
-        // caps at the call site (D041 / OQ-T003).
+        // caps at the call site (D041).
         (STD_LIST, "empty") => {
             // forall a. List a
             Some(poly(vec![A], ty_list(b, Type::Var(A))))
@@ -886,11 +886,11 @@ pub fn stdlib_signature(module: StdlibModuleId, name: &str, b: &BuiltinTyCons) -
                 ),
             ))
         }
-        // Type / constructor names exposed from std.option (OQ-R013)
+        // Type / constructor names exposed from std.option
         (STD_OPTION, "Option") => {
             // The type itself — forall a. Type (Option a).
             // Exposed as a TyCon reference; return a monomorphic TyConId scheme.
-            // TODO Phase 7 (OQ-T012): hand-curated stub
+            // TODO: hand-curated stub — replace with generated table
             stub_phase7()
         }
         (STD_OPTION, "Some") => {
@@ -982,9 +982,9 @@ pub fn stdlib_signature(module: StdlibModuleId, name: &str, b: &BuiltinTyCons) -
                 ),
             ))
         }
-        // Type / constructor names exposed from std.result (OQ-R013)
+        // Type / constructor names exposed from std.result
         (STD_RESULT, "Result") => {
-            // TODO Phase 7 (OQ-T012): hand-curated stub
+            // TODO: hand-curated stub — replace with generated table
             stub_phase7()
         }
         (STD_RESULT, "Ok") => {
@@ -1255,16 +1255,16 @@ pub fn stdlib_signature(module: StdlibModuleId, name: &str, b: &BuiltinTyCons) -
         //
         // The 5 public functions and the JsonValue type + 7 constructors all
         // return stub_phase7() to satisfy the property test (every BUILTINS
-        // export must resolve to Some(Scheme)).  Phase 10 (manifest generator)
-        // will replace these stubs with generated signatures.
+        // export must resolve to Some(Scheme)).  These stubs will be replaced
+        // with generated signatures.
         //
         // ── std.cli (partial stubs) ───────────────────────────────────────────
         // ── std.net.http (partial stubs) ──────────────────────────────────────
         //
         // Request and Response are record TyCons that don't exist in Phase 4's
-        // arena; handler shapes are deferred to Phase 7.
+        // arena; handler shapes are deferred to a later pass.
         //
-        // TODO Phase 10 (OQ-T012): replace stubs with generated signatures.
+        // TODO: replace stubs with generated signatures.
         //
         // T12: `pub type Duration` (time.rg) and `pub type ProcOutput` (proc.rg) are
         // record TyCons declared in the stdlib source; they don't have stable TyConIds
@@ -1275,7 +1275,7 @@ pub fn stdlib_signature(module: StdlibModuleId, name: &str, b: &BuiltinTyCons) -
            "encode" | "decode" | "encodeInt" | "encodeBool" | "encodeText"
            | "JsonValue"
            | "JNull" | "JBool" | "JInt" | "JFloat" | "JText" | "JList" | "JObject"
-           // B-D002 Wave 3: JsonValue constructor shims — see std.json.
+           // JsonValue constructor shims — see std.json.
            // Cross-module variant resolution lands in 0.2.0; until then
            // these are the supported user-facing constructor surface.
            | "jNull" | "jBool" | "jInt" | "jFloat" | "jText" | "jList" | "jObject")
@@ -1591,7 +1591,7 @@ mod tests {
 
     /// `listen` is the only `net.http` symbol that has a real Phase 4 signature
     /// (so `examples/url_shortener.rg` can type-check); the other `net.http`
-    /// items remain Phase 7 stubs (`Request`, `Response`, `respond`, `get`, …).
+    /// items remain stubs (`Request`, `Response`, `respond`, `get`, …).
     #[test]
     fn std_net_http_listen_is_int_handler_to_unit() {
         let b = builtins();

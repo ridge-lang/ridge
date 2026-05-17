@@ -2,7 +2,7 @@
 --
 -- The Result a e type (Ok a | Err e) is declared in the language prelude;
 -- this module provides helper functions only (§4.3).
--- D060: discard provided.
+-- discard provided.
 
 -- Apply a function to the Ok value, propagating Err unchanged.
 pub fn map (f: fn a -> b) (r: Result a e) -> Result b e =
@@ -41,7 +41,7 @@ pub fn isErr (r: Result a e) -> Bool =
         Err _ -> true
 
 -- Discard the Result value, returning Unit.
--- D060: use this when you want to ignore a value without triggering a warning.
+-- Use this when you want to ignore a value without triggering a warning.
 pub fn discard (r: Result a e) -> Unit =
     match r
         Ok _  -> ()

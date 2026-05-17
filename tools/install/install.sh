@@ -247,7 +247,7 @@ fi
 
 # ── Step 7: Verify binary works ───────────────────────────────────────────────
 echo "Verifying installation ..."
-EXPECTED_VERSION="ridge 0.1.0"
+EXPECTED_VERSION="ridge 0.2.0-rc1"
 if ! ridge_out="$(ridge --version 2>&1)"; then
     echo "error: ridge --version failed after install." >&2
     echo "  Ensure ~/.cargo/bin is on your PATH:" >&2

@@ -1,0 +1,148 @@
+name: Release
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: 'Build artifacts only; do NOT create a GitHub Release'
+        type: boolean
+        default: true
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  build:
+    name: Build (${{ matrix.target }})
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: x86_64-unknown-linux-gnu
+            runner: ubuntu-22.04
+            archive_ext: tar.gz
+          - target: x86_64-apple-darwin
+            runner: macos-13
+            archive_ext: tar.gz
+          - target: aarch64-apple-darwin
+            runner: macos-14
+            archive_ext: tar.gz
+          - target: x86_64-pc-windows-msvc
+            runner: windows-2022
+            archive_ext: zip
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: "1.88"
+          targets: ${{ matrix.target }}
+
+      - name: Install Erlang/OTP
+        uses: erlef/setup-beam@v1
+        with:
+          otp-version: "26"
+
+      - name: Cache cargo
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: release-${{ runner.os }}-${{ matrix.target }}-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            release-${{ runner.os }}-${{ matrix.target }}-
+
+      - name: Build release binaries
+        run: cargo build --release --locked -p ridge-cli -p ridge-lsp --target ${{ matrix.target }}
+
+      - name: Ad-hoc sign (macOS)
+        if: runner.os == 'macOS'
+        run: |
+          codesign --sign - --force --options runtime target/${{ matrix.target }}/release/ridge
+          codesign --sign - --force --options runtime target/${{ matrix.target }}/release/ridge-lsp
+
+      - name: Package artifact (Unix)
+        if: runner.os != 'Windows'
+        shell: bash
+        env:
+          ARTIFACT_NAME: ridge-${{ matrix.target }}
+        run: |
+          mkdir -p dist
+          cp target/${{ matrix.target }}/release/ridge dist/
+          cp target/${{ matrix.target }}/release/ridge-lsp dist/
+          tar -czf "${ARTIFACT_NAME}.tar.gz" -C dist ridge ridge-lsp
+          shasum -a 256 "${ARTIFACT_NAME}.tar.gz" > "${ARTIFACT_NAME}.tar.gz.sha256"
+
+      - name: Package artifact (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        env:
+          ARTIFACT_NAME: ridge-${{ matrix.target }}
+        run: |
+          New-Item -ItemType Directory -Force -Path dist | Out-Null
+          Copy-Item "target/${{ matrix.target }}/release/ridge.exe" dist/
+          Copy-Item "target/${{ matrix.target }}/release/ridge-lsp.exe" dist/
+          Compress-Archive -Path dist/ridge.exe, dist/ridge-lsp.exe -DestinationPath "$env:ARTIFACT_NAME.zip"
+          $hash = (Get-FileHash "$env:ARTIFACT_NAME.zip" -Algorithm SHA256).Hash.ToLower()
+          "$hash  $env:ARTIFACT_NAME.zip" | Out-File -Encoding ascii "$env:ARTIFACT_NAME.zip.sha256"
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ridge-${{ matrix.target }}
+          path: |
+            ridge-${{ matrix.target }}.${{ matrix.archive_ext }}
+            ridge-${{ matrix.target }}.${{ matrix.archive_ext }}.sha256
+          if-no-files-found: error
+
+  release:
+    name: Create GitHub Release
+    needs: build
+    runs-on: ubuntu-22.04
+    if: github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && !inputs.dry_run)
+    steps:
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts/
+          merge-multiple: true
+
+      - name: List artifacts
+        run: ls -la artifacts/
+
+      - name: Detect prerelease
+        id: pre
+        shell: bash
+        run: |
+          TAG="${GITHUB_REF_NAME}"
+          if [[ "$TAG" == *"-rc"* ]] || [[ "$TAG" == *"-beta"* ]] || [[ "$TAG" == *"-alpha"* ]]; then
+            echo "prerelease=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "prerelease=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Create draft release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.ref_name }}
+          name: Ridge ${{ github.ref_name }}
+          draft: true
+          prerelease: ${{ steps.pre.outputs.prerelease }}
+          generate_release_notes: true
+          files: |
+            artifacts/*.tar.gz
+            artifacts/*.zip
+            artifacts/*.sha256
+          fail_on_unmatched_files: true

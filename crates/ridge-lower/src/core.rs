@@ -1337,7 +1337,9 @@ fn lower_qualified(ctx: &mut LowerCtx<'_>, qname: &QualifiedName) -> IrExpr {
         }
 
         Some(Binding::Constructor {
-            owner_type, variant, ..
+            owner_type,
+            variant,
+            ..
         }) => {
             let id = ctx.fresh_id(None);
             ctx.errors.push(LowerError::InternalLoweringError {

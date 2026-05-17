@@ -1,7 +1,7 @@
 //! Import resolution (T7) — resolves every `ImportDecl` to a concrete target,
 //! applies cross-project visibility, and computes per-import effective bindings.
 //!
-//! # OQ-R001 (resolved)
+//! ## Bare import semantics
 //!
 //! Bare `import foo.bar` (no `as Alias`, no item list) binds the **last path
 //! segment** (preserving its original case) as a [`Binding::ModuleAlias`].
@@ -10,7 +10,7 @@
 //!
 //! Example: `import std.text` → binds `"text"` as a `ModuleAlias`.
 //!
-//! # OQ-R011 (resolved)
+//! ## Unresolved import cascade suppression
 //!
 //! When an import path fails to resolve (R006 `Unresolved` target), no
 //! cascade `R008`/`R009` errors are emitted for items requested via that
@@ -33,8 +33,8 @@ use crate::{
 /// The resolution of a single `ImportDecl`.
 #[derive(Debug, Clone)]
 pub struct ImportResolution {
-    /// Stub `NodeId(0)` for T7; T8 fills the authoritative value once the
-    /// `NodeIdMap` assigns stable ids to all AST nodes.
+    /// Stub `NodeId(0)` for this pass; T8 fills the authoritative value once
+    /// the `NodeIdMap` assigns stable ids to all AST nodes.
     pub decl_node: NodeId,
     /// What the import path resolved to.
     pub target: ImportTarget,
@@ -53,8 +53,8 @@ pub struct ImportResolution {
 /// # Stability
 ///
 /// Marked `#[non_exhaustive]` — new target kinds may be added in future
-/// versions (e.g. Phase 8 LSP virtual modules).  Match arms outside this
-/// crate must include a wildcard (`_`) arm.
+/// versions (e.g. LSP virtual modules).  Match arms outside this crate
+/// must include a wildcard (`_`) arm.
 #[non_exhaustive]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ImportTarget {
@@ -63,7 +63,7 @@ pub enum ImportTarget {
     /// Resolved to a built-in stdlib module.
     BuiltinStdlib(StdlibModuleId),
     /// Resolved to a project-external dependency (placeholder — not used in
-    /// 0.1.0; reserved for the 0.2.0 package-manager integration).
+    /// 0.1.0; reserved for a future package-manager integration).
     External {
         /// The external project id (placeholder).
         project: ProjectId,
@@ -74,7 +74,7 @@ pub enum ImportTarget {
     ///
     /// Downstream passes must treat this as a suppression sentinel: no
     /// cascade `R008`/`R009` errors should be emitted for items referenced
-    /// via an `Unresolved` target (OQ-R011).
+    /// via an `Unresolved` target.
     Unresolved,
 }
 
@@ -106,8 +106,8 @@ pub struct EffectiveBinding {
 ///
 /// # Stability
 ///
-/// Marked `#[non_exhaustive]` — new binding kinds are anticipated in Phase 4
-/// (type-checker) and Phase 8 (LSP).  Match arms outside this crate must
+/// Marked `#[non_exhaustive]` — new binding kinds are anticipated in the
+/// type-checker and LSP passes.  Match arms outside this crate must
 /// include a wildcard (`_`) arm.
 #[non_exhaustive]
 #[derive(Debug, Clone)]
@@ -165,7 +165,7 @@ pub enum Binding {
         owner_type: SymbolId,
         /// Variant index.  Record auto-constructors are always 0; union
         /// variants are source-ordered starting at 0.  Use `is_record` to
-        /// discriminate — `variant == 0` alone is NOT sufficient (B-D013).
+        /// discriminate — `variant == 0` alone is NOT sufficient.
         variant: u32,
         /// True iff this constructor is the auto-constructor of a
         /// `type T = { ... }` record declaration, false for union variants.
@@ -320,7 +320,7 @@ pub fn resolve_imports(
         }
     }
 
-    // ── Implicit prelude injection (OQ-R013) ──────────────────────────────────
+    // ── Implicit prelude injection ────────────────────────────────────────────
     //
     // For each module, append synthetic prelude ImportResolutions for
     // std.option (Option/Some/None) and std.result (Result/Ok/Err).
@@ -468,7 +468,7 @@ fn compute_effective_bindings(
     // [ "(" ImportList ")" ]`, the alias and item-list clauses are orthogonal:
     // both, either, or neither may be present.  Generate bindings for whichever
     // clauses are present.  Only the bare `import path` form (neither alias nor
-    // items) falls back to the OQ-R001 last-segment ModuleAlias.
+    // items) falls back to the last-segment ModuleAlias.
 
     if let Some(alias_str) = alias {
         // `as Alias` — bind the module under the user-chosen alias name.
@@ -482,10 +482,10 @@ fn compute_effective_bindings(
     }
 
     if let Some(item_names) = items {
-        // `(item, …)` — bind each named export directly.  Per D072 items
-        // accept both `LOWER_IDENT` and `UPPER_IDENT` (fns + types).
+        // `(item, …)` — bind each named export directly.  Items accept
+        // both `LOWER_IDENT` and `UPPER_IDENT` (fns + types).
         //
-        // OQ-R011: if target is Unresolved, skip silently — no R008 cascade.
+        // If target is Unresolved, skip silently — no R008 cascade.
         if matches!(target, ImportTarget::Unresolved) {
             let skipped: Vec<ImportedItem> = item_names
                 .iter()
@@ -528,8 +528,8 @@ fn compute_effective_bindings(
     } else if alias.is_none() {
         // Bare form: `import path` (no alias, no items).
         //
-        // OQ-R001 RESOLVED: bind the last path segment (preserving case) as a
-        // ModuleAlias.  Example: `import std.text` → local name = "text".
+        // Bind the last path segment (preserving case) as a ModuleAlias.
+        // Example: `import std.text` → local name = "text".
         let last_seg = last_segment(path_dotted);
         bindings.push(EffectiveBinding {
             local_name: last_seg.to_owned(),
@@ -753,25 +753,25 @@ const fn shared_dep_name(dep: &SharedDependency) -> &str {
     }
 }
 
-// ── Implicit prelude (OQ-R013 + OQ-R015) ─────────────────────────────────────
+// ── Implicit prelude ──────────────────────────────────────────────────────────
 
 /// The implicit prelude — names always in scope of every Ridge module
 /// without an explicit `import` declaration.
 ///
-/// Per OQ-R013 (resolved): the prelude binds `Option`/`Some`/`None` from
-/// `std.option` and `Result`/`Ok`/`Err` from `std.result` as `StdlibSymbol`
-/// entries (constructor/type bindings).
+/// The prelude binds `Option`/`Some`/`None` from `std.option` and
+/// `Result`/`Ok`/`Err` from `std.result` as `StdlibSymbol` entries
+/// (constructor/type bindings).
 ///
-/// Per OQ-R015 (resolved 2026-04-24): the prelude also binds `ModuleAlias`
-/// entries for all 8 pure-data stdlib modules so that qualified names like
-/// `Int.parse`, `Text.padLeft`, `Float.fromInt`, `List.map`, `Map.empty`,
-/// `Set.fromList`, `Bool.not`, `Json.encode` are usable without an explicit
-/// `import std.X as X` declaration.  Capability-bearing modules (`std.io`,
-/// `std.fs`, `std.net.http`, etc.) are NOT included — every side-effecting
-/// import must remain visible at the import level.
+/// The prelude also binds `ModuleAlias` entries for all 8 pure-data stdlib
+/// modules so that qualified names like `Int.parse`, `Text.padLeft`,
+/// `Float.fromInt`, `List.map`, `Map.empty`, `Set.fromList`, `Bool.not`,
+/// `Json.encode` are usable without an explicit `import std.X as X`
+/// declaration.  Capability-bearing modules (`std.io`, `std.fs`,
+/// `std.net.http`, etc.) are NOT included — every side-effecting import must
+/// remain visible at the import level.
 ///
 /// User imports for the same `local_name` take priority: the prelude binding
-/// is suppressed (same mechanism as OQ-R013 suppression in `resolve_imports`).
+/// is suppressed.
 ///
 /// Returns synthetic `ImportResolution` entries. The walker treats them
 /// identically to user imports.
@@ -798,7 +798,7 @@ pub fn prelude_resolutions() -> Vec<ImportResolution> {
         },
     };
 
-    // OQ-R015: pure-data module aliases injected into every module's scope.
+    // Pure-data module aliases injected into every module's scope.
     // Each entry is (stdlib_path, local_alias).  Adding a future pure-data
     // module is a one-line change here.
     let pure_data_modules: &[(&str, &str)] = &[
@@ -811,10 +811,10 @@ pub fn prelude_resolutions() -> Vec<ImportResolution> {
         ("std.set", "Set"),
         ("std.json", "Json"),
         // std.option and std.result are also pure-data, but their prelude
-        // entries are handled above as StdlibSymbol constructor bindings
-        // (OQ-R013).  The ModuleAlias for Option/Result is omitted here to
-        // avoid a second conflicting prelude IR for the same target; the
-        // StdlibSymbol bindings are sufficient for unqualified constructor use.
+        // entries are handled above as StdlibSymbol constructor bindings.
+        // The ModuleAlias for Option/Result is omitted here to avoid a second
+        // conflicting prelude IR for the same target; the StdlibSymbol
+        // bindings are sufficient for unqualified constructor use.
     ];
 
     let alias_bindings: Vec<EffectiveBinding> = pure_data_modules
@@ -831,7 +831,7 @@ pub fn prelude_resolutions() -> Vec<ImportResolution> {
         })
         .collect();
 
-    // Synthetic IR for the module-alias prelude (OQ-R015).
+    // Synthetic IR for the module-alias prelude.
     // Uses a sentinel BuiltinStdlib(0) target (std.int) for the IR's own
     // target field — the meaningful data is in the effective_bindings, each of
     // which carries its own ModuleAlias target.
@@ -1049,8 +1049,8 @@ mod tests {
     // ── Tests 1–17 ────────────────────────────────────────────────────────────
 
     // Test 1: `import std.list as List` → BuiltinStdlib, alias = "List", 1 binding (ModuleAlias)
-    // After OQ-R013 + OQ-R015 the module gets 3 prelude IRs, so total len = 4.
-    // The 'List' name in OQ-R015 aliases IR is suppressed because the user owns it.
+    // The module gets 3 prelude IRs, so total len = 4.
+    // The 'List' name in the module-alias prelude IR is suppressed because the user owns it.
     #[test]
     fn t1_import_std_list_as_list() {
         let (_td, result) = resolve_single("import std.list as List\n");
@@ -1060,7 +1060,7 @@ mod tests {
             result.resolve_errors
         );
         let module_imports = result.imports.first().expect("module 0");
-        // 1 user import + 3 prelude IRs (OQ-R013 × 2 + OQ-R015 × 1).
+        // 1 user import + 3 prelude IRs (option + result constructors, module aliases).
         assert_eq!(module_imports.len(), 4);
         let res = &module_imports[0];
         assert!(
@@ -1125,7 +1125,7 @@ mod tests {
     }
 
     // Test 4: `import std.bogus` → R006, target = Unresolved
-    // After OQ-R013 + OQ-R015 the module gets 3 prelude IRs, so total len = 4.
+    // The module gets 3 prelude IRs, so total len = 4.
     #[test]
     fn t4_import_std_bogus_r006() {
         let (_td, result) = resolve_single("import std.bogus\n");
@@ -1140,7 +1140,7 @@ mod tests {
             result.resolve_errors
         );
         let module_imports = result.imports.first().expect("module 0");
-        // 1 unresolved user import + 3 prelude IRs (OQ-R013 × 2 + OQ-R015 × 1).
+        // 1 unresolved user import + 3 prelude IRs (option + result constructors, module aliases).
         assert_eq!(module_imports.len(), 4);
         assert_eq!(module_imports[0].target, ImportTarget::Unresolved);
     }
@@ -1711,19 +1711,19 @@ mod tests {
         }
     }
 
-    // ── Prelude tests (OQ-R013) ────────────────────────────────────────────────
+    // ── Prelude tests ─────────────────────────────────────────────────────────
 
     // Prelude test 1: prelude_resolutions() returns exactly 3 ImportResolutions.
-    // OQ-R013 contributes 2 (std.option + std.result constructors/types);
-    // OQ-R015 adds a third synthetic IR that carries the 8 pure-data ModuleAlias
-    // bindings (Int, Float, Bool, Text, List, Map, Set, Json).
+    // The option/result prelude contributes 2 (std.option + std.result constructors/types);
+    // the module-alias prelude adds a third synthetic IR that carries the 8
+    // pure-data ModuleAlias bindings (Int, Float, Bool, Text, List, Map, Set, Json).
     #[test]
     fn prelude_returns_three_resolutions() {
         let resolutions = super::prelude_resolutions();
         assert_eq!(
             resolutions.len(),
             3,
-            "expected exactly 3 prelude ImportResolutions (2 OQ-R013 + 1 OQ-R015)"
+            "expected exactly 3 prelude ImportResolutions (2 option/result + 1 module aliases)"
         );
     }
 
@@ -1783,12 +1783,12 @@ mod tests {
         assert!(names.contains(&"Err"), "missing Err");
     }
 
-    // Prelude test 4: OQ-R013 bindings (IRs 0 and 1) are Binding::StdlibSymbol;
-    // OQ-R015 bindings (IR 2) are Binding::ModuleAlias.
+    // Prelude test 4: option/result prelude bindings (IRs 0 and 1) are Binding::StdlibSymbol;
+    // module-alias prelude bindings (IR 2) are Binding::ModuleAlias.
     #[test]
     fn prelude_binding_kinds_by_resolution() {
         let resolutions = super::prelude_resolutions();
-        // IRs 0 and 1: OQ-R013 — all StdlibSymbol, name == local_name.
+        // IRs 0 and 1: option/result prelude — all StdlibSymbol, name == local_name.
         for ir in &resolutions[..2] {
             for eb in &ir.effective_bindings {
                 match &eb.binding {
@@ -1805,7 +1805,7 @@ mod tests {
                 }
             }
         }
-        // IR 2: OQ-R015 — all ModuleAlias pointing to BuiltinStdlib targets.
+        // IR 2: module-alias prelude — all ModuleAlias pointing to BuiltinStdlib targets.
         for eb in &resolutions[2].effective_bindings {
             match &eb.binding {
                 Binding::ModuleAlias {
@@ -1821,13 +1821,13 @@ mod tests {
     }
 
     // Prelude test 5: 1-module workspace with NO user imports → 3 prelude IRs,
-    // 14 total bindings (6 OQ-R013 + 8 OQ-R015 module aliases).
+    // 14 total bindings (6 from option/result prelude + 8 module aliases).
     #[test]
     fn prelude_injected_when_no_user_imports() {
         // An empty module has no imports → all 14 prelude bindings should appear.
         let (_td, result) = resolve_single("");
         let module_imports = result.imports.first().expect("module 0");
-        // Exactly 3 prelude IRs (OQ-R013 × 2 + OQ-R015 × 1).
+        // Exactly 3 prelude IRs (option + result constructors, module aliases).
         assert_eq!(
             module_imports.len(),
             3,
@@ -1840,7 +1840,7 @@ mod tests {
             .sum();
         assert_eq!(
             total_bindings, 14,
-            "expected 14 total prelude bindings (6 OQ-R013 + 8 OQ-R015); got {total_bindings}"
+            "expected 14 total prelude bindings (6 from option/result prelude + 8 module aliases); got {total_bindings}"
         );
     }
 
@@ -1928,9 +1928,9 @@ mod tests {
         assert!(names.contains(&"Err"), "Err must survive");
     }
 
-    // ── OQ-R015 prelude tests ─────────────────────────────────────────────────
+    // ── Module-alias prelude tests ────────────────────────────────────────────
 
-    // Prelude test 8 (OQ-R015): IR[2] has exactly 8 ModuleAlias bindings for
+    // Prelude test 8: IR[2] has exactly 8 ModuleAlias bindings for
     // Int, Float, Bool, Text, List, Map, Set, Json.
     #[test]
     fn prelude_r015_ir_has_eight_module_aliases() {
@@ -1939,7 +1939,7 @@ mod tests {
         assert_eq!(
             aliases_ir.effective_bindings.len(),
             8,
-            "expected 8 OQ-R015 ModuleAlias bindings; got {:?}",
+            "expected 8 module-alias prelude bindings; got {:?}",
             aliases_ir
                 .effective_bindings
                 .iter()
@@ -1956,7 +1956,7 @@ mod tests {
         }
     }
 
-    // Prelude test 9 (OQ-R015): each module alias points to the correct StdlibModuleId.
+    // Prelude test 9: each module alias points to the correct StdlibModuleId.
     #[test]
     fn prelude_r015_aliases_point_to_correct_module_ids() {
         use crate::stdlib_builtin::StdlibModuleId;
@@ -1996,7 +1996,7 @@ mod tests {
         }
     }
 
-    // Prelude test 10 (OQ-R015): capability-bearing modules are NOT in the prelude.
+    // Prelude test 10: capability-bearing modules are NOT in the prelude.
     // Io, Http must not appear as any prelude ModuleAlias binding.
     #[test]
     fn prelude_r015_no_capability_module_aliases() {
@@ -2027,7 +2027,7 @@ mod tests {
         }
     }
 
-    // Prelude test 11 (OQ-R015): `import std.list as MyList` does NOT suppress
+    // Prelude test 11: `import std.list as MyList` does NOT suppress
     // Int, Text, or any other alias (only the conflicting 'List' name would be
     // suppressed — but 'MyList' is a different name so nothing is suppressed).
     #[test]
@@ -2035,9 +2035,9 @@ mod tests {
         let (_td, result) = resolve_single("import std.list as MyList\n");
         assert!(result.resolve_errors.is_empty());
         let module_imports = result.imports.first().expect("module 0");
-        // Find the OQ-R015 aliases IR.  Prelude IRs are synthetic: alias=None,
+        // Find the module-alias prelude IR.  Prelude IRs are synthetic: alias=None,
         // explicit_items=None.  Among those, find the one whose bindings are
-        // all ModuleAlias (the OQ-R015 IR; the OQ-R013 IRs have StdlibSymbol).
+        // all ModuleAlias (the option/result prelude IRs have StdlibSymbol).
         let aliases_ir = module_imports
             .iter()
             .find(|ir| {
@@ -2048,7 +2048,7 @@ mod tests {
                         .iter()
                         .all(|eb| matches!(&eb.binding, Binding::ModuleAlias { .. }))
             })
-            .expect("expected an OQ-R015 aliases prelude IR");
+            .expect("expected the module-alias prelude IR");
         let names: Vec<&str> = aliases_ir
             .effective_bindings
             .iter()
@@ -2064,7 +2064,7 @@ mod tests {
         assert!(names.contains(&"Text"), "Text alias must survive");
     }
 
-    // Prelude test 12 (OQ-R015): `import std.list as List` DOES suppress the
+    // Prelude test 12: `import std.list as List` DOES suppress the
     // prelude 'List' alias because the user already owns that local_name.
     #[test]
     fn prelude_r015_same_alias_suppresses_list() {

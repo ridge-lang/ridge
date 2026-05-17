@@ -1,4 +1,4 @@
-//! T14 — End-to-end BEAM run on the four Ridge examples.
+//! End-to-end BEAM run on the four Ridge examples.
 //!
 //! Gated on `--features beam-runtime` (requires OTP installation with `erlc`
 //! and `erl` on PATH).  For each of the four examples:
@@ -10,14 +10,14 @@
 //!    subprocess with a 60-second timeout.
 //! 4. Compare normalised stdout against `tests/expected/<name>.txt`.
 //!
-//! `DoD`: all four tests green ↔ spec §11.3 Phase 6 `DoD` line 1346 satisfied.
+//! `DoD`: all four tests green ↔ spec §11.3 `DoD` satisfied.
 //!
-//! Pre-existing failures (unchanged from Phase 6 baseline before T2):
-//! - OQ-E013: `log_analyzer` — CLI args flow via `plain_args` (-extra flag) works
+//! Pre-existing failures (unchanged from baseline):
+//! - `log_analyzer` — CLI args flow via `plain_args` (-extra flag) works
 //!   but stdout mismatch persists (encoding issue).
-//! - OQ-E014: `url_shortener` — `std.map` BEAM module not on code path.
-//! - OQ-E015: `game_of_life` — `std.list` BEAM module not on code path.
-//! - OQ-E016: `rate_limiter` — passes (1/4 baseline unchanged).
+//! - `url_shortener` — `std.map` BEAM module not on code path.
+//! - `game_of_life` — `std.list` BEAM module not on code path.
+//! - `rate_limiter` — passes (1/4 baseline unchanged).
 
 #![cfg(feature = "beam-runtime")]
 #![allow(
@@ -68,9 +68,9 @@ fn normalise(s: &str) -> String {
 /// `read_to_end` completes.  The resulting panic message may show truncated
 /// stdout/stderr.  This is acceptable for a contributor-facing diagnostic
 /// (§1.3 #10 exemption); hardening to a bounded-timeout drain (e.g. via a
-/// thread + `recv_timeout`) is deferred to Phase 9 alongside the bounded-
-/// server testing work.  Do NOT attempt to add a `sleep` or retry loop here
-/// without a plan-level OQ.
+/// thread + `recv_timeout`) is deferred to a future release alongside the
+/// bounded-server testing work.  Do NOT attempt to add a `sleep` or retry
+/// loop here without a design decision.
 fn drain_pipe<R: std::io::Read>(pipe: Option<R>) -> String {
     let Some(mut p) = pipe else {
         return String::from("<no pipe>");
@@ -95,14 +95,14 @@ fn run_erl(beam_dir: &Path, module: &str, plain_args: &[&str]) -> (String, Strin
         .expect("erl not found on PATH — install OTP or run without --features beam-runtime");
 
     let mut cmd = Command::new(&erl_path);
-    // H-A.1 (OQ-C042): use -noinput instead of -noshell; on Windows, -noshell
-    // inhibits the IO subsystem's flush-on-write behaviour, causing stdout to
-    // be buffered and never drained before the process exits.  -noinput leaves
-    // the IO subsystem in a more flush-friendly state for batch programs.
+    // Use -noinput instead of -noshell: on Windows, -noshell inhibits the IO
+    // subsystem's flush-on-write behaviour, causing stdout to be buffered and
+    // never drained before the process exits.  -noinput leaves the IO
+    // subsystem in a more flush-friendly state for batch programs.
     //
-    // H-A.3 (OQ-C042 escalation): prepend an -eval that sets the group_leader
-    // encoding to unicode, ensuring io:format/2 flushes correctly for all
-    // Ridge programs under -noinput on Windows.
+    // Prepend an -eval that sets the group_leader encoding to unicode,
+    // ensuring io:format/2 flushes correctly for all Ridge programs under
+    // -noinput on Windows.
     cmd.arg("-noinput")
         .arg("-eval")
         .arg("io:setopts(group_leader(), [{encoding, unicode}])")
@@ -273,8 +273,9 @@ fn run_example_e2e(name: &str, extra_erl_args: &[&str]) -> (String, String, i32)
 
 // ── Example tests ─────────────────────────────────────────────────────────────
 
-/// `log_analyzer` — Phase 5 bugs (B-1, B-2, B-3) were resolved in the Phase 5
-/// followup pass.  The example now compiles and runs; it requires CLI arguments
+/// `log_analyzer` — codegen bugs affecting record construction, lambda
+/// destructuring, and partial application were resolved in a prior pass.
+/// The example now compiles and runs; it requires CLI arguments
 /// `<log_file> <MIN_LEVEL>` passed via `-extra`.
 ///
 /// Fixture: `tests/fixtures/sample.log`, threshold: `WARN`.
@@ -284,15 +285,14 @@ fn beam_e2e_log_analyzer() {
     let _ = run_example_e2e("log_analyzer", &[fixture, "WARN"]);
 }
 
-/// `url_shortener` — All Phase 5 and Phase 6 bugs resolved.
+/// `url_shortener` — all codegen bugs resolved.
 ///
-/// Previously blocked by OQ-E014 (Phase 5 pass 4 state, 2026-04-29):
+/// Previously blocked by unbound variable errors in main/0 and handle_call/3:
 ///   ridge_module_0: unbound variable 'V_Url' in main/0
 ///   ridge_module_0_store: unbound variable 'V_Code' in handle_call/3
 ///
-/// RESOLVED in Phase 5 followup + Phase 6 pass 5 (B-1 Ok/Err ctor, B-5
-/// state-field reads, B-6 cross-module refs, B-7 SSA state threading, and
-/// the try/catch printer fix that unblocked erlc acceptance).
+/// RESOLVED via fixes to Ok/Err constructor codegen, state-field reads,
+/// cross-module refs, SSA state threading, and the try/catch printer.
 ///
 /// ---
 ///
@@ -315,7 +315,7 @@ fn beam_e2e_log_analyzer() {
 /// not a bug in `url_shortener.rg`.
 ///
 /// **Where the follow-up lives:**
-/// Bounded-server testing patterns for long-running Ridge examples.
+/// A bounded-server testing harness for long-running Ridge examples.
 /// The `#[ignore]` is trivially reversible — un-mark it once a bounded-server
 /// harness integration is in place.
 ///
@@ -335,23 +335,23 @@ fn beam_e2e_url_shortener() {
     let _ = run_example_e2e("url_shortener", &[]);
 }
 
-/// `game_of_life` — All Phase 5 and Phase 6 bugs resolved.
+/// `game_of_life` — all codegen bugs resolved.
 ///
-/// Previously blocked by OQ-E015 (Phase 5 pass 4 state, 2026-04-29):
+/// Previously blocked by a bad-map error in setCell/3:
 ///   {badmap, ok} in setCell/3 — `map_get(rows, ok)` — `with` update
 ///   expression was returning `ok` instead of the updated map.
 ///
-/// RESOLVED in Phase 5 followup + Phase 6 pass 5 (B-1 Ok/Err ctor, B-2
-/// tuple-param lambda destructure, B-3 partial-app eta-wrap, zero-arity
-/// constant apply fix, and the try/catch printer fix).
+/// RESOLVED via fixes to Ok/Err constructor codegen, tuple-param lambda
+/// destructuring, partial-app eta-wrapping, zero-arity constant apply, and
+/// the try/catch printer.
 #[test]
 fn beam_e2e_game_of_life() {
     let _ = run_example_e2e("game_of_life", &[]);
 }
 
-/// OQ-E016: `rate_limiter` — erlc rejects emitted Core Erlang in all actor modules.
+/// `rate_limiter` — erlc rejects emitted Core Erlang in all actor modules.
 ///
-/// T14 erlc subprocess stderr (actual, not inferred — pass 3 state, 2026-04-29):
+/// erlc subprocess stderr (verbatim):
 ///   ridge_module_0: illegal expression in main/0 (×1)
 ///   ridge_module_0_limiter: unbound variable 'V_Capacity', 'V_LastRefill',
 ///     'V_RefillRate', 'V_State2', 'V_State4', 'V_Tokens' in handle_call/3, handle_cast/2
@@ -361,38 +361,31 @@ fn beam_e2e_game_of_life() {
 ///   ridge_module_0_worker: unbound variable 'V_Collector', 'V_Limiter',
 ///     'V_SendRequests', 'V_State3' in handle_call/3, handle_cast/2
 ///
-/// Root cause analysis (Phase 5 bugs — B-4 and B-6 resolved in Phase 6 pass 3):
-/// - "illegal expression in main/0": `apply ~{}~ ('ok')` — Ok() constructor bug (B-1).
+/// Root cause analysis:
+/// - "illegal expression in main/0": `apply ~{}~ ('ok')` — Ok() constructor codegen bug.
 /// - "illegal expression in collector handle_call/3, handle_cast/2": same Ok() bug
-///   inside actor handler bodies (B-1).
+///   inside actor handler bodies.
 /// - "unbound V_Capacity, V_Tokens, V_LastRefill, V_RefillRate in handlers":
-///   Phase 5 emits state-field reads as bare variable references instead of
-///   `call 'maps':'get'('field', V_State)` (B-5).
+///   state-field reads emitted as bare variable references instead of
+///   `call 'maps':'get'('field', V_State)`.
 /// - "unbound V_State2, V_State4 in handlers": SSA state vars scoped incorrectly
-///   — state-thread index mismatch in Phase 5 (B-7).
-/// - B-4 (unbound V_Cap, V_Rate, V_Col, V_Id, V_L in init/1): RESOLVED in Phase 6
-///   pass 3 — Phase 6 now wraps init body in `case V_Args of [P1|[P2|[]]] -> end`.
-/// - B-6 (undefined function requestsPerWorker/0 in handle_call/3): RESOLVED in
-///   Phase 6 pass 3 — Phase 6 now emits `call 'ridge_module_0':'requestsPerWorker' ()`
-///   for parent-module const refs in actor handlers.
+///   — state-thread index mismatch.
+/// - Unbound V_Cap, V_Rate, V_Col, V_Id, V_L in init/1: RESOLVED — init body
+///   now wrapped in `case V_Args of [P1|[P2|[]]] -> end`.
+/// - Undefined function requestsPerWorker/0 in handle_call/3: RESOLVED — codegen
+///   now emits `call 'ridge_module_0':'requestsPerWorker' ()` for parent-module
+///   const refs in actor handlers.
 ///
-/// **Fix scope — Deferred by: OQ-E016 / T14 scope boundary**
-///
-/// Remaining errors (B-1 Ok/Err ctor in actor handlers, B-5 state-field reads,
-/// B-7 SSA state-thread index mismatch, B-2 tuple-param lambda destructure in
-/// collectors/workers) are in IR/lowering (Phase 5 / `ridge-lower`) — out of
-/// scope for T14. These involve frozen-crate semantics and would require a
-/// plan-level decision before any source change to `ridge-codegen-erl` or
-/// `ridge-lower`.
+/// **Remaining errors** (Ok/Err ctor in actor handlers, state-field reads,
+/// SSA state-thread index mismatch, tuple-param lambda destructure in
+/// collectors/workers) are in IR/lowering (`ridge-lower`) — out of scope here.
+/// These involve frozen-crate semantics and would require a plan-level decision
+/// before any source change to `ridge-codegen-erl` or `ridge-lower`.
 ///
 /// **What is deferred:** Full e2e BEAM execution of `rate_limiter.rg`.
-/// **Why:** Multi-actor codegen requires IR/lowering fixes that are outside
-/// the T14 scope boundary.
-/// **Where the follow-up lives:** `rate_limiter` codegen is a 0.2.0 backlog
-/// item unless a future change explicitly reopens it.
-/// **Note:** The blocking issue is OQ-E016, filed during Phase 5/6 pass 4;
-/// see the pre-existing OQ-E016 comment above for the verbatim erlc stderr
-/// evidence.
+/// **Why:** Multi-actor codegen requires IR/lowering fixes in `ridge-lower`.
+/// **Where the follow-up lives:** `rate_limiter` codegen is a backlog item
+/// unless a future change explicitly reopens it.
 #[test]
 fn beam_e2e_rate_limiter() {
     let _ = run_example_e2e("rate_limiter", &[]);

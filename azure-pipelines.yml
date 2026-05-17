@@ -102,14 +102,14 @@ stages:
           - script: cargo test --all --verbose
             displayName: 'cargo test --all'
 
-          # T14 DoD gates — traceability steps (Phase 7 §11.2 G7 / G8).
+          # Stdlib DoD gates — traceability steps (§11.2 G7 / G8).
           # The workspace-level clippy step above already covers ridge-stdlib,
           # but these named steps provide per-gate traceability in the CI log.
           - script: cargo clippy -p ridge-stdlib --all-targets -- -D warnings
-            displayName: 'T14 DoD G7 — ridge-stdlib clippy clean'
+            displayName: 'Stdlib DoD G7 — ridge-stdlib clippy clean'
 
           - script: cargo doc -p ridge-stdlib --no-deps
-            displayName: 'T14 DoD G8 — ridge-stdlib doc clean'
+            displayName: 'Stdlib DoD G8 — ridge-stdlib doc clean'
 
   # ── Slow-CI lane — nightly only (G4: ≥ 151 stdlib tests passing) ───────────
   # Slow-CI lane: requires at least 151 stdlib tests passing (G4 gate).
@@ -235,12 +235,11 @@ stages:
           - script: cargo test -p ridge-stdlib --features stdlib-e2e --release
             displayName: 'Slow-CI: stdlib end-to-end (≥ 151 tests)'
 
-  # ── T13: Install-script lint lane (every PR) ────────────────────────────────
-  # OQ-C014 layer 1: static lint via shellcheck (sh) and PSScriptAnalyzer (ps1).
+  # ── Install-script lint lane (every PR) ──────────────────────────────────────
+  # Layer 1: static lint via shellcheck (sh) and PSScriptAnalyzer (ps1).
   # Runs on all push/PR triggers — no schedule gate.
-  # Install-script static lint lane — runs on every PR.
   - stage: install_lint
-    displayName: 'Install scripts — static lint (T13)'
+    displayName: 'Install script lint'
     dependsOn: []
     condition: succeeded()
     jobs:
@@ -269,12 +268,12 @@ stages:
               Invoke-ScriptAnalyzer tools/install/install.ps1 -EnableExit
             displayName: 'Invoke-ScriptAnalyzer install.ps1 -EnableExit'
 
-  # ── T13: Install-script dry-run snapshot lane (every PR) ────────────────────
-  # OQ-C014 layer 2: assert --dry-run output is byte-identical to the snapshot.
+  # ── Install-script dry-run snapshot lane (every PR) ─────────────────────────
+  # Layer 2: assert --dry-run output is byte-identical to the snapshot.
   # Runs on all push/PR triggers — no schedule gate.
-  # R18: edit script -> run --dry-run -> diff -> commit both files together.
+  # Edit script -> run --dry-run -> diff -> commit both files together.
   - stage: install_dryrun_snapshot
-    displayName: 'Install scripts — dry-run snapshot (T13)'
+    displayName: 'Install scripts — dry-run snapshot'
     dependsOn: install_lint
     condition: succeeded()
     jobs:
@@ -334,9 +333,8 @@ stages:
               }
             displayName: 'Diff install.ps1 -DryRun -Snapshot against expected_dryrun.txt'
 
-  # ── T15 Stage 3: BuildTestMatrix — full install-from-zero + test on three
-  #    platforms.  Replaces the "manual on three VMs" half of OQ-C014 (D155
-  #    rewrite, 2026-05-06) with an automated matrix.  Each job:
+  # ── BuildTestMatrix — full install-from-zero + test on three platforms ───────
+  #    Each job:
   #      1. installs Rust / Erlang / git from scratch via the per-platform
   #         setup script under `.azure-pipelines/`,
   #      2. runs `cargo test --workspace` and `cargo build --workspace --release`,
@@ -350,7 +348,7 @@ stages:
   #    Asserts G1, G2, G3, G6, G8 of §11.2.  Stage 4 ReleaseGate provides the
   #    human sign-off layer that the original manual VM disposition required.
   - stage: BuildTestMatrix
-    displayName: 'T15 — Build + test + install (G1/G2/G3/G6/G8)'
+    displayName: 'Build, test, and install'
     dependsOn:
       - install_lint
       - install_dryrun_snapshot
@@ -827,21 +825,20 @@ stages:
             artifact: ridge-release-windows
             displayName: 'Publish ridge-release-windows artefact'
 
-  # ── T15 Stage 4: ReleaseGate — Azure DevOps Environment with manual
-  #    approval.  Preserves the "human in the loop" property of the original
-  #    OQ-C014 manual-VM disposition (D155 rewrite, 2026-05-06).
+  # ── ReleaseGate — Azure DevOps Environment with manual approval ──────────────
+  #    Preserves the "human in the loop" property of the manual-VM disposition.
   #
   #    Setup (once, by the user, in the Azure DevOps web UI):
   #      1. Pipelines → Environments → New environment → name "ridge-release".
   #      2. Approvals and checks → Add → Approvals → add per-platform
   #         reviewers.  The pipeline pauses here until each approver signs off.
-  #      3. The signed-off Environment record IS the T16 attestation —
+  #      3. The signed-off Environment record is the release attestation —
   #         transcribe the approver/timestamp/run-id into
   #         tools/install/ATTESTATIONS.md.
   #
   #    See `.azure-pipelines/README.md` for the full sign-off flow.
   - stage: ReleaseGate
-    displayName: 'T15 — Release gate (per-platform human sign-off)'
+    displayName: 'Release attestation'
     dependsOn: BuildTestMatrix
     condition: and(succeeded(), eq(variables['Build.SourceBranch'], 'refs/heads/main'))
     jobs:
@@ -856,5 +853,5 @@ stages:
               steps:
                 - script: |
                     echo "BuildTestMatrix passed; awaiting human sign-off on ridge-release Environment."
-                    echo "Reviewer: transcribe approver + run-id + timestamp into tools/install/ATTESTATIONS.md per T16."
+                    echo "Reviewer: transcribe approver + run-id + timestamp into tools/install/ATTESTATIONS.md."
                   displayName: 'Sign-off marker'

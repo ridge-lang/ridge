@@ -1,6 +1,6 @@
 # `.azure-pipelines/` — auxiliary scripts for `azure-pipelines.yml`
 
-This directory holds the per-platform setup and assertion scripts referenced by the **T15 BuildTestMatrix** stage of the root-level `azure-pipelines.yml`.  Layout:
+This directory holds the per-platform setup and assertion scripts referenced by the **Build, test, and install** stage of the root-level `azure-pipelines.yml`.  Layout:
 
 | File | Used by | Purpose |
 |------|---------|---------|
@@ -18,10 +18,10 @@ The full pipeline (`../azure-pipelines.yml`) is composed of six stages:
 |---|-------|---------|---------|
 | 1 | `Validate` | every PR + push to main | `cargo fmt --check`, `cargo clippy --all-targets -- -D warnings`, `cargo build --all`, `cargo test --all` (Linux + Windows matrix). |
 | 2 | `SlowCI_Stdlib` | scheduled (nightly) | `cargo test -p ridge-stdlib --features stdlib-e2e` on three platforms — gated to avoid burning per-PR minutes. |
-| 3 | `install_lint` | every PR | `shellcheck install.sh --severity=warning` + `Invoke-ScriptAnalyzer install.ps1 -EnableExit`.  OQ-C014 layer 1. |
-| 4 | `install_dryrun_snapshot` | every PR | Diffs `install.sh --snapshot` and `install.ps1 -DryRun -Snapshot` against `tools/install/expected_dryrun.txt`.  OQ-C014 layer 2. |
-| 5 | `BuildTestMatrix` | every PR | **T15 / replaces "manual VMs" half of OQ-C014 (D155 rewrite, 2026-05-06).**  On Linux + macOS + Windows agents, from zero: install toolchain, run `cargo test --workspace`, build release, exercise install script pinned to `RIDGE_REPO=https://github.com/ridge-lang/ridge`, assert install < 5 min, run smoke tests, exercise the four canonical examples through `ridge build/run/check/fmt --check`, run stdlib `.test.rg` slow-CI, run escript end-to-end.  Asserts G1, G2, G3, G6, G8 in §11.2. |
-| 6 | `ReleaseGate` | only on main branch | Azure DevOps Environment-gated deployment job.  Pauses the pipeline awaiting per-platform human approval; signed-off run-id is the input to T16's `tools/install/ATTESTATIONS.md` entry.  Preserves the "human in the loop" property of OQ-C014's original manual disposition. |
+| 3 | `install_lint` | every PR | `shellcheck install.sh --severity=warning` + `Invoke-ScriptAnalyzer install.ps1 -EnableExit`.  Static lint layer. |
+| 4 | `install_dryrun_snapshot` | every PR | Diffs `install.sh --snapshot` and `install.ps1 -DryRun -Snapshot` against `tools/install/expected_dryrun.txt`.  Snapshot layer. |
+| 5 | `BuildTestMatrix` | every PR | On Linux + macOS + Windows agents, from zero: install toolchain, run `cargo test --workspace`, build release, exercise install script pinned to `RIDGE_REPO=https://github.com/ridge-lang/ridge`, assert install < 5 min, run smoke tests, exercise the four canonical examples through `ridge build/run/check/fmt --check`, run stdlib `.test.rg` slow-CI, run escript end-to-end.  Asserts G1, G2, G3, G6, G8 in §11.2. |
+| 6 | `ReleaseGate` | only on main branch | Azure DevOps Environment-gated deployment job.  Pauses the pipeline awaiting per-platform human approval; signed-off run-id is recorded in `tools/install/ATTESTATIONS.md`. |
 
 ## Toolchain decisions and rationale
 
@@ -49,7 +49,7 @@ The pipeline expects a GitHub service-connection on the `ridge-lang/ridge` repos
 2. **Service connection.**  The first run prompts for OAuth approval — accept once.  Subsequent runs use the stored connection.
 3. **`ReleaseGate` Environment.**  Pipelines → Environments → New environment → name **`ridge-release`** (must match the value in stage 6's `environment:` field).
 4. **Approvals on the Environment.**  Open `ridge-release` → Approvals and checks → Add → Approvals → add per-platform reviewers.  The pipeline pauses here until each approver signs off.
-5. **Sign-off recording.**  After approval, transcribe approver / timestamp / run-id into `tools/install/ATTESTATIONS.md` (one entry per platform).  This closes T16.
+5. **Sign-off recording.**  After approval, transcribe approver / timestamp / run-id into `tools/install/ATTESTATIONS.md` (one entry per platform).
 
 ## How to reproduce a job locally (best-effort)
 
@@ -102,4 +102,4 @@ cargo test -p ridge-codegen-erl --test escript_test
 ## References
 
 - `tools/install/README.md` — `RIDGE_REPO` / `RIDGE_BRANCH` env-override contract.
-- `docs/T15_G7_MANUAL_ATTESTATION.md` — the only remaining manual-sign-off step in T15.
+- `docs/T15_G7_MANUAL_ATTESTATION.md` — the remaining manual sign-off step in the build/test/install stage.

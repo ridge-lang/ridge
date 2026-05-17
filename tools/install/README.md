@@ -143,7 +143,7 @@ Both scripts honour two environment variables that override the repository URL a
 | `RIDGE_REPO` | `https://github.com/ridge-lang/ridge` | Git repository URL |
 | `RIDGE_BRANCH` | `main` | Git branch / ref |
 
-This is the lever the Phase 8 CI matrix uses to pin installs to the transient public mirror (`https://github.com/ridge-lang/ridge`) until the canonical `ridge-lang/ridge` repository opens in Phase 9 (per the OQ-C014 / D155 disposition rewrite of 2026-05-06).
+This is the lever the CI matrix uses to pin installs to the transient public mirror (`https://github.com/ridge-lang/ridge`) until the canonical `ridge-lang/ridge` repository opens.
 
 **Example — Linux / macOS:**
 
@@ -183,7 +183,7 @@ $env:RIDGE_BRANCH = 'main'
 
 ## Pipeline attestation (T16)
 
-Per the OQ-C014 / D155 disposition rewrite of 2026-05-06 (Option C), the three-platform install attestation is now driven by the **Azure DevOps pipeline** at `azure-pipelines.yml` (Stage 3 `BuildTestMatrix`), which runs the full install + test flow on Ubuntu / macOS / Windows agents from zero, pinned to `RIDGE_REPO=https://github.com/ridge-lang/ridge` while the canonical `ridge-lang/ridge` repo is closed.
+The three-platform install attestation is driven by the **Azure DevOps pipeline** at `azure-pipelines.yml` (Stage 3 `BuildTestMatrix`), which runs the full install + test flow on Ubuntu / macOS / Windows agents from zero, pinned to `RIDGE_REPO=https://github.com/ridge-lang/ridge` while the canonical `ridge-lang/ridge` repo is closed.
 
 T16 is reduced to **~1 h of human work**: trigger the pipeline, review the published logs and artefacts, and record a per-platform sign-off in `tools/install/ATTESTATIONS.md`.  The Stage 4 `ReleaseGate` Environment provides an Azure DevOps approval checkpoint humans attach to.
 

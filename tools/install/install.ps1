@@ -210,7 +210,7 @@ error: git $gitVer is too old; Ridge requires git $MinGit or newer. (P008 PkgGit
 # ── Step 6: Install ridge-cli and ridge-lsp ───────────────────────────────────
 # Repository / branch are overridable via env vars so CI matrices can pin to
 # the transient public mirror (`ridge-lang/ridge`) until `ridge-lang/ridge`
-# opens in Phase 9.  Defaults are deterministic and used by `-Snapshot` mode.
+# opens publicly.  Defaults are deterministic and used by `-Snapshot` mode.
 $RidgeRepo   = if ($env:RIDGE_REPO)   { $env:RIDGE_REPO }   else { 'https://github.com/ridge-lang/ridge' }
 $RidgeBranch = if ($env:RIDGE_BRANCH) { $env:RIDGE_BRANCH } else { 'main' }
 

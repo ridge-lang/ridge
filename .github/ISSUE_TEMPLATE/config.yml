@@ -1,0 +1,8 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Question or discussion
+    url: https://github.com/ridge-lang/ridge/discussions
+    about: For questions, ideas, or general discussion.
+  - name: Security vulnerability
+    url: https://github.com/ridge-lang/ridge/security/policy
+    about: Report a security vulnerability privately per SECURITY.md.

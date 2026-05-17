@@ -1,8 +1,7 @@
 # Contributing to Ridge
 
-Ridge is a new programming language in active early-stage development. This
-document explains how to get set up, the conventions we follow, and how to
-propose changes.
+Ridge is a new programming language. This document explains how to get set up,
+the conventions we follow, and how to propose changes.
 
 Please read [`docs/spec.md`](docs/spec.md) first. The spec is the contract.
 When code and spec disagree, either the code is wrong or the spec needs a
@@ -10,7 +9,7 @@ deliberate update — never a silent drift.
 
 ## Prerequisites
 
-- Rust **1.75** or newer (`rustc --version`)
+- Rust **1.85** or newer (`rustc --version`)
 - Erlang/OTP **26** or newer (`erl -version`)
 - Git
 
@@ -22,8 +21,8 @@ use the `rustup-init.exe` installer.
 ```sh
 git clone https://github.com/ridge-lang/ridge.git
 cd ridge
-cargo build --all
-cargo test --all
+cargo build --workspace
+cargo test --workspace
 ```
 
 If everything goes green, you're ready to hack. The binary entry point is
@@ -39,52 +38,98 @@ ridge/
 │   ├── ridge-parser/       # AST construction
 │   ├── ridge-ast/          # shared AST types
 │   ├── ridge-resolve/      # name resolution, imports, workspace rules
-│   ├── ridge-types/        # type and capability checker
+│   ├── ridge-typecheck/    # type and capability checker
+│   ├── ridge-types/        # type representation
 │   ├── ridge-ir/           # Ridge Core IR
 │   ├── ridge-lower/        # AST to IR
-│   ├── ridge-codegen-erl/  # Core Erlang backend (0.1.0)
-│   ├── ridge-codegen-wasm/ # WebAssembly backend (0.3.0+)
-│   ├── ridge-codegen-llvm/ # LLVM backend (0.4.0+)
+│   ├── ridge-codegen-erl/  # Core Erlang backend
 │   ├── ridge-diagnostics/  # error rendering
 │   ├── ridge-driver/       # compilation orchestration
 │   ├── ridge-cli/          # `ridge` binary
 │   ├── ridge-lsp/          # language server
+│   ├── ridge-fmt/          # formatter
+│   ├── ridge-manifest/     # workspace manifest parsing
+│   ├── ridge-stdlib/       # standard library (Rust + .rg modules)
 │   └── ridge-pkg/          # package manager
 ├── examples/               # sample Ridge programs (*.rg)
 ├── docs/
-│   ├── spec.md             # language specification and roadmap (source of truth)
-│   └── grammar.ebnf        # formal EBNF grammar
-└── azure-pipelines.yml     # CI
+│   ├── spec.md             # language specification (source of truth)
+│   ├── tutorial.md         # install + quickstart
+│   ├── grammar.ebnf        # formal EBNF grammar
+│   └── hot-reload-design.md
+├── tools/
+│   ├── install/            # cross-platform install scripts
+│   └── vscode-ridge/       # VS Code extension
+└── azure-pipelines.yml     # CI (full multi-platform)
 ```
 
-Phase 0 crates are scaffolding only. Real implementation arrives phase by
-phase per `docs/spec.md` §11.
+## Workflow
 
-## Development workflow
+Ridge follows [GitHub Flow](https://docs.github.com/en/get-started/quickstart/github-flow):
 
-1. **Pick a phase task.** Every change must map to a Phase listed in the
-   roadmap or to an explicit bug/improvement tracked as an issue.
-2. **Branch from `main`.** Branch naming: `phase-N/short-description`,
-   `fix/short-description`, or `docs/short-description`.
-3. **Work in small, testable increments.** Write a failing test first where
-   possible.
-4. **Keep commits focused.** One logical change per commit.
-5. **Open a pull request.** Link the phase or issue, describe what and why.
+1. Fork the repo and create a feature branch from `main`.
+2. Make your changes, with tests where applicable.
+3. Push your branch to your fork.
+4. Open a pull request against `ridge-lang/ridge:main`.
+5. Wait for CI to pass and a maintainer to review.
+6. Address review feedback; the maintainer will squash-merge on approval.
+
+`main` is always releasable. All work happens on feature branches.
+
+## Branch naming
+
+| Prefix | When | Example |
+|---|---|---|
+| `feat/` | New feature | `feat/lsp-semantic-tokens` |
+| `fix/` | Bug fix | `fix/typecheck-row-leak` |
+| `docs/` | Documentation only | `docs/tutorial-rewrite` |
+| `refactor/` | No behavior change | `refactor/extract-resolver` |
+| `test/` | Tests only | `test/codegen-snapshots` |
+| `ci/` | CI/build changes | `ci/add-clippy-gate` |
+| `chore/` | Tooling, deps, misc | `chore/bump-tower-lsp` |
+
+Use kebab-case after the prefix. Keep it short and descriptive.
+
+## Commit messages
+
+Ridge uses [Conventional Commits](https://www.conventionalcommits.org/). Format:
+
+```
+<type>(<scope>): <description>
+
+[optional body]
+
+[optional footer]
+```
+
+Examples:
+
+- `feat(lsp): add semantic tokens for capabilities`
+- `fix(typecheck): row variable leaked across modules`
+- `docs(spec): clarify capability subset rules`
+- `chore(deps): bump tower-lsp to 0.21`
+
+Types: `feat`, `fix`, `docs`, `chore`, `refactor`, `test`, `ci`, `build`, `perf`, `style`.
+
+Breaking changes: add `!` after the type (`feat(parser)!: change pipe syntax`)
+or include a `BREAKING CHANGE:` footer.
+
+Keep the description lowercase, present tense, no trailing period. Wrap body
+lines at ~72 characters.
 
 ## Coding conventions
 
 ### Rust code
 
-- Format with `cargo fmt --all` before committing. The CI enforces this.
-- Pass `cargo clippy --all-targets --all-features -- -D warnings`. The
-  workspace lint preset is strict (`pedantic`, `nursery`, plus
-  `unwrap_used`, `expect_used`, `panic` as warnings). If clippy is wrong,
-  document it with a narrow `#[allow(...)]` and a comment explaining why.
+- Format with `cargo fmt --all` before committing. CI enforces this.
+- Pass `cargo clippy --workspace --all-targets -- -D warnings`. If clippy is
+  wrong, document the exception with a narrow `#[allow(...)]` and a comment
+  explaining why.
 - **No `panic!` under user input.** The compiler must turn bad input into
   diagnostics, never crashes. See `docs/spec.md` §10.4.
 - **No `unsafe`.** Forbidden at the workspace level.
 - Prefer `Result<T, Vec<Diagnostic>>` over `Option<T>` for fallible compiler
-  phases; accumulate errors where it's safe to do so.
+  phases; accumulate errors where it is safe to do so.
 
 ### Ridge code (when writing stdlib or examples)
 
@@ -96,45 +141,48 @@ phase per `docs/spec.md` §11.
 
 ## Testing
 
-- Every crate has tests. `cargo test --all` must stay green on `main`.
+- Every crate has tests. `cargo test --workspace` must stay green on `main`.
 - Parser and type-checker phases use **snapshot tests** via `insta`.
   Review snapshot diffs carefully: `cargo insta review`.
 - Error messages are first-class output. When you change an error message,
   update the snapshot and eyeball the new rendering.
-- Integration tests live under `tests/` once we get past Phase 2.
 
-## Commit messages
+## Pull requests
 
-- First line: imperative, ≤ 72 chars. Example: `lexer: handle nested string interpolation`.
-- Body (optional): what and why. Reference the phase (`Phase 1`) or issue.
-- No trailing periods on the subject line.
+- Squash-merged by default — keep the PR title clean (it becomes the squash commit message).
+- One concern per PR. Split unrelated changes.
+- Fill in the PR template completely.
+- Include tests for new behavior; include a regression test for bug fixes.
+- Update `CHANGELOG.md` under `## [Unreleased]` if the change is user-visible.
 
 ## Pull request checklist
 
 - [ ] `cargo fmt --all -- --check` passes
-- [ ] `cargo clippy --all-targets --all-features -- -D warnings` passes
-- [ ] `cargo test --all` passes
+- [ ] `cargo clippy --workspace --all-targets -- -D warnings` passes
+- [ ] `cargo test --workspace` passes
 - [ ] New behavior has tests
 - [ ] Spec updated if language semantics change
+- [ ] `CHANGELOG.md` updated under `## [Unreleased]` if user-visible
 - [ ] No new dependencies without justification in the PR description
-  (cross-reference `docs/spec.md` §10.3)
 
 ## Proposing language changes
 
-Changes to the language itself (syntax, semantics, capability set,
-stdlib scope) go through the **Decision Log** in `docs/spec.md` §15.
+Changes to the language itself (syntax, semantics, capability set, stdlib
+scope) follow a lightweight proposal process:
 
-1. Open an issue describing the problem and proposed change.
-2. Once consensus is reached, add a new `DNNN` entry to the Decision Log
-   with the decision, rationale, alternatives considered, and status.
-3. Update the affected spec sections in the same PR.
+1. **Open a GitHub Issue** describing the problem and proposed change.
+   Label it `proposal`.
+2. **Discuss publicly.** Other contributors weigh in. The maintainer
+   makes the call after reasonable discussion.
+3. **Once accepted**, open a PR that updates the affected spec sections
+   plus the implementation in the same PR.
 
-Phase 0 is not the time for syntax debates. If the spec is silent on
-something you need, raise an open question in `docs/grammar.ebnf` or as
-a GitHub issue labeled `spec-gap`.
+If the spec is silent on something you need, raise an issue labeled
+`spec-gap`.
 
-## Code of conduct
+## Code of Conduct
 
+This project adheres to the [Contributor Covenant](CODE_OF_CONDUCT.md).
 Be respectful. Focus on the work. Disagree with ideas, not people. When in
 doubt, assume good faith.
 

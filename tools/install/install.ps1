@@ -207,7 +207,140 @@ error: git $gitVer is too old; Ridge requires git $MinGit or newer. (P008 PkgGit
     exit 1
 }
 
+# ──────────────────────────────────────────────────────────────────────────────
+# Binary install path (R051-R054)
+# ──────────────────────────────────────────────────────────────────────────────
+
+function Install-FromBinary {
+    $triple = Get-PlatformTriple
+    if (-not $triple) { return $false }
+
+    $version = $env:RIDGE_VERSION
+    if (-not $version) {
+        $version = Get-LatestVersion
+        if (-not $version) {
+            Write-Advisory "R051" "Could not query latest release tag from GitHub"
+            return $false
+        }
+    }
+
+    $assetName = "ridge-$triple.zip"
+    $assetUrl = "https://github.com/ridge-lang/ridge/releases/download/$version/$assetName"
+    $shaUrl   = "$assetUrl.sha256"
+
+    $tmpDir = New-Item -ItemType Directory -Path (Join-Path $env:TEMP "ridge-install-$([guid]::NewGuid().ToString('N'))")
+    try {
+        Write-Host "Downloading $assetName ($version)..."
+        try {
+            Invoke-WebRequest -Uri $assetUrl -OutFile (Join-Path $tmpDir $assetName) -UseBasicParsing -ErrorAction Stop
+        } catch {
+            Write-Advisory "R051" "Failed to download $assetUrl"
+            return $false
+        }
+
+        try {
+            Invoke-WebRequest -Uri $shaUrl -OutFile (Join-Path $tmpDir "$assetName.sha256") -UseBasicParsing -ErrorAction Stop
+        } catch {
+            Write-Advisory "R051" "Failed to download SHA256 sidecar from $shaUrl"
+            return $false
+        }
+
+        Write-Host "Verifying SHA256..."
+        $expectedHash = (Get-Content (Join-Path $tmpDir "$assetName.sha256")).Split(' ')[0].ToLower()
+        $actualHash = (Get-FileHash (Join-Path $tmpDir $assetName) -Algorithm SHA256).Hash.ToLower()
+        if ($expectedHash -ne $actualHash) {
+            Write-Advisory "R052" "SHA256 mismatch for $assetName (expected $expectedHash, got $actualHash)"
+            return $false
+        }
+
+        Write-Host "Extracting to $InstallDir..."
+        New-Item -ItemType Directory -Force -Path $InstallDir | Out-Null
+        try {
+            Expand-Archive -Path (Join-Path $tmpDir $assetName) -DestinationPath $InstallDir -Force
+        } catch {
+            Write-Advisory "R054" "Failed to extract $assetName to $InstallDir"
+            return $false
+        }
+
+        Write-Host "Installed ridge + ridge-lsp to $InstallDir"
+        return $true
+    } finally {
+        Remove-Item -Recurse -Force $tmpDir -ErrorAction SilentlyContinue
+    }
+}
+
+function Get-PlatformTriple {
+    # PowerShell on Windows: assume x86_64-pc-windows-msvc.
+    # If running PS Core on Linux/macOS, that's a user error for install.ps1 — use install.sh.
+    if ([System.Runtime.InteropServices.RuntimeInformation]::IsOSPlatform([System.Runtime.InteropServices.OSPlatform]::Windows)) {
+        $arch = [System.Runtime.InteropServices.RuntimeInformation]::ProcessArchitecture
+        switch ($arch) {
+            'X64'   { return 'x86_64-pc-windows-msvc' }
+            'Arm64' { Write-Advisory "R053" "Windows ARM64 not yet built"; return $null }
+            default { Write-Advisory "R053" "Unsupported Windows architecture: $arch"; return $null }
+        }
+    } else {
+        Write-Advisory "R053" "install.ps1 is for Windows; use install.sh on Linux/macOS"
+        return $null
+    }
+}
+
+function Get-LatestVersion {
+    try {
+        $resp = Invoke-RestMethod -Uri "https://api.github.com/repos/ridge-lang/ridge/releases/latest" -UseBasicParsing -ErrorAction Stop
+        return $resp.tag_name
+    } catch {}
+    try {
+        $resp = Invoke-RestMethod -Uri "https://api.github.com/repos/ridge-lang/ridge/releases?per_page=1" -UseBasicParsing -ErrorAction Stop
+        return $resp[0].tag_name
+    } catch {}
+    return $null
+}
+
+function Write-Advisory {
+    param([string]$Code, [string]$Message)
+    Write-Host "advisory ${Code}: $Message" -ForegroundColor Yellow
+}
+
 # ── Step 6: Install ridge-cli and ridge-lsp ───────────────────────────────────
+$InstallDir = if ($env:RIDGE_INSTALL_DIR) { $env:RIDGE_INSTALL_DIR } else { Join-Path $env:USERPROFILE ".cargo\bin" }
+
+# Binary-first install path (unless RIDGE_FORCE_SOURCE=1)
+if ($env:RIDGE_FORCE_SOURCE -ne "1") {
+    if (Install-FromBinary) {
+        # Run existing post-install version check and exit success
+        Write-Information 'Verifying installation ...'
+        $ExpectedVersion = 'ridge 0.2.0-rc2'
+        try {
+            $ridgeOut = & ridge --version 2>&1
+            if ($LASTEXITCODE -ne 0) { throw "ridge --version exited $LASTEXITCODE" }
+        }
+        catch {
+            Write-Error @"
+error: ridge --version failed after install.
+
+  Ensure $InstallDir is on your PATH, then open a new terminal.
+"@
+            exit 1
+        }
+        if ($ridgeOut -notlike "*$ExpectedVersion*") {
+            Write-Warning "ridge --version printed '$ridgeOut'; expected '$ExpectedVersion'."
+            Write-Warning 'The binary was installed but may be a different version.'
+        }
+        Write-Information ''
+        Write-Information 'Ridge installed successfully!'
+        Write-Information ''
+        Write-Information "  ridge version: $ridgeOut"
+        Write-Information ''
+        Write-Information 'Get started:'
+        Write-Information '  ridge new my-app; cd my-app; ridge run'
+        Write-Information ''
+        Write-Information 'Documentation: https://ridge-lang.org/docs'
+        exit 0
+    }
+    Write-Host "Falling back to source install via cargo..."
+}
+
 # Repository / branch are overridable via env vars so CI matrices can pin to
 # the transient public mirror (`ridge-lang/ridge`) until `ridge-lang/ridge`
 # opens publicly.  Defaults are deterministic and used by `-Snapshot` mode.

@@ -162,13 +162,11 @@ pub(crate) fn lower_symbol(
                     CErlAtom((*fn_name).into()),
                     *arity,
                 )),
-                Some(BridgeTarget::RidgeRuntime { fn_name, arity, .. }) => {
-                    Ok(stdlib_value_fn_ref(
-                        CErlAtom("ridge_rt".into()),
-                        CErlAtom((*fn_name).into()),
-                        *arity,
-                    ))
-                }
+                Some(BridgeTarget::RidgeRuntime { fn_name, arity, .. }) => Ok(stdlib_value_fn_ref(
+                    CErlAtom("ridge_rt".into()),
+                    CErlAtom((*fn_name).into()),
+                    *arity,
+                )),
                 // Phase 7: RidgeStdlibLocal — emit a fun reference to the BEAM
                 // target with the recorded arity (same B-D009 fix as above).
                 Some(BridgeTarget::RidgeStdlibLocal {

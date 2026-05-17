@@ -2,8 +2,8 @@
 --
 -- The Option a type (Some a | None) is declared in the language prelude;
 -- this module provides helper functions only (§4.3).
--- D027: withDefault naming reaffirmed.
--- D060: discard provided.
+-- withDefault naming reaffirmed.
+-- discard provided.
 
 -- Return the contained value, or the default if None.
 pub fn withDefault (d: a) (o: Option a) -> a =
@@ -42,7 +42,7 @@ pub fn isNone (o: Option a) -> Bool =
         None   -> true
 
 -- Discard the Option value, returning Unit.
--- D060: use this when you want to ignore a value without triggering a warning.
+-- Use this when you want to ignore a value without triggering a warning.
 pub fn discard (o: Option a) -> Unit =
     match o
         Some _ -> ()

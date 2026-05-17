@@ -1,7 +1,7 @@
--- std.net.http — HTTP client and server (Tier 4, §3.18 / OQ-S005 / D121).
+-- std.net.http — HTTP client and server (Tier 4, §3.18).
 --
 -- Client strategy: @ffi to ridge_rt helpers that wrap httpc:request/4
--- (OTP-bundled inets — zero external deps per OQ-S005 / D121).
+-- (OTP-bundled inets — zero external deps).
 -- Server strategy: @ffi to ridge_rt:http_listen/2 which drives the
 -- accept loop on a gen_tcp socket.
 --

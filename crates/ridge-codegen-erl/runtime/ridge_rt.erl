@@ -149,7 +149,7 @@ text_split_all(Sep, S) -> binary:split(S, Sep, [global]).
 
 %% list_fold/3 — std.list.fold via lists:foldl with arg-order adapter.
 %%
-%% B-D014 hotfix v3 Wave 2: Ridge's `fold` takes a callback `fn b -> a -> b`
+%% Ridge's `fold` takes a callback `fn b -> a -> b`
 %% (accumulator first, element second).  Erlang's `lists:foldl(F, Acc, List)`
 %% calls the callback as `F(Elem, Acc)` (element first, accumulator second).
 %% Without an adapter, every `List.fold` silently passed args in the wrong
@@ -160,7 +160,7 @@ list_fold(F, Acc, List) ->
 
 %% list_sort_by/2 — std.list.sortBy via lists:sort/2 with key-fn adapter.
 %%
-%% B-D015 hotfix v3 Wave 2: Ridge's `sortBy` takes a KEY function
+%% Ridge's `sortBy` takes a KEY function
 %% `fn a -> b` and orders elements by `key(a) <= key(b)`.  Erlang's
 %% `lists:sort(Fun, List)` instead takes a COMPARATOR `Fun(A, B) -> bool`.
 %% Without an adapter, every `List.sortBy` invoked the user's key function
@@ -311,9 +311,9 @@ proc_run_collect(Port, Acc, Deadline) ->
         {error, {error_record, <<"timeout">>, <<"process exceeded 30s timeout">>}}
     end.
 
-%% --- JSON (§3.17 / OQ-S004 / D120) ---
+%% --- JSON (§3.17) ---
 
-%% B-D002 Wave 3: JsonValue constructor shims.
+%% JsonValue constructor shims.
 %%
 %% Cross-module constructor resolution for user-defined `pub type` variants
 %% is a 0.2.0 design item.  Until then these FFI shims let user code
@@ -353,7 +353,7 @@ json_encode({json_int, N}) ->
 json_encode({json_float, F}) ->
     iolist_to_binary(io_lib:format("~p", [F]));
 json_encode({json_text, T}) ->
-    %% Minimal escaping: backslash and double-quote only (Phase 7 MVP).
+    %% Minimal escaping: backslash and double-quote only (MVP).
     Escaped = binary:replace(
         binary:replace(T, <<"\\">>, <<"\\\\">>, [global]),
         <<"\"">>, <<"\\\"">>, [global]),
@@ -381,7 +381,7 @@ join_binaries([H | T], Sep) ->
 %% Decodes a JSON binary to a JsonValue tagged-tuple tree using OTP-27's
 %% native json module.  Falls back to a simple error response on OTP 26.
 %% Returns {ok, JsonValue} | {error, {error_record, Code, Message}}.
-%% Ridge type: Text -> Result JsonValue Error  (§3.17 / OQ-S004 / D120).
+%% Ridge type: Text -> Result JsonValue Error  (§3.17).
 json_decode(Text) ->
     try
         %% OTP 27+: json:decode/1 is available.
@@ -418,7 +418,7 @@ erlang_to_json_value(L) when is_list(L)    ->
 erlang_to_json_value(M) when is_map(M)     ->
     {json_object, maps:map(fun(_K, V) -> erlang_to_json_value(V) end, M)}.
 
-%% --- HTTP server (§3.18 / OQ-S005 / D121) ---
+%% --- HTTP server (§3.18) ---
 
 %% http_listen/2 — std.net.http.listen
 %%
@@ -560,7 +560,7 @@ http_status_text(404) -> <<"Not Found">>;
 http_status_text(500) -> <<"Internal Server Error">>;
 http_status_text(_)   -> <<"Unknown">>.
 
-%% --- HTTP client (§3.18 / OQ-S005 / D121) ---
+%% --- HTTP client (§3.18) ---
 
 %% http_get/1 — std.net.http.get (called via Ridge FFI wrapper)
 %% Performs an HTTP GET request.  Returns Ridge result shape.

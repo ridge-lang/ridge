@@ -80,12 +80,12 @@ fn badRequest (body: Text) -> Response =
 -- ── Main: spawn Store + start HTTP server ──────────────────────────────────
 -- NOTE: Http.listen accepts a port and a handler fn io time (Request -> Response),
 -- blocking until the server shuts down.
--- D059: main returns Result Unit Error.
+-- main returns Result Unit Error.
 fn spawn net io time main () -> Result Unit Error =
     let store = spawn Store
     Io.println "URL shortener listening on :8080"
 
-    -- D045: ask operator changed from ? to ?>.
+    -- ask operator changed from ? to ?>.
     Http.listen 8080 (fn (req: Request) -> Response =
         match (req.method, req.path)
 

@@ -4,8 +4,8 @@
 -- Pure Ridge functions use if/then/else expressions.
 -- Hybrid functions combine a raw @ffi with a Ridge wrapper.
 --
--- D029: Int is fixed 64-bit signed in the Ridge model.
--- D032: wrappingAdd / saturatingAdd provided for overflow-safe arithmetic.
+-- Int is fixed 64-bit signed in the Ridge model.
+-- wrappingAdd / saturatingAdd provided for overflow-safe arithmetic.
 
 -- Convert an integer to its decimal text representation.
 @ffi("erlang", "integer_to_binary", 1)
@@ -52,7 +52,7 @@ pub fn neg (n: Int) -> Int
 -- Wrapping addition — result is masked to the 64-bit signed range.
 -- Erlang integers are arbitrary-precision, so we simulate 64-bit wrap
 -- by subtracting / adding the 64-bit modulus when the result overflows.
--- D032: this function is the safe alternative to plain add for code that
+-- This function is the safe alternative to plain add for code that
 -- must not crash on overflow.
 pub fn wrappingAdd (a: Int) (b: Int) -> Int =
     let s = a + b
@@ -64,7 +64,7 @@ pub fn wrappingAdd (a: Int) (b: Int) -> Int =
     else s
 
 -- Saturating addition — result is clamped to [Int64.min, Int64.max].
--- D032: use this when you want a bounded result instead of wrapping.
+-- Use this when you want a bounded result instead of wrapping.
 pub fn saturatingAdd (a: Int) (b: Int) -> Int =
     let s = a + b
     let maxVal = 9223372036854775807

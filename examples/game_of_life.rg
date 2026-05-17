@@ -91,7 +91,7 @@ fn gliderGrid (rows: Int) (cols: Int) -> Grid =
 
 const defaultGenerations: Int = 30
 
--- D059: main now returns Result Unit Error; Ok () closes the happy path.
+-- main now returns Result Unit Error; Ok () closes the happy path.
 fn env io time main () -> Result Unit Error =
     let args = Cli.args ()
     let generations =
@@ -99,7 +99,7 @@ fn env io time main () -> Result Unit Error =
  |> Option.flatMap Int.parse
  |> Option.withDefault defaultGenerations
 
-    -- D058: inner fn with capability prefixes is explicitly allowed.
+    -- Inner fn with capability prefixes is explicitly allowed.
     -- Inner loop keeps I/O and time away from the pure step function.
     fn io time loop (gen: Int) (grid: Grid) -> Unit =
         guard (gen > 0) else return ()

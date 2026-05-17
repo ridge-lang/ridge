@@ -1,8 +1,8 @@
 -- Private FFI bridges for std.fs test suite.
 -- These replicate fs.rg and env.rg FFI declarations in local scope because
 -- cross-module calls are unsupported (T17+ deferred).
--- Several tests require both `fs` and `env` capabilities (dual-cap, per OQ-C026
--- / D176); capability syntax: `pub fn fs env test_name ()`.
+-- Several tests require both `fs` and `env` capabilities (dual-cap);
+-- capability syntax: `pub fn fs env test_name ()`.
 @ffi("file", "read_file", 1)
 fn _readFile (path: Text) -> Result Text Text
 

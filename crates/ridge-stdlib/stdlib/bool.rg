@@ -1,7 +1,7 @@
 -- std.bool — Boolean utilities (Tier 1, no stdlib imports).
 --
 -- All four functions are direct @ffi wrappers to BEAM erlang:*.
--- D044: prefix `!` is exclusively send; Bool.not is the only logical-negation surface.
+-- Prefix `!` is exclusively send; Bool.not is the only logical-negation surface.
 
 -- Logical negation.
 @ffi("erlang", "not", 1)

@@ -1,8 +1,8 @@
 -- std.list — List utilities (Tier 2, imports std.option via prelude).
 --
--- D024: data-arg-last convention.
--- D026: `range` is inclusive.
--- D041: HOF capability transparency (cap vars not yet in parser; HOFs are
+-- Data-arg-last convention.
+-- `range` is inclusive.
+-- HOF capability transparency (cap vars not yet in parser; HOFs are
 --       written without explicit cap annotations on function parameters).
 --
 -- Option/Some/None come from the language prelude — no import required.
@@ -50,7 +50,7 @@ pub fn filterMap (f: fn a -> Option b) (xs: List a) -> List b =
                 None    -> filterMap f rest
 
 -- Fold left over a list with an initial accumulator.
--- B-D014 hotfix v3 Wave 2: routed via ridge_rt:list_fold so the callback's
+-- Routed via ridge_rt:list_fold so the callback's
 -- argument order (acc, elem) matches the Ridge type signature.  Erlang's
 -- lists:foldl/3 calls its callback as (elem, acc), so a direct FFI bridge
 -- silently swapped the arguments at every iteration.
@@ -70,7 +70,7 @@ pub fn reverse (xs: List a) -> List a
 pub fn sort (xs: List a) -> List a
 
 -- Sort a list using a key function to derive comparison values.
--- B-D015 hotfix v3 Wave 2: routed via ridge_rt:list_sort_by so the user's
+-- Routed via ridge_rt:list_sort_by so the user's
 -- key function is wrapped into a comparator before being handed to
 -- lists:sort/2.  The previous direct bridge invoked the key function as
 -- if it were a comparator (`Key(A, B) -> bool`), producing nonsense
@@ -148,12 +148,12 @@ pub fn any (p: fn a -> Bool) (xs: List a) -> Bool
 pub fn all (p: fn a -> Bool) (xs: List a) -> Bool
 
 -- Return a list of integers from lo to hi inclusive.
--- D026: range is inclusive at both ends.
+-- Range is inclusive at both ends.
 @ffi("lists", "seq", 2)
 pub fn range (lo: Int) (hi: Int) -> List Int
 
 -- Return a list of integers from lo to hi exclusive.
--- D026: rangeExclusive excludes hi.
+-- rangeExclusive excludes hi.
 pub fn rangeExclusive (lo: Int) (hi: Int) -> List Int =
     range lo (hi - 1)
 

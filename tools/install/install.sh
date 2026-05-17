@@ -212,7 +212,152 @@ if ! version_ge "$git_ver" "$MIN_GIT"; then
     exit 1
 fi
 
+# ──────────────────────────────────────────────────────────────────────────────
+# Binary install path (R051-R054)
+# ──────────────────────────────────────────────────────────────────────────────
+
+install_from_binary() {
+    local triple
+    triple="$(detect_triple)" || return 1
+
+    local version="${RIDGE_VERSION:-}"
+    if [ -z "$version" ]; then
+        version="$(fetch_latest_version)" || {
+            emit_advisory R051 "Could not query latest release tag from GitHub"
+            return 1
+        }
+    fi
+
+    local asset_name="ridge-${triple}.tar.gz"
+    local asset_url="https://github.com/ridge-lang/ridge/releases/download/${version}/${asset_name}"
+    local sha_url="${asset_url}.sha256"
+
+    local tmpdir
+    tmpdir="$(mktemp -d)" || return 1
+    trap 'rm -rf "$tmpdir"' RETURN
+
+    echo "Downloading ${asset_name} (${version})..."
+    if ! curl -fsSL "$asset_url" -o "$tmpdir/${asset_name}"; then
+        emit_advisory R051 "Failed to download ${asset_url}"
+        return 1
+    fi
+
+    if ! curl -fsSL "$sha_url" -o "$tmpdir/${asset_name}.sha256"; then
+        emit_advisory R051 "Failed to download SHA256 sidecar from ${sha_url}"
+        return 1
+    fi
+
+    echo "Verifying SHA256..."
+    pushd "$tmpdir" >/dev/null
+    if ! shasum -a 256 -c "${asset_name}.sha256" >/dev/null 2>&1; then
+        # Try sha256sum (Linux) if shasum (macOS) not available
+        if command -v sha256sum >/dev/null 2>&1; then
+            if ! sha256sum -c "${asset_name}.sha256" >/dev/null 2>&1; then
+                emit_advisory R052 "SHA256 mismatch for ${asset_name}"
+                popd >/dev/null
+                return 1
+            fi
+        else
+            emit_advisory R052 "SHA256 verification failed (no shasum or sha256sum found)"
+            popd >/dev/null
+            return 1
+        fi
+    fi
+    popd >/dev/null
+
+    echo "Extracting to $INSTALL_DIR..."
+    mkdir -p "$INSTALL_DIR"
+    if ! tar -xzf "$tmpdir/${asset_name}" -C "$INSTALL_DIR"; then
+        emit_advisory R054 "Failed to extract ${asset_name} to ${INSTALL_DIR}"
+        return 1
+    fi
+
+    chmod +x "$INSTALL_DIR/ridge" "$INSTALL_DIR/ridge-lsp"
+    echo "Installed ridge + ridge-lsp to $INSTALL_DIR"
+    return 0
+}
+
+detect_triple() {
+    local os arch
+    case "$(uname -s)" in
+        Linux)  os="unknown-linux-gnu" ;;
+        Darwin) os="apple-darwin" ;;
+        *)      emit_advisory R053 "Unsupported OS: $(uname -s)"; return 1 ;;
+    esac
+    case "$(uname -m)" in
+        x86_64)  arch="x86_64" ;;
+        arm64|aarch64) arch="aarch64" ;;
+        *)       emit_advisory R053 "Unsupported architecture: $(uname -m)"; return 1 ;;
+    esac
+    # macOS x86_64 → x86_64-apple-darwin (Intel Macs)
+    # macOS arm64  → aarch64-apple-darwin (M1/M2/M3)
+    # Linux x86_64 → x86_64-unknown-linux-gnu
+    # Linux arm64  → not yet built (no aarch64-unknown-linux-gnu artifact)
+    if [ "$os" = "unknown-linux-gnu" ] && [ "$arch" = "aarch64" ]; then
+        emit_advisory R053 "Linux aarch64 not yet built — falling back to source install"
+        return 1
+    fi
+    echo "${arch}-${os}"
+}
+
+fetch_latest_version() {
+    # Try /releases/latest first (excludes prereleases). On 404, fall back to /releases (all).
+    local url="https://api.github.com/repos/ridge-lang/ridge/releases/latest"
+    local tag
+    tag="$(curl -fsSL "$url" 2>/dev/null | grep -m1 '"tag_name"' | sed -E 's/.*"tag_name": *"([^"]+)".*/\1/')"
+    if [ -n "$tag" ]; then
+        echo "$tag"
+        return 0
+    fi
+    # Fallback: latest including prereleases
+    url="https://api.github.com/repos/ridge-lang/ridge/releases?per_page=1"
+    tag="$(curl -fsSL "$url" 2>/dev/null | grep -m1 '"tag_name"' | sed -E 's/.*"tag_name": *"([^"]+)".*/\1/')"
+    if [ -n "$tag" ]; then
+        echo "$tag"
+        return 0
+    fi
+    return 1
+}
+
+emit_advisory() {
+    local code="$1" message="$2"
+    echo "advisory ${code}: ${message}" >&2
+}
+
 # ── Step 6: Install ridge-cli and ridge-lsp ──────────────────────────────────
+# Determine install location
+INSTALL_DIR="${RIDGE_INSTALL_DIR:-$HOME/.cargo/bin}"
+
+# Binary-first install path (unless RIDGE_FORCE_SOURCE=1)
+if [ "${RIDGE_FORCE_SOURCE:-0}" != "1" ]; then
+    if install_from_binary; then
+        # Run the post-install version check and exit success
+        echo "Verifying installation ..."
+        EXPECTED_VERSION="ridge 0.2.0-rc2"
+        if ! ridge_out="$(ridge --version 2>&1)"; then
+            echo "error: ridge --version failed after install." >&2
+            echo "  Ensure $INSTALL_DIR is on your PATH:" >&2
+            echo "    export PATH=\"$INSTALL_DIR:\$PATH\"" >&2
+            exit 1
+        fi
+        if ! echo "$ridge_out" | grep -qF "$EXPECTED_VERSION"; then
+            echo "warning: ridge --version printed '$ridge_out'; expected '$EXPECTED_VERSION'." >&2
+            echo "  The binary was installed but may be a different version." >&2
+        fi
+        echo ""
+        echo "Ridge installed successfully!"
+        echo ""
+        echo "  ridge version: $(ridge --version)"
+        echo ""
+        echo "Get started:"
+        echo "  ridge new my-app && cd my-app && ridge run"
+        echo ""
+        echo "Documentation: https://ridge-lang.org/docs"
+        exit 0
+    fi
+    echo "Falling back to source install via cargo..."
+fi
+
 # Repository / branch are overridable via env vars so CI matrices can pin to
 # the transient public mirror (`ridge-lang/ridge`) until `ridge-lang/ridge`
 # opens publicly.  Defaults are deterministic and used by `--snapshot` mode.

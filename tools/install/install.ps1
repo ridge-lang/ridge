@@ -8,26 +8,47 @@
     (Rust >= 1.88, Erlang/OTP >= 26, git >= 2.20) and then running
     `cargo install` for ridge-cli and ridge-lsp.
 
-.PARAMETER DryRun
-    Print every command that would be executed (one per line, prefixed
-    "[dry-run]") then exit without side-effects.  Used by reviewers and
-    the CI dry-run snapshot lane.
+.ENVIRONMENT
+    RIDGE_DRY_RUN     Set to "1" to print every command that would be
+                      executed (one per line, prefixed "[dry-run]") then
+                      exit without side-effects.
+    RIDGE_SNAPSHOT    Set to "1" alongside RIDGE_DRY_RUN to strip
+                      platform-detected values for deterministic snapshot
+                      output (CI lane).
+    RIDGE_VERSION     Override the release version to install (e.g.
+                      "v0.2.0-rc2"). Defaults to latest published release.
+    RIDGE_INSTALL_DIR Override the install directory. Defaults to
+                      "$env:USERPROFILE\.cargo\bin".
+    RIDGE_FORCE_SOURCE Set to "1" to skip the binary-download path and
+                      install from source via cargo.
 
 .EXAMPLE
+    # Standard pipe install:
     iwr -useb https://ridge-lang.org/install.ps1 | iex
 
 .EXAMPLE
-    .\install.ps1 -DryRun
+    # Dry-run via env var:
+    $env:RIDGE_DRY_RUN = "1"
+    iwr -useb https://ridge-lang.org/install.ps1 | iex
+    $env:RIDGE_DRY_RUN = $null
+
+.EXAMPLE
+    # Download then execute:
+    iwr -useb https://ridge-lang.org/install.ps1 -OutFile "$env:TEMP\ridge-install.ps1"
+    & "$env:TEMP\ridge-install.ps1"
+    Remove-Item "$env:TEMP\ridge-install.ps1"
 
 .NOTES
     If PowerShell script execution is blocked, run first:
         Set-ExecutionPolicy -Scope Process Bypass
 #>
-[CmdletBinding()]
-param(
-    [switch]$DryRun,
-    [switch]$Snapshot   # CI mode: strip platform-detected values for determinism
-)
+# Flags are read from environment variables instead of param() because this
+# script is also invoked via `iwr -useb <url> | iex`, and PowerShell's
+# Invoke-Expression does not support param blocks (it evaluates the script
+# as an expression, not a script file). Env vars work in both invocation
+# modes.
+$DryRun   = $env:RIDGE_DRY_RUN   -eq "1"
+$Snapshot = $env:RIDGE_SNAPSHOT  -eq "1"
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'

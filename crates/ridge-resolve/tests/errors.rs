@@ -281,7 +281,11 @@ fn r002_duplicate_module_across_projects() {
         "libs/acme/ridge.toml",
         "[project]\nname = \"acme\"\nversion = \"0.1.0\"\nkind = \"library\"\n",
     );
-    write_file(td.path(), "libs/acme/src/domain/Foo.ridge", "fn noop = ()\n");
+    write_file(
+        td.path(),
+        "libs/acme/src/domain/Foo.ridge",
+        "fn noop = ()\n",
+    );
     write_file(
         td.path(),
         "libs/acmedomain/ridge.toml",
@@ -461,7 +465,11 @@ fn r013_forbid_violation_acme_workspace() {
          [project.exports]\n\
          public = [\"**\"]\n",
     );
-    write_file(td.path(), "libs/infra/src/Postgres.ridge", "fn connect = ()\n");
+    write_file(
+        td.path(),
+        "libs/infra/src/Postgres.ridge",
+        "fn connect = ()\n",
+    );
 
     let errors = run_pipeline(&td);
     let r013_count = errors.iter().filter(|e| e.code() == "R013").count();

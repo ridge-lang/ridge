@@ -579,7 +579,11 @@ mod tests {
         let td = TempDir::new().expect("tempdir");
         write_file(td.path(), "ridge.toml", &workspace_toml(&["libs/*"]));
         write_file(td.path(), "libs/proj/ridge.toml", &project_toml("proj"));
-        write_file(td.path(), "libs/proj/src/Alpha.ridge", "import std.io as Io\n");
+        write_file(
+            td.path(),
+            "libs/proj/src/Alpha.ridge",
+            "import std.io as Io\n",
+        );
         write_file(
             td.path(),
             "libs/proj/src/Beta.ridge",

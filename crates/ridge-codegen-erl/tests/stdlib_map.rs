@@ -65,7 +65,11 @@ fn make_workspace(id: &str, module_name: &str, source: &str) -> TempWorkspace {
         "apps/demo/ridge.toml",
         "[project]\nname = \"demo\"\nversion = \"0.1.0\"\nkind = \"library\"\n",
     );
-    write_file(&tw.path, &format!("apps/demo/src/{module_name}.ridge"), source);
+    write_file(
+        &tw.path,
+        &format!("apps/demo/src/{module_name}.ridge"),
+        source,
+    );
     tw
 }
 

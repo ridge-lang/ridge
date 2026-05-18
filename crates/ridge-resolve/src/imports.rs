@@ -1252,7 +1252,11 @@ mod tests {
         );
         write_file(td.path(), "libs/proj_b/ridge.toml", &project_toml("proj_b"));
         // `fn private_fn` with no `pub` → ProjectPrivate
-        write_file(td.path(), "libs/proj_b/src/B.ridge", "fn private_fn () = ()\n");
+        write_file(
+            td.path(),
+            "libs/proj_b/src/B.ridge",
+            "fn private_fn () = ()\n",
+        );
 
         // proj_b has no exports — everything is internal by default.
         // Add a wildcard public export so R007 doesn't fire and we isolate R009.
@@ -1290,7 +1294,11 @@ mod tests {
         let td = TempDir::new().expect("tempdir");
         write_file(td.path(), "ridge.toml", &workspace_toml(&["libs/*"]));
         write_file(td.path(), "libs/proj_a/ridge.toml", &project_toml("proj_a"));
-        write_file(td.path(), "libs/proj_a/src/A.ridge", "import proj_b.B as B\n");
+        write_file(
+            td.path(),
+            "libs/proj_a/src/A.ridge",
+            "import proj_b.B as B\n",
+        );
         // proj_b with no public exports at all.
         write_file(td.path(), "libs/proj_b/ridge.toml", &project_toml("proj_b"));
         write_file(td.path(), "libs/proj_b/src/B.ridge", "");
@@ -1326,7 +1334,11 @@ mod tests {
         let td = TempDir::new().expect("tempdir");
         write_file(td.path(), "ridge.toml", &workspace_toml(&["libs/*"]));
         write_file(td.path(), "libs/proj_a/ridge.toml", &project_toml("proj_a"));
-        write_file(td.path(), "libs/proj_a/src/A.ridge", "import proj_b.B as B\n");
+        write_file(
+            td.path(),
+            "libs/proj_a/src/A.ridge",
+            "import proj_b.B as B\n",
+        );
         let proj_b_toml = "[project]\nname = \"proj_b\"\nversion = \"0.1.0\"\nkind = \"library\"\n\n[project.exports]\npublic = [\"proj_b.**\"]\n";
         write_file(td.path(), "libs/proj_b/ridge.toml", proj_b_toml);
         write_file(td.path(), "libs/proj_b/src/B.ridge", "");
@@ -1361,7 +1373,11 @@ mod tests {
         let td = TempDir::new().expect("tempdir");
         write_file(td.path(), "ridge.toml", &workspace_toml(&["libs/*"]));
         write_file(td.path(), "libs/proj_a/ridge.toml", &project_toml("acme.a"));
-        write_file(td.path(), "libs/proj_a/src/A.ridge", "import acme.b.B as B\n");
+        write_file(
+            td.path(),
+            "libs/proj_a/src/A.ridge",
+            "import acme.b.B as B\n",
+        );
         let proj_b_toml = "[project]\nname = \"acme.b\"\nversion = \"0.1.0\"\nkind = \"library\"\n\n[project.exports]\ninternal = [\"acme.b.**\"]\n";
         write_file(td.path(), "libs/proj_b/ridge.toml", proj_b_toml);
         write_file(td.path(), "libs/proj_b/src/B.ridge", "");
@@ -2185,7 +2201,11 @@ mod tests {
         // a typo `helpor` from B.  Distance(`helpor`, `helper`) = 2 (hit);
         // distance(`helpor`, `_helpr`) = 2 → would also hit if visible, but
         // visibility filtering must drop the underscored one.
-        write_file(td.path(), "libs/proj/src/A.ridge", "import proj.B (helpor)\n");
+        write_file(
+            td.path(),
+            "libs/proj/src/A.ridge",
+            "import proj.B (helpor)\n",
+        );
         write_file(
             td.path(),
             "libs/proj/src/B.ridge",

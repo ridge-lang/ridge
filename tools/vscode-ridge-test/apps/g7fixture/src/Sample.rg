@@ -1,9 +1,8 @@
 -- tools/vscode-ridge-test/apps/g7fixture/src/Sample.rg
 --
--- G7 manual attestation fixture.  Open this
--- file in VS Code with the Ridge extension installed (see
--- ../../../docs/T15_G7_MANUAL_ATTESTATION.md) and verify three diagnostics
--- appear in the Problems panel within ~250 ms.
+-- Manual VS Code diagnostics fixture.  Open this file in VS Code with the
+-- Ridge extension installed and verify three diagnostics appear in the
+-- Problems panel within ~250 ms.
 --
 -- DIAGNOSTIC #1 — R013 ForbidViolation
 -- ------------------------------------

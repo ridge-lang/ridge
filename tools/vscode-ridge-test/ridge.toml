@@ -1,5 +1,5 @@
-# tools/vscode-ridge-test/ridge.toml — workspace root manifest for the G7
-# manual VS Code attestation fixture.
+# tools/vscode-ridge-test/ridge.toml — workspace root manifest for the
+# manual VS Code diagnostics fixture.
 #
 # The forbid rule below makes std.fs unreachable from the g7fixture.* project,
 # triggering R013 ForbidViolation when src/Sample.rg imports it.

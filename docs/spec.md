@@ -1,9 +1,9 @@
 # Ridge — Language Specification & Development Roadmap
 
-**Version:** 0.1.0-draft
+**Version:** 0.2.0-rc4
 **Target:** First public release (Ridge 0.1.0)
-**Author:** Angel (creator) with design collaboration
-**Last updated:** April 2026
+**Author:** The Ridge Language Authors
+**Last updated:** 2026-05-18
 
 **History:** Supersedes `RILL_SPEC_AND_ROADMAP.md` (v0.1.0-draft, Rill). The language was renamed from *Rill* to *Ridge* after a design refinement pass. The underlying philosophy is preserved; the following are the substantive changes from the prior draft:
 - Language name: **Ridge** (was *Rill*). File extension: **`.rg`** (was `.rill`). Manifest: **`ridge.toml`** (was `rill.toml`).

@@ -1,6 +1,6 @@
-# Ridge 0.1.0 — Personal Quickstart
+# Ridge — Quickstart
 
-Install guide for Ridge 0.2.0-rc1.
+Install guide for Ridge 0.2.0-rc3.
 
 ---
 
@@ -25,31 +25,40 @@ cargo install --path crates/ridge-cli
 cargo install --path crates/ridge-lsp
 ```
 
-### Option B — Install from the mirror (second machine, no local clone)
+### Option B — Install from the published release (no local clone)
 
-The canonical public org (`ridge-lang/ridge`) is not yet public. To install from the current mirror, override the defaults:
+Downloads a pre-built `ridge` + `ridge-lsp` binary from the latest GitHub release, verifies its SHA256, and extracts to `~/.cargo/bin`.
 
 ```powershell
-$env:RIDGE_REPO   = 'https://github.com/ridge-lang/ridge'
-$env:RIDGE_BRANCH = 'main'
+# Windows (PowerShell)
 & ([scriptblock]::Create((iwr -useb 'https://raw.githubusercontent.com/ridge-lang/ridge/main/tools/install/install.ps1').Content))
 ```
 
-On Linux/macOS, use `install.sh` instead:
-
 ```bash
-export RIDGE_REPO='https://github.com/ridge-lang/ridge'
-export RIDGE_BRANCH='main'
-curl -fsSL https://raw.githubusercontent.com/ridge-lang/ridge/main/tools/install/install.sh | bash
+# Linux / macOS — pass the script as an argument, do NOT pipe to a shell
+bash -c "$(curl -fsSL https://raw.githubusercontent.com/ridge-lang/ridge/main/tools/install/install.sh)"
 ```
 
-To validate on a second machine without a local clone, use Option B. Option A is available if the repo is already cloned there.
+To pin a specific release tag, set `RIDGE_VERSION`:
+
+```powershell
+$env:RIDGE_VERSION = 'v0.2.0-rc3'
+& ([scriptblock]::Create((iwr -useb 'https://raw.githubusercontent.com/ridge-lang/ridge/main/tools/install/install.ps1').Content))
+```
+
+```bash
+RIDGE_VERSION=v0.2.0-rc3 bash -c "$(curl -fsSL https://raw.githubusercontent.com/ridge-lang/ridge/main/tools/install/install.sh)"
+```
+
+> **Why not `curl … | sh` (or `| bash`)?** The installer's Erlang prerequisite check calls `erl -noshell -eval …`, which reads stdin. When the script is piped through a shell, stdin IS the script body; `erl` consumes the still-unread bytes, the shell hits EOF, and the installer exits silently with zero output. Passing the script as an argument (`bash -c "$(curl …)"`) or downloading first and executing (`curl -o /tmp/i.sh … && bash /tmp/i.sh`) gives `erl` a clean stdin.
 
 ### Verify
 
 ```powershell
 ~/.cargo/bin/ridge --version
-# expected: ridge 0.1.0
+# expected: ridge 0.2.0-rc3
+~/.cargo/bin/ridge-lsp --version
+# expected: ridge-lsp 0.2.0-rc3
 ```
 
 Use the explicit path (`~/.cargo/bin/ridge`), not a glob. The installer's success banner (install.ps1 lines 261–269) also prints this and suggests the next step.
@@ -61,7 +70,7 @@ Use the explicit path (`~/.cargo/bin/ridge`), not a glob. The installer's succes
 The `.vsix` is not in git (see `tools/vscode-ridge/.gitignore`). Build it from source. pnpm is required — corepack picks pnpm 11.1.1 from the `packageManager` field.
 
 ```powershell
-cd H:\PROJECTS\jaavila\Ridge\tools\vscode-ridge
+cd <repo-root>\tools\vscode-ridge
 pnpm install
 pnpm run bundle
 pnpm dlx @vscode/vsce package --no-dependencies
@@ -121,7 +130,7 @@ pub fn main () -> Result Unit Text =
 Use the existing G7 fixture workspace — it already has all three diagnostic triggers in place and does not require any editing.
 
 ```powershell
-code H:\PROJECTS\jaavila\Ridge\tools\vscode-ridge-test
+code <repo-root>\tools\vscode-ridge-test
 ```
 
 Open the file:

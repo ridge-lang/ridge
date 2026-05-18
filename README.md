@@ -10,7 +10,7 @@
 > developer experience, safety from the root, first-class performance, and
 > approachability.
 
-**Status:** 0.2.0-rc1 (release candidate). See [`CHANGELOG.md`](CHANGELOG.md)
+**Status:** 0.2.0-rc3 (release candidate). See [`CHANGELOG.md`](CHANGELOG.md)
 for what landed, and [`docs/spec.md`](docs/spec.md) for the full language
 specification.
 
@@ -48,8 +48,11 @@ Cross-platform install scripts are under [`tools/install/`](tools/install/).
 Full instructions in [`docs/tutorial.md`](docs/tutorial.md).
 
 ```sh
-# Linux / macOS
-curl -fsSL https://raw.githubusercontent.com/ridge-lang/ridge/main/tools/install/install.sh | sh
+# Linux / macOS — pass the script as an argument; do NOT pipe to a shell.
+# The installer's Erlang prereq check reads stdin; piping through `sh` or
+# `bash` causes `erl` to consume the script body and the shell to exit
+# silently before installing anything.
+bash -c "$(curl -fsSL https://raw.githubusercontent.com/ridge-lang/ridge/main/tools/install/install.sh)"
 
 # Windows (PowerShell)
 & ([scriptblock]::Create((iwr -useb 'https://raw.githubusercontent.com/ridge-lang/ridge/main/tools/install/install.ps1').Content))

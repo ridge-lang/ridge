@@ -7,6 +7,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.0-rc4] - 2026-05-18
+
+Release candidate adding Sigstore keyless signing for release artifacts and
+opportunistic signature verification in the install scripts. Integrity guarantees
+remain SHA256-anchored when `cosign` is unavailable.
+
+### Added
+
+- Sigstore keyless signing in `release.yml`: every release archive is signed with `cosign sign-blob --yes --bundle`, producing a `.cosign.bundle` sidecar (signature, certificate, and Rekor transparency-log entry) uploaded next to the archive and its SHA256
+- `install.sh` and `install.ps1` opportunistically download the `.cosign.bundle` and, when `cosign` is on PATH, verify it with `cosign verify-blob` pinned to the `ridge-lang/ridge` release workflow identity and the GitHub Actions OIDC issuer
+- "Verifying release signatures manually" section in `tools/install/README.md` with the full `cosign verify-blob` recipe
+
+### Security
+
+- Release artifacts are now cryptographically signed and logged to the Rekor public transparency log, providing tamper-evident provenance in addition to SHA256 integrity
+- Installer pins the verification identity to `https://github.com/ridge-lang/ridge/.github/workflows/release.yml@refs/tags/v*` and the OIDC issuer to `https://token.actions.githubusercontent.com`, so a signature minted by any other workflow or fork is rejected
+
+### Changed
+
+- New advisory codes in the installer output: `R055` when `cosign` is not on PATH (signature check skipped, SHA256 still enforced) and `R056` when `cosign verify-blob` fails (installation aborts)
+- `release.yml` job permissions now include `id-token: write` so the runner can mint the OIDC token Sigstore exchanges for a short-lived signing certificate
+
 ## [0.2.0-rc3] - 2026-05-18
 
 Release candidate cut to align release artifacts with the install-script
@@ -48,7 +70,8 @@ Initial public release candidate.
 - Standard library: `bool`, `cli`, `env`, `float`, `fs`, `int`, `io`, `json`, `list`, `map`, `net.http`, `option`, `proc`, `random`, `text`, `time`
 - Apache-2.0 licensed
 
-[Unreleased]: https://github.com/ridge-lang/ridge/compare/v0.2.0-rc3...HEAD
+[Unreleased]: https://github.com/ridge-lang/ridge/compare/v0.2.0-rc4...HEAD
+[0.2.0-rc4]: https://github.com/ridge-lang/ridge/releases/tag/v0.2.0-rc4
 [0.2.0-rc3]: https://github.com/ridge-lang/ridge/releases/tag/v0.2.0-rc3
 [0.2.0-rc2]: https://github.com/ridge-lang/ridge/releases/tag/v0.2.0-rc2
 [0.2.0-rc1]: https://github.com/ridge-lang/ridge/releases/tag/v0.2.0-rc1

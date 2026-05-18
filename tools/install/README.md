@@ -16,7 +16,7 @@ curl -sSf https://ridge-lang.org/install.sh | sh
 **Windows** (PowerShell)
 
 ```powershell
-& ([scriptblock]::Create((iwr -useb 'https://ridge-lang.org/install.ps1' -UseBasicParsing).Content))
+& ([scriptblock]::Create((iwr -useb 'https://ridge-lang.org/install.ps1').Content))
 ```
 
 If PowerShell script execution is blocked, run first:
@@ -31,7 +31,7 @@ Options are passed via environment variables (PowerShell's `Invoke-Expression` d
 
 ```powershell
 $env:RIDGE_FORCE_SOURCE = "1"
-& ([scriptblock]::Create((iwr -useb 'https://raw.githubusercontent.com/ridge-lang/ridge/main/tools/install/install.ps1' -UseBasicParsing).Content))
+& ([scriptblock]::Create((iwr -useb 'https://raw.githubusercontent.com/ridge-lang/ridge/main/tools/install/install.ps1').Content))
 $env:RIDGE_FORCE_SOURCE = $null
 ```
 
@@ -96,7 +96,7 @@ sh install.sh --dry-run
 ```powershell
 # Windows — env var (works in both pipe and download-then-execute modes)
 $env:RIDGE_DRY_RUN = "1"
-& ([scriptblock]::Create((iwr -useb 'https://ridge-lang.org/install.ps1' -UseBasicParsing).Content))
+& ([scriptblock]::Create((iwr -useb 'https://ridge-lang.org/install.ps1').Content))
 $env:RIDGE_DRY_RUN = $null
 
 # Windows — download then execute

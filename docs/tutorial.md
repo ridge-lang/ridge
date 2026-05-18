@@ -32,7 +32,7 @@ The canonical public org (`ridge-lang/ridge`) is not yet public. To install from
 ```powershell
 $env:RIDGE_REPO   = 'https://github.com/ridge-lang/ridge'
 $env:RIDGE_BRANCH = 'main'
-irm https://raw.githubusercontent.com/ridge-lang/ridge/main/tools/install/install.ps1 | iex
+& ([scriptblock]::Create((iwr -useb 'https://raw.githubusercontent.com/ridge-lang/ridge/main/tools/install/install.ps1' -UseBasicParsing).Content))
 ```
 
 On Linux/macOS, use `install.sh` instead:

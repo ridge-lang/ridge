@@ -52,7 +52,7 @@ Full instructions in [`docs/tutorial.md`](docs/tutorial.md).
 curl -fsSL https://raw.githubusercontent.com/ridge-lang/ridge/main/tools/install/install.sh | sh
 
 # Windows (PowerShell)
-iwr -useb https://raw.githubusercontent.com/ridge-lang/ridge/main/tools/install/install.ps1 | iex
+& ([scriptblock]::Create((iwr -useb 'https://raw.githubusercontent.com/ridge-lang/ridge/main/tools/install/install.ps1' -UseBasicParsing).Content))
 ```
 
 ## CLI usage

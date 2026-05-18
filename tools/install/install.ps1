@@ -1,4 +1,4 @@
-﻿#Requires -Version 5.1
+#Requires -Version 5.1
 <#
 .SYNOPSIS
     Ridge installer for Windows (PowerShell).
@@ -23,18 +23,19 @@
                       install from source via cargo.
 
 .EXAMPLE
-    # Standard pipe install:
-    iwr -useb https://ridge-lang.org/install.ps1 | iex
+    # Recommended one-liner — wraps the script in a scriptblock so `exit`
+    # statements terminate the install, not the calling shell:
+    & ([scriptblock]::Create((iwr -useb 'https://ridge-lang.org/install.ps1' -UseBasicParsing).Content))
 
 .EXAMPLE
-    # Dry-run via env var:
+    # With env-var options (e.g. dry-run):
     $env:RIDGE_DRY_RUN = "1"
-    iwr -useb https://ridge-lang.org/install.ps1 | iex
+    & ([scriptblock]::Create((iwr -useb 'https://ridge-lang.org/install.ps1' -UseBasicParsing).Content))
     $env:RIDGE_DRY_RUN = $null
 
 .EXAMPLE
-    # Download then execute:
-    iwr -useb https://ridge-lang.org/install.ps1 -OutFile "$env:TEMP\ridge-install.ps1"
+    # Download then execute (also fine):
+    iwr -useb 'https://ridge-lang.org/install.ps1' -OutFile "$env:TEMP\ridge-install.ps1"
     & "$env:TEMP\ridge-install.ps1"
     Remove-Item "$env:TEMP\ridge-install.ps1"
 

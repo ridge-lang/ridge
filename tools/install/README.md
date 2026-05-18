@@ -16,7 +16,7 @@ curl -sSf https://ridge-lang.org/install.sh | sh
 **Windows** (PowerShell)
 
 ```powershell
-iwr -useb https://ridge-lang.org/install.ps1 | iex
+& ([scriptblock]::Create((iwr -useb 'https://ridge-lang.org/install.ps1' -UseBasicParsing).Content))
 ```
 
 If PowerShell script execution is blocked, run first:
@@ -31,9 +31,15 @@ Options are passed via environment variables (PowerShell's `Invoke-Expression` d
 
 ```powershell
 $env:RIDGE_FORCE_SOURCE = "1"
-iwr -useb https://raw.githubusercontent.com/ridge-lang/ridge/main/tools/install/install.ps1 | iex
+& ([scriptblock]::Create((iwr -useb 'https://raw.githubusercontent.com/ridge-lang/ridge/main/tools/install/install.ps1' -UseBasicParsing).Content))
 $env:RIDGE_FORCE_SOURCE = $null
 ```
+
+> **Why `& ([scriptblock]::Create(...))` instead of `| iex`?** Two reasons:
+> 1. `iex` (`Invoke-Expression`) evaluates the input as an expression, not a script file, so `param` blocks and `#Requires` directives at the top of `install.ps1` are mishandled.
+> 2. `exit` statements inside `iex` terminate the **calling shell** (i.e. close your terminal window). Wrapping the script in a scriptblock isolates `exit` to the scriptblock's scope.
+>
+> The `[scriptblock]::Create(...)` pattern is the same one used by `rustup-init.ps1`.
 
 ## Install behavior
 
@@ -90,7 +96,7 @@ sh install.sh --dry-run
 ```powershell
 # Windows — env var (works in both pipe and download-then-execute modes)
 $env:RIDGE_DRY_RUN = "1"
-iwr -useb https://ridge-lang.org/install.ps1 | iex
+& ([scriptblock]::Create((iwr -useb 'https://ridge-lang.org/install.ps1' -UseBasicParsing).Content))
 $env:RIDGE_DRY_RUN = $null
 
 # Windows — download then execute

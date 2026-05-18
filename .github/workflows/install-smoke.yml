@@ -60,12 +60,16 @@ jobs:
           otp-version: "26"
 
       # ── Run install script (will download binaries from release) ──
+      # Pipe through `bash` (not `sh`) on Linux: Ubuntu's /bin/sh is dash,
+      # which rejects some constructs install.sh uses. install.sh itself
+      # should eventually be POSIX-clean, but explicit `bash` here is the
+      # robust pattern (rustup, deno, etc. all use it).
       - name: Run install script (Unix)
         if: matrix.os != 'windows'
         env:
           RIDGE_VERSION: ${{ steps.ver.outputs.version }}
         run: |
-          curl -fsSL "https://raw.githubusercontent.com/ridge-lang/ridge/${{ github.sha }}/tools/install/install.sh" | sh
+          curl -fsSL "https://raw.githubusercontent.com/ridge-lang/ridge/${{ github.sha }}/tools/install/install.sh" | bash
 
       - name: Run install script (Windows)
         if: matrix.os == 'windows'
@@ -76,40 +80,50 @@ jobs:
           $url = "https://raw.githubusercontent.com/ridge-lang/ridge/${{ github.sha }}/tools/install/install.ps1"
           & ([scriptblock]::Create((iwr -useb $url).Content))
 
-      # ── Verify both binaries are on PATH and report expected version ──
-      - name: Verify ridge --version
-        shell: bash
-        run: |
-          ridge --version
+      # ── Ensure install location is on PATH for subsequent steps ──
+      # install.sh extracts to $HOME/.cargo/bin by default; the setup-rust
+      # action usually adds this to PATH, but make it explicit so the verify
+      # steps reliably find the binaries on every runner.
+      - name: Add install dir to PATH (Unix)
+        if: matrix.os != 'windows'
+        run: echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
 
+      - name: Add install dir to PATH (Windows)
+        if: matrix.os == 'windows'
+        shell: pwsh
+        run: |
+          $cargoBin = Join-Path $env:USERPROFILE ".cargo\bin"
+          Add-Content -Path $env:GITHUB_PATH -Value $cargoBin
+
+      # ── Verify both binaries: pipe output through grep instead of $() ──
+      # `$()` capture of native .exe output is flaky on Windows Git Bash
+      # (output sometimes arrives empty). Direct pipe to grep -Fxq is
+      # robust across all platforms and matches the EXACT expected line.
       - name: Verify ridge --version output
         shell: bash
         run: |
-          OUT=$(ridge --version)
           EXPECTED="ridge ${{ steps.ver.outputs.expected }}"
-          if [ "$OUT" != "$EXPECTED" ]; then
-            echo "::error::ridge --version printed '$OUT'; expected '$EXPECTED'"
+          echo "Checking that 'ridge --version' prints exactly: $EXPECTED"
+          ridge --version
+          if ! ridge --version 2>&1 | grep -Fxq "$EXPECTED"; then
+            echo "::error::ridge --version did not print the expected line '$EXPECTED'"
             exit 1
           fi
-          echo "ridge --version: $OUT ✓"
-
-      - name: Verify ridge-lsp --version
-        shell: bash
-        run: |
-          ridge-lsp --version
+          echo "ridge --version: matches expected ✓"
 
       - name: Verify ridge-lsp --version output
         shell: bash
         run: |
-          OUT=$(ridge-lsp --version)
           EXPECTED="ridge-lsp ${{ steps.ver.outputs.expected }}"
-          if [ "$OUT" != "$EXPECTED" ]; then
-            echo "::error::ridge-lsp --version printed '$OUT'; expected '$EXPECTED'"
+          echo "Checking that 'ridge-lsp --version' prints exactly: $EXPECTED"
+          ridge-lsp --version
+          if ! ridge-lsp --version 2>&1 | grep -Fxq "$EXPECTED"; then
+            echo "::error::ridge-lsp --version did not print the expected line '$EXPECTED'"
             exit 1
           fi
-          echo "ridge-lsp --version: $OUT ✓"
+          echo "ridge-lsp --version: matches expected ✓"
 
-      # ── Optional end-to-end smoke: create + build a project ──
+      # ── End-to-end smoke: scaffold + build a Ridge project ──
       - name: Scaffold + build smoke project
         shell: bash
         run: |

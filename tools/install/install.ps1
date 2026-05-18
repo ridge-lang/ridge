@@ -255,11 +255,34 @@ function Install-FromBinary {
 
         Write-Host "Extracting to $InstallDir..."
         New-Item -ItemType Directory -Force -Path $InstallDir | Out-Null
+
+        # Stop any running ridge-lsp.exe processes — editors like VS Code keep
+        # the binary locked while the language server is alive, which causes
+        # Expand-Archive -Force to fail with "Access denied" on overwrite.
+        # The LSP reconnects cleanly when the editor re-launches it.
+        $lspProcs = @(Get-Process -Name "ridge-lsp" -ErrorAction SilentlyContinue)
+        if ($lspProcs.Count -gt 0) {
+            Write-Host "Stopping $($lspProcs.Count) running ridge-lsp process(es) to free the binary..."
+            $lspProcs | Stop-Process -Force -ErrorAction SilentlyContinue
+            Start-Sleep -Milliseconds 200
+        }
+
         try {
-            Expand-Archive -Path (Join-Path $tmpDir $assetName) -DestinationPath $InstallDir -Force
+            Expand-Archive -Path (Join-Path $tmpDir $assetName) -DestinationPath $InstallDir -Force -ErrorAction Stop
         } catch {
-            Write-Advisory "R054" "Failed to extract $assetName to $InstallDir"
+            Write-Advisory "R054" "Failed to extract $assetName to $InstallDir : $($_.Exception.Message)"
             return $false
+        }
+
+        # Verify both binaries landed on disk (catches partial extracts where a
+        # locked file silently kept its old content).
+        $ridgeExe    = Join-Path $InstallDir "ridge.exe"
+        $ridgeLspExe = Join-Path $InstallDir "ridge-lsp.exe"
+        foreach ($binPath in @($ridgeExe, $ridgeLspExe)) {
+            if (-not (Test-Path $binPath)) {
+                Write-Advisory "R054" "Expected binary missing after extract: $binPath"
+                return $false
+            }
         }
 
         Write-Host "Installed ridge + ridge-lsp to $InstallDir"

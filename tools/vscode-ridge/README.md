@@ -41,7 +41,7 @@ Reload VS Code after installation (`Developer: Reload Window`).
 
 ## Manual test (M5 acceptance — 1 manual count)
 
-This is the canonical T14 / G7 verification step:
+Manual verification steps for the diagnostics round-trip:
 
 1. Build and sideload the extension per the instructions above.
 2. Open the repository root in VS Code.
@@ -58,7 +58,7 @@ Expected: the diagnostic is listed with the correct file, line, and column. The 
 | Situation | Behaviour |
 |---|---|
 | `ridge-lsp` not on `PATH` | VS Code shows an error message: _"Ridge: failed to start language server. `ridge-lsp` was not found on PATH. Install it via `tools/install/install.sh` …"_ |
-| VS Code < 1.85 | `vscode-languageclient` ~9.0 will not activate correctly; upgrade VS Code. See R11. |
+| VS Code < 1.85 | `vscode-languageclient` ~9.0 will not activate correctly; upgrade VS Code. |
 | First open before `ridge-lsp` is installed | Extension activates (language is registered), but no diagnostics appear until `ridge-lsp` is installed and VS Code is reloaded. |
 
 ## Architecture

@@ -1,0 +1,118 @@
+name: Install smoke
+
+on:
+  release:
+    types: [published, prereleased]
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Release tag to smoke-test (e.g. v0.2.0-rc2)'
+        required: true
+        type: string
+
+# When triggered by a release, the version is github.event.release.tag_name.
+# When triggered manually, use the dispatch input.
+# Concurrency: don't run multiple smoke runs for the same version simultaneously.
+concurrency:
+  group: install-smoke-${{ github.event.release.tag_name || inputs.version }}
+  cancel-in-progress: false
+
+jobs:
+  smoke:
+    name: Install + verify (${{ matrix.os }})
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: linux
+            runner: ubuntu-22.04
+          - os: macos
+            runner: macos-14
+          - os: windows
+            runner: windows-2022
+
+    steps:
+      - name: Resolve version
+        id: ver
+        shell: bash
+        run: |
+          if [ -n "${{ github.event.release.tag_name }}" ]; then
+            VERSION="${{ github.event.release.tag_name }}"
+          else
+            VERSION="${{ inputs.version }}"
+          fi
+          echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
+          # Expected version string is the tag without the leading 'v'.
+          EXPECTED="${VERSION#v}"
+          echo "expected=${EXPECTED}" >> "$GITHUB_OUTPUT"
+          echo "Smoke-testing version: ${VERSION} (expected output: ridge ${EXPECTED})"
+
+      # ── Prerequisites: install scripts verify these and exit if missing ──
+      - name: Install Rust toolchain (prerequisite check)
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: "1.88"
+
+      - name: Install Erlang/OTP (prerequisite check)
+        uses: erlef/setup-beam@v1
+        with:
+          otp-version: "26"
+
+      # ── Run install script (will download binaries from release) ──
+      - name: Run install script (Unix)
+        if: matrix.os != 'windows'
+        env:
+          RIDGE_VERSION: ${{ steps.ver.outputs.version }}
+        run: |
+          curl -fsSL "https://raw.githubusercontent.com/ridge-lang/ridge/${{ github.sha }}/tools/install/install.sh" | sh
+
+      - name: Run install script (Windows)
+        if: matrix.os == 'windows'
+        shell: pwsh
+        env:
+          RIDGE_VERSION: ${{ steps.ver.outputs.version }}
+        run: |
+          $url = "https://raw.githubusercontent.com/ridge-lang/ridge/${{ github.sha }}/tools/install/install.ps1"
+          & ([scriptblock]::Create((iwr -useb $url).Content))
+
+      # ── Verify both binaries are on PATH and report expected version ──
+      - name: Verify ridge --version
+        shell: bash
+        run: |
+          ridge --version
+
+      - name: Verify ridge --version output
+        shell: bash
+        run: |
+          OUT=$(ridge --version)
+          EXPECTED="ridge ${{ steps.ver.outputs.expected }}"
+          if [ "$OUT" != "$EXPECTED" ]; then
+            echo "::error::ridge --version printed '$OUT'; expected '$EXPECTED'"
+            exit 1
+          fi
+          echo "ridge --version: $OUT ✓"
+
+      - name: Verify ridge-lsp --version
+        shell: bash
+        run: |
+          ridge-lsp --version
+
+      - name: Verify ridge-lsp --version output
+        shell: bash
+        run: |
+          OUT=$(ridge-lsp --version)
+          EXPECTED="ridge-lsp ${{ steps.ver.outputs.expected }}"
+          if [ "$OUT" != "$EXPECTED" ]; then
+            echo "::error::ridge-lsp --version printed '$OUT'; expected '$EXPECTED'"
+            exit 1
+          fi
+          echo "ridge-lsp --version: $OUT ✓"
+
+      # ── Optional end-to-end smoke: create + build a project ──
+      - name: Scaffold + build smoke project
+        shell: bash
+        run: |
+          ridge new smoke-test
+          cd smoke-test
+          ridge build

@@ -27,6 +27,14 @@ erl_crash.dump
 
 .claude/
 
+# Local-only editor / tooling configuration (per-developer).
+CLAUDE.md
+CLAUDE.local.md
+AGENTS.md
+GEMINI.md
+.aider*
+.cursor/
+
 logs_*/
 
 # Public-cutover additions

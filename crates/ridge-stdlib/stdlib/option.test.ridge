@@ -1,6 +1,6 @@
 -- Private helpers for std.option test suite.
--- Pure-Ridge helpers replicate option.rg (T17+ deferred; no FFI needed since
--- all option.rg functions are pure Ridge).
+-- Pure-Ridge helpers replicate option.ridge (T17+ deferred; no FFI needed since
+-- all option.ridge functions are pure Ridge).
 fn _withDefault (d: a) (o: Option a) -> a =
     match o
         Some v -> v

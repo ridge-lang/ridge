@@ -8,7 +8,7 @@
 //!
 //! # What this module exports
 //!
-//! [`extract_ffi_decls`] — walks every `.rg` file under `stdlib_dir` and
+//! [`extract_ffi_decls`] — walks every `.ridge` file under `stdlib_dir` and
 //! returns a sorted list of [`FfiDecl`] values: one per `@ffi`-decorated
 //! `pub fn` (or private `fn`) declaration.
 //!
@@ -43,7 +43,7 @@ use std::path::{Path, PathBuf};
 
 // ── Public types ──────────────────────────────────────────────────────────────
 
-/// One `@ffi`-decorated function declaration discovered in a stdlib `.rg` file.
+/// One `@ffi`-decorated function declaration discovered in a stdlib `.ridge` file.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
 pub struct FfiDecl {
     /// Dotted Ridge module name, e.g. `"std.list"`.
@@ -89,7 +89,7 @@ pub const STDLIB_MODULES: &[&str] = &[
 
 // ── Core extraction ───────────────────────────────────────────────────────────
 
-/// Extract all `@ffi`-decorated function declarations from every stdlib `.rg`
+/// Extract all `@ffi`-decorated function declarations from every stdlib `.ridge`
 /// file under `stdlib_dir`.
 ///
 /// Returns a sorted list of [`FfiDecl`] values (sorted by `ridge_module` then
@@ -104,7 +104,7 @@ pub const STDLIB_MODULES: &[&str] = &[
 ///
 /// # Errors
 ///
-/// Returns `Err(String)` if any `.rg` file that exists cannot be read.
+/// Returns `Err(String)` if any `.ridge` file that exists cannot be read.
 pub fn extract_ffi_decls(stdlib_dir: &Path) -> Result<Vec<FfiDecl>, String> {
     let mut decls: Vec<FfiDecl> = Vec::new();
 
@@ -128,21 +128,21 @@ pub fn extract_ffi_decls(stdlib_dir: &Path) -> Result<Vec<FfiDecl>, String> {
     Ok(decls)
 }
 
-/// Map a dotted module name to its relative `.rg` path under `stdlib/`.
+/// Map a dotted module name to its relative `.ridge` path under `stdlib/`.
 ///
-/// `"std.int"`      → `int.rg`
-/// `"std.net.http"` → `net/http.rg`
+/// `"std.int"`      → `int.ridge`
+/// `"std.net.http"` → `net/http.ridge`
 #[must_use]
 pub fn module_name_to_path(dotted: &str) -> PathBuf {
     let rest = dotted.strip_prefix("std.").unwrap_or(dotted);
     let with_slashes = rest.replace('.', "/");
-    PathBuf::from(format!("{with_slashes}.rg"))
+    PathBuf::from(format!("{with_slashes}.ridge"))
 }
 
 /// Ridge capability keywords (as of 0.1.0).
 const CAP_KEYWORDS: &[&str] = &["io", "fs", "net", "time", "random", "env", "proc"];
 
-/// Extract `@ffi`-decorated `fn` declarations from a single `.rg` source file,
+/// Extract `@ffi`-decorated `fn` declarations from a single `.ridge` source file,
 /// pushing new [`FfiDecl`] values into `out`.
 ///
 /// The extraction is line-based:
@@ -159,7 +159,7 @@ pub fn extract_ffi_from_source(module: &str, src: &str, out: &mut Vec<FfiDecl>) 
         let trimmed = line.trim();
 
         // Skip blank lines and comment lines — they do NOT reset the pending
-        // @ffi state, because the .rg files sometimes have blank comment lines
+        // @ffi state, because the .ridge files sometimes have blank comment lines
         // between @ffi and the fn declaration.
         if trimmed.is_empty() || trimmed.starts_with("--") {
             continue;
@@ -202,7 +202,7 @@ pub fn extract_ffi_from_source(module: &str, src: &str, out: &mut Vec<FfiDecl>) 
 
 // ── T11.5: widened extractor ──────────────────────────────────────────────────
 
-/// Extract **all** public stdlib function declarations from every stdlib `.rg`
+/// Extract **all** public stdlib function declarations from every stdlib `.ridge`
 /// file under `stdlib_dir` — both `@ffi`-decorated stubs and pure-Ridge `pub
 /// fn` bodies.
 ///
@@ -219,7 +219,7 @@ pub fn extract_ffi_from_source(module: &str, src: &str, out: &mut Vec<FfiDecl>) 
 ///
 /// # Errors
 ///
-/// Returns `Err(String)` if any `.rg` file that exists cannot be read.
+/// Returns `Err(String)` if any `.ridge` file that exists cannot be read.
 pub fn extract_all_stdlib_decls(stdlib_dir: &Path) -> Result<Vec<FfiDecl>, String> {
     let mut decls: Vec<FfiDecl> = Vec::new();
 
@@ -242,7 +242,7 @@ pub fn extract_all_stdlib_decls(stdlib_dir: &Path) -> Result<Vec<FfiDecl>, Strin
 }
 
 /// Extract all `pub fn` declarations (both `@ffi`-decorated and pure-Ridge)
-/// from a single `.rg` source file.
+/// from a single `.ridge` source file.
 ///
 /// `@ffi`-decorated functions produce entries with the attribute's BEAM target.
 /// Pure-Ridge `pub fn` (no `@ffi`) produce entries with `beam_module =

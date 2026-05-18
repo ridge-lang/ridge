@@ -427,7 +427,7 @@ mod tests {
 
     #[test]
     fn bracket_suppresses_layout_list() {
-        // Matches game_of_life.rg: `[(-1,-1), (-1,0), ...]` multi-line list.
+        // Matches game_of_life.ridge: `[(-1,-1), (-1,0), ...]` multi-line list.
         //  NEWLINE may be emitted between items at same
         // column; INDENT/DEDENT are still never emitted inside brackets.
         let src = "let x = [\n    1\n    2\n    ]";
@@ -640,7 +640,7 @@ mod tests {
     /// establishes the baseline, subsequent lines at the same column emit NEWLINE).
     #[test]
     fn newline_between_lambda_body_stmts_in_paren() {
-        // Simulates game_of_life.rg lines 59-63:
+        // Simulates game_of_life.ridge lines 59-63:
         //   List.forEach (fn row ->
         //       let line = row
         //       Io.println line)

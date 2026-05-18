@@ -2,7 +2,7 @@
 # manual VS Code diagnostics fixture.
 #
 # The forbid rule below makes std.fs unreachable from the g7fixture.* project,
-# triggering R013 ForbidViolation when src/Sample.rg imports it.
+# triggering R013 ForbidViolation when src/Sample.ridge imports it.
 
 [workspace]
 name    = "g7-fixture-ws"

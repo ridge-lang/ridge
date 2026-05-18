@@ -370,7 +370,7 @@ impl ReplSession {
             .join("apps")
             .join("repl_session")
             .join("src")
-            .join("ReplSession.rg");
+            .join("ReplSession.ridge");
 
         std::fs::write(&src_path, src)
             .map_err(|e| CompileError::Io(format!("write source: {e}")))?;

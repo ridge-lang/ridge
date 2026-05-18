@@ -1,6 +1,6 @@
-//! Track-B `.test.rg` smoke test.
+//! Track-B `.test.ridge` smoke test.
 //!
-//! Asserts that every `<module>.test.rg` file under `crates/ridge-stdlib/stdlib/`
+//! Asserts that every `<module>.test.ridge` file under `crates/ridge-stdlib/stdlib/`
 //! exists (exactly 18 of them — one per stdlib module, per §10 file-count audit)
 //! and that each file **parses without errors**.
 //!
@@ -28,10 +28,10 @@ use ridge_parser::parse_source;
 
 // ── Constants ─────────────────────────────────────────────────────────────────
 
-/// Expected number of `.test.rg` files — one per stdlib module.
+/// Expected number of `.test.ridge` files — one per stdlib module.
 ///
 /// From the §10 file-count audit (plan line 949):
-/// "18 module `.rg` files + 18 `.test.rg` files = 36 source files".
+/// "18 module `.ridge` files + 18 `.test.ridge` files = 36 source files".
 const EXPECTED_TEST_RG_COUNT: usize = 18;
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
@@ -41,7 +41,7 @@ fn stdlib_dir() -> std::path::PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("stdlib")
 }
 
-/// Recursively collect every `*.test.rg` file under `dir`, in lexicographic order.
+/// Recursively collect every `*.test.ridge` file under `dir`, in lexicographic order.
 ///
 /// Returns absolute paths.  Panics if the directory cannot be read.
 fn collect_test_rg_files(dir: &Path) -> Vec<std::path::PathBuf> {
@@ -68,9 +68,9 @@ fn collect_recursive(dir: &Path, out: &mut Vec<std::path::PathBuf>) {
         let path = entry.path();
         if path.is_dir() {
             collect_recursive(&path, out);
-        } else if path.extension().is_some_and(|e| e == "rg") {
+        } else if path.extension().is_some_and(|e| e == "ridge") {
             // Only include files whose stem ends with ".test"
-            // (i.e. the full filename is "<module>.test.rg").
+            // (i.e. the full filename is "<module>.test.ridge").
             let stem = path.file_stem().and_then(|s| s.to_str()).unwrap_or("");
             if std::path::Path::new(stem)
                 .extension()
@@ -84,10 +84,10 @@ fn collect_recursive(dir: &Path, out: &mut Vec<std::path::PathBuf>) {
 
 // ── Test 1: file count ────────────────────────────────────────────────────────
 
-/// Asserts that exactly `EXPECTED_TEST_RG_COUNT` `.test.rg` files exist under
+/// Asserts that exactly `EXPECTED_TEST_RG_COUNT` `.test.ridge` files exist under
 /// `stdlib/`.
 ///
-/// A count mismatch means a module was added without its companion `.test.rg`
+/// A count mismatch means a module was added without its companion `.test.ridge`
 /// (or vice versa), failing the §10 audit-table invariant.
 ///
 /// Failure message: `T201 TestRgCountMismatch`.
@@ -108,7 +108,7 @@ fn test_rg_file_count_is_18() {
 
 // ── Test 2: parse — all 18 files parse without errors ────────────────────────
 
-/// For each `.test.rg` file: read it and call `ridge_parser::parse_source`.
+/// For each `.test.ridge` file: read it and call `ridge_parser::parse_source`.
 /// Asserts that both `errors` and `lex_errors` are empty.
 ///
 /// Failure message: `T201 TestRgParseFailed`.
@@ -121,7 +121,7 @@ fn test_rg_files_parse_cleanly() {
     // setup rather than the source files.  Surface it early.
     assert!(
         !files.is_empty(),
-        "T201 TestRgParseFailed {{ reason: \"no .test.rg files found under {}\" }}",
+        "T201 TestRgParseFailed {{ reason: \"no .test.ridge files found under {}\" }}",
         stdlib.display()
     );
 

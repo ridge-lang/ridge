@@ -65,13 +65,13 @@ fn make_workspace(id: &str, module_name: &str, source: &str) -> TempWorkspace {
         "apps/demo/ridge.toml",
         "[project]\nname = \"demo\"\nversion = \"0.1.0\"\nkind = \"library\"\n",
     );
-    write_file(&tw.path, &format!("apps/demo/src/{module_name}.rg"), source);
+    write_file(&tw.path, &format!("apps/demo/src/{module_name}.ridge"), source);
     tw
 }
 
 fn load_example_workspace(example_name: &str) -> TempWorkspace {
     let manifest_dir = env!("CARGO_MANIFEST_DIR");
-    let example_path = format!("{manifest_dir}/../../examples/{example_name}.rg");
+    let example_path = format!("{manifest_dir}/../../examples/{example_name}.ridge");
     let src = fs::read_to_string(&example_path)
         .unwrap_or_else(|e| panic!("could not read example {example_path}: {e}"));
     make_workspace(
@@ -286,7 +286,7 @@ fn stdlib_bridge_covers_rate_limiter() {
 #[test]
 fn stdlib_bridge_no_perm_for_list_map() {
     // T11: std.list.map is now served by path B (RidgeStdlibLocal) because
-    // list.rg has `@ffi("lists", "map", 2)`.  The BEAM target is the same
+    // list.ridge has `@ffi("lists", "map", 2)`.  The BEAM target is the same
     // (lists:map/2), but the variant changed from BeamStdlib to RidgeStdlibLocal.
     // No arg permutation is applied — the comment from T14 still holds:
     // Phase 5 delivers IR args in BEAM order (fn, list) for pipe calls.

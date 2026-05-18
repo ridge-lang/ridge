@@ -48,7 +48,7 @@ fn proj_happy_app() {
         .as_ref()
         .unwrap()
         .to_string_lossy()
-        .contains("Main.rg"));
+        .contains("Main.ridge"));
 }
 
 /// T1 §3.11 — happy project #3: service with entry point.

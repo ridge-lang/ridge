@@ -1,5 +1,5 @@
 -- Private FFI bridges for std.json test suite.
--- These replicate json.rg FFI declarations in local scope because cross-module
+-- These replicate json.ridge FFI declarations in local scope because cross-module
 -- calls are unsupported (T17+ deferred).
 --
 -- NOTE: JsonValue constructors (JNull, JBool, etc.) use a custom BEAM wire

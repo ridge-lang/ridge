@@ -160,7 +160,7 @@ async fn test_did_open_well_formed_file() {
         .await
         .expect("initialize");
 
-    let file_path = root.join("hello").join("src").join("main.rg");
+    let file_path = root.join("hello").join("src").join("main.ridge");
     let file_uri = Url::from_file_path(&file_path).expect("file URI");
     let src = std::fs::read_to_string(&file_path).expect("read fixture");
 
@@ -193,7 +193,7 @@ async fn test_did_change_triggers_compile() {
         .await
         .expect("initialize");
 
-    let file_path = root.join("hello").join("src").join("main.rg");
+    let file_path = root.join("hello").join("src").join("main.ridge");
     let file_uri = Url::from_file_path(&file_path).expect("file URI");
 
     // Open the file.
@@ -241,7 +241,7 @@ async fn test_did_save_unconditional() {
         .expect("initialize");
 
     let root = fixtures_dir().join("ok_workspace");
-    let file_path = root.join("hello").join("src").join("main.rg");
+    let file_path = root.join("hello").join("src").join("main.ridge");
     let file_uri = Url::from_file_path(&file_path).expect("file URI");
 
     server
@@ -281,7 +281,7 @@ async fn test_type_error_fixture_publishes_diagnostics() {
         .expect("initialize");
 
     let root = fixtures_dir().join("type_error_workspace");
-    let file_path = root.join("app").join("src").join("main.rg");
+    let file_path = root.join("app").join("src").join("main.ridge");
     let file_uri = Url::from_file_path(&file_path).expect("file URI");
     let src = std::fs::read_to_string(&file_path).expect("read fixture");
 
@@ -323,7 +323,7 @@ async fn test_capability_error_fixture() {
         .expect("initialize");
 
     let root = fixtures_dir().join("capability_error_workspace");
-    let file_path = root.join("app").join("src").join("main.rg");
+    let file_path = root.join("app").join("src").join("main.ridge");
     let file_uri = Url::from_file_path(&file_path).expect("file URI");
     let src = std::fs::read_to_string(&file_path).expect("read fixture");
 
@@ -357,7 +357,7 @@ async fn test_multi_file_workspace() {
     let root = fixtures_dir().join("multi_file_workspace");
 
     // Open both files.
-    for (member, file) in &[("lib", "math.rg"), ("app", "main.rg")] {
+    for (member, file) in &[("lib", "math.ridge"), ("app", "main.ridge")] {
         let file_path = root.join(member).join("src").join(file);
         let file_uri = Url::from_file_path(&file_path).expect("file URI");
         let src = std::fs::read_to_string(&file_path).expect("read fixture");
@@ -465,7 +465,7 @@ async fn test_debounce_rapid_changes() {
         .expect("initialize");
 
     let root = fixtures_dir().join("ok_workspace");
-    let file_path = root.join("hello").join("src").join("main.rg");
+    let file_path = root.join("hello").join("src").join("main.ridge");
     let file_uri = Url::from_file_path(&file_path).expect("file URI");
 
     // Open file.
@@ -520,7 +520,7 @@ async fn test_cancellation_discards_stale_results() {
         .expect("initialize");
 
     let root = fixtures_dir().join("type_error_workspace");
-    let file_path = root.join("app").join("src").join("main.rg");
+    let file_path = root.join("app").join("src").join("main.ridge");
     let file_uri = Url::from_file_path(&file_path).expect("file URI");
     let src = std::fs::read_to_string(&file_path).expect("read fixture");
 

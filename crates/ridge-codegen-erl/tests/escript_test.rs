@@ -87,7 +87,7 @@ fn make_example_workspace(name: &str, source: &str) -> (PathBuf, tempfile::TempD
         "apps/demo/ridge.toml",
         "[project]\nname = \"demo\"\nversion = \"0.1.0\"\nkind = \"library\"\n",
     );
-    write(&format!("apps/demo/src/{name}.rg"), source);
+    write(&format!("apps/demo/src/{name}.ridge"), source);
     (root, td)
 }
 
@@ -113,7 +113,7 @@ fn run_escript_e2e(name: &str, extra_args: &[&str]) -> bool {
     let manifest_dir = env!("CARGO_MANIFEST_DIR");
     let example_path = Path::new(manifest_dir)
         .join("../../examples")
-        .join(format!("{name}.rg"));
+        .join(format!("{name}.ridge"));
 
     let source = fs::read_to_string(&example_path)
         .unwrap_or_else(|e| panic!("could not read example {}: {e}", example_path.display()));
@@ -274,7 +274,7 @@ fn escript_log_analyzer() {
 ///
 /// # Deferred
 ///
-/// `url_shortener.rg` calls `Http.listen` which blocks in the BEAM accept loop
+/// `url_shortener.ridge` calls `Http.listen` which blocks in the BEAM accept loop
 /// and never returns.  The escript harness has the same structural constraint
 /// as the BEAM e2e harness (beam_e2e.rs): there is no way to run a blocking
 /// HTTP server in a batch-mode test without a bounded-server harness.
@@ -287,9 +287,9 @@ fn escript_url_shortener() {
     // Skip runtime invocation (Http.listen blocks forever in batch mode).
     let escript_path = find_escript();
     let manifest_dir = env!("CARGO_MANIFEST_DIR");
-    let example_path = Path::new(manifest_dir).join("../../examples/url_shortener.rg");
+    let example_path = Path::new(manifest_dir).join("../../examples/url_shortener.ridge");
 
-    let source = fs::read_to_string(&example_path).expect("could not read url_shortener.rg");
+    let source = fs::read_to_string(&example_path).expect("could not read url_shortener.ridge");
 
     let (workspace_root, _td_ws) = make_example_workspace("url_shortener", &source);
     let opts = CompileOptions::new(workspace_root.clone());
@@ -352,7 +352,7 @@ fn escript_game_of_life() {
 ///
 /// # Deferred by: OQ-E016 (multi-actor codegen)
 ///
-/// `rate_limiter.rg` produces actor modules with unresolved IR bugs (B-1, B-5,
+/// `rate_limiter.ridge` produces actor modules with unresolved IR bugs (B-1, B-5,
 /// B-7) that cause `erlc` to reject the emitted Core Erlang.  This is the same
 /// constraint as `beam_e2e_rate_limiter` in `beam_e2e.rs`.
 ///
@@ -364,9 +364,9 @@ fn escript_game_of_life() {
 fn escript_rate_limiter() {
     let escript_path = find_escript();
     let manifest_dir = env!("CARGO_MANIFEST_DIR");
-    let example_path = Path::new(manifest_dir).join("../../examples/rate_limiter.rg");
+    let example_path = Path::new(manifest_dir).join("../../examples/rate_limiter.ridge");
 
-    let source = fs::read_to_string(&example_path).expect("could not read rate_limiter.rg");
+    let source = fs::read_to_string(&example_path).expect("could not read rate_limiter.ridge");
 
     let (workspace_root, _td_ws) = make_example_workspace("rate_limiter", &source);
     let opts = CompileOptions::new(workspace_root.clone());

@@ -10,8 +10,8 @@ use std::path::Path;
 #[test]
 fn dump_url_shortener_store_core() {
     let manifest_dir = env!("CARGO_MANIFEST_DIR");
-    let example_path = Path::new(manifest_dir).join("../../examples/url_shortener.rg");
-    let source = fs::read_to_string(&example_path).expect("read url_shortener.rg");
+    let example_path = Path::new(manifest_dir).join("../../examples/url_shortener.ridge");
+    let source = fs::read_to_string(&example_path).expect("read url_shortener.ridge");
 
     let tw = common::make_workspace("debug_store", "url_shortener", &source);
     let pipeline = common::run_pipeline(&tw.path);

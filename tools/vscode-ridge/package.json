@@ -28,7 +28,7 @@
           "ridge"
         ],
         "extensions": [
-          ".rg"
+          ".ridge"
         ],
         "configuration": "./language-configuration.json"
       }

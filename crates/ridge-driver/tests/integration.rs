@@ -357,15 +357,15 @@ fn compile_forbid_rule_violation() {
         !sid.contains("<unknown>"),
         "R013 diagnostic must NOT carry <unknown> source_id; got: {sid:?}"
     );
-    // Ridge source files always have the `.rg` extension (lower-case by
+    // Ridge source files always have the `.ridge` extension (lower-case by
     // convention).  Use a path-based check to satisfy clippy's
     // case-sensitive-file-extension-comparisons lint.
     let path_ok = std::path::Path::new(sid)
         .extension()
-        .is_some_and(|e| e.eq_ignore_ascii_case("rg"));
+        .is_some_and(|e| e.eq_ignore_ascii_case("ridge"));
     assert!(
         path_ok,
-        "R013 diagnostic source_id should be a .rg file path; got: {sid:?}"
+        "R013 diagnostic source_id should be a .ridge file path; got: {sid:?}"
     );
 }
 

@@ -7,7 +7,7 @@
 //! <name>/
 //! ├── ridge.toml
 //! ├── src/
-//! │   └── Main.rg
+//! │   └── Main.ridge
 //! └── README.md
 //! ```
 //!
@@ -25,8 +25,8 @@ use crate::error::CliError;
 /// Raw `ridge.toml` template.  `{NAME}` is replaced with the project name.
 const TOML_TEMPLATE: &str = include_str!("../templates/ridge.toml.tpl");
 
-/// Raw `src/Main.rg` template.  `{NAME}` is replaced with the project name.
-const MAIN_RG_TEMPLATE: &str = include_str!("../templates/Main.rg.tpl");
+/// Raw `src/Main.ridge` template.  `{NAME}` is replaced with the project name.
+const MAIN_RG_TEMPLATE: &str = include_str!("../templates/Main.ridge.tpl");
 
 /// Raw `README.md` template.  `{NAME}` is replaced with the project name.
 const README_TEMPLATE: &str = include_str!("../templates/README.md.tpl");
@@ -96,7 +96,7 @@ pub fn validate_name(name: &str) -> Result<(), CliError> {
 ///
 /// `project_dir` must already exist.  This function creates:
 /// - `project_dir/ridge.toml`
-/// - `project_dir/src/Main.rg`
+/// - `project_dir/src/Main.ridge`
 /// - `project_dir/README.md`
 ///
 /// # Errors
@@ -109,11 +109,11 @@ fn write_scaffold(project_dir: &Path, name: &str) -> Result<(), Box<dyn std::err
     let toml_content = TOML_TEMPLATE.replace("{NAME}", name);
     fs::write(project_dir.join("ridge.toml"), toml_content)?;
 
-    // src/Main.rg — use PathBuf::join for cross-platform path construction
+    // src/Main.ridge — use PathBuf::join for cross-platform path construction
     let src_dir = project_dir.join("src");
     fs::create_dir_all(&src_dir)?;
     let main_rg_content = MAIN_RG_TEMPLATE.replace("{NAME}", name);
-    fs::write(src_dir.join("Main.rg"), main_rg_content)?;
+    fs::write(src_dir.join("Main.ridge"), main_rg_content)?;
 
     // README.md
     let readme_content = README_TEMPLATE.replace("{NAME}", name);

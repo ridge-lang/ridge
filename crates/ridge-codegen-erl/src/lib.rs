@@ -343,7 +343,7 @@ fn compile_module_if_requested(
 /// Lower a single stdlib module to a `.core` file and optionally a `.beam` file,
 /// using the Ridge fully-qualified name (e.g. `"std.list"`) as the BEAM module atom.
 ///
-/// This is the Phase 8 path for compiling stdlib `.rg` sources into
+/// This is the Phase 8 path for compiling stdlib `.ridge` sources into
 /// distributable `.beam` artefacts whose module atom matches the name expected
 /// by `BridgeTarget::RidgeStdlibLocal` callers (e.g. `call 'std.list':head(1)`).
 ///

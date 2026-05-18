@@ -48,7 +48,7 @@ pub fn examples_dir() -> PathBuf {
 
 /// Read one of the four canonical Ridge example files.
 pub fn read_example(name: &str) -> String {
-    let path = examples_dir().join(format!("{name}.rg"));
+    let path = examples_dir().join(format!("{name}.ridge"));
     fs::read_to_string(&path).unwrap_or_else(|e| panic!("could not read example {name}: {e}"))
 }
 
@@ -60,7 +60,7 @@ pub fn read_example(name: &str) -> String {
 ///   ridge.toml           (workspace manifest, members = ["apps/*"])
 ///   apps/demo/
 ///     ridge.toml         (project manifest)
-///     src/<module>.rg    (source file)
+///     src/<module>.ridge    (source file)
 /// ```
 pub fn make_workspace(module_name: &str, source: &str) -> TempWorkspace {
     let tw = TempWorkspace::new();
@@ -74,7 +74,7 @@ pub fn make_workspace(module_name: &str, source: &str) -> TempWorkspace {
         "apps/demo/ridge.toml",
         "[project]\nname = \"demo\"\nversion = \"0.1.0\"\nkind = \"library\"\n",
     );
-    write_file(&tw.path, &format!("apps/demo/src/{module_name}.rg"), source);
+    write_file(&tw.path, &format!("apps/demo/src/{module_name}.ridge"), source);
     tw
 }
 
@@ -97,13 +97,13 @@ pub fn make_multi_member_workspace() -> TempWorkspace {
         "apps/api/ridge.toml",
         "[project]\nname = \"api\"\nversion = \"0.1.0\"\nkind = \"library\"\n",
     );
-    write_file(&tw.path, "apps/api/src/Api.rg", api_src);
+    write_file(&tw.path, "apps/api/src/Api.ridge", api_src);
     write_file(
         &tw.path,
         "apps/core/ridge.toml",
         "[project]\nname = \"core\"\nversion = \"0.1.0\"\nkind = \"library\"\n",
     );
-    write_file(&tw.path, "apps/core/src/Core.rg", core_src);
+    write_file(&tw.path, "apps/core/src/Core.ridge", core_src);
     tw
 }
 
@@ -141,7 +141,7 @@ pub fn make_forbid_workspace() -> TempWorkspace {
     );
     let db_src = "pub fn query() -> Text { \"result\" }";
     let ui_src = "import acme.db.Db\npub fn show() -> Text { Db.query() }";
-    write_file(&tw.path, "apps/db/src/Db.rg", db_src);
-    write_file(&tw.path, "apps/ui/src/Ui.rg", ui_src);
+    write_file(&tw.path, "apps/db/src/Db.ridge", db_src);
+    write_file(&tw.path, "apps/ui/src/Ui.ridge", ui_src);
     tw
 }

@@ -17,7 +17,7 @@ use ridge_resolve::{ModuleId, WorkspaceGraph};
 /// Workspace-scoped file-backed source cache.
 ///
 /// Maps each [`SourceId`] (workspace-relative path string) to the raw source
-/// text of the corresponding `.rg` file.  Built once per compile invocation
+/// text of the corresponding `.ridge` file.  Built once per compile invocation
 /// from the [`WorkspaceGraph`] that `ridge-resolve` produces.
 #[derive(Debug, Default)]
 pub struct WorkspaceSourceCache {
@@ -32,7 +32,7 @@ pub struct WorkspaceSourceCache {
 impl WorkspaceSourceCache {
     /// Build a cache from the workspace graph.
     ///
-    /// Reads each `.rg` file from disk.  Files that cannot be read are silently
+    /// Reads each `.ridge` file from disk.  Files that cannot be read are silently
     /// skipped — the renderer falls back to context-less rendering for those
     /// modules (no underline, no caret).
     #[must_use]

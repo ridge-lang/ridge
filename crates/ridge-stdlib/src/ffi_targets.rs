@@ -8,7 +8,7 @@
 //!
 //! The lookup table is generated at build time by `crates/ridge-stdlib/build.rs`
 //! from the `@ffi`-decorated and pure-Ridge `pub fn` declarations in the
-//! `stdlib/*.rg` source files.  Consumers (e.g. `ridge-codegen-erl`) adapt
+//! `stdlib/*.ridge` source files.  Consumers (e.g. `ridge-codegen-erl`) adapt
 //! the returned [`StdlibFfiTarget`] into their own target representation at
 //! the seam — `BridgeTarget` stays in `ridge-codegen-erl`, keeping
 //! `ridge-stdlib` target-neutral.

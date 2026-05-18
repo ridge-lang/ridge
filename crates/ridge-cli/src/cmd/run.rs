@@ -11,7 +11,7 @@
 //! - **Plain**: delegates to [`ridge_driver::run_workspace`] (60 s timeout).
 //! - **`--observer`**: compiles the workspace then spawns `erl` with a
 //!   distributed-node name and cookie.  Prints connection info to stderr.
-//! - **`--watch`** (requires feature `cli-watch`): watches `**/*.rg` and
+//! - **`--watch`** (requires feature `cli-watch`): watches `**/*.ridge` and
 //!   `ridge.toml` via `notify`; debounces 500 ms; SIGTERMs the BEAM child on
 //!   file change, waits 2 s, then SIGKILLs if still alive, recompiles, and
 //!   relaunches.  Ctrl-C exits cleanly.
@@ -343,7 +343,7 @@ fn erlang_cookie_path() -> Option<PathBuf> {
 /// Algorithm:
 /// 1. Initial compile — exit non-zero if it fails (do not enter loop).
 /// 2. Spawn BEAM child.
-/// 3. Watch `**/*.rg` and `ridge.toml` via `notify::RecommendedWatcher`.
+/// 3. Watch `**/*.ridge` and `ridge.toml` via `notify::RecommendedWatcher`.
 /// 4. On file event: debounce 500 ms; SIGTERM child; wait 2 s; SIGKILL if
 ///    still alive; recompile; relaunch.
 /// 5. SIGINT exits cleanly (no zombie children left behind — R14).

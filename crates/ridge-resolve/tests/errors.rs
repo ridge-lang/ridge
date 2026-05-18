@@ -4,7 +4,7 @@
 //! (`crates/ridge-parser/tests/errors.rs`).  Two complementary mechanisms live
 //! here:
 //!
-//! - **Single-file fixtures** under `tests/fixtures/resolve/r###_*.rg` — each
+//! - **Single-file fixtures** under `tests/fixtures/resolve/r###_*.ridge` — each
 //!   declares one or more `-- expect: R### [span=A..B]` headers on the leading
 //!   comment lines.  [`all_fixtures_pass`] iterates the directory, builds a
 //!   synthetic single-module workspace per fixture, runs the full T1..T13
@@ -57,7 +57,7 @@ fn write_file(dir: &Path, relative_path: &str, content: &str) {
 }
 
 /// Build a synthetic single-module workspace whose only module has FQN
-/// `demo.<stem>` (project name `demo`, src/<stem>.rg holds the fixture body).
+/// `demo.<stem>` (project name `demo`, src/<stem>.ridge holds the fixture body).
 ///
 /// The project exports everything via `[project.exports].public = ["**"]`
 /// so cross-project R007 / R009 noise never fires for the single-module
@@ -81,7 +81,7 @@ fn build_single_module_workspace(stem: &str, src: &str) -> TempDir {
          [project.exports]\n\
          public = [\"**\"]\n",
     );
-    write_file(td.path(), &format!("apps/demo/src/{stem}.rg"), src);
+    write_file(td.path(), &format!("apps/demo/src/{stem}.ridge"), src);
     td
 }
 
@@ -158,7 +158,7 @@ fn parse_expects(src: &str) -> Vec<ExpectLine> {
 
 // ── Fixture-driven test ──────────────────────────────────────────────────────
 
-/// Iterate every `tests/fixtures/resolve/*.rg` file, run the resolve pipeline
+/// Iterate every `tests/fixtures/resolve/*.ridge` file, run the resolve pipeline
 /// over a synthetic single-module workspace, and assert every `-- expect:`
 /// directive is satisfied.
 #[test]
@@ -173,7 +173,7 @@ fn all_fixtures_pass() {
     let mut entries: Vec<_> = fs::read_dir(&dir)
         .expect("read fixture dir")
         .filter_map(Result::ok)
-        .filter(|e| e.path().extension().is_some_and(|ext| ext == "rg"))
+        .filter(|e| e.path().extension().is_some_and(|ext| ext == "ridge"))
         .collect();
     entries.sort_by_key(std::fs::DirEntry::file_name);
 
@@ -281,13 +281,13 @@ fn r002_duplicate_module_across_projects() {
         "libs/acme/ridge.toml",
         "[project]\nname = \"acme\"\nversion = \"0.1.0\"\nkind = \"library\"\n",
     );
-    write_file(td.path(), "libs/acme/src/domain/Foo.rg", "fn noop = ()\n");
+    write_file(td.path(), "libs/acme/src/domain/Foo.ridge", "fn noop = ()\n");
     write_file(
         td.path(),
         "libs/acmedomain/ridge.toml",
         "[project]\nname = \"acme.domain\"\nversion = \"0.1.0\"\nkind = \"library\"\n",
     );
-    write_file(td.path(), "libs/acmedomain/src/Foo.rg", "fn noop = ()\n");
+    write_file(td.path(), "libs/acmedomain/src/Foo.ridge", "fn noop = ()\n");
 
     let errors = run_pipeline(&td);
     assert!(
@@ -320,12 +320,12 @@ fn r003_cyclic_import_two_modules() {
     );
     write_file(
         td.path(),
-        "libs/lib/src/A.rg",
+        "libs/lib/src/A.ridge",
         "import lib.B as B\n\nfn noopA = ()\n",
     );
     write_file(
         td.path(),
-        "libs/lib/src/B.rg",
+        "libs/lib/src/B.ridge",
         "import lib.A as A\n\nfn noopB = ()\n",
     );
 
@@ -356,7 +356,7 @@ fn r007_project_export_violation_cross_project() {
     );
     write_file(
         td.path(),
-        "libs/alpha/src/Use.rg",
+        "libs/alpha/src/Use.ridge",
         "import beta.Mod as M\n\nfn noop = ()\n",
     );
     write_file(
@@ -364,7 +364,7 @@ fn r007_project_export_violation_cross_project() {
         "libs/beta/ridge.toml",
         "[project]\nname = \"beta\"\nversion = \"0.1.0\"\nkind = \"library\"\n",
     );
-    write_file(td.path(), "libs/beta/src/Mod.rg", "fn helper = ()\n");
+    write_file(td.path(), "libs/beta/src/Mod.ridge", "fn helper = ()\n");
 
     let errors = run_pipeline(&td);
     assert!(
@@ -394,7 +394,7 @@ fn r009_visibility_violation_cross_project() {
     );
     write_file(
         td.path(),
-        "libs/alpha/src/Use.rg",
+        "libs/alpha/src/Use.ridge",
         "import beta.Mod (helper)\n\nfn noop = ()\n",
     );
     write_file(
@@ -408,7 +408,7 @@ fn r009_visibility_violation_cross_project() {
          [project.exports]\n\
          public = [\"**\"]\n",
     );
-    write_file(td.path(), "libs/beta/src/Mod.rg", "fn helper = ()\n");
+    write_file(td.path(), "libs/beta/src/Mod.ridge", "fn helper = ()\n");
 
     let errors = run_pipeline(&td);
     assert!(
@@ -447,7 +447,7 @@ fn r013_forbid_violation_acme_workspace() {
     );
     write_file(
         td.path(),
-        "libs/domain/src/RegisterUser.rg",
+        "libs/domain/src/RegisterUser.ridge",
         "import acme.infra.Postgres as Pg\n\nfn doIt = ()\n",
     );
     write_file(
@@ -461,7 +461,7 @@ fn r013_forbid_violation_acme_workspace() {
          [project.exports]\n\
          public = [\"**\"]\n",
     );
-    write_file(td.path(), "libs/infra/src/Postgres.rg", "fn connect = ()\n");
+    write_file(td.path(), "libs/infra/src/Postgres.ridge", "fn connect = ()\n");
 
     let errors = run_pipeline(&td);
     let r013_count = errors.iter().filter(|e| e.code() == "R013").count();
@@ -492,7 +492,7 @@ fn r015_capability_denied_by_workspace() {
     );
     write_file(
         td.path(),
-        "apps/demo/src/UsesFfi.rg",
+        "apps/demo/src/UsesFfi.ridge",
         "fn ffi load () -> Unit = ()\n",
     );
 
@@ -527,7 +527,7 @@ fn r016_capability_not_allowed_by_project() {
     );
     write_file(
         td.path(),
-        "apps/demo/src/UsesNet.rg",
+        "apps/demo/src/UsesNet.ridge",
         "fn net listen () -> Unit = ()\n",
     );
 

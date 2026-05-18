@@ -1,5 +1,5 @@
 -- Private helpers for std.list test suite.
--- FFI bridges + pure-Ridge helpers replicate list.rg (T17+ deferred).
+-- FFI bridges + pure-Ridge helpers replicate list.ridge (T17+ deferred).
 @ffi("erlang", "length", 1)
 fn _length (xs: List a) -> Int
 

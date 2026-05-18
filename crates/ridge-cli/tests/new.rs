@@ -23,7 +23,7 @@ fn ridge_cmd() -> Command {
 
 /// `ridge new my-app` creates the canonical layout with substituted content.
 ///
-/// Asserts that `my-app/ridge.toml`, `my-app/src/Main.rg`, and
+/// Asserts that `my-app/ridge.toml`, `my-app/src/Main.ridge`, and
 /// `my-app/README.md` exist and contain the project name in their content.
 /// Then runs `ridge build` inside the generated project and asserts exit 0
 /// (or C004 when OTP is absent — same permissive gate as existing build tests).
@@ -55,17 +55,17 @@ fn new_happy_path() {
         "ridge.toml still contains unreplaced {{NAME}} placeholder"
     );
 
-    // src/Main.rg exists and contains "my-app".
-    let main_rg_path = project_dir.join("src").join("Main.rg");
-    assert!(main_rg_path.exists(), "src/Main.rg not created");
-    let main_rg_content = fs::read_to_string(&main_rg_path).expect("read Main.rg");
+    // src/Main.ridge exists and contains "my-app".
+    let main_rg_path = project_dir.join("src").join("Main.ridge");
+    assert!(main_rg_path.exists(), "src/Main.ridge not created");
+    let main_rg_content = fs::read_to_string(&main_rg_path).expect("read Main.ridge");
     assert!(
         main_rg_content.contains("my-app"),
-        "Main.rg does not contain project name 'my-app': {main_rg_content}"
+        "Main.ridge does not contain project name 'my-app': {main_rg_content}"
     );
     assert!(
         !main_rg_content.contains("{NAME}"),
-        "Main.rg still contains unreplaced {{NAME}} placeholder"
+        "Main.ridge still contains unreplaced {{NAME}} placeholder"
     );
 
     // README.md exists and contains "my-app".

@@ -295,7 +295,7 @@ mod tests {
     fn cache_miss_renders_context_less() {
         let _lock = COLOR_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
         let cache = TestCache::empty();
-        let diag = make_diag("P001", Severity::Error, "nonexistent.rg");
+        let diag = make_diag("P001", Severity::Error, "nonexistent.ridge");
         let mut buf = Vec::new();
         let result = render_with_ariadne(&[diag], &cache, &mut buf);
         assert!(result.is_ok());
@@ -310,13 +310,13 @@ mod tests {
         let _lock = COLOR_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
         let _guard = EnvGuard::set("RIDGE_COLOR", "never");
         let source = "let x { 1\n";
-        let cache = TestCache::with("test.rg", source);
+        let cache = TestCache::with("test.ridge", source);
         let diag = Diagnostic::new(
             "P001",
             Severity::Error,
             Span::new(6, 7),
             "expected = but found {",
-            SourceId::new("test.rg"),
+            SourceId::new("test.ridge"),
         );
         let mut buf = Vec::new();
         let _ = render_with_ariadne(&[diag], &cache, &mut buf);
@@ -333,13 +333,13 @@ mod tests {
         let _lock = COLOR_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
         let _guard = EnvGuard::set("RIDGE_COLOR", "always");
         let source = "let x { 1\n";
-        let cache = TestCache::with("test.rg", source);
+        let cache = TestCache::with("test.ridge", source);
         let diag = Diagnostic::new(
             "P001",
             Severity::Error,
             Span::new(6, 7),
             "expected = but found {",
-            SourceId::new("test.rg"),
+            SourceId::new("test.ridge"),
         );
         let mut buf = Vec::new();
         let _ = render_with_ariadne(&[diag], &cache, &mut buf);
@@ -356,9 +356,9 @@ mod tests {
         let _lock = COLOR_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
         let cache = TestCache::empty();
         let diags = vec![
-            make_diag("P001", Severity::Error, "a.rg"),
-            make_diag("R001", Severity::Warning, "b.rg"),
-            make_diag("T001", Severity::Error, "c.rg"),
+            make_diag("P001", Severity::Error, "a.ridge"),
+            make_diag("R001", Severity::Warning, "b.ridge"),
+            make_diag("T001", Severity::Error, "c.ridge"),
         ];
         let mut buf = Vec::new();
         let result = render_with_ariadne(&diags, &cache, &mut buf);
@@ -372,13 +372,13 @@ mod tests {
         let _lock = COLOR_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
         let _guard = EnvGuard::set("RIDGE_COLOR", "never");
         let source = "let x { 1\nfoo\nbar\n";
-        let cache = TestCache::with("bad.rg", source);
+        let cache = TestCache::with("bad.ridge", source);
         let diag = Diagnostic::new(
             "P001",
             Severity::Error,
             Span::new(6, 7),
             "expected = but found {",
-            SourceId::new("bad.rg"),
+            SourceId::new("bad.ridge"),
         );
         let mut buf = Vec::new();
         let result = render_with_ariadne(&[diag], &cache, &mut buf);
@@ -402,13 +402,13 @@ mod tests {
         let _lock = COLOR_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
         let _guard = EnvGuard::set("RIDGE_COLOR", "never");
         let source = "pub fn foo -> Int = 1\npub fn foo -> Int = 2\n";
-        let cache = TestCache::with("dup.rg", source);
+        let cache = TestCache::with("dup.ridge", source);
         let diag = Diagnostic::new(
             "R005",
             Severity::Error,
             Span::new(22, 24),
             "duplicate declaration `foo`",
-            SourceId::new("dup.rg"),
+            SourceId::new("dup.ridge"),
         )
         .with_note(
             Span::new(0, 2),

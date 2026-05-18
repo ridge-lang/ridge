@@ -5,7 +5,7 @@
 //! duplicate work already owned by:
 //!
 //! - `manifest_consistency.rs`   — G2 (bidirectional manifest / signature checks)
-//! - `test_rg_smoke.rs`          — G1 partial (parse-clean `.test.rg` files)
+//! - `test_rg_smoke.rs`          — G1 partial (parse-clean `.test.ridge` files)
 //! - `crates/ridge-codegen-erl/tests/stdlib_map.rs::build_map_count_is_exactly_6`
 //!   — G3 (path-A retired to exactly 6 `std.op.*` entries)
 //!
@@ -174,7 +174,7 @@ fn g4_test_count_floor() {
 ///
 /// `std.op.*` entries are intentionally omitted from this list — they are the
 /// only permanent path-A entries (emitted by `ridge-lower::operators`, D092)
-/// and have no `.rg` body or `@ffi` annotation.
+/// and have no `.ridge` body or `@ffi` annotation.
 ///
 /// ## Architecture note (T14.5.3)
 ///
@@ -219,7 +219,7 @@ fn g5_path_b_dominance() {
             "G5 §11.2: example symbol ({module}, {fn_name}) not found in path-B \
              extraction (extract_all_stdlib_decls). Path-B must cover this symbol \
              so it is served by RidgeStdlibLocal, not path-A. \
-             This means the symbol is missing from the stdlib .rg source or its \
+             This means the symbol is missing from the stdlib .ridge source or its \
              pub fn declaration was not recognized."
         );
     }
@@ -227,12 +227,12 @@ fn g5_path_b_dominance() {
 
 // ── §11.4 — artefact counts match plan ───────────────────────────────────────
 
-/// §11.4: Exactly 18 `.rg` files and 18 `.test.rg` files under `stdlib/`.
+/// §11.4: Exactly 18 `.ridge` files and 18 `.test.ridge` files under `stdlib/`.
 ///
-/// `net/http.rg` and `net/http.test.rg` count toward the 18 each.
+/// `net/http.ridge` and `net/http.test.ridge` count toward the 18 each.
 ///
 /// Reference: §11.4 artefacts checklist, plan line 949:
-/// "18 module `.rg` files + 18 `.test.rg` files = 36 source files".
+/// "18 module `.ridge` files + 18 `.test.ridge` files = 36 source files".
 #[test]
 fn artefacts_count_matches_plan() {
     const EXPECTED_RG: usize = 18;
@@ -240,23 +240,23 @@ fn artefacts_count_matches_plan() {
 
     let stdlib = stdlib_dir();
 
-    // Collect plain .rg files (not .test.rg).
+    // Collect plain .ridge files (not .test.ridge).
     let rg_files: Vec<std::path::PathBuf> = collect_files(&stdlib, |p| {
         let ext = p.extension().and_then(|e| e.to_str()).unwrap_or("");
-        if ext != "rg" {
+        if ext != "ridge" {
             return false;
         }
-        // Exclude .test.rg: stem ends with ".test".
+        // Exclude .test.ridge: stem ends with ".test".
         let stem = p.file_stem().and_then(|s| s.to_str()).unwrap_or("");
         !Path::new(stem)
             .extension()
             .is_some_and(|e| e.eq_ignore_ascii_case("test"))
     });
 
-    // Collect .test.rg files.
+    // Collect .test.ridge files.
     let test_rg_files: Vec<std::path::PathBuf> = collect_files(&stdlib, |p| {
         let ext = p.extension().and_then(|e| e.to_str()).unwrap_or("");
-        if ext != "rg" {
+        if ext != "ridge" {
             return false;
         }
         let stem = p.file_stem().and_then(|s| s.to_str()).unwrap_or("");
@@ -268,7 +268,7 @@ fn artefacts_count_matches_plan() {
     assert_eq!(
         rg_files.len(),
         EXPECTED_RG,
-        "§11.4: expected exactly {EXPECTED_RG} .rg source files under stdlib/, \
+        "§11.4: expected exactly {EXPECTED_RG} .ridge source files under stdlib/, \
          found {}.\n  files: {:#?}",
         rg_files.len(),
         rg_files
@@ -277,7 +277,7 @@ fn artefacts_count_matches_plan() {
     assert_eq!(
         test_rg_files.len(),
         EXPECTED_TEST_RG,
-        "§11.4: expected exactly {EXPECTED_TEST_RG} .test.rg files under stdlib/, \
+        "§11.4: expected exactly {EXPECTED_TEST_RG} .test.ridge files under stdlib/, \
          found {}.\n  files: {:#?}",
         test_rg_files.len(),
         test_rg_files

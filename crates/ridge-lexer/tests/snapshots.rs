@@ -8,10 +8,10 @@ use std::fmt::Write as _;
 
 use ridge_lexer::{tokenize, Token};
 
-const LOG_ANALYZER: &str = include_str!("../../../examples/log_analyzer.rg");
-const URL_SHORTENER: &str = include_str!("../../../examples/url_shortener.rg");
-const GAME_OF_LIFE: &str = include_str!("../../../examples/game_of_life.rg");
-const RATE_LIMITER: &str = include_str!("../../../examples/rate_limiter.rg");
+const LOG_ANALYZER: &str = include_str!("../../../examples/log_analyzer.ridge");
+const URL_SHORTENER: &str = include_str!("../../../examples/url_shortener.ridge");
+const GAME_OF_LIFE: &str = include_str!("../../../examples/game_of_life.ridge");
+const RATE_LIMITER: &str = include_str!("../../../examples/rate_limiter.ridge");
 
 /// Render the token stream as a compact, human-readable string for snapshots.
 ///

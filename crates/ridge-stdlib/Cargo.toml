@@ -40,7 +40,7 @@ ridge-types = { path = "../ridge-types" }
 
 [features]
 default = []
-# Enables the slow-CI lane integration test that compiles stdlib `.test.rg`
+# Enables the slow-CI lane integration test that compiles stdlib `.test.ridge`
 # files and runs them via the `ridge` binary.  Gated to keep `cargo test --all`
 # fast on a per-PR basis.
 stdlib-e2e = []

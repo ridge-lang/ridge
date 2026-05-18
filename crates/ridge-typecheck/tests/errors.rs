@@ -1,7 +1,7 @@
 //! T17 — per-`T###` fixture harness for `ridge-typecheck` (plan §10 T17, §9.2).
 //!
 //! Mirrors Phase 3's `crates/ridge-resolve/tests/errors.rs`.  Each fixture file
-//! under `tests/fixtures/typecheck/*.rg` declares one or more
+//! under `tests/fixtures/typecheck/*.ridge` declares one or more
 //! `-- expect: T###` directives.  [`all_fixtures_pass`] iterates the directory,
 //! builds a synthetic single-module workspace per fixture, runs the full
 //! resolve+typecheck pipeline, and asserts every expected code appears.
@@ -47,7 +47,7 @@ fn build_single_module_workspace(stem: &str, src: &str) -> TempDir {
          [project.exports]\n\
          public = [\"**\"]\n",
     );
-    write_file(td.path(), &format!("apps/demo/src/{stem}.rg"), src);
+    write_file(td.path(), &format!("apps/demo/src/{stem}.ridge"), src);
     td
 }
 
@@ -99,7 +99,7 @@ fn parse_expects(src: &str) -> Vec<ExpectLine> {
 
 // ── Fixture-driven test ───────────────────────────────────────────────────────
 
-/// Iterate every `tests/fixtures/typecheck/*.rg` file, run the typecheck
+/// Iterate every `tests/fixtures/typecheck/*.ridge` file, run the typecheck
 /// pipeline, and assert every `-- expect: T###` directive is satisfied.
 ///
 /// `DoD` §9.2: ≥ 25 single-file fixtures; every reachable T### code must have
@@ -116,7 +116,7 @@ fn all_fixtures_pass() {
     let mut entries: Vec<_> = fs::read_dir(&dir)
         .expect("read fixture dir")
         .filter_map(Result::ok)
-        .filter(|e| e.path().extension().is_some_and(|ext| ext == "rg"))
+        .filter(|e| e.path().extension().is_some_and(|ext| ext == "ridge"))
         .collect();
     entries.sort_by_key(std::fs::DirEntry::file_name);
 

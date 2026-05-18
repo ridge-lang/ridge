@@ -131,10 +131,10 @@ depfoo = {{ git = "{url}", tag = "v1.0" }}
     );
     fs::write(app_dir.join("ridge.toml"), &app_toml).unwrap();
 
-    // app/src/Main.rg — trivial valid Ridge module.
+    // app/src/Main.ridge — trivial valid Ridge module.
     let src_dir = app_dir.join("src");
     fs::create_dir_all(&src_dir).unwrap();
-    fs::write(src_dir.join("Main.rg"), "pub fn answer () -> Int = 42\n").unwrap();
+    fs::write(src_dir.join("Main.ridge"), "pub fn answer () -> Int = 42\n").unwrap();
 
     // ── 3. Isolated cache directory ───────────────────────────────────────────
     let cache_tmp = TempDir::new().unwrap();

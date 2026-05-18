@@ -1,6 +1,6 @@
 //! Track-A tests for `std.json` — 5 public functions.
 //!
-//! Each test asserts that `json.rg` compiles through the T4 build pipeline
+//! Each test asserts that `json.ridge` compiles through the T4 build pipeline
 //! and that the module appears in the build summary.
 //!
 //! Parametric round-trip coverage: one test per public function (encode,

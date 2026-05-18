@@ -8,7 +8,7 @@
 // copies it to `${OUT_DIR}/stdlib_signatures.rs`.
 //
 // Future tasks (T12+) will make the generation smarter (auto-derived from
-// the real stdlib `.rg` sources).  For now the source of truth is
+// the real stdlib `.ridge` sources).  For now the source of truth is
 // `stdlib_signatures_impl.rs`.
 //
 // Do not add code to this file directly; edit `stdlib_signatures_impl.rs`.

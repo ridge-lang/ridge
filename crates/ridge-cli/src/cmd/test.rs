@@ -460,7 +460,7 @@ fn module_meta<'g>(module: &TypedModule, graph: &'g WorkspaceGraph) -> Option<&'
 /// Return a human-readable module name for display in test output.
 ///
 /// Uses the Pascal-case file stem from the workspace graph, e.g.
-/// `apps/demo/src/Demo.rg` → `"Demo"`.  Falls back to `Module<N>` when
+/// `apps/demo/src/Demo.ridge` → `"Demo"`.  Falls back to `Module<N>` when
 /// the module id is not found in the graph (e.g. stdlib built-ins).
 fn module_display_name(module: &TypedModule, graph: &WorkspaceGraph) -> String {
     module_meta(module, graph).map_or_else(

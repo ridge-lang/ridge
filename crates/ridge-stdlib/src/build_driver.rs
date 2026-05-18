@@ -28,7 +28,7 @@ pub struct TierPlan {
 
 /// The five stdlib tiers in dependency order (§4.1).
 ///
-/// Tier 0 — language built-ins — carries no `.rg` files and is listed for
+/// Tier 0 — language built-ins — carries no `.ridge` files and is listed for
 /// completeness only; `build_all` skips it.
 pub const TIERS: &[TierPlan] = &[
     TierPlan {
@@ -132,18 +132,18 @@ pub struct DiscoveredModule {
     pub name: String,
     /// Tier this module belongs to.
     pub tier: u32,
-    /// Absolute path to the `.rg` source file.
+    /// Absolute path to the `.ridge` source file.
     pub path: PathBuf,
 }
 
 /// Discover which stdlib modules are present on disk, in tier order.
 ///
 /// For each tier (1–4) and each module name in `TIERS`, checks whether the
-/// corresponding `.rg` file exists under `stdlib_dir`.  Missing files are
+/// corresponding `.ridge` file exists under `stdlib_dir`.  Missing files are
 /// silently skipped — T5+ adds them progressively.
 ///
-/// Module `std.net.http` lives at `<stdlib_dir>/net/http.rg` (§11.4 / T9).
-/// All other modules live at `<stdlib_dir>/<last-component>.rg`.
+/// Module `std.net.http` lives at `<stdlib_dir>/net/http.ridge` (§11.4 / T9).
+/// All other modules live at `<stdlib_dir>/<last-component>.ridge`.
 #[must_use]
 pub fn discover(stdlib_dir: &Path) -> Vec<DiscoveredModule> {
     let mut found = Vec::new();
@@ -163,16 +163,16 @@ pub fn discover(stdlib_dir: &Path) -> Vec<DiscoveredModule> {
     found
 }
 
-/// Map a dotted module name to its relative `.rg` path under `stdlib/`.
+/// Map a dotted module name to its relative `.ridge` path under `stdlib/`.
 ///
-/// `std.net.http` → `net/http.rg`
-/// `std.int`      → `int.rg`
+/// `std.net.http` → `net/http.ridge`
+/// `std.int`      → `int.ridge`
 fn module_path(dotted: &str) -> PathBuf {
     // Strip the leading "std." prefix.
     let rest = dotted.strip_prefix("std.").unwrap_or(dotted);
     // Replace remaining dots with path separators.
     let with_slashes = rest.replace('.', "/");
-    PathBuf::from(format!("{with_slashes}.rg"))
+    PathBuf::from(format!("{with_slashes}.ridge"))
 }
 
 // ── Build summary ─────────────────────────────────────────────────────────────
@@ -195,7 +195,7 @@ pub struct BuildSummary {
 /// Returns immediately with `Err(BuildError)` if any tier fails.
 ///
 /// Tier 0 is skipped (no Ridge source).  If `stdlib_dir` does not exist or
-/// contains no `.rg` files, returns `Ok(BuildSummary { tiers_built: 0, .. })`.
+/// contains no `.ridge` files, returns `Ok(BuildSummary { tiers_built: 0, .. })`.
 ///
 /// # Errors
 ///
@@ -325,7 +325,7 @@ fn compile_tier(
 /// ```text
 /// <tmp>/ridge.toml            (workspace)
 /// <tmp>/stdlib/ridge.toml     (project, kind = "library")
-/// <tmp>/stdlib/src/<rel>.rg   (source files)
+/// <tmp>/stdlib/src/<rel>.ridge   (source files)
 /// ```
 fn build_temp_workspace(
     tier: u32,
@@ -363,7 +363,7 @@ fn build_temp_workspace(
     // Copy each module's source file into the temp workspace.
     for module in modules {
         // Derive the source path relative to src/ from the module name.
-        // e.g. "std.int" → "int.rg", "std.net.http" → "net/http.rg"
+        // e.g. "std.int" → "int.ridge", "std.net.http" → "net/http.ridge"
         let rel = module_path(&module.name);
         let dest = proj_dir.join("src").join(&rel);
 

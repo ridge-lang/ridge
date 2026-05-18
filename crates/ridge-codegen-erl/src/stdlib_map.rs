@@ -84,10 +84,10 @@ fn build_map() -> BridgeMap {
     //
     // T11 retired 29 @ffi-decorated entries to path B.  T11.5 retires the remaining
     // 15 cat-B/C entries (pure-Ridge bodies + name-change entries) by widening path
-    // B to cover every `pub fn` in stdlib `.rg` files.
+    // B to cover every `pub fn` in stdlib `.ridge` files.
     //
     // Only cat-A entries remain: `std.op.*` — emitted by `ridge-lower::operators`
-    // with no Ridge surface; they have no `.rg` body or `@ffi` annotation.
+    // with no Ridge surface; they have no `.ridge` body or `@ffi` annotation.
     // These six entries are permanent.
     //
     // Cat-B (pure-Ridge, no @ffi) retired in T11.5 (now served by path B):
@@ -278,7 +278,7 @@ mod tests {
 
     #[test]
     fn lookup_list_map_is_stdlib_local() {
-        // std.list.map is now served by path B: @ffi("lists", "map", 2) in list.rg.
+        // std.list.map is now served by path B: @ffi("lists", "map", 2) in list.ridge.
         match lookup("std.list", "map") {
             Some(BridgeTarget::RidgeStdlibLocal {
                 beam_module,
@@ -295,7 +295,7 @@ mod tests {
 
     #[test]
     fn lookup_io_println_is_stdlib_local() {
-        // std.io.println is now served by path B: @ffi("ridge_rt", "println", 1) in io.rg.
+        // std.io.println is now served by path B: @ffi("ridge_rt", "println", 1) in io.ridge.
         match lookup("std.io", "println") {
             Some(BridgeTarget::RidgeStdlibLocal {
                 beam_module,

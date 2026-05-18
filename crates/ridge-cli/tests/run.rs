@@ -200,7 +200,7 @@ fn run_no_executable_member() {
 
 /// `ridge run --watch` survives a single file-change cycle.
 ///
-/// Writes a `.rg` file mid-run and asserts a recompile + restart occurs
+/// Writes a `.ridge` file mid-run and asserts a recompile + restart occurs
 /// without a crash or zombie process.
 ///
 /// Requires OTP and `cli-watch` feature.
@@ -225,7 +225,7 @@ fn run_watch_single_cycle() {
     // Touch the source file to trigger a watch event.
     write_file(
         &tw.path,
-        "apps/demo/src/Main.rg",
+        "apps/demo/src/Main.ridge",
         "pub fn main -> Int = 1\n",
     );
 
@@ -334,7 +334,7 @@ fn watch_stress() {
     for i in 0..50_u32 {
         // Write a new version of the source file.
         let new_source = format!("pub fn main -> Int = {i}\n");
-        write_file(&tw.path, "apps/demo/src/Main.rg", &new_source);
+        write_file(&tw.path, "apps/demo/src/Main.ridge", &new_source);
 
         // Wait for debounce (500 ms) + compile + restart overhead.
         std::thread::sleep(Duration::from_secs(3));

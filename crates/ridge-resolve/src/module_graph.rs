@@ -436,7 +436,7 @@ mod tests {
         let td = TempDir::new().expect("tempdir");
         write_file(td.path(), "ridge.toml", &workspace_toml(&["libs/*"]));
         write_file(td.path(), "libs/proj/ridge.toml", &project_toml("proj"));
-        write_file(td.path(), "libs/proj/src/Main.rg", src);
+        write_file(td.path(), "libs/proj/src/Main.ridge", src);
         let disc = crate::discover_workspace(td.path());
         let ws = disc.graph.expect("workspace graph");
         (td, ws)
@@ -579,10 +579,10 @@ mod tests {
         let td = TempDir::new().expect("tempdir");
         write_file(td.path(), "ridge.toml", &workspace_toml(&["libs/*"]));
         write_file(td.path(), "libs/proj/ridge.toml", &project_toml("proj"));
-        write_file(td.path(), "libs/proj/src/Alpha.rg", "import std.io as Io\n");
+        write_file(td.path(), "libs/proj/src/Alpha.ridge", "import std.io as Io\n");
         write_file(
             td.path(),
-            "libs/proj/src/Beta.rg",
+            "libs/proj/src/Beta.ridge",
             "import std.list as List\nimport std.map as Map\n",
         );
 
@@ -781,7 +781,7 @@ mod tests {
                 id: ModuleId(i as u32),
                 project: crate::ProjectId(0),
                 fully_qualified_name: format!("proj.Mod{i}"),
-                file_path: std::path::PathBuf::from(format!("/fake/Mod{i}.rg")),
+                file_path: std::path::PathBuf::from(format!("/fake/Mod{i}.ridge")),
                 span_within_file: Span::point(0),
             })
             .collect();

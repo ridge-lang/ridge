@@ -264,7 +264,7 @@ pub fn compile_workspace(options: CompileOptions) -> Result<CompileArtefacts, Co
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
-/// Compile Ridge stdlib `.rg` sources to `.beam` files and place them in `beam_dir`.
+/// Compile Ridge stdlib `.ridge` sources to `.beam` files and place them in `beam_dir`.
 ///
 /// Each stdlib module's BEAM atom is its dotted FQN (e.g. `'std.list'`), so the
 /// corresponding file is `std.list.beam`.  This is required for
@@ -382,7 +382,7 @@ fn compile_stdlib_beams(
     };
 
     // Compile each stdlib module with its FQN as the BEAM atom.
-    // Skip `.test.rg` modules (FQN contains ".test") — test files are not
+    // Skip `.test.ridge` modules (FQN contains ".test") — test files are not
     // distributable stdlib modules.
     for slot in &lowered.modules {
         let Some(m) = slot else { continue };

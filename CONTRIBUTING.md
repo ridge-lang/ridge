@@ -49,9 +49,9 @@ ridge/
 │   ├── ridge-lsp/          # language server
 │   ├── ridge-fmt/          # formatter
 │   ├── ridge-manifest/     # workspace manifest parsing
-│   ├── ridge-stdlib/       # standard library (Rust + .rg modules)
+│   ├── ridge-stdlib/       # standard library (Rust + .ridge modules)
 │   └── ridge-pkg/          # package manager
-├── examples/               # sample Ridge programs (*.rg)
+├── examples/               # sample Ridge programs (*.ridge)
 ├── docs/
 │   ├── spec.md             # language specification (source of truth)
 │   ├── tutorial.md         # install + quickstart

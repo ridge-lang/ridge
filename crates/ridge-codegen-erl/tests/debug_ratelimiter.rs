@@ -9,8 +9,8 @@ use std::path::Path;
 #[test]
 fn dump_rate_limiter_core() {
     let manifest_dir = env!("CARGO_MANIFEST_DIR");
-    let example_path = Path::new(manifest_dir).join("../../examples/rate_limiter.rg");
-    let source = fs::read_to_string(&example_path).expect("read rate_limiter.rg");
+    let example_path = Path::new(manifest_dir).join("../../examples/rate_limiter.ridge");
+    let source = fs::read_to_string(&example_path).expect("read rate_limiter.ridge");
 
     let tw = common::make_workspace("debug_rate", "rate_limiter", &source);
     let pipeline = common::run_pipeline(&tw.path);

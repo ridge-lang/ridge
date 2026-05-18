@@ -472,7 +472,7 @@ mod tests {
             "apps/demo/ridge.toml",
             "[project]\nname = \"demo\"\nversion = \"0.1.0\"\nkind = \"library\"\n",
         );
-        write_file(td.path(), "apps/demo/src/main.rg", src);
+        write_file(td.path(), "apps/demo/src/main.ridge", src);
 
         let disc = discover_workspace(td.path());
         let ws = disc.graph.expect("graph");

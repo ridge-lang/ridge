@@ -1,7 +1,7 @@
 //! T4/T5 smoke test — stdlib build pipeline produces a clean summary.
 //!
 //! This test exercises `build_all` against the real `stdlib/` directory.
-//! With T5 landed, the directory contains five tier-1 `.rg` modules; the
+//! With T5 landed, the directory contains five tier-1 `.ridge` modules; the
 //! test asserts `Ok(_)` and delegates module-specific assertions to the
 //! per-module test files (`int_test.rs`, `float_test.rs`, etc.).
 

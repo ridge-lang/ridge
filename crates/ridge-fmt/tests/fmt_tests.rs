@@ -3,8 +3,8 @@
 //! Test plan:
 //! - 16 golden fixture tests (input → expected output).
 //! - 16 idempotency tests (format(format(input)) == format(input)).
-//! - 1 round-trip integration test (format every `examples/*.rg` and
-//!   `crates/ridge-stdlib/stdlib/**/*.rg`, re-parse, assert AST equivalence).
+//! - 1 round-trip integration test (format every `examples/*.ridge` and
+//!   `crates/ridge-stdlib/stdlib/**/*.ridge`, re-parse, assert AST equivalence).
 //!
 //! Total: 33 tests.
 
@@ -41,8 +41,8 @@ fn assert_idempotent(fixture: &str, input: &str) {
 
 macro_rules! fixture {
     ($prefix:literal) => {{
-        let input = include_str!(concat!("fixtures/", $prefix, "_input.rg"));
-        let expected = include_str!(concat!("fixtures/", $prefix, "_expected.rg"));
+        let input = include_str!(concat!("fixtures/", $prefix, "_input.ridge"));
+        let expected = include_str!(concat!("fixtures/", $prefix, "_expected.ridge"));
         (input, expected)
     }};
 }
@@ -245,11 +245,11 @@ fn idempotent_16_type_decls() {
 
 // ── Round-trip integration test ────────────────────────────────────────────────
 
-/// Format every `examples/*.rg` and `crates/ridge-stdlib/stdlib/**/*.rg` file,
+/// Format every `examples/*.ridge` and `crates/ridge-stdlib/stdlib/**/*.ridge` file,
 /// then re-parse the formatted output and assert that the AST is structurally
 /// equivalent (no items lost, no new parse errors introduced).
 ///
-/// Per the T5 DoD: if no `.rg` files are present, this test still verifies
+/// Per the T5 DoD: if no `.ridge` files are present, this test still verifies
 /// discovery integrity by asserting `file_count > 0`.
 #[test]
 fn round_trip_examples_and_stdlib() {
@@ -271,19 +271,19 @@ fn round_trip_examples_and_stdlib() {
 
     let mut rg_files: Vec<std::path::PathBuf> = Vec::new();
 
-    // Collect examples/*.rg
+    // Collect examples/*.ridge
     if examples_dir.is_dir() {
         if let Ok(entries) = std::fs::read_dir(&examples_dir) {
             for entry in entries.flatten() {
                 let path = entry.path();
-                if path.extension().is_some_and(|e| e == "rg") {
+                if path.extension().is_some_and(|e| e == "ridge") {
                     rg_files.push(path);
                 }
             }
         }
     }
 
-    // Collect crates/ridge-stdlib/stdlib/**/*.rg (recursive)
+    // Collect crates/ridge-stdlib/stdlib/**/*.ridge (recursive)
     if stdlib_dir.is_dir() {
         collect_rg_files(&stdlib_dir, &mut rg_files);
     }
@@ -292,7 +292,7 @@ fn round_trip_examples_and_stdlib() {
     // in fixture discovery does not silently pass.
     assert!(
         !rg_files.is_empty(),
-        "round_trip: no .rg files found in examples/ or crates/ridge-stdlib/stdlib/; \
+        "round_trip: no .ridge files found in examples/ or crates/ridge-stdlib/stdlib/; \
          verify the workspace layout"
     );
 
@@ -360,7 +360,7 @@ fn round_trip_examples_and_stdlib() {
 // ── Idempotency regression on the four canonical Phase 8 examples ────────────
 //
 // Reproducer for the fmt idempotency bug: three consecutive `ridge fmt` passes against
-// `examples/log_analyzer.rg` produced three distinct outputs because:
+// `examples/log_analyzer.ridge` produced three distinct outputs because:
 //   1. `normalise_operator_spaces` cast individual UTF-8 bytes to `char`,
 //      breaking multi-byte scalars in string literals and prose alike.
 //   2. The phase 1c "doc-comment line" check matched only the `---` marker
@@ -404,7 +404,7 @@ fn idempotent_canonical_examples_three_pass() {
         "game_of_life",
         "rate_limiter",
     ] {
-        let path = examples_dir.join(format!("{name}.rg"));
+        let path = examples_dir.join(format!("{name}.ridge"));
         let src = std::fs::read_to_string(&path)
             .unwrap_or_else(|e| panic!("read {}: {e}", path.display()));
         let passes = format_n_passes(&src, 3);
@@ -471,7 +471,7 @@ fn doc_block_body_not_operator_spaced() {
     assert_eq!(first, second, "doc-block fixture not idempotent");
 }
 
-/// Recursively collect all `.rg` files under `dir`.
+/// Recursively collect all `.ridge` files under `dir`.
 fn collect_rg_files(dir: &std::path::Path, out: &mut Vec<std::path::PathBuf>) {
     let Ok(entries) = std::fs::read_dir(dir) else {
         return;
@@ -480,7 +480,7 @@ fn collect_rg_files(dir: &std::path::Path, out: &mut Vec<std::path::PathBuf>) {
         let path = entry.path();
         if path.is_dir() {
             collect_rg_files(&path, out);
-        } else if path.extension().is_some_and(|e| e == "rg") {
+        } else if path.extension().is_some_and(|e| e == "ridge") {
             out.push(path);
         }
     }

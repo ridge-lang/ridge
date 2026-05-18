@@ -1,9 +1,9 @@
 //! Error-recovery fixture tests (T12, §6 T12 `DoD`).
 //!
-//! Each `.rg` file under `tests/fixtures/errors/` starts with one or more
+//! Each `.ridge` file under `tests/fixtures/errors/` starts with one or more
 //! `-- expect: PXXX` header lines.  This harness:
 //!
-//! 1. Enumerates all `.rg` files in the fixture directory.
+//! 1. Enumerates all `.ridge` files in the fixture directory.
 //! 2. Parses the expected codes from `-- expect:` header lines.
 //! 3. Calls `parse_source` on the file content.
 //! 4. Asserts `errors` is non-empty.
@@ -13,7 +13,7 @@
 //!
 //! ## Multi-error regression
 //!
-//! `multi_three_errors.rg` has three `-- expect: P001` lines.  This harness
+//! `multi_three_errors.ridge` has three `-- expect: P001` lines.  This harness
 //! asserts that `errors.len() == 3` for that file specifically — confirming
 //! that error recovery does not produce fewer (abort-early) or more (duplication)
 //! errors than expected.
@@ -62,7 +62,7 @@ fn all_error_fixtures_pass() {
     let mut entries: Vec<_> = std::fs::read_dir(&dir)
         .expect("failed to read fixture directory")
         .filter_map(std::result::Result::ok)
-        .filter(|e| e.path().extension().is_some_and(|ext| ext == "rg"))
+        .filter(|e| e.path().extension().is_some_and(|ext| ext == "ridge"))
         .collect();
 
     // Sort for deterministic order in failure messages.

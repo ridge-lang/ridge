@@ -3,15 +3,15 @@
 # byte-identical files. This is required by:
 #  - rustfmt.toml `newline_style = "Unix"` (otherwise `cargo fmt --check`
 #    fails on every .rs file on Windows runners).
-#  - ridge-fmt golden fixture tests (`crates/ridge-fmt/tests/fixtures/*.rg`)
-#    whose `_expected.rg` files encode the canonical LF output.
+#  - ridge-fmt golden fixture tests (`crates/ridge-fmt/tests/fixtures/*.ridge`)
+#    whose `_expected.ridge` files encode the canonical LF output.
 
 *.rs   text eol=lf
-*.rg   text eol=lf
+*.ridge   text eol=lf
 *.toml text eol=lf
 *.sh   text eol=lf
 
 # Exception: this fixture deliberately holds CRLF line endings — it is the
 # input that exercises ridge-fmt's CRLF→LF normalisation. Marking it as
 # binary prevents Git from rewriting its line endings on checkout.
-crates/ridge-fmt/tests/fixtures/10_crlf_input.rg binary
+crates/ridge-fmt/tests/fixtures/10_crlf_input.ridge binary

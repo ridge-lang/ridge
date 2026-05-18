@@ -54,14 +54,14 @@ mod tests {
     #[test]
     fn is_stdlib_path_returns_true_for_stdlib() {
         assert!(is_stdlib_path(Path::new(
-            "/workspace/crates/ridge-stdlib/src/io.rg"
+            "/workspace/crates/ridge-stdlib/src/io.ridge"
         )));
     }
 
     #[test]
     fn is_stdlib_path_returns_false_for_user_code() {
         assert!(!is_stdlib_path(Path::new(
-            "/workspace/apps/myapp/src/main.rg"
+            "/workspace/apps/myapp/src/main.ridge"
         )));
     }
 
@@ -75,7 +75,7 @@ mod tests {
         };
         let errs = check_ffi_outside_stdlib(
             &module,
-            Path::new("/workspace/crates/ridge-stdlib/src/io.rg"),
+            Path::new("/workspace/crates/ridge-stdlib/src/io.ridge"),
         );
         assert!(errs.is_empty());
     }

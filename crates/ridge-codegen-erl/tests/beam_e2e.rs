@@ -210,7 +210,7 @@ fn make_example_workspace(name: &str, source: &str) -> (PathBuf, tempfile::TempD
         "apps/demo/ridge.toml",
         "[project]\nname = \"demo\"\nversion = \"0.1.0\"\nkind = \"library\"\n",
     );
-    write(&format!("apps/demo/src/{name}.rg"), source);
+    write(&format!("apps/demo/src/{name}.ridge"), source);
     (root, td)
 }
 
@@ -221,7 +221,7 @@ fn run_example_e2e(name: &str, extra_erl_args: &[&str]) -> (String, String, i32)
     let manifest_dir = env!("CARGO_MANIFEST_DIR");
     let example_path = Path::new(manifest_dir)
         .join("../../examples")
-        .join(format!("{name}.rg"));
+        .join(format!("{name}.ridge"));
 
     let source = fs::read_to_string(&example_path)
         .unwrap_or_else(|e| panic!("could not read example {}: {e}", example_path.display()));
@@ -312,7 +312,7 @@ fn beam_e2e_log_analyzer() {
 /// (`erl -noinput -s <mod> main -s init stop`); `main` never returns under
 /// any non-pathological execution, so the 60-second harness timeout is the
 /// inevitable outcome of any healthy run. This is a test-design mismatch,
-/// not a bug in `url_shortener.rg`.
+/// not a bug in `url_shortener.ridge`.
 ///
 /// **Where the follow-up lives:**
 /// A bounded-server testing harness for long-running Ridge examples.
@@ -324,7 +324,7 @@ fn beam_e2e_log_analyzer() {
 ///   rejected — env-var-gated runtime semantics is a capability side-channel
 ///   that breaks "runtime behaves identically in test and prod".
 /// - Option (iii) example-side bounded-server rewrite: rejected — corrupts
-///   the canonical pedagogy of `url_shortener.rg` as a faithful HTTP server
+///   the canonical pedagogy of `url_shortener.ridge` as a faithful HTTP server
 ///   demonstration.
 ///
 /// These options were considered and declined; they SHALL NOT be
@@ -382,7 +382,7 @@ fn beam_e2e_game_of_life() {
 /// These involve frozen-crate semantics and would require a plan-level decision
 /// before any source change to `ridge-codegen-erl` or `ridge-lower`.
 ///
-/// **What is deferred:** Full e2e BEAM execution of `rate_limiter.rg`.
+/// **What is deferred:** Full e2e BEAM execution of `rate_limiter.ridge`.
 /// **Why:** Multi-actor codegen requires IR/lowering fixes in `ridge-lower`.
 /// **Where the follow-up lives:** `rate_limiter` codegen is a backlog item
 /// unless a future change explicitly reopens it.

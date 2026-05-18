@@ -1,5 +1,5 @@
 -- Private helpers for std.text test suite.
--- FFI bridges + pure-Ridge helpers replicate text.rg (T17+ deferred).
+-- FFI bridges + pure-Ridge helpers replicate text.ridge (T17+ deferred).
 @ffi("erlang", "byte_size", 1)
 fn _byteSize (s: Text) -> Int
 

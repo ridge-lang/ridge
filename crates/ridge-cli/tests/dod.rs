@@ -157,7 +157,7 @@ fn dod_ridge_new_smoke() {
 /// `ridge fmt` reaches a byte-identical fixed point in one pass on every one
 /// of the four canonical Phase 8 examples (G3 — full idempotency).
 ///
-/// Method: copy each `examples/<name>.rg` into a tempdir-backed workspace,
+/// Method: copy each `examples/<name>.ridge` into a tempdir-backed workspace,
 /// run `ridge fmt` once, then run `ridge fmt --check` and assert success.
 /// Repeating `fmt` a third time and diffing the output against the second
 /// pass is also asserted to give a stronger guarantee than `--check` alone.
@@ -182,7 +182,7 @@ fn dod_fmt_idempotent() {
             .join("apps")
             .join("demo")
             .join("src")
-            .join(format!("{name}.rg"));
+            .join(format!("{name}.ridge"));
         let after_first =
             fs::read(&src_path).unwrap_or_else(|e| panic!("read {}: {e}", src_path.display()));
 

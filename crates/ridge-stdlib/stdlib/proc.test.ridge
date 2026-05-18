@@ -1,5 +1,5 @@
 -- Private FFI bridges for std.proc test suite.
--- These replicate proc.rg FFI declarations in local scope because cross-module
+-- These replicate proc.ridge FFI declarations in local scope because cross-module
 -- calls are unsupported (T17+ deferred).
 --
 -- ProcOutput = { stdout: Text, stderr: Text, exitCode: Int }

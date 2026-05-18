@@ -1,4 +1,4 @@
--- tools/vscode-ridge-test/apps/g7fixture/src/Sample.rg
+-- tools/vscode-ridge-test/apps/g7fixture/src/Sample.ridge
 --
 -- Manual VS Code diagnostics fixture.  Open this file in VS Code with the
 -- Ridge extension installed and verify three diagnostics appear in the

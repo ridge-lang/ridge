@@ -11,7 +11,7 @@ impl Diagnostic {
     /// Manifest errors carry no source span; a sentinel `Span::point(0)` is
     /// used.  The renderer's source-cache-miss path produces a context-less
     /// render with no underline — which is correct for manifest errors since
-    /// they reference `ridge.toml` rather than `.rg` source files.
+    /// they reference `ridge.toml` rather than `.ridge` source files.
     #[must_use]
     pub fn from_manifest(e: &ManifestError, source_id: SourceId) -> Self {
         Self::new(

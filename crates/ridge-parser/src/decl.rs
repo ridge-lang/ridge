@@ -1284,7 +1284,7 @@ pub(crate) fn parse_state_decl(cur: &mut Cursor<'_>) -> Result<StateDecl, ParseE
 /// Parse an `init` declaration (grammar §5.3 line 511).
 ///
 /// Note: The grammar shows `"init" [ CapList ] "(" [ ParamList ] ")" "=" Block`,
-/// but the canonical example (`rate_limiter.rg`) uses separate annotated params
+/// but the canonical example (`rate_limiter.ridge`) uses separate annotated params
 /// `init (cap: Int) (rate: Float) =`, consistent with `FnDecl` param style.
 /// We implement the fn-param style (zero or more `Param`s) to match actual usage.
 ///
@@ -1710,7 +1710,7 @@ mod tests {
     }
 
     // ─────────────────────────────────────────────────────────────────────────
-    // parse_actor_without_init (url_shortener.rg Store shape)
+    // parse_actor_without_init (url_shortener.ridge Store shape)
     // ─────────────────────────────────────────────────────────────────────────
     #[test]
     fn parse_actor_without_init() {
@@ -1723,7 +1723,7 @@ mod tests {
     }
 
     // ─────────────────────────────────────────────────────────────────────────
-    // parse_actor_with_init (rate_limiter.rg Limiter shape)
+    // parse_actor_with_init (rate_limiter.ridge Limiter shape)
     // ─────────────────────────────────────────────────────────────────────────
     #[test]
     fn parse_actor_with_init() {
@@ -1772,7 +1772,7 @@ mod tests {
     // Example-program first-declaration tests
     // ─────────────────────────────────────────────────────────────────────────
 
-    // log_analyzer.rg — first import `import std.fs as Fs`
+    // log_analyzer.ridge — first import `import std.fs as Fs`
     #[test]
     fn parse_log_analyzer_first_decl() {
         let imp = parse_imp("import std.fs as Fs").expect("should parse");
@@ -1781,7 +1781,7 @@ mod tests {
         assert_eq!(imp.alias.as_ref().map(|a| a.text.as_str()), Some("Fs"));
     }
 
-    // url_shortener.rg — first import `import std.io as Io`
+    // url_shortener.ridge — first import `import std.io as Io`
     #[test]
     fn parse_url_shortener_first_decl() {
         let imp = parse_imp("import std.io as Io").expect("should parse");
@@ -1789,7 +1789,7 @@ mod tests {
         assert_eq!(imp.alias.as_ref().map(|a| a.text.as_str()), Some("Io"));
     }
 
-    // game_of_life.rg — first import `import std.io as Io`
+    // game_of_life.ridge — first import `import std.io as Io`
     // and first declaration `type Grid = { rows: Int, cols: Int, cells: List (List Bool) }`
     #[test]
     fn parse_game_of_life_first_decl() {
@@ -1802,7 +1802,7 @@ mod tests {
         assert_eq!(body.fields.len(), 2);
     }
 
-    // rate_limiter.rg — actor Limiter with init block
+    // rate_limiter.ridge — actor Limiter with init block
     #[test]
     fn parse_rate_limiter_first_decl() {
         let src = "actor Limiter =\n    state capacity: Int\n    state tokens: Float\n    init (cap: Int) (rate: Float) =\n        capacity <- cap\n        tokens <- Float.fromInt cap\n";
@@ -2053,7 +2053,7 @@ mod tests {
     // ─────────────────────────────────────────────────────────────────────────
     // parse_fn_spawn_net_io_time_caps
     // `fn spawn net io time main () = 42` — 4-capability case from
-    // url_shortener.rg / rate_limiter.rg main function.
+    // url_shortener.ridge / rate_limiter.ridge main function.
     // ─────────────────────────────────────────────────────────────────────────
     #[test]
     fn parse_fn_spawn_net_io_time_caps() {

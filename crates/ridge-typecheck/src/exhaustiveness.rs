@@ -877,7 +877,7 @@ pub fn check_exhaustiveness(
 ) {
     // R5: cascade silently when the scrutinee type carries `Type::Error` from
     // upstream (e.g. stubbed record types like `Request`/`Response` in
-    // `examples/url_shortener.rg`).  Firing T016/T017 on absorbed errors
+    // `examples/url_shortener.ridge`).  Firing T016/T017 on absorbed errors
     // drowns the user with cascading diagnostics.  The original error has
     // already been emitted (or intentionally suppressed for stubs).
     if scrutinee_contains_error(scrutinee_ty) {

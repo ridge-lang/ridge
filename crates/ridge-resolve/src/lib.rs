@@ -151,7 +151,7 @@ pub struct WorkspaceGraph {
     pub deps: Vec<Vec<ModuleId>>,
 }
 
-/// Metadata for a single `.rg` source file discovered during the filesystem walk.
+/// Metadata for a single `.ridge` source file discovered during the filesystem walk.
 #[derive(Debug)]
 pub struct ModuleMetadata {
     /// Stable module index within the workspace.
@@ -160,7 +160,7 @@ pub struct ModuleMetadata {
     pub project: ProjectId,
     /// Fully-qualified dot-separated module name, e.g. `"acme.domain.Models.User"`.
     pub fully_qualified_name: String,
-    /// Absolute path to the `.rg` source file.
+    /// Absolute path to the `.ridge` source file.
     pub file_path: std::path::PathBuf,
     /// Byte span covering the entire module source.
     ///

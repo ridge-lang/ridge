@@ -1,11 +1,11 @@
 //! Manifest regression test (§6.2).
 //!
-//! Proves bidirectional consistency between the live stdlib `.rg` sources and
+//! Proves bidirectional consistency between the live stdlib `.ridge` sources and
 //! the generated manifest (`BUILTINS`) and signature table (`stdlib_signature`).
 //!
 //! ## What this file covers
 //!
-//! 1. Re-parses every `.rg` file under `stdlib/` with text-level extraction
+//! 1. Re-parses every `.ridge` file under `stdlib/` with text-level extraction
 //!    (same algorithm that generates the manifest) to collect pub names.
 //! 2. Compares against `BUILTINS[i].exports` — bidirectionally:
 //!    - Every source-public name must appear in the manifest   → `T201`
@@ -26,7 +26,7 @@
 //!
 //! ## Note on parse errors
 //!
-//! Several stdlib `.rg` files use `(_: Unit)` as a thunk-parameter convention.
+//! Several stdlib `.ridge` files use `(_: Unit)` as a thunk-parameter convention.
 //! The current parser (Phase 7) does not support `_` as the name in an
 //! annotated parameter `(_: Type)` — it fires `P012 TopLevelPatternParam` and
 //! drops those function declarations from the partial AST.  The text-level
@@ -70,16 +70,16 @@ fn stdlib_dir() -> std::path::PathBuf {
 // ── Prelude re-export whitelist ───────────────────────────────────────────────
 
 /// Symbols that appear in `BUILTINS[i].exports` but are NOT declared as top-level
-/// `pub fn` or `pub type` in the corresponding `.rg` file.
+/// `pub fn` or `pub type` in the corresponding `.ridge` file.
 ///
 /// These are language-prelude re-exports: the type / constructor is
 /// declared in the compiler prelude and re-exported through the stdlib module's
 /// name in the resolver.  There is no `pub type Option a = ...` declaration in
-/// `option.rg` — the `Option` type is built into the language.  The manifest
+/// `option.ridge` — the `Option` type is built into the language.  The manifest
 /// lists these to enable qualified resolution (e.g. `std.option.Some`).
 ///
 /// The "formal prelude-re-export declaration mechanism" planned for a future
-/// phase will replace this whitelist with an annotation in the `.rg` source.
+/// phase will replace this whitelist with an annotation in the `.ridge` source.
 /// Until then, we skip the manifest→source direction check for these entries.
 const PRELUDE_REEXPORTS: &[(&str, &str)] = &[
     // std.option: Option, Some, None are prelude constructors / the Option type.
@@ -93,7 +93,7 @@ const PRELUDE_REEXPORTS: &[(&str, &str)] = &[
 ];
 
 /// Return `true` if `(module, sym)` is a known prelude re-export that is
-/// legitimately in the manifest but not in the `.rg` source text.
+/// legitimately in the manifest but not in the `.ridge` source text.
 fn is_prelude_reexport(module: &str, sym: &str) -> bool {
     PRELUDE_REEXPORTS
         .iter()
@@ -128,7 +128,7 @@ fn bidirectional_name_consistency() {
             dotted, builtin.name, dotted
         );
 
-        // Read and text-level-extract pub names from the .rg source.
+        // Read and text-level-extract pub names from the .ridge source.
         let rel = module_name_to_path(dotted);
         let full = stdlib.join(&rel);
 
@@ -149,7 +149,7 @@ fn bidirectional_name_consistency() {
             assert!(
                 manifest_names.contains(&sym.as_str()),
                 "T201 ManifestRegressionFailed {{ module: {dotted:?}, sym: {sym:?}, \
-                 reason: \"pub symbol in .rg source but missing from BUILTINS.exports\" }}"
+                 reason: \"pub symbol in .ridge source but missing from BUILTINS.exports\" }}"
             );
         }
 
@@ -164,7 +164,7 @@ fn bidirectional_name_consistency() {
             }
             panic!(
                 "T201 ManifestRegressionFailed {{ module: {dotted:?}, sym: {sym:?}, \
-                 reason: \"BUILTINS.exports entry has no matching pub symbol in .rg source \
+                 reason: \"BUILTINS.exports entry has no matching pub symbol in .ridge source \
                  and is not a prelude re-export\" }}"
             );
         }
@@ -193,7 +193,7 @@ fn signature_shape_consistency() {
         let builtin = &BUILTINS[idx];
         let module_id = builtin.id;
 
-        // Parse the .rg file to obtain a (potentially partial) AST.
+        // Parse the .ridge file to obtain a (potentially partial) AST.
         let rel = module_name_to_path(dotted);
         let full = stdlib.join(&rel);
 

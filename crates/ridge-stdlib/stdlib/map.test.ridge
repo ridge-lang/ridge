@@ -1,5 +1,5 @@
 -- Private helpers for std.map test suite.
--- FFI bridges + pure-Ridge helpers replicate map.rg (T17+ deferred).
+-- FFI bridges + pure-Ridge helpers replicate map.ridge (T17+ deferred).
 @ffi("maps", "new", 0)
 fn _mapsNew () -> Map k v
 

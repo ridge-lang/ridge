@@ -8,7 +8,7 @@
 //! 3. Expand `members_globs` against the workspace root.  Emit M004 for any
 //!    matched directory that lacks a `ridge.toml`.
 //! 4. Detect duplicate project names — M010.
-//! 5. For each project, walk `src_root` recursively.  For each `.rg` file,
+//! 5. For each project, walk `src_root` recursively.  For each `.ridge` file,
 //!    derive the fully-qualified module name and build a [`ModuleMetadata`].
 //! 6. Sort all modules by `fully_qualified_name` for snapshot stability.
 //! 7. Detect duplicate FQNs across all projects — R002.
@@ -376,7 +376,7 @@ fn check_path_dependency_escapes(
 
 // ── Step 5 helpers ────────────────────────────────────────────────────────────
 
-/// Recursively walk `dir` under `src_root`, collecting `.rg` files.
+/// Recursively walk `dir` under `src_root`, collecting `.ridge` files.
 ///
 /// Hidden files and directories (names starting with `.`) are skipped.
 /// Symlinks are followed; cycle detection is performed via a seen-set of
@@ -465,8 +465,8 @@ fn walk_src_root_inner(
                 depth + 1,
             );
         } else if file_type.is_file() || (file_type.is_symlink() && path.is_file()) {
-            // Only process `.rg` files (case-sensitive per R003).
-            if path.extension().is_some_and(|ext| ext == "rg") {
+            // Only process `.ridge` files (case-sensitive per R003).
+            if path.extension().is_some_and(|ext| ext == "ridge") {
                 let fqn = derive_module_fqn(project_name, src_root, &path);
                 let id = ModuleId(*next_id);
                 *next_id += 1;
@@ -488,7 +488,7 @@ fn walk_src_root_inner(
 /// # Algorithm
 ///
 /// 1. Strip `src_root` prefix to obtain the relative path.
-/// 2. Drop the `.rg` extension.
+/// 2. Drop the `.ridge` extension.
 /// 3. Join path components with `.`.
 /// 4. Prefix with `project_name`.
 ///
@@ -643,7 +643,7 @@ root = "{src_root}"
         let dir = TempDir::new().unwrap();
         write_file(dir.path(), "ridge.toml", &workspace_toml(&["libs/*"]));
         write_file(dir.path(), "libs/mylib/ridge.toml", &project_toml("demo"));
-        write_file(dir.path(), "libs/mylib/src/Hello.rg", "-- hello");
+        write_file(dir.path(), "libs/mylib/src/Hello.ridge", "-- hello");
 
         let result = discover_workspace(dir.path());
         assert!(
@@ -673,13 +673,13 @@ root = "{src_root}"
             &workspace_toml(&["libs/*", "apps/*"]),
         );
         write_file(dir.path(), "libs/core/ridge.toml", &project_toml("core"));
-        write_file(dir.path(), "libs/core/src/Util.rg", "-- util");
+        write_file(dir.path(), "libs/core/src/Util.ridge", "-- util");
         write_file(
             dir.path(),
             "apps/server/ridge.toml",
             &project_toml("server"),
         );
-        write_file(dir.path(), "apps/server/src/Main.rg", "-- main");
+        write_file(dir.path(), "apps/server/src/Main.ridge", "-- main");
 
         let result = discover_workspace(dir.path());
         assert!(
@@ -704,7 +704,7 @@ root = "{src_root}"
         assert!(fqns.contains(&"server.Main"), "fqns: {fqns:?}");
     }
 
-    // ── nested module path src/Models/User.rg → <project>.Models.User ───────
+    // ── nested module path src/Models/User.ridge → <project>.Models.User ───────
 
     #[test]
     fn t6_nested_module_path() {
@@ -715,7 +715,7 @@ root = "{src_root}"
             "libs/domain/ridge.toml",
             &project_toml("acme.domain"),
         );
-        write_file(dir.path(), "libs/domain/src/Models/User.rg", "-- user");
+        write_file(dir.path(), "libs/domain/src/Models/User.ridge", "-- user");
 
         let result = discover_workspace(dir.path());
         assert!(
@@ -736,7 +736,7 @@ root = "{src_root}"
         );
     }
 
-    // ── deeply nested path src/A/B/C/D.rg → <project>.A.B.C.D ──────────────
+    // ── deeply nested path src/A/B/C/D.ridge → <project>.A.B.C.D ──────────────
 
     #[test]
     fn t7_deeply_nested_path() {
@@ -747,7 +747,7 @@ root = "{src_root}"
             "libs/deep/ridge.toml",
             &project_toml("acme.deep"),
         );
-        write_file(dir.path(), "libs/deep/src/A/B/C/D.rg", "-- d");
+        write_file(dir.path(), "libs/deep/src/A/B/C/D.ridge", "-- d");
 
         let result = discover_workspace(dir.path());
         assert!(
@@ -771,7 +771,7 @@ root = "{src_root}"
             "libs/mylib/ridge.toml",
             &project_toml("myproject"),
         );
-        write_file(dir.path(), "libs/mylib/src/Main.rg", "-- main");
+        write_file(dir.path(), "libs/mylib/src/Main.ridge", "-- main");
 
         let result = discover_workspace(dir.path());
         assert!(
@@ -784,17 +784,17 @@ root = "{src_root}"
         assert_eq!(graph.modules[0].fully_qualified_name, "myproject.Main");
     }
 
-    // ── non-.rg files are ignored; .hidden.rg is ignored ────────────────────
+    // ── non-.ridge files are ignored; .hidden.ridge is ignored ────────────────────
 
     #[test]
     fn t9_non_rg_files_and_hidden_files_ignored() {
         let dir = TempDir::new().unwrap();
         write_file(dir.path(), "ridge.toml", &workspace_toml(&["libs/*"]));
         write_file(dir.path(), "libs/mylib/ridge.toml", &project_toml("demo"));
-        write_file(dir.path(), "libs/mylib/src/Actual.rg", "-- actual");
+        write_file(dir.path(), "libs/mylib/src/Actual.ridge", "-- actual");
         write_file(dir.path(), "libs/mylib/src/README.md", "# readme");
         write_file(dir.path(), "libs/mylib/src/notes.txt", "notes");
-        write_file(dir.path(), "libs/mylib/src/.hidden.rg", "-- hidden");
+        write_file(dir.path(), "libs/mylib/src/.hidden.ridge", "-- hidden");
 
         let result = discover_workspace(dir.path());
         assert!(
@@ -823,11 +823,11 @@ root = "{src_root}"
         let dir = TempDir::new().unwrap();
         write_file(dir.path(), "ridge.toml", &workspace_toml(&["libs/*"]));
         write_file(dir.path(), "libs/mylib/ridge.toml", &project_toml("demo"));
-        write_file(dir.path(), "libs/mylib/src/Visible.rg", "-- visible");
+        write_file(dir.path(), "libs/mylib/src/Visible.ridge", "-- visible");
         // Hidden dir — should be skipped.
         write_file(
             dir.path(),
-            "libs/mylib/src/.hidden_dir/Secret.rg",
+            "libs/mylib/src/.hidden_dir/Secret.ridge",
             "-- secret",
         );
 
@@ -879,13 +879,13 @@ root = "{src_root}"
             "libs/first/ridge.toml",
             &project_toml("acme.domain"),
         );
-        write_file(dir.path(), "libs/first/src/A.rg", "-- a");
+        write_file(dir.path(), "libs/first/src/A.ridge", "-- a");
         write_file(
             dir.path(),
             "libs/second/ridge.toml",
             &project_toml("acme.domain"),
         );
-        write_file(dir.path(), "libs/second/src/B.rg", "-- b");
+        write_file(dir.path(), "libs/second/src/B.ridge", "-- b");
 
         let result = discover_workspace(dir.path());
         assert!(
@@ -898,8 +898,8 @@ root = "{src_root}"
     // ── R002 fires when two projects produce overlapping FQNs ────────────────
     //
     // Portable recipe (works on all platforms):
-    //   project "acme"        with src/domain/Foo.rg  → "acme.domain.Foo"
-    //   project "acme.domain" with src/Foo.rg          → "acme.domain.Foo"
+    //   project "acme"        with src/domain/Foo.ridge  → "acme.domain.Foo"
+    //   project "acme.domain" with src/Foo.ridge          → "acme.domain.Foo"
     // The two files live in different project directories, so there is no
     // filesystem-level name collision on any platform.
 
@@ -908,13 +908,13 @@ root = "{src_root}"
         let dir = TempDir::new().unwrap();
         write_file(dir.path(), "ridge.toml", &workspace_toml(&["libs/*"]));
         write_file(dir.path(), "libs/acme/ridge.toml", &project_toml("acme"));
-        write_file(dir.path(), "libs/acme/src/domain/Foo.rg", "-- foo");
+        write_file(dir.path(), "libs/acme/src/domain/Foo.ridge", "-- foo");
         write_file(
             dir.path(),
             "libs/acmedomain/ridge.toml",
             &project_toml("acme.domain"),
         );
-        write_file(dir.path(), "libs/acmedomain/src/Foo.rg", "-- foo");
+        write_file(dir.path(), "libs/acmedomain/src/Foo.ridge", "-- foo");
 
         let result = discover_workspace(dir.path());
         assert!(
@@ -935,7 +935,7 @@ root = "{src_root}"
             "libs/mylib/ridge.toml",
             &project_toml_with_src_root("demo", "source"),
         );
-        write_file(dir.path(), "libs/mylib/source/Config.rg", "-- config");
+        write_file(dir.path(), "libs/mylib/source/Config.ridge", "-- config");
 
         let result = discover_workspace(dir.path());
         assert!(
@@ -955,7 +955,7 @@ root = "{src_root}"
 
     // ── canonical-example acceptance ─────────────────────────────────────────
     //
-    // Every .rg file in examples/ resolves to the correct FQN when placed in
+    // Every .ridge file in examples/ resolves to the correct FQN when placed in
     // a synthetic workspace with project.name = "demo".
 
     #[test]
@@ -978,7 +978,7 @@ root = "{src_root}"
         for stem in &example_stems {
             write_file(
                 dir.path(),
-                &format!("libs/examples/src/{stem}.rg"),
+                &format!("libs/examples/src/{stem}.ridge"),
                 "-- example file",
             );
         }
@@ -1027,7 +1027,7 @@ root = "{src_root}"
         //         mylib/
         //           ridge.toml  ← path dep = "../../../outside"
         //           src/
-        //             Foo.rg
+        //             Foo.ridge
         //     outside/           ← the escaping target
         //
         // From workspace/libs/mylib/:
@@ -1054,7 +1054,7 @@ outside = { path = "../../../outside" }
 "#
         .to_owned();
         write_file(&workspace_dir, "libs/mylib/ridge.toml", &proj_manifest);
-        write_file(&workspace_dir, "libs/mylib/src/Foo.rg", "-- foo");
+        write_file(&workspace_dir, "libs/mylib/src/Foo.ridge", "-- foo");
 
         let result = discover_workspace(&workspace_dir);
         assert!(
@@ -1071,9 +1071,9 @@ outside = { path = "../../../outside" }
         let dir = TempDir::new().unwrap();
         write_file(dir.path(), "ridge.toml", &workspace_toml(&["libs/*"]));
         write_file(dir.path(), "libs/p/ridge.toml", &project_toml("p"));
-        write_file(dir.path(), "libs/p/src/Z.rg", "-- z");
-        write_file(dir.path(), "libs/p/src/A.rg", "-- a");
-        write_file(dir.path(), "libs/p/src/M.rg", "-- m");
+        write_file(dir.path(), "libs/p/src/Z.ridge", "-- z");
+        write_file(dir.path(), "libs/p/src/A.ridge", "-- a");
+        write_file(dir.path(), "libs/p/src/M.ridge", "-- m");
 
         let result = discover_workspace(dir.path());
         let graph = result.graph.unwrap();
@@ -1093,20 +1093,20 @@ outside = { path = "../../../outside" }
 
     /// On Windows (NTFS, case-insensitive by default), two files that differ
     /// only in case cannot coexist in the same directory.  Therefore the
-    /// Linux-style FS-collision path for R002 (two distinct files `Foo.rg` and
-    /// `foo.rg` in the same directory producing the same FQN) is unreachable on
+    /// Linux-style FS-collision path for R002 (two distinct files `Foo.ridge` and
+    /// `foo.ridge` in the same directory producing the same FQN) is unreachable on
     /// Windows.
     ///
     /// The portable R002 test covers the cross-project FQN collision case
     /// which is reachable on all platforms.
     ///
     /// TODO: when running on Linux CI, add a `#[cfg(not(windows))]` test that
-    /// physically creates `src/Foo.rg` and `src/foo.rg` in the same project and
+    /// physically creates `src/Foo.ridge` and `src/foo.ridge` in the same project and
     /// asserts R002 fires.
     #[cfg(windows)]
     #[test]
     fn r002_fs_collision_windows_note() {
-        // On Windows, two .rg files with case-differing names in the same
+        // On Windows, two .ridge files with case-differing names in the same
         // directory cannot both exist.  This test documents that the Windows
         // behaviour is: only one file will be visible, so no R002 fires from
         // the FS collision path.  R002 is still exercised by the portable
@@ -1115,22 +1115,22 @@ outside = { path = "../../../outside" }
     }
 
     // Restricted to Linux: macOS APFS is case-insensitive by default, so
-    // writing both `Foo.rg` and `foo.rg` collapses to a single file and the
+    // writing both `Foo.ridge` and `foo.ridge` collapses to a single file and the
     // assertion `graph.modules.len() == 2` would fail.  Windows has its own
     // documentation stub above.
     #[cfg(target_os = "linux")]
     #[test]
     fn r002_fs_collision_linux_same_project() {
-        // On Linux (case-sensitive FS), Foo.rg and foo.rg are distinct files.
+        // On Linux (case-sensitive FS), Foo.ridge and foo.ridge are distinct files.
         // FQN derivation is case-preserving (R003 resolution: case-sensitive),
-        // so Foo.rg → acme.Foo and foo.rg → acme.foo — DIFFERENT FQNs.
+        // so Foo.ridge → acme.Foo and foo.ridge → acme.foo — DIFFERENT FQNs.
         // Therefore no R002 fires from within the same project, confirming that
         // R002 specifically targets identical FQNs, not merely case-differing ones.
         let dir = TempDir::new().unwrap();
         write_file(dir.path(), "ridge.toml", &workspace_toml(&["libs/*"]));
         write_file(dir.path(), "libs/mylib/ridge.toml", &project_toml("acme"));
-        write_file(dir.path(), "libs/mylib/src/Foo.rg", "-- foo");
-        write_file(dir.path(), "libs/mylib/src/foo.rg", "-- foo lowercase");
+        write_file(dir.path(), "libs/mylib/src/Foo.ridge", "-- foo");
+        write_file(dir.path(), "libs/mylib/src/foo.ridge", "-- foo lowercase");
 
         let result = discover_workspace(dir.path());
         // Both files are discovered with distinct FQNs — no R002.

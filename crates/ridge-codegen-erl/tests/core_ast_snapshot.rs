@@ -1,6 +1,6 @@
 //! §2.3 — [`CErlModule`] snapshot tests on Phase 5 micro-fixtures.
 //!
-//! For each fixture under `crates/ridge-lower/tests/fixtures/lower/*.rg`,
+//! For each fixture under `crates/ridge-lower/tests/fixtures/lower/*.ridge`,
 //! runs the full pipeline (resolve → typecheck → lower → codegen) and snapshots
 //! the resulting `CErlModule` via `assert_debug_snapshot!`.
 
@@ -16,7 +16,7 @@ fn snapshot_fixture(fixture_name: &str) {
     let manifest_dir = env!("CARGO_MANIFEST_DIR");
     let fixture_path = Path::new(manifest_dir)
         .join("../ridge-lower/tests/fixtures/lower")
-        .join(format!("{fixture_name}.rg"));
+        .join(format!("{fixture_name}.ridge"));
 
     let source = fs::read_to_string(&fixture_path)
         .unwrap_or_else(|e| panic!("could not read fixture {}: {e}", fixture_path.display()));

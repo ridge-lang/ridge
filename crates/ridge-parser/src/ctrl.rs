@@ -1246,7 +1246,7 @@ mod tests {
 
     // ── parse_guard_multi_stmt (block form) ───────────────────────────
     //
-    // Multi-statement guard else block (mirrors log_analyzer.rg:89–91):
+    // Multi-statement guard else block (mirrors log_analyzer.ridge:89–91):
     //   guard (len >= 2) else
     //       Io.eprintln "usage"
     //       return Err e
@@ -1409,7 +1409,7 @@ mod tests {
 
     // ── parse_guard_else_on_next_line_indented ───────────────────────────────
     //
-    // Mirrors game_of_life.rg:25-27:
+    // Mirrors game_of_life.ridge:25-27:
     //   guard (r >= 0 && r < grid.rows)
     //       else return false
     //
@@ -1463,7 +1463,7 @@ mod tests {
 
     // ── T13-guard-1: parse_guard_with_indent_else_followed_by_more_stmts ────
     //
-    // Critical regression test (Bug B).  Mirrors game_of_life.rg:25-29:
+    // Critical regression test (Bug B).  Mirrors game_of_life.ridge:25-29:
     //   fn cellAt ... =
     //       guard (cond)
     //           else return false

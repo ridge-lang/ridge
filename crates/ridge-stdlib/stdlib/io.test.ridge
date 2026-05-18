@@ -1,5 +1,5 @@
 -- Private FFI bridges for std.io test suite.
--- These replicate io.rg FFI declarations in local scope because cross-module
+-- These replicate io.ridge FFI declarations in local scope because cross-module
 -- calls are unsupported (T17+ deferred).
 @ffi("ridge_rt", "print", 1)
 fn _print (s: Text) -> Unit

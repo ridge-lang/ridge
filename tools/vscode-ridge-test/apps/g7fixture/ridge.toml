@@ -1,5 +1,5 @@
 # tools/vscode-ridge-test/apps/g7fixture/ridge.toml — project manifest for
-# the G7 fixture.
+# the diagnostics fixture.
 #
 # The empty `capabilities.allow = []` whitelist makes any function-level
 # capability (`io`, `net`, …) trigger R016 CapabilityNotAllowed.

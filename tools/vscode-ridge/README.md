@@ -1,7 +1,7 @@
 # vscode-ridge
 
 > **Status: initial scaffold — not Marketplace-published.**
-> This extension provides the minimal VS Code integration to demonstrate M5 ("VS Code shows errors from Ridge files as they happen"). A future release will deliver the full extension: TextMate grammar, syntax highlighting, and Marketplace publication.
+> This extension provides the minimal VS Code integration so that errors from Ridge files surface in the editor as you type. A future release will deliver the full extension: TextMate grammar, syntax highlighting, and Marketplace publication.
 
 ## Prerequisites
 
@@ -39,9 +39,9 @@ Reload VS Code after installation (`Developer: Reload Window`).
 - No completion, hover, go-to-definition, or other LSP features beyond what `ridge-lsp` exposes over the protocol.
 - Not published to the VS Code Marketplace — sideload only for now.
 
-## Manual test (M5 acceptance — 1 manual count)
+## Manual smoke test
 
-This is the canonical T14 / G7 verification step:
+Manual verification steps for the diagnostics round-trip:
 
 1. Build and sideload the extension per the instructions above.
 2. Open the repository root in VS Code.
@@ -58,7 +58,7 @@ Expected: the diagnostic is listed with the correct file, line, and column. The 
 | Situation | Behaviour |
 |---|---|
 | `ridge-lsp` not on `PATH` | VS Code shows an error message: _"Ridge: failed to start language server. `ridge-lsp` was not found on PATH. Install it via `tools/install/install.sh` …"_ |
-| VS Code < 1.85 | `vscode-languageclient` ~9.0 will not activate correctly; upgrade VS Code. See R11. |
+| VS Code < 1.85 | `vscode-languageclient` ~9.0 will not activate correctly; upgrade VS Code. |
 | First open before `ridge-lsp` is installed | Extension activates (language is registered), but no diagnostics appear until `ridge-lsp` is installed and VS Code is reloaded. |
 
 ## Architecture

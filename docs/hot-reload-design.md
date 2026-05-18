@@ -2,7 +2,7 @@
 
 This document is a **placeholder** for the Ridge hot-reload story. It enumerates the four open design questions that any 0.2.0+ implementation must resolve before work begins.
 
-For 0.1.0, the dev-loop substitute is `ridge run --watch` (cheap kill-and-relaunch on file change) — see D158 / D122.  `ridge run --observer` adds the BEAM introspection half (`remsh` / `observer` attach via node name + cookie) at ~1 h cost.  Together these capture roughly 70% of the dev-loop value of true hot-reload at a fraction of the implementation budget, while the harder typed-hot-reload work remains deferred until each of the four questions below has a designed answer.
+For 0.1.0, the dev-loop substitute is `ridge run --watch` (cheap kill-and-relaunch on file change).  `ridge run --observer` adds the BEAM introspection half (`remsh` / `observer` attach via node name + cookie) at ~1 h cost.  Together these capture roughly 70% of the dev-loop value of true hot-reload at a fraction of the implementation budget, while the harder typed-hot-reload work remains deferred until each of the four questions below has a designed answer.
 
 The shape of hot-reload in Ridge is the question of how `code:load_file/1`-style runtime module replacement composes with the language's static guarantees: capabilities, typed records, and stdlib invariants.  Erlang's hot-reload was designed for a dynamically typed runtime where a `badarg` from an incompatible reload is "just" another dynamic-failure mode; under Ridge's pillars a hot-reload that lets a typed program crash with a runtime type error is the *opposite* of what static typing buys the user.  Each of the four sections below captures one axis of that mismatch.
 

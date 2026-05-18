@@ -1,6 +1,23 @@
-# Ridge — Quickstart
+# Ridge — Tutorial
 
-Install guide for Ridge 0.2.0-rc3.
+A guided tour from install to a runnable hello-world to your first
+diagnostics in VS Code. Targets Ridge **0.2.0-rc4**.
+
+This tutorial assumes nothing beyond a working Rust toolchain and a
+recent Erlang/OTP. For the formal language definition, see
+[`spec.md`](spec.md); for runnable sample programs see
+[`../examples/`](../examples/).
+
+## What's in this tutorial
+
+1. [Prerequisites](#prerequisites)
+2. [Install Ridge](#install-ridge)
+3. [Sideload the VS Code extension](#sideload-the-vs-code-extension)
+4. [Create and run a hello-world project](#create-and-run-a-hello-world-project)
+5. [See diagnostics in VS Code](#see-diagnostics-in-vs-code)
+6. [Format a Ridge file](#format-a-ridge-file)
+7. [Run the test suite](#run-the-test-suite)
+8. [Troubleshooting](#troubleshooting)
 
 ---
 
@@ -12,22 +29,26 @@ Install guide for Ridge 0.2.0-rc3.
 | Erlang/OTP | **26** | `erl -eval 'erlang:display(erlang:system_info(otp_release)), halt().'` |
 | git | **2.20** | `git --version` |
 
-These are the values `tools/install/install.ps1` enforces at lines 96, 137, and 173.
+Both install scripts enforce these versions before touching the
+filesystem, so a missing prereq fails fast with a clear message.
 
 ---
 
-## (a) Install Ridge
+## Install Ridge
 
-### Option A — Install from the current working tree (dev machine with the repo cloned)
+### Option A — install from a cloned repo (developer setup)
 
-```powershell
+```sh
 cargo install --path crates/ridge-cli
 cargo install --path crates/ridge-lsp
 ```
 
-### Option B — Install from the published release (no local clone)
+Useful when you're hacking on the compiler itself.
 
-Downloads a pre-built `ridge` + `ridge-lsp` binary from the latest GitHub release, verifies its SHA256, and extracts to `~/.cargo/bin`.
+### Option B — install from the published release
+
+Downloads a pre-built `ridge` + `ridge-lsp` binary from the latest
+GitHub release, verifies its SHA-256, and extracts to `~/.cargo/bin`.
 
 ```powershell
 # Windows (PowerShell)
@@ -35,102 +56,140 @@ Downloads a pre-built `ridge` + `ridge-lsp` binary from the latest GitHub releas
 ```
 
 ```bash
-# Linux / macOS — pass the script as an argument, do NOT pipe to a shell
+# Linux / macOS — pass the script as an argument; do NOT pipe to a shell
 bash -c "$(curl -fsSL https://raw.githubusercontent.com/ridge-lang/ridge/main/tools/install/install.sh)"
 ```
 
 To pin a specific release tag, set `RIDGE_VERSION`:
 
 ```powershell
-$env:RIDGE_VERSION = 'v0.2.0-rc3'
+$env:RIDGE_VERSION = 'v0.2.0-rc4'
 & ([scriptblock]::Create((iwr -useb 'https://raw.githubusercontent.com/ridge-lang/ridge/main/tools/install/install.ps1').Content))
 ```
 
 ```bash
-RIDGE_VERSION=v0.2.0-rc3 bash -c "$(curl -fsSL https://raw.githubusercontent.com/ridge-lang/ridge/main/tools/install/install.sh)"
+RIDGE_VERSION=v0.2.0-rc4 bash -c "$(curl -fsSL https://raw.githubusercontent.com/ridge-lang/ridge/main/tools/install/install.sh)"
 ```
 
-> **Why not `curl … | sh` (or `| bash`)?** The installer's Erlang prerequisite check calls `erl -noshell -eval …`, which reads stdin. When the script is piped through a shell, stdin IS the script body; `erl` consumes the still-unread bytes, the shell hits EOF, and the installer exits silently with zero output. Passing the script as an argument (`bash -c "$(curl …)"`) or downloading first and executing (`curl -o /tmp/i.sh … && bash /tmp/i.sh`) gives `erl` a clean stdin.
+> **Why not `curl … | sh` (or `| bash`)?** The installer's Erlang
+> prerequisite check calls `erl -noshell -eval …`, which reads stdin.
+> When the script is piped through a shell, stdin *is* the script body;
+> `erl` consumes the still-unread bytes, the shell hits EOF, and the
+> installer exits silently with zero output. Passing the script as an
+> argument (`bash -c "$(curl …)"`) or downloading first
+> (`curl -o /tmp/ridge.sh … && bash /tmp/ridge.sh`) gives `erl` a clean
+> stdin.
 
-### Verify
+### Verify the install
 
-```powershell
+```sh
 ~/.cargo/bin/ridge --version
-# expected: ridge 0.2.0-rc3
+# expected: ridge 0.2.0-rc4
 ~/.cargo/bin/ridge-lsp --version
-# expected: ridge-lsp 0.2.0-rc3
+# expected: ridge-lsp 0.2.0-rc4
 ```
 
-Use the explicit path (`~/.cargo/bin/ridge`), not a glob. The installer's success banner (install.ps1 lines 261–269) also prints this and suggests the next step.
+Use the explicit path (`~/.cargo/bin/ridge`), not a shell glob. The
+installer's success banner prints this path and the suggested next
+step.
 
 ---
 
-## (b) Sideload the VS Code Extension
+## Sideload the VS Code extension
 
-The `.vsix` is not in git (see `tools/vscode-ridge/.gitignore`). Build it from source. pnpm is required — corepack picks pnpm 11.1.1 from the `packageManager` field.
+The `.vsix` isn't published to the Marketplace yet; build it from the
+repo. pnpm is required — corepack picks `pnpm@11.1.1` from the
+`packageManager` field in `package.json`.
 
-```powershell
-cd <repo-root>\tools\vscode-ridge
+```sh
+cd <repo-root>/tools/vscode-ridge
 pnpm install
 pnpm run bundle
 pnpm dlx @vscode/vsce package --no-dependencies
-code --install-extension ".\vscode-ridge-0.1.0.vsix"
+code --install-extension ./vscode-ridge-0.1.0.vsix
 ```
 
-Use the literal `.\vscode-ridge-0.1.0.vsix` path — PowerShell does not glob-expand external command arguments, so `*.vsix` fails here.
+On Windows, use the literal path `.\vscode-ridge-0.1.0.vsix` —
+PowerShell doesn't glob-expand external command arguments, so
+`*.vsix` won't match.
 
-On Linux/macOS use forward slashes. If `code` is not on PATH on macOS:
+If `code` isn't on PATH on macOS:
 
 ```bash
 export PATH="$PATH:/Applications/Visual Studio Code.app/Contents/Resources/app/bin"
 ```
 
-Restart VS Code after the install completes.
+Restart VS Code after the install completes. The extension activates
+on any `.rg` file and spawns `ridge-lsp` from your PATH over stdio.
+See [`tools/vscode-ridge/README.md`](../tools/vscode-ridge/README.md)
+for the full extension docs.
 
 ---
 
-## (c) Create and Run a Hello-World Project
+## Create and run a hello-world project
 
-```powershell
+```sh
 ridge new hello
 cd hello
 ridge run
 ```
 
-Expected output (from the generated `Main.rg`):
+Expected output:
 
 ```
-Hello, world!
+Hello from hello!
 ```
 
-The generated workspace has two files worth noting:
+The generated workspace has two files worth knowing about:
 
-**`ridge.toml`** — project manifest. `kind = "application"`, empty `capabilities.allow` by default.
+**`ridge.toml`** — the project manifest. A single-project workspace
+with one app member, the `io` capability allowed, and an entry point
+under `src/`.
 
 ```toml
-[project]
-name    = "hello"
+[workspace]
+name = "hello"
 version = "0.1.0"
-kind    = "application"
+members = ["."]
+
+[project]
+name = "hello"
+version = "0.1.0"
+kind = "app"
+entry = "src/Main.rg"
+
+[project.src]
+root = "src"
+
+[capabilities]
+allow = ["io"]
 ```
 
-**`src/Main.rg`** — entry point. Something like:
+**`src/Main.rg`** — the entry point.
 
 ```ridge
-pub fn main () -> Result Unit Text =
-  io.println "Hello, world!"
+import std.io as Io
+
+pub fn io main () -> Unit =
+  Io.println $"Hello from hello!"
 ```
 
-`io.println` is the standard output capability. The function returns `Result Unit Text`.
+The `io` prefix on `fn` declares the capability the function uses.
+Capabilities are part of the function's signature, so the workspace
+manifest can grant or revoke them at compile time. `Io.println` is
+the standard-output entry point in `std.io`.
 
 ---
 
-## (d) Open in VS Code — Syntax Highlighting and Diagnostics
+## See diagnostics in VS Code
 
-Use the existing G7 fixture workspace — it already has all three diagnostic triggers in place and does not require any editing.
+A pre-wired sample workspace ships with the repo at
+`tools/vscode-ridge-test/`. It has three deliberate problems set up so
+you can confirm the language server is alive and producing real
+diagnostics.
 
-```powershell
-code <repo-root>\tools\vscode-ridge-test
+```sh
+code <repo-root>/tools/vscode-ridge-test
 ```
 
 Open the file:
@@ -139,94 +198,103 @@ Open the file:
 apps/g7fixture/src/Sample.rg
 ```
 
-Open the Problems panel (`Ctrl+Shift+M`). Confirm three diagnostics appear within ~250 ms:
+Open the Problems panel (`Ctrl+Shift+M` / `Cmd+Shift+M`). Three
+diagnostics should appear within about 250 ms:
 
-| # | Line in Sample.rg | Expected diagnostic |
+| # | Line in `Sample.rg` | Expected diagnostic |
 |---|---|---|
-| 1 | `import std.fs as Fs` | **R013 ForbidViolation** — workspace forbid rule `g7fixture.** -> std.fs` |
-| 2 | `pub fn io needs_io () -> Int = 42` | **R016 CapabilityNotAllowed** — project `g7fixture` does not allow capability `io` |
+| 1 | `import std.fs as Fs` | **R013 ForbidViolation** — workspace `forbid` rule blocks `std.fs` for this project |
+| 2 | `pub fn io needs_io () -> Int = 42` | **R016 CapabilityNotAllowed** — the project's `capabilities.allow` does not include `io` |
 | 3 | `pub fn bad_add (a : Int) (b : Int) -> Int = a + "hello"` | **T001 TypeMismatch** — `Int` vs `Text` |
 
-Also confirm syntax highlighting is active: keywords (`pub`, `fn`, `import`, `as`) should render in the keyword colour; string literals in string colour; `--` comments greyed out.
+Also confirm syntax highlighting is active: keywords (`pub`, `fn`,
+`import`, `as`) render in the keyword colour, string literals in the
+string colour, and `--` line comments are greyed out.
 
-### Known Limitation
+### A known rough edge
 
-All three diagnostics will appear in the Problems panel attributed to **`<unknown>` file at line 1:1**. The error message text is correct; only the file attribution and line number are wrong.
-
-Root cause: `crates/ridge-driver/src/check.rs` lines 106 and 112 hardcode `WorkspaceSourceCache::unknown_source_id()` instead of resolving the actual module source identifier.
-
-Fix: Strategy B (envelope `ModuleId` in the driver layer).
-
-This is accepted behavior for 0.1.0. The diagnostic content is what matters for writing code; file attribution and navigation will be fixed in 0.2.0.
+In the current release, all three diagnostics show up in the Problems
+panel attributed to `<unknown>` at `1:1`. The diagnostic *messages*
+are correct — only the file attribution and line number are wrong.
+Tracked for fix in a follow-up release; the diagnostic content is
+already enough to find and fix the underlying problem in the editor.
 
 ---
 
-## (e) Format a Ridge File
+## Format a Ridge file
 
-Break the formatting of `hello/src/Main.rg` by adding extra whitespace or indentation, then:
+Break the formatting of `hello/src/Main.rg` by adding stray whitespace
+or indentation, then run:
 
-```powershell
+```sh
 ridge fmt ./src/Main.rg
 ```
 
 Or to format the whole project:
 
-```powershell
+```sh
 ridge fmt .
 ```
 
-Observe whitespace normalised back to canonical form. The file is formatted in-place.
+Files are rewritten in place. The formatter is deterministic — running
+it twice produces the same output as running it once.
 
 ---
 
-## (f) Run the Test Suite
+## Run the test suite
 
-Add a simple test function to `hello/src/Main.rg` (or a new file):
+`ridge test` discovers every `pub fn test_*` (arity 0) in the workspace
+and runs it. Tests return `Result Unit Text`: `Ok ()` passes, `Err msg`
+fails with `msg` printed.
+
+Add a test to `hello/src/Main.rg`:
 
 ```ridge
 pub fn test_greeting () -> Result Unit Text =
-    if "Hello, world!" == "Hello, world!" then Ok ()
+    if "Hello from hello!" == "Hello from hello!" then Ok ()
     else Err "greeting mismatch"
 ```
 
-Note: Ridge's `let` is indentation-based with no `in` keyword (see `crates/ridge-stdlib/stdlib/int.test.rg:20-27` for canonical multi-line `let` shape). The Haskell-style `let ... in body` form does not parse.
+A note on `let`: Ridge's `let` is indentation-based and has no `in`
+keyword. The Haskell-style `let … in body` form does not parse. For
+the canonical multi-line shape, see
+[`crates/ridge-stdlib/stdlib/int.test.rg`](../crates/ridge-stdlib/stdlib/int.test.rg)
+around lines 20–27.
 
 Run:
 
-```powershell
+```sh
 ridge test
 ```
 
-Expected output: a passing test summary. Individual test functions named `test_*` are discovered and executed by the runner.
-
----
-
-## (g) Confirm `ridge run` Still Works
-
-After making any edits in the previous steps, verify the hello-world program still runs:
-
-```powershell
-ridge run
-# expected: Hello, world!
-```
-
-If the output is missing or garbled, check that `main` still has a valid `Result Unit Text` return and that no capability was added without a corresponding `capabilities.allow` entry in `ridge.toml`.
+You should see a passing test summary.
 
 ---
 
 ## Troubleshooting
 
 **`ridge` not found after install.**
-Add `~/.cargo/bin` to PATH, or use the explicit path `~/.cargo/bin/ridge`.
+Add `~/.cargo/bin` to your PATH, or invoke the explicit path
+`~/.cargo/bin/ridge`. The installer banner prints both.
 
 **LSP not starting in VS Code.**
-Check the VS Code output channel "Ridge Language Server". Verify `ridge-lsp` is on PATH: `~/.cargo/bin/ridge-lsp --version`. If missing, run `cargo install --path crates/ridge-lsp` (Option A) or re-run the install script (Option B).
+Open the "Ridge Language Server" output channel from the VS Code
+output panel. Verify `ridge-lsp` is on PATH:
+`~/.cargo/bin/ridge-lsp --version`. If it's missing, install it via
+Option A (`cargo install --path crates/ridge-lsp`) or re-run the
+release installer (Option B).
 
-**Diagnostics do not appear at all (not even at `<unknown>:1:1`).**
-Confirm the `ridge-lsp` binary is installed (separate from `ridge`). Confirm the extension is active (`code --list-extensions | findstr ridge`). See `docs/T15_G7_MANUAL_ATTESTATION.md` Steps 1–4 for the full G7 debug procedure.
+**Diagnostics don't appear at all.**
+Confirm the `ridge-lsp` binary is installed (it's a separate binary
+from `ridge`) and that the extension is active
+(`code --list-extensions | grep ridge`, or `findstr ridge` on
+Windows). Reload the VS Code window after sideloading.
 
-**`pnpm dlx @vscode/vsce package` emits an icon warning.**
-The placeholder icon at `tools/vscode-ridge/images/icon.png` or the `"icon"` field in `package.json` is missing. This was addressed in T5 — if it reappears, the `images/` directory or `package.json` root `icon` field was not committed.
+**`pnpm dlx @vscode/vsce package` warns about a missing icon.**
+The placeholder icon at `tools/vscode-ridge/images/icon.png` or the
+`"icon"` field in `package.json` is missing from the working tree.
 
-**R013 does not fire on a fresh `ridge new` workspace.**
-R013 requires a workspace-level `forbid` rule. The `tools/vscode-ridge-test/` workspace has this configured; a fresh `ridge new hello` workspace does not. Use the G7 fixture (Path A in this tutorial) to observe R013.
+**R013 doesn't fire on a fresh `ridge new` workspace.**
+R013 needs a workspace-level `forbid` rule, which `ridge new` doesn't
+emit by default. The pre-wired `tools/vscode-ridge-test/` workspace
+has one configured; use it to observe R013.

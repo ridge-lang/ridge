@@ -270,18 +270,14 @@ function Install-FromBinary {
 }
 
 function Get-PlatformTriple {
-    # PowerShell on Windows: assume x86_64-pc-windows-msvc.
-    # If running PS Core on Linux/macOS, that's a user error for install.ps1 — use install.sh.
-    if ([System.Runtime.InteropServices.RuntimeInformation]::IsOSPlatform([System.Runtime.InteropServices.OSPlatform]::Windows)) {
-        $arch = [System.Runtime.InteropServices.RuntimeInformation]::ProcessArchitecture
-        switch ($arch) {
-            'X64'   { return 'x86_64-pc-windows-msvc' }
-            'Arm64' { Write-Advisory "R053" "Windows ARM64 not yet built"; return $null }
-            default { Write-Advisory "R053" "Unsupported Windows architecture: $arch"; return $null }
-        }
-    } else {
-        Write-Advisory "R053" "install.ps1 is for Windows; use install.sh on Linux/macOS"
-        return $null
+    # install.ps1 is Windows-only (see #Requires -Version 5.1).
+    # Use the PROCESSOR_ARCHITECTURE env var so this works on both
+    # Windows PowerShell 5.1 (.NET Framework) and PowerShell 7+ (.NET Core).
+    $arch = $env:PROCESSOR_ARCHITECTURE
+    switch ($arch) {
+        'AMD64' { return 'x86_64-pc-windows-msvc' }
+        'ARM64' { Write-Advisory "R053" "Windows ARM64 not yet built"; return $null }
+        default { Write-Advisory "R053" "Unsupported Windows architecture: $arch"; return $null }
     }
 }
 

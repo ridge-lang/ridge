@@ -1,7 +1,7 @@
 # vscode-ridge
 
 > **Status: initial scaffold — not Marketplace-published.**
-> This extension provides the minimal VS Code integration to demonstrate M5 ("VS Code shows errors from Ridge files as they happen"). A future release will deliver the full extension: TextMate grammar, syntax highlighting, and Marketplace publication.
+> This extension provides the minimal VS Code integration so that errors from Ridge files surface in the editor as you type. A future release will deliver the full extension: TextMate grammar, syntax highlighting, and Marketplace publication.
 
 ## Prerequisites
 
@@ -39,7 +39,7 @@ Reload VS Code after installation (`Developer: Reload Window`).
 - No completion, hover, go-to-definition, or other LSP features beyond what `ridge-lsp` exposes over the protocol.
 - Not published to the VS Code Marketplace — sideload only for now.
 
-## Manual test (M5 acceptance — 1 manual count)
+## Manual smoke test
 
 Manual verification steps for the diagnostics round-trip:
 

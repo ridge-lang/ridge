@@ -261,8 +261,33 @@ The binary install path emits structured advisory messages to stderr when a non-
 | R052 | SHA256 mismatch | The downloaded archive's checksum does not match the `.sha256` sidecar. The file may be corrupt or tampered with; do not use it. |
 | R053 | Unsupported platform | No pre-built binary exists for this OS / architecture combination.  The script falls back to the source install path automatically. |
 | R054 | Extract failed | The archive could not be extracted to `INSTALL_DIR`.  Check available disk space and write permissions. |
+| R055 | cosign skip | `cosign` is not on `PATH`, or no `.cosign.bundle` exists for this release tag. The script continues — SHA256 still guards integrity; cosign verification adds provenance attestation on top. |
+| R056 | cosign verification failed | `cosign verify-blob` rejected the signature for the downloaded archive. Treated as fatal: aborts the binary install path and falls back to source. |
 
-When any of R051–R054 fires, the binary path returns failure and the script falls back to `cargo install` automatically (unless `RIDGE_FORCE_SOURCE=1`, in which case the source path was already the primary path).
+R051, R052, R054, R056 cause the binary path to return failure and fall back to `cargo install` (unless `RIDGE_FORCE_SOURCE=1`, in which case the source path was already the primary path). R053 and R055 are advisories only — R053 means no prebuilt artifact exists for the platform, R055 means signature checking was skipped but integrity is still enforced.
+
+## Verifying release signatures manually
+
+Releases produced by `.github/workflows/release.yml` are signed via [Sigstore](https://www.sigstore.dev/) keyless signing with the GitHub Actions OIDC token. Each archive ships with a `.cosign.bundle` sidecar containing the signature, certificate, and Rekor transparency-log entry.
+
+To verify manually:
+
+```sh
+# Linux / macOS
+ARCHIVE=ridge-x86_64-unknown-linux-gnu.tar.gz
+TAG=v0.2.0   # or whichever release you downloaded
+
+curl -fsSLO "https://github.com/ridge-lang/ridge/releases/download/${TAG}/${ARCHIVE}"
+curl -fsSLO "https://github.com/ridge-lang/ridge/releases/download/${TAG}/${ARCHIVE}.cosign.bundle"
+
+cosign verify-blob \
+  --bundle "${ARCHIVE}.cosign.bundle" \
+  --certificate-identity-regexp "https://github\.com/ridge-lang/ridge/\.github/workflows/release\.yml@refs/tags/v.*" \
+  --certificate-oidc-issuer "https://token.actions.githubusercontent.com" \
+  "${ARCHIVE}"
+```
+
+A `Verified OK` line confirms the archive was signed by the `release.yml` workflow on a release tag in `ridge-lang/ridge`. Install `cosign` from <https://docs.sigstore.dev/system_config/installation/>.
 
 ## Edge cases
 
@@ -274,6 +299,9 @@ When any of R051–R054 fires, the binary path returns failure and the script fa
 | Linux aarch64 | R053 emitted (no artifact yet); falls back to source install |
 | Windows ARM64 | R053 emitted (no artifact yet); falls back to source install |
 | Extraction fails | R054 emitted; falls back to source install |
+| `cosign` missing on PATH | R055 emitted (advisory only); binary install continues, SHA256 still enforced |
+| No `.cosign.bundle` on release | R055 emitted (advisory only); binary install continues |
+| `cosign verify-blob` rejects signature | R056 emitted; aborts binary install, falls back to source |
 | Rust missing | Exit 1 with `curl … sh.rustup.rs` / `rustup-init.exe` hint |
 | Rust < 1.88 | Exit 1 with `rustup update stable` hint |
 | Erlang missing | Exit 1 with `apt` / `brew` / `choco` hint |

@@ -12,6 +12,7 @@ on:
 
 permissions:
   contents: write
+  id-token: write
 
 concurrency:
   group: release-${{ github.ref }}
@@ -98,6 +99,20 @@ jobs:
           $hash = (Get-FileHash "$env:ARTIFACT_NAME.zip" -Algorithm SHA256).Hash.ToLower()
           "$hash  $env:ARTIFACT_NAME.zip" | Out-File -Encoding ascii "$env:ARTIFACT_NAME.zip.sha256"
 
+      - name: Install cosign
+        uses: sigstore/cosign-installer@v3
+        with:
+          cosign-release: 'v2.4.1'
+
+      - name: Sign artifact (keyless)
+        shell: bash
+        env:
+          ARTIFACT: ridge-${{ matrix.target }}.${{ matrix.archive_ext }}
+        run: |
+          cosign sign-blob --yes \
+            --bundle "${ARTIFACT}.cosign.bundle" \
+            "$ARTIFACT"
+
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
@@ -105,6 +120,7 @@ jobs:
           path: |
             ridge-${{ matrix.target }}.${{ matrix.archive_ext }}
             ridge-${{ matrix.target }}.${{ matrix.archive_ext }}.sha256
+            ridge-${{ matrix.target }}.${{ matrix.archive_ext }}.cosign.bundle
           if-no-files-found: error
 
   release:
@@ -145,4 +161,5 @@ jobs:
             artifacts/*.tar.gz
             artifacts/*.zip
             artifacts/*.sha256
+            artifacts/*.cosign.bundle
           fail_on_unmatched_files: true

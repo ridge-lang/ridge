@@ -60,16 +60,30 @@ jobs:
           otp-version: "26"
 
       # ── Run install script (will download binaries from release) ──
-      # Pipe through `bash` (not `sh`) on Linux: Ubuntu's /bin/sh is dash,
-      # which rejects some constructs install.sh uses. install.sh itself
-      # should eventually be POSIX-clean, but explicit `bash` here is the
-      # robust pattern (rustup, deno, etc. all use it).
+      # Download first, then execute with `bash -x` so every command is
+      # echoed to the log. Pipe-to-bash hides errors when curl returns an
+      # empty body or install.sh exits early (no `set -o pipefail` in the
+      # GitHub Actions step shell), and prior runs showed install.sh
+      # producing ZERO output — bash -x makes the silent failure visible.
       - name: Run install script (Unix)
         if: matrix.os != 'windows'
         env:
           RIDGE_VERSION: ${{ steps.ver.outputs.version }}
         run: |
-          curl -fsSL "https://raw.githubusercontent.com/ridge-lang/ridge/${{ github.sha }}/tools/install/install.sh" | bash
+          set -o pipefail
+          INSTALLER=/tmp/ridge-install.sh
+          echo "Fetching installer from raw.githubusercontent.com ..."
+          curl -fsSL "https://raw.githubusercontent.com/ridge-lang/ridge/${{ github.sha }}/tools/install/install.sh" -o "$INSTALLER"
+          echo "Installer size: $(wc -c < "$INSTALLER") bytes"
+          echo "First 3 lines of installer:"
+          head -3 "$INSTALLER"
+          echo "--- begin bash -x trace ---"
+          bash -x "$INSTALLER" 2>&1
+          rc=$?
+          echo "--- end bash -x trace (exit=$rc) ---"
+          echo "Contents of \$HOME/.cargo/bin after install:"
+          ls -la "$HOME/.cargo/bin/" || echo "(directory does not exist)"
+          exit $rc
 
       - name: Run install script (Windows)
         if: matrix.os == 'windows'

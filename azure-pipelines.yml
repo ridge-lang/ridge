@@ -308,7 +308,7 @@ stages:
               $ErrorActionPreference = 'Stop'
 
               $liveLines = (& powershell -NoProfile -NonInteractive -Command `
-                "& 'tools/install/install.ps1' -DryRun -Snapshot" 2>&1)
+                "$env:RIDGE_DRY_RUN='1'; $env:RIDGE_SNAPSHOT='1'; & 'tools/install/install.ps1'" 2>&1)
               # Strip CR so comparison uses LF-only lines matching the snapshot file
               $live = ($liveLines -join "`n") -replace "`r", ""
 
@@ -331,7 +331,7 @@ stages:
                 Write-Host "--- live ---";     Write-Host $liveSection
                 exit 1
               }
-            displayName: 'Diff install.ps1 -DryRun -Snapshot against expected_dryrun.txt'
+            displayName: 'Diff install.ps1 dry-run snapshot against expected_dryrun.txt'
 
   # ── BuildTestMatrix — full install-from-zero + test on three platforms ───────
   #    Each job:

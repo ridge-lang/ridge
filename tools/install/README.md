@@ -25,6 +25,16 @@ If PowerShell script execution is blocked, run first:
 Set-ExecutionPolicy -Scope Process Bypass
 ```
 
+### Pipe install with options
+
+Options are passed via environment variables (PowerShell's `Invoke-Expression` does not support param blocks):
+
+```powershell
+$env:RIDGE_FORCE_SOURCE = "1"
+iwr -useb https://raw.githubusercontent.com/ridge-lang/ridge/main/tools/install/install.ps1 | iex
+$env:RIDGE_FORCE_SOURCE = $null
+```
+
 ## Install behavior
 
 Both scripts follow a binary-first approach:
@@ -68,7 +78,7 @@ Both scripts verify the following before installing:
 
 If a prerequisite is missing or too old, the script exits 1 with a platform-specific install/upgrade hint.
 
-## `--dry-run` / `-DryRun` mode
+## `--dry-run` / dry-run mode
 
 Both scripts support a no-side-effects mode that prints every command they would execute — one per line, prefixed `[dry-run]` — then exits 0 without making any changes.
 
@@ -78,8 +88,15 @@ sh install.sh --dry-run
 ```
 
 ```powershell
-# Windows
-.\install.ps1 -DryRun
+# Windows — env var (works in both pipe and download-then-execute modes)
+$env:RIDGE_DRY_RUN = "1"
+iwr -useb https://ridge-lang.org/install.ps1 | iex
+$env:RIDGE_DRY_RUN = $null
+
+# Windows — download then execute
+$env:RIDGE_DRY_RUN = "1"
+.\install.ps1
+$env:RIDGE_DRY_RUN = $null
 ```
 
 Example output:
@@ -107,7 +124,7 @@ The CI lane diffs the live `--dry-run` output byte-for-byte against `expected_dr
 ### install.sh --dry-run (snapshot mode) ###
 <lines from install.sh --snapshot>
 ### install.ps1 -DryRun (snapshot mode) ###
-<lines from install.ps1 -DryRun -Snapshot>
+<lines from install.ps1 dry-run snapshot>
 ```
 
 The `--snapshot` / `-Snapshot` flags suppress platform-detected runtime values (e.g., `uname -s` output) and replace them with `<OS>` / `<ARCH>` placeholders, making the snapshot fully deterministic across runner platforms.
@@ -123,7 +140,7 @@ When you intentionally change a command in either install script:
    ```bash
    bash tools/install/install.sh --snapshot > /tmp/sh_snap.txt
    powershell.exe -NoProfile -NonInteractive -Command \
-     "& 'tools/install/install.ps1' -DryRun -Snapshot" | tr -d '\r' > /tmp/ps_snap.txt
+     "$env:RIDGE_DRY_RUN='1'; $env:RIDGE_SNAPSHOT='1'; & 'tools/install/install.ps1'" | tr -d '\r' > /tmp/ps_snap.txt
    
    printf '%s\n%s\n%s\n%s\n' \
      '### install.sh --dry-run (snapshot mode) ###' \

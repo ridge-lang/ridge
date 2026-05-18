@@ -344,6 +344,19 @@ if [ "${RIDGE_FORCE_SOURCE:-0}" != "1" ]; then
             echo "warning: ridge --version printed '$ridge_out'; expected '$EXPECTED_VERSION'." >&2
             echo "  The binary was installed but may be a different version." >&2
         fi
+        # Defense-in-depth: ridge.exe extracts successfully but if ridge-lsp.exe
+        # stayed locked during extract, the script would have already failed (see
+        # R054 post-extract Test-Path check). This is a final sanity check that
+        # both binaries actually report the expected version — catches any
+        # scenario where one binary is stale.
+        EXPECTED_LSP_VERSION="ridge-lsp 0.2.0-rc2"
+        if command -v ridge-lsp >/dev/null 2>&1; then
+            ridge_lsp_out=$(ridge-lsp --version 2>&1)
+            if ! echo "$ridge_lsp_out" | grep -qF "$EXPECTED_LSP_VERSION"; then
+                echo "warning: ridge-lsp --version printed '$ridge_lsp_out'; expected '$EXPECTED_LSP_VERSION'." >&2
+                echo "warning: ridge-lsp may be a different version than ridge — try re-running the install." >&2
+            fi
+        fi
         echo ""
         echo "Ridge installed successfully!"
         echo ""
@@ -403,6 +416,20 @@ fi
 if ! echo "$ridge_out" | grep -qF "$EXPECTED_VERSION"; then
     echo "warning: ridge --version printed '$ridge_out'; expected '$EXPECTED_VERSION'." >&2
     echo "  The binary was installed but may be a different version." >&2
+fi
+
+# Defense-in-depth: ridge.exe extracts successfully but if ridge-lsp.exe
+# stayed locked during extract, the script would have already failed (see
+# R054 post-extract Test-Path check). This is a final sanity check that
+# both binaries actually report the expected version — catches any
+# scenario where one binary is stale.
+EXPECTED_LSP_VERSION="ridge-lsp 0.2.0-rc2"
+if command -v ridge-lsp >/dev/null 2>&1; then
+    ridge_lsp_out=$(ridge-lsp --version 2>&1)
+    if ! echo "$ridge_lsp_out" | grep -qF "$EXPECTED_LSP_VERSION"; then
+        echo "warning: ridge-lsp --version printed '$ridge_lsp_out'; expected '$EXPECTED_LSP_VERSION'." >&2
+        echo "warning: ridge-lsp may be a different version than ridge — try re-running the install." >&2
+    fi
 fi
 
 # ── Step 8: Success message ────────────────────────────────────────────────────

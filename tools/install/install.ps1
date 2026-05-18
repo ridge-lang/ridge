@@ -430,6 +430,19 @@ error: ridge --version failed after install.
             Write-Warning "ridge --version printed '$ridgeOut'; expected '$ExpectedVersion'."
             Write-Warning 'The binary was installed but may be a different version.'
         }
+        $ExpectedLspVersion = 'ridge-lsp 0.2.0-rc2'
+        $ridgeLspOut = ''
+        try {
+            $ridgeLspOut = & ridge-lsp --version 2>&1
+            if ($LASTEXITCODE -ne 0) { throw "ridge-lsp --version exited $LASTEXITCODE" }
+        } catch {
+            Write-Warning "ridge-lsp --version did not run successfully: $_"
+            Write-Warning "The LSP binary may be missing or stale — try re-running the install."
+        }
+        if ($ridgeLspOut -and ($ridgeLspOut -notlike "*$ExpectedLspVersion*")) {
+            Write-Warning "ridge-lsp --version printed '$ridgeLspOut'; expected '$ExpectedLspVersion'."
+            Write-Warning "The LSP binary may be a different version than the CLI — try re-running the install."
+        }
         Write-Information ''
         Write-Information 'Ridge installed successfully!'
         Write-Information ''
@@ -486,6 +499,20 @@ error: ridge --version failed after install.
 if ($ridgeOut -notlike "*$ExpectedVersion*") {
     Write-Warning "ridge --version printed '$ridgeOut'; expected '$ExpectedVersion'."
     Write-Warning 'The binary was installed but may be a different version.'
+}
+
+$ExpectedLspVersion = 'ridge-lsp 0.2.0-rc2'
+$ridgeLspOut = ''
+try {
+    $ridgeLspOut = & ridge-lsp --version 2>&1
+    if ($LASTEXITCODE -ne 0) { throw "ridge-lsp --version exited $LASTEXITCODE" }
+} catch {
+    Write-Warning "ridge-lsp --version did not run successfully: $_"
+    Write-Warning "The LSP binary may be missing or stale — try re-running the install."
+}
+if ($ridgeLspOut -and ($ridgeLspOut -notlike "*$ExpectedLspVersion*")) {
+    Write-Warning "ridge-lsp --version printed '$ridgeLspOut'; expected '$ExpectedLspVersion'."
+    Write-Warning "The LSP binary may be a different version than the CLI — try re-running the install."
 }
 
 # ── Step 8: Success message ────────────────────────────────────────────────────

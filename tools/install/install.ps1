@@ -230,8 +230,34 @@ error: git $gitVer is too old; Ridge requires git $MinGit or newer. (P008 PkgGit
 }
 
 # ──────────────────────────────────────────────────────────────────────────────
-# Binary install path (R051-R054)
+# Binary install path (R051-R056)
 # ──────────────────────────────────────────────────────────────────────────────
+
+function Test-CosignBundle {
+    # Returns $true on success, $false on hard failure (signature invalid).
+    # If cosign is absent, emits R055 and returns $true (non-fatal: SHA256
+    # already guards integrity; cosign adds provenance attestation).
+    param([string]$Archive, [string]$Bundle)
+
+    $cosignCmd = Get-Command cosign -ErrorAction SilentlyContinue
+    if (-not $cosignCmd) {
+        Write-Advisory "R055" "cosign not on PATH - skipping signature verification (install: https://docs.sigstore.dev/system_config/installation/)"
+        return $true
+    }
+
+    $identityRegex = 'https://github\.com/ridge-lang/ridge/\.github/workflows/release\.yml@refs/tags/v.*'
+    $oidcIssuer    = 'https://token.actions.githubusercontent.com'
+
+    & cosign verify-blob --bundle $Bundle --certificate-identity-regexp $identityRegex --certificate-oidc-issuer $oidcIssuer $Archive 2>&1 | Out-Null
+
+    if ($LASTEXITCODE -ne 0) {
+        Write-Advisory "R056" "cosign signature verification failed for $(Split-Path $Archive -Leaf)"
+        return $false
+    }
+
+    Write-Host "cosign signature verified."
+    return $true
+}
 
 function Install-FromBinary {
     $triple = Get-PlatformTriple
@@ -249,6 +275,7 @@ function Install-FromBinary {
     $assetName = "ridge-$triple.zip"
     $assetUrl = "https://github.com/ridge-lang/ridge/releases/download/$version/$assetName"
     $shaUrl   = "$assetUrl.sha256"
+    $bundleUrl = "$assetUrl.cosign.bundle"
 
     $tmpDir = New-Item -ItemType Directory -Path (Join-Path $env:TEMP "ridge-install-$([guid]::NewGuid().ToString('N'))")
     try {
@@ -267,12 +294,28 @@ function Install-FromBinary {
             return $false
         }
 
+        # Cosign bundle is optional - older releases predate signing.
+        $bundlePath = Join-Path $tmpDir "$assetName.cosign.bundle"
+        $haveBundle = $false
+        Invoke-WebRequest -Uri $bundleUrl -OutFile $bundlePath -UseBasicParsing -ErrorAction SilentlyContinue
+        if (Test-Path $bundlePath) {
+            $haveBundle = $true
+        }
+
         Write-Host "Verifying SHA256..."
         $expectedHash = (Get-Content (Join-Path $tmpDir "$assetName.sha256")).Split(' ')[0].ToLower()
         $actualHash = (Get-FileHash (Join-Path $tmpDir $assetName) -Algorithm SHA256).Hash.ToLower()
         if ($expectedHash -ne $actualHash) {
             Write-Advisory "R052" "SHA256 mismatch for $assetName (expected $expectedHash, got $actualHash)"
             return $false
+        }
+
+        if ($haveBundle) {
+            $archivePath = Join-Path $tmpDir $assetName
+            $ok = Test-CosignBundle -Archive $archivePath -Bundle $bundlePath
+            if (-not $ok) { return $false }
+        } else {
+            Write-Advisory "R055" "no cosign bundle available for $version - skipping signature verification"
         }
 
         Write-Host "Extracting to $InstallDir..."

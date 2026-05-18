@@ -213,8 +213,33 @@ if ! version_ge "$git_ver" "$MIN_GIT"; then
 fi
 
 # ──────────────────────────────────────────────────────────────────────────────
-# Binary install path (R051-R054)
+# Binary install path (R051-R056)
 # ──────────────────────────────────────────────────────────────────────────────
+
+verify_cosign_bundle() {
+    # Args: $1 = archive path, $2 = bundle path
+    # Returns 0 on success, 1 on hard failure (signature invalid).
+    # If cosign is absent, emits R055 advisory and returns 0 (non-fatal:
+    # SHA256 already guards integrity; cosign adds provenance attestation).
+    local archive="$1" bundle="$2"
+
+    if ! command -v cosign >/dev/null 2>&1; then
+        emit_advisory R055 "cosign not on PATH — skipping signature verification (install: https://docs.sigstore.dev/system_config/installation/)"
+        return 0
+    fi
+
+    if ! cosign verify-blob \
+        --bundle "$bundle" \
+        --certificate-identity-regexp "https://github\\.com/ridge-lang/ridge/\\.github/workflows/release\\.yml@refs/tags/v.*" \
+        --certificate-oidc-issuer "https://token.actions.githubusercontent.com" \
+        "$archive" >/dev/null 2>&1; then
+        emit_advisory R056 "cosign signature verification failed for $(basename "$archive")"
+        return 1
+    fi
+
+    echo "cosign signature verified."
+    return 0
+}
 
 install_from_binary() {
     local triple
@@ -231,6 +256,7 @@ install_from_binary() {
     local asset_name="ridge-${triple}.tar.gz"
     local asset_url="https://github.com/ridge-lang/ridge/releases/download/${version}/${asset_name}"
     local sha_url="${asset_url}.sha256"
+    local bundle_url="${asset_url}.cosign.bundle"
 
     local tmpdir
     tmpdir="$(mktemp -d)" || return 1
@@ -245,6 +271,12 @@ install_from_binary() {
     if ! curl -fsSL "$sha_url" -o "$tmpdir/${asset_name}.sha256"; then
         emit_advisory R051 "Failed to download SHA256 sidecar from ${sha_url}"
         return 1
+    fi
+
+    # Cosign bundle is optional — older releases predate signing.
+    local have_bundle=0
+    if curl -fsSL "$bundle_url" -o "$tmpdir/${asset_name}.cosign.bundle" 2>/dev/null; then
+        have_bundle=1
     fi
 
     echo "Verifying SHA256..."
@@ -264,6 +296,14 @@ install_from_binary() {
         fi
     fi
     popd >/dev/null
+
+    if [ "$have_bundle" -eq 1 ]; then
+        if ! verify_cosign_bundle "$tmpdir/${asset_name}" "$tmpdir/${asset_name}.cosign.bundle"; then
+            return 1
+        fi
+    else
+        emit_advisory R055 "no cosign bundle available for ${version} — skipping signature verification"
+    fi
 
     echo "Extracting to $INSTALL_DIR..."
     mkdir -p "$INSTALL_DIR"

@@ -6,15 +6,17 @@
 [![Rust](https://img.shields.io/badge/rust-1.88+-orange.svg)](https://www.rust-lang.org/)
 [![BEAM](https://img.shields.io/badge/BEAM-OTP%2026+-purple.svg)](https://www.erlang.org/)
 
-> A general-purpose typed functional language for the BEAM, built around
-> developer experience, safety from the root, first-class performance, and
-> approachability.
+A typed functional language for the BEAM. Hindley-Milner inference, row
+polymorphism, actor-first concurrency, and effects tracked in the type
+system. Compiles to BEAM bytecode via Core Erlang.
 
-**Status:** 0.2.0-rc3 (release candidate). See [`CHANGELOG.md`](CHANGELOG.md)
-for what landed, and [`docs/spec.md`](docs/spec.md) for the full language
+**Status:** 0.2.0-rc4 — release candidate. The language and tooling are
+usable end-to-end, but the surface area is still moving. Expect breaking
+changes between release candidates. See [`CHANGELOG.md`](CHANGELOG.md) for
+what landed and [`docs/spec.md`](docs/spec.md) for the full language
 specification.
 
-## Key characteristics
+## What you get
 
 - Statically typed with Hindley-Milner inference and row polymorphism
 - Compiled to BEAM bytecode via Core Erlang
@@ -25,13 +27,8 @@ specification.
 - Workspace model with architectural rules enforced by the compiler
 - No `null` — `Option` and `Result` are the only way to express optionality
   and failure
-- LSP server (diagnostics, hover, go-to-definition) + VS Code extension
+- LSP server (diagnostics, hover, go-to-definition) and VS Code extension
 - Built-in test runner, formatter, and REPL
-
-## Elevator pitch
-
-> Ridge is the only language where your architecture and your effects live
-> in the type system, not in your PR reviews.
 
 ## Hello, world
 
@@ -40,46 +37,67 @@ fn io main () =
     Io.println "Hello, World"
 ```
 
-See [`examples/`](examples/) for more sample programs.
+More sample programs live under [`examples/`](examples/).
 
 ## Install
 
-Cross-platform install scripts are under [`tools/install/`](tools/install/).
-Full instructions in [`docs/tutorial.md`](docs/tutorial.md).
+Pre-built binaries are available for Linux, macOS, and Windows. Install
+scripts download the release archive, verify its SHA256, and place `ridge`
+and `ridge-lsp` on your PATH. If no binary exists for your platform the
+scripts fall back to `cargo install`.
 
-```sh
-# Linux / macOS — pass the script as an argument; do NOT pipe to a shell.
-# The installer's Erlang prereq check reads stdin; piping through `sh` or
-# `bash` causes `erl` to consume the script body and the shell to exit
-# silently before installing anything.
+**Linux / macOS**
+
+```bash
 bash -c "$(curl -fsSL https://raw.githubusercontent.com/ridge-lang/ridge/main/tools/install/install.sh)"
+```
 
-# Windows (PowerShell)
+**Windows (PowerShell)**
+
+```powershell
 & ([scriptblock]::Create((iwr -useb 'https://raw.githubusercontent.com/ridge-lang/ridge/main/tools/install/install.ps1').Content))
 ```
 
-## CLI usage
+Full install notes, environment overrides, and troubleshooting live in
+[`tools/install/README.md`](tools/install/README.md).
+
+## Quickstart
 
 ```sh
-ridge new my-app          # scaffold a new project
-ridge run                 # build and run the current project
-ridge test                # run the test suite
-ridge fmt                 # format all .rg files
-ridge repl                # interactive REPL
+ridge new hello            # scaffold a new project
+cd hello
+ridge run                  # build and run
+ridge test                 # run the test suite
+ridge fmt                  # format .rg files
+ridge repl                 # interactive REPL
 ```
+
+The full walk-through, including project layout and capability declarations,
+is in [`docs/tutorial.md`](docs/tutorial.md).
 
 ## Editor support
 
 - **VS Code:** install the Ridge extension (TextMate grammar + LSP client).
-  Bundled in [`tools/vscode-ridge/`](tools/vscode-ridge/).
-- Any LSP-capable editor can connect to the `ridge-lsp` server binary.
+  Source under [`tools/vscode-ridge/`](tools/vscode-ridge/).
+- Any LSP-capable editor can talk to the `ridge-lsp` binary directly.
 
 ## Documentation
 
-- [Tutorial](docs/tutorial.md) — install + quickstart
+- [Tutorial](docs/tutorial.md) — install plus a guided first project
 - [Language specification](docs/spec.md) — formal definition
 - [Grammar (EBNF)](docs/grammar.ebnf) — parser reference
 - [Examples](examples/) — runnable sample programs
+
+## Release signing
+
+Release archives are signed with [Sigstore](https://www.sigstore.dev/)
+keyless signing via the GitHub Actions OIDC token. Each archive ships with
+a `.cosign.bundle` sidecar containing the signature, certificate, and Rekor
+transparency-log entry. The install scripts verify the signature
+automatically when `cosign` is present (advisory diagnostic `R055` if
+`cosign` is missing, fatal `R056` if verification fails). To verify a
+release manually, see [Verifying release signatures
+manually](tools/install/README.md#verifying-release-signatures-manually).
 
 ## Building from source
 
@@ -88,13 +106,15 @@ cargo build --workspace
 cargo test --workspace
 ```
 
-Prerequisites and conventions: see [`CONTRIBUTING.md`](CONTRIBUTING.md).
+Prerequisites: Rust 1.88+, Erlang/OTP 26+, git 2.20+. Repository layout and
+contributor conventions live in [`CONTRIBUTING.md`](CONTRIBUTING.md).
 
 ## Contributing
 
-PRs welcome. Please read [`CONTRIBUTING.md`](CONTRIBUTING.md) first — it
-covers branch naming, commit conventions, and the proposal process for
-language changes.
+Pull requests are welcome. Please read [`CONTRIBUTING.md`](CONTRIBUTING.md)
+first — it covers branch naming, commit conventions, and how to propose
+language-level changes. By participating you agree to the
+[Code of Conduct](CODE_OF_CONDUCT.md).
 
 ## Security
 

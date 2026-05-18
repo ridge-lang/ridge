@@ -58,6 +58,15 @@ $ErrorActionPreference = 'Stop'
 # (PSScriptAnalyzer rule PSAvoidUsingWriteHost).
 $InformationPreference = 'Continue'
 
+# Wrap the entire installer body so that errors propagate via `throw` and
+# success returns cleanly via `return` — instead of `exit`, which would
+# terminate the calling shell when invoked via `iwr | iex` or
+# `& ([scriptblock]::Create(...))`. This is the same pattern used by
+# rustup-init.ps1.
+$installerExitCode = 0
+try {
+& {
+
 # ── Dry-run mode (step 2 of §3.14) ───────────────────────────────────────────
 if ($DryRun) {
     # Step 1 — platform detection
@@ -97,7 +106,7 @@ if ($DryRun) {
     Write-Output "[dry-run] cargo install --git $DryRepo --branch $DryBranch ridge-lsp"
     # Step 7 — verify
     Write-Output '[dry-run] ridge --version'
-    exit 0
+    return
 }
 
 # ── Step 1: Detect platform / architecture ────────────────────────────────────
@@ -120,7 +129,7 @@ try {
     $cargoOut = & cargo --version 2>&1
 }
 catch {
-    Write-Error @"
+    throw @"
 error: cargo not found -- Rust is not installed.
 
   Install Rust via rustup:
@@ -129,25 +138,22 @@ error: cargo not found -- Rust is not installed.
 
   Or visit https://rustup.rs
 "@
-    exit 1
 }
 
 if ($cargoOut -match 'cargo (\d+\.\d+)') {
     $rustVer = $Matches[1]
 }
 else {
-    Write-Error "error: could not parse cargo version from: $cargoOut"
-    exit 1
+    throw "error: could not parse cargo version from: $cargoOut"
 }
 
 if (-not (Compare-Version $rustVer $MinRust)) {
-    Write-Error @"
+    throw @"
 error: Rust $rustVer is too old; Ridge requires Rust $MinRust or newer.
 
   Update via rustup:
     rustup update stable
 "@
-    exit 1
 }
 
 # ── Step 4: Verify Erlang/OTP >= 26 ──────────────────────────────────────────
@@ -161,7 +167,7 @@ try {
     $otpOut = & erl -noshell -eval 'io:put_chars(erlang:system_info(otp_release)),init:stop().' 2>&1
 }
 catch {
-    Write-Error @"
+    throw @"
 error: erl not found -- Erlang/OTP is not installed.
 
   Install Erlang/OTP via Chocolatey:
@@ -169,17 +175,15 @@ error: erl not found -- Erlang/OTP is not installed.
 
   Or download the installer from https://www.erlang.org/downloads
 "@
-    exit 1
 }
 
 $otpVer = ($otpOut | Out-String).Trim()
 if ($otpVer -notmatch '^\d+$') {
-    Write-Error "error: could not parse OTP release from erl output: $otpOut"
-    exit 1
+    throw "error: could not parse OTP release from erl output: $otpOut"
 }
 $otpVerInt = [int]$otpVer
 if ($otpVerInt -lt $MinOtp) {
-    Write-Error @"
+    throw @"
 error: Erlang/OTP $otpVer is too old; Ridge requires OTP $MinOtp or newer.
 
   Upgrade Erlang/OTP via Chocolatey:
@@ -187,7 +191,6 @@ error: Erlang/OTP $otpVer is too old; Ridge requires OTP $MinOtp or newer.
 
   Or download the installer from https://www.erlang.org/downloads
 "@
-    exit 1
 }
 
 # ── Step 5: Verify git >= 2.20 ────────────────────────────────────────────────
@@ -197,7 +200,7 @@ try {
     $gitOut = & git --version 2>&1
 }
 catch {
-    Write-Error @"
+    throw @"
 error: git not found -- git is not installed.
 
   Install git via Chocolatey:
@@ -205,7 +208,6 @@ error: git not found -- git is not installed.
 
   Or download from https://git-scm.com/download/win
 "@
-    exit 1
 }
 
 # Lenient parse: first MAJOR.MINOR match (R17 — handles exotic version strings).
@@ -213,12 +215,11 @@ if ($gitOut -match '(\d+\.\d+)') {
     $gitVer = $Matches[1]
 }
 else {
-    Write-Error "error: could not parse git version from: $gitOut  (P009 PkgGitVersionUnparseable)"
-    exit 1
+    throw "error: could not parse git version from: $gitOut  (P009 PkgGitVersionUnparseable)"
 }
 
 if (-not (Compare-Version $gitVer $MinGit)) {
-    Write-Error @"
+    throw @"
 error: git $gitVer is too old; Ridge requires git $MinGit or newer. (P008 PkgGitTooOld)
 
   Upgrade git via Chocolatey:
@@ -226,7 +227,6 @@ error: git $gitVer is too old; Ridge requires git $MinGit or newer. (P008 PkgGit
 
   Or download from https://git-scm.com/download/win
 "@
-    exit 1
 }
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -393,7 +393,7 @@ New-Item -ItemType Directory -Force -Path $InstallDir | Out-Null
 # Detect the lock now and bail with an actionable message.
 $ridgeLspExe = Join-Path $InstallDir "ridge-lsp.exe"
 if (-not (Wait-ForUnlockedBinary $ridgeLspExe "ridge-lsp")) {
-    Write-Error @"
+    throw @"
 error: $ridgeLspExe is locked by another process and could not be freed.
 
   An editor (likely VS Code) with the Ridge extension active is holding
@@ -407,7 +407,6 @@ error: $ridgeLspExe is locked by another process and could not be freed.
   To verify no ridge-lsp process is running:
     Get-Process ridge-lsp -ErrorAction SilentlyContinue
 "@
-    exit 1
 }
 
 # Binary-first install path (unless RIDGE_FORCE_SOURCE=1)
@@ -421,12 +420,11 @@ if ($env:RIDGE_FORCE_SOURCE -ne "1") {
             if ($LASTEXITCODE -ne 0) { throw "ridge --version exited $LASTEXITCODE" }
         }
         catch {
-            Write-Error @"
+            throw @"
 error: ridge --version failed after install.
 
   Ensure $InstallDir is on your PATH, then open a new terminal.
 "@
-            exit 1
         }
         if ($ridgeOut -notlike "*$ExpectedVersion*") {
             Write-Warning "ridge --version printed '$ridgeOut'; expected '$ExpectedVersion'."
@@ -441,7 +439,7 @@ error: ridge --version failed after install.
         Write-Information '  ridge new my-app; cd my-app; ridge run'
         Write-Information ''
         Write-Information 'Documentation: https://ridge-lang.org/docs'
-        exit 0
+        return
     }
     Write-Host "Falling back to source install via cargo..."
 }
@@ -458,9 +456,7 @@ try {
     if ($LASTEXITCODE -ne 0) { throw "cargo install ridge-cli exited $LASTEXITCODE" }
 }
 catch {
-    Write-Information ''
-    Write-Error "error: cargo install ridge-cli failed: $_"
-    exit 1
+    throw "error: cargo install ridge-cli failed: $_"
 }
 
 Write-Information 'Installing ridge-lsp ...'
@@ -469,9 +465,7 @@ try {
     if ($LASTEXITCODE -ne 0) { throw "cargo install ridge-lsp exited $LASTEXITCODE" }
 }
 catch {
-    Write-Information ''
-    Write-Error "error: cargo install ridge-lsp failed: $_"
-    exit 1
+    throw "error: cargo install ridge-lsp failed: $_"
 }
 
 # ── Step 7: Verify binary works ───────────────────────────────────────────────
@@ -482,12 +476,11 @@ try {
     if ($LASTEXITCODE -ne 0) { throw "ridge --version exited $LASTEXITCODE" }
 }
 catch {
-    Write-Error @"
+    throw @"
 error: ridge --version failed after install.
 
   Ensure %USERPROFILE%\.cargo\bin is on your PATH, then open a new terminal.
 "@
-    exit 1
 }
 
 if ($ridgeOut -notlike "*$ExpectedVersion*") {
@@ -505,3 +498,13 @@ Write-Information 'Get started:'
 Write-Information '  ridge new my-app; cd my-app; ridge run'
 Write-Information ''
 Write-Information 'Documentation: https://ridge-lang.org/docs'
+
+} # end scriptblock
+} catch {
+    Write-Error $_.Exception.Message
+    $installerExitCode = 1
+}
+
+# Set $LASTEXITCODE for callers that check it. DO NOT call `exit` here
+# — that would kill the host shell when invoked via iex.
+$global:LASTEXITCODE = $installerExitCode

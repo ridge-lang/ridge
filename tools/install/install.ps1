@@ -25,12 +25,12 @@
 .EXAMPLE
     # Recommended one-liner — wraps the script in a scriptblock so `exit`
     # statements terminate the install, not the calling shell:
-    & ([scriptblock]::Create((iwr -useb 'https://ridge-lang.org/install.ps1' -UseBasicParsing).Content))
+    & ([scriptblock]::Create((iwr -useb 'https://ridge-lang.org/install.ps1').Content))
 
 .EXAMPLE
     # With env-var options (e.g. dry-run):
     $env:RIDGE_DRY_RUN = "1"
-    & ([scriptblock]::Create((iwr -useb 'https://ridge-lang.org/install.ps1' -UseBasicParsing).Content))
+    & ([scriptblock]::Create((iwr -useb 'https://ridge-lang.org/install.ps1').Content))
     $env:RIDGE_DRY_RUN = $null
 
 .EXAMPLE

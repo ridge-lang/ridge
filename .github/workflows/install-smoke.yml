@@ -27,13 +27,10 @@ jobs:
         include:
           - os: linux
             runner: ubuntu-22.04
-            shell: bash
           - os: macos
             runner: macos-14
-            shell: bash
           - os: windows
             runner: windows-2022
-            shell: pwsh
 
     steps:
       - name: Resolve version
@@ -81,7 +78,7 @@ jobs:
 
       # ── Verify both binaries are on PATH and report expected version ──
       - name: Verify ridge --version
-        shell: ${{ matrix.shell }}
+        shell: bash
         run: |
           ridge --version
 
@@ -97,7 +94,7 @@ jobs:
           echo "ridge --version: $OUT ✓"
 
       - name: Verify ridge-lsp --version
-        shell: ${{ matrix.shell }}
+        shell: bash
         run: |
           ridge-lsp --version
 
@@ -114,7 +111,7 @@ jobs:
 
       # ── Optional end-to-end smoke: create + build a project ──
       - name: Scaffold + build smoke project
-        shell: ${{ matrix.shell }}
+        shell: bash
         run: |
           ridge new smoke-test
           cd smoke-test

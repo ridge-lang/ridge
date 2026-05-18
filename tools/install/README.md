@@ -10,8 +10,10 @@ source via `cargo install`.
 **Linux / macOS**
 
 ```bash
-curl -sSf https://ridge-lang.org/install.sh | sh
+bash -c "$(curl -sSf https://ridge-lang.org/install.sh)"
 ```
+
+> Pass the script as an argument; do **not** pipe to a shell. The installer's Erlang prerequisite check (`erl -noshell -eval …`) reads stdin. When the script is piped via `curl … | sh` or `curl … | bash`, stdin is the script body itself; `erl` consumes the still-unread bytes, the shell sees EOF, and the installer exits silently with no output. The `bash -c "$(curl …)"` pattern (or download-then-execute) gives `erl` a clean stdin.
 
 **Windows** (PowerShell)
 
@@ -56,7 +58,7 @@ Both scripts follow a binary-first approach:
 To skip the binary path and always build from source:
 
 ```bash
-RIDGE_FORCE_SOURCE=1 sh install.sh
+RIDGE_FORCE_SOURCE=1 bash install.sh
 ```
 
 ```powershell
@@ -90,7 +92,7 @@ Both scripts support a no-side-effects mode that prints every command they would
 
 ```bash
 # Linux / macOS
-sh install.sh --dry-run
+bash install.sh --dry-run
 ```
 
 ```powershell
@@ -189,7 +191,7 @@ Installing the tools locally is recommended but not required.  The CI is the aut
 
 | Variable | Default | Purpose |
 |----------|---------|---------|
-| `RIDGE_VERSION` | _(latest GitHub release)_ | Pin a specific release tag, e.g. `RIDGE_VERSION=v0.2.0-rc2` |
+| `RIDGE_VERSION` | _(latest GitHub release)_ | Pin a specific release tag, e.g. `RIDGE_VERSION=v0.2.0-rc3` |
 | `RIDGE_INSTALL_DIR` | `~/.cargo/bin` (Linux/macOS) / `%USERPROFILE%\.cargo\bin` (Windows) | Directory where `ridge` and `ridge-lsp` are placed |
 | `RIDGE_FORCE_SOURCE` | `0` | Set to `1` to skip the binary path and always build from source |
 
@@ -197,18 +199,18 @@ Installing the tools locally is recommended but not required.  The CI is the aut
 
 ```bash
 # Install a specific version
-RIDGE_VERSION=v0.2.0-rc2 sh install.sh
+RIDGE_VERSION=v0.2.0-rc3 bash install.sh
 
 # Install to a custom directory
-RIDGE_INSTALL_DIR=/usr/local/bin sh install.sh
+RIDGE_INSTALL_DIR=/usr/local/bin bash install.sh
 
 # Force source build (requires Rust)
-RIDGE_FORCE_SOURCE=1 sh install.sh
+RIDGE_FORCE_SOURCE=1 bash install.sh
 ```
 
 ```powershell
 # Install a specific version
-$env:RIDGE_VERSION = 'v0.2.0-rc2'
+$env:RIDGE_VERSION = 'v0.2.0-rc3'
 .\install.ps1
 
 # Install to a custom directory

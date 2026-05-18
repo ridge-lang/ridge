@@ -321,8 +321,72 @@ function Write-Advisory {
     Write-Host "advisory ${Code}: $Message" -ForegroundColor Yellow
 }
 
+# ── Helper: pre-flight write-access test ─────────────────────────────────────
+# Open the file in ReadWrite mode with no sharing. If the file is locked by
+# another process (e.g. an editor's LSP child holding ridge-lsp.exe), the open
+# fails and we return $false. If the file does not exist yet, we treat it as
+# writable (the install will create it).
+function Test-WriteAccess {
+    param([string]$Path)
+    if (-not (Test-Path $Path)) { return $true }
+    try {
+        $stream = [System.IO.File]::Open($Path, 'Open', 'ReadWrite', 'None')
+        $stream.Close()
+        $stream.Dispose()
+        return $true
+    } catch {
+        return $false
+    }
+}
+
+# Try to ensure a binary path is writable: if it isn't, stop processes that
+# could be holding it (best-effort), sleep briefly, and re-test once. Returns
+# $true if the file is writable on entry or after the kill; $false if still
+# locked (typical when an editor's LSP client re-spawns the process before we
+# can complete the install).
+function Wait-ForUnlockedBinary {
+    param([string]$Path, [string]$ProcessName)
+
+    if (Test-WriteAccess $Path) { return $true }
+
+    $procs = @(Get-Process -Name $ProcessName -ErrorAction SilentlyContinue)
+    if ($procs.Count -gt 0) {
+        Write-Host "Stopping $($procs.Count) running $ProcessName process(es) to free the binary..."
+        $procs | Stop-Process -Force -ErrorAction SilentlyContinue
+        Start-Sleep -Milliseconds 500
+    }
+
+    return (Test-WriteAccess $Path)
+}
+
 # ── Step 6: Install ridge-cli and ridge-lsp ───────────────────────────────────
 $InstallDir = if ($env:RIDGE_INSTALL_DIR) { $env:RIDGE_INSTALL_DIR } else { Join-Path $env:USERPROFILE ".cargo\bin" }
+New-Item -ItemType Directory -Force -Path $InstallDir | Out-Null
+
+# Pre-flight: both the binary-fetch and cargo-install paths ultimately write
+# to ridge-lsp.exe in the install dir. If an editor's LSP client (e.g. VS
+# Code's Ridge extension) is actively holding the file and re-spawning the
+# process as fast as we kill it, BOTH install paths will fail — and the
+# cargo-install path wastes ~2 minutes compiling before discovering this.
+# Detect the lock now and bail with an actionable message.
+$ridgeLspExe = Join-Path $InstallDir "ridge-lsp.exe"
+if (-not (Wait-ForUnlockedBinary $ridgeLspExe "ridge-lsp")) {
+    Write-Error @"
+error: $ridgeLspExe is locked by another process and could not be freed.
+
+  An editor (likely VS Code) with the Ridge extension active is holding
+  the language-server binary. The install script tried to stop the
+  ridge-lsp process, but it was re-launched immediately by the editor's
+  LSP client.
+
+  Please fully close any editor with Ridge files open (in VS Code:
+  File -> Exit, not just close the window), then re-run this install.
+
+  To verify no ridge-lsp process is running:
+    Get-Process ridge-lsp -ErrorAction SilentlyContinue
+"@
+    exit 1
+}
 
 # Binary-first install path (unless RIDGE_FORCE_SOURCE=1)
 if ($env:RIDGE_FORCE_SOURCE -ne "1") {

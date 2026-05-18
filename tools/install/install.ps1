@@ -457,7 +457,7 @@ if ($env:RIDGE_FORCE_SOURCE -ne "1") {
     if (Install-FromBinary) {
         # Run existing post-install version check and exit success
         Write-Information 'Verifying installation ...'
-        $ExpectedVersion = 'ridge 0.2.0-rc3'
+        $ExpectedVersion = 'ridge 0.2.0-rc4'
         try {
             $ridgeOut = & ridge --version 2>&1
             if ($LASTEXITCODE -ne 0) { throw "ridge --version exited $LASTEXITCODE" }
@@ -473,7 +473,7 @@ error: ridge --version failed after install.
             Write-Warning "ridge --version printed '$ridgeOut'; expected '$ExpectedVersion'."
             Write-Warning 'The binary was installed but may be a different version.'
         }
-        $ExpectedLspVersion = 'ridge-lsp 0.2.0-rc3'
+        $ExpectedLspVersion = 'ridge-lsp 0.2.0-rc4'
         $ridgeLspOut = ''
         try {
             $ridgeLspOut = & ridge-lsp --version 2>&1
@@ -526,7 +526,7 @@ catch {
 
 # ── Step 7: Verify binary works ───────────────────────────────────────────────
 Write-Information 'Verifying installation ...'
-$ExpectedVersion = 'ridge 0.2.0-rc3'
+$ExpectedVersion = 'ridge 0.2.0-rc4'
 try {
     $ridgeOut = & ridge --version 2>&1
     if ($LASTEXITCODE -ne 0) { throw "ridge --version exited $LASTEXITCODE" }
@@ -544,7 +544,7 @@ if ($ridgeOut -notlike "*$ExpectedVersion*") {
     Write-Warning 'The binary was installed but may be a different version.'
 }
 
-$ExpectedLspVersion = 'ridge-lsp 0.2.0-rc3'
+$ExpectedLspVersion = 'ridge-lsp 0.2.0-rc4'
 $ridgeLspOut = ''
 try {
     $ridgeLspOut = & ridge-lsp --version 2>&1

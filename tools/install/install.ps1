@@ -386,6 +386,45 @@ function Write-Advisory {
     Write-Host "advisory ${Code}: $Message" -ForegroundColor Yellow
 }
 
+# Locate the workspace Cargo.toml relative to this script.  install.ps1 lives
+# at tools\install\install.ps1, so the workspace root is two levels up.  When
+# the script is invoked via iwr/iex there is no $PSCommandPath, in which case
+# the function returns $null.
+function Get-WorkspaceCargoToml {
+    if (-not $PSCommandPath) { return $null }
+    $scriptDir = Split-Path -Parent $PSCommandPath
+    if (-not $scriptDir) { return $null }
+    $candidate = Join-Path $scriptDir '..\..\Cargo.toml'
+    if (-not (Test-Path $candidate)) { return $null }
+    return (Resolve-Path $candidate).Path
+}
+
+# Parse [workspace.package].version from a Cargo.toml.  Section-aware so it
+# does not pick up a stray "version = ..." line inside [workspace.dependencies]
+# or [dependencies.*].  Returns the bare version string on success, $null
+# otherwise.
+function Get-CargoVersion {
+    $cargoToml = Get-WorkspaceCargoToml
+    if (-not $cargoToml) { return $null }
+    $inSection = $false
+    foreach ($line in Get-Content -LiteralPath $cargoToml) {
+        if ($line -match '^\[workspace\.package\]') { $inSection = $true; continue }
+        if ($line -match '^\[')                      { $inSection = $false; continue }
+        if ($inSection -and ($line -match '^version\s*=\s*"([^"]+)"')) {
+            return $Matches[1]
+        }
+    }
+    return $null
+}
+
+# Strip the leading "v" from the release tag we just installed so the value
+# matches the bare X.Y.Z emitted by --version.
+function Get-ReleaseVersion {
+    param([string]$Tag)
+    if (-not $Tag) { return $null }
+    return ($Tag -replace '^v', '')
+}
+
 # ── Helper: pre-flight write-access test ─────────────────────────────────────
 # Open the file in ReadWrite mode with no sharing. If the file is locked by
 # another process (e.g. an editor's LSP child holding ridge-lsp.exe), the open
@@ -455,9 +494,16 @@ error: $ridgeLspExe is locked by another process and could not be freed.
 # Binary-first install path (unless RIDGE_FORCE_SOURCE=1)
 if ($env:RIDGE_FORCE_SOURCE -ne "1") {
     if (Install-FromBinary) {
-        # Run existing post-install version check and exit success
+        # Run existing post-install version check and exit success.
+        # Expected version is derived from the release tag we just downloaded
+        # (env $RIDGE_VERSION, or fetched from /releases/latest), stripped of
+        # the leading "v" so it matches the bare X.Y.Z emitted by --version.
         Write-Information 'Verifying installation ...'
-        $ExpectedVersion = 'ridge 0.2.0-rc5'
+        $installedTag = $env:RIDGE_VERSION
+        if (-not $installedTag) { $installedTag = Get-LatestVersion }
+        $expectedReleaseVersion = Get-ReleaseVersion $installedTag
+        $ExpectedVersion    = "ridge $expectedReleaseVersion"
+        $ExpectedLspVersion = "ridge-lsp $expectedReleaseVersion"
         try {
             $ridgeOut = & ridge --version 2>&1
             if ($LASTEXITCODE -ne 0) { throw "ridge --version exited $LASTEXITCODE" }
@@ -469,22 +515,21 @@ error: ridge --version failed after install.
   Ensure $InstallDir is on your PATH, then open a new terminal.
 "@
         }
-        if ($ridgeOut -notlike "*$ExpectedVersion*") {
+        if ($expectedReleaseVersion -and ($ridgeOut -notlike "*$ExpectedVersion*")) {
             Write-Warning "ridge --version printed '$ridgeOut'; expected '$ExpectedVersion'."
             Write-Warning 'The binary was installed but may be a different version.'
         }
-        $ExpectedLspVersion = 'ridge-lsp 0.2.0-rc5'
         $ridgeLspOut = ''
         try {
             $ridgeLspOut = & ridge-lsp --version 2>&1
             if ($LASTEXITCODE -ne 0) { throw "ridge-lsp --version exited $LASTEXITCODE" }
         } catch {
             Write-Warning "ridge-lsp --version did not run successfully: $_"
-            Write-Warning "The LSP binary may be missing or stale — try re-running the install."
+            Write-Warning "The LSP binary may be missing or stale - try re-running the install."
         }
-        if ($ridgeLspOut -and ($ridgeLspOut -notlike "*$ExpectedLspVersion*")) {
+        if ($expectedReleaseVersion -and $ridgeLspOut -and ($ridgeLspOut -notlike "*$ExpectedLspVersion*")) {
             Write-Warning "ridge-lsp --version printed '$ridgeLspOut'; expected '$ExpectedLspVersion'."
-            Write-Warning "The LSP binary may be a different version than the CLI — try re-running the install."
+            Write-Warning "The LSP binary may be a different version than the CLI - try re-running the install."
         }
         Write-Information ''
         Write-Information 'Ridge installed successfully!'
@@ -525,8 +570,15 @@ catch {
 }
 
 # ── Step 7: Verify binary works ───────────────────────────────────────────────
+# Expected version is derived from the workspace Cargo.toml when the script
+# is run from a Ridge checkout.  iwr/iex installs and copies that lack a
+# nearby Cargo.toml leave the expected string empty -- in that case we still
+# require --version to succeed but skip the equality check rather than warn
+# against an unknown baseline.
 Write-Information 'Verifying installation ...'
-$ExpectedVersion = 'ridge 0.2.0-rc5'
+$expectedCargoVersion = Get-CargoVersion
+$ExpectedVersion    = "ridge $expectedCargoVersion"
+$ExpectedLspVersion = "ridge-lsp $expectedCargoVersion"
 try {
     $ridgeOut = & ridge --version 2>&1
     if ($LASTEXITCODE -ne 0) { throw "ridge --version exited $LASTEXITCODE" }
@@ -539,23 +591,22 @@ error: ridge --version failed after install.
 "@
 }
 
-if ($ridgeOut -notlike "*$ExpectedVersion*") {
+if ($expectedCargoVersion -and ($ridgeOut -notlike "*$ExpectedVersion*")) {
     Write-Warning "ridge --version printed '$ridgeOut'; expected '$ExpectedVersion'."
     Write-Warning 'The binary was installed but may be a different version.'
 }
 
-$ExpectedLspVersion = 'ridge-lsp 0.2.0-rc5'
 $ridgeLspOut = ''
 try {
     $ridgeLspOut = & ridge-lsp --version 2>&1
     if ($LASTEXITCODE -ne 0) { throw "ridge-lsp --version exited $LASTEXITCODE" }
 } catch {
     Write-Warning "ridge-lsp --version did not run successfully: $_"
-    Write-Warning "The LSP binary may be missing or stale — try re-running the install."
+    Write-Warning "The LSP binary may be missing or stale - try re-running the install."
 }
-if ($ridgeLspOut -and ($ridgeLspOut -notlike "*$ExpectedLspVersion*")) {
+if ($expectedCargoVersion -and $ridgeLspOut -and ($ridgeLspOut -notlike "*$ExpectedLspVersion*")) {
     Write-Warning "ridge-lsp --version printed '$ridgeLspOut'; expected '$ExpectedLspVersion'."
-    Write-Warning "The LSP binary may be a different version than the CLI — try re-running the install."
+    Write-Warning "The LSP binary may be a different version than the CLI - try re-running the install."
 }
 
 # ── Step 8: Success message ────────────────────────────────────────────────────

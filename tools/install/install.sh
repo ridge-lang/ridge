@@ -373,7 +373,7 @@ if [ "${RIDGE_FORCE_SOURCE:-0}" != "1" ]; then
     if install_from_binary; then
         # Run the post-install version check and exit success
         echo "Verifying installation ..."
-        EXPECTED_VERSION="ridge 0.2.0-rc4"
+        EXPECTED_VERSION="ridge 0.2.0-rc5"
         if ! ridge_out="$(ridge --version 2>&1)"; then
             echo "error: ridge --version failed after install." >&2
             echo "  Ensure $INSTALL_DIR is on your PATH:" >&2
@@ -389,7 +389,7 @@ if [ "${RIDGE_FORCE_SOURCE:-0}" != "1" ]; then
         # R054 post-extract Test-Path check). This is a final sanity check that
         # both binaries actually report the expected version — catches any
         # scenario where one binary is stale.
-        EXPECTED_LSP_VERSION="ridge-lsp 0.2.0-rc4"
+        EXPECTED_LSP_VERSION="ridge-lsp 0.2.0-rc5"
         if command -v ridge-lsp >/dev/null 2>&1; then
             ridge_lsp_out=$(ridge-lsp --version 2>&1)
             if ! echo "$ridge_lsp_out" | grep -qF "$EXPECTED_LSP_VERSION"; then
@@ -445,7 +445,7 @@ fi
 
 # ── Step 7: Verify binary works ───────────────────────────────────────────────
 echo "Verifying installation ..."
-EXPECTED_VERSION="ridge 0.2.0-rc4"
+EXPECTED_VERSION="ridge 0.2.0-rc5"
 if ! ridge_out="$(ridge --version 2>&1)"; then
     echo "error: ridge --version failed after install." >&2
     echo "  Ensure ~/.cargo/bin is on your PATH:" >&2
@@ -463,7 +463,7 @@ fi
 # R054 post-extract Test-Path check). This is a final sanity check that
 # both binaries actually report the expected version — catches any
 # scenario where one binary is stale.
-EXPECTED_LSP_VERSION="ridge-lsp 0.2.0-rc4"
+EXPECTED_LSP_VERSION="ridge-lsp 0.2.0-rc5"
 if command -v ridge-lsp >/dev/null 2>&1; then
     ridge_lsp_out=$(ridge-lsp --version 2>&1)
     if ! echo "$ridge_lsp_out" | grep -qF "$EXPECTED_LSP_VERSION"; then

@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- VS Code extension prepared for Marketplace publication: hand-authored icon (128×128 PNG with SVG source committed alongside), `galleryBanner` and `keywords` metadata, `homepage` / `bugs` / `license` fields, and an `Apache-2.0` `LICENSE` shipped inside the extension package. Extension version bumped from `0.1.0` to `0.2.0` to track the language release. Extension README rewritten as a Marketplace listing.
+
 ### Changed
 
 - **BREAKING:** Source-file extension renamed from `.rg` to `.ridge`. Resolves a registry collision with Rouge on GitHub Linguist and avoids ambiguous syntax highlighting on github.com. Existing projects must rename their `.rg` files to `.ridge` and update `entry = "src/Main.rg"` in `ridge.toml` to `entry = "src/Main.ridge"`; the CLI no longer recognises `.rg` files.

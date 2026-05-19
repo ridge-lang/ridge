@@ -1,19 +1,36 @@
 {
   "name": "vscode-ridge",
   "displayName": "Ridge",
-  "description": "VS Code language support for Ridge (scaffold)",
-  "version": "0.1.0",
+  "description": "Ridge language support for VS Code: syntax highlighting and diagnostics from ridge-lsp.",
+  "version": "0.2.0",
   "publisher": "ridge-lang",
   "icon": "images/icon.png",
+  "license": "Apache-2.0",
+  "homepage": "https://github.com/ridge-lang/ridge#readme",
+  "bugs": {
+    "url": "https://github.com/ridge-lang/ridge/issues"
+  },
   "repository": {
     "type": "git",
     "url": "https://github.com/ridge-lang/ridge"
   },
+  "galleryBanner": {
+    "color": "#1a1a2e",
+    "theme": "dark"
+  },
+  "keywords": [
+    "ridge",
+    "ridge-lang",
+    "beam",
+    "erlang",
+    "functional"
+  ],
   "engines": {
     "vscode": "^1.85.0"
   },
   "categories": [
-    "Programming Languages"
+    "Programming Languages",
+    "Linters"
   ],
   "activationEvents": [
     "onLanguage:ridge"

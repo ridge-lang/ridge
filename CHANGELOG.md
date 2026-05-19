@@ -10,6 +10,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Changed
 
 - **BREAKING:** Source-file extension renamed from `.rg` to `.ridge`. Resolves a registry collision with Rouge on GitHub Linguist and avoids ambiguous syntax highlighting on github.com. Existing projects must rename their `.rg` files to `.ridge` and update `entry = "src/Main.rg"` in `ridge.toml` to `entry = "src/Main.ridge"`; the CLI no longer recognises `.rg` files.
+- Install scripts no longer hardcode the expected version. Both `install.sh` and `install.ps1` now derive the version they validate against from `RIDGE_VERSION` (release-download path) or from `Cargo.toml` (cargo-install path). Future release cuts only need to bump `Cargo.toml` line 6 plus the resulting `Cargo.lock` regeneration; the eight hardcoded version strings the scripts previously carried are gone.
 
 ## [0.2.0-rc4] - 2026-05-18
 

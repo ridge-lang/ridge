@@ -364,6 +364,50 @@ emit_advisory() {
     echo "advisory ${code}: ${message}" >&2
 }
 
+# Locate the workspace Cargo.toml relative to this script.  The script lives at
+# tools/install/install.sh, so the workspace root is two levels up.  Echoes the
+# resolved path on stdout when found and returns 0; returns 1 otherwise.  Pipe-
+# install mode (no resolvable $0 directory) and the case where the script has
+# been copied outside a Ridge checkout both return 1.
+_ridge_locate_cargo_toml() {
+    local script_dir candidate
+    case "${0:-}" in
+        /*)  script_dir="$(dirname "$0")" ;;
+        */*) script_dir="$(cd "$(dirname "$0")" 2>/dev/null && pwd)" ;;
+        *)   return 1 ;;
+    esac
+    [ -n "$script_dir" ] || return 1
+    candidate="$script_dir/../../Cargo.toml"
+    [ -f "$candidate" ] || return 1
+    printf '%s\n' "$candidate"
+}
+
+# Parse [workspace.package].version from a Cargo.toml.  Section-aware so it
+# does not pick up a stray "version = ..." line inside [workspace.dependencies]
+# or [dependencies.*].  Echoes the bare workspace version (e.g. X.Y.Z) on
+# success, prints nothing and returns 1 on failure.
+_ridge_cargo_version() {
+    local cargo_toml
+    cargo_toml="$(_ridge_locate_cargo_toml)" || return 1
+    [ -f "$cargo_toml" ] || return 1
+    awk -F'"' '
+        /^\[workspace\.package\]/ { in_section = 1; next }
+        /^\[/                     { in_section = 0; next }
+        in_section && /^version[[:space:]]*=/ { print $2; found = 1; exit }
+        END { if (!found) exit 1 }
+    ' "$cargo_toml"
+}
+
+# Resolve the version that the release-download path just installed.  The
+# enclosing block has already assigned the tag to $version (env or fetched
+# from /releases/latest) -- this helper strips the leading "v" so the value
+# matches the "ridge <X.Y.Z>" / "ridge-lsp <X.Y.Z>" output of --version.
+_ridge_release_version() {
+    local tag="${1:-}"
+    [ -n "$tag" ] || return 1
+    printf '%s\n' "${tag#v}"
+}
+
 # ── Step 6: Install ridge-cli and ridge-lsp ──────────────────────────────────
 # Determine install location
 INSTALL_DIR="${RIDGE_INSTALL_DIR:-$HOME/.cargo/bin}"
@@ -371,17 +415,26 @@ INSTALL_DIR="${RIDGE_INSTALL_DIR:-$HOME/.cargo/bin}"
 # Binary-first install path (unless RIDGE_FORCE_SOURCE=1)
 if [ "${RIDGE_FORCE_SOURCE:-0}" != "1" ]; then
     if install_from_binary; then
-        # Run the post-install version check and exit success
+        # Run the post-install version check and exit success.
+        # Expected version is derived from the release tag we just downloaded
+        # (env $RIDGE_VERSION, or fetched from /releases/latest), stripped of
+        # the leading "v" so it matches the bare X.Y.Z emitted by --version.
         echo "Verifying installation ..."
-        EXPECTED_VERSION="ridge 0.2.0-rc5"
+        installed_tag="${RIDGE_VERSION:-}"
+        if [ -z "$installed_tag" ]; then
+            installed_tag="$(fetch_latest_version 2>/dev/null || true)"
+        fi
+        expected_release_version="$(_ridge_release_version "$installed_tag" || true)"
+        expected_version="ridge ${expected_release_version}"
+        expected_lsp_version="ridge-lsp ${expected_release_version}"
         if ! ridge_out="$(ridge --version 2>&1)"; then
             echo "error: ridge --version failed after install." >&2
             echo "  Ensure $INSTALL_DIR is on your PATH:" >&2
             echo "    export PATH=\"$INSTALL_DIR:\$PATH\"" >&2
             exit 1
         fi
-        if ! echo "$ridge_out" | grep -qF "$EXPECTED_VERSION"; then
-            echo "warning: ridge --version printed '$ridge_out'; expected '$EXPECTED_VERSION'." >&2
+        if [ -n "$expected_release_version" ] && ! echo "$ridge_out" | grep -qF "$expected_version"; then
+            echo "warning: ridge --version printed '$ridge_out'; expected '$expected_version'." >&2
             echo "  The binary was installed but may be a different version." >&2
         fi
         # Defense-in-depth: ridge.exe extracts successfully but if ridge-lsp.exe
@@ -389,11 +442,10 @@ if [ "${RIDGE_FORCE_SOURCE:-0}" != "1" ]; then
         # R054 post-extract Test-Path check). This is a final sanity check that
         # both binaries actually report the expected version — catches any
         # scenario where one binary is stale.
-        EXPECTED_LSP_VERSION="ridge-lsp 0.2.0-rc5"
         if command -v ridge-lsp >/dev/null 2>&1; then
             ridge_lsp_out=$(ridge-lsp --version 2>&1)
-            if ! echo "$ridge_lsp_out" | grep -qF "$EXPECTED_LSP_VERSION"; then
-                echo "warning: ridge-lsp --version printed '$ridge_lsp_out'; expected '$EXPECTED_LSP_VERSION'." >&2
+            if [ -n "$expected_release_version" ] && ! echo "$ridge_lsp_out" | grep -qF "$expected_lsp_version"; then
+                echo "warning: ridge-lsp --version printed '$ridge_lsp_out'; expected '$expected_lsp_version'." >&2
                 echo "warning: ridge-lsp may be a different version than ridge — try re-running the install." >&2
             fi
         fi
@@ -444,8 +496,15 @@ if ! cargo install --git "$RIDGE_REPO" --branch "$RIDGE_BRANCH" ridge-lsp 2>&1; 
 fi
 
 # ── Step 7: Verify binary works ───────────────────────────────────────────────
+# Expected version is derived from the workspace Cargo.toml when the script
+# is run from a Ridge checkout.  Pipe-installs and tarball copies that lack a
+# nearby Cargo.toml leave the expected string empty -- in that case we still
+# require --version to succeed but skip the equality check rather than warn
+# against an unknown baseline.
 echo "Verifying installation ..."
-EXPECTED_VERSION="ridge 0.2.0-rc5"
+expected_cargo_version="$(_ridge_cargo_version 2>/dev/null || true)"
+expected_version="ridge ${expected_cargo_version}"
+expected_lsp_version="ridge-lsp ${expected_cargo_version}"
 if ! ridge_out="$(ridge --version 2>&1)"; then
     echo "error: ridge --version failed after install." >&2
     echo "  Ensure ~/.cargo/bin is on your PATH:" >&2
@@ -453,8 +512,8 @@ if ! ridge_out="$(ridge --version 2>&1)"; then
     exit 1
 fi
 
-if ! echo "$ridge_out" | grep -qF "$EXPECTED_VERSION"; then
-    echo "warning: ridge --version printed '$ridge_out'; expected '$EXPECTED_VERSION'." >&2
+if [ -n "$expected_cargo_version" ] && ! echo "$ridge_out" | grep -qF "$expected_version"; then
+    echo "warning: ridge --version printed '$ridge_out'; expected '$expected_version'." >&2
     echo "  The binary was installed but may be a different version." >&2
 fi
 
@@ -463,11 +522,10 @@ fi
 # R054 post-extract Test-Path check). This is a final sanity check that
 # both binaries actually report the expected version — catches any
 # scenario where one binary is stale.
-EXPECTED_LSP_VERSION="ridge-lsp 0.2.0-rc5"
 if command -v ridge-lsp >/dev/null 2>&1; then
     ridge_lsp_out=$(ridge-lsp --version 2>&1)
-    if ! echo "$ridge_lsp_out" | grep -qF "$EXPECTED_LSP_VERSION"; then
-        echo "warning: ridge-lsp --version printed '$ridge_lsp_out'; expected '$EXPECTED_LSP_VERSION'." >&2
+    if [ -n "$expected_cargo_version" ] && ! echo "$ridge_lsp_out" | grep -qF "$expected_lsp_version"; then
+        echo "warning: ridge-lsp --version printed '$ridge_lsp_out'; expected '$expected_lsp_version'." >&2
         echo "warning: ridge-lsp may be a different version than ridge — try re-running the install." >&2
     fi
 fi

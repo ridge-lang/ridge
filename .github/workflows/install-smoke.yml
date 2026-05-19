@@ -3,18 +3,26 @@ name: Install smoke
 on:
   release:
     types: [published, prereleased]
+  pull_request:
+    paths:
+      - 'tools/install/**'
+      - '.github/workflows/install-smoke.yml'
+      - 'Cargo.toml'
+      - 'Cargo.lock'
   workflow_dispatch:
     inputs:
-      version:
-        description: 'Release tag to smoke-test (e.g. v0.2.0-rc2)'
-        required: true
+      ref:
+        description: 'Branch, tag, or SHA to checkout install scripts from'
+        required: false
+        default: 'main'
         type: string
 
-# When triggered by a release, the version is github.event.release.tag_name.
-# When triggered manually, use the dispatch input.
-# Concurrency: don't run multiple smoke runs for the same version simultaneously.
+# Concurrency: serialize runs that target the same ref so concurrent PR pushes
+# (or repeated dispatches against the same branch) don't trample each other.
+# For release events the head ref is the tag; for pull_request it's the PR
+# head ref; for workflow_dispatch it falls back to the dispatch input.
 concurrency:
-  group: install-smoke-${{ github.event.release.tag_name || inputs.version }}
+  group: install-smoke-${{ github.event.release.tag_name || github.head_ref || inputs.ref || github.ref }}
   cancel-in-progress: false
 
 jobs:
@@ -36,17 +44,39 @@ jobs:
       - name: Resolve version
         id: ver
         shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          if [ -n "${{ github.event.release.tag_name }}" ]; then
+          # On release events the version IS the tag being published.
+          # On pull_request and workflow_dispatch we smoke-test the latest
+          # published release, since that's the binary set the install
+          # scripts on the candidate ref will be told to fetch.
+          if [ "${{ github.event_name }}" = "release" ]; then
             VERSION="${{ github.event.release.tag_name }}"
           else
-            VERSION="${{ inputs.version }}"
+            VERSION="$(gh api repos/ridge-lang/ridge/releases/latest --jq '.tag_name')"
           fi
           echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
           # Expected version string is the tag without the leading 'v'.
           EXPECTED="${VERSION#v}"
           echo "expected=${EXPECTED}" >> "$GITHUB_OUTPUT"
           echo "Smoke-testing version: ${VERSION} (expected output: ridge ${EXPECTED})"
+
+      - name: Resolve install-script ref
+        id: src
+        shell: bash
+        run: |
+          # github.sha already points at the PR merge commit on pull_request
+          # and at the tagged commit on release. For workflow_dispatch we
+          # honor the user-supplied ref so manual runs can target any
+          # branch / tag / SHA.
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            REF="${{ inputs.ref }}"
+          else
+            REF="${{ github.sha }}"
+          fi
+          echo "ref=${REF}" >> "$GITHUB_OUTPUT"
+          echo "Install scripts will be fetched from ref: ${REF}"
 
       # ── Prerequisites: install scripts verify these and exit if missing ──
       - name: Install Rust toolchain (prerequisite check)
@@ -73,7 +103,7 @@ jobs:
           set -o pipefail
           INSTALLER=/tmp/ridge-install.sh
           echo "Fetching installer from raw.githubusercontent.com ..."
-          curl -fsSL "https://raw.githubusercontent.com/ridge-lang/ridge/${{ github.sha }}/tools/install/install.sh" -o "$INSTALLER"
+          curl -fsSL "https://raw.githubusercontent.com/ridge-lang/ridge/${{ steps.src.outputs.ref }}/tools/install/install.sh" -o "$INSTALLER"
           echo "Installer size: $(wc -c < "$INSTALLER") bytes"
           echo "First 3 lines of installer:"
           head -3 "$INSTALLER"
@@ -91,7 +121,7 @@ jobs:
         env:
           RIDGE_VERSION: ${{ steps.ver.outputs.version }}
         run: |
-          $url = "https://raw.githubusercontent.com/ridge-lang/ridge/${{ github.sha }}/tools/install/install.ps1"
+          $url = "https://raw.githubusercontent.com/ridge-lang/ridge/${{ steps.src.outputs.ref }}/tools/install/install.ps1"
           & ([scriptblock]::Create((iwr -useb $url).Content))
 
       # ── Ensure install location is on PATH for subsequent steps ──

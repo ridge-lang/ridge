@@ -51,10 +51,18 @@ jobs:
           # On pull_request and workflow_dispatch we smoke-test the latest
           # published release, since that's the binary set the install
           # scripts on the candidate ref will be told to fetch.
+          #
+          # Note: `releases/latest` excludes prereleases and drafts by
+          # design of the GitHub API. Every release published so far is a
+          # release candidate (rc1..rc5) and therefore flagged as a
+          # prerelease, so `releases/latest` returns 404. List all
+          # releases instead and pick the most recent non-draft entry —
+          # GitHub returns releases ordered descending by created_at, so
+          # the first match is the latest published (pre)release.
           if [ "${{ github.event_name }}" = "release" ]; then
             VERSION="${{ github.event.release.tag_name }}"
           else
-            VERSION="$(gh api repos/ridge-lang/ridge/releases/latest --jq '.tag_name')"
+            VERSION="$(gh api repos/ridge-lang/ridge/releases --jq '[.[] | select(.draft == false)][0].tag_name')"
           fi
           echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
           # Expected version string is the tag without the leading 'v'.

@@ -66,12 +66,18 @@ jobs:
         id: src
         shell: bash
         run: |
-          # github.sha already points at the PR merge commit on pull_request
-          # and at the tagged commit on release. For workflow_dispatch we
-          # honor the user-supplied ref so manual runs can target any
-          # branch / tag / SHA.
+          # For pull_request events, github.sha points at the virtual merge
+          # commit (test merge between PR head and base), which raw.github
+          # usercontent.com may not serve reliably. Use the PR head SHA
+          # instead — it's always pushed to the source branch and raw serves
+          # it consistently. This is the pattern used by rustup/cargo/deno.
+          # For workflow_dispatch we honor the user-supplied ref so manual
+          # runs can target any branch / tag / SHA. For release events,
+          # github.sha is the tag commit and is correct.
           if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
             REF="${{ inputs.ref }}"
+          elif [ "${{ github.event_name }}" = "pull_request" ]; then
+            REF="${{ github.event.pull_request.head.sha }}"
           else
             REF="${{ github.sha }}"
           fi

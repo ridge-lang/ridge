@@ -10,7 +10,7 @@ A typed functional language for the BEAM. Hindley-Milner inference, row
 polymorphism, actor-first concurrency, and effects tracked in the type
 system. Compiles to BEAM bytecode via Core Erlang.
 
-**Status:** 0.2.0-rc4 — release candidate. The language and tooling are
+**Status:** 0.2.0-rc5 — release candidate. The language and tooling are
 usable end-to-end, but the surface area is still moving. Expect breaking
 changes between release candidates. See [`CHANGELOG.md`](CHANGELOG.md) for
 what landed and [`docs/spec.md`](docs/spec.md) for the full language

@@ -7,7 +7,7 @@
 //! ```
 //!
 //! Creates `<name>/` in the current directory with the canonical layout
-//! (§2.9): `ridge.toml`, `src/Main.rg`, `README.md`.
+//! (§2.9): `ridge.toml`, `src/Main.ridge`, `README.md`.
 
 use std::path::Path;
 
@@ -21,7 +21,7 @@ use crate::scaffold;
 /// Scaffold a new Ridge project in a new directory.
 ///
 /// Creates `<name>/` in the current directory containing `ridge.toml`,
-/// `src/Main.rg`, and `README.md`.
+/// `src/Main.ridge`, and `README.md`.
 #[derive(Debug, Parser)]
 pub struct NewArgs {
     /// Name of the new project (also used as the directory name).

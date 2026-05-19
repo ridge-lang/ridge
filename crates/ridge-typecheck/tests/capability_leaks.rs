@@ -1,7 +1,7 @@
 //! T17 — capability-leak fixture harness for `ridge-typecheck` (plan §10 T17,
 //! §9.4, §11.3 `DoD` line 1547).
 //!
-//! Six fixtures under `tests/fixtures/capability/*.rg` each exercise one
+//! Six fixtures under `tests/fixtures/capability/*.ridge` each exercise one
 //! decision-tagged capability rule (D018 Model B, D040, D041, D058).  Each
 //! fixture starts with one of two directives:
 //!
@@ -54,7 +54,7 @@ fn build_single_module_workspace(stem: &str, src: &str) -> TempDir {
          [project.exports]\n\
          public = [\"**\"]\n",
     );
-    write_file(td.path(), &format!("apps/demo/src/{stem}.rg"), src);
+    write_file(td.path(), &format!("apps/demo/src/{stem}.ridge"), src);
     td
 }
 
@@ -122,7 +122,7 @@ fn capability_fixtures_pass() {
     let mut entries: Vec<_> = fs::read_dir(&dir)
         .expect("read fixture dir")
         .filter_map(Result::ok)
-        .filter(|e| e.path().extension().is_some_and(|ext| ext == "rg"))
+        .filter(|e| e.path().extension().is_some_and(|ext| ext == "ridge"))
         .collect();
     entries.sort_by_key(std::fs::DirEntry::file_name);
 

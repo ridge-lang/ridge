@@ -179,7 +179,7 @@ impl fmt::Display for TypeError {
             //
             // Spec example:
             //   Error: function 'f' declared as `fn io` uses capability `fs`
-            //     at src/Main.rg:12
+            //     at src/Main.ridge:12
             //     ...
             //     The call to `Fs.readFile` requires `fs`.
             //     Options:
@@ -218,7 +218,7 @@ impl fmt::Display for TypeError {
             //
             // Spec example:
             //   Error: non-exhaustive match
-            //     at src/Shape.rg:12
+            //     at src/Shape.ridge:12
             //     Missing cases:
             //       Triangle _ _ _
             //

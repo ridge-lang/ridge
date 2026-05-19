@@ -155,7 +155,7 @@ mod tests {
             id: ModuleId(id),
             project: ProjectId(0),
             fully_qualified_name: fqn.to_owned(),
-            file_path: PathBuf::from(format!("src/{fqn}.rg")),
+            file_path: PathBuf::from(format!("src/{fqn}.ridge")),
             span_within_file: Span::point(0),
         }
     }

@@ -37,7 +37,7 @@ fn write_file(dir: &Path, relative_path: &str, content: &str) {
 /// Wrap an example file in a minimal workspace for testing.
 fn load_example_into_workspace(example_name: &str) -> TempDir {
     let example_src = format!(
-        "{}/../../examples/{}.rg",
+        "{}/../../examples/{}.ridge",
         env!("CARGO_MANIFEST_DIR"),
         example_name
     );
@@ -57,7 +57,7 @@ fn load_example_into_workspace(example_name: &str) -> TempDir {
     );
     write_file(
         td.path(),
-        &format!("apps/demo/src/{example_name}.rg"),
+        &format!("apps/demo/src/{example_name}.ridge"),
         &src_content,
     );
     td
@@ -221,7 +221,7 @@ fn snapshot_example(example_name: &str) -> TypecheckSnapshot {
 
 // ── Acceptance gate tests ─────────────────────────────────────────────────────
 
-/// §9.3 / §11.3 Phase 4 `DoD` acceptance: `log_analyzer.rg` types cleanly.
+/// §9.3 / §11.3 Phase 4 `DoD` acceptance: `log_analyzer.ridge` types cleanly.
 #[test]
 fn typecheck_log_analyzer() {
     let snap = snapshot_example("log_analyzer");
@@ -233,7 +233,7 @@ fn typecheck_log_analyzer() {
     insta::assert_debug_snapshot!("t17_log_analyzer", snap);
 }
 
-/// §9.3 / §11.3 Phase 4 `DoD` acceptance: `url_shortener.rg` types cleanly.
+/// §9.3 / §11.3 Phase 4 `DoD` acceptance: `url_shortener.ridge` types cleanly.
 #[test]
 fn typecheck_url_shortener() {
     let snap = snapshot_example("url_shortener");
@@ -245,7 +245,7 @@ fn typecheck_url_shortener() {
     insta::assert_debug_snapshot!("t17_url_shortener", snap);
 }
 
-/// §9.3 / §11.3 Phase 4 `DoD` acceptance: `game_of_life.rg` types cleanly.
+/// §9.3 / §11.3 Phase 4 `DoD` acceptance: `game_of_life.ridge` types cleanly.
 #[test]
 fn typecheck_game_of_life() {
     let snap = snapshot_example("game_of_life");
@@ -257,7 +257,7 @@ fn typecheck_game_of_life() {
     insta::assert_debug_snapshot!("t17_game_of_life", snap);
 }
 
-/// §9.3 / §11.3 Phase 4 `DoD` acceptance: `rate_limiter.rg` types cleanly.
+/// §9.3 / §11.3 Phase 4 `DoD` acceptance: `rate_limiter.ridge` types cleanly.
 #[test]
 fn typecheck_rate_limiter() {
     let snap = snapshot_example("rate_limiter");
@@ -280,12 +280,12 @@ fn typecheck_rate_limiter() {
 #[test]
 fn phase45_per_expr_typing_basic() {
     let fixture_path = format!(
-        "{}/tests/fixtures/phase45/per_expr_typing_basic.rg",
+        "{}/tests/fixtures/phase45/per_expr_typing_basic.ridge",
         env!("CARGO_MANIFEST_DIR")
     );
     let src = fs::read_to_string(&fixture_path)
         .unwrap_or_else(|e| panic!("could not read fixture {fixture_path}: {e}"));
-    let td = load_snippet_into_workspace("per_expr_typing_basic.rg", &src);
+    let td = load_snippet_into_workspace("per_expr_typing_basic.ridge", &src);
 
     let disc = discover_workspace(td.path());
     let ws_graph = disc.graph.expect("workspace graph");
@@ -309,12 +309,12 @@ fn phase45_per_expr_typing_basic() {
 #[test]
 fn phase45_polymorphic_let() {
     let fixture_path = format!(
-        "{}/tests/fixtures/phase45/polymorphic_let.rg",
+        "{}/tests/fixtures/phase45/polymorphic_let.ridge",
         env!("CARGO_MANIFEST_DIR")
     );
     let src = fs::read_to_string(&fixture_path)
         .unwrap_or_else(|e| panic!("could not read fixture {fixture_path}: {e}"));
-    let td = load_snippet_into_workspace("polymorphic_let.rg", &src);
+    let td = load_snippet_into_workspace("polymorphic_let.ridge", &src);
 
     let disc = discover_workspace(td.path());
     let ws_graph = disc.graph.expect("workspace graph");
@@ -339,12 +339,12 @@ fn phase45_polymorphic_let() {
 #[test]
 fn phase45_lambda_body_typing() {
     let fixture_path = format!(
-        "{}/tests/fixtures/phase45/lambda_body_typing.rg",
+        "{}/tests/fixtures/phase45/lambda_body_typing.ridge",
         env!("CARGO_MANIFEST_DIR")
     );
     let src = fs::read_to_string(&fixture_path)
         .unwrap_or_else(|e| panic!("could not read fixture {fixture_path}: {e}"));
-    let td = load_snippet_into_workspace("lambda_body_typing.rg", &src);
+    let td = load_snippet_into_workspace("lambda_body_typing.ridge", &src);
 
     let disc = discover_workspace(td.path());
     let ws_graph = disc.graph.expect("workspace graph");

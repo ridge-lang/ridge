@@ -35,15 +35,15 @@ fn write_file(dir: &Path, relative_path: &str, content: &str) {
 /// ```text
 /// ridge.toml           (workspace)
 /// apps/demo/ridge.toml (project, kind = "app")
-/// apps/demo/src/<name>.rg (copy of examples/<name>.rg)
+/// apps/demo/src/<name>.ridge (copy of examples/<name>.ridge)
 /// ```
 ///
 /// Returns the tempdir; callers pass `td.path()` to `discover_workspace`.
 fn load_example_into_workspace(example_name: &str) -> TempDir {
     // CARGO_MANIFEST_DIR for ridge-resolve is `crates/ridge-resolve`.
-    // `../../examples/<name>.rg` reaches the repo-root `examples/` directory.
+    // `../../examples/<name>.ridge` reaches the repo-root `examples/` directory.
     let example_src = format!(
-        "{}/../../examples/{}.rg",
+        "{}/../../examples/{}.ridge",
         env!("CARGO_MANIFEST_DIR"),
         example_name
     );
@@ -65,7 +65,7 @@ fn load_example_into_workspace(example_name: &str) -> TempDir {
     );
     write_file(
         td.path(),
-        &format!("apps/demo/src/{example_name}.rg"),
+        &format!("apps/demo/src/{example_name}.ridge"),
         &src_content,
     );
 
@@ -486,7 +486,7 @@ fn count_b<F: Fn(&Binding) -> bool>(bindings: &[Option<Binding>], f: F) -> usize
 /// - `Some`/`None`/`Ok`/`Err` — closed by R013 (implicit prelude, 2026-04-24).
 /// - `line` — closed by R014 option A (layout-in-brackets, 2026-04-24).
 /// - `Response` — closed by import-list upper-ident extension (`ImportList` accepts `UPPER_IDENT`,
-///   2026-04-25); `examples/url_shortener.rg` now does
+///   2026-04-25); `examples/url_shortener.ridge` now does
 ///   `import std.net.http as Http (Request, Response, listen, respond)` and
 ///   `BUILTINS[std.net.http]` exports include `Request`/`Response`.
 /// - `report`, `run` — closed by the `Expr::Send` walker arm
@@ -675,7 +675,7 @@ fn t8_acceptance_rate_limiter() {
 /// examples and are therefore expected R012 sites.
 ///
 /// After R015 (implicit prelude module aliases, resolved 2026-04-24) plus
-/// the `log_analyzer.rg` `Error.text` fix (replaced with `Err "…"` over
+/// the `log_analyzer.ridge` `Error.text` fix (replaced with `Err "…"` over
 /// `Result Unit Text`), all qualified-name heads in the 4 canonical examples
 /// resolve cleanly.  Empty list — any future R012 in the examples is a
 /// regression.
@@ -725,7 +725,7 @@ fn t9_acceptance_no_unexpected_r012() {
         "Io", "List", "Map", "Random", "Fs", "Env", "Cli", "Time", "Option",
         // R015: now pre-bound as prelude ModuleAlias entries.
         "Int", "Float", "Bool", "Text", "Set", "Json",
-        // Http: url_shortener.rg now has explicit `import std.net.http as Http`.
+        // Http: url_shortener.ridge now has explicit `import std.net.http as Http`.
         "Http",
     ];
     let known_r012 = t9_known_r012_heads();
@@ -830,7 +830,7 @@ fn run_pipeline_and_collect_forbid_errors(path: &std::path::Path) -> Vec<(Module
 #[test]
 fn t12_acceptance_acme_forbid_emits_one_r013() {
     // acme_forbid fixture: forbid = [{ from = "acme.domain.**", to = "acme.infra.**" }]
-    // RegisterUser.rg imports acme.infra.Postgres → violation.
+    // RegisterUser.ridge imports acme.infra.Postgres → violation.
     let path = acme_workspace_path("acme_forbid");
     let errors = run_pipeline_and_collect_forbid_errors(&path);
 
@@ -855,7 +855,7 @@ fn t12_acceptance_acme_forbid_emits_one_r013() {
                 "rule_text should reference from pattern; got: {rule_text:?}"
             );
             // Span must be the ImportDecl span — non-empty, anchored at the
-            // first byte of the `import` keyword in RegisterUser.rg.
+            // first byte of the `import` keyword in RegisterUser.ridge.
             assert!(!import_span.is_empty(), "import span must be non-empty");
             assert_eq!(import_span.start, 0);
         }
@@ -899,7 +899,7 @@ fn t12_acceptance_acme_no_rules_emits_no_r013() {
 //
 // Every canonical example resolves cleanly (zero R-errors) thanks to two decisions:
 // - Import-list upper-ident extension (2026-04-25): `ImportList` accepts `UPPER_IDENT`, so
-//   `examples/url_shortener.rg` can `import std.net.http as Http (Request,
+//   `examples/url_shortener.ridge` can `import std.net.http as Http (Request,
 //   Response, listen, respond)` and reference `Request` / `Response` directly.
 // - **`Expr::Send` walker arm** (`src/walker.rs::visit_send_message`,
 //   2026-04-25): the head of a `Send.message` is treated as a handler-name

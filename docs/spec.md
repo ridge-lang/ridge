@@ -6,7 +6,7 @@
 **Last updated:** 2026-05-18
 
 **History:** Supersedes `RILL_SPEC_AND_ROADMAP.md` (v0.1.0-draft, Rill). The language was renamed from *Rill* to *Ridge* after a design refinement pass. The underlying philosophy is preserved; the following are the substantive changes from the prior draft:
-- Language name: **Ridge** (was *Rill*). File extension: **`.rg`** (was `.rill`). Manifest: **`ridge.toml`** (was `rill.toml`).
+- Language name: **Ridge** (was *Rill*). File extension: **`.ridge`** (was `.rill`). Manifest: **`ridge.toml`** (was `rill.toml`).
 - Effect system: **9 granular capabilities** with prefix list syntax (was binary `fn`/`fn!`).
 - Multi-target strategy: **BEAM + WASM + Native** from the roadmap, no longer "long-term evolution".
 - **Workspace model** with architectural enforcement by the compiler — new first-class feature.
@@ -423,7 +423,7 @@ In 0.1.0, interpolation accepts a **closed set of built-in types**: `Int`, `Floa
 ### 3.11. Modules and imports
 
 ```ridge
--- File libs/domain/src/Users.rg defines module acme.domain.Users
+-- File libs/domain/src/Users.ridge defines module acme.domain.Users
 
 import std.list as List
 import std.map (get, insert)
@@ -650,7 +650,7 @@ Algorithm W (Damas-Hindley-Milner) with union-find, generalization at `let`, ins
 
 ```
 Error: function 'f' declared as `fn io` uses capability `fs`
-  at src/Main.rg:12
+  at src/Main.ridge:12
   |
   12 |  fn io procesarConfig (path: Text) =
      |      ^^ declared here
@@ -667,7 +667,7 @@ Pattern matching must be exhaustive. The compiler implements **Maranget's algori
 
 ```
 Error: non-exhaustive match
-  at src/Shape.rg:12
+  at src/Shape.ridge:12
   |
   12 |   match shape
      |         ^^^^^
@@ -769,7 +769,7 @@ Enforcement happens **before** type-check. A function declaring an unpermitted c
 
 ```
 Error: capability 'net' not allowed in project 'acme.domain'
-  archivo: libs/domain/src/UseCase.rg:12
+  archivo: libs/domain/src/UseCase.ridge:12
   12 | fn net calcular (u: User) -> Result Money Error = ...
      |    ^^^
   The project 'acme.domain' declares allow = [] in ridge.toml
@@ -860,7 +860,7 @@ Each actor is a lightweight process (BEAM process in 0.1–0.3; green thread wit
 ### 7.5. Module semantics
 
 - One file = one module.
-- Module name derived from project name + file path: `apps/api/src/handlers/Users.rg` in project `acme.api` → `acme.api.handlers.Users`.
+- Module name derived from project name + file path: `apps/api/src/handlers/Users.ridge` in project `acme.api` → `acme.api.handlers.Users`.
 - Circular imports are a compile error.
 - Visibility has two layers: manifest (per-module) and code (`pub`, `pub(internal)`, `_`). See [§8.4](#84-visibility-model).
 
@@ -879,27 +879,27 @@ acme-platform/
 │   ├── shared/
 │   │   ├── ridge.toml
 │   │   └── src/
-│   │       ├── Text.rg            → module acme.shared.Text
-│   │       └── Types/Id.rg        → acme.shared.Types.Id
+│   │       ├── Text.ridge            → module acme.shared.Text
+│   │       └── Types/Id.ridge        → acme.shared.Types.Id
 │   ├── domain/
 │   │   ├── ridge.toml
 │   │   └── src/
-│   │       ├── Models/User.rg
-│   │       └── UseCases/RegisterUser.rg
+│   │       ├── Models/User.ridge
+│   │       └── UseCases/RegisterUser.ridge
 │   └── infra/
 │       ├── ridge.toml
-│       └── src/Postgres.rg
+│       └── src/Postgres.ridge
 ├── apps/
 │   ├── api/
 │   │   ├── ridge.toml
-│   │   └── src/Main.rg
+│   │   └── src/Main.ridge
 │   └── cli/
 │       ├── ridge.toml
-│       └── src/Main.rg
+│       └── src/Main.ridge
 └── tests/
     └── domain_test/
         ├── ridge.toml
-        └── src/RegisterUserTest.rg
+        └── src/RegisterUserTest.ridge
 ```
 
 ### 8.2. Workspace manifest (`ridge.toml` root)
@@ -940,7 +940,7 @@ deny = ["ffi"]
 name = "acme.domain"
 version = "0.1.0"
 kind = "library"           # library | app | service | test
-# entry = "src/Main.rg"    # required when kind = app | service
+# entry = "src/Main.ridge"    # required when kind = app | service
 
 [project.src]
 root = "src"               # default: "src"
@@ -990,7 +990,7 @@ dep6 = { hex = "1.2.3" }                          # from hex.pm (0.2.0+)
 
 ```
 Error: forbidden dependency
-  file:   libs/domain/src/UseCases/RegisterUser.rg:5
+  file:   libs/domain/src/UseCases/RegisterUser.ridge:5
   rule:   acme.domain.* cannot depend on acme.infra.*
   source: workspace ridge.toml, [workspace.rules]
 
@@ -1080,7 +1080,7 @@ users |> List.map (.email) |> List.filter isValid |> List.take 10
 ### 10.1. High-level pipeline
 
 ```
-Source (.rg)
+Source (.ridge)
     |
     v
 +------------+
@@ -1132,7 +1132,7 @@ ridge/
 │   ├── ridge-parser/           # AST construction
 │   ├── ridge-ast/              # AST types (shared)
 │   ├── ridge-resolve/          # Name resolution, imports, workspace rules
-│   ├── ridge-stdlib/           # Ridge stdlib (.rg sources under stdlib/<module>.rg)
+│   ├── ridge-stdlib/           # Ridge stdlib (.ridge sources under stdlib/<module>.ridge)
 │   ├── ridge-types/            # Type checker (HM) + capability checker
 │   ├── ridge-ir/               # Ridge Core IR
 │   ├── ridge-lower/            # AST → IR
@@ -1152,7 +1152,7 @@ ridge/
     └── tutorial.md
 ```
 
-*Per D118 (stdlib path closure): the Ridge `.rg` sources live at `crates/ridge-stdlib/stdlib/<module>.rg` (with `net/http.rg` as the single nested module — see §11.3 Phase 7).*
+*Per D118 (stdlib path closure): the Ridge `.ridge` sources live at `crates/ridge-stdlib/stdlib/<module>.ridge` (with `net/http.ridge` as the single nested module — see §11.3 Phase 7).*
 
 ### 10.3. Key dependencies
 
@@ -1222,7 +1222,7 @@ Each phase lists: goal, tasks, deliverable, tests, and estimated effort.
 - `cargo build --all` succeeds
 - `cargo test --all` succeeds
 - `docs/grammar.ebnf` committed
-- `examples/*.rg` committed (as parsing targets, not compiled yet)
+- `examples/*.ridge` committed (as parsing targets, not compiled yet)
 
 ---
 
@@ -1438,9 +1438,9 @@ Six public checkpoints. Each should be a tagged release so progress is visible.
 
 | Milestone | Covers Phases | Headline demo |
 |-----------|---------------|---------------|
-| **M1: Parses** | 0, 1, 2 | `ridge parse examples/log_analyzer.rg` prints a pretty AST |
-| **M2: Resolves, Types, Capabilities** | 3, 4 | `ridge check examples/*.rg` reports OK or typed errors with capability diagnostics |
-| **M3: Runs on BEAM** | 5, 6 | `ridge run examples/log_analyzer.rg` compiles and executes |
+| **M1: Parses** | 0, 1, 2 | `ridge parse examples/log_analyzer.ridge` prints a pretty AST |
+| **M2: Resolves, Types, Capabilities** | 3, 4 | `ridge check examples/*.ridge` reports OK or typed errors with capability diagnostics |
+| **M3: Runs on BEAM** | 5, 6 | `ridge run examples/log_analyzer.ridge` compiles and executes |
 | **M4: Complete** | 7 | All four examples run end-to-end using stdlib |
 | **M5: Tooled** | 8 | VS Code diagnostics + git-based packages work |
 | **M6: Released** | 9 | Public 0.1.0 binaries available |
@@ -1635,20 +1635,20 @@ Raised during resolve design. Each has a provisional answer that the implementat
 |----|----------|--------|--------------------|
 | OQ-R001 ✅ | Bare `import foo.bar` (no `as`, no item list) — what does it expose? | Import-resolution semantics; affects lookup order and collision errors. | **Qualified-namespace only** (Elm-style `import Foo` — use-sites must write `Foo.bar`). Flooding the importer's scope with every `pub` symbol requires an explicit item list (`import foo.bar (a, b)`); wildcard `(..)` is reserved, not in 0.1.0. Rationale: avoids cross-import identifier collisions, keeps resolve-phase lookup order unambiguous, and aligns with Elm (Ridge's primary UX reference) rather than Rust's discouraged `use foo::*;` idiom. **Resolved: OQ accepted as-is; the bare-import-ambiguous variant deleted.** |
 | OQ-R002 ⚠ | Shadowing across scopes — allowed, warned, or forbidden? Spec is silent. | Scope-chain lookup policy; affects `R011` / `R017` severity. | **Cross-scope shadowing allowed silently; same-scope duplicate = `R011` hard error.** Matches Rust / F# / OCaml / Elm; the `_`-prefix convention is the opt-out for intentional shadowing without warning. |
-| OQ-R003 | Case sensitivity of module names and imports. | Module-name derivation (§4.1 step 5); filesystem portability. | **Case-sensitive** per §3.11 examples (`Types/Id.rg` → `acme.shared.Types.Id`, file-name case preserved). Windows filesystems preserve case; collisions emit `R002 DuplicateModule`. |
+| OQ-R003 | Case sensitivity of module names and imports. | Module-name derivation (§4.1 step 5); filesystem portability. | **Case-sensitive** per §3.11 examples (`Types/Id.ridge` → `acme.shared.Types.Id`, file-name case preserved). Windows filesystems preserve case; collisions emit `R002 DuplicateModule`. |
 | OQ-R004 ✅ | `[project.exports].public` / `internal` default when missing — what if the section is absent? | Visibility mapping; whether `pub` leaks without an explicit `[project.exports]` table. | **Absent `public` = all `pub` symbols are externally visible.** Absent `internal` = no additional namespace-internal visibility. Matches the "opt-in restriction" philosophy: a restriction must be declared. A non-blocking lint for `type = "library"` projects lacking `[project.exports].public` is worth adding to nudge library authors toward explicit export lists. **Resolved.** |
 | OQ-R005 | Severity of `R017 StateFieldShadowedByLocal`. | Scope-chain UX. | **Warn-level**, not hard error. Shadowing an actor state field with a local is legal but suspect; emit a warning pinned to the local's `def_span` with a note referencing the state-field span. |
-| OQ-R006 ✅ | How the builtin stdlib manifest stays in sync with the eventual Ridge-written stdlib. | Long-term maintenance. | **Compile-time constant table now; a later pass replaces it with a generated table.** A regression test re-parses every stdlib `.rg` file and asserts its `pub` exports match the constant table. **Resolved.** |
+| OQ-R006 ✅ | How the builtin stdlib manifest stays in sync with the eventual Ridge-written stdlib. | Long-term maintenance. | **Compile-time constant table now; a later pass replaces it with a generated table.** A regression test re-parses every stdlib `.ridge` file and asserts its `pub` exports match the constant table. **Resolved.** |
 | OQ-R007 | `[project.exports].public` glob metasyntax — spec shows `"Models.*"`; what does `*` match? | Glob parser for project-exports. | **Dot-based glob: `*` matches a single segment, `**` matches any number of segments.** Implement via the `globset` crate. Convention matches `gitignore` / Bash globstar / Cargo. |
 | OQ-R008 ✅ | Should `NodeId` be promoted to a proper AST field in `ridge-ast` (micro-refactor) rather than the side-table `NodeIdMap`? | Upstream contract; re-snapshot tests. | **Defer.** The import resolver uses the side-table `NodeIdMap`; the type checker may revisit when it also wants stable IDs. _Known risk:_ a future transform that clones AST nodes must preserve `NodeId`s explicitly — the side-table approach has no type-system guarantee. Document this constraint in the `NodeIdMap` rustdoc. **Resolved.** |
 | OQ-R009 ✅ | `[dependencies]` table transitive conflicts between workspace members sharing a dep via `workspace-dependencies`. | Manifest resolution. | **Version pinning is the workspace's responsibility.** 0.1.0 has no semver solver; each name resolves to exactly one entry. Conflicts across members emit `M013 UnknownWorkspaceMember` or `M015 WorkspaceDependencyAbsent`. **Resolved.** |
 | OQ-R010 ✅ | Should the resolver produce per-module output when earlier parse errors produce a partial AST? | LSP UX. | **Yes.** Run resolution on the partial AST; skip `Expr`/`Pattern`/`Type` nodes that descend into error markers. Goal: LSP users get resolve diagnostics for the parts of a file that did parse, mirroring `rust-analyzer` / `tsc` behaviour. **Resolved.** |
 | OQ-R011 | Should an `import` that resolved to `ImportTarget::Unresolved` (R006) suppress downstream identifier errors (R010) for that module's symbols? | UX — cascading errors. | **Suppress.** If `import nonexistent.module` fires `R006`, all uses of `NonexistentModule.foo` in that file return `Binding::Error` silently (no cascade). Avoids the "1 typo → 47 errors" firehose; `Binding::Error` acts as a poison marker analogous to `ErrorT` in type checkers. |
 | OQ-R012 ✅ | `spawn ActorName` — does the actor name need to be an unqualified `UPPER_IDENT`, or may it be a qualified path `Mod.ActorName`? | Spawn-expression grammar and resolve walker. | **Unqualified `Ident` only in 0.1.0** per grammar §6.19 (`"spawn" UPPER_IDENT { Expr }`). Cross-module spawn requires an `import` of the actor. Revisit in a future release if qualified-spawn ergonomics demand it. **Resolved.** |
-| OQ-R013 ⚠ | Does Ridge have an implicit prelude that auto-imports `Option`/`Result` and their constructors (`Some`, `None`, `Ok`, `Err`) — and possibly `List` constructors — into every module? | All 4 example programs (`log_analyzer.rg`, `url_shortener.rg`, `game_of_life.rg`, `rate_limiter.rg`) use `Some Info`, `None`, `Ok ()`, `return Err (...)` unqualified. With no prelude, every `.rg` file would need `import std.option (Some, None)` and `import std.result (Ok, Err)` boilerplate at the top. | **Resolved: implicit prelude.** Auto-import the following into every module's scope: the `Option` type with constructors `Some` and `None`; the `Result` type with constructors `Ok` and `Err`. Matches Haskell's Prelude, Rust's `std::prelude::v1`, Elm's default imports. A prelude pass injects synthetic `EffectiveBinding` entries equivalent to `import std.option (Option, Some, None)` and `import std.result (Result, Ok, Err)` into every module's binding pool. Conservative scope: constructors of `Option` and `Result` only; see OQ-R015 for module aliases. |
-| OQ-R014 ⚠ | `let` followed by an indented continuation expression (`\|>` chain) inside a parenthesised lambda body fails to terminate at the next statement. The lexer's bracket-suppression of NEWLINE/INDENT/DEDENT folds subsequent statements into the let value, leaving downstream identifier uses unresolved. | Surfaces in `examples/game_of_life.rg`: a `let line = row \|> List.map ... \|> List.fold ... ""` followed by `Io.println $"\| ${line} \|"` parses with `${line}` unresolvable because the parser doesn't see a statement boundary inside the enclosing `()`. | **Resolved: option A** — lexer emits NEWLINE inside brackets when col ≤ baseline; parser `parse_branch_body_flat` collects NEWLINE-separated statements as a flat `Expr::Block`. The alternatives were (a) extending the layout-suppression rule (chosen) or (b) requiring an explicit block delimiter for multi-statement lambda bodies (simpler but forces example refactoring). |
+| OQ-R013 ⚠ | Does Ridge have an implicit prelude that auto-imports `Option`/`Result` and their constructors (`Some`, `None`, `Ok`, `Err`) — and possibly `List` constructors — into every module? | All 4 example programs (`log_analyzer.ridge`, `url_shortener.ridge`, `game_of_life.ridge`, `rate_limiter.ridge`) use `Some Info`, `None`, `Ok ()`, `return Err (...)` unqualified. With no prelude, every `.ridge` file would need `import std.option (Some, None)` and `import std.result (Ok, Err)` boilerplate at the top. | **Resolved: implicit prelude.** Auto-import the following into every module's scope: the `Option` type with constructors `Some` and `None`; the `Result` type with constructors `Ok` and `Err`. Matches Haskell's Prelude, Rust's `std::prelude::v1`, Elm's default imports. A prelude pass injects synthetic `EffectiveBinding` entries equivalent to `import std.option (Option, Some, None)` and `import std.result (Result, Ok, Err)` into every module's binding pool. Conservative scope: constructors of `Option` and `Result` only; see OQ-R015 for module aliases. |
+| OQ-R014 ⚠ | `let` followed by an indented continuation expression (`\|>` chain) inside a parenthesised lambda body fails to terminate at the next statement. The lexer's bracket-suppression of NEWLINE/INDENT/DEDENT folds subsequent statements into the let value, leaving downstream identifier uses unresolved. | Surfaces in `examples/game_of_life.ridge`: a `let line = row \|> List.map ... \|> List.fold ... ""` followed by `Io.println $"\| ${line} \|"` parses with `${line}` unresolvable because the parser doesn't see a statement boundary inside the enclosing `()`. | **Resolved: option A** — lexer emits NEWLINE inside brackets when col ≤ baseline; parser `parse_branch_body_flat` collects NEWLINE-separated statements as a flat `Expr::Block`. The alternatives were (a) extending the layout-suppression rule (chosen) or (b) requiring an explicit block delimiter for multi-statement lambda bodies (simpler but forces example refactoring). |
 | OQ-R015 ⚠ | Should the implicit prelude also pre-bind `ModuleAlias` entries for pure-data stdlib modules (`Int`, `Float`, `Bool`, `Text`, `List`, `Map`, `Set`, `Json`) so that qualified names like `Int.parse`, `Text.padLeft`, `Float.fromInt`, `List.map` work without an explicit `import std.X as X` declaration? | The 4 canonical examples use `Int.parse`, `Int.toText`, `Text.padLeft`, `Float.fromInt` without importing the corresponding stdlib modules. With no prelude alias these produce `R012 UnresolvedQualifiedName`. | **Resolved: pre-bind module aliases for all pure-data stdlib modules; capability-bearing modules require explicit import.** Rationale: (1) preserves Ridge's capability-tracking principle — every side-effecting module remains visible at the import level; (2) matches ML/Haskell precedent; (3) removes boilerplate from data-manipulation programs. _Pure-data modules:_ `std.int` → `Int`, `std.float` → `Float`, `std.bool` → `Bool`, `std.text` → `Text`, `std.list` → `List`, `std.map` → `Map`, `std.set` → `Set`, `std.json` → `Json`. _Capability-bearing modules NOT in prelude:_ `std.io`, `std.fs`, `std.time`, `std.random`, `std.env`, `std.cli`, `std.proc`, `std.net.http`. User imports for the same `local_name` suppress the prelude binding. |
-| OQ-R016 ⚠ | Should the `ImportList` grammar accept `UPPER_IDENT` so users can write `import std.net.http (Request, Response, listen, respond) as Http` and reference the imported type / constructor names unqualified? `examples/url_shortener.rg` uses `Response` and `Request` as bare identifiers but only has `import std.net.http as Http` in scope. With the original `ImportList ::= LOWER_IDENT { "," LOWER_IDENT }` grammar, four `R010 UnresolvedIdent` errors fire on `Response`, and the only workarounds are (a) define the types locally or (b) wait for qualified record-construction `Http.Response { ... }` support which requires AST changes. | Acceptance: `examples/url_shortener.rg` must resolve cleanly. Affects every Ridge user of `std.net.http`, `std.json`, `std.fs` typed APIs. | **Resolved.** `ImportList` accepts both `LOWER_IDENT` and `UPPER_IDENT`. Rationale: aligns with Ridge's reference languages (Haskell, Elm, Rust all permit type/constructor imports in item lists). Implementation: 1-line grammar amendment; ~5-line parser change accepting `UpperIdent` in the item-list arm; BUILTINS extension (`std.net.http` exports gain `Request`, `Response`). `examples/url_shortener.rg` rewritten to `import std.net.http (Request, Response, listen, respond) as Http`. The complementary `Module.Type { ... }` qualified record-construction ergonomic is deferred to a future release. |
+| OQ-R016 ⚠ | Should the `ImportList` grammar accept `UPPER_IDENT` so users can write `import std.net.http (Request, Response, listen, respond) as Http` and reference the imported type / constructor names unqualified? `examples/url_shortener.ridge` uses `Response` and `Request` as bare identifiers but only has `import std.net.http as Http` in scope. With the original `ImportList ::= LOWER_IDENT { "," LOWER_IDENT }` grammar, four `R010 UnresolvedIdent` errors fire on `Response`, and the only workarounds are (a) define the types locally or (b) wait for qualified record-construction `Http.Response { ... }` support which requires AST changes. | Acceptance: `examples/url_shortener.ridge` must resolve cleanly. Affects every Ridge user of `std.net.http`, `std.json`, `std.fs` typed APIs. | **Resolved.** `ImportList` accepts both `LOWER_IDENT` and `UPPER_IDENT`. Rationale: aligns with Ridge's reference languages (Haskell, Elm, Rust all permit type/constructor imports in item lists). Implementation: 1-line grammar amendment; ~5-line parser change accepting `UpperIdent` in the item-list arm; BUILTINS extension (`std.net.http` exports gain `Request`, `Response`). `examples/url_shortener.ridge` rewritten to `import std.net.http (Request, Response, listen, respond) as Http`. The complementary `Module.Type { ... }` qualified record-construction ergonomic is deferred to a future release. |
 
 ---
 
@@ -1660,10 +1660,10 @@ _Note: examples in this appendix reflect decisions D044..D061. In particular, `?
 
 Four programs must compile and run correctly by M4. They serve as acceptance tests for the compiler.
 
-- **A.1. Log analyzer** (`examples/log_analyzer.rg`) — file IO, text parsing, pattern matching, list ops.
-- **A.2. URL shortener** (`examples/url_shortener.rg`) — actors, concurrency, HTTP, JSON.
-- **A.3. Game of Life** (`examples/game_of_life.rg`) — actors, timers, terminal IO, Set.
-- **A.4. Rate limiter per IP** (`examples/rate_limiter.rg`) — actors, `spawn`, `?>` (ask), state, `time`, `Map`. Reference implementation in session notes; exercises the actor model end-to-end.
+- **A.1. Log analyzer** (`examples/log_analyzer.ridge`) — file IO, text parsing, pattern matching, list ops.
+- **A.2. URL shortener** (`examples/url_shortener.ridge`) — actors, concurrency, HTTP, JSON.
+- **A.3. Game of Life** (`examples/game_of_life.ridge`) — actors, timers, terminal IO, Set.
+- **A.4. Rate limiter per IP** (`examples/rate_limiter.ridge`) — actors, `spawn`, `?>` (ask), state, `time`, `Map`. Reference implementation in session notes; exercises the actor model end-to-end.
 
 ### Appendix B — Glossary
 

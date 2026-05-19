@@ -1,9 +1,9 @@
 //! Track-A tests for `std.int` — 12 public functions.
 //!
 //! Each test asserts that:
-//! 1. `build_all` succeeds (i.e., `int.rg` compiles through T4 pipeline), AND
+//! 1. `build_all` succeeds (i.e., `int.ridge` compiles through T4 pipeline), AND
 //! 2. `summary.modules_built` contains `"std.int"`, AND
-//! 3. `discover()` finds the `int.rg` file.
+//! 3. `discover()` finds the `int.ridge` file.
 //!
 //! Tests serialize around a process-level mutex because `build_all` writes to
 //! a temp directory keyed by process ID — parallel invocations within the same

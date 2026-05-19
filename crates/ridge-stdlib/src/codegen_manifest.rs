@@ -1,6 +1,6 @@
 //! Manifest and signature code-generation helpers (T10).
 //!
-//! This module provides the text-level `.rg` parser that extracts public
+//! This module provides the text-level `.ridge` parser that extracts public
 //! symbol names from stdlib source files.  It is the canonical reference
 //! implementation used by the `ridge-resolve` and `ridge-typecheck` build
 //! scripts (each consumer has its own `build.rs` that includes an inline copy
@@ -27,7 +27,7 @@
 //!
 //! [`extract_pub_symbols`] — the core extraction function.  Given the path to
 //! the `stdlib/` directory, it returns a sorted list of
-//! [`StdlibModuleSymbols`] values: one per discovered `.rg` file.
+//! [`StdlibModuleSymbols`] values: one per discovered `.ridge` file.
 //!
 //! [`STDLIB_MODULE_ORDER`] — the canonical module order (tier-ordered,
 //! alphabetical within tier) that the manifest generator uses to assign stable
@@ -42,7 +42,7 @@ use std::path::{Path, PathBuf};
 pub struct StdlibModuleSymbols {
     /// Dot-separated module name, e.g. `"std.list"`.
     pub name: String,
-    /// All `pub fn` and `pub type` names declared in the `.rg` file.
+    /// All `pub fn` and `pub type` names declared in the `.ridge` file.
     pub exports: Vec<String>,
 }
 
@@ -77,11 +77,11 @@ pub const STDLIB_MODULE_ORDER: &[&str] = &[
 
 // ── Core extraction ───────────────────────────────────────────────────────────
 
-/// Extract all `pub fn` and `pub type` names from every `.rg` file under
+/// Extract all `pub fn` and `pub type` names from every `.ridge` file under
 /// `stdlib_dir`, returning them grouped by module in `STDLIB_MODULE_ORDER`
 /// order.
 ///
-/// Only modules listed in [`STDLIB_MODULE_ORDER`] are included.  Any `.rg`
+/// Only modules listed in [`STDLIB_MODULE_ORDER`] are included.  Any `.ridge`
 /// file that does not correspond to a known module name is silently ignored.
 ///
 /// # Errors
@@ -116,15 +116,15 @@ pub fn extract_pub_symbols(stdlib_dir: &Path) -> Result<Vec<StdlibModuleSymbols>
     Ok(results)
 }
 
-/// Map a dotted module name to its relative `.rg` path under `stdlib/`.
+/// Map a dotted module name to its relative `.ridge` path under `stdlib/`.
 ///
-/// `"std.int"`      → `int.rg`
-/// `"std.net.http"` → `net/http.rg`
+/// `"std.int"`      → `int.ridge`
+/// `"std.net.http"` → `net/http.ridge`
 #[must_use]
 pub fn module_name_to_path(dotted: &str) -> PathBuf {
     let rest = dotted.strip_prefix("std.").unwrap_or(dotted);
     let with_slashes = rest.replace('.', "/");
-    PathBuf::from(format!("{with_slashes}.rg"))
+    PathBuf::from(format!("{with_slashes}.ridge"))
 }
 
 /// Extract all `pub fn NAME` and `pub type NAME` symbols from a Ridge source
@@ -255,20 +255,20 @@ pub type JsonValue = JNull
 
     #[test]
     fn module_name_to_path_simple() {
-        assert_eq!(module_name_to_path("std.int"), PathBuf::from("int.rg"));
+        assert_eq!(module_name_to_path("std.int"), PathBuf::from("int.ridge"));
     }
 
     #[test]
     fn module_name_to_path_nested() {
         assert_eq!(
             module_name_to_path("std.net.http"),
-            PathBuf::from("net/http.rg")
+            PathBuf::from("net/http.ridge")
         );
     }
 
     // ── Bidirectional consistency seed test (T10 DoD §9 bullet 9) ───────────────
     //
-    // Asserts every parsed `pub fn`/`pub type` in each `.rg` file shows up in
+    // Asserts every parsed `pub fn`/`pub type` in each `.ridge` file shows up in
     // the `STDLIB_MODULE_ORDER` list.  This seeds the contract that T12 will
     // expand into a full bidirectional regression test
     // (`tests/manifest_consistency.rs`).

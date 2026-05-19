@@ -43,7 +43,7 @@ fn fmt_test_check_passes_on_already_formatted() {
         "apps/demo/ridge.toml",
         "[project]\nname = \"demo\"\nversion = \"0.1.0\"\nkind = \"library\"\n",
     );
-    write_file(&tw.path, "apps/demo/src/Demo.rg", FORMATTED);
+    write_file(&tw.path, "apps/demo/src/Demo.ridge", FORMATTED);
 
     // First pass: no-op (file is already formatted).
     ridge_cmd()
@@ -73,7 +73,7 @@ fn fmt_test_check_fails_on_malformatted() {
         .join("apps")
         .join("demo")
         .join("src")
-        .join("Demo.rg");
+        .join("Demo.ridge");
 
     ridge_cmd()
         .arg("fmt")
@@ -84,7 +84,7 @@ fn fmt_test_check_fails_on_malformatted() {
         .stdout(contains("would reformat"));
 
     // Verify the file was NOT modified by --check.
-    let contents = fs::read_to_string(&rg_path).expect("read .rg file");
+    let contents = fs::read_to_string(&rg_path).expect("read .ridge file");
     assert_eq!(contents, MALFORMATTED, "--check must not modify the file");
 }
 
@@ -99,7 +99,7 @@ fn fmt_test_in_place_rewrites_file() {
         .join("apps")
         .join("demo")
         .join("src")
-        .join("Demo.rg");
+        .join("Demo.ridge");
 
     // Verify the source starts malformatted.
     assert_eq!(

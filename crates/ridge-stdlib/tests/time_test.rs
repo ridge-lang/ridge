@@ -1,6 +1,6 @@
 //! Track-A tests for `std.time` — 9 public functions.
 //!
-//! Each test asserts that `time.rg` compiles through the T4 build pipeline
+//! Each test asserts that `time.ridge` compiles through the T4 build pipeline
 //! and that the module appears in the build summary.
 //!
 //! Tests serialize around a process-level mutex because `build_all` writes to

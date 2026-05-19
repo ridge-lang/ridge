@@ -1,6 +1,6 @@
 //! Track-A tests for `std.net.http` — 6 public functions.
 //!
-//! Each test asserts that `net/http.rg` compiles through the T4 build pipeline
+//! Each test asserts that `net/http.ridge` compiles through the T4 build pipeline
 //! and that the module appears in the build summary / discover output.
 //!
 //! Tests serialize around a process-level mutex because `build_all` writes to
@@ -92,14 +92,14 @@ fn std_net_http_respond_compiles() {
 
 // ── Record-type tests ─────────────────────────────────────────────────────────
 
-/// `Request` record type is declared in `net/http.rg` and the module builds.
+/// `Request` record type is declared in `net/http.ridge` and the module builds.
 #[test]
 fn std_net_http_request_record_compiles() {
     assert_std_net_http_built();
     assert_net_http_rg_discovered();
 }
 
-/// `Response` record type is declared in `net/http.rg` and the module builds.
+/// `Response` record type is declared in `net/http.ridge` and the module builds.
 #[test]
 fn std_net_http_response_record_compiles() {
     assert_std_net_http_built();
@@ -110,7 +110,7 @@ fn std_net_http_response_record_compiles() {
 
 /// `discover` finds `std.net.http` at the `net/` subdirectory path.
 ///
-/// This exercises the `module_path("std.net.http") == "net/http.rg"` logic
+/// This exercises the `module_path("std.net.http") == "net/http.ridge"` logic
 /// in `build_driver::module_path` (T4 subdirectory handling).
 #[test]
 fn std_net_http_discovered_in_subdirectory() {
@@ -122,11 +122,11 @@ fn std_net_http_discovered_in_subdirectory() {
         .expect("std.net.http must be discovered");
     // Tier 4
     assert_eq!(m.tier, 4, "std.net.http must be tier 4");
-    // Path ends with net/http.rg (using OS separators)
+    // Path ends with net/http.ridge (using OS separators)
     let path_str = m.path.to_string_lossy();
     assert!(
-        path_str.contains("net") && path_str.ends_with("http.rg"),
-        "path must end with net/http.rg; got: {path_str}"
+        path_str.contains("net") && path_str.ends_with("http.ridge"),
+        "path must end with net/http.ridge; got: {path_str}"
     );
 }
 

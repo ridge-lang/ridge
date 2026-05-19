@@ -1,5 +1,5 @@
 -- Private helpers for std.set test suite.
--- FFI bridges + pure-Ridge helpers replicate set.rg (T17+ deferred).
+-- FFI bridges + pure-Ridge helpers replicate set.ridge (T17+ deferred).
 @ffi("maps", "new", 0)
 fn _setMapNew () -> Set a
 

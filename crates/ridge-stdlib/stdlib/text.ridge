@@ -12,7 +12,7 @@
 pub fn byteSize (s: Text) -> Int
 
 -- Raw iolist-to-binary bridge (private — used by concat to avoid self-recursion).
--- `a ++ b` in text.rg lowered to `std.text:concat(a,b)` by ridge-lower,
+-- `a ++ b` in text.ridge lowered to `std.text:concat(a,b)` by ridge-lower,
 -- which is a self-call.  Use erlang:iolist_to_binary/1 as the canonical
 -- binary-concatenation primitive instead.
 @ffi("erlang", "iolist_to_binary", 1)

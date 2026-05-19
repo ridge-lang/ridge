@@ -800,7 +800,7 @@ mod tests {
             ],
             attributes: vec![CErlAttribute {
                 name: CErlAtom("file".into()),
-                value: CErlLit::Atom(CErlAtom("smoke.rg".into())),
+                value: CErlLit::Atom(CErlAtom("smoke.ridge".into())),
             }],
             fns: vec![
                 CErlFn {

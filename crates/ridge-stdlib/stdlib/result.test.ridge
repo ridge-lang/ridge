@@ -1,6 +1,6 @@
 -- Private helpers for std.result test suite.
--- Pure-Ridge helpers replicate result.rg (T17+ deferred; no FFI needed since
--- all result.rg functions are pure Ridge).
+-- Pure-Ridge helpers replicate result.ridge (T17+ deferred; no FFI needed since
+-- all result.ridge functions are pure Ridge).
 fn _resMap (f: fn a -> b) (r: Result a e) -> Result b e =
     match r
         Ok v -> Ok (f v)

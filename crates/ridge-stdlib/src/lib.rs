@@ -1,6 +1,6 @@
 //! Ridge standard library — compiled artefacts and public facade.
 //!
-//! The build script (`build.rs`) discovers the `.rg` source files under
+//! The build script (`build.rs`) discovers the `.ridge` source files under
 //! `stdlib/`, drives the Ridge pipeline over them in tier order, and emits
 //! generated tables into `OUT_DIR`.
 

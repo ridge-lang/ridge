@@ -297,7 +297,7 @@ proc_run_collect(Port, Acc, Deadline) ->
             proc_run_collect(Port, [D | Acc], Deadline);
         {Port, {exit_status, Code}} ->
             Stdout = iolist_to_binary(lists:reverse(Acc)),
-            %% ProcOutput is declared in stdlib/proc.rg as
+            %% ProcOutput is declared in stdlib/proc.ridge as
             %%   pub type ProcOutput = { stdout: Text, stderr: Text, exitCode: Int }
             %% which codegen lowers to an Erlang map keyed by field atoms
             %% (field access `.exitCode` compiles to `erlang:map_get(exitCode,

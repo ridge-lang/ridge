@@ -81,7 +81,7 @@ impl Drop for TempWorkspace {
 /// ```text
 /// <tmp>/ridge.toml           (workspace)
 /// <tmp>/apps/demo/ridge.toml (project, kind = "library")
-/// <tmp>/apps/demo/src/<name>.rg
+/// <tmp>/apps/demo/src/<name>.ridge
 /// ```
 pub fn make_workspace(id: &str, module_name: &str, source: &str) -> TempWorkspace {
     let tw = TempWorkspace::new(id);
@@ -96,7 +96,11 @@ pub fn make_workspace(id: &str, module_name: &str, source: &str) -> TempWorkspac
         "apps/demo/ridge.toml",
         "[project]\nname = \"demo\"\nversion = \"0.1.0\"\nkind = \"library\"\n",
     );
-    write_file(&tw.path, &format!("apps/demo/src/{module_name}.rg"), source);
+    write_file(
+        &tw.path,
+        &format!("apps/demo/src/{module_name}.ridge"),
+        source,
+    );
 
     tw
 }
@@ -122,10 +126,10 @@ pub fn run_pipeline(workspace_path: &Path) -> PipelineResult {
     PipelineResult { lowered }
 }
 
-/// Load an example file from `examples/<name>.rg` (relative to workspace root).
+/// Load an example file from `examples/<name>.ridge` (relative to workspace root).
 pub fn load_example_workspace(example_name: &str) -> TempWorkspace {
     let manifest_dir = env!("CARGO_MANIFEST_DIR");
-    let example_path = format!("{manifest_dir}/../../examples/{example_name}.rg");
+    let example_path = format!("{manifest_dir}/../../examples/{example_name}.ridge");
     let src = fs::read_to_string(&example_path)
         .unwrap_or_else(|e| panic!("could not read example {example_path}: {e}"));
     make_workspace(&format!("example_{example_name}"), example_name, &src)

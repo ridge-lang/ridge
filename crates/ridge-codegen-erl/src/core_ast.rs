@@ -46,7 +46,7 @@ pub struct CErlFn {
     pub name: CErlAtom,
     /// Function arity.
     pub arity: u32,
-    /// Annotations, e.g. `( -| [{file, "log_analyzer.rg"}, {line, 47}] )`.
+    /// Annotations, e.g. `( -| [{file, "log_analyzer.ridge"}, {line, 47}] )`.
     pub anns: Vec<CErlAnn>,
     /// Body: a `fun (X1, ..., XN) -> ... end` expression.
     pub body: CErlExpr,
@@ -254,7 +254,7 @@ mod tests {
             }],
             attributes: vec![CErlAttribute {
                 name: CErlAtom("file".into()),
-                value: CErlLit::Atom(CErlAtom("test.rg".into())),
+                value: CErlLit::Atom(CErlAtom("test.ridge".into())),
             }],
             fns: vec![CErlFn {
                 name: CErlAtom("main".into()),

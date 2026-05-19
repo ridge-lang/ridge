@@ -1,5 +1,5 @@
 -- Private FFI bridges for std.bool test suite.
--- These replicate the bool.rg FFI declarations in local scope so that
+-- These replicate the bool.ridge FFI declarations in local scope so that
 -- test functions can call them without a cross-module qualified reference
 -- (which is unsupported for WorkspaceModule imports in the current typecheck —
 -- T17+ deferred per crates/ridge-typecheck/src/stdlib_env.rs:87-92).

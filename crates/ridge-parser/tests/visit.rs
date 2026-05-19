@@ -1,6 +1,6 @@
 //! Integration tests for the `ridge_ast::visit::Visit` trait.
 //!
-//! Tests parse `examples/log_analyzer.rg` and walk the resulting AST with
+//! Tests parse `examples/log_analyzer.ridge` and walk the resulting AST with
 //! sample visitors to verify that `walk_*` helpers recurse correctly.
 
 use ridge_ast::{
@@ -9,7 +9,7 @@ use ridge_ast::{
 };
 use ridge_parser::parse_source;
 
-const LOG_ANALYZER: &str = include_str!("../../../examples/log_analyzer.rg");
+const LOG_ANALYZER: &str = include_str!("../../../examples/log_analyzer.ridge");
 
 // ── ExprCounter ──────────────────────────────────────────────────────────────
 
@@ -45,19 +45,19 @@ impl<'ast> Visit<'ast> for NodeCounter {
 
 // ── Tests ─────────────────────────────────────────────────────────────────────
 
-/// Parses `log_analyzer.rg` and asserts the expression count meets the
+/// Parses `log_analyzer.ridge` and asserts the expression count meets the
 /// empirical minimum of 50 (per T14 definition of done).
 #[test]
 fn visit_expr_count_log_analyzer() {
     let result = parse_source(LOG_ANALYZER);
     assert!(
         result.errors.is_empty(),
-        "expected no parse errors in log_analyzer.rg: {:#?}",
+        "expected no parse errors in log_analyzer.ridge: {:#?}",
         result.errors
     );
     assert!(
         result.lex_errors.is_empty(),
-        "expected no lex errors in log_analyzer.rg: {:#?}",
+        "expected no lex errors in log_analyzer.ridge: {:#?}",
         result.lex_errors
     );
 
@@ -66,19 +66,19 @@ fn visit_expr_count_log_analyzer() {
 
     assert!(
         counter.count >= 50,
-        "expected >= 50 Expr nodes in log_analyzer.rg, got {}",
+        "expected >= 50 Expr nodes in log_analyzer.ridge, got {}",
         counter.count
     );
 }
 
-/// Parses `log_analyzer.rg` and asserts both expression count (≥ 50) and
+/// Parses `log_analyzer.ridge` and asserts both expression count (≥ 50) and
 /// pattern count (≥ 5) are met.
 #[test]
 fn visit_pattern_count_log_analyzer() {
     let result = parse_source(LOG_ANALYZER);
     assert!(
         result.errors.is_empty(),
-        "expected no parse errors in log_analyzer.rg: {:#?}",
+        "expected no parse errors in log_analyzer.ridge: {:#?}",
         result.errors
     );
 
@@ -90,12 +90,12 @@ fn visit_pattern_count_log_analyzer() {
 
     assert!(
         counter.expr_count >= 50,
-        "expected >= 50 Expr nodes in log_analyzer.rg, got {}",
+        "expected >= 50 Expr nodes in log_analyzer.ridge, got {}",
         counter.expr_count
     );
     assert!(
         counter.pattern_count >= 5,
-        "expected >= 5 Pattern nodes in log_analyzer.rg, got {}",
+        "expected >= 5 Pattern nodes in log_analyzer.ridge, got {}",
         counter.pattern_count
     );
 }
@@ -191,9 +191,9 @@ fn visit_module_default_and_walk_module_agree() {
 #[test]
 fn visit_counts_match_across_programs() {
     let srcs = [
-        include_str!("../../../examples/url_shortener.rg"),
-        include_str!("../../../examples/rate_limiter.rg"),
-        include_str!("../../../examples/game_of_life.rg"),
+        include_str!("../../../examples/url_shortener.ridge"),
+        include_str!("../../../examples/rate_limiter.ridge"),
+        include_str!("../../../examples/game_of_life.ridge"),
     ];
 
     for src in srcs {

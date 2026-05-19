@@ -2,7 +2,7 @@
 name = "acme.gateway"
 version = "0.1.0"
 kind = "service"
-entry = "src/Gateway.rg"
+entry = "src/Gateway.ridge"
 
 [capabilities]
 allow = ["net", "io"]

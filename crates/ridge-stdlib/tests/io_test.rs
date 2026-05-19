@@ -1,6 +1,6 @@
 //! Track-A tests for `std.io` — 5 public functions.
 //!
-//! Each test asserts that `io.rg` compiles through the T4 build pipeline
+//! Each test asserts that `io.ridge` compiles through the T4 build pipeline
 //! and that the module appears in the build summary.
 //!
 //! Tests serialize around a process-level mutex because `build_all` writes to

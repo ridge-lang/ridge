@@ -47,8 +47,8 @@ fn init_happy_path() {
         "ridge.toml not created"
     );
     assert!(
-        project_dir.join("src").join("Main.rg").exists(),
-        "src/Main.rg not created"
+        project_dir.join("src").join("Main.ridge").exists(),
+        "src/Main.ridge not created"
     );
     assert!(
         project_dir.join("README.md").exists(),

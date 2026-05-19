@@ -7,7 +7,7 @@
 // # Generation strategy (T10)
 //
 // For T10 the generated content is the original hand-curated module/export
-// table, augmented with exports discovered from `.rg` files.  The baseline
+// table, augmented with exports discovered from `.ridge` files.  The baseline
 // table preserves all prior entries (including prelude re-exports per R013)
 // so that the existing API surface and all existing tests stay green.
 //
@@ -62,19 +62,19 @@ const MODULE_ORDER: &[&str] = &[
 //
 // This baseline replicates the hand-curated BUILTINS table that was previously
 // in stdlib_builtin.rs.  It includes:
-//   - `pub fn` exports that appear in the `.rg` files (ground truth from T5-T9)
+//   - `pub fn` exports that appear in the `.ridge` files (ground truth from T5-T9)
 //   - Prelude re-exported constructors / type names (R013): Some, None,
 //     Option (std.option) and Ok, Err, Result (std.result)
 //   - Alias / compat entries documented in the plan (andThen, unwrapOr, etc.)
 //   - `pub type` entries that serve as re-export markers in the resolver
 //
 // T12 will replace this static table with a generated one derived purely from
-// the `.rg` sources plus a formal prelude-re-export declaration mechanism.
+// the `.ridge` sources plus a formal prelude-re-export declaration mechanism.
 
-// T12 update: BASELINE_EXPORTS now derived from the actual .rg source files
+// T12 update: BASELINE_EXPORTS now derived from the actual .ridge source files
 // (bidirectional consistency mandate, R006).  Entries that were in
-// the old hand-curated T10 table but are NOT in any .rg file have been
-// removed.  New symbols that appear in the .rg files but were absent from the
+// the old hand-curated T10 table but are NOT in any .ridge file have been
+// removed.  New symbols that appear in the .ridge files but were absent from the
 // T10 table have been added.
 //
 // Special prelude re-exports (R013) — constructors/type names that are
@@ -82,12 +82,12 @@ const MODULE_ORDER: &[&str] = &[
 //   std.option: Option, Some, None
 //   std.result: Result, Ok, Err
 // These are retained even though they do not appear as top-level `pub fn` or
-// separate `pub type` declarations in the .rg files.
+// separate `pub type` declarations in the .ridge files.
 //
-// std.proc: `ProcOutput` is declared as `pub type` in proc.rg.
-// std.time:  `Duration`  is declared as `pub type` in time.rg.
-// std.json:  `JsonValue`  is declared as `pub type` in json.rg.
-// std.net.http: `Request`, `Response` are declared as `pub type` in net/http.rg.
+// std.proc: `ProcOutput` is declared as `pub type` in proc.ridge.
+// std.time:  `Duration`  is declared as `pub type` in time.ridge.
+// std.json:  `JsonValue`  is declared as `pub type` in json.ridge.
+// std.net.http: `Request`, `Response` are declared as `pub type` in net/http.ridge.
 const BASELINE_EXPORTS: &[(&str, &[&str])] = &[
     (
         "std.int",
@@ -245,7 +245,7 @@ const BASELINE_EXPORTS: &[(&str, &[&str])] = &[
     (
         "std.time",
         &[
-            // `pub type Duration` declared in time.rg.
+            // `pub type Duration` declared in time.ridge.
             "Duration", "now", "epoch", "fromIso", "diff", "diffMs", "sinceMs", "sleep", "parse",
             "iso",
         ],
@@ -259,7 +259,7 @@ const BASELINE_EXPORTS: &[(&str, &[&str])] = &[
     (
         "std.proc",
         &[
-            // `pub type ProcOutput` declared in proc.rg.
+            // `pub type ProcOutput` declared in proc.ridge.
             "ProcOutput",
             "run",
         ],
@@ -267,7 +267,7 @@ const BASELINE_EXPORTS: &[(&str, &[&str])] = &[
     (
         "std.json",
         &[
-            // `pub type JsonValue` declared in json.rg.
+            // `pub type JsonValue` declared in json.ridge.
             "JsonValue",
             "encode",
             "decode",
@@ -275,7 +275,7 @@ const BASELINE_EXPORTS: &[(&str, &[&str])] = &[
             "encodeBool",
             "encodeText",
             // JsonValue construction shims (FFI bridges to
-            // ridge_rt:json_* — see crates/ridge-stdlib/stdlib/json.rg).
+            // ridge_rt:json_* — see crates/ridge-stdlib/stdlib/json.ridge).
             // Cross-module `pub type` variant resolution lands in 0.2.0;
             // until then these are the supported constructor surface.
             "jNull",
@@ -290,14 +290,14 @@ const BASELINE_EXPORTS: &[(&str, &[&str])] = &[
     (
         "std.net.http",
         &[
-            // `pub type Request` and `pub type Response` declared in net/http.rg.
+            // `pub type Request` and `pub type Response` declared in net/http.ridge.
             "Request", "Response", "get", "post", "put", "delete", "listen", "respond",
         ],
     ),
 ];
 
 fn main() {
-    // Tell Cargo to re-run this script when any stdlib .rg file changes.
+    // Tell Cargo to re-run this script when any stdlib .ridge file changes.
     println!("cargo:rerun-if-changed=../ridge-stdlib/stdlib");
 
     let out_dir = std::env::var("OUT_DIR").unwrap_or_else(|_| {
@@ -326,18 +326,18 @@ fn main() {
 fn generate_manifest(stdlib_dir: &Path, out_path: &Path) -> Result<(), String> {
     // Build the module list in canonical order.
     //
-    // T10: use the baseline table as the definitive export list.  The .rg
+    // T10: use the baseline table as the definitive export list.  The .ridge
     // source files are walked only to validate that they exist (T201 guard);
     // the text-extracted names are NOT merged in here.  T12 will introduce
     // the full bidirectional consistency mechanism.
     let mut modules: Vec<(String, Vec<String>)> = Vec::new();
 
     for &dotted in MODULE_ORDER {
-        // Validate the .rg file exists (T201 guard — emit a warning if not).
+        // Validate the .ridge file exists (T201 guard — emit a warning if not).
         let rel = module_name_to_path(dotted);
         let full = stdlib_dir.join(&rel);
         if !full.exists() {
-            // Missing .rg file is non-fatal for T10 — the module may not have
+            // Missing .ridge file is non-fatal for T10 — the module may not have
             // been written yet (progressive T5-T9 delivery).
             continue;
         }
@@ -397,7 +397,7 @@ fn emit_manifest_rs(modules: &[(String, Vec<String>)]) -> String {
 fn module_name_to_path(dotted: &str) -> PathBuf {
     let rest = dotted.strip_prefix("std.").unwrap_or(dotted);
     let with_slashes = rest.replace('.', "/");
-    PathBuf::from(format!("{with_slashes}.rg"))
+    PathBuf::from(format!("{with_slashes}.ridge"))
 }
 
 fn extract_pub_names(src: &str) -> Vec<String> {

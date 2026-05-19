@@ -68,7 +68,7 @@ ridge new hello            # scaffold a new project
 cd hello
 ridge run                  # build and run
 ridge test                 # run the test suite
-ridge fmt                  # format .rg files
+ridge fmt                  # format .ridge files
 ridge repl                 # interactive REPL
 ```
 

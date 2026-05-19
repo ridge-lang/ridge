@@ -6,7 +6,7 @@
 //! ridge fmt [--check] [--stdin] [<paths>...]
 //! ```
 //!
-//! - Default: format every `.rg` file in the current workspace recursively,
+//! - Default: format every `.ridge` file in the current workspace recursively,
 //!   in-place.
 //! - `--check`: dry-run; exit 1 if any file would change.
 //! - `--stdin`: read from stdin, write formatted output to stdout.
@@ -39,7 +39,7 @@ pub struct FmtArgs {
 
 // ── Directory walker ──────────────────────────────────────────────────────────
 
-/// Collect all `.rg` files under `dir` recursively.
+/// Collect all `.ridge` files under `dir` recursively.
 ///
 /// Skips hidden directories (names starting with `.`) and `target/` at any depth.
 fn collect_rg_files(dir: &Path, out: &mut Vec<PathBuf>) -> Result<(), CliError> {
@@ -70,14 +70,14 @@ fn collect_rg_files(dir: &Path, out: &mut Vec<PathBuf>) -> Result<(), CliError> 
 
         if ft.is_dir() {
             collect_rg_files(&path, out)?;
-        } else if ft.is_file() && path.extension().is_some_and(|ext| ext == "rg") {
+        } else if ft.is_file() && path.extension().is_some_and(|ext| ext == "ridge") {
             out.push(path);
         }
     }
     Ok(())
 }
 
-/// Expand the user-supplied `paths` into a flat list of `.rg` files.
+/// Expand the user-supplied `paths` into a flat list of `.ridge` files.
 ///
 /// Files are taken as-is; directories are walked recursively.  Non-existent
 /// paths return `CliError::FmtPathNotFound`.

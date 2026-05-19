@@ -40,7 +40,7 @@ pub struct BuiltinStdlibModule {
 /// # Generated table
 ///
 /// This slice is generated at build time by `crates/ridge-resolve/build.rs`,
-/// which walks `../ridge-stdlib/stdlib/**/*.rg` and extracts every `pub fn`
+/// which walks `../ridge-stdlib/stdlib/**/*.ridge` and extracts every `pub fn`
 /// and `pub type` declaration.  The file
 /// `${OUT_DIR}/stdlib_manifest.rs` (emitted by that build script) is
 /// `include!`'d here.  The types used inside the generated file

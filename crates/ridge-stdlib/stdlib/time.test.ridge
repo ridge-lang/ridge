@@ -1,5 +1,5 @@
 -- Private FFI bridges for std.time test suite.
--- These replicate time.rg FFI declarations in local scope because cross-module
+-- These replicate time.ridge FFI declarations in local scope because cross-module
 -- calls are unsupported (T17+ deferred).
 @ffi("ridge_rt", "time_now", 1)
 fn _timeNow (_unit: Unit) -> Timestamp

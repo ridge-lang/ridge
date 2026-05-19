@@ -20,7 +20,7 @@ fn ridge_cmd() -> Command {
     Command::cargo_bin("ridge").unwrap()
 }
 
-/// Build a minimal library workspace with one `.rg` source file.
+/// Build a minimal library workspace with one `.ridge` source file.
 fn make_test_workspace(module_name: &str, source: &str) -> TempWorkspace {
     let tw = TempWorkspace::new();
     write_file(
@@ -33,7 +33,11 @@ fn make_test_workspace(module_name: &str, source: &str) -> TempWorkspace {
         "apps/demo/ridge.toml",
         "[project]\nname = \"demo\"\nversion = \"0.1.0\"\nkind = \"library\"\n",
     );
-    write_file(&tw.path, &format!("apps/demo/src/{module_name}.rg"), source);
+    write_file(
+        &tw.path,
+        &format!("apps/demo/src/{module_name}.ridge"),
+        source,
+    );
     tw
 }
 

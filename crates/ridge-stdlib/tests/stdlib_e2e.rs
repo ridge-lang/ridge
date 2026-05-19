@@ -1,4 +1,4 @@
-//! Slow-CI lane: compiles stdlib `.rg` and `.test.rg` files together as a
+//! Slow-CI lane: compiles stdlib `.ridge` and `.test.ridge` files together as a
 //! single workspace member, invokes `ridge test`, parses the summary line,
 //! and asserts the test count meets G4 (≥ 151 in slow-CI lane).
 //!
@@ -29,7 +29,7 @@ const MIN_PASSING: u64 = 151;
 
 // ── Harness ─────────────────────────────────────────────────────────────��─────
 
-/// Slow-CI lane: compile and execute all stdlib `.test.rg` functions via
+/// Slow-CI lane: compile and execute all stdlib `.test.ridge` functions via
 /// `ridge test`, assert the summary line satisfies the gate.
 ///
 /// Algorithm:
@@ -54,7 +54,7 @@ fn stdlib_e2e_runs_all_tests() {
     let stdlib_str = stdlib_dir.to_string_lossy().replace('\\', "/");
 
     // ── 2. Create a per-run tempdir holding only the two TOML manifests ──────
-    // The `.rg` and `.test.rg` source files stay in their canonical on-disk
+    // The `.ridge` and `.test.ridge` source files stay in their canonical on-disk
     // location; the driver reads them directly via the absolute `src_root`.
     // Absolute-path indirection — source files stay in their on-disk location; no tempdir copy.
     let td = tempfile::TempDir::new().expect("create tempdir for stdlib-e2e workspace");

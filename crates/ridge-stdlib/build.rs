@@ -334,7 +334,7 @@ fn is_valid_ident(s: &str) -> bool {
 
 fn module_to_path(dotted: &str) -> PathBuf {
     let rest = dotted.strip_prefix("std.").unwrap_or(dotted);
-    PathBuf::from(format!("{}.rg", rest.replace('.', "/")))
+    PathBuf::from(format!("{}.ridge", rest.replace('.', "/")))
 }
 
 // ── Emitter ───────────────────────────────────────────────────────────────────
@@ -392,7 +392,7 @@ fn emit_rs(entries: &[FfiEntry]) -> String {
     // Emit the lookup function.
     out.push_str("/// Look up the [`StdlibFfiTarget`] for a Ridge stdlib symbol.\n");
     out.push_str("///\n");
-    out.push_str("/// Generated from stdlib `.rg` declarations at build time (T14.5.3).\n");
+    out.push_str("/// Generated from stdlib `.ridge` declarations at build time (T14.5.3).\n");
     out.push_str("/// Covers both `@ffi`-decorated stubs (BEAM target from the attribute) and\n");
     out.push_str("/// pure-Ridge `pub fn` bodies (BEAM target = compiled Ridge stdlib module).\n");
     out.push_str("///\n");

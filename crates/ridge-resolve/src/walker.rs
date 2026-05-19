@@ -904,7 +904,7 @@ mod tests {
         let td = TempDir::new().expect("tempdir");
         write_file(td.path(), "ridge.toml", &workspace_toml(&["libs/*"]));
         write_file(td.path(), "libs/proj/ridge.toml", &project_toml("proj"));
-        write_file(td.path(), "libs/proj/src/Main.rg", src);
+        write_file(td.path(), "libs/proj/src/Main.ridge", src);
 
         let disc = crate::discover_workspace(td.path());
         let mut ws = disc.graph.expect("workspace");
@@ -1007,10 +1007,10 @@ mod tests {
         write_file(td.path(), "libs/proj/ridge.toml", &project_toml("proj"));
         write_file(
             td.path(),
-            "libs/proj/src/A.rg",
+            "libs/proj/src/A.ridge",
             "import proj.B as B\nfn useB = B.helper\n",
         );
-        write_file(td.path(), "libs/proj/src/B.rg", "pub fn helper = ()\n");
+        write_file(td.path(), "libs/proj/src/B.ridge", "pub fn helper = ()\n");
 
         let disc = crate::discover_workspace(td.path());
         let mut ws = disc.graph.expect("graph");
@@ -1594,14 +1594,14 @@ mod tests {
 
     // ── T11 fixture loaders: assert that fixture files fire expected codes ────
     //
-    // These lock T11's DoD: `tests/fixtures/resolve/r011_*.rg` and `r017_*.rg`
+    // These lock T11's DoD: `tests/fixtures/resolve/r011_*.ridge` and `r017_*.ridge`
     // each fire exactly the expected diagnostic.  T15 will later add a generic
     // `-- expect: Rxxx` harness over the whole directory; until then these
     // inline checks guarantee the fixtures stay in sync with T11 behaviour.
 
     #[test]
     fn t11_fixture_r011_duplicate_param() {
-        let src = include_str!("../tests/fixtures/resolve/r011_duplicate_param.rg");
+        let src = include_str!("../tests/fixtures/resolve/r011_duplicate_param.ridge");
         let (_, errors, _nid) = resolve_bare(src);
         let r011_count = count_errors(&errors, |e| {
             matches!(e, ResolveError::DuplicateLocal { .. })
@@ -1614,7 +1614,7 @@ mod tests {
 
     #[test]
     fn t11_fixture_r011_duplicate_let() {
-        let src = include_str!("../tests/fixtures/resolve/r011_duplicate_let.rg");
+        let src = include_str!("../tests/fixtures/resolve/r011_duplicate_let.ridge");
         let (_, errors, _nid) = resolve_bare(src);
         let r011_count = count_errors(&errors, |e| {
             matches!(e, ResolveError::DuplicateLocal { .. })
@@ -1627,7 +1627,7 @@ mod tests {
 
     #[test]
     fn t11_fixture_r011_duplicate_pattern_var() {
-        let src = include_str!("../tests/fixtures/resolve/r011_duplicate_pattern_var.rg");
+        let src = include_str!("../tests/fixtures/resolve/r011_duplicate_pattern_var.ridge");
         let (_, errors, _nid) = resolve_bare(src);
         let r011_count = count_errors(&errors, |e| {
             matches!(e, ResolveError::DuplicateLocal { .. })
@@ -1640,7 +1640,7 @@ mod tests {
 
     #[test]
     fn t11_fixture_r017_let_shadows_state() {
-        let src = include_str!("../tests/fixtures/resolve/r017_let_shadows_state.rg");
+        let src = include_str!("../tests/fixtures/resolve/r017_let_shadows_state.ridge");
         let (_, errors, _nid) = resolve_bare(src);
         let r017_count = count_errors(&errors, |e| {
             matches!(e, ResolveError::StateFieldShadowedByLocal { .. })
@@ -1653,7 +1653,7 @@ mod tests {
 
     #[test]
     fn t11_fixture_r017_handler_param_shadows_state() {
-        let src = include_str!("../tests/fixtures/resolve/r017_handler_param_shadows_state.rg");
+        let src = include_str!("../tests/fixtures/resolve/r017_handler_param_shadows_state.ridge");
         let (_, errors, _nid) = resolve_bare(src);
         let r017_count = count_errors(&errors, |e| {
             matches!(e, ResolveError::StateFieldShadowedByLocal { .. })

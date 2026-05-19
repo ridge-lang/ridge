@@ -249,7 +249,7 @@ pub fn stdlib_signature(module: StdlibModuleId, name: &str, b: &BuiltinTyCons) -
         (STD_BOOL, "and" | "or") => {
             Some(mono(ty_fn_pure(vec![ty_bool(b), ty_bool(b)], ty_bool(b))))
         }
-        // T12: toText present in bool.rg.
+        // T12: toText present in bool.ridge.
         (STD_BOOL, "toText") => Some(mono(ty_fn_pure(vec![ty_bool(b)], ty_text(b)))),
 
         // ── std.text ──────────────────────────────────────────────────────────
@@ -1020,7 +1020,7 @@ pub fn stdlib_signature(module: StdlibModuleId, name: &str, b: &BuiltinTyCons) -
             use ridge_ast::Capability;
             let io_caps = CapabilitySet::singleton(Capability::Io);
             // (_: Unit) -> Result Text Error [io]  (§3.10 / plan line 322)
-            // T12: .rg declares `(_ : Unit)` thunk param; signature updated to match.
+            // T12: .ridge declares `(_ : Unit)` thunk param; signature updated to match.
             Some(mono(ty_fn_caps(
                 vec![ty_unit(b)],
                 ty_result(b, ty_text(b), ty_error(b)),
@@ -1075,11 +1075,11 @@ pub fn stdlib_signature(module: StdlibModuleId, name: &str, b: &BuiltinTyCons) -
         (STD_TIME, "now") => {
             use ridge_ast::Capability;
             let time_caps = CapabilitySet::singleton(Capability::Time);
-            // T12: .rg declares `(_ : Unit)` thunk param; signature updated to match.
+            // T12: .ridge declares `(_ : Unit)` thunk param; signature updated to match.
             Some(mono(ty_fn_caps(vec![ty_unit(b)], ty_timestamp(b), time_caps)))
         }
         (STD_TIME, "epoch") => {
-            // T12: .rg declares `(_ : Unit)` thunk param; signature updated to match.
+            // T12: .ridge declares `(_ : Unit)` thunk param; signature updated to match.
             // (_: Unit) -> Timestamp  (the Unix epoch)
             Some(mono(ty_fn_pure(vec![ty_unit(b)], ty_timestamp(b))))
         }
@@ -1153,7 +1153,7 @@ pub fn stdlib_signature(module: StdlibModuleId, name: &str, b: &BuiltinTyCons) -
         (STD_RANDOM, "float") => {
             use ridge_ast::Capability;
             let rnd_caps = CapabilitySet::singleton(Capability::Random);
-            // T12: .rg declares `(_ : Unit)` thunk param; signature updated to match.
+            // T12: .ridge declares `(_ : Unit)` thunk param; signature updated to match.
             // (_: Unit) -> Float  (uniform 0..1)
             Some(mono(ty_fn_caps(vec![ty_unit(b)], ty_float(b), rnd_caps)))
         }
@@ -1208,7 +1208,7 @@ pub fn stdlib_signature(module: StdlibModuleId, name: &str, b: &BuiltinTyCons) -
         (STD_ENV, "all") => {
             use ridge_ast::Capability;
             let env_caps = CapabilitySet::singleton(Capability::Env);
-            // T12: .rg declares `(_ : Unit)` thunk param; signature updated to match.
+            // T12: .ridge declares `(_ : Unit)` thunk param; signature updated to match.
             // (_: Unit) -> Map Text Text
             Some(mono(ty_fn_caps(
                 vec![ty_unit(b)],
@@ -1219,7 +1219,7 @@ pub fn stdlib_signature(module: StdlibModuleId, name: &str, b: &BuiltinTyCons) -
         (STD_ENV | STD_CLI, "args") => {
             use ridge_ast::Capability;
             let env_caps = CapabilitySet::singleton(Capability::Env);
-            // T12: .rg declares `(_ : Unit)` thunk param; signature updated to match.
+            // T12: .ridge declares `(_ : Unit)` thunk param; signature updated to match.
             // (_: Unit) -> List Text
             Some(mono(ty_fn_caps(
                 vec![ty_unit(b)],
@@ -1248,10 +1248,10 @@ pub fn stdlib_signature(module: StdlibModuleId, name: &str, b: &BuiltinTyCons) -
         // ── std.json ─────────────────────────────────────────────────────────
         //
         // §3.17 / OQ-S004 / D120: JsonValue is a user-declared sum type in
-        // json.rg (not a BuiltinTyCon).  The type signatures here use
+        // json.ridge (not a BuiltinTyCon).  The type signatures here use
         // stub_phase7() (Type::Error) because `JsonValue` has no stable
         // TyConId in BuiltinTyCons — the authoritative schema is built at
-        // compile time by collect_user_tycons when json.rg is processed.
+        // compile time by collect_user_tycons when json.ridge is processed.
         //
         // The 5 public functions and the JsonValue type + 7 constructors all
         // return stub_phase7() to satisfy the property test (every BUILTINS
@@ -1266,7 +1266,7 @@ pub fn stdlib_signature(module: StdlibModuleId, name: &str, b: &BuiltinTyCons) -
         //
         // TODO: replace stubs with generated signatures.
         //
-        // T12: `pub type Duration` (time.rg) and `pub type ProcOutput` (proc.rg) are
+        // T12: `pub type Duration` (time.ridge) and `pub type ProcOutput` (proc.ridge) are
         // record TyCons declared in the stdlib source; they don't have stable TyConIds
         // in BuiltinTyCons so we use stub_phase7() for now.
         (STD_TIME, "Duration")
@@ -1590,7 +1590,7 @@ mod tests {
     // ── std.net.http ──────────────────────────────────────────────────────────
 
     /// `listen` is the only `net.http` symbol that has a real Phase 4 signature
-    /// (so `examples/url_shortener.rg` can type-check); the other `net.http`
+    /// (so `examples/url_shortener.ridge` can type-check); the other `net.http`
     /// items remain stubs (`Request`, `Response`, `respond`, `get`, …).
     #[test]
     fn std_net_http_listen_is_int_handler_to_unit() {

@@ -60,7 +60,7 @@ pub fn examples_dir() -> PathBuf {
 
 /// Read one of the four canonical Ridge example source files.
 pub fn read_example(name: &str) -> String {
-    let path = examples_dir().join(format!("{name}.rg"));
+    let path = examples_dir().join(format!("{name}.ridge"));
     fs::read_to_string(&path).unwrap_or_else(|e| panic!("could not read example {name}: {e}"))
 }
 
@@ -72,7 +72,7 @@ pub fn read_example(name: &str) -> String {
 ///   ridge.toml           (workspace manifest, members = ["apps/*"])
 ///   apps/demo/
 ///     ridge.toml         (project manifest, kind = "library")
-///     src/<module>.rg
+///     src/<module>.ridge
 /// ```
 pub fn make_workspace(module_name: &str, source: &str) -> TempWorkspace {
     let tw = TempWorkspace::new();
@@ -86,7 +86,11 @@ pub fn make_workspace(module_name: &str, source: &str) -> TempWorkspace {
         "apps/demo/ridge.toml",
         "[project]\nname = \"demo\"\nversion = \"0.1.0\"\nkind = \"library\"\n",
     );
-    write_file(&tw.path, &format!("apps/demo/src/{module_name}.rg"), source);
+    write_file(
+        &tw.path,
+        &format!("apps/demo/src/{module_name}.ridge"),
+        source,
+    );
     tw
 }
 
@@ -97,8 +101,8 @@ pub fn make_workspace(module_name: &str, source: &str) -> TempWorkspace {
 /// <root>/
 ///   ridge.toml           (workspace manifest, members = ["apps/*"])
 ///   apps/demo/
-///     ridge.toml         (project manifest, kind = "app", entry = "src/<module>.rg")
-///     src/<module>.rg
+///     ridge.toml         (project manifest, kind = "app", entry = "src/<module>.ridge")
+///     src/<module>.ridge
 /// ```
 ///
 /// The source must define `pub fn main()` (zero-argument) or
@@ -114,10 +118,14 @@ pub fn make_app_workspace(module_name: &str, source: &str) -> TempWorkspace {
         &tw.path,
         "apps/demo/ridge.toml",
         &format!(
-            "[project]\nname = \"demo\"\nversion = \"0.1.0\"\nkind = \"app\"\nentry = \"src/{module_name}.rg\"\n"
+            "[project]\nname = \"demo\"\nversion = \"0.1.0\"\nkind = \"app\"\nentry = \"src/{module_name}.ridge\"\n"
         ),
     );
-    write_file(&tw.path, &format!("apps/demo/src/{module_name}.rg"), source);
+    write_file(
+        &tw.path,
+        &format!("apps/demo/src/{module_name}.ridge"),
+        source,
+    );
     tw
 }
 
@@ -139,13 +147,13 @@ pub fn make_multi_member_workspace() -> TempWorkspace {
         "apps/api/ridge.toml",
         "[project]\nname = \"api\"\nversion = \"0.1.0\"\nkind = \"library\"\n",
     );
-    write_file(&tw.path, "apps/api/src/Api.rg", api_src);
+    write_file(&tw.path, "apps/api/src/Api.ridge", api_src);
     write_file(
         &tw.path,
         "apps/core/ridge.toml",
         "[project]\nname = \"core\"\nversion = \"0.1.0\"\nkind = \"library\"\n",
     );
-    write_file(&tw.path, "apps/core/src/Core.rg", core_src);
+    write_file(&tw.path, "apps/core/src/Core.ridge", core_src);
     tw
 }
 
@@ -163,9 +171,9 @@ pub fn make_mixed_workspace(app_source: &str) -> TempWorkspace {
     write_file(
         &tw.path,
         "apps/myapp/ridge.toml",
-        "[project]\nname = \"myapp\"\nversion = \"0.1.0\"\nkind = \"app\"\nentry = \"src/Main.rg\"\n",
+        "[project]\nname = \"myapp\"\nversion = \"0.1.0\"\nkind = \"app\"\nentry = \"src/Main.ridge\"\n",
     );
-    write_file(&tw.path, "apps/myapp/src/Main.rg", app_source);
+    write_file(&tw.path, "apps/myapp/src/Main.ridge", app_source);
     write_file(
         &tw.path,
         "apps/mylib/ridge.toml",
@@ -173,7 +181,7 @@ pub fn make_mixed_workspace(app_source: &str) -> TempWorkspace {
     );
     write_file(
         &tw.path,
-        "apps/mylib/src/Lib.rg",
+        "apps/mylib/src/Lib.ridge",
         "pub fn helper -> Int = 42\n",
     );
     tw
@@ -181,7 +189,7 @@ pub fn make_mixed_workspace(app_source: &str) -> TempWorkspace {
 
 /// Build an example workspace around one of the four canonical examples.
 ///
-/// The example is placed at `apps/demo/src/<name>.rg` with `kind = "app"`.
+/// The example is placed at `apps/demo/src/<name>.ridge` with `kind = "app"`.
 pub fn make_example_app_workspace(name: &str) -> TempWorkspace {
     let source = read_example(name);
     make_app_workspace(name, &source)

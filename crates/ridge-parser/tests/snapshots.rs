@@ -14,10 +14,10 @@
 
 use ridge_parser::parse_source;
 
-const LOG_ANALYZER: &str = include_str!("../../../examples/log_analyzer.rg");
-const URL_SHORTENER: &str = include_str!("../../../examples/url_shortener.rg");
-const GAME_OF_LIFE: &str = include_str!("../../../examples/game_of_life.rg");
-const RATE_LIMITER: &str = include_str!("../../../examples/rate_limiter.rg");
+const LOG_ANALYZER: &str = include_str!("../../../examples/log_analyzer.ridge");
+const URL_SHORTENER: &str = include_str!("../../../examples/url_shortener.ridge");
+const GAME_OF_LIFE: &str = include_str!("../../../examples/game_of_life.ridge");
+const RATE_LIMITER: &str = include_str!("../../../examples/rate_limiter.ridge");
 
 fn assert_example_parses_clean(name: &str, src: &str) {
     let result = parse_source(src);

@@ -120,7 +120,7 @@ export PATH="$PATH:/Applications/Visual Studio Code.app/Contents/Resources/app/b
 ```
 
 Restart VS Code after the install completes. The extension activates
-on any `.rg` file and spawns `ridge-lsp` from your PATH over stdio.
+on any `.ridge` file and spawns `ridge-lsp` from your PATH over stdio.
 See [`tools/vscode-ridge/README.md`](../tools/vscode-ridge/README.md)
 for the full extension docs.
 
@@ -156,7 +156,7 @@ members = ["."]
 name = "hello"
 version = "0.1.0"
 kind = "app"
-entry = "src/Main.rg"
+entry = "src/Main.ridge"
 
 [project.src]
 root = "src"
@@ -165,7 +165,7 @@ root = "src"
 allow = ["io"]
 ```
 
-**`src/Main.rg`** — the entry point.
+**`src/Main.ridge`** — the entry point.
 
 ```ridge
 import std.io as Io
@@ -195,13 +195,13 @@ code <repo-root>/tools/vscode-ridge-test
 Open the file:
 
 ```
-apps/g7fixture/src/Sample.rg
+apps/g7fixture/src/Sample.ridge
 ```
 
 Open the Problems panel (`Ctrl+Shift+M` / `Cmd+Shift+M`). Three
 diagnostics should appear within about 250 ms:
 
-| # | Line in `Sample.rg` | Expected diagnostic |
+| # | Line in `Sample.ridge` | Expected diagnostic |
 |---|---|---|
 | 1 | `import std.fs as Fs` | **R013 ForbidViolation** — workspace `forbid` rule blocks `std.fs` for this project |
 | 2 | `pub fn io needs_io () -> Int = 42` | **R016 CapabilityNotAllowed** — the project's `capabilities.allow` does not include `io` |
@@ -223,11 +223,11 @@ already enough to find and fix the underlying problem in the editor.
 
 ## Format a Ridge file
 
-Break the formatting of `hello/src/Main.rg` by adding stray whitespace
+Break the formatting of `hello/src/Main.ridge` by adding stray whitespace
 or indentation, then run:
 
 ```sh
-ridge fmt ./src/Main.rg
+ridge fmt ./src/Main.ridge
 ```
 
 Or to format the whole project:
@@ -247,7 +247,7 @@ it twice produces the same output as running it once.
 and runs it. Tests return `Result Unit Text`: `Ok ()` passes, `Err msg`
 fails with `msg` printed.
 
-Add a test to `hello/src/Main.rg`:
+Add a test to `hello/src/Main.ridge`:
 
 ```ridge
 pub fn test_greeting () -> Result Unit Text =
@@ -258,7 +258,7 @@ pub fn test_greeting () -> Result Unit Text =
 A note on `let`: Ridge's `let` is indentation-based and has no `in`
 keyword. The Haskell-style `let … in body` form does not parse. For
 the canonical multi-line shape, see
-[`crates/ridge-stdlib/stdlib/int.test.rg`](../crates/ridge-stdlib/stdlib/int.test.rg)
+[`crates/ridge-stdlib/stdlib/int.test.ridge`](../crates/ridge-stdlib/stdlib/int.test.ridge)
 around lines 20–27.
 
 Run:

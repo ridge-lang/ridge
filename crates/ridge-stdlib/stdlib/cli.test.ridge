@@ -1,5 +1,5 @@
 -- Private FFI bridges for std.cli test suite.
--- These replicate cli.rg FFI declarations in local scope because cross-module
+-- These replicate cli.ridge FFI declarations in local scope because cross-module
 -- calls are unsupported (T17+ deferred).
 @ffi("ridge_rt", "cli_args", 1)
 fn _cliArgs (_unit: Unit) -> List Text

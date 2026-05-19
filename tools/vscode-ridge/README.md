@@ -27,8 +27,8 @@ Reload VS Code after installation (`Developer: Reload Window`).
 
 ## What it does
 
-- Registers `.rg` files as the `ridge` language.
-- Spawns `ridge-lsp` from your `PATH` via stdio when a `.rg` file is opened.
+- Registers `.ridge` files as the `ridge` language.
+- Spawns `ridge-lsp` from your `PATH` via stdio when a `.ridge` file is opened.
 - Surfaces LSP diagnostics (errors, warnings) in the **Problems** panel (`Ctrl+Shift+M` / `Cmd+Shift+M`) as you edit.
 - Enables comment toggling with `--` (Ridge's line-comment marker) via `language-configuration.json`.
 - Enables bracket matching and auto-closing for `()`, `[]`, `{}`, and `""`.
@@ -45,7 +45,7 @@ Manual verification steps for the diagnostics round-trip:
 
 1. Build and sideload the extension per the instructions above.
 2. Open the repository root in VS Code.
-3. Open `examples/log_analyzer.rg`.
+3. Open `examples/log_analyzer.ridge`.
 4. Introduce a deliberate type error — for example, pass a string where an integer is expected.
 5. Save the file (`Ctrl+S` / `Cmd+S`).
 6. Open the **Problems** panel (`Ctrl+Shift+M` / `Cmd+Shift+M`).

@@ -1,6 +1,6 @@
 //! Phase 5 snapshot harness — 16 micro-fixture tests.
 //!
-//! Each fixture under `tests/fixtures/lower/*.rg` is run through the full
+//! Each fixture under `tests/fixtures/lower/*.ridge` is run through the full
 //! pipeline (discover → resolve → typecheck → lower) and the resulting
 //! `LoweredModule` is snapshot-asserted.
 
@@ -20,7 +20,7 @@ use std::path::Path;
 fn snapshot_fixture(fixture_name: &str) {
     let fixture_path = Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("tests/fixtures/lower")
-        .join(format!("{fixture_name}.rg"));
+        .join(format!("{fixture_name}.ridge"));
 
     let source = fs::read_to_string(&fixture_path)
         .unwrap_or_else(|e| panic!("could not read fixture {}: {e}", fixture_path.display()));

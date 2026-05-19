@@ -2,4 +2,4 @@
 name = "acme.app"
 version = "0.1.0"
 kind = "app"
-entry = "src/Main.rg"
+entry = "src/Main.ridge"

@@ -1,6 +1,6 @@
 //! T13 — `.core` text snapshots on the four Ridge examples.
 //!
-//! For each example under `examples/<name>.rg` (repo root), runs the full
+//! For each example under `examples/<name>.ridge` (repo root), runs the full
 //! pipeline (resolve → typecheck → lower → codegen → print) and snapshots
 //! the resulting Core Erlang text via `insta::assert_snapshot!`.
 //!
@@ -21,7 +21,7 @@ fn snapshot_example(name: &str) {
     let manifest_dir = env!("CARGO_MANIFEST_DIR");
     let example_path = Path::new(manifest_dir)
         .join("../../examples")
-        .join(format!("{name}.rg"));
+        .join(format!("{name}.ridge"));
 
     let source = fs::read_to_string(&example_path)
         .unwrap_or_else(|e| panic!("could not read example {}: {e}", example_path.display()));

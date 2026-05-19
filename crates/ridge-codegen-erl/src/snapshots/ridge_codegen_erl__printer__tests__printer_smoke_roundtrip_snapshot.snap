@@ -3,7 +3,7 @@ source: crates/ridge-codegen-erl/src/printer.rs
 expression: printed
 ---
 module 'ridge_smoke' ['main'/1, 'helper'/0]
-  attributes [{'file',['smoke.rg']}]
+  attributes [{'file',['smoke.ridge']}]
   -| []
 'main'/1 =
     ( fun (Args) ->

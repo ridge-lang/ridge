@@ -166,7 +166,7 @@ pub fn prelude_types(b: &BuiltinTyCons) -> (FxHashMap<String, Scheme>, FxHashMap
     tycons.insert("Handle".to_string(), b.handle);
     // Stdlib record types — pre-allocated in BuiltinTyCons (§3.11, §3.12, §3.16).
     // These are registered here so that `ast_type_to_ridge_type` can resolve
-    // `Error`, `Duration`, and `ProcOutput` in stdlib `.rg` type annotations.
+    // `Error`, `Duration`, and `ProcOutput` in stdlib `.ridge` type annotations.
     tycons.insert("Error".to_string(), b.error);
     tycons.insert("Duration".to_string(), b.duration);
     tycons.insert("ProcOutput".to_string(), b.proc_output);

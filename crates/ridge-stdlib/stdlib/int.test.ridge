@@ -1,7 +1,7 @@
 -- Private helpers for std.int test suite.
--- FFI bridges replicate int.rg declarations in local scope (T17+ cross-module
+-- FFI bridges replicate int.ridge declarations in local scope (T17+ cross-module
 -- typecheck deferred — see ridge-typecheck/src/stdlib_env.rs:87-92).
--- Pure-Ridge helpers replicate int.rg bodies for wrappingAdd/saturatingAdd.
+-- Pure-Ridge helpers replicate int.ridge bodies for wrappingAdd/saturatingAdd.
 @ffi("erlang", "integer_to_binary", 1)
 fn _toText (n: Int) -> Text
 

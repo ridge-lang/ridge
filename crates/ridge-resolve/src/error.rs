@@ -17,7 +17,7 @@
 //! ## `ManifestError` (M001..M020)
 //!
 //! Produced while parsing workspace / project manifest files (`ridge.toml`).
-//! Manifest errors do NOT carry a `Span` (manifests are not `.rg` source);
+//! Manifest errors do NOT carry a `Span` (manifests are not `.ridge` source);
 //! [`ManifestError::span`] always returns `None`.  Only [`ManifestError::code`]
 //! is guaranteed stable.
 
@@ -425,7 +425,7 @@ impl ResolveError {
 /// A manifest parsing or validation error produced while reading `ridge.toml`
 /// files.
 ///
-/// Manifest errors do **not** carry a [`Span`] (manifests are not `.rg` source
+/// Manifest errors do **not** carry a [`Span`] (manifests are not `.ridge` source
 /// files).  [`ManifestError::span`] always returns `None`.  Only
 /// [`ManifestError::code`] is guaranteed stable across releases.
 ///
@@ -653,7 +653,7 @@ impl ManifestError {
     }
 
     /// Return the source span associated with this error — always `None` for
-    /// manifest errors because manifests are not `.rg` source files.
+    /// manifest errors because manifests are not `.ridge` source files.
     #[must_use]
     pub const fn span(&self) -> Option<Span> {
         None

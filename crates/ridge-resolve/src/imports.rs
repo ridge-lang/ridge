@@ -1026,7 +1026,7 @@ mod tests {
         let td = TempDir::new().expect("tempdir");
         write_file(td.path(), "ridge.toml", &workspace_toml(&["libs/*"]));
         write_file(td.path(), "libs/proj/ridge.toml", &project_toml("proj"));
-        write_file(td.path(), "libs/proj/src/Main.rg", src);
+        write_file(td.path(), "libs/proj/src/Main.ridge", src);
 
         let disc = crate::discover_workspace(td.path());
         let mut ws = disc.graph.expect("workspace graph");
@@ -1151,8 +1151,8 @@ mod tests {
         let td = TempDir::new().expect("tempdir");
         write_file(td.path(), "ridge.toml", &workspace_toml(&["libs/*"]));
         write_file(td.path(), "libs/proj/ridge.toml", &project_toml("proj"));
-        write_file(td.path(), "libs/proj/src/A.rg", "import proj.B as B\n");
-        write_file(td.path(), "libs/proj/src/B.rg", "");
+        write_file(td.path(), "libs/proj/src/A.ridge", "import proj.B as B\n");
+        write_file(td.path(), "libs/proj/src/B.ridge", "");
 
         let disc = crate::discover_workspace(td.path());
         let mut ws = disc.graph.expect("graph");
@@ -1197,12 +1197,12 @@ mod tests {
         write_file(td.path(), "libs/proj/ridge.toml", &project_toml("proj"));
         write_file(
             td.path(),
-            "libs/proj/src/A.rg",
+            "libs/proj/src/A.ridge",
             "import proj.B (some_pub_fn)\n",
         );
         write_file(
             td.path(),
-            "libs/proj/src/B.rg",
+            "libs/proj/src/B.ridge",
             "pub fn some_pub_fn () = ()\n",
         );
 
@@ -1247,12 +1247,16 @@ mod tests {
         write_file(td.path(), "libs/proj_a/ridge.toml", &project_toml("proj_a"));
         write_file(
             td.path(),
-            "libs/proj_a/src/A.rg",
+            "libs/proj_a/src/A.ridge",
             "import proj_b.B (private_fn)\n",
         );
         write_file(td.path(), "libs/proj_b/ridge.toml", &project_toml("proj_b"));
         // `fn private_fn` with no `pub` → ProjectPrivate
-        write_file(td.path(), "libs/proj_b/src/B.rg", "fn private_fn () = ()\n");
+        write_file(
+            td.path(),
+            "libs/proj_b/src/B.ridge",
+            "fn private_fn () = ()\n",
+        );
 
         // proj_b has no exports — everything is internal by default.
         // Add a wildcard public export so R007 doesn't fire and we isolate R009.
@@ -1290,10 +1294,14 @@ mod tests {
         let td = TempDir::new().expect("tempdir");
         write_file(td.path(), "ridge.toml", &workspace_toml(&["libs/*"]));
         write_file(td.path(), "libs/proj_a/ridge.toml", &project_toml("proj_a"));
-        write_file(td.path(), "libs/proj_a/src/A.rg", "import proj_b.B as B\n");
+        write_file(
+            td.path(),
+            "libs/proj_a/src/A.ridge",
+            "import proj_b.B as B\n",
+        );
         // proj_b with no public exports at all.
         write_file(td.path(), "libs/proj_b/ridge.toml", &project_toml("proj_b"));
-        write_file(td.path(), "libs/proj_b/src/B.rg", "");
+        write_file(td.path(), "libs/proj_b/src/B.ridge", "");
 
         let disc = crate::discover_workspace(td.path());
         let mut ws = disc.graph.expect("graph");
@@ -1326,10 +1334,14 @@ mod tests {
         let td = TempDir::new().expect("tempdir");
         write_file(td.path(), "ridge.toml", &workspace_toml(&["libs/*"]));
         write_file(td.path(), "libs/proj_a/ridge.toml", &project_toml("proj_a"));
-        write_file(td.path(), "libs/proj_a/src/A.rg", "import proj_b.B as B\n");
+        write_file(
+            td.path(),
+            "libs/proj_a/src/A.ridge",
+            "import proj_b.B as B\n",
+        );
         let proj_b_toml = "[project]\nname = \"proj_b\"\nversion = \"0.1.0\"\nkind = \"library\"\n\n[project.exports]\npublic = [\"proj_b.**\"]\n";
         write_file(td.path(), "libs/proj_b/ridge.toml", proj_b_toml);
-        write_file(td.path(), "libs/proj_b/src/B.rg", "");
+        write_file(td.path(), "libs/proj_b/src/B.ridge", "");
 
         let disc = crate::discover_workspace(td.path());
         let mut ws = disc.graph.expect("graph");
@@ -1361,10 +1373,14 @@ mod tests {
         let td = TempDir::new().expect("tempdir");
         write_file(td.path(), "ridge.toml", &workspace_toml(&["libs/*"]));
         write_file(td.path(), "libs/proj_a/ridge.toml", &project_toml("acme.a"));
-        write_file(td.path(), "libs/proj_a/src/A.rg", "import acme.b.B as B\n");
+        write_file(
+            td.path(),
+            "libs/proj_a/src/A.ridge",
+            "import acme.b.B as B\n",
+        );
         let proj_b_toml = "[project]\nname = \"acme.b\"\nversion = \"0.1.0\"\nkind = \"library\"\n\n[project.exports]\ninternal = [\"acme.b.**\"]\n";
         write_file(td.path(), "libs/proj_b/ridge.toml", proj_b_toml);
-        write_file(td.path(), "libs/proj_b/src/B.rg", "");
+        write_file(td.path(), "libs/proj_b/src/B.ridge", "");
 
         let disc = crate::discover_workspace(td.path());
         let mut ws = disc.graph.expect("graph");
@@ -1434,8 +1450,8 @@ mod tests {
         let td = TempDir::new().expect("tempdir");
         write_file(td.path(), "ridge.toml", &workspace_toml(&["libs/*"]));
         write_file(td.path(), "libs/proj/ridge.toml", &project_toml("proj"));
-        write_file(td.path(), "libs/proj/src/A.rg", "import proj.B as B\n");
-        write_file(td.path(), "libs/proj/src/B.rg", "");
+        write_file(td.path(), "libs/proj/src/A.ridge", "import proj.B as B\n");
+        write_file(td.path(), "libs/proj/src/B.ridge", "");
 
         let disc = crate::discover_workspace(td.path());
         let mut ws = disc.graph.expect("graph");
@@ -1484,8 +1500,8 @@ mod tests {
         let td = TempDir::new().expect("tempdir");
         write_file(td.path(), "ridge.toml", &workspace_toml(&["libs/*"]));
         write_file(td.path(), "libs/proj/ridge.toml", &project_toml("proj"));
-        write_file(td.path(), "libs/proj/src/A.rg", "import proj.B as B\n");
-        write_file(td.path(), "libs/proj/src/B.rg", "import proj.A as A\n");
+        write_file(td.path(), "libs/proj/src/A.ridge", "import proj.B as B\n");
+        write_file(td.path(), "libs/proj/src/B.ridge", "import proj.A as A\n");
 
         let disc = crate::discover_workspace(td.path());
         let mut ws = disc.graph.expect("graph");
@@ -1518,7 +1534,7 @@ mod tests {
         write_file(td.path(), "ridge.toml", &workspace_toml(&["libs/*"]));
         let proj_toml = "[project]\nname = \"proj\"\nversion = \"0.1.0\"\nkind = \"library\"\n\n[dependencies]\nunknown = { workspace-member = \"nonexistent\" }\n";
         write_file(td.path(), "libs/proj/ridge.toml", proj_toml);
-        write_file(td.path(), "libs/proj/src/Main.rg", "");
+        write_file(td.path(), "libs/proj/src/Main.ridge", "");
 
         let disc = crate::discover_workspace(td.path());
         let mut ws = disc.graph.expect("graph");
@@ -1552,7 +1568,7 @@ mod tests {
         write_file(td.path(), "ridge.toml", &workspace_toml(&["libs/*"]));
         let proj_toml = "[project]\nname = \"proj\"\nversion = \"0.1.0\"\nkind = \"library\"\n\n[dependencies]\nmissing_ws_dep = { workspace = true }\n";
         write_file(td.path(), "libs/proj/ridge.toml", proj_toml);
-        write_file(td.path(), "libs/proj/src/Main.rg", "");
+        write_file(td.path(), "libs/proj/src/Main.ridge", "");
 
         let disc = crate::discover_workspace(td.path());
         let mut ws = disc.graph.expect("graph");
@@ -1585,7 +1601,7 @@ mod tests {
     #[test]
     fn t17_log_analyzer_imports_resolve_clean() {
         let example_src = format!(
-            "{}/../../examples/log_analyzer.rg",
+            "{}/../../examples/log_analyzer.ridge",
             env!("CARGO_MANIFEST_DIR")
         );
         let src = std::fs::read_to_string(&example_src)
@@ -1594,7 +1610,7 @@ mod tests {
         let td = TempDir::new().expect("tempdir");
         write_file(td.path(), "ridge.toml", &workspace_toml(&["apps/*"]));
         write_file(td.path(), "apps/demo/ridge.toml", &project_toml("demo"));
-        write_file(td.path(), "apps/demo/src/log_analyzer.rg", &src);
+        write_file(td.path(), "apps/demo/src/log_analyzer.ridge", &src);
 
         let disc = crate::discover_workspace(td.path());
         let mut ws = disc.graph.expect("graph");
@@ -1629,7 +1645,7 @@ mod tests {
     #[test]
     fn t18_url_shortener_imports_resolve_clean() {
         let example_src = format!(
-            "{}/../../examples/url_shortener.rg",
+            "{}/../../examples/url_shortener.ridge",
             env!("CARGO_MANIFEST_DIR")
         );
         let src = std::fs::read_to_string(&example_src)
@@ -1638,7 +1654,7 @@ mod tests {
         let td = TempDir::new().expect("tempdir");
         write_file(td.path(), "ridge.toml", &workspace_toml(&["apps/*"]));
         write_file(td.path(), "apps/demo/ridge.toml", &project_toml("demo"));
-        write_file(td.path(), "apps/demo/src/url_shortener.rg", &src);
+        write_file(td.path(), "apps/demo/src/url_shortener.ridge", &src);
 
         let disc = crate::discover_workspace(td.path());
         let mut ws = disc.graph.expect("graph");
@@ -1672,7 +1688,7 @@ mod tests {
     #[test]
     fn t19_game_of_life_imports_resolve_clean() {
         let example_src = format!(
-            "{}/../../examples/game_of_life.rg",
+            "{}/../../examples/game_of_life.ridge",
             env!("CARGO_MANIFEST_DIR")
         );
         let src = std::fs::read_to_string(&example_src)
@@ -1681,7 +1697,7 @@ mod tests {
         let td = TempDir::new().expect("tempdir");
         write_file(td.path(), "ridge.toml", &workspace_toml(&["apps/*"]));
         write_file(td.path(), "apps/demo/ridge.toml", &project_toml("demo"));
-        write_file(td.path(), "apps/demo/src/game_of_life.rg", &src);
+        write_file(td.path(), "apps/demo/src/game_of_life.ridge", &src);
 
         let disc = crate::discover_workspace(td.path());
         let mut ws = disc.graph.expect("graph");
@@ -2091,7 +2107,7 @@ mod tests {
     #[test]
     fn t20_rate_limiter_imports_resolve_clean() {
         let example_src = format!(
-            "{}/../../examples/rate_limiter.rg",
+            "{}/../../examples/rate_limiter.ridge",
             env!("CARGO_MANIFEST_DIR")
         );
         let src = std::fs::read_to_string(&example_src)
@@ -2100,7 +2116,7 @@ mod tests {
         let td = TempDir::new().expect("tempdir");
         write_file(td.path(), "ridge.toml", &workspace_toml(&["apps/*"]));
         write_file(td.path(), "apps/demo/ridge.toml", &project_toml("demo"));
-        write_file(td.path(), "apps/demo/src/rate_limiter.rg", &src);
+        write_file(td.path(), "apps/demo/src/rate_limiter.ridge", &src);
 
         let disc = crate::discover_workspace(td.path());
         let mut ws = disc.graph.expect("graph");
@@ -2185,10 +2201,14 @@ mod tests {
         // a typo `helpor` from B.  Distance(`helpor`, `helper`) = 2 (hit);
         // distance(`helpor`, `_helpr`) = 2 → would also hit if visible, but
         // visibility filtering must drop the underscored one.
-        write_file(td.path(), "libs/proj/src/A.rg", "import proj.B (helpor)\n");
         write_file(
             td.path(),
-            "libs/proj/src/B.rg",
+            "libs/proj/src/A.ridge",
+            "import proj.B (helpor)\n",
+        );
+        write_file(
+            td.path(),
+            "libs/proj/src/B.ridge",
             "pub fn helper x = x\nfn _helpr x = x\n",
         );
 

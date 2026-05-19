@@ -1,6 +1,6 @@
 -- Private helpers for std.float test suite.
--- FFI bridges replicate float.rg declarations in local scope (T17+ deferred).
--- Pure-Ridge helpers replicate float.rg bodies (floor, ceil).
+-- FFI bridges replicate float.ridge declarations in local scope (T17+ deferred).
+-- Pure-Ridge helpers replicate float.ridge bodies (floor, ceil).
 @ffi("ridge_rt", "float_to_text", 1)
 fn _toText (f: Float) -> Text
 

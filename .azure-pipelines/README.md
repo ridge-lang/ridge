@@ -20,7 +20,7 @@ The full pipeline (`../azure-pipelines.yml`) is composed of six stages:
 | 2 | `SlowCI_Stdlib` | scheduled (nightly) | `cargo test -p ridge-stdlib --features stdlib-e2e` on three platforms — gated to avoid burning per-PR minutes. |
 | 3 | `install_lint` | every PR | `shellcheck install.sh --severity=warning` + `Invoke-ScriptAnalyzer install.ps1 -EnableExit`.  Static lint layer. |
 | 4 | `install_dryrun_snapshot` | every PR | Diffs `install.sh --snapshot` and `install.ps1 -DryRun -Snapshot` against `tools/install/expected_dryrun.txt`.  Snapshot layer. |
-| 5 | `BuildTestMatrix` | every PR | On Linux + macOS + Windows agents, from zero: install toolchain, run `cargo test --workspace`, build release, exercise install script pinned to `RIDGE_REPO=https://github.com/ridge-lang/ridge`, assert install < 5 min, run smoke tests, exercise the four canonical examples through `ridge build/run/check/fmt --check`, run stdlib `.test.rg` slow-CI, run escript end-to-end.  Asserts G1, G2, G3, G6, G8 in §11.2. |
+| 5 | `BuildTestMatrix` | every PR | On Linux + macOS + Windows agents, from zero: install toolchain, run `cargo test --workspace`, build release, exercise install script pinned to `RIDGE_REPO=https://github.com/ridge-lang/ridge`, assert install < 5 min, run smoke tests, exercise the four canonical examples through `ridge build/run/check/fmt --check`, run stdlib `.test.ridge` slow-CI, run escript end-to-end.  Asserts G1, G2, G3, G6, G8 in §11.2. |
 | 6 | `ReleaseGate` | only on main branch | Azure DevOps Environment-gated deployment job.  Pauses the pipeline awaiting per-platform human approval; signed-off run-id is recorded in `tools/install/ATTESTATIONS.md`. |
 
 ## Toolchain decisions and rationale

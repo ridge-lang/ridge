@@ -29,7 +29,7 @@ bash -c "$(curl -fsSL https://raw.githubusercontent.com/ridge-lang/ridge/main/to
 & ([scriptblock]::Create((iwr -useb 'https://raw.githubusercontent.com/ridge-lang/ridge/main/tools/install/install.ps1').Content))
 ```
 
-To pin a specific Ridge release, set `RIDGE_VERSION=v0.2.0-rc5` before
+To pin a specific Ridge release, set `RIDGE_VERSION=v0.2.0` before
 running the installer. See the
 [tutorial](https://github.com/ridge-lang/ridge/blob/main/docs/tutorial.md)
 for the full install walkthrough.

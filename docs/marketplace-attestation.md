@@ -57,6 +57,51 @@ Then, in VS Code:
 Tick the corresponding row in the table above when all six steps pass on
 that platform.
 
+## Publish automation
+
+Releases are pushed to the Marketplace from
+[`.github/workflows/vscode-publish.yml`](../.github/workflows/vscode-publish.yml).
+
+- **Pull requests** that touch `tools/vscode-ridge/**` or the workflow itself
+  trigger the `package` job. The job installs dependencies via pnpm, runs
+  `pnpm run bundle`, packages the `.vsix`, and uploads it as a build
+  artifact. PRs never publish to the Marketplace.
+- **Manual publish** runs through `workflow_dispatch`. From the Actions tab
+  pick *VS Code extension*, click **Run workflow**, and tick `publish` to
+  `true`. The workflow re-packages the extension at the current `main` (or
+  the branch you dispatched against) and runs `vsce publish` against the
+  Marketplace. `pre-release` ticks the dispatch into the Marketplace
+  pre-release channel; leave it off for stable releases.
+
+### One-time setup of the `VSCE_PAT` secret
+
+The publish step needs a Personal Access Token issued from Azure DevOps
+under the publisher's account, with **Marketplace > Manage** scope on
+**All accessible organizations**. Store it in this repository under
+*Settings > Secrets and variables > Actions > New repository secret* as
+`VSCE_PAT`. The workflow exits with a clear error if the secret is
+missing, so the absence is loud rather than silent.
+
+The PAT used for the initial v0.2.0 publish was rotated immediately
+after that publish completed. PATs are scoped to a single human
+(creator), so the next rotation should be done by whoever is acting as
+the release manager at the time.
+
+### Release procedure
+
+1. Bump `tools/vscode-ridge/package.json` `version` and merge the change
+   to `main`. The Marketplace rejects duplicate version numbers, so this
+   bump is the gate against an accidental re-publish.
+2. Open the *VS Code extension* workflow on the Actions tab.
+3. **Run workflow** on `main`, tick `publish: true`, leave `pre-release`
+   as its default unless you intend to publish to that channel.
+4. Wait for the `publish` job to finish. The job prints the listing URL
+   in the log. Marketplace indexing can take a few minutes before
+   `code --install-extension ridge-lang.vscode-ridge --force` resolves
+   the new version.
+5. Update the per-platform attestation table above as you verify the
+   new version on each platform.
+
 ## Known limitations on this release
 
 - Capabilities (`io`, `fs`, `net`, ...) render as plain identifiers.

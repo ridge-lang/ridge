@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-05-20
+
+First public release. Ridge is installable on Linux, macOS, and Windows
+via signed prebuilt binaries; the VS Code extension is on the Marketplace
+as `ridge-lang.vscode-ridge`.
+
 ### Added
 
 - VS Code extension published to the Marketplace as
@@ -25,6 +31,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - **BREAKING:** Source-file extension renamed from `.rg` to `.ridge`. Resolves a registry collision with Rouge on GitHub Linguist and avoids ambiguous syntax highlighting on github.com. Existing projects must rename their `.rg` files to `.ridge` and update `entry = "src/Main.rg"` in `ridge.toml` to `entry = "src/Main.ridge"`; the CLI no longer recognises `.rg` files.
 - Install scripts no longer hardcode the expected version. Both `install.sh` and `install.ps1` now derive the version they validate against from `RIDGE_VERSION` (release-download path) or from `Cargo.toml` (cargo-install path). Future release cuts only need to bump `Cargo.toml` line 6 plus the resulting `Cargo.lock` regeneration; the eight hardcoded version strings the scripts previously carried are gone.
+
+### CI
+
+- `.github/workflows/vscode-publish.yml` packages the extension on every PR touching `tools/vscode-ridge/**` and publishes to the Marketplace via manual `workflow_dispatch` with a `publish` checkbox. The `VSCE_PAT` secret must be configured under repo settings before the first dispatched publish.
+- `install-smoke.yml` gains `pull_request` (paths-filtered to `tools/install/**`, `Cargo.toml`, `Cargo.lock`, and itself) and `workflow_dispatch` triggers so install-script changes validate on Linux, macOS, and Windows before merging instead of only at release-publish time.
 
 ## [0.2.0-rc4] - 2026-05-18
 
@@ -89,7 +100,8 @@ Initial public release candidate.
 - Standard library: `bool`, `cli`, `env`, `float`, `fs`, `int`, `io`, `json`, `list`, `map`, `net.http`, `option`, `proc`, `random`, `text`, `time`
 - Apache-2.0 licensed
 
-[Unreleased]: https://github.com/ridge-lang/ridge/compare/v0.2.0-rc4...HEAD
+[Unreleased]: https://github.com/ridge-lang/ridge/compare/v0.2.0...HEAD
+[0.2.0]: https://github.com/ridge-lang/ridge/compare/v0.2.0-rc4...v0.2.0
 [0.2.0-rc4]: https://github.com/ridge-lang/ridge/releases/tag/v0.2.0-rc4
 [0.2.0-rc3]: https://github.com/ridge-lang/ridge/releases/tag/v0.2.0-rc3
 [0.2.0-rc2]: https://github.com/ridge-lang/ridge/releases/tag/v0.2.0-rc2

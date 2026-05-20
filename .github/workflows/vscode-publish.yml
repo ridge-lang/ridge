@@ -52,7 +52,10 @@ jobs:
       - name: Setup Node
         uses: actions/setup-node@v4
         with:
-          node-version: '20'
+          # pnpm 11.1.1 (the packageManager pin in tools/vscode-ridge/package.json)
+          # requires Node >= 22.13; Node 20 fails to load with
+          # ERR_UNKNOWN_BUILTIN_MODULE: node:sqlite.
+          node-version: '22'
 
       - name: Activate pnpm via corepack
         shell: bash
@@ -104,7 +107,10 @@ jobs:
       - name: Setup Node
         uses: actions/setup-node@v4
         with:
-          node-version: '20'
+          # pnpm 11.1.1 (the packageManager pin in tools/vscode-ridge/package.json)
+          # requires Node >= 22.13; Node 20 fails to load with
+          # ERR_UNKNOWN_BUILTIN_MODULE: node:sqlite.
+          node-version: '22'
 
       - name: Activate pnpm via corepack
         shell: bash

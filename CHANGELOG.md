@@ -9,7 +9,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
-- VS Code extension prepared for Marketplace publication: hand-authored icon (128×128 PNG with SVG source committed alongside), `galleryBanner` and `keywords` metadata, `homepage` / `bugs` / `license` fields, and an `Apache-2.0` `LICENSE` shipped inside the extension package. Extension version bumped from `0.1.0` to `0.2.0` to track the language release. Extension README rewritten as a Marketplace listing.
+- VS Code extension published to the Marketplace as
+  [`ridge-lang.vscode-ridge`](https://marketplace.visualstudio.com/items?itemName=ridge-lang.vscode-ridge).
+  Install with `code --install-extension ridge-lang.vscode-ridge` on any
+  platform; first publish is v0.2.0. Three-platform install attestation
+  in [`docs/marketplace-attestation.md`](docs/marketplace-attestation.md).
+- VS Code extension prepared for Marketplace publication: Ridge brand
+  icon (128×128 PNG with SVG vector source traced from the master),
+  `galleryBanner` and `keywords` metadata, `homepage` / `bugs` / `license`
+  fields, and an `Apache-2.0` `LICENSE` shipped inside the extension
+  package. Extension version bumped from `0.1.0` to `0.2.0` to track the
+  language release. Extension README rewritten as a Marketplace listing.
 
 ### Changed
 

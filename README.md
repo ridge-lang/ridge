@@ -2,6 +2,7 @@
 
 [![CI](https://github.com/ridge-lang/ridge/actions/workflows/ci.yml/badge.svg)](https://github.com/ridge-lang/ridge/actions/workflows/ci.yml)
 [![Latest release](https://img.shields.io/github/v/release/ridge-lang/ridge?include_prereleases&label=latest)](https://github.com/ridge-lang/ridge/releases)
+[![VS Code Marketplace](https://img.shields.io/visual-studio-marketplace/v/ridge-lang.vscode-ridge?label=vscode)](https://marketplace.visualstudio.com/items?itemName=ridge-lang.vscode-ridge)
 [![License](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
 [![Rust](https://img.shields.io/badge/rust-1.88+-orange.svg)](https://www.rust-lang.org/)
 [![BEAM](https://img.shields.io/badge/BEAM-OTP%2026+-purple.svg)](https://www.erlang.org/)
@@ -77,8 +78,12 @@ is in [`docs/tutorial.md`](docs/tutorial.md).
 
 ## Editor support
 
-- **VS Code:** install the Ridge extension (TextMate grammar + LSP client).
-  Source under [`tools/vscode-ridge/`](tools/vscode-ridge/).
+- **VS Code:** install the [Ridge
+  extension](https://marketplace.visualstudio.com/items?itemName=ridge-lang.vscode-ridge)
+  from the Marketplace, or run `code --install-extension
+  ridge-lang.vscode-ridge`. It bundles a TextMate grammar and an LSP
+  client wired to `ridge-lsp`. Source under
+  [`tools/vscode-ridge/`](tools/vscode-ridge/).
 - Any LSP-capable editor can talk to the `ridge-lsp` binary directly.
 
 ## Documentation

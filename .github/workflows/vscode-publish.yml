@@ -1,0 +1,151 @@
+name: VS Code extension
+
+on:
+  pull_request:
+    paths:
+      - 'tools/vscode-ridge/**'
+      - '.github/workflows/vscode-publish.yml'
+  workflow_dispatch:
+    inputs:
+      publish:
+        description: 'Publish to the VS Code Marketplace (requires the VSCE_PAT secret).'
+        type: boolean
+        default: false
+      pre-release:
+        description: 'Publish to the Marketplace pre-release channel instead of the stable one.'
+        type: boolean
+        default: false
+
+# Serialize runs that target the same branch/tag so two dispatches against the
+# same ref do not race a Marketplace publish.
+concurrency:
+  group: vscode-publish-${{ github.head_ref || github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  package:
+    name: Bundle + package
+    runs-on: ubuntu-22.04
+    permissions:
+      contents: read
+    outputs:
+      version: ${{ steps.meta.outputs.version }}
+      vsix: ${{ steps.meta.outputs.vsix }}
+    defaults:
+      run:
+        working-directory: tools/vscode-ridge
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Read package metadata
+        id: meta
+        shell: bash
+        run: |
+          VERSION="$(node -p "require('./package.json').version")"
+          VSIX="vscode-ridge-${VERSION}.vsix"
+          echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
+          echo "vsix=${VSIX}" >> "$GITHUB_OUTPUT"
+          echo "Package version: ${VERSION}"
+          echo "Artifact name:   ${VSIX}"
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          # pnpm 11.1.1 (the packageManager pin in tools/vscode-ridge/package.json)
+          # requires Node >= 22.13; Node 20 fails to load with
+          # ERR_UNKNOWN_BUILTIN_MODULE: node:sqlite.
+          node-version: '22'
+
+      - name: Activate pnpm via corepack
+        shell: bash
+        run: |
+          corepack enable
+          corepack prepare pnpm@11.1.1 --activate
+          pnpm --version
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Bundle extension
+        run: pnpm run bundle
+
+      - name: Package .vsix
+        run: pnpm dlx @vscode/vsce package --no-dependencies --out "${{ steps.meta.outputs.vsix }}"
+
+      - name: Inspect .vsix
+        shell: bash
+        run: |
+          ls -la "${{ steps.meta.outputs.vsix }}"
+          pnpm dlx @vscode/vsce ls --no-dependencies
+
+      - name: Upload .vsix artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ steps.meta.outputs.vsix }}
+          path: tools/vscode-ridge/${{ steps.meta.outputs.vsix }}
+          if-no-files-found: error
+          retention-days: 30
+
+  publish:
+    name: Publish to VS Code Marketplace
+    needs: package
+    # Only publish when the workflow was dispatched manually with the
+    # `publish` input set to true. PRs and the default dispatch run produce
+    # the .vsix artifact but never push it to the Marketplace.
+    if: github.event_name == 'workflow_dispatch' && inputs.publish == true
+    runs-on: ubuntu-22.04
+    permissions:
+      contents: read
+    defaults:
+      run:
+        working-directory: tools/vscode-ridge
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          # pnpm 11.1.1 (the packageManager pin in tools/vscode-ridge/package.json)
+          # requires Node >= 22.13; Node 20 fails to load with
+          # ERR_UNKNOWN_BUILTIN_MODULE: node:sqlite.
+          node-version: '22'
+
+      - name: Activate pnpm via corepack
+        shell: bash
+        run: |
+          corepack enable
+          corepack prepare pnpm@11.1.1 --activate
+
+      - name: Download .vsix artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: ${{ needs.package.outputs.vsix }}
+          path: tools/vscode-ridge
+
+      - name: Verify VSCE_PAT is configured
+        shell: bash
+        env:
+          VSCE_PAT: ${{ secrets.VSCE_PAT }}
+        run: |
+          if [ -z "${VSCE_PAT}" ]; then
+            echo "::error::VSCE_PAT secret is not configured for this repository."
+            echo "Add it under Settings > Secrets and variables > Actions > New repository secret."
+            echo "The token must have Marketplace: Manage scope on All accessible organizations."
+            exit 1
+          fi
+          echo "VSCE_PAT is set (length: ${#VSCE_PAT})"
+
+      - name: Publish
+        env:
+          VSCE_PAT: ${{ secrets.VSCE_PAT }}
+        shell: bash
+        run: |
+          FLAGS=(--no-dependencies --packagePath "${{ needs.package.outputs.vsix }}")
+          if [ "${{ inputs.pre-release }}" = "true" ]; then
+            FLAGS+=(--pre-release)
+          fi
+          pnpm dlx @vscode/vsce publish "${FLAGS[@]}"
+          echo "Published ridge-lang.vscode-ridge v${{ needs.package.outputs.version }}"
+          echo "Listing: https://marketplace.visualstudio.com/items?itemName=ridge-lang.vscode-ridge"

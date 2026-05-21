@@ -2,7 +2,7 @@
   "name": "vscode-ridge",
   "displayName": "Ridge",
   "description": "Ridge language support for VS Code: syntax highlighting and diagnostics from ridge-lsp.",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "publisher": "ridge-lang",
   "icon": "images/icon.png",
   "license": "Apache-2.0",

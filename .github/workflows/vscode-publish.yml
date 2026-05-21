@@ -11,8 +11,12 @@ on:
         description: 'Publish to the VS Code Marketplace (requires the VSCE_PAT secret).'
         type: boolean
         default: false
+      publish-openvsx:
+        description: 'Publish to Open VSX (requires the OVSX_PAT secret).'
+        type: boolean
+        default: false
       pre-release:
-        description: 'Publish to the Marketplace pre-release channel instead of the stable one.'
+        description: 'Marketplace pre-release channel. Open VSX has no separate pre-release channel and ignores this flag.'
         type: boolean
         default: false
 
@@ -149,3 +153,61 @@ jobs:
           pnpm dlx @vscode/vsce publish "${FLAGS[@]}"
           echo "Published ridge-lang.vscode-ridge v${{ needs.package.outputs.version }}"
           echo "Listing: https://marketplace.visualstudio.com/items?itemName=ridge-lang.vscode-ridge"
+
+  publish-openvsx:
+    name: Publish to Open VSX
+    needs: package
+    # Only publish when dispatched manually with `publish-openvsx` set to true.
+    # PRs and the default dispatch produce the .vsix artifact but never push it.
+    if: github.event_name == 'workflow_dispatch' && inputs.publish-openvsx == true
+    runs-on: ubuntu-22.04
+    permissions:
+      contents: read
+    defaults:
+      run:
+        working-directory: tools/vscode-ridge
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          # pnpm 11.1.1 needs Node >= 22.13; Node 20 fails with
+          # ERR_UNKNOWN_BUILTIN_MODULE: node:sqlite.
+          node-version: '22'
+
+      - name: Activate pnpm via corepack
+        shell: bash
+        run: |
+          corepack enable
+          corepack prepare pnpm@11.1.1 --activate
+
+      - name: Download .vsix artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: ${{ needs.package.outputs.vsix }}
+          path: tools/vscode-ridge
+
+      - name: Verify OVSX_PAT is configured
+        shell: bash
+        env:
+          OVSX_PAT: ${{ secrets.OVSX_PAT }}
+        run: |
+          if [ -z "${OVSX_PAT}" ]; then
+            echo "::error::OVSX_PAT secret is not configured for this repository."
+            echo "Add it under Settings > Secrets and variables > Actions > New repository secret."
+            echo "Get the token from https://open-vsx.org/user-settings/tokens (sign in with GitHub, then create a new access token)."
+            echo "The ridge-lang namespace must be claimed first under https://open-vsx.org/user-settings/namespaces."
+            exit 1
+          fi
+          echo "OVSX_PAT is set (length: ${#OVSX_PAT})"
+
+      - name: Publish to Open VSX
+        env:
+          OVSX_PAT: ${{ secrets.OVSX_PAT }}
+        shell: bash
+        run: |
+          pnpm dlx ovsx publish "${{ needs.package.outputs.vsix }}"
+          echo "Published ridge-lang.vscode-ridge v${{ needs.package.outputs.version }} to Open VSX"
+          echo "Listing: https://open-vsx.org/extension/ridge-lang/vscode-ridge"

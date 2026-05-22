@@ -800,7 +800,7 @@ root = "{src_root}"
     // ── non-.ridge files are ignored; .hidden.ridge is ignored ────────────────────
 
     #[test]
-    fn t9_non_rg_files_and_hidden_files_ignored() {
+    fn t9_non_ridge_files_and_hidden_files_ignored() {
         let dir = TempDir::new().unwrap();
         write_file(dir.path(), "ridge.toml", &workspace_toml(&["libs/*"]));
         write_file(dir.path(), "libs/mylib/ridge.toml", &project_toml("demo"));

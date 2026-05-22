@@ -211,3 +211,41 @@ jobs:
           pnpm dlx ovsx publish "${{ needs.package.outputs.vsix }}"
           echo "Published ridge-lang.vscode-ridge v${{ needs.package.outputs.version }} to Open VSX"
           echo "Listing: https://open-vsx.org/extension/ridge-lang/vscode-ridge"
+
+  tag:
+    name: Tag vscode-v<version>
+    needs: [package, publish, publish-openvsx]
+    # Tag only when the .vsix was packaged AND at least one publish job
+    # actually pushed it. PR builds and dispatches with both publish
+    # flags unchecked produce no tag. `always()` is needed so this job
+    # runs even when one of the two publish jobs is skipped.
+    if: |
+      always() &&
+      needs.package.result == 'success' &&
+      (needs.publish.result == 'success' || needs.publish-openvsx.result == 'success')
+    runs-on: ubuntu-22.04
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Create and push tag
+        env:
+          VERSION: ${{ needs.package.outputs.version }}
+        shell: bash
+        run: |
+          TAG="vscode-v${VERSION}"
+
+          if git ls-remote --exit-code --tags origin "refs/tags/${TAG}" >/dev/null 2>&1; then
+            echo "Tag ${TAG} already exists on the remote; skipping."
+            exit 0
+          fi
+
+          git config user.name  "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+          git tag -a "${TAG}" -m "Ridge VS Code extension ${VERSION}"
+          git push origin "${TAG}"
+
+          echo "Pushed tag ${TAG} pointing at ${GITHUB_SHA}"

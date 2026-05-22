@@ -33,7 +33,7 @@ fn assert_std_list_built() {
     );
 }
 
-fn assert_list_rg_discovered() {
+fn assert_list_ridge_discovered() {
     let dir = stdlib_dir();
     let modules = discover(&dir);
     assert!(
@@ -46,155 +46,155 @@ fn assert_list_rg_discovered() {
 #[test]
 fn std_list_empty_compiles() {
     assert_std_list_built();
-    assert_list_rg_discovered();
+    assert_list_ridge_discovered();
 }
 
 #[test]
 fn std_list_length_compiles() {
     assert_std_list_built();
-    assert_list_rg_discovered();
+    assert_list_ridge_discovered();
 }
 
 #[test]
 fn std_list_is_empty_compiles() {
     assert_std_list_built();
-    assert_list_rg_discovered();
+    assert_list_ridge_discovered();
 }
 
 #[test]
 fn std_list_head_compiles() {
     assert_std_list_built();
-    assert_list_rg_discovered();
+    assert_list_ridge_discovered();
 }
 
 #[test]
 fn std_list_tail_compiles() {
     assert_std_list_built();
-    assert_list_rg_discovered();
+    assert_list_ridge_discovered();
 }
 
 #[test]
 fn std_list_map_compiles() {
     assert_std_list_built();
-    assert_list_rg_discovered();
+    assert_list_ridge_discovered();
 }
 
 #[test]
 fn std_list_filter_compiles() {
     assert_std_list_built();
-    assert_list_rg_discovered();
+    assert_list_ridge_discovered();
 }
 
 #[test]
 fn std_list_filter_map_compiles() {
     assert_std_list_built();
-    assert_list_rg_discovered();
+    assert_list_ridge_discovered();
 }
 
 #[test]
 fn std_list_fold_compiles() {
     assert_std_list_built();
-    assert_list_rg_discovered();
+    assert_list_ridge_discovered();
 }
 
 #[test]
 fn std_list_fold_right_compiles() {
     assert_std_list_built();
-    assert_list_rg_discovered();
+    assert_list_ridge_discovered();
 }
 
 #[test]
 fn std_list_reverse_compiles() {
     assert_std_list_built();
-    assert_list_rg_discovered();
+    assert_list_ridge_discovered();
 }
 
 #[test]
 fn std_list_sort_compiles() {
     assert_std_list_built();
-    assert_list_rg_discovered();
+    assert_list_ridge_discovered();
 }
 
 #[test]
 fn std_list_sort_by_compiles() {
     assert_std_list_built();
-    assert_list_rg_discovered();
+    assert_list_ridge_discovered();
 }
 
 #[test]
 fn std_list_take_compiles() {
     assert_std_list_built();
-    assert_list_rg_discovered();
+    assert_list_ridge_discovered();
 }
 
 #[test]
 fn std_list_drop_compiles() {
     assert_std_list_built();
-    assert_list_rg_discovered();
+    assert_list_ridge_discovered();
 }
 
 #[test]
 fn std_list_group_by_compiles() {
     assert_std_list_built();
-    assert_list_rg_discovered();
+    assert_list_ridge_discovered();
 }
 
 #[test]
 fn std_list_flat_map_compiles() {
     assert_std_list_built();
-    assert_list_rg_discovered();
+    assert_list_ridge_discovered();
 }
 
 #[test]
 fn std_list_zip_compiles() {
     assert_std_list_built();
-    assert_list_rg_discovered();
+    assert_list_ridge_discovered();
 }
 
 #[test]
 fn std_list_zip_with_compiles() {
     assert_std_list_built();
-    assert_list_rg_discovered();
+    assert_list_ridge_discovered();
 }
 
 #[test]
 fn std_list_contains_compiles() {
     assert_std_list_built();
-    assert_list_rg_discovered();
+    assert_list_ridge_discovered();
 }
 
 #[test]
 fn std_list_find_compiles() {
     assert_std_list_built();
-    assert_list_rg_discovered();
+    assert_list_ridge_discovered();
 }
 
 #[test]
 fn std_list_any_compiles() {
     assert_std_list_built();
-    assert_list_rg_discovered();
+    assert_list_ridge_discovered();
 }
 
 #[test]
 fn std_list_all_compiles() {
     assert_std_list_built();
-    assert_list_rg_discovered();
+    assert_list_ridge_discovered();
 }
 
 #[test]
 fn std_list_range_compiles() {
     assert_std_list_built();
-    assert_list_rg_discovered();
+    assert_list_ridge_discovered();
 }
 
 #[test]
 fn std_list_range_exclusive_compiles() {
     assert_std_list_built();
-    assert_list_rg_discovered();
+    assert_list_ridge_discovered();
 }
 
 #[test]
 fn std_list_for_each_compiles() {
     assert_std_list_built();
-    assert_list_rg_discovered();
+    assert_list_ridge_discovered();
 }

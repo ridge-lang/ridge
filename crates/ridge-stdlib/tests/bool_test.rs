@@ -33,7 +33,7 @@ fn assert_std_bool_built() {
     );
 }
 
-fn assert_bool_rg_discovered() {
+fn assert_bool_ridge_discovered() {
     let dir = stdlib_dir();
     let modules = discover(&dir);
     assert!(
@@ -46,23 +46,23 @@ fn assert_bool_rg_discovered() {
 #[test]
 fn std_bool_not_compiles() {
     assert_std_bool_built();
-    assert_bool_rg_discovered();
+    assert_bool_ridge_discovered();
 }
 
 #[test]
 fn std_bool_and_compiles() {
     assert_std_bool_built();
-    assert_bool_rg_discovered();
+    assert_bool_ridge_discovered();
 }
 
 #[test]
 fn std_bool_or_compiles() {
     assert_std_bool_built();
-    assert_bool_rg_discovered();
+    assert_bool_ridge_discovered();
 }
 
 #[test]
 fn std_bool_to_text_compiles() {
     assert_std_bool_built();
-    assert_bool_rg_discovered();
+    assert_bool_ridge_discovered();
 }

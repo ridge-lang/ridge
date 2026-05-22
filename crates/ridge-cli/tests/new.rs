@@ -56,15 +56,15 @@ fn new_happy_path() {
     );
 
     // src/Main.ridge exists and contains "my-app".
-    let main_rg_path = project_dir.join("src").join("Main.ridge");
-    assert!(main_rg_path.exists(), "src/Main.ridge not created");
-    let main_rg_content = fs::read_to_string(&main_rg_path).expect("read Main.ridge");
+    let main_ridge_path = project_dir.join("src").join("Main.ridge");
+    assert!(main_ridge_path.exists(), "src/Main.ridge not created");
+    let main_ridge_content = fs::read_to_string(&main_ridge_path).expect("read Main.ridge");
     assert!(
-        main_rg_content.contains("my-app"),
-        "Main.ridge does not contain project name 'my-app': {main_rg_content}"
+        main_ridge_content.contains("my-app"),
+        "Main.ridge does not contain project name 'my-app': {main_ridge_content}"
     );
     assert!(
-        !main_rg_content.contains("{NAME}"),
+        !main_ridge_content.contains("{NAME}"),
         "Main.ridge still contains unreplaced {{NAME}} placeholder"
     );
 

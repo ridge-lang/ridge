@@ -33,7 +33,7 @@ fn assert_std_map_built() {
     );
 }
 
-fn assert_map_rg_discovered() {
+fn assert_map_ridge_discovered() {
     let dir = stdlib_dir();
     let modules = discover(&dir);
     assert!(
@@ -46,83 +46,83 @@ fn assert_map_rg_discovered() {
 #[test]
 fn std_map_empty_compiles() {
     assert_std_map_built();
-    assert_map_rg_discovered();
+    assert_map_ridge_discovered();
 }
 
 #[test]
 fn std_map_from_list_compiles() {
     assert_std_map_built();
-    assert_map_rg_discovered();
+    assert_map_ridge_discovered();
 }
 
 #[test]
 fn std_map_to_list_compiles() {
     assert_std_map_built();
-    assert_map_rg_discovered();
+    assert_map_ridge_discovered();
 }
 
 #[test]
 fn std_map_insert_compiles() {
     assert_std_map_built();
-    assert_map_rg_discovered();
+    assert_map_ridge_discovered();
 }
 
 #[test]
 fn std_map_remove_compiles() {
     assert_std_map_built();
-    assert_map_rg_discovered();
+    assert_map_ridge_discovered();
 }
 
 #[test]
 fn std_map_get_compiles() {
     assert_std_map_built();
-    assert_map_rg_discovered();
+    assert_map_ridge_discovered();
 }
 
 #[test]
 fn std_map_contains_compiles() {
     assert_std_map_built();
-    assert_map_rg_discovered();
+    assert_map_ridge_discovered();
 }
 
 #[test]
 fn std_map_keys_compiles() {
     assert_std_map_built();
-    assert_map_rg_discovered();
+    assert_map_ridge_discovered();
 }
 
 #[test]
 fn std_map_values_compiles() {
     assert_std_map_built();
-    assert_map_rg_discovered();
+    assert_map_ridge_discovered();
 }
 
 #[test]
 fn std_map_map_compiles() {
     assert_std_map_built();
-    assert_map_rg_discovered();
+    assert_map_ridge_discovered();
 }
 
 #[test]
 fn std_map_filter_compiles() {
     assert_std_map_built();
-    assert_map_rg_discovered();
+    assert_map_ridge_discovered();
 }
 
 #[test]
 fn std_map_size_compiles() {
     assert_std_map_built();
-    assert_map_rg_discovered();
+    assert_map_ridge_discovered();
 }
 
 #[test]
 fn std_map_merge_compiles() {
     assert_std_map_built();
-    assert_map_rg_discovered();
+    assert_map_ridge_discovered();
 }
 
 #[test]
 fn std_map_update_compiles() {
     assert_std_map_built();
-    assert_map_rg_discovered();
+    assert_map_ridge_discovered();
 }

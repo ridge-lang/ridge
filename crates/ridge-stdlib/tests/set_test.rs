@@ -33,7 +33,7 @@ fn assert_std_set_built() {
     );
 }
 
-fn assert_set_rg_discovered() {
+fn assert_set_ridge_discovered() {
     let dir = stdlib_dir();
     let modules = discover(&dir);
     assert!(
@@ -46,59 +46,59 @@ fn assert_set_rg_discovered() {
 #[test]
 fn std_set_empty_compiles() {
     assert_std_set_built();
-    assert_set_rg_discovered();
+    assert_set_ridge_discovered();
 }
 
 #[test]
 fn std_set_from_list_compiles() {
     assert_std_set_built();
-    assert_set_rg_discovered();
+    assert_set_ridge_discovered();
 }
 
 #[test]
 fn std_set_to_list_compiles() {
     assert_std_set_built();
-    assert_set_rg_discovered();
+    assert_set_ridge_discovered();
 }
 
 #[test]
 fn std_set_insert_compiles() {
     assert_std_set_built();
-    assert_set_rg_discovered();
+    assert_set_ridge_discovered();
 }
 
 #[test]
 fn std_set_remove_compiles() {
     assert_std_set_built();
-    assert_set_rg_discovered();
+    assert_set_ridge_discovered();
 }
 
 #[test]
 fn std_set_contains_compiles() {
     assert_std_set_built();
-    assert_set_rg_discovered();
+    assert_set_ridge_discovered();
 }
 
 #[test]
 fn std_set_union_compiles() {
     assert_std_set_built();
-    assert_set_rg_discovered();
+    assert_set_ridge_discovered();
 }
 
 #[test]
 fn std_set_intersect_compiles() {
     assert_std_set_built();
-    assert_set_rg_discovered();
+    assert_set_ridge_discovered();
 }
 
 #[test]
 fn std_set_difference_compiles() {
     assert_std_set_built();
-    assert_set_rg_discovered();
+    assert_set_ridge_discovered();
 }
 
 #[test]
 fn std_set_size_compiles() {
     assert_std_set_built();
-    assert_set_rg_discovered();
+    assert_set_ridge_discovered();
 }

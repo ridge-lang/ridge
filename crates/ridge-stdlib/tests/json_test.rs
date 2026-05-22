@@ -38,7 +38,7 @@ fn assert_std_json_built() {
     );
 }
 
-fn assert_json_rg_discovered() {
+fn assert_json_ridge_discovered() {
     let dir = stdlib_dir();
     let modules = discover(&dir);
     assert!(
@@ -53,31 +53,31 @@ fn assert_json_rg_discovered() {
 #[test]
 fn std_json_encode_compiles() {
     assert_std_json_built();
-    assert_json_rg_discovered();
+    assert_json_ridge_discovered();
 }
 
 #[test]
 fn std_json_decode_compiles() {
     assert_std_json_built();
-    assert_json_rg_discovered();
+    assert_json_ridge_discovered();
 }
 
 #[test]
 fn std_json_encode_int_compiles() {
     assert_std_json_built();
-    assert_json_rg_discovered();
+    assert_json_ridge_discovered();
 }
 
 #[test]
 fn std_json_encode_bool_compiles() {
     assert_std_json_built();
-    assert_json_rg_discovered();
+    assert_json_ridge_discovered();
 }
 
 #[test]
 fn std_json_encode_text_compiles() {
     assert_std_json_built();
-    assert_json_rg_discovered();
+    assert_json_ridge_discovered();
 }
 
 // ── Parametric round-trip tests — one per JsonValue arm (§3.17 / §3.19) ──────
@@ -90,41 +90,41 @@ fn std_json_encode_text_compiles() {
 #[test]
 fn std_json_jnull_arm_compiles() {
     assert_std_json_built();
-    assert_json_rg_discovered();
+    assert_json_ridge_discovered();
 }
 
 #[test]
 fn std_json_jbool_arm_compiles() {
     assert_std_json_built();
-    assert_json_rg_discovered();
+    assert_json_ridge_discovered();
 }
 
 #[test]
 fn std_json_jint_arm_compiles() {
     assert_std_json_built();
-    assert_json_rg_discovered();
+    assert_json_ridge_discovered();
 }
 
 #[test]
 fn std_json_jfloat_arm_compiles() {
     assert_std_json_built();
-    assert_json_rg_discovered();
+    assert_json_ridge_discovered();
 }
 
 #[test]
 fn std_json_jtext_arm_compiles() {
     assert_std_json_built();
-    assert_json_rg_discovered();
+    assert_json_ridge_discovered();
 }
 
 #[test]
 fn std_json_jlist_arm_compiles() {
     assert_std_json_built();
-    assert_json_rg_discovered();
+    assert_json_ridge_discovered();
 }
 
 #[test]
 fn std_json_jobject_arm_compiles() {
     assert_std_json_built();
-    assert_json_rg_discovered();
+    assert_json_ridge_discovered();
 }

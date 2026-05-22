@@ -33,7 +33,7 @@ fn assert_std_random_built() {
     );
 }
 
-fn assert_random_rg_discovered() {
+fn assert_random_ridge_discovered() {
     let dir = stdlib_dir();
     let modules = discover(&dir);
     assert!(
@@ -46,29 +46,29 @@ fn assert_random_rg_discovered() {
 #[test]
 fn std_random_int_compiles() {
     assert_std_random_built();
-    assert_random_rg_discovered();
+    assert_random_ridge_discovered();
 }
 
 #[test]
 fn std_random_float_compiles() {
     assert_std_random_built();
-    assert_random_rg_discovered();
+    assert_random_ridge_discovered();
 }
 
 #[test]
 fn std_random_alphanumeric_compiles() {
     assert_std_random_built();
-    assert_random_rg_discovered();
+    assert_random_ridge_discovered();
 }
 
 #[test]
 fn std_random_choice_compiles() {
     assert_std_random_built();
-    assert_random_rg_discovered();
+    assert_random_ridge_discovered();
 }
 
 #[test]
 fn std_random_seed_compiles() {
     assert_std_random_built();
-    assert_random_rg_discovered();
+    assert_random_ridge_discovered();
 }

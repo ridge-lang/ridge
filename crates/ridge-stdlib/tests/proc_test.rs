@@ -33,7 +33,7 @@ fn assert_std_proc_built() {
     );
 }
 
-fn assert_proc_rg_discovered() {
+fn assert_proc_ridge_discovered() {
     let dir = stdlib_dir();
     let modules = discover(&dir);
     assert!(
@@ -46,5 +46,5 @@ fn assert_proc_rg_discovered() {
 #[test]
 fn std_proc_run_compiles() {
     assert_std_proc_built();
-    assert_proc_rg_discovered();
+    assert_proc_ridge_discovered();
 }

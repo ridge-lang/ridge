@@ -87,6 +87,10 @@ pub fn compile_workspace(options: CompileOptions) -> Result<CompileArtefacts, Co
     // ── 2. Pipeline: discover → resolve → typecheck → lower ──────────────────
     let disc = discover_workspace(&options.workspace_root);
 
+    // Stash discovery-phase resolve errors (e.g. R023 LegacyRgExtension)
+    // before consuming the struct.
+    let disc_resolve_errors = disc.resolve_errors;
+
     // Surface R001 (no workspace manifest) as C001.
     let ws_graph = disc.graph.ok_or_else(|| CompileError::NoWorkspaceRoot {
         path: options.workspace_root.clone(),
@@ -221,6 +225,13 @@ pub fn compile_workspace(options: CompileOptions) -> Result<CompileArtefacts, Co
     // Build source cache from the workspace graph — used both here and
     // returned to the caller for rendering.
     let sources = WorkspaceSourceCache::from_workspace(&resolved.graph);
+
+    // Discovery-phase errors (e.g. R023 for legacy .rg files) have no module
+    // source location; use the unknown source placeholder.
+    for e in &disc_resolve_errors {
+        let sid = WorkspaceSourceCache::unknown_source_id();
+        diagnostics.push(Diagnostic::from_resolve(e, sid));
+    }
 
     // Surface lex + parse errors first — they are upstream of every other
     // pass.  Missing them silently meant `ridge build` would compile "0

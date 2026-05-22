@@ -94,6 +94,14 @@ pub enum CliError {
         count: usize,
     },
 
+    /// `C105` — `ridge fmt` encountered a file with the legacy `.rg` extension.
+    ///
+    /// Sources must end in `.ridge`. Rename the file and update `ridge.toml`.
+    LegacyRgFile {
+        /// The path of the legacy source file.
+        path: std::path::PathBuf,
+    },
+
     /// `C301` — a `pub fn test_*` function has arity != 0.
     ///
     /// Test functions must take zero parameters.
@@ -188,6 +196,18 @@ impl fmt::Display for CliError {
                 f,
                 "C104 FmtCheckFailed: {count} file(s) would be reformatted"
             ),
+            Self::LegacyRgFile { path } => {
+                let ridge_path = path.with_extension("ridge");
+                write!(
+                    f,
+                    "C105 LegacyRgFile: '{}' uses the legacy `.rg` extension; \
+                     rename it to `.ridge` (e.g. `git mv {} {}`) \
+                     and update the `entry` field in `ridge.toml` if needed",
+                    path.display(),
+                    path.display(),
+                    ridge_path.display(),
+                )
+            }
             Self::TestArityInvalid { qualified_name } => write!(
                 f,
                 "C301 TestArityInvalid: '{qualified_name}' must have zero parameters; \

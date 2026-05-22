@@ -68,10 +68,13 @@ fn collect_rg_files(dir: &Path, out: &mut Vec<PathBuf>) -> Result<(), CliError> 
             source: e.to_string(),
         })?;
 
+        let ext = path.extension();
         if ft.is_dir() {
             collect_rg_files(&path, out)?;
-        } else if ft.is_file() && path.extension().is_some_and(|ext| ext == "ridge") {
+        } else if ft.is_file() && ext.is_some_and(|e| e == "ridge") {
             out.push(path);
+        } else if ft.is_file() && ext.is_some_and(|e| e == "rg") {
+            return Err(CliError::LegacyRgFile { path });
         }
     }
     Ok(())

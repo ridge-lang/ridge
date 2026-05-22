@@ -1,11 +1,11 @@
-# tools/vscode-ridge-test/apps/g7fixture/ridge.toml — project manifest for
+# tools/vscode-ridge-test/apps/vscode-diag-fixture/ridge.toml — project manifest for
 # the diagnostics fixture.
 #
 # The empty `capabilities.allow = []` whitelist makes any function-level
 # capability (`io`, `net`, …) trigger R016 CapabilityNotAllowed.
 
 [project]
-name    = "g7fixture"
+name    = "vscode-diag-fixture"
 version = "0.1.0"
 kind    = "library"
 

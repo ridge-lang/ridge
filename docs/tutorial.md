@@ -195,7 +195,7 @@ code <repo-root>/tools/vscode-ridge-test
 Open the file:
 
 ```
-apps/g7fixture/src/Sample.ridge
+apps/vscode-diag-fixture/src/Sample.ridge
 ```
 
 Open the Problems panel (`Ctrl+Shift+M` / `Cmd+Shift+M`). Three

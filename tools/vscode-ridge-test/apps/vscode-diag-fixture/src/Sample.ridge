@@ -1,4 +1,4 @@
--- tools/vscode-ridge-test/apps/g7fixture/src/Sample.ridge
+-- tools/vscode-ridge-test/apps/vscode-diag-fixture/src/Sample.ridge
 --
 -- Manual VS Code diagnostics fixture.  Open this file in VS Code with the
 -- Ridge extension installed and verify three diagnostics appear in the
@@ -6,7 +6,7 @@
 --
 -- DIAGNOSTIC #1 — R013 ForbidViolation
 -- ------------------------------------
--- The workspace `forbid` rule (`g7fixture.** -> std.fs`) blocks this import.
+-- The workspace `forbid` rule (`vscode-diag-fixture.** -> std.fs`) blocks this import.
 -- Expected diagnostic on the line below: R013 ForbidViolation pointing at
 -- `std.fs`.
 import std.fs as Fs

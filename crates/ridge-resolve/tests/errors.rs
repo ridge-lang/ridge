@@ -547,6 +547,82 @@ fn r016_capability_not_allowed_by_project() {
     drop(td);
 }
 
+/// `R023 LegacyRgExtension` — a project's `src/` directory contains a file
+/// with the old `.rg` extension.  Discovery must emit R023 for each such file.
+#[test]
+fn r023_legacy_rg_extension() {
+    let td = TempDir::new().unwrap();
+    write_file(
+        td.path(),
+        "ridge.toml",
+        "[workspace]\nname = \"ws\"\nversion = \"0.1.0\"\nmembers = [\"apps/*\"]\n",
+    );
+    write_file(
+        td.path(),
+        "apps/demo/ridge.toml",
+        "[project]\nname = \"demo\"\nversion = \"0.1.0\"\nkind = \"library\"\n",
+    );
+    // Place a legacy `.rg` file — discovery should reject it with R023.
+    write_file(td.path(), "apps/demo/src/Main.rg", "fn main = ()\n");
+
+    let errors = run_pipeline(&td);
+    assert!(
+        errors.iter().any(|e| e.code() == "R023"),
+        "expected R023; errors: {errors:?}"
+    );
+    drop(td);
+}
+
+/// `R023 LegacyRgExtension` — one diagnostic per `.rg` file.
+#[test]
+fn r023_one_diagnostic_per_legacy_file() {
+    let td = TempDir::new().unwrap();
+    write_file(
+        td.path(),
+        "ridge.toml",
+        "[workspace]\nname = \"ws\"\nversion = \"0.1.0\"\nmembers = [\"apps/*\"]\n",
+    );
+    write_file(
+        td.path(),
+        "apps/demo/ridge.toml",
+        "[project]\nname = \"demo\"\nversion = \"0.1.0\"\nkind = \"library\"\n",
+    );
+    write_file(td.path(), "apps/demo/src/A.rg", "fn a = ()\n");
+    write_file(td.path(), "apps/demo/src/B.rg", "fn b = ()\n");
+
+    let errors = run_pipeline(&td);
+    let r023_count = errors.iter().filter(|e| e.code() == "R023").count();
+    assert_eq!(
+        r023_count, 2,
+        "expected exactly 2 R023 errors; errors: {errors:?}"
+    );
+    drop(td);
+}
+
+/// `R023` is not emitted for `.ridge` files — only for `.rg`.
+#[test]
+fn r023_not_emitted_for_ridge_files() {
+    let td = TempDir::new().unwrap();
+    write_file(
+        td.path(),
+        "ridge.toml",
+        "[workspace]\nname = \"ws\"\nversion = \"0.1.0\"\nmembers = [\"apps/*\"]\n",
+    );
+    write_file(
+        td.path(),
+        "apps/demo/ridge.toml",
+        "[project]\nname = \"demo\"\nversion = \"0.1.0\"\nkind = \"library\"\n",
+    );
+    write_file(td.path(), "apps/demo/src/Main.ridge", "fn main = ()\n");
+
+    let errors = run_pipeline(&td);
+    assert!(
+        errors.iter().all(|e| e.code() != "R023"),
+        "unexpected R023 for a .ridge file; errors: {errors:?}"
+    );
+    drop(td);
+}
+
 // ── parse_expects unit tests ─────────────────────────────────────────────────
 
 #[cfg(test)]

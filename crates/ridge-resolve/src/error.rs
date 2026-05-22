@@ -4,7 +4,7 @@
 //! `ariadne` renderer) keys on these strings.  Never renumber an assigned code;
 //! only append new ones at the end.
 //!
-//! ## `ResolveError` (R001..R021, R999; R018 reserved)
+//! ## `ResolveError` (R001..R023, R999; R018 reserved)
 //!
 //! Produced during the name-resolution pass over source files.  Every variant
 //! carries a [`Span`] pointing to the offending source location and a stable
@@ -318,6 +318,23 @@ pub enum ResolveError {
         span: Span,
     },
 
+    /// R023 — a source file with the legacy `.rg` extension was found.
+    ///
+    /// Ridge no longer recognises `.rg`; sources must end in `.ridge`.
+    /// Rename the file with `git mv` and update the `entry` field in `ridge.toml`.
+    #[error(
+        "`{}` uses the legacy `.rg` extension — \
+         rename it to `.ridge` and update the `entry` field in `ridge.toml` if needed \
+         (e.g. `git mv {} {}`)",
+        path.display(),
+        path.display(),
+        path.with_extension("ridge").display()
+    )]
+    LegacyRgExtension {
+        /// The file path of the legacy source file.
+        path: PathBuf,
+    },
+
     /// R999 — two AST nodes were assigned the same `NodeId` (signals a
     /// compiler bug, not a user error).
     #[error("internal error: NodeId collision in `{node_kind}`")]
@@ -358,6 +375,7 @@ impl ResolveError {
             Self::CapabilityListOnWrongDecl { .. } => "R020",
             Self::ActorStateMissingDefaultOrInit { .. } => "R021",
             Self::FfiOutsideStdlib { .. } => "R022",
+            Self::LegacyRgExtension { .. } => "R023",
             Self::InternalNodeIdCollision { .. } => "R999",
         }
     }
@@ -379,12 +397,15 @@ impl ResolveError {
     /// Return the source span associated with this error.
     ///
     /// Every `ResolveError` variant carries a span.  For
-    /// [`ResolveError::MissingWorkspaceManifest`], which has no source
+    /// [`ResolveError::MissingWorkspaceManifest`] and
+    /// [`ResolveError::LegacyRgExtension`], which have no meaningful source
     /// location, a zero-length sentinel span at byte 0 is returned.
     #[must_use]
     pub const fn span(&self) -> Span {
         match self {
-            Self::MissingWorkspaceManifest { .. } => Span::point(0),
+            Self::MissingWorkspaceManifest { .. } | Self::LegacyRgExtension { .. } => {
+                Span::point(0)
+            }
             Self::DuplicateModule { second: span, .. }
             | Self::SelfImport { span }
             | Self::UnresolvedImportPath { span, .. }
@@ -738,6 +759,22 @@ mod tests {
             span: sp(),
         };
         assert_eq!(err.code(), "R015");
+    }
+
+    #[test]
+    fn r023_code_is_stable() {
+        let err = ResolveError::LegacyRgExtension {
+            path: "src/Main.rg".into(),
+        };
+        assert_eq!(err.code(), "R023");
+    }
+
+    #[test]
+    fn r023_severity_is_error() {
+        let err = ResolveError::LegacyRgExtension {
+            path: "src/Main.rg".into(),
+        };
+        assert_eq!(err.severity(), Severity::Error);
     }
 
     #[test]

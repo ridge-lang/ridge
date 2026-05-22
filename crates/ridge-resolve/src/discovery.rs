@@ -10,6 +10,7 @@
 //! 4. Detect duplicate project names — M010.
 //! 5. For each project, walk `src_root` recursively.  For each `.ridge` file,
 //!    derive the fully-qualified module name and build a [`ModuleMetadata`].
+//!    Any `.rg` file (legacy extension) emits R023 and is not processed.
 //! 6. Sort all modules by `fully_qualified_name` for snapshot stability.
 //! 7. Detect duplicate FQNs across all projects — R002.
 //!
@@ -156,6 +157,7 @@ pub fn discover_workspace(root: &Path) -> DiscoveryResult {
             project.id,
             &mut next_module_id,
             &mut modules,
+            &mut resolve_errors,
         );
     }
 
@@ -381,6 +383,9 @@ fn check_path_dependency_escapes(
 /// Hidden files and directories (names starting with `.`) are skipped.
 /// Symlinks are followed; cycle detection is performed via a seen-set of
 /// canonicalized directory paths, with a hard depth limit of 64 as backup.
+///
+/// Files with the legacy `.rg` extension produce an R023 diagnostic in
+/// `errors` rather than being silently ignored.
 fn walk_src_root(
     src_root: &Path,
     dir: &Path,
@@ -388,6 +393,7 @@ fn walk_src_root(
     project_id: ProjectId,
     next_id: &mut u32,
     modules: &mut Vec<ModuleMetadata>,
+    errors: &mut Vec<ResolveError>,
 ) {
     walk_src_root_inner(
         src_root,
@@ -396,6 +402,7 @@ fn walk_src_root(
         project_id,
         next_id,
         modules,
+        errors,
         &mut HashSet::new(),
         0,
     );
@@ -416,6 +423,7 @@ fn walk_src_root_inner(
     project_id: ProjectId,
     next_id: &mut u32,
     modules: &mut Vec<ModuleMetadata>,
+    errors: &mut Vec<ResolveError>,
     seen: &mut HashSet<PathBuf>,
     depth: u32,
 ) {
@@ -461,12 +469,14 @@ fn walk_src_root_inner(
                 project_id,
                 next_id,
                 modules,
+                errors,
                 seen,
                 depth + 1,
             );
         } else if file_type.is_file() || (file_type.is_symlink() && path.is_file()) {
-            // Only process `.ridge` files (case-sensitive per R003).
-            if path.extension().is_some_and(|ext| ext == "ridge") {
+            let ext = path.extension();
+            if ext.is_some_and(|e| e == "ridge") {
+                // Only process `.ridge` files (case-sensitive per R003).
                 let fqn = derive_module_fqn(project_name, src_root, &path);
                 let id = ModuleId(*next_id);
                 *next_id += 1;
@@ -478,6 +488,9 @@ fn walk_src_root_inner(
                     // Placeholder span; the module-graph pass will set 0..eof after reading source.
                     span_within_file: Span::point(0),
                 });
+            } else if ext.is_some_and(|e| e == "rg") {
+                // Legacy extension — emit R023 so the user knows to rename the file.
+                errors.push(ResolveError::LegacyRgExtension { path });
             }
         }
     }

@@ -76,6 +76,10 @@ pub fn check_workspace(options: CheckOptions) -> Result<CheckArtefacts, CheckErr
     // ── 2. Pipeline: discover → resolve → typecheck ───────────────────────────
     let disc = discover_workspace(&options.workspace_root);
 
+    // Stash discovery-phase resolve errors (e.g. R023 LegacyRgExtension)
+    // before consuming the struct.
+    let disc_resolve_errors = disc.resolve_errors;
+
     let ws_graph = disc.graph.ok_or_else(|| CheckError::NoWorkspaceRoot {
         path: options.workspace_root.clone(),
     })?;
@@ -91,6 +95,13 @@ pub fn check_workspace(options: CheckOptions) -> Result<CheckArtefacts, CheckErr
     // typecheck, and missing them silently was a real bug (a malformed source
     // would falsely report "type-check passed" because items_parsed was 0).
     let mut diagnostics: Vec<Diagnostic> = Vec::new();
+
+    // Discovery-phase errors (e.g. R023 for legacy .rg files) have no module
+    // source location; use the unknown source placeholder.
+    for e in &disc_resolve_errors {
+        let sid = WorkspaceSourceCache::unknown_source_id();
+        diagnostics.push(Diagnostic::from_resolve(e, sid));
+    }
 
     for (mid, e) in &resolved.lex_errors {
         let sid = sources.id_for_module(*mid);
@@ -141,6 +152,10 @@ pub fn check_workspace_typed(options: CheckOptions) -> Result<CheckTypedArtefact
     // ── 2. Pipeline: discover → resolve → typecheck ───────────────────────────
     let disc = discover_workspace(&options.workspace_root);
 
+    // Stash discovery-phase resolve errors (e.g. R023 LegacyRgExtension)
+    // before consuming the struct.
+    let disc_resolve_errors = disc.resolve_errors;
+
     let ws_graph = disc.graph.ok_or_else(|| CheckError::NoWorkspaceRoot {
         path: options.workspace_root.clone(),
     })?;
@@ -152,6 +167,13 @@ pub fn check_workspace_typed(options: CheckOptions) -> Result<CheckTypedArtefact
     let sources = WorkspaceSourceCache::from_workspace(&resolved.graph);
 
     let mut diagnostics: Vec<Diagnostic> = Vec::new();
+
+    // Discovery-phase errors (e.g. R023 for legacy .rg files) have no module
+    // source location; use the unknown source placeholder.
+    for e in &disc_resolve_errors {
+        let sid = WorkspaceSourceCache::unknown_source_id();
+        diagnostics.push(Diagnostic::from_resolve(e, sid));
+    }
 
     for (mid, e) in &resolved.lex_errors {
         let sid = sources.id_for_module(*mid);

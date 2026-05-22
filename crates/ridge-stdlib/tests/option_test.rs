@@ -33,7 +33,7 @@ fn assert_std_option_built() {
     );
 }
 
-fn assert_option_rg_discovered() {
+fn assert_option_ridge_discovered() {
     let dir = stdlib_dir();
     let modules = discover(&dir);
     assert!(
@@ -46,41 +46,41 @@ fn assert_option_rg_discovered() {
 #[test]
 fn std_option_with_default_compiles() {
     assert_std_option_built();
-    assert_option_rg_discovered();
+    assert_option_ridge_discovered();
 }
 
 #[test]
 fn std_option_map_compiles() {
     assert_std_option_built();
-    assert_option_rg_discovered();
+    assert_option_ridge_discovered();
 }
 
 #[test]
 fn std_option_flat_map_compiles() {
     assert_std_option_built();
-    assert_option_rg_discovered();
+    assert_option_ridge_discovered();
 }
 
 #[test]
 fn std_option_or_else_compiles() {
     assert_std_option_built();
-    assert_option_rg_discovered();
+    assert_option_ridge_discovered();
 }
 
 #[test]
 fn std_option_is_some_compiles() {
     assert_std_option_built();
-    assert_option_rg_discovered();
+    assert_option_ridge_discovered();
 }
 
 #[test]
 fn std_option_is_none_compiles() {
     assert_std_option_built();
-    assert_option_rg_discovered();
+    assert_option_ridge_discovered();
 }
 
 #[test]
 fn std_option_discard_compiles() {
     assert_std_option_built();
-    assert_option_rg_discovered();
+    assert_option_ridge_discovered();
 }

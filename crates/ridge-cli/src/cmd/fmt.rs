@@ -42,7 +42,7 @@ pub struct FmtArgs {
 /// Collect all `.ridge` files under `dir` recursively.
 ///
 /// Skips hidden directories (names starting with `.`) and `target/` at any depth.
-fn collect_rg_files(dir: &Path, out: &mut Vec<PathBuf>) -> Result<(), CliError> {
+fn collect_ridge_files(dir: &Path, out: &mut Vec<PathBuf>) -> Result<(), CliError> {
     let entries = std::fs::read_dir(dir).map_err(|e| CliError::FmtIoError {
         path: dir.to_path_buf(),
         source: e.to_string(),
@@ -70,7 +70,7 @@ fn collect_rg_files(dir: &Path, out: &mut Vec<PathBuf>) -> Result<(), CliError> 
 
         let ext = path.extension();
         if ft.is_dir() {
-            collect_rg_files(&path, out)?;
+            collect_ridge_files(&path, out)?;
         } else if ft.is_file() && ext.is_some_and(|e| e == "ridge") {
             out.push(path);
         } else if ft.is_file() && ext.is_some_and(|e| e == "rg") {
@@ -91,7 +91,7 @@ fn expand_paths(paths: &[PathBuf]) -> Result<Vec<PathBuf>, CliError> {
             return Err(CliError::FmtPathNotFound { path: p.clone() });
         }
         if p.is_dir() {
-            collect_rg_files(p, &mut files)?;
+            collect_ridge_files(p, &mut files)?;
         } else {
             files.push(p.clone());
         }
@@ -118,7 +118,7 @@ pub fn execute(args: &FmtArgs, cwd: &Path) -> Result<(), CliError> {
         // No paths supplied — walk the workspace root.
         let root = find_workspace_root(cwd).ok_or(CliError::NoWorkspaceRoot)?;
         let mut v = Vec::new();
-        collect_rg_files(&root, &mut v)?;
+        collect_ridge_files(&root, &mut v)?;
         v
     } else {
         expand_paths(&args.paths)?

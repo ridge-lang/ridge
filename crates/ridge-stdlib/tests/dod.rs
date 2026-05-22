@@ -5,7 +5,7 @@
 //! duplicate work already owned by:
 //!
 //! - `manifest_consistency.rs`   — G2 (bidirectional manifest / signature checks)
-//! - `test_rg_smoke.rs`          — G1 partial (parse-clean `.test.ridge` files)
+//! - `test_ridge_smoke.rs`       — G1 partial (parse-clean `.test.ridge` files)
 //! - `crates/ridge-codegen-erl/tests/stdlib_map.rs::build_map_count_is_exactly_6`
 //!   — G3 (path-A retired to exactly 6 `std.op.*` entries)
 //!
@@ -107,14 +107,14 @@ where
 ///    the floor per §11.2 G4 (151 after `proc.exec` removed by OQ-S007/D123).
 ///
 /// Files excluded from both counts (they are infrastructure, not module tests):
-/// `manifest_consistency.rs`, `test_rg_smoke.rs`, `dod.rs`, `build_driver_smoke.rs`.
+/// `manifest_consistency.rs`, `test_ridge_smoke.rs`, `dod.rs`, `build_driver_smoke.rs`.
 ///
 /// Reference: §11.2 G4, OQ-S007 / D123.
 #[test]
 fn g4_test_count_floor() {
     const EXCLUDED: &[&str] = &[
         "manifest_consistency.rs",
-        "test_rg_smoke.rs",
+        "test_ridge_smoke.rs",
         "dod.rs",
         "build_driver_smoke.rs",
     ];
@@ -241,7 +241,7 @@ fn artefacts_count_matches_plan() {
     let stdlib = stdlib_dir();
 
     // Collect plain .ridge files (not .test.ridge).
-    let rg_files: Vec<std::path::PathBuf> = collect_files(&stdlib, |p| {
+    let ridge_files: Vec<std::path::PathBuf> = collect_files(&stdlib, |p| {
         let ext = p.extension().and_then(|e| e.to_str()).unwrap_or("");
         if ext != "ridge" {
             return false;
@@ -254,7 +254,7 @@ fn artefacts_count_matches_plan() {
     });
 
     // Collect .test.ridge files.
-    let test_rg_files: Vec<std::path::PathBuf> = collect_files(&stdlib, |p| {
+    let test_ridge_files: Vec<std::path::PathBuf> = collect_files(&stdlib, |p| {
         let ext = p.extension().and_then(|e| e.to_str()).unwrap_or("");
         if ext != "ridge" {
             return false;
@@ -266,21 +266,21 @@ fn artefacts_count_matches_plan() {
     });
 
     assert_eq!(
-        rg_files.len(),
+        ridge_files.len(),
         EXPECTED_RG,
         "§11.4: expected exactly {EXPECTED_RG} .ridge source files under stdlib/, \
          found {}.\n  files: {:#?}",
-        rg_files.len(),
-        rg_files
+        ridge_files.len(),
+        ridge_files
     );
 
     assert_eq!(
-        test_rg_files.len(),
+        test_ridge_files.len(),
         EXPECTED_TEST_RG,
         "§11.4: expected exactly {EXPECTED_TEST_RG} .test.ridge files under stdlib/, \
          found {}.\n  files: {:#?}",
-        test_rg_files.len(),
-        test_rg_files
+        test_ridge_files.len(),
+        test_ridge_files
     );
 }
 

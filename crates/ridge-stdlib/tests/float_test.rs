@@ -33,7 +33,7 @@ fn assert_std_float_built() {
     );
 }
 
-fn assert_float_rg_discovered() {
+fn assert_float_ridge_discovered() {
     let dir = stdlib_dir();
     let modules = discover(&dir);
     assert!(
@@ -46,95 +46,95 @@ fn assert_float_rg_discovered() {
 #[test]
 fn std_float_to_text_compiles() {
     assert_std_float_built();
-    assert_float_rg_discovered();
+    assert_float_ridge_discovered();
 }
 
 #[test]
 fn std_float_parse_raw_compiles() {
     assert_std_float_built();
-    assert_float_rg_discovered();
+    assert_float_ridge_discovered();
 }
 
 #[test]
 fn std_float_parse_compiles() {
     assert_std_float_built();
-    assert_float_rg_discovered();
+    assert_float_ridge_discovered();
 }
 
 #[test]
 fn std_float_from_int_compiles() {
     assert_std_float_built();
-    assert_float_rg_discovered();
+    assert_float_ridge_discovered();
 }
 
 #[test]
 fn std_float_round_compiles() {
     assert_std_float_built();
-    assert_float_rg_discovered();
+    assert_float_ridge_discovered();
 }
 
 #[test]
 fn std_float_truncate_compiles() {
     assert_std_float_built();
-    assert_float_rg_discovered();
+    assert_float_ridge_discovered();
 }
 
 #[test]
 fn std_float_floor_compiles() {
     assert_std_float_built();
-    assert_float_rg_discovered();
+    assert_float_ridge_discovered();
 }
 
 #[test]
 fn std_float_ceil_compiles() {
     assert_std_float_built();
-    assert_float_rg_discovered();
+    assert_float_ridge_discovered();
 }
 
 #[test]
 fn std_float_sqrt_compiles() {
     assert_std_float_built();
-    assert_float_rg_discovered();
+    assert_float_ridge_discovered();
 }
 
 #[test]
 fn std_float_abs_compiles() {
     assert_std_float_built();
-    assert_float_rg_discovered();
+    assert_float_ridge_discovered();
 }
 
 #[test]
 fn std_float_add_compiles() {
     assert_std_float_built();
-    assert_float_rg_discovered();
+    assert_float_ridge_discovered();
 }
 
 #[test]
 fn std_float_sub_compiles() {
     assert_std_float_built();
-    assert_float_rg_discovered();
+    assert_float_ridge_discovered();
 }
 
 #[test]
 fn std_float_mul_compiles() {
     assert_std_float_built();
-    assert_float_rg_discovered();
+    assert_float_ridge_discovered();
 }
 
 #[test]
 fn std_float_div_compiles() {
     assert_std_float_built();
-    assert_float_rg_discovered();
+    assert_float_ridge_discovered();
 }
 
 #[test]
 fn std_float_neg_compiles() {
     assert_std_float_built();
-    assert_float_rg_discovered();
+    assert_float_ridge_discovered();
 }
 
 #[test]
 fn std_float_total_compare_compiles() {
     assert_std_float_built();
-    assert_float_rg_discovered();
+    assert_float_ridge_discovered();
 }

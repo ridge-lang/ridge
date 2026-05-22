@@ -33,7 +33,7 @@ fn assert_std_io_built() {
     );
 }
 
-fn assert_io_rg_discovered() {
+fn assert_io_ridge_discovered() {
     let dir = stdlib_dir();
     let modules = discover(&dir);
     assert!(
@@ -46,29 +46,29 @@ fn assert_io_rg_discovered() {
 #[test]
 fn std_io_print_compiles() {
     assert_std_io_built();
-    assert_io_rg_discovered();
+    assert_io_ridge_discovered();
 }
 
 #[test]
 fn std_io_println_compiles() {
     assert_std_io_built();
-    assert_io_rg_discovered();
+    assert_io_ridge_discovered();
 }
 
 #[test]
 fn std_io_eprint_compiles() {
     assert_std_io_built();
-    assert_io_rg_discovered();
+    assert_io_ridge_discovered();
 }
 
 #[test]
 fn std_io_eprintln_compiles() {
     assert_std_io_built();
-    assert_io_rg_discovered();
+    assert_io_ridge_discovered();
 }
 
 #[test]
 fn std_io_read_line_compiles() {
     assert_std_io_built();
-    assert_io_rg_discovered();
+    assert_io_ridge_discovered();
 }

@@ -33,7 +33,7 @@ fn assert_std_env_built() {
     );
 }
 
-fn assert_env_rg_discovered() {
+fn assert_env_ridge_discovered() {
     let dir = stdlib_dir();
     let modules = discover(&dir);
     assert!(
@@ -46,17 +46,17 @@ fn assert_env_rg_discovered() {
 #[test]
 fn std_env_get_compiles() {
     assert_std_env_built();
-    assert_env_rg_discovered();
+    assert_env_ridge_discovered();
 }
 
 #[test]
 fn std_env_set_compiles() {
     assert_std_env_built();
-    assert_env_rg_discovered();
+    assert_env_ridge_discovered();
 }
 
 #[test]
 fn std_env_all_compiles() {
     assert_std_env_built();
-    assert_env_rg_discovered();
+    assert_env_ridge_discovered();
 }

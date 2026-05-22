@@ -33,7 +33,7 @@ fn assert_std_cli_built() {
     );
 }
 
-fn assert_cli_rg_discovered() {
+fn assert_cli_ridge_discovered() {
     let dir = stdlib_dir();
     let modules = discover(&dir);
     assert!(
@@ -46,11 +46,11 @@ fn assert_cli_rg_discovered() {
 #[test]
 fn std_cli_args_compiles() {
     assert_std_cli_built();
-    assert_cli_rg_discovered();
+    assert_cli_ridge_discovered();
 }
 
 #[test]
 fn std_cli_exit_compiles() {
     assert_std_cli_built();
-    assert_cli_rg_discovered();
+    assert_cli_ridge_discovered();
 }

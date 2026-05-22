@@ -269,7 +269,7 @@ fn round_trip_examples_and_stdlib() {
         .join("ridge-stdlib")
         .join("stdlib");
 
-    let mut rg_files: Vec<std::path::PathBuf> = Vec::new();
+    let mut ridge_files: Vec<std::path::PathBuf> = Vec::new();
 
     // Collect examples/*.ridge
     if examples_dir.is_dir() {
@@ -277,7 +277,7 @@ fn round_trip_examples_and_stdlib() {
             for entry in entries.flatten() {
                 let path = entry.path();
                 if path.extension().is_some_and(|e| e == "ridge") {
-                    rg_files.push(path);
+                    ridge_files.push(path);
                 }
             }
         }
@@ -285,21 +285,21 @@ fn round_trip_examples_and_stdlib() {
 
     // Collect crates/ridge-stdlib/stdlib/**/*.ridge (recursive)
     if stdlib_dir.is_dir() {
-        collect_rg_files(&stdlib_dir, &mut rg_files);
+        collect_ridge_files(&stdlib_dir, &mut ridge_files);
     }
 
     // Explicitly assert that we found at least one file so that a regression
     // in fixture discovery does not silently pass.
     assert!(
-        !rg_files.is_empty(),
+        !ridge_files.is_empty(),
         "round_trip: no .ridge files found in examples/ or crates/ridge-stdlib/stdlib/; \
          verify the workspace layout"
     );
 
-    let file_count = rg_files.len();
+    let file_count = ridge_files.len();
     let mut failures: Vec<String> = Vec::new();
 
-    for path in &rg_files {
+    for path in &ridge_files {
         let src = std::fs::read_to_string(path)
             .unwrap_or_else(|e| panic!("could not read {}: {e}", path.display()));
 
@@ -472,14 +472,14 @@ fn doc_block_body_not_operator_spaced() {
 }
 
 /// Recursively collect all `.ridge` files under `dir`.
-fn collect_rg_files(dir: &std::path::Path, out: &mut Vec<std::path::PathBuf>) {
+fn collect_ridge_files(dir: &std::path::Path, out: &mut Vec<std::path::PathBuf>) {
     let Ok(entries) = std::fs::read_dir(dir) else {
         return;
     };
     for entry in entries.flatten() {
         let path = entry.path();
         if path.is_dir() {
-            collect_rg_files(&path, out);
+            collect_ridge_files(&path, out);
         } else if path.extension().is_some_and(|e| e == "ridge") {
             out.push(path);
         }

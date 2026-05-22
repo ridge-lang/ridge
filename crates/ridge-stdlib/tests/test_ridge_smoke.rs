@@ -44,7 +44,7 @@ fn stdlib_dir() -> std::path::PathBuf {
 /// Recursively collect every `*.test.ridge` file under `dir`, in lexicographic order.
 ///
 /// Returns absolute paths.  Panics if the directory cannot be read.
-fn collect_test_rg_files(dir: &Path) -> Vec<std::path::PathBuf> {
+fn collect_test_ridge_files(dir: &Path) -> Vec<std::path::PathBuf> {
     let mut paths: Vec<std::path::PathBuf> = Vec::new();
     collect_recursive(dir, &mut paths);
     paths.sort();
@@ -92,9 +92,9 @@ fn collect_recursive(dir: &Path, out: &mut Vec<std::path::PathBuf>) {
 ///
 /// Failure message: `T201 TestRgCountMismatch`.
 #[test]
-fn test_rg_file_count_is_18() {
+fn test_ridge_file_count_is_18() {
     let stdlib = stdlib_dir();
-    let files = collect_test_rg_files(&stdlib);
+    let files = collect_test_ridge_files(&stdlib);
 
     assert_eq!(
         files.len(),
@@ -113,9 +113,9 @@ fn test_rg_file_count_is_18() {
 ///
 /// Failure message: `T201 TestRgParseFailed`.
 #[test]
-fn test_rg_files_parse_cleanly() {
+fn test_ridge_files_parse_cleanly() {
     let stdlib = stdlib_dir();
-    let files = collect_test_rg_files(&stdlib);
+    let files = collect_test_ridge_files(&stdlib);
 
     // Sanity: if collect returns zero files, something is wrong with the test
     // setup rather than the source files.  Surface it early.

@@ -33,7 +33,7 @@ fn assert_std_text_built() {
     );
 }
 
-fn assert_text_rg_discovered() {
+fn assert_text_ridge_discovered() {
     let dir = stdlib_dir();
     let modules = discover(&dir);
     assert!(
@@ -46,95 +46,95 @@ fn assert_text_rg_discovered() {
 #[test]
 fn std_text_byte_size_compiles() {
     assert_std_text_built();
-    assert_text_rg_discovered();
+    assert_text_ridge_discovered();
 }
 
 #[test]
 fn std_text_concat_compiles() {
     assert_std_text_built();
-    assert_text_rg_discovered();
+    assert_text_ridge_discovered();
 }
 
 #[test]
 fn std_text_split_compiles() {
     assert_std_text_built();
-    assert_text_rg_discovered();
+    assert_text_ridge_discovered();
 }
 
 #[test]
 fn std_text_split_n_compiles() {
     assert_std_text_built();
-    assert_text_rg_discovered();
+    assert_text_ridge_discovered();
 }
 
 #[test]
 fn std_text_split_any_compiles() {
     assert_std_text_built();
-    assert_text_rg_discovered();
+    assert_text_ridge_discovered();
 }
 
 #[test]
 fn std_text_lines_compiles() {
     assert_std_text_built();
-    assert_text_rg_discovered();
+    assert_text_ridge_discovered();
 }
 
 #[test]
 fn std_text_trim_compiles() {
     assert_std_text_built();
-    assert_text_rg_discovered();
+    assert_text_ridge_discovered();
 }
 
 #[test]
 fn std_text_to_upper_compiles() {
     assert_std_text_built();
-    assert_text_rg_discovered();
+    assert_text_ridge_discovered();
 }
 
 #[test]
 fn std_text_to_lower_compiles() {
     assert_std_text_built();
-    assert_text_rg_discovered();
+    assert_text_ridge_discovered();
 }
 
 #[test]
 fn std_text_starts_with_compiles() {
     assert_std_text_built();
-    assert_text_rg_discovered();
+    assert_text_ridge_discovered();
 }
 
 #[test]
 fn std_text_ends_with_compiles() {
     assert_std_text_built();
-    assert_text_rg_discovered();
+    assert_text_ridge_discovered();
 }
 
 #[test]
 fn std_text_contains_compiles() {
     assert_std_text_built();
-    assert_text_rg_discovered();
+    assert_text_ridge_discovered();
 }
 
 #[test]
 fn std_text_replace_compiles() {
     assert_std_text_built();
-    assert_text_rg_discovered();
+    assert_text_ridge_discovered();
 }
 
 #[test]
 fn std_text_pad_left_compiles() {
     assert_std_text_built();
-    assert_text_rg_discovered();
+    assert_text_ridge_discovered();
 }
 
 #[test]
 fn std_text_pad_right_compiles() {
     assert_std_text_built();
-    assert_text_rg_discovered();
+    assert_text_ridge_discovered();
 }
 
 #[test]
 fn std_text_is_empty_compiles() {
     assert_std_text_built();
-    assert_text_rg_discovered();
+    assert_text_ridge_discovered();
 }

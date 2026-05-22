@@ -33,7 +33,7 @@ fn assert_std_time_built() {
     );
 }
 
-fn assert_time_rg_discovered() {
+fn assert_time_ridge_discovered() {
     let dir = stdlib_dir();
     let modules = discover(&dir);
     assert!(
@@ -46,53 +46,53 @@ fn assert_time_rg_discovered() {
 #[test]
 fn std_time_now_compiles() {
     assert_std_time_built();
-    assert_time_rg_discovered();
+    assert_time_ridge_discovered();
 }
 
 #[test]
 fn std_time_epoch_compiles() {
     assert_std_time_built();
-    assert_time_rg_discovered();
+    assert_time_ridge_discovered();
 }
 
 #[test]
 fn std_time_from_iso_compiles() {
     assert_std_time_built();
-    assert_time_rg_discovered();
+    assert_time_ridge_discovered();
 }
 
 #[test]
 fn std_time_diff_compiles() {
     assert_std_time_built();
-    assert_time_rg_discovered();
+    assert_time_ridge_discovered();
 }
 
 #[test]
 fn std_time_diff_ms_compiles() {
     assert_std_time_built();
-    assert_time_rg_discovered();
+    assert_time_ridge_discovered();
 }
 
 #[test]
 fn std_time_since_ms_compiles() {
     assert_std_time_built();
-    assert_time_rg_discovered();
+    assert_time_ridge_discovered();
 }
 
 #[test]
 fn std_time_sleep_compiles() {
     assert_std_time_built();
-    assert_time_rg_discovered();
+    assert_time_ridge_discovered();
 }
 
 #[test]
 fn std_time_parse_compiles() {
     assert_std_time_built();
-    assert_time_rg_discovered();
+    assert_time_ridge_discovered();
 }
 
 #[test]
 fn std_time_iso_compiles() {
     assert_std_time_built();
-    assert_time_rg_discovered();
+    assert_time_ridge_discovered();
 }

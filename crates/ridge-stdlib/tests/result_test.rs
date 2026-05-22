@@ -33,7 +33,7 @@ fn assert_std_result_built() {
     );
 }
 
-fn assert_result_rg_discovered() {
+fn assert_result_ridge_discovered() {
     let dir = stdlib_dir();
     let modules = discover(&dir);
     assert!(
@@ -46,41 +46,41 @@ fn assert_result_rg_discovered() {
 #[test]
 fn std_result_map_compiles() {
     assert_std_result_built();
-    assert_result_rg_discovered();
+    assert_result_ridge_discovered();
 }
 
 #[test]
 fn std_result_map_err_compiles() {
     assert_std_result_built();
-    assert_result_rg_discovered();
+    assert_result_ridge_discovered();
 }
 
 #[test]
 fn std_result_flat_map_compiles() {
     assert_std_result_built();
-    assert_result_rg_discovered();
+    assert_result_ridge_discovered();
 }
 
 #[test]
 fn std_result_with_default_compiles() {
     assert_std_result_built();
-    assert_result_rg_discovered();
+    assert_result_ridge_discovered();
 }
 
 #[test]
 fn std_result_is_ok_compiles() {
     assert_std_result_built();
-    assert_result_rg_discovered();
+    assert_result_ridge_discovered();
 }
 
 #[test]
 fn std_result_is_err_compiles() {
     assert_std_result_built();
-    assert_result_rg_discovered();
+    assert_result_ridge_discovered();
 }
 
 #[test]
 fn std_result_discard_compiles() {
     assert_std_result_built();
-    assert_result_rg_discovered();
+    assert_result_ridge_discovered();
 }

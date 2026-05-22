@@ -26,7 +26,7 @@ use crate::error::CliError;
 const TOML_TEMPLATE: &str = include_str!("../templates/ridge.toml.tpl");
 
 /// Raw `src/Main.ridge` template.  `{NAME}` is replaced with the project name.
-const MAIN_RG_TEMPLATE: &str = include_str!("../templates/Main.ridge.tpl");
+const MAIN_RIDGE_TEMPLATE: &str = include_str!("../templates/Main.ridge.tpl");
 
 /// Raw `README.md` template.  `{NAME}` is replaced with the project name.
 const README_TEMPLATE: &str = include_str!("../templates/README.md.tpl");
@@ -112,8 +112,8 @@ fn write_scaffold(project_dir: &Path, name: &str) -> Result<(), Box<dyn std::err
     // src/Main.ridge — use PathBuf::join for cross-platform path construction
     let src_dir = project_dir.join("src");
     fs::create_dir_all(&src_dir)?;
-    let main_rg_content = MAIN_RG_TEMPLATE.replace("{NAME}", name);
-    fs::write(src_dir.join("Main.ridge"), main_rg_content)?;
+    let main_ridge_content = MAIN_RIDGE_TEMPLATE.replace("{NAME}", name);
+    fs::write(src_dir.join("Main.ridge"), main_ridge_content)?;
 
     // README.md
     let readme_content = README_TEMPLATE.replace("{NAME}", name);

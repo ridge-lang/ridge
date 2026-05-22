@@ -35,7 +35,7 @@ fn assert_std_int_built() {
     );
 }
 
-fn assert_int_rg_discovered() {
+fn assert_int_ridge_discovered() {
     let dir = stdlib_dir();
     let modules = discover(&dir);
     assert!(
@@ -48,71 +48,71 @@ fn assert_int_rg_discovered() {
 #[test]
 fn std_int_to_text_compiles() {
     assert_std_int_built();
-    assert_int_rg_discovered();
+    assert_int_ridge_discovered();
 }
 
 #[test]
 fn std_int_parse_compiles() {
     assert_std_int_built();
-    assert_int_rg_discovered();
+    assert_int_ridge_discovered();
 }
 
 #[test]
 fn std_int_abs_compiles() {
     assert_std_int_built();
-    assert_int_rg_discovered();
+    assert_int_ridge_discovered();
 }
 
 #[test]
 fn std_int_min_compiles() {
     assert_std_int_built();
-    assert_int_rg_discovered();
+    assert_int_ridge_discovered();
 }
 
 #[test]
 fn std_int_max_compiles() {
     assert_std_int_built();
-    assert_int_rg_discovered();
+    assert_int_ridge_discovered();
 }
 
 #[test]
 fn std_int_add_compiles() {
     assert_std_int_built();
-    assert_int_rg_discovered();
+    assert_int_ridge_discovered();
 }
 
 #[test]
 fn std_int_sub_compiles() {
     assert_std_int_built();
-    assert_int_rg_discovered();
+    assert_int_ridge_discovered();
 }
 
 #[test]
 fn std_int_mul_compiles() {
     assert_std_int_built();
-    assert_int_rg_discovered();
+    assert_int_ridge_discovered();
 }
 
 #[test]
 fn std_int_div_compiles() {
     assert_std_int_built();
-    assert_int_rg_discovered();
+    assert_int_ridge_discovered();
 }
 
 #[test]
 fn std_int_neg_compiles() {
     assert_std_int_built();
-    assert_int_rg_discovered();
+    assert_int_ridge_discovered();
 }
 
 #[test]
 fn std_int_wrapping_add_compiles() {
     assert_std_int_built();
-    assert_int_rg_discovered();
+    assert_int_ridge_discovered();
 }
 
 #[test]
 fn std_int_saturating_add_compiles() {
     assert_std_int_built();
-    assert_int_rg_discovered();
+    assert_int_ridge_discovered();
 }

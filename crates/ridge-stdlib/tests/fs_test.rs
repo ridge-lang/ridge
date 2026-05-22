@@ -33,7 +33,7 @@ fn assert_std_fs_built() {
     );
 }
 
-fn assert_fs_rg_discovered() {
+fn assert_fs_ridge_discovered() {
     let dir = stdlib_dir();
     let modules = discover(&dir);
     assert!(
@@ -46,29 +46,29 @@ fn assert_fs_rg_discovered() {
 #[test]
 fn std_fs_read_file_compiles() {
     assert_std_fs_built();
-    assert_fs_rg_discovered();
+    assert_fs_ridge_discovered();
 }
 
 #[test]
 fn std_fs_write_file_compiles() {
     assert_std_fs_built();
-    assert_fs_rg_discovered();
+    assert_fs_ridge_discovered();
 }
 
 #[test]
 fn std_fs_append_compiles() {
     assert_std_fs_built();
-    assert_fs_rg_discovered();
+    assert_fs_ridge_discovered();
 }
 
 #[test]
 fn std_fs_exists_compiles() {
     assert_std_fs_built();
-    assert_fs_rg_discovered();
+    assert_fs_ridge_discovered();
 }
 
 #[test]
 fn std_fs_lines_compiles() {
     assert_std_fs_built();
-    assert_fs_rg_discovered();
+    assert_fs_ridge_discovered();
 }

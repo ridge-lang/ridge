@@ -3,11 +3,17 @@
    Version:  0.1.0 (2026-04-23)
    Source:   Derived from docs/spec.md §4, cross-referenced with §3 and §6.
    Author:   Derived from the Ridge language specification (Angel, 2026-04)
+
+   D-REFERENCE CONVENTION
+   Inline annotations of the form "Dxxx" throughout this file refer to design
+   decisions recorded in the Ridge language specification. These are stable
+   identifiers for decisions that shaped the grammar.
+
    Changelog (2026-04-23): Incorporated decisions D044–D061.
      D044 — ! is actor-send only (logical-not removed)
      D045 — ?> is ask; ? is propagate-only; AskExpr added
-     D046 — Numeric base prefixes 0b/0o/0x + _ separators (closes Q-019)
-     D047 — Multi-line/raw strings deferred to 0.2.0 (closes Q-017)
+     D046 — Numeric base prefixes 0b/0o/0x + _ separators
+     D047 — Multi-line/raw strings deferred to 0.2.0
      D048 — No Timestamp literal; std.time only
      D049 — IDENT is ASCII-only
      D050 — '..' reserved; no productions in 0.1.0
@@ -952,10 +958,9 @@ PatternAtom   ::= WildcardPattern
                |  TuplePattern
                |  ListConsPattern
                |  "(" Pattern ")" ;
-               (* RecordPattern folded into ConstructorPattern per D051 /
-                  OQ-G016 resolution: both started with UPPER_IDENT and the
-                  record-body form is already an optional arm of
-                  ConstructorPattern.                                         *)
+               (* RecordPattern folded into ConstructorPattern per D051:
+                  both forms start with UPPER_IDENT and the record-body form
+                  is already an optional arm of ConstructorPattern.           *)
 
 
 (* === 7.1  Wildcard pattern === *)
@@ -995,10 +1000,10 @@ FieldPatternList ::= FieldPattern { "," FieldPattern } [ "," ] ;
 
 (* === 7.5  Record pattern (folded into ConstructorPattern) === *)
 
-(* OQ-G016 resolution: after D051 required UPPER_IDENT on both forms, the
-   record-body pattern is indistinguishable from a ConstructorPattern whose
-   optional "{ ... }" arm is present.  The separate RecordPattern production
-   is removed.  See ConstructorPattern §7.4 for the record-body form.        *)
+(* After D051 required UPPER_IDENT on both forms, the record-body pattern is
+   indistinguishable from a ConstructorPattern whose optional "{ ... }" arm
+   is present.  The separate RecordPattern production is therefore removed.
+   See ConstructorPattern §7.4 for the record-body form.                     *)
 
 (* D053: FieldPattern supports shorthand — bare IDENT binds the field to a
    local variable of the same name.                                          *)
@@ -1121,22 +1126,22 @@ ListConsPattern ::= PatternAtom "::" Pattern ;
    CLOSED QUESTIONS
    ============================================================================ *)
 
-(* OQ-G001 (!, logical-not)                 -> closed by D044 (! is actor-send only) *)
-(* OQ-G002 (? dual role)                    -> closed by D045 (?> for ask; ? propagate only) *)
-(* OQ-G003 (numeric base prefixes)          -> closed by D046 (0b/0o/0x + _ separators); also closes Q-019 *)
-(* OQ-G004 (multi-line / raw strings)       -> closed by D047 (deferred to 0.2.0); also closes Q-017 *)
-(* OQ-G005 (bare record pattern)            -> closed by D051 (constructor name always required) *)
-(* OQ-G006 (tuple destructure in let/fn)    -> closed by D052 (full patterns in let/lambda; D037 for top-level fn) *)
-(* OQ-G007 (spawn dual role)                -> resolved: position-disambiguated by existing grammar *)
-(* OQ-G008 (capability variable syntax)     -> closed by D057 (compiler-internal only) *)
-(* OQ-G009 (record shorthand)               -> closed by D053 (shorthand { name } supported) *)
-(* OQ-G010 (leading | in unions)            -> closed by D054 (optional leading |, trailing | forbidden) *)
-(* OQ-G011 (with LHS)                       -> closed by D055 (arbitrary Expr on LHS) *)
-(* OQ-G012 (Timestamp literal)              -> closed by D048 (no literal; std.time only) *)
-(* OQ-G013 (orphan `do` keyword)            -> closed by D056 (removed from grammar) *)
-(* OQ-G014 (Unicode identifiers)            -> closed by D049 (ASCII-only in 0.1.0) *)
-(* OQ-G015 (orphan `..` token)              -> closed by D050 (reserved; no productions in 0.1.0) *)
-(* OQ-G016 (RecordPattern subsumed)         -> resolved in-line: RecordPattern production removed; use ConstructorPattern *)
+(* !, logical-not                 -> D044 (! is actor-send only) *)
+(* ? dual role                    -> D045 (?> for ask; ? propagate only) *)
+(* numeric base prefixes          -> D046 (0b/0o/0x + _ separators) *)
+(* multi-line / raw strings       -> D047 (deferred to 0.2.0) *)
+(* bare record pattern            -> D051 (constructor name always required) *)
+(* tuple destructure in let/fn    -> D052 (full patterns in let/lambda; D037 for top-level fn) *)
+(* spawn dual role                -> resolved: position-disambiguated by existing grammar *)
+(* capability variable syntax     -> D057 (compiler-internal only) *)
+(* record shorthand               -> D053 (shorthand { name } supported) *)
+(* leading | in unions            -> D054 (optional leading |, trailing | forbidden) *)
+(* with LHS                       -> D055 (arbitrary Expr on LHS) *)
+(* Timestamp literal              -> D048 (no literal; std.time only) *)
+(* orphan `do` keyword            -> D056 (removed from grammar) *)
+(* Unicode identifiers            -> D049 (ASCII-only in 0.1.0) *)
+(* orphan `..` token              -> D050 (reserved; no productions in 0.1.0) *)
+(* RecordPattern subsumed         -> resolved in-line: RecordPattern production removed; use ConstructorPattern *)
 
 
 (* ============================================================================

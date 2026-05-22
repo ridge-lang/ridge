@@ -287,24 +287,24 @@ fn distance (x1, y1) (x2, y2) = Float.sqrt ((x2-x1)^2 + (y2-y1)^2)
 
 Every Ridge module has a set of names in scope without any `import` declaration.  The prelude is resolved in `prelude_resolutions()` (`crates/ridge-resolve/src/imports.rs`) and is injected before per-module import resolution.  User imports for the same `local_name` take priority and suppress the prelude binding (no collision error).
 
-**Prelude scope (OQ-R013, OQ-R015 — resolved 2026-04-24):**
+**Prelude scope:**
 
 | Local name | Source | Kind | Notes |
 |------------|--------|------|-------|
-| `Option` | `std.option` | `StdlibSymbol` | Type name (OQ-R013) |
-| `Some` | `std.option` | `StdlibSymbol` | Constructor (OQ-R013) |
-| `None` | `std.option` | `StdlibSymbol` | Constructor (OQ-R013) |
-| `Result` | `std.result` | `StdlibSymbol` | Type name (OQ-R013) |
-| `Ok` | `std.result` | `StdlibSymbol` | Constructor (OQ-R013) |
-| `Err` | `std.result` | `StdlibSymbol` | Constructor (OQ-R013) |
-| `Int` | `std.int` | `ModuleAlias` | Enables `Int.parse`, `Int.toText`, … (OQ-R015) |
-| `Float` | `std.float` | `ModuleAlias` | Enables `Float.fromInt`, `Float.round`, … (OQ-R015) |
-| `Bool` | `std.bool` | `ModuleAlias` | Enables `Bool.not`, … (OQ-R015) |
-| `Text` | `std.text` | `ModuleAlias` | Enables `Text.padLeft`, `Text.split`, … (OQ-R015) |
-| `List` | `std.list` | `ModuleAlias` | Enables `List.map`, `List.fold`, … (OQ-R015) |
-| `Map` | `std.map` | `ModuleAlias` | Enables `Map.empty`, `Map.insert`, … (OQ-R015) |
-| `Set` | `std.set` | `ModuleAlias` | Enables `Set.fromList`, `Set.union`, … (OQ-R015) |
-| `Json` | `std.json` | `ModuleAlias` | Enables `Json.encode`, `Json.decode` (OQ-R015) |
+| `Option` | `std.option` | `StdlibSymbol` | Type name |
+| `Some` | `std.option` | `StdlibSymbol` | Constructor |
+| `None` | `std.option` | `StdlibSymbol` | Constructor |
+| `Result` | `std.result` | `StdlibSymbol` | Type name |
+| `Ok` | `std.result` | `StdlibSymbol` | Constructor |
+| `Err` | `std.result` | `StdlibSymbol` | Constructor |
+| `Int` | `std.int` | `ModuleAlias` | Enables `Int.parse`, `Int.toText`, … |
+| `Float` | `std.float` | `ModuleAlias` | Enables `Float.fromInt`, `Float.round`, … |
+| `Bool` | `std.bool` | `ModuleAlias` | Enables `Bool.not`, … |
+| `Text` | `std.text` | `ModuleAlias` | Enables `Text.padLeft`, `Text.split`, … |
+| `List` | `std.list` | `ModuleAlias` | Enables `List.map`, `List.fold`, … |
+| `Map` | `std.map` | `ModuleAlias` | Enables `Map.empty`, `Map.insert`, … |
+| `Set` | `std.set` | `ModuleAlias` | Enables `Set.fromList`, `Set.union`, … |
+| `Json` | `std.json` | `ModuleAlias` | Enables `Json.encode`, `Json.decode` |
 
 Capability-bearing modules (`std.io`, `std.fs`, `std.net.http`, `std.time`, `std.random`, `std.env`, `std.cli`, `std.proc`) are **not** in the prelude and require an explicit `import` declaration.  This keeps every side-effecting dependency visible at the import level.
 
@@ -539,8 +539,8 @@ Ridge uses **significant indentation** (offside rule), similar to Haskell/F#/Elm
 - Within a block, all items must be at the same indentation level.
 - Tabs are forbidden. Only spaces. (Enforced by lexer; error on tab.)
 - Indentation unit convention: 4 spaces (not enforced, but the formatter uses it).
-- **Layout is partially suppressed inside brackets.** While the bracket-nesting depth (count of open `(`, `[`, `{` not yet matched) is greater than zero, `INDENT` and `DEDENT` tokens are never emitted. However, a `NEWLINE` token _is_ emitted when a logical line begins at column ≤ the baseline column of the first continuation line inside the bracket — this marks a statement boundary inside parenthesised lambda bodies and similar constructs. When depth returns to zero, full layout (including `INDENT`/`DEDENT`) resumes. (D062, resolved by OQ-R014 option A.)
-- `spawn` appears both as a top-level keyword (the spawn expression) and as a capability keyword. The parser disambiguates by position: `spawn ActorName args...` is a spawn expression; `fn spawn f ...` declares the `spawn` capability. Arguments to `spawn` are passed positionally to the actor's `init` block if present (OQ-G007 resolution).
+- **Layout is partially suppressed inside brackets.** While the bracket-nesting depth (count of open `(`, `[`, `{` not yet matched) is greater than zero, `INDENT` and `DEDENT` tokens are never emitted. However, a `NEWLINE` token _is_ emitted when a logical line begins at column ≤ the baseline column of the first continuation line inside the bracket — this marks a statement boundary inside parenthesised lambda bodies and similar constructs. When depth returns to zero, full layout (including `INDENT`/`DEDENT`) resumes. (D062.)
+- `spawn` appears both as a top-level keyword (the spawn expression) and as a capability keyword. The parser disambiguates by position: `spawn ActorName args...` is a spawn expression; `fn spawn f ...` declares the `spawn` capability. Arguments to `spawn` are passed positionally to the actor's `init` block if present.
 
 ### 4.3. BNF grammar (selected productions)
 
@@ -1017,7 +1017,7 @@ ridge init                # initialize a workspace in the current directory
 ridge repl                # interactive REPL
 ```
 
-**Test discovery (0.1.0).** `ridge test` discovers every `pub fn test_<name> ()` (zero-arity) across the workspace. The return type must be `Result Unit Text` (canonical) or `Bool` (deprecated, accepted with per-test `C303` warning, **removed in 0.2.0**). Tests run sequentially in a fresh BEAM child process per test (no shared state leaks). FFI-bearing tests are rejected with `C302 TestCapabilityForbidden`. **0.2.0 evolution (D168 / OQ-C018):** the canonical form becomes `@test "<free-form name>"` as an attribute on `pub fn`, additive on top of the prefix during a one-minor-version migration window; prefix removed in 0.3.0. The keyword-block form `test "name" { body }` is **explicitly rejected** for losing first-class function semantics and forcing grammar churn on every test modifier.
+**Test discovery (0.1.0).** `ridge test` discovers every `pub fn test_<name> ()` (zero-arity) across the workspace. The return type must be `Result Unit Text` (canonical) or `Bool` (deprecated, accepted with a per-test deprecation warning, **removed in 0.2.0**). Tests run sequentially in a fresh BEAM child process per test (no shared state leaks). FFI-bearing tests are rejected with a compile-time capability error. **0.2.0 evolution (D168):** the canonical form becomes `@test "<free-form name>"` as an attribute on `pub fn`, additive on top of the prefix during a one-minor-version migration window; prefix removed in 0.3.0. The keyword-block form `test "name" { body }` is **explicitly rejected** for losing first-class function semantics and forcing grammar churn on every test modifier.
 
 ---
 
@@ -1298,7 +1298,7 @@ Each phase lists: goal, tasks, deliverable, tests, and estimated effort.
 8. **Pattern matching exhaustiveness** using Maranget's algorithm.
 9. High-quality type and capability error messages.
 10. **Actor handler-name validation** (Phase 3 deferral): every `Send.message` head and `Ask.message` Ident must match a declared `on`-handler on the target actor's type. Phase 3 silently passes these through (`crates/ridge-resolve/src/walker.rs::visit_send_message`, plus the existing `visit_ident` no-op for `Ask`); Phase 4 owns the cross-validation against the actor's `SymbolKind::Actor { handlers }` list. Emit a new `T-error` (e.g. `T0NN UnknownActorHandler`) with "did you mean?" suggestions over the actor's handler names. Cross-check arg arity and types against the handler signature. _Source of deferral:_ Phase 3 has no actor-handler scope to resolve against during the walker pass; the walker's job is name-resolution only.
-11. **Qualified record construction** `Module.Type { field = val, ... }` (Phase 3 deferral): currently the parser builds `Expr::Record { constructor: Ident, fields }` and `constructor` is a bare `Ident`, so `Http.Response { ... }` does NOT parse as record construction (it parses as `QualifiedName` followed by something else). To enable this Elm-style ergonomic, change `Expr::Record::constructor` from `Ident` to `QualifiedName` (or add a new `Expr::QualifiedRecord`); update the parser's record-construction recogniser to accept a leading `Module.UPPER`; extend `crates/ridge-resolve/src/qualified.rs` to resolve qualified record constructors; update `walker.rs` and the visitor. D072 (import lists with `UPPER_IDENT`) covers the unqualified-import case so this is purely an ergonomic alternative for users who prefer fully-qualified type references — _not_ blocking for any 0.1.0 example. Resolves the open architectural question raised by OQ-R016. _Estimated effort:_ ~1 day across AST + parser + resolver + tests.
+11. **Qualified record construction** `Module.Type { field = val, ... }` (Phase 3 deferral): currently the parser builds `Expr::Record { constructor: Ident, fields }` and `constructor` is a bare `Ident`, so `Http.Response { ... }` does NOT parse as record construction (it parses as `QualifiedName` followed by something else). To enable this Elm-style ergonomic, change `Expr::Record::constructor` from `Ident` to `QualifiedName` (or add a new `Expr::QualifiedRecord`); update the parser's record-construction recogniser to accept a leading `Module.UPPER`; extend `crates/ridge-resolve/src/qualified.rs` to resolve qualified record constructors; update `walker.rs` and the visitor. D072 (import lists with `UPPER_IDENT`) covers the unqualified-import case so this is purely an ergonomic alternative for users who prefer fully-qualified type references — _not_ blocking for any 0.1.0 example. _Estimated effort:_ ~1 day across AST + parser + resolver + tests.
 
 **Definition of done:**
 - All examples type-check with correct capabilities
@@ -1438,12 +1438,12 @@ Six public checkpoints. Each should be a tagged release so progress is visible.
 
 | Milestone | Covers Phases | Headline demo |
 |-----------|---------------|---------------|
-| **M1: Parses** | 0, 1, 2 | `ridge parse examples/log_analyzer.ridge` prints a pretty AST |
-| **M2: Resolves, Types, Capabilities** | 3, 4 | `ridge check examples/*.ridge` reports OK or typed errors with capability diagnostics |
-| **M3: Runs on BEAM** | 5, 6 | `ridge run examples/log_analyzer.ridge` compiles and executes |
-| **M4: Complete** | 7 | All four examples run end-to-end using stdlib |
-| **M5: Tooled** | 8 | VS Code diagnostics + git-based packages work |
-| **M6: Released** | 9 | Public 0.1.0 binaries available |
+| **Parses** | 0, 1, 2 | `ridge parse examples/log_analyzer.ridge` prints a pretty AST |
+| **Resolves, Types, Capabilities** | 3, 4 | `ridge check examples/*.ridge` reports OK or typed errors with capability diagnostics |
+| **Runs on BEAM** | 5, 6 | `ridge run examples/log_analyzer.ridge` compiles and executes |
+| **Complete** | 7 | All four examples run end-to-end using stdlib |
+| **Tooled** | 8 | VS Code diagnostics + git-based packages work |
+| **Released** | 9 | Public 0.1.0 binaries available |
 
 ---
 
@@ -1621,7 +1621,7 @@ New open questions should be appended here as they arise during implementation. 
 
 **Q-024**: OWASP web-layer policy and `std.net.http` hardening defaults — language-level safety is strong (capabilities, no null, no exceptions, no reflection, forbid arcs), but framework-level web concerns (XSS escaping in templating, CSRF tokens, parameterized SQL via a future `std.db`, authn/authz primitives, rate-limiting helpers, secure cookie defaults, CSP / HSTS headers in `std.net.http.respond`) have no decision. `std.net.http` 0.1.0 exposes only `get` / `post` / `put` / `delete` / `listen` / `respond` (§9.2); building a real web service requires the user to roll their own security layer, which contradicts the "make the right thing easy" principle (§2.1). _Pending — decide before 0.2.0 stdlib expansion; tentative default = bake the OWASP-Top-10 mitigations Ridge can express via types into stdlib (e.g. `Sql` newtype that requires parameter binding to construct, `Html` newtype that escapes on construction, `SecureCookie` defaults with `Secure` + `HttpOnly` + `SameSite=Lax`, default CSP / HSTS headers on `respond`); defer the rest (full authn/authz primitives, distributed rate-limiting library) to a `std.web` ecosystem package layered on top._
 
-**Q-025**: Large-program acceptance corpus — the four canonical examples (Appendix A) are 50–150 LOC each and exercise individual features in isolation; they do not stress cross-module type inference, deep actor topologies, large `match` trees, long workspace dependency chains, or programs >500 LOC. Without large-program tests, scaling bugs in the type checker, lowering pass, or codegen surface only when a real user hits them — by which point the cost of fixing them is much higher. _Pending — decide during the M4 acceptance gate; tentative default = add 5–10 medium programs (~300–800 LOC each) covering an actor-heavy chat server, a multi-module domain workspace exercising `forbid` rules end-to-end, a streaming log-processing pipeline with backpressure simulation, and one ported toy-compiler exercise; each runs as an end-to-end snapshot test on every PR with timing + binary-size budgets._
+**Q-025**: Large-program acceptance corpus — the four canonical examples (Appendix A) are 50–150 LOC each and exercise individual features in isolation; they do not stress cross-module type inference, deep actor topologies, large `match` trees, long workspace dependency chains, or programs >500 LOC. Without large-program tests, scaling bugs in the type checker, lowering pass, or codegen surface only when a real user hits them — by which point the cost of fixing them is much higher. _Pending — decide during the Phase 7 (stdlib) acceptance gate; tentative default = add 5–10 medium programs (~300–800 LOC each) covering an actor-heavy chat server, a multi-module domain workspace exercising `forbid` rules end-to-end, a streaming log-processing pipeline with backpressure simulation, and one ported toy-compiler exercise; each runs as an end-to-end snapshot test on every PR with timing + binary-size budgets._
 
 **Q-026**: Anonymous record literal syntax — Ridge has anonymous tuples `(Int, Text)` and nominal records (declared via `type` + `Constructor { field = ... }`), but no anonymous record literal `{ name = "x", age = 1 }` whose type is inferred structurally. Workflows that benefit (ad-hoc JSON shapes, intermediate computation states, returning multi-field results without naming the type) currently force a tuple (positional, unreadable past 3 fields) or a one-off type alias (verbose, pollutes the namespace). This is a real DX gap relative to OCaml objects, F# anonymous records, and TypeScript object literals. _Pending — decide during Phase 4 type-checker; tentative default = add `{ field = expr, ... }` literal with structural row-typed inference gated to **expression positions only** (no anonymous record types in function signatures — those still require a `type` alias so error messages point at named types). Trade-off: introduces structural types into an otherwise nominal system, brings row-polymorphism complexity to inference, may interact non-trivially with `with` updates (§4.5)._
 
@@ -1658,7 +1658,7 @@ Raised during resolve design. Each has a provisional answer that the implementat
 
 _Note: examples in this appendix reflect decisions D044..D061. In particular, `?>` is the ask operator (D045) and `main` returns `Result Unit Error` (D059)._
 
-Four programs must compile and run correctly by M4. They serve as acceptance tests for the compiler.
+Four programs must compile and run correctly by the "Complete" milestone (Phase 7). They serve as acceptance tests for the compiler.
 
 - **A.1. Log analyzer** (`examples/log_analyzer.ridge`) — file IO, text parsing, pattern matching, list ops.
 - **A.2. URL shortener** (`examples/url_shortener.ridge`) — actors, concurrency, HTTP, JSON.

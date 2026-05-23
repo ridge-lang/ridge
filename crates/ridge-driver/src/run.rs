@@ -98,8 +98,12 @@ pub fn run_workspace(options: RunOptions) -> Result<ProcessExitCode, RunError> {
         }
     }
 
+    // Inherit stdout so the BEAM program's `Io.println` calls reach the
+    // user's terminal as they happen, rather than being buffered into a pipe
+    // and dumped at exit. Stderr stays piped so crash dumps remain available
+    // for inclusion in `RunError::ErlExitNonZero` on failure.
     let mut child = cmd
-        .stdout(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::inherit())
         .stderr(std::process::Stdio::piped())
         .spawn()
         .map_err(|e| RunError::SpawnFailed {
@@ -113,21 +117,20 @@ pub fn run_workspace(options: RunOptions) -> Result<ProcessExitCode, RunError> {
     loop {
         match child.try_wait() {
             Ok(Some(status)) => {
-                let stdout = drain_pipe(child.stdout.take());
                 let stderr = drain_pipe(child.stderr.take());
                 let code = status.code().unwrap_or(-1);
                 if code == 0 {
-                    // Relay captured output to the user — without this the
-                    // BEAM program's stdout/stderr would silently be dropped
-                    // on successful exit.
+                    // Stderr is still piped; relay anything that landed there
+                    // (warnings, etc.) so it isn't dropped on success.
                     use std::io::Write;
-                    let _ = std::io::stdout().write_all(stdout.as_bytes());
                     let _ = std::io::stderr().write_all(stderr.as_bytes());
                     return Ok(ProcessExitCode(0));
                 }
                 return Err(RunError::ErlExitNonZero {
                     code,
-                    stdout,
+                    // Stdout was inherited and already on the user's terminal;
+                    // nothing to surface in the error struct.
+                    stdout: String::new(),
                     stderr,
                 });
             }

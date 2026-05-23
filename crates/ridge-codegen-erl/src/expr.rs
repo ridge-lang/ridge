@@ -125,73 +125,18 @@ fn is_erlang_guard_bif(fn_name: &str, arity: usize) -> bool {
         ("self", 0) => true,
         // Arity 1.
         (
-            "abs"
-            | "bit_size"
-            | "bnot"
-            | "byte_size"
-            | "ceil"
-            | "float"
-            | "floor"
-            | "hd"
-            | "is_atom"
-            | "is_binary"
-            | "is_bitstring"
-            | "is_boolean"
-            | "is_float"
-            | "is_function"
-            | "is_integer"
-            | "is_list"
-            | "is_map"
-            | "is_number"
-            | "is_pid"
-            | "is_port"
-            | "is_reference"
-            | "is_tuple"
-            | "length"
-            | "map_size"
-            | "node"
-            | "not"
-            | "round"
-            | "size"
-            | "tl"
-            | "trunc"
-            | "tuple_size"
-            | "-"
-            | "+",
+            "abs" | "bit_size" | "bnot" | "byte_size" | "ceil" | "float" | "floor" | "hd"
+            | "is_atom" | "is_binary" | "is_bitstring" | "is_boolean" | "is_float" | "is_function"
+            | "is_integer" | "is_list" | "is_map" | "is_number" | "is_pid" | "is_port"
+            | "is_reference" | "is_tuple" | "length" | "map_size" | "node" | "not" | "round"
+            | "size" | "tl" | "trunc" | "tuple_size" | "-" | "+",
             1,
         ) => true,
         // Arity 2.
         (
-            "and"
-            | "band"
-            | "binary_part"
-            | "bor"
-            | "bsl"
-            | "bsr"
-            | "bxor"
-            | "div"
-            | "element"
-            | "is_function"
-            | "is_map_key"
-            | "is_record"
-            | "map_get"
-            | "max"
-            | "min"
-            | "or"
-            | "rem"
-            | "xor"
-            | "+"
-            | "-"
-            | "*"
-            | "/"
-            | "<"
-            | ">"
-            | "=:="
-            | "=/="
-            | "=="
-            | "/="
-            | "=<"
-            | ">=",
+            "and" | "band" | "binary_part" | "bor" | "bsl" | "bsr" | "bxor" | "div" | "element"
+            | "is_function" | "is_map_key" | "is_record" | "map_get" | "max" | "min" | "or" | "rem"
+            | "xor" | "+" | "-" | "*" | "/" | "<" | ">" | "=:=" | "=/=" | "==" | "/=" | "=<" | ">=",
             2,
         ) => true,
         // Arity 3.
@@ -3039,7 +2984,10 @@ mod tests {
         let abs_2 = CErlExpr::Call {
             module: CErlAtom("erlang".into()),
             fn_name: CErlAtom("abs".into()),
-            args: vec![CErlExpr::Lit(CErlLit::Int(-3)), CErlExpr::Lit(CErlLit::Int(0))],
+            args: vec![
+                CErlExpr::Lit(CErlLit::Int(-3)),
+                CErlExpr::Lit(CErlLit::Int(0)),
+            ],
         };
         assert!(contains_non_bif_call(&abs_2));
     }

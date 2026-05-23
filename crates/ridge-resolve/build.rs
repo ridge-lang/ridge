@@ -101,6 +101,8 @@ const BASELINE_EXPORTS: &[(&str, &[&str])] = &[
             "sub",
             "mul",
             "div",
+            "rem",
+            "mod",
             "neg",
             "wrappingAdd",
             "saturatingAdd",

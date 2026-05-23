@@ -213,10 +213,12 @@ pub fn stdlib_signature(module: StdlibModuleId, name: &str, b: &BuiltinTyCons) -
         (STD_INT, "parse") => Some(mono(ty_fn_pure(vec![ty_text(b)], ty_option(b, ty_int(b))))),
         // T12: abs, neg — unary Int -> Int.
         (STD_INT, "abs" | "neg") => Some(mono(ty_fn_pure(vec![ty_int(b)], ty_int(b)))),
-        // T12: binary Int -> Int -> Int (min, max, add, sub, mul, div, wrappingAdd, saturatingAdd).
-        (STD_INT, "min" | "max" | "add" | "sub" | "mul" | "div" | "wrappingAdd" | "saturatingAdd") => {
-            Some(mono(ty_fn_pure(vec![ty_int(b), ty_int(b)], ty_int(b))))
-        }
+        // T12: binary Int -> Int -> Int (min, max, add, sub, mul, div, rem, mod, wrappingAdd, saturatingAdd).
+        (
+            STD_INT,
+            "min" | "max" | "add" | "sub" | "mul" | "div" | "rem" | "mod" | "wrappingAdd"
+            | "saturatingAdd",
+        ) => Some(mono(ty_fn_pure(vec![ty_int(b), ty_int(b)], ty_int(b)))),
 
         // ── std.float ─────────────────────────────────────────────────────────
         (STD_FLOAT, "toText") => Some(mono(ty_fn_pure(vec![ty_float(b)], ty_text(b)))),

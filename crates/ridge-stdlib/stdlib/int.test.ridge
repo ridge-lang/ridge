@@ -14,6 +14,13 @@ fn _abs (n: Int) -> Int
 @ffi("erlang", "-", 1)
 fn _neg (n: Int) -> Int
 
+@ffi("erlang", "rem", 2)
+fn _rem (a: Int) (b: Int) -> Int
+
+fn _mod (a: Int) (b: Int) -> Int =
+    let r = _rem a b
+    _rem (r + b) b
+
 fn _min (a: Int) (b: Int) -> Int = if a <= b then a else b
 fn _max (a: Int) (b: Int) -> Int = if a >= b then a else b
 
@@ -90,3 +97,43 @@ pub fn test_saturatingAdd_clamps_low () -> Result Unit Text =
     let minVal = -9223372036854775808
     if _saturatingAdd minVal (_neg 1) == minVal then Ok ()
     else Err "saturatingAdd minVal (-1) should clamp to minVal"
+
+pub fn test_rem_positive () -> Result Unit Text =
+    if (_rem 10 3) == 1 then Ok ()
+    else Err "10 rem 3 should be 1"
+
+pub fn test_rem_negative_dividend_takes_dividend_sign () -> Result Unit Text =
+    if (_rem (_neg 10) 3) == (_neg 1) then Ok ()
+    else Err "(-10) rem 3 should be -1 (rem takes the dividend's sign)"
+
+pub fn test_rem_zero_dividend () -> Result Unit Text =
+    if (_rem 0 7) == 0 then Ok ()
+    else Err "0 rem 7 should be 0"
+
+pub fn test_mod_positive () -> Result Unit Text =
+    if (_mod 10 3) == 1 then Ok ()
+    else Err "10 mod 3 should be 1"
+
+pub fn test_mod_negative_dividend_takes_divisor_sign () -> Result Unit Text =
+    if (_mod (_neg 10) 3) == 2 then Ok ()
+    else Err "(-10) mod 3 should be 2 (mod takes the divisor's sign)"
+
+pub fn test_mod_negative_divisor () -> Result Unit Text =
+    if (_mod 10 (_neg 3)) == (_neg 2) then Ok ()
+    else Err "10 mod (-3) should be -2 (mod takes the divisor's sign)"
+
+pub fn test_mod_both_negative () -> Result Unit Text =
+    if (_mod (_neg 10) (_neg 3)) == (_neg 1) then Ok ()
+    else Err "(-10) mod (-3) should be -1"
+
+pub fn test_percent_operator_lowers_to_mod () -> Result Unit Text =
+    if ((_neg 10) % 3) == 2 then Ok ()
+    else Err "(-10) % 3 should be 2 (% lowers to std.int.mod)"
+
+pub fn test_percent_operator_fizzbuzz_15 () -> Result Unit Text =
+    if (15 % 15) == 0 then
+        if (15 % 3) == 0 then
+            if (15 % 5) == 0 then Ok ()
+            else Err "15 % 5 should be 0"
+        else Err "15 % 3 should be 0"
+    else Err "15 % 15 should be 0"

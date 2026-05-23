@@ -29,10 +29,42 @@ bash -c "$(curl -fsSL https://raw.githubusercontent.com/ridge-lang/ridge/main/to
 & ([scriptblock]::Create((iwr -useb 'https://raw.githubusercontent.com/ridge-lang/ridge/main/tools/install/install.ps1').Content))
 ```
 
-To pin a specific Ridge release, set `RIDGE_VERSION=v0.2.0` before
+To pin a specific Ridge release, set `RIDGE_VERSION=v0.2.1` before
 running the installer. See the
 [tutorial](https://github.com/ridge-lang/ridge/blob/main/docs/tutorial.md)
 for the full install walkthrough.
+
+## How it works (and how to update the language)
+
+The extension is a thin LSP client. It does not bundle the Ridge compiler
+or analyzer. When you open a `.ridge` file, the extension spawns the
+`ridge-lsp` binary from your `PATH` and proxies JSON-RPC messages
+between it and the editor; all type checking, diagnostics, and
+formatting come from that binary.
+
+```
+┌─────────────────────────────┐     ┌─────────────────────────────┐
+│  VS Code                    │     │  ridge-lsp binary           │
+│  + this extension           │     │  (in PATH, separate install)│
+│  • syntax grammar           │ JSON│  • lexer, parser            │
+│  • language config          │ RPC │  • resolver, typechecker    │
+│  • LSP client               │◀───▶│  • diagnostics              │
+│  • spawns ridge-lsp         │stdio│  • formatter                │
+└─────────────────────────────┘     └─────────────────────────────┘
+        installed once via              installed via install script,
+        the Marketplace                  re-run for each release
+```
+
+The practical consequence: **compiler and diagnostic fixes ship with
+the `ridge-lsp` binary, not with the extension**. A Ridge maintenance
+release that improves diagnostics or fixes a codegen bug only requires
+re-running the install script to update the binary; the extension you
+installed from the Marketplace keeps working as-is.
+
+If something stops behaving the way the [tutorial](https://github.com/ridge-lang/ridge/blob/main/docs/tutorial.md)
+says it should, re-run the install script first to make sure your
+`ridge-lsp` matches the latest release; reinstalling the extension
+itself rarely helps for compiler-side issues.
 
 ## Settings
 

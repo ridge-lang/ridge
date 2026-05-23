@@ -575,9 +575,12 @@ pub fn lower_expr(ctx: &mut LowerCtx<'_>, expr: &Expr) -> IrExpr {
         // ── Send message to actor ─────────────────────────────────────────────
         //
         // `handle ! message` lowers to `IrExpr::Send`.
-        // The AST `message` is `Box<Expr>`; Phase 4 resolved it to a handler
-        // reference.  We extract the handler name from the expression for the
-        // SymbolRef::Handler best-effort construction.
+        //
+        // The parser stores the whole right-hand side in `message: Box<Expr>`,
+        // so `partner ! bounce x y` arrives here as
+        // `Send { message: Call { callee: Ident("bounce"), args: [x, y] } }`
+        // and `partner ! finish` as `Send { message: Ident("finish") }`.
+        // The lowering peels that off into the IR's `(handler_name, args)` pair.
         //
         // OQ-PHASE45-006: actor_module falls back to ctx.module_id (same-module
         // dominant case). Authoritative cross-module resolution requires the
@@ -593,7 +596,8 @@ pub fn lower_expr(ctx: &mut LowerCtx<'_>, expr: &Expr) -> IrExpr {
             // (Binding::Local + associated Handle X type).
             let actor_module = ctx.module_id;
             let handle = Box::new(lower_expr(ctx, handle));
-            let handler_name = expr_as_handler_name(message);
+            let (handler_name, msg_args) = unfold_send_message(message);
+            let args = msg_args.iter().map(|a| lower_expr(ctx, a)).collect();
             IrExpr::Send {
                 id,
                 handle,
@@ -605,9 +609,7 @@ pub fn lower_expr(ctx: &mut LowerCtx<'_>, expr: &Expr) -> IrExpr {
                     actor: String::new(),
                     handler: handler_name,
                 },
-                // AST Send carries no argument list; args is always empty here.
-                // The handler arguments appear as the callee's args in the source.
-                args: Vec::new(),
+                args,
                 span: *span,
             }
         }
@@ -901,10 +903,23 @@ fn wrap_partial_application_if_needed(
 /// module is resolved via the three-step `resolve_actor_module` precedence
 /// (`BindingMap` → bare-name cache → current-module fallback) — Group B 3.1.
 // PHASE45-Group-B: handler name extracted from ident; module resolved via BindingMap.
-fn expr_as_handler_name(expr: &Expr) -> String {
+/// Decompose the message expression of a `Send` into its handler name and
+/// argument list.
+///
+/// The parser stores `handle ! tag arg1 arg2` as
+/// `Send { message: Call { callee: Ident("tag"), args: [arg1, arg2] } }` and
+/// `handle ! tag` as `Send { message: Ident("tag") }`. Anything else
+/// (qualified names, computed expressions) falls back to an empty handler
+/// name and no args — same best-effort behaviour as before but applied at a
+/// shallower depth.
+fn unfold_send_message(expr: &Expr) -> (String, Vec<&Expr>) {
     match expr {
-        Expr::Ident(ident) => ident.text.clone(),
-        _ => String::new(),
+        Expr::Ident(ident) => (ident.text.clone(), Vec::new()),
+        Expr::Call { callee, args, .. } => match callee.as_ref() {
+            Expr::Ident(ident) => (ident.text.clone(), args.iter().collect()),
+            _ => (String::new(), Vec::new()),
+        },
+        _ => (String::new(), Vec::new()),
     }
 }
 
@@ -2206,6 +2221,8 @@ mod tests {
 
     // ── Send lowers to IrExpr::Send with Handler symbol ──────────────────────
 
+    /// Bare-tag send: `handle ! report` (no args). Parser stores `message` as
+    /// a plain `Expr::Ident`; lowering must produce `args: []`.
     #[test]
     fn lower_expr_send_handler_name() {
         let mut ctx = fresh_ctx();
@@ -2227,7 +2244,67 @@ mod tests {
                 ..
             } => {
                 assert_eq!(s, span);
-                assert!(args.is_empty(), "AST Send has no args list");
+                assert!(args.is_empty(), "0-arg send must lower to empty args");
+                match message {
+                    SymbolRef::Handler { handler, .. } => assert_eq!(handler, "report"),
+                    other => panic!("expected Handler, got {other:?}"),
+                }
+            }
+            other => panic!("expected IrExpr::Send, got {other:?}"),
+        }
+        assert!(
+            ctx.errors.is_empty(),
+            "expected no errors; got: {:?}",
+            ctx.errors
+        );
+    }
+
+    /// Send with args: `handle ! report "url" 42`. Parser stores `message` as
+    /// `Expr::Call { callee: Ident("report"), args: [...] }`. Lowering must
+    /// unfold the call and propagate the args into `IrExpr::Send.args`.
+    ///
+    /// Regression for the codegen-erl path where missing args meant
+    /// `ridge_rt:send` was called with a payload of `{''}` (1-tuple with empty
+    /// atom): the receiver could not pattern-match against
+    /// `<{'report', V_A, V_B}> when ...` and dropped the message.
+    #[test]
+    fn lower_expr_send_handler_with_args() {
+        use ridge_ast::Literal;
+
+        let mut ctx = fresh_ctx();
+        let span = sp_at(0, 25);
+        let call_span = sp_at(5, 25);
+        let expr = Expr::Send {
+            handle: Box::new(Expr::Unit(sp())),
+            message: Box::new(Expr::Call {
+                callee: Box::new(Expr::Ident(Ident {
+                    text: "report".into(),
+                    span: sp(),
+                })),
+                args: vec![
+                    Expr::Literal(Literal::Text {
+                        raw: r#""url""#.into(),
+                        span: sp(),
+                    }),
+                    Expr::Literal(Literal::IntDec {
+                        raw: "42".into(),
+                        span: sp(),
+                    }),
+                ],
+                span: call_span,
+            }),
+            span,
+        };
+        let ir = lower_expr(&mut ctx, &expr);
+        match ir {
+            IrExpr::Send {
+                message,
+                args,
+                span: s,
+                ..
+            } => {
+                assert_eq!(s, span);
+                assert_eq!(args.len(), 2, "send must propagate the two args");
                 match message {
                     SymbolRef::Handler { handler, .. } => assert_eq!(handler, "report"),
                     other => panic!("expected Handler, got {other:?}"),

@@ -239,18 +239,28 @@ pub(crate) fn lower_handler_body_for_call(
 /// Lower a handler body for `handle_cast/2` (noreply path).
 ///
 /// B-7 fix: injects `{'noreply', V_State<final>}` AT the leaf of the body.
+///
+/// The leaf value is sequenced for its side effects (Io calls, message sends,
+/// etc.) and then the noreply tuple becomes the actual result of the clause.
+/// A naive `|_, idx| {noreply, V_State}` would discard the leaf entirely,
+/// silently dropping every side effect performed by the handler body when
+/// invoked via `!` (cast) — handlers reached via `?>` (call) were unaffected
+/// because their leaf wrap preserves the value.
 pub(crate) fn lower_handler_body_for_cast(
     body: &IrExpr,
     scope: &mut LocalScope,
     state_idx: &mut u32,
     span: Span,
 ) -> Result<CErlExpr, CodegenError> {
-    // Leaf wrap: {'noreply', V_State<idx>}  (val is ignored for cast)
-    let wrap: &dyn Fn(CErlExpr, u32) -> CErlExpr = &|_val, idx| {
-        CErlExpr::Tuple(vec![
+    let wrap: &dyn Fn(CErlExpr, u32) -> CErlExpr = &|val, idx| {
+        let noreply = CErlExpr::Tuple(vec![
             CErlExpr::Lit(CErlLit::Atom(CErlAtom("noreply".into()))),
             state_expr(idx),
-        ])
+        ]);
+        CErlExpr::Do {
+            first: Box::new(val),
+            then: Box::new(noreply),
+        }
     };
     lower_actor_body_stmts_w(body, scope, state_idx, span, wrap)
 }

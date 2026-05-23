@@ -1626,16 +1626,15 @@ mod tests {
     fn match_guarded_arm_redundant_after_unguarded() {
         let (arena, b) = make_builtins();
         let mut ctx = InferCtx::new();
-        let arms = vec![
-            bool_arm(true),
-            with_guard(bool_arm(true)),
-            bool_arm(false),
-        ];
+        let arms = vec![bool_arm(true), with_guard(bool_arm(true)), bool_arm(false)];
         let scrutinee_ty = Type::Con(b.bool, vec![]);
         check_exhaustiveness(&mut ctx, &arena, &b, &scrutinee_ty, &arms, dummy_span());
         let t017 = has_t017(&ctx.errors);
         if let TypeError::RedundantPattern { arm_index, .. } = t017 {
-            assert_eq!(*arm_index, 1, "arm 1 (true when ...) is redundant after arm 0");
+            assert_eq!(
+                *arm_index, 1,
+                "arm 1 (true when ...) is redundant after arm 0"
+            );
         } else {
             panic!("expected T017 on the guarded duplicate");
         }

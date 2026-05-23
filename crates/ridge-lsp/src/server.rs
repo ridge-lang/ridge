@@ -345,16 +345,12 @@ impl LanguageServer for RidgeLanguageServer {
                         })),
                     },
                 )),
-                diagnostic_provider: Some(DiagnosticServerCapabilities::Options(
-                    DiagnosticOptions {
-                        identifier: None,
-                        inter_file_dependencies: true,
-                        workspace_diagnostics: false,
-                        work_done_progress_options: WorkDoneProgressOptions {
-                            work_done_progress: None,
-                        },
-                    },
-                )),
+                // Diagnostics are pushed via `client.publish_diagnostics(...)`
+                // from `trigger_compile`. The pull endpoint
+                // `textDocument/diagnostic` (LSP 3.17) is intentionally not
+                // advertised because no `diagnostic()` handler is implemented;
+                // advertising the capability made LSP 3.17 clients log
+                // `-32601 Method not found` errors on every document open.
                 ..ServerCapabilities::default()
             },
             server_info: Some(ServerInfo {

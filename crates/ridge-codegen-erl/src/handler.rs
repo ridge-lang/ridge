@@ -391,13 +391,16 @@ mod tests {
         let (pid, pbm) = no_parent();
         let clause = lower_handler_cast_clause(&handler, &FxHashMap::default(), pid, pbm).unwrap();
 
-        // Walk down to find the noreply tuple.
+        // Walk down to find the noreply tuple. Skip past Let and Do — the cast
+        // leaf wrap is now `Do { first: <leaf side effect>, then: <noreply> }`
+        // so the noreply tuple lives in the `then` arm.
         fn contains_noreply(expr: &CErlExpr) -> bool {
             match expr {
                 CErlExpr::Tuple(elems) => {
                     matches!(&elems[0], CErlExpr::Lit(CErlLit::Atom(CErlAtom(s))) if s == "noreply")
                 }
                 CErlExpr::Let { body, .. } => contains_noreply(body),
+                CErlExpr::Do { then, .. } => contains_noreply(then),
                 _ => false,
             }
         }
@@ -405,6 +408,44 @@ mod tests {
         assert!(
             contains_noreply(&clause.body),
             "cast clause body must contain a noreply tuple"
+        );
+    }
+
+    /// Regression: the cast leaf must sequence the body value for its side effects
+    /// before returning `{noreply, V_State}`. A naive `|_, idx| {noreply, ...}` leaf
+    /// wrap discards every Io call / message send inside a `!`-invoked handler.
+    #[test]
+    #[allow(clippy::items_after_statements)]
+    fn cast_clause_preserves_leaf_side_effect() {
+        // Handler body: a Call node (stands in for any side-effecting leaf).
+        let leaf_call = IrExpr::Call {
+            id: IrNodeId(0),
+            callee: Box::new(lit_unit()),
+            args: vec![],
+            span: sp(),
+        };
+        let handler = make_handler("ping", vec![], leaf_call);
+        let (pid, pbm) = no_parent();
+        let clause = lower_handler_cast_clause(&handler, &FxHashMap::default(), pid, pbm).unwrap();
+
+        // The body must contain a Do node whose `then` reaches the noreply tuple;
+        // if it doesn't, the leaf side effect would be silently dropped.
+        fn has_do_before_noreply(expr: &CErlExpr) -> bool {
+            match expr {
+                CErlExpr::Do { then, .. } => matches!(then.as_ref(),
+                    CErlExpr::Tuple(elems)
+                        if matches!(&elems[0],
+                            CErlExpr::Lit(CErlLit::Atom(CErlAtom(s))) if s == "noreply")),
+                CErlExpr::Let { body, .. } => has_do_before_noreply(body),
+                _ => false,
+            }
+        }
+
+        assert!(
+            has_do_before_noreply(&clause.body),
+            "cast clause must sequence the leaf side effect before the noreply tuple, \
+             got: {:#?}",
+            clause.body
         );
     }
 

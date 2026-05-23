@@ -490,21 +490,24 @@ items:
                           Lit: Bool(false)
                         body:
                           Return(n188):
-                            Send(n189) ! Handler(m0..):
+                            Send(n189) ! Handler(m0..report):
                               handle:
                                 Field(n190).collector:
                                   Local(n191): __state
+                              args:
+                                Local(n192): allowed
+                                Local(n193): denied
             body:
-              Call(n192):
+              Call(n194):
                 callee:
-                  Local(n193): sendRequests
+                  Local(n195): sendRequests
                 args:
                   -
-                    Symbol(n194): Local(requestsPerWorker @ m0)
+                    Symbol(n196): Local(requestsPerWorker @ m0)
                   -
-                    Lit(n195): Int(0)
+                    Lit(n197): Int(0)
                   -
-                    Lit(n196): Int(0)
+                    Lit(n198): Int(0)
   - kind: fn
     name: main
     pub: false
@@ -513,86 +516,88 @@ items:
     ret_ty: Con(10) [Con(4), Con(12)]
     params: []
     body:
-      LetIn(n197):
+      LetIn(n199):
         pat:
           Bind: limiter
         value:
-          Spawn(n198) ActorType(Limiter @ m0):
+          Spawn(n200) ActorType(Limiter @ m0):
             args:
-              Lit(n199): Int(10)
-              Lit(n200): Float(2)
+              Lit(n201): Int(10)
+              Lit(n202): Float(2)
         body:
-          LetIn(n201):
+          LetIn(n203):
             pat:
               Bind: collector
             value:
-              Spawn(n202) ActorType(Collector @ m0):
+              Spawn(n204) ActorType(Collector @ m0):
                 args: []
             body:
-              LetIn(n203):
+              LetIn(n205):
                 pat:
                   Bind: workers
                 value:
-                  Call(n204):
+                  Call(n206):
                     callee:
-                      Symbol(n205): Stdlib(std.list.map)
+                      Symbol(n207): Stdlib(std.list.map)
                     args:
                       -
-                        Lambda(n206):
+                        Lambda(n208):
                           caps: CapabilitySet(0)
                           params:
                             - name: id
                               ty: c
                           body:
-                            Spawn(n207) ActorType(Worker @ m0):
+                            Spawn(n209) ActorType(Worker @ m0):
                               args:
-                                Local(n208): id
-                                Local(n209): limiter
-                                Local(n210): collector
+                                Local(n210): id
+                                Local(n211): limiter
+                                Local(n212): collector
                       -
-                        Call(n211):
+                        Call(n213):
                           callee:
-                            Symbol(n212): Stdlib(std.list.range)
+                            Symbol(n214): Stdlib(std.list.range)
                           args:
                             -
-                              Lit(n213): Int(1)
+                              Lit(n215): Int(1)
                             -
-                              Lit(n214): Int(5)
+                              Lit(n216): Int(5)
                 body:
-                  Block(n215):
-                    Call(n216):
+                  Block(n217):
+                    Call(n218):
                       callee:
-                        Symbol(n217): Stdlib(std.list.forEach)
+                        Symbol(n219): Stdlib(std.list.forEach)
                       args:
                         -
-                          Lambda(n218):
+                          Lambda(n220):
                             caps: CapabilitySet(0)
                             params:
                               - name: w
                                 ty: g
                             body:
-                              Send(n219) ! Handler(m0..):
+                              Send(n221) ! Handler(m0..run):
                                 handle:
-                                  Local(n220): w
+                                  Local(n222): w
+                                args:
+                                  Lit(n223): Unit
                         -
-                          Local(n221): workers
-                    Block(n222):
-                      Call(n223):
+                          Local(n224): workers
+                    Block(n225):
+                      Call(n226):
                         callee:
-                          Symbol(n224): Stdlib(std.time.sleep)
+                          Symbol(n227): Stdlib(std.time.sleep)
                         args:
                           -
-                            Lit(n225): Int(6000)
-                      Block(n226):
-                        Call(n227):
-                          callee:
-                            Symbol(n228): Stdlib(std.io.println)
-                          args:
-                            -
-                              Lit(n229): Text("Done.")
+                            Lit(n228): Int(6000)
+                      Block(n229):
                         Call(n230):
                           callee:
-                            Symbol(n231): Prelude(Ok)
+                            Symbol(n231): Stdlib(std.io.println)
                           args:
                             -
-                              Lit(n232): Unit
+                              Lit(n232): Text("Done.")
+                        Call(n233):
+                          callee:
+                            Symbol(n234): Prelude(Ok)
+                          args:
+                            -
+                              Lit(n235): Unit

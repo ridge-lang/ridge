@@ -25,6 +25,21 @@ use ridge_driver::{
     RunOptions,
 };
 
+/// Serialises tests that depend on the value of `$PATH` at the moment `erl`
+/// is resolved.
+///
+/// `run_missing_erlang` mutates the process-wide PATH to suppress `erl`
+/// discovery, and `cargo test` runs unit tests from the same binary in
+/// parallel. Without this lock, any happy-path test that resolves `erl` (the
+/// four `run_*` tests on the canonical examples) can race with the
+/// PATH-clearing test and fail with a spurious `ErlangNotFound` — or worse,
+/// the PATH-clearing test can pass while a parallel sibling silently uses an
+/// already-spawned child that captured the empty PATH at spawn time.
+///
+/// Acquire the lock in any test that either reads PATH (calls `erl`) or
+/// writes it. Other tests in this file can stay parallel.
+static PATH_ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
 /// Normalise line endings and trim trailing whitespace per line.
@@ -79,6 +94,8 @@ fn check_log_analyzer() {
 #[test]
 #[cfg(feature = "beam-runtime")]
 fn run_log_analyzer() {
+    let _guard = PATH_ENV_LOCK.lock().expect("PATH_ENV_LOCK not poisoned");
+
     let source = read_example("log_analyzer");
     let tw = make_workspace("log_analyzer", &source);
 
@@ -147,6 +164,8 @@ fn check_url_shortener() {
 #[test]
 #[cfg(feature = "beam-runtime")]
 fn run_url_shortener() {
+    let _guard = PATH_ENV_LOCK.lock().expect("PATH_ENV_LOCK not poisoned");
+
     let source = read_example("url_shortener");
     let tw = make_workspace("url_shortener", &source);
 
@@ -202,6 +221,8 @@ fn check_game_of_life() {
 #[test]
 #[cfg(feature = "beam-runtime")]
 fn run_game_of_life() {
+    let _guard = PATH_ENV_LOCK.lock().expect("PATH_ENV_LOCK not poisoned");
+
     let source = read_example("game_of_life");
     let tw = make_workspace("game_of_life", &source);
 
@@ -257,6 +278,8 @@ fn check_rate_limiter() {
 #[test]
 #[cfg(feature = "beam-runtime")]
 fn run_rate_limiter() {
+    let _guard = PATH_ENV_LOCK.lock().expect("PATH_ENV_LOCK not poisoned");
+
     let source = read_example("rate_limiter");
     let tw = make_workspace("rate_limiter", &source);
 
@@ -377,15 +400,16 @@ fn compile_forbid_rule_violation() {
 /// ensuring `which("erl")` fails.  We restore it after the test.
 #[test]
 fn run_missing_erlang() {
+    // Other tests in this binary call `erl`/`erlc`; hold PATH_ENV_LOCK so the
+    // PATH mutation below cannot leak to them.
+    let _guard = PATH_ENV_LOCK.lock().expect("PATH_ENV_LOCK not poisoned");
+
     let source = read_example("url_shortener");
     let tw = make_workspace("url_shortener", &source);
 
     // Override PATH to a directory that definitely does not contain `erl`.
     let empty_dir = tempfile::TempDir::new().expect("create empty tempdir");
     let original_path = std::env::var_os("PATH");
-    // Note: setting env vars is not thread-safe across tests that run in parallel
-    // in the same process.  Integration tests run in separate test binaries so
-    // this is safe here (each integration test file is its own process).
     std::env::set_var("PATH", empty_dir.path());
 
     let result = run_workspace(RunOptions::new(tw.path.clone(), "demo".to_owned()));

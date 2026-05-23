@@ -65,6 +65,23 @@ pub fn mod (a: Int) (b: Int) -> Int =
 @ffi("erlang", "-", 1)
 pub fn neg (n: Int) -> Int
 
+-- Integer power: `base` raised to a non-negative integer `exp`.
+-- Implemented via repeated squaring so the result is exact even for large
+-- exponents. The compiler lowering of the `^` operator routes here.
+--
+-- Conventions:
+-- - `pow n 0` returns `1` for every `n` (including `0`).
+-- - `pow 0 k` returns `0` for `k > 0`.
+-- - Negative exponents yield `0` (truncating semantics — Ridge's `Int` model
+--   cannot represent fractions; use `std.float.pow` instead for `Float`).
+pub fn pow (base: Int) (exp: Int) -> Int =
+    if exp < 0 then 0
+    else if exp == 0 then 1
+    else if rem exp 2 == 0 then
+        let half = pow base (div exp 2)
+        half * half
+    else base * pow base (exp - 1)
+
 -- Wrapping addition — result is masked to the 64-bit signed range.
 -- Erlang integers are arbitrary-precision, so we simulate 64-bit wrap
 -- by subtracting / adding the 64-bit modulus when the result overflows.

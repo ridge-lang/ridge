@@ -1,8 +1,10 @@
 //! Regression test for stdlib BEAM bundling.
 //!
-//! Lives in its own test binary so it does not race with `run_missing_erlang`
-//! in `integration.rs`, which mutates the process-wide PATH to suppress
-//! `erl` discovery (see comment at the top of that test).
+//! Lives in its own test binary, isolating it from `run_missing_erlang` in
+//! `integration.rs` (which mutates the process-wide PATH). `integration.rs`
+//! now serialises PATH-dependent tests via a module-level mutex, so the
+//! file-level split is defence-in-depth rather than the only thing keeping
+//! these two tests apart.
 
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 

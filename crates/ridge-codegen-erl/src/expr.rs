@@ -111,26 +111,119 @@ fn lit_true_pat() -> crate::core_ast::CErlPat {
     crate::core_ast::CErlPat::Lit(CErlLit::Atom(CErlAtom("true".into())))
 }
 
-/// True when `expr` contains a call whose module is not `erlang`.
+/// Return `true` if `erlang:<fn_name>/<arity>` is a BEAM guard BIF — i.e. one
+/// of the functions BEAM permits in `case` clause-guard position.
 ///
-/// BEAM `case` clause guards only admit calls to the small whitelist of guard
-/// BIFs — all of which live in the `erlang:` module. Any call to a different
-/// module (a stdlib helper, a user-defined function) makes the surrounding
-/// guard illegal, so the arm must be rewritten out of clause-guard position.
+/// The list mirrors the reference manual's "Guards" section: arithmetic and
+/// bitwise operators, term-info accessors, type-check predicates, the boolean
+/// connectives, and the comparison operators. Anything outside this list is
+/// either not callable in a guard at all (most of `erlang:*` falls here) or
+/// not exposed via the `erlang:` module name.
+fn is_erlang_guard_bif(fn_name: &str, arity: usize) -> bool {
+    match (fn_name, arity) {
+        // Arity 0.
+        ("self", 0) => true,
+        // Arity 1.
+        (
+            "abs"
+            | "bit_size"
+            | "bnot"
+            | "byte_size"
+            | "ceil"
+            | "float"
+            | "floor"
+            | "hd"
+            | "is_atom"
+            | "is_binary"
+            | "is_bitstring"
+            | "is_boolean"
+            | "is_float"
+            | "is_function"
+            | "is_integer"
+            | "is_list"
+            | "is_map"
+            | "is_number"
+            | "is_pid"
+            | "is_port"
+            | "is_reference"
+            | "is_tuple"
+            | "length"
+            | "map_size"
+            | "node"
+            | "not"
+            | "round"
+            | "size"
+            | "tl"
+            | "trunc"
+            | "tuple_size"
+            | "-"
+            | "+",
+            1,
+        ) => true,
+        // Arity 2.
+        (
+            "and"
+            | "band"
+            | "binary_part"
+            | "bor"
+            | "bsl"
+            | "bsr"
+            | "bxor"
+            | "div"
+            | "element"
+            | "is_function"
+            | "is_map_key"
+            | "is_record"
+            | "map_get"
+            | "max"
+            | "min"
+            | "or"
+            | "rem"
+            | "xor"
+            | "+"
+            | "-"
+            | "*"
+            | "/"
+            | "<"
+            | ">"
+            | "=:="
+            | "=/="
+            | "=="
+            | "/="
+            | "=<"
+            | ">=",
+            2,
+        ) => true,
+        // Arity 3.
+        ("binary_part" | "is_record", 3) => true,
+        _ => false,
+    }
+}
+
+/// Return `true` when `expr` (a guard expression) contains a call that BEAM
+/// rejects in clause-guard position.
 ///
-/// Conservative: some `erlang:*` functions are not guard BIFs either (e.g.
-/// `erlang:list_to_binary/1`). Those slip past this check and BEAM rejects
-/// them at load time — same outcome as the current shipping behaviour for
-/// such code. Tightening the whitelist is a follow-up.
+/// BEAM `case` clause guards only admit a small, fixed set of `erlang:` BIFs
+/// — arithmetic operators, comparison operators, term-info accessors, type
+/// guards, and boolean connectives. Anything else (a stdlib helper, a
+/// user-defined function, or an `erlang:*` function that exists but is not a
+/// guard BIF such as `erlang:list_to_binary/1`) makes the surrounding guard
+/// illegal, so the arm must be rewritten out of clause-guard position via
+/// [`lift_guarded_match`].
 fn contains_non_bif_call(expr: &CErlExpr) -> bool {
     match expr {
         CErlExpr::Lit(_) | CErlExpr::Var(_) | CErlExpr::LocalFnRef { .. } => false,
 
         CErlExpr::Call {
             module: CErlAtom(m),
+            fn_name: CErlAtom(f),
             args,
-            ..
-        } => m != "erlang" || args.iter().any(contains_non_bif_call),
+        } => {
+            if m != "erlang" || !is_erlang_guard_bif(f, args.len()) {
+                return true;
+            }
+            args.iter().any(contains_non_bif_call)
+        }
 
         // `apply` indirects through a fun reference; never legal in a guard.
         CErlExpr::Apply { .. } => true,
@@ -2894,6 +2987,61 @@ mod tests {
             args: vec![CErlExpr::Var(CErlVar("X".into()))],
         };
         assert!(contains_non_bif_call(&expr));
+    }
+
+    /// Regression: not every `erlang:*` function is a guard BIF.
+    /// `erlang:integer_to_binary/1` is reachable via `@ffi("erlang",
+    /// "integer_to_binary", 1)` in stdlib but is NOT permitted in clause
+    /// guards. Without the per-name whitelist, this call slipped past the
+    /// loose `m == "erlang"` check and BEAM rejected the resulting code at
+    /// load time. The guard must now be lifted instead.
+    #[test]
+    fn contains_non_bif_call_flags_non_guard_erlang_fn() {
+        let expr = CErlExpr::Call {
+            module: CErlAtom("erlang".into()),
+            fn_name: CErlAtom("integer_to_binary".into()),
+            args: vec![CErlExpr::Var(CErlVar("N".into()))],
+        };
+        assert!(contains_non_bif_call(&expr));
+    }
+
+    /// Regression: a comparison wrapped around a non-guard `erlang:*` call
+    /// must propagate the inner unsafety even though the outer `=:=` is a
+    /// guard BIF. This is the realistic shape: `Int.toText n == "0"` lowers
+    /// to `=:= (integer_to_binary n) "0"`.
+    #[test]
+    fn contains_non_bif_call_flags_non_guard_erlang_inside_eq() {
+        let inner = CErlExpr::Call {
+            module: CErlAtom("erlang".into()),
+            fn_name: CErlAtom("integer_to_binary".into()),
+            args: vec![CErlExpr::Var(CErlVar("N".into()))],
+        };
+        let outer = CErlExpr::Call {
+            module: CErlAtom("erlang".into()),
+            fn_name: CErlAtom("=:=".into()),
+            args: vec![inner, CErlExpr::Lit(CErlLit::Int(0))],
+        };
+        assert!(contains_non_bif_call(&outer));
+    }
+
+    /// Sanity: explicit arity matters. `erlang:abs/1` IS a guard BIF; an
+    /// `erlang:abs` call with the wrong number of args (which can't actually
+    /// occur from legitimate codegen) would not be on the whitelist.
+    #[test]
+    fn contains_non_bif_call_respects_arity() {
+        let abs_1 = CErlExpr::Call {
+            module: CErlAtom("erlang".into()),
+            fn_name: CErlAtom("abs".into()),
+            args: vec![CErlExpr::Lit(CErlLit::Int(-3))],
+        };
+        assert!(!contains_non_bif_call(&abs_1));
+
+        let abs_2 = CErlExpr::Call {
+            module: CErlAtom("erlang".into()),
+            fn_name: CErlAtom("abs".into()),
+            args: vec![CErlExpr::Lit(CErlLit::Int(-3)), CErlExpr::Lit(CErlLit::Int(0))],
+        };
+        assert!(contains_non_bif_call(&abs_2));
     }
 
     #[test]

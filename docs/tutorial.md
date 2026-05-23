@@ -298,3 +298,21 @@ The placeholder icon at `tools/vscode-ridge/images/icon.png` or the
 R013 needs a workspace-level `forbid` rule, which `ridge new` doesn't
 emit by default. The pre-wired `tools/vscode-ridge-test/` workspace
 has one configured; use it to observe R013.
+
+**Non-ASCII output renders as mojibake on Windows (`°` → `Â°`, `é` → `Ã©`).**
+`Io.println` writes UTF-8 to stdout, but the default Windows console
+codepage is the system locale (cp1252 on most English/Spanish installs),
+so the bytes are misdecoded. Switch the active codepage to UTF-8 before
+running Ridge programs that print non-ASCII text:
+
+```powershell
+chcp 65001
+ridge run
+```
+
+The change lasts for the lifetime of the current console window. To make
+it permanent, add `chcp 65001 > $null` to your PowerShell profile
+(`$PROFILE`). Windows Terminal users can also enable
+*Settings → Defaults → Advanced → Use Unicode UTF-8 for worldwide
+language support* in the system Region settings; the change applies to
+new console sessions after a reboot.

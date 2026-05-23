@@ -203,8 +203,18 @@ pub fn compile_workspace(options: CompileOptions) -> Result<CompileArtefacts, Co
     // the stdlib on the BEAM code path.
     if invoke_erlc {
         let beam_dir = codegen_out_root.join("beam");
-        // Non-fatal: stdlib compilation errors do not abort the user's build.
-        let _ = compile_stdlib_beams(&beam_dir, &codegen_out_root, map_profile(options.profile));
+        // Non-fatal at the user's build level: a stdlib bundling failure leaves
+        // the user with a typecheck-clean build that crashes at boot with
+        // `undef`. Surface the error to stderr so the next layer (user, CI)
+        // can act on it rather than discovering it during runtime.
+        if let Err(e) =
+            compile_stdlib_beams(&beam_dir, &codegen_out_root, map_profile(options.profile))
+        {
+            eprintln!("warning: stdlib BEAM bundling failed: {e:?}");
+            eprintln!(
+                "warning: programs calling Ridge-bodied stdlib functions (List.head, Option.withDefault, ...) will crash at runtime with `undef`."
+            );
+        }
     }
 
     // ── 5. Collect artefact paths and diagnostics ─────────────────────────────
@@ -278,8 +288,12 @@ pub fn compile_workspace(options: CompileOptions) -> Result<CompileArtefacts, Co
 /// Compile Ridge stdlib `.ridge` sources to `.beam` files and place them in `beam_dir`.
 ///
 /// Each stdlib module's BEAM atom is its dotted FQN (e.g. `'std.list'`), so the
-/// corresponding file is `std.list.beam`.  This is required for
+/// corresponding file is `std.list.beam`. This is required for
 /// `BridgeTarget::RidgeStdlibLocal` callers that emit `call 'std.list':head(1)`.
+///
+/// Sources are unpacked from the [`ridge_stdlib::STDLIB_SOURCES`] slice into a
+/// per-build tempdir, not read from a compile-time path. Released binaries are
+/// therefore independent of the absolute layout of the machine that built them.
 ///
 /// Idempotent: returns early if `beam_dir/std.list.beam` already exists.
 ///
@@ -289,7 +303,7 @@ pub fn compile_workspace(options: CompileOptions) -> Result<CompileArtefacts, Co
 /// # Errors
 ///
 /// Returns the first `ridge_codegen_erl::CodegenError` encountered (output dir
-/// creation, lowering, or `erlc` failure).
+/// creation, source unpacking, lowering, or `erlc` failure).
 fn compile_stdlib_beams(
     beam_dir: &std::path::Path,
     out_root: &std::path::Path,
@@ -300,10 +314,11 @@ fn compile_stdlib_beams(
         return Ok(());
     }
 
-    // Locate stdlib sources via the `ridge-stdlib` crate's embedded manifest dir.
-    let stdlib_src = ridge_stdlib::stdlib_sources_dir();
-
-    // Build a temporary workspace pointing at the stdlib source directory.
+    // Build a temporary workspace and unpack the embedded stdlib sources into
+    // it. Released binaries cannot rely on a compile-time absolute path to the
+    // stdlib sources because that path only resolves on the build machine —
+    // so we unpack from the `STDLIB_SOURCES` slice embedded by ridge-stdlib's
+    // build script.
     let td = tempfile::TempDir::new().map_err(|e| {
         ridge_codegen_erl::CodegenError::OutputDirNotWritable {
             path: out_root.to_path_buf(),
@@ -322,22 +337,19 @@ fn compile_stdlib_beams(
         io_err: e.to_string(),
     })?;
 
-    // Write project manifest with absolute src_root pointing at real stdlib.
+    // Unpack embedded sources into `<ws_root>/std/src/`.
     let std_dir = ws_root.join("std");
-    std::fs::create_dir_all(&std_dir).map_err(|e| {
+    let std_src_dir = std_dir.join("src");
+    ridge_stdlib::write_stdlib_sources_to(&std_src_dir).map_err(|e| {
         ridge_codegen_erl::CodegenError::OutputDirNotWritable {
-            path: std_dir.clone(),
+            path: std_src_dir.clone(),
             io_err: e.to_string(),
         }
     })?;
-    // On Windows, Path::display() uses backslashes; TOML requires a string value
-    // that the manifest parser stores verbatim, then feeds to Path::join.
-    // Using forward slashes works on all platforms for the absolute path string.
-    let stdlib_src_str = stdlib_src.to_string_lossy().replace('\\', "/");
-    let proj_toml = format!(
-        "[project]\nname = \"std\"\nversion = \"0.1.0\"\nkind = \"library\"\n\n[project.src]\nroot = \"{stdlib_src_str}\"\n\n[project.exports]\npublic = [\"std.**\"]\n"
-    );
-    std::fs::write(std_dir.join("ridge.toml"), &proj_toml).map_err(|e| {
+
+    // Write project manifest with src_root pointing at the unpacked sources.
+    let proj_toml = "[project]\nname = \"std\"\nversion = \"0.1.0\"\nkind = \"library\"\n\n[project.src]\nroot = \"src\"\n\n[project.exports]\npublic = [\"std.**\"]\n";
+    std::fs::write(std_dir.join("ridge.toml"), proj_toml).map_err(|e| {
         ridge_codegen_erl::CodegenError::OutputDirNotWritable {
             path: std_dir.join("ridge.toml"),
             io_err: e.to_string(),
@@ -347,20 +359,30 @@ fn compile_stdlib_beams(
     // Run the Ridge pipeline over the stdlib workspace.
     let disc = discover_workspace(ws_root);
     let Some(ws_graph) = disc.graph else {
-        // Discovery failed — not a fatal codegen error, but we can't proceed.
+        eprintln!(
+            "warning: stdlib BEAM bundling: workspace discovery failed at {}",
+            ws_root.display()
+        );
         return Ok(());
     };
     let resolved = resolve_workspace(ws_graph);
-    // Surface any errors that would prevent useful compilation.
     if resolved
         .errors
         .iter()
         .any(|(_, e)| e.severity() == Severity::Error)
     {
+        eprintln!(
+            "warning: stdlib BEAM bundling: resolve produced {} error(s)",
+            resolved.errors.len()
+        );
         return Ok(());
     }
     let typecheck_result = typecheck_workspace(&resolved);
     if !typecheck_result.errors.is_empty() {
+        eprintln!(
+            "warning: stdlib BEAM bundling: typecheck produced {} error(s)",
+            typecheck_result.errors.len()
+        );
         return Ok(());
     }
     let lowered = lower_workspace(&typecheck_result.typed, &resolved);
@@ -389,7 +411,8 @@ fn compile_stdlib_beams(
 
     // Probe erlc.
     let Ok(erlc_info) = erlc::probe(None) else {
-        return Ok(()); // erlc not available — skip silently
+        eprintln!("warning: stdlib BEAM bundling: erlc not found on PATH; install Erlang/OTP");
+        return Ok(());
     };
 
     // Compile each stdlib module with its FQN as the BEAM atom.

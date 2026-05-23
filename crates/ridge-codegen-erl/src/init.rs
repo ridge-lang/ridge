@@ -343,6 +343,10 @@ fn lower_actor_block_w(
                     *state_idx += 1;
                     let next_state_var = state_var(*state_idx);
 
+                    // Value runs BEFORE the assign visibly takes effect: reads of
+                    // any state field on the RHS must see the pre-assign state, so
+                    // lower the value with the current scope.actor_state_idx still
+                    // pointing at prev_state.
                     let lowered_value = lower_expr_in_scope(value, scope)?;
 
                     let maps_put = CErlExpr::Call {
@@ -354,6 +358,11 @@ fn lower_actor_block_w(
                             prev_state,
                         ],
                     };
+
+                    // Retarget the synthetic `__state` local to the just-bound
+                    // V_State<idx> so subsequent reads in this block see the new
+                    // state value.
+                    scope.actor_state_idx = *state_idx;
 
                     // Thread leaf_wrap into the rest of the block.
                     let rest_expr =
@@ -612,6 +621,10 @@ fn lower_expr_in_actor_context_w(
                 .collect::<Result<Vec<_>, CodegenError>>()?;
 
             *state_idx = max_state_idx;
+            // Mirror state_idx onto the scope so post-match reads of `__state`
+            // resolve to the highest state version reached by any arm. Arms each
+            // saw their own cloned scope; the outer scope must be updated here.
+            scope.actor_state_idx = max_state_idx;
             Ok(CErlExpr::Case {
                 scrutinee: Box::new(lowered_scrutinee),
                 clauses,
@@ -628,6 +641,9 @@ fn lower_expr_in_actor_context_w(
             *state_idx += 1;
             let next_state_var = state_var(*state_idx);
             let lowered_value = lower_expr_in_scope(value, scope)?;
+            // Retarget the synthetic `__state` local to the just-bound
+            // V_State<idx> (mirrors the block-level path).
+            scope.actor_state_idx = *state_idx;
             let maps_put = CErlExpr::Call {
                 module: CErlAtom("maps".into()),
                 fn_name: CErlAtom("put".into()),
@@ -851,5 +867,76 @@ mod tests {
 
         // state_idx must be bumped.
         assert_eq!(state_idx, 1, "state_idx must have incremented to 1");
+    }
+
+    /// Regression for the state-read-after-assign bug: any read of a state
+    /// field that follows an assign in the same actor body must resolve to the
+    /// just-bound V_State<n>, not the stale V_State. Before the scope-tracking
+    /// fix, `count <- 1; count` would emit
+    /// `let V_State1 = maps:put('count', 1, V_State) in maps:get('count', V_State)`
+    /// — pointing the read at the pre-assign map and reporting the old value.
+    #[test]
+    #[allow(clippy::items_after_statements)]
+    fn state_read_after_assign_uses_new_state_var() {
+        let assign_stmt = IrExpr::Assign {
+            id: ridge_ir::IrNodeId(0),
+            target: ridge_ir::AssignTarget::StateField {
+                name: "count".into(),
+                span: sp(),
+            },
+            value: Box::new(lit_int(1)),
+            span: sp(),
+        };
+        let read_after = IrExpr::Field {
+            id: ridge_ir::IrNodeId(0),
+            base: Box::new(IrExpr::Local {
+                id: ridge_ir::IrNodeId(0),
+                name: "__state".to_owned(),
+                span: sp(),
+            }),
+            field: "count".into(),
+            span: sp(),
+        };
+        let stmts = vec![assign_stmt, read_after];
+        let mut scope = LocalScope::new();
+        let mut state_idx: u32 = 0;
+
+        let result = lower_actor_body_stmts(
+            &IrExpr::Block {
+                id: ridge_ir::IrNodeId(0),
+                stmts,
+                span: sp(),
+            },
+            &mut scope,
+            &mut state_idx,
+            sp(),
+        )
+        .unwrap();
+
+        // Outer shape: Let { var: V_State1, value: maps:put(..., V_State), body: <read> }
+        let CErlExpr::Let { var, body, .. } = &result else {
+            panic!("expected Let, got {result:?}");
+        };
+        assert_eq!(var.0, "V_State1");
+
+        // Body must be a maps:get whose final arg references V_State1.
+        let CErlExpr::Call {
+            module,
+            fn_name,
+            args,
+        } = body.as_ref()
+        else {
+            panic!("expected Call (maps:get) in body, got {body:?}");
+        };
+        assert_eq!(module.0, "maps");
+        assert_eq!(fn_name.0, "get");
+        assert!(
+            matches!(&args[1], CErlExpr::Var(CErlVar(s)) if s == "V_State1"),
+            "post-assign state-field read must target V_State1, got {:?}",
+            &args[1]
+        );
+
+        // Scope must also be retargeted so any further reads agree.
+        assert_eq!(scope.actor_state_idx, 1);
     }
 }

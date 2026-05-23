@@ -89,6 +89,17 @@ pub(crate) struct LocalScope {
     ///
     /// `None` in unit tests or contexts where the beam name is unknown.
     pub(crate) own_module_beam_name: Option<Arc<str>>,
+    /// Current SSA index of the synthetic `__state` map inside an actor handler
+    /// or init body.
+    ///
+    /// State-field assigns (`field <- expr`) lower to a `let V_State<n+1> = ...`
+    /// chain. Without tracking the latest index in the scope, reads of the
+    /// `__state` base local (lowered from any state-field ident inside the same
+    /// handler) would always resolve to bare `V_State` and see the pre-mutation
+    /// value. The actor body lowering bumps this in lockstep with the
+    /// `state_idx` parameter; the `IrExpr::Local { name: "__state" }` lookup in
+    /// `lower_expr` consults this field to emit `V_State<actor_state_idx>`.
+    pub(crate) actor_state_idx: u32,
 }
 
 impl LocalScope {
@@ -100,6 +111,7 @@ impl LocalScope {
             actor_parent: None,
             letrec_locals: Arc::new(FxHashSet::default()),
             own_module_beam_name: None,
+            actor_state_idx: 0,
         }
     }
 
@@ -114,6 +126,7 @@ impl LocalScope {
             actor_parent: None,
             letrec_locals: Arc::new(FxHashSet::default()),
             own_module_beam_name: None,
+            actor_state_idx: 0,
         }
     }
 
@@ -132,6 +145,7 @@ impl LocalScope {
             actor_parent: None,
             letrec_locals: Arc::new(FxHashSet::default()),
             own_module_beam_name: Some(Arc::from(module_beam_name)),
+            actor_state_idx: 0,
         }
     }
 
@@ -146,6 +160,7 @@ impl LocalScope {
             actor_parent: None,
             letrec_locals: Arc::new(FxHashSet::default()),
             own_module_beam_name: None,
+            actor_state_idx: 0,
         }
     }
 
@@ -166,6 +181,7 @@ impl LocalScope {
             actor_parent: Some((parent_module_id, Arc::from(parent_beam_name))),
             letrec_locals: Arc::new(FxHashSet::default()),
             own_module_beam_name: None,
+            actor_state_idx: 0,
         }
     }
 

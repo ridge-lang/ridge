@@ -106,10 +106,10 @@ cd <repo-root>/tools/vscode-ridge
 pnpm install
 pnpm run bundle
 pnpm dlx @vscode/vsce package --no-dependencies
-code --install-extension ./vscode-ridge-0.2.0.vsix
+code --install-extension ./vscode-ridge-0.2.1.vsix
 ```
 
-On Windows, use the literal path `.\vscode-ridge-0.2.0.vsix` —
+On Windows, use the literal path `.\vscode-ridge-0.2.1.vsix` —
 PowerShell doesn't glob-expand external command arguments, so
 `*.vsix` won't match.
 

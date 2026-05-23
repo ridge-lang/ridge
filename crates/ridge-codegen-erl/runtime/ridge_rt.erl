@@ -11,7 +11,7 @@
     time_now/0, time_now/1, time_epoch/0, time_epoch/1,
     time_diff_ms/2, time_diff/2,
     time_from_iso/1, time_since_ms/1, time_iso/1,
-    int_parse/0, int_parse/1, float_to_text/1, bool_to_text/1,
+    int_parse/0, int_parse/1, float_parse/1, float_to_text/1, bool_to_text/1,
     text_split_all/2, text_replace_all/3,
     list_fold/3, list_sort_by/2,
     random_int/2, random_choice/1, random_float/1, random_alphanumeric/1, random_seed/1,
@@ -141,6 +141,19 @@ int_parse() -> fun int_parse/1.
 
 int_parse(B) ->
     try {some, binary_to_integer(B)} catch _:_ -> none end.
+
+%% float_parse/1: std.float.parse — Text -> Option Float.
+%% Accepts both float-shaped strings ("3.14", "1e3") and integer-shaped
+%% strings ("100"), returning none only when neither form parses.
+%% Erlang's binary_to_float/1 rejects "100" with badarg even though it is a
+%% valid Float value; falling back to binary_to_integer + erlang:float/1
+%% mirrors what callers (and most languages) expect from a Float parser.
+float_parse(B) ->
+    try {some, binary_to_float(B)}
+    catch _:_ ->
+        try {some, float(binary_to_integer(B))}
+        catch _:_ -> none end
+    end.
 
 float_to_text(F) -> iolist_to_binary(io_lib:format("~p", [F])).
 

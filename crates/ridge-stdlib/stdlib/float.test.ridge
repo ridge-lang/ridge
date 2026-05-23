@@ -7,7 +7,8 @@ fn _toText (f: Float) -> Text
 @ffi("erlang", "binary_to_float", 1)
 fn _parseRaw (s: Text) -> Float
 
-fn _parse (s: Text) -> Option Float = Some (_parseRaw s)
+@ffi("ridge_rt", "float_parse", 1)
+fn _parse (s: Text) -> Option Float
 
 @ffi("erlang", "float", 1)
 fn _fromInt (n: Int) -> Float
@@ -69,6 +70,21 @@ pub fn test_toText_integer_value () -> Result Unit Text =
 pub fn test_parse_round_trip () -> Result Unit Text =
     if _parse "3.14" == None then Err "Float.parse 3.14 should be Some"
     else Ok ()
+
+pub fn test_parse_integer_looking_string () -> Result Unit Text =
+    match _parse "100"
+        None -> Err "Float.parse \"100\" should be Some 100.0, not None"
+        Some v ->
+            if _eqFloat v 100.0 then Ok ()
+            else Err "Float.parse \"100\" should equal 100.0"
+
+pub fn test_parse_invalid_returns_none () -> Result Unit Text =
+    if _parse "abc" == None then Ok ()
+    else Err "Float.parse \"abc\" should be None"
+
+pub fn test_parse_empty_returns_none () -> Result Unit Text =
+    if _parse "" == None then Ok ()
+    else Err "Float.parse \"\" should be None"
 
 pub fn test_fromInt () -> Result Unit Text =
     if _eqFloat (_fromInt 5) 5.0 then Ok ()

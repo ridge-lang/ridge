@@ -232,6 +232,14 @@ struct LoweredArm {
 /// scrutinee is evaluated exactly once even though the variable is referenced
 /// at every nesting level.
 fn lift_guarded_match(scrut_var: &CErlVar, arms: &[LoweredArm]) -> CErlExpr {
+    lift_guarded_match_at_depth(scrut_var, arms, 0)
+}
+
+/// Internal worker for [`lift_guarded_match`] that threads a `depth` counter so
+/// each lifted level gets a uniquely-named `V_LiftedRest<depth>` continuation
+/// thunk. Lexical scoping would let the names collide harmlessly, but giving
+/// nested levels distinct names keeps the generated Core Erlang readable.
+fn lift_guarded_match_at_depth(scrut_var: &CErlVar, arms: &[LoweredArm], depth: u32) -> CErlExpr {
     let mut clauses: Vec<CErlClause> = Vec::with_capacity(arms.len() + 1);
 
     for (i, arm) in arms.iter().enumerate() {
@@ -244,9 +252,15 @@ fn lift_guarded_match(scrut_var: &CErlVar, arms: &[LoweredArm]) -> CErlExpr {
             continue;
         }
 
-        // Non-BIF-safe guard — lift it into the clause body.
-        let rest = if i + 1 < arms.len() {
-            lift_guarded_match(scrut_var, &arms[i + 1..])
+        // Non-BIF-safe guard — lift it into the clause body. The guard-case's
+        // fall-through arm and the outer wildcard catch-all BOTH need the same
+        // remaining-arms expression. A naïve `rest.clone()` in each slot fans
+        // out exponentially over a chain of lifted arms (N×K explosion for K
+        // unsafe arms with N tags downstream). Hoist `rest` into a 0-arg fun
+        // bound by an outer `let`, then reference it from both clause bodies
+        // via `apply`. The fun's body is evaluated at most once per dispatch.
+        let rest_expr = if i + 1 < arms.len() {
+            lift_guarded_match_at_depth(scrut_var, &arms[i + 1..], depth + 1)
         } else {
             // No remaining arms; fall-through replicates the runtime
             // behaviour of an unmatched `case` clause: a `case_clause`
@@ -256,6 +270,12 @@ fn lift_guarded_match(scrut_var: &CErlVar, arms: &[LoweredArm]) -> CErlExpr {
                 fn_name: CErlAtom("error".into()),
                 args: vec![CErlExpr::Lit(CErlLit::Atom(CErlAtom("case_clause".into())))],
             }
+        };
+
+        let rest_var = CErlVar(format!("V_LiftedRest{depth}"));
+        let invoke_rest = || CErlExpr::Apply {
+            callee: Box::new(CErlExpr::Var(rest_var.clone())),
+            args: vec![],
         };
 
         let body_with_guard = CErlExpr::Case {
@@ -269,7 +289,7 @@ fn lift_guarded_match(scrut_var: &CErlVar, arms: &[LoweredArm]) -> CErlExpr {
                 CErlClause {
                     pattern: crate::core_ast::CErlPat::Wild,
                     guard: lit_true(),
-                    body: rest.clone(),
+                    body: invoke_rest(),
                 },
             ],
         };
@@ -282,13 +302,27 @@ fn lift_guarded_match(scrut_var: &CErlVar, arms: &[LoweredArm]) -> CErlExpr {
         clauses.push(CErlClause {
             pattern: crate::core_ast::CErlPat::Wild,
             guard: lit_true(),
-            body: rest,
+            body: invoke_rest(),
         });
 
-        // Remaining arms are folded into `rest`; stop emitting siblings.
-        break;
+        let case_expr = CErlExpr::Case {
+            scrutinee: Box::new(CErlExpr::Var(scrut_var.clone())),
+            clauses,
+        };
+
+        return CErlExpr::Let {
+            var: rest_var,
+            value: Box::new(CErlExpr::Fun {
+                params: vec![],
+                body: Box::new(rest_expr),
+            }),
+            body: Box::new(case_expr),
+        };
     }
 
+    // Every arm was BIF-safe — emit the ordinary case shape (the call site's
+    // fast path already covers this; keep the branch as defensive coverage in
+    // case `lift_guarded_match` is called on an all-safe slice via recursion).
     CErlExpr::Case {
         scrutinee: Box::new(CErlExpr::Var(scrut_var.clone())),
         clauses,
@@ -2865,11 +2899,16 @@ mod tests {
     #[test]
     fn lift_guarded_match_wraps_unsafe_guard_in_inner_case() {
         // Mirrors a 2-arm match where arm 0's guard calls `std.int:mod` and
-        // arm 1 is an unguarded wildcard fallback. Expected shape:
-        //   case V_S of
-        //     V_M  -> case <unsafe-guard> of 'true' -> 1; _ -> <rest> end
-        //     _    -> <rest>
-        //   end
+        // arm 1 is an unguarded wildcard fallback. Expected shape with the
+        // continuation-thunk refactor:
+        //   let V_LiftedRest0 = fun () -> <rest> end in
+        //       case V_S of
+        //           V_M -> case <unsafe-guard> of
+        //                      'true' -> 1
+        //                      _      -> apply V_LiftedRest0 ()
+        //                  end
+        //           _   -> apply V_LiftedRest0 ()
+        //       end
         let scrut_var = CErlVar("V_S".into());
         let unsafe_guard = CErlExpr::Call {
             module: CErlAtom("std.int".into()),
@@ -2895,14 +2934,39 @@ mod tests {
         ];
         let result = lift_guarded_match(&scrut_var, &arms);
 
-        let clauses = match result {
-            CErlExpr::Case {
-                scrutinee, clauses, ..
-            } => {
+        // Outer shape is `let V_LiftedRest0 = fun () -> <rest> end in <case>`.
+        let (rest_fn_body, case_expr) = match result {
+            CErlExpr::Let { var, value, body } => {
+                assert_eq!(var.0, "V_LiftedRest0", "thunk var must be V_LiftedRest0");
+                let fn_body = match *value {
+                    CErlExpr::Fun { params, body } => {
+                        assert!(
+                            params.is_empty(),
+                            "rest thunk must be 0-arity, got params {params:?}"
+                        );
+                        *body
+                    }
+                    other => panic!("expected rest binding to be a Fun, got {other:?}"),
+                };
+                (fn_body, *body)
+            }
+            other => panic!("expected outer Let, got {other:?}"),
+        };
+
+        // The thunk body is the remaining arms — here a single wildcard ->
+        // 0 — re-emitted as a Case. Just sanity-check it is a Case so we
+        // know rest hoisting happened.
+        assert!(
+            matches!(rest_fn_body, CErlExpr::Case { .. }),
+            "rest thunk body must wrap the remaining arms in a Case, got {rest_fn_body:?}"
+        );
+
+        let clauses = match case_expr {
+            CErlExpr::Case { scrutinee, clauses } => {
                 assert!(matches!(*scrutinee, CErlExpr::Var(CErlVar(ref s)) if s == "V_S"));
                 clauses
             }
-            other => panic!("expected outer Case, got {other:?}"),
+            other => panic!("expected inner Case, got {other:?}"),
         };
         assert_eq!(
             clauses.len(),
@@ -2911,7 +2975,7 @@ mod tests {
             clauses.len()
         );
 
-        // First clause: V_M -> case Guard of 'true' -> 1 ; _ -> Rest end
+        // First clause: V_M -> case Guard of 'true' -> 1 ; _ -> apply V_LiftedRest0 () end
         assert!(matches!(
             &clauses[0].pattern,
             crate::core_ast::CErlPat::Var(_)
@@ -2934,20 +2998,38 @@ mod tests {
                     &inner_clauses[1].pattern,
                     crate::core_ast::CErlPat::Wild
                 ));
+                // Inner fall-through must invoke the rest thunk, not duplicate
+                // the rest expression inline.
+                match &inner_clauses[1].body {
+                    CErlExpr::Apply { callee, args } => {
+                        assert!(args.is_empty());
+                        assert!(
+                            matches!(callee.as_ref(), CErlExpr::Var(CErlVar(s)) if s == "V_LiftedRest0"),
+                            "guard fall-through must apply V_LiftedRest0, got {callee:?}"
+                        );
+                    }
+                    other => panic!("expected Apply V_LiftedRest0 (), got {other:?}"),
+                }
             }
             other => panic!("expected inner Case on the guard, got {other:?}"),
         }
 
-        // Second clause: _ -> Rest (a Case over the remaining arms)
+        // Second clause: _ -> apply V_LiftedRest0 () (the rest is hoisted, not
+        // duplicated).
         assert!(matches!(
             &clauses[1].pattern,
             crate::core_ast::CErlPat::Wild
         ));
-        assert!(
-            matches!(&clauses[1].body, CErlExpr::Case { .. }),
-            "expected wildcard fall-through to a Case (the remaining-arms recursion), got {:?}",
-            &clauses[1].body
-        );
+        match &clauses[1].body {
+            CErlExpr::Apply { callee, args } => {
+                assert!(args.is_empty());
+                assert!(
+                    matches!(callee.as_ref(), CErlExpr::Var(CErlVar(s)) if s == "V_LiftedRest0"),
+                    "outer wildcard must apply V_LiftedRest0, got {callee:?}"
+                );
+            }
+            other => panic!("expected outer wildcard body to apply V_LiftedRest0, got {other:?}"),
+        }
     }
 
     #[test]

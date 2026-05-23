@@ -216,8 +216,8 @@ pub fn stdlib_signature(module: StdlibModuleId, name: &str, b: &BuiltinTyCons) -
         // T12: binary Int -> Int -> Int (min, max, add, sub, mul, div, rem, mod, wrappingAdd, saturatingAdd).
         (
             STD_INT,
-            "min" | "max" | "add" | "sub" | "mul" | "div" | "rem" | "mod" | "wrappingAdd"
-            | "saturatingAdd",
+            "min" | "max" | "add" | "sub" | "mul" | "div" | "rem" | "mod" | "pow"
+            | "wrappingAdd" | "saturatingAdd",
         ) => Some(mono(ty_fn_pure(vec![ty_int(b), ty_int(b)], ty_int(b)))),
 
         // ── std.float ─────────────────────────────────────────────────────────

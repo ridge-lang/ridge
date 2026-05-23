@@ -41,6 +41,14 @@ fn _saturatingAdd (a: Int) (b: Int) -> Int =
     else if s < minVal then minVal
     else s
 
+fn _pow (base: Int) (exp: Int) -> Int =
+    if exp < 0 then 0
+    else if exp == 0 then 1
+    else if (_rem exp 2) == 0 then
+        let half = _pow base (exp / 2)
+        half * half
+    else base * _pow base (exp - 1)
+
 pub fn test_smoke_int () -> Result Unit Text = Ok ()
 
 pub fn test_toText_zero () -> Result Unit Text =
@@ -137,3 +145,35 @@ pub fn test_percent_operator_fizzbuzz_15 () -> Result Unit Text =
             else Err "15 % 5 should be 0"
         else Err "15 % 3 should be 0"
     else Err "15 % 15 should be 0"
+
+pub fn test_pow_zero_exp_is_one () -> Result Unit Text =
+    if (_pow 7 0) == 1 then
+        if (_pow 0 0) == 1 then Ok ()
+        else Err "pow 0 0 should be 1 by convention"
+    else Err "pow 7 0 should be 1"
+
+pub fn test_pow_one_exp_is_base () -> Result Unit Text =
+    if (_pow 7 1) == 7 then Ok ()
+    else Err "pow 7 1 should be 7"
+
+pub fn test_pow_positive () -> Result Unit Text =
+    if (_pow 2 10) == 1024 then
+        if (_pow 3 5) == 243 then Ok ()
+        else Err "pow 3 5 should be 243"
+    else Err "pow 2 10 should be 1024"
+
+pub fn test_pow_negative_base () -> Result Unit Text =
+    if (_pow (_neg 2) 3) == (_neg 8) then
+        if (_pow (_neg 2) 4) == 16 then Ok ()
+        else Err "pow (-2) 4 should be 16"
+    else Err "pow (-2) 3 should be -8"
+
+pub fn test_pow_negative_exp_truncates_to_zero () -> Result Unit Text =
+    if (_pow 2 (_neg 1)) == 0 then Ok ()
+    else Err "pow 2 (-1) should be 0 (truncating Int semantics)"
+
+pub fn test_caret_operator_lowers_to_pow () -> Result Unit Text =
+    if (2 ^ 10) == 1024 then
+        if (3 ^ 0) == 1 then Ok ()
+        else Err "3 ^ 0 should be 1"
+    else Err "2 ^ 10 should be 1024 (^ lowers to std.int.pow)"

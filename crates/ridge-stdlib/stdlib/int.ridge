@@ -45,6 +45,22 @@ pub fn mul (a: Int) (b: Int) -> Int
 @ffi("erlang", "div", 2)
 pub fn div (a: Int) (b: Int) -> Int
 
+-- Truncating remainder (Erlang rem semantics).
+-- Result has the same sign as the dividend `a`. Satisfies
+-- `a == b * (a div b) + (a rem b)`.
+@ffi("erlang", "rem", 2)
+pub fn rem (a: Int) (b: Int) -> Int
+
+-- Mathematical modulo (Python `%` semantics).
+-- Result has the same sign as the divisor `b` and lies in
+-- `[0, |b|)` when `b` is positive, or `(b, 0]` when `b` is negative.
+-- Implemented via `((a rem b) + b) rem b`; correct for every combination
+-- of signs of `a` and `b`. Compiler lowering of the `%` operator routes
+-- here.
+pub fn mod (a: Int) (b: Int) -> Int =
+    let r = rem a b
+    rem (r + b) b
+
 -- Negate an integer.
 @ffi("erlang", "-", 1)
 pub fn neg (n: Int) -> Int

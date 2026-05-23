@@ -105,6 +105,196 @@ fn lit_true() -> CErlExpr {
     CErlExpr::Lit(CErlLit::Atom(CErlAtom("true".into())))
 }
 
+/// `'true'` literal pattern — used when an arm's guard has been lifted out
+/// of the clause-guard position into the body's case-of-true dispatch.
+fn lit_true_pat() -> crate::core_ast::CErlPat {
+    crate::core_ast::CErlPat::Lit(CErlLit::Atom(CErlAtom("true".into())))
+}
+
+/// True when `expr` contains a call whose module is not `erlang`.
+///
+/// BEAM `case` clause guards only admit calls to the small whitelist of guard
+/// BIFs — all of which live in the `erlang:` module. Any call to a different
+/// module (a stdlib helper, a user-defined function) makes the surrounding
+/// guard illegal, so the arm must be rewritten out of clause-guard position.
+///
+/// Conservative: some `erlang:*` functions are not guard BIFs either (e.g.
+/// `erlang:list_to_binary/1`). Those slip past this check and BEAM rejects
+/// them at load time — same outcome as the current shipping behaviour for
+/// such code. Tightening the whitelist is a follow-up.
+fn contains_non_bif_call(expr: &CErlExpr) -> bool {
+    match expr {
+        CErlExpr::Lit(_) | CErlExpr::Var(_) | CErlExpr::LocalFnRef { .. } => false,
+
+        CErlExpr::Call {
+            module: CErlAtom(m),
+            args,
+            ..
+        } => m != "erlang" || args.iter().any(contains_non_bif_call),
+
+        // `apply` indirects through a fun reference; never legal in a guard.
+        CErlExpr::Apply { .. } => true,
+
+        CErlExpr::Fun { body, .. } => contains_non_bif_call(body),
+        CErlExpr::Let { value, body, .. } => {
+            contains_non_bif_call(value) || contains_non_bif_call(body)
+        }
+        CErlExpr::LetRec { defs, body } => {
+            defs.iter().any(|(_, _, e)| contains_non_bif_call(e)) || contains_non_bif_call(body)
+        }
+        CErlExpr::Case {
+            scrutinee, clauses, ..
+        } => {
+            contains_non_bif_call(scrutinee)
+                || clauses
+                    .iter()
+                    .any(|c| contains_non_bif_call(&c.guard) || contains_non_bif_call(&c.body))
+        }
+        CErlExpr::Do { first, then } => contains_non_bif_call(first) || contains_non_bif_call(then),
+        CErlExpr::Tuple(elems) | CErlExpr::ListLit(elems) => {
+            elems.iter().any(contains_non_bif_call)
+        }
+        CErlExpr::Cons { head, tail } => contains_non_bif_call(head) || contains_non_bif_call(tail),
+        CErlExpr::MapLit(kvs) => kvs
+            .iter()
+            .any(|(k, v)| contains_non_bif_call(k) || contains_non_bif_call(v)),
+        CErlExpr::MapUpdate { base, updates } => {
+            contains_non_bif_call(base)
+                || updates
+                    .iter()
+                    .any(|(k, v)| contains_non_bif_call(k) || contains_non_bif_call(v))
+        }
+        CErlExpr::Receive { clauses, after } => {
+            clauses
+                .iter()
+                .any(|c| contains_non_bif_call(&c.guard) || contains_non_bif_call(&c.body))
+                || after
+                    .as_ref()
+                    .is_some_and(|(t, b)| contains_non_bif_call(t) || contains_non_bif_call(b))
+        }
+        CErlExpr::Try { body, of, catch } => {
+            contains_non_bif_call(body)
+                || of
+                    .iter()
+                    .any(|c| contains_non_bif_call(&c.guard) || contains_non_bif_call(&c.body))
+                || catch
+                    .iter()
+                    .any(|c| contains_non_bif_call(&c.guard) || contains_non_bif_call(&c.body))
+        }
+    }
+}
+
+/// One pre-lowered match arm carrying the pieces `lift_guarded_match` needs.
+///
+/// `guard` is `'true'` when the source arm had no `when` clause. `guard_is_safe`
+/// records whether [`contains_non_bif_call`] cleared the guard for clause-guard
+/// position — independent of whether the guard is literally `true`, since some
+/// `when`-less arms naturally produce `'true'` as the guard already.
+struct LoweredArm {
+    pattern: crate::core_ast::CErlPat,
+    guard: CErlExpr,
+    body: CErlExpr,
+    guard_is_safe: bool,
+}
+
+/// Rewrite a match whose arm guards include calls outside `erlang:*` into a
+/// chain of nested `case` expressions.
+///
+/// The transformation is needed because Core Erlang clause guards admit only
+/// calls to guard BIFs. Ridge guards routinely contain calls to stdlib helpers
+/// (`std.int:mod/2` when the user writes `n % k`, `std.op:eq/2` and friends
+/// for any non-trivial equality) which `erlc` rejects with
+/// `illegal guard expression`.
+///
+/// Each arm whose guard is not BIF-safe is rewritten from
+///
+/// ```text
+/// Pat when Guard -> Body
+/// ```
+///
+/// to
+///
+/// ```text
+/// Pat -> case Guard of 'true' -> Body ; _ -> Rest end
+/// ```
+///
+/// followed by a wildcard catch-all `_ -> Rest` that handles scrutinees which
+/// did not match `Pat`. `Rest` is the recursive transformation of the
+/// remaining arms against the same (already-bound) scrutinee variable.
+/// Arms that come *after* a lifted arm are folded entirely into `Rest`, not
+/// re-emitted as siblings of the outer case.
+///
+/// Arms whose guard is already BIF-safe (or carries no guard at all) are
+/// emitted as ordinary clauses with their original `when`.
+///
+/// `scrut_var` is the variable the scrutinee has been bound to — the caller
+/// wraps the result of this function in a `let` that introduces it, so the
+/// scrutinee is evaluated exactly once even though the variable is referenced
+/// at every nesting level.
+fn lift_guarded_match(scrut_var: &CErlVar, arms: &[LoweredArm]) -> CErlExpr {
+    let mut clauses: Vec<CErlClause> = Vec::with_capacity(arms.len() + 1);
+
+    for (i, arm) in arms.iter().enumerate() {
+        if arm.guard_is_safe {
+            clauses.push(CErlClause {
+                pattern: arm.pattern.clone(),
+                guard: arm.guard.clone(),
+                body: arm.body.clone(),
+            });
+            continue;
+        }
+
+        // Non-BIF-safe guard — lift it into the clause body.
+        let rest = if i + 1 < arms.len() {
+            lift_guarded_match(scrut_var, &arms[i + 1..])
+        } else {
+            // No remaining arms; fall-through replicates the runtime
+            // behaviour of an unmatched `case` clause: a `case_clause`
+            // exception.
+            CErlExpr::Call {
+                module: CErlAtom("erlang".into()),
+                fn_name: CErlAtom("error".into()),
+                args: vec![CErlExpr::Lit(CErlLit::Atom(CErlAtom("case_clause".into())))],
+            }
+        };
+
+        let body_with_guard = CErlExpr::Case {
+            scrutinee: Box::new(arm.guard.clone()),
+            clauses: vec![
+                CErlClause {
+                    pattern: lit_true_pat(),
+                    guard: lit_true(),
+                    body: arm.body.clone(),
+                },
+                CErlClause {
+                    pattern: crate::core_ast::CErlPat::Wild,
+                    guard: lit_true(),
+                    body: rest.clone(),
+                },
+            ],
+        };
+
+        clauses.push(CErlClause {
+            pattern: arm.pattern.clone(),
+            guard: lit_true(),
+            body: body_with_guard,
+        });
+        clauses.push(CErlClause {
+            pattern: crate::core_ast::CErlPat::Wild,
+            guard: lit_true(),
+            body: rest,
+        });
+
+        // Remaining arms are folded into `rest`; stop emitting siblings.
+        break;
+    }
+
+    CErlExpr::Case {
+        scrutinee: Box::new(CErlExpr::Var(scrut_var.clone())),
+        clauses,
+    }
+}
+
 // ── Central dispatch ─────────────────────────────────────────────────────────
 
 /// Lower an [`IrExpr`] to a [`CErlExpr`] with a fresh empty [`LocalScope`].
@@ -301,26 +491,54 @@ pub(crate) fn lower_expr_in_scope(
             scrutinee, arms, ..
         } => {
             let lowered_scrutinee = lower_expr_in_scope(scrutinee, scope)?;
-            let clauses = arms
+            // Lower each arm's pattern, guard, body once; flag whether the
+            // guard contains a call that BEAM rejects in clause-guard position.
+            let lowered_arms: Vec<LoweredArm> = arms
                 .iter()
                 .map(|arm| {
-                    // Clone scope so pattern-variable bindings in one arm don't
-                    // bleed into subsequent arms.
                     let mut arm_scope = scope.clone();
                     let guard = match &arm.when {
                         Some(w) => lower_expr_in_scope(w, &mut arm_scope)?,
                         None => lit_true(),
                     };
-                    Ok(CErlClause {
+                    let guard_is_safe = !contains_non_bif_call(&guard);
+                    Ok(LoweredArm {
                         pattern: lower_pat(&arm.pat)?,
                         guard,
                         body: lower_expr_in_scope(&arm.body, &mut arm_scope)?,
+                        guard_is_safe,
                     })
                 })
                 .collect::<Result<Vec<_>, CodegenError>>()?;
-            Ok(CErlExpr::Case {
-                scrutinee: Box::new(lowered_scrutinee),
-                clauses,
+
+            // Fast path: every guard fits BEAM's whitelist — emit the
+            // ordinary `case Scrut of P when G -> B; ... end` shape.
+            if lowered_arms.iter().all(|a| a.guard_is_safe) {
+                let clauses = lowered_arms
+                    .into_iter()
+                    .map(|a| CErlClause {
+                        pattern: a.pattern,
+                        guard: a.guard,
+                        body: a.body,
+                    })
+                    .collect();
+                return Ok(CErlExpr::Case {
+                    scrutinee: Box::new(lowered_scrutinee),
+                    clauses,
+                });
+            }
+
+            // Lift path: at least one guard calls a non-BIF function. Bind
+            // the scrutinee to a fresh local so the nested cases produced by
+            // `lift_guarded_match` reference it once each without
+            // re-evaluating the source expression.
+            let scrut_idx = scope.bump("_match_scrut");
+            let scrut_var = ssa_var("V_MatchScrut", scrut_idx);
+            let lifted = lift_guarded_match(&scrut_var, &lowered_arms);
+            Ok(CErlExpr::Let {
+                var: scrut_var,
+                value: Box::new(lowered_scrutinee),
+                body: Box::new(lifted),
             })
         }
 
@@ -2573,5 +2791,199 @@ mod tests {
             }
             other => panic!("expected IrShapeMalformed, got {other:?}"),
         }
+    }
+
+    // ── Guard-lift helpers ───────────────────────────────────────────────────
+
+    #[test]
+    fn contains_non_bif_call_passes_erlang_calls() {
+        let expr = CErlExpr::Call {
+            module: CErlAtom("erlang".into()),
+            fn_name: CErlAtom("=:=".into()),
+            args: vec![
+                CErlExpr::Var(CErlVar("X".into())),
+                CErlExpr::Lit(CErlLit::Int(0)),
+            ],
+        };
+        assert!(!contains_non_bif_call(&expr));
+    }
+
+    #[test]
+    fn contains_non_bif_call_flags_stdlib_calls() {
+        let expr = CErlExpr::Call {
+            module: CErlAtom("std.int".into()),
+            fn_name: CErlAtom("mod".into()),
+            args: vec![
+                CErlExpr::Var(CErlVar("X".into())),
+                CErlExpr::Lit(CErlLit::Int(15)),
+            ],
+        };
+        assert!(contains_non_bif_call(&expr));
+    }
+
+    #[test]
+    fn contains_non_bif_call_finds_nested_stdlib_calls() {
+        // `erlang:'=:='('std.int':mod(X, 15), 0)` — outer is a guard BIF, the
+        // inner stdlib call still disqualifies the whole expression.
+        let inner = CErlExpr::Call {
+            module: CErlAtom("std.int".into()),
+            fn_name: CErlAtom("mod".into()),
+            args: vec![
+                CErlExpr::Var(CErlVar("X".into())),
+                CErlExpr::Lit(CErlLit::Int(15)),
+            ],
+        };
+        let outer = CErlExpr::Call {
+            module: CErlAtom("erlang".into()),
+            fn_name: CErlAtom("=:=".into()),
+            args: vec![inner, CErlExpr::Lit(CErlLit::Int(0))],
+        };
+        assert!(contains_non_bif_call(&outer));
+    }
+
+    #[test]
+    fn contains_non_bif_call_flags_apply() {
+        // `apply Fn (X)` — calling through a fun reference is never legal
+        // in a clause guard.
+        let expr = CErlExpr::Apply {
+            callee: Box::new(CErlExpr::Var(CErlVar("F".into()))),
+            args: vec![CErlExpr::Var(CErlVar("X".into()))],
+        };
+        assert!(contains_non_bif_call(&expr));
+    }
+
+    #[test]
+    fn lift_guarded_match_wraps_unsafe_guard_in_inner_case() {
+        // Mirrors a 2-arm match where arm 0's guard calls `std.int:mod` and
+        // arm 1 is an unguarded wildcard fallback. Expected shape:
+        //   case V_S of
+        //     V_M  -> case <unsafe-guard> of 'true' -> 1; _ -> <rest> end
+        //     _    -> <rest>
+        //   end
+        let scrut_var = CErlVar("V_S".into());
+        let unsafe_guard = CErlExpr::Call {
+            module: CErlAtom("std.int".into()),
+            fn_name: CErlAtom("mod".into()),
+            args: vec![
+                CErlExpr::Var(CErlVar("V_M".into())),
+                CErlExpr::Lit(CErlLit::Int(15)),
+            ],
+        };
+        let arms = vec![
+            LoweredArm {
+                pattern: crate::core_ast::CErlPat::Var(CErlVar("V_M".into())),
+                guard: unsafe_guard,
+                body: CErlExpr::Lit(CErlLit::Int(1)),
+                guard_is_safe: false,
+            },
+            LoweredArm {
+                pattern: crate::core_ast::CErlPat::Wild,
+                guard: lit_true(),
+                body: CErlExpr::Lit(CErlLit::Int(0)),
+                guard_is_safe: true,
+            },
+        ];
+        let result = lift_guarded_match(&scrut_var, &arms);
+
+        let clauses = match result {
+            CErlExpr::Case {
+                scrutinee, clauses, ..
+            } => {
+                assert!(matches!(*scrutinee, CErlExpr::Var(CErlVar(ref s)) if s == "V_S"));
+                clauses
+            }
+            other => panic!("expected outer Case, got {other:?}"),
+        };
+        assert_eq!(
+            clauses.len(),
+            2,
+            "expected lifted arm + wildcard catch-all, got {} clauses",
+            clauses.len()
+        );
+
+        // First clause: V_M -> case Guard of 'true' -> 1 ; _ -> Rest end
+        assert!(matches!(
+            &clauses[0].pattern,
+            crate::core_ast::CErlPat::Var(_)
+        ));
+        match &clauses[0].body {
+            CErlExpr::Case {
+                clauses: inner_clauses,
+                ..
+            } => {
+                assert_eq!(inner_clauses.len(), 2);
+                assert!(matches!(
+                    &inner_clauses[0].pattern,
+                    crate::core_ast::CErlPat::Lit(CErlLit::Atom(CErlAtom(s))) if s == "true"
+                ));
+                assert!(matches!(
+                    inner_clauses[0].body,
+                    CErlExpr::Lit(CErlLit::Int(1))
+                ));
+                assert!(matches!(
+                    &inner_clauses[1].pattern,
+                    crate::core_ast::CErlPat::Wild
+                ));
+            }
+            other => panic!("expected inner Case on the guard, got {other:?}"),
+        }
+
+        // Second clause: _ -> Rest (a Case over the remaining arms)
+        assert!(matches!(
+            &clauses[1].pattern,
+            crate::core_ast::CErlPat::Wild
+        ));
+        assert!(
+            matches!(&clauses[1].body, CErlExpr::Case { .. }),
+            "expected wildcard fall-through to a Case (the remaining-arms recursion), got {:?}",
+            &clauses[1].body
+        );
+    }
+
+    #[test]
+    fn match_with_safe_guards_takes_fast_path() {
+        // `match x { m when m < 0 -> 1 ; _ -> 0 }`
+        // The guard is `erlang:'<'` (a guard BIF), so the lowerer must emit
+        // a plain `case Scrut of P when G -> B end` — no enclosing `Let`.
+        let expr = IrExpr::Match {
+            id: node(),
+            scrutinee: Box::new(local("x")),
+            arms: vec![
+                IrArm {
+                    pat: IrPat::Bind {
+                        name: "m".into(),
+                        inner: None,
+                        span: sp(),
+                    },
+                    when: Some(IrExpr::Call {
+                        id: node(),
+                        callee: Box::new(IrExpr::Symbol {
+                            id: node(),
+                            sym: SymbolRef::Stdlib {
+                                module: "std.op".into(),
+                                name: "lt".into(),
+                            },
+                            span: sp(),
+                        }),
+                        args: vec![local("m"), lit_int(0)],
+                        span: sp(),
+                    }),
+                    body: lit_int(1),
+                    span: sp(),
+                },
+                IrArm {
+                    pat: IrPat::Wild { span: sp() },
+                    when: None,
+                    body: lit_int(0),
+                    span: sp(),
+                },
+            ],
+            span: sp(),
+        };
+        let result = lower_expr(&expr).unwrap();
+        assert!(
+            matches!(result, CErlExpr::Case { .. }),
+            "expected plain Case (fast path), got {result:?}"
+        );
     }
 }

@@ -885,9 +885,17 @@ pub fn check_exhaustiveness(
     }
 
     // ── 1. Build the pattern matrix (one row per arm, one column) ─────────────
+    //
+    // Arms with a `when` guard are excluded from the matrix: a guarded arm
+    // only matches when the guard evaluates to true, and the checker cannot
+    // prove that statically. Treating a guarded arm as covering its pattern
+    // unconditionally would fire spurious T017s for every arm below it and
+    // mask genuine T016 gaps when every arm is guarded.
     let mut matrix = PatternMatrix::default();
     for arm in arms {
-        matrix.push(vec![lift_pattern(&arm.pattern)]);
+        if arm.guard.is_none() {
+            matrix.push(vec![lift_pattern(&arm.pattern)]);
+        }
     }
 
     let column_types = vec![scrutinee_ty.clone()];
@@ -922,6 +930,13 @@ pub fn check_exhaustiveness(
     }
 
     // ── 3. Redundancy check: for each arm i, useful(matrix[0..i], arm[i]) ────
+    //
+    // Same guard caveat as in §1: a guarded arm only fires when the runtime
+    // guard is true, so it cannot count toward the prefix used to judge
+    // whether later arms are redundant. The arm itself is still checked
+    // against the prefix — a guarded arm whose pattern is already covered
+    // by an earlier unguarded arm is unreachable regardless of the guard,
+    // so T017 still fires in that genuine case.
     let mut prefix_matrix = PatternMatrix::default();
     for (i, arm) in arms.iter().enumerate() {
         let arm_row = vec![lift_pattern(&arm.pattern)];
@@ -934,10 +949,12 @@ pub fn check_exhaustiveness(
                 });
             }
             Usefulness::UsefulWithWitness(_) => {
-                // Arm is useful — add it to the prefix.
+                // Arm is useful — add it to the prefix if it has no guard.
             }
         }
-        prefix_matrix.push(arm_row);
+        if arm.guard.is_none() {
+            prefix_matrix.push(arm_row);
+        }
     }
 }
 
@@ -1550,5 +1567,76 @@ mod tests {
         let arms = vec![record_ctor_arm("User")];
         check_exhaustiveness(&mut ctx, &arena, &b, &user_ty, &arms, dummy_span());
         no_errors(&ctx.errors);
+    }
+
+    // ── Guard handling ───────────────────────────────────────────────────────
+
+    /// Attach a `when guard` to an arm. The guard expression is irrelevant to
+    /// the exhaustiveness algorithm — only its presence matters.
+    fn with_guard(mut arm: MatchArm) -> MatchArm {
+        arm.guard = Some(ridge_ast::Expr::Literal(ridge_ast::Literal::Bool {
+            value: true,
+            span: dummy_span(),
+        }));
+        arm
+    }
+
+    /// `match n { m when ... -> 1; m when ... -> 2; m when ... -> 3; _ -> 4 }`
+    /// — no T017. Mirrors the canonical guarded-fizzbuzz shape. Pre-fix the
+    /// checker treated each guarded `m` as a variable pattern covering all
+    /// values and flagged arms 1, 2, 3 as redundant.
+    #[test]
+    fn match_guarded_variable_arms_not_redundant() {
+        let (arena, b) = make_builtins();
+        let mut ctx = InferCtx::new();
+        let arms = vec![
+            with_guard(wildcard_arm()),
+            with_guard(wildcard_arm()),
+            with_guard(wildcard_arm()),
+            wildcard_arm(),
+        ];
+        let scrutinee_ty = Type::Con(b.int, vec![]);
+        check_exhaustiveness(&mut ctx, &arena, &b, &scrutinee_ty, &arms, dummy_span());
+        no_errors(&ctx.errors);
+    }
+
+    /// `match n { _ when ... -> 1 }` — T016 fires. A single guarded arm
+    /// cannot cover the scrutinee statically; the match must have an
+    /// unguarded fall-through.
+    #[test]
+    fn match_single_guarded_arm_not_exhaustive() {
+        let (arena, b) = make_builtins();
+        let mut ctx = InferCtx::new();
+        let arms = vec![with_guard(wildcard_arm())];
+        let scrutinee_ty = Type::Con(b.int, vec![]);
+        check_exhaustiveness(&mut ctx, &arena, &b, &scrutinee_ty, &arms, dummy_span());
+        assert!(
+            ctx.errors
+                .iter()
+                .any(|e| matches!(e, TypeError::NonExhaustiveMatch { .. })),
+            "expected T016 NonExhaustiveMatch when every arm carries a guard, got: {:?}",
+            ctx.errors,
+        );
+    }
+
+    /// `match b { true -> 1; true when ... -> 2 }` — T017 still fires.
+    /// A guarded arm whose pattern is already covered by an earlier
+    /// unguarded arm is unreachable regardless of the guard.
+    #[test]
+    fn match_guarded_arm_redundant_after_unguarded() {
+        let (arena, b) = make_builtins();
+        let mut ctx = InferCtx::new();
+        let arms = vec![bool_arm(true), with_guard(bool_arm(true)), bool_arm(false)];
+        let scrutinee_ty = Type::Con(b.bool, vec![]);
+        check_exhaustiveness(&mut ctx, &arena, &b, &scrutinee_ty, &arms, dummy_span());
+        let t017 = has_t017(&ctx.errors);
+        if let TypeError::RedundantPattern { arm_index, .. } = t017 {
+            assert_eq!(
+                *arm_index, 1,
+                "arm 1 (true when ...) is redundant after arm 0"
+            );
+        } else {
+            panic!("expected T017 on the guarded duplicate");
+        }
     }
 }

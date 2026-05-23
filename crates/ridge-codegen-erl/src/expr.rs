@@ -332,6 +332,16 @@ pub(crate) fn lower_expr_in_scope(
                 });
             }
             let _ = span;
+            // `__state` is the synthetic base local emitted by `lower_ident` for
+            // every state-field read inside an actor handler or init body. It
+            // must always resolve to the latest V_State<n> known to the scope
+            // (bumped by the actor-body lowering on each `<-` assign), not via
+            // the generic `var`-SSA table. Without this, a read of a state field
+            // that follows an assign in the same handler invocation would see
+            // the pre-assign V_State value.
+            if name == "__state" {
+                return Ok(crate::init::state_expr(scope.actor_state_idx));
+            }
             let mangled = name_to_erl_var(name);
             let var = match scope.current_index(name) {
                 Some(idx) => ssa_var(&mangled, idx),

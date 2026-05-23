@@ -15,6 +15,7 @@ use std::path::{Path, PathBuf};
 use ridge_lower::lower_workspace;
 use ridge_resolve::{discover_workspace, resolve_workspace, ResolveError, Severity};
 use ridge_typecheck::typecheck_workspace;
+use tempfile::TempDir;
 
 // ── Tier table (§4.1) ────────────────────────────────────────────────────────
 
@@ -239,14 +240,19 @@ pub fn build_all(stdlib_dir: &Path) -> Result<BuildSummary, BuildError> {
 /// Compile all modules in one tier by constructing a temporary workspace
 /// and running the full pipeline over it.
 ///
-/// The temporary directory is cleaned up on function return.
+/// The temporary directory is bound to a [`TempDir`] held for the lifetime
+/// of this function — Drop removes the directory on every exit path
+/// (success, early return, or panic), so a failure in resolve, typecheck,
+/// or lower no longer leaks `/tmp/ridge_stdlib_tier*` orphans.
 fn compile_tier(
     tier: u32,
     modules: &[&DiscoveredModule],
     stdlib_dir: &Path,
 ) -> Result<(), BuildError> {
-    // Build a temporary workspace under the OS temp dir.
-    let tmp_root = build_temp_workspace(tier, modules, stdlib_dir).map_err(|e| {
+    // Build a temporary workspace under the OS temp dir. The TempDir guard
+    // stays bound until the end of this function; the underlying directory is
+    // removed on Drop regardless of how we exit.
+    let tmp_dir = build_temp_workspace(tier, modules, stdlib_dir).map_err(|e| {
         BuildError::TierBuildFailed {
             tier,
             module: "<setup>".to_owned(),
@@ -254,9 +260,10 @@ fn compile_tier(
             source: e,
         }
     })?;
+    let tmp_root = tmp_dir.path();
 
     // Run discover → resolve → typecheck → lower.
-    let disc = discover_workspace(&tmp_root);
+    let disc = discover_workspace(tmp_root);
 
     // Surface any workspace-discovery errors as T204.
     if !disc.resolve_errors.is_empty() {
@@ -312,37 +319,32 @@ fn compile_tier(
     // Lower.
     let _lowered = lower_workspace(&typecheck_result.typed, &resolved);
 
-    // Clean up.
-    let _ = std::fs::remove_dir_all(&tmp_root);
-
+    // `tmp_dir` Drop runs at scope exit and removes the workspace directory.
     Ok(())
 }
 
 /// Create a temporary on-disk workspace containing all the modules for one
-/// tier.  Returns the path to the workspace root.
+/// tier. Returns a [`TempDir`] guard whose `Drop` removes the directory on
+/// every exit path (Ok, Err, panic). The `prefix` keeps the directory name
+/// recognisable while `tempfile::Builder` appends random characters so
+/// concurrent builds and partially-interrupted prior runs cannot collide.
 ///
-/// Layout:
+/// Layout (relative to `dir.path()`):
 /// ```text
-/// <tmp>/ridge.toml            (workspace)
-/// <tmp>/stdlib/ridge.toml     (project, kind = "library")
-/// <tmp>/stdlib/src/<rel>.ridge   (source files)
+/// ridge.toml            (workspace)
+/// stdlib/ridge.toml     (project, kind = "library")
+/// stdlib/src/<rel>.ridge   (source files)
 /// ```
 fn build_temp_workspace(
     tier: u32,
     modules: &[&DiscoveredModule],
     _stdlib_dir: &Path,
-) -> Result<PathBuf, String> {
-    let tmp_root =
-        std::env::temp_dir().join(format!("ridge_stdlib_tier{tier}_{}", std::process::id()));
-
-    // Clear any leftover from a previous (failed) run.
-    if tmp_root.exists() {
-        std::fs::remove_dir_all(&tmp_root)
-            .map_err(|e| format!("could not clean temp dir {}: {e}", tmp_root.display()))?;
-    }
-
-    std::fs::create_dir_all(&tmp_root)
-        .map_err(|e| format!("could not create temp dir {}: {e}", tmp_root.display()))?;
+) -> Result<TempDir, String> {
+    let tmp_dir = tempfile::Builder::new()
+        .prefix(&format!("ridge_stdlib_tier{tier}_"))
+        .tempdir()
+        .map_err(|e| format!("could not create temp dir for tier {tier}: {e}"))?;
+    let tmp_root = tmp_dir.path();
 
     let proj_dir = tmp_root.join("stdlib");
     std::fs::create_dir_all(proj_dir.join("src"))
@@ -381,7 +383,7 @@ fn build_temp_workspace(
         })?;
     }
 
-    Ok(tmp_root)
+    Ok(tmp_dir)
 }
 
 // ── Helpers ───────────────────────────────────────────────────────────────────

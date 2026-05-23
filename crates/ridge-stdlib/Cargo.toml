@@ -23,6 +23,9 @@ ridge-parser    = { path = "../ridge-parser" }
 ridge-resolve   = { path = "../ridge-resolve" }
 ridge-typecheck = { path = "../ridge-typecheck" }
 ridge-lower     = { path = "../ridge-lower" }
+# Used by build_driver::build_temp_workspace to create the per-tier scratch
+# workspace; the TempDir guard removes the directory on every exit path.
+tempfile        = "3"
 
 [build-dependencies]
 # Keep the same pipeline crates available to build.rs, which uses
@@ -32,10 +35,10 @@ ridge-parser    = { path = "../ridge-parser" }
 ridge-resolve   = { path = "../ridge-resolve" }
 ridge-typecheck = { path = "../ridge-typecheck" }
 ridge-lower     = { path = "../ridge-lower" }
+tempfile        = "3"
 
 [dev-dependencies]
 assert_cmd  = "2"
-tempfile    = "3"
 ridge-types = { path = "../ridge-types" }
 
 [features]

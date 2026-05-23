@@ -16,11 +16,10 @@ The server advertises these capabilities in its `initialize` response:
       "openClose": true,
       "change": 2,             // TextDocumentSyncKind.Incremental
       "save": { "includeText": false }
-    },
-    "diagnosticProvider": {
-      "interFileDependencies": true,
-      "workspaceDiagnostics": false   // 0.2.0+
     }
+    // No diagnosticProvider: the server publishes diagnostics via
+    // `client.publish_diagnostics` (push). The LSP 3.17 pull endpoint
+    // `textDocument/diagnostic` is not implemented.
     // No completionProvider, hoverProvider, or definitionProvider in 0.1.0.
   }
 }

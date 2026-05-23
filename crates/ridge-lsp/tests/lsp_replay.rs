@@ -106,23 +106,16 @@ async fn test_initialize_initialized_roundtrip() {
         _ => panic!("textDocumentSync must be Options"),
     }
 
-    let diag_cap = result
-        .capabilities
-        .diagnostic_provider
-        .expect("diagnosticProvider present");
-    match diag_cap {
-        DiagnosticServerCapabilities::Options(opts) => {
-            assert!(
-                opts.inter_file_dependencies,
-                "interFileDependencies must be true"
-            );
-            assert!(
-                !opts.workspace_diagnostics,
-                "workspaceDiagnostics must be false"
-            );
-        }
-        _ => panic!("diagnosticProvider must be Options"),
-    }
+    // diagnosticProvider must NOT be advertised: the server publishes
+    // diagnostics via `client.publish_diagnostics`, and no `diagnostic()`
+    // handler implements the LSP 3.17 pull endpoint. Advertising it caused
+    // 3.17 clients (vscode-languageclient 9+) to issue
+    // `textDocument/diagnostic` requests on every document open and log
+    // `-32601 Method not found` errors.
+    assert!(
+        result.capabilities.diagnostic_provider.is_none(),
+        "must not advertise diagnosticProvider — server is push-only"
+    );
 
     // No completionProvider, hoverProvider, definitionProvider.
     assert!(

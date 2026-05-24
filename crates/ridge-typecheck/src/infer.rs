@@ -1206,12 +1206,14 @@ fn attach_span(err: TypeError, span: Span) -> TypeError {
             callee,
             expected,
             found,
+            hint,
             ..
         } => TypeError::ArityMismatch {
             callee,
             expected,
             found,
             span,
+            hint,
         },
         TypeError::OccursCheck { var, ty, .. } => TypeError::OccursCheck { var, ty, span },
         other => other,

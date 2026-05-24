@@ -65,13 +65,18 @@ impl fmt::Display for TypeError {
                 callee,
                 expected,
                 found,
+                hint,
                 ..
             } => {
                 write!(
                     f,
                     "T003: arity mismatch\n  `{callee}` expects {expected} argument{s1}, got {found}",
                     s1 = if *expected == 1 { "" } else { "s" },
-                )
+                )?;
+                if let Some(h) = hint {
+                    write!(f, "\n  hint: {h}")?;
+                }
+                Ok(())
             }
 
             // ── T004 ──────────────────────────────────────────────────────────

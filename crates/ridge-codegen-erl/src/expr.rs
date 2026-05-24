@@ -1123,7 +1123,32 @@ fn lower_static_call(
         // Actor BEAM modules are separate compilation units and cannot make
         // unqualified calls into their parent module.
         SymbolRef::Local { name, module } => {
-            let lowered_args = args
+            // Unit-paren shim: if the callee is a known 0-arity local fn AND
+            // the caller passes a single Unit literal (`f ()`), treat the
+            // `()` as syntactic punctuation and emit a 0-arg call.  This
+            // unifies the two common decl/call shapes so that user code
+            // doesn't have to memorise the difference between
+            //   `fn foo ()              -> T = ...`   (parsed: 0 params)
+            //   `fn foo (_unit: Unit)   -> T = ...`   (parsed: 1 param)
+            // — both can now be called as `foo ()` without erlc rejecting
+            // an arity mismatch.  Mirrors the `cli_args/0` ↔ `cli_args/1`
+            // shim pattern in `ridge_rt.erl`.
+            let effective_args: &[IrExpr] = if args.len() == 1
+                && matches!(
+                    &args[0],
+                    IrExpr::Lit {
+                        value: ridge_ir::IrLit::Unit,
+                        ..
+                    }
+                )
+                && scope.fn_arity.get(name).copied() == Some(0)
+            {
+                &[]
+            } else {
+                args
+            };
+
+            let lowered_args = effective_args
                 .iter()
                 .map(|a| lower_expr_in_scope(a, scope))
                 .collect::<Result<Vec<_>, _>>()?;
@@ -1142,7 +1167,7 @@ fn lower_static_call(
 
             // Same-module (or non-actor context): unqualified apply.
             #[allow(clippy::cast_possible_truncation)]
-            let arity = args.len() as u32;
+            let arity = effective_args.len() as u32;
             Ok(CErlExpr::Apply {
                 callee: Box::new(CErlExpr::LocalFnRef {
                     name: CErlAtom(name.clone()),

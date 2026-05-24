@@ -559,10 +559,8 @@ http_recv_all(Sock, Acc) ->
     end.
 
 %% Internal: parse a raw HTTP/1.x request binary into a Ridge Request map.
-%% Ridge wire shape: #{method => Bin, path => Bin, body => Bin}
-%% (matches {request_record, Method, Path, Body} tuple in the BEAM; but since
-%%  Ridge records compile to tagged tuples, we use the atom-keyed map form
-%%  that matches the Ridge record wire representation).
+%% Ridge records compile to atom-keyed maps, so the Request wire shape is
+%% #{method => Bin, path => Bin, body => Bin}.
 http_parse_request(Raw) ->
     Lines = binary:split(Raw, <<"\r\n">>, [global]),
     {Method, Path, Body} =
@@ -577,8 +575,7 @@ http_parse_request(Raw) ->
             _ ->
                 {<<"GET">>, <<"/">>, <<>>}
         end,
-    %% Ridge record wire: {request_record, Method, Path, Body}
-    {request_record, Method, Path, Body}.
+    #{method => Method, path => Path, body => Body}.
 
 %% Internal: extract the body from the lines after the headers.
 http_extract_body([]) -> <<>>;
@@ -588,21 +585,24 @@ http_extract_body([_ | Rest]) ->
     http_extract_body(Rest).
 
 %% Internal: build an HTTP/1.0 response binary from a Ridge Response record.
-%% Ridge record wire: {response_record, Status, Body}
-http_build_response({response_record, Status, Body}) ->
+%% Ridge records compile to atom-keyed maps, so the Response wire shape is
+%% #{status => Int, body => Bin}.  Body coerced to binary so handlers that
+%% return string literals (lists of integers) still serialise correctly.
+http_build_response(#{status := Status, body := Body}) when is_integer(Status) ->
+    BodyBin = iolist_to_binary(Body),
     StatusText = http_status_text(Status),
     iolist_to_binary([
         <<"HTTP/1.0 ">>, integer_to_binary(Status), <<" ">>, StatusText, <<"\r\n">>,
         <<"Content-Type: text/plain\r\n">>,
-        <<"Content-Length: ">>, integer_to_binary(byte_size(Body)), <<"\r\n">>,
+        <<"Content-Length: ">>, integer_to_binary(byte_size(BodyBin)), <<"\r\n">>,
         <<"Connection: close\r\n">>,
         <<"\r\n">>,
-        Body
+        BodyBin
     ]);
 http_build_response(Other) ->
     %% Fallback for unexpected shapes.
-    http_build_response({response_record, 500,
-        iolist_to_binary(io_lib:format("bad response: ~p", [Other]))}).
+    http_build_response(#{status => 500,
+        body => iolist_to_binary(io_lib:format("bad response: ~p", [Other]))}).
 
 %% Internal: map common status codes to reason phrases.
 http_status_text(200) -> <<"OK">>;

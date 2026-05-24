@@ -117,16 +117,35 @@ pub(crate) fn detect_with_peephole(fields: &[(String, IrExpr)]) -> Option<WithPe
 }
 
 /// Return `Some(base_name)` iff `value` is a forwarding projection
-/// `IrExpr::Field { base: IrExpr::Local { name }, field == key }`.
+/// `IrExpr::Field { base: IrExpr::Local { name }, field == key }` AND the
+/// base local is one of the synthesised `__with_base_N` names produced by
+/// the Phase-5 `with`-lowering.
+///
+/// The synthetic-name check is what keeps the peephole from misfiring on
+/// user code like `Response { status = 200, body = req.body }`: there `req`
+/// is a user-named local pointing at a different record type, but the
+/// field/key pair matches by chance, and the unchecked detector used to
+/// rewrite the whole construction as `req with { status = 200 }`, silently
+/// dropping `body` and changing the result's record type.
 fn forwarding_base<'a>(key: &str, value: &'a IrExpr) -> Option<&'a str> {
     if let IrExpr::Field { base, field, .. } = value {
         if field == key {
             if let IrExpr::Local { name, .. } = base.as_ref() {
-                return Some(name.as_str());
+                if is_with_base_local(name) {
+                    return Some(name.as_str());
+                }
             }
         }
     }
     None
+}
+
+/// True iff `name` is one of the `__with_base_N` synthetic locals minted by
+/// `ridge-lower::with_update::lower_with_expr`.  The convention is
+/// `__with_base` followed by an optional `_<digit-suffix>` (per
+/// `LowerCtx::fresh_local`).
+fn is_with_base_local(name: &str) -> bool {
+    name.starts_with("__with_base")
 }
 
 #[cfg(test)]
@@ -254,6 +273,57 @@ mod tests {
         let update_keys: Vec<&str> = ph.updates.iter().map(|(k, _)| *k).collect();
         assert!(update_keys.contains(&"b"));
         assert!(update_keys.contains(&"c"));
+    }
+
+    // ── peephole_ignores_user_named_base ──────────────────────────────────────
+
+    /// `Response { status = 200, body = req.body }` written in user code lands
+    /// here as `[("status", Lit 200), ("body", Field { base: Local("req"),
+    /// field: "body" })]`.  Before the synthetic-name guard the detector
+    /// happily reported a `with`-update of `req`, the caller emitted a
+    /// `MapUpdate` that took `req` (a Request) as the base, and BEAM's type
+    /// checker later rejected the resulting bytecode with
+    /// `bad_type {needed t_map, actual any}`.  The peephole must stay clear
+    /// of any base local that is not one of the synthetic `__with_base_*`
+    /// names produced by Phase-5 `with`-lowering.
+    #[test]
+    fn peephole_ignores_user_named_base() {
+        let fields = vec![
+            ("status".into(), lit_int(200)),
+            (
+                "body".into(),
+                IrExpr::Field {
+                    id: node(),
+                    base: Box::new(local("req")),
+                    field: "body".into(),
+                    span: sp(),
+                },
+            ),
+        ];
+        let result = detect_with_peephole(&fields);
+        assert!(
+            result.is_none(),
+            "peephole must not fire when the base local is a user name, \
+             only when it matches the synthetic `__with_base_N` prefix"
+        );
+    }
+
+    /// Negative sibling: `__with_base_0` (the actual Phase-5 prefix) keeps
+    /// firing the peephole, so genuine `with`-update lowerings still benefit
+    /// from the optimisation.
+    #[test]
+    fn peephole_fires_for_suffixed_synthetic_base() {
+        let fields = vec![
+            forwarding_field("a", "__with_base_0"),
+            ("b".into(), lit_int(99)),
+        ];
+        let result = detect_with_peephole(&fields);
+        assert!(
+            result.is_some(),
+            "synthetic `__with_base_0` must still fire"
+        );
+        let ph = result.unwrap();
+        assert_eq!(ph.base_name, "__with_base_0");
     }
 
     // ── peephole_field_key_mismatch_is_not_forwarding ─────────────────────────

@@ -299,6 +299,82 @@ fn infer_caps_for_decls(
     inferred_caps
 }
 
+/// Run `infer_expr` over every actor handler body in the module so that the
+/// node_types side-table is populated for those expressions.
+///
+/// Handlers and init blocks are not part of the SCC walk over top-level `fn`
+/// decls (which is what populates `node_types` for ordinary functions), so
+/// without this pass any expression inside a handler body — including
+/// arithmetic operands — has no associated type when lowering runs.  That
+/// silently downgrades arithmetic dispatch to the Int family for code that is
+/// actually Float, producing runtime `badarith` crashes on Float division.
+///
+/// State fields and handler parameters are bound into a fresh env frame
+/// before inferring the body.  The body's type is intentionally not unified
+/// against the declared return type here: this pass is only for side-effect
+/// population of `node_types`, and surfacing additional T-errors at this
+/// point would be a behaviour change beyond the scope of the dispatch fix.
+fn typecheck_actor_bodies(
+    ctx: &mut crate::ctx::InferCtx,
+    b: &BuiltinTyCons,
+    ast: &Arc<ridge_ast::Module>,
+    arena: &TyConArena,
+) {
+    use crate::infer::infer_expr;
+    use ridge_ast::ActorMember;
+    use ridge_types::TyConKind;
+
+    let monoscheme = |ty: ridge_types::Type| Scheme {
+        vars: vec![],
+        cap_vars: vec![],
+        ty,
+    };
+
+    for item in &ast.items {
+        let Item::Actor(ad) = item else { continue };
+        let Some(&actor_id) = ctx.user_tycon_names.get(&ad.name.text) else {
+            continue;
+        };
+        let TyConKind::Actor(schema) = &arena.get(actor_id).kind else {
+            continue;
+        };
+
+        let mut handler_idx = 0usize;
+        for member in &ad.members {
+            let ActorMember::On(handler) = member else {
+                continue;
+            };
+            let Some(handler_schema) = schema.handlers.get(handler_idx) else {
+                handler_idx += 1;
+                continue;
+            };
+            handler_idx += 1;
+
+            ctx.env.push_frame();
+
+            // Bind state fields.
+            for field in &schema.state_fields {
+                ctx.env
+                    .bind(field.name.clone(), monoscheme(field.ty.clone()));
+            }
+
+            // Bind handler parameters.
+            for (param, ty) in handler.params.iter().zip(handler_schema.params.iter()) {
+                let name = match param {
+                    ridge_ast::Param::Bare(id) => id.text.clone(),
+                    ridge_ast::Param::Annotated { name, .. } => name.text.clone(),
+                };
+                ctx.env.bind(name, monoscheme(ty.clone()));
+            }
+
+            // Walk the body purely for side-effect: populates ctx.node_types_accum.
+            let _ = infer_expr(ctx, b, &handler.body);
+
+            ctx.env.pop_frame();
+        }
+    }
+}
+
 /// Type-check a single module given its parsed AST, resolved imports, and a
 /// shared (mutable) `TyCon` arena.
 ///
@@ -378,6 +454,13 @@ fn typecheck_module_inner(
     // D040: file-private / unannotated / annotated cap handling is inside
     // infer_caps_for_decls; backward-compat dual-insert is also there.
     let inferred_caps = infer_caps_for_decls(&mut ctx, b, &fn_decls);
+
+    // Step D2: Type-check actor handler bodies so that node_types is populated
+    // for every expression inside a handler.  Without this, dispatchers in
+    // ridge-lower that consult node_types (notably the Float-vs-Int dispatch
+    // for `BinOp::Div`) can't tell which family to pick and fall back to the
+    // Int default, which emits `erlang:div/2` and crashes on Float operands.
+    typecheck_actor_bodies(&mut ctx, b, ast, arena);
 
     // Step E: Actor encapsulation checks.
     for item in &ast.items {

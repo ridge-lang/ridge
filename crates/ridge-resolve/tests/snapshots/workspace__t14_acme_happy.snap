@@ -1,6 +1,5 @@
 ---
 source: crates/ridge-resolve/tests/workspace.rs
-assertion_line: 252
 expression: snap
 ---
 WorkspaceSnapshot {

@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- `Text.replace from to s` now replaces every occurrence of `from`, not just the first. The public bridge in `crates/ridge-stdlib/stdlib/text.ridge` used to call `binary:replace/4` with an empty options list, which Erlang interprets as first-occurrence-only; the function name promises global semantics and matches what users coming from Python's `str.replace`, JavaScript's `replaceAll`, Rust's `str::replace`, or Go's `strings.ReplaceAll` expect. The bridge now routes through `ridge_rt:text_replace_all/3` (which already passes `[global]` and is the same shim used by `Text.split`), so the canonical pipeline `s |> Text.replace "\n" " " |> Text.replace "\t" " "` collapses every newline and every tab as intended. Two regression tests pin the multi-occurrence and pass-through cases.
+
 ## [0.2.2] - 2026-05-24
 
 ### Added

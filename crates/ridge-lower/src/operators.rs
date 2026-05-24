@@ -285,29 +285,21 @@ fn looks_like_float(expr: &Expr) -> bool {
         Expr::Paren { inner, .. } | Expr::Unary { expr: inner, .. } => looks_like_float(inner),
         Expr::Binary { lhs, rhs, .. } => looks_like_float(lhs) || looks_like_float(rhs),
         Expr::Call { callee, .. } => match callee.as_ref() {
-            Expr::Qualified(q) => q
-                .segments
-                .first()
-                .is_some_and(|seg| seg.text == "Float"),
+            Expr::Qualified(q) => q.segments.first().is_some_and(|seg| seg.text == "Float"),
             Expr::FieldAccess { base, .. } => matches!(
                 base.as_ref(),
                 Expr::Ident(id) if id.text == "Float"
             ),
             _ => false,
         },
-        Expr::Qualified(q) => q
-            .segments
-            .first()
-            .is_some_and(|seg| seg.text == "Float"),
+        Expr::Qualified(q) => q.segments.first().is_some_and(|seg| seg.text == "Float"),
         Expr::If {
             then_branch,
             else_branch,
             ..
         } => {
             looks_like_float(then_branch)
-                || else_branch
-                    .as_ref()
-                    .is_some_and(|e| looks_like_float(e))
+                || else_branch.as_ref().is_some_and(|e| looks_like_float(e))
         }
         Expr::Block(b) => b.stmts.last().is_some_and(looks_like_float),
         _ => false,

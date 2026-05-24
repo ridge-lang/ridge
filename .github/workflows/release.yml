@@ -2,7 +2,14 @@ name: Release
 
 on:
   push:
-    tags: ['v*']
+    # Only match version tags like `v0.2.2`, `v1.0.0-rc1`, …
+    # `v*` previously also matched `vscode-v*` (the VS Code extension uses
+    # its own tag prefix to publish to the Marketplace), so every extension
+    # tag triggered a full Ridge build and produced a junk draft release
+    # with the Ridge binaries inside it.  `v[0-9]*` requires a digit right
+    # after `v`, which excludes `vscode-v*` and any other non-version
+    # `v*` tag.
+    tags: ['v[0-9]*']
   workflow_dispatch:
     inputs:
       dry_run:

@@ -11,6 +11,9 @@ const RIDGE_RT_SOURCE: &str = include_str!("../runtime/ridge_rt.erl");
 /// The bundled `ridge_test_runner.erl` source, embedded at compile time.
 const RIDGE_TEST_RUNNER_SOURCE: &str = include_str!("../runtime/ridge_test_runner.erl");
 
+/// The bundled `ridge_main_runner.erl` source, embedded at compile time.
+const RIDGE_MAIN_RUNNER_SOURCE: &str = include_str!("../runtime/ridge_main_runner.erl");
+
 /// Information about the installed runtime.
 #[derive(Debug, Clone)]
 pub struct RuntimeInfo {
@@ -56,7 +59,19 @@ pub fn install_runtime(out_root: &Path) -> Result<RuntimeInfo, CodegenError> {
     })?;
 
     // Also install ridge_test_runner.erl (T9 test runner bridge).
-    install_test_runner_source(&runtime_dir)?;
+    install_runner_source(
+        &runtime_dir,
+        "ridge_test_runner.erl",
+        RIDGE_TEST_RUNNER_SOURCE,
+    )?;
+
+    // And ridge_main_runner.erl, used by `ridge run` to project main()'s
+    // Result return into an exit code (added 0.2.2).
+    install_runner_source(
+        &runtime_dir,
+        "ridge_main_runner.erl",
+        RIDGE_MAIN_RUNNER_SOURCE,
+    )?;
 
     Ok(RuntimeInfo {
         erl_path,
@@ -64,12 +79,16 @@ pub fn install_runtime(out_root: &Path) -> Result<RuntimeInfo, CodegenError> {
     })
 }
 
-/// Install the bundled `ridge_test_runner.erl` under `<runtime_dir>/`.
+/// Install a bundled runner `.erl` source under `<runtime_dir>/<name>`.
 ///
 /// Idempotent — skips the write when the destination already matches.
-fn install_test_runner_source(runtime_dir: &Path) -> Result<(), CodegenError> {
-    let dest = runtime_dir.join("ridge_test_runner.erl");
-    let embedded = RIDGE_TEST_RUNNER_SOURCE.as_bytes();
+fn install_runner_source(
+    runtime_dir: &Path,
+    name: &str,
+    embedded_source: &str,
+) -> Result<(), CodegenError> {
+    let dest = runtime_dir.join(name);
+    let embedded = embedded_source.as_bytes();
     if dest.exists() {
         if let Ok(existing) = std::fs::read(&dest) {
             if existing == embedded {
@@ -120,27 +139,60 @@ pub fn compile_runtime(erlc_path: &Path, out_root: &Path) -> Result<PathBuf, Cod
     }
 
     // ── Compile ridge_test_runner.erl (T9) ────────────────────────────────────
-    let runner_erl_path = out_root.join("runtime").join("ridge_test_runner.erl");
-    let runner_beam_path = beam_out_dir.join("ridge_test_runner.beam");
+    compile_runner_if_missing(
+        erlc_path,
+        out_root,
+        &beam_out_dir,
+        "ridge_test_runner.erl",
+        "ridge_test_runner.beam",
+    )?;
 
-    if runner_erl_path.exists() && !runner_beam_path.exists() {
-        let output = std::process::Command::new(erlc_path)
-            .arg("-o")
-            .arg(&beam_out_dir)
-            .arg(&runner_erl_path)
-            .output()
-            .map_err(|_| CodegenError::ErlcNotFound {
-                searched_paths: vec![],
-            })?;
-
-        if !output.status.success() {
-            return Err(CodegenError::ErlcRejectedInput {
-                core_path: runner_erl_path,
-                stderr: String::from_utf8_lossy(&output.stderr).into_owned(),
-                exit_code: output.status.code().unwrap_or(-1),
-            });
-        }
-    }
+    // ── Compile ridge_main_runner.erl (0.2.2 main() Err projection) ───────────
+    compile_runner_if_missing(
+        erlc_path,
+        out_root,
+        &beam_out_dir,
+        "ridge_main_runner.erl",
+        "ridge_main_runner.beam",
+    )?;
 
     Ok(rt_beam_path)
+}
+
+/// Compile a single bundled runner under `runtime/` to `beam/`.
+///
+/// Idempotent — skips compilation if the `.beam` already exists.  Returns the
+/// path of the produced `.beam` on success.
+fn compile_runner_if_missing(
+    erlc_path: &Path,
+    out_root: &Path,
+    beam_out_dir: &Path,
+    erl_name: &str,
+    beam_name: &str,
+) -> Result<(), CodegenError> {
+    let erl_path = out_root.join("runtime").join(erl_name);
+    let beam_path = beam_out_dir.join(beam_name);
+
+    if !erl_path.exists() || beam_path.exists() {
+        return Ok(());
+    }
+
+    let output = std::process::Command::new(erlc_path)
+        .arg("-o")
+        .arg(beam_out_dir)
+        .arg(&erl_path)
+        .output()
+        .map_err(|_| CodegenError::ErlcNotFound {
+            searched_paths: vec![],
+        })?;
+
+    if !output.status.success() {
+        return Err(CodegenError::ErlcRejectedInput {
+            core_path: erl_path,
+            stderr: String::from_utf8_lossy(&output.stderr).into_owned(),
+            exit_code: output.status.code().unwrap_or(-1),
+        });
+    }
+
+    Ok(())
 }

@@ -554,7 +554,7 @@ items:
                               - name: _
                                 ty: o2
                             body:
-                              Lit(n157): Text("█")
+                              Lit(n157): Text("#")
                         -
                           Call(n158):
                             callee:
@@ -897,7 +897,7 @@ items:
                                                       Symbol(n277): Stdlib(std.text.concat)
                                                     args:
                                                       -
-                                                        Lit(n278): Text("Log analysis â\u{80}\u{94} threshold: ")
+                                                        Lit(n278): Text("Log analysis -- threshold: ")
                                                       -
                                                         Local(n279): levelArg
                                             Block(n280):

@@ -212,6 +212,17 @@ pub fn test_replace_all () -> Result Unit Text =
     if _replace "a" "X" "banana" == "bXnXnX" then Ok ()
     else Err "Text.replace a X banana should be bXnXnX"
 
+-- Regression: previously the public bridge passed empty opts to `binary:replace/4`,
+-- which defaults to first-occurrence only.  This pins the canonical case (whitespace
+-- normalization across a multi-line text) where the bug surfaced in app #11 wc clone.
+pub fn test_replace_all_newlines_to_spaces () -> Result Unit Text =
+    if _replace "\n" " " "a\nb\nc\n" == "a b c " then Ok ()
+    else Err "Text.replace must rewrite every occurrence, not just the first"
+
+pub fn test_replace_no_match_passes_through () -> Result Unit Text =
+    if _replace "z" "?" "hello" == "hello" then Ok ()
+    else Err "Text.replace with no match should return input unchanged"
+
 pub fn test_padLeft_short () -> Result Unit Text =
     if _padLeft 5 "0" "12" == "00012" then Ok ()
     else Err "Text.padLeft 5 0 12 should be 00012"

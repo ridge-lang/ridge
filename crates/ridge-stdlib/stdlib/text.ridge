@@ -128,13 +128,17 @@ fn _moreThanOne (xs: List a) -> Bool =
         _ :: []     -> false
         _ :: _ :: _ -> true
 
--- Raw binary:replace/4 bridge (private — 4th arg = options list).
-@ffi("binary", "replace", 4)
-fn _binaryReplace4 (s: Text) (from: Text) (to: Text) (opts: List Text) -> Text
+-- Replace-all bridge via ridge_rt so we get binary:replace(_, _, _, [global]).
+-- The bare `binary:replace/4` Erlang BIF defaults to first-occurrence only when
+-- the options list is empty; the runtime wrapper hard-codes the `[global]`
+-- option, which matches the surface name (`replace`) and the behavior users
+-- coming from Python/JS/Rust/Go expect.
+@ffi("ridge_rt", "text_replace_all", 3)
+fn _replaceAll (from: Text) (to: Text) (s: Text) -> Text
 
 -- Replace all occurrences of `from` with `to`.
 pub fn replace (from: Text) (to: Text) (s: Text) -> Text =
-    _binaryReplace4 s from to []
+    _replaceAll from to s
 
 -- Raw binary:copy/2 bridge (private).
 @ffi("binary", "copy", 2)

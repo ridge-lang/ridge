@@ -47,6 +47,22 @@ use rustc_hash::FxHashMap;
 /// which is a regular Erlang fun reference of the correct arity that callers
 /// can invoke as `Fun(X1, ..., XN)`.
 fn stdlib_value_fn_ref(module: CErlAtom, fn_name: CErlAtom, arity: u32) -> CErlExpr {
+    // 0-arity stdlib fns (e.g. `Map.empty`, `Set.empty`, `List.empty`) are
+    // declared as value constants from the type checker's point of view —
+    // their scheme is the result type, not a `() -> T` fn type.  Emitting a
+    // `fun () -> call M:F () end` thunk here would put a *fun reference* into
+    // value position, which is what the rest of the language then treats as
+    // opaque: state defaults wrap it but never apply, callers that expect the
+    // declared value type crash with `badmap` / `badarg` / etc.  Resolve the
+    // value at the use site by emitting the call directly so the lowered form
+    // matches the declared scheme.
+    if arity == 0 {
+        return CErlExpr::Call {
+            module,
+            fn_name,
+            args: vec![],
+        };
+    }
     let params: Vec<CErlVar> = (0..arity).map(|i| CErlVar(format!("V_X{i}"))).collect();
     let args: Vec<CErlExpr> = params.iter().map(|p| CErlExpr::Var(p.clone())).collect();
     CErlExpr::Fun {
@@ -353,6 +369,39 @@ mod tests {
                 assert_eq!(args.len(), 2, "Call must forward both fun params");
             }
             other => panic!("expected Ok(CErlExpr::Fun{{..}}), got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn symbol_stdlib_zero_arity_emits_direct_call() {
+        // A 0-arity stdlib symbol used as a value (e.g. `Map.empty`,
+        // `Set.empty`, `List.empty`) must emit the call directly so the
+        // produced expression evaluates to the value, not a `fun () -> ...`
+        // thunk that the rest of the language treats as opaque.  Before this
+        // fix, `state table: Map Text Text = Map.empty` left a fun in state
+        // and the first `maps:to_list(table)` blew up with `badmap`.
+        let sym = SymbolRef::Stdlib {
+            module: "std.map".into(),
+            name: "empty".into(),
+        };
+        let result = lower_symbol(&sym, sp(), &empty_arity(), None);
+        match result {
+            Ok(CErlExpr::Call {
+                module,
+                fn_name,
+                args,
+            }) => {
+                assert_eq!(module.0, "std.map", "expected BEAM module 'std.map'");
+                assert_eq!(fn_name.0, "empty", "expected BEAM fn 'empty'");
+                assert!(
+                    args.is_empty(),
+                    "0-arity stdlib value-ref must have no args"
+                );
+            }
+            other => panic!(
+                "expected direct Call('std.map':'empty'()), got {other:?} — \
+                 a Fun wrapper would put a fun-value in value position and re-introduce the leak"
+            ),
         }
     }
 

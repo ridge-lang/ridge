@@ -68,11 +68,13 @@ fn tally (k: Int) (acc: Map Int Int) -> Map Int Int =
 fn buildHistogram (entries: List LogEntry) -> Map Int Int =
     List.fold (fn acc e -> tally e.hour acc) Map.empty entries
 
--- Render a single histogram bar:  " 7 | ████ (4)"
--- NOTE: Text.padLeft is §9.1 std.text.
+-- Render a single histogram bar:  " 7 | #### (4)"
+-- ASCII `#` is used instead of `█` so the example's stdout stays stable
+-- across console encodings (Windows cp1252 otherwise mojibakes the block
+-- character).
 fn renderBar (hour: Int) (count: Int) -> Text =
     let hourLabel = Int.toText hour |> Text.padLeft 2 " "
-    let bar       = List.range 1 count |> List.map (fn _ -> "█") |> List.fold (fn a b -> $"${a}${b}") ""
+    let bar       = List.range 1 count |> List.map (fn _ -> "#") |> List.fold (fn a b -> $"${a}${b}") ""
     $" ${hourLabel} | ${bar} (${count})"
 
 fn io printHistogram (histogram: Map Int Int) -> Unit =
@@ -102,7 +104,7 @@ fn env io fs main () -> Result Unit Text =
  |> List.filter (meetsThreshold threshold)
 
     let histogram = buildHistogram entries
-    Io.println $"Log analysis — threshold: ${levelArg}"
+    Io.println $"Log analysis -- threshold: ${levelArg}"
     Io.println ""
     match (List.length entries)
         0 -> Io.println "No entries match the given threshold."

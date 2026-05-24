@@ -1,0 +1,5 @@
+Log analysis -- threshold: WARN
+
+Hour | Entries
+-----+---------
+  8 | #### (4)

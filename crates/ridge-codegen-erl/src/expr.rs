@@ -1330,10 +1330,7 @@ fn lower_prelude_call(
 ///
 /// # Identity shortcuts
 ///
-/// - `std.text.toText` — identity on `Text`; erased at codegen.
-/// - `std.net.http.respond` — response value is its return; erased at codegen.
-///
-/// Both expect exactly 1 argument.
+/// - `std.text.toText` — identity on `Text`; erased at codegen. Always 1 arg.
 ///
 /// # Bridge dispatch
 ///
@@ -1351,7 +1348,11 @@ pub(crate) fn lower_call_to_stdlib(
     scope: &mut LocalScope,
 ) -> Result<CErlExpr, CodegenError> {
     // ── Identity shortcuts ────────────────────────────────────────────────────
-    if (module, name) == ("std.text", "toText") || (module, name) == ("std.net.http", "respond") {
+    // `std.net.http.respond` is intentionally NOT shortcut here: its signature
+    // is `(Int, Text) -> Response` (constructs a record), so the codegen must
+    // route it through the regular bridge so the compiled `respond/2` runs
+    // and returns a Response — not the integer status code by itself.
+    if (module, name) == ("std.text", "toText") {
         if args.len() != 1 {
             return Err(CodegenError::IrShapeMalformed {
                 variant: "IrExpr::Call",

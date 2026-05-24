@@ -98,7 +98,7 @@ fn run_pipeline(workspace_path: &Path) -> LoweredWorkspace {
 /// Identity shortcut modules/names that are handled at the call site (no map
 /// entry required — `lower_call_to_stdlib` erases them).
 fn is_identity_shortcut(module: &str, name: &str) -> bool {
-    (module == "std.text" && name == "toText") || (module == "std.net.http" && name == "respond")
+    module == "std.text" && name == "toText"
 }
 
 /// `std.map.empty` is a literal, not a function call — it appears as a
@@ -285,6 +285,62 @@ fn stdlib_bridge_covers_rate_limiter() {
     let tw = load_example_workspace("rate_limiter");
     let ws = run_pipeline(&tw.path);
     assert_bridge_covers("rate_limiter", &ws);
+}
+
+// Lock the new dispatch for `std.net.http.respond`: it must resolve through
+// `stdlib_map::lookup` as a regular 2-arg call, not as an identity shortcut.
+// The previous (incorrect) treatment lifted the call as `args[0]` (the status
+// code Int) and discarded the body, so callers got an Int back where a
+// Response was expected, and any 2-arg `respond status body` form crashed at
+// codegen with E001 "expects 1 arg, got 2".
+#[test]
+fn stdlib_bridge_respond_resolves_as_two_arg_call() {
+    match stdlib_map::lookup("std.net.http", "respond") {
+        Some(BridgeTarget::RidgeStdlibLocal {
+            beam_module,
+            fn_name,
+            arity,
+        }) => {
+            assert_eq!(beam_module, "std.net.http");
+            assert_eq!(fn_name, "respond");
+            assert_eq!(*arity, 2);
+        }
+        other => panic!(
+            "expected RidgeStdlibLocal for std.net.http.respond, got {other:?}\n\
+             If `respond` is being treated as an identity shortcut, restore the bridge route."
+        ),
+    }
+}
+
+// Source-level smoke: `respond status body` must round-trip through codegen
+// without errors.  Before the fix the codegen treated `respond` as a 1-arg
+// identity shortcut and crashed with E001 "expects 1 arg, got 2".
+#[test]
+fn stdlib_respond_two_arg_call_compiles() {
+    use ridge_codegen_erl::{codegen_workspace, BuildProfile, CodegenOptions};
+    let src = r#"
+import std.net.http as Http (Response, respond)
+
+pub fn ok () -> Response =
+    respond 200 "hello"
+"#;
+    let tw = make_workspace("respond_two_arg", "ok", src);
+    let ws = run_pipeline(&tw.path);
+    let mut opts = CodegenOptions::default();
+    opts.out_root = tw.path.join("target_codegen");
+    opts.profile = BuildProfile::Debug;
+    opts.invoke_erlc = false;
+    opts.install_runtime = false;
+    let result = codegen_workspace(&ws, opts);
+    let shortcut_e001s: Vec<_> = result
+        .errors
+        .iter()
+        .filter(|e| format!("{e:?}").contains("identity shortcut"))
+        .collect();
+    assert!(
+        shortcut_e001s.is_empty(),
+        "codegen on `respond 200 \"hello\"` should not trip the identity-shortcut path; got: {shortcut_e001s:?}"
+    );
 }
 
 #[test]

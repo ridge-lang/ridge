@@ -1280,7 +1280,10 @@ pub fn stdlib_signature(module: StdlibModuleId, name: &str, b: &BuiltinTyCons) -
            // JsonValue constructor shims — see std.json.
            // Cross-module variant resolution lands in 0.2.0; until then
            // these are the supported user-facing constructor surface.
-           | "jNull" | "jBool" | "jInt" | "jFloat" | "jText" | "jList" | "jObject")
+           | "jNull" | "jBool" | "jInt" | "jFloat" | "jText" | "jList" | "jObject"
+           // JsonValue accessor companions — destructure a decoded JsonValue
+           // without cross-module variant pattern matching (deferred).
+           | "asInt" | "asFloat" | "asBool" | "asText" | "asList" | "asObject" | "isNull")
         | (STD_CLI, "parseArgs" | "help" | "version")
         | (STD_NET_HTTP, "get" | "post" | "put" | "delete" | "respond" | "Request" | "Response") => {
             stub_phase7()

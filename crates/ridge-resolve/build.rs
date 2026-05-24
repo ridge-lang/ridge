@@ -288,6 +288,16 @@ const BASELINE_EXPORTS: &[(&str, &[&str])] = &[
             "jText",
             "jList",
             "jObject",
+            // JsonValue accessor companions — destructure a JsonValue
+            // returned from `decode` without needing cross-module variant
+            // pattern matching (deferred).  See json.ridge for usage.
+            "asInt",
+            "asFloat",
+            "asBool",
+            "asText",
+            "asList",
+            "asObject",
+            "isNull",
         ],
     ),
     (

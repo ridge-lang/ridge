@@ -21,6 +21,8 @@
     json_null/0, json_null/1,
     json_bool/1, json_int/1, json_float/1, json_text/1,
     json_list/1, json_object/1,
+    json_as_int/1, json_as_float/1, json_as_bool/1, json_as_text/1,
+    json_as_list/1, json_as_object/1, json_is_null/1,
     http_listen/2, http_port/0,
     http_get/1, http_post/2, http_put/2, http_delete/1,
     ask/3, send/2, spawn_actor/3,
@@ -430,6 +432,44 @@ erlang_to_json_value(L) when is_list(L)    ->
     {json_list, [erlang_to_json_value(E) || E <- L]};
 erlang_to_json_value(M) when is_map(M)     ->
     {json_object, maps:map(fun(_K, V) -> erlang_to_json_value(V) end, M)}.
+
+%% JsonValue accessors — companion destructors to the json_* constructors.
+%%
+%% Cross-module pattern matching on user-defined variant constructors
+%% (`Json.JInt n`, `Json.JObject m`, etc.) is still deferred as of 0.2.x,
+%% so a JsonValue returned from `Json.decode` cannot be destructured with
+%% `match`.  These accessors give user code an Option-shaped escape hatch
+%% that needs no constructor resolution: they pattern-match the tagged
+%% tuple here in Erlang and surface `{some, V}` or `none` to the Ridge side.
+%% Ridge types:
+%%   asInt    : JsonValue -> Option Int
+%%   asFloat  : JsonValue -> Option Float
+%%   asBool   : JsonValue -> Option Bool
+%%   asText   : JsonValue -> Option Text
+%%   asList   : JsonValue -> Option (List JsonValue)
+%%   asObject : JsonValue -> Option (Map Text JsonValue)
+%%   isNull   : JsonValue -> Bool
+
+json_as_int({json_int, N}) -> {some, N};
+json_as_int(_)             -> none.
+
+json_as_float({json_float, F}) -> {some, F};
+json_as_float(_)               -> none.
+
+json_as_bool({json_bool, B}) -> {some, B};
+json_as_bool(_)              -> none.
+
+json_as_text({json_text, T}) -> {some, T};
+json_as_text(_)              -> none.
+
+json_as_list({json_list, L}) -> {some, L};
+json_as_list(_)              -> none.
+
+json_as_object({json_object, M}) -> {some, M};
+json_as_object(_)                -> none.
+
+json_is_null(json_null) -> true;
+json_is_null(_)         -> false.
 
 %% --- HTTP server (§3.18) ---
 

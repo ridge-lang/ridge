@@ -83,3 +83,49 @@ pub fn jList (xs: List JsonValue) -> JsonValue
 
 @ffi("ridge_rt", "json_object", 1)
 pub fn jObject (m: Map Text JsonValue) -> JsonValue
+
+-- ── JsonValue accessors. ─────────────────────────────────────────────────────
+--
+-- Cross-module pattern matching on `JsonValue` variants (`JInt`, `JObject`,
+-- etc.) from user code is still deferred (see the comment above on
+-- constructor resolution), so a `JsonValue` returned from `decode` cannot
+-- be destructured with `match` from outside this module.  These accessors
+-- give callers an `Option`-shaped escape hatch: each one pattern-matches
+-- the wire-format tuple in `ridge_rt` and surfaces `Some V` when the
+-- variant matches, or `None` otherwise.  `isNull` returns a `Bool` because
+-- the null variant has no payload.
+--
+-- Decode flow:
+--   match Json.decode text
+--       Err _ -> ...
+--       Ok v  ->
+--           match Json.asObject v
+--               None -> ...                       -- top-level wasn't an object
+--               Some m ->
+--                   match Map.get "id" m
+--                       None -> ...               -- missing field
+--                       Some idVal ->
+--                           match Json.asInt idVal
+--                               None -> ...       -- field wasn't an int
+--                               Some id -> ...    -- use id
+
+@ffi("ridge_rt", "json_as_int", 1)
+pub fn asInt (v: JsonValue) -> Option Int
+
+@ffi("ridge_rt", "json_as_float", 1)
+pub fn asFloat (v: JsonValue) -> Option Float
+
+@ffi("ridge_rt", "json_as_bool", 1)
+pub fn asBool (v: JsonValue) -> Option Bool
+
+@ffi("ridge_rt", "json_as_text", 1)
+pub fn asText (v: JsonValue) -> Option Text
+
+@ffi("ridge_rt", "json_as_list", 1)
+pub fn asList (v: JsonValue) -> Option (List JsonValue)
+
+@ffi("ridge_rt", "json_as_object", 1)
+pub fn asObject (v: JsonValue) -> Option (Map Text JsonValue)
+
+@ffi("ridge_rt", "json_is_null", 1)
+pub fn isNull (v: JsonValue) -> Bool

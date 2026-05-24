@@ -380,6 +380,30 @@ pub fn ok () -> Response =
     );
 }
 
+// Lock the bridge for `std.net.http.get` — the client API surface should
+// resolve to the `ridge_rt:http_get/1` shim, which since the wire fix
+// returns `{ok, #{status => …, body => …}}` (an atom-keyed map) instead
+// of the old `{response_record, …, …}` tagged tuple.  The tagged-tuple
+// shape crashed any caller accessing `resp.status` or `e.message` with
+// `badmap` — same family as the `http_listen` server-side fix in PR #79,
+// just on the client path.
+#[test]
+fn stdlib_bridge_covers_http_client_surface() {
+    for name in ["get", "post", "put", "delete"] {
+        match stdlib_map::lookup("std.net.http", name) {
+            Some(BridgeTarget::RidgeStdlibLocal {
+                beam_module,
+                fn_name,
+                ..
+            }) => {
+                assert_eq!(*beam_module, format!("std.net.http"));
+                assert_eq!(*fn_name, name.to_string());
+            }
+            other => panic!("expected RidgeStdlibLocal for std.net.http.{name}, got {other:?}"),
+        }
+    }
+}
+
 #[test]
 fn stdlib_bridge_no_perm_for_list_map() {
     // T11: std.list.map is now served by path B (RidgeStdlibLocal) because

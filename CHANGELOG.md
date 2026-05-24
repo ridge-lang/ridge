@@ -10,6 +10,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed
 
 - `Text.replace from to s` now replaces every occurrence of `from`, not just the first. The public bridge in `crates/ridge-stdlib/stdlib/text.ridge` used to call `binary:replace/4` with an empty options list, which Erlang interprets as first-occurrence-only; the function name promises global semantics and matches what users coming from Python's `str.replace`, JavaScript's `replaceAll`, Rust's `str::replace`, or Go's `strings.ReplaceAll` expect. The bridge now routes through `ridge_rt:text_replace_all/3` (which already passes `[global]` and is the same shim used by `Text.split`), so the canonical pipeline `s |> Text.replace "\n" " " |> Text.replace "\t" " "` collapses every newline and every tab as intended. Two regression tests pin the multi-occurrence and pass-through cases.
+- `Net.Http.get` / `post` / `put` / `delete` now work end-to-end against HTTPS URLs and real-world APIs. Three bugs in the client path were resolved together in `ridge_rt`:
+  - `application:ensure_all_started(ssl)` is invoked alongside `inets`, so the first `https://` request no longer crashes with `{failed_connect, [{inet, [inet], ssl_not_started}]}`.
+  - The success path returns `{ok, #{status => …, body => …}}` and the error path returns `{error, #{code => …, message => …}}` — atom-keyed maps that match the Ridge `Response` and built-in `Error` records. The previous wire emitted `{response_record, S, B}` and `{error_record, C, M}` tagged tuples, which crashed any caller touching `resp.status` or `e.message` with `badmap`. (Same root cause as the `http_listen` server-side fix in 0.2.2.)
+  - A default `User-Agent: ridge-lang/0.2` header is sent on every request. `httpc`'s built-in `User-Agent: httpc/X.Y` is rejected by several production APIs (GitHub returns HTTP 403 "User-Agent header required"), so the default would not get a beginner past their first real call. Custom headers remain deferred per the std.net.http scope guard.
 
 ## [0.2.2] - 2026-05-24
 

@@ -657,42 +657,69 @@ http_post(Url, Body) ->
 http_put(Url, Body) ->
     http_request_with_body(put, Url, Body).
 
+%% Internal: ensure the HTTP client transport stack is up.  `inets` provides
+%% `httpc`; `ssl` is required by every `https://` URL that ends up calling
+%% `ssl:connect/4` from `httpc_handler`.  Calling `ensure_all_started/1` is
+%% idempotent — repeated invocations are no-ops once the application is up.
+http_client_ensure_started() ->
+    application:ensure_all_started(inets),
+    application:ensure_all_started(ssl),
+    ok.
+
+%% Internal: shape an `httpc:request` return into the Ridge `Result Response Error`
+%% wire.  `Response` is a record `{ status: Int, body: Text }`, which lowers
+%% to an atom-keyed map; `Error` is the built-in `{ code: Text, message: Text }`,
+%% also a map.  Earlier versions of these helpers emitted tagged tuples
+%% (`{response_record, S, B}` / `{error_record, C, M}`), which crashed user
+%% code with `badmap` the moment it touched `r.status` or `e.message` — the
+%% same shape mismatch fixed for the server path in `http_parse_request`/
+%% `http_build_response`.
+http_client_format_ok(Status, RespBody) ->
+    BodyBin = iolist_to_binary(RespBody),
+    {ok, #{status => Status, body => BodyBin}}.
+
+http_client_format_err(Reason) ->
+    Msg = iolist_to_binary(io_lib:format("~p", [Reason])),
+    {error, #{code => <<"http_error">>, message => Msg}}.
+
+%% Internal: default request headers sent with every client request.
+%% httpc's built-in default User-Agent (`httpc/X.Y`) is rejected by several
+%% real-world APIs (GitHub returns HTTP 403 "User-Agent header required" for
+%% it, for example).  A Ridge-identifying string keeps the out-of-the-box
+%% experience working against those APIs.  Custom headers are deferred per
+%% std.net.http scope guard.
+http_client_default_headers() ->
+    [{"User-Agent", "ridge-lang/0.2"}].
+
 %% Internal: client helper for methods with no body.
 http_request_no_body(Method, Url) ->
-    application:ensure_all_started(inets),
+    http_client_ensure_started(),
     UrlStr = binary_to_list(Url),
-    try httpc:request(Method, {UrlStr, []}, [], []) of
+    try httpc:request(Method, {UrlStr, http_client_default_headers()}, [], []) of
         {ok, {{_Vsn, Status, _Phrase}, _Headers, RespBody}} ->
-            BodyBin = iolist_to_binary(RespBody),
-            %% Ridge Response wire: {response_record, Status, Body}
-            {ok, {response_record, Status, BodyBin}};
+            http_client_format_ok(Status, RespBody);
         {error, Reason} ->
-            Msg = iolist_to_binary(io_lib:format("~p", [Reason])),
-            {error, {error_record, <<"http_error">>, Msg}}
+            http_client_format_err(Reason)
     catch
         _:Err ->
-            Msg = iolist_to_binary(io_lib:format("~p", [Err])),
-            {error, {error_record, <<"http_error">>, Msg}}
+            http_client_format_err(Err)
     end.
 
 %% Internal: client helper for methods with a body.
 http_request_with_body(Method, Url, Body) ->
-    application:ensure_all_started(inets),
+    http_client_ensure_started(),
     UrlStr  = binary_to_list(Url),
     BodyStr = binary_to_list(Body),
     try httpc:request(Method,
-            {UrlStr, [], "text/plain", BodyStr},
+            {UrlStr, http_client_default_headers(), "text/plain", BodyStr},
             [], []) of
         {ok, {{_Vsn, Status, _Phrase}, _Headers, RespBody}} ->
-            BodyBin = iolist_to_binary(RespBody),
-            {ok, {response_record, Status, BodyBin}};
+            http_client_format_ok(Status, RespBody);
         {error, Reason} ->
-            Msg = iolist_to_binary(io_lib:format("~p", [Reason])),
-            {error, {error_record, <<"http_error">>, Msg}}
+            http_client_format_err(Reason)
     catch
         _:Err ->
-            Msg = iolist_to_binary(io_lib:format("~p", [Err])),
-            {error, {error_record, <<"http_error">>, Msg}}
+            http_client_format_err(Err)
     end.
 
 %% --- Actor runtime ---

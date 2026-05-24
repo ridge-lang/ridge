@@ -7,6 +7,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.2] - 2026-05-24
+
+### Added
+
+- Diagnostic hint on `T003 arity mismatch` when the offending argument is a curried `fn x1 -> fn x2 -> … -> body` chain and the callee expects an uncurried `fn x1 x2 -> body`. The classic trigger is `List.fold (fn acc -> fn x -> acc + x) 0 xs` — Ridge supports both lambda shapes, but `List.fold` and the rest of the uncurried stdlib helpers expect the n-arg form, and the bare T003 message gave no breadcrumbs. The hint is opt-in: it only fires when the "got" side is a 1-parameter function whose return type chains through additional 1-parameter functions totalling the expected arity.
+- `Json.asInt`, `Json.asFloat`, `Json.asBool`, `Json.asText`, `Json.asList`, `Json.asObject`, and `Json.isNull` — destructor wrappers that turn a `JsonValue` back into `Option Int`, `Option Text`, etc. The underlying tagged-tuple representation (`{json_int, N}`, `{json_object, M}`, …) is still wire-internal, but user code can now pattern-walk decoded JSON via these accessors without depending on cross-module visibility of the `JsonValue` constructors (which is deferred per `stdlib/json.ridge`).
+
+### Fixed
+
+- `ridge run` projects the `Result` returned by `main` to a process exit code instead of silently exiting 0 on `Err`. When `fn main () -> Result Unit T` (or `Result Unit Error`) returns `Err msg`, the message is written to stderr and the process exits with status 1; `Ok ()` and a bare `Unit`-typed main continue to exit 0. The runtime shim `ridge_main_runner:run/1` wraps the entry-point call and turns `{error, _}` returns into the non-zero exit; `ridge_rt`'s existing semantics are unchanged. Pipelines like `ridge run && deploy` now propagate failure end-to-end.
+- Actor handlers can call top-level functions defined in their enclosing module. Each actor was emitted into its own BEAM module (`ridge_module_N_<actor>`), and the codegen rewrote calls to parent-module functions as bare local references, which `erlc` correctly reported as `undefined function …/N in handle_call/3`. Lambda lowering now inherits `actor_parent` and `letrec_locals` from the enclosing scope, and a module that declares an actor exports every `fn`/`const` (not only `pub` ones) so the actor module's qualified `call 'ridge_module_N':<fn> (…)` resolves at load time. Inlining the helper into the handler is no longer required.
+- `f ()` is treated as a call with no arguments when `f` is a 0-arity function in scope. Ridge's declaration form `fn foo () -> T` lowers `foo` as `foo/0`, but the call `foo ()` was lowered as `foo/1` because the parser produces `args: [Unit]`. The lowering's `lower_static_call` now drops a single `Unit` literal when the callee is a known 0-arity local, removing the need for the `(_unit: Unit)` parameter workaround that previously cluttered idiomatic code.
+- Actor handler call forms `?> name ()` and `! name ()` are accepted against handlers declared as `on name () -> T` or `on name = …`. Both surfaces (decl and call site) now produce the same wire shape — a bare `{name}` tag tuple — and the type checker treats a single `()` argument against a zero-parameter handler as no payload instead of firing a false `T003`. Restores symmetry with the regular fn case fixed in 0.2.1.
+- `Float / Float` inside actor handler bodies lowers to `erlang:'/' /2` instead of `erlang:div/2`. The arithmetic-dispatch logic in `ridge-lower` reads each operand's type from `node_types` to decide between the Int and Float stdlib families, but actor handler bodies were never visited by `infer_expr`, so the side-table was empty for sub-expressions and the dispatch fell back to the Int default — making every Float division crash the handler with `badarith` at runtime. Type-checking now runs over each handler body with state fields and parameters bound, populating `node_types` for handler-internal expressions. As defence in depth, the binop lowering also consults the right-hand-side type and a conservative structural check for Float literals and `Float.*` calls before defaulting to Int.
+
+### Docs
+
+- `examples/rate_limiter.ridge` initialises `lastRefill` with `Time.now ()` instead of `Time.epoch ()`. The previous form computed an initial elapsed time of half a century, which the refill arithmetic still handled correctly but obscured the intended algorithm. The result banner also uses ASCII dashes instead of U+2500 box-drawing characters so the example's stdout is stable across console encodings.
+
+## [0.2.1] - 2026-05-23
+
 ### Added
 
 - Diagnostic `R023` when a project source tree contains legacy `.rg` files, with a `git mv` renaming hint. Affects all build, check, run, test, and fmt entry points.
@@ -131,7 +152,9 @@ Initial public release candidate.
 - Standard library: `bool`, `cli`, `env`, `float`, `fs`, `int`, `io`, `json`, `list`, `map`, `net.http`, `option`, `proc`, `random`, `text`, `time`
 - Apache-2.0 licensed
 
-[Unreleased]: https://github.com/ridge-lang/ridge/compare/v0.2.0...HEAD
+[Unreleased]: https://github.com/ridge-lang/ridge/compare/v0.2.2...HEAD
+[0.2.2]: https://github.com/ridge-lang/ridge/compare/v0.2.1...v0.2.2
+[0.2.1]: https://github.com/ridge-lang/ridge/compare/v0.2.0...v0.2.1
 [0.2.0]: https://github.com/ridge-lang/ridge/compare/v0.2.0-rc4...v0.2.0
 [0.2.0-rc4]: https://github.com/ridge-lang/ridge/releases/tag/v0.2.0-rc4
 [0.2.0-rc3]: https://github.com/ridge-lang/ridge/releases/tag/v0.2.0-rc3

@@ -469,6 +469,7 @@ fn check_handler_args(
             expected: handler_params.len(),
             found: normalised_args.len(),
             span,
+            hint: None,
         });
         return;
     }

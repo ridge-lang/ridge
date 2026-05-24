@@ -58,6 +58,10 @@ pub enum TypeError {
         found: usize,
         /// Source span of the call expression.
         span: Span,
+        /// Optional diagnostic hint shown below the main message — for example
+        /// "the argument is a curried `fn x -> fn y -> …` chain; pass an
+        /// uncurried `fn x y -> …` instead".
+        hint: Option<String>,
     },
 
     // ── T004 ─────────────────────────────────────────────────────────────────
@@ -419,6 +423,7 @@ mod tests {
             expected: 2,
             found: 1,
             span: dummy_span(),
+            hint: None,
         }
     }
 

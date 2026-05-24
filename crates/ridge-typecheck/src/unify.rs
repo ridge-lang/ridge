@@ -122,11 +122,13 @@ pub fn unify(ctx: &mut InferCtx, a: &Type, b: &Type) -> Result<(), TypeError> {
             },
         ) => {
             if ps.len() != qs.len() {
+                let hint = curry_hint(ps.len(), qs.len(), s);
                 return Err(TypeError::ArityMismatch {
                     callee: String::new(),
                     expected: ps.len(),
                     found: qs.len(),
                     span: dummy_span(),
+                    hint,
                 });
             }
             // Clone before consuming borrows.
@@ -151,6 +153,7 @@ pub fn unify(ctx: &mut InferCtx, a: &Type, b: &Type) -> Result<(), TypeError> {
                     expected: xs.len(),
                     found: ys.len(),
                     span: dummy_span(),
+                    hint: None,
                 });
             }
             let xs = xs.clone();
@@ -267,6 +270,33 @@ fn mismatch(expected: &Type, found: &Type) -> TypeError {
 /// unification layer. Callers in T6/T7 replace this with a real span.
 const fn dummy_span() -> Span {
     Span::point(0)
+}
+
+/// Build an optional T003 hint when the "got" side of an arity mismatch on
+/// `Type::Fn` looks like a curried chain of single-argument functions whose
+/// total length matches the "expected" side.  The classic shape is
+/// `List.fold (fn acc -> fn x -> acc + x) 0 xs`, where the lambda is
+/// `Fn{[a], ret: Fn{[b], …}}` (1-arg returning a 1-arg fn) and `List.fold`
+/// expects `Fn{[b, a], …}` (uncurried 2-arg).
+fn curry_hint(expected_arity: usize, found_arity: usize, found_ret: &Type) -> Option<String> {
+    if expected_arity <= 1 || found_arity != 1 {
+        return None;
+    }
+    let mut chain_len = 1usize;
+    let mut cursor = found_ret;
+    while let Type::Fn { params, ret, .. } = cursor {
+        if params.len() != 1 {
+            return None;
+        }
+        chain_len += 1;
+        if chain_len == expected_arity {
+            return Some(format!(
+                "the argument is a curried `fn x1 -> fn x2 -> … -> body` chain ({chain_len} single-arg lambdas); pass an uncurried `fn x1 x2 -> body` ({chain_len}-arg lambda) instead"
+            ));
+        }
+        cursor = ret;
+    }
+    None
 }
 
 // ── Tests ─────────────────────────────────────────────────────────────────────
@@ -423,6 +453,64 @@ mod tests {
         };
         let err = unify(&mut ctx, &a, &b).unwrap_err();
         assert_eq!(err.code(), "T003");
+    }
+
+    // T9b — uncurried Fn vs curried 1-arg → curry hint in T003
+    // The "got" side is `fn a -> fn b -> c` (1-arg returning 1-arg), the
+    // "expected" side is `fn a b -> c` (uncurried 2-arg).  Arity counts
+    // differ; the hint should explain the curried-vs-uncurried mismatch.
+    #[test]
+    fn fn_fn_curry_hint_emitted() {
+        let mut ctx = make_ctx();
+        let int = Type::Con(cid(0), vec![]);
+        let expected = Type::Fn {
+            params: vec![int.clone(), int.clone()],
+            ret: Box::new(int.clone()),
+            caps: CapRow::Concrete(CapabilitySet::PURE),
+        };
+        let found = Type::Fn {
+            params: vec![int.clone()],
+            ret: Box::new(Type::Fn {
+                params: vec![int.clone()],
+                ret: Box::new(int),
+                caps: CapRow::Concrete(CapabilitySet::PURE),
+            }),
+            caps: CapRow::Concrete(CapabilitySet::PURE),
+        };
+        let err = unify(&mut ctx, &expected, &found).unwrap_err();
+        assert_eq!(err.code(), "T003");
+        let TypeError::ArityMismatch { hint, .. } = err else {
+            panic!("expected ArityMismatch, got {err:?}");
+        };
+        let h = hint.expect("expected a curry hint");
+        assert!(
+            h.contains("curried") && h.contains("uncurried"),
+            "hint should mention curry vs uncurry: {h}"
+        );
+    }
+
+    // T9c — non-curried mismatched arities do NOT emit the hint.
+    // The "got" side has 1-arg but returns a non-Fn type, so it isn't a
+    // curried chain.  The hint must remain `None` so we don't mislead.
+    #[test]
+    fn fn_fn_non_curried_mismatch_no_hint() {
+        let mut ctx = make_ctx();
+        let int = Type::Con(cid(0), vec![]);
+        let expected = Type::Fn {
+            params: vec![int.clone(), int.clone()],
+            ret: Box::new(int.clone()),
+            caps: CapRow::Concrete(CapabilitySet::PURE),
+        };
+        let found = Type::Fn {
+            params: vec![int.clone()],
+            ret: Box::new(int),
+            caps: CapRow::Concrete(CapabilitySet::PURE),
+        };
+        let err = unify(&mut ctx, &expected, &found).unwrap_err();
+        let TypeError::ArityMismatch { hint, .. } = err else {
+            panic!("expected ArityMismatch");
+        };
+        assert!(hint.is_none(), "hint should not fire for non-curried fn");
     }
 
     // ─────────────────────────────────────────────────────────────────────────

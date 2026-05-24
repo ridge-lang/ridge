@@ -390,3 +390,98 @@ fn beam_e2e_game_of_life() {
 fn beam_e2e_rate_limiter() {
     let _ = run_example_e2e("rate_limiter", &[]);
 }
+
+// ── Regression: actor handler reaches into parent-module fns ─────────────────
+//
+// An actor compiles to its own BEAM module (`<parent>_<actor>`), so any call
+// from inside a handler (or an inner lambda nested in one) to a top-level
+// fn of the source file must be emitted as a qualified
+// `call 'parent':'fn' (args…)` AND the target must appear in the parent
+// module's export list.
+//
+// Two failure modes used to surface in practice:
+//
+//   1. `lower_lambda` dropped `actor_parent` when it created the per-lambda
+//      scope, so any inner `fn helper = ...` that called a parent-module fn
+//      emitted a bare `apply 'fn'/n (...)` → erlc rejected the actor's .core
+//      with `undefined function fn/n in handle_cast/2`.
+//   2. Private (non-`pub`) parent-module fns were never added to the BEAM
+//      export list, so even after the qualified call was emitted, the actor
+//      module saw `undefined function 'parent':'fn'/n` at runtime.
+//
+// This regression compiles + runs a program that exercises both shapes —
+// a direct call from a handler body AND a call from an inner fn — and
+// checks the BEAM exits 0.  The previous failure mode was a runtime crash
+// with a `function_clause` / `undef` exit reason and a non-zero exit code.
+
+const ACTOR_CROSS_MODULE_CALL_SOURCE: &str = r#"
+import std.io as Io
+import std.int as Int
+import std.time as Time
+
+-- Private parent-module fn called from inside an actor handler body.
+-- Before the export-widening fix this was missing from the BEAM exports
+-- and the qualified call from the actor failed at runtime.
+fn double (n: Int) -> Int =
+    n + n
+
+-- Private parent-module fn called from inside an inner lambda nested
+-- in an actor handler — the path lower_lambda used to drop actor_parent
+-- on, producing a bare unqualified call rejected by erlc.
+fn triple (n: Int) -> Int =
+    n + n + n
+
+actor Reach =
+    state result: Int = 0
+
+    on io tick (n: Int) -> Unit =
+        let direct = double n
+        fn nested (x: Int) -> Int =
+            triple x
+        let viaInner = nested n
+        result <- direct + viaInner
+        Io.println $"reach ${Int.toText n} = ${Int.toText result}"
+
+fn spawn io time main () -> Result Unit Text =
+    let r = spawn Reach
+    r ! tick 5
+    Time.sleep 200
+    Ok ()
+"#;
+
+/// Regression: an actor handler reaches into the parent module's private
+/// top-level fns both directly and through an inner fn (lambda).  Both
+/// paths must produce qualified cross-module calls AND the parent module
+/// must export the targets, regardless of Ridge `pub` visibility.
+#[test]
+fn beam_e2e_actor_reaches_parent_module_fns() {
+    let (workspace_root, _td) = make_example_workspace("Reach", ACTOR_CROSS_MODULE_CALL_SOURCE);
+    let opts = CompileOptions::new(workspace_root);
+    let artefacts = compile_workspace(opts)
+        .expect("compile_workspace failed for actor cross-module regression");
+
+    assert!(
+        !artefacts.beam_files.is_empty(),
+        "no .beam files produced\ndiagnostics: {:#?}",
+        artefacts.diagnostics
+    );
+
+    let beam_file = &artefacts.beam_files[0];
+    let beam_dir = beam_file.parent().expect("beam file has parent").to_owned();
+    let module_name = beam_file
+        .file_stem()
+        .and_then(|s| s.to_str())
+        .expect("beam stem is UTF-8")
+        .to_owned();
+
+    let (stdout, stderr, exit_code) = run_erl(&beam_dir, &module_name, &[]);
+    assert_eq!(
+        exit_code, 0,
+        "erl exited {exit_code}\n--- stdout ---\n{stdout}\n--- stderr ---\n{stderr}"
+    );
+    // tick 5 → double 5 = 10, triple 5 = 15, result = 25.
+    assert!(
+        stdout.contains("reach 5 = 25"),
+        "expected 'reach 5 = 25' in stdout, got:\n{stdout}"
+    );
+}

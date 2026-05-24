@@ -143,6 +143,16 @@ pub(crate) fn lower_module_with_name(
         }
     }
 
+    // If the module contains any actor, its parent module must expose every
+    // top-level fn and const to the BEAM linker — actor sub-modules compile
+    // to separate units and reach back into the parent via qualified
+    // `call 'parent':'fn' (args…)` regardless of Ridge `pub` visibility.
+    // Without this widening, calls from actor handlers (and the inner
+    // lambdas they nest) to private parent fns would fail at erlc with
+    // `undefined function fn/n`.  Ridge-level visibility is still enforced
+    // by the resolver, so BEAM export pollution is the only cost.
+    let module_has_actor = m.items.iter().any(|item| matches!(item, IrItem::Actor(_)));
+
     let mut fns = Vec::new();
     let mut exports = Vec::new();
 
@@ -155,8 +165,10 @@ pub(crate) fn lower_module_with_name(
         match item {
             IrItem::Fn(fn_) => {
                 let cerl_fn = lower_fn_with_module_name(fn_, ws, &fn_arity, Some(beam_name))?;
-                // §4.26: add to exports if pub or is_main (entry point).
-                if fn_.is_pub || fn_.is_main {
+                // §4.26: add to exports if pub or is_main (entry point), or
+                // unconditionally when the module has an actor (see comment
+                // above for the cross-module-call rationale).
+                if fn_.is_pub || fn_.is_main || module_has_actor {
                     exports.push(CErlExport {
                         name: cerl_fn.name.clone(),
                         arity: cerl_fn.arity,
@@ -166,8 +178,9 @@ pub(crate) fn lower_module_with_name(
             }
             IrItem::Const(c) => {
                 let cerl_fn = lower_const(c, ws, &fn_arity)?;
-                // §4.27: const → 0-arity fn; exported if is_pub.
-                if c.is_pub {
+                // §4.27: const → 0-arity fn; exported if is_pub, or
+                // unconditionally when the module has an actor.
+                if c.is_pub || module_has_actor {
                     exports.push(CErlExport {
                         name: cerl_fn.name.clone(),
                         arity: 0,

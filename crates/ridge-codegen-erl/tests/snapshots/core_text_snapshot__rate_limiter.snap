@@ -2,7 +2,7 @@
 source: crates/ridge-codegen-erl/tests/core_text_snapshot.rs
 expression: "&core_text"
 ---
-module 'ridge_module_0' ['main'/0]
+module 'ridge_module_0' ['requestsPerWorker'/0, 'main'/0]
   attributes []
   %% Const: requestsPerWorker: Con(TyConId(0), [])
 'requestsPerWorker'/0 =

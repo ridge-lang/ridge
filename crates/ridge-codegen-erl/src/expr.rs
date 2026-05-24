@@ -47,7 +47,7 @@ use crate::scope::{ssa_var, LocalScope};
 use crate::stdlib_map::{self, BridgeTarget};
 use crate::symbol::lower_symbol;
 use crate::with_update::detect_with_peephole;
-use ridge_ir::{AssignTarget, CtorKind, IrExpr, IrParam, IrPat, SymbolRef};
+use ridge_ir::{AssignTarget, CtorKind, IrExpr, IrLit, IrParam, IrPat, SymbolRef};
 
 // ── Variable mangling (§4.2) ─────────────────────────────────────────────────
 
@@ -1323,6 +1323,19 @@ fn lower_prelude_call(
     }
 }
 
+/// Read the declared arity out of any [`BridgeTarget`] variant.  Used by
+/// `lower_call_to_stdlib` to apply the 0-arity `Unit`-drop shim before the
+/// per-variant arity check.
+fn bridge_target_arity(target: &stdlib_map::BridgeTarget) -> u32 {
+    use stdlib_map::BridgeTarget;
+    match target {
+        BridgeTarget::BeamStdlib { arity, .. }
+        | BridgeTarget::BeamStdlibPerm { arity, .. }
+        | BridgeTarget::RidgeRuntime { arity, .. }
+        | BridgeTarget::RidgeStdlibLocal { arity, .. } => *arity,
+    }
+}
+
 // ── Stdlib call dispatch (§4.4 / §3.4) ──────────────────────────────────────
 
 /// Lower a `Call { callee: Symbol(Stdlib { module, name }), args }` node using
@@ -1373,6 +1386,25 @@ pub(crate) fn lower_call_to_stdlib(
             name: name.into(),
             span,
         });
+    };
+
+    // Drop a single `Unit` literal arg when the bridge target is 0-arity so
+    // user code like `Map.empty ()` or `Json.jNull ()` lowers as a 0-arg call
+    // (mirrors the local-fn shim from PR #71 on Ridge-side calls).
+    // Without this, the parser-supplied `[Unit]` argument list trips every
+    // per-variant arity check below with `expects 0 args, got 1`.
+    let args: &[IrExpr] = if bridge_target_arity(target) == 0
+        && args.len() == 1
+        && matches!(
+            &args[0],
+            IrExpr::Lit {
+                value: IrLit::Unit,
+                ..
+            }
+        ) {
+        &[]
+    } else {
+        args
     };
 
     match target {

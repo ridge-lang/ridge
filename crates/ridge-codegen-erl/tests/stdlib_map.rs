@@ -312,6 +312,43 @@ fn stdlib_bridge_respond_resolves_as_two_arg_call() {
     }
 }
 
+// Source-level smoke: `Map.empty ()` (idiomatic call form against a 0-arity
+// stdlib bridge) must round-trip through codegen.  Before the fix the
+// parser-supplied `[Unit]` argument made the bridge dispatch fail with
+// `E001 stdlib local-call 'std.map.empty' expects 0 args, got 1`.  The
+// PR #71 shim that handled the same shape for user-defined `fn f () = …`
+// did not cover stdlib bridges.
+#[test]
+fn stdlib_zero_arity_paren_call_compiles() {
+    use ridge_codegen_erl::{codegen_workspace, BuildProfile, CodegenOptions};
+    let src = r#"
+import std.map as Map
+
+pub fn empty_map () -> Map Text Text =
+    Map.empty ()
+"#;
+    let tw = make_workspace("zero_arity_paren", "empty_map", src);
+    let ws = run_pipeline(&tw.path);
+    let mut opts = CodegenOptions::default();
+    opts.out_root = tw.path.join("target_codegen");
+    opts.profile = BuildProfile::Debug;
+    opts.invoke_erlc = false;
+    opts.install_runtime = false;
+    let result = codegen_workspace(&ws, opts);
+    let arity_e001s: Vec<_> = result
+        .errors
+        .iter()
+        .filter(|e| {
+            let s = format!("{e:?}");
+            s.contains("std.map") && s.contains("empty") && s.contains("expects 0 args")
+        })
+        .collect();
+    assert!(
+        arity_e001s.is_empty(),
+        "codegen on `Map.empty ()` should not surface a `expects 0 args, got 1` error; got: {arity_e001s:?}"
+    );
+}
+
 // Source-level smoke: `respond status body` must round-trip through codegen
 // without errors.  Before the fix the codegen treated `respond` as a 1-arg
 // identity shortcut and crashed with E001 "expects 1 arg, got 2".

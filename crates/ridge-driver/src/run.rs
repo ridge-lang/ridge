@@ -1,7 +1,9 @@
 //! Implementation of [`run_workspace`].
 //!
-//! Compiles the workspace then invokes the BEAM runtime:
-//! `erl -noshell -pa <beam_dir> -s <module> start -s init stop`.
+//! Compiles the workspace then invokes the BEAM runtime via
+//! `ridge_main_runner:run/1`, which pattern-matches the user's `main()`
+//! return value and exits with a code that respects the conventional
+//! `Result Unit Text` shape: `Err _` → exit 1 + stderr, anything else → exit 0.
 //!
 //! BEAM invocation via `erl`, not `escript`.
 //! Beam dir: `<workspace_root>/target/ridge/<profile>/beam/`.
@@ -78,6 +80,14 @@ pub fn run_workspace(options: RunOptions) -> Result<ProcessExitCode, RunError> {
     );
 
     // ── 4. Invoke erl ────────────────────────────────────────────────────────
+    //
+    // The entry function is dispatched through `ridge_main_runner:run/1`,
+    // which calls `<module>:<entry_fn>()` and projects the return value:
+    // an `Err _` causes a non-zero exit + stderr; anything else exits 0.
+    // The runner is installed alongside `ridge_rt.beam` at compile time
+    // (see `ridge_codegen_erl::runtime`).  Without it the BEAM would ignore
+    // `main`'s return value and `ridge run && next-step` would proceed even
+    // after an `Err` from the program.
     let entry_fn = options.entry_fn.as_deref().unwrap_or("main");
 
     let mut cmd = Command::new(&erl_path);
@@ -85,6 +95,8 @@ pub fn run_workspace(options: RunOptions) -> Result<ProcessExitCode, RunError> {
         .arg("-pa")
         .arg(&beam_dir)
         .arg("-s")
+        .arg("ridge_main_runner")
+        .arg("run")
         .arg(&module_name)
         .arg(entry_fn)
         .arg("-s")

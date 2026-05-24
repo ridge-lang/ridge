@@ -541,3 +541,72 @@ fn run_erl_direct(
         }
     }
 }
+
+// ── Tests 17–19: ridge_main_runner Err projection ─────────────────────────────
+//
+// Regression coverage for the bug where `ridge run` ignored main's return
+// value: `Err msg` silently produced exit-0 with no stderr, so any pipeline
+// like `ridge run && next-step` proceeded after a logical failure.
+//
+// The fix wraps the BEAM entry through `ridge_main_runner:run/1` which
+// pattern-matches the return value: `{error, _}` halts non-zero with the
+// message on stderr; anything else (including `{ok, _}` and bare `Unit`)
+// halts zero.  These three tests cover the three shapes mains take in
+// practice.
+
+/// T2-17: `run_workspace` halts non-zero and surfaces the message on stderr
+/// when main returns `Err _`.
+#[test]
+#[cfg(feature = "beam-runtime")]
+fn run_err_main_returns_nonzero_with_stderr() {
+    let _guard = PATH_ENV_LOCK.lock().expect("PATH_ENV_LOCK not poisoned");
+
+    let source = "fn main () -> Result Unit Text =\n    Err \"boom\"\n";
+    let tw = make_workspace("Main", source);
+
+    let result = run_workspace(RunOptions::new(tw.path.clone(), "demo".to_owned()));
+    assert!(
+        result.is_err(),
+        "expected non-zero exit for Err main, got Ok"
+    );
+    let err_str = format!("{:?}", result.unwrap_err());
+    assert!(
+        err_str.contains("boom"),
+        "expected the Err message 'boom' to surface (on stderr), got: {err_str}"
+    );
+}
+
+/// T2-18: `run_workspace` exits zero when main returns `Ok ()` — happy-path
+/// sanity check that the runner's pattern-match doesn't break working code.
+#[test]
+#[cfg(feature = "beam-runtime")]
+fn run_ok_main_returns_zero() {
+    let _guard = PATH_ENV_LOCK.lock().expect("PATH_ENV_LOCK not poisoned");
+
+    let source = "fn main () -> Result Unit Text =\n    Ok ()\n";
+    let tw = make_workspace("Main", source);
+
+    let result = run_workspace(RunOptions::new(tw.path.clone(), "demo".to_owned()));
+    assert!(
+        result.is_ok(),
+        "expected exit 0 for Ok main, got: {result:?}"
+    );
+}
+
+/// T2-19: `run_workspace` exits zero when main returns bare `Unit` — keeps
+/// the pre-runner behaviour for programs that don't opt into the Result
+/// convention (e.g. `fn io main () -> Unit = Io.println "..."`).
+#[test]
+#[cfg(feature = "beam-runtime")]
+fn run_unit_main_returns_zero() {
+    let _guard = PATH_ENV_LOCK.lock().expect("PATH_ENV_LOCK not poisoned");
+
+    let source = "fn main () -> Unit =\n    ()\n";
+    let tw = make_workspace("Main", source);
+
+    let result = run_workspace(RunOptions::new(tw.path.clone(), "demo".to_owned()));
+    assert!(
+        result.is_ok(),
+        "expected exit 0 for Unit main, got: {result:?}"
+    );
+}

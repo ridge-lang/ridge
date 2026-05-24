@@ -987,10 +987,22 @@ fn lower_lambda(
     // lambda bodies (e.g. `List.map f items` where `f` is a local fn) resolve.
     // own_module_beam_name is also inherited so that `spawn` expressions inside
     // lambda bodies can derive the correct actor BEAM module name.
+    // actor_parent is inherited so that inner lambdas (including the recursive
+    // ones the inner-fn surface lowers to) inside an actor handler body keep
+    // routing parent-module SymbolRef::Local calls through the qualified
+    // `call 'parent':'fn' (args…)` path instead of the bare Apply branch,
+    // which would otherwise produce `undefined function fn/n` at erlc time.
+    // letrec_locals is inherited for the symmetric reason: a letrec name
+    // registered in the outer handler scope must still be recognised as
+    // letrec-local (not parent-module) from inside any nested lambda.
     let mut lambda_scope = LocalScope::with_arity_arc(std::sync::Arc::clone(&outer_scope.fn_arity));
     lambda_scope
         .own_module_beam_name
         .clone_from(&outer_scope.own_module_beam_name);
+    lambda_scope
+        .actor_parent
+        .clone_from(&outer_scope.actor_parent);
+    lambda_scope.letrec_locals = std::sync::Arc::clone(&outer_scope.letrec_locals);
     let param_vars: Vec<CErlVar> = params
         .iter()
         .map(|p| CErlVar(name_to_erl_var(&p.name)))

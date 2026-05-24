@@ -147,18 +147,19 @@ pub(crate) fn lower_init_body(
     state_fields: &[IrStateField],
     span: Span,
 ) -> Result<CErlExpr, CodegenError> {
-    // Build the initial state map from defaults.
-    let default_pairs: Vec<(CErlExpr, CErlExpr)> = state_fields
-        .iter()
-        .filter_map(|f| {
-            f.default.as_ref().map(|default_expr| {
-                let key = CErlExpr::Lit(CErlLit::Atom(CErlAtom(f.name.clone())));
-                let val = lower_expr_in_scope(default_expr, &mut LocalScope::new());
-                val.ok().map(|v| (key, v))
-            })
-        })
-        .flatten()
-        .collect();
+    // Build the initial state map from defaults.  Propagate any error from
+    // `lower_expr_in_scope` instead of silently dropping the field — a
+    // dropped field leaves the state map without that key, so every later
+    // `maps:get(field, V_State)` blows up with `badkey` at runtime, and the
+    // codegen error that explained why never reaches the user.
+    let mut default_pairs: Vec<(CErlExpr, CErlExpr)> = Vec::new();
+    for f in state_fields {
+        if let Some(default_expr) = f.default.as_ref() {
+            let key = CErlExpr::Lit(CErlLit::Atom(CErlAtom(f.name.clone())));
+            let val = lower_expr_in_scope(default_expr, &mut LocalScope::new())?;
+            default_pairs.push((key, val));
+        }
+    }
 
     // The initial state expression (default map).
     let initial_state = CErlExpr::MapLit(default_pairs);
@@ -783,6 +784,38 @@ mod tests {
             }
             other => panic!("expected Tuple, got {other:?}"),
         }
+    }
+
+    /// Codegen errors raised while lowering a state field's default expression
+    /// must propagate out of `lower_init_body`.  Before the propagation fix
+    /// the helper silently dropped the field, so the state map shipped with a
+    /// missing key and the next `maps:get(field, V_State)` blew up with
+    /// `badkey` at runtime — there was no surface error.  Use an
+    /// `IrExpr::Call` against a stdlib symbol that does not exist to trigger
+    /// the inner `StdlibBridgeMissing` (E002).
+    #[test]
+    fn init_body_propagates_codegen_error_from_state_default() {
+        use ridge_ir::SymbolRef;
+        let bogus_symbol = IrExpr::Symbol {
+            id: IrNodeId(0),
+            sym: SymbolRef::Stdlib {
+                module: "std.nope".into(),
+                name: "missing".into(),
+            },
+            span: sp(),
+        };
+        let bogus_call = IrExpr::Call {
+            id: IrNodeId(0),
+            callee: Box::new(bogus_symbol),
+            args: vec![],
+            span: sp(),
+        };
+        let fields = vec![state_field("table", Some(bogus_call))];
+        let result = lower_init_body(None, &fields, sp());
+        assert!(
+            result.is_err(),
+            "lower_init_body must surface codegen errors from state defaults, not swallow them",
+        );
     }
 
     // ── lower_init_body — with init block ─────────────────────────────────────

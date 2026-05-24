@@ -597,7 +597,15 @@ pub fn lower_expr(ctx: &mut LowerCtx<'_>, expr: &Expr) -> IrExpr {
             let actor_module = ctx.module_id;
             let handle = Box::new(lower_expr(ctx, handle));
             let (handler_name, msg_args) = unfold_send_message(message);
-            let args = msg_args.iter().map(|a| lower_expr(ctx, a)).collect();
+            // Treat `h ! name ()` as `h ! name` so a 0-arity handler decl
+            // `on name ()` and the call form `name ()` produce the same
+            // wire shape (a bare `{name}` tag tuple).
+            let drop_unit = msg_args.len() == 1 && matches!(msg_args[0], Expr::Unit(_));
+            let args = if drop_unit {
+                Vec::new()
+            } else {
+                msg_args.iter().map(|a| lower_expr(ctx, a)).collect()
+            };
             IrExpr::Send {
                 id,
                 handle,
@@ -637,7 +645,15 @@ pub fn lower_expr(ctx: &mut LowerCtx<'_>, expr: &Expr) -> IrExpr {
             // (Binding::Local + associated Handle X type).
             let actor_module = ctx.module_id;
             let handle = Box::new(lower_expr(ctx, handle));
-            let args = args.iter().map(|a| lower_expr(ctx, a)).collect();
+            // Treat `h ?> name ()` as `h ?> name` so a 0-arity handler decl
+            // `on name ()` and the call form `name ()` produce the same wire
+            // shape (a bare `{name}` tag tuple).
+            let drop_unit = args.len() == 1 && matches!(&args[0], Expr::Unit(_));
+            let args = if drop_unit {
+                Vec::new()
+            } else {
+                args.iter().map(|a| lower_expr(ctx, a)).collect()
+            };
 
             // Lower AST AskTimeout → IR IrTimeout 1:1.
             // The wildcard arm is required by #[non_exhaustive] on AskTimeout.

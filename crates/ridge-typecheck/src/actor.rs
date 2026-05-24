@@ -438,6 +438,14 @@ fn extract_handler_call(message: &Expr) -> Option<(String, &[Expr])> {
 /// Pairwise-unifies `args` against `handler_params`, emitting:
 /// - `T003 ArityMismatch` if lengths differ.
 /// - `T001 TypeMismatch` (via `unify`) if individual types differ.
+///
+/// A single `Unit` literal argument against a zero-parameter handler is
+/// accepted, mirroring the surface symmetry between the handler decl
+/// `on name ()` and the call site `handle ?> name ()`: both forms read the
+/// `()` as "no payload", not as a unit-typed argument.  The normalisation
+/// happens before the arity check so the call still type-checks against a
+/// 0-arity handler, and `infer_expr` is still walked on the unit literal so
+/// node_types stays populated for it.
 fn check_handler_args(
     ctx: &mut InferCtx,
     b: &BuiltinTyCons,
@@ -447,17 +455,25 @@ fn check_handler_args(
     args: &[Expr],
     span: Span,
 ) {
-    if args.len() != handler_params.len() {
+    let normalised_args: &[Expr] =
+        if handler_params.is_empty() && args.len() == 1 && matches!(&args[0], Expr::Unit(_)) {
+            let _ = infer_expr(ctx, b, &args[0]);
+            &[]
+        } else {
+            args
+        };
+
+    if normalised_args.len() != handler_params.len() {
         ctx.errors.push(TypeError::ArityMismatch {
             callee: format!("{actor_name}.{handler_name}"),
             expected: handler_params.len(),
-            found: args.len(),
+            found: normalised_args.len(),
             span,
         });
         return;
     }
 
-    for (arg, param_ty) in args.iter().zip(handler_params.iter()) {
+    for (arg, param_ty) in normalised_args.iter().zip(handler_params.iter()) {
         let arg_ty = infer_expr(ctx, b, arg);
         if let Err(e) = unify(ctx, &arg_ty, param_ty) {
             let e_spanned = attach_span(e, span);

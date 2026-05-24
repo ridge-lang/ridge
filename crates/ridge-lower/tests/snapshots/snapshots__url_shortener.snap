@@ -121,7 +121,7 @@ items:
                       caps: CapabilitySet(0)
                       params:
                         - name: __tuple_param_0
-                          ty: Error
+                          ty: j2
                       body:
                         Match(n32):
                           scrutinee:

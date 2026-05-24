@@ -1,6 +1,5 @@
 ---
 source: crates/ridge-lower/tests/lowering.rs
-assertion_line: 39
 expression: rendered
 ---
 module: m0

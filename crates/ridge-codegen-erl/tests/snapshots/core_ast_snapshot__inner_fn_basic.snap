@@ -1,6 +1,5 @@
 ---
 source: crates/ridge-codegen-erl/tests/core_ast_snapshot.rs
-assertion_line: 41
 expression: "&cerl_module"
 ---
 CErlModule {

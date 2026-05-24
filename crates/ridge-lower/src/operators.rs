@@ -74,9 +74,13 @@ pub fn lower_binary(
 
     // ── All other ops — lower to stdlib Call ──────────────────────────────────
     // PHASE45-T3: resolve the LHS type from node_types for type-driven dispatch
-    // (Float vs Int arithmetic; Text vs List concatenation).
+    // (Float vs Int arithmetic; Text vs List concatenation).  RHS is consulted
+    // as a fallback when the LHS lookup misses, which happens inside contexts
+    // where node_types is not populated for sub-expressions (notably actor
+    // handler bodies; see the structural-Float-hint fallback below).
     let lhs_ty = resolve_lhs_type(ctx, lhs);
-    let (module, name) = op_to_symbol(op, &lhs_ty, ctx);
+    let rhs_ty = resolve_lhs_type(ctx, rhs);
+    let (module, name) = op_to_symbol_with_fallback(op, &lhs_ty, &rhs_ty, lhs, rhs, ctx);
     let callee_id = ctx.fresh_id(None);
     let call_id = ctx.fresh_id(None);
 
@@ -234,6 +238,80 @@ fn resolve_lhs_type(ctx: &LowerCtx<'_>, expr: &Expr) -> Type {
         .and_then(|m| m.get(expr.span(), NodeKind::Expr))
         .and_then(|nid| ctx.node_type(nid).cloned())
         .unwrap_or(Type::Error)
+}
+
+/// Op-to-symbol dispatch with RHS and structural fallbacks.
+///
+/// Most operators (`+`, `-`, `*`, polymorphic comparisons, boolean logic) lower
+/// to the same Erlang BIF for both numeric families, so the Int default is
+/// harmless.  `BinOp::Div` is the exception: `std.int.div` lowers to
+/// `erlang:div/2`, which crashes on Float operands.  When neither side carries
+/// a node_types entry (which is the case inside actor handler bodies — those
+/// bodies are not visited by `infer_expr` today), fall back to a conservative
+/// structural inspection of both operands for Float hints.
+fn op_to_symbol_with_fallback(
+    op: BinOp,
+    lhs_ty: &Type,
+    rhs_ty: &Type,
+    lhs: &Expr,
+    rhs: &Expr,
+    ctx: &LowerCtx<'_>,
+) -> (&'static str, &'static str) {
+    if matches!(op, BinOp::Div)
+        && !is_float(ctx, lhs_ty)
+        && !is_float(ctx, rhs_ty)
+        && (looks_like_float(lhs) || looks_like_float(rhs))
+    {
+        return ("std.float", "div");
+    }
+    let effective_lhs_ty = if matches!(lhs_ty, Type::Error) && is_float(ctx, rhs_ty) {
+        rhs_ty
+    } else {
+        lhs_ty
+    };
+    op_to_symbol(op, effective_lhs_ty, ctx)
+}
+
+/// Best-effort structural check for "this expression evaluates to Float".
+///
+/// Only returns `true` for forms whose float-ness is locally evident — Float
+/// literals and qualified calls into the `Float` module.  Recurses through
+/// parens, binary/unary operators, and conditional branches; intentionally
+/// conservative everywhere else (a bare local binding gives no signal here,
+/// since lowering does not track binding types).
+fn looks_like_float(expr: &Expr) -> bool {
+    match expr {
+        Expr::Literal(lit) => matches!(lit, ridge_ast::Literal::Float { .. }),
+        Expr::Paren { inner, .. } | Expr::Unary { expr: inner, .. } => looks_like_float(inner),
+        Expr::Binary { lhs, rhs, .. } => looks_like_float(lhs) || looks_like_float(rhs),
+        Expr::Call { callee, .. } => match callee.as_ref() {
+            Expr::Qualified(q) => q
+                .segments
+                .first()
+                .is_some_and(|seg| seg.text == "Float"),
+            Expr::FieldAccess { base, .. } => matches!(
+                base.as_ref(),
+                Expr::Ident(id) if id.text == "Float"
+            ),
+            _ => false,
+        },
+        Expr::Qualified(q) => q
+            .segments
+            .first()
+            .is_some_and(|seg| seg.text == "Float"),
+        Expr::If {
+            then_branch,
+            else_branch,
+            ..
+        } => {
+            looks_like_float(then_branch)
+                || else_branch
+                    .as_ref()
+                    .is_some_and(|e| looks_like_float(e))
+        }
+        Expr::Block(b) => b.stmts.last().is_some_and(looks_like_float),
+        _ => false,
+    }
 }
 
 /// Returns `true` if `ty` is the workspace's `Float` tycon.

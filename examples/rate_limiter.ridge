@@ -26,7 +26,7 @@ actor Limiter =
         capacity <- cap
         tokens <- Float.fromInt cap
         refillRate <- rate
-        lastRefill <- Time.epoch ()
+        lastRefill <- Time.now ()
     -- `on time allow` — refill then consume one token.
     -- Returns true when a token is available, false when the bucket is empty.
     on time allow () -> Bool =
@@ -59,7 +59,7 @@ actor Collector =
         totalDenied <- totalDenied + denied
         received <- received + 1
         if received == 5 then
-            Io.println $"── Rate limiter results ──────────────"
+            Io.println $"-- Rate limiter results --------------"
             Io.println $"  Allowed : ${totalAllowed}"
             Io.println $"  Denied  : ${totalDenied}"
             Io.println $"  Total   : ${totalAllowed + totalDenied}"

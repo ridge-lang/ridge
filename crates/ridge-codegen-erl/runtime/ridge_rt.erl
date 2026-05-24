@@ -160,7 +160,32 @@ float_parse(B) ->
 float_to_text(F) -> iolist_to_binary(io_lib:format("~p", [F])).
 
 %% text_split_all/2 — binary:split with [global] option (Sep, Subject order matches Ridge FFI).
+%%
+%% Empty separator was the previous landmine: binary:split/3 rejects `<<>>`
+%% with `badarg`, so `Text.split "" str` crashed at runtime.  An empty
+%% separator now means "split on every grapheme cluster" — what the rest of
+%% the std API treats as "the characters of `s`".  Multi-byte UTF-8 sequences
+%% stay intact (per `string:next_grapheme/1`).  `split "" ""` yields `[]`.
+text_split_all(<<>>, S) -> text_split_graphemes(S);
 text_split_all(Sep, S) -> binary:split(S, Sep, [global]).
+
+text_split_graphemes(S) when is_binary(S) ->
+    text_split_graphemes_acc(S, []).
+
+text_split_graphemes_acc(<<>>, Acc) ->
+    lists:reverse(Acc);
+text_split_graphemes_acc(Rest, Acc) ->
+    case string:next_grapheme(Rest) of
+        [] ->
+            lists:reverse(Acc);
+        [Grapheme | Tail] ->
+            Bin = unicode:characters_to_binary([Grapheme]),
+            TailBin = case Tail of
+                B when is_binary(B) -> B;
+                Other               -> unicode:characters_to_binary(Other)
+            end,
+            text_split_graphemes_acc(TailBin, [Bin | Acc])
+    end.
 
 %% list_fold/3 — std.list.fold via lists:foldl with arg-order adapter.
 %%

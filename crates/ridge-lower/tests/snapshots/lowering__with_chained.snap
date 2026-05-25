@@ -10,10 +10,10 @@ items:
     pub: false
     main: false
     caps: CapabilitySet(0)
-    ret_ty: Con(16)
+    ret_ty: Con(15)
     params:
       - name: p
-        ty: Con(16)
+        ty: Con(15)
     body:
       LetIn(n0):
         pat:
@@ -26,7 +26,7 @@ items:
               Local(n2): p
             body:
               Construct(n3):
-                ctor: Ctor(Record:Point owner=16)
+                ctor: Ctor(Record:Point owner=15)
                 fields:
                   x:
                     Lit(n4): Int(1)
@@ -44,7 +44,7 @@ items:
               Local(n10): p1
             body:
               Construct(n11):
-                ctor: Ctor(Record:Point owner=16)
+                ctor: Ctor(Record:Point owner=15)
                 fields:
                   x:
                     Field(n12).x:

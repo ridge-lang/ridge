@@ -170,3 +170,40 @@ fn all_fixtures_pass() {
         failures.join("\n  ")
     );
 }
+
+/// Regression: an actor whose state field is `Handle <ActorB>` where
+/// `<ActorB>` is declared LATER in the same source file must typecheck
+/// without errors.  Before the two-pass `collect_user_tycons` refactor,
+/// `ActorB` was not yet in the user-tycon name map when pass 2 resolved
+/// `Handle ActorB`, so the field type fell through to a fresh `Type::Var`
+/// and any `state.fieldB ! msg` later raised `T020 send on non-actor`
+/// with the polymorphic stub type embedded in the message.
+#[test]
+fn forward_actor_type_reference_typechecks_cleanly() {
+    let src = "\
+actor Caller =\n\
+    state target: Handle Receiver\n\
+\n\
+    init (r: Handle Receiver) =\n\
+        target <- r\n\
+\n\
+    on poke =\n\
+        target ! ping\n\
+\n\
+actor Receiver =\n\
+    state count: Int = 0\n\
+\n\
+    on ping =\n\
+        count <- count + 1\n\
+";
+    let errors = run_typecheck_on_source("forward_actor", src);
+    let codes: Vec<&str> = errors.iter().map(TypeError::code).collect();
+    assert!(
+        !codes.contains(&"T020"),
+        "forward-referenced actor handle must NOT raise T020; got: {codes:?}"
+    );
+    assert!(
+        !codes.contains(&"T999"),
+        "forward-referenced actor handle must NOT raise T999; got: {codes:?}"
+    );
+}

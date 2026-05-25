@@ -13,7 +13,7 @@ items:
     ret_ty: Con(2)
     params:
       - name: grid
-        ty: Con(16)
+        ty: Con(15)
       - name: r
         ty: Con(0)
       - name: c
@@ -138,7 +138,7 @@ items:
     ret_ty: Con(0)
     params:
       - name: grid
-        ty: Con(16)
+        ty: Con(15)
       - name: r
         ty: Con(0)
       - name: c
@@ -296,7 +296,7 @@ items:
     ret_ty: Con(2)
     params:
       - name: grid
-        ty: Con(16)
+        ty: Con(15)
       - name: r
         ty: Con(0)
       - name: c
@@ -363,10 +363,10 @@ items:
     pub: false
     main: false
     caps: CapabilitySet(0)
-    ret_ty: Con(16)
+    ret_ty: Con(15)
     params:
       - name: grid
-        ty: Con(16)
+        ty: Con(15)
     body:
       LetIn(n131):
         pat:
@@ -446,7 +446,7 @@ items:
               Local(n160): grid
             body:
               Construct(n161):
-                ctor: Ctor(Record:Grid owner=16)
+                ctor: Ctor(Record:Grid owner=15)
                 fields:
                   rows:
                     Field(n162).rows:
@@ -464,7 +464,7 @@ items:
     ret_ty: Con(4)
     params:
       - name: grid
-        ty: Con(16)
+        ty: Con(15)
     body:
       LetIn(n167):
         pat:
@@ -661,7 +661,7 @@ items:
     pub: false
     main: false
     caps: CapabilitySet(0)
-    ret_ty: Con(16)
+    ret_ty: Con(15)
     params:
       - name: r
         ty: Con(0)
@@ -695,7 +695,7 @@ items:
                       Local(n247): c
         body:
           Construct(n248):
-            ctor: Ctor(Record:Grid owner=16)
+            ctor: Ctor(Record:Grid owner=15)
             fields:
               rows:
                 Local(n249): r
@@ -728,14 +728,14 @@ items:
     pub: false
     main: false
     caps: CapabilitySet(0)
-    ret_ty: Con(16)
+    ret_ty: Con(15)
     params:
       - name: targetRow
         ty: Con(0)
       - name: targetCol
         ty: Con(0)
       - name: grid
-        ty: Con(16)
+        ty: Con(15)
     body:
       LetIn(n259):
         pat:
@@ -881,7 +881,7 @@ items:
               Local(n307): grid
             body:
               Construct(n308):
-                ctor: Ctor(Record:Grid owner=16)
+                ctor: Ctor(Record:Grid owner=15)
                 fields:
                   rows:
                     Field(n309).rows:
@@ -896,7 +896,7 @@ items:
     pub: false
     main: false
     caps: CapabilitySet(0)
-    ret_ty: Con(16)
+    ret_ty: Con(15)
     params:
       - name: rows
         ty: Con(0)
@@ -1015,7 +1015,7 @@ items:
                       - name: gen
                         ty: Con(0)
                       - name: grid
-                        ty: Con(16)
+                        ty: Con(15)
                     body:
                       Match(n355):
                         scrutinee:

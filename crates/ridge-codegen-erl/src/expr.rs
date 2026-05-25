@@ -3369,10 +3369,7 @@ mod tests {
         let expr = IrExpr::Construct {
             id: node(),
             ctor: union_ctor("Rectangle"),
-            fields: vec![
-                (String::new(), lit_int(4)),
-                (String::new(), lit_int(6)),
-            ],
+            fields: vec![(String::new(), lit_int(4)), (String::new(), lit_int(6))],
             span: sp(),
         };
         let result = lower_expr(&expr).unwrap();

@@ -2541,18 +2541,29 @@ mod tests {
         let ir = lower_expr(&mut ctx, &expr);
         assert!(ctx.errors.is_empty(), "errors: {:?}", ctx.errors);
         match ir {
-            IrExpr::Construct { ctor, fields, span: s, .. } => {
+            IrExpr::Construct {
+                ctor,
+                fields,
+                span: s,
+                ..
+            } => {
                 assert_eq!(s, call_span);
                 assert_eq!(fields.len(), 1, "expected 1 positional field");
                 assert!(
                     matches!(
                         &fields[0].1,
-                        IrExpr::Lit { value: IrLit::Int(5), .. }
+                        IrExpr::Lit {
+                            value: IrLit::Int(5),
+                            ..
+                        }
                     ),
                     "expected Int(5) field"
                 );
                 match ctor {
-                    SymbolRef::Constructor { ctor_kind: ridge_ir::CtorKind::UnionVariant, .. } => {}
+                    SymbolRef::Constructor {
+                        ctor_kind: ridge_ir::CtorKind::UnionVariant,
+                        ..
+                    } => {}
                     other => panic!("expected UnionVariant ctor, got {other:?}"),
                 }
             }
@@ -2598,15 +2609,30 @@ mod tests {
             IrExpr::Construct { ctor, fields, .. } => {
                 assert_eq!(fields.len(), 2, "expected 2 positional fields");
                 assert!(
-                    matches!(&fields[0].1, IrExpr::Lit { value: IrLit::Int(4), .. }),
+                    matches!(
+                        &fields[0].1,
+                        IrExpr::Lit {
+                            value: IrLit::Int(4),
+                            ..
+                        }
+                    ),
                     "expected Int(4) as first field"
                 );
                 assert!(
-                    matches!(&fields[1].1, IrExpr::Lit { value: IrLit::Int(6), .. }),
+                    matches!(
+                        &fields[1].1,
+                        IrExpr::Lit {
+                            value: IrLit::Int(6),
+                            ..
+                        }
+                    ),
                     "expected Int(6) as second field"
                 );
                 match ctor {
-                    SymbolRef::Constructor { ctor_kind: ridge_ir::CtorKind::UnionVariant, .. } => {}
+                    SymbolRef::Constructor {
+                        ctor_kind: ridge_ir::CtorKind::UnionVariant,
+                        ..
+                    } => {}
                     other => panic!("expected UnionVariant ctor, got {other:?}"),
                 }
             }

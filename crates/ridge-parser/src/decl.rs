@@ -829,10 +829,7 @@ fn looks_like_union(cur: &Cursor<'_>) -> bool {
             return false;
         }
         match cur.peek_n(n) {
-            None
-            | Some(Token::Newline)
-            | Some(Token::Dedent)
-            | Some(Token::Eof)
+            None | Some(Token::Newline) | Some(Token::Dedent) | Some(Token::Eof)
             | Some(Token::Assign) => return false,
             Some(Token::Pipe) if depth == 0 => return true,
             Some(Token::LParen) | Some(Token::LBrack) => {
@@ -1733,8 +1730,7 @@ mod tests {
     fn parse_type_union_positional_two_ctors() {
         // `Circle Int | Rectangle Int Int` — positional union, pipe is beyond
         // the first constructor's argument, so one-token lookahead would miss it.
-        let td =
-            parse_td("type Shape = Circle Int | Rectangle Int Int").expect("should parse");
+        let td = parse_td("type Shape = Circle Int | Rectangle Int Int").expect("should parse");
         assert_eq!(td.name.text, "Shape");
         let alts = match &td.body {
             TypeBody::Union(u) => &u.alternatives,
@@ -1762,10 +1758,8 @@ mod tests {
     // ─────────────────────────────────────────────────────────────────────────
     #[test]
     fn parse_type_union_positional_three_ctors() {
-        let td = parse_td(
-            "type Shape = Circle Int | Rectangle Int Int | Triangle Int Int Int",
-        )
-        .expect("should parse");
+        let td = parse_td("type Shape = Circle Int | Rectangle Int Int | Triangle Int Int Int")
+            .expect("should parse");
         assert_eq!(td.name.text, "Shape");
         let alts = match &td.body {
             TypeBody::Union(u) => &u.alternatives,

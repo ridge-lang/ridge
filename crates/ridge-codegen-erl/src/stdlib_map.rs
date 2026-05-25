@@ -374,6 +374,8 @@ mod tests {
             ("std.io", "eprintln"),
             // std.fs — @ffi-decorated entries
             ("std.fs", "lines"),
+            ("std.fs", "readDir"),
+            ("std.fs", "isDir"),
             // std.cli — @ffi-decorated entries
             ("std.cli", "args"),
             // std.time — @ffi-decorated entries

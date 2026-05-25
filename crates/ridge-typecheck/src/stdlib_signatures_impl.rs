@@ -1054,7 +1054,7 @@ pub fn stdlib_signature(module: StdlibModuleId, name: &str, b: &BuiltinTyCons) -
             let fs_caps = CapabilitySet::singleton(Capability::Fs);
             Some(mono(ty_fn_caps(vec![ty_text(b)], ty_bool(b), fs_caps)))
         }
-        (STD_FS, "lines" | "listDir") => {
+        (STD_FS, "lines" | "listDir" | "readDir") => {
             use ridge_ast::Capability;
             let fs_caps = CapabilitySet::singleton(Capability::Fs);
             Some(mono(ty_fn_caps(
@@ -1062,6 +1062,11 @@ pub fn stdlib_signature(module: StdlibModuleId, name: &str, b: &BuiltinTyCons) -
                 ty_result(b, ty_list(b, ty_text(b)), ty_text(b)),
                 fs_caps,
             )))
+        }
+        (STD_FS, "isDir") => {
+            use ridge_ast::Capability;
+            let fs_caps = CapabilitySet::singleton(Capability::Fs);
+            Some(mono(ty_fn_caps(vec![ty_text(b)], ty_bool(b), fs_caps)))
         }
         (STD_FS, "createDir" | "remove") => {
             use ridge_ast::Capability;

@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- `Fs.readDir` and `Fs.isDir` open the directory-walking path that previous releases left to FFI workarounds. `Fs.readDir path` returns `Result (List Text) Text` with each entry as a bare basename (no leading path component); the underlying `file:list_dir/1` makes no order guarantees, so callers that need a deterministic ordering should sort the result. `Fs.isDir path` returns `Bool` — true iff the path resolves to a directory. Both require the `fs` capability. The new shims unblock the canonical "tree" / "markdown-todo aggregator" / static-site-generator app shapes from `DX_TEST_APPS_0_2_0.md`.
+
 ## [0.2.3] - 2026-05-24
 
 ### Fixed

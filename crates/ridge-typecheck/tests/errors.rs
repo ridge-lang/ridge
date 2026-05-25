@@ -207,3 +207,47 @@ actor Receiver =\n\
         "forward-referenced actor handle must NOT raise T999; got: {codes:?}"
     );
 }
+
+// ── Non-parametric type alias transparency ────────────────────────────────────
+
+/// `type Bag = List Int` declares a non-parametric alias.  At use sites
+/// (parameter annotations, return types) the alias must unify with the body
+/// it stands for: `b: Bag` is interchangeable with `b: List Int` and a call
+/// to `List.length b` must typecheck.
+///
+/// Before the wrap-as-`Type::Alias` fix in `ast_type_to_ridge_type`, the
+/// alias interned as its own opaque `Type::Con(bag_id, [])` and never
+/// unified with `List Int`, surfacing a confusing
+/// `T001 expected #6 (?0), got #15` at every alias use site.
+#[test]
+fn non_parametric_alias_unifies_with_body() {
+    let src = "import std.list as List\n\
+type Bag = List Int\n\
+\n\
+pub fn lengthBag (b: Bag) -> Int = List.length b\n\
+";
+    let errors = run_typecheck_on_source("alias_bag", src);
+    let codes: Vec<&str> = errors.iter().map(TypeError::code).collect();
+    assert!(
+        codes.is_empty(),
+        "non-parametric alias `Bag = List Int` must typecheck cleanly; got: {codes:?}"
+    );
+}
+
+/// A non-parametric alias for a parametric container (`Map`) must also
+/// unify transparently with the body.  This is the exact dx-test paper-cut
+/// from `mini-sql`, where `type Row = Map Text Text` had to be inlined.
+#[test]
+fn non_parametric_map_alias_unifies_with_body() {
+    let src = "import std.map as Map\n\
+type Row = Map Text Text\n\
+\n\
+pub fn empty () -> Row = Map.empty\n\
+";
+    let errors = run_typecheck_on_source("alias_row", src);
+    let codes: Vec<&str> = errors.iter().map(TypeError::code).collect();
+    assert!(
+        codes.is_empty(),
+        "non-parametric alias `Row = Map Text Text` must typecheck cleanly; got: {codes:?}"
+    );
+}

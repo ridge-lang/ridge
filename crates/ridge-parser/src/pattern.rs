@@ -176,6 +176,16 @@ pub(crate) fn parse_pattern_atom(cur: &mut Cursor<'_>) -> Result<Pattern, ParseE
         // ── Constructor pattern `UPPER_IDENT …` ───────────────────────────────
         Token::UpperIdent(_) => parse_constructor_pattern(cur),
 
+        // ── Reserved keyword used as a binding name (`let init = …`) ─────────
+        tok if tok.keyword_text().is_some() => {
+            let keyword = tok.keyword_text().unwrap_or("?");
+            Err(ParseError::ReservedKeywordAsIdent {
+                span,
+                keyword,
+                position: "a pattern",
+            })
+        }
+
         // ── Everything else ───────────────────────────────────────────────────
         _ => Err(ParseError::UnexpectedToken {
             span,

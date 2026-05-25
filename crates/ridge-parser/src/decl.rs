@@ -439,7 +439,17 @@ pub(crate) fn parse_param_top(cur: &mut Cursor<'_>) -> Result<Param, ParseError>
             cur.bump(); // consume `(`
 
             // Disambiguate: look for `LOWER_IDENT :` (annotated param)
-            // vs anything else (pattern — rejected with P012).
+            // vs anything else (pattern — rejected with P012).  A reserved
+            // keyword in this position (e.g. `(init: Int)`) is recognised
+            // separately so the user sees the actual cause instead of the
+            // misleading "tuple and constructor patterns are not allowed".
+            if let Some(keyword) = cur.peek().keyword_text() {
+                return Err(ParseError::ReservedKeywordAsIdent {
+                    span: cur.span(),
+                    keyword,
+                    position: "a function parameter",
+                });
+            }
             match cur.peek().clone() {
                 Token::LowerIdent(ref name_text) => {
                     // Check if next token (after the ident) is `:`.

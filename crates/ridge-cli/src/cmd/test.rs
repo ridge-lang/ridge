@@ -66,6 +66,14 @@ pub struct TestArgs {
     /// Example: `--filter "*.test_arith*"`
     #[arg(long, value_name = "PATTERN")]
     pub filter: Option<String>,
+
+    /// Maximum number of tests to execute concurrently.
+    ///
+    /// Defaults to the number of available CPU cores.  Pass `-j 1` to force
+    /// sequential execution (the pre-0.3.0 behaviour, useful for debugging
+    /// test output ordering).
+    #[arg(long, short = 'j', value_name = "N")]
+    pub jobs: Option<usize>,
 }
 
 // ── Execute ───────────────────────────────────────────────────────────────────
@@ -134,12 +142,14 @@ pub fn execute(args: &TestArgs, cwd: &Path) -> Result<(), CliError> {
         )
     });
 
+    let jobs = resolve_jobs(args.jobs);
+
     if !needs_runtime {
         // run_tests_and_report's loop `continue`s on every invalid classification
         // before touching `erl_path`/`beam_dir`/`runtime_dir`, so the dummy
         // paths below are never dereferenced.
         let unused = Path::new("");
-        run_tests_and_report(&tests, unused, unused, unused);
+        run_tests_and_report(&tests, unused, unused, unused, jobs);
         return Ok(()); // unreachable: run_tests_and_report calls process::exit
     }
 
@@ -182,19 +192,51 @@ pub fn execute(args: &TestArgs, cwd: &Path) -> Result<(), CliError> {
     };
 
     // ── 9. Run tests and tally results ────────────────────────────────────────
-    run_tests_and_report(&tests, &erl_path, &beam_dir, &runtime_dir);
+    run_tests_and_report(&tests, &erl_path, &beam_dir, &runtime_dir, jobs);
     Ok(())
 }
 
+/// Resolve the effective number of worker threads.
+///
+/// - Explicit `--jobs N` honoured as long as `N >= 1`.  `--jobs 0` is
+///   treated as "auto" so a misconfigured runner cannot deadlock on zero
+///   workers.
+/// - `None` falls back to `std::thread::available_parallelism`, with a
+///   final fallback of `1` so the test runner stays usable on platforms
+///   where the parallelism probe returns an error.
+fn resolve_jobs(requested: Option<usize>) -> usize {
+    match requested {
+        Some(n) if n >= 1 => n,
+        _ => std::thread::available_parallelism().map_or(1, std::num::NonZero::get),
+    }
+}
+
+/// Per-test slot used to dispatch outcomes back in input order.  `Skip` is
+/// any classification that is not actually executed against the BEAM
+/// runner (validation failures); `Runnable` is canonical or bool-deprecated
+/// tests that need a BEAM child.
+enum Slot {
+    Skip,
+    Runnable,
+}
+
 /// Run the discovered tests, print per-test results, and exit with the
-/// appropriate code.  Separated from `execute` to keep line counts under the
-/// Clippy limit.
+/// appropriate code.
+///
+/// Validation-failure classifications (`ArityInvalid`,
+/// `CapabilityForbidden`, `InvalidReturnType`) and the `BoolDeprecated`
+/// notice are emitted up front so the order matches the input slice.
+/// Canonical / Bool tests are dispatched to a worker pool of up to `jobs`
+/// concurrent BEAM children.  Their outcomes are reaped in input order so
+/// the per-test `ok` / `FAIL` lines and the summary stay deterministic
+/// regardless of completion order.
 #[allow(clippy::too_many_lines)]
 fn run_tests_and_report(
     tests: &[DiscoveredTest],
     erl_path: &Path,
     beam_dir: &Path,
     runtime_dir: &Path,
+    jobs: usize,
 ) {
     let mut passed: usize = 0;
     let mut failed: usize = 0;
@@ -203,8 +245,9 @@ fn run_tests_and_report(
 
     let wall_start = Instant::now();
 
-    for test in tests {
-        match &test.classification {
+    let slots: Vec<Slot> = tests
+        .iter()
+        .map(|test| match &test.classification {
             TestClassification::ArityInvalid => {
                 eprintln!(
                     "error: C301 TestArityInvalid: '{}' must have zero parameters",
@@ -212,7 +255,7 @@ fn run_tests_and_report(
                 );
                 failed += 1;
                 skipped += 1;
-                continue;
+                Slot::Skip
             }
             TestClassification::CapabilityForbidden => {
                 eprintln!(
@@ -222,7 +265,7 @@ fn run_tests_and_report(
                 );
                 failed += 1;
                 skipped += 1;
-                continue;
+                Slot::Skip
             }
             TestClassification::InvalidReturnType => {
                 eprintln!(
@@ -232,10 +275,9 @@ fn run_tests_and_report(
                 );
                 failed += 1;
                 skipped += 1;
-                continue;
+                Slot::Skip
             }
             TestClassification::BoolDeprecated => {
-                // Emit per-test C303 warning.
                 eprintln!(
                     "warning: C303 BoolTestDeprecated: '{}' returns Bool (deprecated); \
                      -- migrate: change return type to Result Unit Text; \
@@ -243,19 +285,19 @@ fn run_tests_and_report(
                     test.qualified_name
                 );
                 bool_tests += 1;
+                Slot::Runnable
             }
-            TestClassification::Canonical => {}
-        }
+            TestClassification::Canonical => Slot::Runnable,
+        })
+        .collect();
 
-        // Run the test in a fresh BEAM child.
-        let outcome = run_test(
-            erl_path,
-            beam_dir,
-            runtime_dir,
-            &test.beam_module,
-            &test.fn_name,
-        );
+    // Execute the runnable tests with bounded concurrency.  Outcomes are
+    // returned in input order even though completion order is not.
+    let outcomes =
+        execute_runnable_tests(tests, &slots, erl_path, beam_dir, runtime_dir, jobs.max(1));
 
+    for (test, outcome) in tests.iter().zip(outcomes) {
+        let Some(outcome) = outcome else { continue };
         match outcome {
             TestOutcome::Pass => {
                 println!("ok  {}", test.qualified_name);
@@ -284,7 +326,6 @@ fn run_tests_and_report(
 
     let elapsed_ms = wall_start.elapsed().as_millis();
 
-    // ── 8. Print summary ───────────────────────────────────────────────────────
     println!("Tests: {passed} passed, {failed} failed, {skipped} skipped ({elapsed_ms}ms)");
 
     if bool_tests > 0 {
@@ -294,10 +335,80 @@ fn run_tests_and_report(
         );
     }
 
-    // ── 9. Exit code ──────────────────────────────────────────────────────────
     if failed > 0 {
         process::exit(1);
     }
+}
+
+/// Dispatch every `Slot::Runnable` test to a bounded-concurrency worker
+/// pool and reap outcomes back into a slice indexed by the test's position
+/// in the input.
+///
+/// `Slot::Skip` entries get `None`; runnable entries get `Some(outcome)`.
+/// The single-job (`jobs == 1`) path stays sequential so debugging with
+/// `--jobs 1` produces identical wall-clock ordering to the pre-0.3.0
+/// runner.
+fn execute_runnable_tests(
+    tests: &[DiscoveredTest],
+    slots: &[Slot],
+    erl_path: &Path,
+    beam_dir: &Path,
+    runtime_dir: &Path,
+    jobs: usize,
+) -> Vec<Option<TestOutcome>> {
+    use std::sync::{Arc, Condvar, Mutex, PoisonError};
+
+    // Pre-fill with `None` so the indexing stays trivial.
+    let outcomes: Vec<Mutex<Option<TestOutcome>>> =
+        (0..tests.len()).map(|_| Mutex::new(None)).collect();
+
+    // (`available`, `Condvar`) implements a counting semaphore: spawning a
+    // worker decrements the counter, completion increments and signals.
+    let permits = Arc::new((Mutex::new(jobs), Condvar::new()));
+
+    std::thread::scope(|scope| {
+        for (idx, test) in tests.iter().enumerate() {
+            if !matches!(slots[idx], Slot::Runnable) {
+                continue;
+            }
+
+            // Acquire one permit before spawning so at most `jobs` BEAM
+            // children are alive at any moment.  Poisoned locks are
+            // recovered (a panicked sibling can only leave the counter in
+            // a still-meaningful state — the surviving threads must still
+            // be able to schedule themselves and drain).
+            {
+                let (lock, cvar) = &*permits;
+                let mut available = lock.lock().unwrap_or_else(PoisonError::into_inner);
+                while *available == 0 {
+                    available = cvar.wait(available).unwrap_or_else(PoisonError::into_inner);
+                }
+                *available -= 1;
+            }
+
+            let permits_for_worker = Arc::clone(&permits);
+            let outcome_slot = &outcomes[idx];
+            scope.spawn(move || {
+                let outcome = run_test(
+                    erl_path,
+                    beam_dir,
+                    runtime_dir,
+                    &test.beam_module,
+                    &test.fn_name,
+                );
+                *outcome_slot.lock().unwrap_or_else(PoisonError::into_inner) = Some(outcome);
+
+                let (lock, cvar) = &*permits_for_worker;
+                *lock.lock().unwrap_or_else(PoisonError::into_inner) += 1;
+                cvar.notify_one();
+            });
+        }
+    });
+
+    outcomes
+        .into_iter()
+        .map(|m| m.into_inner().unwrap_or_else(PoisonError::into_inner))
+        .collect()
 }
 
 // ── Test discovery ────────────────────────────────────────────────────────────
@@ -616,5 +727,30 @@ fn glob_match_inner(pat: &[u8], text: &[u8]) -> bool {
         (Some(&b'?'), Some(_)) => glob_match_inner(&pat[1..], &text[1..]),
         (Some(p), Some(t)) if p == t => glob_match_inner(&pat[1..], &text[1..]),
         _ => false,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::resolve_jobs;
+
+    #[test]
+    fn resolve_jobs_explicit_value_honoured() {
+        assert_eq!(resolve_jobs(Some(1)), 1);
+        assert_eq!(resolve_jobs(Some(4)), 4);
+        assert_eq!(resolve_jobs(Some(32)), 32);
+    }
+
+    #[test]
+    fn resolve_jobs_zero_falls_back_to_auto() {
+        // `-j 0` would otherwise deadlock the semaphore at startup.
+        let auto = resolve_jobs(None);
+        assert_eq!(resolve_jobs(Some(0)), auto);
+    }
+
+    #[test]
+    fn resolve_jobs_none_returns_positive() {
+        // The auto-detection path must always produce a usable worker count.
+        assert!(resolve_jobs(None) >= 1);
     }
 }

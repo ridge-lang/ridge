@@ -550,10 +550,10 @@ pub(crate) fn lower_expr_in_scope(
                 span: *span,
                 detail: "Assign without enclosing Block — Phase 5 invariant violated".into(),
             }),
-            AssignTarget::StateField { .. } => Err(CodegenError::IrShapeMalformed {
+            AssignTarget::StateField { name, .. } => Err(CodegenError::IrShapeMalformed {
                 variant: "IrExpr::Assign",
                 span: *span,
-                detail: "StateField Assign requires actor-handler context".into(),
+                detail: state_field_assign_detail(name, scope),
             }),
         },
 
@@ -685,6 +685,38 @@ pub(crate) fn lower_expr_in_scope(
 /// rest of the block).  Phase 5 invariants:
 /// - `stmts` must be non-empty.
 /// - `LetIn`/`VarIn` must not appear as Block stmts (they are continuation-form).
+/// Build the detail string for an `IrExpr::Assign { AssignTarget::StateField }`
+/// that reaches the regular expr-lowering path (`lower_expr_in_scope` /
+/// `lower_block_stmts`) instead of the actor-handler path
+/// (`lower_actor_block_w` / `lower_expr_in_actor_context_w`).
+///
+/// Two cases are distinguished by `scope.actor_parent`:
+///
+/// 1. `actor_parent.is_some()` — we ARE inside an actor handler, but the
+///    assign sits in a nested `fn` (lambda) body that the actor-context
+///    walk never reaches.  Lambdas don't have access to the implicit
+///    gen_server state in 0.2.x, so this won't lower as-is.  Emit the
+///    actionable hint pointing at the canonical workaround.
+/// 2. `actor_parent.is_none()` — the assign appears in a top-level `fn`
+///    with no actor parent at all.  That's a genuine "wrong shape" case
+///    (typecheck should have caught it earlier); keep the legacy phrasing
+///    so the existing test suite stays satisfied.
+fn state_field_assign_detail(name: &str, scope: &LocalScope) -> String {
+    if scope.actor_parent.is_some() {
+        format!(
+            "state field `{name}` cannot be assigned from inside a nested `fn` (lambda).  \
+             State assigns are only valid at the immediate handler scope; the implicit \
+             gen_server state is not in scope inside an inner-fn body.  Workaround: \
+             extract the loop to a top-level helper that takes the running totals as \
+             parameters and returns them as a record, then assign once in the handler \
+             body from the returned record's fields.  See dx-tests/producer-consumer \
+             for an example."
+        )
+    } else {
+        "StateField Assign requires actor-handler context".to_string()
+    }
+}
+
 fn lower_block_stmts(
     stmts: &[IrExpr],
     scope: &mut LocalScope,
@@ -721,13 +753,13 @@ fn lower_block_stmts(
 
                 // Assign(StateField) requires actor-handler context.
                 IrExpr::Assign {
-                    target: AssignTarget::StateField { .. },
+                    target: AssignTarget::StateField { name, .. },
                     span: assign_span,
                     ..
                 } => Err(CodegenError::IrShapeMalformed {
                     variant: "IrExpr::Assign",
                     span: *assign_span,
-                    detail: "StateField Assign requires actor-handler context".into(),
+                    detail: state_field_assign_detail(name, scope),
                 }),
 
                 // LetIn/VarIn as a Block stmt: Phase 5 invariant violation.
@@ -2218,6 +2250,52 @@ mod tests {
                 assert!(
                     detail.contains("StateField Assign requires actor-handler context"),
                     "unexpected detail: {detail}"
+                );
+            }
+            other => panic!("expected IrShapeMalformed, got {other:?}"),
+        }
+    }
+
+    /// When the same StateField assign is reached from inside a scope that
+    /// IS within an actor handler (i.e. `actor_parent` is set, which is what
+    /// `lower_lambda` inherits when lowering a `fn` declared inside a
+    /// handler body), the error must call out the lambda-nesting cause and
+    /// point at the canonical workaround (extract loop to top-level fn
+    /// returning an accumulator record).  The plain "requires actor-handler
+    /// context" phrasing pointed at the wrong fix — the assign IS reached
+    /// from an actor context, just not the top-level handler one.
+    #[test]
+    fn expr_assign_state_field_inside_handler_lambda_hints_at_workaround() {
+        use crate::scope::LocalScope;
+        use rustc_hash::FxHashMap;
+        let expr = IrExpr::Assign {
+            id: node(),
+            target: AssignTarget::StateField {
+                name: "count".into(),
+                span: sp(),
+            },
+            value: Box::new(lit_int(0)),
+            span: sp(),
+        };
+        let mut scope = LocalScope::with_actor_parent(
+            FxHashMap::default(),
+            ridge_resolve::ModuleId(0),
+            "ridge_module_0",
+        );
+        let result = lower_expr_in_scope(&expr, &mut scope);
+        match result {
+            Err(CodegenError::IrShapeMalformed { detail, .. }) => {
+                assert!(
+                    detail.contains("nested `fn`") || detail.contains("nested fn"),
+                    "expected hint about nested fn, got: {detail}"
+                );
+                assert!(
+                    detail.contains("count"),
+                    "expected state field name in detail, got: {detail}"
+                );
+                assert!(
+                    detail.contains("Workaround"),
+                    "expected workaround pointer in detail, got: {detail}"
                 );
             }
             other => panic!("expected IrShapeMalformed, got {other:?}"),

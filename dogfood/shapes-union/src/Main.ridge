@@ -1,0 +1,14 @@
+import std.io as Io
+import std.int as Int
+
+type Shape = Circle Int | Rectangle Int Int
+
+fn area (s: Shape) -> Int =
+    match s
+        Circle r       -> 3 * r * r
+        Rectangle w h  -> w * h
+
+fn io main () -> Result Unit Text =
+    Io.println (Int.toText (area (Circle 5)))
+    Io.println (Int.toText (area (Rectangle 4 6)))
+    Ok ()

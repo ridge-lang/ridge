@@ -3322,4 +3322,88 @@ mod tests {
             "expected plain Case (fast path), got {result:?}"
         );
     }
+
+    // ── Union-variant Construct → tagged tuple ───────────────────────────────
+    //
+    // Integration test: verifies that an `IrExpr::Construct` with
+    // `CtorKind::UnionVariant` and positional fields emits the correct
+    // Core Erlang tagged-tuple `{Name, v1, v2, …}`.
+
+    fn union_ctor(name: &str) -> SymbolRef {
+        SymbolRef::Constructor {
+            ctor_kind: CtorKind::UnionVariant,
+            owner_type: TyConId(0),
+            name: name.into(),
+            variant: 1,
+        }
+    }
+
+    /// `Circle 5` folded to `IrExpr::Construct { UnionVariant("Circle"), [(_, Int 5)] }`
+    /// must emit `{circle, 5}` — a two-element Core Erlang tuple.
+    #[test]
+    fn construct_union_variant_one_field_emits_tagged_tuple() {
+        let expr = IrExpr::Construct {
+            id: node(),
+            ctor: union_ctor("Circle"),
+            fields: vec![(String::new(), lit_int(5))],
+            span: sp(),
+        };
+        let result = lower_expr(&expr).unwrap();
+        match result {
+            CErlExpr::Tuple(elems) => {
+                assert_eq!(elems.len(), 2, "expected tag + 1 value");
+                assert!(
+                    matches!(&elems[0], CErlExpr::Lit(CErlLit::Atom(CErlAtom(s))) if s == "Circle"),
+                    "first element must be atom 'Circle'"
+                );
+                assert!(matches!(&elems[1], CErlExpr::Lit(CErlLit::Int(5))));
+            }
+            other => panic!("expected Tuple, got {other:?}"),
+        }
+    }
+
+    /// `Rectangle 4 6` folded to `IrExpr::Construct` with two fields must
+    /// emit `{rectangle, 4, 6}` — a three-element Core Erlang tuple.
+    #[test]
+    fn construct_union_variant_two_fields_emits_tagged_tuple() {
+        let expr = IrExpr::Construct {
+            id: node(),
+            ctor: union_ctor("Rectangle"),
+            fields: vec![
+                (String::new(), lit_int(4)),
+                (String::new(), lit_int(6)),
+            ],
+            span: sp(),
+        };
+        let result = lower_expr(&expr).unwrap();
+        match result {
+            CErlExpr::Tuple(elems) => {
+                assert_eq!(elems.len(), 3, "expected tag + 2 values");
+                assert!(
+                    matches!(&elems[0], CErlExpr::Lit(CErlLit::Atom(CErlAtom(s))) if s == "Rectangle"),
+                    "first element must be atom 'Rectangle'"
+                );
+                assert!(matches!(&elems[1], CErlExpr::Lit(CErlLit::Int(4))));
+                assert!(matches!(&elems[2], CErlExpr::Lit(CErlLit::Int(6))));
+            }
+            other => panic!("expected Tuple, got {other:?}"),
+        }
+    }
+
+    /// Nullary `IrExpr::Construct { UnionVariant("Red"), fields: [] }` must
+    /// emit a bare atom `'Red'`, not a tuple — regression guard.
+    #[test]
+    fn construct_union_variant_zero_fields_emits_bare_atom() {
+        let expr = IrExpr::Construct {
+            id: node(),
+            ctor: union_ctor("Red"),
+            fields: vec![],
+            span: sp(),
+        };
+        let result = lower_expr(&expr).unwrap();
+        assert!(
+            matches!(result, CErlExpr::Lit(CErlLit::Atom(CErlAtom(ref s))) if s == "Red"),
+            "nullary variant must emit bare atom 'Red', got {result:?}"
+        );
+    }
 }

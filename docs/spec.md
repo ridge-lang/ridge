@@ -1,6 +1,6 @@
 # Ridge — Language Specification & Development Roadmap
 
-**Version:** 0.2.2
+**Version:** 0.2.3
 **Target:** First public release (Ridge 0.1.0)
 **Author:** The Ridge Language Authors
 **Last updated:** 2026-05-20

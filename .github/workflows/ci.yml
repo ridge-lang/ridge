@@ -46,4 +46,3 @@ jobs:
 
       - name: Run clippy
         run: cargo clippy --workspace --all-targets -- -D warnings
-        continue-on-error: true  # Don't block PRs on lints yet — graduate to hard fail in Tier 2

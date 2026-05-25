@@ -119,6 +119,11 @@ fn lit_true_pat() -> crate::core_ast::CErlPat {
 /// connectives, and the comparison operators. Anything outside this list is
 /// either not callable in a guard at all (most of `erlang:*` falls here) or
 /// not exposed via the `erlang:` module name.
+//
+// Each arm groups guard BIFs by arity. The arms intentionally share the
+// `true` body; merging them by union of patterns would erase the arity
+// grouping that documents which BIFs are valid at which call shape.
+#[allow(clippy::match_same_arms)]
 fn is_erlang_guard_bif(fn_name: &str, arity: usize) -> bool {
     match (fn_name, arity) {
         // Arity 0.
@@ -679,12 +684,6 @@ pub(crate) fn lower_expr_in_scope(
 
 // ── Block helper (§4.10) ──────────────────────────────────────────────────────
 
-/// Lower a `Block`'s statement slice to a right-folded `Do` chain (§4.10).
-///
-/// Assign statements are promoted to `Let` bindings (the continuation is the
-/// rest of the block).  Phase 5 invariants:
-/// - `stmts` must be non-empty.
-/// - `LetIn`/`VarIn` must not appear as Block stmts (they are continuation-form).
 /// Build the detail string for an `IrExpr::Assign { AssignTarget::StateField }`
 /// that reaches the regular expr-lowering path (`lower_expr_in_scope` /
 /// `lower_block_stmts`) instead of the actor-handler path
@@ -695,7 +694,7 @@ pub(crate) fn lower_expr_in_scope(
 /// 1. `actor_parent.is_some()` — we ARE inside an actor handler, but the
 ///    assign sits in a nested `fn` (lambda) body that the actor-context
 ///    walk never reaches.  Lambdas don't have access to the implicit
-///    gen_server state in 0.2.x, so this won't lower as-is.  Emit the
+///    `gen_server` state in 0.2.x, so this won't lower as-is.  Emit the
 ///    actionable hint pointing at the canonical workaround.
 /// 2. `actor_parent.is_none()` — the assign appears in a top-level `fn`
 ///    with no actor parent at all.  That's a genuine "wrong shape" case
@@ -717,6 +716,13 @@ fn state_field_assign_detail(name: &str, scope: &LocalScope) -> String {
     }
 }
 
+/// Lower a `Block`'s statement slice to a right-folded `Do` chain (§4.10).
+///
+/// Assign statements are promoted to `Let` bindings (the continuation is the
+/// rest of the block).  Phase 5 invariants:
+///
+/// - `stmts` must be non-empty.
+/// - `LetIn`/`VarIn` must not appear as Block stmts (they are continuation-form).
 fn lower_block_stmts(
     stmts: &[IrExpr],
     scope: &mut LocalScope,
@@ -1358,7 +1364,7 @@ fn lower_prelude_call(
 /// Read the declared arity out of any [`BridgeTarget`] variant.  Used by
 /// `lower_call_to_stdlib` to apply the 0-arity `Unit`-drop shim before the
 /// per-variant arity check.
-fn bridge_target_arity(target: &stdlib_map::BridgeTarget) -> u32 {
+const fn bridge_target_arity(target: &stdlib_map::BridgeTarget) -> u32 {
     use stdlib_map::BridgeTarget;
     match target {
         BridgeTarget::BeamStdlib { arity, .. }
@@ -2256,7 +2262,7 @@ mod tests {
         }
     }
 
-    /// When the same StateField assign is reached from inside a scope that
+    /// When the same `StateField` assign is reached from inside a scope that
     /// IS within an actor handler (i.e. `actor_parent` is set, which is what
     /// `lower_lambda` inherits when lowering a `fn` declared inside a
     /// handler body), the error must call out the lambda-nesting cause and

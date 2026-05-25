@@ -26,7 +26,7 @@ fn stdlib_beams_emitted_on_fresh_build() {
     // user code imports, so a successful compile is all we need.
     let source = "pub fn answer () -> Int = 42\n";
     let tw = make_workspace("Main", source);
-    let opts = CompileOptions::new(tw.path.clone());
+    let opts = CompileOptions::new(tw.path);
     let artefacts = compile_workspace(opts).expect("compile workspace");
 
     // Locate the beam dir from any produced artefact.

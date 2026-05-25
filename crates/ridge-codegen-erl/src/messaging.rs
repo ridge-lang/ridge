@@ -482,6 +482,39 @@ mod tests {
         }
     }
 
+    /// `spawn` lowered inside an actor handler must derive the actor's
+    /// BEAM module via the canonical `"<parent>_<actor_lc>"` shape — the
+    /// same one `lower_actor` uses to *emit* the actor module.  Before
+    /// the `with_actor_parent` patch in `scope.rs`, the handler scope
+    /// carried `own_module_beam_name: None`, so this call fell through
+    /// to `derive_actor_beam_module` and produced
+    /// `ridge_actor_<id>_<name>` — a name nothing in the compiled
+    /// output exports, which crashed the spawned process at startup
+    /// with `undefined function ridge_actor_*:init/1`.
+    #[test]
+    fn spawn_inside_handler_uses_parent_module_name() {
+        use crate::scope::LocalScope;
+        use rustc_hash::FxHashMap;
+        let actor = actor_type_sym("Worker");
+        let mut scope =
+            LocalScope::with_actor_parent(FxHashMap::default(), ModuleId(0), "ridge_module_0");
+        let result = lower_spawn(&actor, &[], sp(), &mut scope).unwrap();
+        match &result {
+            CErlExpr::Call {
+                args: call_args, ..
+            } => match &call_args[0] {
+                CErlExpr::Lit(CErlLit::Atom(CErlAtom(name))) => {
+                    assert_eq!(
+                        name, "ridge_module_0_worker",
+                        "spawn target must match the actor sub-module name"
+                    );
+                }
+                other => panic!("expected atom target, got {other:?}"),
+            },
+            other => panic!("expected Call, got {other:?}"),
+        }
+    }
+
     #[test]
     fn spawn_non_actor_type_returns_error() {
         let bad_actor = SymbolRef::Local {

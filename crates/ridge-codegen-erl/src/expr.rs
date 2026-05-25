@@ -3147,6 +3147,7 @@ mod tests {
     }
 
     #[test]
+    #[allow(clippy::cognitive_complexity)] // a single end-to-end scenario test
     fn lift_guarded_match_wraps_unsafe_guard_in_inner_case() {
         // Mirrors a 2-arm match where arm 0's guard calls `std.int:mod` and
         // arm 1 is an unguarded wildcard fallback. Expected shape with the

@@ -147,7 +147,7 @@ impl ScopeWalker<'_> {
         } else if let Some(eb) = self.find_import_binding(name) {
             eb.binding.clone()
         } else {
-            let suggestions = crate::suggest::suggest(name, self.r010_candidates(name));
+            let suggestions = self.r010_suggestions(name);
             self.errors.push(ResolveError::UnresolvedIdent {
                 name: name.clone(),
                 suggestions,
@@ -230,6 +230,20 @@ impl ScopeWalker<'_> {
     /// module (always visible to itself); import effective bindings were
     /// already filtered by T7 (no `_private` symbols leak in).  See plan
     /// §11 risk R14.
+    /// Build the suggestion list for an `R010` site.  Levenshtein candidates
+    /// from `r010_candidates`, augmented with a well-known prelude-shorthand
+    /// (e.g. `not` → `Bool.not`) inserted at the front when the user's name
+    /// matches one of the cases the bare Levenshtein engine cannot bridge.
+    fn r010_suggestions(&self, target: &str) -> Vec<String> {
+        let mut suggestions = crate::suggest::suggest(target, self.r010_candidates(target));
+        if let Some(shorthand) = crate::suggest::well_known_shorthand(target) {
+            suggestions.retain(|s| s != shorthand);
+            suggestions.insert(0, shorthand.to_owned());
+            suggestions.truncate(crate::suggest::MAX_RESULTS);
+        }
+        suggestions
+    }
+
     fn r010_candidates(&self, target: &str) -> Vec<String> {
         let mut out: Vec<String> = Vec::new();
 
@@ -354,8 +368,7 @@ impl ScopeWalker<'_> {
                     self.stamp(name.span, NodeKind::Ident, b);
                 } else {
                     // R010: unknown constructor name in pattern.
-                    let suggestions =
-                        crate::suggest::suggest(&name.text, self.r010_candidates(&name.text));
+                    let suggestions = self.r010_suggestions(&name.text);
                     self.errors.push(ResolveError::UnresolvedIdent {
                         name: name.text.clone(),
                         suggestions,
@@ -613,35 +626,32 @@ impl<'ast> Visit<'ast> for ScopeWalker<'_> {
 
             Expr::Spawn { actor, args, .. } => {
                 // Resolve actor name as ActorName binding.
-                let actor_binding = if let Some(sym) =
-                    self.my_table.and_then(|t| t.lookup(&actor.text))
-                {
-                    if let SymbolKind::Actor { .. } = &sym.kind {
-                        Binding::ActorName {
-                            module: self.module_id,
-                            actor: sym.id,
+                let actor_binding =
+                    if let Some(sym) = self.my_table.and_then(|t| t.lookup(&actor.text)) {
+                        if let SymbolKind::Actor { .. } = &sym.kind {
+                            Binding::ActorName {
+                                module: self.module_id,
+                                actor: sym.id,
+                            }
+                        } else {
+                            // Name exists but is not an actor.
+                            let suggestions = self.r010_suggestions(&actor.text);
+                            self.errors.push(ResolveError::UnresolvedIdent {
+                                name: actor.text.clone(),
+                                suggestions,
+                                span: actor.span,
+                            });
+                            Binding::Error
                         }
                     } else {
-                        // Name exists but is not an actor.
-                        let suggestions =
-                            crate::suggest::suggest(&actor.text, self.r010_candidates(&actor.text));
+                        let suggestions = self.r010_suggestions(&actor.text);
                         self.errors.push(ResolveError::UnresolvedIdent {
                             name: actor.text.clone(),
                             suggestions,
                             span: actor.span,
                         });
                         Binding::Error
-                    }
-                } else {
-                    let suggestions =
-                        crate::suggest::suggest(&actor.text, self.r010_candidates(&actor.text));
-                    self.errors.push(ResolveError::UnresolvedIdent {
-                        name: actor.text.clone(),
-                        suggestions,
-                        span: actor.span,
-                    });
-                    Binding::Error
-                };
+                    };
                 self.stamp(actor.span, NodeKind::Ident, actor_binding);
                 for arg in args {
                     self.visit_expr(arg);
@@ -695,10 +705,7 @@ impl<'ast> Visit<'ast> for ScopeWalker<'_> {
                         } else if let Some(local) = self.scope.lookup_local(&ctor_ident.text) {
                             Binding::Local(local.id)
                         } else {
-                            let suggestions = crate::suggest::suggest(
-                                &ctor_ident.text,
-                                self.r010_candidates(&ctor_ident.text),
-                            );
+                            let suggestions = self.r010_suggestions(&ctor_ident.text);
                             self.errors.push(ResolveError::UnresolvedIdent {
                                 name: ctor_ident.text.clone(),
                                 suggestions,
@@ -1065,6 +1072,48 @@ mod tests {
         assert_eq!(r010_count, 1, "expected 1 R010; got: {errors:?}");
         let error_count = count_binding(&bindings, |b| matches!(b, Binding::Error));
         assert!(error_count >= 1, "expected Binding::Error for nonexistent");
+    }
+
+    /// Bare `not` is a famous prelude-shorthand expectation (Python/JS/Haskell);
+    /// Ridge intentionally only exposes `Bool.not`.  The R010 suggestion list
+    /// must surface `Bool.not` ahead of any junk Levenshtein candidates so the
+    /// user gets a usable hint instead of `Int / Io / Set`.
+    #[test]
+    fn r010_not_suggests_bool_not_first() {
+        let (_, errors, _nid) = resolve_bare("fn f x = not x\n");
+        let r010 = errors
+            .iter()
+            .find_map(|e| match e {
+                ResolveError::UnresolvedIdent {
+                    name, suggestions, ..
+                } if name == "not" => Some(suggestions.clone()),
+                _ => None,
+            })
+            .expect("expected an R010 for `not`");
+        assert_eq!(
+            r010.first().map(String::as_str),
+            Some("Bool.not"),
+            "well-known shorthand must be first; got: {r010:?}"
+        );
+    }
+
+    #[test]
+    fn r010_print_suggests_io_println_first() {
+        let (_, errors, _nid) = resolve_bare("fn f x = print x\n");
+        let r010 = errors
+            .iter()
+            .find_map(|e| match e {
+                ResolveError::UnresolvedIdent {
+                    name, suggestions, ..
+                } if name == "print" => Some(suggestions.clone()),
+                _ => None,
+            })
+            .expect("expected an R010 for `print`");
+        assert_eq!(
+            r010.first().map(String::as_str),
+            Some("Io.println"),
+            "well-known shorthand must be first; got: {r010:?}"
+        );
     }
 
     // ── Test 6: R011 DuplicateLocal (fn params) ───────────────────────────────

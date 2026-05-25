@@ -115,8 +115,12 @@ fn infer_expr_inner(ctx: &mut InferCtx, b: &BuiltinTyCons, expr: &Expr) -> Type 
             if let Some(scheme) = lookup_prelude(b, name) {
                 return instantiate(ctx, &scheme);
             }
-            // 3. Unknown — emit T999; return Error to absorb.
-            emit_internal(ctx, format!("unresolved identifier '{name}'"), id.span)
+            // 3. Unknown — the resolver already emitted R010 for this name
+            //    (with its suggestion list).  Emitting T999 here too would
+            //    double-report and, worse, frame a known unresolved as a
+            //    "compiler bug" — the actual message R010 gave is the right
+            //    one for the user.  Absorb silently.
+            Type::Error
         }
 
         // ── Qualified name ────────────────────────────────────────────────────

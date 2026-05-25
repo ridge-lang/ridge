@@ -46,6 +46,30 @@ pub const MAX_RESULTS: usize = 3;
 /// suggestions".  Keeps per-error cost O(500 × `name_len`²) worst-case.
 pub const CANDIDATE_CAP: usize = 500;
 
+/// Well-known prelude-shorthand → fully-qualified stdlib form.
+///
+/// Ridge intentionally keeps the prelude narrow: `not`, `and`, `or`, `print`
+/// and friends do NOT live at the top level — `Bool.not`, `Bool.and`,
+/// `Bool.or`, `Io.println` do.  Users coming from Python, JS, Haskell, Elixir,
+/// etc. routinely type the short form; the bare-Levenshtein suggester gives
+/// them junk like `Int` / `Io` / `Set` instead of the actual function they
+/// meant.  This table short-circuits the most common cases so the R010 error
+/// at least points at the right symbol.
+///
+/// Returns `None` for any name not in the table; callers should fall back to
+/// the regular Levenshtein candidates.
+#[must_use]
+pub fn well_known_shorthand(name: &str) -> Option<&'static str> {
+    match name {
+        "not" => Some("Bool.not"),
+        "and" => Some("Bool.and"),
+        "or" => Some("Bool.or"),
+        "print" => Some("Io.println"),
+        "println" => Some("Io.println"),
+        _ => None,
+    }
+}
+
 // ── Public API ────────────────────────────────────────────────────────────────
 
 /// Compute up to [`MAX_RESULTS`] "did you mean?" suggestions for `target`.
@@ -289,5 +313,31 @@ mod tests {
             vec!["_private".to_owned()],
             "engine MUST NOT filter; visibility is the caller's job"
         );
+    }
+
+    // ── well_known_shorthand ──────────────────────────────────────────────────
+
+    #[test]
+    fn shorthand_not_maps_to_bool_not() {
+        assert_eq!(well_known_shorthand("not"), Some("Bool.not"));
+    }
+
+    #[test]
+    fn shorthand_and_or_map_to_bool() {
+        assert_eq!(well_known_shorthand("and"), Some("Bool.and"));
+        assert_eq!(well_known_shorthand("or"), Some("Bool.or"));
+    }
+
+    #[test]
+    fn shorthand_print_println_map_to_io_println() {
+        assert_eq!(well_known_shorthand("print"), Some("Io.println"));
+        assert_eq!(well_known_shorthand("println"), Some("Io.println"));
+    }
+
+    #[test]
+    fn shorthand_returns_none_for_unrelated_names() {
+        assert_eq!(well_known_shorthand("foo"), None);
+        assert_eq!(well_known_shorthand("Map"), None);
+        assert_eq!(well_known_shorthand(""), None);
     }
 }

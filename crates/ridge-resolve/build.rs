@@ -166,6 +166,7 @@ const BASELINE_EXPORTS: &[(&str, &[&str])] = &[
             "fold",
             "foldRight",
             "reverse",
+            "concat",
             "sort",
             "sortBy",
             "take",

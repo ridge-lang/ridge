@@ -539,11 +539,45 @@ pub fn lower_expr(ctx: &mut LowerCtx<'_>, expr: &Expr) -> IrExpr {
             let id = ctx.fresh_id(None);
             // Look up callee type before lowering, while we still have the AST.
             let callee_node_type = lookup_callee_type(ctx, callee);
-            let ir_callee = Box::new(lower_expr(ctx, callee));
+            let ir_callee = lower_expr(ctx, callee);
             let ir_args: Vec<IrExpr> = args.iter().map(|a| lower_expr(ctx, a)).collect();
+
+            // Union-variant constructor application: `Circle 5` arrives as
+            // `Expr::Call { callee: Expr::Record(Bare("Circle"), []), args: [5] }`.
+            // After lowering the callee we get `IrExpr::Construct { ctor: UnionVariant, fields: [] }`.
+            // Fold the call args into the construct fields so codegen can emit
+            // the correct tagged tuple `{Circle, 5}` via the IrExpr::Construct path.
+            let is_nullary_union_ctor = matches!(
+                &ir_callee,
+                IrExpr::Construct {
+                    ctor: SymbolRef::Constructor {
+                        ctor_kind: ridge_ir::CtorKind::UnionVariant,
+                        ..
+                    },
+                    fields,
+                    ..
+                } if fields.is_empty()
+            );
+            if is_nullary_union_ctor {
+                // Fold positional args into construct fields.
+                // Codegen drops field names for UnionVariant, so empty-string
+                // names are the correct convention (see codegen-erl expr.rs).
+                let combined_fields: Vec<(String, IrExpr)> =
+                    ir_args.into_iter().map(|a| (String::new(), a)).collect();
+                let IrExpr::Construct { ctor, .. } = ir_callee else {
+                    unreachable!("guarded by is_nullary_union_ctor match above");
+                };
+                return IrExpr::Construct {
+                    id,
+                    ctor,
+                    fields: combined_fields,
+                    span: *span,
+                };
+            }
+
             let call = IrExpr::Call {
                 id,
-                callee: ir_callee,
+                callee: Box::new(ir_callee),
                 args: ir_args.clone(),
                 span: *span,
             };
@@ -2451,6 +2485,158 @@ mod tests {
             "expected no errors; got: {:?}",
             ctx.errors
         );
+    }
+
+    // ── Union-variant call folding ────────────────────────────────────────────
+    //
+    // `Circle 5` parses as `Expr::Call { callee: Expr::Record(Bare("Circle"), []),
+    // args: [5] }`. The callee lowers to `IrExpr::Construct { UnionVariant, fields: [] }`.
+    // The fix folds the call args into the construct so codegen emits `{Circle, 5}`.
+
+    fn make_union_ctor_ctx(ctor_name: &str) -> (LowerCtx<'static>, Span) {
+        use ridge_resolve::SymbolId;
+        let span = sp_at(10, 16);
+        let mut nid_map = NodeIdMap::default();
+        let node_id = nid_map.assign(span, NodeKind::Ident).unwrap();
+        let mut bm: BindingMap = vec![None; (node_id.0 + 1) as usize];
+        bm[node_id.0 as usize] = Some(Binding::Constructor {
+            owner_type: SymbolId(1),
+            variant: 1,
+            is_record: false,
+        });
+        let mut ctx = LowerCtx::new(ModuleId(0), &[]);
+        ctx.attach_bindings(nid_map, Box::leak(Box::new(bm)));
+        let _ = ctor_name;
+        (ctx, span)
+    }
+
+    /// `Circle 5` — single positional arg — must produce `IrExpr::Construct`
+    /// with one field, not `IrExpr::Call`.
+    #[test]
+    fn lower_union_ctor_call_one_arg_produces_construct() {
+        use ridge_ast::expr::RecordCtor;
+
+        let (mut ctx, ctor_span) = make_union_ctor_ctx("Circle");
+        let call_span = sp_at(0, 20);
+
+        // Callee: bare `Circle` with no fields.
+        let callee = Expr::Record {
+            constructor: RecordCtor::Bare(Ident {
+                text: "Circle".into(),
+                span: ctor_span,
+            }),
+            fields: vec![],
+            span: ctor_span,
+        };
+        let expr = Expr::Call {
+            callee: Box::new(callee),
+            args: vec![Expr::Literal(Literal::IntDec {
+                raw: "5".into(),
+                span: sp(),
+            })],
+            span: call_span,
+        };
+
+        let ir = lower_expr(&mut ctx, &expr);
+        assert!(ctx.errors.is_empty(), "errors: {:?}", ctx.errors);
+        match ir {
+            IrExpr::Construct {
+                ctor,
+                fields,
+                span: s,
+                ..
+            } => {
+                assert_eq!(s, call_span);
+                assert_eq!(fields.len(), 1, "expected 1 positional field");
+                assert!(
+                    matches!(
+                        &fields[0].1,
+                        IrExpr::Lit {
+                            value: IrLit::Int(5),
+                            ..
+                        }
+                    ),
+                    "expected Int(5) field"
+                );
+                match ctor {
+                    SymbolRef::Constructor {
+                        ctor_kind: ridge_ir::CtorKind::UnionVariant,
+                        ..
+                    } => {}
+                    other => panic!("expected UnionVariant ctor, got {other:?}"),
+                }
+            }
+            other => panic!("expected IrExpr::Construct, got {other:?}"),
+        }
+    }
+
+    /// `Rectangle 4 6` — two positional args — must produce `IrExpr::Construct`
+    /// with two fields.
+    #[test]
+    fn lower_union_ctor_call_two_args_produces_construct() {
+        use ridge_ast::expr::RecordCtor;
+
+        let (mut ctx, ctor_span) = make_union_ctor_ctx("Rectangle");
+        let call_span = sp_at(0, 25);
+
+        let callee = Expr::Record {
+            constructor: RecordCtor::Bare(Ident {
+                text: "Rectangle".into(),
+                span: ctor_span,
+            }),
+            fields: vec![],
+            span: ctor_span,
+        };
+        let expr = Expr::Call {
+            callee: Box::new(callee),
+            args: vec![
+                Expr::Literal(Literal::IntDec {
+                    raw: "4".into(),
+                    span: sp(),
+                }),
+                Expr::Literal(Literal::IntDec {
+                    raw: "6".into(),
+                    span: sp(),
+                }),
+            ],
+            span: call_span,
+        };
+
+        let ir = lower_expr(&mut ctx, &expr);
+        assert!(ctx.errors.is_empty(), "errors: {:?}", ctx.errors);
+        match ir {
+            IrExpr::Construct { ctor, fields, .. } => {
+                assert_eq!(fields.len(), 2, "expected 2 positional fields");
+                assert!(
+                    matches!(
+                        &fields[0].1,
+                        IrExpr::Lit {
+                            value: IrLit::Int(4),
+                            ..
+                        }
+                    ),
+                    "expected Int(4) as first field"
+                );
+                assert!(
+                    matches!(
+                        &fields[1].1,
+                        IrExpr::Lit {
+                            value: IrLit::Int(6),
+                            ..
+                        }
+                    ),
+                    "expected Int(6) as second field"
+                );
+                match ctor {
+                    SymbolRef::Constructor {
+                        ctor_kind: ridge_ir::CtorKind::UnionVariant,
+                        ..
+                    } => {}
+                    other => panic!("expected UnionVariant ctor, got {other:?}"),
+                }
+            }
+            other => panic!("expected IrExpr::Construct, got {other:?}"),
+        }
     }
 
     // ── Prelude constructor routing ───────────────────────────────────────────

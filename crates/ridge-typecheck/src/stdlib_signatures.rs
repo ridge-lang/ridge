@@ -13,4 +13,11 @@
 //
 // Do not add code to this file directly; edit `stdlib_signatures_impl.rs`.
 
+// The signature table is one match arm per stdlib symbol. Different symbols
+// may carry identical type schemes (for example, several `Text -> Bool`
+// predicates), so the lint that flags arms with identical bodies would
+// suggest merging unrelated entries. Each arm intentionally maps a single
+// stdlib symbol; suppress the lint for the included table.
+#![allow(clippy::match_same_arms)]
+
 include!(concat!(env!("OUT_DIR"), "/stdlib_signatures.rs"));

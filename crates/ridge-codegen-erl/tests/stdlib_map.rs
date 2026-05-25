@@ -321,12 +321,12 @@ fn stdlib_bridge_respond_resolves_as_two_arg_call() {
 #[test]
 fn stdlib_zero_arity_paren_call_compiles() {
     use ridge_codegen_erl::{codegen_workspace, BuildProfile, CodegenOptions};
-    let src = r#"
+    let src = r"
 import std.map as Map
 
 pub fn empty_map () -> Map Text Text =
     Map.empty ()
-"#;
+";
     let tw = make_workspace("zero_arity_paren", "empty_map", src);
     let ws = run_pipeline(&tw.path);
     let mut opts = CodegenOptions::default();

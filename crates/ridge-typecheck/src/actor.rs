@@ -445,7 +445,7 @@ fn extract_handler_call(message: &Expr) -> Option<(String, &[Expr])> {
 /// `()` as "no payload", not as a unit-typed argument.  The normalisation
 /// happens before the arity check so the call still type-checks against a
 /// 0-arity handler, and `infer_expr` is still walked on the unit literal so
-/// node_types stays populated for it.
+/// `node_types` stays populated for it.
 fn check_handler_args(
     ctx: &mut InferCtx,
     b: &BuiltinTyCons,

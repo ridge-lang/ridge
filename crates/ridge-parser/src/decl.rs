@@ -786,29 +786,75 @@ fn parse_type_body(cur: &mut Cursor<'_>) -> Result<TypeBody, ParseError> {
         Token::Pipe => Ok(TypeBody::Union(parse_union_type_body(cur)?)),
 
         // UPPER_IDENT can start a union (no leading `|`) or an alias type.
-        // Disambiguation: if it is followed by another token that could be
-        // a type argument or `|`, it starts a union constructor.
-        // If it is followed by Newline/Eof/Assign, it is an alias.
+        //
+        // The one-token lookahead (`peek_n(1) == Pipe`) only handles nullary
+        // constructors such as `Red | Green | Blue`. For positional constructors
+        // like `Circle Int | Rectangle Int Int` the pipe sits beyond the first
+        // constructor's type arguments, so a deeper scan is required.
+        //
+        // `looks_like_union` scans forward past type-atom tokens (handling
+        // balanced brackets/parens) and returns `true` if it finds a `|`
+        // before any line terminator. The disambiguation rule is preserved:
+        // `type Wrapper = Inner Int` (single constructor, no `|`) is still
+        // treated as a type alias.
         Token::UpperIdent(_) => {
-            // Lookahead: if peek_n(1) == `|`, it is a union.
-            // If peek_n(1) is a type-atom-start or `|`, treat as union.
-            // Otherwise treat as alias type.
-            match cur.peek_n(1) {
-                Some(Token::Pipe) => Ok(TypeBody::Union(parse_union_type_body(cur)?)),
-                // If peek_n(1) is another UPPER_IDENT, it could still be
-                // `Constructor Arg | …` but we handle that in parse_union_type_body
-                // via parse_constructor's greedy arg collection (stops at `|`).
-                // For safety, if we see anything that can't be a positional type arg
-                // and isn't `|`, it's an alias.
-                _ => {
-                    // Try alias first: parse as a Type.
-                    Ok(TypeBody::Alias(parse_type(cur)?))
-                }
+            if looks_like_union(cur) {
+                Ok(TypeBody::Union(parse_union_type_body(cur)?))
+            } else {
+                Ok(TypeBody::Alias(parse_type(cur)?))
             }
         }
 
         // All other starters (LOWER_IDENT, `[`, `(`, `fn`) → alias.
         _ => Ok(TypeBody::Alias(parse_type(cur)?)),
+    }
+}
+
+/// Return `true` when the token stream starting at the current cursor position
+/// looks like the body of a union type declaration.
+///
+/// Scans forward past type-atom tokens — `UPPER_IDENT`, `LOWER_IDENT`, `[…]`,
+/// and `(…)` — tracking bracket/paren depth.  Returns `true` if a `|` is found
+/// at depth 0 before any line terminator (`Newline`, `Dedent`, `Eof`, `Assign`).
+///
+/// The depth bound of 64 prevents pathological inputs from scanning an entire
+/// file; returning `false` in that case safely falls through to the alias branch.
+///
+/// Does NOT consume any tokens — uses `peek_n(n)` for pure lookahead.
+fn looks_like_union(cur: &Cursor<'_>) -> bool {
+    let mut n: usize = 0;
+    let mut depth: i32 = 0;
+    loop {
+        if n > 64 {
+            return false;
+        }
+        match cur.peek_n(n) {
+            None | Some(Token::Newline | Token::Dedent | Token::Eof | Token::Assign) => {
+                return false
+            }
+            Some(Token::Pipe) if depth == 0 => return true,
+            Some(Token::LParen | Token::LBrack) => {
+                depth += 1;
+                n += 1;
+            }
+            Some(Token::RParen | Token::RBrack) => {
+                depth -= 1;
+                if depth < 0 {
+                    return false;
+                }
+                n += 1;
+            }
+            // Any token inside brackets: keep scanning.
+            _ if depth > 0 => {
+                n += 1;
+            }
+            // Type-atom tokens at depth 0: skip past them.
+            Some(Token::UpperIdent(_) | Token::LowerIdent(_)) => {
+                n += 1;
+            }
+            // Anything else at depth 0 is not a type-atom; stop.
+            _ => return false,
+        }
     }
 }
 
@@ -1676,6 +1722,91 @@ mod tests {
             other => panic!("expected Union, got {other:?}"),
         };
         assert_eq!(alts.len(), 3);
+    }
+
+    // ─────────────────────────────────────────────────────────────────────────
+    // parse_type_union_positional_two_ctors
+    // ─────────────────────────────────────────────────────────────────────────
+    #[test]
+    fn parse_type_union_positional_two_ctors() {
+        // `Circle Int | Rectangle Int Int` — positional union, pipe is beyond
+        // the first constructor's argument, so one-token lookahead would miss it.
+        let td = parse_td("type Shape = Circle Int | Rectangle Int Int").expect("should parse");
+        assert_eq!(td.name.text, "Shape");
+        let alts = match &td.body {
+            TypeBody::Union(u) => &u.alternatives,
+            other => panic!("expected Union, got {other:?}"),
+        };
+        assert_eq!(alts.len(), 2);
+        match &alts[0] {
+            Constructor::Positional { name, args, .. } => {
+                assert_eq!(name.text, "Circle");
+                assert_eq!(args.len(), 1);
+            }
+            other @ Constructor::Record { .. } => panic!("expected Positional, got {other:?}"),
+        }
+        match &alts[1] {
+            Constructor::Positional { name, args, .. } => {
+                assert_eq!(name.text, "Rectangle");
+                assert_eq!(args.len(), 2);
+            }
+            other @ Constructor::Record { .. } => panic!("expected Positional, got {other:?}"),
+        }
+    }
+
+    // ─────────────────────────────────────────────────────────────────────────
+    // parse_type_union_positional_three_ctors
+    // ─────────────────────────────────────────────────────────────────────────
+    #[test]
+    fn parse_type_union_positional_three_ctors() {
+        let td = parse_td("type Shape = Circle Int | Rectangle Int Int | Triangle Int Int Int")
+            .expect("should parse");
+        assert_eq!(td.name.text, "Shape");
+        let alts = match &td.body {
+            TypeBody::Union(u) => &u.alternatives,
+            other => panic!("expected Union, got {other:?}"),
+        };
+        assert_eq!(alts.len(), 3);
+        match &alts[2] {
+            Constructor::Positional { name, args, .. } => {
+                assert_eq!(name.text, "Triangle");
+                assert_eq!(args.len(), 3);
+            }
+            other @ Constructor::Record { .. } => panic!("expected Positional, got {other:?}"),
+        }
+    }
+
+    // ─────────────────────────────────────────────────────────────────────────
+    // parse_type_alias_single_positional_ctor_no_pipe — regression guard
+    // ─────────────────────────────────────────────────────────────────────────
+    #[test]
+    fn parse_type_alias_single_positional_ctor_no_pipe() {
+        // `type Wrapper = Inner Int` has a single constructor with no `|`.
+        // It must still be parsed as a type alias, not a union.
+        let td = parse_td("type Wrapper = Inner Int").expect("should parse");
+        assert_eq!(td.name.text, "Wrapper");
+        assert!(
+            matches!(td.body, TypeBody::Alias(_)),
+            "expected Alias, got {:?}",
+            td.body
+        );
+    }
+
+    // ─────────────────────────────────────────────────────────────────────────
+    // parse_type_union_nullary_no_leading_bar — regression guard
+    // ─────────────────────────────────────────────────────────────────────────
+    #[test]
+    fn parse_type_union_nullary_no_leading_bar_regression() {
+        // Nullary unions without a leading `|` must still parse correctly.
+        let td = parse_td("type Color = Red | Green | Blue").expect("should parse");
+        let alts = match &td.body {
+            TypeBody::Union(u) => &u.alternatives,
+            other => panic!("expected Union, got {other:?}"),
+        };
+        assert_eq!(alts.len(), 3);
+        assert!(matches!(&alts[0], Constructor::Positional { name, .. } if name.text == "Red"));
+        assert!(matches!(&alts[1], Constructor::Positional { name, .. } if name.text == "Green"));
+        assert!(matches!(&alts[2], Constructor::Positional { name, .. } if name.text == "Blue"));
     }
 
     // ─────────────────────────────────────────────────────────────────────────

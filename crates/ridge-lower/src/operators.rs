@@ -246,7 +246,7 @@ fn resolve_lhs_type(ctx: &LowerCtx<'_>, expr: &Expr) -> Type {
 /// to the same Erlang BIF for both numeric families, so the Int default is
 /// harmless.  `BinOp::Div` is the exception: `std.int.div` lowers to
 /// `erlang:div/2`, which crashes on Float operands.  When neither side carries
-/// a node_types entry (which is the case inside actor handler bodies — those
+/// a `node_types` entry (which is the case inside actor handler bodies — those
 /// bodies are not visited by `infer_expr` today), fall back to a conservative
 /// structural inspection of both operands for Float hints.
 fn op_to_symbol_with_fallback(

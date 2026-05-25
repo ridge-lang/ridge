@@ -119,6 +119,11 @@ fn lit_true_pat() -> crate::core_ast::CErlPat {
 /// connectives, and the comparison operators. Anything outside this list is
 /// either not callable in a guard at all (most of `erlang:*` falls here) or
 /// not exposed via the `erlang:` module name.
+//
+// Each arm groups guard BIFs by arity. The arms intentionally share the
+// `true` body; merging them by union of patterns would erase the arity
+// grouping that documents which BIFs are valid at which call shape.
+#[allow(clippy::match_same_arms)]
 fn is_erlang_guard_bif(fn_name: &str, arity: usize) -> bool {
     match (fn_name, arity) {
         // Arity 0.
@@ -679,12 +684,6 @@ pub(crate) fn lower_expr_in_scope(
 
 // ── Block helper (§4.10) ──────────────────────────────────────────────────────
 
-/// Lower a `Block`'s statement slice to a right-folded `Do` chain (§4.10).
-///
-/// Assign statements are promoted to `Let` bindings (the continuation is the
-/// rest of the block).  Phase 5 invariants:
-/// - `stmts` must be non-empty.
-/// - `LetIn`/`VarIn` must not appear as Block stmts (they are continuation-form).
 /// Build the detail string for an `IrExpr::Assign { AssignTarget::StateField }`
 /// that reaches the regular expr-lowering path (`lower_expr_in_scope` /
 /// `lower_block_stmts`) instead of the actor-handler path
@@ -695,7 +694,7 @@ pub(crate) fn lower_expr_in_scope(
 /// 1. `actor_parent.is_some()` — we ARE inside an actor handler, but the
 ///    assign sits in a nested `fn` (lambda) body that the actor-context
 ///    walk never reaches.  Lambdas don't have access to the implicit
-///    gen_server state in 0.2.x, so this won't lower as-is.  Emit the
+///    `gen_server` state in 0.2.x, so this won't lower as-is.  Emit the
 ///    actionable hint pointing at the canonical workaround.
 /// 2. `actor_parent.is_none()` — the assign appears in a top-level `fn`
 ///    with no actor parent at all.  That's a genuine "wrong shape" case
@@ -717,6 +716,13 @@ fn state_field_assign_detail(name: &str, scope: &LocalScope) -> String {
     }
 }
 
+/// Lower a `Block`'s statement slice to a right-folded `Do` chain (§4.10).
+///
+/// Assign statements are promoted to `Let` bindings (the continuation is the
+/// rest of the block).  Phase 5 invariants:
+///
+/// - `stmts` must be non-empty.
+/// - `LetIn`/`VarIn` must not appear as Block stmts (they are continuation-form).
 fn lower_block_stmts(
     stmts: &[IrExpr],
     scope: &mut LocalScope,
@@ -1358,7 +1364,7 @@ fn lower_prelude_call(
 /// Read the declared arity out of any [`BridgeTarget`] variant.  Used by
 /// `lower_call_to_stdlib` to apply the 0-arity `Unit`-drop shim before the
 /// per-variant arity check.
-fn bridge_target_arity(target: &stdlib_map::BridgeTarget) -> u32 {
+const fn bridge_target_arity(target: &stdlib_map::BridgeTarget) -> u32 {
     use stdlib_map::BridgeTarget;
     match target {
         BridgeTarget::BeamStdlib { arity, .. }
@@ -2256,7 +2262,7 @@ mod tests {
         }
     }
 
-    /// When the same StateField assign is reached from inside a scope that
+    /// When the same `StateField` assign is reached from inside a scope that
     /// IS within an actor handler (i.e. `actor_parent` is set, which is what
     /// `lower_lambda` inherits when lowering a `fn` declared inside a
     /// handler body), the error must call out the lambda-nesting cause and
@@ -3141,6 +3147,7 @@ mod tests {
     }
 
     #[test]
+    #[allow(clippy::cognitive_complexity)] // a single end-to-end scenario test
     fn lift_guarded_match_wraps_unsafe_guard_in_inner_case() {
         // Mirrors a 2-arm match where arm 0's guard calls `std.int:mod` and
         // arm 1 is an unguarded wildcard fallback. Expected shape with the
@@ -3320,6 +3327,87 @@ mod tests {
         assert!(
             matches!(result, CErlExpr::Case { .. }),
             "expected plain Case (fast path), got {result:?}"
+        );
+    }
+
+    // ── Union-variant Construct → tagged tuple ───────────────────────────────
+    //
+    // Integration test: verifies that an `IrExpr::Construct` with
+    // `CtorKind::UnionVariant` and positional fields emits the correct
+    // Core Erlang tagged-tuple `{Name, v1, v2, …}`.
+
+    fn union_ctor(name: &str) -> SymbolRef {
+        SymbolRef::Constructor {
+            ctor_kind: CtorKind::UnionVariant,
+            owner_type: TyConId(0),
+            name: name.into(),
+            variant: 1,
+        }
+    }
+
+    /// `Circle 5` folded to `IrExpr::Construct { UnionVariant("Circle"), [(_, Int 5)] }`
+    /// must emit `{circle, 5}` — a two-element Core Erlang tuple.
+    #[test]
+    fn construct_union_variant_one_field_emits_tagged_tuple() {
+        let expr = IrExpr::Construct {
+            id: node(),
+            ctor: union_ctor("Circle"),
+            fields: vec![(String::new(), lit_int(5))],
+            span: sp(),
+        };
+        let result = lower_expr(&expr).unwrap();
+        match result {
+            CErlExpr::Tuple(elems) => {
+                assert_eq!(elems.len(), 2, "expected tag + 1 value");
+                assert!(
+                    matches!(&elems[0], CErlExpr::Lit(CErlLit::Atom(CErlAtom(s))) if s == "Circle"),
+                    "first element must be atom 'Circle'"
+                );
+                assert!(matches!(&elems[1], CErlExpr::Lit(CErlLit::Int(5))));
+            }
+            other => panic!("expected Tuple, got {other:?}"),
+        }
+    }
+
+    /// `Rectangle 4 6` folded to `IrExpr::Construct` with two fields must
+    /// emit `{rectangle, 4, 6}` — a three-element Core Erlang tuple.
+    #[test]
+    fn construct_union_variant_two_fields_emits_tagged_tuple() {
+        let expr = IrExpr::Construct {
+            id: node(),
+            ctor: union_ctor("Rectangle"),
+            fields: vec![(String::new(), lit_int(4)), (String::new(), lit_int(6))],
+            span: sp(),
+        };
+        let result = lower_expr(&expr).unwrap();
+        match result {
+            CErlExpr::Tuple(elems) => {
+                assert_eq!(elems.len(), 3, "expected tag + 2 values");
+                assert!(
+                    matches!(&elems[0], CErlExpr::Lit(CErlLit::Atom(CErlAtom(s))) if s == "Rectangle"),
+                    "first element must be atom 'Rectangle'"
+                );
+                assert!(matches!(&elems[1], CErlExpr::Lit(CErlLit::Int(4))));
+                assert!(matches!(&elems[2], CErlExpr::Lit(CErlLit::Int(6))));
+            }
+            other => panic!("expected Tuple, got {other:?}"),
+        }
+    }
+
+    /// Nullary `IrExpr::Construct { UnionVariant("Red"), fields: [] }` must
+    /// emit a bare atom `'Red'`, not a tuple — regression guard.
+    #[test]
+    fn construct_union_variant_zero_fields_emits_bare_atom() {
+        let expr = IrExpr::Construct {
+            id: node(),
+            ctor: union_ctor("Red"),
+            fields: vec![],
+            span: sp(),
+        };
+        let result = lower_expr(&expr).unwrap();
+        assert!(
+            matches!(result, CErlExpr::Lit(CErlLit::Atom(CErlAtom(ref s))) if s == "Red"),
+            "nullary variant must emit bare atom 'Red', got {result:?}"
         );
     }
 }

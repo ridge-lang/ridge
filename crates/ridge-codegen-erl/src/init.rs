@@ -904,7 +904,7 @@ mod tests {
 
     /// Regression for the state-read-after-assign bug: any read of a state
     /// field that follows an assign in the same actor body must resolve to the
-    /// just-bound V_State<n>, not the stale V_State. Before the scope-tracking
+    /// just-bound `V_State<n>`, not the stale `V_State`. Before the scope-tracking
     /// fix, `count <- 1; count` would emit
     /// `let V_State1 = maps:put('count', 1, V_State) in maps:get('count', V_State)`
     /// — pointing the read at the pre-assign map and reporting the old value.

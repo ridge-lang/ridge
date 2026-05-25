@@ -300,7 +300,7 @@ fn infer_caps_for_decls(
 }
 
 /// Run `infer_expr` over every actor handler body in the module so that the
-/// node_types side-table is populated for those expressions.
+/// `node_types` side-table is populated for those expressions.
 ///
 /// Handlers and init blocks are not part of the SCC walk over top-level `fn`
 /// decls (which is what populates `node_types` for ordinary functions), so

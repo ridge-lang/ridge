@@ -564,9 +564,8 @@ pub fn lower_expr(ctx: &mut LowerCtx<'_>, expr: &Expr) -> IrExpr {
                 // names are the correct convention (see codegen-erl expr.rs).
                 let combined_fields: Vec<(String, IrExpr)> =
                     ir_args.into_iter().map(|a| (String::new(), a)).collect();
-                let ctor = match ir_callee {
-                    IrExpr::Construct { ctor, .. } => ctor,
-                    _ => unreachable!(),
+                let IrExpr::Construct { ctor, .. } = ir_callee else {
+                    unreachable!("guarded by is_nullary_union_ctor match above");
                 };
                 return IrExpr::Construct {
                     id,

@@ -64,8 +64,7 @@ pub fn well_known_shorthand(name: &str) -> Option<&'static str> {
         "not" => Some("Bool.not"),
         "and" => Some("Bool.and"),
         "or" => Some("Bool.or"),
-        "print" => Some("Io.println"),
-        "println" => Some("Io.println"),
+        "print" | "println" => Some("Io.println"),
         _ => None,
     }
 }

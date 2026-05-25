@@ -429,10 +429,13 @@ fn parse_expr_bp(cur: &mut Cursor<'_>, min_bp: u8) -> Result<Expr, ParseError> {
         // lhs is itself a Binary with a non-assoc op at the same level."
         //
         // Cleanest approach: check if lhs is a non-assoc Binary AND incoming op
-        // is also non-assoc at the same level.
+        // is also non-assoc at the same level.  The `is_non_assoc(*prev_op)` guard
+        // is load-bearing: without it, any `(arith op) non_assoc x` chain such as
+        // `a + b == c` would be wrongly rejected, because `non_assoc_level` returns
+        // 0 for every op and the level-equality check would always match.
         if is_non_assoc(op) {
             if let Expr::Binary { op: prev_op, .. } = &lhs {
-                if non_assoc_level(*prev_op) == non_assoc_level(op) {
+                if is_non_assoc(*prev_op) && non_assoc_level(*prev_op) == non_assoc_level(op) {
                     let err_span = cur.span();
                     return Err(ParseError::NonAssociativeChain {
                         span: err_span,
@@ -1377,6 +1380,45 @@ mod tests {
     #[test]
     fn pratt_lt_non_assoc_chain_rejects() {
         let e = err("a < b < c");
+        assert_eq!(e.code(), "P009", "expected P009, got {e:?}");
+    }
+
+    /// Arithmetic on the left of a non-assoc comparison must NOT trigger P009.
+    /// Regression test for the false-positive where any `(Binary _) op_non_assoc x`
+    /// was rejected because `non_assoc_level` ignored its op argument and always
+    /// returned 0 — `a + b == c`, `a + b != c`, `a * b < c`, … all reported P009.
+    #[test]
+    fn pratt_arith_then_eq_no_chain() {
+        let e = ok("a + b == c");
+        assert!(
+            matches!(e, Expr::Binary { op: BinOp::Eq, .. }),
+            "expected outer Eq, got {e:?}"
+        );
+    }
+
+    #[test]
+    fn pratt_arith_then_ne_no_chain() {
+        let e = ok("a + b != c");
+        assert!(
+            matches!(e, Expr::Binary { op: BinOp::Ne, .. }),
+            "expected outer Ne, got {e:?}"
+        );
+    }
+
+    #[test]
+    fn pratt_mul_then_lt_no_chain() {
+        let e = ok("a * b < c");
+        assert!(
+            matches!(e, Expr::Binary { op: BinOp::Lt, .. }),
+            "expected outer Lt, got {e:?}"
+        );
+    }
+
+    /// Cross-level non-assoc chains stay rejected — both operands must be
+    /// comparison ops for P009 to fire.
+    #[test]
+    fn pratt_lt_then_eq_still_rejects() {
+        let e = err("a < b == c");
         assert_eq!(e.code(), "P009", "expected P009, got {e:?}");
     }
 

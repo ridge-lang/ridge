@@ -179,6 +179,22 @@ pub enum ParseError {
         position: &'static str,
     },
 
+    /// P021 — an inline record body `{ … }` appeared where a type is
+    /// expected (e.g. `-> Result { name: Text } Text` or `(x: { id: Int })`).
+    ///
+    /// Inline record types in type positions are not part of the surface
+    /// grammar: record types are first-class only through a named
+    /// `type Foo = { … }` declaration.  The historical surface was a
+    /// `P001 expected =` (when the inline record appeared after `->`) or
+    /// a downstream cascade from the lost-track parser, neither of which
+    /// named the actual cause.  P021 names the cause and points to the
+    /// canonical fix: declare a named type and use it here.
+    #[error("inline record types are not supported in type positions; declare a named type with `type Foo = {{ … }}` and use `Foo` here instead")]
+    InlineRecordTypeInTypePosition {
+        /// Source location of the opening `{`.
+        span: Span,
+    },
+
     /// P999 — the lexer's bracket-suppression invariant was violated (should
     /// be unreachable; signals a lexer bug, not a user error).
     #[error("internal error: layout invariant violated inside bracketed region")]
@@ -206,6 +222,7 @@ impl ParseError {
             Self::BareRecordPattern { .. } => "P018",
             Self::OrphanDocComment { .. } => "P019",
             Self::ReservedKeywordAsIdent { .. } => "P020",
+            Self::InlineRecordTypeInTypePosition { .. } => "P021",
             Self::InternalLayoutInvariantViolated { .. } => "P999",
         }
     }
@@ -225,6 +242,7 @@ impl ParseError {
             | Self::BareRecordPattern { span }
             | Self::OrphanDocComment { span }
             | Self::ReservedKeywordAsIdent { span, .. }
+            | Self::InlineRecordTypeInTypePosition { span }
             | Self::InternalLayoutInvariantViolated { span } => *span,
         }
     }
@@ -264,6 +282,17 @@ mod tests {
         };
         assert_eq!(e.code(), "P006");
         assert!(e.to_string().contains("DEDENT outside block"));
+    }
+
+    #[test]
+    fn p021_code_and_display() {
+        let e = ParseError::InlineRecordTypeInTypePosition {
+            span: Span::new(27, 28),
+        };
+        assert_eq!(e.code(), "P021");
+        let msg = e.to_string();
+        assert!(msg.contains("inline record"));
+        assert!(msg.contains("named type"));
     }
 
     #[test]

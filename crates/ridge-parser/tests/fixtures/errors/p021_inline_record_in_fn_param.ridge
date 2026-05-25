@@ -1,0 +1,3 @@
+-- expect: P021
+-- Trigger: inline record type body as the annotation on a fn parameter.
+pub fn id (x: { id: Int }) -> Int = 0

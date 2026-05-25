@@ -359,6 +359,7 @@ fn bind_constructor_schemes(
     clippy::implicit_hasher,
     reason = "FxHashMap is the canonical hasher for this crate"
 )]
+#[allow(clippy::too_many_lines)]
 pub fn ast_type_to_ridge_type(
     b: &BuiltinTyCons,
     ctx: &mut InferCtx,
@@ -366,6 +367,19 @@ pub fn ast_type_to_ridge_type(
     names: &FxHashMap<String, TyConId>,
     param_name_map: &FxHashMap<&str, TyVid>,
 ) -> Type {
+    /// If the user-defined `TyConId` resolves to a `TyConKind::Alias`,
+    /// return a clone of its body for wrapping as `Type::Alias`.  Returns
+    /// `None` for records, unions, actors, primitives, or builtins — those
+    /// stay as opaque `Type::Con(id, args)`.
+    fn alias_body_for(ctx: &InferCtx, id: TyConId) -> Option<Type> {
+        let idx = id.0 as usize;
+        let decl = ctx.tycon_decls.get(idx)?;
+        match &decl.kind {
+            TyConKind::Alias(body) => Some(body.clone()),
+            _ => None,
+        }
+    }
+
     use ridge_ast::PrimitiveType;
 
     match ast_ty {
@@ -393,6 +407,18 @@ pub fn ast_type_to_ridge_type(
             }
             // Check user-defined types.
             if let Some(&id) = names.get(n) {
+                // Non-parametric alias (e.g. `type Bag = Map Text Text`):
+                // wrap as `Type::Alias { name, body }` so `shallow_resolve`
+                // peels through to the RHS and `Bag` unifies with the
+                // alias body.  Otherwise the alias would intern as its own
+                // opaque `Type::Con(alias_id, …)` and never unify with the
+                // body, breaking the user-facing "alias means equal" model.
+                if let Some(body) = alias_body_for(ctx, id) {
+                    return Type::Alias {
+                        name: id,
+                        body: Box::new(body),
+                    };
+                }
                 return Type::Con(id, vec![]);
             }
             // Unknown — allocate fresh var as fallback.
@@ -411,6 +437,23 @@ pub fn ast_type_to_ridge_type(
             }
             // Check user-defined.
             if let Some(&id) = names.get(n) {
+                // Non-parametric alias used in an application position with
+                // arity 0 (`Bag`) — the parser still routes the bare form
+                // through `Named`, but we mirror the wrap-as-Alias rule here
+                // for symmetry.  Parametric aliases (`type Stack a = List
+                // a`) are not yet supported: `TyConKind::Alias` does not
+                // carry the alias's own type-parameter vids, so substitution
+                // cannot run.  They still fall through to `Type::Con` and
+                // continue to fail unification with their body, matching the
+                // pre-fix behaviour until alias-params land.
+                if arg_tys.is_empty() {
+                    if let Some(body) = alias_body_for(ctx, id) {
+                        return Type::Alias {
+                            name: id,
+                            body: Box::new(body),
+                        };
+                    }
+                }
                 return Type::Con(id, arg_tys);
             }
             Type::Var(ctx.fresh_tyvid())

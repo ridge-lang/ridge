@@ -485,3 +485,96 @@ fn beam_e2e_actor_reaches_parent_module_fns() {
         "expected 'reach 5 = 25' in stdout, got:\n{stdout}"
     );
 }
+
+// ── HOF-over-self-recursive-fn regression coverage ────────────────────────────
+
+/// Source: stresses three angles of passing a self-recursive top-level fn as a
+/// first-class value to a stdlib HOF.  Earlier dx-test work (lisp, json-xml,
+/// parser-combinators) avoided this pattern with explicit-recursion
+/// workarounds against a `{badfun, ok}` BEAM crash that no longer
+/// reproduces.  These cases pin the working behaviour so the pattern cannot
+/// silently regress under future codegen refactors.
+const HOF_OVER_RECURSIVE_FN_SOURCE: &str = r#"
+import std.io as Io
+import std.int as Int
+import std.list as List
+
+-- 1. Simple self-recursive Int -> Int passed to List.map.
+fn countdown (n: Int) -> Int =
+    if n <= 0 then 0
+    else countdown (n - 1)
+
+-- 2. Self-recursive fn returning a union, passed to List.map and then
+--    threaded through List.filter with another fn-value.
+type R = ROk Int | RErr Text
+
+fn evalLeaf (n: Int) -> R =
+    if n < 0 then RErr "neg"
+    else if n == 0 then ROk 0
+    else evalLeaf (n - 1)
+
+fn isOk (r: R) -> Bool =
+    match r
+        ROk _ -> true
+        RErr _ -> false
+
+-- 3. Tree-recursive walk over a self-referential union via List.map.
+type Tree = TLeaf Int | TNode (List Tree)
+
+fn sumTree (t: Tree) -> Int =
+    match t
+        TLeaf n -> n
+        TNode kids ->
+            let parts = List.map sumTree kids
+            List.fold (fn acc x -> acc + x) 0 parts
+
+fn io main () -> Result Unit Text =
+    let ns = [3, 2, 1, 0]
+    let downs = List.map countdown ns
+    let okCount = List.length (List.filter isOk (List.map evalLeaf ns))
+    let t = TNode [TLeaf 1, TNode [TLeaf 2, TLeaf 3], TLeaf 4]
+    let total = sumTree t
+    Io.println $"countdown=${Int.toText (List.length downs)} ok=${Int.toText okCount} tree=${Int.toText total}"
+    Ok ()
+"#;
+
+/// Regression: passing a self-recursive top-level fn (or one that calls itself
+/// indirectly through a sibling) to `List.map` / `List.filter` / `List.fold`
+/// must run end-to-end on the BEAM and produce the expected results.  Without
+/// this coverage the historical `{badfun, ok}` crash could resurface
+/// undetected and apps would have to bring back the explicit-recursion
+/// workaround documented in the Tier 5 dx-tests.
+#[test]
+fn beam_e2e_hof_over_self_recursive_fn() {
+    let (workspace_root, _td) = make_example_workspace("Hof", HOF_OVER_RECURSIVE_FN_SOURCE);
+    let opts = CompileOptions::new(workspace_root);
+    let artefacts =
+        compile_workspace(opts).expect("compile_workspace failed for HOF-recursive regression");
+
+    assert!(
+        !artefacts.beam_files.is_empty(),
+        "no .beam files produced\ndiagnostics: {:#?}",
+        artefacts.diagnostics
+    );
+
+    let beam_file = &artefacts.beam_files[0];
+    let beam_dir = beam_file.parent().expect("beam file has parent").to_owned();
+    let module_name = beam_file
+        .file_stem()
+        .and_then(|s| s.to_str())
+        .expect("beam stem is UTF-8")
+        .to_owned();
+
+    let (stdout, stderr, exit_code) = run_erl(&beam_dir, &module_name, &[]);
+    assert_eq!(
+        exit_code, 0,
+        "erl exited {exit_code}\n--- stdout ---\n{stdout}\n--- stderr ---\n{stderr}"
+    );
+    // countdown over [3,2,1,0] → 4 results.
+    // evalLeaf over [3,2,1,0] → 4 ROk → 4.
+    // sumTree TNode[TLeaf 1, TNode[TLeaf 2, TLeaf 3], TLeaf 4] → 1+2+3+4 = 10.
+    assert!(
+        stdout.contains("countdown=4 ok=4 tree=10"),
+        "expected 'countdown=4 ok=4 tree=10' in stdout, got:\n{stdout}"
+    );
+}

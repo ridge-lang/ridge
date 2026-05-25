@@ -159,6 +159,26 @@ pub enum ParseError {
         span: Span,
     },
 
+    /// P020 — a reserved keyword (e.g. `init`, `state`, `on`) appeared in a
+    /// position that expects a plain identifier (a `let` pattern, a `fn`
+    /// parameter name, a lambda parameter, …).
+    ///
+    /// The historical surfaces were `P002 unexpected token` (let patterns)
+    /// and `P012 TopLevelPatternParam` (fn parameters), both of which read
+    /// as unrelated structural errors and sent users hunting for missing
+    /// braces or stray punctuation.  P020 names the cause directly and
+    /// hints at the canonical fix: rename the binding.
+    #[error("reserved keyword `{keyword}` cannot be used as an identifier in {position}; rename the binding")]
+    ReservedKeywordAsIdent {
+        /// Source location of the keyword token.
+        span: Span,
+        /// The keyword text (e.g. `"init"`, `"state"`).
+        keyword: &'static str,
+        /// Where the keyword appeared (e.g. `"a let-binding pattern"`,
+        /// `"a function parameter"`).
+        position: &'static str,
+    },
+
     /// P999 — the lexer's bracket-suppression invariant was violated (should
     /// be unreachable; signals a lexer bug, not a user error).
     #[error("internal error: layout invariant violated inside bracketed region")]
@@ -185,6 +205,7 @@ impl ParseError {
             Self::EmptyBlock { .. } => "P014",
             Self::BareRecordPattern { .. } => "P018",
             Self::OrphanDocComment { .. } => "P019",
+            Self::ReservedKeywordAsIdent { .. } => "P020",
             Self::InternalLayoutInvariantViolated { .. } => "P999",
         }
     }
@@ -203,6 +224,7 @@ impl ParseError {
             | Self::EmptyBlock { span }
             | Self::BareRecordPattern { span }
             | Self::OrphanDocComment { span }
+            | Self::ReservedKeywordAsIdent { span, .. }
             | Self::InternalLayoutInvariantViolated { span } => *span,
         }
     }
@@ -242,6 +264,20 @@ mod tests {
         };
         assert_eq!(e.code(), "P006");
         assert!(e.to_string().contains("DEDENT outside block"));
+    }
+
+    #[test]
+    fn p020_code_and_display() {
+        let e = ParseError::ReservedKeywordAsIdent {
+            span: Span::new(4, 8),
+            keyword: "init",
+            position: "a pattern",
+        };
+        assert_eq!(e.code(), "P020");
+        let msg = e.to_string();
+        assert!(msg.contains("`init`"));
+        assert!(msg.contains("a pattern"));
+        assert!(msg.contains("rename"));
     }
 
     #[test]

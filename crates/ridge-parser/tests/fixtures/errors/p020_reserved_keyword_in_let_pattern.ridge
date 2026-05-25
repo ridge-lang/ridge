@@ -1,0 +1,5 @@
+-- expect: P020
+-- Trigger: `init` is a reserved keyword and cannot bind in a let pattern.
+pub fn entry () -> Int =
+    let init = 10
+    init + 1

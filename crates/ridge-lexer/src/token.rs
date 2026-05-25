@@ -172,6 +172,52 @@ pub enum Token {
     Eof,
 }
 
+impl Token {
+    /// If this token is a reserved keyword, return its source text.
+    ///
+    /// Used by the parser to emit `P020 ReservedKeywordAsIdent` diagnostics
+    /// when a reserved keyword appears in a position that expects a plain
+    /// identifier (e.g. `let init = …` or `fn run (init: Int)`), instead of
+    /// the misleading `P002 unexpected token` / `P012 TopLevelPatternParam`
+    /// fallbacks that those positions otherwise produce.
+    #[must_use]
+    pub const fn keyword_text(&self) -> Option<&'static str> {
+        match self {
+            Self::KwActor => Some("actor"),
+            Self::KwAs => Some("as"),
+            Self::KwCatch => Some("catch"),
+            Self::KwClass => Some("class"),
+            Self::KwConst => Some("const"),
+            Self::KwDeriving => Some("deriving"),
+            Self::KwElse => Some("else"),
+            Self::KwFalse => Some("false"),
+            Self::KwFn => Some("fn"),
+            Self::KwGuard => Some("guard"),
+            Self::KwIf => Some("if"),
+            Self::KwImport => Some("import"),
+            Self::KwIn => Some("in"),
+            Self::KwInit => Some("init"),
+            Self::KwInstance => Some("instance"),
+            Self::KwLet => Some("let"),
+            Self::KwMatch => Some("match"),
+            Self::KwOn => Some("on"),
+            Self::KwPub => Some("pub"),
+            Self::KwReturn => Some("return"),
+            Self::KwSpawn => Some("spawn"),
+            Self::KwState => Some("state"),
+            Self::KwThen => Some("then"),
+            Self::KwTrue => Some("true"),
+            Self::KwTry => Some("try"),
+            Self::KwType => Some("type"),
+            Self::KwVar => Some("var"),
+            Self::KwWhen => Some("when"),
+            Self::KwWhere => Some("where"),
+            Self::KwWith => Some("with"),
+            _ => None,
+        }
+    }
+}
+
 impl std::fmt::Display for Token {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {

@@ -1,7 +1,7 @@
 # Ridge — Tutorial
 
 A guided tour from install to a runnable hello-world to your first
-diagnostics in VS Code. Targets Ridge **0.2.3**.
+diagnostics in VS Code. Targets Ridge **0.2.4**.
 
 This tutorial assumes nothing beyond a working Rust toolchain and a
 recent Erlang/OTP. For the formal language definition, see

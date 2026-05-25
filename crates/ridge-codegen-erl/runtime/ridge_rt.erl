@@ -13,7 +13,7 @@
     time_diff_ms/2, time_diff/2,
     time_from_iso/1, time_since_ms/1, time_iso/1,
     int_parse/0, int_parse/1, float_parse/1, float_to_text/1, bool_to_text/1,
-    text_split_all/2, text_replace_all/3,
+    text_split_all/2, text_replace_all/3, text_join/2,
     list_fold/3, list_sort_by/2,
     random_int/2, random_choice/1, random_float/1, random_alphanumeric/1, random_seed/1,
     env_get/1, env_all/1, env_set/2,
@@ -227,6 +227,14 @@ list_sort_by(Key, List) ->
 
 %% text_replace_all/3 — binary:replace with [global] option (From, To, Subject order matches Ridge FFI).
 text_replace_all(From, To, S) -> binary:replace(S, From, To, [global]).
+
+%% text_join/2 — concatenate Xs with Sep between each element.
+%%
+%% lists:join/2 returns an iolist with the separator interleaved; we flatten
+%% with iolist_to_binary so the Ridge surface is always a single binary.
+%% Matches the Ridge FFI arg order (Sep, Xs).
+text_join(_Sep, []) -> <<>>;
+text_join(Sep, Xs)  -> iolist_to_binary(lists:join(Sep, Xs)).
 
 bool_to_text(true)  -> <<"true">>;
 bool_to_text(false) -> <<"false">>.

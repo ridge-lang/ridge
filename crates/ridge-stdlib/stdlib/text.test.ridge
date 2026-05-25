@@ -8,6 +8,12 @@ fn _iolistToBin (l: List Text) -> Text
 
 fn _concat (a: Text) (b: Text) -> Text = _iolistToBin [a, b]
 
+@ffi("string", "length", 1)
+fn _length (s: Text) -> Int
+
+@ffi("ridge_rt", "text_join", 2)
+fn _join (sep: Text) (xs: List Text) -> Text
+
 @ffi("ridge_rt", "text_split_all", 2)
 fn _split (sep: Text) (s: Text) -> List Text
 
@@ -129,6 +135,37 @@ pub fn test_byteSize_ascii () -> Result Unit Text =
 pub fn test_concat_basic () -> Result Unit Text =
     if _concat "foo" "bar" == "foobar" then Ok ()
     else Err "Text.concat foo bar should be foobar"
+
+pub fn test_length_empty () -> Result Unit Text =
+    if _length "" == 0 then Ok ()
+    else Err "Text.length empty should be 0"
+
+pub fn test_length_ascii () -> Result Unit Text =
+    if _length "hello" == 5 then Ok ()
+    else Err "Text.length hello should be 5"
+
+-- 'café' is 4 graphemes but 5 bytes in UTF-8 (the é is 2 bytes).
+pub fn test_length_grapheme_vs_byteSize () -> Result Unit Text =
+    if _length "café" == 4 then
+        if _byteSize "café" == 5 then Ok ()
+        else Err "Text.byteSize café should be 5"
+    else Err "Text.length café should be 4"
+
+pub fn test_join_basic () -> Result Unit Text =
+    if _join ", " ["a", "b", "c"] == "a, b, c" then Ok ()
+    else Err "Text.join \", \" [a,b,c] should be a, b, c"
+
+pub fn test_join_empty_list () -> Result Unit Text =
+    if _join ", " [] == "" then Ok ()
+    else Err "Text.join over empty list should be empty"
+
+pub fn test_join_singleton () -> Result Unit Text =
+    if _join "," ["solo"] == "solo" then Ok ()
+    else Err "Text.join over singleton should be solo"
+
+pub fn test_join_empty_separator () -> Result Unit Text =
+    if _join "" ["a", "b", "c"] == "abc" then Ok ()
+    else Err "Text.join with empty sep should be abc"
 
 pub fn test_split_simple () -> Result Unit Text =
     let parts = _split "," "a,b,c"

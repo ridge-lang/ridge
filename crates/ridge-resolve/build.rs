@@ -135,6 +135,8 @@ const BASELINE_EXPORTS: &[(&str, &[&str])] = &[
         "std.text",
         &[
             "byteSize",
+            "length",
+            "join",
             "concat",
             "split",
             "splitN",

@@ -116,6 +116,12 @@ fn std_list_sort_compiles() {
 }
 
 #[test]
+fn std_list_concat_compiles() {
+    assert_std_list_built();
+    assert_list_ridge_discovered();
+}
+
+#[test]
 fn std_list_sort_by_compiles() {
     assert_std_list_built();
     assert_list_ridge_discovered();

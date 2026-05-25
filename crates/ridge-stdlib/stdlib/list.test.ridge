@@ -54,6 +54,9 @@ fn _foldRight (f: fn a -> fn b -> b) (acc: b) (xs: List a) -> b =
 @ffi("lists", "reverse", 1)
 fn _reverse (xs: List a) -> List a
 
+@ffi("lists", "append", 2)
+fn _concat (xs: List a) (ys: List a) -> List a
+
 @ffi("lists", "sort", 1)
 fn _sort (xs: List a) -> List a
 
@@ -151,6 +154,18 @@ pub fn test_foldRight_constructs () -> Result Unit Text =
 pub fn test_reverse_basic () -> Result Unit Text =
     if _reverse [1, 2, 3] == [3, 2, 1] then Ok ()
     else Err "List.reverse [1,2,3] should be [3,2,1]"
+
+pub fn test_concat_basic () -> Result Unit Text =
+    if _concat [1, 2] [3, 4] == [1, 2, 3, 4] then Ok ()
+    else Err "List.concat [1,2] [3,4] should be [1,2,3,4]"
+
+pub fn test_concat_empty_left () -> Result Unit Text =
+    if _concat [] [1, 2] == [1, 2] then Ok ()
+    else Err "List.concat [] [1,2] should be [1,2]"
+
+pub fn test_concat_empty_right () -> Result Unit Text =
+    if _concat [1, 2] [] == [1, 2] then Ok ()
+    else Err "List.concat [1,2] [] should be [1,2]"
 
 pub fn test_sort_ascending () -> Result Unit Text =
     if _sort [3, 1, 2] == [1, 2, 3] then Ok ()

@@ -65,6 +65,11 @@ pub fn foldRight (f: fn a -> b -> b) (acc: b) (xs: List a) -> b
 @ffi("lists", "reverse", 1)
 pub fn reverse (xs: List a) -> List a
 
+-- Concatenate two lists.  Backs the `++` operator when its LHS is a list
+-- (see `crates/ridge-lower/src/operators.rs::op_to_symbol::Concat`).
+@ffi("lists", "append", 2)
+pub fn concat (xs: List a) (ys: List a) -> List a
+
 -- Sort a list using the default term ordering.
 @ffi("lists", "sort", 1)
 pub fn sort (xs: List a) -> List a

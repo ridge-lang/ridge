@@ -829,14 +829,15 @@ fn looks_like_union(cur: &Cursor<'_>) -> bool {
             return false;
         }
         match cur.peek_n(n) {
-            None | Some(Token::Newline) | Some(Token::Dedent) | Some(Token::Eof)
-            | Some(Token::Assign) => return false,
+            None | Some(Token::Newline | Token::Dedent | Token::Eof | Token::Assign) => {
+                return false
+            }
             Some(Token::Pipe) if depth == 0 => return true,
-            Some(Token::LParen) | Some(Token::LBrack) => {
+            Some(Token::LParen | Token::LBrack) => {
                 depth += 1;
                 n += 1;
             }
-            Some(Token::RParen) | Some(Token::RBrack) => {
+            Some(Token::RParen | Token::RBrack) => {
                 depth -= 1;
                 if depth < 0 {
                     return false;
@@ -848,7 +849,7 @@ fn looks_like_union(cur: &Cursor<'_>) -> bool {
                 n += 1;
             }
             // Type-atom tokens at depth 0: skip past them.
-            Some(Token::UpperIdent(_)) | Some(Token::LowerIdent(_)) => {
+            Some(Token::UpperIdent(_) | Token::LowerIdent(_)) => {
                 n += 1;
             }
             // Anything else at depth 0 is not a type-atom; stop.
@@ -1742,14 +1743,14 @@ mod tests {
                 assert_eq!(name.text, "Circle");
                 assert_eq!(args.len(), 1);
             }
-            other => panic!("expected Positional, got {other:?}"),
+            other @ Constructor::Record { .. } => panic!("expected Positional, got {other:?}"),
         }
         match &alts[1] {
             Constructor::Positional { name, args, .. } => {
                 assert_eq!(name.text, "Rectangle");
                 assert_eq!(args.len(), 2);
             }
-            other => panic!("expected Positional, got {other:?}"),
+            other @ Constructor::Record { .. } => panic!("expected Positional, got {other:?}"),
         }
     }
 
@@ -1771,7 +1772,7 @@ mod tests {
                 assert_eq!(name.text, "Triangle");
                 assert_eq!(args.len(), 3);
             }
-            other => panic!("expected Positional, got {other:?}"),
+            other @ Constructor::Record { .. } => panic!("expected Positional, got {other:?}"),
         }
     }
 

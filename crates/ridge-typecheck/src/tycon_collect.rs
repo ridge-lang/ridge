@@ -60,23 +60,27 @@ pub fn collect_user_tycons(
     b: &BuiltinTyCons,
     ctx: &mut InferCtx,
 ) -> TyConCollectResult {
-    // ── Pass 1: allocate TyConId slots for every user type name ──────────────
-    // We need stable ids before building schemas because field types may
-    // reference other user types defined later in the same module.
+    // ── Pass 1: intern placeholders for every user type name ─────────────────
+    //
+    // Pass 1 reserves a stable `TyConId` for every `TypeDecl` and `ActorDecl`
+    // BEFORE pass 2 starts resolving field types.  Without this, a field
+    // (or state-field, or handler arg) that mentions a type declared later in
+    // the same source file falls through to `Type::Var(fresh)` in
+    // `ast_type_to_ridge_type`, leaving the typechecker with a free type
+    // variable where a concrete `Type::Con(actor_id, _)` should be — that's
+    // what previously surfaced as `T020 send (\`!\`) on non-actor / found
+    // type Con(TyConId(11), [Var(TyVid(0))])` for a perfectly idiomatic
+    // forward-referencing actor handle.
     let mut name_to_id: FxHashMap<String, TyConId> = FxHashMap::default();
-
     for item in &module.items {
         match item {
             Item::Type(td) => {
+                #[expect(clippy::cast_possible_truncation, reason = "type param count fits u32")]
                 let id = arena.intern(TyConDecl {
                     id: TyConId(0), // overwritten by intern
                     name: td.name.text.clone(),
-                    #[expect(
-                        clippy::cast_possible_truncation,
-                        reason = "type param count fits u32"
-                    )]
                     arity: td.params.len() as u32,
-                    kind: TyConKind::Primitive, // placeholder; filled in pass 2
+                    kind: TyConKind::Primitive, // placeholder; replaced in pass 2
                     def_span: Some(td.span),
                 });
                 name_to_id.insert(td.name.text.clone(), id);
@@ -86,7 +90,7 @@ pub fn collect_user_tycons(
                     id: TyConId(0),
                     name: ad.name.text.clone(),
                     arity: 0,
-                    kind: TyConKind::Primitive, // placeholder
+                    kind: TyConKind::Primitive, // placeholder; replaced in pass 2
                     def_span: Some(ad.span),
                 });
                 name_to_id.insert(ad.name.text.clone(), id);
@@ -95,130 +99,37 @@ pub fn collect_user_tycons(
         }
     }
 
-    // Bind type names in ctx env so `ast_type_to_type` can resolve them
-    // during the second pass (field-type resolution below).
-    // We store them as a side-table rather than in `ctx.env` to avoid
-    // polluting the value-level environment.
-    // (The ctx env is value-level; TyCon ids are kept in `name_to_id`.)
-
-    // ── Pass 2: build real schemas ────────────────────────────────────────────
+    // ── Pass 2: build real schemas and write them back via `replace_kind`. ───
+    //
+    // Every name is already in `name_to_id`, so forward references resolve to
+    // the right `TyConId` (the placeholder kind is fine — the *id* is what
+    // `ast_type_to_ridge_type` needs).  Union constructors are bound only on
+    // this pass so they observe the final schemas.
     for item in &module.items {
         match item {
             Item::Type(td) => {
                 let id = name_to_id[&td.name.text];
-                let kind = build_type_kind(td, b, ctx, &name_to_id, arena);
-
-                // Replace the placeholder in the arena.
-                // The arena doesn't support in-place mutation through `get_mut`,
-                // so we use a workaround: rebuild the TyConDecl at the same id.
-                // Since TyConArena::intern assigns sequential ids starting from 0,
-                // we can't truly replace — instead, update via a clone+rebuild.
-                // For the initial implementation: re-intern is not an option.
-                // We use a Vec mutation workaround below.
-                let _ = (id, kind);
+                let kind = build_type_kind_fresh(td, b, ctx, &name_to_id, arena);
+                arena.replace_kind(id, kind);
+                bind_constructor_schemes(td, id, b, ctx, &name_to_id, arena);
             }
             Item::Actor(ad) => {
                 let id = name_to_id[&ad.name.text];
-                let _ = (id, build_actor_kind(ad, b, ctx, &name_to_id, arena));
-            }
-            _ => {}
-        }
-    }
-
-    // Note: The placeholder-then-replace approach requires mutable access to
-    // arena internals.  Since TyConArena doesn't expose `get_mut`, we use a
-    // different strategy: do a single pass where we pre-compute all schemas
-    // before interning, using the name_to_id map for forward-reference
-    // resolution.  The trade-off is that mutually-recursive types that reference
-    // each other in field types will see the placeholder (`Type::Var`) for the
-    // not-yet-registered type — acceptable for 0.1.0 where type-checking of
-    // such fields will produce T999 rather than crashing.
-
-    // ── Re-do: single-pass strategy ───────────────────────────────────────────
-    // The two-pass above pre-allocated ids.  We now need to actually fill
-    // the arena with real schemas.  Since `intern` assigned sequential ids in
-    // pass 1, we know the ids.  But we interned placeholders.
-    //
-    // Solution: expose a `get_mut` or use a fresh arena + remap.
-    // For T17, we use a fresh approach: intern ALL user types in a single pass
-    // using a helper that resolves field types via `name_to_id` (forward refs
-    // get `Type::Var(fresh)` — acceptable for 0.1.0).
-    //
-    // The pre-allocation pass above is discarded; `name_to_id` already has
-    // the placeholder ids which map to the real arena entries.
-    // However, we can't easily update them without `get_mut`.
-    //
-    // PRAGMATIC APPROACH FOR T17:
-    // Use a fresh `name_to_id` that we build alongside actual interning.
-    // The pre-allocated placeholder entries remain in the arena (as Primitive
-    // kind placeholders) — they won't be matched by any real type resolution
-    // because `user_tycon_names` will point to the new (correct) entries.
-
-    // Clear and rebuild with real schemas.
-    let mut real_name_to_id: FxHashMap<String, TyConId> = FxHashMap::default();
-
-    for item in &module.items {
-        match item {
-            Item::Type(td) => {
-                let kind = build_type_kind_fresh(td, b, ctx, &real_name_to_id, arena);
-                #[expect(clippy::cast_possible_truncation, reason = "type param count fits u32")]
-                let id = arena.intern(TyConDecl {
-                    id: TyConId(0),
-                    name: td.name.text.clone(),
-                    arity: td.params.len() as u32,
-                    kind,
-                    def_span: Some(td.span),
-                });
-                real_name_to_id.insert(td.name.text.clone(), id);
-
-                // Bind constructor schemes in ctx.env for union types.
-                bind_constructor_schemes(td, id, b, ctx, &real_name_to_id, arena);
-            }
-            Item::Actor(ad) => {
-                let kind = build_actor_kind_fresh(ad, b, ctx, &real_name_to_id, arena);
-                let id = arena.intern(TyConDecl {
-                    id: TyConId(0),
-                    name: ad.name.text.clone(),
-                    arity: 0,
-                    kind,
-                    def_span: Some(ad.span),
-                });
-                real_name_to_id.insert(ad.name.text.clone(), id);
+                let kind = build_actor_kind_fresh(ad, b, ctx, &name_to_id, arena);
+                arena.replace_kind(id, kind);
             }
             _ => {}
         }
     }
 
     TyConCollectResult {
-        user_tycon_names: real_name_to_id,
+        user_tycon_names: name_to_id,
     }
 }
 
 // ── Schema builders ───────────────────────────────────────────────────────────
 
-/// Build `TyConKind` from a `TypeDecl` (pass 1 placeholder variant).
-const fn build_type_kind(
-    _td: &TypeDecl,
-    _b: &BuiltinTyCons,
-    _ctx: &mut InferCtx,
-    _names: &FxHashMap<String, TyConId>,
-    _arena: &TyConArena,
-) -> TyConKind {
-    TyConKind::Primitive // placeholder — unused now
-}
-
-/// Build `TyConKind` from an `ActorDecl` (pass 1 placeholder variant).
-const fn build_actor_kind(
-    _ad: &ActorDecl,
-    _b: &BuiltinTyCons,
-    _ctx: &mut InferCtx,
-    _names: &FxHashMap<String, TyConId>,
-    _arena: &TyConArena,
-) -> TyConKind {
-    TyConKind::Primitive // placeholder — unused now
-}
-
-/// Build `TyConKind` from a `TypeDecl` (fresh, using `real_name_to_id`).
+/// Build `TyConKind` from a `TypeDecl` (uses the seeded `name_to_id`).
 fn build_type_kind_fresh(
     td: &TypeDecl,
     b: &BuiltinTyCons,

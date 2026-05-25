@@ -81,6 +81,21 @@ impl TyConArena {
     pub fn all(&self) -> &[TyConDecl] {
         &self.decls
     }
+
+    /// Replaces the `kind` of an already-interned [`TyConDecl`].
+    ///
+    /// Used during two-pass user-`TyCon` collection: pass 1 interns
+    /// placeholders so every type name has a stable [`TyConId`] before
+    /// pass 2 starts resolving field types (which may forward-reference
+    /// later declarations); pass 2 builds the real schema and writes it
+    /// back via this call.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `id.0` is out of bounds.
+    pub fn replace_kind(&mut self, id: TyConId, new_kind: TyConKind) {
+        self.decls[id.0 as usize].kind = new_kind;
+    }
 }
 
 // ── TyConDecl ─────────────────────────────────────────────────────────────────

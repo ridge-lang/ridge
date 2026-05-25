@@ -404,6 +404,26 @@ fn stdlib_bridge_covers_http_client_surface() {
     }
 }
 
+// `Fs.readDir` and `Fs.isDir` were added to the stdlib in 0.2.3-post: any
+// app that walks a directory tree (`tree`, `markdown-todo-aggregator`,
+// future static-site generators) hard-blocks without them.  This test
+// pins the resolver entries so a refactor of stdlib_map can't silently
+// drop them.  Both resolve through `RidgeStdlibLocal` because the
+// `@ffi` declarations live in `crates/ridge-stdlib/stdlib/fs.ridge`; the
+// `beam_module` field reflects the FFI target (`ridge_rt` for `readDir`,
+// `filelib` for the direct `isDir` wrapper).
+#[test]
+fn stdlib_bridge_covers_fs_directory_surface() {
+    assert!(
+        stdlib_map::lookup("std.fs", "readDir").is_some(),
+        "std.fs.readDir must be registered"
+    );
+    assert!(
+        stdlib_map::lookup("std.fs", "isDir").is_some(),
+        "std.fs.isDir must be registered"
+    );
+}
+
 #[test]
 fn stdlib_bridge_no_perm_for_list_map() {
     // T11: std.list.map is now served by path B (RidgeStdlibLocal) because

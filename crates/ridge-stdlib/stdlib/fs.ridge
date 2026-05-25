@@ -32,3 +32,14 @@ pub fn fs exists (path: Text) -> Bool
 -- Returns Ok(lines) or Err(reason) on failure.
 @ffi("ridge_rt", "fs_lines", 1)
 pub fn fs lines (path: Text) -> Result (List Text) Text
+
+-- List the immediate entries (file and subdirectory names) of a directory.
+-- Returns Ok(names) or Err(reason) on failure.  Names are bare basenames;
+-- their order matches the underlying OS call and is not guaranteed to be
+-- sorted.  Callers that need a deterministic order should sort the result.
+@ffi("ridge_rt", "fs_read_dir", 1)
+pub fn fs readDir (path: Text) -> Result (List Text) Text
+
+-- Return true if the path refers to a directory.
+@ffi("filelib", "is_dir", 1)
+pub fn fs isDir (path: Text) -> Bool

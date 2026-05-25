@@ -7,6 +7,7 @@
     println/1, print/1, eprintln/1,
     read_line/1,
     fs_lines/1, fs_read/1, fs_write/2, fs_append/2,
+    fs_read_dir/1,
     cli_args/0, cli_args/1,
     time_now/0, time_now/1, time_epoch/0, time_epoch/1,
     time_diff_ms/2, time_diff/2,
@@ -77,6 +78,21 @@ fs_write(Path, Content) ->
 fs_append(Path, Content) ->
     case file:write_file(Path, Content, [append]) of
         ok         -> {ok, ok};
+        {error, R} -> {error, atom_to_binary(R, utf8)}
+    end.
+
+%% fs_read_dir/1 — std.fs.readDir
+%% Lists the immediate entries (file and subdirectory names) of a directory.
+%% Returns Ridge Result shape: `{ok, [Binary]}` on success, `{error, Msg}` on
+%% failure.  Entry names are bare basenames (no leading path component) and
+%% are returned as UTF-8 binaries; the order matches `file:list_dir/1`'s,
+%% which is unspecified — callers that need a deterministic order should
+%% sort the result.
+fs_read_dir(Path) ->
+    case file:list_dir(Path) of
+        {ok, Names} ->
+            BinNames = [list_to_binary(N) || N <- Names],
+            {ok, BinNames};
         {error, R} -> {error, atom_to_binary(R, utf8)}
     end.
 

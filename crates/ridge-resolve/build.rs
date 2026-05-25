@@ -243,7 +243,15 @@ const BASELINE_EXPORTS: &[(&str, &[&str])] = &[
     ),
     (
         "std.fs",
-        &["readFile", "writeFile", "append", "exists", "lines"],
+        &[
+            "readFile",
+            "writeFile",
+            "append",
+            "exists",
+            "lines",
+            "readDir",
+            "isDir",
+        ],
     ),
     (
         "std.time",

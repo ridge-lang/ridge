@@ -351,3 +351,39 @@ fn watch_stress() {
     let _ = child.kill();
     let _ = child.wait();
 }
+
+// ── Test 10: capability gate — `ridge run` aborts on R016 ────────────────────
+
+/// `ridge run` exits non-zero and renders the diagnostic when the program
+/// uses a capability that is not declared in `[capabilities].allow`.
+///
+/// Does NOT require OTP — the diagnostic gate fires inside the compile phase,
+/// before `erl` is probed.
+#[test]
+fn run_aborts_on_missing_capability() {
+    use common::write_file;
+
+    let tw = common::TempWorkspace::new();
+    write_file(
+        &tw.path,
+        "ridge.toml",
+        "[workspace]\nname = \"caps-ws\"\nversion = \"0.1.0\"\nmembers = [\"apps/*\"]\n",
+    );
+    write_file(
+        &tw.path,
+        "apps/demo/ridge.toml",
+        "[project]\nname = \"demo\"\nversion = \"0.1.0\"\nkind = \"app\"\nentry = \"src/Main.ridge\"\n\n[capabilities]\nallow = []\n",
+    );
+    write_file(
+        &tw.path,
+        "apps/demo/src/Main.ridge",
+        "import std.io as Io\n\nfn io main () -> Result Unit Text =\n    Io.println \"should not reach\"\n    Ok ()\n",
+    );
+
+    ridge_cmd()
+        .arg("run")
+        .current_dir(&tw.path)
+        .assert()
+        .failure()
+        .stderr(contains("R016"));
+}

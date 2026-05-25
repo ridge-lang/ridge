@@ -12,6 +12,10 @@
 use std::path::PathBuf;
 use thiserror::Error;
 
+use ridge_diagnostics::Diagnostic;
+
+use crate::sources::WorkspaceSourceCache;
+
 // ── CompileError ──────────────────────────────────────────────────────────────
 
 /// Fatal error from [`crate::compile_workspace`].
@@ -114,6 +118,21 @@ pub enum CheckError {
     },
 }
 
+// ── CompileDiagnostics payload ────────────────────────────────────────────────
+
+/// Payload for [`RunError::CompileDiagnostics`].
+///
+/// Carries the diagnostics emitted by the compile pipeline and the source
+/// cache needed to render them.  Held behind a `Box` in `RunError` so the
+/// enum's `Result` callsites do not trip `clippy::result_large_err`.
+#[derive(Debug)]
+pub struct CompileDiagnostics {
+    /// Diagnostics emitted by the compile pipeline (errors and warnings).
+    pub diagnostics: Vec<Diagnostic>,
+    /// Source cache for rendering [`Self::diagnostics`].
+    pub sources: WorkspaceSourceCache,
+}
+
 // ── RunError ──────────────────────────────────────────────────────────────────
 
 /// Fatal error from [`crate::run_workspace`].
@@ -123,6 +142,21 @@ pub enum RunError {
     /// Compile phase failed — see inner [`CompileError`].
     #[error("compile failed: {0}")]
     CompileFailed(#[from] CompileError),
+
+    /// Compile produced error-severity diagnostics; run aborts before BEAM
+    /// launch.  Distinct from [`Self::CompileFailed`]: that variant carries a
+    /// fatal driver-level error (no workspace root, package resolution
+    /// failure); this one carries the resolve / typecheck / codegen errors
+    /// that the compile pipeline accumulates on a best-effort basis (e.g.
+    /// `R016` capability not declared in the manifest, `T001` type error).
+    /// Without this gate `ridge run` would either re-execute a stale `.beam`
+    /// from a previous successful compile or run partially-emitted output
+    /// that bypasses the capability contract declared in `ridge.toml`.
+    ///
+    /// Payload is boxed because [`WorkspaceSourceCache`] is large enough to
+    /// trigger `clippy::result_large_err` on every `Result<_, RunError>`.
+    #[error("compile produced {} error-severity diagnostic(s)", .0.diagnostics.len())]
+    CompileDiagnostics(Box<CompileDiagnostics>),
 
     /// `C004` — Erlang runtime (`erl`) not on PATH.
     #[error("C004 ErlangNotFound: erlang runtime not found on PATH (install OTP 26+)")]

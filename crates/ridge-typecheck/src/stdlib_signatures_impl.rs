@@ -421,6 +421,16 @@ pub fn stdlib_signature(module: StdlibModuleId, name: &str, b: &BuiltinTyCons) -
                 ty_fn_pure(vec![ty_list(b, Type::Var(A))], ty_list(b, Type::Var(A))),
             ))
         }
+        (STD_LIST, "concat") => {
+            // forall a. List a -> List a -> List a
+            Some(poly(
+                vec![A],
+                ty_fn_pure(
+                    vec![ty_list(b, Type::Var(A)), ty_list(b, Type::Var(A))],
+                    ty_list(b, Type::Var(A)),
+                ),
+            ))
+        }
         (STD_LIST, "sort") => {
             // forall a. List a -> List a  (requires ord — simplified for Phase 4)
             Some(poly(

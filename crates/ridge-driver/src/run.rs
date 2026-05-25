@@ -12,6 +12,8 @@ use std::io::Read;
 use std::path::Path;
 use std::process::Command;
 
+use ridge_resolve::Severity;
+
 use crate::compile::compile_workspace;
 use crate::error::{ProcessExitCode, RunError};
 use crate::options::{CompileOptions, EmitArtefacts, RunOptions};
@@ -34,12 +36,14 @@ const ERL_TIMEOUT_SECS: u64 = 60;
 ///
 /// ## Errors
 ///
-/// - [`RunError::CompileFailed`] — upstream compile error.
+/// - [`RunError::CompileFailed`] — upstream fatal compile error.
+/// - [`RunError::CompileDiagnostics`] — pipeline accumulated error-severity
+///   diagnostics (e.g. `R016` capability not declared).
 /// - [`RunError::ErlangNotFound`] — `erl` not on PATH (C004).
 /// - [`RunError::NoBeamModule`] — codegen produced no `.beam` output.
 /// - [`RunError::ErlExitNonZero`] — BEAM node exited non-zero.
 /// - [`RunError::SpawnFailed`] — OS could not spawn `erl`.
-#[allow(clippy::needless_pass_by_value)]
+#[allow(clippy::needless_pass_by_value, clippy::too_many_lines)]
 pub fn run_workspace(options: RunOptions) -> Result<ProcessExitCode, RunError> {
     // ── 1. Compile ────────────────────────────────────────────────────────────
     let compile_opts = CompileOptions {
@@ -50,6 +54,25 @@ pub fn run_workspace(options: RunOptions) -> Result<ProcessExitCode, RunError> {
         cache_root: None,
     };
     let artefacts = compile_workspace(compile_opts)?;
+
+    // ── 1a. Stop on error-severity diagnostics ───────────────────────────────
+    // The compile pipeline accumulates non-fatal errors (R016, T001, etc.)
+    // on a best-effort basis and still returns `Ok(artefacts)`.  Running on
+    // top of those artefacts would either re-execute a stale `.beam` from a
+    // previous good compile or run partially-emitted output that bypasses
+    // the capability contract in `ridge.toml`.  Warnings do not gate run.
+    if artefacts
+        .diagnostics
+        .iter()
+        .any(|d| matches!(d.severity, Severity::Error))
+    {
+        return Err(RunError::CompileDiagnostics(Box::new(
+            crate::error::CompileDiagnostics {
+                diagnostics: artefacts.diagnostics,
+                sources: artefacts.sources,
+            },
+        )));
+    }
 
     // ── 2. Probe erl ─────────────────────────────────────────────────────────
     // C004 ErlangNotFound is probed once here, not in compile_workspace

@@ -31,7 +31,7 @@ pub mod sources;
 
 pub use check::{check_workspace, check_workspace_typed, CheckArtefacts, CheckTypedArtefacts};
 pub use compile::{compile_workspace, CompileArtefacts, SourceMap};
-pub use error::{CheckError, CompileError, ProcessExitCode, RunError};
+pub use error::{CheckError, CompileDiagnostics, CompileError, ProcessExitCode, RunError};
 pub use options::{CheckOptions, CompileOptions, EmitArtefacts, Profile, RunOptions};
 pub use run::run_workspace;
 pub use sources::WorkspaceSourceCache;

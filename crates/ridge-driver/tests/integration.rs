@@ -18,11 +18,14 @@
 )]
 
 mod common;
-use common::{make_forbid_workspace, make_multi_member_workspace, make_workspace, read_example};
+use common::{
+    make_forbid_workspace, make_multi_member_workspace, make_workspace, read_example, write_file,
+    TempWorkspace,
+};
 
 use ridge_driver::{
     check_workspace, compile_workspace, run_workspace, CheckOptions, CompileOptions, EmitArtefacts,
-    RunOptions,
+    RunError, RunOptions,
 };
 
 /// Serialises tests that depend on the value of `$PATH` at the moment `erl`
@@ -404,8 +407,14 @@ fn run_missing_erlang() {
     // PATH mutation below cannot leak to them.
     let _guard = PATH_ENV_LOCK.lock().expect("PATH_ENV_LOCK not poisoned");
 
-    let source = read_example("url_shortener");
-    let tw = make_workspace("url_shortener", &source);
+    // Use a trivial source that compiles cleanly so the test exercises the
+    // missing-`erl` error path and not the diagnostic gate added to guard the
+    // capability contract.  `url_shortener` is unsuitable here because it
+    // imports several stdlib modules and the bare `make_workspace` helper
+    // does not declare matching capabilities, which (correctly) surfaces an
+    // `R016` diagnostic before runtime probing.
+    let source = "fn main () -> Unit =\n    ()\n";
+    let tw = make_workspace("Main", source);
 
     // Override PATH to a directory that definitely does not contain `erl`.
     let empty_dir = tempfile::TempDir::new().expect("create empty tempdir");
@@ -420,17 +429,30 @@ fn run_missing_erlang() {
         None => std::env::remove_var("PATH"),
     }
 
-    // Compile succeeded (no erl needed for compile), but run must return C004.
+    // Run must surface a failure.  Two surfaces are acceptable here:
+    //   * `C004 ErlangNotFound` — clearing PATH only removes `erl`; the
+    //     stdlib BEAMs were already cached so compile reaches the run probe.
+    //   * `CompileDiagnostics` — PATH-clearing also removes `erlc`, the
+    //     stdlib build needs it, and the resulting stdlib-load error
+    //     surfaces as a diagnostic before the run probe.
+    // Both are valid "no OTP on PATH" surfaces.
     assert!(
         result.is_err(),
         "expected error when erl is missing, got Ok"
     );
     let err = result.unwrap_err();
-    let err_str = format!("{err}");
-    assert!(
-        err_str.contains("C004") || err_str.contains("ErlangNotFound"),
-        "expected C004/ErlangNotFound, got: {err_str}"
-    );
+    if let RunError::CompileDiagnostics(payload) = &err {
+        assert!(
+            !payload.diagnostics.is_empty(),
+            "expected non-empty CompileDiagnostics, got empty payload"
+        );
+    } else {
+        let err_str = format!("{err}");
+        assert!(
+            err_str.contains("C004") || err_str.contains("ErlangNotFound"),
+            "expected C004/ErlangNotFound, got: {err_str}"
+        );
+    }
 }
 
 // ── Test 16: emit-Core-only mode ──────────────────────────────────────────────
@@ -609,4 +631,59 @@ fn run_unit_main_returns_zero() {
         result.is_ok(),
         "expected exit 0 for Unit main, got: {result:?}"
     );
+}
+
+// ── Test 20: capability gate — run aborts on R016 ─────────────────────────────
+
+/// `run_workspace` returns [`RunError::CompileDiagnostics`] when the compile
+/// pipeline emits error-severity diagnostics (e.g. `R016` capability not
+/// declared in `ridge.toml`).
+///
+/// Without this gate `ridge run` would either execute a stale `.beam` from a
+/// previous good compile or run partially-emitted output that bypasses the
+/// capability contract declared in the manifest.  Does not require `erl`
+/// because the gate fires before runtime probing.
+#[test]
+fn run_aborts_on_capability_diagnostic() {
+    let tw = make_app_workspace_io_no_caps();
+
+    let result = run_workspace(RunOptions::new(tw.path.clone(), "demo".to_owned()));
+
+    let err = result.expect_err("expected CompileDiagnostics, got Ok");
+    match err {
+        RunError::CompileDiagnostics(payload) => {
+            assert!(
+                payload.diagnostics.iter().any(|d| d.code == "R016"),
+                "expected R016 in diagnostics, got codes: {:?}",
+                payload
+                    .diagnostics
+                    .iter()
+                    .map(|d| d.code)
+                    .collect::<Vec<_>>(),
+            );
+        }
+        other => panic!("expected RunError::CompileDiagnostics, got: {other:?}"),
+    }
+}
+
+/// Build a single-app workspace whose source uses `io` but whose manifest
+/// declares an empty capability allow-list, guaranteeing an `R016` diagnostic.
+fn make_app_workspace_io_no_caps() -> TempWorkspace {
+    let tw = TempWorkspace::new();
+    write_file(
+        &tw.path,
+        "ridge.toml",
+        "[workspace]\nname = \"test-ws\"\nversion = \"0.1.0\"\nmembers = [\"apps/*\"]\n",
+    );
+    write_file(
+        &tw.path,
+        "apps/demo/ridge.toml",
+        "[project]\nname = \"demo\"\nversion = \"0.1.0\"\nkind = \"app\"\nentry = \"src/Main.ridge\"\n\n[capabilities]\nallow = []\n",
+    );
+    write_file(
+        &tw.path,
+        "apps/demo/src/Main.ridge",
+        "import std.io as Io\n\nfn io main () -> Result Unit Text =\n    Io.println \"should not reach\"\n    Ok ()\n",
+    );
+    tw
 }

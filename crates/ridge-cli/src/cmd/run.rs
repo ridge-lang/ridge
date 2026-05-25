@@ -20,7 +20,9 @@ use std::path::{Path, PathBuf};
 use std::process;
 
 use clap::Parser;
-use ridge_driver::{compile_workspace, run_workspace, CompileOptions, Profile, RunOptions};
+use ridge_driver::{
+    compile_workspace, run_workspace, CompileOptions, Profile, RunError, RunOptions,
+};
 use ridge_manifest::{find_workspace_root, parse_project, parse_workspace, ProjectKind};
 
 use crate::error::CliError;
@@ -229,7 +231,19 @@ fn execute_plain(args: &RunArgs, workspace_root: PathBuf, member_name: String, p
     opts.extra_args.clone_from(&args.extra_args);
 
     if let Err(e) = run_workspace(opts) {
-        eprintln!("error: {e}");
+        match &e {
+            RunError::CompileDiagnostics(payload) => {
+                // Render the inner diagnostics the same way `ridge build` and
+                // `ridge run --observer` do, then exit non-zero.  Without this
+                // pre-existing `.beam` files from an earlier good compile
+                // would be executed despite the new errors (capability gate
+                // bypass).
+                render_diagnostics(&payload.diagnostics, &payload.sources);
+            }
+            _ => {
+                eprintln!("error: {e}");
+            }
+        }
         process::exit(1);
     }
 }

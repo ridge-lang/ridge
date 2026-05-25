@@ -27,7 +27,7 @@ impl TempWorkspace {
     }
 }
 
-fn write_file(dir: &Path, relative_path: &str, content: &str) {
+pub fn write_file(dir: &Path, relative_path: &str, content: &str) {
     let full = dir.join(relative_path);
     if let Some(parent) = full.parent() {
         fs::create_dir_all(parent).expect("create dirs");

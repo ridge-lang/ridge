@@ -50,6 +50,18 @@ fn std_text_byte_size_compiles() {
 }
 
 #[test]
+fn std_text_length_compiles() {
+    assert_std_text_built();
+    assert_text_ridge_discovered();
+}
+
+#[test]
+fn std_text_join_compiles() {
+    assert_std_text_built();
+    assert_text_ridge_discovered();
+}
+
+#[test]
 fn std_text_concat_compiles() {
     assert_std_text_built();
     assert_text_ridge_discovered();

@@ -14,6 +14,22 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v5
 
+      - name: Free up disk space
+        # GitHub-hosted Linux runners ship with ~25 GB of preinstalled
+        # tooling (Android SDK, .NET, GHC, CodeQL, Boost) that Ridge does
+        # not use. Rust + OTP + the cargo cache push past the remaining
+        # headroom and the runner aborts with "No space left on device"
+        # before the build step. Reclaim the unused space up front.
+        run: |
+          df -h /
+          sudo rm -rf /usr/share/dotnet
+          sudo rm -rf /usr/local/lib/android
+          sudo rm -rf /opt/ghc
+          sudo rm -rf /opt/hostedtoolcache/CodeQL
+          sudo rm -rf /usr/local/share/boost
+          sudo apt-get clean
+          df -h /
+
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
         with:

@@ -180,7 +180,13 @@ impl LocalScope {
             fn_arity: Arc::new(fn_arity),
             actor_parent: Some((parent_module_id, Arc::from(parent_beam_name))),
             letrec_locals: Arc::new(FxHashSet::default()),
-            own_module_beam_name: None,
+            // Carry the parent module's BEAM name so that `IrExpr::Spawn`
+            // lowered inside an actor handler derives its target via the
+            // canonical `"<parent>_<actor_lc>"` shape (e.g.
+            // `ridge_module_0_worker`) instead of the test-only fallback
+            // `ridge_actor_<id>_<name>` placeholder which produces a
+            // runtime `undefined function ridge_actor_*:init/1` crash.
+            own_module_beam_name: Some(Arc::from(parent_beam_name)),
             actor_state_idx: 0,
         }
     }

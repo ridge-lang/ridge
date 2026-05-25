@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- `spawn ActorName` lowered from inside another actor's handler now resolves to the same sub-module name the actor was emitted under. Before this fix the handler scope carried `own_module_beam_name: None`, so the spawn lowering fell through to its test-only fallback (`ridge_actor_<id>_<name>`); the spawned gen_server then crashed at startup with `undefined function ridge_actor_*:init/1` because nothing in the compiled output exports that atom. The `with_actor_parent` scope constructor now carries the parent module's BEAM name through, mirroring what `with_arity_and_module` already did at the top level. Apps with a supervisor that respawns workers from inside a handler (`on respawnAt (i: Int) = let fresh = spawn Worker in …`) work without the registry-pattern workaround that previously moved every spawn out into main.
+
 ### Added
 
 - `Fs.readDir` and `Fs.isDir` open the directory-walking path that previous releases left to FFI workarounds. `Fs.readDir path` returns `Result (List Text) Text` with each entry as a bare basename (no leading path component); the underlying `file:list_dir/1` makes no order guarantees, so callers that need a deterministic ordering should sort the result. `Fs.isDir path` returns `Bool` — true iff the path resolves to a directory. Both require the `fs` capability. The new shims unblock the canonical "tree" / "markdown-todo aggregator" / static-site-generator app shapes from `DX_TEST_APPS_0_2_0.md`.

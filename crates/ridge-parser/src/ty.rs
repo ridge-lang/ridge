@@ -172,6 +172,14 @@ pub(crate) fn parse_type_atom(cur: &mut Cursor<'_>) -> Result<Type, ParseError> 
         // ── `(…)`: unit literal, paren, or tuple ─────────────────────────────
         Token::LParen => parse_paren_or_tuple(cur),
 
+        // ── `{ … }`: inline record types are not part of the type grammar ────
+        // Record types are first-class only through a named `type Foo = { … }`
+        // declaration.  Emit a specific P021 diagnostic that points at the
+        // workaround, instead of letting the bare `{` surface as the
+        // misleading "expected a type, found `{`" or as a stranded `{` that
+        // the outer parser then mis-attributes to a body-block.
+        Token::LBrace => Err(ParseError::InlineRecordTypeInTypePosition { span }),
+
         // ── Everything else is not a valid atom start ─────────────────────────
         _ => Err(ParseError::UnexpectedToken {
             span,
@@ -372,7 +380,16 @@ fn peek_capability(cur: &Cursor<'_>) -> Option<Capability> {
 fn is_type_atom_start(cur: &Cursor<'_>) -> bool {
     matches!(
         cur.peek(),
-        Token::UpperIdent(_) | Token::LowerIdent(_) | Token::LBrack | Token::LParen
+        Token::UpperIdent(_)
+            | Token::LowerIdent(_)
+            | Token::LBrack
+            | Token::LParen
+            // `{` is recognised as a "start" so a stranded inline-record body
+            // in TyCon-argument position (`Result { … } Text`) routes to
+            // `parse_type_atom` and the dedicated `P021` diagnostic, rather
+            // than ending greedy argument collection and surfacing the
+            // misleading `P001 expected =` further upstream.
+            | Token::LBrace
     )
 }
 

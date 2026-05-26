@@ -227,9 +227,10 @@ enum Slot {
 /// `CapabilityForbidden`, `InvalidReturnType`) and the `BoolDeprecated`
 /// notice are emitted up front so the order matches the input slice.
 /// Canonical / Bool tests are dispatched to a worker pool of up to `jobs`
-/// concurrent BEAM children.  Their outcomes are reaped in input order so
-/// the per-test `ok` / `FAIL` lines and the summary stay deterministic
-/// regardless of completion order.
+/// concurrent BEAM children.  Workers print their result live as soon as
+/// the head of the input-ordered queue is ready, so the per-test
+/// `[N/M] ok` / `[N/M] FAIL` lines appear as tests complete — but always
+/// in input order, so the summary and CI logs stay deterministic.
 #[allow(clippy::too_many_lines)]
 fn run_tests_and_report(
     tests: &[DiscoveredTest],
@@ -291,38 +292,14 @@ fn run_tests_and_report(
         })
         .collect();
 
-    // Execute the runnable tests with bounded concurrency.  Outcomes are
-    // returned in input order even though completion order is not.
-    let outcomes =
+    // Execute the runnable tests with bounded concurrency.  Each worker
+    // drains the print queue (input-order cursor) as soon as it finishes,
+    // so progress is visible live while output order stays deterministic.
+    // The worker pool also tallies (passed, failed) at print time.
+    let (run_passed, run_failed) =
         execute_runnable_tests(tests, &slots, erl_path, beam_dir, runtime_dir, jobs.max(1));
-
-    for (test, outcome) in tests.iter().zip(outcomes) {
-        let Some(outcome) = outcome else { continue };
-        match outcome {
-            TestOutcome::Pass => {
-                println!("ok  {}", test.qualified_name);
-                passed += 1;
-            }
-            TestOutcome::Fail { stderr } => {
-                println!("FAIL {}", test.qualified_name);
-                if !stderr.is_empty() {
-                    eprintln!("{}", stderr.trim_end());
-                }
-                failed += 1;
-            }
-            TestOutcome::Timeout => {
-                println!("FAIL {} (timeout after 60s)", test.qualified_name);
-                failed += 1;
-            }
-            TestOutcome::SpawnFailed { message } => {
-                eprintln!(
-                    "error: could not spawn erl for '{}': {message}",
-                    test.qualified_name
-                );
-                failed += 1;
-            }
-        }
-    }
+    passed += run_passed;
+    failed += run_failed;
 
     let elapsed_ms = wall_start.elapsed().as_millis();
 
@@ -345,9 +322,12 @@ fn run_tests_and_report(
 /// in the input.
 ///
 /// `Slot::Skip` entries get `None`; runnable entries get `Some(outcome)`.
-/// The single-job (`jobs == 1`) path stays sequential so debugging with
-/// `--jobs 1` produces identical wall-clock ordering to the pre-0.3.0
-/// runner.
+/// Workers also drain the live print queue as soon as their own outcome
+/// is written: each worker walks the input-order cursor forward, printing
+/// every contiguous `Some` outcome it finds and stopping at the first
+/// not-yet-done slot.  That gives live progress (`[N/M] ok name` appears
+/// as soon as the test of the same index finishes) without losing the
+/// input-ordered output guarantee.
 fn execute_runnable_tests(
     tests: &[DiscoveredTest],
     slots: &[Slot],
@@ -355,16 +335,32 @@ fn execute_runnable_tests(
     beam_dir: &Path,
     runtime_dir: &Path,
     jobs: usize,
-) -> Vec<Option<TestOutcome>> {
+) -> (usize, usize) {
+    use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::{Arc, Condvar, Mutex, PoisonError};
 
-    // Pre-fill with `None` so the indexing stays trivial.
+    // Pre-fill with `None` so the indexing stays trivial.  The slot is
+    // moved out at print time via `Option::take`.
     let outcomes: Vec<Mutex<Option<TestOutcome>>> =
         (0..tests.len()).map(|_| Mutex::new(None)).collect();
 
     // (`available`, `Condvar`) implements a counting semaphore: spawning a
     // worker decrements the counter, completion increments and signals.
     let permits = Arc::new((Mutex::new(jobs), Condvar::new()));
+
+    // Shared print cursor.  Workers race for this lock after writing their
+    // outcome; the winner walks contiguous-ready outcomes from the cursor
+    // forward and prints them in input order.
+    let print_cursor = Mutex::new(0_usize);
+
+    // Per-result tally.  Updated by whichever worker prints each outcome.
+    let passed = AtomicUsize::new(0);
+    let failed = AtomicUsize::new(0);
+
+    // Pre-compute the denominator and the width used to align `[N/M]` so
+    // every progress line has the same width prefix.
+    let total_runnable: usize = slots.iter().filter(|s| matches!(s, Slot::Runnable)).count();
+    let width: usize = total_runnable.to_string().len();
 
     std::thread::scope(|scope| {
         for (idx, test) in tests.iter().enumerate() {
@@ -388,6 +384,10 @@ fn execute_runnable_tests(
 
             let permits_for_worker = Arc::clone(&permits);
             let outcome_slot = &outcomes[idx];
+            let outcomes_ref = &outcomes;
+            let print_cursor_ref = &print_cursor;
+            let passed_ref = &passed;
+            let failed_ref = &failed;
             scope.spawn(move || {
                 let outcome = run_test(
                     erl_path,
@@ -398,6 +398,50 @@ fn execute_runnable_tests(
                 );
                 *outcome_slot.lock().unwrap_or_else(PoisonError::into_inner) = Some(outcome);
 
+                // Drain: take every contiguous ready outcome from the
+                // current cursor forward and print it.  Holding
+                // `print_cursor` across the loop serialises stdout / stderr
+                // and keeps the input-ordered guarantee even when workers
+                // finish out of order.
+                let mut cursor = print_cursor_ref
+                    .lock()
+                    .unwrap_or_else(PoisonError::into_inner);
+                while *cursor < tests.len() {
+                    let i = *cursor;
+                    if !matches!(slots[i], Slot::Runnable) {
+                        // Validation failures already printed up front.
+                        *cursor += 1;
+                        continue;
+                    }
+                    let Some(oc) = outcomes_ref[i]
+                        .lock()
+                        .unwrap_or_else(PoisonError::into_inner)
+                        .take()
+                    else {
+                        // Head still running — the worker that finishes
+                        // this slot will pick the drain back up.
+                        break;
+                    };
+                    let runnable_idx = slots[..i]
+                        .iter()
+                        .filter(|s| matches!(s, Slot::Runnable))
+                        .count()
+                        + 1;
+                    match &oc {
+                        TestOutcome::Pass => {
+                            passed_ref.fetch_add(1, Ordering::Relaxed);
+                        }
+                        TestOutcome::Fail { .. }
+                        | TestOutcome::Timeout
+                        | TestOutcome::SpawnFailed { .. } => {
+                            failed_ref.fetch_add(1, Ordering::Relaxed);
+                        }
+                    }
+                    print_outcome(runnable_idx, total_runnable, width, &tests[i], &oc);
+                    *cursor += 1;
+                }
+                drop(cursor);
+
                 let (lock, cvar) = &*permits_for_worker;
                 *lock.lock().unwrap_or_else(PoisonError::into_inner) += 1;
                 cvar.notify_one();
@@ -405,10 +449,44 @@ fn execute_runnable_tests(
         }
     });
 
-    outcomes
-        .into_iter()
-        .map(|m| m.into_inner().unwrap_or_else(PoisonError::into_inner))
-        .collect()
+    (
+        passed.load(Ordering::Relaxed),
+        failed.load(Ordering::Relaxed),
+    )
+}
+
+/// Print one test's progress line with the `[N/M]` prefix aligned to
+/// `width` digits, plus the captured `stderr` on failure.
+fn print_outcome(
+    n: usize,
+    total: usize,
+    width: usize,
+    test: &DiscoveredTest,
+    outcome: &TestOutcome,
+) {
+    match outcome {
+        TestOutcome::Pass => {
+            println!("[{n:>width$}/{total}] ok   {}", test.qualified_name);
+        }
+        TestOutcome::Fail { stderr } => {
+            println!("[{n:>width$}/{total}] FAIL {}", test.qualified_name);
+            if !stderr.is_empty() {
+                eprintln!("{}", stderr.trim_end());
+            }
+        }
+        TestOutcome::Timeout => {
+            println!(
+                "[{n:>width$}/{total}] FAIL {} (timeout after 60s)",
+                test.qualified_name
+            );
+        }
+        TestOutcome::SpawnFailed { message } => {
+            eprintln!(
+                "[{n:>width$}/{total}] error: could not spawn erl for '{}': {message}",
+                test.qualified_name
+            );
+        }
+    }
 }
 
 // ── Test discovery ────────────────────────────────────────────────────────────

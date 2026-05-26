@@ -315,8 +315,9 @@ const BASELINE_EXPORTS: &[(&str, &[&str])] = &[
     (
         "std.net.http",
         &[
-            // `pub type Request` and `pub type Response` declared in net/http.ridge.
-            "Request", "Response", "get", "post", "put", "delete", "listen", "respond",
+            // `pub type Request`, `Response`, `Sql`, `Html` declared in net/http.ridge.
+            "Request", "Response", "Sql", "Html", "get", "post", "put", "delete", "listen",
+            "respond", "sql", "html",
         ],
     ),
 ];

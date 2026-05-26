@@ -814,6 +814,7 @@ mod tests {
             arity: 0,
             kind: TyConKind::Union(shape_schema.clone()),
             def_span: None,
+            def_module_raw: None,
         });
 
         let mut ctx = InferCtx::new();

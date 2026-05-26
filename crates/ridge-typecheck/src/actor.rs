@@ -592,6 +592,7 @@ mod tests {
             arity: 0,
             kind: TyConKind::Actor(schema),
             def_span: None,
+            def_module_raw: None,
         })
     }
 
@@ -620,6 +621,7 @@ mod tests {
             arity: 0,
             kind: TyConKind::Actor(schema),
             def_span: None,
+            def_module_raw: None,
         })
     }
 

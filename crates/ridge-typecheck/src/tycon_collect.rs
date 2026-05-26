@@ -59,6 +59,7 @@ pub struct TyConCollectResult {
 ///    placeholder.
 pub fn collect_user_tycons(
     module: &Module,
+    module_id: ridge_resolve::ModuleId,
     arena: &mut TyConArena,
     b: &BuiltinTyCons,
     ctx: &mut InferCtx,
@@ -85,6 +86,7 @@ pub fn collect_user_tycons(
                     arity: td.params.len() as u32,
                     kind: TyConKind::Primitive, // placeholder; replaced in pass 2
                     def_span: Some(td.span),
+                    def_module_raw: Some(module_id.0),
                 });
                 name_to_id.insert(td.name.text.clone(), id);
             }
@@ -95,6 +97,7 @@ pub fn collect_user_tycons(
                     arity: 0,
                     kind: TyConKind::Primitive, // placeholder; replaced in pass 2
                     def_span: Some(ad.span),
+                    def_module_raw: Some(module_id.0),
                 });
                 name_to_id.insert(ad.name.text.clone(), id);
             }

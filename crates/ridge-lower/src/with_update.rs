@@ -321,6 +321,7 @@ mod tests {
             arity: 0,
             kind: TyConKind::Record(record_schema),
             def_span: None,
+            def_module_raw: None,
         });
         assert_eq!(
             rec_id,

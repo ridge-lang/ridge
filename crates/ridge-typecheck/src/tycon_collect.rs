@@ -13,12 +13,15 @@
 //!
 //! # Alias resolution
 //!
-//! Aliases are interned as `TyConKind::Alias(body)` where `body` is the
-//! eagerly-resolved RHS.  Because we may see aliases before the types they
-//! reference (source order), we do a second pass over aliases to fill in any
-//! `Type::Var` placeholders that were created for forward-referenced named types.
-//! For 0.1.0 (no cross-module type aliases), a single pass suffices because
-//! mutual alias cycles are prohibited by the grammar.
+//! Aliases are interned as `TyConKind::Alias { params, body }` where
+//! `params` are fresh `TyVid`s standing in for the alias's declared
+//! parameters and `body` is the eagerly-resolved RHS, with each
+//! `Type::Var(p)` referring back to a `p` in `params`.  At use sites,
+//! `ast_type_to_ridge_type` substitutes the params with the supplied
+//! argument types before wrapping in `Type::Alias { name, body }`.  A
+//! dedicated chain pass (`resolve_alias_chains`) walks every alias body
+//! after pass 2 and expands any embedded reference to another alias so
+//! `type IntStack = Stack Int` lands directly on `List Int`.
 
 use ridge_ast::{ActorDecl, ActorMember, Constructor, Item, Module, TypeBody, TypeDecl};
 use ridge_types::{
@@ -148,8 +151,9 @@ pub fn collect_user_tycons(
 }
 
 /// Walk every `TyConKind::Alias` body in `arena` and expand any
-/// `Type::Con(alias_id, _)` embedded inside it to the alias's terminal
-/// (non-alias) body.  The expanded body keeps the wrapping
+/// `Type::Con(alias_id, args)` embedded inside it to the alias's terminal
+/// body — substituting the inner alias's parameters with `args` when the
+/// arities line up.  The expanded body keeps the wrapping
 /// `TyConKind::Alias`, so use-sites still get a `Type::Alias { name, body }`
 /// view at the outer wrap done by `ast_type_to_ridge_type`.
 fn resolve_alias_chains(arena: &mut TyConArena) {
@@ -159,53 +163,62 @@ fn resolve_alias_chains(arena: &mut TyConArena) {
     )]
     let alias_ids: Vec<TyConId> = (0..arena.len())
         .map(|i| TyConId(i as u32))
-        .filter(|&id| matches!(arena.get(id).kind, TyConKind::Alias(_)))
+        .filter(|&id| matches!(arena.get(id).kind, TyConKind::Alias { .. }))
         .collect();
 
     for id in alias_ids {
-        let original_body = match &arena.get(id).kind {
-            TyConKind::Alias(body) => body.clone(),
+        let (original_params, original_body) = match &arena.get(id).kind {
+            TyConKind::Alias { params, body } => (params.clone(), body.clone()),
             _ => continue,
         };
         let mut visited: Vec<TyConId> = vec![id];
         let resolved = chase_alias_chain(arena, &original_body, &mut visited);
-        arena.replace_kind(id, TyConKind::Alias(resolved));
+        arena.replace_kind(
+            id,
+            TyConKind::Alias {
+                params: original_params,
+                body: resolved,
+            },
+        );
     }
 }
 
-/// Recursively replace any `Type::Con(alias_id, _)` reference inside `ty`
-/// with the alias's resolved body, chasing through chained aliases.  Args
-/// of the original `Type::Con` are dropped because non-parametric aliases
-/// have arity 0; parametric aliases stay as `Type::Con` since
-/// `TyConKind::Alias` does not carry the alias's own type-parameter vids
-/// (that's the parametric-alias follow-up still tracked for 0.3.0).
+/// Recursively expand any `Type::Con(alias_id, args)` reference inside
+/// `ty` to the alias's resolved body, chasing through chained aliases.
+/// For parametric aliases the inner alias's parameters are substituted
+/// with the call-site `args` before recursing.
 ///
-/// `visited` is a stack of alias ids currently being expanded; if an alias
-/// references itself transitively the chain is left as `Type::Con` rather
-/// than recursing forever.
+/// `visited` is a stack of alias ids currently being expanded; if an
+/// alias references itself transitively the chain is left as `Type::Con`
+/// rather than recursing forever.
 fn chase_alias_chain(arena: &TyConArena, ty: &Type, visited: &mut Vec<TyConId>) -> Type {
     match ty {
         Type::Con(id, args) => {
-            if matches!(arena.get(*id).kind, TyConKind::Alias(_)) && !visited.contains(id) {
-                // Only chase non-parametric aliases (arity 0 use site).
-                // A parametric `Stack Int` would land here with args
-                // non-empty; expanding it correctly needs substitution,
-                // which is the parametric-alias follow-up.
-                if args.is_empty() {
-                    let inner_body = match &arena.get(*id).kind {
-                        TyConKind::Alias(body) => body.clone(),
-                        _ => unreachable!("matches!() guarded this arm"),
-                    };
-                    visited.push(*id);
-                    let resolved = chase_alias_chain(arena, &inner_body, visited);
-                    visited.pop();
-                    return resolved;
-                }
-            }
+            // Recurse into args first so they are themselves chained.
             let new_args: Vec<Type> = args
                 .iter()
                 .map(|a| chase_alias_chain(arena, a, visited))
                 .collect();
+            if !visited.contains(id) {
+                if let TyConKind::Alias {
+                    params: inner_params,
+                    body: inner_body,
+                } = &arena.get(*id).kind
+                {
+                    if new_args.len() == inner_params.len() {
+                        let subst: FxHashMap<TyVid, Type> = inner_params
+                            .iter()
+                            .zip(new_args.iter())
+                            .map(|(&p, a)| (p, a.clone()))
+                            .collect();
+                        let substituted = substitute_tyvars(inner_body, &subst);
+                        visited.push(*id);
+                        let resolved = chase_alias_chain(arena, &substituted, visited);
+                        visited.pop();
+                        return resolved;
+                    }
+                }
+            }
             Type::Con(*id, new_args)
         }
         Type::Alias { name, body } => Type::Alias {
@@ -230,6 +243,34 @@ fn chase_alias_chain(arena: &TyConArena, ty: &Type, visited: &mut Vec<TyConId>) 
                 .map(|e| chase_alias_chain(arena, e, visited))
                 .collect(),
         ),
+        _ => ty.clone(),
+    }
+}
+
+/// Substitute every `Type::Var(v)` for which `subst` has a mapping with
+/// the corresponding type.  Free vars (not in `subst`) are preserved.
+/// Used for parametric-alias expansion: the alias body holds its own
+/// parameters as `Type::Var(p_i)` placeholders, and use-sites supply the
+/// concrete argument types via `subst = { p_i -> arg_i }`.
+fn substitute_tyvars(ty: &Type, subst: &FxHashMap<TyVid, Type>) -> Type {
+    match ty {
+        Type::Var(v) => subst.get(v).cloned().unwrap_or_else(|| ty.clone()),
+        Type::Con(id, args) => Type::Con(
+            *id,
+            args.iter().map(|a| substitute_tyvars(a, subst)).collect(),
+        ),
+        Type::Fn { params, ret, caps } => Type::Fn {
+            params: params.iter().map(|p| substitute_tyvars(p, subst)).collect(),
+            ret: Box::new(substitute_tyvars(ret, subst)),
+            caps: caps.clone(),
+        },
+        Type::Tuple(elems) => {
+            Type::Tuple(elems.iter().map(|e| substitute_tyvars(e, subst)).collect())
+        }
+        Type::Alias { name, body } => Type::Alias {
+            name: *name,
+            body: Box::new(substitute_tyvars(body, subst)),
+        },
         _ => ty.clone(),
     }
 }
@@ -279,9 +320,14 @@ fn build_type_kind_fresh(
         }
 
         TypeBody::Alias(alias_ty) => {
-            // Eager alias resolution.
+            // Eager alias resolution.  `param_vids` are baked into the body
+            // as `Type::Var(p)` placeholders; use sites substitute them with
+            // the supplied argument types before wrapping in `Type::Alias`.
             let body = ast_type_to_ridge_type(b, ctx, alias_ty, names, &param_name_map);
-            TyConKind::Alias(body)
+            TyConKind::Alias {
+                params: param_vids,
+                body,
+            }
         }
     }
 }
@@ -475,15 +521,38 @@ pub fn ast_type_to_ridge_type(
     param_name_map: &FxHashMap<&str, TyVid>,
 ) -> Type {
     /// If the user-defined `TyConId` resolves to a `TyConKind::Alias`,
-    /// return a clone of its body for wrapping as `Type::Alias`.  Returns
-    /// `None` for records, unions, actors, primitives, or builtins — those
-    /// stay as opaque `Type::Con(id, args)`.
-    fn alias_body_for(ctx: &InferCtx, id: TyConId) -> Option<Type> {
+    /// return clones of its parameters and body for substitution + wrapping
+    /// as `Type::Alias`.  Returns `None` for records, unions, actors,
+    /// primitives, or builtins — those stay as opaque `Type::Con(id, args)`.
+    fn alias_params_body(ctx: &InferCtx, id: TyConId) -> Option<(Vec<TyVid>, Type)> {
         let idx = id.0 as usize;
         let decl = ctx.tycon_decls.get(idx)?;
         match &decl.kind {
-            TyConKind::Alias(body) => Some(body.clone()),
+            TyConKind::Alias { params, body } => Some((params.clone(), body.clone())),
             _ => None,
+        }
+    }
+
+    /// Wrap an alias use as `Type::Alias { name, body }`, substituting the
+    /// alias's own parameters with `arg_tys` when supplied.  Caller is
+    /// responsible for arity matching; this helper only runs the
+    /// substitution path.
+    fn wrap_alias(id: TyConId, params: &[TyVid], body: &Type, arg_tys: &[Type]) -> Type {
+        if params.is_empty() {
+            return Type::Alias {
+                name: id,
+                body: Box::new(body.clone()),
+            };
+        }
+        let subst: FxHashMap<TyVid, Type> = params
+            .iter()
+            .zip(arg_tys.iter())
+            .map(|(&p, a)| (p, a.clone()))
+            .collect();
+        let substituted = substitute_tyvars(body, &subst);
+        Type::Alias {
+            name: id,
+            body: Box::new(substituted),
         }
     }
 
@@ -517,14 +586,13 @@ pub fn ast_type_to_ridge_type(
                 // Non-parametric alias (e.g. `type Bag = Map Text Text`):
                 // wrap as `Type::Alias { name, body }` so `shallow_resolve`
                 // peels through to the RHS and `Bag` unifies with the
-                // alias body.  Otherwise the alias would intern as its own
-                // opaque `Type::Con(alias_id, …)` and never unify with the
-                // body, breaking the user-facing "alias means equal" model.
-                if let Some(body) = alias_body_for(ctx, id) {
-                    return Type::Alias {
-                        name: id,
-                        body: Box::new(body),
-                    };
+                // alias body.  Parametric aliases referenced bare (no
+                // arguments) are a partial application and fall through to
+                // `Type::Con` — the kind error is caught elsewhere.
+                if let Some((params, body)) = alias_params_body(ctx, id) {
+                    if params.is_empty() {
+                        return wrap_alias(id, &params, &body, &[]);
+                    }
                 }
                 return Type::Con(id, vec![]);
             }
@@ -544,21 +612,14 @@ pub fn ast_type_to_ridge_type(
             }
             // Check user-defined.
             if let Some(&id) = names.get(n) {
-                // Non-parametric alias used in an application position with
-                // arity 0 (`Bag`) — the parser still routes the bare form
-                // through `Named`, but we mirror the wrap-as-Alias rule here
-                // for symmetry.  Parametric aliases (`type Stack a = List
-                // a`) are not yet supported: `TyConKind::Alias` does not
-                // carry the alias's own type-parameter vids, so substitution
-                // cannot run.  They still fall through to `Type::Con` and
-                // continue to fail unification with their body, matching the
-                // pre-fix behaviour until alias-params land.
-                if arg_tys.is_empty() {
-                    if let Some(body) = alias_body_for(ctx, id) {
-                        return Type::Alias {
-                            name: id,
-                            body: Box::new(body),
-                        };
+                // Alias used at an application site (`Bag`, `Stack Int`):
+                // substitute the alias's own parameters with `arg_tys` and
+                // wrap as `Type::Alias` so `shallow_resolve` peels through
+                // to the body.  Arity mismatches fall through to a bare
+                // `Type::Con` so the kind-error path keeps surfacing.
+                if let Some((params, body)) = alias_params_body(ctx, id) {
+                    if params.len() == arg_tys.len() {
+                        return wrap_alias(id, &params, &body, &arg_tys);
                     }
                 }
                 return Type::Con(id, arg_tys);

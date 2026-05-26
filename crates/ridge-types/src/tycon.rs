@@ -130,9 +130,18 @@ pub enum TyConKind {
     Union(UnionSchema),
     /// A type alias, eagerly resolved to its RHS.
     ///
-    /// Use-sites carry `Type::Alias { name, body }` for diagnostic naming; the
-    /// `body` here is the expanded RHS.
-    Alias(Type),
+    /// `params` are the alias's own type-parameter slots (empty for
+    /// non-parametric aliases like `type Bag = List Int`).  `body` is the
+    /// expanded RHS and may contain `Type::Var(p)` for each `p` in `params`.
+    /// At use sites callers substitute the `params` with the supplied
+    /// argument types before wrapping in `Type::Alias { name, body }` for
+    /// diagnostic naming.
+    Alias {
+        /// Fresh `TyVid`s standing in for the alias's declared parameters.
+        params: Vec<TyVid>,
+        /// The expanded RHS, with `Type::Var(p)` placeholders for `params`.
+        body: Type,
+    },
     /// Actor type — `Handle X` instantiates this.
     Actor(ActorSchema),
     /// Generic built-in container: `List`, `Map`, `Set`, `Handle`.
@@ -323,8 +332,11 @@ mod tests {
     #[test]
     fn tycon_kind_alias() {
         let alias_body = Type::Con(TyConId(3), vec![]);
-        let kind = TyConKind::Alias(alias_body);
-        assert!(matches!(kind, TyConKind::Alias(_)));
+        let kind = TyConKind::Alias {
+            params: vec![],
+            body: alias_body,
+        };
+        assert!(matches!(kind, TyConKind::Alias { .. }));
     }
 
     #[test]

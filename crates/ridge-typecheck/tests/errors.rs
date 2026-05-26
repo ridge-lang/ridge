@@ -294,3 +294,61 @@ pub fn empty () -> RowC = Map.empty\n\
         "three-step alias chain must typecheck cleanly; got: {codes:?}"
     );
 }
+
+/// Parametric alias: `type Stack a = List a` plus a use of `Stack Int`
+/// must unify with `List Int`.  Before this fix, `TyConKind::Alias` did
+/// not carry the alias's own type-parameter vids, so the use site fell
+/// through to `Type::Con(Stack, [Int])` — an opaque dead end that never
+/// unified with the body.
+#[test]
+fn parametric_alias_unifies_with_body() {
+    let src = "import std.list as List\n\
+type Stack a = List a\n\
+\n\
+pub fn lengthStack (s: Stack Int) -> Int = List.length s\n\
+";
+    let errors = run_typecheck_on_source("alias_stack", src);
+    let codes: Vec<&str> = errors.iter().map(TypeError::code).collect();
+    assert!(
+        codes.is_empty(),
+        "parametric alias `Stack Int` must unify with `List Int`; got: {codes:?}"
+    );
+}
+
+/// Two-parameter parametric alias (`type Pair a b = (a, b)`) — the
+/// substitution path must thread both params through the body in order.
+#[test]
+fn two_parameter_alias_unifies_with_body() {
+    let src = "\
+type Pair a b = (a, b)\n\
+\n\
+pub fn fst (p: Pair Int Text) -> Int =\n\
+    let (a, _) = p\n\
+    a\n\
+";
+    let errors = run_typecheck_on_source("alias_pair", src);
+    let codes: Vec<&str> = errors.iter().map(TypeError::code).collect();
+    assert!(
+        codes.is_empty(),
+        "two-parameter alias `Pair Int Text` must unify with `(Int, Text)`; got: {codes:?}"
+    );
+}
+
+/// Parametric chain: `type Stack a = List a; type IntStack = Stack Int`
+/// — the dedicated chain pass substitutes the inner alias's parameter
+/// when chasing through, so `IntStack` lands directly on `List Int`.
+#[test]
+fn parametric_alias_chained_unifies_with_terminal_body() {
+    let src = "import std.list as List\n\
+type Stack a = List a\n\
+type IntStack = Stack Int\n\
+\n\
+pub fn lengthIntStack (s: IntStack) -> Int = List.length s\n\
+";
+    let errors = run_typecheck_on_source("alias_intstack", src);
+    let codes: Vec<&str> = errors.iter().map(TypeError::code).collect();
+    assert!(
+        codes.is_empty(),
+        "parametric-then-instantiated alias chain must typecheck cleanly; got: {codes:?}"
+    );
+}

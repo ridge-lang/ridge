@@ -1313,7 +1313,9 @@ pub fn stdlib_signature(module: StdlibModuleId, name: &str, b: &BuiltinTyCons) -
            // Web-layer hardening newtypes — Sql / Html record types and their
            // factory functions. Stubs until proper Phase 4 record-typed
            // signatures land for the whole module.
-           | "Sql" | "Html" | "sql" | "html") => {
+           | "Sql" | "Html" | "sql" | "html"
+           // SecureCookie record + factory + header serializer.
+           | "SecureCookie" | "secureCookie" | "secureCookieHeader") => {
             stub_phase7()
         }
         // listen: Int -> (fn {net} (Request -> Response)) -> Unit

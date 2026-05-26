@@ -16,6 +16,12 @@
 @ffi("ridge_rt", "text_replace_all", 3)
 fn _textReplace (from: Text) (to: Text) (s: Text) -> Text
 
+@ffi("erlang", "integer_to_binary", 1)
+fn _intToText (n: Int) -> Text
+
+@ffi("erlang", "iolist_to_binary", 1)
+fn _ioJoin (parts: List Text) -> Text
+
 fn _sqlEscape (raw: Text) -> Text =
     _textReplace "'" "''" raw
 
@@ -26,6 +32,21 @@ fn _htmlEscape (raw: Text) -> Text =
     |> _textReplace ">" "&gt;"
     |> _textReplace "\"" "&quot;"
     |> _textReplace "'" "&#39;"
+
+-- Cookie-header replica: takes the seven SecureCookie fields positionally
+-- and runs the same flatten logic as `secureCookieHeader` in http.ridge.
+fn _cookieHeader (name: Text) (value: Text) (secure: Bool) (httpOnly: Bool) (sameSite: Text) (maxAge: Option Int) (path: Option Text) -> Text =
+    let base = _ioJoin [name, "=", value]
+    let withSecure = if secure then _ioJoin [base, "; Secure"] else base
+    let withHttpOnly = if httpOnly then _ioJoin [withSecure, "; HttpOnly"] else withSecure
+    let withSameSite = _ioJoin [withHttpOnly, "; SameSite=", sameSite]
+    let withMaxAge =
+        match maxAge
+            Some n  -> _ioJoin [withSameSite, "; Max-Age=", _intToText n]
+            None    -> withSameSite
+    match path
+        Some p  -> _ioJoin [withMaxAge, "; Path=", p]
+        None    -> withMaxAge
 
 pub fn test_smoke_net_http () -> Result Unit Text = Ok ()
 
@@ -92,3 +113,50 @@ pub fn test_html_empty_input () -> Result Unit Text =
     let r = _htmlEscape ""
     if r == "" then Ok ()
     else Err $"html \"\" should be \"\", got ${r}"
+
+-- ── SecureCookie tests ───────────────────────────────────────────────────────
+--
+-- The factory in http.ridge fills `secure = true`, `httpOnly = true`,
+-- `sameSite = "Lax"`, `maxAge = None`, `path = None`; the tests below
+-- exercise that default plus each override path through
+-- `secureCookieHeader`.
+
+pub fn test_secure_cookie_default_header () -> Result Unit Text =
+    let h = _cookieHeader "sid" "abc123" true true "Lax" None None
+    if h == "sid=abc123; Secure; HttpOnly; SameSite=Lax" then Ok ()
+    else Err $"default cookie header produced ${h}"
+
+pub fn test_secure_cookie_with_max_age () -> Result Unit Text =
+    let h = _cookieHeader "sid" "abc123" true true "Lax" (Some 3600) None
+    if h == "sid=abc123; Secure; HttpOnly; SameSite=Lax; Max-Age=3600" then Ok ()
+    else Err $"max-age cookie header produced ${h}"
+
+pub fn test_secure_cookie_with_path () -> Result Unit Text =
+    let h = _cookieHeader "sid" "abc123" true true "Lax" None (Some "/api")
+    if h == "sid=abc123; Secure; HttpOnly; SameSite=Lax; Path=/api" then Ok ()
+    else Err $"path cookie header produced ${h}"
+
+pub fn test_secure_cookie_with_max_age_and_path () -> Result Unit Text =
+    let h = _cookieHeader "sid" "abc123" true true "Lax" (Some 60) (Some "/")
+    if h == "sid=abc123; Secure; HttpOnly; SameSite=Lax; Max-Age=60; Path=/" then Ok ()
+    else Err $"max-age + path cookie header produced ${h}"
+
+pub fn test_secure_cookie_secure_off () -> Result Unit Text =
+    let h = _cookieHeader "sid" "abc123" false true "Lax" None None
+    if h == "sid=abc123; HttpOnly; SameSite=Lax" then Ok ()
+    else Err $"secure-off cookie header produced ${h}"
+
+pub fn test_secure_cookie_http_only_off () -> Result Unit Text =
+    let h = _cookieHeader "sid" "abc123" true false "Lax" None None
+    if h == "sid=abc123; Secure; SameSite=Lax" then Ok ()
+    else Err $"http-only-off cookie header produced ${h}"
+
+pub fn test_secure_cookie_same_site_strict () -> Result Unit Text =
+    let h = _cookieHeader "sid" "abc123" true true "Strict" None None
+    if h == "sid=abc123; Secure; HttpOnly; SameSite=Strict" then Ok ()
+    else Err $"same-site=Strict cookie header produced ${h}"
+
+pub fn test_secure_cookie_all_off () -> Result Unit Text =
+    let h = _cookieHeader "sid" "abc123" false false "None" None None
+    if h == "sid=abc123; SameSite=None" then Ok ()
+    else Err $"all-off cookie header produced ${h}"

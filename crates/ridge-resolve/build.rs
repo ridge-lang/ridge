@@ -315,9 +315,23 @@ const BASELINE_EXPORTS: &[(&str, &[&str])] = &[
     (
         "std.net.http",
         &[
-            // `pub type Request`, `Response`, `Sql`, `Html` declared in net/http.ridge.
-            "Request", "Response", "Sql", "Html", "get", "post", "put", "delete", "listen",
-            "respond", "sql", "html",
+            // `pub type Request`, `Response`, `Sql`, `Html`, `SecureCookie` declared
+            // in net/http.ridge.
+            "Request",
+            "Response",
+            "Sql",
+            "Html",
+            "SecureCookie",
+            "get",
+            "post",
+            "put",
+            "delete",
+            "listen",
+            "respond",
+            "sql",
+            "html",
+            "secureCookie",
+            "secureCookieHeader",
         ],
     ),
 ];

@@ -1,4 +1,4 @@
-//! Track-A tests for `std.text` — 16 public functions.
+//! Track-A tests for `std.text` — 19 public functions.
 //!
 //! Each test asserts that `text.ridge` compiles through the T4 build pipeline
 //! and that the module appears in the build summary.
@@ -57,6 +57,12 @@ fn std_text_length_compiles() {
 
 #[test]
 fn std_text_join_compiles() {
+    assert_std_text_built();
+    assert_text_ridge_discovered();
+}
+
+#[test]
+fn std_text_slice_compiles() {
     assert_std_text_built();
     assert_text_ridge_discovered();
 }

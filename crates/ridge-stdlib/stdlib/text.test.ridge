@@ -14,6 +14,9 @@ fn _length (s: Text) -> Int
 @ffi("ridge_rt", "text_join", 2)
 fn _join (sep: Text) (xs: List Text) -> Text
 
+@ffi("ridge_rt", "text_slice", 3)
+fn _slice (start: Int) (len: Int) (s: Text) -> Text
+
 @ffi("ridge_rt", "text_split_all", 2)
 fn _split (sep: Text) (s: Text) -> List Text
 
@@ -166,6 +169,42 @@ pub fn test_join_singleton () -> Result Unit Text =
 pub fn test_join_empty_separator () -> Result Unit Text =
     if _join "" ["a", "b", "c"] == "abc" then Ok ()
     else Err "Text.join with empty sep should be abc"
+
+pub fn test_slice_basic () -> Result Unit Text =
+    if _slice 0 3 "hello" == "hel" then Ok ()
+    else Err "Text.slice 0 3 hello should be hel"
+
+pub fn test_slice_offset () -> Result Unit Text =
+    if _slice 2 2 "hello" == "ll" then Ok ()
+    else Err "Text.slice 2 2 hello should be ll"
+
+pub fn test_slice_clamps_len_to_remaining () -> Result Unit Text =
+    if _slice 2 100 "hello" == "llo" then Ok ()
+    else Err "Text.slice should clamp len to remaining graphemes"
+
+pub fn test_slice_past_end () -> Result Unit Text =
+    if _slice 10 5 "hi" == "" then Ok ()
+    else Err "Text.slice with start past length should be empty"
+
+pub fn test_slice_zero_len () -> Result Unit Text =
+    if _slice 0 0 "hello" == "" then Ok ()
+    else Err "Text.slice with zero len should be empty"
+
+pub fn test_slice_negative_start () -> Result Unit Text =
+    if _slice (0 - 1) 3 "hello" == "" then Ok ()
+    else Err "Text.slice with negative start should be empty"
+
+pub fn test_slice_negative_len () -> Result Unit Text =
+    if _slice 0 (0 - 1) "hello" == "" then Ok ()
+    else Err "Text.slice with negative len should be empty"
+
+-- 'café' is 4 graphemes (the é counts as one) but 5 bytes in UTF-8.
+-- slice indexes in graphemes, so 0..2 is 'ca' and 3..1 is 'é'.
+pub fn test_slice_indexes_in_graphemes () -> Result Unit Text =
+    if _slice 0 2 "café" == "ca" then
+        if _slice 3 1 "café" == "é" then Ok ()
+        else Err "Text.slice 3 1 café should be é"
+    else Err "Text.slice 0 2 café should be ca"
 
 pub fn test_split_simple () -> Result Unit Text =
     let parts = _split "," "a,b,c"

@@ -20,6 +20,14 @@ pub fn length (s: Text) -> Int
 @ffi("ridge_rt", "text_join", 2)
 pub fn join (sep: Text) (xs: List Text) -> Text
 
+-- Extract a substring counted in grapheme clusters.
+-- `slice start len s` returns up to `len` graphemes starting at index `start`
+-- (zero-based). Both bounds saturate: start past the end yields "", and a
+-- length larger than what remains returns the tail. Negative arguments also
+-- yield "" rather than crashing.
+@ffi("ridge_rt", "text_slice", 3)
+pub fn slice (start: Int) (len: Int) (s: Text) -> Text
+
 -- Raw iolist-to-binary bridge (private — used by concat to avoid self-recursion).
 -- `a ++ b` in text.ridge lowered to `std.text:concat(a,b)` by ridge-lower,
 -- which is a self-call.  Use erlang:iolist_to_binary/1 as the canonical

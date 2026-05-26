@@ -1308,7 +1308,12 @@ pub fn stdlib_signature(module: StdlibModuleId, name: &str, b: &BuiltinTyCons) -
            // without cross-module variant pattern matching (deferred).
            | "asInt" | "asFloat" | "asBool" | "asText" | "asList" | "asObject" | "isNull")
         | (STD_CLI, "parseArgs" | "help" | "version")
-        | (STD_NET_HTTP, "get" | "post" | "put" | "delete" | "respond" | "Request" | "Response") => {
+        | (STD_NET_HTTP,
+           "get" | "post" | "put" | "delete" | "respond" | "Request" | "Response"
+           // Web-layer hardening newtypes — Sql / Html record types and their
+           // factory functions. Stubs until proper Phase 4 record-typed
+           // signatures land for the whole module.
+           | "Sql" | "Html" | "sql" | "html") => {
             stub_phase7()
         }
         // listen: Int -> (fn {net} (Request -> Response)) -> Unit

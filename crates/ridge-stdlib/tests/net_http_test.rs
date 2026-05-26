@@ -1,4 +1,4 @@
-//! Track-A tests for `std.net.http` — 6 public functions.
+//! Track-A tests for `std.net.http` — 8 public functions.
 //!
 //! Each test asserts that `net/http.ridge` compiles through the T4 build pipeline
 //! and that the module appears in the build summary / discover output.
@@ -102,6 +102,20 @@ fn std_net_http_request_record_compiles() {
 /// `Response` record type is declared in `net/http.ridge` and the module builds.
 #[test]
 fn std_net_http_response_record_compiles() {
+    assert_std_net_http_built();
+    assert_net_http_ridge_discovered();
+}
+
+/// `Sql` newtype + the `sql` factory function compile through the build pipeline.
+#[test]
+fn std_net_http_sql_newtype_compiles() {
+    assert_std_net_http_built();
+    assert_net_http_ridge_discovered();
+}
+
+/// `Html` newtype + the `html` factory function compile through the build pipeline.
+#[test]
+fn std_net_http_html_newtype_compiles() {
     assert_std_net_http_built();
     assert_net_http_ridge_discovered();
 }

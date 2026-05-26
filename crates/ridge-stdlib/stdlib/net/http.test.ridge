@@ -1,1 +1,94 @@
+-- std.net.http test suite.
+--
+-- The client and server functions can only be exercised against a live
+-- BEAM with the inets app started, which is out of scope for the static
+-- stdlib test pass. The smoke test below pins the module compile path.
+-- The web-layer hardening newtypes (Sql, Html) are covered below; the
+-- record wrapping itself is one trivial line, so the tests focus on the
+-- escape semantics that the factory functions apply.
+--
+-- Following the convention of int.test.ridge / text.test.ridge: the
+-- escape pipelines are replicated as private helpers (`_sqlEscape`,
+-- `_htmlEscape`). The test compilation context does not resolve a
+-- module's own public functions by bare name, so the replica pattern
+-- keeps each `.test.ridge` self-contained.
+
+@ffi("ridge_rt", "text_replace_all", 3)
+fn _textReplace (from: Text) (to: Text) (s: Text) -> Text
+
+fn _sqlEscape (raw: Text) -> Text =
+    _textReplace "'" "''" raw
+
+fn _htmlEscape (raw: Text) -> Text =
+    raw
+    |> _textReplace "&" "&amp;"
+    |> _textReplace "<" "&lt;"
+    |> _textReplace ">" "&gt;"
+    |> _textReplace "\"" "&quot;"
+    |> _textReplace "'" "&#39;"
+
 pub fn test_smoke_net_http () -> Result Unit Text = Ok ()
+
+-- ── Sql escape tests ─────────────────────────────────────────────────────────
+
+pub fn test_sql_basic_no_special () -> Result Unit Text =
+    let r = _sqlEscape "abc"
+    if r == "abc" then Ok ()
+    else Err $"sql \"abc\" should be \"abc\", got ${r}"
+
+pub fn test_sql_doubles_single_quote () -> Result Unit Text =
+    let r = _sqlEscape "O'Brien"
+    if r == "O''Brien" then Ok ()
+    else Err $"sql \"O'Brien\" should be \"O''Brien\", got ${r}"
+
+pub fn test_sql_multiple_quotes () -> Result Unit Text =
+    let r = _sqlEscape "'a'b'"
+    if r == "''a''b''" then Ok ()
+    else Err $"sql \"'a'b'\" should be \"''a''b''\", got ${r}"
+
+pub fn test_sql_empty_input () -> Result Unit Text =
+    let r = _sqlEscape ""
+    if r == "" then Ok ()
+    else Err $"sql \"\" should be \"\", got ${r}"
+
+-- ── Html escape tests ────────────────────────────────────────────────────────
+
+pub fn test_html_basic_no_special () -> Result Unit Text =
+    let r = _htmlEscape "abc"
+    if r == "abc" then Ok ()
+    else Err $"html \"abc\" should be \"abc\", got ${r}"
+
+pub fn test_html_escapes_angle_brackets () -> Result Unit Text =
+    let r = _htmlEscape "<script>"
+    if r == "&lt;script&gt;" then Ok ()
+    else Err $"html \"<script>\" should be \"&lt;script&gt;\", got ${r}"
+
+pub fn test_html_escapes_quote () -> Result Unit Text =
+    let r = _htmlEscape "say \"hi\""
+    if r == "say &quot;hi&quot;" then Ok ()
+    else Err $"html quote escape produced ${r}"
+
+pub fn test_html_escapes_apostrophe () -> Result Unit Text =
+    let r = _htmlEscape "it's"
+    if r == "it&#39;s" then Ok ()
+    else Err $"html apostrophe escape produced ${r}"
+
+pub fn test_html_ampersand_escaped_first () -> Result Unit Text =
+    let r = _htmlEscape "<&>"
+    if r == "&lt;&amp;&gt;" then Ok ()
+    else Err $"html \"<&>\" should be \"&lt;&amp;&gt;\", got ${r}"
+
+pub fn test_html_double_encodes_existing_entity () -> Result Unit Text =
+    let r = _htmlEscape "&amp;"
+    if r == "&amp;amp;" then Ok ()
+    else Err $"html \"&amp;\" should be \"&amp;amp;\", got ${r}"
+
+pub fn test_html_all_five_specials () -> Result Unit Text =
+    let r = _htmlEscape "& < > \" '"
+    if r == "&amp; &lt; &gt; &quot; &#39;" then Ok ()
+    else Err $"html all five specials produced ${r}"
+
+pub fn test_html_empty_input () -> Result Unit Text =
+    let r = _htmlEscape ""
+    if r == "" then Ok ()
+    else Err $"html \"\" should be \"\", got ${r}"

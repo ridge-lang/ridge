@@ -81,3 +81,44 @@ pub fn net listen (port: Int) (handler: fn net Request -> Response) -> Unit
 -- Pure — no capability required.
 pub fn respond (status: Int) (body: Text) -> Response =
     Response { status = status, body = body }
+
+-- ── Web-layer hardening newtypes ──────────────────────────────────────────────
+--
+-- Single-field records that wrap a `Text` after applying an escape pass.
+-- Always construct through the matching factory function (`sql`, `html`),
+-- which is the only path that runs the escape. Constructing the record
+-- directly via `Sql { value = "..." }` is technically possible but bypasses
+-- the escape — the type wrappers are a hint to the type checker (and to
+-- code review), not a security boundary the runtime enforces.
+
+-- A Text value escaped for safe substitution into a SQL string literal.
+-- Embedded single quotes are doubled (`'` -> `''`), the canonical SQL
+-- escape for string literals. The escape is not a substitute for
+-- parameterized queries — it covers the common case of stringly-built
+-- SQL fragments where parameters are not available.
+pub type Sql = { value: Text }
+
+-- A Text value escaped for safe insertion into an HTML document.
+-- The five characters with HTML significance are escaped to their entity
+-- references: `&` -> `&amp;`, `<` -> `&lt;`, `>` -> `&gt;`, `"` -> `&quot;`,
+-- `'` -> `&#39;`. `&` is escaped first so existing entity references in
+-- the input are double-encoded in a predictable way rather than left as
+-- ambiguous live entities.
+pub type Html = { value: Text }
+
+-- Construct a Sql value from raw text, escaping single quotes for SQL
+-- string literals. Pure — no capability required.
+pub fn sql (raw: Text) -> Sql =
+    Sql { value = Text.replace "'" "''" raw }
+
+-- Construct an Html value from raw text, escaping the five HTML special
+-- characters. Pure — no capability required.
+pub fn html (raw: Text) -> Html =
+    let escaped =
+        raw
+        |> Text.replace "&" "&amp;"
+        |> Text.replace "<" "&lt;"
+        |> Text.replace ">" "&gt;"
+        |> Text.replace "\"" "&quot;"
+        |> Text.replace "'" "&#39;"
+    Html { value = escaped }

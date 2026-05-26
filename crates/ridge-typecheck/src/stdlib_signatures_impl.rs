@@ -261,6 +261,10 @@ pub fn stdlib_signature(module: StdlibModuleId, name: &str, b: &BuiltinTyCons) -
             vec![ty_text(b), ty_list(b, ty_text(b))],
             ty_text(b),
         ))),
+        (STD_TEXT, "slice") => Some(mono(ty_fn_pure(
+            vec![ty_int(b), ty_int(b), ty_text(b)],
+            ty_text(b),
+        ))),
         (STD_TEXT, "split" | "splitAny") => Some(mono(ty_fn_pure(
             vec![ty_text(b), ty_text(b)],
             ty_list(b, ty_text(b)),

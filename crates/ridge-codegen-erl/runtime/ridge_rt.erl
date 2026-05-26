@@ -13,7 +13,7 @@
     time_diff_ms/2, time_diff/2,
     time_from_iso/1, time_since_ms/1, time_iso/1,
     int_parse/0, int_parse/1, float_parse/1, float_to_text/1, bool_to_text/1,
-    text_split_all/2, text_replace_all/3, text_join/2,
+    text_split_all/2, text_replace_all/3, text_join/2, text_slice/3,
     list_fold/3, list_sort_by/2,
     random_int/2, random_choice/1, random_float/1, random_alphanumeric/1, random_seed/1,
     env_get/1, env_all/1, env_set/2,
@@ -235,6 +235,19 @@ text_replace_all(From, To, S) -> binary:replace(S, From, To, [global]).
 %% Matches the Ridge FFI arg order (Sep, Xs).
 text_join(_Sep, []) -> <<>>;
 text_join(Sep, Xs)  -> iolist_to_binary(lists:join(Sep, Xs)).
+
+%% text_slice/3 — substring counted in grapheme clusters.
+%%
+%% string:slice/3 saturates on the upper bound (Start >= length(S) returns
+%% <<>>, Len greater than the remaining graphemes returns the rest), which
+%% matches the Python s[a:a+b] / JS s.slice semantics callers expect.
+%% A negative Start or Len would crash string:slice/3 with badarg, so we
+%% clamp both to zero — that lets user code pass arithmetic results without
+%% sprinkling guards.  Arg order matches the Ridge FFI (Start, Len, S).
+text_slice(Start, Len, S) when Start >= 0, Len >= 0 ->
+    Out = string:slice(S, Start, Len),
+    unicode:characters_to_binary(Out);
+text_slice(_, _, _) -> <<>>.
 
 bool_to_text(true)  -> <<"true">>;
 bool_to_text(false) -> <<"false">>.

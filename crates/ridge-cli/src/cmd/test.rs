@@ -359,10 +359,7 @@ fn execute_runnable_tests(
 
     // Pre-compute the denominator and the width used to align `[N/M]` so
     // every progress line has the same width prefix.
-    let total_runnable: usize = slots
-        .iter()
-        .filter(|s| matches!(s, Slot::Runnable))
-        .count();
+    let total_runnable: usize = slots.iter().filter(|s| matches!(s, Slot::Runnable)).count();
     let width: usize = total_runnable.to_string().len();
 
     std::thread::scope(|scope| {

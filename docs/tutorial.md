@@ -63,12 +63,12 @@ bash -c "$(curl -fsSL https://raw.githubusercontent.com/ridge-lang/ridge/main/to
 To pin a specific release tag, set `RIDGE_VERSION`:
 
 ```powershell
-$env:RIDGE_VERSION = 'v0.2.3'
+$env:RIDGE_VERSION = 'v0.2.4'
 & ([scriptblock]::Create((iwr -useb 'https://raw.githubusercontent.com/ridge-lang/ridge/main/tools/install/install.ps1').Content))
 ```
 
 ```bash
-RIDGE_VERSION=v0.2.3 bash -c "$(curl -fsSL https://raw.githubusercontent.com/ridge-lang/ridge/main/tools/install/install.sh)"
+RIDGE_VERSION=v0.2.4 bash -c "$(curl -fsSL https://raw.githubusercontent.com/ridge-lang/ridge/main/tools/install/install.sh)"
 ```
 
 > **Why not `curl … | sh` (or `| bash`)?** The installer's Erlang
@@ -84,9 +84,9 @@ RIDGE_VERSION=v0.2.3 bash -c "$(curl -fsSL https://raw.githubusercontent.com/rid
 
 ```sh
 ~/.cargo/bin/ridge --version
-# expected: ridge 0.2.3
+# expected: ridge 0.2.4
 ~/.cargo/bin/ridge-lsp --version
-# expected: ridge-lsp 0.2.3
+# expected: ridge-lsp 0.2.4
 ```
 
 Use the explicit path (`~/.cargo/bin/ridge`), not a shell glob. The

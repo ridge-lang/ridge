@@ -219,6 +219,24 @@ fn wrap_to_text(ctx: &mut LowerCtx<'_>, inner: IrExpr, ty: Option<Type>, span: S
         // ── Type::Error — absorbing; pass through without wrapping ────────────
         Some(Type::Error) => inner,
 
+        // ── User-defined Type::Con — naming-convention ToText lookup ──────────
+        // When the inner type is a user-defined TyCon (record / union / alias /
+        // actor) whose owning module exports a `pub fn toText`, the
+        // interpolation hole dispatches to that function. The convention
+        // requires `pub fn toText (x: T) -> Text` declared in the same module
+        // that declares `T`. This is the only "typeclass" mechanism in 0.2.x
+        // and is opt-in by naming: no `impl ToText for T` syntax, no global
+        // dispatch table. If the user type's module does not export a matching
+        // `toText`, we fall to the L007 path below.
+        Some(Type::Con(tycon_id, _)) => {
+            if let Some(call) = try_user_to_text(ctx, &inner, tycon_id, span) {
+                call
+            } else {
+                ctx.errors.push(LowerError::ToTextLowering { span });
+                inner
+            }
+        }
+
         // ── Type not available or not in closed set ───────────────────────────
         // When None: node_types is empty; emit L007 defensively and pass
         // inner through.  The type-checker guarantees this cannot fire on valid input.
@@ -227,6 +245,61 @@ fn wrap_to_text(ctx: &mut LowerCtx<'_>, inner: IrExpr, ty: Option<Type>, span: S
             inner
         }
     }
+}
+
+/// Try to dispatch a user-defined `toText` for `tycon_id`.
+///
+/// Returns `Some(Call)` when the type's owning module exports a public
+/// function literally named `toText`; the synthesized call uses
+/// `SymbolRef::External` with the owning module's `ModuleId`. Returns `None`
+/// when the type has no recorded owning module (built-in / stdlib without
+/// `def_module_raw`), when the workspace is unavailable (unit tests that bypass
+/// the pipeline), or when the owning module does not export `toText`. The
+/// caller is responsible for emitting `L007` on the `None` branch.
+fn try_user_to_text(
+    ctx: &mut LowerCtx<'_>,
+    inner: &IrExpr,
+    tycon_id: TyConId,
+    span: Span,
+) -> Option<IrExpr> {
+    let ws = ctx.workspace?;
+    let tycon = ws.tycons.get(tycon_id.0 as usize)?;
+    let module_raw = tycon.def_module_raw?;
+    let owning_module = ridge_resolve::ModuleId(module_raw);
+
+    // Look up the TypedModule for the owning module and scan its AST for a
+    // public `toText` declaration. The lookup is O(items) per dispatch; in
+    // practice modules have small item counts and interpolation sites are
+    // rare, so this stays well below the cost of any cache machinery.
+    let typed_module = ws.modules.get(module_raw as usize)?;
+    let has_to_text = typed_module.ast.items.iter().any(|item| {
+        matches!(
+            item,
+            ridge_ast::Item::Fn(decl)
+                if decl.name.text == "toText"
+                    && matches!(decl.vis, ridge_ast::Visibility::Pub)
+        )
+    });
+    if !has_to_text {
+        return None;
+    }
+
+    let callee_id = ctx.fresh_id(None);
+    let call_id = ctx.fresh_id(None);
+    let callee = Box::new(IrExpr::Symbol {
+        id: callee_id,
+        sym: SymbolRef::External {
+            module: owning_module,
+            name: "toText".into(),
+        },
+        span,
+    });
+    Some(IrExpr::Call {
+        id: call_id,
+        callee,
+        args: vec![inner.clone()],
+        span,
+    })
 }
 
 // OQ-L007: ToText is inserted at lowering time (Phase 5), not at codegen time,

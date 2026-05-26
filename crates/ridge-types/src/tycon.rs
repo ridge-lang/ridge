@@ -114,6 +114,17 @@ pub struct TyConDecl {
     pub kind: TyConKind,
     /// Source span of the declaration; `None` for built-in `TyCons`.
     pub def_span: Option<Span>,
+    /// Raw `u32` representation of the [`ModuleId`] that declared this type.
+    ///
+    /// Stored as a raw integer (not the strongly-typed `ridge_resolve::ModuleId`)
+    /// to avoid a layering dependency: `ridge-types` is one of the foundational
+    /// crates and should not depend on `ridge-resolve`. Downstream code that
+    /// already has access to `ridge-resolve` reconstitutes the strongly-typed
+    /// id with `ridge_resolve::ModuleId(def_module_raw.unwrap())`.
+    ///
+    /// `None` for built-in `TyCons` (no source module) and for stdlib
+    /// declarations that bypass the user collect pass.
+    pub def_module_raw: Option<u32>,
 }
 
 // ── TyConKind ─────────────────────────────────────────────────────────────────
@@ -294,6 +305,7 @@ mod tests {
             arity: 0,
             kind: TyConKind::Primitive,
             def_span: Some(dummy_span()),
+            def_module_raw: None,
         };
         assert_eq!(d.id.0, 1);
         assert_eq!(d.name, "User");

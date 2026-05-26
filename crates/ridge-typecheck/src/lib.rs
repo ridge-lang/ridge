@@ -408,7 +408,7 @@ fn typecheck_module_inner(
     ctx.env.push_frame();
 
     // Step A: Collect user TyCons and seed env with constructor schemes.
-    let tycon_result = collect_user_tycons(ast, arena, b, &mut ctx);
+    let tycon_result = collect_user_tycons(ast, id, arena, b, &mut ctx);
     // Populate the user_tycon_names map for ast_type_to_type resolution.
     ctx.user_tycon_names = tycon_result.user_tycon_names;
     // Snapshot all TyConDecls (builtins + user) for record/union inference.

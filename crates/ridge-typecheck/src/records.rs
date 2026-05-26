@@ -459,6 +459,7 @@ mod tests {
             arity: schema.params.len() as u32,
             kind: TyConKind::Record(schema),
             def_span: None,
+            def_module_raw: None,
         });
         (arena, b, tycon_id)
     }

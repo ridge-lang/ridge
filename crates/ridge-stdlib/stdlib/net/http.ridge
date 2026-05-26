@@ -122,3 +122,57 @@ pub fn html (raw: Text) -> Html =
         |> Text.replace "\"" "&quot;"
         |> Text.replace "'" "&#39;"
     Html { value = escaped }
+
+-- ── SecureCookie record + serializer ──────────────────────────────────────────
+--
+-- A cookie value with safe-by-default attribute settings. The factory
+-- function `secureCookie` returns a value with `Secure`, `HttpOnly`, and
+-- `SameSite=Lax` already turned on — the three attributes that close the
+-- common XSS / CSRF / network-eavesdropping vectors covered by Q-024.
+-- `maxAge` and `path` are optional and default to absent (the browser
+-- treats them as session-scope / current-path respectively).
+--
+-- To produce the value that goes into an HTTP `Set-Cookie:` header, call
+-- `secureCookieHeader`. The function emits the attributes that are set
+-- and omits the ones that are not (`Secure` / `HttpOnly` only appear when
+-- the booleans are true; `Max-Age` and `Path` only appear when their
+-- options are `Some`). `SameSite` is always emitted because the field is
+-- a `Text`, not an `Option`, and an empty string would be invalid.
+
+pub type SecureCookie = { name: Text, value: Text, secure: Bool, httpOnly: Bool, sameSite: Text, maxAge: Option Int, path: Option Text }
+
+-- Build a cookie with safe defaults: Secure on, HttpOnly on, SameSite=Lax,
+-- no Max-Age, no Path. Override individual fields with the record-update
+-- form (`{ c with secure = false, path = Some "/" }`) when a workflow
+-- requires it. Pure — no capability required.
+pub fn secureCookie (name: Text) (value: Text) -> SecureCookie =
+    SecureCookie { name = name, value = value, secure = true, httpOnly = true, sameSite = "Lax", maxAge = None, path = None }
+
+-- Format a SecureCookie as the value for an HTTP `Set-Cookie:` header.
+-- The result is `name=value` followed by `; Attribute` segments for each
+-- attribute that is set. `Secure` and `HttpOnly` are attribute-only (no
+-- value); `SameSite`, `Max-Age`, and `Path` are key=value pairs.
+--
+-- Implementation note: the joins go through `_cookieJoin` (FFI to
+-- `erlang:iolist_to_binary/1`) rather than string interpolation. This
+-- mirrors the pattern in `text.ridge` for `concat`, and keeps the
+-- function self-contained: it does not depend on `std.text` for
+-- internal text concatenation.
+@ffi("erlang", "iolist_to_binary", 1)
+fn _cookieJoin (parts: List Text) -> Text
+
+@ffi("erlang", "integer_to_binary", 1)
+fn _intText (n: Int) -> Text
+
+pub fn secureCookieHeader (c: SecureCookie) -> Text =
+    let base = _cookieJoin [c.name, "=", c.value]
+    let withSecure = if c.secure then _cookieJoin [base, "; Secure"] else base
+    let withHttpOnly = if c.httpOnly then _cookieJoin [withSecure, "; HttpOnly"] else withSecure
+    let withSameSite = _cookieJoin [withHttpOnly, "; SameSite=", c.sameSite]
+    let withMaxAge =
+        match c.maxAge
+            Some n  -> _cookieJoin [withSameSite, "; Max-Age=", _intText n]
+            None    -> withSameSite
+    match c.path
+        Some p  -> _cookieJoin [withMaxAge, "; Path=", p]
+        None    -> withMaxAge

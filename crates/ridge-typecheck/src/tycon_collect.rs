@@ -153,7 +153,10 @@ pub fn collect_user_tycons(
 /// `TyConKind::Alias`, so use-sites still get a `Type::Alias { name, body }`
 /// view at the outer wrap done by `ast_type_to_ridge_type`.
 fn resolve_alias_chains(arena: &mut TyConArena) {
-    #[expect(clippy::cast_possible_truncation, reason = "arena len fits u32 in practice")]
+    #[expect(
+        clippy::cast_possible_truncation,
+        reason = "arena len fits u32 in practice"
+    )]
     let alias_ids: Vec<TyConId> = (0..arena.len())
         .map(|i| TyConId(i as u32))
         .filter(|&id| matches!(arena.get(id).kind, TyConKind::Alias(_)))

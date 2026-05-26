@@ -7,6 +7,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.5] - 2026-05-25
+
+### Fixed
+
+- Multi-step type alias chains now resolve all the way to their terminal body. `type IntList = List Int` followed by `type Numbers = IntList` used to leave `Numbers` interned as `Type::Con(IntList, [])` because pass 2 of user-tycon collection reads `ctx.tycon_decls` before that table has been synced from the arena, so every later alias saw its earlier siblings only as their pass-1 placeholders. A dedicated third pass walks every alias body after pass 2 and expands any embedded `Type::Con(alias_id, args)` to the alias's resolved body, chasing through the chain until it lands on a non-alias terminal type. A visited set breaks cycles defensively.
+- Parametric type aliases (`type Stack a = List a`, `type Pair a b = (a, b)`) now substitute through to their bodies at every use site. The previous shape `TyConKind::Alias(Type)` held only the body, with no record of the alias's own type-parameter vids, so `Stack Int` at a use site fell through to an opaque `Type::Con(Stack, [Int])` that never unified with `List Int`. `TyConKind::Alias` now carries `{ params, body }`; the body keeps the alias's parameters as `Type::Var(p_i)` placeholders and use sites substitute them with the call-site argument types before wrapping in `Type::Alias { name, body }`. The chain pass also substitutes when crossing parametric aliases, so `type Stack a = List a; type IntStack = Stack Int` resolves `IntStack` directly to `List Int` at collection time.
+
+### Added
+
+- `Text.slice (start: Int) (len: Int) (s: Text) -> Text` extracts a substring counted in grapheme clusters, completing the text-API set that already shipped `byteSize`, `length`, and `join`. Indexing follows the rest of the text surface (graphemes, not bytes), so `slice 0 2 "café"` is `"ca"` and `slice 3 1 "café"` is `"é"`. Both bounds saturate — a start past the end gives `""`, a length larger than what remains returns the tail, and negatives clamp to zero, so arithmetic results can be passed without guards. Bridged through `ridge_rt:text_slice/3`, which wraps `string:slice/3`.
+
+### Changed
+
+- `ridge test` now prints per-test results live as workers finish, with an `[N/M]` prefix aligned to the width of `M`. Long suites no longer look frozen until the last worker joins. Output stays in input order — the same deterministic shape CI logs depend on — because each worker drains a shared print cursor and only prints contiguous-ready outcomes from there forward; the worker that finishes the next head-of-queue test takes over the drain. The tally now reads from atomic counters incremented at print time rather than a post-scope iteration.
+
 ## [0.2.4] - 2026-05-25
 
 ### Fixed
@@ -201,7 +216,8 @@ Initial public release candidate.
 - Standard library: `bool`, `cli`, `env`, `float`, `fs`, `int`, `io`, `json`, `list`, `map`, `net.http`, `option`, `proc`, `random`, `text`, `time`
 - Apache-2.0 licensed
 
-[Unreleased]: https://github.com/ridge-lang/ridge/compare/v0.2.4...HEAD
+[Unreleased]: https://github.com/ridge-lang/ridge/compare/v0.2.5...HEAD
+[0.2.5]: https://github.com/ridge-lang/ridge/compare/v0.2.4...v0.2.5
 [0.2.4]: https://github.com/ridge-lang/ridge/compare/v0.2.3...v0.2.4
 [0.2.3]: https://github.com/ridge-lang/ridge/compare/v0.2.2...v0.2.3
 [0.2.2]: https://github.com/ridge-lang/ridge/compare/v0.2.1...v0.2.2

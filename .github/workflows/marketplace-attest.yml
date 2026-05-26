@@ -1,0 +1,99 @@
+name: Marketplace attestation
+
+# Verifies that `ridge-lang.vscode-ridge` installs cleanly from the
+# VS Code Marketplace on Linux and macOS runners. The visual
+# attestation steps (syntax highlighting + live diagnostics rendered
+# in the editor) still require a human on real hardware — those rows
+# stay pending in docs/marketplace-attestation.md until manually
+# signed off. This workflow covers the headless slice: download,
+# install, and verify the published version is listed.
+
+on:
+  workflow_dispatch:
+  release:
+    types: [published]
+  pull_request:
+    paths:
+      - '.github/workflows/marketplace-attest.yml'
+
+concurrency:
+  group: marketplace-attest-${{ github.event.release.tag_name || github.head_ref || github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  attest:
+    name: Attest (${{ matrix.label }})
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - label: Linux
+            runner: ubuntu-22.04
+          - label: macOS
+            runner: macos-14
+
+    steps:
+      - name: Install VS Code (Linux)
+        if: matrix.label == 'Linux'
+        run: |
+          set -euo pipefail
+          curl -fsSL "https://update.code.visualstudio.com/latest/linux-deb-x64/stable" -o /tmp/code.deb
+          sudo apt-get update
+          sudo apt-get install -y /tmp/code.deb
+          code --version
+
+      - name: Install VS Code (macOS)
+        if: matrix.label == 'macOS'
+        run: |
+          set -euo pipefail
+          brew install --cask visual-studio-code
+          code --version
+
+      - name: Install ridge-lang.vscode-ridge from Marketplace
+        run: |
+          set -euo pipefail
+          mkdir -p /tmp/vscode-data /tmp/vscode-ext
+          code \
+            --install-extension ridge-lang.vscode-ridge \
+            --force \
+            --user-data-dir /tmp/vscode-data \
+            --extensions-dir /tmp/vscode-ext
+
+      - name: Verify extension is listed
+        id: verify
+        run: |
+          set -euo pipefail
+          code \
+            --list-extensions --show-versions \
+            --user-data-dir /tmp/vscode-data \
+            --extensions-dir /tmp/vscode-ext \
+            | tee /tmp/extensions.txt
+          if ! grep -q '^ridge-lang.vscode-ridge@' /tmp/extensions.txt; then
+            echo "::error::ridge-lang.vscode-ridge not present in code --list-extensions output"
+            exit 1
+          fi
+          INSTALLED=$(grep '^ridge-lang.vscode-ridge@' /tmp/extensions.txt | head -1)
+          echo "installed=${INSTALLED}" >> "$GITHUB_OUTPUT"
+          echo "Verified: ${INSTALLED}"
+
+      - name: Capture attestation evidence
+        run: |
+          set -euo pipefail
+          cat > /tmp/attestation.txt <<EOF
+          Platform: ${{ matrix.label }}
+          Runner: ${{ matrix.runner }}
+          Date: $(date -u +%Y-%m-%dT%H:%M:%SZ)
+          VS Code: $(code --version | head -1)
+          Installed extension: ${{ steps.verify.outputs.installed }}
+          Marketplace listing: https://marketplace.visualstudio.com/items?itemName=ridge-lang.vscode-ridge
+          Workflow run: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          EOF
+          cat /tmp/attestation.txt
+
+      - name: Upload attestation evidence
+        uses: actions/upload-artifact@v5
+        with:
+          name: attestation-${{ matrix.label }}
+          path: /tmp/attestation.txt
+          if-no-files-found: error

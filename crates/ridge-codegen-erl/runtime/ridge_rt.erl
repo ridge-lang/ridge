@@ -24,7 +24,7 @@
     json_list/1, json_object/1,
     json_as_int/1, json_as_float/1, json_as_bool/1, json_as_text/1,
     json_as_list/1, json_as_object/1, json_is_null/1,
-    http_listen/2, http_port/0,
+    http_listen/2, http_port/0, http_build_response/1,
     http_get/1, http_post/2, http_put/2, http_delete/1,
     ask/3, send/2, spawn_actor/3,
     escript_main/1
@@ -650,6 +650,17 @@ http_extract_body([_ | Rest]) ->
 %% Ridge records compile to atom-keyed maps, so the Response wire shape is
 %% #{status => Int, body => Bin}.  Body coerced to binary so handlers that
 %% return string literals (lists of integers) still serialise correctly.
+%%
+%% Security headers (T-N004 + T-N005 / Q-024): every response carries a
+%% restrictive Content-Security-Policy and a 1-year Strict-Transport-
+%% Security header by default. CSP `default-src 'self'` blocks third-party
+%% script/style/image sources at the browser level. HSTS `max-age=31536000`
+%% asks the browser to upgrade subsequent same-host requests to HTTPS for
+%% one year. `includeSubDomains` and `preload` are deliberately omitted —
+%% they are deployment-policy decisions that depend on whether the
+%% operator owns every subdomain, so committing to them by default would
+%% be wrong as often as it is right. Per-response override is deferred to
+%% a future cut once Response gains a headers field.
 http_build_response(#{status := Status, body := Body}) when is_integer(Status) ->
     BodyBin = iolist_to_binary(Body),
     StatusText = http_status_text(Status),
@@ -657,6 +668,8 @@ http_build_response(#{status := Status, body := Body}) when is_integer(Status) -
         <<"HTTP/1.0 ">>, integer_to_binary(Status), <<" ">>, StatusText, <<"\r\n">>,
         <<"Content-Type: text/plain\r\n">>,
         <<"Content-Length: ">>, integer_to_binary(byte_size(BodyBin)), <<"\r\n">>,
+        <<"Content-Security-Policy: default-src 'self'\r\n">>,
+        <<"Strict-Transport-Security: max-age=31536000\r\n">>,
         <<"Connection: close\r\n">>,
         <<"\r\n">>,
         BodyBin

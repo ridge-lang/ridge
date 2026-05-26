@@ -16,11 +16,19 @@ install verification.
 
 ## Install verification
 
+The table splits the recipe in two: the headless slice (steps 1 and 2 —
+install and version listing) is exercised on every release publish by
+`.github/workflows/marketplace-attest.yml` on Ubuntu 22.04 and
+macOS 14 runners. The visual slice (steps 3 to 6 — syntax highlighting
+and live diagnostics rendered in the editor) still requires a human in
+front of the GUI on real hardware. A row counts as "fully attested"
+only when both slices are filled in.
+
 | Platform | Date | VS Code | Install via `code --install-extension` | Syntax highlighting | Diagnostics from `ridge-lsp` |
 |---|---|---|---|---|---|
 | Windows 11 | 2026-05-20 | 1.120.0 | OK (`ridge-lang.vscode-ridge@0.2.0`) | OK | OK |
-| Linux | _pending_ | _pending_ | _pending_ | _pending_ | _pending_ |
-| macOS | _pending_ | _pending_ | _pending_ | _pending_ | _pending_ |
+| Linux (Ubuntu 22.04, headless) | every release publish | latest stable | OK — automated via `.github/workflows/marketplace-attest.yml` | _pending visual signoff_ | _pending visual signoff_ |
+| macOS 14 (headless) | every release publish | latest stable | OK — automated via `.github/workflows/marketplace-attest.yml` | _pending visual signoff_ | _pending visual signoff_ |
 
 Toolchain on the Windows row was `ridge 0.2.0-rc5` / `ridge-lsp 0.2.0-rc5`
 at `~/.cargo/bin/`. The Marketplace install replaces the prior local
@@ -28,6 +36,14 @@ sideload (`vscode-ridge-0.1.0.vsix`) cleanly — VS Code prompts to remove
 the old version on next restart. Highlighting and diagnostics were
 attested against the same TextMate grammar and LSP client that the
 sideload version has been carrying through routine development.
+
+The Linux and macOS rows quote "every release publish" because the
+attestation workflow fires on the `release: [published]` event in
+addition to `workflow_dispatch` and PRs that touch the workflow file
+itself. Per-run evidence (date, runner, VS Code version, installed
+extension version) is uploaded as a build artefact on each run; see
+the workflow logs under
+<https://github.com/ridge-lang/ridge/actions/workflows/marketplace-attest.yml>.
 
 ## Verification recipe (per platform)
 

@@ -105,8 +105,8 @@ are scheduled, not aspirational.
 
 | Status | Item | Description | Evidence |
 |--------|------|-------------|----------|
-| ⏳ | Linux row in Marketplace attestation | Repeat the six-step recipe from a Linux box (Ubuntu LTS or equivalent) and commit the table update | `docs/marketplace-attestation.md` (pending row) |
-| ⏳ | macOS row in Marketplace attestation | Same recipe on an Apple Silicon laptop; verify both `x86_64-apple-darwin` and `aarch64-apple-darwin` install paths | `docs/marketplace-attestation.md` (pending row) |
+| 🟡 | Linux row in Marketplace attestation | Headless install + version-listing verify automated on Ubuntu 22.04 every release publish. Visual signoff (syntax highlighting + live diagnostics rendered in the editor) still pending from a human on real hardware | `.github/workflows/marketplace-attest.yml`; `docs/marketplace-attestation.md` |
+| 🟡 | macOS row in Marketplace attestation | Headless install + version-listing verify automated on macos-14 (Apple Silicon) every release publish. Visual signoff still pending from a human on real hardware | `.github/workflows/marketplace-attest.yml`; `docs/marketplace-attestation.md` |
 
 ### Tooling and CI
 

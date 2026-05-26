@@ -251,3 +251,46 @@ pub fn empty () -> Row = Map.empty\n\
         "non-parametric alias `Row = Map Text Text` must typecheck cleanly; got: {codes:?}"
     );
 }
+
+/// Multi-step alias chains: `type A = List Int; type B = A` must let
+/// `B` unify with `List Int` even though the second alias references the
+/// first.  Pass 2 builds `B`'s body before `ctx.tycon_decls` has been
+/// synced from the arena, so without the dedicated chain-resolution pass
+/// `B` lands as `Type::Con(A, [])` — an opaque dead end that no caller
+/// can unify with `List Int`.
+#[test]
+fn multistep_alias_chain_unifies_with_terminal_body() {
+    let src = "import std.list as List\n\
+type IntList = List Int\n\
+type Numbers = IntList\n\
+\n\
+pub fn lengthNumbers (ns: Numbers) -> Int = List.length ns\n\
+";
+    let errors = run_typecheck_on_source("alias_chain", src);
+    let codes: Vec<&str> = errors.iter().map(TypeError::code).collect();
+    assert!(
+        codes.is_empty(),
+        "multi-step alias chain `Numbers -> IntList -> List Int` must typecheck \
+         cleanly; got: {codes:?}"
+    );
+}
+
+/// Three-step chain (`A -> B -> C -> Map Text Text`) is the same fix
+/// generalised: the dedicated pass recurses through every alias hop until
+/// it lands on a non-alias body.
+#[test]
+fn three_step_alias_chain_unifies_with_terminal_body() {
+    let src = "import std.map as Map\n\
+type RowA = Map Text Text\n\
+type RowB = RowA\n\
+type RowC = RowB\n\
+\n\
+pub fn empty () -> RowC = Map.empty\n\
+";
+    let errors = run_typecheck_on_source("alias_chain3", src);
+    let codes: Vec<&str> = errors.iter().map(TypeError::code).collect();
+    assert!(
+        codes.is_empty(),
+        "three-step alias chain must typecheck cleanly; got: {codes:?}"
+    );
+}

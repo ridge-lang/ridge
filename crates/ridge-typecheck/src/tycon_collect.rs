@@ -122,8 +122,115 @@ pub fn collect_user_tycons(
         }
     }
 
+    // ── Pass 3: resolve multi-step alias chains. ─────────────────────────────
+    //
+    // Pass 2 reads `ctx.tycon_decls` to decide whether a `Named("Foo")`
+    // reference inside an alias body should wrap as `Type::Alias`.  But
+    // `ctx.tycon_decls` does not get synced from the arena until after the
+    // outer driver in `lib.rs` runs `arena.all().to_vec()`, so within pass 2
+    // every later alias sees its earlier siblings as their *placeholder*
+    // kind, not their real kind.  The result is that
+    // `type IntList = List Int; type Numbers = IntList` leaves Numbers'
+    // body as `Type::Con(IntList, [])` — a dead end that never unifies with
+    // `List Int` because `shallow_resolve` peels `Type::Alias` but not
+    // `Type::Con(alias_id, _)`.
+    //
+    // Pass 3 walks every alias body in arena order and substitutes any
+    // embedded `Type::Con(alias_id, _)` with the alias's resolved body,
+    // following the chain to the terminal non-alias type.  A `visited` set
+    // breaks any cycle defensively (the grammar already forbids them, but a
+    // typo or future relaxation should not melt the typechecker).
+    resolve_alias_chains(arena);
+
     TyConCollectResult {
         user_tycon_names: name_to_id,
+    }
+}
+
+/// Walk every `TyConKind::Alias` body in `arena` and expand any
+/// `Type::Con(alias_id, _)` embedded inside it to the alias's terminal
+/// (non-alias) body.  The expanded body keeps the wrapping
+/// `TyConKind::Alias`, so use-sites still get a `Type::Alias { name, body }`
+/// view at the outer wrap done by `ast_type_to_ridge_type`.
+fn resolve_alias_chains(arena: &mut TyConArena) {
+    #[expect(
+        clippy::cast_possible_truncation,
+        reason = "arena len fits u32 in practice"
+    )]
+    let alias_ids: Vec<TyConId> = (0..arena.len())
+        .map(|i| TyConId(i as u32))
+        .filter(|&id| matches!(arena.get(id).kind, TyConKind::Alias(_)))
+        .collect();
+
+    for id in alias_ids {
+        let original_body = match &arena.get(id).kind {
+            TyConKind::Alias(body) => body.clone(),
+            _ => continue,
+        };
+        let mut visited: Vec<TyConId> = vec![id];
+        let resolved = chase_alias_chain(arena, &original_body, &mut visited);
+        arena.replace_kind(id, TyConKind::Alias(resolved));
+    }
+}
+
+/// Recursively replace any `Type::Con(alias_id, _)` reference inside `ty`
+/// with the alias's resolved body, chasing through chained aliases.  Args
+/// of the original `Type::Con` are dropped because non-parametric aliases
+/// have arity 0; parametric aliases stay as `Type::Con` since
+/// `TyConKind::Alias` does not carry the alias's own type-parameter vids
+/// (that's the parametric-alias follow-up still tracked for 0.3.0).
+///
+/// `visited` is a stack of alias ids currently being expanded; if an alias
+/// references itself transitively the chain is left as `Type::Con` rather
+/// than recursing forever.
+fn chase_alias_chain(arena: &TyConArena, ty: &Type, visited: &mut Vec<TyConId>) -> Type {
+    match ty {
+        Type::Con(id, args) => {
+            if matches!(arena.get(*id).kind, TyConKind::Alias(_)) && !visited.contains(id) {
+                // Only chase non-parametric aliases (arity 0 use site).
+                // A parametric `Stack Int` would land here with args
+                // non-empty; expanding it correctly needs substitution,
+                // which is the parametric-alias follow-up.
+                if args.is_empty() {
+                    let inner_body = match &arena.get(*id).kind {
+                        TyConKind::Alias(body) => body.clone(),
+                        _ => unreachable!("matches!() guarded this arm"),
+                    };
+                    visited.push(*id);
+                    let resolved = chase_alias_chain(arena, &inner_body, visited);
+                    visited.pop();
+                    return resolved;
+                }
+            }
+            let new_args: Vec<Type> = args
+                .iter()
+                .map(|a| chase_alias_chain(arena, a, visited))
+                .collect();
+            Type::Con(*id, new_args)
+        }
+        Type::Alias { name, body } => Type::Alias {
+            name: *name,
+            body: Box::new(chase_alias_chain(arena, body, visited)),
+        },
+        Type::Fn { params, ret, caps } => {
+            let new_params: Vec<Type> = params
+                .iter()
+                .map(|p| chase_alias_chain(arena, p, visited))
+                .collect();
+            let new_ret = Box::new(chase_alias_chain(arena, ret, visited));
+            Type::Fn {
+                params: new_params,
+                ret: new_ret,
+                caps: caps.clone(),
+            }
+        }
+        Type::Tuple(elems) => Type::Tuple(
+            elems
+                .iter()
+                .map(|e| chase_alias_chain(arena, e, visited))
+                .collect(),
+        ),
+        _ => ty.clone(),
     }
 }
 

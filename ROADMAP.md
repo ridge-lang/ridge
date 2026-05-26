@@ -113,7 +113,7 @@ are scheduled, not aspirational.
 | Status | Item | Description | Evidence |
 |--------|------|-------------|----------|
 | ⏳ | Tighten clippy to hard-fail | Remove `continue-on-error: true` from the clippy step in `ci.yml` | `.github/workflows/ci.yml:49` |
-| ⏳ | Cross-platform CI matrix | Run `cargo build` and `cargo test` on macOS and Windows runners, not just Ubuntu | `.github/workflows/ci.yml` |
+| ✅ | Cross-platform CI matrix | `cargo build`, `cargo test`, `cargo fmt --check`, and `cargo clippy -D warnings` run on Ubuntu 22.04, macOS 14, and Windows 2022 on every PR and push to `main` | `.github/workflows/ci.yml` |
 
 ### Standard library
 

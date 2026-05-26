@@ -8,8 +8,19 @@ on:
 
 jobs:
   build-and-test:
-    name: Build and test (Linux)
-    runs-on: ubuntu-latest
+    name: Build and test (${{ matrix.os }})
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: linux
+            runner: ubuntu-22.04
+          - os: macos
+            runner: macos-14
+          - os: windows
+            runner: windows-2022
+
     steps:
       - name: Checkout
         uses: actions/checkout@v5
@@ -20,6 +31,9 @@ jobs:
         # not use. Rust + OTP + the cargo cache push past the remaining
         # headroom and the runner aborts with "No space left on device"
         # before the build step. Reclaim the unused space up front.
+        # macOS and Windows runners have headroom; the bundled tooling
+        # paths are also Linux-specific.
+        if: matrix.os == 'linux'
         run: |
           df -h /
           sudo rm -rf /usr/share/dotnet

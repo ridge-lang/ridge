@@ -7,6 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.6] - 2026-05-26
+
+### Added
+
+- `std.net.http` gains four web-hardening surfaces. `Http.sql raw` returns a `Sql` wrapper around a value with embedded single quotes doubled (`'` -> `''`); `Http.html raw` returns an `Html` wrapper around a value with the five HTML special characters (`&`, `<`, `>`, `"`, `'`) escaped to entity references, with `&` processed first so existing entities double-encode predictably. Both are pure (no capability). The newtypes are records with a single `value` field; pattern matching is via field access. Direct record-syntax construction (`Sql { value = "..." }`) is technically possible but bypasses the escape pass — the type wrappers are a hint to the type checker and to code review, not a runtime-enforced boundary. The SQL escape is not a substitute for parameterized queries, and the doc comment says so.
+- `std.net.http.SecureCookie` record + the `Http.secureCookie name value` factory. The factory returns a value with `secure = true`, `httpOnly = true`, `sameSite = "Lax"`, `maxAge = None`, `path = None` — the three boolean / string defaults are the Q-024 mitigations for XSS / CSRF / network-eavesdropping. `Http.secureCookieHeader c` flattens the record to a `Set-Cookie:` header value, emitting `; Attribute` segments only for the attributes that are set. Override individual fields with the record-update form when a workflow needs `SameSite=Strict`, an explicit `Max-Age`, or a non-root `Path`.
+- String interpolation `${x}` now dispatches to a user-defined `toText` when the hole's type is a user `TyCon` whose owning module exports `pub fn toText (x: T) -> Text`. The dispatch is opt-in by naming: no new syntax, no global typeclass table. The closed `ToText` set (Int / Float / Bool / Text / Timestamp) keeps its existing path; user types now get a third path that synthesizes a `Call(External, toText, [arg])` to the type's owning module. Missing `toText` falls back to the existing `L007 ToTextLowering` defensive path.
+
+### Changed
+
+- The CI workflow now runs `cargo build`, `cargo test`, `cargo fmt --check`, and `cargo clippy -D warnings` on Ubuntu 22.04, macOS 14, and Windows 2022 on every PR and push to `main`, not just Linux. `fail-fast: false` so a problem on one runner does not mask issues on the others. The Linux-only disk-cleanup step is gated to the Linux job; the macOS and Windows runners have headroom and use different filesystem layouts. Rust toolchain install, Erlang/OTP install via `erlef/setup-beam`, and the cargo cache key all work unchanged across platforms.
+- HTTP server responses built through `ridge_rt:http_build_response/1` now carry two security headers by default: `Content-Security-Policy: default-src 'self'` and `Strict-Transport-Security: max-age=31536000`. CSP `default-src 'self'` blocks third-party script/style/image sources at the browser level; HSTS `max-age=31536000` asks the browser to upgrade subsequent same-host requests to HTTPS for one year. `includeSubDomains` and `preload` are deliberately omitted from the HSTS value because they are deployment-policy decisions that depend on whether the operator owns every subdomain. Per-response override is deferred to a future release once `Response` gains a `headers` field — that change would be breaking for the record's shape and does not fit a 0.2.x patch.
+- The VS Code Marketplace attestation gets a headless lane. A new `.github/workflows/marketplace-attest.yml` workflow installs `ridge-lang.vscode-ridge` from the Marketplace on Ubuntu 22.04 and macOS 14 runners on every `release: [published]` event (plus `workflow_dispatch` and PRs that touch the workflow itself), then asserts the published version appears in `code --list-extensions --show-versions`. Per-run evidence (date, runner, VS Code version, installed extension version) is uploaded as a build artefact. The visual slice (syntax highlighting + live diagnostics rendered in the editor) still requires a human on real hardware; the Linux and macOS rows in `docs/marketplace-attestation.md` are split accordingly.
+
 ## [0.2.5] - 2026-05-25
 
 ### Fixed
@@ -216,7 +230,8 @@ Initial public release candidate.
 - Standard library: `bool`, `cli`, `env`, `float`, `fs`, `int`, `io`, `json`, `list`, `map`, `net.http`, `option`, `proc`, `random`, `text`, `time`
 - Apache-2.0 licensed
 
-[Unreleased]: https://github.com/ridge-lang/ridge/compare/v0.2.5...HEAD
+[Unreleased]: https://github.com/ridge-lang/ridge/compare/v0.2.6...HEAD
+[0.2.6]: https://github.com/ridge-lang/ridge/compare/v0.2.5...v0.2.6
 [0.2.5]: https://github.com/ridge-lang/ridge/compare/v0.2.4...v0.2.5
 [0.2.4]: https://github.com/ridge-lang/ridge/compare/v0.2.3...v0.2.4
 [0.2.3]: https://github.com/ridge-lang/ridge/compare/v0.2.2...v0.2.3

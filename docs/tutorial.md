@@ -1,7 +1,7 @@
 # Ridge — Tutorial
 
 A guided tour from install to a runnable hello-world to your first
-diagnostics in VS Code. Targets Ridge **0.2.5**.
+diagnostics in VS Code. Targets Ridge **0.2.6**.
 
 This tutorial assumes nothing beyond a working Rust toolchain and a
 recent Erlang/OTP. For the formal language definition, see
@@ -63,12 +63,12 @@ bash -c "$(curl -fsSL https://raw.githubusercontent.com/ridge-lang/ridge/main/to
 To pin a specific release tag, set `RIDGE_VERSION`:
 
 ```powershell
-$env:RIDGE_VERSION = 'v0.2.5'
+$env:RIDGE_VERSION = 'v0.2.6'
 & ([scriptblock]::Create((iwr -useb 'https://raw.githubusercontent.com/ridge-lang/ridge/main/tools/install/install.ps1').Content))
 ```
 
 ```bash
-RIDGE_VERSION=v0.2.5 bash -c "$(curl -fsSL https://raw.githubusercontent.com/ridge-lang/ridge/main/tools/install/install.sh)"
+RIDGE_VERSION=v0.2.6 bash -c "$(curl -fsSL https://raw.githubusercontent.com/ridge-lang/ridge/main/tools/install/install.sh)"
 ```
 
 > **Why not `curl … | sh` (or `| bash`)?** The installer's Erlang
@@ -84,9 +84,9 @@ RIDGE_VERSION=v0.2.5 bash -c "$(curl -fsSL https://raw.githubusercontent.com/rid
 
 ```sh
 ~/.cargo/bin/ridge --version
-# expected: ridge 0.2.5
+# expected: ridge 0.2.6
 ~/.cargo/bin/ridge-lsp --version
-# expected: ridge-lsp 0.2.5
+# expected: ridge-lsp 0.2.6
 ```
 
 Use the explicit path (`~/.cargo/bin/ridge`), not a shell glob. The

@@ -51,7 +51,7 @@ use ridge_ast::{
     Expr, Param, Span,
 };
 use ridge_ir::{
-    actor::{IrActor, IrHandler, IrInit, IrStateField},
+    actor::{IrActor, IrHandler, IrInit, IrStateField, MailboxConfig, MailboxPolicy},
     IrParam,
 };
 use ridge_resolve::{NodeId, NodeKind};
@@ -119,6 +119,15 @@ pub fn lower_actor(ctx: &mut LowerCtx<'_>, decl: &ActorDecl) -> IrActor {
         })
         .collect();
 
+    // ── 5. Lower the optional mailbox configuration ──────────────────────────
+    let mailbox_config: Option<MailboxConfig> = decl.members.iter().find_map(|m| {
+        if let ActorMember::Mailbox(mb) = m {
+            Some(lower_mailbox_config(&mb.config))
+        } else {
+            None
+        }
+    });
+
     IrActor {
         name: decl.name.text.clone(),
         module: ctx.module_id,
@@ -126,7 +135,7 @@ pub fn lower_actor(ctx: &mut LowerCtx<'_>, decl: &ActorDecl) -> IrActor {
         state_fields,
         init,
         dispatch,
-        mailbox_config: None,
+        mailbox_config,
         // ActorDecl items carry no NodeId per the side-table convention.
         origin: NodeId(0),
         span: decl.span,
@@ -136,6 +145,23 @@ pub fn lower_actor(ctx: &mut LowerCtx<'_>, decl: &ActorDecl) -> IrActor {
 }
 
 // ── Private helpers ───────────────────────────────────────────────────────────
+
+/// Translate the AST mailbox config into its IR mirror. The two enums share
+/// shape and names; the function only re-tags the variants so that downstream
+/// codegen consumes a single `ridge_ir::MailboxConfig` regardless of source.
+const fn lower_mailbox_config(ast: &ridge_ast::MailboxConfig) -> MailboxConfig {
+    match ast {
+        ridge_ast::MailboxConfig::Unbounded => MailboxConfig::Unbounded,
+        ridge_ast::MailboxConfig::Bounded { capacity, policy } => MailboxConfig::Bounded {
+            capacity: *capacity,
+            policy: match policy {
+                ridge_ast::MailboxPolicy::DropNewest => MailboxPolicy::DropNewest,
+                ridge_ast::MailboxPolicy::DropOldest => MailboxPolicy::DropOldest,
+                ridge_ast::MailboxPolicy::Error => MailboxPolicy::Error,
+            },
+        },
+    }
+}
 
 /// Lower a `state` field declaration to `IrStateField`.
 ///

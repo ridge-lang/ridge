@@ -371,6 +371,40 @@ pub fn check_actor_encapsulation(
     errors
 }
 
+// ── Mailbox configuration check ───────────────────────────────────────────────
+
+/// Validate the optional `mailbox` member of an actor declaration.
+///
+/// The only check today is the rejection of `drop oldest`: the policy parses
+/// (so the surface syntax stays stable for when the broker mechanism lands)
+/// but the typechecker refuses it with `T027 MailboxPolicyDropOldestNotShipped`
+/// and points at the two policies that are implemented (`drop newest`,
+/// `error`).
+///
+/// Returns the diagnostics to push into `ctx.errors`. Returns an empty vector
+/// when the actor declares no `mailbox`, declares it as `unbounded`, or uses
+/// one of the supported bounded policies.
+#[must_use]
+pub fn check_actor_mailbox_config(actor: &ridge_ast::ActorDecl) -> Vec<TypeError> {
+    let mut errors = Vec::new();
+    for member in &actor.members {
+        let ridge_ast::ActorMember::Mailbox(mb) = member else {
+            continue;
+        };
+        if let ridge_ast::MailboxConfig::Bounded {
+            policy: ridge_ast::MailboxPolicy::DropOldest,
+            ..
+        } = &mb.config
+        {
+            errors.push(TypeError::MailboxPolicyDropOldestNotShipped {
+                actor: actor.name.text.clone(),
+                span: mb.span,
+            });
+        }
+    }
+    errors
+}
+
 // ── Internal helpers ──────────────────────────────────────────────────────────
 
 /// Resolves a type to `(TyConId, ActorSchema)` if it is a concrete actor type.

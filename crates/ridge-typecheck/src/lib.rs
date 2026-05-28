@@ -387,7 +387,7 @@ fn typecheck_module_inner(
     arena: &mut TyConArena,
     b: &BuiltinTyCons,
 ) -> ModuleTypecheckResult {
-    use crate::actor::check_actor_encapsulation;
+    use crate::actor::{check_actor_encapsulation, check_actor_mailbox_config};
     use crate::ctx::InferCtx;
     use crate::scc::typecheck_module_decls;
     use crate::stdlib_env::seed_stdlib_env;
@@ -462,9 +462,14 @@ fn typecheck_module_inner(
     // Int default, which emits `erlang:div/2` and crashes on Float operands.
     typecheck_actor_bodies(&mut ctx, b, ast, arena);
 
-    // Step E: Actor encapsulation checks.
+    // Step E: Actor encapsulation checks + mailbox config validation.
     for item in &ast.items {
         if let Item::Actor(ad) = item {
+            // Mailbox config validation (T027 — `drop oldest` rejection). This
+            // does not depend on the type-constructor arena and runs even when
+            // the actor has no TyCon entry yet.
+            ctx.errors.extend(check_actor_mailbox_config(ad));
+
             // Retrieve the actor's TyConId from the names map.
             if let Some(&actor_id) = ctx.user_tycon_names.get(&ad.name.text) {
                 let decl = arena.get(actor_id);

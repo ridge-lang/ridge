@@ -356,6 +356,14 @@ impl fmt::Display for TypeError {
                 )
             }
 
+            // ── T027 ──────────────────────────────────────────────────────────
+            Self::MailboxPolicyDropOldestNotShipped { actor, .. } => {
+                write!(
+                    f,
+                    "T027: `drop oldest` mailbox policy is not yet implemented\n  actor `{actor}` declares `mailbox bounded N drop oldest`\n  hint: use `drop newest` (silently drop the incoming message) or `error` (signal failure to the sender) until `drop oldest` ships"
+                )
+            }
+
             // ── T999 ──────────────────────────────────────────────────────────
             Self::InternalTypeError { detail, .. } => {
                 write!(f, "T999: internal type error\n  {detail}\n  This is a compiler bug. Please report it.")
@@ -403,6 +411,7 @@ impl HasErrorCode for TypeError {
             | Self::RowVariableLeak { span, .. }
             | Self::SpawnArityMismatch { span, .. }
             | Self::AskTimeoutNotInt { span, .. }
+            | Self::MailboxPolicyDropOldestNotShipped { span, .. }
             | Self::InternalTypeError { span, .. } => *span,
 
             // T013: uses `recursive_call_span` as the primary span.

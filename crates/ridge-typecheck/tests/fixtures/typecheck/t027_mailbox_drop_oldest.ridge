@@ -1,0 +1,7 @@
+-- expect: T027
+-- T027 MailboxPolicyDropOldestNotShipped: `drop oldest` parses but the
+-- typechecker rejects it until the broker mechanism ships in a later cut.
+actor Window =
+    mailbox bounded 5 drop oldest
+    state n: Int = 0
+    on tick = n <- n + 1

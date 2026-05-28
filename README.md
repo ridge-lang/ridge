@@ -40,10 +40,10 @@ without swapping dialects.
   scheduling, isolated processes, supervisor trees, and crash-only
   design without a framework on top.
 
-WebAssembly and native (LLVM) targets are on the roadmap, so the same
-source can move from a learning notebook to a browser playground to a
-production server without changing dialect. See
-[`ROADMAP.md`](ROADMAP.md).
+BEAM is the production target. WebAssembly and native (LLVM)
+backends are exploratory, kept on the roadmap behind a target-neutral
+intermediate representation so they remain feasible without a fixed
+schedule. See [`ROADMAP.md`](ROADMAP.md).
 
 ## What you get
 

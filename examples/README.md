@@ -1,6 +1,7 @@
 # Ridge Examples
 
-Standalone sample programs. Each file is self-contained and runnable
+Standalone sample programs. Each file is self-contained &mdash; no
+manifest, no extra crates, no setup &mdash; and runnable directly
 once `ridge` is on your `PATH`:
 
 ```sh

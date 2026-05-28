@@ -126,6 +126,7 @@ pub fn lower_actor(ctx: &mut LowerCtx<'_>, decl: &ActorDecl) -> IrActor {
         state_fields,
         init,
         dispatch,
+        mailbox_config: None,
         // ActorDecl items carry no NodeId per the side-table convention.
         origin: NodeId(0),
         span: decl.span,

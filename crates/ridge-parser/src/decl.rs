@@ -35,8 +35,9 @@
 
 use ridge_ast::{
     ActorDecl, ActorMember, Body, Capability, ConstDecl, Constructor, DocComment, Expr, FieldDecl,
-    FnDecl, Ident, ImportDecl, InitDecl, Item, ModulePath, OnHandler, Param, RecordTypeBody,
-    StateDecl, TypeBody, TypeDecl, UnionTypeBody, Visibility,
+    FnDecl, Ident, ImportDecl, InitDecl, Item, MailboxConfig, MailboxDecl, MailboxPolicy,
+    ModulePath, OnHandler, Param, RecordTypeBody, StateDecl, TypeBody, TypeDecl, UnionTypeBody,
+    Visibility,
 };
 use ridge_lexer::Token;
 
@@ -1163,6 +1164,7 @@ pub(crate) fn parse_actor_decl(
         ActorMember::State(s) => s.span,
         ActorMember::Init(i) => i.span,
         ActorMember::On(o) => o.span,
+        ActorMember::Mailbox(mb) => mb.span,
     });
 
     Ok(ActorDecl {
@@ -1248,7 +1250,7 @@ fn parse_actor_body_recovering(
 }
 
 /// Skip tokens to the next actor-member sync point: `state`/`init`/`on`
-/// keyword, `DEDENT`, or `EOF`.
+/// keyword, `mailbox` member-introducer, `DEDENT`, or `EOF`.
 fn sync_to_next_actor_member(cur: &mut Cursor<'_>) {
     loop {
         match cur.peek() {
@@ -1259,6 +1261,7 @@ fn sync_to_next_actor_member(cur: &mut Cursor<'_>) {
             | Token::Dedent
             | Token::Eof
             | Token::Newline => return,
+            Token::LowerIdent(s) if s == "mailbox" => return,
             _ => {
                 cur.bump();
             }
@@ -1272,10 +1275,13 @@ fn parse_actor_member(cur: &mut Cursor<'_>) -> Result<ActorMember, ParseError> {
         Token::KwState => Ok(ActorMember::State(parse_state_decl(cur)?)),
         Token::KwInit => Ok(ActorMember::Init(parse_init_decl(cur)?)),
         Token::KwOn => Ok(ActorMember::On(parse_on_handler(cur, None)?)),
+        Token::LowerIdent(s) if s == "mailbox" => {
+            Ok(ActorMember::Mailbox(parse_mailbox_decl(cur)?))
+        }
         _ => Err(ParseError::UnexpectedToken {
             span: cur.span(),
             description: format!(
-                "expected `state`, `init`, or `on` in actor body, found `{}`",
+                "expected `state`, `init`, `on`, or `mailbox` in actor body, found `{}`",
                 cur.peek()
             ),
         }),
@@ -1445,6 +1451,128 @@ pub(crate) fn parse_on_handler(
         span: start.merge(end_span),
         doc,
     })
+}
+
+// ── parse_mailbox_decl ────────────────────────────────────────────────────────
+
+/// Parse a `mailbox` configuration member of an actor.
+///
+/// Grammar:
+///
+/// ```ebnf
+/// MailboxDecl    ::= "mailbox" MailboxConfig ;
+/// MailboxConfig  ::= "unbounded"
+///                  | "bounded" IntLit MailboxPolicy ;
+/// MailboxPolicy  ::= "drop" ("newest" | "oldest")
+///                  | "error" ;
+/// ```
+///
+/// `mailbox` is a contextual member-introducer, recognized only at actor-body
+/// member position. Outside actor bodies it remains an ordinary identifier.
+/// The configuration words (`unbounded`, `bounded`, `drop`, `newest`,
+/// `oldest`, `error`) are equally contextual.
+///
+/// `drop oldest` is accepted lexically so the parser produces a clean
+/// diagnostic later — the typechecker rejects it until the broker mechanism
+/// ships in a future cut.
+///
+/// Precondition: `cur.peek()` is `Token::LowerIdent("mailbox")`.
+pub(crate) fn parse_mailbox_decl(cur: &mut Cursor<'_>) -> Result<MailboxDecl, ParseError> {
+    let start = cur.span();
+    cur.bump(); // consume `mailbox`
+
+    let kind_span = cur.span();
+    let (config, end) = match cur.peek().clone() {
+        Token::LowerIdent(ref s) if s == "unbounded" => {
+            let span = kind_span;
+            cur.bump();
+            (MailboxConfig::Unbounded, span)
+        }
+        Token::LowerIdent(ref s) if s == "bounded" => {
+            cur.bump();
+            let (capacity, _cap_span) = parse_mailbox_capacity(cur)?;
+            let (policy, policy_span) = parse_mailbox_policy(cur)?;
+            (MailboxConfig::Bounded { capacity, policy }, policy_span)
+        }
+        _ => {
+            return Err(ParseError::Expected {
+                span: kind_span,
+                expected: "`unbounded` or `bounded`",
+                found: cur.peek().to_string(),
+            });
+        }
+    };
+
+    Ok(MailboxDecl {
+        config,
+        span: start.merge(end),
+    })
+}
+
+/// Parse the capacity `N` of a `bounded N` mailbox.
+///
+/// `N` must be a positive `i64` literal. Zero, negative, or overflowing
+/// values surface as `P023 MailboxBoundInvalid`. Non-integer tokens surface
+/// as `P001 Expected`. The four integer token shapes (`IntDec`, `IntBin`,
+/// `IntOct`, `IntHex`) are dispatched here in the same way `ridge-lower`
+/// dispatches literal lowering.
+fn parse_mailbox_capacity(cur: &mut Cursor<'_>) -> Result<(i64, ridge_ast::Span), ParseError> {
+    let span = cur.span();
+    let (raw, radix, prefix) = match cur.peek().clone() {
+        Token::IntDec(raw) => (raw, 10, ""),
+        Token::IntBin(raw) => (raw, 2, "0b"),
+        Token::IntOct(raw) => (raw, 8, "0o"),
+        Token::IntHex(raw) => (raw, 16, "0x"),
+        _ => {
+            return Err(ParseError::Expected {
+                span,
+                expected: "<positive integer literal>",
+                found: cur.peek().to_string(),
+            });
+        }
+    };
+    cur.bump();
+    let cleaned = raw.trim_start_matches(prefix).replace('_', "");
+    match i64::from_str_radix(&cleaned, radix) {
+        Ok(n) if n >= 1 => Ok((n, span)),
+        _ => Err(ParseError::MailboxBoundInvalid { span, raw }),
+    }
+}
+
+/// Parse the policy keyword(s) of a `bounded N <policy>` mailbox.
+///
+/// Returns the policy and the span of its last consumed token. Missing or
+/// unknown policies surface as `P022 MailboxPolicyMissing`.
+fn parse_mailbox_policy(
+    cur: &mut Cursor<'_>,
+) -> Result<(MailboxPolicy, ridge_ast::Span), ParseError> {
+    let head_span = cur.span();
+    match cur.peek().clone() {
+        Token::LowerIdent(ref s) if s == "drop" => {
+            cur.bump();
+            let p_span = cur.span();
+            match cur.peek().clone() {
+                Token::LowerIdent(ref t) if t == "newest" => {
+                    cur.bump();
+                    Ok((MailboxPolicy::DropNewest, p_span))
+                }
+                Token::LowerIdent(ref t) if t == "oldest" => {
+                    cur.bump();
+                    Ok((MailboxPolicy::DropOldest, p_span))
+                }
+                _ => Err(ParseError::Expected {
+                    span: p_span,
+                    expected: "`newest` or `oldest`",
+                    found: cur.peek().to_string(),
+                }),
+            }
+        }
+        Token::LowerIdent(ref s) if s == "error" => {
+            cur.bump();
+            Ok((MailboxPolicy::Error, head_span))
+        }
+        _ => Err(ParseError::MailboxPolicyMissing { span: head_span }),
+    }
 }
 
 // ── Tests ─────────────────────────────────────────────────────────────────────

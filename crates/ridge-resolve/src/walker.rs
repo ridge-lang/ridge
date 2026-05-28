@@ -544,6 +544,9 @@ impl<'ast> Visit<'ast> for ScopeWalker<'_> {
             ActorMember::State(s) => self.visit_state_decl(s),
             ActorMember::Init(i) => self.visit_init_decl(i),
             ActorMember::On(h) => self.visit_on_handler(h),
+            ActorMember::Mailbox(_) => {
+                // Mailbox config has no identifier references to resolve.
+            }
         }
     }
 

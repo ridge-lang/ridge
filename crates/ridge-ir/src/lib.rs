@@ -31,7 +31,7 @@ pub mod workspace;
 
 // ── Flat re-exports so consumers write `ridge_ir::IrExpr`, not `ridge_ir::expr::IrExpr` ──
 
-pub use actor::{IrActor, IrHandler, IrInit, IrStateField};
+pub use actor::{IrActor, IrHandler, IrInit, IrStateField, MailboxConfig, MailboxPolicy};
 pub use expr::{AssignTarget, IrArm, IrExpr, IrTimeout};
 pub use id::IrNodeId;
 pub use item::{IrConst, IrFfiFn, IrFn, IrItem, IrParam};

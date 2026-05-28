@@ -27,6 +27,10 @@
 //! T11 adds:
 //! - `P019 OrphanDocComment`
 //!
+//! Bounded mailboxes add:
+//! - `P022 MailboxPolicyMissing`
+//! - `P023 MailboxBoundInvalid`
+//!
 //! Later tasks (T3–T12) will extend this enum; adding variants is
 //! non-breaking because the enum is not `#[non_exhaustive]` — the parser
 //! crate owns all construction sites.
@@ -195,6 +199,33 @@ pub enum ParseError {
         span: Span,
     },
 
+    /// P022 — `mailbox bounded N` was declared without an overflow policy.
+    ///
+    /// A bounded mailbox must specify how it handles overflow. The valid
+    /// policies are `drop newest`, `drop oldest`, and `error`. There is no
+    /// default policy: requiring an explicit choice forces the author to
+    /// decide what the actor does when the bound is reached.
+    #[error(
+        "bounded mailbox requires an overflow policy: `drop newest`, `drop oldest`, or `error`"
+    )]
+    MailboxPolicyMissing {
+        /// Source location where the policy was expected.
+        span: Span,
+    },
+
+    /// P023 — `mailbox bounded N` was given a capacity that is not a positive
+    /// `i64` literal.
+    ///
+    /// Capacity must be a literal integer in the range `1..=i64::MAX`. Zero,
+    /// negative, and overflowing values are rejected at parse time.
+    #[error("mailbox capacity must be a positive integer literal (got `{raw}`)")]
+    MailboxBoundInvalid {
+        /// Source location of the offending integer literal.
+        span: Span,
+        /// The raw text of the rejected literal.
+        raw: String,
+    },
+
     /// P999 — the lexer's bracket-suppression invariant was violated (should
     /// be unreachable; signals a lexer bug, not a user error).
     #[error("internal error: layout invariant violated inside bracketed region")]
@@ -223,6 +254,8 @@ impl ParseError {
             Self::OrphanDocComment { .. } => "P019",
             Self::ReservedKeywordAsIdent { .. } => "P020",
             Self::InlineRecordTypeInTypePosition { .. } => "P021",
+            Self::MailboxPolicyMissing { .. } => "P022",
+            Self::MailboxBoundInvalid { .. } => "P023",
             Self::InternalLayoutInvariantViolated { .. } => "P999",
         }
     }
@@ -243,6 +276,8 @@ impl ParseError {
             | Self::OrphanDocComment { span }
             | Self::ReservedKeywordAsIdent { span, .. }
             | Self::InlineRecordTypeInTypePosition { span }
+            | Self::MailboxPolicyMissing { span }
+            | Self::MailboxBoundInvalid { span, .. }
             | Self::InternalLayoutInvariantViolated { span } => *span,
         }
     }

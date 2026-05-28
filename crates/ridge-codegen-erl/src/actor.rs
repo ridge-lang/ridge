@@ -539,6 +539,7 @@ mod tests {
             state_fields,
             init: None,
             dispatch: handlers,
+            mailbox_config: None,
             origin: NodeId(0),
             span: sp(),
             is_pub: true,

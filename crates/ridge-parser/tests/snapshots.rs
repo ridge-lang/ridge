@@ -145,3 +145,164 @@ fn snapshot_ffi_with_caps() {
     );
     insta::assert_debug_snapshot!("ffi_with_caps", result.module);
 }
+
+// ── Mailbox configuration snapshot fixtures ──────────────────────────────────
+//
+// Six fixtures pin the surface syntax of the `mailbox` actor member:
+//
+//   1. `mailbox unbounded`                  — explicit unbounded
+//   2. `mailbox bounded N drop newest`      — bounded with drop-newest policy
+//   3. `mailbox bounded N error`            — bounded with error policy
+//   4. `mailbox bounded N drop oldest`      — parses; typecheck rejects later
+//   5. `mailbox bounded N` (no policy)      — `P022 MailboxPolicyMissing`
+//   6. `mailbox bounded 0 drop newest`      — `P023 MailboxBoundInvalid`
+
+#[test]
+fn snapshot_actor_mailbox_unbounded() {
+    let src = "\
+actor Counter =
+    mailbox unbounded
+    state count: Int = 0
+    on increment = count <- count + 1
+";
+    let result = parse_source(src);
+    assert!(
+        result.lex_errors.is_empty(),
+        "lex errors: {:#?}",
+        result.lex_errors
+    );
+    assert!(
+        result.errors.is_empty(),
+        "parse errors: {:#?}",
+        result.errors
+    );
+    insta::assert_debug_snapshot!("actor_mailbox_unbounded", result.module);
+}
+
+#[test]
+fn snapshot_actor_mailbox_bounded_drop_newest() {
+    let src = "\
+actor Limiter =
+    mailbox bounded 100 drop newest
+    state n: Int = 0
+    on tick = n <- n + 1
+";
+    let result = parse_source(src);
+    assert!(
+        result.lex_errors.is_empty(),
+        "lex errors: {:#?}",
+        result.lex_errors
+    );
+    assert!(
+        result.errors.is_empty(),
+        "parse errors: {:#?}",
+        result.errors
+    );
+    insta::assert_debug_snapshot!("actor_mailbox_bounded_drop_newest", result.module);
+}
+
+#[test]
+fn snapshot_actor_mailbox_bounded_error() {
+    let src = "\
+actor Queue =
+    mailbox bounded 10 error
+    state n: Int = 0
+    on tick = n <- n + 1
+";
+    let result = parse_source(src);
+    assert!(
+        result.lex_errors.is_empty(),
+        "lex errors: {:#?}",
+        result.lex_errors
+    );
+    assert!(
+        result.errors.is_empty(),
+        "parse errors: {:#?}",
+        result.errors
+    );
+    insta::assert_debug_snapshot!("actor_mailbox_bounded_error", result.module);
+}
+
+#[test]
+fn snapshot_actor_mailbox_bounded_drop_oldest_parses() {
+    // `drop oldest` is accepted lexically. The typechecker will reject it in
+    // a follow-up; here we just lock the AST shape.
+    let src = "\
+actor Window =
+    mailbox bounded 5 drop oldest
+    state n: Int = 0
+    on tick = n <- n + 1
+";
+    let result = parse_source(src);
+    assert!(
+        result.lex_errors.is_empty(),
+        "lex errors: {:#?}",
+        result.lex_errors
+    );
+    assert!(
+        result.errors.is_empty(),
+        "parse errors: {:#?}",
+        result.errors
+    );
+    insta::assert_debug_snapshot!("actor_mailbox_bounded_drop_oldest", result.module);
+}
+
+#[test]
+fn snapshot_actor_mailbox_no_policy_emits_p022() {
+    // `mailbox bounded N` without a policy → P022 MailboxPolicyMissing.
+    let src = "\
+actor Bad =
+    mailbox bounded 100
+    state n: Int = 0
+    on tick = n <- n + 1
+";
+    let result = parse_source(src);
+    assert!(
+        result.lex_errors.is_empty(),
+        "lex errors: {:#?}",
+        result.lex_errors
+    );
+    assert!(
+        !result.errors.is_empty(),
+        "expected at least one parse error"
+    );
+    let codes: Vec<&str> = result
+        .errors
+        .iter()
+        .map(ridge_parser::ParseError::code)
+        .collect();
+    assert!(
+        codes.contains(&"P022"),
+        "expected P022 in errors, got codes={codes:?}"
+    );
+}
+
+#[test]
+fn snapshot_actor_mailbox_zero_bound_emits_p023() {
+    // `mailbox bounded 0` → P023 MailboxBoundInvalid.
+    let src = "\
+actor Bad =
+    mailbox bounded 0 drop newest
+    state n: Int = 0
+    on tick = n <- n + 1
+";
+    let result = parse_source(src);
+    assert!(
+        result.lex_errors.is_empty(),
+        "lex errors: {:#?}",
+        result.lex_errors
+    );
+    assert!(
+        !result.errors.is_empty(),
+        "expected at least one parse error"
+    );
+    let codes: Vec<&str> = result
+        .errors
+        .iter()
+        .map(ridge_parser::ParseError::code)
+        .collect();
+    assert!(
+        codes.contains(&"P023"),
+        "expected P023 in errors, got codes={codes:?}"
+    );
+}

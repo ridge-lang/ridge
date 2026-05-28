@@ -395,6 +395,9 @@ fn build_actor_kind_fresh(
                     caps: handler_caps,
                 });
             }
+            ActorMember::Mailbox(_) => {
+                // Mailbox config contributes no type variables or schema info.
+            }
         }
     }
 

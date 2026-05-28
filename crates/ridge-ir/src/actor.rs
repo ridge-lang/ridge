@@ -36,6 +36,13 @@ pub struct IrActor {
     pub init: Option<IrInit>,
     /// One handler per `on` clause, in source order.
     pub dispatch: Vec<IrHandler>,
+    /// Mailbox configuration (cut 0.2.7).
+    ///
+    /// `None` means no `mailbox` member was declared and the actor defaults
+    /// to the historical unbounded semantics. `Some(MailboxConfig::Unbounded)`
+    /// means an explicit `mailbox unbounded` member was declared. The two are
+    /// semantically equivalent; the field preserves source fidelity.
+    pub mailbox_config: Option<MailboxConfig>,
     /// AST `ActorDecl` `NodeId` for diagnostics.
     pub origin: NodeId,
     /// Source span of the actor declaration.
@@ -44,6 +51,34 @@ pub struct IrActor {
     pub is_pub: bool,
     /// Doc-comment text if any (D067).
     pub doc: Option<String>,
+}
+
+/// Mailbox capacity and overflow policy of an actor (cut 0.2.7).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum MailboxConfig {
+    /// Unbounded mailbox — senders never block, never fail.
+    Unbounded,
+    /// `bounded N <policy>` — capacity-bounded mailbox.
+    Bounded {
+        /// Capacity. Always `>= 1` and representable as `i64`.
+        capacity: i64,
+        /// Overflow policy.
+        policy: MailboxPolicy,
+    },
+}
+
+/// Mailbox overflow policy (cut 0.2.7).
+///
+/// `DropOldest` is accepted by the parser but rejected by the typechecker
+/// until the broker mechanism ships in a later cut.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MailboxPolicy {
+    /// Silently drop the incoming message on overflow.
+    DropNewest,
+    /// Drop the head-of-queue message on overflow; not yet implemented.
+    DropOldest,
+    /// Signal failure to the sender on overflow.
+    Error,
 }
 
 /// A single actor state field.

@@ -697,21 +697,12 @@ fn beam_e2e_mailbox_drop_newest_under_cap() {
 
 // ── 3. drop_newest over cap caps the queue length ───────────────────────────
 
-// `Actor.mailboxSize` is reached via a private FFI bridge here rather than
-// through the qualified `import std.actor as Actor` path. The qualified
-// path emerges through the typecheck signature table but fails to land in
-// the binding map at the call site (the resulting IR carries no Stdlib
-// SymbolRef, so the codegen falls back to a Unit literal and the BEAM
-// blows up at runtime). The bridge avoids that route entirely while still
-// exercising the real runtime function the cut ships.
 const MAILBOX_DROP_NEWEST_OVERFLOW_SOURCE: &str = r#"
 import std.io as Io
 import std.int as Int
 import std.list as List
 import std.time as Time
-
-@ffi("ridge_rt", "mailbox_size", 1)
-fn _mailboxSize (h: Handle a) -> Option Int
+import std.actor as Actor
 
 actor Slow =
     mailbox bounded 5 drop newest
@@ -726,7 +717,7 @@ fn spawn io time main () -> Result Unit Text =
     -- first handler's 100 ms sleep. The queue caps at 5; the rest are
     -- silently dropped.
     let _ = List.map (fn _ -> s ! tick) (List.range 1 100)
-    match _mailboxSize s
+    match Actor.mailboxSize s
         Some n -> Io.println $"size=${Int.toText n}"
         None -> Io.println "dead"
     Ok ()
@@ -851,9 +842,7 @@ fn beam_e2e_mailbox_error_overflow_crashes_sender() {
 const MAILBOX_SIZE_ALIVE_SOURCE: &str = r#"
 import std.io as Io
 import std.int as Int
-
-@ffi("ridge_rt", "mailbox_size", 1)
-fn _mailboxSize (h: Handle a) -> Option Int
+import std.actor as Actor
 
 actor Quiet =
     state n: Int = 0
@@ -861,7 +850,7 @@ actor Quiet =
 
 fn spawn io main () -> Result Unit Text =
     let q = spawn Quiet
-    match _mailboxSize q
+    match Actor.mailboxSize q
         Some n -> Io.println $"size=${Int.toText n}"
         None -> Io.println "dead"
     Ok ()

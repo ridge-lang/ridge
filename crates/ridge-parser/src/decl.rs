@@ -520,6 +520,22 @@ pub(crate) fn can_start_param(cur: &Cursor<'_>) -> bool {
 ///
 /// Precondition: `cur.peek() == &Token::KwImport`.
 #[allow(clippy::too_many_lines)] // Import parsing is inherently verbose due to multiple optional parts.
+/// Return the text of a token that can appear as a module-path segment in an
+/// `import` declaration.
+///
+/// Module paths accept any identifier plus a small set of global keywords
+/// whose lower-case spelling is a valid stdlib module name. The pattern keeps
+/// the keyword reserved in expression position while letting an import like
+/// `import std.actor as Actor` still parse cleanly.
+fn module_path_segment_text(token: &Token) -> Option<String> {
+    match token {
+        Token::LowerIdent(s) | Token::UpperIdent(s) => Some(s.clone()),
+        Token::KwActor => Some("actor".to_string()),
+        _ => None,
+    }
+}
+
+#[allow(clippy::too_many_lines)]
 pub(crate) fn parse_import(
     cur: &mut Cursor<'_>,
     doc: Option<DocComment>,
@@ -528,15 +544,17 @@ pub(crate) fn parse_import(
     cur.expect(&Token::KwImport)?;
 
     // ── ModulePath ────────────────────────────────────────────────────────────
-    // First segment: any identifier (upper or lower).
+    // Each segment is an identifier; selected keywords whose lower-case spelling
+    // is a valid stdlib module name are also accepted here so paths like
+    // `std.actor` can be written even though `actor` is a global keyword.
     let mut segments: Vec<Ident> = Vec::new();
     let seg_span = cur.span();
-    let first_seg = match cur.peek().clone() {
-        Token::LowerIdent(s) | Token::UpperIdent(s) => {
+    let first_seg = match module_path_segment_text(cur.peek()) {
+        Some(text) => {
             cur.bump();
-            Ident::new(s, seg_span)
+            Ident::new(text, seg_span)
         }
-        _ => {
+        None => {
             return Err(ParseError::Expected {
                 span: cur.span(),
                 expected: "<module name>",
@@ -546,26 +564,16 @@ pub(crate) fn parse_import(
     };
     segments.push(first_seg);
 
-    // Subsequent segments: `.` + (lower or upper ident).
+    // Subsequent segments: `.` + identifier-like token. Bail out on `.` followed
+    // by anything else (e.g. `(.name)` field-accessor sugar at expression sites).
     while cur.peek() == &Token::Dot {
-        // Only consume Dot if followed by an identifier (not `(.name)` accessor).
-        if matches!(
-            cur.peek_n(1),
-            Some(Token::LowerIdent(_) | Token::UpperIdent(_))
-        ) {
-            cur.bump(); // consume `.`
-            let seg_span = cur.span();
-            let seg = match cur.peek().clone() {
-                Token::LowerIdent(s) | Token::UpperIdent(s) => {
-                    cur.bump();
-                    Ident::new(s, seg_span)
-                }
-                _ => unreachable!(),
-            };
-            segments.push(seg);
-        } else {
+        let Some(text) = cur.peek_n(1).and_then(module_path_segment_text) else {
             break;
-        }
+        };
+        cur.bump(); // consume `.`
+        let seg_span = cur.span();
+        cur.bump(); // consume segment
+        segments.push(Ident::new(text, seg_span));
     }
 
     let path_span = segments.iter().fold(start, |acc, seg| acc.merge(seg.span));

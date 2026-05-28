@@ -52,6 +52,7 @@ const MODULE_ORDER: &[&str] = &[
     "std.env",
     "std.cli",
     "std.proc",
+    "std.actor",
     "std.json",
     "std.net.http",
 ];
@@ -279,6 +280,7 @@ const BASELINE_EXPORTS: &[(&str, &[&str])] = &[
             "run",
         ],
     ),
+    ("std.actor", &["mailboxSize"]),
     (
         "std.json",
         &[

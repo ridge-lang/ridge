@@ -70,6 +70,7 @@ pub const STDLIB_MODULE_ORDER: &[&str] = &[
     "std.env",
     "std.cli",
     "std.proc",
+    "std.actor",
     // Tier 4 — advanced
     "std.json",
     "std.net.http",

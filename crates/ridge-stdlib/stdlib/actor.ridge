@@ -1,0 +1,25 @@
+-- std.actor — Actor mailbox observability (Tier 3).
+--
+-- Bounded mailboxes are configured per actor via the `mailbox` member
+-- (see spec §3.9 and §7.2.1). The `!` (send) and `?>` (ask) primitives
+-- remain operators; this module ships the observability primitive that
+-- complements them.
+--
+-- The companion result-returning `Actor.send` is deferred until the
+-- typeclass-derived `Message` typing lands — without it the surface
+-- signature for the message argument is not expressible.
+
+-- Read the current mailbox occupancy of the target actor.
+--
+-- Returns `Some n` when the actor is alive and `None` when the actor is
+-- no longer running (crashed, never started, or pending restart by its
+-- supervisor).
+--
+-- The reading is taken at the moment of the call. Under concurrent
+-- contention the value may briefly disagree with what the next sender
+-- observes — bounds are enforced on a best-effort basis at send time,
+-- not at the read site (see spec §7.2.1).
+--
+-- Cap-free: the handle itself is the proof of access. See spec §6.4.1.
+@ffi("ridge_rt", "mailbox_size", 1)
+pub fn mailboxSize (h: Handle a) -> Option Int

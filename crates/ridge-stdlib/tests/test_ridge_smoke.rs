@@ -30,9 +30,9 @@ use ridge_parser::parse_source;
 
 /// Expected number of `.test.ridge` files — one per stdlib module.
 ///
-/// From the §10 file-count audit (plan line 949):
-/// "18 module `.ridge` files + 18 `.test.ridge` files = 36 source files".
-const EXPECTED_TEST_RG_COUNT: usize = 18;
+/// 18 modules from the §10 file-count audit (plan line 949) plus
+/// `std.actor` shipped with the bounded-mailbox cut.
+const EXPECTED_TEST_RG_COUNT: usize = 19;
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 

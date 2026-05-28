@@ -50,8 +50,9 @@ const STD_RANDOM: StdlibModuleId = StdlibModuleId(12);
 const STD_ENV: StdlibModuleId = StdlibModuleId(13);
 const STD_CLI: StdlibModuleId = StdlibModuleId(14);
 const STD_PROC: StdlibModuleId = StdlibModuleId(15);
-const STD_JSON: StdlibModuleId = StdlibModuleId(16);
-const STD_NET_HTTP: StdlibModuleId = StdlibModuleId(17);
+const STD_ACTOR: StdlibModuleId = StdlibModuleId(16);
+const STD_JSON: StdlibModuleId = StdlibModuleId(17);
+const STD_NET_HTTP: StdlibModuleId = StdlibModuleId(18);
 
 // ── Type-building helpers ─────────────────────────────────────────────────────
 //
@@ -108,6 +109,10 @@ fn ty_set(b: &BuiltinTyCons, a: Type) -> Type {
 #[inline]
 fn ty_option(b: &BuiltinTyCons, a: Type) -> Type {
     Type::Con(b.option, vec![a])
+}
+#[inline]
+fn ty_handle(b: &BuiltinTyCons, a: Type) -> Type {
+    Type::Con(b.handle, vec![a])
 }
 #[inline]
 fn ty_result(b: &BuiltinTyCons, ok: Type, err: Type) -> Type {
@@ -1268,6 +1273,16 @@ pub fn stdlib_signature(module: StdlibModuleId, name: &str, b: &BuiltinTyCons) -
                 ty_result(b, ty_proc_output(b), ty_error(b)),
                 proc_caps,
             )))
+        }
+
+        // ── std.actor ─────────────────────────────────────────────────────────
+        (STD_ACTOR, "mailboxSize") => {
+            // forall a. Handle a -> Option Int  (cap-free; the handle is the
+            // proof of access — see spec §6.4.1).
+            Some(poly(
+                vec![A],
+                ty_fn_pure(vec![ty_handle(b, Type::Var(A))], ty_option(b, ty_int(b))),
+            ))
         }
 
         // ── std.json ─────────────────────────────────────────────────────────

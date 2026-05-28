@@ -1,44 +1,86 @@
-# Ridge
+<p align="center">
+  <img src="assets/logo.svg" alt="Ridge logo" width="160" height="160">
+</p>
 
-[![CI](https://github.com/ridge-lang/ridge/actions/workflows/ci.yml/badge.svg)](https://github.com/ridge-lang/ridge/actions/workflows/ci.yml)
-[![Latest release](https://img.shields.io/github/v/release/ridge-lang/ridge?include_prereleases&label=latest)](https://github.com/ridge-lang/ridge/releases)
-[![VS Code Marketplace](https://img.shields.io/visual-studio-marketplace/v/ridge-lang.vscode-ridge?label=vscode)](https://marketplace.visualstudio.com/items?itemName=ridge-lang.vscode-ridge)
-[![License](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
-[![Rust](https://img.shields.io/badge/rust-1.88+-orange.svg)](https://www.rust-lang.org/)
-[![BEAM](https://img.shields.io/badge/BEAM-OTP%2026+-purple.svg)](https://www.erlang.org/)
+<h1 align="center">Ridge</h1>
 
-A typed functional language for the BEAM. Hindley-Milner inference, row
-polymorphism, actor-first concurrency, and effects tracked in the type
-system. Compiles to BEAM bytecode via Core Erlang.
+<p align="center">A typed functional language for the BEAM.</p>
 
-**Status:** 0.2.6 — sixth maintenance release on the 0.2.x line. The language and tooling are
-usable end-to-end. Pre-1.0 minors may include breaking changes; patch
-releases within 0.2.x will not. See [`CHANGELOG.md`](CHANGELOG.md) for
-what landed and [`docs/spec.md`](docs/spec.md) for the full language
-specification.
+<p align="center">
+  <a href="https://github.com/ridge-lang/ridge/actions/workflows/ci.yml"><img src="https://github.com/ridge-lang/ridge/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
+  <a href="https://github.com/ridge-lang/ridge/releases"><img src="https://img.shields.io/github/v/release/ridge-lang/ridge?include_prereleases&label=latest" alt="Latest release"></a>
+  <a href="https://marketplace.visualstudio.com/items?itemName=ridge-lang.vscode-ridge"><img src="https://img.shields.io/visual-studio-marketplace/v/ridge-lang.vscode-ridge?label=vscode" alt="VS Code Marketplace"></a>
+  <a href="LICENSE"><img src="https://img.shields.io/badge/license-Apache--2.0-blue.svg" alt="License"></a>
+  <a href="https://www.rust-lang.org/"><img src="https://img.shields.io/badge/rust-1.88+-orange.svg" alt="Rust"></a>
+  <a href="https://www.erlang.org/"><img src="https://img.shields.io/badge/BEAM-OTP%2026+-purple.svg" alt="BEAM"></a>
+</p>
+
+---
+
+Hindley-Milner inference, row polymorphism, actor-first concurrency, and
+nine first-class capabilities (`io`, `fs`, `net`, `time`, `random`, `env`,
+`proc`, `spawn`, `ffi`) tracked in the type system. Compiles to BEAM
+bytecode via Core Erlang.
+
+**Status:** 0.2.6, the sixth maintenance release on the 0.2.x line. The
+language and tooling are usable end-to-end. Pre-1.0 minors may include
+breaking changes; patch releases within 0.2.x will not. See
+[`CHANGELOG.md`](CHANGELOG.md) for what landed and
+[`docs/spec.md`](docs/spec.md) for the full language specification.
+
+## Why Ridge?
+
+Ridge is meant to be both teachable and shippable: the same language
+should carry you from a first-day exercise to a real BEAM service
+without swapping dialects.
+
+- The teachable half is the surface. Pure functions, total pattern
+  matches, no `null`, and types that double as documentation.
+- The shippable half is the runtime. The BEAM gives you preemptive
+  scheduling, isolated processes, supervisor trees, and crash-only
+  design without a framework on top.
+
+WebAssembly and native (LLVM) targets are on the roadmap, so the same
+source can move from a learning notebook to a browser playground to a
+production server without changing dialect. See
+[`ROADMAP.md`](ROADMAP.md).
 
 ## What you get
 
 - Statically typed with Hindley-Milner inference and row polymorphism
 - Compiled to BEAM bytecode via Core Erlang
-- Nine first-class capabilities (`io`, `fs`, `net`, `time`, `random`, `env`,
-  `proc`, `spawn`, `ffi`) visible in every function signature
+- Nine first-class capabilities visible in every function signature
 - Immutable by default; mutable state confined to actors
 - Actor-first concurrency
 - Workspace model with architectural rules enforced by the compiler
-- No `null` — `Option` and `Result` are the only way to express optionality
-  and failure
+- No `null` &mdash; `Option` and `Result` are the only way to express
+  optionality and failure
 - LSP server (diagnostics, hover, go-to-definition) and VS Code extension
 - Built-in test runner, formatter, and REPL
 
-## Hello, world
+## A taste of Ridge
+
+Hello, world. The `io` capability in the signature is the type system
+recording that this function performs side effects:
 
 ```ridge
 fn io main () =
     Io.println "Hello, World"
 ```
 
-More sample programs live under [`examples/`](examples/).
+Tagged unions with positional payloads and exhaustive `match`:
+
+```ridge
+type Shape = Circle Int | Rectangle Int Int
+
+fn area (s: Shape) -> Int =
+    match s
+        Circle r       -> 3 * r * r
+        Rectangle w h  -> w * h
+```
+
+More sample programs live under [`examples/`](examples/) and
+[`dogfood/`](dogfood/).
 
 ## Install
 
@@ -88,10 +130,10 @@ is in [`docs/tutorial.md`](docs/tutorial.md).
 
 ## Documentation
 
-- [Tutorial](docs/tutorial.md) — install plus a guided first project
-- [Language specification](docs/spec.md) — formal definition
-- [Grammar (EBNF)](docs/grammar.ebnf) — parser reference
-- [Examples](examples/) — runnable sample programs
+- [Tutorial](docs/tutorial.md) &mdash; install plus a guided first project
+- [Language specification](docs/spec.md) &mdash; formal definition
+- [Grammar (EBNF)](docs/grammar.ebnf) &mdash; parser reference
+- [Examples](examples/) &mdash; runnable sample programs
 
 ## Release signing
 
@@ -117,8 +159,8 @@ contributor conventions live in [`CONTRIBUTING.md`](CONTRIBUTING.md).
 ## Contributing
 
 Pull requests are welcome. Please read [`CONTRIBUTING.md`](CONTRIBUTING.md)
-first — it covers branch naming, commit conventions, and how to propose
-language-level changes. By participating you agree to the
+first &mdash; it covers branch naming, commit conventions, and how to
+propose language-level changes. By participating you agree to the
 [Code of Conduct](CODE_OF_CONDUCT.md).
 
 ## Security
@@ -128,3 +170,11 @@ To report a vulnerability, see [`SECURITY.md`](SECURITY.md).
 ## License
 
 Licensed under the [Apache License, Version 2.0](LICENSE).
+
+## Trademarks
+
+"Ridge" and the Ridge logo are trademarks of The Ridge Language
+Authors. Apache-2.0 grants code rights; it does not grant trademark
+rights. You may use the name and logo unmodified to refer to this
+project. You may not use them to imply endorsement of forks, derivative
+works, or third-party products without prior written permission.

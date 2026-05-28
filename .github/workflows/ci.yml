@@ -25,6 +25,34 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v5
 
+      # Skip the expensive build/test/lint cycle on changesets that only
+      # touch docs, branding, examples, dogfood READMEs, the license file,
+      # or community-template metadata. The job still runs (so the three
+      # required status checks "Build and test (linux/macos/windows)" still
+      # report success), but everything past this step short-circuits.
+      - name: Detect code changes
+        id: changes
+        uses: dorny/paths-filter@v3
+        with:
+          filters: |
+            code:
+              - '**'
+              - '!**.md'
+              - '!docs/**'
+              - '!assets/**'
+              - '!examples/**'
+              - '!dogfood/**'
+              - '!LICENSE'
+              - '!CHANGELOG.md'
+              - '!.github/ISSUE_TEMPLATE/**'
+              - '!.github/PULL_REQUEST_TEMPLATE.md'
+              - '!.github/FUNDING.yml'
+              - '!CODEOWNERS'
+
+      - name: No code paths touched (skip build/test/lint)
+        if: steps.changes.outputs.code != 'true'
+        run: echo "Docs/assets-only changeset; skipping build, test, fmt, and clippy."
+
       - name: Free up disk space
         # GitHub-hosted Linux runners ship with ~25 GB of preinstalled
         # tooling (Android SDK, .NET, GHC, CodeQL, Boost) that Ridge does
@@ -33,7 +61,7 @@ jobs:
         # before the build step. Reclaim the unused space up front.
         # macOS and Windows runners have headroom; the bundled tooling
         # paths are also Linux-specific.
-        if: matrix.os == 'linux'
+        if: matrix.os == 'linux' && steps.changes.outputs.code == 'true'
         run: |
           df -h /
           sudo rm -rf /usr/share/dotnet
@@ -45,17 +73,20 @@ jobs:
           df -h /
 
       - name: Install Rust toolchain
+        if: steps.changes.outputs.code == 'true'
         uses: dtolnay/rust-toolchain@stable
         with:
           toolchain: "1.88"
           components: rustfmt, clippy
 
       - name: Install Erlang/OTP
+        if: steps.changes.outputs.code == 'true'
         uses: erlef/setup-beam@v1
         with:
           otp-version: "26"
 
       - name: Cache cargo registry
+        if: steps.changes.outputs.code == 'true'
         uses: actions/cache@v5
         with:
           path: |
@@ -66,13 +97,17 @@ jobs:
           restore-keys: ${{ runner.os }}-cargo-
 
       - name: Build workspace
+        if: steps.changes.outputs.code == 'true'
         run: cargo build --workspace --locked
 
       - name: Run tests
+        if: steps.changes.outputs.code == 'true'
         run: cargo test --workspace --no-fail-fast --locked
 
       - name: Check formatting
+        if: steps.changes.outputs.code == 'true'
         run: cargo fmt --all -- --check
 
       - name: Run clippy
+        if: steps.changes.outputs.code == 'true'
         run: cargo clippy --workspace --all-targets -- -D warnings

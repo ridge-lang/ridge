@@ -1,16 +1,21 @@
 //! §4.17–§4.19 — Lower `IrExpr::Send`, `IrExpr::Ask`, `IrExpr::Spawn`.
 //!
 //! All three actor-messaging primitives are routed through `ridge_rt` wrappers
-//! per resolved **OQ-E004** (§8.2): `ridge_rt:send/2`, `ridge_rt:ask/3`, and
-//! `ridge_rt:spawn_actor/3`.  This one-hop indirection is the seam where future
-//! telemetry and tracing hooks land without recompiling user code.
+//! per resolved **OQ-E004** (§8.2): `ridge_rt:send_op/2`, `ridge_rt:ask/3`,
+//! and `ridge_rt:spawn_actor/3`.  This one-hop indirection is the seam where
+//! future telemetry and tracing hooks land without recompiling user code.
 //!
 //! ## §4.17 Send (`!`)
 //!
 //! ```ignore
 //! handle ! handler arg1 ... argN
 //! ```
-//! → `call 'ridge_rt':'send' (HandleExpr, {handler_tag, Arg1, ..., ArgN})`
+//! → `call 'ridge_rt':'send_op' (HandleExpr, {handler_tag, Arg1, ..., ArgN})`
+//!
+//! `send_op/2` honours the bounded-mailbox policy carried by the handle.
+//! `drop_newest` silently drops the incoming message on overflow; `error`
+//! raises `{mailbox_full, Pid}` in the caller so the supervisor can react.
+//! Unbounded handles behave exactly as before (one cast, no policy check).
 //!
 //! Returns `'ok'` (Unit).
 //!
@@ -33,7 +38,11 @@
 //! ```
 //! → `call 'ridge_rt':'spawn_actor' (ActorBeamModule, [Arg1, ..., ArgN], [])`
 //!
-//! The Pid is returned directly (Unit type is `Handle a` in Ridge).
+//! Returns a Ridge `Handle a` — opaque at the source level, encoded at the
+//! runtime layer as `{ridge_handle, Pid, MailboxConfig}`. `ridge_rt`
+//! reads the actor module's `'__ridge_mailbox_config'/0` accessor to
+//! assemble the tuple; the codegen site does not need to know whether the
+//! target actor is bounded.
 
 // pub(crate) on items in a pub(crate) module is redundant per clippy; we keep
 // it for explicitness per plan §2.2.
@@ -51,10 +60,13 @@ use ridge_ir::{IrExpr, IrTimeout, SymbolRef};
 
 // ── §4.17 Send ─────────────────────────────────────────────────────────────────
 
-/// Lower `IrExpr::Send` to `call 'ridge_rt':'send' (Handle, {Tag, A1, ..., AN})`.
+/// Lower `IrExpr::Send` to
+/// `call 'ridge_rt':'send_op' (Handle, {Tag, A1, ..., AN})`.
 ///
-/// Per resolved **OQ-E004** (§8.2): all `!` sends route through `ridge_rt:send/2`.
-/// The indirection is the telemetry/tracing seam (plan §3.6).
+/// Per resolved **OQ-E004** (§8.2): all `!` sends route through `ridge_rt`.
+/// The function name moved from `send` to `send_op` when bounded mailboxes
+/// landed — `send_op` honours the policy carried by the handle. The
+/// indirection is the telemetry/tracing seam (plan §3.6).
 ///
 /// Returns `'ok'` (Unit) as the expression value.
 // OQ-E004: always route via ridge_rt (plan §4.17 + §8.2).
@@ -70,7 +82,7 @@ pub(crate) fn lower_send(
 
     Ok(CErlExpr::Call {
         module: CErlAtom("ridge_rt".into()),
-        fn_name: CErlAtom("send".into()),
+        fn_name: CErlAtom("send_op".into()),
         args: vec![handle_expr, msg_tuple],
     })
 }
@@ -131,9 +143,11 @@ pub(crate) fn lower_ask(
 /// Lower `IrExpr::Spawn` to `call 'ridge_rt':'spawn_actor' (ActorMod, [Args...], [])`.
 ///
 /// The actor's BEAM module name is derived from the `ActorType` `SymbolRef`.
-/// `ridge_rt:spawn_actor/3` calls `gen_server:start_link/3` and unwraps the
-/// `{ok, Pid}` result, crashing the spawner on init failure (per resolved
-/// **OQ-E006** §8.2 — BEAM-crash semantics for init failure).
+/// `ridge_rt:spawn_actor/3` calls `gen_server:start_link/3`, reads the
+/// actor module's `'__ridge_mailbox_config'/0`, and returns the
+/// `{ridge_handle, Pid, MailboxConfig}` handle tuple. Init failure crashes
+/// the spawner per resolved **OQ-E006** (§8.2) — BEAM-crash semantics for
+/// init failure.
 ///
 /// # OQ-E006 asymmetry note
 /// Init failure propagates as a BEAM exception rather than a Ridge `Result`.
@@ -295,8 +309,9 @@ mod tests {
     // §4.17 — Send tests
 
     #[test]
-    fn send_emits_ridge_rt_send() {
-        // Send routes through ridge_rt:send/2 per OQ-E004.
+    fn send_emits_ridge_rt_send_op() {
+        // Send routes through ridge_rt:send_op/2 per OQ-E004 (bounded mailbox
+        // support since 0.2.7).
         let handle = lit_int(42); // placeholder — normally a pid variable
         let message = handler_sym("Counter", "increment");
         let args = vec![lit_int(5)];
@@ -311,8 +326,12 @@ mod tests {
                 args: call_args,
             } => {
                 assert_eq!(module.0, "ridge_rt");
-                assert_eq!(fn_name.0, "send");
-                assert_eq!(call_args.len(), 2, "send/2 expects handle + message tuple");
+                assert_eq!(fn_name.0, "send_op");
+                assert_eq!(
+                    call_args.len(),
+                    2,
+                    "send_op/2 expects handle + message tuple"
+                );
                 // Second arg must be the message tuple {increment, 5}.
                 match &call_args[1] {
                     CErlExpr::Tuple(elems) => {

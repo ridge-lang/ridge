@@ -1,5 +1,6 @@
 ---
 source: crates/ridge-codegen-erl/tests/core_text_snapshot.rs
+assertion_line: 47
 expression: "&core_text"
 ---
 module 'ridge_module_0' ['requestsPerWorker'/0, 'main'/0]
@@ -14,6 +15,6 @@ module 'ridge_module_0' ['requestsPerWorker'/0, 'main'/0]
   %% Warning: main/0 — canonical main should have arity 1 (§4.26)
 'main'/0 =
     ( fun () ->
-          let V_Limiter = let V_Anf0 = [10, 2.0] in call 'ridge_rt':'spawn_actor' ('ridge_module_0_limiter', V_Anf0, []) in let V_Collector = let V_Anf1 = [] in call 'ridge_rt':'spawn_actor' ('ridge_module_0_collector', V_Anf1, []) in let V_Workers = let V_Anf3 = ( fun (V_Id) -> let V_Anf2 = [V_Id, V_Limiter, V_Collector] in call 'ridge_rt':'spawn_actor' ('ridge_module_0_worker', V_Anf2, []) -| [] ) in let V_Anf4 = call 'lists':'seq' (1, 5) in call 'lists':'map' (V_Anf3, V_Anf4) in do let V_Anf6 = ( fun (V_W) -> let V_Anf5 = {'run'} in call 'ridge_rt':'send' (V_W, V_Anf5) -| [] ) in call 'lists':'foreach' (V_Anf6, V_Workers) do call 'timer':'sleep' (6000) do call 'ridge_rt':'println' (#{#<68>(8,1,'integer',['unsigned'|['big']]),#<111>(8,1,'integer',['unsigned'|['big']]),#<110>(8,1,'integer',['unsigned'|['big']]),#<101>(8,1,'integer',['unsigned'|['big']]),#<46>(8,1,'integer',['unsigned'|['big']])}#) {'ok', 'ok'}
+          let V_Limiter = let V_Anf0 = [10, 2.0] in call 'ridge_rt':'spawn_actor' ('ridge_module_0_limiter', V_Anf0, []) in let V_Collector = let V_Anf1 = [] in call 'ridge_rt':'spawn_actor' ('ridge_module_0_collector', V_Anf1, []) in let V_Workers = let V_Anf3 = ( fun (V_Id) -> let V_Anf2 = [V_Id, V_Limiter, V_Collector] in call 'ridge_rt':'spawn_actor' ('ridge_module_0_worker', V_Anf2, []) -| [] ) in let V_Anf4 = call 'lists':'seq' (1, 5) in call 'lists':'map' (V_Anf3, V_Anf4) in do let V_Anf6 = ( fun (V_W) -> let V_Anf5 = {'run'} in call 'ridge_rt':'send_op' (V_W, V_Anf5) -| [] ) in call 'lists':'foreach' (V_Anf6, V_Workers) do call 'timer':'sleep' (6000) do call 'ridge_rt':'println' (#{#<68>(8,1,'integer',['unsigned'|['big']]),#<111>(8,1,'integer',['unsigned'|['big']]),#<110>(8,1,'integer',['unsigned'|['big']]),#<101>(8,1,'integer',['unsigned'|['big']]),#<46>(8,1,'integer',['unsigned'|['big']])}#) {'ok', 'ok'}
       -| [] )
 end

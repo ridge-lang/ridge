@@ -2,12 +2,12 @@
 
 **Version:** 0.2.6
 **Author:** The Ridge Language Authors
-**Last updated:** 2026-05-25
+**Last updated:** 2026-05-28
 
 **History:** Supersedes `RILL_SPEC_AND_ROADMAP.md` (v0.1.0-draft, Rill). The language was renamed from *Rill* to *Ridge* after a design refinement pass. The underlying philosophy is preserved; the following are the substantive changes from the prior draft:
 - Language name: **Ridge** (was *Rill*). File extension: **`.ridge`** (was `.rill`). Manifest: **`ridge.toml`** (was `rill.toml`).
 - Effect system: **9 granular capabilities** with prefix list syntax (was binary `fn`/`fn!`).
-- Multi-target strategy: **BEAM + WASM + Native** from the roadmap, no longer "long-term evolution".
+- Multi-target strategy: **BEAM-primary with WebAssembly and native (LLVM) as exploratory backends** behind a target-neutral IR (changed from the fixed multi-target schedule of earlier drafts; see §14).
 - **Workspace model** with architectural enforcement by the compiler — new first-class feature.
 - 0.1.0 scope: **LSP minimum + package manager minimum** included (previously deferred).
 
@@ -35,7 +35,7 @@
 
 ## 1. Executive Summary
 
-**Ridge** is a general-purpose programming language built around four pillars: **developer experience, safety from the root, first-class performance, and approachability**. It combines immutable data, actor-based concurrency, and a granular effect system visible in function signatures. Its IR is target-neutral: Ridge compiles to Core Erlang (running on BEAM), to WebAssembly, and — from version 0.4.0 — to native code via LLVM.
+**Ridge** is a general-purpose programming language built around four pillars: **developer experience, safety from the root, first-class performance, and approachability**. It combines immutable data, actor-based concurrency, and a granular effect system visible in function signatures. Ridge compiles to Core Erlang for the BEAM runtime, which is the production target. The intermediate representation is held target-neutral; WebAssembly and native (LLVM) backends remain exploratory work kept feasible by the shared IR (see §14).
 
 The target audience is software developers who want a language that scales from scripts to distributed systems without mode switching — fast to write, easy to reason about, hard to misuse.
 
@@ -47,10 +47,10 @@ The target audience is software developers who want a language that scales from 
 
 ### Key characteristics
 
-- **Compiled** to Core Erlang (0.1.0), WebAssembly (0.3.0+), and native via LLVM (0.4.0+)
+- **Compiled** to Core Erlang for the BEAM. WebAssembly and native (LLVM) backends are exploratory, gated by a target-neutral IR
 - **Statically typed** with full Hindley-Milner inference
 - **Immutable by default**, mutable state confined to actors
-- **Actor-first concurrency** — millions of lightweight processes on BEAM, portable across backends
+- **Actor-first concurrency** — millions of lightweight processes on BEAM
 - **9 capabilities** (`io`, `fs`, `net`, `time`, `random`, `env`, `proc`, `spawn`, `ffi`) visible in function signatures
 - **Workspace model** with architectural rules enforced by the compiler (forbid-arcs, per-project capability allow/deny)
 - **No null** — `Option` and `Result` are the only way to express optionality and failure
@@ -97,11 +97,11 @@ These will not change, even under pressure.
 | N9 | Pattern matching is exhaustive | Non-exhaustive match is a compile error, not a warning |
 | N10 | Everything is an expression (mostly) | Only `let`, `var`, `const`, `import` are statements |
 | N11 | Architecture is enforced by the compiler | `forbid` rules in workspace manifest produce compile errors |
-| N12 | IR is target-neutral | No BEAM-specific or WASM-specific leakage in the IR; backends consume a shared IR |
+| N12 | IR is target-neutral | No backend-specific leakage in the IR; the shared IR keeps alternative backends feasible without committing to a schedule |
 
 ### 2.3. Deliberate trade-offs
 
-- **We lose** fine-grained memory control (no manual allocation, no ownership tracking). Ridge is not for tight-loop numerical code or embedded systems in 0.1–0.3. The native backend (0.4+) narrows this gap.
+- **We lose** fine-grained memory control (no manual allocation, no ownership tracking). Ridge is not for tight-loop numerical code or embedded systems. A native backend would narrow this gap and remains on the exploratory roadmap (§14).
 - **We lose** familiarity for OO-native developers. The learning curve is steeper than "Java with better syntax."
 - **We accept** a fixed capability set with no user-defined effects. Simpler than Koka/Eff; less expressive.
 - **We gain** correctness by construction, concurrency without fear, code that survives refactors, and the only language-level architectural enforcement on the market.
@@ -1111,7 +1111,8 @@ Source (.ridge)
     v                  v                  v
 +----------+    +----------+       +----------+
 | codegen  |    | codegen  |       | codegen  |
-| erl (0.1)|    | wasm(0.3)|       | llvm(0.4)|
+|   erl    |    |   wasm   |       |   llvm   |
+| (active) |    | (explor.)|       | (explor.)|
 +----+-----+    +----+-----+       +----+-----+
      |               |                   |
      v               v                   v
@@ -1135,9 +1136,9 @@ ridge/
 │   ├── ridge-types/            # Type checker (HM) + capability checker
 │   ├── ridge-ir/               # Ridge Core IR
 │   ├── ridge-lower/            # AST → IR
-│   ├── ridge-codegen-erl/      # IR → Core Erlang (0.1.0)
-│   ├── ridge-codegen-wasm/     # IR → WASM (0.3.0+)
-│   ├── ridge-codegen-llvm/     # IR → LLVM IR (0.4.0+)
+│   ├── ridge-codegen-erl/      # IR → Core Erlang (active backend)
+│   ├── ridge-codegen-wasm/     # IR → WASM (exploratory; stub today)
+│   ├── ridge-codegen-llvm/     # IR → LLVM IR (exploratory; stub today)
 │   ├── ridge-diagnostics/      # Error formatting
 │   ├── ridge-driver/           # Compilation orchestration
 │   ├── ridge-cli/              # Binary entry point
@@ -1325,7 +1326,7 @@ Each phase lists: goal, tasks, deliverable, tests, and estimated effort.
    - Actor handlers → dispatch tables
 3. Lower all constructs.
 
-**Definition of done:** Snapshot tests on IR output for each example. IR contains no BEAM-specific or WASM-specific assumptions.
+**Definition of done:** Snapshot tests on IR output for each example. IR contains no backend-specific assumptions.
 
 ---
 
@@ -1448,119 +1449,79 @@ Six public checkpoints. Each should be a tagged release so progress is visible.
 
 ## 14. Multi-Target Strategy
 
-Ridge is **multi-target from day one of the roadmap**, not as a long-term aspiration. The IR is target-neutral; backends consume a shared IR and produce platform-specific code.
+Ridge is **BEAM-primary**. BEAM is the production target; the language, the standard library, the actor model, and the tooling are all designed against it and validated there. Alternative backends (WebAssembly and native via LLVM) remain on the roadmap as **exploratory work**, contingent on user traction rather than a fixed schedule. The intermediate representation is held target-neutral as a design discipline so the option to activate a second backend stays open without dictating when.
 
-### 14.1. Target timeline
+This section describes the present target, the exploratory ones, the disciplines that keep them feasible, and the cadence on which they are re-evaluated.
 
-```
-0.1.0 (14-18 months)   BEAM MVP — lexer, parser, types, capabilities, codegen Erlang
-0.2.0 (+6-9 months)    BEAM + LSP full + package manager with hex.pm
-                       [native backend starts in parallel here]
-0.3.0 (+6 months)      BEAM + WASM limited (playground + stateless edge functions)
-0.4.0 (+6-9 months)    BEAM + Native alpha (LLVM + custom runtime) + WASM limited
-0.5.0 (+6 months)      BEAM + Native + WASM complete (with actors, WASI)
-1.0.0                  All targets stable
-```
+### 14.1. BEAM (production)
 
-Total to 1.0: **≈ 3.5–4 years**.
-
-### 14.2. BEAM (0.1.0+)
-
-BEAM is the initial primary target. Benefits inherited for free:
-- Preemptive M:N scheduler (35+ years of optimization)
-- Per-process GC, no global stop-the-world
-- OTP: supervisors, gen_server, gen_statem, distributed BEAM
-- Live tracing, `observer`, `recon`
-- Production-grade networking and crypto
+BEAM is the runtime the language was designed against. Benefits inherited for free:
+- Preemptive M:N scheduler with the BeamAsm JIT (35+ years of optimization).
+- Per-process GC, no global stop-the-world.
+- OTP: supervisors, gen_server, gen_statem, distributed BEAM.
+- Live tracing, `observer`, `recon`.
+- Production-grade networking and crypto.
 
 Mapping:
 - Ridge actors → gen_server processes.
 - Ridge types → erased at runtime (BEAM is dynamically typed).
 - Ridge stdlib → thin wrappers over Erlang/OTP primitives.
 
-### 14.3. WebAssembly (0.3.0+)
+### 14.2. Exploratory backends
 
-WASM is the **second target**, delivered in two phases:
+Two alternative backends remain in the roadmap as exploratory work. Neither has a fixed schedule; both are gated on user traction signals — concrete deployment requirements that BEAM cannot serve, expressed as reports against the public tracker.
 
-**Phase 1 — WASM limited (0.3.0, ≈ 2–3 months):**
-- Pure code + deterministic capabilities (`time`, `random` via host-provided shims)
-- No actors, no async I/O, no network
-- Primary purpose: **playground on the browser** + stateless edge functions
-- Single-threaded
+#### 14.2.1. WebAssembly
 
-**Phase 2 — WASM complete (0.5.0+, ≈ 3–4 months additional):**
-- Actors via the WASM threads proposal
-- WASI for `fs`, `net`, `proc`
-- WASM GC standardized
-- Production-ready for edge computing
+WebAssembly would unlock browser playgrounds, edge functions, and embeddable Ridge runtimes. The work splits in two natural phases:
 
-Deployment targets: Cloudflare Workers, Fastly Compute@Edge, Fermyon Spin, wasmtime, wasmer, browser (for playground and web apps).
+- **WASM limited.** Pure code and deterministic capabilities (`time`, `random` via host-provided shims), single-threaded, no actors, no async I/O. Target use cases: in-browser playground and stateless edge functions.
+- **WASM complete.** Actors via the WASM threads proposal, WASI for `fs`/`net`/`proc`, WASM GC where available. Target use cases: production edge computing.
 
-### 14.4. Native via LLVM (0.4.0+)
+Both phases remain exploratory until user traction justifies the investment. The `ridge-codegen-wasm` crate exists today as a stub guarded by the target-neutrality test (`crates/ridge-lower/tests/neutrality.rs`), preserving the option without committing to a schedule.
 
-Native is the **third target**. It unlocks:
-- Compute-bound workloads (10–50× faster than BEAM)
-- Fast CLI startup (<10 ms vs. 50–100 ms on BEAM)
-- Standalone binaries without the Erlang runtime
-- Embedded and constrained environments
+Candidate deployment targets, when and if the work activates: Cloudflare Workers, Fastly Compute@Edge, Fermyon Spin, wasmtime, wasmer, browsers.
 
-The runtime we must build:
+#### 14.2.2. Native via LLVM
 
-#### 14.4.1. Actor scheduler
+A native backend would unlock compute-bound workloads, fast CLI startup (<10 ms vs. 50–100 ms on BEAM), standalone binaries without the Erlang runtime, and embedded or constrained environments.
 
-Build an **M:N scheduler** (many green threads over few OS threads). Reference points: Go's runtime, Tokio, BEAM's scheduler. Estimated effort: **4–6 months**, with scheduler correctness the dominant risk.
+It requires a custom runtime — comparable in effort to the existing BEAM backend, effectively a second compiler:
 
-Decision point at that time: preemptive scheduler (fidelity to BEAM model) vs. cooperative scheduler (simpler, smaller, but changes semantics of long-running computations).
+- M:N actor scheduler (Go-style or BEAM-style; decision deferred until activation).
+- Garbage collection — per-actor heaps where possible, global concurrent GC as the baseline. Reference-counting and ownership are out by design (the first contradicts persistent immutable cycles; the second contradicts Ridge's promise that the programmer doesn't think about memory).
+- Explicit data-layout decisions for each type (List, Map, Union, Text, Record).
+- FFI and system integration via C ABI.
+- Concurrency primitives — MPMC channels, scheduler synchronization, async I/O.
+- Debugging and observability — DWARF, profiler integration.
 
-#### 14.4.2. Garbage collection
+The `ridge-codegen-llvm` crate exists today as a stub guarded by the same target-neutrality test.
 
-Per-actor heaps where possible, global concurrent GC (Go-style) as the baseline. Reference-counting rejected (incompatible with persistent immutable cycles); ownership rejected (contradicts Ridge's promise that the programmer doesn't think about memory). Estimated effort: **3–4 months**.
+### 14.3. The target-neutrality discipline
 
-#### 14.4.3. Data representation
+The IR is held free of backend-specific assumptions. This is not a hint or a code-review check; it is enforced:
 
-Explicit binary layout decisions for every type:
-- List: linked, vector, or persistent HAMT.
-- Map: HAMT, following Clojure/Scala.
-- Union: tagged union layout, possibly pointer tagging.
-- Text: UTF-8, small-string optimization, interning?
-- Record: packed, aligned, field ordering.
+- `crates/ridge-lower/tests/neutrality.rs` asserts the IR carries no backend-specific leakage.
+- The stub `ridge-codegen-wasm` and `ridge-codegen-llvm` crates compile against every PR, so any change that breaks target-neutrality fails CI.
 
-Estimated effort: **1–2 months** of design and implementation.
+The cost of the discipline is small — roughly a 5% tax on lowering and IR design work. It buys the option to activate a second backend later without redoing the frontend.
 
-#### 14.4.4. FFI and system integration
+### 14.4. Re-evaluation
 
-C ABI or bindings to established C libraries (curl, openssl, etc.). Estimated effort for basic stdlib coverage: **1–2 months**.
+Whether the exploratory backends are ever activated, and on what schedule, is re-evaluated **18 months after the 0.3.0 GA tag**, against three signals:
 
-#### 14.4.5. Concurrency primitives
+- **User traction.** Concrete deployment requirements BEAM cannot serve, expressed in public reports against the project tracker.
+- **Capacity.** The project is solo-maintained; activating a second backend is a multi-quarter commitment that competes with BEAM-side work.
+- **Ecosystem state.** Where the WebAssembly and native ecosystems stand at the time — component model, WASI preview, WASM GC standardization, LLVM IR stability.
 
-Thread-safe MPMC channels, scheduler synchronization, non-blocking timers, async I/O integration. These exist as Rust libraries (crossbeam, Tokio internals), but integration with a custom scheduler is non-trivial. Estimated effort: **1–2 months**.
+A mid-cycle checkpoint at 9 months post-0.3.0 GA is reserved for early signal. If user reports concentrate on a deployment shape that BEAM cannot reach (cold-start-sensitive edge functions, in-browser tooling, standalone CLI distribution), the timeline for the relevant backend can advance.
 
-#### 14.4.6. Debugging and observability
+### 14.5. Strategic principles
 
-DWARF debug info, stack traces with Ridge function names, profiler integration. Estimated effort: **1–2 months** (or defer to a later minor version).
-
-### 14.5. Total effort for native backend
-
-| Component | Effort |
-|-----------|--------|
-| `ridge-codegen-llvm` (IR → LLVM IR) | 2–3 months |
-| Runtime — scheduler | 4–6 months |
-| Runtime — GC | 3–4 months |
-| Runtime — data layout & types | 1–2 months |
-| Runtime — FFI & stdlib ports | 1–2 months |
-| Runtime — concurrency primitives | 1–2 months |
-| Linker orchestration | 2–4 weeks |
-| Debugging & observability | 1–2 months (optional initially) |
-| **Total (full-time, with assistance)** | **12–18 months** |
-
-This is comparable in effort to the entire BEAM backend. **It is a second compiler, effectively.** Started in parallel with 0.2.0 development; delivered in alpha at 0.4.0.
-
-### 14.6. Strategic principles
-
-1. **BEAM is first-class; native and WASM are additive.** No deprecation of BEAM planned.
-2. **The IR is the contract.** Backends consume the IR; they need nothing else from the frontend.
+1. **BEAM is the production target.** The language and tooling ship against BEAM today; alternative backends do not gate any 0.x release.
+2. **The IR is the contract.** Backends consume the IR; they need nothing else from the frontend. The IR stays target-neutral.
 3. **Capabilities are target-agnostic.** They are compile-time checks; runtime cost is zero on any target.
-4. **Message public in 0.1–0.3:** "Ridge: statically typed, actor-based, compile-time capability tracking. BEAM target today; native and WASM coming."
+4. **Public messaging.** Ridge is a typed functional language for the BEAM. WebAssembly and native (LLVM) backends are exploratory, kept feasible by the shared IR but not committed to a schedule.
 
 ---
 

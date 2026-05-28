@@ -1,9 +1,11 @@
 # Ridge Roadmap
 
-Ridge is a typed functional language for the BEAM, with WebAssembly and
-native LLVM backends on the roadmap. This document tracks what has
-shipped, what is in flight, and what is planned through 1.0.0. It is
-updated at every release cut and is intentionally honest about gaps.
+Ridge is a typed functional language for the BEAM. WebAssembly and
+native (LLVM) backends remain on the roadmap as exploratory work
+behind a target-neutral intermediate representation; neither is
+committed to a fixed schedule. This document tracks what has shipped,
+what is in flight, and what is planned through 1.0.0. It is updated at
+every release cut and is intentionally honest about gaps.
 
 The project is pre-1.0 and experimental. The language, its standard
 library, and its toolchain are subject to breaking changes between
@@ -11,7 +13,8 @@ minor versions. Patch releases within a `0.x.y` line will not introduce
 breaking changes. Treat anything not yet marked ✅ as in motion.
 
 For the canonical language definition, see [`docs/spec.md`](docs/spec.md).
-Version targets in this document follow [`docs/spec.md` §14.1](docs/spec.md).
+The multi-target framing follows [`docs/spec.md` §14](docs/spec.md):
+BEAM-primary, with exploratory backends gated on user traction.
 
 ## Status legend
 
@@ -82,7 +85,7 @@ Rust-level integration test.
 |--------|------|-------------|----------|
 | ✅ | Pure data modules | `bool`, `int`, `float`, `text`, `list`, `map`, `set`, `option`, `result`, `json` | `crates/ridge-stdlib/tests/{bool,int,float,text,list,map,set,option,result,json}_test.rs` |
 | ✅ | Capability-bearing modules | `cli`, `env`, `fs`, `io`, `proc`, `random`, `time` | `crates/ridge-stdlib/tests/{cli,env,fs,io,proc,random,time}_test.rs` |
-| 🟡 | `net.http` | Minimal client (`get`, `post`, `put`, `delete`) and server (`listen`, `respond`); web-layer hardening defaults (`Sql`/`Html`/`SecureCookie` newtypes, default CSP/HSTS on `respond`) unresolved | `crates/ridge-stdlib/tests/net_http_test.rs` |
+| 🟡 | `net.http` | Minimal client (`get`, `post`, `put`, `delete`) and server (`listen`, `respond`); web-layer hardening defaults (`Sql`/`Html`/`SecureCookie` newtypes, default CSP/HSTS on `respond`) shipped in 0.2.6 (see the maintenance section) | `crates/ridge-stdlib/tests/net_http_test.rs` |
 
 ### Distribution
 
@@ -90,16 +93,19 @@ Rust-level integration test.
 |--------|------|-------------|----------|
 | ✅ | Install scripts | `tools/install/install.sh` (POSIX) and `install.ps1` (PowerShell). SHA256 on every download; opportunistic Sigstore verification when `cosign` is on PATH; expected version derived at runtime (no hardcoded literals) | `.github/workflows/install-smoke.yml` runs end-to-end on Ubuntu 22.04, macOS 14, Windows 2022 on every release publish and on every PR touching install scripts |
 | ✅ | Release pipeline | 4-target cross-compile (`x86_64-unknown-linux-gnu`, `x86_64-apple-darwin` from `macos-14`, `aarch64-apple-darwin`, `x86_64-pc-windows-msvc`); ad-hoc macOS sign; archives + SHA256s; Sigstore keyless signing via OIDC; draft GitHub Release | `.github/workflows/release.yml`; exercised by every rc and v0.2.0 |
-| 🟡 | Marketplace attestation | Windows 11 + VS Code 1.120.0 attested 2026-05-20. Linux and macOS rows still pending — recipe documented, platforms not yet signed off | `docs/marketplace-attestation.md` |
+| 🟡 | Marketplace attestation | Windows 11 + VS Code 1.120.0 attested 2026-05-20. Linux and macOS rows still pending -- recipe documented, platforms not yet signed off | `docs/marketplace-attestation.md` |
 | 🟡 | CI workflow | `cargo build --workspace --locked`, `cargo test --workspace --no-fail-fast --locked`, `cargo fmt --check`, `cargo clippy` on Ubuntu against Rust 1.88 + Erlang/OTP 26. Clippy runs with `continue-on-error: true`; cross-platform CI beyond install-smoke is 0.2.x work | `.github/workflows/ci.yml` |
 
 ---
 
 ## 0.2.x maintenance
 
-Patch-lane work: bugfixes, deferred-but-decided items, and small
-improvements that do not warrant a minor bump. Items in this section
-are scheduled, not aspirational.
+The 0.2.x line runs longer than a typical patch lane. Beyond bugfixes
+and small improvements it carries the language and standard-library
+work that closes the largest gaps with mainstream typed languages
+before the 0.3.0 cut: typeclasses, inline record types, a richer
+testing surface, and additional capability-bearing modules. Items in
+this section are scheduled, not aspirational.
 
 ### Cross-platform attestation
 
@@ -112,138 +118,154 @@ are scheduled, not aspirational.
 
 | Status | Item | Description | Evidence |
 |--------|------|-------------|----------|
-| ⏳ | Tighten clippy to hard-fail | Remove `continue-on-error: true` from the clippy step in `ci.yml` | `.github/workflows/ci.yml:49` |
+| ✅ | Tighten clippy to hard-fail | The clippy step in `ci.yml` runs without `continue-on-error`; warnings break the build | `.github/workflows/ci.yml` |
 | ✅ | Cross-platform CI matrix | `cargo build`, `cargo test`, `cargo fmt --check`, and `cargo clippy -D warnings` run on Ubuntu 22.04, macOS 14, and Windows 2022 on every PR and push to `main` | `.github/workflows/ci.yml` |
 
 ### Standard library
 
 | Status | Item | Description | Evidence |
 |--------|------|-------------|----------|
-| ⏳ | `std.net.http` hardening defaults | `Sql` and `Html` newtypes that escape on construction; `SecureCookie` with `Secure` + `HttpOnly` + `SameSite=Lax` defaults; default CSP / HSTS headers on `respond` | `docs/spec.md §16.2` |
-| ⏳ | Bounded mailboxes + backpressure for actors | Per the deferred-from-0.1.0 list in the spec | `docs/spec.md §16.2` |
+| ✅ | `std.net.http` hardening defaults | `Sql` and `Html` newtypes that escape on construction; `SecureCookie` with `Secure` + `HttpOnly` + `SameSite=Lax` defaults; default CSP / HSTS headers on `respond`. Shipped across 0.2.6 | `CHANGELOG.md` (0.2.6 entries) |
+| ✅ | Open `ToText` dispatch for interpolation | User-defined `toText` participates in string interpolation. Shipped in 0.2.6; the typeclass formalisation lands with the typeclass core (below) | `CHANGELOG.md` (0.2.6 entries) |
+| ⏳ | Bounded mailboxes + backpressure for actors | Per the deferred-from-0.1.0 list in the spec. Three overflow policies (drop-oldest, drop-newest, error) | `docs/spec.md §16.2` |
 | ⏳ | Mailbox observability API | `Actor.mailboxSize`, peek, drain | — |
-| ⏳ | Open `ToText` typeclass for interpolation | Allow user-defined types to participate in string interpolation | — |
+| ⏳ | `std.crypto` | SHA-2 / SHA-3 hashes, HMAC, AEAD (ChaCha20-Poly1305 default), constant-time compare. Thin bridges to the BEAM `:crypto` module | — |
+| ⏳ | `std.uuid` | UUIDv4 (random) and UUIDv7 (timestamp-ordered), plus `toText` / `fromText` round-trips | — |
+| ⏳ | `std.url` | RFC 3986 parser and builder, query-string encoding/decoding, `Url` normalisation | — |
+| ⏳ | `std.log` | Structured logging (`key=value` fields), level filtering, backend-agnostic emit | — |
+| ⏳ | `std.test+` | Extends `std.test` baseline with assertion family, property-based primitives (generators, automatic shrinking), mocking helpers, and a snapshot framework | — |
 
 ### Language polish
 
 | Status | Item | Description | Evidence |
 |--------|------|-------------|----------|
-| ⏳ | Test-discovery sugar | Accept `@test "<name>"` alongside the current `pub fn test_*` convention; both forms recognised in 0.2.x with a `C304 PrefixTestDeprecated` warning per prefix test; `ridge fmt --migrate-tests` one-shot migration ships in the same line. Prefix removed in 0.3.0 | `docs/spec.md §16.2` |
-| ⏳ | Multi-line and raw string literals | — | `docs/spec.md §16.2` |
+| ⏳ | Test-discovery sugar | Accept `@test "<name>"` alongside the current `pub fn test_*` convention; both forms recognised in 0.2.x with a `C304 PrefixTestDeprecated` warning per prefix test; `ridge fmt --migrate-tests` one-shot migration ships in the same line. Prefix removed in 0.3.0 GA | `docs/spec.md §16.2` |
+| ⏳ | Multi-line and raw string literals | Concrete dedent and escape rules chosen during 0.2.x | `docs/spec.md §16.2` |
 | ⏳ | Range and rest-pattern syntax for `..` | Concrete semantics chosen during 0.2.x | `docs/spec.md §16.2` |
+| ⏳ | Inline record types | First-class structural record types in type positions (e.g. `{ name: Text, age: Int }`), with the structural-vs-nominal decision documented in the decision log | — |
+| ⏳ | Typeclasses (`class` / `instance` / `deriving` / `where`) | Keywords are already reserved in the lexer and parser. The 0.2.x typeclass cut adds declaration syntax, instance resolution, deriving for `Eq` / `Ord` / `Show`, and constraint propagation through inference. Formalises the `ToText` dispatch added in 0.2.6 | — |
 
 ### LSP enhancements (bridging into 0.3.0)
 
 | Status | Item | Description | Evidence |
 |--------|------|-------------|----------|
-| ⏳ | Hover with inferred types and capability annotations | `tower-lsp` server already in place; no `hoverProvider` advertised yet — the `initialize` reply explicitly omits it | `crates/ridge-lsp/src/server.rs`; asserted absent by `tests/lsp_replay.rs` |
-| ⏳ | Go-to-definition | — | — |
-| ⏳ | Completion | — | — |
+| ⏳ | Hover with inferred types and capability annotations | `tower-lsp` server already in place; no `hoverProvider` advertised yet -- the `initialize` reply explicitly omits it | `crates/ridge-lsp/src/server.rs`; asserted absent by `tests/lsp_replay.rs` |
+| ⏳ | Go-to-definition | -- | -- |
+| ⏳ | Completion | -- | -- |
 
 Each LSP item above lands in a 0.2.x patch when the cost to ship is
 bounded. Work that grows to require an IR-level symbol index or
-incremental compilation slides to 0.3.0.
+incremental compilation slides to 0.3.0 RC1.
 
 ---
 
-## 0.3.0 — WebAssembly limited
+## 0.3.0 -- LSP at scale + frameworks tier-1
 
-Goal: a second backend producing WebAssembly modules sufficient for a
-browser-based playground and stateless edge functions. Actor-bearing
-programs do **not** target WASM in 0.3.0; that lands in 0.5.0 once the
-WASM threads proposal is broadly available.
+Goal: graduate the developer experience and ship the first wave of
+official frameworks. The release builds in four release candidates,
+each shippable on its own and accumulating into the GA tag. The
+exploratory WebAssembly and native backends remain out of scope for
+0.3.0 -- see the [exploratory backends](#beyond-030--exploratory-backends)
+section.
 
-Effort estimate per [`docs/spec.md` §14.3](docs/spec.md): 2–3 months
-full-time, started in parallel with 0.2.x LSP work.
-
-### WebAssembly backend
-
-| Status | Item | Description | Evidence |
-|--------|------|-------------|----------|
-| 🔄 | `ridge-codegen-wasm` (IR → WebAssembly module) | Crate exists but currently contains only the module-level doc comment and a smoke test. The IR is already target-neutral (asserted by `crates/ridge-lower/tests/neutrality.rs`), so bring-up is a backend implementation, not a frontend redesign | `crates/ridge-codegen-wasm/` |
-| ⏳ | Pure Ridge code + deterministic capabilities | `time` and `random` bound via host-provided shims | `docs/spec.md §14.3` |
-| ⏳ | Host-shim contract for `time` / `random` | Specification of the import surface a host must provide | `docs/spec.md §14.3` |
-| ⏳ | Explicit exclusions for 0.3.0 | No actors, no async I/O, no network; single-threaded execution | `docs/spec.md §14.3` |
-| ⏳ | Deployment targets | Cloudflare Workers, Fastly Compute@Edge, Fermyon Spin, wasmtime, wasmer, browser (playground + web apps) | `docs/spec.md §14.3` |
-| ⏳ | Browser playground harness | Compiles and runs Ridge in-page | — |
-| ⏳ | WASM smoke tests + wasmtime CI runner | Under `crates/ridge-codegen-wasm/tests/`, exercised by an additional CI job | — |
-
-### LSP at 0.3.0
+### 0.3.0 RC1 -- LSP incremental + features
 
 | Status | Item | Description | Evidence |
 |--------|------|-------------|----------|
-| ⏳ | Incremental LSP compilation | Per-module recompile granularity. Today the LSP recompiles the whole workspace on every change via `ridge_driver::check_workspace` (with debounce + cancellation) — the 0.1.0 ceiling is documented in code | `crates/ridge-lsp/src/lib.rs` |
-| ⏳ | Full hover / goto / completion / references | Whatever did not ship in 0.2.x | — |
+| ⏳ | Per-module incremental compilation | Content-hash module cache layered over `check_workspace`; the recompile granularity drops from the full workspace to the changed module set | `crates/ridge-lsp/src/lib.rs` |
+| ⏳ | Hover with inferred types and capability annotations | -- | -- |
+| ⏳ | Go-to-definition | Cross-module aware | -- |
+| ⏳ | Completion | Context-aware: type positions vs expression positions | -- |
+| ⏳ | Find-references | Reverse-index over `Symbol -> Vec<Span>` | -- |
+| ⏳ | Latency budget | Synthetic 200-module bench under 200 ms p50, under 500 ms p99 | `crates/ridge-lsp/tests/lsp_replay.rs` (extended) |
 
-### Language polish at 0.3.0
+### 0.3.0 RC2 -- `ridge.web`
+
+Typed HTTP framework for the BEAM. Cowboy / Bandit underneath,
+exposed through a typed router DSL, JSON via `Encode` / `Decode`
+typeclasses, and a composable middleware chain.
 
 | Status | Item | Description | Evidence |
 |--------|------|-------------|----------|
-| ⏳ | Remove `pub fn test_*` discovery | Per the 0.2.x deprecation cycle | — |
-| ⏳ | Capability set review | Based on 0.2.x usage data | `docs/spec.md §16.2` |
+| ⏳ | Typed router | Routes declared via typeclass instances; path, method, handler in the type | -- |
+| ⏳ | Request / response typed extensions | Query / header / body parsing typed end to end | -- |
+| ⏳ | Middleware composition | Auth, logging, rate-limit, CORS as composable middleware | -- |
+| ⏳ | Typed JSON | `Encode` / `Decode` typeclasses, deriving-friendly | -- |
+| ⏳ | WebSocket support | Cowboy upgrade path | -- |
+| ⏳ | Server-Sent Events | Real-time push without the WebSocket lifecycle | -- |
+| ⏳ | Adapter trait | Cowboy primary, Bandit alternative | -- |
+| ⏳ | Examples corpus | `examples/web/blog/` + `examples/web/realtime-chat/` | -- |
+| ⏳ | Getting-started doc | `docs/frameworks/ridge-web.md` | -- |
+
+### 0.3.0 RC3 -- `ridge.data`
+
+Typed query and migration framework for the BEAM. Postgres is the
+first driver; MySQL and SQLite stay on the table for later minors.
+
+| Status | Item | Description | Evidence |
+|--------|------|-------------|----------|
+| ⏳ | Connection pool | `gen_server`-backed connection lifecycle | -- |
+| ⏳ | Typed query builder | `Select<Row, Conditions>`, `Insert<Row>`, ... | -- |
+| ⏳ | Migrations | Apply / rollback / version tracking | -- |
+| ⏳ | Postgres driver | Either `epgsql` or `pgo`; the choice is captured in the decision log | -- |
+| ⏳ | Row deriving | `deriving (Decode, Encode)` on user records | -- |
+| ⏳ | Transactions | With savepoints | -- |
+| ⏳ | Examples corpus | `examples/data/users-crud/` with docker-compose Postgres in CI | -- |
+| ⏳ | Getting-started doc | `docs/frameworks/ridge-data.md` | -- |
+
+### 0.3.0 GA -- `ridge.obs` + `ridge.test+` + housekeeping
+
+| Status | Item | Description | Evidence |
+|--------|------|-------------|----------|
+| ⏳ | `ridge.obs.Logger` | Structured logging with pluggable backends (Telemetry default, OTel optional) | -- |
+| ⏳ | `ridge.obs` metrics | Counter, Histogram, Gauge primitives | -- |
+| ⏳ | `ridge.obs.Trace` | Distributed tracing spans with W3C Trace Context propagation | -- |
+| ⏳ | `ridge.test+` wire-up | Adoption guide and migration of stdlib tests where applicable | -- |
+| ⏳ | Remove `pub fn test_*` discovery | The 0.2.x deprecation cycle completes here; only `@test "<name>"` remains | -- |
+| ⏳ | Capability set audit | Go / no-go on each of the nine capabilities, with a documented rationale for every decision | -- |
 
 ---
 
-## 0.4.0 — Native alpha (LLVM + custom runtime)
+## Beyond 0.3.0 -- exploratory backends
 
-Goal: a third backend producing native executables via LLVM, plus the
-runtime that BEAM provides for free today (scheduler, GC, data
-representation, concurrency primitives, FFI). Total effort is
-comparable to the entire BEAM frontend — effectively a second
-compiler — and is started in parallel with 0.3.0 work rather than
-strictly after it.
+WebAssembly and native (LLVM) backends remain on the roadmap as
+exploratory work, not committed to a fixed schedule. The decision on
+whether and when to activate either is re-evaluated 18 months after
+the 0.3.0 GA tag, with a mid-cycle checkpoint at 9 months
+post-0.3.0 GA. The criteria are described in
+[`docs/spec.md` §14.4](docs/spec.md): concrete user traction signals,
+maintainer capacity, and the state of the WebAssembly and native
+ecosystems at the time.
 
-Total effort per [`docs/spec.md` §14.5](docs/spec.md): 12–18 months
-full-time with assistance. 0.4.0 is an alpha — the runtime is expected
-to be incomplete and the standard library will not yet have full
-native ports.
+Both backends today have stub codegen crates
+(`crates/ridge-codegen-wasm/`, `crates/ridge-codegen-llvm/`) that
+compile against every PR and are guarded by the target-neutrality
+test (`crates/ridge-lower/tests/neutrality.rs`). The discipline costs
+roughly a 5% tax on lowering work and preserves the option without
+dictating a delivery date.
 
-### Native backend components
-
-| Status | Item | Description | Evidence |
-|--------|------|-------------|----------|
-| 🔄 | `ridge-codegen-llvm` (IR → LLVM IR) | Crate exists with module doc + smoke test only. Effort: 2–3 months | `crates/ridge-codegen-llvm/`; `docs/spec.md §14.5` |
-| ⏳ | Actor scheduler (M:N) | Reference points: Go's runtime, Tokio, BEAM's scheduler. Decision open: preemptive (BEAM fidelity) vs cooperative (simpler, changes long-running-computation semantics). Effort: 4–6 months; correctness is the dominant risk | `docs/spec.md §14.4.1`, §14.5 |
-| ⏳ | Garbage collection | Per-actor heaps where possible; global concurrent GC (Go-style) baseline. Reference-counting and ownership rejected. Effort: 3–4 months | `docs/spec.md §14.4.2`, §14.5 |
-| ⏳ | Data representation | Lists (linked / vector / persistent HAMT); maps (HAMT); unions (tagged); text (UTF-8 + SSO); records (packed, aligned, field-ordered). Effort: 1–2 months | `docs/spec.md §14.4.3`, §14.5 |
-| ⏳ | FFI and system integration | C ABI; bindings to established C libraries (curl, openssl, ...). Effort for basic stdlib coverage: 1–2 months | `docs/spec.md §14.4.4`, §14.5 |
-| ⏳ | Concurrency primitives | Thread-safe MPMC channels, scheduler synchronisation, non-blocking timers, async I/O integrated with the custom scheduler. Effort: 1–2 months | `docs/spec.md §14.4.5`, §14.5 |
-| ⏳ | Debugging and observability | DWARF info, stack traces with Ridge function names, profiler integration. Effort: 1–2 months; deferrable to a later 0.4.x patch | `docs/spec.md §14.4.6`, §14.5 |
-| ⏳ | Linker orchestration | Driver-level wiring of `clang` / `lld` for the final executable. Effort: 2–4 weeks | `docs/spec.md §14.5` |
-
-### What 0.4.0 unlocks
-
-Per [`docs/spec.md` §14.4](docs/spec.md):
-
-- Compute-bound workloads measurably faster than BEAM (the spec quotes
-  10–50× — this remains an aspiration until benchmarks land; see the
-  benchmark-methodology open question in
-  [`docs/spec.md` §16.3](docs/spec.md)).
-- Fast CLI startup (target: under 10 ms vs the 50–100 ms typical of
-  BEAM).
-- Standalone binaries without the Erlang runtime.
-- Embedded and constrained environments.
-
----
-
-## 0.5.0 — Native + WebAssembly complete
-
-Goal: both alternative backends graduate to feature parity with BEAM
-for the constructs they support.
+### WebAssembly (exploratory)
 
 | Status | Item | Description | Evidence |
 |--------|------|-------------|----------|
-| ⏳ | WASM complete | Actors via the WASM threads proposal; WASI for `fs`, `net`, `proc`; WASM GC where available. Additional 3–4 months on top of 0.3.0 | `docs/spec.md §14.3` |
-| ⏳ | Native out of alpha | stdlib ports complete; GC and scheduler hardened beyond alpha; debugging and observability promoted out of "optional" | `docs/spec.md §14.4` |
-| ⏳ | Cross-target benchmark suite | Comparable numbers across BEAM / native / WASM. Depends on the benchmark-methodology decision | `docs/spec.md §16.3` |
-| ⏳ | Observability for actor-bearing programs across targets | Live tracing analogue to `recon` on BEAM; equivalents for native and WASM | — |
+| 🔄 | `ridge-codegen-wasm` (IR → WebAssembly module) | Crate is a stub; the module compiles against every PR but emits no real WebAssembly today | `crates/ridge-codegen-wasm/` |
+| ⏳ | WASM limited | Pure code + deterministic capabilities (`time`, `random` via host shims), single-threaded, no actors or async I/O. Target use cases: in-browser playground and stateless edge functions | `docs/spec.md §14.2.1` |
+| ⏳ | WASM complete | Actors via the WASM threads proposal, WASI for `fs` / `net` / `proc`, WASM GC where available. Target use cases: production edge computing | `docs/spec.md §14.2.1` |
+| ⏳ | Host-shim contract | Specification of the import surface a host must provide for the limited phase | -- |
+| ⏳ | Browser playground harness | In-page compile and execute | -- |
+| ⏳ | wasmtime CI lane | Smoke tests under `crates/ridge-codegen-wasm/tests/` exercised by an additional workflow | -- |
 
-At this point Ridge is multi-target production-capable but pre-1.0:
-breaking changes are still possible, and stability is not yet promised.
+### Native via LLVM (exploratory)
+
+| Status | Item | Description | Evidence |
+|--------|------|-------------|----------|
+| 🔄 | `ridge-codegen-llvm` (IR → LLVM IR) | Crate is a stub | `crates/ridge-codegen-llvm/` |
+| ⏳ | Custom runtime | Scheduler, garbage collector, data representation, FFI, concurrency primitives, debugging and observability. Comparable in effort to the BEAM frontend, effectively a second compiler | `docs/spec.md §14.2.2` |
+| ⏳ | Native target use cases | Compute-bound workloads, fast CLI startup (target under 10 ms vs the 50-100 ms typical of BEAM), standalone binaries without the Erlang runtime, embedded environments | `docs/spec.md §14.2.2` |
 
 ---
 
-## 1.0.0 — Stable
+## 1.0.0 -- Stable
 
 Goal: a stable language, standard library, and tooling surface, with
 explicit semver guarantees from the 1.0 tag forward.
@@ -253,9 +275,9 @@ explicit semver guarantees from the 1.0 tag forward.
 | Surface | Commitment |
 |---------|------------|
 | **Language** | Syntax, semantics, and the nine-capability set are frozen across the 1.x line. Pattern-matching exhaustiveness, type inference rules, actor message semantics, and the implicit prelude are locked. |
-| **Standard library** | Every `pub` function in the 0.5.0 stdlib that survives the 1.0 review is part of the 1.x compatibility surface. Items dropped during the 0.5 → 1.0 pass are listed in the 1.0.0 release notes. |
+| **Standard library** | Every `pub` function in the pre-1.0 stdlib that survives the 1.0 review is part of the 1.x compatibility surface. Items dropped during the stabilisation pass are listed in the 1.0.0 release notes. |
 | **IR (minimum bar)** | The Ridge Core IR is the contract between frontend and backends. Backwards-incompatible IR changes require a major bump. Backward-compatible additions (new node kinds with default lowering) are allowed within 1.x. |
-| **Compiled-artefact wire format** | A `.beam` produced by 1.0.0 loads against the 1.x stdlib; a native binary produced by 1.0.0 continues to run against 1.x runtime libraries. |
+| **Compiled-artefact wire format** | A `.beam` produced by 1.0.0 loads against the 1.x stdlib. If a second backend has been activated by 1.0.0, its artefact contract is documented at that time and held under the same compatibility policy. |
 | **CLI** | Subcommand names, flag names, and exit codes are part of the 1.x compatibility surface. |
 
 ### What 1.0.0 does not commit to
@@ -263,8 +285,8 @@ explicit semver guarantees from the 1.0 tag forward.
 | Surface | Reason |
 |---------|--------|
 | Internal Rust API of `ridge-*` crates | Crates remain `publish = false`; downstream tooling depends on the binaries, not the crates. |
-| Text of diagnostic messages | Error codes (`R013`, `T001`, `P008`, `M005`, …) are stable; the human-readable strings around them are not. |
-| Intermediate file formats | `.core`, internal AST snapshots, IR serialisation — these are implementation artefacts. |
+| Text of diagnostic messages | Error codes (`R013`, `T001`, `P008`, `M005`, ...) are stable; the human-readable strings around them are not. |
+| Intermediate file formats | `.core`, internal AST snapshots, IR serialisation -- these are implementation artefacts. |
 | Experimental features | Features still marked experimental at the time of the 1.0 cut are opt-in and may change within 1.x. |
 | BEAM / OTP versions below the documented minimum | The minimum supported BEAM version is documented at release time and may advance in minor releases. |
 
@@ -279,7 +301,7 @@ explicit semver guarantees from the 1.0 tag forward.
   to the `ridge fmt --migrate-tests` cycle in 0.2.x → 0.3.0).
 
 The exact set of 1.0.0 commitments will be reviewed during the
-0.5 → 1.0 stabilisation pass and the final list locked in a dedicated
+pre-1.0 stabilisation pass and the final list locked in a dedicated
 1.0 proposal document before the tag is cut.
 
 ---
@@ -287,21 +309,23 @@ The exact set of 1.0.0 commitments will be reviewed during the
 ## Strategic principles
 
 These principles are inherited from
-[`docs/spec.md` §14.6](docs/spec.md) and govern every decision on this
+[`docs/spec.md` §14.5](docs/spec.md) and govern every decision on this
 roadmap.
 
-1. **BEAM is first-class; native and WASM are additive.** BEAM is not
-   on a deprecation path. New language features are designed against
-   BEAM first; native and WASM backends must serve the same semantics.
+1. **BEAM is the production target.** The language and tooling ship
+   against BEAM; alternative backends do not gate any 0.x release.
+   New features are designed against BEAM first.
 2. **The IR is the contract.** Backends consume the Ridge Core IR and
    need nothing else from the frontend. Target neutrality is asserted
-   by `crates/ridge-lower/tests/neutrality.rs`.
+   by `crates/ridge-lower/tests/neutrality.rs` and gated by stub
+   compilations against the `ridge-codegen-wasm` and
+   `ridge-codegen-llvm` crates on every PR.
 3. **Capabilities are target-agnostic.** Capability tracking is a
    compile-time check with zero runtime cost on any target. A function
    declared `fn io` carries the same meaning whether it lowers to
-   Erlang, WebAssembly, or native code.
+   Erlang or, later, to any other backend.
 4. **Pre-1.0, breaking changes are expected.** Minor versions
-   (`0.2 → 0.3`, `0.3 → 0.4`, …) may break source compatibility,
+   (`0.2 → 0.3`, `0.3 → 0.4`, ...) may break source compatibility,
    project manifest formats, or stdlib surface. Patches within a
    `0.x.y` line will not. After 1.0.0, the policy in the 1.0.0 section
    above applies.

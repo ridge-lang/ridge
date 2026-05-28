@@ -134,6 +134,7 @@ is in [`docs/tutorial.md`](docs/tutorial.md).
 - [Language specification](docs/spec.md) &mdash; formal definition
 - [Grammar (EBNF)](docs/grammar.ebnf) &mdash; parser reference
 - [Examples](examples/) &mdash; runnable sample programs
+- [Roadmap](ROADMAP.md) &mdash; release plan and what is shipped, in progress, and planned
 
 ## Release signing
 

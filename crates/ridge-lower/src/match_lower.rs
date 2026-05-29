@@ -361,6 +361,8 @@ fn literal_to_ir_lit(lit: &Literal) -> ridge_ir::IrLit {
             let inner = inner.strip_suffix('"').unwrap_or(inner);
             ridge_ir::IrLit::Text(inner.to_owned())
         }
+        // Raw strings carry literal bytes; no escape decoding.
+        Literal::RawText { raw, .. } => ridge_ir::IrLit::Text(raw.clone()),
     }
 }
 

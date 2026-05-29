@@ -66,8 +66,16 @@ pub enum Token {
 
     // ── String literals ──────────────────────────────────────────────────────
     /// A plain `"..."` string literal.  Raw bytes between the outer quotes,
-    /// escapes left un-decoded.
+    /// escapes left un-decoded.  Also used for triple-quoted `"""..."""` literals
+    /// (after dedent processing); escape decoding is handled downstream.
     TextLit(String),
+
+    /// A raw string literal `r"..."`, `r#"..."#`, or `r##"..."##`.
+    ///
+    /// The payload is the literal bytes between the delimiters — no escape
+    /// sequences are interpreted.  Downstream lowering must NOT apply escape
+    /// decoding to this token.
+    RawTextLit(String),
 
     // ── String interpolation tokens (grammar lines 228–241) ────────────
     /// `$"` — opens an interpolated string.
@@ -264,6 +272,7 @@ impl std::fmt::Display for Token {
             Self::Underscore => write!(f, "_"),
 
             Self::TextLit(s) => write!(f, "\"{s}\""),
+            Self::RawTextLit(s) => write!(f, "r\"{s}\""),
 
             Self::InterpStart => write!(f, "$\""),
             Self::InterpExprStart => write!(f, "${{"),

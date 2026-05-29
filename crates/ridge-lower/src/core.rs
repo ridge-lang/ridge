@@ -1022,6 +1022,8 @@ fn lower_literal(ctx: &mut LowerCtx<'_>, lit: &Literal) -> IrExpr {
         Literal::Float { raw, .. } => parse_float(ctx, raw, span),
         Literal::Bool { value, .. } => IrLit::Bool(*value),
         Literal::Text { raw, .. } => IrLit::Text(strip_text_quotes(raw)),
+        // Raw strings carry literal bytes; escape decoding must be skipped.
+        Literal::RawText { raw, .. } => IrLit::Text(raw.clone()),
     };
     IrExpr::Lit { id, value, span }
 }

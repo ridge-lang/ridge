@@ -97,6 +97,28 @@ pub enum LexError {
     /// The first non-blank line of the file is indented (column > 0).
     #[error("top-level declaration must begin at column 0; found indentation at byte {span}")]
     IndentAtTopLevel { span: Span },
+
+    /// A triple-quoted string `"""` had non-whitespace content on the opening line.
+    ///
+    /// The character immediately after the opening `"""` must be a newline.
+    #[error("content after opening `\"\"\"` on the same line is not allowed at byte {span}")]
+    MultilineStringOpenContent { span: Span },
+
+    /// An interior line of a triple-quoted string had less leading whitespace
+    /// than the closing `"""` delimiter, which defines the dedent margin.
+    #[error(
+        "interior line of triple-quoted string has less indentation than the closing `\"\"\"` margin at byte {span}"
+    )]
+    MultilineStringInsufficientIndent { span: Span },
+
+    /// A triple-quoted string or raw string was opened but EOF was reached
+    /// before the matching closing delimiter.
+    #[error("unterminated {kind} string literal opened at byte {open_span}")]
+    UnterminatedMultilineString {
+        open_span: Span,
+        /// A short description of the string kind for the message ("triple-quoted" or "raw").
+        kind: &'static str,
+    },
 }
 
 impl LexError {
@@ -122,6 +144,9 @@ impl LexError {
             Self::EmptyNumericLiteral { .. } => "L010",
             Self::UnexpectedCharacter { .. } => "L011",
             Self::IndentAtTopLevel { .. } => "L012",
+            Self::MultilineStringOpenContent { .. } => "L013",
+            Self::MultilineStringInsufficientIndent { .. } => "L014",
+            Self::UnterminatedMultilineString { .. } => "L015",
         }
     }
 
@@ -137,11 +162,14 @@ impl LexError {
             | Self::TrailingUnderscoreLiteral { span }
             | Self::EmptyNumericLiteral { span }
             | Self::UnexpectedCharacter { span, .. }
-            | Self::IndentAtTopLevel { span } => *span,
+            | Self::IndentAtTopLevel { span }
+            | Self::MultilineStringOpenContent { span }
+            | Self::MultilineStringInsufficientIndent { span } => *span,
 
             Self::UnterminatedString { open_span }
             | Self::UnterminatedInterpolation { open_span }
-            | Self::UnterminatedDocComment { open_span } => *open_span,
+            | Self::UnterminatedDocComment { open_span }
+            | Self::UnterminatedMultilineString { open_span, .. } => *open_span,
         }
     }
 }

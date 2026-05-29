@@ -250,6 +250,77 @@ fn unexpected_character() {
     assert!(e.to_string().contains('#'), "{e}");
 }
 
+// ── MultilineStringOpenContent ───────────────────────────────────────────────
+
+#[test]
+fn multiline_open_content_on_same_line() {
+    // Content immediately after the opening `"""` — must error.
+    let src = "\"\"\"hello\nworld\n\"\"\"";
+    let e = first_error(src);
+    assert!(
+        matches!(e, LexError::MultilineStringOpenContent { .. }),
+        "expected MultilineStringOpenContent, got: {e:?}"
+    );
+    assert!(
+        e.to_string().contains("content") || e.to_string().contains("\"\"\""),
+        "message should mention the delimiter: {e}"
+    );
+}
+
+// ── MultilineStringInsufficientIndent ────────────────────────────────────────
+
+#[test]
+fn multiline_insufficient_indent() {
+    // Closing `"""` has 4-space margin, but the interior line has only 2.
+    let src = "\"\"\"\n  hello\n    \"\"\"";
+    let e = first_error(src);
+    assert!(
+        matches!(e, LexError::MultilineStringInsufficientIndent { .. }),
+        "expected MultilineStringInsufficientIndent, got: {e:?}"
+    );
+}
+
+// ── UnterminatedMultilineString ───────────────────────────────────────────────
+
+#[test]
+fn unterminated_triple_quote() {
+    let src = "\"\"\"\nhello\n";
+    let e = first_error(src);
+    assert!(
+        matches!(
+            e,
+            LexError::UnterminatedMultilineString {
+                kind: "triple-quoted",
+                ..
+            }
+        ),
+        "expected UnterminatedMultilineString (triple-quoted), got: {e:?}"
+    );
+    assert!(e.to_string().contains("unterminated"), "{e}");
+}
+
+#[test]
+fn unterminated_raw_string() {
+    let src = "r\"hello";
+    let e = first_error(src);
+    assert!(
+        matches!(e, LexError::UnterminatedMultilineString { kind: "raw", .. }),
+        "expected UnterminatedMultilineString (raw), got: {e:?}"
+    );
+    assert!(e.to_string().contains("unterminated"), "{e}");
+}
+
+#[test]
+fn unterminated_raw_string_hashed() {
+    // Closed with `"#` but needs `"##` — unterminated.
+    let src = "r##\"hello\"#";
+    let e = first_error(src);
+    assert!(
+        matches!(e, LexError::UnterminatedMultilineString { kind: "raw", .. }),
+        "expected UnterminatedMultilineString (raw), got: {e:?}"
+    );
+}
+
 // ── Span correctness ─────────────────────────────────────────────────────────
 
 #[test]

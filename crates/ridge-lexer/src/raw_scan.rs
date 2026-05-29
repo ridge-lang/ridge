@@ -179,6 +179,22 @@ enum LogosToken<'src> {
     IntDec,
 
     // ── String literals ───────────────────────────────────────────────────────
+    // Triple-quoted multi-line string opener `"""`.  Must be matched BEFORE the
+    // plain `"..."` regex; logos longest-match plus the higher priority ensure
+    // `"""` wins over the single-quote form.  The hand-scanner reads the rest.
+    #[token("\"\"\"", priority = 5)]
+    TripleQuoteOpen,
+
+    // Raw string opener: `r"`, `r#"`, `r##"`, …  Matched before `LowerIdent`
+    // so that `r"…"` is not split into ident `r` + string.  The hand-scanner
+    // counts the leading `#` characters to determine the required closing sequence.
+    //
+    // The regex matches `r` followed by zero or more `#` followed by `"`.
+    // Priority must beat `LowerIdent` (which has no explicit priority, defaults
+    // to 0 / longest-match) — using priority 5 is safe.
+    #[regex(r#"r#*""#, priority = 5)]
+    RawStringOpen,
+
     // Plain text literal `"..."`.  We match up to the closing `"` on the same
     // line, including escape sequences.  The logos regex is deliberately
     // conservative (it captures raw bytes; escape validation happens below).
@@ -362,6 +378,41 @@ pub(crate) fn scan(src: &str) -> (Vec<(RawToken, Span)>, Vec<LexError>) {
                     scan_interp_body(src, interp_start_offset, span.start);
                 tokens.extend(interp_tokens);
                 errors.extend(interp_errors);
+                let (rest_tokens, rest_errors) = scan_from(src, consumed);
+                tokens.extend(rest_tokens);
+                errors.extend(rest_errors);
+                return (tokens, errors);
+            }
+
+            // ── Triple-quoted string `"""..."""` ──────────────────────────────
+            Ok(LogosToken::TripleQuoteOpen) => {
+                let open_start = span.start;
+                let body_start = range.end; // right after `"""`
+                let (tok, scan_errors, consumed) =
+                    scan_triple_quote_body(src, body_start, open_start);
+                errors.extend(scan_errors);
+                if let Some(content) = tok {
+                    tokens.push((RawToken::Token(Token::TextLit(content)), span));
+                }
+                let (rest_tokens, rest_errors) = scan_from(src, consumed);
+                tokens.extend(rest_tokens);
+                errors.extend(rest_errors);
+                return (tokens, errors);
+            }
+
+            // ── Raw string `r"..."` / `r#"..."#` / `r##"..."##` ──────────────
+            Ok(LogosToken::RawStringOpen) => {
+                let open_start = span.start;
+                // The matched slice is `r` + zero-or-more `#` + `"`.
+                // Count the `#` characters (everything between `r` and the `"`).
+                let hash_count = slice.len() - 2; // subtract `r` and `"`
+                let body_start = range.end;
+                let (tok, scan_errors, consumed) =
+                    scan_raw_string_body(src, body_start, open_start, hash_count);
+                errors.extend(scan_errors);
+                if let Some(content) = tok {
+                    tokens.push((RawToken::Token(Token::RawTextLit(content)), span));
+                }
                 let (rest_tokens, rest_errors) = scan_from(src, consumed);
                 tokens.extend(rest_tokens);
                 errors.extend(rest_errors);
@@ -589,6 +640,20 @@ fn shift_error(e: LexError, delta: u32) -> LexError {
         LexError::IndentAtTopLevel { span } => LexError::IndentAtTopLevel {
             span: shift(span, delta),
         },
+        LexError::MultilineStringOpenContent { span } => LexError::MultilineStringOpenContent {
+            span: shift(span, delta),
+        },
+        LexError::MultilineStringInsufficientIndent { span } => {
+            LexError::MultilineStringInsufficientIndent {
+                span: shift(span, delta),
+            }
+        }
+        LexError::UnterminatedMultilineString { open_span, kind } => {
+            LexError::UnterminatedMultilineString {
+                open_span: shift(open_span, delta),
+                kind,
+            }
+        }
     }
 }
 
@@ -621,6 +686,242 @@ fn scan_hole_expr(src: &str, start: usize, end: usize) -> (Vec<(RawToken, Span)>
         .collect();
     let errors = errors.into_iter().map(|e| shift_error(e, off)).collect();
     (tokens, errors)
+}
+
+// ── Triple-quoted string scanner ──────────────────────────────────────────────
+
+/// Scan a triple-quoted `"""..."""` body starting at `pos` (right after the
+/// opening `"""`).
+///
+/// Returns `(Option<body>, errors, consumed_end_pos)`.
+///
+/// - `body` is the dedented, newline-stripped string content ready for later
+///   escape decoding.  `None` is returned when an error prevents producing a
+///   well-formed token; the caller should still advance to `consumed_end_pos`.
+/// - `open_start` is the byte offset of the opening `"""` (for error spans).
+///
+/// # Dedent algorithm (D256, §6.1)
+///
+/// 1. The character immediately after the opening `"""` must be `\n`; anything
+///    else is `L013 MultilineStringOpenContent`.
+/// 2. Collect all bytes until the closing `"""`, tracking which byte sequence
+///    precedes the closing `"""` on its line — that is the margin.
+/// 3. The leading `\n` (after the opening `"""`) and the final `\n` + margin
+///    bytes (before the closing `"""`) are dropped.
+/// 4. From every interior line, strip the margin as a byte-exact prefix.
+///    A line with fewer bytes than the margin is `L014 MultilineStringInsufficientIndent`,
+///    unless the line is blank (empty or whitespace-only), in which case it is
+///    allowed and produces just `\n`.
+fn scan_triple_quote_body(
+    src: &str,
+    pos: usize,
+    open_start: u32,
+) -> (Option<String>, Vec<LexError>, usize) {
+    let mut errors: Vec<LexError> = Vec::new();
+    let bytes = src.as_bytes();
+
+    // ── Step 1: the first byte must be `\n` ──────────────────────────────────
+    if pos >= bytes.len() || bytes[pos] != b'\n' {
+        // Content on the same line as the opening `"""` — error.
+        #[allow(clippy::cast_possible_truncation)]
+        let err_span = Span::new(open_start, pos as u32 + 1);
+        errors.push(LexError::MultilineStringOpenContent { span: err_span });
+        // Recovery: scan forward to find the closing `"""` or EOF.
+        let consumed = skip_to_triple_quote_close(src, pos);
+        return (None, errors, consumed);
+    }
+
+    // Skip the opening newline.
+    let mut i = pos + 1;
+
+    // ── Step 2: scan until the closing `"""` ─────────────────────────────────
+    //
+    // We need to find the closing `"""` and determine the margin (the
+    // whitespace prefix on the closing delimiter's line).
+    //
+    // Strategy: collect the entire body between the opening newline and the
+    // closing `"""`.  Then split on lines to apply dedent.
+    let body_start = i;
+
+    let close_pos = loop {
+        if i + 2 >= bytes.len() {
+            // Check remaining bytes for `"""`
+            if i < bytes.len()
+                && bytes[i] == b'"'
+                && i + 1 < bytes.len()
+                && bytes[i + 1] == b'"'
+                && i + 2 < bytes.len()
+                && bytes[i + 2] == b'"'
+            {
+                break i;
+            }
+            // EOF without closing `"""`.
+            errors.push(LexError::UnterminatedMultilineString {
+                open_span: Span::point(open_start),
+                kind: "triple-quoted",
+            });
+            return (None, errors, bytes.len());
+        }
+        if bytes[i] == b'"' && bytes[i + 1] == b'"' && bytes[i + 2] == b'"' {
+            break i;
+        }
+        i += 1;
+    };
+
+    // `close_pos` is the index of the first `"` of the closing `"""`.
+    // The consumed position is right after the closing `"""`.
+    let consumed = close_pos + 3;
+
+    // ── Step 3: determine the margin ─────────────────────────────────────────
+    //
+    // Walk backward from `close_pos` to find the start of the line containing
+    // the closing `"""`.  The margin is everything from the start of that line
+    // to `close_pos`.
+    let raw_body = &src[body_start..close_pos];
+
+    // Find the last `\n` in the raw body (or the start if none).
+    // When no newline exists the body fits entirely on one line (e.g. `"""\n"""`)
+    // and the margin is the empty string.
+    let last_newline_in_body = raw_body.rfind('\n');
+    let margin: &str = last_newline_in_body.map_or("", |nl_pos| &raw_body[nl_pos + 1..]);
+
+    // Validate that the margin is all-whitespace.  If it contains non-whitespace,
+    // the closing `"""` is not properly dedented — treat as zero margin so we
+    // can still produce a token, but emit an error.
+    //
+    // Note: the closing line (including its trailing content after the margin)
+    // must be exactly `<margin>"""`.  Since logos matched `"""` only, anything
+    // between the last `\n` and `"""` is the margin by construction.
+    // We just need it to be whitespace-only.
+    let effective_margin = if margin.bytes().all(|b| b == b' ') {
+        margin
+    } else {
+        // Margin contains non-space characters — error.
+        #[allow(clippy::cast_possible_truncation)]
+        errors.push(LexError::MultilineStringInsufficientIndent {
+            span: Span::point(open_start),
+        });
+        ""
+    };
+
+    // ── Step 4: build the dedented body ──────────────────────────────────────
+    //
+    // The raw body is everything from after the opening `\n` to just before the
+    // last `\n` that precedes the closing `"""` line.  When no newline exists
+    // the content is empty.
+    let content_raw: &str = last_newline_in_body.map_or("", |nl_pos| &raw_body[..nl_pos]);
+
+    // Split content_raw into lines, strip the margin from each.
+    let mut result = String::new();
+    let margin_len = effective_margin.len();
+
+    for (line_idx, line) in content_raw.split('\n').enumerate() {
+        if line_idx > 0 {
+            result.push('\n');
+        }
+        // Blank line: emit as-is (just `\n`).
+        if line.bytes().all(|b| b == b' ') && line.len() <= margin_len {
+            // A line that is shorter than or equal to the margin AND is
+            // all-spaces is a blank interior line — emit empty.
+            continue;
+        }
+        if line.is_empty() {
+            // Truly empty line (e.g. `\n\n`).
+            continue;
+        }
+        // Check that the line starts with the margin.
+        if margin_len > 0 && !line.starts_with(effective_margin) {
+            // Insufficient indentation.
+            // Find approximate byte offset: body_start + position of this line.
+            let approx_offset = body_start
+                + content_raw
+                    .split('\n')
+                    .take(line_idx)
+                    .map(|l| l.len() + 1)
+                    .sum::<usize>();
+            #[allow(clippy::cast_possible_truncation)]
+            errors.push(LexError::MultilineStringInsufficientIndent {
+                span: Span::point(approx_offset as u32),
+            });
+            // Recovery: include the line as-is.
+            result.push_str(line);
+        } else {
+            result.push_str(&line[margin_len..]);
+        }
+    }
+
+    (Some(result), errors, consumed)
+}
+
+/// Skip forward from `pos` looking for the next `"""` or EOF, for error recovery.
+fn skip_to_triple_quote_close(src: &str, pos: usize) -> usize {
+    let bytes = src.as_bytes();
+    let mut i = pos;
+    while i + 2 < bytes.len() {
+        if bytes[i] == b'"' && bytes[i + 1] == b'"' && bytes[i + 2] == b'"' {
+            return i + 3;
+        }
+        i += 1;
+    }
+    bytes.len()
+}
+
+// ── Raw string scanner ────────────────────────────────────────────────────────
+
+/// Scan a raw string body starting at `pos` (right after the opening
+/// `r"` / `r#"` / …).
+///
+/// `hash_count` is the number of `#` characters between `r` and the opening `"`.
+/// The closing sequence is `"` followed by exactly `hash_count` `#` characters.
+///
+/// No escape processing is performed; every byte is literal.
+/// Raw strings may span multiple lines.
+///
+/// Returns `(Option<body>, errors, consumed_end_pos)`.
+fn scan_raw_string_body(
+    src: &str,
+    pos: usize,
+    open_start: u32,
+    hash_count: usize,
+) -> (Option<String>, Vec<LexError>, usize) {
+    let mut errors: Vec<LexError> = Vec::new();
+    let bytes = src.as_bytes();
+    let mut i = pos;
+    let mut body = String::new();
+
+    loop {
+        if i >= bytes.len() {
+            // EOF without closing delimiter.
+            errors.push(LexError::UnterminatedMultilineString {
+                open_span: Span::point(open_start),
+                kind: "raw",
+            });
+            return (None, errors, i);
+        }
+
+        if bytes[i] == b'"' {
+            // Check whether this is the closing delimiter: `"` + `hash_count` `#`.
+            let after_quote = i + 1;
+            let enough_hashes = hash_count == 0
+                || (after_quote + hash_count <= bytes.len()
+                    && bytes[after_quote..after_quote + hash_count]
+                        .iter()
+                        .all(|&b| b == b'#'));
+            if enough_hashes {
+                let consumed = after_quote + hash_count;
+                return (Some(body), errors, consumed);
+            }
+            // Not a closing delimiter — include the `"` as literal content.
+            // Use char-safe indexing.
+            let ch = src[i..].chars().next().unwrap_or('"');
+            body.push(ch);
+            i += ch.len_utf8();
+        } else {
+            let ch = src[i..].chars().next().unwrap_or('\0');
+            body.push(ch);
+            i += ch.len_utf8();
+        }
+    }
 }
 
 // ── Interpolation body scanner ────────────────────────────────────────────────

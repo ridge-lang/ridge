@@ -207,7 +207,8 @@ fn lit_to_key(lit: &Literal) -> LitKey {
         | Literal::IntOct { raw, .. }
         | Literal::IntHex { raw, .. }
         | Literal::Float { raw, .. }
-        | Literal::Text { raw, .. } => LitKey::Other(raw.clone()),
+        | Literal::Text { raw, .. }
+        | Literal::RawText { raw, .. } => LitKey::Other(raw.clone()),
     }
 }
 

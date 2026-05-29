@@ -32,6 +32,14 @@ pub struct FmtArgs {
     #[arg(long)]
     pub stdin: bool,
 
+    /// Insert `@test` attributes above every `pub fn test_*` that lacks one.
+    ///
+    /// Idempotent: functions that already carry `@test` are left untouched.
+    /// Compatible with `--check` (reports whether any file would change) and
+    /// `--stdin` (reads from stdin, writes the migrated output to stdout).
+    #[arg(long)]
+    pub migrate_tests: bool,
+
     /// Files or directories to format. Defaults to the current workspace.
     #[arg(value_name = "PATHS")]
     pub paths: Vec<PathBuf>,
@@ -110,7 +118,7 @@ fn expand_paths(paths: &[PathBuf]) -> Result<Vec<PathBuf>, CliError> {
 pub fn execute(args: &FmtArgs, cwd: &Path) -> Result<(), CliError> {
     // ── stdin mode ────────────────────────────────────────────────────────────
     if args.stdin {
-        return execute_stdin(args.check);
+        return execute_stdin(args.check, args.migrate_tests);
     }
 
     // ── filesystem mode ───────────────────────────────────────────────────────
@@ -125,16 +133,16 @@ pub fn execute(args: &FmtArgs, cwd: &Path) -> Result<(), CliError> {
     };
 
     if args.check {
-        execute_check(&files)
+        execute_check(&files, args.migrate_tests)
     } else {
-        execute_format(&files)
+        execute_format(&files, args.migrate_tests)
     }
 }
 
 // ── stdin helper ──────────────────────────────────────────────────────────────
 
-/// Handle `ridge fmt [--check] --stdin`.
-fn execute_stdin(check: bool) -> Result<(), CliError> {
+/// Handle `ridge fmt [--check] [--migrate-tests] --stdin`.
+fn execute_stdin(check: bool, migrate: bool) -> Result<(), CliError> {
     let mut src = String::new();
     io::stdin()
         .read_to_string(&mut src)
@@ -143,17 +151,23 @@ fn execute_stdin(check: bool) -> Result<(), CliError> {
             source: e.to_string(),
         })?;
 
-    match ridge_fmt::format_source(&src) {
-        Ok(formatted) => {
+    let transform = if migrate {
+        ridge_fmt::migrate_tests(&src)
+    } else {
+        ridge_fmt::format_source(&src)
+    };
+
+    match transform {
+        Ok(output) => {
             if check {
-                // --check --stdin: exit 1 if input differs from formatted output.
-                if src != formatted {
+                // --check --stdin: exit 1 if input differs from output.
+                if src != output {
                     return Err(CliError::FmtCheckFailed { count: 1 });
                 }
                 return Ok(());
             }
             io::stdout()
-                .write_all(formatted.as_bytes())
+                .write_all(output.as_bytes())
                 .map_err(|e| CliError::FmtIoError {
                     path: PathBuf::from("<stdout>"),
                     source: e.to_string(),
@@ -179,16 +193,22 @@ fn execute_stdin(check: bool) -> Result<(), CliError> {
 
 // ── check helper ──────────────────────────────────────────────────────────────
 
-/// Handle `ridge fmt --check <files>`.
-fn execute_check(files: &[PathBuf]) -> Result<(), CliError> {
+/// Handle `ridge fmt --check [--migrate-tests] <files>`.
+fn execute_check(files: &[PathBuf], migrate: bool) -> Result<(), CliError> {
     let mut would_reformat = 0usize;
 
     for path in files {
         let src = read_file(path)?;
 
-        match ridge_fmt::format_source(&src) {
-            Ok(formatted) => {
-                if src != formatted {
+        let transform = if migrate {
+            ridge_fmt::migrate_tests(&src)
+        } else {
+            ridge_fmt::format_source(&src)
+        };
+
+        match transform {
+            Ok(output) => {
+                if src != output {
                     println!("would reformat {}", path.display());
                     would_reformat += 1;
                 }
@@ -210,8 +230,8 @@ fn execute_check(files: &[PathBuf]) -> Result<(), CliError> {
 
 // ── in-place format helper ────────────────────────────────────────────────────
 
-/// Handle `ridge fmt <files>` (in-place rewrite).
-fn execute_format(files: &[PathBuf]) -> Result<(), CliError> {
+/// Handle `ridge fmt [--migrate-tests] <files>` (in-place rewrite).
+fn execute_format(files: &[PathBuf], migrate: bool) -> Result<(), CliError> {
     let mut io_error = false;
 
     for path in files {
@@ -224,10 +244,16 @@ fn execute_format(files: &[PathBuf]) -> Result<(), CliError> {
             }
         };
 
-        match ridge_fmt::format_source(&src) {
-            Ok(formatted) => {
-                if src != formatted {
-                    if let Err(e) = std::fs::write(path, formatted.as_bytes()) {
+        let transform = if migrate {
+            ridge_fmt::migrate_tests(&src)
+        } else {
+            ridge_fmt::format_source(&src)
+        };
+
+        match transform {
+            Ok(output) => {
+                if src != output {
+                    if let Err(e) = std::fs::write(path, output.as_bytes()) {
                         eprintln!("error: {}: C103 FmtIoError: {e}", path.display());
                         io_error = true;
                     }

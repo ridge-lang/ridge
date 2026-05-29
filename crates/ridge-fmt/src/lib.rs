@@ -82,6 +82,137 @@ fn expand_tabs(src: &str) -> String {
 
 // ── Public API ─────────────────────────────────────────────────────────────────
 
+/// Rewrite legacy prefix-style test functions to the `@test` attribute form.
+///
+/// For each `pub fn test_*` function that does not already carry an
+/// `@test` attribute, inserts `@test "<derived>"` on a new line immediately
+/// above the `pub fn` line at the same indentation.  The derived name is the
+/// function name with its `test_` prefix stripped.
+///
+/// The rewrite is **idempotent**: a function already carrying `@test` is left
+/// untouched.  Everything else in the file — trivia, comments, other
+/// declarations — is preserved verbatim.
+///
+/// # Errors
+///
+/// Returns [`FormatError::FmtSourceUnparseable`] (`C101`) when the source
+/// fails to parse.
+pub fn migrate_tests(src: &str) -> Result<String, FormatError> {
+    use ridge_ast::{Attribute, Item, Visibility};
+
+    // parse_module_with_trivia normalises CRLF internally and returns the
+    // normalised source in `normalised_src`.  All span byte offsets produced
+    // by the parser reference that normalised string, so we work against it
+    // rather than the raw input.
+    let parsed = ridge_parser::parse_module_with_trivia(src);
+
+    if !parsed.result.errors.is_empty() {
+        let msg = parsed
+            .result
+            .errors
+            .first()
+            .map(|e| e.to_string())
+            .unwrap_or_else(|| "unknown parse error".to_string());
+        return Err(FormatError::FmtSourceUnparseable(msg));
+    }
+    if !parsed.result.lex_errors.is_empty() {
+        let msg = parsed
+            .result
+            .lex_errors
+            .first()
+            .map(|e| e.to_string())
+            .unwrap_or_else(|| "unknown lex error".to_string());
+        return Err(FormatError::FmtSourceUnparseable(msg));
+    }
+
+    // The normalised source is the base for all insertions.
+    let normalised = &parsed.normalised_src;
+
+    // Collect insertion points: (byte_offset_of_line_start, attribute_text).
+    // Each entry describes inserting `@test "<name>"\n<indent>` at the
+    // beginning of the line that holds `pub fn test_…`.
+    let mut insertions: Vec<(usize, String)> = Vec::new();
+
+    for item in &parsed.result.module.items {
+        let Item::Fn(decl) = item else { continue };
+
+        // Only `pub fn test_*` without an existing @test attribute.
+        if decl.vis != Visibility::Pub {
+            continue;
+        }
+        let fn_name = &decl.name.text;
+        if !fn_name.starts_with("test_") {
+            continue;
+        }
+        let already_has_test = decl
+            .attrs
+            .iter()
+            .any(|a| matches!(a, Attribute::Test { .. }));
+        if already_has_test {
+            continue;
+        }
+
+        // `FnDecl.span.start` is the byte offset of the `fn` keyword in the
+        // normalised source.  Walk backward to find the start of the line
+        // that contains `pub fn …` — that is where we insert the attribute.
+        let fn_offset = decl.span.start as usize;
+        let line_start = find_line_start(normalised, fn_offset);
+
+        // Capture the indentation of the `pub fn` line.
+        let indent = leading_whitespace(&normalised[line_start..]).to_string();
+
+        // Derive the test display name by stripping the `test_` prefix.
+        let display_name = fn_name.strip_prefix("test_").unwrap_or(fn_name);
+
+        let insertion = format!("@test \"{display_name}\"\n{indent}");
+        insertions.push((line_start, insertion));
+    }
+
+    if insertions.is_empty() {
+        return Ok(normalised.to_string());
+    }
+
+    // Apply insertions from last to first so earlier byte offsets stay valid.
+    insertions.sort_by_key(|(offset, _)| *offset);
+    insertions.reverse();
+
+    let mut result = normalised.to_string();
+    for (offset, text) in insertions {
+        result.insert_str(offset, &text);
+    }
+
+    Ok(result)
+}
+
+/// Return the byte offset of the start of the line containing `offset`.
+///
+/// Scans backward from `offset` to find the preceding newline (or the
+/// beginning of the string).
+fn find_line_start(src: &str, offset: usize) -> usize {
+    let bytes = src.as_bytes();
+    // Start scanning from `offset - 1` to skip the character at `offset`
+    // itself (which may be `fn`, not a newline).
+    if offset == 0 {
+        return 0;
+    }
+    let mut i = offset - 1;
+    loop {
+        if bytes[i] == b'\n' {
+            return i + 1;
+        }
+        if i == 0 {
+            return 0;
+        }
+        i -= 1;
+    }
+}
+
+/// Return the leading whitespace prefix of a line (spaces and tabs).
+fn leading_whitespace(line: &str) -> &str {
+    let trimmed = line.trim_start_matches([' ', '\t']);
+    &line[..line.len() - trimmed.len()]
+}
+
 /// Format a Ridge source string according to the standard style rules.
 ///
 /// # Algorithm

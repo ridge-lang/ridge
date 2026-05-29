@@ -394,9 +394,13 @@ fn parse_field_pattern(cur: &mut Cursor<'_>) -> Result<FieldPattern, ParseError>
 /// - `..`               → `ListPatElem::Rest { bind: None }`
 /// - `IDENT @ ..`       → `ListPatElem::Rest { bind: Some(ident) }`
 ///
+/// The `..` may appear in any position (prefix, middle, or suffix):
+/// - `[a, ..]`          — prefix rest
+/// - `[.., z]`          — suffix rest
+/// - `[a, .., z]`       — middle rest
+///
 /// Errors:
 /// - `P024 MultipleRestInListPattern` — more than one `..` in the list.
-/// - `P025 RestSuffixNotSupported`    — a `..` is followed by more elements.
 ///
 /// Precondition: the opening `[` has been consumed and the current token is
 /// NOT `]`.
@@ -421,15 +425,17 @@ fn parse_list_pattern_elements(
                 span: elem_span,
             });
 
-            // After a rest element, only `,` (possibly with `]` after it) or
-            // `]` is expected.  Any further pattern element is a suffix rest.
+            // After a rest element, consume optional trailing comma and
+            // continue parsing — suffix elements after `..` are now supported.
             if cur.peek() == &Token::Comma {
                 cur.bump(); // consume `,`
+                if cur.peek() == &Token::RBrack {
+                    break; // trailing comma before `]`
+                }
+                // More elements follow — these are suffix elements after the rest.
+                continue;
             }
-            // If there is still content before `]`, that is a suffix rest — P025.
-            if cur.peek() != &Token::RBrack {
-                return Err(ParseError::RestSuffixNotSupported { span: elem_span });
-            }
+            // No comma: must be `]`.
             break;
         }
 
@@ -462,14 +468,14 @@ fn parse_list_pattern_elements(
                         span: full_rest_span,
                     });
 
-                    // Consume optional trailing comma, then check for suffix.
+                    // After a bound rest, consume optional trailing comma and
+                    // continue — suffix elements are allowed after `name @ ..`.
                     if cur.peek() == &Token::Comma {
                         cur.bump();
-                    }
-                    if cur.peek() != &Token::RBrack {
-                        return Err(ParseError::RestSuffixNotSupported {
-                            span: full_rest_span,
-                        });
+                        if cur.peek() == &Token::RBrack {
+                            break; // trailing comma before `]`
+                        }
+                        continue;
                     }
                     break;
                 }
@@ -1082,17 +1088,87 @@ mod tests {
     }
 
     #[test]
-    fn parse_pattern_list_suffix_rest_yields_p025() {
-        // `[.., last]` → P025 RestSuffixNotSupported
+    fn parse_pattern_list_suffix_rest_parses_ok() {
+        // `[.., last]` is now supported — suffix rest parses successfully.
         let result = parse_pat("[.., last]");
-        assert!(result.is_err(), "expected Err for suffix rest `[.., last]`");
-        if let Err(e) = result {
+        assert!(
+            result.is_ok(),
+            "expected Ok for suffix rest `[.., last]`, got {result:?}"
+        );
+        if let Ok(Pattern::List { elements, .. }) = result {
             assert_eq!(
-                e.code(),
-                "P025",
-                "expected P025 RestSuffixNotSupported, got code={} err={e:?}",
-                e.code()
+                elements.len(),
+                2,
+                "expected 2 elements: Rest and Elem(last)"
             );
+            assert!(
+                matches!(
+                    &elements[0],
+                    ridge_ast::pattern::ListPatElem::Rest { bind: None, .. }
+                ),
+                "element 0 expected Rest {{ bind: None }}, got {:?}",
+                elements[0]
+            );
+            assert!(
+                matches!(&elements[1], ridge_ast::pattern::ListPatElem::Elem(Pattern::Var { name, .. }) if name.text == "last"),
+                "element 1 expected Elem(Var(last)), got {:?}",
+                elements[1]
+            );
+        } else {
+            unreachable!("expected List, got {result:?}");
+        }
+    }
+
+    #[test]
+    fn parse_pattern_list_middle_rest_parses_ok() {
+        // `[a, .., z]` is now supported — middle rest parses successfully.
+        let result = parse_pat("[a, .., z]");
+        assert!(
+            result.is_ok(),
+            "expected Ok for middle rest `[a, .., z]`, got {result:?}"
+        );
+        if let Ok(Pattern::List { elements, .. }) = result {
+            assert_eq!(elements.len(), 3, "expected 3 elements");
+            assert!(
+                matches!(&elements[0], ridge_ast::pattern::ListPatElem::Elem(Pattern::Var { name, .. }) if name.text == "a"),
+                "element 0 expected Elem(Var(a)), got {:?}",
+                elements[0]
+            );
+            assert!(
+                matches!(
+                    &elements[1],
+                    ridge_ast::pattern::ListPatElem::Rest { bind: None, .. }
+                ),
+                "element 1 expected Rest, got {:?}",
+                elements[1]
+            );
+            assert!(
+                matches!(&elements[2], ridge_ast::pattern::ListPatElem::Elem(Pattern::Var { name, .. }) if name.text == "z"),
+                "element 2 expected Elem(Var(z)), got {:?}",
+                elements[2]
+            );
+        } else {
+            unreachable!("expected List, got {result:?}");
+        }
+    }
+
+    #[test]
+    fn parse_pattern_list_middle_bound_rest_parses_ok() {
+        // `[a, mid @ .., z]` — middle rest with binding.
+        let result = parse_pat("[a, mid @ .., z]");
+        assert!(
+            result.is_ok(),
+            "expected Ok for `[a, mid @ .., z]`, got {result:?}"
+        );
+        if let Ok(Pattern::List { elements, .. }) = result {
+            assert_eq!(elements.len(), 3, "expected 3 elements");
+            assert!(
+                matches!(&elements[1], ridge_ast::pattern::ListPatElem::Rest { bind: Some(name), .. } if name.text == "mid"),
+                "element 1 expected Rest {{ bind: Some(mid) }}, got {:?}",
+                elements[1]
+            );
+        } else {
+            unreachable!("expected List, got {result:?}");
         }
     }
 
@@ -1102,11 +1178,10 @@ mod tests {
         let result = parse_pat("[.., ..]");
         assert!(result.is_err(), "expected Err for two rests");
         if let Err(e) = result {
-            // The first `..` is followed by `, ..` which looks like a suffix
-            // rest, so the parser may emit P025 before getting to P024.
-            assert!(
-                e.code() == "P024" || e.code() == "P025",
-                "expected P024 or P025, got code={} err={e:?}",
+            assert_eq!(
+                e.code(),
+                "P024",
+                "expected P024 MultipleRestInListPattern, got code={} err={e:?}",
                 e.code()
             );
         }

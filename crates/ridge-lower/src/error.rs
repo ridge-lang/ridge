@@ -46,6 +46,7 @@ use std::fmt;
 /// | `BareGuardExpr`           | `L006` | §4.5  |
 /// | `ToTextLowering`          | `L007` | §4.6  |
 /// | `WithOnNonRecord`         | `L008` | §4.7  |
+/// | `RefutableSliceElement`   | `L009` | §4.8  |
 /// | `UnsolvedTypeInIR`        | `L997` | §5    |
 /// | `CapVarInIR`              | `L998` | §5    |
 /// | `InternalLoweringError`   | `L999` | §5    |
@@ -95,6 +96,17 @@ pub enum LowerError {
         /// The span of the `with` expression.
         span: Span,
     },
+    /// `L009` — a refutable sub-pattern appears in a suffix or middle position
+    /// of a variable-length list slice pattern (§4.8 P026).
+    ///
+    /// Suffix and middle positions must be irrefutable (a variable or `_`) in
+    /// this version.  The pattern at `span` cannot be matched structurally
+    /// because suffix/middle extraction uses runtime list operations that run
+    /// in the arm body, not in an Erlang case clause pattern.
+    RefutableSliceElement {
+        /// The span of the refutable sub-pattern.
+        span: Span,
+    },
     /// `L997` — an unsolved type variable reached the IR, indicating incomplete
     /// typecheck output was passed to the lowerer.
     UnsolvedTypeInIR {
@@ -129,6 +141,7 @@ impl LowerError {
             Self::BareGuardExpr { .. } => "L006",
             Self::ToTextLowering { .. } => "L007",
             Self::WithOnNonRecord { .. } => "L008",
+            Self::RefutableSliceElement { .. } => "L009",
             Self::UnsolvedTypeInIR { .. } => "L997",
             Self::CapVarInIR { .. } => "L998",
             Self::InternalLoweringError { .. } => "L999",
@@ -147,6 +160,7 @@ impl LowerError {
             | Self::BareGuardExpr { span }
             | Self::ToTextLowering { span }
             | Self::WithOnNonRecord { span }
+            | Self::RefutableSliceElement { span }
             | Self::UnsolvedTypeInIR { span }
             | Self::CapVarInIR { span }
             | Self::InternalLoweringError { span, .. } => *span,
@@ -203,6 +217,13 @@ impl fmt::Display for LowerError {
             Self::WithOnNonRecord { span } => {
                 write!(f, "[L008] `with` applied to non-record type at {span:?}")
             }
+            Self::RefutableSliceElement { span } => {
+                write!(
+                    f,
+                    "[L009] refutable pattern in suffix or middle position of a list slice pattern at {span:?}; \
+                     use a variable or `_` here (P026)"
+                )
+            }
             Self::UnsolvedTypeInIR { span } => {
                 write!(
                     f,
@@ -249,6 +270,10 @@ mod tests {
         assert_eq!(LowerError::BareGuardExpr { span: sp() }.code(), "L006");
         assert_eq!(LowerError::ToTextLowering { span: sp() }.code(), "L007");
         assert_eq!(LowerError::WithOnNonRecord { span: sp() }.code(), "L008");
+        assert_eq!(
+            LowerError::RefutableSliceElement { span: sp() }.code(),
+            "L009"
+        );
         assert_eq!(LowerError::UnsolvedTypeInIR { span: sp() }.code(), "L997");
         assert_eq!(LowerError::CapVarInIR { span: sp() }.code(), "L998");
         assert_eq!(

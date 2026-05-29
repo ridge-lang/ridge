@@ -33,7 +33,9 @@
 //!   type annotations.
 //! - `Expr::InnerFn { decl }` — the decl itself holds the body.
 
-use ridge_ast::{BinOp, Block, Body, Expr, LambdaParam, Literal, Pattern, Span, UnaryOp};
+use ridge_ast::{
+    BinOp, Block, Body, Expr, LambdaParam, ListPatElem, Literal, Pattern, Span, UnaryOp,
+};
 use ridge_resolve::NodeKind;
 use ridge_types::{BuiltinTyCons, CapRow, CapabilitySet, Scheme, Type};
 
@@ -915,12 +917,30 @@ pub fn infer_pattern(ctx: &mut InferCtx, b: &BuiltinTyCons, pat: &Pattern, expec
         }
 
         // ── Bracketed list pattern ────────────────────────────────────────────
-        // Desugar `[a, b, ..]` to the equivalent Cons/ListNil/Wildcard tree
-        // and recurse.  This reuses the existing Cons/ListNil inference paths
-        // without any new logic.
-        Pattern::List { .. } => {
-            let desugared = pat.clone().desugar_list();
-            infer_pattern(ctx, b, &desugared, expected_ty);
+        // Infer each element in place against the element type, and bind an
+        // optional rest binder at `List ?a`.  Unlike `desugar_list` (prefix
+        // only), this types suffix/middle binders such as `last` in `[.., last]`.
+        Pattern::List { elements, span } => {
+            let elem_var = Type::Var(ctx.fresh_tyvid());
+            let list_ty = Type::Con(b.list, vec![elem_var.clone()]);
+            if let Err(e) = unify(ctx, &list_ty, expected_ty) {
+                ctx.errors.push(attach_span(e, *span));
+                return;
+            }
+            let resolved_elem = ctx.shallow_resolve(&elem_var);
+            let resolved_list = ctx.shallow_resolve(&list_ty);
+            for elem in elements {
+                match elem {
+                    ListPatElem::Elem(p) => infer_pattern(ctx, b, p, &resolved_elem),
+                    ListPatElem::Rest {
+                        bind: Some(name), ..
+                    } => {
+                        ctx.env
+                            .bind(name.text.clone(), monoscheme(resolved_list.clone()));
+                    }
+                    ListPatElem::Rest { bind: None, .. } => {}
+                }
+            }
         }
 
         // ── Constructor ───────────────────────────────────────────────────────

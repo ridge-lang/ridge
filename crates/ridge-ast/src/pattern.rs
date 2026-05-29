@@ -41,9 +41,9 @@ pub struct FieldPattern {
 pub enum ListPatElem {
     /// A normal pattern element.
     Elem(Pattern),
-    /// A rest position `..` (prefix rest only in 0.2.8; suffix/middle deferred
-    /// to the next cut).  The optional `bind` is the name bound to the
-    /// remaining list tail: `rest @ ..` binds `rest`, plain `..` does not.
+    /// A rest position `..`, which may appear in prefix, middle, or suffix
+    /// position.  The optional `bind` is the name bound to the captured
+    /// middle segment: `mid @ ..` binds `mid`, plain `..` does not.
     Rest {
         /// The binding name for the tail (`rest @ ..`), or `None` (`..`).
         bind: Option<Ident>,
@@ -167,18 +167,17 @@ pub enum Pattern {
         span: Span,
     },
 
-    /// A bracketed list pattern `[a, b, c]` or `[a, rest @ ..]` (D258).
+    /// A bracketed list pattern `[a, b, c]`, `[a, rest @ ..]`, `[.., last]`,
+    /// or `[first, .., last]` (D258).
     ///
     /// Preserves the original bracket syntax for faithful round-tripping by
-    /// `ridge-fmt`.  All downstream phases (exhaustiveness, type inference,
-    /// lowering) desugar this to the equivalent `Cons`/`ListNil`/`Wildcard`
-    /// tree via [`Pattern::desugar_list`] rather than operating on this node
-    /// directly.
+    /// `ridge-fmt`.  Downstream phases desugar this via [`Pattern::desugar_list`]
+    /// for prefix-only rest patterns.  Suffix and middle rest patterns require
+    /// guard-and-extraction lowering handled in `ridge-lower`.
     ///
     /// Invariants enforced by the parser:
     /// - At most one `ListPatElem::Rest` element.
-    /// - If a `Rest` is present it must be the last element (prefix rest only
-    ///   in 0.2.8; suffix/middle support is deferred to the next cut).
+    /// - The `Rest` element may appear in any position (prefix, middle, suffix).
     List {
         /// The element patterns, in source order.
         elements: Vec<ListPatElem>,
@@ -205,6 +204,21 @@ impl Pattern {
         }
     }
 
+    /// True when this `List` pattern has a `Rest` element in a non-last position
+    /// (suffix or middle rest — `[.., z]`, `[a, .., z]`).
+    ///
+    /// Returns `false` for all non-`List` variants and for prefix-only rest.
+    #[must_use]
+    pub fn is_varlen_list(&self) -> bool {
+        let Self::List { elements, .. } = self else {
+            return false;
+        };
+        elements
+            .iter()
+            .position(|e| matches!(e, ListPatElem::Rest { .. }))
+            .is_some_and(|rest_idx| rest_idx < elements.len() - 1)
+    }
+
     /// Desugar a `Pattern::List` to the equivalent `Cons`/`ListNil`/`Wildcard`
     /// tree (D258).
     ///
@@ -221,9 +235,11 @@ impl Pattern {
     /// | `[e0, …, ek, ..]` (prefix rest, no bind) | `Cons(e0, …, Cons(ek, Wildcard))` |
     /// | `[e0, …, ek, rest @ ..]` (prefix rest, bound) | `Cons(e0, …, Cons(ek, Var(rest)))` |
     ///
-    /// Only prefix rest (Rest as the last element) is handled here; the parser
-    /// rejects suffix/middle rest with `P025 RestSuffixNotSupported` until the
-    /// next cut lifts that restriction.
+    /// For suffix/middle rest patterns (`[.., z]`, `[a, .., z]`), this method
+    /// is not called by the lowering pass — those are handled by guard-and-body
+    /// extraction in `ridge-lower`.  If called on such a pattern (e.g. for
+    /// exhaustiveness), the Rest is treated as Wildcard to remain sound
+    /// (conservatively under-approximates coverage).
     ///
     /// # Panics
     ///
@@ -234,47 +250,71 @@ impl Pattern {
             return self;
         };
 
-        // Split off a trailing Rest element if present.
-        let (elems, rest_elem) = match elements.last() {
-            Some(ListPatElem::Rest { .. }) => {
-                let mut e = elements;
-                let r = e.pop();
-                (e, r)
-            }
-            _ => (elements, None),
-        };
+        // Find the Rest element position.
+        let rest_pos = elements
+            .iter()
+            .position(|e| matches!(e, ListPatElem::Rest { .. }));
 
-        // Build the tail: Wildcard, Var(bind), or ListNil.
-        let tail: Self = match rest_elem {
-            Some(ListPatElem::Rest {
-                bind: Some(name),
-                span: rest_span,
-            }) => Self::Var {
-                name,
-                span: rest_span,
-            },
-            Some(ListPatElem::Rest {
-                bind: None,
-                span: rest_span,
-            }) => Self::Wildcard { span: rest_span },
-            _ => Self::ListNil { span },
-        };
-
-        // Wrap element patterns in Cons nodes from right to left.
-        elems.into_iter().rev().fold(tail, |acc, elem| match elem {
-            ListPatElem::Elem(pat) => {
-                let full_span = pat.span().merge(acc.span());
-                Self::Cons {
-                    head: Box::new(pat),
-                    tail: Box::new(acc),
-                    span: full_span,
-                }
+        match rest_pos {
+            None => {
+                // No rest: exact fixed-length list.
+                let tail = Self::ListNil { span };
+                elements
+                    .into_iter()
+                    .rev()
+                    .fold(tail, |acc, elem| build_cons_elem(elem, acc, span))
             }
-            // Rest was already extracted above; this arm is unreachable
-            // in a well-formed List pattern.
-            ListPatElem::Rest {
-                span: rest_span, ..
-            } => Self::Wildcard { span: rest_span },
-        })
+            Some(idx) if idx == elements.len() - 1 => {
+                // Prefix rest: Rest is the last element.
+                let mut elems = elements;
+                let rest_elem = elems.pop();
+                let tail: Self = match rest_elem {
+                    Some(ListPatElem::Rest {
+                        bind: Some(name),
+                        span: rest_span,
+                    }) => Self::Var {
+                        name,
+                        span: rest_span,
+                    },
+                    Some(ListPatElem::Rest {
+                        bind: None,
+                        span: rest_span,
+                    }) => Self::Wildcard { span: rest_span },
+                    _ => Self::ListNil { span },
+                };
+                elems
+                    .into_iter()
+                    .rev()
+                    .fold(tail, |acc, elem| build_cons_elem(elem, acc, span))
+            }
+            Some(_) => {
+                // Suffix or middle rest: conservatively desugar to Wildcard.
+                // The lowering pass handles these via guard-and-body extraction;
+                // exhaustiveness sees them as Wildcard (sound, under-approximates).
+                Self::Wildcard { span }
+            }
+        }
+    }
+}
+
+/// Build a `Cons` node wrapping `acc` with the head from `elem`.
+///
+/// `Rest` elements in the middle of a fold (should not appear in well-formed
+/// calls but handled defensively) produce a Wildcard.
+fn build_cons_elem(elem: ListPatElem, acc: Pattern, list_span: Span) -> Pattern {
+    match elem {
+        ListPatElem::Elem(pat) => {
+            let full_span = pat.span().merge(acc.span());
+            Pattern::Cons {
+                head: Box::new(pat),
+                tail: Box::new(acc),
+                span: full_span,
+            }
+        }
+        ListPatElem::Rest {
+            span: rest_span, ..
+        } => Pattern::Wildcard {
+            span: rest_span.merge(list_span),
+        },
     }
 }

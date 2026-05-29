@@ -24,7 +24,7 @@ use ridge_ast::{
     decl::{ActorDecl, ActorMember, FnDecl, InitDecl, OnHandler, Param, StateDecl},
     expr::{FieldInit, LambdaParam, MatchArm, QualifiedName, RecordCtor},
     visit::{walk_block, walk_expr, walk_init_decl, walk_on_handler, Visit},
-    Block, Body, Expr, Ident, Item, Module, Pattern,
+    Block, Body, Expr, Ident, Item, ListPatElem, Module, Pattern,
 };
 use ridge_lexer::Span;
 
@@ -415,12 +415,24 @@ impl ScopeWalker<'_> {
             Pattern::Paren { inner, .. } => {
                 self.bind_pattern(inner, kind);
             }
-            // Bracketed list pattern — desugar and recurse so that variable
-            // bindings inside the element patterns (and the optional rest bind)
-            // are resolved correctly.
-            Pattern::List { .. } => {
-                let desugared = pat.clone().desugar_list();
-                self.bind_pattern(&desugared, kind);
+            // Bracketed list pattern — bind each element in place. This handles
+            // prefix, middle, and suffix rest uniformly; `desugar_list` only
+            // expresses prefix rest (it cannot represent a suffix as cons), so
+            // binding the elements directly is what registers a suffix/middle
+            // binder such as the `last` in `[.., last]`.
+            Pattern::List { elements, .. } => {
+                for elem in elements {
+                    match elem {
+                        ListPatElem::Elem(p) => self.bind_pattern(p, kind),
+                        ListPatElem::Rest {
+                            bind: Some(name), ..
+                        } => {
+                            self.check_r017_state_shadow(name);
+                            self.add_local_binding(name, kind);
+                        }
+                        ListPatElem::Rest { bind: None, .. } => {}
+                    }
+                }
             }
         }
     }

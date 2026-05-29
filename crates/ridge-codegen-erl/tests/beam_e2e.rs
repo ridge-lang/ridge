@@ -868,3 +868,121 @@ fn beam_e2e_mailbox_size_reports_some_for_live_actor() {
         "expected 'size=0' for an idle live actor, got:\n{stdout}"
     );
 }
+
+// ── Slice pattern BEAM e2e tests (D258) ──────────────────────────────────────
+
+/// Suffix rest `[.., last]`: print the last element of a list.
+const SLICE_SUFFIX_SOURCE: &str = r#"
+import std.io as Io
+import std.int as Int
+
+fn io main () -> Result Unit Text =
+    let xs = [10, 20, 30, 40, 50]
+    match xs
+        [] -> Io.println "empty"
+        [.., last] -> Io.println $"last=${Int.toText last}"
+    Ok ()
+"#;
+
+/// Runs `[.., last]` on a 5-element list; expects the last element (50).
+#[test]
+fn beam_e2e_slice_suffix_last_element() {
+    let (stdout, _) = run_inline_actor_test("SliceSuffix", SLICE_SUFFIX_SOURCE);
+    assert!(
+        stdout.contains("last=50"),
+        "expected 'last=50' for [10,20,30,40,50], got:\n{stdout}"
+    );
+}
+
+/// Middle rest `[first, .., last]`: print first and last elements.
+const SLICE_MIDDLE_SOURCE: &str = r#"
+import std.io as Io
+import std.int as Int
+
+fn io main () -> Result Unit Text =
+    let xs = [1, 2, 3, 4, 5]
+    match xs
+        [] -> Io.println "empty"
+        [first, .., last] -> Io.println $"first=${Int.toText first} last=${Int.toText last}"
+    Ok ()
+"#;
+
+/// Runs `[first, .., last]` on a 5-element list; expects first=1 and last=5.
+#[test]
+fn beam_e2e_slice_middle_first_and_last() {
+    let (stdout, _) = run_inline_actor_test("SliceMiddle", SLICE_MIDDLE_SOURCE);
+    assert!(
+        stdout.contains("first=1"),
+        "expected 'first=1' in output, got:\n{stdout}"
+    );
+    assert!(
+        stdout.contains("last=5"),
+        "expected 'last=5' in output, got:\n{stdout}"
+    );
+}
+
+/// Middle-bound rest `[a, mid @ .., b]`: print the middle slice.
+const SLICE_MID_BIND_SOURCE: &str = r#"
+import std.io as Io
+import std.int as Int
+import std.list as List
+
+fn io main () -> Result Unit Text =
+    let xs = [1, 2, 3, 4, 5]
+    match xs
+        [] -> Io.println "empty"
+        [a, mid @ .., b] ->
+            let len = List.length mid
+            Io.println $"a=${Int.toText a} b=${Int.toText b} mid_len=${Int.toText len}"
+    Ok ()
+"#;
+
+/// Runs `[a, mid @ .., b]` on a 5-element list; middle = [2,3,4] (length 3).
+#[test]
+fn beam_e2e_slice_mid_bind() {
+    let (stdout, _) = run_inline_actor_test("SliceMidBind", SLICE_MID_BIND_SOURCE);
+    assert!(
+        stdout.contains("a=1"),
+        "expected 'a=1' in output, got:\n{stdout}"
+    );
+    assert!(
+        stdout.contains("b=5"),
+        "expected 'b=5' in output, got:\n{stdout}"
+    );
+    assert!(
+        stdout.contains("mid_len=3"),
+        "expected 'mid_len=3' for middle [2,3,4], got:\n{stdout}"
+    );
+}
+
+/// Empty list falls through to `[]` arm with suffix/middle rest present.
+const SLICE_EMPTY_FALLTHROUGH_SOURCE: &str = r#"
+import std.io as Io
+import std.list as List
+
+fn make_empty () -> List Int =
+    List.filter (fn _ -> false) [1]
+
+fn io main () -> Result Unit Text =
+    let xs = make_empty ()
+    match xs
+        [.., last] -> Io.println "non-empty"
+        [] -> Io.println "empty"
+    Ok ()
+"#;
+
+/// An empty list must fall through the `[.., last]` arm (length guard fails)
+/// and match the `[]` arm.
+#[test]
+fn beam_e2e_slice_empty_list_falls_through() {
+    let (stdout, _) =
+        run_inline_actor_test("SliceEmptyFallthrough", SLICE_EMPTY_FALLTHROUGH_SOURCE);
+    assert!(
+        stdout.contains("empty"),
+        "expected 'empty' for [], got:\n{stdout}"
+    );
+    assert!(
+        !stdout.contains("non-empty"),
+        "unexpected 'non-empty' for [], got:\n{stdout}"
+    );
+}

@@ -223,18 +223,33 @@ pub enum ParseError {
         span: Span,
     },
 
-    /// P025 — a `..` rest element is followed by further elements in a list
-    /// pattern (suffix or middle rest position).
+    /// P025 — reserved; previously used for suffix/middle rest (now supported).
     ///
-    /// Suffix and middle rest patterns — `[.., last]`, `[a, .., b]` — are
-    /// not supported in this version.  Use a prefix rest `[first, ..]` or
-    /// the cons operator `head :: tail` instead.
-    #[error(
-        "`..` rest element must be the last element in a list pattern; \
-         suffix and middle rest positions are not yet supported"
-    )]
+    /// This variant is kept for wire-format and downstream-tool compatibility
+    /// but is never emitted by the current parser.
+    #[error("rest element position restriction (unused in current version)")]
     RestSuffixNotSupported {
-        /// Source location of the `..` that is not in the last position.
+        /// Source location.
+        span: Span,
+    },
+
+    /// P026 — a suffix or middle element in a list pattern is a refutable
+    /// sub-pattern (literal, constructor, tuple, …).
+    ///
+    /// Suffix and middle positions — the elements that come after `..` in
+    /// `[.., last]` or `[first, .., last]` — must be irrefutable (a variable
+    /// or `_`) in this version.  Refutable sub-patterns there require runtime
+    /// element extraction that cannot be expressed cleanly as an Erlang case
+    /// clause pattern, so they are rejected with this diagnostic.
+    ///
+    /// Workaround: bind the element to a variable in the slice pattern and
+    /// match further with a nested `match` or a `when` guard.
+    #[error(
+        "refutable patterns are not allowed in suffix or middle positions of a list slice pattern; \
+         use a variable or `_` here"
+    )]
+    RefutableSliceElement {
+        /// Source location of the refutable sub-pattern.
         span: Span,
     },
 
@@ -283,6 +298,7 @@ impl ParseError {
             Self::MailboxBoundInvalid { .. } => "P023",
             Self::MultipleRestInListPattern { .. } => "P024",
             Self::RestSuffixNotSupported { .. } => "P025",
+            Self::RefutableSliceElement { .. } => "P026",
             Self::InternalLayoutInvariantViolated { .. } => "P999",
         }
     }
@@ -307,6 +323,7 @@ impl ParseError {
             | Self::MailboxBoundInvalid { span, .. }
             | Self::MultipleRestInListPattern { span }
             | Self::RestSuffixNotSupported { span }
+            | Self::RefutableSliceElement { span }
             | Self::InternalLayoutInvariantViolated { span } => *span,
         }
     }

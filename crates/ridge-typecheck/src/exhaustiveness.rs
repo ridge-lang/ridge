@@ -17,7 +17,7 @@
 //! When `total_missing > witnesses.len()`, the renderer appends
 //! `... and N more` where `N = total_missing - witnesses.len()`.
 
-use ridge_ast::{Literal, Pattern, Span};
+use ridge_ast::{ListPatElem, Literal, Pattern, Span};
 use ridge_types::{
     BuiltinTyCons, MatchWitness, TyConArena, TyConId, TyConKind, Type, UnionVariant,
     VariantPayload, WitnessKind, WitnessPat,
@@ -198,11 +198,56 @@ fn lift_pattern(pat: &Pattern) -> NormPat {
             }
         }
 
-        // Bracketed list pattern — desugar to Cons/ListNil/Wildcard and
-        // recurse.  Prefix rest is exact; the parser already rejected
-        // suffix/middle rest with P025.
-        Pattern::List { .. } => lift_pattern(&pat.clone().desugar_list()),
+        // Bracketed list pattern — desugar to Cons/ListNil/Wildcard and recurse.
+        Pattern::List { elements, span } => {
+            lift_pattern(&desugar_list_pattern_for_matrix(elements, *span))
+        }
     }
+}
+
+/// Desugar a bracketed list pattern to the cons/nil form used by the
+/// exhaustiveness matrix.
+///
+/// Suffix and middle-rest elements are required to be irrefutable (enforced at
+/// lowering by `L009`), so a pattern like `[a, .., b]` constrains only its first
+/// element and a minimum length — it is equivalent to `a :: _ :: _`. We replace
+/// each suffix element with a wildcard in prefix position and terminate with a
+/// wildcard tail (for `..`) or `[]` (for a fixed-length list). This keeps every
+/// length precisely covered by the cons/nil recursion, so the slice surface adds
+/// no special cases to the core algorithm and stays sound.
+fn desugar_list_pattern_for_matrix(elements: &[ListPatElem], span: Span) -> Pattern {
+    let rest_pos = elements
+        .iter()
+        .position(|e| matches!(e, ListPatElem::Rest { .. }));
+
+    let mut heads: Vec<Pattern> = Vec::new();
+    for (i, elem) in elements.iter().enumerate() {
+        if let ListPatElem::Elem(p) = elem {
+            // Prefix elements keep their pattern; suffix elements (after the
+            // rest) are irrefutable, so only their count matters → wildcard.
+            let is_suffix = rest_pos.is_some_and(|r| i > r);
+            if is_suffix {
+                heads.push(Pattern::Wildcard { span: p.span() });
+            } else {
+                heads.push(p.clone());
+            }
+        }
+    }
+
+    let tail = if rest_pos.is_some() {
+        Pattern::Wildcard { span }
+    } else {
+        Pattern::ListNil { span }
+    };
+
+    heads
+        .into_iter()
+        .rev()
+        .fold(tail, |acc, head| Pattern::Cons {
+            head: Box::new(head),
+            tail: Box::new(acc),
+            span,
+        })
 }
 
 fn lit_to_key(lit: &Literal) -> LitKey {
@@ -1757,5 +1802,131 @@ mod tests {
         let scrutinee_ty = make_list_ty(&b);
         check_exhaustiveness(&mut ctx, &arena, &b, &scrutinee_ty, &arms, dummy_span());
         has_t016(&ctx.errors);
+    }
+
+    // ── Suffix / middle rest (slice surface) ─────────────────────────────────
+    //
+    // Suffix and middle elements are irrefutable, so a `[.., last]` /
+    // `[a, .., b]` pattern is equivalent to a prefix pattern of the same minimum
+    // length (`_ :: _` / `a :: _ :: _`) and is desugared as such for the matrix.
+
+    fn list_elem_var(name: &str) -> ListPatElem {
+        ListPatElem::Elem(Pattern::Var {
+            name: make_ident(name),
+            span: dummy_span(),
+        })
+    }
+    fn list_rest() -> ListPatElem {
+        ListPatElem::Rest {
+            bind: None,
+            span: dummy_span(),
+        }
+    }
+    fn list_node(elements: Vec<ListPatElem>) -> Pattern {
+        Pattern::List {
+            elements,
+            span: dummy_span(),
+        }
+    }
+
+    /// `[] + [.., last]` — exhaustive (`[.., last]` ≡ any non-empty list).
+    #[test]
+    fn match_list_suffix_rest_plus_nil_exhaustive() {
+        let (arena, b) = make_builtins();
+        let mut ctx = InferCtx::new();
+        let arms = vec![
+            list_nil_arm(),
+            list_arm(list_node(vec![list_rest(), list_elem_var("last")])),
+        ];
+        check_exhaustiveness(&mut ctx, &arena, &b, &make_list_ty(&b), &arms, dummy_span());
+        no_errors(&ctx.errors);
+    }
+
+    /// `[.., last]` alone — non-exhaustive (missing `[]`).
+    #[test]
+    fn match_list_suffix_rest_only_non_exhaustive() {
+        let (arena, b) = make_builtins();
+        let mut ctx = InferCtx::new();
+        let arms = vec![list_arm(list_node(vec![
+            list_rest(),
+            list_elem_var("last"),
+        ]))];
+        check_exhaustiveness(&mut ctx, &arena, &b, &make_list_ty(&b), &arms, dummy_span());
+        has_t016(&ctx.errors);
+    }
+
+    /// `[] + [first, .., last]` — NON-exhaustive: the middle-rest needs length
+    /// >= 2, so single-element lists `[_]` are uncovered. (The unsound
+    /// length-blind model wrongly accepted this.)
+    #[test]
+    fn match_list_middle_rest_plus_nil_missing_singleton() {
+        let (arena, b) = make_builtins();
+        let mut ctx = InferCtx::new();
+        let arms = vec![
+            list_nil_arm(),
+            list_arm(list_node(vec![
+                list_elem_var("first"),
+                list_rest(),
+                list_elem_var("last"),
+            ])),
+        ];
+        check_exhaustiveness(&mut ctx, &arena, &b, &make_list_ty(&b), &arms, dummy_span());
+        has_t016(&ctx.errors);
+    }
+
+    /// `[] + [_] + [first, .., last]` — exhaustive (lengths 0, 1, and >= 2).
+    #[test]
+    fn match_list_middle_rest_plus_nil_plus_singleton_exhaustive() {
+        let (arena, b) = make_builtins();
+        let mut ctx = InferCtx::new();
+        let arms = vec![
+            list_nil_arm(),
+            list_arm(list_node(vec![ListPatElem::Elem(Pattern::Wildcard {
+                span: dummy_span(),
+            })])),
+            list_arm(list_node(vec![
+                list_elem_var("first"),
+                list_rest(),
+                list_elem_var("last"),
+            ])),
+        ];
+        check_exhaustiveness(&mut ctx, &arena, &b, &make_list_ty(&b), &arms, dummy_span());
+        no_errors(&ctx.errors);
+    }
+
+    /// `[a, b, ..] + []` — NON-exhaustive (missing single-element lists).
+    /// Guards the unsoundness that prompted the slice-exhaustiveness rework.
+    #[test]
+    fn match_list_mixed_min_lengths_missing_singleton() {
+        let (arena, b) = make_builtins();
+        let mut ctx = InferCtx::new();
+        let arms = vec![
+            list_arm(list_node(vec![
+                list_elem_var("a"),
+                list_elem_var("b"),
+                list_rest(),
+            ])),
+            list_nil_arm(),
+        ];
+        check_exhaustiveness(&mut ctx, &arena, &b, &make_list_ty(&b), &arms, dummy_span());
+        has_t016(&ctx.errors);
+    }
+
+    /// `[a, b, ..] + [x] + []` — exhaustive (lengths >= 2, 1, and 0).
+    #[test]
+    fn match_list_mixed_min_lengths_exhaustive() {
+        let (arena, b) = make_builtins();
+        let mut ctx = InferCtx::new();
+        let arms = vec![
+            list_arm(list_node(vec![
+                list_elem_var("a"),
+                list_elem_var("b"),
+                list_rest(),
+            ])),
+            list_arm(list_node(vec![list_elem_var("x")])),
+            list_nil_arm(),
+        ];
+        check_exhaustiveness(&mut ctx, &arena, &b, &make_list_ty(&b), &arms, dummy_span());
+        no_errors(&ctx.errors);
     }
 }

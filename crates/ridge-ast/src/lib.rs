@@ -47,7 +47,7 @@ pub use expr::{
 pub use ident::Ident;
 pub use lit::Literal;
 pub use module::{Item, Module};
-pub use pattern::{FieldPattern, Pattern};
+pub use pattern::{FieldPattern, ListPatElem, Pattern};
 pub use ty::{FnType, Type};
 pub use visit::Visit;
 

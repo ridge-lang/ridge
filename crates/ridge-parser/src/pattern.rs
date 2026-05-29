@@ -596,7 +596,7 @@ fn can_start_pattern_atom(cur: &Cursor<'_>) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use ridge_ast::{Ident, Literal, Span};
+    use ridge_ast::{Literal, Span};
     use ridge_lexer::tokenize;
 
     fn lex(src: &str) -> Vec<(Token, Span)> {

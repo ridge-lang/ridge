@@ -1750,7 +1750,7 @@ mod tests {
         has_t016(&ctx.errors);
     }
 
-    /// Desugared `[_, ..]` (= `_ :: _`) + `[]` — exhaustive via desugar_list.
+    /// Desugared `[_, ..]` (= `_ :: _`) + `[]` — exhaustive via `desugar_list`.
     ///
     /// Builds `Pattern::List { elements: [Elem(_), Rest { bind: None }] }` and
     /// checks that it desugars correctly and the pair is exhaustive.
@@ -1856,7 +1856,7 @@ mod tests {
     }
 
     /// `[] + [first, .., last]` — NON-exhaustive: the middle-rest needs length
-    /// >= 2, so single-element lists `[_]` are uncovered. (The unsound
+    /// two or more, so single-element lists `[_]` are uncovered. (The unsound
     /// length-blind model wrongly accepted this.)
     #[test]
     fn match_list_middle_rest_plus_nil_missing_singleton() {

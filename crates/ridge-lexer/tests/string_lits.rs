@@ -1,6 +1,6 @@
 //! Tests for multi-line (`"""..."""`) and raw (`r"..."` / `r#"..."#`) string
 //! literals: lexer output, token payloads, and parser round-trips.
-#![allow(clippy::unwrap_used, clippy::expect_used)]
+#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
 use ridge_lexer::{tokenize, LexError, Token};
 

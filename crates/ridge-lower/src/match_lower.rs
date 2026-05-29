@@ -1321,6 +1321,55 @@ mod tests {
         }
     }
 
+    // A refutable element in a slice suffix/middle position must be rejected
+    // with L009 (the 0.2.8 restriction): `[.., 0]` has a literal in the suffix.
+    #[test]
+    fn lower_match_refutable_slice_suffix_emits_l009() {
+        use ridge_ast::ListPatElem;
+
+        let mut ctx = fresh_ctx();
+        let span = sp();
+
+        let scrutinee = Expr::Literal(Literal::IntDec {
+            raw: "0".into(),
+            span,
+        });
+
+        // `[.., 0]` — the suffix element is a refutable literal pattern.
+        let pat = Pattern::List {
+            elements: vec![
+                ListPatElem::Rest { bind: None, span },
+                ListPatElem::Elem(Pattern::Literal {
+                    lit: Literal::IntDec {
+                        raw: "0".into(),
+                        span,
+                    },
+                    span,
+                }),
+            ],
+            span,
+        };
+        let arms = vec![MatchArm {
+            pattern: pat,
+            guard: None,
+            body: Expr::Literal(Literal::IntDec {
+                raw: "1".into(),
+                span,
+            }),
+            span,
+        }];
+
+        let _ = lower_match(&mut ctx, &scrutinee, &arms, span);
+
+        assert!(
+            ctx.errors
+                .iter()
+                .any(|e| matches!(e, LowerError::RefutableSliceElement { .. })),
+            "expected L009 RefutableSliceElement for a literal in suffix position, got: {:?}",
+            ctx.errors
+        );
+    }
+
     // ── T5-match-6: constructor positional pattern ────────────────────────────
     //
     // arm `Some x -> x`: IrPat::Ctor { sym, fields: [], args: [Bind x] }

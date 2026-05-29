@@ -542,6 +542,7 @@ Module {
         ),
         Fn(
             FnDecl {
+                attrs: [],
                 vis: Private,
                 caps: [],
                 name: Ident {
@@ -613,6 +614,7 @@ Module {
                                                     },
                                                 },
                                                 fields: None,
+                                                has_rest: false,
                                                 args: [],
                                                 span: Span {
                                                     start: 893,
@@ -644,6 +646,7 @@ Module {
                                                     },
                                                 },
                                                 fields: None,
+                                                has_rest: false,
                                                 args: [],
                                                 span: Span {
                                                     start: 911,
@@ -675,6 +678,7 @@ Module {
                                                     },
                                                 },
                                                 fields: None,
+                                                has_rest: false,
                                                 args: [],
                                                 span: Span {
                                                     start: 929,
@@ -719,6 +723,7 @@ Module {
         ),
         Fn(
             FnDecl {
+                attrs: [],
                 vis: Private,
                 caps: [],
                 name: Ident {
@@ -1027,6 +1032,7 @@ Module {
         ),
         Fn(
             FnDecl {
+                attrs: [],
                 vis: Private,
                 caps: [],
                 name: Ident {
@@ -2020,6 +2026,7 @@ Module {
         ),
         Fn(
             FnDecl {
+                attrs: [],
                 vis: Private,
                 caps: [],
                 name: Ident {
@@ -2185,6 +2192,7 @@ Module {
         ),
         Fn(
             FnDecl {
+                attrs: [],
                 vis: Private,
                 caps: [],
                 name: Ident {
@@ -2508,6 +2516,7 @@ Module {
         ),
         Fn(
             FnDecl {
+                attrs: [],
                 vis: Private,
                 caps: [],
                 name: Ident {
@@ -2769,6 +2778,7 @@ Module {
         ),
         Fn(
             FnDecl {
+                attrs: [],
                 vis: Private,
                 caps: [],
                 name: Ident {
@@ -3316,6 +3326,7 @@ Module {
         ),
         Fn(
             FnDecl {
+                attrs: [],
                 vis: Private,
                 caps: [
                     Io,
@@ -3804,6 +3815,7 @@ Module {
         ),
         Fn(
             FnDecl {
+                attrs: [],
                 vis: Private,
                 caps: [
                     Env,

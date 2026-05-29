@@ -868,3 +868,258 @@ fn beam_e2e_mailbox_size_reports_some_for_live_actor() {
         "expected 'size=0' for an idle live actor, got:\n{stdout}"
     );
 }
+
+// ── Slice pattern BEAM e2e tests (D258) ──────────────────────────────────────
+
+/// Suffix rest `[.., last]`: print the last element of a list.
+const SLICE_SUFFIX_SOURCE: &str = r#"
+import std.io as Io
+import std.int as Int
+
+fn io main () -> Result Unit Text =
+    let xs = [10, 20, 30, 40, 50]
+    match xs
+        [] -> Io.println "empty"
+        [.., last] -> Io.println $"last=${Int.toText last}"
+    Ok ()
+"#;
+
+/// Runs `[.., last]` on a 5-element list; expects the last element (50).
+#[test]
+fn beam_e2e_slice_suffix_last_element() {
+    let (stdout, _) = run_inline_actor_test("SliceSuffix", SLICE_SUFFIX_SOURCE);
+    assert!(
+        stdout.contains("last=50"),
+        "expected 'last=50' for [10,20,30,40,50], got:\n{stdout}"
+    );
+}
+
+/// Middle rest `[first, .., last]`: print first and last elements.
+const SLICE_MIDDLE_SOURCE: &str = r#"
+import std.io as Io
+import std.int as Int
+
+fn io main () -> Result Unit Text =
+    let xs = [1, 2, 3, 4, 5]
+    match xs
+        [] -> Io.println "empty"
+        [first, .., last] -> Io.println $"first=${Int.toText first} last=${Int.toText last}"
+    Ok ()
+"#;
+
+/// Runs `[first, .., last]` on a 5-element list; expects first=1 and last=5.
+#[test]
+fn beam_e2e_slice_middle_first_and_last() {
+    let (stdout, _) = run_inline_actor_test("SliceMiddle", SLICE_MIDDLE_SOURCE);
+    assert!(
+        stdout.contains("first=1"),
+        "expected 'first=1' in output, got:\n{stdout}"
+    );
+    assert!(
+        stdout.contains("last=5"),
+        "expected 'last=5' in output, got:\n{stdout}"
+    );
+}
+
+/// Middle-bound rest `[a, mid @ .., b]`: print the middle slice.
+const SLICE_MID_BIND_SOURCE: &str = r#"
+import std.io as Io
+import std.int as Int
+import std.list as List
+
+fn io main () -> Result Unit Text =
+    let xs = [1, 2, 3, 4, 5]
+    match xs
+        [] -> Io.println "empty"
+        [a, mid @ .., b] ->
+            let len = List.length mid
+            Io.println $"a=${Int.toText a} b=${Int.toText b} mid_len=${Int.toText len}"
+    Ok ()
+"#;
+
+/// Runs `[a, mid @ .., b]` on a 5-element list; middle = [2,3,4] (length 3).
+#[test]
+fn beam_e2e_slice_mid_bind() {
+    let (stdout, _) = run_inline_actor_test("SliceMidBind", SLICE_MID_BIND_SOURCE);
+    assert!(
+        stdout.contains("a=1"),
+        "expected 'a=1' in output, got:\n{stdout}"
+    );
+    assert!(
+        stdout.contains("b=5"),
+        "expected 'b=5' in output, got:\n{stdout}"
+    );
+    assert!(
+        stdout.contains("mid_len=3"),
+        "expected 'mid_len=3' for middle [2,3,4], got:\n{stdout}"
+    );
+}
+
+/// Empty list falls through to `[]` arm with suffix/middle rest present.
+const SLICE_EMPTY_FALLTHROUGH_SOURCE: &str = r#"
+import std.io as Io
+import std.list as List
+
+fn make_empty () -> List Int =
+    List.filter (fn _ -> false) [1]
+
+fn io main () -> Result Unit Text =
+    let xs = make_empty ()
+    match xs
+        [.., last] -> Io.println "non-empty"
+        [] -> Io.println "empty"
+    Ok ()
+"#;
+
+/// An empty list must fall through the `[.., last]` arm (length guard fails)
+/// and match the `[]` arm.
+#[test]
+fn beam_e2e_slice_empty_list_falls_through() {
+    let (stdout, _) =
+        run_inline_actor_test("SliceEmptyFallthrough", SLICE_EMPTY_FALLTHROUGH_SOURCE);
+    assert!(
+        stdout.contains("empty"),
+        "expected 'empty' for [], got:\n{stdout}"
+    );
+    assert!(
+        !stdout.contains("non-empty"),
+        "unexpected 'non-empty' for [], got:\n{stdout}"
+    );
+}
+
+// ── String literals (commit 1) ───────────────────────────────────────────────
+
+/// Triple-quoted string: dedent against the closing delimiter and drop the
+/// opening/closing newlines, then print the value.
+const STRING_MULTILINE_SOURCE: &str = r##"
+import std.io as Io
+
+fn io main () -> Result Unit Text =
+    let s = """
+        line one
+        line two
+        """
+    Io.println s
+    Ok ()
+"##;
+
+/// `"""` must dedent to `line one\nline two` (no leading margin spaces).
+#[test]
+fn beam_e2e_string_multiline_dedent() {
+    let (stdout, _) = run_inline_actor_test("StringMultiline", STRING_MULTILINE_SOURCE);
+    assert!(
+        stdout.contains("line one\nline two"),
+        "expected dedented 'line one\\nline two', got:\n{stdout:?}"
+    );
+    assert!(
+        !stdout.contains("    line one"),
+        "margin was not stripped, got:\n{stdout:?}"
+    );
+}
+
+/// Raw string: backslash escapes are NOT decoded — `r"a\nb"` is the literal
+/// four characters a, backslash, n, b.
+const STRING_RAW_NO_DECODE_SOURCE: &str = r##"
+import std.io as Io
+
+fn io main () -> Result Unit Text =
+    Io.println r"a\nb"
+    Ok ()
+"##;
+
+#[test]
+fn beam_e2e_string_raw_no_escape_decode() {
+    let (stdout, _) = run_inline_actor_test("StringRawNoDecode", STRING_RAW_NO_DECODE_SOURCE);
+    assert!(
+        stdout.contains(r"a\nb"),
+        "raw string must keep the literal backslash-n, got:\n{stdout:?}"
+    );
+}
+
+/// Raw string with one hash embeds a plain double-quote: `r#"say "hi""#`.
+const STRING_RAW_HASH_SOURCE: &str = r##"
+import std.io as Io
+
+fn io main () -> Result Unit Text =
+    Io.println r#"say "hi""#
+    Ok ()
+"##;
+
+#[test]
+fn beam_e2e_string_raw_hash_embeds_quote() {
+    let (stdout, _) = run_inline_actor_test("StringRawHash", STRING_RAW_HASH_SOURCE);
+    assert!(
+        stdout.contains("say \"hi\""),
+        "raw `#` string must keep the embedded quote, got:\n{stdout:?}"
+    );
+}
+
+// ── Prefix rest, fixed and record patterns (commits 2a) ──────────────────────
+
+/// `[first, rest @ ..]` binds `first` to the head and `rest` to the tail.
+const LIST_PREFIX_REST_SOURCE: &str = r##"
+import std.io as Io
+import std.int as Int
+import std.list as List
+
+fn io main () -> Result Unit Text =
+    let xs = [10, 20, 30, 40]
+    match xs
+        [first, rest @ ..] -> Io.println $"first=${Int.toText first} restLen=${Int.toText (List.length rest)}"
+        [] -> Io.println "empty"
+    Ok ()
+"##;
+
+#[test]
+fn beam_e2e_list_prefix_rest_binds_tail() {
+    let (stdout, _) = run_inline_actor_test("ListPrefixRest", LIST_PREFIX_REST_SOURCE);
+    assert!(
+        stdout.contains("first=10"),
+        "expected first=10, got:\n{stdout}"
+    );
+    assert!(
+        stdout.contains("restLen=3"),
+        "expected restLen=3 for tail [20,30,40], got:\n{stdout}"
+    );
+}
+
+/// Fixed `[a, b, c]` binds positionally and matches a length-3 list exactly.
+const LIST_FIXED_SOURCE: &str = r##"
+import std.io as Io
+import std.int as Int
+
+fn io main () -> Result Unit Text =
+    let xs = [1, 2, 3]
+    match xs
+        [a, b, c] -> Io.println $"sum=${Int.toText (a + b + c)}"
+        _ -> Io.println "other"
+    Ok ()
+"##;
+
+#[test]
+fn beam_e2e_list_fixed_binds_positionally() {
+    let (stdout, _) = run_inline_actor_test("ListFixed", LIST_FIXED_SOURCE);
+    assert!(stdout.contains("sum=6"), "expected sum=6, got:\n{stdout}");
+}
+
+/// Record rest `User { name, .. }` matches and binds `name`, ignoring `age`.
+const RECORD_REST_SOURCE: &str = r##"
+import std.io as Io
+
+type User = { name: Text, age: Int }
+
+fn io main () -> Result Unit Text =
+    let u = User { name = "Ada", age = 42 }
+    match u
+        User { name, .. } -> Io.println name
+    Ok ()
+"##;
+
+#[test]
+fn beam_e2e_record_rest_ignores_other_fields() {
+    let (stdout, _) = run_inline_actor_test("RecordRest", RECORD_REST_SOURCE);
+    assert!(
+        stdout.contains("Ada"),
+        "expected the bound name 'Ada', got:\n{stdout}"
+    );
+}

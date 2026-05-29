@@ -859,6 +859,7 @@ mod tests {
 
         // Build inner fn with {fs} declared.
         let inner_decl = FnDecl {
+            attrs: vec![],
             vis: Visibility::Private,
             caps: vec![Capability::Fs],
             name: id("innerHelper"),
@@ -893,6 +894,7 @@ mod tests {
         ctx.env.push_frame();
 
         let inner_decl = FnDecl {
+            attrs: vec![],
             vis: Visibility::Private,
             caps: vec![Capability::Io],
             name: id("innerHelper"),

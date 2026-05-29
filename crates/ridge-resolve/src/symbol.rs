@@ -612,6 +612,7 @@ mod tests {
 
     fn fn_item(name: &str, vis: Visibility, caps: Vec<Capability>) -> Item {
         Item::Fn(FnDecl {
+            attrs: vec![],
             vis,
             caps,
             name: id(name),

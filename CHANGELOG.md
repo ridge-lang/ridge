@@ -7,6 +7,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.8] - 2026-05-29
+
+### Added
+
+- Multi-line string literals (`"""..."""`): triple-quoted strings strip leading indentation guided by the closing delimiter's column, drop the opening and closing newlines, and process standard escape sequences normally. The single-line `"..."` form is unchanged and still stays single-line.
+- Raw string literals (`r"..."`, `r#"..."#`, `r##"..."##`): no escape processing; every byte between the delimiters is literal. Extra `#` pairs balance embedded quotes. Raw strings may span multiple lines without indentation stripping, complementing the cooked `"""` form.
+- List patterns with rest: a single `..` in any position — `[first, ..]`, `[.., last]`, `[first, .., last]`. Bind the rest through the existing as-pattern operator: `[first, rest @ ..]`. At most one `..` per list pattern (`P024 MultipleRestInListPattern`); suffix and middle elements are restricted to bindings or wildcards in 0.2.8 (`L009`).
+- Record patterns in `match`: a record-body pattern such as `User { name, age }` binds each named field, and a trailing `..` (`User { name, .. }`) matches the named fields while ignoring the rest. Naming an unknown field is an error, and omitting a field without `..` is reported as missing. The `..` itself cannot be bound.
+- `@test "<name>"` attribute for marking test functions regardless of name or visibility. The string is the display name shown by `ridge test`. Return type is unchanged (`Result Unit Text`). When both `@test` and the `test_` prefix apply to the same function, the attribute wins and the test registers once.
+- `ridge fmt --migrate-tests` rewrites `pub fn test_*` functions to the `@test` form in place. It inserts `@test "<derived-name>"` above each matching function without renaming it (derived name is the function name with `test_` stripped). The rewrite is idempotent — a function already carrying `@test` is left untouched.
+- Decision-log entries D256 through D261 in `docs/spec.md §15`, covering the string literal syntax choices, rest pattern semantics, and test-attribute design.
+
+### Deprecated
+
+- The `test_` function-name prefix for test discovery is deprecated (`C304 PrefixTestDeprecated`). Both `@test "<name>"` and `test_` continue to work in 0.2.x; the prefix is removed in 0.3.0. Use `ridge fmt --migrate-tests` to update existing test files.
+
+### Resolved
+
+- Open question Q-017 (multi-line and raw string literal syntax), carried since 0.1.0, is now resolved. See `docs/spec.md §16.1`.
+
 ## [0.2.7] - 2026-05-28
 
 ### Added
@@ -253,7 +273,9 @@ Initial public release candidate.
 - Standard library: `bool`, `cli`, `env`, `float`, `fs`, `int`, `io`, `json`, `list`, `map`, `net.http`, `option`, `proc`, `random`, `text`, `time`
 - Apache-2.0 licensed
 
-[Unreleased]: https://github.com/ridge-lang/ridge/compare/v0.2.6...HEAD
+[Unreleased]: https://github.com/ridge-lang/ridge/compare/v0.2.8...HEAD
+[0.2.8]: https://github.com/ridge-lang/ridge/compare/v0.2.7...v0.2.8
+[0.2.7]: https://github.com/ridge-lang/ridge/compare/v0.2.6...v0.2.7
 [0.2.6]: https://github.com/ridge-lang/ridge/compare/v0.2.5...v0.2.6
 [0.2.5]: https://github.com/ridge-lang/ridge/compare/v0.2.4...v0.2.5
 [0.2.4]: https://github.com/ridge-lang/ridge/compare/v0.2.3...v0.2.4

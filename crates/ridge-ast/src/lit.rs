@@ -61,6 +61,17 @@ pub enum Literal {
         /// Source location.
         span: Span,
     },
+
+    /// A raw string literal `r"..."` / `r#"..."#`.
+    ///
+    /// The payload is the literal bytes between the delimiters; no escape
+    /// sequences are interpreted.  Lowering must NOT apply escape decoding.
+    RawText {
+        /// Literal string content (no escape processing).
+        raw: String,
+        /// Source location.
+        span: Span,
+    },
 }
 
 impl Literal {
@@ -74,7 +85,8 @@ impl Literal {
             | Self::IntHex { span, .. }
             | Self::Float { span, .. }
             | Self::Bool { span, .. }
-            | Self::Text { span, .. } => *span,
+            | Self::Text { span, .. }
+            | Self::RawText { span, .. } => *span,
         }
     }
 }

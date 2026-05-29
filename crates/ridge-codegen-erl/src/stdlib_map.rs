@@ -160,6 +160,90 @@ fn build_map() -> BridgeMap {
                 arity: 2,
             },
         ),
+        // ── __slice__ (list slice pattern helpers) ────────────────────────────
+        // Emitted by ridge-lower when lowering suffix/middle list patterns.
+        // These are internal IR symbols; they never appear in user-written Ridge code.
+        (
+            "__slice__",
+            "length",
+            BeamStdlib {
+                module: "erlang",
+                fn_name: "length",
+                arity: 1,
+            },
+        ),
+        (
+            "__slice__",
+            "hd",
+            BeamStdlib {
+                module: "erlang",
+                fn_name: "hd",
+                arity: 1,
+            },
+        ),
+        (
+            "__slice__",
+            "tl",
+            BeamStdlib {
+                module: "erlang",
+                fn_name: "tl",
+                arity: 1,
+            },
+        ),
+        (
+            "__slice__",
+            "ge",
+            BeamStdlib {
+                module: "erlang",
+                fn_name: ">=",
+                arity: 2,
+            },
+        ),
+        (
+            "__slice__",
+            "nthtail",
+            BeamStdlib {
+                module: "lists",
+                fn_name: "nthtail",
+                arity: 2,
+            },
+        ),
+        (
+            "__slice__",
+            "nth",
+            BeamStdlib {
+                module: "lists",
+                fn_name: "nth",
+                arity: 2,
+            },
+        ),
+        (
+            "__slice__",
+            "sublist",
+            BeamStdlib {
+                module: "lists",
+                fn_name: "sublist",
+                arity: 3,
+            },
+        ),
+        (
+            "__slice__",
+            "minus",
+            BeamStdlib {
+                module: "erlang",
+                fn_name: "-",
+                arity: 2,
+            },
+        ),
+        (
+            "__slice__",
+            "and",
+            BeamStdlib {
+                module: "erlang",
+                fn_name: "and",
+                arity: 2,
+            },
+        ),
     ];
 
     let mut map = FxHashMap::default();
@@ -239,26 +323,38 @@ pub fn lookup(module: &str, name: &str) -> Option<&'static BridgeTarget> {
 mod tests {
     use super::*;
 
-    // ── T11.5: G3 gate — build_map must contain exactly 6 entries ──────────────
+    // ── T11.5: G3 gate — std.op.* entries are the only user-facing path-A entries ─
     //
-    // G3 (§11.2): path-A bridge map reduced to exactly `std.op.*` (6 entries).
-    // All other stdlib symbols are served by path B (ffi_targets).
+    // G3 (§11.2): the only user-surface path-A entries are `std.op.*` (6 entries).
+    // Internal `__slice__.*` entries (9 entries) are also in the static map but are
+    // only ever emitted by the lowering pass for slice-pattern guards/extractions —
+    // they never correspond to a user-written Ridge expression.
     #[test]
-    fn build_map_count_is_exactly_6() {
+    fn build_map_has_std_op_and_slice_entries() {
         let map = build_map();
+        // 6 std.op entries + 9 __slice__ entries = 15 total.
         assert_eq!(
             map.len(),
-            6,
-            "build_map must return exactly 6 entries (std.op.*) after T11.5; \
-             got {}. G3 (§11.2) requires path-A retired to only std.op.*.",
+            15,
+            "build_map must return 15 entries (6 std.op + 9 __slice__); got {}.",
             map.len()
         );
-        // Verify all 6 are std.op.* entries.
+        // Verify all 6 std.op entries are present.
         let op_names = ["eq", "ne", "lt", "gt", "le", "ge"];
         for name in op_names {
             assert!(
                 map.contains_key(&format!("std.op::{name}")),
                 "std.op.{name} must be in build_map"
+            );
+        }
+        // Verify all 9 __slice__ entries are present.
+        let slice_names = [
+            "length", "hd", "tl", "ge", "nthtail", "nth", "sublist", "minus", "and",
+        ];
+        for name in slice_names {
+            assert!(
+                map.contains_key(&format!("__slice__::{name}")),
+                "__slice__.{name} must be in build_map"
             );
         }
     }

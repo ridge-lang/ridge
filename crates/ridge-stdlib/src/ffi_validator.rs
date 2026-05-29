@@ -184,6 +184,7 @@ mod tests {
         arity: u32,
     ) -> FnDecl {
         FnDecl {
+            attrs: vec![],
             vis: Visibility::Pub,
             caps,
             name: make_ident("testFn"),
@@ -340,6 +341,7 @@ mod tests {
     #[test]
     fn non_ffi_decls_produce_no_diagnostics() {
         let decl = FnDecl {
+            attrs: vec![],
             vis: Visibility::Pub,
             caps: vec![],
             name: make_ident("pureFunc"),

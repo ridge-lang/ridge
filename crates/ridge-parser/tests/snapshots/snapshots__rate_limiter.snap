@@ -2146,6 +2146,7 @@ Module {
                                     stmts: [
                                         InnerFn {
                                             decl: FnDecl {
+                                                attrs: [],
                                                 vis: Private,
                                                 caps: [
                                                     Time,
@@ -2803,6 +2804,7 @@ Module {
         ),
         Fn(
             FnDecl {
+                attrs: [],
                 vis: Private,
                 caps: [
                     Spawn,

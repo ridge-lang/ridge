@@ -1,8 +1,8 @@
 # Ridge — Language Specification & Development Roadmap
 
-**Version:** 0.2.7
+**Version:** 0.2.8
 **Author:** The Ridge Language Authors
-**Last updated:** 2026-05-28
+**Last updated:** 2026-05-29
 
 **History:** Supersedes `RILL_SPEC_AND_ROADMAP.md` (v0.1.0-draft, Rill). The language was renamed from *Rill* to *Ridge* after a design refinement pass. The underlying philosophy is preserved; the following are the substantive changes from the prior draft:
 - Language name: **Ridge** (was *Rill*). File extension: **`.ridge`** (was `.rill`). Manifest: **`ridge.toml`** (was `rill.toml`).
@@ -531,7 +531,7 @@ Note: `spawn` appears both as a top-level keyword (the spawn expression) and as 
 ->   function type arrow, match arm
 =>   (reserved, not used in 0.1.0)
 @    as-pattern binder
-..   (reserved, not used in 0.1.0; see D050)
+..   rest pattern element in list and record patterns (see §4.5)
 ```
 
 #### Identifiers
@@ -556,7 +556,52 @@ List:    [1, 2, 3], []
 Tuple:   (1, "two", 3.0)
 ```
 
-String escapes in 0.1.0 (D047): `\n`, `\t`, `\"`, `\\`, `\r`, `\0`, `\u{HHHH}`. Multi-line and raw string literals are deferred to 0.2.0.
+String escapes (D047): `\n`, `\t`, `\"`, `\\`, `\r`, `\0`, `\u{HHHH}`. Multi-line and raw string literals are described in §4.1.1 below.
+
+#### 4.1.1. Multi-line and raw string literals
+
+**Multi-line strings (`"""..."""`)** extend the single-line `"..."` form, which remains single-line only. The two forms do not overlap.
+
+```ridge
+let query = """
+    SELECT id, name
+    FROM users
+    WHERE active = true
+    """
+
+let html = """
+    <p>Hello, ${user.name}</p>
+    """
+```
+
+Syntax rules:
+
+- Opening delimiter: `"""` followed immediately by a newline. The newline after the opening `"""` is dropped and does not appear in the value.
+- Closing delimiter: a newline, zero or more spaces, then `"""`. The newline before the closing `"""` is also dropped.
+- Indentation stripping: the column position of the closing `"""` defines the margin. That many leading spaces are stripped from every interior line. A line with fewer spaces than the margin is a parse error.
+- Blank interior lines are allowed and survive as empty lines in the value.
+- Standard escape sequences are processed normally — triple-quoted strings are cooked, not raw.
+- A triple-quoted string is a plain string literal: it does not interpolate. Interpolation remains the `$"..."` form (§3.10); an interpolated multi-line literal (`$"""..."""`) is not provided in 0.2.8.
+
+See D256.
+
+**Raw strings (`r"..."`, `r#"..."#`, `r##"..."##`)** disable escape processing entirely. Every byte between the delimiters is literal.
+
+```ridge
+let pattern = r"\d+\.\d+"          -- no escape processing
+let withQuote = r#"say "hello""#    -- interior " balanced by # pairs
+let multiline = r"first line
+second line"                        -- spans newlines without dedenting
+```
+
+Syntax rules:
+
+- `r"..."` — no escape sequences; interior `"` is not permitted.
+- `r#"..."#` — interior `"` is allowed as long as it is not followed by `#`. Extend to `r##"..."##` when the content needs `"#` sequences, and so on for deeper nesting.
+- Raw strings may span multiple lines. Unlike `"""..."""`, there is no dedenting — the content is taken literally.
+- `r` immediately followed by `"` or one or more `#` then `"` is always a raw string. Applying the function `r` to a string requires a space: `r "x"`.
+
+See D257.
 
 #### Comments
 
@@ -616,8 +661,14 @@ MatchExpr     = "match" Expr { MatchArm } .
 MatchArm      = Pattern [ "when" Expr ] "->" Expr .
 
 Pattern       = Literal | Ident | "_" | Constructor { Pattern }
-              | "(" PatternList ")" | "[" PatternList "]"
+              | "(" PatternList ")" | "[" ListPatternList "]"
               | RecordPattern | Ident "@" Pattern | Ident "::" Pattern .
+
+ListPatternList = [ ListPatternElem { "," ListPatternElem } ] .
+ListPatternElem = Pattern | RestPattern .
+RestPattern     = ".." | Ident "@" ".." .
+
+RecordPattern   = Constructor "{" FieldPatternList [ "," ".." ] "}" .
 
 PipeExpr      = Expr "|>" Expr .
 AppExpr       = Expr Expr .
@@ -647,6 +698,57 @@ Note: The full normative grammar lives in `docs/grammar.ebnf`. The productions a
 | 11 | `!` `?>` (send / ask) | left | actor message operators |
 | 12 | function application | left | |
 | 13 | `?` (postfix propagate), `.` (field access) | left | call-suffix band |
+
+### 4.5. Rest patterns in list and record patterns
+
+**List patterns** match against the `List a` type.
+
+A fixed-length list pattern matches exactly N elements:
+
+```ridge
+match xs
+    []        -> "empty"
+    [x]       -> "one element"
+    [x, y]    -> "two elements"
+    [x, y, z] -> "three elements"
+    _         -> "other"
+```
+
+A single `..` in any position matches zero or more remaining elements without binding them:
+
+```ridge
+match xs
+    [first, ..]       -> first    -- head of a non-empty list
+    [.., last]        -> last     -- last element
+    [first, .., last] -> (first, last)
+```
+
+Bind the rest using the as-pattern operator `@`:
+
+```ridge
+match xs
+    [first, rest @ ..] -> -- first: a; rest: List a
+    [first, mid @ .., last] -> -- mid: List a
+```
+
+Constraints:
+- At most one `..` per list pattern (`P024 MultipleRestInListPattern`).
+- In 0.2.8, the elements after the rest (`suffix` and `middle` positions) must be simple bindings or wildcards. A refutable element in a suffix or middle position is rejected at the lowering stage (`L009`).
+- Matching a trailing element or binding the middle requires traversing the full list, since lists are singly linked. This is ergonomically convenient, not cheap.
+
+See D258.
+
+**Record rest patterns** match a constructor carrying at least the named fields, ignoring any others:
+
+```ridge
+match event
+    Login { userId, .. }  -> handleLogin userId
+    Logout { userId, .. } -> handleLogout userId
+```
+
+The `..` is a modifier on the field set, not a sub-pattern, and cannot be bound. A record pattern without `..` matches exactly the fields named; with `..` it matches any value of that constructor type that carries at least those fields.
+
+See D259.
 
 ---
 
@@ -1132,12 +1234,51 @@ ridge test                # run all tests
 ridge test --member X     # run tests of member X
 ridge test --filter G     # run tests whose qualified name matches glob G
 ridge fmt                 # format the whole workspace (opinionated, no config)
+ridge fmt --migrate-tests # rewrite prefix-style test functions to @test form
 ridge new <name>          # scaffold a new project
 ridge init                # initialize a workspace in the current directory
 ridge repl                # interactive REPL
 ```
 
-**Test discovery (0.1.0).** `ridge test` discovers every `pub fn test_<name> ()` (zero-arity) across the workspace. The return type must be `Result Unit Text` (canonical) or `Bool` (deprecated, accepted with a per-test deprecation warning, **removed in 0.2.0**). Tests run sequentially in a fresh BEAM child process per test (no shared state leaks). FFI-bearing tests are rejected with a compile-time capability error. **0.2.0 evolution (D168):** the canonical form becomes `@test "<free-form name>"` as an attribute on `pub fn`, additive on top of the prefix during a one-minor-version migration window; prefix removed in 0.3.0. The keyword-block form `test "name" { body }` is **explicitly rejected** for losing first-class function semantics and forcing grammar churn on every test modifier.
+**Test discovery.** `ridge test` recognises two forms:
+
+1. `@test "<name>"` attribute on any function, regardless of name or visibility (0.2.8+, canonical). See §8.8.
+2. `pub fn test_<name> ()` function-name prefix (deprecated, `C304 PrefixTestDeprecated`; removed in 0.3.0).
+
+Both forms must return `Result Unit Text`. Tests run in a fresh BEAM child process per test; no shared state leaks between runs. FFI-bearing tests are rejected with a compile-time capability error. When both forms apply to the same function the attribute wins and the test registers once.
+
+### 8.8. Test declaration with `@test`
+
+`@test "<name>"` marks a function as a test regardless of its name or visibility:
+
+```ridge
+@test "returns greeting for known user"
+fn greetingForKnownUser () -> Result Unit Text =
+    let result = greet "Angel"
+    if result == "Hello, Angel" then Ok ()
+    else Err $"expected Hello, Angel; got ${result}"
+
+@test "login event carries user id"
+pub fn loginEventShape () -> Result Unit Text =
+    match Login { userId = 1, at = Time.epoch () }
+        Login { userId, .. } ->
+            if userId == 1 then Ok ()
+            else Err "wrong userId"
+        _ -> Err "wrong variant"
+```
+
+Rules:
+
+- The argument to `@test` must be a string literal (`P027 TestAttrArgNotString` otherwise).
+- The string is the display name shown by `ridge test`.
+- The function must return `Result Unit Text`.
+- Visibility does not matter — private functions can be tests.
+- When both `@test` and the `test_` prefix apply, the attribute takes precedence and the test registers once.
+- The `test_` prefix convention is deprecated as of 0.2.8 (`C304 PrefixTestDeprecated`) and is removed in 0.3.0.
+
+`ridge fmt --migrate-tests` rewrites prefix-style tests to the `@test` form in place. It inserts `@test "<derived-name>"` above each `pub fn test_<name>` and does not rename the function, so existing references remain valid. The derived name is the function name with its `test_` prefix removed (e.g. `test_empty_list` → `@test "empty_list"`). The rewrite is idempotent: a function already carrying `@test` is left untouched.
+
+See D260, D261.
 
 ---
 
@@ -1662,6 +1803,12 @@ section without scattering rationales.
 | D253 | `error` policy via `!` raises an exit signal | On overflow, the bound check inside `!` raises `{mailbox_full, Pid}` (BEAM) in the sender process. Supervised senders get standard let-it-crash semantics; unsupervised senders take the BEAM down. The result-returning variant for `Actor.send` is deferred to the cut that introduces first-class message values (post-typeclasses). See §7.2.1. |
 | D254 | Observability scope | `Actor.mailboxSize : Handle a -> Option Int` is the observability primitive that ships. `Some n` reports the current queue length; `None` reports a dead actor. `Actor.peek` and `Actor.drain` require typeclass-derived message typing and are deferred. See §7.2.1 and §9. |
 | D255 | Handles as effect tokens | Operations that take a `Handle a` and act only on that actor's queue or state require no capability beyond possessing the handle (`!`, `Actor.mailboxSize`). The handle itself proves access; the cap was paid at `spawn`. See §6.4.1. |
+| D256 | Multi-line string literals | Triple-quoted strings (`"""..."""`) carry literal newlines and strip leading indentation: the newline right after the opening `"""` and the one right before the closing `"""` are dropped, and the closing delimiter's own indentation sets the margin removed from every interior line. Standard escapes still apply — triple-quoted strings are cooked, not raw. The single-quote form `"..."` stays single-line, so the two forms never overlap. See §4.1.1. |
+| D257 | Raw string literals | Raw strings use the `r"..."` and `r#"..."#` family, where extra `#` pairs balance embedded quotes (`r##"..."##`). No escape sequences are interpreted; every byte between the delimiters is literal. Raw strings may span multiple lines without dedenting, complementing the cooked, indentation-stripped `"""` form. See §4.1.1. |
+| D258 | Rest patterns in list patterns | List patterns accept a single `..` in any position — `[first, ..]`, `[.., last]`, `[first, .., last]`. The rest binds through the existing as-pattern operator: `[first, rest @ ..]` captures the remaining elements as a list. At most one `..` per list pattern. Binding the rest or matching a trailing element traverses the whole list, since lists are singly linked on the target runtime — an ergonomic convenience, not a cheap one. See §4.5. |
+| D259 | Rest patterns in record patterns | Record patterns accept a trailing `..` to match the remaining fields without naming them — `User { name, .. }`. The `..` is a modifier on the field set rather than a sub-pattern, and it cannot be bound. A record pattern with `..` matches any value of that type carrying at least the named fields. See §4.5. |
+| D260 | Test declaration via `@test` | A function annotated `@test "<name>"` is a test regardless of its name or visibility, and the string is the test's display name. This supersedes the `test_` prefix convention, which keeps working but now reports `C304` (deprecated) and is removed in 0.3.0. The return-type contract is unchanged (`Result Unit Text`). When both forms apply to one function the attribute wins and the test registers once. See §8.8. |
+| D261 | One-shot test migration | `ridge fmt --migrate-tests` rewrites prefix-style test functions to the `@test` form by inserting an attribute above each one. It does not rename the function, so existing references stay valid and the rewrite is idempotent — a function already carrying `@test` is left untouched. The generated name is the function name with its `test_` prefix removed. See §8.8. |
 
 ---
 
@@ -1689,7 +1836,7 @@ All 0.1.0-blocking design questions have been resolved. This section tracks thei
 | Q-014 | Mailbox observability | `Actor.mailboxSize` ships in 0.2.7. `peek` and `drain` remain deferred until typeclass-derived message typing is available. See §7.2.1. | D042, D254 |
 | Q-015 | DI pattern in tests | Convention in 0.1.0; library in 0.2.0 | D043 |
 | Q-016 | `Text` Unicode normalization | No lexer-side normalization; `Text` stores raw UTF-8; normalization exposed via `std.text.normalize` | D063 |
-| Q-017 | Multi-line and raw string literal syntax | Deferred to 0.2.0; single-line with standard escapes in 0.1.0 | D047 |
+| Q-017 | Multi-line and raw string literal syntax | `"""..."""` (cooked, dedented against the closing delimiter) and `r"..."` / `r#"..."#` family (raw, no escapes, may span newlines without dedenting). Resolved in 0.2.8. See §4.1.1. | D256, D257 |
 | Q-019 | Numeric literal syntax (digit separators, base prefixes) | Supported in 0.1.0: `0b`, `0o`, `0x`, `_` separator | D046 |
 | Q-020 | Doc-comment attachment semantics (parser) | Attach to next top-level `Item` (or `Module::doc` at file head); orphan `DOC_COMMENT` → warning `P019` | D067 |
 | Q-022 | `guard … else <block>` — single-expression else vs multi-statement block | Multi-statement indented `Block` permitted (final statement must diverge via `return`) | D066 |
@@ -1702,10 +1849,10 @@ These are locked for 0.1.0 but will be revisited:
 - **Full capability polymorphism** beyond stdlib HOFs, if demand arises (Q-013)
 - **`ridge.test` DI helpers** for capability stubbing (Q-015)
 - **Capability set review** based on 0.1.0 usage data (Q-007)
-- **Multi-line and raw string literals** (Q-017 / D047)
-- **Range and rest-pattern syntax for `..`** (D050) — concrete semantics chosen in 0.2.0
+- ~~Multi-line and raw string literals~~ — resolved in 0.2.8; see D256, D257.
+- ~~Range and rest-pattern syntax for `..`~~ — rest patterns in list and record patterns resolved in 0.2.8; see D258, D259.
 - **Unicode identifiers** (D049) — reconsidered in 0.3.0+
-- **`@test "<free-form name>"` attribute as canonical test-discovery form** (D168 / OQ-C018) — 0.1.0 uses `pub fn test_*` name-prefix discovery; 0.2.0 adds `@test "<name>"` as additive sugar (both accepted; prefix emits `C304 PrefixTestDeprecated` per-test warning); 0.3.0 removes prefix. `ridge fmt --migrate-tests` one-shot migration ships in 0.2.0. The keyword-block form `test "name" { body }` is **explicitly rejected** (loses first-class function semantics, multiplies grammar churn for `@ignore` / `@only` / `@slow` composition).
+- ~~`@test "<free-form name>"` attribute as canonical test-discovery form~~ — resolved in 0.2.8; see §8.8, D260, D261. The `test_` prefix emits `C304 PrefixTestDeprecated`; prefix is removed in 0.3.0. The keyword-block form `test "name" { body }` remains explicitly rejected.
 
 #### Deferred from 0.2.7
 

@@ -26,6 +26,32 @@ pub struct FieldPattern {
     pub span: Span,
 }
 
+// ── ListPatElem ───────────────────────────────────────────────────────────────
+
+/// A single element inside a bracketed list pattern `[…]` (D258).
+///
+/// ```text
+/// [a, b, rest @ ..]
+///  ^  ^  ^^^^^^^^^^
+///  |  |  rest element with binding
+///  |  Elem
+///  Elem
+/// ```
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ListPatElem {
+    /// A normal pattern element.
+    Elem(Pattern),
+    /// A rest position `..`, which may appear in prefix, middle, or suffix
+    /// position.  The optional `bind` is the name bound to the captured
+    /// middle segment: `mid @ ..` binds `mid`, plain `..` does not.
+    Rest {
+        /// The binding name for the tail (`rest @ ..`), or `None` (`..`).
+        bind: Option<Ident>,
+        /// Span of this rest element (covers `IDENT @ ..` or just `..`).
+        span: Span,
+    },
+}
+
 // ── Pattern ───────────────────────────────────────────────────────────────────
 
 /// A match pattern in Ridge source code.
@@ -80,6 +106,12 @@ pub enum Pattern {
         /// Record-body field patterns.  `Some(…)` iff the `{ … }` form was
         /// used; `None` for the positional form.
         fields: Option<Vec<FieldPattern>>,
+        /// Whether a trailing `..` was present in the record-body form (D259).
+        ///
+        /// Only meaningful when `fields` is `Some`.  When `true`, the pattern
+        /// matches any value of the named record type that carries at least the
+        /// named fields, ignoring any additional fields.
+        has_rest: bool,
         /// Zero or more positional sub-patterns (only when `fields` is `None`).
         args: Vec<Self>,
         /// Span covering the entire constructor pattern.
@@ -134,6 +166,24 @@ pub enum Pattern {
         /// Source location of the `[` `]` pair.
         span: Span,
     },
+
+    /// A bracketed list pattern `[a, b, c]`, `[a, rest @ ..]`, `[.., last]`,
+    /// or `[first, .., last]` (D258).
+    ///
+    /// Preserves the original bracket syntax for faithful round-tripping by
+    /// `ridge-fmt`.  Downstream phases desugar this via [`Pattern::desugar_list`]
+    /// for prefix-only rest patterns.  Suffix and middle rest patterns require
+    /// guard-and-extraction lowering handled in `ridge-lower`.
+    ///
+    /// Invariants enforced by the parser:
+    /// - At most one `ListPatElem::Rest` element.
+    /// - The `Rest` element may appear in any position (prefix, middle, suffix).
+    List {
+        /// The element patterns, in source order.
+        elements: Vec<ListPatElem>,
+        /// Span covering the full `[…]` construct.
+        span: Span,
+    },
 }
 
 impl Pattern {
@@ -149,7 +199,122 @@ impl Pattern {
             | Self::Cons { span, .. }
             | Self::As { span, .. }
             | Self::Paren { span, .. }
-            | Self::ListNil { span } => *span,
+            | Self::ListNil { span }
+            | Self::List { span, .. } => *span,
         }
+    }
+
+    /// True when this `List` pattern has a `Rest` element in a non-last position
+    /// (suffix or middle rest — `[.., z]`, `[a, .., z]`).
+    ///
+    /// Returns `false` for all non-`List` variants and for prefix-only rest.
+    #[must_use]
+    pub fn is_varlen_list(&self) -> bool {
+        let Self::List { elements, .. } = self else {
+            return false;
+        };
+        elements
+            .iter()
+            .position(|e| matches!(e, ListPatElem::Rest { .. }))
+            .is_some_and(|rest_idx| rest_idx < elements.len() - 1)
+    }
+
+    /// Desugar a `Pattern::List` to the equivalent `Cons`/`ListNil`/`Wildcard`
+    /// tree (D258).
+    ///
+    /// This shared helper is called by type inference, exhaustiveness checking,
+    /// and pattern lowering so that those passes reuse the existing
+    /// `Cons`/`ListNil` machinery without change.
+    ///
+    /// # Desugar rules
+    ///
+    /// | Pattern | Desugars to |
+    /// |---------|-------------|
+    /// | `[]` (empty List) | `ListNil` |
+    /// | `[e0, …, en]` (no Rest) | `Cons(e0, Cons(…, Cons(en, ListNil)))` |
+    /// | `[e0, …, ek, ..]` (prefix rest, no bind) | `Cons(e0, …, Cons(ek, Wildcard))` |
+    /// | `[e0, …, ek, rest @ ..]` (prefix rest, bound) | `Cons(e0, …, Cons(ek, Var(rest)))` |
+    ///
+    /// For suffix/middle rest patterns (`[.., z]`, `[a, .., z]`), this method
+    /// is not called by the lowering pass — those are handled by guard-and-body
+    /// extraction in `ridge-lower`.  If called on such a pattern (e.g. for
+    /// exhaustiveness), the Rest is treated as Wildcard to remain sound
+    /// (conservatively under-approximates coverage).
+    ///
+    /// # Panics
+    ///
+    /// Does not panic; any non-`List` variant is returned as-is.
+    #[must_use]
+    pub fn desugar_list(self) -> Self {
+        let Self::List { elements, span } = self else {
+            return self;
+        };
+
+        // Find the Rest element position.
+        let rest_pos = elements
+            .iter()
+            .position(|e| matches!(e, ListPatElem::Rest { .. }));
+
+        match rest_pos {
+            None => {
+                // No rest: exact fixed-length list.
+                let tail = Self::ListNil { span };
+                elements
+                    .into_iter()
+                    .rev()
+                    .fold(tail, |acc, elem| build_cons_elem(elem, acc, span))
+            }
+            Some(idx) if idx == elements.len() - 1 => {
+                // Prefix rest: Rest is the last element.
+                let mut elems = elements;
+                let rest_elem = elems.pop();
+                let tail: Self = match rest_elem {
+                    Some(ListPatElem::Rest {
+                        bind: Some(name),
+                        span: rest_span,
+                    }) => Self::Var {
+                        name,
+                        span: rest_span,
+                    },
+                    Some(ListPatElem::Rest {
+                        bind: None,
+                        span: rest_span,
+                    }) => Self::Wildcard { span: rest_span },
+                    _ => Self::ListNil { span },
+                };
+                elems
+                    .into_iter()
+                    .rev()
+                    .fold(tail, |acc, elem| build_cons_elem(elem, acc, span))
+            }
+            Some(_) => {
+                // Suffix or middle rest: conservatively desugar to Wildcard.
+                // The lowering pass handles these via guard-and-body extraction;
+                // exhaustiveness sees them as Wildcard (sound, under-approximates).
+                Self::Wildcard { span }
+            }
+        }
+    }
+}
+
+/// Build a `Cons` node wrapping `acc` with the head from `elem`.
+///
+/// `Rest` elements in the middle of a fold (should not appear in well-formed
+/// calls but handled defensively) produce a Wildcard.
+fn build_cons_elem(elem: ListPatElem, acc: Pattern, list_span: Span) -> Pattern {
+    match elem {
+        ListPatElem::Elem(pat) => {
+            let full_span = pat.span().merge(acc.span());
+            Pattern::Cons {
+                head: Box::new(pat),
+                tail: Box::new(acc),
+                span: full_span,
+            }
+        }
+        ListPatElem::Rest {
+            span: rest_span, ..
+        } => Pattern::Wildcard {
+            span: rest_span.merge(list_span),
+        },
     }
 }

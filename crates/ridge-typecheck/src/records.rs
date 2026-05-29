@@ -18,7 +18,7 @@
 //! `T005 UnknownField` uses [`ridge_resolve::suggest::suggest`] with the
 //! schema's field names as candidates (§7, upstream contract).
 
-use ridge_ast::{FieldInit, Ident, Span};
+use ridge_ast::{FieldInit, FieldPattern, Ident, Span};
 use ridge_types::{BuiltinTyCons, RecordSchema, TyConId, TyVid, Type};
 
 use crate::ctx::InferCtx;
@@ -378,6 +378,78 @@ fn attach_span(e: TypeError, span: Span) -> TypeError {
         },
         TypeError::OccursCheck { var, ty, .. } => TypeError::OccursCheck { var, ty, span },
         other => other,
+    }
+}
+
+// ── Record-body pattern inference ───────────────────────────────────────────────
+
+/// Type-check a record-body constructor pattern `Rec { f1 = p1, f2, .. }`.
+///
+/// Unifies the scrutinee with the record type, types each named field's
+/// sub-pattern against that field's declared type (a shorthand `{ age }` binds
+/// a new local of the field's type), reports unknown field names, and — unless a
+/// trailing `..` is present (`has_rest`) — reports any omitted field as missing.
+#[allow(clippy::too_many_arguments)]
+pub fn infer_record_pattern(
+    ctx: &mut InferCtx,
+    b: &BuiltinTyCons,
+    schema: &RecordSchema,
+    owner_tycon: TyConId,
+    record_name: &str,
+    fields: &[FieldPattern],
+    has_rest: bool,
+    expected: &Type,
+    span: Span,
+) {
+    // Instantiate the schema's params with fresh vars and unify the scrutinee.
+    let params = schema.params.clone();
+    let fresh_args: Vec<Type> = params
+        .iter()
+        .map(|_| Type::Var(ctx.fresh_tyvid()))
+        .collect();
+    let record_ty = Type::Con(owner_tycon, fresh_args.clone());
+    if let Err(e) = unify(ctx, expected, &record_ty) {
+        ctx.errors.push(attach_span(e, span));
+    }
+
+    // Type or bind each named field; flag unknown field names.
+    for fp in fields {
+        let field_ty = if let Some(f) = schema
+            .record_fields()
+            .iter()
+            .find(|f| f.name == fp.name.text)
+        {
+            subst_type(&f.ty, &params, &fresh_args)
+        } else {
+            ctx.errors.push(TypeError::UnknownField {
+                record: record_name.to_string(),
+                field: fp.name.text.clone(),
+                suggestions: field_suggestions(&fp.name.text, schema),
+                span: fp.span,
+            });
+            Type::Error
+        };
+        match &fp.pattern {
+            Some(sub) => crate::infer::infer_pattern(ctx, b, sub, &field_ty),
+            // Shorthand `{ age }` binds a new local of the field's type.
+            None => ctx.env.bind(
+                fp.name.text.clone(),
+                crate::instantiate::monoscheme(field_ty),
+            ),
+        }
+    }
+
+    // Without `..`, every declared field must be named.
+    if !has_rest {
+        for decl_field in schema.record_fields() {
+            if !fields.iter().any(|fp| fp.name.text == decl_field.name) {
+                ctx.errors.push(TypeError::MissingField {
+                    record: record_name.to_string(),
+                    field: decl_field.name.clone(),
+                    span,
+                });
+            }
+        }
     }
 }
 
@@ -770,6 +842,149 @@ mod tests {
         } else {
             panic!("expected Type::Con(Box, [..]), got {ty:?}");
         }
+        let _ = arena.len();
+        ctx.env.pop_frame();
+    }
+
+    // ── Record-body pattern inference ────────────────────────────────────────
+
+    fn fp_short(name: &str) -> FieldPattern {
+        FieldPattern {
+            name: id(name),
+            pattern: None,
+            span: ds(),
+        }
+    }
+
+    /// `User { name, .. }` — shorthand binds `name`; `..` allows omitting `age`.
+    #[test]
+    fn record_pattern_rest_binds_named_field() {
+        let schema = make_schema(&[
+            ("name", Type::Con(TyConId(3), vec![])),
+            ("age", Type::Con(TyConId(0), vec![])),
+        ]);
+        let (arena, b, user_id) = make_arena_with_record("User", schema.clone());
+        let mut ctx = InferCtx::new();
+        ctx.env.push_frame();
+        let fields = vec![fp_short("name")];
+        let expected = Type::Var(ctx.fresh_tyvid());
+        infer_record_pattern(
+            &mut ctx,
+            &b,
+            &schema,
+            user_id,
+            "User",
+            &fields,
+            true,
+            &expected,
+            ds(),
+        );
+        assert!(
+            ctx.errors.is_empty(),
+            "expected no errors; got {:?}",
+            ctx.errors
+        );
+        assert!(
+            ctx.env.lookup("name").is_some(),
+            "shorthand `name` must be bound"
+        );
+        let _ = arena.len();
+        ctx.env.pop_frame();
+    }
+
+    /// `User { name, age }` — all fields named, no `..` → exhaustive, no errors.
+    #[test]
+    fn record_pattern_all_fields_no_rest_ok() {
+        let schema = make_schema(&[
+            ("name", Type::Con(TyConId(3), vec![])),
+            ("age", Type::Con(TyConId(0), vec![])),
+        ]);
+        let (arena, b, user_id) = make_arena_with_record("User", schema.clone());
+        let mut ctx = InferCtx::new();
+        ctx.env.push_frame();
+        let fields = vec![fp_short("name"), fp_short("age")];
+        let expected = Type::Var(ctx.fresh_tyvid());
+        infer_record_pattern(
+            &mut ctx,
+            &b,
+            &schema,
+            user_id,
+            "User",
+            &fields,
+            false,
+            &expected,
+            ds(),
+        );
+        assert!(
+            ctx.errors.is_empty(),
+            "expected no errors; got {:?}",
+            ctx.errors
+        );
+        let _ = arena.len();
+        ctx.env.pop_frame();
+    }
+
+    /// `User { nope, .. }` — unknown field name reported.
+    #[test]
+    fn record_pattern_unknown_field_reported() {
+        let schema = make_schema(&[("name", Type::Con(TyConId(3), vec![]))]);
+        let (arena, b, user_id) = make_arena_with_record("User", schema.clone());
+        let mut ctx = InferCtx::new();
+        ctx.env.push_frame();
+        let fields = vec![fp_short("nope")];
+        let expected = Type::Var(ctx.fresh_tyvid());
+        infer_record_pattern(
+            &mut ctx,
+            &b,
+            &schema,
+            user_id,
+            "User",
+            &fields,
+            true,
+            &expected,
+            ds(),
+        );
+        assert!(
+            ctx.errors
+                .iter()
+                .any(|e| matches!(e, TypeError::UnknownField { .. })),
+            "expected UnknownField; got {:?}",
+            ctx.errors
+        );
+        let _ = arena.len();
+        ctx.env.pop_frame();
+    }
+
+    /// `User { name }` without `..` on a 2-field record → missing `age`.
+    #[test]
+    fn record_pattern_missing_field_without_rest() {
+        let schema = make_schema(&[
+            ("name", Type::Con(TyConId(3), vec![])),
+            ("age", Type::Con(TyConId(0), vec![])),
+        ]);
+        let (arena, b, user_id) = make_arena_with_record("User", schema.clone());
+        let mut ctx = InferCtx::new();
+        ctx.env.push_frame();
+        let fields = vec![fp_short("name")];
+        let expected = Type::Var(ctx.fresh_tyvid());
+        infer_record_pattern(
+            &mut ctx,
+            &b,
+            &schema,
+            user_id,
+            "User",
+            &fields,
+            false,
+            &expected,
+            ds(),
+        );
+        assert!(
+            ctx.errors
+                .iter()
+                .any(|e| matches!(e, TypeError::MissingField { .. })),
+            "expected MissingField for `age`; got {:?}",
+            ctx.errors
+        );
         let _ = arena.len();
         ctx.env.pop_frame();
     }

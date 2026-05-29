@@ -11,6 +11,31 @@
 
 use crate::{Block, Capability, DocComment, Expr, Ident, Span, Type, Visibility};
 
+// ── Attribute ─────────────────────────────────────────────────────────────────
+
+/// A function-level attribute (grammar §4.1, D260).
+///
+/// Attributes are written above a `fn` declaration and control compiler
+/// behaviour without changing the function's type or calling convention.
+///
+/// Currently only the `@test` attribute is represented here.  The `@ffi`
+/// attribute is handled separately as [`Body::Ffi`] and does not appear in
+/// this enum.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Attribute {
+    /// `@test "<display-name>"` — marks the function as a test case.
+    ///
+    /// The string is the human-readable display name shown in `ridge test`
+    /// output.  The function may have any visibility; `@test` makes it
+    /// discoverable regardless of whether it is `pub`.
+    Test {
+        /// Display name for test output (the string literal argument).
+        name: String,
+        /// Span covering the full `@test "…"` token sequence.
+        span: Span,
+    },
+}
+
 // ── FnBody ────────────────────────────────────────────────────────────────────
 
 /// The body of a function declaration (grammar §4.1).
@@ -208,9 +233,17 @@ pub enum Constructor {
 /// ```text
 /// fn greet (name: Text) -> Text = $"Hello, ${name}"
 /// pub fn io log (msg: Text) -> Unit = Io.println msg
+/// @test "greet returns hello"
+/// fn test_greet () -> Result Unit Text = Ok ()
 /// ```
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct FnDecl {
+    /// Function-level attributes (e.g. `@test "…"`).
+    ///
+    /// Most functions have no attributes — this is `vec![]` in the common
+    /// case.  The `@ffi` attribute is represented as [`Body::Ffi`] and does
+    /// not appear here.
+    pub attrs: Vec<Attribute>,
     /// Visibility modifier (default: `Private`).
     pub vis: Visibility,
     /// Capability annotations.

@@ -78,6 +78,10 @@ pub(crate) fn parse_literal(cur: &mut Cursor<'_>) -> Result<Literal, ParseError>
             cur.bump();
             Ok(Literal::Text { raw, span })
         }
+        Token::RawTextLit(raw) => {
+            cur.bump();
+            Ok(Literal::RawText { raw, span })
+        }
         _ => Err(ParseError::UnexpectedToken {
             span,
             description: format!("expected a literal, found `{}`", cur.peek()),
@@ -539,7 +543,8 @@ pub(crate) fn parse_expr_atom(cur: &mut Cursor<'_>) -> Result<Expr, ParseError> 
         | Token::Float(_)
         | Token::KwTrue
         | Token::KwFalse
-        | Token::TextLit(_) => parse_literal(cur).map(Expr::Literal),
+        | Token::TextLit(_)
+        | Token::RawTextLit(_) => parse_literal(cur).map(Expr::Literal),
 
         // ── Parenthesised forms ───────────────────────────────────────────────
         // Four cases dispatched by lookahead:
@@ -876,6 +881,7 @@ fn can_start_arg_atom(cur: &Cursor<'_>) -> bool {
             | Token::IntHex(_)
             | Token::Float(_)
             | Token::TextLit(_)
+            | Token::RawTextLit(_)
             | Token::KwTrue
             | Token::KwFalse
             | Token::InterpStart

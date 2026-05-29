@@ -33,7 +33,9 @@
 //!   type annotations.
 //! - `Expr::InnerFn { decl }` — the decl itself holds the body.
 
-use ridge_ast::{BinOp, Block, Body, Expr, LambdaParam, Literal, Pattern, Span, UnaryOp};
+use ridge_ast::{
+    BinOp, Block, Body, Expr, LambdaParam, ListPatElem, Literal, Pattern, Span, UnaryOp,
+};
 use ridge_resolve::NodeKind;
 use ridge_types::{BuiltinTyCons, CapRow, CapabilitySet, Scheme, Type};
 
@@ -914,23 +916,78 @@ pub fn infer_pattern(ctx: &mut InferCtx, b: &BuiltinTyCons, pat: &Pattern, expec
             }
         }
 
+        // ── Bracketed list pattern ────────────────────────────────────────────
+        // Infer each element in place against the element type, and bind an
+        // optional rest binder at `List ?a`.  Unlike `desugar_list` (prefix
+        // only), this types suffix/middle binders such as `last` in `[.., last]`.
+        Pattern::List { elements, span } => {
+            let elem_var = Type::Var(ctx.fresh_tyvid());
+            let list_ty = Type::Con(b.list, vec![elem_var.clone()]);
+            if let Err(e) = unify(ctx, &list_ty, expected_ty) {
+                ctx.errors.push(attach_span(e, *span));
+                return;
+            }
+            let resolved_elem = ctx.shallow_resolve(&elem_var);
+            let resolved_list = ctx.shallow_resolve(&list_ty);
+            for elem in elements {
+                match elem {
+                    ListPatElem::Elem(p) => infer_pattern(ctx, b, p, &resolved_elem),
+                    ListPatElem::Rest {
+                        bind: Some(name), ..
+                    } => {
+                        ctx.env
+                            .bind(name.text.clone(), monoscheme(resolved_list.clone()));
+                    }
+                    ListPatElem::Rest { bind: None, .. } => {}
+                }
+            }
+        }
+
         // ── Constructor ───────────────────────────────────────────────────────
         // Two forms:
         //   fields: None  → positional constructor pattern → T9 (unions.rs)
-        //   fields: Some  → record-body constructor pattern → T8 (deferred to T17)
+        //   fields: Some  → record-body constructor pattern → records.rs
         Pattern::Constructor {
             name,
             fields,
+            has_rest,
             args,
             span,
         } => {
-            if fields.is_some() {
-                // Record-body constructor pattern — T8/T17 pipeline wiring.
+            if let Some(field_pats) = fields {
+                // Record-body constructor pattern: resolve the record type and
+                // type each field against its declared type.
+                if let Some(&tycon_id) = ctx.user_tycon_names.get(&name.text) {
+                    if let Some(decl) = ctx.tycon_decls.get(tycon_id.0 as usize).cloned() {
+                        if let ridge_types::TyConKind::Record(schema) = &decl.kind {
+                            let schema = schema.clone();
+                            crate::records::infer_record_pattern(
+                                ctx,
+                                b,
+                                &schema,
+                                tycon_id,
+                                &name.text,
+                                field_pats,
+                                *has_rest,
+                                expected_ty,
+                                *span,
+                            );
+                            return;
+                        }
+                    }
+                }
+                // Not a known record type — report and keep inference going by
+                // typing any sub-patterns against Error.
                 let _ = emit_internal(
                     ctx,
-                    "record-body constructor pattern typing deferred to T17",
+                    format!("record pattern `{}` is not a known record type", name.text),
                     *span,
                 );
+                for fp in field_pats {
+                    if let Some(sub) = &fp.pattern {
+                        infer_pattern(ctx, b, sub, &Type::Error);
+                    }
+                }
                 return;
             }
 
@@ -1011,7 +1068,7 @@ pub const fn type_of_literal(b: &BuiltinTyCons, lit: &Literal) -> Type {
         | Literal::IntHex { .. } => Type::Con(b.int, vec![]),
         Literal::Float { .. } => Type::Con(b.float, vec![]),
         Literal::Bool { .. } => Type::Con(b.bool, vec![]),
-        Literal::Text { .. } => Type::Con(b.text, vec![]),
+        Literal::Text { .. } | Literal::RawText { .. } => Type::Con(b.text, vec![]),
     }
 }
 
@@ -1946,6 +2003,7 @@ mod tests {
 
         // inner fn add (x: Int) -> Int = x
         let decl = FnDecl {
+            attrs: vec![],
             vis: Visibility::Private,
             caps: vec![],
             name: make_ident("add"),

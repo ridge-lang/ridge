@@ -311,6 +311,7 @@ const fn token_description(tok: &Token) -> &'static str {
         }
         Token::Float(_) => "<float-literal>",
         Token::TextLit(_) => "<string-literal>",
+        Token::RawTextLit(_) => "<raw-string-literal>",
         Token::InterpText(_) => "<interpolated-text>",
         Token::DocComment(_) => "<doc-comment>",
     }

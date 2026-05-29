@@ -361,6 +361,7 @@ mod tests {
 
     fn simple_fn_decl(name: &str, body: Expr) -> FnDecl {
         FnDecl {
+            attrs: vec![],
             vis: ridge_ast::Visibility::Private,
             caps: vec![],
             name: ident(name),
@@ -508,6 +509,7 @@ mod tests {
     fn lower_fn_pub_flag() {
         let mut ctx = fresh_ctx();
         let decl = FnDecl {
+            attrs: vec![],
             vis: ridge_ast::Visibility::Pub,
             caps: vec![],
             name: ident("exported"),

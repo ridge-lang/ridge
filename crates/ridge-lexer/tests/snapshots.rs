@@ -77,6 +77,7 @@ fn token_kind_name(t: &Token) -> &'static str {
         Token::IntHex(_) => "INT_HEX",
         Token::Float(_) => "FLOAT",
         Token::TextLit(_) => "TEXT_LIT",
+        Token::RawTextLit(_) => "RAW_TEXT_LIT",
         Token::InterpStart => "INTERP_START",
         Token::InterpText(_) => "INTERP_TEXT",
         Token::InterpExprStart => "INTERP_EXPR_START",
@@ -136,6 +137,7 @@ fn token_payload(t: &Token) -> String {
         | Token::IntHex(s)
         | Token::Float(s)
         | Token::TextLit(s)
+        | Token::RawTextLit(s)
         | Token::InterpText(s)
         | Token::DocComment(s) => format!("{s:?}"),
         _ => String::new(),

@@ -948,6 +948,7 @@ mod tests {
                 pattern: Pattern::Constructor {
                     name: id("Some"),
                     fields: None,
+                    has_rest: false,
                     args: vec![],
                     span: ds(),
                 },
@@ -966,6 +967,7 @@ mod tests {
                 pattern: Pattern::Constructor {
                     name: id("None"),
                     fields: None,
+                    has_rest: false,
                     args: vec![],
                     span: ds(),
                 },

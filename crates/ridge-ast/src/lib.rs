@@ -36,9 +36,9 @@ pub mod visit;
 pub use base::{Capability, DocComment, PrimitiveType, Visibility};
 pub use block::Block;
 pub use decl::{
-    ActorDecl, ActorMember, Body, ConstDecl, Constructor, FieldDecl, FnDecl, ImportDecl, InitDecl,
-    MailboxConfig, MailboxDecl, MailboxPolicy, ModulePath, OnHandler, Param, RecordTypeBody,
-    StateDecl, TypeBody, TypeDecl, UnionTypeBody,
+    ActorDecl, ActorMember, Attribute, Body, ConstDecl, Constructor, FieldDecl, FnDecl, ImportDecl,
+    InitDecl, MailboxConfig, MailboxDecl, MailboxPolicy, ModulePath, OnHandler, Param,
+    RecordTypeBody, StateDecl, TypeBody, TypeDecl, UnionTypeBody,
 };
 pub use expr::{
     AskTimeout, BinOp, Expr, FieldInit, InterpPart, LambdaParam, MatchArm, QualifiedName,
@@ -47,7 +47,7 @@ pub use expr::{
 pub use ident::Ident;
 pub use lit::Literal;
 pub use module::{Item, Module};
-pub use pattern::{FieldPattern, Pattern};
+pub use pattern::{FieldPattern, ListPatElem, Pattern};
 pub use ty::{FnType, Type};
 pub use visit::Visit;
 

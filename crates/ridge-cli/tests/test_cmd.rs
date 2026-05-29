@@ -12,6 +12,7 @@ mod common;
 
 use assert_cmd::Command;
 use common::{write_file, TempWorkspace};
+use predicates::prelude::PredicateBooleanExt;
 use predicates::str::contains;
 
 // ── Helper ────────────────────────────────────────────────────────────────────
@@ -171,4 +172,71 @@ fn test_no_tests_discovered() {
         .assert()
         .success()
         .stdout(contains("no tests discovered"));
+}
+
+// ── Test 8: @test on private fn is discovered (un-gated) ─────────────────────
+
+/// A private (non-`pub`) function annotated with `@test` is discovered as a
+/// test — visibility is ignored when the attribute is present.
+///
+/// This check runs without OTP: the function has C301 arity-invalid because it
+/// takes a parameter, which exercises the discovery path before any BEAM spawn.
+/// We verify the test *was* discovered (C301 fires, not "no tests discovered").
+#[test]
+fn test_attr_private_fn_discovered() {
+    // Private fn with @test — will hit ArityInvalid (takes a param) but that
+    // proves discovery succeeded.  We cannot run the test without OTP.
+    let src = "@test \"my private test\"\nfn private_check (x: Int) -> Result Unit Text = Ok ()\n";
+    let tw = make_test_workspace("Demo", src);
+
+    ridge_cmd()
+        .arg("test")
+        .current_dir(&tw.path)
+        .assert()
+        .failure()
+        .stderr(contains("C301 TestArityInvalid"));
+}
+
+// ── Test 9: legacy test_* emits C304 warning (un-gated) ──────────────────────
+
+/// A `pub fn test_*` function without `@test` emits `C304 PrefixTestDeprecated`
+/// as a warning.  The test is still classified (and hits C301 here to avoid
+/// needing OTP, proving discovery ran).
+#[test]
+fn test_legacy_prefix_emits_c304() {
+    // pub fn test_* with wrong arity — C301 fires after C304 warning.
+    let src = "pub fn test_legacy (x: Int) -> Result Unit Text = Ok ()\n";
+    let tw = make_test_workspace("Demo", src);
+
+    ridge_cmd()
+        .arg("test")
+        .current_dir(&tw.path)
+        .assert()
+        .failure()
+        .stderr(contains("C304 PrefixTestDeprecated"))
+        .stderr(contains("C301 TestArityInvalid"));
+}
+
+// ── Test 10: fn with both @test and test_* prefix registered once, no C304 ────
+
+/// A function that carries `@test` AND has a `test_` prefix name is registered
+/// once (via the attribute path) and does NOT emit `C304`.
+///
+/// We verify by checking that C304 is absent from stderr while the test is
+/// still discovered (C301 proves discovery ran).
+#[test]
+fn test_attr_wins_over_prefix_no_c304() {
+    let src =
+        "@test \"explicit name\"\npub fn test_also_prefixed (x: Int) -> Result Unit Text = Ok ()\n";
+    let tw = make_test_workspace("Demo", src);
+
+    ridge_cmd()
+        .arg("test")
+        .current_dir(&tw.path)
+        .assert()
+        .failure()
+        // C304 must NOT appear — attribute path was taken.
+        .stderr(predicates::str::contains("C304").not())
+        // C301 confirms the test was actually discovered.
+        .stderr(contains("C301 TestArityInvalid"));
 }

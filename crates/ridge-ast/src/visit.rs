@@ -377,6 +377,7 @@ pub fn walk_expr<'ast, V: Visit<'ast> + ?Sized>(v: &mut V, e: &'ast Expr) {
 ///
 /// The match is exhaustive so that new variants force a compile error here.
 pub fn walk_pattern<'ast, V: Visit<'ast> + ?Sized>(v: &mut V, p: &'ast Pattern) {
+    use crate::pattern::ListPatElem;
     match p {
         Pattern::Wildcard { .. } | Pattern::Literal { .. } | Pattern::ListNil { .. } => {}
         Pattern::Var { name, .. } => v.visit_ident(name),
@@ -410,6 +411,17 @@ pub fn walk_pattern<'ast, V: Visit<'ast> + ?Sized>(v: &mut V, p: &'ast Pattern) 
             v.visit_pattern(inner);
         }
         Pattern::Paren { inner, .. } => v.visit_pattern(inner),
+        Pattern::List { elements, .. } => {
+            for elem in elements {
+                match elem {
+                    ListPatElem::Elem(pat) => v.visit_pattern(pat),
+                    ListPatElem::Rest {
+                        bind: Some(name), ..
+                    } => v.visit_ident(name),
+                    ListPatElem::Rest { bind: None, .. } => {}
+                }
+            }
+        }
     }
 }
 

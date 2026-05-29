@@ -421,6 +421,7 @@ Module {
         ),
         Fn(
             FnDecl {
+                attrs: [],
                 vis: Private,
                 caps: [
                     Random,
@@ -1169,6 +1170,7 @@ Module {
                                                             },
                                                         },
                                                         fields: None,
+                                                        has_rest: false,
                                                         args: [
                                                             Tuple {
                                                                 elems: [
@@ -1228,6 +1230,7 @@ Module {
                                                             },
                                                         },
                                                         fields: None,
+                                                        has_rest: false,
                                                         args: [],
                                                         span: Span {
                                                             start: 2554,
@@ -1529,6 +1532,7 @@ Module {
         ),
         Fn(
             FnDecl {
+                attrs: [],
                 vis: Private,
                 caps: [],
                 name: Ident {
@@ -1746,6 +1750,7 @@ Module {
         ),
         Fn(
             FnDecl {
+                attrs: [],
                 vis: Private,
                 caps: [],
                 name: Ident {
@@ -1878,6 +1883,7 @@ Module {
         ),
         Fn(
             FnDecl {
+                attrs: [],
                 vis: Private,
                 caps: [],
                 name: Ident {
@@ -2010,6 +2016,7 @@ Module {
         ),
         Fn(
             FnDecl {
+                attrs: [],
                 vis: Private,
                 caps: [],
                 name: Ident {
@@ -2163,6 +2170,7 @@ Module {
         ),
         Fn(
             FnDecl {
+                attrs: [],
                 vis: Private,
                 caps: [],
                 name: Ident {
@@ -2295,6 +2303,7 @@ Module {
         ),
         Fn(
             FnDecl {
+                attrs: [],
                 vis: Private,
                 caps: [
                     Spawn,
@@ -3161,6 +3170,7 @@ Module {
                                                                                             },
                                                                                         },
                                                                                         fields: None,
+                                                                                        has_rest: false,
                                                                                         args: [
                                                                                             Var {
                                                                                                 name: Ident {
@@ -3223,6 +3233,7 @@ Module {
                                                                                             },
                                                                                         },
                                                                                         fields: None,
+                                                                                        has_rest: false,
                                                                                         args: [],
                                                                                         span: Span {
                                                                                             start: 4979,

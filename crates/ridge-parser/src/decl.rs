@@ -34,10 +34,10 @@
 #![allow(clippy::redundant_pub_crate)]
 
 use ridge_ast::{
-    ActorDecl, ActorMember, Body, Capability, ConstDecl, Constructor, DocComment, Expr, FieldDecl,
-    FnDecl, Ident, ImportDecl, InitDecl, Item, MailboxConfig, MailboxDecl, MailboxPolicy,
-    ModulePath, OnHandler, Param, RecordTypeBody, StateDecl, TypeBody, TypeDecl, UnionTypeBody,
-    Visibility,
+    ActorDecl, ActorMember, Attribute, Body, Capability, ConstDecl, Constructor, DocComment, Expr,
+    FieldDecl, FnDecl, Ident, ImportDecl, InitDecl, Item, MailboxConfig, MailboxDecl,
+    MailboxPolicy, ModulePath, OnHandler, Param, RecordTypeBody, StateDecl, TypeBody, TypeDecl,
+    UnionTypeBody, Visibility,
 };
 use ridge_lexer::Token;
 
@@ -240,6 +240,7 @@ fn parse_fn_decl_ffi(
     let end_span = ret.as_ref().map_or(name_span, ridge_ast::Type::span);
 
     Ok(FnDecl {
+        attrs: vec![],
         vis,
         caps,
         name,
@@ -263,6 +264,43 @@ use crate::{
     ty::{parse_type, parse_type_atom},
 };
 
+// ── @test attribute ───────────────────────────────────────────────────────────
+
+/// Attempt to parse an `@test "<display-name>"` attribute.
+///
+/// Grammar:
+/// ```ebnf
+/// TestAttr = "@" "test" TextLit ;
+/// ```
+///
+/// The cursor must be positioned at `Token::At` when this function is called.
+/// On success the cursor is advanced past the closing string literal.
+/// On failure, a `ParseError` is returned.
+///
+/// Precondition: `cur.peek() == &Token::At` and the token after `@` is
+/// the identifier `test`.
+fn parse_test_attr(cur: &mut Cursor<'_>) -> Result<Attribute, ParseError> {
+    let start = cur.span();
+    cur.expect(&Token::At)?; // consume `@`
+
+    // Consume the literal identifier "test" (verified by caller).
+    cur.bump();
+
+    // Argument: string literal display name.
+    let name_span = cur.span();
+    match cur.peek().clone() {
+        Token::TextLit(s) => {
+            let end = cur.span();
+            cur.bump();
+            Ok(Attribute::Test {
+                name: s,
+                span: start.merge(end),
+            })
+        }
+        _ => Err(ParseError::TestAttrArgNotString { span: name_span }),
+    }
+}
+
 // ── parse_item ────────────────────────────────────────────────────────────────
 
 /// Parse a single top-level item (grammar §2.1 `TopLevel`).
@@ -277,17 +315,40 @@ pub(crate) fn parse_item(
     doc: Option<DocComment>,
     vis: Visibility,
 ) -> Result<Item, ParseError> {
-    // ── @ffi attribute — must precede a `pub fn` declaration ─────────────────
-    // When the current token is `@`, try to parse an `@ffi(...)` attribute.
-    // The visibility passed in from the caller will be `Private` (because `@`
-    // is not a visibility keyword); we re-parse the visibility after the attr.
+    // ── Attribute handling — `@ffi` and `@test` ───────────────────────────────
+    // When the current token is `@`, inspect the following identifier to decide
+    // which attribute to parse.  The visibility passed in will be `Private`
+    // (because `@` is not a visibility keyword); visibility is re-parsed after
+    // any `@test` attributes, or inside `parse_fn_decl_ffi` for `@ffi`.
     if cur.peek() == &Token::At {
-        let ffi = parse_ffi_attr(cur)?;
-        // Skip any Newline between the attribute line and the `pub fn` line.
-        while cur.peek() == &Token::Newline {
-            cur.bump();
+        // Peek past `@` to see the attribute name.
+        let attr_name = cur.peek_n(1).cloned();
+        if matches!(&attr_name, Some(Token::LowerIdent(s)) if s == "ffi") {
+            // `@ffi(...)` — existing path, unchanged.
+            let ffi = parse_ffi_attr(cur)?;
+            while cur.peek() == &Token::Newline {
+                cur.bump();
+            }
+            return Ok(Item::Fn(parse_fn_decl_ffi(cur, ffi, doc)?));
         }
-        return Ok(Item::Fn(parse_fn_decl_ffi(cur, ffi, doc)?));
+
+        if matches!(&attr_name, Some(Token::LowerIdent(s)) if s == "test") {
+            // Collect zero or more `@test` attributes (only one is expected in
+            // practice, but the grammar allows the same form multiple times).
+            let mut attrs: Vec<Attribute> = Vec::new();
+            while cur.peek() == &Token::At
+                && matches!(cur.peek_n(1), Some(Token::LowerIdent(s)) if s == "test")
+            {
+                attrs.push(parse_test_attr(cur)?);
+                while cur.peek() == &Token::Newline {
+                    cur.bump();
+                }
+            }
+            // Re-parse visibility, then dispatch to the normal fn parser with
+            // the collected attrs.
+            let fn_vis = parse_visibility(cur)?;
+            return Ok(Item::Fn(parse_fn_decl_with_attrs(cur, fn_vis, doc, attrs)?));
+        }
     }
 
     match cur.peek() {
@@ -1106,6 +1167,75 @@ pub(crate) fn parse_fn_decl(
     let end_span = expr.span();
 
     Ok(FnDecl {
+        attrs: vec![],
+        vis,
+        caps,
+        name,
+        params,
+        ret,
+        body: Body::Expr(expr),
+        span: start.merge(end_span),
+        doc,
+    })
+}
+
+/// Parse a function declaration that has pre-parsed attributes.
+///
+/// Called from [`parse_item`] after one or more `@test` attributes have been
+/// collected.  The cursor must be positioned at `fn` (after any visibility has
+/// already been parsed by the caller).
+///
+/// Precondition: `cur.peek() == &Token::KwFn`.
+fn parse_fn_decl_with_attrs(
+    cur: &mut Cursor<'_>,
+    vis: Visibility,
+    doc: Option<DocComment>,
+    attrs: Vec<Attribute>,
+) -> Result<FnDecl, ParseError> {
+    let start = cur.span();
+    cur.expect(&Token::KwFn)?;
+
+    let caps = parse_cap_list(cur);
+
+    let name_span = cur.span();
+    let name = match cur.peek().clone() {
+        Token::LowerIdent(s) => {
+            cur.bump();
+            Ident::new(s, name_span)
+        }
+        _ => {
+            return Err(ParseError::Expected {
+                span: cur.span(),
+                expected: "<function name>",
+                found: cur.peek().to_string(),
+            });
+        }
+    };
+
+    let mut params: Vec<Param> = Vec::new();
+    if cur.peek() == &Token::LParen && cur.peek_n(1) == Some(&Token::RParen) {
+        cur.bump();
+        cur.bump();
+    } else {
+        while can_start_param(cur) {
+            params.push(parse_param_top(cur)?);
+        }
+    }
+
+    let ret = if cur.peek() == &Token::Arrow {
+        cur.bump();
+        Some(parse_type(cur)?)
+    } else {
+        None
+    };
+
+    cur.expect(&Token::Assign)?;
+
+    let expr = parse_branch_body(cur)?;
+    let end_span = expr.span();
+
+    Ok(FnDecl {
+        attrs,
         vis,
         caps,
         name,

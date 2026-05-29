@@ -8,7 +8,7 @@
 //!
 //! Total: 33 tests.
 
-use ridge_fmt::format_source;
+use ridge_fmt::{format_source, migrate_tests};
 
 // ── Helpers ────────────────────────────────────────────────────────────────────
 
@@ -469,6 +469,136 @@ fn doc_block_body_not_operator_spaced() {
     );
     let second = format_source(&first).expect("must format twice");
     assert_eq!(first, second, "doc-block fixture not idempotent");
+}
+
+// ── @test attribute round-trip ────────────────────────────────────────────────
+
+/// A source file containing `@test "…"` must survive `format_source` unchanged
+/// (the attribute must not be silently dropped or mangled).
+///
+/// Because `ridge-fmt` is trivia-preserving, it never re-emits AST nodes —
+/// only normalises whitespace.  This test guards that the formatter parses the
+/// `@test` attribute successfully and returns the source byte-identical.
+#[test]
+fn test_attr_survives_format() {
+    let input = "@test \"my test\"\nfn check_things () -> Result Unit Text = Ok ()\n";
+    let formatted = format_source(input).expect("format_source must succeed on @test source");
+    assert_eq!(
+        formatted, input,
+        "@test attribute was modified or dropped by format_source"
+    );
+}
+
+/// Formatting a source file with `@test "…"` is idempotent.
+#[test]
+fn test_attr_format_idempotent() {
+    let input = "@test \"my test\"\nfn check_things () -> Result Unit Text = Ok ()\n";
+    assert_idempotent("test_attr", input);
+}
+
+// ── migrate_tests tests ────────────────────────────────────────────────────────
+
+/// A `pub fn test_foo` gains `@test "foo"` above it; the function name is unchanged.
+#[test]
+fn migrate_adds_attribute_to_prefix_test() {
+    let input = "pub fn test_arith_add () -> Result Unit Text = Ok ()\n";
+    let output = migrate_tests(input).expect("migrate_tests must succeed");
+    assert!(
+        output.contains("@test \"arith_add\""),
+        "expected @test attribute to be inserted: {output:?}"
+    );
+    assert!(
+        output.contains("pub fn test_arith_add"),
+        "function name must be unchanged: {output:?}"
+    );
+}
+
+/// Running `migrate_tests` twice produces no further change (idempotent).
+#[test]
+fn migrate_is_idempotent() {
+    let input = "pub fn test_arith_add () -> Result Unit Text = Ok ()\n";
+    let first = migrate_tests(input).expect("first pass");
+    let second = migrate_tests(&first).expect("second pass");
+    assert_eq!(first, second, "migrate_tests must be idempotent");
+}
+
+/// A function that already carries `@test` is left untouched.
+#[test]
+fn migrate_skips_already_annotated() {
+    let input = "@test \"arith_add\"\npub fn test_arith_add () -> Result Unit Text = Ok ()\n";
+    let output = migrate_tests(input).expect("migrate_tests must succeed");
+    assert_eq!(
+        input, output,
+        "already-annotated function must not be modified"
+    );
+}
+
+/// A private (non-`pub`) `test_*` function is not touched.
+#[test]
+fn migrate_skips_private_fn() {
+    let input = "fn test_internal () -> Result Unit Text = Ok ()\n";
+    let output = migrate_tests(input).expect("migrate_tests must succeed");
+    assert_eq!(input, output, "private test_ function must not be modified");
+}
+
+/// A function whose name does not start with `test_` is not touched.
+#[test]
+fn migrate_skips_non_test_prefix() {
+    let input = "pub fn helper () -> Int = 42\n";
+    let output = migrate_tests(input).expect("migrate_tests must succeed");
+    assert_eq!(input, output, "non-test_ function must not be modified");
+}
+
+/// A `pub fn test_*` preceded by a line comment gets the attribute placed
+/// below the comment, directly above `pub fn`.
+#[test]
+fn migrate_inserts_below_line_comment() {
+    let input = "-- sets up the counter\npub fn test_counter () -> Result Unit Text = Ok ()\n";
+    let output = migrate_tests(input).expect("migrate_tests must succeed");
+    // The @test line must appear between the comment and the pub fn line.
+    let attr_pos = output.find("@test \"counter\"").expect("@test missing");
+    let fn_pos = output.find("pub fn test_counter").expect("fn missing");
+    assert!(
+        attr_pos < fn_pos,
+        "@test must appear before pub fn: {output:?}"
+    );
+    // The comment must still be present.
+    assert!(
+        output.contains("-- sets up the counter"),
+        "line comment must be preserved: {output:?}"
+    );
+}
+
+/// Multiple `pub fn test_*` functions in one file all get the attribute.
+#[test]
+fn migrate_handles_multiple_fns() {
+    let input = concat!(
+        "pub fn test_add () -> Result Unit Text = Ok ()\n",
+        "\n",
+        "pub fn test_sub () -> Result Unit Text = Ok ()\n",
+    );
+    let output = migrate_tests(input).expect("migrate_tests must succeed");
+    assert!(
+        output.contains("@test \"add\""),
+        "first function missing @test: {output:?}"
+    );
+    assert!(
+        output.contains("@test \"sub\""),
+        "second function missing @test: {output:?}"
+    );
+}
+
+/// Normal `format_source` (no `--migrate-tests`) is unaffected by the migration
+/// code path — it must still produce the same output as before.
+#[test]
+fn format_source_regression_unaffected_by_migration() {
+    let input = "pub fn test_foo () -> Result Unit Text = Ok ()\n";
+    let formatted = format_source(input).expect("format_source must succeed");
+    // format_source should not insert @test attributes.
+    assert!(
+        !formatted.contains("@test"),
+        "format_source must not insert @test attributes: {formatted:?}"
+    );
 }
 
 /// Recursively collect all `.ridge` files under `dir`.

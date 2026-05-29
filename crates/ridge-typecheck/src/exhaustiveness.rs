@@ -178,7 +178,9 @@ fn lift_pattern(pat: &Pattern) -> NormPat {
                 // pattern with any field bindings (including `..`) always
                 // matches the whole constructor.  Lifting to Wildcard avoids
                 // false T016 alerts for record types while still allowing
-                // wildcard-based redundancy detection to work.
+                // wildcard-based redundancy detection to work.  The `has_rest`
+                // flag (D259) does not change this behaviour: an explicit
+                // record pattern with `..` is still irrefutable over its type.
                 NormPat::Wildcard
             } else {
                 // Positional constructor — arity known from args.
@@ -195,6 +197,11 @@ fn lift_pattern(pat: &Pattern) -> NormPat {
                 )
             }
         }
+
+        // Bracketed list pattern — desugar to Cons/ListNil/Wildcard and
+        // recurse.  Prefix rest is exact; the parser already rejected
+        // suffix/middle rest with P025.
+        Pattern::List { .. } => lift_pattern(&pat.clone().desugar_list()),
     }
 }
 
@@ -1121,6 +1128,7 @@ mod tests {
             pattern: Pattern::Constructor {
                 name: make_ident(name),
                 fields: None,
+                has_rest: false,
                 args,
                 span: dummy_span(),
             },
@@ -1153,6 +1161,7 @@ mod tests {
             pattern: Pattern::Constructor {
                 name: make_ident(name),
                 fields: Some(vec![]),
+                has_rest: false,
                 args: vec![],
                 span: dummy_span(),
             },
@@ -1641,5 +1650,112 @@ mod tests {
         } else {
             panic!("expected T017 on the guarded duplicate");
         }
+    }
+
+    // ── List pattern exhaustiveness (D258) ────────────────────────────────────
+
+    fn list_arm(pat: Pattern) -> MatchArm {
+        MatchArm {
+            pattern: pat,
+            guard: None,
+            body: ridge_ast::Expr::Literal(ridge_ast::Literal::IntDec {
+                raw: "1".to_string(),
+                span: dummy_span(),
+            }),
+            span: dummy_span(),
+        }
+    }
+
+    fn list_nil_arm() -> MatchArm {
+        list_arm(Pattern::ListNil { span: dummy_span() })
+    }
+
+    fn cons_wildcard_arm() -> MatchArm {
+        // `_ :: _` — matches any non-empty list
+        list_arm(Pattern::Cons {
+            head: Box::new(Pattern::Wildcard { span: dummy_span() }),
+            tail: Box::new(Pattern::Wildcard { span: dummy_span() }),
+            span: dummy_span(),
+        })
+    }
+
+    fn make_list_ty(b: &BuiltinTyCons) -> Type {
+        Type::Con(b.list, vec![Type::Con(b.int, vec![])])
+    }
+
+    /// `match xs { [] -> ..; _ :: _ -> .. }` — exhaustive (no T016).
+    #[test]
+    fn match_list_nil_and_cons_exhaustive() {
+        let (arena, b) = make_builtins();
+        let mut ctx = InferCtx::new();
+        let arms = vec![list_nil_arm(), cons_wildcard_arm()];
+        let scrutinee_ty = make_list_ty(&b);
+        check_exhaustiveness(&mut ctx, &arena, &b, &scrutinee_ty, &arms, dummy_span());
+        no_errors(&ctx.errors);
+    }
+
+    /// `match xs { [] -> .. }` — non-exhaustive (T016, missing `_ :: _`).
+    #[test]
+    fn match_list_nil_only_non_exhaustive() {
+        let (arena, b) = make_builtins();
+        let mut ctx = InferCtx::new();
+        let arms = vec![list_nil_arm()];
+        let scrutinee_ty = make_list_ty(&b);
+        check_exhaustiveness(&mut ctx, &arena, &b, &scrutinee_ty, &arms, dummy_span());
+        has_t016(&ctx.errors);
+    }
+
+    /// Desugared `[_, ..]` (= `_ :: _`) + `[]` — exhaustive via desugar_list.
+    ///
+    /// Builds `Pattern::List { elements: [Elem(_), Rest { bind: None }] }` and
+    /// checks that it desugars correctly and the pair is exhaustive.
+    #[test]
+    fn match_list_bracket_prefix_rest_exhaustive() {
+        use ridge_ast::pattern::ListPatElem;
+
+        let (arena, b) = make_builtins();
+        let mut ctx = InferCtx::new();
+
+        // `[_, ..]` as a List node
+        let list_pat = Pattern::List {
+            elements: vec![
+                ListPatElem::Elem(Pattern::Wildcard { span: dummy_span() }),
+                ListPatElem::Rest {
+                    bind: None,
+                    span: dummy_span(),
+                },
+            ],
+            span: dummy_span(),
+        };
+
+        let arms = vec![list_arm(list_pat), list_nil_arm()];
+        let scrutinee_ty = make_list_ty(&b);
+        check_exhaustiveness(&mut ctx, &arena, &b, &scrutinee_ty, &arms, dummy_span());
+        no_errors(&ctx.errors);
+    }
+
+    /// Single-arm `[_, ..]` without `[]` — non-exhaustive (missing empty list).
+    #[test]
+    fn match_list_bracket_prefix_rest_missing_nil() {
+        use ridge_ast::pattern::ListPatElem;
+
+        let (arena, b) = make_builtins();
+        let mut ctx = InferCtx::new();
+
+        let list_pat = Pattern::List {
+            elements: vec![
+                ListPatElem::Elem(Pattern::Wildcard { span: dummy_span() }),
+                ListPatElem::Rest {
+                    bind: None,
+                    span: dummy_span(),
+                },
+            ],
+            span: dummy_span(),
+        };
+
+        let arms = vec![list_arm(list_pat)];
+        let scrutinee_ty = make_list_ty(&b);
+        check_exhaustiveness(&mut ctx, &arena, &b, &scrutinee_ty, &arms, dummy_span());
+        has_t016(&ctx.errors);
     }
 }

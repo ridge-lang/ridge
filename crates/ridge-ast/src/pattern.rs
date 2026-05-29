@@ -26,6 +26,32 @@ pub struct FieldPattern {
     pub span: Span,
 }
 
+// ── ListPatElem ───────────────────────────────────────────────────────────────
+
+/// A single element inside a bracketed list pattern `[…]` (D258).
+///
+/// ```text
+/// [a, b, rest @ ..]
+///  ^  ^  ^^^^^^^^^^
+///  |  |  rest element with binding
+///  |  Elem
+///  Elem
+/// ```
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ListPatElem {
+    /// A normal pattern element.
+    Elem(Pattern),
+    /// A rest position `..` (prefix rest only in 0.2.8; suffix/middle deferred
+    /// to the next cut).  The optional `bind` is the name bound to the
+    /// remaining list tail: `rest @ ..` binds `rest`, plain `..` does not.
+    Rest {
+        /// The binding name for the tail (`rest @ ..`), or `None` (`..`).
+        bind: Option<Ident>,
+        /// Span of this rest element (covers `IDENT @ ..` or just `..`).
+        span: Span,
+    },
+}
+
 // ── Pattern ───────────────────────────────────────────────────────────────────
 
 /// A match pattern in Ridge source code.
@@ -80,6 +106,12 @@ pub enum Pattern {
         /// Record-body field patterns.  `Some(…)` iff the `{ … }` form was
         /// used; `None` for the positional form.
         fields: Option<Vec<FieldPattern>>,
+        /// Whether a trailing `..` was present in the record-body form (D259).
+        ///
+        /// Only meaningful when `fields` is `Some`.  When `true`, the pattern
+        /// matches any value of the named record type that carries at least the
+        /// named fields, ignoring any additional fields.
+        has_rest: bool,
         /// Zero or more positional sub-patterns (only when `fields` is `None`).
         args: Vec<Self>,
         /// Span covering the entire constructor pattern.
@@ -134,6 +166,25 @@ pub enum Pattern {
         /// Source location of the `[` `]` pair.
         span: Span,
     },
+
+    /// A bracketed list pattern `[a, b, c]` or `[a, rest @ ..]` (D258).
+    ///
+    /// Preserves the original bracket syntax for faithful round-tripping by
+    /// `ridge-fmt`.  All downstream phases (exhaustiveness, type inference,
+    /// lowering) desugar this to the equivalent `Cons`/`ListNil`/`Wildcard`
+    /// tree via [`Pattern::desugar_list`] rather than operating on this node
+    /// directly.
+    ///
+    /// Invariants enforced by the parser:
+    /// - At most one `ListPatElem::Rest` element.
+    /// - If a `Rest` is present it must be the last element (prefix rest only
+    ///   in 0.2.8; suffix/middle support is deferred to the next cut).
+    List {
+        /// The element patterns, in source order.
+        elements: Vec<ListPatElem>,
+        /// Span covering the full `[…]` construct.
+        span: Span,
+    },
 }
 
 impl Pattern {
@@ -149,7 +200,81 @@ impl Pattern {
             | Self::Cons { span, .. }
             | Self::As { span, .. }
             | Self::Paren { span, .. }
-            | Self::ListNil { span } => *span,
+            | Self::ListNil { span }
+            | Self::List { span, .. } => *span,
         }
+    }
+
+    /// Desugar a `Pattern::List` to the equivalent `Cons`/`ListNil`/`Wildcard`
+    /// tree (D258).
+    ///
+    /// This shared helper is called by type inference, exhaustiveness checking,
+    /// and pattern lowering so that those passes reuse the existing
+    /// `Cons`/`ListNil` machinery without change.
+    ///
+    /// # Desugar rules
+    ///
+    /// | Pattern | Desugars to |
+    /// |---------|-------------|
+    /// | `[]` (empty List) | `ListNil` |
+    /// | `[e0, …, en]` (no Rest) | `Cons(e0, Cons(…, Cons(en, ListNil)))` |
+    /// | `[e0, …, ek, ..]` (prefix rest, no bind) | `Cons(e0, …, Cons(ek, Wildcard))` |
+    /// | `[e0, …, ek, rest @ ..]` (prefix rest, bound) | `Cons(e0, …, Cons(ek, Var(rest)))` |
+    ///
+    /// Only prefix rest (Rest as the last element) is handled here; the parser
+    /// rejects suffix/middle rest with `P025 RestSuffixNotSupported` until the
+    /// next cut lifts that restriction.
+    ///
+    /// # Panics
+    ///
+    /// Does not panic; any non-`List` variant is returned as-is.
+    #[must_use]
+    pub fn desugar_list(self) -> Self {
+        let Self::List { elements, span } = self else {
+            return self;
+        };
+
+        // Split off a trailing Rest element if present.
+        let (elems, rest_elem) = match elements.last() {
+            Some(ListPatElem::Rest { .. }) => {
+                let mut e = elements;
+                let r = e.pop();
+                (e, r)
+            }
+            _ => (elements, None),
+        };
+
+        // Build the tail: Wildcard, Var(bind), or ListNil.
+        let tail: Self = match rest_elem {
+            Some(ListPatElem::Rest {
+                bind: Some(name),
+                span: rest_span,
+            }) => Self::Var {
+                name,
+                span: rest_span,
+            },
+            Some(ListPatElem::Rest {
+                bind: None,
+                span: rest_span,
+            }) => Self::Wildcard { span: rest_span },
+            _ => Self::ListNil { span },
+        };
+
+        // Wrap element patterns in Cons nodes from right to left.
+        elems.into_iter().rev().fold(tail, |acc, elem| match elem {
+            ListPatElem::Elem(pat) => {
+                let full_span = pat.span().merge(acc.span());
+                Self::Cons {
+                    head: Box::new(pat),
+                    tail: Box::new(acc),
+                    span: full_span,
+                }
+            }
+            // Rest was already extracted above; this arm is unreachable
+            // in a well-formed List pattern.
+            ListPatElem::Rest {
+                span: rest_span, ..
+            } => Self::Wildcard { span: rest_span },
+        })
     }
 }

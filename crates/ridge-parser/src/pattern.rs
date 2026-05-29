@@ -32,7 +32,7 @@
 #![allow(dead_code)]
 #![allow(clippy::redundant_pub_crate)]
 
-use ridge_ast::{FieldPattern, Ident, Pattern};
+use ridge_ast::{pattern::ListPatElem, FieldPattern, Ident, Pattern};
 use ridge_lexer::Token;
 
 use crate::{cursor::Cursor, error::ParseError, expr::parse_literal};
@@ -158,12 +158,39 @@ pub(crate) fn parse_pattern_atom(cur: &mut Cursor<'_>) -> Result<Pattern, ParseE
             })
         }
 
-        // ── Empty-list pattern `[]` ───────────────────────────────────────────
+        // ── Bracketed list pattern `[…]` ─────────────────────────────────────
+        //
+        // Handles the full bracketed list pattern form (D258):
+        //   `[]`              → Pattern::ListNil
+        //   `[a, b, c]`       → Pattern::List { elements: [Elem(a), Elem(b), Elem(c)] }
+        //   `[a, ..]`         → Pattern::List { elements: [Elem(a), Rest { bind: None }] }
+        //   `[a, rest @ ..]`  → Pattern::List { elements: [Elem(a), Rest { bind: Some(rest) }] }
         Token::LBrack => {
             cur.bump(); // consume `[`
+
+            // Empty list `[]`.
+            if cur.peek() == &Token::RBrack {
+                let end_span = cur.span();
+                cur.bump();
+                return Ok(Pattern::ListNil {
+                    span: span.merge(end_span),
+                });
+            }
+
+            let (elements, has_rest) = parse_list_pattern_elements(cur)?;
+
             let end_span = cur.expect(&Token::RBrack)?;
-            Ok(Pattern::ListNil {
-                span: span.merge(end_span),
+            let full_span = span.merge(end_span);
+
+            // A list pattern with no elements and no rest is `[]` — handled
+            // above; reaching here with an empty elements vec is defensive.
+            if elements.is_empty() && !has_rest {
+                return Ok(Pattern::ListNil { span: full_span });
+            }
+
+            Ok(Pattern::List {
+                elements,
+                span: full_span,
             })
         }
 
@@ -218,12 +245,13 @@ fn parse_constructor_pattern(cur: &mut Cursor<'_>) -> Result<Pattern, ParseError
     // Check for the record-body form `{ … }`.
     if cur.peek() == &Token::LBrace {
         cur.bump(); // consume `{`
-        let fields = parse_field_pattern_list(cur)?;
+        let (fields, has_rest) = parse_field_pattern_list(cur)?;
         let rbrace_span = cur.expect(&Token::RBrace)?;
         end_span = rbrace_span;
         return Ok(Pattern::Constructor {
             name,
             fields: Some(fields),
+            has_rest,
             args: vec![],
             span: start_span.merge(end_span),
         });
@@ -240,6 +268,7 @@ fn parse_constructor_pattern(cur: &mut Cursor<'_>) -> Result<Pattern, ParseError
     Ok(Pattern::Constructor {
         name,
         fields: None,
+        has_rest: false,
         args,
         span: start_span.merge(end_span),
     })
@@ -247,19 +276,36 @@ fn parse_constructor_pattern(cur: &mut Cursor<'_>) -> Result<Pattern, ParseError
 
 // ── parse_field_pattern_list (internal) ──────────────────────────────────────
 
-/// Parse `FieldPattern { "," FieldPattern } [ "," ]` inside `{ … }`.
+/// Parse `FieldPattern { "," FieldPattern } [ "," [ ".." ] ]` inside `{ … }`.
 ///
 /// Precondition: the opening `{` has already been consumed.
 /// The closing `}` is NOT consumed here; the caller handles it.
-fn parse_field_pattern_list(cur: &mut Cursor<'_>) -> Result<Vec<FieldPattern>, ParseError> {
+///
+/// Returns `(fields, has_rest)` where `has_rest` is `true` when a trailing
+/// `..` was present (D259 record rest pattern).
+fn parse_field_pattern_list(cur: &mut Cursor<'_>) -> Result<(Vec<FieldPattern>, bool), ParseError> {
     let mut fields: Vec<FieldPattern> = Vec::new();
+    let mut has_rest = false;
 
     // Empty record body `{}` is allowed (edge case).
     if cur.peek() == &Token::RBrace {
-        return Ok(fields);
+        return Ok((fields, has_rest));
     }
 
     loop {
+        // A leading `..` with no preceding field name — record rest at the
+        // start of the list (or after a comma).
+        if cur.peek() == &Token::DotDot {
+            cur.bump(); // consume `..`
+            has_rest = true;
+            // After `..` the only valid token is `}` (or an optional trailing
+            // comma before `}`).
+            if cur.peek() == &Token::Comma {
+                cur.bump(); // consume optional trailing `,`
+            }
+            break;
+        }
+
         let field = parse_field_pattern(cur)?;
         fields.push(field);
 
@@ -269,6 +315,16 @@ fn parse_field_pattern_list(cur: &mut Cursor<'_>) -> Result<Vec<FieldPattern>, P
             if cur.peek() == &Token::RBrace {
                 break;
             }
+            // `..` after a comma — record rest (D259).
+            if cur.peek() == &Token::DotDot {
+                cur.bump(); // consume `..`
+                has_rest = true;
+                // Accept an optional trailing comma after `..`.
+                if cur.peek() == &Token::Comma {
+                    cur.bump();
+                }
+                break;
+            }
             // Otherwise continue to the next field.
         } else {
             // No comma: must be followed by `}`.
@@ -276,7 +332,7 @@ fn parse_field_pattern_list(cur: &mut Cursor<'_>) -> Result<Vec<FieldPattern>, P
         }
     }
 
-    Ok(fields)
+    Ok((fields, has_rest))
 }
 
 // ── parse_field_pattern (internal) ───────────────────────────────────────────
@@ -324,6 +380,136 @@ fn parse_field_pattern(cur: &mut Cursor<'_>) -> Result<FieldPattern, ParseError>
         pattern: None,
         span: name_span,
     })
+}
+
+// ── parse_list_pattern_elements (internal) ────────────────────────────────────
+
+/// Parse the element list inside `[…]` (D258).
+///
+/// Returns `(elements, has_rest)`.  `has_rest` is `true` when at least one
+/// `..` element was present.
+///
+/// Accepted forms (comma-separated, trailing comma allowed):
+/// - `Pattern`          → `ListPatElem::Elem(pat)`
+/// - `..`               → `ListPatElem::Rest { bind: None }`
+/// - `IDENT @ ..`       → `ListPatElem::Rest { bind: Some(ident) }`
+///
+/// Errors:
+/// - `P024 MultipleRestInListPattern` — more than one `..` in the list.
+/// - `P025 RestSuffixNotSupported`    — a `..` is followed by more elements.
+///
+/// Precondition: the opening `[` has been consumed and the current token is
+/// NOT `]`.
+fn parse_list_pattern_elements(
+    cur: &mut Cursor<'_>,
+) -> Result<(Vec<ListPatElem>, bool), ParseError> {
+    let mut elements: Vec<ListPatElem> = Vec::new();
+    let mut has_rest = false;
+
+    loop {
+        let elem_span = cur.span();
+
+        // ── `..` bare rest ────────────────────────────────────────────────────
+        if cur.peek() == &Token::DotDot {
+            if has_rest {
+                return Err(ParseError::MultipleRestInListPattern { span: elem_span });
+            }
+            cur.bump(); // consume `..`
+            has_rest = true;
+            elements.push(ListPatElem::Rest {
+                bind: None,
+                span: elem_span,
+            });
+
+            // After a rest element, only `,` (possibly with `]` after it) or
+            // `]` is expected.  Any further pattern element is a suffix rest.
+            if cur.peek() == &Token::Comma {
+                cur.bump(); // consume `,`
+            }
+            // If there is still content before `]`, that is a suffix rest — P025.
+            if cur.peek() != &Token::RBrack {
+                return Err(ParseError::RestSuffixNotSupported { span: elem_span });
+            }
+            break;
+        }
+
+        // ── `IDENT @ ..` bound rest ───────────────────────────────────────────
+        //
+        // Detect `LOWER_IDENT` followed by `@` followed by `..` — this is the
+        // bound rest form.  We special-case it here so it does NOT go through
+        // the general `@` as-pattern path in `parse_pattern`.
+        if let Token::LowerIdent(ref name_text) = cur.peek().clone() {
+            // Peek ahead: LowerIdent `@` DotDot
+            // We need two-token lookahead.  Use a temporary clone check:
+            // bump the ident, check for `@`, then check for `..`.
+            let name_text = name_text.clone();
+            let name_span = elem_span;
+            cur.bump(); // consume the ident tentatively
+
+            if cur.peek() == &Token::At {
+                cur.bump(); // consume `@`
+                if cur.peek() == &Token::DotDot {
+                    // Confirmed: `IDENT @ ..`
+                    let dot_span = cur.span();
+                    cur.bump(); // consume `..`
+                    if has_rest {
+                        return Err(ParseError::MultipleRestInListPattern { span: dot_span });
+                    }
+                    has_rest = true;
+                    let full_rest_span = name_span.merge(dot_span);
+                    elements.push(ListPatElem::Rest {
+                        bind: Some(Ident::new(name_text, name_span)),
+                        span: full_rest_span,
+                    });
+
+                    // Consume optional trailing comma, then check for suffix.
+                    if cur.peek() == &Token::Comma {
+                        cur.bump();
+                    }
+                    if cur.peek() != &Token::RBrack {
+                        return Err(ParseError::RestSuffixNotSupported {
+                            span: full_rest_span,
+                        });
+                    }
+                    break;
+                }
+                // `IDENT @` but not followed by `..`: fall back to normal `@`
+                // as-pattern via parse_pattern.  We already consumed the ident
+                // and `@`; reconstruct as `As { name, inner: parse_pattern_atom }`.
+                let inner = parse_pattern_atom(cur)?;
+                let full_span = name_span.merge(inner.span());
+                elements.push(ListPatElem::Elem(Pattern::As {
+                    name: Ident::new(name_text, name_span),
+                    inner: Box::new(inner),
+                    span: full_span,
+                }));
+            } else {
+                // Not an `@` — treat as a plain Var pattern.
+                elements.push(ListPatElem::Elem(Pattern::Var {
+                    name: Ident::new(name_text, name_span),
+                    span: name_span,
+                }));
+            }
+        } else {
+            // Normal pattern element.
+            let pat = parse_pattern(cur)?;
+            elements.push(ListPatElem::Elem(pat));
+        }
+
+        // ── Separator / terminator ────────────────────────────────────────────
+        if cur.peek() == &Token::Comma {
+            cur.bump(); // consume `,`
+                        // Trailing comma before `]`.
+            if cur.peek() == &Token::RBrack {
+                break;
+            }
+            // Continue to the next element.
+        } else {
+            break;
+        }
+    }
+
+    Ok((elements, has_rest))
 }
 
 // ── parse_paren_or_tuple_pattern (internal) ───────────────────────────────────
@@ -404,7 +590,7 @@ fn can_start_pattern_atom(cur: &Cursor<'_>) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use ridge_ast::{Literal, Span};
+    use ridge_ast::{Ident, Literal, Span};
     use ridge_lexer::tokenize;
 
     fn lex(src: &str) -> Vec<(Token, Span)> {
@@ -787,6 +973,263 @@ mod tests {
             assert!(matches!(&args[0], Pattern::Var { name, .. } if name.text == "result"));
         } else {
             unreachable!("expected Constructor, got {result:?}");
+        }
+    }
+
+    // ── list patterns ─────────────────────────────────────────────────────────
+
+    #[test]
+    fn parse_pattern_list_empty() {
+        // `[]` → ListNil
+        let result = parse_pat("[]");
+        assert!(result.is_ok(), "expected Ok, got {result:?}");
+        assert!(
+            matches!(result, Ok(Pattern::ListNil { .. })),
+            "expected ListNil, got {result:?}"
+        );
+    }
+
+    #[test]
+    fn parse_pattern_list_three_elements() {
+        // `[a, b, c]` → List with 3 Elem entries
+        let result = parse_pat("[a, b, c]");
+        assert!(result.is_ok(), "expected Ok, got {result:?}");
+        if let Ok(Pattern::List { elements, .. }) = result {
+            assert_eq!(elements.len(), 3);
+            for (i, elem) in elements.iter().enumerate() {
+                let expected = ["a", "b", "c"][i];
+                assert!(
+                    matches!(elem, ridge_ast::pattern::ListPatElem::Elem(Pattern::Var { name, .. }) if name.text == expected),
+                    "element {i} expected Elem(Var({expected})), got {elem:?}"
+                );
+            }
+        } else {
+            unreachable!("expected List, got {result:?}");
+        }
+    }
+
+    #[test]
+    fn parse_pattern_list_bare_rest() {
+        // `[a, ..]` → List { elements: [Elem(a), Rest { bind: None }] }
+        let result = parse_pat("[a, ..]");
+        assert!(result.is_ok(), "expected Ok, got {result:?}");
+        if let Ok(Pattern::List { elements, .. }) = result {
+            assert_eq!(elements.len(), 2);
+            assert!(
+                matches!(&elements[0], ridge_ast::pattern::ListPatElem::Elem(Pattern::Var { name, .. }) if name.text == "a"),
+                "element 0 expected Elem(Var(a)), got {:?}",
+                elements[0]
+            );
+            assert!(
+                matches!(
+                    &elements[1],
+                    ridge_ast::pattern::ListPatElem::Rest { bind: None, .. }
+                ),
+                "element 1 expected Rest {{ bind: None }}, got {:?}",
+                elements[1]
+            );
+        } else {
+            unreachable!("expected List, got {result:?}");
+        }
+    }
+
+    #[test]
+    fn parse_pattern_list_bound_rest() {
+        // `[a, rest @ ..]` → List { elements: [Elem(a), Rest { bind: Some(rest) }] }
+        let result = parse_pat("[a, rest @ ..]");
+        assert!(result.is_ok(), "expected Ok, got {result:?}");
+        if let Ok(Pattern::List { elements, .. }) = result {
+            assert_eq!(elements.len(), 2);
+            assert!(
+                matches!(&elements[0], ridge_ast::pattern::ListPatElem::Elem(Pattern::Var { name, .. }) if name.text == "a"),
+                "element 0 expected Elem(Var(a)), got {:?}",
+                elements[0]
+            );
+            if let ridge_ast::pattern::ListPatElem::Rest {
+                bind: Some(name), ..
+            } = &elements[1]
+            {
+                assert_eq!(name.text, "rest");
+            } else {
+                unreachable!(
+                    "element 1 expected Rest {{ bind: Some(rest) }}, got {:?}",
+                    elements[1]
+                );
+            }
+        } else {
+            unreachable!("expected List, got {result:?}");
+        }
+    }
+
+    #[test]
+    fn parse_pattern_list_multi_bare_rest() {
+        // `[a, b, ..]` → List with two Elem entries and a trailing Rest
+        let result = parse_pat("[a, b, ..]");
+        assert!(result.is_ok(), "expected Ok, got {result:?}");
+        if let Ok(Pattern::List { elements, .. }) = result {
+            assert_eq!(elements.len(), 3);
+            assert!(
+                matches!(
+                    &elements[2],
+                    ridge_ast::pattern::ListPatElem::Rest { bind: None, .. }
+                ),
+                "element 2 expected Rest {{ bind: None }}, got {:?}",
+                elements[2]
+            );
+        } else {
+            unreachable!("expected List, got {result:?}");
+        }
+    }
+
+    #[test]
+    fn parse_pattern_list_suffix_rest_yields_p025() {
+        // `[.., last]` → P025 RestSuffixNotSupported
+        let result = parse_pat("[.., last]");
+        assert!(result.is_err(), "expected Err for suffix rest `[.., last]`");
+        if let Err(e) = result {
+            assert_eq!(
+                e.code(),
+                "P025",
+                "expected P025 RestSuffixNotSupported, got code={} err={e:?}",
+                e.code()
+            );
+        }
+    }
+
+    #[test]
+    fn parse_pattern_list_multiple_rests_yields_p024() {
+        // `[.., ..]` — two rests → P024
+        let result = parse_pat("[.., ..]");
+        assert!(result.is_err(), "expected Err for two rests");
+        if let Err(e) = result {
+            // The first `..` is followed by `, ..` which looks like a suffix
+            // rest, so the parser may emit P025 before getting to P024.
+            assert!(
+                e.code() == "P024" || e.code() == "P025",
+                "expected P024 or P025, got code={} err={e:?}",
+                e.code()
+            );
+        }
+    }
+
+    // ── record rest pattern ───────────────────────────────────────────────────
+
+    #[test]
+    fn parse_pattern_record_rest_has_rest_true() {
+        // `User { name, .. }` → Constructor { fields: Some([name]), has_rest: true }
+        let result = parse_pat("User { name, .. }");
+        assert!(result.is_ok(), "expected Ok, got {result:?}");
+        if let Ok(Pattern::Constructor {
+            name,
+            fields,
+            has_rest,
+            ..
+        }) = result
+        {
+            assert_eq!(name.text, "User");
+            assert!(has_rest, "expected has_rest = true");
+            assert!(fields.is_some(), "expected fields = Some(...)");
+            if let Some(fields) = fields {
+                assert_eq!(fields.len(), 1);
+                assert_eq!(fields[0].name.text, "name");
+            }
+        } else {
+            unreachable!("expected Constructor, got {result:?}");
+        }
+    }
+
+    #[test]
+    fn parse_pattern_record_no_rest_has_rest_false() {
+        // `User { name }` → Constructor { fields: Some([name]), has_rest: false }
+        let result = parse_pat("User { name }");
+        assert!(result.is_ok(), "expected Ok, got {result:?}");
+        if let Ok(Pattern::Constructor { has_rest, .. }) = result {
+            assert!(!has_rest, "expected has_rest = false");
+        } else {
+            unreachable!("expected Constructor, got {result:?}");
+        }
+    }
+
+    // ── desugar_list ──────────────────────────────────────────────────────────
+
+    #[test]
+    fn desugar_list_empty_gives_list_nil() {
+        let pat = Pattern::List {
+            elements: vec![],
+            span: Span::point(0),
+        };
+        let desugared = pat.desugar_list();
+        assert!(
+            matches!(desugared, Pattern::ListNil { .. }),
+            "expected ListNil, got {desugared:?}"
+        );
+    }
+
+    #[test]
+    fn desugar_list_single_element_gives_cons_nil() {
+        let pat = Pattern::List {
+            elements: vec![ridge_ast::pattern::ListPatElem::Elem(Pattern::Var {
+                name: ridge_ast::Ident::new("x", Span::point(0)),
+                span: Span::point(0),
+            })],
+            span: Span::point(0),
+        };
+        let desugared = pat.desugar_list();
+        if let Pattern::Cons { head, tail, .. } = desugared {
+            assert!(matches!(*head, Pattern::Var { name, .. } if name.text == "x"));
+            assert!(matches!(*tail, Pattern::ListNil { .. }));
+        } else {
+            unreachable!("expected Cons, got {desugared:?}");
+        }
+    }
+
+    #[test]
+    fn desugar_list_prefix_rest_no_bind_gives_cons_wildcard() {
+        // `[a, ..]` desugars to `Cons(a, Wildcard)`
+        let pat = Pattern::List {
+            elements: vec![
+                ridge_ast::pattern::ListPatElem::Elem(Pattern::Var {
+                    name: ridge_ast::Ident::new("a", Span::point(0)),
+                    span: Span::point(0),
+                }),
+                ridge_ast::pattern::ListPatElem::Rest {
+                    bind: None,
+                    span: Span::point(2),
+                },
+            ],
+            span: Span::point(0),
+        };
+        let desugared = pat.desugar_list();
+        if let Pattern::Cons { head, tail, .. } = desugared {
+            assert!(matches!(*head, Pattern::Var { name, .. } if name.text == "a"));
+            assert!(matches!(*tail, Pattern::Wildcard { .. }));
+        } else {
+            unreachable!("expected Cons, got {desugared:?}");
+        }
+    }
+
+    #[test]
+    fn desugar_list_prefix_rest_bound_gives_cons_var() {
+        // `[a, rest @ ..]` desugars to `Cons(a, Var(rest))`
+        let pat = Pattern::List {
+            elements: vec![
+                ridge_ast::pattern::ListPatElem::Elem(Pattern::Var {
+                    name: ridge_ast::Ident::new("a", Span::point(0)),
+                    span: Span::point(0),
+                }),
+                ridge_ast::pattern::ListPatElem::Rest {
+                    bind: Some(ridge_ast::Ident::new("rest", Span::point(2))),
+                    span: Span::point(2),
+                },
+            ],
+            span: Span::point(0),
+        };
+        let desugared = pat.desugar_list();
+        if let Pattern::Cons { head, tail, .. } = desugared {
+            assert!(matches!(*head, Pattern::Var { name, .. } if name.text == "a"));
+            assert!(matches!(*tail, Pattern::Var { name, .. } if name.text == "rest"));
+        } else {
+            unreachable!("expected Cons, got {desugared:?}");
         }
     }
 }

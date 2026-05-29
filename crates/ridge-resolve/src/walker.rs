@@ -415,6 +415,13 @@ impl ScopeWalker<'_> {
             Pattern::Paren { inner, .. } => {
                 self.bind_pattern(inner, kind);
             }
+            // Bracketed list pattern — desugar and recurse so that variable
+            // bindings inside the element patterns (and the optional rest bind)
+            // are resolved correctly.
+            Pattern::List { .. } => {
+                let desugared = pat.clone().desugar_list();
+                self.bind_pattern(&desugared, kind);
+            }
         }
     }
 

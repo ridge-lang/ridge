@@ -147,12 +147,17 @@ pub fn lower_pattern_full(ctx: &mut LowerCtx<'_>, pat: &Pattern) -> IrPat {
         // ── Empty-list pattern `[]` ───────────────────────────────────────────
         Pattern::ListNil { span } => IrPat::Nil { span: *span },
 
+        // ── Bracketed list pattern `[a, b, ..]` ──────────────────────────────
+        // Desugar to Cons/ListNil/Wildcard/Bind and lower the result.
+        Pattern::List { .. } => lower_pattern_full(ctx, &pat.clone().desugar_list()),
+
         // ── Constructor pattern ───────────────────────────────────────────────
         Pattern::Constructor {
             name,
             fields,
             args,
             span,
+            ..
         } => lower_constructor_pattern(ctx, name, fields.as_deref(), args, *span),
     }
 }
@@ -662,6 +667,7 @@ mod tests {
                 span: ctor_span,
             },
             fields: None,
+            has_rest: false,
             args: vec![var_pat("x")],
             span: sp_at(5, 11),
         };
@@ -735,6 +741,7 @@ mod tests {
                 span: ctor_span,
             },
             fields: Some(vec![fp]),
+            has_rest: false,
             args: vec![],
             span: sp_at(0, 15),
         };

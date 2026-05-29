@@ -213,6 +213,31 @@ pub enum ParseError {
         span: Span,
     },
 
+    /// P024 — a list pattern contains more than one `..` rest element.
+    ///
+    /// A list pattern may contain at most one `..`.  Write `[first, ..]` or
+    /// `[first, rest @ ..]` with a single rest.
+    #[error("list pattern may contain at most one `..` rest element")]
+    MultipleRestInListPattern {
+        /// Source location of the second `..` token.
+        span: Span,
+    },
+
+    /// P025 — a `..` rest element is followed by further elements in a list
+    /// pattern (suffix or middle rest position).
+    ///
+    /// Suffix and middle rest patterns — `[.., last]`, `[a, .., b]` — are
+    /// not supported in this version.  Use a prefix rest `[first, ..]` or
+    /// the cons operator `head :: tail` instead.
+    #[error(
+        "`..` rest element must be the last element in a list pattern; \
+         suffix and middle rest positions are not yet supported"
+    )]
+    RestSuffixNotSupported {
+        /// Source location of the `..` that is not in the last position.
+        span: Span,
+    },
+
     /// P023 — `mailbox bounded N` was given a capacity that is not a positive
     /// `i64` literal.
     ///
@@ -256,6 +281,8 @@ impl ParseError {
             Self::InlineRecordTypeInTypePosition { .. } => "P021",
             Self::MailboxPolicyMissing { .. } => "P022",
             Self::MailboxBoundInvalid { .. } => "P023",
+            Self::MultipleRestInListPattern { .. } => "P024",
+            Self::RestSuffixNotSupported { .. } => "P025",
             Self::InternalLayoutInvariantViolated { .. } => "P999",
         }
     }
@@ -278,6 +305,8 @@ impl ParseError {
             | Self::InlineRecordTypeInTypePosition { span }
             | Self::MailboxPolicyMissing { span }
             | Self::MailboxBoundInvalid { span, .. }
+            | Self::MultipleRestInListPattern { span }
+            | Self::RestSuffixNotSupported { span }
             | Self::InternalLayoutInvariantViolated { span } => *span,
         }
     }

@@ -914,6 +914,15 @@ pub fn infer_pattern(ctx: &mut InferCtx, b: &BuiltinTyCons, pat: &Pattern, expec
             }
         }
 
+        // ── Bracketed list pattern ────────────────────────────────────────────
+        // Desugar `[a, b, ..]` to the equivalent Cons/ListNil/Wildcard tree
+        // and recurse.  This reuses the existing Cons/ListNil inference paths
+        // without any new logic.
+        Pattern::List { .. } => {
+            let desugared = pat.clone().desugar_list();
+            infer_pattern(ctx, b, &desugared, expected_ty);
+        }
+
         // ── Constructor ───────────────────────────────────────────────────────
         // Two forms:
         //   fields: None  → positional constructor pattern → T9 (unions.rs)
@@ -923,6 +932,7 @@ pub fn infer_pattern(ctx: &mut InferCtx, b: &BuiltinTyCons, pat: &Pattern, expec
             fields,
             args,
             span,
+            ..
         } => {
             if fields.is_some() {
                 // Record-body constructor pattern — T8/T17 pipeline wiring.

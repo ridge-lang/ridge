@@ -1169,6 +1169,7 @@ Module {
                                                             },
                                                         },
                                                         fields: None,
+                                                        has_rest: false,
                                                         args: [
                                                             Tuple {
                                                                 elems: [
@@ -1228,6 +1229,7 @@ Module {
                                                             },
                                                         },
                                                         fields: None,
+                                                        has_rest: false,
                                                         args: [],
                                                         span: Span {
                                                             start: 2554,
@@ -3161,6 +3163,7 @@ Module {
                                                                                             },
                                                                                         },
                                                                                         fields: None,
+                                                                                        has_rest: false,
                                                                                         args: [
                                                                                             Var {
                                                                                                 name: Ident {
@@ -3223,6 +3226,7 @@ Module {
                                                                                             },
                                                                                         },
                                                                                         fields: None,
+                                                                                        has_rest: false,
                                                                                         args: [],
                                                                                         span: Span {
                                                                                             start: 4979,

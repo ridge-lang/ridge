@@ -22,7 +22,7 @@ nine first-class capabilities (`io`, `fs`, `net`, `time`, `random`, `env`,
 `proc`, `spawn`, `ffi`) tracked in the type system. Compiles to BEAM
 bytecode via Core Erlang.
 
-**Status:** 0.2.7, the seventh release on the 0.2.x line. The
+**Status:** 0.2.8, the eighth release on the 0.2.x line. The
 language and tooling are usable end-to-end. Pre-1.0 minors may include
 breaking changes; patch releases within 0.2.x will not. See
 [`CHANGELOG.md`](CHANGELOG.md) for what landed and

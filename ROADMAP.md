@@ -140,9 +140,9 @@ this section are scheduled, not aspirational.
 
 | Status | Item | Description | Evidence |
 |--------|------|-------------|----------|
-| ⏳ | Test-discovery sugar | Accept `@test "<name>"` alongside the current `pub fn test_*` convention; both forms recognised in 0.2.x with a `C304 PrefixTestDeprecated` warning per prefix test; `ridge fmt --migrate-tests` one-shot migration ships in the same line. Prefix removed in 0.3.0 GA | `docs/spec.md §16.2` |
-| ⏳ | Multi-line and raw string literals | Concrete dedent and escape rules chosen during 0.2.x | `docs/spec.md §16.2` |
-| ⏳ | Range and rest-pattern syntax for `..` | Concrete semantics chosen during 0.2.x | `docs/spec.md §16.2` |
+| ✅ | Test-discovery via `@test` | `@test "<name>"` accepted alongside `pub fn test_*`; both forms recognised with `C304 PrefixTestDeprecated` per prefix test; `ridge fmt --migrate-tests` one-shot migration. Prefix removed in 0.3.0 GA. Shipped in 0.2.8. | `docs/spec.md §8.8`, `CHANGELOG.md` (0.2.8) |
+| ✅ | Multi-line and raw string literals | `"""..."""` cooked with dedent; `r"..."` / `r#"..."#` raw without dedent. Shipped in 0.2.8. | `docs/spec.md §4.1.1`, `CHANGELOG.md` (0.2.8) |
+| ✅ | Rest patterns in list and record patterns | `[first, ..]`, `[.., last]`, `[first, rest @ .., last]`; `User { name, .. }`. Shipped in 0.2.8. | `docs/spec.md §4.5`, `CHANGELOG.md` (0.2.8) |
 | ⏳ | Inline record types | First-class structural record types in type positions (e.g. `{ name: Text, age: Int }`), with the structural-vs-nominal decision documented in the decision log | — |
 | ⏳ | Typeclasses (`class` / `instance` / `deriving` / `where`) | Keywords are already reserved in the lexer and parser. The 0.2.x typeclass cut adds declaration syntax, instance resolution, deriving for `Eq` / `Ord` / `Show`, and constraint propagation through inference. Formalises the `ToText` dispatch added in 0.2.6 | — |
 

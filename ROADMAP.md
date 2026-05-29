@@ -127,8 +127,9 @@ this section are scheduled, not aspirational.
 |--------|------|-------------|----------|
 | ✅ | `std.net.http` hardening defaults | `Sql` and `Html` newtypes that escape on construction; `SecureCookie` with `Secure` + `HttpOnly` + `SameSite=Lax` defaults; default CSP / HSTS headers on `respond`. Shipped across 0.2.6 | `CHANGELOG.md` (0.2.6 entries) |
 | ✅ | Open `ToText` dispatch for interpolation | User-defined `toText` participates in string interpolation. Shipped in 0.2.6; the typeclass formalisation lands with the typeclass core (below) | `CHANGELOG.md` (0.2.6 entries) |
-| ⏳ | Bounded mailboxes + backpressure for actors | Per the deferred-from-0.1.0 list in the spec. Three overflow policies (drop-oldest, drop-newest, error) | `docs/spec.md §16.2` |
-| ⏳ | Mailbox observability API | `Actor.mailboxSize`, peek, drain | — |
+| ✅ | Bounded mailboxes + backpressure for actors (drop newest, error) | `mailbox` actor member with two overflow policies. `drop oldest` parses but is type-check-rejected pending a broker process intermediary | `docs/spec.md §7.2.1`; `CHANGELOG.md` (0.2.7 entries) |
+| ✅ | Mailbox observability API (`mailboxSize`) | `Actor.mailboxSize : Handle a -> Option Int`. `peek` and `drain` deferred until typeclass-derived message typing is available | `docs/spec.md §7.2.1`; `crates/ridge-stdlib/stdlib/actor.ridge` |
+| ⏳ | Mailbox `drop oldest` policy + broker | Sliding-window overflow handling via a broker process intermediary. Parsed in 0.2.7 but type-check-rejected pending implementation | `docs/spec.md §7.2.1` |
 | ⏳ | `std.crypto` | SHA-2 / SHA-3 hashes, HMAC, AEAD (ChaCha20-Poly1305 default), constant-time compare. Thin bridges to the BEAM `:crypto` module | — |
 | ⏳ | `std.uuid` | UUIDv4 (random) and UUIDv7 (timestamp-ordered), plus `toText` / `fromText` round-trips | — |
 | ⏳ | `std.url` | RFC 3986 parser and builder, query-string encoding/decoding, `Url` normalisation | — |

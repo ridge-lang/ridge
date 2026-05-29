@@ -421,6 +421,7 @@ Module {
         ),
         Fn(
             FnDecl {
+                attrs: [],
                 vis: Private,
                 caps: [
                     Random,
@@ -1531,6 +1532,7 @@ Module {
         ),
         Fn(
             FnDecl {
+                attrs: [],
                 vis: Private,
                 caps: [],
                 name: Ident {
@@ -1748,6 +1750,7 @@ Module {
         ),
         Fn(
             FnDecl {
+                attrs: [],
                 vis: Private,
                 caps: [],
                 name: Ident {
@@ -1880,6 +1883,7 @@ Module {
         ),
         Fn(
             FnDecl {
+                attrs: [],
                 vis: Private,
                 caps: [],
                 name: Ident {
@@ -2012,6 +2016,7 @@ Module {
         ),
         Fn(
             FnDecl {
+                attrs: [],
                 vis: Private,
                 caps: [],
                 name: Ident {
@@ -2165,6 +2170,7 @@ Module {
         ),
         Fn(
             FnDecl {
+                attrs: [],
                 vis: Private,
                 caps: [],
                 name: Ident {
@@ -2297,6 +2303,7 @@ Module {
         ),
         Fn(
             FnDecl {
+                attrs: [],
                 vis: Private,
                 caps: [
                     Spawn,

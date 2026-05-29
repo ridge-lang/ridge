@@ -607,6 +607,7 @@ mod tests {
     /// and a body that is just an expression.
     fn make_fn_decl(name: &str, body: Expr) -> FnDecl {
         FnDecl {
+            attrs: vec![],
             vis: ridge_ast::Visibility::Private,
             caps: vec![],
             name: id(name),
@@ -931,6 +932,7 @@ mod tests {
     fn make_fn_decl_at(name: &str, start: u32, body: Expr) -> FnDecl {
         let sp = Span::new(start, start + 10);
         FnDecl {
+            attrs: vec![],
             vis: ridge_ast::Visibility::Private,
             caps: vec![],
             name: Ident {
@@ -1017,6 +1019,7 @@ mod tests {
         ctx.env.push_frame();
         // fn id x = x — polymorphic: ∀a. a -> a
         let decl = FnDecl {
+            attrs: vec![],
             vis: ridge_ast::Visibility::Private,
             caps: vec![],
             name: Ident {

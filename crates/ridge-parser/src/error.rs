@@ -266,6 +266,17 @@ pub enum ParseError {
         raw: String,
     },
 
+    /// P027 — `@test` was not given a string-literal argument.
+    ///
+    /// The `@test` attribute requires a string literal immediately after the
+    /// keyword: `@test "my test name"`.  Any other token at that position
+    /// produces this diagnostic.
+    #[error("`@test` requires a string literal argument — write `@test \"<name>\"`")]
+    TestAttrArgNotString {
+        /// Source location of the unexpected token.
+        span: Span,
+    },
+
     /// P999 — the lexer's bracket-suppression invariant was violated (should
     /// be unreachable; signals a lexer bug, not a user error).
     #[error("internal error: layout invariant violated inside bracketed region")]
@@ -299,6 +310,7 @@ impl ParseError {
             Self::MultipleRestInListPattern { .. } => "P024",
             Self::RestSuffixNotSupported { .. } => "P025",
             Self::RefutableSliceElement { .. } => "P026",
+            Self::TestAttrArgNotString { .. } => "P027",
             Self::InternalLayoutInvariantViolated { .. } => "P999",
         }
     }
@@ -324,6 +336,7 @@ impl ParseError {
             | Self::MultipleRestInListPattern { span }
             | Self::RestSuffixNotSupported { span }
             | Self::RefutableSliceElement { span }
+            | Self::TestAttrArgNotString { span }
             | Self::InternalLayoutInvariantViolated { span } => *span,
         }
     }

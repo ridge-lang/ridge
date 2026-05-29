@@ -38,9 +38,9 @@ use std::time::Instant;
 
 use clap::Parser;
 use ridge_driver::{
-    check_workspace_typed, compile_workspace, AstCapability, AstItem, AstType, CheckOptions,
-    CompileOptions, ModuleMetadata, PrimitiveType, TypedModule, TypedWorkspace, Visibility,
-    WorkspaceGraph,
+    check_workspace_typed, compile_workspace, AstAttribute, AstCapability, AstItem, AstType,
+    CheckOptions, CompileOptions, ModuleMetadata, PrimitiveType, TypedModule, TypedWorkspace,
+    Visibility, WorkspaceGraph,
 };
 use ridge_manifest::find_workspace_root;
 
@@ -519,7 +519,19 @@ struct DiscoveredTest {
     classification: TestClassification,
 }
 
-/// Walk every module in the typed workspace and collect `pub fn test_*` entries.
+/// Walk every module in the typed workspace and collect test entries.
+///
+/// Discovery runs in two passes per function:
+///
+/// 1. If the function carries an `@test "<name>"` attribute, it is a test
+///    regardless of its name or visibility.  The attribute string is used as
+///    the display name.
+/// 2. Otherwise, if the function is `pub` and its name starts with `test_`,
+///    it is a legacy test and `C304 PrefixTestDeprecated` is emitted as a
+///    warning.
+///
+/// A function that satisfies both conditions is registered exactly once via
+/// the attribute path; `C304` is suppressed for it.
 fn discover_tests(typed: &TypedWorkspace, graph: &WorkspaceGraph) -> Vec<DiscoveredTest> {
     let mut tests = Vec::new();
 
@@ -530,19 +542,75 @@ fn discover_tests(typed: &TypedWorkspace, graph: &WorkspaceGraph) -> Vec<Discove
         for item in &module.ast.items {
             let AstItem::Fn(f) = item else { continue };
 
-            // Only public functions.
+            // Check for @test attribute (wins regardless of visibility or name).
+            let test_attr = f
+                .attrs
+                .iter()
+                .map(|a| match a {
+                    AstAttribute::Test { name, .. } => name.as_str(),
+                })
+                .next();
+
+            if let Some(display_name) = test_attr {
+                // Attribute path — any visibility, display name from attribute.
+                let qualified_name = format!("{module_name}.{display_name}");
+                let fn_name = f.name.text.clone();
+
+                if !f.params.is_empty() {
+                    tests.push(DiscoveredTest {
+                        qualified_name,
+                        beam_module: beam_module.clone(),
+                        fn_name,
+                        classification: TestClassification::ArityInvalid,
+                    });
+                    continue;
+                }
+
+                if f.caps.contains(&AstCapability::Ffi) {
+                    tests.push(DiscoveredTest {
+                        qualified_name,
+                        beam_module: beam_module.clone(),
+                        fn_name,
+                        classification: TestClassification::CapabilityForbidden,
+                    });
+                    continue;
+                }
+
+                let classification = match return_type_classification(f.ret.as_ref()) {
+                    ReturnTypeKind::ResultUnitText => TestClassification::Canonical,
+                    ReturnTypeKind::Bool => TestClassification::BoolDeprecated,
+                    ReturnTypeKind::Other => TestClassification::InvalidReturnType,
+                };
+
+                tests.push(DiscoveredTest {
+                    qualified_name,
+                    beam_module: beam_module.clone(),
+                    fn_name,
+                    classification,
+                });
+                continue;
+            }
+
+            // Legacy prefix path — only `pub fn test_*`.
             if f.vis != Visibility::Pub {
                 continue;
             }
-            // Only `test_*` prefix.
             if !f.name.text.starts_with("test_") {
                 continue;
             }
 
+            // C304: emit deprecation warning for every prefix-matched test.
+            eprintln!(
+                "warning: C304 PrefixTestDeprecated: '{}.{}' uses the deprecated `test_` prefix; \
+                 add `@test \"{}\"` above the function and remove the prefix in 0.3.0",
+                module_name,
+                f.name.text,
+                f.name.text.strip_prefix("test_").unwrap_or(&f.name.text),
+            );
+
             let qualified_name = format!("{module_name}.{}", f.name.text);
             let fn_name = f.name.text.clone();
 
-            // Check arity.
             if !f.params.is_empty() {
                 tests.push(DiscoveredTest {
                     qualified_name,
@@ -553,7 +621,6 @@ fn discover_tests(typed: &TypedWorkspace, graph: &WorkspaceGraph) -> Vec<Discove
                 continue;
             }
 
-            // Check for ffi capability.
             if f.caps.contains(&AstCapability::Ffi) {
                 tests.push(DiscoveredTest {
                     qualified_name,
@@ -564,7 +631,6 @@ fn discover_tests(typed: &TypedWorkspace, graph: &WorkspaceGraph) -> Vec<Discove
                 continue;
             }
 
-            // Classify by return type.
             let classification = match return_type_classification(f.ret.as_ref()) {
                 ReturnTypeKind::ResultUnitText => TestClassification::Canonical,
                 ReturnTypeKind::Bool => TestClassification::BoolDeprecated,

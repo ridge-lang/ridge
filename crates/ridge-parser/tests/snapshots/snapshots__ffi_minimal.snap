@@ -6,6 +6,7 @@ Module {
     items: [
         Fn(
             FnDecl {
+                attrs: [],
                 vis: Pub,
                 caps: [],
                 name: Ident {

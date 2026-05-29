@@ -306,3 +306,73 @@ actor Bad =
         "expected P023 in errors, got codes={codes:?}"
     );
 }
+
+// ── @test attribute snapshot fixtures ────────────────────────────────────────
+//
+// Covers:
+//   1. Private fn with `@test "name"` — parses, attrs populated, no body restriction.
+//   2. `@test` without a string literal — P027 TestAttrArgNotString.
+
+/// Private function annotated with `@test "my test"`.
+///
+/// The attribute makes it discoverable as a test regardless of visibility.
+/// ```ridge
+/// @test "my test"
+/// fn check_things () -> Result Unit Text = Ok ()
+/// ```
+#[test]
+fn snapshot_test_attr_on_private_fn() {
+    let src = "@test \"my test\"\nfn check_things () -> Result Unit Text = Ok ()\n";
+    let result = parse_source(src);
+    assert!(
+        result.lex_errors.is_empty(),
+        "unexpected lex errors: {:#?}",
+        result.lex_errors
+    );
+    assert!(
+        result.errors.is_empty(),
+        "unexpected parse errors: {:#?}",
+        result.errors
+    );
+    assert_eq!(result.module.items.len(), 1, "expected 1 item");
+    let ridge_ast::Item::Fn(fn_decl) = &result.module.items[0] else {
+        panic!("expected Item::Fn");
+    };
+    assert_eq!(fn_decl.attrs.len(), 1, "expected 1 attribute");
+    assert!(
+        matches!(&fn_decl.attrs[0], ridge_ast::Attribute::Test { name, .. } if name == "my test"),
+        "expected Attribute::Test {{ name: \"my test\" }}, got {:?}",
+        fn_decl.attrs[0],
+    );
+    assert_eq!(
+        fn_decl.vis,
+        ridge_ast::Visibility::Private,
+        "fn must be private"
+    );
+    insta::assert_debug_snapshot!("test_attr_private_fn", result.module);
+}
+
+/// `@test` with a non-string argument emits P027.
+#[test]
+fn test_attr_non_string_arg_emits_p027() {
+    let src = "@test 42\nfn bad () -> Result Unit Text = Ok ()\n";
+    let result = parse_source(src);
+    assert!(
+        result.lex_errors.is_empty(),
+        "lex errors: {:#?}",
+        result.lex_errors
+    );
+    assert!(
+        !result.errors.is_empty(),
+        "expected at least one parse error"
+    );
+    let codes: Vec<&str> = result
+        .errors
+        .iter()
+        .map(ridge_parser::ParseError::code)
+        .collect();
+    assert!(
+        codes.contains(&"P027"),
+        "expected P027 in errors, got codes={codes:?}"
+    );
+}

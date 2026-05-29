@@ -47,5 +47,6 @@ pub use ridge_resolve::{ModuleId, ModuleMetadata, WorkspaceGraph};
 // Re-export AST types used by `ridge test` for test-function introspection,
 // so `ridge-cli` avoids a direct dep on `ridge-ast` (T9).
 pub use ridge_ast::{
-    Capability as AstCapability, Item as AstItem, PrimitiveType, Type as AstType, Visibility,
+    Attribute as AstAttribute, Capability as AstCapability, Item as AstItem, PrimitiveType,
+    Type as AstType, Visibility,
 };

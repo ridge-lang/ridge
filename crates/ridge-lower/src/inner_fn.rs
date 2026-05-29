@@ -278,6 +278,7 @@ mod tests {
 
     fn simple_decl(name: &str, body: Expr) -> FnDecl {
         FnDecl {
+            attrs: vec![],
             vis: ridge_ast::Visibility::Private,
             caps: vec![],
             name: Ident {
@@ -294,6 +295,7 @@ mod tests {
 
     fn decl_with_params(name: &str, params: Vec<Param>, body: Expr) -> FnDecl {
         FnDecl {
+            attrs: vec![],
             vis: ridge_ast::Visibility::Private,
             caps: vec![],
             name: Ident {

@@ -542,6 +542,7 @@ Module {
         ),
         Fn(
             FnDecl {
+                attrs: [],
                 vis: Private,
                 caps: [],
                 name: Ident {
@@ -722,6 +723,7 @@ Module {
         ),
         Fn(
             FnDecl {
+                attrs: [],
                 vis: Private,
                 caps: [],
                 name: Ident {
@@ -1030,6 +1032,7 @@ Module {
         ),
         Fn(
             FnDecl {
+                attrs: [],
                 vis: Private,
                 caps: [],
                 name: Ident {
@@ -2023,6 +2026,7 @@ Module {
         ),
         Fn(
             FnDecl {
+                attrs: [],
                 vis: Private,
                 caps: [],
                 name: Ident {
@@ -2188,6 +2192,7 @@ Module {
         ),
         Fn(
             FnDecl {
+                attrs: [],
                 vis: Private,
                 caps: [],
                 name: Ident {
@@ -2511,6 +2516,7 @@ Module {
         ),
         Fn(
             FnDecl {
+                attrs: [],
                 vis: Private,
                 caps: [],
                 name: Ident {
@@ -2772,6 +2778,7 @@ Module {
         ),
         Fn(
             FnDecl {
+                attrs: [],
                 vis: Private,
                 caps: [],
                 name: Ident {
@@ -3319,6 +3326,7 @@ Module {
         ),
         Fn(
             FnDecl {
+                attrs: [],
                 vis: Private,
                 caps: [
                     Io,
@@ -3807,6 +3815,7 @@ Module {
         ),
         Fn(
             FnDecl {
+                attrs: [],
                 vis: Private,
                 caps: [
                     Env,

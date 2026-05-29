@@ -1976,6 +1976,7 @@ mod tests {
 
         // inner fn add (x: Int) -> Int = x
         let decl = FnDecl {
+            attrs: vec![],
             vis: Visibility::Private,
             caps: vec![],
             name: make_ident("add"),

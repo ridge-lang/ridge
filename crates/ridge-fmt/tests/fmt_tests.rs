@@ -471,6 +471,31 @@ fn doc_block_body_not_operator_spaced() {
     assert_eq!(first, second, "doc-block fixture not idempotent");
 }
 
+// ── @test attribute round-trip ────────────────────────────────────────────────
+
+/// A source file containing `@test "…"` must survive `format_source` unchanged
+/// (the attribute must not be silently dropped or mangled).
+///
+/// Because `ridge-fmt` is trivia-preserving, it never re-emits AST nodes —
+/// only normalises whitespace.  This test guards that the formatter parses the
+/// `@test` attribute successfully and returns the source byte-identical.
+#[test]
+fn test_attr_survives_format() {
+    let input = "@test \"my test\"\nfn check_things () -> Result Unit Text = Ok ()\n";
+    let formatted = format_source(input).expect("format_source must succeed on @test source");
+    assert_eq!(
+        formatted, input,
+        "@test attribute was modified or dropped by format_source"
+    );
+}
+
+/// Formatting a source file with `@test "…"` is idempotent.
+#[test]
+fn test_attr_format_idempotent() {
+    let input = "@test \"my test\"\nfn check_things () -> Result Unit Text = Ok ()\n";
+    assert_idempotent("test_attr", input);
+}
+
 /// Recursively collect all `.ridge` files under `dir`.
 fn collect_ridge_files(dir: &std::path::Path, out: &mut Vec<std::path::PathBuf>) {
     let Ok(entries) = std::fs::read_dir(dir) else {

@@ -298,6 +298,10 @@ pub enum ActorMember {
     Init(InitDecl),
     /// An `on` message handler.
     On(OnHandler),
+    /// A `mailbox` configuration member (cut 0.2.7).
+    ///
+    /// At most one per actor — semantic check, not grammar.
+    Mailbox(MailboxDecl),
 }
 
 /// A state field declaration (grammar §5.2 line 500).
@@ -338,6 +342,56 @@ pub struct InitDecl {
     pub body: Block,
     /// Span covering the whole `init` declaration.
     pub span: Span,
+}
+
+/// A `mailbox` configuration member of an actor (cut 0.2.7).
+///
+/// Configures the actor's mailbox capacity and overflow behavior. Omitting the
+/// member is equivalent to writing `mailbox unbounded` — the historical
+/// 0.1.0 / 0.2.6 behavior.
+///
+/// ```text
+/// mailbox unbounded
+/// mailbox bounded 100 drop newest
+/// mailbox bounded 100 error
+/// ```
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MailboxDecl {
+    /// The parsed configuration.
+    pub config: MailboxConfig,
+    /// Span covering the whole `mailbox …` member.
+    pub span: Span,
+}
+
+/// Mailbox capacity and overflow policy (cut 0.2.7).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum MailboxConfig {
+    /// `mailbox unbounded` — explicit unbounded mailbox.
+    Unbounded,
+    /// `mailbox bounded N <policy>` — capacity-bounded mailbox.
+    Bounded {
+        /// Capacity. Always `>= 1` and representable as `i64` (validated by the
+        /// parser; out-of-range values surface as `P023 MailboxBoundInvalid`).
+        capacity: i64,
+        /// Overflow policy.
+        policy: MailboxPolicy,
+    },
+}
+
+/// Mailbox overflow policy (cut 0.2.7).
+///
+/// `DropOldest` parses but is rejected by the typechecker until the broker
+/// mechanism ships in a later cut. Keeping it in the surface grammar lets the
+/// parser produce a precise diagnostic instead of a structural error and
+/// reserves the syntax so adding the policy later is not a breaking change.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MailboxPolicy {
+    /// `drop newest` — silently drop the incoming message on overflow.
+    DropNewest,
+    /// `drop oldest` — drop the head-of-queue message; not yet implemented.
+    DropOldest,
+    /// `error` — signal failure to the sender on overflow.
+    Error,
 }
 
 /// A message handler declaration (grammar §5.4 line 522).

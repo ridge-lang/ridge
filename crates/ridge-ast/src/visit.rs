@@ -32,7 +32,8 @@
 use crate::{
     decl::{
         ActorDecl, ActorMember, ConstDecl, Constructor, FieldDecl, FnDecl, ImportDecl, InitDecl,
-        ModulePath, OnHandler, Param, RecordTypeBody, StateDecl, TypeBody, TypeDecl, UnionTypeBody,
+        MailboxDecl, ModulePath, OnHandler, Param, RecordTypeBody, StateDecl, TypeBody, TypeDecl,
+        UnionTypeBody,
     },
     expr::{AskTimeout, FieldInit, InterpPart, LambdaParam, MatchArm, QualifiedName, RecordCtor},
     Block, Expr, FnType, Ident, Item, Module, Pattern, Type,
@@ -157,6 +158,11 @@ pub trait Visit<'ast> {
     /// Visit an `on` message handler declaration.
     fn visit_on_handler(&mut self, h: &'ast OnHandler) {
         walk_on_handler(self, h);
+    }
+
+    /// Visit a `mailbox` configuration member.
+    fn visit_mailbox_decl(&mut self, d: &'ast MailboxDecl) {
+        walk_mailbox_decl(self, d);
     }
 
     /// Visit a function parameter.
@@ -569,14 +575,18 @@ pub fn walk_actor_decl<'ast, V: Visit<'ast> + ?Sized>(v: &mut V, d: &'ast ActorD
     }
 }
 
-/// Walk an [`ActorMember`]: dispatches to state, init, or on-handler.
+/// Walk an [`ActorMember`]: dispatches to state, init, on-handler, or mailbox.
 pub fn walk_actor_member<'ast, V: Visit<'ast> + ?Sized>(v: &mut V, m: &'ast ActorMember) {
     match m {
         ActorMember::State(s) => v.visit_state_decl(s),
         ActorMember::Init(i) => v.visit_init_decl(i),
         ActorMember::On(h) => v.visit_on_handler(h),
+        ActorMember::Mailbox(mb) => v.visit_mailbox_decl(mb),
     }
 }
+
+/// Walk a [`MailboxDecl`]: no inner nodes traversed (config is a value type).
+pub const fn walk_mailbox_decl<'ast, V: Visit<'ast> + ?Sized>(_v: &mut V, _d: &'ast MailboxDecl) {}
 
 /// Walk a [`StateDecl`]: name, type, and optional default expression.
 pub fn walk_state_decl<'ast, V: Visit<'ast> + ?Sized>(v: &mut V, d: &'ast StateDecl) {

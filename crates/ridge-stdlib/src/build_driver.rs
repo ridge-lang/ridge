@@ -60,6 +60,7 @@ pub const TIERS: &[TierPlan] = &[
             "std.env",
             "std.cli",
             "std.proc",
+            "std.actor",
         ],
     },
     TierPlan {

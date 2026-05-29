@@ -1,6 +1,6 @@
 # Ridge — Language Specification & Development Roadmap
 
-**Version:** 0.2.6
+**Version:** 0.2.7
 **Author:** The Ridge Language Authors
 **Last updated:** 2026-05-28
 
@@ -410,6 +410,46 @@ actor Worker =
 let w = spawn Worker limiterHandle
 ```
 
+#### §3.9.x. Mailbox configuration
+
+An actor's mailbox can be configured via an optional `mailbox` member
+alongside `state`, `init`, and `on`:
+
+```ridge
+actor RateLimiter =
+    mailbox bounded 1000 drop newest
+    state tokens: Int = 100
+
+    on consume () -> Bool =
+        if tokens > 0 then
+            tokens <- tokens - 1
+            true
+        else
+            false
+```
+
+Three forms are accepted:
+
+| Form | Behaviour |
+|------|-----------|
+| (omitted) | Unbounded mailbox. The 0.1.0 / 0.2.6 default. |
+| `mailbox unbounded` | Unbounded, explicit. |
+| `mailbox bounded N drop newest` | Bounded at `N`. On overflow: silently drop the incoming message. |
+| `mailbox bounded N error` | Bounded at `N`. On overflow: caller signals failure (see §7.2.1). |
+
+When `bounded N` is specified, an overflow policy is **mandatory**. Writing
+`mailbox bounded N` without a policy produces a parse error
+(`P022 MailboxPolicyMissing`). `N` must be a literal integer in
+`1..=i64::MAX`; zero, negative, or overflowing values produce
+`P023 MailboxBoundInvalid`.
+
+A third policy, `drop oldest`, is parsed but not yet implemented;
+programs using it produce a type-check error
+(`T027 MailboxPolicyDropOldestNotShipped`) until the broker mechanism it
+requires ships in a later cut. See §7.2.1 for the full semantics — how
+overflow is surfaced through `!`, how the bound is enforced under
+contention, and how observability composes via `Actor.mailboxSize`.
+
 ### 3.10. String interpolation
 
 ```ridge
@@ -749,6 +789,32 @@ Rationale: actors are mental models of separate processes with their own effects
 
 The compiler still verifies that the actor itself has the right capabilities (its declared set is the union of its handlers'), within the project where the actor is defined.
 
+#### §6.4.1. Handles as effect tokens
+
+Operations that take a `Handle a` and act on the corresponding actor's
+local state or mailbox do not require additional capabilities beyond
+possessing the handle. The handle itself is the proof of access: it was
+produced by `spawn` (which carries the `spawn` capability) or returned
+from another function that already accounted for the access.
+
+Cap-free actor-local operations:
+
+- `actor ! msg` — send (operator). Fire-and-forget.
+- `Actor.mailboxSize actor` — read mailbox occupancy. See §9.
+
+Operations that produce additional effects beyond the actor itself still
+carry their capabilities:
+
+- `actor ?> msg [timeout T]` — ask. Requires `time` for the timeout
+  primitive (not for the actor access).
+- `spawn ActorName` — requires `spawn` capability. Produces the handle.
+
+The principle generalises: any future actor-local primitive that takes a
+`Handle a` and observes or mutates only that actor's queue or state is
+cap-free. Primitives that reach outside the handle's actor — runtime
+introspection that does not key on a specific handle, cross-actor
+coordination — keep whichever capability already classifies them.
+
 ### 6.5. Project-level capabilities
 
 The workspace manifest can restrict capabilities per project:
@@ -842,6 +908,61 @@ Each actor is a lightweight process (BEAM process in 0.1–0.3; green thread wit
 - Each actor processes one message at a time, FIFO.
 - Actor state is private; no direct access from outside.
 - Message send is one-way; ask is implemented as send + await reply with a reference.
+
+#### §7.2.1. Mailbox configuration
+
+By default, an actor's mailbox is **unbounded**: senders never block,
+never fail; the only limit is the underlying runtime's per-process memory
+budget. This is the 0.1.0 / 0.2.6 behaviour and remains the default when
+the `mailbox` actor member is omitted (see §3.9).
+
+An actor can opt into a **bounded** mailbox by declaring a `mailbox`
+member with a capacity `N` and an explicit overflow policy.
+
+**Overflow policies (0.2.7).**
+
+| Policy | On overflow (via `!`) |
+|--------|----------------------|
+| `drop newest` | Silently drop the incoming message. `!` returns `Unit` as always. |
+| `error` | Raise an exit signal in the sender (`{mailbox_full, Pid}` on BEAM). Let-it-crash; if supervised, the supervisor decides what happens next. |
+
+Choosing between the two is a value judgement, not a structural one:
+`drop newest` favours the actor's liveness over delivery guarantees;
+`error` favours backpressure visibility over fire-and-forget ergonomics.
+Neither is a default; an `error`-policied actor must be paired with a
+caller (or supervisor) that knows how to respond to the signal.
+
+The `drop oldest` policy (silently drop the head-of-queue message on
+overflow) is **parsed but not yet implemented**. Programs using it
+produce `T027 MailboxPolicyDropOldestNotShipped` until the policy ships
+in a focused later cut. Implementing it requires a broker process
+intermediary, because the BEAM does not permit a sender to mutate
+another process's mailbox; the broker holds the bounded queue and
+forwards under the cap. Reserving the syntax now keeps the eventual
+broker rollout from re-shaping the surface grammar.
+
+**Order, fairness, FIFO.** Independently of the mailbox configuration,
+an actor processes one message at a time in FIFO order. Bounded
+mailboxes do not introduce priority queueing or selective receive.
+
+**Best-effort bound under contention.** The bound is enforced at send
+time by sampling the receiver's queue length. Under concurrent senders
+the queue may briefly exceed the declared cap by a small margin between
+the sample and the cast; the bound is therefore a *soft* invariant, not
+a strict one. Use cases that need a strict bound need the broker-based
+policies that are still planned.
+
+**Observability.** A live actor's mailbox occupancy is read via
+`Actor.mailboxSize : Handle a -> Option Int`. `Some n` is the queue
+length at the moment of the call; `None` means the actor is no longer
+alive (crashed, never existed, or pending restart). `Actor.peek` and
+`Actor.drain` are planned for a post-typeclasses cut, when the
+message-shape infrastructure they need is in scope.
+
+**Capabilities.** All mailbox operations (`!`, `Actor.mailboxSize`) are
+**cap-free**: the handle is the effect token (see §6.4.1). `?>` (ask)
+keeps `time` because of the timeout primitive, not because of the
+mailbox access.
 
 ### 7.3. Memory model
 
@@ -1525,6 +1646,25 @@ A mid-cycle checkpoint at 9 months post-0.3.0 GA is reserved for early signal. I
 
 ---
 
+## 15. Decision Log
+
+Stable identifiers for design decisions referenced elsewhere in the
+spec, in compiler error messages, and in the CHANGELOG. Existing entries
+referenced as `D###` from earlier sections live in their respective
+sections; the table below collects decisions introduced from the
+bounded-mailbox cut onward so they can be cross-referenced from any
+section without scattering rationales.
+
+| ID | Topic | Resolution |
+|----|-------|-----------|
+| D251 | Bounded mailbox syntax | `mailbox` actor member alongside `state`/`init`/`on`. Three forms: `mailbox unbounded`, `mailbox bounded N drop newest`, `mailbox bounded N error`. The capacity `N` is a positive integer literal; the overflow policy is mandatory when bounded. The configuration keywords (`bounded`, `unbounded`, `drop`, `newest`, `oldest`, `error`) are contextual — they live alongside ordinary identifiers everywhere else. See §3.9 and §7.2.1. |
+| D252 | Overflow policy set | `drop newest` and `error` ship in this cut. `drop oldest` parses but is rejected by the type-checker (`T027`) until a broker process intermediary lands in a focused follow-up; reserving the spelling now keeps that follow-up additive. The two shipped policies cover the two ergonomic extremes: drop-on-overflow vs. signal-on-overflow. See §7.2.1. |
+| D253 | `error` policy via `!` raises an exit signal | On overflow, the bound check inside `!` raises `{mailbox_full, Pid}` (BEAM) in the sender process. Supervised senders get standard let-it-crash semantics; unsupervised senders take the BEAM down. The result-returning variant for `Actor.send` is deferred to the cut that introduces first-class message values (post-typeclasses). See §7.2.1. |
+| D254 | Observability scope | `Actor.mailboxSize : Handle a -> Option Int` is the observability primitive that ships. `Some n` reports the current queue length; `None` reports a dead actor. `Actor.peek` and `Actor.drain` require typeclass-derived message typing and are deferred. See §7.2.1 and §9. |
+| D255 | Handles as effect tokens | Operations that take a `Handle a` and act only on that actor's queue or state require no capability beyond possessing the handle (`!`, `Actor.mailboxSize`). The handle itself proves access; the cap was paid at `spawn`. See §6.4.1. |
+
+---
+
 ## 16. Open Questions
 
 All 0.1.0-blocking design questions have been resolved. This section tracks their resolution and lists work deferred to 0.2.0.
@@ -1535,7 +1675,7 @@ All 0.1.0-blocking design questions have been resolved. This section tracks thei
 |----|----------|-----------|----------|
 | Q-001 | Integer semantics | Fixed 64-bit signed across all targets | D029 |
 | Q-002 | Float NaN equality | `NaN == NaN` is false (IEEE 754) | D030 |
-| Q-003 | Actor mailbox size | Unbounded in 0.1.0 | D031 |
+| Q-003 | Actor mailbox size | Configurable per actor in 0.2.7: unbounded (default), or bounded with `drop newest` / `error`. `drop oldest` parses but is rejected pending a broker. See §3.9, §7.2.1. | D031, D251, D252, D253 |
 | Q-004 | Integer overflow | Crash; explicit `wrappingAdd` / `saturatingAdd` for alternatives | D032 |
 | Q-005 | Formatter policy | Opinionated, zero config | D033 |
 | Q-006 | Test framework | Built into CLI (`ridge test`) | D034 |
@@ -1546,7 +1686,7 @@ All 0.1.0-blocking design questions have been resolved. This section tracks thei
 | Q-011 | `?` operator scope | Inline in `Result`/`Option` contexts; `try` block for narrower scope | D039 |
 | Q-012 | Capability inference on private fns | Declared on public, inferred on file-private | D040 |
 | Q-013 | Capability polymorphism in HOFs | Capability variable in stdlib signatures | D041 |
-| Q-014 | Mailbox observability | Deferred | D042 |
+| Q-014 | Mailbox observability | `Actor.mailboxSize` ships in 0.2.7. `peek` and `drain` remain deferred until typeclass-derived message typing is available. See §7.2.1. | D042, D254 |
 | Q-015 | DI pattern in tests | Convention in 0.1.0; library in 0.2.0 | D043 |
 | Q-016 | `Text` Unicode normalization | No lexer-side normalization; `Text` stores raw UTF-8; normalization exposed via `std.text.normalize` | D063 |
 | Q-017 | Multi-line and raw string literal syntax | Deferred to 0.2.0; single-line with standard escapes in 0.1.0 | D047 |
@@ -1558,16 +1698,23 @@ All 0.1.0-blocking design questions have been resolved. This section tracks thei
 
 These are locked for 0.1.0 but will be revisited:
 
-- **Bounded mailboxes and backpressure** (Q-003)
 - **Open `ToText` typeclass** for interpolation of user-defined types (Q-010)
 - **Full capability polymorphism** beyond stdlib HOFs, if demand arises (Q-013)
-- **Mailbox observability API** (`Actor.mailboxSize`, peek, drain) (Q-014)
 - **`ridge.test` DI helpers** for capability stubbing (Q-015)
 - **Capability set review** based on 0.1.0 usage data (Q-007)
 - **Multi-line and raw string literals** (Q-017 / D047)
 - **Range and rest-pattern syntax for `..`** (D050) — concrete semantics chosen in 0.2.0
 - **Unicode identifiers** (D049) — reconsidered in 0.3.0+
 - **`@test "<free-form name>"` attribute as canonical test-discovery form** (D168 / OQ-C018) — 0.1.0 uses `pub fn test_*` name-prefix discovery; 0.2.0 adds `@test "<name>"` as additive sugar (both accepted; prefix emits `C304 PrefixTestDeprecated` per-test warning); 0.3.0 removes prefix. `ridge fmt --migrate-tests` one-shot migration ships in 0.2.0. The keyword-block form `test "name" { body }` is **explicitly rejected** (loses first-class function semantics, multiplies grammar churn for `@ignore` / `@only` / `@slow` composition).
+
+#### Deferred from 0.2.7
+
+The bounded-mailbox cut considered the following surfaces and deferred
+them to focused follow-ups:
+
+- **`drop oldest` mailbox policy** — parses cleanly but is type-check-rejected (`T027`) until a broker process intermediary lands. The broker is the only way to enforce strict head-of-queue eviction without violating per-process mailbox isolation.
+- **`Actor.send : Handle a -> Msg -> Result Unit MailboxFull`** — the result-returning send. The signature requires a typed message value derived from each actor's handler set, which depends on the typeclass infrastructure not yet shipped. Until then, `!` covers fire-and-forget, and `bounded N error` surfaces overflow at the call site through a let-it-crash exit signal.
+- **`Actor.peek` and `Actor.drain`** — same dependency on the message-shape typeclass. `drain` is additionally destructive and waits for a concrete use case before shipping.
 
 ### 16.3. New questions
 

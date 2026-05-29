@@ -1987,7 +1987,7 @@ mod tests {
             ("List", 4),
             ("Map", 5),
             ("Set", 6),
-            ("Json", 16),
+            ("Json", 17),
         ];
         for (alias, expected_id) in expected {
             let eb = aliases_ir

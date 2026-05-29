@@ -64,7 +64,7 @@ use crate::handler::{
     call_params, cast_params, lower_handler_call_clause, lower_handler_cast_clause,
 };
 use crate::init::lower_init_body;
-use ridge_ir::IrActor;
+use ridge_ir::{IrActor, MailboxConfig, MailboxPolicy};
 use rustc_hash::FxHashMap;
 
 // ── Entry point ───────────────────────────────────────────────────────────────
@@ -123,6 +123,10 @@ pub(crate) fn lower_actor(
             name: CErlAtom("code_change".into()),
             arity: 3,
         },
+        CErlExport {
+            name: CErlAtom("__ridge_mailbox_config".into()),
+            arity: 0,
+        },
     ];
 
     // ── Attributes ────────────────────────────────────────────────────────────
@@ -131,9 +135,8 @@ pub(crate) fn lower_actor(
     let attributes = vec![];
 
     // ── Functions ─────────────────────────────────────────────────────────────
-    // Assemble the 7 gen_server callbacks: start_link + init + handle_call +
-    // handle_cast + handle_info + terminate + code_change.
-    // Each may fail (except the boilerplate stubs), so we collect results.
+    // Assemble the gen_server callbacks plus the `__ridge_mailbox_config/0`
+    // accessor read by `ridge_rt:spawn_actor/3`.
     let fns_result: Result<Vec<_>, _> = [
         emit_start_link(&actor_beam_name, init_params_count),
         emit_init(actor),
@@ -142,6 +145,7 @@ pub(crate) fn lower_actor(
         Ok(emit_handle_info_stub()),
         Ok(emit_terminate_stub()),
         Ok(emit_code_change_stub()),
+        Ok(emit_mailbox_config_fn(actor)),
     ]
     .into_iter()
     .collect();
@@ -439,6 +443,56 @@ fn emit_code_change_stub() -> CErlFn {
     }
 }
 
+// ── __ridge_mailbox_config/0 ──────────────────────────────────────────────────
+
+/// Emit the `'__ridge_mailbox_config'/0` accessor read by
+/// `ridge_rt:spawn_actor/3`.
+///
+/// The accessor returns the mailbox configuration as an Erlang term that
+/// matches the runtime's pattern table:
+///
+/// | Ridge declaration                  | Returned term                    |
+/// |------------------------------------|----------------------------------|
+/// | (omitted) or `mailbox unbounded`   | `unbounded`                      |
+/// | `mailbox bounded N drop newest`    | `{bounded, N, drop_newest}`      |
+/// | `mailbox bounded N error`          | `{bounded, N, error}`            |
+///
+/// The function is module-level and takes no arguments, so `spawn_actor`
+/// can look it up once at spawn time and bake the result into the handle.
+fn emit_mailbox_config_fn(actor: &IrActor) -> CErlFn {
+    let config_term = mailbox_config_term(actor.mailbox_config.as_ref());
+    let body = CErlExpr::Fun {
+        params: vec![],
+        body: Box::new(config_term),
+    };
+    CErlFn {
+        name: CErlAtom("__ridge_mailbox_config".into()),
+        arity: 0,
+        anns: vec![CErlAnn(
+            "%% Ridge mailbox config accessor (read by ridge_rt:spawn_actor/3)".into(),
+        )],
+        body,
+    }
+}
+
+/// Translate the optional `IrActor.mailbox_config` into the Erlang term
+/// returned by `__ridge_mailbox_config/0`.
+fn mailbox_config_term(config: Option<&MailboxConfig>) -> CErlExpr {
+    let atom = |s: &str| CErlExpr::Lit(CErlLit::Atom(CErlAtom(s.into())));
+    match config {
+        None | Some(MailboxConfig::Unbounded) => atom("unbounded"),
+        Some(MailboxConfig::Bounded { capacity, policy }) => CErlExpr::Tuple(vec![
+            atom("bounded"),
+            CErlExpr::Lit(CErlLit::Int(*capacity)),
+            atom(match policy {
+                MailboxPolicy::DropNewest => "drop_newest",
+                MailboxPolicy::DropOldest => "drop_oldest",
+                MailboxPolicy::Error => "error",
+            }),
+        ]),
+    }
+}
+
 // ── Defensive catch-all clauses ───────────────────────────────────────────────
 
 /// Catch-all clause for `handle_call/3`: stops the server on unknown call.
@@ -539,6 +593,7 @@ mod tests {
             state_fields,
             init: None,
             dispatch: handlers,
+            mailbox_config: None,
             origin: NodeId(0),
             span: sp(),
             is_pub: true,
@@ -591,17 +646,22 @@ mod tests {
             exported_names.contains(&"start_link"),
             "must export start_link"
         );
+        assert!(
+            exported_names.contains(&"__ridge_mailbox_config"),
+            "must export __ridge_mailbox_config/0 (read by ridge_rt:spawn_actor)"
+        );
     }
 
     #[test]
-    fn actor_module_has_seven_fns() {
-        // start_link + init + handle_call + handle_cast + handle_info + terminate + code_change.
+    fn actor_module_has_eight_fns() {
+        // start_link + init + handle_call + handle_cast + handle_info +
+        // terminate + code_change + __ridge_mailbox_config.
         let actor = make_actor("Counter", vec![], vec![]);
         let m = lower_actor(&actor, "ridge_examples", &FxHashMap::default()).unwrap();
         assert_eq!(
             m.fns.len(),
-            7,
-            "actor module must have exactly 7 callback fns"
+            8,
+            "actor module must have exactly 8 callback fns"
         );
     }
 

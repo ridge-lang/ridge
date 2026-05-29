@@ -37,7 +37,8 @@ pub use base::{Capability, DocComment, PrimitiveType, Visibility};
 pub use block::Block;
 pub use decl::{
     ActorDecl, ActorMember, Body, ConstDecl, Constructor, FieldDecl, FnDecl, ImportDecl, InitDecl,
-    ModulePath, OnHandler, Param, RecordTypeBody, StateDecl, TypeBody, TypeDecl, UnionTypeBody,
+    MailboxConfig, MailboxDecl, MailboxPolicy, ModulePath, OnHandler, Param, RecordTypeBody,
+    StateDecl, TypeBody, TypeDecl, UnionTypeBody,
 };
 pub use expr::{
     AskTimeout, BinOp, Expr, FieldInit, InterpPart, LambdaParam, MatchArm, QualifiedName,

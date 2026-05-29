@@ -7,6 +7,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.7] - 2026-05-28
+
+### Added
+
+- Actors can now declare a `mailbox` configuration member alongside `state`, `init`, and `on`. Three forms are accepted: `mailbox unbounded` (the explicit default), `mailbox bounded N drop newest` (silently drop the incoming message on overflow), and `mailbox bounded N error` (raise `{mailbox_full, Pid}` in the sender on overflow, so a supervisor can decide what happens next). The capacity `N` is a positive integer literal; the overflow policy is mandatory when bounded, with `P022 MailboxPolicyMissing` if it is missing and `P023 MailboxBoundInvalid` if `N` is zero, negative, or out of range. The configuration keywords (`bounded`, `unbounded`, `drop`, `newest`, `oldest`, `error`) stay reserved only inside the `mailbox` member; everywhere else they remain ordinary identifiers. The historical unbounded default carries through unchanged when the member is omitted, so existing programs keep their behaviour byte-for-byte.
+- New `std.actor` module shipping `Actor.mailboxSize : Handle a -> Option Int`. `Some n` is the queue length at the moment of the call; `None` means the actor is no longer alive. The function is cap-free: the handle itself is the proof of access, formalised in the new §6.4.1 "Handles as effect tokens" subsection. Reading the queue length is best-effort under concurrent senders — the value reflects what the next sender would see, which may briefly diverge from the strict bound under contention; the spec §7.2.1 documents this as a soft-bound invariant.
+- Decision-log entries D251 through D255 collected into a new §15 of the spec. The entries record the syntax choice, the overflow-policy set that ships now, the let-it-crash semantics for `error` via `!`, the observability scope, and the "handle as effect token" capability rule that motivates the cap-free design.
+
+### Changed
+
+- The actor handle's runtime representation changed from a bare `Pid` to the opaque tuple `{ridge_handle, Pid, MailboxConfig}` so that `!` can honour the mailbox configuration carried by the handle without an extra dispatch hop per send. The Ridge surface is unaffected — the spec already treated `Handle a` as opaque — but any hand-written Erlang glue that assumed `is_pid(Handle)` needs to update to `is_tuple(Handle) andalso element(1, Handle) =:= ridge_handle`. The runtime exposes `ridge_rt:send_op/2` (the new target of `!`) plus `ridge_rt:mailbox_size/1` (read by `Actor.mailboxSize`) for direct integration paths. `ridge_rt:send/2` stays as a backward-compatible cast bridge for tooling built before this cut.
+- `import` paths now accept the `actor` keyword as a module-path segment. The keyword stays reserved everywhere else; without this contextual exception, `import std.actor as Actor` collapsed silently to `import std` and `Actor.mailboxSize` at use sites failed to resolve. The change is purely additive — no existing import shape parses differently.
+
+### Resolved
+
+- Open questions Q-003 (actor mailbox size) and Q-014 (mailbox observability) from the 0.1.0 deferred-to-0.2.0 list are now closed. See `docs/spec.md §16.1`.
+
+### Deferred
+
+- The `drop oldest` mailbox policy is parsed but type-check-rejected (`T027 MailboxPolicyDropOldestNotShipped`); programs using it get a precise diagnostic listing the two policies that do ship. Implementing the policy needs a broker process intermediary because BEAM does not permit a sender to mutate another process's mailbox, and is planned for a focused follow-up.
+- The result-returning `Actor.send (h: Handle a) (msg) -> Result Unit MailboxFull` waits on first-class message values, which depend on the typeclass infrastructure not yet in scope. Until then `!` covers fire-and-forget and `bounded N error` surfaces overflow at the call site through a let-it-crash exit signal.
+- `Actor.peek` and `Actor.drain` are deferred for the same reason — they require the message-shape typeclass infrastructure to be tipable. `drain` is additionally destructive and waits for a concrete use case before shipping.
+
 ## [0.2.6] - 2026-05-26
 
 ### Added

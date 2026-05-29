@@ -335,6 +335,22 @@ pub enum TypeError {
         span: Span,
     },
 
+    // ── T027 ─────────────────────────────────────────────────────────────────
+    /// An actor declares `mailbox bounded N drop oldest`.
+    ///
+    /// The `drop oldest` overflow policy parses as valid surface syntax but is
+    /// not yet implemented: enforcing it requires a broker process intermediary
+    /// (BEAM does not permit a sender to remove a message from another
+    /// process's mailbox). The two policies that are implemented today are
+    /// `drop newest` (silently drop the incoming message) and `error` (signal
+    /// failure to the sender).
+    MailboxPolicyDropOldestNotShipped {
+        /// Name of the actor whose mailbox declaration uses the policy.
+        actor: String,
+        /// Source span of the `mailbox` member.
+        span: Span,
+    },
+
     // ── T999 ─────────────────────────────────────────────────────────────────
     /// Internal type-checker invariant violation — should never reach users.
     ///
@@ -352,8 +368,8 @@ pub enum TypeError {
 impl TypeError {
     /// Returns the stable `T###` error code for this variant.
     ///
-    /// The codes are allocated in `T001..T030` for Ridge 0.1.0.
-    /// `T999` is the catch-all internal error. No overlap with `R###`/`M###`.
+    /// The codes are allocated in `T001..T030` and `T999` is the catch-all
+    /// internal error. No overlap with `R###`/`M###`.
     #[must_use]
     pub const fn code(&self) -> &'static str {
         match self {
@@ -383,6 +399,7 @@ impl TypeError {
             Self::RowVariableLeak { .. } => "T024",
             Self::SpawnArityMismatch { .. } => "T025",
             Self::AskTimeoutNotInt { .. } => "T026",
+            Self::MailboxPolicyDropOldestNotShipped { .. } => "T027",
             Self::InternalTypeError { .. } => "T999",
         }
     }

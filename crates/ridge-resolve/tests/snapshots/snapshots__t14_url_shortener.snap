@@ -1,5 +1,6 @@
 ---
 source: crates/ridge-resolve/tests/snapshots.rs
+assertion_line: 1078
 expression: snap
 ---
 ResolvedSnapshot {
@@ -17,7 +18,7 @@ ResolvedSnapshot {
         "<bare> -> BuiltinStdlib(3)",
         "<bare> -> BuiltinStdlib(7)",
         "<bare> -> BuiltinStdlib(8)",
-        "Http -> BuiltinStdlib(17)",
+        "Http -> BuiltinStdlib(18)",
         "Io -> BuiltinStdlib(9)",
         "List -> BuiltinStdlib(4)",
         "Map -> BuiltinStdlib(5)",

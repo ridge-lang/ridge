@@ -82,6 +82,7 @@ pub const STDLIB_MODULES: &[&str] = &[
     "std.env",
     "std.cli",
     "std.proc",
+    "std.actor",
     // Tier 4
     "std.json",
     "std.net.http",

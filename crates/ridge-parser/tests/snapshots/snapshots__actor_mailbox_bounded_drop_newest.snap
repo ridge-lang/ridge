@@ -1,0 +1,137 @@
+---
+source: crates/ridge-parser/tests/snapshots.rs
+assertion_line: 201
+expression: result.module
+---
+Module {
+    items: [
+        Actor(
+            ActorDecl {
+                vis: Private,
+                name: Ident {
+                    text: "Limiter",
+                    span: Span {
+                        start: 6,
+                        end: 13,
+                    },
+                },
+                members: [
+                    Mailbox(
+                        MailboxDecl {
+                            config: Bounded {
+                                capacity: 100,
+                                policy: DropNewest,
+                            },
+                            span: Span {
+                                start: 20,
+                                end: 51,
+                            },
+                        },
+                    ),
+                    State(
+                        StateDecl {
+                            name: Ident {
+                                text: "n",
+                                span: Span {
+                                    start: 62,
+                                    end: 63,
+                                },
+                            },
+                            ty: Primitive {
+                                name: Int,
+                                span: Span {
+                                    start: 65,
+                                    end: 68,
+                                },
+                            },
+                            default: Some(
+                                Literal(
+                                    IntDec {
+                                        raw: "0",
+                                        span: Span {
+                                            start: 71,
+                                            end: 72,
+                                        },
+                                    },
+                                ),
+                            ),
+                            span: Span {
+                                start: 56,
+                                end: 72,
+                            },
+                        },
+                    ),
+                    On(
+                        OnHandler {
+                            caps: [],
+                            name: Ident {
+                                text: "tick",
+                                span: Span {
+                                    start: 80,
+                                    end: 84,
+                                },
+                            },
+                            params: [],
+                            ret: None,
+                            body: Assign {
+                                target: Ident(
+                                    Ident {
+                                        text: "n",
+                                        span: Span {
+                                            start: 87,
+                                            end: 88,
+                                        },
+                                    },
+                                ),
+                                value: Binary {
+                                    op: Add,
+                                    lhs: Ident(
+                                        Ident {
+                                            text: "n",
+                                            span: Span {
+                                                start: 92,
+                                                end: 93,
+                                            },
+                                        },
+                                    ),
+                                    rhs: Literal(
+                                        IntDec {
+                                            raw: "1",
+                                            span: Span {
+                                                start: 96,
+                                                end: 97,
+                                            },
+                                        },
+                                    ),
+                                    span: Span {
+                                        start: 92,
+                                        end: 97,
+                                    },
+                                },
+                                span: Span {
+                                    start: 87,
+                                    end: 97,
+                                },
+                            },
+                            span: Span {
+                                start: 77,
+                                end: 97,
+                            },
+                            doc: None,
+                        },
+                    ),
+                ],
+                span: Span {
+                    start: 0,
+                    end: 97,
+                },
+                doc: None,
+            },
+        ),
+    ],
+    doc: [],
+    span: Span {
+        start: 0,
+        end: 98,
+    },
+}

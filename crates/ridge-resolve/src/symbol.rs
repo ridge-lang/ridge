@@ -513,6 +513,9 @@ impl<'ast> Visit<'ast> for TopLevelCollector {
                         ridge_ast::ActorMember::Init(_) => {
                             has_init = true;
                         }
+                        ridge_ast::ActorMember::Mailbox(_) => {
+                            // Mailbox config contributes no symbols.
+                        }
                     }
                 }
 

@@ -35,8 +35,9 @@
 
 use ridge_ast::{
     ActorDecl, ActorMember, Body, Capability, ConstDecl, Constructor, DocComment, Expr, FieldDecl,
-    FnDecl, Ident, ImportDecl, InitDecl, Item, ModulePath, OnHandler, Param, RecordTypeBody,
-    StateDecl, TypeBody, TypeDecl, UnionTypeBody, Visibility,
+    FnDecl, Ident, ImportDecl, InitDecl, Item, MailboxConfig, MailboxDecl, MailboxPolicy,
+    ModulePath, OnHandler, Param, RecordTypeBody, StateDecl, TypeBody, TypeDecl, UnionTypeBody,
+    Visibility,
 };
 use ridge_lexer::Token;
 
@@ -519,6 +520,22 @@ pub(crate) fn can_start_param(cur: &Cursor<'_>) -> bool {
 ///
 /// Precondition: `cur.peek() == &Token::KwImport`.
 #[allow(clippy::too_many_lines)] // Import parsing is inherently verbose due to multiple optional parts.
+/// Return the text of a token that can appear as a module-path segment in an
+/// `import` declaration.
+///
+/// Module paths accept any identifier plus a small set of global keywords
+/// whose lower-case spelling is a valid stdlib module name. The pattern keeps
+/// the keyword reserved in expression position while letting an import like
+/// `import std.actor as Actor` still parse cleanly.
+fn module_path_segment_text(token: &Token) -> Option<String> {
+    match token {
+        Token::LowerIdent(s) | Token::UpperIdent(s) => Some(s.clone()),
+        Token::KwActor => Some("actor".to_string()),
+        _ => None,
+    }
+}
+
+#[allow(clippy::too_many_lines)]
 pub(crate) fn parse_import(
     cur: &mut Cursor<'_>,
     doc: Option<DocComment>,
@@ -527,15 +544,17 @@ pub(crate) fn parse_import(
     cur.expect(&Token::KwImport)?;
 
     // ── ModulePath ────────────────────────────────────────────────────────────
-    // First segment: any identifier (upper or lower).
+    // Each segment is an identifier; selected keywords whose lower-case spelling
+    // is a valid stdlib module name are also accepted here so paths like
+    // `std.actor` can be written even though `actor` is a global keyword.
     let mut segments: Vec<Ident> = Vec::new();
     let seg_span = cur.span();
-    let first_seg = match cur.peek().clone() {
-        Token::LowerIdent(s) | Token::UpperIdent(s) => {
+    let first_seg = match module_path_segment_text(cur.peek()) {
+        Some(text) => {
             cur.bump();
-            Ident::new(s, seg_span)
+            Ident::new(text, seg_span)
         }
-        _ => {
+        None => {
             return Err(ParseError::Expected {
                 span: cur.span(),
                 expected: "<module name>",
@@ -545,26 +564,16 @@ pub(crate) fn parse_import(
     };
     segments.push(first_seg);
 
-    // Subsequent segments: `.` + (lower or upper ident).
+    // Subsequent segments: `.` + identifier-like token. Bail out on `.` followed
+    // by anything else (e.g. `(.name)` field-accessor sugar at expression sites).
     while cur.peek() == &Token::Dot {
-        // Only consume Dot if followed by an identifier (not `(.name)` accessor).
-        if matches!(
-            cur.peek_n(1),
-            Some(Token::LowerIdent(_) | Token::UpperIdent(_))
-        ) {
-            cur.bump(); // consume `.`
-            let seg_span = cur.span();
-            let seg = match cur.peek().clone() {
-                Token::LowerIdent(s) | Token::UpperIdent(s) => {
-                    cur.bump();
-                    Ident::new(s, seg_span)
-                }
-                _ => unreachable!(),
-            };
-            segments.push(seg);
-        } else {
+        let Some(text) = cur.peek_n(1).and_then(module_path_segment_text) else {
             break;
-        }
+        };
+        cur.bump(); // consume `.`
+        let seg_span = cur.span();
+        cur.bump(); // consume segment
+        segments.push(Ident::new(text, seg_span));
     }
 
     let path_span = segments.iter().fold(start, |acc, seg| acc.merge(seg.span));
@@ -1163,6 +1172,7 @@ pub(crate) fn parse_actor_decl(
         ActorMember::State(s) => s.span,
         ActorMember::Init(i) => i.span,
         ActorMember::On(o) => o.span,
+        ActorMember::Mailbox(mb) => mb.span,
     });
 
     Ok(ActorDecl {
@@ -1248,7 +1258,7 @@ fn parse_actor_body_recovering(
 }
 
 /// Skip tokens to the next actor-member sync point: `state`/`init`/`on`
-/// keyword, `DEDENT`, or `EOF`.
+/// keyword, `mailbox` member-introducer, `DEDENT`, or `EOF`.
 fn sync_to_next_actor_member(cur: &mut Cursor<'_>) {
     loop {
         match cur.peek() {
@@ -1259,6 +1269,7 @@ fn sync_to_next_actor_member(cur: &mut Cursor<'_>) {
             | Token::Dedent
             | Token::Eof
             | Token::Newline => return,
+            Token::LowerIdent(s) if s == "mailbox" => return,
             _ => {
                 cur.bump();
             }
@@ -1272,10 +1283,13 @@ fn parse_actor_member(cur: &mut Cursor<'_>) -> Result<ActorMember, ParseError> {
         Token::KwState => Ok(ActorMember::State(parse_state_decl(cur)?)),
         Token::KwInit => Ok(ActorMember::Init(parse_init_decl(cur)?)),
         Token::KwOn => Ok(ActorMember::On(parse_on_handler(cur, None)?)),
+        Token::LowerIdent(s) if s == "mailbox" => {
+            Ok(ActorMember::Mailbox(parse_mailbox_decl(cur)?))
+        }
         _ => Err(ParseError::UnexpectedToken {
             span: cur.span(),
             description: format!(
-                "expected `state`, `init`, or `on` in actor body, found `{}`",
+                "expected `state`, `init`, `on`, or `mailbox` in actor body, found `{}`",
                 cur.peek()
             ),
         }),
@@ -1445,6 +1459,128 @@ pub(crate) fn parse_on_handler(
         span: start.merge(end_span),
         doc,
     })
+}
+
+// ── parse_mailbox_decl ────────────────────────────────────────────────────────
+
+/// Parse a `mailbox` configuration member of an actor.
+///
+/// Grammar:
+///
+/// ```ebnf
+/// MailboxDecl    ::= "mailbox" MailboxConfig ;
+/// MailboxConfig  ::= "unbounded"
+///                  | "bounded" IntLit MailboxPolicy ;
+/// MailboxPolicy  ::= "drop" ("newest" | "oldest")
+///                  | "error" ;
+/// ```
+///
+/// `mailbox` is a contextual member-introducer, recognized only at actor-body
+/// member position. Outside actor bodies it remains an ordinary identifier.
+/// The configuration words (`unbounded`, `bounded`, `drop`, `newest`,
+/// `oldest`, `error`) are equally contextual.
+///
+/// `drop oldest` is accepted lexically so the parser produces a clean
+/// diagnostic later — the typechecker rejects it until the broker mechanism
+/// ships in a future cut.
+///
+/// Precondition: `cur.peek()` is `Token::LowerIdent("mailbox")`.
+pub(crate) fn parse_mailbox_decl(cur: &mut Cursor<'_>) -> Result<MailboxDecl, ParseError> {
+    let start = cur.span();
+    cur.bump(); // consume `mailbox`
+
+    let kind_span = cur.span();
+    let (config, end) = match cur.peek().clone() {
+        Token::LowerIdent(ref s) if s == "unbounded" => {
+            let span = kind_span;
+            cur.bump();
+            (MailboxConfig::Unbounded, span)
+        }
+        Token::LowerIdent(ref s) if s == "bounded" => {
+            cur.bump();
+            let (capacity, _cap_span) = parse_mailbox_capacity(cur)?;
+            let (policy, policy_span) = parse_mailbox_policy(cur)?;
+            (MailboxConfig::Bounded { capacity, policy }, policy_span)
+        }
+        _ => {
+            return Err(ParseError::Expected {
+                span: kind_span,
+                expected: "`unbounded` or `bounded`",
+                found: cur.peek().to_string(),
+            });
+        }
+    };
+
+    Ok(MailboxDecl {
+        config,
+        span: start.merge(end),
+    })
+}
+
+/// Parse the capacity `N` of a `bounded N` mailbox.
+///
+/// `N` must be a positive `i64` literal. Zero, negative, or overflowing
+/// values surface as `P023 MailboxBoundInvalid`. Non-integer tokens surface
+/// as `P001 Expected`. The four integer token shapes (`IntDec`, `IntBin`,
+/// `IntOct`, `IntHex`) are dispatched here in the same way `ridge-lower`
+/// dispatches literal lowering.
+fn parse_mailbox_capacity(cur: &mut Cursor<'_>) -> Result<(i64, ridge_ast::Span), ParseError> {
+    let span = cur.span();
+    let (raw, radix, prefix) = match cur.peek().clone() {
+        Token::IntDec(raw) => (raw, 10, ""),
+        Token::IntBin(raw) => (raw, 2, "0b"),
+        Token::IntOct(raw) => (raw, 8, "0o"),
+        Token::IntHex(raw) => (raw, 16, "0x"),
+        _ => {
+            return Err(ParseError::Expected {
+                span,
+                expected: "<positive integer literal>",
+                found: cur.peek().to_string(),
+            });
+        }
+    };
+    cur.bump();
+    let cleaned = raw.trim_start_matches(prefix).replace('_', "");
+    match i64::from_str_radix(&cleaned, radix) {
+        Ok(n) if n >= 1 => Ok((n, span)),
+        _ => Err(ParseError::MailboxBoundInvalid { span, raw }),
+    }
+}
+
+/// Parse the policy keyword(s) of a `bounded N <policy>` mailbox.
+///
+/// Returns the policy and the span of its last consumed token. Missing or
+/// unknown policies surface as `P022 MailboxPolicyMissing`.
+fn parse_mailbox_policy(
+    cur: &mut Cursor<'_>,
+) -> Result<(MailboxPolicy, ridge_ast::Span), ParseError> {
+    let head_span = cur.span();
+    match cur.peek().clone() {
+        Token::LowerIdent(ref s) if s == "drop" => {
+            cur.bump();
+            let p_span = cur.span();
+            match cur.peek().clone() {
+                Token::LowerIdent(ref t) if t == "newest" => {
+                    cur.bump();
+                    Ok((MailboxPolicy::DropNewest, p_span))
+                }
+                Token::LowerIdent(ref t) if t == "oldest" => {
+                    cur.bump();
+                    Ok((MailboxPolicy::DropOldest, p_span))
+                }
+                _ => Err(ParseError::Expected {
+                    span: p_span,
+                    expected: "`newest` or `oldest`",
+                    found: cur.peek().to_string(),
+                }),
+            }
+        }
+        Token::LowerIdent(ref s) if s == "error" => {
+            cur.bump();
+            Ok((MailboxPolicy::Error, head_span))
+        }
+        _ => Err(ParseError::MailboxPolicyMissing { span: head_span }),
+    }
 }
 
 // ── Tests ─────────────────────────────────────────────────────────────────────

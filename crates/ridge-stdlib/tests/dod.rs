@@ -235,8 +235,8 @@ fn g5_path_b_dominance() {
 /// "18 module `.ridge` files + 18 `.test.ridge` files = 36 source files".
 #[test]
 fn artefacts_count_matches_plan() {
-    const EXPECTED_RG: usize = 18;
-    const EXPECTED_TEST_RG: usize = 18;
+    const EXPECTED_RG: usize = 19;
+    const EXPECTED_TEST_RG: usize = 19;
 
     let stdlib = stdlib_dir();
 

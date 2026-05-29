@@ -649,7 +649,7 @@ pub(crate) fn lower_expr_in_scope(
         IrExpr::Field {
             base, field, span, ..
         } => lower_field(base, field, *span, scope),
-        // §4.17 — Send (`!`): route through ridge_rt:send/2 (OQ-E004).
+        // §4.17 — Send (`!`): route through ridge_rt:send_op/2 (OQ-E004).
         IrExpr::Send {
             handle,
             message,

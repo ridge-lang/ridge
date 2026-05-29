@@ -578,3 +578,293 @@ fn beam_e2e_hof_over_self_recursive_fn() {
         "expected 'countdown=4 ok=4 tree=10' in stdout, got:\n{stdout}"
     );
 }
+
+// ── Bounded mailbox + observability tests ─────────────────────────────────────
+//
+// Six tests pin the bounded-mailbox runtime end to end:
+//
+//   1. Unbounded actors keep their 0.1.0 / 0.2.6 behaviour (regression).
+//   2. drop_newest below the cap delivers every message.
+//   3. drop_newest above the cap caps the queue at N.
+//   4. error    below the cap delivers every message.
+//   5. error    above the cap raises {mailbox_full, _} in the sender, so the
+//      BEAM exits non-zero with that reason in stderr.
+//   6. Actor.mailboxSize reports Some for a freshly-spawned (live) actor.
+//
+// The companion case — mailboxSize on a dead actor returns None — needs a
+// way to terminate an actor from Ridge source without taking the spawning
+// process down with it. gen_server:start_link links the spawner, so the
+// natural "crash on a malformed message" recipe collapses main too. That
+// case is left to a future test once a non-linking spawn or a Ridge-level
+// exit-trap primitive lands; pure-Erlang coverage of mailbox_size/1's
+// `undefined` branch is already in the runtime.
+
+/// Helper that compiles, runs, and asserts a zero exit code, returning
+/// `(stdout, stderr)`.
+fn run_inline_actor_test(name: &str, source: &str) -> (String, String) {
+    let (workspace_root, _td) = make_example_workspace(name, source);
+    let opts = CompileOptions::new(workspace_root);
+    let artefacts = compile_workspace(opts)
+        .unwrap_or_else(|e| panic!("compile_workspace failed for {name}: {e}"));
+    assert!(
+        !artefacts.beam_files.is_empty(),
+        "no .beam files for {name}\ndiagnostics: {:#?}",
+        artefacts.diagnostics
+    );
+    let beam_file = &artefacts.beam_files[0];
+    let beam_dir = beam_file.parent().expect("beam parent").to_owned();
+    let module = beam_file
+        .file_stem()
+        .and_then(|s| s.to_str())
+        .expect("beam stem utf-8")
+        .to_owned();
+    let (stdout, stderr, exit_code) = run_erl(&beam_dir, &module, &[]);
+    assert_eq!(
+        exit_code, 0,
+        "erl exited {exit_code} for {name}\n--- stdout ---\n{stdout}\n--- stderr ---\n{stderr}"
+    );
+    (stdout, stderr)
+}
+
+// ── 1. unbounded baseline ────────────────────────────────────────────────────
+
+const MAILBOX_UNBOUNDED_SOURCE: &str = r#"
+import std.io as Io
+import std.int as Int
+import std.list as List
+import std.time as Time
+
+actor Counter =
+    state n: Int = 0
+    on tick = n <- n + 1
+
+fn spawn io time main () -> Result Unit Text =
+    let c = spawn Counter
+    let _ = List.map (fn _ -> c ! tick) (List.range 1 100)
+    -- Let the actor drain the 100 casts before we exit.
+    Time.sleep 200
+    Io.println "unbounded ok"
+    Ok ()
+"#;
+
+/// Sending 100 messages to an actor with no `mailbox` member must succeed
+/// end to end with no overflow signalling — this is the 0.1.0 / 0.2.6
+/// behaviour the cut promises to preserve.
+#[test]
+fn beam_e2e_mailbox_unbounded_unchanged() {
+    let (stdout, _) = run_inline_actor_test("MailboxUnbounded", MAILBOX_UNBOUNDED_SOURCE);
+    assert!(
+        stdout.contains("unbounded ok"),
+        "expected 'unbounded ok' in stdout, got:\n{stdout}"
+    );
+}
+
+// ── 2. drop_newest under cap delivers every message ─────────────────────────
+
+const MAILBOX_DROP_NEWEST_UNDER_CAP_SOURCE: &str = r#"
+import std.io as Io
+import std.int as Int
+import std.list as List
+import std.time as Time
+
+actor Counter =
+    mailbox bounded 100 drop newest
+    state n: Int = 0
+    on tick = n <- n + 1
+
+fn spawn io time main () -> Result Unit Text =
+    let c = spawn Counter
+    let _ = List.map (fn _ -> c ! tick) (List.range 1 50)
+    Time.sleep 200
+    Io.println "drop newest under cap ok"
+    Ok ()
+"#;
+
+/// 50 messages to a `drop newest` actor bounded at 100 must all be
+/// delivered — overflow logic must not fire while the queue stays under
+/// the cap.
+#[test]
+fn beam_e2e_mailbox_drop_newest_under_cap() {
+    let (stdout, _) = run_inline_actor_test(
+        "MailboxDropNewestUnder",
+        MAILBOX_DROP_NEWEST_UNDER_CAP_SOURCE,
+    );
+    assert!(
+        stdout.contains("drop newest under cap ok"),
+        "expected 'drop newest under cap ok' in stdout, got:\n{stdout}"
+    );
+}
+
+// ── 3. drop_newest over cap caps the queue length ───────────────────────────
+
+const MAILBOX_DROP_NEWEST_OVERFLOW_SOURCE: &str = r#"
+import std.io as Io
+import std.int as Int
+import std.list as List
+import std.time as Time
+import std.actor as Actor
+
+actor Slow =
+    mailbox bounded 5 drop newest
+    state n: Int = 0
+    on tick =
+        Time.sleep 100
+        n <- n + 1
+
+fn spawn io time main () -> Result Unit Text =
+    let s = spawn Slow
+    -- Saturate the bounded mailbox while the actor is stuck inside the
+    -- first handler's 100 ms sleep. The queue caps at 5; the rest are
+    -- silently dropped.
+    let _ = List.map (fn _ -> s ! tick) (List.range 1 100)
+    match Actor.mailboxSize s
+        Some n -> Io.println $"size=${Int.toText n}"
+        None -> Io.println "dead"
+    Ok ()
+"#;
+
+/// Saturating a `drop newest` actor bounded at 5 with 100 sends must cap
+/// the queue at 5 — the rest of the messages are silently dropped, so
+/// `Actor.mailboxSize` reports a small number bounded by the declared cap.
+#[test]
+fn beam_e2e_mailbox_drop_newest_overflow_caps_queue() {
+    let (stdout, _) = run_inline_actor_test(
+        "MailboxDropNewestOverflow",
+        MAILBOX_DROP_NEWEST_OVERFLOW_SOURCE,
+    );
+    let size_line = stdout
+        .lines()
+        .find(|l| l.starts_with("size="))
+        .unwrap_or_else(|| panic!("expected a `size=...` line, got:\n{stdout}"));
+    let size: u32 = size_line
+        .trim_start_matches("size=")
+        .parse()
+        .unwrap_or_else(|e| panic!("could not parse size in {size_line:?}: {e}"));
+    assert!(
+        size <= 5,
+        "drop_newest bound is 5; observed mailboxSize {size} exceeds the cap.\nstdout:\n{stdout}"
+    );
+}
+
+// ── 4. error under cap delivers every message ───────────────────────────────
+
+const MAILBOX_ERROR_UNDER_CAP_SOURCE: &str = r#"
+import std.io as Io
+import std.int as Int
+import std.list as List
+import std.time as Time
+
+actor Counter =
+    mailbox bounded 100 error
+    state n: Int = 0
+    on tick = n <- n + 1
+
+fn spawn io time main () -> Result Unit Text =
+    let c = spawn Counter
+    let _ = List.map (fn _ -> c ! tick) (List.range 1 50)
+    Time.sleep 200
+    Io.println "error under cap ok"
+    Ok ()
+"#;
+
+/// 50 messages to an `error` actor bounded at 100 must all be delivered —
+/// the sender never sees an overflow signal while the queue stays under
+/// the cap.
+#[test]
+fn beam_e2e_mailbox_error_under_cap() {
+    let (stdout, _) = run_inline_actor_test("MailboxErrorUnder", MAILBOX_ERROR_UNDER_CAP_SOURCE);
+    assert!(
+        stdout.contains("error under cap ok"),
+        "expected 'error under cap ok' in stdout, got:\n{stdout}"
+    );
+}
+
+// ── 5. error overflow via `!` crashes the sender ────────────────────────────
+
+const MAILBOX_ERROR_OVERFLOW_SOURCE: &str = r#"
+import std.io as Io
+import std.list as List
+import std.time as Time
+
+actor Slow =
+    mailbox bounded 5 error
+    state n: Int = 0
+    on tick =
+        Time.sleep 200
+        n <- n + 1
+
+fn spawn io time main () -> Result Unit Text =
+    let s = spawn Slow
+    -- Saturate the bounded mailbox. The 6th cast onward raises
+    -- {mailbox_full, _} in the sender (this process); main never reaches
+    -- the println below, the linked BEAM exits non-zero, and erl prints
+    -- the reason on stderr.
+    let _ = List.map (fn _ -> s ! tick) (List.range 1 100)
+    Io.println "should not reach"
+    Ok ()
+"#;
+
+/// Saturating an `error` actor bounded at 5 must raise `{mailbox_full, _}`
+/// in the caller. With main as the caller, the BEAM exits non-zero and the
+/// reason is visible in `erl`'s stderr.
+#[test]
+fn beam_e2e_mailbox_error_overflow_crashes_sender() {
+    let (workspace_root, _td) =
+        make_example_workspace("MailboxErrorOverflow", MAILBOX_ERROR_OVERFLOW_SOURCE);
+    let opts = CompileOptions::new(workspace_root);
+    let artefacts = compile_workspace(opts).expect("compile error-overflow source");
+    let beam_file = &artefacts.beam_files[0];
+    let beam_dir = beam_file.parent().expect("beam parent").to_owned();
+    let module = beam_file
+        .file_stem()
+        .and_then(|s| s.to_str())
+        .expect("beam stem utf-8")
+        .to_owned();
+
+    let (stdout, stderr, exit_code) = run_erl(&beam_dir, &module, &[]);
+    assert_ne!(
+        exit_code, 0,
+        "expected non-zero exit code (sender crash via `!` overflow), got 0\n--- stdout ---\n{stdout}\n--- stderr ---\n{stderr}"
+    );
+    let combined = format!("{stdout}\n{stderr}");
+    assert!(
+        combined.contains("mailbox_full"),
+        "expected 'mailbox_full' in stdout+stderr, got:\n--- stdout ---\n{stdout}\n--- stderr ---\n{stderr}"
+    );
+    assert!(
+        !stdout.contains("should not reach"),
+        "main should crash before reaching the println; stdout was:\n{stdout}"
+    );
+}
+
+// ── 6. mailboxSize reports Some for a live actor ────────────────────────────
+
+const MAILBOX_SIZE_ALIVE_SOURCE: &str = r#"
+import std.io as Io
+import std.int as Int
+import std.actor as Actor
+
+actor Quiet =
+    state n: Int = 0
+    on tick = n <- n + 1
+
+fn spawn io main () -> Result Unit Text =
+    let q = spawn Quiet
+    match Actor.mailboxSize q
+        Some n -> Io.println $"size=${Int.toText n}"
+        None -> Io.println "dead"
+    Ok ()
+"#;
+
+/// A freshly-spawned actor with no pending messages must report `Some 0`
+/// from `ridge_rt:mailbox_size/1`. The match arm proves the runtime hands
+/// the Ridge program an `Option` tuple; the digit proves the queue length
+/// round-trips through the FFI.
+#[test]
+fn beam_e2e_mailbox_size_reports_some_for_live_actor() {
+    let (stdout, _) = run_inline_actor_test("MailboxSizeAlive", MAILBOX_SIZE_ALIVE_SOURCE);
+    assert!(
+        stdout.contains("size=0"),
+        "expected 'size=0' for an idle live actor, got:\n{stdout}"
+    );
+}

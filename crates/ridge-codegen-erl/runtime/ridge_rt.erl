@@ -26,7 +26,7 @@
     json_as_list/1, json_as_object/1, json_is_null/1,
     http_listen/2, http_port/0, http_build_response/1,
     http_get/1, http_post/2, http_put/2, http_delete/1,
-    ask/3, send/2, spawn_actor/3,
+    ask/3, send/2, send_op/2, send_fn/2, mailbox_size/1, spawn_actor/3,
     escript_main/1
 ]).
 
@@ -773,11 +773,21 @@ http_request_with_body(Method, Url, Body) ->
     end.
 
 %% --- Actor runtime ---
-%% ask/3: ask(Pid, Msg, Timeout) — Msg is the full {tag, arg1, ...} tuple.
-%% Per OQ-E004 §8.2: generated code emits ask(Pid, {tag, args...}, TimeoutMs).
-%% Timeout exit is re-raised as a structured error for Ridge source attribution.
+%%
+%% Handle wire format (since 0.2.7):
+%%
+%%   Handle a ≡ {ridge_handle, Pid, MailboxConfig}
+%%   MailboxConfig ≡ unbounded
+%%                 | {bounded, pos_integer(), drop_newest | error}
+%%
+%% Handles are opaque at the Ridge surface (spec §7.2). Anything inside this
+%% module that takes a handle expects the tuple shape above. The legacy
+%% bare-Pid path is no longer reachable from Ridge-emitted code.
 
-ask(Pid, Msg, Timeout) ->
+%% ask/3 — synchronous request/response. Bounded mailbox policies do not
+%% apply: ask is a request/response primitive, not a backpressure surface.
+%% Timeout exit is re-raised as a structured error for Ridge source attribution.
+ask({ridge_handle, Pid, _Config}, Msg, Timeout) ->
     try gen_server:call(Pid, Msg, Timeout) of
         Reply -> Reply
     catch
@@ -785,11 +795,77 @@ ask(Pid, Msg, Timeout) ->
             erlang:error({ridge_rt_ask_timeout, Msg, Timeout})
     end.
 
-send(Pid, Msg) -> gen_server:cast(Pid, Msg), ok.
+%% send/2 — fire-and-forget cast that ignores bounded-mailbox policies.
+%% Retained as a backward-compatible bridge so callers built before 0.2.7
+%% (and any hand-written Erlang glue) still work. Ridge `!` emits send_op/2
+%% instead, which honours the mailbox configuration carried by the handle.
+send({ridge_handle, Pid, _Config}, Msg) ->
+    gen_server:cast(Pid, Msg),
+    ok.
 
+%% send_op/2 — target of the Ridge `!` operator. Honours the bounded-mailbox
+%% policy carried by the handle. The drop_newest path silently drops the
+%% incoming message on overflow; the error path raises in the caller so the
+%% supervisor decides what to do. Both paths treat a dead actor as a no-op
+%% to keep `gen_server:cast` semantics.
+send_op({ridge_handle, Pid, unbounded}, Msg) ->
+    gen_server:cast(Pid, Msg),
+    ok;
+send_op({ridge_handle, Pid, {bounded, N, drop_newest}}, Msg) ->
+    case erlang:process_info(Pid, message_queue_len) of
+        {message_queue_len, Len} when Len >= N -> ok;
+        {message_queue_len, _Len}              -> gen_server:cast(Pid, Msg), ok;
+        undefined                              -> ok
+    end;
+send_op({ridge_handle, Pid, {bounded, N, error}}, Msg) ->
+    case erlang:process_info(Pid, message_queue_len) of
+        {message_queue_len, Len} when Len >= N -> erlang:error({mailbox_full, Pid});
+        {message_queue_len, _Len}              -> gen_server:cast(Pid, Msg), ok;
+        undefined                              -> ok
+    end.
+
+%% send_fn/2 — target of the stdlib `Actor.send` fn. Result-returning variant
+%% of send_op. Drop-newest reports success (the user opted into silent drop);
+%% error reports {error, mailbox_full} so the caller can recover.
+send_fn({ridge_handle, Pid, unbounded}, Msg) ->
+    gen_server:cast(Pid, Msg),
+    {ok};
+send_fn({ridge_handle, Pid, {bounded, N, drop_newest}}, Msg) ->
+    case erlang:process_info(Pid, message_queue_len) of
+        {message_queue_len, Len} when Len >= N -> {ok};
+        {message_queue_len, _Len}              -> gen_server:cast(Pid, Msg), {ok};
+        undefined                              -> {ok}
+    end;
+send_fn({ridge_handle, Pid, {bounded, N, error}}, Msg) ->
+    case erlang:process_info(Pid, message_queue_len) of
+        {message_queue_len, Len} when Len >= N -> {error, mailbox_full};
+        {message_queue_len, _Len}              -> gen_server:cast(Pid, Msg), {ok};
+        undefined                              -> {ok}
+    end.
+
+%% mailbox_size/1 — target of the stdlib `Actor.mailboxSize` fn.
+%% Returns {some, N} for a live actor or none for a dead one. The reading
+%% is instantaneous and may briefly disagree with concurrent senders; the
+%% spec documents this as a soft-bound invariant.
+mailbox_size({ridge_handle, Pid, _Config}) ->
+    case erlang:process_info(Pid, message_queue_len) of
+        {message_queue_len, Len} -> {some, Len};
+        undefined                -> none
+    end.
+
+%% spawn_actor/3 — wraps gen_server:start_link/3 and decorates the result
+%% with the actor's declared mailbox configuration. The actor module exports
+%% '__ridge_mailbox_config'/0 (emitted by ridge-codegen-erl); spawn_actor
+%% looks it up once at spawn time so the resulting handle carries the config
+%% with no per-send dispatch cost.
 spawn_actor(Mod, Init, _Caps) ->
     {ok, Pid} = gen_server:start_link(Mod, Init, []),
-    Pid.
+    Config =
+        case erlang:function_exported(Mod, '__ridge_mailbox_config', 0) of
+            true  -> Mod:'__ridge_mailbox_config'();
+            false -> unbounded
+        end,
+    {ridge_handle, Pid, Config}.
 
 %% --- escript bridge ---
 

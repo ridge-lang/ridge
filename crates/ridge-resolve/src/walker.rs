@@ -316,6 +316,7 @@ impl ScopeWalker<'_> {
     /// The `constructor_is_use_site` flag controls whether a `Pattern::Constructor`
     /// name is resolved as a use-site (true in match arms) or skipped (false in
     /// let patterns where we don't have separate Constructor resolution).
+    #[allow(clippy::too_many_lines)]
     fn bind_pattern(&mut self, pat: &Pattern, kind: LocalKind) {
         match pat {
             Pattern::Wildcard { .. } | Pattern::Literal { .. } | Pattern::ListNil { .. } => {
@@ -348,6 +349,24 @@ impl ScopeWalker<'_> {
                                     owner_type: owner,
                                     variant: var,
                                     is_record: is_rec,
+                                },
+                            );
+                        }
+                        _ if fields.is_some() => {
+                            // A record-body pattern `Foo { … }` names the record
+                            // type, whose auto-constructor shares the type's name
+                            // and is not separately indexed (so `lookup` returns
+                            // the type symbol). Stamp it as the record constructor
+                            // — owner_type is the type symbol itself — so lowering
+                            // builds the map pattern instead of falling back to a
+                            // wildcard.
+                            self.stamp(
+                                name.span,
+                                NodeKind::Ident,
+                                Binding::Constructor {
+                                    owner_type: sym.id,
+                                    variant: 0,
+                                    is_record: true,
                                 },
                             );
                         }

@@ -1103,13 +1103,6 @@ fn beam_e2e_list_fixed_binds_positionally() {
 }
 
 /// Record rest `User { name, .. }` matches and binds `name`, ignoring `age`.
-///
-/// IGNORED: record-body patterns in `match` (with or without `..`) are not yet
-/// type-checked — `ridge-typecheck` defers record-body pattern typing (it emits
-/// an internal placeholder today), so the whole program fails to compile before
-/// codegen. The `..` rest modifier and its exhaustiveness are implemented; what
-/// is missing is the underlying record-pattern typing, which is a separate
-/// pre-existing gap. Un-ignore once record-body pattern typing lands.
 const RECORD_REST_SOURCE: &str = r##"
 import std.io as Io
 
@@ -1123,7 +1116,6 @@ fn io main () -> Result Unit Text =
 "##;
 
 #[test]
-#[ignore = "record-body pattern typing is deferred in ridge-typecheck; record match does not compile end-to-end yet"]
 fn beam_e2e_record_rest_ignores_other_fields() {
     let (stdout, _) = run_inline_actor_test("RecordRest", RECORD_REST_SOURCE);
     assert!(

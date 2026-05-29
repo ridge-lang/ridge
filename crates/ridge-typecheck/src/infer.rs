@@ -946,21 +946,48 @@ pub fn infer_pattern(ctx: &mut InferCtx, b: &BuiltinTyCons, pat: &Pattern, expec
         // ── Constructor ───────────────────────────────────────────────────────
         // Two forms:
         //   fields: None  → positional constructor pattern → T9 (unions.rs)
-        //   fields: Some  → record-body constructor pattern → T8 (deferred to T17)
+        //   fields: Some  → record-body constructor pattern → records.rs
         Pattern::Constructor {
             name,
             fields,
+            has_rest,
             args,
             span,
-            ..
         } => {
-            if fields.is_some() {
-                // Record-body constructor pattern — T8/T17 pipeline wiring.
+            if let Some(field_pats) = fields {
+                // Record-body constructor pattern: resolve the record type and
+                // type each field against its declared type.
+                if let Some(&tycon_id) = ctx.user_tycon_names.get(&name.text) {
+                    if let Some(decl) = ctx.tycon_decls.get(tycon_id.0 as usize).cloned() {
+                        if let ridge_types::TyConKind::Record(schema) = &decl.kind {
+                            let schema = schema.clone();
+                            crate::records::infer_record_pattern(
+                                ctx,
+                                b,
+                                &schema,
+                                tycon_id,
+                                &name.text,
+                                field_pats,
+                                *has_rest,
+                                expected_ty,
+                                *span,
+                            );
+                            return;
+                        }
+                    }
+                }
+                // Not a known record type — report and keep inference going by
+                // typing any sub-patterns against Error.
                 let _ = emit_internal(
                     ctx,
-                    "record-body constructor pattern typing deferred to T17",
+                    format!("record pattern `{}` is not a known record type", name.text),
                     *span,
                 );
+                for fp in field_pats {
+                    if let Some(sub) = &fp.pattern {
+                        infer_pattern(ctx, b, sub, &Type::Error);
+                    }
+                }
                 return;
             }
 

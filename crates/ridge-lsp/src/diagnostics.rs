@@ -6,6 +6,8 @@
 //! - `notes` → `DiagnosticRelatedInformation`
 //! - `primary_span` → `Range` (via `LineMap` byte-offset conversion)
 
+use std::path::Path;
+
 use ridge_diagnostics::{Diagnostic, NoteSeverity, Severity};
 use ridge_lexer::Span;
 use tower_lsp::lsp_types::{
@@ -14,6 +16,33 @@ use tower_lsp::lsp_types::{
 };
 
 use crate::span_recovery::resolve_span_to_lsp;
+
+// ── Source-id → URI resolution ────────────────────────────────────────────────
+
+/// The static fallback URI for diagnostics with no resolvable file path.
+fn unknown_uri() -> Url {
+    // `file:///unknown` is a compile-time constant; `Url::parse` cannot fail.
+    #[allow(clippy::expect_used)]
+    Url::parse("file:///unknown").expect("static URL is valid")
+}
+
+/// Resolve the document URI a diagnostic belongs to from its `source_id`.
+///
+/// `source_id` is the workspace-relative, forward-slash path that
+/// `WorkspaceSourceCache` keys every module by (e.g. `app/src/main.ridge`).
+/// Joining it onto the absolute workspace root yields the same URI the editor
+/// opened the file with, so diagnostics land on the right document regardless
+/// of whether that document is currently open.
+///
+/// Diagnostics without a real source location are keyed `<unknown>` (or
+/// `<module N>` for an unmapped module id); those anchor to the workspace root.
+#[must_use]
+pub fn source_id_to_uri(workspace_root: &Path, source_id: &str) -> Url {
+    if source_id == "<unknown>" || source_id.starts_with("<module ") {
+        return Url::from_file_path(workspace_root).unwrap_or_else(|()| unknown_uri());
+    }
+    Url::from_file_path(workspace_root.join(source_id)).unwrap_or_else(|()| unknown_uri())
+}
 
 // ── Severity mapping ──────────────────────────────────────────────────────────
 

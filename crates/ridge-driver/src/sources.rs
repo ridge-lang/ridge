@@ -86,6 +86,17 @@ impl WorkspaceSourceCache {
     pub fn unknown_source_id() -> SourceId {
         SourceId::new("<unknown>")
     }
+
+    /// Return the on-disk source text for a `source_id`, if this cache holds it.
+    ///
+    /// The LSP resolves diagnostic spans against this text rather than the
+    /// editor's open-document buffer: `check_workspace` compiles the on-disk
+    /// state, so a diagnostic's byte offsets index the text read from disk, not
+    /// whatever an unsaved buffer currently contains.
+    #[must_use]
+    pub fn text(&self, source_id: &str) -> Option<&str> {
+        self.sources.get(source_id).map(|arc| arc.as_str())
+    }
 }
 
 impl SourceCache for WorkspaceSourceCache {

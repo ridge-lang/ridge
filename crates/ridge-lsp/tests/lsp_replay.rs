@@ -445,6 +445,88 @@ async fn test_d087_fully_synthetic_prelude_node() {
     assert_eq!(range.end.character, 1);
 }
 
+// ── Span-attribution test: diagnostic lands on its real line and file ─────────
+
+/// Regression for the `<unknown> 1:1` defect: a diagnostic for a file that is
+/// not open in the editor must still resolve to the correct document URI and
+/// the correct line/column, not collapse to the workspace `<unknown>` file at
+/// line 1.
+///
+/// The fix derives the URI from the workspace-relative `source_id` and resolves
+/// the span against the on-disk text the compiler read (`artefacts.sources`),
+/// so no open document is required.  This test deliberately never calls
+/// `did_open` — it drives the driver directly, the way the publish loop does.
+#[tokio::test]
+async fn test_diagnostic_resolves_to_real_span_without_open_doc() {
+    use ridge_driver::{check_workspace, CheckOptions};
+    use ridge_lsp::diagnostics::{source_id_to_uri, to_lsp_diagnostic};
+
+    // Build a hermetic single-member workspace whose only module has a T001 on
+    // line 2. Driving the driver directly (no `did_open`) is exactly what the
+    // publish loop does for a file the editor has not opened.
+    let root = std::env::temp_dir().join(format!("ridge_lsp_span_{}", std::process::id()));
+    let app_src = root.join("app").join("src");
+    std::fs::create_dir_all(&app_src).expect("create temp workspace");
+    std::fs::write(
+        root.join("ridge.toml"),
+        "[workspace]\nname = \"span-ws\"\nversion = \"0.1.0\"\nmembers = [\"app\"]\n",
+    )
+    .expect("write workspace manifest");
+    std::fs::write(
+        root.join("app").join("ridge.toml"),
+        "[project]\nname = \"app\"\nversion = \"0.1.0\"\nkind = \"app\"\nentry = \"src/Main.ridge\"\n\n[capabilities]\nallow = []\n",
+    )
+    .expect("write project manifest");
+    std::fs::write(
+        app_src.join("Main.ridge"),
+        "-- intentional type error: Int where Text is expected\npub fn wrong -> Text = 42\n",
+    )
+    .expect("write source");
+
+    let artefacts =
+        check_workspace(CheckOptions::new(root.clone())).expect("workspace checks without fatal");
+
+    // The fixture has exactly one error (a T001 on `42`, which sits on line 2).
+    let diag = artefacts
+        .diagnostics
+        .iter()
+        .find(|d| d.code == "T001")
+        .expect("type_error_workspace must emit T001");
+
+    let source_key = diag.source_id.as_str();
+    assert_ne!(
+        source_key, "<unknown>",
+        "a type error must carry its module source id, not the unknown placeholder"
+    );
+
+    let uri = source_id_to_uri(&root, source_key);
+    let expected_uri = Url::from_file_path(root.join("app").join("src").join("Main.ridge"))
+        .expect("fixture file URI");
+    assert_eq!(
+        uri, expected_uri,
+        "diagnostic must attribute to the real file"
+    );
+
+    let src_text = artefacts
+        .sources
+        .text(source_key)
+        .expect("source cache holds the on-disk text");
+    let lsp_diag = to_lsp_diagnostic(diag, &uri, Some(src_text));
+
+    // `pub fn wrong -> Text = 42` is the second line; the `42` token must land
+    // on 0-indexed line 1, never the line-1 (`0:0`) fallback.
+    assert_eq!(
+        lsp_diag.range.start.line, 1,
+        "T001 must point at line 2, not the `<unknown> 1:1` fallback"
+    );
+    assert!(
+        lsp_diag.range.start.character > 0,
+        "the span must carry a real column, not character 0"
+    );
+
+    let _ = std::fs::remove_dir_all(&root);
+}
+
 // ── Debounce test: rapid didChange flurries trigger exactly one compile ────────
 
 #[tokio::test]

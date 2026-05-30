@@ -372,6 +372,13 @@ pub fn resolve_workspace(ws: WorkspaceGraph) -> ResolvedWorkspace {
         capabilities::check_capabilities(&pm.ast, project, &ws.manifest, &mut cap_errors);
         all_errors.extend(cap_errors.into_iter().map(|e| (pm.id, e)));
 
+        // Crate-path gate for `@ffi` (R022). User-authored modules may not
+        // declare `@ffi`; only the standard library can. The source path of
+        // the module tells us which side of that line it sits on.
+        let source_path = &ws.modules[pm.id.0 as usize].file_path;
+        let ffi_errors = decl::check_ffi_outside_stdlib(&pm.ast, source_path);
+        all_errors.extend(ffi_errors.into_iter().map(|e| (pm.id, e)));
+
         let module_imports_owned: Vec<imports::ImportResolution> = import_result
             .imports
             .get(pm.id.0 as usize)

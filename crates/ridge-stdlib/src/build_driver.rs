@@ -347,14 +347,19 @@ fn build_temp_workspace(
         .map_err(|e| format!("could not create temp dir for tier {tier}: {e}"))?;
     let tmp_root = tmp_dir.path();
 
-    let proj_dir = tmp_root.join("stdlib");
+    // Name the project directory `ridge-stdlib` so the source paths handed to
+    // the resolver carry the marker that the `@ffi` crate-path gate (R022)
+    // looks for. The stdlib genuinely lives in `crates/ridge-stdlib`; these
+    // copied tier sources are part of that same build, and must be treated as
+    // stdlib rather than user code.
+    let proj_dir = tmp_root.join("ridge-stdlib");
     std::fs::create_dir_all(proj_dir.join("src"))
         .map_err(|e| format!("could not create src dir: {e}"))?;
 
     // Workspace manifest.
     write_str(
         &tmp_root.join("ridge.toml"),
-        "[workspace]\nname = \"ridge-stdlib-tier\"\nversion = \"0.1.0\"\nmembers = [\"stdlib\"]\n",
+        "[workspace]\nname = \"ridge-stdlib-tier\"\nversion = \"0.1.0\"\nmembers = [\"ridge-stdlib\"]\n",
     )?;
 
     // Project manifest.

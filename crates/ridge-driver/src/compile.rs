@@ -327,18 +327,21 @@ fn compile_stdlib_beams(
     })?;
     let ws_root = td.path();
 
-    // Write workspace manifest.
+    // Write workspace manifest. The project directory is named `ridge-stdlib`
+    // so the source paths the resolver sees carry the marker that the `@ffi`
+    // crate-path gate (R022) recognises — these unpacked sources ARE the
+    // standard library and must be allowed to declare `@ffi`, unlike user code.
     std::fs::write(
         ws_root.join("ridge.toml"),
-        "[workspace]\nname = \"stdlib-build\"\nversion = \"0.1.0\"\nmembers = [\"std\"]\n",
+        "[workspace]\nname = \"stdlib-build\"\nversion = \"0.1.0\"\nmembers = [\"ridge-stdlib\"]\n",
     )
     .map_err(|e| ridge_codegen_erl::CodegenError::OutputDirNotWritable {
         path: ws_root.join("ridge.toml"),
         io_err: e.to_string(),
     })?;
 
-    // Unpack embedded sources into `<ws_root>/std/src/`.
-    let std_dir = ws_root.join("std");
+    // Unpack embedded sources into `<ws_root>/ridge-stdlib/src/`.
+    let std_dir = ws_root.join("ridge-stdlib");
     let std_src_dir = std_dir.join("src");
     ridge_stdlib::write_stdlib_sources_to(&std_src_dir).map_err(|e| {
         ridge_codegen_erl::CodegenError::OutputDirNotWritable {

@@ -79,4 +79,54 @@ mod tests {
         );
         assert!(errs.is_empty());
     }
+
+    /// Build a module containing a single `@ffi`-decorated `pub fn`.
+    fn module_with_ffi() -> Module {
+        use ridge_ast::{FnDecl, Ident, Span, Visibility};
+
+        let span = Span::point(0);
+        let decl = FnDecl {
+            attrs: vec![],
+            vis: Visibility::Pub,
+            caps: vec![],
+            name: Ident {
+                text: "length".to_owned(),
+                span,
+            },
+            params: vec![],
+            ret: None,
+            body: Body::Ffi {
+                module: "erlang".to_owned(),
+                name: "length".to_owned(),
+                arity: 1,
+            },
+            span,
+            doc: None,
+        };
+        Module {
+            items: vec![Item::Fn(decl)],
+            doc: vec![],
+            span,
+        }
+    }
+
+    #[test]
+    fn r022_fires_for_ffi_in_user_module() {
+        let module = module_with_ffi();
+        let errs =
+            check_ffi_outside_stdlib(&module, Path::new("/workspace/apps/myapp/src/main.ridge"));
+        assert_eq!(errs.len(), 1);
+        assert!(matches!(errs[0], ResolveError::FfiOutsideStdlib { .. }));
+        assert_eq!(errs[0].code(), "R022");
+    }
+
+    #[test]
+    fn no_r022_for_ffi_in_stdlib_module() {
+        let module = module_with_ffi();
+        let errs = check_ffi_outside_stdlib(
+            &module,
+            Path::new("/workspace/crates/ridge-stdlib/stdlib/list.ridge"),
+        );
+        assert!(errs.is_empty(), "stdlib `@ffi` must be allowed: {errs:?}");
+    }
 }

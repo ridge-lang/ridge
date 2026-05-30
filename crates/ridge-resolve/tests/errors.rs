@@ -547,6 +547,37 @@ fn r016_capability_not_allowed_by_project() {
     drop(td);
 }
 
+/// `R022 FfiOutsideStdlib` — a user-authored module that declares an `@ffi`
+/// function must be rejected by the full resolve pipeline, not just the unit
+/// checker.  The synthetic workspace lives under a tempdir with no
+/// `ridge-stdlib` component, so the crate-path gate treats it as user code.
+#[test]
+fn r022_ffi_outside_stdlib_in_user_module() {
+    let td = TempDir::new().unwrap();
+    write_file(
+        td.path(),
+        "ridge.toml",
+        "[workspace]\nname = \"ws\"\nversion = \"0.1.0\"\nmembers = [\"apps/*\"]\n",
+    );
+    write_file(
+        td.path(),
+        "apps/demo/ridge.toml",
+        "[project]\nname = \"demo\"\nversion = \"0.1.0\"\nkind = \"library\"\n",
+    );
+    write_file(
+        td.path(),
+        "apps/demo/src/UsesFfi.ridge",
+        "@ffi(\"erlang\", \"length\", 1)\npub fn length (xs: List a) -> Int\n",
+    );
+
+    let errors = run_pipeline(&td);
+    assert!(
+        errors.iter().any(|e| e.code() == "R022"),
+        "expected R022 from the resolve pipeline; errors: {errors:?}"
+    );
+    drop(td);
+}
+
 /// `R023 LegacyRgExtension` — a project's `src/` directory contains a file
 /// with the old `.rg` extension.  Discovery must emit R023 for each such file.
 #[test]

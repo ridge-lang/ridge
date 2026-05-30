@@ -761,7 +761,10 @@ pub fn lower_expr(ctx: &mut LowerCtx<'_>, expr: &Expr) -> IrExpr {
             let anon_name = ctx
                 .workspace
                 .and_then(|ws| ws.tycons.get(anon_id.0 as usize))
-                .map_or_else(|| format!("{{anon record #{}}}", anon_id.0), |d| d.name.clone());
+                .map_or_else(
+                    || format!("{{anon record #{}}}", anon_id.0),
+                    |d| d.name.clone(),
+                );
 
             let id = ctx.fresh_id(None);
             IrExpr::Construct {

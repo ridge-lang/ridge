@@ -147,14 +147,13 @@ impl PatternMatrix {
 /// scope for 0.1.0 (no closed domain; treated as non-closed).
 fn lift_pattern(pat: &Pattern) -> NormPat {
     match pat {
-        // Wildcard and variable bindings lift to Wildcard.
-        Pattern::Wildcard { .. } | Pattern::Var { .. } => NormPat::Wildcard,
-
-        // Inline record patterns (`{ f1, f2 }`) are irrefutable over their
-        // matched type (a single-constructor record) — lift to Wildcard just as
-        // named record patterns with fields do.  The `has_rest` flag does not
-        // change this: even an exact-field pattern covers the whole constructor.
-        Pattern::Record { .. } => NormPat::Wildcard,
+        // Wildcard, variable bindings, and inline record patterns lift to Wildcard.
+        // Inline records are irrefutable over their matched type (single-constructor
+        // record); the `has_rest` flag does not change this — even an exact-field
+        // pattern covers the whole constructor.
+        Pattern::Wildcard { .. } | Pattern::Var { .. } | Pattern::Record { .. } => {
+            NormPat::Wildcard
+        }
 
         // Empty-list pattern `[]` — 0-arity ListNil constructor.
         Pattern::ListNil { .. } => NormPat::Ctor(Constructor::ListNil, vec![]),

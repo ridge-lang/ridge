@@ -793,9 +793,7 @@ fn infer_expr_inner(ctx: &mut InferCtx, b: &BuiltinTyCons, expr: &Expr) -> Type 
         }
 
         // ── Inline record literal ─────────────────────────────────────────────
-        Expr::RecordLit { fields, span } => {
-            infer_record_lit(ctx, b, fields, *span)
-        }
+        Expr::RecordLit { fields, span } => infer_record_lit(ctx, b, fields, *span),
     }
 }
 
@@ -1205,7 +1203,8 @@ fn ast_type_to_type(ctx: &mut InferCtx, b: &BuiltinTyCons, ast_ty: &ridge_ast::T
             } else {
                 emit_internal(
                     ctx,
-                    "inline record type not found in anonymous TyCon table (pre-scan miss)".to_string(),
+                    "inline record type not found in anonymous TyCon table (pre-scan miss)"
+                        .to_string(),
                     *span,
                 )
             }
@@ -1298,7 +1297,7 @@ fn infer_binary(
 /// Infers each field's value type, computes the structural `ShapeKey`, looks
 /// up the pre-scanned `AnonRecordTable`, and delegates field checking to the
 /// existing [`crate::records::infer_record_construction`].  Mints a new anon
-/// TyCon on MISS (value-position shapes not covered by the pre-scan).
+/// `TyCon` on MISS (value-position shapes not covered by the pre-scan).
 fn infer_record_lit(
     ctx: &mut InferCtx,
     b: &BuiltinTyCons,
@@ -1376,6 +1375,10 @@ fn infer_record_lit(
         // Intern into the ctx's snapshot and anon_records table.
         // The arena is not directly accessible here, so we append to
         // tycon_decls manually and assign the next sequential id.
+        #[expect(
+            clippy::cast_possible_truncation,
+            reason = "tycon count bounded by program size; exceeding 2^32 is not realistic"
+        )]
         let next_id = TyConId(ctx.tycon_decls.len() as u32);
         let mut interned_decl = decl;
         interned_decl.id = next_id;
@@ -1402,7 +1405,7 @@ fn infer_record_lit(
 /// If `expected_ty` resolves to a known anon `Type::Con`, delegates to the
 /// schema-agnostic [`crate::records::infer_record_pattern`].  If the scrutinee
 /// is a free type variable (not yet determined), unifies it with a fresh anon
-/// TyCon built from the pattern's field names.
+/// `TyCon` built from the pattern's field names.
 fn infer_inline_record_pattern(
     ctx: &mut InferCtx,
     b: &BuiltinTyCons,
@@ -1465,6 +1468,10 @@ fn infer_inline_record_pattern(
                 def_module_raw: None,
                 is_anon: true,
             };
+            #[expect(
+                clippy::cast_possible_truncation,
+                reason = "tycon count bounded by program size; exceeding 2^32 is not realistic"
+            )]
             let next_id = TyConId(ctx.tycon_decls.len() as u32);
             let mut interned_decl = decl;
             interned_decl.id = next_id;
@@ -1479,8 +1486,7 @@ fn infer_inline_record_pattern(
         let fresh_ty = Type::Con(anon_id, vec![]);
         if matches!(&resolved, Type::Var(_)) {
             if let Err(e) = crate::unify::unify(ctx, expected_ty, &fresh_ty) {
-                ctx.errors
-                    .push(crate::records::attach_span_pub(e, span));
+                ctx.errors.push(crate::records::attach_span_pub(e, span));
             }
         }
         crate::records::infer_record_pattern(

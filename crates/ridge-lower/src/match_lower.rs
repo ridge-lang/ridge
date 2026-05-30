@@ -782,11 +782,7 @@ pub fn lower_pattern_full(ctx: &mut LowerCtx<'_>, pat: &Pattern) -> IrPat {
         // in `node_types` by the typecheck pass.  When the node-type table is absent
         // (unit-test scaffolding), we fall back to `TyConId(0)` — the IR is still
         // structurally correct even if the id is wrong.
-        Pattern::Record {
-            fields,
-            span,
-            ..
-        } => {
+        Pattern::Record { fields, span, .. } => {
             let anon_id: TyConId = ctx
                 .node_id_map
                 .as_ref()
@@ -804,7 +800,10 @@ pub fn lower_pattern_full(ctx: &mut LowerCtx<'_>, pat: &Pattern) -> IrPat {
             let anon_name = ctx
                 .workspace
                 .and_then(|ws| ws.tycons.get(anon_id.0 as usize))
-                .map_or_else(|| format!("{{anon record #{}}}", anon_id.0), |d| d.name.clone());
+                .map_or_else(
+                    || format!("{{anon record #{}}}", anon_id.0),
+                    |d| d.name.clone(),
+                );
 
             let ir_fields: Vec<(String, IrPat)> = fields
                 .iter()

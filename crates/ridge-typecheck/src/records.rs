@@ -367,6 +367,7 @@ pub fn infer_record_with(
 /// Callers outside `records.rs` that need to attach a span to a `TypeError`
 /// produced by `unify` (which emits dummy spans) can call this instead of
 /// duplicating the match logic.
+#[must_use]
 pub fn attach_span_pub(e: TypeError, span: Span) -> TypeError {
     attach_span(e, span)
 }

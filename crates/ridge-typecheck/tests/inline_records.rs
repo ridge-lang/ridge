@@ -62,12 +62,7 @@ fn has_error(result: &TypecheckResult, code: &str) -> bool {
 }
 
 fn anon_count(result: &TypecheckResult) -> usize {
-    result
-        .typed
-        .tycons
-        .iter()
-        .filter(|d| d.is_anon)
-        .count()
+    result.typed.tycons.iter().filter(|d| d.is_anon).count()
 }
 
 // ── Spec §6 Worked Examples ───────────────────────────────────────────────────
@@ -75,10 +70,10 @@ fn anon_count(result: &TypecheckResult) -> usize {
 /// Example 1 — simple parameter type annotation.
 #[test]
 fn spec_ex1_simple_parameter() {
-    let src = r#"
+    let src = r"
 fn greet (person: { name: Text, age: Int }) -> Text =
     person.name
-"#;
+";
     let result = typecheck_src(src);
     assert!(
         result.errors.is_empty(),
@@ -90,15 +85,19 @@ fn greet (person: { name: Text, age: Int }) -> Text =
 /// Example 2 — return type annotation.
 #[test]
 fn spec_ex2_return_type() {
-    let src = r#"
+    let src = r"
 fn parseResult (raw: Text) -> { ok: Bool, value: Int } =
     { ok = true, value = 42 }
-"#;
+";
     let result = typecheck_src(src);
     assert!(
         result.errors.is_empty(),
         "ex2: expected no errors, got: {:#?}",
-        result.errors.iter().map(|(_, e)| format!("{}: {}", e.code(), e)).collect::<Vec<_>>()
+        result
+            .errors
+            .iter()
+            .map(|(_, e)| format!("{}: {}", e.code(), e))
+            .collect::<Vec<_>>()
     );
 }
 
@@ -138,10 +137,10 @@ fn lookupUser (id: Int) -> { id: Int, name: Text } =
 /// Example 5 — `with`-update on an inline-typed record.
 #[test]
 fn spec_ex5_with_update() {
-    let src = r#"
+    let src = r"
 fn bump (r: { count: Int, label: Text }) -> { count: Int, label: Text } =
     r with { count = r.count + 1 }
-"#;
+";
     let result = typecheck_src(src);
     assert!(
         result.errors.is_empty(),
@@ -150,7 +149,7 @@ fn bump (r: { count: Int, label: Text }) -> { count: Int, label: Text } =
     );
 }
 
-/// Example 6 — order-insensitivity: `f` and `g` share the same return TyCon.
+/// Example 6 — order-insensitivity: `f` and `g` share the same return `TyCon`.
 #[test]
 fn spec_ex6_order_insensitivity() {
     let src = r#"
@@ -178,13 +177,13 @@ fn g () -> { a: Int, b: Text } = { b = "y", a = 2 }
 /// error (T001).
 #[test]
 fn spec_ex7_nominal_inline_distinctness() {
-    let src = r#"
+    let src = r"
 type Coords = { x: Int, y: Int }
 
 fn makeInline () -> { x: Int, y: Int } = { x = 0, y = 0 }
 
 fn bad () -> Coords = makeInline ()
-"#;
+";
     let result = typecheck_src(src);
     // The inline `{ x: Int, y: Int }` in makeInline's return and the `Coords`
     // in bad()'s return annotation are nominally distinct — expect a mismatch.
@@ -209,7 +208,11 @@ fn check () -> Text =
     assert!(
         result.errors.is_empty(),
         "ex8: expected no errors, got: {:#?}",
-        result.errors.iter().map(|(_, e)| format!("{}: {}", e.code(), e)).collect::<Vec<_>>()
+        result
+            .errors
+            .iter()
+            .map(|(_, e)| format!("{}: {}", e.code(), e))
+            .collect::<Vec<_>>()
     );
     // One anon TyCon for the empty shape.
     assert!(
@@ -220,7 +223,7 @@ fn check () -> Text =
 
 // ── Shape property tests ──────────────────────────────────────────────────────
 
-/// R-key: two occurrences of the same shape share a single anon TyConId.
+/// R-key: two occurrences of the same shape share a single anon `TyConId`.
 #[test]
 fn shape_order_insensitivity_same_id() {
     let src = r#"
@@ -236,7 +239,7 @@ fn g () -> { a: Int, b: Text } = { b = "y", a = 2 }
     );
 }
 
-/// R-key: different shapes produce distinct anon TyCons.
+/// R-key: different shapes produce distinct anon `TyCons`.
 #[test]
 fn shape_different_fields_distinct_id() {
     let src = r#"
@@ -254,14 +257,14 @@ fn g () -> { a: Text } = { a = "x" }
     );
 }
 
-/// R-key: nested record shares the inner anon TyCon with a standalone occurrence.
+/// R-key: nested record shares the inner anon `TyCon` with a standalone occurrence.
 #[test]
 fn shape_nested_shares_inner_id() {
-    let src = r#"
+    let src = r"
 fn inner () -> { id: Int } = { id = 1 }
 fn outer () -> { profile: { id: Int }, active: Bool } =
     { profile = { id = 2 }, active = true }
-"#;
+";
     let result = typecheck_src(src);
     // Only two distinct anon shapes: { id: Int } and { active: Bool, profile: … }.
     // The inner { id: Int } is shared between inner() and outer()'s profile field.
@@ -272,13 +275,13 @@ fn outer () -> { profile: { id: Int }, active: Bool } =
     );
 }
 
-/// R-empty: two empty record occurrences share a single anon TyCon.
+/// R-empty: two empty record occurrences share a single anon `TyCon`.
 #[test]
 fn shape_empty_shared() {
-    let src = r#"
+    let src = r"
 fn a () -> {} = {}
 fn b () -> {} = {}
-"#;
+";
     let result = typecheck_src(src);
     assert!(result.errors.is_empty());
     assert_eq!(
@@ -290,14 +293,14 @@ fn b () -> {} = {}
 
 // ── Agreement assertion ───────────────────────────────────────────────────────
 
-/// R-agree: the annotation TyConId and the literal's inferred TyConId are the
+/// R-agree: the annotation `TyConId` and the literal's inferred `TyConId` are the
 /// same (the shape maps to the same anon id through both paths).
 #[test]
 fn agreement_annotation_and_literal_same_id() {
-    let src = r#"
+    let src = r"
 fn f () -> { x: Int, y: Int } =
     { x = 1, y = 2 }
-"#;
+";
     let result = typecheck_src(src);
     assert!(
         result.errors.is_empty(),
@@ -332,7 +335,7 @@ fn diagnostic_p021_malformed_type() {
 
 /// P029: inline record field references a free type variable (after deep-resolve).
 ///
-/// When a RecordLit is inferred and a field is still a free var, P029 fires.
+/// When a `RecordLit` is inferred and a field is still a free var, P029 fires.
 /// This is hard to trigger from surface syntax without a parametric context, so
 /// we test indirectly via the tyvar-in-literal path.
 ///
@@ -342,9 +345,9 @@ fn diagnostic_p021_malformed_type() {
 #[test]
 fn diagnostic_p029_no_panic() {
     // A valid program to ensure P029 path doesn't crash when not triggered.
-    let src = r#"
+    let src = r"
 fn f (x: { id: Int }) -> Int = x.id
-"#;
+";
     let result = typecheck_src(src);
     assert!(
         !has_error(&result, "P029"),
@@ -352,18 +355,18 @@ fn f (x: { id: Int }) -> Int = x.id
     );
 }
 
-/// T028 (incomplete record pattern) is covered by infer_record_pattern which
-/// emits T004 (MissingField) for each omitted field.
+/// T028 (incomplete record pattern) is covered by `infer_record_pattern` which
+/// emits T004 (`MissingField`) for each omitted field.
 ///
 /// This test verifies that matching a two-field record with a one-field pattern
 /// (no `..`) reports a missing-field error.
 #[test]
 fn diagnostic_incomplete_record_pattern() {
-    let src = r#"
+    let src = r"
 fn f (r: { name: Text, age: Int }) -> Text =
     match r
         { name } -> name
-"#;
+";
     let result = typecheck_src(src);
     // T004 MissingField is emitted for the missing `age` field.
     assert!(
@@ -376,11 +379,11 @@ fn f (r: { name: Text, age: Int }) -> Text =
 /// Pattern with rest (`..`) is complete — no error.
 #[test]
 fn record_pattern_with_rest_ok() {
-    let src = r#"
+    let src = r"
 fn f (r: { name: Text, age: Int }) -> Text =
     match r
         { name, .. } -> name
-"#;
+";
     let result = typecheck_src(src);
     // T004 must NOT fire when `..` is present.
     assert!(

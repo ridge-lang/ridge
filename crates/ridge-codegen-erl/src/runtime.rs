@@ -14,6 +14,13 @@ const RIDGE_TEST_RUNNER_SOURCE: &str = include_str!("../runtime/ridge_test_runne
 /// The bundled `ridge_main_runner.erl` source, embedded at compile time.
 const RIDGE_MAIN_RUNNER_SOURCE: &str = include_str!("../runtime/ridge_main_runner.erl");
 
+/// The bundled `ridge_bench_runner.erl` source, embedded at compile time.
+///
+/// Unlike the other runners this is *not* installed on every build — it is only
+/// needed when running Layer B micro-benchmarks, so the benchmark harness opts
+/// in via [`install_bench_runner`] / [`compile_bench_runner`].
+const RIDGE_BENCH_RUNNER_SOURCE: &str = include_str!("../runtime/ridge_bench_runner.erl");
+
 /// Information about the installed runtime.
 #[derive(Debug, Clone)]
 pub struct RuntimeInfo {
@@ -100,6 +107,49 @@ fn install_runner_source(
         path: dest,
         io_err: e.to_string(),
     })
+}
+
+/// Install the bundled `ridge_bench_runner.erl` under `<out_root>/runtime/`.
+///
+/// Separate from [`install_runtime`] because the bench runner is only needed by
+/// the Layer B benchmark harness, not by ordinary `ridge build` / `ridge run`.
+/// Idempotent — skips the write when the destination already matches.
+///
+/// I/O failures surface as [`CodegenError::OutputDirNotWritable`].
+pub fn install_bench_runner(out_root: &Path) -> Result<PathBuf, CodegenError> {
+    let runtime_dir = out_root.join("runtime");
+    std::fs::create_dir_all(&runtime_dir).map_err(|e| CodegenError::OutputDirNotWritable {
+        path: runtime_dir.clone(),
+        io_err: e.to_string(),
+    })?;
+    install_runner_source(
+        &runtime_dir,
+        "ridge_bench_runner.erl",
+        RIDGE_BENCH_RUNNER_SOURCE,
+    )?;
+    Ok(runtime_dir.join("ridge_bench_runner.erl"))
+}
+
+/// Compile the installed `ridge_bench_runner.erl` to `ridge_bench_runner.beam`.
+///
+/// Companion to [`install_bench_runner`]; the `.beam` lands in
+/// `<out_root>/beam/` so `erl -pa <beam_dir>` can load it. Idempotent.
+///
+/// Errors during `erlc` surface as [`CodegenError::ErlcRejectedInput`].
+pub fn compile_bench_runner(erlc_path: &Path, out_root: &Path) -> Result<PathBuf, CodegenError> {
+    let beam_out_dir = out_root.join("beam");
+    std::fs::create_dir_all(&beam_out_dir).map_err(|e| CodegenError::OutputDirNotWritable {
+        path: beam_out_dir.clone(),
+        io_err: e.to_string(),
+    })?;
+    compile_runner_if_missing(
+        erlc_path,
+        out_root,
+        &beam_out_dir,
+        "ridge_bench_runner.erl",
+        "ridge_bench_runner.beam",
+    )?;
+    Ok(beam_out_dir.join("ridge_bench_runner.beam"))
 }
 
 /// Compile the installed `ridge_rt.erl` to `ridge_rt.beam` using `erlc`.

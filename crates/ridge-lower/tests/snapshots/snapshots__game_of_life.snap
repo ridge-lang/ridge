@@ -439,23 +439,12 @@ items:
                           -
                             Lit(n158): Int(1)
         body:
-          LetIn(n159):
-            pat:
-              Bind: __with_base_1
-            value:
+          RecordUpdate(n159):
+            base:
               Local(n160): grid
-            body:
-              Construct(n161):
-                ctor: Ctor(Record:Grid owner=15)
-                fields:
-                  rows:
-                    Field(n162).rows:
-                      Local(n163): __with_base_1
-                  cols:
-                    Field(n164).cols:
-                      Local(n165): __with_base_1
-                  cells:
-                    Local(n166): newCells
+            updates:
+              cells:
+                Local(n161): newCells
   - kind: fn
     name: renderGrid
     pub: false
@@ -466,16 +455,16 @@ items:
       - name: grid
         ty: Con(15)
     body:
-      LetIn(n167):
+      LetIn(n162):
         pat:
           Bind: border
         value:
-          Call(n168):
+          Call(n163):
             callee:
-              Symbol(n169): Stdlib(std.list.fold)
+              Symbol(n164): Stdlib(std.list.fold)
             args:
               -
-                Lambda(n170):
+                Lambda(n165):
                   caps: CapabilitySet(0)
                   params:
                     - name: a
@@ -483,90 +472,90 @@ items:
                     - name: b
                       ty: x1
                   body:
-                    Call(n171):
+                    Call(n166):
                       callee:
-                        Symbol(n172): Stdlib(std.text.concat)
+                        Symbol(n167): Stdlib(std.text.concat)
                       args:
                         -
-                          Local(n173): a
+                          Local(n168): a
                         -
-                          Local(n174): b
+                          Local(n169): b
               -
-                Lit(n175): Text("")
+                Lit(n170): Text("")
               -
-                Call(n176):
+                Call(n171):
                   callee:
-                    Symbol(n177): Stdlib(std.list.map)
+                    Symbol(n172): Stdlib(std.list.map)
                   args:
                     -
-                      Lambda(n178):
+                      Lambda(n173):
                         caps: CapabilitySet(0)
                         params:
                           - name: _
                             ty: a2
                         body:
-                          Lit(n179): Text("-")
+                          Lit(n174): Text("-")
                     -
-                      Call(n180):
+                      Call(n175):
                         callee:
-                          Symbol(n181): Stdlib(std.list.range)
+                          Symbol(n176): Stdlib(std.list.range)
                         args:
                           -
-                            Lit(n182): Int(1)
+                            Lit(n177): Int(1)
                           -
-                            Call(n183):
+                            Call(n178):
                               callee:
-                                Symbol(n184): Stdlib(std.int.add)
+                                Symbol(n179): Stdlib(std.int.add)
                               args:
                                 -
-                                  Field(n185).cols:
-                                    Local(n186): grid
+                                  Field(n180).cols:
+                                    Local(n181): grid
                                 -
-                                  Lit(n187): Int(2)
+                                  Lit(n182): Int(2)
         body:
-          Block(n188):
-            Call(n189):
+          Block(n183):
+            Call(n184):
               callee:
-                Symbol(n190): Stdlib(std.io.println)
+                Symbol(n185): Stdlib(std.io.println)
               args:
                 -
-                  Call(n191):
+                  Call(n186):
                     callee:
-                      Symbol(n192): Stdlib(std.text.concat)
+                      Symbol(n187): Stdlib(std.text.concat)
                     args:
                       -
-                        Call(n193):
+                        Call(n188):
                           callee:
-                            Symbol(n194): Stdlib(std.text.concat)
+                            Symbol(n189): Stdlib(std.text.concat)
                           args:
                             -
-                              Lit(n195): Text("+")
+                              Lit(n190): Text("+")
                             -
-                              Local(n196): border
+                              Local(n191): border
                       -
-                        Lit(n197): Text("+")
-            Block(n198):
-              Call(n199):
+                        Lit(n192): Text("+")
+            Block(n193):
+              Call(n194):
                 callee:
-                  Symbol(n200): Stdlib(std.list.forEach)
+                  Symbol(n195): Stdlib(std.list.forEach)
                 args:
                   -
-                    Lambda(n201):
+                    Lambda(n196):
                       caps: CapabilitySet(0)
                       params:
                         - name: row
                           ty: g2
                       body:
-                        LetIn(n202):
+                        LetIn(n197):
                           pat:
                             Bind: line
                           value:
-                            Call(n203):
+                            Call(n198):
                               callee:
-                                Symbol(n204): Stdlib(std.list.fold)
+                                Symbol(n199): Stdlib(std.list.fold)
                               args:
                                 -
-                                  Lambda(n205):
+                                  Lambda(n200):
                                     caps: CapabilitySet(0)
                                     params:
                                       - name: a
@@ -574,88 +563,88 @@ items:
                                       - name: b
                                         ty: k2
                                     body:
-                                      Call(n206):
+                                      Call(n201):
                                         callee:
-                                          Symbol(n207): Stdlib(std.text.concat)
+                                          Symbol(n202): Stdlib(std.text.concat)
                                         args:
                                           -
-                                            Local(n208): a
+                                            Local(n203): a
                                           -
-                                            Local(n209): b
+                                            Local(n204): b
                                 -
-                                  Lit(n210): Text("")
+                                  Lit(n205): Text("")
                                 -
-                                  Call(n211):
+                                  Call(n206):
                                     callee:
-                                      Symbol(n212): Stdlib(std.list.map)
+                                      Symbol(n207): Stdlib(std.list.map)
                                     args:
                                       -
-                                        Lambda(n213):
+                                        Lambda(n208):
                                           caps: CapabilitySet(0)
                                           params:
                                             - name: alive
                                               ty: n2
                                           body:
-                                            Match(n214):
+                                            Match(n209):
                                               scrutinee:
-                                                Local(n215): alive
+                                                Local(n210): alive
                                               arms:
                                                 -
                                                   pat:
                                                     Lit: Bool(true)
                                                   body:
-                                                    Lit(n216): Text("#")
+                                                    Lit(n211): Text("#")
                                                 -
                                                   pat:
                                                     Lit: Bool(false)
                                                   body:
-                                                    Lit(n217): Text(" ")
+                                                    Lit(n212): Text(" ")
                                       -
-                                        Local(n218): row
+                                        Local(n213): row
                           body:
-                            Call(n219):
+                            Call(n214):
                               callee:
-                                Symbol(n220): Stdlib(std.io.println)
+                                Symbol(n215): Stdlib(std.io.println)
                               args:
                                 -
-                                  Call(n221):
+                                  Call(n216):
                                     callee:
-                                      Symbol(n222): Stdlib(std.text.concat)
+                                      Symbol(n217): Stdlib(std.text.concat)
                                     args:
                                       -
-                                        Call(n223):
+                                        Call(n218):
                                           callee:
-                                            Symbol(n224): Stdlib(std.text.concat)
+                                            Symbol(n219): Stdlib(std.text.concat)
                                           args:
                                             -
-                                              Lit(n225): Text("| ")
+                                              Lit(n220): Text("| ")
                                             -
-                                              Local(n226): line
+                                              Local(n221): line
                                       -
-                                        Lit(n227): Text(" |")
+                                        Lit(n222): Text(" |")
                   -
-                    Field(n228).cells:
-                      Local(n229): grid
-              Call(n230):
+                    Field(n223).cells:
+                      Local(n224): grid
+              Call(n225):
                 callee:
-                  Symbol(n231): Stdlib(std.io.println)
+                  Symbol(n226): Stdlib(std.io.println)
                 args:
                   -
-                    Call(n232):
+                    Call(n227):
                       callee:
-                        Symbol(n233): Stdlib(std.text.concat)
+                        Symbol(n228): Stdlib(std.text.concat)
                       args:
                         -
-                          Call(n234):
+                          Call(n229):
                             callee:
-                              Symbol(n235): Stdlib(std.text.concat)
+                              Symbol(n230): Stdlib(std.text.concat)
                             args:
                               -
-                                Lit(n236): Text("+")
+                                Lit(n231): Text("+")
                               -
-                                Local(n237): border
+                                Local(n232): border
                         -
-                          Lit(n238): Text("+")
+                          Lit(n233): Text("+")
   - kind: fn
     name: makeEmptyGrid
     pub: false
@@ -668,61 +657,61 @@ items:
       - name: c
         ty: Con(0)
     body:
-      LetIn(n239):
+      LetIn(n234):
         pat:
           Bind: emptyRow
         value:
-          Call(n240):
+          Call(n235):
             callee:
-              Symbol(n241): Stdlib(std.list.map)
+              Symbol(n236): Stdlib(std.list.map)
             args:
               -
-                Lambda(n242):
+                Lambda(n237):
                   caps: CapabilitySet(0)
                   params:
                     - name: _
                       ty: v2
                   body:
-                    Lit(n243): Bool(false)
+                    Lit(n238): Bool(false)
               -
-                Call(n244):
+                Call(n239):
                   callee:
-                    Symbol(n245): Stdlib(std.list.range)
+                    Symbol(n240): Stdlib(std.list.range)
                   args:
                     -
-                      Lit(n246): Int(1)
+                      Lit(n241): Int(1)
                     -
-                      Local(n247): c
+                      Local(n242): c
         body:
-          Construct(n248):
+          Construct(n243):
             ctor: Ctor(Record:Grid owner=15)
             fields:
               rows:
-                Local(n249): r
+                Local(n244): r
               cols:
-                Local(n250): c
+                Local(n245): c
               cells:
-                Call(n251):
+                Call(n246):
                   callee:
-                    Symbol(n252): Stdlib(std.list.map)
+                    Symbol(n247): Stdlib(std.list.map)
                   args:
                     -
-                      Lambda(n253):
+                      Lambda(n248):
                         caps: CapabilitySet(0)
                         params:
                           - name: _
                             ty: a3
                         body:
-                          Local(n254): emptyRow
+                          Local(n249): emptyRow
                     -
-                      Call(n255):
+                      Call(n250):
                         callee:
-                          Symbol(n256): Stdlib(std.list.range)
+                          Symbol(n251): Stdlib(std.list.range)
                         args:
                           -
-                            Lit(n257): Int(1)
+                            Lit(n252): Int(1)
                           -
-                            Local(n258): r
+                            Local(n253): r
   - kind: fn
     name: setCell
     pub: false
@@ -737,24 +726,24 @@ items:
       - name: grid
         ty: Con(15)
     body:
-      LetIn(n259):
+      LetIn(n254):
         pat:
           Bind: newCells
         value:
-          Call(n260):
+          Call(n255):
             callee:
-              Symbol(n261): Stdlib(std.list.map)
+              Symbol(n256): Stdlib(std.list.map)
             args:
               -
-                Lambda(n262):
+                Lambda(n257):
                   caps: CapabilitySet(0)
                   params:
-                    - name: __tuple_param_2
+                    - name: __tuple_param_1
                       ty: f3
                   body:
-                    Match(n263):
+                    Match(n258):
                       scrutinee:
-                        Local(n264): __tuple_param_2
+                        Local(n259): __tuple_param_1
                       arms:
                         -
                           pat:
@@ -762,35 +751,35 @@ items:
                               Bind: ri
                               Bind: row
                           body:
-                            Match(n265):
+                            Match(n260):
                               scrutinee:
-                                Call(n266):
+                                Call(n261):
                                   callee:
-                                    Symbol(n267): Stdlib(std.op.eq)
+                                    Symbol(n262): Stdlib(std.op.eq)
                                   args:
                                     -
-                                      Local(n268): ri
+                                      Local(n263): ri
                                     -
-                                      Local(n269): targetRow
+                                      Local(n264): targetRow
                               arms:
                                 -
                                   pat:
                                     Lit: Bool(true)
                                   body:
-                                    Call(n270):
+                                    Call(n265):
                                       callee:
-                                        Symbol(n271): Stdlib(std.list.map)
+                                        Symbol(n266): Stdlib(std.list.map)
                                       args:
                                         -
-                                          Lambda(n272):
+                                          Lambda(n267):
                                             caps: CapabilitySet(0)
                                             params:
-                                              - name: __tuple_param_3
+                                              - name: __tuple_param_2
                                                 ty: k3
                                             body:
-                                              Match(n273):
+                                              Match(n268):
                                                 scrutinee:
-                                                  Local(n274): __tuple_param_3
+                                                  Local(n269): __tuple_param_2
                                                 arms:
                                                   -
                                                     pat:
@@ -798,99 +787,88 @@ items:
                                                         Bind: ci
                                                         Bind: v
                                                     body:
-                                                      Match(n275):
+                                                      Match(n270):
                                                         scrutinee:
-                                                          Call(n276):
+                                                          Call(n271):
                                                             callee:
-                                                              Symbol(n277): Stdlib(std.op.eq)
+                                                              Symbol(n272): Stdlib(std.op.eq)
                                                             args:
                                                               -
-                                                                Local(n278): ci
+                                                                Local(n273): ci
                                                               -
-                                                                Local(n279): targetCol
+                                                                Local(n274): targetCol
                                                         arms:
                                                           -
                                                             pat:
                                                               Lit: Bool(true)
                                                             body:
-                                                              Lit(n280): Bool(true)
+                                                              Lit(n275): Bool(true)
                                                           -
                                                             pat:
                                                               Lit: Bool(false)
                                                             body:
-                                                              Local(n281): v
+                                                              Local(n276): v
                                         -
-                                          Call(n282):
+                                          Call(n277):
                                             callee:
-                                              Symbol(n283): Stdlib(std.list.zip)
+                                              Symbol(n278): Stdlib(std.list.zip)
                                             args:
                                               -
-                                                Call(n284):
+                                                Call(n279):
                                                   callee:
-                                                    Symbol(n285): Stdlib(std.list.range)
+                                                    Symbol(n280): Stdlib(std.list.range)
                                                   args:
                                                     -
-                                                      Lit(n286): Int(0)
+                                                      Lit(n281): Int(0)
                                                     -
-                                                      Call(n287):
+                                                      Call(n282):
                                                         callee:
-                                                          Symbol(n288): Stdlib(std.int.sub)
+                                                          Symbol(n283): Stdlib(std.int.sub)
                                                         args:
                                                           -
-                                                            Field(n289).cols:
-                                                              Local(n290): grid
+                                                            Field(n284).cols:
+                                                              Local(n285): grid
                                                           -
-                                                            Lit(n291): Int(1)
+                                                            Lit(n286): Int(1)
                                               -
-                                                Local(n292): row
+                                                Local(n287): row
                                 -
                                   pat:
                                     Lit: Bool(false)
                                   body:
-                                    Local(n293): row
+                                    Local(n288): row
               -
-                Call(n294):
+                Call(n289):
                   callee:
-                    Symbol(n295): Stdlib(std.list.zip)
+                    Symbol(n290): Stdlib(std.list.zip)
                   args:
                     -
-                      Call(n296):
+                      Call(n291):
                         callee:
-                          Symbol(n297): Stdlib(std.list.range)
+                          Symbol(n292): Stdlib(std.list.range)
                         args:
                           -
-                            Lit(n298): Int(0)
+                            Lit(n293): Int(0)
                           -
-                            Call(n299):
+                            Call(n294):
                               callee:
-                                Symbol(n300): Stdlib(std.int.sub)
+                                Symbol(n295): Stdlib(std.int.sub)
                               args:
                                 -
-                                  Field(n301).rows:
-                                    Local(n302): grid
+                                  Field(n296).rows:
+                                    Local(n297): grid
                                 -
-                                  Lit(n303): Int(1)
+                                  Lit(n298): Int(1)
                     -
-                      Field(n304).cells:
-                        Local(n305): grid
+                      Field(n299).cells:
+                        Local(n300): grid
         body:
-          LetIn(n306):
-            pat:
-              Bind: __with_base_4
-            value:
-              Local(n307): grid
-            body:
-              Construct(n308):
-                ctor: Ctor(Record:Grid owner=15)
-                fields:
-                  rows:
-                    Field(n309).rows:
-                      Local(n310): __with_base_4
-                  cols:
-                    Field(n311).cols:
-                      Local(n312): __with_base_4
-                  cells:
-                    Local(n313): newCells
+          RecordUpdate(n301):
+            base:
+              Local(n302): grid
+            updates:
+              cells:
+                Local(n303): newCells
   - kind: fn
     name: gliderGrid
     pub: false
@@ -903,64 +881,64 @@ items:
       - name: cols
         ty: Con(0)
     body:
-      Call(n314):
+      Call(n304):
         callee:
-          Symbol(n315): Local(setCell @ m0)
+          Symbol(n305): Local(setCell @ m0)
         args:
           -
-            Lit(n316): Int(2)
+            Lit(n306): Int(2)
           -
-            Lit(n317): Int(2)
+            Lit(n307): Int(2)
           -
-            Call(n318):
+            Call(n308):
               callee:
-                Symbol(n319): Local(setCell @ m0)
+                Symbol(n309): Local(setCell @ m0)
               args:
                 -
-                  Lit(n320): Int(2)
+                  Lit(n310): Int(2)
                 -
-                  Lit(n321): Int(1)
+                  Lit(n311): Int(1)
                 -
-                  Call(n322):
+                  Call(n312):
                     callee:
-                      Symbol(n323): Local(setCell @ m0)
+                      Symbol(n313): Local(setCell @ m0)
                     args:
                       -
-                        Lit(n324): Int(2)
+                        Lit(n314): Int(2)
                       -
-                        Lit(n325): Int(0)
+                        Lit(n315): Int(0)
                       -
-                        Call(n326):
+                        Call(n316):
                           callee:
-                            Symbol(n327): Local(setCell @ m0)
+                            Symbol(n317): Local(setCell @ m0)
                           args:
                             -
-                              Lit(n328): Int(1)
+                              Lit(n318): Int(1)
                             -
-                              Lit(n329): Int(2)
+                              Lit(n319): Int(2)
                             -
-                              Call(n330):
+                              Call(n320):
                                 callee:
-                                  Symbol(n331): Local(setCell @ m0)
+                                  Symbol(n321): Local(setCell @ m0)
                                 args:
                                   -
-                                    Lit(n332): Int(0)
+                                    Lit(n322): Int(0)
                                   -
-                                    Lit(n333): Int(1)
+                                    Lit(n323): Int(1)
                                   -
-                                    Call(n334):
+                                    Call(n324):
                                       callee:
-                                        Symbol(n335): Local(makeEmptyGrid @ m0)
+                                        Symbol(n325): Local(makeEmptyGrid @ m0)
                                       args:
                                         -
-                                          Local(n336): rows
+                                          Local(n326): rows
                                         -
-                                          Local(n337): cols
+                                          Local(n327): cols
   - kind: const
     name: defaultGenerations
     ty: Con(0)
     value:
-      Lit(n338): Int(30)
+      Lit(n328): Int(30)
   - kind: fn
     name: main
     pub: false
@@ -969,47 +947,47 @@ items:
     ret_ty: Con(10) [Con(4), Con(12)]
     params: []
     body:
-      LetIn(n339):
+      LetIn(n329):
         pat:
           Bind: args
         value:
-          Call(n340):
+          Call(n330):
             callee:
-              Symbol(n341): Stdlib(std.cli.args)
+              Symbol(n331): Stdlib(std.cli.args)
             args:
               -
-                Lit(n342): Unit
+                Lit(n332): Unit
         body:
-          LetIn(n343):
+          LetIn(n333):
             pat:
               Bind: generations
             value:
-              Call(n344):
+              Call(n334):
                 callee:
-                  Symbol(n345): Stdlib(std.option.withDefault)
+                  Symbol(n335): Stdlib(std.option.withDefault)
                 args:
                   -
-                    Symbol(n346): Local(defaultGenerations @ m0)
+                    Symbol(n336): Local(defaultGenerations @ m0)
                   -
-                    Call(n347):
+                    Call(n337):
                       callee:
-                        Symbol(n348): Stdlib(std.option.flatMap)
+                        Symbol(n338): Stdlib(std.option.flatMap)
                       args:
                         -
-                          Symbol(n349): Stdlib(std.int.parse)
+                          Symbol(n339): Stdlib(std.int.parse)
                         -
-                          Call(n350):
+                          Call(n340):
                             callee:
-                              Symbol(n351): Stdlib(std.list.head)
+                              Symbol(n341): Stdlib(std.list.head)
                             args:
                               -
-                                Local(n352): args
+                                Local(n342): args
             body:
-              LetIn(n353):
+              LetIn(n343):
                 pat:
                   Bind: loop
                 value:
-                  Lambda(n354):
+                  Lambda(n344):
                     caps: CapabilitySet(0)
                     params:
                       - name: gen
@@ -1017,140 +995,140 @@ items:
                       - name: grid
                         ty: Con(15)
                     body:
-                      Match(n355):
+                      Match(n345):
                         scrutinee:
-                          Call(n356):
+                          Call(n346):
                             callee:
-                              Symbol(n357): Stdlib(std.op.gt)
+                              Symbol(n347): Stdlib(std.op.gt)
                             args:
                               -
-                                Local(n358): gen
+                                Local(n348): gen
                               -
-                                Lit(n359): Int(0)
+                                Lit(n349): Int(0)
                         arms:
                           -
                             pat:
                               Lit: Bool(true)
                             body:
-                              Block(n360):
-                                Call(n361):
+                              Block(n350):
+                                Call(n351):
                                   callee:
-                                    Symbol(n362): Stdlib(std.io.print)
+                                    Symbol(n352): Stdlib(std.io.print)
                                   args:
                                     -
-                                      Lit(n363): Text("\u{1b}[2J\u{1b}[H")
-                                Block(n364):
-                                  Call(n365):
+                                      Lit(n353): Text("\u{1b}[2J\u{1b}[H")
+                                Block(n354):
+                                  Call(n355):
                                     callee:
-                                      Symbol(n366): Stdlib(std.io.println)
+                                      Symbol(n356): Stdlib(std.io.println)
                                     args:
                                       -
-                                        Call(n367):
+                                        Call(n357):
                                           callee:
-                                            Symbol(n368): Stdlib(std.text.concat)
+                                            Symbol(n358): Stdlib(std.text.concat)
                                           args:
                                             -
-                                              Call(n369):
+                                              Call(n359):
                                                 callee:
-                                                  Symbol(n370): Stdlib(std.text.concat)
+                                                  Symbol(n360): Stdlib(std.text.concat)
                                                 args:
                                                   -
-                                                    Call(n371):
+                                                    Call(n361):
                                                       callee:
-                                                        Symbol(n372): Stdlib(std.text.concat)
+                                                        Symbol(n362): Stdlib(std.text.concat)
                                                       args:
                                                         -
-                                                          Lit(n373): Text("Generation ")
+                                                          Lit(n363): Text("Generation ")
                                                         -
-                                                          Call(n374):
+                                                          Call(n364):
                                                             callee:
-                                                              Symbol(n375): Stdlib(std.int.toText)
+                                                              Symbol(n365): Stdlib(std.int.toText)
                                                             args:
                                                               -
-                                                                Call(n376):
+                                                                Call(n366):
                                                                   callee:
-                                                                    Symbol(n377): Stdlib(std.int.add)
+                                                                    Symbol(n367): Stdlib(std.int.add)
                                                                   args:
                                                                     -
-                                                                      Call(n378):
+                                                                      Call(n368):
                                                                         callee:
-                                                                          Symbol(n379): Stdlib(std.int.sub)
+                                                                          Symbol(n369): Stdlib(std.int.sub)
                                                                         args:
                                                                           -
-                                                                            Local(n380): generations
+                                                                            Local(n370): generations
                                                                           -
-                                                                            Local(n381): gen
+                                                                            Local(n371): gen
                                                                     -
-                                                                      Lit(n382): Int(1)
+                                                                      Lit(n372): Int(1)
                                                   -
-                                                    Lit(n383): Text(" / ")
+                                                    Lit(n373): Text(" / ")
                                             -
-                                              Call(n384):
+                                              Call(n374):
                                                 callee:
-                                                  Symbol(n385): Stdlib(std.int.toText)
+                                                  Symbol(n375): Stdlib(std.int.toText)
                                                 args:
                                                   -
-                                                    Local(n386): generations
-                                  Block(n387):
-                                    Call(n388):
+                                                    Local(n376): generations
+                                  Block(n377):
+                                    Call(n378):
                                       callee:
-                                        Symbol(n389): Local(renderGrid @ m0)
+                                        Symbol(n379): Local(renderGrid @ m0)
                                       args:
                                         -
-                                          Local(n390): grid
-                                    Block(n391):
-                                      Call(n392):
+                                          Local(n380): grid
+                                    Block(n381):
+                                      Call(n382):
                                         callee:
-                                          Symbol(n393): Stdlib(std.time.sleep)
+                                          Symbol(n383): Stdlib(std.time.sleep)
                                         args:
                                           -
-                                            Lit(n394): Int(200)
-                                      Call(n395):
+                                            Lit(n384): Int(200)
+                                      Call(n385):
                                         callee:
-                                          Local(n396): loop
+                                          Local(n386): loop
                                         args:
                                           -
-                                            Call(n397):
+                                            Call(n387):
                                               callee:
-                                                Symbol(n398): Stdlib(std.int.sub)
+                                                Symbol(n388): Stdlib(std.int.sub)
                                               args:
                                                 -
-                                                  Local(n399): gen
+                                                  Local(n389): gen
                                                 -
-                                                  Lit(n400): Int(1)
+                                                  Lit(n390): Int(1)
                                           -
-                                            Call(n401):
+                                            Call(n391):
                                               callee:
-                                                Symbol(n402): Local(step @ m0)
+                                                Symbol(n392): Local(step @ m0)
                                               args:
                                                 -
-                                                  Local(n403): grid
+                                                  Local(n393): grid
                           -
                             pat:
                               Lit: Bool(false)
                             body:
-                              Return(n404):
-                                Lit(n405): Unit
+                              Return(n394):
+                                Lit(n395): Unit
                 body:
-                  Block(n406):
-                    Call(n407):
+                  Block(n396):
+                    Call(n397):
                       callee:
-                        Local(n408): loop
+                        Local(n398): loop
                       args:
                         -
-                          Local(n409): generations
+                          Local(n399): generations
                         -
-                          Call(n410):
+                          Call(n400):
                             callee:
-                              Symbol(n411): Local(gliderGrid @ m0)
+                              Symbol(n401): Local(gliderGrid @ m0)
                             args:
                               -
-                                Lit(n412): Int(20)
+                                Lit(n402): Int(20)
                               -
-                                Lit(n413): Int(40)
-                    Call(n414):
+                                Lit(n403): Int(40)
+                    Call(n404):
                       callee:
-                        Symbol(n415): Prelude(Ok)
+                        Symbol(n405): Prelude(Ok)
                       args:
                         -
-                          Lit(n416): Unit
+                          Lit(n406): Unit

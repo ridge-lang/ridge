@@ -46,7 +46,6 @@ use crate::return_::lower_return;
 use crate::scope::{ssa_var, LocalScope};
 use crate::stdlib_map::{self, BridgeTarget};
 use crate::symbol::lower_symbol;
-use crate::with_update::detect_with_peephole;
 use ridge_ir::{AssignTarget, CtorKind, IrExpr, IrLit, IrParam, IrPat, SymbolRef};
 
 // ── Variable mangling (§4.2) ─────────────────────────────────────────────────
@@ -639,11 +638,28 @@ pub(crate) fn lower_expr_in_scope(
         IrExpr::Call {
             callee, args, span, ..
         } => lower_call(callee, args, *span, scope),
-        // §4.12 — Constructor: Record → MapLit (with optional `with` peephole →
-        // MapUpdate); UnionVariant/Prelude → Tuple or bare Atom.
+        // §4.12 — Constructor: Record → MapLit; UnionVariant/Prelude → Tuple or
+        // bare Atom.
         IrExpr::Construct {
             ctor, fields, span, ..
         } => lower_construct(ctor, fields, *span, scope),
+
+        // §4.5 — `with` update → map update `Base#{ key => val, … }`.
+        IrExpr::RecordUpdate { base, updates, .. } => {
+            let base_expr = lower_expr_in_scope(base, scope)?;
+            let kvs = updates
+                .iter()
+                .map(|(key, value)| {
+                    let k = CErlExpr::Lit(CErlLit::Atom(CErlAtom(key.clone())));
+                    let v = lower_expr_in_scope(value, scope)?;
+                    Ok((k, v))
+                })
+                .collect::<Result<Vec<_>, CodegenError>>()?;
+            Ok(CErlExpr::MapUpdate {
+                base: Box::new(base_expr),
+                updates: kvs,
+            })
+        }
 
         // §4.13 — Field projection: emit `call 'maps':'get'(Atom key, Base)`.
         IrExpr::Field {
@@ -817,31 +833,8 @@ fn lower_construct(
             ctor_kind: CtorKind::Record,
             ..
         } => {
-            // OQ-CG004: try the `with`-update peephole first.
-            if let Some(ph) = detect_with_peephole(fields) {
-                // Emit MapUpdate { base: Var(base_name), updates: non-forwarding pairs }.
-                let base_local = IrExpr::Local {
-                    id: ridge_ir::IrNodeId(0),
-                    name: ph.base_name.into(),
-                    span,
-                };
-                let base_expr = lower_expr_in_scope(&base_local, scope)?;
-                let updates = ph
-                    .updates
-                    .into_iter()
-                    .map(|(key, value)| {
-                        let k = CErlExpr::Lit(CErlLit::Atom(CErlAtom(key.into())));
-                        let v = lower_expr_in_scope(value, scope)?;
-                        Ok((k, v))
-                    })
-                    .collect::<Result<Vec<_>, CodegenError>>()?;
-                return Ok(CErlExpr::MapUpdate {
-                    base: Box::new(base_expr),
-                    updates,
-                });
-            }
-
-            // Full MapLit: all fields become (Atom key, lowered value) pairs.
+            // Record construction → full map literal. (`with` updates lower to
+            // `IrExpr::RecordUpdate` → `MapUpdate`, handled in `lower_expr`.)
             let pairs = fields
                 .iter()
                 .map(|(key, value)| {
@@ -2594,38 +2587,22 @@ mod tests {
     // ── `with` peephole fires → MapUpdate ────────────────────────────────────
 
     #[test]
-    fn expr_construct_with_peephole_record() {
-        // Simulates: r with { b = 99 } where record has fields a, b.
-        // Phase-5 synthesised shape:
-        //   Construct { Record, fields: [
-        //     ("a", Field { base: Local("__with_base"), field: "a" }),
-        //     ("b", Int 99),
-        //   ]}
-        // → MapUpdate { base: Var V_WithBase, updates: [(Atom "b", Int 99)] }
-        let forwarding_a = IrExpr::Field {
+    fn expr_record_update_lowers_to_map_update() {
+        // `r with { b = 99 }` → IrExpr::RecordUpdate { base: Local("r"),
+        //   updates: [("b", Int 99)] } → MapUpdate { base: Var V_R,
+        //   updates: [(Atom "b", Int 99)] }. No record schema involved.
+        let expr = IrExpr::RecordUpdate {
             id: node(),
-            base: Box::new(local("__with_base")),
-            field: "a".into(),
-            span: sp(),
-        };
-        let expr = IrExpr::Construct {
-            id: node(),
-            ctor: SymbolRef::Constructor {
-                ctor_kind: CtorKind::Record,
-                owner_type: TyConId(0),
-                name: "MyRecord".into(),
-                variant: 0,
-            },
-            fields: vec![("a".into(), forwarding_a), ("b".into(), lit_int(99))],
+            base: Box::new(local("r")),
+            updates: vec![("b".into(), lit_int(99))],
             span: sp(),
         };
         let result = lower_expr(&expr).unwrap();
         match result {
             CErlExpr::MapUpdate { base, updates } => {
-                // base should be the __with_base variable
                 assert!(
-                    matches!(*base, CErlExpr::Var(CErlVar(ref s)) if s == "V_WithBase"),
-                    "expected base Var V_WithBase, got {base:?}"
+                    matches!(*base, CErlExpr::Var(CErlVar(ref s)) if s == "V_R"),
+                    "expected base Var V_R, got {base:?}"
                 );
                 assert_eq!(updates.len(), 1);
                 assert!(

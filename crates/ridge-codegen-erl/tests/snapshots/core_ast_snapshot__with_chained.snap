@@ -32,71 +32,51 @@ CErlModule {
                     var: CErlVar(
                         "V_P1",
                     ),
-                    value: Let {
-                        var: CErlVar(
-                            "V_WithBase0",
-                        ),
-                        value: Var(
+                    value: MapUpdate {
+                        base: Var(
                             CErlVar(
                                 "V_P",
                             ),
                         ),
-                        body: MapUpdate {
-                            base: Var(
-                                CErlVar(
-                                    "V_WithBase0",
+                        updates: [
+                            (
+                                Lit(
+                                    Atom(
+                                        CErlAtom(
+                                            "x",
+                                        ),
+                                    ),
+                                ),
+                                Lit(
+                                    Int(
+                                        1,
+                                    ),
                                 ),
                             ),
-                            updates: [
-                                (
-                                    Lit(
-                                        Atom(
-                                            CErlAtom(
-                                                "x",
-                                            ),
-                                        ),
-                                    ),
-                                    Lit(
-                                        Int(
-                                            1,
-                                        ),
-                                    ),
-                                ),
-                            ],
-                        },
+                        ],
                     },
-                    body: Let {
-                        var: CErlVar(
-                            "V_WithBase1",
-                        ),
-                        value: Var(
+                    body: MapUpdate {
+                        base: Var(
                             CErlVar(
                                 "V_P1",
                             ),
                         ),
-                        body: MapUpdate {
-                            base: Var(
-                                CErlVar(
-                                    "V_WithBase1",
+                        updates: [
+                            (
+                                Lit(
+                                    Atom(
+                                        CErlAtom(
+                                            "y",
+                                        ),
+                                    ),
+                                ),
+                                Lit(
+                                    Int(
+                                        2,
+                                    ),
                                 ),
                             ),
-                            updates: [
-                                (
-                                    Lit(
-                                        Atom(
-                                            CErlAtom(
-                                                "y",
-                                            ),
-                                        ),
-                                    ),
-                                    Lit(
-                                        Int(
-                                            2,
-                                        ),
-                                    ),
-                                ),
-                            ],
-                        },
+                        ],
                     },
                 },
             },

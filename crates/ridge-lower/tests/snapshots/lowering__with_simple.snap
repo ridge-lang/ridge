@@ -15,17 +15,9 @@ items:
       - name: p
         ty: Con(15)
     body:
-      LetIn(n0):
-        pat:
-          Bind: __with_base_0
-        value:
+      RecordUpdate(n0):
+        base:
           Local(n1): p
-        body:
-          Construct(n2):
-            ctor: Ctor(Record:Point owner=15)
-            fields:
-              x:
-                Lit(n3): Int(10)
-              y:
-                Field(n4).y:
-                  Local(n5): __with_base_0
+        updates:
+          x:
+            Lit(n2): Int(10)

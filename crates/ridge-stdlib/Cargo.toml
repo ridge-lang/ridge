@@ -30,6 +30,9 @@ tempfile        = "3"
 [build-dependencies]
 # Keep the same pipeline crates available to build.rs, which uses
 # include!("src/build_driver.rs") to share the driver code.
+# `ridge-ast` is needed by the `@ffi` audit-table validation the driver runs
+# during the build (FnDecl / Body / Capability types).
+ridge-ast       = { path = "../ridge-ast" }
 ridge-lexer     = { path = "../ridge-lexer" }
 ridge-parser    = { path = "../ridge-parser" }
 ridge-resolve   = { path = "../ridge-resolve" }

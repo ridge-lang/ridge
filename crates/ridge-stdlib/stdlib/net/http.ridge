@@ -30,16 +30,16 @@ pub type Response = { status: Int, body: Text }
 -- On failure returns {error, {error_record, Code, Message}}.
 
 @ffi("ridge_rt", "http_get", 1)
-fn raw_http_get (url: Text) -> Result Response Error
+fn net raw_http_get (url: Text) -> Result Response Error
 
 @ffi("ridge_rt", "http_post", 2)
-fn raw_http_post (url: Text) (body: Text) -> Result Response Error
+fn net raw_http_post (url: Text) (body: Text) -> Result Response Error
 
 @ffi("ridge_rt", "http_put", 2)
-fn raw_http_put (url: Text) (body: Text) -> Result Response Error
+fn net raw_http_put (url: Text) (body: Text) -> Result Response Error
 
 @ffi("ridge_rt", "http_delete", 1)
-fn raw_http_delete (url: Text) -> Result Response Error
+fn net raw_http_delete (url: Text) -> Result Response Error
 
 -- ── Public client API ────────────────────────────────────────────────────────
 

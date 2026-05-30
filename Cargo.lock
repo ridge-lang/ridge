@@ -1530,8 +1530,10 @@ name = "ridge-bench"
 version = "0.2.9"
 dependencies = [
  "criterion",
+ "ridge-codegen-erl",
  "ridge-driver",
  "tempfile",
+ "which",
 ]
 
 [[package]]

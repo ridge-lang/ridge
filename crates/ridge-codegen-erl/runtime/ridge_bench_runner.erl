@@ -43,10 +43,22 @@ run(Other) ->
     erlang:halt(2).
 
 %% discover(ModAtom) -> [{Mod, Fn}] — every exported zero-arity bench_*.
+%%
+%% Ridge-generated modules do not export `module_info/1`, so exports are read
+%% from the .beam file's export chunk via beam_lib rather than by introspection.
 discover(Mod) ->
     _ = code:ensure_loaded(Mod),
-    Exports = try Mod:module_info(exports) catch _:_ -> [] end,
-    [{Mod, Fn} || {Fn, 0} <- Exports, is_bench_name(Fn)].
+    case code:which(Mod) of
+        BeamPath when is_list(BeamPath) ->
+            case beam_lib:chunks(BeamPath, [exports]) of
+                {ok, {Mod, [{exports, Exports}]}} ->
+                    [{Mod, Fn} || {Fn, 0} <- Exports, is_bench_name(Fn)];
+                _ ->
+                    []
+            end;
+        _ ->
+            []
+    end.
 
 is_bench_name(Fn) ->
     case atom_to_list(Fn) of
@@ -55,11 +67,19 @@ is_bench_name(Fn) ->
     end.
 
 report(Mod, Fn) ->
-    {Median, P99, Iters} = bench(Mod, Fn, ?ITERS),
-    io:format(
-        "{\"bench\":\"~s\",\"median_ns\":~B,\"p99_ns\":~B,\"iters\":~B}~n",
-        [Fn, Median, P99, Iters]
-    ).
+    try
+        {Median, P99, Iters} = bench(Mod, Fn, ?ITERS),
+        io:format(
+            "{\"bench\":\"~s\",\"median_ns\":~B,\"p99_ns\":~B,\"iters\":~B}~n",
+            [Fn, Median, P99, Iters]
+        )
+    catch
+        %% One crashing benchmark must not abort the others or the whole run;
+        %% surface it on stderr and emit a marker line on stdout.
+        Class:Reason:Stack ->
+            io:format(standard_error, "bench ~s crashed: ~p:~p~n~p~n", [Fn, Class, Reason, Stack]),
+            io:format("{\"bench\":\"~s\",\"error\":true}~n", [Fn])
+    end.
 
 %% bench(Mod, Fn, Iters) -> {MedianNs, P99Ns, MeasuredIters}.
 bench(Mod, Fn, Iters) ->

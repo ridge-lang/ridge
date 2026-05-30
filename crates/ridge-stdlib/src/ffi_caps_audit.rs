@@ -172,7 +172,7 @@ pub static AUDIT_TABLE: &[FfiAuditEntry] = &[
         beam_module: "erlang",
         fn_name: "halt",
         arity: 1,
-        requires_caps: &[Capability::Env],
+        requires_caps: &[Capability::Proc],
     },
     // ── erts_internal (IEEE-754 total order) ──────────────────────────────────
     FfiAuditEntry {
@@ -723,6 +723,180 @@ pub static AUDIT_TABLE: &[FfiAuditEntry] = &[
         fn_name: "http_delete",
         arity: 1,
         requires_caps: &[Capability::Net],
+    },
+    // ── erlang (integer remainder) ────────────────────────────────────────────
+    FfiAuditEntry {
+        beam_module: "erlang",
+        fn_name: "rem",
+        arity: 2,
+        requires_caps: &[],
+    },
+    // ── lists (list append) ───────────────────────────────────────────────────
+    FfiAuditEntry {
+        beam_module: "lists",
+        fn_name: "append",
+        arity: 2,
+        requires_caps: &[],
+    },
+    // ── string (byte length) ──────────────────────────────────────────────────
+    FfiAuditEntry {
+        beam_module: "string",
+        fn_name: "length",
+        arity: 1,
+        requires_caps: &[],
+    },
+    // ── filelib (directory probe) ─────────────────────────────────────────────
+    FfiAuditEntry {
+        beam_module: "filelib",
+        fn_name: "is_dir",
+        arity: 1,
+        requires_caps: &[Capability::Fs],
+    },
+    // ── ridge_rt filesystem readers ───────────────────────────────────────────
+    FfiAuditEntry {
+        beam_module: "ridge_rt",
+        fn_name: "fs_read",
+        arity: 1,
+        requires_caps: &[Capability::Fs],
+    },
+    FfiAuditEntry {
+        beam_module: "ridge_rt",
+        fn_name: "fs_read_dir",
+        arity: 1,
+        requires_caps: &[Capability::Fs],
+    },
+    // ── ridge_rt scalar parsing / formatting ──────────────────────────────────
+    FfiAuditEntry {
+        beam_module: "ridge_rt",
+        fn_name: "float_parse",
+        arity: 1,
+        requires_caps: &[],
+    },
+    // ── ridge_rt text helpers ─────────────────────────────────────────────────
+    FfiAuditEntry {
+        beam_module: "ridge_rt",
+        fn_name: "text_join",
+        arity: 2,
+        requires_caps: &[],
+    },
+    FfiAuditEntry {
+        beam_module: "ridge_rt",
+        fn_name: "text_slice",
+        arity: 3,
+        requires_caps: &[],
+    },
+    // ── ridge_rt list helpers ─────────────────────────────────────────────────
+    FfiAuditEntry {
+        beam_module: "ridge_rt",
+        fn_name: "list_fold",
+        arity: 3,
+        requires_caps: &[],
+    },
+    FfiAuditEntry {
+        beam_module: "ridge_rt",
+        fn_name: "list_sort_by",
+        arity: 2,
+        requires_caps: &[],
+    },
+    // ── ridge_rt timestamp (monotonic epoch read) ─────────────────────────────
+    FfiAuditEntry {
+        beam_module: "ridge_rt",
+        fn_name: "time_epoch",
+        arity: 1,
+        requires_caps: &[],
+    },
+    // ── ridge_rt actor introspection ──────────────────────────────────────────
+    FfiAuditEntry {
+        beam_module: "ridge_rt",
+        fn_name: "mailbox_size",
+        arity: 1,
+        requires_caps: &[],
+    },
+    // ── ridge_rt JSON constructors (pure value building) ──────────────────────
+    FfiAuditEntry {
+        beam_module: "ridge_rt",
+        fn_name: "json_null",
+        arity: 1,
+        requires_caps: &[],
+    },
+    FfiAuditEntry {
+        beam_module: "ridge_rt",
+        fn_name: "json_bool",
+        arity: 1,
+        requires_caps: &[],
+    },
+    FfiAuditEntry {
+        beam_module: "ridge_rt",
+        fn_name: "json_int",
+        arity: 1,
+        requires_caps: &[],
+    },
+    FfiAuditEntry {
+        beam_module: "ridge_rt",
+        fn_name: "json_float",
+        arity: 1,
+        requires_caps: &[],
+    },
+    FfiAuditEntry {
+        beam_module: "ridge_rt",
+        fn_name: "json_text",
+        arity: 1,
+        requires_caps: &[],
+    },
+    FfiAuditEntry {
+        beam_module: "ridge_rt",
+        fn_name: "json_list",
+        arity: 1,
+        requires_caps: &[],
+    },
+    FfiAuditEntry {
+        beam_module: "ridge_rt",
+        fn_name: "json_object",
+        arity: 1,
+        requires_caps: &[],
+    },
+    // ── ridge_rt JSON accessors (pure value inspection) ───────────────────────
+    FfiAuditEntry {
+        beam_module: "ridge_rt",
+        fn_name: "json_as_int",
+        arity: 1,
+        requires_caps: &[],
+    },
+    FfiAuditEntry {
+        beam_module: "ridge_rt",
+        fn_name: "json_as_float",
+        arity: 1,
+        requires_caps: &[],
+    },
+    FfiAuditEntry {
+        beam_module: "ridge_rt",
+        fn_name: "json_as_bool",
+        arity: 1,
+        requires_caps: &[],
+    },
+    FfiAuditEntry {
+        beam_module: "ridge_rt",
+        fn_name: "json_as_text",
+        arity: 1,
+        requires_caps: &[],
+    },
+    FfiAuditEntry {
+        beam_module: "ridge_rt",
+        fn_name: "json_as_list",
+        arity: 1,
+        requires_caps: &[],
+    },
+    FfiAuditEntry {
+        beam_module: "ridge_rt",
+        fn_name: "json_as_object",
+        arity: 1,
+        requires_caps: &[],
+    },
+    FfiAuditEntry {
+        beam_module: "ridge_rt",
+        fn_name: "json_is_null",
+        arity: 1,
+        requires_caps: &[],
     },
 ];
 

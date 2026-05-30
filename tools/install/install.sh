@@ -218,14 +218,22 @@ fi
 
 verify_cosign_bundle() {
     # Args: $1 = archive path, $2 = bundle path
-    # Returns 0 on success, 1 on hard failure (signature invalid).
-    # If cosign is absent, emits R055 advisory and returns 0 (non-fatal:
-    # SHA256 already guards integrity; cosign adds provenance attestation).
+    # Returns 0 on success, 1 on hard failure.
+    # This release is signed (a bundle was published), so its provenance is
+    # verifiable. cosign is required by default: SHA256 is fetched from the same
+    # origin as the archive and only guards transport integrity, not provenance,
+    # so a missing cosign leaves no way to tell a genuine release from a tampered
+    # one. Set RIDGE_SKIP_SIGNATURE=1 to install without that check at your own
+    # risk.
     local archive="$1" bundle="$2"
 
     if ! command -v cosign >/dev/null 2>&1; then
-        emit_advisory R055 "cosign not on PATH — skipping signature verification (install: https://docs.sigstore.dev/system_config/installation/)"
-        return 0
+        if [ "${RIDGE_SKIP_SIGNATURE:-0}" = "1" ]; then
+            emit_advisory R055 "cosign not on PATH — provenance verification skipped (RIDGE_SKIP_SIGNATURE=1)"
+            return 0
+        fi
+        emit_advisory R055 "cosign not on PATH — refusing to install this signed release unverified. Install cosign (https://docs.sigstore.dev/system_config/installation/), or re-run with RIDGE_SKIP_SIGNATURE=1 to override."
+        return 1
     fi
 
     if ! cosign verify-blob \

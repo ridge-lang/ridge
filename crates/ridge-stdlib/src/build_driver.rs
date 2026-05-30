@@ -272,7 +272,7 @@ fn compile_tier(
         return Err(error_from_resolve(tier, modules, first));
     }
 
-    let Some(ws_graph) = disc.graph else {
+    let Some(mut ws_graph) = disc.graph else {
         return Err(BuildError::TierBuildFailed {
             tier,
             module: "<discovery>".to_owned(),
@@ -280,6 +280,18 @@ fn compile_tier(
             source: "workspace graph not produced by discovery".to_owned(),
         });
     };
+
+    // These sources ARE the standard library, so they are allowed to declare
+    // `@ffi`; mark the graph as stdlib so the resolver's R022 gate permits it.
+    ws_graph.is_stdlib = true;
+
+    // Validate the stdlib's own `@ffi` declarations against the closed-list
+    // audit table (T001 arity, T002 capability, T004 unknown target) before
+    // the sources are compiled. The audit table is the single source of truth
+    // for which BEAM targets the standard library is permitted to reach, so a
+    // declaration that drifts out of the table must fail the build rather than
+    // ship a stub that crashes — or escapes the capability model — at runtime.
+    validate_tier_ffi(tier, modules, &ws_graph)?;
 
     let resolved = resolve_workspace(ws_graph);
 
@@ -391,6 +403,46 @@ fn build_temp_workspace(
 
 fn write_str(path: &Path, content: &str) -> Result<(), String> {
     std::fs::write(path, content).map_err(|e| format!("could not write {}: {e}", path.display()))
+}
+
+/// Validate every `@ffi` declaration in a tier against the closed-list audit
+/// table, returning a T204 build error on the first diagnostic.
+///
+/// Parses the tier's modules through the resolver's module-graph pass to reach
+/// the `FnDecl` nodes, collects the `@ffi`-decorated ones, and runs
+/// [`crate::ffi_validator::validate_ffi_decls`] over them. A non-empty result
+/// means a stdlib `@ffi` drifted out of the audit table (unknown target,
+/// wrong arity, or a missing capability) and the build must stop.
+fn validate_tier_ffi(
+    tier: u32,
+    modules: &[&DiscoveredModule],
+    ws_graph: &ridge_resolve::WorkspaceGraph,
+) -> Result<(), BuildError> {
+    let graph = ridge_resolve::build_module_graph(ws_graph);
+
+    let mut ffi_decls: Vec<&ridge_ast::FnDecl> = Vec::new();
+    for parsed in &graph.modules {
+        for item in &parsed.ast.items {
+            if let ridge_ast::Item::Fn(decl) = item {
+                if matches!(decl.body, ridge_ast::Body::Ffi { .. }) {
+                    ffi_decls.push(decl);
+                }
+            }
+        }
+    }
+
+    let diags = crate::ffi_validator::validate_ffi_decls(&ffi_decls);
+    if let Some(first) = diags.first() {
+        let (mod_name, mod_path) = first_module_label(modules);
+        return Err(BuildError::TierBuildFailed {
+            tier,
+            module: mod_name,
+            path: mod_path,
+            source: format!("{} invalid stdlib @ffi declaration", first.code()),
+        });
+    }
+
+    Ok(())
 }
 
 /// Build a T204 `BuildError` from a `ResolveError`.

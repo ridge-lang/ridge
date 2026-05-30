@@ -169,6 +169,49 @@ pub(crate) fn parse_expr_pratt(cur: &mut Cursor<'_>) -> Result<Expr, ParseError>
     parse_expr_bp(cur, 0)
 }
 
+// ── Recursion-depth guard ───────────────────────────────────────────────────
+
+/// Maximum expression nesting depth the recursive-descent parser will follow.
+///
+/// The expression grammar is parsed by mutual recursion (`parse_expr_bp`
+/// recurses for operands and re-enters through parenthesised/list atoms), so
+/// deeply nested input — thousands of `(((…)))`, nested lists, or chained
+/// operators — would otherwise grow the native stack without bound and abort
+/// the process. 256 is far deeper than any hand-written or formatter-produced
+/// program nests, yet shallow enough to stop well short of a stack overflow.
+const MAX_EXPR_DEPTH: u32 = 256;
+
+/// RAII guard that increments [`Cursor::expr_depth`] on creation and decrements
+/// it on drop, so the counter is restored no matter which `?`/early-return path
+/// unwinds out of the Pratt core.
+struct DepthGuard<'a, 't> {
+    cur: &'a mut Cursor<'t>,
+}
+
+impl<'a, 't> DepthGuard<'a, 't> {
+    /// Enter one expression-recursion level.
+    ///
+    /// Returns `Err(P028 ExpressionTooDeep)` (without entering) when the limit
+    /// is already reached, so the caller stops descending gracefully instead of
+    /// recursing further.
+    fn enter(cur: &'a mut Cursor<'t>) -> Result<Self, ParseError> {
+        if cur.expr_depth >= MAX_EXPR_DEPTH {
+            return Err(ParseError::ExpressionTooDeep {
+                span: cur.span(),
+                limit: MAX_EXPR_DEPTH,
+            });
+        }
+        cur.expr_depth += 1;
+        Ok(Self { cur })
+    }
+}
+
+impl Drop for DepthGuard<'_, '_> {
+    fn drop(&mut self) {
+        self.cur.expr_depth -= 1;
+    }
+}
+
 // ── Pratt core ────────────────────────────────────────────────────────────────
 
 /// Pratt parser — parses expressions whose left binding power exceeds
@@ -178,6 +221,12 @@ pub(crate) fn parse_expr_pratt(cur: &mut Cursor<'_>) -> Result<Expr, ParseError>
 #[allow(clippy::too_many_lines)] // Pratt table + postfix block is inherently long
 #[allow(clippy::cognitive_complexity)] // same reason — Pratt loop dispatch is irreducibly branchy
 fn parse_expr_bp(cur: &mut Cursor<'_>, min_bp: u8) -> Result<Expr, ParseError> {
+    // ── Recursion-depth guard ─────────────────────────────────────────────────
+    // Bound the descent before doing any work. The guard decrements on drop, so
+    // the counter is correct on every return path below.
+    let guard = DepthGuard::enter(cur)?;
+    let cur = &mut *guard.cur;
+
     // ── Prefix / nud ─────────────────────────────────────────────────────────
     let mut lhs = if cur.peek() == &Token::Minus {
         // Unary minus (only prefix operator). rbp = 19.
@@ -1883,6 +1932,90 @@ mod tests {
         assert!(
             matches!(e, Expr::Lambda { .. }),
             "expected Lambda, got {e:?}"
+        );
+    }
+
+    // ── Recursion-depth guard (P028) ─────────────────────────────────────────
+
+    /// Parse `src` on a worker thread with a generous (8 MiB) stack — the same
+    /// order of magnitude the compiler's main thread gets — and return the
+    /// first parse error.
+    ///
+    /// The deep-nesting cases below feed thousands of nested constructs.  The
+    /// `P028` guard stops the descent at 256 levels, but the default per-test
+    /// stack the Rust harness hands out is far smaller than a real main thread,
+    /// so we run these on an explicit large-stack thread to exercise the guard
+    /// under realistic conditions rather than the harness's tiny default.
+    fn err_big_stack(src: &str) -> ParseError {
+        let owned = src.to_string();
+        std::thread::Builder::new()
+            .stack_size(8 * 1024 * 1024)
+            .spawn(move || err(&owned))
+            .expect("spawn parser thread")
+            .join()
+            .expect("parser thread panicked (likely stack overflow — guard failed)")
+    }
+
+    /// Pathological nesting must be rejected with P028 instead of overflowing
+    /// the native stack.  `10_000` nested parens is far past the 256 limit and
+    /// would crash an unbounded recursive-descent parser; with the guard it
+    /// returns a clean diagnostic and the process stays alive.
+    #[test]
+    fn deeply_nested_parens_reject_without_overflow() {
+        let depth = 10_000;
+        let src = format!("{}1{}", "(".repeat(depth), ")".repeat(depth));
+        let e = err_big_stack(&src);
+        assert_eq!(e.code(), "P028", "expected P028, got {e:?}");
+    }
+
+    /// Deeply nested lists are bounded by the same guard (the list parser
+    /// re-enters the expression parser per element).
+    #[test]
+    fn deeply_nested_lists_reject_without_overflow() {
+        let depth = 10_000;
+        let src = format!("{}1{}", "[".repeat(depth), "]".repeat(depth));
+        let e = err_big_stack(&src);
+        assert_eq!(e.code(), "P028", "expected P028, got {e:?}");
+    }
+
+    /// A long chain of binary operators also descends, so it is bounded too.
+    #[test]
+    fn deeply_chained_operators_reject_without_overflow() {
+        // Right-associative `::` recurses once per element → deep descent.
+        let src = format!("{}x", "x :: ".repeat(10_000));
+        let e = err_big_stack(&src);
+        assert_eq!(e.code(), "P028", "expected P028, got {e:?}");
+    }
+
+    /// Nesting comfortably under the limit must still parse cleanly — the guard
+    /// must not introduce a false positive on ordinary programs.  Real code
+    /// rarely nests beyond a handful of levels; 64 is already extreme.
+    #[test]
+    fn moderately_nested_parens_still_parse() {
+        let depth = 64;
+        let src = format!("{}1{}", "(".repeat(depth), ")".repeat(depth));
+        let e = ok(&src);
+        // Outermost layer is a Paren wrapping the next.
+        assert!(
+            matches!(e, Expr::Paren { .. }),
+            "expected Paren at top, got {e:?}"
+        );
+    }
+
+    /// A normally-nested expression (a few levels of mixed parens, lists, and
+    /// operators) is unaffected by the guard.
+    #[test]
+    fn normally_nested_expression_parses_clean() {
+        let e = ok("(1 + [2, (3 * 4)]) :: [5]");
+        assert!(
+            matches!(
+                e,
+                Expr::Binary {
+                    op: BinOp::Cons,
+                    ..
+                }
+            ),
+            "expected Cons at top, got {e:?}"
         );
     }
 }

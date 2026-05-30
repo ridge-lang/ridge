@@ -113,6 +113,9 @@ jobs:
         if: matrix.os != 'windows'
         env:
           RIDGE_VERSION: ${{ steps.ver.outputs.version }}
+          # Runners don't ship cosign; opt out of the now-default provenance
+          # check so the smoke test exercises install mechanics, not signing.
+          RIDGE_SKIP_SIGNATURE: "1"
         run: |
           set -o pipefail
           INSTALLER=/tmp/ridge-install.sh
@@ -134,6 +137,9 @@ jobs:
         shell: pwsh
         env:
           RIDGE_VERSION: ${{ steps.ver.outputs.version }}
+          # Runners don't ship cosign; opt out of the now-default provenance
+          # check so the smoke test exercises install mechanics, not signing.
+          RIDGE_SKIP_SIGNATURE: "1"
         run: |
           $url = "https://raw.githubusercontent.com/ridge-lang/ridge/${{ steps.src.outputs.ref }}/tools/install/install.ps1"
           & ([scriptblock]::Create((iwr -useb $url).Content))

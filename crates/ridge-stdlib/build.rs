@@ -16,9 +16,28 @@
 // T201 errors: surfaced via eprintln! + process::exit(1) (no panic! per §1.3).
 
 // Suppress lints that are not relevant in a build script context.
-#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+// `enum_variant_names` fires on `FfiDiag` (all variants share the `Ffi`
+// prefix); the library crate silences it through the workspace lint config,
+// which build scripts do not inherit, so it is repeated here.
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::panic,
+    clippy::enum_variant_names
+)]
 
 use std::fmt::Write as _;
+
+// The build driver validates the stdlib's own `@ffi` declarations against the
+// closed-list audit table before compiling. Both the validator and the audit
+// table are normal library modules (`crate::ffi_validator`,
+// `crate::ffi_caps_audit`); pull them in here under the same module paths the
+// library exposes so the shared `build_driver.rs` source resolves identically
+// whether it is compiled as part of the crate or `include!`d by this script.
+#[path = "src/ffi_caps_audit.rs"]
+mod ffi_caps_audit;
+#[path = "src/ffi_validator.rs"]
+mod ffi_validator;
 
 // The included file brings its own `use` statements and all public items,
 // including `use std::path::{Path, PathBuf}`.

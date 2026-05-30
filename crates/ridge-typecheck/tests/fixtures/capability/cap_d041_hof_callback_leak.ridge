@@ -1,0 +1,18 @@
+-- expect: T014
+-- Adversarial complement to cap_d041_hof_cap_flow.  `Io.println` ({io}) is
+-- passed point-free as the callback to `List.forEach`, but `leaky` declares no
+-- capabilities.  The HOF cap variable unifies to {io} (D041) and flows into
+-- `leaky`'s *inferred* set, so T014 rejects it: {io} is not a subset of {}.
+--
+-- The point-free form is what makes this a precise soundness lock: the T18
+-- per-call-site check reads PURE for the `List.forEach` callee (its caps live
+-- in a CapRow::Var resolved only through the argument — see `call_site_caps`),
+-- and there is no lambda body for T18 to descend into, so T18 stays silent and
+-- T14 is the *sole* check that catches the leak.  This pins the invariant that
+-- T14's HOF-aware inference is the enforcing pass and T18's conservatism is
+-- sound because T14 backstops it.
+import std.io as Io
+import std.list as List
+
+fn leaky (xs: List Text) -> Unit =
+    List.forEach Io.println xs

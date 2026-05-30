@@ -304,6 +304,7 @@ pub fn compile_workspace(options: CompileOptions) -> Result<CompileArtefacts, Co
 ///
 /// Returns the first `ridge_codegen_erl::CodegenError` encountered (output dir
 /// creation, source unpacking, lowering, or `erlc` failure).
+#[allow(clippy::too_many_lines)]
 fn compile_stdlib_beams(
     beam_dir: &std::path::Path,
     out_root: &std::path::Path,
@@ -358,13 +359,14 @@ fn compile_stdlib_beams(
 
     // Run the Ridge pipeline over the stdlib workspace.
     let disc = discover_workspace(ws_root);
-    let Some(ws_graph) = disc.graph else {
+    let Some(mut ws_graph) = disc.graph else {
         eprintln!(
             "warning: stdlib BEAM bundling: workspace discovery failed at {}",
             ws_root.display()
         );
         return Ok(());
     };
+    ws_graph.is_stdlib = true; // these are stdlib sources; R022 permits @ffi
     let resolved = resolve_workspace(ws_graph);
     if resolved
         .errors

@@ -195,6 +195,7 @@ mod tests {
             projects: vec![],
             modules,
             deps: vec![vec![]; len],
+            is_stdlib: false,
         }
     }
 

@@ -549,8 +549,8 @@ fn r016_capability_not_allowed_by_project() {
 
 /// `R022 FfiOutsideStdlib` — a user-authored module that declares an `@ffi`
 /// function must be rejected by the full resolve pipeline, not just the unit
-/// checker.  The synthetic workspace lives under a tempdir with no
-/// `ridge-stdlib` component, so the crate-path gate treats it as user code.
+/// checker.  A workspace discovered from disk is not the standard library, so
+/// the gate treats it as user code.
 #[test]
 fn r022_ffi_outside_stdlib_in_user_module() {
     let td = TempDir::new().unwrap();
@@ -574,6 +574,38 @@ fn r022_ffi_outside_stdlib_in_user_module() {
     assert!(
         errors.iter().any(|e| e.code() == "R022"),
         "expected R022 from the resolve pipeline; errors: {errors:?}"
+    );
+    drop(td);
+}
+
+/// `R022 FfiOutsideStdlib` — a user project that happens to sit in a directory
+/// named `ridge-stdlib` is still user code and must be rejected. The old
+/// path-component heuristic let such a directory bypass the gate; with the
+/// stdlib decision carried as an explicit flag (false for any discovered
+/// workspace) the hole is closed.
+#[test]
+fn r022_ffi_rejected_in_user_dir_named_ridge_stdlib() {
+    let td = TempDir::new().unwrap();
+    write_file(
+        td.path(),
+        "ridge.toml",
+        "[workspace]\nname = \"ws\"\nversion = \"0.1.0\"\nmembers = [\"ridge-stdlib/*\"]\n",
+    );
+    write_file(
+        td.path(),
+        "ridge-stdlib/myproj/ridge.toml",
+        "[project]\nname = \"myproj\"\nversion = \"0.1.0\"\nkind = \"library\"\n",
+    );
+    write_file(
+        td.path(),
+        "ridge-stdlib/myproj/src/Foo.ridge",
+        "@ffi(\"erlang\", \"length\", 1)\npub fn length (xs: List a) -> Int\n",
+    );
+
+    let errors = run_pipeline(&td);
+    assert!(
+        errors.iter().any(|e| e.code() == "R022"),
+        "a user dir named `ridge-stdlib` must not bypass R022; errors: {errors:?}"
     );
     drop(td);
 }

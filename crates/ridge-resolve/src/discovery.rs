@@ -185,6 +185,10 @@ pub fn discover_workspace(root: &Path) -> DiscoveryResult {
             projects,
             modules,
             deps,
+            // Discovery cannot know if these sources are the standard library;
+            // the stdlib build paths set this after discovery. User builds
+            // leave it false, so user `@ffi` is rejected by R022.
+            is_stdlib: false,
         }),
         manifest_errors,
         resolve_errors,

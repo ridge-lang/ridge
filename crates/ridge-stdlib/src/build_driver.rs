@@ -272,7 +272,7 @@ fn compile_tier(
         return Err(error_from_resolve(tier, modules, first));
     }
 
-    let Some(ws_graph) = disc.graph else {
+    let Some(mut ws_graph) = disc.graph else {
         return Err(BuildError::TierBuildFailed {
             tier,
             module: "<discovery>".to_owned(),
@@ -280,6 +280,10 @@ fn compile_tier(
             source: "workspace graph not produced by discovery".to_owned(),
         });
     };
+
+    // These sources ARE the standard library, so they are allowed to declare
+    // `@ffi`; mark the graph as stdlib so the resolver's R022 gate permits it.
+    ws_graph.is_stdlib = true;
 
     // Validate the stdlib's own `@ffi` declarations against the closed-list
     // audit table (T001 arity, T002 capability, T004 unknown target) before
@@ -355,19 +359,14 @@ fn build_temp_workspace(
         .map_err(|e| format!("could not create temp dir for tier {tier}: {e}"))?;
     let tmp_root = tmp_dir.path();
 
-    // Name the project directory `ridge-stdlib` so the source paths handed to
-    // the resolver carry the marker that the `@ffi` crate-path gate (R022)
-    // looks for. The stdlib genuinely lives in `crates/ridge-stdlib`; these
-    // copied tier sources are part of that same build, and must be treated as
-    // stdlib rather than user code.
-    let proj_dir = tmp_root.join("ridge-stdlib");
+    let proj_dir = tmp_root.join("stdlib");
     std::fs::create_dir_all(proj_dir.join("src"))
         .map_err(|e| format!("could not create src dir: {e}"))?;
 
     // Workspace manifest.
     write_str(
         &tmp_root.join("ridge.toml"),
-        "[workspace]\nname = \"ridge-stdlib-tier\"\nversion = \"0.1.0\"\nmembers = [\"ridge-stdlib\"]\n",
+        "[workspace]\nname = \"ridge-stdlib-tier\"\nversion = \"0.1.0\"\nmembers = [\"stdlib\"]\n",
     )?;
 
     // Project manifest.

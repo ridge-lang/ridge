@@ -149,6 +149,15 @@ pub struct WorkspaceGraph {
     /// Discovery initialises this as `vec![vec![]; modules.len()]`.
     /// The module-graph pass fills the actual edges after import resolution.
     pub deps: Vec<Vec<ModuleId>>,
+    /// Whether this workspace is the Ridge standard library.
+    ///
+    /// Discovery sets this to `false`; the stdlib build paths flip it to `true`
+    /// after discovery. It gates the `@ffi` privilege (R022): standard-library
+    /// modules may declare `@ffi`, user code may not. The flag is threaded from
+    /// the driver instead of being inferred from the source path, which cannot
+    /// be trusted (the stdlib is built from copied sources under a throwaway
+    /// path, and a user directory could be named `ridge-stdlib`).
+    pub is_stdlib: bool,
 }
 
 /// Metadata for a single `.ridge` source file discovered during the filesystem walk.
@@ -372,11 +381,11 @@ pub fn resolve_workspace(ws: WorkspaceGraph) -> ResolvedWorkspace {
         capabilities::check_capabilities(&pm.ast, project, &ws.manifest, &mut cap_errors);
         all_errors.extend(cap_errors.into_iter().map(|e| (pm.id, e)));
 
-        // Crate-path gate for `@ffi` (R022). User-authored modules may not
-        // declare `@ffi`; only the standard library can. The source path of
-        // the module tells us which side of that line it sits on.
-        let source_path = &ws.modules[pm.id.0 as usize].file_path;
-        let ffi_errors = decl::check_ffi_outside_stdlib(&pm.ast, source_path);
+        // `@ffi` gate (R022). User-authored modules may not declare `@ffi`;
+        // only the standard library can. Whether this workspace is the stdlib
+        // is decided by the driver and carried on the graph, not guessed from
+        // the source path.
+        let ffi_errors = decl::check_ffi_outside_stdlib(&pm.ast, ws.is_stdlib);
         all_errors.extend(ffi_errors.into_iter().map(|e| (pm.id, e)));
 
         let module_imports_owned: Vec<imports::ImportResolution> = import_result

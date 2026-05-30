@@ -804,6 +804,7 @@ mod tests {
             projects: vec![],
             modules,
             deps: vec![vec![]; n],
+            is_stdlib: false,
         };
 
         let mg = ModuleGraph {

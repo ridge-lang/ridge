@@ -2,27 +2,30 @@
 //!
 //! Currently houses the crate-path gate for `@ffi` (§5.5 / T003).
 
-use std::path::Path;
-
 use ridge_ast::{Body, Item, Module};
 
 use crate::error::ResolveError;
 
 // ── Crate-path gate (T003 FfiOutsideStdlib) ───────────────────────────────────
 
-/// Emit `R022 FfiOutsideStdlib` for every `@ffi`-decorated `pub fn` found in
-/// `module` when `source_path` is not inside the `ridge-stdlib` crate.
+/// Emit `R022 FfiOutsideStdlib` for every `@ffi`-decorated `fn` found in
+/// `module`, unless the module belongs to the standard library.
 ///
-/// The stdlib crate is identified by the presence of `"ridge-stdlib"` in the
-/// canonical source path (separator-agnostic via [`Path::components`]).
+/// `@ffi` is a standard-library-only privilege. Whether a module is part of
+/// the standard library is decided by the driver that builds it — the stdlib
+/// build paths set `is_stdlib`, every user build leaves it `false` — rather
+/// than inferred from the source path, which is unreliable: the stdlib is
+/// compiled from sources copied into a throwaway workspace whose path carries
+/// no stable marker, and a user directory could just as easily be named
+/// `ridge-stdlib`.
 ///
 /// # Errors emitted
 ///
-/// - [`ResolveError::FfiOutsideStdlib`] (`R022`) — for each `@ffi` decl whose
-///   file is outside `crates/ridge-stdlib/`.
+/// - [`ResolveError::FfiOutsideStdlib`] (`R022`) — for each `@ffi` decl in a
+///   module that is not part of the standard library.
 #[must_use]
-pub fn check_ffi_outside_stdlib(module: &Module, source_path: &Path) -> Vec<ResolveError> {
-    if is_stdlib_path(source_path) {
+pub fn check_ffi_outside_stdlib(module: &Module, is_stdlib: bool) -> Vec<ResolveError> {
+    if is_stdlib {
         return Vec::new();
     }
 
@@ -37,14 +40,6 @@ pub fn check_ffi_outside_stdlib(module: &Module, source_path: &Path) -> Vec<Reso
     errors
 }
 
-/// Return `true` when `path` is inside the `ridge-stdlib` Rust crate.
-///
-/// Detection criterion: any path component equals `"ridge-stdlib"`.
-fn is_stdlib_path(path: &Path) -> bool {
-    path.components()
-        .any(|c| c.as_os_str().to_str().is_some_and(|s| s == "ridge-stdlib"))
-}
-
 // ── Tests ─────────────────────────────────────────────────────────────────────
 
 #[cfg(test)]
@@ -52,31 +47,14 @@ mod tests {
     use super::*;
 
     #[test]
-    fn is_stdlib_path_returns_true_for_stdlib() {
-        assert!(is_stdlib_path(Path::new(
-            "/workspace/crates/ridge-stdlib/src/io.ridge"
-        )));
-    }
-
-    #[test]
-    fn is_stdlib_path_returns_false_for_user_code() {
-        assert!(!is_stdlib_path(Path::new(
-            "/workspace/apps/myapp/src/main.ridge"
-        )));
-    }
-
-    #[test]
-    fn no_errors_when_source_is_stdlib() {
-        // An empty module inside the stdlib path produces no errors.
+    fn no_errors_when_module_is_stdlib() {
+        // An empty stdlib module produces no errors.
         let module = ridge_ast::Module {
             items: vec![],
             doc: vec![],
             span: ridge_ast::Span::point(0),
         };
-        let errs = check_ffi_outside_stdlib(
-            &module,
-            Path::new("/workspace/crates/ridge-stdlib/src/io.ridge"),
-        );
+        let errs = check_ffi_outside_stdlib(&module, true);
         assert!(errs.is_empty());
     }
 
@@ -113,8 +91,7 @@ mod tests {
     #[test]
     fn r022_fires_for_ffi_in_user_module() {
         let module = module_with_ffi();
-        let errs =
-            check_ffi_outside_stdlib(&module, Path::new("/workspace/apps/myapp/src/main.ridge"));
+        let errs = check_ffi_outside_stdlib(&module, false);
         assert_eq!(errs.len(), 1);
         assert!(matches!(errs[0], ResolveError::FfiOutsideStdlib { .. }));
         assert_eq!(errs[0].code(), "R022");
@@ -123,10 +100,7 @@ mod tests {
     #[test]
     fn no_r022_for_ffi_in_stdlib_module() {
         let module = module_with_ffi();
-        let errs = check_ffi_outside_stdlib(
-            &module,
-            Path::new("/workspace/crates/ridge-stdlib/stdlib/list.ridge"),
-        );
+        let errs = check_ffi_outside_stdlib(&module, true);
         assert!(errs.is_empty(), "stdlib `@ffi` must be allowed: {errs:?}");
     }
 }

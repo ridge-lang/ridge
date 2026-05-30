@@ -7,6 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.9] - 2026-05-30
+
+### Added
+
+- The parser bounds expression nesting depth at 256 levels (`P028 ExpressionTooDeep`). Pathologically nested input — thousands of nested parentheses, lists, or operator chains — now reports a diagnostic instead of overflowing the native stack and aborting the compiler with no message.
+
+### Changed
+
+- The release installer requires cosign signature verification by default when a release is signed. A missing `cosign` previously continued with an advisory, but the SHA256 sidecar is fetched from the same origin as the archive, so it guards transport integrity without attesting provenance. The installer now refuses to install a signed release it cannot verify; set `RIDGE_SKIP_SIGNATURE=1` to opt out. Unsigned (older) releases are unaffected.
+
+### Security
+
+- `@ffi` declarations are now rejected in user code at build time (`R022 FfiOutsideStdlib`). FFI is a standard-library-only privilege; the gate existed but was never invoked during a normal build. In the same pass, the standard library's own `@ffi` declarations are validated against the capability audit table as it builds — an FFI target with missing capabilities or an unknown callee now fails the build — closing the gap between a documented safety check and one that actually runs.
+
 ## [0.2.8] - 2026-05-29
 
 ### Added

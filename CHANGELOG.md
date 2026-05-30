@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.10] - 2026-05-30
+
+### Added
+
+- A benchmark suite (`ridge-bench`) for tracking compile performance over time. A native layer measures the pipeline from lexing through Core Erlang emission with criterion; a BEAM layer times generated code through a micro-benchmark harness. A workflow records the native layer on every pull request.
+
+### Fixed
+
+- Editor diagnostics now land on the correct file and line. A diagnostic for a source file that was not open in the editor previously collapsed to `<unknown>` at line 1; spans are now resolved against the text the compiler read, and the document is identified from its workspace-relative path.
+- The feature list in `README.md` no longer advertises LSP hover and go-to-definition, which are not implemented yet.
+
 ## [0.2.9] - 2026-05-30
 
 ### Added

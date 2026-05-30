@@ -11,6 +11,7 @@
 pub mod builtins;
 pub mod capability_set;
 pub mod scheme;
+pub mod shape_key;
 pub mod subst;
 pub mod ty;
 pub mod tycon;
@@ -21,6 +22,7 @@ pub mod witness;
 pub use builtins::BuiltinTyCons;
 pub use capability_set::CapabilitySet;
 pub use scheme::Scheme;
+pub use shape_key::{AnonRecordTable, CapKey, ShapeKey, TyKey, shape_key, type_to_key};
 pub use subst::Subst;
 pub use ty::{CapRow, CapVid, TyVid, Type};
 pub use tycon::{

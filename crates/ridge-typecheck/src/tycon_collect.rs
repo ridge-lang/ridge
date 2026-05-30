@@ -87,6 +87,7 @@ pub fn collect_user_tycons(
                     kind: TyConKind::Primitive, // placeholder; replaced in pass 2
                     def_span: Some(td.span),
                     def_module_raw: Some(module_id.0),
+                    is_anon: false,
                 });
                 name_to_id.insert(td.name.text.clone(), id);
             }
@@ -98,6 +99,7 @@ pub fn collect_user_tycons(
                     kind: TyConKind::Primitive, // placeholder; replaced in pass 2
                     def_span: Some(ad.span),
                     def_module_raw: Some(module_id.0),
+                    is_anon: false,
                 });
                 name_to_id.insert(ad.name.text.clone(), id);
             }

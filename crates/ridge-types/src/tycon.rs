@@ -125,6 +125,13 @@ pub struct TyConDecl {
     /// `None` for built-in `TyCons` (no source module) and for stdlib
     /// declarations that bypass the user collect pass.
     pub def_module_raw: Option<u32>,
+    /// `true` for anonymous `TyCons` minted from inline record types.
+    ///
+    /// These are interned from `{ field: Type, … }` syntax and have no
+    /// user-visible name.  Diagnostic renderers use this flag to switch from
+    /// name-based rendering (`Coords`) to structural-shape rendering
+    /// (`{ x: Int, y: Int }`).
+    pub is_anon: bool,
 }
 
 // ── TyConKind ─────────────────────────────────────────────────────────────────
@@ -306,6 +313,7 @@ mod tests {
             kind: TyConKind::Primitive,
             def_span: Some(dummy_span()),
             def_module_raw: None,
+            is_anon: false,
         };
         assert_eq!(d.id.0, 1);
         assert_eq!(d.name, "User");

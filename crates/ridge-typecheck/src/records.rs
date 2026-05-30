@@ -532,6 +532,7 @@ mod tests {
             kind: TyConKind::Record(schema),
             def_span: None,
             def_module_raw: None,
+            is_anon: false,
         });
         (arena, b, tycon_id)
     }

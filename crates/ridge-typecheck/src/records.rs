@@ -362,6 +362,15 @@ pub fn infer_record_with(
 
 // ── Internal helpers ──────────────────────────────────────────────────────────
 
+/// Public re-export of [`attach_span`] for use by `infer.rs` inline-record helpers.
+///
+/// Callers outside `records.rs` that need to attach a span to a `TypeError`
+/// produced by `unify` (which emits dummy spans) can call this instead of
+/// duplicating the match logic.
+pub fn attach_span_pub(e: TypeError, span: Span) -> TypeError {
+    attach_span(e, span)
+}
+
 /// Attach a `Span` to a `TypeError` that was produced without a proper span
 /// (typically from [`unify`]).
 ///

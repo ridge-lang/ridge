@@ -351,6 +351,33 @@ pub enum TypeError {
         span: Span,
     },
 
+    // ── P029 ─────────────────────────────────────────────────────────────────
+    /// A field inside an inline record type references a type variable from an
+    /// enclosing parametric declaration.  Parametric anonymous records are not
+    /// supported in this version.
+    ///
+    /// The diagnostic code is `P029` (not a `T###`) because it is a semantic
+    /// companion to the surface-syntax restriction — analogous to how lower-level
+    /// `P026` lives in `ridge-lower`.
+    InlineRecordTyVarField {
+        /// Name of the type variable that appeared inside the inline record.
+        var_name: String,
+        /// Source span of the inline record type expression.
+        span: Span,
+    },
+
+    // ── T028 ─────────────────────────────────────────────────────────────────
+    /// A constructor-less record pattern omits one or more fields of the
+    /// matched record type and does not include a `..` rest pattern.
+    IncompleteRecordPattern {
+        /// Structural description of the record type being matched.
+        record: String,
+        /// Fields that are present in the type but absent from the pattern.
+        missing_fields: Vec<String>,
+        /// Source span of the record pattern.
+        span: Span,
+    },
+
     // ── T999 ─────────────────────────────────────────────────────────────────
     /// Internal type-checker invariant violation — should never reach users.
     ///
@@ -400,6 +427,8 @@ impl TypeError {
             Self::SpawnArityMismatch { .. } => "T025",
             Self::AskTimeoutNotInt { .. } => "T026",
             Self::MailboxPolicyDropOldestNotShipped { .. } => "T027",
+            Self::IncompleteRecordPattern { .. } => "T028",
+            Self::InlineRecordTyVarField { .. } => "P029",
             Self::InternalTypeError { .. } => "T999",
         }
     }

@@ -199,7 +199,6 @@ fn collect_called_names(
         | Expr::Send { .. }
         | Expr::Ask { .. }
         | Expr::Spawn { .. } => {}
-        // TODO(0.2.12): collect dependency edges through inline record literal field values.
         Expr::RecordLit { fields, .. } => {
             for f in fields {
                 if let Some(ref val) = f.value {

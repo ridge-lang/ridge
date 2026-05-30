@@ -234,15 +234,21 @@ error: git $gitVer is too old; Ridge requires git $MinGit or newer. (P008 PkgGit
 # ──────────────────────────────────────────────────────────────────────────────
 
 function Test-CosignBundle {
-    # Returns $true on success, $false on hard failure (signature invalid).
-    # If cosign is absent, emits R055 and returns $true (non-fatal: SHA256
-    # already guards integrity; cosign adds provenance attestation).
+    # Returns $true on success, $false on hard failure.
+    # This release is signed (a bundle was published), so its provenance is
+    # verifiable. cosign is required by default: SHA256 is fetched from the same
+    # origin as the archive and only guards transport integrity, not provenance.
+    # Set RIDGE_SKIP_SIGNATURE=1 to install without that check at your own risk.
     param([string]$Archive, [string]$Bundle)
 
     $cosignCmd = Get-Command cosign -ErrorAction SilentlyContinue
     if (-not $cosignCmd) {
-        Write-Advisory "R055" "cosign not on PATH - skipping signature verification (install: https://docs.sigstore.dev/system_config/installation/)"
-        return $true
+        if ($env:RIDGE_SKIP_SIGNATURE -eq "1") {
+            Write-Advisory "R055" "cosign not on PATH - provenance verification skipped (RIDGE_SKIP_SIGNATURE=1)"
+            return $true
+        }
+        Write-Advisory "R055" "cosign not on PATH - refusing to install this signed release unverified. Install cosign (https://docs.sigstore.dev/system_config/installation/), or re-run with RIDGE_SKIP_SIGNATURE=1 to override."
+        return $false
     }
 
     $identityRegex = 'https://github\.com/ridge-lang/ridge/\.github/workflows/release\.yml@refs/tags/v.*'

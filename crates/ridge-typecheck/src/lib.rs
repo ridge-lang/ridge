@@ -391,7 +391,7 @@ fn typecheck_module_inner(
     use crate::ctx::InferCtx;
     use crate::scc::typecheck_module_decls;
     use crate::stdlib_env::seed_stdlib_env;
-    use crate::tycon_collect::collect_user_tycons;
+    use crate::tycon_collect::{collect_user_tycons, prescan_inline_records};
     use ridge_resolve::assign_node_ids;
 
     // Phase 4.5 T2/T3: build the NodeIdMap for this module so that infer_expr
@@ -412,6 +412,14 @@ fn typecheck_module_inner(
     // Populate the user_tycon_names map for ast_type_to_type resolution.
     ctx.user_tycon_names = tycon_result.user_tycon_names;
     // Snapshot all TyConDecls (builtins + user) for record/union inference.
+    ctx.tycon_decls = arena.all().to_vec();
+
+    // Step A2: Pre-scan inline record types and intern anonymous TyCons.
+    // Must run AFTER pass-1 (names stable) and alias-chain resolution, BEFORE
+    // inference begins so that ast_type_to_ridge_type can look up shapes.
+    let anon_table = prescan_inline_records(&[ast], arena, b, &mut ctx);
+    ctx.anon_records = anon_table;
+    // Re-snapshot after anon TyCon interning so ctx.tycon_decls includes them.
     ctx.tycon_decls = arena.all().to_vec();
 
     // Step B: Seed env with prelude constructors + stdlib qualified bindings.

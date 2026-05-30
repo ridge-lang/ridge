@@ -24,10 +24,11 @@
 //! `type IntStack = Stack Int` lands directly on `List Int`.
 
 use ridge_ast::{ActorDecl, ActorMember, Constructor, Item, Module, TypeBody, TypeDecl};
+use ridge_ast::visit::{Visit, walk_module};
 use ridge_types::{
-    ActorSchema, BuiltinTyCons, CapabilitySet, HandlerSchema, RecordField, RecordSchema, Scheme,
-    TyConArena, TyConDecl, TyConId, TyConKind, TyVid, Type, UnionSchema, UnionVariant,
-    VariantPayload,
+    ActorSchema, AnonRecordTable, BuiltinTyCons, CapabilitySet, HandlerSchema, RecordField,
+    RecordSchema, Scheme, TyConArena, TyConDecl, TyConId, TyConKind, TyVid, Type,
+    UnionSchema, UnionVariant, VariantPayload, shape_key,
 };
 use rustc_hash::FxHashMap;
 
@@ -153,6 +154,258 @@ pub fn collect_user_tycons(
     TyConCollectResult {
         user_tycon_names: name_to_id,
     }
+}
+
+// ── Pre-scan: anonymous record interning ──────────────────────────────────────
+
+/// Walk all AST `Type::Record` nodes in every module, intern a unique
+/// anonymous `TyCon` per structural shape, and return the complete
+/// `AnonRecordTable` (shape → `TyConId`).
+///
+/// Must be called AFTER pass-1 (all named `TyCon` ids are stable) and after
+/// `resolve_alias_chains` (alias bodies are terminal).  Must be called BEFORE
+/// `ast_type_to_ridge_type` is invoked on any `Type::Record` node.
+///
+/// Uses the same `b` / `names` / `ctx` context as `ast_type_to_ridge_type` so
+/// that primitive and user-defined types resolve consistently.
+pub fn prescan_inline_records(
+    modules: &[&Module],
+    arena: &mut TyConArena,
+    b: &BuiltinTyCons,
+    ctx: &mut InferCtx,
+) -> AnonRecordTable {
+    let mut table: AnonRecordTable = AnonRecordTable::default();
+    let mut counter: usize = 0;
+    // Collect name→id from tycon_decls (already populated in ctx).
+    let names: FxHashMap<String, TyConId> = ctx
+        .tycon_decls
+        .iter()
+        .map(|d| (d.name.clone(), d.id))
+        .collect();
+
+    for module in modules {
+        let mut collector = InlineRecordCollector {
+            arena,
+            b,
+            ctx,
+            names: &names,
+            table: &mut table,
+            counter: &mut counter,
+        };
+        walk_module(&mut collector, module);
+    }
+    table
+}
+
+/// Visitor that walks every `Type::Record` node bottom-up and interns it.
+struct InlineRecordCollector<'a> {
+    arena: &'a mut TyConArena,
+    b: &'a BuiltinTyCons,
+    ctx: &'a mut InferCtx,
+    names: &'a FxHashMap<String, TyConId>,
+    table: &'a mut AnonRecordTable,
+    counter: &'a mut usize,
+}
+
+impl<'ast> Visit<'ast> for InlineRecordCollector<'_> {
+    fn visit_type(&mut self, t: &'ast ridge_ast::Type) {
+        // Recurse FIRST (bottom-up: inner fields before outer).
+        ridge_ast::visit::walk_type(self, t);
+
+        if let ridge_ast::Type::Record { fields, span } = t {
+            intern_inline_record(
+                self.arena,
+                self.b,
+                self.ctx,
+                self.names,
+                self.table,
+                self.counter,
+                fields,
+                *span,
+            );
+        }
+    }
+}
+
+/// Resolve the AST fields of a `Type::Record` to `ridge_types::Type` values,
+/// compute the `ShapeKey`, and intern a new anonymous `TyCon` if not already
+/// present.  Idempotent: the same shape always produces the same `TyConId`.
+#[expect(
+    clippy::too_many_arguments,
+    reason = "flat helper called from visitor; threading all context is unavoidable without a struct"
+)]
+fn intern_inline_record(
+    arena: &mut TyConArena,
+    b: &BuiltinTyCons,
+    ctx: &mut InferCtx,
+    names: &FxHashMap<String, TyConId>,
+    table: &mut AnonRecordTable,
+    counter: &mut usize,
+    fields: &[ridge_ast::RecordTypeField],
+    span: ridge_ast::Span,
+) {
+    // Resolve each field's AST type using the same machinery as
+    // ast_type_to_ridge_type.  Nested inline records are already interned by
+    // the bottom-up visit, so they resolve as Type::Con(inner_anon_id, []).
+    let resolved_fields: Vec<(String, Type)> = fields
+        .iter()
+        .map(|f| {
+            let ty = resolve_field_type_for_prescan(b, ctx, &f.ty, names, table);
+            (f.name.text.clone(), ty)
+        })
+        .collect();
+
+    // Build the canonical shape key.
+    let key = shape_key(&resolved_fields);
+
+    // Intern on MISS.
+    table.entry(key).or_insert_with(|| {
+        // Build canonical (sorted-by-name) field list for the schema.
+        let mut canonical_fields: Vec<RecordField> = resolved_fields
+            .into_iter()
+            .map(|(name, ty)| RecordField { name, ty })
+            .collect();
+        canonical_fields.sort_by(|a, b| a.name.cmp(&b.name));
+
+        let anon_name = format!("{{anon record #{}}}", *counter);
+        *counter += 1;
+
+        #[expect(
+            clippy::cast_possible_truncation,
+            reason = "anon counter is bounded by source positions"
+        )]
+        let decl = TyConDecl {
+            id: TyConId(0), // overwritten by arena.intern
+            name: anon_name,
+            arity: 0,
+            kind: TyConKind::Record(RecordSchema::new(vec![], canonical_fields)),
+            def_span: Some(span),
+            def_module_raw: None, // no single owning module for workspace-wide anons
+            is_anon: true,
+        };
+        arena.intern(decl)
+    });
+}
+
+/// Resolve a single field's AST type to a `ridge_types::Type` during the
+/// pre-scan.  This mirrors `ast_type_to_ridge_type` but also handles
+/// `Type::Record` via the in-progress `table` (since nested inline records
+/// were already interned in the bottom-up walk).
+fn resolve_field_type_for_prescan(
+    b: &BuiltinTyCons,
+    ctx: &mut InferCtx,
+    ast_ty: &ridge_ast::Type,
+    names: &FxHashMap<String, TyConId>,
+    table: &AnonRecordTable,
+) -> Type {
+    match ast_ty {
+        ridge_ast::Type::Primitive { name, .. } => {
+            use ridge_ast::PrimitiveType;
+            let tycon = match name {
+                PrimitiveType::Int => b.int,
+                PrimitiveType::Float => b.float,
+                PrimitiveType::Bool => b.bool,
+                PrimitiveType::Text => b.text,
+                PrimitiveType::Unit => b.unit,
+                PrimitiveType::Timestamp => b.timestamp,
+            };
+            Type::Con(tycon, vec![])
+        }
+        ridge_ast::Type::Named { name, .. } => {
+            let n = name.text.as_str();
+            if let Some(id) = crate::prelude::lookup_prelude_tycon(b, n) {
+                return Type::Con(id, vec![]);
+            }
+            if let Some(&id) = names.get(n) {
+                return Type::Con(id, vec![]);
+            }
+            Type::Var(ctx.fresh_tyvid())
+        }
+        ridge_ast::Type::App { head, args, .. } => {
+            let n = head.text.as_str();
+            let arg_tys: Vec<Type> = args
+                .iter()
+                .map(|a| resolve_field_type_for_prescan(b, ctx, a, names, table))
+                .collect();
+            if let Some(id) = crate::prelude::lookup_prelude_tycon(b, n) {
+                return Type::Con(id, arg_tys);
+            }
+            if let Some(&id) = names.get(n) {
+                return Type::Con(id, arg_tys);
+            }
+            Type::Var(ctx.fresh_tyvid())
+        }
+        ridge_ast::Type::Tuple { elems, .. } => {
+            let ts: Vec<Type> = elems
+                .iter()
+                .map(|e| resolve_field_type_for_prescan(b, ctx, e, names, table))
+                .collect();
+            Type::Tuple(ts)
+        }
+        ridge_ast::Type::List { elem, .. } => {
+            let elem_ty = resolve_field_type_for_prescan(b, ctx, elem, names, table);
+            Type::Con(b.list, vec![elem_ty])
+        }
+        ridge_ast::Type::Fn { fn_ty, .. } => {
+            let param_tys: Vec<Type> = fn_ty
+                .params
+                .iter()
+                .map(|p| resolve_field_type_for_prescan(b, ctx, p, names, table))
+                .collect();
+            let ret_ty = resolve_field_type_for_prescan(b, ctx, &fn_ty.ret, names, table);
+            let cap_row = if fn_ty.caps.is_empty() {
+                ridge_types::CapRow::Concrete(CapabilitySet::PURE)
+            } else {
+                let mut cs = CapabilitySet::PURE;
+                for cap in &fn_ty.caps {
+                    cs = cs.union(&CapabilitySet::singleton(*cap));
+                }
+                ridge_types::CapRow::Concrete(cs)
+            };
+            Type::Fn {
+                params: param_tys,
+                ret: Box::new(ret_ty),
+                caps: cap_row,
+            }
+        }
+        ridge_ast::Type::Paren { inner, .. } => {
+            resolve_field_type_for_prescan(b, ctx, inner, names, table)
+        }
+        ridge_ast::Type::Var { .. } => {
+            // Type variables inside inline record fields are a tyvar-in-field
+            // rejection case (P022 / T5).  Return a fresh var as a placeholder;
+            // T5 will emit the diagnostic.
+            Type::Var(ctx.fresh_tyvid())
+        }
+        ridge_ast::Type::Record { fields, .. } => {
+            // Nested inline record: look up in the table (already interned by
+            // the bottom-up visitor before we reach this field).
+            let resolved: Vec<(String, Type)> = fields
+                .iter()
+                .map(|f| {
+                    let ty = resolve_field_type_for_prescan(b, ctx, &f.ty, names, table);
+                    (f.name.text.clone(), ty)
+                })
+                .collect();
+            let key = shape_key(&resolved);
+            if let Some(&id) = table.get(&key) {
+                Type::Con(id, vec![])
+            } else {
+                // Should not happen in a correct bottom-up walk, but handle
+                // defensively.
+                log_prescan_miss();
+                Type::Error
+            }
+        }
+    }
+}
+
+/// Emit a diagnostic-level note when a nested inline record was not found in
+/// the pre-scan table (indicates a walk-order bug).
+fn log_prescan_miss() {
+    // In production, this path should never be hit.  We avoid panicking so
+    // inference can continue and produce more useful diagnostics.
+    // A future observability pass can wire a tracing::warn! here.
 }
 
 /// Walk every `TyConKind::Alias` body in `arena` and expand any
@@ -685,9 +938,241 @@ pub fn ast_type_to_ridge_type(
             }
         }
 
-        // TODO(0.2.12): resolve inline record types via AnonRecordTable (T4).
-        // The pre-scan (prescan_inline_records) interns anonymous TyCons before
-        // this function is called; T4 wires the ShapeKey lookup here.
-        ridge_ast::Type::Record { .. } => Type::Error,
+        // Inline record type — look up the pre-scanned AnonRecordTable.
+        //
+        // The pre-scan (prescan_inline_records) ran before this function is
+        // called, so the table is fully populated for all type-position
+        // occurrences.  We re-resolve the field types using the same context
+        // and compute the ShapeKey to look up the interned anon TyConId.
+        ridge_ast::Type::Record { fields, .. } => {
+            // Resolve field types using the same function.
+            let resolved: Vec<(String, Type)> = fields
+                .iter()
+                .map(|f| {
+                    let ty = ast_type_to_ridge_type(b, ctx, &f.ty, names, param_name_map);
+                    (f.name.text.clone(), ty)
+                })
+                .collect();
+            let key = ridge_types::shape_key(&resolved);
+            // Look up in ctx.anon_records (populated by the pre-scan).
+            if let Some(&id) = ctx.anon_records.get(&key) {
+                Type::Con(id, vec![])
+            } else {
+                // Pre-scan miss — should not happen for type-position occurrences.
+                // Return Error so inference can absorb the fault.
+                Type::Error
+            }
+        }
+    }
+}
+
+// ── Tests ─────────────────────────────────────────────────────────────────────
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use ridge_ast::{Ident, RecordTypeField, Span, Type as AstType};
+    use ridge_types::BuiltinTyCons;
+
+    fn ds() -> Span {
+        Span::point(0)
+    }
+
+    fn field(name: &str, ty: AstType) -> RecordTypeField {
+        RecordTypeField {
+            name: Ident::new(name, ds()),
+            ty,
+            span: ds(),
+        }
+    }
+
+    fn int_ast() -> AstType {
+        AstType::Primitive {
+            name: ridge_ast::PrimitiveType::Int,
+            span: ds(),
+        }
+    }
+
+    fn text_ast() -> AstType {
+        AstType::Primitive {
+            name: ridge_ast::PrimitiveType::Text,
+            span: ds(),
+        }
+    }
+
+    fn make_ctx_with_builtins(arena: &mut TyConArena) -> (BuiltinTyCons, InferCtx) {
+        let b = BuiltinTyCons::allocate(arena);
+        let mut ctx = InferCtx::new();
+        ctx.tycon_decls = arena.all().to_vec();
+        (b, ctx)
+    }
+
+    // Build a one-item module containing a single fn with the given parameter type.
+    fn module_with_fn_param(ty: AstType) -> ridge_ast::Module {
+        use ridge_ast::{Body, FnDecl, Item, Param, Visibility};
+        let f = FnDecl {
+            name: Ident::new("f", ds()),
+            params: vec![Param::Annotated {
+                name: Ident::new("r", ds()),
+                ty,
+                span: ds(),
+            }],
+            caps: vec![],
+            ret: None,
+            doc: None,
+            vis: Visibility::Private,
+            attrs: vec![],
+            body: Body::Expr(ridge_ast::Expr::Unit(ds())),
+            span: ds(),
+        };
+        ridge_ast::Module {
+            items: vec![Item::Fn(f)],
+            doc: vec![],
+            span: ds(),
+        }
+    }
+
+    // Single shape interns exactly once.
+    #[test]
+    fn prescan_single_shape_interns_once() {
+        let mut arena = TyConArena::new();
+        let (b, mut ctx) = make_ctx_with_builtins(&mut arena);
+
+        let rec_ty = AstType::Record {
+            fields: vec![field("x", int_ast()), field("y", int_ast())],
+            span: ds(),
+        };
+        let module = module_with_fn_param(rec_ty);
+
+        let table = prescan_inline_records(&[&module], &mut arena, &b, &mut ctx);
+        assert_eq!(table.len(), 1, "expected exactly one anonymous TyCon");
+    }
+
+    // Order-insensitive: two occurrences of the same shape share one entry.
+    #[test]
+    fn prescan_order_insensitive_sharing() {
+        let mut arena = TyConArena::new();
+        let (b, mut ctx) = make_ctx_with_builtins(&mut arena);
+
+        // Module with two fn params: { x: Int, y: Int } and { y: Int, x: Int }
+        use ridge_ast::{Body, FnDecl, Item, Param, Visibility};
+        let f1 = FnDecl {
+            name: Ident::new("f1", ds()),
+            params: vec![Param::Annotated {
+                name: Ident::new("r", ds()),
+                ty: AstType::Record {
+                    fields: vec![field("x", int_ast()), field("y", int_ast())],
+                    span: ds(),
+                },
+                span: ds(),
+            }],
+            caps: vec![],
+            ret: None,
+            doc: None,
+            vis: Visibility::Private,
+            attrs: vec![],
+            body: Body::Expr(ridge_ast::Expr::Unit(ds())),
+            span: ds(),
+        };
+        let f2 = FnDecl {
+            name: Ident::new("f2", ds()),
+            params: vec![Param::Annotated {
+                name: Ident::new("r", ds()),
+                ty: AstType::Record {
+                    fields: vec![field("y", int_ast()), field("x", int_ast())],
+                    span: ds(),
+                },
+                span: ds(),
+            }],
+            caps: vec![],
+            ret: None,
+            doc: None,
+            vis: Visibility::Private,
+            attrs: vec![],
+            body: Body::Expr(ridge_ast::Expr::Unit(ds())),
+            span: ds(),
+        };
+        let module = ridge_ast::Module {
+            items: vec![Item::Fn(f1), Item::Fn(f2)],
+            doc: vec![],
+            span: ds(),
+        };
+
+        let table = prescan_inline_records(&[&module], &mut arena, &b, &mut ctx);
+        assert_eq!(table.len(), 1, "order-swapped shapes should share one entry");
+    }
+
+    // Nested inline records produce two table entries.
+    #[test]
+    fn prescan_nested_produces_two_entries() {
+        let mut arena = TyConArena::new();
+        let (b, mut ctx) = make_ctx_with_builtins(&mut arena);
+
+        // Outer: { inner: { id: Int } }
+        let inner_ty = AstType::Record {
+            fields: vec![field("id", int_ast())],
+            span: ds(),
+        };
+        let outer_ty = AstType::Record {
+            fields: vec![field("inner", inner_ty)],
+            span: ds(),
+        };
+        let module = module_with_fn_param(outer_ty);
+
+        let table = prescan_inline_records(&[&module], &mut arena, &b, &mut ctx);
+        assert_eq!(table.len(), 2, "nested inline records should produce two entries (inner + outer)");
+    }
+
+    // Different field types → distinct entries.
+    #[test]
+    fn prescan_distinct_by_field_type() {
+        let mut arena = TyConArena::new();
+        let (b, mut ctx) = make_ctx_with_builtins(&mut arena);
+
+        use ridge_ast::{Body, FnDecl, Item, Param, Visibility};
+        let f1 = FnDecl {
+            name: Ident::new("g1", ds()),
+            params: vec![Param::Annotated {
+                name: Ident::new("r", ds()),
+                ty: AstType::Record {
+                    fields: vec![field("a", int_ast())],
+                    span: ds(),
+                },
+                span: ds(),
+            }],
+            caps: vec![],
+            ret: None,
+            doc: None,
+            vis: Visibility::Private,
+            attrs: vec![],
+            body: Body::Expr(ridge_ast::Expr::Unit(ds())),
+            span: ds(),
+        };
+        let f2 = FnDecl {
+            name: Ident::new("g2", ds()),
+            params: vec![Param::Annotated {
+                name: Ident::new("r", ds()),
+                ty: AstType::Record {
+                    fields: vec![field("a", text_ast())],
+                    span: ds(),
+                },
+                span: ds(),
+            }],
+            caps: vec![],
+            ret: None,
+            doc: None,
+            vis: Visibility::Private,
+            attrs: vec![],
+            body: Body::Expr(ridge_ast::Expr::Unit(ds())),
+            span: ds(),
+        };
+        let module = ridge_ast::Module {
+            items: vec![Item::Fn(f1), Item::Fn(f2)],
+            doc: vec![],
+            span: ds(),
+        };
+
+        let table = prescan_inline_records(&[&module], &mut arena, &b, &mut ctx);
+        assert_eq!(table.len(), 2, "different field types must produce distinct entries");
     }
 }

@@ -39,6 +39,7 @@ use crate::{
     Block, Expr, FnType, Ident, Item, Module, Pattern, Type,
 };
 
+
 // ── Visit trait ───────────────────────────────────────────────────────────────
 
 /// Immutable visitor for the Ridge AST.
@@ -284,6 +285,11 @@ pub fn walk_expr<'ast, V: Visit<'ast> + ?Sized>(v: &mut V, e: &'ast Expr) {
                 v.visit_field_init(fi);
             }
         }
+        Expr::RecordLit { fields, .. } => {
+            for fi in fields {
+                v.visit_field_init(fi);
+            }
+        }
         Expr::With { base, fields, .. } => {
             v.visit_expr(base);
             for fi in fields {
@@ -422,6 +428,14 @@ pub fn walk_pattern<'ast, V: Visit<'ast> + ?Sized>(v: &mut V, p: &'ast Pattern) 
                 }
             }
         }
+        Pattern::Record { fields, .. } => {
+            for fp in fields {
+                v.visit_ident(&fp.name);
+                if let Some(inner) = &fp.pattern {
+                    v.visit_pattern(inner);
+                }
+            }
+        }
     }
 }
 
@@ -448,6 +462,12 @@ pub fn walk_type<'ast, V: Visit<'ast> + ?Sized>(v: &mut V, t: &'ast Type) {
         Type::List { elem, .. } => v.visit_type(elem),
         Type::Fn { fn_ty, .. } => v.visit_fn_type(fn_ty),
         Type::Paren { inner, .. } => v.visit_type(inner),
+        Type::Record { fields, .. } => {
+            for field in fields {
+                v.visit_ident(&field.name);
+                v.visit_type(&field.ty);
+            }
+        }
     }
 }
 

@@ -790,6 +790,16 @@ fn infer_expr_inner(ctx: &mut InferCtx, b: &BuiltinTyCons, expr: &Expr) -> Type 
             let arena = build_arena_from_ctx(ctx);
             crate::actor::infer_spawn(ctx, b, actor, args.as_slice(), *span, &arena)
         }
+
+        // TODO(0.2.12): type-check inline record literals (implemented in T5).
+        Expr::RecordLit { span, .. } => {
+            let _ = emit_internal(
+                ctx,
+                "inline record literal not yet type-checked (inline-records T5)".to_string(),
+                *span,
+            );
+            Type::Error
+        }
     }
 }
 
@@ -1053,6 +1063,15 @@ pub fn infer_pattern(ctx: &mut InferCtx, b: &BuiltinTyCons, pat: &Pattern, expec
                 }
             }
         }
+
+        // TODO(0.2.12): type-check inline record patterns (implemented in T5).
+        Pattern::Record { span, .. } => {
+            let _ = emit_internal(
+                ctx,
+                "inline record pattern not yet type-checked (inline-records T5)".to_string(),
+                *span,
+            );
+        }
     }
 }
 
@@ -1168,6 +1187,12 @@ fn ast_type_to_type(ctx: &mut InferCtx, b: &BuiltinTyCons, ast_ty: &ridge_ast::T
             // unification variable.  T7 will wire proper annotation-variable
             // tracking; for T6 this is sufficient for monosignatures.
             Type::Var(ctx.fresh_tyvid())
+        }
+
+        // TODO(0.2.12): resolve inline record types via AnonRecordTable (T5).
+        ridge_ast::Type::Record { .. } => {
+            // Pre-scan (T4) will populate ctx.anon_records; T5 wires the lookup.
+            Type::Error
         }
     }
 }

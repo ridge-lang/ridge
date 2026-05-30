@@ -684,5 +684,10 @@ pub fn ast_type_to_ridge_type(
                 Type::Var(ctx.fresh_tyvid())
             }
         }
+
+        // TODO(0.2.12): resolve inline record types via AnonRecordTable (T4).
+        // The pre-scan (prescan_inline_records) interns anonymous TyCons before
+        // this function is called; T4 wires the ShapeKey lookup here.
+        ridge_ast::Type::Record { .. } => Type::Error,
     }
 }

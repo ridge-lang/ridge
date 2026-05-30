@@ -401,6 +401,15 @@ fn check_body(
                 }
             }
         }
+
+        // TODO(0.2.12): cap-check field values in inline record literals.
+        Expr::RecordLit { fields, .. } => {
+            for f in fields {
+                if let Some(ref val) = f.value {
+                    check_body(ctx, b, enclosing_name, enclosing_effective, val);
+                }
+            }
+        }
     }
 }
 

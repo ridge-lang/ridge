@@ -106,6 +106,12 @@ pub(crate) fn lower_ast_type(ctx: &mut LowerCtx<'_>, ast_ty: &ridge_ast::Type) -
             .and_then(|m| m.get(*span, NodeKind::Type))
             .and_then(|nid| ctx.node_type(nid).cloned())
             .unwrap_or(Type::Error),
+
+        // TODO(0.2.12): resolve inline record types via AnonRecordTable (T6).
+        // After T4/T5 populate TypedWorkspace.anon_records, T6 wires the
+        // ShapeKey lookup into LowerCtx so this arm can return the correct
+        // Type::Con(anon_id, []).
+        ridge_ast::Type::Record { .. } => Type::Error,
     }
 }
 

@@ -829,6 +829,9 @@ pub fn lower_pattern_full(ctx: &mut LowerCtx<'_>, pat: &Pattern) -> IrPat {
             span,
             ..
         } => lower_constructor_pattern(ctx, name, fields.as_deref(), args, *span),
+
+        // TODO(0.2.12): lower inline record patterns to map-field tests (T6).
+        Pattern::Record { span, .. } => IrPat::Wild { span: *span },
     }
 }
 

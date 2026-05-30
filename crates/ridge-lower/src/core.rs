@@ -717,6 +717,16 @@ pub fn lower_expr(ctx: &mut LowerCtx<'_>, expr: &Expr) -> IrExpr {
                 span: *span,
             }
         }
+
+        // TODO(0.2.12): lower inline record literals to IrExpr::Construct (T6).
+        Expr::RecordLit { span, .. } => {
+            let id = ctx.fresh_id(None);
+            IrExpr::Lit {
+                id,
+                value: ridge_ir::IrLit::Unit,
+                span: *span,
+            }
+        }
     }
 }
 

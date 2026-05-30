@@ -202,6 +202,12 @@ fn lift_pattern(pat: &Pattern) -> NormPat {
         Pattern::List { elements, span } => {
             lift_pattern(&desugar_list_pattern_for_matrix(elements, *span))
         }
+
+        // TODO(0.2.12): exhaustiveness for inline record patterns (T5).
+        // An inline record pattern with `..` is irrefutable over its type;
+        // without `..` it must cover all fields. Conservatively lift to
+        // Wildcard for now — the real check is wired in T5.
+        Pattern::Record { .. } => NormPat::Wildcard,
     }
 }
 

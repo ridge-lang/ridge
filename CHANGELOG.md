@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- A record `with` update inside a closure whose parameter type is not annotated — for example `fn acc -> acc with { v = acc.v + 1 }` passed to `List.fold` — now works. It previously compiled to a unit value and crashed at run time, because the update was reconstructed from the record's declared fields and that shape was unknown at the closure body. `with` now lowers to a direct map update of only the touched fields, so it no longer depends on the record type being known at the update site.
+
 ## [0.2.10] - 2026-05-30
 
 ### Added

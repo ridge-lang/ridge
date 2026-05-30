@@ -31,6 +31,9 @@
 //! - `P022 MailboxPolicyMissing`
 //! - `P023 MailboxBoundInvalid`
 //!
+//! Parser hardening adds:
+//! - `P028 ExpressionTooDeep`
+//!
 //! Later tasks (T3–T12) will extend this enum; adding variants is
 //! non-breaking because the enum is not `#[non_exhaustive]` — the parser
 //! crate owns all construction sites.
@@ -277,6 +280,22 @@ pub enum ParseError {
         span: Span,
     },
 
+    /// P028 — an expression nested deeper than the parser's recursion limit.
+    ///
+    /// The expression parser is recursive descent, so deeply nested input
+    /// (thousands of nested parentheses, lists, or operators) would otherwise
+    /// overflow the native stack and abort the whole compiler with no
+    /// diagnostic.  A fixed depth limit stops the descent and reports this
+    /// error instead.  No hand-written or formatter-produced program reaches
+    /// the limit; only pathological or adversarial input does.
+    #[error("expression nesting too deep (limit {limit})")]
+    ExpressionTooDeep {
+        /// Source location at which the limit was reached.
+        span: Span,
+        /// The maximum nesting depth the parser allows.
+        limit: u32,
+    },
+
     /// P999 — the lexer's bracket-suppression invariant was violated (should
     /// be unreachable; signals a lexer bug, not a user error).
     #[error("internal error: layout invariant violated inside bracketed region")]
@@ -311,6 +330,7 @@ impl ParseError {
             Self::RestSuffixNotSupported { .. } => "P025",
             Self::RefutableSliceElement { .. } => "P026",
             Self::TestAttrArgNotString { .. } => "P027",
+            Self::ExpressionTooDeep { .. } => "P028",
             Self::InternalLayoutInvariantViolated { .. } => "P999",
         }
     }
@@ -337,6 +357,7 @@ impl ParseError {
             | Self::RestSuffixNotSupported { span }
             | Self::RefutableSliceElement { span }
             | Self::TestAttrArgNotString { span }
+            | Self::ExpressionTooDeep { span, .. }
             | Self::InternalLayoutInvariantViolated { span } => *span,
         }
     }
@@ -401,6 +422,18 @@ mod tests {
         assert!(msg.contains("`init`"));
         assert!(msg.contains("a pattern"));
         assert!(msg.contains("rename"));
+    }
+
+    #[test]
+    fn p028_code_and_display() {
+        let e = ParseError::ExpressionTooDeep {
+            span: Span::new(0, 1),
+            limit: 256,
+        };
+        assert_eq!(e.code(), "P028");
+        let msg = e.to_string();
+        assert!(msg.contains("too deep"));
+        assert!(msg.contains("256"));
     }
 
     #[test]

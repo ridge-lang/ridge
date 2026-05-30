@@ -42,6 +42,14 @@ pub(crate) struct Cursor<'t> {
     /// we are inside at least one bracket, where the lexer emits NEWLINE (not
     /// INDENT/DEDENT) at statement boundaries.
     pub(crate) bracket_depth: u32,
+    /// Current expression-parser recursion depth.
+    ///
+    /// Incremented on entry to the Pratt core ([`crate::expr::parse_expr_bp`])
+    /// and decremented on exit, so it tracks how deeply nested the current
+    /// expression is.  When it would exceed the parser's fixed limit the
+    /// expression parser stops descending and reports `P028 ExpressionTooDeep`
+    /// instead of recursing further and overflowing the native stack.
+    pub(crate) expr_depth: u32,
     /// Line-map for column lookups in the nested-match offside rule (E2).
     ///
     /// Provided by [`ridge_lexer::LineMap`] when the cursor is constructed via
@@ -71,6 +79,7 @@ impl<'t> Cursor<'t> {
             pos: 0,
             no_layout_arm: false,
             bracket_depth: 0,
+            expr_depth: 0,
             line_map: None,
         }
     }
@@ -89,6 +98,7 @@ impl<'t> Cursor<'t> {
             pos: 0,
             no_layout_arm: false,
             bracket_depth: 0,
+            expr_depth: 0,
             line_map: Some(line_map),
         }
     }

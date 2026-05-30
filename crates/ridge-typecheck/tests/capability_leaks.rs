@@ -1,7 +1,7 @@
 //! T17 — capability-leak fixture harness for `ridge-typecheck` (plan §10 T17,
 //! §9.4, §11.3 `DoD` line 1547).
 //!
-//! Six fixtures under `tests/fixtures/capability/*.ridge` each exercise one
+//! Seven fixtures under `tests/fixtures/capability/*.ridge` each exercise one
 //! decision-tagged capability rule (D018 Model B, D040, D041, D058).  Each
 //! fixture starts with one of two directives:
 //!
@@ -11,7 +11,7 @@
 //! The harness mirrors the structure of `tests/errors.rs` but supports the
 //! "clean" form so positive (well-typed) capability scenarios are first-class.
 //!
-//! Per `DoD`: all six fixtures must be present and the suite must pass.
+//! Per `DoD`: all fixtures must be present and the suite must pass.
 
 #![allow(clippy::expect_used, clippy::unwrap_used, clippy::panic)]
 
@@ -24,7 +24,7 @@ use tempfile::TempDir;
 
 const FIXTURE_DIR: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/capability");
 
-const REQUIRED_FIXTURES: usize = 6;
+const REQUIRED_FIXTURES: usize = 7;
 
 // ── Workspace setup helpers ──────────────────────────────────────────────────
 

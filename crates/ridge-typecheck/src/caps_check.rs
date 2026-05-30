@@ -404,11 +404,24 @@ fn check_body(
     }
 }
 
-/// Compute the capability contribution of a *call site* (`Expr::Call` callee).
+/// Compute the capability contribution of a *call site* (`Expr::Call` callee)
+/// for the T18 per-call-site check.
 ///
-/// This mirrors `caps_of_callee` in `caps_infer` but is simplified: we only
-/// need the concrete caps set, not the HOF resolution logic.  For T14 we use
-/// the scheme lookup directly (same as `caps_infer::caps_of_callee`).
+/// This is a deliberately conservative simplification of
+/// `caps_infer::caps_of_callee`: it reads the callee's concrete caps from the
+/// scheme but does **not** perform HOF cap resolution.  For a higher-order
+/// callee whose own `Type::Fn` carries a `CapRow::Var` (e.g. `List.forEach`),
+/// the effect arrives only through the callback argument, so this function
+/// reports `PURE` — it under-attributes such call sites.
+///
+/// That under-attribution is sound because T14 (`caps_infer::infer_caps`),
+/// which *does* resolve HOF caps via D041, is the enforcing pass: a function
+/// whose body leaks a capability through a HOF callback has that capability in
+/// its inferred set and is rejected by T14 unless it declares it.  The
+/// `cap_d041_hof_callback_leak` fixture locks this invariant in.  A full
+/// reconciliation so T18 attributes HOF call sites precisely is deferred to the
+/// capability audit (it needs the mutable instantiation context that T14 has
+/// and this later, immutable pass does not).
 fn call_site_caps(ctx: &InferCtx, callee: &Expr, _args: &[Expr]) -> CapabilitySet {
     match callee {
         Expr::Ident(id) => ctx

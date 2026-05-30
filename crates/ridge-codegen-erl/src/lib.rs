@@ -34,7 +34,6 @@ pub(crate) mod pat;
 pub(crate) mod return_;
 pub(crate) mod scope;
 pub(crate) mod symbol;
-pub(crate) mod with_update;
 
 pub use core_ast::*;
 pub use error::CodegenError;

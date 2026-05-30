@@ -433,6 +433,27 @@ impl Renderer {
                 }
                 self.indent -= 1;
             }
+            IrExpr::RecordUpdate {
+                id, base, updates, ..
+            } => {
+                let nid = self.render_node_id(*id);
+                self.push(&format!("RecordUpdate({nid}):"));
+                self.indent += 1;
+                self.push("base:");
+                self.indent += 1;
+                self.render_expr(base);
+                self.indent -= 1;
+                self.push("updates:");
+                self.indent += 1;
+                for (name, val) in updates {
+                    self.push(&format!("{name}:"));
+                    self.indent += 1;
+                    self.render_expr(val);
+                    self.indent -= 1;
+                }
+                self.indent -= 1;
+                self.indent -= 1;
+            }
             IrExpr::Field {
                 id, base, field, ..
             } => {

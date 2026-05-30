@@ -28,38 +28,28 @@ CErlModule {
                         "V_P",
                     ),
                 ],
-                body: Let {
-                    var: CErlVar(
-                        "V_WithBase0",
-                    ),
-                    value: Var(
+                body: MapUpdate {
+                    base: Var(
                         CErlVar(
                             "V_P",
                         ),
                     ),
-                    body: MapUpdate {
-                        base: Var(
-                            CErlVar(
-                                "V_WithBase0",
+                    updates: [
+                        (
+                            Lit(
+                                Atom(
+                                    CErlAtom(
+                                        "x",
+                                    ),
+                                ),
+                            ),
+                            Lit(
+                                Int(
+                                    10,
+                                ),
                             ),
                         ),
-                        updates: [
-                            (
-                                Lit(
-                                    Atom(
-                                        CErlAtom(
-                                            "x",
-                                        ),
-                                    ),
-                                ),
-                                Lit(
-                                    Int(
-                                        10,
-                                    ),
-                                ),
-                            ),
-                        ],
-                    },
+                    ],
                 },
             },
         },

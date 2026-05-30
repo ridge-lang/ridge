@@ -119,6 +119,25 @@ pub enum IrExpr {
         span: Span,
     },
 
+    /// Record `with`-update: `base with { field = val, … }`.
+    ///
+    /// A partial update over an existing record value — only the touched fields
+    /// are listed; every other field is preserved from `base`. Backends lower
+    /// this directly to a map update (`base#{ key => val, … }`), so it needs no
+    /// record schema. This is what lets `with` work on a value whose concrete
+    /// record type is not statically known at this point (e.g. an unannotated
+    /// closure parameter).
+    RecordUpdate {
+        /// The IR-side node identifier.
+        id: IrNodeId,
+        /// The base record value being updated.
+        base: Box<Self>,
+        /// Touched fields and their new values, in source order.
+        updates: Vec<(String, Self)>,
+        /// Source span.
+        span: Span,
+    },
+
     /// Field projection.
     Field {
         /// The IR-side node identifier.

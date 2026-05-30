@@ -24,13 +24,9 @@ pub fn bench_string_build () -> Int =
      |> List.fold (fn acc _ -> acc ++ "x") ""
     Text.length s
 
--- Record threaded through 10k field updates: exercises `with`. Named recursion
--- rather than a fold lambda, because a `with` expression in a closure body is
--- currently mis-lowered; the named-function path is sound.
-fn churn (acc: Cell) (k: Int) -> Cell =
-    if k <= 0 then acc
-    else churn (acc with { v = acc.v + k, n = acc.n + 1 }) (k - 1)
-
+-- Record threaded through 10k field updates: exercises `with` in a fold lambda.
 pub fn bench_record_churn () -> Int =
-    let f = churn (Cell { v = 0, n = 0 }) 10000
+    let f =
+        List.range 1 10000
+     |> List.fold (fn acc x -> acc with { v = acc.v + x, n = acc.n + 1 }) (Cell { v = 0, n = 0 })
     f.v + f.n

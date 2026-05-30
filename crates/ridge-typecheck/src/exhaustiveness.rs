@@ -1064,13 +1064,30 @@ fn collect_all_missing(
 // ── Type rendering helper ─────────────────────────────────────────────────────
 
 /// Renders a `Type` as a human-readable string for diagnostic messages.
+///
+/// Anonymous inline record types are rendered by their structural shape
+/// (`{ id: Int, name: Text }`) rather than by their internal synthetic name
+/// (`{anon record #N}`).  Named record types and all other types render by
+/// their declared name as before.
 fn render_type(ty: &Type, arena: &TyConArena) -> String {
     match ty {
         Type::Con(id, args) => {
             if id.0 as usize >= arena.len() {
                 return format!("?{}", id.0);
             }
-            let name = &arena.get(*id).name;
+            let decl = arena.get(*id);
+            // Inline (anonymous) records: render the structural shape.
+            if decl.is_anon {
+                if let ridge_types::TyConKind::Record(schema) = &decl.kind {
+                    let fields: Vec<String> = schema
+                        .record_fields()
+                        .iter()
+                        .map(|f| format!("{}: {}", f.name, render_type(&f.ty, arena)))
+                        .collect();
+                    return format!("{{ {} }}", fields.join(", "));
+                }
+            }
+            let name = &decl.name;
             if args.is_empty() {
                 name.clone()
             } else {

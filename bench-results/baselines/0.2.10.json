@@ -1,0 +1,5 @@
+[
+  {"version":"0.2.10","sha":"","layer":"B","bench":"bench_list_sum_10k","median_ns":102400,"p99_ns":204800,"iters":199},
+  {"version":"0.2.10","sha":"","layer":"B","bench":"bench_string_build","median_ns":716800,"p99_ns":1126400,"iters":199},
+  {"version":"0.2.10","sha":"","layer":"B","bench":"bench_record_churn","median_ns":102400,"p99_ns":204800,"iters":199}
+]

@@ -16,6 +16,8 @@ path = "src/lib.rs"
 [dependencies]
 ridge-driver = { path = "../ridge-driver" }
 tempfile     = "3"
+serde        = { version = "1", features = ["derive"] }
+serde_json   = { version = "1" }
 
 [dev-dependencies]
 criterion        = { version = "0.5", default-features = false, features = ["cargo_bench_support"] }

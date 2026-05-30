@@ -25,6 +25,8 @@ use ridge_driver::{
     check_workspace, compile_workspace, CheckOptions, CompileOptions, EmitArtefacts,
 };
 
+pub mod tracking;
+
 // ── Corpus generators ─────────────────────────────────────────────────────────
 
 /// Generate a module with `n` exported nullary functions, each calling the

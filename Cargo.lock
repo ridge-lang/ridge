@@ -1532,6 +1532,8 @@ dependencies = [
  "criterion",
  "ridge-codegen-erl",
  "ridge-driver",
+ "serde",
+ "serde_json",
  "tempfile",
  "which",
 ]

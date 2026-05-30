@@ -372,8 +372,8 @@ fn check_body(
             }
         }
 
-        // ── Record / With / FieldAccess ───────────────────────────────────────
-        Expr::Record { fields, .. } => {
+        // ── Record / RecordLit / With / FieldAccess ───────────────────────────
+        Expr::Record { fields, .. } | Expr::RecordLit { fields, .. } => {
             for f in fields {
                 if let Some(ref val) = f.value {
                     check_body(ctx, b, enclosing_name, enclosing_effective, val);
@@ -398,15 +398,6 @@ fn check_body(
             for p in parts {
                 if let InterpPart::Expr { expr: e, .. } = p {
                     check_body(ctx, b, enclosing_name, enclosing_effective, e);
-                }
-            }
-        }
-
-        // TODO(0.2.12): cap-check field values in inline record literals.
-        Expr::RecordLit { fields, .. } => {
-            for f in fields {
-                if let Some(ref val) = f.value {
-                    check_body(ctx, b, enclosing_name, enclosing_effective, val);
                 }
             }
         }

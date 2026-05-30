@@ -471,7 +471,7 @@ fn parse_inline_record_type(cur: &mut Cursor<'_>) -> Result<Type, ParseError> {
         // Separator: `,` or end.
         if cur.peek() == &Token::Comma {
             cur.bump(); // consume `,`
-            // Trailing comma before `}` — done.
+                        // Trailing comma before `}` — done.
             if cur.peek() == &Token::RBrace {
                 break;
             }

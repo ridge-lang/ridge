@@ -792,7 +792,7 @@ fn parse_inline_record_literal(cur: &mut Cursor<'_>) -> Result<Expr, ParseError>
         // Separator: `,` or end.
         if cur.peek() == &Token::Comma {
             cur.bump(); // consume `,`
-            // Trailing comma followed by `}` — done.
+                        // Trailing comma followed by `}` — done.
             if cur.peek() == &Token::RBrace {
                 break;
             }
@@ -2136,7 +2136,10 @@ mod tests {
     #[test]
     fn parse_expr_inline_record_lit_empty() {
         let e = ok("{}");
-        assert!(matches!(e, Expr::RecordLit { .. }), "expected RecordLit, got {e:?}");
+        assert!(
+            matches!(e, Expr::RecordLit { .. }),
+            "expected RecordLit, got {e:?}"
+        );
         if let Expr::RecordLit { fields, .. } = e {
             assert!(fields.is_empty());
         }
@@ -2164,7 +2167,10 @@ mod tests {
         if let Expr::RecordLit { fields, .. } = e {
             assert_eq!(fields.len(), 1);
             assert_eq!(fields[0].name.text, "x");
-            assert!(fields[0].value.is_none(), "expected shorthand (value = None)");
+            assert!(
+                fields[0].value.is_none(),
+                "expected shorthand (value = None)"
+            );
         } else {
             panic!("expected Expr::RecordLit, got {e:?}");
         }

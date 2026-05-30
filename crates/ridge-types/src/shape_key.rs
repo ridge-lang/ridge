@@ -39,15 +39,15 @@ use crate::{
 #[derive(Clone, PartialEq, Eq, Hash, Debug)]
 pub enum TyKey {
     /// A type-constructor application.
-    Con(TyConId, Vec<TyKey>),
+    Con(TyConId, Vec<Self>),
     /// A structural tuple.
-    Tuple(Vec<TyKey>),
+    Tuple(Vec<Self>),
     /// A function type.
     Fn {
         /// Parameter type keys.
-        params: Vec<TyKey>,
+        params: Vec<Self>,
         /// Return type key.
-        ret: Box<TyKey>,
+        ret: Box<Self>,
         /// Capability-row key.
         caps: CapKey,
     },
@@ -109,6 +109,7 @@ pub fn type_to_key(ty: &Type) -> TyKey {
     }
 }
 
+#[allow(clippy::missing_const_for_fn)]
 fn cap_row_to_key(cap_row: &CapRow) -> CapKey {
     use crate::ty::CapVid;
     match cap_row {
@@ -128,6 +129,7 @@ fn cap_row_to_key(cap_row: &CapRow) -> CapKey {
 /// # Contract
 ///
 /// Each `Type` in `fields` must be fully resolved (see [`type_to_key`]).
+#[must_use]
 pub fn shape_key(fields: &[(String, Type)]) -> ShapeKey {
     let mut v: Vec<(String, TyKey)> = fields
         .iter()
@@ -226,7 +228,11 @@ mod tests {
     // Bool field in key round-trips correctly
     #[test]
     fn multiple_field_names_sort_ascending() {
-        let k = shape_key(&fields(&[("z", bool_ty()), ("a", int_ty()), ("m", text_ty())]));
+        let k = shape_key(&fields(&[
+            ("z", bool_ty()),
+            ("a", int_ty()),
+            ("m", text_ty()),
+        ]));
         // The sorted key should have fields in order a, m, z
         let expected = ShapeKey(vec![
             ("a".to_string(), TyKey::Con(TyConId(0), vec![])),

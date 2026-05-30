@@ -257,7 +257,7 @@ fn parse_inline_record_pattern(cur: &mut Cursor<'_>) -> Result<Pattern, ParseErr
     // `{ .. }` — rest-only pattern.
     if cur.peek() == &Token::DotDot {
         cur.bump(); // consume `..`
-        // Optional trailing comma.
+                    // Optional trailing comma.
         if cur.peek() == &Token::Comma {
             cur.bump();
         }
@@ -323,7 +323,7 @@ fn parse_inline_record_pattern(cur: &mut Cursor<'_>) -> Result<Pattern, ParseErr
         // Separator: `,` or end.
         if cur.peek() == &Token::Comma {
             cur.bump(); // consume `,`
-            // Trailing comma before `}` — done.
+                        // Trailing comma before `}` — done.
             if cur.peek() == &Token::RBrace {
                 break;
             }
@@ -1010,8 +1010,14 @@ mod tests {
     fn parse_pattern_inline_record_shorthand() {
         // `{ name }` → Pattern::Record { fields: [FieldPattern { name: "name", pattern: None }], has_rest: false }
         let result = parse_pat("{ name }");
-        assert!(result.is_ok(), "expected Ok for inline record pattern, got {result:?}");
-        if let Ok(Pattern::Record { fields, has_rest, .. }) = result {
+        assert!(
+            result.is_ok(),
+            "expected Ok for inline record pattern, got {result:?}"
+        );
+        if let Ok(Pattern::Record {
+            fields, has_rest, ..
+        }) = result
+        {
             assert!(!has_rest);
             assert_eq!(fields.len(), 1);
             assert_eq!(fields[0].name.text, "name");
@@ -1028,7 +1034,10 @@ mod tests {
         // `{ name, .. }` → Pattern::Record { has_rest: true }
         let result = parse_pat("{ name, .. }");
         assert!(result.is_ok(), "expected Ok, got {result:?}");
-        if let Ok(Pattern::Record { fields, has_rest, .. }) = result {
+        if let Ok(Pattern::Record {
+            fields, has_rest, ..
+        }) = result
+        {
             assert!(has_rest, "expected has_rest = true");
             assert_eq!(fields.len(), 1);
             assert_eq!(fields[0].name.text, "name");
@@ -1043,7 +1052,10 @@ mod tests {
     fn parse_pattern_inline_record_empty() {
         let result = parse_pat("{}");
         assert!(result.is_ok(), "expected Ok, got {result:?}");
-        if let Ok(Pattern::Record { fields, has_rest, .. }) = result {
+        if let Ok(Pattern::Record {
+            fields, has_rest, ..
+        }) = result
+        {
             assert!(fields.is_empty());
             assert!(!has_rest);
         } else {
@@ -1057,7 +1069,10 @@ mod tests {
     fn parse_pattern_inline_record_rest_only() {
         let result = parse_pat("{ .. }");
         assert!(result.is_ok(), "expected Ok, got {result:?}");
-        if let Ok(Pattern::Record { fields, has_rest, .. }) = result {
+        if let Ok(Pattern::Record {
+            fields, has_rest, ..
+        }) = result
+        {
             assert!(fields.is_empty());
             assert!(has_rest, "expected has_rest = true");
         } else {
@@ -1072,7 +1087,10 @@ mod tests {
         // `{ name = "Ada", age }` — explicit + shorthand
         let result = parse_pat("{ name = \"Ada\", age }");
         assert!(result.is_ok(), "expected Ok, got {result:?}");
-        if let Ok(Pattern::Record { fields, has_rest, .. }) = result {
+        if let Ok(Pattern::Record {
+            fields, has_rest, ..
+        }) = result
+        {
             assert!(!has_rest);
             assert_eq!(fields.len(), 2);
             assert_eq!(fields[0].name.text, "name");

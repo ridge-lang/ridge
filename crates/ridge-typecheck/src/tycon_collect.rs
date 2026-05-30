@@ -23,12 +23,12 @@
 //! after pass 2 and expands any embedded reference to another alias so
 //! `type IntStack = Stack Int` lands directly on `List Int`.
 
+use ridge_ast::visit::{walk_module, Visit};
 use ridge_ast::{ActorDecl, ActorMember, Constructor, Item, Module, TypeBody, TypeDecl};
-use ridge_ast::visit::{Visit, walk_module};
 use ridge_types::{
-    ActorSchema, AnonRecordTable, BuiltinTyCons, CapabilitySet, HandlerSchema, RecordField,
-    RecordSchema, Scheme, TyConArena, TyConDecl, TyConId, TyConKind, TyVid, Type,
-    UnionSchema, UnionVariant, VariantPayload, shape_key,
+    shape_key, ActorSchema, AnonRecordTable, BuiltinTyCons, CapabilitySet, HandlerSchema,
+    RecordField, RecordSchema, Scheme, TyConArena, TyConDecl, TyConId, TyConKind, TyVid, Type,
+    UnionSchema, UnionVariant, VariantPayload,
 };
 use rustc_hash::FxHashMap;
 
@@ -270,10 +270,6 @@ fn intern_inline_record(
         let anon_name = format!("{{anon record #{}}}", *counter);
         *counter += 1;
 
-        #[expect(
-            clippy::cast_possible_truncation,
-            reason = "anon counter is bounded by source positions"
-        )]
         let decl = TyConDecl {
             id: TyConId(0), // overwritten by arena.intern
             name: anon_name,
@@ -402,7 +398,7 @@ fn resolve_field_type_for_prescan(
 
 /// Emit a diagnostic-level note when a nested inline record was not found in
 /// the pre-scan table (indicates a walk-order bug).
-fn log_prescan_miss() {
+const fn log_prescan_miss() {
     // In production, this path should never be hit.  We avoid panicking so
     // inference can continue and produce more useful diagnostics.
     // A future observability pass can wire a tracing::warn! here.
@@ -971,7 +967,9 @@ pub fn ast_type_to_ridge_type(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use ridge_ast::{Ident, RecordTypeField, Span, Type as AstType};
+    use ridge_ast::{
+        Body, FnDecl, Ident, Item, Param, RecordTypeField, Span, Type as AstType, Visibility,
+    };
     use ridge_types::BuiltinTyCons;
 
     fn ds() -> Span {
@@ -1009,7 +1007,6 @@ mod tests {
 
     // Build a one-item module containing a single fn with the given parameter type.
     fn module_with_fn_param(ty: AstType) -> ridge_ast::Module {
-        use ridge_ast::{Body, FnDecl, Item, Param, Visibility};
         let f = FnDecl {
             name: Ident::new("f", ds()),
             params: vec![Param::Annotated {
@@ -1055,7 +1052,6 @@ mod tests {
         let (b, mut ctx) = make_ctx_with_builtins(&mut arena);
 
         // Module with two fn params: { x: Int, y: Int } and { y: Int, x: Int }
-        use ridge_ast::{Body, FnDecl, Item, Param, Visibility};
         let f1 = FnDecl {
             name: Ident::new("f1", ds()),
             params: vec![Param::Annotated {
@@ -1099,7 +1095,11 @@ mod tests {
         };
 
         let table = prescan_inline_records(&[&module], &mut arena, &b, &mut ctx);
-        assert_eq!(table.len(), 1, "order-swapped shapes should share one entry");
+        assert_eq!(
+            table.len(),
+            1,
+            "order-swapped shapes should share one entry"
+        );
     }
 
     // Nested inline records produce two table entries.
@@ -1120,7 +1120,11 @@ mod tests {
         let module = module_with_fn_param(outer_ty);
 
         let table = prescan_inline_records(&[&module], &mut arena, &b, &mut ctx);
-        assert_eq!(table.len(), 2, "nested inline records should produce two entries (inner + outer)");
+        assert_eq!(
+            table.len(),
+            2,
+            "nested inline records should produce two entries (inner + outer)"
+        );
     }
 
     // Different field types → distinct entries.
@@ -1129,7 +1133,6 @@ mod tests {
         let mut arena = TyConArena::new();
         let (b, mut ctx) = make_ctx_with_builtins(&mut arena);
 
-        use ridge_ast::{Body, FnDecl, Item, Param, Visibility};
         let f1 = FnDecl {
             name: Ident::new("g1", ds()),
             params: vec![Param::Annotated {
@@ -1173,6 +1176,10 @@ mod tests {
         };
 
         let table = prescan_inline_records(&[&module], &mut arena, &b, &mut ctx);
-        assert_eq!(table.len(), 2, "different field types must produce distinct entries");
+        assert_eq!(
+            table.len(),
+            2,
+            "different field types must produce distinct entries"
+        );
     }
 }

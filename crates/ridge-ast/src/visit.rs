@@ -39,7 +39,6 @@ use crate::{
     Block, Expr, FnType, Ident, Item, Module, Pattern, Type,
 };
 
-
 // ── Visit trait ───────────────────────────────────────────────────────────────
 
 /// Immutable visitor for the Ridge AST.

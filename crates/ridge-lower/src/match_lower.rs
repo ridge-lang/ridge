@@ -771,7 +771,9 @@ fn build_length_call(ctx: &mut LowerCtx<'_>, scrut_ref: &IrExpr, span: Span) -> 
 pub fn lower_pattern_full(ctx: &mut LowerCtx<'_>, pat: &Pattern) -> IrPat {
     match pat {
         // ── Atom patterns ──────────────────────────────────────────────────────
-        Pattern::Wildcard { span } => IrPat::Wild { span: *span },
+        // TODO(0.2.12): Pattern::Record lowers to map-field tests in T6; until
+        // then it falls through to Wild to keep the workspace compiling.
+        Pattern::Wildcard { span } | Pattern::Record { span, .. } => IrPat::Wild { span: *span },
 
         Pattern::Literal { lit, span } => IrPat::Lit {
             value: literal_to_ir_lit(lit),
@@ -829,9 +831,6 @@ pub fn lower_pattern_full(ctx: &mut LowerCtx<'_>, pat: &Pattern) -> IrPat {
             span,
             ..
         } => lower_constructor_pattern(ctx, name, fields.as_deref(), args, *span),
-
-        // TODO(0.2.12): lower inline record patterns to map-field tests (T6).
-        Pattern::Record { span, .. } => IrPat::Wild { span: *span },
     }
 }
 

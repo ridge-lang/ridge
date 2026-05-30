@@ -147,8 +147,11 @@ impl PatternMatrix {
 /// scope for 0.1.0 (no closed domain; treated as non-closed).
 fn lift_pattern(pat: &Pattern) -> NormPat {
     match pat {
-        // Wildcard and variable bindings lift to Wildcard.
-        Pattern::Wildcard { .. } | Pattern::Var { .. } => NormPat::Wildcard,
+        // Wildcard, variable bindings, and inline record patterns lift to Wildcard.
+        // TODO(0.2.12): Pattern::Record exhaustiveness is wired in T5.
+        Pattern::Wildcard { .. } | Pattern::Var { .. } | Pattern::Record { .. } => {
+            NormPat::Wildcard
+        }
 
         // Empty-list pattern `[]` — 0-arity ListNil constructor.
         Pattern::ListNil { .. } => NormPat::Ctor(Constructor::ListNil, vec![]),
@@ -202,12 +205,6 @@ fn lift_pattern(pat: &Pattern) -> NormPat {
         Pattern::List { elements, span } => {
             lift_pattern(&desugar_list_pattern_for_matrix(elements, *span))
         }
-
-        // TODO(0.2.12): exhaustiveness for inline record patterns (T5).
-        // An inline record pattern with `..` is irrefutable over its type;
-        // without `..` it must cover all fields. Conservatively lift to
-        // Wildcard for now — the real check is wired in T5.
-        Pattern::Record { .. } => NormPat::Wildcard,
     }
 }
 

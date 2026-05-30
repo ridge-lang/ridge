@@ -186,13 +186,15 @@ pub fn infer_caps(ctx: &mut InferCtx, b: &BuiltinTyCons, expr: &Expr) -> Capabil
             })
         }
 
-        // ── Record / With / FieldAccess ───────────────────────────────────────
+        // ── Record / RecordLit / With / FieldAccess ───────────────────────────
         // Walk sub-expressions.
-        Expr::Record { fields, .. } => fields.iter().fold(CapabilitySet::PURE, |acc, f| {
-            f.value
-                .as_ref()
-                .map_or(acc, |val| acc.union(&infer_caps(ctx, b, val)))
-        }),
+        Expr::Record { fields, .. } | Expr::RecordLit { fields, .. } => {
+            fields.iter().fold(CapabilitySet::PURE, |acc, f| {
+                f.value
+                    .as_ref()
+                    .map_or(acc, |val| acc.union(&infer_caps(ctx, b, val)))
+            })
+        }
         Expr::With { base, fields, .. } => {
             let mut caps = infer_caps(ctx, b, base);
             for f in fields {
@@ -213,13 +215,6 @@ pub fn infer_caps(ctx: &mut InferCtx, b: &BuiltinTyCons, expr: &Expr) -> Capabil
                 InterpPart::Text { .. } => acc,
             })
         }
-
-        // TODO(0.2.12): walk inline record literal field values for cap inference.
-        Expr::RecordLit { fields, .. } => fields.iter().fold(CapabilitySet::PURE, |acc, f| {
-            f.value
-                .as_ref()
-                .map_or(acc, |val| acc.union(&infer_caps(ctx, b, val)))
-        }),
     }
 }
 

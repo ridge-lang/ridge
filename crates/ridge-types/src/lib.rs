@@ -22,7 +22,7 @@ pub mod witness;
 pub use builtins::BuiltinTyCons;
 pub use capability_set::CapabilitySet;
 pub use scheme::Scheme;
-pub use shape_key::{AnonRecordTable, CapKey, ShapeKey, TyKey, shape_key, type_to_key};
+pub use shape_key::{shape_key, type_to_key, AnonRecordTable, CapKey, ShapeKey, TyKey};
 pub use subst::Subst;
 pub use ty::{CapRow, CapVid, TyVid, Type};
 pub use tycon::{

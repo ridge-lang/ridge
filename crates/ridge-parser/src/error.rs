@@ -339,8 +339,8 @@ impl ParseError {
             Self::BareRecordPattern { .. } => "P018",
             Self::OrphanDocComment { .. } => "P019",
             Self::ReservedKeywordAsIdent { .. } => "P020",
-            Self::MalformedInlineRecordType { .. } => "P021",
-            Self::InlineRecordTypeInTypePosition { .. } => "P021",
+            Self::MalformedInlineRecordType { .. }
+            | Self::InlineRecordTypeInTypePosition { .. } => "P021",
             Self::MailboxPolicyMissing { .. } => "P022",
             Self::MailboxBoundInvalid { .. } => "P023",
             Self::MultipleRestInListPattern { .. } => "P024",

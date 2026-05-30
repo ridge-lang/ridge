@@ -10,7 +10,9 @@
 
 use ena::unify::{InPlaceUnificationTable, NoError, UnifyKey, UnifyValue};
 use ridge_resolve::{NodeIdMap, NodeKind};
-use ridge_types::{AnonRecordTable, CapRow, CapVid, CapabilitySet, Scheme, TyConDecl, TyConId, TyVid, Type};
+use ridge_types::{
+    AnonRecordTable, CapRow, CapVid, CapabilitySet, Scheme, TyConDecl, TyConId, TyVid, Type,
+};
 use rustc_hash::FxHashMap;
 
 use crate::error::TypeError;

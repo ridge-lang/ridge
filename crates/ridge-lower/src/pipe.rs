@@ -154,11 +154,11 @@ const fn expr_span(expr: &Expr) -> Span {
         | Expr::Let { span: s, .. }
         | Expr::Var { span: s, .. }
         | Expr::Assign { span: s, .. }
-        | Expr::Interp { span: s, .. } => *s,
+        | Expr::Interp { span: s, .. }
+        | Expr::RecordLit { span: s, .. } => *s,
         Expr::Ident(i) => i.span,
         Expr::Qualified(q) => q.span,
         Expr::Block(b) => b.span,
-        Expr::RecordLit { span: s, .. } => *s,
     }
 }
 

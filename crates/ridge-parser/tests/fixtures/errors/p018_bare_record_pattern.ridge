@@ -1,5 +1,6 @@
--- expect: P018
--- Trigger: record-body pattern `{ ... }` without a constructor name prefix.
-fn f x =
-    match x
-        { name } -> 1
+-- expect: P021
+-- P018 retired in 0.2.12: bare record patterns are now supported.
+-- This fixture now triggers P021 (malformed inline record type) instead,
+-- to keep the error-fixture infrastructure exercised.
+-- Trigger: inline record type with missing colon separator.
+fn f (x: { id Int }) -> Int = 0

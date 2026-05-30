@@ -179,7 +179,6 @@ fn check_type(
         Type::Paren { inner, .. } => check_type(inner, project, workspace, errors),
         // Primitive, Named, Var — no caps, no children.
         Type::Primitive { .. } | Type::Named { .. } | Type::Var { .. } => {}
-        // TODO(0.2.12): recurse into inline record field types for cap checking.
         Type::Record { fields, .. } => {
             for field in fields {
                 check_type(&field.ty, project, workspace, errors);

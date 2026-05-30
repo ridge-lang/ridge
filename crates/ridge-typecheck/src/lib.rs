@@ -47,7 +47,7 @@ pub use ridge_types::{MatchWitness, WitnessKind, WitnessPat};
 
 use ridge_ast::Item;
 use ridge_resolve::{build_module_graph, ModuleId, NodeId, ResolvedWorkspace};
-use ridge_types::{CapabilitySet, Scheme, TyConArena, TyConDecl, Type};
+use ridge_types::{AnonRecordTable, CapabilitySet, Scheme, TyConArena, TyConDecl, Type};
 use rustc_hash::FxHashMap;
 use std::sync::Arc;
 
@@ -70,6 +70,11 @@ pub struct ModuleTypecheckResult {
     pub typed: TypedModule,
     /// `T###` diagnostics for this module only.
     pub errors: Vec<TypeError>,
+    /// Anonymous record table built by the pre-scan for this module.
+    ///
+    /// Merged into [`TypedWorkspace::anon_records`] by the workspace
+    /// driver after all modules are checked.
+    pub anon_records: AnonRecordTable,
 }
 
 /// The fully type-checked workspace.
@@ -85,6 +90,13 @@ pub struct TypedWorkspace {
     pub tycons: Vec<TyConDecl>,
     /// Shortcut handles into `tycons` for the 12 built-in `TyCons`.
     pub builtins: BuiltinTyCons,
+    /// Shape → [`ridge_types::TyConId`] map for anonymous record types.
+    ///
+    /// Populated by [`crate::tycon_collect::prescan_inline_records`] during
+    /// type-checking and frozen here for Phase 5 (lowering) to resolve
+    /// `Type::Record` AST nodes without re-interning.  Read-only after
+    /// `typecheck_workspace` returns.
+    pub anon_records: AnonRecordTable,
 }
 
 /// A single module after type-checking.
@@ -140,6 +152,8 @@ pub fn typecheck_workspace(ws: &ResolvedWorkspace) -> TypecheckResult {
     let module_graph = build_module_graph(&ws.graph);
 
     let mut typed_modules: Vec<TypedModule> = Vec::with_capacity(ws.modules.len());
+    // Merged anonymous record table across all modules.
+    let mut workspace_anon_records: AnonRecordTable = AnonRecordTable::default();
 
     // Step 3: Type-check each module.
     for rm in &ws.modules {
@@ -167,6 +181,9 @@ pub fn typecheck_workspace(ws: &ResolvedWorkspace) -> TypecheckResult {
 
         let result = typecheck_module_inner(rm.id, &ast, &rm.imports, &mut arena, &b);
         all_errors.extend(result.errors.into_iter().map(|e| (rm.id, e)));
+        // Merge this module's anon_records (last-write wins; same shapes share
+        // the same TyConId workspace-wide because the arena is shared).
+        workspace_anon_records.extend(result.anon_records);
         typed_modules.push(result.typed);
     }
 
@@ -178,6 +195,7 @@ pub fn typecheck_workspace(ws: &ResolvedWorkspace) -> TypecheckResult {
             modules: typed_modules,
             tycons,
             builtins: b,
+            anon_records: workspace_anon_records,
         },
         errors: all_errors,
     }
@@ -210,6 +228,7 @@ pub fn typecheck_module(
                 match_witnesses: FxHashMap::default(),
             },
             errors: Vec::new(),
+            anon_records: AnonRecordTable::default(),
         };
     };
 
@@ -230,6 +249,7 @@ pub fn typecheck_module(
                 match_witnesses: FxHashMap::default(),
             },
             errors: Vec::new(),
+            anon_records: AnonRecordTable::default(),
         };
     };
 
@@ -533,9 +553,13 @@ fn typecheck_module_inner(
         match_witnesses: FxHashMap::default(), // T17: populated by infer_expr
     };
 
+    // Move the anon_records table out so the workspace driver can merge it.
+    let anon_records = std::mem::take(&mut ctx.anon_records);
+
     ModuleTypecheckResult {
         typed,
         errors: ctx.errors,
+        anon_records,
     }
 }
 

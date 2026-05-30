@@ -718,12 +718,61 @@ pub fn lower_expr(ctx: &mut LowerCtx<'_>, expr: &Expr) -> IrExpr {
             }
         }
 
-        // TODO(0.2.12): lower inline record literals to IrExpr::Construct (T6).
-        Expr::RecordLit { span, .. } => {
+        // ── Inline record literal ─────────────────────────────────────────────
+        //
+        // `{ f = v, … }` lowers to `IrExpr::Construct { Record, owner = anon_id }`.
+        // The codegen layer drops the constructor tag for Record-kind constructs and
+        // emits a BEAM map — no codegen change needed.
+        Expr::RecordLit { fields, span } => {
+            // Step 1: lower each field value.
+            let ir_fields: Vec<(String, IrExpr)> = fields
+                .iter()
+                .map(|fi| {
+                    let val_expr = fi
+                        .value
+                        .as_ref()
+                        .map_or_else(|| Expr::Ident(fi.name.clone()), Clone::clone);
+                    (fi.name.text.clone(), lower_expr(ctx, &val_expr))
+                })
+                .collect();
+
+            // Step 2: look up the anon TyConId from the typecheck node-type table.
+            // The typecheck pass stamped `Type::Con(anon_id, [])` for this expression
+            // under NodeKind::Expr.
+            let anon_id: TyConId = ctx
+                .node_id_map
+                .as_ref()
+                .and_then(|m| m.get(*span, NodeKind::Expr))
+                .and_then(|nid| ctx.node_type(nid))
+                .and_then(|ty| {
+                    if let Type::Con(id, _) = ty {
+                        Some(*id)
+                    } else {
+                        None
+                    }
+                })
+                // Defensive fallback for unit-test scaffolding that does not
+                // wire the node-type table.  TyConId(0) is the `Int` builtin in
+                // the normal arena; under test scaffolding the arena is usually
+                // empty and this produces no-op IR.
+                .unwrap_or(TyConId(0));
+
+            // Step 3: look up the anon decl name for the SymbolRef.
+            let anon_name = ctx
+                .workspace
+                .and_then(|ws| ws.tycons.get(anon_id.0 as usize))
+                .map_or_else(|| format!("{{anon record #{}}}", anon_id.0), |d| d.name.clone());
+
             let id = ctx.fresh_id(None);
-            IrExpr::Lit {
+            IrExpr::Construct {
                 id,
-                value: ridge_ir::IrLit::Unit,
+                ctor: SymbolRef::Constructor {
+                    ctor_kind: ridge_ir::CtorKind::Record,
+                    owner_type: anon_id,
+                    name: anon_name,
+                    variant: 0,
+                },
+                fields: ir_fields,
                 span: *span,
             }
         }

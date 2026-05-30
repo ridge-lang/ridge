@@ -17,7 +17,7 @@ use ridge_ast::{Item, Span};
 use ridge_ir::{IrNodeId, LoweredModule};
 use ridge_resolve::{BindingMap, ModuleId, NodeId, NodeIdMap, SymbolId, SymbolTable};
 use ridge_typecheck::TypedWorkspace;
-use ridge_types::{CapabilitySet, TyConId, Type};
+use ridge_types::{CapabilitySet, ShapeKey, TyConId, Type};
 use rustc_hash::{FxHashMap, FxHashSet};
 
 /// Name-to-`TyConId` cache, built lazily from the workspace on first lookup.
@@ -281,6 +281,18 @@ impl<'tw> LowerCtx<'tw> {
         self.tycon_name_cache
             .as_ref()
             .and_then(|c| c.get(name).copied())
+    }
+
+    /// Look up the [`TyConId`] for an anonymous record type by its structural shape.
+    ///
+    /// Reads the frozen `TypedWorkspace::anon_records` table populated by the
+    /// typecheck pre-scan.  Returns `None` when no workspace is attached (unit
+    /// tests) or when the shape has no entry (agreement-failure sentinel: the
+    /// typecheck and lower canonicalizers disagree — should not happen in
+    /// correct programs).
+    #[must_use]
+    pub fn lookup_anon_by_shape(&self, key: &ShapeKey) -> Option<TyConId> {
+        self.workspace?.anon_records.get(key).copied()
     }
 
     /// Look up the `ModuleId` of an actor by its source-level name.

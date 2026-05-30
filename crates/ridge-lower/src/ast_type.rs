@@ -107,11 +107,25 @@ pub(crate) fn lower_ast_type(ctx: &mut LowerCtx<'_>, ast_ty: &ridge_ast::Type) -
             .and_then(|nid| ctx.node_type(nid).cloned())
             .unwrap_or(Type::Error),
 
-        // TODO(0.2.12): resolve inline record types via AnonRecordTable (T6).
-        // After T4/T5 populate TypedWorkspace.anon_records, T6 wires the
-        // ShapeKey lookup into LowerCtx so this arm can return the correct
-        // Type::Con(anon_id, []).
-        ridge_ast::Type::Record { .. } => Type::Error,
+        // ── Inline record type — look up the AnonRecordTable by ShapeKey ────────
+        //
+        // The typecheck pre-scan interned every inline record into
+        // `TypedWorkspace::anon_records`.  Lower it by recursively lowering each
+        // field's AST type, computing the same ShapeKey, and reading the frozen
+        // table.  A MISS indicates a canonicalization disagreement between the
+        // typecheck and lower paths — fall back to `Type::Error`.
+        ridge_ast::Type::Record { fields, .. } => {
+            let lowered: Vec<(String, Type)> = fields
+                .iter()
+                .map(|f| {
+                    let ty = lower_ast_type(ctx, &f.ty);
+                    (f.name.text.clone(), ty)
+                })
+                .collect();
+            let key = ridge_types::shape_key(&lowered);
+            ctx.lookup_anon_by_shape(&key)
+                .map_or(Type::Error, |id| Type::Con(id, vec![]))
+        }
     }
 }
 

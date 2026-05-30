@@ -453,7 +453,6 @@ impl ScopeWalker<'_> {
                     }
                 }
             }
-            // TODO(0.2.12): bind field variables in inline record patterns.
             Pattern::Record { fields, .. } => {
                 for fp in fields {
                     if let Some(inner) = &fp.pattern {

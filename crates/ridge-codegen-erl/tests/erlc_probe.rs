@@ -211,6 +211,91 @@ fn compile_core_returns_e004_on_subprocess_exit_failure() {
     }
 }
 
+/// The Layer B bench runner installs, compiles, discovers `bench_*/0` exports
+/// in a module, times them, and prints one machine-readable JSON line each.
+///
+/// Gated on `beam-runtime` (real OTP) plus a `which` guard for `erl`/`erlc`.
+#[test]
+#[cfg_attr(
+    not(feature = "beam-runtime"),
+    ignore = "requires OTP installation; run with --features beam-runtime"
+)]
+fn bench_runner_times_and_reports_bench_functions() {
+    if which::which("erlc").is_err() || which::which("erl").is_err() {
+        eprintln!("erl/erlc not on PATH — skipping bench_runner_times_and_reports_bench_functions");
+        return;
+    }
+
+    let dir = tempdir().unwrap();
+    let out_root = dir.path();
+    output_layout::ensure_out_dirs(out_root).expect("ensure_out_dirs");
+
+    // Install + compile the bench runner.
+    runtime::install_bench_runner(out_root).expect("install_bench_runner");
+    let info = erlc::probe(None).expect("probe");
+    runtime::compile_bench_runner(&info.path, out_root).expect("compile_bench_runner");
+
+    // A hand-written bench module: one trivial body and one that does enough
+    // work to clear the clock resolution, so we can assert a real timing.
+    let beam_dir = output_layout::beam_dir(out_root);
+    let demo_erl = out_root.join("bench_demo.erl");
+    fs::write(
+        &demo_erl,
+        "-module(bench_demo).\n\
+         -export([bench_noop/0, bench_listwork/0]).\n\
+         bench_noop() -> ok.\n\
+         bench_listwork() -> lists:sum(lists:seq(1, 100000)).\n",
+    )
+    .expect("write bench_demo.erl");
+    let status = std::process::Command::new(&info.path)
+        .arg("-o")
+        .arg(&beam_dir)
+        .arg(&demo_erl)
+        .status()
+        .expect("erlc bench_demo");
+    assert!(status.success(), "erlc must compile bench_demo");
+
+    // Run every bench in a single BEAM boot.
+    let output = std::process::Command::new("erl")
+        .arg("-noshell")
+        .arg("-pa")
+        .arg(&beam_dir)
+        .arg("-s")
+        .arg("ridge_bench_runner")
+        .arg("run")
+        .arg("bench_demo")
+        .arg("-s")
+        .arg("init")
+        .arg("stop")
+        .output()
+        .expect("run bench runner");
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stdout.contains("\"bench\":\"bench_noop\""),
+        "missing bench_noop result line:\nstdout:\n{stdout}\nstderr:\n{stderr}"
+    );
+    assert!(
+        stdout.contains("\"bench\":\"bench_listwork\""),
+        "missing bench_listwork result line:\nstdout:\n{stdout}"
+    );
+    assert!(
+        stdout.contains("\"median_ns\":") && stdout.contains("\"p99_ns\":"),
+        "result lines must carry median_ns and p99_ns:\n{stdout}"
+    );
+    // The substantial body must register a non-zero median (proves timing works,
+    // not just that lines are printed).
+    let listwork_line = stdout
+        .lines()
+        .find(|l| l.contains("bench_listwork"))
+        .expect("bench_listwork line present");
+    assert!(
+        !listwork_line.contains("\"median_ns\":0,"),
+        "a 100k-element body must measure above clock resolution:\n{listwork_line}"
+    );
+}
+
 /// `compile_core` returns `E003 ErlcNotFound` when the erlc executable path
 /// does not exist.  No real erlc needed — the binary simply doesn't exist.
 #[test]

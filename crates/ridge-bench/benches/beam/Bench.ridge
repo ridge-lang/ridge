@@ -1,0 +1,36 @@
+-- Layer B micro-benchmarks: bodies compiled to BEAM and timed by
+-- ridge_bench_runner. Each `pub fn bench_*/0` becomes a benchmark.
+--
+-- These measure the real generated code so the numbers can decide whether the
+-- conditional codegen work (var-length list patterns, pairwise concat, record
+-- update) is worth doing. Keep the bodies allocation-heavy enough to clear the
+-- platform clock resolution.
+
+import std.list as List
+import std.text as Text
+
+type Cell = { v: Int, n: Int }
+
+-- List traversal over 10k elements: exercises the list-match codegen.
+pub fn bench_list_sum_10k () -> Int =
+    List.range 1 10000
+ |> List.fold (fn acc x -> acc + x) 0
+
+-- String built by repeated concatenation: exercises the concat path, the
+-- suspected pairwise O(n^2) byte-copy.
+pub fn bench_string_build () -> Int =
+    let s =
+        List.range 1 4000
+     |> List.fold (fn acc _ -> acc ++ "x") ""
+    Text.length s
+
+-- Record threaded through 10k field updates: exercises `with`. Named recursion
+-- rather than a fold lambda, because a `with` expression in a closure body is
+-- currently mis-lowered; the named-function path is sound.
+fn churn (acc: Cell) (k: Int) -> Cell =
+    if k <= 0 then acc
+    else churn (acc with { v = acc.v + k, n = acc.n + 1 }) (k - 1)
+
+pub fn bench_record_churn () -> Int =
+    let f = churn (Cell { v = 0, n = 0 }) 10000
+    f.v + f.n

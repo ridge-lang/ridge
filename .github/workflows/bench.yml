@@ -1,0 +1,81 @@
+name: Bench
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+
+# A newer commit on the same ref makes an in-flight bench run obsolete.
+concurrency:
+  group: bench-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  layer-a:
+    name: Layer A (native pipeline)
+    runs-on: ubuntu-22.04
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      # Same docs/assets short-circuit as CI: a changeset that touches no
+      # code cannot move the numbers, so skip the run.
+      - name: Detect code changes
+        id: changes
+        uses: dorny/paths-filter@v3
+        with:
+          predicate-quantifier: 'every'
+          filters: |
+            code:
+              - '**'
+              - '!**.md'
+              - '!docs/**'
+              - '!assets/**'
+              - '!examples/**'
+              - '!dogfood/**'
+              - '!LICENSE'
+              - '!CHANGELOG.md'
+              - '!.github/ISSUE_TEMPLATE/**'
+              - '!.github/PULL_REQUEST_TEMPLATE.md'
+
+      - name: Install Rust toolchain
+        if: steps.changes.outputs.code == 'true'
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: "1.88"
+
+      # No Erlang/OTP: Layer A stops at Core Erlang emission and never invokes
+      # erlc, so the run is pure native code. That is the point of this layer.
+
+      - name: Cache cargo registry
+        if: steps.changes.outputs.code == 'true'
+        uses: actions/cache@v5
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-bench-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: ${{ runner.os }}-bench-
+
+      - name: Run Layer A benchmarks
+        if: steps.changes.outputs.code == 'true'
+        # Informational for now: this run establishes the measurement
+        # baselines. Regression gating lands once a committed baseline
+        # exists to compare against. Reduced sampling keeps PR latency low.
+        run: |
+          cargo bench -p ridge-bench --bench pipeline --locked -- \
+            --warm-up-time 0.5 --measurement-time 2 --sample-size 20 \
+            | tee bench-output.txt
+
+      - name: Upload benchmark results
+        if: steps.changes.outputs.code == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: bench-layer-a
+          path: |
+            bench-output.txt
+            target/criterion/**
+          if-no-files-found: warn

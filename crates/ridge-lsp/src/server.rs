@@ -50,7 +50,7 @@ use tower_lsp::{Client, LanguageServer};
 use ridge_driver::{check_workspace, CheckOptions};
 use ridge_manifest::find_workspace_root;
 
-use crate::diagnostics::to_lsp_diagnostic;
+use crate::diagnostics::{source_id_to_uri, to_lsp_diagnostic};
 
 // ── WorkspaceSnapshot ─────────────────────────────────────────────────────────
 
@@ -177,28 +177,23 @@ impl RidgeLanguageServer {
                     }
 
                     for diag in &artefacts.diagnostics {
-                        let source_key = diag.source_id.as_str().to_owned();
-                        // Attempt to find the open doc text for span conversion.
-                        let src_text = docs_snapshot
-                            .iter()
-                            .find(|(uri, _)| uri.path().ends_with(&source_key))
-                            .map(|(_, text)| text.as_str());
+                        let source_key = diag.source_id.as_str();
 
-                        // Find the URI for this diagnostic's source file.
-                        // The static `file:///unknown` fallback URL is a
-                        // compile-time constant; `expect` cannot fail.
-                        #[allow(clippy::expect_used)]
-                        let uri = docs_snapshot
-                            .keys()
-                            .find(|uri| uri.path().ends_with(&source_key))
-                            .cloned()
-                            .unwrap_or_else(|| {
-                                // Fallback: construct file URI from workspace root + source_key.
-                                let path = workspace_root.join(&source_key);
-                                Url::from_file_path(&path).unwrap_or_else(|()| {
-                                    Url::parse("file:///unknown").expect("static URL is valid")
-                                })
-                            });
+                        // Derive the document URI from the workspace-relative
+                        // source id instead of suffix-matching open-doc paths.
+                        // The old `ends_with` match failed whenever the file was
+                        // not open, anchoring the diagnostic to `<unknown>`.
+                        let uri = source_id_to_uri(&workspace_root, source_key);
+
+                        // Resolve spans against the exact on-disk text the
+                        // compiler read — `check_workspace` compiles disk state,
+                        // so a diagnostic's byte offsets index that text, not the
+                        // editor buffer. Fall back to the open-doc text only when
+                        // the cache has no entry for this source id.
+                        let src_text = artefacts
+                            .sources
+                            .text(source_key)
+                            .or_else(|| docs_snapshot.get(&uri).map(String::as_str));
 
                         let lsp_diag = to_lsp_diagnostic(diag, &uri, src_text);
                         by_file.entry(uri.to_string()).or_default().push(lsp_diag);

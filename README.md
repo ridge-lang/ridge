@@ -55,7 +55,7 @@ schedule. See [`ROADMAP.md`](ROADMAP.md).
 - Workspace model with architectural rules enforced by the compiler
 - No `null` &mdash; `Option` and `Result` are the only way to express
   optionality and failure
-- LSP server (diagnostics, hover, go-to-definition) and VS Code extension
+- LSP server (live diagnostics) and VS Code extension
 - Built-in test runner, formatter, and REPL
 
 ## A taste of Ridge

@@ -25,9 +25,10 @@ use ridge_types::TyConId;
 use rustc_hash::{FxHashMap, FxHashSet};
 
 use crate::class_env::{
-    register_prelude_classes, ClassInfo, ClassTable, InstanceEnv, InstanceInfo, InstanceOrigin,
-    MethodSig,
+    register_prelude_classes, register_prelude_instances, ClassInfo, ClassTable, InstanceEnv,
+    InstanceInfo, InstanceOrigin, MethodSig,
 };
+use crate::derive::derive_instances;
 use crate::error::TypeError;
 
 // ── Public entry point ────────────────────────────────────────────────────────
@@ -40,6 +41,12 @@ pub struct CollectResult {
     pub instance_env: InstanceEnv,
     /// Coherence diagnostics (T031–T035 + T034 from [`InstanceEnv::insert`]).
     pub errors: Vec<TypeError>,
+    /// Derived instances generated from `deriving` clauses.
+    ///
+    /// Each entry maps `(module_id, type_name)` → list of derived instances,
+    /// stored so the lowering pass can emit the method fns and dict values for
+    /// each derived class. Instances that failed coherence (T032) are absent.
+    pub derived_instances: Vec<crate::derive::DerivedInstance>,
 }
 
 /// Runs the collect + coherence pass over every module in a workspace.
@@ -74,6 +81,11 @@ pub fn collect_workspace(
     // Step 1: Seed the ClassTable with built-in prelude classes.
     register_prelude_classes(&mut class_table);
 
+    // Step 1b: Seed the InstanceEnv with built-in prelude instances (ToText,
+    // Eq, and Ord for the primitive types). These live in the prelude module
+    // (`def_module = None`) and are not subject to the orphan check below.
+    register_prelude_instances(&mut instance_env);
+
     // Step 2: Walk all ClassDecl items, registering user-defined classes.
     // The two-pass approach in collect_class_decls ensures forward references
     // in superclass lists resolve correctly.
@@ -97,6 +109,18 @@ pub fn collect_workspace(
         );
     }
 
+    // Step 4b: Synthesise instances for every `TypeDecl` that has a
+    // `deriving (…)` clause. Derived instances are registered into the same
+    // InstanceEnv as explicit ones; coherence (T032 overlap) is enforced
+    // by the same InstanceEnv::insert path.
+    let derived_instances = collect_derived_instances(
+        modules,
+        user_tycon_names,
+        &class_table,
+        &mut instance_env,
+        &mut errors,
+    );
+
     // Step 5: Orphan-rule check (T031) for all collected instances.
     check_orphan_rule(&instance_env, &class_table, &mut errors);
 
@@ -107,6 +131,7 @@ pub fn collect_workspace(
         class_table,
         instance_env,
         errors,
+        derived_instances,
     }
 }
 
@@ -219,6 +244,59 @@ fn collect_instance_decls(
             Err(e) => errors.push(e.into_type_error()),
         }
     }
+}
+
+// ── Derived instance collection ───────────────────────────────────────────────
+
+/// Synthesises instances for every `TypeDecl` in each module that has a
+/// non-empty `deriving` clause.
+///
+/// The predicted `TyConId` for each user type is looked up from
+/// `user_tycon_names`. If a type name is not in the map (e.g. because the
+/// pre-scan did not reach it), the `deriving` clause is silently skipped; the
+/// type-checker will surface missing instances at call sites via T029.
+///
+/// Returns all successfully generated [`crate::derive::DerivedInstance`]s so
+/// the lowering pass can emit the corresponding method fns and dict values.
+fn collect_derived_instances(
+    modules: &[(u32, &ridge_ast::Module)],
+    user_tycon_names: &FxHashMap<String, TyConId>,
+    class_table: &ClassTable,
+    instance_env: &mut InstanceEnv,
+    errors: &mut Vec<TypeError>,
+) -> Vec<crate::derive::DerivedInstance> {
+    let mut all_derived: Vec<crate::derive::DerivedInstance> = Vec::new();
+
+    for &(module_id, ast) in modules {
+        for item in &ast.items {
+            let Item::Type(type_decl) = item else {
+                continue;
+            };
+            if type_decl.deriving.is_empty() {
+                continue;
+            }
+
+            // Look up the TyConId assigned to this type during the arena
+            // pre-scan. If the name is absent, skip — the solver will catch
+            // any missing instances at use sites.
+            let Some(&tycon_id) = user_tycon_names.get(type_decl.name.text.as_str()) else {
+                continue;
+            };
+
+            let (generated, derive_errors) = derive_instances(
+                type_decl,
+                tycon_id,
+                module_id,
+                class_table,
+                instance_env,
+                user_tycon_names,
+            );
+            all_derived.extend(generated);
+            errors.extend(derive_errors);
+        }
+    }
+
+    all_derived
 }
 
 // ── Coherence checks ─────────────────────────────────────────────────────────
@@ -684,11 +762,15 @@ mod tests {
 
     #[test]
     fn coherence_missing_superclass_t033() {
-        // instance Ord Int without instance Eq Int.
-        // We put only Ord; Eq is not in the module so EQ_CLASS won't have
-        // an Int instance.
-        let m = module_with_items(vec![instance_decl_item("Ord", "Int")]);
-        let result = collect_workspace(&[(0, &m)], &rustc_hash::FxHashMap::default());
+        // instance Ord Widget without instance Eq Widget.
+        // Widget is a user-defined type with no prelude instances, so the
+        // prelude-injected Eq Int / Ord Int entries do not interfere.
+        let widget_id = TyConId(100); // well above the 16 prelude TyConIds
+        let mut user_types = rustc_hash::FxHashMap::default();
+        user_types.insert("Widget".to_string(), widget_id);
+
+        let m = module_with_items(vec![instance_decl_item("Ord", "Widget")]);
+        let result = collect_workspace(&[(0, &m)], &user_types);
         let has_t033 = result.errors.iter().any(|e| e.code() == "T033");
         assert!(
             has_t033,
@@ -701,12 +783,17 @@ mod tests {
 
     #[test]
     fn coherence_superclass_present_no_t033() {
-        // instance Eq Int + instance Ord Int → OK (Eq is Ord's superclass).
+        // instance Eq Widget + instance Ord Widget → OK (Eq is Ord's superclass).
+        // Using a user type to avoid conflict with prelude-injected Int instances.
+        let widget_id = TyConId(101);
+        let mut user_types = rustc_hash::FxHashMap::default();
+        user_types.insert("Widget".to_string(), widget_id);
+
         let m = module_with_items(vec![
-            instance_decl_item("Eq", "Int"),
-            instance_decl_item("Ord", "Int"),
+            instance_decl_item("Eq", "Widget"),
+            instance_decl_item("Ord", "Widget"),
         ]);
-        let result = collect_workspace(&[(0, &m)], &rustc_hash::FxHashMap::default());
+        let result = collect_workspace(&[(0, &m)], &user_types);
         let has_t033 = result.errors.iter().any(|e| e.code() == "T033");
         assert!(
             !has_t033,

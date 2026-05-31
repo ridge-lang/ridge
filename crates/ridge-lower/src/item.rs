@@ -44,9 +44,9 @@ use ridge_ast::{
     decl::{ConstDecl, FnDecl},
     module::Item,
     typeclass::InstanceDecl,
-    Body, Expr, Param, Visibility,
+    Body, Expr, Param, Span, Visibility,
 };
-use ridge_ir::{CtorKind, IrConst, IrExpr, IrFfiFn, IrFn, IrItem, IrParam, SymbolRef};
+use ridge_ir::{CtorKind, IrConst, IrExpr, IrFfiFn, IrFn, IrItem, IrLit, IrParam, SymbolRef};
 use ridge_resolve::{NodeId, NodeKind};
 use ridge_types::{Scheme, Type};
 
@@ -403,6 +403,815 @@ pub fn lower_const(ctx: &mut LowerCtx<'_>, decl: &ConstDecl) -> IrConst {
         span: decl.span,
         is_pub: matches!(decl.vis, Visibility::Pub),
     }
+}
+
+/// Lower a derived instance (produced from a `deriving` clause) to IR.
+///
+/// Like [`lower_instance`], this emits:
+/// 1. One private [`IrFn`] per method with a synthesised body.
+/// 2. One [`IrConst`] dict value `$inst_{ClassName}_{TypeName}`.
+///
+/// The method body is determined by the [`ridge_typecheck::DerivedMethodBody`]
+/// tag stored during the collect pass.
+#[expect(
+    clippy::too_many_lines,
+    reason = "flat match dispatch over all derived method body kinds; splitting would not reduce complexity"
+)]
+pub fn lower_derived_instance(
+    ctx: &mut LowerCtx<'_>,
+    derived: &ridge_typecheck::DerivedInstance,
+    class_name: &str,
+    type_name: &str,
+) -> Vec<IrItem> {
+    use ridge_ir::{IrArm, IrPat};
+    use ridge_typecheck::DerivedMethodBody;
+
+    let sp = Span::point(0);
+    let mut items: Vec<IrItem> = Vec::new();
+
+    let method_name = derived
+        .instance_info
+        .methods
+        .first()
+        .map_or("", |(n, _)| n.as_str());
+    let fn_name = format!("{class_name}__{type_name}__{method_name}");
+
+    // ── Build the method body ─────────────────────────────────────────────────
+
+    let (body, params) = match &derived.method_body {
+        DerivedMethodBody::DerivedEq => {
+            // eq (a: T) (b: T) -> Bool  =  erlang:=:=(a, b)
+            // Dispatch through std.op.eq which codegen maps to erlang:=:=.
+            let body = IrExpr::Call {
+                id: ctx.fresh_id(None),
+                callee: Box::new(IrExpr::Symbol {
+                    id: ctx.fresh_id(None),
+                    sym: SymbolRef::Stdlib {
+                        module: "std.op".to_string(),
+                        name: "eq".to_string(),
+                    },
+                    span: sp,
+                }),
+                args: vec![
+                    IrExpr::Local {
+                        id: ctx.fresh_id(None),
+                        name: "a".to_string(),
+                        span: sp,
+                    },
+                    IrExpr::Local {
+                        id: ctx.fresh_id(None),
+                        name: "b".to_string(),
+                        span: sp,
+                    },
+                ],
+                span: sp,
+            };
+            let params = vec![
+                IrParam {
+                    name: "a".to_string(),
+                    ty: Type::Error,
+                    span: sp,
+                },
+                IrParam {
+                    name: "b".to_string(),
+                    ty: Type::Error,
+                    span: sp,
+                },
+            ];
+            (body, params)
+        }
+
+        DerivedMethodBody::DerivedToTextRecord {
+            field_names,
+            field_tycons,
+        } => {
+            // toText (x: T) -> Text
+            //   = "TypeName { f1 = " ++ toText(x.f1) ++ ", f2 = " ++ toText(x.f2) ++ " }"
+            //
+            // Each field is accessed via IrExpr::Field, then wrapped with the
+            // appropriate stdlib toText call (reusing the interpolation path
+            // for builtin types: std.int.toText, std.bool.toText, etc.).
+            // Text fields and user-defined types are passed through as-is.
+            let body = build_to_text_record_body(ctx, type_name, field_names, field_tycons, sp);
+            let params = vec![IrParam {
+                name: "x".to_string(),
+                ty: Type::Error,
+                span: sp,
+            }];
+            (body, params)
+        }
+
+        DerivedMethodBody::DerivedToTextUnion { variants } => {
+            // toText (x: T) -> Text  =  match x { Ctor => "Ctor", Ctor(v0, v1) => "Ctor(" ++ toText(v0) ++ ", " ++ toText(v1) ++ ")", ... }
+            // Nullary variants render as just the name; payload variants render
+            // "CtorName(toText(v0), toText(v1), ...)".
+            let arms: Vec<IrArm> = variants
+                .iter()
+                .map(|(ctor_name, payload_count, payload_tycons)| {
+                    // Bind payload variables p0, p1, … so they can be rendered.
+                    let sym = SymbolRef::Constructor {
+                        ctor_kind: CtorKind::UnionVariant,
+                        owner_type: derived.key.1,
+                        name: ctor_name.clone(),
+                        variant: 0,
+                    };
+                    let args: Vec<IrPat> = (0..*payload_count)
+                        .map(|i| IrPat::Bind {
+                            name: format!("_p{i}"),
+                            inner: None,
+                            span: sp,
+                        })
+                        .collect();
+                    let pat = IrPat::Ctor {
+                        sym,
+                        fields: vec![],
+                        args,
+                        span: sp,
+                    };
+                    let arm_body = build_to_text_union_arm_body(
+                        ctx,
+                        ctor_name,
+                        *payload_count,
+                        payload_tycons,
+                        sp,
+                    );
+                    IrArm {
+                        pat,
+                        when: None,
+                        body: arm_body,
+                        span: sp,
+                    }
+                })
+                .collect();
+
+            let body = IrExpr::Match {
+                id: ctx.fresh_id(None),
+                scrutinee: Box::new(IrExpr::Local {
+                    id: ctx.fresh_id(None),
+                    name: "x".to_string(),
+                    span: sp,
+                }),
+                arms,
+                span: sp,
+            };
+            let params = vec![IrParam {
+                name: "x".to_string(),
+                ty: Type::Error,
+                span: sp,
+            }];
+            (body, params)
+        }
+
+        DerivedMethodBody::DerivedOrdRecord { field_names } => {
+            // compare (a: T) (b: T) -> Ordering
+            // Field-by-field lexicographic order. Uses nested matches on
+            // std.op.lt / std.op.gt per field; first non-Equal field wins.
+            // For 0.2.13, emit a match using std.op.lt/gt calls.
+            let body = build_ord_record_body(ctx, field_names, sp);
+            let params = vec![
+                IrParam {
+                    name: "a".to_string(),
+                    ty: Type::Error,
+                    span: sp,
+                },
+                IrParam {
+                    name: "b".to_string(),
+                    ty: Type::Error,
+                    span: sp,
+                },
+            ];
+            (body, params)
+        }
+
+        DerivedMethodBody::DerivedOrdUnion { variants } => {
+            // compare (a: T) (b: T) -> Ordering — variant index then payload.
+            let body = build_ord_union_body(ctx, derived.key.1, variants, sp);
+            let params = vec![
+                IrParam {
+                    name: "a".to_string(),
+                    ty: Type::Error,
+                    span: sp,
+                },
+                IrParam {
+                    name: "b".to_string(),
+                    ty: Type::Error,
+                    span: sp,
+                },
+            ];
+            (body, params)
+        }
+    };
+
+    // ── Emit the method fn ────────────────────────────────────────────────────
+
+    let method_fn = IrFn {
+        name: fn_name.clone(),
+        module: ctx.module_id,
+        params,
+        ret_ty: Type::Error,
+        caps: ridge_types::CapabilitySet::PURE,
+        scheme: Scheme::mono(Type::Error),
+        body,
+        origin: NodeId(0),
+        span: sp,
+        is_pub: false,
+        is_main: false,
+        doc: None,
+    };
+    items.push(IrItem::Fn(method_fn));
+
+    // ── Emit the dict const ───────────────────────────────────────────────────
+    // $inst_ClassName_TypeName = #{ 'method' => fun fn_name/N }
+
+    let dict_name = format!("$inst_{class_name}_{type_name}");
+    let fn_ref_expr = IrExpr::Symbol {
+        id: ctx.fresh_id(None),
+        sym: SymbolRef::Local {
+            name: fn_name,
+            module: ctx.module_id,
+        },
+        span: sp,
+    };
+
+    let dict_value = IrExpr::Construct {
+        id: ctx.fresh_id(None),
+        ctor: SymbolRef::Constructor {
+            ctor_kind: CtorKind::Record,
+            owner_type: ridge_types::TyConId(0),
+            name: dict_name.clone(),
+            variant: 0,
+        },
+        fields: vec![(method_name.to_string(), fn_ref_expr)],
+        span: sp,
+    };
+
+    items.push(IrItem::Const(IrConst {
+        name: dict_name,
+        ty: Type::Error,
+        value: dict_value,
+        origin: NodeId(0),
+        span: sp,
+        is_pub: false,
+    }));
+
+    items
+}
+
+// ── Derived Ord body builders ─────────────────────────────────────────────────
+
+/// Build the `compare` body for a derived `Ord` on a record type.
+///
+/// Emits field-by-field comparisons via `std.op.lt`/`std.op.gt`; first
+/// non-`Equal` result wins. The IR uses `Match` arms on `true`/`false` literals
+/// since there is no `IrExpr::If` in the IR.
+#[expect(
+    clippy::too_many_lines,
+    reason = "sequential field-by-field comparison chain; splitting by field count would not reduce complexity"
+)]
+fn build_ord_record_body(ctx: &mut LowerCtx<'_>, field_names: &[String], sp: Span) -> IrExpr {
+    use ridge_ir::{IrArm, IrLit, IrPat};
+
+    // Helper: build a Less/Equal/Greater Ordering constructor.
+    let ordering_ctor = |ctx: &mut LowerCtx<'_>, name: &str, variant: u32| IrExpr::Construct {
+        id: ctx.fresh_id(None),
+        ctor: SymbolRef::Constructor {
+            ctor_kind: CtorKind::UnionVariant,
+            owner_type: ridge_types::TyConId(15), // Ordering
+            name: name.to_string(),
+            variant,
+        },
+        fields: vec![],
+        span: sp,
+    };
+
+    if field_names.is_empty() {
+        return ordering_ctor(ctx, "Equal", 1);
+    }
+
+    // Build from the last field backwards; start with Equal and wrap each field.
+    let mut result = ordering_ctor(ctx, "Equal", 1);
+
+    for field in field_names.iter().rev() {
+        // a.field
+        let a_field = IrExpr::Field {
+            id: ctx.fresh_id(None),
+            base: Box::new(IrExpr::Local {
+                id: ctx.fresh_id(None),
+                name: "a".to_string(),
+                span: sp,
+            }),
+            field: field.clone(),
+            span: sp,
+        };
+        // b.field
+        let b_field = IrExpr::Field {
+            id: ctx.fresh_id(None),
+            base: Box::new(IrExpr::Local {
+                id: ctx.fresh_id(None),
+                name: "b".to_string(),
+                span: sp,
+            }),
+            field: field.clone(),
+            span: sp,
+        };
+
+        // lt_call: std.op.lt(a.field, b.field)
+        let lt_call = IrExpr::Call {
+            id: ctx.fresh_id(None),
+            callee: Box::new(IrExpr::Symbol {
+                id: ctx.fresh_id(None),
+                sym: SymbolRef::Stdlib {
+                    module: "std.op".to_string(),
+                    name: "lt".to_string(),
+                },
+                span: sp,
+            }),
+            args: vec![a_field.clone(), b_field.clone()],
+            span: sp,
+        };
+
+        // gt_call: std.op.gt(a.field, b.field)
+        let gt_call = IrExpr::Call {
+            id: ctx.fresh_id(None),
+            callee: Box::new(IrExpr::Symbol {
+                id: ctx.fresh_id(None),
+                sym: SymbolRef::Stdlib {
+                    module: "std.op".to_string(),
+                    name: "gt".to_string(),
+                },
+                span: sp,
+            }),
+            args: vec![a_field, b_field],
+            span: sp,
+        };
+
+        // match std.op.gt(a.f, b.f) { true => Greater, _ => <rest> }
+        let gt_match = IrExpr::Match {
+            id: ctx.fresh_id(None),
+            scrutinee: Box::new(gt_call),
+            arms: vec![
+                IrArm {
+                    pat: IrPat::Lit {
+                        value: IrLit::Bool(true),
+                        span: sp,
+                    },
+                    when: None,
+                    body: ordering_ctor(ctx, "Greater", 2),
+                    span: sp,
+                },
+                IrArm {
+                    pat: IrPat::Wild { span: sp },
+                    when: None,
+                    body: result,
+                    span: sp,
+                },
+            ],
+            span: sp,
+        };
+
+        // match std.op.lt(a.f, b.f) { true => Less, _ => <gt_match> }
+        result = IrExpr::Match {
+            id: ctx.fresh_id(None),
+            scrutinee: Box::new(lt_call),
+            arms: vec![
+                IrArm {
+                    pat: IrPat::Lit {
+                        value: IrLit::Bool(true),
+                        span: sp,
+                    },
+                    when: None,
+                    body: ordering_ctor(ctx, "Less", 0),
+                    span: sp,
+                },
+                IrArm {
+                    pat: IrPat::Wild { span: sp },
+                    when: None,
+                    body: gt_match,
+                    span: sp,
+                },
+            ],
+            span: sp,
+        };
+    }
+
+    result
+}
+
+/// Build the `compare` body for a derived `Ord` on a union type.
+///
+/// Emits a nested match: `match a { CtorI => match b { CtorJ => Less/Equal/Greater } }`.
+/// The variant ordering is the declaration order (earlier variant = `Less`).
+#[expect(
+    clippy::too_many_lines,
+    reason = "nested outer/inner match arms over all variant pairs; splitting would not reduce complexity"
+)]
+fn build_ord_union_body(
+    ctx: &mut LowerCtx<'_>,
+    owner_tycon: ridge_types::TyConId,
+    variants: &[(String, usize)],
+    sp: Span,
+) -> IrExpr {
+    use ridge_ir::{IrArm, IrPat};
+
+    if variants.is_empty() {
+        return IrExpr::Construct {
+            id: ctx.fresh_id(None),
+            ctor: SymbolRef::Constructor {
+                ctor_kind: CtorKind::UnionVariant,
+                owner_type: ridge_types::TyConId(15),
+                name: "Equal".to_string(),
+                variant: 1,
+            },
+            fields: vec![],
+            span: sp,
+        };
+    }
+
+    let make_ordering = |ctx: &mut LowerCtx<'_>, name: &str, v: u32| IrExpr::Construct {
+        id: ctx.fresh_id(None),
+        ctor: SymbolRef::Constructor {
+            ctor_kind: CtorKind::UnionVariant,
+            owner_type: ridge_types::TyConId(15),
+            name: name.to_string(),
+            variant: v,
+        },
+        fields: vec![],
+        span: sp,
+    };
+
+    let outer_arms: Vec<IrArm> = variants
+        .iter()
+        .enumerate()
+        .map(|(i, (ctor_i, payload_i))| {
+            let a_args: Vec<IrPat> = (0..*payload_i)
+                .map(|k| IrPat::Bind {
+                    name: format!("_af{k}"),
+                    inner: None,
+                    span: sp,
+                })
+                .collect();
+            let a_pat = IrPat::Ctor {
+                sym: SymbolRef::Constructor {
+                    ctor_kind: CtorKind::UnionVariant,
+                    owner_type: owner_tycon,
+                    name: ctor_i.clone(),
+                    variant: 0,
+                },
+                fields: vec![],
+                args: a_args,
+                span: sp,
+            };
+
+            let inner_arms: Vec<IrArm> = variants
+                .iter()
+                .enumerate()
+                .map(|(j, (ctor_j, payload_j))| {
+                    let b_args: Vec<IrPat> = (0..*payload_j)
+                        .map(|k| IrPat::Bind {
+                            name: format!("_bf{k}"),
+                            inner: None,
+                            span: sp,
+                        })
+                        .collect();
+                    let b_pat = IrPat::Ctor {
+                        sym: SymbolRef::Constructor {
+                            ctor_kind: CtorKind::UnionVariant,
+                            owner_type: owner_tycon,
+                            name: ctor_j.clone(),
+                            variant: 0,
+                        },
+                        fields: vec![],
+                        args: b_args,
+                        span: sp,
+                    };
+                    // When i == j (same variant), compare payload fields in order
+                    // using the already-bound variables _af0/_bf0, _af1/_bf1, etc.
+                    // This is the payload tiebreak: first non-Equal field wins.
+                    let inner_body = match i.cmp(&j) {
+                        std::cmp::Ordering::Less => make_ordering(ctx, "Less", 0),
+                        std::cmp::Ordering::Greater => make_ordering(ctx, "Greater", 2),
+                        std::cmp::Ordering::Equal => {
+                            // Build field names for the bound payload variables.
+                            let payload_var_names: Vec<String> =
+                                (0..*payload_i).map(|k| format!("_af{k}")).collect();
+                            let b_var_names: Vec<String> =
+                                (0..*payload_i).map(|k| format!("_bf{k}")).collect();
+                            build_ord_payload_body(ctx, &payload_var_names, &b_var_names, sp)
+                        }
+                    };
+                    IrArm {
+                        pat: b_pat,
+                        when: None,
+                        body: inner_body,
+                        span: sp,
+                    }
+                })
+                .collect();
+
+            IrArm {
+                pat: a_pat,
+                when: None,
+                body: IrExpr::Match {
+                    id: ctx.fresh_id(None),
+                    scrutinee: Box::new(IrExpr::Local {
+                        id: ctx.fresh_id(None),
+                        name: "b".to_string(),
+                        span: sp,
+                    }),
+                    arms: inner_arms,
+                    span: sp,
+                },
+                span: sp,
+            }
+        })
+        .collect();
+
+    IrExpr::Match {
+        id: ctx.fresh_id(None),
+        scrutinee: Box::new(IrExpr::Local {
+            id: ctx.fresh_id(None),
+            name: "a".to_string(),
+            span: sp,
+        }),
+        arms: outer_arms,
+        span: sp,
+    }
+}
+
+// ── Derived ToText body builders ──────────────────────────────────────────────
+
+/// Build the `toText` body for a derived record type.
+///
+/// Produces the IR equivalent of:
+/// ```text
+/// "TypeName { f1 = " ++ toText(x.f1) ++ ", f2 = " ++ toText(x.f2) ++ " }"
+/// ```
+///
+/// Locked render format: `TypeName { field1 = <value>, field2 = <value> }`.
+/// Empty records render as just `"TypeName"`.
+///
+/// Each field value `x.fN` is accessed via `IrExpr::Field` and wrapped with
+/// the correct stdlib `toText` call for its type (reusing the same dispatch
+/// table as the string-interpolation lowering pass). Text fields and
+/// user-defined types are passed through without an additional wrapper.
+fn build_to_text_record_body(
+    ctx: &mut LowerCtx<'_>,
+    type_name: &str,
+    field_names: &[String],
+    field_tycons: &[Option<ridge_types::TyConId>],
+    sp: Span,
+) -> IrExpr {
+    use crate::interp::{make_concat_call, wrap_to_text_by_tycon};
+
+    if field_names.is_empty() {
+        return IrExpr::Lit {
+            id: ctx.fresh_id(None),
+            value: IrLit::Text(type_name.to_string()),
+            span: sp,
+        };
+    }
+
+    // Opening prefix: "TypeName { "
+    let mut acc = IrExpr::Lit {
+        id: ctx.fresh_id(None),
+        value: IrLit::Text(format!("{type_name} {{ ")),
+        span: sp,
+    };
+
+    for (idx, field) in field_names.iter().enumerate() {
+        // Separator: ", " before every field except the first.
+        if idx > 0 {
+            let sep = IrExpr::Lit {
+                id: ctx.fresh_id(None),
+                value: IrLit::Text(", ".to_string()),
+                span: sp,
+            };
+            acc = make_concat_call(ctx, acc, sep, sp);
+        }
+
+        // "fieldName = "
+        let label = IrExpr::Lit {
+            id: ctx.fresh_id(None),
+            value: IrLit::Text(format!("{field} = ")),
+            span: sp,
+        };
+        acc = make_concat_call(ctx, acc, label, sp);
+
+        // x.field
+        let field_val = IrExpr::Field {
+            id: ctx.fresh_id(None),
+            base: Box::new(IrExpr::Local {
+                id: ctx.fresh_id(None),
+                name: "x".to_string(),
+                span: sp,
+            }),
+            field: field.clone(),
+            span: sp,
+        };
+
+        // Wrap in toText if we know the field's TyConId.
+        let rendered = if let Some(tycon) = field_tycons.get(idx).copied().flatten() {
+            wrap_to_text_by_tycon(ctx, field_val, tycon, sp)
+        } else {
+            field_val
+        };
+        acc = make_concat_call(ctx, acc, rendered, sp);
+    }
+
+    // Closing suffix: " }"
+    let close = IrExpr::Lit {
+        id: ctx.fresh_id(None),
+        value: IrLit::Text(" }".to_string()),
+        span: sp,
+    };
+    make_concat_call(ctx, acc, close, sp)
+}
+
+/// Build the body of a single match arm for a derived union `toText`.
+///
+/// - Nullary variant → `IrLit::Text("CtorName")`.
+/// - Payload variant → `"CtorName(" ++ toText(_p0) ++ ", " ++ toText(_p1) ++ ")"`.
+///
+/// Payload variables are the bound names from the match pattern: `_p0`, `_p1`, etc.
+fn build_to_text_union_arm_body(
+    ctx: &mut LowerCtx<'_>,
+    ctor_name: &str,
+    payload_count: usize,
+    payload_tycons: &[Option<ridge_types::TyConId>],
+    sp: Span,
+) -> IrExpr {
+    use crate::interp::{make_concat_call, wrap_to_text_by_tycon};
+
+    if payload_count == 0 {
+        return IrExpr::Lit {
+            id: ctx.fresh_id(None),
+            value: IrLit::Text(ctor_name.to_string()),
+            span: sp,
+        };
+    }
+
+    // Opening: "CtorName("
+    let mut acc = IrExpr::Lit {
+        id: ctx.fresh_id(None),
+        value: IrLit::Text(format!("{ctor_name}(")),
+        span: sp,
+    };
+
+    for i in 0..payload_count {
+        if i > 0 {
+            let sep = IrExpr::Lit {
+                id: ctx.fresh_id(None),
+                value: IrLit::Text(", ".to_string()),
+                span: sp,
+            };
+            acc = make_concat_call(ctx, acc, sep, sp);
+        }
+
+        let payload_var = IrExpr::Local {
+            id: ctx.fresh_id(None),
+            name: format!("_p{i}"),
+            span: sp,
+        };
+        let rendered = if let Some(tycon) = payload_tycons.get(i).copied().flatten() {
+            wrap_to_text_by_tycon(ctx, payload_var, tycon, sp)
+        } else {
+            payload_var
+        };
+        acc = make_concat_call(ctx, acc, rendered, sp);
+    }
+
+    // Closing: ")"
+    let close = IrExpr::Lit {
+        id: ctx.fresh_id(None),
+        value: IrLit::Text(")".to_string()),
+        span: sp,
+    };
+    make_concat_call(ctx, acc, close, sp)
+}
+
+/// Build a field-by-field payload comparison using bound local variables.
+///
+/// Used by derived `Ord` for unions when both scrutinees are the same variant
+/// (the tiebreak case). `a_vars` and `b_vars` are the names of the bound
+/// payload variables from the outer and inner match arms respectively.
+///
+/// Follows the same `std.op.lt` / `std.op.gt` nested-match pattern as
+/// [`build_ord_record_body`]; returns `Equal` immediately for empty payloads.
+fn build_ord_payload_body(
+    ctx: &mut LowerCtx<'_>,
+    a_vars: &[String],
+    b_vars: &[String],
+    sp: Span,
+) -> IrExpr {
+    use ridge_ir::{IrArm, IrLit, IrPat};
+
+    let ordering_ctor = |ctx: &mut LowerCtx<'_>, name: &str, variant: u32| IrExpr::Construct {
+        id: ctx.fresh_id(None),
+        ctor: SymbolRef::Constructor {
+            ctor_kind: CtorKind::UnionVariant,
+            owner_type: ridge_types::TyConId(15), // Ordering
+            name: name.to_string(),
+            variant,
+        },
+        fields: vec![],
+        span: sp,
+    };
+
+    if a_vars.is_empty() {
+        return ordering_ctor(ctx, "Equal", 1);
+    }
+
+    // Build right-to-left, same pattern as build_ord_record_body.
+    let mut result = ordering_ctor(ctx, "Equal", 1);
+
+    for (a_name, b_name) in a_vars.iter().zip(b_vars.iter()).rev() {
+        let a_local = IrExpr::Local {
+            id: ctx.fresh_id(None),
+            name: a_name.clone(),
+            span: sp,
+        };
+        let b_local = IrExpr::Local {
+            id: ctx.fresh_id(None),
+            name: b_name.clone(),
+            span: sp,
+        };
+
+        let lt_call = IrExpr::Call {
+            id: ctx.fresh_id(None),
+            callee: Box::new(IrExpr::Symbol {
+                id: ctx.fresh_id(None),
+                sym: SymbolRef::Stdlib {
+                    module: "std.op".to_string(),
+                    name: "lt".to_string(),
+                },
+                span: sp,
+            }),
+            args: vec![a_local.clone(), b_local.clone()],
+            span: sp,
+        };
+
+        let gt_call = IrExpr::Call {
+            id: ctx.fresh_id(None),
+            callee: Box::new(IrExpr::Symbol {
+                id: ctx.fresh_id(None),
+                sym: SymbolRef::Stdlib {
+                    module: "std.op".to_string(),
+                    name: "gt".to_string(),
+                },
+                span: sp,
+            }),
+            args: vec![a_local, b_local],
+            span: sp,
+        };
+
+        let gt_match = IrExpr::Match {
+            id: ctx.fresh_id(None),
+            scrutinee: Box::new(gt_call),
+            arms: vec![
+                IrArm {
+                    pat: IrPat::Lit {
+                        value: IrLit::Bool(true),
+                        span: sp,
+                    },
+                    when: None,
+                    body: ordering_ctor(ctx, "Greater", 2),
+                    span: sp,
+                },
+                IrArm {
+                    pat: IrPat::Wild { span: sp },
+                    when: None,
+                    body: result,
+                    span: sp,
+                },
+            ],
+            span: sp,
+        };
+
+        result = IrExpr::Match {
+            id: ctx.fresh_id(None),
+            scrutinee: Box::new(lt_call),
+            arms: vec![
+                IrArm {
+                    pat: IrPat::Lit {
+                        value: IrLit::Bool(true),
+                        span: sp,
+                    },
+                    when: None,
+                    body: ordering_ctor(ctx, "Less", 0),
+                    span: sp,
+                },
+                IrArm {
+                    pat: IrPat::Wild { span: sp },
+                    when: None,
+                    body: gt_match,
+                    span: sp,
+                },
+            ],
+            span: sp,
+        };
+    }
+
+    result
 }
 
 // ── Private helpers ───────────────────────────────────────────────────────────
@@ -812,5 +1621,250 @@ mod tests {
             }
             other => panic!("expected IrItem::Const, got {other:?}"),
         }
+    }
+
+    // ── Derived ToText record renders values, not static names ────────────────
+
+    /// Counts how many `std.text.concat` calls are nested in the IR expression.
+    fn count_concat(expr: &IrExpr) -> usize {
+        match expr {
+            IrExpr::Call { callee, args, .. } => {
+                if let IrExpr::Symbol {
+                    sym: SymbolRef::Stdlib { name, .. },
+                    ..
+                } = callee.as_ref()
+                {
+                    if name == "concat" && args.len() == 2 {
+                        return 1 + count_concat(&args[0]);
+                    }
+                }
+                0
+            }
+            _ => 0,
+        }
+    }
+
+    /// Check whether `expr` (recursively) contains `std.int.toText`.
+    fn contains_int_to_text(expr: &IrExpr) -> bool {
+        match expr {
+            IrExpr::Call { callee, args, .. } => {
+                if let IrExpr::Symbol {
+                    sym: SymbolRef::Stdlib { module, name },
+                    ..
+                } = callee.as_ref()
+                {
+                    if module == "std.int" && name == "toText" {
+                        return true;
+                    }
+                }
+                args.iter().any(contains_int_to_text) || contains_int_to_text(callee)
+            }
+            IrExpr::Match {
+                scrutinee, arms, ..
+            } => {
+                contains_int_to_text(scrutinee)
+                    || arms.iter().any(|arm| contains_int_to_text(&arm.body))
+            }
+            _ => false,
+        }
+    }
+
+    /// Check whether `expr` (recursively) contains a field accessor for `field_name`.
+    fn contains_field(expr: &IrExpr, field_name: &str) -> bool {
+        match expr {
+            IrExpr::Field { field, base, .. } => {
+                field == field_name || contains_field(base, field_name)
+            }
+            IrExpr::Call { callee, args, .. } => {
+                contains_field(callee, field_name)
+                    || args.iter().any(|a| contains_field(a, field_name))
+            }
+            _ => false,
+        }
+    }
+
+    #[test]
+    fn derived_to_text_record_body_renders_values() {
+        use ridge_typecheck::DerivedInstance;
+        use ridge_typecheck::{DerivedMethodBody, InstanceInfo, InstanceOrigin};
+        use ridge_types::{TyConId, TOTEXT_CLASS};
+
+        let mut ctx = fresh_ctx();
+
+        // Point = { x: Int, y: Int } deriving (ToText)
+        // field_tycons: [Some(TyConId(0)), Some(TyConId(0))] — both Int
+        let derived = DerivedInstance {
+            key: (TOTEXT_CLASS, TyConId(16)),
+            instance_info: InstanceInfo {
+                def_module: Some(0),
+                methods: vec![("toText".to_string(), String::new())],
+                ctx_constraints: vec![],
+                origin: InstanceOrigin::Explicit,
+                span: sp(),
+            },
+            method_body: DerivedMethodBody::DerivedToTextRecord {
+                field_names: vec!["x".to_string(), "y".to_string()],
+                field_tycons: vec![Some(TyConId(0)), Some(TyConId(0))],
+            },
+        };
+
+        let items = lower_derived_instance(&mut ctx, &derived, "ToText", "Point");
+
+        // Should produce exactly 2 items: method fn + dict const.
+        assert_eq!(items.len(), 2);
+
+        let fn_item = match &items[0] {
+            IrItem::Fn(f) => f,
+            other => panic!("expected IrFn, got {other:?}"),
+        };
+
+        // The body must contain concat calls (not a plain literal).
+        let concat_count = count_concat(&fn_item.body);
+        assert!(
+            concat_count > 0,
+            "derived ToText record body must use concat, not a static string; got {concat_count} concats"
+        );
+
+        // The body must dispatch std.int.toText for the Int fields.
+        assert!(
+            contains_int_to_text(&fn_item.body),
+            "body must call std.int.toText for Int fields"
+        );
+
+        // The body must reference field 'x'.
+        assert!(
+            contains_field(&fn_item.body, "x"),
+            "body must access field 'x'"
+        );
+
+        // The body must reference field 'y'.
+        assert!(
+            contains_field(&fn_item.body, "y"),
+            "body must access field 'y'"
+        );
+    }
+
+    // ── Derived ToText union payload renders values ─────────────────────────────
+
+    #[test]
+    fn derived_to_text_union_payload_renders_values() {
+        use ridge_typecheck::{DerivedInstance, DerivedMethodBody, InstanceInfo, InstanceOrigin};
+        use ridge_types::{TyConId, TOTEXT_CLASS};
+
+        let mut ctx = fresh_ctx();
+
+        // Shape = Circle(Int) | Rect(Int, Int) deriving (ToText)
+        let derived = DerivedInstance {
+            key: (TOTEXT_CLASS, TyConId(17)),
+            instance_info: InstanceInfo {
+                def_module: Some(0),
+                methods: vec![("toText".to_string(), String::new())],
+                ctx_constraints: vec![],
+                origin: InstanceOrigin::Explicit,
+                span: sp(),
+            },
+            method_body: DerivedMethodBody::DerivedToTextUnion {
+                variants: vec![
+                    // Circle(Int) — 1 Int payload
+                    ("Circle".to_string(), 1, vec![Some(TyConId(0))]),
+                    // Rect(Int, Int) — 2 Int payloads
+                    (
+                        "Rect".to_string(),
+                        2,
+                        vec![Some(TyConId(0)), Some(TyConId(0))],
+                    ),
+                    // Point — nullary, no payloads
+                    ("Point".to_string(), 0, vec![]),
+                ],
+            },
+        };
+
+        let items = lower_derived_instance(&mut ctx, &derived, "ToText", "Shape");
+        assert_eq!(items.len(), 2, "method fn + dict const");
+
+        let fn_item = match &items[0] {
+            IrItem::Fn(f) => f,
+            other => panic!("expected IrFn, got {other:?}"),
+        };
+
+        // The overall body must be a Match.
+        assert!(
+            matches!(&fn_item.body, IrExpr::Match { .. }),
+            "union ToText body must be a Match"
+        );
+
+        // The body must dispatch std.int.toText for the Int payload fields.
+        assert!(
+            contains_int_to_text(&fn_item.body),
+            "payload Int fields must call std.int.toText"
+        );
+    }
+
+    // ── Derived Ord union same-variant payload tiebreak compares fields ─────────
+
+    /// Check whether `expr` (recursively) contains a call to `std.op.{op}`.
+    fn contains_op(expr: &IrExpr, op: &str) -> bool {
+        match expr {
+            IrExpr::Call { callee, args, .. } => {
+                if let IrExpr::Symbol {
+                    sym: SymbolRef::Stdlib { module, name },
+                    ..
+                } = callee.as_ref()
+                {
+                    if module == "std.op" && name == op {
+                        return true;
+                    }
+                }
+                args.iter().any(|a| contains_op(a, op)) || contains_op(callee, op)
+            }
+            IrExpr::Match {
+                scrutinee, arms, ..
+            } => contains_op(scrutinee, op) || arms.iter().any(|arm| contains_op(&arm.body, op)),
+            _ => false,
+        }
+    }
+
+    #[test]
+    fn derived_ord_union_same_variant_payload_tiebreak() {
+        use ridge_typecheck::{DerivedInstance, DerivedMethodBody, InstanceInfo, InstanceOrigin};
+        use ridge_types::{TyConId, ORD_CLASS};
+
+        let mut ctx = fresh_ctx();
+
+        // Wrapper = Box(Int) deriving (Ord)
+        // When both are Box(_), compare the Int payloads.
+        let derived = DerivedInstance {
+            key: (ORD_CLASS, TyConId(18)),
+            instance_info: InstanceInfo {
+                def_module: Some(0),
+                methods: vec![("compare".to_string(), String::new())],
+                ctx_constraints: vec![],
+                origin: InstanceOrigin::Explicit,
+                span: sp(),
+            },
+            method_body: DerivedMethodBody::DerivedOrdUnion {
+                variants: vec![("Box".to_string(), 1)],
+            },
+        };
+
+        let items = lower_derived_instance(&mut ctx, &derived, "Ord", "Wrapper");
+        assert_eq!(items.len(), 2, "method fn + dict const");
+
+        let fn_item = match &items[0] {
+            IrItem::Fn(f) => f,
+            other => panic!("expected IrFn, got {other:?}"),
+        };
+
+        // The body must be a Match (outer dispatch on 'a').
+        assert!(
+            matches!(&fn_item.body, IrExpr::Match { .. }),
+            "Ord union body must be a Match"
+        );
+
+        // The body must call std.op.lt and/or std.op.gt for the payload comparison.
+        assert!(
+            contains_op(&fn_item.body, "lt") || contains_op(&fn_item.body, "gt"),
+            "same-variant payload tiebreak must emit std.op.lt/gt for comparison"
+        );
     }
 }

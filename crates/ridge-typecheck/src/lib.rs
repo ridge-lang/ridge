@@ -23,6 +23,7 @@ pub mod caps_infer;
 pub mod class_env;
 pub mod collect;
 pub mod ctx;
+pub mod derive;
 pub mod error;
 pub mod exhaustiveness;
 pub mod infer;
@@ -41,9 +42,11 @@ pub mod unify;
 pub mod unions;
 
 pub use class_env::{
-    register_prelude_classes, ClassTable, InstanceEnv, InstanceInfo, InstanceOrigin,
+    register_prelude_classes, register_prelude_instances, ClassTable, InstanceEnv, InstanceInfo,
+    InstanceOrigin,
 };
 pub use collect::{collect_workspace, CollectResult};
+pub use derive::{derive_instances, DerivedInstance, DerivedMethodBody};
 pub use error::TypeError;
 pub use render::{emit_internal, emit_internal_strict};
 pub use ridge_resolve::Severity;
@@ -116,6 +119,11 @@ pub struct TypedWorkspace {
     /// Populated by the collect pass. Used by the lowering pass to determine
     /// which dictionary value to thread at each constrained call site.
     pub instance_env: InstanceEnv,
+    /// All instances synthesised from `deriving (…)` clauses.
+    ///
+    /// The lowering pass emits method fns and dict values for each entry. Empty
+    /// for workspaces without any `deriving` clauses.
+    pub derived_instances: Vec<crate::derive::DerivedInstance>,
 }
 
 /// A single module after type-checking.
@@ -289,6 +297,7 @@ pub fn typecheck_workspace(ws: &ResolvedWorkspace) -> TypecheckResult {
             anon_records: workspace_anon_records,
             class_table,
             instance_env,
+            derived_instances: collect_result.derived_instances,
         },
         errors: all_errors,
     }

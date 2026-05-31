@@ -343,11 +343,11 @@ fn discharge_concrete(
 /// For the special case of `Eq Float` the hint includes the floating-point
 /// footgun warning per the spec. All other cases get the generic suggestion.
 fn build_fix_hint(class_name: &str, tyconid: TyConId) -> String {
-    // TyConId(4) is the Float builtin (see ridge-types/src/builtins.rs).
-    // We use the numeric id here rather than comparing a string name because
-    // `class_name` is the class, not the type, and we have only the raw id
-    // for the type at this point.
-    let is_eq_float = class_name == "Eq" && tyconid == ridge_types::TyConId(4);
+    // Float is TyConId(1) in the builtin arena (builtins.rs allocation order:
+    // Int=0, Float=1, Bool=2, Text=3, Unit=4, Timestamp=5, …).
+    // We use the numeric id because `class_name` is the class, not the type,
+    // and we have only the raw TyConId for the type at this call site.
+    let is_eq_float = class_name == "Eq" && tyconid == ridge_types::TyConId(1);
 
     if is_eq_float {
         "floating-point equality is a footgun (`0.1 + 0.2 ≠ 0.3`); \

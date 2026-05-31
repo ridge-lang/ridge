@@ -344,6 +344,128 @@ pub fn register_prelude_classes(ct: &mut ClassTable) {
     );
 }
 
+// ── Prelude instance registration ────────────────────────────────────────────
+
+/// Registers the built-in prelude instances for `ToText`, `Eq`, and `Ord`
+/// into `instance_env`.
+///
+/// These instances cover the primitive prelude types (`Int`, `Bool`, `Text`,
+/// `Timestamp`, `Ordering`) and are equivalent to the instances the user
+/// would declare explicitly, but live in the prelude module (`def_module =
+/// None`).
+///
+/// Notable omissions (intentional):
+/// - **`Eq Float`** — floating-point equality is a footgun; the instance is
+///   intentionally absent so that `deriving Eq` on a `Float`-bearing type
+///   fails with a T029 that includes the footgun warning.
+/// - **`Ord Float`**, **`Ord Bool`** — not defined in the 0.2.13 prelude.
+///
+/// `TyConId` values are the fixed builtin indices assigned by
+/// [`ridge_types::BuiltinTyCons::allocate`]:
+/// `Int=0, Float=1, Bool=2, Text=3, Unit=4, Timestamp=5, …, Ordering=15`.
+pub fn register_prelude_instances(env: &mut InstanceEnv) {
+    let ds = Span::point(0);
+
+    // Helper to build a minimal prelude instance entry.
+    let prelude_inst = |method: &str| InstanceInfo {
+        def_module: None,
+        methods: vec![(method.to_string(), String::new())],
+        ctx_constraints: vec![],
+        origin: InstanceOrigin::Explicit,
+        span: ds,
+    };
+
+    // ── ToText instances ──────────────────────────────────────────────────────
+    // Int (TyConId 0)
+    let _ = env.insert(
+        (TOTEXT_CLASS, TyConId(0)),
+        prelude_inst("toText"),
+        "ToText",
+        "Int",
+    );
+    // Float (TyConId 1)
+    let _ = env.insert(
+        (TOTEXT_CLASS, TyConId(1)),
+        prelude_inst("toText"),
+        "ToText",
+        "Float",
+    );
+    // Bool (TyConId 2)
+    let _ = env.insert(
+        (TOTEXT_CLASS, TyConId(2)),
+        prelude_inst("toText"),
+        "ToText",
+        "Bool",
+    );
+    // Text (TyConId 3)
+    let _ = env.insert(
+        (TOTEXT_CLASS, TyConId(3)),
+        prelude_inst("toText"),
+        "ToText",
+        "Text",
+    );
+    // Timestamp (TyConId 5)
+    let _ = env.insert(
+        (TOTEXT_CLASS, TyConId(5)),
+        prelude_inst("toText"),
+        "ToText",
+        "Timestamp",
+    );
+    // Ordering (TyConId 15)
+    let _ = env.insert(
+        (TOTEXT_CLASS, TyConId(15)),
+        prelude_inst("toText"),
+        "ToText",
+        "Ordering",
+    );
+
+    // ── Eq instances ─────────────────────────────────────────────────────────
+    // Eq Float is intentionally absent — floating-point equality is a footgun.
+    // Int (TyConId 0)
+    let _ = env.insert((EQ_CLASS, TyConId(0)), prelude_inst("eq"), "Eq", "Int");
+    // Bool (TyConId 2)
+    let _ = env.insert((EQ_CLASS, TyConId(2)), prelude_inst("eq"), "Eq", "Bool");
+    // Text (TyConId 3)
+    let _ = env.insert((EQ_CLASS, TyConId(3)), prelude_inst("eq"), "Eq", "Text");
+    // Timestamp (TyConId 5)
+    let _ = env.insert(
+        (EQ_CLASS, TyConId(5)),
+        prelude_inst("eq"),
+        "Eq",
+        "Timestamp",
+    );
+    // Eq Ordering — required by the Ord Ordering superclass check
+    let _ = env.insert(
+        (EQ_CLASS, TyConId(15)),
+        prelude_inst("eq"),
+        "Eq",
+        "Ordering",
+    );
+
+    // ── Ord instances ─────────────────────────────────────────────────────────
+    // Int (TyConId 0)
+    let _ = env.insert(
+        (ORD_CLASS, TyConId(0)),
+        prelude_inst("compare"),
+        "Ord",
+        "Int",
+    );
+    // Text (TyConId 3) — lexicographic ordering
+    let _ = env.insert(
+        (ORD_CLASS, TyConId(3)),
+        prelude_inst("compare"),
+        "Ord",
+        "Text",
+    );
+    // Ord Ordering — natural ordering: Less < Equal < Greater
+    let _ = env.insert(
+        (ORD_CLASS, TyConId(15)),
+        prelude_inst("compare"),
+        "Ord",
+        "Ordering",
+    );
+}
+
 // ── Tests ─────────────────────────────────────────────────────────────────────
 
 #[cfg(test)]

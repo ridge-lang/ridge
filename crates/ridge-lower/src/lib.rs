@@ -103,6 +103,8 @@ pub fn lower_module(
     // Attach the current module's inferred_caps side-table so that
     // lookup_inferred_caps can read Phase 4's capability inference results.
     ctx.attach_inferred_caps(&typed.inferred_caps);
+    // Attach the class/instance registries for dictionary-lowering.
+    ctx.attach_class_registries(&ws.class_table, &ws.instance_env);
     if let Some(rm) = rmod {
         // Reconstruct the NodeIdMap from the module AST so that
         // (Span, NodeKind) → NodeId lookups are available during lowering.
@@ -117,12 +119,12 @@ pub fn lower_module(
     }
 
     // ── Item walker — lower each top-level item in source order ──────────────
-    let items: Vec<ridge_ir::IrItem> = typed
-        .ast
-        .items
-        .iter()
-        .filter_map(|ast_item| item::lower_item(&mut ctx, ast_item))
-        .collect();
+    // Instance declarations expand to multiple IR items (one dict const +
+    // one private fn per method), so we collect into a flat Vec.
+    let mut items: Vec<ridge_ir::IrItem> = Vec::new();
+    for ast_item in &typed.ast.items {
+        items.extend(item::lower_item_multi(&mut ctx, ast_item));
+    }
 
     ctx.finish_with_items(items)
 }

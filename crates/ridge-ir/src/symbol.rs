@@ -2,7 +2,7 @@
 // OQ-IR003: SymbolRef is #[non_exhaustive] — see expr.rs for rationale.
 
 use ridge_resolve::ModuleId;
-use ridge_types::TyConId;
+use ridge_types::{ClassId, TyConId};
 
 /// Opaque cross-module symbol reference.
 ///
@@ -68,6 +68,23 @@ pub enum SymbolRef {
     Prelude {
         /// The prelude symbol name.
         name: String,
+    },
+
+    /// An unresolved class-method reference.
+    ///
+    /// Emitted by the lowering pass for a method call inside a constrained
+    /// function body, before the call site is resolved against the dictionary
+    /// parameter. The codegen layer never sees this variant — it must be
+    /// rewritten to a `Field` projection over the in-scope dict value before
+    /// emission.
+    ///
+    /// If this variant reaches codegen it indicates a lowering invariant
+    /// violation.
+    Method {
+        /// The class that declares this method.
+        class: ClassId,
+        /// The method name (e.g. `"toText"`, `"eq"`, `"compare"`).
+        method: String,
     },
 }
 

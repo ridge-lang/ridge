@@ -62,7 +62,7 @@
 use ridge_ast::{expr::InterpPart, Expr, Span};
 use ridge_ir::{IrExpr, IrLit, SymbolRef};
 use ridge_resolve::NodeKind;
-use ridge_types::{TyConId, Type};
+use ridge_types::{TyConId, Type, TOTEXT_CLASS};
 
 use crate::core::lower_expr;
 use crate::ctx::LowerCtx;
@@ -219,6 +219,24 @@ fn wrap_to_text(ctx: &mut LowerCtx<'_>, inner: IrExpr, ty: Option<Type>, span: S
         // ── Type::Error — absorbing; pass through without wrapping ────────────
         Some(Type::Error) => inner,
 
+        // ── Type::Var — polymorphic hole in a constrained fn ─────────────────
+        // When the hole type is a free variable AND the enclosing fn is
+        // constrained for `ToText a`, dispatch through the in-scope dict param:
+        // `apply maps:get('toText', $dict_ToText_{a}) (inner)`.
+        //
+        // This is the dictionary-passing path for string-interpolation holes
+        // whose type is polymorphic (e.g. `$"it is ${x}"` in `fn describe
+        // (x: a) -> Text where ToText a`). For monomorphic holes the
+        // `Type::Con` arms above handle dispatch.
+        Some(Type::Var(_tyvid)) => {
+            if let Some(dict_call) = try_dict_to_text(ctx, &inner, span) {
+                dict_call
+            } else {
+                ctx.errors.push(LowerError::ToTextLowering { span });
+                inner
+            }
+        }
+
         // ── User-defined Type::Con — naming-convention ToText lookup ──────────
         // When the inner type is a user-defined TyCon (record / union / alias /
         // actor) whose owning module exports a `pub fn toText`, the
@@ -297,6 +315,55 @@ fn try_user_to_text(
     Some(IrExpr::Call {
         id: call_id,
         callee,
+        args: vec![inner.clone()],
+        span,
+    })
+}
+
+/// Try to dispatch `toText` through the in-scope dictionary parameter when the
+/// hole expression has a polymorphic type (`Type::Var`).
+///
+/// Used inside constrained functions where the type variable `a` is bound by
+/// a `where ToText a` constraint and the caller's own dict param
+/// `$dict_ToText_{idx}` holds the dictionary.
+///
+/// Returns `Some(Call(Field($dict, 'toText'), [inner]))` when the enclosing
+/// function has a `ToText` constraint; `None` otherwise.
+fn try_dict_to_text(ctx: &mut LowerCtx<'_>, inner: &IrExpr, span: Span) -> Option<IrExpr> {
+    // Find a ToText constraint on the current fn.
+    let totext_c = ctx
+        .current_fn_constraints
+        .iter()
+        .find(|c| c.class == TOTEXT_CLASS)
+        .cloned()?;
+
+    let class_name = ctx.class_name(TOTEXT_CLASS).unwrap_or("ToText").to_owned();
+    let dict_param_name = format!("$dict_{class_name}_{}", totext_c.ty.0);
+
+    // Dict expression: the in-scope dict param (a local variable).
+    let dict_id = ctx.fresh_id(None);
+    let dict_expr = IrExpr::Local {
+        id: dict_id,
+        name: dict_param_name,
+        span,
+    };
+
+    // Method projection: `IrExpr::Field { base: dict, field: "toText" }`.
+    // Codegen lowers this to `maps:get('toText', Dict)` (or folds it if the
+    // dict is a literal MapLit via the static peephole in lower_field).
+    let field_id = ctx.fresh_id(None);
+    let method_ref = IrExpr::Field {
+        id: field_id,
+        base: Box::new(dict_expr),
+        field: "toText".into(),
+        span,
+    };
+
+    // Wrap in a call: `apply (maps:get('toText', Dict)) (inner)`.
+    let call_id = ctx.fresh_id(None);
+    Some(IrExpr::Call {
+        id: call_id,
+        callee: Box::new(method_ref),
         args: vec![inner.clone()],
         span,
     })

@@ -77,7 +77,17 @@ pub enum DictPlan {
     ///
     /// The lowering pass should pass the literal instance dictionary as the
     /// dictionary argument to the call.
-    Static(Box<InstanceInfo>),
+    ///
+    /// `tycon` is the concrete [`TyConId`] that satisfied the constraint —
+    /// stored here so the lowering pass can look up the type's source name
+    /// from [`TypedWorkspace::tycons`] to form the dict constant name
+    /// `$inst_{ClassName}_{TypeName}`.
+    Static {
+        /// Instance metadata (method names, origin, etc.).
+        info: Box<InstanceInfo>,
+        /// The concrete type that was resolved.
+        tycon: TyConId,
+    },
     /// The constraint is still polymorphic: the caller receives a dictionary
     /// parameter and should forward it to the callee.
     ///
@@ -293,9 +303,14 @@ fn discharge_concrete(
 
         Some(inst_info) => {
             // Record the static resolution plan for the lowering pass.
+            // Include the concrete TyConId so the lowering pass can look up
+            // the type name without re-resolving the instance.
             dict_resolution
                 .entry((c.class, c.ty))
-                .or_insert_with(|| DictPlan::Static(Box::new(inst_info.clone())));
+                .or_insert_with(|| DictPlan::Static {
+                    info: Box::new(inst_info.clone()),
+                    tycon: tyconid,
+                });
 
             // Enqueue superclass requirements for the same concrete type.
             // Termination: the class DAG is acyclic (T035 checked earlier).
@@ -428,7 +443,7 @@ mod tests {
         // A Static dict plan must be recorded.
         let plan = dict_res.get(&(TOTEXT_CLASS, a));
         assert!(
-            matches!(plan, Some(DictPlan::Static(_))),
+            matches!(plan, Some(DictPlan::Static { .. })),
             "case (a): expected Static plan, got {plan:?}"
         );
     }

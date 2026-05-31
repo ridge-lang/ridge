@@ -13,11 +13,11 @@
 //! as each rule module is implemented.
 
 use crate::error::LowerError;
-use ridge_ast::{Item, Span};
+use ridge_ast::{Body, Item, Span};
 use ridge_ir::{IrNodeId, LoweredModule};
 use ridge_resolve::{BindingMap, ModuleId, NodeId, NodeIdMap, SymbolId, SymbolTable};
-use ridge_typecheck::TypedWorkspace;
-use ridge_types::{CapabilitySet, ShapeKey, TyConId, Type};
+use ridge_typecheck::{ClassTable, InstanceEnv, TypedWorkspace};
+use ridge_types::{CapabilitySet, Constraint, ShapeKey, TyConId, Type};
 use rustc_hash::{FxHashMap, FxHashSet};
 
 /// Name-to-`TyConId` cache, built lazily from the workspace on first lookup.
@@ -124,6 +124,35 @@ pub struct LowerCtx<'tw> {
     /// `None` for `LowerCtx`s constructed without a `ResolvedModule` (e.g.
     /// unit tests that pass no `ResolvedModule`). // OQ-PHASE45-007
     pub symbol_table: Option<&'tw SymbolTable>,
+
+    /// Workspace-level class registry. Used by the lowering pass to resolve
+    /// [`ridge_types::ClassId`] values to their canonical class names when
+    /// synthesizing dictionary parameter names and instance dict constant names.
+    ///
+    /// `None` for unit tests that do not run the full pipeline.
+    pub class_table: Option<&'tw ClassTable>,
+
+    /// Workspace-level instance registry. Used by the lowering pass to
+    /// determine which dictionary value to thread at constrained call sites.
+    ///
+    /// `None` for unit tests that do not run the full pipeline.
+    pub instance_env: Option<&'tw InstanceEnv>,
+
+    /// Constraints of the function currently being lowered, in declaration
+    /// order.
+    ///
+    /// Set when entering a constrained `fn` body, cleared on exit. Used by
+    /// call-site lowering to determine whether to forward the caller's own
+    /// dict param (`DictPlan::Forward`).
+    pub current_fn_constraints: Vec<Constraint>,
+
+    /// Cached mapping from top-level fn name to its scheme constraints.
+    ///
+    /// Built lazily on the first call to
+    /// [`LowerCtx::lookup_fn_constraints`] from the current module's AST
+    /// and the workspace's `TypedModule.schemes`. Used to determine whether
+    /// a call target needs dict arguments prepended.
+    fn_constraint_cache: Option<FxHashMap<String, Vec<Constraint>>>,
 }
 
 impl<'tw> LowerCtx<'tw> {
@@ -152,6 +181,10 @@ impl<'tw> LowerCtx<'tw> {
             workspace: None,
             inferred_caps: None,
             tycon_name_cache: None,
+            class_table: None,
+            instance_env: None,
+            current_fn_constraints: Vec::new(),
+            fn_constraint_cache: None,
             actor_module_cache: None,
             symbol_table: None,
         }
@@ -339,6 +372,87 @@ impl<'tw> LowerCtx<'tw> {
     /// a resolve-layer `SymbolId` to its owner type's source name.
     pub const fn attach_symbol_table(&mut self, table: &'tw SymbolTable) {
         self.symbol_table = Some(table);
+    }
+
+    /// Attach the workspace class and instance registries.
+    ///
+    /// Called from [`crate::lower_module`] when the full [`TypedWorkspace`] is
+    /// available.  The registries are used by the dictionary-lowering pass to
+    /// resolve class names and select which instance dictionary to thread at
+    /// constrained call sites.
+    pub const fn attach_class_registries(
+        &mut self,
+        class_table: &'tw ClassTable,
+        instance_env: &'tw InstanceEnv,
+    ) {
+        self.class_table = Some(class_table);
+        self.instance_env = Some(instance_env);
+    }
+
+    /// Look up the canonical name for a [`ridge_types::ClassId`].
+    ///
+    /// Returns `None` when no class table is attached (unit tests) or when the
+    /// id is not registered.
+    #[must_use]
+    pub fn class_name(&self, class: ridge_types::ClassId) -> Option<&str> {
+        self.class_table?.get(class).map(|info| info.name.as_str())
+    }
+
+    /// Look up the constraints on a top-level fn by name.
+    ///
+    /// Builds a name → constraints cache from the current module's `TypedModule`
+    /// on the first call (one linear scan over top-level `fn` decls + their
+    /// schemes). Subsequent calls are O(1).
+    ///
+    /// Returns an empty slice for unknown fns, fns without a wired scheme, or
+    /// when no workspace is attached.
+    pub fn lookup_fn_constraints(&mut self, fn_name: &str) -> &[ridge_types::Constraint] {
+        use ridge_ast::Expr as AstExpr;
+        use ridge_resolve::NodeKind;
+
+        // Build the cache on first use.
+        if self.fn_constraint_cache.is_none() {
+            let mut cache: FxHashMap<String, Vec<ridge_types::Constraint>> = FxHashMap::default();
+
+            let Some(ws) = self.workspace else {
+                self.fn_constraint_cache = Some(cache);
+                return &[];
+            };
+            let Some(tmod) = ws.modules.get(self.module_id.0 as usize) else {
+                self.fn_constraint_cache = Some(cache);
+                return &[];
+            };
+
+            // Walk top-level fn decls; look up each fn's scheme by body NodeId.
+            for item in &tmod.ast.items {
+                let Item::Fn(decl) = item else { continue };
+                let body = match &decl.body {
+                    Body::Expr(e) => e,
+                    Body::Ffi { .. } => continue,
+                };
+                // Mirror the body-node-kind keying from item.rs / scc.rs.
+                let (body_span, body_kind) = match body {
+                    AstExpr::Block(b) => (b.span, NodeKind::Block),
+                    AstExpr::Try { span, .. } => (*span, NodeKind::Try),
+                    other => (other.span(), NodeKind::Expr),
+                };
+                let constraints = self
+                    .node_id_map
+                    .as_ref()
+                    .and_then(|m| m.get(body_span, body_kind))
+                    .and_then(|nid| tmod.schemes.get(&nid))
+                    .map(|scheme| scheme.constraints.clone())
+                    .unwrap_or_default();
+                cache.insert(decl.name.text.clone(), constraints);
+            }
+
+            self.fn_constraint_cache = Some(cache);
+        }
+
+        self.fn_constraint_cache
+            .as_ref()
+            .and_then(|c| c.get(fn_name))
+            .map_or(&[], Vec::as_slice)
     }
 
     /// Translate a resolve-layer `SymbolId` (constructor owner) to its IR-layer

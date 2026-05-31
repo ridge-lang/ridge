@@ -126,6 +126,44 @@ pub fn lower_module(
         items.extend(item::lower_item_multi(&mut ctx, ast_item));
     }
 
+    // ── Derived instance lowering ─────────────────────────────────────────────
+    // Emit method fns + dict consts for instances synthesised from `deriving`
+    // clauses. The InstanceEnv already has these registered (so the constraint
+    // solver and call-site dict-plan logic see them), but the IR for the method
+    // bodies and dict values must be emitted here, analogous to `lower_instance`
+    // for explicit `instance` declarations.
+    //
+    // We only emit for instances that belong to this module (def_module ==
+    // Some(typed.id.0)), so each module is self-contained.
+    for derived in &ws.derived_instances {
+        let Some(inst_module) = derived.instance_info.def_module else {
+            continue; // prelude-injected instance — no body to emit
+        };
+        if inst_module != typed.id.0 {
+            continue; // another module's derived instance
+        }
+
+        // Look up the class and type names for the dict symbol.
+        // Class name: from the workspace class table.
+        let class_name = ws.class_table.get(derived.key.0).map_or_else(
+            || format!("Class{}", derived.key.0 .0),
+            |ci| ci.name.clone(),
+        );
+
+        // Type name: from the workspace tycons arena (by TyConId index).
+        let type_name = ws
+            .tycons
+            .get(derived.key.1 .0 as usize)
+            .map_or_else(|| format!("Type{}", derived.key.1 .0), |td| td.name.clone());
+
+        items.extend(item::lower_derived_instance(
+            &mut ctx,
+            derived,
+            &class_name,
+            &type_name,
+        ));
+    }
+
     ctx.finish_with_items(items)
 }
 

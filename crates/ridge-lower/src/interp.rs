@@ -371,8 +371,55 @@ fn try_dict_to_text(ctx: &mut LowerCtx<'_>, inner: &IrExpr, span: Span) -> Optio
 
 // OQ-L007: ToText is inserted at lowering time (Phase 5), not at codegen time,
 // so that the IR is target-neutral (no implicit coercion knowledge needed downstream).
+
+/// Wrap `arg` in the correct `toText` call for `tycon_id`.
+///
+/// Used by the derived-instance lowering pass to dispatch `toText` on each
+/// record field or union payload. The mapping follows the same closed set as
+/// [`wrap_to_text`]:
+///
+/// | `TyConId` | Dispatch target          |
+/// |-----------|--------------------------|
+/// | 0 (Int)   | `std.int.toText`         |
+/// | 1 (Float) | `std.float.toText`       |
+/// | 2 (Bool)  | `std.bool.toText`        |
+/// | 3 (Text)  | identity — returned as-is |
+/// | 5 (Timestamp) | `std.time.toText`    |
+/// | other     | identity — no known stdlib dispatch; field rendered as-is |
+///
+/// For user-defined types the derived instance lowering emits an identity
+/// (no wrapper) because those types render via their own derived or explicit
+/// `ToText` instance, resolved separately through the dict machinery.
+pub(crate) fn wrap_to_text_by_tycon(
+    ctx: &mut LowerCtx<'_>,
+    arg: IrExpr,
+    tycon_id: TyConId,
+    span: Span,
+) -> IrExpr {
+    if tycon_id == INT_TYCON {
+        make_to_text_call(ctx, arg, "std.int", span)
+    } else if tycon_id == FLOAT_TYCON {
+        make_to_text_call(ctx, arg, "std.float", span)
+    } else if tycon_id == BOOL_TYCON {
+        make_to_text_call(ctx, arg, "std.bool", span)
+    } else if tycon_id == TIMESTAMP_TYCON {
+        make_to_text_call(ctx, arg, "std.time", span)
+    } else {
+        // Text (TyConId 3) and all user-defined types: identity.
+        arg
+    }
+}
+
 /// Build `Call(Stdlib { module, name: "toText" }, [arg])`.
-fn make_to_text_call(ctx: &mut LowerCtx<'_>, arg: IrExpr, module: &str, span: Span) -> IrExpr {
+///
+/// Shared with the derived-instance lowering pass, which constructs the
+/// same `std.<x>.toText` dispatch for record and union payloads.
+pub(crate) fn make_to_text_call(
+    ctx: &mut LowerCtx<'_>,
+    arg: IrExpr,
+    module: &str,
+    span: Span,
+) -> IrExpr {
     let callee_id = ctx.fresh_id(None);
     let call_id = ctx.fresh_id(None);
     let callee = Box::new(IrExpr::Symbol {
@@ -392,7 +439,15 @@ fn make_to_text_call(ctx: &mut LowerCtx<'_>, arg: IrExpr, module: &str, span: Sp
 }
 
 /// Build `Call(Stdlib { module: "std.text", name: "concat" }, [lhs, rhs])`.
-fn make_concat_call(ctx: &mut LowerCtx<'_>, lhs: IrExpr, rhs: IrExpr, span: Span) -> IrExpr {
+///
+/// Shared with the derived-instance lowering pass, which uses the same
+/// `std.text.concat` primitive to join rendered field and literal chunks.
+pub(crate) fn make_concat_call(
+    ctx: &mut LowerCtx<'_>,
+    lhs: IrExpr,
+    rhs: IrExpr,
+    span: Span,
+) -> IrExpr {
     let callee_id = ctx.fresh_id(None);
     let call_id = ctx.fresh_id(None);
     let callee = Box::new(IrExpr::Symbol {

@@ -773,6 +773,56 @@ pub fn lower_pattern_full(ctx: &mut LowerCtx<'_>, pat: &Pattern) -> IrPat {
         // ── Atom patterns ──────────────────────────────────────────────────────
         Pattern::Wildcard { span } => IrPat::Wild { span: *span },
 
+        // ── Inline record pattern ──────────────────────────────────────────────
+        //
+        // `{ f1, f2 = p, .. }` lowers to `IrPat::Ctor { Record, fields, args: [] }`,
+        // exactly like the record-body form of `Pattern::Constructor`.
+        //
+        // The anonymous TyConId is taken from the scrutinee's inferred type recorded
+        // in `node_types` by the typecheck pass.  When the node-type table is absent
+        // (unit-test scaffolding), we fall back to `TyConId(0)` — the IR is still
+        // structurally correct even if the id is wrong.
+        Pattern::Record { fields, span, .. } => {
+            let anon_id: TyConId = ctx
+                .node_id_map
+                .as_ref()
+                .and_then(|m| m.get(*span, NodeKind::Expr))
+                .and_then(|nid| ctx.node_type(nid))
+                .and_then(|ty| {
+                    if let ridge_types::Type::Con(id, _) = ty {
+                        Some(*id)
+                    } else {
+                        None
+                    }
+                })
+                .unwrap_or(TyConId(0));
+
+            let anon_name = ctx
+                .workspace
+                .and_then(|ws| ws.tycons.get(anon_id.0 as usize))
+                .map_or_else(
+                    || format!("{{anon record #{}}}", anon_id.0),
+                    |d| d.name.clone(),
+                );
+
+            let ir_fields: Vec<(String, IrPat)> = fields
+                .iter()
+                .map(|fp| field_pattern_to_pair(ctx, fp))
+                .collect();
+
+            IrPat::Ctor {
+                sym: SymbolRef::Constructor {
+                    ctor_kind: CtorKind::Record,
+                    owner_type: anon_id,
+                    name: anon_name,
+                    variant: 0,
+                },
+                fields: ir_fields,
+                args: vec![],
+                span: *span,
+            }
+        }
+
         Pattern::Literal { lit, span } => IrPat::Lit {
             value: literal_to_ir_lit(lit),
             span: *span,

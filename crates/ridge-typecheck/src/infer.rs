@@ -34,10 +34,11 @@
 //! - `Expr::InnerFn { decl }` — the decl itself holds the body.
 
 use ridge_ast::{
-    BinOp, Block, Body, Expr, LambdaParam, ListPatElem, Literal, Pattern, Span, UnaryOp,
+    BinOp, Block, Body, Expr, FieldInit, FieldPattern, LambdaParam, ListPatElem, Literal, Pattern,
+    Span, UnaryOp,
 };
 use ridge_resolve::NodeKind;
-use ridge_types::{BuiltinTyCons, CapRow, CapabilitySet, Scheme, Type};
+use ridge_types::{BuiltinTyCons, CapRow, CapabilitySet, Scheme, TyConId, TyConKind, Type};
 
 use crate::ctx::InferCtx;
 use crate::error::TypeError;
@@ -790,6 +791,9 @@ fn infer_expr_inner(ctx: &mut InferCtx, b: &BuiltinTyCons, expr: &Expr) -> Type 
             let arena = build_arena_from_ctx(ctx);
             crate::actor::infer_spawn(ctx, b, actor, args.as_slice(), *span, &arena)
         }
+
+        // ── Inline record literal ─────────────────────────────────────────────
+        Expr::RecordLit { fields, span } => infer_record_lit(ctx, b, fields, *span),
     }
 }
 
@@ -1053,6 +1057,15 @@ pub fn infer_pattern(ctx: &mut InferCtx, b: &BuiltinTyCons, pat: &Pattern, expec
                 }
             }
         }
+
+        // ── Inline record pattern ─────────────────────────────────────────────
+        Pattern::Record {
+            fields,
+            has_rest,
+            span,
+        } => {
+            infer_inline_record_pattern(ctx, b, fields, *has_rest, expected_ty, *span);
+        }
     }
 }
 
@@ -1169,6 +1182,33 @@ fn ast_type_to_type(ctx: &mut InferCtx, b: &BuiltinTyCons, ast_ty: &ridge_ast::T
             // tracking; for T6 this is sufficient for monosignatures.
             Type::Var(ctx.fresh_tyvid())
         }
+
+        // ── Inline record type — look up the pre-scanned AnonRecordTable ────────
+        ridge_ast::Type::Record { fields, span } => {
+            // The pre-scan (prescan_inline_records) ran before inference starts and
+            // interned every type-position inline record.  Resolve each field's AST
+            // type using the same ast_type_to_type machinery, compute the ShapeKey,
+            // and read the table.  This path does NOT intern new anon TyCons; if the
+            // key is absent the pre-scan had a coverage bug — fall back to Type::Error.
+            let resolved: Vec<(String, Type)> = fields
+                .iter()
+                .map(|f| {
+                    let ty = ast_type_to_type(ctx, b, &f.ty);
+                    (f.name.text.clone(), ty)
+                })
+                .collect();
+            let key = ridge_types::shape_key(&resolved);
+            if let Some(&id) = ctx.anon_records.get(&key) {
+                Type::Con(id, vec![])
+            } else {
+                emit_internal(
+                    ctx,
+                    "inline record type not found in anonymous TyCon table (pre-scan miss)"
+                        .to_string(),
+                    *span,
+                )
+            }
+        }
     }
 }
 
@@ -1248,6 +1288,219 @@ fn infer_binary(
             span,
         ),
     }
+}
+
+// ── Inline record helpers ─────────────────────────────────────────────────────
+
+/// Infer the type of a constructor-less record literal `{ f = v, … }`.
+///
+/// Infers each field's value type, computes the structural `ShapeKey`, looks
+/// up the pre-scanned `AnonRecordTable`, and delegates field checking to the
+/// existing [`crate::records::infer_record_construction`].  Mints a new anon
+/// `TyCon` on MISS (value-position shapes not covered by the pre-scan).
+fn infer_record_lit(
+    ctx: &mut InferCtx,
+    b: &BuiltinTyCons,
+    fields: &[FieldInit],
+    span: Span,
+) -> Type {
+    // Step 1+2: infer and deep-resolve each field's value type.
+    let resolved_fields: Vec<(String, Type)> = fields
+        .iter()
+        .map(|fi| {
+            let raw_ty = match &fi.value {
+                Some(val_expr) => infer_expr(ctx, b, val_expr),
+                None => {
+                    // Shorthand `{ x }` — look up `x` in scope.
+                    if let Some(s) = ctx.env.lookup(&fi.name.text).cloned() {
+                        instantiate(ctx, &s)
+                    } else {
+                        emit_internal(
+                            ctx,
+                            format!("shorthand field '{}' not in scope", fi.name.text),
+                            fi.span,
+                        )
+                    }
+                }
+            };
+            let resolved = ctx.deep_resolve(&raw_ty);
+            (fi.name.text.clone(), resolved)
+        })
+        .collect();
+
+    // Step 3: P029 tyvar rejection — if any field resolves to a free Var,
+    // emit the diagnostic and abort (the inline record cannot be interned
+    // without concrete field types).
+    for (field_name, ty) in &resolved_fields {
+        if let Type::Var(_) = ty {
+            ctx.errors.push(TypeError::InlineRecordTyVarField {
+                var_name: field_name.clone(),
+                span,
+            });
+            return Type::Error;
+        }
+    }
+
+    // Step 4: compute shape key and look up the anon TyCon table.
+    let key = ridge_types::shape_key(&resolved_fields);
+    let anon_id = if let Some(&id) = ctx.anon_records.get(&key) {
+        id
+    } else {
+        // MISS: a record literal whose shape did not appear in any type
+        // annotation (not covered by the pre-scan).  Mint it now so that
+        // inference can continue.  Both paths share the same table so ids
+        // remain globally consistent.
+        let sorted_fields: Vec<ridge_types::RecordField> = {
+            let mut v: Vec<ridge_types::RecordField> = resolved_fields
+                .iter()
+                .map(|(n, t)| ridge_types::RecordField {
+                    name: n.clone(),
+                    ty: t.clone(),
+                })
+                .collect();
+            v.sort_by(|a, b| a.name.cmp(&b.name));
+            v
+        };
+        let counter = ctx.anon_records.len();
+        let anon_name = format!("{{anon record #{counter}}}");
+        let decl = ridge_types::TyConDecl {
+            id: TyConId(0),
+            name: anon_name,
+            arity: 0,
+            kind: TyConKind::Record(ridge_types::RecordSchema::new(vec![], sorted_fields)),
+            def_span: Some(span),
+            def_module_raw: None,
+            is_anon: true,
+        };
+        // Intern into the ctx's snapshot and anon_records table.
+        // The arena is not directly accessible here, so we append to
+        // tycon_decls manually and assign the next sequential id.
+        #[expect(
+            clippy::cast_possible_truncation,
+            reason = "tycon count bounded by program size; exceeding 2^32 is not realistic"
+        )]
+        let next_id = TyConId(ctx.tycon_decls.len() as u32);
+        let mut interned_decl = decl;
+        interned_decl.id = next_id;
+        ctx.tycon_decls.push(interned_decl);
+        ctx.anon_records.insert(key, next_id);
+        next_id
+    };
+
+    // Step 5: get the schema for the anon TyCon.
+    let (schema, anon_name) = {
+        let decl = &ctx.tycon_decls[anon_id.0 as usize];
+        let TyConKind::Record(schema) = &decl.kind else {
+            return emit_internal(ctx, "anon TyCon is not a Record".to_string(), span);
+        };
+        (schema.clone(), decl.name.clone())
+    };
+
+    // Step 6: delegate to the existing record construction checker.
+    crate::records::infer_record_construction(ctx, b, &schema, anon_id, &anon_name, fields, span)
+}
+
+/// Check an inline record pattern `{ f1, f2, .. }` against `expected_ty`.
+///
+/// If `expected_ty` resolves to a known anon `Type::Con`, delegates to the
+/// schema-agnostic [`crate::records::infer_record_pattern`].  If the scrutinee
+/// is a free type variable (not yet determined), unifies it with a fresh anon
+/// `TyCon` built from the pattern's field names.
+fn infer_inline_record_pattern(
+    ctx: &mut InferCtx,
+    b: &BuiltinTyCons,
+    fields: &[FieldPattern],
+    has_rest: bool,
+    expected_ty: &Type,
+    span: Span,
+) {
+    let resolved = ctx.deep_resolve(expected_ty);
+
+    // Step 2: if expected_ty resolves to a known anon TyCon with a Record schema.
+    if let Type::Con(anon_id, _) = &resolved {
+        let anon_id = *anon_id;
+        if let Some(decl) = ctx.tycon_decls.get(anon_id.0 as usize) {
+            if let TyConKind::Record(schema) = &decl.kind.clone() {
+                let schema = schema.clone();
+                let anon_name = decl.name.clone();
+                crate::records::infer_record_pattern(
+                    ctx, b, &schema, anon_id, &anon_name, fields, has_rest, &resolved, span,
+                );
+                return;
+            }
+        }
+    }
+
+    // Step 3: free-variable scrutinee — build a fresh anon TyCon from the
+    // pattern's field names with fresh type vars per field, intern it, and
+    // unify the scrutinee.
+    if matches!(&resolved, Type::Var(_) | Type::Error) {
+        let fresh_fields: Vec<(String, Type)> = fields
+            .iter()
+            .map(|fp| {
+                let fresh = Type::Var(ctx.fresh_tyvid());
+                (fp.name.text.clone(), fresh)
+            })
+            .collect();
+        let key = ridge_types::shape_key(&fresh_fields);
+        let anon_id = if let Some(&id) = ctx.anon_records.get(&key) {
+            id
+        } else {
+            let sorted: Vec<ridge_types::RecordField> = {
+                let mut v: Vec<ridge_types::RecordField> = fresh_fields
+                    .iter()
+                    .map(|(n, t)| ridge_types::RecordField {
+                        name: n.clone(),
+                        ty: t.clone(),
+                    })
+                    .collect();
+                v.sort_by(|a, b| a.name.cmp(&b.name));
+                v
+            };
+            let counter = ctx.anon_records.len();
+            let anon_name = format!("{{anon record #{counter}}}");
+            let decl = ridge_types::TyConDecl {
+                id: TyConId(0),
+                name: anon_name,
+                arity: 0,
+                kind: TyConKind::Record(ridge_types::RecordSchema::new(vec![], sorted)),
+                def_span: Some(span),
+                def_module_raw: None,
+                is_anon: true,
+            };
+            #[expect(
+                clippy::cast_possible_truncation,
+                reason = "tycon count bounded by program size; exceeding 2^32 is not realistic"
+            )]
+            let next_id = TyConId(ctx.tycon_decls.len() as u32);
+            let mut interned_decl = decl;
+            interned_decl.id = next_id;
+            ctx.tycon_decls.push(interned_decl);
+            ctx.anon_records.insert(key, next_id);
+            next_id
+        };
+        let TyConKind::Record(schema) = ctx.tycon_decls[anon_id.0 as usize].kind.clone() else {
+            return;
+        };
+        let anon_name = ctx.tycon_decls[anon_id.0 as usize].name.clone();
+        let fresh_ty = Type::Con(anon_id, vec![]);
+        if matches!(&resolved, Type::Var(_)) {
+            if let Err(e) = crate::unify::unify(ctx, expected_ty, &fresh_ty) {
+                ctx.errors.push(crate::records::attach_span_pub(e, span));
+            }
+        }
+        crate::records::infer_record_pattern(
+            ctx, b, &schema, anon_id, &anon_name, fields, has_rest, &fresh_ty, span,
+        );
+        return;
+    }
+
+    // Unexpected scrutinee type for an inline record pattern.
+    let _ = emit_internal(
+        ctx,
+        format!("inline record pattern on unexpected type: {resolved:?}"),
+        span,
+    );
 }
 
 /// Attaches a source span to a `TypeError`.

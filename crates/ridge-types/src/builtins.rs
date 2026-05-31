@@ -132,6 +132,7 @@ impl BuiltinTyCons {
             kind: TyConKind::Primitive,
             def_span: None,
             def_module_raw: None,
+            is_anon: false,
         });
         let float = arena.intern(TyConDecl {
             id: TyConId(0),
@@ -140,6 +141,7 @@ impl BuiltinTyCons {
             kind: TyConKind::Primitive,
             def_span: None,
             def_module_raw: None,
+            is_anon: false,
         });
         let bool_ = arena.intern(TyConDecl {
             id: TyConId(0),
@@ -148,6 +150,7 @@ impl BuiltinTyCons {
             kind: TyConKind::Primitive,
             def_span: None,
             def_module_raw: None,
+            is_anon: false,
         });
         let text = arena.intern(TyConDecl {
             id: TyConId(0),
@@ -156,6 +159,7 @@ impl BuiltinTyCons {
             kind: TyConKind::Primitive,
             def_span: None,
             def_module_raw: None,
+            is_anon: false,
         });
         let unit = arena.intern(TyConDecl {
             id: TyConId(0),
@@ -164,6 +168,7 @@ impl BuiltinTyCons {
             kind: TyConKind::Primitive,
             def_span: None,
             def_module_raw: None,
+            is_anon: false,
         });
         let timestamp = arena.intern(TyConDecl {
             id: TyConId(0),
@@ -172,6 +177,7 @@ impl BuiltinTyCons {
             kind: TyConKind::Primitive,
             def_span: None,
             def_module_raw: None,
+            is_anon: false,
         });
 
         // ── Generic built-in containers (TyConKind::Builtin) ──────────────────
@@ -182,6 +188,7 @@ impl BuiltinTyCons {
             kind: TyConKind::Builtin,
             def_span: None,
             def_module_raw: None,
+            is_anon: false,
         });
         let map = arena.intern(TyConDecl {
             id: TyConId(0),
@@ -190,6 +197,7 @@ impl BuiltinTyCons {
             kind: TyConKind::Builtin,
             def_span: None,
             def_module_raw: None,
+            is_anon: false,
         });
         let set = arena.intern(TyConDecl {
             id: TyConId(0),
@@ -198,6 +206,7 @@ impl BuiltinTyCons {
             kind: TyConKind::Builtin,
             def_span: None,
             def_module_raw: None,
+            is_anon: false,
         });
 
         // ── Prelude unions (TyConKind::Union) ─────────────────────────────────
@@ -226,6 +235,7 @@ impl BuiltinTyCons {
             }),
             def_span: None,
             def_module_raw: None,
+            is_anon: false,
         });
         // Result a e — Ok a | Err e  (spec: Result a e)
         let result = arena.intern(TyConDecl {
@@ -247,6 +257,7 @@ impl BuiltinTyCons {
             }),
             def_span: None,
             def_module_raw: None,
+            is_anon: false,
         });
 
         // ── Handle a — phantom actor-reference type (TyConKind::Builtin) ──────
@@ -261,6 +272,7 @@ impl BuiltinTyCons {
             kind: TyConKind::Builtin,
             def_span: None,
             def_module_raw: None,
+            is_anon: false,
         });
 
         // ── Stdlib record types (TyConKind::Record) ───────────────────────────
@@ -294,6 +306,7 @@ impl BuiltinTyCons {
             )),
             def_span: None,
             def_module_raw: None,
+            is_anon: false,
         });
         // §3.12: Duration { ms: Int }
         let duration = arena.intern(TyConDecl {
@@ -309,6 +322,7 @@ impl BuiltinTyCons {
             )),
             def_span: None,
             def_module_raw: None,
+            is_anon: false,
         });
         // §3.16 / OQ-S007 / D123: ProcOutput { stdout: Text, stderr: Text, exitCode: Int }
         let proc_output = arena.intern(TyConDecl {
@@ -334,6 +348,7 @@ impl BuiltinTyCons {
             )),
             def_span: None,
             def_module_raw: None,
+            is_anon: false,
         });
 
         // Verify assignment order matches spec §4.1 indices 0..14.

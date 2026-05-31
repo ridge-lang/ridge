@@ -362,6 +362,16 @@ pub fn infer_record_with(
 
 // ── Internal helpers ──────────────────────────────────────────────────────────
 
+/// Public re-export of [`attach_span`] for use by `infer.rs` inline-record helpers.
+///
+/// Callers outside `records.rs` that need to attach a span to a `TypeError`
+/// produced by `unify` (which emits dummy spans) can call this instead of
+/// duplicating the match logic.
+#[must_use]
+pub fn attach_span_pub(e: TypeError, span: Span) -> TypeError {
+    attach_span(e, span)
+}
+
 /// Attach a `Span` to a `TypeError` that was produced without a proper span
 /// (typically from [`unify`]).
 ///
@@ -532,6 +542,7 @@ mod tests {
             kind: TyConKind::Record(schema),
             def_span: None,
             def_module_raw: None,
+            is_anon: false,
         });
         (arena, b, tycon_id)
     }

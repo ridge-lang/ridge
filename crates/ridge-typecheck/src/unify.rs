@@ -258,6 +258,16 @@ pub fn occurs(ctx: &mut InferCtx, v: TyVid, t: &Type) -> bool {
 // ── Internal helpers ──────────────────────────────────────────────────────────
 
 /// Constructs a `T001 TypeMismatch` error with a dummy span.
+///
+/// # T001 rendering note
+///
+/// `Type::Display` (the `{expected}` / `{found}` format) renders `Type::Con`
+/// as `#N` — it has no arena access.  Named records therefore print as `#N`
+/// today; anon records inherit the same limitation.  To render structural
+/// shapes here the arena would need to be threaded into `UnifyCtx` and this
+/// helper.  That is a non-trivial refactor deferred to a follow-on cut:
+// TODO(0.2.12/T7b): thread the arena into UnifyCtx so anon records render
+// as `{ … }` in T001 strings rather than `#N`.
 fn mismatch(expected: &Type, found: &Type) -> TypeError {
     TypeError::TypeMismatch {
         expected: format!("{expected}"),

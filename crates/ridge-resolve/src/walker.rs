@@ -453,6 +453,17 @@ impl ScopeWalker<'_> {
                     }
                 }
             }
+            Pattern::Record { fields, .. } => {
+                for fp in fields {
+                    if let Some(inner) = &fp.pattern {
+                        self.bind_pattern(inner, kind);
+                    } else {
+                        // Shorthand `{ age }` — bind `age` as a local.
+                        self.check_r017_state_shadow(&fp.name);
+                        self.add_local_binding(&fp.name, kind);
+                    }
+                }
+            }
         }
     }
 

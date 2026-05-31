@@ -692,6 +692,13 @@ pub(crate) fn parse_expr_atom(cur: &mut Cursor<'_>) -> Result<Expr, ParseError> 
             }
         }
 
+        // ── Constructor-less record literal `{ field = val, … }` ─────────────
+        //
+        // Disambiguation: `{` followed by `LOWER_IDENT =` is unambiguously a
+        // record literal (blocks use statement forms, not `=`-assignment syntax).
+        // `{}` is the empty record literal.
+        Token::LBrace => parse_inline_record_literal(cur),
+
         // ── Interpolated string (full with holes, T8) ─────────────────────────
         Token::InterpStart => actor_ops::parse_interp_full(cur),
 
@@ -711,6 +718,95 @@ pub(crate) fn parse_expr_atom(cur: &mut Cursor<'_>) -> Result<Expr, ParseError> 
             description: format!("unexpected token `{}` in expression position", cur.peek()),
         }),
     }
+}
+
+// ── Inline record literal parsing ────────────────────────────────────────────
+
+/// Parse a constructor-less record literal `{ field = val, … }`.
+///
+/// Grammar:
+/// ```ebnf
+/// RecordLit ::= '{' '}'
+///             | '{' RecordLitField (',' RecordLitField)* ','? '}' ;
+/// RecordLitField ::= LOWER_IDENT '=' Expr ;
+/// ```
+///
+/// The empty form `{}` produces `Expr::RecordLit { fields: [] }`.
+///
+/// Precondition: `cur.peek() == Token::LBrace`.
+fn parse_inline_record_literal(cur: &mut Cursor<'_>) -> Result<Expr, ParseError> {
+    let start_span = cur.span();
+    cur.bump(); // consume `{`
+
+    // Empty record: `{}`
+    if cur.peek() == &Token::RBrace {
+        let end_span = cur.span();
+        cur.bump(); // consume `}`
+        return Ok(Expr::RecordLit {
+            fields: vec![],
+            span: start_span.merge(end_span),
+        });
+    }
+
+    let mut fields: Vec<ridge_ast::expr::FieldInit> = Vec::new();
+
+    loop {
+        let field_span = cur.span();
+
+        // Parse field name (must be LOWER_IDENT).
+        let name_text = match cur.peek().clone() {
+            Token::LowerIdent(s) => {
+                cur.bump();
+                s
+            }
+            _ => {
+                return Err(ParseError::UnexpectedToken {
+                    span: field_span,
+                    description: format!(
+                        "expected a lowercase field name in record literal, found `{}`",
+                        cur.peek()
+                    ),
+                });
+            }
+        };
+        let name = ridge_ast::Ident::new(name_text, field_span);
+
+        // Field shorthand `{ x }` — value is None.
+        // Field explicit `{ x = expr }`.
+        let (value, fi_end_span) = if cur.peek() == &Token::Assign {
+            cur.bump(); // consume `=`
+            let val = parse_expr(cur)?;
+            let end = val.span();
+            (Some(val), end)
+        } else {
+            (None, field_span)
+        };
+
+        let fi_span = field_span.merge(fi_end_span);
+        fields.push(ridge_ast::expr::FieldInit {
+            name,
+            value,
+            span: fi_span,
+        });
+
+        // Separator: `,` or end.
+        if cur.peek() == &Token::Comma {
+            cur.bump(); // consume `,`
+                        // Trailing comma followed by `}` — done.
+            if cur.peek() == &Token::RBrace {
+                break;
+            }
+        } else {
+            // No comma: must be `}` next.
+            break;
+        }
+    }
+
+    let end_span = cur.expect(&Token::RBrace)?;
+    Ok(Expr::RecordLit {
+        fields,
+        span: start_span.merge(end_span),
+    })
 }
 
 // ── Parenthesised expression dispatch ────────────────────────────────────────
@@ -2017,5 +2113,66 @@ mod tests {
             ),
             "expected Cons at top, got {e:?}"
         );
+    }
+
+    // ── Inline record literal — two fields ───────────────────────────────────
+
+    #[test]
+    fn parse_expr_inline_record_lit_two_fields() {
+        // `{ ok = True, value = 42 }` → Expr::RecordLit
+        let e = ok("{ ok = True, value = 42 }");
+        if let Expr::RecordLit { fields, .. } = e {
+            assert_eq!(fields.len(), 2);
+            assert_eq!(fields[0].name.text, "ok");
+            assert!(fields[0].value.is_some());
+            assert_eq!(fields[1].name.text, "value");
+        } else {
+            panic!("expected Expr::RecordLit, got {e:?}");
+        }
+    }
+
+    // ── Inline record literal — empty `{}` ───────────────────────────────────
+
+    #[test]
+    fn parse_expr_inline_record_lit_empty() {
+        let e = ok("{}");
+        assert!(
+            matches!(e, Expr::RecordLit { .. }),
+            "expected RecordLit, got {e:?}"
+        );
+        if let Expr::RecordLit { fields, .. } = e {
+            assert!(fields.is_empty());
+        }
+    }
+
+    // ── Inline record literal — trailing comma ───────────────────────────────
+
+    #[test]
+    fn parse_expr_inline_record_lit_trailing_comma() {
+        let e = ok("{ x = 1, }");
+        if let Expr::RecordLit { fields, .. } = e {
+            assert_eq!(fields.len(), 1);
+            assert_eq!(fields[0].name.text, "x");
+        } else {
+            panic!("expected Expr::RecordLit, got {e:?}");
+        }
+    }
+
+    // ── Inline record literal — shorthand field ──────────────────────────────
+
+    #[test]
+    fn parse_expr_inline_record_lit_shorthand() {
+        // `{ x }` → RecordLit with value = None (shorthand)
+        let e = ok("{ x }");
+        if let Expr::RecordLit { fields, .. } = e {
+            assert_eq!(fields.len(), 1);
+            assert_eq!(fields[0].name.text, "x");
+            assert!(
+                fields[0].value.is_none(),
+                "expected shorthand (value = None)"
+            );
+        } else {
+            panic!("expected Expr::RecordLit, got {e:?}");
+        }
     }
 }

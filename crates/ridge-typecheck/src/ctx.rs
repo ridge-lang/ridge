@@ -10,7 +10,9 @@
 
 use ena::unify::{InPlaceUnificationTable, NoError, UnifyKey, UnifyValue};
 use ridge_resolve::{NodeIdMap, NodeKind};
-use ridge_types::{CapRow, CapVid, CapabilitySet, Scheme, TyConDecl, TyConId, TyVid, Type};
+use ridge_types::{
+    AnonRecordTable, CapRow, CapVid, CapabilitySet, Scheme, TyConDecl, TyConId, TyVid, Type,
+};
 use rustc_hash::FxHashMap;
 
 use crate::error::TypeError;
@@ -257,6 +259,14 @@ pub struct InferCtx {
     /// Moved into `TypedModule.schemes` at module-end.
     // OQ-PHASE45-003: top-level decl schemes only; let-bound locals excluded.
     pub schemes_accum: FxHashMap<ridge_resolve::NodeId, Scheme>,
+
+    /// Map from anonymous record shape to the [`ridge_types::TyConId`] interned
+    /// for it during the collect pre-scan.
+    ///
+    /// Populated by `tycon_collect::prescan_inline_records` BEFORE inference
+    /// begins.  Read by `ast_type_to_ridge_type` and the `Expr::RecordLit` /
+    /// `Pattern::Record` inference arms (T5).
+    pub anon_records: AnonRecordTable,
 }
 
 impl InferCtx {
@@ -276,6 +286,7 @@ impl InferCtx {
             node_id_map: None,
             node_types_accum: Vec::new(),
             schemes_accum: FxHashMap::default(),
+            anon_records: AnonRecordTable::default(),
         }
     }
 

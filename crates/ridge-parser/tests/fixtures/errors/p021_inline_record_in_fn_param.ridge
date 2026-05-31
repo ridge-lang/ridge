@@ -1,3 +1,5 @@
 -- expect: P021
--- Trigger: inline record type body as the annotation on a fn parameter.
-pub fn id (x: { id: Int }) -> Int = 0
+-- Trigger: inline record type with a missing `:` between field name and type.
+-- Well-formed inline record types in fn params are now supported; this tests
+-- the malformed-type diagnostic for a bad field syntax.
+pub fn id (x: { id Int }) -> Int = 0

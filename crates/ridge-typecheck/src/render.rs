@@ -364,6 +364,33 @@ impl fmt::Display for TypeError {
                 )
             }
 
+            // ── T028 ──────────────────────────────────────────────────────────
+            Self::IncompleteRecordPattern {
+                record,
+                missing_fields,
+                ..
+            } => {
+                write!(
+                    f,
+                    "T028: record pattern is missing fields\n  type `{record}` has fields not covered by this pattern"
+                )?;
+                for field in missing_fields {
+                    write!(f, "\n  missing field: `{field}`")?;
+                }
+                write!(
+                    f,
+                    "\n  hint: add the missing field bindings, or add `..` to ignore the rest"
+                )
+            }
+
+            // ── P029 ──────────────────────────────────────────────────────────
+            Self::InlineRecordTyVarField { var_name, .. } => {
+                write!(
+                    f,
+                    "P029: inline record type may not reference a type variable\n  type variable `{var_name}` used inside an inline record type\n  note: parametric inline record types are not supported in this version\n  help: give this record a name and use the named type as the field type"
+                )
+            }
+
             // ── T999 ──────────────────────────────────────────────────────────
             Self::InternalTypeError { detail, .. } => {
                 write!(f, "T999: internal type error\n  {detail}\n  This is a compiler bug. Please report it.")
@@ -412,6 +439,8 @@ impl HasErrorCode for TypeError {
             | Self::SpawnArityMismatch { span, .. }
             | Self::AskTimeoutNotInt { span, .. }
             | Self::MailboxPolicyDropOldestNotShipped { span, .. }
+            | Self::IncompleteRecordPattern { span, .. }
+            | Self::InlineRecordTyVarField { span, .. }
             | Self::InternalTypeError { span, .. } => *span,
 
             // T013: uses `recursive_call_span` as the primary span.

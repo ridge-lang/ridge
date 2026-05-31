@@ -46,7 +46,7 @@
 #![allow(dead_code)]
 #![allow(clippy::redundant_pub_crate)]
 
-use ridge_ast::{Capability, FnType, Ident, PrimitiveType, Type};
+use ridge_ast::{Capability, FnType, Ident, PrimitiveType, RecordTypeField, Type};
 use ridge_lexer::Token;
 
 use crate::{cursor::Cursor, error::ParseError};
@@ -172,13 +172,13 @@ pub(crate) fn parse_type_atom(cur: &mut Cursor<'_>) -> Result<Type, ParseError> 
         // ── `(…)`: unit literal, paren, or tuple ─────────────────────────────
         Token::LParen => parse_paren_or_tuple(cur),
 
-        // ── `{ … }`: inline record types are not part of the type grammar ────
-        // Record types are first-class only through a named `type Foo = { … }`
-        // declaration.  Emit a specific P021 diagnostic that points at the
-        // workaround, instead of letting the bare `{` surface as the
-        // misleading "expected a type, found `{`" or as a stranded `{` that
-        // the outer parser then mis-attributes to a body-block.
-        Token::LBrace => Err(ParseError::InlineRecordTypeInTypePosition { span }),
+        // ── `{ … }`: inline record type ──────────────────────────────────────
+        //
+        // Grammar:
+        //   inline-record-type ::= '{' '}'
+        //                        | '{' record-type-field (',' record-type-field)* ','? '}'
+        //   record-type-field  ::= LOWER_IDENT ':' type
+        Token::LBrace => parse_inline_record_type(cur),
 
         // ── Everything else is not a valid atom start ─────────────────────────
         _ => Err(ParseError::UnexpectedToken {
@@ -391,6 +391,113 @@ fn is_type_atom_start(cur: &Cursor<'_>) -> bool {
             // misleading `P001 expected =` further upstream.
             | Token::LBrace
     )
+}
+
+// ── parse_inline_record_type (internal) ──────────────────────────────────────
+
+/// Parse an inline record type `{ field: Type, … }`.
+///
+/// Grammar:
+/// ```ebnf
+/// inline-record-type ::= '{' '}'
+///                       | '{' record-type-field (',' record-type-field)* ','? '}' ;
+/// record-type-field  ::= LOWER_IDENT ':' type ;
+/// ```
+///
+/// P021 (`MalformedInlineRecordType`) is emitted when:
+/// - A field name is not a lowercase identifier.
+/// - The `:` separator is missing (`{ x Int }` instead of `{ x: Int }`).
+/// - The body is unterminated (EOF or unexpected token before `}`).
+///
+/// Precondition: `cur.peek() == Token::LBrace`.
+fn parse_inline_record_type(cur: &mut Cursor<'_>) -> Result<Type, ParseError> {
+    let start_span = cur.span();
+    cur.bump(); // consume `{`
+
+    // Empty record type: `{}`.
+    if cur.peek() == &Token::RBrace {
+        let end_span = cur.span();
+        cur.bump(); // consume `}`
+        return Ok(Type::Record {
+            fields: vec![],
+            span: start_span.merge(end_span),
+        });
+    }
+
+    let mut fields: Vec<RecordTypeField> = Vec::new();
+
+    loop {
+        let field_span = cur.span();
+
+        // Parse field name — must be a lowercase identifier.
+        let name_text = match cur.peek().clone() {
+            Token::LowerIdent(s) => {
+                cur.bump();
+                s
+            }
+            tok => {
+                return Err(ParseError::MalformedInlineRecordType {
+                    span: field_span,
+                    description: format!(
+                        "expected a lowercase field name, found `{tok}`; write the field as `fieldName: Type`, for example `x: Int`"
+                    ),
+                });
+            }
+        };
+        let name = Ident::new(name_text, field_span);
+
+        // Must have `:` separator.
+        if cur.peek() != &Token::Colon {
+            return Err(ParseError::MalformedInlineRecordType {
+                span: cur.span(),
+                description: format!(
+                    "expected `:` after field name `{}` in record type; write `{}: Type`",
+                    name.text, name.text
+                ),
+            });
+        }
+        cur.bump(); // consume `:`
+
+        // Parse the field type.
+        let field_ty = parse_type(cur)?;
+        let field_end = field_ty.span();
+
+        fields.push(RecordTypeField {
+            name,
+            ty: field_ty,
+            span: field_span.merge(field_end),
+        });
+
+        // Separator: `,` or end.
+        if cur.peek() == &Token::Comma {
+            cur.bump(); // consume `,`
+                        // Trailing comma before `}` — done.
+            if cur.peek() == &Token::RBrace {
+                break;
+            }
+        } else {
+            // No comma: must be `}` next.
+            break;
+        }
+    }
+
+    // Expect closing `}`.
+    if cur.peek() != &Token::RBrace {
+        return Err(ParseError::MalformedInlineRecordType {
+            span: cur.span(),
+            description: format!(
+                "unterminated inline record type; expected `}}` but found `{}`",
+                cur.peek()
+            ),
+        });
+    }
+    let end_span = cur.span();
+    cur.bump(); // consume `}`
+
+    Ok(Type::Record {
+        fields,
+        span: start_span.merge(end_span),
+    })
 }
 
 // ── Tests ─────────────────────────────────────────────────────────────────────
@@ -764,6 +871,93 @@ mod tests {
                 e.code() == "P001" || e.code() == "P002",
                 "expected P001 or P002, got {e:?}"
             );
+        }
+    }
+
+    // ── Inline record type — two fields ─────────────────────────────────────
+
+    #[test]
+    fn parse_type_inline_record_two_fields() {
+        let result = parse_ty("{ x: Int, y: Int }");
+        assert!(result.is_ok(), "expected Ok, got {result:?}");
+        if let Ok(Type::Record { fields, .. }) = result {
+            assert_eq!(fields.len(), 2);
+            assert_eq!(fields[0].name.text, "x");
+            assert!(matches!(
+                fields[0].ty,
+                Type::Primitive {
+                    name: PrimitiveType::Int,
+                    ..
+                }
+            ));
+            assert_eq!(fields[1].name.text, "y");
+        } else {
+            panic!("expected Type::Record, got {result:?}");
+        }
+    }
+
+    // ── Inline record type — empty {} ────────────────────────────────────────
+
+    #[test]
+    fn parse_type_inline_record_empty() {
+        let result = parse_ty("{}");
+        assert!(result.is_ok(), "expected Ok, got {result:?}");
+        if let Ok(Type::Record { fields, .. }) = result {
+            assert!(fields.is_empty());
+        } else {
+            panic!("expected Type::Record, got {result:?}");
+        }
+    }
+
+    // ── Inline record type — trailing comma ──────────────────────────────────
+
+    #[test]
+    fn parse_type_inline_record_trailing_comma() {
+        let result = parse_ty("{ x: Int, }");
+        assert!(result.is_ok(), "expected Ok, got {result:?}");
+        if let Ok(Type::Record { fields, .. }) = result {
+            assert_eq!(fields.len(), 1);
+            assert_eq!(fields[0].name.text, "x");
+        } else {
+            panic!("expected Type::Record, got {result:?}");
+        }
+    }
+
+    // ── Inline record type — as generic argument `Option { id: Int }` ────────
+
+    #[test]
+    fn parse_type_inline_record_as_generic_arg() {
+        // `Option { id: Int }` should parse as App { head: Option, args: [Record { id: Int }] }
+        let result = parse_ty("Option { id: Int }");
+        assert!(result.is_ok(), "expected Ok, got {result:?}");
+        if let Ok(Type::App { head, args, .. }) = result {
+            assert_eq!(head.text, "Option");
+            assert_eq!(args.len(), 1);
+            assert!(matches!(&args[0], Type::Record { .. }));
+        } else {
+            panic!("expected Type::App, got {result:?}");
+        }
+    }
+
+    // ── Malformed inline record type — missing colon → P021 ──────────────────
+
+    #[test]
+    fn parse_type_inline_record_malformed_missing_colon() {
+        let result = parse_ty("{ x Int }");
+        assert!(result.is_err(), "expected Err, got {result:?}");
+        if let Err(e) = result {
+            assert_eq!(e.code(), "P021", "expected P021, got {e:?}");
+        }
+    }
+
+    // ── Malformed inline record type — uppercase field name → P021 ───────────
+
+    #[test]
+    fn parse_type_inline_record_malformed_uppercase_field() {
+        let result = parse_ty("{ X: Int }");
+        assert!(result.is_err(), "expected Err, got {result:?}");
+        if let Err(e) = result {
+            assert_eq!(e.code(), "P021", "expected P021, got {e:?}");
         }
     }
 }

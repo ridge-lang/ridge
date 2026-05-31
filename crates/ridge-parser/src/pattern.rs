@@ -22,10 +22,11 @@
 //! `As { name, inner }`.  That combined result then participates in any
 //! following `::` chain.
 //!
-//! # P018 — Bare record pattern
+//! # Inline record patterns
 //!
-//! A bare `{` in pattern position (without a leading `UPPER_IDENT`) is
-//! rejected with [`ParseError::BareRecordPattern`] (P018).
+//! A bare `{` in pattern position produces `Pattern::Record` (inline record
+//! pattern).  P018 (`BareRecordPattern`) was retired in 0.2.12 when bare
+//! record patterns became fully supported.
 
 // These functions are called by tests in this file.  They will be called from
 // production code (match/let/lambda).  Suppress dead_code until then.
@@ -114,7 +115,7 @@ pub(crate) fn parse_pattern(cur: &mut Cursor<'_>) -> Result<Pattern, ParseError>
 /// | `_` | `Pattern::Wildcard` |
 /// | `LOWER_IDENT` | `Pattern::Var` |
 /// | literal tokens | `Pattern::Literal` |
-/// | `{` | `P018 BareRecordPattern` |
+/// | `{` | `Pattern::Record` (inline record pattern) |
 /// | `(` | tuple (≥2 elems), paren (1 elem), or P002 for `()` |
 /// | `UPPER_IDENT` | `Pattern::Constructor` |
 /// | anything else | `P002 UnexpectedToken` |
@@ -194,8 +195,8 @@ pub(crate) fn parse_pattern_atom(cur: &mut Cursor<'_>) -> Result<Pattern, ParseE
             })
         }
 
-        // ── Bare record pattern `{ … }` — P018 error ─────────────────────────
-        Token::LBrace => Err(ParseError::BareRecordPattern { span }),
+        // ── Inline record pattern `{ field, … }` or `{ field, .. }` ──────────
+        Token::LBrace => parse_inline_record_pattern(cur),
 
         // ── Parenthesised / tuple ─────────────────────────────────────────────
         Token::LParen => parse_paren_or_tuple_pattern(cur),
@@ -219,6 +220,124 @@ pub(crate) fn parse_pattern_atom(cur: &mut Cursor<'_>) -> Result<Pattern, ParseE
             description: format!("unexpected token `{}` in pattern position", cur.peek()),
         }),
     }
+}
+
+// ── parse_inline_record_pattern (internal) ────────────────────────────────────
+
+/// Parse an inline record pattern `{ field, … }` or `{ field, .. }`.
+///
+/// Grammar:
+/// ```ebnf
+/// RecordPattern ::= '{' '}'
+///                 | '{' RecordPatField (',' RecordPatField)* ','? '}'
+///                 | '{' RecordPatField (',' RecordPatField)* ',' '..' ','? '}'
+///                 | '{' '..' '}' ;
+/// RecordPatField ::= LOWER_IDENT               (* shorthand: bind to same-named var *)
+///                  | LOWER_IDENT '=' Pattern ; (* explicit: match field against pattern *)
+/// ```
+///
+/// `has_rest = true` when `..` is present.  `..` must be last.
+///
+/// Precondition: `cur.peek() == Token::LBrace`.
+fn parse_inline_record_pattern(cur: &mut Cursor<'_>) -> Result<Pattern, ParseError> {
+    let start_span = cur.span();
+    cur.bump(); // consume `{`
+
+    // `{}` — empty record pattern.
+    if cur.peek() == &Token::RBrace {
+        let end_span = cur.span();
+        cur.bump();
+        return Ok(Pattern::Record {
+            fields: vec![],
+            has_rest: false,
+            span: start_span.merge(end_span),
+        });
+    }
+
+    // `{ .. }` — rest-only pattern.
+    if cur.peek() == &Token::DotDot {
+        cur.bump(); // consume `..`
+                    // Optional trailing comma.
+        if cur.peek() == &Token::Comma {
+            cur.bump();
+        }
+        let end_span = cur.expect(&Token::RBrace)?;
+        return Ok(Pattern::Record {
+            fields: vec![],
+            has_rest: true,
+            span: start_span.merge(end_span),
+        });
+    }
+
+    let mut fields: Vec<FieldPattern> = Vec::new();
+    let mut has_rest = false;
+
+    loop {
+        // Check for `..` rest marker (must be last).
+        if cur.peek() == &Token::DotDot {
+            cur.bump(); // consume `..`
+            has_rest = true;
+            // Optional trailing comma.
+            if cur.peek() == &Token::Comma {
+                cur.bump();
+            }
+            break;
+        }
+
+        let field_span = cur.span();
+
+        // Field name — must be lowercase.
+        let name_text = match cur.peek().clone() {
+            Token::LowerIdent(s) => {
+                cur.bump();
+                s
+            }
+            _ => {
+                return Err(ParseError::UnexpectedToken {
+                    span: field_span,
+                    description: format!(
+                        "expected a lowercase field name in record pattern, found `{}`",
+                        cur.peek()
+                    ),
+                });
+            }
+        };
+        let name = Ident::new(name_text, field_span);
+
+        // Shorthand `{ x }` vs. explicit `{ x = pat }`.
+        let (pat, fp_end) = if cur.peek() == &Token::Assign {
+            cur.bump(); // consume `=`
+            let inner = parse_pattern(cur)?;
+            let end = inner.span();
+            (Some(inner), end)
+        } else {
+            (None, field_span)
+        };
+
+        fields.push(FieldPattern {
+            name,
+            pattern: pat,
+            span: field_span.merge(fp_end),
+        });
+
+        // Separator: `,` or end.
+        if cur.peek() == &Token::Comma {
+            cur.bump(); // consume `,`
+                        // Trailing comma before `}` — done.
+            if cur.peek() == &Token::RBrace {
+                break;
+            }
+        } else {
+            break;
+        }
+    }
+
+    let end_span = cur.expect(&Token::RBrace)?;
+    Ok(Pattern::Record {
+        fields,
+        has_rest,
+        span: start_span.merge(end_span),
+    })
 }
 
 // ── parse_constructor_pattern (internal) ─────────────────────────────────────
@@ -885,19 +1004,101 @@ mod tests {
         }
     }
 
-    // ── bare record pattern → P018 ─────────────────────────────────────
+    // ── inline record pattern — shorthand field ───────────────────────────
 
     #[test]
-    fn parse_pattern_bare_record_rejects_with_p018() {
+    fn parse_pattern_inline_record_shorthand() {
+        // `{ name }` → Pattern::Record { fields: [FieldPattern { name: "name", pattern: None }], has_rest: false }
         let result = parse_pat("{ name }");
-        assert!(result.is_err(), "expected Err for bare record pattern");
-        if let Err(e) = result {
-            assert_eq!(
-                e.code(),
-                "P018",
-                "expected P018 BareRecordPattern, got code={} err={e:?}",
-                e.code()
-            );
+        assert!(
+            result.is_ok(),
+            "expected Ok for inline record pattern, got {result:?}"
+        );
+        if let Ok(Pattern::Record {
+            fields, has_rest, ..
+        }) = result
+        {
+            assert!(!has_rest);
+            assert_eq!(fields.len(), 1);
+            assert_eq!(fields[0].name.text, "name");
+            assert!(fields[0].pattern.is_none());
+        } else {
+            panic!("expected Pattern::Record, got {result:?}");
+        }
+    }
+
+    // ── inline record pattern — has_rest ────────────────────────────────────
+
+    #[test]
+    fn parse_pattern_inline_record_has_rest() {
+        // `{ name, .. }` → Pattern::Record { has_rest: true }
+        let result = parse_pat("{ name, .. }");
+        assert!(result.is_ok(), "expected Ok, got {result:?}");
+        if let Ok(Pattern::Record {
+            fields, has_rest, ..
+        }) = result
+        {
+            assert!(has_rest, "expected has_rest = true");
+            assert_eq!(fields.len(), 1);
+            assert_eq!(fields[0].name.text, "name");
+        } else {
+            panic!("expected Pattern::Record, got {result:?}");
+        }
+    }
+
+    // ── inline record pattern — empty ────────────────────────────────────────
+
+    #[test]
+    fn parse_pattern_inline_record_empty() {
+        let result = parse_pat("{}");
+        assert!(result.is_ok(), "expected Ok, got {result:?}");
+        if let Ok(Pattern::Record {
+            fields, has_rest, ..
+        }) = result
+        {
+            assert!(fields.is_empty());
+            assert!(!has_rest);
+        } else {
+            panic!("expected Pattern::Record, got {result:?}");
+        }
+    }
+
+    // ── inline record pattern — rest-only ────────────────────────────────────
+
+    #[test]
+    fn parse_pattern_inline_record_rest_only() {
+        let result = parse_pat("{ .. }");
+        assert!(result.is_ok(), "expected Ok, got {result:?}");
+        if let Ok(Pattern::Record {
+            fields, has_rest, ..
+        }) = result
+        {
+            assert!(fields.is_empty());
+            assert!(has_rest, "expected has_rest = true");
+        } else {
+            panic!("expected Pattern::Record, got {result:?}");
+        }
+    }
+
+    // ── inline record pattern — explicit binding ──────────────────────────────
+
+    #[test]
+    fn parse_pattern_inline_record_explicit() {
+        // `{ name = "Ada", age }` — explicit + shorthand
+        let result = parse_pat("{ name = \"Ada\", age }");
+        assert!(result.is_ok(), "expected Ok, got {result:?}");
+        if let Ok(Pattern::Record {
+            fields, has_rest, ..
+        }) = result
+        {
+            assert!(!has_rest);
+            assert_eq!(fields.len(), 2);
+            assert_eq!(fields[0].name.text, "name");
+            assert!(fields[0].pattern.is_some()); // explicit
+            assert_eq!(fields[1].name.text, "age");
+            assert!(fields[1].pattern.is_none()); // shorthand
+        } else {
+            panic!("expected Pattern::Record, got {result:?}");
         }
     }
 

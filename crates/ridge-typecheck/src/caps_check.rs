@@ -372,8 +372,8 @@ fn check_body(
             }
         }
 
-        // ── Record / With / FieldAccess ───────────────────────────────────────
-        Expr::Record { fields, .. } => {
+        // ── Record / RecordLit / With / FieldAccess ───────────────────────────
+        Expr::Record { fields, .. } | Expr::RecordLit { fields, .. } => {
             for f in fields {
                 if let Some(ref val) = f.value {
                     check_body(ctx, b, enclosing_name, enclosing_effective, val);

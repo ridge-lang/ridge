@@ -144,12 +144,15 @@ pub enum ParseError {
         since: &'static str,
     },
 
-    /// P018 — a record-body pattern `{ … }` was used without a constructor
-    /// name.  A record pattern must start with
-    /// `UPPER_IDENT`, e.g. `User { name }`.
-    #[error("record patterns require a constructor name (e.g. `User {{ name }}`)")]
+    /// P018 — retired in 0.2.12.  Constructor-less record patterns are now
+    /// fully supported.  This code is reserved and will not be reused.
+    ///
+    /// Previously: a record-body pattern `{ … }` was rejected when it
+    /// appeared without a leading constructor name.
+    // P018 retired in 0.2.12 — code reserved, will not be reused.
+    #[error("P018 retired — bare record patterns are now supported")]
     BareRecordPattern {
-        /// Source location of the bare `{`.
+        /// Source location of the bare `{` (kept for diagnostic-wire compat).
         span: Span,
     },
 
@@ -186,16 +189,29 @@ pub enum ParseError {
         position: &'static str,
     },
 
-    /// P021 — an inline record body `{ … }` appeared where a type is
-    /// expected (e.g. `-> Result { name: Text } Text` or `(x: { id: Int })`).
+    /// P021 — an inline record type `{ … }` in type position is syntactically
+    /// malformed.  Emitted for:
+    /// - A field missing the `:` separator (`{ x Int }` instead of `{ x: Int }`).
+    /// - A field name that is not a lowercase identifier.
+    /// - An unterminated record body (EOF or unexpected token before `}`).
     ///
-    /// Inline record types in type positions are not part of the surface
-    /// grammar: record types are first-class only through a named
-    /// `type Foo = { … }` declaration.  The historical surface was a
-    /// `P001 expected =` (when the inline record appeared after `->`) or
-    /// a downstream cascade from the lost-track parser, neither of which
-    /// named the actual cause.  P021 names the cause and points to the
-    /// canonical fix: declare a named type and use it here.
+    /// Well-formed inline record types are now part of the grammar; this code
+    /// names parse-level faults within the record body rather than rejecting
+    /// the entire form.
+    #[error("P021: malformed inline record type — {description}")]
+    MalformedInlineRecordType {
+        /// Source location of the fault.
+        span: Span,
+        /// Human-readable description of the specific fault.
+        description: String,
+    },
+
+    /// Kept for diagnostic-wire compatibility; no longer emitted.
+    ///
+    /// In versions before 0.2.12 this variant was emitted whenever `{` appeared
+    /// in a type position.  It is retained so that code that matches on
+    /// `ParseError` exhaustively does not require immediate updates.
+    #[doc(hidden)]
     #[error("inline record types are not supported in type positions; declare a named type with `type Foo = {{ … }}` and use `Foo` here instead")]
     InlineRecordTypeInTypePosition {
         /// Source location of the opening `{`.
@@ -323,7 +339,8 @@ impl ParseError {
             Self::BareRecordPattern { .. } => "P018",
             Self::OrphanDocComment { .. } => "P019",
             Self::ReservedKeywordAsIdent { .. } => "P020",
-            Self::InlineRecordTypeInTypePosition { .. } => "P021",
+            Self::MalformedInlineRecordType { .. }
+            | Self::InlineRecordTypeInTypePosition { .. } => "P021",
             Self::MailboxPolicyMissing { .. } => "P022",
             Self::MailboxBoundInvalid { .. } => "P023",
             Self::MultipleRestInListPattern { .. } => "P024",
@@ -350,6 +367,7 @@ impl ParseError {
             | Self::BareRecordPattern { span }
             | Self::OrphanDocComment { span }
             | Self::ReservedKeywordAsIdent { span, .. }
+            | Self::MalformedInlineRecordType { span, .. }
             | Self::InlineRecordTypeInTypePosition { span }
             | Self::MailboxPolicyMissing { span }
             | Self::MailboxBoundInvalid { span, .. }

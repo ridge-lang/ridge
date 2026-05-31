@@ -284,6 +284,7 @@ mod tests {
             )),
             def_span: None,
             def_module_raw: None,
+            is_anon: false,
         });
 
         let mut ctx = InferCtx::new();

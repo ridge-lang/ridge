@@ -184,6 +184,23 @@ pub enum Pattern {
         /// Span covering the full `[…]` construct.
         span: Span,
     },
+
+    /// A constructor-less inline record pattern `{ field, … }` or `{ field, .. }`.
+    ///
+    /// Parsed when a `{` in pattern position is followed by a lowercase
+    /// identifier (field binding) or `..`.  The empty form `{}` is also valid.
+    ///
+    /// When `has_rest = true`, a `..` rest was present and unmentioned fields
+    /// are ignored.  When `has_rest = false`, every field of the matched type
+    /// must be mentioned (enforced at type-check time — T010).
+    Record {
+        /// The field patterns (may be empty for `{}`).
+        fields: Vec<FieldPattern>,
+        /// Whether a trailing `..` was present.
+        has_rest: bool,
+        /// Span covering the full `{ … }` form.
+        span: Span,
+    },
 }
 
 impl Pattern {
@@ -200,7 +217,8 @@ impl Pattern {
             | Self::As { span, .. }
             | Self::Paren { span, .. }
             | Self::ListNil { span }
-            | Self::List { span, .. } => *span,
+            | Self::List { span, .. }
+            | Self::Record { span, .. } => *span,
         }
     }
 

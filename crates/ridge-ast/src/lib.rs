@@ -48,7 +48,7 @@ pub use ident::Ident;
 pub use lit::Literal;
 pub use module::{Item, Module};
 pub use pattern::{FieldPattern, ListPatElem, Pattern};
-pub use ty::{FnType, Type};
+pub use ty::{FnType, RecordTypeField, Type};
 pub use visit::Visit;
 
 #[cfg(test)]

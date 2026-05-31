@@ -147,8 +147,13 @@ impl PatternMatrix {
 /// scope for 0.1.0 (no closed domain; treated as non-closed).
 fn lift_pattern(pat: &Pattern) -> NormPat {
     match pat {
-        // Wildcard and variable bindings lift to Wildcard.
-        Pattern::Wildcard { .. } | Pattern::Var { .. } => NormPat::Wildcard,
+        // Wildcard, variable bindings, and inline record patterns lift to Wildcard.
+        // Inline records are irrefutable over their matched type (single-constructor
+        // record); the `has_rest` flag does not change this — even an exact-field
+        // pattern covers the whole constructor.
+        Pattern::Wildcard { .. } | Pattern::Var { .. } | Pattern::Record { .. } => {
+            NormPat::Wildcard
+        }
 
         // Empty-list pattern `[]` — 0-arity ListNil constructor.
         Pattern::ListNil { .. } => NormPat::Ctor(Constructor::ListNil, vec![]),
@@ -1058,13 +1063,30 @@ fn collect_all_missing(
 // ── Type rendering helper ─────────────────────────────────────────────────────
 
 /// Renders a `Type` as a human-readable string for diagnostic messages.
+///
+/// Anonymous inline record types are rendered by their structural shape
+/// (`{ id: Int, name: Text }`) rather than by their internal synthetic name
+/// (`{anon record #N}`).  Named record types and all other types render by
+/// their declared name as before.
 fn render_type(ty: &Type, arena: &TyConArena) -> String {
     match ty {
         Type::Con(id, args) => {
             if id.0 as usize >= arena.len() {
                 return format!("?{}", id.0);
             }
-            let name = &arena.get(*id).name;
+            let decl = arena.get(*id);
+            // Inline (anonymous) records: render the structural shape.
+            if decl.is_anon {
+                if let ridge_types::TyConKind::Record(schema) = &decl.kind {
+                    let fields: Vec<String> = schema
+                        .record_fields()
+                        .iter()
+                        .map(|f| format!("{}: {}", f.name, render_type(&f.ty, arena)))
+                        .collect();
+                    return format!("{{ {} }}", fields.join(", "));
+                }
+            }
+            let name = &decl.name;
             if args.is_empty() {
                 name.clone()
             } else {
@@ -1235,6 +1257,7 @@ mod tests {
             }),
             def_span: None,
             def_module_raw: None,
+            is_anon: false,
         });
         (id, Type::Con(id, vec![]))
     }
@@ -1259,6 +1282,7 @@ mod tests {
             kind: TyConKind::Record(RecordSchema::new(vec![], record_fields)),
             def_span: None,
             def_module_raw: None,
+            is_anon: false,
         });
         (id, Type::Con(id, vec![]))
     }

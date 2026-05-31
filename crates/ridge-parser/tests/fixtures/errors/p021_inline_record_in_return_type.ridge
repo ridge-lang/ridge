@@ -1,4 +1,6 @@
 -- expect: P021
--- Trigger: inline record type body in a TyCon-argument position.
-pub fn foo (x: Int) -> Result { name: Text, age: Int } Text =
-    Ok { name = "ada", age = x }
+-- Trigger: inline record type with an uppercase field name (not a lowercase identifier).
+-- Well-formed inline record types in return position are now supported; this tests
+-- the malformed-type diagnostic when a field name is not a lowercase identifier.
+pub fn foo () -> { Name: Text } =
+    { name = "ada" }

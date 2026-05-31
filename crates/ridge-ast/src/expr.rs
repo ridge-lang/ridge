@@ -420,6 +420,20 @@ pub enum Expr {
         span: Span,
     },
 
+    /// A constructor-less inline record literal `{ field = val, … }`.
+    ///
+    /// Parsed when a `{` in expression position is followed by
+    /// `LOWER_IDENT =`, distinguishing it from a block.  The empty form `{}`
+    /// is also parsed as `RecordLit` (zero-field anonymous record value).
+    ///
+    /// Shorthand fields (`{ x }`) are represented as `FieldInit { value: None }`.
+    RecordLit {
+        /// The field initialisers (may be empty for `{}`).
+        fields: Vec<FieldInit>,
+        /// Span covering the full `{ … }` form.
+        span: Span,
+    },
+
     /// A functional update `base with { field = val, … }` (D055, grammar §6.18,
     /// Pratt level 5.5).
     ///
@@ -618,6 +632,7 @@ impl Expr {
             | Self::Lambda { span, .. }
             | Self::InnerFn { span, .. }
             | Self::Record { span, .. }
+            | Self::RecordLit { span, .. }
             | Self::With { span, .. }
             | Self::Ask { span, .. }
             | Self::Send { span, .. }

@@ -179,6 +179,11 @@ fn check_type(
         Type::Paren { inner, .. } => check_type(inner, project, workspace, errors),
         // Primitive, Named, Var — no caps, no children.
         Type::Primitive { .. } | Type::Named { .. } | Type::Var { .. } => {}
+        Type::Record { fields, .. } => {
+            for field in fields {
+                check_type(&field.ty, project, workspace, errors);
+            }
+        }
     }
 }
 

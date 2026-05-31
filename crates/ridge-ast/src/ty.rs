@@ -6,6 +6,25 @@
 
 use crate::{Capability, Ident, PrimitiveType, Span};
 
+// ── RecordTypeField ───────────────────────────────────────────────────────────
+
+/// A single field in an inline record type (grammar §3.4 inline-record-type).
+///
+/// ```text
+/// { x: Int, y: Int }
+///   ^^^^^^  ^^^^^^
+///   RecordTypeField instances
+/// ```
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RecordTypeField {
+    /// Field name (must be a lowercase identifier).
+    pub name: Ident,
+    /// Declared field type.
+    pub ty: Type,
+    /// Span of this field entry (`name: type`).
+    pub span: Span,
+}
+
 // ── Type ──────────────────────────────────────────────────────────────────────
 
 /// A type expression in Ridge source code (grammar §3.4).
@@ -105,6 +124,18 @@ pub enum Type {
         /// Source location.
         span: Span,
     },
+
+    /// An inline record type `{ fieldName: Type, … }` (grammar inline-record-type).
+    ///
+    /// Desugars to an anonymous nominal type constructor during the typecheck
+    /// pre-scan.  May appear in any type position.  Field names must be
+    /// lowercase identifiers; field order is semantically irrelevant.
+    Record {
+        /// The declared fields of the inline record.
+        fields: Vec<RecordTypeField>,
+        /// Span covering the full `{ … }` form.
+        span: Span,
+    },
 }
 
 impl Type {
@@ -119,7 +150,8 @@ impl Type {
             | Self::List { span, .. }
             | Self::Fn { span, .. }
             | Self::Paren { span, .. }
-            | Self::Var { span, .. } => *span,
+            | Self::Var { span, .. }
+            | Self::Record { span, .. } => *span,
         }
     }
 }

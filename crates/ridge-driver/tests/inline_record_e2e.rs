@@ -1,6 +1,6 @@
 //! End-to-end value checks for inline record types through the full pipeline.
 //!
-//! Covers the inline-specific chain: parse → typecheck anonymous TyCon →
+//! Covers the inline-specific chain: parse → typecheck anonymous `TyCon` →
 //! lower by shape → Core Erlang → run on the BEAM → assert runtime values.
 //!
 //! Each `pub fn` in the Ridge source returns an `Int` so the harness can
@@ -20,7 +20,7 @@ use ridge_driver::{compile_workspace, CompileOptions, EmitArtefacts};
 /// Each `pub fn` returns an `Int` so the harness can assert exact values.
 ///
 /// All functions use inline record type annotations (no `type` alias).
-/// The codegen path exercised: shape interning + id-agreement + lower-by-ShapeKey.
+/// The codegen path exercised: shape interning + id-agreement + lower-by-`ShapeKey`.
 const SOURCE: &str = r#"
 -- Case 1: construct an inline-typed record and read a field.
 -- Return type annotation drives anon TyCon creation; literal { v = 10, n = 0 }

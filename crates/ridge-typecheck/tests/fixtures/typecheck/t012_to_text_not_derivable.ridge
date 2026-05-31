@@ -1,5 +1,5 @@
--- expect: T012
--- T012 ToTextNotDerivable: string interpolation with a record type
--- that is not in the closed ToText set (Int, Float, Bool, Text, Timestamp).
+-- expect: T029
+-- T029 NoInstance: string interpolation with a record type that has no
+-- ToText instance. Add `instance ToText Point` or `deriving (ToText)`.
 type Point = { x: Int, y: Int }
 fn bad (p: Point) -> Text = $"Point is ${p}"

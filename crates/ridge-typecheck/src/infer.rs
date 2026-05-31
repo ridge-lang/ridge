@@ -747,8 +747,16 @@ fn infer_expr_inner(ctx: &mut InferCtx, b: &BuiltinTyCons, expr: &Expr) -> Type 
         // ── Try block (T10) ───────────────────────────────────────────────────
         Expr::Try { block, span } => crate::pipe_propagate::infer_try(ctx, b, block, *span),
 
-        // ── String interpolation (T11) ────────────────────────────────────────
-        Expr::Interp { parts, span } => crate::interp::infer_interp(ctx, b, parts, *span),
+        // ── String interpolation ──────────────────────────────────────────────
+        // The ToText instance set is cloned out of the context (populated before
+        // per-body inference by the SCC pass). When absent (unit tests without
+        // the full pipeline), the built-in closed set is used as a fallback.
+        // Cloning is cheap: the set is small (prelude types + user types with
+        // ToText) and is only cloned once per Interp expression.
+        Expr::Interp { parts, span } => {
+            let to_text_set = ctx.to_text_tycons.clone();
+            crate::interp::infer_interp(ctx, b, parts, *span, to_text_set.as_ref())
+        }
 
         // ── Send (T15) ────────────────────────────────────────────────────────
         // Full actor type resolution requires the workspace TyConArena (wired in

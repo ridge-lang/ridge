@@ -1,0 +1,20 @@
+-- Cryptographic utilities.
+--
+-- Provides constant-time comparison for secret-bearing byte sequences.
+-- Use `constantTimeEq` instead of `==` when comparing values that carry
+-- secret data (tokens, password hashes, HMACs, session keys) to prevent
+-- timing-based side-channel attacks.
+
+-- Compare two equal-length byte sequences in constant time.
+--
+-- Returns `True` when the sequences are equal. Unlike structural equality
+-- (`==`), this function takes the same amount of time regardless of how
+-- many bytes match, which prevents timing-based authentication attacks.
+--
+-- Both inputs must have the same length; the comparison is meant for
+-- fixed-length secrets such as password hashes, HMAC tags, and digests,
+-- where equality could otherwise reveal secret information to an observer
+-- measuring response time. Hash variable-length tokens to a fixed width
+-- before comparing.
+@ffi("crypto", "hash_equals", 2)
+pub fn constantTimeEq (a: Text) (b: Text) -> Bool

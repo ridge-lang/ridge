@@ -155,11 +155,17 @@ pub enum TypeError {
         span: Span,
     },
 
-    // ── T012 ─────────────────────────────────────────────────────────────────
-    /// A string-interpolation hole contains a value that cannot be converted to
-    /// text (the closed `ToText` set — D038).
+    // ── T012 — RESERVED, must not be re-emitted ───────────────────────────────
+    // Retired in 0.2.13: the closed-set interpolation restriction is replaced by
+    // open typeclass dispatch. Missing `ToText` instances now surface as T029
+    // `NoInstance`. The variant is kept so that the diagnostic code slot T012 is
+    // never reused and old serialised diagnostics remain decodable.
+    /// Interpolation hole type not in the closed `ToText` set (retired).
+    ///
+    /// Do not emit this variant from new code. It exists solely to reserve the
+    /// T012 code slot. Use [`TypeError::NoInstance`] (T029) instead.
     ToTextNotDerivable {
-        /// The type that is not in the `ToText` closed set.
+        /// The type that was not in the closed set.
         ty: String,
         /// Source span of the interpolation hole.
         span: Span,

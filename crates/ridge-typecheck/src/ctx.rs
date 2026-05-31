@@ -291,6 +291,17 @@ pub struct InferCtx {
     /// Empty for modules with no constrained functions (the common pre-typeclass
     /// case) — reading it is always safe.
     pub dict_resolution_accum: crate::solve::DictResolution,
+
+    /// Set of `TyConId`s that have a registered `ToText` instance.
+    ///
+    /// Populated from the workspace instance registry before per-body inference
+    /// begins (set by the SCC pass). Used by interpolation-hole type-checking to
+    /// perform an O(1) membership test instead of the old built-in closed-set
+    /// comparison.
+    ///
+    /// `None` in unit-test scaffolding that bypasses the full pipeline; the
+    /// interpolation pass falls back to the built-in closed set in that case.
+    pub to_text_tycons: Option<rustc_hash::FxHashSet<TyConId>>,
 }
 
 impl InferCtx {
@@ -313,7 +324,40 @@ impl InferCtx {
             anon_records: AnonRecordTable::default(),
             deferred_constraints: Vec::new(),
             dict_resolution_accum: rustc_hash::FxHashMap::default(),
+            to_text_tycons: None,
         }
+    }
+
+    /// Populate the `ToText` instance set from the workspace instance registry.
+    ///
+    /// Called by the SCC pass before per-body inference so that
+    /// interpolation-hole type-checking can query the set with O(1) membership
+    /// tests. Must be called with the same `InstanceEnv` that will remain
+    /// valid for the lifetime of this context.
+    pub fn set_to_text_instances(&mut self, env: &crate::class_env::InstanceEnv) {
+        use ridge_types::TOTEXT_CLASS;
+        let set: rustc_hash::FxHashSet<TyConId> = env
+            .instances
+            .keys()
+            .filter_map(|&(class, tycon)| {
+                if class == TOTEXT_CLASS {
+                    Some(tycon)
+                } else {
+                    None
+                }
+            })
+            .collect();
+        self.to_text_tycons = Some(set);
+    }
+
+    /// Returns `true` when `tycon_id` has a registered `ToText` instance.
+    ///
+    /// When the set is not populated (unit-test scaffolding without the full
+    /// pipeline), returns `None` so callers can fall back to the built-in
+    /// closed set.
+    #[must_use]
+    pub fn has_to_text(&self, tycon_id: TyConId) -> Option<bool> {
+        self.to_text_tycons.as_ref().map(|s| s.contains(&tycon_id))
     }
 
     /// Write back the shallow-resolved type for an expression position to

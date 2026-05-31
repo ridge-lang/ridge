@@ -1,0 +1,9 @@
+-- expect: T034
+-- T034 ToTextConflict: a type has both a pub fn toText (auto-promoted) and
+-- an explicit instance ToText declaration for the same type.
+type Color = Red | Green | Blue
+
+pub fn toText (c: Color) -> Text = "red"
+
+instance ToText Color =
+    toText (c: Color) -> Text = "Color"

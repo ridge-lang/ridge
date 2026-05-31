@@ -237,17 +237,17 @@ fn wrap_to_text(ctx: &mut LowerCtx<'_>, inner: IrExpr, ty: Option<Type>, span: S
             }
         }
 
-        // ── User-defined Type::Con — naming-convention ToText lookup ──────────
-        // When the inner type is a user-defined TyCon (record / union / alias /
-        // actor) whose owning module exports a `pub fn toText`, the
-        // interpolation hole dispatches to that function. The convention
-        // requires `pub fn toText (x: T) -> Text` declared in the same module
-        // that declares `T`. This is the only "typeclass" mechanism in 0.2.x
-        // and is opt-in by naming: no `impl ToText for T` syntax, no global
-        // dispatch table. If the user type's module does not export a matching
-        // `toText`, we fall to the L007 path below.
+        // ── User-defined Type::Con — ToText instance registry lookup ─────────
+        // When the inner type is a user-defined TyCon, dispatch through the
+        // workspace instance registry. The registry is populated during the
+        // collect pass for explicit `instance ToText T` declarations and for
+        // auto-promoted `pub fn toText (x: T) -> Text` declarations. This
+        // O(1) lookup replaces the old AST scan and fixes the three limitations
+        // of that approach: it works for types without a `def_module_raw` (e.g.
+        // stdlib/builtin types), in unit-test contexts where the workspace is
+        // absent (falls through to L007 gracefully), and at O(1) cost per site.
         Some(Type::Con(tycon_id, _)) => {
-            if let Some(call) = try_user_to_text(ctx, &inner, tycon_id, span) {
+            if let Some(call) = try_instance_to_text(ctx, &inner, tycon_id, span) {
                 call
             } else {
                 ctx.errors.push(LowerError::ToTextLowering { span });
@@ -265,42 +265,36 @@ fn wrap_to_text(ctx: &mut LowerCtx<'_>, inner: IrExpr, ty: Option<Type>, span: S
     }
 }
 
-/// Try to dispatch a user-defined `toText` for `tycon_id`.
+/// Try to dispatch `toText` for `tycon_id` through the workspace instance
+/// registry.
 ///
-/// Returns `Some(Call)` when the type's owning module exports a public
-/// function literally named `toText`; the synthesized call uses
-/// `SymbolRef::External` with the owning module's `ModuleId`. Returns `None`
-/// when the type has no recorded owning module (built-in / stdlib without
-/// `def_module_raw`), when the workspace is unavailable (unit tests that bypass
-/// the pipeline), or when the owning module does not export `toText`. The
-/// caller is responsible for emitting `L007` on the `None` branch.
-fn try_user_to_text(
+/// Returns `Some(Call)` when the instance registry contains a `ToText` entry
+/// for `tycon_id` and the owning module's `toText` function can be referenced.
+/// Returns `None` when the registry is unavailable (unit tests without the
+/// full pipeline) or when no `ToText` instance is registered for the type.
+/// The caller is responsible for emitting `L007` on the `None` branch.
+///
+/// This is an O(1) lookup — it replaces the previous approach of scanning
+/// the owning module's AST for a `pub fn toText` declaration on every
+/// interpolation site.
+fn try_instance_to_text(
     ctx: &mut LowerCtx<'_>,
     inner: &IrExpr,
     tycon_id: TyConId,
     span: Span,
 ) -> Option<IrExpr> {
-    let ws = ctx.workspace?;
-    let tycon = ws.tycons.get(tycon_id.0 as usize)?;
-    let module_raw = tycon.def_module_raw?;
-    let owning_module = ridge_resolve::ModuleId(module_raw);
+    // The instance registry is available when the full pipeline is wired.
+    let env = ctx.instance_env?;
 
-    // Look up the TypedModule for the owning module and scan its AST for a
-    // public `toText` declaration. The lookup is O(items) per dispatch; in
-    // practice modules have small item counts and interpolation sites are
-    // rare, so this stays well below the cost of any cache machinery.
-    let typed_module = ws.modules.get(module_raw as usize)?;
-    let has_to_text = typed_module.ast.items.iter().any(|item| {
-        matches!(
-            item,
-            ridge_ast::Item::Fn(decl)
-                if decl.name.text == "toText"
-                    && matches!(decl.vis, ridge_ast::Visibility::Pub)
-        )
-    });
-    if !has_to_text {
-        return None;
-    }
+    // O(1) instance lookup by (ToText, TyConId).
+    let inst = env.get((TOTEXT_CLASS, tycon_id))?;
+
+    // Determine the owning module: the instance's def_module carries the
+    // module that originally declared the `pub fn toText` (or the explicit
+    // `instance ToText T` declaration). For prelude instances `def_module`
+    // is `None`; those are handled by the closed-set arms above.
+    let module_raw = inst.def_module?;
+    let owning_module = ridge_resolve::ModuleId(module_raw);
 
     let callee_id = ctx.fresh_id(None);
     let call_id = ctx.fresh_id(None);

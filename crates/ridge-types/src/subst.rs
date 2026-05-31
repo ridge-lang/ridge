@@ -152,6 +152,7 @@ impl Subst {
             vars: scheme.vars.clone(),
             cap_vars: scheme.cap_vars.clone(),
             ty: restricted.apply_to_ty(&scheme.ty),
+            constraints: scheme.constraints.clone(),
         }
     }
 }
@@ -287,6 +288,7 @@ mod tests {
                 ret: Box::new(Type::Con(cid(1), vec![])),
                 caps: CapRow::Concrete(CapabilitySet::PURE),
             },
+            constraints: vec![],
         };
         let s = Subst::singleton(vid(0), Type::Con(cid(99), vec![]));
         let result = s.apply_to_scheme(&scheme);

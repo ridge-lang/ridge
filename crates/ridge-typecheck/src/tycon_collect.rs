@@ -755,6 +755,7 @@ fn bind_constructor_schemes(
             vars: param_vids.clone(),
             cap_vars: vec![],
             ty: fn_ty,
+            constraints: vec![],
         };
         ctx.env.bind(name, scheme);
     }

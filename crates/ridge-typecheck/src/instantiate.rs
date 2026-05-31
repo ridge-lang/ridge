@@ -133,6 +133,7 @@ pub fn generalise_with_env(
         vars,
         cap_vars,
         ty: ty_resolved,
+        constraints: vec![],
     }
 }
 
@@ -211,6 +212,7 @@ mod tests {
             vars: vec![a],
             cap_vars: vec![],
             ty: Type::Var(a),
+            constraints: vec![],
         };
         let result = instantiate(&mut ctx, &scheme);
         // Should be a Var (the fresh one), not TyVid(0) itself (which is a scheme
@@ -234,6 +236,7 @@ mod tests {
                 ret: Box::new(Type::Var(a)),
                 caps: CapRow::Concrete(CapabilitySet::PURE),
             },
+            constraints: vec![],
         };
 
         let t1 = instantiate(&mut ctx, &scheme);
@@ -281,6 +284,7 @@ mod tests {
             vars: vec![a, b],
             cap_vars: vec![],
             ty: Type::Tuple(vec![Type::Var(a), Type::Var(b)]),
+            constraints: vec![],
         };
         let result = instantiate(&mut ctx, &scheme);
         let (fv_a, fv_b) = match result {
@@ -313,6 +317,7 @@ mod tests {
                 ret: Box::new(Type::Var(a)),
                 caps: CapRow::Var(c),
             },
+            constraints: vec![],
         };
         let result = instantiate(&mut ctx, &scheme);
         match result {

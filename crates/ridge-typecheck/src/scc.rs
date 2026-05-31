@@ -883,6 +883,7 @@ mod tests {
             vars: vec![], // NOT generalised
             cap_vars: vec![],
             ty: Type::Var(unbound),
+            constraints: vec![],
         };
         ctx.env.bind("x".to_string(), scheme);
 

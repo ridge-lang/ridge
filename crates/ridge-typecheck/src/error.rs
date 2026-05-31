@@ -378,6 +378,90 @@ pub enum TypeError {
         span: Span,
     },
 
+    // ── T031 ─────────────────────────────────────────────────────────────────
+    /// An `instance C T` is declared outside both the module that defines `C`
+    /// and the module that defines `T` (orphan-instance rule).
+    ///
+    /// The orphan rule is the coherence property that prevents a third-party
+    /// module from hijacking security-critical class instances.
+    OrphanInstance {
+        /// Display name of the class.
+        class: String,
+        /// Display name of the type.
+        ty: String,
+        /// Module that contains the violating instance declaration.
+        instance_module: String,
+        /// Source span of the `instance` keyword.
+        span: Span,
+    },
+
+    // ── T032 ─────────────────────────────────────────────────────────────────
+    /// A second `instance C T` is declared for the same `(C, T)` pair.
+    ///
+    /// Only one instance per `(class, type)` pair is allowed (Haskell-98
+    /// coherence). The single-value-per-key `InstanceEnv` structurally enforces
+    /// this: a duplicate insert is a hard error, never a silent override.
+    OverlappingInstance {
+        /// Display name of the class.
+        class: String,
+        /// Display name of the type.
+        ty: String,
+        /// Span of the first (existing) instance declaration.
+        first_span: Span,
+        /// Span of the second (conflicting) instance declaration.
+        second_span: Span,
+    },
+
+    // ── T033 ─────────────────────────────────────────────────────────────────
+    /// `instance C T` is declared but a required superclass instance is absent.
+    ///
+    /// For example, `instance Ord T` requires `instance Eq T` because `Ord`
+    /// declares `Eq` as a superclass. The check walks the superclass DAG
+    /// transitively; the DAG is acyclic by construction (T035 is reported
+    /// earlier if a cycle is detected).
+    MissingSuperclassInstance {
+        /// Display name of the class being instantiated.
+        class: String,
+        /// Display name of the type.
+        ty: String,
+        /// Display name of the missing superclass.
+        superclass: String,
+        /// Source span of the `instance` declaration that triggered the check.
+        span: Span,
+    },
+
+    // ── T034 ─────────────────────────────────────────────────────────────────
+    /// A type has both a `pub fn toText` (auto-promoted to a `ToText` instance)
+    /// and an explicit `instance ToText T` declaration.
+    ///
+    /// This is a **hard error** — not a warning — because allowing silent
+    /// override would mean two different `ToText` behaviours depending on the
+    /// collect order, which is a coherence violation.
+    // T034 RETIRED-SLOT: if this variant is removed, mark the code slot
+    // T034 as RESERVED in this file so the number is not reused.
+    ToTextConflict {
+        /// Display name of the type.
+        ty: String,
+        /// Span of the explicit `instance ToText T` declaration.
+        totext_span: Span,
+        /// Span of the `pub fn toText` declaration that was auto-promoted.
+        auto_promote_span: Span,
+    },
+
+    // ── T035 ─────────────────────────────────────────────────────────────────
+    /// The class hierarchy forms a cycle (e.g. `class A where B` and
+    /// `class B where A`).
+    ///
+    /// Detected during class collection, before any instance solving. A cycle
+    /// would make superclass propagation non-terminating; this check ensures
+    /// the class DAG is acyclic.
+    SuperclassCycle {
+        /// The class names forming the cycle, in cycle order.
+        cycle: Vec<String>,
+        /// Source span of the first class in the cycle.
+        span: Span,
+    },
+
     // ── T999 ─────────────────────────────────────────────────────────────────
     /// Internal type-checker invariant violation — should never reach users.
     ///
@@ -429,6 +513,11 @@ impl TypeError {
             Self::MailboxPolicyDropOldestNotShipped { .. } => "T027",
             Self::IncompleteRecordPattern { .. } => "T028",
             Self::InlineRecordTyVarField { .. } => "P029",
+            Self::OrphanInstance { .. } => "T031",
+            Self::OverlappingInstance { .. } => "T032",
+            Self::MissingSuperclassInstance { .. } => "T033",
+            Self::ToTextConflict { .. } => "T034",
+            Self::SuperclassCycle { .. } => "T035",
             Self::InternalTypeError { .. } => "T999",
         }
     }
@@ -799,5 +888,74 @@ mod tests {
     #[test]
     fn code_t999() {
         assert_eq!(t999().code(), "T999");
+    }
+
+    // ── T031–T035 helpers and code tests ─────────────────────────────────────
+
+    fn t031() -> TypeError {
+        TypeError::OrphanInstance {
+            class: "Eq".into(),
+            ty: "Logger".into(),
+            instance_module: "app.Util".into(),
+            span: dummy_span(),
+        }
+    }
+
+    fn t032() -> TypeError {
+        TypeError::OverlappingInstance {
+            class: "ToText".into(),
+            ty: "Color".into(),
+            first_span: dummy_span(),
+            second_span: dummy_span(),
+        }
+    }
+
+    fn t033() -> TypeError {
+        TypeError::MissingSuperclassInstance {
+            class: "Ord".into(),
+            ty: "Color".into(),
+            superclass: "Eq".into(),
+            span: dummy_span(),
+        }
+    }
+
+    fn t034() -> TypeError {
+        TypeError::ToTextConflict {
+            ty: "User".into(),
+            totext_span: dummy_span(),
+            auto_promote_span: dummy_span(),
+        }
+    }
+
+    fn t035() -> TypeError {
+        TypeError::SuperclassCycle {
+            cycle: vec!["A".into(), "B".into()],
+            span: dummy_span(),
+        }
+    }
+
+    #[test]
+    fn code_t031() {
+        assert_eq!(t031().code(), "T031");
+    }
+
+    #[test]
+    fn code_t032() {
+        assert_eq!(t032().code(), "T032");
+    }
+
+    #[test]
+    fn code_t033() {
+        assert_eq!(t033().code(), "T033");
+    }
+
+    #[test]
+    fn code_t034() {
+        assert_eq!(t034().code(), "T034");
+    }
+
+    #[test]
+    fn code_t035() {
+        assert_eq!(t035().code(), "T035");
     }
 }

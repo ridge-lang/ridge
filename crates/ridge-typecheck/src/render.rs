@@ -391,6 +391,57 @@ impl fmt::Display for TypeError {
                 )
             }
 
+            // ── T031 ──────────────────────────────────────────────────────────
+            Self::OrphanInstance {
+                class,
+                ty,
+                instance_module,
+                ..
+            } => {
+                write!(
+                    f,
+                    "T031: orphan instance\n  `instance {class} {ty}` must be defined in the module that declares `{class}` or the module that declares `{ty}`; found in `{instance_module}`\n  hint: move the instance to the class's module or the type's module"
+                )
+            }
+
+            // ── T032 ──────────────────────────────────────────────────────────
+            Self::OverlappingInstance { class, ty, .. } => {
+                write!(
+                    f,
+                    "T032: overlapping instance\n  `instance {class} {ty}` is already defined; only one instance per class/type pair is allowed\n  hint: remove the duplicate instance"
+                )
+            }
+
+            // ── T033 ──────────────────────────────────────────────────────────
+            Self::MissingSuperclassInstance {
+                class,
+                ty,
+                superclass,
+                ..
+            } => {
+                write!(
+                    f,
+                    "T033: missing superclass instance\n  `{class} {ty}` requires `{superclass} {ty}` but no such instance exists\n  hint: add `instance {superclass} {ty}` or add `{superclass}` to the `deriving` list"
+                )
+            }
+
+            // ── T034 ──────────────────────────────────────────────────────────
+            Self::ToTextConflict { ty, .. } => {
+                write!(
+                    f,
+                    "T034: conflicting ToText instances\n  `{ty}` already has a ToText instance auto-derived from its `pub fn toText`; remove one (either the `pub fn toText` function or the explicit `instance ToText {ty}`)"
+                )
+            }
+
+            // ── T035 ──────────────────────────────────────────────────────────
+            Self::SuperclassCycle { cycle, .. } => {
+                write!(
+                    f,
+                    "T035: superclass cycle detected\n  cycle: {}\n  hint: class hierarchies must be acyclic; remove one of the circular superclass requirements",
+                    cycle.join(" -> ")
+                )
+            }
+
             // ── T999 ──────────────────────────────────────────────────────────
             Self::InternalTypeError { detail, .. } => {
                 write!(f, "T999: internal type error\n  {detail}\n  This is a compiler bug. Please report it.")
@@ -441,7 +492,16 @@ impl HasErrorCode for TypeError {
             | Self::MailboxPolicyDropOldestNotShipped { span, .. }
             | Self::IncompleteRecordPattern { span, .. }
             | Self::InlineRecordTyVarField { span, .. }
+            | Self::OrphanInstance { span, .. }
+            | Self::OverlappingInstance {
+                second_span: span, ..
+            }
+            | Self::MissingSuperclassInstance { span, .. }
+            | Self::SuperclassCycle { span, .. }
             | Self::InternalTypeError { span, .. } => *span,
+
+            // T034: uses `totext_span` (the explicit instance) as the primary span.
+            Self::ToTextConflict { totext_span, .. } => *totext_span,
 
             // T013: uses `recursive_call_span` as the primary span.
             Self::PolymorphicRecursion {

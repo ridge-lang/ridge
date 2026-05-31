@@ -155,13 +155,19 @@ const fn poly(vars: Vec<TyVid>, ty: Type) -> Scheme {
         vars,
         cap_vars: vec![],
         ty,
+        constraints: vec![],
     }
 }
 
 /// Builds a polymorphic `Scheme` with cap vars (for HOFs).
 #[inline]
 const fn poly_cap(vars: Vec<TyVid>, cap_vars: Vec<CapVid>, ty: Type) -> Scheme {
-    Scheme { vars, cap_vars, ty }
+    Scheme {
+        vars,
+        cap_vars,
+        ty,
+        constraints: vec![],
+    }
 }
 
 /// Builds a monomorphic scheme.
@@ -171,6 +177,7 @@ const fn mono(ty: Type) -> Scheme {
         vars: vec![],
         cap_vars: vec![],
         ty,
+        constraints: vec![],
     }
 }
 
@@ -1205,6 +1212,7 @@ pub fn stdlib_signature(module: StdlibModuleId, name: &str, b: &BuiltinTyCons) -
                     ty_option(b, Type::Var(A)),
                     rnd_caps,
                 ),
+                constraints: vec![],
             })
         }
         (STD_RANDOM, "seed") => {

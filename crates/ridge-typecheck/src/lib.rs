@@ -20,6 +20,8 @@
 pub mod actor;
 pub mod caps_check;
 pub mod caps_infer;
+pub mod class_env;
+pub mod collect;
 pub mod ctx;
 pub mod error;
 pub mod exhaustiveness;
@@ -37,6 +39,10 @@ pub mod tycon_collect;
 pub mod unify;
 pub mod unions;
 
+pub use class_env::{
+    register_prelude_classes, ClassTable, InstanceEnv, InstanceInfo, InstanceOrigin,
+};
+pub use collect::{collect_workspace, CollectResult};
 pub use error::TypeError;
 pub use render::{emit_internal, emit_internal_strict};
 pub use ridge_resolve::Severity;
@@ -348,6 +354,7 @@ fn typecheck_actor_bodies(
         vars: vec![],
         cap_vars: vec![],
         ty,
+        constraints: vec![],
     };
 
     for item in &ast.items {
@@ -456,6 +463,7 @@ fn typecheck_module_inner(
                 vars: vec![],
                 cap_vars: vec![],
                 ty,
+                constraints: vec![],
             };
             ctx.env.bind(c.name.text.clone(), scheme);
         }

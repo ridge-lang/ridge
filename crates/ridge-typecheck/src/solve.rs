@@ -162,7 +162,7 @@ pub fn solve_constraints(
             class_table,
             env_snap_ty,
             scc_span,
-            c,
+            &c,
             &resolved,
             &mut work,
             &mut visited,
@@ -185,7 +185,7 @@ fn dispatch_constraint(
     class_table: &ClassTable,
     env_snap_ty: &FxHashSet<TyVid>,
     scc_span: Span,
-    c: Constraint,
+    c: &Constraint,
     resolved: &Type,
     work: &mut Vec<Constraint>,
     visited: &mut FxHashSet<(ClassId, TyConId)>,
@@ -201,7 +201,7 @@ fn dispatch_constraint(
                 instance_env,
                 class_table,
                 scc_span,
-                &c,
+                c,
                 tyconid,
                 work,
                 visited,
@@ -227,15 +227,24 @@ fn dispatch_constraint(
             } else {
                 // Case (b): the variable will be generalised by this SCC.
                 // Retain the constraint so the caller can attach it to the
-                // resulting scheme.
-                if !retained.iter().any(|r| r == &c) {
-                    retained.push(c.clone());
+                // resulting scheme. Use the resolved canonical TyVid (`v`)
+                // rather than the original `c.ty` so that `write_back_schemes`
+                // can match the constraint against `scheme.vars` (which also
+                // holds resolved vars). Without this, constraints introduced
+                // through instantiation carry an aliased TyVid that diverges
+                // from the generalised vars even though they represent the
+                // same unification root.
+                let resolved_c = Constraint {
+                    class: c.class,
+                    ty: v,
+                };
+                if !retained.iter().any(|r| r == &resolved_c) {
+                    retained.push(resolved_c.clone());
                 }
-                // Record a Forward plan: callers of this function must
-                // thread their own incoming dict parameter for this class.
+                // Record a Forward plan keyed by the resolved TyVid.
                 dict_resolution
-                    .entry((c.class, c.ty))
-                    .or_insert(DictPlan::Forward(c));
+                    .entry((c.class, v))
+                    .or_insert(DictPlan::Forward(resolved_c));
             }
         }
 

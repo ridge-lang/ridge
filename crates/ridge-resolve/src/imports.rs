@@ -179,6 +179,18 @@ pub enum Binding {
         /// The field name.
         field: String,
     },
+    /// A class method referenced by its bare name.
+    ///
+    /// Produced when a bare identifier resolves to a class method rather than a
+    /// local binding or module-level symbol. The lower pass projects the method
+    /// out of the appropriate dictionary (Static or Forward).
+    ClassMethod {
+        /// The class that owns this method.
+        class_name: String,
+        /// The method name.
+        method: String,
+    },
+
     /// Name resolution failed; a diagnostic has been emitted.
     Error,
 }

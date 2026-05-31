@@ -9,7 +9,7 @@
 //! Coherence is workspace-wide: an instance declared anywhere in the workspace
 //! participates in the global uniqueness requirement.
 
-use ridge_ast::Span;
+use ridge_ast::{Span, Type as AstType};
 use ridge_types::{ClassId, Constraint, TyConId, EQ_CLASS, ORD_CLASS, TOTEXT_CLASS};
 use rustc_hash::FxHashMap;
 
@@ -27,6 +27,23 @@ pub struct MethodSig {
     pub name: String,
     /// Number of parameters (arity).
     pub arity: usize,
+    /// AST parameter types in declaration order, as written in the class body.
+    ///
+    /// Populated during the collect pass (pass 2) from the parsed `MethodSig`.
+    /// Empty for prelude-registered methods that have no source AST.
+    /// Consumers convert these to `ridge_types::Type` at inference time by
+    /// substituting the class type variable for a fresh `TyVid`.
+    pub ast_param_types: Vec<AstType>,
+    /// AST return type as written in the class body.
+    ///
+    /// `None` for prelude-registered methods that have no source AST.
+    pub ast_ret_type: Option<AstType>,
+    /// The name of the class type variable (e.g. `"a"` in `class Describe a`).
+    ///
+    /// Used when converting `ast_param_types`/`ast_ret_type` to ridge types:
+    /// every occurrence of this variable name is mapped to the freshly allocated
+    /// `TyVid` representing the class type argument at the call site.
+    pub class_ty_var: String,
 }
 
 // ── ClassInfo ────────────────────────────────────────────────────────────────
@@ -309,6 +326,9 @@ pub fn register_prelude_classes(ct: &mut ClassTable) {
             method_sigs: vec![MethodSig {
                 name: "toText".to_string(),
                 arity: 1,
+                ast_param_types: vec![],
+                ast_ret_type: None,
+                class_ty_var: String::new(),
             }],
             superclasses: vec![],
             def_module: None, // prelude — no module id
@@ -323,6 +343,9 @@ pub fn register_prelude_classes(ct: &mut ClassTable) {
             method_sigs: vec![MethodSig {
                 name: "eq".to_string(),
                 arity: 2,
+                ast_param_types: vec![],
+                ast_ret_type: None,
+                class_ty_var: String::new(),
             }],
             superclasses: vec![],
             def_module: None,
@@ -337,6 +360,9 @@ pub fn register_prelude_classes(ct: &mut ClassTable) {
             method_sigs: vec![MethodSig {
                 name: "compare".to_string(),
                 arity: 2,
+                ast_param_types: vec![],
+                ast_ret_type: None,
+                class_ty_var: String::new(),
             }],
             superclasses: vec![EQ_CLASS],
             def_module: None,

@@ -553,6 +553,80 @@ impl<'ast> Visit<'ast> for TopLevelCollector {
     }
 }
 
+// ── ClassMethodIndex ──────────────────────────────────────────────────────────
+
+/// Workspace-scoped index mapping bare method names to the class that declares them.
+///
+/// Built from the AST `ClassDecl` items across all modules. The resolver uses this
+/// to stamp [`crate::imports::Binding::ClassMethod`] on bare idents that match a
+/// known class method, enabling method calls without explicit qualification.
+///
+/// When two distinct classes declare the same method name the index stores the
+/// first class's name and records the collision so `R024` can be emitted at the
+/// use site.
+#[derive(Debug, Default, Clone)]
+pub struct ClassMethodIndex {
+    /// Method name → `(class_name, arity)`.
+    ///
+    /// When a collision is detected the first-seen entry is retained and the
+    /// name is also inserted into `collisions` so the walker knows to emit R024.
+    entries: rustc_hash::FxHashMap<String, (String, usize)>,
+    /// Method names that appear in more than one class.
+    ///
+    /// Value is `(first_class, second_class)` — the two class names involved.
+    pub collisions: rustc_hash::FxHashMap<String, (String, String)>,
+}
+
+impl ClassMethodIndex {
+    /// Build a `ClassMethodIndex` by scanning every module's top-level items.
+    ///
+    /// Iterates `(ast)` pairs in source order. Handles both user-declared classes
+    /// and the prelude class names (`ToText`, `Eq`, `Ord`) that are parsed from
+    /// source rather than from a registry.
+    #[must_use]
+    pub fn build(modules: &[&ridge_ast::Module]) -> Self {
+        let mut index = Self::default();
+        for ast in modules {
+            for item in &ast.items {
+                if let ridge_ast::Item::ClassDecl(decl) = item {
+                    let class_name = &decl.name.text;
+                    for method in &decl.methods {
+                        let method_name = method.name.text.clone();
+                        let arity = method.params.len();
+                        if let Some((existing_class, _)) = index.entries.get(&method_name) {
+                            // Collision — two distinct classes declare the same name.
+                            if existing_class != class_name {
+                                let first = existing_class.clone();
+                                index
+                                    .collisions
+                                    .entry(method_name)
+                                    .or_insert_with(|| (first, class_name.clone()));
+                            }
+                        } else {
+                            index
+                                .entries
+                                .insert(method_name, (class_name.clone(), arity));
+                        }
+                    }
+                }
+            }
+        }
+        index
+    }
+
+    /// Look up a method by name.
+    ///
+    /// Returns `Some((class_name, arity))` when the name belongs to exactly one
+    /// class, `None` when the name is unknown.  Use [`ClassMethodIndex::collisions`]
+    /// separately to detect the ambiguous-name case.
+    #[must_use]
+    pub fn lookup(&self, name: &str) -> Option<(&str, usize)> {
+        self.entries
+            .get(name)
+            .map(|(class, arity)| (class.as_str(), *arity))
+    }
+}
+
 // ── Tests ─────────────────────────────────────────────────────────────────────
 
 #[cfg(test)]

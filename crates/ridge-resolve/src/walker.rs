@@ -34,7 +34,7 @@ use crate::{
     node_id::{NodeIdMap, NodeKind},
     qualified,
     scope::{LocalKind, ScopeKind, ScopeStack},
-    symbol::{SymbolKind, SymbolTable},
+    symbol::{ClassMethodIndex, SymbolKind, SymbolTable},
     ModuleId,
 };
 
@@ -56,6 +56,10 @@ use crate::{
 /// - `symbol_tables` — one per module, indexed by `ModuleId.0`.  Used for
 ///   module-symbol lookups and qualified-name target resolution.
 /// - `module_imports` — import resolutions for this module (from T7).
+/// - `class_method_index` — optional workspace-scoped index of class method names.
+///   When provided, bare idents that miss all other lookups are checked against
+///   the index before emitting R010. Pass `None` in unit tests that do not set
+///   up a workspace.
 #[must_use]
 pub fn resolve_module_uses(
     module_id: ModuleId,
@@ -63,6 +67,7 @@ pub fn resolve_module_uses(
     node_id_map: &NodeIdMap,
     symbol_tables: &[SymbolTable],
     module_imports: &[ImportResolution],
+    class_method_index: Option<&ClassMethodIndex>,
 ) -> (Vec<Option<Binding>>, Vec<ResolveError>) {
     // Allocate one slot per NodeId (None = "not yet stamped").
     let mut bindings: Vec<Option<Binding>> = vec![None; node_id_map.len()];
@@ -76,6 +81,7 @@ pub fn resolve_module_uses(
         my_table,
         all_symbol_tables: symbol_tables,
         module_imports,
+        class_method_index,
         bindings: &mut bindings,
         errors: &mut errors,
         scope: ScopeStack::default(),
@@ -100,6 +106,8 @@ struct ScopeWalker<'a> {
     all_symbol_tables: &'a [SymbolTable],
     /// Import resolutions for the current module.
     module_imports: &'a [ImportResolution],
+    /// Workspace-scoped class method index (optional — absent in unit tests).
+    class_method_index: Option<&'a ClassMethodIndex>,
     /// Output bindings side-table (indexed by NodeId.0).
     bindings: &'a mut Vec<Option<Binding>>,
     /// Accumulated errors.
@@ -128,11 +136,12 @@ impl ScopeWalker<'_> {
 
     /// Resolve an identifier at a use-site and stamp the binding.
     ///
-    /// Lookup order (plan §4.5):
+    /// Lookup order:
     /// 1. Local scope chain (innermost → outermost).
     /// 2. Module-level symbol table.
     /// 3. Import effective bindings.
-    /// 4. Miss → R010.
+    /// 4. Class method index (lowest precedence — locals and top-level fns shadow methods).
+    /// 5. Miss → R010.
     fn resolve_ident(&mut self, id: &Ident) {
         let name = &id.text;
         let span = id.span;
@@ -146,6 +155,8 @@ impl ScopeWalker<'_> {
             }
         } else if let Some(eb) = self.find_import_binding(name) {
             eb.binding.clone()
+        } else if let Some(binding) = self.resolve_class_method(name, span) {
+            binding
         } else {
             let suggestions = self.r010_suggestions(name);
             self.errors.push(ResolveError::UnresolvedIdent {
@@ -157,6 +168,34 @@ impl ScopeWalker<'_> {
         };
 
         self.stamp(span, NodeKind::Ident, binding);
+    }
+
+    /// Try to resolve `name` as a class method via the workspace method index.
+    ///
+    /// Returns `Some(Binding::ClassMethod { .. })` when the name belongs to exactly
+    /// one class. Emits `R024 AmbiguousMethodName` and returns `Some(Binding::Error)`
+    /// when two distinct classes declare the same name (caller must not also emit R010
+    /// in that case).  Returns `None` when the name is not a class method at all.
+    fn resolve_class_method(&mut self, name: &str, span: Span) -> Option<Binding> {
+        let index = self.class_method_index?;
+
+        // Check for an ambiguous collision first.
+        if let Some((first_class, second_class)) = index.collisions.get(name) {
+            self.errors.push(ResolveError::AmbiguousMethodName {
+                name: name.to_owned(),
+                first_class: first_class.clone(),
+                second_class: second_class.clone(),
+                span,
+            });
+            return Some(Binding::Error);
+        }
+
+        // Unambiguous method lookup.
+        let (class_name, _arity) = index.lookup(name)?;
+        Some(Binding::ClassMethod {
+            class_name: class_name.to_owned(),
+            method: name.to_owned(),
+        })
     }
 
     /// Resolve a qualified name `Head.tail...` and stamp the binding on the
@@ -989,8 +1028,14 @@ mod tests {
             .first()
             .map_or([].as_slice(), Vec::as_slice);
 
-        let (bindings, errors) =
-            resolve_module_uses(pm.id, &pm.ast, &node_id_map, &symbol_tables, module_imports);
+        let (bindings, errors) = resolve_module_uses(
+            pm.id,
+            &pm.ast,
+            &node_id_map,
+            &symbol_tables,
+            module_imports,
+            None,
+        );
 
         drop(td);
         (bindings, errors, import_result, node_id_map)
@@ -1003,7 +1048,8 @@ mod tests {
         let module_id = ModuleId(0);
         let (table, _) = collect_symbols(module_id, &m);
         let all_tables = vec![table];
-        let (bindings, errors) = resolve_module_uses(module_id, &m, &nid_map, &all_tables, &[]);
+        let (bindings, errors) =
+            resolve_module_uses(module_id, &m, &nid_map, &all_tables, &[], None);
         (bindings, errors, nid_map)
     }
 
@@ -1106,8 +1152,14 @@ mod tests {
             .map_or([].as_slice(), Vec::as_slice);
 
         let (nid_map, _) = assign_node_ids(&a_pm.ast);
-        let (bindings, errors) =
-            resolve_module_uses(a_pm.id, &a_pm.ast, &nid_map, &symbol_tables, a_imports);
+        let (bindings, errors) = resolve_module_uses(
+            a_pm.id,
+            &a_pm.ast,
+            &nid_map,
+            &symbol_tables,
+            a_imports,
+            None,
+        );
 
         assert!(errors.is_empty(), "A: unexpected errors: {errors:?}");
         let imported = count_binding(&bindings, |b| matches!(b, Binding::ImportedSymbol { .. }));
@@ -1851,6 +1903,150 @@ mod tests {
             suggestions.len() <= 3,
             "R010 suggestion list must cap at 3; got {} ({suggestions:?})",
             suggestions.len()
+        );
+    }
+
+    // ── Class method resolution tests ─────────────────────────────────────────
+
+    /// Helper: resolve a single-module workspace that contains a class declaration.
+    /// Passes the class method index so method names can be resolved as
+    /// `Binding::ClassMethod` rather than falling through to R010.
+    fn resolve_with_class_index(src: &str) -> (Vec<Option<Binding>>, Vec<ResolveError>, NodeIdMap) {
+        let td = TempDir::new().expect("tempdir");
+        write_file(td.path(), "ridge.toml", &workspace_toml(&["libs/*"]));
+        write_file(td.path(), "libs/proj/ridge.toml", &project_toml("proj"));
+        write_file(td.path(), "libs/proj/src/Main.ridge", src);
+
+        let disc = crate::discover_workspace(td.path());
+        let mut ws = disc.graph.expect("workspace");
+        let g = build_module_graph(&ws);
+
+        let symbol_tables: Vec<SymbolTable> = g
+            .modules
+            .iter()
+            .map(|pm| {
+                let (t, _) = collect_symbols(pm.id, &pm.ast);
+                t
+            })
+            .collect();
+
+        let import_result = resolve_imports(&mut ws, &g, &symbol_tables);
+        let pm = g.modules.first().expect("module 0");
+        let (nid_map, _) = assign_node_ids(&pm.ast);
+        let module_imports = import_result
+            .imports
+            .first()
+            .map_or([].as_slice(), Vec::as_slice);
+
+        // Build the class method index from all parsed modules.
+        let all_asts: Vec<&Module> = g.modules.iter().map(|pm| &*pm.ast).collect();
+        let cmi = crate::symbol::ClassMethodIndex::build(&all_asts);
+
+        let (bindings, errors) = resolve_module_uses(
+            pm.id,
+            &pm.ast,
+            &nid_map,
+            &symbol_tables,
+            module_imports,
+            Some(&cmi),
+        );
+
+        drop(td);
+        (bindings, errors, nid_map)
+    }
+
+    /// `describe Red` — where `describe` is a class method — must resolve to
+    /// `Binding::ClassMethod`, NOT to R010 `UnresolvedIdent`.
+    #[test]
+    fn class_method_bare_call_resolves_to_class_method_binding() {
+        let src = r"
+class Describe a =
+    describe (x: a) -> Text
+
+type Color = Red | Green | Blue
+
+fn main = describe Red
+";
+        let (bindings, errors, _nid) = resolve_with_class_index(src);
+
+        // Must not produce R010 for `describe`.
+        let r010_count = count_errors(
+            &errors,
+            |e| matches!(e, ResolveError::UnresolvedIdent { name, .. } if name == "describe"),
+        );
+        assert_eq!(
+            r010_count, 0,
+            "describe must not produce R010; errors: {errors:?}"
+        );
+
+        // Must produce at least one ClassMethod binding for `describe`.
+        let class_method_count = count_binding(
+            &bindings,
+            |b| matches!(b, Binding::ClassMethod { method, .. } if method == "describe"),
+        );
+        assert!(
+            class_method_count >= 1,
+            "expected Binding::ClassMethod for `describe`; bindings: {bindings:?}"
+        );
+    }
+
+    /// A local fn named like a class method must shadow the method (existing
+    /// programs stay green).
+    #[test]
+    fn local_fn_shadows_class_method() {
+        let src = "
+class Describe a =
+    describe (x: a) -> Text
+
+fn describe x = \"shadowed\"
+
+fn main = describe 42
+";
+        let (bindings, errors, _nid) = resolve_with_class_index(src);
+
+        // No R010 — `describe` resolves to the local fn.
+        let r010 = count_errors(
+            &errors,
+            |e| matches!(e, ResolveError::UnresolvedIdent { name, .. } if name == "describe"),
+        );
+        assert_eq!(
+            r010, 0,
+            "local fn must shadow class method, no R010; errors: {errors:?}"
+        );
+
+        // The binding for `describe` in `main` must be ModuleSymbol (the local fn),
+        // NOT ClassMethod.
+        let class_method_count = count_binding(
+            &bindings,
+            |b| matches!(b, Binding::ClassMethod { method, .. } if method == "describe"),
+        );
+        assert_eq!(
+            class_method_count, 0,
+            "local fn must shadow class method; no ClassMethod binding expected"
+        );
+    }
+
+    /// Two distinct classes declaring the same method name must produce R024.
+    #[test]
+    fn two_classes_same_method_name_r024() {
+        let src = r"
+class Describe a =
+    describe (x: a) -> Text
+
+class Show a =
+    describe (x: a) -> Text
+
+fn main = describe 42
+";
+        let (_, errors, _) = resolve_with_class_index(src);
+
+        let r024_count = count_errors(
+            &errors,
+            |e| matches!(e, ResolveError::AmbiguousMethodName { name, .. } if name == "describe"),
+        );
+        assert!(
+            r024_count >= 1,
+            "expected R024 for ambiguous method `describe`; errors: {errors:?}"
         );
     }
 }

@@ -1,6 +1,6 @@
 # Ridge — Language Specification & Development Roadmap
 
-**Version:** 0.2.12
+**Version:** 0.2.13
 **Author:** The Ridge Language Authors
 **Last updated:** 2026-05-29
 
@@ -20,6 +20,7 @@
 3. [Language Overview](#3-language-overview)
 4. [Formal Syntax Reference](#4-formal-syntax-reference)
 5. [Type System](#5-type-system)
+   - [5.6 Typeclasses](#56-typeclasses)
 6. [Capabilities System](#6-capabilities-system)
 7. [Semantic Model](#7-semantic-model)
 8. [Project & Workspace Model](#8-project--workspace-model)
@@ -457,7 +458,7 @@ Io.println $"User ${user.name} has ${user.age} years"
 Io.println $"Total: ${items |> List.map (.price) |> List.sum}"
 ```
 
-In 0.1.0, interpolation accepts a **closed set of built-in types**: `Int`, `Float`, `Bool`, `Text`, `Timestamp`. User-defined types must be converted explicitly (e.g., `$"user=${User.toText u}"`). In 0.2.0 this becomes an open `ToText` typeclass. See D038.
+String interpolation dispatches through the `ToText` class (§5.6). Built-in types (`Int`, `Float`, `Bool`, `Text`, `Timestamp`) have prelude instances. User-defined types become interpolatable by adding `deriving (ToText)` to the type declaration or by writing an explicit `instance ToText T`. See §5.6 and D038.
 
 ### 3.11. Modules and imports
 
@@ -763,8 +764,8 @@ Ridge's type system is based on **Hindley-Milner with extensions**:
 - Parametric polymorphism with let-generalization.
 - **Capability inference** alongside type inference (see §5.3).
 
-**Not in 0.1.0 but syntactically reserved:**
-- Type classes / traits with constraints (`where t is Comparable`).
+**Not in 0.1.0 but added in later releases:**
+- Type classes with constraints — shipped in 0.2.13 (see §5.6).
 - Row polymorphism for records.
 - Higher-kinded types.
 
@@ -822,7 +823,177 @@ Ridge has **no implicit subtyping**. No `Dog <: Animal`. This keeps inference de
 
 1. Parametric polymorphism (generics).
 2. Union types (closed polymorphism).
-3. Typeclasses (open polymorphism, post-0.1.0).
+3. Typeclasses (open polymorphism — see §5.6).
+
+### 5.6. Typeclasses
+
+Ridge 0.2.13 adds typeclasses: named interfaces that a type can satisfy, with coherence guarantees enforced by the compiler. Dispatch is dictionary-passing — no runtime type tags, no reflection, near-zero overhead at monomorphic call sites.
+
+#### 5.6.1. Class declarations
+
+A class declaration names an interface and lists bare method signatures. The `class` keyword is followed by the class name, a single type variable, an optional superclass list, and `=`:
+
+```ridge
+class ToText a =
+    toText (x: a) -> Text
+
+class Eq a =
+    eq (x: a) (y: a) -> Bool
+
+class Ord a where Eq a =
+    compare (x: a) (y: a) -> Ordering
+```
+
+Method signatures inside a class body are **bare**: no `fn` keyword, no body. A class body is a list of contracts. Default method bodies are not supported in 0.2.13.
+
+Superclasses are declared with a `where` clause between the type variable and `=`. `class Ord a where Eq a` means every `Ord` instance requires a corresponding `Eq` instance for the same type. An empty class body is rejected (`P030 MalformedClassDecl`).
+
+```ebnf
+ClassDecl    ::= "class" UpperIdent TyVar [ "where" SuperList ] "=" NEWLINE
+                 INDENT MethodSig+ DEDENT
+SuperList    ::= ClassConstraint { "," ClassConstraint }
+ClassConstraint ::= UpperIdent TyVar
+MethodSig    ::= LowerIdent ParamList "->" Type NEWLINE
+```
+
+#### 5.6.2. Instance declarations
+
+An instance declaration provides method bodies for a specific type:
+
+```ridge
+instance ToText Color =
+    toText (c: Color) -> Text = match c
+        Red   -> "red"
+        Green -> "green"
+        Blue  -> "blue"
+```
+
+Each method definition has the same form as a top-level `fn` body — `name (params) -> RetType = body` — without the `fn` keyword. An instance must define every method declared by the class. An empty instance body is rejected (`P031 MalformedInstanceDecl`).
+
+```ebnf
+InstanceDecl ::= "instance" UpperIdent Type "=" NEWLINE
+                 INDENT MethodDef+ DEDENT
+MethodDef    ::= LowerIdent ParamList "->" Type "=" Expr NEWLINE
+```
+
+Only single-parameter classes are supported in 0.2.13.
+
+#### 5.6.3. Constraints on function signatures
+
+A function can require class instances for its type variables using a `where` clause after the return type:
+
+```ridge
+fn describe (x: a) -> Text where ToText a =
+    $"value: ${x}"
+
+fn sortPair (a: a) (b: a) -> (a, a) where Ord a =
+    if compare a b == Less then (a, b) else (b, a)
+```
+
+Multiple constraints are comma-separated: `where Ord a, Eq a`. At every call site, the compiler checks that the concrete type has the required instances; if not, it emits `T029 NoInstance`.
+
+```ebnf
+WhereClause ::= "where" ClassConstraint { "," ClassConstraint }
+```
+
+The `where` clause is appended to the function signature between the return type and `=`.
+
+#### 5.6.4. Deriving
+
+The `deriving` clause on a type declaration generates instances automatically. The clause is written after the type body:
+
+```ridge
+type Color = Red | Green | Blue deriving (Eq, ToText, Ord)
+
+type Point = { x: Int, y: Int } deriving (Eq, Ord)
+```
+
+The derivable classes in 0.2.13 are `Eq`, `ToText`, and `Ord`. `Show` is accepted as an alias for `ToText` in `deriving` (and elsewhere); both refer to the same class.
+
+```ebnf
+Deriving ::= "deriving" "(" UpperIdent { "," UpperIdent } ")"
+```
+
+**Derived `Eq`** generates a structural equality check using BEAM `=:=`. For records (represented as Erlang maps) and unions (tagged tuples or bare atoms), BEAM structural equality is correct. No `Eq` instance exists for `Float` in the prelude — floating-point equality is a footgun. A type with a `Float` field is rejected when `Eq` is derived (`T029 NoInstance`).
+
+**Security note:** `=:=` is not constant-time. Do not derive `Eq` on types carrying secret data (tokens, password hashes, HMACs, session keys). Use `std.crypto.constantTimeEq` instead:
+
+```ridge
+import std.crypto as Crypto
+
+-- Compare two equal-length byte sequences in constant time.
+-- Both inputs must have the same length.
+let safe = Crypto.constantTimeEq tokenA tokenB
+```
+
+`constantTimeEq (a: Text) (b: Text) -> Bool` wraps `crypto:hash_equals/2` from the OTP `crypto` application and takes the same amount of time regardless of how many bytes match.
+
+**Derived `ToText`** generates a human-readable rendering. For record types, fields are rendered in declaration order:
+
+```
+Point { x = 3, y = 4 }
+```
+
+For union types, nullary constructors render as their name; constructors with payload render as `CtorName(field1, field2, ...)`:
+
+```
+Red
+Some(42)
+```
+
+Each field's rendering dispatches through the `ToText` instance for that field's type; if a field type has no `ToText` instance, the compiler emits `T029 NoInstance` at derive time.
+
+**Derived `Ord`** generates a `compare` method returning `Ordering`. For record types, fields are compared in declaration order; the first field that is not `Equal` determines the result. For union types, variants are compared by their declaration position first (`Red < Green < Blue`); if both values have the same constructor and it carries payload, payload fields are compared in order. `Ord` requires `Eq` for the same type (checked by coherence; missing → `T033 MissingSuperclassInstance`).
+
+#### 5.6.5. The `Ordering` type
+
+`Ordering` is a prelude type with three constructors, used as the return type of `compare`:
+
+```ridge
+pub type Ordering = Less | Equal | Greater
+```
+
+It has prelude `Eq`, `Ord`, and `ToText` instances. `Less`, `Equal`, and `Greater` are available without any import.
+
+#### 5.6.6. `ToText` and string interpolation
+
+`pub fn toText` functions are automatically promoted to `ToText` instances. Any top-level `pub fn toText (x: T) -> Text` in a module is treated exactly as if the user had written `instance ToText T`. This means existing code with hand-written `toText` functions continues to work without changes.
+
+If a type has both a `pub fn toText` and an explicit `instance ToText T`, the compiler emits `T034 ToTextConflict` and stops. Remove one or the other.
+
+`Show` is an alias for `ToText`. Writing `instance Show T` or `deriving (Show)` is identical to writing `instance ToText T` or `deriving (ToText)`.
+
+#### 5.6.7. Coherence
+
+The compiler enforces three coherence rules across the whole workspace:
+
+**One instance per (class, type) pair.** Declaring a second `instance C T` for the same class and type — whether explicit or via `deriving` — is a compile error (`T032 OverlappingInstance`).
+
+**Orphan rule.** An `instance C T` must be defined in the module that declares `C` or the module that declares `T`. An instance written elsewhere is an orphan and rejected (`T031 OrphanInstance`). This prevents any module from silently changing the behaviour of a security-critical class for a type it doesn't own.
+
+**Superclass requirement.** When an instance `C T` is declared or derived, every superclass of `C` must also have an instance for `T`. Missing → `T033 MissingSuperclassInstance`. The class hierarchy must be acyclic; a cycle is caught at class collection time (`T035 SuperclassCycle`).
+
+#### 5.6.8. Diagnostic codes
+
+| Code | Name | Trigger |
+|------|------|---------|
+| P030 | MalformedClassDecl | A `class` declaration is structurally invalid (empty body, `fn` keyword in signature, method body inside class, etc.) |
+| P031 | MalformedInstanceDecl | An `instance` declaration is structurally invalid (empty body, missing method body, etc.) |
+| T029 | NoInstance | A constrained call site has no instance for the required class, or `deriving` cannot produce one (e.g. `Float` field with `Eq`) |
+| T031 | OrphanInstance | Instance defined outside the class's module and the type's module |
+| T032 | OverlappingInstance | A second instance for the same (class, type) pair |
+| T033 | MissingSuperclassInstance | Instance declared but required superclass instance is absent |
+| T034 | ToTextConflict | Type has both a `pub fn toText` auto-instance and an explicit `instance ToText T` |
+| T035 | SuperclassCycle | The class hierarchy contains a cycle |
+
+#### 5.6.9. What is not yet supported
+
+The following are deferred to future releases:
+
+- Default method bodies in class declarations
+- Multi-parameter type classes
+- Functional dependencies
+- Newtype deriving
 
 ---
 

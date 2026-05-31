@@ -38,7 +38,7 @@
 
 use ridge_ast::{Body, Expr, FnDecl, Param, Span};
 use ridge_resolve::NodeKind;
-use ridge_types::{BuiltinTyCons, CapRow, CapVid, CapabilitySet, Scheme, TyVid, Type};
+use ridge_types::{BuiltinTyCons, CapRow, CapVid, CapabilitySet, Constraint, Scheme, TyVid, Type};
 use rustc_hash::{FxHashMap, FxHashSet};
 
 use crate::caps_check::caps_from_ast_slice;
@@ -302,6 +302,12 @@ pub fn tarjan_sccs(graph: &CallGraph) -> Vec<Vec<DeclId>> {
 /// against the pre-SCC env snapshot, writes the resulting scheme to
 /// `ctx.schemes_accum` (keyed by body `NodeId`), and re-binds the name in the
 /// env with the polymorphic scheme.
+///
+/// `retained_constraints` — constraints that the solver kept as polymorphic
+/// (case b). Each is filtered to only the `TyVid`s that the scheme actually
+/// generalises, then attached to `scheme.constraints`. This is the mechanism
+/// by which `fn describe (x: a) -> Text where ToText a` keeps its constraint
+/// in its generalised scheme.
 fn write_back_schemes(
     ctx: &mut InferCtx,
     scc: &[DeclId],
@@ -309,12 +315,22 @@ fn write_back_schemes(
     mut scc_fn_types: FxHashMap<DeclId, Type>,
     env_snap_ty: &FxHashSet<TyVid>,
     env_snap_cap: &FxHashSet<CapVid>,
+    retained_constraints: &[Constraint],
 ) {
     let mut generalised: Vec<(&Expr, String, Scheme)> = Vec::new();
     for &did in scc {
         let decl = decls[did.0];
         if let Some(fn_ty) = scc_fn_types.remove(&did) {
-            let scheme = generalise_with_env(ctx, &fn_ty, env_snap_ty, env_snap_cap);
+            let mut scheme = generalise_with_env(ctx, &fn_ty, env_snap_ty, env_snap_cap);
+            // Attach retained constraints whose TyVid ended up in this scheme's
+            // generalised variable set. Constraints over vars not in `scheme.vars`
+            // escaped to an outer scope and were already reported as T030 by the
+            // solver; we skip them here rather than double-reporting.
+            scheme.constraints = retained_constraints
+                .iter()
+                .filter(|c| scheme.vars.contains(&c.ty))
+                .cloned()
+                .collect();
             // Body::Ffi has no expression span to key a scheme entry by.
             // We still bind the name in the env for forward references.
             if let Body::Expr(e) = &decl.body {
@@ -348,6 +364,13 @@ fn write_back_schemes(
 /// After this call, `ctx.env` (at the outermost frame) contains a generalised
 /// [`Scheme`] for every decl.  Any `T###` diagnostics are pushed to `ctx.errors`.
 ///
+/// # Constraint solving
+///
+/// When `instance_env` is non-empty (i.e. the workspace has registered typeclass
+/// instances), the constraint solver runs after each SCC's bodies are inferred
+/// and before generalisation. Retained constraints are attached to the
+/// generalised schemes (see [`crate::solve::solve_constraints`]).
+///
 /// # T023 — Unsolved type variables
 ///
 /// After generalising all SCCs, this function scans every scheme for residual
@@ -360,11 +383,17 @@ fn write_back_schemes(
 ///
 /// ```ignore
 /// ctx.env.push_frame();
-/// typecheck_module_decls(&mut ctx, &b, &decls);
+/// typecheck_module_decls(&mut ctx, &b, &decls, &class_table, &instance_env);
 /// let schemes = /* read from ctx.env */;
 /// ctx.env.pop_frame();
 /// ```
-pub fn typecheck_module_decls(ctx: &mut InferCtx, b: &BuiltinTyCons, decls: &[&FnDecl]) {
+pub fn typecheck_module_decls(
+    ctx: &mut InferCtx,
+    b: &BuiltinTyCons,
+    decls: &[&FnDecl],
+    class_table: &crate::class_env::ClassTable,
+    instance_env: &crate::class_env::InstanceEnv,
+) {
     if decls.is_empty() {
         return;
     }
@@ -475,10 +504,36 @@ pub fn typecheck_module_decls(ctx: &mut InferCtx, b: &BuiltinTyCons, decls: &[&F
             ctx.env.pop_frame();
         }
 
+        // ── Constraint solving — between step b and generalisation ───────────
+        // Drain deferred constraints accumulated during body inference. For
+        // modules with no constrained functions (the common pre-typeclass
+        // case) this is a no-op: deferred_constraints is empty and the solver
+        // returns immediately with empty retained + empty dict_resolution.
+        //
+        // The SCC span (first decl's span) is used as a fallback location in
+        // diagnostics when a constraint carries no more precise span.
+        let scc_span = scc
+            .first()
+            .and_then(|did| scc_spans.get(did))
+            .copied()
+            .unwrap_or_else(|| Span::point(0));
+        let (retained, _dict_resolution) =
+            crate::solve::solve_constraints(ctx, instance_env, class_table, &env_snap_ty, scc_span);
+        // _dict_resolution is kept for the lowering pass; it will be stored
+        // on TypedModule when the lowering pass is implemented.
+
         // ── Steps c+d: generalise and write back schemes ──────────────────────
         // OQ-PHASE45-003: top-level decl schemes only (no let-bound locals).
         // OQ-PHASE45-005: span-keyed via body span (same as T5 inferred_caps).
-        write_back_schemes(ctx, scc, decls, scc_fn_types, &env_snap_ty, &env_snap_cap);
+        write_back_schemes(
+            ctx,
+            scc,
+            decls,
+            scc_fn_types,
+            &env_snap_ty,
+            &env_snap_cap,
+            &retained,
+        );
     }
 
     // 3. Detect T023 — unsolved type variables.
@@ -610,6 +665,15 @@ mod tests {
         (arena, b)
     }
 
+    /// Returns empty class and instance registries for tests that do not
+    /// exercise typeclass constraint solving.
+    fn empty_registries() -> (crate::class_env::ClassTable, crate::class_env::InstanceEnv) {
+        (
+            crate::class_env::ClassTable::new(),
+            crate::class_env::InstanceEnv::new(),
+        )
+    }
+
     /// Helper: build a minimal `FnDecl` with the given name, a single Int param,
     /// and a body that is just an expression.
     fn make_fn_decl(name: &str, body: Expr) -> FnDecl {
@@ -723,7 +787,8 @@ mod tests {
         let decl = make_fn_decl("identity", body);
         let decls: Vec<&FnDecl> = vec![&decl];
 
-        typecheck_module_decls(&mut ctx, &b, &decls);
+        let (ct, ie) = empty_registries();
+        typecheck_module_decls(&mut ctx, &b, &decls, &ct, &ie);
 
         let scheme = ctx
             .env
@@ -777,7 +842,8 @@ mod tests {
         let odd = make_fn_decl("odd", odd_body);
         let decls: Vec<&FnDecl> = vec![&even, &odd];
 
-        typecheck_module_decls(&mut ctx, &b, &decls);
+        let (ct, ie) = empty_registries();
+        typecheck_module_decls(&mut ctx, &b, &decls, &ct, &ie);
 
         // Both names must be in env.
         assert!(ctx.env.lookup("even").is_some(), "even must be bound");
@@ -810,7 +876,8 @@ mod tests {
         let decl = make_fn_decl("const_42", body);
         let decls: Vec<&FnDecl> = vec![&decl];
 
-        typecheck_module_decls(&mut ctx, &b, &decls);
+        let (ct, ie) = empty_registries();
+        typecheck_module_decls(&mut ctx, &b, &decls, &ct, &ie);
 
         let scheme = ctx
             .env
@@ -987,7 +1054,8 @@ mod tests {
             }),
         );
         let decls: Vec<&FnDecl> = vec![&decl];
-        typecheck_module_decls(&mut ctx, &b, &decls);
+        let (ct, ie) = empty_registries();
+        typecheck_module_decls(&mut ctx, &b, &decls, &ct, &ie);
         ctx.env.pop_frame();
 
         assert_eq!(ctx.schemes_accum.len(), 1, "one top-level scheme expected");
@@ -1050,7 +1118,8 @@ mod tests {
             doc: None,
         };
         let decls: Vec<&FnDecl> = vec![&decl];
-        typecheck_module_decls(&mut ctx, &b, &decls);
+        let (ct, ie) = empty_registries();
+        typecheck_module_decls(&mut ctx, &b, &decls, &ct, &ie);
         ctx.env.pop_frame();
 
         assert_eq!(ctx.schemes_accum.len(), 1, "one scheme for polymorphic fn");
@@ -1124,7 +1193,8 @@ mod tests {
         });
         let decl = make_fn_decl_at("foo", 0, body);
         let decls: Vec<&FnDecl> = vec![&decl];
-        typecheck_module_decls(&mut ctx, &b, &decls);
+        let (ct, ie) = empty_registries();
+        typecheck_module_decls(&mut ctx, &b, &decls, &ct, &ie);
         ctx.env.pop_frame();
 
         // schemes_accum should only contain the top-level `foo` decl, not `x`.

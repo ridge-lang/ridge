@@ -378,6 +378,41 @@ pub enum TypeError {
         span: Span,
     },
 
+    // ── T029 ─────────────────────────────────────────────────────────────────
+    /// A constrained function is called with a type that has no instance for
+    /// the required class.
+    ///
+    /// For example, calling `describe` (which requires `ToText a`) with a
+    /// custom type that has no `ToText` instance fires this error. The fix
+    /// is to write an `instance` declaration or add the class to the type's
+    /// `deriving` list.
+    NoInstance {
+        /// Display name of the class (e.g. `"ToText"`).
+        class: String,
+        /// Display name of the concrete type (e.g. `"Color"`).
+        ty: String,
+        /// Source span of the call or use site.
+        span: Span,
+        /// Context-specific fix suggestion shown below the main message.
+        fix_hint: String,
+    },
+
+    // ── T030 ─────────────────────────────────────────────────────────────────
+    /// A class constraint's type variable cannot be resolved to a concrete
+    /// type and is not being generalised — it is ambiguous.
+    ///
+    /// This typically means the user wrote an expression where the class
+    /// cannot be determined from context. Adding a type annotation that pins
+    /// the type variable resolves the ambiguity.
+    AmbiguousConstraint {
+        /// Display name of the class (e.g. `"ToText"`).
+        class: String,
+        /// Display name of the ambiguous type variable.
+        ty_var: String,
+        /// Source span of the ambiguous use site.
+        span: Span,
+    },
+
     // ── T031 ─────────────────────────────────────────────────────────────────
     /// An `instance C T` is declared outside both the module that defines `C`
     /// and the module that defines `T` (orphan-instance rule).
@@ -479,7 +514,7 @@ pub enum TypeError {
 impl TypeError {
     /// Returns the stable `T###` error code for this variant.
     ///
-    /// The codes are allocated in `T001..T030` and `T999` is the catch-all
+    /// The codes are allocated in `T001..T035` and `T999` is the catch-all
     /// internal error. No overlap with `R###`/`M###`.
     #[must_use]
     pub const fn code(&self) -> &'static str {
@@ -513,6 +548,8 @@ impl TypeError {
             Self::MailboxPolicyDropOldestNotShipped { .. } => "T027",
             Self::IncompleteRecordPattern { .. } => "T028",
             Self::InlineRecordTyVarField { .. } => "P029",
+            Self::NoInstance { .. } => "T029",
+            Self::AmbiguousConstraint { .. } => "T030",
             Self::OrphanInstance { .. } => "T031",
             Self::OverlappingInstance { .. } => "T032",
             Self::MissingSuperclassInstance { .. } => "T033",
@@ -888,6 +925,35 @@ mod tests {
     #[test]
     fn code_t999() {
         assert_eq!(t999().code(), "T999");
+    }
+
+    // ── T029–T030 helpers and code tests ─────────────────────────────────────
+
+    fn t029() -> TypeError {
+        TypeError::NoInstance {
+            class: "ToText".into(),
+            ty: "Foo".into(),
+            span: dummy_span(),
+            fix_hint: "add `instance ToText Foo` or add `deriving (ToText)` to the type".into(),
+        }
+    }
+
+    fn t030() -> TypeError {
+        TypeError::AmbiguousConstraint {
+            class: "ToText".into(),
+            ty_var: "a".into(),
+            span: dummy_span(),
+        }
+    }
+
+    #[test]
+    fn code_t029() {
+        assert_eq!(t029().code(), "T029");
+    }
+
+    #[test]
+    fn code_t030() {
+        assert_eq!(t030().code(), "T030");
     }
 
     // ── T031–T035 helpers and code tests ─────────────────────────────────────

@@ -383,6 +383,24 @@ impl fmt::Display for TypeError {
                 )
             }
 
+            // ── T029 ──────────────────────────────────────────────────────────
+            Self::NoInstance {
+                class,
+                ty,
+                fix_hint,
+                ..
+            } => {
+                write!(f, "T029: no instance `{class} {ty}`\n  {fix_hint}")
+            }
+
+            // ── T030 ──────────────────────────────────────────────────────────
+            Self::AmbiguousConstraint { class, ty_var, .. } => {
+                write!(
+                    f,
+                    "T030: ambiguous constraint\n  cannot determine which instance of `{class}` to use for the type variable `{ty_var}` here\n  hint: add a type annotation to fix the type variable"
+                )
+            }
+
             // ── P029 ──────────────────────────────────────────────────────────
             Self::InlineRecordTyVarField { var_name, .. } => {
                 write!(
@@ -492,6 +510,8 @@ impl HasErrorCode for TypeError {
             | Self::MailboxPolicyDropOldestNotShipped { span, .. }
             | Self::IncompleteRecordPattern { span, .. }
             | Self::InlineRecordTyVarField { span, .. }
+            | Self::NoInstance { span, .. }
+            | Self::AmbiguousConstraint { span, .. }
             | Self::OrphanInstance { span, .. }
             | Self::OverlappingInstance {
                 second_span: span, ..

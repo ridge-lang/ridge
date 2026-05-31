@@ -19,7 +19,7 @@
 //!     Scheme { vars, cap_vars, ty }
 //! ```
 
-use ridge_types::{CapRow, CapVid, Scheme, TyVid, Type};
+use ridge_types::{CapRow, CapVid, Constraint, Scheme, TyVid, Type};
 use rustc_hash::FxHashSet;
 
 use crate::ctx::InferCtx;
@@ -36,6 +36,14 @@ use crate::ctx::InferCtx;
 /// The substitution is performed by [`Scheme::instantiate`] in `ridge-types`;
 /// this function is the caller that supplies fresh-variable factories bound to
 /// the active [`InferCtx`].
+///
+/// # Constraint deferral
+///
+/// If `scheme.constraints` is non-empty, each constraint is remapped through
+/// the same `old → fresh` `TyVid` index map built for the type substitution,
+/// then pushed to [`InferCtx::deferred_constraints`]. For unconstrained schemes
+/// (`constraints` is empty), this is a no-op — the fast path for all
+/// pre-typeclass code.
 #[must_use]
 pub fn instantiate(ctx: &mut InferCtx, scheme: &Scheme) -> Type {
     // We cannot pass two `&mut ctx` closures simultaneously (borrow checker).
@@ -43,18 +51,18 @@ pub fn instantiate(ctx: &mut InferCtx, scheme: &Scheme) -> Type {
     let n_ty = scheme.vars.len();
     let n_cap = scheme.cap_vars.len();
 
-    let mut fresh_tyvids: Vec<ridge_types::TyVid> = Vec::with_capacity(n_ty);
+    let mut fresh_tyvids: Vec<TyVid> = Vec::with_capacity(n_ty);
     for _ in 0..n_ty {
         fresh_tyvids.push(ctx.fresh_tyvid());
     }
-    let mut fresh_capvids: Vec<ridge_types::CapVid> = Vec::with_capacity(n_cap);
+    let mut fresh_capvids: Vec<CapVid> = Vec::with_capacity(n_cap);
     for _ in 0..n_cap {
         fresh_capvids.push(ctx.fresh_capvid());
     }
 
     let mut ty_idx = 0usize;
     let mut cap_idx = 0usize;
-    scheme.instantiate(
+    let instantiated = scheme.instantiate(
         &mut || {
             let v = fresh_tyvids[ty_idx];
             ty_idx += 1;
@@ -65,7 +73,31 @@ pub fn instantiate(ctx: &mut InferCtx, scheme: &Scheme) -> Type {
             cap_idx += 1;
             c
         },
-    )
+    );
+
+    // Remap and defer constraints through the same old→fresh TyVid mapping.
+    // For schemes with no constraints (the common pre-typeclass case) this
+    // loop is a no-op and has no observable effect.
+    if !scheme.constraints.is_empty() {
+        // Build old → fresh index: scheme.vars[i] maps to fresh_tyvids[i].
+        // Use a small stack-allocated lookup rather than a HashMap for the
+        // typical case of ≤ 3 type variables per scheme.
+        for c in &scheme.constraints {
+            // Find the position of the constraint's TyVid in the scheme's
+            // bound variable list, then map it to the corresponding fresh var.
+            let fresh_ty = scheme
+                .vars
+                .iter()
+                .position(|&v| v == c.ty)
+                .map_or(c.ty, |i| fresh_tyvids[i]); // defensive: if not found, pass through unchanged
+            ctx.deferred_constraints.push(Constraint {
+                class: c.class,
+                ty: fresh_ty,
+            });
+        }
+    }
+
+    instantiated
 }
 
 /// Wraps a monomorphic type in a [`Scheme`] with no quantified variables.

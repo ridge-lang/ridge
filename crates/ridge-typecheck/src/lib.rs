@@ -33,6 +33,7 @@ pub mod prelude;
 pub mod records;
 pub mod render;
 pub mod scc;
+pub mod solve;
 pub mod stdlib_env;
 pub mod stdlib_signatures;
 pub mod tycon_collect;
@@ -47,6 +48,7 @@ pub use error::TypeError;
 pub use render::{emit_internal, emit_internal_strict};
 pub use ridge_resolve::Severity;
 pub use ridge_types::BuiltinTyCons;
+pub use solve::{DictPlan, DictResolution};
 
 // Re-export witness types from ridge_types — the canonical definitions live there.
 pub use ridge_types::{MatchWitness, WitnessKind, WitnessPat};
@@ -125,6 +127,16 @@ pub struct TypedModule {
     /// Per-`match` exhaustiveness witnesses, keyed by the `match` expression's
     /// `NodeId`.
     pub match_witnesses: FxHashMap<NodeId, Vec<MatchWitness>>,
+    /// Per-constraint dictionary resolution plan produced by the constraint
+    /// solver.
+    ///
+    /// Keyed by `(ClassId, TyVid)` — uniquely identifies one deferred
+    /// constraint at one instantiation site. The lowering pass reads this map
+    /// to emit dictionary arguments at constrained call sites.
+    ///
+    /// Empty for modules that contain no constrained functions (the common
+    /// pre-typeclass case).
+    pub dict_resolution: DictResolution,
 }
 
 // ── Entry points ──────────────────────────────────────────────────────────────
@@ -181,6 +193,7 @@ pub fn typecheck_workspace(ws: &ResolvedWorkspace) -> TypecheckResult {
                 schemes: FxHashMap::default(),
                 inferred_caps: FxHashMap::default(),
                 match_witnesses: FxHashMap::default(),
+                dict_resolution: FxHashMap::default(),
             });
             continue;
         };
@@ -232,6 +245,7 @@ pub fn typecheck_module(
                 schemes: FxHashMap::default(),
                 inferred_caps: FxHashMap::default(),
                 match_witnesses: FxHashMap::default(),
+                dict_resolution: FxHashMap::default(),
             },
             errors: Vec::new(),
             anon_records: AnonRecordTable::default(),
@@ -253,6 +267,7 @@ pub fn typecheck_module(
                 schemes: FxHashMap::default(),
                 inferred_caps: FxHashMap::default(),
                 match_witnesses: FxHashMap::default(),
+                dict_resolution: FxHashMap::default(),
             },
             errors: Vec::new(),
             anon_records: AnonRecordTable::default(),
@@ -483,7 +498,18 @@ fn typecheck_module_inner(
         })
         .collect();
 
-    typecheck_module_decls(&mut ctx, b, &fn_decls);
+    // For now the class/instance registries are empty (the workspace collect
+    // pass that populates them is wired up separately). When the registries
+    // are empty the constraint solver is a no-op for all existing code.
+    let empty_class_table = crate::class_env::ClassTable::new();
+    let empty_instance_env = crate::class_env::InstanceEnv::new();
+    typecheck_module_decls(
+        &mut ctx,
+        b,
+        &fn_decls,
+        &empty_class_table,
+        &empty_instance_env,
+    );
 
     // Step D: Capability checking for each fn decl.
     // OQ-PHASE45-005: span-keyed lookup via fn body's span + NodeKind.
@@ -559,6 +585,7 @@ fn typecheck_module_inner(
         schemes,    // Phase 4.5 T4: populated by SCC generalise write-back
         inferred_caps,
         match_witnesses: FxHashMap::default(), // T17: populated by infer_expr
+        dict_resolution: FxHashMap::default(), // populated by the constraint solver when classes are used
     };
 
     // Move the anon_records table out so the workspace driver can merge it.

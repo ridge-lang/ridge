@@ -53,6 +53,7 @@ const STD_PROC: StdlibModuleId = StdlibModuleId(15);
 const STD_ACTOR: StdlibModuleId = StdlibModuleId(16);
 const STD_JSON: StdlibModuleId = StdlibModuleId(17);
 const STD_NET_HTTP: StdlibModuleId = StdlibModuleId(18);
+const STD_CRYPTO: StdlibModuleId = StdlibModuleId(19);
 
 // ── Type-building helpers ─────────────────────────────────────────────────────
 //
@@ -1347,6 +1348,13 @@ pub fn stdlib_signature(module: StdlibModuleId, name: &str, b: &BuiltinTyCons) -
             vec![A, B_VAR],
             ty_fn_pure(vec![ty_int(b), Type::Var(B_VAR)], ty_unit(b)),
         )),
+
+        // ── std.crypto ────────────────────────────────────────────────────────
+        // constantTimeEq: Text -> Text -> Bool
+        (STD_CRYPTO, "constantTimeEq") => Some(mono(ty_fn_pure(
+            vec![ty_text(b), ty_text(b)],
+            ty_bool(b),
+        ))),
 
         // ── catch-all ─────────────────────────────────────────────────────────
         _ => None,

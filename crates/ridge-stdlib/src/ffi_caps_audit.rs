@@ -898,6 +898,13 @@ pub static AUDIT_TABLE: &[FfiAuditEntry] = &[
         arity: 1,
         requires_caps: &[],
     },
+    // ── crypto (pure cryptographic ops) ──────────────────────────────────────
+    FfiAuditEntry {
+        beam_module: "crypto",
+        fn_name: "hash_equals",
+        arity: 2,
+        requires_caps: &[],
+    },
 ];
 
 // ── Tests ─────────────────────────────────────────────────────────────────────

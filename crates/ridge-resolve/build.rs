@@ -55,6 +55,7 @@ const MODULE_ORDER: &[&str] = &[
     "std.actor",
     "std.json",
     "std.net.http",
+    "std.crypto",
 ];
 
 // ── Baseline export table (T10: preserves original API) ───────────────────────
@@ -334,6 +335,13 @@ const BASELINE_EXPORTS: &[(&str, &[&str])] = &[
             "html",
             "secureCookie",
             "secureCookieHeader",
+        ],
+    ),
+    (
+        "std.crypto",
+        &[
+            // Constant-time comparison for secret-bearing values.
+            "constantTimeEq",
         ],
     ),
 ];

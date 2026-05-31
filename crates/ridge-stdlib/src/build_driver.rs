@@ -67,6 +67,10 @@ pub const TIERS: &[TierPlan] = &[
         tier: 4,
         modules: &["std.json", "std.net.http"],
     },
+    TierPlan {
+        tier: 5,
+        modules: &["std.crypto"],
+    },
 ];
 
 // ── Error types (T203 / T204) ─────────────────────────────────────────────────

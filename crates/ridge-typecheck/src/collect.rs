@@ -13,10 +13,14 @@
 //!    `instance Eq T`.
 //! 4. **T035 Superclass cycle** — the class hierarchy must be acyclic.
 //!
-//! The T034 `ToTextConflict` path (auto-promoted `pub fn toText` vs explicit
-//! `instance ToText T`) is handled inside [`InstanceEnv::insert`] via the
-//! [`InstanceOrigin`] flag. The auto-promotion of `pub fn toText` is wired up
-//! by the `ToText` migration; for now the flag and the error routing are in place.
+//! 5. **T034 `ToText` conflict** — an auto-promoted `pub fn toText` instance
+//!    conflicts with an explicit `instance ToText T` for the same type.
+//!
+//! Auto-promotion runs in Step 3b: every `pub fn toText (x: T) -> Text`
+//! declaration is synthesized into an `instance ToText T` with
+//! [`InstanceOrigin::AutoPromoted`] before explicit instances are collected in
+//! Step 4. A subsequent explicit `instance ToText T` then fires T034
+//! automatically via [`InstanceEnv::insert`]'s duplicate-key routing.
 
 use std::collections::HashMap;
 
@@ -95,6 +99,21 @@ pub fn collect_workspace(
     // This must run before instance collection so that superclass DAG traversal
     // in T033 is guaranteed to terminate.
     check_superclass_cycles(&class_table, &mut errors);
+
+    // Step 3b: Auto-promote every `pub fn toText (x: T) -> Text` to a
+    // synthesized `instance ToText T`.  This happens BEFORE explicit instance
+    // collection (Step 4) so that a subsequent explicit `instance ToText T`
+    // for the same type correctly fires T034 (instead of T032).
+    for &(module_id, ast) in modules {
+        collect_auto_promoted_to_text(
+            ast,
+            module_id,
+            &class_table,
+            user_tycon_names,
+            &mut instance_env,
+            &mut errors,
+        );
+    }
 
     // Step 4: Walk all InstanceDecl items, inserting into InstanceEnv.
     // InstanceEnv::insert already detects T032 / T034 on duplicate keys.
@@ -240,6 +259,97 @@ fn collect_instance_decls(
         let type_name = type_display(&decl.ty);
 
         match env.insert((class_id, tycon_id), info, class_name, &type_name) {
+            Ok(()) => {}
+            Err(e) => errors.push(e.into_type_error()),
+        }
+    }
+}
+
+// ── Auto-promotion of pub fn toText ──────────────────────────────────────────
+
+/// Auto-promotes every qualifying `pub fn toText (x: T) -> Text` declaration
+/// to a synthesized `instance ToText T` with [`InstanceOrigin::AutoPromoted`].
+///
+/// A declaration qualifies when:
+/// - Its name is exactly `toText` (case-sensitive).
+/// - Its visibility is `Pub`.
+/// - It has exactly one parameter whose type is a concrete named constructor.
+/// - Its declared return type is `Text`.
+///
+/// The synthesized instance is inserted with the function's module as
+/// `def_module`, satisfying the orphan rule (the function and type share the
+/// same module by the naming convention). When an explicit `instance ToText T`
+/// already exists for the same type, [`InstanceEnv::insert`] fires T034
+/// automatically through the `InstanceOrigin` routing.
+fn collect_auto_promoted_to_text(
+    ast: &ridge_ast::Module,
+    module_id: u32,
+    ct: &ClassTable,
+    user_tycon_names: &FxHashMap<String, TyConId>,
+    env: &mut InstanceEnv,
+    errors: &mut Vec<TypeError>,
+) {
+    use ridge_ast::{Item, Type as AstType, Visibility};
+
+    // ToText must be a registered class; if absent there is nothing to promote.
+    let Some(totext_id) = ct.id_by_name("ToText") else {
+        return;
+    };
+
+    for item in &ast.items {
+        let Item::Fn(decl) = item else { continue };
+
+        // Must be public and named exactly "toText".
+        if decl.vis != Visibility::Pub || decl.name.text != "toText" {
+            continue;
+        }
+
+        // Must have exactly one parameter.
+        if decl.params.len() != 1 {
+            continue;
+        }
+
+        // The parameter must carry an explicit type annotation.
+        let param_ty = match &decl.params[0] {
+            ridge_ast::decl::Param::Annotated { ty, .. } => ty,
+            ridge_ast::decl::Param::Bare(_) => continue,
+        };
+
+        // The parameter type must be a concrete named constructor.
+        let Some(tycon_id) = extract_tycon_id(param_ty, user_tycon_names) else {
+            continue;
+        };
+
+        // Do not auto-promote for builtin/prelude types (TyConId 0–15): they
+        // are already covered by instances registered in `register_prelude_instances`.
+        // Auto-promotion targets user-defined types only (TyConId >= 16).
+        if tycon_id.0 < 16 {
+            continue;
+        }
+
+        // The return type must be Text (either as a Primitive or Named type).
+        let ret_is_text = decl.ret.as_ref().is_some_and(is_text_type);
+        if !ret_is_text {
+            continue;
+        }
+
+        // Build a synthesized instance with AutoPromoted origin so that a
+        // subsequent explicit `instance ToText T` fires T034 via InstanceEnv::insert.
+        let info = InstanceInfo {
+            def_module: Some(module_id),
+            methods: vec![("toText".to_string(), decl.name.text.clone())],
+            ctx_constraints: vec![],
+            origin: InstanceOrigin::AutoPromoted,
+            span: decl.span,
+        };
+
+        let type_name = match param_ty {
+            AstType::Named { name, .. } => name.text.clone(),
+            AstType::Primitive { name, .. } => format!("{name:?}"),
+            _ => "<type>".to_string(),
+        };
+
+        match env.insert((totext_id, tycon_id), info, "ToText", &type_name) {
             Ok(()) => {}
             Err(e) => errors.push(e.into_type_error()),
         }
@@ -549,6 +659,22 @@ fn builtin_tycon_id_by_name(name: &str) -> Option<TyConId> {
         "ProcOutput" => Some(TyConId(14)),
         "Ordering" => Some(TyConId(15)),
         _ => None,
+    }
+}
+
+/// Returns `true` when the AST type represents `Text`.
+///
+/// Accepts both the `Primitive` variant (how the parser represents `Text`)
+/// and a `Named` variant with the text `"Text"` (defensive fallback).
+fn is_text_type(ty: &ridge_ast::Type) -> bool {
+    use ridge_ast::Type as AstType;
+    match ty {
+        AstType::Primitive {
+            name: ridge_ast::PrimitiveType::Text,
+            ..
+        } => true,
+        AstType::Named { name, .. } => name.text == "Text",
+        _ => false,
     }
 }
 
@@ -863,6 +989,111 @@ mod tests {
                 crate::class_env::CoherenceError::OverlappingInstance { .. }
             ),
             "two explicit instances must produce OverlappingInstance (T032), got {err:?}"
+        );
+    }
+
+    // ── Auto-promotion of pub fn toText ───────────────────────────────────────
+
+    /// Build a minimal `pub fn toText (x: UserType) -> Text` `FnDecl` item.
+    ///
+    /// Uses `TyConId(100)` as the user type id, which is above the 16-entry
+    /// builtin range so auto-promotion is not filtered out.
+    fn pub_fn_to_text_item(param_type_name: &str) -> Item {
+        use ridge_ast::{
+            decl::{Body, FnDecl, Param},
+            Expr, Literal, Visibility,
+        };
+
+        Item::Fn(FnDecl {
+            attrs: vec![],
+            vis: Visibility::Pub,
+            caps: vec![],
+            name: ident("toText"),
+            params: vec![Param::Annotated {
+                name: ident("x"),
+                ty: named_type(param_type_name),
+                span: ds(),
+            }],
+            ret: Some(ridge_ast::Type::Primitive {
+                name: ridge_ast::PrimitiveType::Text,
+                span: ds(),
+            }),
+            constraints: vec![],
+            body: Body::Expr(Expr::Literal(Literal::Text {
+                raw: r#""placeholder""#.to_string(),
+                span: ds(),
+            })),
+            span: ds(),
+            doc: None,
+        })
+    }
+
+    /// A `pub fn toText` for a user type registers an auto-promoted `ToText`
+    /// instance in the environment.
+    #[test]
+    fn auto_promote_pub_fn_to_text_registers_instance() {
+        use crate::class_env::InstanceOrigin;
+
+        let user_id = TyConId(100);
+        let mut user_types = rustc_hash::FxHashMap::default();
+        user_types.insert("Widget".to_string(), user_id);
+
+        let m = module_with_items(vec![pub_fn_to_text_item("Widget")]);
+        let result = collect_workspace(&[(0, &m)], &user_types);
+
+        assert!(
+            result.errors.is_empty(),
+            "auto-promotion must not produce errors; got: {:?}",
+            result.errors
+        );
+        let inst = result.instance_env.get((TOTEXT_CLASS, user_id));
+        assert!(
+            inst.is_some(),
+            "expected ToText Widget instance in registry after auto-promotion"
+        );
+        assert_eq!(
+            inst.unwrap().origin,
+            InstanceOrigin::AutoPromoted,
+            "auto-promoted instance must have AutoPromoted origin"
+        );
+    }
+
+    /// A `pub fn toText` followed by an explicit `instance ToText T` for the
+    /// same type fires T034.
+    #[test]
+    fn auto_promote_then_explicit_instance_fires_t034() {
+        let user_id = TyConId(101);
+        let mut user_types = rustc_hash::FxHashMap::default();
+        user_types.insert("Color".to_string(), user_id);
+
+        let m = module_with_items(vec![
+            pub_fn_to_text_item("Color"),
+            instance_decl_item("ToText", "Color"),
+        ]);
+        let result = collect_workspace(&[(0, &m)], &user_types);
+
+        let has_t034 = result.errors.iter().any(|e| e.code() == "T034");
+        assert!(
+            has_t034,
+            "pub fn toText + explicit instance ToText T must produce T034; got {:?}",
+            result.errors
+        );
+    }
+
+    /// Builtin types (`TyConId` < 16) must NOT be auto-promoted — they are
+    /// already covered by prelude instances.
+    #[test]
+    fn auto_promote_skips_builtin_types() {
+        // `Int` maps to TyConId(0), which is < 16.
+        let m = module_with_items(vec![pub_fn_to_text_item("Int")]);
+        let result = collect_workspace(&[(0, &m)], &rustc_hash::FxHashMap::default());
+
+        // No T034 because the builtin filter skips TyConId 0.
+        let has_t034 = result.errors.iter().any(|e| e.code() == "T034");
+        assert!(
+            !has_t034,
+            "pub fn toText for a builtin type must NOT fire T034; got {:?}",
+            result.errors
         );
     }
 }

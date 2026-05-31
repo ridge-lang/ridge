@@ -403,6 +403,10 @@ pub fn typecheck_module_decls(
         return;
     }
 
+    // Snapshot the ToText instance set into the inference context so that
+    // interpolation-hole type-checking can perform O(1) membership tests.
+    ctx.set_to_text_instances(instance_env);
+
     // 1. Build call graph and compute SCCs in toposort order.
     let graph = build_call_graph(decls);
     let sccs = tarjan_sccs(&graph);

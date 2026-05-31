@@ -267,6 +267,21 @@ pub struct InferCtx {
     /// begins.  Read by `ast_type_to_ridge_type` and the `Expr::RecordLit` /
     /// `Pattern::Record` inference arms (T5).
     pub anon_records: AnonRecordTable,
+
+    // ── Constraint solving (0.2.13 typeclasses) ──────────────────────────────
+    /// Class constraints deferred during inference, waiting to be solved.
+    ///
+    /// When a constrained scheme is instantiated, each of its constraints is
+    /// remapped through the same fresh-`TyVid` substitution used for the type
+    /// variables and pushed here. After all bodies in an SCC are inferred,
+    /// [`crate::solve::solve_constraints`] drains this list and either
+    /// discharges each constraint (concrete type → instance lookup), retains
+    /// it for generalisation (still-polymorphic variable), or reports an error
+    /// (ambiguous / missing instance).
+    ///
+    /// Pre-typeclass code never adds to this list; the solver is a no-op when
+    /// it is empty, so unconstrained modules are completely unaffected.
+    pub deferred_constraints: Vec<ridge_types::Constraint>,
 }
 
 impl InferCtx {
@@ -287,6 +302,7 @@ impl InferCtx {
             node_types_accum: Vec::new(),
             schemes_accum: FxHashMap::default(),
             anon_records: AnonRecordTable::default(),
+            deferred_constraints: Vec::new(),
         }
     }
 

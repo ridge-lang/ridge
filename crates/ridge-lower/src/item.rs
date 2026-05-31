@@ -107,7 +107,9 @@ pub fn lower_item(ctx: &mut LowerCtx<'_>, item: &Item) -> Option<IrItem> {
         }
         Item::Actor(decl) => Some(IrItem::Actor(lower_actor(ctx, decl))),
         Item::Const(decl) => Some(IrItem::Const(lower_const(ctx, decl))),
-        Item::Type(_) | Item::Import(_) => None,
+        // Type, import, class, and instance declarations are erased at the IR
+        // level. Class/instance lowering is deferred to a later release.
+        Item::Type(_) | Item::Import(_) | Item::ClassDecl(_) | Item::InstanceDecl(_) => None,
     }
 }
 
@@ -367,6 +369,7 @@ mod tests {
             name: ident(name),
             params: vec![],
             ret: None,
+            constraints: vec![],
             body: Body::Expr(body),
             span: sp(),
             doc: None,
@@ -470,6 +473,7 @@ mod tests {
                 name: ident("Int"),
                 span: sp(),
             }),
+            deriving: vec![],
             span: sp(),
             doc: None,
         });
@@ -515,6 +519,7 @@ mod tests {
             name: ident("exported"),
             params: vec![],
             ret: None,
+            constraints: vec![],
             body: Body::Expr(Expr::Unit(sp())),
             span: sp(),
             doc: None,

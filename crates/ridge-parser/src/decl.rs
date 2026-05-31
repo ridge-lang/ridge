@@ -34,6 +34,7 @@
 #![allow(clippy::redundant_pub_crate)]
 
 use ridge_ast::{
+    typeclass::{ClassConstraint, ClassDecl, InstanceDecl, MethodDef, MethodSig},
     ActorDecl, ActorMember, Attribute, Body, Capability, ConstDecl, Constructor, DocComment, Expr,
     FieldDecl, FnDecl, Ident, ImportDecl, InitDecl, Item, MailboxConfig, MailboxDecl,
     MailboxPolicy, ModulePath, OnHandler, Param, RecordTypeBody, StateDecl, TypeBody, TypeDecl,
@@ -246,6 +247,7 @@ fn parse_fn_decl_ffi(
         name,
         params,
         ret,
+        constraints: vec![],
         body: Body::Ffi {
             module: ffi.module,
             name: ffi.name,
@@ -358,21 +360,14 @@ pub(crate) fn parse_item(
         Token::KwFn => Ok(Item::Fn(parse_fn_decl(cur, vis, doc)?)),
         Token::KwActor => Ok(Item::Actor(parse_actor_decl(cur, vis, doc)?)),
 
-        // Reserved keywords deferred to 0.2.0.
-        Token::KwClass => Err(ParseError::DeferredFeature {
-            span: cur.span(),
-            feature: "class",
-            since: "0.2.0",
-        }),
-        Token::KwInstance => Err(ParseError::DeferredFeature {
-            span: cur.span(),
-            feature: "instance",
-            since: "0.2.0",
-        }),
+        Token::KwClass => Ok(Item::ClassDecl(parse_class_decl(cur, vis, doc)?)),
+        Token::KwInstance => Ok(Item::InstanceDecl(parse_instance_decl(cur, doc)?)),
+        // `deriving` is only valid as a trailing clause on a type declaration,
+        // never as a standalone top-level item.
         Token::KwDeriving => Err(ParseError::DeferredFeature {
             span: cur.span(),
-            feature: "deriving",
-            since: "0.2.0",
+            feature: "standalone deriving",
+            since: "0.2.13",
         }),
 
         other => Err(ParseError::UnexpectedToken {
@@ -839,17 +834,27 @@ pub(crate) fn parse_type_decl(
     cur.expect(&Token::Assign)?;
 
     let body = parse_type_body(cur)?;
-    let end_span = match &body {
+    let body_end_span = match &body {
         TypeBody::Record(r) => r.span,
         TypeBody::Union(u) => u.span,
         TypeBody::Alias(t) => t.span(),
     };
+
+    // Optional trailing `deriving ( ClassName, … )` clause.
+    let deriving = if cur.peek() == &Token::KwDeriving {
+        parse_deriving_clause(cur)?
+    } else {
+        vec![]
+    };
+
+    let end_span = deriving.last().map_or(body_end_span, |id: &Ident| id.span);
 
     Ok(TypeDecl {
         vis,
         name,
         params,
         body,
+        deriving,
         span: start.merge(end_span),
         doc,
     })
@@ -1160,6 +1165,13 @@ pub(crate) fn parse_fn_decl(
         None
     };
 
+    // Optional `where ClassConstraint { "," ClassConstraint }` clause.
+    let constraints = if cur.peek() == &Token::KwWhere {
+        parse_where_clause(cur)?
+    } else {
+        vec![]
+    };
+
     // `=` then body (inline or INDENT-delimited block).
     cur.expect(&Token::Assign)?;
 
@@ -1173,6 +1185,7 @@ pub(crate) fn parse_fn_decl(
         name,
         params,
         ret,
+        constraints,
         body: Body::Expr(expr),
         span: start.merge(end_span),
         doc,
@@ -1229,6 +1242,13 @@ fn parse_fn_decl_with_attrs(
         None
     };
 
+    // Optional `where` clause (same as plain parse_fn_decl).
+    let constraints = if cur.peek() == &Token::KwWhere {
+        parse_where_clause(cur)?
+    } else {
+        vec![]
+    };
+
     cur.expect(&Token::Assign)?;
 
     let expr = parse_branch_body(cur)?;
@@ -1241,7 +1261,532 @@ fn parse_fn_decl_with_attrs(
         name,
         params,
         ret,
+        constraints,
         body: Body::Expr(expr),
+        span: start.merge(end_span),
+        doc,
+    })
+}
+
+// ── Typeclass helpers ─────────────────────────────────────────────────────────
+
+/// Desugar `Show` to `ToText` so it never propagates past the parser.
+///
+/// All other class names are returned unchanged. The span of the returned
+/// `Ident` is the span of the original token.
+fn desugar_class_name(ident: Ident) -> Ident {
+    if ident.text == "Show" {
+        Ident::new("ToText", ident.span)
+    } else {
+        ident
+    }
+}
+
+/// Parse a `where SuperList` clause used both in class heads and fn signatures.
+///
+/// ```ebnf
+/// WhereClause  ::= "where" ClassConstraint { "," ClassConstraint }
+/// ClassConstraint ::= UpperIdent TyVar
+/// ```
+///
+/// Precondition: `cur.peek() == &Token::KwWhere`.
+fn parse_where_clause(cur: &mut Cursor<'_>) -> Result<Vec<ClassConstraint>, ParseError> {
+    cur.bump(); // consume `where`
+    let mut constraints = Vec::new();
+    loop {
+        // UpperIdent = class name.
+        let class_span = cur.span();
+        let class = match cur.peek().clone() {
+            Token::UpperIdent(s) => {
+                cur.bump();
+                desugar_class_name(Ident::new(s, class_span))
+            }
+            _ => {
+                return Err(ParseError::Expected {
+                    span: cur.span(),
+                    expected: "<class name>",
+                    found: cur.peek().to_string(),
+                });
+            }
+        };
+
+        // LowerIdent = type variable.
+        let ty_var_span = cur.span();
+        let ty_var = match cur.peek().clone() {
+            Token::LowerIdent(s) => {
+                cur.bump();
+                Ident::new(s, ty_var_span)
+            }
+            _ => {
+                return Err(ParseError::Expected {
+                    span: cur.span(),
+                    expected: "<type variable>",
+                    found: cur.peek().to_string(),
+                });
+            }
+        };
+
+        let span = class_span.merge(ty_var_span);
+        constraints.push(ClassConstraint {
+            class,
+            ty_var,
+            span,
+        });
+
+        // Another constraint follows if there is a `,`.
+        if cur.peek() == &Token::Comma {
+            cur.bump(); // consume `,`
+        } else {
+            break;
+        }
+    }
+    Ok(constraints)
+}
+
+/// Parse a `deriving ( UpperIdent { "," UpperIdent } )` clause.
+///
+/// ```ebnf
+/// Deriving ::= "deriving" "(" UpperIdent { "," UpperIdent } ")"
+/// ```
+///
+/// Precondition: `cur.peek() == &Token::KwDeriving`.
+fn parse_deriving_clause(cur: &mut Cursor<'_>) -> Result<Vec<Ident>, ParseError> {
+    cur.bump(); // consume `deriving`
+
+    cur.expect(&Token::LParen)?;
+
+    let mut classes: Vec<Ident> = Vec::new();
+
+    // Allow empty `()`.
+    if cur.peek() != &Token::RParen {
+        let class_span = cur.span();
+        let name = match cur.peek().clone() {
+            Token::UpperIdent(s) => {
+                cur.bump();
+                desugar_class_name(Ident::new(s, class_span))
+            }
+            _ => {
+                return Err(ParseError::Expected {
+                    span: cur.span(),
+                    expected: "<class name>",
+                    found: cur.peek().to_string(),
+                });
+            }
+        };
+        classes.push(name);
+
+        while cur.peek() == &Token::Comma {
+            cur.bump(); // consume `,`
+            if cur.peek() == &Token::RParen {
+                break; // trailing comma allowed
+            }
+            let class_span = cur.span();
+            let name = match cur.peek().clone() {
+                Token::UpperIdent(s) => {
+                    cur.bump();
+                    desugar_class_name(Ident::new(s, class_span))
+                }
+                _ => {
+                    return Err(ParseError::Expected {
+                        span: cur.span(),
+                        expected: "<class name>",
+                        found: cur.peek().to_string(),
+                    });
+                }
+            };
+            classes.push(name);
+        }
+    }
+
+    cur.expect(&Token::RParen)?;
+
+    Ok(classes)
+}
+
+/// Parse a method signature (bare — no `fn` keyword, no body).
+///
+/// ```ebnf
+/// MethodSig ::= LowerIdent ParamList "->" Type
+/// ```
+///
+/// Precondition: `cur.peek()` is a `LowerIdent`.
+fn parse_method_sig(cur: &mut Cursor<'_>) -> Result<MethodSig, ParseError> {
+    let start = cur.span();
+
+    let name_span = cur.span();
+    let name = match cur.peek().clone() {
+        Token::LowerIdent(s) => {
+            cur.bump();
+            Ident::new(s, name_span)
+        }
+        _ => {
+            return Err(ParseError::Expected {
+                span: cur.span(),
+                expected: "<method name>",
+                found: cur.peek().to_string(),
+            });
+        }
+    };
+
+    // Parameters: `()` is the zero-param marker; consume it and leave params empty.
+    let mut params: Vec<Param> = Vec::new();
+    if cur.peek() == &Token::LParen && cur.peek_n(1) == Some(&Token::RParen) {
+        cur.bump(); // consume `(`
+        cur.bump(); // consume `)`
+    } else {
+        while can_start_param(cur) {
+            params.push(parse_param_top(cur)?);
+        }
+    }
+
+    // Required `->`.
+    cur.expect(&Token::Arrow)?;
+
+    let ret = parse_type(cur)?;
+    let end_span = ret.span();
+
+    Ok(MethodSig {
+        name,
+        params,
+        ret,
+        span: start.merge(end_span),
+    })
+}
+
+/// Parse a method definition (bare name, params, `->` type, `=` body).
+///
+/// ```ebnf
+/// MethodDef ::= LowerIdent ParamList "->" Type "=" Expr
+/// ```
+///
+/// Precondition: `cur.peek()` is a `LowerIdent`.
+fn parse_method_def(cur: &mut Cursor<'_>) -> Result<MethodDef, ParseError> {
+    let start = cur.span();
+
+    let name_span = cur.span();
+    let name = match cur.peek().clone() {
+        Token::LowerIdent(s) => {
+            cur.bump();
+            Ident::new(s, name_span)
+        }
+        _ => {
+            return Err(ParseError::Expected {
+                span: cur.span(),
+                expected: "<method name>",
+                found: cur.peek().to_string(),
+            });
+        }
+    };
+
+    // Parameters.
+    let mut params: Vec<Param> = Vec::new();
+    if cur.peek() == &Token::LParen && cur.peek_n(1) == Some(&Token::RParen) {
+        cur.bump();
+        cur.bump();
+    } else {
+        while can_start_param(cur) {
+            params.push(parse_param_top(cur)?);
+        }
+    }
+
+    // Required `->`.
+    cur.expect(&Token::Arrow)?;
+
+    let ret = parse_type(cur)?;
+
+    // Required `=` and body expression.
+    cur.expect(&Token::Assign)?;
+
+    let body = parse_branch_body(cur)?;
+    let end_span = body.span();
+
+    Ok(MethodDef {
+        name,
+        params,
+        ret,
+        body,
+        span: start.merge(end_span),
+    })
+}
+
+/// Parse a `class` declaration.
+///
+/// ```ebnf
+/// ClassDecl ::= "class" UpperIdent TyVar [ "where" SuperList ] "=" NEWLINE
+///               INDENT MethodSig+ DEDENT
+/// ```
+///
+/// Precondition: `cur.peek() == &Token::KwClass`.
+#[allow(clippy::too_many_lines)] // exhaustive error paths for each structural fault
+fn parse_class_decl(
+    cur: &mut Cursor<'_>,
+    _vis: Visibility,
+    doc: Option<DocComment>,
+) -> Result<ClassDecl, ParseError> {
+    let start = cur.span();
+    cur.bump(); // consume `class`
+
+    // Class name: UpperIdent.
+    let name_span = cur.span();
+    let name = match cur.peek().clone() {
+        Token::UpperIdent(s) => {
+            cur.bump();
+            desugar_class_name(Ident::new(s, name_span))
+        }
+        _ => {
+            return Err(ParseError::MalformedClassDecl {
+                span: cur.span(),
+                reason: "expected a class name (`UpperIdent`) after `class`".to_string(),
+            });
+        }
+    };
+
+    // Type variable: LowerIdent.
+    let ty_var_span = cur.span();
+    let ty_var = match cur.peek().clone() {
+        Token::LowerIdent(s) => {
+            cur.bump();
+            Ident::new(s, ty_var_span)
+        }
+        _ => {
+            return Err(ParseError::MalformedClassDecl {
+                span: cur.span(),
+                reason: "expected a type variable (`lowerIdent`) after the class name; \
+                         only single-parameter classes are supported"
+                    .to_string(),
+            });
+        }
+    };
+
+    // Optional `where SuperList` (superclass constraints).
+    let superclasses = if cur.peek() == &Token::KwWhere {
+        parse_where_clause(cur)?
+    } else {
+        vec![]
+    };
+
+    // `=` then indented body.
+    cur.expect(&Token::Assign)?;
+
+    // Consume optional NEWLINE before INDENT.
+    if cur.peek() == &Token::Newline && cur.peek_n(1) == Some(&Token::Indent) {
+        cur.bump();
+    }
+
+    let indent_span = cur.span();
+    if cur.peek() != &Token::Indent {
+        return Err(ParseError::MalformedClassDecl {
+            span: indent_span,
+            reason: "class body must be an indented block of method signatures".to_string(),
+        });
+    }
+    cur.bump(); // consume INDENT
+
+    // Must have at least one method signature.
+    if cur.peek() == &Token::Dedent {
+        let empty_span = cur.span();
+        cur.bump(); // consume DEDENT
+        return Err(ParseError::MalformedClassDecl {
+            span: empty_span,
+            reason: "class body must contain at least one method signature; \
+                     write `methodName (param: Type) -> RetType`"
+                .to_string(),
+        });
+    }
+
+    // Reject `fn` keyword at the start of the first member (clearer error).
+    if cur.peek() == &Token::KwFn {
+        return Err(ParseError::MalformedClassDecl {
+            span: cur.span(),
+            reason: "method signatures in a class body must be bare (no `fn` keyword); \
+                     write `methodName (param: Type) -> RetType`"
+                .to_string(),
+        });
+    }
+
+    let mut methods: Vec<MethodSig> = Vec::new();
+
+    loop {
+        // Reject `fn` keyword before each method.
+        if cur.peek() == &Token::KwFn {
+            return Err(ParseError::MalformedClassDecl {
+                span: cur.span(),
+                reason: "method signatures in a class body must be bare (no `fn` keyword); \
+                         write `methodName (param: Type) -> RetType`"
+                    .to_string(),
+            });
+        }
+
+        // Parse one method signature.
+        let sig = parse_method_sig(cur)?;
+
+        // Reject a body expression after the signature (`= Expr`).
+        if cur.peek() == &Token::Assign {
+            return Err(ParseError::MalformedClassDecl {
+                span: cur.span(),
+                reason: "class method signatures must not have a body; \
+                         default method bodies are not supported in this release"
+                    .to_string(),
+            });
+        }
+
+        methods.push(sig);
+
+        // Consume the separating NEWLINE between signatures.
+        if cur.peek() == &Token::Newline {
+            cur.bump();
+        }
+
+        // Stop at DEDENT (end of class body).
+        if cur.peek() == &Token::Dedent {
+            break;
+        }
+
+        // Anything else that cannot start a method → stop; let DEDENT check
+        // handle the error path below.
+        if !matches!(cur.peek(), Token::LowerIdent(_)) {
+            break;
+        }
+    }
+
+    let end_span = cur.span();
+    cur.expect(&Token::Dedent)?;
+
+    Ok(ClassDecl {
+        name,
+        ty_var,
+        superclasses,
+        methods,
+        span: start.merge(end_span),
+        doc,
+    })
+}
+
+/// Parse an `instance` declaration.
+///
+/// ```ebnf
+/// InstanceDecl ::= "instance" UpperIdent Type "=" NEWLINE
+///                  INDENT MethodDef+ DEDENT
+/// ```
+///
+/// Precondition: `cur.peek() == &Token::KwInstance`.
+#[allow(clippy::too_many_lines)] // exhaustive error paths for each structural fault
+fn parse_instance_decl(
+    cur: &mut Cursor<'_>,
+    doc: Option<DocComment>,
+) -> Result<InstanceDecl, ParseError> {
+    let start = cur.span();
+    cur.bump(); // consume `instance`
+
+    // Class name: UpperIdent.
+    let class_span = cur.span();
+    let class = match cur.peek().clone() {
+        Token::UpperIdent(s) => {
+            cur.bump();
+            desugar_class_name(Ident::new(s, class_span))
+        }
+        _ => {
+            return Err(ParseError::MalformedInstanceDecl {
+                span: cur.span(),
+                reason: "expected a class name (`UpperIdent`) after `instance`".to_string(),
+            });
+        }
+    };
+
+    // The `where` keyword on an instance head is rejected (0.2.13 — instance
+    // heads cannot carry constraints).
+    if cur.peek() == &Token::KwWhere {
+        return Err(ParseError::MalformedInstanceDecl {
+            span: cur.span(),
+            reason: "`where` constraints on instance heads are not supported; \
+                     only class declarations may have superclass `where` clauses"
+                .to_string(),
+        });
+    }
+
+    // Instance head type: parse a single type atom.
+    let ty = parse_type(cur).map_err(|_| ParseError::MalformedInstanceDecl {
+        span: cur.span(),
+        reason: "expected a type after the class name in the instance head".to_string(),
+    })?;
+
+    // Check for a `where` clause after the type — also forbidden on instance heads.
+    if cur.peek() == &Token::KwWhere {
+        return Err(ParseError::MalformedInstanceDecl {
+            span: cur.span(),
+            reason: "`where` constraints on instance heads are not supported; \
+                     only class declarations may have superclass `where` clauses"
+                .to_string(),
+        });
+    }
+
+    // `=` then indented body.
+    cur.expect(&Token::Assign)?;
+
+    // Consume optional NEWLINE before INDENT.
+    if cur.peek() == &Token::Newline && cur.peek_n(1) == Some(&Token::Indent) {
+        cur.bump();
+    }
+
+    let indent_span = cur.span();
+    if cur.peek() != &Token::Indent {
+        return Err(ParseError::MalformedInstanceDecl {
+            span: indent_span,
+            reason: "instance body must be an indented block of method definitions".to_string(),
+        });
+    }
+    cur.bump(); // consume INDENT
+
+    // Must have at least one method definition.
+    if cur.peek() == &Token::Dedent {
+        let empty_span = cur.span();
+        cur.bump();
+        return Err(ParseError::MalformedInstanceDecl {
+            span: empty_span,
+            reason: "instance body must contain at least one method definition; \
+                     write `methodName (param: Type) -> RetType = body`"
+                .to_string(),
+        });
+    }
+
+    let mut methods: Vec<MethodDef> = Vec::new();
+
+    loop {
+        let def = parse_method_def(cur).map_err(|e| {
+            // If the method definition is missing its `=` body, surface a
+            // clear P031 rather than the generic P001.
+            ParseError::MalformedInstanceDecl {
+                span: e.span(),
+                reason: "each method in an instance must have a body; \
+                         write `methodName (param: Type) -> RetType = body`"
+                    .to_string(),
+            }
+        })?;
+
+        methods.push(def);
+
+        // Consume the separating NEWLINE between definitions.
+        if cur.peek() == &Token::Newline {
+            cur.bump();
+        }
+
+        // Stop at DEDENT (end of instance body).
+        if cur.peek() == &Token::Dedent {
+            break;
+        }
+
+        if !matches!(cur.peek(), Token::LowerIdent(_)) {
+            break;
+        }
+    }
+
+    let end_span = cur.span();
+    cur.expect(&Token::Dedent)?;
+
+    Ok(InstanceDecl {
+        class,
+        ty,
+        methods,
         span: start.merge(end_span),
         doc,
     })
@@ -2413,16 +2958,21 @@ mod tests {
     }
 
     // ─────────────────────────────────────────────────────────────────────────
-    // parse_deferred_class_keyword_p013
+    // parse_class_keyword_dispatches_to_class_decl
+    // The `class` keyword now parses a real class declaration rather than
+    // producing P013 DeferredFeature.
     // ─────────────────────────────────────────────────────────────────────────
     #[test]
-    fn parse_deferred_class_keyword_p013() {
-        let toks = lex("class Eq a = ...");
+    fn parse_class_keyword_dispatches_to_class_decl() {
+        let toks = lex("class Eq a =\n    eq (x: a) (y: a) -> Bool\n");
         let mut cur = Cursor::new(&toks);
         let vis = parse_visibility(&mut cur).unwrap();
         let result = parse_item(&mut cur, None, vis);
-        assert!(result.is_err(), "expected Err(P013), got {result:?}");
-        assert_eq!(result.unwrap_err().code(), "P013");
+        assert!(result.is_ok(), "class declaration should parse: {result:?}");
+        assert!(
+            matches!(result.unwrap(), Item::ClassDecl(_)),
+            "expected Item::ClassDecl"
+        );
     }
 
     // ─────────────────────────────────────────────────────────────────────────
@@ -2492,5 +3042,186 @@ mod tests {
             f.caps
         );
         assert_eq!(f.caps.len(), 4, "expected 4 caps, got {:?}", f.caps);
+    }
+
+    // ── Typeclass helpers ─────────────────────────────────────────────────────
+
+    fn parse_cls(src: &str) -> Result<ClassDecl, ParseError> {
+        let toks = lex(src);
+        let mut cur = Cursor::new(&toks);
+        let vis = parse_visibility(&mut cur).unwrap();
+        parse_class_decl(&mut cur, vis, None)
+    }
+
+    fn parse_inst(src: &str) -> Result<InstanceDecl, ParseError> {
+        let toks = lex(src);
+        let mut cur = Cursor::new(&toks);
+        parse_instance_decl(&mut cur, None)
+    }
+
+    // ── parse_class_decl_basic ────────────────────────────────────────────────
+    // `class Show a = \n    toText (x: a) -> Text` — minimal class.
+    #[test]
+    fn parse_class_decl_basic() {
+        // "Show" must be desugared to "ToText" in the parsed AST.
+        let src = "class Show a =\n    toText (x: a) -> Text\n";
+        let cd = parse_cls(src).expect("should parse");
+        assert_eq!(cd.name.text, "ToText", "Show must desugar to ToText");
+        assert_eq!(cd.ty_var.text, "a");
+        assert!(cd.superclasses.is_empty());
+        assert_eq!(cd.methods.len(), 1);
+        assert_eq!(cd.methods[0].name.text, "toText");
+    }
+
+    // ── parse_class_decl_with_superclass ─────────────────────────────────────
+    // `class Ord a where Eq a = compare (x: a) (y: a) -> Ordering`
+    #[test]
+    fn parse_class_decl_with_superclass() {
+        let src = "class Ord a where Eq a =\n    compare (x: a) (y: a) -> Ordering\n";
+        let cd = parse_cls(src).expect("should parse");
+        assert_eq!(cd.name.text, "Ord");
+        assert_eq!(cd.superclasses.len(), 1);
+        assert_eq!(cd.superclasses[0].class.text, "Eq");
+        assert_eq!(cd.superclasses[0].ty_var.text, "a");
+        assert_eq!(cd.methods.len(), 1);
+        assert_eq!(cd.methods[0].name.text, "compare");
+    }
+
+    // ── parse_class_decl_empty_body_p030 ─────────────────────────────────────
+    // An empty body must produce P030.
+    #[test]
+    fn parse_class_decl_empty_body_p030() {
+        let src = "class Foo a =\n    \n";
+        let err = parse_cls(src).expect_err("should fail");
+        assert_eq!(err.code(), "P030");
+    }
+
+    // ── parse_class_decl_fn_keyword_p030 ─────────────────────────────────────
+    // A method using the `fn` keyword must produce P030.
+    #[test]
+    fn parse_class_decl_fn_keyword_p030() {
+        let src = "class Foo a =\n    fn bar (x: a) -> Text\n";
+        let err = parse_cls(src).expect_err("should fail");
+        assert_eq!(err.code(), "P030");
+    }
+
+    // ── parse_instance_decl_basic ─────────────────────────────────────────────
+    // `instance Show Color = toText (c: Color) -> Text = "red"` — minimal instance.
+    #[test]
+    fn parse_instance_decl_basic() {
+        // Show→ToText desugar applies in instance heads too.
+        let src = "instance Show Color =\n    toText (c: Color) -> Text = \"red\"\n";
+        let id = parse_inst(src).expect("should parse");
+        assert_eq!(id.class.text, "ToText", "Show must desugar to ToText");
+        assert_eq!(id.methods.len(), 1);
+        assert_eq!(id.methods[0].name.text, "toText");
+    }
+
+    // ── parse_instance_decl_empty_body_p031 ───────────────────────────────────
+    // An empty instance body must produce P031.
+    #[test]
+    fn parse_instance_decl_empty_body_p031() {
+        let src = "instance Foo Color =\n    \n";
+        let err = parse_inst(src).expect_err("should fail");
+        assert_eq!(err.code(), "P031");
+    }
+
+    // ── parse_instance_where_on_head_p031 ────────────────────────────────────
+    // A `where` clause on an instance head is rejected with P031.
+    #[test]
+    fn parse_instance_where_on_head_p031() {
+        let src = "instance Foo Color where Bar Color =\n    foo (x: Color) -> Text = \"x\"\n";
+        let err = parse_inst(src).expect_err("should fail");
+        assert_eq!(err.code(), "P031");
+    }
+
+    // ── parse_fn_where_clause ─────────────────────────────────────────────────
+    // `fn f (x: a) -> Text where Show a = x` — desugars Show→ToText.
+    #[test]
+    fn parse_fn_where_clause() {
+        let src = "fn f (x: a) -> Text where Show a = x\n";
+        let fd = parse_fn(src).expect("should parse");
+        assert_eq!(fd.constraints.len(), 1);
+        assert_eq!(
+            fd.constraints[0].class.text, "ToText",
+            "Show must desugar to ToText in where clause"
+        );
+        assert_eq!(fd.constraints[0].ty_var.text, "a");
+    }
+
+    // ── parse_fn_no_where_clause ──────────────────────────────────────────────
+    // An ordinary fn without a where clause has empty constraints.
+    #[test]
+    fn parse_fn_no_where_clause() {
+        let src = "fn greet (name: Text) -> Text = \"hi\"\n";
+        let fd = parse_fn(src).expect("should parse");
+        assert!(
+            fd.constraints.is_empty(),
+            "unconstrained fn must have empty constraints"
+        );
+    }
+
+    // ── parse_deriving_basic ──────────────────────────────────────────────────
+    // `type Color = Red | Green | Blue deriving (Show, Eq, Ord)`.
+    #[test]
+    fn parse_deriving_basic() {
+        let src = "type Color = Red | Green | Blue deriving (Show, Eq, Ord)\n";
+        let td = parse_td(src).expect("should parse");
+        assert_eq!(td.deriving.len(), 3);
+        assert_eq!(
+            td.deriving[0].text, "ToText",
+            "Show must desugar to ToText in deriving list"
+        );
+        assert_eq!(td.deriving[1].text, "Eq");
+        assert_eq!(td.deriving[2].text, "Ord");
+    }
+
+    // ── parse_show_alias_desugars ─────────────────────────────────────────────
+    // Confirm the AST never contains the string "Show" as a class name.
+    #[test]
+    fn parse_show_alias_desugars() {
+        // Class declaration with Show.
+        let src_class = "class Show a =\n    toText (x: a) -> Text\n";
+        let cd = parse_cls(src_class).expect("class should parse");
+        assert_ne!(
+            cd.name.text, "Show",
+            "class name must not be Show after desugar"
+        );
+
+        // Instance declaration with Show.
+        let src_inst = "instance Show Color =\n    toText (c: Color) -> Text = \"x\"\n";
+        let id = parse_inst(src_inst).expect("instance should parse");
+        assert_ne!(
+            id.class.text, "Show",
+            "instance class must not be Show after desugar"
+        );
+
+        // Deriving clause with Show.
+        let src_type = "type C = A | B deriving (Show)\n";
+        let td = parse_td(src_type).expect("type should parse");
+        assert!(
+            td.deriving.iter().all(|n| n.text != "Show"),
+            "deriving list must not contain Show after desugar"
+        );
+
+        // Where clause with Show.
+        let src_fn = "fn f (x: a) -> Text where Show a = x\n";
+        let fd = parse_fn(src_fn).expect("fn should parse");
+        assert!(
+            fd.constraints.iter().all(|c| c.class.text != "Show"),
+            "where clause must not contain Show after desugar"
+        );
+    }
+
+    // ── parse_type_no_deriving ────────────────────────────────────────────────
+    // A type without a deriving clause has an empty deriving list.
+    #[test]
+    fn parse_type_no_deriving() {
+        let src = "type Color = Red | Green | Blue\n";
+        let td = parse_td(src).expect("should parse");
+        assert!(
+            td.deriving.is_empty(),
+            "type without deriving must have empty deriving list"
+        );
     }
 }

@@ -359,9 +359,10 @@ impl<'ast> Visit<'ast> for TopLevelCollector {
     #[allow(clippy::too_many_lines)] // exhaustive match over all Item variants with synthesis
     fn visit_item(&mut self, i: &'ast ridge_ast::Item) {
         match i {
-            Item::Import(_) => {
-                // Imports are skipped — they do not add to the symbol table.
-            }
+            // Imports, class declarations, and instance declarations add no
+            // symbols to the module-level symbol table. Class/instance semantic
+            // passes are deferred to a later release.
+            Item::Import(_) | Item::ClassDecl(_) | Item::InstanceDecl(_) => {}
             Item::Fn(d) => {
                 let vis = resolve_visibility(d.vis, &d.name.text);
                 self.push(
@@ -618,6 +619,7 @@ mod tests {
             name: id(name),
             params: vec![],
             ret: None,
+            constraints: vec![],
             body: Body::Expr(unit_expr()),
             span: sp(),
             doc: None,
@@ -641,6 +643,7 @@ mod tests {
             name: id(name),
             params: vec![],
             body: TypeBody::Alias(prim_type_int()),
+            deriving: vec![],
             span: sp(),
             doc: None,
         })
@@ -663,6 +666,7 @@ mod tests {
                 alternatives,
                 span: sp(),
             }),
+            deriving: vec![],
             span: sp(),
             doc: None,
         })
@@ -685,6 +689,7 @@ mod tests {
                 fields: field_decls,
                 span: sp(),
             }),
+            deriving: vec![],
             span: sp(),
             doc: None,
         })

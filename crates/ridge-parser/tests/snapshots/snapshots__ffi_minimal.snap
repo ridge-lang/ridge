@@ -67,6 +67,7 @@ Module {
                         },
                     },
                 ),
+                constraints: [],
                 body: Ffi {
                     module: "erlang",
                     name: "+",

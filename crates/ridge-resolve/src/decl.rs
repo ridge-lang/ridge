@@ -73,6 +73,7 @@ mod tests {
             },
             params: vec![],
             ret: None,
+            constraints: vec![],
             body: Body::Ffi {
                 module: "erlang".to_owned(),
                 name: "length".to_owned(),

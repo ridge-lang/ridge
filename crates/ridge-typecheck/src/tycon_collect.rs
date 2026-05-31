@@ -1019,6 +1019,7 @@ mod tests {
             doc: None,
             vis: Visibility::Private,
             attrs: vec![],
+            constraints: vec![],
             body: Body::Expr(ridge_ast::Expr::Unit(ds())),
             span: ds(),
         };
@@ -1067,6 +1068,7 @@ mod tests {
             doc: None,
             vis: Visibility::Private,
             attrs: vec![],
+            constraints: vec![],
             body: Body::Expr(ridge_ast::Expr::Unit(ds())),
             span: ds(),
         };
@@ -1085,6 +1087,7 @@ mod tests {
             doc: None,
             vis: Visibility::Private,
             attrs: vec![],
+            constraints: vec![],
             body: Body::Expr(ridge_ast::Expr::Unit(ds())),
             span: ds(),
         };
@@ -1148,6 +1151,7 @@ mod tests {
             doc: None,
             vis: Visibility::Private,
             attrs: vec![],
+            constraints: vec![],
             body: Body::Expr(ridge_ast::Expr::Unit(ds())),
             span: ds(),
         };
@@ -1166,6 +1170,7 @@ mod tests {
             doc: None,
             vis: Visibility::Private,
             attrs: vec![],
+            constraints: vec![],
             body: Body::Expr(ridge_ast::Expr::Unit(ds())),
             span: ds(),
         };

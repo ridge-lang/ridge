@@ -620,6 +620,7 @@ mod tests {
             name: id(name),
             params: vec![Param::Bare(id("n"))],
             ret: None,
+            constraints: vec![],
             body: ridge_ast::Body::Expr(body),
             span: ds(),
             doc: None,
@@ -948,6 +949,7 @@ mod tests {
             },
             params: vec![],
             ret: None,
+            constraints: vec![],
             body: ridge_ast::Body::Expr(body),
             span: sp,
             doc: None,
@@ -1038,6 +1040,7 @@ mod tests {
                 span: param_span,
             })],
             ret: None,
+            constraints: vec![],
             body: ridge_ast::Body::Expr(Expr::Ident(Ident {
                 text: "x".to_string(),
                 span: body_ident_span,

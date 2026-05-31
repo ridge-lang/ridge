@@ -30,6 +30,7 @@ pub mod lit;
 pub mod module;
 pub mod pattern;
 pub mod ty;
+pub mod typeclass;
 pub mod visit;
 
 // Flatten the most commonly used types into the crate root for ergonomics.
@@ -49,6 +50,7 @@ pub use lit::Literal;
 pub use module::{Item, Module};
 pub use pattern::{FieldPattern, ListPatElem, Pattern};
 pub use ty::{FnType, RecordTypeField, Type};
+pub use typeclass::{ClassConstraint, ClassDecl, InstanceDecl, MethodDef, MethodSig};
 pub use visit::Visit;
 
 #[cfg(test)]

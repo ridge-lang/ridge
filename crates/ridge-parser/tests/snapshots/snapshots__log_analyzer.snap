@@ -419,6 +419,7 @@ Module {
                         },
                     },
                 ),
+                deriving: [],
                 span: Span {
                     start: 591,
                     end: 623,
@@ -533,6 +534,7 @@ Module {
                         },
                     },
                 ),
+                deriving: [],
                 span: Span {
                     start: 672,
                     end: 766,
@@ -589,6 +591,7 @@ Module {
                         },
                     },
                 ),
+                constraints: [],
                 body: Expr(
                     Block(
                         Block {
@@ -785,6 +788,7 @@ Module {
                         },
                     },
                 ),
+                constraints: [],
                 body: Expr(
                     Block(
                         Block {
@@ -1094,6 +1098,7 @@ Module {
                         },
                     },
                 ),
+                constraints: [],
                 body: Expr(
                     Block(
                         Block {
@@ -2099,6 +2104,7 @@ Module {
                         },
                     },
                 ),
+                constraints: [],
                 body: Expr(
                     Block(
                         Block {
@@ -2297,6 +2303,7 @@ Module {
                         },
                     },
                 ),
+                constraints: [],
                 body: Expr(
                     Block(
                         Block {
@@ -2600,6 +2607,7 @@ Module {
                         },
                     },
                 ),
+                constraints: [],
                 body: Expr(
                     Block(
                         Block {
@@ -2839,6 +2847,7 @@ Module {
                         },
                     },
                 ),
+                constraints: [],
                 body: Expr(
                     Block(
                         Block {
@@ -3391,6 +3400,7 @@ Module {
                         },
                     },
                 ),
+                constraints: [],
                 body: Expr(
                     Block(
                         Block {
@@ -3861,6 +3871,7 @@ Module {
                         },
                     },
                 ),
+                constraints: [],
                 body: Expr(
                     Block(
                         Block {

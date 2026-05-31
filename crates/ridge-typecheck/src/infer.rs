@@ -2272,6 +2272,7 @@ mod tests {
                 name: PrimitiveType::Int,
                 span: dummy_span(),
             }),
+            constraints: vec![],
             body: Body::Expr(Expr::Ident(make_ident("x"))),
             span: dummy_span(),
             doc: None,

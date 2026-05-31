@@ -36,6 +36,7 @@ use crate::{
         UnionTypeBody,
     },
     expr::{AskTimeout, FieldInit, InterpPart, LambdaParam, MatchArm, QualifiedName, RecordCtor},
+    typeclass::{ClassDecl, InstanceDecl},
     Block, Expr, FnType, Ident, Item, Module, Pattern, Type,
 };
 
@@ -140,6 +141,16 @@ pub trait Visit<'ast> {
         walk_actor_decl(self, d);
     }
 
+    /// Visit a `class` declaration.
+    fn visit_class_decl(&mut self, d: &'ast ClassDecl) {
+        walk_class_decl(self, d);
+    }
+
+    /// Visit an `instance` declaration.
+    fn visit_instance_decl(&mut self, d: &'ast InstanceDecl) {
+        walk_instance_decl(self, d);
+    }
+
     /// Visit a member declaration inside an actor body.
     fn visit_actor_member(&mut self, m: &'ast ActorMember) {
         walk_actor_member(self, m);
@@ -225,6 +236,8 @@ pub fn walk_item<'ast, V: Visit<'ast> + ?Sized>(v: &mut V, i: &'ast Item) {
         Item::Type(d) => v.visit_type_decl(d),
         Item::Fn(d) => v.visit_fn_decl(d),
         Item::Actor(d) => v.visit_actor_decl(d),
+        Item::ClassDecl(d) => v.visit_class_decl(d),
+        Item::InstanceDecl(d) => v.visit_instance_decl(d),
     }
 }
 
@@ -567,16 +580,19 @@ pub fn walk_const_decl<'ast, V: Visit<'ast> + ?Sized>(v: &mut V, d: &'ast ConstD
     v.visit_expr(&d.value);
 }
 
-/// Walk a [`TypeDecl`]: name, type params, and body.
+/// Walk a [`TypeDecl`]: name, type params, body, and deriving list.
 pub fn walk_type_decl<'ast, V: Visit<'ast> + ?Sized>(v: &mut V, d: &'ast TypeDecl) {
     v.visit_ident(&d.name);
     for tp in &d.params {
         v.visit_ident(tp);
     }
     v.visit_type_body(&d.body);
+    for class_name in &d.deriving {
+        v.visit_ident(class_name);
+    }
 }
 
-/// Walk a [`FnDecl`]: name, params, optional return type, and body.
+/// Walk a [`FnDecl`]: name, params, optional return type, constraints, and body.
 ///
 /// For `Body::Expr(e)` the expression is visited normally.
 /// For `Body::Ffi { .. }` there is no expression child to visit — the FFI
@@ -590,11 +606,62 @@ pub fn walk_fn_decl<'ast, V: Visit<'ast> + ?Sized>(v: &mut V, d: &'ast FnDecl) {
     if let Some(ret) = &d.ret {
         v.visit_type(ret);
     }
+    for constraint in &d.constraints {
+        v.visit_ident(&constraint.class);
+        v.visit_ident(&constraint.ty_var);
+    }
     match &d.body {
         Body::Expr(e) => v.visit_expr(e),
         Body::Ffi { .. } => {
             // FFI passthrough — no expression child to visit.
         }
+    }
+}
+
+/// Walk a [`ClassDecl`]: name, type variable, superclasses, and method signatures.
+pub fn walk_class_decl<'ast, V: Visit<'ast> + ?Sized>(v: &mut V, d: &'ast ClassDecl) {
+    use crate::typeclass::MethodSig;
+    v.visit_ident(&d.name);
+    v.visit_ident(&d.ty_var);
+    for sup in &d.superclasses {
+        v.visit_ident(&sup.class);
+        v.visit_ident(&sup.ty_var);
+    }
+    for method in &d.methods {
+        let MethodSig {
+            name, params, ret, ..
+        } = method;
+        v.visit_ident(name);
+        for param in params {
+            v.visit_param(param);
+        }
+        v.visit_type(ret);
+    }
+}
+
+/// Walk an [`InstanceDecl`]: class name, target type, and method definitions.
+pub fn walk_instance_decl<'ast, V: Visit<'ast> + ?Sized>(v: &mut V, d: &'ast InstanceDecl) {
+    use crate::typeclass::MethodDef;
+    use crate::Body;
+    v.visit_ident(&d.class);
+    v.visit_type(&d.ty);
+    for method in &d.methods {
+        let MethodDef {
+            name,
+            params,
+            ret,
+            body,
+            ..
+        } = method;
+        v.visit_ident(name);
+        for param in params {
+            v.visit_param(param);
+        }
+        v.visit_type(ret);
+        // Walk the body as an expression (Body::Expr equivalent).
+        // MethodDef stores the body directly as Expr, not Body enum.
+        let _ = Body::Expr; // silence unused import hint
+        v.visit_expr(body);
     }
 }
 

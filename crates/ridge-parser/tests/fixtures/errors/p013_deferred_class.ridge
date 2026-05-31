@@ -1,3 +1,3 @@
--- expect: P013
--- Trigger: `class` keyword is reserved/deferred to 0.2.0.
-class Eq a = unit
+-- expect: P030
+-- Trigger: a `class` declaration with no method body produces P030.
+class Eq a =

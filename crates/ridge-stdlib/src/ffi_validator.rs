@@ -190,6 +190,7 @@ mod tests {
             name: make_ident("testFn"),
             params,
             ret: None,
+            constraints: vec![],
             body: Body::Ffi {
                 module: module.to_owned(),
                 name: fn_name.to_owned(),
@@ -347,6 +348,7 @@ mod tests {
             name: make_ident("pureFunc"),
             params: vec![bare_param("x")],
             ret: None,
+            constraints: vec![],
             body: Body::Expr(ridge_ast::Expr::Unit(sp())),
             span: sp(),
             doc: None,

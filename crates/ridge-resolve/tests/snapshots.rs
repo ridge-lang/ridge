@@ -12,7 +12,8 @@
 use ridge_resolve::{
     assign_node_ids, build_module_graph, check_forbid_rules, collect_symbols,
     detect_cycles_authoritative, discover_workspace, resolve_imports, resolve_module_uses,
-    resolve_workspace, Binding, ImportTarget, ModuleId, ResolveError, SymbolTable,
+    resolve_workspace, Binding, ClassMethodIndex, ImportTarget, ModuleId, ResolveError,
+    SymbolTable,
 };
 use std::collections::BTreeMap;
 use std::fs;
@@ -457,8 +458,18 @@ fn t8_resolve_for_example(example_name: &str) -> (Vec<Option<Binding>>, Vec<Reso
         .first()
         .map_or([].as_slice(), Vec::as_slice);
 
-    let (bindings, errors) =
-        resolve_module_uses(pm.id, &pm.ast, &nid_map, &symbol_tables, module_imports);
+    // Build a class method index for this workspace.
+    let all_asts: Vec<&ridge_ast::Module> = g.modules.iter().map(|m| &*m.ast).collect();
+    let cmi = ClassMethodIndex::build(&all_asts);
+
+    let (bindings, errors) = resolve_module_uses(
+        pm.id,
+        &pm.ast,
+        &nid_map,
+        &symbol_tables,
+        module_imports,
+        Some(&cmi),
+    );
 
     // Invariant: bindings.len() == node_ids.len().
     assert_eq!(

@@ -1483,6 +1483,50 @@ fn lower_ident(ctx: &mut LowerCtx<'_>, ident: &Ident) -> IrExpr {
             }
         }
 
+        Some(Binding::ClassMethod { class_name, method }) => {
+            // Lower a bare class method reference to a dictionary projection.
+            //
+            // Two sub-cases, mirroring the `toText` dispatch in interp.rs:
+            //
+            // (a) Forward — the enclosing fn is constrained for this class:
+            //     emit `IrExpr::Field { base: Local("$dict_{Class}_{tyvid}"), field: method }`.
+            //
+            // (b) Static — monomorphic call site: the constraint solver placed a
+            //     `DictPlan::Static` in `dict_resolution`. Resolve it via
+            //     `resolve_dict_arg` (same helper used by `build_dict_args`) and
+            //     project the field out of the resulting dict expression.
+            //
+            // The outer `Expr::Call` node then applies this field-projection value
+            // to the user arguments; no extra dict args are prepended because the
+            // dictionary has already been embedded in the callee position.
+            // Prefer ctx.class_table (already a &ClassTable) when available;
+            // fall back to the workspace-level ClassTable.
+            let class_id = ctx
+                .class_table
+                .or_else(|| ctx.workspace.map(|ws| &ws.class_table))
+                .and_then(|ct| ct.id_by_name(class_name));
+
+            let dict_expr = if let Some(cid) = class_id {
+                resolve_dict_arg(ctx, cid, class_name, span)
+            } else {
+                // No workspace or unknown class — fall back to a unit literal.
+                let id = ctx.fresh_id(None);
+                IrExpr::Lit {
+                    id,
+                    value: IrLit::Unit,
+                    span,
+                }
+            };
+
+            let field_id = ctx.fresh_id(None);
+            IrExpr::Field {
+                id: field_id,
+                base: Box::new(dict_expr),
+                field: method.clone(),
+                span,
+            }
+        }
+
         Some(Binding::Error) => {
             // Name resolution already emitted an R### diagnostic; lower to
             // a Unit literal to suppress cascading L### errors.

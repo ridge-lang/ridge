@@ -24,7 +24,7 @@
 
 use std::collections::HashMap;
 
-use ridge_ast::{Item, Module};
+use ridge_ast::{self, Item, Module};
 use ridge_types::TyConId;
 use rustc_hash::{FxHashMap, FxHashSet};
 
@@ -189,12 +189,39 @@ fn collect_class_decls(modules: &[(u32, &Module)], ct: &mut ClassTable) {
                 .filter_map(|sc| ct.id_by_name(&sc.class.text))
                 .collect();
 
+            // The class type variable (e.g. `a` in `class Describe a`) is needed
+            // by the env-seeding pass so it can map occurrences of that name in
+            // param/ret types to the fresh TyVid allocated per call site.
+            let class_ty_var = decl.ty_var.text.clone();
+
             let method_sigs: Vec<MethodSig> = decl
                 .methods
                 .iter()
-                .map(|m| MethodSig {
-                    name: m.name.text.clone(),
-                    arity: m.params.len(),
+                .map(|m| {
+                    // Collect AST param types from annotated params. Bare params
+                    // have no type annotation; use the class type variable as a
+                    // fallback (the convention for single-param class methods).
+                    let ast_param_types: Vec<ridge_ast::Type> = m
+                        .params
+                        .iter()
+                        .map(|p| match p {
+                            ridge_ast::decl::Param::Annotated { ty, .. } => ty.clone(),
+                            ridge_ast::decl::Param::Bare(_) => ridge_ast::Type::Named {
+                                name: ridge_ast::Ident {
+                                    text: class_ty_var.clone(),
+                                    span: m.span,
+                                },
+                                span: m.span,
+                            },
+                        })
+                        .collect();
+                    MethodSig {
+                        name: m.name.text.clone(),
+                        arity: m.params.len(),
+                        ast_param_types,
+                        ast_ret_type: Some(m.ret.clone()),
+                        class_ty_var: class_ty_var.clone(),
+                    }
                 })
                 .collect();
 

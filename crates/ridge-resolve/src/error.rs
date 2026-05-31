@@ -4,7 +4,7 @@
 //! `ariadne` renderer) keys on these strings.  Never renumber an assigned code;
 //! only append new ones at the end.
 //!
-//! ## `ResolveError` (R001..R023, R999; R018 reserved)
+//! ## `ResolveError` (R001..R024, R999; R018 reserved)
 //!
 //! Produced during the name-resolution pass over source files.  Every variant
 //! carries a [`Span`] pointing to the offending source location and a stable
@@ -335,6 +335,23 @@ pub enum ResolveError {
         path: PathBuf,
     },
 
+    /// R024 — two distinct typeclasses declare the same method name, making a
+    /// bare reference to that name ambiguous.
+    ///
+    /// Qualify the call with the instance type or rename one of the methods to
+    /// eliminate the ambiguity.
+    #[error("method name `{name}` is declared by multiple classes: `{first_class}` and `{second_class}`")]
+    AmbiguousMethodName {
+        /// The method name that appears in more than one class.
+        name: String,
+        /// The first class that declares the method.
+        first_class: String,
+        /// The second (conflicting) class that declares the method.
+        second_class: String,
+        /// Span of the method reference that triggered the error.
+        span: Span,
+    },
+
     /// R999 — two AST nodes were assigned the same `NodeId` (signals a
     /// compiler bug, not a user error).
     #[error("internal error: NodeId collision in `{node_kind}`")]
@@ -376,6 +393,7 @@ impl ResolveError {
             Self::ActorStateMissingDefaultOrInit { .. } => "R021",
             Self::FfiOutsideStdlib { .. } => "R022",
             Self::LegacyRgExtension { .. } => "R023",
+            Self::AmbiguousMethodName { .. } => "R024",
             Self::InternalNodeIdCollision { .. } => "R999",
         }
     }
@@ -423,6 +441,7 @@ impl ResolveError {
             | Self::CapabilityListOnWrongDecl { span }
             | Self::ActorStateMissingDefaultOrInit { span, .. }
             | Self::FfiOutsideStdlib { span }
+            | Self::AmbiguousMethodName { span, .. }
             | Self::InternalNodeIdCollision { span, .. }
             | Self::DuplicateDeclaration {
                 second_span: span, ..

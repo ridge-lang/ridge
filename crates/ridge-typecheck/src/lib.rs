@@ -554,6 +554,17 @@ fn typecheck_module_inner(
     // Re-snapshot after anon TyCon interning so ctx.tycon_decls includes them.
     ctx.tycon_decls = arena.all().to_vec();
 
+    // Step B-pre: Seed one scheme per class method at lowest precedence.
+    // These bindings are entered first so that any same-named local fn or stdlib
+    // entry bound afterwards (by seed_stdlib_env or by the SCC fn-type step)
+    // overwrites them — implementing "class methods shadow at lowest precedence".
+    // The constraint deferral in `instantiate` then handles the rest: each call
+    // site that instantiates the scheme pushes a `Constraint` into
+    // `deferred_constraints`, which the solver later resolves as Static or Forward.
+    if let Some(ct) = class_table {
+        seed_class_method_schemes(&mut ctx, b, ct);
+    }
+
     // Step B: Seed env with prelude constructors + stdlib qualified bindings.
     seed_stdlib_env(&mut ctx, b, imports);
 
@@ -687,6 +698,92 @@ fn typecheck_module_inner(
     }
 }
 
+// ── Class method scheme seeding ────────────────────────────────────────────────
+
+/// Seeds one polymorphic scheme per class method into `ctx.env`.
+///
+/// The scheme has the shape `∀a. Fn{params, ret} with constraints=[Constraint{class, a}]`
+/// where `a` is a fresh `TyVid` and the param/ret types are derived from the
+/// class body's AST method signatures.
+///
+/// These bindings are entered at the LOWEST precedence layer: because `env.bind`
+/// inserts into the innermost (and only) frame, any subsequent binding for the
+/// same name — from stdlib seeding, user `fn` declarations, or local params —
+/// overwrites the method scheme, implementing correct shadowing.
+///
+/// When a method scheme is instantiated at a call site, `instantiate` in
+/// `instantiate.rs` defers the constraint into `ctx.deferred_constraints`.
+/// The SCC solver then resolves it as `Static` (concrete receiver) or retains
+/// it as `Forward` (polymorphic receiver), enabling the implicit-acquisition
+/// semantic described in the design (no explicit `where` clause required).
+fn seed_class_method_schemes(
+    ctx: &mut crate::ctx::InferCtx,
+    b: &ridge_types::BuiltinTyCons,
+    class_table: &crate::class_env::ClassTable,
+) {
+    use crate::tycon_collect::ast_type_to_ridge_type;
+    use ridge_types::{CapRow, CapabilitySet, Constraint, Scheme, Type};
+    use rustc_hash::FxHashMap;
+
+    for (class_id, class_info) in class_table.iter() {
+        for sig in &class_info.method_sigs {
+            // Skip methods whose AST types were not recorded (prelude methods
+            // registered without source; their ToText/Eq/Ord dispatch is handled
+            // by the existing interpolation path).
+            let Some(ast_ret) = &sig.ast_ret_type else {
+                continue;
+            };
+            if sig.ast_param_types.is_empty() {
+                continue;
+            }
+
+            // Allocate a fresh TyVid for the class type variable (e.g. `a`).
+            let class_tyvid = ctx.fresh_tyvid();
+
+            // Map the class type variable name to the fresh TyVid so that
+            // occurrences of it in param/ret types are resolved correctly.
+            let mut tyvar_map: FxHashMap<&str, ridge_types::TyVid> = FxHashMap::default();
+            if !sig.class_ty_var.is_empty() {
+                tyvar_map.insert(sig.class_ty_var.as_str(), class_tyvid);
+            }
+
+            let user_tycon_names = ctx.user_tycon_names.clone();
+
+            // Convert AST param types to Ridge types, substituting class_ty_var.
+            let param_types: Vec<Type> = sig
+                .ast_param_types
+                .iter()
+                .map(|ast_ty| ast_type_to_ridge_type(b, ctx, ast_ty, &user_tycon_names, &tyvar_map))
+                .collect();
+
+            // Convert AST return type.
+            let ret_type = ast_type_to_ridge_type(b, ctx, ast_ret, &user_tycon_names, &tyvar_map);
+
+            let fn_ty = Type::Fn {
+                params: param_types,
+                ret: Box::new(ret_type),
+                caps: CapRow::Concrete(CapabilitySet::PURE),
+            };
+
+            // Build a polymorphic scheme ∀[class_tyvid]. fn_ty with constraint.
+            let scheme = Scheme {
+                vars: vec![class_tyvid],
+                cap_vars: vec![],
+                ty: fn_ty,
+                constraints: vec![Constraint {
+                    class: class_id,
+                    ty: class_tyvid,
+                }],
+            };
+
+            // Seed at lowest precedence: bind under the method name.
+            // Subsequent bindings for the same name (user fns, stdlib) will
+            // overwrite this entry, keeping existing programs green.
+            ctx.env.bind(sig.name.clone(), scheme);
+        }
+    }
+}
+
 // ── Tests ──────────────────────────────────────────────────────────────────────
 
 #[cfg(test)]
@@ -778,6 +875,108 @@ mod tests {
         assert!(
             found,
             "expected real NodeId (from node_id_map) in inferred_caps, but none matched"
+        );
+    }
+
+    // ── Class method invocation typecheck tests ────────────────────────────────
+
+    /// Calling a class method on a concrete receiver infers the correct return type
+    /// with no T030 (ambiguous constraint) error.
+    #[test]
+    fn class_method_concrete_call_infers_ret_no_t030() {
+        let src = r#"
+class Describe a =
+    describe (x: a) -> Text
+
+type Color = Red | Green | Blue
+
+fn colorDesc (c: Color) -> Text =
+    match c
+        Red   -> "red"
+        Green -> "green"
+        Blue  -> "blue"
+
+instance Describe Color =
+    describe (x: Color) -> Text = colorDesc x
+
+pub fn test_call () -> Text =
+    describe Red
+"#;
+        let result = typecheck_snippet(src);
+        // No typecheck errors should fire (especially not T030).
+        let t030_count = result
+            .errors
+            .iter()
+            .filter(|e| e.1.code() == "T030")
+            .count();
+        assert_eq!(
+            t030_count, 0,
+            "T030 must not fire for a concrete method call; errors: {:?}",
+            result.errors
+        );
+        let all_errors: Vec<_> = result
+            .errors
+            .iter()
+            .filter(|e| e.1.code() != "T023")
+            .collect();
+        assert!(
+            all_errors.is_empty(),
+            "no typecheck errors expected for concrete method call; errors: {all_errors:?}"
+        );
+    }
+
+    /// `fn announce (x: a) -> Text = describe x` (NO explicit `where` clause)
+    /// must typecheck and the inferred scheme must carry the implicit constraint.
+    #[test]
+    fn class_method_implicit_constraint_acquisition() {
+        let src = r#"
+class Describe a =
+    describe (x: a) -> Text
+
+type Color = Red | Green | Blue
+
+fn colorDesc (c: Color) -> Text =
+    match c
+        Red   -> "red"
+        Green -> "green"
+        Blue  -> "blue"
+
+instance Describe Color =
+    describe (x: Color) -> Text = colorDesc x
+
+fn announce (x: a) -> Text =
+    describe x
+
+pub fn test_call () -> Text =
+    announce Red
+"#;
+        let result = typecheck_snippet(src);
+        // No T030 and no other fatal errors (implicit constraint should be retained).
+        let t030_count = result
+            .errors
+            .iter()
+            .filter(|e| e.1.code() == "T030")
+            .count();
+        assert_eq!(
+            t030_count, 0,
+            "T030 must not fire for implicit constraint acquisition; errors: {:?}",
+            result.errors
+        );
+        // The announce fn's scheme should carry a Describe constraint.
+        let has_constrained_announce = result
+            .typed
+            .modules
+            .iter()
+            .any(|m| m.schemes.values().any(|s| !s.constraints.is_empty()));
+        assert!(
+            has_constrained_announce,
+            "expected `announce` to have a constraint in its scheme; modules: {:?}",
+            result
+                .typed
+                .modules
+                .iter()
+                .map(|m| &m.schemes)
+                .collect::<Vec<_>>()
         );
     }
 }

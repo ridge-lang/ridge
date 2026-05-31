@@ -102,8 +102,8 @@ pub use qualified::{resolve_qualified_name, resolve_qualified_record_constructor
 pub use scope::{LocalEntry, LocalId, LocalKind, Scope, ScopeKind, ScopeStack};
 pub use stdlib_builtin::{lookup_stdlib, BuiltinStdlibModule, StdlibModuleId, BUILTINS};
 pub use symbol::{
-    apply_external_exports, collect_symbols, HandlerSig, StateField, SymbolEntry, SymbolKind,
-    SymbolTable,
+    apply_external_exports, collect_symbols, ClassMethodIndex, HandlerSig, StateField, SymbolEntry,
+    SymbolKind, SymbolTable,
 };
 pub use visibility::{resolve_visibility, ResolvedVisibility};
 pub use walker::resolve_module_uses;
@@ -358,6 +358,18 @@ pub fn resolve_workspace(ws: WorkspaceGraph) -> ResolvedWorkspace {
     let cycle_errors = imports::detect_cycles_authoritative(&ws, &import_result.imports);
     all_errors.extend(cycle_errors);
 
+    // Build the workspace-scoped class method index from all parsed modules.
+    // The index maps bare method names to the single class that declares them;
+    // cross-class name collisions are recorded so R024 fires at the use site.
+    let all_asts: Vec<&ridge_ast::Module> = g.modules.iter().map(|pm| &*pm.ast).collect();
+    let class_method_index = symbol::ClassMethodIndex::build(&all_asts);
+
+    // Collect R024 errors for ambiguous method names discovered during indexing.
+    // These are workspace-level errors (no per-module attribution needed); we
+    // attribute them to module 0 as a sentinel since they have no use-site yet.
+    // The actual per-use-site R024 is emitted by the walker below.
+    // (No workspace-level R024 needed here — the walker emits them at use sites.)
+
     // NodeId assignment + walker + capability enforcement + build ResolvedModule per module.
     let mut resolved_modules: Vec<ResolvedModule> = Vec::with_capacity(g.modules.len());
     for pm in &g.modules {
@@ -370,8 +382,14 @@ pub fn resolve_workspace(ws: WorkspaceGraph) -> ResolvedWorkspace {
             .map_or([].as_slice(), Vec::as_slice);
 
         // Walker + qualified-name resolution.
-        let (bindings, walker_errors) =
-            walker::resolve_module_uses(pm.id, &pm.ast, &nid_map, &symbol_tables, module_imports);
+        let (bindings, walker_errors) = walker::resolve_module_uses(
+            pm.id,
+            &pm.ast,
+            &nid_map,
+            &symbol_tables,
+            module_imports,
+            Some(&class_method_index),
+        );
         all_errors.extend(walker_errors.into_iter().map(|e| (pm.id, e)));
 
         // Capability enforcement.
@@ -458,9 +476,13 @@ pub fn resolve_module(ws: &WorkspaceGraph, id: ModuleId) -> ModuleResolveResult 
     let (nid_map, nid_errors) = node_id::assign_node_ids(&pm.ast);
     errors.extend(nid_errors);
 
+    // Build a minimal class method index from this single module.
+    let single_ast: Vec<&ridge_ast::Module> = vec![&pm.ast];
+    let cmi = symbol::ClassMethodIndex::build(&single_ast);
+
     let all_tables = vec![symbol::SymbolTable::empty(id)];
     let (bindings, walker_errors) =
-        walker::resolve_module_uses(pm.id, &pm.ast, &nid_map, &all_tables, &[]);
+        walker::resolve_module_uses(pm.id, &pm.ast, &nid_map, &all_tables, &[], Some(&cmi));
     errors.extend(walker_errors);
 
     // T10: capability enforcement.

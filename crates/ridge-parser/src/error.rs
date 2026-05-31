@@ -312,6 +312,33 @@ pub enum ParseError {
         limit: u32,
     },
 
+    /// P030 — a `class` declaration is structurally malformed.
+    ///
+    /// Fired when the body is empty, a method uses the `fn` keyword, or a
+    /// method signature contains a body expression. Write bare signatures:
+    /// `methodName (param: ParamType) -> RetType`.
+    #[error("malformed class declaration: {reason}")]
+    MalformedClassDecl {
+        /// Source location of the fault.
+        span: Span,
+        /// Human-readable description of the specific fault.
+        reason: String,
+    },
+
+    /// P031 — an `instance` declaration is structurally malformed.
+    ///
+    /// Fired when the body is empty, a method is missing its body expression,
+    /// or a `where` clause appears on the instance head (instance heads cannot
+    /// carry constraints in this release). Write full definitions:
+    /// `methodName (param: ParamType) -> RetType = body`.
+    #[error("malformed instance declaration: {reason}")]
+    MalformedInstanceDecl {
+        /// Source location of the fault.
+        span: Span,
+        /// Human-readable description of the specific fault.
+        reason: String,
+    },
+
     /// P999 — the lexer's bracket-suppression invariant was violated (should
     /// be unreachable; signals a lexer bug, not a user error).
     #[error("internal error: layout invariant violated inside bracketed region")]
@@ -348,6 +375,8 @@ impl ParseError {
             Self::RefutableSliceElement { .. } => "P026",
             Self::TestAttrArgNotString { .. } => "P027",
             Self::ExpressionTooDeep { .. } => "P028",
+            Self::MalformedClassDecl { .. } => "P030",
+            Self::MalformedInstanceDecl { .. } => "P031",
             Self::InternalLayoutInvariantViolated { .. } => "P999",
         }
     }
@@ -376,6 +405,8 @@ impl ParseError {
             | Self::RefutableSliceElement { span }
             | Self::TestAttrArgNotString { span }
             | Self::ExpressionTooDeep { span, .. }
+            | Self::MalformedClassDecl { span, .. }
+            | Self::MalformedInstanceDecl { span, .. }
             | Self::InternalLayoutInvariantViolated { span } => *span,
         }
     }
@@ -468,5 +499,29 @@ mod tests {
         let span = Span::new(3, 7);
         let e = ParseError::LayoutMismatch { span, hint: "test" };
         assert_eq!(e.span(), span);
+    }
+
+    #[test]
+    fn p030_code_and_display() {
+        let e = ParseError::MalformedClassDecl {
+            span: Span::new(0, 5),
+            reason: "class body must contain at least one method signature".to_string(),
+        };
+        assert_eq!(e.code(), "P030");
+        let msg = e.to_string();
+        assert!(msg.contains("malformed class declaration"));
+        assert!(msg.contains("at least one method"));
+    }
+
+    #[test]
+    fn p031_code_and_display() {
+        let e = ParseError::MalformedInstanceDecl {
+            span: Span::new(0, 8),
+            reason: "instance body must contain at least one method definition".to_string(),
+        };
+        assert_eq!(e.code(), "P031");
+        let msg = e.to_string();
+        assert!(msg.contains("malformed instance declaration"));
+        assert!(msg.contains("at least one method"));
     }
 }

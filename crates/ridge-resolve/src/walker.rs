@@ -514,8 +514,10 @@ impl<'ast> Visit<'ast> for ScopeWalker<'_> {
 
     fn visit_item(&mut self, i: &'ast Item) {
         match i {
-            // Imports are handled by T7; Type resolution is Phase 4.
-            Item::Import(_) | Item::Type(_) => {}
+            // Imports, type declarations, and typeclass declarations are
+            // handled by other passes; skip in the use-site resolver.
+            // Class/instance semantic passes are deferred to a later release.
+            Item::Import(_) | Item::Type(_) | Item::ClassDecl(_) | Item::InstanceDecl(_) => {}
             Item::Const(d) => {
                 // Const value: resolve use-sites in the value expression.
                 // The const name itself is a module symbol, not a local.

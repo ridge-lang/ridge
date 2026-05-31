@@ -150,7 +150,9 @@ fn check_item(
         // so walk them too.
         Item::Type(decl) => check_type_body(&decl.body, project, workspace, errors),
         Item::Const(decl) => check_type(&decl.ty, project, workspace, errors),
-        Item::Import(_) => {}
+        // Import and typeclass declarations carry no capability annotations.
+        // Class/instance semantic passes are deferred to a later release.
+        Item::Import(_) | Item::ClassDecl(_) | Item::InstanceDecl(_) => {}
     }
 }
 

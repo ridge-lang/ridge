@@ -2,6 +2,7 @@
 
 use crate::{
     decl::{ActorDecl, ConstDecl, FnDecl, ImportDecl, TypeDecl},
+    typeclass::{ClassDecl, InstanceDecl},
     DocComment, Span,
 };
 
@@ -20,10 +21,6 @@ pub struct Module {
 }
 
 /// A top-level declaration in a Ridge module (grammar §2.1 line 303).
-///
-/// `ClassDecl`, `InstanceDecl`, and `TraitDecl` are reserved keywords with no
-/// grammar productions in 0.1.0 (grammar §1.2 simplifying assumption 6).
-/// The parser emits `P013 DeferredFeature` if it encounters those keywords.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Item {
     /// An `import` declaration.
@@ -36,4 +33,13 @@ pub enum Item {
     Fn(FnDecl),
     /// An `actor` declaration.
     Actor(ActorDecl),
+    /// A `class` declaration (typeclass definition).
+    ///
+    /// Parsed from 0.2.13 onwards. Semantic passes (resolve, typecheck,
+    /// lower) handle these items in later cuts.
+    ClassDecl(ClassDecl),
+    /// An `instance` declaration (typeclass instance).
+    ///
+    /// Parsed from 0.2.13 onwards. Semantic passes handle these in later cuts.
+    InstanceDecl(InstanceDecl),
 }

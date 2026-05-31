@@ -9,7 +9,9 @@
 //! - [`ActorDecl`] / [`ActorMember`] / [`StateDecl`] / [`InitDecl`] /
 //!   [`OnHandler`]  — grammar §5
 
-use crate::{Block, Capability, DocComment, Expr, Ident, Span, Type, Visibility};
+use crate::{
+    typeclass::ClassConstraint, Block, Capability, DocComment, Expr, Ident, Span, Type, Visibility,
+};
 
 // ── Attribute ─────────────────────────────────────────────────────────────────
 
@@ -143,6 +145,7 @@ pub struct ConstDecl {
 /// type User  = { name: Text, age: Int }
 /// type Option a = None | Some a
 /// type UserId = Text
+/// type Color = Red | Green | Blue deriving (ToText, Eq, Ord)
 /// ```
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TypeDecl {
@@ -154,6 +157,11 @@ pub struct TypeDecl {
     pub params: Vec<Ident>,
     /// The type body: record, union, or alias.
     pub body: TypeBody,
+    /// Classes to derive instances for (empty = no `deriving` clause).
+    ///
+    /// `Show` is desugared to `ToText` at parse time; entries here always use
+    /// canonical class names.
+    pub deriving: Vec<Ident>,
     /// Span covering the whole declaration.
     pub span: Span,
     /// Attached doc comment (set to `None` in T10; T11 fills this).
@@ -233,6 +241,7 @@ pub enum Constructor {
 /// ```text
 /// fn greet (name: Text) -> Text = $"Hello, ${name}"
 /// pub fn io log (msg: Text) -> Unit = Io.println msg
+/// fn describe (x: a) -> Text where ToText a = $"${x}"
 /// @test "greet returns hello"
 /// fn test_greet () -> Result Unit Text = Ok ()
 /// ```
@@ -254,6 +263,11 @@ pub struct FnDecl {
     pub params: Vec<Param>,
     /// Optional return type after `->`.
     pub ret: Option<Type>,
+    /// Class constraints from an optional `where` clause (empty = unconstrained).
+    ///
+    /// `Show` is desugared to `ToText` at parse time; entries here always use
+    /// canonical class names.
+    pub constraints: Vec<ClassConstraint>,
     /// The function body — either a normal expression or an FFI passthrough.
     ///
     /// `Body::Expr` is the common case (all non-stdlib functions).

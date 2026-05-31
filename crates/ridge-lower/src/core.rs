@@ -575,13 +575,33 @@ pub fn lower_expr(ctx: &mut LowerCtx<'_>, expr: &Expr) -> IrExpr {
                 };
             }
 
+            // Dictionary-passing: when the callee is a constrained fn,
+            // prepend one dict argument per constraint in the callee's scheme.
+            //
+            // For `DictPlan::Static`: the concrete type was resolved by the
+            // constraint solver. The dict arg references the module-level
+            // instance dict constant `$inst_{ClassName}_{TypeName}`.
+            //
+            // For `DictPlan::Forward`: the caller is itself constrained for the
+            // same class → forward the caller's own incoming dict param
+            // `$dict_{ClassName}_{TyVar}`.
+            //
+            // When neither can be resolved (test scaffolding without a wired
+            // workspace, or the callee has no constraint entry), the dict arg
+            // falls back to `IrExpr::Lit(Unit)` — a defensive no-op that keeps
+            // the compiler from crashing. Real programs will have all dict plans
+            // resolved by the typecheck pass.
+            let dict_args = build_dict_args(ctx, &ir_callee, *span);
+            let all_args: Vec<IrExpr> = dict_args.into_iter().chain(ir_args.clone()).collect();
+
             let call = IrExpr::Call {
                 id,
                 callee: Box::new(ir_callee),
-                args: ir_args.clone(),
+                args: all_args,
                 span: *span,
             };
             // B-3: wrap in a synthetic Lambda if partial application is detected.
+            // Pass `ir_args` (user-only args, not dict args) for the arity check.
             wrap_partial_application_if_needed(ctx, call, &ir_args, callee_node_type, *span)
         }
 
@@ -833,6 +853,151 @@ fn resolve_actor_module(ctx: &mut LowerCtx<'_>, actor_ident: &ridge_ast::Ident) 
 
     // Step 3: current-module fallback.
     ctx.module_id
+}
+
+// ── Dictionary-passing helpers ────────────────────────────────────────────────
+
+/// Build the implicit dictionary arguments to prepend before user args when
+/// calling a constrained function.
+///
+/// Inspects the lowered callee: when it is a `SymbolRef::Local` whose fn has
+/// constraints in the workspace scheme table, one dict arg is produced per
+/// constraint.
+///
+/// Resolution strategy (in order):
+///
+/// 1. **Static** (`DictPlan::Static`): the constraint resolved to a known
+///    `(ClassId, TyConId)` pair. The dict arg is the module-level instance
+///    dict constant `$inst_{ClassName}_{TypeName}`.
+/// 2. **Forward** (`DictPlan::Forward`): the caller is itself constrained for
+///    the same class. The dict arg is the caller's own incoming dict param
+///    `$dict_{ClassName}_{TyVar}`.
+/// 3. **Fallback**: no resolution available (test scaffolding without a wired
+///    workspace). Returns `IrExpr::Lit(Unit)` as a defensive placeholder.
+fn build_dict_args(ctx: &mut LowerCtx<'_>, callee: &IrExpr, span: Span) -> Vec<IrExpr> {
+    // Only `SymbolRef::Local` callees can be constrained top-level fns.
+    let callee_name = match callee {
+        IrExpr::Symbol {
+            sym: SymbolRef::Local { name, .. },
+            ..
+        } => name.clone(),
+        _ => return vec![],
+    };
+
+    // Look up the callee's constraints. Returns `&[]` for unknown fns.
+    let constraints = ctx.lookup_fn_constraints(&callee_name).to_vec();
+    if constraints.is_empty() {
+        return vec![];
+    }
+
+    let mut dict_args: Vec<IrExpr> = Vec::with_capacity(constraints.len());
+
+    for c in &constraints {
+        let class_name = ctx.class_name(c.class).unwrap_or("Unknown").to_owned();
+
+        // Try to find a dict resolution for this constraint.
+        let dict_expr = resolve_dict_arg(ctx, c.class, &class_name, span);
+        dict_args.push(dict_expr);
+    }
+
+    dict_args
+}
+
+/// Resolve the dictionary value for one constraint at a call site.
+///
+/// Looks up `ctx.workspace`'s `dict_resolution` for the current module,
+/// then falls back to a forward-param reference if the caller is constrained
+/// for the same class, and finally to a unit literal as a defensive no-op.
+fn resolve_dict_arg(
+    ctx: &mut LowerCtx<'_>,
+    class: ridge_types::ClassId,
+    class_name: &str,
+    span: Span,
+) -> IrExpr {
+    // Determine whether the CALLER is itself constrained for this class.
+    // If so, use the Forward path (forward the caller's own incoming dict param).
+    // This is the correct dispatch for polymorphic call sites:
+    //   - `fn announce (x: a) -> Text where Show a = describe x` → forward
+    //   - `fn main_static () -> Text = describe Red` → no caller constraint → Static
+    let caller_constraint = ctx
+        .current_fn_constraints
+        .iter()
+        .find(|c| c.class == class)
+        .cloned();
+
+    if let Some(c) = caller_constraint {
+        let id = ctx.fresh_id(None);
+        return IrExpr::Local {
+            id,
+            name: format!("$dict_{class_name}_{}", c.ty.0),
+            span,
+        };
+    }
+
+    // The caller is not constrained for this class — it is a monomorphic call
+    // site. Search for a DictPlan::Static entry in the module's dict_resolution
+    // that applies to this ClassId. For 0.2.13 with single-param non-generic
+    // instances, there is at most one Static entry per ClassId per call scope.
+    if let Some(plan) = ctx
+        .workspace
+        .and_then(|ws| ws.modules.get(ctx.module_id.0 as usize))
+        .and_then(|tmod| {
+            tmod.dict_resolution
+                .iter()
+                .find(|((cid, _), plan)| {
+                    *cid == class && matches!(plan, ridge_typecheck::DictPlan::Static { .. })
+                })
+                .map(|(_, plan)| plan.clone())
+        })
+    {
+        return dict_plan_to_expr(ctx, plan, class_name, span);
+    }
+
+    // Defensive no-op: emit a unit literal. This should not happen in
+    // well-typed programs — a typecheck error would fire for missing instances.
+    let id = ctx.fresh_id(None);
+    IrExpr::Lit {
+        id,
+        value: ridge_ir::IrLit::Unit,
+        span,
+    }
+}
+
+/// Convert a resolved [`DictPlan`] to the `IrExpr` that threads the dictionary.
+fn dict_plan_to_expr(
+    ctx: &mut LowerCtx<'_>,
+    plan: ridge_typecheck::DictPlan,
+    class_name: &str,
+    span: Span,
+) -> IrExpr {
+    use ridge_typecheck::DictPlan;
+    match plan {
+        DictPlan::Static { tycon, .. } => {
+            // Look up the type's source name from the TyCon arena.
+            let type_name = ctx
+                .workspace
+                .and_then(|ws| ws.tycons.get(tycon.0 as usize))
+                .map_or_else(|| format!("TyCon{}", tycon.0), |decl| decl.name.clone());
+            let dict_const_name = format!("$inst_{class_name}_{type_name}");
+            let id = ctx.fresh_id(None);
+            IrExpr::Symbol {
+                id,
+                sym: SymbolRef::Local {
+                    name: dict_const_name,
+                    module: ctx.module_id,
+                },
+                span,
+            }
+        }
+        DictPlan::Forward(c) => {
+            let id = ctx.fresh_id(None);
+            IrExpr::Local {
+                id,
+                name: format!("$dict_{class_name}_{}", c.ty.0),
+                span,
+            }
+        }
+    }
 }
 
 // ── Lambda, record, and call helpers ─────────────────────────────────────────

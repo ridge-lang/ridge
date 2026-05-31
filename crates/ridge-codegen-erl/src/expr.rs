@@ -71,17 +71,22 @@ use ridge_ir::{AssignTarget, CtorKind, IrExpr, IrLit, IrParam, IrPat, SymbolRef}
 /// SSA suffixes (`V_Count1`, `V_Count2`, …) are managed by `LocalScope`
 /// — this function only implements the base mangling.
 pub(crate) fn name_to_erl_var(name: &str) -> String {
-    // 1. Strip leading underscores.
-    let stripped = name.trim_start_matches('_');
+    // 1. Replace `$` with `D` (dollar sign is not valid in Erlang variable
+    //    names). Dictionary parameter names use `$` as a sigil (e.g.
+    //    `$dict_ToText_0`); replace it so the generated variable is legal.
+    let no_dollar = name.replace('$', "D");
 
-    // 2. Split on '_', capitalise each non-empty segment, join.
+    // 2. Strip leading underscores.
+    let stripped = no_dollar.trim_start_matches('_');
+
+    // 3. Split on '_', capitalise each non-empty segment, join.
     let capitalised: String = stripped
         .split('_')
         .filter(|seg| !seg.is_empty())
         .map(capitalise_first)
         .collect();
 
-    // 3. Prepend the `V_` prefix.
+    // 4. Prepend the `V_` prefix.
     format!("V_{capitalised}")
 }
 
@@ -979,7 +984,22 @@ fn lower_construct(
 
 // ── §4.13 Field lowering ──────────────────────────────────────────────────────
 
-/// Lower `IrExpr::Field` to `call 'maps':'get'(Atom key, base)` (§4.13).
+/// Lower `IrExpr::Field` to `call 'maps':'get'(Atom key, base)` (§4.13),
+/// with a static-resolution peephole for typeclass dictionaries.
+///
+/// # Static peephole (dictionary lowering)
+///
+/// When `base` is a literal `IrExpr::Construct { ctor: Record, fields }` (an
+/// instance dictionary) and `fields` contains a pair whose key matches `field`,
+/// the lookup is folded at codegen time: instead of emitting
+/// `call 'maps':'get'(Key, #{...})` the matched value is emitted directly.
+///
+/// This fires for every call site where the dict arg is a literal `MapLit`
+/// (i.e. `DictPlan::Static` was resolved). Under coherence, essentially every
+/// monomorphic call site is static, so dispatch overhead is near-zero.
+///
+/// The peephole only applies to syntactically-literal `Construct` nodes — it
+/// does NOT apply to variables or `Local` references that happen to hold a map.
 ///
 /// Argument order follows Erlang's `maps:get/2` convention: `(Key, Map)`.
 fn lower_field(
@@ -989,6 +1009,23 @@ fn lower_field(
     scope: &mut LocalScope,
 ) -> Result<CErlExpr, CodegenError> {
     let _ = span; // span carried in error variants only; no use here
+
+    // Static-dict peephole: fold `maps:get(K, #{K => V, ...})` → `V`.
+    if let IrExpr::Construct {
+        ctor:
+            ridge_ir::SymbolRef::Constructor {
+                ctor_kind: ridge_ir::CtorKind::Record,
+                ..
+            },
+        fields,
+        ..
+    } = base
+    {
+        if let Some((_key, value)) = fields.iter().find(|(k, _)| k == field) {
+            return lower_expr_in_scope(value, scope);
+        }
+    }
+
     let key = CErlExpr::Lit(CErlLit::Atom(CErlAtom(field.into())));
     let base_expr = lower_expr_in_scope(base, scope)?;
     Ok(CErlExpr::Call {
@@ -3385,6 +3422,83 @@ mod tests {
         assert!(
             matches!(result, CErlExpr::Lit(CErlLit::Atom(CErlAtom(ref s))) if s == "Red"),
             "nullary variant must emit bare atom 'Red', got {result:?}"
+        );
+    }
+
+    // ── Static-dict peephole ──────────────────────────────────────────────────
+
+    /// `IrExpr::Field { base: Construct(Record, [(K, V)]), field: K }` folds to
+    /// `V` directly — no `maps:get` call emitted (static-dict peephole).
+    ///
+    /// This exercises the typeclass dictionary lowering path: when the dict arg
+    /// is a literal [`IrExpr::Construct`] (Record kind), `lower_field` detects
+    /// the key statically and skips the runtime map lookup.
+    #[test]
+    fn field_on_literal_record_construct_peephole_fires() {
+        use ridge_ir::{CtorKind, SymbolRef};
+        use ridge_types::TyConId;
+
+        // Build a literal dict: `#{ 'toText' => 42 }` (an int stands in for a fun ref).
+        let method_value = IrExpr::Lit {
+            id: node(),
+            value: IrLit::Int(42),
+            span: sp(),
+        };
+        let dict = IrExpr::Construct {
+            id: node(),
+            ctor: SymbolRef::Constructor {
+                ctor_kind: CtorKind::Record,
+                owner_type: TyConId(0),
+                name: "$inst_Show_Color".into(),
+                variant: 0,
+            },
+            fields: vec![("toText".into(), method_value)],
+            span: sp(),
+        };
+
+        // Projection: `dict.toText` — should fold to the value directly.
+        let field_expr = IrExpr::Field {
+            id: node(),
+            base: Box::new(dict),
+            field: "toText".into(),
+            span: sp(),
+        };
+
+        let result = lower_expr(&field_expr).unwrap();
+
+        // The peephole must have fired: result is the Int(42), NOT a maps:get call.
+        assert!(
+            matches!(result, CErlExpr::Lit(CErlLit::Int(42))),
+            "static-dict peephole must fold to the value directly, got {result:?}"
+        );
+    }
+
+    /// `IrExpr::Field` on a non-literal base (e.g. a `Local` variable) must NOT
+    /// fire the peephole — it emits the standard `maps:get` call.
+    #[test]
+    fn field_on_local_variable_does_not_peephole() {
+        let dict_var = IrExpr::Local {
+            id: node(),
+            name: "$dict_Show_0".into(),
+            span: sp(),
+        };
+        let field_expr = IrExpr::Field {
+            id: node(),
+            base: Box::new(dict_var),
+            field: "toText".into(),
+            span: sp(),
+        };
+
+        let result = lower_expr(&field_expr).unwrap();
+
+        // Must be a `maps:get` call — peephole must NOT fire for non-literals.
+        assert!(
+            matches!(
+                &result,
+                CErlExpr::Call { module, fn_name, .. }
+                    if module.0 == "maps" && fn_name.0 == "get"
+            ),
+            "non-literal base must emit maps:get, got {result:?}"
         );
     }
 }

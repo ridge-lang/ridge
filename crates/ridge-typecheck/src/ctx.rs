@@ -282,6 +282,15 @@ pub struct InferCtx {
     /// Pre-typeclass code never adds to this list; the solver is a no-op when
     /// it is empty, so unconstrained modules are completely unaffected.
     pub deferred_constraints: Vec<ridge_types::Constraint>,
+
+    /// Per-constraint dictionary resolution plan accumulated across all SCCs.
+    ///
+    /// Each SCC's solver run merges its `DictResolution` into this map.
+    /// Moved into `TypedModule.dict_resolution` at module-end.
+    ///
+    /// Empty for modules with no constrained functions (the common pre-typeclass
+    /// case) — reading it is always safe.
+    pub dict_resolution_accum: crate::solve::DictResolution,
 }
 
 impl InferCtx {
@@ -303,6 +312,7 @@ impl InferCtx {
             schemes_accum: FxHashMap::default(),
             anon_records: AnonRecordTable::default(),
             deferred_constraints: Vec::new(),
+            dict_resolution_accum: rustc_hash::FxHashMap::default(),
         }
     }
 

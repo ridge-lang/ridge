@@ -55,7 +55,7 @@ pub use ridge_types::{MatchWitness, WitnessKind, WitnessPat};
 
 use ridge_ast::Item;
 use ridge_resolve::{build_module_graph, ModuleId, NodeId, ResolvedWorkspace};
-use ridge_types::{AnonRecordTable, CapabilitySet, Scheme, TyConArena, TyConDecl, Type};
+use ridge_types::{AnonRecordTable, CapabilitySet, Scheme, TyConArena, TyConDecl, TyConId, Type};
 use rustc_hash::FxHashMap;
 use std::sync::Arc;
 
@@ -105,6 +105,17 @@ pub struct TypedWorkspace {
     /// `Type::Record` AST nodes without re-interning.  Read-only after
     /// `typecheck_workspace` returns.
     pub anon_records: AnonRecordTable,
+    /// Workspace-level class registry (name → `ClassId` + metadata).
+    ///
+    /// Populated by the collect pass when class/instance declarations are
+    /// present. Empty for pre-typeclass workspaces; consumers must treat an
+    /// empty table as equivalent to "no typeclasses defined".
+    pub class_table: ClassTable,
+    /// Workspace-level instance registry (`(ClassId, TyConId)` → instance metadata).
+    ///
+    /// Populated by the collect pass. Used by the lowering pass to determine
+    /// which dictionary value to thread at each constrained call site.
+    pub instance_env: InstanceEnv,
 }
 
 /// A single module after type-checking.
@@ -173,6 +184,59 @@ pub fn typecheck_workspace(ws: &ResolvedWorkspace) -> TypecheckResult {
     // Merged anonymous record table across all modules.
     let mut workspace_anon_records: AnonRecordTable = AnonRecordTable::default();
 
+    // Step 2b: Pre-collect user TyCon names from ALL modules to build a
+    // name → TyConId map for the collect pass. This lets the collect pass
+    // resolve user-defined instance head types (e.g. `instance ToText Color`
+    // → `TyConId` for `Color`) without needing the full TyConArena.
+    //
+    // We predict the TyConIds by scanning the AST names in source order.
+    // Each TypeDecl and ActorDecl allocates exactly one ID in the arena
+    // (in the order they appear across modules). The arena currently holds
+    // only the built-in TyCons, so the next ID is `arena.all().len()`.
+    // We replicate the collect_user_tycons pass-1 ID assignment here.
+    let mut workspace_tycon_names: FxHashMap<String, TyConId> = FxHashMap::default();
+    #[expect(
+        clippy::cast_possible_truncation,
+        reason = "arena size is bounded by program size; exceeding 2^32 TyCons is not realistic"
+    )]
+    let mut next_id = arena.all().len() as u32;
+    for pm in &module_graph.modules {
+        for item in &pm.ast.items {
+            let name = match item {
+                Item::Type(td) => Some(td.name.text.clone()),
+                Item::Actor(ad) => Some(ad.name.text.clone()),
+                _ => None,
+            };
+            if let Some(n) = name {
+                // Only record if not already present (same name declared in
+                // multiple modules — take the first occurrence).
+                workspace_tycon_names.entry(n).or_insert_with(|| {
+                    let id = TyConId(next_id);
+                    next_id += 1;
+                    id
+                });
+            }
+        }
+    }
+
+    // Run the workspace collect pass to build the class/instance registries.
+    // This runs over all module ASTs before any module is type-checked so the
+    // solver sees every instance.
+    let module_ast_pairs: Vec<(u32, &ridge_ast::Module)> = module_graph
+        .modules
+        .iter()
+        .map(|pm| (pm.id.0, pm.ast.as_ref()))
+        .collect();
+    let collect_result = collect_workspace(&module_ast_pairs, &workspace_tycon_names);
+    // Coherence errors are workspace-level; accumulate them tagged with the
+    // module they originated in (use ModuleId(0) as a fallback — coherence
+    // errors carry their own span, so the module tag is informational only).
+    for err in collect_result.errors {
+        all_errors.push((ModuleId(0), err));
+    }
+    let class_table = collect_result.class_table;
+    let instance_env = collect_result.instance_env;
+
     // Step 3: Type-check each module.
     for rm in &ws.modules {
         // Find the corresponding parsed module (by ModuleId).
@@ -198,7 +262,15 @@ pub fn typecheck_workspace(ws: &ResolvedWorkspace) -> TypecheckResult {
             continue;
         };
 
-        let result = typecheck_module_inner(rm.id, &ast, &rm.imports, &mut arena, &b);
+        let result = typecheck_module_inner(
+            rm.id,
+            &ast,
+            &rm.imports,
+            &mut arena,
+            &b,
+            Some(&class_table),
+            Some(&instance_env),
+        );
         all_errors.extend(result.errors.into_iter().map(|e| (rm.id, e)));
         // Merge this module's anon_records (last-write wins; same shapes share
         // the same TyConId workspace-wide because the arena is shared).
@@ -215,6 +287,8 @@ pub fn typecheck_workspace(ws: &ResolvedWorkspace) -> TypecheckResult {
             tycons,
             builtins: b,
             anon_records: workspace_anon_records,
+            class_table,
+            instance_env,
         },
         errors: all_errors,
     }
@@ -286,7 +360,7 @@ pub fn typecheck_module(
 
     let ast = Arc::clone(&pm.ast);
 
-    typecheck_module_inner(module_id, &ast, &rm.imports, &mut arena, b)
+    typecheck_module_inner(module_id, &ast, &rm.imports, &mut arena, b, None, None)
 }
 
 // ── Internal pipeline ─────────────────────────────────────────────────────────
@@ -422,12 +496,19 @@ fn typecheck_actor_bodies(
 ///
 /// This is the single-module body used by both [`typecheck_workspace`] and
 /// [`typecheck_module`].
+///
+/// `class_table` and `instance_env` supply the workspace-level class/instance
+/// registries produced by [`crate::collect::collect_workspace`]. When `None`,
+/// empty registries are used and the constraint solver is a no-op (the pre-
+/// typeclass behavior for the LSP hot-path and unit tests).
 fn typecheck_module_inner(
     id: ModuleId,
     ast: &Arc<ridge_ast::Module>,
     imports: &[ridge_resolve::ImportResolution],
     arena: &mut TyConArena,
     b: &BuiltinTyCons,
+    class_table: Option<&crate::class_env::ClassTable>,
+    instance_env: Option<&crate::class_env::InstanceEnv>,
 ) -> ModuleTypecheckResult {
     use crate::actor::{check_actor_encapsulation, check_actor_mailbox_config};
     use crate::ctx::InferCtx;
@@ -498,18 +579,13 @@ fn typecheck_module_inner(
         })
         .collect();
 
-    // For now the class/instance registries are empty (the workspace collect
-    // pass that populates them is wired up separately). When the registries
-    // are empty the constraint solver is a no-op for all existing code.
-    let empty_class_table = crate::class_env::ClassTable::new();
-    let empty_instance_env = crate::class_env::InstanceEnv::new();
-    typecheck_module_decls(
-        &mut ctx,
-        b,
-        &fn_decls,
-        &empty_class_table,
-        &empty_instance_env,
-    );
+    // Use the caller-supplied registries when available; fall back to empty
+    // registries so the constraint solver is a no-op for unconstrained modules.
+    let scratch_class_table = crate::class_env::ClassTable::new();
+    let scratch_instance_env = crate::class_env::InstanceEnv::new();
+    let ct = class_table.unwrap_or(&scratch_class_table);
+    let ie = instance_env.unwrap_or(&scratch_instance_env);
+    typecheck_module_decls(&mut ctx, b, &fn_decls, ct, ie);
 
     // Step D: Capability checking for each fn decl.
     // OQ-PHASE45-005: span-keyed lookup via fn body's span + NodeKind.
@@ -570,6 +646,10 @@ fn typecheck_module_inner(
     // OQ-PHASE45-003: top-level decl schemes only; let-bound locals excluded.
     let schemes = std::mem::take(&mut ctx.schemes_accum);
 
+    // Capture the dictionary resolution plan accumulated during SCC solving.
+    // Non-empty only when typeclass constraints were present in this module.
+    let dict_resolution = std::mem::take(&mut ctx.dict_resolution_accum);
+
     ctx.env.pop_frame();
 
     // Phase 4.5 T3: move the node_types accumulator into TypedModule.
@@ -585,7 +665,7 @@ fn typecheck_module_inner(
         schemes,    // Phase 4.5 T4: populated by SCC generalise write-back
         inferred_caps,
         match_witnesses: FxHashMap::default(), // T17: populated by infer_expr
-        dict_resolution: FxHashMap::default(), // populated by the constraint solver when classes are used
+        dict_resolution, // populated by the constraint solver when classes are used
     };
 
     // Move the anon_records table out so the workspace driver can merge it.

@@ -22,7 +22,7 @@ use std::collections::HashMap;
 
 use ridge_ast::{Item, Module};
 use ridge_types::TyConId;
-use rustc_hash::FxHashSet;
+use rustc_hash::{FxHashMap, FxHashSet};
 
 use crate::class_env::{
     register_prelude_classes, ClassInfo, ClassTable, InstanceEnv, InstanceInfo, InstanceOrigin,
@@ -48,12 +48,25 @@ pub struct CollectResult {
 /// is the raw `u32` from [`ridge_resolve::ModuleId`] and is used for the
 /// orphan-rule check.
 ///
+/// `user_tycon_names` is a name → [`TyConId`] map pre-collected from the
+/// workspace's `TyCon` arena. It is used to resolve user-defined type names in
+/// instance heads (e.g. `instance ToText Color` → `TyConId` for `Color`).
+/// Pass an empty map if the arena has not been populated yet; user-type
+/// instances will be silently skipped in that case.
+///
 /// The function always returns a fully-populated result, even when coherence
 /// errors are found. Callers append `result.errors` to the global error list
 /// and continue typechecking; the registry is usable even in the presence of
 /// errors (the conflicting instance simply was not inserted).
 #[must_use]
-pub fn collect_workspace(modules: &[(u32, &Module)]) -> CollectResult {
+#[expect(
+    clippy::implicit_hasher,
+    reason = "FxHashMap is the canonical hasher for this crate; matches the pattern in solve.rs and ctx.rs"
+)]
+pub fn collect_workspace(
+    modules: &[(u32, &Module)],
+    user_tycon_names: &FxHashMap<String, TyConId>,
+) -> CollectResult {
     let mut class_table = ClassTable::new();
     let mut instance_env = InstanceEnv::new();
     let mut errors: Vec<TypeError> = Vec::new();
@@ -74,7 +87,14 @@ pub fn collect_workspace(modules: &[(u32, &Module)]) -> CollectResult {
     // Step 4: Walk all InstanceDecl items, inserting into InstanceEnv.
     // InstanceEnv::insert already detects T032 / T034 on duplicate keys.
     for &(module_id, ast) in modules {
-        collect_instance_decls(ast, module_id, &class_table, &mut instance_env, &mut errors);
+        collect_instance_decls(
+            ast,
+            module_id,
+            &class_table,
+            user_tycon_names,
+            &mut instance_env,
+            &mut errors,
+        );
     }
 
     // Step 5: Orphan-rule check (T031) for all collected instances.
@@ -153,6 +173,7 @@ fn collect_instance_decls(
     ast: &Module,
     module_id: u32,
     ct: &ClassTable,
+    user_tycon_names: &FxHashMap<String, TyConId>,
     env: &mut InstanceEnv,
     errors: &mut Vec<TypeError>,
 ) {
@@ -171,8 +192,8 @@ fn collect_instance_decls(
         // Extract the head TyConId from the instance type. In 0.2.13 only
         // single, concrete type constructors are valid instance heads (no
         // parametric instances, no compound types at the head position).
-        // We look for a named type with a TyConId baked in by the AST.
-        let Some(tycon_id) = extract_tycon_id(&decl.ty) else {
+        // User-defined types are resolved via the pre-collected name map.
+        let Some(tycon_id) = extract_tycon_id(&decl.ty, user_tycon_names) else {
             continue; // Unsupported head form — ignored in this pass.
         };
 
@@ -394,18 +415,20 @@ fn check_missing_superclass_instances(
 /// [`ridge_types::TyConArena`], which is not threaded into this pass yet.
 /// For now we extract the pre-resolved `TyConId` embedded in `Type::Named`
 /// if the AST carries it, or fall back to `None` for forms we cannot resolve.
-fn extract_tycon_id(ty: &ridge_ast::Type) -> Option<TyConId> {
-    // The AST type is `ridge_ast::Type`, not `ridge_types::Type`.
-    // In 0.2.13, instance heads are simple named types. The AST does not yet
-    // carry pre-resolved TyConIds for user types (that happens in the tycon
-    // collect pass). For now we return `None` for user types; the workspace
-    // integration supplies the TyConId via the tycon arena.
-    //
-    // Builtin types can be identified by name at this point.
+fn extract_tycon_id(
+    ty: &ridge_ast::Type,
+    user_tycon_names: &FxHashMap<String, TyConId>,
+) -> Option<TyConId> {
     use ridge_ast::Type as AstType;
     match ty {
-        // `Named` in the AST is a zero-arg named type constructor (e.g. `Color`).
-        AstType::Named { name, .. } => builtin_tycon_id_by_name(&name.text),
+        // `Named` covers both built-in and user-defined type constructors.
+        // We first check the pre-collected user tycon names (which include
+        // all user-declared types from the workspace-wide TyCon scan), then
+        // fall back to the builtin table for prelude/primitive types.
+        AstType::Named { name, .. } => user_tycon_names
+            .get(name.text.as_str())
+            .copied()
+            .or_else(|| builtin_tycon_id_by_name(&name.text)),
         // `Primitive` covers built-in scalars like `Int`, `Float`, `Bool`.
         AstType::Primitive { name, .. } => {
             use ridge_ast::PrimitiveType;
@@ -562,7 +585,7 @@ mod tests {
             class_decl_item("MyClass", vec![], "myMethod"),
             class_decl_item("OtherClass", vec![], "otherMethod"),
         ]);
-        let result = collect_workspace(&[(0, &m)]);
+        let result = collect_workspace(&[(0, &m)], &rustc_hash::FxHashMap::default());
 
         assert!(
             result.errors.is_empty(),
@@ -583,7 +606,7 @@ mod tests {
 
     #[test]
     fn prelude_classes_in_class_table() {
-        let result = collect_workspace(&[]);
+        let result = collect_workspace(&[], &rustc_hash::FxHashMap::default());
         let ct = &result.class_table;
         assert_eq!(ct.id_by_name("ToText"), Some(TOTEXT_CLASS));
         assert_eq!(ct.id_by_name("Eq"), Some(EQ_CLASS));
@@ -602,7 +625,7 @@ mod tests {
             instance_decl_item("ToText", "Int"),
             instance_decl_item("ToText", "Int"),
         ]);
-        let result = collect_workspace(&[(0, &m)]);
+        let result = collect_workspace(&[(0, &m)], &rustc_hash::FxHashMap::default());
         let has_t032 = result.errors.iter().any(|e| e.code() == "T032");
         assert!(
             has_t032,
@@ -621,7 +644,8 @@ mod tests {
         let mod0 = module_with_items(vec![class_decl_item("MyShow", vec![], "myShow")]);
         let mod1 = module_with_items(vec![instance_decl_item("MyShow", "Int")]);
 
-        let result = collect_workspace(&[(0, &mod0), (1, &mod1)]);
+        let result =
+            collect_workspace(&[(0, &mod0), (1, &mod1)], &rustc_hash::FxHashMap::default());
         let has_t031 = result.errors.iter().any(|e| e.code() == "T031");
         assert!(
             has_t031,
@@ -647,7 +671,7 @@ mod tests {
                 "methodB",
             ),
         ]);
-        let result = collect_workspace(&[(0, &m)]);
+        let result = collect_workspace(&[(0, &m)], &rustc_hash::FxHashMap::default());
         let has_t035 = result.errors.iter().any(|e| e.code() == "T035");
         assert!(
             has_t035,
@@ -664,7 +688,7 @@ mod tests {
         // We put only Ord; Eq is not in the module so EQ_CLASS won't have
         // an Int instance.
         let m = module_with_items(vec![instance_decl_item("Ord", "Int")]);
-        let result = collect_workspace(&[(0, &m)]);
+        let result = collect_workspace(&[(0, &m)], &rustc_hash::FxHashMap::default());
         let has_t033 = result.errors.iter().any(|e| e.code() == "T033");
         assert!(
             has_t033,
@@ -682,7 +706,7 @@ mod tests {
             instance_decl_item("Eq", "Int"),
             instance_decl_item("Ord", "Int"),
         ]);
-        let result = collect_workspace(&[(0, &m)]);
+        let result = collect_workspace(&[(0, &m)], &rustc_hash::FxHashMap::default());
         let has_t033 = result.errors.iter().any(|e| e.code() == "T033");
         assert!(
             !has_t033,

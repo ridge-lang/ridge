@@ -387,6 +387,11 @@ fn write_back_schemes(
 /// let schemes = /* read from ctx.env */;
 /// ctx.env.pop_frame();
 /// ```
+#[expect(
+    clippy::too_many_lines,
+    reason = "SCC algorithm + constraint solving + generalisation — all tightly coupled; splitting would require passing \
+              large amounts of shared state between sub-functions without clarity gain"
+)]
 pub fn typecheck_module_decls(
     ctx: &mut InferCtx,
     b: &BuiltinTyCons,
@@ -421,7 +426,31 @@ pub fn typecheck_module_decls(
             // Use declared annotations when present; fall back to fresh TyVids
             // for unannotated positions.  This is required so that T001 fires
             // when the body type contradicts a declared return/param annotation.
-            let empty_param_map: FxHashMap<&str, TyVid> = FxHashMap::default();
+
+            // Build a type-variable name → fresh TyVid map for this fn.
+            // We pre-allocate one TyVid per unique type variable name so that
+            // the same name (e.g. `a` in both `(x: a)` and `where ToText a`)
+            // maps to the SAME TyVid throughout the signature and the `where`
+            // clause. Without this, each `ast_type_to_ridge_type` call for an
+            // unknown name allocates a NEW TyVid, making the constraint's TyVid
+            // different from the param's TyVid and breaking constraint solving.
+            let mut tyvar_map: FxHashMap<&str, TyVid> = FxHashMap::default();
+            // Collect type variable names from the `where` clause.
+            for c in &decl.constraints {
+                let name = c.ty_var.text.as_str();
+                tyvar_map.entry(name).or_insert_with(|| ctx.fresh_tyvid());
+            }
+            // Collect type variable names from annotated params.
+            for p in &decl.params {
+                if let Param::Annotated { ty, .. } = p {
+                    collect_tyvars_from_ast_type(ty, &mut tyvar_map, ctx);
+                }
+            }
+            // Collect type variable names from the return type.
+            if let Some(ret_ast) = &decl.ret {
+                collect_tyvars_from_ast_type(ret_ast, &mut tyvar_map, ctx);
+            }
+
             let user_tycon_names = ctx.user_tycon_names.clone();
             let param_types: Vec<Type> = decl
                 .params
@@ -429,13 +458,13 @@ pub fn typecheck_module_decls(
                 .map(|p| match p {
                     Param::Bare(_) => Type::Var(ctx.fresh_tyvid()),
                     Param::Annotated { ty, .. } => {
-                        ast_type_to_ridge_type(b, ctx, ty, &user_tycon_names, &empty_param_map)
+                        ast_type_to_ridge_type(b, ctx, ty, &user_tycon_names, &tyvar_map)
                     }
                 })
                 .collect();
             let ret_ty = match &decl.ret {
                 Some(ret_ast_ty) => {
-                    ast_type_to_ridge_type(b, ctx, ret_ast_ty, &user_tycon_names, &empty_param_map)
+                    ast_type_to_ridge_type(b, ctx, ret_ast_ty, &user_tycon_names, &tyvar_map)
                 }
                 None => Type::Var(ctx.fresh_tyvid()),
             };
@@ -455,6 +484,24 @@ pub fn typecheck_module_decls(
             scc_fn_types.insert(did, fn_ty.clone());
             scc_spans.insert(did, decl.span);
             ctx.env.bind(decl.name.text.clone(), monoscheme(fn_ty));
+
+            // Seed deferred constraints from the `where` clause.
+            // For each `where ClassName TyVar`, look up the TyVid allocated
+            // for `TyVar` in `tyvar_map` and push a deferred constraint.
+            // This allows the constraint solver to track the requirement on
+            // the fn's own type variable through body inference.
+            for c in &decl.constraints {
+                let Some(&tyvid) = tyvar_map.get(c.ty_var.text.as_str()) else {
+                    continue;
+                };
+                let Some(class_id) = class_table.id_by_name(&c.class.text) else {
+                    continue; // Unknown class — a typecheck error will fire elsewhere.
+                };
+                ctx.deferred_constraints.push(Constraint {
+                    class: class_id,
+                    ty: tyvid,
+                });
+            }
         }
 
         // ── Step b: infer each body ────────────────────────────────────────────
@@ -517,10 +564,11 @@ pub fn typecheck_module_decls(
             .and_then(|did| scc_spans.get(did))
             .copied()
             .unwrap_or_else(|| Span::point(0));
-        let (retained, _dict_resolution) =
+        let (retained, scc_dict_resolution) =
             crate::solve::solve_constraints(ctx, instance_env, class_table, &env_snap_ty, scc_span);
-        // _dict_resolution is kept for the lowering pass; it will be stored
-        // on TypedModule when the lowering pass is implemented.
+        // Merge this SCC's resolution into the per-module accumulator so the
+        // lowering pass can read the full map from ctx.dict_resolution_accum.
+        ctx.dict_resolution_accum.extend(scc_dict_resolution);
 
         // ── Steps c+d: generalise and write back schemes ──────────────────────
         // OQ-PHASE45-003: top-level decl schemes only (no let-bound locals).
@@ -540,6 +588,60 @@ pub fn typecheck_module_decls(
     //    Walk every binding in the current (outermost) frame, deep-resolve the
     //    scheme body, and check for residual free TyVids.
     detect_unsolved_type_vars(ctx);
+}
+
+/// Collect all lower-case type variable names from an AST type annotation.
+///
+/// Used by the SCC step (a) to pre-allocate `TyVid`s for all type variables
+/// in the fn signature BEFORE calling `ast_type_to_ridge_type`, so that the
+/// same variable name (e.g. `a` appearing in both a param and the `where`
+/// clause) maps to the SAME fresh `TyVid` throughout.
+///
+/// Lower-case single-letter identifiers are treated as type variables; all
+/// others (upper-case or multi-character) are treated as type constructors.
+fn collect_tyvars_from_ast_type<'a>(
+    ty: &'a ridge_ast::Type,
+    map: &mut rustc_hash::FxHashMap<&'a str, TyVid>,
+    ctx: &mut crate::ctx::InferCtx,
+) {
+    match ty {
+        ridge_ast::Type::Named { name, .. } => {
+            // Heuristic: a fully-lowercase ident is a type variable (e.g. `a`,
+            // `b`, `key`, `val`). Upper-case or mixed-case names are type
+            // constructors and are not collected here.
+            let n = name.text.as_str();
+            let is_tyvar = n.chars().next().is_some_and(char::is_lowercase);
+            if is_tyvar {
+                map.entry(n).or_insert_with(|| ctx.fresh_tyvid());
+            }
+        }
+        ridge_ast::Type::App { args, .. } => {
+            for a in args {
+                collect_tyvars_from_ast_type(a, map, ctx);
+            }
+        }
+        ridge_ast::Type::Fn { fn_ty, .. } => {
+            for p in &fn_ty.params {
+                collect_tyvars_from_ast_type(p, map, ctx);
+            }
+            collect_tyvars_from_ast_type(&fn_ty.ret, map, ctx);
+        }
+        ridge_ast::Type::Tuple { elems, .. } => {
+            for e in elems {
+                collect_tyvars_from_ast_type(e, map, ctx);
+            }
+        }
+        ridge_ast::Type::List { elem, .. } => {
+            collect_tyvars_from_ast_type(elem, map, ctx);
+        }
+        ridge_ast::Type::Record { fields, .. } => {
+            for f in fields {
+                collect_tyvars_from_ast_type(&f.ty, map, ctx);
+            }
+        }
+        // Primitive and other forms carry no type variables.
+        _ => {}
+    }
 }
 
 /// Scans the current env frame for residual free [`TyVid`]s after generalisation

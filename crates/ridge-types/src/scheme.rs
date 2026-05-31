@@ -2,6 +2,7 @@
 
 use rustc_hash::FxHashSet;
 
+use crate::constraint::Constraint;
 use crate::ty::{CapRow, CapVid, TyVid, Type};
 
 // ── Scheme ────────────────────────────────────────────────────────────────────
@@ -9,6 +10,10 @@ use crate::ty::{CapRow, CapVid, TyVid, Type};
 /// A type scheme `∀ vars cap_vars. ty` as produced by generalisation.
 ///
 /// `cap_vars` are [`CapVid`]s generalised over function-typed schemes per D041.
+/// `constraints` carries class constraints over the universally-quantified type
+/// variables, e.g. `∀ a. ToText a => a -> Text`. The constraint solver
+/// populates this field; it is empty for all pre-existing, unconstrained
+/// declarations.
 #[derive(Debug, Clone)]
 pub struct Scheme {
     /// Universally-quantified type variables.
@@ -17,16 +22,24 @@ pub struct Scheme {
     pub cap_vars: Vec<CapVid>,
     /// The body type, which may mention variables in `vars` and `cap_vars`.
     pub ty: Type,
+    /// Class constraints over `vars`. Empty for unconstrained declarations.
+    ///
+    /// Each constraint's [`Constraint::ty`] is a member of `vars`. The
+    /// constraint solver attached these during generalisation; the lowering
+    /// pass reads them to thread dictionaries. Ignored by
+    /// `free_vars`/`instantiate`/`subst_type` — those operate on `ty` only.
+    pub constraints: Vec<Constraint>,
 }
 
 impl Scheme {
-    /// Constructs a monomorphic scheme (no quantified variables).
+    /// Constructs a monomorphic scheme (no quantified variables, no constraints).
     #[must_use]
     pub const fn mono(ty: Type) -> Self {
         Self {
             vars: vec![],
             cap_vars: vec![],
             ty,
+            constraints: vec![],
         }
     }
 
@@ -205,6 +218,7 @@ mod tests {
                 ret: Box::new(Type::Con(cid(0), vec![])),
                 caps: CapRow::Concrete(CapabilitySet::PURE),
             },
+            constraints: vec![],
         };
         let (fty, fcap) = scheme.free_vars();
         assert!(fty.is_empty(), "expected no free ty vars, got {fty:?}");
@@ -225,6 +239,7 @@ mod tests {
                 ret: Box::new(Type::Var(a)),
                 caps: CapRow::Concrete(CapabilitySet::PURE),
             },
+            constraints: vec![],
         };
         let (fty, _) = scheme.free_vars();
         assert!(fty.is_empty(), "bound var a should not appear as free");
@@ -257,6 +272,7 @@ mod tests {
                 ret: Box::new(Type::Con(cid(4), vec![])),
                 caps: CapRow::Var(cvid(0)),
             },
+            constraints: vec![],
         };
         let (_, fcap) = scheme.free_vars();
         assert!(fcap.contains(&cvid(0)), "cap var should be free");
@@ -276,6 +292,7 @@ mod tests {
                 ret: Box::new(Type::Con(cid(4), vec![])),
                 caps: CapRow::Var(c),
             },
+            constraints: vec![],
         };
         let (_, fcap) = scheme.free_vars();
         assert!(fcap.is_empty(), "bound cap var c should not appear as free");
@@ -295,6 +312,7 @@ mod tests {
                 ret: Box::new(Type::Var(a)),
                 caps: CapRow::Concrete(CapabilitySet::PURE),
             },
+            constraints: vec![],
         };
 
         let mut counter1 = 10u32;
@@ -373,6 +391,7 @@ mod tests {
                 ret: Box::new(Type::Var(a)),
                 caps: CapRow::Concrete(CapabilitySet::PURE),
             },
+            constraints: vec![],
         };
         let (fty, _) = scheme.free_vars();
         assert!(!fty.contains(&a), "a should be bound");

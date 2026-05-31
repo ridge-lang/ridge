@@ -71,6 +71,7 @@ fn poly1(var: TyVid, ty: Type) -> Scheme {
         vars: vec![var],
         cap_vars: vec![],
         ty,
+        constraints: vec![],
     }
 }
 
@@ -81,6 +82,7 @@ fn poly2(v0: TyVid, v1: TyVid, ty: Type) -> Scheme {
         vars: vec![v0, v1],
         cap_vars: vec![],
         ty,
+        constraints: vec![],
     }
 }
 
@@ -170,6 +172,32 @@ pub fn prelude_types(b: &BuiltinTyCons) -> (FxHashMap<String, Scheme>, FxHashMap
     tycons.insert("Error".to_string(), b.error);
     tycons.insert("Duration".to_string(), b.duration);
     tycons.insert("ProcOutput".to_string(), b.proc_output);
+    // Ordering = Less | Equal | Greater — prelude union type required by Ord (0.2.13).
+    tycons.insert("Ordering".to_string(), b.ordering);
+
+    // Ordering constructors — nullary, so each has type `() -> Ordering`.
+    let ordering_ty = ty_con(b.ordering, vec![]);
+    let scheme_less = Scheme {
+        vars: vec![],
+        cap_vars: vec![],
+        ty: ty_fn_pure(vec![], ordering_ty.clone()),
+        constraints: vec![],
+    };
+    let scheme_equal = Scheme {
+        vars: vec![],
+        cap_vars: vec![],
+        ty: ty_fn_pure(vec![], ordering_ty.clone()),
+        constraints: vec![],
+    };
+    let scheme_greater = Scheme {
+        vars: vec![],
+        cap_vars: vec![],
+        ty: ty_fn_pure(vec![], ordering_ty),
+        constraints: vec![],
+    };
+    values.insert("Less".to_string(), scheme_less);
+    values.insert("Equal".to_string(), scheme_equal);
+    values.insert("Greater".to_string(), scheme_greater);
 
     (values, tycons)
 }
@@ -471,5 +499,36 @@ mod tests {
         assert!(lookup_prelude(&b, "none").is_none());
         assert!(lookup_prelude(&b, "ok").is_none());
         assert!(lookup_prelude(&b, "err").is_none());
+    }
+
+    // ── Ordering type and constructors are in the prelude ─────────────────────
+
+    #[test]
+    fn ordering_tycon_in_prelude() {
+        let b = make_builtins();
+        let id = lookup_prelude_tycon(&b, "Ordering")
+            .expect("Ordering must be in the prelude tycon map");
+        assert_eq!(id, b.ordering);
+    }
+
+    #[test]
+    fn ordering_constructors_in_prelude_value_map() {
+        let b = make_builtins();
+        for ctor in &["Less", "Equal", "Greater"] {
+            let scheme = lookup_prelude(&b, ctor)
+                .unwrap_or_else(|| panic!("{ctor} must be in the prelude value map"));
+            // Each constructor is nullary (no type vars, returns Ordering).
+            assert!(scheme.vars.is_empty(), "{ctor} must have no type params");
+            match &scheme.ty {
+                ridge_types::Type::Fn { params, ret, .. } => {
+                    assert!(params.is_empty(), "{ctor} is nullary");
+                    assert!(
+                        matches!(ret.as_ref(), ridge_types::Type::Con(id, _) if *id == b.ordering),
+                        "{ctor} return type must be Ordering"
+                    );
+                }
+                other => panic!("{ctor} scheme type must be Fn, got: {other:?}"),
+            }
+        }
     }
 }

@@ -492,6 +492,7 @@ mod tests {
                 ret: Box::new(Type::Con(b.unit, vec![])),
                 caps: CapRow::Var(cap_c), // outer fn inherits callback caps
             },
+            constraints: vec![],
         }
     }
 
@@ -507,6 +508,7 @@ mod tests {
                 ret: Box::new(Type::Con(b.int, vec![])),
                 caps: CapRow::Concrete(CapabilitySet::PURE),
             },
+            constraints: vec![],
         }
     }
 

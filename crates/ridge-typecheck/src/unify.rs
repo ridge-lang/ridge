@@ -693,6 +693,7 @@ mod tests {
                 ret: Box::new(Type::Var(a)),
                 caps: CapRow::Concrete(CapabilitySet::PURE),
             },
+            constraints: vec![],
         };
 
         // Use a plain counter for fresh TyVid allocation to avoid double-borrow.

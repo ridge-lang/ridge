@@ -63,6 +63,12 @@ pub struct BuiltinTyCons {
     ///
     /// Returned as the `Ok` payload of `std.proc.run`.
     pub proc_output: TyConId,
+    /// `Ordering = Less | Equal | Greater` — the result type of `compare`.
+    ///
+    /// Required by the `Ord` typeclass (0.2.13). Registered as a prelude
+    /// union type so any module can match on `Less`, `Equal`, `Greater`
+    /// without an explicit import.
+    pub ordering: TyConId,
 }
 
 impl BuiltinTyCons {
@@ -92,6 +98,7 @@ impl BuiltinTyCons {
             error: SENTINEL,
             duration: SENTINEL,
             proc_output: SENTINEL,
+            ordering: SENTINEL,
         }
     }
 
@@ -351,7 +358,34 @@ impl BuiltinTyCons {
             is_anon: false,
         });
 
-        // Verify assignment order matches spec §4.1 indices 0..14.
+        // Ordering = Less | Equal | Greater (0.2.13 prelude type, required by Ord)
+        let ordering = arena.intern(TyConDecl {
+            id: TyConId(0),
+            name: "Ordering".to_string(),
+            arity: 0,
+            kind: TyConKind::Union(UnionSchema {
+                params: vec![],
+                variants: vec![
+                    UnionVariant {
+                        name: "Less".to_string(),
+                        kind: VariantPayload::Nullary,
+                    },
+                    UnionVariant {
+                        name: "Equal".to_string(),
+                        kind: VariantPayload::Nullary,
+                    },
+                    UnionVariant {
+                        name: "Greater".to_string(),
+                        kind: VariantPayload::Nullary,
+                    },
+                ],
+            }),
+            def_span: None,
+            def_module_raw: None, // prelude — no user module
+            is_anon: false,
+        });
+
+        // Verify assignment order matches spec §4.1 indices 0..15.
         debug_assert_eq!(int.0, 0);
         debug_assert_eq!(float.0, 1);
         debug_assert_eq!(bool_.0, 2);
@@ -367,6 +401,7 @@ impl BuiltinTyCons {
         debug_assert_eq!(error.0, 12);
         debug_assert_eq!(duration.0, 13);
         debug_assert_eq!(proc_output.0, 14);
+        debug_assert_eq!(ordering.0, 15);
 
         // Suppress the "unused" lint — CapabilitySet is imported for future use
         // in T4 (actor schemas carry CapabilitySet).
@@ -388,6 +423,7 @@ impl BuiltinTyCons {
             error,
             duration,
             proc_output,
+            ordering,
         }
     }
 }
@@ -467,9 +503,10 @@ mod tests {
     }
 
     #[test]
-    fn arena_len_is_15() {
+    fn arena_len_is_16() {
+        // 15 original builtins + Ordering (added in 0.2.13 for the Ord typeclass)
         let (arena, _) = make_arena_with_builtins();
-        assert_eq!(arena.len(), 15);
+        assert_eq!(arena.len(), 16);
     }
 
     // ── Arena get() round-trip ────────────────────────────────────────────────

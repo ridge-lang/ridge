@@ -1,7 +1,7 @@
 # Ridge — Tutorial
 
 A guided tour from install to a runnable hello-world to your first
-diagnostics in VS Code. Targets Ridge **0.2.12**.
+diagnostics in VS Code. Targets Ridge **0.2.13**.
 
 This tutorial assumes nothing beyond a working Rust toolchain and a
 recent Erlang/OTP. For the formal language definition, see
@@ -17,7 +17,8 @@ recent Erlang/OTP. For the formal language definition, see
 5. [See diagnostics in VS Code](#see-diagnostics-in-vs-code)
 6. [Format a Ridge file](#format-a-ridge-file)
 7. [Run the test suite](#run-the-test-suite)
-8. [Troubleshooting](#troubleshooting)
+8. [Typeclasses](#typeclasses)
+9. [Troubleshooting](#troubleshooting)
 
 ---
 
@@ -63,12 +64,12 @@ bash -c "$(curl -fsSL https://raw.githubusercontent.com/ridge-lang/ridge/main/to
 To pin a specific release tag, set `RIDGE_VERSION`:
 
 ```powershell
-$env:RIDGE_VERSION = 'v0.2.12'
+$env:RIDGE_VERSION = 'v0.2.13'
 & ([scriptblock]::Create((iwr -useb 'https://raw.githubusercontent.com/ridge-lang/ridge/main/tools/install/install.ps1').Content))
 ```
 
 ```bash
-RIDGE_VERSION=v0.2.12 bash -c "$(curl -fsSL https://raw.githubusercontent.com/ridge-lang/ridge/main/tools/install/install.sh)"
+RIDGE_VERSION=v0.2.13 bash -c "$(curl -fsSL https://raw.githubusercontent.com/ridge-lang/ridge/main/tools/install/install.sh)"
 ```
 
 > **Why not `curl … | sh` (or `| bash`)?** The installer's Erlang
@@ -84,9 +85,9 @@ RIDGE_VERSION=v0.2.12 bash -c "$(curl -fsSL https://raw.githubusercontent.com/ri
 
 ```sh
 ~/.cargo/bin/ridge --version
-# expected: ridge 0.2.12
+# expected: ridge 0.2.13
 ~/.cargo/bin/ridge-lsp --version
-# expected: ridge-lsp 0.2.12
+# expected: ridge-lsp 0.2.13
 ```
 
 Use the explicit path (`~/.cargo/bin/ridge`), not a shell glob. The
@@ -268,6 +269,108 @@ ridge test
 ```
 
 You should see a passing test summary.
+
+---
+
+## Typeclasses
+
+Typeclasses let you write functions that work across multiple types without
+committing to a specific one. The classic example is a `describe` function
+that can render any type it's given — as long as that type knows how to
+produce a text representation.
+
+### Defining a class
+
+```ridge
+class Describable a =
+    describe (x: a) -> Text
+```
+
+`class Describable a` declares an interface with one method. The body
+lists bare signatures — no `fn` keyword, no implementation.
+
+### Writing an instance
+
+```ridge
+type Color = Red | Green | Blue
+
+instance Describable Color =
+    describe (c: Color) -> Text = match c
+        Red   -> "a red pigment"
+        Green -> "a green pigment"
+        Blue  -> "a blue pigment"
+```
+
+`instance Describable Color` provides the implementation for `Color`. Every
+method declared in the class must appear in the instance body.
+
+### Constraining a function
+
+A function that needs `describe` to work on its argument declares the
+requirement in a `where` clause:
+
+```ridge
+fn announce (x: a) -> Text where Describable a =
+    $"Announcing: ${describe x}"
+```
+
+Call it with any type that has a `Describable` instance:
+
+```ridge
+announce Red     -- "Announcing: a red pigment"
+```
+
+If you call it with a type that has no `Describable` instance, the compiler
+reports `T029 NoInstance` and tells you what to add.
+
+### Deriving common instances
+
+For the three most common classes — `Eq`, `ToText`, and `Ord` — you can ask
+the compiler to generate the instance for you:
+
+```ridge
+type Priority = Low | Medium | High deriving (Eq, ToText, Ord)
+```
+
+`Eq` derives structural equality. `ToText` derives a text rendering (the
+constructor name: `"Low"`, `"Medium"`, `"High"`). `Ord` derives an ordering
+based on declaration order: `Low < Medium < High`.
+
+For records, `ToText` produces `TypeName { field = value, ... }` in
+declaration order:
+
+```ridge
+type Point = { x: Int, y: Int } deriving (Eq, ToText, Ord)
+
+-- $"${Point { x = 3, y = 4 }}" renders as "Point { x = 3, y = 4 }"
+```
+
+### String interpolation and ToText
+
+`$"..."` interpolation calls `toText` on each interpolated expression. A
+type becomes interpolatable as soon as it has a `ToText` instance — either
+derived, written by hand as `instance ToText T`, or via a `pub fn toText`
+function in the same module (which is promoted automatically).
+
+### A note on equality and secrets
+
+`deriving Eq` uses BEAM structural equality (`=:=`), which is not
+constant-time. Do not compare secret values — tokens, password hashes, HMAC
+tags — with `==` or derived `Eq`. Use `std.crypto.constantTimeEq` instead:
+
+```ridge
+import std.crypto as Crypto
+
+let same = Crypto.constantTimeEq hashA hashB    -- constant-time, safe for secrets
+```
+
+Also note that `Float` has no `Eq` instance in the prelude. Deriving `Eq`
+on a type that contains a `Float` field is a compile error (`T029
+NoInstance`). Use an explicit comparison function with appropriate tolerance
+if you need float equality.
+
+For the full grammar, coherence rules, and diagnostic reference, see
+[`spec.md §5.6`](spec.md#56-typeclasses).
 
 ---
 

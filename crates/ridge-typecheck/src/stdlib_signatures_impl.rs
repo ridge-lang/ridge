@@ -96,6 +96,10 @@ const fn ty_proc_output(b: &BuiltinTyCons) -> Type {
     Type::Con(b.proc_output, vec![])
 }
 #[inline]
+const fn ty_json_value(b: &BuiltinTyCons) -> Type {
+    Type::Con(b.json_value, vec![])
+}
+#[inline]
 fn ty_list(b: &BuiltinTyCons, elem: Type) -> Type {
     Type::Con(b.list, vec![elem])
 }
@@ -1296,16 +1300,25 @@ pub fn stdlib_signature(module: StdlibModuleId, name: &str, b: &BuiltinTyCons) -
 
         // ── std.json ─────────────────────────────────────────────────────────
         //
-        // §3.17 / OQ-S004 / D120: JsonValue is a user-declared sum type in
-        // json.ridge (not a BuiltinTyCon).  The type signatures here use
-        // stub_phase7() (Type::Error) because `JsonValue` has no stable
-        // TyConId in BuiltinTyCons — the authoritative schema is built at
-        // compile time by collect_user_tycons when json.ridge is processed.
+        // §3.17: JsonValue is now a prelude union (BuiltinTyCons::json_value),
+        // so the two bridge functions carry real signatures. The `J*` variants
+        // and the `JsonValue` type name are prelude symbols, not std.json
+        // exports — they are typed by `prelude.rs`, not here.
         //
-        // The 5 public functions and the JsonValue type + 7 constructors all
-        // return stub_phase7() to satisfy the property test (every BUILTINS
-        // export must resolve to Some(Scheme)).  These stubs will be replaced
-        // with generated signatures.
+        // encode : JsonValue -> Text
+        (STD_JSON, "encode") => Some(mono(ty_fn_pure(
+            vec![ty_json_value(b)],
+            ty_text(b),
+        ))),
+        // decode : Text -> Result JsonValue Error
+        (STD_JSON, "decode") => Some(mono(ty_fn_pure(
+            vec![ty_text(b)],
+            ty_result(b, ty_json_value(b), ty_error(b)),
+        ))),
+
+        // The remaining std.json surface (the pure encode helpers, the FFI
+        // construction shims, and the accessor companions) is still stubbed —
+        // see the shared stub arm below.
         //
         // ── std.cli (partial stubs) ───────────────────────────────────────────
         // ── std.net.http (partial stubs) ──────────────────────────────────────
@@ -1321,15 +1334,13 @@ pub fn stdlib_signature(module: StdlibModuleId, name: &str, b: &BuiltinTyCons) -
         (STD_TIME, "Duration")
         | (STD_PROC, "ProcOutput")
         | (STD_JSON,
-           "encode" | "decode" | "encodeInt" | "encodeBool" | "encodeText"
-           | "JsonValue"
-           | "JNull" | "JBool" | "JInt" | "JFloat" | "JText" | "JList" | "JObject"
-           // JsonValue constructor shims — see std.json.
-           // Cross-module variant resolution lands in 0.2.0; until then
-           // these are the supported user-facing constructor surface.
+           "encodeInt" | "encodeBool" | "encodeText"
+           // JsonValue construction shims (FFI bridges to ridge_rt:json_*).
+           // The first-class `J*` constructors are prelude-typed; these shims
+           // remain for callers that already use them.
            | "jNull" | "jBool" | "jInt" | "jFloat" | "jText" | "jList" | "jObject"
-           // JsonValue accessor companions — destructure a decoded JsonValue
-           // without cross-module variant pattern matching (deferred).
+           // JsonValue accessor companions — peel one variant off a decoded
+           // JsonValue as an Option-shaped escape hatch.
            | "asInt" | "asFloat" | "asBool" | "asText" | "asList" | "asObject" | "isNull")
         | (STD_CLI, "parseArgs" | "help" | "version")
         | (STD_NET_HTTP,
@@ -1644,13 +1655,41 @@ mod tests {
         ));
     }
 
-    // ── std.json (stub) ───────────────────────────────────────────────────────
+    // ── std.json ──────────────────────────────────────────────────────────────
 
     #[test]
-    fn std_json_encode_is_phase7_stub() {
+    fn std_json_encode_is_json_value_to_text() {
         let b = builtins();
         let scheme = stdlib_signature(STD_JSON, "encode", &b).unwrap();
-        assert!(matches!(scheme.ty, Type::Error));
+        // encode : JsonValue -> Text
+        assert!(scheme.vars.is_empty());
+        assert!(matches!(
+            &scheme.ty,
+            Type::Fn { params, ret, .. }
+                if params.len() == 1
+                    && matches!(&params[0], Type::Con(id, _) if *id == b.json_value)
+                    && matches!(ret.as_ref(), Type::Con(id, _) if *id == b.text)
+        ));
+    }
+
+    #[test]
+    fn std_json_decode_is_text_to_result_json_error() {
+        let b = builtins();
+        let scheme = stdlib_signature(STD_JSON, "decode", &b).unwrap();
+        // decode : Text -> Result JsonValue Error
+        assert!(scheme.vars.is_empty());
+        let Type::Fn { params, ret, .. } = &scheme.ty else {
+            panic!("decode must be a function type");
+        };
+        assert_eq!(params.len(), 1);
+        assert!(matches!(&params[0], Type::Con(id, _) if *id == b.text));
+        match ret.as_ref() {
+            Type::Con(id, args) if *id == b.result => {
+                assert!(matches!(&args[0], Type::Con(i, _) if *i == b.json_value));
+                assert!(matches!(&args[1], Type::Con(i, _) if *i == b.error));
+            }
+            other => panic!("decode must return Result JsonValue Error, got {other:?}"),
+        }
     }
 
     // ── std.net.http ──────────────────────────────────────────────────────────

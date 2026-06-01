@@ -88,7 +88,8 @@ const MODULE_ORDER: &[&str] = &[
 //
 // std.proc: `ProcOutput` is declared as `pub type` in proc.ridge.
 // std.time:  `Duration`  is declared as `pub type` in time.ridge.
-// std.json:  `JsonValue`  is declared as `pub type` in json.ridge.
+// std.json:  `JsonValue` is a language prelude union (compiler builtin), so it
+//            is NOT a std.json export — unlike the records above.
 // std.net.http: `Request`, `Response` are declared as `pub type` in net/http.ridge.
 const BASELINE_EXPORTS: &[(&str, &[&str])] = &[
     (
@@ -285,8 +286,8 @@ const BASELINE_EXPORTS: &[(&str, &[&str])] = &[
     (
         "std.json",
         &[
-            // `pub type JsonValue` declared in json.ridge.
-            "JsonValue",
+            // JsonValue is a language prelude union (compiler builtin), not a
+            // std.json export — so it is intentionally absent from this list.
             "encode",
             "decode",
             "encodeInt",

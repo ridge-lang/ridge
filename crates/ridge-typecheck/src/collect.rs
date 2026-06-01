@@ -347,10 +347,10 @@ fn collect_auto_promoted_to_text(
             continue;
         };
 
-        // Do not auto-promote for builtin/prelude types (TyConId 0–15): they
+        // Do not auto-promote for builtin/prelude types (TyConId 0–16): they
         // are already covered by instances registered in `register_prelude_instances`.
-        // Auto-promotion targets user-defined types only (TyConId >= 16).
-        if tycon_id.0 < 16 {
+        // Auto-promotion targets user-defined types only (TyConId >= 17).
+        if tycon_id.0 < 17 {
             continue;
         }
 
@@ -461,17 +461,17 @@ fn check_orphan_rule(env: &InstanceEnv, ct: &ClassTable, errors: &mut Vec<TypeEr
         let class_module = ct.get(class_id).and_then(|ci| ci.def_module);
         // For now, `tycon.def_module_raw` is encoded as the `TyConId.0` index;
         // we do not have direct access to the TyConArena here. Instead we use a
-        // sentinel: builtin TyConIds (0..=15) have `def_module_raw = None`.
-        // User TyConIds start at 16 and carry the module in a side-channel we
+        // sentinel: builtin TyConIds (0..=16) have `def_module_raw = None`.
+        // User TyConIds start at 17 and carry the module in a side-channel we
         // do not have here. For now we implement the check conservatively:
         // - If the class has a known def_module AND it matches the instance module
         //   → OK.
-        // - If the tycon id is ≥ 16 (user-defined type), we trust that the
+        // - If the tycon id is ≥ 17 (user-defined type), we trust that the
         //   instance is in the correct module (the full check arrives once the
         //   TyConArena is threaded through).
         // - Otherwise, if neither class module nor tycon is user-local → orphan.
         let in_class_module = class_module == Some(inst_module);
-        let tycon_is_builtin = tycon_id.0 < 16; // builtins have fixed low ids
+        let tycon_is_builtin = tycon_id.0 < 17; // builtins have fixed low ids
         let tycon_is_user_local = !tycon_is_builtin; // assume same module for now
 
         if in_class_module || tycon_is_user_local {
@@ -665,7 +665,7 @@ fn extract_tycon_id(
 /// Maps a prelude type name to its fixed `TyConId` index (0-based, matches
 /// `BuiltinTyCons::allocate` assignment order).
 ///
-/// Only covers the 16 pre-allocated builtins; user types return `None` here
+/// Only covers the 17 pre-allocated builtins; user types return `None` here
 /// (they need the [`ridge_types::TyConArena`], threaded in the integration phase).
 fn builtin_tycon_id_by_name(name: &str) -> Option<TyConId> {
     match name {
@@ -685,6 +685,7 @@ fn builtin_tycon_id_by_name(name: &str) -> Option<TyConId> {
         "Duration" => Some(TyConId(13)),
         "ProcOutput" => Some(TyConId(14)),
         "Ordering" => Some(TyConId(15)),
+        "JsonValue" => Some(TyConId(16)),
         _ => None,
     }
 }
@@ -1107,11 +1108,11 @@ mod tests {
         );
     }
 
-    /// Builtin types (`TyConId` < 16) must NOT be auto-promoted — they are
+    /// Builtin types (`TyConId` < 17) must NOT be auto-promoted — they are
     /// already covered by prelude instances.
     #[test]
     fn auto_promote_skips_builtin_types() {
-        // `Int` maps to TyConId(0), which is < 16.
+        // `Int` maps to TyConId(0), which is < 17.
         let m = module_with_items(vec![pub_fn_to_text_item("Int")]);
         let result = collect_workspace(&[(0, &m)], &rustc_hash::FxHashMap::default());
 

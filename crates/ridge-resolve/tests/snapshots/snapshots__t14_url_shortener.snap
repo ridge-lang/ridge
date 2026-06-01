@@ -1,6 +1,5 @@
 ---
 source: crates/ridge-resolve/tests/snapshots.rs
-assertion_line: 1078
 expression: snap
 ---
 ResolvedSnapshot {
@@ -15,6 +14,7 @@ ResolvedSnapshot {
     },
     import_aliases: [
         "<bare> -> BuiltinStdlib(0)",
+        "<bare> -> BuiltinStdlib(17)",
         "<bare> -> BuiltinStdlib(3)",
         "<bare> -> BuiltinStdlib(7)",
         "<bare> -> BuiltinStdlib(8)",

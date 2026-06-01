@@ -259,10 +259,12 @@ pub fn infer_variant_pattern(
 
 // ── Prelude-union helpers ─────────────────────────────────────────────────────
 
-/// Resolve a constructor name (e.g. `"Some"`, `"None"`, `"Ok"`, `"Err"`) to its
-/// `(TyConId, variant_idx)` using the built-in prelude unions.
+/// Resolve a prelude constructor name to its `(TyConId, variant_idx)`.
 ///
-/// Returns `None` if the name is not a recognised prelude constructor.
+/// Covers the `Option`/`Result` constructors and the seven `JsonValue`
+/// variants, using the built-in prelude unions. The `JsonValue` indices match
+/// the variant order in `BuiltinTyCons::allocate`. Returns `None` if the name
+/// is not a recognised prelude constructor.
 #[must_use]
 pub fn resolve_prelude_ctor(b: &BuiltinTyCons, name: &str) -> Option<(TyConId, usize)> {
     match name {
@@ -270,6 +272,13 @@ pub fn resolve_prelude_ctor(b: &BuiltinTyCons, name: &str) -> Option<(TyConId, u
         "None" => Some((b.option, 1)),
         "Ok" => Some((b.result, 0)),
         "Err" => Some((b.result, 1)),
+        "JNull" => Some((b.json_value, 0)),
+        "JBool" => Some((b.json_value, 1)),
+        "JInt" => Some((b.json_value, 2)),
+        "JFloat" => Some((b.json_value, 3)),
+        "JText" => Some((b.json_value, 4)),
+        "JList" => Some((b.json_value, 5)),
+        "JObject" => Some((b.json_value, 6)),
         _ => None,
     }
 }

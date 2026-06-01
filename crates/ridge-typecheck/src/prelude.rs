@@ -16,13 +16,16 @@
 //! in Ridge, not value-level names; their constructors `Some`/`None`/`Ok`/`Err`
 //! carry the value-level schemes).
 //!
-//! # Note on `Json`
+//! # Note on `Json` vs `JsonValue`
 //!
 //! `Json` is injected by Phase 3 as a `Binding::ModuleAlias` (pointing to
-//! `std.json`), not as a `TyCon`.  `BuiltinTyCons` has no `json` field, so `Json`
-//! has no `TyConId` entry here.  The property test (test 6) skips `ModuleAlias`
-//! bindings that have no corresponding `TyCon` — this is tracked as a known T4
-//! drift item pending a Phase-5/7 `Json` `TyCon` definition.
+//! `std.json`), not as a `TyCon` — it is the qualified accessor for module
+//! functions like `Json.encode`.  `BuiltinTyCons` has no `json` field, so
+//! `Json` has no `TyConId` entry here; the property test (test 6) skips it.
+//!
+//! `JsonValue` (distinct from `Json`) **is** a prelude union `TyCon` —
+//! `b.json_value` — with the seven `J*` constructors in the value map, so any
+//! module can build and match JSON values without importing `std.json`.
 //!
 //! # Stability variables
 //!
@@ -199,6 +202,48 @@ pub fn prelude_types(b: &BuiltinTyCons) -> (FxHashMap<String, Scheme>, FxHashMap
     values.insert("Equal".to_string(), scheme_equal);
     values.insert("Greater".to_string(), scheme_greater);
 
+    // ── JsonValue type + constructors ─────────────────────────────────────────
+    //
+    // JsonValue is a prelude union (§3.17) so any module can build and match
+    // JSON values without importing std.json. Each constructor is monomorphic
+    // (JsonValue carries no type parameters); the payload types reference the
+    // primitive/container builtins allocated above.
+    tycons.insert("JsonValue".to_string(), b.json_value);
+
+    let json_ty = ty_con(b.json_value, vec![]);
+    let json_ctor = |param: Option<Type>| Scheme {
+        vars: vec![],
+        cap_vars: vec![],
+        ty: ty_fn_pure(param.map_or_else(Vec::new, |p| vec![p]), json_ty.clone()),
+        constraints: vec![],
+    };
+    // JNull : () -> JsonValue
+    values.insert("JNull".to_string(), json_ctor(None));
+    // JBool : (Bool) -> JsonValue
+    values.insert("JBool".to_string(), json_ctor(Some(ty_con(b.bool, vec![]))));
+    // JInt : (Int) -> JsonValue
+    values.insert("JInt".to_string(), json_ctor(Some(ty_con(b.int, vec![]))));
+    // JFloat : (Float) -> JsonValue
+    values.insert(
+        "JFloat".to_string(),
+        json_ctor(Some(ty_con(b.float, vec![]))),
+    );
+    // JText : (Text) -> JsonValue
+    values.insert("JText".to_string(), json_ctor(Some(ty_con(b.text, vec![]))));
+    // JList : (List JsonValue) -> JsonValue
+    values.insert(
+        "JList".to_string(),
+        json_ctor(Some(ty_con(b.list, vec![json_ty.clone()]))),
+    );
+    // JObject : (Map Text JsonValue) -> JsonValue
+    values.insert(
+        "JObject".to_string(),
+        json_ctor(Some(ty_con(
+            b.map,
+            vec![ty_con(b.text, vec![]), json_ty.clone()],
+        ))),
+    );
+
     (values, tycons)
 }
 
@@ -222,14 +267,15 @@ pub fn lookup_prelude_tycon(b: &BuiltinTyCons, name: &str) -> Option<TyConId> {
 }
 
 /// Returns the [`ridge_types::UnionSchema`] for a prelude union `TyCon`
-/// (`Option` or `Result`).
+/// (`Option`, `Result`, or `JsonValue`).
 ///
 /// This is used by T9's pattern-matching dispatch to retrieve the canonical
 /// schema for prelude union types without access to a full `TyConArena`.
 ///
 /// # Panics (debug only)
 ///
-/// Panics in debug builds if `id` is neither `b.option` nor `b.result`.
+/// Panics in debug builds if `id` is none of `b.option`, `b.result`,
+/// or `b.json_value`.
 #[must_use]
 pub fn get_prelude_union_schema(b: &BuiltinTyCons, id: TyConId) -> ridge_types::UnionSchema {
     use ridge_types::{TyVid, Type, UnionSchema, UnionVariant, VariantPayload};
@@ -261,6 +307,50 @@ pub fn get_prelude_union_schema(b: &BuiltinTyCons, id: TyConId) -> ridge_types::
                 UnionVariant {
                     name: "Err".to_string(),
                     kind: VariantPayload::Positional(vec![Type::Var(TyVid(1))]),
+                },
+            ],
+        }
+    } else if id == b.json_value {
+        // JsonValue = JNull | JBool Bool | JInt Int | JFloat Float | JText Text
+        //           | JList (List JsonValue) | JObject (Map Text JsonValue)
+        // Mirror of BuiltinTyCons::allocate; payloads name the concrete
+        // builtin TyConIds (JsonValue is monomorphic, no schema params).
+        UnionSchema {
+            params: vec![],
+            variants: vec![
+                UnionVariant {
+                    name: "JNull".to_string(),
+                    kind: VariantPayload::Nullary,
+                },
+                UnionVariant {
+                    name: "JBool".to_string(),
+                    kind: VariantPayload::Positional(vec![Type::Con(b.bool, vec![])]),
+                },
+                UnionVariant {
+                    name: "JInt".to_string(),
+                    kind: VariantPayload::Positional(vec![Type::Con(b.int, vec![])]),
+                },
+                UnionVariant {
+                    name: "JFloat".to_string(),
+                    kind: VariantPayload::Positional(vec![Type::Con(b.float, vec![])]),
+                },
+                UnionVariant {
+                    name: "JText".to_string(),
+                    kind: VariantPayload::Positional(vec![Type::Con(b.text, vec![])]),
+                },
+                UnionVariant {
+                    name: "JList".to_string(),
+                    kind: VariantPayload::Positional(vec![Type::Con(
+                        b.list,
+                        vec![Type::Con(b.json_value, vec![])],
+                    )]),
+                },
+                UnionVariant {
+                    name: "JObject".to_string(),
+                    kind: VariantPayload::Positional(vec![Type::Con(
+                        b.map,
+                        vec![Type::Con(b.text, vec![]), Type::Con(b.json_value, vec![])],
+                    )]),
                 },
             ],
         }

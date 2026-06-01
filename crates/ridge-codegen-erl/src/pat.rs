@@ -152,6 +152,22 @@ fn lower_prelude_pat(
     _fields: &[(String, IrPat)],
     span: Span,
 ) -> Result<CErlPat, CodegenError> {
+    if let Some((tag, has_payload)) = crate::expr::json_ctor_tag(name) {
+        // JsonValue variant patterns mirror the `ridge_rt:json_*` wire format:
+        // `JNull` → `'json_null'`, `JInt n` → `{'json_int', lower(n)}`, etc.
+        if has_payload {
+            let inner = args.first().ok_or_else(|| CodegenError::IrShapeMalformed {
+                variant: "IrPat::Ctor(Prelude::Json)",
+                span,
+                detail: format!("'{name}' pattern expects exactly one argument"),
+            })?;
+            return Ok(CErlPat::Tuple(vec![
+                CErlPat::Lit(CErlLit::Atom(CErlAtom(tag.into()))),
+                lower_pat(inner)?,
+            ]));
+        }
+        return Ok(CErlPat::Lit(CErlLit::Atom(CErlAtom(tag.into()))));
+    }
     match name {
         "Some" => {
             // `Some p` → `{'some', lower(p)}`.
@@ -432,6 +448,45 @@ mod tests {
         };
         let result = lower_pat(&pat).unwrap();
         assert!(matches!(result, CErlPat::Lit(CErlLit::Atom(CErlAtom(ref s))) if s == "none"));
+    }
+
+    #[test]
+    fn pat_prelude_jint() {
+        // `JInt Wild` → `{'json_int', Wild}`.
+        let pat = IrPat::Ctor {
+            sym: SymbolRef::Prelude {
+                name: "JInt".into(),
+            },
+            fields: vec![],
+            args: vec![IrPat::Wild { span: sp() }],
+            span: sp(),
+        };
+        let result = lower_pat(&pat).unwrap();
+        match result {
+            CErlPat::Tuple(elems) => {
+                assert_eq!(elems.len(), 2);
+                assert!(
+                    matches!(&elems[0], CErlPat::Lit(CErlLit::Atom(CErlAtom(s))) if s == "json_int")
+                );
+                assert!(matches!(elems[1], CErlPat::Wild));
+            }
+            other => panic!("expected Tuple, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn pat_prelude_jnull() {
+        // `JNull` → `'json_null'`.
+        let pat = IrPat::Ctor {
+            sym: SymbolRef::Prelude {
+                name: "JNull".into(),
+            },
+            fields: vec![],
+            args: vec![],
+            span: sp(),
+        };
+        let result = lower_pat(&pat).unwrap();
+        assert!(matches!(result, CErlPat::Lit(CErlLit::Atom(CErlAtom(ref s))) if s == "json_null"));
     }
 
     #[test]

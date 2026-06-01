@@ -1694,7 +1694,7 @@ mod tests {
         // Point = { x: Int, y: Int } deriving (ToText)
         // field_tycons: [Some(TyConId(0)), Some(TyConId(0))] — both Int
         let derived = DerivedInstance {
-            key: (TOTEXT_CLASS, TyConId(16)),
+            key: (TOTEXT_CLASS, TyConId(100)),
             instance_info: InstanceInfo {
                 def_module: Some(0),
                 methods: vec![("toText".to_string(), String::new())],

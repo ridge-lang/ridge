@@ -3,8 +3,8 @@
 //! # Entry points
 //!
 //! - [`typecheck_workspace`] — type-check an entire [`ResolvedWorkspace`].
-//! - [`typecheck_module`] — type-check a single module against an already-
-//!   typed workspace (LSP hot-path).
+//! - [`typecheck_module_incremental`] — re-check a single edited module against
+//!   an already-typed workspace (LSP incremental hot-path).
 //!
 //! Both entry points never short-circuit on the first error; they accumulate all
 //! diagnostics and return a result containing both the (potentially partial)
@@ -57,7 +57,7 @@ pub use solve::{DictPlan, DictResolution};
 pub use ridge_types::{MatchWitness, WitnessKind, WitnessPat};
 
 use ridge_ast::Item;
-use ridge_resolve::{build_module_graph, ModuleId, NodeId, ResolvedWorkspace};
+use ridge_resolve::{ModuleId, NodeId, ResolvedWorkspace};
 use ridge_types::{AnonRecordTable, CapabilitySet, Scheme, TyConArena, TyConDecl, TyConId, Type};
 use rustc_hash::FxHashMap;
 use std::sync::Arc;
@@ -86,6 +86,21 @@ pub struct ModuleTypecheckResult {
     /// Merged into [`TypedWorkspace::anon_records`] by the workspace
     /// driver after all modules are checked.
     pub anon_records: AnonRecordTable,
+}
+
+/// Result of incrementally type-checking a single edited module.
+///
+/// Carries the freshly typed module plus the full `TyCon` list its `node_types`
+/// index into. Because an incremental check appends the edited module's `TyCons`
+/// to the arena, this list supersedes the caller's cached
+/// [`TypedWorkspace::tycons`] when rendering or storing the edited module.
+#[derive(Debug)]
+pub struct ModuleTypecheckIncremental {
+    /// The freshly type-checked module, its errors, and its anon-record table.
+    pub result: ModuleTypecheckResult,
+    /// Builtins plus every module's `TyCons`, with the edited module's freshly
+    /// interned at the tail. `result.typed.node_types` index into this list.
+    pub tycons: Vec<TyConDecl>,
 }
 
 /// The fully type-checked workspace.
@@ -312,81 +327,88 @@ pub fn typecheck_workspace(ws: &ResolvedWorkspace) -> TypecheckResult {
     }
 }
 
-/// Type-check a single module against an already-typechecked workspace.
+/// Build an empty [`ModuleTypecheckResult`] for a module that could not be
+/// located in the workspace (an out-of-range id or a missing AST).
+fn empty_module_result(module_id: ModuleId) -> ModuleTypecheckResult {
+    ModuleTypecheckResult {
+        typed: TypedModule {
+            id: module_id,
+            ast: Arc::new(ridge_ast::Module {
+                items: Vec::new(),
+                doc: Vec::new(),
+                span: ridge_ast::Span::point(0),
+            }),
+            node_types: Vec::new(),
+            schemes: FxHashMap::default(),
+            inferred_caps: FxHashMap::default(),
+            match_witnesses: FxHashMap::default(),
+            dict_resolution: FxHashMap::default(),
+        },
+        errors: Vec::new(),
+        anon_records: AnonRecordTable::default(),
+    }
+}
+
+/// Incrementally type-check a single edited module against an already-typed
+/// workspace.
 ///
-/// The caller supplies a [`TypedWorkspace`] from a prior
-/// [`typecheck_workspace`] call.  This is the LSP hot-path: re-check one
-/// module without re-processing the entire workspace.
+/// The caller supplies the [`ResolvedWorkspace`] — already updated for the edit
+/// by [`ridge_resolve::resolve_module_incremental`] — and the [`TypedWorkspace`]
+/// from the prior full check. This re-checks one module without touching the
+/// rest of the workspace.
+///
+/// The arena is rebuilt from `typed_ws.tycons`, preserving every existing
+/// `TyConId`; the edited module's own `TyCons` are then interned at the tail
+/// with fresh ids. The edited module's `node_types` therefore index into the
+/// returned [`ModuleTypecheckIncremental::tycons`], not the stale
+/// `typed_ws.tycons` — the raw ids may differ from a full build, but the types
+/// they denote are identical. The class/instance registries from the prior
+/// check are reused unchanged, so this path is correct only while the edit
+/// leaves the workspace's class/instance/deriving surface intact.
 #[must_use]
-pub fn typecheck_module(
+pub fn typecheck_module_incremental(
     module_id: ModuleId,
     ws: &ResolvedWorkspace,
     typed_ws: &TypedWorkspace,
-) -> ModuleTypecheckResult {
+) -> ModuleTypecheckIncremental {
     // Find the resolved module entry.
     let Some(rm) = ws.modules.iter().find(|m| m.id == module_id) else {
-        return ModuleTypecheckResult {
-            typed: TypedModule {
-                id: module_id,
-                ast: Arc::new(ridge_ast::Module {
-                    items: Vec::new(),
-                    doc: Vec::new(),
-                    span: ridge_ast::Span::point(0),
-                }),
-                node_types: Vec::new(),
-                schemes: FxHashMap::default(),
-                inferred_caps: FxHashMap::default(),
-                match_witnesses: FxHashMap::default(),
-                dict_resolution: FxHashMap::default(),
-            },
-            errors: Vec::new(),
-            anon_records: AnonRecordTable::default(),
+        return ModuleTypecheckIncremental {
+            result: empty_module_result(module_id),
+            tycons: typed_ws.tycons.clone(),
         };
     };
 
-    // Re-parse this module's source to obtain an AST.
-    let module_graph = build_module_graph(&ws.graph);
-    let Some(pm) = module_graph.modules.iter().find(|pm| pm.id == module_id) else {
-        return ModuleTypecheckResult {
-            typed: TypedModule {
-                id: module_id,
-                ast: Arc::new(ridge_ast::Module {
-                    items: Vec::new(),
-                    doc: Vec::new(),
-                    span: ridge_ast::Span::point(0),
-                }),
-                node_types: Vec::new(),
-                schemes: FxHashMap::default(),
-                inferred_caps: FxHashMap::default(),
-                match_witnesses: FxHashMap::default(),
-                dict_resolution: FxHashMap::default(),
-            },
-            errors: Vec::new(),
-            anon_records: AnonRecordTable::default(),
+    // Reuse the AST the resolver retained for this module — no re-parse.
+    let Some(ast) = ws.module_asts.get(module_id.0 as usize).map(Arc::clone) else {
+        return ModuleTypecheckIncremental {
+            result: empty_module_result(module_id),
+            tycons: typed_ws.tycons.clone(),
         };
     };
 
-    // Clone the arena from the typed workspace so we can add this module's
-    // user TyCons without invalidating other modules' TyConIds.
-    // (For the LSP path, we share builtins + other-module TyCons.)
+    // Rebuild the arena from the prior check, preserving every existing TyConId,
+    // so this module's TyCons append at the tail with fresh ids.
     let mut arena = TyConArena::new();
-    // Re-register all TyCons from the typed workspace (builtins + other modules).
     for decl in &typed_ws.tycons {
         arena.intern(decl.clone());
     }
     let b = &typed_ws.builtins;
 
-    let ast = Arc::clone(&pm.ast);
-
-    typecheck_module_inner(
+    let result = typecheck_module_inner(
         module_id,
         &ast,
         rm.node_ids.clone(),
         &rm.imports,
         &mut arena,
         b,
-        None,
-    )
+        Some((&typed_ws.class_table, &typed_ws.instance_env)),
+    );
+
+    ModuleTypecheckIncremental {
+        tycons: arena.all().to_vec(),
+        result,
+    }
 }
 
 // ── Internal pipeline ─────────────────────────────────────────────────────────
@@ -521,7 +543,7 @@ fn typecheck_actor_bodies(
 /// shared (mutable) `TyCon` arena.
 ///
 /// This is the single-module body used by both [`typecheck_workspace`] and
-/// [`typecheck_module`].
+/// [`typecheck_module_incremental`].
 ///
 /// `registries` supplies the workspace-level class/instance tables produced by
 /// [`crate::collect::collect_workspace`]. When `None`, empty registries are used

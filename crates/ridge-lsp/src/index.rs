@@ -18,10 +18,14 @@ use std::sync::Arc;
 use ridge_driver::WorkspaceSourceCache;
 use ridge_lexer::{LineIndex, Span};
 use ridge_resolve::imports::{Binding, ImportTarget};
-use ridge_resolve::{LocalId, ModuleId, NodeId, NodeIdMap, NodeKind, ResolvedWorkspace};
+use ridge_resolve::{
+    LocalId, ModuleId, NodeId, NodeIdMap, NodeKind, ResolvedModule, ResolvedVisibility,
+    ResolvedWorkspace,
+};
 use ridge_typecheck::{render_type_with, TypedWorkspace};
-use tower_lsp::lsp_types::{Location, Position, Range, Url};
+use tower_lsp::lsp_types::{CompletionItemKind, Location, Position, Range, Url};
 
+use crate::completion::{detect_context, symbol_kind, CompletionItemData, Context, KEYWORDS};
 use crate::diagnostics::source_id_to_uri;
 
 /// A position-indexed view of one module's stamped nodes.
@@ -366,6 +370,102 @@ impl WorkspaceIndex {
                 character: end_char,
             },
         })
+    }
+
+    /// Answer a completion request at an LSP `(line, utf16_col)` position.
+    ///
+    /// Returns the candidates (never errors, never `None`). Reads only this
+    /// immutable snapshot — a completion never triggers a compile.
+    #[must_use]
+    pub fn completions_at(&self, uri: &Url, line: u32, utf16_col: u32) -> Vec<CompletionItemData> {
+        self.try_completions(uri, line, utf16_col)
+            .unwrap_or_default()
+    }
+
+    fn try_completions(
+        &self,
+        uri: &Url,
+        line: u32,
+        utf16_col: u32,
+    ) -> Option<Vec<CompletionItemData>> {
+        let mid = *self.uri_to_module.get(uri)?;
+        let mi = mid.0 as usize;
+        let byte = self.line_indices.get(mi)?.utf16_to_byte(line, utf16_col);
+        let offset = byte as usize;
+        let src = self.module_text.get(mi)?;
+        let rm = self.resolved.modules.get(mi)?;
+
+        let mut out: Vec<CompletionItemData> = Vec::new();
+        match detect_context(src, offset) {
+            Context::None => {}
+            Context::Member { alias, prefix } => {
+                if let Some(target) = alias_target(rm, &alias) {
+                    if let Some(trm) = self.resolved.modules.get(target.0 as usize) {
+                        for e in &trm.symbols.entries {
+                            if e.visibility == ResolvedVisibility::Pub
+                                && e.name.starts_with(&prefix)
+                            {
+                                out.push(item(e.name.clone(), symbol_kind(&e.kind), '0'));
+                            }
+                        }
+                    }
+                }
+            }
+            Context::Type { prefix } => {
+                for decl in &self.typed.tycons {
+                    if !decl.is_anon && decl.name.starts_with(&prefix) {
+                        out.push(item(decl.name.clone(), CompletionItemKind::CLASS, '0'));
+                    }
+                }
+            }
+            Context::Expr { prefix } => {
+                // Locals in scope sort first, then this module's symbols, then
+                // import aliases, then keywords.
+                for local in rm.scopes.visible_at(byte) {
+                    if local.name.starts_with(&prefix) {
+                        out.push(item(local.name.clone(), CompletionItemKind::VARIABLE, '0'));
+                    }
+                }
+                for e in &rm.symbols.entries {
+                    if e.name.starts_with(&prefix) {
+                        out.push(item(e.name.clone(), symbol_kind(&e.kind), '1'));
+                    }
+                }
+                for imp in &rm.imports {
+                    if let Some(alias) = &imp.alias {
+                        if alias.starts_with(&prefix) {
+                            out.push(item(alias.clone(), CompletionItemKind::MODULE, '2'));
+                        }
+                    }
+                }
+                for kw in KEYWORDS {
+                    if kw.starts_with(&prefix) {
+                        out.push(item((*kw).to_owned(), CompletionItemKind::KEYWORD, '3'));
+                    }
+                }
+            }
+        }
+        Some(out)
+    }
+}
+
+/// The workspace module an import `alias` resolves to, if any.
+fn alias_target(rm: &ResolvedModule, alias: &str) -> Option<ModuleId> {
+    rm.imports
+        .iter()
+        .find_map(|imp| match (&imp.alias, &imp.target) {
+            (Some(a), ImportTarget::WorkspaceModule(m)) if a == alias => Some(*m),
+            _ => None,
+        })
+}
+
+/// Shape a completion candidate, grouping it by a leading sort digit.
+fn item(label: String, kind: CompletionItemKind, group: char) -> CompletionItemData {
+    CompletionItemData {
+        sort_text: format!("{group}{label}"),
+        label,
+        kind,
+        detail: None,
     }
 }
 

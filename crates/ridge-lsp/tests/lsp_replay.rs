@@ -117,10 +117,10 @@ async fn test_initialize_initialized_roundtrip() {
         "must not advertise diagnosticProvider — server is push-only"
     );
 
-    // No completionProvider, hoverProvider, definitionProvider.
+    // completionProvider, hoverProvider, definitionProvider are all advertised.
     assert!(
-        result.capabilities.completion_provider.is_none(),
-        "must not advertise completionProvider"
+        result.capabilities.completion_provider.is_some(),
+        "must advertise completionProvider"
     );
     assert!(
         result.capabilities.hover_provider.is_some(),
@@ -1037,5 +1037,200 @@ async fn test_definition_local_and_nulls() {
     assert!(
         scalar_location(ws).is_none(),
         "whitespace has no definition"
+    );
+}
+
+// ── Test 18: two-member fixture (cross-module definition + completion) ─────────
+
+/// Build a two-member workspace (a `library` `lib` and an `app` that imports it),
+/// open the app file, and return the service plus the index's app and lib URIs.
+async fn two_member_fixture() -> (
+    tower_lsp::LspService<RidgeLanguageServer>,
+    tower_lsp::ClientSocket,
+    Url,
+    Url,
+) {
+    let dir = tempfile::TempDir::new().expect("temp dir");
+    let root = dir.path().to_path_buf();
+    std::fs::create_dir_all(root.join("lib").join("src")).expect("lib src");
+    std::fs::create_dir_all(root.join("app").join("src")).expect("app src");
+    std::fs::write(
+        root.join("ridge.toml"),
+        "[workspace]\nname = \"two-ws\"\nversion = \"0.1.0\"\nmembers = [\"lib\", \"app\"]\n",
+    )
+    .expect("workspace manifest");
+    std::fs::write(
+        root.join("lib").join("ridge.toml"),
+        "[project]\nname = \"lib\"\nversion = \"0.1.0\"\nkind = \"library\"\n\n[capabilities]\nallow = []\n",
+    )
+    .expect("lib manifest");
+    std::fs::write(
+        root.join("lib").join("src").join("Lib.ridge"),
+        "pub fn helper -> Int = 1\n",
+    )
+    .expect("lib source");
+    std::fs::write(
+        root.join("app").join("ridge.toml"),
+        "[project]\nname = \"app\"\nversion = \"0.1.0\"\nkind = \"app\"\nentry = \"src/Main.ridge\"\n\n[capabilities]\nallow = []\n",
+    )
+    .expect("app manifest");
+    let app_text = "import lib.Lib as Lib\npub fn run -> Int = Lib.helper\n";
+    std::fs::write(root.join("app").join("src").join("Main.ridge"), app_text).expect("app source");
+
+    let (service, socket) = build_test_service();
+    let app_uri;
+    let lib_uri;
+    {
+        let server = service.inner();
+        let root_uri = Url::from_file_path(&root).expect("root URI");
+        server
+            .initialize(InitializeParams {
+                root_uri: Some(root_uri.clone()),
+                workspace_folders: Some(vec![WorkspaceFolder {
+                    uri: root_uri,
+                    name: "two-ws".to_owned(),
+                }]),
+                capabilities: ClientCapabilities::default(),
+                ..InitializeParams::default()
+            })
+            .await
+            .expect("initialize");
+        server
+            .did_open(DidOpenTextDocumentParams {
+                text_document: TextDocumentItem {
+                    uri: Url::from_file_path(root.join("app").join("src").join("Main.ridge"))
+                        .expect("app URI"),
+                    language_id: "ridge".to_owned(),
+                    version: 1,
+                    text: app_text.to_owned(),
+                },
+            })
+            .await;
+        let mut index = None;
+        for _ in 0..120 {
+            tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;
+            if let Some(idx) = server.workspace_index().await {
+                index = Some(idx);
+                break;
+            }
+        }
+        let index = index.expect("index installed");
+        app_uri = index
+            .uri_to_module
+            .keys()
+            .find(|u| u.path().ends_with("Main.ridge"))
+            .expect("app module")
+            .clone();
+        lib_uri = index
+            .uri_to_module
+            .keys()
+            .find(|u| u.path().ends_with("Lib.ridge"))
+            .expect("lib module — multi-member discovery")
+            .clone();
+    }
+    std::mem::forget(dir);
+    (service, socket, app_uri, lib_uri)
+}
+
+#[tokio::test]
+async fn test_definition_cross_module() {
+    let (service, _socket, app_uri, lib_uri) = two_member_fixture().await;
+    let server = service.inner();
+
+    // Go-to-def on `Lib.helper` (line 1, inside `helper`) → Lib.ridge.
+    let resp = server
+        .goto_definition(goto_at(&app_uri, 1, 26))
+        .await
+        .expect("ok");
+    let loc = scalar_location(resp).expect("cross-module definition");
+    assert_eq!(loc.uri, lib_uri, "definition must land in Lib.ridge");
+    assert_eq!(loc.range.start.line, 0, "helper is on line 1 of Lib.ridge");
+}
+
+// ── Test 19: textDocument/completion ──────────────────────────────────────────
+
+fn complete_at(uri: &Url, line: u32, character: u32) -> CompletionParams {
+    CompletionParams {
+        text_document_position: TextDocumentPositionParams {
+            text_document: TextDocumentIdentifier { uri: uri.clone() },
+            position: Position { line, character },
+        },
+        work_done_progress_params: WorkDoneProgressParams::default(),
+        partial_result_params: PartialResultParams::default(),
+        context: None,
+    }
+}
+
+fn completion_items(resp: Option<CompletionResponse>) -> Vec<CompletionItem> {
+    match resp {
+        Some(CompletionResponse::Array(items)) => items,
+        Some(CompletionResponse::List(list)) => list.items,
+        None => Vec::new(),
+    }
+}
+
+#[tokio::test]
+async fn test_completion_locals_module_and_misses() {
+    // `counter` is a top-level fn; `foo` binds `count`, used in its body.
+    let src = "pub fn counter = 1\npub fn foo count = count\n";
+    let (service, _socket, uri) = hover_fixture(src).await;
+    let server = service.inner();
+
+    // Inside the body `count` after typing `co` (line 1, char 21): the local
+    // `count` (sort 0) ranks before the module fn `counter` (sort 1).
+    let items = completion_items(
+        server
+            .completion(complete_at(&uri, 1, 21))
+            .await
+            .expect("ok"),
+    );
+    let count = items
+        .iter()
+        .find(|i| i.label == "count")
+        .expect("local count");
+    let counter = items
+        .iter()
+        .find(|i| i.label == "counter")
+        .expect("module counter");
+    assert_eq!(count.kind, Some(CompletionItemKind::VARIABLE));
+    assert!(
+        count.sort_text < counter.sort_text,
+        "local must sort before module symbol: {:?} vs {:?}",
+        count.sort_text,
+        counter.sort_text
+    );
+
+    // Inside a comment → nothing.
+    let comment_src = "-- todo: write foo\n";
+    let (service, _socket, uri) = hover_fixture(comment_src).await;
+    let server = service.inner();
+    let items = completion_items(
+        server
+            .completion(complete_at(&uri, 0, 14))
+            .await
+            .expect("ok"),
+    );
+    assert!(
+        items.is_empty(),
+        "no completion inside a comment, got {items:?}"
+    );
+}
+
+#[tokio::test]
+async fn test_completion_member_access() {
+    let (service, _socket, app_uri, _lib_uri) = two_member_fixture().await;
+    let server = service.inner();
+
+    // Right after `Lib.` (line 1, char 24) → the library's exported symbols.
+    let items = completion_items(
+        server
+            .completion(complete_at(&app_uri, 1, 24))
+            .await
+            .expect("ok"),
+    );
+    assert!(
+        items.iter().any(|i| i.label == "helper"),
+        "member access should offer `helper`, got {:?}",
+        items.iter().map(|i| &i.label).collect::<Vec<_>>()
     );
 }

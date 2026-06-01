@@ -1171,3 +1171,117 @@ fn module_asts_are_retained_and_aligned_with_modules() {
         );
     }
 }
+
+// ── Incremental single-module resolution (resolve_module_incremental) ─────────
+
+/// Build a two-module library workspace: `Lib` exports `helper`, and `App` is
+/// supplied by the caller (so tests can vary its body while it imports `Lib`).
+fn build_lib_app_workspace(app_src: &str) -> TempDir {
+    let td = TempDir::new().expect("tempdir");
+    write_file(
+        td.path(),
+        "ridge.toml",
+        "[workspace]\nname = \"libapp-ws\"\nversion = \"0.1.0\"\nmembers = [\"libs/*\"]\n",
+    );
+    write_file(
+        td.path(),
+        "libs/proj/ridge.toml",
+        "[project]\nname = \"proj\"\nversion = \"0.1.0\"\nkind = \"library\"\n",
+    );
+    write_file(td.path(), "libs/proj/src/Lib.ridge", "pub fn helper = 1\n");
+    write_file(td.path(), "libs/proj/src/App.ridge", app_src);
+    td
+}
+
+fn module_id_by_suffix(ws: &ridge_resolve::WorkspaceGraph, suffix: &str) -> ModuleId {
+    ws.modules
+        .iter()
+        .find(|m| m.fully_qualified_name.ends_with(suffix))
+        .map_or_else(|| panic!("module ending in {suffix} not found"), |m| m.id)
+}
+
+/// A structural fingerprint of a resolved module. None of these types derive
+/// `PartialEq`, so we compare their `Debug` form, which includes spans and every
+/// field — strong enough to catch any divergence from the full build.
+fn module_fingerprint(rm: &ridge_resolve::ResolvedModule) -> (String, String, String, Vec<String>) {
+    let bindings = format!("{:?}", rm.bindings);
+    let imports = format!("{:?}", rm.imports);
+    let symbols = format!("{:?}", rm.symbols);
+    let mut nids: Vec<String> = rm
+        .node_ids
+        .iter()
+        .map(|(span, kind, nid)| format!("{span:?}|{kind:?}|{nid:?}"))
+        .collect();
+    nids.sort();
+    (bindings, imports, symbols, nids)
+}
+
+#[test]
+fn incremental_resolve_matches_full_for_cross_module_refs() {
+    let td = build_lib_app_workspace("import proj.Lib\npub fn use_it = Lib.helper\n");
+
+    // Cache: a from-scratch full resolve.
+    let ws1 = discover_workspace(td.path()).graph.expect("graph");
+    let app_id = module_id_by_suffix(&ws1, ".App");
+    let app_ast = {
+        let g = build_module_graph(&ws1);
+        std::sync::Arc::clone(&g.modules[app_id.0 as usize].ast)
+    };
+    let mut cached = resolve_workspace(ws1);
+
+    // Re-resolve App incrementally with identical content (a no-op edit).
+    let _ = ridge_resolve::resolve_module_incremental(&mut cached, app_id, &app_ast, true);
+
+    // Oracle: an independent full resolve of the same workspace.
+    let ws2 = discover_workspace(td.path()).graph.expect("graph");
+    let full = resolve_workspace(ws2);
+
+    let inc_app = &cached.modules[app_id.0 as usize];
+    let full_app = &full.modules[app_id.0 as usize];
+
+    // The old single-module resolve_module returned empty imports and broke
+    // cross-module bindings; incremental must instead match the full build.
+    assert!(
+        !inc_app.imports.is_empty(),
+        "incremental resolve dropped App's imports (regression to isolated resolve)"
+    );
+    assert_eq!(
+        module_fingerprint(inc_app),
+        module_fingerprint(full_app),
+        "incremental App resolution must be identical to the full build"
+    );
+}
+
+#[test]
+fn incremental_resolve_matches_full_after_body_edit() {
+    let td = build_lib_app_workspace("import proj.Lib\npub fn use_it = Lib.helper\n");
+
+    // Cache from the original source.
+    let ws1 = discover_workspace(td.path()).graph.expect("graph");
+    let app_id = module_id_by_suffix(&ws1, ".App");
+    let mut cached = resolve_workspace(ws1);
+
+    // Edit App's body: add a second function that also references Lib. Overwrite
+    // on disk so re-discovery sees the new source.
+    let app_v2 = "import proj.Lib\npub fn use_it = Lib.helper\npub fn twice = Lib.helper\n";
+    write_file(td.path(), "libs/proj/src/App.ridge", app_v2);
+
+    let ws2 = discover_workspace(td.path()).graph.expect("graph");
+    let app_ast_v2 = {
+        let g = build_module_graph(&ws2);
+        std::sync::Arc::clone(&g.modules[app_id.0 as usize].ast)
+    };
+    let _ = ridge_resolve::resolve_module_incremental(&mut cached, app_id, &app_ast_v2, true);
+
+    // Oracle: a full resolve of the edited workspace.
+    let ws3 = discover_workspace(td.path()).graph.expect("graph");
+    let full = resolve_workspace(ws3);
+
+    let inc_app = &cached.modules[app_id.0 as usize];
+    let full_app = &full.modules[app_id.0 as usize];
+    assert_eq!(
+        module_fingerprint(inc_app),
+        module_fingerprint(full_app),
+        "incremental App resolution after a body edit must match the full build"
+    );
+}

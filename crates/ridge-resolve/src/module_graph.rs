@@ -135,7 +135,10 @@ pub(crate) fn parse_and_collect_imports(
 
 /// Walk the top-level items of a `Module` and return one `TentativeEdge` per
 /// `import` declaration encountered.
-fn collect_import_edges(module_id: ModuleId, module: &Module) -> Vec<TentativeEdge> {
+///
+/// Exposed within the crate so incremental re-resolution can rebuild the
+/// tentative edges from already-parsed ASTs without re-reading source files.
+pub(crate) fn collect_import_edges(module_id: ModuleId, module: &Module) -> Vec<TentativeEdge> {
     let mut edges = Vec::new();
 
     for item in &module.items {

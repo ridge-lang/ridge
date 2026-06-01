@@ -22,11 +22,12 @@ nine first-class capabilities (`io`, `fs`, `net`, `time`, `random`, `env`,
 `proc`, `spawn`, `ffi`) tracked in the type system. Compiles to BEAM
 bytecode via Core Erlang.
 
-**Status:** 0.2.13, the thirteenth release on the 0.2.x line. The
-language and tooling are usable end-to-end. Pre-1.0 minors may include
-breaking changes; patch releases within 0.2.x will not. See
-[`CHANGELOG.md`](CHANGELOG.md) for what landed and
-[`docs/spec.md`](docs/spec.md) for the full language specification.
+**Status:** 0.3.0-rc1, a release candidate that brings language-server IDE
+features — hover types, go-to-definition, and scope-aware completion — to the
+0.2.x line; 0.2.13 remains the latest stable release. The language and tooling
+are usable end-to-end. Pre-1.0 minors may include breaking changes; patch
+releases within a minor will not. See [`CHANGELOG.md`](CHANGELOG.md) for what
+landed and [`docs/spec.md`](docs/spec.md) for the full language specification.
 
 ## Why Ridge?
 

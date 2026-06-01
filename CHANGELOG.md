@@ -7,6 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.0-rc1] - 2026-06-01
+
+### Added
+
+- Language server: hover shows the inferred type of the symbol under the cursor.
+- Language server: go-to-definition jumps to a name's binding site, including across modules.
+- Language server: scope-aware, context-sensitive completion — locals in scope, this module's symbols, imports, and keywords, plus a module's exported names after `Module.`.
+
+### Changed
+
+- Language server: positions are exchanged as UTF-16 code units, so diagnostics and editor features land on the correct column in lines containing non-ASCII text.
+- The type checker reuses the resolver's node-id map instead of rebuilding its own, and `CheckTypedArtefacts` now exposes the full resolved workspace.
+
 ## [0.2.11] - 2026-05-30
 
 ### Fixed

@@ -237,12 +237,10 @@ impl RidgeLanguageServer {
                     // until this fully-built one replaces it, and the generation
                     // guard prevents a slow aborted compile from overwriting a
                     // newer result.
-                    let typed = artefacts.typed;
-                    let resolved = artefacts.resolved;
                     let new_index = Arc::new(WorkspaceIndex::build(
                         generation,
-                        typed,
-                        resolved,
+                        &artefacts.typed,
+                        &artefacts.resolved,
                         &artefacts.sources,
                     ));
                     let mut snap = state_for_install.lock().await;

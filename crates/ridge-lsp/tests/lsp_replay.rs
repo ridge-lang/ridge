@@ -123,8 +123,8 @@ async fn test_initialize_initialized_roundtrip() {
         "must not advertise completionProvider"
     );
     assert!(
-        result.capabilities.hover_provider.is_none(),
-        "must not advertise hoverProvider"
+        result.capabilities.hover_provider.is_some(),
+        "must advertise hoverProvider"
     );
     assert!(
         result.capabilities.definition_provider.is_none(),
@@ -852,4 +852,127 @@ async fn test_scope_tree_retained_on_didopen() {
         visible.contains(&"name"),
         "parameter `name` must be visible in the body, got {visible:?}"
     );
+}
+
+// ── Test 16: textDocument/hover ───────────────────────────────────────────────
+
+/// Build a hermetic workspace with `main_src`, open it, and return the server,
+/// the file URI, and the kept-alive temp dir once a compile has produced an
+/// analysis index.
+async fn hover_fixture(
+    main_src: &'static str,
+) -> (
+    tower_lsp::LspService<RidgeLanguageServer>,
+    tower_lsp::ClientSocket,
+    Url,
+) {
+    let dir = tempfile::TempDir::new().expect("temp dir");
+    let root = dir.path().to_path_buf();
+    let app_src = root.join("app").join("src");
+    std::fs::create_dir_all(&app_src).expect("create temp workspace");
+    std::fs::write(
+        root.join("ridge.toml"),
+        "[workspace]\nname = \"hover-ws\"\nversion = \"0.1.0\"\nmembers = [\"app\"]\n",
+    )
+    .expect("write workspace manifest");
+    std::fs::write(
+        root.join("app").join("ridge.toml"),
+        "[project]\nname = \"app\"\nversion = \"0.1.0\"\nkind = \"app\"\nentry = \"src/Main.ridge\"\n\n[capabilities]\nallow = []\n",
+    )
+    .expect("write project manifest");
+    std::fs::write(app_src.join("Main.ridge"), main_src).expect("write source");
+
+    let (service, socket) = build_test_service();
+    let file_uri = Url::from_file_path(app_src.join("Main.ridge")).expect("file URI");
+    {
+        let server = service.inner();
+        let root_uri = Url::from_file_path(&root).expect("root URI");
+        server
+            .initialize(InitializeParams {
+                root_uri: Some(root_uri.clone()),
+                workspace_folders: Some(vec![WorkspaceFolder {
+                    uri: root_uri,
+                    name: "hover-ws".to_owned(),
+                }]),
+                capabilities: ClientCapabilities::default(),
+                ..InitializeParams::default()
+            })
+            .await
+            .expect("initialize");
+        server
+            .did_open(DidOpenTextDocumentParams {
+                text_document: TextDocumentItem {
+                    uri: file_uri.clone(),
+                    language_id: "ridge".to_owned(),
+                    version: 1,
+                    text: main_src.to_owned(),
+                },
+            })
+            .await;
+        for _ in 0..120 {
+            tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;
+            if server.workspace_index().await.is_some() {
+                break;
+            }
+        }
+        assert!(
+            server.workspace_index().await.is_some(),
+            "index must be installed before hovering"
+        );
+    }
+    // Leak the temp dir for the duration of the test process; the OS reclaims it.
+    std::mem::forget(dir);
+    (service, socket, file_uri)
+}
+
+fn hover_at(uri: &Url, line: u32, character: u32) -> HoverParams {
+    HoverParams {
+        text_document_position_params: TextDocumentPositionParams {
+            text_document: TextDocumentIdentifier { uri: uri.clone() },
+            position: Position { line, character },
+        },
+        work_done_progress_params: WorkDoneProgressParams::default(),
+    }
+}
+
+fn hover_markdown(h: Option<Hover>) -> Option<String> {
+    match h?.contents {
+        HoverContents::Markup(MarkupContent { value, .. }) => Some(value),
+        _ => None,
+    }
+}
+
+#[tokio::test]
+async fn test_hover_literal_and_local_and_misses() {
+    // Line 0: `42` literal at character 23. Line 1: body `x` at character 14.
+    let src = "pub fn answer -> Int = 42\npub fn id x = x\n";
+    let (service, _socket, uri) = hover_fixture(src).await;
+    let server = service.inner();
+
+    // Literal `42` → its primitive type.
+    let h = server.hover(hover_at(&uri, 0, 23)).await.expect("hover ok");
+    let md = hover_markdown(h).expect("hover over literal returns markup");
+    assert!(
+        md.contains("Int"),
+        "literal hover should mention Int, got {md:?}"
+    );
+
+    // Body `x` use-site → a local with its type.
+    let h = server.hover(hover_at(&uri, 1, 14)).await.expect("hover ok");
+    let md = hover_markdown(h).expect("hover over local returns markup");
+    assert!(
+        md.contains("(local) x"),
+        "local hover should label the binding, got {md:?}"
+    );
+
+    // Whitespace between tokens → no hover.
+    let h = server.hover(hover_at(&uri, 0, 6)).await.expect("hover ok");
+    assert!(h.is_none(), "hover over whitespace must be null");
+
+    // Far past end of line → no hover.
+    let h = server
+        .hover(hover_at(&uri, 0, 9999))
+        .await
+        .expect("hover ok");
+    assert!(h.is_none(), "hover past end-of-line must be null");
 }

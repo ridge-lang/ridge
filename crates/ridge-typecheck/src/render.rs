@@ -603,6 +603,97 @@ pub fn emit_internal_strict(
     ridge_types::Type::Error
 }
 
+// ── Type rendering for hover ──────────────────────────────────────────────────
+
+/// Render a [`ridge_types::Type`] to a human-readable string.
+///
+/// `tycons` is the workspace type-constructor table
+/// ([`crate::TypedWorkspace::tycons`]), indexed by `TyConId.0`. Unlike the
+/// internal diagnostic renderer in `exhaustiveness`, this completes the
+/// function-type arm and names type variables with stable single letters, which
+/// is what the language server shows on hover.
+#[must_use]
+pub fn render_type_with(ty: &ridge_types::Type, tycons: &[ridge_types::TyConDecl]) -> String {
+    render_at_depth(ty, tycons, 0)
+}
+
+/// Stable, readable name for a type variable: `a`..`z`, then `a1`, `b1`, …
+#[allow(
+    clippy::cast_possible_truncation,
+    reason = "v % 26 is in 0..26, always fits a u8"
+)]
+fn render_var(v: u32) -> String {
+    let letter = char::from(b'a' + (v % 26) as u8);
+    if v < 26 {
+        letter.to_string()
+    } else {
+        format!("{letter}{}", v / 26)
+    }
+}
+
+fn render_at_depth(ty: &ridge_types::Type, tycons: &[ridge_types::TyConDecl], depth: u8) -> String {
+    use ridge_types::{TyConKind, Type};
+
+    // Bound recursion so a pathological type cannot blow the hover budget.
+    if depth >= 5 {
+        return "…".to_owned();
+    }
+
+    match ty {
+        Type::Con(id, args) => {
+            let Some(decl) = tycons.get(id.0 as usize) else {
+                return format!("?{}", id.0);
+            };
+            if decl.is_anon {
+                if let TyConKind::Record(schema) = &decl.kind {
+                    let fields: Vec<String> = schema
+                        .record_fields()
+                        .iter()
+                        .map(|f| {
+                            format!("{}: {}", f.name, render_at_depth(&f.ty, tycons, depth + 1))
+                        })
+                        .collect();
+                    return format!("{{ {} }}", fields.join(", "));
+                }
+            }
+            if args.is_empty() {
+                decl.name.clone()
+            } else {
+                let parts: Vec<String> = args
+                    .iter()
+                    .map(|a| render_at_depth(a, tycons, depth + 1))
+                    .collect();
+                format!("{} {}", decl.name, parts.join(" "))
+            }
+        }
+        Type::Tuple(ts) => {
+            let parts: Vec<String> = ts
+                .iter()
+                .map(|t| render_at_depth(t, tycons, depth + 1))
+                .collect();
+            format!("({})", parts.join(", "))
+        }
+        Type::Fn { params, ret, .. } => {
+            let ps: Vec<String> = params
+                .iter()
+                .map(|p| render_at_depth(p, tycons, depth + 1))
+                .collect();
+            format!(
+                "({}) -> {}",
+                ps.join(", "),
+                render_at_depth(ret, tycons, depth + 1)
+            )
+        }
+        Type::Var(v) => render_var(v.0),
+        Type::Alias { name, .. } => tycons
+            .get(name.0 as usize)
+            .map_or_else(|| format!("?{}", name.0), |d| d.name.clone()),
+        Type::Error => "Error".to_owned(),
+        // `Type` is #[non_exhaustive]; render any future variant opaquely.
+        _ => "_".to_owned(),
+    }
+}
+
 // ── Tests ─────────────────────────────────────────────────────────────────────
 
 #[cfg(test)]
@@ -610,6 +701,36 @@ mod tests {
     use super::*;
     use ridge_ast::{Capability, Span};
     use ridge_types::CapabilitySet;
+
+    #[test]
+    fn render_var_letters() {
+        assert_eq!(render_var(0), "a");
+        assert_eq!(render_var(1), "b");
+        assert_eq!(render_var(25), "z");
+        assert_eq!(render_var(26), "a1");
+        assert_eq!(render_var(27), "b1");
+    }
+
+    #[test]
+    fn render_tuple_of_vars() {
+        use ridge_types::{TyVid, Type};
+        let tup = Type::Tuple(vec![Type::Var(TyVid(0)), Type::Var(TyVid(1))]);
+        assert_eq!(render_type_with(&tup, &[]), "(a, b)");
+    }
+
+    #[test]
+    fn render_depth_is_bounded() {
+        use ridge_types::{TyVid, Type};
+        // Nest tuples past the depth cap; the inner type collapses to `…`.
+        let mut t = Type::Var(TyVid(0));
+        for _ in 0..8 {
+            t = Type::Tuple(vec![t]);
+        }
+        assert!(
+            render_type_with(&t, &[]).contains('…'),
+            "deeply nested type must truncate"
+        );
+    }
 
     fn sp() -> Span {
         Span::point(0)

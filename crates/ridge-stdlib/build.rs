@@ -500,6 +500,14 @@ fn collect_ridge_files(
         if ft.is_dir() {
             collect_ridge_files(root, &path, out)?;
         } else if ft.is_file() && path.extension().is_some_and(|e| e == "ridge") {
+            // `codec.ridge` is the canonical, human-readable declaration of the
+            // built-in Encode/Decode classes (registered in Rust, not compiled).
+            // It must NOT be embedded: the driver compiles every unpacked source,
+            // and codec.ridge's `instance Encode Int` would overlap the prelude
+            // instance (T032). A consistency test reads it straight from disk.
+            if path.file_name().is_some_and(|n| n == "codec.ridge") {
+                continue;
+            }
             let rel = path
                 .strip_prefix(root)
                 .map_err(|e| format!("stdlib-sources-embed: strip_prefix: {e}"))?

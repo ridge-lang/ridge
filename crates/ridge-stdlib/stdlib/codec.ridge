@@ -1,0 +1,49 @@
+-- std.codec — the Encode and Decode typeclasses (§3.18).
+--
+-- This file is the canonical, human-readable declaration of the two JSON
+-- codec classes. The compiler registers them as built-in prelude classes in
+-- Rust (register_prelude_classes), so codec.ridge is NOT part of the compiled
+-- standard library (it is not listed in the build tiers). A consistency test
+-- parses this file and asserts the class shapes here match the Rust
+-- registration, so the two never drift.
+--
+-- Encode and Decode bridge any type to and from JsonValue, the prelude JSON
+-- value union (JNull | JBool | JInt | JFloat | JText | JList | JObject).
+-- `deriving (Encode, Decode)` on a record or union generates the instances;
+-- the primitive instances below are built in.
+
+-- Encode turns a value into a JsonValue.
+class Encode a =
+    encode (x: a) -> JsonValue
+
+-- Decode reads a value back out of a JsonValue, or reports why it could not.
+class Decode a =
+    decode (j: JsonValue) -> Result a Error
+
+-- ── Built-in primitive instances ─────────────────────────────────────────────
+--
+-- Encode maps each primitive straight onto its JsonValue variant.
+instance Encode Int =
+    encode (x: Int) -> JsonValue = JInt x
+
+instance Encode Float =
+    encode (x: Float) -> JsonValue = JFloat x
+
+instance Encode Bool =
+    encode (x: Bool) -> JsonValue = JBool x
+
+instance Encode Text =
+    encode (x: Text) -> JsonValue = JText x
+
+-- Decode pattern-matches the expected variant and fails with an Error record
+-- otherwise. The primitive Decode instances (Int, Float, Bool, Text) follow the
+-- same shape; for example:
+--
+--   instance Decode Int =
+--       decode (j: JsonValue) -> Result Int Error =
+--           match j
+--               JInt n -> Ok n
+--               _      -> Err { code = "decode.int", message = "expected a JSON int" }
+--
+-- They are built into the compiler rather than spelled out here so that the
+-- canonical file stays focused on the class shapes.

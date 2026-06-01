@@ -10,7 +10,9 @@
 //! participates in the global uniqueness requirement.
 
 use ridge_ast::{Span, Type as AstType};
-use ridge_types::{ClassId, Constraint, TyConId, EQ_CLASS, ORD_CLASS, TOTEXT_CLASS};
+use ridge_types::{
+    ClassId, Constraint, TyConId, DECODE_CLASS, ENCODE_CLASS, EQ_CLASS, ORD_CLASS, TOTEXT_CLASS,
+};
 use rustc_hash::FxHashMap;
 
 use crate::error::TypeError;
@@ -65,9 +67,10 @@ pub struct ClassInfo {
 
 /// Workspace-level class registry: name → [`ClassId`] + [`ClassInfo`].
 ///
-/// [`ClassId`]s are allocated sequentially. The three prelude classes
-/// (`ToText`, `Eq`, `Ord`) have fixed ids reserved by the constants in
-/// [`ridge_types`]: `TOTEXT_CLASS=0`, `EQ_CLASS=1`, `ORD_CLASS=2`.
+/// [`ClassId`]s are allocated sequentially. The five prelude classes
+/// (`ToText`, `Eq`, `Ord`, `Encode`, `Decode`) have fixed ids reserved by the
+/// constants in [`ridge_types`]: `TOTEXT_CLASS=0`, `EQ_CLASS=1`, `ORD_CLASS=2`,
+/// `ENCODE_CLASS=3`, `DECODE_CLASS=4`.
 #[derive(Debug, Default)]
 pub struct ClassTable {
     /// Id → class information.
@@ -85,15 +88,15 @@ impl ClassTable {
         Self {
             classes: FxHashMap::default(),
             by_name: FxHashMap::default(),
-            next_id: 3, // 0, 1, 2 reserved for prelude constants
+            next_id: 5, // 0..=4 reserved for prelude constants (ToText/Eq/Ord/Encode/Decode)
         }
     }
 
     /// Interns a class name, returning its [`ClassId`].
     ///
     /// If the name already exists the existing id is returned unchanged
-    /// (idempotent). New names are allocated sequentially starting from 3;
-    /// ids 0–2 are reserved for the prelude constants and must be registered
+    /// (idempotent). New names are allocated sequentially starting from 5;
+    /// ids 0–4 are reserved for the prelude constants and must be registered
     /// explicitly via [`ClassTable::insert_with_id`].
     #[must_use]
     pub fn intern(&mut self, name: &str) -> ClassId {
@@ -312,11 +315,15 @@ impl InstanceEnv {
 
 // ── Prelude class registration ────────────────────────────────────────────────
 
-/// Registers the three built-in prelude classes (`ToText`, `Eq`, `Ord`) into
-/// `class_table` at their reserved [`ClassId`]s (0–2).
+/// Registers the built-in prelude classes (`ToText`, `Eq`, `Ord`, `Encode`,
+/// `Decode`) into `class_table` at their reserved [`ClassId`]s (0–4).
 ///
 /// Must be called once before the workspace collect pass so that user-declared
 /// class and instance items can reference these classes by name.
+///
+/// `Encode`/`Decode` mirror the Ridge-syntax declarations in
+/// `crates/ridge-stdlib/stdlib/codec.ridge`, which is the canonical source for
+/// humans; a consistency test keeps the two in sync.
 pub fn register_prelude_classes(ct: &mut ClassTable) {
     // ToText (id=0) — no superclasses; one method: toText
     ct.insert_with_id(
@@ -368,17 +375,51 @@ pub fn register_prelude_classes(ct: &mut ClassTable) {
             def_module: None,
         },
     );
+
+    // Encode (id=3) — no superclasses; one method: encode (a -> JsonValue).
+    ct.insert_with_id(
+        ENCODE_CLASS,
+        ClassInfo {
+            name: "Encode".to_string(),
+            method_sigs: vec![MethodSig {
+                name: "encode".to_string(),
+                arity: 1,
+                ast_param_types: vec![],
+                ast_ret_type: None,
+                class_ty_var: String::new(),
+            }],
+            superclasses: vec![],
+            def_module: None,
+        },
+    );
+
+    // Decode (id=4) — no superclasses; one method: decode (JsonValue -> Result a Error).
+    ct.insert_with_id(
+        DECODE_CLASS,
+        ClassInfo {
+            name: "Decode".to_string(),
+            method_sigs: vec![MethodSig {
+                name: "decode".to_string(),
+                arity: 1,
+                ast_param_types: vec![],
+                ast_ret_type: None,
+                class_ty_var: String::new(),
+            }],
+            superclasses: vec![],
+            def_module: None,
+        },
+    );
 }
 
 // ── Prelude instance registration ────────────────────────────────────────────
 
-/// Registers the built-in prelude instances for `ToText`, `Eq`, and `Ord`
-/// into `instance_env`.
+/// Registers the built-in prelude instances for `ToText`, `Eq`, `Ord`,
+/// `Encode`, and `Decode` into `instance_env`.
 ///
 /// These instances cover the primitive prelude types (`Int`, `Bool`, `Text`,
-/// `Timestamp`, `Ordering`) and are equivalent to the instances the user
-/// would declare explicitly, but live in the prelude module (`def_module =
-/// None`).
+/// `Timestamp`, `Ordering`, plus `Float` for `Encode`/`Decode`) and are
+/// equivalent to the instances the user would declare explicitly, but live in
+/// the prelude module (`def_module = None`).
 ///
 /// Notable omissions (intentional):
 /// - **`Eq Float`** — floating-point equality is a footgun; the instance is
@@ -389,6 +430,10 @@ pub fn register_prelude_classes(ct: &mut ClassTable) {
 /// `TyConId` values are the fixed builtin indices assigned by
 /// [`ridge_types::BuiltinTyCons::allocate`]:
 /// `Int=0, Float=1, Bool=2, Text=3, Unit=4, Timestamp=5, …, Ordering=15`.
+#[expect(
+    clippy::too_many_lines,
+    reason = "flat sequential env.insert() calls, one per prelude instance; splitting per class would hurt readability without reducing complexity"
+)]
 pub fn register_prelude_instances(env: &mut InstanceEnv) {
     let ds = Span::point(0);
 
@@ -490,6 +535,62 @@ pub fn register_prelude_instances(env: &mut InstanceEnv) {
         "Ord",
         "Ordering",
     );
+
+    // ── Encode instances ──────────────────────────────────────────────────────
+    // Each primitive maps to the matching JsonValue variant (JInt/JFloat/JBool/
+    // JText). Unlike Eq, Encode Float is fine — JSON numbers carry floats.
+    // The method bodies are filled in by the deriving pass; here we only record
+    // that the instance exists so derived Encode can discharge field constraints.
+    let _ = env.insert(
+        (ENCODE_CLASS, TyConId(0)),
+        prelude_inst("encode"),
+        "Encode",
+        "Int",
+    );
+    let _ = env.insert(
+        (ENCODE_CLASS, TyConId(1)),
+        prelude_inst("encode"),
+        "Encode",
+        "Float",
+    );
+    let _ = env.insert(
+        (ENCODE_CLASS, TyConId(2)),
+        prelude_inst("encode"),
+        "Encode",
+        "Bool",
+    );
+    let _ = env.insert(
+        (ENCODE_CLASS, TyConId(3)),
+        prelude_inst("encode"),
+        "Encode",
+        "Text",
+    );
+
+    // ── Decode instances ──────────────────────────────────────────────────────
+    let _ = env.insert(
+        (DECODE_CLASS, TyConId(0)),
+        prelude_inst("decode"),
+        "Decode",
+        "Int",
+    );
+    let _ = env.insert(
+        (DECODE_CLASS, TyConId(1)),
+        prelude_inst("decode"),
+        "Decode",
+        "Float",
+    );
+    let _ = env.insert(
+        (DECODE_CLASS, TyConId(2)),
+        prelude_inst("decode"),
+        "Decode",
+        "Bool",
+    );
+    let _ = env.insert(
+        (DECODE_CLASS, TyConId(3)),
+        prelude_inst("decode"),
+        "Decode",
+        "Text",
+    );
 }
 
 // ── Tests ─────────────────────────────────────────────────────────────────────
@@ -497,7 +598,7 @@ pub fn register_prelude_instances(env: &mut InstanceEnv) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use ridge_types::{EQ_CLASS, ORD_CLASS, TOTEXT_CLASS};
+    use ridge_types::{DECODE_CLASS, ENCODE_CLASS, EQ_CLASS, ORD_CLASS, TOTEXT_CLASS};
 
     fn dummy_span() -> Span {
         Span::point(0)
@@ -541,9 +642,41 @@ mod tests {
         assert_eq!(ct.id_by_name("ToText"), Some(TOTEXT_CLASS));
         assert_eq!(ct.id_by_name("Eq"), Some(EQ_CLASS));
         assert_eq!(ct.id_by_name("Ord"), Some(ORD_CLASS));
+        assert_eq!(ct.id_by_name("Encode"), Some(ENCODE_CLASS));
+        assert_eq!(ct.id_by_name("Decode"), Some(DECODE_CLASS));
 
         let ord_info = ct.get(ORD_CLASS).expect("Ord must be in ClassTable");
         assert_eq!(ord_info.superclasses, vec![EQ_CLASS]);
+
+        // Encode/Decode each have a single arity-1 method and no superclass.
+        let encode_info = ct.get(ENCODE_CLASS).expect("Encode must be in ClassTable");
+        assert_eq!(encode_info.method_sigs.len(), 1);
+        assert_eq!(encode_info.method_sigs[0].name, "encode");
+        assert_eq!(encode_info.method_sigs[0].arity, 1);
+        assert!(encode_info.superclasses.is_empty());
+
+        let decode_info = ct.get(DECODE_CLASS).expect("Decode must be in ClassTable");
+        assert_eq!(decode_info.method_sigs.len(), 1);
+        assert_eq!(decode_info.method_sigs[0].name, "decode");
+        assert_eq!(decode_info.method_sigs[0].arity, 1);
+        assert!(decode_info.superclasses.is_empty());
+    }
+
+    #[test]
+    fn prelude_encode_decode_instances_registered() {
+        let mut env = InstanceEnv::new();
+        register_prelude_instances(&mut env);
+        // Encode/Decode cover the four JSON primitives Int/Float/Bool/Text.
+        for tycon in [TyConId(0), TyConId(1), TyConId(2), TyConId(3)] {
+            assert!(
+                env.get((ENCODE_CLASS, tycon)).is_some(),
+                "Encode instance missing for {tycon:?}"
+            );
+            assert!(
+                env.get((DECODE_CLASS, tycon)).is_some(),
+                "Decode instance missing for {tycon:?}"
+            );
+        }
     }
 
     // ── InstanceEnv::insert duplicate → OverlappingInstance (T032) ───────────

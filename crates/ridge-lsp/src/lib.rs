@@ -35,6 +35,7 @@
     )
 )]
 
+pub mod completion;
 pub mod diagnostics;
 pub mod index;
 pub mod server;

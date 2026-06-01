@@ -384,6 +384,11 @@ impl LanguageServer for RidgeLanguageServer {
                 position_encoding: Some(PositionEncodingKind::UTF16),
                 hover_provider: Some(HoverProviderCapability::Simple(true)),
                 definition_provider: Some(OneOf::Left(true)),
+                completion_provider: Some(CompletionOptions {
+                    trigger_characters: Some(vec![".".to_owned()]),
+                    resolve_provider: Some(false),
+                    ..CompletionOptions::default()
+                }),
                 text_document_sync: Some(TextDocumentSyncCapability::Options(
                     TextDocumentSyncOptions {
                         open_close: Some(true),
@@ -528,6 +533,31 @@ impl LanguageServer for RidgeLanguageServer {
         Ok(index
             .definition_at(&uri, pos.line, pos.character)
             .map(GotoDefinitionResponse::Scalar))
+    }
+
+    async fn completion(&self, params: CompletionParams) -> LspResult<Option<CompletionResponse>> {
+        let uri = params.text_document_position.text_document.uri;
+        let pos = params.text_document_position.position;
+
+        let index = {
+            let snap = self.state.lock().await;
+            snap.index.clone()
+        };
+        let Some(index) = index else {
+            return Ok(Some(CompletionResponse::Array(Vec::new())));
+        };
+        let items = index
+            .completions_at(&uri, pos.line, pos.character)
+            .into_iter()
+            .map(|d| CompletionItem {
+                label: d.label,
+                kind: Some(d.kind),
+                sort_text: Some(d.sort_text),
+                detail: d.detail,
+                ..CompletionItem::default()
+            })
+            .collect();
+        Ok(Some(CompletionResponse::Array(items)))
     }
 }
 

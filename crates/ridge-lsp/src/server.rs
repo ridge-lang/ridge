@@ -9,20 +9,19 @@
 //!
 //! 1. `initialize`: read `rootUri` / first `workspaceFolders` entry → set workspace root.
 //!    Extra workspace folders trigger one-time `L802 LspMultiRootUnsupported` warn.
-//! 2. `textDocument/didChange`: debounce 250 ms; on trigger, cancel any in-flight
-//!    compile (by aborting the tokio task), then spawn a fresh `check_workspace` call.
-//! 3. `textDocument/didSave`: unconditional compile (no debounce).
+//! 2. `textDocument/didChange`: debounce 250 ms, then recompile the edited modules
+//!    against their editor buffers via the retained incremental engine.
+//! 3. `textDocument/didSave`: reseed the engine from disk (no debounce).
 //! 4. Diagnostics published via `client.publish_diagnostics(...)`.
 //!
-//! # Cancellation
+//! # Compile model
 //!
-//! The `check_workspace` driver function is synchronous.  We run it inside
-//! `tokio::task::spawn_blocking`.  Cancellation is achieved by calling
-//! `JoinHandle::abort()` on the running task — this is the minimal correct
-//! approach given that `check_workspace` has no cooperative cancellation hook.
-//! The aborted blocking thread may run briefly past the abort signal (tokio
-//! does not forcibly kill blocking threads), but it will not publish diagnostics
-//! because the result is discarded when a new compile is queued.
+//! The retained incremental engine lives behind a blocking mutex. Each compile
+//! runs on `tokio::task::spawn_blocking`, locks the engine, applies the buffer
+//! edits (or reseeds from disk), and builds a fresh `WorkspaceIndex`. The index
+//! and diagnostics install only under a generation guard, so a slow compile that
+//! a newer edit superseded clobbers nothing. Editor queries read the installed
+//! index `Arc` and never touch the engine, so a recompile never blocks a hover.
 
 // LSP server module-local stylistic allow: `significant_drop_tightening`
 // (nursery) — the suggested rewrites push lock acquisitions into single
@@ -30,10 +29,10 @@
 // patterns; the lock holds are short.
 #![allow(clippy::significant_drop_tightening)]
 
-use std::collections::HashSet;
-use std::path::PathBuf;
+use std::collections::{HashMap, HashSet};
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex as StdMutex};
 
 use tokio::sync::Mutex;
 use tokio::task::JoinHandle;
@@ -45,9 +44,12 @@ use tower_lsp::jsonrpc::Result as LspResult;
 use tower_lsp::lsp_types::*;
 use tower_lsp::{Client, LanguageServer};
 
-use ridge_driver::{check_workspace_typed, CheckOptions};
+use ridge_driver::{
+    check_workspace_incremental, collect_diagnostics, CheckError, CheckOptions, IncrementalState,
+};
 use ridge_lexer::LineIndex;
 use ridge_manifest::find_workspace_root;
+use ridge_resolve::ModuleId;
 
 use crate::diagnostics::{source_id_to_uri, to_lsp_diagnostic};
 use crate::index::WorkspaceIndex;
@@ -77,6 +79,9 @@ struct WorkspaceSnapshot {
     /// successful compile; reads clone the `Arc` and release the lock before
     /// querying. `None` until the first compile lands.
     index: Option<Arc<WorkspaceIndex>>,
+    /// File URIs edited since the last compile. Drained by the debounced
+    /// incremental compile so a burst of edits across files is applied together.
+    dirty: HashSet<Url>,
 }
 
 // ── RidgeLanguageServer ───────────────────────────────────────────────────────
@@ -96,6 +101,12 @@ pub struct RidgeLanguageServer {
     /// the installer only swaps in a result whose generation beats the one
     /// already stored, so a slow aborted compile cannot clobber a newer one.
     compile_generation: Arc<AtomicU64>,
+    /// The retained incremental engine. A full compile reseeds it; an edit
+    /// recompiles the affected modules in place. Held behind a blocking mutex so
+    /// the `spawn_blocking` compile task can own it without moving it out (and
+    /// thus never lose it to a task abort). Editor queries never touch it — they
+    /// read the derived `WorkspaceIndex` snapshot instead.
+    engine: Arc<StdMutex<Option<IncrementalState>>>,
 }
 
 impl RidgeLanguageServer {
@@ -108,6 +119,7 @@ impl RidgeLanguageServer {
             compile_handle: Arc::new(Mutex::new(None)),
             debounce_handle: Arc::new(Mutex::new(None)),
             compile_generation: Arc::new(AtomicU64::new(0)),
+            engine: Arc::new(StdMutex::new(None)),
         }
     }
 
@@ -123,16 +135,17 @@ impl RidgeLanguageServer {
         snap.index.clone()
     }
 
-    /// Run a type-check of the workspace and publish diagnostics.
+    /// Run a workspace compile and publish diagnostics.
     ///
-    /// Cancels any currently-running compile by aborting its task.
-    /// Then spawns a new `tokio::task::spawn_blocking` call to `check_workspace`.
-    async fn trigger_compile(&self) {
-        let state_arc = Arc::clone(&self.state);
-        let client = self.client.clone();
+    /// `reseed` forces a fresh full check from disk; otherwise the retained
+    /// incremental engine is reused (seeded on first use). `edits` are
+    /// `(uri, buffer)` pairs applied to the engine before the result is built,
+    /// so diagnostics and the analysis index reflect the editor's buffers rather
+    /// than stale disk text. The heavy work runs on a blocking thread; its index
+    /// and diagnostics install under the generation guard, so a slow compile
+    /// superseded by a newer one is discarded.
+    async fn run_compile(&self, reseed: bool, edits: Vec<(Url, String)>) {
         let compile_handle_arc = Arc::clone(&self.compile_handle);
-
-        // Cancel any existing in-flight compile.
         {
             let mut ch = compile_handle_arc.lock().await;
             if let Some(handle) = ch.take() {
@@ -140,138 +153,100 @@ impl RidgeLanguageServer {
             }
         }
 
-        // Snapshot the workspace root and open docs.
-        let (workspace_root, docs_snapshot) = {
-            let snap = state_arc.lock().await;
+        let workspace_root = {
+            let snap = self.state.lock().await;
             if snap.missing_workspace {
-                // Already published L801; nothing to compile.
                 return;
             }
             match snap.workspace_root.clone() {
-                Some(root) => (root, snap.open_docs.clone()),
+                Some(root) => root,
                 None => return,
             }
         };
 
-        // Claim a generation for this compile and capture a state handle so the
-        // task can install its index without clobbering a newer one.
-        let generation = self.compile_generation.fetch_add(1, Ordering::SeqCst) + 1;
+        let engine = Arc::clone(&self.engine);
+        let gen_counter = Arc::clone(&self.compile_generation);
         let state_for_install = Arc::clone(&self.state);
+        let client = self.client.clone();
 
         let handle = tokio::spawn(async move {
-            let opts = CheckOptions::new(workspace_root.clone()).with_retain_indices(true);
-
-            // Run the synchronous check in a blocking thread pool thread.
-            let result = tokio::task::spawn_blocking(move || check_workspace_typed(opts)).await;
+            let result = tokio::task::spawn_blocking(move || {
+                compile_blocking(&engine, &gen_counter, &workspace_root, reseed, &edits)
+            })
+            .await;
 
             match result {
-                Err(_join_err) => {
-                    // Task was aborted or panicked; discard silently.
-                }
+                Err(_join_err) => {} // aborted or panicked; discard
                 Ok(Err(check_err)) => {
-                    // Fatal driver error (e.g. workspace not found).
                     tracing::error!("L804 LspInternal: driver fatal error: {check_err}");
-                    // The static URL `file:///unknown` is hard-coded; `Url::parse`
-                    // on it cannot fail.  `expect` is the right tool here — the
-                    // lib-level `expect_used` deny is for user-reachable inputs,
-                    // not for compile-time-known constants.
-                    #[allow(clippy::expect_used)]
-                    let uri = Url::from_file_path(&workspace_root).unwrap_or_else(|()| {
-                        Url::parse("file:///unknown").expect("static URL is valid")
-                    });
-                    let lsp_diag = Diagnostic {
-                        range: Range::default(),
-                        severity: Some(DiagnosticSeverity::ERROR),
-                        code: Some(NumberOrString::String("L804".to_owned())),
-                        code_description: None,
-                        source: Some("ridge".to_owned()),
-                        message: format!("L804 LspInternal: {check_err}"),
-                        related_information: None,
-                        tags: None,
-                        data: None,
-                    };
-                    client.publish_diagnostics(uri, vec![lsp_diag], None).await;
                 }
-                Ok(Ok(artefacts)) => {
-                    // Bucket diagnostics by source file.
-                    let mut by_file: std::collections::HashMap<String, Vec<Diagnostic>> =
-                        std::collections::HashMap::new();
-
-                    // Pre-populate with all open docs so we clear stale diagnostics.
-                    for uri in docs_snapshot.keys() {
-                        by_file.entry(uri.to_string()).or_default();
-                    }
-
-                    for diag in &artefacts.diagnostics {
-                        let source_key = diag.source_id.as_str();
-
-                        // Derive the document URI from the workspace-relative
-                        // source id instead of suffix-matching open-doc paths.
-                        // The old `ends_with` match failed whenever the file was
-                        // not open, anchoring the diagnostic to `<unknown>`.
-                        let uri = source_id_to_uri(&workspace_root, source_key);
-
-                        // Resolve spans against the exact on-disk text the
-                        // compiler read — `check_workspace` compiles disk state,
-                        // so a diagnostic's byte offsets index that text, not the
-                        // editor buffer. Fall back to the open-doc text only when
-                        // the cache has no entry for this source id.
-                        let src_text = artefacts
-                            .sources
-                            .text(source_key)
-                            .or_else(|| docs_snapshot.get(&uri).map(String::as_str));
-
-                        let lsp_diag = to_lsp_diagnostic(diag, &uri, src_text);
-                        by_file.entry(uri.to_string()).or_default().push(lsp_diag);
-                    }
-
-                    // Publish (or clear) diagnostics for every file.
-                    for (uri_str, diags) in by_file {
-                        if let Ok(uri) = Url::parse(&uri_str) {
+                Ok(Ok(out)) => {
+                    // Install the index and publish diagnostics only if this
+                    // compile is still the newest — both are gated on the same
+                    // generation so a superseded result clobbers nothing.
+                    let install = {
+                        let mut snap = state_for_install.lock().await;
+                        if snap
+                            .index
+                            .as_ref()
+                            .is_none_or(|existing| out.generation > existing.generation)
+                        {
+                            snap.index = Some(Arc::clone(&out.index));
+                            true
+                        } else {
+                            false
+                        }
+                    };
+                    if install {
+                        for (uri, diags) in out.diagnostics_by_file {
                             client.publish_diagnostics(uri, diags, None).await;
                         }
-                    }
-
-                    // Build the retained analysis index off-lock, then install
-                    // it under a short lock. The previous index stays queryable
-                    // until this fully-built one replaces it, and the generation
-                    // guard prevents a slow aborted compile from overwriting a
-                    // newer result.
-                    let new_index = Arc::new(WorkspaceIndex::build(
-                        generation,
-                        &artefacts.typed,
-                        &artefacts.resolved,
-                        &artefacts.sources,
-                    ));
-                    let mut snap = state_for_install.lock().await;
-                    if snap
-                        .index
-                        .as_ref()
-                        .is_none_or(|existing| generation > existing.generation)
-                    {
-                        snap.index = Some(new_index);
                     }
                 }
             }
         });
 
-        // Store the new handle.
         let mut ch = compile_handle_arc.lock().await;
         *ch = Some(handle);
     }
 
-    /// Schedule a debounced compile (250 ms delay).
+    /// Reseed the engine from disk and recompile against every open buffer.
+    /// Used on open and save, where the on-disk state is authoritative.
+    async fn trigger_compile(&self) {
+        let edits: Vec<(Url, String)> = {
+            let snap = self.state.lock().await;
+            snap.open_docs
+                .iter()
+                .map(|(uri, text)| (uri.clone(), text.clone()))
+                .collect()
+        };
+        self.run_compile(true, edits).await;
+    }
+
+    /// Drain the dirty set and incrementally recompile those files' buffers.
+    async fn flush_dirty_compile(&self) {
+        let edits: Vec<(Url, String)> = {
+            let mut guard = self.state.lock().await;
+            let WorkspaceSnapshot {
+                dirty, open_docs, ..
+            } = &mut *guard;
+            dirty
+                .drain()
+                .filter_map(|uri| open_docs.get(&uri).map(|text| (uri, text.clone())))
+                .collect()
+        };
+        if edits.is_empty() {
+            return;
+        }
+        self.run_compile(false, edits).await;
+    }
+
+    /// Schedule a debounced incremental compile (250 ms delay).
     ///
-    /// Cancels any pending debounce timer and restarts it.  If a new
-    /// `didChange` arrives before the 250 ms elapses, the previous timer
-    /// is cancelled and a new one starts.
+    /// Cancels any pending debounce timer and restarts it, so a burst of
+    /// `didChange` notifications collapses into one recompile of the dirty set.
     async fn schedule_debounced_compile(&self) {
         let debounce_arc = Arc::clone(&self.debounce_handle);
-        let server_state = Arc::clone(&self.state);
-        let server_compile = Arc::clone(&self.compile_handle);
-        let client = self.client.clone();
-
-        // Cancel any pending debounce timer.
         {
             let mut dh = debounce_arc.lock().await;
             if let Some(handle) = dh.take() {
@@ -280,21 +255,110 @@ impl RidgeLanguageServer {
         }
 
         let self_clone = Self {
-            client,
-            state: server_state,
-            compile_handle: server_compile,
+            client: self.client.clone(),
+            state: Arc::clone(&self.state),
+            compile_handle: Arc::clone(&self.compile_handle),
             debounce_handle: Arc::clone(&debounce_arc),
             compile_generation: Arc::clone(&self.compile_generation),
+            engine: Arc::clone(&self.engine),
         };
 
         let handle = tokio::spawn(async move {
             tokio::time::sleep(tokio::time::Duration::from_millis(250)).await;
-            self_clone.trigger_compile().await;
+            self_clone.flush_dirty_compile().await;
         });
 
         let mut dh = debounce_arc.lock().await;
         *dh = Some(handle);
     }
+}
+
+// ── Compile helpers (run off the async runtime) ───────────────────────────────
+
+/// One compile's product: the analysis index plus diagnostics bucketed by file,
+/// ready to install and publish under the generation guard.
+struct CompileOutput {
+    generation: u64,
+    index: Arc<WorkspaceIndex>,
+    diagnostics_by_file: Vec<(Url, Vec<Diagnostic>)>,
+}
+
+/// Seed-or-reuse the engine, apply the buffer edits, and produce the index and
+/// diagnostics. Holds the engine mutex for the whole call, so concurrent
+/// compiles serialise on the shared engine; the generation is claimed inside
+/// that lock so its order matches the order edits were applied.
+fn compile_blocking(
+    engine: &StdMutex<Option<IncrementalState>>,
+    gen_counter: &AtomicU64,
+    workspace_root: &Path,
+    reseed: bool,
+    edits: &[(Url, String)],
+) -> Result<CompileOutput, CheckError> {
+    let mut guard = engine
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    if reseed || guard.is_none() {
+        let opts = CheckOptions::new(workspace_root.to_path_buf()).with_retain_indices(true);
+        *guard = Some(check_workspace_incremental(opts)?);
+    }
+    let Some(state) = guard.as_mut() else {
+        return Err(CheckError::NoWorkspaceRoot {
+            path: workspace_root.to_path_buf(),
+        });
+    };
+
+    for (uri, buffer) in edits {
+        if let Some(mid) = module_for_uri(state, uri) {
+            state.recompile(mid, buffer);
+        }
+    }
+
+    let generation = gen_counter.fetch_add(1, Ordering::SeqCst) + 1;
+    let sources = state.source_cache();
+    let structured = collect_diagnostics(
+        &state.disc_resolve_errors,
+        &state.resolved,
+        &state.type_errors,
+        &sources,
+    );
+    let index = Arc::new(WorkspaceIndex::build(
+        generation,
+        &state.typed,
+        &state.resolved,
+        &sources,
+    ));
+
+    // Pre-populate every module's URI so a now-clean file gets its stale
+    // diagnostics cleared, then bucket the current diagnostics by file.
+    let mut by_file: HashMap<Url, Vec<Diagnostic>> = index
+        .uri_to_module
+        .keys()
+        .map(|uri| (uri.clone(), Vec::new()))
+        .collect();
+    for diag in &structured {
+        let source_key = diag.source_id.as_str();
+        let uri = source_id_to_uri(workspace_root, source_key);
+        let src_text = sources.text(source_key);
+        let lsp_diag = to_lsp_diagnostic(diag, &uri, src_text);
+        by_file.entry(uri).or_default().push(lsp_diag);
+    }
+
+    Ok(CompileOutput {
+        generation,
+        index,
+        diagnostics_by_file: by_file.into_iter().collect(),
+    })
+}
+
+/// The workspace module a document URI maps to, keyed the same way the index and
+/// diagnostics are (workspace root joined with the source id).
+fn module_for_uri(state: &IncrementalState, uri: &Url) -> Option<ModuleId> {
+    let sources = state.source_cache();
+    let root = &state.resolved.graph.root;
+    state.resolved.graph.modules.iter().find_map(|module| {
+        (source_id_to_uri(root, sources.id_for_module(module.id).as_str()) == *uri)
+            .then_some(module.id)
+    })
 }
 
 // ── LanguageServer impl ───────────────────────────────────────────────────────
@@ -451,18 +515,21 @@ impl LanguageServer for RidgeLanguageServer {
         // apply them sequentially.
         {
             let mut snap = self.state.lock().await;
-            let entry = snap.open_docs.entry(uri.clone()).or_default();
-            for change in params.content_changes {
-                if let Some(range) = change.range {
-                    // Apply incremental edit: replace the byte range with new text.
-                    apply_incremental_edit(entry, range, &change.text);
-                } else {
-                    // Full-text replacement.
-                    *entry = change.text;
+            {
+                let entry = snap.open_docs.entry(uri.clone()).or_default();
+                for change in params.content_changes {
+                    if let Some(range) = change.range {
+                        // Apply incremental edit: replace the byte range with new text.
+                        apply_incremental_edit(entry, range, &change.text);
+                    } else {
+                        // Full-text replacement.
+                        *entry = change.text;
+                    }
                 }
             }
+            snap.dirty.insert(uri.clone());
         }
-        // Debounced compile — 250 ms.
+        // Debounced incremental compile — 250 ms.
         self.schedule_debounced_compile().await;
     }
 

@@ -3,13 +3,18 @@
 //! Runs `discover → resolve → typecheck` only — no lowering, no codegen, no
 //! BEAM files produced.  Collects all diagnostics and returns them.
 
+use std::sync::Arc;
+
 use ridge_diagnostics::Diagnostic;
 use ridge_manifest::find_workspace_root;
-use ridge_resolve::{discover_workspace, resolve_workspace_with, ResolvedWorkspace};
-use ridge_typecheck::{typecheck_workspace, TypedWorkspace};
+use ridge_resolve::{
+    discover_workspace, resolve_workspace_with, ModuleId, ResolveError, ResolvedWorkspace,
+};
+use ridge_typecheck::{typecheck_workspace, TypeError, TypedWorkspace};
 
 use crate::diag_adapters::diag_from_typecheck;
 use crate::error::CheckError;
+use crate::incremental::IncrementalState;
 use crate::options::CheckOptions;
 use crate::sources::WorkspaceSourceCache;
 
@@ -52,6 +57,46 @@ pub struct CheckTypedArtefacts {
     /// (for BEAM module names and source URIs); its `modules` carry the
     /// symbols, bindings, and node-id maps the LSP queries.
     pub resolved: ResolvedWorkspace,
+}
+
+// ── Diagnostic aggregation ────────────────────────────────────────────────────
+
+/// Flatten every structured diagnostic — discovery, lex, parse, resolve, and
+/// typecheck — into one list, resolving each to its source via `sources`.
+///
+/// Shared by the full-check entry points and the LSP's incremental path so they
+/// produce byte-identical diagnostic sets.
+#[must_use]
+pub fn collect_diagnostics(
+    disc_resolve_errors: &[ResolveError],
+    resolved: &ResolvedWorkspace,
+    type_errors: &[(ModuleId, TypeError)],
+    sources: &WorkspaceSourceCache,
+) -> Vec<Diagnostic> {
+    let mut diagnostics: Vec<Diagnostic> = Vec::new();
+
+    // Discovery-phase errors (e.g. R023 for legacy .rg files) have no module
+    // source location; use the unknown source placeholder.
+    for e in disc_resolve_errors {
+        diagnostics.push(Diagnostic::from_resolve(
+            e,
+            WorkspaceSourceCache::unknown_source_id(),
+        ));
+    }
+    for (mid, e) in &resolved.lex_errors {
+        diagnostics.push(Diagnostic::from_lex(*mid, e, sources.id_for_module(*mid)));
+    }
+    for (mid, e) in &resolved.parse_errors {
+        diagnostics.push(Diagnostic::from_parse(*mid, e, sources.id_for_module(*mid)));
+    }
+    for (mid, e) in &resolved.errors {
+        diagnostics.push(Diagnostic::from_resolve(e, sources.id_for_module(*mid)));
+    }
+    for (mid, e) in type_errors {
+        diagnostics.push(diag_from_typecheck(e, sources.id_for_module(*mid)));
+    }
+
+    diagnostics
 }
 
 // ── Entry point ───────────────────────────────────────────────────────────────
@@ -97,34 +142,12 @@ pub fn check_workspace(options: CheckOptions) -> Result<CheckArtefacts, CheckErr
     // Surface lex + parse errors first — they are upstream of resolve and
     // typecheck, and missing them silently was a real bug (a malformed source
     // would falsely report "type-check passed" because items_parsed was 0).
-    let mut diagnostics: Vec<Diagnostic> = Vec::new();
-
-    // Discovery-phase errors (e.g. R023 for legacy .rg files) have no module
-    // source location; use the unknown source placeholder.
-    for e in &disc_resolve_errors {
-        let sid = WorkspaceSourceCache::unknown_source_id();
-        diagnostics.push(Diagnostic::from_resolve(e, sid));
-    }
-
-    for (mid, e) in &resolved.lex_errors {
-        let sid = sources.id_for_module(*mid);
-        diagnostics.push(Diagnostic::from_lex(*mid, e, sid));
-    }
-
-    for (mid, e) in &resolved.parse_errors {
-        let sid = sources.id_for_module(*mid);
-        diagnostics.push(Diagnostic::from_parse(*mid, e, sid));
-    }
-
-    for (mid, e) in &resolved.errors {
-        let sid = sources.id_for_module(*mid);
-        diagnostics.push(Diagnostic::from_resolve(e, sid));
-    }
-
-    for (mid, e) in &typecheck_result.errors {
-        let sid = sources.id_for_module(*mid);
-        diagnostics.push(diag_from_typecheck(e, sid));
-    }
+    let diagnostics = collect_diagnostics(
+        &disc_resolve_errors,
+        &resolved,
+        &typecheck_result.errors,
+        &sources,
+    );
 
     Ok(CheckArtefacts {
         diagnostics,
@@ -169,34 +192,12 @@ pub fn check_workspace_typed(options: CheckOptions) -> Result<CheckTypedArtefact
     // ── 3. Collect diagnostics ────────────────────────────────────────────────
     let sources = WorkspaceSourceCache::from_workspace(&resolved.graph);
 
-    let mut diagnostics: Vec<Diagnostic> = Vec::new();
-
-    // Discovery-phase errors (e.g. R023 for legacy .rg files) have no module
-    // source location; use the unknown source placeholder.
-    for e in &disc_resolve_errors {
-        let sid = WorkspaceSourceCache::unknown_source_id();
-        diagnostics.push(Diagnostic::from_resolve(e, sid));
-    }
-
-    for (mid, e) in &resolved.lex_errors {
-        let sid = sources.id_for_module(*mid);
-        diagnostics.push(Diagnostic::from_lex(*mid, e, sid));
-    }
-
-    for (mid, e) in &resolved.parse_errors {
-        let sid = sources.id_for_module(*mid);
-        diagnostics.push(Diagnostic::from_parse(*mid, e, sid));
-    }
-
-    for (mid, e) in &resolved.errors {
-        let sid = sources.id_for_module(*mid);
-        diagnostics.push(Diagnostic::from_resolve(e, sid));
-    }
-
-    for (mid, e) in &typecheck_result.errors {
-        let sid = sources.id_for_module(*mid);
-        diagnostics.push(diag_from_typecheck(e, sid));
-    }
+    let diagnostics = collect_diagnostics(
+        &disc_resolve_errors,
+        &resolved,
+        &typecheck_result.errors,
+        &sources,
+    );
 
     Ok(CheckTypedArtefacts {
         diagnostics,
@@ -204,4 +205,55 @@ pub fn check_workspace_typed(options: CheckOptions) -> Result<CheckTypedArtefact
         typed: typecheck_result.typed,
         resolved,
     })
+}
+
+// ── check_workspace_incremental ───────────────────────────────────────────────
+
+/// Seed an [`IncrementalState`] from a full check, for the LSP's incremental path.
+///
+/// Runs the same `discover → resolve → typecheck` pipeline as
+/// [`check_workspace_typed`], then bundles the result into an engine that also
+/// retains each module's source text, so later single-file edits can recompute
+/// only what they affect and still reproduce diagnostics and an index.
+///
+/// ## Errors
+///
+/// Fatal errors (`C001`–`C003`) are returned as [`CheckError`].
+#[allow(clippy::needless_pass_by_value)]
+pub fn check_workspace_incremental(options: CheckOptions) -> Result<IncrementalState, CheckError> {
+    let _manifest_dir = find_workspace_root(&options.workspace_root).ok_or_else(|| {
+        CheckError::NoWorkspaceRoot {
+            path: options.workspace_root.clone(),
+        }
+    })?;
+
+    let disc = discover_workspace(&options.workspace_root);
+    let disc_resolve_errors = disc.resolve_errors;
+    let ws_graph = disc.graph.ok_or_else(|| CheckError::NoWorkspaceRoot {
+        path: options.workspace_root.clone(),
+    })?;
+
+    let resolved = resolve_workspace_with(ws_graph, options.retain_indices);
+    let typecheck_result = typecheck_workspace(&resolved);
+
+    // Capture each module's on-disk text (indexed by ModuleId.0) so the engine
+    // can track per-module source across edits.
+    let sources = WorkspaceSourceCache::from_workspace(&resolved.graph);
+    let mut module_sources: Vec<Arc<String>> = (0..resolved.modules.len())
+        .map(|_| Arc::new(String::new()))
+        .collect();
+    for module in &resolved.graph.modules {
+        let i = module.id.0 as usize;
+        if let (Some(slot), Some(text)) = (
+            module_sources.get_mut(i),
+            sources.text(sources.id_for_module(module.id).as_str()),
+        ) {
+            *slot = Arc::new(text.to_owned());
+        }
+    }
+
+    Ok(
+        IncrementalState::new(resolved, typecheck_result, disc_resolve_errors)
+            .with_module_sources(module_sources),
+    )
 }

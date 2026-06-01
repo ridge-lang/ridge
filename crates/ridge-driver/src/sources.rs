@@ -6,7 +6,7 @@
 //! does not need to retain `ParsedModule.source` across the pipeline.
 
 use std::collections::HashMap;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use ridge_diagnostics::{SourceCache, SourceId};
@@ -41,27 +41,45 @@ impl WorkspaceSourceCache {
         let workspace_root = &graph.root;
 
         for module in &graph.modules {
-            let file_path = &module.file_path;
-            // Compute a workspace-relative display name (forward slashes for
-            // platform-neutral, CI-stable output).
-            let display = file_path
-                .strip_prefix(workspace_root)
-                .unwrap_or(file_path)
-                .components()
-                .map(|c| c.as_os_str().to_string_lossy())
-                .collect::<Vec<_>>()
-                .join("/");
-
-            let source_id_str = display.clone();
+            let source_id_str = source_id_for(workspace_root, &module.file_path);
 
             // Read source from disk.  Files that cannot be read are silently
             // skipped — the renderer falls back to context-less rendering for
             // those modules.
-            if let Ok(text) = std::fs::read_to_string(file_path) {
+            if let Ok(text) = std::fs::read_to_string(&module.file_path) {
                 cache.sources.insert(source_id_str.clone(), Arc::new(text));
             }
 
-            cache.names.insert(source_id_str.clone(), display);
+            cache
+                .names
+                .insert(source_id_str.clone(), source_id_str.clone());
+            cache.module_to_id.insert(module.id.0, source_id_str);
+        }
+
+        cache
+    }
+
+    /// Build a cache from in-memory per-module source text instead of disk.
+    ///
+    /// `texts[ModuleId.0]` is the source for that module. The LSP uses this:
+    /// its incremental engine tracks each module's current buffer text, so the
+    /// cache (and the diagnostics + index built from it) match exactly what was
+    /// compiled. Modules without a matching text entry are skipped.
+    #[must_use]
+    pub fn from_module_texts(graph: &WorkspaceGraph, texts: &[Arc<String>]) -> Self {
+        let mut cache = Self::default();
+        let workspace_root = &graph.root;
+
+        for module in &graph.modules {
+            let source_id_str = source_id_for(workspace_root, &module.file_path);
+            if let Some(text) = texts.get(module.id.0 as usize) {
+                cache
+                    .sources
+                    .insert(source_id_str.clone(), Arc::clone(text));
+            }
+            cache
+                .names
+                .insert(source_id_str.clone(), source_id_str.clone());
             cache.module_to_id.insert(module.id.0, source_id_str);
         }
 
@@ -109,6 +127,18 @@ impl SourceCache for WorkspaceSourceCache {
             .get(id.as_str())
             .map_or_else(|| id.as_str(), String::as_str)
     }
+}
+
+/// A module's workspace-relative source id (forward slashes for
+/// platform-neutral, CI-stable output).
+fn source_id_for(workspace_root: &Path, file_path: &Path) -> String {
+    file_path
+        .strip_prefix(workspace_root)
+        .unwrap_or(file_path)
+        .components()
+        .map(|c| c.as_os_str().to_string_lossy())
+        .collect::<Vec<_>>()
+        .join("/")
 }
 
 // ── Per-module-id path resolution ─────────────────────────────────────────────

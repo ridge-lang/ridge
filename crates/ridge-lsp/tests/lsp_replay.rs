@@ -1225,3 +1225,105 @@ async fn test_completion_member_access() {
         items.iter().map(|i| &i.label).collect::<Vec<_>>()
     );
 }
+
+// ── Incremental: a didChange recompile reflects the buffer, not disk ───────────
+
+/// After `didOpen`, a `didChange` that replaces the body must update the retained
+/// index from the editor buffer — not the unchanged on-disk file.
+#[tokio::test]
+async fn test_didchange_incremental_reflects_buffer() {
+    let dir = tempfile::TempDir::new().expect("temp dir");
+    let root = dir.path().to_path_buf();
+    let app_src = root.join("app").join("src");
+    std::fs::create_dir_all(&app_src).expect("create temp workspace");
+    std::fs::write(
+        root.join("ridge.toml"),
+        "[workspace]\nname = \"inc-ws\"\nversion = \"0.1.0\"\nmembers = [\"app\"]\n",
+    )
+    .expect("write workspace manifest");
+    std::fs::write(
+        root.join("app").join("ridge.toml"),
+        "[project]\nname = \"app\"\nversion = \"0.1.0\"\nkind = \"app\"\nentry = \"src/Main.ridge\"\n\n[capabilities]\nallow = []\n",
+    )
+    .expect("write project manifest");
+    // On disk the function returns an Int.
+    std::fs::write(app_src.join("Main.ridge"), "pub fn f = 1\n").expect("write source");
+
+    let (service, _socket) = build_test_service();
+    let server = service.inner();
+
+    let root_uri = Url::from_file_path(&root).expect("root URI");
+    server
+        .initialize(InitializeParams {
+            root_uri: Some(root_uri.clone()),
+            workspace_folders: Some(vec![WorkspaceFolder {
+                uri: root_uri,
+                name: "inc-ws".to_owned(),
+            }]),
+            capabilities: ClientCapabilities::default(),
+            ..InitializeParams::default()
+        })
+        .await
+        .expect("initialize");
+
+    let file_uri = Url::from_file_path(app_src.join("Main.ridge")).expect("file URI");
+    server
+        .did_open(DidOpenTextDocumentParams {
+            text_document: TextDocumentItem {
+                uri: file_uri,
+                language_id: "ridge".to_owned(),
+                version: 1,
+                text: "pub fn f = 1\n".to_owned(),
+            },
+        })
+        .await;
+
+    // Wait for the open compile, then take the canonical URI the index uses.
+    let mut uri = None;
+    for _ in 0..120 {
+        tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;
+        if let Some(idx) = server.workspace_index().await {
+            if let Some(u) = idx.uri_to_module.keys().next() {
+                uri = Some(u.clone());
+                break;
+            }
+        }
+    }
+    let uri = uri.expect("index installed after didOpen");
+
+    // Edit the buffer (not disk): the function now returns Text.
+    let v2 = "pub fn f = \"hello\"\n";
+    server
+        .did_change(DidChangeTextDocumentParams {
+            text_document: VersionedTextDocumentIdentifier {
+                uri: uri.clone(),
+                version: 2,
+            },
+            content_changes: vec![TextDocumentContentChangeEvent {
+                range: None,
+                range_length: None,
+                text: v2.to_owned(),
+            }],
+        })
+        .await;
+
+    // After the debounced incremental compile, hover on the new literal must
+    // report Text (the buffer), not Int (the unchanged disk file).
+    let col = u32::try_from(v2.find('"').expect("string literal") + 1).expect("offset fits u32");
+    let mut hover = None;
+    for _ in 0..120 {
+        tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;
+        if let Some(idx) = server.workspace_index().await {
+            if let Some((markdown, _)) = idx.hover_at(&uri, 0, col) {
+                if markdown.contains("Text") {
+                    hover = Some(markdown);
+                    break;
+                }
+            }
+        }
+    }
+    assert!(
+        hover.is_some(),
+        "hover after the edit must report the buffer's Text type, not disk's Int"
+    );
+}

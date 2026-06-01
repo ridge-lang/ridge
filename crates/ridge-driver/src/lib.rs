@@ -30,7 +30,10 @@ pub mod sources;
 
 // ── Flat re-exports ───────────────────────────────────────────────────────────
 
-pub use check::{check_workspace, check_workspace_typed, CheckArtefacts, CheckTypedArtefacts};
+pub use check::{
+    check_workspace, check_workspace_incremental, check_workspace_typed, collect_diagnostics,
+    CheckArtefacts, CheckTypedArtefacts,
+};
 pub use compile::{compile_workspace, CompileArtefacts, SourceMap};
 pub use error::{CheckError, CompileDiagnostics, CompileError, ProcessExitCode, RunError};
 pub use incremental::IncrementalState;

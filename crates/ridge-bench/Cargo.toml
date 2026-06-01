@@ -32,5 +32,9 @@ beam-runtime = []
 name    = "pipeline"
 harness = false
 
+[[bench]]
+name    = "incremental"
+harness = false
+
 [lints]
 workspace = true

@@ -135,6 +135,7 @@ struct WideChar {
 /// non-ASCII characters per line so the two encodings can be converted exactly,
 /// while staying allocation-light: an ASCII-only line carries an empty list and
 /// hits a fast offset-arithmetic path.
+#[derive(Debug)]
 pub struct LineIndex {
     /// `line_starts[i]` is the byte offset of the first byte on line `i`.
     line_starts: Vec<u32>,

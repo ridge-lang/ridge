@@ -30,6 +30,7 @@ ridge-manifest   = { path = "../ridge-manifest" }
 ridge-lexer      = { path = "../ridge-lexer" }
 ridge-resolve    = { path = "../ridge-resolve" }
 ridge-typecheck  = { path = "../ridge-typecheck" }
+ridge-types      = { path = "../ridge-types" }
 
 [dev-dependencies]
 tempfile = "3"

@@ -239,7 +239,12 @@ impl RidgeLanguageServer {
                     // newer result.
                     let typed = artefacts.typed;
                     let resolved = artefacts.resolved;
-                    let new_index = Arc::new(WorkspaceIndex::build(generation, typed, resolved));
+                    let new_index = Arc::new(WorkspaceIndex::build(
+                        generation,
+                        typed,
+                        resolved,
+                        &artefacts.sources,
+                    ));
                     let mut snap = state_for_install.lock().await;
                     if snap
                         .index
@@ -377,6 +382,7 @@ impl LanguageServer for RidgeLanguageServer {
                 // default. Advertising it explicitly documents the contract; the
                 // server converts via `ridge_lexer::LineIndex`.
                 position_encoding: Some(PositionEncodingKind::UTF16),
+                hover_provider: Some(HoverProviderCapability::Simple(true)),
                 text_document_sync: Some(TextDocumentSyncCapability::Options(
                     TextDocumentSyncOptions {
                         open_close: Some(true),
@@ -476,6 +482,32 @@ impl LanguageServer for RidgeLanguageServer {
         }
         // Clear diagnostics for the closed file.
         self.client.publish_diagnostics(uri, vec![], None).await;
+    }
+
+    async fn hover(&self, params: HoverParams) -> LspResult<Option<Hover>> {
+        let uri = params.text_document_position_params.text_document.uri;
+        let pos = params.text_document_position_params.position;
+
+        // Clone the snapshot Arc and release the lock before querying, so a
+        // hover never blocks on (or triggers) a compile. A stale snapshot may
+        // yield a stale type; that is acceptable and resolves on the next compile.
+        let index = {
+            let snap = self.state.lock().await;
+            snap.index.clone()
+        };
+        let Some(index) = index else {
+            return Ok(None);
+        };
+        let Some((markdown, span)) = index.hover_at(&uri, pos.line, pos.character) else {
+            return Ok(None);
+        };
+        Ok(Some(Hover {
+            contents: HoverContents::Markup(MarkupContent {
+                kind: MarkupKind::Markdown,
+                value: markdown,
+            }),
+            range: index.span_to_range(&uri, span),
+        }))
     }
 }
 

@@ -84,6 +84,54 @@ pub fn wide_record(n: usize) -> String {
     s
 }
 
+/// The source of one module in an incremental-benchmark workspace.
+///
+/// A small, self-contained run of functions (no cross-module references), so the
+/// corpus checks cleanly while a single-module recompile still pays the
+/// workspace-sized cost of rebuilding the shared symbol and `TyCon` tables.
+#[must_use]
+pub fn incremental_module_source(i: usize) -> String {
+    let mut s = String::new();
+    let _ = writeln!(s, "pub fn m{i}_a () -> Int = {i}");
+    let _ = writeln!(s, "pub fn m{i}_b () -> Int = m{i}_a () + 1");
+    let _ = writeln!(s, "pub fn m{i}_c () -> Int = m{i}_b () + 1");
+    s
+}
+
+/// Write an `n`-module library workspace to a temp dir for the incremental
+/// benchmarks.
+///
+/// Modules are named `Mod0`..`Mod{n-1}` in a single `lib` project; the temp dir
+/// is removed on drop.
+///
+/// # Errors
+///
+/// Returns any filesystem error from creating directories or writing files.
+pub fn build_incremental_workspace(n: usize) -> std::io::Result<tempfile::TempDir> {
+    let n = n.max(1);
+    let dir = tempfile::Builder::new()
+        .prefix("ridge-inc-bench-")
+        .tempdir()?;
+    let root = dir.path();
+    let lib_src = root.join("lib").join("src");
+    std::fs::create_dir_all(&lib_src)?;
+    std::fs::write(
+        root.join("ridge.toml"),
+        "[workspace]\nname = \"inc-bench\"\nversion = \"0.1.0\"\nmembers = [\"lib\"]\n",
+    )?;
+    std::fs::write(
+        root.join("lib").join("ridge.toml"),
+        "[project]\nname = \"lib\"\nversion = \"0.1.0\"\nkind = \"library\"\n",
+    )?;
+    for i in 0..n {
+        std::fs::write(
+            lib_src.join(format!("Mod{i}.ridge")),
+            incremental_module_source(i),
+        )?;
+    }
+    Ok(dir)
+}
+
 // ── Temp-workspace harness ────────────────────────────────────────────────────
 
 /// A single-member Ridge workspace written to a temp directory, removed on drop.

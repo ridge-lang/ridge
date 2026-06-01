@@ -125,7 +125,7 @@ pub enum NodeKind {
 ///
 /// Stamped in a single post-parse traversal by [`assign_node_ids`]; looked up
 /// during scope resolution in [`crate::walker`].
-#[derive(Debug, Default)]
+#[derive(Debug, Default, Clone)]
 pub struct NodeIdMap {
     by_span: FxHashMap<(Span, NodeKind), NodeId>,
     count: u32,
@@ -167,6 +167,16 @@ impl NodeIdMap {
     #[must_use]
     pub const fn is_empty(&self) -> bool {
         self.count == 0
+    }
+
+    /// Iterate over every stamped `(span, kind) → id` entry.
+    ///
+    /// Order is unspecified (backed by a hash map). The LSP uses this to build a
+    /// position-indexed view of a module's nodes for hover / go-to-definition.
+    pub fn iter(&self) -> impl Iterator<Item = (Span, NodeKind, NodeId)> + '_ {
+        self.by_span
+            .iter()
+            .map(|(&(span, kind), &id)| (span, kind, id))
     }
 }
 

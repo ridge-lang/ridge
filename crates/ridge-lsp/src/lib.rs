@@ -36,6 +36,7 @@
 )]
 
 pub mod diagnostics;
+pub mod index;
 pub mod server;
 pub mod span_recovery;
 

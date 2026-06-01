@@ -152,6 +152,13 @@ pub struct CheckOptions {
     /// Optional filter: only check the named members.  When `None`, every
     /// member is checked.
     pub members: Option<Vec<String>>,
+
+    /// Retain per-module index data (scope trees) for editor queries.
+    ///
+    /// The batch compiler (`ridge check` / `ridge build`) leaves this `false` so
+    /// it does not pay to materialise data it never reads. The language server
+    /// sets it `true` to power hover, go-to-definition, and completion.
+    pub retain_indices: bool,
 }
 
 impl CheckOptions {
@@ -161,7 +168,16 @@ impl CheckOptions {
         Self {
             workspace_root,
             members: None,
+            retain_indices: false,
         }
+    }
+
+    /// Enable or disable retention of per-module index data and return `self`
+    /// (builder style).
+    #[must_use]
+    pub const fn with_retain_indices(mut self, retain: bool) -> Self {
+        self.retain_indices = retain;
+        self
     }
 }
 

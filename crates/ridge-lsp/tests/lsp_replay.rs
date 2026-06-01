@@ -883,7 +883,7 @@ async fn hover_fixture(
     std::fs::write(app_src.join("Main.ridge"), main_src).expect("write source");
 
     let (service, socket) = build_test_service();
-    let file_uri = Url::from_file_path(app_src.join("Main.ridge")).expect("file URI");
+    let mut file_uri = Url::from_file_path(app_src.join("Main.ridge")).expect("file URI");
     {
         let server = service.inner();
         let root_uri = Url::from_file_path(&root).expect("root URI");
@@ -909,16 +909,24 @@ async fn hover_fixture(
                 },
             })
             .await;
+        let mut index = None;
         for _ in 0..120 {
             tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;
-            if server.workspace_index().await.is_some() {
+            if let Some(idx) = server.workspace_index().await {
+                index = Some(idx);
                 break;
             }
         }
-        assert!(
-            server.workspace_index().await.is_some(),
-            "index must be installed before hovering"
-        );
+        let index = index.expect("index must be installed before hovering");
+        // Hover against the URI the index actually holds — the same scheme
+        // diagnostics are published with, which is what an editor sends. A
+        // freshly built path can differ when a temp dir is symlinked.
+        file_uri = index
+            .uri_to_module
+            .keys()
+            .next()
+            .expect("one module in index")
+            .clone();
     }
     // Leak the temp dir for the duration of the test process; the OS reclaims it.
     std::mem::forget(dir);

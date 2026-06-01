@@ -119,7 +119,7 @@ pub struct ScopeNode {
 /// Nodes are stored in pre-order (a parent always precedes its children), so a
 /// `parent` index is always smaller than the child's own index. Empty unless
 /// the walker was asked to record scopes (the LSP path).
-#[derive(Debug, Default)]
+#[derive(Debug, Default, Clone)]
 pub struct ScopeIndex {
     /// All scopes, pre-order. Index `i` is referenced by children via `parent`.
     pub nodes: Vec<ScopeNode>,

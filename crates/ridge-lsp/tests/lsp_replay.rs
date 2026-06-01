@@ -823,34 +823,25 @@ async fn test_scope_tree_retained_on_didopen() {
     }
     let index = index.expect("index installed after a successful compile");
 
-    let mid = *index
+    // The parameter `name` is in scope in the body. Completing there must offer
+    // it, which only works when the scope tree was retained (retain_indices set).
+    let uri = index
         .uri_to_module
-        .values()
+        .keys()
         .next()
-        .expect("the workspace contributes one module");
-    let module = index
-        .resolved
-        .modules
-        .iter()
-        .find(|m| m.id == mid)
-        .expect("resolved module present");
-
-    assert!(
-        !module.scopes.is_empty(),
-        "scope tree must be retained when retain_indices is set"
-    );
-
-    // The parameter `name` is visible at the body use-site (the last `name`).
-    let offset = u32::try_from(main_src.rfind("name").expect("body name")).expect("fits u32") + 1;
-    let visible: Vec<&str> = module
-        .scopes
-        .visible_at(offset)
-        .iter()
-        .map(|e| e.name.as_str())
+        .expect("the workspace contributes one module")
+        .clone();
+    // A column inside the body's `name` use-site, where the parameter is in scope.
+    let col =
+        u32::try_from(main_src.rfind("name").expect("body name") + 1).expect("offset fits u32");
+    let labels: Vec<String> = index
+        .completions_at(&uri, 0, col)
+        .into_iter()
+        .map(|c| c.label)
         .collect();
     assert!(
-        visible.contains(&"name"),
-        "parameter `name` must be visible in the body, got {visible:?}"
+        labels.contains(&"name".to_owned()),
+        "parameter `name` must be in scope in the body, got {labels:?}"
     );
 }
 

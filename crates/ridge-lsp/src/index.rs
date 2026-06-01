@@ -17,12 +17,13 @@ use std::sync::Arc;
 
 use ridge_driver::WorkspaceSourceCache;
 use ridge_lexer::{LineIndex, Span};
-use ridge_resolve::imports::{Binding, ImportTarget};
+use ridge_resolve::imports::{Binding, ImportResolution, ImportTarget};
 use ridge_resolve::{
-    LocalId, ModuleId, NodeId, NodeIdMap, NodeKind, ResolvedModule, ResolvedVisibility,
-    ResolvedWorkspace,
+    LocalId, ModuleId, NodeId, NodeIdMap, NodeKind, ResolvedVisibility, ResolvedWorkspace,
+    ScopeIndex, SymbolTable,
 };
 use ridge_typecheck::{render_type_with, TypedWorkspace};
+use ridge_types::TyConDecl;
 use tower_lsp::lsp_types::{CompletionItemKind, Location, Position, Range, Url};
 
 use crate::completion::{detect_context, symbol_kind, CompletionItemData, Context, KEYWORDS};
@@ -92,6 +93,25 @@ impl NodeSpatialIndex {
     }
 }
 
+/// The per-module data the editor-query methods read.
+///
+/// Extracted (cloned) from the resolved and typed workspaces at build time so
+/// the index does not own — or pin — the workspaces that the incremental engine
+/// keeps mutating. Indexed by `ModuleId.0`.
+#[derive(Debug)]
+struct ModuleView {
+    /// Type stamped on each expression `NodeId`, indexed by `NodeId.0`.
+    node_types: Vec<Option<ridge_types::Type>>,
+    /// Binding stamped on each name `NodeId`, indexed by `NodeId.0`.
+    bindings: Vec<Option<Binding>>,
+    /// This module's top-level symbol table.
+    symbols: SymbolTable,
+    /// This module's lexical scope tree (for locals-in-scope completion).
+    scopes: ScopeIndex,
+    /// This module's resolved imports.
+    imports: Vec<ImportResolution>,
+}
+
 /// The full analysis result the server keeps between compiles.
 ///
 /// Immutable once built; replaced wholesale by a newer generation.
@@ -100,11 +120,11 @@ pub struct WorkspaceIndex {
     /// Monotonic compile generation. A later compile carries a strictly higher
     /// generation, which the install guard uses to reject a stale result.
     pub generation: u64,
-    /// The fully type-checked workspace (per-module `node_types`, schemes, …).
-    pub typed: TypedWorkspace,
-    /// The resolved workspace (per-module symbols, bindings, node-id maps, and
-    /// the workspace graph).
-    pub resolved: ResolvedWorkspace,
+    /// All `TyCon` declarations (builtins + user). The per-module `node_types`
+    /// index into this list when rendering hovered types.
+    tycons: Vec<TyConDecl>,
+    /// Per-module query data, indexed by `ModuleId.0`.
+    modules: Vec<ModuleView>,
     /// Document URI → [`ModuleId`]. Keyed the same way diagnostics are published
     /// (workspace root joined with the source id), so an editor-sent URI matches.
     pub uri_to_module: HashMap<Url, ModuleId>,
@@ -127,8 +147,8 @@ impl WorkspaceIndex {
     #[must_use]
     pub fn build(
         generation: u64,
-        typed: TypedWorkspace,
-        resolved: ResolvedWorkspace,
+        typed: &TypedWorkspace,
+        resolved: &ResolvedWorkspace,
         sources: &WorkspaceSourceCache,
     ) -> Self {
         let n = resolved.modules.len();
@@ -163,18 +183,33 @@ impl WorkspaceIndex {
         // `resolved.modules` is indexed by `ModuleId.0`, so the spatial vec built
         // in iteration order is addressable by `ModuleId.0` too.
         let mut spatial: Vec<NodeSpatialIndex> = Vec::with_capacity(n);
+        let mut modules: Vec<ModuleView> = Vec::with_capacity(n);
         for (i, rm) in resolved.modules.iter().enumerate() {
             debug_assert_eq!(
                 rm.id.0 as usize, i,
                 "resolved.modules must be indexed by ModuleId.0"
             );
             spatial.push(NodeSpatialIndex::from_node_ids(&rm.node_ids));
+            // Clone the per-module query data out of the borrowed workspaces so
+            // the index can outlive them.
+            let node_types = typed
+                .modules
+                .get(i)
+                .map(|tm| tm.node_types.clone())
+                .unwrap_or_default();
+            modules.push(ModuleView {
+                node_types,
+                bindings: rm.bindings.clone(),
+                symbols: rm.symbols.clone(),
+                scopes: rm.scopes.clone(),
+                imports: rm.imports.clone(),
+            });
         }
 
         Self {
             generation,
-            typed,
-            resolved,
+            tycons: typed.tycons.clone(),
+            modules,
             uri_to_module,
             spatial,
             line_indices,
@@ -228,7 +263,6 @@ impl WorkspaceIndex {
             ],
         )?;
         let ty = self
-            .typed
             .modules
             .get(mi)?
             .node_types
@@ -237,7 +271,7 @@ impl WorkspaceIndex {
         if matches!(ty, ridge_types::Type::Error) {
             return None;
         }
-        let type_str = render_type_with(ty, &self.typed.tycons);
+        let type_str = render_type_with(ty, &self.tycons);
 
         // If an identifier covers the same offset, prefix with its role + name
         // and underline the identifier; otherwise this is a literal/expression
@@ -247,10 +281,9 @@ impl WorkspaceIndex {
         {
             let name = self.text_slice(mi, id_span);
             let binding = self
-                .resolved
                 .modules
                 .get(mi)
-                .and_then(|rm| rm.bindings.get(id_node.0 as usize))
+                .and_then(|m| m.bindings.get(id_node.0 as usize))
                 .and_then(Option::as_ref);
             let label = binding_label(binding);
             Some((format!("{label}{name} : {type_str}"), id_span))
@@ -287,7 +320,7 @@ impl WorkspaceIndex {
         // The binding sits on the narrowest name node that actually carries one:
         // for `Mod.item` the binding is on the whole `QualifiedName`, not the
         // segment ident under the cursor.
-        let bindings = &self.resolved.modules.get(mi)?.bindings;
+        let bindings = &self.modules.get(mi)?.bindings;
         let binding = self
             .spatial
             .get(mi)?
@@ -326,8 +359,7 @@ impl WorkspaceIndex {
 
     /// `def_span` of symbol `symbol` in module `module`.
     fn symbol_def_span(&self, module: ModuleId, symbol: ridge_resolve::SymbolId) -> Option<Span> {
-        self.resolved
-            .modules
+        self.modules
             .get(module.0 as usize)?
             .symbols
             .entries
@@ -337,8 +369,7 @@ impl WorkspaceIndex {
 
     /// `def_span` of the local `local_id`, searched across module `mi`'s scopes.
     fn find_local_def_span(&self, mi: usize, local_id: LocalId) -> Option<Span> {
-        self.resolved
-            .modules
+        self.modules
             .get(mi)?
             .scopes
             .nodes
@@ -393,15 +424,15 @@ impl WorkspaceIndex {
         let byte = self.line_indices.get(mi)?.utf16_to_byte(line, utf16_col);
         let offset = byte as usize;
         let src = self.module_text.get(mi)?;
-        let rm = self.resolved.modules.get(mi)?;
+        let m = self.modules.get(mi)?;
 
         let mut out: Vec<CompletionItemData> = Vec::new();
         match detect_context(src, offset) {
             Context::None => {}
             Context::Member { alias, prefix } => {
-                if let Some(target) = alias_target(rm, &alias) {
-                    if let Some(trm) = self.resolved.modules.get(target.0 as usize) {
-                        for e in &trm.symbols.entries {
+                if let Some(target) = alias_target(&m.imports, &alias) {
+                    if let Some(tm) = self.modules.get(target.0 as usize) {
+                        for e in &tm.symbols.entries {
                             if e.visibility == ResolvedVisibility::Pub
                                 && e.name.starts_with(&prefix)
                             {
@@ -412,7 +443,7 @@ impl WorkspaceIndex {
                 }
             }
             Context::Type { prefix } => {
-                for decl in &self.typed.tycons {
+                for decl in &self.tycons {
                     if !decl.is_anon && decl.name.starts_with(&prefix) {
                         out.push(item(decl.name.clone(), CompletionItemKind::CLASS, '0'));
                     }
@@ -421,17 +452,17 @@ impl WorkspaceIndex {
             Context::Expr { prefix } => {
                 // Locals in scope sort first, then this module's symbols, then
                 // import aliases, then keywords.
-                for local in rm.scopes.visible_at(byte) {
+                for local in m.scopes.visible_at(byte) {
                     if local.name.starts_with(&prefix) {
                         out.push(item(local.name.clone(), CompletionItemKind::VARIABLE, '0'));
                     }
                 }
-                for e in &rm.symbols.entries {
+                for e in &m.symbols.entries {
                     if e.name.starts_with(&prefix) {
                         out.push(item(e.name.clone(), symbol_kind(&e.kind), '1'));
                     }
                 }
-                for imp in &rm.imports {
+                for imp in &m.imports {
                     if let Some(alias) = &imp.alias {
                         if alias.starts_with(&prefix) {
                             out.push(item(alias.clone(), CompletionItemKind::MODULE, '2'));
@@ -450,8 +481,8 @@ impl WorkspaceIndex {
 }
 
 /// The workspace module an import `alias` resolves to, if any.
-fn alias_target(rm: &ResolvedModule, alias: &str) -> Option<ModuleId> {
-    rm.imports
+fn alias_target(imports: &[ImportResolution], alias: &str) -> Option<ModuleId> {
+    imports
         .iter()
         .find_map(|imp| match (&imp.alias, &imp.target) {
             (Some(a), ImportTarget::WorkspaceModule(m)) if a == alias => Some(*m),

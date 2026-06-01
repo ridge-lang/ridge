@@ -30,6 +30,8 @@ use ridge_typecheck::{
     typecheck_module_incremental, typecheck_workspace, TypeError, TypecheckResult, TypedWorkspace,
 };
 
+use crate::sources::WorkspaceSourceCache;
+
 /// A resolved + typed workspace plus the bookkeeping needed to recompute it
 /// incrementally.
 #[derive(Debug)]
@@ -48,6 +50,11 @@ pub struct IncrementalState {
     /// Typeclass-surface hash per module — its `class` / `instance` / `deriving`
     /// declarations — indexed by `ModuleId.0`.
     registry_hashes: Vec<u64>,
+    /// Current source text per module, indexed by `ModuleId.0`. Empty unless the
+    /// caller seeds it (the LSP path) via [`IncrementalState::with_module_sources`];
+    /// an edit updates the edited module's entry so [`IncrementalState::source_cache`]
+    /// always reflects what was actually compiled.
+    module_sources: Vec<Arc<String>>,
 }
 
 impl IncrementalState {
@@ -75,7 +82,26 @@ impl IncrementalState {
             disc_resolve_errors,
             surface_hashes,
             registry_hashes,
+            module_sources: Vec::new(),
         }
+    }
+
+    /// Seed the per-module source text, indexed by `ModuleId.0`.
+    ///
+    /// Enables [`source_cache`](Self::source_cache); without it the engine still
+    /// recompiles correctly but cannot reproduce a source cache.
+    #[must_use]
+    pub fn with_module_sources(mut self, sources: Vec<Arc<String>>) -> Self {
+        self.module_sources = sources;
+        self
+    }
+
+    /// A source cache reflecting each module's current text — the on-disk text at
+    /// seed time, plus whatever later edits replaced it with. Built without
+    /// touching disk, so it always matches what the engine actually compiled.
+    #[must_use]
+    pub fn source_cache(&self) -> WorkspaceSourceCache {
+        WorkspaceSourceCache::from_module_texts(&self.resolved.graph, &self.module_sources)
     }
 
     /// Apply an edit to one module's source and recompute everything it affects.
@@ -102,6 +128,12 @@ impl IncrementalState {
         }
         for e in parsed.lex_errors {
             self.resolved.lex_errors.push((edited_id, e));
+        }
+
+        // Track the edited module's new source so `source_cache` keeps matching
+        // what was compiled. No-op when sources were not seeded (non-LSP callers).
+        if let Some(slot) = self.module_sources.get_mut(edited_id.0 as usize) {
+            *slot = Arc::new(new_source.to_owned());
         }
 
         // A class / instance / deriving change needs the workspace registries

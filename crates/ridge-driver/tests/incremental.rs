@@ -13,7 +13,9 @@ use std::path::Path;
 
 use tempfile::TempDir;
 
-use ridge_driver::IncrementalState;
+use ridge_driver::{
+    check_workspace_incremental, collect_diagnostics, CheckOptions, IncrementalState,
+};
 use ridge_resolve::{discover_workspace, resolve_workspace_with, ModuleId, ResolvedWorkspace};
 use ridge_typecheck::{render_type_with, typecheck_workspace, TypedWorkspace};
 
@@ -251,4 +253,52 @@ fn body_edit_in_a_typeclass_module_stays_incremental() {
         "a body edit must not deep-recompile, even with typeclass declarations present"
     );
     assert_matches_full(&state, td.path());
+}
+
+// ── The LSP-facing seeding + source-cache + diagnostics path ──────────────────
+
+#[test]
+fn check_workspace_incremental_tracks_buffer_text_and_diagnostics() {
+    let td = build_ws(
+        "pub fn helper -> Int = 1\n",
+        "import proj.Lib\npub fn use_it -> Int = 2\n",
+    );
+
+    let opts = CheckOptions::new(td.path().to_path_buf()).with_retain_indices(true);
+    let mut state = check_workspace_incremental(opts).expect("seed the engine");
+    let lib = module_id_by_suffix(&state.resolved, ".Lib");
+
+    // A clean workspace produces no diagnostics through the LSP-facing path.
+    let sources = state.source_cache();
+    let diags = collect_diagnostics(
+        &state.disc_resolve_errors,
+        &state.resolved,
+        &state.type_errors,
+        &sources,
+    );
+    assert!(diags.is_empty(), "clean workspace, got: {diags:?}");
+
+    // Edit Lib's buffer to a type error — without writing to disk.
+    let lib_v2 = "pub fn helper -> Int = \"oops\"\n";
+    state.recompile(lib, lib_v2);
+
+    let sources = state.source_cache();
+    // The source cache now reflects the buffer, not the unchanged disk file.
+    let lib_text = sources
+        .text(sources.id_for_module(lib).as_str())
+        .expect("Lib source present");
+    assert!(
+        lib_text.contains("oops"),
+        "source cache must track the edited buffer, got: {lib_text:?}"
+    );
+    let diags = collect_diagnostics(
+        &state.disc_resolve_errors,
+        &state.resolved,
+        &state.type_errors,
+        &sources,
+    );
+    assert!(
+        !diags.is_empty(),
+        "the buffer edit's type error must surface through the LSP path"
+    );
 }

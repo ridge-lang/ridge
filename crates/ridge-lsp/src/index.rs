@@ -17,10 +17,10 @@ use std::sync::Arc;
 
 use ridge_driver::WorkspaceSourceCache;
 use ridge_lexer::{LineIndex, Span};
-use ridge_resolve::imports::Binding;
-use ridge_resolve::{ModuleId, NodeId, NodeIdMap, NodeKind, ResolvedWorkspace};
+use ridge_resolve::imports::{Binding, ImportTarget};
+use ridge_resolve::{LocalId, ModuleId, NodeId, NodeIdMap, NodeKind, ResolvedWorkspace};
 use ridge_typecheck::{render_type_with, TypedWorkspace};
-use tower_lsp::lsp_types::{Position, Range, Url};
+use tower_lsp::lsp_types::{Location, Position, Range, Url};
 
 use crate::diagnostics::source_id_to_uri;
 
@@ -65,6 +65,27 @@ impl NodeSpatialIndex {
             .min_by_key(|(span, _, _)| span.end - span.start)
             .map(|&(span, kind, id)| (id, kind, span))
     }
+
+    /// All nodes covering `offset` whose kind is in `prefer`, narrowest first.
+    ///
+    /// Used when the wanted node is the narrowest one that *also* carries some
+    /// data (e.g. a binding): a qualified name records its binding on the whole
+    /// `QualifiedName` node, which is wider than the segment idents under the
+    /// cursor.
+    fn enclosing(&self, offset: u32, prefer: &[NodeKind]) -> Vec<(NodeId, NodeKind, Span)> {
+        let mut hits: Vec<(NodeId, NodeKind, Span)> = self
+            .entries
+            .iter()
+            .filter(|(span, kind, _)| {
+                span.start <= offset
+                    && offset < span.end
+                    && (prefer.is_empty() || prefer.contains(kind))
+            })
+            .map(|&(span, kind, id)| (id, kind, span))
+            .collect();
+        hits.sort_by_key(|(_, _, span)| span.end - span.start);
+        hits
+    }
 }
 
 /// The full analysis result the server keeps between compiles.
@@ -89,6 +110,9 @@ pub struct WorkspaceIndex {
     pub line_indices: Vec<LineIndex>,
     /// Per-module source text the spans index into, indexed by `ModuleId.0`.
     pub module_text: Vec<Arc<str>>,
+    /// Per-module document URI, indexed by `ModuleId.0` (for cross-file
+    /// go-to-definition targets). `None` if the path had no valid URI.
+    pub module_uris: Vec<Option<Url>>,
 }
 
 impl WorkspaceIndex {
@@ -112,6 +136,7 @@ impl WorkspaceIndex {
         // matter.
         let mut module_text: Vec<Arc<str>> = vec![Arc::from(""); n];
         let mut line_indices: Vec<LineIndex> = (0..n).map(|_| LineIndex::new("")).collect();
+        let mut module_uris: Vec<Option<Url>> = vec![None; n];
 
         for module in &resolved.graph.modules {
             let i = module.id.0 as usize;
@@ -123,7 +148,8 @@ impl WorkspaceIndex {
             // matches even when discovery canonicalised the on-disk path.
             let source_id = sources.id_for_module(module.id);
             let uri = source_id_to_uri(root, source_id.as_str());
-            uri_to_module.insert(uri, module.id);
+            uri_to_module.insert(uri.clone(), module.id);
+            module_uris[i] = Some(uri);
             if let Some(text) = sources.text(source_id.as_str()) {
                 module_text[i] = Arc::from(text);
                 line_indices[i] = LineIndex::new(text);
@@ -149,6 +175,7 @@ impl WorkspaceIndex {
             spatial,
             line_indices,
             module_text,
+            module_uris,
         }
     }
 
@@ -239,6 +266,93 @@ impl WorkspaceIndex {
     #[must_use]
     pub fn span_to_range(&self, uri: &Url, span: Span) -> Option<Range> {
         let mid = *self.uri_to_module.get(uri)?;
+        self.range_in(mid, span)
+    }
+
+    /// Answer a go-to-definition request at an LSP `(line, utf16_col)` position.
+    ///
+    /// Returns the definition site, or `None` for whitespace, a keyword, a
+    /// literal, a stdlib/builtin symbol, or an unresolved name. Reads only this
+    /// immutable snapshot — never triggers a compile.
+    #[must_use]
+    pub fn definition_at(&self, uri: &Url, line: u32, utf16_col: u32) -> Option<Location> {
+        let mid = *self.uri_to_module.get(uri)?;
+        let mi = mid.0 as usize;
+        let offset = self.line_indices.get(mi)?.utf16_to_byte(line, utf16_col);
+
+        // The binding sits on the narrowest name node that actually carries one:
+        // for `Mod.item` the binding is on the whole `QualifiedName`, not the
+        // segment ident under the cursor.
+        let bindings = &self.resolved.modules.get(mi)?.bindings;
+        let binding = self
+            .spatial
+            .get(mi)?
+            .enclosing(offset, &[NodeKind::Ident, NodeKind::QualifiedName])
+            .into_iter()
+            .find_map(|(nid, _, _)| bindings.get(nid.0 as usize).and_then(Option::as_ref))?;
+
+        match binding {
+            Binding::Local(local_id) => {
+                let span = self.find_local_def_span(mi, *local_id)?;
+                self.location_in(mid, span)
+            }
+            Binding::ModuleSymbol { module, symbol }
+            | Binding::ImportedSymbol { module, symbol, .. } => {
+                let span = self.symbol_def_span(*module, *symbol)?;
+                self.location_in(*module, span)
+            }
+            Binding::ActorName { module, actor } => {
+                let span = self.symbol_def_span(*module, *actor)?;
+                self.location_in(*module, span)
+            }
+            Binding::Constructor { owner_type, .. } => {
+                // The owning type is a symbol of the current module.
+                let span = self.symbol_def_span(mid, *owner_type)?;
+                self.location_in(mid, span)
+            }
+            Binding::ModuleAlias {
+                target: ImportTarget::WorkspaceModule(target),
+                ..
+            } => self.location_in(*target, Span::point(0)),
+            // Stdlib aliases/symbols, field accessors, class methods, and errors
+            // have no in-workspace definition site.
+            _ => None,
+        }
+    }
+
+    /// `def_span` of symbol `symbol` in module `module`.
+    fn symbol_def_span(&self, module: ModuleId, symbol: ridge_resolve::SymbolId) -> Option<Span> {
+        self.resolved
+            .modules
+            .get(module.0 as usize)?
+            .symbols
+            .entries
+            .get(symbol.0 as usize)
+            .map(|e| e.def_span)
+    }
+
+    /// `def_span` of the local `local_id`, searched across module `mi`'s scopes.
+    fn find_local_def_span(&self, mi: usize, local_id: LocalId) -> Option<Span> {
+        self.resolved
+            .modules
+            .get(mi)?
+            .scopes
+            .nodes
+            .iter()
+            .flat_map(|node| &node.locals)
+            .find(|entry| entry.id == local_id)
+            .map(|entry| entry.def_span)
+    }
+
+    /// Build a [`Location`] for `span` in module `mid`.
+    fn location_in(&self, mid: ModuleId, span: Span) -> Option<Location> {
+        let uri = self.module_uris.get(mid.0 as usize)?.clone()?;
+        let range = self.range_in(mid, span)?;
+        Some(Location { uri, range })
+    }
+
+    /// Convert a byte `span` in module `mid` to an LSP UTF-16 [`Range`].
+    fn range_in(&self, mid: ModuleId, span: Span) -> Option<Range> {
         let li = self.line_indices.get(mid.0 as usize)?;
         let (start_line, start_char) = li.byte_to_utf16(span.start);
         let (end_line, end_char) = li.byte_to_utf16(span.end);

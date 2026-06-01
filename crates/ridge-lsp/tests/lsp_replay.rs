@@ -127,8 +127,8 @@ async fn test_initialize_initialized_roundtrip() {
         "must advertise hoverProvider"
     );
     assert!(
-        result.capabilities.definition_provider.is_none(),
-        "must not advertise definitionProvider"
+        result.capabilities.definition_provider.is_some(),
+        "must advertise definitionProvider"
     );
 
     // initialized() must not panic.
@@ -983,4 +983,59 @@ async fn test_hover_literal_and_local_and_misses() {
         .await
         .expect("hover ok");
     assert!(h.is_none(), "hover past end-of-line must be null");
+}
+
+// ── Test 17: textDocument/definition ──────────────────────────────────────────
+
+fn goto_at(uri: &Url, line: u32, character: u32) -> GotoDefinitionParams {
+    GotoDefinitionParams {
+        text_document_position_params: TextDocumentPositionParams {
+            text_document: TextDocumentIdentifier { uri: uri.clone() },
+            position: Position { line, character },
+        },
+        work_done_progress_params: WorkDoneProgressParams::default(),
+        partial_result_params: PartialResultParams::default(),
+    }
+}
+
+fn scalar_location(resp: Option<GotoDefinitionResponse>) -> Option<Location> {
+    match resp? {
+        GotoDefinitionResponse::Scalar(loc) => Some(loc),
+        _ => None,
+    }
+}
+
+#[tokio::test]
+async fn test_definition_local_and_nulls() {
+    // `foo` binds `x` at character 11; the body uses it at 15 and 19.
+    let src = "pub fn foo x = x + x\n";
+    let (service, _socket, uri) = hover_fixture(src).await;
+    let server = service.inner();
+
+    // Body `x` → its parameter definition, same file.
+    let resp = server
+        .goto_definition(goto_at(&uri, 0, 15))
+        .await
+        .expect("ok");
+    let loc = scalar_location(resp).expect("definition of local `x`");
+    assert_eq!(loc.uri, uri, "local definition is in the same file");
+    assert_eq!(
+        loc.range.start.character, 11,
+        "must point at the parameter `x`"
+    );
+
+    // Keyword and whitespace have no definition.
+    let kw = server
+        .goto_definition(goto_at(&uri, 0, 4))
+        .await
+        .expect("ok");
+    assert!(scalar_location(kw).is_none(), "keyword has no definition");
+    let ws = server
+        .goto_definition(goto_at(&uri, 0, 3))
+        .await
+        .expect("ok");
+    assert!(
+        scalar_location(ws).is_none(),
+        "whitespace has no definition"
+    );
 }

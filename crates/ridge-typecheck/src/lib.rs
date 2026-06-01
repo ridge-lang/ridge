@@ -273,11 +273,21 @@ pub fn typecheck_workspace(ws: &ResolvedWorkspace) -> TypecheckResult {
         let result = typecheck_module_inner(
             rm.id,
             &ast,
+            rm.node_ids.clone(),
             &rm.imports,
             &mut arena,
             &b,
-            Some(&class_table),
-            Some(&instance_env),
+            Some((&class_table, &instance_env)),
+        );
+        // `node_types` is indexed by `NodeId.0` and grown on demand, so it can be
+        // shorter than the full map but must never exceed it. A violation means
+        // resolve and typecheck disagree on the NodeId space.
+        debug_assert!(
+            result.typed.node_types.len() <= rm.node_ids.len(),
+            "node_types ({}) exceeds NodeIdMap size ({}) for module {:?}",
+            result.typed.node_types.len(),
+            rm.node_ids.len(),
+            rm.id
         );
         all_errors.extend(result.errors.into_iter().map(|e| (rm.id, e)));
         // Merge this module's anon_records (last-write wins; same shapes share
@@ -369,7 +379,15 @@ pub fn typecheck_module(
 
     let ast = Arc::clone(&pm.ast);
 
-    typecheck_module_inner(module_id, &ast, &rm.imports, &mut arena, b, None, None)
+    typecheck_module_inner(
+        module_id,
+        &ast,
+        rm.node_ids.clone(),
+        &rm.imports,
+        &mut arena,
+        b,
+        None,
+    )
 }
 
 // ── Internal pipeline ─────────────────────────────────────────────────────────
@@ -506,34 +524,33 @@ fn typecheck_actor_bodies(
 /// This is the single-module body used by both [`typecheck_workspace`] and
 /// [`typecheck_module`].
 ///
-/// `class_table` and `instance_env` supply the workspace-level class/instance
-/// registries produced by [`crate::collect::collect_workspace`]. When `None`,
-/// empty registries are used and the constraint solver is a no-op (the pre-
-/// typeclass behavior for the LSP hot-path and unit tests).
+/// `registries` supplies the workspace-level class/instance tables produced by
+/// [`crate::collect::collect_workspace`]. When `None`, empty registries are used
+/// and the constraint solver is a no-op (the pre-typeclass behavior for the LSP
+/// hot-path and unit tests). The two tables always travel together, so they are
+/// passed as one optional pair.
 fn typecheck_module_inner(
     id: ModuleId,
     ast: &Arc<ridge_ast::Module>,
+    node_id_map: ridge_resolve::NodeIdMap,
     imports: &[ridge_resolve::ImportResolution],
     arena: &mut TyConArena,
     b: &BuiltinTyCons,
-    class_table: Option<&crate::class_env::ClassTable>,
-    instance_env: Option<&crate::class_env::InstanceEnv>,
+    registries: Option<(
+        &crate::class_env::ClassTable,
+        &crate::class_env::InstanceEnv,
+    )>,
 ) -> ModuleTypecheckResult {
     use crate::actor::{check_actor_encapsulation, check_actor_mailbox_config};
     use crate::ctx::InferCtx;
     use crate::scc::typecheck_module_decls;
     use crate::stdlib_env::seed_stdlib_env;
     use crate::tycon_collect::{collect_user_tycons, prescan_inline_records};
-    use ridge_resolve::assign_node_ids;
-
-    // Phase 4.5 T2/T3: build the NodeIdMap for this module so that infer_expr
-    // can write back per-expression types. R999 collisions from node stamping
-    // are non-fatal — we accumulate them but continue inference.
-    // OQ-PHASE45-005: span-keyed lookup; no NodeId fields added to FnDecl/ConstDecl.
-    let (node_id_map, _nid_errors) = assign_node_ids(ast);
 
     let mut ctx = InferCtx::new();
-    // Attach the NodeIdMap to the context so infer_expr can write back types.
+    // Attach the resolver's NodeIdMap so infer_expr can write back per-expression
+    // types. The map is stamped once during resolve and threaded in here rather
+    // than rebuilt, so resolve and typecheck stay keyed by the same NodeIds.
     ctx.node_id_map = Some(node_id_map);
 
     // Push the module-level env frame.
@@ -561,7 +578,7 @@ fn typecheck_module_inner(
     // The constraint deferral in `instantiate` then handles the rest: each call
     // site that instantiates the scheme pushes a `Constraint` into
     // `deferred_constraints`, which the solver later resolves as Static or Forward.
-    if let Some(ct) = class_table {
+    if let Some((ct, _)) = registries {
         seed_class_method_schemes(&mut ctx, b, ct);
     }
 
@@ -603,8 +620,7 @@ fn typecheck_module_inner(
     // registries so the constraint solver is a no-op for unconstrained modules.
     let scratch_class_table = crate::class_env::ClassTable::new();
     let scratch_instance_env = crate::class_env::InstanceEnv::new();
-    let ct = class_table.unwrap_or(&scratch_class_table);
-    let ie = instance_env.unwrap_or(&scratch_instance_env);
+    let (ct, ie) = registries.unwrap_or((&scratch_class_table, &scratch_instance_env));
     typecheck_module_decls(&mut ctx, b, &fn_decls, ct, ie);
 
     // Step D: Capability checking for each fn decl.

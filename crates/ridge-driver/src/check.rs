@@ -5,7 +5,7 @@
 
 use ridge_diagnostics::Diagnostic;
 use ridge_manifest::find_workspace_root;
-use ridge_resolve::{discover_workspace, resolve_workspace, WorkspaceGraph};
+use ridge_resolve::{discover_workspace, resolve_workspace, ResolvedWorkspace};
 use ridge_typecheck::{typecheck_workspace, TypedWorkspace};
 
 use crate::diag_adapters::diag_from_typecheck;
@@ -32,9 +32,11 @@ pub struct CheckArtefacts {
 
 /// Artefacts produced by a successful [`check_workspace_typed`] call.
 ///
-/// Extends [`CheckArtefacts`] with the fully-typed workspace and the workspace
-/// graph, which `ridge test` uses to discover test functions, inspect their
-/// types and capability sets, and derive BEAM module names from file paths.
+/// Extends [`CheckArtefacts`] with the fully-typed workspace and the resolved
+/// workspace, which `ridge test` uses to discover test functions, inspect their
+/// types and capability sets, and derive BEAM module names from file paths. The
+/// resolved workspace also carries per-module resolution data (symbols,
+/// bindings, node-id maps) that the LSP queries.
 #[derive(Debug)]
 #[non_exhaustive]
 pub struct CheckTypedArtefacts {
@@ -46,9 +48,10 @@ pub struct CheckTypedArtefacts {
     /// The fully type-checked workspace — used by `ridge test` for test
     /// function discovery, return-type inspection, and capability checks.
     pub typed: TypedWorkspace,
-    /// The workspace graph — provides per-module `file_path` via
-    /// [`WorkspaceGraph::modules`] so callers can derive BEAM module names.
-    pub graph: WorkspaceGraph,
+    /// The resolved workspace. Its `graph` provides per-module `file_path`
+    /// (for BEAM module names and source URIs); its `modules` carry the
+    /// symbols, bindings, and node-id maps the LSP queries.
+    pub resolved: ResolvedWorkspace,
 }
 
 // ── Entry point ───────────────────────────────────────────────────────────────
@@ -199,6 +202,6 @@ pub fn check_workspace_typed(options: CheckOptions) -> Result<CheckTypedArtefact
         diagnostics,
         sources,
         typed: typecheck_result.typed,
-        graph: resolved.graph,
+        resolved,
     })
 }

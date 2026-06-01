@@ -250,6 +250,13 @@ pub struct ResolvedModule {
     pub scopes: ScopeTree,
     /// Node-id–indexed binding side-table produced by the walker.
     pub bindings: BindingMap,
+    /// The `(Span, NodeKind) → NodeId` map stamped by [`assign_node_ids`] for
+    /// this module.
+    ///
+    /// Retained so the type checker can consume it instead of rebuilding, and so
+    /// the LSP can map a source position to a `NodeId` for hover,
+    /// go-to-definition, and completion.
+    pub node_ids: NodeIdMap,
 }
 
 /// Result of resolving a single module in the context of an already-resolved
@@ -421,6 +428,7 @@ pub fn resolve_workspace(ws: WorkspaceGraph) -> ResolvedWorkspace {
             imports: module_imports_owned,
             scopes: Vec::new(), // TODO(Phase 4): retain scope tree from walker
             bindings,
+            node_ids: nid_map,
         });
     }
 
@@ -463,6 +471,7 @@ pub fn resolve_module(ws: &WorkspaceGraph, id: ModuleId) -> ModuleResolveResult 
                 imports: Vec::new(),
                 scopes: Vec::new(),
                 bindings: Vec::new(),
+                node_ids: NodeIdMap::default(),
             },
             errors,
         };
@@ -499,6 +508,7 @@ pub fn resolve_module(ws: &WorkspaceGraph, id: ModuleId) -> ModuleResolveResult 
             imports: Vec::new(), // No import-resolution context available in single-module mode
             scopes: Vec::new(),
             bindings,
+            node_ids: nid_map,
         },
         errors,
     }

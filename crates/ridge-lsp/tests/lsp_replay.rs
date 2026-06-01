@@ -639,3 +639,122 @@ async fn test_cancellation_discards_stale_results() {
     // The abort() call on the JoinHandle is the cancellation mechanism.
     // The aborted blocking thread may finish but its result is discarded.
 }
+
+// ── Test 14: retained analysis index is queryable after a compile ─────────────
+
+/// After a successful compile, the server retains a queryable analysis index:
+/// the opened file maps to a module, an offset inside an identifier resolves to
+/// a node, and whitespace / unknown URIs resolve to nothing.
+///
+/// Uses a hermetic temp workspace with complete manifests so the compile
+/// actually succeeds (the committed `tests/fixtures` manifests omit required
+/// fields and so never get past discovery — they back the smoke tests only).
+#[tokio::test]
+async fn test_workspace_index_populated_after_compile() {
+    let dir = tempfile::TempDir::new().expect("temp dir");
+    let root = dir.path().to_path_buf();
+    let app_src = root.join("app").join("src");
+    std::fs::create_dir_all(&app_src).expect("create temp workspace");
+    std::fs::write(
+        root.join("ridge.toml"),
+        "[workspace]\nname = \"idx-ws\"\nversion = \"0.1.0\"\nmembers = [\"app\"]\n",
+    )
+    .expect("write workspace manifest");
+    std::fs::write(
+        root.join("app").join("ridge.toml"),
+        "[project]\nname = \"app\"\nversion = \"0.1.0\"\nkind = \"app\"\nentry = \"src/Main.ridge\"\n\n[capabilities]\nallow = []\n",
+    )
+    .expect("write project manifest");
+    let main_src = "pub fn greet -> Text = \"hi\"\n";
+    std::fs::write(app_src.join("Main.ridge"), main_src).expect("write source");
+
+    let (service, _socket) = build_test_service();
+    let server = service.inner();
+
+    let root_uri = Url::from_file_path(&root).expect("root URI");
+    server
+        .initialize(InitializeParams {
+            root_uri: Some(root_uri.clone()),
+            workspace_folders: Some(vec![WorkspaceFolder {
+                uri: root_uri,
+                name: "idx-ws".to_owned(),
+            }]),
+            capabilities: ClientCapabilities::default(),
+            ..InitializeParams::default()
+        })
+        .await
+        .expect("initialize");
+
+    let file_path = app_src.join("Main.ridge");
+    let file_uri = Url::from_file_path(&file_path).expect("file URI");
+
+    // No index exists before the first compile completes. Reading the snapshot
+    // here must not block or deadlock.
+    assert!(
+        server.workspace_index().await.is_none(),
+        "no index should exist before any compile"
+    );
+
+    server
+        .did_open(DidOpenTextDocumentParams {
+            text_document: TextDocumentItem {
+                uri: file_uri.clone(),
+                language_id: "ridge".to_owned(),
+                version: 1,
+                text: main_src.to_owned(),
+            },
+        })
+        .await;
+
+    // did_open triggers an immediate compile (no debounce). Poll for the index
+    // rather than sleeping a fixed amount: under parallel test-suite load a
+    // single compile can take longer than a fixed window, and reading the
+    // snapshot repeatedly also exercises the lock discipline.
+    let mut index = None;
+    for _ in 0..120 {
+        tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;
+        if let Some(idx) = server.workspace_index().await {
+            index = Some(idx);
+            break;
+        }
+    }
+    let index = index.expect("index installed after a successful compile");
+
+    // Exactly one module was compiled. Query against the URI the index actually
+    // holds: discovery canonicalizes file paths, so the key may differ
+    // textually from the tempdir path built above (on macOS `/var` resolves to
+    // `/private/var`, on Windows a verbatim prefix appears). Reconciling an
+    // editor-sent URI with the canonical key belongs where hover and
+    // go-to-definition consume `textDocument.uri`.
+    let (module_uri, _mid) = index
+        .uri_to_module
+        .iter()
+        .next()
+        .expect("the compiled workspace contributes one module");
+    assert!(
+        module_uri.path().ends_with("Main.ridge"),
+        "module URI must point at the source file, got {module_uri}"
+    );
+
+    // The source is `pub fn greet -> Text = "hi"`; `greet` starts at byte
+    // offset 7, so offset 8 falls inside it and resolves to a node.
+    let hit = index.node_at(module_uri, 8, &[]);
+    assert!(
+        hit.is_some(),
+        "node_at inside `greet` must hit, got {hit:?}"
+    );
+
+    // Offset 3 is the space in `pub fn`, covered by no stamped node.
+    let miss = index.node_at(module_uri, 3, &[]);
+    assert!(
+        miss.is_none(),
+        "node_at in the `pub fn` prefix must miss, got {miss:?}"
+    );
+
+    // An unknown URI resolves to nothing.
+    let other = Url::parse("file:///not/in/workspace.ridge").expect("url");
+    assert!(
+        index.node_at(&other, 0, &[]).is_none(),
+        "node_at on a non-workspace URI must be None"
+    );
+}

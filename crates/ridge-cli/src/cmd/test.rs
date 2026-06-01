@@ -108,7 +108,7 @@ pub fn execute(args: &TestArgs, cwd: &Path) -> Result<(), CliError> {
     }
 
     // ── 3. Discover test functions ─────────────────────────────────────────────
-    let tests = discover_tests(&typed_artefacts.typed, &typed_artefacts.graph);
+    let tests = discover_tests(&typed_artefacts.typed, &typed_artefacts.resolved.graph);
 
     if tests.is_empty() {
         println!("notice: no tests discovered");

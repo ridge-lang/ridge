@@ -35,6 +35,7 @@
 
 use std::collections::HashSet;
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 
 use tokio::sync::Mutex;
@@ -47,10 +48,11 @@ use tower_lsp::jsonrpc::Result as LspResult;
 use tower_lsp::lsp_types::*;
 use tower_lsp::{Client, LanguageServer};
 
-use ridge_driver::{check_workspace, CheckOptions};
+use ridge_driver::{check_workspace_typed, CheckOptions};
 use ridge_manifest::find_workspace_root;
 
 use crate::diagnostics::{source_id_to_uri, to_lsp_diagnostic};
+use crate::index::WorkspaceIndex;
 
 // ── WorkspaceSnapshot ─────────────────────────────────────────────────────────
 
@@ -73,6 +75,10 @@ struct WorkspaceSnapshot {
     warned_multi_root: bool,
     /// True if `workspace_root` was found to be missing `ridge.toml`.
     missing_workspace: bool,
+    /// The most recent completed analysis, if any. Replaced wholesale on each
+    /// successful compile; reads clone the `Arc` and release the lock before
+    /// querying. `None` until the first compile lands.
+    index: Option<Arc<WorkspaceIndex>>,
 }
 
 // ── RidgeLanguageServer ───────────────────────────────────────────────────────
@@ -88,6 +94,10 @@ pub struct RidgeLanguageServer {
     compile_handle: Arc<Mutex<Option<JoinHandle<()>>>>,
     /// Handle to the debounce timer task.
     debounce_handle: Arc<Mutex<Option<JoinHandle<()>>>>,
+    /// Monotonic compile-generation counter. Each compile claims a fresh value;
+    /// the installer only swaps in a result whose generation beats the one
+    /// already stored, so a slow aborted compile cannot clobber a newer one.
+    compile_generation: Arc<AtomicU64>,
 }
 
 impl RidgeLanguageServer {
@@ -99,7 +109,20 @@ impl RidgeLanguageServer {
             state: Arc::new(Mutex::new(WorkspaceSnapshot::default())),
             compile_handle: Arc::new(Mutex::new(None)),
             debounce_handle: Arc::new(Mutex::new(None)),
+            compile_generation: Arc::new(AtomicU64::new(0)),
         }
+    }
+
+    /// Return the most recent analysis index, if a compile has completed.
+    ///
+    /// Clones the `Arc` under a short lock and releases the lock before
+    /// returning, so a query never holds the state mutex while it reads the
+    /// index. This is the read-path primitive for hover, go-to-definition, and
+    /// completion.
+    #[must_use]
+    pub async fn workspace_index(&self) -> Option<Arc<WorkspaceIndex>> {
+        let snap = self.state.lock().await;
+        snap.index.clone()
     }
 
     /// Run a type-check of the workspace and publish diagnostics.
@@ -132,11 +155,16 @@ impl RidgeLanguageServer {
             }
         };
 
+        // Claim a generation for this compile and capture a state handle so the
+        // task can install its index without clobbering a newer one.
+        let generation = self.compile_generation.fetch_add(1, Ordering::SeqCst) + 1;
+        let state_for_install = Arc::clone(&self.state);
+
         let handle = tokio::spawn(async move {
-            let opts = CheckOptions::new(workspace_root.clone());
+            let opts = CheckOptions::new(workspace_root.clone()).with_retain_indices(true);
 
             // Run the synchronous check in a blocking thread pool thread.
-            let result = tokio::task::spawn_blocking(move || check_workspace(opts)).await;
+            let result = tokio::task::spawn_blocking(move || check_workspace_typed(opts)).await;
 
             match result {
                 Err(_join_err) => {
@@ -205,6 +233,23 @@ impl RidgeLanguageServer {
                             client.publish_diagnostics(uri, diags, None).await;
                         }
                     }
+
+                    // Build the retained analysis index off-lock, then install
+                    // it under a short lock. The previous index stays queryable
+                    // until this fully-built one replaces it, and the generation
+                    // guard prevents a slow aborted compile from overwriting a
+                    // newer result.
+                    let typed = artefacts.typed;
+                    let resolved = artefacts.resolved;
+                    let new_index = Arc::new(WorkspaceIndex::build(generation, typed, resolved));
+                    let mut snap = state_for_install.lock().await;
+                    if snap
+                        .index
+                        .as_ref()
+                        .is_none_or(|existing| generation > existing.generation)
+                    {
+                        snap.index = Some(new_index);
+                    }
                 }
             }
         });
@@ -238,6 +283,7 @@ impl RidgeLanguageServer {
             state: server_state,
             compile_handle: server_compile,
             debounce_handle: Arc::clone(&debounce_arc),
+            compile_generation: Arc::clone(&self.compile_generation),
         };
 
         let handle = tokio::spawn(async move {

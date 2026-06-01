@@ -28,10 +28,13 @@ ridge-diagnostics = { path = "../ridge-diagnostics" }
 ridge-ir         = { path = "../ridge-ir" }
 ridge-manifest   = { path = "../ridge-manifest" }
 ridge-lexer      = { path = "../ridge-lexer" }
+ridge-resolve    = { path = "../ridge-resolve" }
+ridge-typecheck  = { path = "../ridge-typecheck" }
 
 [dev-dependencies]
 tempfile = "3"
 tokio    = { version = "1", features = ["rt-multi-thread", "macros", "io-std", "time", "sync"] }
+ridge-parser = { path = "../ridge-parser" }
 
 [lints]
 workspace = true

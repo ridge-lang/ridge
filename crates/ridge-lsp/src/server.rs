@@ -24,14 +24,11 @@
 //! does not forcibly kill blocking threads), but it will not publish diagnostics
 //! because the result is discarded when a new compile is queued.
 
-// LSP server module-local stylistic allows:
-// - `significant_drop_tightening` (nursery): the suggested rewrites push lock
-//   acquisitions into single expressions and lose visual clarity around
-//   "snapshot then act on snapshot" patterns; the lock holds are short.
-// - `map_unwrap_or` (pedantic): UTF-8/UTF-16 column conversion uses
-//   `.last().map(...).unwrap_or(0)` for legibility; `.map_or(0, ...)` flips
-//   the argument order awkwardly here.
-#![allow(clippy::significant_drop_tightening, clippy::map_unwrap_or)]
+// LSP server module-local stylistic allow: `significant_drop_tightening`
+// (nursery) — the suggested rewrites push lock acquisitions into single
+// expressions and lose visual clarity around "snapshot then act on snapshot"
+// patterns; the lock holds are short.
+#![allow(clippy::significant_drop_tightening)]
 
 use std::collections::HashSet;
 use std::path::PathBuf;
@@ -49,6 +46,7 @@ use tower_lsp::lsp_types::*;
 use tower_lsp::{Client, LanguageServer};
 
 use ridge_driver::{check_workspace_typed, CheckOptions};
+use ridge_lexer::LineIndex;
 use ridge_manifest::find_workspace_root;
 
 use crate::diagnostics::{source_id_to_uri, to_lsp_diagnostic};
@@ -375,6 +373,10 @@ impl LanguageServer for RidgeLanguageServer {
 
         Ok(InitializeResult {
             capabilities: ServerCapabilities {
+                // Positions are exchanged as UTF-16 code-unit offsets, the LSP
+                // default. Advertising it explicitly documents the contract; the
+                // server converts via `ridge_lexer::LineIndex`.
+                position_encoding: Some(PositionEncodingKind::UTF16),
                 text_document_sync: Some(TextDocumentSyncCapability::Options(
                     TextDocumentSyncOptions {
                         open_close: Some(true),
@@ -481,50 +483,68 @@ impl LanguageServer for RidgeLanguageServer {
 
 /// Apply an incremental LSP text edit to an in-memory document string.
 ///
-/// Converts LSP 0-indexed line/character positions to byte offsets, then
-/// replaces the byte range with `new_text`.
+/// LSP positions are 0-indexed line / UTF-16 character. [`LineIndex`] converts
+/// them to byte offsets so an edit lands on the right bytes even on lines that
+/// contain non-ASCII text.
 fn apply_incremental_edit(doc: &mut String, range: Range, new_text: &str) {
-    let start_offset = lsp_pos_to_byte_offset(doc, range.start);
-    let end_offset = lsp_pos_to_byte_offset(doc, range.end);
-    if start_offset <= end_offset && end_offset <= doc.len() {
-        doc.replace_range(start_offset..end_offset, new_text);
+    let index = LineIndex::new(doc);
+    let start = index.utf16_to_byte(range.start.line, range.start.character) as usize;
+    let end = index.utf16_to_byte(range.end.line, range.end.character) as usize;
+    if start <= end && end <= doc.len() {
+        doc.replace_range(start..end, new_text);
     }
 }
 
-/// Convert an LSP `Position` (0-indexed line, UTF-16 character) to a byte offset.
-///
-/// We approximate UTF-16 characters as UTF-8 bytes here (acceptable for
-/// ASCII-dominant Ridge source files; 0.2.0 can add proper UTF-16 support).
-fn lsp_pos_to_byte_offset(doc: &str, pos: Position) -> usize {
-    let mut line = 0u32;
-    let mut byte_offset = 0usize;
+#[cfg(test)]
+mod tests {
+    use super::*;
 
-    for (i, ch) in doc.char_indices() {
-        if line == pos.line {
-            // Walk characters on this line to find the column.
-            let col_bytes = doc[i..]
-                .char_indices()
-                .take(pos.character as usize)
-                .last()
-                .map(|(j, c)| j + c.len_utf8())
-                .unwrap_or(0);
-            return i + col_bytes;
-        }
-        if ch == '\n' {
-            line += 1;
-            byte_offset = i + 1;
-        }
+    fn at(line: u32, character: u32) -> Position {
+        Position { line, character }
     }
-    // If line is beyond the end, return the end of the document.
-    if line == pos.line {
-        let tail = &doc[byte_offset..];
-        let col_bytes = tail
-            .char_indices()
-            .take(pos.character as usize)
-            .last()
-            .map(|(j, c)| j + c.len_utf8())
-            .unwrap_or(0);
-        return byte_offset + col_bytes;
+
+    #[test]
+    fn incremental_edit_replaces_multibyte_char() {
+        // "café": replace the é (UTF-16 column 3..4) with "e".
+        let mut doc = "café".to_owned();
+        apply_incremental_edit(
+            &mut doc,
+            Range {
+                start: at(0, 3),
+                end: at(0, 4),
+            },
+            "e",
+        );
+        assert_eq!(doc, "cafe");
     }
-    doc.len()
+
+    #[test]
+    fn incremental_edit_after_emoji_hits_correct_bytes() {
+        // "😀ab": insert "!" at UTF-16 column 2 (just past the surrogate pair),
+        // which is byte 4 — a naive byte==column reading would split the emoji.
+        let mut doc = "😀ab".to_owned();
+        apply_incremental_edit(
+            &mut doc,
+            Range {
+                start: at(0, 2),
+                end: at(0, 2),
+            },
+            "!",
+        );
+        assert_eq!(doc, "😀!ab");
+    }
+
+    #[test]
+    fn incremental_edit_second_line() {
+        let mut doc = "alpha\nbeta".to_owned();
+        apply_incremental_edit(
+            &mut doc,
+            Range {
+                start: at(1, 0),
+                end: at(1, 4),
+            },
+            "gamma",
+        );
+        assert_eq!(doc, "alpha\ngamma");
+    }
 }

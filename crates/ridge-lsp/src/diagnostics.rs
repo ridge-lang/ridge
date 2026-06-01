@@ -73,26 +73,25 @@ pub const fn lsp_note_severity(s: NoteSeverity) -> DiagnosticSeverity {
 
 // ── Range / Position helpers ──────────────────────────────────────────────────
 
-/// Convert a byte-offset `Span` to an LSP `Range` using a `LineMap`.
+/// Convert a byte-offset `Span` to an LSP `Range` using a `LineIndex`.
 ///
-/// LSP positions are 0-indexed line / character (UTF-16 code unit offset).
-/// We use UTF-8 byte column here — good enough for ASCII-dominant source
-/// files; a 0.2.0 follow-up can switch to `tower_lsp_utf16` if needed.
+/// LSP positions are 0-indexed line / character, where `character` counts
+/// UTF-16 code units. `LineIndex::byte_to_utf16` performs that conversion
+/// exactly, so columns are correct on lines containing non-ASCII text.
 #[must_use]
 pub fn span_to_range(span: Span, src: &str) -> Range {
-    use ridge_lexer::LineMap;
-    let lm = LineMap::new(src);
-    let (start_line, start_col) = lm.line_col(span.start);
-    let (end_line, end_col) = lm.line_col(span.end);
-    // LSP is 0-indexed; LineMap returns 1-indexed.
+    use ridge_lexer::LineIndex;
+    let li = LineIndex::new(src);
+    let (start_line, start_char) = li.byte_to_utf16(span.start);
+    let (end_line, end_char) = li.byte_to_utf16(span.end);
     Range {
         start: Position {
-            line: start_line.saturating_sub(1),
-            character: start_col.saturating_sub(1),
+            line: start_line,
+            character: start_char,
         },
         end: Position {
-            line: end_line.saturating_sub(1),
-            character: end_col.saturating_sub(1),
+            line: end_line,
+            character: end_char,
         },
     }
 }
@@ -156,5 +155,32 @@ pub fn to_lsp_diagnostic(diag: &Diagnostic, file_uri: &Url, src: Option<&str>) -
         },
         tags: None,
         data: None,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn span_to_range_uses_utf16_columns() {
+        // "café x": bytes c,a,f (1 each), é (2), space (1), x (1) → 'x' at byte 6.
+        // In UTF-16 the é is a single unit, so 'x' is column 5, not 6.
+        let src = "café x";
+        let range = span_to_range(Span::new(6, 7), src);
+        assert_eq!(range.start.line, 0);
+        assert_eq!(
+            range.start.character, 5,
+            "x must be UTF-16 column 5, not byte column 6"
+        );
+        assert_eq!(range.end.character, 6);
+    }
+
+    #[test]
+    fn span_to_range_ascii_unchanged() {
+        let src = "fn foo = 42";
+        let range = span_to_range(Span::new(3, 6), src);
+        assert_eq!(range.start.character, 3);
+        assert_eq!(range.end.character, 6);
     }
 }

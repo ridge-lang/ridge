@@ -29,7 +29,7 @@
 //!    location is recoverable.  Falls back to file line 1 col 1 (LSP 0-indexed:
 //!    line 0, character 0).
 
-use ridge_lexer::{LineMap, Span};
+use ridge_lexer::{LineIndex, Span};
 use tower_lsp::lsp_types::{Position, Range};
 
 /// Convert a byte-offset `Span` to an LSP `Range` with synthesised-node fallback.
@@ -44,25 +44,25 @@ pub fn resolve_span_to_lsp(span: Span, src: &str) -> Range {
         return file_line1_range();
     }
 
-    let lm = LineMap::new(src);
-    let (start_line, start_col) = lm.line_col(span.start);
-    let (end_line, end_col) = lm.line_col(span.end);
+    let li = LineIndex::new(src);
+    let (start_line, start_char) = li.byte_to_utf16(span.start);
+    let (end_line, end_char) = li.byte_to_utf16(span.end);
 
     // Clamp: if end comes out before start (degenerate span), use a unit range.
-    let (end_line, end_col) = if (end_line, end_col) < (start_line, start_col) {
-        (start_line, start_col + 1)
+    let (end_line, end_char) = if (end_line, end_char) < (start_line, start_char) {
+        (start_line, start_char + 1)
     } else {
-        (end_line, end_col)
+        (end_line, end_char)
     };
 
     Range {
         start: Position {
-            line: start_line.saturating_sub(1),
-            character: start_col.saturating_sub(1),
+            line: start_line,
+            character: start_char,
         },
         end: Position {
-            line: end_line.saturating_sub(1),
-            character: end_col.saturating_sub(1),
+            line: end_line,
+            character: end_char,
         },
     }
 }

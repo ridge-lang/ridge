@@ -36,7 +36,7 @@ mod raw_scan;
 mod strings;
 
 pub use error::LexError;
-pub use span::{LineMap, Span};
+pub use span::{LineIndex, LineMap, Span};
 pub use token::Token;
 
 /// The result of lexing a single source file.

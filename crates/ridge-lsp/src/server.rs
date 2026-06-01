@@ -383,6 +383,7 @@ impl LanguageServer for RidgeLanguageServer {
                 // server converts via `ridge_lexer::LineIndex`.
                 position_encoding: Some(PositionEncodingKind::UTF16),
                 hover_provider: Some(HoverProviderCapability::Simple(true)),
+                definition_provider: Some(OneOf::Left(true)),
                 text_document_sync: Some(TextDocumentSyncCapability::Options(
                     TextDocumentSyncOptions {
                         open_close: Some(true),
@@ -508,6 +509,25 @@ impl LanguageServer for RidgeLanguageServer {
             }),
             range: index.span_to_range(&uri, span),
         }))
+    }
+
+    async fn goto_definition(
+        &self,
+        params: GotoDefinitionParams,
+    ) -> LspResult<Option<GotoDefinitionResponse>> {
+        let uri = params.text_document_position_params.text_document.uri;
+        let pos = params.text_document_position_params.position;
+
+        let index = {
+            let snap = self.state.lock().await;
+            snap.index.clone()
+        };
+        let Some(index) = index else {
+            return Ok(None);
+        };
+        Ok(index
+            .definition_at(&uri, pos.line, pos.character)
+            .map(GotoDefinitionResponse::Scalar))
     }
 }
 

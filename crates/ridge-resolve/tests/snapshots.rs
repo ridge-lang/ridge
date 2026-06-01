@@ -1115,3 +1115,59 @@ fn t14_snapshot_rate_limiter() {
     );
     insta::assert_debug_snapshot!("t14_rate_limiter", snap);
 }
+
+#[test]
+fn module_asts_are_retained_and_aligned_with_modules() {
+    // The resolver retains the AST it parsed for every module so the type
+    // checker can reuse it instead of parsing each file a second time. The
+    // retained ASTs must be parallel to `modules` and indexed by `ModuleId.0`.
+    // Alpha and Beta carry a different number of top-level items, so a
+    // misordering would surface as a mismatched item count below.
+    let td = TempDir::new().expect("tempdir");
+    write_file(
+        td.path(),
+        "ridge.toml",
+        "[workspace]\nname = \"asts-ws\"\nversion = \"0.1.0\"\nmembers = [\"libs/*\"]\n",
+    );
+    write_file(
+        td.path(),
+        "libs/proj/ridge.toml",
+        "[project]\nname = \"proj\"\nversion = \"0.1.0\"\nkind = \"library\"\n",
+    );
+    write_file(td.path(), "libs/proj/src/Alpha.ridge", "pub fn a = 1\n");
+    write_file(
+        td.path(),
+        "libs/proj/src/Beta.ridge",
+        "pub fn b = 2\npub fn c = 3\n",
+    );
+
+    let disc = discover_workspace(td.path());
+    let ws = disc.graph.expect("graph present on happy path");
+
+    // The item count per module straight from the module-graph parse, used as a
+    // cheap structural fingerprint to cross-check the retained ASTs.
+    let g = build_module_graph(&ws);
+    let item_counts: Vec<usize> = g.modules.iter().map(|pm| pm.ast.items.len()).collect();
+
+    let resolved = resolve_workspace(ws);
+
+    assert_eq!(
+        resolved.module_asts.len(),
+        resolved.modules.len(),
+        "module_asts must hold one AST per resolved module"
+    );
+
+    for rm in &resolved.modules {
+        let idx = rm.id.0 as usize;
+        let ast = resolved
+            .module_asts
+            .get(idx)
+            .unwrap_or_else(|| panic!("missing retained AST for module {:?}", rm.id));
+        assert_eq!(
+            ast.items.len(),
+            item_counts[idx],
+            "retained AST for {:?} disagrees with the module-graph parse",
+            rm.id
+        );
+    }
+}

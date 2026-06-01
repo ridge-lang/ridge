@@ -296,6 +296,13 @@ pub struct ResolvedWorkspace {
     /// Lexer errors per source module, captured from `ridge-lexer` during
     /// the module-graph pass.  Same rationale as `parse_errors`.
     pub lex_errors: Vec<(ModuleId, ridge_lexer::LexError)>,
+    /// Parsed AST for every module, retained from the module-graph pass and
+    /// indexed by `ModuleId.0` (parallel to `modules`).
+    ///
+    /// This holds the same `Arc<Module>` the resolver parsed, so later passes
+    /// (the type-checker, the LSP) can reuse it instead of reading and parsing
+    /// every source file a second time. Entry `i` is the module `ModuleId(i)`.
+    pub module_asts: Vec<std::sync::Arc<ridge_ast::Module>>,
 }
 
 // ── DR-01: Public entry points ────────────────────────────────────────────────
@@ -457,6 +464,11 @@ pub fn resolve_workspace_with(ws: WorkspaceGraph, retain_indices: bool) -> Resol
         errors: all_errors,
         parse_errors: all_parse_errors,
         lex_errors: all_lex_errors,
+        module_asts: g
+            .modules
+            .iter()
+            .map(|pm| std::sync::Arc::clone(&pm.ast))
+            .collect(),
     }
 }
 

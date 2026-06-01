@@ -24,7 +24,7 @@ jobs:
       # code cannot move the numbers, so skip the run.
       - name: Detect code changes
         id: changes
-        uses: dorny/paths-filter@v3
+        uses: dorny/paths-filter@v4
         with:
           predicate-quantifier: 'every'
           filters: |
@@ -72,7 +72,7 @@ jobs:
 
       - name: Upload benchmark results
         if: steps.changes.outputs.code == 'true'
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: bench-layer-a
           path: |

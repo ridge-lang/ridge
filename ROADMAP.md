@@ -144,7 +144,7 @@ this section are scheduled, not aspirational.
 | ✅ | Multi-line and raw string literals | `"""..."""` cooked with dedent; `r"..."` / `r#"..."#` raw without dedent. Shipped in 0.2.8. | `docs/spec.md §4.1.1`, `CHANGELOG.md` (0.2.8) |
 | ✅ | Rest patterns in list and record patterns | `[first, ..]`, `[.., last]`, `[first, rest @ .., last]`; `User { name, .. }`. Shipped in 0.2.8. | `docs/spec.md §4.5`, `CHANGELOG.md` (0.2.8) |
 | ⏳ | Inline record types | First-class structural record types in type positions (e.g. `{ name: Text, age: Int }`), with the structural-vs-nominal decision documented in the decision log | — |
-| ⏳ | Typeclasses (`class` / `instance` / `deriving` / `where`) | Keywords are already reserved in the lexer and parser. The 0.2.x typeclass cut adds declaration syntax, instance resolution, deriving for `Eq` / `Ord` / `Show`, and constraint propagation through inference. Formalises the `ToText` dispatch added in 0.2.6 | — |
+| ✅ | Typeclasses (`class` / `instance` / `deriving` / superclass `where`) | Declaration syntax, name resolution (class-method index), instance resolution with coherence (orphan, overlap, superclass cycle), constraint propagation through inference, `deriving` for `Eq` / `Ord` / `ToText` on records and unions, and dictionary-passing lowering to BEAM. Superclass `where` on class heads is supported; `where` on instance heads (parametric instances) is not yet — see the 0.3.0 framework note below | `crates/ridge-typecheck/src/{collect,solve,derive,class_env}.rs`; `crates/ridge-lower/src/item.rs`; `crates/ridge-driver/tests/typeclass_{dict,deriving}_e2e.rs` |
 
 ### LSP enhancements (bridging into 0.3.0)
 
@@ -163,28 +163,39 @@ incremental compilation slides to 0.3.0 RC1.
 ## 0.3.0 -- LSP at scale + frameworks tier-1
 
 Goal: graduate the developer experience and ship the first wave of
-official frameworks. The release builds in four release candidates,
-each shippable on its own and accumulating into the GA tag. The
-exploratory WebAssembly and native backends remain out of scope for
+official frameworks. The release builds in a series of release
+candidates, each shippable on its own and accumulating into the GA tag.
+The exploratory WebAssembly and native backends remain out of scope for
 0.3.0 -- see the [exploratory backends](#beyond-030--exploratory-backends)
 section.
+
+The LSP tier below (originally one RC) shipped across two prereleases:
+`0.3.0-rc1` (the IDE features) and `0.3.0-rc2` (incremental compilation).
+The framework tiers that follow are renumbered when they are scheduled.
 
 ### 0.3.0 RC1 -- LSP incremental + features
 
 | Status | Item | Description | Evidence |
 |--------|------|-------------|----------|
-| ⏳ | Per-module incremental compilation | Content-hash module cache layered over `check_workspace`; the recompile granularity drops from the full workspace to the changed module set | `crates/ridge-lsp/src/lib.rs` |
-| ⏳ | Hover with inferred types and capability annotations | -- | -- |
-| ⏳ | Go-to-definition | Cross-module aware | -- |
-| ⏳ | Completion | Context-aware: type positions vs expression positions | -- |
+| ✅ | Per-module incremental compilation | An edit recompiles only the changed module and the modules that transitively import it, instead of the whole workspace; the result is identical to a full build | `crates/ridge-driver/src/incremental.rs`, `tests/incremental.rs`; `crates/ridge-lsp/src/server.rs` |
+| ✅ | Hover with inferred types and capability annotations | Renders the inferred type (function types carry their capability set) of the symbol under the cursor | `crates/ridge-lsp/tests/lsp_replay.rs` |
+| ✅ | Go-to-definition | Cross-module aware | `crates/ridge-lsp/tests/lsp_replay.rs` |
+| ✅ | Completion | Context-aware: member access, type positions, expression positions | `crates/ridge-lsp/tests/lsp_replay.rs` |
 | ⏳ | Find-references | Reverse-index over `Symbol -> Vec<Span>` | -- |
-| ⏳ | Latency budget | Synthetic 200-module bench under 200 ms p50, under 500 ms p99 | `crates/ridge-lsp/tests/lsp_replay.rs` (extended) |
+| ✅ | Latency budget | On a synthetic 200-module workspace a leaf recompile stays far under a full rebuild (gated relative guard); a criterion bench reports the millisecond numbers | `crates/ridge-bench/tests/incremental_perf.rs`, `benches/incremental.rs` |
 
 ### 0.3.0 RC2 -- `ridge.web`
 
 Typed HTTP framework for the BEAM. Cowboy / Bandit underneath,
 exposed through a typed router DSL, JSON via `Encode` / `Decode`
 typeclasses, and a composable middleware chain.
+
+The typeclass core (declarations, coherence, constraint solving,
+`deriving` for `Eq` / `Ord` / `ToText`, dictionary passing to BEAM) is in
+place. Two language pieces are still needed before the typed JSON layer:
+parametric instances (`where` on instance heads, e.g.
+`instance Encode a => Encode (List a)`), and extending `deriving` to
+`Encode` / `Decode` on user records.
 
 | Status | Item | Description | Evidence |
 |--------|------|-------------|----------|

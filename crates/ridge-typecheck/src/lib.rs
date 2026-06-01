@@ -169,7 +169,7 @@ pub struct TypedModule {
 /// # Pipeline
 ///
 /// 1. Allocate a shared [`TyConArena`] and register the 12 built-in `TyCons`.
-/// 2. Re-parse each module's source via `build_module_graph` to obtain ASTs.
+/// 2. Reuse the ASTs the resolver already parsed (`ResolvedWorkspace::module_asts`).
 /// 3. For each module (in topological order from `ws.graph.deps`):
 ///    a. Collect user `TyCons` from `TypeDecl` / `ActorDecl` nodes.
 ///    b. Seed the env with prelude + stdlib qualified bindings.
@@ -185,9 +185,7 @@ pub fn typecheck_workspace(ws: &ResolvedWorkspace) -> TypecheckResult {
     let mut arena = TyConArena::new();
     let b = BuiltinTyCons::allocate(&mut arena);
 
-    // Step 2: Re-parse all modules to obtain their ASTs.
-    let module_graph = build_module_graph(&ws.graph);
-
+    // Step 2: Reuse the ASTs the resolver already parsed — no second parse pass.
     let mut typed_modules: Vec<TypedModule> = Vec::with_capacity(ws.modules.len());
     // Merged anonymous record table across all modules.
     let mut workspace_anon_records: AnonRecordTable = AnonRecordTable::default();
@@ -208,8 +206,8 @@ pub fn typecheck_workspace(ws: &ResolvedWorkspace) -> TypecheckResult {
         reason = "arena size is bounded by program size; exceeding 2^32 TyCons is not realistic"
     )]
     let mut next_id = arena.all().len() as u32;
-    for pm in &module_graph.modules {
-        for item in &pm.ast.items {
+    for ast in &ws.module_asts {
+        for item in &ast.items {
             let name = match item {
                 Item::Type(td) => Some(td.name.text.clone()),
                 Item::Actor(ad) => Some(ad.name.text.clone()),
@@ -230,10 +228,11 @@ pub fn typecheck_workspace(ws: &ResolvedWorkspace) -> TypecheckResult {
     // Run the workspace collect pass to build the class/instance registries.
     // This runs over all module ASTs before any module is type-checked so the
     // solver sees every instance.
-    let module_ast_pairs: Vec<(u32, &ridge_ast::Module)> = module_graph
+    let module_ast_pairs: Vec<(u32, &ridge_ast::Module)> = ws
         .modules
         .iter()
-        .map(|pm| (pm.id.0, pm.ast.as_ref()))
+        .zip(&ws.module_asts)
+        .map(|(rm, ast)| (rm.id.0, ast.as_ref()))
         .collect();
     let collect_result = collect_workspace(&module_ast_pairs, &workspace_tycon_names);
     // Coherence errors are workspace-level; accumulate them tagged with the
@@ -247,12 +246,12 @@ pub fn typecheck_workspace(ws: &ResolvedWorkspace) -> TypecheckResult {
 
     // Step 3: Type-check each module.
     for rm in &ws.modules {
-        // Find the corresponding parsed module (by ModuleId).
-        let pm_opt = module_graph.modules.iter().find(|pm| pm.id == rm.id);
-        // If we couldn't find the parsed module (e.g. I/O error), produce
+        // Reuse the resolver's AST for this module (indexed by ModuleId).
+        let ast_opt = ws.module_asts.get(rm.id.0 as usize);
+        // If the AST is somehow absent (e.g. an earlier I/O error), produce
         // an empty typed module and continue.
-        let ast = if let Some(pm) = pm_opt {
-            Arc::clone(&pm.ast)
+        let ast = if let Some(ast) = ast_opt {
+            Arc::clone(ast)
         } else {
             typed_modules.push(TypedModule {
                 id: rm.id,

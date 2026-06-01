@@ -538,3 +538,144 @@ pub fn resolve_module(ws: &WorkspaceGraph, id: ModuleId) -> ModuleResolveResult 
         errors,
     }
 }
+
+/// Incrementally re-resolve a single edited module against an already-resolved
+/// workspace, updating `cached` in place.
+///
+/// Unlike [`resolve_module`], this sees the full workspace context. It reuses
+/// every unchanged module's cached symbol table and AST (parsing nothing),
+/// re-collects the edited module's symbols, and re-runs import resolution for
+/// the whole workspace so the edited module's cross-module references bind
+/// exactly as a from-scratch [`resolve_workspace`] would. Only the edited
+/// module's walker pass runs; its `ResolvedModule`, the workspace dependency
+/// edges (`graph.deps`), and the retained AST are written back into `cached`.
+/// The returned vector holds the edited module's `R###` diagnostics.
+///
+/// This re-resolves only the edited module. A caller that changes a module's
+/// public surface is responsible for re-resolving the reverse-dependencies that
+/// import it — this function does not chase that closure.
+#[must_use]
+pub fn resolve_module_incremental(
+    cached: &mut ResolvedWorkspace,
+    edited_id: ModuleId,
+    edited_ast: &std::sync::Arc<ridge_ast::Module>,
+    retain_indices: bool,
+) -> Vec<ResolveError> {
+    let n = cached.modules.len();
+    let ei = edited_id.0 as usize;
+    if ei >= n {
+        return Vec::new();
+    }
+
+    let mut errors: Vec<ResolveError> = Vec::new();
+
+    // Re-collect the edited module's symbols (+ external exports), exactly as the
+    // workspace pass does for every module.
+    let (mut edited_symbols, sym_errs) = symbol::collect_symbols(edited_id, edited_ast);
+    errors.extend(sym_errs);
+    let project_idx = cached.graph.modules[ei].project.0 as usize;
+    {
+        let project = &cached.graph.projects[project_idx];
+        // External-export validation is a manifest-level concern; the symbol
+        // table it produces is what matters for resolution, so the M### errors
+        // are not threaded into this module's R### result.
+        let _ = symbol::apply_external_exports(
+            &mut edited_symbols,
+            &project.exports_public,
+            &project.manifest_path,
+        );
+    }
+
+    // Full symbol-table vector: every unchanged module's cached table, plus the
+    // edited module's freshly collected one.
+    let symbol_tables: Vec<symbol::SymbolTable> = (0..n)
+        .map(|i| {
+            if i == ei {
+                edited_symbols.clone()
+            } else {
+                cached.modules[i].symbols.clone()
+            }
+        })
+        .collect();
+
+    // Reconstruct the workspace's tentative import edges from the retained ASTs
+    // (the edited module from its new AST), in the same per-module order
+    // `build_module_graph` produces, then re-resolve imports for the whole
+    // workspace. This recomputes `graph.deps` and every module's import
+    // resolutions without parsing anything.
+    let mut tentative_edges: Vec<TentativeEdge> = Vec::new();
+    for i in 0..n {
+        let ast = if i == ei {
+            edited_ast.as_ref()
+        } else {
+            cached.module_asts[i].as_ref()
+        };
+        let mid = ModuleId(u32::try_from(i).unwrap_or(u32::MAX));
+        tentative_edges.extend(module_graph::collect_import_edges(mid, ast));
+    }
+    let g = ModuleGraph {
+        modules: Vec::new(),
+        tentative_edges,
+    };
+    let import_result = imports::resolve_imports(&mut cached.graph, &g, &symbol_tables);
+    errors.extend(
+        import_result
+            .resolve_errors
+            .into_iter()
+            .filter(|(m, _)| *m == edited_id)
+            .map(|(_, e)| e),
+    );
+
+    // Assign node ids and run the walker for the edited module only, against the
+    // full symbol tables and its resolved imports.
+    let (nid_map, nid_errors) = node_id::assign_node_ids(edited_ast);
+    errors.extend(nid_errors);
+
+    let all_asts: Vec<&ridge_ast::Module> = (0..n)
+        .map(|i| {
+            if i == ei {
+                edited_ast.as_ref()
+            } else {
+                cached.module_asts[i].as_ref()
+            }
+        })
+        .collect();
+    let class_method_index = symbol::ClassMethodIndex::build(&all_asts);
+
+    let edited_imports: Vec<imports::ImportResolution> =
+        import_result.imports.get(ei).cloned().unwrap_or_default();
+
+    let (bindings, walker_errors, scopes) = walker::resolve_module_uses(
+        edited_id,
+        edited_ast,
+        &nid_map,
+        &symbol_tables,
+        &edited_imports,
+        Some(&class_method_index),
+        retain_indices,
+    );
+    errors.extend(walker_errors);
+
+    // Capability and `@ffi` enforcement for the edited module.
+    let project = &cached.graph.projects[project_idx];
+    let mut cap_errors = Vec::new();
+    capabilities::check_capabilities(edited_ast, project, &cached.graph.manifest, &mut cap_errors);
+    errors.extend(cap_errors);
+    errors.extend(decl::check_ffi_outside_stdlib(
+        edited_ast,
+        cached.graph.is_stdlib,
+    ));
+
+    // Write the freshly resolved module and its AST back into the cache.
+    cached.modules[ei] = ResolvedModule {
+        id: edited_id,
+        symbols: edited_symbols,
+        imports: edited_imports,
+        scopes,
+        bindings,
+        node_ids: nid_map,
+    };
+    cached.module_asts[ei] = std::sync::Arc::clone(edited_ast);
+
+    errors
+}

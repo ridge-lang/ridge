@@ -1,6 +1,6 @@
 # Ridge — Language Specification & Development Roadmap
 
-**Version:** 0.3.0-rc1
+**Version:** 0.3.0-rc2
 **Author:** The Ridge Language Authors
 **Last updated:** 2026-06-01
 

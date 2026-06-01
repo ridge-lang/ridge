@@ -1,7 +1,7 @@
 # Ridge — Tutorial
 
 A guided tour from install to a runnable hello-world to your first
-diagnostics in VS Code. Targets Ridge **0.3.0-rc1**.
+diagnostics in VS Code. Targets Ridge **0.3.0-rc2**.
 
 This tutorial assumes nothing beyond a working Rust toolchain and a
 recent Erlang/OTP. For the formal language definition, see
@@ -125,11 +125,13 @@ on any `.ridge` file and spawns `ridge-lsp` from your PATH over stdio.
 See [`tools/vscode-ridge/README.md`](../tools/vscode-ridge/README.md)
 for the full extension docs.
 
-Beyond live diagnostics, the language server answers three editor requests as
-of 0.3.0-rc1: **hover** shows the inferred type of the symbol under the cursor,
+Beyond live diagnostics, the language server answers three editor requests:
+**hover** shows the inferred type of the symbol under the cursor,
 **go-to-definition** jumps to where a name is bound (including across modules),
 and **completion** suggests the locals in scope, the module's symbols, imports,
-and keywords — plus a module's exported names after you type `Module.`.
+and keywords — plus a module's exported names after you type `Module.`. As of
+0.3.0-rc2 an edit recompiles only the modules it affects, so these stay
+responsive as a workspace grows.
 
 ---
 

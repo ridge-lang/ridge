@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.0-rc2] - 2026-06-01
+
+### Changed
+
+- Language server: edits recompile incrementally. A single-file change re-checks only the edited modules and the modules that transitively import them, instead of the whole workspace, so diagnostics and editor features stay responsive as a workspace grows. A class, instance, or deriving change re-runs the workspace-wide coherence checks; a save reseeds from disk.
+
+### Fixed
+
+- Language server: diagnostics, hover, and go-to-definition resolve against the editor's buffer rather than the last-saved file on disk, so they reflect unsaved edits.
+
 ## [0.3.0-rc1] - 2026-06-01
 
 ### Added

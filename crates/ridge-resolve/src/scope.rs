@@ -94,6 +94,79 @@ pub struct LocalEntry {
     pub kind: LocalKind,
 }
 
+// ── ScopeNode / ScopeIndex ────────────────────────────────────────────────────
+
+/// A persisted lexical scope: its byte range, its bound locals, and a pointer to
+/// the enclosing scope.
+///
+/// Unlike [`Scope`] (a live frame discarded after the walk), a `ScopeNode` is
+/// retained so the LSP can answer "which names are visible at this offset".
+#[derive(Debug, Clone)]
+pub struct ScopeNode {
+    /// The syntactic context that introduced this scope.
+    pub kind: ScopeKind,
+    /// Byte range the scope covers in the source.
+    pub range: Span,
+    /// Index of the enclosing scope in [`ScopeIndex::nodes`]; `None` for the
+    /// module root.
+    pub parent: Option<u32>,
+    /// Locals bound directly in this scope, in insertion order.
+    pub locals: Vec<LocalEntry>,
+}
+
+/// A module's lexical scopes, flattened into a parent-linked tree.
+///
+/// Nodes are stored in pre-order (a parent always precedes its children), so a
+/// `parent` index is always smaller than the child's own index. Empty unless
+/// the walker was asked to record scopes (the LSP path).
+#[derive(Debug, Default)]
+pub struct ScopeIndex {
+    /// All scopes, pre-order. Index `i` is referenced by children via `parent`.
+    pub nodes: Vec<ScopeNode>,
+}
+
+impl ScopeIndex {
+    /// Create an empty scope index.
+    #[must_use]
+    pub const fn new() -> Self {
+        Self { nodes: Vec::new() }
+    }
+
+    /// `true` when no scopes were recorded.
+    #[must_use]
+    pub const fn is_empty(&self) -> bool {
+        self.nodes.is_empty()
+    }
+
+    /// Return the locals visible at `offset`, innermost first.
+    ///
+    /// Walks from the narrowest scope containing `offset` up through its
+    /// ancestors, collecting locals. A name bound in an inner scope shadows the
+    /// same name in an outer scope, so only the inner binding is returned.
+    #[must_use]
+    pub fn visible_at(&self, offset: u32) -> Vec<&LocalEntry> {
+        let mut cur = self
+            .nodes
+            .iter()
+            .enumerate()
+            .filter(|(_, n)| n.range.start <= offset && offset < n.range.end)
+            .min_by_key(|(_, n)| n.range.end - n.range.start)
+            .map(|(i, _)| i);
+
+        let mut out: Vec<&LocalEntry> = Vec::new();
+        while let Some(idx) = cur {
+            let node = &self.nodes[idx];
+            for local in &node.locals {
+                if !out.iter().any(|e| e.name == local.name) {
+                    out.push(local);
+                }
+            }
+            cur = node.parent.map(|p| p as usize);
+        }
+        out
+    }
+}
+
 // ── Scope ─────────────────────────────────────────────────────────────────────
 
 /// A single lexical scope frame.
@@ -131,9 +204,27 @@ pub struct ScopeStack {
     pub stack: Vec<Scope>,
     /// Monotone counter used to allocate fresh [`LocalId`]s.
     pub local_counter: u32,
+    /// When `true`, [`push_with_start`](Self::push_with_start) /
+    /// [`pop_into`](Self::pop_into) record each scope into [`retained`] so the
+    /// LSP can query visible locals. The batch compiler leaves this `false`.
+    record_scopes: bool,
+    /// Persisted scope nodes, in pre-order. Filled only when `record_scopes`.
+    retained: Vec<ScopeNode>,
+    /// Node ids of the currently-open recorded scopes, used to thread parent
+    /// links. Parallel to the live `stack` while recording.
+    live_ids: Vec<u32>,
 }
 
 impl ScopeStack {
+    /// Create a scope stack that records scopes for later LSP queries.
+    #[must_use]
+    pub fn with_recording(record: bool) -> Self {
+        Self {
+            record_scopes: record,
+            ..Self::default()
+        }
+    }
+
     /// Push a new empty scope of the given kind.
     pub fn push(&mut self, kind: ScopeKind) {
         self.stack.push(Scope::new(kind));
@@ -145,6 +236,56 @@ impl ScopeStack {
     pub fn pop(&mut self) {
         debug_assert!(!self.stack.is_empty(), "ScopeStack::pop on empty stack");
         self.stack.pop();
+    }
+
+    /// Push a scope, recording its start offset when recording is enabled.
+    ///
+    /// Behaves like [`push`](Self::push) for resolution; additionally allocates a
+    /// retained [`ScopeNode`] (parented to the enclosing recorded scope) whose
+    /// locals and end offset are filled in by [`pop_into`](Self::pop_into).
+    pub fn push_with_start(&mut self, kind: ScopeKind, start: u32) {
+        if self.record_scopes {
+            let parent = self.live_ids.last().copied();
+            #[allow(
+                clippy::cast_possible_truncation,
+                reason = "scope count is bounded by program size"
+            )]
+            let id = self.retained.len() as u32;
+            self.retained.push(ScopeNode {
+                kind,
+                range: Span::new(start, start),
+                parent,
+                locals: Vec::new(),
+            });
+            self.live_ids.push(id);
+        }
+        self.stack.push(Scope::new(kind));
+    }
+
+    /// Pop a scope, finalising its retained node (end offset + locals) when
+    /// recording is enabled.
+    pub fn pop_into(&mut self, end: u32) {
+        debug_assert!(
+            !self.stack.is_empty(),
+            "ScopeStack::pop_into on empty stack"
+        );
+        let frame = self.stack.pop();
+        if self.record_scopes {
+            if let (Some(id), Some(frame)) = (self.live_ids.pop(), frame) {
+                if let Some(node) = self.retained.get_mut(id as usize) {
+                    node.range.end = end;
+                    node.locals = frame.locals;
+                }
+            }
+        }
+    }
+
+    /// Take the recorded scopes as a [`ScopeIndex`], leaving the stack's record
+    /// empty (the index is empty when recording was disabled).
+    pub fn take_scope_index(&mut self) -> ScopeIndex {
+        ScopeIndex {
+            nodes: std::mem::take(&mut self.retained),
+        }
     }
 
     /// Add a local to the **current** (innermost) scope.
@@ -382,5 +523,76 @@ mod tests {
         let mut stack = ScopeStack::default();
         stack.push(ScopeKind::FnBody);
         assert!(stack.enclosing_kind(ScopeKind::ActorBody).is_none());
+    }
+
+    // ── ScopeIndex.visible_at ──────────────────────────────────────────────────
+
+    fn local(id: u32, name: &str) -> LocalEntry {
+        LocalEntry {
+            id: LocalId(id),
+            name: name.to_owned(),
+            def_span: sp_at(id),
+            kind: LocalKind::LetImmutable,
+        }
+    }
+
+    #[test]
+    fn scope_index_visible_at_shadowing() {
+        // Outer FnBody [0,100) binds `x`; inner Block [20,40) binds `y` and a
+        // shadowing `x`.
+        let index = ScopeIndex {
+            nodes: vec![
+                ScopeNode {
+                    kind: ScopeKind::FnBody,
+                    range: Span::new(0, 100),
+                    parent: None,
+                    locals: vec![local(0, "x")],
+                },
+                ScopeNode {
+                    kind: ScopeKind::Block,
+                    range: Span::new(20, 40),
+                    parent: Some(0),
+                    locals: vec![local(1, "y"), local(2, "x")],
+                },
+            ],
+        };
+
+        // Inside the inner block: `y` plus the inner `x` (shadowing the outer).
+        let inner = index.visible_at(25);
+        assert!(inner.iter().any(|e| e.name == "y"));
+        assert_eq!(
+            inner.iter().filter(|e| e.name == "x").count(),
+            1,
+            "x must appear once"
+        );
+        let x = inner.iter().find(|e| e.name == "x").unwrap();
+        assert_eq!(x.id, LocalId(2), "inner x shadows outer x");
+
+        // Outside the inner block: only the outer `x`.
+        let outer = index.visible_at(5);
+        assert_eq!(outer.len(), 1);
+        assert_eq!(outer[0].id, LocalId(0));
+    }
+
+    #[test]
+    fn scope_index_visible_at_outside_all_scopes() {
+        let index = ScopeIndex {
+            nodes: vec![ScopeNode {
+                kind: ScopeKind::FnBody,
+                range: Span::new(10, 20),
+                parent: None,
+                locals: vec![local(0, "a")],
+            }],
+        };
+        assert!(index.visible_at(5).is_empty(), "before any scope");
+        assert!(index.visible_at(50).is_empty(), "after any scope");
+        assert_eq!(index.visible_at(15).len(), 1, "inside the scope");
+    }
+
+    #[test]
+    fn scope_index_empty() {
+        let index = ScopeIndex::new();
+        assert!(index.is_empty());
+        assert!(index.visible_at(0).is_empty());
     }
 }

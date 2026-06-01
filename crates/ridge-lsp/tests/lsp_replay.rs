@@ -758,3 +758,98 @@ async fn test_workspace_index_populated_after_compile() {
         "node_at on a non-workspace URI must be None"
     );
 }
+
+// ── Test 15: scope tree is retained and queryable after a compile ─────────────
+
+/// With `retain_indices` enabled (the LSP path), the resolved workspace carries
+/// a populated scope tree, so the locals visible at a body offset can be
+/// enumerated.
+#[tokio::test]
+async fn test_scope_tree_retained_on_didopen() {
+    let dir = tempfile::TempDir::new().expect("temp dir");
+    let root = dir.path().to_path_buf();
+    let app_src = root.join("app").join("src");
+    std::fs::create_dir_all(&app_src).expect("create temp workspace");
+    std::fs::write(
+        root.join("ridge.toml"),
+        "[workspace]\nname = \"scope-ws\"\nversion = \"0.1.0\"\nmembers = [\"app\"]\n",
+    )
+    .expect("write workspace manifest");
+    std::fs::write(
+        root.join("app").join("ridge.toml"),
+        "[project]\nname = \"app\"\nversion = \"0.1.0\"\nkind = \"app\"\nentry = \"src/Main.ridge\"\n\n[capabilities]\nallow = []\n",
+    )
+    .expect("write project manifest");
+    // `greet` binds the parameter `name`, used again in the body.
+    let main_src = "pub fn greet name -> Text = name\n";
+    std::fs::write(app_src.join("Main.ridge"), main_src).expect("write source");
+
+    let (service, _socket) = build_test_service();
+    let server = service.inner();
+
+    let root_uri = Url::from_file_path(&root).expect("root URI");
+    server
+        .initialize(InitializeParams {
+            root_uri: Some(root_uri.clone()),
+            workspace_folders: Some(vec![WorkspaceFolder {
+                uri: root_uri,
+                name: "scope-ws".to_owned(),
+            }]),
+            capabilities: ClientCapabilities::default(),
+            ..InitializeParams::default()
+        })
+        .await
+        .expect("initialize");
+
+    let file_uri = Url::from_file_path(app_src.join("Main.ridge")).expect("file URI");
+    server
+        .did_open(DidOpenTextDocumentParams {
+            text_document: TextDocumentItem {
+                uri: file_uri,
+                language_id: "ridge".to_owned(),
+                version: 1,
+                text: main_src.to_owned(),
+            },
+        })
+        .await;
+
+    let mut index = None;
+    for _ in 0..120 {
+        tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;
+        if let Some(idx) = server.workspace_index().await {
+            index = Some(idx);
+            break;
+        }
+    }
+    let index = index.expect("index installed after a successful compile");
+
+    let mid = *index
+        .uri_to_module
+        .values()
+        .next()
+        .expect("the workspace contributes one module");
+    let module = index
+        .resolved
+        .modules
+        .iter()
+        .find(|m| m.id == mid)
+        .expect("resolved module present");
+
+    assert!(
+        !module.scopes.is_empty(),
+        "scope tree must be retained when retain_indices is set"
+    );
+
+    // The parameter `name` is visible at the body use-site (the last `name`).
+    let offset = u32::try_from(main_src.rfind("name").expect("body name")).expect("fits u32") + 1;
+    let visible: Vec<&str> = module
+        .scopes
+        .visible_at(offset)
+        .iter()
+        .map(|e| e.name.as_str())
+        .collect();
+    assert!(
+        visible.contains(&"name"),
+        "parameter `name` must be visible in the body, got {visible:?}"
+    );
+}

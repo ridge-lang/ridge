@@ -5,7 +5,7 @@
 
 use ridge_diagnostics::Diagnostic;
 use ridge_manifest::find_workspace_root;
-use ridge_resolve::{discover_workspace, resolve_workspace, ResolvedWorkspace};
+use ridge_resolve::{discover_workspace, resolve_workspace_with, ResolvedWorkspace};
 use ridge_typecheck::{typecheck_workspace, TypedWorkspace};
 
 use crate::diag_adapters::diag_from_typecheck;
@@ -87,7 +87,7 @@ pub fn check_workspace(options: CheckOptions) -> Result<CheckArtefacts, CheckErr
         path: options.workspace_root.clone(),
     })?;
 
-    let resolved = resolve_workspace(ws_graph);
+    let resolved = resolve_workspace_with(ws_graph, options.retain_indices);
     let typecheck_result = typecheck_workspace(&resolved);
 
     // ── 3. Collect diagnostics ────────────────────────────────────────────────
@@ -163,7 +163,7 @@ pub fn check_workspace_typed(options: CheckOptions) -> Result<CheckTypedArtefact
         path: options.workspace_root.clone(),
     })?;
 
-    let resolved = resolve_workspace(ws_graph);
+    let resolved = resolve_workspace_with(ws_graph, options.retain_indices);
     let typecheck_result = typecheck_workspace(&resolved);
 
     // ── 3. Collect diagnostics ────────────────────────────────────────────────

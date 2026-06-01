@@ -33,7 +33,7 @@ use crate::{
     imports::{Binding, EffectiveBinding, ImportResolution},
     node_id::{NodeIdMap, NodeKind},
     qualified,
-    scope::{LocalKind, ScopeKind, ScopeStack},
+    scope::{LocalKind, ScopeIndex, ScopeKind, ScopeStack},
     symbol::{ClassMethodIndex, SymbolKind, SymbolTable},
     ModuleId,
 };
@@ -68,7 +68,8 @@ pub fn resolve_module_uses(
     symbol_tables: &[SymbolTable],
     module_imports: &[ImportResolution],
     class_method_index: Option<&ClassMethodIndex>,
-) -> (Vec<Option<Binding>>, Vec<ResolveError>) {
+    retain: bool,
+) -> (Vec<Option<Binding>>, Vec<ResolveError>, ScopeIndex) {
     // Allocate one slot per NodeId (None = "not yet stamped").
     let mut bindings: Vec<Option<Binding>> = vec![None; node_id_map.len()];
     let mut errors: Vec<ResolveError> = Vec::new();
@@ -84,13 +85,14 @@ pub fn resolve_module_uses(
         class_method_index,
         bindings: &mut bindings,
         errors: &mut errors,
-        scope: ScopeStack::default(),
+        scope: ScopeStack::with_recording(retain),
         in_actor_state_names: Vec::new(),
     };
 
     walker.visit_module(ast);
+    let scopes = walker.scope.take_scope_index();
 
-    (bindings, errors)
+    (bindings, errors, scopes)
 }
 
 // ── ScopeWalker ───────────────────────────────────────────────────────────────
@@ -544,11 +546,11 @@ impl<'ast> Visit<'ast> for ScopeWalker<'_> {
 
     fn visit_module(&mut self, m: &'ast Module) {
         // Push a module-level scope (imports live here, not as locals).
-        self.scope.push(ScopeKind::Module);
+        self.scope.push_with_start(ScopeKind::Module, m.span.start);
         for item in &m.items {
             self.visit_item(item);
         }
-        self.scope.pop();
+        self.scope.pop_into(m.span.end);
     }
 
     fn visit_item(&mut self, i: &'ast Item) {
@@ -575,7 +577,7 @@ impl<'ast> Visit<'ast> for ScopeWalker<'_> {
         // comes from an InnerFn, the caller adds the name to the enclosing scope.
 
         // Push FnBody scope and bind parameters.
-        self.scope.push(ScopeKind::FnBody);
+        self.scope.push_with_start(ScopeKind::FnBody, d.span.start);
         for param in &d.params {
             self.add_param(param, LocalKind::FnParam);
         }
@@ -585,14 +587,15 @@ impl<'ast> Visit<'ast> for ScopeWalker<'_> {
         if let Body::Expr(e) = &d.body {
             self.visit_expr(e);
         }
-        self.scope.pop();
+        self.scope.pop_into(d.span.end);
     }
 
     // ── Actor declarations ────────────────────────────────────────────────────
 
     fn visit_actor_decl(&mut self, d: &'ast ActorDecl) {
         // Push an ActorBody scope.
-        self.scope.push(ScopeKind::ActorBody);
+        self.scope
+            .push_with_start(ScopeKind::ActorBody, d.span.start);
 
         // Collect state field names for R017 detection before walking members.
         let state_fields: Vec<(String, Span)> = d
@@ -626,7 +629,7 @@ impl<'ast> Visit<'ast> for ScopeWalker<'_> {
 
         // Restore previous state list (handles nested actors if they ever exist).
         self.in_actor_state_names = prev_state;
-        self.scope.pop();
+        self.scope.pop_into(d.span.end);
     }
 
     fn visit_actor_member(&mut self, m: &'ast ActorMember) {
@@ -648,35 +651,38 @@ impl<'ast> Visit<'ast> for ScopeWalker<'_> {
     }
 
     fn visit_init_decl(&mut self, d: &'ast InitDecl) {
-        self.scope.push(ScopeKind::InitBlock);
+        self.scope
+            .push_with_start(ScopeKind::InitBlock, d.span.start);
         for param in &d.params {
             self.add_param(param, LocalKind::InitParam);
         }
         walk_init_decl(self, d);
-        self.scope.pop();
+        self.scope.pop_into(d.span.end);
     }
 
     fn visit_on_handler(&mut self, h: &'ast OnHandler) {
-        self.scope.push(ScopeKind::OnHandler);
+        self.scope
+            .push_with_start(ScopeKind::OnHandler, h.span.start);
         for param in &h.params {
             self.add_param(param, LocalKind::HandlerParam);
         }
         walk_on_handler(self, h);
-        self.scope.pop();
+        self.scope.pop_into(h.span.end);
     }
 
     // ── Block ─────────────────────────────────────────────────────────────────
 
     fn visit_block(&mut self, b: &'ast Block) {
-        self.scope.push(ScopeKind::Block);
+        self.scope.push_with_start(ScopeKind::Block, b.span.start);
         walk_block(self, b);
-        self.scope.pop();
+        self.scope.pop_into(b.span.end);
     }
 
     // ── Match arm ─────────────────────────────────────────────────────────────
 
     fn visit_match_arm(&mut self, arm: &'ast MatchArm) {
-        self.scope.push(ScopeKind::MatchArm);
+        self.scope
+            .push_with_start(ScopeKind::MatchArm, arm.span.start);
         // Bind all pattern variables.
         self.bind_pattern(&arm.pattern, LocalKind::PatternBinding);
         // Walk the optional guard.
@@ -685,7 +691,7 @@ impl<'ast> Visit<'ast> for ScopeWalker<'_> {
         }
         // Walk the body.
         self.visit_expr(&arm.body);
-        self.scope.pop();
+        self.scope.pop_into(arm.span.end);
     }
 
     // ── Expressions ───────────────────────────────────────────────────────────
@@ -829,28 +835,30 @@ impl<'ast> Visit<'ast> for ScopeWalker<'_> {
             }
 
             Expr::Lambda { params, body, .. } => {
-                self.scope.push(ScopeKind::Lambda);
+                self.scope
+                    .push_with_start(ScopeKind::Lambda, e.span().start);
                 for lp in params {
                     self.bind_lambda_param(lp);
                 }
                 self.visit_expr(body);
-                self.scope.pop();
+                self.scope.pop_into(e.span().end);
             }
 
             Expr::InnerFn { decl, .. } => {
                 // Inner fn name is added to the enclosing scope, then the fn body
                 // gets its own FnBody scope.
                 self.add_local_binding(&decl.name, LocalKind::FnParam);
-                self.scope.push(ScopeKind::FnBody);
+                self.scope
+                    .push_with_start(ScopeKind::FnBody, decl.span.start);
                 for param in &decl.params {
                     self.add_param(param, LocalKind::FnParam);
                 }
                 // Inner fns always have Body::Expr; Body::Ffi is only valid at
                 // module top-level (enforced in T3).
-                if let Body::Expr(e) = &decl.body {
-                    self.visit_expr(e);
+                if let Body::Expr(inner) = &decl.body {
+                    self.visit_expr(inner);
                 }
-                self.scope.pop();
+                self.scope.pop_into(decl.span.end);
             }
 
             Expr::Let {
@@ -873,18 +881,20 @@ impl<'ast> Visit<'ast> for ScopeWalker<'_> {
             }
 
             Expr::Try { block, .. } => {
-                self.scope.push(ScopeKind::TryBlock);
+                self.scope
+                    .push_with_start(ScopeKind::TryBlock, e.span().start);
                 walk_block(self, block);
-                self.scope.pop();
+                self.scope.pop_into(e.span().end);
             }
 
             Expr::Guard {
                 cond, else_branch, ..
             } => {
                 self.visit_expr(cond);
-                self.scope.push(ScopeKind::GuardElse);
+                self.scope
+                    .push_with_start(ScopeKind::GuardElse, else_branch.span.start);
                 walk_block(self, else_branch);
-                self.scope.pop();
+                self.scope.pop_into(else_branch.span.end);
             }
 
             Expr::Send {
@@ -1028,13 +1038,14 @@ mod tests {
             .first()
             .map_or([].as_slice(), Vec::as_slice);
 
-        let (bindings, errors) = resolve_module_uses(
+        let (bindings, errors, _scopes) = resolve_module_uses(
             pm.id,
             &pm.ast,
             &node_id_map,
             &symbol_tables,
             module_imports,
             None,
+            false,
         );
 
         drop(td);
@@ -1048,8 +1059,8 @@ mod tests {
         let module_id = ModuleId(0);
         let (table, _) = collect_symbols(module_id, &m);
         let all_tables = vec![table];
-        let (bindings, errors) =
-            resolve_module_uses(module_id, &m, &nid_map, &all_tables, &[], None);
+        let (bindings, errors, _scopes) =
+            resolve_module_uses(module_id, &m, &nid_map, &all_tables, &[], None, false);
         (bindings, errors, nid_map)
     }
 
@@ -1152,13 +1163,14 @@ mod tests {
             .map_or([].as_slice(), Vec::as_slice);
 
         let (nid_map, _) = assign_node_ids(&a_pm.ast);
-        let (bindings, errors) = resolve_module_uses(
+        let (bindings, errors, _scopes) = resolve_module_uses(
             a_pm.id,
             &a_pm.ast,
             &nid_map,
             &symbol_tables,
             a_imports,
             None,
+            false,
         );
 
         assert!(errors.is_empty(), "A: unexpected errors: {errors:?}");
@@ -1942,13 +1954,14 @@ mod tests {
         let all_asts: Vec<&Module> = g.modules.iter().map(|pm| &*pm.ast).collect();
         let cmi = crate::symbol::ClassMethodIndex::build(&all_asts);
 
-        let (bindings, errors) = resolve_module_uses(
+        let (bindings, errors, _scopes) = resolve_module_uses(
             pm.id,
             &pm.ast,
             &nid_map,
             &symbol_tables,
             module_imports,
             Some(&cmi),
+            false,
         );
 
         drop(td);

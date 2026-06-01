@@ -462,13 +462,14 @@ fn t8_resolve_for_example(example_name: &str) -> (Vec<Option<Binding>>, Vec<Reso
     let all_asts: Vec<&ridge_ast::Module> = g.modules.iter().map(|m| &*m.ast).collect();
     let cmi = ClassMethodIndex::build(&all_asts);
 
-    let (bindings, errors) = resolve_module_uses(
+    let (bindings, errors, _scopes) = resolve_module_uses(
         pm.id,
         &pm.ast,
         &nid_map,
         &symbol_tables,
         module_imports,
         Some(&cmi),
+        false,
     );
 
     // Invariant: bindings.len() == node_ids.len().

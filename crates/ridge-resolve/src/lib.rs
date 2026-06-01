@@ -99,7 +99,9 @@ pub use module_graph::{
 };
 pub use node_id::{assign_node_ids, NodeIdMap, NodeKind};
 pub use qualified::{resolve_qualified_name, resolve_qualified_record_constructor};
-pub use scope::{LocalEntry, LocalId, LocalKind, Scope, ScopeKind, ScopeStack};
+pub use scope::{
+    LocalEntry, LocalId, LocalKind, Scope, ScopeIndex, ScopeKind, ScopeNode, ScopeStack,
+};
 pub use stdlib_builtin::{lookup_stdlib, BuiltinStdlibModule, StdlibModuleId, BUILTINS};
 pub use symbol::{
     apply_external_exports, collect_symbols, ClassMethodIndex, HandlerSig, StateField, SymbolEntry,
@@ -118,13 +120,12 @@ pub use walker::resolve_module_uses;
 /// definition site.
 pub type BindingMap = Vec<Option<imports::Binding>>;
 
-/// Static scope snapshot for one module.
+/// Persisted lexical scope tree for one module.
 ///
-/// Currently `Vec<scope::Scope>` — the walker discards its internal
-/// [`scope::ScopeStack`] after the pass, so the live tree is not retained.
-/// TODO(Phase 4): if the type checker needs a persistent scope tree, promote
-/// this to a proper newtype with parent-pointer traversal.
-pub type ScopeTree = Vec<scope::Scope>;
+/// Empty unless the walker was asked to record scopes (`retain_indices`), which
+/// the LSP enables to answer "which locals are visible at this offset". The
+/// batch compiler leaves it empty.
+pub type ScopeTree = scope::ScopeIndex;
 
 // ── Workspace-level artefacts ────────────────────────────────────────────────
 
@@ -314,6 +315,17 @@ pub struct ResolvedWorkspace {
 /// [`ResolvedWorkspace::errors`] / [`ResolvedWorkspace::manifest_errors`].
 #[must_use]
 pub fn resolve_workspace(ws: WorkspaceGraph) -> ResolvedWorkspace {
+    resolve_workspace_with(ws, false)
+}
+
+/// Resolve a workspace, optionally recording per-module scope trees.
+///
+/// Identical to [`resolve_workspace`] except that when `retain_indices` is set
+/// each module's [`ScopeTree`] is populated from the walker. The LSP enables
+/// this so completion can enumerate locals in scope; the batch compiler passes
+/// `false` and pays nothing for the scope tree.
+#[must_use]
+pub fn resolve_workspace_with(ws: WorkspaceGraph, retain_indices: bool) -> ResolvedWorkspace {
     let mut all_errors: Vec<(ModuleId, ResolveError)> = Vec::new();
     let mut all_manifest_errors: Vec<ManifestError> = Vec::new();
 
@@ -389,13 +401,14 @@ pub fn resolve_workspace(ws: WorkspaceGraph) -> ResolvedWorkspace {
             .map_or([].as_slice(), Vec::as_slice);
 
         // Walker + qualified-name resolution.
-        let (bindings, walker_errors) = walker::resolve_module_uses(
+        let (bindings, walker_errors, scopes) = walker::resolve_module_uses(
             pm.id,
             &pm.ast,
             &nid_map,
             &symbol_tables,
             module_imports,
             Some(&class_method_index),
+            retain_indices,
         );
         all_errors.extend(walker_errors.into_iter().map(|e| (pm.id, e)));
 
@@ -426,7 +439,7 @@ pub fn resolve_workspace(ws: WorkspaceGraph) -> ResolvedWorkspace {
                 .cloned()
                 .unwrap_or_else(|| symbol::SymbolTable::empty(pm.id)),
             imports: module_imports_owned,
-            scopes: Vec::new(), // TODO(Phase 4): retain scope tree from walker
+            scopes,
             bindings,
             node_ids: nid_map,
         });
@@ -469,7 +482,7 @@ pub fn resolve_module(ws: &WorkspaceGraph, id: ModuleId) -> ModuleResolveResult 
                 id,
                 symbols: symbol::SymbolTable::empty(id),
                 imports: Vec::new(),
-                scopes: Vec::new(),
+                scopes: ScopeIndex::new(),
                 bindings: Vec::new(),
                 node_ids: NodeIdMap::default(),
             },
@@ -490,8 +503,8 @@ pub fn resolve_module(ws: &WorkspaceGraph, id: ModuleId) -> ModuleResolveResult 
     let cmi = symbol::ClassMethodIndex::build(&single_ast);
 
     let all_tables = vec![symbol::SymbolTable::empty(id)];
-    let (bindings, walker_errors) =
-        walker::resolve_module_uses(pm.id, &pm.ast, &nid_map, &all_tables, &[], Some(&cmi));
+    let (bindings, walker_errors, scopes) =
+        walker::resolve_module_uses(pm.id, &pm.ast, &nid_map, &all_tables, &[], Some(&cmi), true);
     errors.extend(walker_errors);
 
     // T10: capability enforcement.
@@ -506,7 +519,7 @@ pub fn resolve_module(ws: &WorkspaceGraph, id: ModuleId) -> ModuleResolveResult 
             id,
             symbols,
             imports: Vec::new(), // No import-resolution context available in single-module mode
-            scopes: Vec::new(),
+            scopes,
             bindings,
             node_ids: nid_map,
         },

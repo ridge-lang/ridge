@@ -185,3 +185,70 @@ fn edit_that_introduces_a_type_error_matches_full() {
     );
     assert_matches_full(&state, td.path());
 }
+
+// ── Tier-2b: class / instance / deriving changes ──────────────────────────────
+
+const LIB_WITH_CLASS: &str = "class Show a =\n    toText (x: a) -> Text\ntype Color = Red | Green\ninstance Show Color =\n    toText (c: Color) -> Text = \"red\"\n";
+
+#[test]
+fn adding_an_instance_deep_recompiles_and_matches_full() {
+    let td = build_ws(LIB_WITH_CLASS, "import proj.Lib\npub fn f -> Int = 1\n");
+    let mut state = full_state(td.path());
+    let lib = module_id_by_suffix(&state.resolved, ".Lib");
+
+    // Add a second type and instance — a change to the class/instance surface.
+    let lib_v2 = "class Show a =\n    toText (x: a) -> Text\ntype Color = Red | Green\ninstance Show Color =\n    toText (c: Color) -> Text = \"red\"\ntype Tone = Hi | Lo\ninstance Show Tone =\n    toText (t: Tone) -> Text = \"t\"\n";
+    write_file(td.path(), "libs/proj/src/Lib.ridge", lib_v2);
+    let recompiled = state.recompile(lib, lib_v2);
+
+    assert_eq!(
+        recompiled.len(),
+        state.resolved.modules.len(),
+        "a class/instance change must deep-recompile every module"
+    );
+    assert_matches_full(&state, td.path());
+}
+
+#[test]
+fn deriving_change_deep_recompiles_and_matches_full() {
+    let td = build_ws(
+        "type Color = Red | Green\n",
+        "import proj.Lib\npub fn f -> Int = 1\n",
+    );
+    let mut state = full_state(td.path());
+    let lib = module_id_by_suffix(&state.resolved, ".Lib");
+
+    let lib_v2 = "type Color = Red | Green deriving (Eq)\n";
+    write_file(td.path(), "libs/proj/src/Lib.ridge", lib_v2);
+    let recompiled = state.recompile(lib, lib_v2);
+
+    assert_eq!(
+        recompiled.len(),
+        state.resolved.modules.len(),
+        "a deriving change must deep-recompile every module"
+    );
+    assert_matches_full(&state, td.path());
+}
+
+#[test]
+fn body_edit_in_a_typeclass_module_stays_incremental() {
+    // A module with class/instance declarations plus an ordinary function.
+    let lib_v1 = "pub fn greet -> Text = \"hi\"\nclass Show a =\n    toText (x: a) -> Text\ntype Color = Red\ninstance Show Color =\n    toText (c: Color) -> Text = \"red\"\n";
+    let td = build_ws(lib_v1, "import proj.Lib\npub fn f -> Int = 1\n");
+    let mut state = full_state(td.path());
+    let lib = module_id_by_suffix(&state.resolved, ".Lib");
+
+    // Change only the ordinary function's body. The class/instance declarations
+    // shift position, but the typeclass surface is unchanged — so this stays a
+    // single-module recompile, not a deep one.
+    let lib_v2 = "pub fn greet -> Text = \"hello there\"\nclass Show a =\n    toText (x: a) -> Text\ntype Color = Red\ninstance Show Color =\n    toText (c: Color) -> Text = \"red\"\n";
+    write_file(td.path(), "libs/proj/src/Lib.ridge", lib_v2);
+    let recompiled = state.recompile(lib, lib_v2);
+
+    assert_eq!(
+        recompiled,
+        vec![lib],
+        "a body edit must not deep-recompile, even with typeclass declarations present"
+    );
+    assert_matches_full(&state, td.path());
+}

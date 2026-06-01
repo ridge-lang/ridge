@@ -536,7 +536,10 @@ fn typecheck_module_inner(
     imports: &[ridge_resolve::ImportResolution],
     arena: &mut TyConArena,
     b: &BuiltinTyCons,
-    registries: Option<(&crate::class_env::ClassTable, &crate::class_env::InstanceEnv)>,
+    registries: Option<(
+        &crate::class_env::ClassTable,
+        &crate::class_env::InstanceEnv,
+    )>,
 ) -> ModuleTypecheckResult {
     use crate::actor::{check_actor_encapsulation, check_actor_mailbox_config};
     use crate::ctx::InferCtx;

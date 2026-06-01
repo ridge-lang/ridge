@@ -720,22 +720,32 @@ async fn test_workspace_index_populated_after_compile() {
     }
     let index = index.expect("index installed after a successful compile");
 
-    // The opened file is a workspace module.
+    // Exactly one module was compiled. Query against the URI the index actually
+    // holds: discovery canonicalizes file paths, so the key may differ
+    // textually from the tempdir path built above (on macOS `/var` resolves to
+    // `/private/var`, on Windows a verbatim prefix appears). Reconciling an
+    // editor-sent URI with the canonical key belongs where hover and
+    // go-to-definition consume `textDocument.uri`.
+    let (module_uri, _mid) = index
+        .uri_to_module
+        .iter()
+        .next()
+        .expect("the compiled workspace contributes one module");
     assert!(
-        index.uri_to_module.contains_key(&file_uri),
-        "opened file must map to a module"
+        module_uri.path().ends_with("Main.ridge"),
+        "module URI must point at the source file, got {module_uri}"
     );
 
     // The source is `pub fn greet -> Text = "hi"`; `greet` starts at byte
     // offset 7, so offset 8 falls inside it and resolves to a node.
-    let hit = index.node_at(&file_uri, 8, &[]);
+    let hit = index.node_at(module_uri, 8, &[]);
     assert!(
         hit.is_some(),
         "node_at inside `greet` must hit, got {hit:?}"
     );
 
     // Offset 3 is the space in `pub fn`, covered by no stamped node.
-    let miss = index.node_at(&file_uri, 3, &[]);
+    let miss = index.node_at(module_uri, 3, &[]);
     assert!(
         miss.is_none(),
         "node_at in the `pub fn` prefix must miss, got {miss:?}"

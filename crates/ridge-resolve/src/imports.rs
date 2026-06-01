@@ -770,8 +770,9 @@ const fn shared_dep_name(dep: &SharedDependency) -> &str {
 /// The implicit prelude — names always in scope of every Ridge module
 /// without an explicit `import` declaration.
 ///
-/// The prelude binds `Option`/`Some`/`None` from `std.option` and
-/// `Result`/`Ok`/`Err` from `std.result` as `StdlibSymbol` entries
+/// The prelude binds `Option`/`Some`/`None` from `std.option`,
+/// `Result`/`Ok`/`Err` from `std.result`, and `JsonValue` plus its seven
+/// `J*` constructors from `std.json` as `StdlibSymbol` entries
 /// (constructor/type bindings).
 ///
 /// The prelude also binds `ModuleAlias` entries for all 8 pure-data stdlib
@@ -794,6 +795,7 @@ pub fn prelude_resolutions() -> Vec<ImportResolution> {
     let synth_span = Span::point(0);
     let opt_id = StdlibModuleId(7); // std.option
     let res_id = StdlibModuleId(8); // std.result
+    let json_id = StdlibModuleId(17); // std.json
 
     let opt_binding = |name: &str| EffectiveBinding {
         local_name: name.to_string(),
@@ -806,6 +808,16 @@ pub fn prelude_resolutions() -> Vec<ImportResolution> {
         local_name: name.to_string(),
         binding: Binding::StdlibSymbol {
             module: res_id,
+            name: name.to_string(),
+        },
+    };
+    // JsonValue (§3.17) is a prelude union like Option/Result: the type name and
+    // its seven `J*` constructors are in scope in every module. The constructors
+    // lower to the lowercase-snake BEAM atoms `ridge_rt:json_*` produces.
+    let json_binding = |name: &str| EffectiveBinding {
+        local_name: name.to_string(),
+        binding: Binding::StdlibSymbol {
+            module: json_id,
             name: name.to_string(),
         },
     };
@@ -875,6 +887,23 @@ pub fn prelude_resolutions() -> Vec<ImportResolution> {
             alias: None,
             explicit_items: None,
             effective_bindings: vec![res_binding("Result"), res_binding("Ok"), res_binding("Err")],
+            span: synth_span,
+        },
+        ImportResolution {
+            decl_node: crate::NodeId(0),
+            target: ImportTarget::BuiltinStdlib(json_id),
+            alias: None,
+            explicit_items: None,
+            effective_bindings: vec![
+                json_binding("JsonValue"),
+                json_binding("JNull"),
+                json_binding("JBool"),
+                json_binding("JInt"),
+                json_binding("JFloat"),
+                json_binding("JText"),
+                json_binding("JList"),
+                json_binding("JObject"),
+            ],
             span: synth_span,
         },
         aliases_ir,
@@ -1072,8 +1101,8 @@ mod tests {
             result.resolve_errors
         );
         let module_imports = result.imports.first().expect("module 0");
-        // 1 user import + 3 prelude IRs (option + result constructors, module aliases).
-        assert_eq!(module_imports.len(), 4);
+        // 1 user import + 4 prelude IRs (option + result + json constructors, module aliases).
+        assert_eq!(module_imports.len(), 5);
         let res = &module_imports[0];
         assert!(
             matches!(res.target, ImportTarget::BuiltinStdlib(_)),
@@ -1137,7 +1166,7 @@ mod tests {
     }
 
     // Test 4: `import std.bogus` → R006, target = Unresolved
-    // The module gets 3 prelude IRs, so total len = 4.
+    // The module gets 4 prelude IRs, so total len = 5.
     #[test]
     fn t4_import_std_bogus_r006() {
         let (_td, result) = resolve_single("import std.bogus\n");
@@ -1152,8 +1181,8 @@ mod tests {
             result.resolve_errors
         );
         let module_imports = result.imports.first().expect("module 0");
-        // 1 unresolved user import + 3 prelude IRs (option + result constructors, module aliases).
-        assert_eq!(module_imports.len(), 4);
+        // 1 unresolved user import + 4 prelude IRs (option + result + json constructors, module aliases).
+        assert_eq!(module_imports.len(), 5);
         assert_eq!(module_imports[0].target, ImportTarget::Unresolved);
     }
 
@@ -1741,17 +1770,18 @@ mod tests {
 
     // ── Prelude tests ─────────────────────────────────────────────────────────
 
-    // Prelude test 1: prelude_resolutions() returns exactly 3 ImportResolutions.
-    // The option/result prelude contributes 2 (std.option + std.result constructors/types);
-    // the module-alias prelude adds a third synthetic IR that carries the 8
-    // pure-data ModuleAlias bindings (Int, Float, Bool, Text, List, Map, Set, Json).
+    // Prelude test 1: prelude_resolutions() returns exactly 4 ImportResolutions.
+    // The option/result/json prelude contributes 3 (std.option + std.result +
+    // std.json constructors/types); the module-alias prelude adds a fourth
+    // synthetic IR that carries the 8 pure-data ModuleAlias bindings (Int,
+    // Float, Bool, Text, List, Map, Set, Json).
     #[test]
-    fn prelude_returns_three_resolutions() {
+    fn prelude_returns_four_resolutions() {
         let resolutions = super::prelude_resolutions();
         assert_eq!(
             resolutions.len(),
-            3,
-            "expected exactly 3 prelude ImportResolutions (2 option/result + 1 module aliases)"
+            4,
+            "expected exactly 4 prelude ImportResolutions (3 option/result/json + 1 module aliases)"
         );
     }
 
@@ -1811,13 +1841,49 @@ mod tests {
         assert!(names.contains(&"Err"), "missing Err");
     }
 
-    // Prelude test 4: option/result prelude bindings (IRs 0 and 1) are Binding::StdlibSymbol;
-    // module-alias prelude bindings (IR 2) are Binding::ModuleAlias.
+    // Prelude test 3b: third IR targets std.json and carries JsonValue plus its
+    // seven `J*` constructors as StdlibSymbol bindings.
+    #[test]
+    fn prelude_third_ir_is_std_json_with_eight_bindings() {
+        let resolutions = super::prelude_resolutions();
+        let json_ir = &resolutions[2];
+        assert!(
+            matches!(
+                json_ir.target,
+                ImportTarget::BuiltinStdlib(crate::stdlib_builtin::StdlibModuleId(17))
+            ),
+            "expected BuiltinStdlib(17) for std.json, got {:?}",
+            json_ir.target
+        );
+        let names: Vec<&str> = json_ir
+            .effective_bindings
+            .iter()
+            .map(|eb| eb.local_name.as_str())
+            .collect();
+        assert_eq!(
+            names,
+            vec![
+                "JsonValue",
+                "JNull",
+                "JBool",
+                "JInt",
+                "JFloat",
+                "JText",
+                "JList",
+                "JObject"
+            ],
+            "std.json prelude must bind the type name and seven constructors"
+        );
+    }
+
+    // Prelude test 4: option/result/json prelude bindings (IRs 0, 1, 2) are
+    // Binding::StdlibSymbol; module-alias prelude bindings (IR 3) are
+    // Binding::ModuleAlias.
     #[test]
     fn prelude_binding_kinds_by_resolution() {
         let resolutions = super::prelude_resolutions();
-        // IRs 0 and 1: option/result prelude — all StdlibSymbol, name == local_name.
-        for ir in &resolutions[..2] {
+        // IRs 0, 1, 2: option/result/json prelude — all StdlibSymbol, name == local_name.
+        for ir in &resolutions[..3] {
             for eb in &ir.effective_bindings {
                 match &eb.binding {
                     Binding::StdlibSymbol { name, .. } => {
@@ -1833,8 +1899,8 @@ mod tests {
                 }
             }
         }
-        // IR 2: module-alias prelude — all ModuleAlias pointing to BuiltinStdlib targets.
-        for eb in &resolutions[2].effective_bindings {
+        // IR 3: module-alias prelude — all ModuleAlias pointing to BuiltinStdlib targets.
+        for eb in &resolutions[3].effective_bindings {
             match &eb.binding {
                 Binding::ModuleAlias {
                     target: ImportTarget::BuiltinStdlib(_),
@@ -1848,18 +1914,19 @@ mod tests {
         }
     }
 
-    // Prelude test 5: 1-module workspace with NO user imports → 3 prelude IRs,
-    // 14 total bindings (6 from option/result prelude + 8 module aliases).
+    // Prelude test 5: 1-module workspace with NO user imports → 4 prelude IRs,
+    // 22 total bindings (6 from option/result prelude + 8 from json prelude +
+    // 8 module aliases).
     #[test]
     fn prelude_injected_when_no_user_imports() {
-        // An empty module has no imports → all 14 prelude bindings should appear.
+        // An empty module has no imports → all 22 prelude bindings should appear.
         let (_td, result) = resolve_single("");
         let module_imports = result.imports.first().expect("module 0");
-        // Exactly 3 prelude IRs (option + result constructors, module aliases).
+        // Exactly 4 prelude IRs (option + result + json constructors, module aliases).
         assert_eq!(
             module_imports.len(),
-            3,
-            "expected 3 prelude IRs for empty module; got {}",
+            4,
+            "expected 4 prelude IRs for empty module; got {}",
             module_imports.len()
         );
         let total_bindings: usize = module_imports
@@ -1867,8 +1934,8 @@ mod tests {
             .map(|ir| ir.effective_bindings.len())
             .sum();
         assert_eq!(
-            total_bindings, 14,
-            "expected 14 total prelude bindings (6 from option/result prelude + 8 module aliases); got {total_bindings}"
+            total_bindings, 22,
+            "expected 22 total prelude bindings (6 option/result + 8 json + 8 module aliases); got {total_bindings}"
         );
     }
 
@@ -1958,12 +2025,12 @@ mod tests {
 
     // ── Module-alias prelude tests ────────────────────────────────────────────
 
-    // Prelude test 8: IR[2] has exactly 8 ModuleAlias bindings for
+    // Prelude test 8: IR[3] has exactly 8 ModuleAlias bindings for
     // Int, Float, Bool, Text, List, Map, Set, Json.
     #[test]
     fn prelude_r015_ir_has_eight_module_aliases() {
         let resolutions = super::prelude_resolutions();
-        let aliases_ir = &resolutions[2];
+        let aliases_ir = &resolutions[3];
         assert_eq!(
             aliases_ir.effective_bindings.len(),
             8,
@@ -1989,7 +2056,7 @@ mod tests {
     fn prelude_r015_aliases_point_to_correct_module_ids() {
         use crate::stdlib_builtin::StdlibModuleId;
         let resolutions = super::prelude_resolutions();
-        let aliases_ir = &resolutions[2];
+        let aliases_ir = &resolutions[3];
 
         let expected: &[(&str, u32)] = &[
             ("Int", 0),

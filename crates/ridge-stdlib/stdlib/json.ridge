@@ -16,10 +16,14 @@
 --
 -- decode strategy: ridge_rt:json_decode/1 wrapping OTP-27 json:decode/1.
 
--- The Ridge JSON value type.
--- Self-referential variants (JList, JObject) reference JsonValue; the Erlang
--- wire representation is a nested tagged-tuple tree built by the bridge.
-pub type JsonValue = JNull | JBool Bool | JInt Int | JFloat Float | JText Text | JList (List JsonValue) | JObject (Map Text JsonValue)
+-- JsonValue is a language prelude union (like Option and Result), so it is in
+-- scope everywhere without importing std.json. Its definition lives in the
+-- compiler's builtin table:
+--   JNull | JBool Bool | JInt Int | JFloat Float | JText Text
+--   | JList (List JsonValue) | JObject (Map Text JsonValue)
+-- The variants lower to the lowercase-snake BEAM atoms (json_null,
+-- {json_int, N}, ...) that the json_encode/1 bridge below walks; self-
+-- referential variants (JList, JObject) nest the same tagged-tuple tree.
 
 -- Encode a JsonValue to its JSON text representation.
 -- Bridge: ridge_rt:json_encode/1 — walks the tagged-tuple tree recursively.

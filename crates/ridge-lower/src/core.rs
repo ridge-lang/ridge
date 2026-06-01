@@ -396,8 +396,9 @@ pub fn lower_expr(ctx: &mut LowerCtx<'_>, expr: &Expr) -> IrExpr {
         // | Constructor { variant > 0, .. } | SymbolRef::Constructor { UnionVar } |
         // | None / other                    | SymbolRef::Constructor { Record }   | (defensive)
         //
-        // The prelude set is the closed set {Ok, Err, Some, None} per spec §3.7
-        // and OQ-PF001 resolution (hard-coded in ridge-lower, not ridge-resolve).
+        // The prelude set is the closed set {Ok, Err, Some, None} plus the seven
+        // JsonValue variants {JNull, JBool, JInt, JFloat, JText, JList, JObject}
+        // (hard-coded in ridge-lower, not ridge-resolve).
         Expr::Record {
             constructor,
             fields,
@@ -443,7 +444,11 @@ pub fn lower_expr(ctx: &mut LowerCtx<'_>, expr: &Expr) -> IrExpr {
             if matches!(
                 &binding,
                 Some(Binding::StdlibSymbol { name, .. })
-                    if matches!(name.as_str(), "Ok" | "Err" | "Some" | "None")
+                    if matches!(
+                        name.as_str(),
+                        "Ok" | "Err" | "Some" | "None"
+                            | "JNull" | "JBool" | "JInt" | "JFloat" | "JText" | "JList" | "JObject"
+                    )
             ) {
                 if ir_fields.is_empty() {
                     // Function-style usage: emit as Symbol so Call routing works.
@@ -1380,10 +1385,23 @@ fn lower_ident(ctx: &mut LowerCtx<'_>, ident: &Ident) -> IrExpr {
             name,
         }) => {
             let id = ctx.fresh_id(None);
-            // B-1 fix (Phase 5 followup): the closed prelude set {Ok, Err, Some,
-            // None} must emit SymbolRef::Prelude so Phase 6 can emit the correct
-            // Erlang tuple/atom form. All other stdlib symbols remain Stdlib.
-            if matches!(name.as_str(), "Ok" | "Err" | "Some" | "None") {
+            // B-1 fix (Phase 5 followup): the closed prelude constructor set
+            // (Option/Result plus the seven JsonValue variants) must emit
+            // SymbolRef::Prelude so Phase 6 can emit the correct Erlang
+            // tuple/atom form. All other stdlib symbols remain Stdlib.
+            if matches!(
+                name.as_str(),
+                "Ok" | "Err"
+                    | "Some"
+                    | "None"
+                    | "JNull"
+                    | "JBool"
+                    | "JInt"
+                    | "JFloat"
+                    | "JText"
+                    | "JList"
+                    | "JObject"
+            ) {
                 IrExpr::Symbol {
                     id,
                     sym: SymbolRef::Prelude { name: name.clone() },

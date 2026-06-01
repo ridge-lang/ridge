@@ -69,6 +69,16 @@ pub struct BuiltinTyCons {
     /// union type so any module can match on `Less`, `Equal`, `Greater`
     /// without an explicit import.
     pub ordering: TyConId,
+    /// `JsonValue` — the JSON value tree (§3.17).
+    ///
+    /// `JNull | JBool Bool | JInt Int | JFloat Float | JText Text
+    ///  | JList (List JsonValue) | JObject (Map Text JsonValue)`.
+    ///
+    /// Registered as a prelude union so any module can build and match JSON
+    /// values without importing `std.json`. The variants lower to the
+    /// lowercase-snake BEAM atoms (`json_null`, `{json_int, N}`, …) that
+    /// `ridge_rt:json_encode/1` walks — see `ridge-codegen-erl`.
+    pub json_value: TyConId,
 }
 
 impl BuiltinTyCons {
@@ -99,15 +109,17 @@ impl BuiltinTyCons {
             duration: SENTINEL,
             proc_output: SENTINEL,
             ordering: SENTINEL,
+            json_value: SENTINEL,
         }
     }
 
-    /// Allocates the 15 built-in `TyCons` into `arena` and returns a populated
+    /// Allocates the built-in `TyCons` into `arena` and returns a populated
     /// `BuiltinTyCons`.
     ///
     /// Indices are assigned in a fixed order (Int=0, Float=1, Bool=2, Text=3,
     /// Unit=4, Timestamp=5, List=6, Map=7, Set=8, Option=9, Result=10,
-    /// Handle=11, Error=12, Duration=13, ProcOutput=14) matching spec §4.1.
+    /// Handle=11, Error=12, Duration=13, ProcOutput=14, Ordering=15,
+    /// JsonValue=16) matching spec §4.1.
     /// Callers must pass a **fresh** arena (i.e. `arena.is_empty()` must be
     /// true) so that the resulting `TyConId`s are stable and predictable.
     ///
@@ -385,7 +397,61 @@ impl BuiltinTyCons {
             is_anon: false,
         });
 
-        // Verify assignment order matches spec §4.1 indices 0..15.
+        // JsonValue — the JSON value tree (§3.17), a prelude union so any module
+        // can build and match JSON without importing std.json. JList/JObject are
+        // self-referential, so their payloads name JsonValue's own TyConId. The
+        // arena assigns ids sequentially, so this is index 16 (asserted below).
+        let json_value = arena.intern(TyConDecl {
+            id: TyConId(0),
+            name: "JsonValue".to_string(),
+            arity: 0,
+            kind: TyConKind::Union(UnionSchema {
+                params: vec![],
+                variants: vec![
+                    UnionVariant {
+                        name: "JNull".to_string(),
+                        kind: VariantPayload::Nullary,
+                    },
+                    UnionVariant {
+                        name: "JBool".to_string(),
+                        kind: VariantPayload::Positional(vec![Type::Con(bool_, vec![])]),
+                    },
+                    UnionVariant {
+                        name: "JInt".to_string(),
+                        kind: VariantPayload::Positional(vec![Type::Con(int, vec![])]),
+                    },
+                    UnionVariant {
+                        name: "JFloat".to_string(),
+                        kind: VariantPayload::Positional(vec![Type::Con(float, vec![])]),
+                    },
+                    UnionVariant {
+                        name: "JText".to_string(),
+                        kind: VariantPayload::Positional(vec![Type::Con(text, vec![])]),
+                    },
+                    UnionVariant {
+                        name: "JList".to_string(),
+                        // List JsonValue
+                        kind: VariantPayload::Positional(vec![Type::Con(
+                            list,
+                            vec![Type::Con(TyConId(16), vec![])],
+                        )]),
+                    },
+                    UnionVariant {
+                        name: "JObject".to_string(),
+                        // Map Text JsonValue
+                        kind: VariantPayload::Positional(vec![Type::Con(
+                            map,
+                            vec![Type::Con(text, vec![]), Type::Con(TyConId(16), vec![])],
+                        )]),
+                    },
+                ],
+            }),
+            def_span: None,
+            def_module_raw: None, // prelude — no user module
+            is_anon: false,
+        });
+
+        // Verify assignment order matches spec §4.1 indices 0..16.
         debug_assert_eq!(int.0, 0);
         debug_assert_eq!(float.0, 1);
         debug_assert_eq!(bool_.0, 2);
@@ -402,6 +468,7 @@ impl BuiltinTyCons {
         debug_assert_eq!(duration.0, 13);
         debug_assert_eq!(proc_output.0, 14);
         debug_assert_eq!(ordering.0, 15);
+        debug_assert_eq!(json_value.0, 16);
 
         // Suppress the "unused" lint — CapabilitySet is imported for future use
         // in T4 (actor schemas carry CapabilitySet).
@@ -424,6 +491,7 @@ impl BuiltinTyCons {
             duration,
             proc_output,
             ordering,
+            json_value,
         }
     }
 }
@@ -503,10 +571,10 @@ mod tests {
     }
 
     #[test]
-    fn arena_len_is_16() {
-        // 15 original builtins + Ordering (added in 0.2.13 for the Ord typeclass)
+    fn arena_len_is_17() {
+        // 15 original builtins + Ordering (0.2.13) + JsonValue (0.3.0).
         let (arena, _) = make_arena_with_builtins();
-        assert_eq!(arena.len(), 16);
+        assert_eq!(arena.len(), 17);
     }
 
     // ── Arena get() round-trip ────────────────────────────────────────────────
@@ -652,6 +720,26 @@ mod tests {
             );
         } else {
             panic!("ProcOutput must be a Record TyCon");
+        }
+    }
+
+    #[test]
+    fn json_value_is_union_with_seven_variants() {
+        let (arena, b) = make_arena_with_builtins();
+        let decl = arena.get(b.json_value);
+        assert_eq!(decl.name, "JsonValue");
+        assert_eq!(decl.arity, 0);
+        assert_eq!(b.json_value.0, 16);
+        if let TyConKind::Union(schema) = &decl.kind {
+            let names: Vec<&str> = schema.variants.iter().map(|v| v.name.as_str()).collect();
+            assert_eq!(
+                names,
+                vec!["JNull", "JBool", "JInt", "JFloat", "JText", "JList", "JObject"]
+            );
+            // JNull is nullary; JList/JObject are self-referential.
+            assert!(matches!(schema.variants[0].kind, VariantPayload::Nullary));
+        } else {
+            panic!("JsonValue must be a Union TyCon");
         }
     }
 

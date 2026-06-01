@@ -944,16 +944,18 @@ fn lower_constructor_pattern(
             }
         }
 
-        // Prelude constructors (`Some`, `None`, `Ok`, `Err`) are bound by the
-        // resolve phase as `Binding::StdlibSymbol` (prelude contract).
-        // They are not `Binding::Constructor`; lower them directly to
+        // Prelude constructors (`Some`, `None`, `Ok`, `Err`, and the seven
+        // JsonValue variants) are bound by the resolve phase as
+        // `Binding::StdlibSymbol` (prelude contract). They are not
+        // `Binding::Constructor`; lower them directly to
         // `IrPat::Ctor { sym: SymbolRef::Prelude { name } }`.
         Some(Binding::StdlibSymbol { name: sym_name, .. }) => {
             let prelude_name = sym_name.clone();
-            // Only the four known prelude constructors map to IrPat::Ctor.
+            // Only the known prelude constructors map to IrPat::Ctor.
             // For anything else fall through to the error arm below.
             match prelude_name.as_str() {
-                "Some" | "None" | "Ok" | "Err" => {
+                "Some" | "None" | "Ok" | "Err" | "JNull" | "JBool" | "JInt" | "JFloat"
+                | "JText" | "JList" | "JObject" => {
                     let sym = SymbolRef::Prelude { name: prelude_name };
                     let ir_args: Vec<IrPat> =
                         args.iter().map(|a| lower_pattern_full(ctx, a)).collect();

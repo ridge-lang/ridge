@@ -671,8 +671,14 @@ mod tests {
             record_body(vec![("x", int_type()), ("y", int_type())]),
             vec!["Eq"],
         );
-        let (generated, errors) =
-            derive_instances(&decl, TyConId(16), 42, &ct, &mut env, &FxHashMap::default());
+        let (generated, errors) = derive_instances(
+            &decl,
+            TyConId(100),
+            42,
+            &ct,
+            &mut env,
+            &FxHashMap::default(),
+        );
         assert!(errors.is_empty(), "no errors expected: {errors:?}");
         assert_eq!(generated.len(), 1, "one instance generated");
         assert!(matches!(
@@ -681,7 +687,7 @@ mod tests {
         ));
         // Instance must be registered.
         assert!(
-            env.get((EQ_CLASS, TyConId(16))).is_some(),
+            env.get((EQ_CLASS, TyConId(100))).is_some(),
             "Eq instance must be in InstanceEnv"
         );
     }

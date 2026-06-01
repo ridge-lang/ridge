@@ -233,12 +233,12 @@ fn t7_acceptance_log_analyzer_imports_resolve() {
             res.alias
         );
     }
-    // log_analyzer has 8 user imports + 3 prelude IRs (R013 × 2 + R015 × 1) = 11.
+    // log_analyzer has 8 user imports + 4 prelude IRs (R013 × 3 + R015 × 1) = 12.
     // R015 aliases IR always added (user has List+Map suppressed → 6 remaining bindings).
     assert_eq!(
         module_imports.len(),
-        11,
-        "log_analyzer: expected 11 imports (8 user + 3 prelude), got {}",
+        12,
+        "log_analyzer: expected 12 imports (8 user + 4 prelude), got {}",
         module_imports.len()
     );
 }
@@ -265,12 +265,12 @@ fn t7_acceptance_url_shortener_imports_resolve() {
         );
     }
     // url_shortener has 7 user imports (including std.net.http as Http per R015)
-    // + 3 prelude IRs (R013 × 2 + R015 × 1) = 10.
+    // + 4 prelude IRs (R013 × 3 + R015 × 1) = 11.
     // R015 aliases IR has List+Map suppressed → 6 remaining bindings, still added.
     assert_eq!(
         module_imports.len(),
-        10,
-        "url_shortener: expected 10 imports (7 user + 3 prelude), got {}",
+        11,
+        "url_shortener: expected 11 imports (7 user + 4 prelude), got {}",
         module_imports.len()
     );
 }
@@ -296,12 +296,12 @@ fn t7_acceptance_game_of_life_imports_resolve() {
             "game_of_life: unresolved import"
         );
     }
-    // game_of_life has 5 user imports + 3 prelude IRs (R013 × 2 + R015 × 1) = 8.
+    // game_of_life has 5 user imports + 4 prelude IRs (R013 × 3 + R015 × 1) = 9.
     // R015 aliases IR has List suppressed → 7 remaining bindings, still added.
     assert_eq!(
         module_imports.len(),
-        8,
-        "game_of_life: expected 8 imports (5 user + 3 prelude), got {}",
+        9,
+        "game_of_life: expected 9 imports (5 user + 4 prelude), got {}",
         module_imports.len()
     );
 }
@@ -327,12 +327,12 @@ fn t7_acceptance_rate_limiter_imports_resolve() {
             "rate_limiter: unresolved import"
         );
     }
-    // rate_limiter has 5 user imports + 3 prelude IRs (R013 × 2 + R015 × 1) = 8.
+    // rate_limiter has 5 user imports + 4 prelude IRs (R013 × 3 + R015 × 1) = 9.
     // R015 aliases IR has List suppressed → 7 remaining bindings, still added.
     assert_eq!(
         module_imports.len(),
-        8,
-        "rate_limiter: expected 8 imports (5 user + 3 prelude), got {}",
+        9,
+        "rate_limiter: expected 9 imports (5 user + 4 prelude), got {}",
         module_imports.len()
     );
 }

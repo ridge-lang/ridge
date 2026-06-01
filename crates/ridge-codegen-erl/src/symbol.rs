@@ -244,11 +244,14 @@ pub(crate) fn lower_symbol(
             Ok(CErlExpr::Lit(CErlLit::Atom(CErlAtom(name.clone()))))
         }
 
-        // Prelude symbols used as values:
-        //   "None" → atom `'none'` (zero-arg, fully implementable in T3).
-        //   All others: deferred — Phase 5 wraps Ok/Err/Some in Construct.
+        // Prelude symbols used as values (bare, zero-arg):
+        //   "None"  → atom `'none'`.
+        //   "JNull" → atom `'json_null'` (the nullary JsonValue variant).
+        //   All others: deferred — Phase 5 wraps Ok/Err/Some and the
+        //   payload-bearing JsonValue variants in Construct/Call.
         SymbolRef::Prelude { name } => match name.as_str() {
             "None" => Ok(CErlExpr::Lit(CErlLit::Atom(CErlAtom("none".into())))),
+            "JNull" => Ok(CErlExpr::Lit(CErlLit::Atom(CErlAtom("json_null".into())))),
             other => Err(CodegenError::IrShapeMalformed {
                 variant: "SymbolRef::Prelude",
                 span,
@@ -489,6 +492,18 @@ mod tests {
         };
         let result = lower_symbol(&sym, sp(), &empty_arity(), None);
         assert!(matches!(result, Ok(CErlExpr::Lit(CErlLit::Atom(CErlAtom(ref s)))) if s == "none"));
+    }
+
+    #[test]
+    fn symbol_prelude_jnull_emits_json_null_atom() {
+        // Bare nullary JsonValue variant used as a value → atom `'json_null'`.
+        let sym = SymbolRef::Prelude {
+            name: "JNull".into(),
+        };
+        let result = lower_symbol(&sym, sp(), &empty_arity(), None);
+        assert!(
+            matches!(result, Ok(CErlExpr::Lit(CErlLit::Atom(CErlAtom(ref s)))) if s == "json_null")
+        );
     }
 
     #[test]

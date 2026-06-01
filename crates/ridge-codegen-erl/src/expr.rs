@@ -872,6 +872,34 @@ fn lower_construct(
         }
 
         // ── Prelude constructors. ─────────────────────────────────────────────
+        SymbolRef::Prelude { name } if json_ctor_tag(name).is_some() => {
+            // JsonValue variants → the lowercase-snake BEAM atoms that
+            // `ridge_rt:json_encode/1` walks (`json_null`, `{json_int, N}`, …).
+            let (tag, has_payload) = json_ctor_tag(name).unwrap_or(("", false));
+            if has_payload {
+                if fields.len() != 1 {
+                    return Err(CodegenError::IrShapeMalformed {
+                        variant: "SymbolRef::Prelude",
+                        span,
+                        detail: format!("Prelude '{name}' expects exactly 1 field, got {}", fields.len()),
+                    });
+                }
+                let inner = lower_expr_in_scope(&fields[0].1, scope)?;
+                Ok(CErlExpr::Tuple(vec![
+                    CErlExpr::Lit(CErlLit::Atom(CErlAtom(tag.into()))),
+                    inner,
+                ]))
+            } else {
+                if !fields.is_empty() {
+                    return Err(CodegenError::IrShapeMalformed {
+                        variant: "SymbolRef::Prelude",
+                        span,
+                        detail: format!("Prelude '{name}' expects exactly 0 fields, got {}", fields.len()),
+                    });
+                }
+                Ok(CErlExpr::Lit(CErlLit::Atom(CErlAtom(tag.into()))))
+            }
+        }
         SymbolRef::Prelude { name } => match name.as_str() {
             "None" => {
                 if !fields.is_empty() {
@@ -1321,13 +1349,55 @@ fn lower_static_call(
     }
 }
 
-/// Lower a `Prelude`-callee call (the `Some/None/Ok/Err` dispatch).
+/// Maps a prelude `JsonValue` constructor name to its lowercase-snake BEAM
+/// atom tag and whether it carries a single payload, mirroring the wire format
+/// `ridge_rt:json_*` produces. Returns `None` for non-JSON prelude names.
+pub(crate) fn json_ctor_tag(name: &str) -> Option<(&'static str, bool)> {
+    Some(match name {
+        "JNull" => ("json_null", false),
+        "JBool" => ("json_bool", true),
+        "JInt" => ("json_int", true),
+        "JFloat" => ("json_float", true),
+        "JText" => ("json_text", true),
+        "JList" => ("json_list", true),
+        "JObject" => ("json_object", true),
+        _ => return None,
+    })
+}
+
+/// Lower a `Prelude`-callee call (the `Some/None/Ok/Err` and `JsonValue`
+/// dispatch).
 fn lower_prelude_call(
     name: &str,
     args: &[IrExpr],
     span: ridge_ast::Span,
     scope: &mut LocalScope,
 ) -> Result<CErlExpr, CodegenError> {
+    if let Some((tag, has_payload)) = json_ctor_tag(name) {
+        // JsonValue variants → `json_null` / `{json_int, N}` / … BEAM atoms.
+        if has_payload {
+            if args.len() != 1 {
+                return Err(CodegenError::IrShapeMalformed {
+                    variant: "IrExpr::Call",
+                    span,
+                    detail: format!("Prelude '{name}' call expects 1 arg, got {}", args.len()),
+                });
+            }
+            let inner = lower_expr_in_scope(&args[0], scope)?;
+            return Ok(CErlExpr::Tuple(vec![
+                CErlExpr::Lit(CErlLit::Atom(CErlAtom(tag.into()))),
+                inner,
+            ]));
+        }
+        if !args.is_empty() {
+            return Err(CodegenError::IrShapeMalformed {
+                variant: "IrExpr::Call",
+                span,
+                detail: format!("Prelude '{name}' call expects 0 args, got {}", args.len()),
+            });
+        }
+        return Ok(CErlExpr::Lit(CErlLit::Atom(CErlAtom(tag.into()))));
+    }
     match name {
         "None" => {
             if !args.is_empty() {
@@ -2501,6 +2571,51 @@ mod tests {
         assert!(
             matches!(result, CErlExpr::Lit(CErlLit::Atom(CErlAtom(ref s))) if s == "none"),
             "expected Lit(Atom 'none'), got {result:?}"
+        );
+    }
+
+    // ── IrExpr::Construct — Prelude JsonValue variants ──────────────────────
+
+    #[test]
+    fn expr_construct_prelude_jint_emits_json_int_tuple() {
+        // Construct { ctor: Prelude "JInt", fields: [("0", Int 42)] }
+        // → Tuple([Atom "json_int", Int 42])
+        let expr = IrExpr::Construct {
+            id: node(),
+            ctor: SymbolRef::Prelude {
+                name: "JInt".into(),
+            },
+            fields: vec![("0".into(), lit_int(42))],
+            span: sp(),
+        };
+        let result = lower_expr(&expr).unwrap();
+        match result {
+            CErlExpr::Tuple(elems) => {
+                assert_eq!(elems.len(), 2);
+                assert!(
+                    matches!(&elems[0], CErlExpr::Lit(CErlLit::Atom(CErlAtom(s))) if s == "json_int")
+                );
+                assert!(matches!(&elems[1], CErlExpr::Lit(CErlLit::Int(42))));
+            }
+            other => panic!("expected Tuple([json_int, 42]), got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn expr_construct_prelude_jnull_emits_atom() {
+        // Construct { ctor: Prelude "JNull", fields: [] } → Lit(Atom "json_null")
+        let expr = IrExpr::Construct {
+            id: node(),
+            ctor: SymbolRef::Prelude {
+                name: "JNull".into(),
+            },
+            fields: vec![],
+            span: sp(),
+        };
+        let result = lower_expr(&expr).unwrap();
+        assert!(
+            matches!(result, CErlExpr::Lit(CErlLit::Atom(CErlAtom(ref s))) if s == "json_null"),
+            "expected Lit(Atom 'json_null'), got {result:?}"
         );
     }
 

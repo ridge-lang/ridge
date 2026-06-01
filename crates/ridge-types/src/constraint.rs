@@ -16,10 +16,12 @@ use crate::ty::TyVid;
 /// Opaque to `ridge-types`; the name-to-id mapping lives in
 /// `ridge-typecheck::class_env::ClassTable`.
 ///
-/// Three fixed ids are reserved for the prelude classes:
+/// Five fixed ids are reserved for the prelude classes:
 /// - `0` — `ToText`
 /// - `1` — `Eq`
 /// - `2` — `Ord`
+/// - `3` — `Encode`
+/// - `4` — `Decode`
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct ClassId(pub u32);
 
@@ -29,6 +31,10 @@ pub const TOTEXT_CLASS: ClassId = ClassId(0);
 pub const EQ_CLASS: ClassId = ClassId(1);
 /// Reserved `ClassId` for the built-in `Ord` class.
 pub const ORD_CLASS: ClassId = ClassId(2);
+/// Reserved `ClassId` for the built-in `Encode` class (`a -> JsonValue`).
+pub const ENCODE_CLASS: ClassId = ClassId(3);
+/// Reserved `ClassId` for the built-in `Decode` class (`JsonValue -> Result a Error`).
+pub const DECODE_CLASS: ClassId = ClassId(4);
 
 // ── Constraint ────────────────────────────────────────────────────────────────
 
@@ -59,6 +65,20 @@ mod tests {
         assert_eq!(TOTEXT_CLASS, ClassId(0));
         assert_ne!(TOTEXT_CLASS, EQ_CLASS);
         assert_ne!(EQ_CLASS, ORD_CLASS);
+    }
+
+    #[test]
+    fn prelude_class_ids_are_distinct_and_sequential() {
+        let ids = [
+            TOTEXT_CLASS,
+            EQ_CLASS,
+            ORD_CLASS,
+            ENCODE_CLASS,
+            DECODE_CLASS,
+        ];
+        for (i, id) in ids.iter().enumerate() {
+            assert_eq!(id.0 as usize, i, "prelude class ids must be 0..=4 in order");
+        }
     }
 
     #[test]

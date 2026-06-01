@@ -246,8 +246,14 @@ fn artefacts_count_matches_plan() {
         if ext != "ridge" {
             return false;
         }
-        // Exclude .test.ridge: stem ends with ".test".
         let stem = p.file_stem().and_then(|s| s.to_str()).unwrap_or("");
+        // `codec.ridge` is the canonical declaration of the built-in
+        // Encode/Decode classes — not a compiled module, so it is not one of
+        // the EXPECTED_RG stdlib source files.
+        if stem == "codec" {
+            return false;
+        }
+        // Exclude .test.ridge: stem ends with ".test".
         !Path::new(stem)
             .extension()
             .is_some_and(|e| e.eq_ignore_ascii_case("test"))

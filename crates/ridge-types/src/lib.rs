@@ -22,7 +22,9 @@ pub mod witness;
 
 pub use builtins::BuiltinTyCons;
 pub use capability_set::CapabilitySet;
-pub use constraint::{ClassId, Constraint, EQ_CLASS, ORD_CLASS, TOTEXT_CLASS};
+pub use constraint::{
+    ClassId, Constraint, DECODE_CLASS, ENCODE_CLASS, EQ_CLASS, ORD_CLASS, TOTEXT_CLASS,
+};
 pub use scheme::Scheme;
 pub use shape_key::{shape_key, type_to_key, AnonRecordTable, CapKey, ShapeKey, TyKey};
 pub use subst::Subst;

@@ -906,9 +906,11 @@ The `deriving` clause on a type declaration generates instances automatically. T
 type Color = Red | Green | Blue deriving (Eq, ToText, Ord)
 
 type Point = { x: Int, y: Int } deriving (Eq, Ord)
+
+type Person = { name: Text, age: Int } deriving (Encode)
 ```
 
-The derivable classes in 0.2.13 are `Eq`, `ToText`, and `Ord`. `Show` is accepted as an alias for `ToText` in `deriving` (and elsewhere); both refer to the same class.
+The derivable classes are `Eq`, `ToText`, `Ord`, `Encode`, and `Decode`. `Show` is accepted as an alias for `ToText` in `deriving` (and elsewhere); both refer to the same class.
 
 ```ebnf
 Deriving ::= "deriving" "(" UpperIdent { "," UpperIdent } ")"
@@ -944,6 +946,32 @@ Some(42)
 Each field's rendering dispatches through the `ToText` instance for that field's type; if a field type has no `ToText` instance, the compiler emits `T029 NoInstance` at derive time.
 
 **Derived `Ord`** generates a `compare` method returning `Ordering`. For record types, fields are compared in declaration order; the first field that is not `Equal` determines the result. For union types, variants are compared by their declaration position first (`Red < Green < Blue`); if both values have the same constructor and it carries payload, payload fields are compared in order. `Ord` requires `Eq` for the same type (checked by coherence; missing → `T033 MissingSuperclassInstance`).
+
+**Derived `Encode`** generates an `encode` method that converts a value to `JsonValue`. The encoding follows a DX-first hybrid wire format:
+
+- **Record** → a JSON object whose keys are the field names (in declaration order) and whose values are the recursively-encoded fields. `Person { name = "Ann", age = 30 }` encodes to `{"name":"Ann","age":30}`.
+- **Nullary union constructor** → a bare JSON string. `Admin` encodes to `"Admin"`.
+- **Payload union constructor** → an adjacently-tagged JSON object. `Circle 3.0` encodes to `{"tag":"Circle","values":[3.0]}`. This shape round-trips cleanly with `deriving (Decode)`.
+- **`Option T`** → `T | null`. `Some "Bob"` encodes to `"Bob"`; `None` encodes to `null`.
+- **`List T`** → a JSON array. `["a", "b"]` encodes to `["a","b"]`.
+- **`Map Text T`** → a JSON object whose keys are the map's `Text` keys and whose values are the recursively-encoded map values.
+- **`Result T E`** → adjacently-tagged, same as a payload union: `Ok x` → `{"tag":"Ok","values":[encode x]}`; `Err e` → `{"tag":"Err","values":[encode e]}`.
+- **Nested derived type** → calls that type's `encode` method recursively.
+
+The deriver recurses over the concrete field type, so `List Text`, `Option Int`, and `Map Text Bool` fields are all supported without any extra constraints. Deriving `Encode` on a generic type (one with a type parameter, such as `type Box a = { val: a }`) is rejected with `T029 NoInstance` and a hint pointing to parametric instances, which require explicit `instance` declarations.
+
+**Derived `Decode`** generates a `decode` method that converts a `JsonValue` back into a value of the derived type. The method signature is `decode : JsonValue -> Result T Error`, the inverse of `encode`. It consumes exactly the same wire format that `deriving (Encode)` produces, so `encode` and `decode` round-trip: `decode (encode x) == Ok x`.
+
+The decoding rules mirror the encoding rules above:
+
+- **Record** → expects a `JObject`. Each declared field is looked up in the JSON object by name; a missing field short-circuits with `Err { code = "decode.missing_field", … }`. A field value of the wrong JSON kind short-circuits with `Err { code = "decode.expected_int"` (or `"decode.expected_string"`, etc.), … }`.
+- **Nullary union constructor** → expects `JText "CtorName"`. An unknown tag short-circuits with `Err { code = "decode.unknown_tag", … }`.
+- **Payload union constructor** → expects a `JObject` with `"tag"` and `"values"` keys. The tag string selects the constructor; the `values` array must have exactly as many elements as the constructor expects (`decode.bad_arity` otherwise).
+- **`Option T`** → `JNull` decodes to `None`; any other JSON value is decoded as `T` and wrapped in `Some`.
+- **`List T`** → expects a `JArray`. Each element is decoded individually; the first failure short-circuits (fail-fast, not accumulate-all).
+- **`Map Text T`** → expects a `JObject`. Each value is decoded individually; the first failure short-circuits.
+
+Decoding is fail-fast: the first error encountered is immediately returned. Use `Err` values from the `Error` record (`{ code: Text, message: Text }`) to inspect what went wrong. Decoding a generic type is rejected with `T029 NoInstance`, the same constraint as `Encode`.
 
 #### 5.6.5. The `Ordering` type
 

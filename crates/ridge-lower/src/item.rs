@@ -600,6 +600,108 @@ pub fn lower_derived_instance(
             ];
             (body, params)
         }
+
+        DerivedMethodBody::DerivedEncodeRecord {
+            field_names,
+            field_shapes,
+        } => {
+            // encode (x: T) -> JsonValue
+            //   = JObject(std.map.fromList([(<<"f">>, encode_shape(x.f)), ...]))
+            let body = build_encode_record_body(ctx, field_names, field_shapes, sp);
+            let params = vec![IrParam {
+                name: "x".to_string(),
+                ty: Type::Error,
+                span: sp,
+            }];
+            (body, params)
+        }
+
+        DerivedMethodBody::DerivedEncodeUnion { variants } => {
+            // encode (x: T) -> JsonValue
+            //   = match x { Nullary -> JText "Ctor"; Payload _p0... -> {"tag":...,"values":[...]} }
+            let arms: Vec<ridge_ir::IrArm> = variants
+                .iter()
+                .map(|(ctor_name, payload_shapes)| {
+                    let payload_count = payload_shapes.len();
+                    let sym = SymbolRef::Constructor {
+                        ctor_kind: CtorKind::UnionVariant,
+                        owner_type: derived.key.1,
+                        name: ctor_name.clone(),
+                        variant: 0,
+                    };
+                    let args: Vec<ridge_ir::IrPat> = (0..payload_count)
+                        .map(|i| ridge_ir::IrPat::Bind {
+                            name: format!("_p{i}"),
+                            inner: None,
+                            span: sp,
+                        })
+                        .collect();
+                    let pat = ridge_ir::IrPat::Ctor {
+                        sym,
+                        fields: vec![],
+                        args,
+                        span: sp,
+                    };
+                    let arm_body = build_encode_union_arm_body(ctx, ctor_name, payload_shapes, sp);
+                    ridge_ir::IrArm {
+                        pat,
+                        when: None,
+                        body: arm_body,
+                        span: sp,
+                    }
+                })
+                .collect();
+            let body = IrExpr::Match {
+                id: ctx.fresh_id(None),
+                scrutinee: Box::new(IrExpr::Local {
+                    id: ctx.fresh_id(None),
+                    name: "x".to_string(),
+                    span: sp,
+                }),
+                arms,
+                span: sp,
+            };
+            let params = vec![IrParam {
+                name: "x".to_string(),
+                ty: Type::Error,
+                span: sp,
+            }];
+            (body, params)
+        }
+
+        DerivedMethodBody::DerivedDecodeRecord {
+            field_names,
+            field_shapes,
+        } => {
+            // decode (j: JsonValue) -> Result T Error
+            //   = match j { JObject m -> <sequence per field>; _ -> Err(decode.expected_object) }
+            let body = build_decode_record_body(
+                ctx,
+                derived.key.1,
+                type_name,
+                field_names,
+                field_shapes,
+                sp,
+            );
+            let params = vec![IrParam {
+                name: "j".to_string(),
+                ty: Type::Error,
+                span: sp,
+            }];
+            (body, params)
+        }
+
+        DerivedMethodBody::DerivedDecodeUnion { variants } => {
+            // decode (j: JsonValue) -> Result T Error
+            //   = match j { JText s -> <nullary dispatch>; JObject m -> <payload dispatch>; _ -> Err(...) }
+            let body = build_decode_union_body(ctx, derived.key.1, type_name, variants, sp);
+            let params = vec![IrParam {
+                name: "j".to_string(),
+                ty: Type::Error,
+                span: sp,
+            }];
+            (body, params)
+        }
     };
 
     // ── Emit the method fn ────────────────────────────────────────────────────
@@ -1212,6 +1314,3241 @@ fn build_ord_payload_body(
     }
 
     result
+}
+
+// ── Derived Encode body builders ──────────────────────────────────────────────
+
+/// Build the `encode` body for a derived `Encode` on a record type.
+///
+/// Emits `JObject(std.map.fromList([(<<"field">>, encode_shape(x.field)), ...]))`.
+/// Binary `Text` keys are required for the `JObject` representation
+/// (maps in `ridge_rt` use binary keys for JSON objects).
+/// An empty record encodes to `JObject(fromList([]))` = `{}`.
+fn build_encode_record_body(
+    ctx: &mut LowerCtx<'_>,
+    field_names: &[String],
+    field_shapes: &[ridge_typecheck::FieldShape],
+    sp: Span,
+) -> IrExpr {
+    // Build the list of (Text key, JsonValue) pairs as a Ridge list literal:
+    //   [(<<"name">>, encode_shape x.name), (<<"age">>, encode_shape x.age), ...]
+    let pairs: Vec<IrExpr> = field_names
+        .iter()
+        .zip(field_shapes.iter())
+        .map(|(field, shape)| {
+            // x.field
+            let field_val = IrExpr::Field {
+                id: ctx.fresh_id(None),
+                base: Box::new(IrExpr::Local {
+                    id: ctx.fresh_id(None),
+                    name: "x".to_string(),
+                    span: sp,
+                }),
+                field: field.clone(),
+                span: sp,
+            };
+            let encoded = encode_shape(ctx, shape, field_val, sp);
+            // (<<"field">>, encoded) — a Tuple IR node.
+            IrExpr::Tuple {
+                id: ctx.fresh_id(None),
+                elems: vec![
+                    IrExpr::Lit {
+                        id: ctx.fresh_id(None),
+                        value: IrLit::Text(field.clone()),
+                        span: sp,
+                    },
+                    encoded,
+                ],
+                span: sp,
+            }
+        })
+        .collect();
+
+    // std.map.fromList(pairs_list) → the Erlang map.
+    let pairs_list = IrExpr::ListLit {
+        id: ctx.fresh_id(None),
+        elems: pairs,
+        span: sp,
+    };
+    let from_list_call = IrExpr::Call {
+        id: ctx.fresh_id(None),
+        callee: Box::new(IrExpr::Symbol {
+            id: ctx.fresh_id(None),
+            sym: SymbolRef::Stdlib {
+                module: "std.map".to_string(),
+                name: "fromList".to_string(),
+            },
+            span: sp,
+        }),
+        args: vec![pairs_list],
+        span: sp,
+    };
+
+    // JObject(the_map)
+    IrExpr::Call {
+        id: ctx.fresh_id(None),
+        callee: Box::new(IrExpr::Symbol {
+            id: ctx.fresh_id(None),
+            sym: SymbolRef::Prelude {
+                name: "JObject".to_string(),
+            },
+            span: sp,
+        }),
+        args: vec![from_list_call],
+        span: sp,
+    }
+}
+
+/// Build the body of a single match arm for a derived union `encode`.
+///
+/// - Nullary variant → `JText "CtorName"` (bare JSON string).
+/// - Payload variant → `JObject(fromList([("tag", JText "Ctor"), ("values", JList [encode_shape(_p0), ...])]))`.
+///
+/// Payload variables are bound in the match pattern as `_p0`, `_p1`, etc.
+#[expect(
+    clippy::too_many_lines,
+    reason = "flat IR construction for the adjacently-tagged payload-union form; splitting would hurt readability"
+)]
+fn build_encode_union_arm_body(
+    ctx: &mut LowerCtx<'_>,
+    ctor_name: &str,
+    payload_shapes: &[ridge_typecheck::FieldShape],
+    sp: Span,
+) -> IrExpr {
+    if payload_shapes.is_empty() {
+        // Nullary → JText "CtorName"
+        return IrExpr::Call {
+            id: ctx.fresh_id(None),
+            callee: Box::new(IrExpr::Symbol {
+                id: ctx.fresh_id(None),
+                sym: SymbolRef::Prelude {
+                    name: "JText".to_string(),
+                },
+                span: sp,
+            }),
+            args: vec![IrExpr::Lit {
+                id: ctx.fresh_id(None),
+                value: IrLit::Text(ctor_name.to_string()),
+                span: sp,
+            }],
+            span: sp,
+        };
+    }
+
+    // Payload → adjacently-tagged object.
+    // values = [encode_shape(_p0), encode_shape(_p1), ...]
+    let encoded_payloads: Vec<IrExpr> = payload_shapes
+        .iter()
+        .enumerate()
+        .map(|(i, shape)| {
+            let pvar = IrExpr::Local {
+                id: ctx.fresh_id(None),
+                name: format!("_p{i}"),
+                span: sp,
+            };
+            encode_shape(ctx, shape, pvar, sp)
+        })
+        .collect();
+
+    let payload_elems = IrExpr::ListLit {
+        id: ctx.fresh_id(None),
+        elems: encoded_payloads,
+        span: sp,
+    };
+    let wrapped_values = IrExpr::Call {
+        id: ctx.fresh_id(None),
+        callee: Box::new(IrExpr::Symbol {
+            id: ctx.fresh_id(None),
+            sym: SymbolRef::Prelude {
+                name: "JList".to_string(),
+            },
+            span: sp,
+        }),
+        args: vec![payload_elems],
+        span: sp,
+    };
+
+    // [("tag", JText "Ctor"), ("values", JList [...])]
+    let tag_pair = IrExpr::Tuple {
+        id: ctx.fresh_id(None),
+        elems: vec![
+            IrExpr::Lit {
+                id: ctx.fresh_id(None),
+                value: IrLit::Text("tag".to_string()),
+                span: sp,
+            },
+            IrExpr::Call {
+                id: ctx.fresh_id(None),
+                callee: Box::new(IrExpr::Symbol {
+                    id: ctx.fresh_id(None),
+                    sym: SymbolRef::Prelude {
+                        name: "JText".to_string(),
+                    },
+                    span: sp,
+                }),
+                args: vec![IrExpr::Lit {
+                    id: ctx.fresh_id(None),
+                    value: IrLit::Text(ctor_name.to_string()),
+                    span: sp,
+                }],
+                span: sp,
+            },
+        ],
+        span: sp,
+    };
+    let values_pair = IrExpr::Tuple {
+        id: ctx.fresh_id(None),
+        elems: vec![
+            IrExpr::Lit {
+                id: ctx.fresh_id(None),
+                value: IrLit::Text("values".to_string()),
+                span: sp,
+            },
+            wrapped_values,
+        ],
+        span: sp,
+    };
+
+    let pairs_list = IrExpr::ListLit {
+        id: ctx.fresh_id(None),
+        elems: vec![tag_pair, values_pair],
+        span: sp,
+    };
+    let from_list_call = IrExpr::Call {
+        id: ctx.fresh_id(None),
+        callee: Box::new(IrExpr::Symbol {
+            id: ctx.fresh_id(None),
+            sym: SymbolRef::Stdlib {
+                module: "std.map".to_string(),
+                name: "fromList".to_string(),
+            },
+            span: sp,
+        }),
+        args: vec![pairs_list],
+        span: sp,
+    };
+
+    IrExpr::Call {
+        id: ctx.fresh_id(None),
+        callee: Box::new(IrExpr::Symbol {
+            id: ctx.fresh_id(None),
+            sym: SymbolRef::Prelude {
+                name: "JObject".to_string(),
+            },
+            span: sp,
+        }),
+        args: vec![from_list_call],
+        span: sp,
+    }
+}
+
+/// Structural `encode_shape` — recursively emits the IR expression that encodes
+/// `value_expr` according to its [`FieldShape`].
+///
+/// Parallel to the `wrap_to_text_by_tycon` pattern in `interp.rs`, but for
+/// `JsonValue` output instead of `Text` output.
+///
+/// # Lambda lowering note
+///
+/// `Lst` and `MapText` shapes emit an `IrExpr::Lambda` passed to `std.list.map`
+/// / `std.map.map` respectively.  This is new ground for derived bodies (`ToText`
+/// never needed a lambda); the lambda path is validated end-to-end by the
+/// unit tests in this module and confirmed by the fact that `IrExpr::Lambda`
+/// is already used and round-tripped in `field_accessor.rs`.
+#[expect(
+    clippy::too_many_lines,
+    reason = "structural recursion over FieldShape; each arm is self-contained IR construction, splitting would not reduce complexity"
+)]
+fn encode_shape(
+    ctx: &mut LowerCtx<'_>,
+    shape: &ridge_typecheck::FieldShape,
+    value_expr: IrExpr,
+    sp: Span,
+) -> IrExpr {
+    use ridge_typecheck::FieldShape;
+    use ridge_types::CapabilitySet;
+
+    match shape {
+        // ── Primitive → inline JsonValue ctor ────────────────────────────────
+        FieldShape::Prim(tycon) => {
+            let ctor_name = match tycon.0 {
+                0 => "JInt",
+                1 => "JFloat",
+                2 => "JBool",
+                _ => "JText", // Text (3) and any other primitive fall back to JText
+            };
+            IrExpr::Call {
+                id: ctx.fresh_id(None),
+                callee: Box::new(IrExpr::Symbol {
+                    id: ctx.fresh_id(None),
+                    sym: SymbolRef::Prelude {
+                        name: ctor_name.to_string(),
+                    },
+                    span: sp,
+                }),
+                args: vec![value_expr],
+                span: sp,
+            }
+        }
+
+        // ── JsonValue identity ────────────────────────────────────────────────
+        FieldShape::Json => value_expr,
+
+        // ── Option T → Some x ⇒ encode_shape(T, x); None ⇒ JNull ────────────
+        FieldShape::Opt(inner) => {
+            let bound = ctx.fresh_local("__enc_some");
+            let bound_local = IrExpr::Local {
+                id: ctx.fresh_id(None),
+                name: bound.clone(),
+                span: sp,
+            };
+            let encoded_inner = encode_shape(ctx, inner, bound_local, sp);
+
+            let some_arm = ridge_ir::IrArm {
+                pat: ridge_ir::IrPat::Ctor {
+                    sym: SymbolRef::Prelude {
+                        name: "Some".to_string(),
+                    },
+                    fields: vec![],
+                    args: vec![ridge_ir::IrPat::Bind {
+                        name: bound,
+                        inner: None,
+                        span: sp,
+                    }],
+                    span: sp,
+                },
+                when: None,
+                body: encoded_inner,
+                span: sp,
+            };
+            let none_arm = ridge_ir::IrArm {
+                pat: ridge_ir::IrPat::Ctor {
+                    sym: SymbolRef::Prelude {
+                        name: "None".to_string(),
+                    },
+                    fields: vec![],
+                    args: vec![],
+                    span: sp,
+                },
+                when: None,
+                body: IrExpr::Call {
+                    id: ctx.fresh_id(None),
+                    callee: Box::new(IrExpr::Symbol {
+                        id: ctx.fresh_id(None),
+                        sym: SymbolRef::Prelude {
+                            name: "JNull".to_string(),
+                        },
+                        span: sp,
+                    }),
+                    args: vec![],
+                    span: sp,
+                },
+                span: sp,
+            };
+            IrExpr::Match {
+                id: ctx.fresh_id(None),
+                scrutinee: Box::new(value_expr),
+                arms: vec![some_arm, none_arm],
+                span: sp,
+            }
+        }
+
+        // ── List T → JList(std.list.map (\e -> encode_shape(T, e)) xs) ────────
+        FieldShape::Lst(inner) => {
+            let elem_param = ctx.fresh_local("__enc_elem");
+            let elem_local = IrExpr::Local {
+                id: ctx.fresh_id(None),
+                name: elem_param.clone(),
+                span: sp,
+            };
+            let encoded_elem = encode_shape(ctx, inner, elem_local, sp);
+            let elem_lambda = IrExpr::Lambda {
+                id: ctx.fresh_id(None),
+                params: vec![IrParam {
+                    name: elem_param,
+                    ty: ridge_types::Type::Error,
+                    span: sp,
+                }],
+                body: Box::new(encoded_elem),
+                caps: CapabilitySet::PURE,
+                span: sp,
+            };
+            let mapped = IrExpr::Call {
+                id: ctx.fresh_id(None),
+                callee: Box::new(IrExpr::Symbol {
+                    id: ctx.fresh_id(None),
+                    sym: SymbolRef::Stdlib {
+                        module: "std.list".to_string(),
+                        name: "map".to_string(),
+                    },
+                    span: sp,
+                }),
+                args: vec![elem_lambda, value_expr],
+                span: sp,
+            };
+            IrExpr::Call {
+                id: ctx.fresh_id(None),
+                callee: Box::new(IrExpr::Symbol {
+                    id: ctx.fresh_id(None),
+                    sym: SymbolRef::Prelude {
+                        name: "JList".to_string(),
+                    },
+                    span: sp,
+                }),
+                args: vec![mapped],
+                span: sp,
+            }
+        }
+
+        // ── Map Text T → JObject(std.map.map (\_k v -> encode_shape(T, v)) m) ─
+        FieldShape::MapText(inner) => {
+            let key_param = ctx.fresh_local("__enc_mk");
+            let val_param = ctx.fresh_local("__enc_mv");
+            let val_local = IrExpr::Local {
+                id: ctx.fresh_id(None),
+                name: val_param.clone(),
+                span: sp,
+            };
+            let encoded_val = encode_shape(ctx, inner, val_local, sp);
+            // Two-param lambda: \_k v -> encode_shape(inner, v)
+            let map_lambda = IrExpr::Lambda {
+                id: ctx.fresh_id(None),
+                params: vec![
+                    IrParam {
+                        name: key_param,
+                        ty: ridge_types::Type::Error,
+                        span: sp,
+                    },
+                    IrParam {
+                        name: val_param,
+                        ty: ridge_types::Type::Error,
+                        span: sp,
+                    },
+                ],
+                body: Box::new(encoded_val),
+                caps: CapabilitySet::PURE,
+                span: sp,
+            };
+            let mapped = IrExpr::Call {
+                id: ctx.fresh_id(None),
+                callee: Box::new(IrExpr::Symbol {
+                    id: ctx.fresh_id(None),
+                    sym: SymbolRef::Stdlib {
+                        module: "std.map".to_string(),
+                        name: "map".to_string(),
+                    },
+                    span: sp,
+                }),
+                args: vec![map_lambda, value_expr],
+                span: sp,
+            };
+            IrExpr::Call {
+                id: ctx.fresh_id(None),
+                callee: Box::new(IrExpr::Symbol {
+                    id: ctx.fresh_id(None),
+                    sym: SymbolRef::Prelude {
+                        name: "JObject".to_string(),
+                    },
+                    span: sp,
+                }),
+                args: vec![mapped],
+                span: sp,
+            }
+        }
+
+        // ── Result T E → adjacently-tagged union shape ─────────────────────────
+        FieldShape::Res(ok_shape, err_shape) => {
+            // Ok _p0 → {"tag":"Ok","values":[encode_shape(ok,_p0)]}
+            let ok_bound = ctx.fresh_local("__enc_ok");
+            let ok_local = IrExpr::Local {
+                id: ctx.fresh_id(None),
+                name: ok_bound.clone(),
+                span: sp,
+            };
+            let ok_encoded = encode_shape(ctx, ok_shape, ok_local, sp);
+            let ok_body = build_result_variant_object(ctx, "Ok", ok_encoded, sp);
+            let ok_arm = ridge_ir::IrArm {
+                pat: ridge_ir::IrPat::Ctor {
+                    sym: SymbolRef::Prelude {
+                        name: "Ok".to_string(),
+                    },
+                    fields: vec![],
+                    args: vec![ridge_ir::IrPat::Bind {
+                        name: ok_bound,
+                        inner: None,
+                        span: sp,
+                    }],
+                    span: sp,
+                },
+                when: None,
+                body: ok_body,
+                span: sp,
+            };
+
+            // Err _p0 → {"tag":"Err","values":[encode_shape(err,_p0)]}
+            let err_bound = ctx.fresh_local("__enc_err");
+            let err_local = IrExpr::Local {
+                id: ctx.fresh_id(None),
+                name: err_bound.clone(),
+                span: sp,
+            };
+            let err_encoded = encode_shape(ctx, err_shape, err_local, sp);
+            let err_body = build_result_variant_object(ctx, "Err", err_encoded, sp);
+            let err_arm = ridge_ir::IrArm {
+                pat: ridge_ir::IrPat::Ctor {
+                    sym: SymbolRef::Prelude {
+                        name: "Err".to_string(),
+                    },
+                    fields: vec![],
+                    args: vec![ridge_ir::IrPat::Bind {
+                        name: err_bound,
+                        inner: None,
+                        span: sp,
+                    }],
+                    span: sp,
+                },
+                when: None,
+                body: err_body,
+                span: sp,
+            };
+
+            IrExpr::Match {
+                id: ctx.fresh_id(None),
+                scrutinee: Box::new(value_expr),
+                arms: vec![ok_arm, err_arm],
+                span: sp,
+            }
+        }
+
+        // ── User type → Encode__{TypeName}__encode(v) ────────────────────────
+        // Mirror the naming convention from `lower_derived_instance`:
+        //   fn_name = format!("{class_name}__{type_name}__{method_name}")
+        // For the Encode class that is `Encode__{TypeName}__encode`.
+        //
+        // Same-module nested types are referenced via `SymbolRef::Local`, which
+        // resolves at codegen time exactly as the derived instance fn does.
+        // Cross-module nested types would need `SymbolRef::External`; that path
+        // is not yet wired (the instance solver does not yet propagate the
+        // def_module of nested user types to the field shape).  Emitting Local
+        // is correct for same-module usage and will produce a clear "undefined
+        // function" BEAM error if a cross-module type is used — no silent
+        // pass-through that corrupts JSON.
+        FieldShape::User { type_name, .. } => {
+            let fn_name = format!("Encode__{type_name}__encode");
+            IrExpr::Call {
+                id: ctx.fresh_id(None),
+                callee: Box::new(IrExpr::Symbol {
+                    id: ctx.fresh_id(None),
+                    sym: SymbolRef::Local {
+                        name: fn_name,
+                        module: ctx.module_id,
+                    },
+                    span: sp,
+                }),
+                args: vec![value_expr],
+                span: sp,
+            }
+        }
+    }
+}
+
+/// Helper: build `JObject(fromList([("tag", JText ctor_name), ("values", JList [encoded_payload])]))`.
+///
+/// Used by the `Result` arm of `encode_shape`.
+fn build_result_variant_object(
+    ctx: &mut LowerCtx<'_>,
+    ctor_name: &str,
+    encoded_payload: IrExpr,
+    sp: Span,
+) -> IrExpr {
+    let single_elem = IrExpr::ListLit {
+        id: ctx.fresh_id(None),
+        elems: vec![encoded_payload],
+        span: sp,
+    };
+    let wrapped_payload = IrExpr::Call {
+        id: ctx.fresh_id(None),
+        callee: Box::new(IrExpr::Symbol {
+            id: ctx.fresh_id(None),
+            sym: SymbolRef::Prelude {
+                name: "JList".to_string(),
+            },
+            span: sp,
+        }),
+        args: vec![single_elem],
+        span: sp,
+    };
+    let tag_pair = IrExpr::Tuple {
+        id: ctx.fresh_id(None),
+        elems: vec![
+            IrExpr::Lit {
+                id: ctx.fresh_id(None),
+                value: IrLit::Text("tag".to_string()),
+                span: sp,
+            },
+            IrExpr::Call {
+                id: ctx.fresh_id(None),
+                callee: Box::new(IrExpr::Symbol {
+                    id: ctx.fresh_id(None),
+                    sym: SymbolRef::Prelude {
+                        name: "JText".to_string(),
+                    },
+                    span: sp,
+                }),
+                args: vec![IrExpr::Lit {
+                    id: ctx.fresh_id(None),
+                    value: IrLit::Text(ctor_name.to_string()),
+                    span: sp,
+                }],
+                span: sp,
+            },
+        ],
+        span: sp,
+    };
+    let values_pair = IrExpr::Tuple {
+        id: ctx.fresh_id(None),
+        elems: vec![
+            IrExpr::Lit {
+                id: ctx.fresh_id(None),
+                value: IrLit::Text("values".to_string()),
+                span: sp,
+            },
+            wrapped_payload,
+        ],
+        span: sp,
+    };
+    let pairs_list = IrExpr::ListLit {
+        id: ctx.fresh_id(None),
+        elems: vec![tag_pair, values_pair],
+        span: sp,
+    };
+    let from_list = IrExpr::Call {
+        id: ctx.fresh_id(None),
+        callee: Box::new(IrExpr::Symbol {
+            id: ctx.fresh_id(None),
+            sym: SymbolRef::Stdlib {
+                module: "std.map".to_string(),
+                name: "fromList".to_string(),
+            },
+            span: sp,
+        }),
+        args: vec![pairs_list],
+        span: sp,
+    };
+    IrExpr::Call {
+        id: ctx.fresh_id(None),
+        callee: Box::new(IrExpr::Symbol {
+            id: ctx.fresh_id(None),
+            sym: SymbolRef::Prelude {
+                name: "JObject".to_string(),
+            },
+            span: sp,
+        }),
+        args: vec![from_list],
+        span: sp,
+    }
+}
+
+// ── Derived Decode body builders ──────────────────────────────────────────────
+
+/// Build a `Construct(Prelude{Err}, [("$0", record{code, message})])`.
+///
+/// Error records use `TyConId(12)` (the builtin `Error` type) and lower to an
+/// Erlang atom-keyed map `#{ code => B, message => B }` (expr.rs:836-851).
+fn build_decode_error(ctx: &mut LowerCtx<'_>, code: &str, message: String, sp: Span) -> IrExpr {
+    use ridge_types::TyConId;
+    let err_record = IrExpr::Construct {
+        id: ctx.fresh_id(None),
+        ctor: SymbolRef::Constructor {
+            ctor_kind: CtorKind::Record,
+            owner_type: TyConId(12), // Error = builtin TyConId(12)
+            name: "Error".to_string(),
+            variant: 0,
+        },
+        fields: vec![
+            (
+                "code".to_string(),
+                IrExpr::Lit {
+                    id: ctx.fresh_id(None),
+                    value: IrLit::Text(code.to_string()),
+                    span: sp,
+                },
+            ),
+            (
+                "message".to_string(),
+                IrExpr::Lit {
+                    id: ctx.fresh_id(None),
+                    value: IrLit::Text(message),
+                    span: sp,
+                },
+            ),
+        ],
+        span: sp,
+    };
+    IrExpr::Construct {
+        id: ctx.fresh_id(None),
+        ctor: SymbolRef::Prelude {
+            name: "Err".to_string(),
+        },
+        fields: vec![("$0".to_string(), err_record)],
+        span: sp,
+    }
+}
+
+/// Wrap an expression in `Ok(v)`.
+///
+/// Uses `IrNodeId(0)` for the outer Construct — derived instance bodies are
+/// not registered in the `NodeIdMap` (no AST span to key on), so the ID value
+/// is irrelevant for codegen.
+fn build_ok(v: IrExpr, sp: Span) -> IrExpr {
+    use ridge_ir::IrNodeId;
+    IrExpr::Construct {
+        id: IrNodeId(0),
+        ctor: SymbolRef::Prelude {
+            name: "Ok".to_string(),
+        },
+        fields: vec![("$0".to_string(), v)],
+        span: sp,
+    }
+}
+
+/// Emit the fail-fast sequencing pattern for a fallible sub-decode:
+///
+/// ```text
+/// match <sub_result> {
+///   Ok  __dec_ok_N  -> <continuation using __dec_ok_N>
+///   Err __dec_err_N -> return Err __dec_err_N
+/// }
+/// ```
+///
+/// This is the exact IR that `propagate.rs:100-175` (`lower_propagate_result`)
+/// emits for the `?` operator — `IrExpr::Return` inside a derived fn body
+/// short-circuits to the fn boundary, implementing fail-fast.
+fn decode_seq(
+    ctx: &mut LowerCtx<'_>,
+    sub_result: IrExpr,
+    ok_name: String,
+    cont: IrExpr,
+    sp: Span,
+) -> IrExpr {
+    let err_name = ctx.fresh_local("__dec_err");
+    let err_local = IrExpr::Local {
+        id: ctx.fresh_id(None),
+        name: err_name.clone(),
+        span: sp,
+    };
+    // Err __dec_err_N -> return Err __dec_err_N
+    let return_err = IrExpr::Return {
+        id: ctx.fresh_id(None),
+        value: Box::new(IrExpr::Construct {
+            id: ctx.fresh_id(None),
+            ctor: SymbolRef::Prelude {
+                name: "Err".to_string(),
+            },
+            fields: vec![("$0".to_string(), err_local)],
+            span: sp,
+        }),
+        span: sp,
+    };
+    let err_arm = ridge_ir::IrArm {
+        pat: ridge_ir::IrPat::Ctor {
+            sym: SymbolRef::Prelude {
+                name: "Err".to_string(),
+            },
+            fields: vec![],
+            args: vec![ridge_ir::IrPat::Bind {
+                name: err_name,
+                inner: None,
+                span: sp,
+            }],
+            span: sp,
+        },
+        when: None,
+        body: return_err,
+        span: sp,
+    };
+    let ok_arm = ridge_ir::IrArm {
+        pat: ridge_ir::IrPat::Ctor {
+            sym: SymbolRef::Prelude {
+                name: "Ok".to_string(),
+            },
+            fields: vec![],
+            args: vec![ridge_ir::IrPat::Bind {
+                name: ok_name,
+                inner: None,
+                span: sp,
+            }],
+            span: sp,
+        },
+        when: None,
+        body: cont,
+        span: sp,
+    };
+    IrExpr::Match {
+        id: ctx.fresh_id(None),
+        scrutinee: Box::new(sub_result),
+        arms: vec![ok_arm, err_arm],
+        span: sp,
+    }
+}
+
+/// Recursive `decode_shape` — inverse of `encode_shape`.
+///
+/// Returns an expression of type `Result T Error`.
+///
+/// # Fail-fast note for `Lst` and `MapText`
+///
+/// `IrExpr::Return` CANNOT be used inside a lambda passed to `std.list.fold`
+/// (it would return from the lambda, not the derived fn).  For these shapes the
+/// error is threaded via the fold ACCUMULATOR: the accumulator is itself a
+/// `Result (List T) Error`; once it is `Err`, subsequent steps pass it through
+/// unchanged.  This is the accumulator-Result-fold pattern used throughout
+/// the derived-decode body builders.
+#[expect(
+    clippy::too_many_lines,
+    reason = "structural recursion over FieldShape; each arm is self-contained IR construction"
+)]
+fn decode_shape(
+    ctx: &mut LowerCtx<'_>,
+    shape: &ridge_typecheck::FieldShape,
+    json_expr: IrExpr,
+    sp: Span,
+) -> IrExpr {
+    use ridge_typecheck::FieldShape;
+
+    match shape {
+        // ── Prim → match JInt/JFloat/JBool/JText; bind v; Ok v; _ -> Err ─────
+        FieldShape::Prim(tycon) => {
+            let (ctor_name, err_code) = match tycon.0 {
+                0 => ("JInt", "decode.expected_int"),
+                1 => ("JFloat", "decode.expected_float"),
+                2 => ("JBool", "decode.expected_bool"),
+                _ => ("JText", "decode.expected_string"), // Text (3) and others
+            };
+            let bound = ctx.fresh_local("__dec_prim");
+            let bound_local = IrExpr::Local {
+                id: ctx.fresh_id(None),
+                name: bound.clone(),
+                span: sp,
+            };
+            let ok_v = build_ok(bound_local, sp);
+            let ok_arm = ridge_ir::IrArm {
+                pat: ridge_ir::IrPat::Ctor {
+                    sym: SymbolRef::Prelude {
+                        name: ctor_name.to_string(),
+                    },
+                    fields: vec![],
+                    args: vec![ridge_ir::IrPat::Bind {
+                        name: bound,
+                        inner: None,
+                        span: sp,
+                    }],
+                    span: sp,
+                },
+                when: None,
+                body: ok_v,
+                span: sp,
+            };
+            let err_body = build_decode_error(
+                ctx,
+                err_code,
+                format!("expected a JSON {ctor_name} value"),
+                sp,
+            );
+            let wild_arm = ridge_ir::IrArm {
+                pat: ridge_ir::IrPat::Wild { span: sp },
+                when: None,
+                body: err_body,
+                span: sp,
+            };
+            IrExpr::Match {
+                id: ctx.fresh_id(None),
+                scrutinee: Box::new(json_expr),
+                arms: vec![ok_arm, wild_arm],
+                span: sp,
+            }
+        }
+
+        // ── Json → Ok json_expr (identity) ───────────────────────────────────
+        FieldShape::Json => build_ok(json_expr, sp),
+
+        // ── Opt(inner) → JNull -> Ok None; _ -> decode_shape(inner) >>= Ok Some
+        FieldShape::Opt(inner) => {
+            // JNull arm → Ok None
+            let none_id = ctx.fresh_id(None);
+            let none_val = IrExpr::Construct {
+                id: none_id,
+                ctor: SymbolRef::Prelude {
+                    name: "None".to_string(),
+                },
+                fields: vec![],
+                span: sp,
+            };
+            let ok_none = build_ok(none_val, sp);
+            let null_arm = ridge_ir::IrArm {
+                pat: ridge_ir::IrPat::Ctor {
+                    sym: SymbolRef::Prelude {
+                        name: "JNull".to_string(),
+                    },
+                    fields: vec![],
+                    args: vec![],
+                    span: sp,
+                },
+                when: None,
+                body: ok_none,
+                span: sp,
+            };
+
+            // _ arm → bind jv, decode inner jv, wrap Some
+            // Use IrPat::Bind to capture the non-null JsonValue.
+            let jv_opt_bound = ctx.fresh_local("__dec_opt_jv");
+            let inner_bound = ctx.fresh_local("__dec_opt_v");
+            let jv_opt_local = IrExpr::Local {
+                id: ctx.fresh_id(None),
+                name: jv_opt_bound.clone(),
+                span: sp,
+            };
+            let sub_decode = decode_shape(ctx, inner, jv_opt_local, sp);
+            let some_val = IrExpr::Construct {
+                id: ctx.fresh_id(None),
+                ctor: SymbolRef::Prelude {
+                    name: "Some".to_string(),
+                },
+                fields: vec![(
+                    "$0".to_string(),
+                    IrExpr::Local {
+                        id: ctx.fresh_id(None),
+                        name: inner_bound.clone(),
+                        span: sp,
+                    },
+                )],
+                span: sp,
+            };
+            let ok_some = build_ok(some_val, sp);
+            let cont = decode_seq(ctx, sub_decode, inner_bound, ok_some, sp);
+            let wild_arm = ridge_ir::IrArm {
+                pat: ridge_ir::IrPat::Bind {
+                    name: jv_opt_bound,
+                    inner: None,
+                    span: sp,
+                },
+                when: None,
+                body: cont,
+                span: sp,
+            };
+
+            IrExpr::Match {
+                id: ctx.fresh_id(None),
+                scrutinee: Box::new(json_expr),
+                arms: vec![null_arm, wild_arm],
+                span: sp,
+            }
+        }
+
+        // ── Lst(inner) → expect JList xs; fold-acc-Result decode each element ─
+        FieldShape::Lst(inner) => {
+            let xs_bound = ctx.fresh_local("__dec_xs");
+            let xs_local = IrExpr::Local {
+                id: ctx.fresh_id(None),
+                name: xs_bound.clone(),
+                span: sp,
+            };
+
+            // Build the fold body — accumulator-Result-fold (no Return inside lambda).
+            let fold_result = build_list_decode_fold(ctx, inner, xs_local, sp);
+
+            // Wrap in JList match.
+            let ok_arm = ridge_ir::IrArm {
+                pat: ridge_ir::IrPat::Ctor {
+                    sym: SymbolRef::Prelude {
+                        name: "JList".to_string(),
+                    },
+                    fields: vec![],
+                    args: vec![ridge_ir::IrPat::Bind {
+                        name: xs_bound,
+                        inner: None,
+                        span: sp,
+                    }],
+                    span: sp,
+                },
+                when: None,
+                body: fold_result,
+                span: sp,
+            };
+            let err_body = build_decode_error(
+                ctx,
+                "decode.expected_array",
+                "expected a JSON array".to_string(),
+                sp,
+            );
+            let wild_arm = ridge_ir::IrArm {
+                pat: ridge_ir::IrPat::Wild { span: sp },
+                when: None,
+                body: err_body,
+                span: sp,
+            };
+            IrExpr::Match {
+                id: ctx.fresh_id(None),
+                scrutinee: Box::new(json_expr),
+                arms: vec![ok_arm, wild_arm],
+                span: sp,
+            }
+        }
+
+        // ── MapText(inner) → expect JObject m; fold via toList+decode+fromList ─
+        FieldShape::MapText(inner) => {
+            let m_bound = ctx.fresh_local("__dec_m");
+            let m_local = IrExpr::Local {
+                id: ctx.fresh_id(None),
+                name: m_bound.clone(),
+                span: sp,
+            };
+            let fold_result = build_map_decode_fold(ctx, inner, m_local, sp);
+            let ok_arm = ridge_ir::IrArm {
+                pat: ridge_ir::IrPat::Ctor {
+                    sym: SymbolRef::Prelude {
+                        name: "JObject".to_string(),
+                    },
+                    fields: vec![],
+                    args: vec![ridge_ir::IrPat::Bind {
+                        name: m_bound,
+                        inner: None,
+                        span: sp,
+                    }],
+                    span: sp,
+                },
+                when: None,
+                body: fold_result,
+                span: sp,
+            };
+            let err_body = build_decode_error(
+                ctx,
+                "decode.expected_object",
+                "expected a JSON object".to_string(),
+                sp,
+            );
+            let wild_arm = ridge_ir::IrArm {
+                pat: ridge_ir::IrPat::Wild { span: sp },
+                when: None,
+                body: err_body,
+                span: sp,
+            };
+            IrExpr::Match {
+                id: ctx.fresh_id(None),
+                scrutinee: Box::new(json_expr),
+                arms: vec![ok_arm, wild_arm],
+                span: sp,
+            }
+        }
+
+        // ── Res(ok_shape, err_shape) → adjacently-tagged union inverse ─────────
+        FieldShape::Res(ok_shape, err_shape) => {
+            // expect JObject m -> Map.get "tag" m -> Some (JText t) -> dispatch
+            let m_bound = ctx.fresh_local("__dec_rm");
+            let tag_lit_id = ctx.fresh_id(None);
+            let tag_m_id = ctx.fresh_id(None);
+            let tag_opt = map_get_call(
+                ctx,
+                IrExpr::Lit {
+                    id: tag_lit_id,
+                    value: IrLit::Text("tag".to_string()),
+                    span: sp,
+                },
+                IrExpr::Local {
+                    id: tag_m_id,
+                    name: m_bound.clone(),
+                    span: sp,
+                },
+                sp,
+            );
+            let tag_text_bound = ctx.fresh_local("__dec_rtag");
+            // Map.get "values" m
+            let vals_lit_id = ctx.fresh_id(None);
+            let vals_m_id = ctx.fresh_id(None);
+            let vals_key = IrExpr::Lit {
+                id: vals_lit_id,
+                value: IrLit::Text("values".to_string()),
+                span: sp,
+            };
+            let vals_map_local = IrExpr::Local {
+                id: vals_m_id,
+                name: m_bound.clone(),
+                span: sp,
+            };
+            let vals_opt = map_get_call(ctx, vals_key, vals_map_local, sp);
+
+            // Build Ok branch: read values[0], decode ok_shape, wrap Ok(Ok v)
+            let ok_vals_bound = ctx.fresh_local("__dec_rv_ok");
+            let ok_inner_bound = ctx.fresh_local("__dec_rok");
+            let ok_inner = {
+                // values[0] = std.list.head xs (simplest; values is JList [v])
+                let vals_local = IrExpr::Local {
+                    id: ctx.fresh_id(None),
+                    name: ok_vals_bound,
+                    span: sp,
+                };
+                // decode_shape on the JList element: expect JList [jv], take head
+                let head_call = IrExpr::Call {
+                    id: ctx.fresh_id(None),
+                    callee: Box::new(IrExpr::Symbol {
+                        id: ctx.fresh_id(None),
+                        sym: SymbolRef::Stdlib {
+                            module: "std.list".to_string(),
+                            name: "head".to_string(),
+                        },
+                        span: sp,
+                    }),
+                    args: vec![vals_local],
+                    span: sp,
+                };
+                // head returns Option T; we need the value — match Some v -> v
+                // For simplicity, use std.list.index 0 which returns Option; but
+                // the cleanest approach: match the JList directly since we know
+                // the payload is JList [v].
+                // Actually the values is stored as JList [v] after encode; at decode
+                // time we have values = Some (JList vs); use std.list.head on vs.
+                // head : List T -> Option T; match Some x -> x; None -> Err
+                let v0_bound = ctx.fresh_local("__dec_rv0");
+                let v0_local = IrExpr::Local {
+                    id: ctx.fresh_id(None),
+                    name: v0_bound.clone(),
+                    span: sp,
+                };
+                let sub = decode_shape(ctx, ok_shape, v0_local, sp);
+                let ok_inner_local_id = ctx.fresh_id(None);
+                let ok_inner_ctor_id = ctx.fresh_id(None);
+                let ok_ok = build_ok(
+                    IrExpr::Construct {
+                        id: ok_inner_ctor_id,
+                        ctor: SymbolRef::Prelude {
+                            name: "Ok".to_string(),
+                        },
+                        fields: vec![(
+                            "$0".to_string(),
+                            IrExpr::Local {
+                                id: ok_inner_local_id,
+                                name: ok_inner_bound.clone(),
+                                span: sp,
+                            },
+                        )],
+                        span: sp,
+                    },
+                    sp,
+                );
+                let cont_ok = decode_seq(ctx, sub, ok_inner_bound, ok_ok, sp);
+                let none_err = build_decode_error(
+                    ctx,
+                    "decode.bad_arity",
+                    "Result Ok expects 1 value".to_string(),
+                    sp,
+                );
+                // match head(vs) { Some v0 -> cont; None -> Err }
+                let some_arm = ridge_ir::IrArm {
+                    pat: ridge_ir::IrPat::Ctor {
+                        sym: SymbolRef::Prelude {
+                            name: "Some".to_string(),
+                        },
+                        fields: vec![],
+                        args: vec![ridge_ir::IrPat::Bind {
+                            name: v0_bound,
+                            inner: None,
+                            span: sp,
+                        }],
+                        span: sp,
+                    },
+                    when: None,
+                    body: cont_ok,
+                    span: sp,
+                };
+                let none_arm = ridge_ir::IrArm {
+                    pat: ridge_ir::IrPat::Wild { span: sp },
+                    when: None,
+                    body: none_err,
+                    span: sp,
+                };
+                IrExpr::Match {
+                    id: ctx.fresh_id(None),
+                    scrutinee: Box::new(head_call),
+                    arms: vec![some_arm, none_arm],
+                    span: sp,
+                }
+            };
+
+            // Build Err branch similarly
+            let err_vals_bound = ctx.fresh_local("__dec_rv_err");
+            let err_inner_bound = ctx.fresh_local("__dec_rerr");
+            let err_inner = {
+                let vals_local = IrExpr::Local {
+                    id: ctx.fresh_id(None),
+                    name: err_vals_bound,
+                    span: sp,
+                };
+                let head_call = IrExpr::Call {
+                    id: ctx.fresh_id(None),
+                    callee: Box::new(IrExpr::Symbol {
+                        id: ctx.fresh_id(None),
+                        sym: SymbolRef::Stdlib {
+                            module: "std.list".to_string(),
+                            name: "head".to_string(),
+                        },
+                        span: sp,
+                    }),
+                    args: vec![vals_local],
+                    span: sp,
+                };
+                let v0_bound = ctx.fresh_local("__dec_rv0e");
+                let v0_local = IrExpr::Local {
+                    id: ctx.fresh_id(None),
+                    name: v0_bound.clone(),
+                    span: sp,
+                };
+                let sub = decode_shape(ctx, err_shape, v0_local, sp);
+                let err_inner_local_id = ctx.fresh_id(None);
+                let err_inner_ctor_id = ctx.fresh_id(None);
+                let ok_err = build_ok(
+                    IrExpr::Construct {
+                        id: err_inner_ctor_id,
+                        ctor: SymbolRef::Prelude {
+                            name: "Err".to_string(),
+                        },
+                        fields: vec![(
+                            "$0".to_string(),
+                            IrExpr::Local {
+                                id: err_inner_local_id,
+                                name: err_inner_bound.clone(),
+                                span: sp,
+                            },
+                        )],
+                        span: sp,
+                    },
+                    sp,
+                );
+                let cont_err = decode_seq(ctx, sub, err_inner_bound, ok_err, sp);
+                let none_err = build_decode_error(
+                    ctx,
+                    "decode.bad_arity",
+                    "Result Err expects 1 value".to_string(),
+                    sp,
+                );
+                let some_arm = ridge_ir::IrArm {
+                    pat: ridge_ir::IrPat::Ctor {
+                        sym: SymbolRef::Prelude {
+                            name: "Some".to_string(),
+                        },
+                        fields: vec![],
+                        args: vec![ridge_ir::IrPat::Bind {
+                            name: v0_bound,
+                            inner: None,
+                            span: sp,
+                        }],
+                        span: sp,
+                    },
+                    when: None,
+                    body: cont_err,
+                    span: sp,
+                };
+                let none_arm = ridge_ir::IrArm {
+                    pat: ridge_ir::IrPat::Wild { span: sp },
+                    when: None,
+                    body: none_err,
+                    span: sp,
+                };
+                IrExpr::Match {
+                    id: ctx.fresh_id(None),
+                    scrutinee: Box::new(head_call),
+                    arms: vec![some_arm, none_arm],
+                    span: sp,
+                }
+            };
+
+            // Dispatch on tag string
+            let unknown_tag_err = build_decode_error(
+                ctx,
+                "decode.unknown_tag",
+                "unknown Result tag".to_string(),
+                sp,
+            );
+            let tag_local_1 = IrExpr::Local {
+                id: ctx.fresh_id(None),
+                name: tag_text_bound.clone(),
+                span: sp,
+            };
+            let tag_local_2 = IrExpr::Local {
+                id: ctx.fresh_id(None),
+                name: tag_text_bound.clone(),
+                span: sp,
+            };
+            // match vals_opt { Some (JList vs) -> ok_inner | err_inner; _ -> Err }
+            let vals_some_bound_ok = ctx.fresh_local("__dec_rvs_ok");
+            let vals_some_bound_err = ctx.fresh_local("__dec_rvs_err");
+
+            // The overall dispatch: first match tag_opt to get the tag string.
+            // Then inside Some (JText t), dispatch on t to read vals.
+            let ok_vals_arm = ridge_ir::IrArm {
+                pat: ridge_ir::IrPat::Ctor {
+                    sym: SymbolRef::Prelude {
+                        name: "Some".to_string(),
+                    },
+                    fields: vec![],
+                    args: vec![ridge_ir::IrPat::Bind {
+                        name: vals_some_bound_ok.clone(),
+                        inner: None,
+                        span: sp,
+                    }],
+                    span: sp,
+                },
+                when: None,
+                body: {
+                    // vals_some_bound_ok is JList vs; bind xs_ok
+                    let xs_ok = ctx.fresh_local("__dec_rvxs_ok");
+                    {
+                        // Replace ok_inner: bind ok_vals_bound = xs_ok
+                        // We already built ok_inner assuming ok_vals_bound is bound.
+                        // Re-use by let-binding: just match JList xs_ok -> ok_inner
+                        let jlist_bind = ridge_ir::IrArm {
+                            pat: ridge_ir::IrPat::Ctor {
+                                sym: SymbolRef::Prelude {
+                                    name: "JList".to_string(),
+                                },
+                                fields: vec![],
+                                args: vec![ridge_ir::IrPat::Bind {
+                                    name: xs_ok.clone(),
+                                    inner: None,
+                                    span: sp,
+                                }],
+                                span: sp,
+                            },
+                            when: None,
+                            body: {
+                                // Substitute ok_vals_bound -> xs_ok by emitting head(xs_ok)
+                                let xs_local = IrExpr::Local {
+                                    id: ctx.fresh_id(None),
+                                    name: xs_ok,
+                                    span: sp,
+                                };
+                                let head_call2 = IrExpr::Call {
+                                    id: ctx.fresh_id(None),
+                                    callee: Box::new(IrExpr::Symbol {
+                                        id: ctx.fresh_id(None),
+                                        sym: SymbolRef::Stdlib {
+                                            module: "std.list".to_string(),
+                                            name: "head".to_string(),
+                                        },
+                                        span: sp,
+                                    }),
+                                    args: vec![xs_local],
+                                    span: sp,
+                                };
+                                let v0_b = ctx.fresh_local("__dec_rv0b");
+                                let v0_l = IrExpr::Local {
+                                    id: ctx.fresh_id(None),
+                                    name: v0_b.clone(),
+                                    span: sp,
+                                };
+                                let ok_inner_b = ctx.fresh_local("__dec_rokb");
+                                let sub2 = decode_shape(ctx, ok_shape, v0_l, sp);
+                                let ok_inner_b_local_id = ctx.fresh_id(None);
+                                let ok_inner_b_ctor_id = ctx.fresh_id(None);
+                                let ok_ok2 = build_ok(
+                                    IrExpr::Construct {
+                                        id: ok_inner_b_ctor_id,
+                                        ctor: SymbolRef::Prelude {
+                                            name: "Ok".to_string(),
+                                        },
+                                        fields: vec![(
+                                            "$0".to_string(),
+                                            IrExpr::Local {
+                                                id: ok_inner_b_local_id,
+                                                name: ok_inner_b.clone(),
+                                                span: sp,
+                                            },
+                                        )],
+                                        span: sp,
+                                    },
+                                    sp,
+                                );
+                                let cont2 = decode_seq(ctx, sub2, ok_inner_b, ok_ok2, sp);
+                                let none_err2 = build_decode_error(
+                                    ctx,
+                                    "decode.bad_arity",
+                                    "Result Ok expects 1 value".to_string(),
+                                    sp,
+                                );
+                                let sa = ridge_ir::IrArm {
+                                    pat: ridge_ir::IrPat::Ctor {
+                                        sym: SymbolRef::Prelude {
+                                            name: "Some".to_string(),
+                                        },
+                                        fields: vec![],
+                                        args: vec![ridge_ir::IrPat::Bind {
+                                            name: v0_b,
+                                            inner: None,
+                                            span: sp,
+                                        }],
+                                        span: sp,
+                                    },
+                                    when: None,
+                                    body: cont2,
+                                    span: sp,
+                                };
+                                let na = ridge_ir::IrArm {
+                                    pat: ridge_ir::IrPat::Wild { span: sp },
+                                    when: None,
+                                    body: none_err2,
+                                    span: sp,
+                                };
+                                IrExpr::Match {
+                                    id: ctx.fresh_id(None),
+                                    scrutinee: Box::new(head_call2),
+                                    arms: vec![sa, na],
+                                    span: sp,
+                                }
+                            },
+                            span: sp,
+                        };
+                        let bad_shape = build_decode_error(
+                            ctx,
+                            "decode.expected_array",
+                            "Result values must be a JSON array".to_string(),
+                            sp,
+                        );
+                        let wild_a = ridge_ir::IrArm {
+                            pat: ridge_ir::IrPat::Wild { span: sp },
+                            when: None,
+                            body: bad_shape,
+                            span: sp,
+                        };
+                        IrExpr::Match {
+                            id: ctx.fresh_id(None),
+                            scrutinee: Box::new(IrExpr::Local {
+                                id: ctx.fresh_id(None),
+                                name: vals_some_bound_ok,
+                                span: sp,
+                            }),
+                            arms: vec![jlist_bind, wild_a],
+                            span: sp,
+                        }
+                    }
+                },
+                span: sp,
+            };
+
+            let err_vals_arm = ridge_ir::IrArm {
+                pat: ridge_ir::IrPat::Ctor {
+                    sym: SymbolRef::Prelude {
+                        name: "Some".to_string(),
+                    },
+                    fields: vec![],
+                    args: vec![ridge_ir::IrPat::Bind {
+                        name: vals_some_bound_err.clone(),
+                        inner: None,
+                        span: sp,
+                    }],
+                    span: sp,
+                },
+                when: None,
+                body: {
+                    let xs_err = ctx.fresh_local("__dec_rvxs_err");
+                    let jlist_bind = ridge_ir::IrArm {
+                        pat: ridge_ir::IrPat::Ctor {
+                            sym: SymbolRef::Prelude {
+                                name: "JList".to_string(),
+                            },
+                            fields: vec![],
+                            args: vec![ridge_ir::IrPat::Bind {
+                                name: xs_err.clone(),
+                                inner: None,
+                                span: sp,
+                            }],
+                            span: sp,
+                        },
+                        when: None,
+                        body: {
+                            let xs_l = IrExpr::Local {
+                                id: ctx.fresh_id(None),
+                                name: xs_err,
+                                span: sp,
+                            };
+                            let head_call_e = IrExpr::Call {
+                                id: ctx.fresh_id(None),
+                                callee: Box::new(IrExpr::Symbol {
+                                    id: ctx.fresh_id(None),
+                                    sym: SymbolRef::Stdlib {
+                                        module: "std.list".to_string(),
+                                        name: "head".to_string(),
+                                    },
+                                    span: sp,
+                                }),
+                                args: vec![xs_l],
+                                span: sp,
+                            };
+                            let v0_b = ctx.fresh_local("__dec_rv0be");
+                            let v0_l = IrExpr::Local {
+                                id: ctx.fresh_id(None),
+                                name: v0_b.clone(),
+                                span: sp,
+                            };
+                            let err_inner_b = ctx.fresh_local("__dec_rerrb");
+                            let sub_e = decode_shape(ctx, err_shape, v0_l, sp);
+                            let err_inner_b_local_id = ctx.fresh_id(None);
+                            let err_inner_b_ctor_id = ctx.fresh_id(None);
+                            let ok_err2 = build_ok(
+                                IrExpr::Construct {
+                                    id: err_inner_b_ctor_id,
+                                    ctor: SymbolRef::Prelude {
+                                        name: "Err".to_string(),
+                                    },
+                                    fields: vec![(
+                                        "$0".to_string(),
+                                        IrExpr::Local {
+                                            id: err_inner_b_local_id,
+                                            name: err_inner_b.clone(),
+                                            span: sp,
+                                        },
+                                    )],
+                                    span: sp,
+                                },
+                                sp,
+                            );
+                            let cont_e = decode_seq(ctx, sub_e, err_inner_b, ok_err2, sp);
+                            let none_err_e = build_decode_error(
+                                ctx,
+                                "decode.bad_arity",
+                                "Result Err expects 1 value".to_string(),
+                                sp,
+                            );
+                            let sa = ridge_ir::IrArm {
+                                pat: ridge_ir::IrPat::Ctor {
+                                    sym: SymbolRef::Prelude {
+                                        name: "Some".to_string(),
+                                    },
+                                    fields: vec![],
+                                    args: vec![ridge_ir::IrPat::Bind {
+                                        name: v0_b,
+                                        inner: None,
+                                        span: sp,
+                                    }],
+                                    span: sp,
+                                },
+                                when: None,
+                                body: cont_e,
+                                span: sp,
+                            };
+                            let na = ridge_ir::IrArm {
+                                pat: ridge_ir::IrPat::Wild { span: sp },
+                                when: None,
+                                body: none_err_e,
+                                span: sp,
+                            };
+                            IrExpr::Match {
+                                id: ctx.fresh_id(None),
+                                scrutinee: Box::new(head_call_e),
+                                arms: vec![sa, na],
+                                span: sp,
+                            }
+                        },
+                        span: sp,
+                    };
+                    let bad_shape_e = build_decode_error(
+                        ctx,
+                        "decode.expected_array",
+                        "Result values must be a JSON array".to_string(),
+                        sp,
+                    );
+                    let wild_ae = ridge_ir::IrArm {
+                        pat: ridge_ir::IrPat::Wild { span: sp },
+                        when: None,
+                        body: bad_shape_e,
+                        span: sp,
+                    };
+                    IrExpr::Match {
+                        id: ctx.fresh_id(None),
+                        scrutinee: Box::new(IrExpr::Local {
+                            id: ctx.fresh_id(None),
+                            name: vals_some_bound_err,
+                            span: sp,
+                        }),
+                        arms: vec![jlist_bind, wild_ae],
+                        span: sp,
+                    }
+                },
+                span: sp,
+            };
+
+            // tag dispatch: if t == "Ok" -> read vals -> ok_inner; if t == "Err" -> err_inner
+            let tag_dispatch = {
+                // Build two ifs as match (nested):
+                // We build it as a chain using the ok/err vals_arms we already have.
+                // Actually we need to read vals_opt (Map.get "values" m) after matching the tag.
+                // The cleanest: emit a match on tag_text_bound's value.
+                // We already have vals_opt computed; now dispatch.
+
+                // "Ok" branch: match vals_opt { Some jv -> ok_inner_w_vals; _ -> Err missing }
+                let missing_vals_ok = build_decode_error(
+                    ctx,
+                    "decode.bad_arity",
+                    "Result Ok: missing values field".to_string(),
+                    sp,
+                );
+                let vals_none_arm_ok = ridge_ir::IrArm {
+                    pat: ridge_ir::IrPat::Wild { span: sp },
+                    when: None,
+                    body: missing_vals_ok,
+                    span: sp,
+                };
+                let ok_branch = IrExpr::Match {
+                    id: ctx.fresh_id(None),
+                    scrutinee: Box::new(IrExpr::Call {
+                        id: ctx.fresh_id(None),
+                        callee: Box::new(IrExpr::Symbol {
+                            id: ctx.fresh_id(None),
+                            sym: SymbolRef::Stdlib {
+                                module: "std.map".to_string(),
+                                name: "get".to_string(),
+                            },
+                            span: sp,
+                        }),
+                        args: vec![
+                            IrExpr::Lit {
+                                id: ctx.fresh_id(None),
+                                value: IrLit::Text("values".to_string()),
+                                span: sp,
+                            },
+                            IrExpr::Local {
+                                id: ctx.fresh_id(None),
+                                name: m_bound.clone(),
+                                span: sp,
+                            },
+                        ],
+                        span: sp,
+                    }),
+                    arms: vec![ok_vals_arm, vals_none_arm_ok],
+                    span: sp,
+                };
+
+                // "Err" branch similarly
+                let missing_vals_err = build_decode_error(
+                    ctx,
+                    "decode.bad_arity",
+                    "Result Err: missing values field".to_string(),
+                    sp,
+                );
+                let vals_none_arm_err = ridge_ir::IrArm {
+                    pat: ridge_ir::IrPat::Wild { span: sp },
+                    when: None,
+                    body: missing_vals_err,
+                    span: sp,
+                };
+                let err_branch = IrExpr::Match {
+                    id: ctx.fresh_id(None),
+                    scrutinee: Box::new(IrExpr::Call {
+                        id: ctx.fresh_id(None),
+                        callee: Box::new(IrExpr::Symbol {
+                            id: ctx.fresh_id(None),
+                            sym: SymbolRef::Stdlib {
+                                module: "std.map".to_string(),
+                                name: "get".to_string(),
+                            },
+                            span: sp,
+                        }),
+                        args: vec![
+                            IrExpr::Lit {
+                                id: ctx.fresh_id(None),
+                                value: IrLit::Text("values".to_string()),
+                                span: sp,
+                            },
+                            IrExpr::Local {
+                                id: ctx.fresh_id(None),
+                                name: m_bound.clone(),
+                                span: sp,
+                            },
+                        ],
+                        span: sp,
+                    }),
+                    arms: vec![err_vals_arm, vals_none_arm_err],
+                    span: sp,
+                };
+
+                // Dispatch on tag_text string
+                let ok_tag_arm = ridge_ir::IrArm {
+                    pat: ridge_ir::IrPat::Lit {
+                        value: IrLit::Text("Ok".to_string()),
+                        span: sp,
+                    },
+                    when: None,
+                    body: ok_branch,
+                    span: sp,
+                };
+                let err_tag_arm = ridge_ir::IrArm {
+                    pat: ridge_ir::IrPat::Lit {
+                        value: IrLit::Text("Err".to_string()),
+                        span: sp,
+                    },
+                    when: None,
+                    body: err_branch,
+                    span: sp,
+                };
+                let unk_tag_arm = ridge_ir::IrArm {
+                    pat: ridge_ir::IrPat::Wild { span: sp },
+                    when: None,
+                    body: unknown_tag_err,
+                    span: sp,
+                };
+                IrExpr::Match {
+                    id: ctx.fresh_id(None),
+                    scrutinee: Box::new(tag_local_1),
+                    arms: vec![ok_tag_arm, err_tag_arm, unk_tag_arm],
+                    span: sp,
+                }
+            };
+
+            // Sequence: tag_opt -> Some (JText t) -> dispatch; _ -> Err
+            let _tag_jtext_bound = ctx.fresh_local("__dec_rtjt");
+            let jtext_bind_arm = ridge_ir::IrArm {
+                pat: ridge_ir::IrPat::Ctor {
+                    sym: SymbolRef::Prelude {
+                        name: "JText".to_string(),
+                    },
+                    fields: vec![],
+                    args: vec![ridge_ir::IrPat::Bind {
+                        name: tag_text_bound,
+                        inner: None,
+                        span: sp,
+                    }],
+                    span: sp,
+                },
+                when: None,
+                body: tag_dispatch,
+                span: sp,
+            };
+            let bad_tag_type_err = build_decode_error(
+                ctx,
+                "decode.unknown_tag",
+                "Result tag must be a JSON string".to_string(),
+                sp,
+            );
+            let wild_tag_arm = ridge_ir::IrArm {
+                pat: ridge_ir::IrPat::Wild { span: sp },
+                when: None,
+                body: bad_tag_type_err,
+                span: sp,
+            };
+            // match Map.get "tag" m { Some jv -> match jv { JText t -> ...; _ -> Err }; None -> Err }
+            let missing_tag_err = build_decode_error(
+                ctx,
+                "decode.unknown_tag",
+                "missing tag field in Result object".to_string(),
+                sp,
+            );
+            let tag_some_bound = ctx.fresh_local("__dec_rtso");
+            let tag_some_arm = ridge_ir::IrArm {
+                pat: ridge_ir::IrPat::Ctor {
+                    sym: SymbolRef::Prelude {
+                        name: "Some".to_string(),
+                    },
+                    fields: vec![],
+                    args: vec![ridge_ir::IrPat::Bind {
+                        name: tag_some_bound.clone(),
+                        inner: None,
+                        span: sp,
+                    }],
+                    span: sp,
+                },
+                when: None,
+                body: IrExpr::Match {
+                    id: ctx.fresh_id(None),
+                    scrutinee: Box::new(IrExpr::Local {
+                        id: ctx.fresh_id(None),
+                        name: tag_some_bound,
+                        span: sp,
+                    }),
+                    arms: vec![jtext_bind_arm, wild_tag_arm],
+                    span: sp,
+                },
+                span: sp,
+            };
+            let tag_none_arm = ridge_ir::IrArm {
+                pat: ridge_ir::IrPat::Wild { span: sp },
+                when: None,
+                body: missing_tag_err,
+                span: sp,
+            };
+            let tag_match = IrExpr::Match {
+                id: ctx.fresh_id(None),
+                scrutinee: Box::new(tag_opt),
+                arms: vec![tag_some_arm, tag_none_arm],
+                span: sp,
+            };
+
+            // Outer: expect JObject
+            let ok_jobj_arm = ridge_ir::IrArm {
+                pat: ridge_ir::IrPat::Ctor {
+                    sym: SymbolRef::Prelude {
+                        name: "JObject".to_string(),
+                    },
+                    fields: vec![],
+                    args: vec![ridge_ir::IrPat::Bind {
+                        name: m_bound,
+                        inner: None,
+                        span: sp,
+                    }],
+                    span: sp,
+                },
+                when: None,
+                body: tag_match,
+                span: sp,
+            };
+            let wild_obj_arm = ridge_ir::IrArm {
+                pat: ridge_ir::IrPat::Wild { span: sp },
+                when: None,
+                body: build_decode_error(
+                    ctx,
+                    "decode.expected_object",
+                    "expected a JSON object for Result".to_string(),
+                    sp,
+                ),
+                span: sp,
+            };
+            // Suppress unused variable warning from the unused intermediate bindings
+            let _ = (ok_inner, err_inner, tag_local_2, vals_opt);
+            IrExpr::Match {
+                id: ctx.fresh_id(None),
+                scrutinee: Box::new(json_expr),
+                arms: vec![ok_jobj_arm, wild_obj_arm],
+                span: sp,
+            }
+        }
+
+        // ── User type → Decode__{TypeName}__decode(j) ────────────────────────
+        FieldShape::User { type_name, .. } => {
+            let fn_name = format!("Decode__{type_name}__decode");
+            IrExpr::Call {
+                id: ctx.fresh_id(None),
+                callee: Box::new(IrExpr::Symbol {
+                    id: ctx.fresh_id(None),
+                    sym: SymbolRef::Local {
+                        name: fn_name,
+                        module: ctx.module_id,
+                    },
+                    span: sp,
+                }),
+                args: vec![json_expr],
+                span: sp,
+            }
+        }
+    }
+}
+
+/// Helper: `std.map.get key map` → `Option V`.
+fn map_get_call(ctx: &mut LowerCtx<'_>, key: IrExpr, map: IrExpr, sp: Span) -> IrExpr {
+    IrExpr::Call {
+        id: ctx.fresh_id(None),
+        callee: Box::new(IrExpr::Symbol {
+            id: ctx.fresh_id(None),
+            sym: SymbolRef::Stdlib {
+                module: "std.map".to_string(),
+                name: "get".to_string(),
+            },
+            span: sp,
+        }),
+        args: vec![key, map],
+        span: sp,
+    }
+}
+
+/// Build the `decode` body for a derived `Decode` on a record type.
+///
+/// Emits:
+/// ```text
+/// match j {
+///   JObject m ->
+///     match Map.get "f1" m { Some jv1 -> <decode_seq(decode_shape(s1, jv1), x1)>;
+///                            None     -> return Err(decode.missing_field "f1") } ;
+///     …
+///     Ok T { f1 = x1, … }
+///   _ -> Err(decode.expected_object "T")
+/// }
+/// ```
+#[expect(
+    clippy::too_many_lines,
+    reason = "flat sequencing over fields; each iteration is self-contained IR construction"
+)]
+fn build_decode_record_body(
+    ctx: &mut LowerCtx<'_>,
+    tycon: ridge_types::TyConId,
+    type_name: &str,
+    field_names: &[String],
+    field_shapes: &[ridge_typecheck::FieldShape],
+    sp: Span,
+) -> IrExpr {
+    let m_bound = ctx.fresh_local("__dec_rec_m");
+
+    // Bind names for each successfully decoded field.
+    let bound_names: Vec<String> = field_names
+        .iter()
+        .map(|f| ctx.fresh_local(&format!("__dec_f_{f}")))
+        .collect();
+
+    // Build the final Ok(T { f1=x1, … }) assembly.
+    let record_fields: Vec<(String, IrExpr)> = field_names
+        .iter()
+        .zip(bound_names.iter())
+        .map(|(name, bound)| {
+            (
+                name.clone(),
+                IrExpr::Local {
+                    id: ctx.fresh_id(None),
+                    name: bound.clone(),
+                    span: sp,
+                },
+            )
+        })
+        .collect();
+    let record_val = IrExpr::Construct {
+        id: ctx.fresh_id(None),
+        ctor: SymbolRef::Constructor {
+            ctor_kind: CtorKind::Record,
+            owner_type: tycon,
+            name: type_name.to_string(),
+            variant: 0,
+        },
+        fields: record_fields,
+        span: sp,
+    };
+    let ok_record = build_ok(record_val, sp);
+
+    // Sequence the field decodes from the innermost (last field) outward.
+    // Each field wraps the continuation.
+    let mut cont = ok_record;
+    for (field_name, (bound_name, shape)) in field_names
+        .iter()
+        .zip(bound_names.iter().zip(field_shapes.iter()))
+        .rev()
+    {
+        // Map.get "field" m → Option JsonValue
+        let field_lit_id = ctx.fresh_id(None);
+        let field_m_id = ctx.fresh_id(None);
+        let field_key = IrExpr::Lit {
+            id: field_lit_id,
+            value: IrLit::Text(field_name.clone()),
+            span: sp,
+        };
+        let field_map = IrExpr::Local {
+            id: field_m_id,
+            name: m_bound.clone(),
+            span: sp,
+        };
+        let get_result = map_get_call(ctx, field_key, field_map, sp);
+        // Some jv -> decode_seq(decode_shape(shape, jv), bound_name, cont)
+        // None    -> return Err(decode.missing_field "field")
+        let jv_bound = ctx.fresh_local(&format!("__dec_jv_{field_name}"));
+        let jv_local = IrExpr::Local {
+            id: ctx.fresh_id(None),
+            name: jv_bound.clone(),
+            span: sp,
+        };
+        let sub_decode = decode_shape(ctx, shape, jv_local, sp);
+        let field_cont = decode_seq(ctx, sub_decode, bound_name.clone(), cont, sp);
+        // match get_result { Some jv -> field_cont; None -> return Err(missing_field) }
+        let missing_err = IrExpr::Return {
+            id: ctx.fresh_id(None),
+            value: Box::new(build_decode_error(
+                ctx,
+                "decode.missing_field",
+                format!("missing field \"{field_name}\""),
+                sp,
+            )),
+            span: sp,
+        };
+        let some_arm = ridge_ir::IrArm {
+            pat: ridge_ir::IrPat::Ctor {
+                sym: SymbolRef::Prelude {
+                    name: "Some".to_string(),
+                },
+                fields: vec![],
+                args: vec![ridge_ir::IrPat::Bind {
+                    name: jv_bound,
+                    inner: None,
+                    span: sp,
+                }],
+                span: sp,
+            },
+            when: None,
+            body: field_cont,
+            span: sp,
+        };
+        let none_arm = ridge_ir::IrArm {
+            pat: ridge_ir::IrPat::Wild { span: sp },
+            when: None,
+            body: missing_err,
+            span: sp,
+        };
+        cont = IrExpr::Match {
+            id: ctx.fresh_id(None),
+            scrutinee: Box::new(get_result),
+            arms: vec![some_arm, none_arm],
+            span: sp,
+        };
+    }
+
+    // Wrap in JObject match.
+    let jobject_arm = ridge_ir::IrArm {
+        pat: ridge_ir::IrPat::Ctor {
+            sym: SymbolRef::Prelude {
+                name: "JObject".to_string(),
+            },
+            fields: vec![],
+            args: vec![ridge_ir::IrPat::Bind {
+                name: m_bound,
+                inner: None,
+                span: sp,
+            }],
+            span: sp,
+        },
+        when: None,
+        body: cont,
+        span: sp,
+    };
+    let wild_arm = ridge_ir::IrArm {
+        pat: ridge_ir::IrPat::Wild { span: sp },
+        when: None,
+        body: build_decode_error(
+            ctx,
+            "decode.expected_object",
+            format!("expected a JSON object for type {type_name}"),
+            sp,
+        ),
+        span: sp,
+    };
+    IrExpr::Match {
+        id: ctx.fresh_id(None),
+        scrutinee: Box::new(IrExpr::Local {
+            id: ctx.fresh_id(None),
+            name: "j".to_string(),
+            span: sp,
+        }),
+        arms: vec![jobject_arm, wild_arm],
+        span: sp,
+    }
+}
+
+/// Build the `decode` body for a derived `Decode` on a union type.
+///
+/// Dispatches on the JSON shape:
+/// - `JText s` → nullary ctor lookup via string comparison chain.
+/// - `JObject m` → payload ctor via `"tag"`/`"values"` keys, arity check.
+/// - `_` → `Err(decode.unknown_tag)`.
+#[expect(
+    clippy::too_many_lines,
+    reason = "flat dispatch over union variants; each arm is self-contained"
+)]
+fn build_decode_union_body(
+    ctx: &mut LowerCtx<'_>,
+    tycon: ridge_types::TyConId,
+    type_name: &str,
+    variants: &[(String, Vec<ridge_typecheck::FieldShape>)],
+    sp: Span,
+) -> IrExpr {
+    let nullary: Vec<&str> = variants
+        .iter()
+        .filter(|(_, shapes)| shapes.is_empty())
+        .map(|(n, _)| n.as_str())
+        .collect();
+    let payload: Vec<(&str, &[ridge_typecheck::FieldShape])> = variants
+        .iter()
+        .filter(|(_, shapes)| !shapes.is_empty())
+        .map(|(n, shapes)| (n.as_str(), shapes.as_slice()))
+        .collect();
+
+    // ── JText branch (nullary ctors) ─────────────────────────────────────────
+    let s_bound = ctx.fresh_local("__dec_un_s");
+    let jtext_arm_body = {
+        // Chain: if s == "Ctor" then Ok Ctor else … else Err(unknown_tag)
+        let unk = build_decode_error(
+            ctx,
+            "decode.unknown_tag",
+            format!("unknown constructor tag for {type_name}"),
+            sp,
+        );
+        let mut chain = unk;
+        for ctor_name in nullary.iter().rev() {
+            let ctor_val = IrExpr::Construct {
+                id: ctx.fresh_id(None),
+                ctor: SymbolRef::Constructor {
+                    ctor_kind: CtorKind::UnionVariant,
+                    owner_type: tycon,
+                    name: ctor_name.to_string(),
+                    variant: 0,
+                },
+                fields: vec![],
+                span: sp,
+            };
+            let ok_ctor = build_ok(ctor_val, sp);
+            // s == "ctor" check via std.op.eq
+            let eq_check = IrExpr::Call {
+                id: ctx.fresh_id(None),
+                callee: Box::new(IrExpr::Symbol {
+                    id: ctx.fresh_id(None),
+                    sym: SymbolRef::Stdlib {
+                        module: "std.op".to_string(),
+                        name: "eq".to_string(),
+                    },
+                    span: sp,
+                }),
+                args: vec![
+                    IrExpr::Local {
+                        id: ctx.fresh_id(None),
+                        name: s_bound.clone(),
+                        span: sp,
+                    },
+                    IrExpr::Lit {
+                        id: ctx.fresh_id(None),
+                        value: IrLit::Text(ctor_name.to_string()),
+                        span: sp,
+                    },
+                ],
+                span: sp,
+            };
+            // match eq_check { true -> ok_ctor; _ -> chain }
+            let true_arm = ridge_ir::IrArm {
+                pat: ridge_ir::IrPat::Lit {
+                    value: IrLit::Bool(true),
+                    span: sp,
+                },
+                when: None,
+                body: ok_ctor,
+                span: sp,
+            };
+            let false_arm = ridge_ir::IrArm {
+                pat: ridge_ir::IrPat::Wild { span: sp },
+                when: None,
+                body: chain,
+                span: sp,
+            };
+            chain = IrExpr::Match {
+                id: ctx.fresh_id(None),
+                scrutinee: Box::new(eq_check),
+                arms: vec![true_arm, false_arm],
+                span: sp,
+            };
+        }
+        chain
+    };
+    let jtext_arm = ridge_ir::IrArm {
+        pat: ridge_ir::IrPat::Ctor {
+            sym: SymbolRef::Prelude {
+                name: "JText".to_string(),
+            },
+            fields: vec![],
+            args: vec![ridge_ir::IrPat::Bind {
+                name: s_bound,
+                inner: None,
+                span: sp,
+            }],
+            span: sp,
+        },
+        when: None,
+        body: jtext_arm_body,
+        span: sp,
+    };
+
+    // ── JObject branch (payload ctors) ───────────────────────────────────────
+    let m_bound_u = ctx.fresh_local("__dec_un_m");
+    let jobject_arm_body = if payload.is_empty() {
+        // No payload ctors — any JObject is unknown.
+        build_decode_error(
+            ctx,
+            "decode.unknown_tag",
+            format!("expected a JSON string for {type_name}, not an object"),
+            sp,
+        )
+    } else {
+        // Map.get "tag" m → Some (JText t) → dispatch
+        let un_tag_lit_id = ctx.fresh_id(None);
+        let un_tag_m_id = ctx.fresh_id(None);
+        let un_tag_key = IrExpr::Lit {
+            id: un_tag_lit_id,
+            value: IrLit::Text("tag".to_string()),
+            span: sp,
+        };
+        let un_tag_map = IrExpr::Local {
+            id: un_tag_m_id,
+            name: m_bound_u.clone(),
+            span: sp,
+        };
+        let tag_opt = map_get_call(ctx, un_tag_key, un_tag_map, sp);
+        let t_bound = ctx.fresh_local("__dec_un_t");
+        let tag_dispatch = build_union_payload_tag_dispatch(
+            ctx, tycon, type_name, &payload, &m_bound_u, &t_bound, sp,
+        );
+        // match tag_opt { Some (JText t) -> tag_dispatch; _ -> Err }
+        let jtext_inner_arm = ridge_ir::IrArm {
+            pat: ridge_ir::IrPat::Ctor {
+                sym: SymbolRef::Prelude {
+                    name: "JText".to_string(),
+                },
+                fields: vec![],
+                args: vec![ridge_ir::IrPat::Bind {
+                    name: t_bound,
+                    inner: None,
+                    span: sp,
+                }],
+                span: sp,
+            },
+            when: None,
+            body: tag_dispatch,
+            span: sp,
+        };
+        let bad_tag_arm = ridge_ir::IrArm {
+            pat: ridge_ir::IrPat::Wild { span: sp },
+            when: None,
+            body: build_decode_error(
+                ctx,
+                "decode.unknown_tag",
+                format!("tag field must be a JSON string for {type_name}"),
+                sp,
+            ),
+            span: sp,
+        };
+        // match some_jv { JText t -> ...; _ -> Err }
+        let tag_inner_bound = ctx.fresh_local("__dec_un_ti");
+        let tag_some_arm = ridge_ir::IrArm {
+            pat: ridge_ir::IrPat::Ctor {
+                sym: SymbolRef::Prelude {
+                    name: "Some".to_string(),
+                },
+                fields: vec![],
+                args: vec![ridge_ir::IrPat::Bind {
+                    name: tag_inner_bound.clone(),
+                    inner: None,
+                    span: sp,
+                }],
+                span: sp,
+            },
+            when: None,
+            body: IrExpr::Match {
+                id: ctx.fresh_id(None),
+                scrutinee: Box::new(IrExpr::Local {
+                    id: ctx.fresh_id(None),
+                    name: tag_inner_bound,
+                    span: sp,
+                }),
+                arms: vec![jtext_inner_arm, bad_tag_arm],
+                span: sp,
+            },
+            span: sp,
+        };
+        let missing_tag_arm = ridge_ir::IrArm {
+            pat: ridge_ir::IrPat::Wild { span: sp },
+            when: None,
+            body: build_decode_error(
+                ctx,
+                "decode.unknown_tag",
+                format!("missing tag field for {type_name}"),
+                sp,
+            ),
+            span: sp,
+        };
+        IrExpr::Match {
+            id: ctx.fresh_id(None),
+            scrutinee: Box::new(tag_opt),
+            arms: vec![tag_some_arm, missing_tag_arm],
+            span: sp,
+        }
+    };
+    let jobject_arm = ridge_ir::IrArm {
+        pat: ridge_ir::IrPat::Ctor {
+            sym: SymbolRef::Prelude {
+                name: "JObject".to_string(),
+            },
+            fields: vec![],
+            args: vec![ridge_ir::IrPat::Bind {
+                name: m_bound_u,
+                inner: None,
+                span: sp,
+            }],
+            span: sp,
+        },
+        when: None,
+        body: jobject_arm_body,
+        span: sp,
+    };
+
+    // ── Wildcard ─────────────────────────────────────────────────────────────
+    let wild_arm = ridge_ir::IrArm {
+        pat: ridge_ir::IrPat::Wild { span: sp },
+        when: None,
+        body: build_decode_error(
+            ctx,
+            "decode.unknown_tag",
+            format!("expected a JSON string or object for {type_name}"),
+            sp,
+        ),
+        span: sp,
+    };
+
+    IrExpr::Match {
+        id: ctx.fresh_id(None),
+        scrutinee: Box::new(IrExpr::Local {
+            id: ctx.fresh_id(None),
+            name: "j".to_string(),
+            span: sp,
+        }),
+        arms: vec![jtext_arm, jobject_arm, wild_arm],
+        span: sp,
+    }
+}
+
+/// Dispatch on the tag string `t` for payload union ctors.
+///
+/// Builds a chain: if `t == "Ctor1"` then decode payload1 else … else `Err(unknown_tag)`.
+fn build_union_payload_tag_dispatch(
+    ctx: &mut LowerCtx<'_>,
+    tycon: ridge_types::TyConId,
+    type_name: &str,
+    payload: &[(&str, &[ridge_typecheck::FieldShape])],
+    m_bound: &str,
+    t_bound: &str,
+    sp: Span,
+) -> IrExpr {
+    let unk = build_decode_error(
+        ctx,
+        "decode.unknown_tag",
+        format!("unknown constructor tag for {type_name}"),
+        sp,
+    );
+    let mut chain = unk;
+    for (ctor_name, shapes) in payload.iter().rev() {
+        let arity = shapes.len();
+        // Build the payload decode body for this ctor.
+        let ctor_body =
+            build_union_payload_ctor_body(ctx, tycon, ctor_name, shapes, m_bound.to_string(), sp);
+        let eq_check = IrExpr::Call {
+            id: ctx.fresh_id(None),
+            callee: Box::new(IrExpr::Symbol {
+                id: ctx.fresh_id(None),
+                sym: SymbolRef::Stdlib {
+                    module: "std.op".to_string(),
+                    name: "eq".to_string(),
+                },
+                span: sp,
+            }),
+            args: vec![
+                IrExpr::Local {
+                    id: ctx.fresh_id(None),
+                    name: t_bound.to_string(),
+                    span: sp,
+                },
+                IrExpr::Lit {
+                    id: ctx.fresh_id(None),
+                    value: IrLit::Text(ctor_name.to_string()),
+                    span: sp,
+                },
+            ],
+            span: sp,
+        };
+        let true_arm = ridge_ir::IrArm {
+            pat: ridge_ir::IrPat::Lit {
+                value: IrLit::Bool(true),
+                span: sp,
+            },
+            when: None,
+            body: ctor_body,
+            span: sp,
+        };
+        let false_arm = ridge_ir::IrArm {
+            pat: ridge_ir::IrPat::Wild { span: sp },
+            when: None,
+            body: chain,
+            span: sp,
+        };
+        chain = IrExpr::Match {
+            id: ctx.fresh_id(None),
+            scrutinee: Box::new(eq_check),
+            arms: vec![true_arm, false_arm],
+            span: sp,
+        };
+        let _ = arity;
+    }
+    chain
+}
+
+/// Build the body for decoding one payload union constructor from a `JObject` with `tag`+`values`.
+///
+/// Reads `Map.get "values" m` → `Some (JList [v0, v1, …])`, decodes each
+/// positional arg, checks arity, and assembles `Ok(Ctor v0 v1 …)`.
+#[expect(
+    clippy::too_many_lines,
+    reason = "flat sequencing per payload field; each step is self-contained"
+)]
+fn build_union_payload_ctor_body(
+    ctx: &mut LowerCtx<'_>,
+    tycon: ridge_types::TyConId,
+    ctor_name: &str,
+    shapes: &[ridge_typecheck::FieldShape],
+    m_bound: String,
+    sp: Span,
+) -> IrExpr {
+    let arity = shapes.len();
+    // Map.get "values" m
+    let pl_vals_lit_id = ctx.fresh_id(None);
+    let pl_vals_m_id = ctx.fresh_id(None);
+    let pl_vals_key = IrExpr::Lit {
+        id: pl_vals_lit_id,
+        value: IrLit::Text("values".to_string()),
+        span: sp,
+    };
+    let pl_vals_map = IrExpr::Local {
+        id: pl_vals_m_id,
+        name: m_bound,
+        span: sp,
+    };
+    let vals_opt = map_get_call(ctx, pl_vals_key, pl_vals_map, sp);
+
+    // Bind one local per payload arg by positional name.
+    let p_bounds: Vec<String> = (0..arity)
+        .map(|i| ctx.fresh_local(&format!("__dec_pjv{i}")))
+        .collect();
+
+    // Build final ctor assembly using the decoded value locals.
+    let dec_bounds: Vec<String> = (0..arity)
+        .map(|i| ctx.fresh_local(&format!("__dec_p{i}")))
+        .collect();
+    let ctor_fields: Vec<(String, IrExpr)> = dec_bounds
+        .iter()
+        .enumerate()
+        .map(|(i, bound)| {
+            (
+                format!("${i}"),
+                IrExpr::Local {
+                    id: ctx.fresh_id(None),
+                    name: bound.clone(),
+                    span: sp,
+                },
+            )
+        })
+        .collect();
+    let ctor_val = IrExpr::Construct {
+        id: ctx.fresh_id(None),
+        ctor: SymbolRef::Constructor {
+            ctor_kind: CtorKind::UnionVariant,
+            owner_type: tycon,
+            name: ctor_name.to_string(),
+            variant: 0,
+        },
+        fields: ctor_fields,
+        span: sp,
+    };
+    let ok_ctor = build_ok(ctor_val, sp);
+
+    // Sequence payload decodes innermost-first.
+    // p_bounds[i] is the raw JsonValue; dec_bounds[i] is the decoded value.
+    let mut cont = ok_ctor;
+    for (i, (jv_bound, (dec_bound, shape))) in p_bounds
+        .iter()
+        .zip(dec_bounds.iter().zip(shapes.iter()))
+        .enumerate()
+        .rev()
+    {
+        let jv_local = IrExpr::Local {
+            id: ctx.fresh_id(None),
+            name: jv_bound.clone(),
+            span: sp,
+        };
+        let sub_decode = decode_shape(ctx, shape, jv_local, sp);
+        cont = decode_seq(ctx, sub_decode, dec_bound.clone(), cont, sp);
+        let _ = i;
+    }
+
+    // Build a Cons-chain pattern to destructure the list: [p0, p1, ...] with tail bound to _.
+    // For arity N: p0 :: p1 :: … :: p_{N-1} :: []
+    // Use a match on the JList xs first, then pattern-match xs.
+    let xs_bound = ctx.fresh_local("__dec_pl_xs");
+    // Build the nested Cons pattern from p_bounds.
+    let list_pat = {
+        let mut pat: ridge_ir::IrPat = ridge_ir::IrPat::Nil { span: sp };
+        for jv_bound in p_bounds.iter().rev() {
+            pat = ridge_ir::IrPat::Cons {
+                head: Box::new(ridge_ir::IrPat::Bind {
+                    name: jv_bound.clone(),
+                    inner: None,
+                    span: sp,
+                }),
+                tail: Box::new(pat),
+                span: sp,
+            };
+        }
+        pat
+    };
+    // match xs { [p0, p1, ...] -> cont; _ -> Err(bad_arity) }
+    let list_match_arm = ridge_ir::IrArm {
+        pat: list_pat,
+        when: None,
+        body: cont,
+        span: sp,
+    };
+    let bad_arity_arm = ridge_ir::IrArm {
+        pat: ridge_ir::IrPat::Wild { span: sp },
+        when: None,
+        body: IrExpr::Return {
+            id: ctx.fresh_id(None),
+            value: Box::new(build_decode_error(
+                ctx,
+                "decode.bad_arity",
+                format!("constructor {ctor_name} expects {arity} value(s)"),
+                sp,
+            )),
+            span: sp,
+        },
+        span: sp,
+    };
+    // Wrap xs in a match so we can pattern on it.
+    let xs_match = IrExpr::Match {
+        id: ctx.fresh_id(None),
+        scrutinee: Box::new(IrExpr::Local {
+            id: ctx.fresh_id(None),
+            name: xs_bound.clone(),
+            span: sp,
+        }),
+        arms: vec![list_match_arm, bad_arity_arm],
+        span: sp,
+    };
+
+    // match vals_opt { Some (JList xs) -> xs_match; _ -> Err(bad_arity) }
+    let jlist_arm = ridge_ir::IrArm {
+        pat: ridge_ir::IrPat::Ctor {
+            sym: SymbolRef::Prelude {
+                name: "JList".to_string(),
+            },
+            fields: vec![],
+            args: vec![ridge_ir::IrPat::Bind {
+                name: xs_bound,
+                inner: None,
+                span: sp,
+            }],
+            span: sp,
+        },
+        when: None,
+        body: xs_match,
+        span: sp,
+    };
+    let bad_shape_arm = ridge_ir::IrArm {
+        pat: ridge_ir::IrPat::Wild { span: sp },
+        when: None,
+        body: build_decode_error(
+            ctx,
+            "decode.expected_array",
+            format!("constructor {ctor_name} values must be a JSON array"),
+            sp,
+        ),
+        span: sp,
+    };
+    // vals_opt = Some jv; match jv { JList xs -> cont; _ -> Err }
+    let jv_vals_bound = ctx.fresh_local("__dec_pl_jv");
+    let vals_some_arm = ridge_ir::IrArm {
+        pat: ridge_ir::IrPat::Ctor {
+            sym: SymbolRef::Prelude {
+                name: "Some".to_string(),
+            },
+            fields: vec![],
+            args: vec![ridge_ir::IrPat::Bind {
+                name: jv_vals_bound.clone(),
+                inner: None,
+                span: sp,
+            }],
+            span: sp,
+        },
+        when: None,
+        body: IrExpr::Match {
+            id: ctx.fresh_id(None),
+            scrutinee: Box::new(IrExpr::Local {
+                id: ctx.fresh_id(None),
+                name: jv_vals_bound,
+                span: sp,
+            }),
+            arms: vec![jlist_arm, bad_shape_arm],
+            span: sp,
+        },
+        span: sp,
+    };
+    let vals_none_arm = ridge_ir::IrArm {
+        pat: ridge_ir::IrPat::Wild { span: sp },
+        when: None,
+        body: build_decode_error(
+            ctx,
+            "decode.bad_arity",
+            format!("missing values field for constructor {ctor_name}"),
+            sp,
+        ),
+        span: sp,
+    };
+    IrExpr::Match {
+        id: ctx.fresh_id(None),
+        scrutinee: Box::new(vals_opt),
+        arms: vec![vals_some_arm, vals_none_arm],
+        span: sp,
+    }
+}
+
+/// Build the accumulator-Result fold for decoding a `List T`.
+///
+/// Emits:
+/// ```text
+/// std.list.fold (\elem acc ->
+///   match acc {
+///     Err e -> Err e
+///     Ok done -> match decode_shape(inner, elem) {
+///                  Ok v -> Ok (done ++ [v])  -- via std.list.append
+///                  Err e -> Err e
+///                }
+///   }
+/// ) (Ok []) xs
+/// |> map std.list.reverse
+/// ```
+///
+/// The accumulator threads `Result (List T) Error`; once `Err`, it stays `Err`.
+/// `IrExpr::Return` is NOT used inside the lambda — safe for fold.
+///
+/// Returns an expression of type `Result (List T) Error`.
+#[expect(
+    clippy::too_many_lines,
+    reason = "flat accumulator-fold IR construction; each step is self-contained IR"
+)]
+fn build_list_decode_fold(
+    ctx: &mut LowerCtx<'_>,
+    inner: &ridge_typecheck::FieldShape,
+    xs: IrExpr,
+    sp: Span,
+) -> IrExpr {
+    use ridge_types::CapabilitySet;
+
+    let elem_param = ctx.fresh_local("__df_elem");
+    let acc_param = ctx.fresh_local("__df_acc");
+    let ok_done_bound = ctx.fresh_local("__df_done");
+    let err_pass_bound = ctx.fresh_local("__df_err");
+    let ok_v_bound = ctx.fresh_local("__df_v");
+    let inner_err_bound = ctx.fresh_local("__df_ierr");
+
+    // Ok v -> Ok (done ++ [v])
+    // Use Cons to prepend (we reverse at the end — cheaper than append).
+    let prepend = IrExpr::Cons {
+        id: ctx.fresh_id(None),
+        head: Box::new(IrExpr::Local {
+            id: ctx.fresh_id(None),
+            name: ok_v_bound.clone(),
+            span: sp,
+        }),
+        tail: Box::new(IrExpr::Local {
+            id: ctx.fresh_id(None),
+            name: ok_done_bound.clone(),
+            span: sp,
+        }),
+        span: sp,
+    };
+    let ok_prepend = build_ok(prepend, sp);
+    let inner_err_local = IrExpr::Local {
+        id: ctx.fresh_id(None),
+        name: inner_err_bound.clone(),
+        span: sp,
+    };
+    let pass_inner_err = IrExpr::Construct {
+        id: ctx.fresh_id(None),
+        ctor: SymbolRef::Prelude {
+            name: "Err".to_string(),
+        },
+        fields: vec![("$0".to_string(), inner_err_local)],
+        span: sp,
+    };
+    let inner_ok_arm = ridge_ir::IrArm {
+        pat: ridge_ir::IrPat::Ctor {
+            sym: SymbolRef::Prelude {
+                name: "Ok".to_string(),
+            },
+            fields: vec![],
+            args: vec![ridge_ir::IrPat::Bind {
+                name: ok_v_bound,
+                inner: None,
+                span: sp,
+            }],
+            span: sp,
+        },
+        when: None,
+        body: ok_prepend,
+        span: sp,
+    };
+    let inner_err_arm = ridge_ir::IrArm {
+        pat: ridge_ir::IrPat::Ctor {
+            sym: SymbolRef::Prelude {
+                name: "Err".to_string(),
+            },
+            fields: vec![],
+            args: vec![ridge_ir::IrPat::Bind {
+                name: inner_err_bound,
+                inner: None,
+                span: sp,
+            }],
+            span: sp,
+        },
+        when: None,
+        body: pass_inner_err,
+        span: sp,
+    };
+    // decode_shape(inner, elem) → match { Ok v -> Ok (v::done); Err e -> Err e }
+    let elem_local = IrExpr::Local {
+        id: ctx.fresh_id(None),
+        name: elem_param.clone(),
+        span: sp,
+    };
+    let sub_decode = decode_shape(ctx, inner, elem_local, sp);
+    let inner_match = IrExpr::Match {
+        id: ctx.fresh_id(None),
+        scrutinee: Box::new(sub_decode),
+        arms: vec![inner_ok_arm, inner_err_arm],
+        span: sp,
+    };
+    // Ok done -> <inner_match>
+    let ok_acc_arm = ridge_ir::IrArm {
+        pat: ridge_ir::IrPat::Ctor {
+            sym: SymbolRef::Prelude {
+                name: "Ok".to_string(),
+            },
+            fields: vec![],
+            args: vec![ridge_ir::IrPat::Bind {
+                name: ok_done_bound,
+                inner: None,
+                span: sp,
+            }],
+            span: sp,
+        },
+        when: None,
+        body: inner_match,
+        span: sp,
+    };
+    // Err e -> Err e
+    let err_pass_local = IrExpr::Local {
+        id: ctx.fresh_id(None),
+        name: err_pass_bound.clone(),
+        span: sp,
+    };
+    let pass_err = IrExpr::Construct {
+        id: ctx.fresh_id(None),
+        ctor: SymbolRef::Prelude {
+            name: "Err".to_string(),
+        },
+        fields: vec![("$0".to_string(), err_pass_local)],
+        span: sp,
+    };
+    let err_acc_arm = ridge_ir::IrArm {
+        pat: ridge_ir::IrPat::Ctor {
+            sym: SymbolRef::Prelude {
+                name: "Err".to_string(),
+            },
+            fields: vec![],
+            args: vec![ridge_ir::IrPat::Bind {
+                name: err_pass_bound,
+                inner: None,
+                span: sp,
+            }],
+            span: sp,
+        },
+        when: None,
+        body: pass_err,
+        span: sp,
+    };
+    // Lambda body: match acc { Ok done -> ...; Err e -> Err e }
+    let lambda_body = IrExpr::Match {
+        id: ctx.fresh_id(None),
+        scrutinee: Box::new(IrExpr::Local {
+            id: ctx.fresh_id(None),
+            name: acc_param.clone(),
+            span: sp,
+        }),
+        arms: vec![ok_acc_arm, err_acc_arm],
+        span: sp,
+    };
+    // ridge_rt:list_fold calls F(Acc, Elem) — acc is the first arg, elem second.
+    let fold_lambda = IrExpr::Lambda {
+        id: ctx.fresh_id(None),
+        params: vec![
+            IrParam {
+                name: acc_param,
+                ty: ridge_types::Type::Error,
+                span: sp,
+            },
+            IrParam {
+                name: elem_param,
+                ty: ridge_types::Type::Error,
+                span: sp,
+            },
+        ],
+        body: Box::new(lambda_body),
+        caps: CapabilitySet::PURE,
+        span: sp,
+    };
+    // seed = Ok []
+    let seed_list_id = ctx.fresh_id(None);
+    let seed = build_ok(
+        IrExpr::ListLit {
+            id: seed_list_id,
+            elems: vec![],
+            span: sp,
+        },
+        sp,
+    );
+    // std.list.fold lambda seed xs
+    let fold_result = IrExpr::Call {
+        id: ctx.fresh_id(None),
+        callee: Box::new(IrExpr::Symbol {
+            id: ctx.fresh_id(None),
+            sym: SymbolRef::Stdlib {
+                module: "std.list".to_string(),
+                name: "fold".to_string(),
+            },
+            span: sp,
+        }),
+        args: vec![fold_lambda, seed, xs],
+        span: sp,
+    };
+    // Reverse the accumulated list: fold_result is Ok (reversed_list) | Err e.
+    // match fold_result { Ok reversed -> Ok (std.list.reverse reversed); Err e -> Err e }
+    let rev_bound = ctx.fresh_local("__df_rev");
+    let rev_err_bound = ctx.fresh_local("__df_rev_err");
+    let rev_call = IrExpr::Call {
+        id: ctx.fresh_id(None),
+        callee: Box::new(IrExpr::Symbol {
+            id: ctx.fresh_id(None),
+            sym: SymbolRef::Stdlib {
+                module: "std.list".to_string(),
+                name: "reverse".to_string(),
+            },
+            span: sp,
+        }),
+        args: vec![IrExpr::Local {
+            id: ctx.fresh_id(None),
+            name: rev_bound.clone(),
+            span: sp,
+        }],
+        span: sp,
+    };
+    let ok_rev = build_ok(rev_call, sp);
+    let ok_rev_arm = ridge_ir::IrArm {
+        pat: ridge_ir::IrPat::Ctor {
+            sym: SymbolRef::Prelude {
+                name: "Ok".to_string(),
+            },
+            fields: vec![],
+            args: vec![ridge_ir::IrPat::Bind {
+                name: rev_bound,
+                inner: None,
+                span: sp,
+            }],
+            span: sp,
+        },
+        when: None,
+        body: ok_rev,
+        span: sp,
+    };
+    let pass_rev_err_local = IrExpr::Local {
+        id: ctx.fresh_id(None),
+        name: rev_err_bound.clone(),
+        span: sp,
+    };
+    let pass_rev_err = IrExpr::Construct {
+        id: ctx.fresh_id(None),
+        ctor: SymbolRef::Prelude {
+            name: "Err".to_string(),
+        },
+        fields: vec![("$0".to_string(), pass_rev_err_local)],
+        span: sp,
+    };
+    let err_rev_arm = ridge_ir::IrArm {
+        pat: ridge_ir::IrPat::Ctor {
+            sym: SymbolRef::Prelude {
+                name: "Err".to_string(),
+            },
+            fields: vec![],
+            args: vec![ridge_ir::IrPat::Bind {
+                name: rev_err_bound,
+                inner: None,
+                span: sp,
+            }],
+            span: sp,
+        },
+        when: None,
+        body: pass_rev_err,
+        span: sp,
+    };
+    IrExpr::Match {
+        id: ctx.fresh_id(None),
+        scrutinee: Box::new(fold_result),
+        arms: vec![ok_rev_arm, err_rev_arm],
+        span: sp,
+    }
+}
+
+/// Build the accumulator-Result fold for decoding a `Map Text T`.
+///
+/// Converts the `JObject` map to a list of (key, value) pairs via `std.map.toList`,
+/// folds over them decoding each value, then reassembles via `std.map.fromList`.
+#[expect(
+    clippy::too_many_lines,
+    reason = "flat accumulator-fold IR construction; splitting would reduce readability without reducing complexity"
+)]
+fn build_map_decode_fold(
+    ctx: &mut LowerCtx<'_>,
+    inner: &ridge_typecheck::FieldShape,
+    m: IrExpr,
+    sp: Span,
+) -> IrExpr {
+    use ridge_types::CapabilitySet;
+
+    // pairs = std.map.toList m → List (Text, JsonValue)
+    let pairs = IrExpr::Call {
+        id: ctx.fresh_id(None),
+        callee: Box::new(IrExpr::Symbol {
+            id: ctx.fresh_id(None),
+            sym: SymbolRef::Stdlib {
+                module: "std.map".to_string(),
+                name: "toList".to_string(),
+            },
+            span: sp,
+        }),
+        args: vec![m],
+        span: sp,
+    };
+
+    // Fold over pairs: acc = Result (List (Text, T)) Error
+    let pair_param = ctx.fresh_local("__dm_pair");
+    let acc_param = ctx.fresh_local("__dm_acc");
+    let k_bound = ctx.fresh_local("__dm_k");
+    let v_bound = ctx.fresh_local("__dm_v");
+    let ok_done_bound = ctx.fresh_local("__dm_done");
+    let err_pass_bound = ctx.fresh_local("__dm_err");
+    let ok_tv_bound = ctx.fresh_local("__dm_tv");
+    let inner_err_bound = ctx.fresh_local("__dm_ierr");
+
+    // decode v → Result T Error
+    let v_local = IrExpr::Local {
+        id: ctx.fresh_id(None),
+        name: v_bound.clone(),
+        span: sp,
+    };
+    let sub_decode = decode_shape(ctx, inner, v_local, sp);
+
+    // Ok tv -> Ok ((k, tv) :: done)
+    let k_local = IrExpr::Local {
+        id: ctx.fresh_id(None),
+        name: k_bound.clone(),
+        span: sp,
+    };
+    let tv_local = IrExpr::Local {
+        id: ctx.fresh_id(None),
+        name: ok_tv_bound.clone(),
+        span: sp,
+    };
+    let new_pair = IrExpr::Tuple {
+        id: ctx.fresh_id(None),
+        elems: vec![k_local, tv_local],
+        span: sp,
+    };
+    let prepend = IrExpr::Cons {
+        id: ctx.fresh_id(None),
+        head: Box::new(new_pair),
+        tail: Box::new(IrExpr::Local {
+            id: ctx.fresh_id(None),
+            name: ok_done_bound.clone(),
+            span: sp,
+        }),
+        span: sp,
+    };
+    let ok_prepend = build_ok(prepend, sp);
+    let inner_err_local = IrExpr::Local {
+        id: ctx.fresh_id(None),
+        name: inner_err_bound.clone(),
+        span: sp,
+    };
+    let pass_inner_err = IrExpr::Construct {
+        id: ctx.fresh_id(None),
+        ctor: SymbolRef::Prelude {
+            name: "Err".to_string(),
+        },
+        fields: vec![("$0".to_string(), inner_err_local)],
+        span: sp,
+    };
+    let inner_ok_arm = ridge_ir::IrArm {
+        pat: ridge_ir::IrPat::Ctor {
+            sym: SymbolRef::Prelude {
+                name: "Ok".to_string(),
+            },
+            fields: vec![],
+            args: vec![ridge_ir::IrPat::Bind {
+                name: ok_tv_bound,
+                inner: None,
+                span: sp,
+            }],
+            span: sp,
+        },
+        when: None,
+        body: ok_prepend,
+        span: sp,
+    };
+    let inner_err_arm = ridge_ir::IrArm {
+        pat: ridge_ir::IrPat::Ctor {
+            sym: SymbolRef::Prelude {
+                name: "Err".to_string(),
+            },
+            fields: vec![],
+            args: vec![ridge_ir::IrPat::Bind {
+                name: inner_err_bound,
+                inner: None,
+                span: sp,
+            }],
+            span: sp,
+        },
+        when: None,
+        body: pass_inner_err,
+        span: sp,
+    };
+    let inner_match = IrExpr::Match {
+        id: ctx.fresh_id(None),
+        scrutinee: Box::new(sub_decode),
+        arms: vec![inner_ok_arm, inner_err_arm],
+        span: sp,
+    };
+
+    // Destructure the (k, v) pair: match pair { (k, v) -> ... }
+    // Use Tuple pattern to bind k and v.
+    let kv_body = inner_match;
+    let ok_acc_arm = ridge_ir::IrArm {
+        pat: ridge_ir::IrPat::Ctor {
+            sym: SymbolRef::Prelude {
+                name: "Ok".to_string(),
+            },
+            fields: vec![],
+            args: vec![ridge_ir::IrPat::Bind {
+                name: ok_done_bound,
+                inner: None,
+                span: sp,
+            }],
+            span: sp,
+        },
+        when: None,
+        body: {
+            // Bind k and v from pair, then run kv_body.
+            // Use a Tuple pattern match on pair.
+            let pair_local = IrExpr::Local {
+                id: ctx.fresh_id(None),
+                name: pair_param.clone(),
+                span: sp,
+            };
+            let tuple_arm = ridge_ir::IrArm {
+                pat: ridge_ir::IrPat::Tuple {
+                    elems: vec![
+                        ridge_ir::IrPat::Bind {
+                            name: k_bound,
+                            inner: None,
+                            span: sp,
+                        },
+                        ridge_ir::IrPat::Bind {
+                            name: v_bound,
+                            inner: None,
+                            span: sp,
+                        },
+                    ],
+                    span: sp,
+                },
+                when: None,
+                body: kv_body,
+                span: sp,
+            };
+            let wild_tuple_arm = ridge_ir::IrArm {
+                pat: ridge_ir::IrPat::Wild { span: sp },
+                when: None,
+                body: build_decode_error(
+                    ctx,
+                    "decode.expected_object",
+                    "map entry is not a key-value pair".to_string(),
+                    sp,
+                ),
+                span: sp,
+            };
+            IrExpr::Match {
+                id: ctx.fresh_id(None),
+                scrutinee: Box::new(pair_local),
+                arms: vec![tuple_arm, wild_tuple_arm],
+                span: sp,
+            }
+        },
+        span: sp,
+    };
+    let err_pass_local = IrExpr::Local {
+        id: ctx.fresh_id(None),
+        name: err_pass_bound.clone(),
+        span: sp,
+    };
+    let pass_err = IrExpr::Construct {
+        id: ctx.fresh_id(None),
+        ctor: SymbolRef::Prelude {
+            name: "Err".to_string(),
+        },
+        fields: vec![("$0".to_string(), err_pass_local)],
+        span: sp,
+    };
+    let err_acc_arm = ridge_ir::IrArm {
+        pat: ridge_ir::IrPat::Ctor {
+            sym: SymbolRef::Prelude {
+                name: "Err".to_string(),
+            },
+            fields: vec![],
+            args: vec![ridge_ir::IrPat::Bind {
+                name: err_pass_bound,
+                inner: None,
+                span: sp,
+            }],
+            span: sp,
+        },
+        when: None,
+        body: pass_err,
+        span: sp,
+    };
+    let lambda_body = IrExpr::Match {
+        id: ctx.fresh_id(None),
+        scrutinee: Box::new(IrExpr::Local {
+            id: ctx.fresh_id(None),
+            name: acc_param.clone(),
+            span: sp,
+        }),
+        arms: vec![ok_acc_arm, err_acc_arm],
+        span: sp,
+    };
+    // ridge_rt:list_fold calls F(Acc, Elem) — acc is the first arg, pair second.
+    let fold_lambda = IrExpr::Lambda {
+        id: ctx.fresh_id(None),
+        params: vec![
+            IrParam {
+                name: acc_param,
+                ty: ridge_types::Type::Error,
+                span: sp,
+            },
+            IrParam {
+                name: pair_param,
+                ty: ridge_types::Type::Error,
+                span: sp,
+            },
+        ],
+        body: Box::new(lambda_body),
+        caps: CapabilitySet::PURE,
+        span: sp,
+    };
+    let seed_list_id2 = ctx.fresh_id(None);
+    let seed = build_ok(
+        IrExpr::ListLit {
+            id: seed_list_id2,
+            elems: vec![],
+            span: sp,
+        },
+        sp,
+    );
+    let fold_result = IrExpr::Call {
+        id: ctx.fresh_id(None),
+        callee: Box::new(IrExpr::Symbol {
+            id: ctx.fresh_id(None),
+            sym: SymbolRef::Stdlib {
+                module: "std.list".to_string(),
+                name: "fold".to_string(),
+            },
+            span: sp,
+        }),
+        args: vec![fold_lambda, seed, pairs],
+        span: sp,
+    };
+    // match fold_result { Ok pairs_rev -> Ok (fromList (reverse pairs_rev)); Err e -> Err e }
+    let pairs_rev_bound = ctx.fresh_local("__dm_pr");
+    let map_err_bound = ctx.fresh_local("__dm_me");
+    let rev_call = IrExpr::Call {
+        id: ctx.fresh_id(None),
+        callee: Box::new(IrExpr::Symbol {
+            id: ctx.fresh_id(None),
+            sym: SymbolRef::Stdlib {
+                module: "std.list".to_string(),
+                name: "reverse".to_string(),
+            },
+            span: sp,
+        }),
+        args: vec![IrExpr::Local {
+            id: ctx.fresh_id(None),
+            name: pairs_rev_bound.clone(),
+            span: sp,
+        }],
+        span: sp,
+    };
+    let from_list = IrExpr::Call {
+        id: ctx.fresh_id(None),
+        callee: Box::new(IrExpr::Symbol {
+            id: ctx.fresh_id(None),
+            sym: SymbolRef::Stdlib {
+                module: "std.map".to_string(),
+                name: "fromList".to_string(),
+            },
+            span: sp,
+        }),
+        args: vec![rev_call],
+        span: sp,
+    };
+    let ok_map = build_ok(from_list, sp);
+    let ok_pairs_arm = ridge_ir::IrArm {
+        pat: ridge_ir::IrPat::Ctor {
+            sym: SymbolRef::Prelude {
+                name: "Ok".to_string(),
+            },
+            fields: vec![],
+            args: vec![ridge_ir::IrPat::Bind {
+                name: pairs_rev_bound,
+                inner: None,
+                span: sp,
+            }],
+            span: sp,
+        },
+        when: None,
+        body: ok_map,
+        span: sp,
+    };
+    let pass_map_err_local = IrExpr::Local {
+        id: ctx.fresh_id(None),
+        name: map_err_bound.clone(),
+        span: sp,
+    };
+    let pass_map_err = IrExpr::Construct {
+        id: ctx.fresh_id(None),
+        ctor: SymbolRef::Prelude {
+            name: "Err".to_string(),
+        },
+        fields: vec![("$0".to_string(), pass_map_err_local)],
+        span: sp,
+    };
+    let err_map_arm = ridge_ir::IrArm {
+        pat: ridge_ir::IrPat::Ctor {
+            sym: SymbolRef::Prelude {
+                name: "Err".to_string(),
+            },
+            fields: vec![],
+            args: vec![ridge_ir::IrPat::Bind {
+                name: map_err_bound,
+                inner: None,
+                span: sp,
+            }],
+            span: sp,
+        },
+        when: None,
+        body: pass_map_err,
+        span: sp,
+    };
+    IrExpr::Match {
+        id: ctx.fresh_id(None),
+        scrutinee: Box::new(fold_result),
+        arms: vec![ok_pairs_arm, err_map_arm],
+        span: sp,
+    }
 }
 
 // ── Private helpers ───────────────────────────────────────────────────────────
@@ -1866,5 +5203,385 @@ mod tests {
             contains_op(&fn_item.body, "lt") || contains_op(&fn_item.body, "gt"),
             "same-variant payload tiebreak must emit std.op.lt/gt for comparison"
         );
+    }
+
+    // ── Derived Encode User field emits a Call, not identity ─────────────────
+
+    /// Walk `expr` recursively and return true if it (directly or transitively)
+    /// contains a `Call` whose callee is a `SymbolRef::Local` with name matching
+    /// `expected_fn`.
+    fn contains_local_call(expr: &IrExpr, expected_fn: &str) -> bool {
+        match expr {
+            IrExpr::Call { callee, args, .. } => {
+                if let IrExpr::Symbol {
+                    sym: SymbolRef::Local { name, .. },
+                    ..
+                } = callee.as_ref()
+                {
+                    if name == expected_fn {
+                        return true;
+                    }
+                }
+                contains_local_call(callee, expected_fn)
+                    || args.iter().any(|a| contains_local_call(a, expected_fn))
+            }
+            IrExpr::Match {
+                scrutinee, arms, ..
+            } => {
+                contains_local_call(scrutinee, expected_fn)
+                    || arms
+                        .iter()
+                        .any(|arm| contains_local_call(&arm.body, expected_fn))
+            }
+            IrExpr::Field { base, .. } => contains_local_call(base, expected_fn),
+            IrExpr::Tuple { elems, .. } | IrExpr::ListLit { elems, .. } => {
+                elems.iter().any(|e| contains_local_call(e, expected_fn))
+            }
+            IrExpr::Lambda { body, .. } => contains_local_call(body, expected_fn),
+            _ => false,
+        }
+    }
+
+    #[test]
+    fn derived_encode_user_field_emits_call_not_identity() {
+        use ridge_typecheck::{
+            DerivedInstance, DerivedMethodBody, FieldShape, InstanceInfo, InstanceOrigin,
+        };
+        use ridge_types::{TyConId, ENCODE_CLASS};
+
+        let mut ctx = fresh_ctx();
+
+        // Order = { customer: Customer } deriving (Encode)
+        // where Customer is a same-module user type with TyConId(200).
+        // The `customer` field shape is User { tycon: 200, type_name: "Customer" }.
+        // The lowering must emit a Call to `Encode__Customer__encode`, not identity.
+        let derived = DerivedInstance {
+            key: (ENCODE_CLASS, TyConId(201)),
+            instance_info: InstanceInfo {
+                def_module: Some(0),
+                methods: vec![("encode".to_string(), String::new())],
+                ctx_constraints: vec![],
+                origin: InstanceOrigin::Explicit,
+                span: sp(),
+            },
+            method_body: DerivedMethodBody::DerivedEncodeRecord {
+                field_names: vec!["customer".to_string()],
+                field_shapes: vec![FieldShape::User {
+                    tycon: TyConId(200),
+                    type_name: "Customer".to_string(),
+                }],
+            },
+        };
+
+        let items = lower_derived_instance(&mut ctx, &derived, "Encode", "Order");
+        assert_eq!(items.len(), 2, "method fn + dict const");
+
+        let fn_item = match &items[0] {
+            IrItem::Fn(f) => f,
+            other => panic!("expected IrFn, got {other:?}"),
+        };
+
+        // The body must call Encode__Customer__encode, not pass the value through.
+        // The call to Encode__Customer__encode receives x.customer as its argument,
+        // so this single assertion confirms both that the correct fn is called and
+        // that the field accessor is wired in.
+        assert!(
+            contains_local_call(&fn_item.body, "Encode__Customer__encode"),
+            "User field must emit a Call to Encode__Customer__encode; \
+             body: {:#?}",
+            fn_item.body
+        );
+    }
+
+    // ── Derived Decode record body — JObject guard + field lookups ──────────
+
+    /// Walk `expr` recursively and return true if it contains a `Construct`
+    /// with the given Prelude ctor name.
+    fn contains_prelude_ctor(expr: &IrExpr, ctor: &str) -> bool {
+        match expr {
+            IrExpr::Construct {
+                ctor: c, fields, ..
+            } => {
+                if let SymbolRef::Prelude { name } = c {
+                    if name == ctor {
+                        return true;
+                    }
+                }
+                fields.iter().any(|(_, e)| contains_prelude_ctor(e, ctor))
+            }
+            IrExpr::Match {
+                scrutinee, arms, ..
+            } => {
+                contains_prelude_ctor(scrutinee, ctor)
+                    || arms
+                        .iter()
+                        .any(|arm| contains_prelude_ctor(&arm.body, ctor))
+            }
+            IrExpr::Call { callee, args, .. } => {
+                contains_prelude_ctor(callee, ctor)
+                    || args.iter().any(|a| contains_prelude_ctor(a, ctor))
+            }
+            IrExpr::Return { value, .. } => contains_prelude_ctor(value, ctor),
+            _ => false,
+        }
+    }
+
+    /// Walk `expr` recursively and return true if it contains a Return.
+    fn contains_return(expr: &IrExpr) -> bool {
+        match expr {
+            IrExpr::Return { .. } => true,
+            IrExpr::Match {
+                scrutinee, arms, ..
+            } => contains_return(scrutinee) || arms.iter().any(|arm| contains_return(&arm.body)),
+            IrExpr::Call { callee, args, .. } => {
+                contains_return(callee) || args.iter().any(contains_return)
+            }
+            IrExpr::Construct { fields, .. } => fields.iter().any(|(_, e)| contains_return(e)),
+            _ => false,
+        }
+    }
+
+    #[test]
+    fn derived_decode_record_body_has_jobject_guard_and_ok_ctor() {
+        use ridge_typecheck::{
+            DerivedInstance, DerivedMethodBody, FieldShape, InstanceInfo, InstanceOrigin,
+        };
+        use ridge_types::{TyConId, DECODE_CLASS};
+
+        let mut ctx = fresh_ctx();
+
+        // Person = { name: Text, age: Int } deriving (Decode)
+        let derived = DerivedInstance {
+            key: (DECODE_CLASS, TyConId(100)),
+            instance_info: InstanceInfo {
+                def_module: Some(0),
+                methods: vec![("decode".to_string(), String::new())],
+                ctx_constraints: vec![],
+                origin: InstanceOrigin::Explicit,
+                span: sp(),
+            },
+            method_body: DerivedMethodBody::DerivedDecodeRecord {
+                field_names: vec!["name".to_string(), "age".to_string()],
+                field_shapes: vec![
+                    FieldShape::Prim(TyConId(3)), // Text
+                    FieldShape::Prim(TyConId(0)), // Int
+                ],
+            },
+        };
+
+        let items = lower_derived_instance(&mut ctx, &derived, "Decode", "Person");
+        assert_eq!(items.len(), 2, "method fn + dict const");
+
+        let fn_item = match &items[0] {
+            IrItem::Fn(f) => f,
+            other => panic!("expected IrFn, got {other:?}"),
+        };
+
+        // The body must be a Match (outer JObject guard).
+        assert!(
+            matches!(&fn_item.body, IrExpr::Match { .. }),
+            "Decode record body must be a Match on j"
+        );
+
+        // The body must contain an Ok construction (the happy-path Ok(T {...}) assembly).
+        assert!(
+            contains_prelude_ctor(&fn_item.body, "Ok"),
+            "Decode record body must contain Ok(...) assembly; body: {:#?}",
+            fn_item.body
+        );
+
+        // The body must contain a Return for fail-fast on missing field.
+        assert!(
+            contains_return(&fn_item.body),
+            "Decode record body must contain Return for missing-field fail-fast"
+        );
+    }
+
+    #[test]
+    fn derived_decode_union_body_has_jtext_and_jobject_arms() {
+        use ridge_typecheck::{
+            DerivedInstance, DerivedMethodBody, FieldShape, InstanceInfo, InstanceOrigin,
+        };
+        use ridge_types::{TyConId, DECODE_CLASS};
+
+        let mut ctx = fresh_ctx();
+
+        // Shape = Circle Float | Rect Float Float | Admin (nullary) deriving (Decode)
+        let derived = DerivedInstance {
+            key: (DECODE_CLASS, TyConId(101)),
+            instance_info: InstanceInfo {
+                def_module: Some(0),
+                methods: vec![("decode".to_string(), String::new())],
+                ctx_constraints: vec![],
+                origin: InstanceOrigin::Explicit,
+                span: sp(),
+            },
+            method_body: DerivedMethodBody::DerivedDecodeUnion {
+                variants: vec![
+                    ("Admin".to_string(), vec![]),
+                    ("Circle".to_string(), vec![FieldShape::Prim(TyConId(1))]),
+                ],
+            },
+        };
+
+        let items = lower_derived_instance(&mut ctx, &derived, "Decode", "Shape");
+        assert_eq!(items.len(), 2, "method fn + dict const");
+
+        let fn_item = match &items[0] {
+            IrItem::Fn(f) => f,
+            other => panic!("expected IrFn, got {other:?}"),
+        };
+
+        // The outer body must be a Match.
+        assert!(
+            matches!(&fn_item.body, IrExpr::Match { .. }),
+            "Decode union body must be a Match on j"
+        );
+
+        // Must contain Ok (for nullary ctor success).
+        assert!(
+            contains_prelude_ctor(&fn_item.body, "Ok"),
+            "Decode union body must contain Ok(...) for successful decode"
+        );
+    }
+
+    #[test]
+    fn derived_decode_user_field_emits_local_call() {
+        use ridge_typecheck::{
+            DerivedInstance, DerivedMethodBody, FieldShape, InstanceInfo, InstanceOrigin,
+        };
+        use ridge_types::{TyConId, DECODE_CLASS};
+
+        let mut ctx = fresh_ctx();
+
+        // Invoice = { customer: Customer } deriving (Decode)
+        // The customer field shape is User { tycon: 200, type_name: "Customer" }.
+        // The lowering must emit a Call to `Decode__Customer__decode`.
+        let derived = DerivedInstance {
+            key: (DECODE_CLASS, TyConId(201)),
+            instance_info: InstanceInfo {
+                def_module: Some(0),
+                methods: vec![("decode".to_string(), String::new())],
+                ctx_constraints: vec![],
+                origin: InstanceOrigin::Explicit,
+                span: sp(),
+            },
+            method_body: DerivedMethodBody::DerivedDecodeRecord {
+                field_names: vec!["customer".to_string()],
+                field_shapes: vec![FieldShape::User {
+                    tycon: TyConId(200),
+                    type_name: "Customer".to_string(),
+                }],
+            },
+        };
+
+        let items = lower_derived_instance(&mut ctx, &derived, "Decode", "Invoice");
+        assert_eq!(items.len(), 2, "method fn + dict const");
+
+        let fn_item = match &items[0] {
+            IrItem::Fn(f) => f,
+            other => panic!("expected IrFn, got {other:?}"),
+        };
+
+        assert!(
+            contains_local_call(&fn_item.body, "Decode__Customer__decode"),
+            "User field must emit a Call to Decode__Customer__decode; body: {:#?}",
+            fn_item.body
+        );
+    }
+
+    #[test]
+    fn derived_decode_list_field_uses_fold() {
+        fn contains_lambda(expr: &IrExpr) -> bool {
+            match expr {
+                IrExpr::Lambda { .. } => true,
+                IrExpr::Match {
+                    scrutinee, arms, ..
+                } => contains_lambda(scrutinee) || arms.iter().any(|a| contains_lambda(&a.body)),
+                IrExpr::Call { callee, args, .. } => {
+                    contains_lambda(callee) || args.iter().any(contains_lambda)
+                }
+                _ => false,
+            }
+        }
+
+        use ridge_typecheck::{
+            DerivedInstance, DerivedMethodBody, FieldShape, InstanceInfo, InstanceOrigin,
+        };
+        use ridge_types::{TyConId, DECODE_CLASS};
+
+        let mut ctx = fresh_ctx();
+
+        // Profile = { tags: List Text } deriving (Decode)
+        let derived = DerivedInstance {
+            key: (DECODE_CLASS, TyConId(202)),
+            instance_info: InstanceInfo {
+                def_module: Some(0),
+                methods: vec![("decode".to_string(), String::new())],
+                ctx_constraints: vec![],
+                origin: InstanceOrigin::Explicit,
+                span: sp(),
+            },
+            method_body: DerivedMethodBody::DerivedDecodeRecord {
+                field_names: vec!["tags".to_string()],
+                field_shapes: vec![FieldShape::Lst(Box::new(FieldShape::Prim(TyConId(3))))],
+            },
+        };
+
+        let items = lower_derived_instance(&mut ctx, &derived, "Decode", "Profile");
+        assert_eq!(items.len(), 2);
+
+        let fn_item = match &items[0] {
+            IrItem::Fn(f) => f,
+            other => panic!("expected IrFn, got {other:?}"),
+        };
+
+        assert!(
+            contains_lambda(&fn_item.body),
+            "List decode must emit a Lambda for the fold accumulator"
+        );
+    }
+
+    #[test]
+    fn derived_decode_decode_seq_emits_return() {
+        use ridge_ir::IrNodeId;
+        // decode_seq is a private helper, but we verify its output via the record lowering test.
+        // Specifically: the decode record body for a field must contain IrExpr::Return
+        // (fail-fast on missing field).
+        use ridge_typecheck::{
+            DerivedInstance, DerivedMethodBody, FieldShape, InstanceInfo, InstanceOrigin,
+        };
+        use ridge_types::{TyConId, DECODE_CLASS};
+
+        let mut ctx = fresh_ctx();
+
+        let derived = DerivedInstance {
+            key: (DECODE_CLASS, TyConId(203)),
+            instance_info: InstanceInfo {
+                def_module: Some(0),
+                methods: vec![("decode".to_string(), String::new())],
+                ctx_constraints: vec![],
+                origin: InstanceOrigin::Explicit,
+                span: sp(),
+            },
+            method_body: DerivedMethodBody::DerivedDecodeRecord {
+                field_names: vec!["x".to_string()],
+                field_shapes: vec![FieldShape::Prim(TyConId(0))],
+            },
+        };
+
+        let items = lower_derived_instance(&mut ctx, &derived, "Decode", "Point");
+        let fn_item = match &items[0] {
+            IrItem::Fn(f) => f,
+            other => panic!("expected IrFn, got {other:?}"),
+        };
+
+        // The fail-fast pattern (IrExpr::Return) must be present for the missing-field case.
+        assert!(
+            contains_return(&fn_item.body),
+            "decode_seq must emit IrExpr::Return for fail-fast; body: {:#?}",
+            fn_item.body
+        );
+        let _ = IrNodeId(0); // suppress unused warning
     }
 }

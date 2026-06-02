@@ -46,7 +46,7 @@ pub use class_env::{
     InstanceOrigin,
 };
 pub use collect::{collect_workspace, CollectResult};
-pub use derive::{derive_instances, DerivedInstance, DerivedMethodBody};
+pub use derive::{derive_instances, DerivedInstance, DerivedMethodBody, FieldShape};
 pub use error::TypeError;
 pub use render::{emit_internal, emit_internal_strict, render_type_with};
 pub use ridge_resolve::Severity;

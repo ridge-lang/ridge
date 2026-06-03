@@ -1,15 +1,15 @@
-# Ridge — Language Specification & Development Roadmap
+# Ridge — Language Specification
 
-**Version:** 0.3.0-rc2
+**Version:** 0.3.0-rc4
 **Author:** The Ridge Language Authors
-**Last updated:** 2026-06-01
+**Last updated:** 2026-06-03
 
 **History:** Supersedes `RILL_SPEC_AND_ROADMAP.md` (v0.1.0-draft, Rill). The language was renamed from *Rill* to *Ridge* after a design refinement pass. The underlying philosophy is preserved; the following are the substantive changes from the prior draft:
 - Language name: **Ridge** (was *Rill*). File extension: **`.ridge`** (was `.rill`). Manifest: **`ridge.toml`** (was `rill.toml`).
 - Effect system: **9 granular capabilities** with prefix list syntax (was binary `fn`/`fn!`).
-- Multi-target strategy: **BEAM-primary with WebAssembly and native (LLVM) as exploratory backends** behind a target-neutral IR (changed from the fixed multi-target schedule of earlier drafts; see §14).
+- Multi-target strategy: **BEAM-primary with WebAssembly and native (LLVM) as exploratory backends** behind a target-neutral IR (changed from the fixed multi-target schedule of earlier drafts; see §11).
 - **Workspace model** with architectural enforcement by the compiler — new first-class feature.
-- 0.1.0 scope: **LSP minimum + package manager minimum** included (previously deferred).
+- **LSP and a package manager** are part of the toolchain rather than deferred extras.
 
 ---
 
@@ -26,21 +26,18 @@
 8. [Project & Workspace Model](#8-project--workspace-model)
 9. [Standard Library Scope](#9-standard-library-scope)
 10. [Compiler Architecture](#10-compiler-architecture)
-11. [Development Roadmap](#11-development-roadmap)
-12. [Milestones & Deliverables](#12-milestones--deliverables)
-14. [Multi-Target Strategy](#14-multi-target-strategy)
-16. [Open Questions](#16-open-questions)
-17. [Appendices](#17-appendices)
+11. [Multi-Target Strategy](#11-multi-target-strategy)
+12. [Appendices](#12-appendices)
 
 ---
 
 ## 1. Executive Summary
 
-**Ridge** is a general-purpose programming language built around four pillars: **developer experience, safety from the root, first-class performance, and approachability**. It combines immutable data, actor-based concurrency, and a granular effect system visible in function signatures. Ridge compiles to Core Erlang for the BEAM runtime, which is the production target. The intermediate representation is held target-neutral; WebAssembly and native (LLVM) backends remain exploratory work kept feasible by the shared IR (see §14).
+**Ridge** is a general-purpose programming language built around four pillars: **developer experience, safety from the root, first-class performance, and approachability**. It combines immutable data, actor-based concurrency, and a granular effect system visible in function signatures. Ridge compiles to Core Erlang for the BEAM runtime, which is the production target. The intermediate representation is held target-neutral; WebAssembly and native (LLVM) backends remain exploratory work kept feasible by the shared IR (see §11).
 
 The target audience is software developers who want a language that scales from scripts to distributed systems without mode switching — fast to write, easy to reason about, hard to misuse.
 
-**This document defines Ridge 0.1.0**, the first milestone release. It covers language design, compiler architecture, standard library scope, workspace model, and a phased development roadmap with clear milestones.
+**This document defines Ridge 0.3.0-rc4** — the language as it currently ships: typeclasses with deriving (including `Encode`/`Decode`), parametric instances, actors with bounded mailboxes, exhaustive pattern matching, a JSON codec, and the Core Erlang / BEAM backend. It covers language design, the type and capability systems, the standard library scope, the workspace model, and the compiler architecture.
 
 ### Elevator pitch
 
@@ -102,7 +99,7 @@ These will not change, even under pressure.
 
 ### 2.3. Deliberate trade-offs
 
-- **We lose** fine-grained memory control (no manual allocation, no ownership tracking). Ridge is not for tight-loop numerical code or embedded systems. A native backend would narrow this gap and remains on the exploratory roadmap (§14).
+- **We lose** fine-grained memory control (no manual allocation, no ownership tracking). Ridge is not for tight-loop numerical code or embedded systems. A native backend would narrow this gap and remains on the exploratory roadmap (§11).
 - **We lose** familiarity for OO-native developers. The learning curve is steeper than "Java with better syntax."
 - **We accept** a fixed capability set with no user-defined effects. Simpler than Koka/Eff; less expressive.
 - **We gain** correctness by construction, concurrency without fear, code that survives refactors, and the only language-level architectural enforcement on the market.
@@ -119,7 +116,7 @@ fn io main () -> Result Unit Error =
     Ok ()
 ```
 
-A `Unit`-returning `main` is also valid (`fn io main () = Io.println "Hello, World"`), but you lose `?` propagation; see D059.
+A `Unit`-returning `main` is also valid (`fn io main () = Io.println "Hello, World"`), but you lose `?` propagation.
 
 ### 3.2. Basic values and bindings
 
@@ -180,7 +177,7 @@ users |> List.map (.name)
 
 #### Inner function declarations
 
-A `fn` declaration inside another function body may declare its own capability prefix. The inner function's capability set must be a subset of the enclosing function's declared set (D058).
+A `fn` declaration inside another function body may declare its own capability prefix. The inner function's capability set must be a subset of the enclosing function's declared set.
 
 ```ridge
 fn io fs main () -> Result Unit Error =
@@ -189,7 +186,7 @@ fn io fs main () -> Result Unit Error =
     Ok ()
 ```
 
-Top-level `fn` declarations follow D037 (parameters are `Ident` or `(Ident: Type)` only). Inner `fn` declarations follow the same rule for their parameters but may freely declare capability prefixes up to the enclosing set.
+Top-level `fn` declarations restrict their parameters to `Ident` or `(Ident: Type)` only. Inner `fn` declarations follow the same rule for their parameters but may freely declare capability prefixes up to the enclosing set.
 
 ### 3.4. Pipe operator
 
@@ -227,7 +224,7 @@ let older = u with { age = 31 }
 let n = u.name
 ```
 
-The constructor name is **always required** in patterns and construction (D051): write `User { name = n }`, never `{ name = n }`. Shorthand `{ name }` binds to a local variable named `name`, equivalent to `{ name = name }` (D053). Mixed form: `User { name, email = e, age }`.
+The constructor name is **always required** in patterns and construction: write `User { name = n }`, never `{ name = n }`. Shorthand `{ name }` binds to a local variable named `name`, equivalent to `{ name = name }`. Mixed form: `User { name, email = e, age }`.
 
 ```ridge
 -- Union types (algebraic data types)
@@ -271,17 +268,17 @@ match user
     admin @ User { role = Admin } -> handleAdmin admin
     other                         -> handleOther other
 
--- Shorthand field binding in patterns (D053): `{ name }` ≡ `{ name = name }`
+-- Shorthand field binding in patterns: `{ name }` ≡ `{ name = name }`
 match user
     User { name, age } -> $"${name} is ${age}"
 
--- Destructuring in let — full patterns including tuples and records (D052)
+-- Destructuring in let — full patterns including tuples and records
 let (x, y) = point
 let (User { name }, count) = pair           -- tuple with nested record pattern
 fn distance (x1, y1) (x2, y2) = Float.sqrt ((x2-x1)^2 + (y2-y1)^2)
 ```
 
-**Pattern scope rules (D052):** `let` bindings and lambda parameters accept full patterns (tuples, records with shorthand, constructor patterns, wildcards, as-patterns). Top-level `fn` declarations are restricted to `Ident` or `(Ident: Type)` per D037 — destructure inside the body via `let` or `match`.
+**Pattern scope rules:** `let` bindings and lambda parameters accept full patterns (tuples, records with shorthand, constructor patterns, wildcards, as-patterns). Top-level `fn` declarations are restricted to `Ident` or `(Ident: Type)` — destructure inside the body via `let` or `match`.
 
 ### 3.7. Implicit prelude
 
@@ -326,7 +323,7 @@ fn fs net processOrder (orderId: Int) -> Result OrderResult Error =
         Ok { order = order, payment = payment }
 ```
 
-`try { ... }` is a **value-producing expression** (D060): it yields `Result`/`Option`. An unused non-`Unit` result produces a compiler warning (`discarded_result`). To explicitly discard, use `Result.discard : Result a e -> Unit` or `Option.discard : Option a -> Unit` from the stdlib, or use `match`. Ridge has no monadic do-notation — `try` + `?` is the idiomatic chaining mechanism.
+`try { ... }` is a **value-producing expression**: it yields `Result`/`Option`. An unused non-`Unit` result produces a compiler warning (`discarded_result`). To explicitly discard, use `Result.discard : Result a e -> Unit` or `Option.discard : Option a -> Unit` from the stdlib, or use `match`. Ridge has no monadic do-notation — `try` + `?` is the idiomatic chaining mechanism.
 
 ### 3.8. Capabilities (effects)
 
@@ -385,14 +382,14 @@ Handlers may declare capabilities; the actor's effective capability set is the u
 
 #### §3.9.x. init blocks
 
-When actor state cannot be given a compile-time default, an `init` block initialises it at spawn time (D061).
+When actor state cannot be given a compile-time default, an `init` block initialises it at spawn time.
 
 - An actor has at most one `init` block.
 - Syntax: `init [capList] (params) = body`
 - If `init` is present, `spawn ActorName arg1 arg2` passes arguments positionally to `init`.
 - If `init` is absent, all `state` fields must have defaults (preserves current behaviour).
 - Inside `init`, assign state fields with `<-`. Other expressions are allowed.
-- Callers of `spawn` do **not** inherit `init`'s capabilities (consistent with D018 handler encapsulation). Only the `spawn` capability is required in the caller.
+- Callers of `spawn` do **not** inherit `init`'s capabilities (consistent with handler encapsulation). Only the `spawn` capability is required in the caller.
 
 ```ridge
 actor Worker =
@@ -433,7 +430,7 @@ Three forms are accepted:
 
 | Form | Behaviour |
 |------|-----------|
-| (omitted) | Unbounded mailbox. The 0.1.0 / 0.2.6 default. |
+| (omitted) | Unbounded mailbox. The default. |
 | `mailbox unbounded` | Unbounded, explicit. |
 | `mailbox bounded N drop newest` | Bounded at `N`. On overflow: silently drop the incoming message. |
 | `mailbox bounded N error` | Bounded at `N`. On overflow: caller signals failure (see §7.2.1). |
@@ -447,7 +444,7 @@ When `bounded N` is specified, an overflow policy is **mandatory**. Writing
 A third policy, `drop oldest`, is parsed but not yet implemented;
 programs using it produce a type-check error
 (`T027 MailboxPolicyDropOldestNotShipped`) until the broker mechanism it
-requires ships in a later cut. See §7.2.1 for the full semantics — how
+requires ships in a future release. See §7.2.1 for the full semantics — how
 overflow is surfaced through `!`, how the bound is enforced under
 contention, and how observability composes via `Actor.mailboxSize`.
 
@@ -458,7 +455,7 @@ Io.println $"User ${user.name} has ${user.age} years"
 Io.println $"Total: ${items |> List.map (.price) |> List.sum}"
 ```
 
-String interpolation dispatches through the `ToText` class (§5.6). Built-in types (`Int`, `Float`, `Bool`, `Text`, `Timestamp`) have prelude instances. User-defined types become interpolatable by adding `deriving (ToText)` to the type declaration or by writing an explicit `instance ToText T`. See §5.6 and D038.
+String interpolation dispatches through the `ToText` class (§5.6). Built-in types (`Int`, `Float`, `Bool`, `Text`, `Timestamp`) have prelude instances. User-defined types become interpolatable by adding `deriving (ToText)` to the type declaration or by writing an explicit `instance ToText T`. See §5.6.
 
 ### 3.11. Modules and imports
 
@@ -530,7 +527,7 @@ Note: `spawn` appears both as a top-level keyword (the spawn expression) and as 
 ::   list cons
 ++   concatenation
 ->   function type arrow, match arm
-=>   (reserved, not used in 0.1.0)
+=>   (reserved, not currently used)
 @    as-pattern binder
 ..   rest pattern element in list and record patterns (see §4.5)
 ```
@@ -541,7 +538,7 @@ Note: `spawn` appears both as a top-level keyword (the spawn expression) and as 
 - Uppercase-starting: types, constructors, modules
 - Must match: `[a-zA-Z][a-zA-Z0-9_]*`
 - Underscore prefix `_` marks private/unused
-- 0.1.0 is ASCII-only per D049; source files are UTF-8 (string literals and comments may contain any Unicode). Unicode identifiers reconsidered in 0.3.0+.
+- Identifiers are ASCII-only; source files are UTF-8 (string literals and comments may contain any Unicode).
 
 #### Literals
 
@@ -557,7 +554,7 @@ List:    [1, 2, 3], []
 Tuple:   (1, "two", 3.0)
 ```
 
-String escapes (D047): `\n`, `\t`, `\"`, `\\`, `\r`, `\0`, `\u{HHHH}`. Multi-line and raw string literals are described in §4.1.1 below.
+String escapes: `\n`, `\t`, `\"`, `\\`, `\r`, `\0`, `\u{HHHH}`. Multi-line and raw string literals are described in §4.1.1 below.
 
 #### 4.1.1. Multi-line and raw string literals
 
@@ -582,9 +579,7 @@ Syntax rules:
 - Indentation stripping: the column position of the closing `"""` defines the margin. That many leading spaces are stripped from every interior line. A line with fewer spaces than the margin is a parse error.
 - Blank interior lines are allowed and survive as empty lines in the value.
 - Standard escape sequences are processed normally — triple-quoted strings are cooked, not raw.
-- A triple-quoted string is a plain string literal: it does not interpolate. Interpolation remains the `$"..."` form (§3.10); an interpolated multi-line literal (`$"""..."""`) is not provided in 0.2.8.
-
-See D256.
+- A triple-quoted string is a plain string literal: it does not interpolate. Interpolation remains the `$"..."` form (§3.10); an interpolated multi-line literal (`$"""..."""`) is not provided.
 
 **Raw strings (`r"..."`, `r#"..."#`, `r##"..."##`)** disable escape processing entirely. Every byte between the delimiters is literal.
 
@@ -602,8 +597,6 @@ Syntax rules:
 - Raw strings may span multiple lines. Unlike `"""..."""`, there is no dedenting — the content is taken literally.
 - `r` immediately followed by `"` or one or more `#` then `"` is always a raw string. Applying the function `r` to a string requires a space: `r "x"`.
 
-See D257.
-
 #### Comments
 
 ```
@@ -619,12 +612,12 @@ See D257.
 
 Ridge uses **significant indentation** (offside rule), similar to Haskell/F#/Elm.
 
-- A block is introduced by `=`, `->`, `then`, or `else`. (`do` was removed in D056.)
+- A block is introduced by `=`, `->`, `then`, or `else`.
 - The block's contents must be indented strictly deeper than the opening line.
 - Within a block, all items must be at the same indentation level.
 - Tabs are forbidden. Only spaces. (Enforced by lexer; error on tab.)
 - Indentation unit convention: 4 spaces (not enforced, but the formatter uses it).
-- **Layout is partially suppressed inside brackets.** While the bracket-nesting depth (count of open `(`, `[`, `{` not yet matched) is greater than zero, `INDENT` and `DEDENT` tokens are never emitted. However, a `NEWLINE` token _is_ emitted when a logical line begins at column ≤ the baseline column of the first continuation line inside the bracket — this marks a statement boundary inside parenthesised lambda bodies and similar constructs. When depth returns to zero, full layout (including `INDENT`/`DEDENT`) resumes. (D062.)
+- **Layout is partially suppressed inside brackets.** While the bracket-nesting depth (count of open `(`, `[`, `{` not yet matched) is greater than zero, `INDENT` and `DEDENT` tokens are never emitted. However, a `NEWLINE` token _is_ emitted when a logical line begins at column ≤ the baseline column of the first continuation line inside the bracket — this marks a statement boundary inside parenthesised lambda bodies and similar constructs. When depth returns to zero, full layout (including `INDENT`/`DEDENT`) resumes.
 - `spawn` appears both as a top-level keyword (the spawn expression) and as a capability keyword. The parser disambiguates by position: `spawn ActorName args...` is a spawn expression; `fn spawn f ...` declares the `spawn` capability. Arguments to `spawn` are passed positionally to the actor's `init` block if present.
 
 ### 4.3. BNF grammar (selected productions)
@@ -695,7 +688,7 @@ Note: The full normative grammar lives in `docs/grammar.ebnf`. The productions a
 | 7 | `+` `-` | left | |
 | 8 | `*` `/` `%` | left | |
 | 9 | `^` | right | |
-| 10 | `-` (unary negate) | n/a | no prefix `!`; negation is `Bool.not` (D044) |
+| 10 | `-` (unary negate) | n/a | no prefix `!`; negation is `Bool.not` |
 | 11 | `!` `?>` (send / ask) | left | actor message operators |
 | 12 | function application | left | |
 | 13 | `?` (postfix propagate), `.` (field access) | left | call-suffix band |
@@ -734,10 +727,8 @@ match xs
 
 Constraints:
 - At most one `..` per list pattern (`P024 MultipleRestInListPattern`).
-- In 0.2.8, the elements after the rest (`suffix` and `middle` positions) must be simple bindings or wildcards. A refutable element in a suffix or middle position is rejected at the lowering stage (`L009`).
+- The elements after the rest (`suffix` and `middle` positions) must be simple bindings or wildcards. A refutable element in a suffix or middle position is rejected at the lowering stage (`L009`).
 - Matching a trailing element or binding the middle requires traversing the full list, since lists are singly linked. This is ergonomically convenient, not cheap.
-
-See D258.
 
 **Record rest patterns** match a constructor carrying at least the named fields, ignoring any others:
 
@@ -749,8 +740,6 @@ match event
 
 The `..` is a modifier on the field set, not a sub-pattern, and cannot be bound. A record pattern without `..` matches exactly the fields named; with `..` it matches any value of that constructor type that carries at least those fields.
 
-See D259.
-
 ---
 
 ## 5. Type System
@@ -759,13 +748,13 @@ See D259.
 
 Ridge's type system is based on **Hindley-Milner with extensions**:
 
-- Full type inference (no annotation required anywhere in 0.1.0).
+- Full type inference (no annotation required anywhere).
 - Algebraic data types (sum and product).
 - Parametric polymorphism with let-generalization.
+- Type classes with constraints (see §5.6).
 - **Capability inference** alongside type inference (see §5.3).
 
-**Not in 0.1.0 but added in later releases:**
-- Type classes with constraints — shipped in 0.2.13 (see §5.6).
+**Not yet supported:**
 - Row polymorphism for records.
 - Higher-kinded types.
 
@@ -783,7 +772,7 @@ Set a      -- immutable set
 Option a   -- Some a | None
 Result a e -- Ok a | Err e
 Handle a   -- reference to a spawned actor of type a
-Timestamp  -- opaque; no literal syntax (D048); see §9.2 std.time for construction
+Timestamp  -- opaque; no literal syntax; see §9.2 std.time for construction
 ```
 
 ### 5.3. Type inference algorithm
@@ -827,7 +816,7 @@ Ridge has **no implicit subtyping**. No `Dog <: Animal`. This keeps inference de
 
 ### 5.6. Typeclasses
 
-Ridge 0.2.13 adds typeclasses: named interfaces that a type can satisfy, with coherence guarantees enforced by the compiler. Dispatch is dictionary-passing — no runtime type tags, no reflection, near-zero overhead at monomorphic call sites.
+Ridge has typeclasses: named interfaces that a type can satisfy, with coherence guarantees enforced by the compiler. Dispatch is dictionary-passing — no runtime type tags, no reflection, near-zero overhead at monomorphic call sites.
 
 #### 5.6.1. Class declarations
 
@@ -844,7 +833,7 @@ class Ord a where Eq a =
     compare (x: a) (y: a) -> Ordering
 ```
 
-Method signatures inside a class body are **bare**: no `fn` keyword, no body. A class body is a list of contracts. Default method bodies are not supported in 0.2.13.
+Method signatures inside a class body are **bare**: no `fn` keyword, no body. A class body is a list of contracts. Default method bodies are not supported.
 
 Superclasses are declared with a `where` clause between the type variable and `=`. `class Ord a where Eq a` means every `Ord` instance requires a corresponding `Eq` instance for the same type. An empty class body is rejected (`P030 MalformedClassDecl`).
 
@@ -1074,14 +1063,14 @@ fn fs net syncConfig (url: Text) -> Result Unit Error =
 
 Capabilities appear between `fn` (or `on`) and the function name, in any order but conventionally alphabetical.
 
-Inner `fn` declarations inside a function body may also declare a capability prefix; the inner function's capability set must be a subset of the enclosing function's declared set (D058; see §3.3 for example).
+Inner `fn` declarations inside a function body may also declare a capability prefix; the inner function's capability set must be a subset of the enclosing function's declared set (see §3.3 for example).
 
 ### 6.3. Propagation rules
 
 1. **Pure functions may only call pure functions.** Calling `Io.print` from `fn f` is a compile error.
 2. **`fn X f` may call `fn g` (pure) and `fn Y h` where `Y ⊆ X`.** A caller must have at least the capabilities of the callee.
 3. **Inference + verification.** The compiler infers the capability set of a body; if a signature is declared, the body's set must be a subset. If not, the error suggests either adding the missing capability or removing the offending call.
-4. **Transitive subset rule for inner functions (D058).** If an inner `fn` declaration inside a function body declares a capability prefix, that inner function's capability set must be a subset of the enclosing function's declared (or inferred) capability set. This rule applies transitively through nested inner functions.
+4. **Transitive subset rule for inner functions.** If an inner `fn` declaration inside a function body declares a capability prefix, that inner function's capability set must be a subset of the enclosing function's declared (or inferred) capability set. This rule applies transitively through nested inner functions.
 
 ### 6.4. Actor encapsulation (Model B)
 
@@ -1160,9 +1149,9 @@ Error: capability 'net' not allowed in project 'acme.domain'
     - Refactor to inject the network call as a dependency
 ```
 
-### 6.6. 0.1.0 semantics: static flags, manual DI
+### 6.6. Semantics: static flags, manual DI
 
-In 0.1.0, capabilities are **compile-time tags only**. There are no replaceable handlers at runtime. Testing is done via **dependency injection**: pass functions as arguments.
+Capabilities are **compile-time tags only**. There are no replaceable handlers at runtime. Testing is done via **dependency injection**: pass functions as arguments.
 
 ```ridge
 -- Production code — fn time, clock is Time.now
@@ -1180,11 +1169,11 @@ calcularVencimientoCon Time.now ticket
 calcularVencimientoCon (fn () -> fakeTime) ticket
 ```
 
-Replaceable capability handlers (à la Roc platforms) are evaluated for 0.2+ if demand arises.
+Replaceable capability handlers (à la Roc platforms) remain under consideration if demand arises.
 
 ### 6.7. Capability polymorphism in higher-order functions
 
-Higher-order stdlib functions like `List.forEach`, `List.map`, `Result.andThen` must not force a single capability on their callback. Ridge 0.1.0 solves this with a **capability variable** in the signature — the caps of the callback flow through to the caller at each call site. This is not a typeclass; it's a single effect variable in the type system.
+Higher-order stdlib functions like `List.forEach`, `List.map`, `Result.andThen` must not force a single capability on their callback. Ridge solves this with a **capability variable** in the signature — the caps of the callback flow through to the caller at each call site. This is not a typeclass; it's a single effect variable in the type system.
 
 ```ridge
 -- Stdlib signature (c is a capability-set variable):
@@ -1204,8 +1193,6 @@ fn fs writeAll (paths: List Path) -> Unit =
 
 The compiler unifies `c` with the callback's inferred capability set at each use and propagates it to the caller's capability set. This keeps the stdlib single-variant and keeps user code free of capability-suffixed helpers.
 
-See D041.
-
 ---
 
 ## 7. Semantic Model
@@ -1218,7 +1205,7 @@ See D041.
 
 ### 7.2. Actor semantics
 
-Each actor is a lightweight process (BEAM process in 0.1–0.3; green thread with M:N scheduler in native 0.4+).
+Each actor is a lightweight process — a BEAM process on the production target. A native backend would map actors to green threads under an M:N scheduler.
 
 - **`actor ! msg`** (send): asynchronous, returns immediately, returns `Unit`. No capability required beyond having the handle.
 - **`actor ?> msg`** (ask): synchronous from caller's perspective, blocks the calling process until reply. Requires `time` in the caller (for the timeout), nothing else.
@@ -1230,13 +1217,13 @@ Each actor is a lightweight process (BEAM process in 0.1–0.3; green thread wit
 
 By default, an actor's mailbox is **unbounded**: senders never block,
 never fail; the only limit is the underlying runtime's per-process memory
-budget. This is the 0.1.0 / 0.2.6 behaviour and remains the default when
-the `mailbox` actor member is omitted (see §3.9).
+budget. This is the default when the `mailbox` actor member is omitted
+(see §3.9).
 
 An actor can opt into a **bounded** mailbox by declaring a `mailbox`
 member with a capacity `N` and an explicit overflow policy.
 
-**Overflow policies (0.2.7).**
+**Overflow policies.**
 
 | Policy | On overflow (via `!`) |
 |--------|----------------------|
@@ -1252,7 +1239,7 @@ caller (or supervisor) that knows how to respond to the signal.
 The `drop oldest` policy (silently drop the head-of-queue message on
 overflow) is **parsed but not yet implemented**. Programs using it
 produce `T027 MailboxPolicyDropOldestNotShipped` until the policy ships
-in a focused later cut. Implementing it requires a broker process
+in a future release. Implementing it requires a broker process
 intermediary, because the BEAM does not permit a sender to mutate
 another process's mailbox; the broker holds the bounded queue and
 forwards under the cap. Reserving the syntax now keeps the eventual
@@ -1273,8 +1260,7 @@ policies that are still planned.
 `Actor.mailboxSize : Handle a -> Option Int`. `Some n` is the queue
 length at the moment of the call; `None` means the actor is no longer
 alive (crashed, never existed, or pending restart). `Actor.peek` and
-`Actor.drain` are planned for a post-typeclasses cut, when the
-message-shape infrastructure they need is in scope.
+`Actor.drain` are planned for a future release.
 
 **Capabilities.** All mailbox operations (`!`, `Actor.mailboxSize`) are
 **cap-free**: the handle is the effect token (see §6.4.1). `?>` (ask)
@@ -1286,12 +1272,12 @@ mailbox access.
 - All values are immutable except actor `state`.
 - Sharing structurally-equal data is a compiler optimization (persistent data structures).
 - On BEAM: garbage collection is per-process (no global GC pauses); process memory is isolated; messages are copied between processes.
-- On native (0.4+): concurrent GC (Go-style) with per-actor heaps where possible.
+- A native backend would use concurrent GC (Go-style) with per-actor heaps where possible.
 
 ### 7.4. Error handling model
 
 - **Recoverable errors**: `Result a e` — handled explicitly.
-- **Programming errors**: runtime crashes (index out of bounds, match failure at runtime, etc.) — the actor dies. Supervisors (post-0.1.0) can restart.
+- **Programming errors**: runtime crashes (index out of bounds, match failure at runtime, etc.) — the actor dies. Supervisors can restart it.
 - **No exceptions** in user code. Period.
 
 ### 7.5. Module semantics
@@ -1418,7 +1404,7 @@ dep2 = { git = "github.com/x/y", tag = "v1.0" }   # git, pinned by tag
 dep3 = { git = "...", branch = "main" }           # git, floating
 dep4 = { workspace = true }                       # from workspace.dependencies
 dep5 = { workspace-member = "domain" }            # another member in the same workspace
-dep6 = { hex = "1.2.3" }                          # from hex.pm (0.2.0+)
+dep6 = { hex = "1.2.3" }                          # from hex.pm
 ```
 
 ### 8.6. Forbid rules
@@ -1457,8 +1443,8 @@ ridge repl                # interactive REPL
 
 **Test discovery.** `ridge test` recognises two forms:
 
-1. `@test "<name>"` attribute on any function, regardless of name or visibility (0.2.8+, canonical). See §8.8.
-2. `pub fn test_<name> ()` function-name prefix (deprecated, `C304 PrefixTestDeprecated`; removed in 0.3.0).
+1. `@test "<name>"` attribute on any function, regardless of name or visibility (canonical). See §8.8.
+2. `pub fn test_<name> ()` function-name prefix (deprecated, `C304 PrefixTestDeprecated`).
 
 Both forms must return `Result Unit Text`. Tests run in a fresh BEAM child process per test; no shared state leaks between runs. FFI-bearing tests are rejected with a compile-time capability error. When both forms apply to the same function the attribute wins and the test registers once.
 
@@ -1489,15 +1475,13 @@ Rules:
 - The function must return `Result Unit Text`.
 - Visibility does not matter — private functions can be tests.
 - When both `@test` and the `test_` prefix apply, the attribute takes precedence and the test registers once.
-- The `test_` prefix convention is deprecated as of 0.2.8 (`C304 PrefixTestDeprecated`) and is removed in 0.3.0.
+- The `test_` prefix convention is deprecated (`C304 PrefixTestDeprecated`).
 
 `ridge fmt --migrate-tests` rewrites prefix-style tests to the `@test` form in place. It inserts `@test "<derived-name>"` above each `pub fn test_<name>` and does not rename the function, so existing references remain valid. The derived name is the function name with its `test_` prefix removed (e.g. `test_empty_list` → `@test "empty_list"`). The rewrite is idempotent: a function already carrying `@test` is left untouched.
 
-See D260, D261.
-
 ---
 
-## 9. Standard Library Scope (0.1.0)
+## 9. Standard Library Scope
 
 ### 9.1. Core modules
 
@@ -1513,7 +1497,7 @@ See D260, D261.
 | `std.option` | Option helpers | `withDefault`, `map`, `flatMap`, `orElse`, `isSome`, `isNone`, `discard` |
 | `std.result` | Result helpers | `map`, `mapErr`, `flatMap`, `withDefault`, `isOk`, `isErr`, `discard` |
 
-*Note (D126):* `length` is **reserved** in 0.1.0 for 0.2.0 codepoint-aware semantics. `byteSize` returns the byte count under UTF-8 encoding; for character/grapheme counting, wait for `length` in 0.2.0.
+*Note:* `length` is **reserved** for future codepoint-aware semantics. `byteSize` returns the byte count under UTF-8 encoding; character/grapheme counting will arrive with `length` in a later release.
 
 **Convention:** in every stdlib function, the "main data" argument comes **last**, so pipes compose naturally:
 
@@ -1521,9 +1505,9 @@ See D260, D261.
 users |> List.map (.email) |> List.filter isValid |> List.take 10
 ```
 
-**Logical negation** is `Bool.not : Bool -> Bool` (D044). There is no prefix `!` for negation; `!` is exclusively the actor-send operator.
+**Logical negation** is `Bool.not : Bool -> Bool`. There is no prefix `!` for negation; `!` is exclusively the actor-send operator.
 
-`Result.discard : Result a e -> Unit` and `Option.discard : Option a -> Unit` (D060) are the explicit way to silence the `discarded_result` compiler warning when a `try` or `?` expression result is intentionally unused.
+`Result.discard : Result a e -> Unit` and `Option.discard : Option a -> Unit` are the explicit way to silence the `discarded_result` compiler warning when a `try` or `?` expression result is intentionally unused.
 
 ### 9.2. Capability-bearing modules
 
@@ -1538,16 +1522,50 @@ users |> List.map (.email) |> List.filter isValid |> List.take 10
 | `std.proc` | `proc` | `exec`, `run` |
 | `std.net.http` | `net` | `get`, `post`, `put`, `delete`, `listen` |
 
-### 9.3. Advanced (0.1.0 scope)
+### 9.3. JSON
 
-| Module | Purpose | Priority |
-|--------|---------|----------|
-| `std.json` | JSON encode/decode | High |
-| `std.http` | HTTP client + basic server | Medium (defer to 0.2 if time-constrained) |
-| `std.regex` | Regular expressions | Low |
-| `std.terminal` | Terminal control | Low |
+`std.json` ships as part of the standard library. It is a thin module over the prelude `JsonValue` type (§9.4): a parser, a serializer, and the bridge to `deriving (Encode, Decode)`.
 
-**Decision rule:** enough to write the three canonical example programs (log analyzer, URL shortener, Game of Life) plus the rate limiter in [Appendix A](#appendix-a--canonical-example-programs). Nothing more, nothing less.
+| Function | Signature | Purpose |
+|----------|-----------|---------|
+| `Json.encode` | `JsonValue -> Text` | Serialize a `JsonValue` tree to a JSON string |
+| `Json.decode` | `Text -> Result JsonValue Error` | Parse a JSON string into a `JsonValue` tree |
+
+For typed values, `deriving (Encode)` produces an `encode : T -> JsonValue` method and `deriving (Decode)` produces `decode : JsonValue -> Result T Error` (§5.6.4). The usual round-trip is `Json.encode (encode value)` to produce a string and `decode value |> Result.flatMap ...` from a parsed tree.
+
+```ridge
+type Person = { name: Text, age: Int } deriving (Encode, Decode)
+
+let p = Person { name = "Ann", age = 30 }
+let text = Json.encode (encode p)            -- {"name":"Ann","age":30}
+
+let parsed = Json.decode text ?              -- JsonValue
+let back = decode parsed ?                   -- Person
+```
+
+### 9.4. The `JsonValue` prelude type
+
+`JsonValue` is a first-class prelude type — in scope in every module without an import — that models a parsed JSON document:
+
+```ridge
+pub type JsonValue =
+    | JNull
+    | JBool Bool
+    | JInt Int
+    | JFloat Float
+    | JText Text
+    | JList (List JsonValue)
+    | JObject (Map Text JsonValue)
+```
+
+It is the canonical intermediate representation between Ridge values and JSON text. `Json.decode` produces a `JsonValue`; `Json.encode` consumes one. Derived `Encode`/`Decode` methods convert between user types and `JsonValue` (§5.6.4), so the typical flow is `T → JsonValue → Text` on the way out and `Text → JsonValue → T` on the way in. Building a `JsonValue` by hand is also supported — pattern-match and construct its variants directly when a value's shape is dynamic.
+
+### 9.5. Additional modules
+
+| Module | Purpose | Status |
+|--------|---------|--------|
+| `std.regex` | Regular expressions | Planned |
+| `std.terminal` | Terminal control | Planned |
 
 ---
 
@@ -1619,7 +1637,7 @@ ridge/
 │   ├── ridge-diagnostics/      # Error formatting
 │   ├── ridge-driver/           # Compilation orchestration
 │   ├── ridge-cli/              # Binary entry point
-│   ├── ridge-lsp/              # Language server (0.1.0 minimum, 0.2.0 full)
+│   ├── ridge-lsp/              # Language server
 │   └── ridge-pkg/              # Package manager
 ├── tests/
 ├── examples/
@@ -1629,7 +1647,7 @@ ridge/
     └── tutorial.md
 ```
 
-*Per D118 (stdlib path closure): the Ridge `.ridge` sources live at `crates/ridge-stdlib/stdlib/<module>.ridge` (with `net/http.ridge` as the single nested module — see §11.3 Phase 7).*
+The Ridge `.ridge` stdlib sources live at `crates/ridge-stdlib/stdlib/<module>.ridge`, with `net/http.ridge` as the single nested module.
 
 ### 10.3. Key dependencies
 
@@ -1654,283 +1672,13 @@ ridge/
 
 ---
 
-## 11. Development Roadmap
-
-### 11.1. Philosophy
-
-- **Ship vertical slices.** Each milestone produces something runnable.
-- **Tests from day one.** Snapshot tests for the parser, golden tests for codegen, integration tests for full pipeline.
-- **No premature optimization.** Correctness first, performance when measured.
-- **No scope creep.** Every feature not on this roadmap is explicitly deferred.
-
-### 11.2. Prerequisites
-
-Before starting Phase 0:
-
-- [ ] Rust 1.75+ installed
-- [ ] Erlang/OTP 26+ installed (`erl`, `erlc` on PATH)
-- [ ] Git repo initialized
-- [ ] This document committed as `docs/spec.md`
-- [ ] `github.com/ridge-lang` org reserved
-- [ ] Domain `ridge-lang.org` (or alternative) reserved
-- [ ] CI pipeline planned (GitHub Actions or Azure DevOps)
-
-### 11.3. Phase breakdown
-
-Each phase lists: goal, tasks, deliverable, tests, and estimated effort.
-
----
-
-### **Phase 0 — Foundations** _(≈ 1.5 weeks full-time)_
-
-**Goal:** Lock design decisions, set up infrastructure.
-
-**Tasks:**
-1. Write formal EBNF grammar → `docs/grammar.ebnf`.
-2. Initialize Cargo workspace with all crates (empty).
-3. Set up CI: build + test on push.
-4. Set up `rustfmt`, `clippy` strict configs.
-5. Write contribution guide.
-6. Create `examples/` directory with the four target programs (log analyzer, URL shortener, Game of Life, rate limiter).
-
-**Deliverable:** Empty compiler that builds green, grammar doc, examples written.
-
-**Definition of done:**
-- `cargo build --all` succeeds
-- `cargo test --all` succeeds
-- `docs/grammar.ebnf` committed
-- `examples/*.ridge` committed (as parsing targets, not compiled yet)
-
----
-
-### **Phase 1 — Lexer** _(≈ 1 week)_
-
-**Goal:** Turn source text into a token stream, with correct handling of layout.
-
-**Tasks:**
-1. Define `Token` enum in `ridge-lexer/src/token.rs`.
-2. Implement basic tokenization with `logos` (keywords, literals, punctuation).
-3. Implement **layout algorithm**: convert indentation into `INDENT` / `DEDENT` / `NEWLINE` tokens.
-4. Handle string interpolation lexically (tokenize `$"..."` with nested expression segments).
-5. Handle doc comments `---...---`.
-6. Span tracking on every token for diagnostics.
-
-**Definition of done:**
-- All four example programs tokenize without error
-- Snapshot tests locked in
-- Bad inputs produce helpful errors
-
----
-
-### **Phase 2 — Parser** _(≈ 1.5 weeks)_
-
-**Goal:** Token stream → AST.
-
-**Tasks:**
-1. Define AST types in `ridge-ast/`.
-2. Implement parser with `chumsky`, including capability prefix lists.
-3. Handle all syntactic constructs: types, functions, actors, patterns, expressions, workspaces-as-types (import parsing).
-4. Error recovery: produce partial AST + diagnostics.
-5. Integrate `ariadne` for rendering parse errors.
-
-**Definition of done:**
-- All four examples parse successfully
-- 60+ snapshot tests
-- Every syntactic construct has at least one positive and one negative test
-
----
-
-### **Phase 3 — Name Resolution, Imports, Workspace Rules** _(≈ 1.5 weeks)_
-
-**Goal:** Resolve identifiers, build the module graph, enforce workspace architectural rules.
-
-**Tasks:**
-1. Implement workspace manifest parsing (`ridge.toml` root + per-project).
-2. Implement module discovery (file path → module name, using project name prefix).
-3. Build symbol tables per module.
-4. Resolve imports; detect cycles.
-5. Enforce `[workspace.rules] forbid` — produce compile errors on forbidden arcs.
-6. Enforce visibility (`pub`, `pub(internal)`, `_`, project.exports).
-7. "Did you mean X?" suggestions (Levenshtein distance for typos).
-
-**Definition of done:**
-- Multi-module, multi-project example compiles through resolution
-- Forbid-rule violations produce the structured error from §8.6
-- Visibility violations produce clear errors
-
----
-
-### **Phase 4 — Types & Capabilities** _(≈ 4.5 weeks — the hardest phase)_
-
-**Goal:** Infer and check types and capabilities across the program.
-
-**Tasks:**
-1. Implement type representation (monotypes, polytypes, type variables).
-2. Implement Algorithm W with union-find.
-3. Handle let-generalization correctly.
-4. Type-check all expression forms.
-5. **Capability inference:** compute each function's capability set from its body.
-6. **Capability check:** verify declared set ⊇ inferred set; verify callees ⊆ caller; enforce project-level capability allow/deny.
-7. **Actor capability encapsulation** (Model B): asks inherit only `time`, not handler capabilities.
-8. **Pattern matching exhaustiveness** using Maranget's algorithm.
-9. High-quality type and capability error messages.
-10. **Actor handler-name validation** (Phase 3 deferral): every `Send.message` head and `Ask.message` Ident must match a declared `on`-handler on the target actor's type. Phase 3 silently passes these through (`crates/ridge-resolve/src/walker.rs::visit_send_message`, plus the existing `visit_ident` no-op for `Ask`); Phase 4 owns the cross-validation against the actor's `SymbolKind::Actor { handlers }` list. Emit a new `T-error` (e.g. `T0NN UnknownActorHandler`) with "did you mean?" suggestions over the actor's handler names. Cross-check arg arity and types against the handler signature. _Source of deferral:_ Phase 3 has no actor-handler scope to resolve against during the walker pass; the walker's job is name-resolution only.
-11. **Qualified record construction** `Module.Type { field = val, ... }` (Phase 3 deferral): currently the parser builds `Expr::Record { constructor: Ident, fields }` and `constructor` is a bare `Ident`, so `Http.Response { ... }` does NOT parse as record construction (it parses as `QualifiedName` followed by something else). To enable this Elm-style ergonomic, change `Expr::Record::constructor` from `Ident` to `QualifiedName` (or add a new `Expr::QualifiedRecord`); update the parser's record-construction recogniser to accept a leading `Module.UPPER`; extend `crates/ridge-resolve/src/qualified.rs` to resolve qualified record constructors; update `walker.rs` and the visitor. D072 (import lists with `UPPER_IDENT`) covers the unqualified-import case so this is purely an ergonomic alternative for users who prefer fully-qualified type references — _not_ blocking for any 0.1.0 example. _Estimated effort:_ ~1 day across AST + parser + resolver + tests.
-
-**Definition of done:**
-- All examples type-check with correct capabilities
-- 120+ tests (half positive, half negative)
-- Error messages reviewed for quality
-- Capability-leak test suite (design of workspace + actor encapsulation)
-- Handler-name validation for `Send` / `Ask` against actor's `on` list (task 10 above)
-- Qualified record construction `Module.Type { ... }` parses + resolves (task 11 above)
-
----
-
-### **Phase 5 — Lowering to Ridge Core IR** _(≈ 1 week)_
-
-**Goal:** Simplify typed AST into a minimal intermediate representation.
-
-**Tasks:**
-1. Define Ridge Core IR (small, explicit, target-neutral).
-2. Desugar:
-   - `|>` → function application
-   - `?` → pattern match
-   - `try` blocks → chained `?`
-   - `guard` → `match`
-   - String interpolation → concatenation with `ToText`
-   - `with` updates → record construction
-   - Actor handlers → dispatch tables
-3. Lower all constructs.
-
-**Definition of done:** Snapshot tests on IR output for each example. IR contains no backend-specific assumptions.
-
----
-
-### **Phase 6 — Codegen to Core Erlang** _(≈ 1.5 weeks)_
-
-**Goal:** Ridge Core IR → Core Erlang source files.
-
-**Tasks:**
-1. Map Ridge types to Erlang representations:
-   - `Int`, `Float`, `Bool` → native
-   - `Text` → binary
-   - Records → maps (`#{ name := "...", ... }`)
-   - Union types → tagged tuples
-   - `Option` → `{some, X}` / `none`
-   - `List` → Erlang lists
-   - `Map`, `Set` → Erlang maps / `gb_sets`
-2. Map actors to gen_server processes.
-3. Map `!` (send) and `?>` (ask) to Erlang message operations.
-4. Emit `.core` files.
-5. Invoke `erlc` to produce `.beam`.
-
-**Definition of done:** All four examples compile, link, and run correctly on BEAM.
-
----
-
-### **Phase 7 — Standard Library** _(≈ 1 week)_
-
-**Goal:** Write the stdlib in Ridge, using the compiler to bootstrap it.
-
-**Tasks:**
-1. `std.int`, `std.float`, `std.bool`.
-2. `std.text` using Erlang's `binary` module.
-3. `std.list`, `std.map`, `std.set`.
-4. `std.option`, `std.result`.
-5. IO modules: `std.io`, `std.fs`, `std.time`, `std.random`, `std.env`, `std.cli`, `std.proc`.
-6. `std.json` (MVP: encode/decode).
-7. `std.net.http` (minimal client + server).
-
-**Definition of done:**
-- All examples run using only stdlib + user code
-- Every public stdlib function has at least one test
-
----
-
-### **Phase 8 — CLI, LSP minimum, Package manager minimum** _(≈ 2 weeks)_
-
-**Goal:** Developer experience floor for 0.1.0.
-
-**Tasks:**
-1. CLI subcommands: `ridge {build|run|check|fmt|new|init|test|repl}`.
-2. `ridge fmt` basic formatter (opinionated, no options).
-3. **LSP minimum** (ridge-lsp crate):
-   - Diagnostics on save (runs the compiler in watch mode, streams errors as LSP JSON-RPC).
-   - No goto-definition, no hover, no refactor (those are 0.2.0).
-4. **Package manager minimum** (ridge-pkg crate):
-   - `dependencies = { path = "../foo" }`
-   - `dependencies = { git = "github.com/x/y", tag = "v1.0" }`
-   - No registry, no semver resolution, no lockfile.
-5. Installation script / prebuilt binaries.
-
-**Definition of done:**
-- User can install Ridge and run hello-world in < 5 minutes
-- VS Code shows errors from Ridge files as they happen
-- A project with a git dependency builds successfully
-
----
-
-### **Phase 9 — Release** _(≈ 0.5 weeks)_
-
-**Goal:** Public 0.1.0 release.
-
-**Tasks:**
-1. Build binaries for Linux x86_64, macOS x86_64, macOS arm64, Windows x86_64.
-2. SHA256 checksums, GitHub Releases.
-3. README with examples and install instructions.
-4. Basic tutorial in `docs/tutorial.md`.
-5. TextMate grammar for syntax highlighting on GitHub.
-6. Announcement on HN, r/ProgrammingLanguages, Lobsters.
-
-**Deliverable:** **Ridge 0.1.0 publicly released.**
-
----
-
-### 11.4. Total effort estimate
-
-Full-time:
-
-| Phase | Effort |
-|-------|--------|
-| 0. Foundations | 1.5 weeks |
-| 1. Lexer | 1.0 week |
-| 2. Parser | 1.5 weeks |
-| 3. Resolve + Workspaces | 1.5 weeks |
-| 4. Types + Capabilities | 4.5 weeks |
-| 5. Lowering | 1.0 week |
-| 6. Codegen Erl | 1.5 weeks |
-| 7. Stdlib | 1.0 week |
-| 8. CLI + LSP min + Pkg min | 2.0 weeks |
-| 9. Release | 0.5 weeks |
-| **Total 0.1.0** | **≈ 16 weeks full-time** |
-
-At 15 h/week part-time: **≈ 11 months**. At 10 h/week part-time: **≈ 16 months**.
-
----
-
-## 12. Milestones & Deliverables
-
-Six public checkpoints. Each should be a tagged release so progress is visible.
-
-| Milestone | Covers Phases | Headline demo |
-|-----------|---------------|---------------|
-| **Parses** | 0, 1, 2 | `ridge parse examples/log_analyzer.ridge` prints a pretty AST |
-| **Resolves, Types, Capabilities** | 3, 4 | `ridge check examples/*.ridge` reports OK or typed errors with capability diagnostics |
-| **Runs on BEAM** | 5, 6 | `ridge run examples/log_analyzer.ridge` compiles and executes |
-| **Complete** | 7 | All four examples run end-to-end using stdlib |
-| **Tooled** | 8 | VS Code diagnostics + git-based packages work |
-| **Released** | 9 | Public 0.1.0 binaries available |
-
----
-
-## 14. Multi-Target Strategy
+## 11. Multi-Target Strategy
 
 Ridge is **BEAM-primary**. BEAM is the production target; the language, the standard library, the actor model, and the tooling are all designed against it and validated there. Alternative backends (WebAssembly and native via LLVM) remain on the roadmap as **exploratory work**, contingent on user traction rather than a fixed schedule. The intermediate representation is held target-neutral as a design discipline so the option to activate a second backend stays open without dictating when.
 
 This section describes the present target, the exploratory ones, the disciplines that keep them feasible, and the cadence on which they are re-evaluated.
 
-### 14.1. BEAM (production)
+### 11.1. BEAM (production)
 
 BEAM is the runtime the language was designed against. Benefits inherited for free:
 - Preemptive M:N scheduler with the BeamAsm JIT (35+ years of optimization).
@@ -1944,11 +1692,11 @@ Mapping:
 - Ridge types → erased at runtime (BEAM is dynamically typed).
 - Ridge stdlib → thin wrappers over Erlang/OTP primitives.
 
-### 14.2. Exploratory backends
+### 11.2. Exploratory backends
 
 Two alternative backends remain in the roadmap as exploratory work. Neither has a fixed schedule; both are gated on user traction signals — concrete deployment requirements that BEAM cannot serve, expressed as reports against the public tracker.
 
-#### 14.2.1. WebAssembly
+#### 11.2.1. WebAssembly
 
 WebAssembly would unlock browser playgrounds, edge functions, and embeddable Ridge runtimes. The work splits in two natural phases:
 
@@ -1959,7 +1707,7 @@ Both phases remain exploratory until user traction justifies the investment. The
 
 Candidate deployment targets, when and if the work activates: Cloudflare Workers, Fastly Compute@Edge, Fermyon Spin, wasmtime, wasmer, browsers.
 
-#### 14.2.2. Native via LLVM
+#### 11.2.2. Native via LLVM
 
 A native backend would unlock compute-bound workloads, fast CLI startup (<10 ms vs. 50–100 ms on BEAM), standalone binaries without the Erlang runtime, and embedded or constrained environments.
 
@@ -1974,7 +1722,7 @@ It requires a custom runtime — comparable in effort to the existing BEAM backe
 
 The `ridge-codegen-llvm` crate exists today as a stub guarded by the same target-neutrality test.
 
-### 14.3. The target-neutrality discipline
+### 11.3. The target-neutrality discipline
 
 The IR is held free of backend-specific assumptions. This is not a hint or a code-review check; it is enforced:
 
@@ -1983,17 +1731,17 @@ The IR is held free of backend-specific assumptions. This is not a hint or a cod
 
 The cost of the discipline is small — roughly a 5% tax on lowering and IR design work. It buys the option to activate a second backend later without redoing the frontend.
 
-### 14.4. Re-evaluation
+### 11.4. Re-evaluation
 
-Whether the exploratory backends are ever activated, and on what schedule, is re-evaluated **18 months after the 0.3.0 GA tag**, against three signals:
+Whether the exploratory backends are ever activated is re-evaluated periodically against three signals:
 
 - **User traction.** Concrete deployment requirements BEAM cannot serve, expressed in public reports against the project tracker.
-- **Capacity.** The project is solo-maintained; activating a second backend is a multi-quarter commitment that competes with BEAM-side work.
+- **Capacity.** The project is solo-maintained; activating a second backend is a substantial commitment that competes with BEAM-side work.
 - **Ecosystem state.** Where the WebAssembly and native ecosystems stand at the time — component model, WASI preview, WASM GC standardization, LLVM IR stability.
 
-A mid-cycle checkpoint at 9 months post-0.3.0 GA is reserved for early signal. If user reports concentrate on a deployment shape that BEAM cannot reach (cold-start-sensitive edge functions, in-browser tooling, standalone CLI distribution), the timeline for the relevant backend can advance.
+If user reports concentrate on a deployment shape that BEAM cannot reach (cold-start-sensitive edge functions, in-browser tooling, standalone CLI distribution), the relevant backend moves up the priority list.
 
-### 14.5. Strategic principles
+### 11.5. Strategic principles
 
 1. **BEAM is the production target.** The language and tooling ship against BEAM today; alternative backends do not gate any 0.x release.
 2. **The IR is the contract.** Backends consume the IR; they need nothing else from the frontend. The IR stays target-neutral.
@@ -2002,137 +1750,18 @@ A mid-cycle checkpoint at 9 months post-0.3.0 GA is reserved for early signal. I
 
 ---
 
-## 15. Decision Log
-
-Stable identifiers for design decisions referenced elsewhere in the
-spec, in compiler error messages, and in the CHANGELOG. Existing entries
-referenced as `D###` from earlier sections live in their respective
-sections; the table below collects decisions introduced from the
-bounded-mailbox cut onward so they can be cross-referenced from any
-section without scattering rationales.
-
-| ID | Topic | Resolution |
-|----|-------|-----------|
-| D251 | Bounded mailbox syntax | `mailbox` actor member alongside `state`/`init`/`on`. Three forms: `mailbox unbounded`, `mailbox bounded N drop newest`, `mailbox bounded N error`. The capacity `N` is a positive integer literal; the overflow policy is mandatory when bounded. The configuration keywords (`bounded`, `unbounded`, `drop`, `newest`, `oldest`, `error`) are contextual — they live alongside ordinary identifiers everywhere else. See §3.9 and §7.2.1. |
-| D252 | Overflow policy set | `drop newest` and `error` ship in this cut. `drop oldest` parses but is rejected by the type-checker (`T027`) until a broker process intermediary lands in a focused follow-up; reserving the spelling now keeps that follow-up additive. The two shipped policies cover the two ergonomic extremes: drop-on-overflow vs. signal-on-overflow. See §7.2.1. |
-| D253 | `error` policy via `!` raises an exit signal | On overflow, the bound check inside `!` raises `{mailbox_full, Pid}` (BEAM) in the sender process. Supervised senders get standard let-it-crash semantics; unsupervised senders take the BEAM down. The result-returning variant for `Actor.send` is deferred to the cut that introduces first-class message values (post-typeclasses). See §7.2.1. |
-| D254 | Observability scope | `Actor.mailboxSize : Handle a -> Option Int` is the observability primitive that ships. `Some n` reports the current queue length; `None` reports a dead actor. `Actor.peek` and `Actor.drain` require typeclass-derived message typing and are deferred. See §7.2.1 and §9. |
-| D255 | Handles as effect tokens | Operations that take a `Handle a` and act only on that actor's queue or state require no capability beyond possessing the handle (`!`, `Actor.mailboxSize`). The handle itself proves access; the cap was paid at `spawn`. See §6.4.1. |
-| D256 | Multi-line string literals | Triple-quoted strings (`"""..."""`) carry literal newlines and strip leading indentation: the newline right after the opening `"""` and the one right before the closing `"""` are dropped, and the closing delimiter's own indentation sets the margin removed from every interior line. Standard escapes still apply — triple-quoted strings are cooked, not raw. The single-quote form `"..."` stays single-line, so the two forms never overlap. See §4.1.1. |
-| D257 | Raw string literals | Raw strings use the `r"..."` and `r#"..."#` family, where extra `#` pairs balance embedded quotes (`r##"..."##`). No escape sequences are interpreted; every byte between the delimiters is literal. Raw strings may span multiple lines without dedenting, complementing the cooked, indentation-stripped `"""` form. See §4.1.1. |
-| D258 | Rest patterns in list patterns | List patterns accept a single `..` in any position — `[first, ..]`, `[.., last]`, `[first, .., last]`. The rest binds through the existing as-pattern operator: `[first, rest @ ..]` captures the remaining elements as a list. At most one `..` per list pattern. Binding the rest or matching a trailing element traverses the whole list, since lists are singly linked on the target runtime — an ergonomic convenience, not a cheap one. See §4.5. |
-| D259 | Rest patterns in record patterns | Record patterns accept a trailing `..` to match the remaining fields without naming them — `User { name, .. }`. The `..` is a modifier on the field set rather than a sub-pattern, and it cannot be bound. A record pattern with `..` matches any value of that type carrying at least the named fields. See §4.5. |
-| D260 | Test declaration via `@test` | A function annotated `@test "<name>"` is a test regardless of its name or visibility, and the string is the test's display name. This supersedes the `test_` prefix convention, which keeps working but now reports `C304` (deprecated) and is removed in 0.3.0. The return-type contract is unchanged (`Result Unit Text`). When both forms apply to one function the attribute wins and the test registers once. See §8.8. |
-| D261 | One-shot test migration | `ridge fmt --migrate-tests` rewrites prefix-style test functions to the `@test` form by inserting an attribute above each one. It does not rename the function, so existing references stay valid and the rewrite is idempotent — a function already carrying `@test` is left untouched. The generated name is the function name with its `test_` prefix removed. See §8.8. |
-
----
-
-## 16. Open Questions
-
-All 0.1.0-blocking design questions have been resolved. This section tracks their resolution and lists work deferred to 0.2.0.
-
-### 16.1. Resolved
-
-| ID | Question | Resolution | Decision |
-|----|----------|-----------|----------|
-| Q-001 | Integer semantics | Fixed 64-bit signed across all targets | D029 |
-| Q-002 | Float NaN equality | `NaN == NaN` is false (IEEE 754) | D030 |
-| Q-003 | Actor mailbox size | Configurable per actor in 0.2.7: unbounded (default), or bounded with `drop newest` / `error`. `drop oldest` parses but is rejected pending a broker. See §3.9, §7.2.1. | D031, D251, D252, D253 |
-| Q-004 | Integer overflow | Crash; explicit `wrappingAdd` / `saturatingAdd` for alternatives | D032 |
-| Q-005 | Formatter policy | Opinionated, zero config | D033 |
-| Q-006 | Test framework | Built into CLI (`ridge test`) | D034 |
-| Q-007 | Capability set size | 9 fixed in 0.1.0 | D035 |
-| Q-008 | `let ... in` vs block | Block-structured only | D036 |
-| Q-009 | Typed lambda parameters | Lambdas use same `Param` grammar as `FnDecl` | D037 |
-| Q-010 | String interpolation coercion | Closed set in 0.1.0; `ToText` typeclass in 0.2.0 | D038 |
-| Q-011 | `?` operator scope | Inline in `Result`/`Option` contexts; `try` block for narrower scope | D039 |
-| Q-012 | Capability inference on private fns | Declared on public, inferred on file-private | D040 |
-| Q-013 | Capability polymorphism in HOFs | Capability variable in stdlib signatures | D041 |
-| Q-014 | Mailbox observability | `Actor.mailboxSize` ships in 0.2.7. `peek` and `drain` remain deferred until typeclass-derived message typing is available. See §7.2.1. | D042, D254 |
-| Q-015 | DI pattern in tests | Convention in 0.1.0; library in 0.2.0 | D043 |
-| Q-016 | `Text` Unicode normalization | No lexer-side normalization; `Text` stores raw UTF-8; normalization exposed via `std.text.normalize` | D063 |
-| Q-017 | Multi-line and raw string literal syntax | `"""..."""` (cooked, dedented against the closing delimiter) and `r"..."` / `r#"..."#` family (raw, no escapes, may span newlines without dedenting). Resolved in 0.2.8. See §4.1.1. | D256, D257 |
-| Q-019 | Numeric literal syntax (digit separators, base prefixes) | Supported in 0.1.0: `0b`, `0o`, `0x`, `_` separator | D046 |
-| Q-020 | Doc-comment attachment semantics (parser) | Attach to next top-level `Item` (or `Module::doc` at file head); orphan `DOC_COMMENT` → warning `P019` | D067 |
-| Q-022 | `guard … else <block>` — single-expression else vs multi-statement block | Multi-statement indented `Block` permitted (final statement must diverge via `return`) | D066 |
-
-### 16.2. Deferred to 0.2.0
-
-These are locked for 0.1.0 but will be revisited:
-
-- **Open `ToText` typeclass** for interpolation of user-defined types (Q-010)
-- **Full capability polymorphism** beyond stdlib HOFs, if demand arises (Q-013)
-- **`ridge.test` DI helpers** for capability stubbing (Q-015)
-- **Capability set review** based on 0.1.0 usage data (Q-007)
-- ~~Multi-line and raw string literals~~ — resolved in 0.2.8; see D256, D257.
-- ~~Range and rest-pattern syntax for `..`~~ — rest patterns in list and record patterns resolved in 0.2.8; see D258, D259.
-- **Unicode identifiers** (D049) — reconsidered in 0.3.0+
-- ~~`@test "<free-form name>"` attribute as canonical test-discovery form~~ — resolved in 0.2.8; see §8.8, D260, D261. The `test_` prefix emits `C304 PrefixTestDeprecated`; prefix is removed in 0.3.0. The keyword-block form `test "name" { body }` remains explicitly rejected.
-
-#### Deferred from 0.2.7
-
-The bounded-mailbox cut considered the following surfaces and deferred
-them to focused follow-ups:
-
-- **`drop oldest` mailbox policy** — parses cleanly but is type-check-rejected (`T027`) until a broker process intermediary lands. The broker is the only way to enforce strict head-of-queue eviction without violating per-process mailbox isolation.
-- **`Actor.send : Handle a -> Msg -> Result Unit MailboxFull`** — the result-returning send. The signature requires a typed message value derived from each actor's handler set, which depends on the typeclass infrastructure not yet shipped. Until then, `!` covers fire-and-forget, and `bounded N error` surfaces overflow at the call site through a let-it-crash exit signal.
-- **`Actor.peek` and `Actor.drain`** — same dependency on the message-shape typeclass. `drain` is additionally destructive and waits for a concrete use case before shipping.
-
-### 16.3. New questions
-
-New open questions should be appended here as they arise during implementation. Track them as GitHub issues once the repo exists.
-
-**Q-018**: `Map` / `Set` ordering and backing representation — ordered (tree-based, deterministic iteration) or hash (faster, non-deterministic)? Affects stdlib API, serialization determinism, and test reproducibility. _Pending — decide during Phase 4 when stdlib types are lowered._
-
-**Q-021**: `return expr` semantics in Result/Option-returning functions — does `return expr` return `expr` verbatim (requiring it to already be `Result`/`Option`-typed, matching the function's return type), or does it auto-wrap into `Ok expr` / `Some expr` when the function return type is `Result`/`Option`? The spec §3.12 example `return Err (Inactive user.id)` is consistent with the verbatim reading. _Pending — decide during Phase 4 type-checker when `return` is lowered; verbatim reading is the tentative default._
-
-**Q-023**: Benchmark methodology and "first-class performance" measurement strategy — §1 lists performance as a core pillar but the roadmap §11 has no benchmark phase, no choice of bench framework (Criterion-style? `cargo bench`? Ridge-side `ridge bench`?), no golden-number commitments per target (BEAM / WASM / native), and no regression policy. Without a measurement layer, the "first-class performance" pillar is unverified — a stated value with no enforcement. _Pending — decide before Phase 6 (codegen-erl) so 0.1.0 ships with at least a baseline `ridge bench` subcommand and a small benchmark corpus; tentative default = Criterion-style harness inside the compiler crates plus a Ridge-side `bench` block lowered to per-target timing scaffolds, with a starter corpus exercising actor send/receive throughput, list/map ops at 10k/100k elements, and the four Appendix-A example programs end-to-end._
-
-**Q-024**: OWASP web-layer policy and `std.net.http` hardening defaults — language-level safety is strong (capabilities, no null, no exceptions, no reflection, forbid arcs), but framework-level web concerns (XSS escaping in templating, CSRF tokens, parameterized SQL via a future `std.db`, authn/authz primitives, rate-limiting helpers, secure cookie defaults, CSP / HSTS headers in `std.net.http.respond`) have no decision. `std.net.http` 0.1.0 exposes only `get` / `post` / `put` / `delete` / `listen` / `respond` (§9.2); building a real web service requires the user to roll their own security layer, which contradicts the "make the right thing easy" principle (§2.1). _Pending — decide before 0.2.0 stdlib expansion; tentative default = bake the OWASP-Top-10 mitigations Ridge can express via types into stdlib (e.g. `Sql` newtype that requires parameter binding to construct, `Html` newtype that escapes on construction, `SecureCookie` defaults with `Secure` + `HttpOnly` + `SameSite=Lax`, default CSP / HSTS headers on `respond`); defer the rest (full authn/authz primitives, distributed rate-limiting library) to a `std.web` ecosystem package layered on top._
-
-**Q-025**: Large-program acceptance corpus — the four canonical examples (Appendix A) are 50–150 LOC each and exercise individual features in isolation; they do not stress cross-module type inference, deep actor topologies, large `match` trees, long workspace dependency chains, or programs >500 LOC. Without large-program tests, scaling bugs in the type checker, lowering pass, or codegen surface only when a real user hits them — by which point the cost of fixing them is much higher. _Pending — decide during the Phase 7 (stdlib) acceptance gate; tentative default = add 5–10 medium programs (~300–800 LOC each) covering an actor-heavy chat server, a multi-module domain workspace exercising `forbid` rules end-to-end, a streaming log-processing pipeline with backpressure simulation, and one ported toy-compiler exercise; each runs as an end-to-end snapshot test on every PR with timing + binary-size budgets._
-
-**Q-026**: Anonymous record literal syntax — Ridge has anonymous tuples `(Int, Text)` and nominal records (declared via `type` + `Constructor { field = ... }`), but no anonymous record literal `{ name = "x", age = 1 }` whose type is inferred structurally. Workflows that benefit (ad-hoc JSON shapes, intermediate computation states, returning multi-field results without naming the type) currently force a tuple (positional, unreadable past 3 fields) or a one-off type alias (verbose, pollutes the namespace). This is a real DX gap relative to OCaml objects, F# anonymous records, and TypeScript object literals. _Pending — decide during Phase 4 type-checker; tentative default = add `{ field = expr, ... }` literal with structural row-typed inference gated to **expression positions only** (no anonymous record types in function signatures — those still require a `type` alias so error messages point at named types). Trade-off: introduces structural types into an otherwise nominal system, brings row-polymorphism complexity to inference, may interact non-trivially with `with` updates (§4.5)._
-
-**Q-027**: Native GUI / desktop toolkit roadmap — Ridge 0.1.0–0.4.0 targets BEAM, WASM, and LLVM-native, but the roadmap §11 contains no toolkit for desktop UI (analogous to WPF / Tkinter / Qt / SwiftUI). With WASM (0.3.0) a Ridge program can target the browser via a userland framework, but native windowed applications are unaddressed, and "general-purpose" (§1) is therefore narrower than the marketing implies. _Pending — decide during 0.5.0 planning, or sooner if a concrete user demand arises; tentative default = **stay out of the toolkit business** (UI is userland or a dedicated `ridge.ui` ecosystem package layered on `std.ffi` to bind to GTK / Qt / Cocoa); revisit only if a Ridge-native immediate-mode toolkit becomes a strategic priority. Rationale: building a UI toolkit is a multi-year commitment that would dwarf the rest of the language scope; the same effort spent on stdlib + tooling produces more compounding value._
-
-#### Resolve design questions (OQ-R001..OQ-R016)
-
-Raised during resolve design. Each has a provisional answer that the implementation uses by default.
-
-| ID | Question | Impact | Provisional answer |
-|----|----------|--------|--------------------|
-| OQ-R001 ✅ | Bare `import foo.bar` (no `as`, no item list) — what does it expose? | Import-resolution semantics; affects lookup order and collision errors. | **Qualified-namespace only** (Elm-style `import Foo` — use-sites must write `Foo.bar`). Flooding the importer's scope with every `pub` symbol requires an explicit item list (`import foo.bar (a, b)`); wildcard `(..)` is reserved, not in 0.1.0. Rationale: avoids cross-import identifier collisions, keeps resolve-phase lookup order unambiguous, and aligns with Elm (Ridge's primary UX reference) rather than Rust's discouraged `use foo::*;` idiom. **Resolved: OQ accepted as-is; the bare-import-ambiguous variant deleted.** |
-| OQ-R002 ⚠ | Shadowing across scopes — allowed, warned, or forbidden? Spec is silent. | Scope-chain lookup policy; affects `R011` / `R017` severity. | **Cross-scope shadowing allowed silently; same-scope duplicate = `R011` hard error.** Matches Rust / F# / OCaml / Elm; the `_`-prefix convention is the opt-out for intentional shadowing without warning. |
-| OQ-R003 | Case sensitivity of module names and imports. | Module-name derivation (§4.1 step 5); filesystem portability. | **Case-sensitive** per §3.11 examples (`Types/Id.ridge` → `acme.shared.Types.Id`, file-name case preserved). Windows filesystems preserve case; collisions emit `R002 DuplicateModule`. |
-| OQ-R004 ✅ | `[project.exports].public` / `internal` default when missing — what if the section is absent? | Visibility mapping; whether `pub` leaks without an explicit `[project.exports]` table. | **Absent `public` = all `pub` symbols are externally visible.** Absent `internal` = no additional namespace-internal visibility. Matches the "opt-in restriction" philosophy: a restriction must be declared. A non-blocking lint for `type = "library"` projects lacking `[project.exports].public` is worth adding to nudge library authors toward explicit export lists. **Resolved.** |
-| OQ-R005 | Severity of `R017 StateFieldShadowedByLocal`. | Scope-chain UX. | **Warn-level**, not hard error. Shadowing an actor state field with a local is legal but suspect; emit a warning pinned to the local's `def_span` with a note referencing the state-field span. |
-| OQ-R006 ✅ | How the builtin stdlib manifest stays in sync with the eventual Ridge-written stdlib. | Long-term maintenance. | **Compile-time constant table now; a later pass replaces it with a generated table.** A regression test re-parses every stdlib `.ridge` file and asserts its `pub` exports match the constant table. **Resolved.** |
-| OQ-R007 | `[project.exports].public` glob metasyntax — spec shows `"Models.*"`; what does `*` match? | Glob parser for project-exports. | **Dot-based glob: `*` matches a single segment, `**` matches any number of segments.** Implement via the `globset` crate. Convention matches `gitignore` / Bash globstar / Cargo. |
-| OQ-R008 ✅ | Should `NodeId` be promoted to a proper AST field in `ridge-ast` (micro-refactor) rather than the side-table `NodeIdMap`? | Upstream contract; re-snapshot tests. | **Defer.** The import resolver uses the side-table `NodeIdMap`; the type checker may revisit when it also wants stable IDs. _Known risk:_ a future transform that clones AST nodes must preserve `NodeId`s explicitly — the side-table approach has no type-system guarantee. Document this constraint in the `NodeIdMap` rustdoc. **Resolved.** |
-| OQ-R009 ✅ | `[dependencies]` table transitive conflicts between workspace members sharing a dep via `workspace-dependencies`. | Manifest resolution. | **Version pinning is the workspace's responsibility.** 0.1.0 has no semver solver; each name resolves to exactly one entry. Conflicts across members emit `M013 UnknownWorkspaceMember` or `M015 WorkspaceDependencyAbsent`. **Resolved.** |
-| OQ-R010 ✅ | Should the resolver produce per-module output when earlier parse errors produce a partial AST? | LSP UX. | **Yes.** Run resolution on the partial AST; skip `Expr`/`Pattern`/`Type` nodes that descend into error markers. Goal: LSP users get resolve diagnostics for the parts of a file that did parse, mirroring `rust-analyzer` / `tsc` behaviour. **Resolved.** |
-| OQ-R011 | Should an `import` that resolved to `ImportTarget::Unresolved` (R006) suppress downstream identifier errors (R010) for that module's symbols? | UX — cascading errors. | **Suppress.** If `import nonexistent.module` fires `R006`, all uses of `NonexistentModule.foo` in that file return `Binding::Error` silently (no cascade). Avoids the "1 typo → 47 errors" firehose; `Binding::Error` acts as a poison marker analogous to `ErrorT` in type checkers. |
-| OQ-R012 ✅ | `spawn ActorName` — does the actor name need to be an unqualified `UPPER_IDENT`, or may it be a qualified path `Mod.ActorName`? | Spawn-expression grammar and resolve walker. | **Unqualified `Ident` only in 0.1.0** per grammar §6.19 (`"spawn" UPPER_IDENT { Expr }`). Cross-module spawn requires an `import` of the actor. Revisit in a future release if qualified-spawn ergonomics demand it. **Resolved.** |
-| OQ-R013 ⚠ | Does Ridge have an implicit prelude that auto-imports `Option`/`Result` and their constructors (`Some`, `None`, `Ok`, `Err`) — and possibly `List` constructors — into every module? | All 4 example programs (`log_analyzer.ridge`, `url_shortener.ridge`, `game_of_life.ridge`, `rate_limiter.ridge`) use `Some Info`, `None`, `Ok ()`, `return Err (...)` unqualified. With no prelude, every `.ridge` file would need `import std.option (Some, None)` and `import std.result (Ok, Err)` boilerplate at the top. | **Resolved: implicit prelude.** Auto-import the following into every module's scope: the `Option` type with constructors `Some` and `None`; the `Result` type with constructors `Ok` and `Err`. Matches Haskell's Prelude, Rust's `std::prelude::v1`, Elm's default imports. A prelude pass injects synthetic `EffectiveBinding` entries equivalent to `import std.option (Option, Some, None)` and `import std.result (Result, Ok, Err)` into every module's binding pool. Conservative scope: constructors of `Option` and `Result` only; see OQ-R015 for module aliases. |
-| OQ-R014 ⚠ | `let` followed by an indented continuation expression (`\|>` chain) inside a parenthesised lambda body fails to terminate at the next statement. The lexer's bracket-suppression of NEWLINE/INDENT/DEDENT folds subsequent statements into the let value, leaving downstream identifier uses unresolved. | Surfaces in `examples/game_of_life.ridge`: a `let line = row \|> List.map ... \|> List.fold ... ""` followed by `Io.println $"\| ${line} \|"` parses with `${line}` unresolvable because the parser doesn't see a statement boundary inside the enclosing `()`. | **Resolved: option A** — lexer emits NEWLINE inside brackets when col ≤ baseline; parser `parse_branch_body_flat` collects NEWLINE-separated statements as a flat `Expr::Block`. The alternatives were (a) extending the layout-suppression rule (chosen) or (b) requiring an explicit block delimiter for multi-statement lambda bodies (simpler but forces example refactoring). |
-| OQ-R015 ⚠ | Should the implicit prelude also pre-bind `ModuleAlias` entries for pure-data stdlib modules (`Int`, `Float`, `Bool`, `Text`, `List`, `Map`, `Set`, `Json`) so that qualified names like `Int.parse`, `Text.padLeft`, `Float.fromInt`, `List.map` work without an explicit `import std.X as X` declaration? | The 4 canonical examples use `Int.parse`, `Int.toText`, `Text.padLeft`, `Float.fromInt` without importing the corresponding stdlib modules. With no prelude alias these produce `R012 UnresolvedQualifiedName`. | **Resolved: pre-bind module aliases for all pure-data stdlib modules; capability-bearing modules require explicit import.** Rationale: (1) preserves Ridge's capability-tracking principle — every side-effecting module remains visible at the import level; (2) matches ML/Haskell precedent; (3) removes boilerplate from data-manipulation programs. _Pure-data modules:_ `std.int` → `Int`, `std.float` → `Float`, `std.bool` → `Bool`, `std.text` → `Text`, `std.list` → `List`, `std.map` → `Map`, `std.set` → `Set`, `std.json` → `Json`. _Capability-bearing modules NOT in prelude:_ `std.io`, `std.fs`, `std.time`, `std.random`, `std.env`, `std.cli`, `std.proc`, `std.net.http`. User imports for the same `local_name` suppress the prelude binding. |
-| OQ-R016 ⚠ | Should the `ImportList` grammar accept `UPPER_IDENT` so users can write `import std.net.http (Request, Response, listen, respond) as Http` and reference the imported type / constructor names unqualified? `examples/url_shortener.ridge` uses `Response` and `Request` as bare identifiers but only has `import std.net.http as Http` in scope. With the original `ImportList ::= LOWER_IDENT { "," LOWER_IDENT }` grammar, four `R010 UnresolvedIdent` errors fire on `Response`, and the only workarounds are (a) define the types locally or (b) wait for qualified record-construction `Http.Response { ... }` support which requires AST changes. | Acceptance: `examples/url_shortener.ridge` must resolve cleanly. Affects every Ridge user of `std.net.http`, `std.json`, `std.fs` typed APIs. | **Resolved.** `ImportList` accepts both `LOWER_IDENT` and `UPPER_IDENT`. Rationale: aligns with Ridge's reference languages (Haskell, Elm, Rust all permit type/constructor imports in item lists). Implementation: 1-line grammar amendment; ~5-line parser change accepting `UpperIdent` in the item-list arm; BUILTINS extension (`std.net.http` exports gain `Request`, `Response`). `examples/url_shortener.ridge` rewritten to `import std.net.http (Request, Response, listen, respond) as Http`. The complementary `Module.Type { ... }` qualified record-construction ergonomic is deferred to a future release. |
-
----
-
-## 17. Appendices
+## 12. Appendices
 
 ### Appendix A — Canonical example programs
 
-_Note: examples in this appendix reflect decisions D044..D061. In particular, `?>` is the ask operator (D045) and `main` returns `Result Unit Error` (D059)._
+_Note: in these examples, `?>` is the ask operator and `main` returns `Result Unit Error`._
 
-Four programs must compile and run correctly by the "Complete" milestone (Phase 7). They serve as acceptance tests for the compiler.
+Four programs compile and run correctly and serve as acceptance tests for the compiler.
 
 - **A.1. Log analyzer** (`examples/log_analyzer.ridge`) — file IO, text parsing, pattern matching, list ops.
 - **A.2. URL shortener** (`examples/url_shortener.ridge`) — actors, concurrency, HTTP, JSON.
 - **A.3. Game of Life** (`examples/game_of_life.ridge`) — actors, timers, terminal IO, Set.
-- **A.4. Rate limiter per IP** (`examples/rate_limiter.ridge`) — actors, `spawn`, `?>` (ask), state, `time`, `Map`. Reference implementation in session notes; exercises the actor model end-to-end.
+- **A.4. Rate limiter per IP** (`examples/rate_limiter.ridge`) — actors, `spawn`, `?>` (ask), state, `time`, `Map`. Exercises the actor model end-to-end.
 
 ### Appendix B — Glossary
 
@@ -2140,13 +1769,13 @@ Four programs must compile and run correctly by the "Complete" milestone (Phase 
 - **Ask**: synchronous message send with reply (`handle ?> msg`).
 - **BEAM**: the Erlang virtual machine.
 - **Capability**: a tag in a function's signature that names an effect the function may perform (`io`, `fs`, etc.).
-- **Core Erlang**: Erlang's intermediate representation, a compilation target for 0.1.0.
+- **Core Erlang**: Erlang's intermediate representation; Ridge's production compilation target.
 - **Forbid rule**: a compiler-enforced architectural constraint declared in `[workspace.rules]` that prevents module-to-module dependencies.
 - **HM**: Hindley-Milner type system.
 - **IR (Ridge Core IR)**: target-neutral intermediate representation; the contract between frontend and backends.
 - **Monomorphization**: compiling a generic function to one concrete version per use.
 - **Send**: asynchronous message send (`handle ! msg`).
-- **Typeclass**: an interface-like construct for ad-hoc polymorphism (deferred to 0.2.0).
+- **Typeclass**: an interface-like construct for ad-hoc polymorphism (§5.6).
 - **Workspace**: a tree of related projects, rooted at a `ridge.toml` with `[workspace]`.
 
 ### Appendix C — References
@@ -2165,4 +1794,4 @@ Four programs must compile and run correctly by the "Complete" milestone (Phase 
 
 **End of document.**
 
-_This is a living document. Amend it as the project evolves, but treat every change as a deliberate design decision worth recording in the Decision Log._
+_This is a living document. Amend it as the language evolves, treating every change as a deliberate design decision._

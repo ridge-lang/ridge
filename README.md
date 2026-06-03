@@ -22,14 +22,16 @@ nine first-class capabilities (`io`, `fs`, `net`, `time`, `random`, `env`,
 `proc`, `spawn`, `ffi`) tracked in the type system. Compiles to BEAM
 bytecode via Core Erlang.
 
-**Status:** 0.3.0-rc2, a release candidate that makes the language server
-recompile incrementally — a single-file edit re-checks only the modules it
-affects instead of the whole workspace — on top of the rc1 IDE features (hover,
-go-to-definition, completion). 0.2.13 remains the latest stable release. The
-language and tooling are usable end-to-end. Pre-1.0 minors may include breaking
-changes; patch releases within a minor will not. See
-[`CHANGELOG.md`](CHANGELOG.md) for what landed and
-[`docs/spec.md`](docs/spec.md) for the full language specification.
+**Status:** 0.3.0-rc4, a release candidate that completes the typeclass system:
+`deriving (Encode, Decode)` works on records, unions, and generic types;
+`JsonValue` is a first-class prelude type; the stdlib ships eight parametric
+instances covering `List`, `Option`, `Map Text`, and `Result`; and derived
+`encode`/`decode` are now callable by bare name without any `class`
+redeclaration. 0.2.13 remains the latest stable release. The language and
+tooling are usable end-to-end. Pre-1.0 minors may include breaking changes;
+patch releases within a minor will not. See [`CHANGELOG.md`](CHANGELOG.md)
+for what landed and [`docs/spec.md`](docs/spec.md) for the full language
+specification.
 
 ## Why Ridge?
 
@@ -80,6 +82,66 @@ fn area (s: Shape) -> Int =
     match s
         Circle r       -> 3 * r * r
         Rectangle w h  -> w * h
+```
+
+Zero-boilerplate JSON. Derive `Encode` and `Decode` on a record, and the
+compiler generates the codec automatically — no schema file, no code gen step:
+
+```ridge
+type Person = { name: Text, age: Int } deriving (Eq, ToText, Encode, Decode)
+
+-- encode converts a Person to JsonValue; Json.encode serialises it to Text
+fn toJson (x: a) -> Text where Encode a = Json.encode (encode x)
+
+-- decode converts a JsonValue back to Person; Json.decode parses the Text first
+fn fromJson (s: Text) -> Result Person Error =
+    match Json.decode s
+        Ok j  -> decode j
+        Err e -> Err e
+```
+
+Pipe composition keeps data flow readable left-to-right:
+
+```ridge
+let active =
+    users
+    |> List.filter (fn u -> u.active)
+    |> List.map (fn u -> u.name)
+    |> List.sortBy (fn n -> n)
+```
+
+Rest patterns let you focus on the parts you care about and ignore the rest:
+
+```ridge
+-- List rest: match the head, ignore the tail
+match items
+    []          -> "empty"
+    [first, ..] -> $"starts with ${first}"
+
+-- Record rest: match named fields, ignore others
+type Profile = { name: Text, age: Int, active: Bool }
+
+match profile
+    Profile { name, .. } -> $"Hello, ${name}"
+```
+
+Actors: lightweight processes with typed mailboxes and zero shared state. The
+`spawn` capability appears in the caller's signature; `time` covers the
+implicit timeout on `?>` (ask); the actor's own effects stay encapsulated:
+
+```ridge
+actor Counter =
+    state count: Int = 0
+
+    on increment = count <- count + 1
+    on get -> Int = count
+
+fn io spawn time main () =
+    let c = spawn Counter
+    c ! increment
+    c ! increment
+    let n = c ?> get        -- synchronous ask; n = 2
+    Io.println $"count: ${n}"
 ```
 
 More sample programs live under [`examples/`](examples/) and

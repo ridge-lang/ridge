@@ -143,37 +143,24 @@ this section are scheduled, not aspirational.
 | ✅ | Test-discovery via `@test` | `@test "<name>"` accepted alongside `pub fn test_*`; both forms recognised with `C304 PrefixTestDeprecated` per prefix test; `ridge fmt --migrate-tests` one-shot migration. Prefix removed in 0.3.0 GA. Shipped in 0.2.8. | `docs/spec.md §8.8`, `CHANGELOG.md` (0.2.8) |
 | ✅ | Multi-line and raw string literals | `"""..."""` cooked with dedent; `r"..."` / `r#"..."#` raw without dedent. Shipped in 0.2.8. | `docs/spec.md §4.1.1`, `CHANGELOG.md` (0.2.8) |
 | ✅ | Rest patterns in list and record patterns | `[first, ..]`, `[.., last]`, `[first, rest @ .., last]`; `User { name, .. }`. Shipped in 0.2.8. | `docs/spec.md §4.5`, `CHANGELOG.md` (0.2.8) |
-| ⏳ | Inline record types | First-class structural record types in type positions (e.g. `{ name: Text, age: Int }`), with the structural-vs-nominal decision documented in the decision log | — |
-| ✅ | Typeclasses (`class` / `instance` / `deriving` / superclass `where`) | Declaration syntax, name resolution (class-method index), instance resolution with coherence (orphan, overlap, superclass cycle), constraint propagation through inference, `deriving` for `Eq` / `Ord` / `ToText` on records and unions, and dictionary-passing lowering to BEAM. Superclass `where` on class heads is supported; `where` on instance heads (parametric instances) is not yet — see the 0.3.0 framework note below | `crates/ridge-typecheck/src/{collect,solve,derive,class_env}.rs`; `crates/ridge-lower/src/item.rs`; `crates/ridge-driver/tests/typeclass_{dict,deriving}_e2e.rs` |
-
-### LSP enhancements (bridging into 0.3.0)
-
-| Status | Item | Description | Evidence |
-|--------|------|-------------|----------|
-| ⏳ | Hover with inferred types and capability annotations | `tower-lsp` server already in place; no `hoverProvider` advertised yet -- the `initialize` reply explicitly omits it | `crates/ridge-lsp/src/server.rs`; asserted absent by `tests/lsp_replay.rs` |
-| ⏳ | Go-to-definition | -- | -- |
-| ⏳ | Completion | -- | -- |
-
-Each LSP item above lands in a 0.2.x patch when the cost to ship is
-bounded. Work that grows to require an IR-level symbol index or
-incremental compilation slides to 0.3.0 RC1.
+| ⏳ | Inline record types | First-class structural record types in type positions (e.g. `{ name: Text, age: Int }`), with the structural-vs-nominal decision documented in the spec | — |
+| ✅ | Typeclasses (`class` / `instance` / `deriving` / superclass `where`) | Declaration syntax, name resolution (class-method index), instance resolution with coherence (orphan, overlap, superclass cycle), constraint propagation through inference, `deriving` for `Eq` / `Ord` / `ToText` on records and unions, and dictionary-passing lowering to BEAM. Superclass `where` on class heads is supported; `where` on instance heads (parametric instances) is also supported — see the typeclass-completion section in 0.3.0 | `crates/ridge-typecheck/src/{collect,solve,derive,class_env}.rs`; `crates/ridge-lower/src/item.rs`; `crates/ridge-driver/tests/typeclass_{dict,deriving}_e2e.rs` |
 
 ---
 
 ## 0.3.0 -- LSP at scale + frameworks tier-1
 
 Goal: graduate the developer experience and ship the first wave of
-official frameworks. The release builds in a series of release
-candidates, each shippable on its own and accumulating into the GA tag.
-The exploratory WebAssembly and native backends remain out of scope for
-0.3.0 -- see the [exploratory backends](#beyond-030--exploratory-backends)
-section.
+official frameworks. The exploratory WebAssembly and native backends
+remain out of scope for 0.3.0 -- see the
+[exploratory backends](#beyond-030--exploratory-backends) section.
 
-The LSP tier below (originally one RC) shipped across two prereleases:
-`0.3.0-rc1` (the IDE features) and `0.3.0-rc2` (incremental compilation).
-The framework tiers that follow are renumbered when they are scheduled.
+The release builds in a series of release candidates, each shippable on
+its own and accumulating into the GA tag. So far: rc1 (LSP IDE features),
+rc2 (incremental compilation), rc3 (typeclass completion), and rc4
+(usability fix — prelude class methods callable by bare name).
 
-### 0.3.0 RC1 -- LSP incremental + features
+### 0.3.0 RC1 -- LSP IDE features
 
 | Status | Item | Description | Evidence |
 |--------|------|-------------|----------|
@@ -184,18 +171,37 @@ The framework tiers that follow are renumbered when they are scheduled.
 | ⏳ | Find-references | Reverse-index over `Symbol -> Vec<Span>` | -- |
 | ✅ | Latency budget | On a synthetic 200-module workspace a leaf recompile stays far under a full rebuild (gated relative guard); a criterion bench reports the millisecond numbers | `crates/ridge-bench/tests/incremental_perf.rs`, `benches/incremental.rs` |
 
-### 0.3.0 RC2 -- `ridge.web`
+### 0.3.0 RC3 -- Typeclass completion
+
+Finished the typeclass system end-to-end: `JsonValue` as a first-class
+prelude type, `Encode` / `Decode` deriving for user types, parametric
+instances with `where` constraints, and eight stdlib instances.
+
+| Status | Item | Description | Evidence |
+|--------|------|-------------|----------|
+| ✅ | `JsonValue` first-class prelude type | `JNull`, `JBool`, `JInt`, `JFloat`, `JText`, `JList`, `JObject` constructors available without an import; replaces the opaque tagged-tuple representation | `crates/ridge-typecheck/src/prelude.rs`; `crates/ridge-stdlib/stdlib/json.ridge` |
+| ✅ | `deriving (Encode, Decode)` for records and unions | `Encode` serialises a user record or union to `JsonValue`; `Decode` deserialises in the reverse direction; both are derived with no boilerplate | `crates/ridge-typecheck/src/derive.rs`; `crates/ridge-driver/tests/typeclass_{dict,deriving}_e2e.rs` |
+| ✅ | Generic/parametric derived instances | `type Box a = { val: a } deriving (Encode)` produces a constrained instance that propagates `Encode a` automatically | `crates/ridge-typecheck/src/derive.rs` |
+| ✅ | `where`-constrained instance heads | `instance Encode (List a) where Encode a` — the full parametric-instance grammar including the `where` clause is now accepted and resolved | `crates/ridge-typecheck/src/{collect,solve,class_env}.rs` |
+| ✅ | 8 stdlib `Encode` / `Decode` instances | `List a`, `Option a`, `Map Text v`, `Result a b` — instances for all four generic prelude containers in both directions | `crates/ridge-stdlib/stdlib/` |
+
+### 0.3.0 RC4 -- Prelude method usability
+
+| Status | Item | Description | Evidence |
+|--------|------|-------------|----------|
+| ✅ | Prelude typeclass methods callable by bare name | `encode`, `decode`, `toText`, `eq`, `compare` resolve without redeclaring the class — `deriving (Encode, Decode)` works through its intended API from user code | `crates/ridge-typecheck/src/prelude.rs`; `crates/ridge-driver/tests/typeclass_{dict,deriving}_e2e.rs` |
+
+### Upcoming -- `ridge.web`
 
 Typed HTTP framework for the BEAM. Cowboy / Bandit underneath,
 exposed through a typed router DSL, JSON via `Encode` / `Decode`
 typeclasses, and a composable middleware chain.
 
-The typeclass core (declarations, coherence, constraint solving,
-`deriving` for `Eq` / `Ord` / `ToText`, dictionary passing to BEAM) is in
-place. Two language pieces are still needed before the typed JSON layer:
-parametric instances (`where` on instance heads, e.g.
-`instance Encode a => Encode (List a)`), and extending `deriving` to
-`Encode` / `Decode` on user records.
+The language prerequisites are satisfied: the typeclass core
+(declarations, coherence, constraint solving, dictionary passing),
+`deriving (Encode, Decode)` for user records and unions, parametric
+instances with `where` constraints, and eight prelude stdlib instances
+all shipped in rc3. The framework itself is the remaining work.
 
 | Status | Item | Description | Evidence |
 |--------|------|-------------|----------|
@@ -209,7 +215,7 @@ parametric instances (`where` on instance heads, e.g.
 | ⏳ | Examples corpus | `examples/web/blog/` + `examples/web/realtime-chat/` | -- |
 | ⏳ | Getting-started doc | `docs/frameworks/ridge-web.md` | -- |
 
-### 0.3.0 RC3 -- `ridge.data`
+### Upcoming -- `ridge.data`
 
 Typed query and migration framework for the BEAM. Postgres is the
 first driver; MySQL and SQLite stay on the table for later minors.
@@ -219,13 +225,13 @@ first driver; MySQL and SQLite stay on the table for later minors.
 | ⏳ | Connection pool | `gen_server`-backed connection lifecycle | -- |
 | ⏳ | Typed query builder | `Select<Row, Conditions>`, `Insert<Row>`, ... | -- |
 | ⏳ | Migrations | Apply / rollback / version tracking | -- |
-| ⏳ | Postgres driver | Either `epgsql` or `pgo`; the choice is captured in the decision log | -- |
+| ⏳ | Postgres driver | Either `epgsql` or `pgo`; the choice will be documented when the driver ships | -- |
 | ⏳ | Row deriving | `deriving (Decode, Encode)` on user records | -- |
 | ⏳ | Transactions | With savepoints | -- |
 | ⏳ | Examples corpus | `examples/data/users-crud/` with docker-compose Postgres in CI | -- |
 | ⏳ | Getting-started doc | `docs/frameworks/ridge-data.md` | -- |
 
-### 0.3.0 GA -- `ridge.obs` + `ridge.test+` + housekeeping
+### 0.3.0 GA -- `ridge.obs`, `ridge.test+`, and housekeeping
 
 | Status | Item | Description | Evidence |
 |--------|------|-------------|----------|

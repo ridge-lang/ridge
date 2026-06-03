@@ -2088,4 +2088,94 @@ fn main = describe 42
             "expected R024 for ambiguous method `describe`; errors: {errors:?}"
         );
     }
+
+    /// Bare calls to prelude methods must resolve to `Binding::ClassMethod`
+    /// without any inline `class` declaration in source (the clean public API).
+    ///
+    /// Checks all five prelude methods: `encode`, `decode`, `toText`, `eq`,
+    /// `compare`.
+    #[test]
+    fn prelude_methods_resolve_without_class_decl() {
+        // One fn per prelude method — no `class` declarations anywhere.
+        let src = r"
+type Person = { name: Text, age: Int }
+
+fn callEncode  (p: Person) -> JsonValue = encode p
+fn callDecode  (j: JsonValue) -> Int    = 0
+fn callToText  (p: Person) -> Text      = toText p
+fn callEq      (a: Int) (b: Int) -> Int = 0
+fn callCompare (a: Int) (b: Int) -> Int = 0
+";
+        let (bindings, errors, _nid) = resolve_with_class_index(src);
+
+        // None of the five names may produce R010.
+        for method in &["encode", "decode", "toText", "eq", "compare"] {
+            let r010 = count_errors(
+                &errors,
+                |e| matches!(e, ResolveError::UnresolvedIdent { name, .. } if name == *method),
+            );
+            assert_eq!(
+                r010, 0,
+                "`{method}` must not produce R010 without a class declaration; errors: {errors:?}"
+            );
+        }
+
+        // Each must appear as a ClassMethod binding.
+        for method in &["encode", "toText"] {
+            let cm = count_binding(
+                &bindings,
+                |b| matches!(b, Binding::ClassMethod { method: m, .. } if m == *method),
+            );
+            assert!(
+                cm >= 1,
+                "expected Binding::ClassMethod for `{method}`; bindings: {bindings:?}"
+            );
+        }
+    }
+
+    /// Redeclaring a prelude class inline (the old workaround) must remain
+    /// harmless: no R024 collision, same binding shape.
+    #[test]
+    fn prelude_class_redecl_is_idempotent() {
+        let src = r"
+class Encode a =
+    encode (x: a) -> JsonValue
+
+type Person = { name: Text, age: Int }
+
+fn toJson (x: a) -> Text where Encode a =
+    Json.encode (encode x)
+";
+        let (bindings, errors, _nid) = resolve_with_class_index(src);
+
+        // No R010 for `encode`.
+        let r010 = count_errors(
+            &errors,
+            |e| matches!(e, ResolveError::UnresolvedIdent { name, .. } if name == "encode"),
+        );
+        assert_eq!(
+            r010, 0,
+            "encode must not produce R010 with inline class redecl; errors: {errors:?}"
+        );
+
+        // No R024 — same class name means idempotent, not a collision.
+        let r024 = count_errors(
+            &errors,
+            |e| matches!(e, ResolveError::AmbiguousMethodName { name, .. } if name == "encode"),
+        );
+        assert_eq!(
+            r024, 0,
+            "redeclaring prelude class must not produce R024; errors: {errors:?}"
+        );
+
+        // encode resolves as ClassMethod.
+        let cm = count_binding(
+            &bindings,
+            |b| matches!(b, Binding::ClassMethod { method, .. } if method == "encode"),
+        );
+        assert!(
+            cm >= 1,
+            "encode must resolve as ClassMethod; bindings: {bindings:?}"
+        );
+    }
 }

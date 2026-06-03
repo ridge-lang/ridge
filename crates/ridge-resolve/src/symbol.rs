@@ -580,12 +580,25 @@ pub struct ClassMethodIndex {
 impl ClassMethodIndex {
     /// Build a `ClassMethodIndex` by scanning every module's top-level items.
     ///
-    /// Iterates `(ast)` pairs in source order. Handles both user-declared classes
-    /// and the prelude class names (`ToText`, `Eq`, `Ord`) that are parsed from
-    /// source rather than from a registry.
+    /// Iterates `(ast)` pairs in source order, collecting user-declared class
+    /// method names.  Before the scan the five prelude classes are seeded via
+    /// [`Self::seed_prelude`] so that bare calls to their methods resolve
+    /// without the caller having to redeclare the class in source:
+    ///
+    /// - `toText`   → `ToText`  (arity 1)
+    /// - `eq`       → `Eq`      (arity 2)
+    /// - `compare`  → `Ord`     (arity 2)
+    /// - `encode`   → `Encode`  (arity 1)
+    /// - `decode`   → `Decode`  (arity 1)
+    ///
+    /// A user redeclaration of any prelude class (same class name) is idempotent
+    /// — the collision guard keeps the first-seen entry and skips the duplicate
+    /// silently.  A truly distinct user class that happens to pick the same
+    /// method name still triggers R024 at the use site.
     #[must_use]
     pub fn build(modules: &[&ridge_ast::Module]) -> Self {
         let mut index = Self::default();
+        index.seed_prelude();
         for ast in modules {
             for item in &ast.items {
                 if let ridge_ast::Item::ClassDecl(decl) = item {
@@ -612,6 +625,25 @@ impl ClassMethodIndex {
             }
         }
         index
+    }
+
+    /// Seed the five built-in prelude class methods so they resolve without a
+    /// source-level `class` declaration.
+    ///
+    /// Mirrors `register_prelude_classes` in `ridge-typecheck`.  Entries use the
+    /// same `(class_name, arity)` shape as the AST-scan loop in [`Self::build`].
+    fn seed_prelude(&mut self) {
+        let prelude: &[(&str, &str, usize)] = &[
+            ("toText", "ToText", 1),
+            ("eq", "Eq", 2),
+            ("compare", "Ord", 2),
+            ("encode", "Encode", 1),
+            ("decode", "Decode", 1),
+        ];
+        for &(method, class, arity) in prelude {
+            self.entries
+                .insert(method.to_owned(), (class.to_owned(), arity));
+        }
     }
 
     /// Look up a method by name.
@@ -1039,6 +1071,93 @@ mod tests {
         // Total = 5
         let entry_names: Vec<_> = table.entries.iter().map(|e| &e.name).collect();
         assert_eq!(table.entries.len(), 5, "entries: {entry_names:?}");
+    }
+
+    // ── ClassMethodIndex tests ────────────────────────────────────────────────
+
+    /// Build a one-method `ClassDecl` item for index tests.
+    fn class_item(class: &str, method: &str, param_count: usize) -> Item {
+        use ridge_ast::{ClassDecl, MethodSig};
+        let params = (0..param_count)
+            .map(|i| Param::Bare(id(&format!("p{i}"))))
+            .collect();
+        Item::ClassDecl(ClassDecl {
+            name: id(class),
+            ty_var: id("a"),
+            superclasses: vec![],
+            methods: vec![MethodSig {
+                name: id(method),
+                params,
+                ret: prim_type_int(),
+                span: sp(),
+            }],
+            span: sp(),
+            doc: None,
+        })
+    }
+
+    // Test 16: ClassMethodIndex — empty module still seeds all 5 prelude methods.
+    #[test]
+    fn t16_class_method_index_prelude_seeded() {
+        let m = empty_module();
+        let idx = ClassMethodIndex::build(&[&m]);
+
+        // All five prelude methods must be present.
+        let (cls, arity) = idx.lookup("toText").expect("toText missing");
+        assert_eq!(cls, "ToText");
+        assert_eq!(arity, 1);
+
+        let (cls, arity) = idx.lookup("eq").expect("eq missing");
+        assert_eq!(cls, "Eq");
+        assert_eq!(arity, 2);
+
+        let (cls, arity) = idx.lookup("compare").expect("compare missing");
+        assert_eq!(cls, "Ord");
+        assert_eq!(arity, 2);
+
+        let (cls, arity) = idx.lookup("encode").expect("encode missing");
+        assert_eq!(cls, "Encode");
+        assert_eq!(arity, 1);
+
+        let (cls, arity) = idx.lookup("decode").expect("decode missing");
+        assert_eq!(cls, "Decode");
+        assert_eq!(arity, 1);
+
+        // No collisions from prelude alone.
+        assert!(idx.collisions.is_empty(), "no collisions expected");
+    }
+
+    // Test 17: ClassMethodIndex — redeclaring a prelude class is idempotent (no collision).
+    #[test]
+    fn t17_class_method_index_prelude_redecl_idempotent() {
+        // User source redeclares `class Encode` (same class name, same method).
+        let m = module_with(vec![class_item("Encode", "encode", 1)]);
+        let idx = ClassMethodIndex::build(&[&m]);
+
+        // Still resolves correctly — no collision, same entry.
+        let (cls, arity) = idx.lookup("encode").expect("encode missing after redecl");
+        assert_eq!(cls, "Encode");
+        assert_eq!(arity, 1);
+        assert!(
+            idx.collisions.is_empty(),
+            "same-class redecl must NOT produce a collision; got {:?}",
+            idx.collisions
+        );
+    }
+
+    // Test 18: ClassMethodIndex — a distinct user class using a prelude method name → R024.
+    #[test]
+    fn t18_class_method_index_distinct_class_same_method_collides() {
+        // A brand-new class "Serialise" that also declares `encode` — R024 territory.
+        let m = module_with(vec![class_item("Serialise", "encode", 1)]);
+        let idx = ClassMethodIndex::build(&[&m]);
+
+        // The collision must be recorded so R024 fires at the use site.
+        assert!(
+            idx.collisions.contains_key("encode"),
+            "distinct-class method collision must be recorded; collisions: {:?}",
+            idx.collisions
+        );
     }
 
     // Test 15: actor with init member — init is NOT added as a handler

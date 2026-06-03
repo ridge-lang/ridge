@@ -65,4 +65,4 @@ The server reads JSON-RPC over stdin and writes responses to stdout (LSP framing
 ## Manual VS Code attestation
 
 Deferred.  The VS Code extension scaffold that wires `ridge-lsp` as its language
-server is planned for a future release.
+server is not yet available.

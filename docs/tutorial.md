@@ -1,7 +1,7 @@
 # Ridge — Tutorial
 
 A guided tour from install to a runnable hello-world to your first
-diagnostics in VS Code. Targets Ridge **0.3.0-rc2**.
+diagnostics in VS Code. Targets Ridge **0.3.0-rc4**.
 
 This tutorial assumes nothing beyond a working Rust toolchain and a
 recent Erlang/OTP. For the formal language definition, see
@@ -12,7 +12,7 @@ recent Erlang/OTP. For the formal language definition, see
 
 1. [Prerequisites](#prerequisites)
 2. [Install Ridge](#install-ridge)
-3. [Sideload the VS Code extension](#sideload-the-vs-code-extension)
+3. [Install the VS Code extension](#install-the-vs-code-extension)
 4. [Create and run a hello-world project](#create-and-run-a-hello-world-project)
 5. [See diagnostics in VS Code](#see-diagnostics-in-vs-code)
 6. [Format a Ridge file](#format-a-ridge-file)
@@ -85,9 +85,7 @@ RIDGE_VERSION=v0.2.13 bash -c "$(curl -fsSL https://raw.githubusercontent.com/ri
 
 ```sh
 ~/.cargo/bin/ridge --version
-# expected: ridge 0.2.13
 ~/.cargo/bin/ridge-lsp --version
-# expected: ridge-lsp 0.2.13
 ```
 
 Use the explicit path (`~/.cargo/bin/ridge`), not a shell glob. The
@@ -96,29 +94,18 @@ step.
 
 ---
 
-## Sideload the VS Code extension
+## Install the VS Code extension
 
-The `.vsix` isn't published to the Marketplace yet; build it from the
-repo. pnpm is required — corepack picks `pnpm@11.1.1` from the
-`packageManager` field in `package.json`.
+The extension is published to the Visual Studio Code Marketplace. Search
+for **Ridge** in the Extensions view (`Ctrl+Shift+X` / `Cmd+Shift+X`), or
+install from the command line:
 
 ```sh
-cd <repo-root>/tools/vscode-ridge
-pnpm install
-pnpm run bundle
-pnpm dlx @vscode/vsce package --no-dependencies
-code --install-extension ./vscode-ridge-0.2.1.vsix
+code --install-extension ridge-lang.vscode-ridge
 ```
 
-On Windows, use the literal path `.\vscode-ridge-0.2.1.vsix` —
-PowerShell doesn't glob-expand external command arguments, so
-`*.vsix` won't match.
-
-If `code` isn't on PATH on macOS:
-
-```bash
-export PATH="$PATH:/Applications/Visual Studio Code.app/Contents/Resources/app/bin"
-```
+You can also install from the Marketplace page:
+[marketplace.visualstudio.com/items?itemName=ridge-lang.vscode-ridge](https://marketplace.visualstudio.com/items?itemName=ridge-lang.vscode-ridge)
 
 Restart VS Code after the install completes. The extension activates
 on any `.ridge` file and spawns `ridge-lsp` from your PATH over stdio.
@@ -129,9 +116,9 @@ Beyond live diagnostics, the language server answers three editor requests:
 **hover** shows the inferred type of the symbol under the cursor,
 **go-to-definition** jumps to where a name is bound (including across modules),
 and **completion** suggests the locals in scope, the module's symbols, imports,
-and keywords — plus a module's exported names after you type `Module.`. As of
-0.3.0-rc2 an edit recompiles only the modules it affects, so these stay
-responsive as a workspace grows.
+and keywords — plus a module's exported names after you type `Module.`. Edits
+recompile only the affected modules, so these stay responsive as a workspace
+grows.
 
 ---
 
@@ -220,14 +207,6 @@ Also confirm syntax highlighting is active: keywords (`pub`, `fn`,
 `import`, `as`) render in the keyword colour, string literals in the
 string colour, and `--` line comments are greyed out.
 
-### A known rough edge
-
-In the current release, all three diagnostics show up in the Problems
-panel attributed to `<unknown>` at `1:1`. The diagnostic *messages*
-are correct — only the file attribution and line number are wrong.
-Tracked for fix in a follow-up release; the diagnostic content is
-already enough to find and fix the underlying problem in the editor.
-
 ---
 
 ## Format a Ridge file
@@ -252,17 +231,21 @@ it twice produces the same output as running it once.
 
 ## Run the test suite
 
-`ridge test` discovers every `pub fn test_*` (arity 0) in the workspace
-and runs it. Tests return `Result Unit Text`: `Ok ()` passes, `Err msg`
-fails with `msg` printed.
-
-Add a test to `hello/src/Main.ridge`:
+`ridge test` discovers every function annotated with `@test` and runs it.
+Tests return `Result Unit Text`: `Ok ()` passes, `Err msg` fails with `msg`
+printed. Annotate with `@test "<display name>"` above any function — the name
+is shown in the test report and can be any string:
 
 ```ridge
-pub fn test_greeting () -> Result Unit Text =
+@test "greeting matches expected output"
+fn greeting () -> Result Unit Text =
     if "Hello from hello!" == "Hello from hello!" then Ok ()
     else Err "greeting mismatch"
 ```
+
+The `pub fn test_*` naming prefix is deprecated as of 0.2.8 and removed in
+0.3.0. Use `@test` for all new tests; run `ridge fmt --migrate-tests` to
+rewrite any old-style tests automatically.
 
 A note on `let`: Ridge's `let` is indentation-based and has no `in`
 keyword. The Haskell-style `let … in body` form does not parse. For
@@ -364,18 +347,65 @@ function in the same module (which is promoted automatically).
 
 `deriving Eq` uses BEAM structural equality (`=:=`), which is not
 constant-time. Do not compare secret values — tokens, password hashes, HMAC
-tags — with `==` or derived `Eq`. Use `std.crypto.constantTimeEq` instead:
-
-```ridge
-import std.crypto as Crypto
-
-let same = Crypto.constantTimeEq hashA hashB    -- constant-time, safe for secrets
-```
+tags — with `==` or derived `Eq`. Use `Crypto.constantTimeEq` from `std.crypto`
+instead; it takes two `Text` values and returns a `Bool` using a fixed-time
+comparison that does not short-circuit on the first mismatched byte.
 
 Also note that `Float` has no `Eq` instance in the prelude. Deriving `Eq`
 on a type that contains a `Float` field is a compile error (`T029
 NoInstance`). Use an explicit comparison function with appropriate tolerance
 if you need float equality.
+
+### Deriving Encode and Decode
+
+`Encode` and `Decode` are the two JSON typeclass instances. Derive both on a
+record and the compiler generates a full codec with no boilerplate:
+
+```ridge
+type Person = { name: Text, age: Int } deriving (Eq, ToText, Encode, Decode)
+```
+
+The idiomatic pattern is a constrained helper — `where Encode a` makes the
+`encode` method available inside the function body:
+
+```ridge
+fn toJson (x: a) -> Text where Encode a = Json.encode (encode x)
+```
+
+Use it to turn a `Person` into a JSON string:
+
+```ridge
+let person = Person { name = "Ann", age = 30 }
+let json   = toJson person
+-- json: "{\"name\":\"Ann\",\"age\":30}"
+```
+
+Decoding goes the other way. `Json.decode` parses the text into `JsonValue`,
+then `decode` reconstructs the typed value:
+
+```ridge
+fn fromJson (s: Text) -> Result Person Error =
+    match Json.decode s
+        Ok j  -> decode j
+        Err e -> Err e
+
+let result = fromJson json
+-- result: Ok (Person { name = "Ann", age = 30 })
+```
+
+`decode` returns `Result T Error`, so a malformed document or a missing
+field produces an `Err` rather than a crash. The two directions round-trip
+exactly: `decode (encode x) == Ok x` for any value that has both instances.
+
+Deriving works on unions too. Nullary constructors encode as bare JSON
+strings; constructors with payload encode as adjacently-tagged objects
+(`{"tag":"…","values":[…]}`). Generic types get constrained instances
+automatically — `type Box a = { val: a } deriving (Encode, Decode)` compiles
+and round-trips for any element type that itself has `Encode` and `Decode`.
+
+The stdlib ships eight parametric instances out of the box: `List a`,
+`Option a`, `Map Text a`, and `Result a e` for both `Encode` and `Decode`,
+so nested collections just work.
 
 For the full grammar, coherence rules, and diagnostic reference, see
 [`spec.md §5.6`](spec.md#56-typeclasses).
@@ -399,11 +429,7 @@ release installer (Option B).
 Confirm the `ridge-lsp` binary is installed (it's a separate binary
 from `ridge`) and that the extension is active
 (`code --list-extensions | grep ridge`, or `findstr ridge` on
-Windows). Reload the VS Code window after sideloading.
-
-**`pnpm dlx @vscode/vsce package` warns about a missing icon.**
-The placeholder icon at `tools/vscode-ridge/images/icon.png` or the
-`"icon"` field in `package.json` is missing from the working tree.
+Windows). Reload the VS Code window after installing the extension.
 
 **R013 doesn't fire on a fresh `ridge new` workspace.**
 R013 needs a workspace-level `forbid` rule, which `ridge new` doesn't

@@ -7,6 +7,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.0-rc4] - 2026-06-03
+
+### Added
+
+- Prelude typeclass methods are now callable by bare name from user code: `encode`, `decode`, `toText`, `eq`, and `compare` resolve without the caller needing to redeclare the class. `deriving (Encode, Decode)` now works through its intended API — `encode x` and `decode j` call the derived instance directly.
+
+## [0.3.0-rc3] - 2026-06-03
+
+### Added
+
+- `JsonValue` is now a first-class prelude type. The constructors `JNull`, `JBool`, `JInt`, `JFloat`, `JText`, `JList`, and `JObject` are available without an explicit import, replacing the opaque tagged-tuple representation that previously required going through the `Json` module accessors.
+- `deriving (Encode)` and `deriving (Decode)` for user records and unions. `Encode` serialises a value to `JsonValue`; `Decode` deserialises in the reverse direction. Both work on named records, unions with positional and named-field constructors, and types that mix the two.
+- Generic/parametric derived instances: `type Box a = { val: a } deriving (Encode)` produces a constrained instance that propagates `Encode a` automatically. Parametric derivation works for any number of type parameters.
+- `where`-constrained instance heads: `instance Encode (List a) where Encode a` — the full parametric-instance grammar is now accepted, resolved, and dictionary-passed to the BEAM.
+- Eight `Encode` / `Decode` instances in the standard library covering the four generic prelude containers in both directions: `List a`, `Option a`, `Map Text v`, and `Result a b`.
+
 ## [0.3.0-rc2] - 2026-06-01
 
 ### Changed
@@ -71,7 +87,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Record patterns in `match`: a record-body pattern such as `User { name, age }` binds each named field, and a trailing `..` (`User { name, .. }`) matches the named fields while ignoring the rest. Naming an unknown field is an error, and omitting a field without `..` is reported as missing. The `..` itself cannot be bound.
 - `@test "<name>"` attribute for marking test functions regardless of name or visibility. The string is the display name shown by `ridge test`. Return type is unchanged (`Result Unit Text`). When both `@test` and the `test_` prefix apply to the same function, the attribute wins and the test registers once.
 - `ridge fmt --migrate-tests` rewrites `pub fn test_*` functions to the `@test` form in place. It inserts `@test "<derived-name>"` above each matching function without renaming it (derived name is the function name with `test_` stripped). The rewrite is idempotent — a function already carrying `@test` is left untouched.
-- Decision-log entries D256 through D261 in `docs/spec.md §15`, covering the string literal syntax choices, rest pattern semantics, and test-attribute design.
+- Design decisions covering the string literal syntax choices, rest pattern semantics, and test-attribute design are documented in `docs/spec.md §15`.
 
 ### Deprecated
 
@@ -87,7 +103,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Actors can now declare a `mailbox` configuration member alongside `state`, `init`, and `on`. Three forms are accepted: `mailbox unbounded` (the explicit default), `mailbox bounded N drop newest` (silently drop the incoming message on overflow), and `mailbox bounded N error` (raise `{mailbox_full, Pid}` in the sender on overflow, so a supervisor can decide what happens next). The capacity `N` is a positive integer literal; the overflow policy is mandatory when bounded, with `P022 MailboxPolicyMissing` if it is missing and `P023 MailboxBoundInvalid` if `N` is zero, negative, or out of range. The configuration keywords (`bounded`, `unbounded`, `drop`, `newest`, `oldest`, `error`) stay reserved only inside the `mailbox` member; everywhere else they remain ordinary identifiers. The historical unbounded default carries through unchanged when the member is omitted, so existing programs keep their behaviour byte-for-byte.
 - New `std.actor` module shipping `Actor.mailboxSize : Handle a -> Option Int`. `Some n` is the queue length at the moment of the call; `None` means the actor is no longer alive. The function is cap-free: the handle itself is the proof of access, formalised in the new §6.4.1 "Handles as effect tokens" subsection. Reading the queue length is best-effort under concurrent senders — the value reflects what the next sender would see, which may briefly diverge from the strict bound under contention; the spec §7.2.1 documents this as a soft-bound invariant.
-- Decision-log entries D251 through D255 collected into a new §15 of the spec. The entries record the syntax choice, the overflow-policy set that ships now, the let-it-crash semantics for `error` via `!`, the observability scope, and the "handle as effect token" capability rule that motivates the cap-free design.
+- Design decisions for the mailbox feature are collected into a new §15 of the spec, covering the syntax choice, the overflow-policy set, the let-it-crash semantics for `error` via `!`, the observability scope, and the "handle as effect token" capability rule that motivates the cap-free design.
 
 ### Changed
 
@@ -100,7 +116,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Deferred
 
-- The `drop oldest` mailbox policy is parsed but type-check-rejected (`T027 MailboxPolicyDropOldestNotShipped`); programs using it get a precise diagnostic listing the two policies that do ship. Implementing the policy needs a broker process intermediary because BEAM does not permit a sender to mutate another process's mailbox, and is planned for a focused follow-up.
+- The `drop oldest` mailbox policy is parsed but type-check-rejected (`T027 MailboxPolicyDropOldestNotShipped`); programs using it get a precise diagnostic listing the two policies that do ship. Implementing the policy needs a broker process intermediary because BEAM does not permit a sender to mutate another process's mailbox; it is deferred pending a broker implementation.
 - The result-returning `Actor.send (h: Handle a) (msg) -> Result Unit MailboxFull` waits on first-class message values, which depend on the typeclass infrastructure not yet in scope. Until then `!` covers fire-and-forget and `bounded N error` surfaces overflow at the call site through a let-it-crash exit signal.
 - `Actor.peek` and `Actor.drain` are deferred for the same reason — they require the message-shape typeclass infrastructure to be tipable. `drain` is additionally destructive and waits for a concrete use case before shipping.
 
@@ -146,7 +162,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
-- `Fs.readDir` and `Fs.isDir` open the directory-walking path that previous releases left to FFI workarounds. `Fs.readDir path` returns `Result (List Text) Text` with each entry as a bare basename (no leading path component); the underlying `file:list_dir/1` makes no order guarantees, so callers that need a deterministic ordering should sort the result. `Fs.isDir path` returns `Bool` — true iff the path resolves to a directory. Both require the `fs` capability. The new shims unblock the canonical "tree" / "markdown-todo aggregator" / static-site-generator app shapes from `DX_TEST_APPS_0_2_0.md`.
+- `Fs.readDir` and `Fs.isDir` open the directory-walking path that previous releases left to FFI workarounds. `Fs.readDir path` returns `Result (List Text) Text` with each entry as a bare basename (no leading path component); the underlying `file:list_dir/1` makes no order guarantees, so callers that need a deterministic ordering should sort the result. `Fs.isDir path` returns `Bool` — true iff the path resolves to a directory. Both require the `fs` capability. The new shims unblock the canonical "tree", "markdown-todo aggregator", and static-site-generator app shapes.
 - `List.concat (xs: List a) (ys: List a) -> List a` fills the missing leaf for the `++` operator on lists. `crates/ridge-lower/src/operators.rs` already routed `BinOp::Concat` to `std.list.concat` when the left operand resolved to a `List`, but no stdlib symbol carried that name — `xs ++ ys` lowered cleanly to `call 'std.list':'concat'/2` and then hit `E002 no stdlib bridge for std.list.concat` at codegen. Bridged to `lists:append/2` (the 2-arg BEAM equivalent of `L1 ++ L2`). Apps that wanted the natural list-append idiom had been rendering to text with a separator or rolling a recursive fold.
 - `Text.length (s: Text) -> Int` returns the number of grapheme clusters in a text value, distinct from the byte count `Text.byteSize` already provided. Bridged to `string:length/1`, so multibyte UTF-8 sequences are counted as one grapheme each — `length "café"` is `4` while `byteSize "café"` stays `5`. The 0.1.0 comment in `text.ridge` had reserved the name for this codepoint-aware semantics and the typecheck signature table already carried the corresponding arm; only the declaration and the export entry were missing.
 - `Text.join (sep: Text) (xs: List Text) -> Text` interleaves a separator between elements of a list and concatenates the result. Bridged to a new `ridge_rt:text_join/2` helper that wraps `lists:join/2` + `iolist_to_binary/1`. Empty list yields the empty string; empty separator concatenates. Apps had been rolling their own via `List.fold (fn acc x -> acc <> sep <> x) "" xs`, which has a leading-separator bug on the head element.
@@ -327,7 +343,16 @@ Initial public release candidate.
 - Standard library: `bool`, `cli`, `env`, `float`, `fs`, `int`, `io`, `json`, `list`, `map`, `net.http`, `option`, `proc`, `random`, `text`, `time`
 - Apache-2.0 licensed
 
-[Unreleased]: https://github.com/ridge-lang/ridge/compare/v0.2.8...HEAD
+[Unreleased]: https://github.com/ridge-lang/ridge/compare/v0.3.0-rc4...HEAD
+[0.3.0-rc4]: https://github.com/ridge-lang/ridge/compare/v0.3.0-rc3...v0.3.0-rc4
+[0.3.0-rc3]: https://github.com/ridge-lang/ridge/compare/v0.3.0-rc2...v0.3.0-rc3
+[0.3.0-rc2]: https://github.com/ridge-lang/ridge/compare/v0.3.0-rc1...v0.3.0-rc2
+[0.3.0-rc1]: https://github.com/ridge-lang/ridge/compare/v0.2.13...v0.3.0-rc1
+[0.2.13]: https://github.com/ridge-lang/ridge/compare/v0.2.12...v0.2.13
+[0.2.12]: https://github.com/ridge-lang/ridge/compare/v0.2.11...v0.2.12
+[0.2.11]: https://github.com/ridge-lang/ridge/compare/v0.2.10...v0.2.11
+[0.2.10]: https://github.com/ridge-lang/ridge/compare/v0.2.9...v0.2.10
+[0.2.9]: https://github.com/ridge-lang/ridge/compare/v0.2.8...v0.2.9
 [0.2.8]: https://github.com/ridge-lang/ridge/compare/v0.2.7...v0.2.8
 [0.2.7]: https://github.com/ridge-lang/ridge/compare/v0.2.6...v0.2.7
 [0.2.6]: https://github.com/ridge-lang/ridge/compare/v0.2.5...v0.2.6

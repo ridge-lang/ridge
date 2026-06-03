@@ -121,7 +121,6 @@ the release manager at the time.
 ## Known limitations on this release
 
 - Capabilities (`io`, `fs`, `net`, ...) render as plain identifiers.
-  Semantic-tokens-based capability highlighting is planned for a future
-  release.
+  Semantic token highlighting is not yet available.
 - Only diagnostics are surfaced today — `ridge-lsp` does not yet
   implement hover, completion, or go-to-definition.

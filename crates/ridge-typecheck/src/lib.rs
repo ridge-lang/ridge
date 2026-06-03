@@ -601,6 +601,7 @@ fn typecheck_module_inner(
     // `deferred_constraints`, which the solver later resolves as Static or Forward.
     if let Some((ct, _)) = registries {
         seed_class_method_schemes(&mut ctx, b, ct);
+        seed_prelude_codec_schemes(&mut ctx, b);
     }
 
     // Step B: Seed env with prelude constructors + stdlib qualified bindings.
@@ -830,6 +831,73 @@ fn seed_class_method_schemes(
             // overwrite this entry, keeping existing programs green.
             ctx.env.bind(sig.name.clone(), scheme);
         }
+    }
+}
+
+/// Seed type-environment schemes for the two prelude codec methods (`encode`,
+/// `decode`) so that bare calls work without an inline `class` redeclaration.
+///
+/// `ToText`, `Eq`, and `Ord` are dispatched via language operators (`$"..."`,
+/// `==`, comparison) and do not need an env scheme for bare calls.  `Encode`
+/// and `Decode` have no operator and must be callable by bare name from user
+/// code, so their schemes are seeded here rather than through the AST-driven
+/// `seed_class_method_schemes` path (which requires `ast_param_types` to be
+/// populated, which the prelude registry intentionally leaves empty).
+///
+/// Schemes:
+///
+/// - `encode :: ∀a. a → JsonValue where Encode a`
+/// - `decode :: ∀a. JsonValue → Result a Error where Decode a`
+fn seed_prelude_codec_schemes(ctx: &mut crate::ctx::InferCtx, b: &ridge_types::BuiltinTyCons) {
+    use ridge_types::{
+        CapRow, CapabilitySet, Constraint, Scheme, Type, DECODE_CLASS, ENCODE_CLASS,
+    };
+
+    // ── encode :: ∀a. a → JsonValue where Encode a ───────────────────────────
+    {
+        let a = ctx.fresh_tyvid();
+        let fn_ty = Type::Fn {
+            params: vec![Type::Var(a)],
+            ret: Box::new(Type::Con(b.json_value, vec![])),
+            caps: CapRow::Concrete(CapabilitySet::PURE),
+        };
+        ctx.env.bind(
+            "encode".to_owned(),
+            Scheme {
+                vars: vec![a],
+                cap_vars: vec![],
+                ty: fn_ty,
+                constraints: vec![Constraint {
+                    class: ENCODE_CLASS,
+                    ty: a,
+                }],
+            },
+        );
+    }
+
+    // ── decode :: ∀a. JsonValue → Result a Error where Decode a ─────────────
+    {
+        let a = ctx.fresh_tyvid();
+        let fn_ty = Type::Fn {
+            params: vec![Type::Con(b.json_value, vec![])],
+            ret: Box::new(Type::Con(
+                b.result,
+                vec![Type::Var(a), Type::Con(b.error, vec![])],
+            )),
+            caps: CapRow::Concrete(CapabilitySet::PURE),
+        };
+        ctx.env.bind(
+            "decode".to_owned(),
+            Scheme {
+                vars: vec![a],
+                cap_vars: vec![],
+                ty: fn_ty,
+                constraints: vec![Constraint {
+                    class: DECODE_CLASS,
+                    ty: a,
+                }],
+            },
+        );
     }
 }
 

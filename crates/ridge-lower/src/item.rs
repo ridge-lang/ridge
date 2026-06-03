@@ -3377,7 +3377,7 @@ fn build_decode_union_body(
                 ctor: SymbolRef::Constructor {
                     ctor_kind: CtorKind::UnionVariant,
                     owner_type: tycon,
-                    name: ctor_name.to_string(),
+                    name: (*ctor_name).to_string(),
                     variant: 0,
                 },
                 fields: vec![],
@@ -3403,7 +3403,7 @@ fn build_decode_union_body(
                     },
                     IrExpr::Lit {
                         id: ctx.fresh_id(None),
-                        value: IrLit::Text(ctor_name.to_string()),
+                        value: IrLit::Text((*ctor_name).to_string()),
                         span: sp,
                     },
                 ],
@@ -3641,7 +3641,7 @@ fn build_union_payload_tag_dispatch(
                 },
                 IrExpr::Lit {
                     id: ctx.fresh_id(None),
-                    value: IrLit::Text(ctor_name.to_string()),
+                    value: IrLit::Text((*ctor_name).to_string()),
                     span: sp,
                 },
             ],

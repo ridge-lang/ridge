@@ -23,6 +23,7 @@
 use ridge_ast::{
     decl::{ActorDecl, ActorMember, FnDecl, InitDecl, OnHandler, Param, StateDecl},
     expr::{FieldInit, LambdaParam, MatchArm, QualifiedName, RecordCtor},
+    typeclass::InstanceDecl,
     visit::{walk_block, walk_expr, walk_init_decl, walk_on_handler, Visit},
     Block, Body, Expr, Ident, Item, ListPatElem, Module, Pattern,
 };
@@ -555,10 +556,14 @@ impl<'ast> Visit<'ast> for ScopeWalker<'_> {
 
     fn visit_item(&mut self, i: &'ast Item) {
         match i {
-            // Imports, type declarations, and typeclass declarations are
-            // handled by other passes; skip in the use-site resolver.
-            // Class/instance semantic passes are deferred to a later release.
-            Item::Import(_) | Item::Type(_) | Item::ClassDecl(_) | Item::InstanceDecl(_) => {}
+            // Imports, type declarations, and class declarations are handled by
+            // other passes; skip in the use-site resolver.
+            Item::Import(_) | Item::Type(_) | Item::ClassDecl(_) => {}
+            // Instance method bodies are resolved so that use-sites inside them
+            // (module fns, locals, prelude constructors, and — crucially for
+            // parametric instances — bare class-method calls on the constrained
+            // variable) bind correctly during lowering.
+            Item::InstanceDecl(d) => self.visit_instance_decl(d),
             Item::Const(d) => {
                 // Const value: resolve use-sites in the value expression.
                 // The const name itself is a module symbol, not a local.
@@ -588,6 +593,27 @@ impl<'ast> Visit<'ast> for ScopeWalker<'_> {
             self.visit_expr(e);
         }
         self.scope.pop_into(d.span.end);
+    }
+
+    // ── Instance declarations ─────────────────────────────────────────────────
+
+    /// Resolve use-sites inside each instance method body.
+    ///
+    /// Each method is walked like a function body: a fresh `FnBody` scope is
+    /// pushed, its parameters are bound as locals, and the body expression is
+    /// visited. This binds module-fn calls, locals, prelude constructors, and
+    /// bare class-method calls (`encode e` inside `instance Encode (List a)`)
+    /// so the lowering pass can thread dictionaries through them.
+    fn visit_instance_decl(&mut self, d: &'ast InstanceDecl) {
+        for method in &d.methods {
+            self.scope
+                .push_with_start(ScopeKind::FnBody, method.span.start);
+            for param in &method.params {
+                self.add_param(param, LocalKind::FnParam);
+            }
+            self.visit_expr(&method.body);
+            self.scope.pop_into(method.span.end);
+        }
     }
 
     // ── Actor declarations ────────────────────────────────────────────────────

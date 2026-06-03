@@ -711,7 +711,19 @@ fn typecheck_module_inner(
 
     // Phase 4.5 T3: move the node_types accumulator into TypedModule.
     // Every expression that was reached by infer_expr has its type recorded here.
-    let node_types = std::mem::take(&mut ctx.node_types_accum);
+    //
+    // Resolve each entry deeply now that the union-find is complete. The
+    // write-back during inference only shallow-resolves (the top constructor),
+    // so a recorded `Box ?e` may still mention a variable that later unified with
+    // a concrete type. The lowering pass reads these types to pick instance
+    // dictionaries for parametric instances, where the element type — not just
+    // the head constructor — selects the dictionary, so it must be fully ground.
+    let mut node_types = std::mem::take(&mut ctx.node_types_accum);
+    for slot in &mut node_types {
+        if let Some(ty) = slot {
+            *slot = Some(ctx.deep_resolve(ty));
+        }
+    }
 
     // Phase 4.5 T5: inferred_caps is now keyed by real NodeIds (or proxy fallback).
     // The T17 proxy comment is removed; the sweep will update LowerCtx::lookup_inferred_caps.

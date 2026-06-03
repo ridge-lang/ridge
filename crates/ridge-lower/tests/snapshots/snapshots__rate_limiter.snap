@@ -558,7 +558,7 @@ items:
                           caps: CapabilitySet(0)
                           params:
                             - name: id
-                              ty: c
+                              ty: Con(0)
                           body:
                             Spawn(n214) ActorType(Worker @ m0):
                               args:
@@ -585,7 +585,7 @@ items:
                             caps: CapabilitySet(0)
                             params:
                               - name: w
-                                ty: g
+                                ty: Con(11) [Con(19)]
                             body:
                               Send(n226) ! Handler(m0..run):
                                 handle:

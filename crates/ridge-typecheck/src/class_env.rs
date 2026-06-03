@@ -11,7 +11,8 @@
 
 use ridge_ast::{Span, Type as AstType};
 use ridge_types::{
-    ClassId, Constraint, TyConId, DECODE_CLASS, ENCODE_CLASS, EQ_CLASS, ORD_CLASS, TOTEXT_CLASS,
+    ClassId, Constraint, TyConId, TyVid, DECODE_CLASS, ENCODE_CLASS, EQ_CLASS, ORD_CLASS,
+    TOTEXT_CLASS,
 };
 use rustc_hash::FxHashMap;
 
@@ -170,9 +171,30 @@ pub struct InstanceInfo {
     /// Method name → symbol (placeholder; dictionary lowering fills in real
     /// `SymbolRef`s).
     pub methods: Vec<(String, String)>,
-    /// Constraints required by the instance's method bodies (for parametric
-    /// instances — always empty in 0.2.13 single-param non-generic instances).
+    /// Constraints required by the instance's method bodies.
+    ///
+    /// For a parametric instance `Encode (List a) where Encode a`, this holds
+    /// one entry for the `Encode a` context requirement. For non-parametric
+    /// instances this is always empty.
+    ///
+    /// The [`TyVid`]s stored here are **sentinel zeros** — they are never
+    /// valid inference variables. The solver uses [`InstanceInfo::head_var_positions`]
+    /// to substitute the correct concrete type from the head's type arguments
+    /// before enqueuing a `ctx_constraint`.
     pub ctx_constraints: Vec<Constraint>,
+    /// Per-`ctx_constraint` head argument position.
+    ///
+    /// `head_var_positions[i]` is the zero-based index into the head type's
+    /// argument list that carries the type variable for `ctx_constraints[i]`.
+    ///
+    /// For `instance Encode (List a) where Encode a`, the head is `List a`
+    /// (one arg at position 0), so `head_var_positions = [0]`.
+    /// For `instance Foo (Result a e) where Bar a, Baz e`, this would be
+    /// `[0, 1]`.
+    ///
+    /// Always the same length as `ctx_constraints`. Empty for non-parametric
+    /// instances.
+    pub head_var_positions: Vec<usize>,
     /// How this instance was created.
     pub origin: InstanceOrigin,
     /// Source span of the `instance` declaration (for error messages).
@@ -442,8 +464,31 @@ pub fn register_prelude_instances(env: &mut InstanceEnv) {
         def_module: None,
         methods: vec![(method.to_string(), String::new())],
         ctx_constraints: vec![],
+        head_var_positions: vec![],
         origin: InstanceOrigin::Explicit,
         span: ds,
+    };
+
+    // Helper to build a PARAMETRIC prelude instance entry such as
+    // `instance Encode (List a) where Encode a`. The context constraints carry
+    // the element class with a sentinel `TyVid(0)`; the solver substitutes the
+    // concrete element type using `head_var_positions` (see `discharge_concrete`).
+    let parametric_inst = |method: &str, ctx_class: ClassId, positions: Vec<usize>| {
+        let ctx_constraints = positions
+            .iter()
+            .map(|_| Constraint {
+                class: ctx_class,
+                ty: TyVid(0),
+            })
+            .collect::<Vec<_>>();
+        InstanceInfo {
+            def_module: None,
+            methods: vec![(method.to_string(), String::new())],
+            ctx_constraints,
+            head_var_positions: positions,
+            origin: InstanceOrigin::Explicit,
+            span: ds,
+        }
     };
 
     // ── ToText instances ──────────────────────────────────────────────────────
@@ -591,6 +636,67 @@ pub fn register_prelude_instances(env: &mut InstanceEnv) {
         "Decode",
         "Text",
     );
+
+    // ── Parametric container instances (Encode/Decode) ────────────────────────
+    // `instance Encode (List a) where Encode a`, and the Option/Map/Result duals,
+    // for both Encode and Decode. The head TyConIds are the fixed builtin slots:
+    // List=6, Map=7, Option=9, Result=10. The constrained element variable sits
+    // at head position 0 for List/Option, position 1 for `Map Text a` (the Text
+    // key is at 0), and positions 0 and 1 for `Result a e`.
+    //
+    // These instances have NO source body. Their dictionaries are synthesised in
+    // the lowering pass (see `ridge_lower::prelude_dict`); registering them here
+    // is what lets the constraint solver discharge `Encode (List Int)` etc. and
+    // build the dict-of-dicts plan. `def_module = None` bypasses the orphan rule.
+    let _ = env.insert(
+        (ENCODE_CLASS, TyConId(6)),
+        parametric_inst("encode", ENCODE_CLASS, vec![0]),
+        "Encode",
+        "List",
+    );
+    let _ = env.insert(
+        (ENCODE_CLASS, TyConId(9)),
+        parametric_inst("encode", ENCODE_CLASS, vec![0]),
+        "Encode",
+        "Option",
+    );
+    let _ = env.insert(
+        (ENCODE_CLASS, TyConId(7)),
+        parametric_inst("encode", ENCODE_CLASS, vec![1]),
+        "Encode",
+        "Map",
+    );
+    let _ = env.insert(
+        (ENCODE_CLASS, TyConId(10)),
+        parametric_inst("encode", ENCODE_CLASS, vec![0, 1]),
+        "Encode",
+        "Result",
+    );
+
+    let _ = env.insert(
+        (DECODE_CLASS, TyConId(6)),
+        parametric_inst("decode", DECODE_CLASS, vec![0]),
+        "Decode",
+        "List",
+    );
+    let _ = env.insert(
+        (DECODE_CLASS, TyConId(9)),
+        parametric_inst("decode", DECODE_CLASS, vec![0]),
+        "Decode",
+        "Option",
+    );
+    let _ = env.insert(
+        (DECODE_CLASS, TyConId(7)),
+        parametric_inst("decode", DECODE_CLASS, vec![1]),
+        "Decode",
+        "Map",
+    );
+    let _ = env.insert(
+        (DECODE_CLASS, TyConId(10)),
+        parametric_inst("decode", DECODE_CLASS, vec![0, 1]),
+        "Decode",
+        "Result",
+    );
 }
 
 // ── Tests ─────────────────────────────────────────────────────────────────────
@@ -609,6 +715,7 @@ mod tests {
             def_module: None,
             methods: vec![],
             ctx_constraints: vec![],
+            head_var_positions: vec![],
             origin,
             span: dummy_span(),
         }

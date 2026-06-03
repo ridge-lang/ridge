@@ -25,7 +25,7 @@
 use std::collections::HashMap;
 
 use ridge_ast::{self, Item, Module};
-use ridge_types::TyConId;
+use ridge_types::{Constraint, TyConId, TyVid};
 use rustc_hash::{FxHashMap, FxHashSet};
 
 use crate::class_env::{
@@ -260,9 +260,10 @@ fn collect_instance_decls(
             continue;
         };
 
-        // Extract the head TyConId from the instance type. In 0.2.13 only
-        // single, concrete type constructors are valid instance heads (no
-        // parametric instances, no compound types at the head position).
+        // Extract the head TyConId from the instance type. For simple heads
+        // (`Encode Int`) this is just the named TyCon. For parametric heads
+        // (`Encode (List a)`) the head TyCon is the outer constructor (`List`);
+        // the type argument (`a`) is recorded in `head_var_positions`.
         // User-defined types are resolved via the pre-collected name map.
         let Some(tycon_id) = extract_tycon_id(&decl.ty, user_tycon_names) else {
             continue; // Unsupported head form — ignored in this pass.
@@ -274,10 +275,14 @@ fn collect_instance_decls(
             .map(|m| (m.name.text.clone(), String::new())) // placeholder symbol
             .collect();
 
+        let (ctx_constraints, head_var_positions) =
+            build_ctx_constraints(&decl.constraints, &decl.ty, ct, user_tycon_names);
+
         let info = InstanceInfo {
             def_module: Some(module_id),
             methods,
-            ctx_constraints: vec![],
+            ctx_constraints,
+            head_var_positions,
             origin: InstanceOrigin::Explicit,
             span: decl.span,
         };
@@ -366,6 +371,7 @@ fn collect_auto_promoted_to_text(
             def_module: Some(module_id),
             methods: vec![("toText".to_string(), decl.name.text.clone())],
             ctx_constraints: vec![],
+            head_var_positions: vec![],
             origin: InstanceOrigin::AutoPromoted,
             span: decl.span,
         };
@@ -621,21 +627,33 @@ fn check_missing_superclass_instances(
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
-/// Extracts the `TyConId` from an AST type in an instance head.
+/// Extracts the head `TyConId` from an AST type in an instance head.
 ///
-/// In 0.2.13, only named type constructors (no polymorphic or compound heads)
-/// are supported. Returns `None` for any form we cannot yet resolve.
+/// For a simple head (`Encode Int`) this is the named `TyCon`. For a parametric
+/// head (`Encode (List a)`) this is the outer constructor (`List`); the type
+/// argument (`a`) is handled separately by [`build_ctx_constraints`].
 ///
-/// Full resolution (looking up user `TyCon`s by name) requires access to the
-/// [`ridge_types::TyConArena`], which is not threaded into this pass yet.
-/// For now we extract the pre-resolved `TyConId` embedded in `Type::Named`
-/// if the AST carries it, or fall back to `None` for forms we cannot resolve.
+/// Returns `None` for forms we cannot resolve (e.g. bare type variables,
+/// tuples, or other compound types not yet supported as instance heads).
+/// Peel any `Type::Paren` wrappers so callers see the underlying type.
+///
+/// A parenthesised instance head such as `(List a)` parses to
+/// `Type::Paren { inner: App { List, [a] } }`; the coherence key, the context
+/// constraints, and the dictionary lowering all need the inner `App`.
+fn peel_paren(ty: &ridge_ast::Type) -> &ridge_ast::Type {
+    let mut cur = ty;
+    while let ridge_ast::Type::Paren { inner, .. } = cur {
+        cur = inner;
+    }
+    cur
+}
+
 fn extract_tycon_id(
     ty: &ridge_ast::Type,
     user_tycon_names: &FxHashMap<String, TyConId>,
 ) -> Option<TyConId> {
     use ridge_ast::Type as AstType;
-    match ty {
+    match peel_paren(ty) {
         // `Named` covers both built-in and user-defined type constructors.
         // We first check the pre-collected user tycon names (which include
         // all user-declared types from the workspace-wide TyCon scan), then
@@ -644,6 +662,12 @@ fn extract_tycon_id(
             .get(name.text.as_str())
             .copied()
             .or_else(|| builtin_tycon_id_by_name(&name.text)),
+        // `App` covers parametric heads like `List a` or `Map Text a`.
+        // The env key uses the outer constructor (`List`, `Map`) only.
+        AstType::App { head, .. } => user_tycon_names
+            .get(head.text.as_str())
+            .copied()
+            .or_else(|| builtin_tycon_id_by_name(&head.text)),
         // `Primitive` covers built-in scalars like `Int`, `Float`, `Bool`.
         AstType::Primitive { name, .. } => {
             use ridge_ast::PrimitiveType;
@@ -690,6 +714,85 @@ fn builtin_tycon_id_by_name(name: &str) -> Option<TyConId> {
     }
 }
 
+/// Translates an instance `where` clause into the `(ctx_constraints,
+/// head_var_positions)` pair stored on [`InstanceInfo`].
+///
+/// For each [`ridge_ast::ClassConstraint`] in `where_constraints`, this
+/// function:
+///
+/// 1. Resolves the constraint class name to a [`ClassId`].
+/// 2. Locates the type variable named by `ty_var` in the head type's argument
+///    list (only `Type::App` heads have positional args).
+/// 3. Records the argument position in `head_var_positions` and stores a
+///    sentinel [`Constraint`] (with [`TyVid(0)`] — never a live inference
+///    variable) in `ctx_constraints`.
+///
+/// The [`TyVid`] stored is a **sentinel** and must not be used directly by
+/// inference passes. The solver reads `head_var_positions[i]` to substitute
+/// the concrete type from the resolved `Type::Con(_, args)` before enqueuing
+/// the constraint.
+///
+/// Returns `(vec![], vec![])` when `where_constraints` is empty (non-parametric
+/// instances). Silently skips constraints whose class is unknown or whose
+/// type variable is not found among the head's positional args.
+fn build_ctx_constraints(
+    where_constraints: &[ridge_ast::typeclass::ClassConstraint],
+    head_ty: &ridge_ast::Type,
+    ct: &ClassTable,
+    _user_tycon_names: &FxHashMap<String, TyConId>,
+) -> (Vec<Constraint>, Vec<usize>) {
+    use ridge_ast::Type as AstType;
+
+    if where_constraints.is_empty() {
+        return (vec![], vec![]);
+    }
+
+    // Collect the positional args from the head type, together with their
+    // variable names for lookup. Only `App` heads have args; `Named`/`Primitive`
+    // heads have no args (non-parametric). A parenthesised head `(List a)` is
+    // peeled first so the `App` is visible.
+    let head_args: Vec<Option<&str>> = match peel_paren(head_ty) {
+        AstType::App { args, .. } => args
+            .iter()
+            .map(|a| match a {
+                AstType::Var { name, .. } => Some(name.text.as_str()),
+                _ => None,
+            })
+            .collect(),
+        _ => vec![],
+    };
+
+    let mut ctx_constraints = Vec::new();
+    let mut head_var_positions = Vec::new();
+
+    for wc in where_constraints {
+        // Resolve the class name — skip unknown classes (flagged elsewhere).
+        let Some(class_id) = ct.id_by_name(&wc.class.text) else {
+            continue;
+        };
+
+        // Find the arg position that carries this type variable.
+        let Some(pos) = head_args
+            .iter()
+            .position(|&var_name| var_name == Some(wc.ty_var.text.as_str()))
+        else {
+            // The variable is not in the head args — malformed instance; skip.
+            continue;
+        };
+
+        // Store a sentinel constraint. The TyVid(0) is never used directly
+        // by the solver; it reads head_var_positions to find the correct
+        // concrete type at solve time.
+        ctx_constraints.push(Constraint {
+            class: class_id,
+            ty: TyVid(0),
+        });
+        head_var_positions.push(pos);
+    }
+
+    (ctx_constraints, head_var_positions)
+}
+
 /// Returns `true` when the AST type represents `Text`.
 ///
 /// Accepts both the `Primitive` variant (how the parser represents `Text`)
@@ -709,7 +812,7 @@ fn is_text_type(ty: &ridge_ast::Type) -> bool {
 /// Returns a display-friendly string for an AST type (for error messages).
 fn type_display(ty: &ridge_ast::Type) -> String {
     use ridge_ast::Type as AstType;
-    match ty {
+    match peel_paren(ty) {
         AstType::Named { name, .. } => name.text.clone(),
         AstType::Primitive { name, .. } => format!("{name:?}"),
         AstType::App { head, .. } => head.text.clone(),
@@ -789,6 +892,7 @@ mod tests {
         Item::InstanceDecl(InstanceDecl {
             class: ident(class),
             ty: named_type(ty),
+            constraints: vec![],
             methods: vec![MethodDef {
                 name: ident("toText"),
                 params: vec![Param::Bare(ident("x"))],
@@ -969,6 +1073,7 @@ mod tests {
             def_module: Some(0),
             methods: vec![],
             ctx_constraints: vec![],
+            head_var_positions: vec![],
             origin: InstanceOrigin::AutoPromoted,
             span: ds(),
         };
@@ -976,6 +1081,7 @@ mod tests {
             def_module: Some(0),
             methods: vec![],
             ctx_constraints: vec![],
+            head_var_positions: vec![],
             origin: InstanceOrigin::Explicit,
             span: ds(),
         };
@@ -1002,6 +1108,7 @@ mod tests {
             def_module: Some(0),
             methods: vec![],
             ctx_constraints: vec![],
+            head_var_positions: vec![],
             origin,
             span: ds(),
         };
@@ -1106,6 +1213,138 @@ mod tests {
             "pub fn toText + explicit instance ToText T must produce T034; got {:?}",
             result.errors
         );
+    }
+
+    // ── Parametric instance collect: build_ctx_constraints unit tests ────────
+
+    /// Helper to build a registered `ClassTable` with the prelude classes.
+    fn prelude_class_table() -> ClassTable {
+        let mut ct = ClassTable::new();
+        register_prelude_classes(&mut ct);
+        ct
+    }
+
+    /// Build a parametric `App` type head, e.g. `List a`.
+    fn app_type(head: &str, var: &str) -> AstType {
+        AstType::App {
+            head: ident(head),
+            args: vec![AstType::Var {
+                name: ident(var),
+                span: ds(),
+            }],
+            span: ds(),
+        }
+    }
+
+    /// Build a 2-arg `App` type where the first arg is a named type (e.g. `Text`)
+    /// and the second is a type variable, e.g. `Map Text a`.
+    fn app2_named_var_type(head: &str, arg0_name: &str, arg1_var: &str) -> AstType {
+        AstType::App {
+            head: ident(head),
+            args: vec![
+                AstType::Named {
+                    name: ident(arg0_name),
+                    span: ds(),
+                },
+                AstType::Var {
+                    name: ident(arg1_var),
+                    span: ds(),
+                },
+            ],
+            span: ds(),
+        }
+    }
+
+    /// Build a two-var `App` type, e.g. `Result a e`.
+    fn app2_vars_type(head: &str, var0: &str, var1: &str) -> AstType {
+        AstType::App {
+            head: ident(head),
+            args: vec![
+                AstType::Var {
+                    name: ident(var0),
+                    span: ds(),
+                },
+                AstType::Var {
+                    name: ident(var1),
+                    span: ds(),
+                },
+            ],
+            span: ds(),
+        }
+    }
+
+    fn make_class_constraint(class: &str, var: &str) -> ClassConstraint {
+        ClassConstraint {
+            class: ident(class),
+            ty_var: ident(var),
+            span: ds(),
+        }
+    }
+
+    /// `build_ctx_constraints` for `Encode (List a) where Encode a` returns one
+    /// constraint at position 0.
+    #[test]
+    fn ctx_constraints_list_a_pos0() {
+        use ridge_types::ENCODE_CLASS;
+
+        let ct = prelude_class_table();
+        let head = app_type("List", "a");
+        let wcs = vec![make_class_constraint("Encode", "a")];
+
+        let (constraints, positions) =
+            build_ctx_constraints(&wcs, &head, &ct, &FxHashMap::default());
+
+        assert_eq!(constraints.len(), 1, "one ctx_constraint for Encode a");
+        assert_eq!(constraints[0].class, ENCODE_CLASS);
+        assert_eq!(positions, vec![0], "a is at arg position 0 in List a");
+    }
+
+    /// `Map Text a` — the constrained var `a` is at position 1 (after `Text`).
+    #[test]
+    fn ctx_constraints_map_text_a_pos1() {
+        let ct = prelude_class_table();
+        let head = app2_named_var_type("Map", "Text", "a");
+        let wcs = vec![make_class_constraint("Encode", "a")];
+
+        let (_, positions) = build_ctx_constraints(&wcs, &head, &ct, &FxHashMap::default());
+
+        assert_eq!(positions, vec![1], "a is at arg position 1 in Map Text a");
+    }
+
+    /// `Result a e` with two constraints — positions are 0 and 1 respectively.
+    #[test]
+    fn ctx_constraints_result_a_e_two_positions() {
+        use ridge_types::ENCODE_CLASS;
+
+        let ct = prelude_class_table();
+        let head = app2_vars_type("Result", "a", "e");
+        let wcs = vec![
+            make_class_constraint("Encode", "a"),
+            make_class_constraint("Encode", "e"),
+        ];
+
+        let (constraints, positions) =
+            build_ctx_constraints(&wcs, &head, &ct, &FxHashMap::default());
+
+        assert_eq!(constraints.len(), 2, "two constraints for Result a e");
+        assert_eq!(
+            constraints.iter().map(|c| c.class).collect::<Vec<_>>(),
+            vec![ENCODE_CLASS, ENCODE_CLASS]
+        );
+        assert_eq!(positions, vec![0, 1], "a at 0, e at 1");
+    }
+
+    /// A plain named head (non-parametric) produces empty constraint/position lists.
+    #[test]
+    fn ctx_constraints_named_head_empty() {
+        let ct = prelude_class_table();
+        let head = named_type("Int");
+
+        let (constraints, positions) =
+            build_ctx_constraints(&[], &head, &ct, &FxHashMap::default());
+
+        assert!(constraints.is_empty());
+        assert!(positions.is_empty());
     }
 
     /// Builtin types (`TyConId` < 17) must NOT be auto-promoted — they are

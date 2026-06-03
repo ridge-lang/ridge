@@ -1,0 +1,13 @@
+class Encode a =
+    encode (x: a) -> JsonValue
+
+class Decode a =
+    decode (j: JsonValue) -> Result a Error
+
+type Box a = { val: a } deriving (Encode, Decode)
+
+fn toJson (x: a) -> Text where Encode a =
+    Json.encode (encode x)
+
+pub fn main_box () -> Text =
+    toJson (Box { val = 7 })

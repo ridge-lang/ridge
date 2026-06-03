@@ -570,6 +570,28 @@ pub fn typecheck_module_decls(
             .unwrap_or_else(|| Span::point(0));
         let (retained, scc_dict_resolution) =
             crate::solve::solve_constraints(ctx, instance_env, class_table, &env_snap_ty, scc_span);
+
+        // The type variables this SCC will generalise over — exactly the free
+        // variables of its function signatures after the bodies have been
+        // inferred. A parametric instance's element dictionary may forward one
+        // of these (e.g. `Encode a` inside a `where Encode a` body); any element
+        // variable that is neither here nor in an enclosing scope was never
+        // pinned by the caller, so its dictionary is unsatisfiable (T030).
+        let mut generalizable: FxHashSet<TyVid> = FxHashSet::default();
+        for fn_ty in scc_fn_types.values() {
+            let resolved = ctx.deep_resolve(fn_ty);
+            let (vars, _) = collect_free_vars(&resolved);
+            generalizable.extend(vars);
+        }
+        crate::solve::report_ambiguous_element_dicts(
+            ctx,
+            class_table,
+            &scc_dict_resolution,
+            &generalizable,
+            &env_snap_ty,
+            scc_span,
+        );
+
         // Merge this SCC's resolution into the per-module accumulator so the
         // lowering pass can read the full map from ctx.dict_resolution_accum.
         ctx.dict_resolution_accum.extend(scc_dict_resolution);

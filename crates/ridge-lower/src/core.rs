@@ -596,7 +596,23 @@ pub fn lower_expr(ctx: &mut LowerCtx<'_>, expr: &Expr) -> IrExpr {
             // falls back to `IrExpr::Lit(Unit)` — a defensive no-op that keeps
             // the compiler from crashing. Real programs will have all dict plans
             // resolved by the typecheck pass.
-            let dict_args = build_dict_args(ctx, &ir_callee, *span);
+            // Collect each call argument's fully-resolved type so the dictionary
+            // resolver can build the exact instance dictionary from the concrete
+            // type flowing into the constrained parameter. The full type spine —
+            // not just its head constructor — is required: a parametric instance
+            // such as `Encode (Option a)` needs the element type to pick the
+            // element dictionary, and two call sites that share a head (an
+            // `Option Int` and an `Option Text`) must each get their own.
+            let arg_types: Vec<Option<Type>> = args
+                .iter()
+                .map(|a| {
+                    ctx.node_id_map
+                        .as_ref()
+                        .and_then(|m| m.get(a.span(), NodeKind::Expr))
+                        .and_then(|nid| ctx.node_type(nid).cloned())
+                })
+                .collect();
+            let dict_args = build_dict_args(ctx, &ir_callee, &arg_types, *span);
             let all_args: Vec<IrExpr> = dict_args.into_iter().chain(ir_args.clone()).collect();
 
             let call = IrExpr::Call {
@@ -871,15 +887,22 @@ fn resolve_actor_module(ctx: &mut LowerCtx<'_>, actor_ident: &ridge_ast::Ident) 
 ///
 /// Resolution strategy (in order):
 ///
-/// 1. **Static** (`DictPlan::Static`): the constraint resolved to a known
-///    `(ClassId, TyConId)` pair. The dict arg is the module-level instance
-///    dict constant `$inst_{ClassName}_{TypeName}`.
-/// 2. **Forward** (`DictPlan::Forward`): the caller is itself constrained for
+/// 1. **Forward** (`DictPlan::Forward`): the caller is itself constrained for
 ///    the same class. The dict arg is the caller's own incoming dict param
 ///    `$dict_{ClassName}_{TyVar}`.
+/// 2. **Static** (`DictPlan::Static`): the constraint's variable was pinned to a
+///    concrete type by the argument flowing into the constrained parameter. The
+///    dictionary is built from that resolved type — the full `Type::Con` spine,
+///    recursively — so a parametric instance receives the correct element
+///    dictionaries.
 /// 3. **Fallback**: no resolution available (test scaffolding without a wired
 ///    workspace). Returns `IrExpr::Lit(Unit)` as a defensive placeholder.
-fn build_dict_args(ctx: &mut LowerCtx<'_>, callee: &IrExpr, span: Span) -> Vec<IrExpr> {
+fn build_dict_args(
+    ctx: &mut LowerCtx<'_>,
+    callee: &IrExpr,
+    arg_types: &[Option<Type>],
+    span: Span,
+) -> Vec<IrExpr> {
     // Only `SymbolRef::Local` callees can be constrained top-level fns.
     let callee_name = match callee {
         IrExpr::Symbol {
@@ -894,29 +917,116 @@ fn build_dict_args(ctx: &mut LowerCtx<'_>, callee: &IrExpr, span: Span) -> Vec<I
     if constraints.is_empty() {
         return vec![];
     }
+    // The callee scheme's parameter types tell us which argument pins each
+    // constraint variable.
+    let param_types = ctx.lookup_fn_param_types(&callee_name).to_vec();
 
     let mut dict_args: Vec<IrExpr> = Vec::with_capacity(constraints.len());
 
     for c in &constraints {
         let class_name = ctx.class_name(c.class).unwrap_or("Unknown").to_owned();
 
-        // Try to find a dict resolution for this constraint.
-        let dict_expr = resolve_dict_arg(ctx, c.class, &class_name, span);
+        // The concrete type the constraint variable was unified to at this call
+        // site: walk the scheme's parameter types in lockstep with the resolved
+        // argument types, find where `c.ty` appears, and read off the matching
+        // sub-type. `None` when the variable cannot be located (no type info).
+        let constraint_ty =
+            constraint_arg_type(&param_types, arg_types, c.ty).map(|ty| deep_peel_alias(&ty));
+
+        let dict_expr = resolve_dict_arg(ctx, c.class, &class_name, constraint_ty.as_ref(), span);
         dict_args.push(dict_expr);
     }
 
     dict_args
 }
 
+/// Peel transparent alias wrappers from a type, leaving the underlying shape.
+fn deep_peel_alias(ty: &Type) -> Type {
+    match ty {
+        Type::Alias { body, .. } => deep_peel_alias(body),
+        other => other.clone(),
+    }
+}
+
+/// Find the concrete type a constraint variable was unified to at a call site.
+///
+/// Walks each scheme parameter type alongside the resolved type of the
+/// corresponding call argument. When a scheme parameter mentions `var` (e.g. the
+/// `a` in a `List a` parameter), the structurally-aligned position in the
+/// resolved argument type is the concrete type that satisfies the constraint
+/// (the element of a `List Int`, or the whole argument when the parameter is a
+/// bare `a`). Returns `None` when the variable is not found or type information
+/// is missing.
+fn constraint_arg_type(
+    param_types: &[Type],
+    arg_types: &[Option<Type>],
+    var: ridge_types::TyVid,
+) -> Option<Type> {
+    for (param, arg) in param_types.iter().zip(arg_types.iter()) {
+        let Some(arg_ty) = arg else { continue };
+        if let Some(found) = align_var(param, arg_ty, var) {
+            return Some(found);
+        }
+    }
+    None
+}
+
+/// Structurally align a scheme parameter type with a resolved argument type to
+/// extract the sub-type sitting at `var`'s position.
+///
+/// `List a` vs `List Int` with `var = a` yields `Int`; a bare `a` vs `Option Int`
+/// yields the whole `Option Int`. Returns `None` when `var` does not occur in
+/// `param` or the two shapes do not align.
+fn align_var(param: &Type, arg: &Type, var: ridge_types::TyVid) -> Option<Type> {
+    match param {
+        Type::Var(v) if *v == var => Some(arg.clone()),
+        Type::Var(_) => None,
+        Type::Alias { body, .. } => align_var(body, arg, var),
+        _ => {
+            let arg = deep_peel_alias(arg);
+            match (param, &arg) {
+                (Type::Con(_, pargs), Type::Con(_, aargs)) => pargs
+                    .iter()
+                    .zip(aargs.iter())
+                    .find_map(|(p, a)| align_var(p, a, var)),
+                (Type::Tuple(ps), Type::Tuple(as_)) => ps
+                    .iter()
+                    .zip(as_.iter())
+                    .find_map(|(p, a)| align_var(p, a, var)),
+                (
+                    Type::Fn {
+                        params: pps,
+                        ret: pret,
+                        ..
+                    },
+                    Type::Fn {
+                        params: aps,
+                        ret: aret,
+                        ..
+                    },
+                ) => pps
+                    .iter()
+                    .zip(aps.iter())
+                    .find_map(|(p, a)| align_var(p, a, var))
+                    .or_else(|| align_var(pret, aret, var)),
+                _ => None,
+            }
+        }
+    }
+}
+
 /// Resolve the dictionary value for one constraint at a call site.
 ///
-/// Looks up `ctx.workspace`'s `dict_resolution` for the current module,
-/// then falls back to a forward-param reference if the caller is constrained
-/// for the same class, and finally to a unit literal as a defensive no-op.
+/// Forwards the caller's own incoming dict param when the caller is constrained
+/// for the same class; otherwise builds the dictionary directly from the
+/// concrete type that pinned the constraint, recursing through the instance
+/// registry so parametric instances receive their element dictionaries. Falls
+/// back to a unit literal when neither path applies (test scaffolding).
 fn resolve_dict_arg(
     ctx: &mut LowerCtx<'_>,
     class: ridge_types::ClassId,
     class_name: &str,
+    constraint_ty: Option<&Type>,
     span: Span,
 ) -> IrExpr {
     // Determine whether the CALLER is itself constrained for this class.
@@ -940,22 +1050,21 @@ fn resolve_dict_arg(
     }
 
     // The caller is not constrained for this class — it is a monomorphic call
-    // site. Search for a DictPlan::Static entry in the module's dict_resolution
-    // that applies to this ClassId. For 0.2.13 with single-param non-generic
-    // instances, there is at most one Static entry per ClassId per call scope.
-    if let Some(plan) = ctx
-        .workspace
-        .and_then(|ws| ws.modules.get(ctx.module_id.0 as usize))
-        .and_then(|tmod| {
-            tmod.dict_resolution
-                .iter()
-                .find(|((cid, _), plan)| {
-                    *cid == class && matches!(plan, ridge_typecheck::DictPlan::Static { .. })
-                })
-                .map(|(_, plan)| plan.clone())
-        })
-    {
-        return dict_plan_to_expr(ctx, plan, class_name, span);
+    // site. Build the dictionary plan from the concrete type the argument pinned
+    // the constraint to, then lower it. This recurses through the type's spine
+    // so a parametric instance gets the right element dictionaries, and two call
+    // sites sharing a head constructor each get their own.
+    if let Some(ty) = constraint_ty {
+        if let Some(plan) = build_dict_plan_from_type(ctx, class, ty) {
+            return dict_plan_to_expr(ctx, class, plan, class_name, span);
+        }
+    } else if let Some(plan) = single_static_plan_for_class(ctx, class) {
+        // No pinning type is available (a bare class-method reference used as a
+        // value, with no enclosing constraint). Fall back to the sole Static
+        // plan for the class in this module's resolution table. This keeps the
+        // single-instance dispatch that predates parametric instances working;
+        // an ambiguous multi-plan case here would already be flagged upstream.
+        return dict_plan_to_expr(ctx, class, plan, class_name, span);
     }
 
     // Defensive no-op: emit a unit literal. This should not happen in
@@ -968,29 +1077,169 @@ fn resolve_dict_arg(
     }
 }
 
+/// The unique `DictPlan::Static` for `class` in the current module's resolution
+/// table, if exactly one exists. Used only when no argument type is available to
+/// pin the constraint (a bare class-method value). Returns `None` when there is
+/// no plan or more than one (ambiguous).
+fn single_static_plan_for_class(
+    ctx: &LowerCtx<'_>,
+    class: ridge_types::ClassId,
+) -> Option<ridge_typecheck::DictPlan> {
+    let tmod = ctx
+        .workspace
+        .and_then(|ws| ws.modules.get(ctx.module_id.0 as usize))?;
+    let mut found: Option<&ridge_typecheck::DictPlan> = None;
+    for ((cid, _), plan) in &tmod.dict_resolution {
+        if *cid == class && matches!(plan, ridge_typecheck::DictPlan::Static { .. }) {
+            if found.is_some() {
+                return None; // more than one — ambiguous, do not guess
+            }
+            found = Some(plan);
+        }
+    }
+    found.cloned()
+}
+
+/// Build a [`ridge_typecheck::DictPlan`] for `(class, ty)` directly from a
+/// resolved type, recursing through the instance registry.
+///
+/// This is the lowering-side counterpart to the solver's plan resolution: it
+/// reads the registered instance for the type's head constructor, then resolves
+/// each context constraint against the concrete type argument at the recorded
+/// head position. A `List Int` yields `Static { List, [Static { Int }] }`; a
+/// `Result Int Text` yields two element plans; a nested `List (Option Int)`
+/// nests. A bare type variable yields a `Forward` (the enclosing scope threads
+/// the dictionary). Returns `None` when no instance is registered for the head —
+/// a typecheck error (T029) would already have fired for that case.
+fn build_dict_plan_from_type(
+    ctx: &LowerCtx<'_>,
+    class: ridge_types::ClassId,
+    ty: &Type,
+) -> Option<ridge_typecheck::DictPlan> {
+    use ridge_typecheck::DictPlan;
+
+    match deep_peel_alias(ty) {
+        Type::Con(tycon, args) => {
+            let env = ctx.instance_env?;
+            let info = env.get((class, tycon))?;
+            // Resolve one sub-dictionary per context constraint, reading the
+            // concrete type argument at the constraint's recorded head position.
+            let mut sub_dicts: Vec<DictPlan> = Vec::with_capacity(info.ctx_constraints.len());
+            for (ctx_c, &pos) in info
+                .ctx_constraints
+                .iter()
+                .zip(info.head_var_positions.iter())
+            {
+                let elem_ty = args.get(pos).cloned().unwrap_or(Type::Error);
+                let sub =
+                    build_dict_plan_from_type(ctx, ctx_c.class, &elem_ty).unwrap_or_else(|| {
+                        // The element resolved to a variable (or no instance):
+                        // forward a dictionary parameter. For a well-typed program
+                        // this is a genuine forward; a truly unsatisfiable element
+                        // is reported as T030 by the solver before lowering runs.
+                        DictPlan::Forward(ridge_types::Constraint {
+                            class: ctx_c.class,
+                            ty: forward_var_of(&elem_ty),
+                        })
+                    });
+                sub_dicts.push(sub);
+            }
+            Some(DictPlan::Static {
+                info: Box::new(info.clone()),
+                tycon,
+                args: sub_dicts,
+            })
+        }
+        // Neither a bare type variable nor any non-constructor shape resolves to
+        // a concrete instance here.
+        _ => None,
+    }
+}
+
+/// The forward variable to thread for an unresolved element type. When the
+/// element is itself a type variable, forward that variable; otherwise use the
+/// sentinel `TyVid(0)` (the dictionary is built structurally and the variable is
+/// not consulted).
+fn forward_var_of(ty: &Type) -> ridge_types::TyVid {
+    match deep_peel_alias(ty) {
+        Type::Var(v) => v,
+        _ => ridge_types::TyVid(0),
+    }
+}
+
 /// Convert a resolved [`DictPlan`] to the `IrExpr` that threads the dictionary.
+///
+/// `class` is the [`ClassId`] the dictionary satisfies — needed to recognise
+/// the prelude `Encode`/`Decode` instances, whose dictionaries are synthesised
+/// inline (see [`crate::prelude_dict`]) because they have no module-level
+/// `$inst_` constant.
 fn dict_plan_to_expr(
     ctx: &mut LowerCtx<'_>,
+    class: ridge_types::ClassId,
     plan: ridge_typecheck::DictPlan,
     class_name: &str,
     span: Span,
 ) -> IrExpr {
     use ridge_typecheck::DictPlan;
     match plan {
-        DictPlan::Static { tycon, .. } => {
-            // Look up the type's source name from the TyCon arena.
+        DictPlan::Static { tycon, args, .. } => {
+            // Recursively lower the sub-dictionaries first. For a parametric
+            // instance `Encode (List a)` the args carry the element dict plan;
+            // each sub-dict is resolved through the SAME class (the context
+            // constraint shares the head class for the codec instances).
+            let sub_dicts: Vec<IrExpr> = args
+                .into_iter()
+                .map(|sub| dict_plan_to_expr(ctx, class, sub, class_name, span))
+                .collect();
+
+            // Prelude-reserved `Encode`/`Decode` instances (the JSON primitives
+            // and the `List`/`Option`/`Map`/`Result` containers) have no runtime
+            // `$inst_` value — the deriving path inlines their behaviour and the
+            // container instances are registered in Rust with no source body.
+            // Synthesise the dictionary map inline at the use site instead, with
+            // the already-lowered element dicts threaded in. This is what makes
+            // `List Int` / `Option Text` / etc. run.
+            if crate::prelude_dict::is_prelude_codec_instance(class, tycon) {
+                return crate::prelude_dict::synth_prelude_dict(ctx, class, tycon, sub_dicts, span)
+                    .unwrap_or_else(|| {
+                        // `is_prelude_codec_instance` already matched, so synth
+                        // returns Some; this branch is unreachable in practice.
+                        let id = ctx.fresh_id(None);
+                        IrExpr::Lit {
+                            id,
+                            value: ridge_ir::IrLit::Unit,
+                            span,
+                        }
+                    });
+            }
+
+            // A user-defined instance: reference its module-level `$inst_`
+            // constant. For a hand-written *parametric* instance the constant is
+            // a function of the element dict(s), so apply it to `sub_dicts`
+            // (dict-of-dicts). A non-parametric instance has no sub-dicts and the
+            // bare symbol is the dictionary map.
             let type_name = ctx
                 .workspace
                 .and_then(|ws| ws.tycons.get(tycon.0 as usize))
                 .map_or_else(|| format!("TyCon{}", tycon.0), |decl| decl.name.clone());
             let dict_const_name = format!("$inst_{class_name}_{type_name}");
             let id = ctx.fresh_id(None);
-            IrExpr::Symbol {
+            let dict_symbol = IrExpr::Symbol {
                 id,
                 sym: SymbolRef::Local {
                     name: dict_const_name,
                     module: ctx.module_id,
                 },
+                span,
+            };
+            if sub_dicts.is_empty() {
+                return dict_symbol;
+            }
+            let call_id = ctx.fresh_id(None);
+            IrExpr::Call {
+                id: call_id,
+                callee: Box::new(dict_symbol),
+                args: sub_dicts,
                 span,
             }
         }
@@ -1525,7 +1774,11 @@ fn lower_ident(ctx: &mut LowerCtx<'_>, ident: &Ident) -> IrExpr {
                 .and_then(|ct| ct.id_by_name(class_name));
 
             let dict_expr = if let Some(cid) = class_id {
-                resolve_dict_arg(ctx, cid, class_name, span)
+                // A bare class-method reference carries no call arguments here to
+                // pin the constraint by type; the surrounding call applies the
+                // result. With no pinning type, `resolve_dict_arg` forwards an
+                // enclosing dict param or falls back to the sole Static plan.
+                resolve_dict_arg(ctx, cid, class_name, None, span)
             } else {
                 // No workspace or unknown class — fall back to a unit literal.
                 let id = ctx.fresh_id(None);

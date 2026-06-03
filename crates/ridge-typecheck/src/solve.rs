@@ -87,6 +87,17 @@ pub enum DictPlan {
         info: Box<InstanceInfo>,
         /// The concrete type that was resolved.
         tycon: TyConId,
+        /// Sub-dictionary plans for a parametric instance's context
+        /// constraints, in `ctx_constraints` order.
+        ///
+        /// Empty for every non-parametric instance — the lowering pass emits a
+        /// bare `$inst_{Class}_{Type}` symbol reference in that case, exactly as
+        /// before. For a parametric instance such as
+        /// `instance Encode (List a) where Encode a`, this holds the resolved
+        /// element dictionary plan (e.g. the `Encode Int` plan when the head is
+        /// `List Int`). The lowering pass applies the `$inst_` function to these
+        /// sub-dicts, producing the dict-of-dicts at runtime.
+        args: Vec<DictPlan>,
     },
     /// The constraint is still polymorphic: the caller receives a dictionary
     /// parameter and should forward it to the callee.
@@ -196,6 +207,10 @@ fn dispatch_constraint(
         // ── Case (a): concrete type — look up instance ────────────────────────
         Type::Con(tyconid, _) => {
             let tyconid = *tyconid;
+            // Clone the full resolved type so discharge_concrete can read the
+            // type arguments when substituting ctx_constraints for parametric
+            // instances (e.g. `Encode (List Int)` → arg 0 is `Int`).
+            let resolved_con = resolved.clone();
             discharge_concrete(
                 ctx,
                 instance_env,
@@ -203,6 +218,7 @@ fn dispatch_constraint(
                 scc_span,
                 c,
                 tyconid,
+                &resolved_con,
                 work,
                 visited,
                 dict_resolution,
@@ -272,6 +288,11 @@ fn dispatch_constraint(
 ///
 /// On success: record a [`DictPlan::Static`] entry and enqueue the instance's
 /// superclass and `ctx_constraints` requirements. On failure: push T029.
+///
+/// For parametric instances the `resolved_con` carries the full `Type::Con`
+/// (including type arguments such as `[Int]` in `List Int`). When the instance
+/// has a non-empty `head_var_positions`, each `ctx_constraint` is substituted
+/// with the concrete arg type at the recorded position before being enqueued.
 #[allow(clippy::too_many_arguments)]
 fn discharge_concrete(
     ctx: &mut InferCtx,
@@ -280,6 +301,7 @@ fn discharge_concrete(
     scc_span: Span,
     c: &Constraint,
     tyconid: TyConId,
+    resolved_con: &Type,
     work: &mut Vec<Constraint>,
     visited: &mut FxHashSet<(ClassId, TyConId)>,
     dict_resolution: &mut DictResolution,
@@ -311,6 +333,22 @@ fn discharge_concrete(
         }
 
         Some(inst_info) => {
+            let inst_info = inst_info.clone();
+
+            // For a parametric instance, resolve each context constraint's
+            // sub-dictionary plan against the concrete type arguments. For a
+            // non-parametric instance `head_var_positions` is empty, so this is
+            // an empty vec and the lowering pass emits a bare `$inst_` symbol —
+            // identical behaviour to before this feature.
+            let args = resolve_ctx_dict_args(
+                ctx,
+                instance_env,
+                class_table,
+                scc_span,
+                &inst_info,
+                resolved_con,
+            );
+
             // Record the static resolution plan for the lowering pass.
             // Include the concrete TyConId so the lowering pass can look up
             // the type name without re-resolving the instance.
@@ -319,6 +357,7 @@ fn discharge_concrete(
                 .or_insert_with(|| DictPlan::Static {
                     info: Box::new(inst_info.clone()),
                     tycon: tyconid,
+                    args,
                 });
 
             // Enqueue superclass requirements for the same concrete type.
@@ -337,11 +376,222 @@ fn discharge_concrete(
                 }
             }
 
-            // Enqueue the instance's own ctx_constraints.
-            // For 0.2.13 single-param non-generic instances these are always
-            // empty; the hook exists for parametric instances in future cuts.
-            for ctx_c in &inst_info.ctx_constraints {
-                work.push(ctx_c.clone());
+            // The instance's context constraints are NOT enqueued onto the
+            // worklist. For a parametric instance the sub-dictionary plans were
+            // already computed by `resolve_ctx_dict_args` (which recurses through
+            // `resolve_dict_plan`) and attached to the Static plan's `args`. Any
+            // missing-element-instance diagnostic (T029) is raised there.
+            //
+            // Enqueuing them here would record extra `dict_resolution` entries
+            // keyed by fresh inference variables under the same `ClassId` as the
+            // top-level constraint. The lowering pass selects a dictionary by
+            // `ClassId` alone (`resolve_dict_arg`), so a spurious sub-constraint
+            // entry could be picked instead of the real one — passing the element
+            // dictionary where the container dictionary was required. Keeping
+            // sub-dicts solely inside the parent plan's `args` avoids that.
+        }
+    }
+}
+
+/// Resolve the ordered sub-dictionary plans for a parametric instance's
+/// context constraints.
+///
+/// For a parametric instance `instance Encode (List a) where Encode a`, the
+/// head's concrete type arguments are matched against `head_var_positions` to
+/// recover the element type (`Int` in `List Int`), and the matching context
+/// constraint (`Encode a`) is resolved against that concrete element type to
+/// produce its `DictPlan`. The result is one plan per `ctx_constraint`, in
+/// order; the lowering pass applies `$inst_Encode_List` to these sub-dicts.
+///
+/// Returns an empty vec for non-parametric instances (`head_var_positions`
+/// empty), so the caller records a plain `DictPlan::Static { args: [] }`.
+fn resolve_ctx_dict_args(
+    ctx: &mut InferCtx,
+    instance_env: &InstanceEnv,
+    class_table: &ClassTable,
+    scc_span: Span,
+    inst_info: &InstanceInfo,
+    resolved_con: &Type,
+) -> Vec<DictPlan> {
+    if inst_info.head_var_positions.is_empty() {
+        return Vec::new();
+    }
+
+    let con_args: &[Type] = match resolved_con {
+        Type::Con(_, args) => args,
+        _ => &[],
+    };
+
+    let mut args: Vec<DictPlan> = Vec::with_capacity(inst_info.ctx_constraints.len());
+    for (ctx_c, &pos) in inst_info
+        .ctx_constraints
+        .iter()
+        .zip(inst_info.head_var_positions.iter())
+    {
+        // The concrete element type at this head argument position.
+        let arg_ty = con_args.get(pos).cloned().unwrap_or(Type::Error);
+        let resolved_arg = ctx.deep_resolve(&arg_ty);
+        let plan = resolve_dict_plan(
+            ctx,
+            instance_env,
+            class_table,
+            scc_span,
+            ctx_c.class,
+            &resolved_arg,
+        );
+        args.push(plan);
+    }
+    args
+}
+
+/// Resolve a `(class, concrete-or-var type)` pair into a [`DictPlan`] without
+/// touching the solver work queue.
+///
+/// This is the recursive core that builds the dict-of-dicts for parametric
+/// instances. It mirrors [`dispatch_constraint`]'s case (a) / case (b)
+/// classification but produces a plan directly rather than enqueuing:
+///
+/// - `Type::Con` with a registered instance → `DictPlan::Static`, recursing on
+///   the instance's own context constraints (so `List (List Int)` nests).
+/// - `Type::Var` → `DictPlan::Forward` (the enclosing scope threads a dict
+///   param; e.g. resolving `Encode a` inside a `where Encode a` body).
+/// - Missing instance / other shapes → a `Forward` placeholder; the missing
+///   instance is reported by the normal worklist path, so no duplicate T029.
+fn resolve_dict_plan(
+    ctx: &mut InferCtx,
+    instance_env: &InstanceEnv,
+    class_table: &ClassTable,
+    scc_span: Span,
+    class: ClassId,
+    resolved: &Type,
+) -> DictPlan {
+    // Placeholder for the "no resolution" cases. The top-level worklist still
+    // enqueues the corresponding constraint and emits any T029 diagnostic, so
+    // these placeholders never double-report.
+    let forward_placeholder = || {
+        DictPlan::Forward(Constraint {
+            class,
+            ty: TyVid(0),
+        })
+    };
+
+    match resolved {
+        Type::Con(tyconid, _) => {
+            let tyconid = *tyconid;
+            // Clone the instance metadata out first so the immutable borrow on
+            // `instance_env` is released before the recursive call below borrows
+            // `ctx` mutably.
+            let Some(inst_info) = instance_env.get((class, tyconid)).cloned() else {
+                // No instance for this element type → T029. The element type is a
+                // concrete `Type::Con`, so this is a genuine missing-instance
+                // error (e.g. `Encode (List SomeType)` where `SomeType` has no
+                // `Encode` instance). Report it here because the sub-constraint is
+                // no longer enqueued onto the worklist.
+                let class_name = class_table
+                    .get(class)
+                    .map_or("?", |info| info.name.as_str());
+                let fix_hint = build_fix_hint(class_name, tyconid);
+                ctx.errors.push(TypeError::NoInstance {
+                    class: class_name.to_string(),
+                    ty: format!("{tyconid:?}"),
+                    span: scc_span,
+                    fix_hint,
+                });
+                return forward_placeholder();
+            };
+            let args = resolve_ctx_dict_args(
+                ctx,
+                instance_env,
+                class_table,
+                scc_span,
+                &inst_info,
+                resolved,
+            );
+            DictPlan::Static {
+                info: Box::new(inst_info),
+                tycon: tyconid,
+                args,
+            }
+        }
+        Type::Var(v) => DictPlan::Forward(Constraint { class, ty: *v }),
+        // Other shapes are ill-typed for a class head; a diagnostic fires on
+        // the normal path. Use a Forward placeholder so the plan is total.
+        _ => forward_placeholder(),
+    }
+}
+
+/// Report `T030` for any parametric-instance element dictionary that resolved
+/// to a free type variable the caller never pinned.
+///
+/// A parametric instance such as `Encode (Option a)` needs the element's
+/// dictionary at runtime. When a call site fixes the container head but leaves
+/// the element type open — e.g. `toJson None`, where the `Option`'s element is
+/// never constrained — the solver records a `DictPlan::Static` whose element
+/// sub-plan is a `Forward` over an unbound variable. That variable cannot be
+/// satisfied: it is neither concrete nor a parameter the enclosing function can
+/// thread a dictionary for. Emitting a clear ambiguity error here is correct;
+/// silently forwarding a non-existent dictionary would crash at runtime or
+/// encode the wrong value.
+///
+/// `generalizable` holds the type variables that *will* become this SCC's
+/// scheme variables (a legitimate `where C a` body forwards one of these).
+/// `outer` holds variables that belong to an enclosing scope and are already
+/// dictionary-threaded there. An element variable in neither set is ambiguous.
+#[expect(
+    clippy::implicit_hasher,
+    reason = "FxHashSet is the canonical hasher for this crate; matches solve_constraints"
+)]
+pub fn report_ambiguous_element_dicts(
+    ctx: &mut InferCtx,
+    class_table: &ClassTable,
+    dict_resolution: &DictResolution,
+    generalizable: &FxHashSet<TyVid>,
+    outer: &FxHashSet<TyVid>,
+    scc_span: Span,
+) {
+    // Collect first so the immutable borrow on `dict_resolution` is released
+    // before pushing diagnostics through the mutable `ctx`.
+    let mut ambiguous: Vec<(ClassId, Span)> = Vec::new();
+    for plan in dict_resolution.values() {
+        collect_ambiguous_element_vars(plan, generalizable, outer, scc_span, &mut ambiguous);
+    }
+    for (class, span) in ambiguous {
+        let class_name = class_table
+            .get(class)
+            .map_or("?", |info| info.name.as_str());
+        ctx.errors.push(TypeError::AmbiguousConstraint {
+            class: class_name.to_string(),
+            ty_var: "the element type".to_string(),
+            span,
+        });
+    }
+}
+
+/// Walk a [`DictPlan`] tree and record every parametric sub-dictionary that
+/// forwards an unsatisfiable element variable.
+///
+/// Only the `args` of a `Static` plan — the element/value/arm dictionaries of a
+/// parametric instance — are inspected. A top-level `Forward` (the whole
+/// constraint is polymorphic, classified separately by `dispatch_constraint`)
+/// is not an element position and is left alone.
+fn collect_ambiguous_element_vars(
+    plan: &DictPlan,
+    generalizable: &FxHashSet<TyVid>,
+    outer: &FxHashSet<TyVid>,
+    scc_span: Span,
+    out: &mut Vec<(ClassId, Span)>,
+) {
+    if let DictPlan::Static { args, .. } = plan {
+        for sub in args {
+            match sub {
+                DictPlan::Forward(c) => {
+                    if !generalizable.contains(&c.ty) && !outer.contains(&c.ty) {
+                        out.push((c.class, scc_span));
+                    }
+                }
+                DictPlan::Static { .. } => {
+                    collect_ambiguous_element_vars(sub, generalizable, outer, scc_span, out);
+                }
             }
         }
     }
@@ -376,8 +626,8 @@ fn build_fix_hint(class_name: &str, tyconid: TyConId) -> String {
 mod tests {
     use super::*;
     use ridge_types::{
-        BuiltinTyCons, Constraint, Scheme, TyConArena, TyConId, TyVid, Type, EQ_CLASS, ORD_CLASS,
-        TOTEXT_CLASS,
+        BuiltinTyCons, Constraint, Scheme, TyConArena, TyConId, TyVid, Type, ENCODE_CLASS,
+        EQ_CLASS, ORD_CLASS, TOTEXT_CLASS,
     };
     use rustc_hash::FxHashSet;
 
@@ -396,6 +646,7 @@ mod tests {
             def_module: None,
             methods: vec![],
             ctx_constraints: vec![],
+            head_var_positions: vec![],
             origin: InstanceOrigin::Explicit,
             span: dummy_span(),
         }
@@ -750,5 +1001,278 @@ mod tests {
             retained.iter().any(|c| c.class == TOTEXT_CLASS),
             "retained must include ToText constraint"
         );
+    }
+
+    // ── Parametric instance solver substitution ──────────────────────────────
+    //
+    // When discharging a concrete constraint whose instance is parametric, the
+    // solver must substitute the concrete type arg(s) into the ctx_constraints
+    // before resolving their sub-dictionaries.
+
+    /// Build a parametric `InstanceInfo` for a 1-arg head like `List a`.
+    ///
+    /// `ctx_class` is the class required on the element (e.g. `ENCODE_CLASS`).
+    /// `arg_pos` is the arg position of the constrained var (0 for `List a`).
+    fn make_parametric_instance(ctx_class: ClassId, arg_pos: usize) -> InstanceInfo {
+        InstanceInfo {
+            def_module: None,
+            methods: vec![],
+            ctx_constraints: vec![Constraint {
+                class: ctx_class,
+                ty: TyVid(0), // sentinel — solver must not use this directly
+            }],
+            head_var_positions: vec![arg_pos],
+            origin: InstanceOrigin::Explicit,
+            span: dummy_span(),
+        }
+    }
+
+    /// Build a 2-constraint parametric `InstanceInfo` for a 2-arg head like `Result a e`.
+    fn make_parametric_instance_2(ctx_class: ClassId, pos0: usize, pos1: usize) -> InstanceInfo {
+        InstanceInfo {
+            def_module: None,
+            methods: vec![],
+            ctx_constraints: vec![
+                Constraint {
+                    class: ctx_class,
+                    ty: TyVid(0),
+                },
+                Constraint {
+                    class: ctx_class,
+                    ty: TyVid(0),
+                },
+            ],
+            head_var_positions: vec![pos0, pos1],
+            origin: InstanceOrigin::Explicit,
+            span: dummy_span(),
+        }
+    }
+
+    /// `Encode (List Int)` — the solver must enqueue `Encode Int` (NOT a free var).
+    ///
+    /// After solving: no error, `Encode Int` is also discharged via its concrete instance.
+    #[test]
+    fn parametric_list_int_enqueues_encode_int() {
+        let mut ctx = InferCtx::new();
+        let mut arena = TyConArena::new();
+        let b = BuiltinTyCons::allocate(&mut arena);
+
+        let list_tycon = b.list;
+        let int_tycon = b.int;
+
+        // The constraint variable resolves to `List Int`.
+        let a = ctx.fresh_tyvid();
+        ctx.tyvids.union_value(
+            TyVidKey(a.0),
+            TyValue(Some(Type::Con(
+                list_tycon,
+                vec![Type::Con(int_tycon, vec![])],
+            ))),
+        );
+
+        ctx.deferred_constraints.push(Constraint {
+            class: ENCODE_CLASS,
+            ty: a,
+        });
+
+        let ct = make_class_table();
+        let mut env = InstanceEnv::new();
+        // Register `Encode (List a) where Encode a` — parametric.
+        env.insert(
+            (ENCODE_CLASS, list_tycon),
+            make_parametric_instance(ENCODE_CLASS, 0),
+            "Encode",
+            "List",
+        )
+        .expect("parametric Encode List insert");
+        // Register `Encode Int` — the sub-constraint must resolve here.
+        env.insert(
+            (ENCODE_CLASS, int_tycon),
+            make_instance_info(),
+            "Encode",
+            "Int",
+        )
+        .expect("Encode Int insert");
+
+        let env_snap: FxHashSet<TyVid> = FxHashSet::default();
+        let (retained, dict_res) = solve_constraints(&mut ctx, &env, &ct, &env_snap, dummy_span());
+
+        assert!(
+            ctx.errors.is_empty(),
+            "Encode (List Int) with Encode Int present must produce no errors; got {:?}",
+            ctx.errors
+        );
+        assert!(retained.is_empty(), "all constraints must be discharged");
+
+        // A Static plan for the outer Encode (List _) constraint must exist.
+        let outer_plan = dict_res.get(&(ENCODE_CLASS, a));
+        assert!(
+            matches!(outer_plan, Some(DictPlan::Static { tycon, .. }) if *tycon == list_tycon),
+            "outer plan must be Static for List; got {outer_plan:?}"
+        );
+    }
+
+    /// `Encode (List Int)` without `Encode Int` in the env — must emit T029 for Int.
+    #[test]
+    fn parametric_list_int_missing_element_instance_emits_t029() {
+        let mut ctx = InferCtx::new();
+        let mut arena = TyConArena::new();
+        let b = BuiltinTyCons::allocate(&mut arena);
+
+        let list_tycon = b.list;
+        let int_tycon = b.int;
+
+        let a = ctx.fresh_tyvid();
+        ctx.tyvids.union_value(
+            TyVidKey(a.0),
+            TyValue(Some(Type::Con(
+                list_tycon,
+                vec![Type::Con(int_tycon, vec![])],
+            ))),
+        );
+        ctx.deferred_constraints.push(Constraint {
+            class: ENCODE_CLASS,
+            ty: a,
+        });
+
+        let ct = make_class_table();
+        let mut env = InstanceEnv::new();
+        // Only `Encode (List a)` — no `Encode Int`.
+        env.insert(
+            (ENCODE_CLASS, list_tycon),
+            make_parametric_instance(ENCODE_CLASS, 0),
+            "Encode",
+            "List",
+        )
+        .expect("parametric Encode List insert");
+
+        let env_snap: FxHashSet<TyVid> = FxHashSet::default();
+        let _ = solve_constraints(&mut ctx, &env, &ct, &env_snap, dummy_span());
+
+        assert!(
+            ctx.errors.iter().any(|e| e.code() == "T029"),
+            "missing Encode Int must emit T029; errors: {:?}",
+            ctx.errors
+        );
+    }
+
+    /// `Encode (Map Text Bool)` — the solver must bind position-1 arg (Bool),
+    /// NOT position-0 (Text). Only Bool is the constrained element.
+    #[test]
+    fn parametric_map_text_bool_binds_bool_not_text() {
+        let mut ctx = InferCtx::new();
+        let mut arena = TyConArena::new();
+        let b = BuiltinTyCons::allocate(&mut arena);
+
+        let map_tycon = b.map;
+        let text_tycon = b.text;
+        let bool_tycon = b.bool;
+
+        // a resolves to `Map Text Bool`.
+        let a = ctx.fresh_tyvid();
+        ctx.tyvids.union_value(
+            TyVidKey(a.0),
+            TyValue(Some(Type::Con(
+                map_tycon,
+                vec![Type::Con(text_tycon, vec![]), Type::Con(bool_tycon, vec![])],
+            ))),
+        );
+        ctx.deferred_constraints.push(Constraint {
+            class: ENCODE_CLASS,
+            ty: a,
+        });
+
+        let ct = make_class_table();
+        let mut env = InstanceEnv::new();
+        // `Encode (Map Text a) where Encode a` — var at position 1.
+        env.insert(
+            (ENCODE_CLASS, map_tycon),
+            make_parametric_instance(ENCODE_CLASS, 1),
+            "Encode",
+            "Map",
+        )
+        .expect("parametric Encode Map insert");
+        // Register `Encode Bool` — the correctly-positioned arg.
+        env.insert(
+            (ENCODE_CLASS, bool_tycon),
+            make_instance_info(),
+            "Encode",
+            "Bool",
+        )
+        .expect("Encode Bool insert");
+        // Do NOT register `Encode Text` — if the solver mistakenly binds pos 0
+        // it would emit T029 for Text.
+
+        let env_snap: FxHashSet<TyVid> = FxHashSet::default();
+        let (retained, _) = solve_constraints(&mut ctx, &env, &ct, &env_snap, dummy_span());
+
+        assert!(
+            ctx.errors.is_empty(),
+            "Encode (Map Text Bool) with Encode Bool must have no errors; got {:?}",
+            ctx.errors
+        );
+        assert!(retained.is_empty());
+    }
+
+    /// `Encode (Result Int Text)` with two `ctx_constraints` — both must be
+    /// substituted at their correct positions.
+    #[test]
+    fn parametric_result_int_text_both_positions() {
+        let mut ctx = InferCtx::new();
+        let mut arena = TyConArena::new();
+        let b = BuiltinTyCons::allocate(&mut arena);
+
+        let result_tycon = b.result;
+        let int_tycon = b.int;
+        let text_tycon = b.text;
+
+        // a resolves to `Result Int Text`.
+        let a = ctx.fresh_tyvid();
+        ctx.tyvids.union_value(
+            TyVidKey(a.0),
+            TyValue(Some(Type::Con(
+                result_tycon,
+                vec![Type::Con(int_tycon, vec![]), Type::Con(text_tycon, vec![])],
+            ))),
+        );
+        ctx.deferred_constraints.push(Constraint {
+            class: ENCODE_CLASS,
+            ty: a,
+        });
+
+        let ct = make_class_table();
+        let mut env = InstanceEnv::new();
+        // `Encode (Result a e) where Encode a, Encode e` — vars at positions 0 and 1.
+        env.insert(
+            (ENCODE_CLASS, result_tycon),
+            make_parametric_instance_2(ENCODE_CLASS, 0, 1),
+            "Encode",
+            "Result",
+        )
+        .expect("parametric Encode Result insert");
+        env.insert(
+            (ENCODE_CLASS, int_tycon),
+            make_instance_info(),
+            "Encode",
+            "Int",
+        )
+        .expect("Encode Int insert");
+        env.insert(
+            (ENCODE_CLASS, text_tycon),
+            make_instance_info(),
+            "Encode",
+            "Text",
+        )
+        .expect("Encode Text insert");
+
+        let env_snap: FxHashSet<TyVid> = FxHashSet::default();
+        let (retained, _) = solve_constraints(&mut ctx, &env, &ct, &env_snap, dummy_span());
+
+        assert!(
+            ctx.errors.is_empty(),
+            "Encode (Result Int Text) must have no errors; got {:?}",
+            ctx.errors
+        );
+        assert!(retained.is_empty());
     }
 }

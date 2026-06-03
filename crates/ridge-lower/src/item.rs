@@ -264,12 +264,21 @@ pub fn lower_fn(ctx: &mut LowerCtx<'_>, decl: &FnDecl) -> IrFn {
 
 // ── Instance lowering ─────────────────────────────────────────────────────────
 
-/// Lower an `instance C T` declaration to a dict const and one fn per method.
+/// Lower an `instance C T` declaration to a dict and one fn per method.
 ///
-/// Produces (in order):
+/// For a **non-parametric** instance (`instance Show Color`) this produces:
 /// 1. One private [`IrFn`] per method body, named `{ClassName}__{TypeName}__{MethodName}`.
 /// 2. One module-level [`IrConst`] named `$inst_{ClassName}_{TypeName}`, whose
 ///    value is a `MapLit` of `{'method' => fn/N, ...}` — the typeclass dictionary.
+///
+/// For a **parametric** instance (`instance Encode (List a) where Encode a`)
+/// the dictionary cannot be a constant — its methods need the element type's
+/// dictionary at runtime. The `$inst_` item is emitted as an [`IrFn`] taking one
+/// dict parameter per context constraint (`$dict_{CtxClass}_{i}`) and returning
+/// the method map. Method bodies that call a class method on the constrained
+/// variable (e.g. `encode e` for `e : a`) project the passed-in dict via the
+/// Forward path, so the call site applies `$inst_Encode_List` to the element
+/// dictionary to build the concrete map.
 ///
 /// When the class name or type name cannot be resolved (missing class table or
 /// unknown type), lowering is skipped and an empty vec is returned. This is a
@@ -277,13 +286,56 @@ pub fn lower_fn(ctx: &mut LowerCtx<'_>, decl: &FnDecl) -> IrFn {
 pub fn lower_instance(ctx: &mut LowerCtx<'_>, decl: &InstanceDecl) -> Vec<IrItem> {
     let class_name = decl.class.text.clone();
 
-    // Determine the concrete type name from the AST type annotation.
-    let type_name = match &decl.ty {
+    // Determine the head type-constructor name from the AST type annotation.
+    // A non-parametric head is `Type::Named` (`Color`); a parametric head is
+    // `Type::App` (`List a`), which parses parenthesised — `(List a)` →
+    // `Type::Paren { App }` — so peel any `Paren` wrappers first. Both forms
+    // contribute the same `$inst_{Class}_{Head}` name, keyed by the head ctor.
+    let head_ty = {
+        let mut cur = &decl.ty;
+        while let ridge_ast::Type::Paren { inner, .. } = cur {
+            cur = inner;
+        }
+        cur
+    };
+    let type_name = match head_ty {
         ridge_ast::Type::Named { name, .. } => name.text.clone(),
-        // Other type forms (tuples, fns, …) are not supported as instance heads
-        // in 0.2.13. Skip silently — a typecheck error would already have fired.
+        ridge_ast::Type::App { head, .. } => head.text.clone(),
+        // Other type forms (tuples, fns, …) are not supported as instance heads.
+        // Skip silently — a typecheck error would already have fired.
         _ => return vec![],
     };
+
+    // Build the implicit dictionary parameters for a parametric instance, one
+    // per `where` constraint. Each is named `$dict_{CtxClass}_{i}` where `i` is
+    // the constraint's position; the matching `current_fn_constraints` entry
+    // (set below) carries `TyVid(i)` so the Forward path in method-body lowering
+    // projects this exact parameter. Empty for non-parametric instances.
+    let mut dict_params: Vec<IrParam> = Vec::new();
+    let mut body_constraints: Vec<ridge_types::Constraint> = Vec::new();
+    for (i, cc) in decl.constraints.iter().enumerate() {
+        let ctx_class_name = cc.class.text.clone();
+        let class_id = ctx
+            .class_table
+            .and_then(|ct| ct.id_by_name(&ctx_class_name));
+        #[allow(clippy::cast_possible_truncation)]
+        let tyvid = ridge_types::TyVid(i as u32);
+        dict_params.push(IrParam {
+            name: format!("$dict_{ctx_class_name}_{}", tyvid.0),
+            ty: Type::Error, // untyped in IR — dicts are plain BEAM maps
+            span: cc.span,
+        });
+        if let Some(class) = class_id {
+            body_constraints.push(ridge_types::Constraint { class, ty: tyvid });
+        }
+    }
+    let is_parametric = !dict_params.is_empty();
+
+    // Expose the instance's context constraints while lowering method bodies so
+    // that bare class-method references on the constrained variable forward the
+    // passed-in dict params. Restored after the method loop. For non-parametric
+    // instances `body_constraints` is empty → no change in behaviour.
+    let saved_constraints = std::mem::replace(&mut ctx.current_fn_constraints, body_constraints);
 
     let mut items: Vec<IrItem> = Vec::new();
 
@@ -292,80 +344,29 @@ pub fn lower_instance(ctx: &mut LowerCtx<'_>, decl: &InstanceDecl) -> Vec<IrItem
     let mut dict_fields: Vec<(String, IrExpr)> = Vec::new();
 
     for method in &decl.methods {
-        let method_name = method.name.text.clone();
-        // Private fn name: ClassName__TypeName__MethodName
-        let fn_name = format!("{class_name}__{type_name}__{method_name}");
-
-        // Lower the method body as an ordinary fn.
-        // The method fn receives the user params (NOT a dict param — methods
-        // inside an instance body access the concrete type directly).
-        let body = lower_expr(ctx, &method.body);
-
-        let ret_ty = lower_ast_type(ctx, &method.ret);
-
-        let params: Vec<IrParam> = method
-            .params
-            .iter()
-            .map(|p| match p {
-                Param::Bare(id) => IrParam {
-                    name: id.text.clone(),
-                    ty: Type::Error,
-                    span: id.span,
-                },
-                Param::Annotated { name, ty, span } => IrParam {
-                    name: name.text.clone(),
-                    ty: lower_ast_type(ctx, ty),
-                    span: *span,
-                },
-            })
-            .collect();
-
-        let _arity = params.len();
-
-        let method_fn = IrFn {
-            name: fn_name.clone(),
-            module: ctx.module_id,
-            params,
-            ret_ty,
-            caps: ridge_types::CapabilitySet::PURE,
-            scheme: Scheme::mono(Type::Error), // placeholder — not used by codegen
-            body,
-            origin: NodeId(0),
-            span: method.span,
-            is_pub: false, // instance method fns are always module-private
-            is_main: false,
-            doc: None,
-        };
-
-        items.push(IrItem::Fn(method_fn));
-
-        // Build the dict field: method_name_atom → LocalFnRef(fn_name, arity).
-        // The field VALUE is a Symbol so codegen emits `fun fn_name/arity`.
-        let id = ctx.fresh_id(None);
-        let fn_ref_expr = IrExpr::Symbol {
-            id,
-            sym: SymbolRef::Local {
-                name: fn_name,
-                module: ctx.module_id,
-            },
-            span: method.span,
-        };
-
-        dict_fields.push((method_name, fn_ref_expr));
+        let (method_fn, dict_field) =
+            lower_instance_method(ctx, method, is_parametric, &class_name, &type_name);
+        if let Some(fn_item) = method_fn {
+            items.push(IrItem::Fn(fn_item));
+        }
+        dict_fields.push(dict_field);
     }
 
-    // Build the dict const: $inst_ClassName_TypeName = #{'method' => fn/N, ...}
+    // Method bodies are lowered; restore the caller's constraint scope.
+    ctx.current_fn_constraints = saved_constraints;
+
+    // Build the dictionary value: $inst_ClassName_TypeName = #{'method' => fn/N, ...}
     let dict_name = format!("$inst_{class_name}_{type_name}");
     let id = ctx.fresh_id(None);
 
     // Use `IrExpr::Construct` with a Record ctor so codegen lowers it to MapLit.
-    // The ctor name matches the dict const name (it's just a placeholder symbol
-    // for the Record ctor — the actual field data is in `fields`).
+    // The ctor name matches the dict name (it's just a placeholder symbol for
+    // the Record ctor — the actual field data is in `fields`).
     let dict_value = IrExpr::Construct {
         id,
         ctor: SymbolRef::Constructor {
             ctor_kind: CtorKind::Record,
-            // TyConId(0) is a placeholder — dict consts are untyped in the IR.
+            // TyConId(0) is a placeholder — dicts are untyped in the IR.
             owner_type: ridge_types::TyConId(0),
             name: dict_name.clone(),
             variant: 0,
@@ -374,17 +375,125 @@ pub fn lower_instance(ctx: &mut LowerCtx<'_>, decl: &InstanceDecl) -> Vec<IrItem
         span: decl.span,
     };
 
-    let dict_const = IrConst {
-        name: dict_name,
-        ty: Type::Error, // untyped in IR
-        value: dict_value,
-        origin: NodeId(0),
-        span: decl.span,
-        is_pub: false,
-    };
-    items.push(IrItem::Const(dict_const));
+    if is_parametric {
+        // Parametric instance: `$inst_` is a *function* of the element dicts.
+        // `fun($dict_Encode_0) -> #{'encode' => fun(Xs) -> ... end} end`.
+        // The method-map Construct closes over the dict params; codegen emits a
+        // MapLit whose method funs reference those params via `maps:get`.
+        let dict_fn = IrFn {
+            name: dict_name,
+            module: ctx.module_id,
+            params: dict_params,
+            ret_ty: Type::Error, // untyped in IR — returns a dict map
+            caps: ridge_types::CapabilitySet::PURE,
+            scheme: Scheme::mono(Type::Error), // placeholder — not used by codegen
+            body: dict_value,
+            origin: NodeId(0),
+            span: decl.span,
+            is_pub: false,
+            is_main: false,
+            doc: None,
+        };
+        items.push(IrItem::Fn(dict_fn));
+    } else {
+        let dict_const = IrConst {
+            name: dict_name,
+            ty: Type::Error, // untyped in IR
+            value: dict_value,
+            origin: NodeId(0),
+            span: decl.span,
+            is_pub: false,
+        };
+        items.push(IrItem::Const(dict_const));
+    }
 
     items
+}
+
+/// Lower one instance method to its dict-map field, plus (for non-parametric
+/// instances) the private top-level fn that field references.
+///
+/// - **Parametric** instance → the field value is an inline [`IrExpr::Lambda`]
+///   so the method body captures the enclosing `$inst_` fn's dict parameters;
+///   returns `(None, field)`.
+/// - **Non-parametric** instance → emit a private `{Class}__{Type}__{method}`
+///   [`IrFn`] and reference it as `fun fn_name/arity`; returns `(Some(fn), field)`.
+fn lower_instance_method(
+    ctx: &mut LowerCtx<'_>,
+    method: &ridge_ast::typeclass::MethodDef,
+    is_parametric: bool,
+    class_name: &str,
+    type_name: &str,
+) -> (Option<IrFn>, (String, IrExpr)) {
+    let method_name = method.name.text.clone();
+
+    // Lower the method body. The user params carry the concrete-type values;
+    // for a parametric instance the body additionally references the enclosing
+    // `$inst_` fn's dict params (set in `current_fn_constraints`), captured by
+    // the method's closure.
+    let body = lower_expr(ctx, &method.body);
+
+    let params: Vec<IrParam> = method
+        .params
+        .iter()
+        .map(|p| match p {
+            Param::Bare(id) => IrParam {
+                name: id.text.clone(),
+                ty: Type::Error,
+                span: id.span,
+            },
+            Param::Annotated { name, ty, span } => IrParam {
+                name: name.text.clone(),
+                ty: lower_ast_type(ctx, ty),
+                span: *span,
+            },
+        })
+        .collect();
+
+    if is_parametric {
+        // Inline lambda so the body captures the enclosing dict parameters. A
+        // separate top-level fn would not see `$dict_{Class}_{i}` in scope.
+        let lambda_id = ctx.fresh_id(None);
+        let method_lambda = IrExpr::Lambda {
+            id: lambda_id,
+            params,
+            body: Box::new(body),
+            caps: ridge_types::CapabilitySet::PURE,
+            span: method.span,
+        };
+        return (None, (method_name, method_lambda));
+    }
+
+    // Non-parametric: private top-level fn referenced as `fun fn_name/arity`.
+    let ret_ty = lower_ast_type(ctx, &method.ret);
+    let fn_name = format!("{class_name}__{type_name}__{method_name}");
+    let method_fn = IrFn {
+        name: fn_name.clone(),
+        module: ctx.module_id,
+        params,
+        ret_ty,
+        caps: ridge_types::CapabilitySet::PURE,
+        scheme: Scheme::mono(Type::Error), // placeholder — not used by codegen
+        body,
+        origin: NodeId(0),
+        span: method.span,
+        is_pub: false, // instance method fns are always module-private
+        is_main: false,
+        doc: None,
+    };
+
+    // The field VALUE is a Symbol so codegen emits `fun fn_name/arity`.
+    let id = ctx.fresh_id(None);
+    let fn_ref_expr = IrExpr::Symbol {
+        id,
+        sym: SymbolRef::Local {
+            name: fn_name,
+            module: ctx.module_id,
+        },
+        span: method.span,
+    };
+
+    (Some(method_fn), (method_name, fn_ref_expr))
 }
 
 /// Lower a top-level [`ConstDecl`] to an [`IrConst`].
@@ -704,7 +813,68 @@ pub fn lower_derived_instance(
         }
     };
 
-    // ── Emit the method fn ────────────────────────────────────────────────────
+    // A generic type whose derived instance threads element dictionaries (e.g.
+    // `type Box a deriving (Encode)` → `instance Encode (Box a) where Encode a`)
+    // produces a constrained instance: `head_var_positions` lists the type
+    // parameters that flow a runtime dict. Such an instance lowers like a
+    // hand-written parametric instance — `$inst_` is a *function* of those dicts
+    // and the method is an inline lambda closing over them.
+    let head_var_positions = &derived.instance_info.head_var_positions;
+    let is_parametric = !head_var_positions.is_empty();
+
+    let dict_name = format!("$inst_{class_name}_{type_name}");
+
+    if is_parametric {
+        // The method body references `$dict_{Class}_{i}` directly (emitted by the
+        // `Var` arm of encode_shape/decode_shape), so it must be an inline lambda
+        // captured inside the `$inst_` function — a separate top-level fn would
+        // not have those dict parameters in scope.
+        let method_lambda = IrExpr::Lambda {
+            id: ctx.fresh_id(None),
+            params,
+            body: Box::new(body),
+            caps: ridge_types::CapabilitySet::PURE,
+            span: sp,
+        };
+        let dict_value = IrExpr::Construct {
+            id: ctx.fresh_id(None),
+            ctor: SymbolRef::Constructor {
+                ctor_kind: CtorKind::Record,
+                owner_type: ridge_types::TyConId(0),
+                name: dict_name.clone(),
+                variant: 0,
+            },
+            fields: vec![(method_name.to_string(), method_lambda)],
+            span: sp,
+        };
+        let dict_params: Vec<IrParam> = head_var_positions
+            .iter()
+            .map(|&i| IrParam {
+                name: format!("$dict_{class_name}_{i}"),
+                ty: Type::Error,
+                span: sp,
+            })
+            .collect();
+        let dict_fn = IrFn {
+            name: dict_name,
+            module: ctx.module_id,
+            params: dict_params,
+            ret_ty: Type::Error,
+            caps: ridge_types::CapabilitySet::PURE,
+            scheme: Scheme::mono(Type::Error),
+            body: dict_value,
+            origin: NodeId(0),
+            span: sp,
+            is_pub: false,
+            is_main: false,
+            doc: None,
+        };
+        items.push(IrItem::Fn(dict_fn));
+        return items;
+    }
+
+    // ── Non-parametric: emit the method fn + the dict const ───────────────────
+    // $inst_ClassName_TypeName = #{ 'method' => fun fn_name/N }
 
     let method_fn = IrFn {
         name: fn_name.clone(),
@@ -722,10 +892,6 @@ pub fn lower_derived_instance(
     };
     items.push(IrItem::Fn(method_fn));
 
-    // ── Emit the dict const ───────────────────────────────────────────────────
-    // $inst_ClassName_TypeName = #{ 'method' => fun fn_name/N }
-
-    let dict_name = format!("$inst_{class_name}_{type_name}");
     let fn_ref_expr = IrExpr::Symbol {
         id: ctx.fresh_id(None),
         sym: SymbolRef::Local {
@@ -1845,6 +2011,31 @@ fn encode_shape(
                     },
                     span: sp,
                 }),
+                args: vec![value_expr],
+                span: sp,
+            }
+        }
+
+        // ── Type variable → project the forwarded element dictionary ──────────
+        // The derived instance for a generic type receives one `$dict_Encode_i`
+        // parameter per used type variable. Encode the value by projecting the
+        // `encode` method from that dict and applying it:
+        // `(maps:get('encode', $dict_Encode_i))(value)`.
+        FieldShape::Var { param_index } => {
+            let dict = IrExpr::Local {
+                id: ctx.fresh_id(None),
+                name: format!("$dict_Encode_{param_index}"),
+                span: sp,
+            };
+            let projected = IrExpr::Field {
+                id: ctx.fresh_id(None),
+                base: Box::new(dict),
+                field: "encode".to_string(),
+                span: sp,
+            };
+            IrExpr::Call {
+                id: ctx.fresh_id(None),
+                callee: Box::new(projected),
                 args: vec![value_expr],
                 span: sp,
             }
@@ -3132,6 +3323,29 @@ fn decode_shape(
                     },
                     span: sp,
                 }),
+                args: vec![json_expr],
+                span: sp,
+            }
+        }
+
+        // ── Type variable → project the forwarded element dictionary ──────────
+        // `(maps:get('decode', $dict_Decode_i))(json)` returns `Result T Error`
+        // directly — the decode method is already fallible, so no extra wrapping.
+        FieldShape::Var { param_index } => {
+            let dict = IrExpr::Local {
+                id: ctx.fresh_id(None),
+                name: format!("$dict_Decode_{param_index}"),
+                span: sp,
+            };
+            let projected = IrExpr::Field {
+                id: ctx.fresh_id(None),
+                base: Box::new(dict),
+                field: "decode".to_string(),
+                span: sp,
+            };
+            IrExpr::Call {
+                id: ctx.fresh_id(None),
+                callee: Box::new(projected),
                 args: vec![json_expr],
                 span: sp,
             }
@@ -4920,6 +5134,7 @@ mod tests {
                 name: ident("Color"),
                 span: sp(),
             },
+            constraints: vec![],
             methods: vec![method],
             span: sp(),
             doc: None,
@@ -5036,6 +5251,7 @@ mod tests {
                 def_module: Some(0),
                 methods: vec![("toText".to_string(), String::new())],
                 ctx_constraints: vec![],
+                head_var_positions: vec![],
                 origin: InstanceOrigin::Explicit,
                 span: sp(),
             },
@@ -5097,6 +5313,7 @@ mod tests {
                 def_module: Some(0),
                 methods: vec![("toText".to_string(), String::new())],
                 ctx_constraints: vec![],
+                head_var_positions: vec![],
                 origin: InstanceOrigin::Explicit,
                 span: sp(),
             },
@@ -5176,6 +5393,7 @@ mod tests {
                 def_module: Some(0),
                 methods: vec![("compare".to_string(), String::new())],
                 ctx_constraints: vec![],
+                head_var_positions: vec![],
                 origin: InstanceOrigin::Explicit,
                 span: sp(),
             },
@@ -5261,6 +5479,7 @@ mod tests {
                 def_module: Some(0),
                 methods: vec![("encode".to_string(), String::new())],
                 ctx_constraints: vec![],
+                head_var_positions: vec![],
                 origin: InstanceOrigin::Explicit,
                 span: sp(),
             },
@@ -5357,6 +5576,7 @@ mod tests {
                 def_module: Some(0),
                 methods: vec![("decode".to_string(), String::new())],
                 ctx_constraints: vec![],
+                head_var_positions: vec![],
                 origin: InstanceOrigin::Explicit,
                 span: sp(),
             },
@@ -5413,6 +5633,7 @@ mod tests {
                 def_module: Some(0),
                 methods: vec![("decode".to_string(), String::new())],
                 ctx_constraints: vec![],
+                head_var_positions: vec![],
                 origin: InstanceOrigin::Explicit,
                 span: sp(),
             },
@@ -5463,6 +5684,7 @@ mod tests {
                 def_module: Some(0),
                 methods: vec![("decode".to_string(), String::new())],
                 ctx_constraints: vec![],
+                head_var_positions: vec![],
                 origin: InstanceOrigin::Explicit,
                 span: sp(),
             },
@@ -5519,6 +5741,7 @@ mod tests {
                 def_module: Some(0),
                 methods: vec![("decode".to_string(), String::new())],
                 ctx_constraints: vec![],
+                head_var_positions: vec![],
                 origin: InstanceOrigin::Explicit,
                 span: sp(),
             },
@@ -5561,6 +5784,7 @@ mod tests {
                 def_module: Some(0),
                 methods: vec![("decode".to_string(), String::new())],
                 ctx_constraints: vec![],
+                head_var_positions: vec![],
                 origin: InstanceOrigin::Explicit,
                 span: sp(),
             },

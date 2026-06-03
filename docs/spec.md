@@ -871,12 +871,26 @@ instance ToText Color =
 Each method definition has the same form as a top-level `fn` body — `name (params) -> RetType = body` — without the `fn` keyword. An instance must define every method declared by the class. An empty instance body is rejected (`P031 MalformedInstanceDecl`).
 
 ```ebnf
-InstanceDecl ::= "instance" UpperIdent Type "=" NEWLINE
+InstanceDecl ::= "instance" UpperIdent Type [ WhereClause ] "=" NEWLINE
                  INDENT MethodDef+ DEDENT
 MethodDef    ::= LowerIdent ParamList "->" Type "=" Expr NEWLINE
 ```
 
-Only single-parameter classes are supported in 0.2.13.
+An instance head may be a type constructor applied to a type variable, with the element constraints written in a trailing `where` clause:
+
+```ridge
+instance Encode (List a) where Encode a =
+    encode (xs: List a) -> JsonValue =
+        JList (List.map (fn e -> encode e) xs)
+```
+
+`instance Encode (List a) where Encode a` reads "given an `Encode` instance for `a`, here is an `Encode` instance for `List a`." The element instance is supplied at runtime: the compiler passes the element's dictionary to the parametric instance when a concrete `List Int`, `List Text`, etc. is encoded. The `where` clause uses the same syntax as constraints on function signatures (§5.6.3); Ridge has no `=>` arrow.
+
+The element type must be determinable where the method is used. The dictionary for each element is chosen from the full resolved argument type, so `encode (Some 5)` and `encode (Some "hi")` dispatch to the `Int` and `Text` encoders respectively. If the element type is left open — `encode None`, or `encode []` with no annotation — there is no way to choose an element encoder, and the constraint is reported as ambiguous (`T030 AmbiguousConstraint`). Annotate the value (`let xs : List Int = []`) to fix the element type.
+
+The prelude already provides parametric `Encode` and `Decode` instances for `List a`, `Option a`, `Map Text a`, and `Result a e`. These four type constructors are **reserved** for the prelude — a user instance such as `instance Encode (List MyType)` overlaps the prelude instance and is rejected (`T032 OverlappingInstance`). To customise encoding for a contained type, write the instance for that element type, not for the container.
+
+Only single-parameter classes are supported.
 
 #### 5.6.3. Constraints on function signatures
 
@@ -958,7 +972,9 @@ Each field's rendering dispatches through the `ToText` instance for that field's
 - **`Result T E`** → adjacently-tagged, same as a payload union: `Ok x` → `{"tag":"Ok","values":[encode x]}`; `Err e` → `{"tag":"Err","values":[encode e]}`.
 - **Nested derived type** → calls that type's `encode` method recursively.
 
-The deriver recurses over the concrete field type, so `List Text`, `Option Int`, and `Map Text Bool` fields are all supported without any extra constraints. Deriving `Encode` on a generic type (one with a type parameter, such as `type Box a = { val: a }`) is rejected with `T029 NoInstance` and a hint pointing to parametric instances, which require explicit `instance` declarations.
+The deriver recurses over the concrete field type, so `List Text`, `Option Int`, and `Map Text Bool` fields are all supported without any extra constraints.
+
+A generic type — one with a type parameter, such as `type Box a = { val: a } deriving (Encode)` — derives a **constrained** instance. The compiler synthesises `instance Encode (Box a) where Encode a`: a field whose type is the parameter `a` encodes through the element's `Encode` instance, supplied at runtime, exactly like the prelude container instances. A field that mentions a type variable which is *not* one of the type's own parameters is still rejected (`T029 NoInstance`), since there is no parameter through which to thread its dictionary.
 
 **Derived `Decode`** generates a `decode` method that converts a `JsonValue` back into a value of the derived type. The method signature is `decode : JsonValue -> Result T Error`, the inverse of `encode`. It consumes exactly the same wire format that `deriving (Encode)` produces, so `encode` and `decode` round-trip: `decode (encode x) == Ok x`.
 
@@ -971,7 +987,7 @@ The decoding rules mirror the encoding rules above:
 - **`List T`** → expects a `JArray`. Each element is decoded individually; the first failure short-circuits (fail-fast, not accumulate-all).
 - **`Map Text T`** → expects a `JObject`. Each value is decoded individually; the first failure short-circuits.
 
-Decoding is fail-fast: the first error encountered is immediately returned. Use `Err` values from the `Error` record (`{ code: Text, message: Text }`) to inspect what went wrong. Decoding a generic type is rejected with `T029 NoInstance`, the same constraint as `Encode`.
+Decoding is fail-fast: the first error encountered is immediately returned. Use `Err` values from the `Error` record (`{ code: Text, message: Text }`) to inspect what went wrong. A generic type derives a constrained `Decode` instance the same way `Encode` does, so `type Box a = { val: a } deriving (Encode, Decode)` round-trips over any element type that itself has both instances.
 
 #### 5.6.5. The `Ordering` type
 

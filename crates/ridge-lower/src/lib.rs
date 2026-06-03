@@ -32,6 +32,7 @@ pub mod item;
 pub mod match_lower;
 pub mod operators;
 pub mod pipe;
+pub mod prelude_dict;
 pub mod propagate;
 pub mod try_block;
 pub mod with_update;

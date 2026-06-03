@@ -1,0 +1,8 @@
+class Encode a =
+    encode (x: a) -> JsonValue
+
+fn toJson (x: a) -> Text where Encode a =
+    Json.encode (encode x)
+
+pub fn main_list () -> Text =
+    toJson [1, 2, 3]

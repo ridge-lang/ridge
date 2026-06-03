@@ -1,0 +1,227 @@
+---
+source: crates/ridge-lower/tests/lowering.rs
+expression: rendered
+---
+module: m0
+items_count: 4
+items:
+  - kind: fn
+    name: toJson
+    pub: false
+    main: false
+    caps: CapabilitySet(0)
+    ret_ty: Con(3)
+    params:
+      - name: $dict_Encode_3
+        ty: Error
+      - name: x
+        ty: Error
+    body:
+      Call(n0):
+        callee:
+          Symbol(n1): Stdlib(std.json.encode)
+        args:
+          -
+            Call(n2):
+              callee:
+                Field(n3).encode:
+                  Local(n4): $dict_Encode_3
+              args:
+                -
+                  Local(n5): x
+  - kind: fn
+    name: main_box
+    pub: true
+    main: false
+    caps: CapabilitySet(0)
+    ret_ty: Con(3)
+    params: []
+    body:
+      Call(n6):
+        callee:
+          Symbol(n7): Local(toJson @ m0)
+        args:
+          -
+            Call(n8):
+              callee:
+                Symbol(n9): Local($inst_Encode_Box @ m0)
+              args:
+                -
+                  Construct(n10):
+                    ctor: Ctor(Record:$synth_dict_encode owner=0)
+                    fields:
+                      encode:
+                        Lambda(n11):
+                          caps: CapabilitySet(0)
+                          params:
+                            - name: __enc_x
+                              ty: Error
+                          body:
+                            Call(n12):
+                              callee:
+                                Symbol(n13): Prelude(JInt)
+                              args:
+                                -
+                                  Local(n14): __enc_x
+          -
+            Construct(n15):
+              ctor: Ctor(Record:Box owner=17)
+              fields:
+                val:
+                  Lit(n16): Int(7)
+  - kind: fn
+    name: $inst_Encode_Box
+    pub: false
+    main: false
+    caps: CapabilitySet(0)
+    ret_ty: Error
+    params:
+      - name: $dict_Encode_0
+        ty: Error
+    body:
+      Construct(n17):
+        ctor: Ctor(Record:$inst_Encode_Box owner=0)
+        fields:
+          encode:
+            Lambda(n18):
+              caps: CapabilitySet(0)
+              params:
+                - name: x
+                  ty: Error
+              body:
+                Call(n19):
+                  callee:
+                    Symbol(n20): Prelude(JObject)
+                  args:
+                    -
+                      Call(n21):
+                        callee:
+                          Symbol(n22): Stdlib(std.map.fromList)
+                        args:
+                          -
+                            ListLit(n23):
+                              Tuple(n24):
+                                Lit(n25): Text("val")
+                                Call(n26):
+                                  callee:
+                                    Field(n27).encode:
+                                      Local(n28): $dict_Encode_0
+                                  args:
+                                    -
+                                      Field(n29).val:
+                                        Local(n30): x
+  - kind: fn
+    name: $inst_Decode_Box
+    pub: false
+    main: false
+    caps: CapabilitySet(0)
+    ret_ty: Error
+    params:
+      - name: $dict_Decode_0
+        ty: Error
+    body:
+      Construct(n31):
+        ctor: Ctor(Record:$inst_Decode_Box owner=0)
+        fields:
+          decode:
+            Lambda(n32):
+              caps: CapabilitySet(0)
+              params:
+                - name: j
+                  ty: Error
+              body:
+                Match(n33):
+                  scrutinee:
+                    Local(n34): j
+                  arms:
+                    -
+                      pat:
+                        Ctor: Prelude(JObject)
+                          args:
+                            Bind: __dec_rec_m_0
+                      body:
+                        Match(n35):
+                          scrutinee:
+                            Call(n36):
+                              callee:
+                                Symbol(n37): Stdlib(std.map.get)
+                              args:
+                                -
+                                  Lit(n38): Text("val")
+                                -
+                                  Local(n39): __dec_rec_m_0
+                          arms:
+                            -
+                              pat:
+                                Ctor: Prelude(Some)
+                                  args:
+                                    Bind: __dec_jv_val_2
+                              body:
+                                Match(n40):
+                                  scrutinee:
+                                    Call(n41):
+                                      callee:
+                                        Field(n42).decode:
+                                          Local(n43): $dict_Decode_0
+                                      args:
+                                        -
+                                          Local(n44): __dec_jv_val_2
+                                  arms:
+                                    -
+                                      pat:
+                                        Ctor: Prelude(Ok)
+                                          args:
+                                            Bind: __dec_f_val_1
+                                      body:
+                                        Construct(n0):
+                                          ctor: Prelude(Ok)
+                                          fields:
+                                            $0:
+                                              Construct(n45):
+                                                ctor: Ctor(Record:Box owner=17)
+                                                fields:
+                                                  val:
+                                                    Local(n46): __dec_f_val_1
+                                    -
+                                      pat:
+                                        Ctor: Prelude(Err)
+                                          args:
+                                            Bind: __dec_err_3
+                                      body:
+                                        Return(n47):
+                                          Construct(n48):
+                                            ctor: Prelude(Err)
+                                            fields:
+                                              $0:
+                                                Local(n49): __dec_err_3
+                            -
+                              pat:
+                                Wild
+                              body:
+                                Return(n50):
+                                  Construct(n51):
+                                    ctor: Prelude(Err)
+                                    fields:
+                                      $0:
+                                        Construct(n52):
+                                          ctor: Ctor(Record:Error owner=12)
+                                          fields:
+                                            code:
+                                              Lit(n53): Text("decode.missing_field")
+                                            message:
+                                              Lit(n54): Text("missing field \"val\"")
+                    -
+                      pat:
+                        Wild
+                      body:
+                        Construct(n55):
+                          ctor: Prelude(Err)
+                          fields:
+                            $0:
+                              Construct(n56):
+                                ctor: Ctor(Record:Error owner=12)
+                                fields:
+                                  code:
+                                    Lit(n57): Text("decode.expected_object")
+                                  message:
+                                    Lit(n58): Text("expected a JSON object for type Box")

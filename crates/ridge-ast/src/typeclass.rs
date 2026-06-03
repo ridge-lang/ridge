@@ -101,9 +101,14 @@ pub struct ClassDecl {
 ///         Red   => "red"
 ///         Green => "green"
 ///         Blue  => "blue"
+///
+/// instance Encode (List a) where Encode a =
+///     encode (xs) = ...
 /// ```
 ///
-/// In 0.2.13 instance heads cannot carry `where` constraints.
+/// Parametric instances carry a `where` clause listing the constraints on
+/// the head's type variable(s), e.g. `where Encode a` for `Encode (List a)`.
+/// Non-parametric instances have an empty `constraints` list.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct InstanceDecl {
     /// The class being instantiated (`UPPER_IDENT`).
@@ -112,6 +117,12 @@ pub struct InstanceDecl {
     pub class: Ident,
     /// The concrete type the instance applies to.
     pub ty: Type,
+    /// Constraints on the instance head's type variable(s) (`where C a`).
+    ///
+    /// Non-empty only for parametric instances such as
+    /// `instance Encode (List a) where Encode a`. The collect pass populates
+    /// [`InstanceInfo::ctx_constraints`] from this field.
+    pub constraints: Vec<ClassConstraint>,
     /// Method definitions (at least one required).
     pub methods: Vec<MethodDef>,
     /// Span covering the full declaration.

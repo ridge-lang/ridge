@@ -186,6 +186,25 @@ fn snap_actor_state_field_read() {
     snapshot_fixture("actor_state_field_read");
 }
 
+/// Parametric instance over a primitive element: encoding `[1, 2, 3]` resolves
+/// `Encode (List Int)` to the prelude `Encode (List a)` instance applied to the
+/// prelude `Encode Int`. Both dictionaries are prelude-reserved with no module
+/// constant, so the use site synthesises them inline — the list method maps each
+/// element through the synthesised `Encode Int` dictionary (`JInt`).
+#[test]
+fn snap_parametric_instance_list() {
+    snapshot_fixture("parametric_instance_list");
+}
+
+/// Generic user type deriving `Encode`/`Decode`: `type Box a = { val: a }` lifts
+/// the deriving Var-boundary into a constrained instance. `$inst_Encode_Box`
+/// becomes a function of the element dictionary `$dict_Encode_0`; the derived
+/// method projects `encode` from it for the `val` field.
+#[test]
+fn snap_derive_generic_box() {
+    snapshot_fixture("derive_generic_box");
+}
+
 // ── Group B §3.1: Actor-name → ModuleId wiring ───────────────────────────────
 
 // B-actor-1: Spawn expression resolves actor module via actor_module_cache.

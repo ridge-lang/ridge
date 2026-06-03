@@ -29,6 +29,11 @@ type TyConNameCache = FxHashMap<String, TyConId>;
 /// (deterministic by module-walk order). // OQ-PHASE45-006
 type ActorModuleCache = FxHashMap<String, ModuleId>;
 
+/// Per-fn cache of scheme constraints and parameter types, keyed by fn name.
+/// Built lazily from the current module's schemes; see
+/// [`LowerCtx::lookup_fn_constraints`] and [`LowerCtx::lookup_fn_param_types`].
+type FnConstraintCache = FxHashMap<String, (Vec<Constraint>, Vec<Type>)>;
+
 /// Per-module state threaded through all Phase 5 lowering rules.
 ///
 /// One `LowerCtx` is created per module, lives for the duration of
@@ -146,13 +151,17 @@ pub struct LowerCtx<'tw> {
     /// dict param (`DictPlan::Forward`).
     pub current_fn_constraints: Vec<Constraint>,
 
-    /// Cached mapping from top-level fn name to its scheme constraints.
+    /// Cached mapping from top-level fn name to its scheme constraints and the
+    /// scheme's parameter types.
     ///
     /// Built lazily on the first call to
     /// [`LowerCtx::lookup_fn_constraints`] from the current module's AST
-    /// and the workspace's `TypedModule.schemes`. Used to determine whether
-    /// a call target needs dict arguments prepended.
-    fn_constraint_cache: Option<FxHashMap<String, Vec<Constraint>>>,
+    /// and the workspace's `TypedModule.schemes`. The constraints decide whether
+    /// a call target needs dict arguments prepended; the parameter types let the
+    /// dictionary resolver match a constraint variable to the argument that pins
+    /// it, so each dictionary is built from the concrete type actually flowing
+    /// into the constrained parameter.
+    fn_constraint_cache: Option<FnConstraintCache>,
 }
 
 impl<'tw> LowerCtx<'tw> {
@@ -407,52 +416,81 @@ impl<'tw> LowerCtx<'tw> {
     /// Returns an empty slice for unknown fns, fns without a wired scheme, or
     /// when no workspace is attached.
     pub fn lookup_fn_constraints(&mut self, fn_name: &str) -> &[ridge_types::Constraint] {
-        use ridge_ast::Expr as AstExpr;
-        use ridge_resolve::NodeKind;
-
-        // Build the cache on first use.
-        if self.fn_constraint_cache.is_none() {
-            let mut cache: FxHashMap<String, Vec<ridge_types::Constraint>> = FxHashMap::default();
-
-            let Some(ws) = self.workspace else {
-                self.fn_constraint_cache = Some(cache);
-                return &[];
-            };
-            let Some(tmod) = ws.modules.get(self.module_id.0 as usize) else {
-                self.fn_constraint_cache = Some(cache);
-                return &[];
-            };
-
-            // Walk top-level fn decls; look up each fn's scheme by body NodeId.
-            for item in &tmod.ast.items {
-                let Item::Fn(decl) = item else { continue };
-                let body = match &decl.body {
-                    Body::Expr(e) => e,
-                    Body::Ffi { .. } => continue,
-                };
-                // Mirror the body-node-kind keying from item.rs / scc.rs.
-                let (body_span, body_kind) = match body {
-                    AstExpr::Block(b) => (b.span, NodeKind::Block),
-                    AstExpr::Try { span, .. } => (*span, NodeKind::Try),
-                    other => (other.span(), NodeKind::Expr),
-                };
-                let constraints = self
-                    .node_id_map
-                    .as_ref()
-                    .and_then(|m| m.get(body_span, body_kind))
-                    .and_then(|nid| tmod.schemes.get(&nid))
-                    .map(|scheme| scheme.constraints.clone())
-                    .unwrap_or_default();
-                cache.insert(decl.name.text.clone(), constraints);
-            }
-
-            self.fn_constraint_cache = Some(cache);
-        }
-
+        self.ensure_fn_constraint_cache();
         self.fn_constraint_cache
             .as_ref()
             .and_then(|c| c.get(fn_name))
-            .map_or(&[], Vec::as_slice)
+            .map_or(&[], |(constraints, _)| constraints.as_slice())
+    }
+
+    /// Look up a top-level fn's scheme parameter types by name.
+    ///
+    /// Returns the generalised scheme's `Type::Fn` parameter list — the types
+    /// in which the scheme's constraint variables appear. Used by the dictionary
+    /// resolver to locate, for each constraint, the argument that pins it.
+    ///
+    /// Returns an empty slice when the fn is unknown, has no `Type::Fn` scheme,
+    /// or no workspace is attached.
+    pub fn lookup_fn_param_types(&mut self, fn_name: &str) -> &[Type] {
+        self.ensure_fn_constraint_cache();
+        self.fn_constraint_cache
+            .as_ref()
+            .and_then(|c| c.get(fn_name))
+            .map_or(&[], |(_, params)| params.as_slice())
+    }
+
+    /// Populate `fn_constraint_cache` on first use: one linear scan over the
+    /// current module's top-level `fn` decls, recording each fn's scheme
+    /// constraints and parameter types keyed by name.
+    fn ensure_fn_constraint_cache(&mut self) {
+        use ridge_ast::Expr as AstExpr;
+        use ridge_resolve::NodeKind;
+
+        if self.fn_constraint_cache.is_some() {
+            return;
+        }
+
+        let mut cache: FnConstraintCache = FxHashMap::default();
+
+        let Some(ws) = self.workspace else {
+            self.fn_constraint_cache = Some(cache);
+            return;
+        };
+        let Some(tmod) = ws.modules.get(self.module_id.0 as usize) else {
+            self.fn_constraint_cache = Some(cache);
+            return;
+        };
+
+        // Walk top-level fn decls; look up each fn's scheme by body NodeId.
+        for item in &tmod.ast.items {
+            let Item::Fn(decl) = item else { continue };
+            let body = match &decl.body {
+                Body::Expr(e) => e,
+                Body::Ffi { .. } => continue,
+            };
+            // Mirror the body-node-kind keying from item.rs / scc.rs.
+            let (body_span, body_kind) = match body {
+                AstExpr::Block(b) => (b.span, NodeKind::Block),
+                AstExpr::Try { span, .. } => (*span, NodeKind::Try),
+                other => (other.span(), NodeKind::Expr),
+            };
+            let entry = self
+                .node_id_map
+                .as_ref()
+                .and_then(|m| m.get(body_span, body_kind))
+                .and_then(|nid| tmod.schemes.get(&nid))
+                .map(|scheme| {
+                    let params = match &scheme.ty {
+                        Type::Fn { params, .. } => params.clone(),
+                        _ => Vec::new(),
+                    };
+                    (scheme.constraints.clone(), params)
+                })
+                .unwrap_or_default();
+            cache.insert(decl.name.text.clone(), entry);
+        }
+
+        self.fn_constraint_cache = Some(cache);
     }
 
     /// Translate a resolve-layer `SymbolId` (constructor owner) to its IR-layer

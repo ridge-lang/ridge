@@ -1,0 +1,99 @@
+---
+source: crates/ridge-lower/tests/lowering.rs
+expression: rendered
+---
+module: m0
+items_count: 2
+items:
+  - kind: fn
+    name: toJson
+    pub: false
+    main: false
+    caps: CapabilitySet(0)
+    ret_ty: Con(3)
+    params:
+      - name: $dict_Encode_1
+        ty: Error
+      - name: x
+        ty: Error
+    body:
+      Call(n0):
+        callee:
+          Symbol(n1): Stdlib(std.json.encode)
+        args:
+          -
+            Call(n2):
+              callee:
+                Field(n3).encode:
+                  Local(n4): $dict_Encode_1
+              args:
+                -
+                  Local(n5): x
+  - kind: fn
+    name: main_list
+    pub: true
+    main: false
+    caps: CapabilitySet(0)
+    ret_ty: Con(3)
+    params: []
+    body:
+      Call(n6):
+        callee:
+          Symbol(n7): Local(toJson @ m0)
+        args:
+          -
+            Construct(n8):
+              ctor: Ctor(Record:$synth_dict_encode owner=0)
+              fields:
+                encode:
+                  Lambda(n9):
+                    caps: CapabilitySet(0)
+                    params:
+                      - name: __enc_xs
+                        ty: Error
+                    body:
+                      Call(n10):
+                        callee:
+                          Symbol(n11): Prelude(JList)
+                        args:
+                          -
+                            Call(n12):
+                              callee:
+                                Symbol(n13): Stdlib(std.list.map)
+                              args:
+                                -
+                                  Lambda(n14):
+                                    caps: CapabilitySet(0)
+                                    params:
+                                      - name: __enc_e
+                                        ty: Error
+                                    body:
+                                      Call(n15):
+                                        callee:
+                                          Field(n16).encode:
+                                            Construct(n17):
+                                              ctor: Ctor(Record:$synth_dict_encode owner=0)
+                                              fields:
+                                                encode:
+                                                  Lambda(n18):
+                                                    caps: CapabilitySet(0)
+                                                    params:
+                                                      - name: __enc_x
+                                                        ty: Error
+                                                    body:
+                                                      Call(n19):
+                                                        callee:
+                                                          Symbol(n20): Prelude(JInt)
+                                                        args:
+                                                          -
+                                                            Local(n21): __enc_x
+                                        args:
+                                          -
+                                            Local(n22): __enc_e
+                                -
+                                  Local(n23): __enc_xs
+          -
+            ListLit(n24):
+              Lit(n25): Int(1)
+              Lit(n26): Int(2)
+              Lit(n27): Int(3)

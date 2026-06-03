@@ -1693,32 +1693,22 @@ fn parse_instance_decl(
         }
     };
 
-    // The `where` keyword on an instance head is rejected (0.2.13 — instance
-    // heads cannot carry constraints).
-    if cur.peek() == &Token::KwWhere {
-        return Err(ParseError::MalformedInstanceDecl {
-            span: cur.span(),
-            reason: "`where` constraints on instance heads are not supported; \
-                     only class declarations may have superclass `where` clauses"
-                .to_string(),
-        });
-    }
-
     // Instance head type: parse a single type atom.
     let ty = parse_type(cur).map_err(|_| ParseError::MalformedInstanceDecl {
         span: cur.span(),
         reason: "expected a type after the class name in the instance head".to_string(),
     })?;
 
-    // Check for a `where` clause after the type — also forbidden on instance heads.
-    if cur.peek() == &Token::KwWhere {
-        return Err(ParseError::MalformedInstanceDecl {
-            span: cur.span(),
-            reason: "`where` constraints on instance heads are not supported; \
-                     only class declarations may have superclass `where` clauses"
-                .to_string(),
-        });
-    }
+    // Optional `where` clause — lists context constraints for parametric
+    // instances, e.g. `instance Encode (List a) where Encode a`.
+    let constraints = if cur.peek() == &Token::KwWhere {
+        parse_where_clause(cur).map_err(|e| ParseError::MalformedInstanceDecl {
+            span: e.span(),
+            reason: "invalid `where` clause on instance head".to_string(),
+        })?
+    } else {
+        vec![]
+    };
 
     // `=` then indented body.
     cur.expect(&Token::Assign)?;
@@ -1786,6 +1776,7 @@ fn parse_instance_decl(
     Ok(InstanceDecl {
         class,
         ty,
+        constraints,
         methods,
         span: start.merge(end_span),
         doc,
@@ -3126,13 +3117,41 @@ mod tests {
         assert_eq!(err.code(), "P031");
     }
 
-    // ── parse_instance_where_on_head_p031 ────────────────────────────────────
-    // A `where` clause on an instance head is rejected with P031.
+    // ── parse_instance_where_on_head ─────────────────────────────────────────
+    // A `where` clause on an instance head is parsed successfully and the
+    // constraints are attached to the returned `InstanceDecl`.
     #[test]
-    fn parse_instance_where_on_head_p031() {
-        let src = "instance Foo Color where Bar Color =\n    foo (x: Color) -> Text = \"x\"\n";
-        let err = parse_inst(src).expect_err("should fail");
-        assert_eq!(err.code(), "P031");
+    fn parse_instance_where_on_head() {
+        let src = "instance Foo (Bar a) where Baz a =\n    foo (x: Bar a) -> Text = \"x\"\n";
+        let decl = parse_inst(src).expect("should parse");
+        assert_eq!(decl.constraints.len(), 1);
+        assert_eq!(decl.constraints[0].class.text, "Baz");
+        assert_eq!(decl.constraints[0].ty_var.text, "a");
+    }
+
+    // ── parse_instance_non_parametric_no_constraints ─────────────────────────
+    // A plain non-parametric instance (`instance Encode Int`) produces an empty
+    // `constraints` list — no regression.
+    #[test]
+    fn parse_instance_non_parametric_no_constraints() {
+        let src = "instance Encode Int =\n    encode (x: Int) -> Text = \"0\"\n";
+        let decl = parse_inst(src).expect("should parse");
+        assert!(
+            decl.constraints.is_empty(),
+            "non-parametric instance must have empty constraints"
+        );
+    }
+
+    // ── parse_instance_encode_list_a ─────────────────────────────────────────
+    // `instance Encode (List a) where Encode a` is the canonical parametric
+    // instance form.
+    #[test]
+    fn parse_instance_encode_list_a() {
+        let src = "instance Encode (List a) where Encode a =\n    encode (xs: a) -> Text = \"x\"\n";
+        let decl = parse_inst(src).expect("should parse");
+        assert_eq!(decl.constraints.len(), 1);
+        assert_eq!(decl.constraints[0].class.text, "Encode");
+        assert_eq!(decl.constraints[0].ty_var.text, "a");
     }
 
     // ── parse_fn_where_clause ─────────────────────────────────────────────────

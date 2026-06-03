@@ -45,9 +45,9 @@ items:
                   caps: CapabilitySet(0)
                   params:
                     - name: acc
-                      ty: d
+                      ty: Con(3)
                     - name: c
-                      ty: e
+                      ty: Con(3)
                   body:
                     Call(n10):
                       callee:
@@ -69,7 +69,7 @@ items:
                         caps: CapabilitySet(0)
                         params:
                           - name: _
-                            ty: h
+                            ty: Con(0)
                         body:
                           Call(n18):
                             callee:
@@ -121,7 +121,7 @@ items:
                       caps: CapabilitySet(0)
                       params:
                         - name: __tuple_param_0
-                          ty: j2
+                          ty: Type
                       body:
                         Match(n32):
                           scrutinee:

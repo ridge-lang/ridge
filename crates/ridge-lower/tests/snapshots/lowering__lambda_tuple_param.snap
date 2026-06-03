@@ -24,7 +24,7 @@ items:
               caps: CapabilitySet(0)
               params:
                 - name: __tuple_param_0
-                  ty: c
+                  ty: Type
               body:
                 Match(n3):
                   scrutinee:
@@ -65,7 +65,7 @@ items:
               caps: CapabilitySet(0)
               params:
                 - name: __tuple_param_1
-                  ty: i
+                  ty: Type
               body:
                 Match(n13):
                   scrutinee:

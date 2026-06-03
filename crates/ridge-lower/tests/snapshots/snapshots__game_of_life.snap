@@ -213,9 +213,9 @@ items:
                   caps: CapabilitySet(0)
                   params:
                     - name: a
-                      ty: q
+                      ty: Con(0)
                     - name: b
-                      ty: r
+                      ty: Con(0)
                   body:
                     Call(n88):
                       callee:
@@ -237,7 +237,7 @@ items:
                         caps: CapabilitySet(0)
                         params:
                           - name: __tuple_param_0
-                            ty: u
+                            ty: Type
                         body:
                           Match(n96):
                             scrutinee:
@@ -381,7 +381,7 @@ items:
                   caps: CapabilitySet(0)
                   params:
                     - name: r
-                      ty: l1
+                      ty: Con(0)
                   body:
                     Call(n135):
                       callee:
@@ -392,7 +392,7 @@ items:
                             caps: CapabilitySet(0)
                             params:
                               - name: c
-                                ty: o1
+                                ty: Con(0)
                             body:
                               Call(n138):
                                 callee:
@@ -468,9 +468,9 @@ items:
                   caps: CapabilitySet(0)
                   params:
                     - name: a
-                      ty: w1
+                      ty: Con(3)
                     - name: b
-                      ty: x1
+                      ty: Con(3)
                   body:
                     Call(n166):
                       callee:
@@ -492,7 +492,7 @@ items:
                         caps: CapabilitySet(0)
                         params:
                           - name: _
-                            ty: a2
+                            ty: Con(0)
                         body:
                           Lit(n174): Text("-")
                     -
@@ -544,7 +544,7 @@ items:
                       caps: CapabilitySet(0)
                       params:
                         - name: row
-                          ty: g2
+                          ty: Con(6) [Con(2)]
                       body:
                         LetIn(n197):
                           pat:
@@ -559,9 +559,9 @@ items:
                                     caps: CapabilitySet(0)
                                     params:
                                       - name: a
-                                        ty: j2
+                                        ty: Con(3)
                                       - name: b
-                                        ty: k2
+                                        ty: Con(3)
                                     body:
                                       Call(n201):
                                         callee:
@@ -583,7 +583,7 @@ items:
                                           caps: CapabilitySet(0)
                                           params:
                                             - name: alive
-                                              ty: n2
+                                              ty: Con(2)
                                           body:
                                             Match(n209):
                                               scrutinee:
@@ -670,7 +670,7 @@ items:
                   caps: CapabilitySet(0)
                   params:
                     - name: _
-                      ty: v2
+                      ty: Con(0)
                   body:
                     Lit(n238): Bool(false)
               -
@@ -700,7 +700,7 @@ items:
                         caps: CapabilitySet(0)
                         params:
                           - name: _
-                            ty: a3
+                            ty: Con(0)
                         body:
                           Local(n249): emptyRow
                     -
@@ -739,7 +739,7 @@ items:
                   caps: CapabilitySet(0)
                   params:
                     - name: __tuple_param_1
-                      ty: f3
+                      ty: Type
                   body:
                     Match(n258):
                       scrutinee:
@@ -775,7 +775,7 @@ items:
                                             caps: CapabilitySet(0)
                                             params:
                                               - name: __tuple_param_2
-                                                ty: k3
+                                                ty: Type
                                             body:
                                               Match(n268):
                                                 scrutinee:

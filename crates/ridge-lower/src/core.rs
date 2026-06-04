@@ -542,6 +542,16 @@ pub fn lower_expr(ctx: &mut LowerCtx<'_>, expr: &Expr) -> IrExpr {
         // the lookup may miss; in that case no wrapping is done (safe fallback).
         Expr::Call { callee, args, span } => {
             let id = ctx.fresh_id(None);
+
+            // Bare class-method call (`describe Red`): pin the constraint from
+            // the argument occupying the class type variable's position, so two
+            // distinct instances each dispatch to the right dictionary. Without
+            // this, the callee lowering falls back to the sole-static-plan
+            // heuristic, which cannot tell two same-class instances apart.
+            if let Some(call) = try_lower_classmethod_call(ctx, callee, args, id, *span) {
+                return call;
+            }
+
             // Look up callee type before lowering, while we still have the AST.
             let callee_node_type = lookup_callee_type(ctx, callee);
             let ir_callee = lower_expr(ctx, callee);
@@ -1091,13 +1101,131 @@ fn single_static_plan_for_class(
     let mut found: Option<&ridge_typecheck::DictPlan> = None;
     for ((cid, _), plan) in &tmod.dict_resolution {
         if *cid == class && matches!(plan, ridge_typecheck::DictPlan::Static { .. }) {
-            if found.is_some() {
-                return None; // more than one — ambiguous, do not guess
+            match found {
+                None => found = Some(plan),
+                // Several call sites that resolve the SAME instance each register
+                // their own entry (keyed by their constraint variable); identical
+                // plans are not an ambiguity. Only distinct instances are.
+                Some(prev) if same_dict_plan(prev, plan) => {}
+                Some(_) => return None, // genuinely distinct instances — do not guess
             }
-            found = Some(plan);
         }
     }
     found.cloned()
+}
+
+/// Structural equality for two dictionary plans, used to tell "the same instance
+/// registered by two call sites" apart from "two distinct instances".
+///
+/// `DictPlan` is not `PartialEq` (its `InstanceInfo` payload is not), so compare
+/// the resolved concrete spine: a `Static` plan is identified by its `tycon` and
+/// the structure of its sub-dictionaries; a `Forward` by its class and variable.
+fn same_dict_plan(a: &ridge_typecheck::DictPlan, b: &ridge_typecheck::DictPlan) -> bool {
+    use ridge_typecheck::DictPlan;
+    match (a, b) {
+        (
+            DictPlan::Static {
+                tycon: ta,
+                args: aa,
+                ..
+            },
+            DictPlan::Static {
+                tycon: tb,
+                args: ab,
+                ..
+            },
+        ) => {
+            ta == tb && aa.len() == ab.len() && aa.iter().zip(ab).all(|(x, y)| same_dict_plan(x, y))
+        }
+        (DictPlan::Forward(ca), DictPlan::Forward(cb)) => ca.class == cb.class && ca.ty == cb.ty,
+        _ => false,
+    }
+}
+
+/// Resolve a callee ident to `(class_name, method)` when it binds to a class
+/// method. Mirrors the binding lookup in `lower_ident`.
+fn classmethod_binding(ctx: &LowerCtx<'_>, ident: &Ident) -> Option<(String, String)> {
+    let node_id = ctx
+        .node_id_map
+        .as_ref()
+        .and_then(|m| m.get(ident.span, NodeKind::Ident))?;
+    let binding = ctx
+        .binding_map
+        .and_then(|bm| bm.get(node_id.0 as usize).and_then(Option::as_ref))?;
+    match binding {
+        Binding::ClassMethod { class_name, method } => Some((class_name.clone(), method.clone())),
+        _ => None,
+    }
+}
+
+/// The concrete type pinning the class variable at a bare class-method call.
+///
+/// Locates the method parameter declared as the bare class type variable and
+/// reads the resolved type of the argument in that position. Returns `None` when
+/// the class variable is not a direct parameter — a nested occurrence
+/// (`describe (xs: List a)`) or a return-only one (`decode (j) -> a`) — leaving
+/// those to the generic lowering path.
+fn classmethod_pin_type(
+    ctx: &LowerCtx<'_>,
+    class: ridge_types::ClassId,
+    method: &str,
+    args: &[Expr],
+) -> Option<Type> {
+    let info = ctx
+        .class_table
+        .or_else(|| ctx.workspace.map(|ws| &ws.class_table))?
+        .get(class)?;
+    let sig = info.method_sigs.iter().find(|m| m.name == method)?;
+    let pos = sig.ast_param_types.iter().position(
+        |t| matches!(t, ridge_ast::Type::Var { name, .. } if name.text == sig.class_ty_var),
+    )?;
+    let arg = args.get(pos)?;
+    let node_id = ctx
+        .node_id_map
+        .as_ref()
+        .and_then(|m| m.get(arg.span(), NodeKind::Expr))?;
+    ctx.node_type(node_id).cloned().map(|t| deep_peel_alias(&t))
+}
+
+/// Lower a bare class-method call (`describe Red`) by pinning the class
+/// constraint from the argument type. Returns `None` when the callee is not a
+/// class method, or when no argument pins the class variable (return-polymorphic
+/// methods like `decode`), leaving those to the generic call path.
+fn try_lower_classmethod_call(
+    ctx: &mut LowerCtx<'_>,
+    callee: &Expr,
+    args: &[Expr],
+    id: ridge_ir::IrNodeId,
+    span: Span,
+) -> Option<IrExpr> {
+    let Expr::Ident(ident) = callee else {
+        return None;
+    };
+    let (class_name, method) = classmethod_binding(ctx, ident)?;
+    let cid = ctx
+        .class_table
+        .or_else(|| ctx.workspace.map(|ws| &ws.class_table))
+        .and_then(|ct| ct.id_by_name(&class_name))?;
+
+    // Only intercept when an argument pins the class variable; otherwise the
+    // generic path (and the sole-static-plan fallback) handles it.
+    let pin_ty = classmethod_pin_type(ctx, cid, &method, args)?;
+
+    let ir_args: Vec<IrExpr> = args.iter().map(|a| lower_expr(ctx, a)).collect();
+    let dict_expr = resolve_dict_arg(ctx, cid, &class_name, Some(&pin_ty), span);
+    let field_id = ctx.fresh_id(None);
+    let field = IrExpr::Field {
+        id: field_id,
+        base: Box::new(dict_expr),
+        field: method,
+        span,
+    };
+    Some(IrExpr::Call {
+        id,
+        callee: Box::new(field),
+        args: ir_args,
+        span,
+    })
 }
 
 /// Build a [`ridge_typecheck::DictPlan`] for `(class, ty)` directly from a

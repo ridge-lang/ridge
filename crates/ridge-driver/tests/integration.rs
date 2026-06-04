@@ -164,8 +164,17 @@ fn check_url_shortener() {
 }
 
 /// T2-06: run the `url_shortener` example on the BEAM runtime.
+///
+/// `url_shortener` is a server example: its `main` calls `Http.listen`, which
+/// blocks the BEAM accept loop until the server shuts down, so a
+/// run-to-completion check can never terminate (it only ever hits the 60-second
+/// `run_erl_direct` timeout). Ignored for the same reason as the blocking-server
+/// e2e in `ridge-codegen-erl/tests/beam_e2e.rs`. Compile and check stay covered by
+/// the sibling `*_url_shortener` tests above; un-mark this once a bounded-server
+/// harness exists.
 #[test]
 #[cfg(feature = "beam-runtime")]
+#[ignore = "Http.listen blocks the BEAM accept loop; run-to-completion not testable"]
 fn run_url_shortener() {
     let _guard = PATH_ENV_LOCK.lock().expect("PATH_ENV_LOCK not poisoned");
 

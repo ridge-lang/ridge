@@ -109,6 +109,16 @@ jobs:
         if: steps.changes.outputs.code == 'true'
         run: cargo test --workspace --no-fail-fast --locked
 
+      # The BEAM end-to-end suites are gated behind the `beam-runtime` feature:
+      # they compile each example through the full pipeline, invoke erlc/erl on
+      # the installed OTP, and assert real runtime output. The default
+      # `cargo test` above never sets the feature, so without this step CI would
+      # install OTP yet never exercise the BEAM. Linux only -- OTP behaviour is
+      # target-agnostic here and a single platform keeps the gate fast.
+      - name: Run BEAM runtime e2e (linux)
+        if: matrix.os == 'linux' && steps.changes.outputs.code == 'true'
+        run: cargo test -p ridge-codegen-erl -p ridge-driver -p ridge-cli --features beam-runtime --no-fail-fast --locked
+
       - name: Check formatting
         if: steps.changes.outputs.code == 'true'
         run: cargo fmt --all -- --check

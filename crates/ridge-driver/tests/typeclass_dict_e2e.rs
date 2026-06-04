@@ -195,7 +195,39 @@ pub fn forward_call () -> Text =
     announce Green
 "#;
 
-fn write_method_call_workspace(root: &std::path::Path) {
+/// Two DISTINCT instances of one user class, each invoked by bare method name.
+/// `describe Red` must select `Describe Color` and `describe Square` must select
+/// `Describe Shape`. Before per-call-site pinning, the lowering saw two `Static`
+/// plans for the same class, judged them ambiguous, and fell back to a unit
+/// placeholder — the dictionary projected as the atom `ok` and `maps:get`
+/// crashed at runtime.
+const METHOD_CALL_MULTI_SOURCE: &str = r#"
+class Describe a =
+    describe (x: a) -> Text
+
+type Color = Red | Green
+type Shape = Circle | Square
+
+instance Describe Color =
+    describe (c: Color) -> Text =
+        match c
+            Red   -> "red"
+            Green -> "green"
+
+instance Describe Shape =
+    describe (s: Shape) -> Text =
+        match s
+            Circle -> "circle"
+            Square -> "square"
+
+pub fn call_color () -> Text =
+    describe Red
+
+pub fn call_shape () -> Text =
+    describe Square
+"#;
+
+fn write_method_call_workspace(root: &std::path::Path, source: &str) {
     let app_src = root.join("app").join("src");
     std::fs::create_dir_all(&app_src).expect("create workspace dirs");
     std::fs::write(
@@ -208,7 +240,7 @@ fn write_method_call_workspace(root: &std::path::Path) {
         "[project]\nname = \"app\"\nversion = \"0.1.0\"\nkind = \"app\"\nentry = \"src/Main.ridge\"\n\n[capabilities]\nallow = []\n",
     )
     .expect("write project manifest");
-    std::fs::write(app_src.join("Main.ridge"), METHOD_CALL_SOURCE).expect("write source");
+    std::fs::write(app_src.join("Main.ridge"), source).expect("write source");
 }
 
 #[test]
@@ -228,7 +260,7 @@ fn method_invocation_by_name_computes_correct_values() {
         .prefix("ridge-method-call-e2e-cache-")
         .tempdir()
         .expect("cache dir");
-    write_method_call_workspace(dir.path());
+    write_method_call_workspace(dir.path(), METHOD_CALL_SOURCE);
 
     let artefacts = compile_workspace(
         CompileOptions::new(dir.path().to_path_buf())
@@ -299,5 +331,93 @@ fn method_invocation_by_name_computes_correct_values() {
     assert!(
         stdout.contains("forward_call=green"),
         "expected `forward_call=green`\nstdout:\n{stdout}\nstderr:\n{stderr}"
+    );
+}
+
+#[test]
+fn method_invocation_distinct_instances_dispatch_by_argument() {
+    if which::which("erlc").is_err() || which::which("erl").is_err() {
+        eprintln!(
+            "erl/erlc not on PATH — skipping method_invocation_distinct_instances_dispatch_by_argument"
+        );
+        return;
+    }
+
+    let dir = tempfile::Builder::new()
+        .prefix("ridge-method-call-multi-e2e-")
+        .tempdir()
+        .expect("temp dir");
+    let cache = tempfile::Builder::new()
+        .prefix("ridge-method-call-multi-e2e-cache-")
+        .tempdir()
+        .expect("cache dir");
+    write_method_call_workspace(dir.path(), METHOD_CALL_MULTI_SOURCE);
+
+    let artefacts = compile_workspace(
+        CompileOptions::new(dir.path().to_path_buf())
+            .with_emit(EmitArtefacts::Beam)
+            .with_cache_root(cache.path().to_path_buf()),
+    )
+    .expect("compile to BEAM");
+
+    if !artefacts.diagnostics.is_empty() {
+        eprintln!("COMPILE DIAGNOSTICS:");
+        for d in &artefacts.diagnostics {
+            eprintln!("  {:?}", d);
+        }
+    }
+
+    let fatal_count = artefacts
+        .diagnostics
+        .iter()
+        .filter(|d| format!("{d:?}").contains("Error"))
+        .count();
+    assert_eq!(
+        fatal_count, 0,
+        "expected no fatal diagnostics; got: {:?}",
+        artefacts.diagnostics
+    );
+
+    let beam_dir = artefacts
+        .beam_files
+        .iter()
+        .find_map(|p| p.parent())
+        .expect("at least one beam file")
+        .to_path_buf();
+    let module = artefacts
+        .beam_files
+        .iter()
+        .filter_map(|p| p.file_stem().and_then(|s| s.to_str()))
+        .find(|stem| stem.starts_with("ridge_module_"))
+        .expect("a user module")
+        .to_owned();
+
+    let expr = format!(
+        "F=fun(N)->io:format(\"~s=~s~n\",[N,{module}:N()])end, \
+         lists:foreach(F,['call_color','call_shape']), halt()."
+    );
+    let output = Command::new("erl")
+        .arg("-noshell")
+        .arg("-pa")
+        .arg(&beam_dir)
+        .arg("-eval")
+        .arg(&expr)
+        .output()
+        .expect("run erl");
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+
+    // Each bare `describe` call must pin its own instance from the argument
+    // type: `describe Red` → `Describe Color`, `describe Square` → `Describe
+    // Shape`. A regression to the sole-static-plan fallback would crash both
+    // with `{badmap,ok}` (two same-class plans judged ambiguous).
+    assert!(
+        stdout.contains("call_color=red"),
+        "expected `call_color=red`\nstdout:\n{stdout}\nstderr:\n{stderr}"
+    );
+    assert!(
+        stdout.contains("call_shape=square"),
+        "expected `call_shape=square`\nstdout:\n{stdout}\nstderr:\n{stderr}"
     );
 }

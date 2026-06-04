@@ -351,6 +351,15 @@ tags — with `==` or derived `Eq`. Use `Crypto.constantTimeEq` from `std.crypto
 instead; it takes two `Text` values and returns a `Bool` using a fixed-time
 comparison that does not short-circuit on the first mismatched byte.
 
+```ridge
+import std.crypto as Crypto
+
+-- Check a session token without leaking timing information. Both values must
+-- be the same length; hash variable-length tokens to a fixed width first.
+pub fn sessionMatches (provided: Text) (expected: Text) -> Bool =
+    Crypto.constantTimeEq provided expected
+```
+
 Also note that `Float` has no `Eq` instance in the prelude. Deriving `Eq`
 on a type that contains a `Float` field is a compile error (`T029
 NoInstance`). Use an explicit comparison function with appropriate tolerance

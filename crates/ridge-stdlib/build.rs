@@ -140,6 +140,8 @@ const STDLIB_MODULES: &[&str] = &[
     // Tier 4
     "std.json",
     "std.net.http",
+    // Tier 5
+    "std.crypto",
 ];
 
 // ── Entry type ────────────────────────────────────────────────────────────────

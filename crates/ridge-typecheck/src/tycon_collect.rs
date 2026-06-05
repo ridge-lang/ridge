@@ -938,14 +938,9 @@ pub fn ast_type_to_ridge_type(
             }
         }
 
-        // Inline record type — look up the pre-scanned AnonRecordTable.
-        //
-        // The pre-scan (prescan_inline_records) ran before this function is
-        // called, so the table is fully populated for all type-position
-        // occurrences.  We re-resolve the field types using the same context
-        // and compute the ShapeKey to look up the interned anon TyConId.
+        // Inline record type → a structural, closed `Type::Record`. The field
+        // set lives in the type itself; no interning, no shape-key lookup.
         ridge_ast::Type::Record { fields, .. } => {
-            // Resolve field types using the same function.
             let resolved: Vec<(String, Type)> = fields
                 .iter()
                 .map(|f| {
@@ -953,15 +948,7 @@ pub fn ast_type_to_ridge_type(
                     (f.name.text.clone(), ty)
                 })
                 .collect();
-            let key = ridge_types::shape_key(&resolved);
-            // Look up in ctx.anon_records (populated by the pre-scan).
-            if let Some(&id) = ctx.anon_records.get(&key) {
-                Type::Con(id, vec![])
-            } else {
-                // Pre-scan miss — should not happen for type-position occurrences.
-                // Return Error so inference can absorb the fault.
-                Type::Error
-            }
+            Type::record(resolved, ridge_types::RowTail::Closed)
         }
     }
 }

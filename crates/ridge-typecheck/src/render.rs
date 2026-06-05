@@ -693,6 +693,19 @@ fn render_at_depth(ty: &ridge_types::Type, tycons: &[ridge_types::TyConDecl], de
                 render_at_depth(ret, tycons, depth + 1)
             )
         }
+        Type::Record { fields, tail } => {
+            let parts: Vec<String> = fields
+                .iter()
+                .map(|(label, fty)| format!("{label}: {}", render_at_depth(fty, tycons, depth + 1)))
+                .collect();
+            match tail {
+                // Open row renders with a trailing `..`.
+                ridge_types::RowTail::Open(_) if parts.is_empty() => "{ .. }".to_owned(),
+                ridge_types::RowTail::Open(_) => format!("{{ {}, .. }}", parts.join(", ")),
+                _ if parts.is_empty() => "{}".to_owned(),
+                _ => format!("{{ {} }}", parts.join(", ")),
+            }
+        }
         Type::Var(v) => render_var(v.0),
         Type::Alias { name, .. } => tycons
             .get(name.0 as usize)

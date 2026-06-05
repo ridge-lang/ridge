@@ -38,7 +38,7 @@ use ridge_ast::{
     Span, UnaryOp,
 };
 use ridge_resolve::NodeKind;
-use ridge_types::{BuiltinTyCons, CapRow, CapabilitySet, Scheme, TyConId, TyConKind, Type};
+use ridge_types::{BuiltinTyCons, CapRow, CapabilitySet, Scheme, TyConKind, Type};
 
 use crate::ctx::InferCtx;
 use crate::error::TypeError;
@@ -1302,17 +1302,17 @@ fn infer_binary(
 
 /// Infer the type of a constructor-less record literal `{ f = v, … }`.
 ///
-/// Infers each field's value type, computes the structural `ShapeKey`, looks
-/// up the pre-scanned `AnonRecordTable`, and delegates field checking to the
-/// existing [`crate::records::infer_record_construction`].  Mints a new anon
-/// `TyCon` on MISS (value-position shapes not covered by the pre-scan).
+/// A record literal *defines* a structural record: each field's value type is
+/// that field's type, so the result is a closed [`Type::Record`]. There is no
+/// schema to validate against, and a field may stay a free type variable — it
+/// generalises like any other component of the row.
 fn infer_record_lit(
     ctx: &mut InferCtx,
     b: &BuiltinTyCons,
     fields: &[FieldInit],
     span: Span,
 ) -> Type {
-    // Step 1+2: infer and deep-resolve each field's value type.
+    let _ = span;
     let resolved_fields: Vec<(String, Type)> = fields
         .iter()
         .map(|fi| {
@@ -1331,90 +1331,18 @@ fn infer_record_lit(
                     }
                 }
             };
-            let resolved = ctx.deep_resolve(&raw_ty);
-            (fi.name.text.clone(), resolved)
+            (fi.name.text.clone(), ctx.deep_resolve(&raw_ty))
         })
         .collect();
-
-    // Step 3: P029 tyvar rejection — if any field resolves to a free Var,
-    // emit the diagnostic and abort (the inline record cannot be interned
-    // without concrete field types).
-    for (field_name, ty) in &resolved_fields {
-        if let Type::Var(_) = ty {
-            ctx.errors.push(TypeError::InlineRecordTyVarField {
-                var_name: field_name.clone(),
-                span,
-            });
-            return Type::Error;
-        }
-    }
-
-    // Step 4: compute shape key and look up the anon TyCon table.
-    let key = ridge_types::shape_key(&resolved_fields);
-    let anon_id = if let Some(&id) = ctx.anon_records.get(&key) {
-        id
-    } else {
-        // MISS: a record literal whose shape did not appear in any type
-        // annotation (not covered by the pre-scan).  Mint it now so that
-        // inference can continue.  Both paths share the same table so ids
-        // remain globally consistent.
-        let sorted_fields: Vec<ridge_types::RecordField> = {
-            let mut v: Vec<ridge_types::RecordField> = resolved_fields
-                .iter()
-                .map(|(n, t)| ridge_types::RecordField {
-                    name: n.clone(),
-                    ty: t.clone(),
-                })
-                .collect();
-            v.sort_by(|a, b| a.name.cmp(&b.name));
-            v
-        };
-        let counter = ctx.anon_records.len();
-        let anon_name = format!("{{anon record #{counter}}}");
-        let decl = ridge_types::TyConDecl {
-            id: TyConId(0),
-            name: anon_name,
-            arity: 0,
-            kind: TyConKind::Record(ridge_types::RecordSchema::new(vec![], sorted_fields)),
-            def_span: Some(span),
-            def_module_raw: None,
-            opaque: false,
-            is_anon: true,
-        };
-        // Intern into the ctx's snapshot and anon_records table.
-        // The arena is not directly accessible here, so we append to
-        // tycon_decls manually and assign the next sequential id.
-        #[expect(
-            clippy::cast_possible_truncation,
-            reason = "tycon count bounded by program size; exceeding 2^32 is not realistic"
-        )]
-        let next_id = TyConId(ctx.tycon_decls.len() as u32);
-        let mut interned_decl = decl;
-        interned_decl.id = next_id;
-        ctx.tycon_decls.push(interned_decl);
-        ctx.anon_records.insert(key, next_id);
-        next_id
-    };
-
-    // Step 5: get the schema for the anon TyCon.
-    let (schema, anon_name) = {
-        let decl = &ctx.tycon_decls[anon_id.0 as usize];
-        let TyConKind::Record(schema) = &decl.kind else {
-            return emit_internal(ctx, "anon TyCon is not a Record".to_string(), span);
-        };
-        (schema.clone(), decl.name.clone())
-    };
-
-    // Step 6: delegate to the existing record construction checker.
-    crate::records::infer_record_construction(ctx, b, &schema, anon_id, &anon_name, fields, span)
+    Type::record(resolved_fields, ridge_types::RowTail::Closed)
 }
 
 /// Check an inline record pattern `{ f1, f2, .. }` against `expected_ty`.
 ///
-/// If `expected_ty` resolves to a known anon `Type::Con`, delegates to the
-/// schema-agnostic [`crate::records::infer_record_pattern`].  If the scrutinee
-/// is a free type variable (not yet determined), unifies it with a fresh anon
-/// `TyCon` built from the pattern's field names.
+/// A structural [`Type::Record`] scrutinee is destructured directly against its
+/// row. A free type variable is unified with a fresh structural record built
+/// from the pattern's field names (open when the pattern has a trailing `..`).
+/// A legacy anon `Type::Con` record still delegates to the schema-based path.
 fn infer_inline_record_pattern(
     ctx: &mut InferCtx,
     b: &BuiltinTyCons,
@@ -1425,7 +1353,15 @@ fn infer_inline_record_pattern(
 ) {
     let resolved = ctx.deep_resolve(expected_ty);
 
-    // Step 2: if expected_ty resolves to a known anon TyCon with a Record schema.
+    // Structural record scrutinee — destructure against the row directly.
+    if let Type::Record { fields: row, tail } = &resolved {
+        let row = row.clone();
+        let is_open = matches!(tail, ridge_types::RowTail::Open(_));
+        infer_structural_record_pattern(ctx, b, fields, has_rest, &resolved, &row, is_open, span);
+        return;
+    }
+
+    // Legacy anon `Type::Con` with a Record schema → schema-based path.
     if let Type::Con(anon_id, _) = &resolved {
         let anon_id = *anon_id;
         if let Some(decl) = ctx.tycon_decls.get(anon_id.0 as usize) {
@@ -1440,68 +1376,32 @@ fn infer_inline_record_pattern(
         }
     }
 
-    // Step 3: free-variable scrutinee — build a fresh anon TyCon from the
-    // pattern's field names with fresh type vars per field, intern it, and
-    // unify the scrutinee.
+    // Free-variable scrutinee — unify with a fresh structural record. The row is
+    // open iff the pattern ends in `..` (so `{ a, .. }` matches any record with
+    // an `a`; `{ a }` matches exactly `{ a }`).
     if matches!(&resolved, Type::Var(_) | Type::Error) {
-        let fresh_fields: Vec<(String, Type)> = fields
+        let pat_fields: Vec<(String, Type)> = fields
             .iter()
-            .map(|fp| {
-                let fresh = Type::Var(ctx.fresh_tyvid());
-                (fp.name.text.clone(), fresh)
-            })
+            .map(|fp| (fp.name.text.clone(), Type::Var(ctx.fresh_tyvid())))
             .collect();
-        let key = ridge_types::shape_key(&fresh_fields);
-        let anon_id = if let Some(&id) = ctx.anon_records.get(&key) {
-            id
+        let tail = if has_rest {
+            ridge_types::RowTail::Open(ctx.fresh_rowvid())
         } else {
-            let sorted: Vec<ridge_types::RecordField> = {
-                let mut v: Vec<ridge_types::RecordField> = fresh_fields
-                    .iter()
-                    .map(|(n, t)| ridge_types::RecordField {
-                        name: n.clone(),
-                        ty: t.clone(),
-                    })
-                    .collect();
-                v.sort_by(|a, b| a.name.cmp(&b.name));
-                v
-            };
-            let counter = ctx.anon_records.len();
-            let anon_name = format!("{{anon record #{counter}}}");
-            let decl = ridge_types::TyConDecl {
-                id: TyConId(0),
-                name: anon_name,
-                arity: 0,
-                kind: TyConKind::Record(ridge_types::RecordSchema::new(vec![], sorted)),
-                def_span: Some(span),
-                def_module_raw: None,
-                opaque: false,
-                is_anon: true,
-            };
-            #[expect(
-                clippy::cast_possible_truncation,
-                reason = "tycon count bounded by program size; exceeding 2^32 is not realistic"
-            )]
-            let next_id = TyConId(ctx.tycon_decls.len() as u32);
-            let mut interned_decl = decl;
-            interned_decl.id = next_id;
-            ctx.tycon_decls.push(interned_decl);
-            ctx.anon_records.insert(key, next_id);
-            next_id
+            ridge_types::RowTail::Closed
         };
-        let TyConKind::Record(schema) = ctx.tycon_decls[anon_id.0 as usize].kind.clone() else {
-            return;
-        };
-        let anon_name = ctx.tycon_decls[anon_id.0 as usize].name.clone();
-        let fresh_ty = Type::Con(anon_id, vec![]);
+        let rec_ty = Type::record(pat_fields.clone(), tail);
         if matches!(&resolved, Type::Var(_)) {
-            if let Err(e) = crate::unify::unify(ctx, expected_ty, &fresh_ty) {
+            if let Err(e) = crate::unify::unify(ctx, expected_ty, &rec_ty) {
                 ctx.errors.push(crate::records::attach_span_pub(e, span));
             }
         }
-        crate::records::infer_record_pattern(
-            ctx, b, &schema, anon_id, &anon_name, fields, has_rest, &fresh_ty, span,
-        );
+        for fp in fields {
+            let field_ty = pat_fields
+                .iter()
+                .find(|(l, _)| *l == fp.name.text)
+                .map_or(Type::Error, |(_, t)| t.clone());
+            bind_or_check_field_pattern(ctx, b, fp, &field_ty);
+        }
         return;
     }
 
@@ -1511,6 +1411,79 @@ fn infer_inline_record_pattern(
         format!("inline record pattern on unexpected type: {resolved:?}"),
         span,
     );
+}
+
+/// Destructure an inline record pattern against a known structural row.
+#[allow(clippy::too_many_arguments)]
+fn infer_structural_record_pattern(
+    ctx: &mut InferCtx,
+    b: &BuiltinTyCons,
+    fields: &[FieldPattern],
+    has_rest: bool,
+    resolved: &Type,
+    row: &[(String, Type)],
+    is_open: bool,
+    span: Span,
+) {
+    for fp in fields {
+        let field_ty = if let Some((_, ft)) = row.iter().find(|(l, _)| *l == fp.name.text) {
+            ft.clone()
+        } else if is_open {
+            // Open row: the field may be supplied by the tail. Grow the row to
+            // record that the scrutinee carries it.
+            let fresh = Type::Var(ctx.fresh_tyvid());
+            let grown = Type::record(
+                vec![(fp.name.text.clone(), fresh.clone())],
+                ridge_types::RowTail::Open(ctx.fresh_rowvid()),
+            );
+            if let Err(e) = crate::unify::unify(ctx, resolved, &grown) {
+                ctx.errors.push(crate::records::attach_span_pub(e, span));
+            }
+            fresh
+        } else {
+            ctx.errors.push(TypeError::UnknownField {
+                record: format!("{resolved}"),
+                field: fp.name.text.clone(),
+                suggestions: ridge_resolve::suggest::suggest(
+                    &fp.name.text,
+                    row.iter().map(|(l, _)| l.clone()),
+                ),
+                span: fp.span,
+            });
+            Type::Error
+        };
+        bind_or_check_field_pattern(ctx, b, fp, &field_ty);
+    }
+
+    // A closed row without `..` requires every field be named.
+    if !has_rest && !is_open {
+        for (label, _) in row {
+            if !fields.iter().any(|fp| fp.name.text == *label) {
+                ctx.errors.push(TypeError::MissingField {
+                    record: format!("{resolved}"),
+                    field: label.clone(),
+                    span,
+                });
+            }
+        }
+    }
+}
+
+/// Bind a shorthand field pattern (`{ age }`) as a new local of the field's
+/// type, or recurse into an explicit sub-pattern (`{ age = p }`).
+fn bind_or_check_field_pattern(
+    ctx: &mut InferCtx,
+    b: &BuiltinTyCons,
+    fp: &FieldPattern,
+    field_ty: &Type,
+) {
+    match &fp.pattern {
+        Some(sub) => infer_pattern(ctx, b, sub, field_ty),
+        None => ctx.env.bind(
+            fp.name.text.clone(),
+            crate::instantiate::monoscheme(field_ty.clone()),
+        ),
+    }
 }
 
 /// Attaches a source span to a `TypeError`.

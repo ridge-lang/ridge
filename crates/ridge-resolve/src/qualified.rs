@@ -614,6 +614,7 @@ mod tests {
                     arity: 0,
                     is_record: false,
                     owner_module,
+                    opaque: false,
                 },
                 visibility: ResolvedVisibility::Pub,
                 def_span: sp(),

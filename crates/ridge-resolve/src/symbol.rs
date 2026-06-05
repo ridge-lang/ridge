@@ -135,6 +135,10 @@ pub enum SymbolKind {
         /// constructor is later resolved from an importing module — the basis
         /// for the opaque-type construction/pattern gate.
         owner_module: ModuleId,
+        /// True iff the owning type was declared `opaque`. Together with
+        /// `owner_module` this drives the construction/pattern gate: an opaque
+        /// constructor used outside `owner_module` is rejected.
+        opaque: bool,
     },
     /// A synthesised field-accessor symbol.
     FieldAccessor {
@@ -399,8 +403,10 @@ impl<'ast> Visit<'ast> for TopLevelCollector {
                 // successfully registered (no R005 on the type itself).
                 let Some(type_id) = type_id_opt else { return };
                 // Every constructor synthesised below belongs to the module
-                // currently being collected — its true defining module.
+                // currently being collected — its true defining module — and
+                // inherits the type's opacity.
                 let owner_module = self.table.module;
+                let opaque = d.opaque;
 
                 match &d.body {
                     ridge_ast::TypeBody::Record(rec) => {
@@ -415,6 +421,7 @@ impl<'ast> Visit<'ast> for TopLevelCollector {
                                 arity: ctor_arity,
                                 is_record: true,
                                 owner_module,
+                                opaque,
                             },
                             vis,
                             rec.span,
@@ -450,6 +457,7 @@ impl<'ast> Visit<'ast> for TopLevelCollector {
                                             arity: ctor_arity,
                                             is_record: false,
                                             owner_module,
+                                            opaque,
                                         },
                                         vis,
                                         *span,
@@ -467,6 +475,7 @@ impl<'ast> Visit<'ast> for TopLevelCollector {
                                             arity: ctor_arity,
                                             is_record: false,
                                             owner_module,
+                                            opaque,
                                         },
                                         vis,
                                         *span,

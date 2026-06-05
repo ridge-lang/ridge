@@ -151,6 +151,7 @@ impl BuiltinTyCons {
             kind: TyConKind::Primitive,
             def_span: None,
             def_module_raw: None,
+            opaque: false,
             is_anon: false,
         });
         let float = arena.intern(TyConDecl {
@@ -160,6 +161,7 @@ impl BuiltinTyCons {
             kind: TyConKind::Primitive,
             def_span: None,
             def_module_raw: None,
+            opaque: false,
             is_anon: false,
         });
         let bool_ = arena.intern(TyConDecl {
@@ -169,6 +171,7 @@ impl BuiltinTyCons {
             kind: TyConKind::Primitive,
             def_span: None,
             def_module_raw: None,
+            opaque: false,
             is_anon: false,
         });
         let text = arena.intern(TyConDecl {
@@ -178,6 +181,7 @@ impl BuiltinTyCons {
             kind: TyConKind::Primitive,
             def_span: None,
             def_module_raw: None,
+            opaque: false,
             is_anon: false,
         });
         let unit = arena.intern(TyConDecl {
@@ -187,6 +191,7 @@ impl BuiltinTyCons {
             kind: TyConKind::Primitive,
             def_span: None,
             def_module_raw: None,
+            opaque: false,
             is_anon: false,
         });
         let timestamp = arena.intern(TyConDecl {
@@ -196,6 +201,7 @@ impl BuiltinTyCons {
             kind: TyConKind::Primitive,
             def_span: None,
             def_module_raw: None,
+            opaque: false,
             is_anon: false,
         });
 
@@ -207,6 +213,7 @@ impl BuiltinTyCons {
             kind: TyConKind::Builtin,
             def_span: None,
             def_module_raw: None,
+            opaque: false,
             is_anon: false,
         });
         let map = arena.intern(TyConDecl {
@@ -216,6 +223,7 @@ impl BuiltinTyCons {
             kind: TyConKind::Builtin,
             def_span: None,
             def_module_raw: None,
+            opaque: false,
             is_anon: false,
         });
         let set = arena.intern(TyConDecl {
@@ -225,6 +233,7 @@ impl BuiltinTyCons {
             kind: TyConKind::Builtin,
             def_span: None,
             def_module_raw: None,
+            opaque: false,
             is_anon: false,
         });
 
@@ -254,6 +263,7 @@ impl BuiltinTyCons {
             }),
             def_span: None,
             def_module_raw: None,
+            opaque: false,
             is_anon: false,
         });
         // Result a e — Ok a | Err e  (spec: Result a e)
@@ -276,6 +286,7 @@ impl BuiltinTyCons {
             }),
             def_span: None,
             def_module_raw: None,
+            opaque: false,
             is_anon: false,
         });
 
@@ -291,6 +302,7 @@ impl BuiltinTyCons {
             kind: TyConKind::Builtin,
             def_span: None,
             def_module_raw: None,
+            opaque: false,
             is_anon: false,
         });
 
@@ -325,6 +337,7 @@ impl BuiltinTyCons {
             )),
             def_span: None,
             def_module_raw: None,
+            opaque: false,
             is_anon: false,
         });
         // §3.12: Duration { ms: Int }
@@ -341,6 +354,7 @@ impl BuiltinTyCons {
             )),
             def_span: None,
             def_module_raw: None,
+            opaque: false,
             is_anon: false,
         });
         // §3.16 / OQ-S007 / D123: ProcOutput { stdout: Text, stderr: Text, exitCode: Int }
@@ -367,6 +381,7 @@ impl BuiltinTyCons {
             )),
             def_span: None,
             def_module_raw: None,
+            opaque: false,
             is_anon: false,
         });
 
@@ -394,6 +409,7 @@ impl BuiltinTyCons {
             }),
             def_span: None,
             def_module_raw: None, // prelude — no user module
+            opaque: false,
             is_anon: false,
         });
 
@@ -448,6 +464,7 @@ impl BuiltinTyCons {
             }),
             def_span: None,
             def_module_raw: None, // prelude — no user module
+            opaque: false,
             is_anon: false,
         });
 

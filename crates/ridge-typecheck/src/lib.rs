@@ -582,6 +582,10 @@ fn typecheck_actor_bodies(
     clippy::too_many_arguments,
     reason = "per-module typecheck threads its resolver inputs explicitly"
 )]
+#[expect(
+    clippy::too_many_lines,
+    reason = "linear per-module typecheck pipeline; splitting would obscure pass order"
+)]
 fn typecheck_module_inner(
     id: ModuleId,
     ast: &Arc<ridge_ast::Module>,
@@ -609,6 +613,10 @@ fn typecheck_module_inner(
 
     // Push the module-level env frame.
     ctx.env.push_frame();
+
+    // Record which module is being inferred so the opaque-type field boundary
+    // (records.rs) can compare against each type's defining module.
+    ctx.current_module_raw = Some(id.0);
 
     // Step A: Collect user TyCons and seed env with constructor schemes.
     let tycon_result = collect_user_tycons(ast, id, arena, b, &mut ctx);

@@ -87,3 +87,44 @@ fn imported_type_correct_field_use_is_clean() {
         "correct cross-module field access must type-check clean; got {errors:?}"
     );
 }
+
+// ── Opaque field boundary (T036) — reachable now that imported types resolve ──
+
+const LIB_OPAQUE: &str = "pub opaque type Sql = { raw: Text }\n";
+
+#[test]
+fn opaque_cross_module_field_access_is_t036() {
+    // Reading an opaque type's field from another module is rejected.
+    let main = "import proj.Lib (Sql)\nfn leak (s: Sql) -> Text = s.raw\n";
+    let errors = typecheck_two_modules(main, LIB_OPAQUE);
+    assert_eq!(
+        count_code(&errors, "T036"),
+        1,
+        "expected one T036 for cross-module opaque field access; got {errors:?}"
+    );
+}
+
+#[test]
+fn opaque_cross_module_with_update_is_t036() {
+    // Rebuilding an opaque value's field via `with` from another module is rejected.
+    let main = "import proj.Lib (Sql)\nfn tamper (s: Sql) -> Sql = s with { raw = \"x\" }\n";
+    let errors = typecheck_two_modules(main, LIB_OPAQUE);
+    assert_eq!(
+        count_code(&errors, "T036"),
+        1,
+        "expected one T036 for cross-module opaque with-update; got {errors:?}"
+    );
+}
+
+#[test]
+fn opaque_in_module_field_access_is_allowed() {
+    // The declaring module may read its own opaque fields.
+    let lib = "pub opaque type Sql = { raw: Text }\npub fn unwrap (s: Sql) -> Text = s.raw\n";
+    let main = "fn main = ()\n";
+    let errors = typecheck_two_modules(main, lib);
+    assert_eq!(
+        count_code(&errors, "T036"),
+        0,
+        "in-module opaque field access must be allowed; got {errors:?}"
+    );
+}

@@ -627,6 +627,7 @@ mod tests {
             kind: TyConKind::Actor(schema),
             def_span: None,
             def_module_raw: None,
+            opaque: false,
             is_anon: false,
         })
     }
@@ -657,6 +658,7 @@ mod tests {
             kind: TyConKind::Actor(schema),
             def_span: None,
             def_module_raw: None,
+            opaque: false,
             is_anon: false,
         })
     }

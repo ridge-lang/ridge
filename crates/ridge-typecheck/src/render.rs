@@ -460,6 +460,14 @@ impl fmt::Display for TypeError {
                 )
             }
 
+            // ── T036 ──────────────────────────────────────────────────────────
+            Self::OpaqueFieldAccess { record, field, .. } => {
+                write!(
+                    f,
+                    "T036: field `{field}` of opaque type `{record}` cannot be reached outside its defining module\n  hint: call a function the module exports instead of touching the field directly"
+                )
+            }
+
             // ── T999 ──────────────────────────────────────────────────────────
             Self::InternalTypeError { detail, .. } => {
                 write!(f, "T999: internal type error\n  {detail}\n  This is a compiler bug. Please report it.")
@@ -518,6 +526,7 @@ impl HasErrorCode for TypeError {
             }
             | Self::MissingSuperclassInstance { span, .. }
             | Self::SuperclassCycle { span, .. }
+            | Self::OpaqueFieldAccess { span, .. }
             | Self::InternalTypeError { span, .. } => *span,
 
             // T034: uses `totext_span` (the explicit instance) as the primary span.

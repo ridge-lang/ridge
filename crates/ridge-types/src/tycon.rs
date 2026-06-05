@@ -125,6 +125,11 @@ pub struct TyConDecl {
     /// `None` for built-in `TyCons` (no source module) and for stdlib
     /// declarations that bypass the user collect pass.
     pub def_module_raw: Option<u32>,
+    /// `true` when the type was declared `opaque`. Field-level access (`.field`,
+    /// `with`) of an opaque type is confined to its defining module; reaching a
+    /// field from another module is a type error (T036). Always `false` for
+    /// built-ins and anonymous inline records.
+    pub opaque: bool,
     /// `true` for anonymous `TyCons` minted from inline record types.
     ///
     /// These are interned from `{ field: Type, … }` syntax and have no
@@ -313,6 +318,7 @@ mod tests {
             kind: TyConKind::Primitive,
             def_span: Some(dummy_span()),
             def_module_raw: None,
+            opaque: false,
             is_anon: false,
         };
         assert_eq!(d.id.0, 1);

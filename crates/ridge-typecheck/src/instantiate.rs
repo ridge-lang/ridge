@@ -214,6 +214,15 @@ fn collect_free_vars_rec(
                 collect_free_vars_rec(t, free_ty, free_cap);
             }
         }
+        Type::Record { fields, .. } => {
+            // Walk field types so a record holding a polymorphic value (e.g.
+            // `{ id = fn x -> x }`) generalises over the field's variable. The
+            // tail is a `RowVid` — a separate namespace, quantified with the
+            // open-record surface syntax.
+            for (_, t) in fields {
+                collect_free_vars_rec(t, free_ty, free_cap);
+            }
+        }
         Type::Alias { body, .. } => {
             collect_free_vars_rec(body, free_ty, free_cap);
         }
@@ -749,6 +758,41 @@ mod tests {
         assert!(free.contains(&v1), "v1 must be in env free vars");
 
         ctx.env.pop_frame();
+        ctx.env.pop_frame();
+    }
+
+    // ── Record field generalisation (R3 dropped P029) ─────────────────────────
+
+    #[test]
+    fn collect_free_vars_walks_record_fields() {
+        let a = TyVid(7);
+        let rec = Type::record(
+            vec![
+                ("x".to_string(), Type::Var(a)),
+                ("y".to_string(), Type::Con(cid(0), vec![])),
+            ],
+            ridge_types::RowTail::Closed,
+        );
+        let (free_ty, _) = collect_free_vars(&rec);
+        assert!(free_ty.contains(&a), "field var `a` must be free");
+        assert_eq!(free_ty.len(), 1, "only `a` is free");
+    }
+
+    #[test]
+    fn generalise_collects_record_field_vars() {
+        let mut ctx = InferCtx::new();
+        ctx.env.push_frame();
+        let a = ctx.fresh_tyvid();
+        let rec = Type::record(
+            vec![("x".to_string(), Type::Var(a))],
+            ridge_types::RowTail::Closed,
+        );
+        let scheme = generalise(&mut ctx, &rec);
+        assert!(
+            scheme.vars.contains(&a),
+            "a record field var must be generalised, got {:?}",
+            scheme.vars
+        );
         ctx.env.pop_frame();
     }
 }

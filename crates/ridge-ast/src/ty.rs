@@ -125,14 +125,19 @@ pub enum Type {
         span: Span,
     },
 
-    /// An inline record type `{ fieldName: Type, … }` (grammar inline-record-type).
+    /// An inline record type `{ fieldName: Type, … }`, optionally open over a
+    /// row variable: `{ name: Text | r }` (grammar inline-record-type).
     ///
-    /// Desugars to an anonymous nominal type constructor during the typecheck
-    /// pre-scan.  May appear in any type position.  Field names must be
-    /// lowercase identifiers; field order is semantically irrelevant.
+    /// A closed record (`tail` is `None`) denotes exactly its fields; an open
+    /// record (`tail` is `Some(r)`) is polymorphic over the extra fields carried
+    /// by the row variable `r`. May appear in any type position. Field names must
+    /// be lowercase identifiers; field order is semantically irrelevant.
     Record {
         /// The declared fields of the inline record.
         fields: Vec<RecordTypeField>,
+        /// Optional row-variable tail: `Some(r)` for an open record `{ … | r }`,
+        /// `None` for a closed record.
+        tail: Option<Ident>,
         /// Span covering the full `{ … }` form.
         span: Span,
     },

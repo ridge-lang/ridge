@@ -1191,13 +1191,8 @@ fn ast_type_to_type(ctx: &mut InferCtx, b: &BuiltinTyCons, ast_ty: &ridge_ast::T
             Type::Var(ctx.fresh_tyvid())
         }
 
-        // ── Inline record type — look up the pre-scanned AnonRecordTable ────────
-        ridge_ast::Type::Record { fields, span } => {
-            // The pre-scan (prescan_inline_records) ran before inference starts and
-            // interned every type-position inline record.  Resolve each field's AST
-            // type using the same ast_type_to_type machinery, compute the ShapeKey,
-            // and read the table.  This path does NOT intern new anon TyCons; if the
-            // key is absent the pre-scan had a coverage bug — fall back to Type::Error.
+        // ── Inline record type → a structural `Type::Record` ───────────────────
+        ridge_ast::Type::Record { fields, tail, .. } => {
             let resolved: Vec<(String, Type)> = fields
                 .iter()
                 .map(|f| {
@@ -1205,17 +1200,10 @@ fn ast_type_to_type(ctx: &mut InferCtx, b: &BuiltinTyCons, ast_ty: &ridge_ast::T
                     (f.name.text.clone(), ty)
                 })
                 .collect();
-            let key = ridge_types::shape_key(&resolved);
-            if let Some(&id) = ctx.anon_records.get(&key) {
-                Type::Con(id, vec![])
-            } else {
-                emit_internal(
-                    ctx,
-                    "inline record type not found in anonymous TyCon table (pre-scan miss)"
-                        .to_string(),
-                    *span,
-                )
-            }
+            // The row-variable tail (`{ … | r }`) is resolved to an open row in
+            // a follow-up; for now every annotated inline record is closed.
+            let _ = tail;
+            Type::record(resolved, ridge_types::RowTail::Closed)
         }
     }
 }

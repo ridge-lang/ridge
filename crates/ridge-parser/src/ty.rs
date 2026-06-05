@@ -420,13 +420,15 @@ fn parse_inline_record_type(cur: &mut Cursor<'_>) -> Result<Type, ParseError> {
         cur.bump(); // consume `}`
         return Ok(Type::Record {
             fields: vec![],
+            tail: None,
             span: start_span.merge(end_span),
         });
     }
 
     let mut fields: Vec<RecordTypeField> = Vec::new();
 
-    loop {
+    // Skip field parsing for a tail-only open record `{ | r }`.
+    while cur.peek() != &Token::Pipe {
         let field_span = cur.span();
 
         // Parse field name — must be a lowercase identifier.
@@ -476,10 +478,13 @@ fn parse_inline_record_type(cur: &mut Cursor<'_>) -> Result<Type, ParseError> {
                 break;
             }
         } else {
-            // No comma: must be `}` next.
+            // No comma: must be `}` or `| r` next.
             break;
         }
     }
+
+    // Optional row-variable tail: `| r` makes the record open.
+    let tail = parse_record_type_tail(cur)?;
 
     // Expect closing `}`.
     if cur.peek() != &Token::RBrace {
@@ -496,8 +501,33 @@ fn parse_inline_record_type(cur: &mut Cursor<'_>) -> Result<Type, ParseError> {
 
     Ok(Type::Record {
         fields,
+        tail,
         span: start_span.merge(end_span),
     })
+}
+
+/// Parse an optional row-variable tail `| r` inside an inline record type.
+///
+/// Returns `Some(r)` when a `|` is present (making the record open over the
+/// lowercase row variable `r`), `None` otherwise.
+fn parse_record_type_tail(cur: &mut Cursor<'_>) -> Result<Option<Ident>, ParseError> {
+    if cur.peek() != &Token::Pipe {
+        return Ok(None);
+    }
+    cur.bump(); // consume `|`
+    let tail_span = cur.span();
+    match cur.peek().clone() {
+        Token::LowerIdent(s) => {
+            cur.bump();
+            Ok(Some(Ident::new(s, tail_span)))
+        }
+        tok => Err(ParseError::MalformedInlineRecordType {
+            span: tail_span,
+            description: format!(
+                "expected a lowercase row variable after `|`, found `{tok}`; write an open record as `{{ field: Type | r }}`"
+            ),
+        }),
+    }
 }
 
 // ── Tests ─────────────────────────────────────────────────────────────────────
@@ -902,11 +932,54 @@ mod tests {
     fn parse_type_inline_record_empty() {
         let result = parse_ty("{}");
         assert!(result.is_ok(), "expected Ok, got {result:?}");
-        if let Ok(Type::Record { fields, .. }) = result {
+        if let Ok(Type::Record { fields, tail, .. }) = result {
             assert!(fields.is_empty());
+            assert!(tail.is_none(), "{{}} is a closed record");
         } else {
             panic!("expected Type::Record, got {result:?}");
         }
+    }
+
+    // ── Inline record type — open over a row variable ────────────────────────
+
+    #[test]
+    fn parse_type_inline_record_open_tail() {
+        let result = parse_ty("{ x: Int | r }");
+        assert!(result.is_ok(), "expected Ok, got {result:?}");
+        if let Ok(Type::Record { fields, tail, .. }) = result {
+            assert_eq!(fields.len(), 1);
+            assert_eq!(fields[0].name.text, "x");
+            assert_eq!(
+                tail.as_ref().map(|t| t.text.as_str()),
+                Some("r"),
+                "open record must carry its row variable"
+            );
+        } else {
+            panic!("expected Type::Record, got {result:?}");
+        }
+    }
+
+    #[test]
+    fn parse_type_inline_record_closed_has_no_tail() {
+        let result = parse_ty("{ x: Int }");
+        assert!(matches!(result, Ok(Type::Record { tail: None, .. })), "got {result:?}");
+    }
+
+    #[test]
+    fn parse_type_inline_record_tail_only() {
+        let result = parse_ty("{ | r }");
+        if let Ok(Type::Record { fields, tail, .. }) = result {
+            assert!(fields.is_empty(), "tail-only record has no fields");
+            assert_eq!(tail.as_ref().map(|t| t.text.as_str()), Some("r"));
+        } else {
+            panic!("expected Type::Record, got {result:?}");
+        }
+    }
+
+    #[test]
+    fn parse_type_inline_record_pipe_without_var_errors() {
+        let result = parse_ty("{ x: Int | }");
+        assert!(result.is_err(), "a `|` with no row variable is an error: {result:?}");
     }
 
     // ── Inline record type — trailing comma ──────────────────────────────────

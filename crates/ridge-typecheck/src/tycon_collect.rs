@@ -214,7 +214,7 @@ impl<'ast> Visit<'ast> for InlineRecordCollector<'_> {
         // Recurse FIRST (bottom-up: inner fields before outer).
         ridge_ast::visit::walk_type(self, t);
 
-        if let ridge_ast::Type::Record { fields, span } = t {
+        if let ridge_ast::Type::Record { fields, span, .. } = t {
             intern_inline_record(
                 self.arena,
                 self.b,
@@ -1029,6 +1029,7 @@ mod tests {
 
         let rec_ty = AstType::Record {
             fields: vec![field("x", int_ast()), field("y", int_ast())],
+            tail: None,
             span: ds(),
         };
         let module = module_with_fn_param(rec_ty);
@@ -1050,6 +1051,7 @@ mod tests {
                 name: Ident::new("r", ds()),
                 ty: AstType::Record {
                     fields: vec![field("x", int_ast()), field("y", int_ast())],
+                    tail: None,
                     span: ds(),
                 },
                 span: ds(),
@@ -1069,6 +1071,7 @@ mod tests {
                 name: Ident::new("r", ds()),
                 ty: AstType::Record {
                     fields: vec![field("y", int_ast()), field("x", int_ast())],
+                    tail: None,
                     span: ds(),
                 },
                 span: ds(),
@@ -1105,10 +1108,12 @@ mod tests {
         // Outer: { inner: { id: Int } }
         let inner_ty = AstType::Record {
             fields: vec![field("id", int_ast())],
+            tail: None,
             span: ds(),
         };
         let outer_ty = AstType::Record {
             fields: vec![field("inner", inner_ty)],
+            tail: None,
             span: ds(),
         };
         let module = module_with_fn_param(outer_ty);
@@ -1133,6 +1138,7 @@ mod tests {
                 name: Ident::new("r", ds()),
                 ty: AstType::Record {
                     fields: vec![field("a", int_ast())],
+                    tail: None,
                     span: ds(),
                 },
                 span: ds(),
@@ -1152,6 +1158,7 @@ mod tests {
                 name: Ident::new("r", ds()),
                 ty: AstType::Record {
                     fields: vec![field("a", text_ast())],
+                    tail: None,
                     span: ds(),
                 },
                 span: ds(),

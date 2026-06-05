@@ -22,6 +22,7 @@ pub mod caps_check;
 pub mod caps_infer;
 pub mod class_env;
 pub mod collect;
+pub mod cross_module;
 pub mod ctx;
 pub mod derive;
 pub mod error;
@@ -193,12 +194,29 @@ pub struct TypedModule {
 ///    e. Run `check_actor_encapsulation` for each `actor` decl.
 /// 4. Accumulate all diagnostics; return them alongside the typed workspace.
 #[must_use]
+#[expect(
+    clippy::too_many_lines,
+    reason = "linear workspace typecheck driver; splitting would obscure the pass order"
+)]
 pub fn typecheck_workspace(ws: &ResolvedWorkspace) -> TypecheckResult {
     let mut all_errors: Vec<(ModuleId, TypeError)> = Vec::new();
 
     // Step 1: Shared TyCon arena + built-in registration.
     let mut arena = TyConArena::new();
     let b = BuiltinTyCons::allocate(&mut arena);
+
+    // Predict each module's own type/actor `TyConId`s (the arena is shared, so a
+    // producer's id is valid in any consumer). Used to seed imported type names
+    // into each consumer's `user_tycon_names` so cross-module annotations resolve.
+    #[expect(
+        clippy::cast_possible_truncation,
+        reason = "builtin TyCon count is a small constant"
+    )]
+    let builtins_len = arena.all().len() as u32;
+    let per_module_tycon_names =
+        crate::cross_module::predict_module_tycon_names(&ws.module_asts, builtins_len);
+    let symbol_tables: Vec<&ridge_resolve::SymbolTable> =
+        ws.modules.iter().map(|m| &m.symbols).collect();
 
     // Step 2: Reuse the ASTs the resolver already parsed — no second parse pass.
     let mut typed_modules: Vec<TypedModule> = Vec::with_capacity(ws.modules.len());
@@ -284,11 +302,17 @@ pub fn typecheck_workspace(ws: &ResolvedWorkspace) -> TypecheckResult {
             continue;
         };
 
+        let imported_tycons = crate::cross_module::imported_tycon_names(
+            &rm.imports,
+            &symbol_tables,
+            &per_module_tycon_names,
+        );
         let result = typecheck_module_inner(
             rm.id,
             &ast,
             rm.node_ids.clone(),
             &rm.imports,
+            &imported_tycons,
             &mut arena,
             &b,
             Some((&class_table, &instance_env)),
@@ -395,11 +419,15 @@ pub fn typecheck_module_incremental(
     }
     let b = &typed_ws.builtins;
 
+    // The incremental path stays module-local for cross-module seeding (no
+    // imported-type map); a full incremental rebuild covers cross-module changes.
+    let no_imported_tycons = FxHashMap::default();
     let result = typecheck_module_inner(
         module_id,
         &ast,
         rm.node_ids.clone(),
         &rm.imports,
+        &no_imported_tycons,
         &mut arena,
         b,
         Some((&typed_ws.class_table, &typed_ws.instance_env)),
@@ -550,11 +578,16 @@ fn typecheck_actor_bodies(
 /// and the constraint solver is a no-op (the pre-typeclass behavior for the LSP
 /// hot-path and unit tests). The two tables always travel together, so they are
 /// passed as one optional pair.
+#[expect(
+    clippy::too_many_arguments,
+    reason = "per-module typecheck threads its resolver inputs explicitly"
+)]
 fn typecheck_module_inner(
     id: ModuleId,
     ast: &Arc<ridge_ast::Module>,
     node_id_map: ridge_resolve::NodeIdMap,
     imports: &[ridge_resolve::ImportResolution],
+    imported_tycons: &FxHashMap<String, TyConId>,
     arena: &mut TyConArena,
     b: &BuiltinTyCons,
     registries: Option<(
@@ -581,6 +614,11 @@ fn typecheck_module_inner(
     let tycon_result = collect_user_tycons(ast, id, arena, b, &mut ctx);
     // Populate the user_tycon_names map for ast_type_to_type resolution.
     ctx.user_tycon_names = tycon_result.user_tycon_names;
+    // Seed imported type names (cross-module): a local declaration of the same
+    // name always wins, so only insert imports that don't shadow a local type.
+    for (name, &tid) in imported_tycons {
+        ctx.user_tycon_names.entry(name.clone()).or_insert(tid);
+    }
     // Snapshot all TyConDecls (builtins + user) for record/union inference.
     ctx.tycon_decls = arena.all().to_vec();
 

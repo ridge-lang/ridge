@@ -595,7 +595,10 @@ mod tests {
         table.entries.push(SymbolEntry {
             id: type_id,
             name: type_name.to_owned(),
-            kind: SymbolKind::Type { arity: 0 },
+            kind: SymbolKind::Type {
+                arity: 0,
+                opaque: false,
+            },
             visibility: ResolvedVisibility::Pub,
             def_span: sp(),
             exported_externally: false,

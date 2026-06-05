@@ -104,6 +104,11 @@ pub enum SymbolKind {
     Type {
         /// Number of type parameters (0 for monomorphic types).
         arity: u32,
+        /// True iff the type was declared `opaque`. Carried on the type entry
+        /// itself so an imported opaque record (whose construction resolves to
+        /// the type symbol, not a separate constructor symbol) can still be
+        /// gated — the constructor entries mirror this in their own `opaque`.
+        opaque: bool,
     },
     /// An `actor` declaration.
     Actor {
@@ -393,7 +398,10 @@ impl<'ast> Visit<'ast> for TopLevelCollector {
                 let arity = d.params.len().try_into().unwrap_or(u32::MAX);
                 let type_id_opt = self.push(
                     d.name.text.clone(),
-                    SymbolKind::Type { arity },
+                    SymbolKind::Type {
+                        arity,
+                        opaque: d.opaque,
+                    },
                     vis,
                     d.span,
                     true,
@@ -970,7 +978,7 @@ mod tests {
         // Type arity = 0
         assert!(matches!(
             table.entries[0].kind,
-            SymbolKind::Type { arity: 0 }
+            SymbolKind::Type { arity: 0, .. }
         ));
     }
 
@@ -987,7 +995,7 @@ mod tests {
         assert!(errors.is_empty(), "errors: {errors:?}");
         assert!(matches!(
             table.entries[0].kind,
-            SymbolKind::Type { arity: 1 }
+            SymbolKind::Type { arity: 1, .. }
         ));
     }
 
@@ -1000,7 +1008,7 @@ mod tests {
         assert_eq!(table.entries.len(), 1);
         assert!(matches!(
             table.entries[0].kind,
-            SymbolKind::Type { arity: 0 }
+            SymbolKind::Type { arity: 0, .. }
         ));
     }
 

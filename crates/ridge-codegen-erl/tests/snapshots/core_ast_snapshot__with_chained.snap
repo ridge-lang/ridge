@@ -1,5 +1,6 @@
 ---
 source: crates/ridge-codegen-erl/tests/core_ast_snapshot.rs
+assertion_line: 41
 expression: "&cerl_module"
 ---
 CErlModule {
@@ -32,51 +33,91 @@ CErlModule {
                     var: CErlVar(
                         "V_P1",
                     ),
-                    value: MapUpdate {
-                        base: Var(
-                            CErlVar(
-                                "V_P",
-                            ),
+                    value: Let {
+                        var: CErlVar(
+                            "V_Anf0",
                         ),
-                        updates: [
-                            (
-                                Lit(
-                                    Atom(
-                                        CErlAtom(
-                                            "x",
+                        value: MapLit(
+                            [
+                                (
+                                    Lit(
+                                        Atom(
+                                            CErlAtom(
+                                                "x",
+                                            ),
+                                        ),
+                                    ),
+                                    Lit(
+                                        Int(
+                                            1,
                                         ),
                                     ),
                                 ),
-                                Lit(
-                                    Int(
-                                        1,
+                            ],
+                        ),
+                        body: Call {
+                            module: CErlAtom(
+                                "maps",
+                            ),
+                            fn_name: CErlAtom(
+                                "merge",
+                            ),
+                            args: [
+                                Var(
+                                    CErlVar(
+                                        "V_P",
                                     ),
                                 ),
-                            ),
-                        ],
+                                Var(
+                                    CErlVar(
+                                        "V_Anf0",
+                                    ),
+                                ),
+                            ],
+                        },
                     },
-                    body: MapUpdate {
-                        base: Var(
-                            CErlVar(
-                                "V_P1",
-                            ),
+                    body: Let {
+                        var: CErlVar(
+                            "V_Anf1",
                         ),
-                        updates: [
-                            (
-                                Lit(
-                                    Atom(
-                                        CErlAtom(
-                                            "y",
+                        value: MapLit(
+                            [
+                                (
+                                    Lit(
+                                        Atom(
+                                            CErlAtom(
+                                                "y",
+                                            ),
+                                        ),
+                                    ),
+                                    Lit(
+                                        Int(
+                                            2,
                                         ),
                                     ),
                                 ),
-                                Lit(
-                                    Int(
-                                        2,
+                            ],
+                        ),
+                        body: Call {
+                            module: CErlAtom(
+                                "maps",
+                            ),
+                            fn_name: CErlAtom(
+                                "merge",
+                            ),
+                            args: [
+                                Var(
+                                    CErlVar(
+                                        "V_P1",
                                     ),
                                 ),
-                            ),
-                        ],
+                                Var(
+                                    CErlVar(
+                                        "V_Anf1",
+                                    ),
+                                ),
+                            ],
+                        },
                     },
                 },
             },

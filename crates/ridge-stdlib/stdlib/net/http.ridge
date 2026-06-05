@@ -158,24 +158,23 @@ pub opaque type SecureCookie = { name: Text, value: Text, secure: Bool, httpOnly
 pub fn secureCookie (name: Text) (value: Text) -> SecureCookie =
     SecureCookie { name = name, value = value, secure = true, httpOnly = true, sameSite = "Lax", maxAge = None, path = None }
 
--- Attribute setters. Each returns a new cookie with one field replaced; this is
--- the supported way to override a default now that the record is opaque. They
--- rebuild the record explicitly (rather than a `with`-update) to keep the BEAM
--- map type concrete for the optimizer.
+-- Attribute setters. Each returns a new cookie with one field replaced — the
+-- supported way to override a default now that the record is opaque, since a
+-- record-update on the value is rejected outside this module.
 pub fn withSecure (c: SecureCookie) (on: Bool) -> SecureCookie =
-    SecureCookie { name = c.name, value = c.value, secure = on, httpOnly = c.httpOnly, sameSite = c.sameSite, maxAge = c.maxAge, path = c.path }
+    c with { secure = on }
 
 pub fn withHttpOnly (c: SecureCookie) (on: Bool) -> SecureCookie =
-    SecureCookie { name = c.name, value = c.value, secure = c.secure, httpOnly = on, sameSite = c.sameSite, maxAge = c.maxAge, path = c.path }
+    c with { httpOnly = on }
 
 pub fn withSameSite (c: SecureCookie) (mode: Text) -> SecureCookie =
-    SecureCookie { name = c.name, value = c.value, secure = c.secure, httpOnly = c.httpOnly, sameSite = mode, maxAge = c.maxAge, path = c.path }
+    c with { sameSite = mode }
 
 pub fn withMaxAge (c: SecureCookie) (seconds: Option Int) -> SecureCookie =
-    SecureCookie { name = c.name, value = c.value, secure = c.secure, httpOnly = c.httpOnly, sameSite = c.sameSite, maxAge = seconds, path = c.path }
+    c with { maxAge = seconds }
 
 pub fn withPath (c: SecureCookie) (p: Option Text) -> SecureCookie =
-    SecureCookie { name = c.name, value = c.value, secure = c.secure, httpOnly = c.httpOnly, sameSite = c.sameSite, maxAge = c.maxAge, path = p }
+    c with { path = p }
 
 -- Format a SecureCookie as the value for an HTTP `Set-Cookie:` header.
 -- The result is `name=value` followed by `; Attribute` segments for each

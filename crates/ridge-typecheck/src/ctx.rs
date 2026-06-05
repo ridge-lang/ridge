@@ -11,7 +11,8 @@
 use ena::unify::{InPlaceUnificationTable, NoError, UnifyKey, UnifyValue};
 use ridge_resolve::{NodeIdMap, NodeKind};
 use ridge_types::{
-    AnonRecordTable, CapRow, CapVid, CapabilitySet, Scheme, TyConDecl, TyConId, TyVid, Type,
+    AnonRecordTable, CapRow, CapVid, CapabilitySet, Row, RowTail, RowVid, Scheme, TyConDecl,
+    TyConId, TyVid, Type,
 };
 use rustc_hash::FxHashMap;
 
@@ -32,6 +33,11 @@ pub struct TyValue(pub Option<Type>);
 /// capability-row variables.
 #[derive(Clone, Debug)]
 pub struct CapValue(pub Option<CapRow>);
+
+/// Newtype over `Option<Row>` used as the `ena` unification value for
+/// record-row variables.
+#[derive(Clone, Debug)]
+pub struct RowValue(pub Option<Row>);
 
 /// [`UnifyValue`] for [`TyValue`].
 ///
@@ -57,6 +63,22 @@ impl UnifyValue for TyValue {
 ///
 /// Same conservative policy as [`TyValue`] above.
 impl UnifyValue for CapValue {
+    type Error = NoError;
+
+    fn unify_values(a: &Self, b: &Self) -> Result<Self, NoError> {
+        match (&a.0, &b.0) {
+            (None, _) => Ok(b.clone()),
+            (_, None) | (Some(_), Some(_)) => Ok(a.clone()),
+        }
+    }
+}
+
+/// [`UnifyValue`] for [`RowValue`].
+///
+/// Same conservative policy as [`TyValue`] above: the unifier always peels a
+/// tail to an *unbound* row var before binding it, so two `Some`s never legally
+/// meet here. If they do it is an upstream bug; keep the first as a fallback.
+impl UnifyValue for RowValue {
     type Error = NoError;
 
     fn unify_values(a: &Self, b: &Self) -> Result<Self, NoError> {
@@ -106,6 +128,26 @@ impl UnifyKey for CapVidKey {
 
     fn tag() -> &'static str {
         "CapVidKey"
+    }
+}
+
+/// `ena` key wrapping a [`RowVid`] index.
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Hash)]
+pub struct RowVidKey(pub u32);
+
+impl UnifyKey for RowVidKey {
+    type Value = RowValue;
+
+    fn index(&self) -> u32 {
+        self.0
+    }
+
+    fn from_index(u: u32) -> Self {
+        Self(u)
+    }
+
+    fn tag() -> &'static str {
+        "RowVidKey"
     }
 }
 
@@ -193,6 +235,9 @@ pub struct InferCtx {
     pub tyvids: InPlaceUnificationTable<TyVidKey>,
     /// Union-find table for capability-row variables.
     pub capvids: InPlaceUnificationTable<CapVidKey>,
+    /// Union-find table for record-row variables (the open tail of a
+    /// [`Type::Record`]).
+    pub rowvids: InPlaceUnificationTable<RowVidKey>,
 
     // ── T6 additions ─────────────────────────────────────────────────────────
     /// Lexically-scoped type environment (name → Scheme).
@@ -327,6 +372,7 @@ impl InferCtx {
         Self {
             tyvids: InPlaceUnificationTable::new(),
             capvids: InPlaceUnificationTable::new(),
+            rowvids: InPlaceUnificationTable::new(),
             env: Env::new(),
             current_caps: CapabilitySet::PURE,
             errors: Vec::new(),
@@ -414,6 +460,40 @@ impl InferCtx {
         CapVid(key.0)
     }
 
+    /// Allocates a fresh record-row variable and returns it as a [`RowVid`].
+    pub fn fresh_rowvid(&mut self) -> RowVid {
+        let key = self.rowvids.new_key(RowValue(None));
+        RowVid(key.0)
+    }
+
+    /// Peels bound row variables off a record row, gathering every known field.
+    ///
+    /// Walks the tail while it is a *bound* row var: each bound row's fields are
+    /// appended and its own tail followed, until the tail is `Closed` or an
+    /// *unbound* row var. The returned tail's row var (if any) is canonicalised
+    /// to its union-find root. Field *types* are not resolved here — the unifier
+    /// unifies them itself; this only exposes the field set for the label split.
+    #[must_use]
+    pub fn resolve_row(
+        &mut self,
+        fields: &[(String, Type)],
+        tail: &RowTail,
+    ) -> (Vec<(String, Type)>, RowTail) {
+        let mut out: Vec<(String, Type)> = fields.to_vec();
+        let mut cur = tail.clone();
+        while let RowTail::Open(rv) = cur.clone() {
+            let root = self.rowvids.find(RowVidKey(rv.0));
+            let Some(row) = self.rowvids.probe_value(root).0 else {
+                // Unbound row var — canonicalise to its root and stop.
+                cur = RowTail::Open(RowVid(root.0));
+                break;
+            };
+            out.extend(row.fields.iter().cloned());
+            cur = row.tail;
+        }
+        (out, cur)
+    }
+
     /// Shallow-resolves a type:
     ///
     /// - `Type::Var(v)` — looks up `v` in the unification table. If bound,
@@ -483,6 +563,17 @@ impl InferCtx {
                     name: *name,
                     body: Box::new(new_body),
                 }
+            }
+            Type::Record { fields, tail } => {
+                // Peel bound row vars off the tail, then deep-resolve every
+                // (gathered) field type. The tail ends `Closed` or at an
+                // unbound root row var.
+                let (peeled_fields, peeled_tail) = self.resolve_row(fields, tail);
+                let resolved_fields: Vec<(String, Type)> = peeled_fields
+                    .iter()
+                    .map(|(label, t)| (label.clone(), self.deep_resolve(t)))
+                    .collect();
+                Type::record(resolved_fields, peeled_tail)
             }
             Type::Error => Type::Error,
             // Non-exhaustive wildcard: future Type variants are deep-resolved

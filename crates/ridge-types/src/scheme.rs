@@ -126,6 +126,13 @@ fn collect_free_ty(
                 collect_free_ty(t, bound_ty, bound_cap, free_ty, free_cap);
             }
         }
+        Type::Record { fields, tail: _ } => {
+            for (_, t) in fields {
+                collect_free_ty(t, bound_ty, bound_cap, free_ty, free_cap);
+            }
+            // Row vars in `tail` are not collected yet: schemes do not bind row
+            // vars until R4 (`Scheme.row_vars` + row-var free collection).
+        }
         Type::Alias { body, .. } => {
             // Alias is transparent — walk the body.
             collect_free_ty(body, bound_ty, bound_cap, free_ty, free_cap);
@@ -175,6 +182,14 @@ fn subst_type(
             ts.iter()
                 .map(|t| subst_type(t, ty_subst, cap_subst))
                 .collect(),
+        ),
+        Type::Record { fields, tail } => Type::record(
+            fields
+                .iter()
+                .map(|(label, t)| (label.clone(), subst_type(t, ty_subst, cap_subst)))
+                .collect(),
+            // Tail unchanged: instantiation does not freshen row vars yet (R4).
+            tail.clone(),
         ),
         Type::Alias { name, body } => Type::Alias {
             name: *name,

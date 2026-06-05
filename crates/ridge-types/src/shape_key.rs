@@ -22,7 +22,7 @@
 use rustc_hash::FxHashMap;
 
 use crate::{
-    ty::{CapRow, TyVid},
+    ty::{CapRow, RowTail, RowVid, TyVid},
     tycon::TyConId,
     Type,
 };
@@ -50,6 +50,14 @@ pub enum TyKey {
         ret: Box<Self>,
         /// Capability-row key.
         caps: CapKey,
+    },
+    /// A structural record. `fields` is sorted by label (the [`Type::Record`]
+    /// invariant); `tail` is `None` when closed, `Some(rowvid)` when open.
+    Record {
+        /// Field-label → type-key pairs, sorted by label.
+        fields: Vec<(String, Self)>,
+        /// `None` = closed row; `Some(ρ)` = open over row var ρ.
+        tail: Option<u32>,
     },
     /// An unresolved unification variable.
     Var(TyVid),
@@ -103,6 +111,17 @@ pub fn type_to_key(ty: &Type) -> TyKey {
             params: params.iter().map(type_to_key).collect(),
             ret: Box::new(type_to_key(ret)),
             caps: cap_row_to_key(caps),
+        },
+        Type::Record { fields, tail } => TyKey::Record {
+            // Fields already obey the sorted invariant from `Type::record`.
+            fields: fields
+                .iter()
+                .map(|(label, t)| (label.clone(), type_to_key(t)))
+                .collect(),
+            tail: match tail {
+                RowTail::Closed => None,
+                RowTail::Open(RowVid(v)) => Some(*v),
+            },
         },
         Type::Var(v) => TyKey::Var(*v),
         Type::Error => TyKey::Error,

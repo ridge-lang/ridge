@@ -130,6 +130,11 @@ pub enum SymbolKind {
         /// `type T = { ... }` record declaration; false if it is a variant of
         /// a `type T = A | B | C` union declaration.
         is_record: bool,
+        /// The module that declares the owning type. Stamped at symbol
+        /// collection so it is the true defining module even when the
+        /// constructor is later resolved from an importing module — the basis
+        /// for the opaque-type construction/pattern gate.
+        owner_module: ModuleId,
     },
     /// A synthesised field-accessor symbol.
     FieldAccessor {
@@ -393,6 +398,9 @@ impl<'ast> Visit<'ast> for TopLevelCollector {
                 // Only synthesise constructors/accessors if the type entry was
                 // successfully registered (no R005 on the type itself).
                 let Some(type_id) = type_id_opt else { return };
+                // Every constructor synthesised below belongs to the module
+                // currently being collected — its true defining module.
+                let owner_module = self.table.module;
 
                 match &d.body {
                     ridge_ast::TypeBody::Record(rec) => {
@@ -406,6 +414,7 @@ impl<'ast> Visit<'ast> for TopLevelCollector {
                                 variant: 0,
                                 arity: ctor_arity,
                                 is_record: true,
+                                owner_module,
                             },
                             vis,
                             rec.span,
@@ -440,6 +449,7 @@ impl<'ast> Visit<'ast> for TopLevelCollector {
                                             variant,
                                             arity: ctor_arity,
                                             is_record: false,
+                                            owner_module,
                                         },
                                         vis,
                                         *span,
@@ -456,6 +466,7 @@ impl<'ast> Visit<'ast> for TopLevelCollector {
                                             variant,
                                             arity: ctor_arity,
                                             is_record: false,
+                                            owner_module,
                                         },
                                         vis,
                                         *span,

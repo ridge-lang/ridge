@@ -170,6 +170,11 @@ pub enum Binding {
         /// True iff this constructor is the auto-constructor of a
         /// `type T = { ... }` record declaration, false for union variants.
         is_record: bool,
+        /// The module that declares the owning type, carried through from the
+        /// constructor symbol. Equality against the use-site module is the
+        /// opaque-type construction/pattern gate (an opaque constructor used
+        /// outside its defining module is rejected).
+        owner_module: ModuleId,
     },
     /// A field-accessor shorthand `(.name)`.
     ///

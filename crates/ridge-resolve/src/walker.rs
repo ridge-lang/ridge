@@ -381,9 +381,11 @@ impl ScopeWalker<'_> {
                             owner_type,
                             variant,
                             is_record,
+                            owner_module,
                             ..
                         } => {
-                            let (owner, var, is_rec) = (*owner_type, *variant, *is_record);
+                            let (owner, var, is_rec, owner_mod) =
+                                (*owner_type, *variant, *is_record, *owner_module);
                             self.stamp(
                                 name.span,
                                 NodeKind::Ident,
@@ -391,6 +393,7 @@ impl ScopeWalker<'_> {
                                     owner_type: owner,
                                     variant: var,
                                     is_record: is_rec,
+                                    owner_module: owner_mod,
                                 },
                             );
                         }
@@ -409,6 +412,7 @@ impl ScopeWalker<'_> {
                                     owner_type: sym.id,
                                     variant: 0,
                                     is_record: true,
+                                    owner_module: self.module_id,
                                 },
                             );
                         }
@@ -808,13 +812,16 @@ impl<'ast> Visit<'ast> for ScopeWalker<'_> {
                                     owner_type,
                                     variant,
                                     is_record,
+                                    owner_module,
                                     ..
                                 } => {
-                                    let (owner, var, is_rec) = (*owner_type, *variant, *is_record);
+                                    let (owner, var, is_rec, owner_mod) =
+                                        (*owner_type, *variant, *is_record, *owner_module);
                                     Binding::Constructor {
                                         owner_type: owner,
                                         variant: var,
                                         is_record: is_rec,
+                                        owner_module: owner_mod,
                                     }
                                 }
                                 // For all other symbol kinds (Type, Fn, Const, Actor, FieldAccessor)

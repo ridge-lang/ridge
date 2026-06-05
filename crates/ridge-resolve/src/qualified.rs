@@ -339,6 +339,7 @@ fn resolve_type_actor_head(
                     owner_type,
                     variant,
                     is_record,
+                    owner_module,
                     ..
                 } = &entry.kind
                 {
@@ -347,6 +348,7 @@ fn resolve_type_actor_head(
                             owner_type: head_sym_id,
                             variant: *variant,
                             is_record: *is_record,
+                            owner_module: *owner_module,
                         };
                     }
                 }
@@ -600,6 +602,7 @@ mod tests {
         });
         table.index.insert(type_name.to_owned(), type_id);
 
+        let owner_module = table.module;
         for (i, ctor_name) in ctors.iter().enumerate() {
             let ctor_id = SymbolId(u32::try_from(table.entries.len()).unwrap_or(u32::MAX));
             table.entries.push(SymbolEntry {
@@ -610,6 +613,7 @@ mod tests {
                     variant: u32::try_from(i).unwrap_or(u32::MAX),
                     arity: 0,
                     is_record: false,
+                    owner_module,
                 },
                 visibility: ResolvedVisibility::Pub,
                 def_span: sp(),

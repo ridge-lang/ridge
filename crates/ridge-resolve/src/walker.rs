@@ -248,6 +248,14 @@ impl ScopeWalker<'_> {
             Binding::ImportedSymbol { module, symbol, .. } => {
                 self.imported_opaque_owner(*module, *symbol)
             }
+            // Stdlib taint wrappers (e.g. `Sql`, `Html`): opacity is carried on the
+            // generated builtin manifest. A stdlib symbol is never reached from
+            // inside its own module in user code, so any opaque use is cross-module.
+            // The sentinel `ModuleId(u32::MAX)` can never equal a real module id.
+            Binding::StdlibSymbol { module, name } => crate::stdlib_builtin::BUILTINS
+                .get(module.0 as usize)
+                .is_some_and(|m| m.opaque_types.contains(&name.as_str()))
+                .then_some(ModuleId(u32::MAX)),
             _ => None,
         }
     }
@@ -2428,6 +2436,45 @@ fn toJson (x: a) -> Text where Encode a =
         assert_eq!(
             gated, 0,
             "transparent record must construct cross-module; {errors:?}"
+        );
+    }
+
+    // ── O5: stdlib taint wrappers are opaque (Sql/Html/SecureCookie) ──────────
+
+    #[test]
+    fn stdlib_opaque_construct_is_r025() {
+        // Forging a `Sql` directly from user code bypasses the escape — rejected.
+        let src = "import std.net.http (Sql)\nfn f = Sql { value = \"x\" }\n";
+        let (_b, errors, _i, _n) = full_resolve_single(src);
+        let r025 = count_opaque(&errors, |e| {
+            matches!(e, ResolveError::OpaqueConstruct { .. })
+        });
+        assert_eq!(r025, 1, "stdlib Sql construct must be R025; {errors:?}");
+    }
+
+    #[test]
+    fn stdlib_opaque_pattern_is_r026() {
+        let src =
+            "import std.net.http (Sql)\nfn f s =\n    match s\n        Sql { value } -> value\n";
+        let (_b, errors, _i, _n) = full_resolve_single(src);
+        let r026 = count_opaque(&errors, |e| matches!(e, ResolveError::OpaquePattern { .. }));
+        assert_eq!(r026, 1, "stdlib Sql pattern must be R026; {errors:?}");
+    }
+
+    #[test]
+    fn stdlib_smart_constructor_is_allowed() {
+        // The exported factory `sql` is a function, not the opaque constructor.
+        let src = "import std.net.http (sql)\nfn f = sql \"x\"\n";
+        let (_b, errors, _i, _n) = full_resolve_single(src);
+        let gated = count_opaque(&errors, |e| {
+            matches!(
+                e,
+                ResolveError::OpaqueConstruct { .. } | ResolveError::OpaquePattern { .. }
+            )
+        });
+        assert_eq!(
+            gated, 0,
+            "calling the `sql` factory must be allowed; {errors:?}"
         );
     }
 }

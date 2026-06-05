@@ -27,6 +27,10 @@ pub struct BuiltinStdlibModule {
     pub name: &'static str,
     /// Exported symbol names.  Slice is `&'static` for zero-cost lookup.
     pub exports: &'static [&'static str],
+    /// Names of exported types declared `opaque`. Construction, pattern
+    /// matching, and field access of these are confined to the stdlib module
+    /// itself, so any use from user code is rejected (R025 / R026 / T036).
+    pub opaque_types: &'static [&'static str],
 }
 
 /// The compile-time stdlib manifest.

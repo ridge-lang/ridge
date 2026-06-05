@@ -159,6 +159,7 @@ const fn poly(vars: Vec<TyVid>, ty: Type) -> Scheme {
     Scheme {
         vars,
         cap_vars: vec![],
+        row_vars: vec![],
         ty,
         constraints: vec![],
     }
@@ -170,6 +171,7 @@ const fn poly_cap(vars: Vec<TyVid>, cap_vars: Vec<CapVid>, ty: Type) -> Scheme {
     Scheme {
         vars,
         cap_vars,
+        row_vars: vec![],
         ty,
         constraints: vec![],
     }
@@ -181,6 +183,7 @@ const fn mono(ty: Type) -> Scheme {
     Scheme {
         vars: vec![],
         cap_vars: vec![],
+        row_vars: vec![],
         ty,
         constraints: vec![],
     }
@@ -1212,6 +1215,7 @@ pub fn stdlib_signature(module: StdlibModuleId, name: &str, b: &BuiltinTyCons) -
             Some(Scheme {
                 vars: vec![A],
                 cap_vars: vec![],
+                row_vars: vec![],
                 ty: ty_fn_caps(
                     vec![ty_list(b, Type::Var(A))],
                     ty_option(b, Type::Var(A)),

@@ -757,6 +757,7 @@ fn bind_constructor_schemes(
         let scheme = Scheme {
             vars: param_vids.clone(),
             cap_vars: vec![],
+            row_vars: vec![],
             ty: fn_ty,
             constraints: vec![],
         };

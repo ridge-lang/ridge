@@ -5070,6 +5070,7 @@ mod tests {
         let constrained_scheme = Scheme {
             vars: vec![TyVid(0)],
             cap_vars: vec![],
+            row_vars: vec![],
             ty: Type::Error,
             constraints: vec![constraint],
         };

@@ -918,6 +918,7 @@ mod tests {
         let scheme = Scheme {
             vars: vec![a],
             cap_vars: vec![],
+            row_vars: vec![],
             ty: Type::Var(a),
             constraints: vec![Constraint {
                 class: TOTEXT_CLASS,
@@ -959,6 +960,7 @@ mod tests {
         let scheme = Scheme {
             vars: vec![a],
             cap_vars: vec![],
+            row_vars: vec![],
             ty: Type::Var(a),
             constraints: vec![], // unconstrained
         };

@@ -19,7 +19,7 @@
 //!     Scheme { vars, cap_vars, ty }
 //! ```
 
-use ridge_types::{CapRow, CapVid, Constraint, Scheme, TyVid, Type};
+use ridge_types::{CapRow, CapVid, Constraint, RowTail, RowVid, Scheme, TyVid, Type};
 use rustc_hash::FxHashSet;
 
 use crate::ctx::InferCtx;
@@ -50,6 +50,7 @@ pub fn instantiate(ctx: &mut InferCtx, scheme: &Scheme) -> Type {
     // Allocate all fresh variables upfront, then pass index-based closures.
     let n_ty = scheme.vars.len();
     let n_cap = scheme.cap_vars.len();
+    let n_row = scheme.row_vars.len();
 
     let mut fresh_tyvids: Vec<TyVid> = Vec::with_capacity(n_ty);
     for _ in 0..n_ty {
@@ -59,9 +60,14 @@ pub fn instantiate(ctx: &mut InferCtx, scheme: &Scheme) -> Type {
     for _ in 0..n_cap {
         fresh_capvids.push(ctx.fresh_capvid());
     }
+    let mut fresh_rowvids: Vec<RowVid> = Vec::with_capacity(n_row);
+    for _ in 0..n_row {
+        fresh_rowvids.push(ctx.fresh_rowvid());
+    }
 
     let mut ty_idx = 0usize;
     let mut cap_idx = 0usize;
+    let mut row_idx = 0usize;
     let instantiated = scheme.instantiate(
         &mut || {
             let v = fresh_tyvids[ty_idx];
@@ -72,6 +78,11 @@ pub fn instantiate(ctx: &mut InferCtx, scheme: &Scheme) -> Type {
             let c = fresh_capvids[cap_idx];
             cap_idx += 1;
             c
+        },
+        &mut || {
+            let r = fresh_rowvids[row_idx];
+            row_idx += 1;
+            r
         },
     );
 
@@ -126,7 +137,8 @@ pub const fn monoscheme(ty: Type) -> Scheme {
 pub fn generalise(ctx: &mut InferCtx, ty: &Type) -> Scheme {
     let free_in_env_ty = ctx.env_free_tyvids();
     let free_in_env_cap = ctx.env_free_capvids();
-    generalise_with_env(ctx, ty, &free_in_env_ty, &free_in_env_cap)
+    let free_in_env_row = ctx.env_free_rowvids();
+    generalise_with_env(ctx, ty, &free_in_env_ty, &free_in_env_cap, &free_in_env_row)
 }
 
 /// Variant of [`generalise`] that uses a pre-computed env free-var snapshot
@@ -146,24 +158,31 @@ pub fn generalise_with_env(
     ty: &Type,
     free_in_env_ty: &FxHashSet<TyVid>,
     free_in_env_cap: &FxHashSet<CapVid>,
+    free_in_env_row: &FxHashSet<RowVid>,
 ) -> Scheme {
-    // 1. Deep-resolve (follows union-find roots recursively).
+    // 1. Deep-resolve (follows union-find roots recursively). For records this
+    //    peels bound row vars off every tail, so a surviving open tail names a
+    //    genuinely free row var.
     let ty_resolved = ctx.deep_resolve(ty);
 
     // 2. Free vars in the resolved type.
     let (free_ty, free_cap) = collect_free_vars(&ty_resolved);
+    let free_row = collect_free_row_vars(&ty_resolved);
 
     // 3. Generalise over vars that are not in the environment.
     let mut vars: Vec<TyVid> = free_ty.difference(free_in_env_ty).copied().collect();
     let mut cap_vars: Vec<CapVid> = free_cap.difference(free_in_env_cap).copied().collect();
+    let mut row_vars: Vec<RowVid> = free_row.difference(free_in_env_row).copied().collect();
 
     // Sort for determinism (avoids snapshot-test flakiness).
     vars.sort_by_key(|v| v.0);
     cap_vars.sort_by_key(|c| c.0);
+    row_vars.sort_by_key(|r| r.0);
 
     Scheme {
         vars,
         cap_vars,
+        row_vars,
         ty: ty_resolved,
         constraints: vec![],
     }
@@ -231,6 +250,51 @@ fn collect_free_vars_rec(
     }
 }
 
+/// Collects the free record-row variables in a (already-resolved) type.
+///
+/// A [`RowVid`] is "free" when it appears in an *open* record tail. The input
+/// is assumed deep-resolved, so any surviving `RowTail::Open` names an unbound
+/// row var. Row vars live in their own namespace, so this is reported
+/// separately from [`collect_free_vars`].
+#[must_use]
+pub fn collect_free_row_vars(ty: &Type) -> FxHashSet<RowVid> {
+    let mut free_row: FxHashSet<RowVid> = FxHashSet::default();
+    collect_free_row_vars_rec(ty, &mut free_row);
+    free_row
+}
+
+fn collect_free_row_vars_rec(ty: &Type, free_row: &mut FxHashSet<RowVid>) {
+    match ty {
+        Type::Record { fields, tail } => {
+            if let RowTail::Open(rv) = tail {
+                free_row.insert(*rv);
+            }
+            for (_, t) in fields {
+                collect_free_row_vars_rec(t, free_row);
+            }
+        }
+        Type::Con(_, args) => {
+            for a in args {
+                collect_free_row_vars_rec(a, free_row);
+            }
+        }
+        Type::Fn { params, ret, .. } => {
+            for p in params {
+                collect_free_row_vars_rec(p, free_row);
+            }
+            collect_free_row_vars_rec(ret, free_row);
+        }
+        Type::Tuple(ts) => {
+            for t in ts {
+                collect_free_row_vars_rec(t, free_row);
+            }
+        }
+        Type::Alias { body, .. } => collect_free_row_vars_rec(body, free_row),
+        // Vars, Error, and any future variant carry no open record tail.
+        _ => {}
+    }
+}
+
 // ── Tests ─────────────────────────────────────────────────────────────────────
 
 #[cfg(test)]
@@ -252,6 +316,7 @@ mod tests {
         let scheme = Scheme {
             vars: vec![a],
             cap_vars: vec![],
+            row_vars: vec![],
             ty: Type::Var(a),
             constraints: vec![],
         };
@@ -272,6 +337,7 @@ mod tests {
         let scheme = Scheme {
             vars: vec![a],
             cap_vars: vec![],
+            row_vars: vec![],
             ty: Type::Fn {
                 params: vec![Type::Var(a)],
                 ret: Box::new(Type::Var(a)),
@@ -324,6 +390,7 @@ mod tests {
         let scheme = Scheme {
             vars: vec![a, b],
             cap_vars: vec![],
+            row_vars: vec![],
             ty: Type::Tuple(vec![Type::Var(a), Type::Var(b)]),
             constraints: vec![],
         };
@@ -353,6 +420,7 @@ mod tests {
         let scheme = Scheme {
             vars: vec![a],
             cap_vars: vec![c],
+            row_vars: vec![],
             ty: Type::Fn {
                 params: vec![Type::Var(a)],
                 ret: Box::new(Type::Var(a)),

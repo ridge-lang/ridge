@@ -888,6 +888,7 @@ mod tests {
         let scheme = Scheme {
             vars: vec![a],
             cap_vars: vec![],
+            row_vars: vec![],
             ty: Type::Fn {
                 params: vec![Type::Var(a)],
                 ret: Box::new(Type::Var(a)),
@@ -911,6 +912,7 @@ mod tests {
                 cap_counter += 1;
                 c
             },
+            &mut || ridge_types::RowVid(0),
         );
         let t2 = scheme.instantiate(
             &mut || {
@@ -923,6 +925,7 @@ mod tests {
                 cap_counter += 1;
                 c
             },
+            &mut || ridge_types::RowVid(0),
         );
 
         // Extract the fresh vars from each instantiation.

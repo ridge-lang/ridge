@@ -616,6 +616,23 @@ impl InferCtx {
         result
     }
 
+    /// Collects all free [`RowVid`]s from every scheme in every environment frame.
+    ///
+    /// Counterpart to [`Self::env_free_tyvids`] for record-row variables.
+    /// Generalisation uses this to avoid quantifying a row var that is still
+    /// live in an outer binding.
+    #[must_use]
+    pub fn env_free_rowvids(&self) -> rustc_hash::FxHashSet<ridge_types::RowVid> {
+        use rustc_hash::FxHashSet;
+        let mut result: FxHashSet<ridge_types::RowVid> = FxHashSet::default();
+        for frame in &self.env.frames {
+            for scheme in frame.bindings.values() {
+                result.extend(scheme.free_row_vars());
+            }
+        }
+        result
+    }
+
     /// Shallow-resolves a capability row:
     ///
     /// - `CapRow::Var(v)` — probes the cap unification table. If bound,

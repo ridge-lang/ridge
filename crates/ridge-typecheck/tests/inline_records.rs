@@ -466,3 +466,49 @@ fn caller () -> Int =
         "a closed record must reject a record with extra fields"
     );
 }
+
+/// An open record parameter is polymorphic across call sites: the same function
+/// applied to two differently-shaped records must typecheck. Each application
+/// instantiates a fresh row variable, so the first call's extra field does not
+/// pin the parameter's shape for the second.
+#[test]
+fn open_record_param_polymorphic_across_shapes() {
+    let src = r"
+fn fieldX (r: { x: Int | a }) -> Int = r.x
+
+fn caller () -> Int =
+    let withY = { x = 1, y = 2 }
+    let withZ = { x = 3, z = 4 }
+    let first = fieldX withY
+    let second = fieldX withZ
+    first + second
+";
+    let result = typecheck_src(src);
+    assert!(
+        result.errors.is_empty(),
+        "an open record param must accept differently-shaped records across calls, got: {:#?}",
+        error_codes(&result)
+    );
+}
+
+/// Two record literals of different shapes flowing into the same open-record
+/// parameter must not unify with each other. The row variable is quantified, so
+/// the two call sites stay independent rather than forcing `withY` and `withZ`
+/// to share a shape.
+#[test]
+fn open_record_calls_do_not_cross_constrain_arguments() {
+    let src = r"
+fn fieldX (r: { x: Int | a }) -> Int = r.x
+
+fn caller (flag: Bool) -> Int =
+    let withY = { x = 1, y = 2 }
+    let withZ = { x = 3, z = 4 }
+    fieldX withY + fieldX withZ
+";
+    let result = typecheck_src(src);
+    assert!(
+        result.errors.is_empty(),
+        "independent open-record calls must not cross-constrain their arguments, got: {:#?}",
+        error_codes(&result)
+    );
+}

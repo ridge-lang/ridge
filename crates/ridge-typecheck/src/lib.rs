@@ -533,6 +533,7 @@ fn typecheck_actor_bodies(
     let monoscheme = |ty: ridge_types::Type| Scheme {
         vars: vec![],
         cap_vars: vec![],
+        row_vars: vec![],
         ty,
         constraints: vec![],
     };
@@ -686,6 +687,7 @@ fn typecheck_module_inner(
             let scheme = ridge_types::Scheme {
                 vars: vec![],
                 cap_vars: vec![],
+                row_vars: vec![],
                 ty,
                 constraints: vec![],
             };
@@ -891,6 +893,7 @@ fn seed_class_method_schemes(
             let scheme = Scheme {
                 vars: vec![class_tyvid],
                 cap_vars: vec![],
+                row_vars: vec![],
                 ty: fn_ty,
                 constraints: vec![Constraint {
                     class: class_id,
@@ -938,6 +941,7 @@ fn seed_prelude_codec_schemes(ctx: &mut crate::ctx::InferCtx, b: &ridge_types::B
             Scheme {
                 vars: vec![a],
                 cap_vars: vec![],
+                row_vars: vec![],
                 ty: fn_ty,
                 constraints: vec![Constraint {
                     class: ENCODE_CLASS,
@@ -963,6 +967,7 @@ fn seed_prelude_codec_schemes(ctx: &mut crate::ctx::InferCtx, b: &ridge_types::B
             Scheme {
                 vars: vec![a],
                 cap_vars: vec![],
+                row_vars: vec![],
                 ty: fn_ty,
                 constraints: vec![Constraint {
                     class: DECODE_CLASS,

@@ -73,6 +73,7 @@ fn poly1(var: TyVid, ty: Type) -> Scheme {
     Scheme {
         vars: vec![var],
         cap_vars: vec![],
+        row_vars: vec![],
         ty,
         constraints: vec![],
     }
@@ -84,6 +85,7 @@ fn poly2(v0: TyVid, v1: TyVid, ty: Type) -> Scheme {
     Scheme {
         vars: vec![v0, v1],
         cap_vars: vec![],
+        row_vars: vec![],
         ty,
         constraints: vec![],
     }
@@ -183,18 +185,21 @@ pub fn prelude_types(b: &BuiltinTyCons) -> (FxHashMap<String, Scheme>, FxHashMap
     let scheme_less = Scheme {
         vars: vec![],
         cap_vars: vec![],
+        row_vars: vec![],
         ty: ty_fn_pure(vec![], ordering_ty.clone()),
         constraints: vec![],
     };
     let scheme_equal = Scheme {
         vars: vec![],
         cap_vars: vec![],
+        row_vars: vec![],
         ty: ty_fn_pure(vec![], ordering_ty.clone()),
         constraints: vec![],
     };
     let scheme_greater = Scheme {
         vars: vec![],
         cap_vars: vec![],
+        row_vars: vec![],
         ty: ty_fn_pure(vec![], ordering_ty),
         constraints: vec![],
     };
@@ -214,6 +219,7 @@ pub fn prelude_types(b: &BuiltinTyCons) -> (FxHashMap<String, Scheme>, FxHashMap
     let json_ctor = |param: Option<Type>| Scheme {
         vars: vec![],
         cap_vars: vec![],
+        row_vars: vec![],
         ty: ty_fn_pure(param.map_or_else(Vec::new, |p| vec![p]), json_ty.clone()),
         constraints: vec![],
     };

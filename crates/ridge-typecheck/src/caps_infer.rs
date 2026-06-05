@@ -478,6 +478,7 @@ mod tests {
         Scheme {
             vars: vec![a],
             cap_vars: vec![cap_c],
+            row_vars: vec![],
             ty: Type::Fn {
                 params: vec![
                     // callback: fn c (a -> Unit)
@@ -503,6 +504,7 @@ mod tests {
         Scheme {
             vars: vec![a],
             cap_vars: vec![],
+            row_vars: vec![],
             ty: Type::Fn {
                 params: vec![Type::Con(b.list, vec![Type::Var(a)])],
                 ret: Box::new(Type::Con(b.int, vec![])),

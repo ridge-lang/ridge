@@ -201,17 +201,23 @@ impl Subst {
             .map(|(c, s)| (*c, *s))
             .collect();
 
+        let restricted_row: FxHashMap<RowVid, Row> = self
+            .row
+            .iter()
+            .filter(|(r, _)| !scheme.row_vars.contains(r))
+            .map(|(r, row)| (*r, row.clone()))
+            .collect();
+
         let restricted = Self {
             ty: restricted_ty,
             cap: restricted_cap,
-            // No scheme binds row vars yet (R4 adds `Scheme.row_vars`); until
-            // then row substitutions are never scheme-bound, so pass them whole.
-            row: self.row.clone(),
+            row: restricted_row,
         };
 
         Scheme {
             vars: scheme.vars.clone(),
             cap_vars: scheme.cap_vars.clone(),
+            row_vars: scheme.row_vars.clone(),
             ty: restricted.apply_to_ty(&scheme.ty),
             constraints: scheme.constraints.clone(),
         }
@@ -344,6 +350,7 @@ mod tests {
         let scheme = Scheme {
             vars: vec![a],
             cap_vars: vec![],
+            row_vars: vec![],
             ty: Type::Fn {
                 params: vec![Type::Var(a)],
                 ret: Box::new(Type::Con(cid(1), vec![])),

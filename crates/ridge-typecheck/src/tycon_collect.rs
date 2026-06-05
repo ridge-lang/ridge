@@ -938,9 +938,9 @@ pub fn ast_type_to_ridge_type(
             }
         }
 
-        // Inline record type → a structural, closed `Type::Record`. The field
-        // set lives in the type itself; no interning, no shape-key lookup.
-        ridge_ast::Type::Record { fields, .. } => {
+        // Inline record type → a structural `Type::Record`. A `| r` tail makes
+        // the row open over a fresh row variable; a closed record has none.
+        ridge_ast::Type::Record { fields, tail, .. } => {
             let resolved: Vec<(String, Type)> = fields
                 .iter()
                 .map(|f| {
@@ -948,7 +948,12 @@ pub fn ast_type_to_ridge_type(
                     (f.name.text.clone(), ty)
                 })
                 .collect();
-            Type::record(resolved, ridge_types::RowTail::Closed)
+            let row_tail = if tail.is_some() {
+                ridge_types::RowTail::Open(ctx.fresh_rowvid())
+            } else {
+                ridge_types::RowTail::Closed
+            };
+            Type::record(resolved, row_tail)
         }
     }
 }

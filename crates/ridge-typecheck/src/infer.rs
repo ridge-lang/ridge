@@ -1200,10 +1200,13 @@ fn ast_type_to_type(ctx: &mut InferCtx, b: &BuiltinTyCons, ast_ty: &ridge_ast::T
                     (f.name.text.clone(), ty)
                 })
                 .collect();
-            // The row-variable tail (`{ … | r }`) is resolved to an open row in
-            // a follow-up; for now every annotated inline record is closed.
-            let _ = tail;
-            Type::record(resolved, ridge_types::RowTail::Closed)
+            // A `| r` tail makes the row open over a fresh row variable.
+            let row_tail = if tail.is_some() {
+                ridge_types::RowTail::Open(ctx.fresh_rowvid())
+            } else {
+                ridge_types::RowTail::Closed
+            };
+            Type::record(resolved, row_tail)
         }
     }
 }

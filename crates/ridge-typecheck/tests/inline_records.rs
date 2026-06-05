@@ -430,3 +430,39 @@ fn f () -> { a: Int } =
         error_codes(&result)
     );
 }
+
+/// An open record parameter `{ x: Int | a }` accepts a record carrying the
+/// declared field plus extras — the headline of row polymorphism.
+#[test]
+fn open_record_param_accepts_extra_fields() {
+    let src = r"
+fn fieldX (r: { x: Int | a }) -> Int = r.x
+
+fn caller () -> Int =
+    let rec = { x = 1, y = 2 }
+    fieldX rec
+";
+    let result = typecheck_src(src);
+    assert!(
+        result.errors.is_empty(),
+        "an open record must accept a record with extra fields, got: {:#?}",
+        error_codes(&result)
+    );
+}
+
+/// A closed record parameter `{ x: Int }` rejects a record with extra fields.
+#[test]
+fn closed_record_param_rejects_extra_fields() {
+    let src = r"
+fn fieldX (r: { x: Int }) -> Int = r.x
+
+fn caller () -> Int =
+    let rec = { x = 1, y = 2 }
+    fieldX rec
+";
+    let result = typecheck_src(src);
+    assert!(
+        !result.errors.is_empty(),
+        "a closed record must reject a record with extra fields"
+    );
+}

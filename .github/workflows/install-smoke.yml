@@ -101,7 +101,7 @@ jobs:
       - name: Install Erlang/OTP (prerequisite check)
         uses: erlef/setup-beam@v1
         with:
-          otp-version: "26"
+          otp-version: "27"
 
       # ── Run install script (will download binaries from release) ──
       # Download first, then execute with `bash -x` so every command is

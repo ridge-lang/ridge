@@ -5,7 +5,7 @@
 
 .DESCRIPTION
     Installs the Ridge CLI and LSP server by verifying prerequisites
-    (Rust >= 1.88, Erlang/OTP >= 26, git >= 2.20) and then running
+    (Rust >= 1.88, Erlang/OTP >= 27, git >= 2.20) and then running
     `cargo install` for ridge-cli and ridge-lsp.
 
 .ENVIRONMENT
@@ -156,13 +156,13 @@ error: Rust $rustVer is too old; Ridge requires Rust $MinRust or newer.
 "@
 }
 
-# ── Step 4: Verify Erlang/OTP >= 26 ──────────────────────────────────────────
+# ── Step 4: Verify Erlang/OTP >= 27 ──────────────────────────────────────────
 # Use `io:put_chars(...)` rather than `io:format("~s~n", ...)`: PowerShell 5.1
 # strips inner `"` chars when marshaling native command args, so any -eval with
 # a quoted format string arrives at erl mangled and triggers an Erlang parse
 # error during boot.  `io:put_chars/1` takes char data directly (no format
 # string, no `"` in the eval), which is robust across PS 5.1 / 7.x.
-$MinOtp = 26
+$MinOtp = 27
 try {
     $otpOut = & erl -noshell -eval 'io:put_chars(erlang:system_info(otp_release)),init:stop().' 2>&1
 }

@@ -79,6 +79,10 @@ pub struct BuiltinTyCons {
     /// lowercase-snake BEAM atoms (`json_null`, `{json_int, N}`, …) that
     /// `ridge_rt:json_encode/1` walks — see `ridge-codegen-erl`.
     pub json_value: TyConId,
+    /// `std.net.http` `Sql` — opaque `{ value: Text }` taint wrapper.
+    pub sql: TyConId,
+    /// `std.net.http` `Html` — opaque `{ value: Text }` taint wrapper.
+    pub html: TyConId,
 }
 
 impl BuiltinTyCons {
@@ -110,6 +114,8 @@ impl BuiltinTyCons {
             proc_output: SENTINEL,
             ordering: SENTINEL,
             json_value: SENTINEL,
+            sql: SENTINEL,
+            html: SENTINEL,
         }
     }
 
@@ -468,6 +474,45 @@ impl BuiltinTyCons {
             is_anon: false,
         });
 
+        // Web-layer taint wrappers (std.net.http). Declared as `opaque` records so
+        // that field access outside their defining module is a type error (T036);
+        // `def_module_raw = u32::MAX` is a sentinel that never equals a real user
+        // module, so any consumer-module access is treated as cross-module. The
+        // matching local declarations in net/http.ridge are what the stdlib's own
+        // compilation sees; user code resolves these names to these builtin ids.
+        let sql = arena.intern(TyConDecl {
+            id: TyConId(0),
+            name: "Sql".to_string(),
+            arity: 0,
+            kind: TyConKind::Record(RecordSchema::new(
+                vec![],
+                vec![RecordField {
+                    name: "value".to_string(),
+                    ty: Type::Con(text, vec![]),
+                }],
+            )),
+            def_span: None,
+            def_module_raw: Some(u32::MAX),
+            opaque: true,
+            is_anon: false,
+        });
+        let html = arena.intern(TyConDecl {
+            id: TyConId(0),
+            name: "Html".to_string(),
+            arity: 0,
+            kind: TyConKind::Record(RecordSchema::new(
+                vec![],
+                vec![RecordField {
+                    name: "value".to_string(),
+                    ty: Type::Con(text, vec![]),
+                }],
+            )),
+            def_span: None,
+            def_module_raw: Some(u32::MAX),
+            opaque: true,
+            is_anon: false,
+        });
+
         // Verify assignment order matches spec §4.1 indices 0..16.
         debug_assert_eq!(int.0, 0);
         debug_assert_eq!(float.0, 1);
@@ -486,6 +531,8 @@ impl BuiltinTyCons {
         debug_assert_eq!(proc_output.0, 14);
         debug_assert_eq!(ordering.0, 15);
         debug_assert_eq!(json_value.0, 16);
+        debug_assert_eq!(sql.0, 17);
+        debug_assert_eq!(html.0, 18);
 
         // Suppress the "unused" lint — CapabilitySet is imported for future use
         // in T4 (actor schemas carry CapabilitySet).
@@ -509,6 +556,8 @@ impl BuiltinTyCons {
             proc_output,
             ordering,
             json_value,
+            sql,
+            html,
         }
     }
 }

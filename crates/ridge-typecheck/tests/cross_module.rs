@@ -162,6 +162,51 @@ fn imported_fn_call_correct_arg_is_clean() {
     );
 }
 
+// ── Stdlib taint wrappers (Sql/Html) are opaque end-to-end ────────────────────
+
+fn typecheck_one(main_src: &str) -> Vec<TypeError> {
+    let td = TempDir::new().expect("tempdir");
+    write_file(
+        td.path(),
+        "ridge.toml",
+        "[workspace]\nname = \"ws\"\nversion = \"0.1.0\"\nmembers = [\"libs/*\"]\n",
+    );
+    write_file(
+        td.path(),
+        "libs/app/ridge.toml",
+        "[project]\nname = \"app\"\nversion = \"0.1.0\"\nkind = \"library\"\n",
+    );
+    write_file(td.path(), "libs/app/src/Main.ridge", main_src);
+    let disc = discover_workspace(td.path());
+    let resolved = resolve_workspace(disc.graph.expect("workspace graph"));
+    let result = typecheck_workspace(&resolved);
+    result.errors.into_iter().map(|(_, e)| e).collect()
+}
+
+#[test]
+fn stdlib_opaque_field_access_is_t036() {
+    // Reading `Sql`'s field from user code is rejected (it would expose the
+    // representation and let callers skip the escape contract).
+    let main = "import std.net.http (Sql)\nfn leak (s: Sql) -> Text = s.value\n";
+    let errors = typecheck_one(main);
+    assert_eq!(
+        count_code(&errors, "T036"),
+        1,
+        "expected one T036 for stdlib opaque field access; got {errors:?}"
+    );
+}
+
+#[test]
+fn stdlib_accessor_reads_value_cleanly() {
+    // The exported `sqlValue` accessor is the sanctioned way to read the text.
+    let main = "import std.net.http (sql, sqlValue)\nfn ok () -> Text = sqlValue (sql \"x\")\n";
+    let errors = typecheck_one(main);
+    assert!(
+        errors.is_empty(),
+        "factory + accessor round-trip must type-check clean; got {errors:?}"
+    );
+}
+
 #[test]
 fn qualified_imported_fn_call_is_type_checked() {
     // `import x as Lib` then `Lib.needsText` resolves to the producer's scheme.

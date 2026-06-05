@@ -1345,14 +1345,33 @@ pub fn stdlib_signature(module: StdlibModuleId, name: &str, b: &BuiltinTyCons) -
         | (STD_CLI, "parseArgs" | "help" | "version")
         | (STD_NET_HTTP,
            "get" | "post" | "put" | "delete" | "respond" | "Request" | "Response"
-           // Web-layer hardening newtypes — Sql / Html record types and their
-           // factory functions. Stubs until proper Phase 4 record-typed
-           // signatures land for the whole module.
-           | "Sql" | "Html" | "sql" | "html"
+           // `Sql` / `Html` as bare value (the constructor) stay stubbed — the
+           // resolver already rejects constructing them from user code (R025).
+           | "Sql" | "Html"
            // SecureCookie record + factory + header serializer.
            | "SecureCookie" | "secureCookie" | "secureCookieHeader") => {
             stub_phase7()
         }
+
+        // Web-layer taint wrappers: `sql`/`html` escape raw text into an opaque
+        // wrapper; `sqlValue`/`htmlValue` read the escaped text back out (the only
+        // way to do so, since the field is opaque outside the module).
+        (STD_NET_HTTP, "sql") => Some(mono(ty_fn_pure(
+            vec![ty_text(b)],
+            Type::Con(b.sql, vec![]),
+        ))),
+        (STD_NET_HTTP, "html") => Some(mono(ty_fn_pure(
+            vec![ty_text(b)],
+            Type::Con(b.html, vec![]),
+        ))),
+        (STD_NET_HTTP, "sqlValue") => Some(mono(ty_fn_pure(
+            vec![Type::Con(b.sql, vec![])],
+            ty_text(b),
+        ))),
+        (STD_NET_HTTP, "htmlValue") => Some(mono(ty_fn_pure(
+            vec![Type::Con(b.html, vec![])],
+            ty_text(b),
+        ))),
         // listen: Int -> (fn {net} (Request -> Response)) -> Unit
         // Phase 4: polymorphic over the handler type (Request/Response stubs).
         (STD_NET_HTTP, "listen") => Some(poly(

@@ -297,6 +297,7 @@ pub fn typecheck_workspace(ws: &ResolvedWorkspace) -> TypecheckResult {
             &rm.imports,
             &symbol_tables,
             &per_module_tycon_names,
+            &b,
         );
         let imported_schemes = crate::cross_module::imported_value_schemes(
             &rm.imports,

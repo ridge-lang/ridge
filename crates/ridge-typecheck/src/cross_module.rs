@@ -15,7 +15,20 @@ use std::sync::Arc;
 
 use ridge_ast::{Item, Module};
 use ridge_resolve::{Binding, ImportResolution, ImportTarget, ModuleId, SymbolKind, SymbolTable};
-use ridge_types::{Scheme, TyConId};
+use ridge_types::{BuiltinTyCons, Scheme, TyConId};
+
+/// Map a stdlib opaque type name to its pre-registered builtin `TyConId`.
+///
+/// Stdlib taint wrappers are interned as builtins (see `BuiltinTyCons`) rather
+/// than collected from source, so an importing module resolves the bare name to
+/// these ids. Returns `None` for any name that is not a known stdlib opaque type.
+fn stdlib_opaque_tycon(b: &BuiltinTyCons, name: &str) -> Option<TyConId> {
+    match name {
+        "Sql" => Some(b.sql),
+        "Html" => Some(b.html),
+        _ => None,
+    }
+}
 
 /// Order modules so every producer is type-checked before its consumers.
 ///
@@ -122,30 +135,47 @@ pub(crate) fn imported_tycon_names(
     imports: &[ImportResolution],
     symbol_tables: &[&SymbolTable],
     per_module_tycon_names: &[FxHashMap<String, TyConId>],
+    b: &BuiltinTyCons,
 ) -> FxHashMap<String, TyConId> {
     let mut out: FxHashMap<String, TyConId> = FxHashMap::default();
     for ir in imports {
         for eb in &ir.effective_bindings {
-            let Binding::ImportedSymbol { module, symbol, .. } = &eb.binding else {
-                continue;
-            };
-            let Some(table) = symbol_tables.get(module.0 as usize) else {
-                continue;
-            };
-            let Some(entry) = table.entries.get(symbol.0 as usize) else {
-                continue;
-            };
-            if !matches!(
-                entry.kind,
-                SymbolKind::Type { .. } | SymbolKind::Actor { .. }
-            ) {
-                continue;
-            }
-            if let Some(&tid) = per_module_tycon_names
-                .get(module.0 as usize)
-                .and_then(|m| m.get(&entry.name))
-            {
-                out.insert(eb.local_name.clone(), tid);
+            match &eb.binding {
+                // A type imported from another workspace module.
+                Binding::ImportedSymbol { module, symbol, .. } => {
+                    let Some(entry) = symbol_tables
+                        .get(module.0 as usize)
+                        .and_then(|t| t.entries.get(symbol.0 as usize))
+                    else {
+                        continue;
+                    };
+                    if !matches!(
+                        entry.kind,
+                        SymbolKind::Type { .. } | SymbolKind::Actor { .. }
+                    ) {
+                        continue;
+                    }
+                    if let Some(&tid) = per_module_tycon_names
+                        .get(module.0 as usize)
+                        .and_then(|m| m.get(&entry.name))
+                    {
+                        out.insert(eb.local_name.clone(), tid);
+                    }
+                }
+                // An opaque taint wrapper imported from a builtin stdlib module
+                // (`Sql`, `Html`) — resolve the bare name to its builtin TyConId so
+                // annotations type-check and field access is gated (T036).
+                Binding::StdlibSymbol { module, name } => {
+                    let is_opaque = ridge_resolve::BUILTINS
+                        .get(module.0 as usize)
+                        .is_some_and(|m| m.opaque_types.contains(&name.as_str()));
+                    if is_opaque {
+                        if let Some(tid) = stdlib_opaque_tycon(b, name) {
+                            out.insert(eb.local_name.clone(), tid);
+                        }
+                    }
+                }
+                _ => {}
             }
         }
     }

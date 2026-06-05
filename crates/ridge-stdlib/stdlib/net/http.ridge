@@ -123,6 +123,16 @@ pub fn html (raw: Text) -> Html =
         |> Text.replace "'" "&#39;"
     Html { value = escaped }
 
+-- Read the escaped text out of a Sql value. `sql` already ran the escape, so
+-- this is the safe text to splice into a SQL string literal. This accessor is
+-- the only way to reach the value from outside this module.
+pub fn sqlValue (s: Sql) -> Text =
+    s.value
+
+-- Read the escaped text out of an Html value.
+pub fn htmlValue (h: Html) -> Text =
+    h.value
+
 -- ── SecureCookie record + serializer ──────────────────────────────────────────
 --
 -- A cookie value with safe-by-default attribute settings. The factory

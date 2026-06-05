@@ -334,6 +334,8 @@ const BASELINE_EXPORTS: &[(&str, &[&str])] = &[
             "respond",
             "sql",
             "html",
+            "sqlValue",
+            "htmlValue",
             "secureCookie",
             "secureCookieHeader",
         ],
@@ -497,7 +499,10 @@ fn extract_pub_names(src: &str) -> Vec<String> {
             continue;
         }
 
-        if let Some(rest) = trimmed.strip_prefix("pub type ") {
+        if let Some(rest) = trimmed
+            .strip_prefix("pub opaque type ")
+            .or_else(|| trimmed.strip_prefix("pub type "))
+        {
             let mut tokens = rest.split_whitespace();
             if let Some(n) = tokens.next() {
                 let n = n.trim_end_matches('=').trim();

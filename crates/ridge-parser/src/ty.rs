@@ -962,7 +962,10 @@ mod tests {
     #[test]
     fn parse_type_inline_record_closed_has_no_tail() {
         let result = parse_ty("{ x: Int }");
-        assert!(matches!(result, Ok(Type::Record { tail: None, .. })), "got {result:?}");
+        assert!(
+            matches!(result, Ok(Type::Record { tail: None, .. })),
+            "got {result:?}"
+        );
     }
 
     #[test]
@@ -979,7 +982,10 @@ mod tests {
     #[test]
     fn parse_type_inline_record_pipe_without_var_errors() {
         let result = parse_ty("{ x: Int | }");
-        assert!(result.is_err(), "a `|` with no row variable is an error: {result:?}");
+        assert!(
+            result.is_err(),
+            "a `|` with no row variable is an error: {result:?}"
+        );
     }
 
     // ── Inline record type — trailing comma ──────────────────────────────────

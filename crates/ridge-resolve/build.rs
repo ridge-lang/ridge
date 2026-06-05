@@ -358,8 +358,7 @@ const BASELINE_EXPORTS: &[(&str, &[&str])] = &[
 /// of the generated manifest so the resolver and type-checker confine these
 /// types' construction, pattern matching, and field access to the declaring
 /// stdlib module (the web-layer taint wrappers).
-const BASELINE_OPAQUE: &[(&str, &[&str])] =
-    &[("std.net.http", &["Sql", "Html", "SecureCookie"])];
+const BASELINE_OPAQUE: &[(&str, &[&str])] = &[("std.net.http", &["Sql", "Html", "SecureCookie"])];
 
 fn main() {
     // Tell Cargo to re-run this script when any stdlib .ridge file changes.

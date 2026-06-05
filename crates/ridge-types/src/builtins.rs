@@ -687,10 +687,11 @@ mod tests {
     }
 
     #[test]
-    fn arena_len_is_17() {
-        // 15 original builtins + Ordering (0.2.13) + JsonValue (0.3.0).
+    fn arena_len_is_20() {
+        // 15 original builtins + Ordering + JsonValue + the std.net.http taint
+        // wrappers Sql / Html / SecureCookie.
         let (arena, _) = make_arena_with_builtins();
-        assert_eq!(arena.len(), 17);
+        assert_eq!(arena.len(), 20);
     }
 
     // ── Arena get() round-trip ────────────────────────────────────────────────

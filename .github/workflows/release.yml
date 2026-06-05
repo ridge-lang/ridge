@@ -59,7 +59,7 @@ jobs:
       - name: Install Erlang/OTP
         uses: erlef/setup-beam@v1
         with:
-          otp-version: "26"
+          otp-version: "27"
 
       - name: Cache cargo
         uses: actions/cache@v5

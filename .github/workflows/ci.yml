@@ -88,7 +88,10 @@ jobs:
         if: steps.changes.outputs.code == 'true'
         uses: erlef/setup-beam@v1
         with:
-          otp-version: "26"
+          # 27 is the project's minimum supported OTP: deriving (Decode) bridges
+          # to the stdlib `json` module, which lands in OTP 27. The BEAM e2e job
+          # below pins the floor (27) and the latest (28).
+          otp-version: "27"
 
       - name: Cache cargo registry
         if: steps.changes.outputs.code == 'true'
@@ -116,3 +119,77 @@ jobs:
       - name: Run clippy
         if: steps.changes.outputs.code == 'true'
         run: cargo clippy --workspace --all-targets -- -D warnings
+
+  # The BEAM end-to-end suites are gated behind the `beam-runtime` feature: they
+  # compile each example through the full pipeline, invoke erlc/erl on the
+  # installed OTP, and assert real runtime output. The default `cargo test` in
+  # build-and-test never sets the feature, so these never ran in CI before. Run
+  # them on the supported OTP floor (27) and the latest (28); both must pass.
+  beam-e2e:
+    name: BEAM e2e (OTP ${{ matrix.otp }})
+    runs-on: ubuntu-22.04
+    strategy:
+      fail-fast: false
+      matrix:
+        otp: ["27", "28"]
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Detect code changes
+        id: changes
+        uses: dorny/paths-filter@v4
+        with:
+          predicate-quantifier: 'every'
+          filters: |
+            code:
+              - '**'
+              - '!**.md'
+              - '!docs/**'
+              - '!assets/**'
+              - '!examples/**'
+              - '!dogfood/**'
+              - '!LICENSE'
+              - '!CHANGELOG.md'
+              - '!.github/ISSUE_TEMPLATE/**'
+              - '!.github/PULL_REQUEST_TEMPLATE.md'
+              - '!.github/FUNDING.yml'
+              - '!CODEOWNERS'
+
+      - name: Free up disk space
+        if: steps.changes.outputs.code == 'true'
+        run: |
+          sudo rm -rf /usr/share/dotnet
+          sudo rm -rf /usr/local/lib/android
+          sudo rm -rf /opt/ghc
+          sudo rm -rf /opt/hostedtoolcache/CodeQL
+          sudo rm -rf /usr/local/share/boost
+          sudo apt-get clean
+
+      - name: Install Rust toolchain
+        if: steps.changes.outputs.code == 'true'
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: "1.88"
+
+      - name: Install Erlang/OTP
+        if: steps.changes.outputs.code == 'true'
+        uses: erlef/setup-beam@v1
+        with:
+          otp-version: ${{ matrix.otp }}
+
+      - name: Cache cargo registry
+        if: steps.changes.outputs.code == 'true'
+        uses: actions/cache@v5
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-beam-${{ matrix.otp }}-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: ${{ runner.os }}-cargo-beam-${{ matrix.otp }}-
+
+      - name: Run BEAM runtime e2e
+        if: steps.changes.outputs.code == 'true'
+        run: cargo test -p ridge-codegen-erl -p ridge-driver -p ridge-cli --features beam-runtime --no-fail-fast --locked

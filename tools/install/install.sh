@@ -114,13 +114,13 @@ if ! version_ge "$rust_ver" "$MIN_RUST"; then
     exit 1
 fi
 
-# ── Step 4: Verify Erlang/OTP ≥ 26 ──────────────────────────────────────────
+# ── Step 4: Verify Erlang/OTP ≥ 27 ──────────────────────────────────────────
 # Uses `io:put_chars(erlang:system_info(otp_release))` rather than
 # `io:format("~s~n", ...)` so the same eval expression works under PowerShell
 # 5.1 in install.ps1 (PS 5.1 strips inner `"` chars from native command args).
 # Bash preserves the eval verbatim either way; the unified pattern keeps both
 # installers symmetric and makes the dry-run snapshot directly comparable.
-MIN_OTP=26
+MIN_OTP=27
 if ! otp_out="$(erl -noshell -eval 'io:put_chars(erlang:system_info(otp_release)),init:stop().' 2>&1)"; then
     echo "error: erl not found — Erlang/OTP is not installed." >&2
     echo "" >&2

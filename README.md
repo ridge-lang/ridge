@@ -219,7 +219,7 @@ cargo build --workspace
 cargo test --workspace
 ```
 
-Prerequisites: Rust 1.88+, Erlang/OTP 26+, git 2.20+. Repository layout and
+Prerequisites: Rust 1.88+, Erlang/OTP 27+, git 2.20+. Repository layout and
 contributor conventions live in [`CONTRIBUTING.md`](CONTRIBUTING.md).
 
 ## Contributing

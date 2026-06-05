@@ -88,6 +88,7 @@ pub fn collect_user_tycons(
                     kind: TyConKind::Primitive, // placeholder; replaced in pass 2
                     def_span: Some(td.span),
                     def_module_raw: Some(module_id.0),
+                    opaque: td.opaque,
                     is_anon: false,
                 });
                 name_to_id.insert(td.name.text.clone(), id);
@@ -100,6 +101,7 @@ pub fn collect_user_tycons(
                     kind: TyConKind::Primitive, // placeholder; replaced in pass 2
                     def_span: Some(ad.span),
                     def_module_raw: Some(module_id.0),
+                    opaque: false, // actors cannot be opaque
                     is_anon: false,
                 });
                 name_to_id.insert(ad.name.text.clone(), id);
@@ -277,6 +279,7 @@ fn intern_inline_record(
             kind: TyConKind::Record(RecordSchema::new(vec![], canonical_fields)),
             def_span: Some(span),
             def_module_raw: None, // no single owning module for workspace-wide anons
+            opaque: false,
             is_anon: true,
         };
         arena.intern(decl)

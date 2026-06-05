@@ -352,6 +352,29 @@ pub enum ResolveError {
         span: Span,
     },
 
+    /// R025 — a constructor of an `opaque` type was used to build a value
+    /// outside the module that declares the type. Opaque types are constructed
+    /// only by their defining module; call a smart constructor it exports
+    /// instead.
+    #[error("constructor `{ctor_name}` belongs to an opaque type and cannot be used outside its defining module")]
+    OpaqueConstruct {
+        /// The constructor name as written at the use site.
+        ctor_name: String,
+        /// Span of the offending construction.
+        span: Span,
+    },
+
+    /// R026 — a constructor of an `opaque` type was matched in a pattern
+    /// outside the module that declares the type. Destructuring exposes the
+    /// hidden fields, so it is rejected outside the defining module.
+    #[error("constructor `{ctor_name}` belongs to an opaque type and cannot be matched outside its defining module")]
+    OpaquePattern {
+        /// The constructor name as written at the use site.
+        ctor_name: String,
+        /// Span of the offending pattern.
+        span: Span,
+    },
+
     /// R999 — two AST nodes were assigned the same `NodeId` (signals a
     /// compiler bug, not a user error).
     #[error("internal error: NodeId collision in `{node_kind}`")]
@@ -394,6 +417,8 @@ impl ResolveError {
             Self::FfiOutsideStdlib { .. } => "R022",
             Self::LegacyRgExtension { .. } => "R023",
             Self::AmbiguousMethodName { .. } => "R024",
+            Self::OpaqueConstruct { .. } => "R025",
+            Self::OpaquePattern { .. } => "R026",
             Self::InternalNodeIdCollision { .. } => "R999",
         }
     }
@@ -442,6 +467,8 @@ impl ResolveError {
             | Self::ActorStateMissingDefaultOrInit { span, .. }
             | Self::FfiOutsideStdlib { span }
             | Self::AmbiguousMethodName { span, .. }
+            | Self::OpaqueConstruct { span, .. }
+            | Self::OpaquePattern { span, .. }
             | Self::InternalNodeIdCollision { span, .. }
             | Self::DuplicateDeclaration {
                 second_span: span, ..

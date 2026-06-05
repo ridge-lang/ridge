@@ -56,6 +56,7 @@ fn token_kind_name(t: &Token) -> &'static str {
         Token::KwLet => "KW_LET",
         Token::KwMatch => "KW_MATCH",
         Token::KwOn => "KW_ON",
+        Token::KwOpaque => "KW_OPAQUE",
         Token::KwPub => "KW_PUB",
         Token::KwReturn => "KW_RETURN",
         Token::KwSpawn => "KW_SPAWN",

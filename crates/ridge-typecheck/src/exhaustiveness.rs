@@ -1257,6 +1257,7 @@ mod tests {
             }),
             def_span: None,
             def_module_raw: None,
+            opaque: false,
             is_anon: false,
         });
         (id, Type::Con(id, vec![]))
@@ -1282,6 +1283,7 @@ mod tests {
             kind: TyConKind::Record(RecordSchema::new(vec![], record_fields)),
             def_span: None,
             def_module_raw: None,
+            opaque: false,
             is_anon: false,
         });
         (id, Type::Con(id, vec![]))

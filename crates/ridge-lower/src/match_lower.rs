@@ -1174,6 +1174,7 @@ mod tests {
             owner_type: SymbolId(0),
             variant,
             is_record: false,
+            owner_module: ModuleId(0),
         });
 
         let mut ctx = LowerCtx::new(ModuleId(0), &[]);

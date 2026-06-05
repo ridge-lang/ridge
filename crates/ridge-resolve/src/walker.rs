@@ -226,6 +226,92 @@ impl ScopeWalker<'_> {
             .find(|eb| eb.local_name == name)
     }
 
+    /// Resolve whether `binding` names the construction or pattern-match of an
+    /// **opaque** type, returning the [`ModuleId`] that declares it.
+    ///
+    /// Opacity lives on the type entry and is mirrored on every constructor of
+    /// that type. A bare or qualified constructor resolves to a
+    /// [`Binding::Constructor`] whose `owner_type` points at the type entry; an
+    /// imported constructor resolves to a [`Binding::ImportedSymbol`] pointing
+    /// either at the type entry (a record auto-constructor shares the type's
+    /// name and id) or at a union-variant constructor entry. Both shapes are
+    /// inspected here. Any other binding — or a non-opaque type — yields `None`.
+    fn opaque_owner(&self, binding: &Binding) -> Option<ModuleId> {
+        match binding {
+            Binding::Constructor {
+                owner_type,
+                owner_module,
+                ..
+            } => self
+                .type_symbol_is_opaque(*owner_module, *owner_type)
+                .then_some(*owner_module),
+            Binding::ImportedSymbol { module, symbol, .. } => {
+                self.imported_opaque_owner(*module, *symbol)
+            }
+            // Stdlib taint wrappers (e.g. `Sql`, `Html`): opacity is carried on the
+            // generated builtin manifest. A stdlib symbol is never reached from
+            // inside its own module in user code, so any opaque use is cross-module.
+            // The sentinel `ModuleId(u32::MAX)` can never equal a real module id.
+            Binding::StdlibSymbol { module, name } => crate::stdlib_builtin::BUILTINS
+                .get(module.0 as usize)
+                .is_some_and(|m| m.opaque_types.contains(&name.as_str()))
+                .then_some(ModuleId(u32::MAX)),
+            _ => None,
+        }
+    }
+
+    /// True iff the entry at `(module, symbol)` is a `Type` declared `opaque`.
+    fn type_symbol_is_opaque(&self, module: ModuleId, symbol: crate::SymbolId) -> bool {
+        self.all_symbol_tables
+            .get(module.0 as usize)
+            .and_then(|t| t.entries.get(symbol.0 as usize))
+            .is_some_and(|e| matches!(e.kind, SymbolKind::Type { opaque: true, .. }))
+    }
+
+    /// Opacity for an imported symbol: the entry is either the type itself (an
+    /// imported record auto-constructor) or a union-variant constructor that
+    /// mirrors the type's opacity. Returns the declaring module when opaque.
+    fn imported_opaque_owner(&self, module: ModuleId, symbol: crate::SymbolId) -> Option<ModuleId> {
+        let entry = self
+            .all_symbol_tables
+            .get(module.0 as usize)
+            .and_then(|t| t.entries.get(symbol.0 as usize))?;
+        match entry.kind {
+            SymbolKind::Type { opaque: true, .. } => Some(module),
+            SymbolKind::Constructor {
+                opaque: true,
+                owner_module,
+                ..
+            } => Some(owner_module),
+            _ => None,
+        }
+    }
+
+    /// O3 gate: a constructor of an opaque type may only build or match a value
+    /// inside the module that declares the type. Emits `R025` (construction) or
+    /// `R026` (pattern) when the use crosses the defining module boundary.
+    /// In-module use (O4) is unrestricted and never fires.
+    fn check_opaque_use(
+        &mut self,
+        binding: &Binding,
+        ctor_name: &str,
+        span: Span,
+        is_pattern: bool,
+    ) {
+        let Some(owner_module) = self.opaque_owner(binding) else {
+            return;
+        };
+        if owner_module == self.module_id {
+            return;
+        }
+        let ctor_name = ctor_name.to_owned();
+        self.errors.push(if is_pattern {
+            ResolveError::OpaquePattern { ctor_name, span }
+        } else {
+            ResolveError::OpaqueConstruct { ctor_name, span }
+        });
+    }
+
     /// Visit a `Send.message` payload, treating its head identifier as a
     /// handler-name LABEL (no resolution against current scope).
     ///
@@ -381,9 +467,11 @@ impl ScopeWalker<'_> {
                             owner_type,
                             variant,
                             is_record,
+                            owner_module,
                             ..
                         } => {
-                            let (owner, var, is_rec) = (*owner_type, *variant, *is_record);
+                            let (owner, var, is_rec, owner_mod) =
+                                (*owner_type, *variant, *is_record, *owner_module);
                             self.stamp(
                                 name.span,
                                 NodeKind::Ident,
@@ -391,6 +479,7 @@ impl ScopeWalker<'_> {
                                     owner_type: owner,
                                     variant: var,
                                     is_record: is_rec,
+                                    owner_module: owner_mod,
                                 },
                             );
                         }
@@ -409,6 +498,7 @@ impl ScopeWalker<'_> {
                                     owner_type: sym.id,
                                     variant: 0,
                                     is_record: true,
+                                    owner_module: self.module_id,
                                 },
                             );
                         }
@@ -426,6 +516,7 @@ impl ScopeWalker<'_> {
                     }
                 } else if let Some(eb) = self.find_import_binding(&name.text) {
                     let b = eb.binding.clone();
+                    self.check_opaque_use(&b, &name.text, name.span, true);
                     self.stamp(name.span, NodeKind::Ident, b);
                 } else {
                     // R010: unknown constructor name in pattern.
@@ -808,13 +899,16 @@ impl<'ast> Visit<'ast> for ScopeWalker<'_> {
                                     owner_type,
                                     variant,
                                     is_record,
+                                    owner_module,
                                     ..
                                 } => {
-                                    let (owner, var, is_rec) = (*owner_type, *variant, *is_record);
+                                    let (owner, var, is_rec, owner_mod) =
+                                        (*owner_type, *variant, *is_record, *owner_module);
                                     Binding::Constructor {
                                         owner_type: owner,
                                         variant: var,
                                         is_record: is_rec,
+                                        owner_module: owner_mod,
                                     }
                                 }
                                 // For all other symbol kinds (Type, Fn, Const, Actor, FieldAccessor)
@@ -838,6 +932,12 @@ impl<'ast> Visit<'ast> for ScopeWalker<'_> {
                             });
                             Binding::Error
                         };
+                        self.check_opaque_use(
+                            &ctor_binding,
+                            &ctor_ident.text,
+                            ctor_ident.span,
+                            false,
+                        );
                         self.stamp(ctor_ident.span, NodeKind::Ident, ctor_binding);
                     }
                     RecordCtor::Qualified(qn) => {
@@ -852,6 +952,8 @@ impl<'ast> Visit<'ast> for ScopeWalker<'_> {
                             self.module_imports,
                             self.errors,
                         );
+                        let ctor_name = qn.segments.last().map_or("", |s| s.text.as_str());
+                        self.check_opaque_use(&binding, ctor_name, qn.span, false);
                         self.stamp(qn.span, NodeKind::Ident, binding);
                     }
                 }
@@ -2176,6 +2278,203 @@ fn toJson (x: a) -> Text where Encode a =
         assert!(
             cm >= 1,
             "encode must resolve as ClassMethod; bindings: {bindings:?}"
+        );
+    }
+
+    // ── O3: opaque-type construction / pattern gate (R025 / R026) ─────────────
+
+    /// Resolve a 2-module workspace under one project `proj`: `main_src` is
+    /// `Main.ridge`, `lib_src` is `Lib.ridge`. Returns Main's resolve errors.
+    fn resolve_main_with_lib(main_src: &str, lib_src: &str) -> Vec<ResolveError> {
+        let td = TempDir::new().expect("tempdir");
+        write_file(td.path(), "ridge.toml", &workspace_toml(&["libs/*"]));
+        write_file(td.path(), "libs/proj/ridge.toml", &project_toml("proj"));
+        write_file(td.path(), "libs/proj/src/Main.ridge", main_src);
+        write_file(td.path(), "libs/proj/src/Lib.ridge", lib_src);
+
+        let disc = crate::discover_workspace(td.path());
+        let mut ws = disc.graph.expect("workspace");
+        let g = build_module_graph(&ws);
+        let symbol_tables: Vec<SymbolTable> = g
+            .modules
+            .iter()
+            .map(|pm| {
+                let (t, _) = collect_symbols(pm.id, &pm.ast);
+                t
+            })
+            .collect();
+        let import_result = resolve_imports(&mut ws, &g, &symbol_tables);
+
+        let main_pm = g
+            .modules
+            .iter()
+            .find(|pm| {
+                #[allow(clippy::case_sensitive_file_extension_comparisons)]
+                ws.modules[pm.id.0 as usize]
+                    .fully_qualified_name
+                    .ends_with(".Main")
+            })
+            .expect("module Main");
+        let main_imports = import_result
+            .imports
+            .get(main_pm.id.0 as usize)
+            .map_or([].as_slice(), Vec::as_slice);
+
+        let (nid_map, _) = assign_node_ids(&main_pm.ast);
+        let (_bindings, errors, _scopes) = resolve_module_uses(
+            main_pm.id,
+            &main_pm.ast,
+            &nid_map,
+            &symbol_tables,
+            main_imports,
+            None,
+            false,
+        );
+        drop(td);
+        errors
+    }
+
+    fn count_opaque<F: Fn(&ResolveError) -> bool>(errors: &[ResolveError], f: F) -> usize {
+        errors.iter().filter(|e| f(e)).count()
+    }
+
+    #[test]
+    fn o3_in_module_opaque_construct_ok() {
+        // Building an opaque record inside its defining module is allowed (O4).
+        let src = "opaque type Sql = { raw: Text }\nfn make r = Sql { raw = r }\n";
+        let (_b, errors, _n) = resolve_bare(src);
+        let gated = count_opaque(&errors, |e| {
+            matches!(
+                e,
+                ResolveError::OpaqueConstruct { .. } | ResolveError::OpaquePattern { .. }
+            )
+        });
+        assert_eq!(
+            gated, 0,
+            "in-module construct must not be gated; {errors:?}"
+        );
+    }
+
+    #[test]
+    fn o3_in_module_opaque_pattern_ok() {
+        // Destructuring an opaque record inside its defining module is allowed.
+        let src =
+            "opaque type Box = { v: Int }\nfn unwrap b =\n    match b\n        Box { v } -> v\n";
+        let (_b, errors, _n) = resolve_bare(src);
+        let gated = count_opaque(&errors, |e| matches!(e, ResolveError::OpaquePattern { .. }));
+        assert_eq!(gated, 0, "in-module pattern must not be gated; {errors:?}");
+    }
+
+    #[test]
+    fn o3_cross_module_imported_construct_r025() {
+        // Headline case: an imported opaque constructor cannot build a value.
+        let main = "import proj.Lib (Sql)\nfn make r = Sql { raw = r }\n";
+        let lib = "pub opaque type Sql = { raw: Text }\n";
+        let errors = resolve_main_with_lib(main, lib);
+        let r025 = count_opaque(&errors, |e| {
+            matches!(e, ResolveError::OpaqueConstruct { .. })
+        });
+        assert_eq!(
+            r025, 1,
+            "expected 1 R025 for imported opaque ctor; {errors:?}"
+        );
+    }
+
+    #[test]
+    fn o3_cross_module_imported_pattern_r026() {
+        // An imported opaque constructor cannot be matched cross-module.
+        let main =
+            "import proj.Lib (Sql)\nfn unwrap s =\n    match s\n        Sql { raw } -> raw\n";
+        let lib = "pub opaque type Sql = { raw: Text }\n";
+        let errors = resolve_main_with_lib(main, lib);
+        let r026 = count_opaque(&errors, |e| matches!(e, ResolveError::OpaquePattern { .. }));
+        assert_eq!(
+            r026, 1,
+            "expected 1 R026 for imported opaque pattern; {errors:?}"
+        );
+    }
+
+    #[test]
+    fn o3_cross_module_qualified_construct_r025() {
+        // A qualified opaque constructor `Lib.Sql { .. }` is gated too.
+        let main = "import proj.Lib as Lib\nfn make r = Lib.Sql { raw = r }\n";
+        let lib = "pub opaque type Sql = { raw: Text }\n";
+        let errors = resolve_main_with_lib(main, lib);
+        let r025 = count_opaque(&errors, |e| {
+            matches!(e, ResolveError::OpaqueConstruct { .. })
+        });
+        assert_eq!(r025, 1, "expected 1 R025 via qualified ctor; {errors:?}");
+    }
+
+    #[test]
+    fn o3_cross_module_imported_union_variant_construct_r025() {
+        // An opaque union's variant cannot be constructed cross-module.
+        let main = "import proj.Lib (Wrap)\nfn make = Wrap 1\n";
+        let lib = "pub opaque type Boxed = | Wrap Int\n";
+        let errors = resolve_main_with_lib(main, lib);
+        let r025 = count_opaque(&errors, |e| {
+            matches!(e, ResolveError::OpaqueConstruct { .. })
+        });
+        assert_eq!(
+            r025, 1,
+            "expected 1 R025 for opaque union variant; {errors:?}"
+        );
+    }
+
+    #[test]
+    fn o3_cross_module_transparent_construct_ok() {
+        // A normal (transparent) imported record constructs fine cross-module.
+        let main = "import proj.Lib (Plain)\nfn make = Plain { x = 1 }\n";
+        let lib = "pub type Plain = { x: Int }\n";
+        let errors = resolve_main_with_lib(main, lib);
+        let gated = count_opaque(&errors, |e| {
+            matches!(
+                e,
+                ResolveError::OpaqueConstruct { .. } | ResolveError::OpaquePattern { .. }
+            )
+        });
+        assert_eq!(
+            gated, 0,
+            "transparent record must construct cross-module; {errors:?}"
+        );
+    }
+
+    // ── O5: stdlib taint wrappers are opaque (Sql/Html/SecureCookie) ──────────
+
+    #[test]
+    fn stdlib_opaque_construct_is_r025() {
+        // Forging a `Sql` directly from user code bypasses the escape — rejected.
+        let src = "import std.net.http (Sql)\nfn f = Sql { value = \"x\" }\n";
+        let (_b, errors, _i, _n) = full_resolve_single(src);
+        let r025 = count_opaque(&errors, |e| {
+            matches!(e, ResolveError::OpaqueConstruct { .. })
+        });
+        assert_eq!(r025, 1, "stdlib Sql construct must be R025; {errors:?}");
+    }
+
+    #[test]
+    fn stdlib_opaque_pattern_is_r026() {
+        let src =
+            "import std.net.http (Sql)\nfn f s =\n    match s\n        Sql { value } -> value\n";
+        let (_b, errors, _i, _n) = full_resolve_single(src);
+        let r026 = count_opaque(&errors, |e| matches!(e, ResolveError::OpaquePattern { .. }));
+        assert_eq!(r026, 1, "stdlib Sql pattern must be R026; {errors:?}");
+    }
+
+    #[test]
+    fn stdlib_smart_constructor_is_allowed() {
+        // The exported factory `sql` is a function, not the opaque constructor.
+        let src = "import std.net.http (sql)\nfn f = sql \"x\"\n";
+        let (_b, errors, _i, _n) = full_resolve_single(src);
+        let gated = count_opaque(&errors, |e| {
+            matches!(
+                e,
+                ResolveError::OpaqueConstruct { .. } | ResolveError::OpaquePattern { .. }
+            )
+        });
+        assert_eq!(
+            gated, 0,
+            "calling the `sql` factory must be allowed; {errors:?}"
         );
     }
 }

@@ -79,6 +79,12 @@ pub struct BuiltinTyCons {
     /// lowercase-snake BEAM atoms (`json_null`, `{json_int, N}`, …) that
     /// `ridge_rt:json_encode/1` walks — see `ridge-codegen-erl`.
     pub json_value: TyConId,
+    /// `std.net.http` `Sql` — opaque `{ value: Text }` taint wrapper.
+    pub sql: TyConId,
+    /// `std.net.http` `Html` — opaque `{ value: Text }` taint wrapper.
+    pub html: TyConId,
+    /// `std.net.http` `SecureCookie` — opaque cookie record with safe defaults.
+    pub secure_cookie: TyConId,
 }
 
 impl BuiltinTyCons {
@@ -110,6 +116,9 @@ impl BuiltinTyCons {
             proc_output: SENTINEL,
             ordering: SENTINEL,
             json_value: SENTINEL,
+            sql: SENTINEL,
+            html: SENTINEL,
+            secure_cookie: SENTINEL,
         }
     }
 
@@ -151,6 +160,7 @@ impl BuiltinTyCons {
             kind: TyConKind::Primitive,
             def_span: None,
             def_module_raw: None,
+            opaque: false,
             is_anon: false,
         });
         let float = arena.intern(TyConDecl {
@@ -160,6 +170,7 @@ impl BuiltinTyCons {
             kind: TyConKind::Primitive,
             def_span: None,
             def_module_raw: None,
+            opaque: false,
             is_anon: false,
         });
         let bool_ = arena.intern(TyConDecl {
@@ -169,6 +180,7 @@ impl BuiltinTyCons {
             kind: TyConKind::Primitive,
             def_span: None,
             def_module_raw: None,
+            opaque: false,
             is_anon: false,
         });
         let text = arena.intern(TyConDecl {
@@ -178,6 +190,7 @@ impl BuiltinTyCons {
             kind: TyConKind::Primitive,
             def_span: None,
             def_module_raw: None,
+            opaque: false,
             is_anon: false,
         });
         let unit = arena.intern(TyConDecl {
@@ -187,6 +200,7 @@ impl BuiltinTyCons {
             kind: TyConKind::Primitive,
             def_span: None,
             def_module_raw: None,
+            opaque: false,
             is_anon: false,
         });
         let timestamp = arena.intern(TyConDecl {
@@ -196,6 +210,7 @@ impl BuiltinTyCons {
             kind: TyConKind::Primitive,
             def_span: None,
             def_module_raw: None,
+            opaque: false,
             is_anon: false,
         });
 
@@ -207,6 +222,7 @@ impl BuiltinTyCons {
             kind: TyConKind::Builtin,
             def_span: None,
             def_module_raw: None,
+            opaque: false,
             is_anon: false,
         });
         let map = arena.intern(TyConDecl {
@@ -216,6 +232,7 @@ impl BuiltinTyCons {
             kind: TyConKind::Builtin,
             def_span: None,
             def_module_raw: None,
+            opaque: false,
             is_anon: false,
         });
         let set = arena.intern(TyConDecl {
@@ -225,6 +242,7 @@ impl BuiltinTyCons {
             kind: TyConKind::Builtin,
             def_span: None,
             def_module_raw: None,
+            opaque: false,
             is_anon: false,
         });
 
@@ -254,6 +272,7 @@ impl BuiltinTyCons {
             }),
             def_span: None,
             def_module_raw: None,
+            opaque: false,
             is_anon: false,
         });
         // Result a e — Ok a | Err e  (spec: Result a e)
@@ -276,6 +295,7 @@ impl BuiltinTyCons {
             }),
             def_span: None,
             def_module_raw: None,
+            opaque: false,
             is_anon: false,
         });
 
@@ -291,6 +311,7 @@ impl BuiltinTyCons {
             kind: TyConKind::Builtin,
             def_span: None,
             def_module_raw: None,
+            opaque: false,
             is_anon: false,
         });
 
@@ -325,6 +346,7 @@ impl BuiltinTyCons {
             )),
             def_span: None,
             def_module_raw: None,
+            opaque: false,
             is_anon: false,
         });
         // §3.12: Duration { ms: Int }
@@ -341,6 +363,7 @@ impl BuiltinTyCons {
             )),
             def_span: None,
             def_module_raw: None,
+            opaque: false,
             is_anon: false,
         });
         // §3.16 / OQ-S007 / D123: ProcOutput { stdout: Text, stderr: Text, exitCode: Int }
@@ -367,6 +390,7 @@ impl BuiltinTyCons {
             )),
             def_span: None,
             def_module_raw: None,
+            opaque: false,
             is_anon: false,
         });
 
@@ -394,6 +418,7 @@ impl BuiltinTyCons {
             }),
             def_span: None,
             def_module_raw: None, // prelude — no user module
+            opaque: false,
             is_anon: false,
         });
 
@@ -448,6 +473,91 @@ impl BuiltinTyCons {
             }),
             def_span: None,
             def_module_raw: None, // prelude — no user module
+            opaque: false,
+            is_anon: false,
+        });
+
+        // Web-layer taint wrappers (std.net.http). Declared as `opaque` records so
+        // that field access outside their defining module is a type error (T036);
+        // `def_module_raw = u32::MAX` is a sentinel that never equals a real user
+        // module, so any consumer-module access is treated as cross-module. The
+        // matching local declarations in net/http.ridge are what the stdlib's own
+        // compilation sees; user code resolves these names to these builtin ids.
+        let sql = arena.intern(TyConDecl {
+            id: TyConId(0),
+            name: "Sql".to_string(),
+            arity: 0,
+            kind: TyConKind::Record(RecordSchema::new(
+                vec![],
+                vec![RecordField {
+                    name: "value".to_string(),
+                    ty: Type::Con(text, vec![]),
+                }],
+            )),
+            def_span: None,
+            def_module_raw: Some(u32::MAX),
+            opaque: true,
+            is_anon: false,
+        });
+        let html = arena.intern(TyConDecl {
+            id: TyConId(0),
+            name: "Html".to_string(),
+            arity: 0,
+            kind: TyConKind::Record(RecordSchema::new(
+                vec![],
+                vec![RecordField {
+                    name: "value".to_string(),
+                    ty: Type::Con(text, vec![]),
+                }],
+            )),
+            def_span: None,
+            def_module_raw: Some(u32::MAX),
+            opaque: true,
+            is_anon: false,
+        });
+
+        // SecureCookie — an opaque cookie value built with safe defaults by the
+        // `secureCookie` factory and adjusted via the exported `with*` setters.
+        let secure_cookie = arena.intern(TyConDecl {
+            id: TyConId(0),
+            name: "SecureCookie".to_string(),
+            arity: 0,
+            kind: TyConKind::Record(RecordSchema::new(
+                vec![],
+                vec![
+                    RecordField {
+                        name: "name".to_string(),
+                        ty: Type::Con(text, vec![]),
+                    },
+                    RecordField {
+                        name: "value".to_string(),
+                        ty: Type::Con(text, vec![]),
+                    },
+                    RecordField {
+                        name: "secure".to_string(),
+                        ty: Type::Con(bool_, vec![]),
+                    },
+                    RecordField {
+                        name: "httpOnly".to_string(),
+                        ty: Type::Con(bool_, vec![]),
+                    },
+                    RecordField {
+                        name: "sameSite".to_string(),
+                        ty: Type::Con(text, vec![]),
+                    },
+                    RecordField {
+                        name: "maxAge".to_string(),
+                        ty: Type::Con(option, vec![Type::Con(int, vec![])]),
+                    },
+                    RecordField {
+                        name: "path".to_string(),
+                        ty: Type::Con(option, vec![Type::Con(text, vec![])]),
+                    },
+                ],
+            )),
+            def_span: None,
+            def_module_raw: Some(u32::MAX),
+            opaque: true,
             is_anon: false,
         });
 
@@ -469,6 +579,9 @@ impl BuiltinTyCons {
         debug_assert_eq!(proc_output.0, 14);
         debug_assert_eq!(ordering.0, 15);
         debug_assert_eq!(json_value.0, 16);
+        debug_assert_eq!(sql.0, 17);
+        debug_assert_eq!(html.0, 18);
+        debug_assert_eq!(secure_cookie.0, 19);
 
         // Suppress the "unused" lint — CapabilitySet is imported for future use
         // in T4 (actor schemas carry CapabilitySet).
@@ -492,6 +605,9 @@ impl BuiltinTyCons {
             proc_output,
             ordering,
             json_value,
+            sql,
+            html,
+            secure_cookie,
         }
     }
 }
@@ -571,10 +687,11 @@ mod tests {
     }
 
     #[test]
-    fn arena_len_is_17() {
-        // 15 original builtins + Ordering (0.2.13) + JsonValue (0.3.0).
+    fn arena_len_is_20() {
+        // 15 original builtins + Ordering + JsonValue + the std.net.http taint
+        // wrappers Sql / Html / SecureCookie.
         let (arena, _) = make_arena_with_builtins();
-        assert_eq!(arena.len(), 17);
+        assert_eq!(arena.len(), 20);
     }
 
     // ── Arena get() round-trip ────────────────────────────────────────────────

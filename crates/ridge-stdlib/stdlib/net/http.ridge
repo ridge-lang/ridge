@@ -85,18 +85,18 @@ pub fn respond (status: Int) (body: Text) -> Response =
 -- ── Web-layer hardening newtypes ──────────────────────────────────────────────
 --
 -- Single-field records that wrap a `Text` after applying an escape pass.
--- Always construct through the matching factory function (`sql`, `html`),
--- which is the only path that runs the escape. Constructing the record
--- directly via `Sql { value = "..." }` is technically possible but bypasses
--- the escape — the type wrappers are a hint to the type checker (and to
--- code review), not a security boundary the runtime enforces.
+-- They are `opaque`: outside this module a value can only be produced through
+-- the matching factory (`sql`, `html`), which is the one path that runs the
+-- escape. Constructing the record directly (`Sql { value = "..." }`) or
+-- destructuring it is rejected from user code, so the escape cannot be
+-- bypassed.
 
 -- A Text value escaped for safe substitution into a SQL string literal.
 -- Embedded single quotes are doubled (`'` -> `''`), the canonical SQL
 -- escape for string literals. The escape is not a substitute for
 -- parameterized queries — it covers the common case of stringly-built
 -- SQL fragments where parameters are not available.
-pub type Sql = { value: Text }
+pub opaque type Sql = { value: Text }
 
 -- A Text value escaped for safe insertion into an HTML document.
 -- The five characters with HTML significance are escaped to their entity
@@ -104,7 +104,7 @@ pub type Sql = { value: Text }
 -- `'` -> `&#39;`. `&` is escaped first so existing entity references in
 -- the input are double-encoded in a predictable way rather than left as
 -- ambiguous live entities.
-pub type Html = { value: Text }
+pub opaque type Html = { value: Text }
 
 -- Construct a Sql value from raw text, escaping single quotes for SQL
 -- string literals. Pure — no capability required.
@@ -123,6 +123,16 @@ pub fn html (raw: Text) -> Html =
         |> Text.replace "'" "&#39;"
     Html { value = escaped }
 
+-- Read the escaped text out of a Sql value. `sql` already ran the escape, so
+-- this is the safe text to splice into a SQL string literal. This accessor is
+-- the only way to reach the value from outside this module.
+pub fn sqlValue (s: Sql) -> Text =
+    s.value
+
+-- Read the escaped text out of an Html value.
+pub fn htmlValue (h: Html) -> Text =
+    h.value
+
 -- ── SecureCookie record + serializer ──────────────────────────────────────────
 --
 -- A cookie value with safe-by-default attribute settings. The factory
@@ -139,14 +149,33 @@ pub fn html (raw: Text) -> Html =
 -- options are `Some`). `SameSite` is always emitted because the field is
 -- a `Text`, not an `Option`, and an empty string would be invalid.
 
-pub type SecureCookie = { name: Text, value: Text, secure: Bool, httpOnly: Bool, sameSite: Text, maxAge: Option Int, path: Option Text }
+pub opaque type SecureCookie = { name: Text, value: Text, secure: Bool, httpOnly: Bool, sameSite: Text, maxAge: Option Int, path: Option Text }
 
 -- Build a cookie with safe defaults: Secure on, HttpOnly on, SameSite=Lax,
--- no Max-Age, no Path. Override individual fields with the record-update
--- form (`{ c with secure = false, path = Some "/" }`) when a workflow
--- requires it. Pure — no capability required.
+-- no Max-Age, no Path. The record is opaque, so adjust individual attributes
+-- through the `with*` setters below rather than a record-update on the value.
+-- Pure — no capability required.
 pub fn secureCookie (name: Text) (value: Text) -> SecureCookie =
     SecureCookie { name = name, value = value, secure = true, httpOnly = true, sameSite = "Lax", maxAge = None, path = None }
+
+-- Attribute setters. Each returns a new cookie with one field replaced; this is
+-- the supported way to override a default now that the record is opaque. They
+-- rebuild the record explicitly (rather than a `with`-update) to keep the BEAM
+-- map type concrete for the optimizer.
+pub fn withSecure (c: SecureCookie) (on: Bool) -> SecureCookie =
+    SecureCookie { name = c.name, value = c.value, secure = on, httpOnly = c.httpOnly, sameSite = c.sameSite, maxAge = c.maxAge, path = c.path }
+
+pub fn withHttpOnly (c: SecureCookie) (on: Bool) -> SecureCookie =
+    SecureCookie { name = c.name, value = c.value, secure = c.secure, httpOnly = on, sameSite = c.sameSite, maxAge = c.maxAge, path = c.path }
+
+pub fn withSameSite (c: SecureCookie) (mode: Text) -> SecureCookie =
+    SecureCookie { name = c.name, value = c.value, secure = c.secure, httpOnly = c.httpOnly, sameSite = mode, maxAge = c.maxAge, path = c.path }
+
+pub fn withMaxAge (c: SecureCookie) (seconds: Option Int) -> SecureCookie =
+    SecureCookie { name = c.name, value = c.value, secure = c.secure, httpOnly = c.httpOnly, sameSite = c.sameSite, maxAge = seconds, path = c.path }
+
+pub fn withPath (c: SecureCookie) (p: Option Text) -> SecureCookie =
+    SecureCookie { name = c.name, value = c.value, secure = c.secure, httpOnly = c.httpOnly, sameSite = c.sameSite, maxAge = c.maxAge, path = p }
 
 -- Format a SecureCookie as the value for an HTTP `Set-Cookie:` header.
 -- The result is `name=value` followed by `; Attribute` segments for each

@@ -186,6 +186,20 @@ pub fn infer_record_construction(
     Type::Con(owner_tycon, fresh_args)
 }
 
+// ── opaque-type field boundary ──────────────────────────────────────────────────
+
+/// Whether `decl` is an `opaque` type whose fields are being reached from a
+/// module other than the one that declares it.
+///
+/// Field-level access (`.field`) and `with`-updates of an opaque type are
+/// confined to its defining module. Built-ins and anonymous records are never
+/// opaque, so this is a cheap no-op for them. When the current module is unknown
+/// (unit-test scaffolding that bypasses the per-module driver) the gate also
+/// no-ops, since there is nothing to compare against.
+fn opaque_field_violation(ctx: &InferCtx, decl: &ridge_types::TyConDecl) -> bool {
+    decl.opaque && ctx.current_module_raw.is_some() && ctx.current_module_raw != decl.def_module_raw
+}
+
 // ── infer_field_access ────────────────────────────────────────────────────────
 
 /// Infer the type of a field-access expression `base.field` (§4.8).
@@ -224,6 +238,15 @@ pub fn infer_field_access(
         let decl = tycons.get(tycon_id.0 as usize);
         if let Some(decl) = decl {
             if let ridge_types::TyConKind::Record(schema) = &decl.kind {
+                // An opaque type hides its fields outside its defining module.
+                if opaque_field_violation(ctx, decl) {
+                    ctx.errors.push(TypeError::OpaqueFieldAccess {
+                        record: decl.name.clone(),
+                        field: field_name.text.clone(),
+                        span: field_span,
+                    });
+                    return Type::Error;
+                }
                 // Find the field.
                 let params = schema.params.clone();
                 let field_entry = schema
@@ -305,6 +328,21 @@ pub fn infer_record_with(
 
     let record_name = decl.map_or("?", |d| d.name.as_str());
     let params = schema.params.clone();
+
+    // An opaque type may only be field-updated inside its defining module.
+    if let Some(d) = decl {
+        if opaque_field_violation(ctx, d) {
+            let field = fields
+                .first()
+                .map_or(String::new(), |fi| fi.name.text.clone());
+            ctx.errors.push(TypeError::OpaqueFieldAccess {
+                record: record_name.to_string(),
+                field,
+                span,
+            });
+            return Type::Error;
+        }
+    }
 
     // Step: flag unknown fields (extra fields not in schema).
     for fi in fields {
@@ -542,6 +580,7 @@ mod tests {
             kind: TyConKind::Record(schema),
             def_span: None,
             def_module_raw: None,
+            opaque: false,
             is_anon: false,
         });
         (arena, b, tycon_id)

@@ -334,8 +334,15 @@ const BASELINE_EXPORTS: &[(&str, &[&str])] = &[
             "respond",
             "sql",
             "html",
+            "sqlValue",
+            "htmlValue",
             "secureCookie",
             "secureCookieHeader",
+            "withSecure",
+            "withHttpOnly",
+            "withSameSite",
+            "withMaxAge",
+            "withPath",
         ],
     ),
     (
@@ -346,6 +353,12 @@ const BASELINE_EXPORTS: &[(&str, &[&str])] = &[
         ],
     ),
 ];
+
+/// Per-module list of `pub opaque type` names. Drives the `opaque_types` field
+/// of the generated manifest so the resolver and type-checker confine these
+/// types' construction, pattern matching, and field access to the declaring
+/// stdlib module (the web-layer taint wrappers).
+const BASELINE_OPAQUE: &[(&str, &[&str])] = &[("std.net.http", &["Sql", "Html", "SecureCookie"])];
 
 fn main() {
     // Tell Cargo to re-run this script when any stdlib .ridge file changes.
@@ -381,7 +394,7 @@ fn generate_manifest(stdlib_dir: &Path, out_path: &Path) -> Result<(), String> {
     // source files are walked only to validate that they exist (T201 guard);
     // the text-extracted names are NOT merged in here.  T12 will introduce
     // the full bidirectional consistency mechanism.
-    let mut modules: Vec<(String, Vec<String>)> = Vec::new();
+    let mut modules: Vec<(String, Vec<String>, Vec<String>)> = Vec::new();
 
     for &dotted in MODULE_ORDER {
         // Validate the .ridge file exists (T201 guard — emit a warning if not).
@@ -400,7 +413,15 @@ fn generate_manifest(stdlib_dir: &Path, out_path: &Path) -> Result<(), String> {
             .map_or(&[], |(_, exps)| *exps);
 
         let exports: Vec<String> = baseline.iter().map(|&s| s.to_owned()).collect();
-        modules.push((dotted.to_owned(), exports));
+
+        let opaque: Vec<String> = BASELINE_OPAQUE
+            .iter()
+            .find(|&(name, _)| *name == dotted)
+            .map_or_else(Vec::new, |(_, ops)| {
+                ops.iter().map(|&s| s.to_owned()).collect()
+            });
+
+        modules.push((dotted.to_owned(), exports, opaque));
     }
 
     let content = emit_manifest_rs(&modules);
@@ -417,7 +438,7 @@ fn generate_manifest(stdlib_dir: &Path, out_path: &Path) -> Result<(), String> {
 
 // ── Code emitter ──────────────────────────────────────────────────────────────
 
-fn emit_manifest_rs(modules: &[(String, Vec<String>)]) -> String {
+fn emit_manifest_rs(modules: &[(String, Vec<String>, Vec<String>)]) -> String {
     // The generated file contains only the `BUILTINS` static initializer body.
     // It is included via:
     //   pub static BUILTINS: &[BuiltinStdlibModule] = include!(...);
@@ -427,13 +448,18 @@ fn emit_manifest_rs(modules: &[(String, Vec<String>)]) -> String {
     out.push_str("// Do not edit by hand — re-run cargo build to regenerate.\n");
     out.push_str("&[\n");
 
-    for (idx, (dotted, exports)) in modules.iter().enumerate() {
+    for (idx, (dotted, exports, opaque)) in modules.iter().enumerate() {
         out.push_str("    BuiltinStdlibModule {\n");
         out.push_str(&format!("        id: StdlibModuleId({idx}),\n"));
         out.push_str(&format!("        name: \"{dotted}\",\n"));
         out.push_str("        exports: &[\n");
         for exp in exports {
             out.push_str(&format!("            \"{exp}\",\n"));
+        }
+        out.push_str("        ],\n");
+        out.push_str("        opaque_types: &[\n");
+        for ty in opaque {
+            out.push_str(&format!("            \"{ty}\",\n"));
         }
         out.push_str("        ],\n");
         out.push_str("    },\n");
@@ -478,7 +504,10 @@ fn extract_pub_names(src: &str) -> Vec<String> {
             continue;
         }
 
-        if let Some(rest) = trimmed.strip_prefix("pub type ") {
+        if let Some(rest) = trimmed
+            .strip_prefix("pub opaque type ")
+            .or_else(|| trimmed.strip_prefix("pub type "))
+        {
             let mut tokens = rest.split_whitespace();
             if let Some(n) = tokens.next() {
                 let n = n.trim_end_matches('=').trim();

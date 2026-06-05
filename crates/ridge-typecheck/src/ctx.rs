@@ -302,6 +302,22 @@ pub struct InferCtx {
     /// `None` in unit-test scaffolding that bypasses the full pipeline; the
     /// interpolation pass falls back to the built-in closed set in that case.
     pub to_text_tycons: Option<rustc_hash::FxHashSet<TyConId>>,
+
+    /// Raw `ModuleId` of the module currently being inferred.
+    ///
+    /// Compared against [`ridge_types::TyConDecl::def_module_raw`] to enforce the
+    /// opaque-type field boundary (T036): field access (`.field`) and
+    /// `with`-updates of an opaque type are rejected outside the module that
+    /// declares it. `None` in unit-test scaffolding that bypasses the per-module
+    /// driver — the gate then no-ops.
+    pub current_module_raw: Option<u32>,
+
+    /// Top-level `fn`/`const` schemes generalised for this module, keyed by name.
+    ///
+    /// Captured as each declaration's scheme is written back so the workspace
+    /// driver can expose them to importing modules (cross-module value seeding).
+    /// Mirrors `schemes_accum` but keyed by name rather than body `NodeId`.
+    pub name_schemes_accum: FxHashMap<String, Scheme>,
 }
 
 impl InferCtx {
@@ -325,6 +341,8 @@ impl InferCtx {
             deferred_constraints: Vec::new(),
             dict_resolution_accum: rustc_hash::FxHashMap::default(),
             to_text_tycons: None,
+            current_module_raw: None,
+            name_schemes_accum: FxHashMap::default(),
         }
     }
 

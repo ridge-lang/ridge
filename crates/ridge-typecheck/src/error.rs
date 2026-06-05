@@ -503,6 +503,19 @@ pub enum TypeError {
         span: Span,
     },
 
+    // ── T036 ─────────────────────────────────────────────────────────────────
+    /// A field of an `opaque` type was reached (`.field` or `with`) from outside
+    /// the module that declares the type. Opaque types hide their representation;
+    /// only their defining module may read or rebuild their fields.
+    OpaqueFieldAccess {
+        /// Name of the opaque record type.
+        record: String,
+        /// The field being accessed or updated.
+        field: String,
+        /// Source span of the offending access.
+        span: Span,
+    },
+
     // ── T999 ─────────────────────────────────────────────────────────────────
     /// Internal type-checker invariant violation — should never reach users.
     ///
@@ -520,7 +533,7 @@ pub enum TypeError {
 impl TypeError {
     /// Returns the stable `T###` error code for this variant.
     ///
-    /// The codes are allocated in `T001..T035` and `T999` is the catch-all
+    /// The codes are allocated in `T001..T036` and `T999` is the catch-all
     /// internal error. No overlap with `R###`/`M###`.
     #[must_use]
     pub const fn code(&self) -> &'static str {
@@ -561,6 +574,7 @@ impl TypeError {
             Self::MissingSuperclassInstance { .. } => "T033",
             Self::ToTextConflict { .. } => "T034",
             Self::SuperclassCycle { .. } => "T035",
+            Self::OpaqueFieldAccess { .. } => "T036",
             Self::InternalTypeError { .. } => "T999",
         }
     }

@@ -104,6 +104,11 @@ pub enum SymbolKind {
     Type {
         /// Number of type parameters (0 for monomorphic types).
         arity: u32,
+        /// True iff the type was declared `opaque`. Carried on the type entry
+        /// itself so an imported opaque record (whose construction resolves to
+        /// the type symbol, not a separate constructor symbol) can still be
+        /// gated — the constructor entries mirror this in their own `opaque`.
+        opaque: bool,
     },
     /// An `actor` declaration.
     Actor {
@@ -130,6 +135,15 @@ pub enum SymbolKind {
         /// `type T = { ... }` record declaration; false if it is a variant of
         /// a `type T = A | B | C` union declaration.
         is_record: bool,
+        /// The module that declares the owning type. Stamped at symbol
+        /// collection so it is the true defining module even when the
+        /// constructor is later resolved from an importing module — the basis
+        /// for the opaque-type construction/pattern gate.
+        owner_module: ModuleId,
+        /// True iff the owning type was declared `opaque`. Together with
+        /// `owner_module` this drives the construction/pattern gate: an opaque
+        /// constructor used outside `owner_module` is rejected.
+        opaque: bool,
     },
     /// A synthesised field-accessor symbol.
     FieldAccessor {
@@ -384,7 +398,10 @@ impl<'ast> Visit<'ast> for TopLevelCollector {
                 let arity = d.params.len().try_into().unwrap_or(u32::MAX);
                 let type_id_opt = self.push(
                     d.name.text.clone(),
-                    SymbolKind::Type { arity },
+                    SymbolKind::Type {
+                        arity,
+                        opaque: d.opaque,
+                    },
                     vis,
                     d.span,
                     true,
@@ -393,6 +410,11 @@ impl<'ast> Visit<'ast> for TopLevelCollector {
                 // Only synthesise constructors/accessors if the type entry was
                 // successfully registered (no R005 on the type itself).
                 let Some(type_id) = type_id_opt else { return };
+                // Every constructor synthesised below belongs to the module
+                // currently being collected — its true defining module — and
+                // inherits the type's opacity.
+                let owner_module = self.table.module;
+                let opaque = d.opaque;
 
                 match &d.body {
                     ridge_ast::TypeBody::Record(rec) => {
@@ -406,6 +428,8 @@ impl<'ast> Visit<'ast> for TopLevelCollector {
                                 variant: 0,
                                 arity: ctor_arity,
                                 is_record: true,
+                                owner_module,
+                                opaque,
                             },
                             vis,
                             rec.span,
@@ -440,6 +464,8 @@ impl<'ast> Visit<'ast> for TopLevelCollector {
                                             variant,
                                             arity: ctor_arity,
                                             is_record: false,
+                                            owner_module,
+                                            opaque,
                                         },
                                         vis,
                                         *span,
@@ -456,6 +482,8 @@ impl<'ast> Visit<'ast> for TopLevelCollector {
                                             variant,
                                             arity: ctor_arity,
                                             is_record: false,
+                                            owner_module,
+                                            opaque,
                                         },
                                         vis,
                                         *span,
@@ -746,6 +774,7 @@ mod tests {
     fn alias_type_item(name: &str, vis: Visibility) -> Item {
         Item::Type(TypeDecl {
             vis,
+            opaque: false,
             name: id(name),
             params: vec![],
             body: TypeBody::Alias(prim_type_int()),
@@ -766,6 +795,7 @@ mod tests {
             .collect();
         Item::Type(TypeDecl {
             vis,
+            opaque: false,
             name: id(name),
             params: vec![],
             body: TypeBody::Union(UnionTypeBody {
@@ -789,6 +819,7 @@ mod tests {
             .collect();
         Item::Type(TypeDecl {
             vis,
+            opaque: false,
             name: id(name),
             params: params.into_iter().map(id).collect(),
             body: TypeBody::Record(RecordTypeBody {
@@ -947,7 +978,7 @@ mod tests {
         // Type arity = 0
         assert!(matches!(
             table.entries[0].kind,
-            SymbolKind::Type { arity: 0 }
+            SymbolKind::Type { arity: 0, .. }
         ));
     }
 
@@ -964,7 +995,7 @@ mod tests {
         assert!(errors.is_empty(), "errors: {errors:?}");
         assert!(matches!(
             table.entries[0].kind,
-            SymbolKind::Type { arity: 1 }
+            SymbolKind::Type { arity: 1, .. }
         ));
     }
 
@@ -977,7 +1008,7 @@ mod tests {
         assert_eq!(table.entries.len(), 1);
         assert!(matches!(
             table.entries[0].kind,
-            SymbolKind::Type { arity: 0 }
+            SymbolKind::Type { arity: 0, .. }
         ));
     }
 

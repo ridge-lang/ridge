@@ -1378,6 +1378,7 @@ fn infer_record_lit(
             kind: TyConKind::Record(ridge_types::RecordSchema::new(vec![], sorted_fields)),
             def_span: Some(span),
             def_module_raw: None,
+            opaque: false,
             is_anon: true,
         };
         // Intern into the ctx's snapshot and anon_records table.
@@ -1474,6 +1475,7 @@ fn infer_inline_record_pattern(
                 kind: TyConKind::Record(ridge_types::RecordSchema::new(vec![], sorted)),
                 def_span: Some(span),
                 def_module_raw: None,
+                opaque: false,
                 is_anon: true,
             };
             #[expect(

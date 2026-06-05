@@ -337,6 +337,8 @@ fn write_back_schemes(
                 generalised.push((e, decl.name.text.clone(), scheme));
             } else {
                 // Ffi: bind the scheme in the env but skip schemes_accum.
+                ctx.name_schemes_accum
+                    .insert(decl.name.text.clone(), scheme.clone());
                 ctx.env.bind(decl.name.text.clone(), scheme);
             }
         }
@@ -354,6 +356,7 @@ fn write_back_schemes(
         {
             ctx.schemes_accum.insert(nid, scheme.clone());
         }
+        ctx.name_schemes_accum.insert(name.clone(), scheme.clone());
         ctx.env.bind(name, scheme);
     }
 }

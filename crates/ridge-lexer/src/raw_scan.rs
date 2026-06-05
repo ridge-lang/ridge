@@ -118,6 +118,8 @@ enum LogosToken<'src> {
     KwMatch,
     #[token("on")]
     KwOn,
+    #[token("opaque")]
+    KwOpaque,
     #[token("pub")]
     KwPub,
     #[token("return")]
@@ -512,6 +514,7 @@ pub(crate) fn scan(src: &str) -> (Vec<(RawToken, Span)>, Vec<LexError>) {
             Ok(LogosToken::KwLet) => tokens.push((RawToken::Token(Token::KwLet), span)),
             Ok(LogosToken::KwMatch) => tokens.push((RawToken::Token(Token::KwMatch), span)),
             Ok(LogosToken::KwOn) => tokens.push((RawToken::Token(Token::KwOn), span)),
+            Ok(LogosToken::KwOpaque) => tokens.push((RawToken::Token(Token::KwOpaque), span)),
             Ok(LogosToken::KwPub) => tokens.push((RawToken::Token(Token::KwPub), span)),
             Ok(LogosToken::KwReturn) => tokens.push((RawToken::Token(Token::KwReturn), span)),
             Ok(LogosToken::KwSpawn) => tokens.push((RawToken::Token(Token::KwSpawn), span)),

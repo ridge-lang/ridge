@@ -1267,6 +1267,7 @@ mod tests {
         use ridge_ast::Visibility;
         TypeDecl {
             vis: Visibility::Private,
+            opaque: false,
             name: ident(name),
             params: vec![],
             body,

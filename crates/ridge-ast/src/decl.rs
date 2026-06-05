@@ -151,6 +151,10 @@ pub struct ConstDecl {
 pub struct TypeDecl {
     /// Visibility modifier (default: `Private`).
     pub vis: Visibility,
+    /// `true` when the declaration was prefixed with `opaque`. An opaque type
+    /// hides its constructor and fields from other modules; only records and
+    /// unions can be opaque (the parser rejects `opaque` on aliases).
+    pub opaque: bool,
     /// The declared type name (`UPPER_IDENT`).
     pub name: Ident,
     /// Type parameters (lowercase type variables).

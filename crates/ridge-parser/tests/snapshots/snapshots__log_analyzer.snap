@@ -359,6 +359,7 @@ Module {
         Type(
             TypeDecl {
                 vis: Private,
+                opaque: false,
                 name: Ident {
                     text: "Level",
                     span: Span {
@@ -430,6 +431,7 @@ Module {
         Type(
             TypeDecl {
                 vis: Private,
+                opaque: false,
                 name: Ident {
                     text: "LogEntry",
                     span: Span {

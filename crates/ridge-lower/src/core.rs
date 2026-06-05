@@ -470,6 +470,7 @@ pub fn lower_expr(ctx: &mut LowerCtx<'_>, expr: &Expr) -> IrExpr {
                 owner_type: sym_id,
                 variant,
                 is_record,
+                ..
             }) = &binding
             {
                 // User constructor (record auto-ctor or union variant).
@@ -1832,6 +1833,7 @@ fn lower_ident(ctx: &mut LowerCtx<'_>, ident: &Ident) -> IrExpr {
             owner_type,
             variant,
             is_record,
+            ..
         }) => {
             // OQ-PHASE45-007: emit Symbol { Constructor } using the resolved
             // TyConId (via lookup_constructor_tycon → owner-type name →
@@ -3175,6 +3177,7 @@ mod tests {
             owner_type: SymbolId(1),
             variant: 1,
             is_record: false,
+            owner_module: ModuleId(0),
         });
         let mut ctx = LowerCtx::new(ModuleId(0), &[]);
         ctx.attach_bindings(nid_map, Box::leak(Box::new(bm)));
@@ -3425,6 +3428,7 @@ mod tests {
             owner_type: SymbolId(0),
             variant: 0,
             is_record: true,
+            owner_module: ModuleId(0),
         });
 
         let expr = Expr::Record {
@@ -3477,6 +3481,7 @@ mod tests {
             owner_type: SymbolId(0),
             variant: 1,
             is_record: false,
+            owner_module: ModuleId(0),
         });
 
         let expr = Expr::Record {

@@ -177,8 +177,11 @@ pub fn extract_pub_names_from_source(src: &str) -> Vec<String> {
             continue;
         }
 
-        // Collect `pub type` declarations.
-        if let Some(rest) = trimmed.strip_prefix("pub type ") {
+        // Collect `pub type` declarations, including `pub opaque type`.
+        if let Some(rest) = trimmed
+            .strip_prefix("pub opaque type ")
+            .or_else(|| trimmed.strip_prefix("pub type "))
+        {
             let mut tokens = rest.split_whitespace();
             if let Some(n) = tokens.next() {
                 let n = n.trim_end_matches('=').trim_end_matches(' ');

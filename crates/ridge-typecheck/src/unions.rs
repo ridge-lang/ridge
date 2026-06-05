@@ -824,6 +824,7 @@ mod tests {
             kind: TyConKind::Union(shape_schema.clone()),
             def_span: None,
             def_module_raw: None,
+            opaque: false,
             is_anon: false,
         });
 

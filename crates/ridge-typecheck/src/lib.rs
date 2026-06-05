@@ -87,6 +87,11 @@ pub struct ModuleTypecheckResult {
     /// Merged into [`TypedWorkspace::anon_records`] by the workspace
     /// driver after all modules are checked.
     pub anon_records: AnonRecordTable,
+    /// Generalised top-level `fn`/`const` schemes for this module, keyed by name.
+    ///
+    /// The workspace driver stores these so importing modules (checked later in
+    /// dependency order) can seed them into their environment.
+    pub name_schemes: FxHashMap<String, ridge_types::Scheme>,
 }
 
 /// Result of incrementally type-checking a single edited module.
@@ -205,58 +210,41 @@ pub fn typecheck_workspace(ws: &ResolvedWorkspace) -> TypecheckResult {
     let mut arena = TyConArena::new();
     let b = BuiltinTyCons::allocate(&mut arena);
 
-    // Predict each module's own type/actor `TyConId`s (the arena is shared, so a
-    // producer's id is valid in any consumer). Used to seed imported type names
-    // into each consumer's `user_tycon_names` so cross-module annotations resolve.
+    // Type-check producers before consumers so a module's imported types and
+    // schemes are already available when it is checked.
+    let check_order = crate::cross_module::topo_order(&ws.graph.deps);
+
+    // Predict each module's own type/actor `TyConId`s in the SAME order the
+    // collect pass interns them (the shared arena makes a producer's id valid in
+    // any consumer). Used to seed imported type names into each consumer's
+    // `user_tycon_names`, and flattened for the instance-collection pass which
+    // only needs a name to resolve to some declaring id.
     #[expect(
         clippy::cast_possible_truncation,
         reason = "builtin TyCon count is a small constant"
     )]
     let builtins_len = arena.all().len() as u32;
-    let per_module_tycon_names =
-        crate::cross_module::predict_module_tycon_names(&ws.module_asts, builtins_len);
+    let per_module_tycon_names = crate::cross_module::predict_module_tycon_names(
+        &ws.module_asts,
+        &check_order,
+        builtins_len,
+    );
+    let workspace_tycon_names =
+        crate::cross_module::flatten_tycon_names(&per_module_tycon_names, &check_order);
     let symbol_tables: Vec<&ridge_resolve::SymbolTable> =
         ws.modules.iter().map(|m| &m.symbols).collect();
 
     // Step 2: Reuse the ASTs the resolver already parsed — no second parse pass.
-    let mut typed_modules: Vec<TypedModule> = Vec::with_capacity(ws.modules.len());
+    // Filled by `ModuleId.0` slot (checking runs in dependency order, but the
+    // typed workspace stays `ModuleId`-indexed for downstream consumers).
+    let mut typed_slots: Vec<Option<TypedModule>> = (0..ws.modules.len()).map(|_| None).collect();
     // Merged anonymous record table across all modules.
     let mut workspace_anon_records: AnonRecordTable = AnonRecordTable::default();
-
-    // Step 2b: Pre-collect user TyCon names from ALL modules to build a
-    // name → TyConId map for the collect pass. This lets the collect pass
-    // resolve user-defined instance head types (e.g. `instance ToText Color`
-    // → `TyConId` for `Color`) without needing the full TyConArena.
-    //
-    // We predict the TyConIds by scanning the AST names in source order.
-    // Each TypeDecl and ActorDecl allocates exactly one ID in the arena
-    // (in the order they appear across modules). The arena currently holds
-    // only the built-in TyCons, so the next ID is `arena.all().len()`.
-    // We replicate the collect_user_tycons pass-1 ID assignment here.
-    let mut workspace_tycon_names: FxHashMap<String, TyConId> = FxHashMap::default();
-    #[expect(
-        clippy::cast_possible_truncation,
-        reason = "arena size is bounded by program size; exceeding 2^32 TyCons is not realistic"
-    )]
-    let mut next_id = arena.all().len() as u32;
-    for ast in &ws.module_asts {
-        for item in &ast.items {
-            let name = match item {
-                Item::Type(td) => Some(td.name.text.clone()),
-                Item::Actor(ad) => Some(ad.name.text.clone()),
-                _ => None,
-            };
-            if let Some(n) = name {
-                // Only record if not already present (same name declared in
-                // multiple modules — take the first occurrence).
-                workspace_tycon_names.entry(n).or_insert_with(|| {
-                    let id = TyConId(next_id);
-                    next_id += 1;
-                    id
-                });
-            }
-        }
-    }
+    // Each module's exported fn/const schemes (by `ModuleId.0`), populated as the
+    // module is checked so later (dependent) modules can seed them.
+    let mut exported_schemes: Vec<FxHashMap<String, ridge_types::Scheme>> = (0..ws.modules.len())
+        .map(|_| FxHashMap::default())
+        .collect();
 
     // Run the workspace collect pass to build the class/instance registries.
     // This runs over all module ASTs before any module is type-checked so the
@@ -277,8 +265,11 @@ pub fn typecheck_workspace(ws: &ResolvedWorkspace) -> TypecheckResult {
     let class_table = collect_result.class_table;
     let instance_env = collect_result.instance_env;
 
-    // Step 3: Type-check each module.
-    for rm in &ws.modules {
+    // Step 3: Type-check each module in dependency order (producers first).
+    for &mid in &check_order {
+        let Some(rm) = ws.modules.iter().find(|m| m.id == mid) else {
+            continue;
+        };
         // Reuse the resolver's AST for this module (indexed by ModuleId).
         let ast_opt = ws.module_asts.get(rm.id.0 as usize);
         // If the AST is somehow absent (e.g. an earlier I/O error), produce
@@ -286,7 +277,7 @@ pub fn typecheck_workspace(ws: &ResolvedWorkspace) -> TypecheckResult {
         let ast = if let Some(ast) = ast_opt {
             Arc::clone(ast)
         } else {
-            typed_modules.push(TypedModule {
+            typed_slots[rm.id.0 as usize] = Some(TypedModule {
                 id: rm.id,
                 ast: Arc::new(ridge_ast::Module {
                     items: Vec::new(),
@@ -307,12 +298,18 @@ pub fn typecheck_workspace(ws: &ResolvedWorkspace) -> TypecheckResult {
             &symbol_tables,
             &per_module_tycon_names,
         );
+        let imported_schemes = crate::cross_module::imported_value_schemes(
+            &rm.imports,
+            &symbol_tables,
+            &exported_schemes,
+        );
         let result = typecheck_module_inner(
             rm.id,
             &ast,
             rm.node_ids.clone(),
             &rm.imports,
             &imported_tycons,
+            &imported_schemes,
             &mut arena,
             &b,
             Some((&class_table, &instance_env)),
@@ -331,8 +328,21 @@ pub fn typecheck_workspace(ws: &ResolvedWorkspace) -> TypecheckResult {
         // Merge this module's anon_records (last-write wins; same shapes share
         // the same TyConId workspace-wide because the arena is shared).
         workspace_anon_records.extend(result.anon_records);
-        typed_modules.push(result.typed);
+        // Expose this module's schemes to modules that import it (checked later).
+        exported_schemes[rm.id.0 as usize] = result.name_schemes;
+        typed_slots[rm.id.0 as usize] = Some(result.typed);
     }
+
+    // Re-assemble typed modules in `ModuleId` order for downstream consumers.
+    let typed_modules: Vec<TypedModule> = typed_slots
+        .into_iter()
+        .enumerate()
+        .map(|(i, slot)| {
+            slot.unwrap_or_else(|| {
+                empty_module_result(ModuleId(u32::try_from(i).unwrap_or(u32::MAX))).typed
+            })
+        })
+        .collect();
 
     // Collect all TyConDecls from arena for the typed workspace.
     let tycons: Vec<TyConDecl> = arena.all().to_vec();
@@ -370,6 +380,7 @@ fn empty_module_result(module_id: ModuleId) -> ModuleTypecheckResult {
         },
         errors: Vec::new(),
         anon_records: AnonRecordTable::default(),
+        name_schemes: FxHashMap::default(),
     }
 }
 
@@ -420,14 +431,17 @@ pub fn typecheck_module_incremental(
     let b = &typed_ws.builtins;
 
     // The incremental path stays module-local for cross-module seeding (no
-    // imported-type map); a full incremental rebuild covers cross-module changes.
+    // imported-type or imported-scheme maps); a full rebuild covers cross-module
+    // changes.
     let no_imported_tycons = FxHashMap::default();
+    let no_imported_schemes = FxHashMap::default();
     let result = typecheck_module_inner(
         module_id,
         &ast,
         rm.node_ids.clone(),
         &rm.imports,
         &no_imported_tycons,
+        &no_imported_schemes,
         &mut arena,
         b,
         Some((&typed_ws.class_table, &typed_ws.instance_env)),
@@ -592,6 +606,7 @@ fn typecheck_module_inner(
     node_id_map: ridge_resolve::NodeIdMap,
     imports: &[ridge_resolve::ImportResolution],
     imported_tycons: &FxHashMap<String, TyConId>,
+    imported_schemes: &FxHashMap<String, ridge_types::Scheme>,
     arena: &mut TyConArena,
     b: &BuiltinTyCons,
     registries: Option<(
@@ -653,6 +668,13 @@ fn typecheck_module_inner(
     // Step B: Seed env with prelude constructors + stdlib qualified bindings.
     seed_stdlib_env(&mut ctx, b, imports);
 
+    // Step B1: Seed schemes for fns/consts imported from other workspace modules
+    // (cross-module value seeding). Bound after stdlib but before local consts and
+    // fns, so a same-named local declaration always wins.
+    for (name, scheme) in imported_schemes {
+        ctx.env.bind(name.clone(), scheme.clone());
+    }
+
     // Step B2: Bind top-level const declarations in the env so fn bodies that
     // reference them resolve correctly (e.g. `defaultGenerations`, `alphabet`).
     // Consts are typed by inferring their value expression under the current env.
@@ -666,6 +688,8 @@ fn typecheck_module_inner(
                 ty,
                 constraints: vec![],
             };
+            ctx.name_schemes_accum
+                .insert(c.name.text.clone(), scheme.clone());
             ctx.env.bind(c.name.text.clone(), scheme);
         }
     }
@@ -791,6 +815,7 @@ fn typecheck_module_inner(
         typed,
         errors: ctx.errors,
         anon_records,
+        name_schemes: ctx.name_schemes_accum,
     }
 }
 

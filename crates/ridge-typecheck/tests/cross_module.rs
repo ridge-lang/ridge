@@ -128,3 +128,54 @@ fn opaque_in_module_field_access_is_allowed() {
         "in-module opaque field access must be allowed; got {errors:?}"
     );
 }
+
+// ── Function scheme seeding — imported fn calls are type-checked ───────────────
+
+const LIB_FN: &str = "pub fn needsText (r: Text) -> Text = r\n";
+
+fn count_mismatch(errors: &[TypeError]) -> usize {
+    errors
+        .iter()
+        .filter(|e| matches!(e.code(), "T001" | "T002"))
+        .count()
+}
+
+#[test]
+fn imported_fn_call_wrong_arg_type_is_rejected() {
+    // `needsText 123` passes an Int where Text is required: the imported scheme
+    // must flow so the mismatch is caught (previously absorbed silently).
+    let main = "import proj.Lib (needsText)\nfn f () -> Text = needsText 123\n";
+    let errors = typecheck_two_modules(main, LIB_FN);
+    assert!(
+        count_mismatch(&errors) >= 1,
+        "expected a type mismatch for cross-module call with bad arg; got {errors:?}"
+    );
+}
+
+#[test]
+fn imported_fn_call_correct_arg_is_clean() {
+    let main = "import proj.Lib (needsText)\nfn f () -> Text = needsText \"ok\"\n";
+    let errors = typecheck_two_modules(main, LIB_FN);
+    assert!(
+        errors.is_empty(),
+        "correct cross-module call must type-check clean; got {errors:?}"
+    );
+}
+
+#[test]
+fn qualified_imported_fn_call_is_type_checked() {
+    // `import x as Lib` then `Lib.needsText` resolves to the producer's scheme.
+    let main = "import proj.Lib as Lib\nfn ok () -> Text = Lib.needsText \"ok\"\n";
+    let errors = typecheck_two_modules(main, LIB_FN);
+    assert!(
+        errors.is_empty(),
+        "qualified cross-module call with correct arg must be clean; got {errors:?}"
+    );
+
+    let bad = "import proj.Lib as Lib\nfn bad () -> Text = Lib.needsText 123\n";
+    let errors = typecheck_two_modules(bad, LIB_FN);
+    assert!(
+        count_mismatch(&errors) >= 1,
+        "qualified cross-module call with bad arg must be rejected; got {errors:?}"
+    );
+}

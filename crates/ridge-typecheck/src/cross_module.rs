@@ -26,6 +26,7 @@ fn stdlib_opaque_tycon(b: &BuiltinTyCons, name: &str) -> Option<TyConId> {
     match name {
         "Sql" => Some(b.sql),
         "Html" => Some(b.html),
+        "SecureCookie" => Some(b.secure_cookie),
         _ => None,
     }
 }

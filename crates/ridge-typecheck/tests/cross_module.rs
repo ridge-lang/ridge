@@ -208,6 +208,28 @@ fn stdlib_accessor_reads_value_cleanly() {
 }
 
 #[test]
+fn stdlib_secure_cookie_field_access_is_t036() {
+    let main = "import std.net.http (SecureCookie)\nfn leak (c: SecureCookie) -> Text = c.value\n";
+    let errors = typecheck_one(main);
+    assert_eq!(
+        count_code(&errors, "T036"),
+        1,
+        "expected one T036 reading a SecureCookie field; got {errors:?}"
+    );
+}
+
+#[test]
+fn stdlib_secure_cookie_setters_are_clean() {
+    // Build with defaults, override an attribute through a setter, then serialize.
+    let main = "import std.net.http (secureCookie, withSecure, secureCookieHeader)\nfn ok () -> Text = secureCookieHeader (withSecure (secureCookie \"n\" \"v\") false)\n";
+    let errors = typecheck_one(main);
+    assert!(
+        errors.is_empty(),
+        "factory + setter + serializer must type-check clean; got {errors:?}"
+    );
+}
+
+#[test]
 fn qualified_imported_fn_call_is_type_checked() {
     // `import x as Lib` then `Lib.needsText` resolves to the producer's scheme.
     let main = "import proj.Lib as Lib\nfn ok () -> Text = Lib.needsText \"ok\"\n";

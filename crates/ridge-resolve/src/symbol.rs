@@ -757,6 +757,7 @@ mod tests {
     fn alias_type_item(name: &str, vis: Visibility) -> Item {
         Item::Type(TypeDecl {
             vis,
+            opaque: false,
             name: id(name),
             params: vec![],
             body: TypeBody::Alias(prim_type_int()),
@@ -777,6 +778,7 @@ mod tests {
             .collect();
         Item::Type(TypeDecl {
             vis,
+            opaque: false,
             name: id(name),
             params: vec![],
             body: TypeBody::Union(UnionTypeBody {
@@ -800,6 +802,7 @@ mod tests {
             .collect();
         Item::Type(TypeDecl {
             vis,
+            opaque: false,
             name: id(name),
             params: params.into_iter().map(id).collect(),
             body: TypeBody::Record(RecordTypeBody {

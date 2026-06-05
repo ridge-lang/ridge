@@ -34,6 +34,9 @@
 //! Parser hardening adds:
 //! - `P028 ExpressionTooDeep`
 //!
+//! Opaque types add:
+//! - `P032 OpaqueOnAlias`
+//!
 //! Later tasks (T3–T12) will extend this enum; adding variants is
 //! non-breaking because the enum is not `#[non_exhaustive]` — the parser
 //! crate owns all construction sites.
@@ -339,6 +342,15 @@ pub enum ParseError {
         reason: String,
     },
 
+    /// P032 — `opaque` was applied to a type alias. Opacity hides a type's
+    /// constructor and fields from other modules; an alias has neither, so the
+    /// modifier is meaningless there. Only records and unions can be opaque.
+    #[error("`opaque` is not allowed on a type alias; only records and unions can be opaque")]
+    OpaqueOnAlias {
+        /// Source location of the offending declaration.
+        span: Span,
+    },
+
     /// P999 — the lexer's bracket-suppression invariant was violated (should
     /// be unreachable; signals a lexer bug, not a user error).
     #[error("internal error: layout invariant violated inside bracketed region")]
@@ -377,6 +389,7 @@ impl ParseError {
             Self::ExpressionTooDeep { .. } => "P028",
             Self::MalformedClassDecl { .. } => "P030",
             Self::MalformedInstanceDecl { .. } => "P031",
+            Self::OpaqueOnAlias { .. } => "P032",
             Self::InternalLayoutInvariantViolated { .. } => "P999",
         }
     }
@@ -407,6 +420,7 @@ impl ParseError {
             | Self::ExpressionTooDeep { span, .. }
             | Self::MalformedClassDecl { span, .. }
             | Self::MalformedInstanceDecl { span, .. }
+            | Self::OpaqueOnAlias { span }
             | Self::InternalLayoutInvariantViolated { span } => *span,
         }
     }

@@ -206,6 +206,7 @@ fn sync_to_next_item(cur: &mut cursor::Cursor<'_>) {
             }
             Token::KwFn
             | Token::KwType
+            | Token::KwOpaque
             | Token::KwActor
             | Token::KwConst
             | Token::KwImport

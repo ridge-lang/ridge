@@ -220,6 +220,7 @@ Module {
         Type(
             TypeDecl {
                 vis: Private,
+                opaque: false,
                 name: Ident {
                     text: "Grid",
                     span: Span {

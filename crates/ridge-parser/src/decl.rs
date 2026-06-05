@@ -356,7 +356,11 @@ pub(crate) fn parse_item(
     match cur.peek() {
         Token::KwImport => Ok(Item::Import(parse_import(cur, doc)?)),
         Token::KwConst => Ok(Item::Const(parse_const(cur, vis, doc)?)),
-        Token::KwType => Ok(Item::Type(parse_type_decl(cur, vis, doc)?)),
+        Token::KwType => Ok(Item::Type(parse_type_decl(cur, vis, doc, false)?)),
+        Token::KwOpaque => {
+            cur.bump(); // consume `opaque`; `parse_type_decl` expects `type` next
+            Ok(Item::Type(parse_type_decl(cur, vis, doc, true)?))
+        }
         Token::KwFn => Ok(Item::Fn(parse_fn_decl(cur, vis, doc)?)),
         Token::KwActor => Ok(Item::Actor(parse_actor_decl(cur, vis, doc)?)),
 
@@ -802,6 +806,7 @@ pub(crate) fn parse_type_decl(
     cur: &mut Cursor<'_>,
     vis: Visibility,
     doc: Option<DocComment>,
+    opaque: bool,
 ) -> Result<TypeDecl, ParseError> {
     let start = cur.span();
     cur.expect(&Token::KwType)?;
@@ -840,6 +845,14 @@ pub(crate) fn parse_type_decl(
         TypeBody::Alias(t) => t.span(),
     };
 
+    // `opaque` hides a constructor and fields; an alias has neither, so the
+    // modifier is meaningless there (P032).
+    if opaque && matches!(body, TypeBody::Alias(_)) {
+        return Err(ParseError::OpaqueOnAlias {
+            span: start.merge(body_end_span),
+        });
+    }
+
     // Optional trailing `deriving ( ClassName, … )` clause.
     let deriving = if cur.peek() == &Token::KwDeriving {
         parse_deriving_clause(cur)?
@@ -851,6 +864,7 @@ pub(crate) fn parse_type_decl(
 
     Ok(TypeDecl {
         vis,
+        opaque,
         name,
         params,
         body,
@@ -2306,7 +2320,7 @@ mod tests {
         let toks = lex(src);
         let mut cur = Cursor::new(&toks);
         let vis = parse_visibility(&mut cur).unwrap();
-        parse_type_decl(&mut cur, vis, None)
+        parse_type_decl(&mut cur, vis, None, false)
     }
 
     // Helper: lex and apply parse_actor_decl.
@@ -2964,6 +2978,52 @@ mod tests {
             matches!(result.unwrap(), Item::ClassDecl(_)),
             "expected Item::ClassDecl"
         );
+    }
+
+    // ─────────────────────────────────────────────────────────────────────────
+    // opaque types (O1): the `opaque` modifier sets TypeDecl.opaque, is valid
+    // on records and unions, and is rejected on aliases with P032.
+    // ─────────────────────────────────────────────────────────────────────────
+    #[test]
+    fn parse_opaque_record_sets_flag() {
+        let toks = lex("opaque type Id = { raw: Int }\n");
+        let mut cur = Cursor::new(&toks);
+        let vis = parse_visibility(&mut cur).unwrap();
+        match parse_item(&mut cur, None, vis).expect("opaque record should parse") {
+            Item::Type(td) => {
+                assert!(td.opaque, "expected opaque flag set");
+                assert_eq!(td.name.text, "Id");
+                assert!(matches!(td.body, TypeBody::Record(_)));
+            }
+            other => panic!("expected Item::Type, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parse_opaque_union_sets_flag() {
+        let toks = lex("opaque type Color = Red | Green\n");
+        let mut cur = Cursor::new(&toks);
+        let vis = parse_visibility(&mut cur).unwrap();
+        let item = parse_item(&mut cur, None, vis).expect("opaque union should parse");
+        assert!(matches!(item, Item::Type(td) if td.opaque));
+    }
+
+    #[test]
+    fn parse_plain_type_has_opaque_false() {
+        let toks = lex("type Id = { raw: Int }\n");
+        let mut cur = Cursor::new(&toks);
+        let vis = parse_visibility(&mut cur).unwrap();
+        let item = parse_item(&mut cur, None, vis).expect("type should parse");
+        assert!(matches!(item, Item::Type(td) if !td.opaque));
+    }
+
+    #[test]
+    fn parse_opaque_alias_is_rejected_p032() {
+        let toks = lex("opaque type Id = Int\n");
+        let mut cur = Cursor::new(&toks);
+        let vis = parse_visibility(&mut cur).unwrap();
+        let err = parse_item(&mut cur, None, vis).expect_err("opaque alias must be rejected");
+        assert_eq!(err.code(), "P032");
     }
 
     // ─────────────────────────────────────────────────────────────────────────

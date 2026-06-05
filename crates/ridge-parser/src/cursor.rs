@@ -256,6 +256,7 @@ const fn token_description(tok: &Token) -> &'static str {
         Token::KwType => "type",
         Token::KwActor => "actor",
         Token::KwPub => "pub",
+        Token::KwOpaque => "opaque",
         Token::KwInit => "init",
         Token::KwOn => "on",
         Token::KwState => "state",

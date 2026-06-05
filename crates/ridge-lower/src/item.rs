@@ -4992,6 +4992,7 @@ mod tests {
 
         let type_item = Item::Type(TypeDecl {
             vis: ridge_ast::Visibility::Private,
+            opaque: false,
             name: ident("MyType"),
             params: vec![],
             body: TypeBody::Alias(ridge_ast::Type::Named {

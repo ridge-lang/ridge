@@ -1,5 +1,6 @@
 ---
 source: crates/ridge-codegen-erl/tests/core_ast_snapshot.rs
+assertion_line: 41
 expression: "&cerl_module"
 ---
 CErlModule {
@@ -28,28 +29,48 @@ CErlModule {
                         "V_P",
                     ),
                 ],
-                body: MapUpdate {
-                    base: Var(
-                        CErlVar(
-                            "V_P",
-                        ),
+                body: Let {
+                    var: CErlVar(
+                        "V_Anf0",
                     ),
-                    updates: [
-                        (
-                            Lit(
-                                Atom(
-                                    CErlAtom(
-                                        "x",
+                    value: MapLit(
+                        [
+                            (
+                                Lit(
+                                    Atom(
+                                        CErlAtom(
+                                            "x",
+                                        ),
+                                    ),
+                                ),
+                                Lit(
+                                    Int(
+                                        10,
                                     ),
                                 ),
                             ),
-                            Lit(
-                                Int(
-                                    10,
+                        ],
+                    ),
+                    body: Call {
+                        module: CErlAtom(
+                            "maps",
+                        ),
+                        fn_name: CErlAtom(
+                            "merge",
+                        ),
+                        args: [
+                            Var(
+                                CErlVar(
+                                    "V_P",
                                 ),
                             ),
-                        ),
-                    ],
+                            Var(
+                                CErlVar(
+                                    "V_Anf0",
+                                ),
+                            ),
+                        ],
+                    },
                 },
             },
         },

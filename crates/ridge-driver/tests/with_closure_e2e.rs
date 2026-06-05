@@ -6,6 +6,11 @@
 //! compile real Ridge to BEAM and assert the *computed values*, so a regression
 //! that drops the update (or any touched/untouched field) is caught.
 //!
+//! `set_field/1` additionally covers a `with` over the parameter of an exported
+//! function. Because the caller is outside the module, the parameter has type
+//! `any` to the BEAM analyser, which used to make the native `put_map_assoc`
+//! fail the +5 consistency check; the update now routes through `maps:merge/2`.
+//!
 //! Gated on `beam-runtime` (real OTP) plus a `which` guard for `erl`/`erlc`.
 
 #![cfg(feature = "beam-runtime")]
@@ -41,6 +46,10 @@ pub fn shorthand_pulls_local () -> Int =
 
 pub fn chained_update () -> Int =
     let r = Cell { v = 0, n = 0 } with { v = 1 } with { n = 2 }
+    r.v + r.n
+
+pub fn set_field (c: Cell) -> Int =
+    let r = c with { v = c.v + 1, n = c.n + 100 }
     r.v + r.n
 ";
 
@@ -99,11 +108,17 @@ fn record_with_shapes_compute_correct_values() {
         .expect("a user module")
         .to_owned();
 
-    // Drive every shape in one BEAM boot; each prints `name=value`.
+    // Drive every shape in one BEAM boot; each prints `name=value`. The last
+    // line calls `set_field/1` with a map built in Erlang, so the parameter is
+    // an opaque external argument (type `any`) — the exact shape that made the
+    // native map-update fail the +5 validator before `with` over an opaque base
+    // started routing through `maps:merge/2`.
     let expr = format!(
         "F=fun(N)->io:format(\"~s=~p~n\",[N,{module}:N()])end, \
          lists:foreach(F,['closure_single','closure_multi','closure_untouched_survives',\
-         'shorthand_pulls_local','chained_update']), halt()."
+         'shorthand_pulls_local','chained_update']), \
+         io:format(\"exported_param=~p~n\",[{module}:set_field(#{{v=>10,n=>7}})]), \
+         halt()."
     );
     let output = Command::new("erl")
         .arg("-noshell")
@@ -123,6 +138,7 @@ fn record_with_shapes_compute_correct_values() {
         ("closure_untouched_survives", 7), // n preserved through the update
         ("shorthand_pulls_local", 49),     // local v=42, n=7 preserved
         ("chained_update", 3),             // v=1, n=2
+        ("exported_param", 118),           // (10+1) + (7+100), opaque external arg
     ] {
         let needle = format!("{name}={want}");
         assert!(

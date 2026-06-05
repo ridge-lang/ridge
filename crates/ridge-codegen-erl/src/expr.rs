@@ -649,7 +649,19 @@ pub(crate) fn lower_expr_in_scope(
             ctor, fields, span, ..
         } => lower_construct(ctor, fields, *span, scope),
 
-        // §4.5 — `with` update → map update `Base#{ key => val, … }`.
+        // §4.5 — `with` update.
+        //
+        // When the base is statically a map term the BEAM type analyser can
+        // see — a record literal or a nested `with` rooted in one — emit the
+        // native map-update `~{ k => v | Base }~`, which compiles to the
+        // inline `put_map_assoc`.
+        //
+        // When the base type is opaque to the analyser — a function parameter,
+        // a field read, any call result — that instruction fails the +5
+        // validator's consistency check (`{needed,{t_map,_,_}},{actual,any}`).
+        // Route those through `maps:merge/2`, an ordinary BIF call with no
+        // static map-type requirement and the same update semantics: the
+        // second map's values win, every untouched key is preserved.
         IrExpr::RecordUpdate { base, updates, .. } => {
             let base_expr = lower_expr_in_scope(base, scope)?;
             let kvs = updates
@@ -660,10 +672,18 @@ pub(crate) fn lower_expr_in_scope(
                     Ok((k, v))
                 })
                 .collect::<Result<Vec<_>, CodegenError>>()?;
-            Ok(CErlExpr::MapUpdate {
-                base: Box::new(base_expr),
-                updates: kvs,
-            })
+            if cerl_is_static_map(&base_expr) {
+                Ok(CErlExpr::MapUpdate {
+                    base: Box::new(base_expr),
+                    updates: kvs,
+                })
+            } else {
+                Ok(CErlExpr::Call {
+                    module: CErlAtom("maps".into()),
+                    fn_name: CErlAtom("merge".into()),
+                    args: vec![base_expr, CErlExpr::MapLit(kvs)],
+                })
+            }
         }
 
         // §4.13 — Field projection: emit `call 'maps':'get'(Atom key, Base)`.
@@ -701,6 +721,19 @@ pub(crate) fn lower_expr_in_scope(
             detail: "unrecognised IrExpr variant — no lowering arm defined".into(),
         }),
     }
+}
+
+/// Is `e` a Core Erlang term the BEAM type analyser already sees as a map?
+///
+/// Only map literals and native map updates qualify: both lower to a map term
+/// whose type is statically known, so a `put_map_assoc` over them passes the
+/// +5 validator. A `Var`, a `Call`, or any other expression has type `any` as
+/// far as the analyser is concerned, and a `put_map_assoc` over `any` trips
+/// `{bad_type,{needed,{t_map,any,any}},{actual,any}}`. Those base expressions
+/// take the `maps:merge/2` path instead. A `MapUpdate` is only ever emitted
+/// over a base that already satisfied this test, so it is itself always a map.
+const fn cerl_is_static_map(e: &CErlExpr) -> bool {
+    matches!(e, CErlExpr::MapLit(_) | CErlExpr::MapUpdate { .. })
 }
 
 // ── Block helper (§4.10) ──────────────────────────────────────────────────────
@@ -2736,13 +2769,17 @@ mod tests {
         }
     }
 
-    // ── `with` peephole fires → MapUpdate ────────────────────────────────────
+    // ── `with` over an opaque base → maps:merge/2 ────────────────────────────
 
     #[test]
-    fn expr_record_update_lowers_to_map_update() {
-        // `r with { b = 99 }` → IrExpr::RecordUpdate { base: Local("r"),
-        //   updates: [("b", Int 99)] } → MapUpdate { base: Var V_R,
-        //   updates: [(Atom "b", Int 99)] }. No record schema involved.
+    fn expr_record_update_over_var_base_lowers_to_maps_merge() {
+        // `r with { b = 99 }` where `r` is a variable (e.g. a function
+        // parameter) → IrExpr::RecordUpdate { base: Local("r"), updates:
+        //   [("b", Int 99)] } → call 'maps':'merge'(V_R, ~{'b'=>99}~).
+        //
+        // The native `put_map_assoc` would fail the +5 validator here because
+        // a variable has type `any`, so the conversion routes opaque bases
+        // through `maps:merge/2`. No record schema is involved.
         let expr = IrExpr::RecordUpdate {
             id: node(),
             base: Box::new(local("r")),
@@ -2751,10 +2788,70 @@ mod tests {
         };
         let result = lower_expr(&expr).unwrap();
         match result {
+            CErlExpr::Call {
+                module,
+                fn_name,
+                args,
+            } => {
+                assert_eq!(module.0, "maps");
+                assert_eq!(fn_name.0, "merge");
+                assert_eq!(args.len(), 2);
+                assert!(
+                    matches!(&args[0], CErlExpr::Var(CErlVar(s)) if s == "V_R"),
+                    "expected base var V_R, got {:?}",
+                    &args[0]
+                );
+                match &args[1] {
+                    CErlExpr::MapLit(pairs) => {
+                        assert_eq!(pairs.len(), 1);
+                        assert!(
+                            matches!(&pairs[0].0, CErlExpr::Lit(CErlLit::Atom(CErlAtom(s))) if s == "b"),
+                            "expected key atom 'b', got {:?}",
+                            &pairs[0].0
+                        );
+                        assert!(
+                            matches!(&pairs[0].1, CErlExpr::Lit(CErlLit::Int(99))),
+                            "expected value Int 99, got {:?}",
+                            &pairs[0].1
+                        );
+                    }
+                    other => panic!("expected MapLit update arg, got {other:?}"),
+                }
+            }
+            other => panic!("expected Call(maps:merge), got {other:?}"),
+        }
+    }
+
+    // ── `with` over a record literal → native MapUpdate ──────────────────────
+
+    #[test]
+    fn expr_record_update_over_record_literal_uses_native_map_update() {
+        // `(Point { a = 1 }) with { b = 99 }` → the base lowers to a MapLit,
+        // which the BEAM analyser already sees as a map, so the conversion
+        // keeps the native map-update `~{'b'=>99 | ~{'a'=>1}~}~`.
+        let base = IrExpr::Construct {
+            id: node(),
+            ctor: SymbolRef::Constructor {
+                ctor_kind: CtorKind::Record,
+                owner_type: TyConId(0),
+                name: "Point".into(),
+                variant: 0,
+            },
+            fields: vec![("a".into(), lit_int(1))],
+            span: sp(),
+        };
+        let expr = IrExpr::RecordUpdate {
+            id: node(),
+            base: Box::new(base),
+            updates: vec![("b".into(), lit_int(99))],
+            span: sp(),
+        };
+        let result = lower_expr(&expr).unwrap();
+        match result {
             CErlExpr::MapUpdate { base, updates } => {
                 assert!(
-                    matches!(*base, CErlExpr::Var(CErlVar(ref s)) if s == "V_R"),
-                    "expected base Var V_R, got {base:?}"
+                    matches!(*base, CErlExpr::MapLit(_)),
+                    "expected MapLit base, got {base:?}"
                 );
                 assert_eq!(updates.len(), 1);
                 assert!(

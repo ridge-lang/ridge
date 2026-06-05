@@ -197,11 +197,15 @@ Typed HTTP framework for the BEAM. Cowboy / Bandit underneath,
 exposed through a typed router DSL, JSON via `Encode` / `Decode`
 typeclasses, and a composable middleware chain.
 
-The language prerequisites are satisfied: the typeclass core
+The JSON and typeclass foundation shipped in rc3: the typeclass core
 (declarations, coherence, constraint solving, dictionary passing),
 `deriving (Encode, Decode)` for user records and unions, parametric
-instances with `where` constraints, and eight prelude stdlib instances
-all shipped in rc3. The framework itself is the remaining work.
+instances with `where` constraints, and the prelude stdlib instances.
+A typed web framework needs more from the language than that, and those
+pieces are landing across the 0.3.0 RC line before the framework itself
+-- opaque types for the taint-safe `Sql` / `Html` wrappers, and
+cross-module type checking so a framework's API is type-safe in the apps
+that consume it. The framework builds on top once those are in.
 
 | Status | Item | Description | Evidence |
 |--------|------|-------------|----------|

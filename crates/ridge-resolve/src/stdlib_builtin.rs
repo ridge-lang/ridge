@@ -55,7 +55,7 @@ pub static BUILTINS: &[BuiltinStdlibModule] =
 
 /// Look up a stdlib module by its dot-separated name (e.g. `"std.list"`).
 ///
-/// Linear scan over [`BUILTINS`] — O(N) where N = 19.  Acceptable for the
+/// Linear scan over [`BUILTINS`] — O(N) where N = 21.  Acceptable for the
 /// current table size; Phase 7 may replace with a hash map if N grows.
 #[must_use]
 pub fn lookup_stdlib(name: &str) -> Option<&'static BuiltinStdlibModule> {
@@ -70,8 +70,8 @@ mod tests {
 
     // Test 1: table length
     #[test]
-    fn builtins_len_is_20() {
-        assert_eq!(BUILTINS.len(), 20, "expected exactly 20 builtin modules");
+    fn builtins_len_is_21() {
+        assert_eq!(BUILTINS.len(), 21, "expected exactly 21 builtin modules");
     }
 
     // Test 2: each entry's id.0 == its index

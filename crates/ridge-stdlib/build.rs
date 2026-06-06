@@ -142,6 +142,7 @@ const STDLIB_MODULES: &[&str] = &[
     "std.net.http",
     // Tier 5
     "std.crypto",
+    "std.sql",
 ];
 
 // ── Entry type ────────────────────────────────────────────────────────────────

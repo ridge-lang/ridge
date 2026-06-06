@@ -208,6 +208,19 @@ fn stdlib_accessor_reads_value_cleanly() {
 }
 
 #[test]
+fn stdlib_sql_value_imports_and_resolves() {
+    // The opaque `SqlValue` from std.sql can be imported and named in a
+    // signature; passing one through resolves to the builtin opaque type
+    // rather than a fresh variable.
+    let main = "import std.sql (SqlValue)\nfn id (v: SqlValue) -> SqlValue = v\n";
+    let errors = typecheck_one(main);
+    assert!(
+        errors.is_empty(),
+        "importing and naming SqlValue must type-check clean; got {errors:?}"
+    );
+}
+
+#[test]
 fn stdlib_secure_cookie_field_access_is_t036() {
     let main = "import std.net.http (SecureCookie)\nfn leak (c: SecureCookie) -> Text = c.value\n";
     let errors = typecheck_one(main);

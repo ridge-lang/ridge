@@ -74,8 +74,9 @@ pub const STDLIB_MODULE_ORDER: &[&str] = &[
     // Tier 4 — advanced
     "std.json",
     "std.net.http",
-    // Tier 5 — security
+    // Tier 5 — security + data
     "std.crypto",
+    "std.sql",
 ];
 
 // ── Core extraction ───────────────────────────────────────────────────────────

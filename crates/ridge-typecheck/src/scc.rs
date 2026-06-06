@@ -38,7 +38,9 @@
 
 use ridge_ast::{Body, Expr, FnDecl, Param, Span};
 use ridge_resolve::NodeKind;
-use ridge_types::{BuiltinTyCons, CapRow, CapVid, CapabilitySet, Constraint, Scheme, TyVid, Type};
+use ridge_types::{
+    BuiltinTyCons, CapRow, CapVid, CapabilitySet, Constraint, RowVid, Scheme, TyVid, Type,
+};
 use rustc_hash::{FxHashMap, FxHashSet};
 
 use crate::caps_check::caps_from_ast_slice;
@@ -308,6 +310,10 @@ pub fn tarjan_sccs(graph: &CallGraph) -> Vec<Vec<DeclId>> {
 /// generalises, then attached to `scheme.constraints`. This is the mechanism
 /// by which `fn describe (x: a) -> Text where ToText a` keeps its constraint
 /// in its generalised scheme.
+#[allow(
+    clippy::too_many_arguments,
+    reason = "three pre-SCC env free-var snapshots (ty/cap/row) plus retained constraints"
+)]
 fn write_back_schemes(
     ctx: &mut InferCtx,
     scc: &[DeclId],
@@ -315,13 +321,15 @@ fn write_back_schemes(
     mut scc_fn_types: FxHashMap<DeclId, Type>,
     env_snap_ty: &FxHashSet<TyVid>,
     env_snap_cap: &FxHashSet<CapVid>,
+    env_snap_row: &FxHashSet<RowVid>,
     retained_constraints: &[Constraint],
 ) {
     let mut generalised: Vec<(&Expr, String, Scheme)> = Vec::new();
     for &did in scc {
         let decl = decls[did.0];
         if let Some(fn_ty) = scc_fn_types.remove(&did) {
-            let mut scheme = generalise_with_env(ctx, &fn_ty, env_snap_ty, env_snap_cap);
+            let mut scheme =
+                generalise_with_env(ctx, &fn_ty, env_snap_ty, env_snap_cap, env_snap_row);
             // Attach retained constraints whose TyVid ended up in this scheme's
             // generalised variable set. Constraints over vars not in `scheme.vars`
             // escaped to an outer scope and were already reported as T030 by the
@@ -421,6 +429,7 @@ pub fn typecheck_module_decls(
         // env" when generalising.  Snapshot now; use this for step (c).
         let env_snap_ty = ctx.env_free_tyvids();
         let env_snap_cap = ctx.env_free_capvids();
+        let env_snap_row = ctx.env_free_rowvids();
 
         // ── Step a: allocate fresh fn types for each decl in the SCC ──────────
         // We bind each decl name to a *monomorphic* Fn type so that recursive
@@ -609,6 +618,7 @@ pub fn typecheck_module_decls(
             scc_fn_types,
             &env_snap_ty,
             &env_snap_cap,
+            &env_snap_row,
             &retained,
         );
     }
@@ -1080,6 +1090,7 @@ mod tests {
         let scheme = Scheme {
             vars: vec![], // NOT generalised
             cap_vars: vec![],
+            row_vars: vec![],
             ty: Type::Var(unbound),
             constraints: vec![],
         };

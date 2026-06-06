@@ -234,6 +234,26 @@ pub fn infer_field_access(
         return Type::Error;
     }
 
+    // Structural record (anonymous / inline): the field set lives in the type,
+    // so look it up directly — no schema, and no opaque check (anonymous records
+    // are never opaque).
+    if let Type::Record { fields, .. } = &base_resolved {
+        if let Some((_, fty)) = fields.iter().find(|(l, _)| *l == field_name.text) {
+            return fty.clone();
+        }
+        let suggestions = ridge_resolve::suggest::suggest(
+            &field_name.text,
+            fields.iter().map(|(l, _)| l.clone()),
+        );
+        ctx.errors.push(TypeError::UnknownField {
+            record: format!("{base_resolved}"),
+            field: field_name.text.clone(),
+            suggestions,
+            span: field_span,
+        });
+        return Type::Error;
+    }
+
     if let Type::Con(tycon_id, args) = &base_resolved {
         let decl = tycons.get(tycon_id.0 as usize);
         if let Some(decl) = decl {
@@ -305,6 +325,16 @@ pub fn infer_record_with(
     // Absorb: free type vars and Error bases propagate silently.
     if matches!(&base_resolved, Type::Var(_) | Type::Error) {
         return Type::Error;
+    }
+
+    // Structural record: handled in its own helper (no schema, no opaque check).
+    let structural_fields = if let Type::Record { fields, .. } = &base_resolved {
+        Some(fields.clone())
+    } else {
+        None
+    };
+    if let Some(row_fields) = structural_fields {
+        return infer_structural_with(ctx, b, base_resolved, &row_fields, fields);
     }
 
     let (tycon_id, args) = if let Type::Con(id, args) = &base_resolved {
@@ -395,6 +425,56 @@ pub fn infer_record_with(
     }
 
     // Result: same type as base.
+    base_resolved
+}
+
+/// `with`-update over a structural record row (anonymous / inline). Each update
+/// field must already be in the row; its value type is unified with the field's
+/// type. Unknown fields are reported. Returns the base row unchanged.
+fn infer_structural_with(
+    ctx: &mut InferCtx,
+    b: &BuiltinTyCons,
+    base_resolved: Type,
+    row_fields: &[(String, Type)],
+    fields: &[FieldInit],
+) -> Type {
+    for fi in fields {
+        let Some((_, field_ty)) = row_fields.iter().find(|(l, _)| *l == fi.name.text) else {
+            let suggestions = ridge_resolve::suggest::suggest(
+                &fi.name.text,
+                row_fields.iter().map(|(l, _)| l.clone()),
+            );
+            ctx.errors.push(TypeError::UnknownField {
+                record: format!("{base_resolved}"),
+                field: fi.name.text.clone(),
+                suggestions,
+                span: fi.span,
+            });
+            continue;
+        };
+        let field_ty = field_ty.clone();
+        let value_ty = match &fi.value {
+            Some(val_expr) => crate::infer::infer_expr(ctx, b, val_expr),
+            None => {
+                if let Some(s) = ctx.env.lookup(&fi.name.text) {
+                    let s = s.clone();
+                    crate::instantiate::instantiate(ctx, &s)
+                } else {
+                    emit_internal(
+                        ctx,
+                        format!(
+                            "shorthand field '{}' not in scope in with-update",
+                            fi.name.text
+                        ),
+                        fi.span,
+                    )
+                }
+            }
+        };
+        if let Err(e) = unify(ctx, &value_ty, &field_ty) {
+            ctx.errors.push(attach_span(e, fi.span));
+        }
+    }
     base_resolved
 }
 
@@ -1037,5 +1117,72 @@ mod tests {
         );
         let _ = arena.len();
         ctx.env.pop_frame();
+    }
+
+    // ── Structural records (anonymous / inline) — field access & with (R3) ────
+
+    #[test]
+    fn structural_field_access_returns_field_type() {
+        let mut ctx = InferCtx::new();
+        let mut arena = TyConArena::new();
+        let b = BuiltinTyCons::allocate(&mut arena);
+        let rec = Type::record(
+            vec![
+                ("name".to_string(), Type::Con(b.text, vec![])),
+                ("age".to_string(), Type::Con(b.int, vec![])),
+            ],
+            ridge_types::RowTail::Closed,
+        );
+        let ty = infer_field_access(&mut ctx, &b, &rec, &id("age"), ds(), &[]);
+        assert!(matches!(ty, Type::Con(tc, _) if tc == b.int), "got {ty:?}");
+        assert!(ctx.errors.is_empty(), "{:?}", ctx.errors);
+    }
+
+    #[test]
+    fn structural_field_access_unknown_field_errors() {
+        let mut ctx = InferCtx::new();
+        let mut arena = TyConArena::new();
+        let b = BuiltinTyCons::allocate(&mut arena);
+        let rec = Type::record(
+            vec![("name".to_string(), Type::Con(b.text, vec![]))],
+            ridge_types::RowTail::Closed,
+        );
+        let ty = infer_field_access(&mut ctx, &b, &rec, &id("missing"), ds(), &[]);
+        assert!(ty.is_error());
+        assert_eq!(ctx.errors.len(), 1);
+        assert_eq!(ctx.errors[0].code(), "T005");
+    }
+
+    #[test]
+    fn structural_with_present_field_unifies_and_returns_base() {
+        let mut ctx = InferCtx::new();
+        let mut arena = TyConArena::new();
+        let b = BuiltinTyCons::allocate(&mut arena);
+        let rec = Type::record(
+            vec![("count".to_string(), Type::Con(b.int, vec![]))],
+            ridge_types::RowTail::Closed,
+        );
+        let updates = vec![fi("count", Some(int_lit("5")))];
+        let ty = infer_record_with(&mut ctx, &b, &rec, &updates, ds(), &[]);
+        assert!(matches!(ty, Type::Record { .. }), "got {ty:?}");
+        assert!(ctx.errors.is_empty(), "{:?}", ctx.errors);
+    }
+
+    #[test]
+    fn structural_with_unknown_field_errors() {
+        let mut ctx = InferCtx::new();
+        let mut arena = TyConArena::new();
+        let b = BuiltinTyCons::allocate(&mut arena);
+        let rec = Type::record(
+            vec![("count".to_string(), Type::Con(b.int, vec![]))],
+            ridge_types::RowTail::Closed,
+        );
+        let updates = vec![fi("nope", Some(int_lit("1")))];
+        let _ = infer_record_with(&mut ctx, &b, &rec, &updates, ds(), &[]);
+        assert!(
+            ctx.errors.iter().any(|e| e.code() == "T005"),
+            "{:?}",
+            ctx.errors
+        );
     }
 }

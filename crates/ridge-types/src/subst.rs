@@ -5,7 +5,7 @@ use rustc_hash::FxHashMap;
 use crate::{
     capability_set::CapabilitySet,
     scheme::Scheme,
-    ty::{CapRow, CapVid, TyVid, Type},
+    ty::{CapRow, CapVid, Row, RowTail, RowVid, TyVid, Type},
 };
 
 // ── Subst ─────────────────────────────────────────────────────────────────────
@@ -22,6 +22,9 @@ pub struct Subst {
     pub ty: FxHashMap<TyVid, Type>,
     /// Capability-row variable substitutions.
     pub cap: FxHashMap<CapVid, CapabilitySet>,
+    /// Record-row variable substitutions: each bound [`RowVid`] maps to the
+    /// row (fields + tail) that absorbed it during unification.
+    pub row: FxHashMap<RowVid, Row>,
 }
 
 impl Subst {
@@ -64,9 +67,24 @@ impl Subst {
             result_cap.entry(*c).or_insert(*s);
         }
 
+        // Row subst: apply `self` to each of `other`'s rows, then keep `self`'s
+        // own rows that `other` did not override. Mirrors the `ty` strategy.
+        let mut result_row: FxHashMap<RowVid, Row> = other
+            .row
+            .iter()
+            .map(|(rv, row)| {
+                let (fields, tail) = self.apply_to_row(&row.fields, &row.tail);
+                (*rv, Row::new(fields, tail))
+            })
+            .collect();
+        for (rv, row) in &self.row {
+            result_row.entry(*rv).or_insert_with(|| row.clone());
+        }
+
         Self {
             ty: result_ty,
             cap: result_cap,
+            row: result_row,
         }
     }
 
@@ -112,6 +130,10 @@ impl Subst {
                 }
             }
             Type::Tuple(ts) => Type::Tuple(ts.iter().map(|t| self.apply_to_ty(t)).collect()),
+            Type::Record { fields, tail } => {
+                let (new_fields, new_tail) = self.apply_to_row(fields, tail);
+                Type::record(new_fields, new_tail)
+            }
             // Alias is transparent — substitute the body, keep the wrapper.
             Type::Alias { name, body } => Type::Alias {
                 name: *name,
@@ -119,6 +141,42 @@ impl Subst {
             },
             Type::Error => Type::Error,
         }
+    }
+
+    /// Applies this substitution to a record row `{ fields | tail }`, returning
+    /// the substituted field set and the resolved tail.
+    ///
+    /// Each field type is substituted. If the tail is `Open(ρ)` and ρ is bound
+    /// in `self.row`, the bound row is spliced in — its fields appended and its
+    /// own tail followed — iterating until the tail is `Closed` or unbound. The
+    /// returned fields are not yet normalised; [`Type::record`] does that at the
+    /// call sites. Assumes an acyclic row substitution (the occurs-check the
+    /// unifier runs before binding a `RowVid` guarantees this).
+    #[must_use]
+    fn apply_to_row(
+        &self,
+        fields: &[(String, Type)],
+        tail: &RowTail,
+    ) -> (Vec<(String, Type)>, RowTail) {
+        let mut out: Vec<(String, Type)> = fields
+            .iter()
+            .map(|(label, t)| (label.clone(), self.apply_to_ty(t)))
+            .collect();
+        // Follow the tail while it is a *bound* row var, splicing each bound
+        // row in. `cur.clone()` keeps `cur` live for the final return when the
+        // loop exits on a closed or unbound tail (RowTail is cheap to clone).
+        let mut cur = tail.clone();
+        while let RowTail::Open(rv) = cur.clone() {
+            let Some(row) = self.row.get(&rv) else {
+                // Unbound row var — leave the tail open at ρ.
+                break;
+            };
+            for (label, t) in &row.fields {
+                out.push((label.clone(), self.apply_to_ty(t)));
+            }
+            cur = row.tail.clone();
+        }
+        (out, cur)
     }
 
     /// Applies this substitution to a scheme, skipping bound variables.
@@ -143,14 +201,23 @@ impl Subst {
             .map(|(c, s)| (*c, *s))
             .collect();
 
+        let restricted_row: FxHashMap<RowVid, Row> = self
+            .row
+            .iter()
+            .filter(|(r, _)| !scheme.row_vars.contains(r))
+            .map(|(r, row)| (*r, row.clone()))
+            .collect();
+
         let restricted = Self {
             ty: restricted_ty,
             cap: restricted_cap,
+            row: restricted_row,
         };
 
         Scheme {
             vars: scheme.vars.clone(),
             cap_vars: scheme.cap_vars.clone(),
+            row_vars: scheme.row_vars.clone(),
             ty: restricted.apply_to_ty(&scheme.ty),
             constraints: scheme.constraints.clone(),
         }
@@ -165,7 +232,7 @@ mod tests {
     use crate::{
         capability_set::CapabilitySet,
         scheme::Scheme,
-        ty::{CapRow, TyVid, Type},
+        ty::{CapRow, Row, RowTail, RowVid, TyVid, Type},
         tycon::TyConId,
     };
 
@@ -283,6 +350,7 @@ mod tests {
         let scheme = Scheme {
             vars: vec![a],
             cap_vars: vec![],
+            row_vars: vec![],
             ty: Type::Fn {
                 params: vec![Type::Var(a)],
                 ret: Box::new(Type::Con(cid(1), vec![])),
@@ -339,5 +407,100 @@ mod tests {
             matches!(r1, Type::Con(TyConId(5), _)),
             "?1 should resolve through the chain to Int, got: {r1:?}"
         );
+    }
+
+    // ── row substitution (L1) ─────────────────────────────────────────────────
+
+    fn rec_field(label: &str, id: u32) -> (String, Type) {
+        (label.to_string(), Type::Con(cid(id), vec![]))
+    }
+
+    #[test]
+    fn apply_to_ty_closed_record_substitutes_field_types() {
+        // { v: ?0 }  with  ?0 := #1  →  { v: #1 }
+        let s = Subst::singleton(vid(0), Type::Con(cid(1), vec![]));
+        let rec = Type::record(vec![("v".into(), Type::Var(vid(0)))], RowTail::Closed);
+        match s.apply_to_ty(&rec) {
+            Type::Record { fields, tail } => {
+                assert_eq!(tail, RowTail::Closed);
+                assert_eq!(fields.len(), 1);
+                assert!(matches!(fields[0].1, Type::Con(TyConId(1), _)));
+            }
+            other => panic!("expected Record, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn apply_to_ty_open_record_unbound_tail_stays_open() {
+        let s = Subst::empty();
+        let rec = Type::record(vec![rec_field("a", 0)], RowTail::Open(RowVid(5)));
+        match s.apply_to_ty(&rec) {
+            Type::Record { tail, .. } => assert_eq!(tail, RowTail::Open(RowVid(5))),
+            other => panic!("expected Record, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn apply_to_ty_open_record_splices_bound_row() {
+        // { a: #1 | ρ0 }  with  ρ0 := { b: #2 }  →  { a: #1, b: #2 }, closed.
+        let mut s = Subst::empty();
+        s.row.insert(
+            RowVid(0),
+            Row::new(vec![rec_field("b", 2)], RowTail::Closed),
+        );
+        let rec = Type::record(vec![rec_field("a", 1)], RowTail::Open(RowVid(0)));
+        match s.apply_to_ty(&rec) {
+            Type::Record { fields, tail } => {
+                assert_eq!(tail, RowTail::Closed, "spliced row was closed");
+                let labels: Vec<&str> = fields.iter().map(|(l, _)| l.as_str()).collect();
+                assert_eq!(labels, ["a", "b"]);
+            }
+            other => panic!("expected Record, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn apply_to_ty_splices_chained_row_vars() {
+        // { a | ρ0 }, ρ0 := { b | ρ1 }, ρ1 := { c }  →  { a, b, c }, closed.
+        let mut s = Subst::empty();
+        s.row.insert(
+            RowVid(0),
+            Row::new(vec![rec_field("b", 2)], RowTail::Open(RowVid(1))),
+        );
+        s.row.insert(
+            RowVid(1),
+            Row::new(vec![rec_field("c", 3)], RowTail::Closed),
+        );
+        let rec = Type::record(vec![rec_field("a", 1)], RowTail::Open(RowVid(0)));
+        match s.apply_to_ty(&rec) {
+            Type::Record { fields, tail } => {
+                assert_eq!(tail, RowTail::Closed);
+                let labels: Vec<&str> = fields.iter().map(|(l, _)| l.as_str()).collect();
+                assert_eq!(labels, ["a", "b", "c"]);
+            }
+            other => panic!("expected Record, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn apply_to_ty_splice_substitutes_bound_field_types() {
+        // ρ0 := { b: ?0 }, ?0 := #7, record { | ρ0 }  →  { b: #7 }.
+        let mut s = Subst::empty();
+        s.ty.insert(vid(0), Type::Con(cid(7), vec![]));
+        s.row.insert(
+            RowVid(0),
+            Row::new(vec![("b".into(), Type::Var(vid(0)))], RowTail::Closed),
+        );
+        let rec = Type::record(vec![], RowTail::Open(RowVid(0)));
+        match s.apply_to_ty(&rec) {
+            Type::Record { fields, .. } => {
+                assert_eq!(fields.len(), 1);
+                assert!(
+                    matches!(fields[0].1, Type::Con(TyConId(7), _)),
+                    "field type inside the spliced row must be substituted too"
+                );
+            }
+            other => panic!("expected Record, got {other:?}"),
+        }
     }
 }

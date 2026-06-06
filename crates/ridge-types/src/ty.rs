@@ -17,6 +17,59 @@ pub struct TyVid(pub u32);
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct CapVid(pub u32);
 
+/// Record-row variable index — the unification slot for the open tail of a
+/// [`Type::Record`]. Allocated by the inference table, exactly like [`TyVid`]
+/// and [`CapVid`], but lives in its own namespace.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct RowVid(pub u32);
+
+// ── Record rows ───────────────────────────────────────────────────────────────
+
+/// The tail of a record row: either closed (the field set is exact) or open
+/// (there may be more fields, reached through a [`RowVid`]).
+#[non_exhaustive]
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum RowTail {
+    /// The field set is exact — no further labels.
+    Closed,
+    /// The row may carry additional labels, bound through this variable.
+    Open(RowVid),
+}
+
+/// A record row: a labelled field set plus a tail. This is the substitution
+/// target for a bound [`RowVid`] (`Subst::row`).
+///
+/// The `fields` vector obeys the same invariant as [`Type::Record`]: sorted by
+/// label, no duplicates. Build one through [`Row::new`] to enforce it.
+#[derive(Debug, Clone)]
+pub struct Row {
+    /// Labelled field types — sorted by label, duplicate-free.
+    pub fields: Vec<(String, Type)>,
+    /// Whether the row is closed or open through a row variable.
+    pub tail: RowTail,
+}
+
+impl Row {
+    /// Builds a row, normalising `fields` to the sorted, duplicate-free
+    /// invariant (a later duplicate label wins, matching record-literal
+    /// shadowing). Construct rows through this rather than the struct literal.
+    #[must_use]
+    pub fn new(mut fields: Vec<(String, Type)>, tail: RowTail) -> Self {
+        normalise_fields(&mut fields);
+        Self { fields, tail }
+    }
+}
+
+/// Sort `fields` by label and drop earlier duplicates (last label wins).
+fn normalise_fields(fields: &mut Vec<(String, Type)>) {
+    // Stable sort keeps later duplicates after earlier ones for the same label;
+    // dedup_by then keeps the first of each equal run, so reverse first to make
+    // "last wins" fall out of keeping-the-first.
+    fields.reverse();
+    fields.sort_by(|a, b| a.0.cmp(&b.0));
+    fields.dedup_by(|a, b| a.0 == b.0);
+}
+
 // ── Capability row ────────────────────────────────────────────────────────────
 
 /// Capability set carried by a function type.
@@ -45,11 +98,13 @@ pub enum CapRow {
 /// - [`Type::Alias`] — diagnostic-naming wrapper for an eagerly-resolved alias.
 /// - [`Type::Error`] — the absorbing error type; see below.
 ///
-/// # Closed records
+/// # Records
 ///
-/// Spec §5.1 reserves row polymorphism for post-0.1.0. In Phase 4 a record type
-/// is exactly its `TyCon::Record(RecordSchema)` — no row-extension variable.
-/// Records are closed with no row polymorphism in this release.
+/// Nominal records (`User`, declared with `type`) stay [`Type::Con`] over their
+/// `TyCon::Record(RecordSchema)` — they keep their nominal identity for error
+/// names and instance dispatch. Structural/anonymous records are [`Type::Record`]
+/// with a [`RowTail`]: `Closed` for an exact field set, `Open(ρ)` when the row is
+/// polymorphic over a [`RowVid`] tail (`{ name: Text | ρ }`).
 ///
 /// # `Type::Error` — absorbing semantics
 ///
@@ -76,6 +131,18 @@ pub enum Type {
     },
     /// A structural tuple type.
     Tuple(Vec<Self>),
+    /// A structural record type: a labelled field set plus a [`RowTail`].
+    ///
+    /// `fields` is sorted by label and duplicate-free (see [`Type::record`]).
+    /// `Closed` is an exact field set; `Open(ρ)` leaves the row polymorphic over
+    /// the tail variable `ρ`. Nominal records are NOT this — they remain
+    /// [`Type::Con`] over their record `TyCon`.
+    Record {
+        /// Labelled field types — sorted by label, duplicate-free.
+        fields: Vec<(String, Self)>,
+        /// Whether the field set is exact or open through a row variable.
+        tail: RowTail,
+    },
     /// Diagnostic-naming wrapper for an eagerly-resolved type alias.
     ///
     /// Behaviorally transparent: `shallow_resolve`, unification, occurs-check,
@@ -104,6 +171,16 @@ impl Type {
     #[must_use]
     pub const fn is_error(&self) -> bool {
         matches!(self, Self::Error)
+    }
+
+    /// Builds a structural record type, normalising `fields` to the sorted,
+    /// duplicate-free invariant (a later duplicate label wins, matching
+    /// record-literal shadowing). Construct records through this rather than the
+    /// `Self::Record { .. }` literal so the invariant always holds.
+    #[must_use]
+    pub fn record(mut fields: Vec<(String, Self)>, tail: RowTail) -> Self {
+        normalise_fields(&mut fields);
+        Self::Record { fields, tail }
     }
 }
 
@@ -147,6 +224,19 @@ impl fmt::Display for Type {
                     first = false;
                 }
                 write!(f, ")")
+            }
+            Self::Record { fields, tail } => {
+                write!(f, "{{")?;
+                for (i, (label, ty)) in fields.iter().enumerate() {
+                    write!(f, "{}{label}: {ty}", if i == 0 { " " } else { ", " })?;
+                }
+                match tail {
+                    // Open row: "{ a: A | ?r0 }" (or "{ | ?r0 }" when empty).
+                    RowTail::Open(rv) => write!(f, " | ?r{} }}", rv.0),
+                    // Closed: "{ a: A }", or "{}" when there are no fields.
+                    RowTail::Closed if fields.is_empty() => write!(f, "}}"),
+                    RowTail::Closed => write!(f, " }}"),
+                }
             }
             // Prefer the alias name over the expanded body.
             Self::Alias { name, .. } => write!(f, "#{}", name.0),
@@ -300,5 +390,82 @@ mod tests {
     fn tuple_construction() {
         let t = Type::Tuple(vec![Type::Con(cid(0), vec![]), Type::Con(cid(1), vec![])]);
         assert!(matches!(t, Type::Tuple(ref v) if v.len() == 2));
+    }
+
+    // ── Record rows (L1) ──────────────────────────────────────────────────────
+
+    fn field(label: &str, id: u32) -> (String, Type) {
+        (label.to_string(), Type::Con(cid(id), vec![]))
+    }
+
+    #[test]
+    fn record_constructor_sorts_fields_by_label() {
+        let t = Type::record(vec![field("name", 1), field("age", 2)], RowTail::Closed);
+        match t {
+            Type::Record { fields, tail } => {
+                assert_eq!(tail, RowTail::Closed);
+                let labels: Vec<&str> = fields.iter().map(|(l, _)| l.as_str()).collect();
+                assert_eq!(labels, ["age", "name"], "fields must be sorted by label");
+            }
+            _ => panic!("expected Record"),
+        }
+    }
+
+    #[test]
+    fn record_constructor_dedups_last_label_wins() {
+        // Two `x` fields: Con(7) then Con(9). Record-literal shadowing → last wins.
+        let t = Type::record(
+            vec![field("x", 7), field("y", 5), field("x", 9)],
+            RowTail::Closed,
+        );
+        match t {
+            Type::Record { fields, .. } => {
+                assert_eq!(fields.len(), 2, "duplicate label collapses to one");
+                let x = &fields.iter().find(|(l, _)| l == "x").unwrap().1;
+                assert!(
+                    matches!(x, Type::Con(TyConId(9), _)),
+                    "last `x` (Con 9) must win, got {x:?}"
+                );
+            }
+            _ => panic!("expected Record"),
+        }
+    }
+
+    #[test]
+    fn record_display_closed_nonempty() {
+        let t = Type::record(vec![field("age", 0), field("name", 1)], RowTail::Closed);
+        assert_eq!(format!("{t}"), "{ age: #0, name: #1 }");
+    }
+
+    #[test]
+    fn record_display_empty_closed() {
+        let t = Type::record(vec![], RowTail::Closed);
+        assert_eq!(format!("{t}"), "{}");
+    }
+
+    #[test]
+    fn record_display_open_shows_row_var() {
+        let t = Type::record(vec![field("name", 1)], RowTail::Open(RowVid(3)));
+        assert_eq!(format!("{t}"), "{ name: #1 | ?r3 }");
+    }
+
+    #[test]
+    fn record_display_empty_open() {
+        let t = Type::record(vec![], RowTail::Open(RowVid(0)));
+        assert_eq!(format!("{t}"), "{ | ?r0 }");
+    }
+
+    #[test]
+    fn record_is_not_error() {
+        let t = Type::record(vec![field("a", 0)], RowTail::Closed);
+        assert!(!t.is_error());
+    }
+
+    #[test]
+    fn row_tail_equality() {
+        assert_eq!(RowTail::Closed, RowTail::Closed);
+        assert_eq!(RowTail::Open(RowVid(1)), RowTail::Open(RowVid(1)));
+        assert_ne!(RowTail::Open(RowVid(1)), RowTail::Open(RowVid(2)));
+        assert_ne!(RowTail::Closed, RowTail::Open(RowVid(0)));
     }
 }

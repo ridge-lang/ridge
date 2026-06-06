@@ -430,3 +430,106 @@ fn f () -> { a: Int } =
         error_codes(&result)
     );
 }
+
+/// An open record parameter `{ x: Int | a }` accepts a record carrying the
+/// declared field plus extras — the headline of row polymorphism.
+#[test]
+fn open_record_param_accepts_extra_fields() {
+    let src = r"
+fn fieldX (r: { x: Int | a }) -> Int = r.x
+
+fn caller () -> Int =
+    let rec = { x = 1, y = 2 }
+    fieldX rec
+";
+    let result = typecheck_src(src);
+    assert!(
+        result.errors.is_empty(),
+        "an open record must accept a record with extra fields, got: {:#?}",
+        error_codes(&result)
+    );
+}
+
+/// A closed record parameter `{ x: Int }` rejects a record with extra fields,
+/// reporting the dedicated row-shape diagnostic T037 (not the flat T001).
+#[test]
+fn closed_record_param_rejects_extra_fields() {
+    let src = r"
+fn fieldX (r: { x: Int }) -> Int = r.x
+
+fn caller () -> Int =
+    let rec = { x = 1, y = 2 }
+    fieldX rec
+";
+    let result = typecheck_src(src);
+    assert!(
+        has_error(&result, "T037"),
+        "a closed record must reject extra fields with T037, got: {:#?}",
+        error_codes(&result)
+    );
+}
+
+/// Two closed records whose label sets disagree report T037, the record-shape
+/// diagnostic, rather than a flat type mismatch.
+#[test]
+fn closed_records_with_different_labels_report_t037() {
+    let src = r"
+fn takesXY (r: { x: Int, y: Int }) -> Int = r.x
+
+fn caller () -> Int =
+    let rec = { x = 1, z = 2 }
+    takesXY rec
+";
+    let result = typecheck_src(src);
+    assert!(
+        has_error(&result, "T037"),
+        "mismatched closed record shapes must report T037, got: {:#?}",
+        error_codes(&result)
+    );
+}
+
+/// An open record parameter is polymorphic across call sites: the same function
+/// applied to two differently-shaped records must typecheck. Each application
+/// instantiates a fresh row variable, so the first call's extra field does not
+/// pin the parameter's shape for the second.
+#[test]
+fn open_record_param_polymorphic_across_shapes() {
+    let src = r"
+fn fieldX (r: { x: Int | a }) -> Int = r.x
+
+fn caller () -> Int =
+    let withY = { x = 1, y = 2 }
+    let withZ = { x = 3, z = 4 }
+    let first = fieldX withY
+    let second = fieldX withZ
+    first + second
+";
+    let result = typecheck_src(src);
+    assert!(
+        result.errors.is_empty(),
+        "an open record param must accept differently-shaped records across calls, got: {:#?}",
+        error_codes(&result)
+    );
+}
+
+/// Two record literals of different shapes flowing into the same open-record
+/// parameter must not unify with each other. The row variable is quantified, so
+/// the two call sites stay independent rather than forcing `withY` and `withZ`
+/// to share a shape.
+#[test]
+fn open_record_calls_do_not_cross_constrain_arguments() {
+    let src = r"
+fn fieldX (r: { x: Int | a }) -> Int = r.x
+
+fn caller (flag: Bool) -> Int =
+    let withY = { x = 1, y = 2 }
+    let withZ = { x = 3, z = 4 }
+    fieldX withY + fieldX withZ
+";
+    let result = typecheck_src(src);
+    assert!(
+        result.errors.is_empty(),
+        "independent open-record calls must not cross-constrain their arguments, got: {:#?}",
+        error_codes(&result)
+    );
+}

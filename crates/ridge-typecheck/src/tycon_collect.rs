@@ -214,7 +214,7 @@ impl<'ast> Visit<'ast> for InlineRecordCollector<'_> {
         // Recurse FIRST (bottom-up: inner fields before outer).
         ridge_ast::visit::walk_type(self, t);
 
-        if let ridge_ast::Type::Record { fields, span } = t {
+        if let ridge_ast::Type::Record { fields, span, .. } = t {
             intern_inline_record(
                 self.arena,
                 self.b,
@@ -757,6 +757,7 @@ fn bind_constructor_schemes(
         let scheme = Scheme {
             vars: param_vids.clone(),
             cap_vars: vec![],
+            row_vars: vec![],
             ty: fn_ty,
             constraints: vec![],
         };
@@ -938,14 +939,9 @@ pub fn ast_type_to_ridge_type(
             }
         }
 
-        // Inline record type — look up the pre-scanned AnonRecordTable.
-        //
-        // The pre-scan (prescan_inline_records) ran before this function is
-        // called, so the table is fully populated for all type-position
-        // occurrences.  We re-resolve the field types using the same context
-        // and compute the ShapeKey to look up the interned anon TyConId.
-        ridge_ast::Type::Record { fields, .. } => {
-            // Resolve field types using the same function.
+        // Inline record type → a structural `Type::Record`. A `| r` tail makes
+        // the row open over a fresh row variable; a closed record has none.
+        ridge_ast::Type::Record { fields, tail, .. } => {
             let resolved: Vec<(String, Type)> = fields
                 .iter()
                 .map(|f| {
@@ -953,15 +949,12 @@ pub fn ast_type_to_ridge_type(
                     (f.name.text.clone(), ty)
                 })
                 .collect();
-            let key = ridge_types::shape_key(&resolved);
-            // Look up in ctx.anon_records (populated by the pre-scan).
-            if let Some(&id) = ctx.anon_records.get(&key) {
-                Type::Con(id, vec![])
+            let row_tail = if tail.is_some() {
+                ridge_types::RowTail::Open(ctx.fresh_rowvid())
             } else {
-                // Pre-scan miss — should not happen for type-position occurrences.
-                // Return Error so inference can absorb the fault.
-                Type::Error
-            }
+                ridge_types::RowTail::Closed
+            };
+            Type::record(resolved, row_tail)
         }
     }
 }
@@ -1042,6 +1035,7 @@ mod tests {
 
         let rec_ty = AstType::Record {
             fields: vec![field("x", int_ast()), field("y", int_ast())],
+            tail: None,
             span: ds(),
         };
         let module = module_with_fn_param(rec_ty);
@@ -1063,6 +1057,7 @@ mod tests {
                 name: Ident::new("r", ds()),
                 ty: AstType::Record {
                     fields: vec![field("x", int_ast()), field("y", int_ast())],
+                    tail: None,
                     span: ds(),
                 },
                 span: ds(),
@@ -1082,6 +1077,7 @@ mod tests {
                 name: Ident::new("r", ds()),
                 ty: AstType::Record {
                     fields: vec![field("y", int_ast()), field("x", int_ast())],
+                    tail: None,
                     span: ds(),
                 },
                 span: ds(),
@@ -1118,10 +1114,12 @@ mod tests {
         // Outer: { inner: { id: Int } }
         let inner_ty = AstType::Record {
             fields: vec![field("id", int_ast())],
+            tail: None,
             span: ds(),
         };
         let outer_ty = AstType::Record {
             fields: vec![field("inner", inner_ty)],
+            tail: None,
             span: ds(),
         };
         let module = module_with_fn_param(outer_ty);
@@ -1146,6 +1144,7 @@ mod tests {
                 name: Ident::new("r", ds()),
                 ty: AstType::Record {
                     fields: vec![field("a", int_ast())],
+                    tail: None,
                     span: ds(),
                 },
                 span: ds(),
@@ -1165,6 +1164,7 @@ mod tests {
                 name: Ident::new("r", ds()),
                 ty: AstType::Record {
                     fields: vec![field("a", text_ast())],
+                    tail: None,
                     span: ds(),
                 },
                 span: ds(),

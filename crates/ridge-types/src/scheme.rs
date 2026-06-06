@@ -3,7 +3,7 @@
 use rustc_hash::FxHashSet;
 
 use crate::constraint::Constraint;
-use crate::ty::{CapRow, CapVid, TyVid, Type};
+use crate::ty::{CapRow, CapVid, RowTail, RowVid, TyVid, Type};
 
 // ── Scheme ────────────────────────────────────────────────────────────────────
 
@@ -20,7 +20,14 @@ pub struct Scheme {
     pub vars: Vec<TyVid>,
     /// Universally-quantified capability-row variables (stdlib HOFs only, D041).
     pub cap_vars: Vec<CapVid>,
-    /// The body type, which may mention variables in `vars` and `cap_vars`.
+    /// Universally-quantified record-row variables (open-record polymorphism).
+    ///
+    /// Each is a [`RowVid`] that appears in an open tail of `ty`. Instantiation
+    /// freshens these so a function with an open-record parameter can be applied
+    /// at differently-shaped records within the same program.
+    pub row_vars: Vec<RowVid>,
+    /// The body type, which may mention variables in `vars`, `cap_vars`, and
+    /// `row_vars`.
     pub ty: Type,
     /// Class constraints over `vars`. Empty for unconstrained declarations.
     ///
@@ -38,6 +45,7 @@ impl Scheme {
         Self {
             vars: vec![],
             cap_vars: vec![],
+            row_vars: vec![],
             ty,
             constraints: vec![],
         }
@@ -60,11 +68,27 @@ impl Scheme {
         (free_ty, free_cap)
     }
 
+    /// Returns the free record-row variables in the scheme body that are NOT
+    /// bound by `row_vars`.
+    ///
+    /// Row variables live in their own namespace ([`RowVid`]), so they are
+    /// reported separately from [`Self::free_vars`] to keep that method's
+    /// `(TyVid, CapVid)` signature stable.
+    #[must_use]
+    pub fn free_row_vars(&self) -> FxHashSet<RowVid> {
+        let bound: FxHashSet<RowVid> = self.row_vars.iter().copied().collect();
+        let mut all = FxHashSet::default();
+        collect_row_vars(&self.ty, &mut all);
+        all.retain(|rv| !bound.contains(rv));
+        all
+    }
+
     /// Instantiates the scheme, producing a monomorphic `Type` by substituting
     /// fresh unification variables for every bound variable.
     ///
     /// `fresh_ty` — called once per bound [`TyVid`] to produce a fresh one.
     /// `fresh_cap` — called once per bound [`CapVid`] to produce a fresh one.
+    /// `fresh_row` — called once per bound [`RowVid`] to produce a fresh one.
     ///
     /// The returned `Type` has no occurrences of the old bound variables;
     /// all have been replaced by fresh variables.
@@ -73,6 +97,7 @@ impl Scheme {
         &self,
         fresh_ty: &mut dyn FnMut() -> TyVid,
         fresh_cap: &mut dyn FnMut() -> CapVid,
+        fresh_row: &mut dyn FnMut() -> RowVid,
     ) -> Type {
         // Build per-variable substitution maps.
         let ty_subst: std::collections::HashMap<TyVid, Type> = self
@@ -82,8 +107,10 @@ impl Scheme {
             .collect();
         let cap_subst: std::collections::HashMap<CapVid, CapVid> =
             self.cap_vars.iter().map(|&c| (c, fresh_cap())).collect();
+        let row_subst: std::collections::HashMap<RowVid, RowVid> =
+            self.row_vars.iter().map(|&r| (r, fresh_row())).collect();
 
-        subst_type(&self.ty, &ty_subst, &cap_subst)
+        subst_type(&self.ty, &ty_subst, &cap_subst, &row_subst)
     }
 }
 
@@ -126,6 +153,13 @@ fn collect_free_ty(
                 collect_free_ty(t, bound_ty, bound_cap, free_ty, free_cap);
             }
         }
+        Type::Record { fields, tail: _ } => {
+            for (_, t) in fields {
+                collect_free_ty(t, bound_ty, bound_cap, free_ty, free_cap);
+            }
+            // Row vars in `tail` live in a separate namespace; they are reported
+            // by [`Scheme::free_row_vars`], not here.
+        }
         Type::Alias { body, .. } => {
             // Alias is transparent — walk the body.
             collect_free_ty(body, bound_ty, bound_cap, free_ty, free_cap);
@@ -140,21 +174,22 @@ fn subst_type(
     ty: &Type,
     ty_subst: &std::collections::HashMap<TyVid, Type>,
     cap_subst: &std::collections::HashMap<CapVid, CapVid>,
+    row_subst: &std::collections::HashMap<RowVid, RowVid>,
 ) -> Type {
     match ty {
         Type::Var(v) => ty_subst.get(v).cloned().unwrap_or(Type::Var(*v)),
         Type::Con(id, args) => Type::Con(
             *id,
             args.iter()
-                .map(|a| subst_type(a, ty_subst, cap_subst))
+                .map(|a| subst_type(a, ty_subst, cap_subst, row_subst))
                 .collect(),
         ),
         Type::Fn { params, ret, caps } => {
             let new_params = params
                 .iter()
-                .map(|p| subst_type(p, ty_subst, cap_subst))
+                .map(|p| subst_type(p, ty_subst, cap_subst, row_subst))
                 .collect();
-            let new_ret = Box::new(subst_type(ret, ty_subst, cap_subst));
+            let new_ret = Box::new(subst_type(ret, ty_subst, cap_subst, row_subst));
             let new_caps = match caps {
                 CapRow::Var(c) => {
                     if let Some(&nc) = cap_subst.get(c) {
@@ -173,14 +208,63 @@ fn subst_type(
         }
         Type::Tuple(ts) => Type::Tuple(
             ts.iter()
-                .map(|t| subst_type(t, ty_subst, cap_subst))
+                .map(|t| subst_type(t, ty_subst, cap_subst, row_subst))
                 .collect(),
+        ),
+        Type::Record { fields, tail } => Type::record(
+            fields
+                .iter()
+                .map(|(label, t)| (label.clone(), subst_type(t, ty_subst, cap_subst, row_subst)))
+                .collect(),
+            // Freshen a quantified open tail; leave closed and free tails as-is.
+            match tail {
+                RowTail::Open(rv) => row_subst
+                    .get(rv)
+                    .map_or_else(|| tail.clone(), |&nrv| RowTail::Open(nrv)),
+                RowTail::Closed => RowTail::Closed,
+            },
         ),
         Type::Alias { name, body } => Type::Alias {
             name: *name,
-            body: Box::new(subst_type(body, ty_subst, cap_subst)),
+            body: Box::new(subst_type(body, ty_subst, cap_subst, row_subst)),
         },
         Type::Error => Type::Error,
+    }
+}
+
+/// Collects every record-row variable that appears in an open tail of `ty`.
+///
+/// Walks records (recording the tail's [`RowVid`] when it is open) and every
+/// compound type so that nested records — a record field that is itself an
+/// open record, a tuple of records — are covered.
+fn collect_row_vars(ty: &Type, out: &mut FxHashSet<RowVid>) {
+    match ty {
+        Type::Record { fields, tail } => {
+            if let RowTail::Open(rv) = tail {
+                out.insert(*rv);
+            }
+            for (_, t) in fields {
+                collect_row_vars(t, out);
+            }
+        }
+        Type::Con(_, args) => {
+            for a in args {
+                collect_row_vars(a, out);
+            }
+        }
+        Type::Fn { params, ret, .. } => {
+            for p in params {
+                collect_row_vars(p, out);
+            }
+            collect_row_vars(ret, out);
+        }
+        Type::Tuple(ts) => {
+            for t in ts {
+                collect_row_vars(t, out);
+            }
+        }
+        Type::Alias { body, .. } => collect_row_vars(body, out),
+        Type::Var(_) | Type::Error => {}
     }
 }
 
@@ -191,7 +275,7 @@ mod tests {
     use super::*;
     use crate::{
         capability_set::CapabilitySet,
-        ty::{CapRow, CapVid, TyVid, Type},
+        ty::{CapRow, CapVid, RowVid, TyVid, Type},
         tycon::TyConId,
     };
 
@@ -213,6 +297,7 @@ mod tests {
         let scheme = Scheme {
             vars: vec![],
             cap_vars: vec![],
+            row_vars: vec![],
             ty: Type::Fn {
                 params: vec![Type::Con(cid(0), vec![])],
                 ret: Box::new(Type::Con(cid(0), vec![])),
@@ -234,6 +319,7 @@ mod tests {
         let scheme = Scheme {
             vars: vec![a],
             cap_vars: vec![],
+            row_vars: vec![],
             ty: Type::Fn {
                 params: vec![Type::Var(a)],
                 ret: Box::new(Type::Var(a)),
@@ -267,6 +353,7 @@ mod tests {
         let scheme = Scheme {
             vars: vec![],
             cap_vars: vec![],
+            row_vars: vec![],
             ty: Type::Fn {
                 params: vec![Type::Con(cid(0), vec![])],
                 ret: Box::new(Type::Con(cid(4), vec![])),
@@ -287,6 +374,7 @@ mod tests {
         let scheme = Scheme {
             vars: vec![],
             cap_vars: vec![c],
+            row_vars: vec![],
             ty: Type::Fn {
                 params: vec![Type::Con(cid(0), vec![])],
                 ret: Box::new(Type::Con(cid(4), vec![])),
@@ -307,6 +395,7 @@ mod tests {
         let scheme = Scheme {
             vars: vec![a],
             cap_vars: vec![],
+            row_vars: vec![],
             ty: Type::Fn {
                 params: vec![Type::Var(a)],
                 ret: Box::new(Type::Var(a)),
@@ -323,6 +412,7 @@ mod tests {
                 v
             },
             &mut || CapVid(0),
+            &mut || RowVid(0),
         );
 
         let mut counter2 = 20u32;
@@ -333,6 +423,7 @@ mod tests {
                 v
             },
             &mut || CapVid(0),
+            &mut || RowVid(0),
         );
 
         // The fresh vars in t1 and t2 should differ.
@@ -366,6 +457,7 @@ mod tests {
                 v
             },
             &mut || CapVid(0),
+            &mut || RowVid(0),
         );
         // No vars to substitute — body should come back as the same Con.
         assert!(matches!(t, Type::Con(TyConId(0), _)));
@@ -386,6 +478,7 @@ mod tests {
         let scheme = Scheme {
             vars: vec![a, b],
             cap_vars: vec![],
+            row_vars: vec![],
             ty: Type::Fn {
                 params: vec![Type::Var(a), Type::Var(b)],
                 ret: Box::new(Type::Var(a)),

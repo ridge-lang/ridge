@@ -20,10 +20,12 @@
 //! `TypeError` with a `span` before propagating it to the error accumulator.
 //! Until then the error is constructed with a dummy `Span::point(0)`.
 
-use ridge_ast::Span;
-use ridge_types::{CapRow, TyVid, Type};
+use std::cmp::Ordering;
 
-use crate::ctx::{CapValue, CapVidKey, InferCtx, TyValue, TyVidKey};
+use ridge_ast::Span;
+use ridge_types::{CapRow, Row, RowTail, RowVid, TyVid, Type};
+
+use crate::ctx::{CapValue, CapVidKey, InferCtx, RowValue, RowVidKey, TyValue, TyVidKey};
 use crate::error::TypeError;
 
 // ── Public API ────────────────────────────────────────────────────────────────
@@ -164,6 +166,24 @@ pub fn unify(ctx: &mut InferCtx, a: &Type, b: &Type) -> Result<(), TypeError> {
             Ok(())
         }
 
+        // ── Two structural records ────────────────────────────────────────────
+        (
+            Type::Record {
+                fields: f1,
+                tail: t1,
+            },
+            Type::Record {
+                fields: f2,
+                tail: t2,
+            },
+        ) => {
+            let f1 = f1.clone();
+            let t1 = t1.clone();
+            let f2 = f2.clone();
+            let t2 = t2.clone();
+            unify_rows(ctx, &f1, &t1, &f2, &t2)
+        }
+
         // ── Alias on either side (defensive: shallow_resolve already peels) ───
         (Type::Alias { body, .. }, other) => {
             let body = *body.clone();
@@ -248,6 +268,9 @@ pub fn occurs(ctx: &mut InferCtx, v: TyVid, t: &Type) -> bool {
             params.iter().any(|p| occurs(ctx, v, p)) || occurs(ctx, v, ret)
         }
         Type::Tuple(ts) => ts.iter().any(|t| occurs(ctx, v, t)),
+        // Record: the TyVid can only hide in the field types — the tail is a
+        // RowVid, a different namespace.
+        Type::Record { fields, .. } => fields.iter().any(|(_, t)| occurs(ctx, v, t)),
         // Alias is transparent; walk the body.
         Type::Alias { body, .. } => occurs(ctx, v, body),
         // Type is #[non_exhaustive] — wildcard for forward-compat (including Error).
@@ -255,7 +278,192 @@ pub fn occurs(ctx: &mut InferCtx, v: TyVid, t: &Type) -> bool {
     }
 }
 
+// ── Row unification (Rémy-style) ────────────────────────────────────────────────
+
+/// Unifies two record rows using Rémy-style row unification.
+///
+/// Both rows are peeled first (`InferCtx::resolve_row`) so every currently-known
+/// field is visible and each tail is `Closed` or an *unbound* root row var.
+/// Fields split into `common` (in both — their types are unified), `only1` (left
+/// only), and `only2` (right only), then the four tail combinations dispatch:
+///
+/// | left \ right | `Closed`                          | `Open(ρ2)`                                   |
+/// |--------------|-----------------------------------|----------------------------------------------|
+/// | `Closed`     | `only1` and `only2` must be empty  | `only2` empty; bind `ρ2 := { only1 \| Closed }` |
+/// | `Open(ρ1)`   | `only1` empty; bind `ρ1 := { only2 \| Closed }` | fresh `ρ`; bind `ρ1 := { only2 \| ρ }`, `ρ2 := { only1 \| ρ }` |
+///
+/// A side the opposite tail cannot absorb is a row mismatch. The same-variable
+/// `Open(ρ)/Open(ρ)` case requires both extras empty (the shared tail cannot
+/// expand two ways).
+pub fn unify_rows(
+    ctx: &mut InferCtx,
+    fields1: &[(String, Type)],
+    tail1: &RowTail,
+    fields2: &[(String, Type)],
+    tail2: &RowTail,
+) -> Result<(), TypeError> {
+    let (mut f1, t1) = ctx.resolve_row(fields1, tail1);
+    let (mut f2, t2) = ctx.resolve_row(fields2, tail2);
+    f1.sort_by(|a, b| a.0.cmp(&b.0));
+    f2.sort_by(|a, b| a.0.cmp(&b.0));
+
+    // Merge-split the two sorted field lists by label.
+    let mut common: Vec<(Type, Type)> = Vec::new();
+    let mut only1: Vec<(String, Type)> = Vec::new();
+    let mut only2: Vec<(String, Type)> = Vec::new();
+    let (mut i, mut j) = (0, 0);
+    while i < f1.len() && j < f2.len() {
+        match f1[i].0.cmp(&f2[j].0) {
+            Ordering::Less => {
+                only1.push(f1[i].clone());
+                i += 1;
+            }
+            Ordering::Greater => {
+                only2.push(f2[j].clone());
+                j += 1;
+            }
+            Ordering::Equal => {
+                common.push((f1[i].1.clone(), f2[j].1.clone()));
+                i += 1;
+                j += 1;
+            }
+        }
+    }
+    only1.extend_from_slice(&f1[i..]);
+    only2.extend_from_slice(&f2[j..]);
+
+    // Common labels must agree on their field types.
+    for (a, b) in &common {
+        unify(ctx, a, b)?;
+    }
+
+    match (&t1, &t2) {
+        (RowTail::Closed, RowTail::Closed) => {
+            if only1.is_empty() && only2.is_empty() {
+                Ok(())
+            } else {
+                Err(row_mismatch(&f1, &t1, &f2, &t2, &only1, &only2))
+            }
+        }
+        // Left is exact: it cannot carry the right's extra explicit fields, but
+        // the right's open tail absorbs the left's extras.
+        (RowTail::Closed, RowTail::Open(rv2)) => {
+            if only2.is_empty() {
+                bind_row(ctx, *rv2, only1, RowTail::Closed)
+            } else {
+                Err(row_mismatch(&f1, &t1, &f2, &t2, &only1, &only2))
+            }
+        }
+        (RowTail::Open(rv1), RowTail::Closed) => {
+            if only1.is_empty() {
+                bind_row(ctx, *rv1, only2, RowTail::Closed)
+            } else {
+                Err(row_mismatch(&f1, &t1, &f2, &t2, &only1, &only2))
+            }
+        }
+        (RowTail::Open(rv1), RowTail::Open(rv2)) => {
+            if rv1.0 == rv2.0 {
+                // Same tail var: the explicit parts must already match exactly,
+                // otherwise the shared var would have to expand two ways.
+                if only1.is_empty() && only2.is_empty() {
+                    Ok(())
+                } else {
+                    Err(row_mismatch(&f1, &t1, &f2, &t2, &only1, &only2))
+                }
+            } else {
+                let fresh = ctx.fresh_rowvid();
+                bind_row(ctx, *rv1, only2, RowTail::Open(fresh))?;
+                bind_row(ctx, *rv2, only1, RowTail::Open(fresh))
+            }
+        }
+        // RowTail is #[non_exhaustive] — forward-compat wildcard.
+        _ => Err(row_mismatch(&f1, &t1, &f2, &t2, &only1, &only2)),
+    }
+}
+
+/// Binds an unbound row var `rv` to the row `{ fields | tail }`, after an
+/// occurs check that rejects an infinite row.
+fn bind_row(
+    ctx: &mut InferCtx,
+    rv: RowVid,
+    fields: Vec<(String, Type)>,
+    tail: RowTail,
+) -> Result<(), TypeError> {
+    if row_occurs(ctx, rv, &fields, &tail) {
+        return Err(TypeError::OccursCheck {
+            var: format!("?r{}", rv.0),
+            ty: format!("{}", Type::record(fields, tail)),
+            span: dummy_span(),
+        });
+    }
+    ctx.rowvids
+        .union_value(RowVidKey(rv.0), RowValue(Some(Row::new(fields, tail))));
+    Ok(())
+}
+
+/// Returns `true` if row var `rv` occurs in `{ fields | tail }` — directly as
+/// the tail or transitively inside a field type — which would make the row
+/// infinite.
+fn row_occurs(ctx: &mut InferCtx, rv: RowVid, fields: &[(String, Type)], tail: &RowTail) -> bool {
+    if let RowTail::Open(t) = tail {
+        let rv_root = ctx.rowvids.find(RowVidKey(rv.0));
+        let t_root = ctx.rowvids.find(RowVidKey(t.0));
+        if rv_root == t_root {
+            return true;
+        }
+        // Bound tail var: follow its row.
+        if let Some(row) = ctx.rowvids.probe_value(t_root).0 {
+            if row_occurs(ctx, rv, &row.fields, &row.tail) {
+                return true;
+            }
+        }
+    }
+    for (_, ty) in fields {
+        if ty_occurs_rowvid(ctx, rv, ty) {
+            return true;
+        }
+    }
+    false
+}
+
+/// Returns `true` if row var `rv` occurs anywhere in type `t`.
+fn ty_occurs_rowvid(ctx: &mut InferCtx, rv: RowVid, t: &Type) -> bool {
+    let t = ctx.shallow_resolve(t);
+    match &t {
+        Type::Record { fields, tail } => row_occurs(ctx, rv, fields, tail),
+        Type::Con(_, args) => args.iter().any(|a| ty_occurs_rowvid(ctx, rv, a)),
+        Type::Fn { params, ret, .. } => {
+            params.iter().any(|p| ty_occurs_rowvid(ctx, rv, p)) || ty_occurs_rowvid(ctx, rv, ret)
+        }
+        Type::Tuple(ts) => ts.iter().any(|x| ty_occurs_rowvid(ctx, rv, x)),
+        Type::Alias { body, .. } => ty_occurs_rowvid(ctx, rv, body),
+        _ => false,
+    }
+}
+
 // ── Internal helpers ──────────────────────────────────────────────────────────
+
+/// Builds a `T037 RowMismatch` from two record rows that failed to unify.
+///
+/// `f1`/`t1` is the expected row, `f2`/`t2` the found row (the `unify(a, b)`
+/// orientation). `only1` are the expected-only labels (missing from the found
+/// row) and `only2` the found-only labels (not allowed by the expected row).
+fn row_mismatch(
+    f1: &[(String, Type)],
+    t1: &RowTail,
+    f2: &[(String, Type)],
+    t2: &RowTail,
+    only1: &[(String, Type)],
+    only2: &[(String, Type)],
+) -> TypeError {
+    TypeError::RowMismatch {
+        expected: format!("{}", Type::record(f1.to_vec(), t1.clone())),
+        found: format!("{}", Type::record(f2.to_vec(), t2.clone())),
+        missing_fields: only1.iter().map(|(label, _)| label.clone()).collect(),
+        extra_fields: only2.iter().map(|(label, _)| label.clone()).collect(),
+        span: dummy_span(),
+    }
+}
 
 /// Constructs a `T001 TypeMismatch` error with a dummy span.
 ///
@@ -688,6 +896,7 @@ mod tests {
         let scheme = Scheme {
             vars: vec![a],
             cap_vars: vec![],
+            row_vars: vec![],
             ty: Type::Fn {
                 params: vec![Type::Var(a)],
                 ret: Box::new(Type::Var(a)),
@@ -711,6 +920,7 @@ mod tests {
                 cap_counter += 1;
                 c
             },
+            &mut || ridge_types::RowVid(0),
         );
         let t2 = scheme.instantiate(
             &mut || {
@@ -723,6 +933,7 @@ mod tests {
                 cap_counter += 1;
                 c
             },
+            &mut || ridge_types::RowVid(0),
         );
 
         // Extract the fresh vars from each instantiation.
@@ -891,5 +1102,171 @@ mod tests {
         unify(&mut ctx, &Type::Var(v), &tup).unwrap();
         let resolved = ctx.shallow_resolve(&Type::Var(v));
         assert!(matches!(resolved, Type::Tuple(_)));
+    }
+
+    // ─────────────────────────────────────────────────────────────────────────
+    // Row unification — the full Rémy table (R2)
+    // ─────────────────────────────────────────────────────────────────────────
+
+    fn con(n: u32) -> Type {
+        Type::Con(cid(n), vec![])
+    }
+
+    fn rec(fields: &[(&str, Type)], tail: RowTail) -> Type {
+        Type::record(
+            fields
+                .iter()
+                .map(|(l, t)| ((*l).to_string(), t.clone()))
+                .collect(),
+            tail,
+        )
+    }
+
+    fn labels(ty: &Type) -> Vec<String> {
+        match ty {
+            Type::Record { fields, .. } => fields.iter().map(|(l, _)| l.clone()).collect(),
+            other => panic!("expected Record, got {other:?}"),
+        }
+    }
+
+    // Closed/Closed, equal field sets (order-insensitive) → unifies.
+    #[test]
+    fn rows_closed_closed_equal_unifies() {
+        let mut ctx = make_ctx();
+        let a = rec(&[("x", con(0)), ("y", con(1))], RowTail::Closed);
+        let b = rec(&[("y", con(1)), ("x", con(0))], RowTail::Closed);
+        assert!(unify(&mut ctx, &a, &b).is_ok());
+    }
+
+    // Closed/Closed with an extra field → mismatch.
+    #[test]
+    fn rows_closed_closed_extra_field_mismatches() {
+        let mut ctx = make_ctx();
+        let a = rec(&[("x", con(0))], RowTail::Closed);
+        let b = rec(&[("x", con(0)), ("y", con(1))], RowTail::Closed);
+        assert_eq!(unify(&mut ctx, &a, &b).unwrap_err().code(), "T037");
+    }
+
+    // A shared label with conflicting field types → mismatch.
+    #[test]
+    fn rows_common_field_type_mismatch() {
+        let mut ctx = make_ctx();
+        let a = rec(&[("x", con(0))], RowTail::Closed);
+        let b = rec(&[("x", con(1))], RowTail::Closed);
+        assert!(unify(&mut ctx, &a, &b).is_err());
+    }
+
+    // A shared label unifies its field types (binds a var).
+    #[test]
+    fn rows_common_field_binds_var() {
+        let mut ctx = make_ctx();
+        let v = ctx.fresh_tyvid();
+        let a = rec(&[("x", Type::Var(v))], RowTail::Closed);
+        let b = rec(&[("x", con(1))], RowTail::Closed);
+        assert!(unify(&mut ctx, &a, &b).is_ok());
+        assert!(matches!(
+            ctx.shallow_resolve(&Type::Var(v)),
+            Type::Con(TyConId(1), _)
+        ));
+    }
+
+    // Closed/Open: the open right tail absorbs the closed left's extra field.
+    #[test]
+    fn rows_closed_open_absorbs_into_right_tail() {
+        let mut ctx = make_ctx();
+        let rho = ctx.fresh_rowvid();
+        let a = rec(&[("x", con(0)), ("y", con(1))], RowTail::Closed);
+        let b = rec(&[("x", con(0))], RowTail::Open(rho));
+        assert!(unify(&mut ctx, &a, &b).is_ok());
+        let resolved = ctx.deep_resolve(&b);
+        assert_eq!(labels(&resolved), ["x", "y"]);
+        assert!(matches!(
+            resolved,
+            Type::Record {
+                tail: RowTail::Closed,
+                ..
+            }
+        ));
+    }
+
+    // Open/Closed: symmetric — the open left tail absorbs the closed right's extra.
+    #[test]
+    fn rows_open_closed_absorbs_into_left_tail() {
+        let mut ctx = make_ctx();
+        let rho = ctx.fresh_rowvid();
+        let a = rec(&[("x", con(0))], RowTail::Open(rho));
+        let b = rec(&[("x", con(0)), ("y", con(1))], RowTail::Closed);
+        assert!(unify(&mut ctx, &a, &b).is_ok());
+        assert_eq!(labels(&ctx.deep_resolve(&a)), ["x", "y"]);
+    }
+
+    // Closed/Open where the open side has an extra *explicit* field the closed
+    // side lacks → mismatch (the closed side is exact).
+    #[test]
+    fn rows_closed_open_extra_explicit_field_mismatches() {
+        let mut ctx = make_ctx();
+        let rho = ctx.fresh_rowvid();
+        let a = rec(&[("x", con(0))], RowTail::Closed);
+        let b = rec(&[("x", con(0)), ("y", con(1))], RowTail::Open(rho));
+        assert_eq!(unify(&mut ctx, &a, &b).unwrap_err().code(), "T037");
+    }
+
+    // Open/Open, distinct tail vars: both rows expand to the union, sharing a
+    // fresh tail.
+    #[test]
+    fn rows_open_open_distinct_vars_merge() {
+        let mut ctx = make_ctx();
+        let r1 = ctx.fresh_rowvid();
+        let r2 = ctx.fresh_rowvid();
+        let a = rec(&[("x", con(0))], RowTail::Open(r1));
+        let b = rec(&[("y", con(1))], RowTail::Open(r2));
+        assert!(unify(&mut ctx, &a, &b).is_ok());
+        let ra = ctx.deep_resolve(&a);
+        let rb = ctx.deep_resolve(&b);
+        assert_eq!(labels(&ra), ["x", "y"]);
+        assert_eq!(labels(&rb), ["x", "y"]);
+        assert!(matches!(
+            ra,
+            Type::Record {
+                tail: RowTail::Open(_),
+                ..
+            }
+        ));
+    }
+
+    // Open/Open, same tail var: the explicit parts must already match.
+    #[test]
+    fn rows_open_open_same_var_distinct_fields_mismatches() {
+        let mut ctx = make_ctx();
+        let rho = ctx.fresh_rowvid();
+        let a = rec(&[("x", con(0))], RowTail::Open(rho));
+        let b = rec(&[("y", con(1))], RowTail::Open(rho));
+        assert!(unify(&mut ctx, &a, &b).is_err());
+    }
+
+    #[test]
+    fn rows_open_open_same_var_equal_fields_ok() {
+        let mut ctx = make_ctx();
+        let rho = ctx.fresh_rowvid();
+        let v = ctx.fresh_tyvid();
+        let a = rec(&[("x", Type::Var(v))], RowTail::Open(rho));
+        let b = rec(&[("x", con(1))], RowTail::Open(rho));
+        assert!(unify(&mut ctx, &a, &b).is_ok());
+        assert!(matches!(
+            ctx.shallow_resolve(&Type::Var(v)),
+            Type::Con(TyConId(1), _)
+        ));
+    }
+
+    // Binding a row var to a row that contains it → occurs check rejects it.
+    #[test]
+    fn rows_occurs_check_rejects_infinite_row() {
+        let mut ctx = make_ctx();
+        let rho = ctx.fresh_rowvid();
+        let inner = rec(&[], RowTail::Open(rho));
+        let a = rec(&[], RowTail::Open(rho));
+        let b = rec(&[("a", inner)], RowTail::Closed);
+        let err = unify(&mut ctx, &a, &b).unwrap_err();
+        assert!(matches!(err, TypeError::OccursCheck { .. }), "got {err:?}");
     }
 }

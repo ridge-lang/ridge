@@ -141,6 +141,25 @@ impl ClassTable {
     pub fn iter(&self) -> impl Iterator<Item = (ClassId, &ClassInfo)> {
         self.classes.iter().map(|(&id, info)| (id, info))
     }
+
+    /// Returns the class name that declares `method`, when exactly one class
+    /// owns it. Returns `None` when the method is unknown or is shared by more
+    /// than one class (callers must consult `ClassMethodIndex.collisions` for
+    /// the ambiguous case).
+    #[must_use]
+    pub fn class_name_for_method(&self, method: &str) -> Option<&str> {
+        let mut found: Option<&str> = None;
+        for info in self.classes.values() {
+            if info.method_sigs.iter().any(|m| m.name == method) {
+                if found.is_some() {
+                    // Two classes declare this method — ambiguous.
+                    return None;
+                }
+                found = Some(&info.name);
+            }
+        }
+        found
+    }
 }
 
 // ── InstanceOrigin ────────────────────────────────────────────────────────────

@@ -52,7 +52,7 @@ use ridge_types::{Scheme, Type};
 
 use crate::actor_lower::lower_actor;
 use crate::ast_type::lower_ast_type;
-use crate::core::lower_expr;
+use crate::core::{lower_expr, stdlib_class_home_module};
 use crate::ctx::LowerCtx;
 
 // ── Public entry points ───────────────────────────────────────────────────────
@@ -301,6 +301,21 @@ pub fn lower_instance(ctx: &mut LowerCtx<'_>, decl: &InstanceDecl) -> Vec<IrItem
     let type_name = match head_ty {
         ridge_ast::Type::Named { name, .. } => name.text.clone(),
         ridge_ast::Type::App { head, .. } => head.text.clone(),
+        // Primitive types (`Int`, `Float`, `Bool`, `Text`) as instance heads —
+        // e.g. `instance SqlType Int`. The name string must match the tycon name
+        // used in the typecheck/tycon arena so that generated dict-const names
+        // like `$inst_SqlType_Int` are consistent across the pipeline.
+        ridge_ast::Type::Primitive { name, .. } => {
+            use ridge_ast::PrimitiveType;
+            match name {
+                PrimitiveType::Int => "Int".to_owned(),
+                PrimitiveType::Float => "Float".to_owned(),
+                PrimitiveType::Bool => "Bool".to_owned(),
+                PrimitiveType::Text => "Text".to_owned(),
+                PrimitiveType::Unit => "Unit".to_owned(),
+                PrimitiveType::Timestamp => "Timestamp".to_owned(),
+            }
+        }
         // Other type forms (tuples, fns, …) are not supported as instance heads.
         // Skip silently — a typecheck error would already have fired.
         _ => return vec![],
@@ -396,13 +411,17 @@ pub fn lower_instance(ctx: &mut LowerCtx<'_>, decl: &InstanceDecl) -> Vec<IrItem
         };
         items.push(IrItem::Fn(dict_fn));
     } else {
+        // Instance dicts for stdlib-defined classes must be exported from the
+        // compiled stdlib module so that user code can reference them cross-module
+        // via `SymbolRef::Stdlib`. User-defined instances stay private.
+        let is_pub = stdlib_class_home_module(&class_name).is_some();
         let dict_const = IrConst {
             name: dict_name,
             ty: Type::Error, // untyped in IR
             value: dict_value,
             origin: NodeId(0),
             span: decl.span,
-            is_pub: false,
+            is_pub,
         };
         items.push(IrItem::Const(dict_const));
     }

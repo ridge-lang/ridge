@@ -16,25 +16,25 @@ instance SqlType Int =
     fromSql (v: SqlValue) -> Result Int Error =
         match v
             SqlInt n -> Ok n
-            _        -> Err { code = "sql.decode.int", message = "expected a SQL integer" }
+            _        -> Err ({ code = "sql.decode.int", message = "expected a SQL integer" })
 
 instance SqlType Text =
     toSql (x: Text) -> SqlValue = SqlText x
     fromSql (v: SqlValue) -> Result Text Error =
         match v
             SqlText s -> Ok s
-            _         -> Err { code = "sql.decode.text", message = "expected a SQL text value" }
+            _         -> Err ({ code = "sql.decode.text", message = "expected a SQL text value" })
 
 instance SqlType Bool =
     toSql (x: Bool) -> SqlValue = SqlBool x
     fromSql (v: SqlValue) -> Result Bool Error =
         match v
             SqlBool b -> Ok b
-            _         -> Err { code = "sql.decode.bool", message = "expected a SQL boolean" }
+            _         -> Err ({ code = "sql.decode.bool", message = "expected a SQL boolean" })
 
 instance SqlType Float =
     toSql (x: Float) -> SqlValue = SqlFloat x
     fromSql (v: SqlValue) -> Result Float Error =
         match v
             SqlFloat f -> Ok f
-            _          -> Err { code = "sql.decode.float", message = "expected a SQL float" }
+            _          -> Err ({ code = "sql.decode.float", message = "expected a SQL float" })

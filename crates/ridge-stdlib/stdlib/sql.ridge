@@ -1,0 +1,14 @@
+-- std.sql — the SqlType codec class and its base-type instances.
+--
+-- SqlValue is the adapter-neutral bridge between Ridge values and SQL columns;
+-- the storage adapters move SqlValue across the wire. SqlType maps a Ridge type
+-- to and from a SqlValue. The base-type instances live here; opaque newtypes
+-- get their instance for free via deriving (see the data layer).
+
+pub type SqlValue = SqlInt Int | SqlText Text | SqlBool Bool | SqlFloat Float | SqlNull
+
+pub class SqlType a =
+    toSql   (x: a)        -> SqlValue
+
+instance SqlType Int =
+    toSql (x: Int) -> SqlValue = SqlInt x

@@ -227,15 +227,15 @@ fn g5_path_b_dominance() {
 
 // ── §11.4 — artefact counts match plan ───────────────────────────────────────
 
-/// §11.4: Exactly 18 `.ridge` files and 18 `.test.ridge` files under `stdlib/`.
+/// §11.4: 21 module `.ridge` files and 19 paired `.test.ridge` BEAM suites
+/// under `stdlib/`.
 ///
-/// `net/http.ridge` and `net/http.test.ridge` count toward the 18 each.
-///
-/// Reference: §11.4 artefacts checklist, plan line 949:
-/// "18 module `.ridge` files + 18 `.test.ridge` files = 36 source files".
+/// `net/http.ridge` and `net/http.test.ridge` each count toward their total.
+/// `crypto` and `sql` ship no `.test.ridge` (their behaviour is covered by
+/// Rust-side tests), so the `.ridge` count runs two ahead.
 #[test]
 fn artefacts_count_matches_plan() {
-    const EXPECTED_RG: usize = 20;
+    const EXPECTED_RG: usize = 21;
     const EXPECTED_TEST_RG: usize = 19;
 
     let stdlib = stdlib_dir();

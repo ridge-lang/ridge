@@ -229,6 +229,31 @@ fn stdlib_secure_cookie_setters_are_clean() {
     );
 }
 
+// ── Class-method signatures resolve types from any module (no spurious T023) ──
+
+// A class method whose signature mentions a type declared in the class's own
+// module is seeded into every module's env so bare-name calls resolve. When the
+// seed resolved those signature types against only the consuming module's type
+// names, the return type fell through to a fresh variable that then surfaced as
+// a spurious T023 (unsolved type variable) in an unrelated module. The signature
+// must resolve against the workspace-global type map instead.
+const LIB_CLASS: &str =
+    "pub type Payload = Wrap Int\npub class Codec a =\n    encodePayload (x: a) -> Payload\n";
+
+#[test]
+fn class_method_return_type_from_other_module_no_t023() {
+    // `Main` neither declares nor imports `Payload`, yet `Codec.encodePayload`
+    // is seeded into it. The return type must still resolve to the producer's
+    // `TyCon`, not leak a free variable.
+    let main = "fn f () -> Int = 1\n";
+    let errors = typecheck_two_modules(main, LIB_CLASS);
+    assert_eq!(
+        count_code(&errors, "T023"),
+        0,
+        "class-method return type from another module must not leak a T023; got {errors:?}"
+    );
+}
+
 #[test]
 fn qualified_imported_fn_call_is_type_checked() {
     // `import x as Lib` then `Lib.needsText` resolves to the producer's scheme.

@@ -468,6 +468,27 @@ impl fmt::Display for TypeError {
                 )
             }
 
+            // ── T037 ──────────────────────────────────────────────────────────
+            Self::RowMismatch {
+                expected,
+                found,
+                missing_fields,
+                extra_fields,
+                ..
+            } => {
+                write!(
+                    f,
+                    "T037: record shape mismatch\n  expected `{expected}`, got `{found}`"
+                )?;
+                if !extra_fields.is_empty() {
+                    write!(f, "\n  unexpected field(s): {}", extra_fields.join(", "))?;
+                }
+                if !missing_fields.is_empty() {
+                    write!(f, "\n  missing field(s): {}", missing_fields.join(", "))?;
+                }
+                Ok(())
+            }
+
             // ── T999 ──────────────────────────────────────────────────────────
             Self::InternalTypeError { detail, .. } => {
                 write!(f, "T999: internal type error\n  {detail}\n  This is a compiler bug. Please report it.")
@@ -527,6 +548,7 @@ impl HasErrorCode for TypeError {
             | Self::MissingSuperclassInstance { span, .. }
             | Self::SuperclassCycle { span, .. }
             | Self::OpaqueFieldAccess { span, .. }
+            | Self::RowMismatch { span, .. }
             | Self::InternalTypeError { span, .. } => *span,
 
             // T034: uses `totext_span` (the explicit instance) as the primary span.

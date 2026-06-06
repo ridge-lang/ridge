@@ -516,6 +516,25 @@ pub enum TypeError {
         span: Span,
     },
 
+    // ── T037 ─────────────────────────────────────────────────────────────────
+    /// Two record rows cannot be unified because their fixed field sets
+    /// disagree — for example a closed record met an extra field, or two closed
+    /// records carry different labels. Distinct from T001 so a shape failure
+    /// reads in record terms (which fields are missing or unexpected) rather
+    /// than as a flat "type mismatch".
+    RowMismatch {
+        /// The expected record row, rendered (e.g. `{ x: Int }`).
+        expected: String,
+        /// The found record row, rendered (e.g. `{ x: Int, y: Int }`).
+        found: String,
+        /// Labels the expected row requires that the found row lacks.
+        missing_fields: Vec<String>,
+        /// Labels the found row carries that the expected row does not allow.
+        extra_fields: Vec<String>,
+        /// Source span of the offending expression.
+        span: Span,
+    },
+
     // ── T999 ─────────────────────────────────────────────────────────────────
     /// Internal type-checker invariant violation — should never reach users.
     ///
@@ -533,7 +552,7 @@ pub enum TypeError {
 impl TypeError {
     /// Returns the stable `T###` error code for this variant.
     ///
-    /// The codes are allocated in `T001..T036` and `T999` is the catch-all
+    /// The codes are allocated in `T001..T037` and `T999` is the catch-all
     /// internal error. No overlap with `R###`/`M###`.
     #[must_use]
     pub const fn code(&self) -> &'static str {
@@ -575,6 +594,7 @@ impl TypeError {
             Self::ToTextConflict { .. } => "T034",
             Self::SuperclassCycle { .. } => "T035",
             Self::OpaqueFieldAccess { .. } => "T036",
+            Self::RowMismatch { .. } => "T037",
             Self::InternalTypeError { .. } => "T999",
         }
     }
@@ -1043,5 +1063,30 @@ mod tests {
     #[test]
     fn code_t035() {
         assert_eq!(t035().code(), "T035");
+    }
+
+    fn t037() -> TypeError {
+        TypeError::RowMismatch {
+            expected: "{ x: Int }".into(),
+            found: "{ x: Int, y: Int }".into(),
+            missing_fields: vec![],
+            extra_fields: vec!["y".into()],
+            span: dummy_span(),
+        }
+    }
+
+    #[test]
+    fn code_t037() {
+        assert_eq!(t037().code(), "T037");
+    }
+
+    #[test]
+    fn t037_message_names_the_unexpected_field() {
+        let msg = format!("{}", t037());
+        assert!(msg.contains("T037"), "message should carry the code: {msg}");
+        assert!(
+            msg.contains("unexpected field(s): y"),
+            "message should name the extra field: {msg}"
+        );
     }
 }

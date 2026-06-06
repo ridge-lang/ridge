@@ -342,7 +342,7 @@ pub fn unify_rows(
             if only1.is_empty() && only2.is_empty() {
                 Ok(())
             } else {
-                Err(row_mismatch(&f1, &t1, &f2, &t2))
+                Err(row_mismatch(&f1, &t1, &f2, &t2, &only1, &only2))
             }
         }
         // Left is exact: it cannot carry the right's extra explicit fields, but
@@ -351,14 +351,14 @@ pub fn unify_rows(
             if only2.is_empty() {
                 bind_row(ctx, *rv2, only1, RowTail::Closed)
             } else {
-                Err(row_mismatch(&f1, &t1, &f2, &t2))
+                Err(row_mismatch(&f1, &t1, &f2, &t2, &only1, &only2))
             }
         }
         (RowTail::Open(rv1), RowTail::Closed) => {
             if only1.is_empty() {
                 bind_row(ctx, *rv1, only2, RowTail::Closed)
             } else {
-                Err(row_mismatch(&f1, &t1, &f2, &t2))
+                Err(row_mismatch(&f1, &t1, &f2, &t2, &only1, &only2))
             }
         }
         (RowTail::Open(rv1), RowTail::Open(rv2)) => {
@@ -368,7 +368,7 @@ pub fn unify_rows(
                 if only1.is_empty() && only2.is_empty() {
                     Ok(())
                 } else {
-                    Err(row_mismatch(&f1, &t1, &f2, &t2))
+                    Err(row_mismatch(&f1, &t1, &f2, &t2, &only1, &only2))
                 }
             } else {
                 let fresh = ctx.fresh_rowvid();
@@ -377,7 +377,7 @@ pub fn unify_rows(
             }
         }
         // RowTail is #[non_exhaustive] — forward-compat wildcard.
-        _ => Err(row_mismatch(&f1, &t1, &f2, &t2)),
+        _ => Err(row_mismatch(&f1, &t1, &f2, &t2, &only1, &only2)),
     }
 }
 
@@ -443,18 +443,26 @@ fn ty_occurs_rowvid(ctx: &mut InferCtx, rv: RowVid, t: &Type) -> bool {
 
 // ── Internal helpers ──────────────────────────────────────────────────────────
 
-/// Builds a `TypeMismatch` from two record rows (used for row-shape failures
-/// until the dedicated row diagnostic lands).
+/// Builds a `T037 RowMismatch` from two record rows that failed to unify.
+///
+/// `f1`/`t1` is the expected row, `f2`/`t2` the found row (the `unify(a, b)`
+/// orientation). `only1` are the expected-only labels (missing from the found
+/// row) and `only2` the found-only labels (not allowed by the expected row).
 fn row_mismatch(
     f1: &[(String, Type)],
     t1: &RowTail,
     f2: &[(String, Type)],
     t2: &RowTail,
+    only1: &[(String, Type)],
+    only2: &[(String, Type)],
 ) -> TypeError {
-    mismatch(
-        &Type::record(f1.to_vec(), t1.clone()),
-        &Type::record(f2.to_vec(), t2.clone()),
-    )
+    TypeError::RowMismatch {
+        expected: format!("{}", Type::record(f1.to_vec(), t1.clone())),
+        found: format!("{}", Type::record(f2.to_vec(), t2.clone())),
+        missing_fields: only1.iter().map(|(label, _)| label.clone()).collect(),
+        extra_fields: only2.iter().map(|(label, _)| label.clone()).collect(),
+        span: dummy_span(),
+    }
 }
 
 /// Constructs a `T001 TypeMismatch` error with a dummy span.
@@ -1136,7 +1144,7 @@ mod tests {
         let mut ctx = make_ctx();
         let a = rec(&[("x", con(0))], RowTail::Closed);
         let b = rec(&[("x", con(0)), ("y", con(1))], RowTail::Closed);
-        assert_eq!(unify(&mut ctx, &a, &b).unwrap_err().code(), "T001");
+        assert_eq!(unify(&mut ctx, &a, &b).unwrap_err().code(), "T037");
     }
 
     // A shared label with conflicting field types → mismatch.
@@ -1200,7 +1208,7 @@ mod tests {
         let rho = ctx.fresh_rowvid();
         let a = rec(&[("x", con(0))], RowTail::Closed);
         let b = rec(&[("x", con(0)), ("y", con(1))], RowTail::Open(rho));
-        assert_eq!(unify(&mut ctx, &a, &b).unwrap_err().code(), "T001");
+        assert_eq!(unify(&mut ctx, &a, &b).unwrap_err().code(), "T037");
     }
 
     // Open/Open, distinct tail vars: both rows expand to the union, sharing a

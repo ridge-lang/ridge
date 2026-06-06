@@ -450,7 +450,8 @@ fn caller () -> Int =
     );
 }
 
-/// A closed record parameter `{ x: Int }` rejects a record with extra fields.
+/// A closed record parameter `{ x: Int }` rejects a record with extra fields,
+/// reporting the dedicated row-shape diagnostic T037 (not the flat T001).
 #[test]
 fn closed_record_param_rejects_extra_fields() {
     let src = r"
@@ -462,8 +463,28 @@ fn caller () -> Int =
 ";
     let result = typecheck_src(src);
     assert!(
-        !result.errors.is_empty(),
-        "a closed record must reject a record with extra fields"
+        has_error(&result, "T037"),
+        "a closed record must reject extra fields with T037, got: {:#?}",
+        error_codes(&result)
+    );
+}
+
+/// Two closed records whose label sets disagree report T037, the record-shape
+/// diagnostic, rather than a flat type mismatch.
+#[test]
+fn closed_records_with_different_labels_report_t037() {
+    let src = r"
+fn takesXY (r: { x: Int, y: Int }) -> Int = r.x
+
+fn caller () -> Int =
+    let rec = { x = 1, z = 2 }
+    takesXY rec
+";
+    let result = typecheck_src(src);
+    assert!(
+        has_error(&result, "T037"),
+        "mismatched closed record shapes must report T037, got: {:#?}",
+        error_codes(&result)
     );
 }
 

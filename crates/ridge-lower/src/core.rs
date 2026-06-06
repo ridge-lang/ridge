@@ -772,11 +772,10 @@ pub fn lower_expr(ctx: &mut LowerCtx<'_>, expr: &Expr) -> IrExpr {
 
         // ── Inline record literal ─────────────────────────────────────────────
         //
-        // `{ f = v, … }` lowers to `IrExpr::Construct { Record, owner = anon_id }`.
-        // The codegen layer drops the constructor tag for Record-kind constructs and
-        // emits a BEAM map — no codegen change needed.
+        // `{ f = v, … }` lowers to `IrExpr::Construct { Record, .. }`. The codegen
+        // layer drops the constructor tag for Record-kind constructs and emits a
+        // BEAM map, so the owner is a placeholder — no codegen change needed.
         Expr::RecordLit { fields, span } => {
-            // Step 1: lower each field value.
             let ir_fields: Vec<(String, IrExpr)> = fields
                 .iter()
                 .map(|fi| {
@@ -788,33 +787,18 @@ pub fn lower_expr(ctx: &mut LowerCtx<'_>, expr: &Expr) -> IrExpr {
                 })
                 .collect();
 
-            // Step 2: look up the anon TyConId from the typecheck node-type table.
-            // The typecheck pass stamped `Type::Con(anon_id, [])` for this expression
-            // under NodeKind::Expr.
-            let anon_id: TyConId = ctx
-                .node_id_map
-                .as_ref()
-                .and_then(|m| m.get(*span, NodeKind::Expr))
-                .and_then(|nid| ctx.node_type(nid))
-                .and_then(|ty| {
-                    if let Type::Con(id, _) = ty {
-                        Some(*id)
-                    } else {
-                        None
-                    }
-                })
-                // Defensive fallback for unit-test scaffolding that does not
-                // wire the node-type table.  TyConId(0) is the `Int` builtin in
-                // the normal arena; under test scaffolding the arena is usually
-                // empty and this produces no-op IR.
-                .unwrap_or(TyConId(0));
-
-            // Step 3: look up the anon decl name for the SymbolRef.
-            let anon_name = ctx
+            // Record literals are structural: the type checker infers them as
+            // `Type::Record`, never a nominal `Type::Con`, so there is no anon
+            // `TyConId` to recover from the node-type table. Codegen lowers a
+            // Record `Construct` to a bare BEAM map (see `lower_construct`) and
+            // ignores `owner_type`/`name`, so the placeholder owner is what ends
+            // up emitted regardless. `name` stays a readable label for the IR.
+            let owner_type = TyConId(0);
+            let record_name = ctx
                 .workspace
-                .and_then(|ws| ws.tycons.get(anon_id.0 as usize))
+                .and_then(|ws| ws.tycons.get(owner_type.0 as usize))
                 .map_or_else(
-                    || format!("{{anon record #{}}}", anon_id.0),
+                    || format!("{{anon record #{}}}", owner_type.0),
                     |d| d.name.clone(),
                 );
 
@@ -823,8 +807,8 @@ pub fn lower_expr(ctx: &mut LowerCtx<'_>, expr: &Expr) -> IrExpr {
                 id,
                 ctor: SymbolRef::Constructor {
                     ctor_kind: ridge_ir::CtorKind::Record,
-                    owner_type: anon_id,
-                    name: anon_name,
+                    owner_type,
+                    name: record_name,
                     variant: 0,
                 },
                 fields: ir_fields,

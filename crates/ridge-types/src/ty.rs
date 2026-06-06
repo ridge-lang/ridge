@@ -258,6 +258,7 @@ impl fmt::Display for CapabilitySet {
             (Capability::Proc, "proc"),
             (Capability::Spawn, "spawn"),
             (Capability::Ffi, "ffi"),
+            (Capability::Db, "db"),
         ]
         .iter()
         .filter_map(|(cap, name)| {

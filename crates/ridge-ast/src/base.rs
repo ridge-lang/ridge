@@ -47,6 +47,10 @@ pub enum Capability {
     Spawn,
     /// Foreign Function Interface.
     Ffi,
+    /// Database access (the Postgres/SQLite adapters bridge this to `net`/`fs`
+    /// inside the runtime, so query sites never need raw network or filesystem
+    /// access).
+    Db,
 }
 
 // ── PrimitiveType ─────────────────────────────────────────────────────────────

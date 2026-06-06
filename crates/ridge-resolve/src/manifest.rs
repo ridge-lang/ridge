@@ -771,6 +771,7 @@ fn parse_capability(cap_str: &str, manifest_path: &Path) -> Result<Capability, M
         "proc" => Ok(Capability::Proc),
         "spawn" => Ok(Capability::Spawn),
         "ffi" => Ok(Capability::Ffi),
+        "db" => Ok(Capability::Db),
         _ => Err(ManifestError::InvalidCapabilityName {
             name: cap_str.to_owned(),
             path: manifest_path.to_owned(),
@@ -997,6 +998,25 @@ mod tests {
         let toml = include_str!("../tests/fixtures/manifest/M011_unknown_capability_project.toml");
         let err = parse_project_manifest(toml, pp(), ProjectId(0)).unwrap_err();
         assert_eq!(err.code(), "M011");
+    }
+
+    #[test]
+    fn db_capability_parses_in_manifest() {
+        let toml = "\
+[workspace]
+name = \"acme\"
+version = \"0.1.0\"
+members = [\"apps/*\"]
+
+[workspace.capabilities]
+deny = [\"db\"]
+";
+        let ws = parse_workspace_manifest(toml, wp()).expect("manifest should parse");
+        assert!(
+            ws.capabilities_deny.contains(&ridge_ast::Capability::Db),
+            "deny list should contain the `db` capability, got {:?}",
+            ws.capabilities_deny
+        );
     }
 
     // ── M012 CycleInDependencies — deferred to import resolution ─────────────

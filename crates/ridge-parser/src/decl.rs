@@ -459,6 +459,7 @@ fn peek_capability(cur: &Cursor<'_>) -> Option<Capability> {
             "proc" => Some(Capability::Proc),
             "spawn" => Some(Capability::Spawn), // fallback if ever emitted as LowerIdent
             "ffi" => Some(Capability::Ffi),
+            "db" => Some(Capability::Db),
             _ => None,
         },
         _ => None,
@@ -2452,6 +2453,13 @@ mod tests {
         assert_eq!(f.caps, vec![Capability::Io]);
         assert_eq!(f.params.len(), 1);
         assert!(matches!(&f.params[0], Param::Bare(id) if id.text == "msg"));
+    }
+
+    #[test]
+    fn parse_fn_with_db_cap() {
+        let f = parse_fn("fn db queryUser id = id").expect("should parse");
+        assert_eq!(f.name.text, "queryUser");
+        assert_eq!(f.caps, vec![Capability::Db]);
     }
 
     // ─────────────────────────────────────────────────────────────────────────

@@ -401,6 +401,7 @@ pub(crate) fn parse_capability(
         "proc" => Ok(Capability::Proc),
         "spawn" => Ok(Capability::Spawn),
         "ffi" => Ok(Capability::Ffi),
+        "db" => Ok(Capability::Db),
         _ => Err(ManifestError::InvalidCapabilityName {
             name: cap_str.to_owned(),
             path: manifest_path.to_owned(),

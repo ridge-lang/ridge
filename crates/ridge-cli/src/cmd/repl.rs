@@ -28,7 +28,8 @@
 //!
 //! The REPL session declares
 //! `allow = ["io", "fs", "net", "time", "random", "env", "proc", "spawn"]`
-//! (8 of 9 capabilities; `ffi` excluded) so users can experiment freely.
+//! (8 of 10 capabilities; `ffi` and `db` excluded) so users can experiment
+//! freely.
 //! This is a privileged context — code run in the REPL may perform I/O,
 //! access the filesystem, spawn processes, etc.
 //!

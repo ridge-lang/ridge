@@ -506,6 +506,23 @@ actor X =
         assert!(denied_ats.contains(&"myproj"), "missing project denial");
     }
 
+    /// Bonus — the `db` capability (spec §6.1) participates in deny like any
+    /// other: `deny = ["db"]` rejects a `fn db` decl with R015.
+    #[test]
+    fn t11_db_capability_can_be_denied() {
+        let proj = project("demo", None, vec![Capability::Db]);
+        let ws = workspace(vec![]);
+        let errs = check("fn db queryUser () = ()", &proj, &ws);
+        assert_eq!(errs.len(), 1, "expected 1 error, got: {errs:?}");
+        match &errs[0] {
+            ResolveError::CapabilityDenied { cap, denied_at, .. } => {
+                assert_eq!(*cap, Capability::Db);
+                assert_eq!(denied_at, "demo");
+            }
+            other => panic!("expected CapabilityDenied, got: {other:?}"),
+        }
+    }
+
     /// Bonus — `fn io fs main` with no allow/deny → no errors (canonical example
     /// entry points are clean).
     #[test]

@@ -194,8 +194,9 @@ mod tests {
             Capability::Proc,
             Capability::Spawn,
             Capability::Ffi,
+            Capability::Db,
         ];
-        assert_eq!(caps.len(), 9);
+        assert_eq!(caps.len(), 10);
     }
 
     // ── PrimitiveType ─────────────────────────────────────────────────────────

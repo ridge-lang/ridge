@@ -1155,7 +1155,7 @@ fn fn_is_inner_fn(cur: &Cursor<'_>) -> bool {
 
     // ── Step 1: skip capabilities; check for a function name ─────────────────
     const CAPS: &[&str] = &[
-        "io", "fs", "net", "time", "random", "env", "proc", "spawn", "ffi",
+        "io", "fs", "net", "time", "random", "env", "proc", "spawn", "ffi", "db",
     ];
     let mut first_non_cap = 1usize;
     loop {

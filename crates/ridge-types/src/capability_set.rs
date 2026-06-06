@@ -1,4 +1,4 @@
-//! [`CapabilitySet`] — a compact bit-set over the 9 Ridge capabilities.
+//! [`CapabilitySet`] — a compact bit-set over the 10 Ridge capabilities.
 //!
 //! Bit layout (spec §3.5, D017, D035):
 //! ```text
@@ -11,24 +11,25 @@
 //! bit 6  = proc
 //! bit 7  = spawn
 //! bit 8  = ffi
-//! bit 9  = reserved (always zero — forward-extension slot under D035)
+//! bit 9  = db
+//! bits 10..15 = reserved (always zero — forward-extension slack under D035)
 //! ```
 //!
 //! The set fits in a single `u16`; `CapabilitySet(0)` is the **pure** (empty)
-//! set. The reserved bit 9 is never set by any public API.
+//! set. The reserved high bits are never set by any public API.
 
 use ridge_ast::Capability;
 
-/// Bit-set over the 9 Ridge capabilities (spec §6.1, D017, D035).
+/// Bit-set over the 10 Ridge capabilities (spec §6.1, D017, D035).
 ///
 /// Bit 0 = io, 1 = fs, 2 = net, 3 = time, 4 = random, 5 = env, 6 = proc,
-/// 7 = spawn, 8 = ffi. Bit 9 is reserved (always zero) so that the set fits
-/// in a single `u16` with one slack bit for forward extension under D035.
+/// 7 = spawn, 8 = ffi, 9 = db. Bits 10..15 are reserved (always zero), leaving
+/// the set in a single `u16` with slack for forward extension under D035.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct CapabilitySet(pub(crate) u16);
 
-/// Bitmask covering only the 9 valid capability bits (0..=8).
-const VALID_MASK: u16 = 0b0000_0001_1111_1111;
+/// Bitmask covering only the 10 valid capability bits (0..=9).
+const VALID_MASK: u16 = 0b0000_0011_1111_1111;
 
 impl CapabilitySet {
     /// The pure (empty) capability set — no capabilities required.
@@ -135,7 +136,7 @@ impl CapabilitySet {
 
 // ── Internal helpers ──────────────────────────────────────────────────────────
 
-/// Returns the bit index (0..=8) for the given capability.
+/// Returns the bit index (0..=9) for the given capability.
 const fn bit_index(c: Capability) -> u32 {
     match c {
         Capability::Io => 0,
@@ -147,11 +148,12 @@ const fn bit_index(c: Capability) -> u32 {
         Capability::Proc => 6,
         Capability::Spawn => 7,
         Capability::Ffi => 8,
+        Capability::Db => 9,
     }
 }
 
-/// All 9 capabilities in bit-index order. Used by `iter()`.
-const ALL_CAPABILITIES: [Capability; 9] = [
+/// All 10 capabilities in bit-index order. Used by `iter()`.
+const ALL_CAPABILITIES: [Capability; 10] = [
     Capability::Io,
     Capability::Fs,
     Capability::Net,
@@ -161,6 +163,7 @@ const ALL_CAPABILITIES: [Capability; 9] = [
     Capability::Proc,
     Capability::Spawn,
     Capability::Ffi,
+    Capability::Db,
 ];
 
 // ── Tests ─────────────────────────────────────────────────────────────────────
@@ -190,12 +193,18 @@ mod tests {
     }
 
     #[test]
+    fn singleton_db_bit_index_9() {
+        let s = CapabilitySet::singleton(Capability::Db);
+        assert_eq!(s.bits(), 1u16 << 9);
+    }
+
+    #[test]
     fn pure_is_zero() {
         assert_eq!(CapabilitySet::PURE.bits(), 0);
     }
 
     #[test]
-    fn all_nine_singletons_are_distinct() {
+    fn all_singletons_are_distinct() {
         let sets: Vec<_> = ALL_CAPABILITIES
             .iter()
             .map(|&c| CapabilitySet::singleton(c))
@@ -360,12 +369,12 @@ mod tests {
     }
 
     #[test]
-    fn len_all_caps_is_nine() {
+    fn len_all_caps_is_ten() {
         let mut all = CapabilitySet::PURE;
         for &c in &ALL_CAPABILITIES {
             all.insert(c);
         }
-        assert_eq!(all.len(), 9);
+        assert_eq!(all.len(), 10);
     }
 
     // ── iter ──────────────────────────────────────────────────────────────────
@@ -383,7 +392,7 @@ mod tests {
     }
 
     #[test]
-    fn iter_all_caps_yields_nine_in_order() {
+    fn iter_all_caps_yields_ten_in_order() {
         let mut all = CapabilitySet::PURE;
         for &c in &ALL_CAPABILITIES {
             all.insert(c);
@@ -395,19 +404,19 @@ mod tests {
     // ── from_bits / bits ──────────────────────────────────────────────────────
 
     #[test]
-    fn from_bits_clears_reserved_bit_9() {
-        // bit 9 set should be masked away
-        let s = CapabilitySet::from_bits(1u16 << 9 | 1u16 << 0);
-        assert_eq!(s.bits(), 1u16);
+    fn from_bits_clears_reserved_high_bits() {
+        // bits 10..15 are out of range and must be masked away; bit 9 (db) stays.
+        let s = CapabilitySet::from_bits(1u16 << 10 | 1u16 << 9 | 1u16 << 0);
+        assert_eq!(s.bits(), 1u16 << 9 | 1u16);
     }
 
     #[test]
-    fn reserved_bit_never_set_by_insert() {
+    fn reserved_bits_never_set_by_insert() {
         let mut s = CapabilitySet::PURE;
         for &c in &ALL_CAPABILITIES {
             s.insert(c);
         }
-        // bit 9 must remain zero
-        assert_eq!(s.bits() & (1u16 << 9), 0);
+        // bits 10..15 must remain zero (only 0..=9 are real capabilities).
+        assert_eq!(s.bits() & !VALID_MASK, 0);
     }
 }

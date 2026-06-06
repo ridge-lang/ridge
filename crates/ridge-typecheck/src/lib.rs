@@ -676,6 +676,7 @@ fn typecheck_module_inner(
     if let Some((ct, _)) = registries {
         seed_class_method_schemes(&mut ctx, b, ct, global_tycon_names);
         seed_prelude_codec_schemes(&mut ctx, b);
+        seed_sql_codec_schemes(&mut ctx, b, ct);
     }
 
     // Step B: Seed env with prelude constructors + stdlib qualified bindings.
@@ -996,6 +997,72 @@ fn seed_prelude_codec_schemes(ctx: &mut crate::ctx::InferCtx, b: &ridge_types::B
                 ty: fn_ty,
                 constraints: vec![Constraint {
                     class: DECODE_CLASS,
+                    ty: a,
+                }],
+            },
+        );
+    }
+}
+
+/// Seed env schemes for std.sql's `toSql`/`fromSql` codec methods so bare calls
+/// type-check once `std.sql` is imported (the resolver gates the names). Mirrors
+/// `seed_prelude_codec_schemes` but for the dynamically-registered `SqlType`
+/// class, whose id is looked up from the class table. Skipped when `SqlType` is
+/// absent (empty registries / LSP hot path).
+///
+/// - `toSql   :: ∀a. a        -> SqlValue        where SqlType a`
+/// - `fromSql :: ∀a. SqlValue -> Result a Error  where SqlType a`
+fn seed_sql_codec_schemes(
+    ctx: &mut crate::ctx::InferCtx,
+    b: &ridge_types::BuiltinTyCons,
+    class_table: &crate::class_env::ClassTable,
+) {
+    use ridge_types::{CapRow, CapabilitySet, Constraint, Scheme, Type};
+    let Some(sqltype) = class_table.id_by_name("SqlType") else {
+        return;
+    };
+    // toSql :: ∀a. a -> SqlValue where SqlType a
+    {
+        let a = ctx.fresh_tyvid();
+        let fn_ty = Type::Fn {
+            params: vec![Type::Var(a)],
+            ret: Box::new(Type::Con(b.sql_value, vec![])),
+            caps: CapRow::Concrete(CapabilitySet::PURE),
+        };
+        ctx.env.bind(
+            "toSql".to_owned(),
+            Scheme {
+                vars: vec![a],
+                cap_vars: vec![],
+                row_vars: vec![],
+                ty: fn_ty,
+                constraints: vec![Constraint {
+                    class: sqltype,
+                    ty: a,
+                }],
+            },
+        );
+    }
+    // fromSql :: ∀a. SqlValue -> Result a Error where SqlType a
+    {
+        let a = ctx.fresh_tyvid();
+        let fn_ty = Type::Fn {
+            params: vec![Type::Con(b.sql_value, vec![])],
+            ret: Box::new(Type::Con(
+                b.result,
+                vec![Type::Var(a), Type::Con(b.error, vec![])],
+            )),
+            caps: CapRow::Concrete(CapabilitySet::PURE),
+        };
+        ctx.env.bind(
+            "fromSql".to_owned(),
+            Scheme {
+                vars: vec![a],
+                cap_vars: vec![],
+                row_vars: vec![],
+                ty: fn_ty,
+                constraints: vec![Constraint {
+                    class: sqltype,
                     ty: a,
                 }],
             },

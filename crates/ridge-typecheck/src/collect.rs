@@ -29,8 +29,9 @@ use ridge_types::{Constraint, TyConId, TyVid};
 use rustc_hash::{FxHashMap, FxHashSet};
 
 use crate::class_env::{
-    register_prelude_classes, register_prelude_instances, ClassInfo, ClassTable, InstanceEnv,
-    InstanceInfo, InstanceOrigin, MethodSig,
+    register_prelude_classes, register_prelude_instances, register_stdlib_classes,
+    register_stdlib_instances, ClassInfo, ClassTable, InstanceEnv, InstanceInfo, InstanceOrigin,
+    MethodSig,
 };
 use crate::derive::derive_instances;
 use crate::error::TypeError;
@@ -84,6 +85,10 @@ pub fn collect_workspace(
 
     // Step 1: Seed the ClassTable with built-in prelude classes.
     register_prelude_classes(&mut class_table);
+    // Step 1a: Register stdlib-defined typeclasses (e.g. SqlType from std.sql).
+    // Must follow prelude classes so their dynamically-assigned ClassIds are
+    // contiguous and precede any user-declared classes.
+    register_stdlib_classes(&mut class_table);
 
     // Step 1b: Seed the InstanceEnv with built-in prelude instances (ToText,
     // Eq, and Ord for the primitive types). These live in the prelude module
@@ -127,6 +132,14 @@ pub fn collect_workspace(
             &mut errors,
         );
     }
+
+    // Step 4c: Seed stdlib instances (SqlType for Int/Text/Bool/Float).
+    // Runs after collect_instance_decls so that if sql.ridge itself is being
+    // compiled (stdlib tier-5 build), its source-level declarations are already
+    // registered and this call becomes a no-op for those keys. For user
+    // workspaces, the source-level declarations are absent and all four entries
+    // are inserted here so the constraint solver can discharge them.
+    register_stdlib_instances(&mut instance_env, &class_table);
 
     // Step 4b: Synthesise instances for every `TypeDecl` that has a
     // `deriving (…)` clause. Derived instances are registered into the same

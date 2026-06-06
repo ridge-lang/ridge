@@ -267,6 +267,47 @@ fn class_method_return_type_from_other_module_no_t023() {
     );
 }
 
+// ── SqlType codec class — base-type instances ─────────────────────────────────
+
+#[test]
+fn stdlib_sql_type_base_instances_typecheck() {
+    // toSql resolves the SqlType instance for each base type.
+    let main = "import std.sql (toSql, SqlValue)\n\
+                fn encInt (n: Int) -> SqlValue = toSql n\n\
+                fn encText (s: Text) -> SqlValue = toSql s\n\
+                fn encBool (b: Bool) -> SqlValue = toSql b\n\
+                fn encFloat (f: Float) -> SqlValue = toSql f\n";
+    let errors = typecheck_one(main);
+    assert!(
+        errors.is_empty(),
+        "toSql on base types must type-check clean; got {errors:?}"
+    );
+}
+
+#[test]
+fn stdlib_sql_type_fromsql_typechecks() {
+    let main = "import std.sql (fromSql, SqlValue)\n\
+                fn decInt (v: SqlValue) -> Result Int Error = fromSql v\n";
+    let errors = typecheck_one(main);
+    assert!(
+        errors.is_empty(),
+        "fromSql must type-check clean; got {errors:?}"
+    );
+}
+
+#[test]
+fn stdlib_sql_type_missing_instance_is_rejected() {
+    // A user record has no SqlType instance, so toSql on it must be rejected.
+    let main = "import std.sql (toSql, SqlValue)\n\
+                pub type Widget = { n: Int }\n\
+                fn bad (w: Widget) -> SqlValue = toSql w\n";
+    let errors = typecheck_one(main);
+    assert!(
+        !errors.is_empty(),
+        "toSql on a type with no SqlType instance must be rejected; got no errors"
+    );
+}
+
 #[test]
 fn qualified_imported_fn_call_is_type_checked() {
     // `import x as Lib` then `Lib.needsText` resolves to the producer's scheme.

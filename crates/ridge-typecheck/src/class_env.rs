@@ -699,6 +699,93 @@ pub fn register_prelude_instances(env: &mut InstanceEnv) {
     );
 }
 
+// ── Stdlib class registration ────────────────────────────────────────────────
+
+/// Registers stdlib-defined typeclasses that user code consumes by import.
+///
+/// Currently `SqlType` from std.sql, registered with the same shape as the
+/// `pub class SqlType` in sql.ridge so the constraint solver and instance
+/// coherence see it. Its method schemes are seeded directly (see
+/// `seed_sql_codec_schemes` in lib.rs), so the method sigs carry no AST types
+/// and the AST-driven `seed_class_method_schemes` skips them.
+///
+/// Must be called once, after `register_prelude_classes`, before the workspace
+/// collect pass, so the dynamically-assigned `ClassId` precedes user classes.
+pub fn register_stdlib_classes(ct: &mut ClassTable) {
+    let id = ct.intern("SqlType");
+    ct.insert_with_id(
+        id,
+        ClassInfo {
+            name: "SqlType".to_string(),
+            method_sigs: vec![
+                MethodSig {
+                    name: "toSql".to_string(),
+                    arity: 1,
+                    ast_param_types: vec![],
+                    ast_ret_type: None,
+                    class_ty_var: String::new(),
+                },
+                MethodSig {
+                    name: "fromSql".to_string(),
+                    arity: 1,
+                    ast_param_types: vec![],
+                    ast_ret_type: None,
+                    class_ty_var: String::new(),
+                },
+            ],
+            superclasses: vec![],
+            def_module: None,
+        },
+    );
+}
+
+/// Registers the base-type instances of stdlib-defined classes into `env`.
+///
+/// Currently covers `SqlType` for Int/Text/Bool/Float, keyed by the class id
+/// that `register_stdlib_classes` assigned. Like prelude instances they live
+/// outside any user module (`def_module = None`) so the orphan rule does not
+/// apply.
+///
+/// Must run after `collect_instance_decls` so that if `sql.ridge` is being
+/// compiled as part of the stdlib build (tier 5), its source-level instance
+/// declarations are already in the env and this function is a no-op for those
+/// keys. For user workspaces (which never declare `instance SqlType T`), all
+/// four entries are inserted here and the constraint solver can discharge them.
+pub fn register_stdlib_instances(env: &mut InstanceEnv, ct: &ClassTable) {
+    let Some(sqltype) = ct.id_by_name("SqlType") else {
+        return;
+    };
+    let ds = Span::point(0);
+    let inst = || InstanceInfo {
+        def_module: None,
+        methods: vec![
+            ("toSql".to_string(), String::new()),
+            ("fromSql".to_string(), String::new()),
+        ],
+        ctx_constraints: vec![],
+        head_var_positions: vec![],
+        origin: InstanceOrigin::Explicit,
+        span: ds,
+    };
+    // Builtin TyConIds: Int=0, Float=1, Bool=2, Text=3.
+    // Use entry/or_insert rather than the coherence-checking insert so that
+    // source-level declarations (from sql.ridge in the stdlib build) always
+    // win — they got here first, and we never want to overwrite them or
+    // surface a spurious T032.
+    env.instances
+        .entry((sqltype, TyConId(0)))
+        .or_insert_with(inst);
+    env.instances
+        .entry((sqltype, TyConId(3)))
+        .or_insert_with(inst);
+    env.instances
+        .entry((sqltype, TyConId(2)))
+        .or_insert_with(inst);
+    env.instances
+        .entry((sqltype, TyConId(1)))
+        .or_insert_with(inst);
+}
+
 // ── Tests ─────────────────────────────────────────────────────────────────────
 
 #[cfg(test)]

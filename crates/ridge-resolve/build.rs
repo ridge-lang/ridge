@@ -356,9 +356,9 @@ const BASELINE_EXPORTS: &[(&str, &[&str])] = &[
     (
         "std.sql",
         &[
-            // The opaque SQL column value bridged by the SqlType codec class.
-            // The class and its methods become importable in a later step.
-            "SqlValue",
+            // The opaque SQL column value plus the SqlType codec class and its
+            // methods, all importable from user code.
+            "SqlValue", "SqlType", "toSql", "fromSql",
         ],
     ),
 ];

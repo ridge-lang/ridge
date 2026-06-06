@@ -139,6 +139,61 @@ pub enum DerivedMethodBody {
         /// An empty `payload_shapes` vec signals a nullary variant.
         variants: Vec<(String, Vec<FieldShape>)>,
     },
+
+    /// Transparent delegation for an `opaque` single-field wrapper (a newtype).
+    ///
+    /// Each class method forwards to the inner type's instance: arguments of the
+    /// wrapper type are unwrapped (the single field is projected out) on the way
+    /// in, and a result of the wrapper type is rewrapped on the way out. The
+    /// effect is that `opaque type Money = { cents: Int } deriving (SqlType, …)`
+    /// behaves exactly like its inner `Int` for every derived class — the wrapper
+    /// is indistinguishable from its payload at runtime.
+    DerivedDelegated {
+        /// The single record field projected to reach the inner value.
+        field_name: String,
+        /// `TyConId` of the inner type — selects its prelude/stdlib dictionary.
+        inner_tycon: TyConId,
+        /// Source name of the inner type (e.g. `"Int"`), used to build the
+        /// `$inst_{Class}_{Inner}` reference for stdlib-class instances.
+        inner_type_name: String,
+        /// One entry per class method, describing how the wrapper threads
+        /// through it (which args to unwrap, whether to rewrap the result).
+        methods: Vec<DelegatedMethod>,
+    },
+}
+
+/// How the wrapper type flows through one delegated argument position.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DelegArg {
+    /// The argument has the wrapper type — unwrap it (project the field) before
+    /// passing it to the inner method.
+    Wrapped,
+    /// The argument does not mention the wrapper type — pass it through as-is.
+    Plain,
+}
+
+/// How the wrapper type flows through a delegated method's result.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DelegResult {
+    /// The result does not mention the wrapper type — return the inner result
+    /// unchanged (e.g. `toSql` returns a `SqlValue`).
+    Plain,
+    /// The result is the wrapper type — rewrap the inner value.
+    Wrap,
+    /// The result is `Result wrapper Error` — map `Ok n -> Ok (wrap n)` and
+    /// forward `Err` unchanged (e.g. `fromSql`/`decode`).
+    WrapResult,
+}
+
+/// One method of a delegated newtype instance and how the wrapper threads it.
+#[derive(Debug, Clone)]
+pub struct DelegatedMethod {
+    /// Method name (`toSql`, `encode`, …).
+    pub name: String,
+    /// Per-argument flow, in declaration order.
+    pub args: Vec<DelegArg>,
+    /// Result flow.
+    pub result: DelegResult,
 }
 
 /// Structural shape for a single field or payload argument.
@@ -230,6 +285,10 @@ pub struct DerivedInstance {
     clippy::implicit_hasher,
     reason = "FxHashMap is the canonical hasher for this crate; matches the pattern in solve.rs and collect.rs"
 )]
+#[expect(
+    clippy::too_many_lines,
+    reason = "flat per-class dispatch over the deriving clause (delegated + structural paths); splitting would not reduce complexity"
+)]
 pub fn derive_instances(
     type_decl: &ridge_ast::decl::TypeDecl,
     tycon_id: TyConId,
@@ -240,6 +299,15 @@ pub fn derive_instances(
 ) -> (Vec<DerivedInstance>, Vec<TypeError>) {
     let mut generated: Vec<DerivedInstance> = Vec::new();
     let mut errors: Vec<TypeError> = Vec::new();
+
+    // An `opaque` wrapper around a single concrete field is a newtype: its
+    // derived instances delegate to the inner type's instances (transparent
+    // wrapper semantics). Recognised once; consulted per derived class below.
+    let newtype = if type_decl.opaque {
+        recognize_newtype(&type_decl.body, user_tycon_names)
+    } else {
+        None
+    };
 
     for class_ident in &type_decl.deriving {
         let class_name = &class_ident.text;
@@ -255,6 +323,60 @@ pub fn derive_instances(
             });
             continue;
         };
+
+        // Transparent newtype delegation. For an `opaque` single-field wrapper,
+        // a class with a delegation plan forwards to the inner type's instance
+        // instead of synthesising a structural body. `Eq`/`Ord` have no plan and
+        // fall through to the structural path — on a single field that is already
+        // transparent, so they need no special handling.
+        if let Some(nt) = &newtype {
+            if let Some(plan) = delegation_plan_for_class(class_name) {
+                // The inner type must implement the class for delegation to make
+                // sense; otherwise the wrapper has nothing to forward to.
+                if instance_env.get((class_id, nt.inner_tycon)).is_none() {
+                    errors.push(TypeError::NoInstance {
+                        class: class_name.clone(),
+                        ty: type_decl.name.text.clone(),
+                        span,
+                        fix_hint: format!(
+                            "`deriving {class_name}` on `{}` forwards to its inner type \
+                             `{}`, which has no `{class_name}` instance; add one or drop \
+                             `{class_name}` from the deriving clause",
+                            type_decl.name.text, nt.inner_type_name
+                        ),
+                    });
+                    continue;
+                }
+
+                let info = InstanceInfo {
+                    def_module: Some(module_id),
+                    methods: plan
+                        .iter()
+                        .map(|m| (m.name.clone(), String::new()))
+                        .collect(),
+                    ctx_constraints: vec![],
+                    head_var_positions: vec![],
+                    origin: InstanceOrigin::Explicit,
+                    span,
+                };
+                let key = (class_id, tycon_id);
+                let type_name = type_decl.name.text.clone();
+                match instance_env.insert(key, info.clone(), class_name, &type_name) {
+                    Ok(()) => generated.push(DerivedInstance {
+                        key,
+                        instance_info: info,
+                        method_body: DerivedMethodBody::DerivedDelegated {
+                            field_name: nt.field_name.clone(),
+                            inner_tycon: nt.inner_tycon,
+                            inner_type_name: nt.inner_type_name.clone(),
+                            methods: plan,
+                        },
+                    }),
+                    Err(coherence_err) => errors.push(coherence_err.into_type_error()),
+                }
+                continue;
+            }
+        }
 
         // Reject non-derivable classes.
         if !is_derivable(class_id) {
@@ -327,6 +449,101 @@ fn is_derivable(class_id: ridge_types::ClassId) -> bool {
         || class_id == ORD_CLASS
         || class_id == ENCODE_CLASS
         || class_id == DECODE_CLASS
+}
+
+/// The inner field of a recognised newtype: the single record field a
+/// transparent wrapper delegates through.
+struct NewtypeInfo {
+    /// Name of the single record field.
+    field_name: String,
+    /// `TyConId` of the field's (concrete) type.
+    inner_tycon: TyConId,
+    /// Source name of the field's type (`"Int"`, `"Text"`, a user type, …).
+    inner_type_name: String,
+}
+
+/// Recognise a newtype: a record with exactly one field whose type resolves to
+/// a concrete `TyConId`. Returns `None` for multi-field records, unions,
+/// aliases, or a field whose type is a variable (a generic wrapper like
+/// `Box a = { val: a }` keeps the structural/parametric derive path).
+///
+/// Phantom type parameters are fine — `Id a = { raw: Int }` is a newtype over
+/// `Int`; the unused `a` does not affect delegation.
+fn recognize_newtype(
+    body: &TypeBody,
+    user_tycon_names: &FxHashMap<String, TyConId>,
+) -> Option<NewtypeInfo> {
+    let TypeBody::Record(r) = body else {
+        return None;
+    };
+    let [field] = r.fields.as_slice() else {
+        return None;
+    };
+    let inner_tycon = resolve_ast_type_to_tycon_id(&field.ty, user_tycon_names)?;
+    let inner_type_name = ast_type_simple_name(&field.ty)?;
+    Some(NewtypeInfo {
+        field_name: field.name.text.clone(),
+        inner_tycon,
+        inner_type_name,
+    })
+}
+
+/// The source-level name of a simple (primitive or named) AST type. Returns
+/// `None` for compound types — they cannot be the inner type of a newtype.
+fn ast_type_simple_name(ty: &AstType) -> Option<String> {
+    use ridge_ast::base::PrimitiveType;
+    match ty {
+        AstType::Primitive { name, .. } => Some(
+            match name {
+                PrimitiveType::Int => "Int",
+                PrimitiveType::Float => "Float",
+                PrimitiveType::Bool => "Bool",
+                PrimitiveType::Text => "Text",
+                PrimitiveType::Unit => "Unit",
+                PrimitiveType::Timestamp => "Timestamp",
+            }
+            .to_string(),
+        ),
+        AstType::Named { name, .. } => Some(name.text.clone()),
+        _ => None,
+    }
+}
+
+/// The delegation plan for a derivable class: one [`DelegatedMethod`] per class
+/// method, describing how the wrapper threads through it.
+///
+/// Returns `None` for classes that have no delegated form. `Eq`/`Ord` are
+/// intentionally absent — on a single-field wrapper the structural derive is
+/// already transparent (whole-value `=:=` / single-field comparison), so they
+/// keep the structural path. User-defined classes are not yet newtype-derivable.
+fn delegation_plan_for_class(class_name: &str) -> Option<Vec<DelegatedMethod>> {
+    let m = |name: &str, args: Vec<DelegArg>, result: DelegResult| DelegatedMethod {
+        name: name.to_string(),
+        args,
+        result,
+    };
+    match class_name {
+        "ToText" => Some(vec![m(
+            "toText",
+            vec![DelegArg::Wrapped],
+            DelegResult::Plain,
+        )]),
+        "Encode" => Some(vec![m(
+            "encode",
+            vec![DelegArg::Wrapped],
+            DelegResult::Plain,
+        )]),
+        "Decode" => Some(vec![m(
+            "decode",
+            vec![DelegArg::Plain],
+            DelegResult::WrapResult,
+        )]),
+        "SqlType" => Some(vec![
+            m("toSql", vec![DelegArg::Wrapped], DelegResult::Plain),
+            m("fromSql", vec![DelegArg::Plain], DelegResult::WrapResult),
+        ]),
+        _ => None,
+    }
 }
 
 /// Returns the single method name for a derivable class.
@@ -2151,5 +2368,141 @@ mod tests {
                 generated[0].method_body
             );
         }
+    }
+
+    // ── Newtype delegation (transparent opaque wrappers) ──────────────────────
+
+    fn make_class_table_with_sql() -> ClassTable {
+        let mut ct = ClassTable::new();
+        register_prelude_classes(&mut ct);
+        crate::class_env::register_stdlib_classes(&mut ct);
+        ct
+    }
+
+    fn make_instance_env_with_sql(ct: &ClassTable) -> InstanceEnv {
+        let mut env = InstanceEnv::new();
+        register_prelude_instances(&mut env);
+        crate::class_env::register_stdlib_instances(&mut env, ct);
+        env
+    }
+
+    fn opaque_record_decl(
+        name: &str,
+        field: (&str, AstType),
+        deriving: Vec<&str>,
+    ) -> ridge_ast::decl::TypeDecl {
+        let mut decl = type_decl_with_body(name, record_body(vec![field]), deriving);
+        decl.opaque = true;
+        decl
+    }
+
+    #[test]
+    fn derive_sqltype_on_opaque_newtype_delegates() {
+        let ct = make_class_table_with_sql();
+        let mut env = make_instance_env_with_sql(&ct);
+        // opaque type Money = { cents: Int } deriving (SqlType)
+        let decl = opaque_record_decl("Money", ("cents", int_type()), vec!["SqlType"]);
+        let (generated, errors) =
+            derive_instances(&decl, TyConId(100), 7, &ct, &mut env, &FxHashMap::default());
+        assert!(errors.is_empty(), "no errors: {errors:?}");
+        assert_eq!(generated.len(), 1);
+        if let DerivedMethodBody::DerivedDelegated {
+            field_name,
+            inner_tycon,
+            inner_type_name,
+            methods,
+        } = &generated[0].method_body
+        {
+            assert_eq!(field_name, "cents");
+            assert_eq!(*inner_tycon, TyConId(0), "inner Int");
+            assert_eq!(inner_type_name, "Int");
+            let names: Vec<&str> = methods.iter().map(|m| m.name.as_str()).collect();
+            assert_eq!(names, ["toSql", "fromSql"]);
+            assert_eq!(methods[0].args, vec![DelegArg::Wrapped]);
+            assert_eq!(methods[0].result, DelegResult::Plain);
+            assert_eq!(methods[1].args, vec![DelegArg::Plain]);
+            assert_eq!(methods[1].result, DelegResult::WrapResult);
+        } else {
+            panic!(
+                "expected DerivedDelegated, got {:?}",
+                generated[0].method_body
+            );
+        }
+        let sql = ct.id_by_name("SqlType").expect("SqlType registered");
+        assert!(
+            env.get((sql, TyConId(100))).is_some(),
+            "delegated SqlType instance must be registered"
+        );
+    }
+
+    #[test]
+    fn derive_sqltype_missing_inner_instance_emits_t029() {
+        let ct = make_class_table_with_sql();
+        let mut env = make_instance_env_with_sql(&ct);
+        // opaque type Wrapped = { raw: Widget }; Widget has no SqlType instance.
+        let mut names = FxHashMap::default();
+        names.insert("Widget".to_string(), TyConId(70));
+        let decl = opaque_record_decl("Wrapped", ("raw", named_type("Widget")), vec!["SqlType"]);
+        let (generated, errors) = derive_instances(&decl, TyConId(101), 7, &ct, &mut env, &names);
+        assert!(generated.is_empty(), "no instance when inner lacks SqlType");
+        assert_eq!(errors.len(), 1);
+        assert_eq!(errors[0].code(), "T029", "missing inner instance → T029");
+    }
+
+    #[test]
+    fn derive_encode_on_opaque_newtype_delegates_transparently() {
+        let ct = make_class_table_with_sql();
+        let mut env = make_instance_env_with_sql(&ct);
+        // opaque type Email = { raw: Text } deriving (Encode) — transparent, not structural.
+        let decl = opaque_record_decl("Email", ("raw", text_type()), vec!["Encode"]);
+        let (generated, errors) =
+            derive_instances(&decl, TyConId(102), 7, &ct, &mut env, &FxHashMap::default());
+        assert!(errors.is_empty(), "no errors: {errors:?}");
+        assert_eq!(generated.len(), 1);
+        assert!(
+            matches!(
+                generated[0].method_body,
+                DerivedMethodBody::DerivedDelegated { .. }
+            ),
+            "opaque newtype Encode must delegate, got {:?}",
+            generated[0].method_body
+        );
+    }
+
+    #[test]
+    fn derive_eq_on_opaque_newtype_stays_structural() {
+        let ct = make_class_table_with_sql();
+        let mut env = make_instance_env_with_sql(&ct);
+        // opaque type Money = { cents: Int } deriving (Eq) — Eq has no delegation plan.
+        let decl = opaque_record_decl("Money", ("cents", int_type()), vec!["Eq"]);
+        let (generated, errors) =
+            derive_instances(&decl, TyConId(103), 7, &ct, &mut env, &FxHashMap::default());
+        assert!(errors.is_empty(), "no errors: {errors:?}");
+        assert_eq!(generated.len(), 1);
+        assert!(
+            matches!(generated[0].method_body, DerivedMethodBody::DerivedEq),
+            "Eq on a one-field wrapper stays structural, got {:?}",
+            generated[0].method_body
+        );
+    }
+
+    #[test]
+    fn derive_sqltype_on_nonopaque_record_is_rejected() {
+        let ct = make_class_table_with_sql();
+        let mut env = make_instance_env_with_sql(&ct);
+        // type Plain = { cents: Int } deriving (SqlType) — not opaque → no delegation.
+        let decl = type_decl_with_body(
+            "Plain",
+            record_body(vec![("cents", int_type())]),
+            vec!["SqlType"],
+        );
+        let (generated, errors) =
+            derive_instances(&decl, TyConId(104), 7, &ct, &mut env, &FxHashMap::default());
+        assert!(
+            generated.is_empty(),
+            "SqlType is not structurally derivable"
+        );
+        assert_eq!(errors.len(), 1);
+        assert_eq!(errors[0].code(), "T029");
     }
 }

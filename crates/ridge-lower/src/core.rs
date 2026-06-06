@@ -1477,19 +1477,22 @@ fn dict_plan_to_expr(
             // a function of the element dict(s), so apply it to `sub_dicts`
             // (dict-of-dicts). A non-parametric instance has no sub-dicts and the
             // bare symbol is the dictionary map.
-            let type_name = ctx
-                .workspace
-                .and_then(|ws| ws.tycons.get(tycon.0 as usize))
-                .map_or_else(|| format!("TyCon{}", tycon.0), |decl| decl.name.clone());
+            let decl = ctx.workspace.and_then(|ws| ws.tycons.get(tycon.0 as usize));
+            let type_name =
+                decl.map_or_else(|| format!("TyCon{}", tycon.0), |decl| decl.name.clone());
             let dict_const_name = format!("$inst_{class_name}_{type_name}");
             let id = ctx.fresh_id(None);
 
-            // When the instance's class is defined in a compiled stdlib module
-            // (e.g. `SqlType` lives in `std.sql`), its `$inst_` constant is
-            // exported from that module — not from the user's current module.
-            // Emit a cross-module `SymbolRef::Stdlib` so codegen calls
-            // `'std.sql':'$inst_SqlType_Int'()` instead of looking up a local.
-            let sym = if let Some(home) = stdlib_class_home_module(class_name) {
+            // A stdlib class (e.g. `SqlType` in `std.sql`) compiles `$inst_`
+            // constants only for the base types it defines instances for — the
+            // builtins. A *user* newtype that derives such a class carries its
+            // delegated dictionary in its own module, so only builtin types take
+            // the cross-module `SymbolRef::Stdlib` path; user types resolve their
+            // `$inst_` locally.
+            let tycon_is_builtin = decl.is_some_and(|d| d.def_module_raw.is_none());
+            let sym = if let Some(home) =
+                stdlib_class_home_module(class_name).filter(|_| tycon_is_builtin)
+            {
                 SymbolRef::Stdlib {
                     module: home.to_owned(),
                     name: dict_const_name,

@@ -557,6 +557,28 @@ pub fn lower_derived_instance(
     let sp = Span::point(0);
     let mut items: Vec<IrItem> = Vec::new();
 
+    // Transparent newtype delegation has its own shape — potentially several
+    // methods, each forwarding to the inner type's dictionary — so it does not
+    // fit the single-method structural path below.
+    if let DerivedMethodBody::DerivedDelegated {
+        field_name,
+        inner_tycon,
+        inner_type_name,
+        methods,
+    } = &derived.method_body
+    {
+        return build_delegated_instance(
+            ctx,
+            derived.key,
+            class_name,
+            type_name,
+            field_name,
+            *inner_tycon,
+            inner_type_name,
+            methods,
+        );
+    }
+
     let method_name = derived
         .instance_info
         .methods
@@ -830,6 +852,10 @@ pub fn lower_derived_instance(
             }];
             (body, params)
         }
+
+        DerivedMethodBody::DerivedDelegated { .. } => {
+            unreachable!("DerivedDelegated is handled by the early return above")
+        }
     };
 
     // A generic type whose derived instance threads element dictionaries (e.g.
@@ -942,6 +968,324 @@ pub fn lower_derived_instance(
     }));
 
     items
+}
+
+// ── Derived newtype delegation ────────────────────────────────────────────────
+
+/// Lower a transparent newtype instance: emit one forwarding method fn per class
+/// method plus the `$inst_{Class}_{Type}` dictionary const.
+///
+/// Each method unwraps its wrapper-typed arguments (projecting the single field),
+/// forwards to the inner type's dictionary, and rewraps the result when it is the
+/// wrapper type. The wrapper is therefore indistinguishable from its inner value
+/// at runtime for every delegated class.
+#[expect(
+    clippy::too_many_arguments,
+    reason = "destructured fields of the DerivedDelegated method body, passed through to one builder"
+)]
+#[expect(
+    clippy::too_many_lines,
+    reason = "flat per-method fn + dict-const emission; splitting would not reduce complexity"
+)]
+fn build_delegated_instance(
+    ctx: &mut LowerCtx<'_>,
+    key: (ridge_types::ClassId, ridge_types::TyConId),
+    class_name: &str,
+    type_name: &str,
+    field_name: &str,
+    inner_tycon: ridge_types::TyConId,
+    inner_type_name: &str,
+    methods: &[ridge_typecheck::DelegatedMethod],
+) -> Vec<IrItem> {
+    use ridge_typecheck::{DelegArg, DelegResult};
+
+    let sp = Span::point(0);
+    let newtype_tycon = key.1;
+    let class_id = key.0;
+    let mut items: Vec<IrItem> = Vec::new();
+    let mut dict_fields: Vec<(String, IrExpr)> = Vec::new();
+
+    for method in methods {
+        let params: Vec<IrParam> = (0..method.args.len())
+            .map(|i| IrParam {
+                name: format!("__d{i}"),
+                ty: Type::Error,
+                span: sp,
+            })
+            .collect();
+
+        // Unwrap each wrapper-typed argument (`__di.field`); pass others through.
+        let call_args: Vec<IrExpr> = method
+            .args
+            .iter()
+            .enumerate()
+            .map(|(i, arg)| {
+                let local = IrExpr::Local {
+                    id: ctx.fresh_id(None),
+                    name: format!("__d{i}"),
+                    span: sp,
+                };
+                match arg {
+                    DelegArg::Wrapped => IrExpr::Field {
+                        id: ctx.fresh_id(None),
+                        base: Box::new(local),
+                        field: field_name.to_string(),
+                        span: sp,
+                    },
+                    DelegArg::Plain => local,
+                }
+            })
+            .collect();
+
+        let inner_result = delegated_inner_call(
+            ctx,
+            class_id,
+            class_name,
+            inner_tycon,
+            inner_type_name,
+            &method.name,
+            call_args,
+            sp,
+        );
+
+        let body = match method.result {
+            DelegResult::Plain => inner_result,
+            DelegResult::Wrap => {
+                wrap_newtype(ctx, newtype_tycon, type_name, field_name, inner_result, sp)
+            }
+            DelegResult::WrapResult => {
+                wrap_result_newtype(ctx, newtype_tycon, type_name, field_name, inner_result, sp)
+            }
+        };
+
+        let fn_name = format!("{class_name}__{type_name}__{}", method.name);
+        items.push(IrItem::Fn(IrFn {
+            name: fn_name.clone(),
+            module: ctx.module_id,
+            params,
+            ret_ty: Type::Error,
+            caps: ridge_types::CapabilitySet::PURE,
+            scheme: Scheme::mono(Type::Error),
+            body,
+            origin: NodeId(0),
+            span: sp,
+            is_pub: false,
+            is_main: false,
+            doc: None,
+        }));
+
+        dict_fields.push((
+            method.name.clone(),
+            IrExpr::Symbol {
+                id: ctx.fresh_id(None),
+                sym: SymbolRef::Local {
+                    name: fn_name,
+                    module: ctx.module_id,
+                },
+                span: sp,
+            },
+        ));
+    }
+
+    let dict_name = format!("$inst_{class_name}_{type_name}");
+    let dict_value = IrExpr::Construct {
+        id: ctx.fresh_id(None),
+        ctor: SymbolRef::Constructor {
+            ctor_kind: CtorKind::Record,
+            owner_type: ridge_types::TyConId(0),
+            name: dict_name.clone(),
+            variant: 0,
+        },
+        fields: dict_fields,
+        span: sp,
+    };
+    items.push(IrItem::Const(IrConst {
+        name: dict_name,
+        ty: Type::Error,
+        value: dict_value,
+        origin: NodeId(0),
+        span: sp,
+        // Stdlib-class instances (e.g. `SqlType`) are referenced cross-module, so
+        // their dictionary const must be exported. Prelude-class instances keep
+        // the private path, matching the structural derived dicts.
+        is_pub: crate::core::stdlib_class_home_module(class_name).is_some(),
+    }));
+
+    items
+}
+
+/// Build the call to the inner type's class method for one delegated method.
+///
+/// The inner dictionary is located the same way the constraint solver would:
+/// `ToText` dispatches straight to the inner type's stdlib `toText`; prelude
+/// `Encode`/`Decode` primitives synthesise their dictionary inline; a stdlib
+/// class (`SqlType`) references its `$inst_` const in the class's home module.
+#[expect(
+    clippy::too_many_arguments,
+    reason = "the inner-instance coordinates (class, inner tycon, names) plus the call args"
+)]
+fn delegated_inner_call(
+    ctx: &mut LowerCtx<'_>,
+    class_id: ridge_types::ClassId,
+    class_name: &str,
+    inner_tycon: ridge_types::TyConId,
+    inner_type_name: &str,
+    method: &str,
+    mut args: Vec<IrExpr>,
+    sp: Span,
+) -> IrExpr {
+    // ToText forwards to the inner type's stdlib renderer directly (there is no
+    // runtime `ToText` dictionary to project).
+    if class_name == "ToText" {
+        let arg = args.pop().unwrap_or_else(|| IrExpr::Lit {
+            id: ctx.fresh_id(None),
+            value: IrLit::Unit,
+            span: sp,
+        });
+        return crate::interp::wrap_to_text_by_tycon(ctx, arg, inner_tycon, sp);
+    }
+
+    // Prelude `Encode`/`Decode` for a primitive inner: synthesise the dictionary
+    // inline (these instances have no module-level `$inst_` const).
+    let dict = if crate::prelude_dict::is_prelude_codec_instance(class_id, inner_tycon) {
+        crate::prelude_dict::synth_prelude_dict(ctx, class_id, inner_tycon, vec![], sp)
+            .unwrap_or_else(|| IrExpr::Lit {
+                id: ctx.fresh_id(None),
+                value: IrLit::Unit,
+                span: sp,
+            })
+    } else if let Some(home) = crate::core::stdlib_class_home_module(class_name) {
+        // Stdlib class (`SqlType`): its base-type dictionary lives in the home
+        // module and is fetched cross-module.
+        IrExpr::Symbol {
+            id: ctx.fresh_id(None),
+            sym: SymbolRef::Stdlib {
+                module: home.to_owned(),
+                name: format!("$inst_{class_name}_{inner_type_name}"),
+            },
+            span: sp,
+        }
+    } else {
+        // A user-class instance defined locally (not reached for the MVP's
+        // delegated classes; kept for completeness).
+        IrExpr::Symbol {
+            id: ctx.fresh_id(None),
+            sym: SymbolRef::Local {
+                name: format!("$inst_{class_name}_{inner_type_name}"),
+                module: ctx.module_id,
+            },
+            span: sp,
+        }
+    };
+
+    let projected = IrExpr::Field {
+        id: ctx.fresh_id(None),
+        base: Box::new(dict),
+        field: method.to_string(),
+        span: sp,
+    };
+    IrExpr::Call {
+        id: ctx.fresh_id(None),
+        callee: Box::new(projected),
+        args,
+        span: sp,
+    }
+}
+
+/// `Newtype { field = value }` — rewrap an inner value into the wrapper record.
+fn wrap_newtype(
+    ctx: &mut LowerCtx<'_>,
+    newtype_tycon: ridge_types::TyConId,
+    type_name: &str,
+    field_name: &str,
+    value: IrExpr,
+    sp: Span,
+) -> IrExpr {
+    IrExpr::Construct {
+        id: ctx.fresh_id(None),
+        ctor: SymbolRef::Constructor {
+            ctor_kind: CtorKind::Record,
+            owner_type: newtype_tycon,
+            name: type_name.to_string(),
+            variant: 0,
+        },
+        fields: vec![(field_name.to_string(), value)],
+        span: sp,
+    }
+}
+
+/// `match <result> { Ok n -> Ok (Newtype { field = n }); Err e -> Err e }` —
+/// rewrap the `Ok` payload of a `Result wrapper Error`, forwarding `Err`.
+fn wrap_result_newtype(
+    ctx: &mut LowerCtx<'_>,
+    newtype_tycon: ridge_types::TyConId,
+    type_name: &str,
+    field_name: &str,
+    result: IrExpr,
+    sp: Span,
+) -> IrExpr {
+    use ridge_ir::{IrArm, IrPat};
+
+    let n_local = IrExpr::Local {
+        id: ctx.fresh_id(None),
+        name: "__dn".to_string(),
+        span: sp,
+    };
+    let wrapped = wrap_newtype(ctx, newtype_tycon, type_name, field_name, n_local, sp);
+    let ok_arm = IrArm {
+        pat: IrPat::Ctor {
+            sym: SymbolRef::Prelude {
+                name: "Ok".to_string(),
+            },
+            fields: vec![],
+            args: vec![IrPat::Bind {
+                name: "__dn".to_string(),
+                inner: None,
+                span: sp,
+            }],
+            span: sp,
+        },
+        when: None,
+        body: build_ok(wrapped, sp),
+        span: sp,
+    };
+
+    let e_local = IrExpr::Local {
+        id: ctx.fresh_id(None),
+        name: "__de".to_string(),
+        span: sp,
+    };
+    let err_arm = IrArm {
+        pat: IrPat::Ctor {
+            sym: SymbolRef::Prelude {
+                name: "Err".to_string(),
+            },
+            fields: vec![],
+            args: vec![IrPat::Bind {
+                name: "__de".to_string(),
+                inner: None,
+                span: sp,
+            }],
+            span: sp,
+        },
+        when: None,
+        body: IrExpr::Construct {
+            id: ctx.fresh_id(None),
+            ctor: SymbolRef::Prelude {
+                name: "Err".to_string(),
+            },
+            fields: vec![("$0".to_string(), e_local)],
+            span: sp,
+        },
+        span: sp,
+    };
+
+    IrExpr::Match {
+        id: ctx.fresh_id(None),
+        scrutinee: Box::new(result),
+        arms: vec![ok_arm, err_arm],
+        span: sp,
+    }
 }
 
 // ── Derived Ord body builders ─────────────────────────────────────────────────

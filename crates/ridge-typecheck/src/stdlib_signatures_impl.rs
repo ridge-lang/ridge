@@ -1452,6 +1452,15 @@ mod tests {
         let mut missing: Vec<(&str, &str)> = Vec::new();
         for module in BUILTINS {
             for &name in module.exports {
+                // std.sql's `SqlType` class, its methods (`toSql`/`fromSql`,
+                // seeded via `seed_sql_codec_schemes` rather than this signature
+                // table), and the opaque `SqlValue` type are not value schemes,
+                // so they have no `stdlib_signature` entry by design.
+                if module.name == "std.sql"
+                    && matches!(name, "SqlValue" | "SqlType" | "toSql" | "fromSql")
+                {
+                    continue;
+                }
                 let result = stdlib_signature(module.id, name, &b);
                 if result.is_none() {
                     missing.push((module.name, name));

@@ -105,6 +105,13 @@ fn main() {
 
 const CAP_KEYWORDS: &[&str] = &["io", "fs", "net", "time", "random", "env", "proc"];
 
+// ── Stdlib typeclass names ────────────────────────────────────────────────────
+//
+// Typeclasses defined in the stdlib whose instance dictionaries are compiled
+// into the stdlib module and must be exported (so user code can reference them
+// cross-module). Each entry is `(class_name, home_ridge_module)`.
+const STDLIB_CLASSES: &[(&str, &str)] = &[("SqlType", "std.sql")];
+
 // Constructor-shaped fns must export arity 0; this invariant catches accidental
 // (_unit: Unit) regressions at build time. Hoisted to module scope (out of
 // `generate_ffi_targets`) to satisfy `clippy::items_after_statements`.
@@ -142,6 +149,7 @@ const STDLIB_MODULES: &[&str] = &[
     "std.net.http",
     // Tier 5
     "std.crypto",
+    "std.sql",
 ];
 
 // ── Entry type ────────────────────────────────────────────────────────────────
@@ -223,6 +231,11 @@ fn generate_ffi_targets(stdlib_dir: &Path, out_path: &Path) -> Result<usize, Str
 // `@ffi`-decorated functions.  Pure-Ridge entries use the Ridge module name as
 // the BEAM module atom (e.g. `"std.list"`) and the Ridge fn name as the BEAM fn
 // name; arity is counted from the signature's top-level `(...)` param groups.
+//
+// Also emits bridge entries for generated instance-dict consts of stdlib-defined
+// typeclasses (e.g. `$inst_SqlType_Int/0` in `std.sql`), so that
+// `SymbolRef::Stdlib { module: "std.sql", name: "$inst_SqlType_Int" }` resolves
+// to arity 0 and codegen emits `call 'std.sql':'$inst_SqlType_Int' ()`.
 fn extract_ffi(src: &str, module: &str, out: &mut Vec<FfiEntry>) {
     // `pending` holds the parsed @ffi attribute for the immediately following fn.
     let mut pending: Option<(String, String, u32)> = None;
@@ -241,6 +254,30 @@ fn extract_ffi(src: &str, module: &str, out: &mut Vec<FfiEntry>) {
                 pending = Some(attr);
                 continue;
             }
+        }
+
+        // Detect instance declarations for stdlib-defined typeclasses and emit a
+        // bridge entry for the generated `$inst_<Class>_<Type>/0` dict const.
+        // Matches: `instance <ClassName> <TypeName>` with optional trailing `=`.
+        if let Some(rest) = t.strip_prefix("instance ") {
+            if let Some((class_name, type_name)) = parse_instance_head(rest) {
+                let is_stdlib_class = STDLIB_CLASSES
+                    .iter()
+                    .any(|(c, home)| *c == class_name && *home == module);
+                if is_stdlib_class {
+                    let dict_name = format!("$inst_{class_name}_{type_name}");
+                    out.push(FfiEntry {
+                        ridge_module: module.to_owned(),
+                        ridge_fn: dict_name.clone(),
+                        beam_module: module.to_owned(),
+                        beam_fn: dict_name,
+                        arity: 0,
+                    });
+                }
+            }
+            // Instance lines are not fn declarations; reset @ffi pending state.
+            pending = None;
+            continue;
         }
 
         // Detect fn declaration (public or private).
@@ -287,6 +324,32 @@ fn extract_ffi(src: &str, module: &str, out: &mut Vec<FfiEntry>) {
         // Any other non-trivial line resets state.
         pending = None;
     }
+}
+
+/// Parse the head of an `instance` declaration to extract `(class_name, type_name)`.
+///
+/// Accepts both `ClassName TypeName =` and `ClassName TypeName` (the `=` may be
+/// on the same line or a subsequent line). Returns `None` for parametric heads
+/// (e.g. `instance SqlType (List a)`) which are not yet supported as stdlib
+/// dict consts.
+fn parse_instance_head(rest: &str) -> Option<(String, String)> {
+    let mut tokens = rest.split_whitespace();
+    let class_name = tokens.next()?;
+    let type_name_raw = tokens.next()?;
+    // Skip parametric heads: they start with `(`.
+    if type_name_raw.starts_with('(') {
+        return None;
+    }
+    // Strip a trailing `=` if it was joined to the type name token.
+    let type_name = type_name_raw.trim_end_matches('=').trim();
+    if type_name.is_empty() || !is_valid_ident(type_name) {
+        return None;
+    }
+    // Validate class name is also a plain identifier.
+    if !is_valid_ident(class_name) {
+        return None;
+    }
+    Some((class_name.to_owned(), type_name.to_owned()))
 }
 
 /// Count the number of top-level `(...)` parameter groups in a Ridge fn

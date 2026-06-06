@@ -1139,6 +1139,18 @@ fn classmethod_binding(ctx: &LowerCtx<'_>, ident: &Ident) -> Option<(String, Str
         .and_then(|bm| bm.get(node_id.0 as usize).and_then(Option::as_ref))?;
     match binding {
         Binding::ClassMethod { class_name, method } => Some((class_name.clone(), method.clone())),
+        // A stdlib class method (e.g. `toSql`/`fromSql` from `std.sql`) is
+        // resolved by the resolver as `StdlibSymbol` because it appears in the
+        // stdlib module's export manifest. However, the class table registers
+        // the method under its class, so we can recover the class-method shape
+        // here and route through the dictionary dispatch path.
+        Binding::StdlibSymbol { name, .. } => {
+            let ct = ctx
+                .class_table
+                .or_else(|| ctx.workspace.map(|ws| &ws.class_table))?;
+            ct.class_name_for_method(name)
+                .map(|class_name| (class_name.to_owned(), name.clone()))
+        }
         _ => None,
     }
 }
@@ -1161,21 +1173,59 @@ fn classmethod_pin_type(
         .or_else(|| ctx.workspace.map(|ws| &ws.class_table))?
         .get(class)?;
     let sig = info.method_sigs.iter().find(|m| m.name == method)?;
-    let pos = sig.ast_param_types.iter().position(
-        |t| matches!(t, ridge_ast::Type::Var { name, .. } if name.text == sig.class_ty_var),
-    )?;
-    let arg = args.get(pos)?;
-    let node_id = ctx
-        .node_id_map
-        .as_ref()
-        .and_then(|m| m.get(arg.span(), NodeKind::Expr))?;
-    ctx.node_type(node_id).cloned().map(|t| deep_peel_alias(&t))
+
+    // For source-declared class methods, `ast_param_types` carries the AST
+    // annotations; find the parameter where the class type variable appears.
+    if !sig.ast_param_types.is_empty() {
+        let pos = sig.ast_param_types.iter().position(
+            |t| matches!(t, ridge_ast::Type::Var { name, .. } if name.text == sig.class_ty_var),
+        )?;
+        let arg = args.get(pos)?;
+        let node_id = ctx
+            .node_id_map
+            .as_ref()
+            .and_then(|m| m.get(arg.span(), NodeKind::Expr))?;
+        return ctx.node_type(node_id).cloned().map(|t| deep_peel_alias(&t));
+    }
+
+    // For stdlib-registered methods (no AST param types), try each argument
+    // position. Accept the first argument whose resolved type has a registered
+    // instance for this class — this pins `toSql (x: a)` from the `x` argument
+    // without requiring AST annotation data.
+    let env = ctx.instance_env?;
+    for arg in args {
+        let node_id = ctx
+            .node_id_map
+            .as_ref()
+            .and_then(|m| m.get(arg.span(), NodeKind::Expr))?;
+        let arg_ty = ctx
+            .node_type(node_id)
+            .cloned()
+            .map(|t| deep_peel_alias(&t))?;
+        // Check if this argument type has a registered instance for `class`.
+        if let Type::Con(tycon, _) = &arg_ty {
+            if env.instances.contains_key(&(class, *tycon)) {
+                return Some(arg_ty);
+            }
+        }
+    }
+
+    None
 }
 
 /// Lower a bare class-method call (`describe Red`) by pinning the class
 /// constraint from the argument type. Returns `None` when the callee is not a
 /// class method, or when no argument pins the class variable (return-polymorphic
-/// methods like `decode`), leaving those to the generic call path.
+/// methods like `decode`) AND the class is user-defined, leaving those to the
+/// generic call path.
+///
+/// For stdlib-defined classes (whose `ast_param_types` is empty because they
+/// are registered in Rust rather than from source AST), the argument pin is
+/// tried first; when unavailable (e.g. for `fromSql (v: SqlValue) -> Result a Error`
+/// where the class variable is in the return type), the call expression's own
+/// node type is examined to extract the concrete class type argument. This lets
+/// both `toSql n` and `fromSql v` resolve their dictionaries at the right
+/// instance without falling back to the unreliable sole-static-plan heuristic.
 fn try_lower_classmethod_call(
     ctx: &mut LowerCtx<'_>,
     callee: &Expr,
@@ -1192,12 +1242,32 @@ fn try_lower_classmethod_call(
         .or_else(|| ctx.workspace.map(|ws| &ws.class_table))
         .and_then(|ct| ct.id_by_name(&class_name))?;
 
-    // Only intercept when an argument pins the class variable; otherwise the
-    // generic path (and the sole-static-plan fallback) handles it.
-    let pin_ty = classmethod_pin_type(ctx, cid, &method, args)?;
+    // Try to pin the constraint type from an argument. For user-defined classes
+    // the source AST carries the parameter annotations; `classmethod_pin_type`
+    // scans them and locates the class type variable's position. For
+    // stdlib-registered classes the AST is absent, so the function returns None
+    // when the class variable cannot be found by AST scan.
+    let mut pin_ty = classmethod_pin_type(ctx, cid, &method, args);
+
+    let is_stdlib_class = stdlib_class_home_module(&class_name).is_some();
+
+    // For user-defined classes where no argument pins the constraint (return-
+    // polymorphic methods like `decode`), defer to the generic call path and
+    // its own dict-arg machinery.
+    if pin_ty.is_none() && !is_stdlib_class {
+        return None;
+    }
+
+    // For stdlib-registered class methods where the argument does not directly
+    // carry the class variable (e.g. `fromSql (v: SqlValue) -> Result a Error`),
+    // try to derive the concrete class type from the call expression's inferred
+    // return type. Walk the return type looking for a known registered instance.
+    if pin_ty.is_none() && is_stdlib_class {
+        pin_ty = stdlib_classmethod_pin_from_return(ctx, cid, span);
+    }
 
     let ir_args: Vec<IrExpr> = args.iter().map(|a| lower_expr(ctx, a)).collect();
-    let dict_expr = resolve_dict_arg(ctx, cid, &class_name, Some(&pin_ty), span);
+    let dict_expr = resolve_dict_arg(ctx, cid, &class_name, pin_ty.as_ref(), span);
     let field_id = ctx.fresh_id(None);
     let field = IrExpr::Field {
         id: field_id,
@@ -1211,6 +1281,67 @@ fn try_lower_classmethod_call(
         args: ir_args,
         span,
     })
+}
+
+/// Derive a pin type for a stdlib class method whose class variable is in the
+/// return type rather than the argument list (e.g. `fromSql (v: SqlValue) -> Result a Error`).
+///
+/// Reads the inferred return type of the call expression at `call_span`, then
+/// searches the registered instances for this class to find one whose tycon
+/// appears in that return type. Returns `Some(concrete_type)` when exactly one
+/// instance is a candidate; `None` when the return type is unavailable or no
+/// registered instance matches.
+fn stdlib_classmethod_pin_from_return(
+    ctx: &LowerCtx<'_>,
+    class: ridge_types::ClassId,
+    call_span: Span,
+) -> Option<Type> {
+    // Look up the inferred type of the call expression itself.
+    let call_type = ctx
+        .node_id_map
+        .as_ref()
+        .and_then(|m| m.get(call_span, NodeKind::Expr))
+        .and_then(|nid| ctx.node_type(nid).cloned())
+        .map(|t| deep_peel_alias(&t))?;
+
+    // Walk the registered instances for this class. Each registered instance
+    // is keyed by (class, TyConId). We want the TyConId whose corresponding
+    // base type appears somewhere inside the call's return type.
+    let env = ctx.instance_env?;
+    let mut candidate: Option<TyConId> = None;
+    for &(cid, tycon) in env.instances.keys() {
+        if cid != class {
+            continue;
+        }
+        // Check whether a bare nullary application of this tycon occurs
+        // anywhere in the call's return type.
+        if type_contains_tycon(&call_type, tycon) {
+            if candidate.is_some() {
+                // Two candidates — ambiguous, give up.
+                return None;
+            }
+            candidate = Some(tycon);
+        }
+    }
+    candidate.map(|tycon| Type::Con(tycon, vec![]))
+}
+
+/// Return `true` when a bare `Type::Con(needle, [])` (nullary constructor)
+/// occurs anywhere in the type tree of `haystack`.
+fn type_contains_tycon(haystack: &Type, needle: TyConId) -> bool {
+    match haystack {
+        Type::Con(tycon, args) => {
+            *tycon == needle && args.is_empty()
+                || args.iter().any(|a| type_contains_tycon(a, needle))
+        }
+        Type::Tuple(elems) => elems.iter().any(|e| type_contains_tycon(e, needle)),
+        Type::Fn { params, ret, .. } => {
+            params.iter().any(|p| type_contains_tycon(p, needle))
+                || type_contains_tycon(ret, needle)
+        }
+        Type::Alias { body, .. } => type_contains_tycon(body, needle),
+        _ => false,
+    }
 }
 
 /// Build a [`ridge_typecheck::DictPlan`] for `(class, ty)` directly from a
@@ -1280,6 +1411,21 @@ fn forward_var_of(ty: &Type) -> ridge_types::TyVid {
     }
 }
 
+/// Home BEAM module for a stdlib-defined typeclass whose instance dictionaries
+/// are compiled into that module and referenced cross-module from user code.
+///
+/// Returns `Some(module)` for stdlib classes whose `$inst_` constants must be
+/// fetched via [`SymbolRef::Stdlib`]; returns `None` for user-defined classes
+/// (which keep the [`SymbolRef::Local`] path). Prelude `Encode`/`Decode`
+/// instances are handled by the earlier `is_prelude_codec_instance` branch and
+/// never reach this function.
+pub(crate) fn stdlib_class_home_module(class_name: &str) -> Option<&'static str> {
+    match class_name {
+        "SqlType" => Some("std.sql"),
+        _ => None,
+    }
+}
+
 /// Convert a resolved [`DictPlan`] to the `IrExpr` that threads the dictionary.
 ///
 /// `class` is the [`ClassId`] the dictionary satisfies — needed to recognise
@@ -1337,14 +1483,24 @@ fn dict_plan_to_expr(
                 .map_or_else(|| format!("TyCon{}", tycon.0), |decl| decl.name.clone());
             let dict_const_name = format!("$inst_{class_name}_{type_name}");
             let id = ctx.fresh_id(None);
-            let dict_symbol = IrExpr::Symbol {
-                id,
-                sym: SymbolRef::Local {
+
+            // When the instance's class is defined in a compiled stdlib module
+            // (e.g. `SqlType` lives in `std.sql`), its `$inst_` constant is
+            // exported from that module — not from the user's current module.
+            // Emit a cross-module `SymbolRef::Stdlib` so codegen calls
+            // `'std.sql':'$inst_SqlType_Int'()` instead of looking up a local.
+            let sym = if let Some(home) = stdlib_class_home_module(class_name) {
+                SymbolRef::Stdlib {
+                    module: home.to_owned(),
+                    name: dict_const_name,
+                }
+            } else {
+                SymbolRef::Local {
                     name: dict_const_name,
                     module: ctx.module_id,
-                },
-                span,
+                }
             };
+            let dict_symbol = IrExpr::Symbol { id, sym, span };
             if sub_dicts.is_empty() {
                 return dict_symbol;
             }

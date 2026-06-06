@@ -311,6 +311,7 @@ pub fn typecheck_workspace(ws: &ResolvedWorkspace) -> TypecheckResult {
             &rm.imports,
             &imported_tycons,
             &imported_schemes,
+            &workspace_tycon_names,
             &mut arena,
             &b,
             Some((&class_table, &instance_env)),
@@ -436,6 +437,14 @@ pub fn typecheck_module_incremental(
     // changes.
     let no_imported_tycons = FxHashMap::default();
     let no_imported_schemes = FxHashMap::default();
+    // The prior arena holds every workspace type, so a name→id map over it lets
+    // class-method signatures resolve cross-module type references (e.g. a
+    // stdlib class whose methods mention a type from its own module).
+    let global_tycon_names: FxHashMap<String, TyConId> = typed_ws
+        .tycons
+        .iter()
+        .map(|d| (d.name.clone(), d.id))
+        .collect();
     let result = typecheck_module_inner(
         module_id,
         &ast,
@@ -443,6 +452,7 @@ pub fn typecheck_module_incremental(
         &rm.imports,
         &no_imported_tycons,
         &no_imported_schemes,
+        &global_tycon_names,
         &mut arena,
         b,
         Some((&typed_ws.class_table, &typed_ws.instance_env)),
@@ -609,6 +619,7 @@ fn typecheck_module_inner(
     imports: &[ridge_resolve::ImportResolution],
     imported_tycons: &FxHashMap<String, TyConId>,
     imported_schemes: &FxHashMap<String, ridge_types::Scheme>,
+    global_tycon_names: &FxHashMap<String, TyConId>,
     arena: &mut TyConArena,
     b: &BuiltinTyCons,
     registries: Option<(
@@ -663,8 +674,9 @@ fn typecheck_module_inner(
     // site that instantiates the scheme pushes a `Constraint` into
     // `deferred_constraints`, which the solver later resolves as Static or Forward.
     if let Some((ct, _)) = registries {
-        seed_class_method_schemes(&mut ctx, b, ct);
+        seed_class_method_schemes(&mut ctx, b, ct, global_tycon_names);
         seed_prelude_codec_schemes(&mut ctx, b);
+        seed_sql_codec_schemes(&mut ctx, b, ct);
     }
 
     // Step B: Seed env with prelude constructors + stdlib qualified bindings.
@@ -844,10 +856,26 @@ fn seed_class_method_schemes(
     ctx: &mut crate::ctx::InferCtx,
     b: &ridge_types::BuiltinTyCons,
     class_table: &crate::class_env::ClassTable,
+    global_tycon_names: &FxHashMap<String, TyConId>,
 ) {
     use crate::tycon_collect::ast_type_to_ridge_type;
     use ridge_types::{CapRow, CapabilitySet, Constraint, Scheme, Type};
     use rustc_hash::FxHashMap;
+
+    // Class-method signatures may reference types declared in the class's own
+    // module while being seeded into a *different* module's env — every global
+    // class method is seeded into every module so bare-name calls resolve. A
+    // method like `toSql (x: a) -> SqlValue` declared in `std.sql` is therefore
+    // seeded into, say, `std.crypto`, where `SqlValue` is not in the local
+    // `user_tycon_names`. Resolving against only the current module's names
+    // would leave it as a fresh var, which then trips T023 (unsolved type
+    // variable) when the scheme is generalised. Merge the workspace-global type
+    // map under the local one (local wins on a name clash, preserving shadowing)
+    // so cross-module type names in a signature resolve to their shared arena id.
+    let mut sig_tycon_names = global_tycon_names.clone();
+    for (name, &id) in &ctx.user_tycon_names {
+        sig_tycon_names.insert(name.clone(), id);
+    }
 
     for (class_id, class_info) in class_table.iter() {
         for sig in &class_info.method_sigs {
@@ -871,17 +899,15 @@ fn seed_class_method_schemes(
                 tyvar_map.insert(sig.class_ty_var.as_str(), class_tyvid);
             }
 
-            let user_tycon_names = ctx.user_tycon_names.clone();
-
             // Convert AST param types to Ridge types, substituting class_ty_var.
             let param_types: Vec<Type> = sig
                 .ast_param_types
                 .iter()
-                .map(|ast_ty| ast_type_to_ridge_type(b, ctx, ast_ty, &user_tycon_names, &tyvar_map))
+                .map(|ast_ty| ast_type_to_ridge_type(b, ctx, ast_ty, &sig_tycon_names, &tyvar_map))
                 .collect();
 
             // Convert AST return type.
-            let ret_type = ast_type_to_ridge_type(b, ctx, ast_ret, &user_tycon_names, &tyvar_map);
+            let ret_type = ast_type_to_ridge_type(b, ctx, ast_ret, &sig_tycon_names, &tyvar_map);
 
             let fn_ty = Type::Fn {
                 params: param_types,
@@ -971,6 +997,72 @@ fn seed_prelude_codec_schemes(ctx: &mut crate::ctx::InferCtx, b: &ridge_types::B
                 ty: fn_ty,
                 constraints: vec![Constraint {
                     class: DECODE_CLASS,
+                    ty: a,
+                }],
+            },
+        );
+    }
+}
+
+/// Seed env schemes for std.sql's `toSql`/`fromSql` codec methods so bare calls
+/// type-check once `std.sql` is imported (the resolver gates the names). Mirrors
+/// `seed_prelude_codec_schemes` but for the dynamically-registered `SqlType`
+/// class, whose id is looked up from the class table. Skipped when `SqlType` is
+/// absent (empty registries / LSP hot path).
+///
+/// - `toSql   :: ∀a. a        -> SqlValue        where SqlType a`
+/// - `fromSql :: ∀a. SqlValue -> Result a Error  where SqlType a`
+fn seed_sql_codec_schemes(
+    ctx: &mut crate::ctx::InferCtx,
+    b: &ridge_types::BuiltinTyCons,
+    class_table: &crate::class_env::ClassTable,
+) {
+    use ridge_types::{CapRow, CapabilitySet, Constraint, Scheme, Type};
+    let Some(sqltype) = class_table.id_by_name("SqlType") else {
+        return;
+    };
+    // toSql :: ∀a. a -> SqlValue where SqlType a
+    {
+        let a = ctx.fresh_tyvid();
+        let fn_ty = Type::Fn {
+            params: vec![Type::Var(a)],
+            ret: Box::new(Type::Con(b.sql_value, vec![])),
+            caps: CapRow::Concrete(CapabilitySet::PURE),
+        };
+        ctx.env.bind(
+            "toSql".to_owned(),
+            Scheme {
+                vars: vec![a],
+                cap_vars: vec![],
+                row_vars: vec![],
+                ty: fn_ty,
+                constraints: vec![Constraint {
+                    class: sqltype,
+                    ty: a,
+                }],
+            },
+        );
+    }
+    // fromSql :: ∀a. SqlValue -> Result a Error where SqlType a
+    {
+        let a = ctx.fresh_tyvid();
+        let fn_ty = Type::Fn {
+            params: vec![Type::Con(b.sql_value, vec![])],
+            ret: Box::new(Type::Con(
+                b.result,
+                vec![Type::Var(a), Type::Con(b.error, vec![])],
+            )),
+            caps: CapRow::Concrete(CapabilitySet::PURE),
+        };
+        ctx.env.bind(
+            "fromSql".to_owned(),
+            Scheme {
+                vars: vec![a],
+                cap_vars: vec![],
+                row_vars: vec![],
+                ty: fn_ty,
+                constraints: vec![Constraint {
+                    class: sqltype,
                     ty: a,
                 }],
             },

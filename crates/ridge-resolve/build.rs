@@ -56,6 +56,7 @@ const MODULE_ORDER: &[&str] = &[
     "std.json",
     "std.net.http",
     "std.crypto",
+    "std.sql",
 ];
 
 // ── Baseline export table (T10: preserves original API) ───────────────────────
@@ -352,13 +353,24 @@ const BASELINE_EXPORTS: &[(&str, &[&str])] = &[
             "constantTimeEq",
         ],
     ),
+    (
+        "std.sql",
+        &[
+            // The opaque SQL column value plus the SqlType codec class and its
+            // methods, all importable from user code.
+            "SqlValue", "SqlType", "toSql", "fromSql",
+        ],
+    ),
 ];
 
 /// Per-module list of `pub opaque type` names. Drives the `opaque_types` field
 /// of the generated manifest so the resolver and type-checker confine these
 /// types' construction, pattern matching, and field access to the declaring
 /// stdlib module (the web-layer taint wrappers).
-const BASELINE_OPAQUE: &[(&str, &[&str])] = &[("std.net.http", &["Sql", "Html", "SecureCookie"])];
+const BASELINE_OPAQUE: &[(&str, &[&str])] = &[
+    ("std.net.http", &["Sql", "Html", "SecureCookie"]),
+    ("std.sql", &["SqlValue"]),
+];
 
 fn main() {
     // Tell Cargo to re-run this script when any stdlib .ridge file changes.

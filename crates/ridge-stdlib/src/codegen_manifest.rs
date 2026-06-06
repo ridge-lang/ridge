@@ -74,8 +74,9 @@ pub const STDLIB_MODULE_ORDER: &[&str] = &[
     // Tier 4 — advanced
     "std.json",
     "std.net.http",
-    // Tier 5 — security
+    // Tier 5 — security + data
     "std.crypto",
+    "std.sql",
 ];
 
 // ── Core extraction ───────────────────────────────────────────────────────────
@@ -130,29 +131,77 @@ pub fn module_name_to_path(dotted: &str) -> PathBuf {
     PathBuf::from(format!("{with_slashes}.ridge"))
 }
 
-/// Extract all `pub fn NAME` and `pub type NAME` symbols from a Ridge source
-/// string.
+/// Extract all `pub fn NAME`, `pub type NAME`, and `pub class NAME` symbols
+/// (including class method names) from a Ridge source string.
 ///
 /// Handles:
 /// - `pub fn NAME ...`                 — pure function
 /// - `pub fn CAP NAME ...`             — capability-bearing function
 /// - `pub fn CAP CAP2 NAME ...`        — (future-proof) multiple cap keywords
 /// - `pub type NAME ...`               — type declaration
+/// - `pub class NAME ...`              — typeclass declaration; its indented
+///   method signature lines are extracted as method names
 ///
 /// Ridge capability keywords (as of 0.1.0): `io`, `fs`, `net`, `time`,
 /// `random`, `env`, `proc`.  These appear between `pub fn` and the function
 /// name.  The parser must skip them to land on the actual identifier.
+///
+/// `pub class` extraction: after the class name is pushed, subsequent lines
+/// that are indented (raw line starts with whitespace) and non-blank /
+/// non-comment are treated as method signatures; their first token (trimmed
+/// of a trailing `(`) is pushed as a method name.  The flag is cleared on
+/// any non-indented, non-blank, non-comment line — meaning `instance` blocks
+/// and their indented method-impl lines are NOT extracted.
 #[must_use]
 pub fn extract_pub_names_from_source(src: &str) -> Vec<String> {
     const CAP_KEYWORDS: &[&str] = &["io", "fs", "net", "time", "random", "env", "proc"];
 
     let mut names: Vec<String> = Vec::new();
+    let mut in_pub_class = false;
 
     for line in src.lines() {
         let trimmed = line.trim();
 
+        // While inside a `pub class` body, blank/comment lines are skipped
+        // without clearing the flag.
+        if in_pub_class {
+            if trimmed.is_empty() || trimmed.starts_with("--") {
+                continue;
+            }
+            // An indented, non-blank, non-comment line is a method signature.
+            let starts_with_space = line.starts_with(' ') || line.starts_with('\t');
+            if starts_with_space {
+                let method = trimmed
+                    .split_whitespace()
+                    .next()
+                    .unwrap_or("")
+                    .trim_end_matches('(');
+                if is_valid_ridge_ident(method) {
+                    names.push(method.to_owned());
+                }
+                continue;
+            }
+            // A non-indented line ends the class body.
+            in_pub_class = false;
+            // Fall through to process this line normally.
+        }
+
         // Skip comment lines and blank lines.
         if trimmed.starts_with("--") || trimmed.is_empty() {
+            continue;
+        }
+
+        // Collect `pub class` declarations and enter class-body mode.
+        if let Some(rest) = trimmed.strip_prefix("pub class ") {
+            let class_name = rest
+                .split_whitespace()
+                .next()
+                .unwrap_or("")
+                .trim_end_matches('=');
+            if is_valid_ridge_ident(class_name) {
+                names.push(class_name.to_owned());
+                in_pub_class = true;
+            }
             continue;
         }
 
@@ -257,6 +306,27 @@ pub type JsonValue = JNull
 ";
         let names = extract_pub_names_from_source(src);
         assert_eq!(names, vec!["toText", "parse", "println", "JsonValue"]);
+    }
+
+    #[test]
+    fn extracts_pub_class_and_methods() {
+        let src = "pub class SqlType a =\n    toSql (x: a) -> SqlValue\n    fromSql (v: SqlValue) -> Result a Error\n";
+        let names = extract_pub_names_from_source(src);
+        assert_eq!(names, vec!["SqlType", "toSql", "fromSql"]);
+    }
+
+    #[test]
+    fn instance_block_methods_not_extracted() {
+        // `instance` is not `pub class`, so its indented method-impl lines
+        // must not be treated as class methods.
+        let src = "\
+pub class SqlType a =
+    toSql (x: a) -> SqlValue
+instance SqlType Int =
+    toSql (x: Int) -> SqlValue = SqlInt x
+";
+        let names = extract_pub_names_from_source(src);
+        assert_eq!(names, vec!["SqlType", "toSql"]);
     }
 
     #[test]

@@ -85,6 +85,13 @@ pub struct BuiltinTyCons {
     pub html: TyConId,
     /// `std.net.http` `SecureCookie` — opaque cookie record with safe defaults.
     pub secure_cookie: TyConId,
+    /// `std.sql` `SqlValue` — the opaque, adapter-neutral SQL column value that
+    /// the `SqlType` codec class maps Ridge values to and from. Modelled like
+    /// `JsonValue` (a union of the base column shapes) but opaque to consumers:
+    /// user code imports the type name and the `toSql`/`fromSql` methods, never
+    /// the variants. The matching `pub type SqlValue` in `sql.ridge` is what the
+    /// stdlib's own compilation sees.
+    pub sql_value: TyConId,
 }
 
 impl BuiltinTyCons {
@@ -119,6 +126,7 @@ impl BuiltinTyCons {
             sql: SENTINEL,
             html: SENTINEL,
             secure_cookie: SENTINEL,
+            sql_value: SENTINEL,
         }
     }
 
@@ -128,7 +136,8 @@ impl BuiltinTyCons {
     /// Indices are assigned in a fixed order (Int=0, Float=1, Bool=2, Text=3,
     /// Unit=4, Timestamp=5, List=6, Map=7, Set=8, Option=9, Result=10,
     /// Handle=11, Error=12, Duration=13, ProcOutput=14, Ordering=15,
-    /// JsonValue=16) matching spec §4.1.
+    /// JsonValue=16, Sql=17, Html=18, SecureCookie=19, SqlValue=20) matching
+    /// spec §4.1.
     /// Callers must pass a **fresh** arena (i.e. `arena.is_empty()` must be
     /// true) so that the resulting `TyConId`s are stable and predictable.
     ///
@@ -561,6 +570,46 @@ impl BuiltinTyCons {
             is_anon: false,
         });
 
+        // SqlValue — the SQL column value the `SqlType` codec maps to/from. A
+        // union of the base column shapes, mirroring the `pub type SqlValue` in
+        // sql.ridge. Marked opaque (and given the cross-module sentinel module)
+        // so consumers cannot construct or match its variants; they reach it only
+        // through the imported `toSql`/`fromSql` methods.
+        let sql_value = arena.intern(TyConDecl {
+            id: TyConId(0),
+            name: "SqlValue".to_string(),
+            arity: 0,
+            kind: TyConKind::Union(UnionSchema {
+                params: vec![],
+                variants: vec![
+                    UnionVariant {
+                        name: "SqlInt".to_string(),
+                        kind: VariantPayload::Positional(vec![Type::Con(int, vec![])]),
+                    },
+                    UnionVariant {
+                        name: "SqlText".to_string(),
+                        kind: VariantPayload::Positional(vec![Type::Con(text, vec![])]),
+                    },
+                    UnionVariant {
+                        name: "SqlBool".to_string(),
+                        kind: VariantPayload::Positional(vec![Type::Con(bool_, vec![])]),
+                    },
+                    UnionVariant {
+                        name: "SqlFloat".to_string(),
+                        kind: VariantPayload::Positional(vec![Type::Con(float, vec![])]),
+                    },
+                    UnionVariant {
+                        name: "SqlNull".to_string(),
+                        kind: VariantPayload::Nullary,
+                    },
+                ],
+            }),
+            def_span: None,
+            def_module_raw: Some(u32::MAX),
+            opaque: true,
+            is_anon: false,
+        });
+
         // Verify assignment order matches spec §4.1 indices 0..16.
         debug_assert_eq!(int.0, 0);
         debug_assert_eq!(float.0, 1);
@@ -582,6 +631,7 @@ impl BuiltinTyCons {
         debug_assert_eq!(sql.0, 17);
         debug_assert_eq!(html.0, 18);
         debug_assert_eq!(secure_cookie.0, 19);
+        debug_assert_eq!(sql_value.0, 20);
 
         // Suppress the "unused" lint — CapabilitySet is imported for future use
         // in T4 (actor schemas carry CapabilitySet).
@@ -608,6 +658,7 @@ impl BuiltinTyCons {
             sql,
             html,
             secure_cookie,
+            sql_value,
         }
     }
 }
@@ -687,11 +738,11 @@ mod tests {
     }
 
     #[test]
-    fn arena_len_is_20() {
+    fn arena_len_is_21() {
         // 15 original builtins + Ordering + JsonValue + the std.net.http taint
-        // wrappers Sql / Html / SecureCookie.
+        // wrappers Sql / Html / SecureCookie + std.sql's SqlValue.
         let (arena, _) = make_arena_with_builtins();
-        assert_eq!(arena.len(), 20);
+        assert_eq!(arena.len(), 21);
     }
 
     // ── Arena get() round-trip ────────────────────────────────────────────────

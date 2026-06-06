@@ -49,7 +49,7 @@ The target audience is software developers who want a language that scales from 
 - **Statically typed** with full Hindley-Milner inference
 - **Immutable by default**, mutable state confined to actors
 - **Actor-first concurrency** — millions of lightweight processes on BEAM
-- **9 capabilities** (`io`, `fs`, `net`, `time`, `random`, `env`, `proc`, `spawn`, `ffi`) visible in function signatures
+- **10 capabilities** (`io`, `fs`, `net`, `time`, `random`, `env`, `proc`, `spawn`, `ffi`, `db`) visible in function signatures
 - **Workspace model** with architectural rules enforced by the compiler (forbid-arcs, per-project capability allow/deny)
 - **No null** — `Option` and `Result` are the only way to express optionality and failure
 - **Pipe-oriented composition** — `|>` is a first-class language construct
@@ -91,7 +91,7 @@ These will not change, even under pressure.
 | N5 | No user-defined operators | Fixed set of built-ins; custom operations are named functions |
 | N6 | No macros | Metaprogramming comes from `deriving`, not textual substitution |
 | N7 | No reflection | Runtime type introspection is a code smell |
-| N8 | Capabilities are tracked in the type | Fixed set of 9; no user-defined capabilities |
+| N8 | Capabilities are tracked in the type | Fixed set of 10; no user-defined capabilities |
 | N9 | Pattern matching is exhaustive | Non-exhaustive match is a compile error, not a warning |
 | N10 | Everything is an expression (mostly) | Only `let`, `var`, `const`, `import` are statements |
 | N11 | Architecture is enforced by the compiler | `forbid` rules in workspace manifest produce compile errors |
@@ -327,7 +327,7 @@ fn fs net processOrder (orderId: Int) -> Result OrderResult Error =
 
 ### 3.8. Capabilities (effects)
 
-Ridge has **9 capabilities** visible in every function signature. They form a closed set — users cannot define new ones.
+Ridge has **10 capabilities** visible in every function signature. They form a closed set — users cannot define new ones.
 
 | Capability | Covers |
 |------------|--------|
@@ -340,6 +340,7 @@ Ridge has **9 capabilities** visible in every function signature. They form a cl
 | `proc` | exec of external commands, signals |
 | `spawn` | creating actors, workers |
 | `ffi` | calls to external code (C, BEAM foreign) |
+| `db` | database access (Postgres, SQLite) |
 
 ```ridge
 -- Pure: no capabilities, deterministic
@@ -511,7 +512,7 @@ where    with
 These are keywords only after `fn` or `on`; elsewhere they are ordinary identifiers.
 
 ```
-io    fs    net    time    random    env    proc    spawn    ffi
+io    fs    net    time    random    env    proc    spawn    ffi    db
 ```
 
 Note: `spawn` appears both as a top-level keyword (the spawn expression) and as a capability. The parser disambiguates by position; see §4.2 for details.
@@ -639,7 +640,7 @@ UnionType     = { "|" Constructor } .
 Constructor   = UpperIdent { Type } | UpperIdent RecordType .
 
 FnDecl        = [ "pub" [ "(" "internal" ")" ] ] "fn" { Capability } Ident { Param } [ "->" Type ] "=" Expr .
-Capability    = "io" | "fs" | "net" | "time" | "random" | "env" | "proc" | "spawn" | "ffi" .
+Capability    = "io" | "fs" | "net" | "time" | "random" | "env" | "proc" | "spawn" | "ffi" | "db" .
 Param         = Ident | "(" Ident ":" Type ")" .
 
 ActorDecl     = [ "pub" ] "actor" UpperIdent "=" { ActorMember } .
@@ -1032,9 +1033,9 @@ The following are deferred to future releases:
 
 ## 6. Capabilities System
 
-### 6.1. The 9 capabilities
+### 6.1. The 10 capabilities
 
-Ridge has a **closed set** of 9 capabilities. Users cannot define new ones. This is deliberately less expressive than Koka/Eff but radically simpler to teach and to debug.
+Ridge has a **closed set** of 10 capabilities. Users cannot define new ones. This is deliberately less expressive than Koka/Eff but radically simpler to teach and to debug.
 
 | Capability | Covers | Why separate |
 |------------|--------|--------------|
@@ -1047,6 +1048,7 @@ Ridge has a **closed set** of 9 capabilities. Users cannot define new ones. This
 | `proc` | exec of external commands, signals | Worst-of-worst: arbitrary code execution |
 | `spawn` | creating actors or workers | Concurrency visible in signatures |
 | `ffi` | calls to external code (C, BEAM foreign) | Escape hatch — breaks all guarantees |
+| `db` | database queries and transactions | Narrow, auditable grant; the adapters bridge it to `net`/`fs` so query sites never hold raw network or filesystem access |
 
 ### 6.2. Syntax: prefix list
 

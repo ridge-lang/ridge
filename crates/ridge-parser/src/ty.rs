@@ -363,6 +363,7 @@ fn peek_capability(cur: &Cursor<'_>) -> Option<Capability> {
             "proc" => Some(Capability::Proc),
             "spawn" => Some(Capability::Spawn),
             "ffi" => Some(Capability::Ffi),
+            "db" => Some(Capability::Db),
             _ => None,
         },
         _ => None,

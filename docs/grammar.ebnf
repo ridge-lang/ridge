@@ -173,13 +173,13 @@ KEYWORD       ::= "actor"    | "as"       | "catch"    | "class"
    position.  The lexer emits them as IDENT; the parser interprets them as
    Capability when in that position.
 
-     io    fs    net    time    random    env    proc    spawn    ffi
+     io    fs    net    time    random    env    proc    spawn    ffi    db
 
    NOTE: "spawn" also appears as a top-level keyword (spawn expression).
    The parser disambiguates by syntactic position (see SpawnExpr).          *)
 
 CAPABILITY_KW ::= "io" | "fs" | "net" | "time" | "random"
-               |  "env" | "proc" | "spawn" | "ffi" ;
+               |  "env" | "proc" | "spawn" | "ffi" | "db" ;
 
 
 (* === 1.4  Identifiers === *)
@@ -464,7 +464,7 @@ TypeVariable  ::= LOWER_IDENT ;
    Capability polymorphism (D041/D057) is compiler-internal; users may only
    use these concrete capability names in capability-prefix position.        *)
 Capability    ::= "io" | "fs" | "net" | "time" | "random"
-               |  "env" | "proc" | "spawn" | "ffi" ;
+               |  "env" | "proc" | "spawn" | "ffi" | "db" ;
 
 
 (* ============================================================================

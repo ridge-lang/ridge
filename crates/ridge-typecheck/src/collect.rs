@@ -30,8 +30,8 @@ use rustc_hash::{FxHashMap, FxHashSet};
 
 use crate::class_env::{
     register_prelude_classes, register_prelude_instances, register_stdlib_classes,
-    register_stdlib_instances, ClassInfo, ClassTable, InstanceEnv, InstanceInfo, InstanceOrigin,
-    MethodSig,
+    register_stdlib_instances, ClassInfo, ClassTable, InstanceEnv, InstanceHead, InstanceInfo,
+    InstanceOrigin, MethodSig,
 };
 use crate::derive::derive_instances;
 use crate::error::TypeError;
@@ -202,10 +202,15 @@ fn collect_class_decls(modules: &[(u32, &Module)], ct: &mut ClassTable) {
                 .filter_map(|sc| ct.id_by_name(&sc.class.text))
                 .collect();
 
-            // The class type variable (e.g. `a` in `class Describe a`) is needed
-            // by the env-seeding pass so it can map occurrences of that name in
-            // param/ret types to the fresh TyVid allocated per call site.
-            let class_ty_var = decl.ty_var.text.clone();
+            // The class type variables (e.g. `a` in `class Describe a`, or
+            // `a b` in `class Convert a b`) are needed by the env-seeding pass so
+            // it can map occurrences of those names in param/ret types to the
+            // fresh TyVids allocated per call site.
+            let class_ty_vars: Vec<String> = decl.ty_vars.iter().map(|t| t.text.clone()).collect();
+            // Bare class-method params default to the first class type variable
+            // (the single-parameter convention; multi-parameter class methods
+            // annotate their params).
+            let bare_fallback = class_ty_vars.first().cloned().unwrap_or_default();
 
             let method_sigs: Vec<MethodSig> = decl
                 .methods
@@ -221,7 +226,7 @@ fn collect_class_decls(modules: &[(u32, &Module)], ct: &mut ClassTable) {
                             ridge_ast::decl::Param::Annotated { ty, .. } => ty.clone(),
                             ridge_ast::decl::Param::Bare(_) => ridge_ast::Type::Named {
                                 name: ridge_ast::Ident {
-                                    text: class_ty_var.clone(),
+                                    text: bare_fallback.clone(),
                                     span: m.span,
                                 },
                                 span: m.span,
@@ -233,7 +238,7 @@ fn collect_class_decls(modules: &[(u32, &Module)], ct: &mut ClassTable) {
                         arity: m.params.len(),
                         ast_param_types,
                         ast_ret_type: Some(m.ret.clone()),
-                        class_ty_var: class_ty_var.clone(),
+                        class_ty_vars: class_ty_vars.clone(),
                     }
                 })
                 .collect();
@@ -242,6 +247,7 @@ fn collect_class_decls(modules: &[(u32, &Module)], ct: &mut ClassTable) {
                 class_id,
                 ClassInfo {
                     name: name.clone(),
+                    arity: decl.ty_vars.len(),
                     method_sigs,
                     superclasses,
                     def_module: Some(module_id),
@@ -273,14 +279,37 @@ fn collect_instance_decls(
             continue;
         };
 
-        // Extract the head TyConId from the instance type. For simple heads
-        // (`Encode Int`) this is just the named TyCon. For parametric heads
-        // (`Encode (List a)`) the head TyCon is the outer constructor (`List`);
-        // the type argument (`a`) is recorded in `head_var_positions`.
-        // User-defined types are resolved via the pre-collected name map.
-        let Some(tycon_id) = extract_tycon_id(&decl.ty, user_tycon_names) else {
+        // Extract one head TyConId per head atom. For a simple head (`Encode Int`)
+        // this is a single named TyCon; for a parametric head (`Encode (List a)`)
+        // it is the outer constructor (`List`), with the type argument (`a`)
+        // recorded in `head_var_positions`; for a multi-parameter head
+        // (`Convert Celsius Fahrenheit`) it is one TyCon per atom. User-defined
+        // types resolve via the pre-collected name map.
+        let mut head_tycons = InstanceHead::new();
+        let mut head_ok = true;
+        for atom in &decl.head {
+            let Some(id) = extract_tycon_id(atom, user_tycon_names) else {
+                head_ok = false;
+                break;
+            };
+            head_tycons.push(id);
+        }
+        if !head_ok {
             continue; // Unsupported head form — ignored in this pass.
-        };
+        }
+
+        // Arity check: the head must supply exactly as many type atoms as the
+        // class declares type parameters.
+        let class_arity = ct.get(class_id).map_or(1, |ci| ci.arity);
+        if head_tycons.len() != class_arity {
+            errors.push(TypeError::InstanceArityMismatch {
+                class: decl.class.text.clone(),
+                expected: class_arity,
+                found: head_tycons.len(),
+                span: decl.span,
+            });
+            continue;
+        }
 
         let methods: Vec<(String, String)> = decl
             .methods
@@ -288,8 +317,14 @@ fn collect_instance_decls(
             .map(|m| (m.name.text.clone(), String::new())) // placeholder symbol
             .collect();
 
-        let (ctx_constraints, head_var_positions) =
-            build_ctx_constraints(&decl.constraints, &decl.ty, ct, user_tycon_names);
+        // Context constraints (parametric element dictionaries) are modelled for
+        // the single-head case only in this release; multi-parameter instance
+        // heads are concrete.
+        let (ctx_constraints, head_var_positions) = if decl.head.len() == 1 {
+            build_ctx_constraints(&decl.constraints, &decl.head[0], ct, user_tycon_names)
+        } else {
+            (vec![], vec![])
+        };
 
         let info = InstanceInfo {
             def_module: Some(module_id),
@@ -301,9 +336,14 @@ fn collect_instance_decls(
         };
 
         let class_name = &decl.class.text;
-        let type_name = type_display(&decl.ty);
+        let type_name = decl
+            .head
+            .iter()
+            .map(type_display)
+            .collect::<Vec<_>>()
+            .join(" ");
 
-        match env.insert((class_id, tycon_id), info, class_name, &type_name) {
+        match env.insert_multi(class_id, head_tycons, info, class_name, &type_name) {
             Ok(()) => {}
             Err(e) => errors.push(e.into_type_error()),
         }
@@ -472,7 +512,8 @@ fn collect_derived_instances(
 /// If the instance is in a user module, it's an orphan unless one of the two
 /// home modules is `Some(module_id)` matching the instance module.
 fn check_orphan_rule(env: &InstanceEnv, ct: &ClassTable, errors: &mut Vec<TypeError>) {
-    for (&(class_id, tycon_id), info) in &env.instances {
+    for ((class_id, head), info) in &env.instances {
+        let class_id = *class_id;
         let Some(inst_module) = info.def_module else {
             continue; // prelude-injected instance — always valid
         };
@@ -490,10 +531,11 @@ fn check_orphan_rule(env: &InstanceEnv, ct: &ClassTable, errors: &mut Vec<TypeEr
         //   TyConArena is threaded through).
         // - Otherwise, if neither class module nor tycon is user-local → orphan.
         let in_class_module = class_module == Some(inst_module);
-        let tycon_is_builtin = tycon_id.0 < 17; // builtins have fixed low ids
-        let tycon_is_user_local = !tycon_is_builtin; // assume same module for now
+        // A head is user-local if any of its constructors is user-defined
+        // (builtins have fixed low ids < 17).
+        let any_user_local = head.iter().any(|t| t.0 >= 17);
 
-        if in_class_module || tycon_is_user_local {
+        if in_class_module || any_user_local {
             continue; // valid
         }
 
@@ -501,7 +543,11 @@ fn check_orphan_rule(env: &InstanceEnv, ct: &ClassTable, errors: &mut Vec<TypeEr
         let class_name = ct
             .get(class_id)
             .map_or_else(|| format!("#{}", class_id.0), |ci| ci.name.clone());
-        let type_name = format!("#{}", tycon_id.0);
+        let type_name = head
+            .iter()
+            .map(|t| format!("#{}", t.0))
+            .collect::<Vec<_>>()
+            .join(" ");
         errors.push(TypeError::OrphanInstance {
             class: class_name,
             ty: type_name,
@@ -595,11 +641,12 @@ fn check_missing_superclass_instances(
     ct: &ClassTable,
     errors: &mut Vec<TypeError>,
 ) {
-    // Pre-collect the set of registered (class, tycon) keys for O(1) lookup.
-    let registered: FxHashSet<(ridge_types::ClassId, TyConId)> =
-        env.instances.keys().copied().collect();
+    // Pre-collect the set of registered (class, head) keys for O(1) lookup.
+    let registered: FxHashSet<(ridge_types::ClassId, InstanceHead)> =
+        env.instances.keys().cloned().collect();
 
-    for (&(class_id, tycon_id), info) in &env.instances {
+    for ((class_id, head), info) in &env.instances {
+        let class_id = *class_id;
         // Walk all superclasses transitively.
         let mut to_check: Vec<ridge_types::ClassId> = Vec::new();
         let mut seen: FxHashSet<ridge_types::ClassId> = FxHashSet::default();
@@ -613,12 +660,16 @@ fn check_missing_superclass_instances(
             }
             seen.insert(super_id);
 
-            if !registered.contains(&(super_id, tycon_id)) {
-                // Missing superclass instance.
+            if !registered.contains(&(super_id, head.clone())) {
+                // Missing superclass instance for the same head.
                 let class_name = ct
                     .get(class_id)
                     .map_or_else(|| format!("#{}", class_id.0), |ci| ci.name.clone());
-                let type_name = format!("#{}", tycon_id.0);
+                let type_name = head
+                    .iter()
+                    .map(|t| format!("#{}", t.0))
+                    .collect::<Vec<_>>()
+                    .join(" ");
                 let super_name = ct
                     .get(super_id)
                     .map_or_else(|| format!("#{}", super_id.0), |ci| ci.name.clone());
@@ -784,11 +835,13 @@ fn build_ctx_constraints(
             continue;
         };
 
-        // Find the arg position that carries this type variable.
-        let Some(pos) = head_args
-            .iter()
-            .position(|&var_name| var_name == Some(wc.ty_var.text.as_str()))
-        else {
+        // Find the arg position that carries this type variable. A parametric
+        // element constraint binds a single head variable (`where Encode a`); use
+        // the first listed variable.
+        let Some(var_name) = wc.ty_vars.first().map(|t| t.text.as_str()) else {
+            continue;
+        };
+        let Some(pos) = head_args.iter().position(|&v| v == Some(var_name)) else {
             // The variable is not in the head args — malformed instance; skip.
             continue;
         };
@@ -796,10 +849,7 @@ fn build_ctx_constraints(
         // Store a sentinel constraint. The TyVid(0) is never used directly
         // by the solver; it reads head_var_positions to find the correct
         // concrete type at solve time.
-        ctx_constraints.push(Constraint {
-            class: class_id,
-            ty: TyVid(0),
-        });
+        ctx_constraints.push(Constraint::single(class_id, TyVid(0)));
         head_var_positions.push(pos);
     }
 
@@ -877,14 +927,14 @@ mod tests {
             .into_iter()
             .map(|(class, var)| ClassConstraint {
                 class: ident(&class),
-                ty_var: ident(&var),
+                ty_vars: vec![ident(&var)],
                 span: ds(),
             })
             .collect();
 
         Item::ClassDecl(ClassDecl {
             name: ident(name),
-            ty_var: ident("a"),
+            ty_vars: vec![ident("a")],
             superclasses,
             methods: vec![AstMethodSig {
                 name: ident(method),
@@ -904,7 +954,7 @@ mod tests {
 
         Item::InstanceDecl(InstanceDecl {
             class: ident(class),
-            ty: named_type(ty),
+            head: vec![named_type(ty)],
             constraints: vec![],
             methods: vec![MethodDef {
                 name: ident("toText"),
@@ -1289,7 +1339,7 @@ mod tests {
     fn make_class_constraint(class: &str, var: &str) -> ClassConstraint {
         ClassConstraint {
             class: ident(class),
-            ty_var: ident(var),
+            ty_vars: vec![ident(var)],
             span: ds(),
         }
     }

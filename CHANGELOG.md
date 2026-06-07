@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Multi-parameter type classes: a class can take more than one type parameter, e.g. `class Convert a b = convert (x: a) -> b`. Instance heads list one type per parameter (`instance Convert Celsius Fahrenheit`), coherence is keyed by the whole head tuple so instances that share a leading type but differ later coexist, and a call selects the instance from the types at every head position. A head position the caller leaves undetermined is reported as an ambiguous constraint to annotate.
+
 ## [0.3.0-rc4] - 2026-06-03
 
 ### Added

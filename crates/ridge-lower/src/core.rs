@@ -925,8 +925,8 @@ fn build_dict_args(
         // site: walk the scheme's parameter types in lockstep with the resolved
         // argument types, find where `c.ty` appears, and read off the matching
         // sub-type. `None` when the variable cannot be located (no type info).
-        let constraint_ty =
-            constraint_arg_type(&param_types, arg_types, c.ty).map(|ty| deep_peel_alias(&ty));
+        let constraint_ty = constraint_arg_type(&param_types, arg_types, c.sole_ty())
+            .map(|ty| deep_peel_alias(&ty));
 
         let dict_expr = resolve_dict_arg(ctx, c.class, &class_name, constraint_ty.as_ref(), span);
         dict_args.push(dict_expr);
@@ -1039,7 +1039,7 @@ fn resolve_dict_arg(
         let id = ctx.fresh_id(None);
         return IrExpr::Local {
             id,
-            name: format!("$dict_{class_name}_{}", c.ty.0),
+            name: format!("$dict_{class_name}_{}", c.sole_ty().0),
             span,
         };
     }
@@ -1051,6 +1051,13 @@ fn resolve_dict_arg(
     // sites sharing a head constructor each get their own.
     if let Some(ty) = constraint_ty {
         if let Some(plan) = build_dict_plan_from_type(ctx, class, ty) {
+            return dict_plan_to_expr(ctx, class, plan, class_name, span);
+        }
+        // The argument pins only one class parameter, but a multi-parameter
+        // instance is keyed by the full head tuple, which a single-type lookup
+        // cannot reconstruct. Fall back to the solved Static plan when the class
+        // has exactly one instance in scope (the common multi-parameter case).
+        if let Some(plan) = single_static_plan_for_class(ctx, class) {
             return dict_plan_to_expr(ctx, class, plan, class_name, span);
         }
     } else if let Some(plan) = single_static_plan_for_class(ctx, class) {
@@ -1111,18 +1118,23 @@ fn same_dict_plan(a: &ridge_typecheck::DictPlan, b: &ridge_typecheck::DictPlan) 
         (
             DictPlan::Static {
                 tycon: ta,
+                extra_head: ea,
                 args: aa,
                 ..
             },
             DictPlan::Static {
                 tycon: tb,
+                extra_head: eb,
                 args: ab,
                 ..
             },
         ) => {
-            ta == tb && aa.len() == ab.len() && aa.iter().zip(ab).all(|(x, y)| same_dict_plan(x, y))
+            ta == tb
+                && ea == eb
+                && aa.len() == ab.len()
+                && aa.iter().zip(ab).all(|(x, y)| same_dict_plan(x, y))
         }
-        (DictPlan::Forward(ca), DictPlan::Forward(cb)) => ca.class == cb.class && ca.ty == cb.ty,
+        (DictPlan::Forward(ca), DictPlan::Forward(cb)) => ca.class == cb.class && ca.tys == cb.tys,
         _ => false,
     }
 }
@@ -1177,9 +1189,10 @@ fn classmethod_pin_type(
     // For source-declared class methods, `ast_param_types` carries the AST
     // annotations; find the parameter where the class type variable appears.
     if !sig.ast_param_types.is_empty() {
-        let pos = sig.ast_param_types.iter().position(
-            |t| matches!(t, ridge_ast::Type::Var { name, .. } if name.text == sig.class_ty_var),
-        )?;
+        let pos = sig.ast_param_types.iter().position(|t| {
+            matches!(t, ridge_ast::Type::Var { name, .. }
+                if sig.class_ty_vars.contains(&name.text))
+        })?;
         let arg = args.get(pos)?;
         let node_id = ctx
             .node_id_map
@@ -1204,7 +1217,7 @@ fn classmethod_pin_type(
             .map(|t| deep_peel_alias(&t))?;
         // Check if this argument type has a registered instance for `class`.
         if let Type::Con(tycon, _) = &arg_ty {
-            if env.instances.contains_key(&(class, *tycon)) {
+            if env.get((class, *tycon)).is_some() {
                 return Some(arg_ty);
             }
         }
@@ -1309,18 +1322,20 @@ fn stdlib_classmethod_pin_from_return(
     // base type appears somewhere inside the call's return type.
     let env = ctx.instance_env?;
     let mut candidate: Option<TyConId> = None;
-    for &(cid, tycon) in env.instances.keys() {
-        if cid != class {
+    for (cid, head) in env.instances.keys() {
+        if *cid != class {
             continue;
         }
-        // Check whether a bare nullary application of this tycon occurs
-        // anywhere in the call's return type.
-        if type_contains_tycon(&call_type, tycon) {
-            if candidate.is_some() {
-                // Two candidates — ambiguous, give up.
-                return None;
+        // Check whether a bare nullary application of any of this instance head's
+        // constructors occurs anywhere in the call's return type.
+        for &tycon in head {
+            if type_contains_tycon(&call_type, tycon) {
+                if candidate.is_some() {
+                    // Two candidates — ambiguous, give up.
+                    return None;
+                }
+                candidate = Some(tycon);
             }
-            candidate = Some(tycon);
         }
     }
     candidate.map(|tycon| Type::Con(tycon, vec![]))
@@ -1381,16 +1396,17 @@ fn build_dict_plan_from_type(
                         // forward a dictionary parameter. For a well-typed program
                         // this is a genuine forward; a truly unsatisfiable element
                         // is reported as T030 by the solver before lowering runs.
-                        DictPlan::Forward(ridge_types::Constraint {
-                            class: ctx_c.class,
-                            ty: forward_var_of(&elem_ty),
-                        })
+                        DictPlan::Forward(ridge_types::Constraint::single(
+                            ctx_c.class,
+                            forward_var_of(&elem_ty),
+                        ))
                     });
                 sub_dicts.push(sub);
             }
             Some(DictPlan::Static {
                 info: Box::new(info.clone()),
                 tycon,
+                extra_head: smallvec::SmallVec::default(),
                 args: sub_dicts,
             })
         }
@@ -1441,7 +1457,12 @@ fn dict_plan_to_expr(
 ) -> IrExpr {
     use ridge_typecheck::DictPlan;
     match plan {
-        DictPlan::Static { tycon, args, .. } => {
+        DictPlan::Static {
+            tycon,
+            extra_head,
+            args,
+            ..
+        } => {
             // Recursively lower the sub-dictionaries first. For a parametric
             // instance `Encode (List a)` the args carry the element dict plan;
             // each sub-dict is resolved through the SAME class (the context
@@ -1478,8 +1499,17 @@ fn dict_plan_to_expr(
             // (dict-of-dicts). A non-parametric instance has no sub-dicts and the
             // bare symbol is the dictionary map.
             let decl = ctx.workspace.and_then(|ws| ws.tycons.get(tycon.0 as usize));
-            let type_name =
+            let mut type_name =
                 decl.map_or_else(|| format!("TyCon{}", tycon.0), |decl| decl.name.clone());
+            // Multi-parameter instance: append the remaining head constructors so
+            // the reference matches the generated `$inst_{Class}_{T0}_{T1}…` const.
+            for extra in extra_head {
+                let extra_decl = ctx.workspace.and_then(|ws| ws.tycons.get(extra.0 as usize));
+                let extra_name = extra_decl
+                    .map_or_else(|| format!("TyCon{}", extra.0), |decl| decl.name.clone());
+                type_name.push('_');
+                type_name.push_str(&extra_name);
+            }
             let dict_const_name = format!("$inst_{class_name}_{type_name}");
             let id = ctx.fresh_id(None);
 
@@ -1530,7 +1560,7 @@ fn dict_plan_to_expr(
             let id = ctx.fresh_id(None);
             IrExpr::Local {
                 id,
-                name: format!("$dict_{class_name}_{}", c.ty.0),
+                name: format!("$dict_{class_name}_{}", c.sole_ty().0),
                 span,
             }
         }

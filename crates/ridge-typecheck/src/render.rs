@@ -489,6 +489,19 @@ impl fmt::Display for TypeError {
                 Ok(())
             }
 
+            // ── T038 ──────────────────────────────────────────────────────────
+            Self::InstanceArityMismatch {
+                class,
+                expected,
+                found,
+                ..
+            } => {
+                write!(
+                    f,
+                    "T038: wrong number of types in instance head\n  class `{class}` takes {expected} type parameter(s), but the instance head supplies {found}\n  hint: give the instance exactly {expected} type atom(s), parenthesising applied types like `(List a)`"
+                )
+            }
+
             // ── T999 ──────────────────────────────────────────────────────────
             Self::InternalTypeError { detail, .. } => {
                 write!(f, "T999: internal type error\n  {detail}\n  This is a compiler bug. Please report it.")
@@ -549,6 +562,7 @@ impl HasErrorCode for TypeError {
             | Self::SuperclassCycle { span, .. }
             | Self::OpaqueFieldAccess { span, .. }
             | Self::RowMismatch { span, .. }
+            | Self::InstanceArityMismatch { span, .. }
             | Self::InternalTypeError { span, .. } => *span,
 
             // T034: uses `totext_span` (the explicit instance) as the primary span.

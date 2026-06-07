@@ -19,6 +19,7 @@ ridge-types      = { path = "../ridge-types" }
 ridge-ast        = { path = "../ridge-ast" }
 ridge-resolve    = { path = "../ridge-resolve" }
 rustc-hash       = { workspace = true }
+smallvec         = { workspace = true }
 
 [dev-dependencies]
 insta            = { workspace = true }

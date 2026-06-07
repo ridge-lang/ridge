@@ -657,12 +657,9 @@ fn var_indices_to_constraints(
 ) -> (Vec<Constraint>, Vec<usize>) {
     let ctx_constraints = used
         .iter()
-        .map(|_| Constraint {
-            class: class_id,
-            // Sentinel — the solver substitutes the concrete arg via
-            // head_var_positions, mirroring the prelude parametric instances.
-            ty: ridge_types::TyVid(0),
-        })
+        // Sentinel — the solver substitutes the concrete arg via
+        // head_var_positions, mirroring the prelude parametric instances.
+        .map(|_| Constraint::single(class_id, ridge_types::TyVid(0)))
         .collect();
     (ctx_constraints, used.to_vec())
 }

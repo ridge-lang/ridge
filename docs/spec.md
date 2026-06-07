@@ -1020,12 +1020,31 @@ The compiler enforces three coherence rules across the whole workspace:
 | T034 | ToTextConflict | Type has both a `pub fn toText` auto-instance and an explicit `instance ToText T` |
 | T035 | SuperclassCycle | The class hierarchy contains a cycle |
 
-#### 5.6.9. What is not yet supported
+#### 5.6.9. Multi-parameter classes
+
+A class may take more than one type parameter:
+
+```ridge
+class Convert a b =
+    convert (x: a) -> b
+
+instance Convert Celsius Fahrenheit =
+    convert (c) = ...
+```
+
+An instance head supplies one type per class parameter, written as a sequence
+of type atoms (parenthesise an applied type, e.g. `(List a)`). Coherence is
+keyed by the whole head tuple, so `Convert Celsius Fahrenheit` and
+`Convert Celsius Kelvin` are distinct instances and coexist. A call resolves
+the instance from the type at every head position; when a position is left
+undetermined — for example a result type the caller never fixes — the
+constraint is ambiguous and must be annotated.
+
+#### 5.6.10. What is not yet supported
 
 The following are deferred to future releases:
 
 - Default method bodies in class declarations
-- Multi-parameter type classes
 - Functional dependencies
 - Newtype deriving
 

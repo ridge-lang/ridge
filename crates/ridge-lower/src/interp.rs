@@ -332,7 +332,7 @@ fn try_dict_to_text(ctx: &mut LowerCtx<'_>, inner: &IrExpr, span: Span) -> Optio
         .cloned()?;
 
     let class_name = ctx.class_name(TOTEXT_CLASS).unwrap_or("ToText").to_owned();
-    let dict_param_name = format!("$dict_{class_name}_{}", totext_c.ty.0);
+    let dict_param_name = format!("$dict_{class_name}_{}", totext_c.sole_ty().0);
 
     // Dict expression: the in-scope dict param (a local variable).
     let dict_id = ctx.fresh_id(None);

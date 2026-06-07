@@ -535,6 +535,24 @@ pub enum TypeError {
         span: Span,
     },
 
+    // ── T038 ─────────────────────────────────────────────────────────────────
+    /// An `instance` head supplies the wrong number of type atoms for its class.
+    ///
+    /// A class declares a fixed number of type parameters (`class Convert a b`
+    /// has two). The instance head must supply exactly that many type atoms, so
+    /// `instance Convert Celsius` (one atom for a two-parameter class) and
+    /// `instance Eq Int Bool` (two for a one-parameter class) are both rejected.
+    InstanceArityMismatch {
+        /// Display name of the class.
+        class: String,
+        /// Number of type parameters the class declares.
+        expected: usize,
+        /// Number of type atoms the instance head supplied.
+        found: usize,
+        /// Source span of the `instance` declaration.
+        span: Span,
+    },
+
     // ── T999 ─────────────────────────────────────────────────────────────────
     /// Internal type-checker invariant violation — should never reach users.
     ///
@@ -595,6 +613,7 @@ impl TypeError {
             Self::SuperclassCycle { .. } => "T035",
             Self::OpaqueFieldAccess { .. } => "T036",
             Self::RowMismatch { .. } => "T037",
+            Self::InstanceArityMismatch { .. } => "T038",
             Self::InternalTypeError { .. } => "T999",
         }
     }
@@ -1087,6 +1106,30 @@ mod tests {
         assert!(
             msg.contains("unexpected field(s): y"),
             "message should name the extra field: {msg}"
+        );
+    }
+
+    fn t038() -> TypeError {
+        TypeError::InstanceArityMismatch {
+            class: "Convert".into(),
+            expected: 2,
+            found: 1,
+            span: dummy_span(),
+        }
+    }
+
+    #[test]
+    fn code_t038() {
+        assert_eq!(t038().code(), "T038");
+    }
+
+    #[test]
+    fn t038_message_names_the_counts() {
+        let msg = format!("{}", t038());
+        assert!(msg.contains("T038"), "message should carry the code: {msg}");
+        assert!(
+            msg.contains('2') && msg.contains('1'),
+            "message should report expected and found counts: {msg}"
         );
     }
 }

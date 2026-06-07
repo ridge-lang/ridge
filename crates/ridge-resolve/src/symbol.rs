@@ -1289,7 +1289,7 @@ mod tests {
             .collect();
         Item::ClassDecl(ClassDecl {
             name: id(class),
-            ty_var: id("a"),
+            ty_vars: vec![id("a")],
             superclasses: vec![],
             methods: vec![MethodSig {
                 name: id(method),

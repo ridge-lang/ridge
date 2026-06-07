@@ -37,8 +37,8 @@ use ridge_ast::{
     typeclass::{ClassConstraint, ClassDecl, InstanceDecl, MethodDef, MethodSig},
     ActorDecl, ActorMember, Attribute, Body, Capability, ConstDecl, Constructor, DocComment, Expr,
     FieldDecl, FnDecl, Ident, ImportDecl, InitDecl, Item, MailboxConfig, MailboxDecl,
-    MailboxPolicy, ModulePath, OnHandler, Param, RecordTypeBody, StateDecl, TypeBody, TypeDecl,
-    UnionTypeBody, Visibility,
+    MailboxPolicy, ModulePath, OnHandler, Param, RecordTypeBody, StateDecl, Type, TypeBody,
+    TypeDecl, UnionTypeBody, Visibility,
 };
 use ridge_lexer::Token;
 
@@ -263,7 +263,7 @@ use crate::{
     ctrl::parse_branch_body,
     cursor::Cursor,
     error::ParseError,
-    ty::{parse_type, parse_type_atom},
+    ty::{is_type_atom_start, parse_type, parse_type_atom},
 };
 
 // ── @test attribute ───────────────────────────────────────────────────────────
@@ -1325,26 +1325,29 @@ fn parse_where_clause(cur: &mut Cursor<'_>) -> Result<Vec<ClassConstraint>, Pars
             }
         };
 
-        // LowerIdent = type variable.
-        let ty_var_span = cur.span();
-        let ty_var = match cur.peek().clone() {
-            Token::LowerIdent(s) => {
-                cur.bump();
-                Ident::new(s, ty_var_span)
-            }
-            _ => {
-                return Err(ParseError::Expected {
-                    span: cur.span(),
-                    expected: "<type variable>",
-                    found: cur.peek().to_string(),
-                });
-            }
-        };
+        // One or more LowerIdent type variables. A multi-parameter constraint
+        // such as `Convert a b` carries several; they end at the next `,`, the
+        // `=`, or the start of the indented body.
+        let mut ty_vars: Vec<Ident> = Vec::new();
+        let mut last_span = class_span;
+        while let Token::LowerIdent(s) = cur.peek().clone() {
+            let sp = cur.span();
+            cur.bump();
+            ty_vars.push(Ident::new(s, sp));
+            last_span = sp;
+        }
+        if ty_vars.is_empty() {
+            return Err(ParseError::Expected {
+                span: cur.span(),
+                expected: "<type variable>",
+                found: cur.peek().to_string(),
+            });
+        }
 
-        let span = class_span.merge(ty_var_span);
+        let span = class_span.merge(last_span);
         constraints.push(ClassConstraint {
             class,
-            ty_var,
+            ty_vars,
             span,
         });
 
@@ -1556,22 +1559,21 @@ fn parse_class_decl(
         }
     };
 
-    // Type variable: LowerIdent.
-    let ty_var_span = cur.span();
-    let ty_var = match cur.peek().clone() {
-        Token::LowerIdent(s) => {
-            cur.bump();
-            Ident::new(s, ty_var_span)
-        }
-        _ => {
-            return Err(ParseError::MalformedClassDecl {
-                span: cur.span(),
-                reason: "expected a type variable (`lowerIdent`) after the class name; \
-                         only single-parameter classes are supported"
-                    .to_string(),
-            });
-        }
-    };
+    // Type variables: one or more LowerIdent. A multi-parameter class such as
+    // `Convert a b` declares several; they end at `where`, `=`, or the body.
+    let mut ty_vars: Vec<Ident> = Vec::new();
+    while let Token::LowerIdent(s) = cur.peek().clone() {
+        let sp = cur.span();
+        cur.bump();
+        ty_vars.push(Ident::new(s, sp));
+    }
+    if ty_vars.is_empty() {
+        return Err(ParseError::MalformedClassDecl {
+            span: cur.span(),
+            reason: "expected at least one type variable (`lowerIdent`) after the class name"
+                .to_string(),
+        });
+    }
 
     // Optional `where SuperList` (superclass constraints).
     let superclasses = if cur.peek() == &Token::KwWhere {
@@ -1669,7 +1671,7 @@ fn parse_class_decl(
 
     Ok(ClassDecl {
         name,
-        ty_var,
+        ty_vars,
         superclasses,
         methods,
         span: start.merge(end_span),
@@ -1708,11 +1710,24 @@ fn parse_instance_decl(
         }
     };
 
-    // Instance head type: parse a single type atom.
-    let ty = parse_type(cur).map_err(|_| ParseError::MalformedInstanceDecl {
-        span: cur.span(),
-        reason: "expected a type after the class name in the instance head".to_string(),
-    })?;
+    // Instance head: one or more type atoms, one per class parameter. An
+    // ordinary instance has a single atom (`Eq Int`, `Encode (List a)`); a
+    // multi-parameter instance has several (`Convert Celsius Fahrenheit`).
+    let mut head: Vec<Type> = Vec::new();
+    head.push(
+        parse_type_atom(cur).map_err(|_| ParseError::MalformedInstanceDecl {
+            span: cur.span(),
+            reason: "expected a type after the class name in the instance head".to_string(),
+        })?,
+    );
+    while is_type_atom_start(cur) {
+        head.push(
+            parse_type_atom(cur).map_err(|_| ParseError::MalformedInstanceDecl {
+                span: cur.span(),
+                reason: "expected a type atom in the instance head".to_string(),
+            })?,
+        );
+    }
 
     // Optional `where` clause — lists context constraints for parametric
     // instances, e.g. `instance Encode (List a) where Encode a`.
@@ -1790,7 +1805,7 @@ fn parse_instance_decl(
 
     Ok(InstanceDecl {
         class,
-        ty,
+        head,
         constraints,
         methods,
         span: start.merge(end_span),
@@ -3126,7 +3141,8 @@ mod tests {
         let src = "class Show a =\n    toText (x: a) -> Text\n";
         let cd = parse_cls(src).expect("should parse");
         assert_eq!(cd.name.text, "ToText", "Show must desugar to ToText");
-        assert_eq!(cd.ty_var.text, "a");
+        assert_eq!(cd.ty_vars.len(), 1);
+        assert_eq!(cd.ty_vars[0].text, "a");
         assert!(cd.superclasses.is_empty());
         assert_eq!(cd.methods.len(), 1);
         assert_eq!(cd.methods[0].name.text, "toText");
@@ -3141,7 +3157,7 @@ mod tests {
         assert_eq!(cd.name.text, "Ord");
         assert_eq!(cd.superclasses.len(), 1);
         assert_eq!(cd.superclasses[0].class.text, "Eq");
-        assert_eq!(cd.superclasses[0].ty_var.text, "a");
+        assert_eq!(cd.superclasses[0].ty_vars[0].text, "a");
         assert_eq!(cd.methods.len(), 1);
         assert_eq!(cd.methods[0].name.text, "compare");
     }
@@ -3194,7 +3210,8 @@ mod tests {
         let decl = parse_inst(src).expect("should parse");
         assert_eq!(decl.constraints.len(), 1);
         assert_eq!(decl.constraints[0].class.text, "Baz");
-        assert_eq!(decl.constraints[0].ty_var.text, "a");
+        assert_eq!(decl.constraints[0].ty_vars[0].text, "a");
+        assert_eq!(decl.head.len(), 1, "single-atom parametric head");
     }
 
     // ── parse_instance_non_parametric_no_constraints ─────────────────────────
@@ -3219,7 +3236,7 @@ mod tests {
         let decl = parse_inst(src).expect("should parse");
         assert_eq!(decl.constraints.len(), 1);
         assert_eq!(decl.constraints[0].class.text, "Encode");
-        assert_eq!(decl.constraints[0].ty_var.text, "a");
+        assert_eq!(decl.constraints[0].ty_vars[0].text, "a");
     }
 
     // ── parse_fn_where_clause ─────────────────────────────────────────────────
@@ -3233,7 +3250,7 @@ mod tests {
             fd.constraints[0].class.text, "ToText",
             "Show must desugar to ToText in where clause"
         );
-        assert_eq!(fd.constraints[0].ty_var.text, "a");
+        assert_eq!(fd.constraints[0].ty_vars[0].text, "a");
     }
 
     // ── parse_fn_no_where_clause ──────────────────────────────────────────────

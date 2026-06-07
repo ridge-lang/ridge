@@ -1483,18 +1483,25 @@ fn dict_plan_to_expr(
             let dict_const_name = format!("$inst_{class_name}_{type_name}");
             let id = ctx.fresh_id(None);
 
-            // A stdlib class (e.g. `SqlType` in `std.sql`) compiles `$inst_`
-            // constants only for the base types it defines instances for — the
-            // builtins. A *user* newtype that derives such a class carries its
-            // delegated dictionary in its own module, so only builtin types take
-            // the cross-module `SymbolRef::Stdlib` path; user types resolve their
-            // `$inst_` locally.
+            // The dictionary const lives in whichever module owns the instance:
+            // - a stdlib class's BUILTIN base types → the class's home module
+            //   (cross-module via `SymbolRef::Stdlib` + the FFI bridge);
+            // - a user type defined in ANOTHER module → that producer module
+            //   (cross-module via `SymbolRef::External`, invoked as a call);
+            // - a type defined in the current module → a local reference.
             let tycon_is_builtin = decl.is_some_and(|d| d.def_module_raw.is_none());
+            let producer = decl.and_then(|d| d.def_module_raw);
+            let is_cross_module = producer.is_some_and(|p| p != ctx.module_id.0);
             let sym = if let Some(home) =
                 stdlib_class_home_module(class_name).filter(|_| tycon_is_builtin)
             {
                 SymbolRef::Stdlib {
                     module: home.to_owned(),
+                    name: dict_const_name,
+                }
+            } else if let Some(p) = producer.filter(|_| is_cross_module) {
+                SymbolRef::External {
+                    module: ridge_resolve::ModuleId(p),
                     name: dict_const_name,
                 }
             } else {
@@ -1504,7 +1511,11 @@ fn dict_plan_to_expr(
                 }
             };
             let dict_symbol = IrExpr::Symbol { id, sym, span };
-            if sub_dicts.is_empty() {
+            // A cross-module `External` reference is a 0-arity producer-module fn
+            // that must be invoked as a call (its value form is not lowered); a
+            // same-module const is usable directly as a value. Parametric
+            // instances always apply their sub-dictionaries.
+            if sub_dicts.is_empty() && !is_cross_module {
                 return dict_symbol;
             }
             let call_id = ctx.fresh_id(None);

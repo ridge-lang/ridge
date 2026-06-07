@@ -405,23 +405,24 @@ pub fn lower_instance(ctx: &mut LowerCtx<'_>, decl: &InstanceDecl) -> Vec<IrItem
             body: dict_value,
             origin: NodeId(0),
             span: decl.span,
-            is_pub: false,
+            // Instance dictionaries are exported so the constraint solver can
+            // reference them cross-module (a consumer module dispatching a class
+            // method on a type defined elsewhere). The method fns they close over
+            // stay private. See `SymbolRef::External` dispatch in codegen.
+            is_pub: true,
             is_main: false,
             doc: None,
         };
         items.push(IrItem::Fn(dict_fn));
     } else {
-        // Instance dicts for stdlib-defined classes must be exported from the
-        // compiled stdlib module so that user code can reference them cross-module
-        // via `SymbolRef::Stdlib`. User-defined instances stay private.
-        let is_pub = stdlib_class_home_module(&class_name).is_some();
         let dict_const = IrConst {
             name: dict_name,
             ty: Type::Error, // untyped in IR
             value: dict_value,
             origin: NodeId(0),
             span: decl.span,
-            is_pub,
+            // Exported for cross-module dispatch (see the parametric arm above).
+            is_pub: true,
         };
         items.push(IrItem::Const(dict_const));
     }
@@ -910,7 +911,8 @@ pub fn lower_derived_instance(
             body: dict_value,
             origin: NodeId(0),
             span: sp,
-            is_pub: false,
+            // Exported for cross-module instance dispatch (see `lower_instance`).
+            is_pub: true,
             is_main: false,
             doc: None,
         };
@@ -964,7 +966,8 @@ pub fn lower_derived_instance(
         value: dict_value,
         origin: NodeId(0),
         span: sp,
-        is_pub: false,
+        // Exported for cross-module instance dispatch (see `lower_instance`).
+        is_pub: true,
     }));
 
     items
@@ -1105,10 +1108,9 @@ fn build_delegated_instance(
         value: dict_value,
         origin: NodeId(0),
         span: sp,
-        // Stdlib-class instances (e.g. `SqlType`) are referenced cross-module, so
-        // their dictionary const must be exported. Prelude-class instances keep
-        // the private path, matching the structural derived dicts.
-        is_pub: crate::core::stdlib_class_home_module(class_name).is_some(),
+        // Exported for cross-module instance dispatch (see `lower_instance`); the
+        // forwarding method fns it closes over stay private.
+        is_pub: true,
     }));
 
     items
@@ -1154,7 +1156,7 @@ fn delegated_inner_call(
                 value: IrLit::Unit,
                 span: sp,
             })
-    } else if let Some(home) = crate::core::stdlib_class_home_module(class_name) {
+    } else if let Some(home) = stdlib_class_home_module(class_name) {
         // Stdlib class (`SqlType`): its base-type dictionary lives in the home
         // module and is fetched cross-module.
         IrExpr::Symbol {
@@ -5529,7 +5531,10 @@ mod tests {
                     c.name, "$inst_Show_Color",
                     "dict const name follows $inst_ClassName_TypeName"
                 );
-                assert!(!c.is_pub, "dict consts are always private");
+                assert!(
+                    c.is_pub,
+                    "dict consts are exported for cross-module instance dispatch"
+                );
                 // The dict value must be a Construct (MapLit shape).
                 assert!(
                     matches!(&c.value, IrExpr::Construct { .. }),

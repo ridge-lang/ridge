@@ -18,7 +18,7 @@ use ridge_ir::{IrNodeId, LoweredModule};
 use ridge_resolve::{BindingMap, ModuleId, NodeId, NodeIdMap, SymbolId, SymbolTable};
 use ridge_typecheck::quote::QuoteInfo;
 use ridge_typecheck::{ClassTable, InstanceEnv, TypedWorkspace};
-use ridge_types::{CapabilitySet, Constraint, ShapeKey, TyConId, Type};
+use ridge_types::{CapabilitySet, Constraint, ShapeKey, TyConId, TyConKind, Type, VariantPayload};
 use rustc_hash::{FxHashMap, FxHashSet};
 
 /// Name-to-`TyConId` cache, built lazily from the workspace on first lookup.
@@ -533,6 +533,44 @@ impl<'tw> LowerCtx<'tw> {
         let entry = table.entries.get(owner_type.0 as usize)?;
         let owner_name = entry.name.clone();
         self.lookup_tycon_by_name(&owner_name)
+    }
+
+    /// Resolve a constructor of a reconciled stdlib type to its
+    /// `(owner TyConId, variant index, is_record)` by scanning the reserved
+    /// block recorded in [`TypedWorkspace::stdlib_tycons`].
+    ///
+    /// Reconciled stdlib constructors are bound by resolve as
+    /// `Binding::StdlibSymbol`, which carries only a name — unlike user
+    /// constructors (`Binding::Constructor`, carrying owner + variant) and the
+    /// hand-listed prelude builtins, their shape lives only in the arena decl.
+    /// Returns `None` if `name` is not a constructor of any reconciled type.
+    #[must_use]
+    #[expect(
+        clippy::cast_possible_truncation,
+        reason = "a union's variant count is far below u32::MAX"
+    )]
+    pub fn lookup_stdlib_ctor(&self, name: &str) -> Option<(TyConId, u32, bool)> {
+        let ws = self.workspace?;
+        for &tid in ws.stdlib_tycons.values() {
+            let Some(decl) = ws.tycons.get(tid.0 as usize) else {
+                continue;
+            };
+            match &decl.kind {
+                TyConKind::Union(u) => {
+                    if let Some((i, v)) =
+                        u.variants.iter().enumerate().find(|(_, v)| v.name == name)
+                    {
+                        let is_record = matches!(v.kind, VariantPayload::Record(_));
+                        return Some((decl.id, i as u32, is_record));
+                    }
+                }
+                TyConKind::Record(_) if decl.name == name => {
+                    return Some((decl.id, 0, true));
+                }
+                _ => {}
+            }
+        }
+        None
     }
 
     /// Look up the type assigned to a `NodeId` in the upstream `node_types`

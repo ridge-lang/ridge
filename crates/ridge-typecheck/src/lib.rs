@@ -39,6 +39,7 @@ pub mod scc;
 pub mod solve;
 pub mod stdlib_env;
 pub mod stdlib_signatures;
+pub mod stdlib_types;
 pub mod tycon_collect;
 pub mod unify;
 pub mod unions;
@@ -149,6 +150,12 @@ pub struct TypedWorkspace {
     /// The lowering pass emits method fns and dict values for each entry. Empty
     /// for workspaces without any `deriving` clauses.
     pub derived_instances: Vec<crate::derive::DerivedInstance>,
+    /// Reconciled stdlib type names → their reserved-block `TyConId`.
+    ///
+    /// Populated from [`crate::stdlib_types::intern_stdlib_types`]; empty during
+    /// the standard library's own build. The lowering pass reads this to resolve
+    /// a reconciled type's constructor to its `(owner, variant)` from the arena.
+    pub stdlib_tycons: FxHashMap<String, TyConId>,
 }
 
 /// A single module after type-checking.
@@ -218,6 +225,17 @@ pub fn typecheck_workspace(ws: &ResolvedWorkspace) -> TypecheckResult {
     // Step 1: Shared TyCon arena + built-in registration.
     let mut arena = TyConArena::new();
     let b = BuiltinTyCons::allocate(&mut arena);
+
+    // Reconciled stdlib types occupy a reserved block immediately after the
+    // built-ins and before any user type, so their ids are stable workspace-wide
+    // and `builtins_len` below shifts the user-type prediction base past them.
+    // The standard library's own build declares these types from source, so the
+    // reservation is skipped there to avoid a second, conflicting declaration.
+    let stdlib_tycon_names = if ws.graph.is_stdlib {
+        FxHashMap::default()
+    } else {
+        crate::stdlib_types::intern_stdlib_types(&mut arena, &b)
+    };
 
     // Type-check producers before consumers so a module's imported types and
     // schemes are already available when it is checked.
@@ -307,6 +325,7 @@ pub fn typecheck_workspace(ws: &ResolvedWorkspace) -> TypecheckResult {
             &rm.imports,
             &symbol_tables,
             &per_module_tycon_names,
+            &stdlib_tycon_names,
             &b,
         );
         let imported_schemes = crate::cross_module::imported_value_schemes(
@@ -322,6 +341,7 @@ pub fn typecheck_workspace(ws: &ResolvedWorkspace) -> TypecheckResult {
             &imported_tycons,
             &imported_schemes,
             &workspace_tycon_names,
+            &stdlib_tycon_names,
             &mut arena,
             &b,
             Some((&class_table, &instance_env)),
@@ -368,6 +388,7 @@ pub fn typecheck_workspace(ws: &ResolvedWorkspace) -> TypecheckResult {
             class_table,
             instance_env,
             derived_instances: collect_result.derived_instances,
+            stdlib_tycons: stdlib_tycon_names,
         },
         errors: all_errors,
     }
@@ -464,6 +485,7 @@ pub fn typecheck_module_incremental(
         &no_imported_tycons,
         &no_imported_schemes,
         &global_tycon_names,
+        &typed_ws.stdlib_tycons,
         &mut arena,
         b,
         Some((&typed_ws.class_table, &typed_ws.instance_env)),
@@ -631,6 +653,7 @@ fn typecheck_module_inner(
     imported_tycons: &FxHashMap<String, TyConId>,
     imported_schemes: &FxHashMap<String, ridge_types::Scheme>,
     global_tycon_names: &FxHashMap<String, TyConId>,
+    stdlib_tycon_names: &FxHashMap<String, TyConId>,
     arena: &mut TyConArena,
     b: &BuiltinTyCons,
     registries: Option<(
@@ -701,7 +724,7 @@ fn typecheck_module_inner(
     }
 
     // Step B: Seed env with prelude constructors + stdlib qualified bindings.
-    seed_stdlib_env(&mut ctx, b, imports);
+    seed_stdlib_env(&mut ctx, b, imports, stdlib_tycon_names);
 
     // Step B1: Seed schemes for fns/consts imported from other workspace modules
     // (cross-module value seeding). Bound after stdlib but before local consts and

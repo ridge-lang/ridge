@@ -8,16 +8,18 @@ use crate::{decl::Param, DocComment, Expr, Ident, Span, Type};
 
 // ── ClassConstraint ───────────────────────────────────────────────────────────
 
-/// A single class constraint in a `where` clause or superclass list.
+/// A class constraint in a `where` clause or superclass list.
 ///
-/// Written as `ClassName tyVar`, e.g. `ToText a` or `Eq b`.
+/// Written as `ClassName tyVar…`, e.g. `ToText a`, `Eq b`, or — for a
+/// multi-parameter class — `Convert a b`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ClassConstraint {
     /// The class name (`UPPER_IDENT`), e.g. `ToText`, `Eq`, `Ord`.
     pub class: Ident,
-    /// The constrained type variable (`LOWER_IDENT`), e.g. `a`.
-    pub ty_var: Ident,
-    /// Span covering `ClassName tyVar`.
+    /// The constrained type variables (`LOWER_IDENT`), e.g. `a` — or `a b`
+    /// for a multi-parameter class. Always at least one.
+    pub ty_vars: Vec<Ident>,
+    /// Span covering `ClassName tyVar…`.
     pub span: Span,
 }
 
@@ -69,9 +71,10 @@ pub struct MethodDef {
 ///
 /// class Ord a where Eq a =
 ///     compare (x: a) (y: a) -> Ordering
-/// ```
 ///
-/// In 0.2.13 only single-parameter classes are supported.
+/// class Convert a b =
+///     convert (x: a) -> b
+/// ```
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ClassDecl {
     /// The class name (`UPPER_IDENT`).
@@ -79,8 +82,9 @@ pub struct ClassDecl {
     /// `Show` is desugared to `ToText` at parse time; this field always holds
     /// the canonical name.
     pub name: Ident,
-    /// The class's single type variable (`LOWER_IDENT`).
-    pub ty_var: Ident,
+    /// The class's type variables (`LOWER_IDENT`). One for an ordinary class,
+    /// several for a multi-parameter class. Always at least one.
+    pub ty_vars: Vec<Ident>,
     /// Optional superclass constraints (`where C a`).
     pub superclasses: Vec<ClassConstraint>,
     /// Method signatures (at least one required).
@@ -104,6 +108,9 @@ pub struct ClassDecl {
 ///
 /// instance Encode (List a) where Encode a =
 ///     encode (xs) = ...
+///
+/// instance Convert Celsius Fahrenheit =
+///     convert (c) = ...
 /// ```
 ///
 /// Parametric instances carry a `where` clause listing the constraints on
@@ -115,8 +122,11 @@ pub struct InstanceDecl {
     ///
     /// `Show` is desugared to `ToText` at parse time.
     pub class: Ident,
-    /// The concrete type the instance applies to.
-    pub ty: Type,
+    /// The concrete head types the instance applies to — one type atom per
+    /// class parameter. One entry for an ordinary class (`Encode (List a)`),
+    /// several for a multi-parameter class (`Convert Celsius Fahrenheit`).
+    /// Always at least one.
+    pub head: Vec<Type>,
     /// Constraints on the instance head's type variable(s) (`where C a`).
     ///
     /// Non-empty only for parametric instances such as

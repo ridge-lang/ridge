@@ -608,7 +608,9 @@ pub fn walk_fn_decl<'ast, V: Visit<'ast> + ?Sized>(v: &mut V, d: &'ast FnDecl) {
     }
     for constraint in &d.constraints {
         v.visit_ident(&constraint.class);
-        v.visit_ident(&constraint.ty_var);
+        for tv in &constraint.ty_vars {
+            v.visit_ident(tv);
+        }
     }
     match &d.body {
         Body::Expr(e) => v.visit_expr(e),
@@ -622,10 +624,14 @@ pub fn walk_fn_decl<'ast, V: Visit<'ast> + ?Sized>(v: &mut V, d: &'ast FnDecl) {
 pub fn walk_class_decl<'ast, V: Visit<'ast> + ?Sized>(v: &mut V, d: &'ast ClassDecl) {
     use crate::typeclass::MethodSig;
     v.visit_ident(&d.name);
-    v.visit_ident(&d.ty_var);
+    for tv in &d.ty_vars {
+        v.visit_ident(tv);
+    }
     for sup in &d.superclasses {
         v.visit_ident(&sup.class);
-        v.visit_ident(&sup.ty_var);
+        for tv in &sup.ty_vars {
+            v.visit_ident(tv);
+        }
     }
     for method in &d.methods {
         let MethodSig {
@@ -644,7 +650,9 @@ pub fn walk_instance_decl<'ast, V: Visit<'ast> + ?Sized>(v: &mut V, d: &'ast Ins
     use crate::typeclass::MethodDef;
     use crate::Body;
     v.visit_ident(&d.class);
-    v.visit_type(&d.ty);
+    for t in &d.head {
+        v.visit_type(t);
+    }
     for method in &d.methods {
         let MethodDef {
             name,

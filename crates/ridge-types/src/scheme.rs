@@ -31,7 +31,7 @@ pub struct Scheme {
     pub ty: Type,
     /// Class constraints over `vars`. Empty for unconstrained declarations.
     ///
-    /// Each constraint's [`Constraint::ty`] is a member of `vars`. The
+    /// Each constraint's [`Constraint::tys`] are members of `vars`. The
     /// constraint solver attached these during generalisation; the lowering
     /// pass reads them to thread dictionaries. Ignored by
     /// `free_vars`/`instantiate`/`subst_type` — those operate on `ty` only.

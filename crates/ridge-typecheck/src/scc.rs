@@ -336,7 +336,7 @@ fn write_back_schemes(
             // solver; we skip them here rather than double-reporting.
             scheme.constraints = retained_constraints
                 .iter()
-                .filter(|c| scheme.vars.contains(&c.ty))
+                .filter(|c| c.tys.iter().any(|v| scheme.vars.contains(v)))
                 .cloned()
                 .collect();
             // Body::Ffi has no expression span to key a scheme entry by.
@@ -451,10 +451,14 @@ pub fn typecheck_module_decls(
             // unknown name allocates a NEW TyVid, making the constraint's TyVid
             // different from the param's TyVid and breaking constraint solving.
             let mut tyvar_map: FxHashMap<&str, TyVid> = FxHashMap::default();
-            // Collect type variable names from the `where` clause.
+            // Collect type variable names from the `where` clause (each
+            // constraint may carry several for a multi-parameter class).
             for c in &decl.constraints {
-                let name = c.ty_var.text.as_str();
-                tyvar_map.entry(name).or_insert_with(|| ctx.fresh_tyvid());
+                for tv in &c.ty_vars {
+                    tyvar_map
+                        .entry(tv.text.as_str())
+                        .or_insert_with(|| ctx.fresh_tyvid());
+                }
             }
             // Collect type variable names from annotated params.
             for p in &decl.params {
@@ -507,16 +511,19 @@ pub fn typecheck_module_decls(
             // This allows the constraint solver to track the requirement on
             // the fn's own type variable through body inference.
             for c in &decl.constraints {
-                let Some(&tyvid) = tyvar_map.get(c.ty_var.text.as_str()) else {
-                    continue;
-                };
                 let Some(class_id) = class_table.id_by_name(&c.class.text) else {
                     continue; // Unknown class — a typecheck error will fire elsewhere.
                 };
-                ctx.deferred_constraints.push(Constraint {
-                    class: class_id,
-                    ty: tyvid,
-                });
+                let tys: smallvec::SmallVec<[TyVid; 1]> = c
+                    .ty_vars
+                    .iter()
+                    .filter_map(|tv| tyvar_map.get(tv.text.as_str()).copied())
+                    .collect();
+                if tys.len() != c.ty_vars.len() {
+                    continue; // a constraint variable did not resolve — skip
+                }
+                ctx.deferred_constraints
+                    .push(Constraint::new(class_id, tys));
             }
         }
 

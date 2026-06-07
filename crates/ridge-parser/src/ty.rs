@@ -378,7 +378,7 @@ fn peek_capability(cur: &Cursor<'_>) -> Option<Capability> {
 ///
 /// Used to drive the greedy argument loop in `parse_type_app` and the param
 /// loop in `parse_fn_type`.
-fn is_type_atom_start(cur: &Cursor<'_>) -> bool {
+pub(crate) fn is_type_atom_start(cur: &Cursor<'_>) -> bool {
     matches!(
         cur.peek(),
         Token::UpperIdent(_)

@@ -606,9 +606,9 @@ mod tests {
         let set: FxHashSet<TyConId> = env
             .instances
             .keys()
-            .filter_map(|&(class, tycon)| {
-                if class == TOTEXT_CLASS {
-                    Some(tycon)
+            .filter_map(|(class, head)| {
+                if *class == TOTEXT_CLASS {
+                    head.first().copied()
                 } else {
                     None
                 }
@@ -662,9 +662,9 @@ mod tests {
         let set: FxHashSet<TyConId> = env
             .instances
             .keys()
-            .filter_map(|&(class, tycon)| {
-                if class == TOTEXT_CLASS {
-                    Some(tycon)
+            .filter_map(|(class, head)| {
+                if *class == TOTEXT_CLASS {
+                    head.first().copied()
                 } else {
                     None
                 }

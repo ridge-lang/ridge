@@ -352,3 +352,60 @@ pub fn lengthIntStack (s: IntStack) -> Int = List.length s\n\
         "parametric-then-instantiated alias chain must typecheck cleanly; got: {codes:?}"
     );
 }
+
+// ── Multi-parameter typeclasses (L7) ──────────────────────────────────────────
+
+/// A two-parameter class with a concrete instance and a fully-determined call
+/// site typechecks with no diagnostics: the constraint resolves against the
+/// instance keyed by the `(Int, Bool)` head tuple.
+#[test]
+fn multi_param_class_and_instance_typecheck() {
+    let src = "class Convert a b =\n    convert (x: a) -> b\n\ninstance Convert Int Bool =\n    convert (x: Int) -> Bool = true\n\nfn intToBool (n: Int) -> Bool = convert n\n";
+    let errors = run_typecheck_on_source("mptc_happy", src);
+    let codes: Vec<&str> = errors.iter().map(TypeError::code).collect();
+    assert!(
+        codes.is_empty(),
+        "a 2-parameter class + matching instance + determined call must typecheck cleanly; got: {codes:?}"
+    );
+}
+
+/// When a multi-parameter constraint leaves a head position undetermined, the
+/// solver reports T030 — the user must annotate the open type. (Resolving it
+/// automatically would require functional dependencies, deferred for now.)
+#[test]
+fn multi_param_undetermined_result_is_ambiguous() {
+    let src = "class Convert a b =\n    convert (x: a) -> b\n\ninstance Convert Int Bool =\n    convert (x: Int) -> Bool = true\n\nfn amb (n: Int) -> Text =\n    let r = convert n\n    \"done\"\n";
+    let errors = run_typecheck_on_source("mptc_ambiguous", src);
+    let codes: Vec<&str> = errors.iter().map(TypeError::code).collect();
+    assert!(
+        codes.contains(&"T030"),
+        "an undetermined multi-parameter head position must be ambiguous (T030); got: {codes:?}"
+    );
+}
+
+/// Two instances for the same head tuple `(Int, Bool)` violate coherence — T032,
+/// the same single-value-per-key rule the instance registry enforces for
+/// single-parameter classes, now over the head tuple.
+#[test]
+fn duplicate_multi_param_instance_is_overlapping() {
+    let src = "class Convert a b =\n    convert (x: a) -> b\n\ninstance Convert Int Bool =\n    convert (x: Int) -> Bool = true\n\ninstance Convert Int Bool =\n    convert (x: Int) -> Bool = false\n";
+    let errors = run_typecheck_on_source("mptc_overlap", src);
+    let codes: Vec<&str> = errors.iter().map(TypeError::code).collect();
+    assert!(
+        codes.contains(&"T032"),
+        "two instances for the same head tuple must overlap (T032); got: {codes:?}"
+    );
+}
+
+/// Distinct head tuples are distinct instances: `Convert Int Bool` and
+/// `Convert Int Text` coexist without a coherence error.
+#[test]
+fn distinct_multi_param_head_tuples_coexist() {
+    let src = "class Convert a b =\n    convert (x: a) -> b\n\ninstance Convert Int Bool =\n    convert (x: Int) -> Bool = true\n\ninstance Convert Int Text =\n    convert (x: Int) -> Text = \"n\"\n";
+    let errors = run_typecheck_on_source("mptc_distinct", src);
+    let codes: Vec<&str> = errors.iter().map(TypeError::code).collect();
+    assert!(
+        !codes.contains(&"T032"),
+        "distinct head tuples must not collide; got: {codes:?}"
+    );
+}

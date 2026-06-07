@@ -456,7 +456,7 @@ pub fn lower_fn(ctx: &mut LowerCtx<'_>, decl: &FnDecl) -> IrFn {
         .map(|c| {
             let class_name = ctx.class_name(c.class).unwrap_or("Unknown");
             IrParam {
-                name: format!("$dict_{class_name}_{}", c.ty.0),
+                name: format!("$dict_{class_name}_{}", c.sole_ty().0),
                 ty: Type::Error, // untyped in IR
                 span: decl.span,
             }
@@ -511,40 +511,45 @@ pub fn lower_fn(ctx: &mut LowerCtx<'_>, decl: &FnDecl) -> IrFn {
 pub fn lower_instance(ctx: &mut LowerCtx<'_>, decl: &InstanceDecl) -> Vec<IrItem> {
     let class_name = decl.class.text.clone();
 
-    // Determine the head type-constructor name from the AST type annotation.
-    // A non-parametric head is `Type::Named` (`Color`); a parametric head is
-    // `Type::App` (`List a`), which parses parenthesised — `(List a)` →
-    // `Type::Paren { App }` — so peel any `Paren` wrappers first. Both forms
-    // contribute the same `$inst_{Class}_{Head}` name, keyed by the head ctor.
-    let head_ty = {
-        let mut cur = &decl.ty;
+    // Determine the head type-constructor name(s) from the AST. A non-parametric
+    // head is `Type::Named` (`Color`); a parametric head is `Type::App`
+    // (`List a`), which parses parenthesised — `(List a)` → `Type::Paren { App }`
+    // — so peel any `Paren` wrappers first. A multi-parameter head contributes
+    // one name per atom, joined with `_` so `Convert Celsius Fahrenheit` keys
+    // `$inst_Convert_Celsius_Fahrenheit`. A single-atom head keeps the existing
+    // `$inst_{Class}_{Head}` name unchanged.
+    let mut head_names: Vec<String> = Vec::with_capacity(decl.head.len());
+    for atom in &decl.head {
+        let mut cur = atom;
         while let ridge_ast::Type::Paren { inner, .. } = cur {
             cur = inner;
         }
-        cur
-    };
-    let type_name = match head_ty {
-        ridge_ast::Type::Named { name, .. } => name.text.clone(),
-        ridge_ast::Type::App { head, .. } => head.text.clone(),
-        // Primitive types (`Int`, `Float`, `Bool`, `Text`) as instance heads —
-        // e.g. `instance SqlType Int`. The name string must match the tycon name
-        // used in the typecheck/tycon arena so that generated dict-const names
-        // like `$inst_SqlType_Int` are consistent across the pipeline.
-        ridge_ast::Type::Primitive { name, .. } => {
-            use ridge_ast::PrimitiveType;
-            match name {
-                PrimitiveType::Int => "Int".to_owned(),
-                PrimitiveType::Float => "Float".to_owned(),
-                PrimitiveType::Bool => "Bool".to_owned(),
-                PrimitiveType::Text => "Text".to_owned(),
-                PrimitiveType::Unit => "Unit".to_owned(),
-                PrimitiveType::Timestamp => "Timestamp".to_owned(),
+        let name = match cur {
+            ridge_ast::Type::Named { name, .. } => name.text.clone(),
+            ridge_ast::Type::App { head, .. } => head.text.clone(),
+            // Primitive types (`Int`, `Float`, `Bool`, `Text`) as instance heads —
+            // e.g. `instance SqlType Int`. The name string must match the tycon
+            // name used in the typecheck/tycon arena so generated dict-const names
+            // like `$inst_SqlType_Int` stay consistent across the pipeline.
+            ridge_ast::Type::Primitive { name, .. } => {
+                use ridge_ast::PrimitiveType;
+                match name {
+                    PrimitiveType::Int => "Int",
+                    PrimitiveType::Float => "Float",
+                    PrimitiveType::Bool => "Bool",
+                    PrimitiveType::Text => "Text",
+                    PrimitiveType::Unit => "Unit",
+                    PrimitiveType::Timestamp => "Timestamp",
+                }
+                .to_owned()
             }
-        }
-        // Other type forms (tuples, fns, …) are not supported as instance heads.
-        // Skip silently — a typecheck error would already have fired.
-        _ => return vec![],
-    };
+            // Other type forms (tuples, fns, …) are not supported as instance
+            // heads. Skip silently — a typecheck error would already have fired.
+            _ => return vec![],
+        };
+        head_names.push(name);
+    }
+    let type_name = head_names.join("_");
 
     // Build the implicit dictionary parameters for a parametric instance, one
     // per `where` constraint. Each is named `$dict_{CtxClass}_{i}` where `i` is
@@ -566,7 +571,7 @@ pub fn lower_instance(ctx: &mut LowerCtx<'_>, decl: &InstanceDecl) -> Vec<IrItem
             span: cc.span,
         });
         if let Some(class) = class_id {
-            body_constraints.push(ridge_types::Constraint { class, ty: tyvid });
+            body_constraints.push(ridge_types::Constraint::single(class, tyvid));
         }
     }
     let is_parametric = !dict_params.is_empty();
@@ -5653,10 +5658,7 @@ mod tests {
         let ctx = fresh_ctx();
 
         // Construct a scheme with one constraint (ClassId=0, TyVid=0).
-        let constraint = Constraint {
-            class: ClassId(0),
-            ty: TyVid(0),
-        };
+        let constraint = Constraint::single(ClassId(0), TyVid(0));
         let constrained_scheme = Scheme {
             vars: vec![TyVid(0)],
             cap_vars: vec![],
@@ -5681,7 +5683,7 @@ mod tests {
             .map(|c| {
                 let cn = ctx.class_name(c.class).unwrap_or("Unknown");
                 IrParam {
-                    name: format!("$dict_{cn}_{}", c.ty.0),
+                    name: format!("$dict_{cn}_{}", c.sole_ty().0),
                     ty: ridge_types::Type::Error,
                     span: sp(),
                 }
@@ -5722,10 +5724,10 @@ mod tests {
                 text: "Show".into(),
                 span: sp(),
             },
-            ty: AstType::Named {
+            head: vec![AstType::Named {
                 name: ident("Color"),
                 span: sp(),
-            },
+            }],
             constraints: vec![],
             methods: vec![method],
             span: sp(),

@@ -16,6 +16,7 @@ ridge-resolve     = { path = "../ridge-resolve" }
 ridge-types       = { path = "../ridge-types" }
 thiserror.workspace  = true
 rustc-hash.workspace = true
+smallvec.workspace   = true
 ena.workspace        = true
 
 [dev-dependencies]

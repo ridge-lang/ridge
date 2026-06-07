@@ -15,6 +15,11 @@ use ridge_types::{
     TOTEXT_CLASS,
 };
 use rustc_hash::FxHashMap;
+use smallvec::{smallvec, SmallVec};
+
+/// The instance-key head: the tuple of type constructors an instance applies
+/// to. Length one for an ordinary class, several for a multi-parameter class.
+pub type InstanceHead = SmallVec<[TyConId; 1]>;
 
 use crate::error::TypeError;
 
@@ -41,12 +46,14 @@ pub struct MethodSig {
     ///
     /// `None` for prelude-registered methods that have no source AST.
     pub ast_ret_type: Option<AstType>,
-    /// The name of the class type variable (e.g. `"a"` in `class Describe a`).
+    /// The names of the class type variables (e.g. `["a"]` in `class Describe a`,
+    /// `["a", "b"]` in `class Convert a b`).
     ///
     /// Used when converting `ast_param_types`/`ast_ret_type` to ridge types:
-    /// every occurrence of this variable name is mapped to the freshly allocated
-    /// `TyVid` representing the class type argument at the call site.
-    pub class_ty_var: String,
+    /// every occurrence of one of these names is mapped to a freshly allocated
+    /// `TyVid` representing that class type argument at the call site. Empty for
+    /// prelude-registered methods that have no source AST.
+    pub class_ty_vars: Vec<String>,
 }
 
 // ── ClassInfo ────────────────────────────────────────────────────────────────
@@ -56,6 +63,10 @@ pub struct MethodSig {
 pub struct ClassInfo {
     /// Canonical class name (e.g. `"ToText"`, `"Eq"`, `"Ord"`).
     pub name: String,
+    /// Number of class type parameters (`1` for an ordinary class, more for a
+    /// multi-parameter class such as `Convert a b`). An instance head must
+    /// supply exactly this many type atoms.
+    pub arity: usize,
     /// Method signatures declared in the class body.
     pub method_sigs: Vec<MethodSig>,
     /// Immediate superclass ids (e.g. `Ord` has `[EQ_CLASS]`).
@@ -283,13 +294,17 @@ impl CoherenceError {
 
 /// Workspace-level instance registry.
 ///
-/// The single-value-per-key `(ClassId, TyConId) → InstanceInfo` map IS the
-/// Haskell-98 coherence constraint: at most one instance per `(class, type)` pair.
-/// A second insert for the same key returns a [`CoherenceError`].
+/// The single-value-per-key `(ClassId, InstanceHead) → InstanceInfo` map IS the
+/// Haskell-98 coherence constraint: at most one instance per `(class, head)`
+/// tuple, where the head is the tuple of type constructors the instance applies
+/// to (one for an ordinary class, several for a multi-parameter class). A second
+/// insert for the same key returns a [`CoherenceError`]; distinct head tuples
+/// are distinct keys, so `Convert Celsius Fahrenheit` and `Convert Celsius Kelvin`
+/// coexist.
 #[derive(Debug, Default)]
 pub struct InstanceEnv {
     /// The canonical instance map.
-    pub instances: FxHashMap<(ClassId, TyConId), InstanceInfo>,
+    pub instances: FxHashMap<(ClassId, InstanceHead), InstanceInfo>,
 }
 
 impl InstanceEnv {
@@ -316,6 +331,21 @@ impl InstanceEnv {
         class_name: &str,
         type_name: &str,
     ) -> Result<(), CoherenceError> {
+        self.insert_multi(key.0, smallvec![key.1], info, class_name, type_name)
+    }
+
+    /// Inserts an instance keyed by a multi-constructor head, or returns a
+    /// [`CoherenceError`] on conflict. The single-parameter [`Self::insert`]
+    /// delegates here with a length-one head.
+    pub fn insert_multi(
+        &mut self,
+        class: ClassId,
+        head: InstanceHead,
+        info: InstanceInfo,
+        class_name: &str,
+        type_name: &str,
+    ) -> Result<(), CoherenceError> {
+        let key = (class, head);
         if let Some(existing) = self.instances.get(&key) {
             let (first_span, second_span) = (existing.span, info.span);
             let one_auto = existing.origin == InstanceOrigin::AutoPromoted
@@ -347,9 +377,16 @@ impl InstanceEnv {
         Ok(())
     }
 
-    /// Looks up an instance by `(ClassId, TyConId)`.
+    /// Looks up an instance by `(ClassId, TyConId)` — the single-parameter case.
     #[must_use]
     pub fn get(&self, key: (ClassId, TyConId)) -> Option<&InstanceInfo> {
+        self.get_multi(key.0, &[key.1])
+    }
+
+    /// Looks up an instance by a class id and a head tuple of type constructors.
+    #[must_use]
+    pub fn get_multi(&self, class: ClassId, head: &[TyConId]) -> Option<&InstanceInfo> {
+        let key = (class, InstanceHead::from_slice(head));
         self.instances.get(&key)
     }
 }
@@ -371,12 +408,13 @@ pub fn register_prelude_classes(ct: &mut ClassTable) {
         TOTEXT_CLASS,
         ClassInfo {
             name: "ToText".to_string(),
+            arity: 1,
             method_sigs: vec![MethodSig {
                 name: "toText".to_string(),
                 arity: 1,
                 ast_param_types: vec![],
                 ast_ret_type: None,
-                class_ty_var: String::new(),
+                class_ty_vars: Vec::new(),
             }],
             superclasses: vec![],
             def_module: None, // prelude — no module id
@@ -388,12 +426,13 @@ pub fn register_prelude_classes(ct: &mut ClassTable) {
         EQ_CLASS,
         ClassInfo {
             name: "Eq".to_string(),
+            arity: 1,
             method_sigs: vec![MethodSig {
                 name: "eq".to_string(),
                 arity: 2,
                 ast_param_types: vec![],
                 ast_ret_type: None,
-                class_ty_var: String::new(),
+                class_ty_vars: Vec::new(),
             }],
             superclasses: vec![],
             def_module: None,
@@ -405,12 +444,13 @@ pub fn register_prelude_classes(ct: &mut ClassTable) {
         ORD_CLASS,
         ClassInfo {
             name: "Ord".to_string(),
+            arity: 1,
             method_sigs: vec![MethodSig {
                 name: "compare".to_string(),
                 arity: 2,
                 ast_param_types: vec![],
                 ast_ret_type: None,
-                class_ty_var: String::new(),
+                class_ty_vars: Vec::new(),
             }],
             superclasses: vec![EQ_CLASS],
             def_module: None,
@@ -422,12 +462,13 @@ pub fn register_prelude_classes(ct: &mut ClassTable) {
         ENCODE_CLASS,
         ClassInfo {
             name: "Encode".to_string(),
+            arity: 1,
             method_sigs: vec![MethodSig {
                 name: "encode".to_string(),
                 arity: 1,
                 ast_param_types: vec![],
                 ast_ret_type: None,
-                class_ty_var: String::new(),
+                class_ty_vars: Vec::new(),
             }],
             superclasses: vec![],
             def_module: None,
@@ -439,12 +480,13 @@ pub fn register_prelude_classes(ct: &mut ClassTable) {
         DECODE_CLASS,
         ClassInfo {
             name: "Decode".to_string(),
+            arity: 1,
             method_sigs: vec![MethodSig {
                 name: "decode".to_string(),
                 arity: 1,
                 ast_param_types: vec![],
                 ast_ret_type: None,
-                class_ty_var: String::new(),
+                class_ty_vars: Vec::new(),
             }],
             superclasses: vec![],
             def_module: None,
@@ -495,10 +537,7 @@ pub fn register_prelude_instances(env: &mut InstanceEnv) {
     let parametric_inst = |method: &str, ctx_class: ClassId, positions: Vec<usize>| {
         let ctx_constraints = positions
             .iter()
-            .map(|_| Constraint {
-                class: ctx_class,
-                ty: TyVid(0),
-            })
+            .map(|_| Constraint::single(ctx_class, TyVid(0)))
             .collect::<Vec<_>>();
         InstanceInfo {
             def_module: None,
@@ -736,20 +775,21 @@ pub fn register_stdlib_classes(ct: &mut ClassTable) {
         id,
         ClassInfo {
             name: "SqlType".to_string(),
+            arity: 1,
             method_sigs: vec![
                 MethodSig {
                     name: "toSql".to_string(),
                     arity: 1,
                     ast_param_types: vec![],
                     ast_ret_type: None,
-                    class_ty_var: String::new(),
+                    class_ty_vars: Vec::new(),
                 },
                 MethodSig {
                     name: "fromSql".to_string(),
                     arity: 1,
                     ast_param_types: vec![],
                     ast_ret_type: None,
-                    class_ty_var: String::new(),
+                    class_ty_vars: Vec::new(),
                 },
             ],
             superclasses: vec![],
@@ -792,16 +832,16 @@ pub fn register_stdlib_instances(env: &mut InstanceEnv, ct: &ClassTable) {
     // win — they got here first, and we never want to overwrite them or
     // surface a spurious T032.
     env.instances
-        .entry((sqltype, TyConId(0)))
+        .entry((sqltype, smallvec![TyConId(0)]))
         .or_insert_with(inst);
     env.instances
-        .entry((sqltype, TyConId(3)))
+        .entry((sqltype, smallvec![TyConId(3)]))
         .or_insert_with(inst);
     env.instances
-        .entry((sqltype, TyConId(2)))
+        .entry((sqltype, smallvec![TyConId(2)]))
         .or_insert_with(inst);
     env.instances
-        .entry((sqltype, TyConId(1)))
+        .entry((sqltype, smallvec![TyConId(1)]))
         .or_insert_with(inst);
 }
 

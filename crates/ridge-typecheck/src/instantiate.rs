@@ -94,17 +94,22 @@ pub fn instantiate(ctx: &mut InferCtx, scheme: &Scheme) -> Type {
         // Use a small stack-allocated lookup rather than a HashMap for the
         // typical case of ≤ 3 type variables per scheme.
         for c in &scheme.constraints {
-            // Find the position of the constraint's TyVid in the scheme's
+            // Remap every constrained TyVid: find its position in the scheme's
             // bound variable list, then map it to the corresponding fresh var.
-            let fresh_ty = scheme
-                .vars
+            // Multi-parameter constraints carry several; remap each in order.
+            let fresh_tys: smallvec::SmallVec<[ridge_types::TyVid; 1]> = c
+                .tys
                 .iter()
-                .position(|&v| v == c.ty)
-                .map_or(c.ty, |i| fresh_tyvids[i]); // defensive: if not found, pass through unchanged
-            ctx.deferred_constraints.push(Constraint {
-                class: c.class,
-                ty: fresh_ty,
-            });
+                .map(|&v| {
+                    scheme
+                        .vars
+                        .iter()
+                        .position(|&x| x == v)
+                        .map_or(v, |i| fresh_tyvids[i]) // defensive: pass through if absent
+                })
+                .collect();
+            ctx.deferred_constraints
+                .push(Constraint::new(c.class, fresh_tys));
         }
     }
 

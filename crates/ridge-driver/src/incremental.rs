@@ -327,20 +327,28 @@ fn registry_hash(module: &Module) -> u64 {
                 let mut methods: Vec<String> =
                     c.methods.iter().map(method_sig_fingerprint).collect();
                 methods.sort();
+                let ty_vars = c
+                    .ty_vars
+                    .iter()
+                    .map(|t| t.text.as_str())
+                    .collect::<Vec<_>>()
+                    .join(" ");
                 parts.push(format!(
                     "C|{}|{}|{supers:?}|{methods:?}",
-                    c.name.text, c.ty_var.text
+                    c.name.text, ty_vars
                 ));
             }
             Item::InstanceDecl(i) => {
                 let mut methods: Vec<&str> =
                     i.methods.iter().map(|m| m.name.text.as_str()).collect();
                 methods.sort_unstable();
-                parts.push(format!(
-                    "I|{}|{}|{methods:?}",
-                    i.class.text,
-                    render_ast_type(&i.ty)
-                ));
+                let head = i
+                    .head
+                    .iter()
+                    .map(render_ast_type)
+                    .collect::<Vec<_>>()
+                    .join(" ");
+                parts.push(format!("I|{}|{}|{methods:?}", i.class.text, head));
             }
             Item::Type(t) if !t.deriving.is_empty() => {
                 let mut der: Vec<&str> = t.deriving.iter().map(|d| d.text.as_str()).collect();

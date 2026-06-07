@@ -902,14 +902,25 @@ fn seed_class_method_schemes(
                 continue;
             }
 
-            // Allocate a fresh TyVid for the class type variable (e.g. `a`).
-            let class_tyvid = ctx.fresh_tyvid();
-
-            // Map the class type variable name to the fresh TyVid so that
-            // occurrences of it in param/ret types are resolved correctly.
+            // Allocate a fresh TyVid per class type variable — one for an
+            // ordinary class (`a`), several for a multi-parameter class (`a b`).
+            // Map each name so that occurrences in param/ret types resolve to the
+            // matching fresh TyVid.
             let mut tyvar_map: FxHashMap<&str, ridge_types::TyVid> = FxHashMap::default();
-            if !sig.class_ty_var.is_empty() {
-                tyvar_map.insert(sig.class_ty_var.as_str(), class_tyvid);
+            let mut class_tyvids: Vec<ridge_types::TyVid> =
+                Vec::with_capacity(sig.class_ty_vars.len());
+            for name in &sig.class_ty_vars {
+                let tv = ctx.fresh_tyvid();
+                class_tyvids.push(tv);
+                if !name.is_empty() {
+                    tyvar_map.insert(name.as_str(), tv);
+                }
+            }
+            // A method whose AST types were recorded always has at least one
+            // class variable; keep one as a defensive fallback so the scheme is
+            // never empty-quantified.
+            if class_tyvids.is_empty() {
+                class_tyvids.push(ctx.fresh_tyvid());
             }
 
             // Convert AST param types to Ridge types, substituting class_ty_var.
@@ -928,16 +939,16 @@ fn seed_class_method_schemes(
                 caps: CapRow::Concrete(CapabilitySet::PURE),
             };
 
-            // Build a polymorphic scheme ∀[class_tyvid]. fn_ty with constraint.
+            // Build a polymorphic scheme ∀[class_tyvids]. fn_ty with one
+            // constraint over all the class variables.
+            let constraint_tys: smallvec::SmallVec<[ridge_types::TyVid; 1]> =
+                class_tyvids.iter().copied().collect();
             let scheme = Scheme {
-                vars: vec![class_tyvid],
+                vars: class_tyvids,
                 cap_vars: vec![],
                 row_vars: vec![],
                 ty: fn_ty,
-                constraints: vec![Constraint {
-                    class: class_id,
-                    ty: class_tyvid,
-                }],
+                constraints: vec![Constraint::new(class_id, constraint_tys)],
             };
 
             // Seed at lowest precedence: bind under the method name.
@@ -982,10 +993,7 @@ fn seed_prelude_codec_schemes(ctx: &mut crate::ctx::InferCtx, b: &ridge_types::B
                 cap_vars: vec![],
                 row_vars: vec![],
                 ty: fn_ty,
-                constraints: vec![Constraint {
-                    class: ENCODE_CLASS,
-                    ty: a,
-                }],
+                constraints: vec![Constraint::single(ENCODE_CLASS, a)],
             },
         );
     }
@@ -1008,10 +1016,7 @@ fn seed_prelude_codec_schemes(ctx: &mut crate::ctx::InferCtx, b: &ridge_types::B
                 cap_vars: vec![],
                 row_vars: vec![],
                 ty: fn_ty,
-                constraints: vec![Constraint {
-                    class: DECODE_CLASS,
-                    ty: a,
-                }],
+                constraints: vec![Constraint::single(DECODE_CLASS, a)],
             },
         );
     }
@@ -1049,10 +1054,7 @@ fn seed_sql_codec_schemes(
                 cap_vars: vec![],
                 row_vars: vec![],
                 ty: fn_ty,
-                constraints: vec![Constraint {
-                    class: sqltype,
-                    ty: a,
-                }],
+                constraints: vec![Constraint::single(sqltype, a)],
             },
         );
     }
@@ -1074,10 +1076,7 @@ fn seed_sql_codec_schemes(
                 cap_vars: vec![],
                 row_vars: vec![],
                 ty: fn_ty,
-                constraints: vec![Constraint {
-                    class: sqltype,
-                    ty: a,
-                }],
+                constraints: vec![Constraint::single(sqltype, a)],
             },
         );
     }

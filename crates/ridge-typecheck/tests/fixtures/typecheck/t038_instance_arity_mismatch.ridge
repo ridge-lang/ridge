@@ -1,0 +1,7 @@
+-- expect: T038
+-- A two-parameter class needs a two-atom instance head; one atom is rejected.
+class Convert a b =
+    convert (x: a) -> b
+
+instance Convert Int =
+    convert (x: Int) -> Int = x

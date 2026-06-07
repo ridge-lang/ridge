@@ -56,6 +56,7 @@
 use ridge_ast::Span;
 use ridge_types::{ClassId, Constraint, TyConId, TyVid, Type};
 use rustc_hash::{FxHashMap, FxHashSet};
+use smallvec::SmallVec;
 
 use crate::class_env::{ClassTable, InstanceEnv, InstanceInfo};
 use crate::ctx::InferCtx;
@@ -85,8 +86,17 @@ pub enum DictPlan {
     Static {
         /// Instance metadata (method names, origin, etc.).
         info: Box<InstanceInfo>,
-        /// The concrete type that was resolved.
+        /// The first concrete head constructor that was resolved. For a
+        /// single-parameter class this is the whole head; the dict constant is
+        /// `$inst_{ClassName}_{name(tycon)}`.
         tycon: TyConId,
+        /// Additional head constructors for a multi-parameter class
+        /// (`Convert Celsius Fahrenheit` → `tycon = Celsius`,
+        /// `extra_head = [Fahrenheit]`). Empty for a single-parameter class, so
+        /// the single-parameter dict name is unchanged; for a multi-parameter
+        /// class the lowering pass appends these to form
+        /// `$inst_{ClassName}_{name(tycon)}_{name(extra…)}`.
+        extra_head: SmallVec<[TyConId; 1]>,
         /// Sub-dictionary plans for a parametric instance's context
         /// constraints, in `ctx_constraints` order.
         ///
@@ -166,20 +176,35 @@ pub fn solve_constraints(
     let mut visited: FxHashSet<(ClassId, TyConId)> = FxHashSet::default();
 
     while let Some(c) = work.pop() {
-        let resolved = ctx.deep_resolve(&Type::Var(c.ty));
-        dispatch_constraint(
-            ctx,
-            instance_env,
-            class_table,
-            env_snap_ty,
-            scc_span,
-            &c,
-            &resolved,
-            &mut work,
-            &mut visited,
-            &mut retained,
-            &mut dict_resolution,
-        );
+        if c.tys.len() == 1 {
+            // Single-parameter constraint — the established case (a)/(b)/(c) path.
+            let resolved = ctx.deep_resolve(&Type::Var(c.sole_ty()));
+            dispatch_constraint(
+                ctx,
+                instance_env,
+                class_table,
+                env_snap_ty,
+                scc_span,
+                &c,
+                &resolved,
+                &mut work,
+                &mut visited,
+                &mut retained,
+                &mut dict_resolution,
+            );
+        } else {
+            // Multi-parameter constraint (`Convert a b`, …).
+            dispatch_multi_constraint(
+                ctx,
+                instance_env,
+                class_table,
+                env_snap_ty,
+                scc_span,
+                &c,
+                &mut retained,
+                &mut dict_resolution,
+            );
+        }
     }
 
     (retained, dict_resolution)
@@ -250,10 +275,7 @@ fn dispatch_constraint(
                 // through instantiation carry an aliased TyVid that diverges
                 // from the generalised vars even though they represent the
                 // same unification root.
-                let resolved_c = Constraint {
-                    class: c.class,
-                    ty: v,
-                };
+                let resolved_c = Constraint::single(c.class, v);
                 if !retained.iter().any(|r| r == &resolved_c) {
                     retained.push(resolved_c.clone());
                 }
@@ -282,6 +304,109 @@ fn dispatch_constraint(
             });
         }
     }
+}
+
+/// Dispatch a multi-parameter class constraint (`Convert a b`, …).
+///
+/// Resolves every constrained variable, then:
+/// - **all concrete** → look the instance up by the head tuple via
+///   [`InstanceEnv::get_multi`]; a missing instance is T029.
+/// - **all still variables** → retain the constraint for generalisation
+///   (case b) when the variables are local, or report T030 ambiguity when one
+///   escapes the SCC (case c).
+/// - **mixed concrete/variable** → T030 ambiguity. Resolving such a constraint
+///   without an annotation needs functional dependencies, which this release
+///   does not implement; the user annotates the open position instead.
+#[allow(clippy::too_many_arguments)]
+fn dispatch_multi_constraint(
+    ctx: &mut InferCtx,
+    instance_env: &InstanceEnv,
+    class_table: &ClassTable,
+    env_snap_ty: &FxHashSet<TyVid>,
+    scc_span: Span,
+    c: &Constraint,
+    retained: &mut Vec<Constraint>,
+    dict_resolution: &mut DictResolution,
+) {
+    let n = c.tys.len();
+    let resolved: Vec<Type> = c
+        .tys
+        .iter()
+        .map(|&v| ctx.deep_resolve(&Type::Var(v)))
+        .collect();
+
+    let mut head_tycons: SmallVec<[TyConId; 1]> = SmallVec::new();
+    let mut head_vars: SmallVec<[TyVid; 1]> = SmallVec::new();
+    for r in &resolved {
+        match r {
+            Type::Con(id, _) => head_tycons.push(*id),
+            Type::Var(v) => head_vars.push(*v),
+            _ => {}
+        }
+    }
+
+    let class_name = class_table
+        .get(c.class)
+        .map_or("?", |info| info.name.as_str());
+
+    // ── All concrete: resolve the instance by the head tuple. ──
+    if head_tycons.len() == n {
+        let Some(info) = instance_env.get_multi(c.class, &head_tycons) else {
+            let head_disp = head_tycons
+                .iter()
+                .map(|t| format!("{t:?}"))
+                .collect::<Vec<_>>()
+                .join(" ");
+            ctx.errors.push(TypeError::NoInstance {
+                class: class_name.to_string(),
+                ty: head_disp,
+                span: scc_span,
+                fix_hint: format!("add `instance {class_name} …` for this combination of types"),
+            });
+            return;
+        };
+        let info = info.clone();
+        let extra_head: SmallVec<[TyConId; 1]> = head_tycons.iter().skip(1).copied().collect();
+        dict_resolution
+            .entry((c.class, c.tys[0]))
+            .or_insert_with(|| DictPlan::Static {
+                info: Box::new(info),
+                tycon: head_tycons[0],
+                extra_head,
+                args: vec![],
+            });
+        return;
+    }
+
+    // ── All variables: retain for generalisation, or report ambiguity. ──
+    if head_vars.len() == n {
+        if let Some(&escaping) = head_vars.iter().find(|v| env_snap_ty.contains(v)) {
+            ctx.errors.push(TypeError::AmbiguousConstraint {
+                class: class_name.to_string(),
+                ty_var: format!("?{}", escaping.0),
+                span: scc_span,
+            });
+        } else {
+            let resolved_c = Constraint::new(c.class, head_vars.clone());
+            if !retained.iter().any(|r| r == &resolved_c) {
+                retained.push(resolved_c.clone());
+            }
+            dict_resolution
+                .entry((c.class, head_vars[0]))
+                .or_insert(DictPlan::Forward(resolved_c));
+        }
+        return;
+    }
+
+    // ── Mixed: an open position cannot be resolved without fundeps. ──
+    let var = head_vars
+        .first()
+        .map_or_else(|| format!("?{}", c.tys[0].0), |v| format!("?{}", v.0));
+    ctx.errors.push(TypeError::AmbiguousConstraint {
+        class: class_name.to_string(),
+        ty_var: var,
+        span: scc_span,
+    });
 }
 
 /// Attempt to discharge a concrete `(ClassId, TyConId)` constraint.
@@ -353,10 +478,11 @@ fn discharge_concrete(
             // Include the concrete TyConId so the lowering pass can look up
             // the type name without re-resolving the instance.
             dict_resolution
-                .entry((c.class, c.ty))
+                .entry((c.class, c.sole_ty()))
                 .or_insert_with(|| DictPlan::Static {
                     info: Box::new(inst_info.clone()),
                     tycon: tyconid,
+                    extra_head: SmallVec::new(),
                     args,
                 });
 
@@ -368,10 +494,7 @@ fn discharge_concrete(
                     if !visited.contains(&super_key) {
                         // Use the same TyVid from the original constraint —
                         // the solver will deep_resolve it again.
-                        work.push(Constraint {
-                            class: superclass_id,
-                            ty: c.ty,
-                        });
+                        work.push(Constraint::single(superclass_id, c.sole_ty()));
                     }
                 }
             }
@@ -468,12 +591,7 @@ fn resolve_dict_plan(
     // Placeholder for the "no resolution" cases. The top-level worklist still
     // enqueues the corresponding constraint and emits any T029 diagnostic, so
     // these placeholders never double-report.
-    let forward_placeholder = || {
-        DictPlan::Forward(Constraint {
-            class,
-            ty: TyVid(0),
-        })
-    };
+    let forward_placeholder = || DictPlan::Forward(Constraint::single(class, TyVid(0)));
 
     match resolved {
         Type::Con(tyconid, _) => {
@@ -510,10 +628,11 @@ fn resolve_dict_plan(
             DictPlan::Static {
                 info: Box::new(inst_info),
                 tycon: tyconid,
+                extra_head: SmallVec::new(),
                 args,
             }
         }
-        Type::Var(v) => DictPlan::Forward(Constraint { class, ty: *v }),
+        Type::Var(v) => DictPlan::Forward(Constraint::single(class, *v)),
         // Other shapes are ill-typed for a class head; a diagnostic fires on
         // the normal path. Use a Forward placeholder so the plan is total.
         _ => forward_placeholder(),
@@ -585,7 +704,13 @@ fn collect_ambiguous_element_vars(
         for sub in args {
             match sub {
                 DictPlan::Forward(c) => {
-                    if !generalizable.contains(&c.ty) && !outer.contains(&c.ty) {
+                    // A forwarded element dict is ambiguous when none of its
+                    // variables is generalisable or threaded from an outer scope.
+                    let satisfiable = c
+                        .tys
+                        .iter()
+                        .any(|v| generalizable.contains(v) || outer.contains(v));
+                    if !satisfiable {
                         out.push((c.class, scc_span));
                     }
                 }
@@ -682,10 +807,8 @@ mod tests {
             .union_value(TyVidKey(a.0), TyValue(Some(Type::Con(int_tycon, vec![]))));
 
         // Push a deferred constraint: ToText a (which resolves to ToText Int).
-        ctx.deferred_constraints.push(Constraint {
-            class: TOTEXT_CLASS,
-            ty: a,
-        });
+        ctx.deferred_constraints
+            .push(Constraint::single(TOTEXT_CLASS, a));
 
         let ct = make_class_table();
         let env = make_instance_env_with(TOTEXT_CLASS, int_tycon);
@@ -723,10 +846,8 @@ mod tests {
             .union_value(TyVidKey(a.0), TyValue(Some(Type::Con(float_tycon, vec![]))));
 
         // ToText a where a = Float, but no ToText Float instance exists.
-        ctx.deferred_constraints.push(Constraint {
-            class: TOTEXT_CLASS,
-            ty: a,
-        });
+        ctx.deferred_constraints
+            .push(Constraint::single(TOTEXT_CLASS, a));
 
         let ct = make_class_table();
         let env = InstanceEnv::new(); // empty — no instances
@@ -750,10 +871,8 @@ mod tests {
         let a = ctx.fresh_tyvid();
 
         // Push a deferred constraint: ToText a. `a` is fresh and not unified.
-        ctx.deferred_constraints.push(Constraint {
-            class: TOTEXT_CLASS,
-            ty: a,
-        });
+        ctx.deferred_constraints
+            .push(Constraint::single(TOTEXT_CLASS, a));
 
         let ct = make_class_table();
         let env = InstanceEnv::new();
@@ -768,13 +887,7 @@ mod tests {
             ctx.errors
         );
         assert_eq!(retained.len(), 1, "case (b): must retain the constraint");
-        assert_eq!(
-            retained[0],
-            Constraint {
-                class: TOTEXT_CLASS,
-                ty: a
-            }
-        );
+        assert_eq!(retained[0], Constraint::single(TOTEXT_CLASS, a));
         // A Forward plan must be recorded.
         let plan = dict_res.get(&(TOTEXT_CLASS, a));
         assert!(
@@ -790,10 +903,8 @@ mod tests {
         let mut ctx = InferCtx::new();
         let a = ctx.fresh_tyvid();
 
-        ctx.deferred_constraints.push(Constraint {
-            class: TOTEXT_CLASS,
-            ty: a,
-        });
+        ctx.deferred_constraints
+            .push(Constraint::single(TOTEXT_CLASS, a));
 
         let ct = make_class_table();
         let env = InstanceEnv::new();
@@ -843,10 +954,8 @@ mod tests {
             .union_value(TyVidKey(a.0), TyValue(Some(Type::Con(int_tycon, vec![]))));
 
         // Require Ord a → the solver should also check Eq a (Ord's superclass).
-        ctx.deferred_constraints.push(Constraint {
-            class: ORD_CLASS,
-            ty: a,
-        });
+        ctx.deferred_constraints
+            .push(Constraint::single(ORD_CLASS, a));
 
         let ct = make_class_table();
         let mut env = InstanceEnv::new();
@@ -881,10 +990,8 @@ mod tests {
         ctx.tyvids
             .union_value(TyVidKey(a.0), TyValue(Some(Type::Con(int_tycon, vec![]))));
 
-        ctx.deferred_constraints.push(Constraint {
-            class: ORD_CLASS,
-            ty: a,
-        });
+        ctx.deferred_constraints
+            .push(Constraint::single(ORD_CLASS, a));
 
         let ct = make_class_table();
         let mut env = InstanceEnv::new();
@@ -920,10 +1027,7 @@ mod tests {
             cap_vars: vec![],
             row_vars: vec![],
             ty: Type::Var(a),
-            constraints: vec![Constraint {
-                class: TOTEXT_CLASS,
-                ty: a,
-            }],
+            constraints: vec![Constraint::single(TOTEXT_CLASS, a)],
         };
 
         assert!(ctx.deferred_constraints.is_empty());
@@ -940,13 +1044,15 @@ mod tests {
         let dc = &ctx.deferred_constraints[0];
         assert_eq!(dc.class, TOTEXT_CLASS);
         assert_ne!(
-            dc.ty, a,
+            dc.sole_ty(),
+            a,
             "constraint TyVid must be the fresh var, not the bound var TyVid(99)"
         );
         // The fresh var must match the TyVid allocated inside the ctx (TyVid(1)
         // because TyVid(0) was pre-consumed above).
         assert_eq!(
-            dc.ty.0, 1,
+            dc.sole_ty().0,
+            1,
             "fresh var for the first scheme var must be TyVid(1)"
         );
     }
@@ -981,14 +1087,10 @@ mod tests {
         let b = ctx.fresh_tyvid();
 
         // Two constraints: ToText a (will be retained) and ToText b (also retained).
-        ctx.deferred_constraints.push(Constraint {
-            class: TOTEXT_CLASS,
-            ty: a,
-        });
-        ctx.deferred_constraints.push(Constraint {
-            class: TOTEXT_CLASS,
-            ty: b,
-        });
+        ctx.deferred_constraints
+            .push(Constraint::single(TOTEXT_CLASS, a));
+        ctx.deferred_constraints
+            .push(Constraint::single(TOTEXT_CLASS, b));
 
         let ct = make_class_table();
         let env = InstanceEnv::new();
@@ -1019,10 +1121,8 @@ mod tests {
         InstanceInfo {
             def_module: None,
             methods: vec![],
-            ctx_constraints: vec![Constraint {
-                class: ctx_class,
-                ty: TyVid(0), // sentinel — solver must not use this directly
-            }],
+            // sentinel TyVid(0) — solver must not use this directly
+            ctx_constraints: vec![Constraint::single(ctx_class, TyVid(0))],
             head_var_positions: vec![arg_pos],
             origin: InstanceOrigin::Explicit,
             span: dummy_span(),
@@ -1035,14 +1135,8 @@ mod tests {
             def_module: None,
             methods: vec![],
             ctx_constraints: vec![
-                Constraint {
-                    class: ctx_class,
-                    ty: TyVid(0),
-                },
-                Constraint {
-                    class: ctx_class,
-                    ty: TyVid(0),
-                },
+                Constraint::single(ctx_class, TyVid(0)),
+                Constraint::single(ctx_class, TyVid(0)),
             ],
             head_var_positions: vec![pos0, pos1],
             origin: InstanceOrigin::Explicit,
@@ -1072,10 +1166,8 @@ mod tests {
             ))),
         );
 
-        ctx.deferred_constraints.push(Constraint {
-            class: ENCODE_CLASS,
-            ty: a,
-        });
+        ctx.deferred_constraints
+            .push(Constraint::single(ENCODE_CLASS, a));
 
         let ct = make_class_table();
         let mut env = InstanceEnv::new();
@@ -1132,10 +1224,8 @@ mod tests {
                 vec![Type::Con(int_tycon, vec![])],
             ))),
         );
-        ctx.deferred_constraints.push(Constraint {
-            class: ENCODE_CLASS,
-            ty: a,
-        });
+        ctx.deferred_constraints
+            .push(Constraint::single(ENCODE_CLASS, a));
 
         let ct = make_class_table();
         let mut env = InstanceEnv::new();
@@ -1179,10 +1269,8 @@ mod tests {
                 vec![Type::Con(text_tycon, vec![]), Type::Con(bool_tycon, vec![])],
             ))),
         );
-        ctx.deferred_constraints.push(Constraint {
-            class: ENCODE_CLASS,
-            ty: a,
-        });
+        ctx.deferred_constraints
+            .push(Constraint::single(ENCODE_CLASS, a));
 
         let ct = make_class_table();
         let mut env = InstanceEnv::new();
@@ -1237,10 +1325,8 @@ mod tests {
                 vec![Type::Con(int_tycon, vec![]), Type::Con(text_tycon, vec![])],
             ))),
         );
-        ctx.deferred_constraints.push(Constraint {
-            class: ENCODE_CLASS,
-            ty: a,
-        });
+        ctx.deferred_constraints
+            .push(Constraint::single(ENCODE_CLASS, a));
 
         let ct = make_class_table();
         let mut env = InstanceEnv::new();

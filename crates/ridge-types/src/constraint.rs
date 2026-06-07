@@ -7,6 +7,8 @@
 //! carry constraints without creating a dependency cycle: `ridge-types` has no
 //! knowledge of the class registry; it only stores the interned id.
 
+use smallvec::{smallvec, SmallVec};
+
 use crate::ty::TyVid;
 
 // ── ClassId ───────────────────────────────────────────────────────────────────
@@ -38,20 +40,55 @@ pub const DECODE_CLASS: ClassId = ClassId(4);
 
 // ── Constraint ────────────────────────────────────────────────────────────────
 
-/// A single-parameter class constraint: `class_name type_var`.
+/// A class constraint `class_name type_var…`.
 ///
 /// Stored on [`crate::Scheme`] for polymorphic declarations that constrain
-/// their type variables (e.g. `∀ a. ToText a => a -> Text`).
+/// their type variables (e.g. `∀ a. ToText a => a -> Text`). The constrained
+/// variables are held in `tys`: one for an ordinary single-parameter class,
+/// several for a multi-parameter class such as `Convert a b`. The inline
+/// length-1 backing means the overwhelmingly common single-parameter case
+/// carries no heap allocation.
 ///
-/// The constraint references a [`TyVid`] that is always one of the scheme's
-/// `vars` — it is never a free inference variable in committed code.
+/// Each variable is always one of the scheme's `vars` — never a free
+/// inference variable in committed code.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct Constraint {
     /// The class being required.
     pub class: ClassId,
-    /// The constrained type variable (must appear in the enclosing
-    /// [`crate::Scheme::vars`]).
-    pub ty: TyVid,
+    /// The constrained type variables (each must appear in the enclosing
+    /// [`crate::Scheme::vars`]). Length one for a single-parameter class.
+    pub tys: SmallVec<[TyVid; 1]>,
+}
+
+impl Constraint {
+    /// Builds a single-parameter constraint `C a`.
+    #[must_use]
+    pub fn single(class: ClassId, ty: TyVid) -> Self {
+        Self {
+            class,
+            tys: smallvec![ty],
+        }
+    }
+
+    /// Builds a constraint over an explicit list of variables `C a b …`.
+    #[must_use]
+    pub const fn new(class: ClassId, tys: SmallVec<[TyVid; 1]>) -> Self {
+        Self { class, tys }
+    }
+
+    /// Returns the sole constrained variable, for the single-parameter case.
+    ///
+    /// Debug builds assert the constraint really is single-parameter; this is
+    /// the seam multi-parameter dispatch widens to walk every variable.
+    #[must_use]
+    pub fn sole_ty(&self) -> TyVid {
+        debug_assert_eq!(
+            self.tys.len(),
+            1,
+            "sole_ty called on a multi-parameter constraint"
+        );
+        self.tys[0]
+    }
 }
 
 // ── Tests ─────────────────────────────────────────────────────────────────────
@@ -83,30 +120,31 @@ mod tests {
 
     #[test]
     fn constraint_equality() {
-        let a = Constraint {
-            class: TOTEXT_CLASS,
-            ty: TyVid(0),
-        };
-        let b = Constraint {
-            class: TOTEXT_CLASS,
-            ty: TyVid(0),
-        };
-        let c = Constraint {
-            class: EQ_CLASS,
-            ty: TyVid(0),
-        };
+        let a = Constraint::single(TOTEXT_CLASS, TyVid(0));
+        let b = Constraint::single(TOTEXT_CLASS, TyVid(0));
+        let c = Constraint::single(EQ_CLASS, TyVid(0));
         assert_eq!(a, b);
         assert_ne!(a, c);
     }
 
     #[test]
     fn constraint_clone() {
-        let original = Constraint {
-            class: ORD_CLASS,
-            ty: TyVid(5),
-        };
+        let original = Constraint::single(ORD_CLASS, TyVid(5));
         let cloned = original.clone();
         assert_eq!(original, cloned);
+    }
+
+    #[test]
+    fn sole_ty_returns_single_var() {
+        let c = Constraint::single(EQ_CLASS, TyVid(7));
+        assert_eq!(c.sole_ty(), TyVid(7));
+        assert_eq!(c.tys.len(), 1);
+    }
+
+    #[test]
+    fn multi_param_constraint_holds_every_var() {
+        let c = Constraint::new(EQ_CLASS, smallvec![TyVid(1), TyVid(2)]);
+        assert_eq!(c.tys.as_slice(), &[TyVid(1), TyVid(2)]);
     }
 
     #[test]

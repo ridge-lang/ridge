@@ -313,10 +313,13 @@ pub fn derive_instances(
         let class_name = &class_ident.text;
         let span = class_ident.span;
 
-        // `Table` is a column-codegen directive, not a typeclass: it generates a
-        // column mirror (a type plus two values), synthesized in `tycon_collect`.
-        // Skip it here so the class lookup below does not flag it as unknown.
-        if class_name == ridge_ast::column_mirror::TABLE_DERIVE {
+        // `Table` and `Schema` are data-layer codegen directives, not
+        // typeclasses: they generate top-level declarations (a column mirror, a
+        // schema descriptor), synthesized in `tycon_collect`. Skip them here so
+        // the class lookup below does not flag them as unknown.
+        if class_name == ridge_ast::column_mirror::TABLE_DERIVE
+            || class_name == ridge_ast::column_mirror::SCHEMA_DERIVE
+        {
             continue;
         }
 

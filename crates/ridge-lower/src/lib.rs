@@ -104,6 +104,9 @@ pub fn lower_module(
     // Attach the current module's inferred_caps side-table so that
     // lookup_inferred_caps can read Phase 4's capability inference results.
     ctx.attach_inferred_caps(&typed.inferred_caps);
+    // Attach the quoted-lambda side-table so quoted bodies are reified to QExpr
+    // trees instead of lowered to closures.
+    ctx.attach_quoted_lambdas(&typed.quoted_lambdas);
     // Attach the class/instance registries for dictionary-lowering.
     ctx.attach_class_registries(&ws.class_table, &ws.instance_env);
     if let Some(rm) = rmod {

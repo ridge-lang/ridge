@@ -150,6 +150,7 @@ const STDLIB_MODULES: &[&str] = &[
     // Tier 5
     "std.crypto",
     "std.sql",
+    "std.query",
 ];
 
 // ── Entry type ────────────────────────────────────────────────────────────────

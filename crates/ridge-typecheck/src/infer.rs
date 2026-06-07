@@ -195,7 +195,45 @@ fn infer_expr_inner(ctx: &mut InferCtx, b: &BuiltinTyCons, expr: &Expr) -> Type 
         // ── Call ──────────────────────────────────────────────────────────────
         Expr::Call { callee, args, span } => {
             let callee_ty = infer_expr(ctx, b, callee);
-            let arg_types: Vec<Type> = args.iter().map(|a| infer_expr(ctx, b, a)).collect();
+            // Quotation: a lambda flowing into a `Quote (e -> _)` parameter is
+            // captured as an expression tree, not checked as an ordinary
+            // function. Peek the callee's parameter types so each such lambda is
+            // routed to the isolated quote checker instead of `infer_expr`.
+            let callee_params: Option<Vec<Type>> = match ctx.deep_resolve(&callee_ty) {
+                Type::Fn { params, .. } => Some(params),
+                _ => None,
+            };
+            let arg_types: Vec<Type> = args
+                .iter()
+                .enumerate()
+                .map(|(i, a)| {
+                    // The lambda is usually parenthesised at the call site
+                    // (`f (fn u -> …)`), so look through `Paren` to find it.
+                    let inner = peel_parens(a);
+                    if matches!(inner, Expr::Lambda { .. }) {
+                        if let Some(pty) = callee_params.as_ref().and_then(|p| p.get(i)) {
+                            let pty = ctx.deep_resolve(pty);
+                            if crate::quote::is_quote_param(ctx, &pty) {
+                                return match crate::quote::quote_entity(ctx, &pty) {
+                                    Some(entity)
+                                        if crate::quote::check_quote(ctx, b, inner, entity) =>
+                                    {
+                                        pty
+                                    }
+                                    Some(_) => Type::Error,
+                                    None => {
+                                        ctx.errors.push(TypeError::QuoteEntityUnknown {
+                                            span: inner.span(),
+                                        });
+                                        Type::Error
+                                    }
+                                };
+                            }
+                        }
+                    }
+                    infer_expr(ctx, b, a)
+                })
+                .collect();
 
             // D069: zero-param call convention. `fn f ()` declares `params = []`
             // in the AST, producing scheme `∀. Fn { params: [], ret: T }`.
@@ -1481,6 +1519,18 @@ fn bind_or_check_field_pattern(
 ///
 /// `unify` returns errors with dummy `Span::point(0)`; callers replace the
 /// span with the most informative location they have.
+/// Look through any `Paren` wrappers to the expression they enclose.
+///
+/// Call-site arguments are routinely parenthesised (`f (fn u -> …)`), so the
+/// quotation hook peels parentheses before testing for a lambda.
+fn peel_parens(e: &Expr) -> &Expr {
+    let mut cur = e;
+    while let Expr::Paren { inner, .. } = cur {
+        cur = inner;
+    }
+    cur
+}
+
 fn attach_span(err: TypeError, span: Span) -> TypeError {
     match err {
         TypeError::TypeMismatch {

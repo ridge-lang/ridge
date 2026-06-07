@@ -57,6 +57,7 @@ const MODULE_ORDER: &[&str] = &[
     "std.net.http",
     "std.crypto",
     "std.sql",
+    "std.query",
 ];
 
 // ── Baseline export table (T10: preserves original API) ───────────────────────
@@ -359,6 +360,14 @@ const BASELINE_EXPORTS: &[(&str, &[&str])] = &[
             // The opaque SQL column value plus the SqlType codec class and its
             // methods, all importable from user code.
             "SqlValue", "SqlType", "toSql", "fromSql",
+        ],
+    ),
+    (
+        "std.query",
+        &[
+            // The tree renderer. `Quote`/`QExpr` and their constructors are
+            // prelude builtins, not std.query exports.
+            "debugShow",
         ],
     ),
 ];

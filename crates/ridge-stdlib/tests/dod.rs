@@ -231,11 +231,11 @@ fn g5_path_b_dominance() {
 /// under `stdlib/`.
 ///
 /// `net/http.ridge` and `net/http.test.ridge` each count toward their total.
-/// `crypto` and `sql` ship no `.test.ridge` (their behaviour is covered by
-/// Rust-side tests), so the `.ridge` count runs two ahead.
+/// `crypto`, `sql`, and `query` ship no `.test.ridge` (their behaviour is
+/// covered by Rust-side tests), so the `.ridge` count runs three ahead.
 #[test]
 fn artefacts_count_matches_plan() {
-    const EXPECTED_RG: usize = 21;
+    const EXPECTED_RG: usize = 22;
     const EXPECTED_TEST_RG: usize = 19;
 
     let stdlib = stdlib_dir();

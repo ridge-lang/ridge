@@ -1,0 +1,36 @@
+-- std.query — the runtime side of quotation.
+--
+-- When a lambda is passed where a `Quote` is expected, the compiler does not
+-- lower it to a closure. It captures the body as a `QExpr` tree and wraps it in
+-- a `Quote`. This is the same idea as C#'s `Expression<Func<>>`: the predicate
+-- becomes data a later pass walks, rather than a function that runs.
+--
+-- `QExpr` and `Quote` are prelude builtins (like `JsonValue`), so they are in
+-- scope here without an import. The compiler builds the tree directly; this
+-- module walks it back — for now, rendering it to a readable, SQL-shaped string
+-- so a captured body can be shown to have round-tripped to the tree it should.
+
+-- Render a captured tree to a readable, SQL-shaped string. Literals show as `?`
+-- placeholders — binding parameters is the SQL-compilation pass's job; this is
+-- here to confirm a quoted body round-trips to a tree.
+pub fn debugShow (q: Quote f) -> Text = showExpr q.tree
+
+fn showExpr (e: QExpr) -> Text =
+    match e
+        QCol c      -> c
+        QLitInt _   -> "?"
+        QLitText _  -> "?"
+        QLitBool _  -> "?"
+        QLitFloat _ -> "?"
+        QNot x      -> Text.concat "(NOT " (Text.concat (showExpr x) ")")
+        QAnd l r    -> binNode l " AND " r
+        QOr l r     -> binNode l " OR " r
+        QEq l r     -> binNode l " = " r
+        QNe l r     -> binNode l " <> " r
+        QLt l r     -> binNode l " < " r
+        QGt l r     -> binNode l " > " r
+        QLe l r     -> binNode l " <= " r
+        QGe l r     -> binNode l " >= " r
+
+fn binNode (l: QExpr) (op: Text) (r: QExpr) -> Text =
+    Text.concat "(" (Text.concat (showExpr l) (Text.concat op (Text.concat (showExpr r) ")")))

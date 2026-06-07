@@ -9,6 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Quotation: a lambda passed where a `Quote` is expected is captured as an expression tree instead of being compiled to a closure — the same idea as C#'s `Expression<Func<>>`. A predicate like `fn u -> u.age >= 18 && u.active` is type-checked against the entity's columns and reified into a `QExpr` value the program can walk at runtime. Field accesses become column references by their SQL name (a `signupYear` field reads back as `signup_year`), boolean columns work as predicates on their own, and an unknown column (`T039`), an unsupported form (`T040`), a mismatched comparison (`T041`), or an entity that can't be determined (`T042`) are reported at compile time. This is the mechanism the query layer builds on.
 - Multi-parameter type classes: a class can take more than one type parameter, e.g. `class Convert a b = convert (x: a) -> b`. Instance heads list one type per parameter (`instance Convert Celsius Fahrenheit`), coherence is keyed by the whole head tuple so instances that share a leading type but differ later coexist, and a call selects the instance from the types at every head position. A head position the caller leaves undetermined is reported as an ambiguous constraint to annotate.
 
 ## [0.3.0-rc4] - 2026-06-03

@@ -409,3 +409,57 @@ fn distinct_multi_param_head_tuples_coexist() {
         "distinct head tuples must not collide; got: {codes:?}"
     );
 }
+
+// ── Quotation (L6) ────────────────────────────────────────────────────────────
+
+/// A predicate over real columns, with a comparison and a boolean column joined
+/// by `&&`, type-checks cleanly: the lambda is captured against `User`'s columns
+/// rather than checked as an ordinary function.
+#[test]
+fn quoted_predicate_typechecks() {
+    let src = "type User = { age: Int, active: Bool }\n\nfn pred (q: Quote (User -> Bool)) -> Bool = true\n\nfn demo () -> Bool = pred (fn u -> u.age >= 18 && u.active)\n";
+    let errors = run_typecheck_on_source("quote_happy", src);
+    let codes: Vec<&str> = errors.iter().map(TypeError::code).collect();
+    assert!(
+        codes.is_empty(),
+        "a quoted predicate over real columns must typecheck cleanly; got: {codes:?}"
+    );
+}
+
+/// Referencing a field that is not a column of the entity is a compile error
+/// (T039), not wrong SQL at runtime.
+#[test]
+fn quoted_unknown_column_is_rejected() {
+    let src = "type User = { age: Int, active: Bool }\n\nfn pred (q: Quote (User -> Bool)) -> Bool = true\n\nfn demo () -> Bool = pred (fn u -> u.salary >= 18)\n";
+    let errors = run_typecheck_on_source("quote_unknown_col", src);
+    let codes: Vec<&str> = errors.iter().map(TypeError::code).collect();
+    assert!(
+        codes.contains(&"T039"),
+        "an unknown column in a quoted predicate must be T039; got: {codes:?}"
+    );
+}
+
+/// Comparing a column with a literal of a different type is rejected (T041).
+#[test]
+fn quoted_comparison_type_mismatch_is_rejected() {
+    let src = "type User = { age: Int, active: Bool }\n\nfn pred (q: Quote (User -> Bool)) -> Bool = true\n\nfn demo () -> Bool = pred (fn u -> u.age >= \"old\")\n";
+    let errors = run_typecheck_on_source("quote_cmp_mismatch", src);
+    let codes: Vec<&str> = errors.iter().map(TypeError::code).collect();
+    assert!(
+        codes.contains(&"T041"),
+        "a mismatched comparison in a quoted predicate must be T041; got: {codes:?}"
+    );
+}
+
+/// A quoted body that is not boolean — here a bare integer column — is rejected
+/// (T040): a predicate must evaluate to a boolean.
+#[test]
+fn quoted_non_boolean_body_is_rejected() {
+    let src = "type User = { age: Int, active: Bool }\n\nfn pred (q: Quote (User -> Bool)) -> Bool = true\n\nfn demo () -> Bool = pred (fn u -> u.age)\n";
+    let errors = run_typecheck_on_source("quote_non_bool", src);
+    let codes: Vec<&str> = errors.iter().map(TypeError::code).collect();
+    assert!(
+        codes.contains(&"T040"),
+        "a non-boolean quoted predicate body must be T040; got: {codes:?}"
+    );
+}

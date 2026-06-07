@@ -107,6 +107,10 @@ fn poly2(v0: TyVid, v1: TyVid, ty: Type) -> Scheme {
 ///
 /// The returned maps are intended to seed the inference context in T6.
 #[must_use]
+#[allow(
+    clippy::too_many_lines,
+    reason = "flat sequence of prelude scheme/tycon inserts; one statement per binding reads best inline"
+)]
 pub fn prelude_types(b: &BuiltinTyCons) -> (FxHashMap<String, Scheme>, FxHashMap<String, TyConId>) {
     // ── Constructor value schemes ─────────────────────────────────────────────
 
@@ -249,6 +253,42 @@ pub fn prelude_types(b: &BuiltinTyCons) -> (FxHashMap<String, Scheme>, FxHashMap
             vec![ty_con(b.text, vec![]), json_ty.clone()],
         ))),
     );
+
+    // ── Quotation type names and constructors ─────────────────────────────────
+    //
+    // `QExpr` and `Quote` are prelude builtins so a quoted predicate's type
+    // (`Quote (User -> Bool)`) resolves in any module without an import. The
+    // `QExpr` constructors are matched by the quotation runtime and synthesised
+    // by the compiler when it reifies a body; their value schemes are registered
+    // here so every prelude binding resolves to an entry (the same shape the
+    // `JsonValue` constructors carry).
+    tycons.insert("QExpr".to_string(), b.q_expr);
+    tycons.insert("Quote".to_string(), b.quote);
+
+    let qexpr_ty = ty_con(b.q_expr, vec![]);
+    let q_ctor = |params: Vec<Type>| Scheme {
+        vars: vec![],
+        cap_vars: vec![],
+        row_vars: vec![],
+        ty: ty_fn_pure(params, qexpr_ty.clone()),
+        constraints: vec![],
+    };
+    let text_ty = ty_con(b.text, vec![]);
+    values.insert("QCol".to_string(), q_ctor(vec![text_ty.clone()]));
+    values.insert("QLitInt".to_string(), q_ctor(vec![ty_con(b.int, vec![])]));
+    values.insert("QLitText".to_string(), q_ctor(vec![text_ty]));
+    values.insert("QLitBool".to_string(), q_ctor(vec![ty_con(b.bool, vec![])]));
+    values.insert(
+        "QLitFloat".to_string(),
+        q_ctor(vec![ty_con(b.float, vec![])]),
+    );
+    values.insert("QNot".to_string(), q_ctor(vec![qexpr_ty.clone()]));
+    for name in ["QAnd", "QOr", "QEq", "QNe", "QLt", "QGt", "QLe", "QGe"] {
+        values.insert(
+            name.to_string(),
+            q_ctor(vec![qexpr_ty.clone(), qexpr_ty.clone()]),
+        );
+    }
 
     (values, tycons)
 }

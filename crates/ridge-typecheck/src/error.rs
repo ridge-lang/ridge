@@ -553,6 +553,63 @@ pub enum TypeError {
         span: Span,
     },
 
+    // ── T039 ─────────────────────────────────────────────────────────────────
+    /// A quoted predicate references a field that is not a column of its entity.
+    ///
+    /// Inside `fn u -> u.age >= 18`, every `u.field` must name a real field of
+    /// the entity the quote is checked against. A typo or a dropped column is
+    /// caught here rather than producing wrong SQL at runtime.
+    QuoteUnknownColumn {
+        /// Display name of the entity the quote is checked against.
+        entity: String,
+        /// The field name that is not a column.
+        column: String,
+        /// Near-miss column names to suggest.
+        suggestions: Vec<String>,
+        /// Source span of the offending field access.
+        span: Span,
+    },
+
+    // ── T040 ─────────────────────────────────────────────────────────────────
+    /// A quoted predicate uses a form the quotation layer does not support yet.
+    ///
+    /// The quoted sub-language is deliberately small: column references,
+    /// literals, comparisons, and `&&`/`||`. Anything else (a free variable, an
+    /// arithmetic operator, a call) lands here with a description of what was
+    /// found.
+    QuoteUnsupportedExpr {
+        /// What the quote contained that is not supported.
+        detail: String,
+        /// Source span of the offending expression.
+        span: Span,
+    },
+
+    // ── T041 ─────────────────────────────────────────────────────────────────
+    /// The two sides of a comparison in a quoted predicate have different types.
+    ///
+    /// `u.age >= "18"` compares an `Int` column with a `Text` literal; the
+    /// operands must share a type so the generated SQL is well-typed.
+    QuoteComparisonMismatch {
+        /// Rendered type of the left operand.
+        left: String,
+        /// Rendered type of the right operand.
+        right: String,
+        /// Source span of the comparison.
+        span: Span,
+    },
+
+    // ── T042 ─────────────────────────────────────────────────────────────────
+    /// The entity type a quoted predicate is checked against cannot be
+    /// determined at the call site.
+    ///
+    /// A `Quote (e -> Bool)` parameter needs `e` to be a concrete record type so
+    /// `u.field` can be resolved. When `e` is still open (no surrounding query
+    /// fixes it), annotate the predicate so the entity is known.
+    QuoteEntityUnknown {
+        /// Source span of the quoted lambda.
+        span: Span,
+    },
+
     // ── T999 ─────────────────────────────────────────────────────────────────
     /// Internal type-checker invariant violation — should never reach users.
     ///
@@ -614,6 +671,10 @@ impl TypeError {
             Self::OpaqueFieldAccess { .. } => "T036",
             Self::RowMismatch { .. } => "T037",
             Self::InstanceArityMismatch { .. } => "T038",
+            Self::QuoteUnknownColumn { .. } => "T039",
+            Self::QuoteUnsupportedExpr { .. } => "T040",
+            Self::QuoteComparisonMismatch { .. } => "T041",
+            Self::QuoteEntityUnknown { .. } => "T042",
             Self::InternalTypeError { .. } => "T999",
         }
     }

@@ -114,9 +114,14 @@ pub fn lower_item_multi(ctx: &mut LowerCtx<'_>, item: &Item) -> Vec<IrItem> {
         Item::Actor(decl) => vec![IrItem::Actor(lower_actor(ctx, decl))],
         Item::Const(decl) => vec![IrItem::Const(lower_const(ctx, decl))],
         Item::InstanceDecl(decl) => lower_instance(ctx, decl),
-        // A `deriving (Table)` record erases like any type, except it also emits
-        // its column-mirror values (the type itself stays in the arena).
-        Item::Type(decl) => lower_table_mirrors(ctx, decl),
+        // A `deriving (Table)` / `deriving (Schema)` record erases like any type,
+        // except it also emits its column-mirror values and/or schema descriptor
+        // (the type itself stays in the arena).
+        Item::Type(decl) => {
+            let mut items = lower_table_mirrors(ctx, decl);
+            items.extend(lower_schema_descriptor(ctx, decl));
+            items
+        }
         // Import and class declarations are erased at the IR level.
         // Class metadata lives in `TypedWorkspace.class_table`.
         Item::Import(_) | Item::ClassDecl(_) => vec![],
@@ -217,11 +222,103 @@ fn lower_table_mirrors(ctx: &mut LowerCtx<'_>, decl: &ridge_ast::TypeDecl) -> Ve
     ]
 }
 
+/// Emit the schema-descriptor value for a `deriving (Schema)` record.
+///
+/// For `pub type User = { id: Int, … } deriving (Schema)` this produces one
+/// top-level constant:
+///
+/// - `userSchema = { name = "User", table = "users",
+///                   fields = [ { name = "id", column = "id", ty = "Int",
+///                                optional = false }, … ] }`
+///
+/// The descriptor is the introspection source the data/web layers map to an
+/// `OpenAPI` spec or a migration diff. Names and SQL spellings come from
+/// [`ridge_ast::column_mirror`]; the value is an `IrExpr::Construct` over the
+/// `Schema` / `FieldSchema` record ctors (codegen turns each into a `MapLit`).
+/// Returns `[]` for any type without `deriving (Schema)` or with a non-record
+/// body.
+fn lower_schema_descriptor(ctx: &mut LowerCtx<'_>, decl: &ridge_ast::TypeDecl) -> Vec<IrItem> {
+    use ridge_ast::column_mirror as cm;
+
+    if !cm::has_schema_derive(&decl.deriving) {
+        return vec![];
+    }
+    let ridge_ast::TypeBody::Record(rec) = &decl.body else {
+        return vec![];
+    };
+
+    let entity = decl.name.text.as_str();
+    let table = cm::table_sql_name(entity);
+    let span = decl.span;
+    let is_pub = matches!(decl.vis, Visibility::Pub);
+
+    // One FieldSchema record per entity field.
+    let field_records: Vec<IrExpr> = rec
+        .fields
+        .iter()
+        .map(|f| {
+            // Build the leaf values first so `ctx` is not borrowed twice in one
+            // call (argument evaluation would alias the `&mut`).
+            let name_v = synth_text(ctx, &f.name.text, span);
+            let column_v = synth_text(ctx, &cm::column_sql_name(&f.name.text), span);
+            let ty_v = synth_text(ctx, &cm::render_type_tag(&f.ty), span);
+            let optional_v = synth_bool(ctx, cm::is_optional_type(&f.ty), span);
+            synth_record(
+                ctx,
+                "FieldSchema",
+                vec![
+                    ("name".to_owned(), name_v),
+                    ("column".to_owned(), column_v),
+                    ("ty".to_owned(), ty_v),
+                    ("optional".to_owned(), optional_v),
+                ],
+                span,
+            )
+        })
+        .collect();
+    let fields_list = IrExpr::ListLit {
+        id: ctx.fresh_id(None),
+        elems: field_records,
+        span,
+    };
+
+    let name_v = synth_text(ctx, entity, span);
+    let table_v = synth_text(ctx, &table, span);
+    let schema_value = synth_record(
+        ctx,
+        "Schema",
+        vec![
+            ("name".to_owned(), name_v),
+            ("table".to_owned(), table_v),
+            ("fields".to_owned(), fields_list),
+        ],
+        span,
+    );
+
+    vec![IrItem::Const(IrConst {
+        name: cm::schema_value_name(entity),
+        ty: Type::Error, // untyped in IR — a plain record/map value
+        value: schema_value,
+        origin: NodeId(0),
+        span,
+        is_pub,
+    })]
+}
+
 /// Synthesize a `Text` literal IR expression.
 fn synth_text(ctx: &mut LowerCtx<'_>, s: &str, span: ridge_ast::Span) -> IrExpr {
     IrExpr::Lit {
         id: ctx.fresh_id(None),
         value: ridge_ir::IrLit::Text(s.to_owned()),
+        span,
+    }
+}
+
+/// Synthesize a `Bool` literal IR expression.
+fn synth_bool(ctx: &mut LowerCtx<'_>, b: bool, span: ridge_ast::Span) -> IrExpr {
+    IrExpr::Lit {
+        id: ctx.fresh_id(None),
+        value: ridge_ir::IrLit::Bool(b),
         span,
     }
 }

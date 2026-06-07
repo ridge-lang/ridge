@@ -664,6 +664,10 @@ fn typecheck_module_inner(
     // bodies that reference the values type-check. Runs after the import merge so
     // `Column`/`Table` from std.sql are resolvable.
     crate::tycon_collect::synth_table_mirrors(ast, id, arena, b, global_tycon_names, &mut ctx);
+    // Schema codegen: bind `<entity>Schema : Schema` for every `deriving (Schema)`
+    // record. The descriptor type is the `Schema` builtin (no per-entity type), so
+    // this only registers value schemes; lowering emits the values.
+    crate::tycon_collect::synth_schema_descriptors(ast, b, &mut ctx);
     // Snapshot all TyConDecls (builtins + user) for record/union inference.
     ctx.tycon_decls = arena.all().to_vec();
 

@@ -106,6 +106,23 @@ pub struct BuiltinTyCons {
     /// (the table name and ordered column names). Compiler-internal, like
     /// [`Self::column`].
     pub table: TyConId,
+    /// `FieldSchema` — one entry in a [`Self::schema`] descriptor produced by
+    /// `deriving (Schema)`.
+    ///
+    /// The data is `{ name: Text, column: Text, ty: Text, optional: Bool }`:
+    /// the record field name, its SQL column name, a readable spelling of its
+    /// type, and whether it is `Option`-wrapped. Registered as a
+    /// `TyConKind::Record` so `field.ty` is typeable; non-opaque so user code
+    /// can read the descriptor.
+    pub field_schema: TyConId,
+    /// `Schema` — the structural descriptor produced by `deriving (Schema)`.
+    ///
+    /// The data is `{ name: Text, table: Text, fields: List FieldSchema }`: the
+    /// entity name, its SQL table name, and the per-field descriptors. Used as
+    /// the introspection source for `OpenAPI` generation and migration diffing.
+    /// Arity 0 (uniform across entities) so a `List Schema` collects every
+    /// model. Compiler-internal, like [`Self::column`].
+    pub schema: TyConId,
 }
 
 impl BuiltinTyCons {
@@ -143,6 +160,8 @@ impl BuiltinTyCons {
             sql_value: SENTINEL,
             column: SENTINEL,
             table: SENTINEL,
+            field_schema: SENTINEL,
+            schema: SENTINEL,
         }
     }
 
@@ -677,6 +696,67 @@ impl BuiltinTyCons {
             is_anon: false,
         });
 
+        // FieldSchema — one column entry in a `deriving (Schema)` descriptor.
+        // Interned before Schema so Schema's `fields` field can name its id.
+        let field_schema = arena.intern(TyConDecl {
+            id: TyConId(0),
+            name: "FieldSchema".to_string(),
+            arity: 0,
+            kind: TyConKind::Record(RecordSchema::new(
+                vec![],
+                vec![
+                    RecordField {
+                        name: "name".to_string(),
+                        ty: Type::Con(text, vec![]),
+                    },
+                    RecordField {
+                        name: "column".to_string(),
+                        ty: Type::Con(text, vec![]),
+                    },
+                    RecordField {
+                        name: "ty".to_string(),
+                        ty: Type::Con(text, vec![]),
+                    },
+                    RecordField {
+                        name: "optional".to_string(),
+                        ty: Type::Con(bool_, vec![]),
+                    },
+                ],
+            )),
+            def_span: None,
+            def_module_raw: None,
+            opaque: false,
+            is_anon: false,
+        });
+        // Schema — the structural descriptor from `deriving (Schema)`. Arity 0;
+        // `fields` is `List FieldSchema` (the id just allocated above).
+        let schema = arena.intern(TyConDecl {
+            id: TyConId(0),
+            name: "Schema".to_string(),
+            arity: 0,
+            kind: TyConKind::Record(RecordSchema::new(
+                vec![],
+                vec![
+                    RecordField {
+                        name: "name".to_string(),
+                        ty: Type::Con(text, vec![]),
+                    },
+                    RecordField {
+                        name: "table".to_string(),
+                        ty: Type::Con(text, vec![]),
+                    },
+                    RecordField {
+                        name: "fields".to_string(),
+                        ty: Type::Con(list, vec![Type::Con(field_schema, vec![])]),
+                    },
+                ],
+            )),
+            def_span: None,
+            def_module_raw: None,
+            opaque: false,
+            is_anon: false,
+        });
+
         // Verify assignment order matches spec §4.1 indices 0..16.
         debug_assert_eq!(int.0, 0);
         debug_assert_eq!(float.0, 1);
@@ -701,6 +781,8 @@ impl BuiltinTyCons {
         debug_assert_eq!(sql_value.0, 20);
         debug_assert_eq!(column.0, 21);
         debug_assert_eq!(table.0, 22);
+        debug_assert_eq!(field_schema.0, 23);
+        debug_assert_eq!(schema.0, 24);
 
         // Suppress the "unused" lint — CapabilitySet is imported for future use
         // in T4 (actor schemas carry CapabilitySet).
@@ -730,6 +812,8 @@ impl BuiltinTyCons {
             sql_value,
             column,
             table,
+            field_schema,
+            schema,
         }
     }
 }
@@ -809,12 +893,13 @@ mod tests {
     }
 
     #[test]
-    fn arena_len_is_23() {
+    fn arena_len_is_25() {
         // 15 original builtins + Ordering + JsonValue + the std.net.http taint
         // wrappers Sql / Html / SecureCookie + std.sql's SqlValue + the
-        // column-codegen builtins Column / Table.
+        // column-codegen builtins Column / Table + the schema-codegen builtins
+        // FieldSchema / Schema.
         let (arena, _) = make_arena_with_builtins();
-        assert_eq!(arena.len(), 23);
+        assert_eq!(arena.len(), 25);
     }
 
     #[test]
@@ -851,6 +936,49 @@ mod tests {
             .map(|f| f.name.as_str())
             .collect();
         assert_eq!(fields, vec!["name", "columns"]);
+    }
+
+    #[test]
+    fn field_schema_is_record_arity_0() {
+        let (arena, b) = make_arena_with_builtins();
+        let decl = arena.get(b.field_schema);
+        assert_eq!(decl.name, "FieldSchema");
+        assert_eq!(decl.arity, 0);
+        assert!(!decl.opaque);
+        let TyConKind::Record(schema) = &decl.kind else {
+            panic!("FieldSchema should be a record");
+        };
+        let fields: Vec<&str> = schema
+            .record_fields()
+            .iter()
+            .map(|f| f.name.as_str())
+            .collect();
+        assert_eq!(fields, vec!["name", "column", "ty", "optional"]);
+    }
+
+    #[test]
+    fn schema_is_record_arity_0() {
+        let (arena, b) = make_arena_with_builtins();
+        let decl = arena.get(b.schema);
+        assert_eq!(decl.name, "Schema");
+        assert_eq!(decl.arity, 0);
+        assert!(!decl.opaque);
+        let TyConKind::Record(schema) = &decl.kind else {
+            panic!("Schema should be a record");
+        };
+        let fields: Vec<&str> = schema
+            .record_fields()
+            .iter()
+            .map(|f| f.name.as_str())
+            .collect();
+        assert_eq!(fields, vec!["name", "table", "fields"]);
+        // `fields` is `List FieldSchema`.
+        let fields_ty = &schema.record_fields()[2].ty;
+        assert!(
+            matches!(fields_ty, Type::Con(id, args)
+                if *id == b.list && matches!(args.first(), Some(Type::Con(fs, _)) if *fs == b.field_schema)),
+            "Schema.fields must be List FieldSchema, got {fields_ty:?}"
+        );
     }
 
     // ── Arena get() round-trip ────────────────────────────────────────────────

@@ -1,15 +1,17 @@
-//! Naming and recognition helpers for the `deriving (Table)` column mirror.
+//! Naming and recognition helpers for the data-layer `deriving` directives.
 //!
-//! `deriving (Table)` is a code-generation directive, not a typeclass. For a
-//! record entity it generates a column-mirror type, a column-mirror value, and
-//! a table-metadata value:
+//! `deriving (Table)` and `deriving (Schema)` are code-generation directives,
+//! not typeclasses. For a record entity they generate user-visible top-level
+//! declarations:
 //!
 //! ```text
-//! pub type User = { id: Int, email: Text } deriving (Table)
-//! -- generates:
+//! pub type User = { id: Int, email: Text } deriving (Table, Schema)
+//! -- Table generates:
 //! type UserCols  = { id: Column User Int, email: Column User Text }
 //! let  userCols  : UserCols  = { id = .., email = .. }
 //! let  userTable : Table User = { name = "users", columns = ["id", "email"] }
+//! -- Schema generates:
+//! let  userSchema : Schema = { name = "User", table = "users", fields = [..] }
 //! ```
 //!
 //! Three compiler phases each generate part of this: name resolution registers
@@ -18,6 +20,8 @@
 //! exact generated names, so these helpers are the single source of truth.
 
 use crate::ident::Ident;
+use crate::ty::Type;
+use crate::PrimitiveType;
 
 /// The name used inside a `deriving (...)` clause to request column codegen.
 pub const TABLE_DERIVE: &str = "Table";
@@ -44,6 +48,87 @@ pub fn mirror_value_name(entity: &str) -> String {
 #[must_use]
 pub fn table_value_name(entity: &str) -> String {
     format!("{}Table", lower_first(entity))
+}
+
+/// The name used inside a `deriving (...)` clause to request a schema descriptor.
+pub const SCHEMA_DERIVE: &str = "Schema";
+
+/// Whether a `deriving` clause requests a schema descriptor (`deriving (Schema)`).
+#[must_use]
+pub fn has_schema_derive(deriving: &[Ident]) -> bool {
+    deriving.iter().any(|d| d.text == SCHEMA_DERIVE)
+}
+
+/// Name of the generated schema-descriptor value for an entity: `User` →
+/// `userSchema`.
+#[must_use]
+pub fn schema_value_name(entity: &str) -> String {
+    format!("{}Schema", lower_first(entity))
+}
+
+/// Render a field's declared type to its `FieldSchema` type tag.
+///
+/// The tag is a readable, machine-parseable spelling of the type that the
+/// introspection layer maps to an `OpenAPI`/JSON type or a SQL column type:
+/// `Int` → `"Int"`, `Id User` → `"Id User"`, `Option Text` → `"Option Text"`,
+/// `Map Text (Id User)` keeps the nested application parenthesised. Function and
+/// inline-record fields are rare in entities and collapse to `"Fn"` / `"Record"`.
+#[must_use]
+pub fn render_type_tag(ty: &Type) -> String {
+    match ty {
+        Type::Primitive { name, .. } => primitive_tag(*name).to_owned(),
+        Type::Named { name, .. } | Type::Var { name, .. } => name.text.clone(),
+        Type::App { head, args, .. } => {
+            let mut out = head.text.clone();
+            for a in args {
+                out.push(' ');
+                out.push_str(&render_type_atom(a));
+            }
+            out
+        }
+        Type::List { elem, .. } => format!("List {}", render_type_atom(elem)),
+        Type::Paren { inner, .. } => render_type_tag(inner),
+        Type::Tuple { elems, .. } => {
+            let parts: Vec<String> = elems.iter().map(render_type_tag).collect();
+            format!("({})", parts.join(", "))
+        }
+        Type::Fn { .. } => "Fn".to_owned(),
+        Type::Record { .. } => "Record".to_owned(),
+    }
+}
+
+/// Render a type as an *argument* of an application: a multi-word application or
+/// function type is parenthesised so the parent tag stays unambiguous.
+fn render_type_atom(ty: &Type) -> String {
+    match ty {
+        Type::App { args, .. } if !args.is_empty() => format!("({})", render_type_tag(ty)),
+        Type::Fn { .. } => format!("({})", render_type_tag(ty)),
+        other => render_type_tag(other),
+    }
+}
+
+/// The `UPPER_IDENT` spelling of a primitive type, for the descriptor type tag.
+const fn primitive_tag(p: PrimitiveType) -> &'static str {
+    match p {
+        PrimitiveType::Int => "Int",
+        PrimitiveType::Float => "Float",
+        PrimitiveType::Bool => "Bool",
+        PrimitiveType::Text => "Text",
+        PrimitiveType::Unit => "Unit",
+        PrimitiveType::Timestamp => "Timestamp",
+    }
+}
+
+/// Whether a field's declared type is optional (`Option a`), which the
+/// descriptor records as a nullable / not-required column.
+#[must_use]
+pub fn is_optional_type(ty: &Type) -> bool {
+    match ty {
+        Type::Paren { inner, .. } => is_optional_type(inner),
+        Type::Named { name, .. } => name.text == "Option",
+        Type::App { head, .. } => head.text == "Option",
+        _ => false,
+    }
 }
 
 /// The SQL table name for an entity: `User` → `users`, `BlogPost` → `blog_posts`.
@@ -169,5 +254,89 @@ mod tests {
         assert_eq!(column_sql_name("createdAt"), "created_at");
         assert_eq!(column_sql_name("authorId"), "author_id");
         assert_eq!(column_sql_name("isPublished2"), "is_published2");
+    }
+
+    // ── Schema descriptor helpers ────────────────────────────────────────────
+
+    fn ident(name: &str) -> Ident {
+        Ident::new(name, Span::point(0))
+    }
+    fn prim(p: PrimitiveType) -> Type {
+        Type::Primitive {
+            name: p,
+            span: Span::point(0),
+        }
+    }
+    fn named(name: &str) -> Type {
+        Type::Named {
+            name: ident(name),
+            span: Span::point(0),
+        }
+    }
+    fn app(head: &str, args: Vec<Type>) -> Type {
+        Type::App {
+            head: ident(head),
+            args,
+            span: Span::point(0),
+        }
+    }
+
+    #[test]
+    fn detects_schema_derive() {
+        assert!(has_schema_derive(&idents(&["Schema"])));
+        assert!(has_schema_derive(&idents(&["Table", "Schema", "Eq"])));
+        assert!(!has_schema_derive(&idents(&["Table", "Eq"])));
+        assert!(!has_schema_derive(&[]));
+    }
+
+    #[test]
+    fn schema_value_names() {
+        assert_eq!(schema_value_name("User"), "userSchema");
+        assert_eq!(schema_value_name("BlogPost"), "blogPostSchema");
+    }
+
+    #[test]
+    fn type_tags_render() {
+        assert_eq!(render_type_tag(&prim(PrimitiveType::Int)), "Int");
+        assert_eq!(render_type_tag(&prim(PrimitiveType::Text)), "Text");
+        assert_eq!(render_type_tag(&named("Email")), "Email");
+        assert_eq!(render_type_tag(&app("Id", vec![named("User")])), "Id User");
+        assert_eq!(
+            render_type_tag(&app("Option", vec![prim(PrimitiveType::Text)])),
+            "Option Text"
+        );
+        assert_eq!(
+            render_type_tag(&Type::List {
+                elem: Box::new(named("Post")),
+                span: Span::point(0),
+            }),
+            "List Post"
+        );
+        // Nested applications parenthesise the argument.
+        assert_eq!(
+            render_type_tag(&app("Option", vec![app("Id", vec![named("User")])])),
+            "Option (Id User)"
+        );
+        assert_eq!(
+            render_type_tag(&Type::Tuple {
+                elems: vec![prim(PrimitiveType::Int), prim(PrimitiveType::Text)],
+                span: Span::point(0),
+            }),
+            "(Int, Text)"
+        );
+    }
+
+    #[test]
+    fn optional_detection() {
+        assert!(is_optional_type(&app(
+            "Option",
+            vec![prim(PrimitiveType::Text)]
+        )));
+        assert!(is_optional_type(&Type::Paren {
+            inner: Box::new(app("Option", vec![named("User")])),
+            span: Span::point(0),
+        }));
+        assert!(!is_optional_type(&prim(PrimitiveType::Int)));
+        assert!(!is_optional_type(&app("List", vec![named("Post")])));
     }
 }

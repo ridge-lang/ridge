@@ -268,6 +268,46 @@ pub fn synth_table_mirrors(
     }
 }
 
+// ── Schema codegen: `deriving (Schema)` descriptors ───────────────────────────
+
+/// Register the scheme for every `deriving (Schema)` descriptor value in
+/// `module`.
+///
+/// For an entity `User`, this binds `userSchema : Schema` so user code
+/// referencing the descriptor type-checks. Unlike the column mirror, the
+/// descriptor type is uniform across entities (the `Schema` builtin), so no
+/// per-entity type is interned — only the value scheme is registered. Name
+/// resolution has already reserved the `userSchema` name (see
+/// [`ridge_ast::column_mirror`]); lowering emits the value.
+///
+/// Idempotent: binding the same scheme on an incremental re-check overwrites
+/// rather than duplicating.
+pub fn synth_schema_descriptors(module: &Module, b: &BuiltinTyCons, ctx: &mut InferCtx) {
+    use ridge_ast::column_mirror as cm;
+
+    let schema_scheme = Scheme {
+        vars: vec![],
+        cap_vars: vec![],
+        row_vars: vec![],
+        ty: Type::Con(b.schema, vec![]),
+        constraints: vec![],
+    };
+
+    for item in &module.items {
+        let Item::Type(td) = item else { continue };
+        if !cm::has_schema_derive(&td.deriving) {
+            continue;
+        }
+        let TypeBody::Record(_) = &td.body else {
+            continue;
+        };
+        let value = cm::schema_value_name(td.name.text.as_str());
+        ctx.name_schemes_accum
+            .insert(value.clone(), schema_scheme.clone());
+        ctx.env.bind(value, schema_scheme.clone());
+    }
+}
+
 // ── Pre-scan: anonymous record interning ──────────────────────────────────────
 
 /// Walk all AST `Type::Record` nodes in every module, intern a unique

@@ -484,6 +484,21 @@ impl<'ast> Visit<'ast> for TopLevelCollector {
                                 true,
                             );
                         }
+
+                        // Schema codegen: `deriving (Schema)` generates a single
+                        // user-visible descriptor value `<entity>Schema`. Register
+                        // its name here; its type is fixed (the `Schema` builtin)
+                        // and the value is emitted in lowering. See
+                        // `ridge_ast::column_mirror`.
+                        if ridge_ast::column_mirror::has_schema_derive(&d.deriving) {
+                            self.push(
+                                ridge_ast::column_mirror::schema_value_name(d.name.text.as_str()),
+                                SymbolKind::Const,
+                                vis,
+                                d.span,
+                                true,
+                            );
+                        }
                     }
                     ridge_ast::TypeBody::Union(union_body) => {
                         for (idx, alt) in union_body.alternatives.iter().enumerate() {
@@ -1100,6 +1115,46 @@ mod tests {
         assert!(table.lookup("UserCols").is_none());
         assert!(table.lookup("userCols").is_none());
         assert!(table.lookup("userTable").is_none());
+    }
+
+    // `deriving (Schema)` on a record registers the descriptor value name so
+    // user code can reference it; the value is synthesized downstream.
+    #[test]
+    fn record_deriving_schema_registers_descriptor_name() {
+        let m = module_with(vec![record_type_item_deriving(
+            "User",
+            Visibility::Pub,
+            vec!["id", "email"],
+            vec!["Schema"],
+        )]);
+        let (table, errors) = collect_symbols(ModuleId(0), &m);
+        assert!(errors.is_empty(), "errors: {errors:?}");
+        assert!(
+            matches!(
+                table.lookup("userSchema").map(|e| &e.kind),
+                Some(SymbolKind::Const)
+            ),
+            "userSchema should be a referenceable value"
+        );
+        assert_eq!(
+            table.lookup("userSchema").map(|e| e.visibility),
+            Some(ResolvedVisibility::Pub)
+        );
+        // Schema alone does not register the column-mirror names.
+        assert!(table.lookup("userCols").is_none());
+    }
+
+    // No `deriving (Schema)` → no descriptor name.
+    #[test]
+    fn record_without_schema_derive_has_no_descriptor() {
+        let m = module_with(vec![record_type_item_deriving(
+            "User",
+            Visibility::Pub,
+            vec!["id"],
+            vec!["Table"],
+        )]);
+        let (table, _errors) = collect_symbols(ModuleId(0), &m);
+        assert!(table.lookup("userSchema").is_none());
     }
 
     // Test 8: generic record type `type List a = { items: List a, len: Int }` → arity = 1

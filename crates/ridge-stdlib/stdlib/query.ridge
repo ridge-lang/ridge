@@ -10,6 +10,10 @@
 -- module walks it back — for now, rendering it to a readable, SQL-shaped string
 -- so a captured body can be shown to have round-tripped to the tree it should.
 
+-- Sort direction for query ordering. A plain union declared in Ridge: importing
+-- modules can name `SortOrder` and build/match `Asc`/`Desc` directly.
+pub type SortOrder = Asc | Desc
+
 -- Render a captured tree to a readable, SQL-shaped string. Literals show as `?`
 -- placeholders — binding parameters is the SQL-compilation pass's job; this is
 -- here to confirm a quoted body round-trips to a tree.

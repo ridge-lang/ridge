@@ -1012,6 +1012,28 @@ fn lower_constructor_pattern(
                     };
                 }
                 _ => {
+                    // A constructor of a reconciled stdlib type. Its owner/variant
+                    // live only in the arena decl (resolve bound a bare
+                    // `StdlibSymbol`), so resolve the shape from the reserved block
+                    // and lower to a real `UnionVariant` pattern so codegen binds
+                    // the payload variables — the same shape the construct side uses.
+                    if let Some((owner_type, variant, _is_record)) =
+                        ctx.lookup_stdlib_ctor(&prelude_name)
+                    {
+                        let ir_args: Vec<IrPat> =
+                            args.iter().map(|a| lower_pattern_full(ctx, a)).collect();
+                        return IrPat::Ctor {
+                            sym: SymbolRef::Constructor {
+                                ctor_kind: CtorKind::UnionVariant,
+                                owner_type,
+                                name: prelude_name,
+                                variant,
+                            },
+                            fields: vec![],
+                            args: ir_args,
+                            span,
+                        };
+                    }
                     ctx.errors.push(LowerError::InternalLoweringError {
                         span,
                         message: format!(

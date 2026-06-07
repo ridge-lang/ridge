@@ -1473,6 +1473,13 @@ mod tests {
                 {
                     continue;
                 }
+                // std.query's reconciled types: `SortOrder` is a type (no value
+                // scheme) and `Asc`/`Desc` are constructors resolved from the
+                // reserved arena block (`reconciled_ctor_scheme`), not from this
+                // hand-curated signature table.
+                if module.name == "std.query" && matches!(name, "SortOrder" | "Asc" | "Desc") {
+                    continue;
+                }
                 let result = stdlib_signature(module.id, name, &b);
                 if result.is_none() {
                     missing.push((module.name, name));

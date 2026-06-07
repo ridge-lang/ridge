@@ -471,6 +471,43 @@ pub fn lower_expr(ctx: &mut LowerCtx<'_>, expr: &Expr) -> IrExpr {
                         span: *span,
                     }
                 }
+            } else if matches!(&binding, Some(Binding::StdlibSymbol { .. })) {
+                // A constructor of a reconciled stdlib type. Resolve was unable to
+                // carry its owner/variant (it bound a bare `StdlibSymbol`), so the
+                // shape comes from the arena decl interned in the reserved block.
+                if let Some((owner_type, variant, is_record)) = ctx.lookup_stdlib_ctor(&ctor_name) {
+                    let ctor_kind = if is_record {
+                        ridge_ir::CtorKind::Record
+                    } else {
+                        ridge_ir::CtorKind::UnionVariant
+                    };
+                    IrExpr::Construct {
+                        id,
+                        ctor: SymbolRef::Constructor {
+                            ctor_kind,
+                            owner_type,
+                            name: ctor_name,
+                            variant,
+                        },
+                        fields: ir_fields,
+                        span: *span,
+                    }
+                } else {
+                    // Unknown stdlib constructor (no reconciled decl): defensive
+                    // fallback, same shape as the no-binding arm below.
+                    let owner_type = ctx.lookup_tycon_by_name(&ctor_name).unwrap_or(TyConId(0));
+                    IrExpr::Construct {
+                        id,
+                        ctor: SymbolRef::Constructor {
+                            ctor_kind: ridge_ir::CtorKind::Record,
+                            owner_type,
+                            name: ctor_name,
+                            variant: 0,
+                        },
+                        fields: ir_fields,
+                        span: *span,
+                    }
+                }
             } else if let Some(Binding::Constructor {
                 owner_type: sym_id,
                 variant,

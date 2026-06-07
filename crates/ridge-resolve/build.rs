@@ -368,6 +368,11 @@ const BASELINE_EXPORTS: &[(&str, &[&str])] = &[
             // The tree renderer. `Quote`/`QExpr` and their constructors are
             // prelude builtins, not std.query exports.
             "debugShow",
+            // Sort direction, declared in query.ridge. The type plus its two
+            // constructors are importable for ordering.
+            "SortOrder",
+            "Asc",
+            "Desc",
         ],
     ),
 ];

@@ -137,6 +137,7 @@ pub(crate) fn imported_tycon_names(
     imports: &[ImportResolution],
     symbol_tables: &[&SymbolTable],
     per_module_tycon_names: &[FxHashMap<String, TyConId>],
+    stdlib_tycon_names: &FxHashMap<String, TyConId>,
     b: &BuiltinTyCons,
 ) -> FxHashMap<String, TyConId> {
     let mut out: FxHashMap<String, TyConId> = FxHashMap::default();
@@ -164,16 +165,21 @@ pub(crate) fn imported_tycon_names(
                         out.insert(eb.local_name.clone(), tid);
                     }
                 }
-                // An opaque taint wrapper imported from a builtin stdlib module
-                // (`Sql`, `Html`) — resolve the bare name to its builtin TyConId so
+                // A type imported from a stdlib module. Reconciled stdlib types
+                // resolve by name to their reserved-block id; the older opaque
+                // taint wrappers (`Sql`, `Html`) fall back to their built-in id so
                 // annotations type-check and field access is gated (T036).
                 Binding::StdlibSymbol { module, name } => {
-                    let is_opaque = ridge_resolve::BUILTINS
-                        .get(module.0 as usize)
-                        .is_some_and(|m| m.opaque_types.contains(&name.as_str()));
-                    if is_opaque {
-                        if let Some(tid) = stdlib_opaque_tycon(b, name) {
-                            out.insert(eb.local_name.clone(), tid);
+                    if let Some(&tid) = stdlib_tycon_names.get(name) {
+                        out.insert(eb.local_name.clone(), tid);
+                    } else {
+                        let is_opaque = ridge_resolve::BUILTINS
+                            .get(module.0 as usize)
+                            .is_some_and(|m| m.opaque_types.contains(&name.as_str()));
+                        if is_opaque {
+                            if let Some(tid) = stdlib_opaque_tycon(b, name) {
+                                out.insert(eb.local_name.clone(), tid);
+                            }
                         }
                     }
                 }

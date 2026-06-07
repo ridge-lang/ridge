@@ -10,11 +10,13 @@
 //! the T999 "qualified name unresolved" fallback.
 
 use ridge_resolve::{Binding, BuiltinStdlibModule, ImportResolution, ImportTarget, BUILTINS};
-use ridge_types::BuiltinTyCons;
+use ridge_types::{BuiltinTyCons, TyConId};
+use rustc_hash::FxHashMap;
 
 use crate::ctx::InferCtx;
 use crate::prelude::prelude_types;
 use crate::stdlib_signatures::stdlib_signature;
+use crate::stdlib_types::reconciled_ctor_scheme;
 
 // ── Public API ────────────────────────────────────────────────────────────────
 
@@ -23,8 +25,21 @@ use crate::stdlib_signatures::stdlib_signature;
 /// 2. Qualified stdlib bindings from `imports` (e.g. `"Io.println"` → Scheme).
 /// 3. Bare stdlib bindings from `import std.text (split, trim, lines)` style.
 ///
+/// `reconciled` maps reconciled stdlib type names to their reserved-block ids,
+/// so a constructor imported from such a type (`import std.m (MkT)`) that has no
+/// hand-curated stdlib signature gets its scheme derived from the arena decl.
+///
 /// Must be called after `ctx.env.push_frame()` and before `typecheck_module_decls`.
-pub fn seed_stdlib_env(ctx: &mut InferCtx, b: &BuiltinTyCons, imports: &[ImportResolution]) {
+#[expect(
+    clippy::implicit_hasher,
+    reason = "callers always pass the workspace's FxHashMap; generalising over the hasher adds noise for no caller benefit"
+)]
+pub fn seed_stdlib_env(
+    ctx: &mut InferCtx,
+    b: &BuiltinTyCons,
+    imports: &[ImportResolution],
+    reconciled: &FxHashMap<String, TyConId>,
+) {
     // 1. Prelude constructor schemes.
     let (prelude_values, _) = prelude_types(b);
     for (name, scheme) in prelude_values {
@@ -65,6 +80,14 @@ pub fn seed_stdlib_env(ctx: &mut InferCtx, b: &BuiltinTyCons, imports: &[ImportR
                     Binding::StdlibSymbol { module: mid, name } => {
                         if let Some(scheme) = stdlib_signature(*mid, name, b) {
                             ctx.env.bind(eb.local_name.clone(), scheme);
+                        } else {
+                            // A constructor of a reconciled stdlib type (no
+                            // hand-curated signature); derive its scheme from the
+                            // arena declaration interned in the reserved block.
+                            let recon = reconciled_ctor_scheme(&ctx.tycon_decls, reconciled, name);
+                            if let Some(scheme) = recon {
+                                ctx.env.bind(eb.local_name.clone(), scheme);
+                            }
                         }
                     }
                     _ => {}

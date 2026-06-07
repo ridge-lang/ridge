@@ -100,6 +100,22 @@ fn is_prelude_reexport(module: &str, sym: &str) -> bool {
         .any(|&(m, s)| m == module && s == sym)
 }
 
+/// Exported constructors of a non-opaque union `pub type` declared in source.
+///
+/// Text extraction only surfaces the type name (`SortOrder`), not its variants,
+/// so the manifest→source direction needs these listed explicitly. A future
+/// pub-type-constructor export mechanism in the resolver will derive them from
+/// source and retire this list (the same trajectory as `PRELUDE_REEXPORTS`).
+const CONSTRUCTOR_EXPORTS: &[(&str, &str)] = &[("std.query", "Asc"), ("std.query", "Desc")];
+
+/// Return `true` if `(module, sym)` is a known exported union constructor that is
+/// legitimately in the manifest but not surfaced by text extraction.
+fn is_constructor_export(module: &str, sym: &str) -> bool {
+    CONSTRUCTOR_EXPORTS
+        .iter()
+        .any(|&(m, s)| m == module && s == sym)
+}
+
 // ── Test 1: bidirectional name consistency ────────────────────────────────────
 
 /// For every module in `STDLIB_MODULE_ORDER`:
@@ -161,6 +177,9 @@ fn bidirectional_name_consistency() {
             }
             if is_prelude_reexport(dotted, sym) {
                 continue; // whitelisted prelude re-export
+            }
+            if is_constructor_export(dotted, sym) {
+                continue; // whitelisted exported union constructor
             }
             panic!(
                 "T201 ManifestRegressionFailed {{ module: {dotted:?}, sym: {sym:?}, \

@@ -313,6 +313,13 @@ pub fn derive_instances(
         let class_name = &class_ident.text;
         let span = class_ident.span;
 
+        // `Table` is a column-codegen directive, not a typeclass: it generates a
+        // column mirror (a type plus two values), synthesized in `tycon_collect`.
+        // Skip it here so the class lookup below does not flag it as unknown.
+        if class_name == ridge_ast::column_mirror::TABLE_DERIVE {
+            continue;
+        }
+
         // Reject unknown class.
         let Some(class_id) = class_table.id_by_name(class_name) else {
             errors.push(TypeError::NoInstance {

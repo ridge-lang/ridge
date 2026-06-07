@@ -114,9 +114,137 @@ pub fn lower_item_multi(ctx: &mut LowerCtx<'_>, item: &Item) -> Vec<IrItem> {
         Item::Actor(decl) => vec![IrItem::Actor(lower_actor(ctx, decl))],
         Item::Const(decl) => vec![IrItem::Const(lower_const(ctx, decl))],
         Item::InstanceDecl(decl) => lower_instance(ctx, decl),
-        // Type, import, and class declarations are erased at the IR level.
+        // A `deriving (Table)` record erases like any type, except it also emits
+        // its column-mirror values (the type itself stays in the arena).
+        Item::Type(decl) => lower_table_mirrors(ctx, decl),
+        // Import and class declarations are erased at the IR level.
         // Class metadata lives in `TypedWorkspace.class_table`.
-        Item::Type(_) | Item::Import(_) | Item::ClassDecl(_) => vec![],
+        Item::Import(_) | Item::ClassDecl(_) => vec![],
+    }
+}
+
+/// Emit the column-mirror values for a `deriving (Table)` record.
+///
+/// For `pub type User = { id: Int, … } deriving (Table)` this produces two
+/// top-level constants (the mirror type itself is erased; it lives in the
+/// arena):
+///
+/// - `userCols  = { id = Column { name = "id", table = "users" }, … }`
+/// - `userTable = { name = "users", columns = ["id", …] }`
+///
+/// Records lower to BEAM maps, so each value is an `IrExpr::Construct` over a
+/// record ctor (codegen turns it into a `MapLit`). Names and SQL spellings come
+/// from [`ridge_ast::column_mirror`], the shared source of truth that name
+/// resolution and type checking also use. Returns `[]` for any type without
+/// `deriving (Table)` or with a non-record body.
+fn lower_table_mirrors(ctx: &mut LowerCtx<'_>, decl: &ridge_ast::TypeDecl) -> Vec<IrItem> {
+    use ridge_ast::column_mirror as cm;
+
+    if !cm::has_table_derive(&decl.deriving) {
+        return vec![];
+    }
+    let ridge_ast::TypeBody::Record(rec) = &decl.body else {
+        return vec![];
+    };
+
+    let entity = decl.name.text.as_str();
+    let table = cm::table_sql_name(entity);
+    let span = decl.span;
+    let is_pub = matches!(decl.vis, Visibility::Pub);
+
+    // userCols = { <field> = Column { name = "<col>", table = "<table>" }, … }.
+    // The mirror field keeps the entity's field name (so `userCols.createdAt`
+    // works); the Column carries the SQL column name.
+    let cols_fields: Vec<(String, IrExpr)> = rec
+        .fields
+        .iter()
+        .map(|f| {
+            let col = cm::column_sql_name(&f.name.text);
+            // Build the leaf values first so `ctx` is not borrowed twice in one
+            // call (argument evaluation would alias the `&mut`).
+            let name_v = synth_text(ctx, &col, span);
+            let table_v = synth_text(ctx, &table, span);
+            let column_val = synth_record(
+                ctx,
+                "Column",
+                vec![("name".to_owned(), name_v), ("table".to_owned(), table_v)],
+                span,
+            );
+            (f.name.text.clone(), column_val)
+        })
+        .collect();
+    let cols_value = synth_record(ctx, &cm::mirror_type_name(entity), cols_fields, span);
+
+    // userTable = { name = "<table>", columns = ["<col>", …] }.
+    let table_name_v = synth_text(ctx, &table, span);
+    let column_names: Vec<IrExpr> = rec
+        .fields
+        .iter()
+        .map(|f| synth_text(ctx, &cm::column_sql_name(&f.name.text), span))
+        .collect();
+    let columns_list = IrExpr::ListLit {
+        id: ctx.fresh_id(None),
+        elems: column_names,
+        span,
+    };
+    let table_value = synth_record(
+        ctx,
+        "Table",
+        vec![
+            ("name".to_owned(), table_name_v),
+            ("columns".to_owned(), columns_list),
+        ],
+        span,
+    );
+
+    vec![
+        IrItem::Const(IrConst {
+            name: cm::mirror_value_name(entity),
+            ty: Type::Error, // untyped in IR — a plain record/map value
+            value: cols_value,
+            origin: NodeId(0),
+            span,
+            is_pub,
+        }),
+        IrItem::Const(IrConst {
+            name: cm::table_value_name(entity),
+            ty: Type::Error,
+            value: table_value,
+            origin: NodeId(0),
+            span,
+            is_pub,
+        }),
+    ]
+}
+
+/// Synthesize a `Text` literal IR expression.
+fn synth_text(ctx: &mut LowerCtx<'_>, s: &str, span: ridge_ast::Span) -> IrExpr {
+    IrExpr::Lit {
+        id: ctx.fresh_id(None),
+        value: ridge_ir::IrLit::Text(s.to_owned()),
+        span,
+    }
+}
+
+/// Synthesize a record-construction IR expression (codegen lowers it to a
+/// `MapLit`). `owner_type` is irrelevant for records — codegen reads only
+/// `ctor_kind` — so a placeholder id is used, matching the instance-dict path.
+fn synth_record(
+    ctx: &mut LowerCtx<'_>,
+    name: &str,
+    fields: Vec<(String, IrExpr)>,
+    span: ridge_ast::Span,
+) -> IrExpr {
+    IrExpr::Construct {
+        id: ctx.fresh_id(None),
+        ctor: SymbolRef::Constructor {
+            ctor_kind: CtorKind::Record,
+            owner_type: ridge_types::TyConId(0),
+            name: name.to_owned(),
+            variant: 0,
+        },
+        fields,
+        span,
     }
 }
 

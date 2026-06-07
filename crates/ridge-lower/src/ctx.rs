@@ -16,6 +16,7 @@ use crate::error::LowerError;
 use ridge_ast::{Body, Item, Span};
 use ridge_ir::{IrNodeId, LoweredModule};
 use ridge_resolve::{BindingMap, ModuleId, NodeId, NodeIdMap, SymbolId, SymbolTable};
+use ridge_typecheck::quote::QuoteInfo;
 use ridge_typecheck::{ClassTable, InstanceEnv, TypedWorkspace};
 use ridge_types::{CapabilitySet, Constraint, ShapeKey, TyConId, Type};
 use rustc_hash::{FxHashMap, FxHashSet};
@@ -112,6 +113,13 @@ pub struct LowerCtx<'tw> {
     /// for the proxy-key contract.  `None` for unit tests that do not run the
     /// full pipeline.
     pub inferred_caps: Option<&'tw FxHashMap<NodeId, CapabilitySet>>,
+    /// The current module's quoted-lambda side-table from Phase 4.
+    ///
+    /// Keyed by the quoted lambda's span. A present entry means the lambda body
+    /// must be reified into a `QExpr` tree (see [`LowerCtx::lookup_quoted`])
+    /// rather than lowered to a closure. `None` for unit tests that do not run
+    /// the full pipeline; empty for modules with no quotation.
+    pub quoted_lambdas: Option<&'tw FxHashMap<Span, QuoteInfo>>,
     /// Lazy name→`TyConId` cache populated on first call to
     /// [`LowerCtx::lookup_tycon_by_name`].
     tycon_name_cache: Option<TyConNameCache>,
@@ -189,6 +197,7 @@ impl<'tw> LowerCtx<'tw> {
             binding_map: None,
             workspace: None,
             inferred_caps: None,
+            quoted_lambdas: None,
             tycon_name_cache: None,
             class_table: None,
             instance_env: None,
@@ -257,6 +266,22 @@ impl<'tw> LowerCtx<'tw> {
     /// capability inference results for top-level `fn` declarations.
     pub const fn attach_inferred_caps(&mut self, caps: &'tw FxHashMap<NodeId, CapabilitySet>) {
         self.inferred_caps = Some(caps);
+    }
+
+    /// Attach the current module's quoted-lambda side-table.
+    ///
+    /// Called from [`crate::lower_module`] once the `TypedModule` is available,
+    /// so [`Self::lookup_quoted`] can tell which lambda bodies to reify.
+    pub const fn attach_quoted_lambdas(&mut self, quoted: &'tw FxHashMap<Span, QuoteInfo>) {
+        self.quoted_lambdas = Some(quoted);
+    }
+
+    /// Returns the [`QuoteInfo`] for a lambda at `span`, if it was captured as a
+    /// quote during type-checking. `None` means the lambda is an ordinary
+    /// closure and should be lowered as usual.
+    #[must_use]
+    pub fn lookup_quoted(&self, span: Span) -> Option<&'tw QuoteInfo> {
+        self.quoted_lambdas.and_then(|q| q.get(&span))
     }
 
     /// Looks up Phase 4's `inferred_caps` side-table by the proxy `NodeId`

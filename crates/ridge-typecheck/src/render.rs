@@ -502,6 +502,47 @@ impl fmt::Display for TypeError {
                 )
             }
 
+            // ── T039 ──────────────────────────────────────────────────────────
+            Self::QuoteUnknownColumn {
+                entity,
+                column,
+                suggestions,
+                ..
+            } => {
+                write!(
+                    f,
+                    "T039: `{column}` is not a column of `{entity}` in this quoted predicate"
+                )?;
+                if !suggestions.is_empty() {
+                    write!(f, "\n  did you mean: {}", suggestions.join(", "))?;
+                }
+                Ok(())
+            }
+
+            // ── T040 ──────────────────────────────────────────────────────────
+            Self::QuoteUnsupportedExpr { detail, .. } => {
+                write!(
+                    f,
+                    "T040: this is not supported inside a quoted predicate\n  {detail}\n  hint: a quoted predicate is built from column references, literals, comparisons, and `&&`/`||`"
+                )
+            }
+
+            // ── T041 ──────────────────────────────────────────────────────────
+            Self::QuoteComparisonMismatch { left, right, .. } => {
+                write!(
+                    f,
+                    "T041: the two sides of this comparison have different types\n  left is `{left}`, right is `{right}`"
+                )
+            }
+
+            // ── T042 ──────────────────────────────────────────────────────────
+            Self::QuoteEntityUnknown { .. } => {
+                write!(
+                    f,
+                    "T042: cannot tell which entity this quoted predicate is about\n  hint: annotate the predicate's parameter, e.g. `fn (u: User) -> u.age >= 18`"
+                )
+            }
+
             // ── T999 ──────────────────────────────────────────────────────────
             Self::InternalTypeError { detail, .. } => {
                 write!(f, "T999: internal type error\n  {detail}\n  This is a compiler bug. Please report it.")
@@ -563,6 +604,10 @@ impl HasErrorCode for TypeError {
             | Self::OpaqueFieldAccess { span, .. }
             | Self::RowMismatch { span, .. }
             | Self::InstanceArityMismatch { span, .. }
+            | Self::QuoteUnknownColumn { span, .. }
+            | Self::QuoteUnsupportedExpr { span, .. }
+            | Self::QuoteComparisonMismatch { span, .. }
+            | Self::QuoteEntityUnknown { span, .. }
             | Self::InternalTypeError { span, .. } => *span,
 
             // T034: uses `totext_span` (the explicit instance) as the primary span.

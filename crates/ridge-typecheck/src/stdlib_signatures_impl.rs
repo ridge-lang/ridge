@@ -54,6 +54,8 @@ const STD_ACTOR: StdlibModuleId = StdlibModuleId(16);
 const STD_JSON: StdlibModuleId = StdlibModuleId(17);
 const STD_NET_HTTP: StdlibModuleId = StdlibModuleId(18);
 const STD_CRYPTO: StdlibModuleId = StdlibModuleId(19);
+// std.sql is module 20; its codec schemes are seeded separately. std.query is 21.
+const STD_QUERY: StdlibModuleId = StdlibModuleId(21);
 
 // ── Type-building helpers ─────────────────────────────────────────────────────
 //
@@ -1422,6 +1424,16 @@ pub fn stdlib_signature(module: StdlibModuleId, name: &str, b: &BuiltinTyCons) -
             vec![ty_text(b), ty_text(b)],
             ty_bool(b),
         ))),
+
+        // ── std.query ─────────────────────────────────────────────────────────
+        // debugShow: ∀ f. Quote f -> Text — renders a captured tree.
+        (STD_QUERY, "debugShow") => Some(poly(
+            vec![A],
+            ty_fn_pure(
+                vec![Type::Con(b.quote, vec![Type::Var(A)])],
+                ty_text(b),
+            ),
+        )),
 
         // ── catch-all ─────────────────────────────────────────────────────────
         _ => None,

@@ -123,6 +123,17 @@ pub struct BuiltinTyCons {
     /// Arity 0 (uniform across entities) so a `List Schema` collects every
     /// model. Compiler-internal, like [`Self::column`].
     pub schema: TyConId,
+    /// `QExpr` — the reified expression tree a quoted predicate is captured as.
+    ///
+    /// A prelude union (like [`Self::json_value`]) so the quotation runtime can
+    /// build and match it without an import. Leaves are columns and literals;
+    /// inner nodes are the comparison and boolean operators. The compiler
+    /// constructs these nodes directly when it reifies a quoted body.
+    pub q_expr: TyConId,
+    /// `Quote f` — a captured expression. `f` records the quoted shape (for a
+    /// predicate, `Entity -> Bool`) so a query and its predicate stay in
+    /// agreement; it is phantom — the value carries only the reified `tree`.
+    pub quote: TyConId,
 }
 
 impl BuiltinTyCons {
@@ -162,6 +173,8 @@ impl BuiltinTyCons {
             table: SENTINEL,
             field_schema: SENTINEL,
             schema: SENTINEL,
+            q_expr: SENTINEL,
+            quote: SENTINEL,
         }
     }
 
@@ -757,6 +770,124 @@ impl BuiltinTyCons {
             is_anon: false,
         });
 
+        // QExpr — the reified quotation expression tree. A prelude union (like
+        // JsonValue) so the quotation runtime builds and matches it without an
+        // import. Self-referential variants name QExpr's own id (index 25).
+        let q_expr = arena.intern(TyConDecl {
+            id: TyConId(0),
+            name: "QExpr".to_string(),
+            arity: 0,
+            kind: TyConKind::Union(UnionSchema {
+                params: vec![],
+                variants: vec![
+                    UnionVariant {
+                        name: "QCol".to_string(),
+                        kind: VariantPayload::Positional(vec![Type::Con(text, vec![])]),
+                    },
+                    UnionVariant {
+                        name: "QLitInt".to_string(),
+                        kind: VariantPayload::Positional(vec![Type::Con(int, vec![])]),
+                    },
+                    UnionVariant {
+                        name: "QLitText".to_string(),
+                        kind: VariantPayload::Positional(vec![Type::Con(text, vec![])]),
+                    },
+                    UnionVariant {
+                        name: "QLitBool".to_string(),
+                        kind: VariantPayload::Positional(vec![Type::Con(bool_, vec![])]),
+                    },
+                    UnionVariant {
+                        name: "QLitFloat".to_string(),
+                        kind: VariantPayload::Positional(vec![Type::Con(float, vec![])]),
+                    },
+                    UnionVariant {
+                        name: "QAnd".to_string(),
+                        kind: VariantPayload::Positional(vec![
+                            Type::Con(TyConId(25), vec![]),
+                            Type::Con(TyConId(25), vec![]),
+                        ]),
+                    },
+                    UnionVariant {
+                        name: "QOr".to_string(),
+                        kind: VariantPayload::Positional(vec![
+                            Type::Con(TyConId(25), vec![]),
+                            Type::Con(TyConId(25), vec![]),
+                        ]),
+                    },
+                    UnionVariant {
+                        name: "QNot".to_string(),
+                        kind: VariantPayload::Positional(vec![Type::Con(TyConId(25), vec![])]),
+                    },
+                    UnionVariant {
+                        name: "QEq".to_string(),
+                        kind: VariantPayload::Positional(vec![
+                            Type::Con(TyConId(25), vec![]),
+                            Type::Con(TyConId(25), vec![]),
+                        ]),
+                    },
+                    UnionVariant {
+                        name: "QNe".to_string(),
+                        kind: VariantPayload::Positional(vec![
+                            Type::Con(TyConId(25), vec![]),
+                            Type::Con(TyConId(25), vec![]),
+                        ]),
+                    },
+                    UnionVariant {
+                        name: "QLt".to_string(),
+                        kind: VariantPayload::Positional(vec![
+                            Type::Con(TyConId(25), vec![]),
+                            Type::Con(TyConId(25), vec![]),
+                        ]),
+                    },
+                    UnionVariant {
+                        name: "QGt".to_string(),
+                        kind: VariantPayload::Positional(vec![
+                            Type::Con(TyConId(25), vec![]),
+                            Type::Con(TyConId(25), vec![]),
+                        ]),
+                    },
+                    UnionVariant {
+                        name: "QLe".to_string(),
+                        kind: VariantPayload::Positional(vec![
+                            Type::Con(TyConId(25), vec![]),
+                            Type::Con(TyConId(25), vec![]),
+                        ]),
+                    },
+                    UnionVariant {
+                        name: "QGe".to_string(),
+                        kind: VariantPayload::Positional(vec![
+                            Type::Con(TyConId(25), vec![]),
+                            Type::Con(TyConId(25), vec![]),
+                        ]),
+                    },
+                ],
+            }),
+            def_span: None,
+            def_module_raw: None, // prelude — no user module
+            opaque: false,
+            is_anon: false,
+        });
+
+        // Quote f — a captured expression. Phantom `f` (arity 1); the carried
+        // data is the reified `tree`. Prelude record (like Table) so the type
+        // name resolves in any module without an import.
+        let quote = arena.intern(TyConDecl {
+            id: TyConId(0),
+            name: "Quote".to_string(),
+            arity: 1,
+            kind: TyConKind::Record(RecordSchema::new(
+                vec![TyVid(0)],
+                vec![RecordField {
+                    name: "tree".to_string(),
+                    ty: Type::Con(q_expr, vec![]),
+                }],
+            )),
+            def_span: None,
+            def_module_raw: None,
+            opaque: false,
+            is_anon: false,
+        });
+
         // Verify assignment order matches spec §4.1 indices 0..16.
         debug_assert_eq!(int.0, 0);
         debug_assert_eq!(float.0, 1);
@@ -783,6 +914,8 @@ impl BuiltinTyCons {
         debug_assert_eq!(table.0, 22);
         debug_assert_eq!(field_schema.0, 23);
         debug_assert_eq!(schema.0, 24);
+        debug_assert_eq!(q_expr.0, 25);
+        debug_assert_eq!(quote.0, 26);
 
         // Suppress the "unused" lint — CapabilitySet is imported for future use
         // in T4 (actor schemas carry CapabilitySet).
@@ -814,6 +947,8 @@ impl BuiltinTyCons {
             table,
             field_schema,
             schema,
+            q_expr,
+            quote,
         }
     }
 }
@@ -893,13 +1028,13 @@ mod tests {
     }
 
     #[test]
-    fn arena_len_is_25() {
+    fn arena_len_is_27() {
         // 15 original builtins + Ordering + JsonValue + the std.net.http taint
         // wrappers Sql / Html / SecureCookie + std.sql's SqlValue + the
         // column-codegen builtins Column / Table + the schema-codegen builtins
-        // FieldSchema / Schema.
+        // FieldSchema / Schema + the quotation builtins QExpr / Quote.
         let (arena, _) = make_arena_with_builtins();
-        assert_eq!(arena.len(), 25);
+        assert_eq!(arena.len(), 27);
     }
 
     #[test]

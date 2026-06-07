@@ -274,6 +274,11 @@ pub fn lower_expr(ctx: &mut LowerCtx<'_>, expr: &Expr) -> IrExpr {
         // This is mechanical and target-neutral; it uses `IrExpr::Match` and
         // `IrPat::Tuple`/`IrPat::Bind`, which Phase 6 already handles.
         Expr::Lambda { params, body, span } => {
+            // Quotation: a lambda captured as a quote during type-checking is
+            // reified into a `QExpr` tree rather than lowered to a closure.
+            if ctx.lookup_quoted(*span).is_some() {
+                return reify_quote(ctx, body, *span);
+            }
             let id = ctx.fresh_id(None);
             // Lower all params; detect any non-Var tuple patterns.
             let mut ir_params: Vec<IrParam> = Vec::with_capacity(params.len());
@@ -815,6 +820,136 @@ pub fn lower_expr(ctx: &mut LowerCtx<'_>, expr: &Expr) -> IrExpr {
                 span: *span,
             }
         }
+    }
+}
+
+// ── Quotation reification (std.query) ─────────────────────────────────────────
+
+/// The `QExpr` builtin `TyConId` (see `ridge_types::builtins`).
+const QEXPR_TYCON: TyConId = TyConId(25);
+
+/// Reify a quoted lambda body into a `Quote { tree }` value.
+///
+/// `QExpr` and `Quote` are prelude builtins, so the tree is built directly as
+/// `Construct` nodes over the `QExpr` constructors (the same way `Ordering` and
+/// `JsonValue` are synthesised), and the `Quote` wrapper is a record that lowers
+/// to a map. No other module's constructors are referenced.
+fn reify_quote(ctx: &mut LowerCtx<'_>, body: &Expr, span: Span) -> IrExpr {
+    let tree = reify_node(ctx, body);
+    IrExpr::Construct {
+        id: ctx.fresh_id(None),
+        ctor: SymbolRef::Constructor {
+            ctor_kind: ridge_ir::CtorKind::Record,
+            owner_type: TyConId(0),
+            name: "Quote".to_string(),
+            variant: 0,
+        },
+        fields: vec![("tree".to_string(), tree)],
+        span,
+    }
+}
+
+/// Build a `QExpr` union-variant node with positional payloads named `$0`, `$1`.
+fn qexpr_node(
+    ctx: &mut LowerCtx<'_>,
+    name: &str,
+    variant: u32,
+    args: Vec<IrExpr>,
+    span: Span,
+) -> IrExpr {
+    let fields = args
+        .into_iter()
+        .enumerate()
+        .map(|(i, a)| (format!("${i}"), a))
+        .collect();
+    IrExpr::Construct {
+        id: ctx.fresh_id(None),
+        ctor: SymbolRef::Constructor {
+            ctor_kind: ridge_ir::CtorKind::UnionVariant,
+            owner_type: QEXPR_TYCON,
+            name: name.to_string(),
+            variant,
+        },
+        fields,
+        span,
+    }
+}
+
+/// Reify one node of a quoted predicate into a `QExpr` value.
+///
+/// The shape was already validated by the quotation type-checker, so anything
+/// unexpected here is an internal invariant violation, not a user error.
+fn reify_node(ctx: &mut LowerCtx<'_>, e: &Expr) -> IrExpr {
+    use ridge_ast::BinOp;
+    match e {
+        Expr::Paren { inner, .. } => reify_node(ctx, inner),
+
+        // `u.field` → `QCol "<sql column>"`.
+        Expr::FieldAccess { field, span, .. } => {
+            let col = ridge_ast::column_mirror::column_sql_name(&field.text);
+            let name_lit = IrExpr::Lit {
+                id: ctx.fresh_id(None),
+                value: IrLit::Text(col),
+                span: *span,
+            };
+            qexpr_node(ctx, "QCol", 0, vec![name_lit], *span)
+        }
+
+        // A literal → `QLit{Int,Text,Bool,Float} <value>`.
+        Expr::Literal(lit) => {
+            let span = lit.span();
+            let value = lower_expr(ctx, e);
+            let (name, variant) = match lit {
+                Literal::IntDec { .. }
+                | Literal::IntBin { .. }
+                | Literal::IntOct { .. }
+                | Literal::IntHex { .. } => ("QLitInt", 1),
+                Literal::Float { .. } => ("QLitFloat", 4),
+                Literal::Bool { .. } => ("QLitBool", 3),
+                Literal::Text { .. } | Literal::RawText { .. } => ("QLitText", 2),
+            };
+            qexpr_node(ctx, name, variant, vec![value], span)
+        }
+
+        // A comparison or boolean connective → the matching `QExpr` node.
+        Expr::Binary { op, lhs, rhs, span } => {
+            let (name, variant) = match op {
+                BinOp::And => ("QAnd", 5),
+                BinOp::Or => ("QOr", 6),
+                BinOp::Eq => ("QEq", 8),
+                BinOp::Ne => ("QNe", 9),
+                BinOp::Lt => ("QLt", 10),
+                BinOp::Gt => ("QGt", 11),
+                BinOp::Le => ("QLe", 12),
+                BinOp::Ge => ("QGe", 13),
+                _ => {
+                    ctx.errors.push(LowerError::InternalLoweringError {
+                        span: *span,
+                        message: "unsupported operator survived quote checking".into(),
+                    });
+                    return unit_lit(ctx, *span);
+                }
+            };
+            let l = reify_node(ctx, lhs);
+            let r = reify_node(ctx, rhs);
+            qexpr_node(ctx, name, variant, vec![l, r], *span)
+        }
+
+        other => {
+            ctx.errors.push(LowerError::InternalLoweringError {
+                span: other.span(),
+                message: "unsupported expression survived quote checking".into(),
+            });
+            unit_lit(ctx, other.span())
+        }
+    }
+}
+
+fn unit_lit(ctx: &mut LowerCtx<'_>, span: Span) -> IrExpr {
+    IrExpr::Lit {
+        id: ctx.fresh_id(None),
+        value: IrLit::Unit,
+        span,
     }
 }
 

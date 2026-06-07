@@ -69,7 +69,7 @@ pub const TIERS: &[TierPlan] = &[
     },
     TierPlan {
         tier: 5,
-        modules: &["std.crypto", "std.sql"],
+        modules: &["std.crypto", "std.sql", "std.query"],
     },
 ];
 

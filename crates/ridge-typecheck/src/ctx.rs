@@ -363,6 +363,14 @@ pub struct InferCtx {
     /// driver can expose them to importing modules (cross-module value seeding).
     /// Mirrors `schemes_accum` but keyed by name rather than body `NodeId`.
     pub name_schemes_accum: FxHashMap<String, Scheme>,
+
+    /// Quoted lambdas discovered during inference, keyed by the lambda's span.
+    ///
+    /// Populated by [`crate::quote::check_quote`] when a lambda flows into a
+    /// `Quote` parameter. Moved into `TypedModule.quoted_lambdas` at module-end
+    /// so the lowering pass knows which lambda bodies to reify into `QExpr`
+    /// trees. Empty for any module that uses no quotation.
+    pub quoted_lambdas_accum: FxHashMap<ridge_ast::Span, crate::quote::QuoteInfo>,
 }
 
 impl InferCtx {
@@ -389,6 +397,7 @@ impl InferCtx {
             to_text_tycons: None,
             current_module_raw: None,
             name_schemes_accum: FxHashMap::default(),
+            quoted_lambdas_accum: FxHashMap::default(),
         }
     }
 

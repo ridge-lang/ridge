@@ -32,6 +32,7 @@ pub mod instantiate;
 pub mod interp;
 pub mod pipe_propagate;
 pub mod prelude;
+pub mod quote;
 pub mod records;
 pub mod render;
 pub mod scc;
@@ -180,6 +181,11 @@ pub struct TypedModule {
     /// Empty for modules that contain no constrained functions (the common
     /// pre-typeclass case).
     pub dict_resolution: DictResolution,
+    /// Quoted lambdas captured during inference, keyed by the lambda's span.
+    ///
+    /// The lowering pass reads this to reify a quoted body into a `QExpr` tree
+    /// instead of a closure. Empty for any module that uses no quotation.
+    pub quoted_lambdas: FxHashMap<ridge_ast::Span, crate::quote::QuoteInfo>,
 }
 
 // ── Entry points ──────────────────────────────────────────────────────────────
@@ -292,6 +298,7 @@ pub fn typecheck_workspace(ws: &ResolvedWorkspace) -> TypecheckResult {
                 inferred_caps: FxHashMap::default(),
                 match_witnesses: FxHashMap::default(),
                 dict_resolution: FxHashMap::default(),
+                quoted_lambdas: FxHashMap::default(),
             });
             continue;
         };
@@ -382,6 +389,7 @@ fn empty_module_result(module_id: ModuleId) -> ModuleTypecheckResult {
             inferred_caps: FxHashMap::default(),
             match_witnesses: FxHashMap::default(),
             dict_resolution: FxHashMap::default(),
+            quoted_lambdas: FxHashMap::default(),
         },
         errors: Vec::new(),
         anon_records: AnonRecordTable::default(),
@@ -826,6 +834,9 @@ fn typecheck_module_inner(
 
     // Phase 4.5 T5: inferred_caps is now keyed by real NodeIds (or proxy fallback).
     // The T17 proxy comment is removed; the sweep will update LowerCtx::lookup_inferred_caps.
+    // Move the quoted-lambda side-table out for the lowering pass.
+    let quoted_lambdas = std::mem::take(&mut ctx.quoted_lambdas_accum);
+
     let typed = TypedModule {
         id,
         ast: Arc::clone(ast),
@@ -834,6 +845,7 @@ fn typecheck_module_inner(
         inferred_caps,
         match_witnesses: FxHashMap::default(), // T17: populated by infer_expr
         dict_resolution, // populated by the constraint solver when classes are used
+        quoted_lambdas,  // populated by the quotation checker when quotes are used
     };
 
     // Move the anon_records table out so the workspace driver can merge it.

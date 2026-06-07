@@ -1040,7 +1040,35 @@ the instance from the type at every head position; when a position is left
 undetermined — for example a result type the caller never fixes — the
 constraint is ambiguous and must be annotated.
 
-#### 5.6.10. What is not yet supported
+#### 5.6.10. Quotation
+
+A lambda passed where a `Quote` is expected is **captured as an expression
+tree** rather than compiled to a closure — the model C# uses for
+`Expression<Func<>>`. This is how a query predicate is written in native
+syntax yet compiled to something other than a function:
+
+```ridge
+fn showUserPred (q: Quote (User -> Bool)) -> Text = Query.debugShow q
+
+-- the lambda is captured, not called:
+showUserPred (fn u -> u.age >= 18 && u.active)
+```
+
+`Quote f` carries the quoted shape in its phantom parameter (here
+`User -> Bool`) so the surrounding code can keep a value and its predicate in
+agreement. Inside the quote the parameter stands for the entity's columns:
+`u.age` resolves to the `age` column of `User`, and the body is checked by a
+small dedicated pass — not the ordinary operator typing — that accepts column
+references, literals, the six comparisons, and `&&`/`||`. A boolean column is a
+predicate on its own (`fn u -> u.active`).
+
+The captured body becomes a `QExpr` value. Field accesses are recorded by their
+SQL column name (a `signupYear` field becomes `signup_year`), so the tree is
+ready to compile to SQL. Diagnostics: `T039` (a field that is not a column),
+`T040` (a form the quote does not support), `T041` (a comparison whose sides
+disagree), `T042` (the entity cannot be determined — annotate the parameter).
+
+#### 5.6.11. What is not yet supported
 
 The following are deferred to future releases:
 

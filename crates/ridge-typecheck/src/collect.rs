@@ -774,6 +774,8 @@ fn builtin_tycon_id_by_name(name: &str) -> Option<TyConId> {
         "ProcOutput" => Some(TyConId(14)),
         "Ordering" => Some(TyConId(15)),
         "JsonValue" => Some(TyConId(16)),
+        "QExpr" => Some(TyConId(25)),
+        "Quote" => Some(TyConId(26)),
         _ => None,
     }
 }

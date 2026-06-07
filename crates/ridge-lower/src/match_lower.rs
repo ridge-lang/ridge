@@ -884,6 +884,29 @@ pub fn lower_pattern_full(ctx: &mut LowerCtx<'_>, pat: &Pattern) -> IrPat {
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
+/// The variant index of a `QExpr` constructor, or `None` if `name` is not one.
+///
+/// Mirrors the variant order interned for `QExpr` in `ridge_types::builtins`.
+fn qexpr_variant(name: &str) -> Option<u32> {
+    Some(match name {
+        "QCol" => 0,
+        "QLitInt" => 1,
+        "QLitText" => 2,
+        "QLitBool" => 3,
+        "QLitFloat" => 4,
+        "QAnd" => 5,
+        "QOr" => 6,
+        "QNot" => 7,
+        "QEq" => 8,
+        "QNe" => 9,
+        "QLt" => 10,
+        "QGt" => 11,
+        "QLe" => 12,
+        "QGe" => 13,
+        _ => return None,
+    })
+}
+
 /// Lower a constructor pattern to `IrPat::Ctor`.
 ///
 /// Resolves the constructor `SymbolRef` via the `BindingMap` attached to
@@ -895,6 +918,10 @@ pub fn lower_pattern_full(ctx: &mut LowerCtx<'_>, pat: &Pattern) -> IrPat {
 /// `LowerCtx::lookup_constructor_tycon(owner_sym_id)` which translates the
 /// resolve-layer `SymbolId` to a `TyConId` via the symbol table. Falls back
 /// to `TyConId(0)` when the symbol table or workspace is absent (defensive).
+#[allow(
+    clippy::too_many_lines,
+    reason = "flat constructor-binding dispatch; the arms read best in one place"
+)]
 fn lower_constructor_pattern(
     ctx: &mut LowerCtx<'_>,
     name: &Ident,
@@ -951,6 +978,24 @@ fn lower_constructor_pattern(
         // `IrPat::Ctor { sym: SymbolRef::Prelude { name } }`.
         Some(Binding::StdlibSymbol { name: sym_name, .. }) => {
             let prelude_name = sym_name.clone();
+            // QExpr constructors (the quotation tree) are prelude builtins. They
+            // carry payloads, so they must lower to a real `UnionVariant`
+            // pattern over QExpr's `TyConId` — matching the way the reify pass
+            // constructs them — so codegen binds the payload variables.
+            if let Some(variant) = qexpr_variant(&prelude_name) {
+                let ir_args: Vec<IrPat> = args.iter().map(|a| lower_pattern_full(ctx, a)).collect();
+                return IrPat::Ctor {
+                    sym: SymbolRef::Constructor {
+                        ctor_kind: CtorKind::UnionVariant,
+                        owner_type: TyConId(25), // QExpr
+                        name: prelude_name,
+                        variant,
+                    },
+                    fields: vec![],
+                    args: ir_args,
+                    span,
+                };
+            }
             // Only the known prelude constructors map to IrPat::Ctor.
             // For anything else fall through to the error arm below.
             match prelude_name.as_str() {

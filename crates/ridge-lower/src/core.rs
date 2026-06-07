@@ -1477,21 +1477,31 @@ fn dict_plan_to_expr(
             // a function of the element dict(s), so apply it to `sub_dicts`
             // (dict-of-dicts). A non-parametric instance has no sub-dicts and the
             // bare symbol is the dictionary map.
-            let type_name = ctx
-                .workspace
-                .and_then(|ws| ws.tycons.get(tycon.0 as usize))
-                .map_or_else(|| format!("TyCon{}", tycon.0), |decl| decl.name.clone());
+            let decl = ctx.workspace.and_then(|ws| ws.tycons.get(tycon.0 as usize));
+            let type_name =
+                decl.map_or_else(|| format!("TyCon{}", tycon.0), |decl| decl.name.clone());
             let dict_const_name = format!("$inst_{class_name}_{type_name}");
             let id = ctx.fresh_id(None);
 
-            // When the instance's class is defined in a compiled stdlib module
-            // (e.g. `SqlType` lives in `std.sql`), its `$inst_` constant is
-            // exported from that module — not from the user's current module.
-            // Emit a cross-module `SymbolRef::Stdlib` so codegen calls
-            // `'std.sql':'$inst_SqlType_Int'()` instead of looking up a local.
-            let sym = if let Some(home) = stdlib_class_home_module(class_name) {
+            // The dictionary const lives in whichever module owns the instance:
+            // - a stdlib class's BUILTIN base types → the class's home module
+            //   (cross-module via `SymbolRef::Stdlib` + the FFI bridge);
+            // - a user type defined in ANOTHER module → that producer module
+            //   (cross-module via `SymbolRef::External`, invoked as a call);
+            // - a type defined in the current module → a local reference.
+            let tycon_is_builtin = decl.is_some_and(|d| d.def_module_raw.is_none());
+            let producer = decl.and_then(|d| d.def_module_raw);
+            let is_cross_module = producer.is_some_and(|p| p != ctx.module_id.0);
+            let sym = if let Some(home) =
+                stdlib_class_home_module(class_name).filter(|_| tycon_is_builtin)
+            {
                 SymbolRef::Stdlib {
                     module: home.to_owned(),
+                    name: dict_const_name,
+                }
+            } else if let Some(p) = producer.filter(|_| is_cross_module) {
+                SymbolRef::External {
+                    module: ridge_resolve::ModuleId(p),
                     name: dict_const_name,
                 }
             } else {
@@ -1501,7 +1511,11 @@ fn dict_plan_to_expr(
                 }
             };
             let dict_symbol = IrExpr::Symbol { id, sym, span };
-            if sub_dicts.is_empty() {
+            // A cross-module `External` reference is a 0-arity producer-module fn
+            // that must be invoked as a call (its value form is not lowered); a
+            // same-module const is usable directly as a value. Parametric
+            // instances always apply their sub-dictionaries.
+            if sub_dicts.is_empty() && !is_cross_module {
                 return dict_symbol;
             }
             let call_id = ctx.fresh_id(None);

@@ -1160,7 +1160,7 @@ fn lower_lambda(
 /// **Static path** — callee is `IrExpr::Symbol`:
 /// - `Local { name }` → unqualified Apply or qualified cross-module Call.
 /// - `Stdlib { .. }` → bridge map lookup via `lower_call_to_stdlib`.
-/// - `External { .. }` → `IrShapeMalformed` (not yet supported).
+/// - `External { module, name }` → qualified cross-module `call 'ridge_module_<id>':'name'(args)`.
 /// - `Constructor { UnionVariant, name }` with N args → `Tuple([Atom name, A1..AN])`.
 ///   Empty args → bare `Lit(Atom name)`.
 /// - `Constructor { Record, .. }` → defensive `IrShapeMalformed` (records are
@@ -1309,14 +1309,24 @@ fn lower_static_call(
         // ── Stdlib call → bridge map lookup. ─────────────────────────────────
         SymbolRef::Stdlib { module, name } => lower_call_to_stdlib(module, name, args, span, scope),
 
-        // ── External call → not yet supported. ───────────────────────────────
-        SymbolRef::External { name, .. } => Err(CodegenError::IrShapeMalformed {
-            variant: "IrExpr::Call",
-            span,
-            detail: format!(
-                "External-callee Call '{name}' not yet supported (arity + module mangling needed)"
-            ),
-        }),
+        // ── External call → qualified cross-module call. ─────────────────────
+        // A symbol imported from another user module (or a cross-module instance
+        // dictionary). The producer's BEAM module name is mangled from its id,
+        // matching the scheme `codegen_one_module` uses; the call arity is the
+        // number of arguments.
+        SymbolRef::External { name, module } => {
+            let lowered_args = args
+                .iter()
+                .map(|a| lower_expr_in_scope(a, scope))
+                .collect::<Result<Vec<_>, _>>()?;
+            let segment = format!("module_{}", module.0);
+            let beam_module = crate::module::mangle_module_name(&[segment.as_str()], *module)?;
+            Ok(CErlExpr::Call {
+                module: CErlAtom(beam_module),
+                fn_name: CErlAtom(name.clone()),
+                args: lowered_args,
+            })
+        }
 
         // ── UnionVariant constructor call. ────────────────────────────────────
         SymbolRef::Constructor {

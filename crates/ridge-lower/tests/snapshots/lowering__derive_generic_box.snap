@@ -71,7 +71,7 @@ items:
                   Lit(n16): Int(7)
   - kind: fn
     name: $inst_Encode_Box
-    pub: false
+    pub: true
     main: false
     caps: CapabilitySet(0)
     ret_ty: Error
@@ -112,7 +112,7 @@ items:
                                         Local(n30): x
   - kind: fn
     name: $inst_Decode_Box
-    pub: false
+    pub: true
     main: false
     caps: CapabilitySet(0)
     ret_ty: Error

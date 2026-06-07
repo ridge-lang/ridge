@@ -158,6 +158,116 @@ pub fn collect_user_tycons(
     }
 }
 
+// ── Column codegen: `deriving (Table)` mirrors ────────────────────────────────
+
+/// Synthesize the column mirror for every record in `module` that derives
+/// `Table`.
+///
+/// For an entity `User`, this interns a `UserCols` record type — one
+/// `Column User T` field per entity field `f: T` — and registers two value
+/// schemes so user code referencing them type-checks:
+///
+/// - `userCols  : UserCols`     — the column mirror
+/// - `userTable : Table User`   — the table metadata
+///
+/// Name resolution has already reserved the three names (see
+/// [`ridge_ast::column_mirror`]); this fills in their types. Lowering emits the
+/// values. `Column`/`Table` are compiler builtins ([`BuiltinTyCons`]), so user
+/// code never imports or names them.
+///
+/// Idempotent: on an incremental re-check the arena already holds the mirror
+/// (rebuilt from the prior pass), so its schema is replaced in place rather than
+/// duplicated.
+#[expect(
+    clippy::implicit_hasher,
+    reason = "FxHashMap is the canonical hasher for this crate; matches collect_workspace and the rest of the typecheck API"
+)]
+pub fn synth_table_mirrors(
+    module: &Module,
+    module_id: ridge_resolve::ModuleId,
+    arena: &mut TyConArena,
+    b: &BuiltinTyCons,
+    global_tycon_names: &FxHashMap<String, TyConId>,
+    ctx: &mut InferCtx,
+) {
+    use ridge_ast::column_mirror as cm;
+
+    let column_id = b.column;
+    let table_id = b.table;
+
+    let mono = |ty: Type| Scheme {
+        vars: vec![],
+        cap_vars: vec![],
+        row_vars: vec![],
+        ty,
+        constraints: vec![],
+    };
+
+    for item in &module.items {
+        let Item::Type(td) = item else { continue };
+        if !cm::has_table_derive(&td.deriving) {
+            continue;
+        }
+        let TypeBody::Record(_) = &td.body else {
+            continue;
+        };
+        let entity = td.name.text.as_str();
+
+        let Some(&entity_id) = ctx.user_tycon_names.get(entity) else {
+            continue;
+        };
+        let entity_ty = Type::Con(entity_id, vec![]);
+
+        // Mirror each entity field `f: T` as `f: Column Entity T`. The schema was
+        // built by pass 2 of `collect_user_tycons`, so it is available here.
+        let mirror_fields: Vec<RecordField> = {
+            let TyConKind::Record(schema) = &arena.get(entity_id).kind else {
+                continue;
+            };
+            schema
+                .record_fields()
+                .iter()
+                .map(|f| RecordField {
+                    name: f.name.clone(),
+                    ty: Type::Con(column_id, vec![entity_ty.clone(), f.ty.clone()]),
+                })
+                .collect()
+        };
+
+        let mirror_name = cm::mirror_type_name(entity);
+        let mirror_kind = TyConKind::Record(RecordSchema::new(vec![], mirror_fields));
+        let mirror_id = if let Some(&existing) = global_tycon_names.get(&mirror_name) {
+            // Incremental re-check: the mirror is already in the rebuilt arena.
+            arena.replace_kind(existing, mirror_kind);
+            existing
+        } else {
+            arena.intern(TyConDecl {
+                id: TyConId(0), // overwritten by intern
+                name: mirror_name.clone(),
+                arity: 0,
+                kind: mirror_kind,
+                def_span: Some(td.span),
+                def_module_raw: Some(module_id.0),
+                opaque: false,
+                is_anon: false,
+            })
+        };
+        ctx.user_tycon_names.insert(mirror_name, mirror_id);
+
+        let cols_value = cm::mirror_value_name(entity);
+        let cols_scheme = mono(Type::Con(mirror_id, vec![]));
+        ctx.name_schemes_accum
+            .insert(cols_value.clone(), cols_scheme.clone());
+        ctx.env.bind(cols_value, cols_scheme);
+
+        let table_value = cm::table_value_name(entity);
+        let table_scheme = mono(Type::Con(table_id, vec![entity_ty]));
+        ctx.name_schemes_accum
+            .insert(table_value.clone(), table_scheme.clone());
+        ctx.env.bind(table_value, table_scheme);
+    }
+}
+
 // ── Pre-scan: anonymous record interning ──────────────────────────────────────
 
 /// Walk all AST `Type::Record` nodes in every module, intern a unique

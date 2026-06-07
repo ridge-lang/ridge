@@ -92,6 +92,20 @@ pub struct BuiltinTyCons {
     /// the variants. The matching `pub type SqlValue` in `sql.ridge` is what the
     /// stdlib's own compilation sees.
     pub sql_value: TyConId,
+    /// `Column e a` — a typed column reference produced by `deriving (Table)`.
+    ///
+    /// `e` (entity) and `a` (value type) are phantom parameters that keep
+    /// columns of different tables and types from mixing; the carried data is
+    /// `{ name: Text, table: Text }`. Registered as a `TyConKind::Record` so
+    /// `col.name` is typeable. Compiler-internal: user code never names it
+    /// directly, it only appears in a generated column mirror.
+    pub column: TyConId,
+    /// `Table e` — table metadata produced by `deriving (Table)`.
+    ///
+    /// `e` (entity) is phantom; the data is `{ name: Text, columns: List Text }`
+    /// (the table name and ordered column names). Compiler-internal, like
+    /// [`Self::column`].
+    pub table: TyConId,
 }
 
 impl BuiltinTyCons {
@@ -127,6 +141,8 @@ impl BuiltinTyCons {
             html: SENTINEL,
             secure_cookie: SENTINEL,
             sql_value: SENTINEL,
+            column: SENTINEL,
+            table: SENTINEL,
         }
     }
 
@@ -610,6 +626,57 @@ impl BuiltinTyCons {
             is_anon: false,
         });
 
+        // Column e a — typed column reference from `deriving (Table)`. Phantom
+        // `e`/`a` (arity 2) are unused by the fields, so a use site's argument
+        // substitution leaves `name`/`table` as `Text`. Non-opaque: `col.name`
+        // is readable from user code.
+        let column = arena.intern(TyConDecl {
+            id: TyConId(0),
+            name: "Column".to_string(),
+            arity: 2,
+            kind: TyConKind::Record(RecordSchema::new(
+                vec![TyVid(0), TyVid(1)],
+                vec![
+                    RecordField {
+                        name: "name".to_string(),
+                        ty: Type::Con(text, vec![]),
+                    },
+                    RecordField {
+                        name: "table".to_string(),
+                        ty: Type::Con(text, vec![]),
+                    },
+                ],
+            )),
+            def_span: None,
+            def_module_raw: None,
+            opaque: false,
+            is_anon: false,
+        });
+        // Table e — table metadata from `deriving (Table)`. Phantom `e`
+        // (arity 1); fields are the table name and ordered column names.
+        let table = arena.intern(TyConDecl {
+            id: TyConId(0),
+            name: "Table".to_string(),
+            arity: 1,
+            kind: TyConKind::Record(RecordSchema::new(
+                vec![TyVid(0)],
+                vec![
+                    RecordField {
+                        name: "name".to_string(),
+                        ty: Type::Con(text, vec![]),
+                    },
+                    RecordField {
+                        name: "columns".to_string(),
+                        ty: Type::Con(list, vec![Type::Con(text, vec![])]),
+                    },
+                ],
+            )),
+            def_span: None,
+            def_module_raw: None,
+            opaque: false,
+            is_anon: false,
+        });
+
         // Verify assignment order matches spec §4.1 indices 0..16.
         debug_assert_eq!(int.0, 0);
         debug_assert_eq!(float.0, 1);
@@ -632,6 +699,8 @@ impl BuiltinTyCons {
         debug_assert_eq!(html.0, 18);
         debug_assert_eq!(secure_cookie.0, 19);
         debug_assert_eq!(sql_value.0, 20);
+        debug_assert_eq!(column.0, 21);
+        debug_assert_eq!(table.0, 22);
 
         // Suppress the "unused" lint — CapabilitySet is imported for future use
         // in T4 (actor schemas carry CapabilitySet).
@@ -659,6 +728,8 @@ impl BuiltinTyCons {
             html,
             secure_cookie,
             sql_value,
+            column,
+            table,
         }
     }
 }
@@ -738,11 +809,48 @@ mod tests {
     }
 
     #[test]
-    fn arena_len_is_21() {
+    fn arena_len_is_23() {
         // 15 original builtins + Ordering + JsonValue + the std.net.http taint
-        // wrappers Sql / Html / SecureCookie + std.sql's SqlValue.
+        // wrappers Sql / Html / SecureCookie + std.sql's SqlValue + the
+        // column-codegen builtins Column / Table.
         let (arena, _) = make_arena_with_builtins();
-        assert_eq!(arena.len(), 21);
+        assert_eq!(arena.len(), 23);
+    }
+
+    #[test]
+    fn column_is_record_arity_2() {
+        let (arena, b) = make_arena_with_builtins();
+        let decl = arena.get(b.column);
+        assert_eq!(decl.name, "Column");
+        assert_eq!(decl.arity, 2);
+        assert!(!decl.opaque);
+        let TyConKind::Record(schema) = &decl.kind else {
+            panic!("Column should be a record");
+        };
+        let fields: Vec<&str> = schema
+            .record_fields()
+            .iter()
+            .map(|f| f.name.as_str())
+            .collect();
+        assert_eq!(fields, vec!["name", "table"]);
+    }
+
+    #[test]
+    fn table_is_record_arity_1() {
+        let (arena, b) = make_arena_with_builtins();
+        let decl = arena.get(b.table);
+        assert_eq!(decl.name, "Table");
+        assert_eq!(decl.arity, 1);
+        assert!(!decl.opaque);
+        let TyConKind::Record(schema) = &decl.kind else {
+            panic!("Table should be a record");
+        };
+        let fields: Vec<&str> = schema
+            .record_fields()
+            .iter()
+            .map(|f| f.name.as_str())
+            .collect();
+        assert_eq!(fields, vec!["name", "columns"]);
     }
 
     // ── Arena get() round-trip ────────────────────────────────────────────────

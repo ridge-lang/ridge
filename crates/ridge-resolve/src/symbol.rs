@@ -449,6 +449,41 @@ impl<'ast> Visit<'ast> for TopLevelCollector {
                                 false, // NOT in index
                             );
                         }
+
+                        // Column codegen: `deriving (Table)` generates a
+                        // user-visible column mirror — a mirror type plus two
+                        // values. Register their names here so references
+                        // resolve; the type and values themselves are
+                        // synthesized later (type checking, then lowering). The
+                        // mirror inherits the entity's visibility. See
+                        // `ridge_ast::column_mirror`.
+                        if ridge_ast::column_mirror::has_table_derive(&d.deriving) {
+                            let entity = d.name.text.as_str();
+                            self.push(
+                                ridge_ast::column_mirror::mirror_type_name(entity),
+                                SymbolKind::Type {
+                                    arity: 0,
+                                    opaque: false,
+                                },
+                                vis,
+                                d.span,
+                                true,
+                            );
+                            self.push(
+                                ridge_ast::column_mirror::mirror_value_name(entity),
+                                SymbolKind::Const,
+                                vis,
+                                d.span,
+                                true,
+                            );
+                            self.push(
+                                ridge_ast::column_mirror::table_value_name(entity),
+                                SymbolKind::Const,
+                                vis,
+                                d.span,
+                                true,
+                            );
+                        }
                     }
                     ridge_ast::TypeBody::Union(union_body) => {
                         for (idx, alt) in union_body.alternatives.iter().enumerate() {
@@ -832,6 +867,35 @@ mod tests {
         })
     }
 
+    fn record_type_item_deriving(
+        name: &str,
+        vis: Visibility,
+        fields: Vec<&str>,
+        deriving: Vec<&str>,
+    ) -> Item {
+        let field_decls = fields
+            .into_iter()
+            .map(|f| FieldDecl {
+                name: id(f),
+                ty: prim_type_int(),
+                span: sp(),
+            })
+            .collect();
+        Item::Type(TypeDecl {
+            vis,
+            opaque: false,
+            name: id(name),
+            params: vec![],
+            body: TypeBody::Record(RecordTypeBody {
+                fields: field_decls,
+                span: sp(),
+            }),
+            deriving: deriving.into_iter().map(id).collect(),
+            span: sp(),
+            doc: None,
+        })
+    }
+
     fn actor_item(
         name: &str,
         vis: Visibility,
@@ -980,6 +1044,62 @@ mod tests {
             table.entries[0].kind,
             SymbolKind::Type { arity: 0, .. }
         ));
+    }
+
+    // `deriving (Table)` on a record registers the column-mirror names so user
+    // code can reference them; the type and values are synthesized downstream.
+    #[test]
+    fn record_deriving_table_registers_column_mirror_names() {
+        let m = module_with(vec![record_type_item_deriving(
+            "User",
+            Visibility::Pub,
+            vec!["id", "email", "age"],
+            vec!["Table"],
+        )]);
+        let (table, errors) = collect_symbols(ModuleId(0), &m);
+        assert!(errors.is_empty(), "errors: {errors:?}");
+
+        assert!(
+            matches!(
+                table.lookup("UserCols").map(|e| &e.kind),
+                Some(SymbolKind::Type { arity: 0, .. })
+            ),
+            "UserCols should be a referenceable type"
+        );
+        assert!(
+            matches!(
+                table.lookup("userCols").map(|e| &e.kind),
+                Some(SymbolKind::Const)
+            ),
+            "userCols should be a referenceable value"
+        );
+        assert!(
+            matches!(
+                table.lookup("userTable").map(|e| &e.kind),
+                Some(SymbolKind::Const)
+            ),
+            "userTable should be a referenceable value"
+        );
+        // The mirror inherits the entity's visibility.
+        assert_eq!(
+            table.lookup("UserCols").map(|e| e.visibility),
+            Some(ResolvedVisibility::Pub)
+        );
+    }
+
+    // No `deriving (Table)` → no column-mirror names.
+    #[test]
+    fn record_without_table_derive_has_no_column_mirror() {
+        let m = module_with(vec![record_type_item_deriving(
+            "User",
+            Visibility::Pub,
+            vec!["id"],
+            vec!["Eq"],
+        )]);
+        let (table, _errors) = collect_symbols(ModuleId(0), &m);
+        assert!(table.lookup("UserCols").is_none());
+        assert!(table.lookup("userCols").is_none());
+        assert!(table.lookup("userTable").is_none());
     }
 
     // Test 8: generic record type `type List a = { items: List a, len: Int }` → arity = 1

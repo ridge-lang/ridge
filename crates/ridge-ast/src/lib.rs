@@ -23,6 +23,7 @@ pub use ridge_lexer::Span;
 
 pub mod base;
 pub mod block;
+pub mod column_mirror;
 pub mod decl;
 pub mod expr;
 pub mod ident;

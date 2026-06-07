@@ -658,6 +658,12 @@ fn typecheck_module_inner(
     for (name, &tid) in imported_tycons {
         ctx.user_tycon_names.entry(name.clone()).or_insert(tid);
     }
+    // Step A1: Column codegen — synthesize the `deriving (Table)` mirrors (the
+    // `<Entity>Cols` type plus the `<entity>Cols` / `<entity>Table` values)
+    // before the snapshot, so field access on a mirror resolves and fn/const
+    // bodies that reference the values type-check. Runs after the import merge so
+    // `Column`/`Table` from std.sql are resolvable.
+    crate::tycon_collect::synth_table_mirrors(ast, id, arena, b, global_tycon_names, &mut ctx);
     // Snapshot all TyConDecls (builtins + user) for record/union inference.
     ctx.tycon_decls = arena.all().to_vec();
 

@@ -367,10 +367,11 @@ const BASELINE_EXPORTS: &[(&str, &[&str])] = &[
     (
         "std.query",
         &[
-            // The tree renderer and the SQL compiler. `Quote`/`QExpr` and their
+            // The tree renderer and the SQL compilers. `Quote`/`QExpr` and their
             // constructors are prelude builtins, not std.query exports.
             "debugShow",
             "toSql",
+            "orderSql",
             // Sort direction, declared in query.ridge. The type plus its two
             // constructors are importable for ordering.
             "SortOrder",

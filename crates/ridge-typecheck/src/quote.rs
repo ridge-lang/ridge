@@ -64,6 +64,26 @@ pub(crate) fn quote_entity(ctx: &mut InferCtx, param_ty: &Type) -> Option<TyConI
     }
 }
 
+/// Extracts the resolved result type `r` from a `Quote (e -> r)` type.
+///
+/// Returns `None` when the type is not a `Quote` wrapping a one-parameter
+/// function. The result type selects the accepted body shape in
+/// [`check_quote`]: `Bool` is a predicate (a `where` body); a scalar column
+/// type is a single column (an `orderBy` key).
+pub(crate) fn quote_result(ctx: &mut InferCtx, param_ty: &Type) -> Option<Type> {
+    let Type::Con(id, args) = param_ty else {
+        return None;
+    };
+    if !is_quote_tycon(ctx, *id) {
+        return None;
+    }
+    let inner = ctx.deep_resolve(args.first()?);
+    let Type::Fn { ret, .. } = inner else {
+        return None;
+    };
+    Some(ctx.deep_resolve(&ret))
+}
+
 /// Checks a quoted lambda body against `entity`. On success records a
 /// [`QuoteInfo`] for the lambda span and returns `true`; on failure pushes a
 /// diagnostic and returns `false`.
@@ -72,6 +92,7 @@ pub(crate) fn check_quote(
     b: &BuiltinTyCons,
     lambda: &Expr,
     entity: TyConId,
+    expected_ret: Option<&Type>,
 ) -> bool {
     let Expr::Lambda { params, body, span } = lambda else {
         return false;
@@ -113,21 +134,48 @@ pub(crate) fn check_quote(
         return false;
     };
 
-    match check_node(ctx, b, body, &param_name, &fields, &entity_name) {
-        Some(qk) if as_predicate(b, &qk) => {
+    let Some(qk) = check_node(ctx, b, body, &param_name, &fields, &entity_name) else {
+        return false;
+    };
+
+    // The quote's result type selects the accepted body shape: a `Bool` result
+    // is a predicate (a `where` body); a scalar result is a single column (an
+    // `orderBy` key). With no result type known, fall back to predicate.
+    let want = expected_ret.map(|r| ctx.deep_resolve(r));
+    let is_bool_result = want
+        .as_ref()
+        .map_or(true, |r| matches!(r, Type::Con(id, _) if *id == b.bool));
+
+    if is_bool_result {
+        if as_predicate(b, &qk) {
             ctx.quoted_lambdas_accum
                 .insert(*span, QuoteInfo { param_name, entity });
-            true
+            return true;
         }
-        Some(_) => {
-            ctx.errors.push(TypeError::QuoteUnsupportedExpr {
-                detail: "a quoted predicate must be a boolean expression".to_string(),
-                span: body.span(),
-            });
-            false
-        }
-        None => false,
+        ctx.errors.push(TypeError::QuoteUnsupportedExpr {
+            detail: "a quoted predicate must be a boolean expression".to_string(),
+            span: body.span(),
+        });
+        return false;
     }
+
+    // Non-boolean result: an ordering key, which must be a single column (or a
+    // literal) of the quote's result type.
+    let want_ty = want.unwrap_or_else(|| Type::Con(b.bool, vec![]));
+    let matches_result = value_type(&qk)
+        .map(|vt| ctx.deep_resolve(vt))
+        .is_some_and(|vt| same_value_type(&vt, &want_ty));
+    if matches_result {
+        ctx.quoted_lambdas_accum
+            .insert(*span, QuoteInfo { param_name, entity });
+        return true;
+    }
+    let want_rendered = crate::render::render_type_with(&want_ty, &ctx.tycon_decls);
+    ctx.errors.push(TypeError::QuoteUnsupportedExpr {
+        detail: format!("a quoted ordering key must be a single column of type {want_rendered}"),
+        span: body.span(),
+    });
+    false
 }
 
 // ── Internals ───────────────────────────────────────────────────────────────

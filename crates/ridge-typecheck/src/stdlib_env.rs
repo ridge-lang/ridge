@@ -16,7 +16,7 @@ use rustc_hash::FxHashMap;
 use crate::ctx::InferCtx;
 use crate::prelude::prelude_types;
 use crate::stdlib_signatures::stdlib_signature;
-use crate::stdlib_types::reconciled_ctor_scheme;
+use crate::stdlib_types::{reconciled_ctor_scheme, reconciled_fn_scheme};
 
 // ── Public API ────────────────────────────────────────────────────────────────
 
@@ -81,10 +81,12 @@ pub fn seed_stdlib_env(
                         if let Some(scheme) = stdlib_signature(*mid, name, b) {
                             ctx.env.bind(eb.local_name.clone(), scheme);
                         } else {
-                            // A constructor of a reconciled stdlib type (no
-                            // hand-curated signature); derive its scheme from the
-                            // arena declaration interned in the reserved block.
-                            let recon = reconciled_ctor_scheme(&ctx.tycon_decls, reconciled, name);
+                            // No hand-curated signature: either a constructor of
+                            // a reconciled stdlib type, or a stdlib function whose
+                            // signature references one. Both are derived from the
+                            // reconciled arena block.
+                            let recon = reconciled_ctor_scheme(&ctx.tycon_decls, reconciled, name)
+                                .or_else(|| reconciled_fn_scheme(name, reconciled, b));
                             if let Some(scheme) = recon {
                                 ctx.env.bind(eb.local_name.clone(), scheme);
                             }

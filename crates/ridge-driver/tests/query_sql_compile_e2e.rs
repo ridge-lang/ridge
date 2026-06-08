@@ -22,7 +22,7 @@ use std::process::Command;
 use ridge_driver::{compile_workspace, CompileOptions, EmitArtefacts};
 
 const SOURCE: &str = r#"
-import std.query as Query
+import std.query as Query (SortOrder, Asc, Desc)
 import std.sql (Sql, SqlValue, sqlValue)
 import std.int as Int
 import std.list as List
@@ -30,6 +30,14 @@ import std.list as List
 pub type User = { id: Int, age: Int, active: Bool, signupYear: Int } deriving (Table)
 
 fn compiled (q: Quote (User -> Bool)) -> (Sql, List SqlValue) = Query.toSql q
+
+fn orderKey (q: Quote (User -> Int)) -> Sql = Query.orderSql Desc q
+
+fn orderKeyAsc (q: Quote (User -> Int)) -> Sql = Query.orderSql Asc q
+
+pub fn recentFirst () -> Text = sqlValue (orderKey (fn u -> u.signupYear))
+
+pub fn oldestFirst () -> Text = sqlValue (orderKeyAsc (fn u -> u.signupYear))
 
 pub fn adultSql () -> Text =
     match compiled (fn u -> u.age >= 18)
@@ -115,7 +123,7 @@ fn quoted_predicate_compiles_to_parameterized_sql() {
 
     let expr = format!(
         "F=fun(N)->io:format(\"~s=~s~n\",[N,{module}:N()])end, \
-         lists:foreach(F,['adultSql','adultBinds','activeAdultSql','activeAdultBinds','recentSql']), halt()."
+         lists:foreach(F,['adultSql','adultBinds','activeAdultSql','activeAdultBinds','recentSql','recentFirst','oldestFirst']), halt()."
     );
     let output = Command::new("erl")
         .arg("-noshell")
@@ -153,5 +161,15 @@ fn quoted_predicate_compiles_to_parameterized_sql() {
     assert!(
         stdout.contains("recentSql=(signup_year >= ?)"),
         "expected `recentSql=(signup_year >= ?)`\nstdout:\n{stdout}\nstderr:\n{stderr}"
+    );
+    // An ordering key is a bare column compiled with its direction; the
+    // camelCase field reifies to its snake_case SQL name and carries no bind.
+    assert!(
+        stdout.contains("recentFirst=signup_year DESC"),
+        "expected `recentFirst=signup_year DESC`\nstdout:\n{stdout}\nstderr:\n{stderr}"
+    );
+    assert!(
+        stdout.contains("oldestFirst=signup_year ASC"),
+        "expected `oldestFirst=signup_year ASC`\nstdout:\n{stdout}\nstderr:\n{stderr}"
     );
 }

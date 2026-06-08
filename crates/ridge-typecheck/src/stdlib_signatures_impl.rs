@@ -1508,10 +1508,13 @@ mod tests {
                     continue;
                 }
                 // std.query's reconciled types: `SortOrder` is a type (no value
-                // scheme) and `Asc`/`Desc` are constructors resolved from the
-                // reserved arena block (`reconciled_ctor_scheme`), not from this
-                // hand-curated signature table.
-                if module.name == "std.query" && matches!(name, "SortOrder" | "Asc" | "Desc") {
+                // scheme), `Asc`/`Desc` are constructors resolved from the
+                // reserved arena block (`reconciled_ctor_scheme`), and `orderSql`
+                // is a function whose signature references `SortOrder`, so it is
+                // seeded via `reconciled_fn_scheme` rather than this table.
+                if module.name == "std.query"
+                    && matches!(name, "SortOrder" | "Asc" | "Desc" | "orderSql")
+                {
                     continue;
                 }
                 let result = stdlib_signature(module.id, name, &b);

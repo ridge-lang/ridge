@@ -76,3 +76,15 @@ fn binNodeSql (l: QExpr) (op: Text) (r: QExpr) -> { text: Text, binds: List SqlV
     let rr = compileExpr r
     let t = Text.concat "(" (Text.concat lr.text (Text.concat op (Text.concat rr.text ")")))
     { text = t, binds = lr.binds ++ rr.binds }
+
+-- Compile a quoted ordering key (a single column) plus a direction into an
+-- `ORDER BY` fragment, e.g. `created_at DESC`. An ordering key is a column, so
+-- it carries no bind values.
+pub fn orderSql (dir: SortOrder) (q: Quote f) -> Sql =
+    let r = compileExpr q.tree
+    sql (Text.concat r.text (Text.concat " " (dirKeyword dir)))
+
+fn dirKeyword (dir: SortOrder) -> Text =
+    match dir
+        Asc  -> "ASC"
+        Desc -> "DESC"

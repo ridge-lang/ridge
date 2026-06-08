@@ -144,7 +144,7 @@ pub(crate) fn check_quote(
     let want = expected_ret.map(|r| ctx.deep_resolve(r));
     let is_bool_result = want
         .as_ref()
-        .map_or(true, |r| matches!(r, Type::Con(id, _) if *id == b.bool));
+        .is_none_or(|r| matches!(r, Type::Con(id, _) if *id == b.bool));
 
     if is_bool_result {
         if as_predicate(b, &qk) {

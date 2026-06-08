@@ -104,6 +104,10 @@ pub fn lower_workspace(twork: &TypedWorkspace, rwork: &ResolvedWorkspace) -> Low
 /// resolve correctly (§3.2).  `None` is accepted defensively for test scaffolding
 /// that does not run the full resolve pipeline.
 #[must_use]
+#[expect(
+    clippy::implicit_hasher,
+    reason = "callers always pass the workspace's FxHashMap; generalising over the hasher adds noise for no caller benefit"
+)]
 pub fn lower_module(
     typed: &TypedModule,
     ws: &TypedWorkspace,

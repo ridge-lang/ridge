@@ -231,7 +231,7 @@ impl<'tw> LowerCtx<'tw> {
     }
 
     /// Attach the stdlib-module FQN map (see [`Self::stdlib_module_fqns`]).
-    pub fn attach_stdlib_module_fqns(&mut self, fqns: &'tw FxHashMap<ModuleId, String>) {
+    pub const fn attach_stdlib_module_fqns(&mut self, fqns: &'tw FxHashMap<ModuleId, String>) {
         self.stdlib_module_fqns = Some(fqns);
     }
 

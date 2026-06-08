@@ -223,7 +223,8 @@ fn collect_class_decls(modules: &[(u32, &Module)], ct: &mut ClassTable) {
                         .params
                         .iter()
                         .map(|p| match p {
-                            ridge_ast::decl::Param::Annotated { ty, .. } => ty.clone(),
+                            ridge_ast::decl::Param::Annotated { ty, .. }
+                            | ridge_ast::decl::Param::PatternAnnotated { ty, .. } => ty.clone(),
                             ridge_ast::decl::Param::Bare(_) => ridge_ast::Type::Named {
                                 name: ridge_ast::Ident {
                                     text: bare_fallback.clone(),
@@ -396,7 +397,8 @@ fn collect_auto_promoted_to_text(
 
         // The parameter must carry an explicit type annotation.
         let param_ty = match &decl.params[0] {
-            ridge_ast::decl::Param::Annotated { ty, .. } => ty,
+            ridge_ast::decl::Param::Annotated { ty, .. }
+            | ridge_ast::decl::Param::PatternAnnotated { ty, .. } => ty,
             ridge_ast::decl::Param::Bare(_) => continue,
         };
 

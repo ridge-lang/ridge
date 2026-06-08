@@ -1854,6 +1854,65 @@ fn lambda_param_to_ir_param(
     }
 }
 
+// ── Destructuring (pattern) param helpers (L9) ───────────────────────────────
+
+/// Build the synthetic [`IrParam`] for a destructuring `PatternAnnotated` param.
+///
+/// A parameter that destructures (`(Point { x, y }: Point)`) lowers to a fresh
+/// `__param_N` binder; the pattern itself is matched in a wrapping `match`
+/// around the body (see [`wrap_pattern_params`]). Returns the param plus its
+/// fresh name so the caller can build that wrapper.
+pub(crate) fn synth_destructure_param(
+    ctx: &mut LowerCtx<'_>,
+    ty: &ridge_ast::Type,
+    span: Span,
+) -> (IrParam, String) {
+    let name = ctx.fresh_local("__param");
+    let ir = IrParam {
+        name: name.clone(),
+        ty: lower_ast_type(ctx, ty),
+        span,
+    };
+    (ir, name)
+}
+
+/// Wrap `body` so each destructuring param binds its pattern via a `match`.
+///
+/// `entries` pairs each synthetic param name (from [`synth_destructure_param`])
+/// with its source pattern and span. The wrappers nest outside-in, so the first
+/// param's match is outermost. Each is a single irrefutable arm — refutability
+/// was rejected in typecheck, so the match never fails at runtime.
+pub(crate) fn wrap_pattern_params(
+    ctx: &mut LowerCtx<'_>,
+    body: IrExpr,
+    entries: Vec<(String, &Pattern, Span)>,
+) -> IrExpr {
+    entries
+        .into_iter()
+        .rev()
+        .fold(body, |inner, (name, pat, span)| {
+            let ir_pat = crate::match_lower::lower_pattern_full(ctx, pat);
+            let arm = ridge_ir::IrArm {
+                pat: ir_pat,
+                when: None,
+                body: inner,
+                span,
+            };
+            let scrutinee_id = ctx.fresh_id(None);
+            let match_id = ctx.fresh_id(None);
+            IrExpr::Match {
+                id: match_id,
+                scrutinee: Box::new(IrExpr::Local {
+                    id: scrutinee_id,
+                    name,
+                    span,
+                }),
+                arms: vec![arm],
+                span,
+            }
+        })
+}
+
 // ── B-3 helpers (partial application detection) ──────────────────────────────
 
 /// Look up the resolved `Type` for the callee AST `Expr`.

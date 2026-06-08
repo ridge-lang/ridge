@@ -382,7 +382,7 @@ fn method_sig_fingerprint(m: &MethodSig) -> String {
 fn render_param(p: &Param) -> String {
     match p {
         Param::Bare(_) => "_".to_string(),
-        Param::Annotated { ty, .. } => render_ast_type(ty),
+        Param::Annotated { ty, .. } | Param::PatternAnnotated { ty, .. } => render_ast_type(ty),
     }
 }
 

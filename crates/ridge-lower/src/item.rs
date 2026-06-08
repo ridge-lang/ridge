@@ -44,7 +44,7 @@ use ridge_ast::{
     decl::{ConstDecl, FnDecl},
     module::Item,
     typeclass::InstanceDecl,
-    Body, Expr, Param, Span, Visibility,
+    Body, Expr, Param, Pattern, Span, Visibility,
 };
 use ridge_ir::{CtorKind, IrConst, IrExpr, IrFfiFn, IrFn, IrItem, IrLit, IrParam, SymbolRef};
 use ridge_resolve::{NodeId, NodeKind};
@@ -52,7 +52,9 @@ use ridge_types::{Scheme, Type};
 
 use crate::actor_lower::lower_actor;
 use crate::ast_type::lower_ast_type;
-use crate::core::{lower_expr, stdlib_class_home_module};
+use crate::core::{
+    lower_expr, stdlib_class_home_module, synth_destructure_param, wrap_pattern_params,
+};
 use crate::ctx::LowerCtx;
 
 // ── Public entry points ───────────────────────────────────────────────────────
@@ -439,12 +441,22 @@ pub fn lower_fn(ctx: &mut LowerCtx<'_>, decl: &FnDecl) -> IrFn {
 
     // PHASE45-T3: bare-param types are lifted from the scheme's Type::Fn
     // rather than looked up via NodeKind::Ident (ident spans carry no type).
-    let user_params: Vec<IrParam> = decl
-        .params
-        .iter()
-        .enumerate()
-        .map(|(idx, p)| param_to_ir_param(ctx, &scheme, idx, p))
-        .collect();
+    //
+    // A destructuring param (`(Point { x, y }: Point)`, L9) lowers to a fresh
+    // `__param_N` binder and records an entry so the body can be wrapped in a
+    // `match` that binds the pattern.
+    let mut user_params: Vec<IrParam> = Vec::with_capacity(decl.params.len());
+    let mut pattern_entries: Vec<(String, &Pattern, Span)> = Vec::new();
+    for (idx, p) in decl.params.iter().enumerate() {
+        if let Param::PatternAnnotated { pat, ty, span } = p {
+            let (ir, synth) = synth_destructure_param(ctx, ty, *span);
+            user_params.push(ir);
+            pattern_entries.push((synth, pat, *span));
+        } else {
+            user_params.push(param_to_ir_param(ctx, &scheme, idx, p));
+        }
+    }
+    let body = wrap_pattern_params(ctx, body, pattern_entries);
 
     // Prepend one implicit dict param per class constraint.
     // Dict params come BEFORE user params; their order follows the scheme's
@@ -681,24 +693,30 @@ fn lower_instance_method(
     // for a parametric instance the body additionally references the enclosing
     // `$inst_` fn's dict params (set in `current_fn_constraints`), captured by
     // the method's closure.
-    let body = lower_expr(ctx, &method.body);
+    let raw_body = lower_expr(ctx, &method.body);
 
-    let params: Vec<IrParam> = method
-        .params
-        .iter()
-        .map(|p| match p {
-            Param::Bare(id) => IrParam {
+    let mut params: Vec<IrParam> = Vec::with_capacity(method.params.len());
+    let mut pattern_entries: Vec<(String, &Pattern, Span)> = Vec::new();
+    for p in &method.params {
+        match p {
+            Param::Bare(id) => params.push(IrParam {
                 name: id.text.clone(),
                 ty: Type::Error,
                 span: id.span,
-            },
-            Param::Annotated { name, ty, span } => IrParam {
+            }),
+            Param::Annotated { name, ty, span } => params.push(IrParam {
                 name: name.text.clone(),
                 ty: lower_ast_type(ctx, ty),
                 span: *span,
-            },
-        })
-        .collect();
+            }),
+            Param::PatternAnnotated { pat, ty, span } => {
+                let (ir, synth) = synth_destructure_param(ctx, ty, *span);
+                params.push(ir);
+                pattern_entries.push((synth, pat, *span));
+            }
+        }
+    }
+    let body = wrap_pattern_params(ctx, raw_body, pattern_entries);
 
     if is_parametric {
         // Inline lambda so the body captures the enclosing dict parameters. A
@@ -5447,6 +5465,10 @@ fn param_to_ir_param(
             ty: lower_ast_type(ctx, ty),
             span: *span,
         },
+        // A destructuring param is normally handled by the caller (which also
+        // records the body wrapper); this arm keeps the synthetic binder correct
+        // if it is ever lowered in isolation.
+        Param::PatternAnnotated { ty, span, .. } => synth_destructure_param(ctx, ty, *span).0,
     }
 }
 

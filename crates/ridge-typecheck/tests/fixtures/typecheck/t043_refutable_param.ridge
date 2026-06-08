@@ -1,0 +1,4 @@
+-- expect: T043
+-- T043 RefutablePatternParam: `Some x` is refutable — it does not match `None`,
+-- so it cannot stand in for every value the parameter may receive.
+fn unwrap (Some x: Option Int) -> Int = x

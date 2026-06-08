@@ -58,14 +58,14 @@
     allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::todo)
 )]
 
-use ridge_ast::{decl::FnDecl, Body, Param, Span};
+use ridge_ast::{decl::FnDecl, Body, Param, Pattern, Span};
 use ridge_ir::{IrExpr, IrLit, IrParam, IrPat};
 use ridge_resolve::NodeKind;
 use ridge_types::Type;
 
 use crate::ast_type::lower_ast_type;
 use crate::block::fold_block_to_continuation;
-use crate::core::lower_expr;
+use crate::core::{lower_expr, synth_destructure_param, wrap_pattern_params};
 use crate::ctx::LowerCtx;
 use crate::error::LowerError;
 
@@ -176,12 +176,17 @@ fn build_lambda(ctx: &mut LowerCtx<'_>, decl: &FnDecl) -> IrExpr {
     // unit); the Type::Fn shape will not match and the lookup falls back to
     // Type::Error — which is the same as the prior NodeKind::Ident path but
     // uses the correct structural approach.
-    let params: Vec<IrParam> = decl
-        .params
-        .iter()
-        .enumerate()
-        .map(|(idx, p)| param_to_ir_param(ctx, decl.span, idx, p))
-        .collect();
+    let mut params: Vec<IrParam> = Vec::with_capacity(decl.params.len());
+    let mut pattern_entries: Vec<(String, &Pattern, Span)> = Vec::new();
+    for (idx, p) in decl.params.iter().enumerate() {
+        if let Param::PatternAnnotated { pat, ty, span } = p {
+            let (ir, synth) = synth_destructure_param(ctx, ty, *span);
+            params.push(ir);
+            pattern_entries.push((synth, pat, *span));
+        } else {
+            params.push(param_to_ir_param(ctx, decl.span, idx, p));
+        }
+    }
 
     // Inner fns always have Body::Expr; Body::Ffi is only valid at module
     // top-level (T3 will reject it elsewhere).
@@ -192,7 +197,8 @@ fn build_lambda(ctx: &mut LowerCtx<'_>, decl: &FnDecl) -> IrExpr {
             unreachable!("Body::Ffi in inner-fn position — T3 must reject this before lowering")
         }
     };
-    let body = Box::new(lower_expr(ctx, body_expr));
+    let body = lower_expr(ctx, body_expr);
+    let body = Box::new(wrap_pattern_params(ctx, body, pattern_entries));
 
     let caps = ctx.lookup_inferred_caps(decl.span);
 
@@ -251,6 +257,9 @@ fn param_to_ir_param(
             ty: lower_ast_type(ctx, ty),
             span: *span,
         },
+        // Destructuring params are handled by `build_lambda` (which also wraps
+        // the body); this arm keeps the synthetic binder correct in isolation.
+        Param::PatternAnnotated { ty, span, .. } => synth_destructure_param(ctx, ty, *span).0,
     }
 }
 

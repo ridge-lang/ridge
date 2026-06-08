@@ -46,7 +46,7 @@ use rustc_hash::{FxHashMap, FxHashSet};
 use crate::caps_check::caps_from_ast_slice;
 use crate::ctx::InferCtx;
 use crate::error::TypeError;
-use crate::infer::infer_expr;
+use crate::infer::{infer_expr, infer_pattern};
 use crate::instantiate::{collect_free_vars, generalise_with_env, monoscheme};
 use crate::tycon_collect::ast_type_to_ridge_type;
 use crate::unify::unify;
@@ -462,7 +462,7 @@ pub fn typecheck_module_decls(
             }
             // Collect type variable names from annotated params.
             for p in &decl.params {
-                if let Param::Annotated { ty, .. } = p {
+                if let Param::Annotated { ty, .. } | Param::PatternAnnotated { ty, .. } = p {
                     collect_tyvars_from_ast_type(ty, &mut tyvar_map, ctx);
                 }
             }
@@ -477,7 +477,7 @@ pub fn typecheck_module_decls(
                 .iter()
                 .map(|p| match p {
                     Param::Bare(_) => Type::Var(ctx.fresh_tyvid()),
-                    Param::Annotated { ty, .. } => {
+                    Param::Annotated { ty, .. } | Param::PatternAnnotated { ty, .. } => {
                         ast_type_to_ridge_type(b, ctx, ty, &user_tycon_names, &tyvar_map)
                     }
                 })
@@ -544,11 +544,22 @@ pub fn typecheck_module_decls(
 
                 // Bind params as monoschemes.
                 for (param, ty) in decl.params.iter().zip(param_tys.iter()) {
-                    let param_name = match param {
-                        ridge_ast::Param::Bare(id) => id.text.clone(),
-                        ridge_ast::Param::Annotated { name, .. } => name.text.clone(),
-                    };
-                    ctx.env.bind(param_name, monoscheme(ty.clone()));
+                    match param {
+                        ridge_ast::Param::Bare(id) => {
+                            ctx.env.bind(id.text.clone(), monoscheme(ty.clone()));
+                        }
+                        ridge_ast::Param::Annotated { name, .. } => {
+                            ctx.env.bind(name.text.clone(), monoscheme(ty.clone()));
+                        }
+                        // A destructuring param binds every binder of its pattern
+                        // against the param type; the pattern must be irrefutable.
+                        // Bind first so a pattern-driven annotation (e.g. a tuple
+                        // over a type variable) is resolved before the check.
+                        ridge_ast::Param::PatternAnnotated { pat, span, .. } => {
+                            infer_pattern(ctx, b, pat, ty);
+                            crate::exhaustiveness::check_param_irrefutable(ctx, b, pat, ty, *span);
+                        }
+                    }
                 }
 
                 // Body::Ffi carries a fully-declared signature; no inference needed.

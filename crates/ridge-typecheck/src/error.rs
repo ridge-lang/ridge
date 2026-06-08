@@ -610,6 +610,23 @@ pub enum TypeError {
         span: Span,
     },
 
+    // ── T043 ─────────────────────────────────────────────────────────────────
+    /// A function parameter destructures with a pattern that does not match
+    /// every value of its type.
+    ///
+    /// Top-level parameter patterns must be irrefutable — a function is called
+    /// on every value of its parameter type, so the pattern cannot be allowed
+    /// to fail. Use a single-constructor pattern (record, newtype, single-variant
+    /// union, tuple), or destructure in the body with `match` / `let`.
+    RefutablePatternParam {
+        /// Rendered example value the pattern fails to match (a witness).
+        witness: String,
+        /// Rendered type of the parameter.
+        ty: String,
+        /// Source span of the parameter pattern.
+        span: Span,
+    },
+
     // ── T999 ─────────────────────────────────────────────────────────────────
     /// Internal type-checker invariant violation — should never reach users.
     ///
@@ -675,6 +692,7 @@ impl TypeError {
             Self::QuoteUnsupportedExpr { .. } => "T040",
             Self::QuoteComparisonMismatch { .. } => "T041",
             Self::QuoteEntityUnknown { .. } => "T042",
+            Self::RefutablePatternParam { .. } => "T043",
             Self::InternalTypeError { .. } => "T999",
         }
     }

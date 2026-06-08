@@ -1016,6 +1016,73 @@ pub fn check_exhaustiveness(
     }
 }
 
+/// Witness for a refutable parameter pattern, or `None` if it is irrefutable.
+///
+/// A top-level parameter pattern (`fn f (Point { x, y }: Point) = …`) must
+/// match every value of its type — a function is applied to all of them, so the
+/// pattern cannot be allowed to fail. That is precisely the exhaustiveness
+/// question for a one-arm match: the pattern is irrefutable iff a wildcard is
+/// *not* useful against the single-row matrix `[pattern]`. When a wildcard is
+/// still useful, its witness is an example value the pattern misses (rendered
+/// for `T043`).
+///
+/// `param_ty` must be deep-resolved by the caller.
+#[must_use]
+pub fn param_pattern_witness(
+    arena: &TyConArena,
+    b: &BuiltinTyCons,
+    pat: &Pattern,
+    param_ty: &Type,
+) -> Option<String> {
+    // Cascade silently when the type carries an upstream error — the original
+    // diagnostic has already fired and a spurious T043 would only add noise.
+    if scrutinee_contains_error(param_ty) {
+        return None;
+    }
+
+    let mut matrix = PatternMatrix::default();
+    matrix.push(vec![lift_pattern(pat)]);
+    let column_types = vec![param_ty.clone()];
+
+    match useful(&matrix, &[NormPat::Wildcard], &column_types, b, arena) {
+        Usefulness::UsefulWithWitness(witnesses) => Some(
+            witnesses
+                .first()
+                .map_or_else(|| "_".to_string(), |mw| render_witness(&mw.example)),
+        ),
+        Usefulness::NotUseful => None,
+    }
+}
+
+/// Check a parameter pattern for irrefutability and push `T043` if it fails.
+///
+/// `param_ty` is deep-resolved here, then a name-carrying arena is built from
+/// the collected tycon decls (the same approach the match-exhaustiveness call
+/// site uses) so union/record schemas resolve.
+pub fn check_param_irrefutable(
+    ctx: &mut InferCtx,
+    b: &BuiltinTyCons,
+    pat: &Pattern,
+    param_ty: &Type,
+    span: Span,
+) {
+    let resolved = ctx.deep_resolve(param_ty);
+    if scrutinee_contains_error(&resolved) {
+        return;
+    }
+
+    let mut full_arena = TyConArena::new();
+    for decl in &ctx.tycon_decls {
+        full_arena.intern(decl.clone());
+    }
+
+    if let Some(witness) = param_pattern_witness(&full_arena, b, pat, &resolved) {
+        let ty = render_type(&resolved, &full_arena);
+        ctx.errors
+            .push(TypeError::RefutablePatternParam { witness, ty, span });
+    }
+}
+
 /// Collects missing witnesses, capping at `MAX_WITNESSES`.
 ///
 /// Returns `(capped_witnesses, total_missing)` where `total_missing` is the

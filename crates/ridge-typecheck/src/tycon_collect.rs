@@ -768,7 +768,8 @@ fn build_actor_kind_fresh(
                     .iter()
                     .map(|p| match p {
                         ridge_ast::Param::Bare(_) => Type::Var(ctx.fresh_tyvid()),
-                        ridge_ast::Param::Annotated { ty, .. } => {
+                        ridge_ast::Param::Annotated { ty, .. }
+                        | ridge_ast::Param::PatternAnnotated { ty, .. } => {
                             ast_type_to_ridge_type(b, ctx, ty, names, &empty_params)
                         }
                     })
@@ -782,7 +783,8 @@ fn build_actor_kind_fresh(
                     .iter()
                     .map(|p| match p {
                         ridge_ast::Param::Bare(_) => Type::Var(ctx.fresh_tyvid()),
-                        ridge_ast::Param::Annotated { ty, .. } => {
+                        ridge_ast::Param::Annotated { ty, .. }
+                        | ridge_ast::Param::PatternAnnotated { ty, .. } => {
                             ast_type_to_ridge_type(b, ctx, ty, names, &empty_params)
                         }
                     })

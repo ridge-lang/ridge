@@ -566,7 +566,8 @@ fn infer_expr_inner(ctx: &mut InferCtx, b: &BuiltinTyCons, expr: &Expr) -> Type 
                 .iter()
                 .map(|p| match p {
                     ridge_ast::Param::Bare(_) => Type::Var(ctx.fresh_tyvid()),
-                    ridge_ast::Param::Annotated { ty, .. } => ast_type_to_type(ctx, b, ty),
+                    ridge_ast::Param::Annotated { ty, .. }
+                    | ridge_ast::Param::PatternAnnotated { ty, .. } => ast_type_to_type(ctx, b, ty),
                 })
                 .collect();
             #[expect(
@@ -593,12 +594,15 @@ fn infer_expr_inner(ctx: &mut InferCtx, b: &BuiltinTyCons, expr: &Expr) -> Type 
             // Infer the body in a new scope.
             ctx.env.push_frame();
             for (param, ty) in decl.params.iter().zip(param_types.iter()) {
-                let param_name = match param {
+                match param {
                     ridge_ast::Param::Bare(id) | ridge_ast::Param::Annotated { name: id, .. } => {
-                        id.text.clone()
+                        ctx.env.bind(id.text.clone(), monoscheme(ty.clone()));
                     }
-                };
-                ctx.env.bind(param_name, monoscheme(ty.clone()));
+                    ridge_ast::Param::PatternAnnotated { pat, span, .. } => {
+                        infer_pattern(ctx, b, pat, ty);
+                        crate::exhaustiveness::check_param_irrefutable(ctx, b, pat, ty, *span);
+                    }
+                }
             }
 
             // Set the return type context.

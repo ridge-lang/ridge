@@ -17,6 +17,54 @@ use crate::{
     },
 };
 
+// ── Synthetic function-type constructors (Fn/0 … Fn/15) ────────────────────────
+
+/// Number of synthetic per-arity function-type constructors (`Fn/0 … Fn/15`).
+///
+/// Function types are structural ([`Type::Fn`]) and carry no nominal `TyCon`.
+/// Typeclass dispatch, however, keys on `(ClassId, TyConId)`. These synthetic
+/// ids give a function-type instance head (`instance Handler (fn a -> R)`) a
+/// stable dispatch key, chosen by **arity alone** — the capability row is *not*
+/// part of the key. Sixteen covers every realistic function arity.
+pub const FN_ARITY_COUNT: usize = 16;
+
+/// `TyConId` of `Fn/0` — the base of the reserved function-type block.
+///
+/// The block `Fn/0 … Fn/15` is interned immediately after the last nominal
+/// builtin (`Quote` = 26) and before any user/stdlib `TyCon`, so user
+/// allocation never collides with it. [`BuiltinTyCons::allocate`] asserts this
+/// layout.
+pub const FN_TYCON_BASE: u32 = 27;
+
+/// Maps a function arity to its synthetic `Fn/arity` [`TyConId`], or `None` when
+/// the arity exceeds [`FN_ARITY_COUNT`].
+#[must_use]
+pub fn fn_tycon_id(arity: usize) -> Option<TyConId> {
+    let arity = u32::try_from(arity)
+        .ok()
+        .filter(|&a| (a as usize) < FN_ARITY_COUNT)?;
+    Some(TyConId(FN_TYCON_BASE + arity))
+}
+
+/// Inverse of [`fn_tycon_id`]: recovers the arity from a synthetic `Fn/arity`
+/// id, or `None` when `id` is not in the reserved function-type block.
+#[must_use]
+pub fn fn_tycon_arity(id: TyConId) -> Option<usize> {
+    let offset = id.0.checked_sub(FN_TYCON_BASE)? as usize;
+    (offset < FN_ARITY_COUNT).then_some(offset)
+}
+
+/// The arena/dictionary name of the synthetic `Fn/arity` constructor.
+///
+/// Returns `"Fn0"`, `"Fn1"`, … . This name is the bridge that keeps the
+/// generated dictionary constant consistent across the pipeline: the arena decl
+/// name, the instance-definition lowering, and the call-site reference all
+/// derive `$inst_{Class}_Fn{arity}` from it.
+#[must_use]
+pub fn fn_tycon_name(arity: usize) -> String {
+    format!("Fn{arity}")
+}
+
 /// Built-in `TyCon` ids — assigned at workspace-init time, then immutable.
 ///
 /// `#[non_exhaustive]` so that adding a new built-in (e.g. in 0.2.0) is
@@ -134,6 +182,10 @@ pub struct BuiltinTyCons {
     /// predicate, `Entity -> Bool`) so a query and its predicate stay in
     /// agreement; it is phantom — the value carries only the reified `tree`.
     pub quote: TyConId,
+    /// Synthetic per-arity function-type constructors `Fn/0 … Fn/15`
+    /// (index = arity). Dispatch keys only — never applied as `Type::Con`.
+    /// See [`fn_tycon_id`] / [`FN_ARITY_COUNT`].
+    pub fns: [TyConId; FN_ARITY_COUNT],
 }
 
 impl BuiltinTyCons {
@@ -175,6 +227,7 @@ impl BuiltinTyCons {
             schema: SENTINEL,
             q_expr: SENTINEL,
             quote: SENTINEL,
+            fns: [SENTINEL; FN_ARITY_COUNT],
         }
     }
 
@@ -902,6 +955,27 @@ impl BuiltinTyCons {
             is_anon: false,
         });
 
+        // Synthetic per-arity function-type constructors Fn/0 … Fn/15. Function
+        // types are structural (`Type::Fn`) with no nominal TyCon; these ids let
+        // an instance head over a function type participate in (ClassId, TyConId)
+        // dispatch, keyed by arity only (caps are NOT part of the key). They are
+        // dispatch keys — never applied as `Type::Con`, so `arity` is 0. They sit
+        // immediately after the nominal builtins and before any user/stdlib TyCon
+        // (FN_TYCON_BASE = 27), so user allocation cannot collide.
+        let mut fns = [TyConId(u32::MAX); FN_ARITY_COUNT];
+        for (n, slot) in fns.iter_mut().enumerate() {
+            *slot = arena.intern(TyConDecl {
+                id: TyConId(0),
+                name: fn_tycon_name(n),
+                arity: 0,
+                kind: TyConKind::Builtin,
+                def_span: None,
+                def_module_raw: None,
+                opaque: false,
+                is_anon: false,
+            });
+        }
+
         // Verify assignment order matches spec §4.1 indices 0..16.
         debug_assert_eq!(int.0, 0);
         debug_assert_eq!(float.0, 1);
@@ -930,6 +1004,10 @@ impl BuiltinTyCons {
         debug_assert_eq!(schema.0, 24);
         debug_assert_eq!(q_expr.0, 25);
         debug_assert_eq!(quote.0, 26);
+        // Synthetic Fn/N block: Fn/0 = 27 … Fn/15 = 42 (FN_TYCON_BASE = 27).
+        debug_assert_eq!(fns[0].0, FN_TYCON_BASE);
+        debug_assert_eq!(fns[0].0, 27);
+        debug_assert_eq!(fns[FN_ARITY_COUNT - 1].0, 42);
 
         // Suppress the "unused" lint — CapabilitySet is imported for future use
         // in T4 (actor schemas carry CapabilitySet).
@@ -963,6 +1041,7 @@ impl BuiltinTyCons {
             schema,
             q_expr,
             quote,
+            fns,
         }
     }
 }
@@ -1042,13 +1121,37 @@ mod tests {
     }
 
     #[test]
-    fn arena_len_is_27() {
+    fn arena_len_is_43() {
         // 15 original builtins + Ordering + JsonValue + the std.net.http taint
         // wrappers Sql / Html / SecureCookie + std.sql's SqlValue + the
         // column-codegen builtins Column / Table + the schema-codegen builtins
-        // FieldSchema / Schema + the quotation builtins QExpr / Quote.
+        // FieldSchema / Schema + the quotation builtins QExpr / Quote (27 total)
+        // + the 16 synthetic function-type constructors Fn/0 … Fn/15.
         let (arena, _) = make_arena_with_builtins();
-        assert_eq!(arena.len(), 27);
+        assert_eq!(arena.len(), 27 + FN_ARITY_COUNT);
+        assert_eq!(arena.len(), 43);
+    }
+
+    #[test]
+    fn fn_tycons_are_arity_keyed_and_contiguous() {
+        let (arena, b) = make_arena_with_builtins();
+        // Fn/0 = 27 … Fn/15 = 42, named "Fn0" … "Fn15", all Builtin-kind.
+        for (n, &id) in b.fns.iter().enumerate() {
+            let n_u32 = u32::try_from(n).unwrap();
+            assert_eq!(id.0, FN_TYCON_BASE + n_u32);
+            assert_eq!(fn_tycon_id(n), Some(id));
+            assert_eq!(fn_tycon_arity(id), Some(n));
+            let decl = arena.get(id);
+            assert_eq!(decl.name, fn_tycon_name(n));
+            assert_eq!(decl.name, format!("Fn{n}"));
+            assert!(matches!(decl.kind, TyConKind::Builtin));
+            assert!(decl.def_module_raw.is_none());
+        }
+        // Out of range → None, both directions.
+        let count_u32 = u32::try_from(FN_ARITY_COUNT).unwrap();
+        assert_eq!(fn_tycon_id(FN_ARITY_COUNT), None);
+        assert_eq!(fn_tycon_arity(TyConId(FN_TYCON_BASE - 1)), None);
+        assert_eq!(fn_tycon_arity(TyConId(FN_TYCON_BASE + count_u32)), None);
     }
 
     #[test]

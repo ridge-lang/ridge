@@ -268,6 +268,68 @@ fn record_style_variant_pattern_reports_t044_not_t999() {
     );
 }
 
+// ── Instances over function types (L8 / P1) ───────────────────────────────────
+
+/// A class whose instance head is a FUNCTION TYPE (`instance Run (Int -> Int)`)
+/// must resolve when a bare function is used where the class is required. The
+/// constraint `Run (Int -> Int)` keys on the synthetic per-arity `Fn/1`
+/// constructor; a regression would surface `T029 NoInstance` (the function type
+/// fell through the dispatcher to the `_` wildcard) or an internal `T999`.
+#[test]
+fn function_type_instance_resolves_for_bare_fn() {
+    let src = "\
+class Run f =\n\
+\x20   run (self: f) (x: Int) -> Int\n\
+\n\
+instance Run (Int -> Int) =\n\
+\x20   run (g: Int -> Int) (x: Int) -> Int = g x\n\
+\n\
+pub fn callIt () -> Int =\n\
+\x20   run (fn (x: Int) -> Int = x + 1) 41\n\
+";
+    let errors = run_typecheck_on_source("fn_instance", src);
+    let codes: Vec<&str> = errors.iter().map(TypeError::code).collect();
+    assert!(
+        !codes.contains(&"T029"),
+        "a function-type instance must resolve for a bare fn (no NoInstance); got: {codes:?}"
+    );
+    assert!(
+        !codes.contains(&"T999"),
+        "a function-type instance must NOT leak an internal T999; got: {codes:?}"
+    );
+    assert!(
+        codes.is_empty(),
+        "the function-type-instance program must typecheck cleanly; got: {codes:?}"
+    );
+}
+
+/// A polymorphic, constrained consumer (`useRun … where Run a`) forwards its
+/// retained `Run a` constraint; at the concrete call site the constraint pins
+/// `a` to a function type and discharges to the `Fn/1` instance. Guards the
+/// retained/forward path in addition to the direct one above.
+#[test]
+fn function_type_instance_resolves_through_constrained_consumer() {
+    let src = "\
+class Run f =\n\
+\x20   run (self: f) (x: Int) -> Int\n\
+\n\
+instance Run (Int -> Int) =\n\
+\x20   run (g: Int -> Int) (x: Int) -> Int = g x\n\
+\n\
+fn useRun (f: a) (n: Int) -> Int where Run a =\n\
+\x20   run f n\n\
+\n\
+pub fn callIt () -> Int =\n\
+\x20   useRun (fn (x: Int) -> Int = x + 1) 41\n\
+";
+    let errors = run_typecheck_on_source("fn_instance_fwd", src);
+    let codes: Vec<&str> = errors.iter().map(TypeError::code).collect();
+    assert!(
+        codes.is_empty(),
+        "constrained-consumer function instance must typecheck cleanly; got: {codes:?}"
+    );
+}
+
 // ── Non-parametric type alias transparency ────────────────────────────────────
 
 /// `type Bag = List Int` declares a non-parametric alias.  At use sites

@@ -20,7 +20,9 @@ pub mod witness;
 
 // ── Public re-exports ─────────────────────────────────────────────────────────
 
-pub use builtins::BuiltinTyCons;
+pub use builtins::{
+    fn_tycon_arity, fn_tycon_id, fn_tycon_name, BuiltinTyCons, FN_ARITY_COUNT, FN_TYCON_BASE,
+};
 pub use capability_set::CapabilitySet;
 pub use constraint::{
     ClassId, Constraint, DECODE_CLASS, ENCODE_CLASS, EQ_CLASS, ORD_CLASS, TOTEXT_CLASS,

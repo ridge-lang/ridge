@@ -555,8 +555,13 @@ pub fn lower_instance(ctx: &mut LowerCtx<'_>, decl: &InstanceDecl) -> Vec<IrItem
                 }
                 .to_owned()
             }
-            // Other type forms (tuples, fns, …) are not supported as instance
-            // heads. Skip silently — a typecheck error would already have fired.
+            // A function-type instance head (`instance Run (fn Int -> Int)`).
+            // Name it after the synthetic per-arity `Fn/N` constructor so the
+            // generated dict const `$inst_{Class}_Fn{arity}` matches the arena
+            // name the call site reads when referencing the dictionary.
+            ridge_ast::Type::Fn { fn_ty, .. } => ridge_types::fn_tycon_name(fn_ty.params.len()),
+            // Other type forms (tuples, …) are not supported as instance heads.
+            // Skip silently — a typecheck error would already have fired.
             _ => return vec![],
         };
         head_names.push(name);

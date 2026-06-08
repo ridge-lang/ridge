@@ -748,6 +748,12 @@ fn extract_tycon_id(
                 _ => None,
             }
         }
+        // A function-type instance head (`instance Handler (fn a -> R)`) keys on
+        // the synthetic per-arity `Fn/N` constructor. The capability row is NOT
+        // part of the key — dispatch is arity-only. `fn_ty.params` holds the
+        // parameter atoms; a curried `a -> b -> c` nests its tail in `ret`, so it
+        // is arity 1. Arities beyond `FN_ARITY_COUNT` yield `None` (unsupported).
+        AstType::Fn { fn_ty, .. } => ridge_types::fn_tycon_id(fn_ty.params.len()),
         _ => None,
     }
 }

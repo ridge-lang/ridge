@@ -286,10 +286,50 @@ fn dispatch_constraint(
             }
         }
 
-        // ── Other resolved types (Error, Alias, Fn, Tuple …) ─────────────────
+        // ── Case (a'): function type — key on the synthetic Fn/arity ─────────
+        // A bare function satisfies a class with a function-type instance head
+        // (`instance Handler (fn a -> R)`). Dispatch keys on `Fn/params.len()`
+        // (arity only; the capability row is not part of the key). This
+        // reuses the concrete discharge path wholesale: the function's
+        // params/ret are projected as positional "type arguments" by
+        // `resolve_ctx_dict_args`, exactly like `List a` / `Result a e`.
+        Type::Fn { params, .. } => {
+            if let Some(tyconid) = ridge_types::fn_tycon_id(params.len()) {
+                let resolved_con = resolved.clone();
+                discharge_concrete(
+                    ctx,
+                    instance_env,
+                    class_table,
+                    scc_span,
+                    c,
+                    tyconid,
+                    &resolved_con,
+                    work,
+                    visited,
+                    dict_resolution,
+                );
+            } else {
+                // Arity exceeds the reserved Fn/N block — no instance can exist.
+                let class_name = class_table
+                    .get(c.class)
+                    .map_or("?", |info| info.name.as_str());
+                ctx.errors.push(TypeError::NoInstance {
+                    class: class_name.to_string(),
+                    ty: format!("a function of arity {}", params.len()),
+                    span: scc_span,
+                    fix_hint: format!(
+                        "functions of arity {} cannot be class instances (max {})",
+                        params.len(),
+                        ridge_types::FN_ARITY_COUNT - 1
+                    ),
+                });
+            }
+        }
+
+        // ── Other resolved types (Error, Alias, Tuple …) ─────────────────────
         // Error: already in an error path — skip silently to avoid cascading.
         // Alias: should have been resolved by deep_resolve; treat as unknown.
-        // Fn / Tuple: not valid class heads in single-param 0.2.13.
+        // Tuple: not a valid class head in single-param dispatch.
         _ => {
             // Emit a no-instance error for non-Con / non-Var shapes. These
             // arise from ill-typed programs that already have other errors.
@@ -540,9 +580,20 @@ fn resolve_ctx_dict_args(
         return Vec::new();
     }
 
-    let con_args: &[Type] = match resolved_con {
-        Type::Con(_, args) => args,
-        _ => &[],
+    let con_args: Vec<Type> = match resolved_con {
+        Type::Con(_, args) => args.clone(),
+        // Project a function type into positional "type arguments": the
+        // parameter types followed by the return type (`[p₀ … pₙ, ret]`). This
+        // lets a parametric function instance (`instance Handler (fn a -> R)
+        // where Handler a`) pull an element dictionary from a head position via
+        // `head_var_positions` — the identical mechanism `List a` / `Result a e`
+        // use for their type arguments.
+        Type::Fn { params, ret, .. } => {
+            let mut projected = params.clone();
+            projected.push((**ret).clone());
+            projected
+        }
+        _ => Vec::new(),
     };
 
     let mut args: Vec<DictPlan> = Vec::with_capacity(inst_info.ctx_constraints.len());

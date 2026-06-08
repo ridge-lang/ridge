@@ -325,3 +325,25 @@ fn qualified_imported_fn_call_is_type_checked() {
         "qualified cross-module call with bad arg must be rejected; got {errors:?}"
     );
 }
+
+#[test]
+fn qualified_reconciled_fn_resolves_clean() {
+    // `Query.orderSql` is seeded via the reconciled arena block (its signature
+    // names the reconciled `SortOrder`), not the hand-curated signature table.
+    // A qualified call must still find it in the env rather than fall through to
+    // the T999 "qualified name unresolved" path.
+    let main = "import std.query as Query (Asc)\n\
+                import std.sql (Sql)\n\
+                pub type Row = { age: Int }\n\
+                fn ord (q: Quote (Row -> Int)) -> Sql = Query.orderSql Asc q\n";
+    let errors = typecheck_two_modules(main, LIB_FN);
+    assert_eq!(
+        count_code(&errors, "T999"),
+        0,
+        "qualified `Query.orderSql` must resolve via the reconciled block; got {errors:?}"
+    );
+    assert!(
+        errors.is_empty(),
+        "the reconciled qualified call must type-check clean; got {errors:?}"
+    );
+}

@@ -108,12 +108,14 @@ fn quoted_predicate_compiles_to_parameterized_sql() {
     )
     .expect("compile to BEAM");
 
-    if !artefacts.diagnostics.is_empty() {
-        eprintln!("COMPILE DIAGNOSTICS:");
-        for d in &artefacts.diagnostics {
-            eprintln!("  {d:?}");
-        }
-    }
+    // The query module must compile clean: `Query.toSql`, `Query.orderSql`, and
+    // `Query.selectSql` all resolve as qualified calls (orderSql is seeded from
+    // the reconciled block, so its qualified form must be in the env too).
+    assert!(
+        artefacts.diagnostics.is_empty(),
+        "expected a clean compile, got diagnostics: {:?}",
+        artefacts.diagnostics
+    );
 
     let beam_dir = artefacts
         .beam_files

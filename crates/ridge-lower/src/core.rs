@@ -987,6 +987,45 @@ fn reify_node(ctx: &mut LowerCtx<'_>, e: &Expr) -> IrExpr {
             qexpr_node(ctx, name, variant, vec![l, r], *span)
         }
 
+        // `{ field = u.col, … }` → `QProj [(alias, QCol "col"), …]` — a
+        // select-list. Each field's name is the output alias (its SQL-cased
+        // column name); the value reifies to the projected column.
+        Expr::RecordLit { fields, span } => {
+            let items: Vec<IrExpr> = fields
+                .iter()
+                .map(|fi| {
+                    let alias = ridge_ast::column_mirror::column_sql_name(&fi.name.text);
+                    let alias_lit = IrExpr::Lit {
+                        id: ctx.fresh_id(None),
+                        value: IrLit::Text(alias),
+                        span: fi.span,
+                    };
+                    let col = match &fi.value {
+                        Some(v) => reify_node(ctx, v),
+                        None => {
+                            ctx.errors.push(LowerError::InternalLoweringError {
+                                span: fi.span,
+                                message: "shorthand projection field survived quote checking"
+                                    .into(),
+                            });
+                            unit_lit(ctx, fi.span)
+                        }
+                    };
+                    IrExpr::Tuple {
+                        id: ctx.fresh_id(None),
+                        elems: vec![alias_lit, col],
+                        span: fi.span,
+                    }
+                })
+                .collect();
+            let list = IrExpr::ListLit {
+                id: ctx.fresh_id(None),
+                elems: items,
+                span: *span,
+            };
+            qexpr_node(ctx, "QProj", 14, vec![list], *span)
+        }
+
         other => {
             ctx.errors.push(LowerError::InternalLoweringError {
                 span: other.span(),

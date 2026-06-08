@@ -289,6 +289,14 @@ pub fn prelude_types(b: &BuiltinTyCons) -> (FxHashMap<String, Scheme>, FxHashMap
             q_ctor(vec![qexpr_ty.clone(), qexpr_ty.clone()]),
         );
     }
+    // QProj carries a select-list of `(alias, column)` pairs.
+    values.insert(
+        "QProj".to_string(),
+        q_ctor(vec![ty_con(
+            b.list,
+            vec![Type::Tuple(vec![ty_con(b.text, vec![]), qexpr_ty.clone()])],
+        )]),
+    );
 
     (values, tycons)
 }

@@ -37,9 +37,15 @@ fn showExpr (e: QExpr) -> Text =
         QGt l r     -> binNode l " > " r
         QLe l r     -> binNode l " <= " r
         QGe l r     -> binNode l " >= " r
+        QProj cols  -> Text.join ", " (showProjCols cols)
 
 fn binNode (l: QExpr) (op: Text) (r: QExpr) -> Text =
     Text.concat "(" (Text.concat (showExpr l) (Text.concat op (Text.concat (showExpr r) ")")))
+
+fn showProjCols (cols: List (Text, QExpr)) -> List Text =
+    match cols
+        []                   -> []
+        (alias, col) :: rest -> aliasedCol alias (showExpr col) :: showProjCols rest
 
 -- Compile a quoted predicate to parameterized SQL and its ordered bind values.
 -- Each literal becomes a `?` placeholder and its value is collected, left to
@@ -65,6 +71,7 @@ fn compileExpr (e: QExpr) -> { text: Text, binds: List SqlValue } =
         QGt l r  -> binNodeSql l " > " r
         QLe l r  -> binNodeSql l " <= " r
         QGe l r  -> binNodeSql l " >= " r
+        QProj cols -> { text = Text.join ", " (projCols cols), binds = [] }
 
 fn unaryNode (pre: Text) (x: QExpr) (post: Text) -> { text: Text, binds: List SqlValue } =
     let r = compileExpr x
@@ -88,3 +95,22 @@ fn dirKeyword (dir: SortOrder) -> Text =
     match dir
         Asc  -> "ASC"
         Desc -> "DESC"
+
+-- Compile a quoted projection (a record of columns) into a SQL select-list,
+-- e.g. `id, signup_year`. A field whose name differs from its source column is
+-- emitted as `column AS alias`. A projection selects columns, so it carries no
+-- bind values.
+pub fn selectSql (q: Quote f) -> Sql =
+    let r = compileExpr q.tree
+    sql r.text
+
+fn projCols (cols: List (Text, QExpr)) -> List Text =
+    match cols
+        []                   -> []
+        (alias, col) :: rest ->
+            let r = compileExpr col
+            aliasedCol alias r.text :: projCols rest
+
+fn aliasedCol (alias: Text) (colSql: Text) -> Text =
+    if alias == colSql then colSql
+    else Text.concat colSql (Text.concat " AS " alias)

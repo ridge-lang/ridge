@@ -372,6 +372,7 @@ const BASELINE_EXPORTS: &[(&str, &[&str])] = &[
             "debugShow",
             "toSql",
             "orderSql",
+            "selectSql",
             // Sort direction, declared in query.ridge. The type plus its two
             // constructors are importable for ordering.
             "SortOrder",

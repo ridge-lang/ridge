@@ -861,6 +861,19 @@ impl BuiltinTyCons {
                             Type::Con(TyConId(25), vec![]),
                         ]),
                     },
+                    // A projection: a select-list of `(alias, column)` pairs. The
+                    // alias is the output column name (the record field), the
+                    // QExpr is the projected column.
+                    UnionVariant {
+                        name: "QProj".to_string(),
+                        kind: VariantPayload::Positional(vec![Type::Con(
+                            list,
+                            vec![Type::Tuple(vec![
+                                Type::Con(text, vec![]),
+                                Type::Con(TyConId(25), vec![]),
+                            ])],
+                        )]),
+                    },
                 ],
             }),
             def_span: None,

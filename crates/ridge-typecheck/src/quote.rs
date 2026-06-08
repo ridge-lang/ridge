@@ -134,14 +134,31 @@ pub(crate) fn check_quote(
         return false;
     };
 
+    // The quote's result type selects the accepted body shape: a `Bool` result
+    // is a predicate (a `where` body); a record result is a projection (a
+    // `select` list); any other scalar result is a single column (an `orderBy`
+    // key). With no result type known, fall back to predicate.
+    let want = expected_ret.map(|r| ctx.deep_resolve(r));
+
+    // Projection: a record result is a select-list of columns.
+    if let Some(proj) = want.as_ref().and_then(|t| record_fields_of(ctx, t)) {
+        return check_projection(
+            ctx,
+            b,
+            body,
+            &param_name,
+            &fields,
+            &entity_name,
+            &proj,
+            *span,
+            entity,
+        );
+    }
+
     let Some(qk) = check_node(ctx, b, body, &param_name, &fields, &entity_name) else {
         return false;
     };
 
-    // The quote's result type selects the accepted body shape: a `Bool` result
-    // is a predicate (a `where` body); a scalar result is a single column (an
-    // `orderBy` key). With no result type known, fall back to predicate.
-    let want = expected_ret.map(|r| ctx.deep_resolve(r));
     let is_bool_result = want
         .as_ref()
         .is_none_or(|r| matches!(r, Type::Con(id, _) if *id == b.bool));
@@ -199,6 +216,134 @@ fn entity_fields(ctx: &InferCtx, entity: TyConId) -> Option<Vec<(String, Type)>>
             .map(|f| (f.name.clone(), f.ty.clone()))
             .collect(),
     )
+}
+
+/// The `(name, type)` fields of `ty` when it is a record type, else `None`.
+///
+/// Selects the projection body shape in [`check_quote`]: a record result is a
+/// select-list, so its declared fields drive the column-by-column check. An
+/// inline annotation like `{ id: Int, name: Text }` is a structural
+/// [`Type::Record`]; a named record type is a `Type::Con` over a record decl.
+fn record_fields_of(ctx: &InferCtx, ty: &Type) -> Option<Vec<(String, Type)>> {
+    match ty {
+        Type::Record { fields, .. } => Some(
+            fields
+                .iter()
+                .map(|(name, t)| (name.clone(), t.clone()))
+                .collect(),
+        ),
+        Type::Con(id, _) => entity_fields(ctx, *id),
+        _ => None,
+    }
+}
+
+/// Checks a quoted projection body — a record literal whose every field is a
+/// column of `entity` — against the declared projection record `expected`.
+///
+/// Each field name is the output alias; its value must be a column of the
+/// predicate parameter. The body's field set and column types must match
+/// `expected`, so the captured projection cannot disagree with the type the
+/// caller declared for it.
+#[allow(clippy::too_many_arguments)]
+fn check_projection(
+    ctx: &mut InferCtx,
+    b: &BuiltinTyCons,
+    body: &Expr,
+    param: &str,
+    fields: &[(String, Type)],
+    entity_name: &str,
+    expected: &[(String, Type)],
+    span: Span,
+    entity: TyConId,
+) -> bool {
+    let mut body = body;
+    while let Expr::Paren { inner, .. } = body {
+        body = inner;
+    }
+    let Expr::RecordLit { fields: inits, .. } = body else {
+        ctx.errors.push(TypeError::QuoteUnsupportedExpr {
+            detail: "a quoted projection must be a record of columns, like `{ id = row.id }`"
+                .to_string(),
+            span: body.span(),
+        });
+        return false;
+    };
+    if inits.is_empty() {
+        ctx.errors.push(TypeError::QuoteUnsupportedExpr {
+            detail: "a quoted projection must select at least one column".to_string(),
+            span: body.span(),
+        });
+        return false;
+    }
+
+    for fi in inits {
+        let Some(value) = &fi.value else {
+            ctx.errors.push(TypeError::QuoteUnsupportedExpr {
+                detail: format!(
+                    "projection field `{0}` must be written `{0} = {param}.column`",
+                    fi.name.text
+                ),
+                span: fi.span,
+            });
+            return false;
+        };
+        let Some(qk) = check_node(ctx, b, value, param, fields, entity_name) else {
+            return false;
+        };
+        let QKind::Col(col_ty) = qk else {
+            ctx.errors.push(TypeError::QuoteUnsupportedExpr {
+                detail: format!("projection field `{}` must be a column of `{param}`", fi.name.text),
+                span: fi.span,
+            });
+            return false;
+        };
+        let Some((_, exp_ty)) = expected.iter().find(|(n, _)| n == &fi.name.text) else {
+            ctx.errors.push(TypeError::QuoteUnsupportedExpr {
+                detail: format!(
+                    "projection field `{}` is not declared in the result record",
+                    fi.name.text
+                ),
+                span: fi.span,
+            });
+            return false;
+        };
+        let col_ty = ctx.deep_resolve(&col_ty);
+        let exp_ty = ctx.deep_resolve(exp_ty);
+        if !same_value_type(&col_ty, &exp_ty) {
+            let left = crate::render::render_type_with(&col_ty, &ctx.tycon_decls);
+            let right = crate::render::render_type_with(&exp_ty, &ctx.tycon_decls);
+            ctx.errors.push(TypeError::QuoteUnsupportedExpr {
+                detail: format!(
+                    "projection field `{}` is a column of type {left}, but the result \
+                     record declares {right}",
+                    fi.name.text
+                ),
+                span: fi.span,
+            });
+            return false;
+        }
+    }
+
+    // Every declared field must be projected — the captured select-list cannot
+    // be narrower than the type the caller declared for it.
+    for (n, _) in expected {
+        if !inits.iter().any(|fi| &fi.name.text == n) {
+            ctx.errors.push(TypeError::QuoteUnsupportedExpr {
+                detail: format!("a quoted projection is missing the declared column `{n}`"),
+                span,
+            });
+            return false;
+        }
+    }
+
+    ctx.quoted_lambdas_accum.insert(
+        span,
+        QuoteInfo {
+            param_name: param.to_string(),
+            entity,
+        },
+    );
+    true
 }
 
 fn check_node(

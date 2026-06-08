@@ -7,6 +7,15 @@
 
 pub type SqlValue = SqlInt Int | SqlText Text | SqlBool Bool | SqlFloat Float | SqlNull
 
+-- Direct SqlValue constructors. The variants are opaque to consumers (who reach
+-- them through `SqlType` or these factories), so these monomorphic factories are
+-- the supported way to build a bind value of a known base type — the query
+-- compiler uses them to turn captured literals into parameters.
+pub fn sqlInt (n: Int) -> SqlValue = SqlInt n
+pub fn sqlText (s: Text) -> SqlValue = SqlText s
+pub fn sqlBool (b: Bool) -> SqlValue = SqlBool b
+pub fn sqlFloat (x: Float) -> SqlValue = SqlFloat x
+
 pub class SqlType a =
     toSql   (x: a)        -> SqlValue
     fromSql (v: SqlValue) -> Result a Error

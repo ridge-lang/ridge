@@ -1373,6 +1373,24 @@ pub fn stdlib_signature(module: StdlibModuleId, name: &str, b: &BuiltinTyCons) -
             vec![Type::Con(b.sql, vec![])],
             ty_text(b),
         ))),
+        // Monomorphic SqlValue factories — turn a base value into the opaque
+        // bind type without the `SqlType` class machinery.
+        (STD_SQL, "sqlInt") => Some(mono(ty_fn_pure(
+            vec![ty_int(b)],
+            Type::Con(b.sql_value, vec![]),
+        ))),
+        (STD_SQL, "sqlText") => Some(mono(ty_fn_pure(
+            vec![ty_text(b)],
+            Type::Con(b.sql_value, vec![]),
+        ))),
+        (STD_SQL, "sqlBool") => Some(mono(ty_fn_pure(
+            vec![ty_bool(b)],
+            Type::Con(b.sql_value, vec![]),
+        ))),
+        (STD_SQL, "sqlFloat") => Some(mono(ty_fn_pure(
+            vec![ty_float(b)],
+            Type::Con(b.sql_value, vec![]),
+        ))),
         (STD_NET_HTTP, "html") => Some(mono(ty_fn_pure(
             vec![ty_text(b)],
             Type::Con(b.html, vec![]),
@@ -1436,6 +1454,18 @@ pub fn stdlib_signature(module: StdlibModuleId, name: &str, b: &BuiltinTyCons) -
             ty_fn_pure(
                 vec![Type::Con(b.quote, vec![Type::Var(A)])],
                 ty_text(b),
+            ),
+        )),
+        // toSql: ∀ f. Quote f -> (Sql, List SqlValue) — compiles a captured tree
+        // to parameterized SQL plus the ordered bind values.
+        (STD_QUERY, "toSql") => Some(poly(
+            vec![A],
+            ty_fn_pure(
+                vec![Type::Con(b.quote, vec![Type::Var(A)])],
+                Type::Tuple(vec![
+                    Type::Con(b.sql, vec![]),
+                    Type::Con(b.list, vec![Type::Con(b.sql_value, vec![])]),
+                ]),
             ),
         )),
 

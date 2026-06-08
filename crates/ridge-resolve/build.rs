@@ -357,6 +357,8 @@ const BASELINE_EXPORTS: &[(&str, &[&str])] = &[
             // The opaque SQL column value plus the SqlType codec class and its
             // methods, all importable from user code.
             "SqlValue", "SqlType", "toSql", "fromSql",
+            // Monomorphic SqlValue factories (the variants stay opaque).
+            "sqlInt", "sqlText", "sqlBool", "sqlFloat",
             // The safe SQL statement-text wrapper, its factory, and accessor —
             // a data-layer concern, declared in sql.ridge.
             "Sql", "sql", "sqlValue",
@@ -365,9 +367,10 @@ const BASELINE_EXPORTS: &[(&str, &[&str])] = &[
     (
         "std.query",
         &[
-            // The tree renderer. `Quote`/`QExpr` and their constructors are
-            // prelude builtins, not std.query exports.
+            // The tree renderer and the SQL compiler. `Quote`/`QExpr` and their
+            // constructors are prelude builtins, not std.query exports.
             "debugShow",
+            "toSql",
             // Sort direction, declared in query.ridge. The type plus its two
             // constructors are importable for ordering.
             "SortOrder",

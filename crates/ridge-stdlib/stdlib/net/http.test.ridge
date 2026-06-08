@@ -3,9 +3,9 @@
 -- The client and server functions can only be exercised against a live
 -- BEAM with the inets app started, which is out of scope for the static
 -- stdlib test pass. The smoke test below pins the module compile path.
--- The web-layer hardening newtypes (Sql, Html) are covered below; the
--- record wrapping itself is one trivial line, so the tests focus on the
--- escape semantics that the factory functions apply.
+-- The escape semantics applied by the `sql` (now in std.sql) and `html`
+-- factories are covered below; the record wrapping itself is one trivial
+-- line, so the tests focus on the escape behaviour the factories apply.
 --
 -- Following the convention of int.test.ridge / text.test.ridge: the
 -- escape pipelines are replicated as private helpers (`_sqlEscape`,

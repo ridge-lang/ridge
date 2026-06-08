@@ -54,7 +54,9 @@ const STD_ACTOR: StdlibModuleId = StdlibModuleId(16);
 const STD_JSON: StdlibModuleId = StdlibModuleId(17);
 const STD_NET_HTTP: StdlibModuleId = StdlibModuleId(18);
 const STD_CRYPTO: StdlibModuleId = StdlibModuleId(19);
-// std.sql is module 20; its codec schemes are seeded separately. std.query is 21.
+// std.sql is module 20; its codec schemes (SqlType/SqlValue) are seeded
+// separately, but the plain `sql`/`sqlValue` helpers are hand-curated below.
+const STD_SQL: StdlibModuleId = StdlibModuleId(20);
 const STD_QUERY: StdlibModuleId = StdlibModuleId(21);
 
 // ── Type-building helpers ─────────────────────────────────────────────────────
@@ -1351,27 +1353,47 @@ pub fn stdlib_signature(module: StdlibModuleId, name: &str, b: &BuiltinTyCons) -
         | (STD_CLI, "parseArgs" | "help" | "version")
         | (STD_NET_HTTP,
            "get" | "post" | "put" | "delete" | "respond" | "Request" | "Response"
-           // `Sql` / `Html` / `SecureCookie` as a bare value (the constructor)
-           // stay stubbed — the resolver rejects constructing them from user
-           // code (R025).
-           | "Sql" | "Html" | "SecureCookie") => {
+           // `Html` / `SecureCookie` as a bare value (the constructor) stay
+           // stubbed — the resolver rejects constructing them from user code
+           // (R025). `Sql` is the same, declared under std.sql.
+           | "Html" | "SecureCookie")
+        | (STD_SQL, "Sql") => {
             stub_phase7()
         }
 
-        // Web-layer taint wrappers: `sql`/`html` escape raw text into an opaque
-        // wrapper; `sqlValue`/`htmlValue` read the escaped text back out (the only
-        // way to do so, since the field is opaque outside the module).
-        (STD_NET_HTTP, "sql") => Some(mono(ty_fn_pure(
+        // Safe-text taint wrappers: `sql` (std.sql) and `html` (std.net.http)
+        // escape raw text into an opaque wrapper; `sqlValue`/`htmlValue` read the
+        // escaped text back out (the only way to do so, since the field is opaque
+        // outside the declaring module).
+        (STD_SQL, "sql") => Some(mono(ty_fn_pure(
             vec![ty_text(b)],
             Type::Con(b.sql, vec![]),
+        ))),
+        (STD_SQL, "sqlValue") => Some(mono(ty_fn_pure(
+            vec![Type::Con(b.sql, vec![])],
+            ty_text(b),
+        ))),
+        // Monomorphic SqlValue factories — turn a base value into the opaque
+        // bind type without the `SqlType` class machinery.
+        (STD_SQL, "sqlInt") => Some(mono(ty_fn_pure(
+            vec![ty_int(b)],
+            Type::Con(b.sql_value, vec![]),
+        ))),
+        (STD_SQL, "sqlText") => Some(mono(ty_fn_pure(
+            vec![ty_text(b)],
+            Type::Con(b.sql_value, vec![]),
+        ))),
+        (STD_SQL, "sqlBool") => Some(mono(ty_fn_pure(
+            vec![ty_bool(b)],
+            Type::Con(b.sql_value, vec![]),
+        ))),
+        (STD_SQL, "sqlFloat") => Some(mono(ty_fn_pure(
+            vec![ty_float(b)],
+            Type::Con(b.sql_value, vec![]),
         ))),
         (STD_NET_HTTP, "html") => Some(mono(ty_fn_pure(
             vec![ty_text(b)],
             Type::Con(b.html, vec![]),
-        ))),
-        (STD_NET_HTTP, "sqlValue") => Some(mono(ty_fn_pure(
-            vec![Type::Con(b.sql, vec![])],
-            ty_text(b),
         ))),
         (STD_NET_HTTP, "htmlValue") => Some(mono(ty_fn_pure(
             vec![Type::Con(b.html, vec![])],
@@ -1434,6 +1456,18 @@ pub fn stdlib_signature(module: StdlibModuleId, name: &str, b: &BuiltinTyCons) -
                 ty_text(b),
             ),
         )),
+        // toSql: ∀ f. Quote f -> (Sql, List SqlValue) — compiles a captured tree
+        // to parameterized SQL plus the ordered bind values.
+        (STD_QUERY, "toSql") => Some(poly(
+            vec![A],
+            ty_fn_pure(
+                vec![Type::Con(b.quote, vec![Type::Var(A)])],
+                Type::Tuple(vec![
+                    Type::Con(b.sql, vec![]),
+                    Type::Con(b.list, vec![Type::Con(b.sql_value, vec![])]),
+                ]),
+            ),
+        )),
 
         // ── catch-all ─────────────────────────────────────────────────────────
         _ => None,
@@ -1474,10 +1508,13 @@ mod tests {
                     continue;
                 }
                 // std.query's reconciled types: `SortOrder` is a type (no value
-                // scheme) and `Asc`/`Desc` are constructors resolved from the
-                // reserved arena block (`reconciled_ctor_scheme`), not from this
-                // hand-curated signature table.
-                if module.name == "std.query" && matches!(name, "SortOrder" | "Asc" | "Desc") {
+                // scheme), `Asc`/`Desc` are constructors resolved from the
+                // reserved arena block (`reconciled_ctor_scheme`), and `orderSql`
+                // is a function whose signature references `SortOrder`, so it is
+                // seeded via `reconciled_fn_scheme` rather than this table.
+                if module.name == "std.query"
+                    && matches!(name, "SortOrder" | "Asc" | "Desc" | "orderSql")
+                {
                     continue;
                 }
                 let result = stdlib_signature(module.id, name, &b);

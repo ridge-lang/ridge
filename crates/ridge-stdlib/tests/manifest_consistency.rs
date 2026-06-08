@@ -243,6 +243,12 @@ fn signature_shape_consistency() {
             .collect();
 
         for (fn_name, ast_param_count) in &pub_fns {
+            // std.query `orderSql` references the reconciled `SortOrder` type, so
+            // it is seeded via `reconciled_fn_scheme` rather than the
+            // `stdlib_signature` table this shape check covers.
+            if dotted == "std.query" && *fn_name == "orderSql" {
+                continue;
+            }
             // 1. Signature must resolve to Some.
             let scheme = stdlib_signature(module_id, fn_name, &b).unwrap_or_else(|| {
                 panic!(

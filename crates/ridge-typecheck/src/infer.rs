@@ -214,9 +214,16 @@ fn infer_expr_inner(ctx: &mut InferCtx, b: &BuiltinTyCons, expr: &Expr) -> Type 
                         if let Some(pty) = callee_params.as_ref().and_then(|p| p.get(i)) {
                             let pty = ctx.deep_resolve(pty);
                             if crate::quote::is_quote_param(ctx, &pty) {
+                                let expected_ret = crate::quote::quote_result(ctx, &pty);
                                 return match crate::quote::quote_entity(ctx, &pty) {
                                     Some(entity)
-                                        if crate::quote::check_quote(ctx, b, inner, entity) =>
+                                        if crate::quote::check_quote(
+                                            ctx,
+                                            b,
+                                            inner,
+                                            entity,
+                                            expected_ret.as_ref(),
+                                        ) =>
                                     {
                                         pty
                                     }

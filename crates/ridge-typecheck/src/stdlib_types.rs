@@ -29,8 +29,8 @@
 //! [`typecheck_workspace`]: crate::typecheck_workspace
 
 use ridge_types::{
-    BuiltinTyCons, CapRow, CapabilitySet, Scheme, TyConArena, TyConDecl, TyConId, TyConKind, Type,
-    UnionSchema, UnionVariant, VariantPayload,
+    BuiltinTyCons, CapRow, CapabilitySet, Scheme, TyConArena, TyConDecl, TyConId, TyConKind, TyVid,
+    Type, UnionSchema, UnionVariant, VariantPayload,
 };
 use rustc_hash::FxHashMap;
 
@@ -138,6 +138,40 @@ pub(crate) fn reconciled_ctor_scheme(
         }
     }
     None
+}
+
+/// Build the value scheme for a stdlib function whose signature references a
+/// reconciled type, so the hand-curated `stdlib_signature` table (which only
+/// sees [`BuiltinTyCons`]) cannot express it. Returns `None` for any name not
+/// in the table.
+pub(crate) fn reconciled_fn_scheme(
+    name: &str,
+    reconciled: &FxHashMap<String, TyConId>,
+    b: &BuiltinTyCons,
+) -> Option<Scheme> {
+    match name {
+        // std.query `orderSql : ∀f. SortOrder -> Quote f -> Sql` — compiles a
+        // quoted ordering key plus a direction into an `ORDER BY` fragment.
+        "orderSql" => {
+            let sort_order = *reconciled.get("SortOrder")?;
+            let f = TyVid(0);
+            Some(Scheme {
+                vars: vec![f],
+                cap_vars: vec![],
+                row_vars: vec![],
+                ty: Type::Fn {
+                    params: vec![
+                        Type::Con(sort_order, vec![]),
+                        Type::Con(b.quote, vec![Type::Var(f)]),
+                    ],
+                    ret: Box::new(Type::Con(b.sql, vec![])),
+                    caps: CapRow::Concrete(CapabilitySet::PURE),
+                },
+                constraints: vec![],
+            })
+        }
+        _ => None,
+    }
 }
 
 #[cfg(test)]

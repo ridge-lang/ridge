@@ -106,13 +106,6 @@ fn std_net_http_response_record_compiles() {
     assert_net_http_ridge_discovered();
 }
 
-/// `Sql` newtype + the `sql` factory function compile through the build pipeline.
-#[test]
-fn std_net_http_sql_newtype_compiles() {
-    assert_std_net_http_built();
-    assert_net_http_ridge_discovered();
-}
-
 /// `Html` newtype + the `html` factory function compile through the build pipeline.
 #[test]
 fn std_net_http_html_newtype_compiles() {

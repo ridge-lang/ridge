@@ -7,8 +7,10 @@
 --
 -- `QExpr` and `Quote` are prelude builtins (like `JsonValue`), so they are in
 -- scope here without an import. The compiler builds the tree directly; this
--- module walks it back — for now, rendering it to a readable, SQL-shaped string
--- so a captured body can be shown to have round-tripped to the tree it should.
+-- module walks it back, either rendering it to a readable string (`debugShow`)
+-- or compiling it to parameterized SQL plus its bind values (`toSql`).
+
+import std.sql (Sql, sql, SqlValue, sqlInt, sqlText, sqlBool, sqlFloat)
 
 -- Sort direction for query ordering. A plain union declared in Ridge: importing
 -- modules can name `SortOrder` and build/match `Asc`/`Desc` directly.
@@ -38,3 +40,51 @@ fn showExpr (e: QExpr) -> Text =
 
 fn binNode (l: QExpr) (op: Text) (r: QExpr) -> Text =
     Text.concat "(" (Text.concat (showExpr l) (Text.concat op (Text.concat (showExpr r) ")")))
+
+-- Compile a quoted predicate to parameterized SQL and its ordered bind values.
+-- Each literal becomes a `?` placeholder and its value is collected, left to
+-- right, into the bind list — so the pair is safe to hand to a parameterized
+-- query adapter without ever interpolating a value into the statement.
+pub fn toSql (q: Quote f) -> (Sql, List SqlValue) =
+    let r = compileExpr q.tree
+    (sql r.text, r.binds)
+
+fn compileExpr (e: QExpr) -> { text: Text, binds: List SqlValue } =
+    match e
+        QCol c      -> { text = c, binds = [] }
+        QLitInt n   -> { text = "?", binds = [sqlInt n] }
+        QLitText s  -> { text = "?", binds = [sqlText s] }
+        QLitBool b  -> { text = "?", binds = [sqlBool b] }
+        QLitFloat x -> { text = "?", binds = [sqlFloat x] }
+        QNot x      -> unaryNode "(NOT " x ")"
+        QAnd l r -> binNodeSql l " AND " r
+        QOr l r  -> binNodeSql l " OR " r
+        QEq l r  -> binNodeSql l " = " r
+        QNe l r  -> binNodeSql l " <> " r
+        QLt l r  -> binNodeSql l " < " r
+        QGt l r  -> binNodeSql l " > " r
+        QLe l r  -> binNodeSql l " <= " r
+        QGe l r  -> binNodeSql l " >= " r
+
+fn unaryNode (pre: Text) (x: QExpr) (post: Text) -> { text: Text, binds: List SqlValue } =
+    let r = compileExpr x
+    let t = Text.concat pre (Text.concat r.text post)
+    { text = t, binds = r.binds }
+
+fn binNodeSql (l: QExpr) (op: Text) (r: QExpr) -> { text: Text, binds: List SqlValue } =
+    let lr = compileExpr l
+    let rr = compileExpr r
+    let t = Text.concat "(" (Text.concat lr.text (Text.concat op (Text.concat rr.text ")")))
+    { text = t, binds = lr.binds ++ rr.binds }
+
+-- Compile a quoted ordering key (a single column) plus a direction into an
+-- `ORDER BY` fragment, e.g. `created_at DESC`. An ordering key is a column, so
+-- it carries no bind values.
+pub fn orderSql (dir: SortOrder) (q: Quote f) -> Sql =
+    let r = compileExpr q.tree
+    sql (Text.concat r.text (Text.concat " " (dirKeyword dir)))
+
+fn dirKeyword (dir: SortOrder) -> Text =
+    match dir
+        Asc  -> "ASC"
+        Desc -> "DESC"

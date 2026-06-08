@@ -7,6 +7,15 @@
 
 pub type SqlValue = SqlInt Int | SqlText Text | SqlBool Bool | SqlFloat Float | SqlNull
 
+-- Direct SqlValue constructors. The variants are opaque to consumers (who reach
+-- them through `SqlType` or these factories), so these monomorphic factories are
+-- the supported way to build a bind value of a known base type — the query
+-- compiler uses them to turn captured literals into parameters.
+pub fn sqlInt (n: Int) -> SqlValue = SqlInt n
+pub fn sqlText (s: Text) -> SqlValue = SqlText s
+pub fn sqlBool (b: Bool) -> SqlValue = SqlBool b
+pub fn sqlFloat (x: Float) -> SqlValue = SqlFloat x
+
 pub class SqlType a =
     toSql   (x: a)        -> SqlValue
     fromSql (v: SqlValue) -> Result a Error
@@ -38,3 +47,26 @@ instance SqlType Float =
         match v
             SqlFloat f -> Ok f
             _          -> Err ({ code = "sql.decode.float", message = "expected a SQL float" })
+
+-- ── Safe SQL statement text ───────────────────────────────────────────────────
+--
+-- A `Text` value escaped for safe substitution into a SQL string literal.
+-- Embedded single quotes are doubled (`'` -> `''`), the canonical SQL escape for
+-- string literals. This is not a substitute for parameterized queries — it
+-- covers the common case of stringly-built SQL fragments where parameters are
+-- not available. The type is `opaque`: outside this module a value can only be
+-- produced through the `sql` factory, which is the one path that runs the
+-- escape, so constructing the record directly (`Sql { value = "..." }`) or
+-- destructuring it is rejected and the escape cannot be bypassed.
+pub opaque type Sql = { value: Text }
+
+-- Construct a Sql value from raw text, escaping single quotes for SQL string
+-- literals. Pure — no capability required.
+pub fn sql (raw: Text) -> Sql =
+    Sql { value = Text.replace "'" "''" raw }
+
+-- Read the escaped text out of a Sql value. `sql` already ran the escape, so
+-- this is the safe text to splice into a SQL string literal. This accessor is
+-- the only way to reach the value from outside this module.
+pub fn sqlValue (s: Sql) -> Text =
+    s.value

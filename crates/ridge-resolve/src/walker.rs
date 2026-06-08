@@ -2444,7 +2444,7 @@ fn toJson (x: a) -> Text where Encode a =
     #[test]
     fn stdlib_opaque_construct_is_r025() {
         // Forging a `Sql` directly from user code bypasses the escape — rejected.
-        let src = "import std.net.http (Sql)\nfn f = Sql { value = \"x\" }\n";
+        let src = "import std.sql (Sql)\nfn f = Sql { value = \"x\" }\n";
         let (_b, errors, _i, _n) = full_resolve_single(src);
         let r025 = count_opaque(&errors, |e| {
             matches!(e, ResolveError::OpaqueConstruct { .. })
@@ -2454,8 +2454,7 @@ fn toJson (x: a) -> Text where Encode a =
 
     #[test]
     fn stdlib_opaque_pattern_is_r026() {
-        let src =
-            "import std.net.http (Sql)\nfn f s =\n    match s\n        Sql { value } -> value\n";
+        let src = "import std.sql (Sql)\nfn f s =\n    match s\n        Sql { value } -> value\n";
         let (_b, errors, _i, _n) = full_resolve_single(src);
         let r026 = count_opaque(&errors, |e| matches!(e, ResolveError::OpaquePattern { .. }));
         assert_eq!(r026, 1, "stdlib Sql pattern must be R026; {errors:?}");
@@ -2464,7 +2463,7 @@ fn toJson (x: a) -> Text where Encode a =
     #[test]
     fn stdlib_smart_constructor_is_allowed() {
         // The exported factory `sql` is a function, not the opaque constructor.
-        let src = "import std.net.http (sql)\nfn f = sql \"x\"\n";
+        let src = "import std.sql (sql)\nfn f = sql \"x\"\n";
         let (_b, errors, _i, _n) = full_resolve_single(src);
         let gated = count_opaque(&errors, |e| {
             matches!(

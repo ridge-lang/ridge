@@ -20,6 +20,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - The safe-SQL text wrapper `Sql` — with its `sql` factory and `sqlValue` accessor — moved from `std.net.http` to `std.sql`, where it sits next to `SqlValue` and the `SqlType` codec. `std.net.http` keeps the HTML and cookie hardening helpers. Import `Sql`/`sql` from `std.sql` going forward.
 
+### Fixed
+
+- A few ordinary mistakes around union types reported an internal error (`T999`, "this is a compiler bug") instead of something useful. Using a type as a value constructor — the symptom of a single-variant union written without its leading `|`, which parses as a type alias — now reports `T044` with a hint toward the fix. Matching a record-style union variant, which isn't supported yet, reports `T044` as well. A genuinely unknown constructor is left to the resolver's `R010` rather than also raising `T999`.
+
 ## [0.3.0-rc4] - 2026-06-03
 
 ### Added

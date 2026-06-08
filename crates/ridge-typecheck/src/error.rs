@@ -627,6 +627,24 @@ pub enum TypeError {
         span: Span,
     },
 
+    // ── T044 ─────────────────────────────────────────────────────────────────
+    /// A name is used as a constructor (in a value or pattern) but does not
+    /// name one.
+    ///
+    /// The usual cause is a single-variant union written without its leading
+    /// `|`, which parses as a type alias (`type X = Foo Int` aliases `Foo Int`
+    /// instead of declaring the constructor `Foo`). It also covers record-style
+    /// union variants in patterns, which are not yet matchable. A genuinely
+    /// unresolved name is reported by the resolver (`R010`) instead.
+    NotAConstructor {
+        /// The offending name.
+        name: String,
+        /// Context-specific guidance toward the fix.
+        hint: String,
+        /// Source span of the use site.
+        span: Span,
+    },
+
     // ── T999 ─────────────────────────────────────────────────────────────────
     /// Internal type-checker invariant violation — should never reach users.
     ///
@@ -693,6 +711,7 @@ impl TypeError {
             Self::QuoteComparisonMismatch { .. } => "T041",
             Self::QuoteEntityUnknown { .. } => "T042",
             Self::RefutablePatternParam { .. } => "T043",
+            Self::NotAConstructor { .. } => "T044",
             Self::InternalTypeError { .. } => "T999",
         }
     }

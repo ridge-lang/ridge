@@ -551,6 +551,11 @@ impl fmt::Display for TypeError {
                 )
             }
 
+            // ── T044 ──────────────────────────────────────────────────────────
+            Self::NotAConstructor { name, hint, .. } => {
+                write!(f, "T044: `{name}` is not a constructor\n  {hint}")
+            }
+
             // ── T999 ──────────────────────────────────────────────────────────
             Self::InternalTypeError { detail, .. } => {
                 write!(f, "T999: internal type error\n  {detail}\n  This is a compiler bug. Please report it.")
@@ -617,6 +622,7 @@ impl HasErrorCode for TypeError {
             | Self::QuoteComparisonMismatch { span, .. }
             | Self::QuoteEntityUnknown { span, .. }
             | Self::RefutablePatternParam { span, .. }
+            | Self::NotAConstructor { span, .. }
             | Self::InternalTypeError { span, .. } => *span,
 
             // T034: uses `totext_span` (the explicit instance) as the primary span.

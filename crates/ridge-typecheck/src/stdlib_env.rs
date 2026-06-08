@@ -73,7 +73,7 @@ pub fn seed_stdlib_env(
                     } => {
                         let local = eb.local_name.as_str();
                         if let Some(alias_module) = BUILTINS.get(mid.0 as usize) {
-                            bind_module_qualified(ctx, b, alias_module, local, *mid);
+                            bind_module_qualified(ctx, b, alias_module, local, *mid, reconciled);
                         }
                     }
                     // `import std.text (split, trim)` → local_name = "split", binding = StdlibSymbol
@@ -106,7 +106,7 @@ pub fn seed_stdlib_env(
 
             if let Some(local_alias) = alias {
                 if !has_module_alias_binding {
-                    bind_module_qualified(ctx, b, module, local_alias, *stdlib_id);
+                    bind_module_qualified(ctx, b, module, local_alias, *stdlib_id, reconciled);
                 }
             }
         } else {
@@ -122,19 +122,28 @@ pub fn seed_stdlib_env(
 
 /// Bind all exports of `module` under the qualified prefix `local_alias`.
 ///
-/// For each export name `n` in `module.exports`, looks up
-/// `stdlib_signature(module.id, n, b)` and binds `"<local_alias>.<n>"`.
+/// For each export name `n` in `module.exports`, binds `"<local_alias>.<n>"` to
+/// its scheme. The scheme comes from the hand-curated `stdlib_signature` table,
+/// or — for an export with no entry there — from the reconciled arena block: a
+/// constructor of a reconciled `pub type`, or a function whose signature names
+/// one (e.g. `std.query.orderSql`, typed over `SortOrder`). Without this
+/// fallback a qualified `Query.orderSql` would not be in the env and would hit
+/// the T999 "qualified name unresolved" path even though it resolves bare.
 fn bind_module_qualified(
     ctx: &mut InferCtx,
     b: &BuiltinTyCons,
     module: &BuiltinStdlibModule,
     local_alias: &str,
     stdlib_id: ridge_resolve::StdlibModuleId,
+    reconciled: &FxHashMap<String, TyConId>,
 ) {
     for &export_name in module.exports {
-        if let Some(scheme) = stdlib_signature(stdlib_id, export_name, b) {
-            let key = format!("{local_alias}.{export_name}");
-            ctx.env.bind(key, scheme);
+        let scheme = stdlib_signature(stdlib_id, export_name, b).or_else(|| {
+            reconciled_ctor_scheme(&ctx.tycon_decls, reconciled, export_name)
+                .or_else(|| reconciled_fn_scheme(export_name, reconciled, b))
+        });
+        if let Some(scheme) = scheme {
+            ctx.env.bind(format!("{local_alias}.{export_name}"), scheme);
         }
     }
 }

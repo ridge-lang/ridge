@@ -1468,6 +1468,15 @@ pub fn stdlib_signature(module: StdlibModuleId, name: &str, b: &BuiltinTyCons) -
                 ]),
             ),
         )),
+        // selectSql: ∀ f. Quote f -> Sql — compiles a captured projection into a
+        // SQL select-list. A projection selects columns, so it carries no binds.
+        (STD_QUERY, "selectSql") => Some(poly(
+            vec![A],
+            ty_fn_pure(
+                vec![Type::Con(b.quote, vec![Type::Var(A)])],
+                Type::Con(b.sql, vec![]),
+            ),
+        )),
 
         // ── catch-all ─────────────────────────────────────────────────────────
         _ => None,

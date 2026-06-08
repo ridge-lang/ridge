@@ -903,6 +903,7 @@ fn qexpr_variant(name: &str) -> Option<u32> {
         "QGt" => 11,
         "QLe" => 12,
         "QGe" => 13,
+        "QProj" => 14,
         _ => return None,
     })
 }

@@ -21,13 +21,19 @@ import std.int as Int
 
 pub type Point = { x: Int, y: Int }
 
+type Box = | MkBox Int
+
 fn addCoords (Point { x, y }: Point) -> Int = x + y
 
 fn diff ((a, b): (Int, Int)) -> Int = a - b
 
+fn unbox (MkBox n: Box) -> Int = n
+
 pub fn sumPoint () -> Text = Int.toText (addCoords (Point { x = 3, y = 4 }))
 
 pub fn diffed () -> Text = Int.toText (diff (10, 3))
+
+pub fn unboxed () -> Text = Int.toText (unbox (MkBox 42))
 "#;
 
 fn write_workspace(root: &std::path::Path) {
@@ -94,7 +100,7 @@ fn destructuring_params_bind_and_run() {
 
     let expr = format!(
         "F=fun(N)->io:format(\"~s=~s~n\",[N,{module}:N()])end, \
-         lists:foreach(F,['sumPoint','diffed']), halt()."
+         lists:foreach(F,['sumPoint','diffed','unboxed']), halt()."
     );
     let output = Command::new("erl")
         .arg("-noshell")
@@ -117,5 +123,10 @@ fn destructuring_params_bind_and_run() {
     assert!(
         stdout.contains("diffed=7"),
         "expected `diffed=7`\nstdout:\n{stdout}\nstderr:\n{stderr}"
+    );
+    // The single-constructor union param (`| MkBox Int`) binds the wrapped value.
+    assert!(
+        stdout.contains("unboxed=42"),
+        "expected `unboxed=42`\nstdout:\n{stdout}\nstderr:\n{stderr}"
     );
 }

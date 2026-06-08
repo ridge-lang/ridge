@@ -534,12 +534,13 @@ impl BuiltinTyCons {
             is_anon: false,
         });
 
-        // Web-layer taint wrappers (std.net.http). Declared as `opaque` records so
-        // that field access outside their defining module is a type error (T036);
-        // `def_module_raw = u32::MAX` is a sentinel that never equals a real user
-        // module, so any consumer-module access is treated as cross-module. The
-        // matching local declarations in net/http.ridge are what the stdlib's own
-        // compilation sees; user code resolves these names to these builtin ids.
+        // Opaque taint wrappers. Declared as `opaque` records so that field access
+        // outside their defining module is a type error (T036); `def_module_raw =
+        // u32::MAX` is a sentinel that never equals a real user module, so any
+        // consumer-module access is treated as cross-module. The matching local
+        // declarations (`Sql` in sql.ridge; `Html`/`SecureCookie` in net/http.ridge)
+        // are what the stdlib's own compilation sees; user code resolves these names
+        // to these builtin ids.
         let sql = arena.intern(TyConDecl {
             id: TyConId(0),
             name: "Sql".to_string(),

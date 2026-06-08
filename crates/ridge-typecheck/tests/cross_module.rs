@@ -187,7 +187,7 @@ fn typecheck_one(main_src: &str) -> Vec<TypeError> {
 fn stdlib_opaque_field_access_is_t036() {
     // Reading `Sql`'s field from user code is rejected (it would expose the
     // representation and let callers skip the escape contract).
-    let main = "import std.net.http (Sql)\nfn leak (s: Sql) -> Text = s.value\n";
+    let main = "import std.sql (Sql)\nfn leak (s: Sql) -> Text = s.value\n";
     let errors = typecheck_one(main);
     assert_eq!(
         count_code(&errors, "T036"),
@@ -199,7 +199,7 @@ fn stdlib_opaque_field_access_is_t036() {
 #[test]
 fn stdlib_accessor_reads_value_cleanly() {
     // The exported `sqlValue` accessor is the sanctioned way to read the text.
-    let main = "import std.net.http (sql, sqlValue)\nfn ok () -> Text = sqlValue (sql \"x\")\n";
+    let main = "import std.sql (sql, sqlValue)\nfn ok () -> Text = sqlValue (sql \"x\")\n";
     let errors = typecheck_one(main);
     assert!(
         errors.is_empty(),

@@ -54,7 +54,9 @@ const STD_ACTOR: StdlibModuleId = StdlibModuleId(16);
 const STD_JSON: StdlibModuleId = StdlibModuleId(17);
 const STD_NET_HTTP: StdlibModuleId = StdlibModuleId(18);
 const STD_CRYPTO: StdlibModuleId = StdlibModuleId(19);
-// std.sql is module 20; its codec schemes are seeded separately. std.query is 21.
+// std.sql is module 20; its codec schemes (SqlType/SqlValue) are seeded
+// separately, but the plain `sql`/`sqlValue` helpers are hand-curated below.
+const STD_SQL: StdlibModuleId = StdlibModuleId(20);
 const STD_QUERY: StdlibModuleId = StdlibModuleId(21);
 
 // ── Type-building helpers ─────────────────────────────────────────────────────
@@ -1351,27 +1353,29 @@ pub fn stdlib_signature(module: StdlibModuleId, name: &str, b: &BuiltinTyCons) -
         | (STD_CLI, "parseArgs" | "help" | "version")
         | (STD_NET_HTTP,
            "get" | "post" | "put" | "delete" | "respond" | "Request" | "Response"
-           // `Sql` / `Html` / `SecureCookie` as a bare value (the constructor)
-           // stay stubbed — the resolver rejects constructing them from user
-           // code (R025).
-           | "Sql" | "Html" | "SecureCookie") => {
+           // `Html` / `SecureCookie` as a bare value (the constructor) stay
+           // stubbed — the resolver rejects constructing them from user code
+           // (R025). `Sql` is the same, declared under std.sql.
+           | "Html" | "SecureCookie")
+        | (STD_SQL, "Sql") => {
             stub_phase7()
         }
 
-        // Web-layer taint wrappers: `sql`/`html` escape raw text into an opaque
-        // wrapper; `sqlValue`/`htmlValue` read the escaped text back out (the only
-        // way to do so, since the field is opaque outside the module).
-        (STD_NET_HTTP, "sql") => Some(mono(ty_fn_pure(
+        // Safe-text taint wrappers: `sql` (std.sql) and `html` (std.net.http)
+        // escape raw text into an opaque wrapper; `sqlValue`/`htmlValue` read the
+        // escaped text back out (the only way to do so, since the field is opaque
+        // outside the declaring module).
+        (STD_SQL, "sql") => Some(mono(ty_fn_pure(
             vec![ty_text(b)],
             Type::Con(b.sql, vec![]),
+        ))),
+        (STD_SQL, "sqlValue") => Some(mono(ty_fn_pure(
+            vec![Type::Con(b.sql, vec![])],
+            ty_text(b),
         ))),
         (STD_NET_HTTP, "html") => Some(mono(ty_fn_pure(
             vec![ty_text(b)],
             Type::Con(b.html, vec![]),
-        ))),
-        (STD_NET_HTTP, "sqlValue") => Some(mono(ty_fn_pure(
-            vec![Type::Con(b.sql, vec![])],
-            ty_text(b),
         ))),
         (STD_NET_HTTP, "htmlValue") => Some(mono(ty_fn_pure(
             vec![Type::Con(b.html, vec![])],

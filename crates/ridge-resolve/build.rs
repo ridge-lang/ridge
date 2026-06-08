@@ -321,11 +321,10 @@ const BASELINE_EXPORTS: &[(&str, &[&str])] = &[
     (
         "std.net.http",
         &[
-            // `pub type Request`, `Response`, `Sql`, `Html`, `SecureCookie` declared
-            // in net/http.ridge.
+            // `pub type Request`, `Response`, `Html`, `SecureCookie` declared in
+            // net/http.ridge.
             "Request",
             "Response",
-            "Sql",
             "Html",
             "SecureCookie",
             "get",
@@ -334,9 +333,7 @@ const BASELINE_EXPORTS: &[(&str, &[&str])] = &[
             "delete",
             "listen",
             "respond",
-            "sql",
             "html",
-            "sqlValue",
             "htmlValue",
             "secureCookie",
             "secureCookieHeader",
@@ -360,6 +357,9 @@ const BASELINE_EXPORTS: &[(&str, &[&str])] = &[
             // The opaque SQL column value plus the SqlType codec class and its
             // methods, all importable from user code.
             "SqlValue", "SqlType", "toSql", "fromSql",
+            // The safe SQL statement-text wrapper, its factory, and accessor —
+            // a data-layer concern, declared in sql.ridge.
+            "Sql", "sql", "sqlValue",
         ],
     ),
     (
@@ -380,10 +380,10 @@ const BASELINE_EXPORTS: &[(&str, &[&str])] = &[
 /// Per-module list of `pub opaque type` names. Drives the `opaque_types` field
 /// of the generated manifest so the resolver and type-checker confine these
 /// types' construction, pattern matching, and field access to the declaring
-/// stdlib module (the web-layer taint wrappers).
+/// stdlib module (taint wrappers and opaque codec values).
 const BASELINE_OPAQUE: &[(&str, &[&str])] = &[
-    ("std.net.http", &["Sql", "Html", "SecureCookie"]),
-    ("std.sql", &["SqlValue"]),
+    ("std.net.http", &["Html", "SecureCookie"]),
+    ("std.sql", &["Sql", "SqlValue"]),
 ];
 
 fn main() {

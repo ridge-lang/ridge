@@ -84,19 +84,11 @@ pub fn respond (status: Int) (body: Text) -> Response =
 
 -- ── Web-layer hardening newtypes ──────────────────────────────────────────────
 --
--- Single-field records that wrap a `Text` after applying an escape pass.
--- They are `opaque`: outside this module a value can only be produced through
--- the matching factory (`sql`, `html`), which is the one path that runs the
--- escape. Constructing the record directly (`Sql { value = "..." }`) or
--- destructuring it is rejected from user code, so the escape cannot be
--- bypassed.
-
--- A Text value escaped for safe substitution into a SQL string literal.
--- Embedded single quotes are doubled (`'` -> `''`), the canonical SQL
--- escape for string literals. The escape is not a substitute for
--- parameterized queries — it covers the common case of stringly-built
--- SQL fragments where parameters are not available.
-pub opaque type Sql = { value: Text }
+-- A single-field record that wraps a `Text` after applying an escape pass.
+-- It is `opaque`: outside this module a value can only be produced through the
+-- `html` factory, which is the one path that runs the escape. Constructing the
+-- record directly (`Html { value = "..." }`) or destructuring it is rejected
+-- from user code, so the escape cannot be bypassed.
 
 -- A Text value escaped for safe insertion into an HTML document.
 -- The five characters with HTML significance are escaped to their entity
@@ -105,11 +97,6 @@ pub opaque type Sql = { value: Text }
 -- the input are double-encoded in a predictable way rather than left as
 -- ambiguous live entities.
 pub opaque type Html = { value: Text }
-
--- Construct a Sql value from raw text, escaping single quotes for SQL
--- string literals. Pure — no capability required.
-pub fn sql (raw: Text) -> Sql =
-    Sql { value = Text.replace "'" "''" raw }
 
 -- Construct an Html value from raw text, escaping the five HTML special
 -- characters. Pure — no capability required.
@@ -122,12 +109,6 @@ pub fn html (raw: Text) -> Html =
         |> Text.replace "\"" "&quot;"
         |> Text.replace "'" "&#39;"
     Html { value = escaped }
-
--- Read the escaped text out of a Sql value. `sql` already ran the escape, so
--- this is the safe text to splice into a SQL string literal. This accessor is
--- the only way to reach the value from outside this module.
-pub fn sqlValue (s: Sql) -> Text =
-    s.value
 
 -- Read the escaped text out of an Html value.
 pub fn htmlValue (h: Html) -> Text =

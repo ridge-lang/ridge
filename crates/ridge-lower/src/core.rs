@@ -1000,16 +1000,14 @@ fn reify_node(ctx: &mut LowerCtx<'_>, e: &Expr) -> IrExpr {
                         value: IrLit::Text(alias),
                         span: fi.span,
                     };
-                    let col = match &fi.value {
-                        Some(v) => reify_node(ctx, v),
-                        None => {
-                            ctx.errors.push(LowerError::InternalLoweringError {
-                                span: fi.span,
-                                message: "shorthand projection field survived quote checking"
-                                    .into(),
-                            });
-                            unit_lit(ctx, fi.span)
-                        }
+                    let col = if let Some(v) = &fi.value {
+                        reify_node(ctx, v)
+                    } else {
+                        ctx.errors.push(LowerError::InternalLoweringError {
+                            span: fi.span,
+                            message: "shorthand projection field survived quote checking".into(),
+                        });
+                        unit_lit(ctx, fi.span)
                     };
                     IrExpr::Tuple {
                         id: ctx.fresh_id(None),

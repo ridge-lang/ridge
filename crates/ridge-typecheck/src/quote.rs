@@ -292,7 +292,10 @@ fn check_projection(
         };
         let QKind::Col(col_ty) = qk else {
             ctx.errors.push(TypeError::QuoteUnsupportedExpr {
-                detail: format!("projection field `{}` must be a column of `{param}`", fi.name.text),
+                detail: format!(
+                    "projection field `{}` must be a column of `{param}`",
+                    fi.name.text
+                ),
                 span: fi.span,
             });
             return false;

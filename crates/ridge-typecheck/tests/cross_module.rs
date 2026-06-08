@@ -308,6 +308,46 @@ fn stdlib_sql_type_missing_instance_is_rejected() {
     );
 }
 
+// ── Row decoder — deriving (Row) ──────────────────────────────────────────────
+
+#[test]
+fn deriving_row_record_typechecks_and_resolves_from_row() {
+    // `deriving (Row)` synthesises a `Row User` instance; a `fromRow` call whose
+    // result type is pinned to `User` resolves to that instance and is clean.
+    let main = "import std.sql (fromRow, SqlValue)\n\
+                pub type User = { id: Int, name: Text } deriving (Row)\n\
+                pub fn decode (r: Map Text SqlValue) -> Result User Error = fromRow r\n";
+    let errors = typecheck_one(main);
+    assert!(
+        errors.is_empty(),
+        "deriving (Row) + fromRow on a primitive-field record must be clean; got {errors:?}"
+    );
+}
+
+#[test]
+fn deriving_row_unsupported_field_type_is_rejected() {
+    // A field whose type has no SqlType instance (here `List Int`) cannot be
+    // read from a column, so `deriving (Row)` must fail rather than emit a
+    // decoder that references a missing `fromSql`.
+    let main = "pub type Bad = { tags: List Int } deriving (Row)\n";
+    let errors = typecheck_one(main);
+    assert!(
+        !errors.is_empty(),
+        "deriving (Row) with a non-SqlType field must be rejected; got no errors"
+    );
+}
+
+#[test]
+fn deriving_row_on_union_is_rejected() {
+    // A row maps columns to record fields; a union has no column layout.
+    let main = "pub type Shape = Circle Int | Square Int deriving (Row)\n";
+    let errors = typecheck_one(main);
+    assert!(
+        !errors.is_empty(),
+        "deriving (Row) on a union must be rejected; got no errors"
+    );
+}
+
 #[test]
 fn qualified_imported_fn_call_is_type_checked() {
     // `import x as Lib` then `Lib.needsText` resolves to the producer's scheme.

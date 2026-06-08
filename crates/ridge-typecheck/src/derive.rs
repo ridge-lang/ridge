@@ -140,6 +140,22 @@ pub enum DerivedMethodBody {
         variants: Vec<(String, Vec<FieldShape>)>,
     },
 
+    /// `fromRow` body for a record type (`deriving (Row)`).  Reads each field
+    /// from its snake-cased column in a `Map Text SqlValue` and decodes it
+    /// through that field type's `SqlType.fromSql`, threading the first `Err`
+    /// outward (fail-fast), then assembles `Ok(T { f1 = v1, … })`.  A missing
+    /// column short-circuits to `Err`.
+    DerivedRowRecord {
+        /// Record field names in declaration order.
+        field_names: Vec<String>,
+        /// Snake-cased column name read for each field, same order as
+        /// `field_names`.
+        columns: Vec<String>,
+        /// `SqlType` instance type name used to dispatch `fromSql` for each
+        /// field (`"Int"`, `"Text"`, `"Bool"`, `"Float"`), same order.
+        field_type_names: Vec<String>,
+    },
+
     /// Transparent delegation for an `opaque` single-field wrapper (a newtype).
     ///
     /// Each class method forwards to the inner type's instance: arguments of the
@@ -386,6 +402,38 @@ pub fn derive_instances(
                 }
                 continue;
             }
+        }
+
+        // `Row` is the data-layer row decoder class (declared in std.sql). It is
+        // structurally derivable for records — `fromRow` reads each column via
+        // the field type's `SqlType.fromSql` — but is not one of the reserved
+        // prelude classes, so it gets its own branch ahead of the `is_derivable`
+        // gate below (which only admits the prelude-reserved classes).
+        if class_name == ridge_ast::column_mirror::ROW_DERIVE {
+            match generate_row(&type_decl.body, &type_decl.name, span) {
+                Err(e) => errors.push(e),
+                Ok(body) => {
+                    let info = InstanceInfo {
+                        def_module: Some(module_id),
+                        methods: vec![("fromRow".to_string(), String::new())],
+                        ctx_constraints: vec![],
+                        head_var_positions: vec![],
+                        origin: InstanceOrigin::Explicit,
+                        span,
+                    };
+                    let key = (class_id, tycon_id);
+                    let type_name = type_decl.name.text.clone();
+                    match instance_env.insert(key, info.clone(), class_name, &type_name) {
+                        Ok(()) => generated.push(DerivedInstance {
+                            key,
+                            instance_info: info,
+                            method_body: body,
+                        }),
+                        Err(coherence_err) => errors.push(coherence_err.into_type_error()),
+                    }
+                }
+            }
+            continue;
         }
 
         // Reject non-derivable classes.
@@ -1104,6 +1152,85 @@ fn generate_decode(
                 hvp,
             ))
         }
+    }
+}
+
+// ── derive Row ──────────────────────────────────────────────────────────────────
+
+/// Generate `derive Row` for a record type.
+///
+/// Produces a [`DerivedMethodBody::DerivedRowRecord`]: each field reads its
+/// snake-cased column from the `Map Text SqlValue` row and decodes it through
+/// the field type's `SqlType.fromSql`. Only records are supported (a union or
+/// alias has no column layout), and each field type must be one of the base
+/// `SqlType` primitives — `Int`, `Text`, `Bool`, or `Float` — which the prelude
+/// `SqlType` instances cover. Anything else (a user type, `Option`, a container)
+/// yields a `NoInstance` error naming the offending field; richer field types
+/// land once their `SqlType` instances exist.
+fn generate_row(
+    body: &TypeBody,
+    type_name: &Ident,
+    span: Span,
+) -> Result<DerivedMethodBody, TypeError> {
+    let TypeBody::Record(r) = body else {
+        return Err(TypeError::NoInstance {
+            class: "Row".to_string(),
+            ty: type_name.text.clone(),
+            span,
+            fix_hint: "`deriving (Row)` is supported on record types only; a row \
+                       maps named columns to record fields"
+                .to_string(),
+        });
+    };
+    let mut field_names = Vec::with_capacity(r.fields.len());
+    let mut columns = Vec::with_capacity(r.fields.len());
+    let mut field_type_names = Vec::with_capacity(r.fields.len());
+    for field in &r.fields {
+        let Some(type_tag) = sql_primitive_type_name(&field.ty) else {
+            return Err(TypeError::NoInstance {
+                class: "Row".to_string(),
+                ty: type_name.text.clone(),
+                span,
+                fix_hint: format!(
+                    "field `{}` of type `{}` has no `SqlType` instance; \
+                     `deriving (Row)` currently supports fields of type \
+                     Int, Text, Bool, or Float",
+                    field.name.text,
+                    ast_type_display(&field.ty),
+                ),
+            });
+        };
+        field_names.push(field.name.text.clone());
+        columns.push(ridge_ast::column_mirror::column_sql_name(&field.name.text));
+        field_type_names.push(type_tag);
+    }
+    Ok(DerivedMethodBody::DerivedRowRecord {
+        field_names,
+        columns,
+        field_type_names,
+    })
+}
+
+/// The `SqlType` instance type name for a field type, when it is one of the base
+/// primitives the prelude `SqlType` instances cover. Returns `None` for any
+/// other type (a user type, container, or `Option`), which has no `fromSql` to
+/// dispatch yet.
+fn sql_primitive_type_name(ty: &AstType) -> Option<String> {
+    use ridge_ast::base::PrimitiveType;
+    match ty {
+        AstType::Primitive { name, .. } => match name {
+            PrimitiveType::Int => Some("Int".to_string()),
+            PrimitiveType::Text => Some("Text".to_string()),
+            PrimitiveType::Bool => Some("Bool".to_string()),
+            PrimitiveType::Float => Some("Float".to_string()),
+            PrimitiveType::Unit | PrimitiveType::Timestamp => None,
+        },
+        AstType::Named { name, .. } => match name.text.as_str() {
+            "Int" | "Text" | "Bool" | "Float" => Some(name.text.clone()),
+            _ => None,
+        },
+        AstType::Paren { inner, .. } => sql_primitive_type_name(inner),
+        _ => None,
     }
 }
 

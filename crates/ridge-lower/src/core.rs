@@ -1661,7 +1661,7 @@ fn forward_var_of(ty: &Type) -> ridge_types::TyVid {
 /// never reach this function.
 pub(crate) fn stdlib_class_home_module(class_name: &str) -> Option<&'static str> {
     match class_name {
-        "SqlType" => Some("std.sql"),
+        "SqlType" | "Row" => Some("std.sql"),
         _ => None,
     }
 }

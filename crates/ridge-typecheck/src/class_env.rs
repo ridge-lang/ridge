@@ -796,6 +796,28 @@ pub fn register_stdlib_classes(ct: &mut ClassTable) {
             def_module: None,
         },
     );
+
+    // `Row` from std.sql — the database-row decoder class. Its single method
+    // `fromRow` is seeded directly (see `seed_sql_codec_schemes` in lib.rs), so
+    // the method sig carries no AST types, exactly like `SqlType` above. The
+    // instances come from `deriving (Row)` on user records, not from the prelude.
+    let row_id = ct.intern("Row");
+    ct.insert_with_id(
+        row_id,
+        ClassInfo {
+            name: "Row".to_string(),
+            arity: 1,
+            method_sigs: vec![MethodSig {
+                name: "fromRow".to_string(),
+                arity: 1,
+                ast_param_types: vec![],
+                ast_ret_type: None,
+                class_ty_vars: Vec::new(),
+            }],
+            superclasses: vec![],
+            def_module: None,
+        },
+    );
 }
 
 /// Registers the base-type instances of stdlib-defined classes into `env`.

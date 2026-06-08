@@ -1122,6 +1122,34 @@ fn seed_sql_codec_schemes(
             },
         );
     }
+    // fromRow :: ∀a. Map Text SqlValue -> Result a Error where Row a
+    // The Row class is registered alongside SqlType (see register_stdlib_classes);
+    // its instances come from `deriving (Row)`. Seeded here for the same reason as
+    // the codec methods: bare `fromRow` calls type-check once std.sql is imported.
+    if let Some(row) = class_table.id_by_name("Row") {
+        let a = ctx.fresh_tyvid();
+        let fn_ty = Type::Fn {
+            params: vec![Type::Con(
+                b.map,
+                vec![Type::Con(b.text, vec![]), Type::Con(b.sql_value, vec![])],
+            )],
+            ret: Box::new(Type::Con(
+                b.result,
+                vec![Type::Var(a), Type::Con(b.error, vec![])],
+            )),
+            caps: CapRow::Concrete(CapabilitySet::PURE),
+        };
+        ctx.env.bind(
+            "fromRow".to_owned(),
+            Scheme {
+                vars: vec![a],
+                cap_vars: vec![],
+                row_vars: vec![],
+                ty: fn_ty,
+                constraints: vec![Constraint::single(row, a)],
+            },
+        );
+    }
 }
 
 // ── Tests ──────────────────────────────────────────────────────────────────────

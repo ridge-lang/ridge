@@ -66,6 +66,21 @@ pub fn schema_value_name(entity: &str) -> String {
     format!("{}Schema", lower_first(entity))
 }
 
+/// The name used inside a `deriving (...)` clause to request a row decoder.
+pub const ROW_DERIVE: &str = "Row";
+
+/// Whether a `deriving` clause requests a row decoder (`deriving (Row)`).
+///
+/// Unlike `Table`/`Schema`, `Row` is a real typeclass (declared in `std.sql`):
+/// `deriving (Row)` synthesises a `Row` instance whose `fromRow` method reads a
+/// database row — a `Map Text SqlValue` keyed by snake-cased column name — back
+/// into the record. The column names are the same `column_sql_name` mapping the
+/// `Table` derive uses, so a row and its table agree on column spelling.
+#[must_use]
+pub fn has_row_derive(deriving: &[Ident]) -> bool {
+    deriving.iter().any(|d| d.text == ROW_DERIVE)
+}
+
 /// Render a field's declared type to its `FieldSchema` type tag.
 ///
 /// The tag is a readable, machine-parseable spelling of the type that the
@@ -293,6 +308,14 @@ mod tests {
     fn schema_value_names() {
         assert_eq!(schema_value_name("User"), "userSchema");
         assert_eq!(schema_value_name("BlogPost"), "blogPostSchema");
+    }
+
+    #[test]
+    fn detects_row_derive() {
+        assert!(has_row_derive(&idents(&["Row"])));
+        assert!(has_row_derive(&idents(&["Eq", "Row", "Table"])));
+        assert!(!has_row_derive(&idents(&["Table", "Schema"])));
+        assert!(!has_row_derive(&[]));
     }
 
     #[test]

@@ -48,6 +48,17 @@ instance SqlType Float =
             SqlFloat f -> Ok f
             _          -> Err ({ code = "sql.decode.float", message = "expected a SQL float" })
 
+-- ── Row decoder ───────────────────────────────────────────────────────────────
+--
+-- A database row is a `Map Text SqlValue` keyed by column name. `Row` decodes
+-- one back into a typed record; `deriving (Row)` on a record synthesises the
+-- instance. Each field reads its column (the snake_cased field name) and runs
+-- the field type's `SqlType.fromSql`, threading the first failure outward, so a
+-- missing column or a type mismatch yields a descriptive `Err`. The storage
+-- adapters produce the row; this is the read half of the data layer's mapping.
+pub class Row a =
+    fromRow (r: Map Text SqlValue) -> Result a Error
+
 -- ── Safe SQL statement text ───────────────────────────────────────────────────
 --
 -- A `Text` value escaped for safe substitution into a SQL string literal.

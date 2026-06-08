@@ -1107,6 +1107,31 @@ pub fn lower_derived_instance(
             (body, params)
         }
 
+        DerivedMethodBody::DerivedRowRecord {
+            field_names,
+            columns,
+            field_type_names,
+        } => {
+            // fromRow (r: Map Text SqlValue) -> Result T Error
+            //   = match Map.get "col1" r { Some sv -> fromSql(sv) >>= f1; None -> Err(missing) };
+            //     … ; Ok T { f1 = f1, … }
+            let body = build_from_row_record_body(
+                ctx,
+                derived.key.1,
+                type_name,
+                field_names,
+                columns,
+                field_type_names,
+                sp,
+            );
+            let params = vec![IrParam {
+                name: "r".to_string(),
+                ty: Type::Error,
+                span: sp,
+            }];
+            (body, params)
+        }
+
         DerivedMethodBody::DerivedDelegated { .. } => {
             unreachable!("DerivedDelegated is handled by the early return above")
         }
@@ -4160,6 +4185,169 @@ fn build_decode_record_body(
             span: sp,
         }),
         arms: vec![jobject_arm, wild_arm],
+        span: sp,
+    }
+}
+
+/// Build the `fromRow` body for a derived `Row` on a record type.
+///
+/// Emits, with `r` the `Map Text SqlValue` parameter:
+/// ```text
+/// match Map.get "col1" r { Some sv1 -> <decode_seq(fromSql_Int(sv1), f1)>;
+///                          None     -> return Err(row.missing_column "col1") } ;
+/// …
+/// Ok T { f1 = f1, … }
+/// ```
+/// Each field reads its snake-cased column, runs the field type's `SqlType.fromSql`
+/// (dispatched cross-module to `std.sql`), and threads the first `Err` outward
+/// via [`decode_seq`]'s `return`. Unlike the JSON record decoder there is no outer
+/// object-shape match — the row map is the scrutinee for every field directly.
+fn build_from_row_record_body(
+    ctx: &mut LowerCtx<'_>,
+    tycon: ridge_types::TyConId,
+    type_name: &str,
+    field_names: &[String],
+    columns: &[String],
+    field_type_names: &[String],
+    sp: Span,
+) -> IrExpr {
+    // Bind names for each successfully decoded field.
+    let bound_names: Vec<String> = field_names
+        .iter()
+        .map(|f| ctx.fresh_local(&format!("__row_f_{f}")))
+        .collect();
+
+    // Final Ok(T { f1 = x1, … }) assembly.
+    let record_fields: Vec<(String, IrExpr)> = field_names
+        .iter()
+        .zip(bound_names.iter())
+        .map(|(name, bound)| {
+            (
+                name.clone(),
+                IrExpr::Local {
+                    id: ctx.fresh_id(None),
+                    name: bound.clone(),
+                    span: sp,
+                },
+            )
+        })
+        .collect();
+    let record_val = IrExpr::Construct {
+        id: ctx.fresh_id(None),
+        ctor: SymbolRef::Constructor {
+            ctor_kind: CtorKind::Record,
+            owner_type: tycon,
+            name: type_name.to_string(),
+            variant: 0,
+        },
+        fields: record_fields,
+        span: sp,
+    };
+    let mut cont = build_ok(record_val, sp);
+
+    // Sequence the field reads from the last field outward; each wraps the
+    // continuation so the first failure short-circuits the whole decode.
+    for ((field_name, column), (bound_name, type_tag)) in field_names
+        .iter()
+        .zip(columns.iter())
+        .zip(bound_names.iter().zip(field_type_names.iter()))
+        .rev()
+    {
+        // Map.get "column" r → Option SqlValue
+        let col_key = IrExpr::Lit {
+            id: ctx.fresh_id(None),
+            value: IrLit::Text(column.clone()),
+            span: sp,
+        };
+        let row_map = IrExpr::Local {
+            id: ctx.fresh_id(None),
+            name: "r".to_string(),
+            span: sp,
+        };
+        let get_result = map_get_call(ctx, col_key, row_map, sp);
+
+        // Some sv -> decode_seq(fromSql(sv), bound, cont)
+        let sv_bound = ctx.fresh_local(&format!("__row_sv_{field_name}"));
+        let sv_local = IrExpr::Local {
+            id: ctx.fresh_id(None),
+            name: sv_bound.clone(),
+            span: sp,
+        };
+        let from_sql = build_from_sql_call(ctx, type_tag, sv_local, sp);
+        let field_cont = decode_seq(ctx, from_sql, bound_name.clone(), cont, sp);
+
+        // None -> return Err(row.missing_column "column")
+        let missing_err = IrExpr::Return {
+            id: ctx.fresh_id(None),
+            value: Box::new(build_decode_error(
+                ctx,
+                "row.missing_column",
+                format!("missing column \"{column}\" for field \"{field_name}\""),
+                sp,
+            )),
+            span: sp,
+        };
+        let some_arm = ridge_ir::IrArm {
+            pat: ridge_ir::IrPat::Ctor {
+                sym: SymbolRef::Prelude {
+                    name: "Some".to_string(),
+                },
+                fields: vec![],
+                args: vec![ridge_ir::IrPat::Bind {
+                    name: sv_bound,
+                    inner: None,
+                    span: sp,
+                }],
+                span: sp,
+            },
+            when: None,
+            body: field_cont,
+            span: sp,
+        };
+        let none_arm = ridge_ir::IrArm {
+            pat: ridge_ir::IrPat::Wild { span: sp },
+            when: None,
+            body: missing_err,
+            span: sp,
+        };
+        cont = IrExpr::Match {
+            id: ctx.fresh_id(None),
+            scrutinee: Box::new(get_result),
+            arms: vec![some_arm, none_arm],
+            span: sp,
+        };
+    }
+
+    cont
+}
+
+/// Emit `(maps:get('fromSql', $inst_SqlType_{Type}))(sv)` → `Result T Error`.
+///
+/// The `SqlType` base-type instances are compiled into `std.sql`; their dict
+/// constant `$inst_SqlType_{Type}` is exported, so it is referenced cross-module
+/// via [`SymbolRef::Stdlib`] and the `fromSql` method projected from it. This is
+/// the same dispatch the constraint solver emits for a concrete `fromSql` call
+/// (see `dict_plan_to_expr` in `core.rs`), specialised here to the builtin
+/// primitive that `generate_row` already validated.
+fn build_from_sql_call(ctx: &mut LowerCtx<'_>, type_tag: &str, sv: IrExpr, sp: Span) -> IrExpr {
+    let dict = IrExpr::Symbol {
+        id: ctx.fresh_id(None),
+        sym: SymbolRef::Stdlib {
+            module: "std.sql".to_string(),
+            name: format!("$inst_SqlType_{type_tag}"),
+        },
+        span: sp,
+    };
+    let from_sql = IrExpr::Field {
+        id: ctx.fresh_id(None),
+        base: Box::new(dict),
+        field: "fromSql".to_string(),
+        span: sp,
+    };
+    IrExpr::Call {
+        id: ctx.fresh_id(None),
+        callee: Box::new(from_sql),
+        args: vec![sv],
         span: sp,
     }
 }

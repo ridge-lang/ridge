@@ -916,6 +916,21 @@ fn qexpr_node(
 ///
 /// The shape was already validated by the quotation type-checker, so anything
 /// unexpected here is an internal invariant violation, not a user error.
+/// Pick the `SymbolRef` for an imported symbol. A cross-stdlib-module target
+/// (the producer is a stdlib module) routes through the stdlib bridge so its
+/// BEAM atom is the dotted FQN (`'std.sql':sqlInt`); a user-module target keeps
+/// the `ridge_module_<id>` external mangle.
+fn imported_symbol_ref(ctx: &LowerCtx<'_>, module: ModuleId, name: String) -> SymbolRef {
+    if let Some(fqn) = ctx.stdlib_fqn(module) {
+        SymbolRef::Stdlib {
+            module: fqn.to_string(),
+            name,
+        }
+    } else {
+        SymbolRef::External { module, name }
+    }
+}
+
 fn reify_node(ctx: &mut LowerCtx<'_>, e: &Expr) -> IrExpr {
     use ridge_ast::BinOp;
     match e {
@@ -2104,14 +2119,8 @@ fn lower_ident(ctx: &mut LowerCtx<'_>, ident: &Ident) -> IrExpr {
         }) => {
             // A symbol imported from another module (same project or external).
             let id = ctx.fresh_id(None);
-            IrExpr::Symbol {
-                id,
-                sym: SymbolRef::External {
-                    module: *module,
-                    name: ident.text.clone(),
-                },
-                span,
-            }
+            let sym = imported_symbol_ref(ctx, *module, ident.text.clone());
+            IrExpr::Symbol { id, sym, span }
         }
 
         Some(Binding::StdlibSymbol {
@@ -2388,14 +2397,8 @@ fn lower_qualified(ctx: &mut LowerCtx<'_>, qname: &QualifiedName) -> IrExpr {
             module, symbol: _, ..
         }) => {
             let id = ctx.fresh_id(None);
-            IrExpr::Symbol {
-                id,
-                sym: SymbolRef::External {
-                    module: *module,
-                    name: last_name,
-                },
-                span,
-            }
+            let sym = imported_symbol_ref(ctx, *module, last_name);
+            IrExpr::Symbol { id, sym, span }
         }
 
         Some(Binding::ModuleSymbol { module, symbol: _ }) => {

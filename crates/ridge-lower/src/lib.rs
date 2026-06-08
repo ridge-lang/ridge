@@ -41,8 +41,9 @@ pub use ctx::LowerCtx;
 pub use error::LowerError;
 
 use ridge_ir::{LoweredModule, LoweredWorkspace};
-use ridge_resolve::{assign_node_ids, ResolvedWorkspace};
+use ridge_resolve::{assign_node_ids, ModuleId, ResolvedWorkspace};
 use ridge_typecheck::{TypedModule, TypedWorkspace};
+use rustc_hash::FxHashMap;
 
 /// Lower an entire typed workspace to Core IR.
 ///
@@ -61,13 +62,24 @@ use ridge_typecheck::{TypedModule, TypedWorkspace};
 /// the definition-of-done literal.
 #[must_use]
 pub fn lower_workspace(twork: &TypedWorkspace, rwork: &ResolvedWorkspace) -> LoweredWorkspace {
+    // Per-ModuleId FQN for stdlib modules only (FQN starts with `std.`). A
+    // cross-stdlib-module call (e.g. `std.query` → `std.sql`) routes through the
+    // stdlib bridge so its BEAM atom is the dotted FQN, not the user-module
+    // `ridge_module_<id>` mangle. User modules are absent and keep the mangle.
+    let stdlib_fqns: FxHashMap<ModuleId, String> = rwork
+        .graph
+        .modules
+        .iter()
+        .filter(|m| m.fully_qualified_name.starts_with("std."))
+        .map(|m| (m.id, m.fully_qualified_name.clone()))
+        .collect();
     let modules = twork
         .modules
         .iter()
         .enumerate()
         .map(|(i, typed)| {
             let rmod = rwork.modules.get(i);
-            Some(lower_module(typed, twork, rmod))
+            Some(lower_module(typed, twork, rmod, &stdlib_fqns))
         })
         .collect();
     // Safety: a workspace with more than 2^32 TyCons is not a valid Ridge
@@ -96,11 +108,15 @@ pub fn lower_module(
     typed: &TypedModule,
     ws: &TypedWorkspace,
     rmod: Option<&ridge_resolve::ResolvedModule>,
+    stdlib_fqns: &FxHashMap<ModuleId, String>,
 ) -> LoweredModule {
     let mut ctx = LowerCtx::new(typed.id, &typed.node_types);
     // Attach workspace-level context (tycons + builtins) for `with` schema
     // lookup (§4.5) and interp `ToText` dispatch (§4.6).
     ctx.attach_workspace(ws);
+    // Attach the stdlib-module FQN map so cross-stdlib-module calls route
+    // through the bridge (dotted FQN atom) instead of the user-module mangle.
+    ctx.attach_stdlib_module_fqns(stdlib_fqns);
     // Attach the current module's inferred_caps side-table so that
     // lookup_inferred_caps can read Phase 4's capability inference results.
     ctx.attach_inferred_caps(&typed.inferred_caps);

@@ -170,6 +170,16 @@ pub struct LowerCtx<'tw> {
     /// it, so each dictionary is built from the concrete type actually flowing
     /// into the constrained parameter.
     fn_constraint_cache: Option<FnConstraintCache>,
+
+    /// Per-`ModuleId` fully-qualified name for stdlib modules (those whose FQN
+    /// starts with `std.`), built once from the resolved graph.
+    ///
+    /// Lets the `ImportedSymbol` lowering route a cross-stdlib-module call
+    /// through the stdlib bridge — emitting the dotted FQN BEAM atom
+    /// (`'std.sql':sqlInt`) instead of the `ridge_module_<id>` mangle used for
+    /// user modules. `None` outside the full pipeline (and empty during a user
+    /// build, where stdlib calls already resolve as `StdlibSymbol`).
+    pub stdlib_module_fqns: Option<&'tw FxHashMap<ModuleId, String>>,
 }
 
 impl<'tw> LowerCtx<'tw> {
@@ -205,6 +215,7 @@ impl<'tw> LowerCtx<'tw> {
             fn_constraint_cache: None,
             actor_module_cache: None,
             symbol_table: None,
+            stdlib_module_fqns: None,
         }
     }
 
@@ -217,6 +228,19 @@ impl<'tw> LowerCtx<'tw> {
     pub fn attach_bindings(&mut self, node_id_map: NodeIdMap, binding_map: &'tw BindingMap) {
         self.node_id_map = Some(node_id_map);
         self.binding_map = Some(binding_map);
+    }
+
+    /// Attach the stdlib-module FQN map (see [`Self::stdlib_module_fqns`]).
+    pub fn attach_stdlib_module_fqns(&mut self, fqns: &'tw FxHashMap<ModuleId, String>) {
+        self.stdlib_module_fqns = Some(fqns);
+    }
+
+    /// The dotted FQN of `module` if it is a stdlib module, else `None`.
+    #[must_use]
+    pub fn stdlib_fqn(&self, module: ModuleId) -> Option<&str> {
+        self.stdlib_module_fqns
+            .and_then(|m| m.get(&module))
+            .map(String::as_str)
     }
 
     /// Allocate the next [`IrNodeId`] and record the AST→IR provenance link.

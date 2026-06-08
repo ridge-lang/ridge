@@ -47,6 +47,23 @@ use crate::prelude::{lookup_prelude, lookup_prelude_tycon};
 use crate::render::emit_internal;
 use crate::unify::unify;
 
+/// Guidance for a name used as a constructor that actually names a type — the
+/// usual symptom of a single-variant union written without its leading `|`
+/// (which parses as a type alias).
+const HINT_TYPE_AS_CTOR: &str = "it names a type, not a value constructor; a single-variant union needs a leading `|` and a constructor name distinct from the type, e.g. `type T = | Mk Int`";
+
+/// Guidance for a record-style union variant used in a pattern, which is not
+/// yet matchable.
+const HINT_RECORD_VARIANT: &str = "record-style union variants can't be matched yet; give the variant positional fields, or use a standalone record type";
+
+/// True if `name` is a variant of some user-defined union in scope.
+fn is_user_union_variant(ctx: &InferCtx, name: &str) -> bool {
+    ctx.tycon_decls.iter().any(|decl| {
+        matches!(&decl.kind, ridge_types::TyConKind::Union(schema)
+            if schema.variants.iter().any(|v| v.name == name))
+    })
+}
+
 // ── Public entry points ────────────────────────────────────────────────────────
 
 /// Infers the type of `expr` in the current `InferCtx` and writes back the
@@ -743,11 +760,15 @@ fn infer_expr_inner(ctx: &mut InferCtx, b: &BuiltinTyCons, expr: &Expr) -> Type 
                                 )
                             }
                         } else {
-                            emit_internal(
-                                ctx,
-                                format!("type '{ctor_name}' is not a record or union"),
-                                *span,
-                            )
+                            // The name resolves to a type (e.g. an alias), not a
+                            // constructor. The resolver does not flag this, so
+                            // report it here instead of leaking T999.
+                            ctx.errors.push(TypeError::NotAConstructor {
+                                name: ctor_name.to_string(),
+                                hint: HINT_TYPE_AS_CTOR.to_string(),
+                                span: *span,
+                            });
+                            Type::Error
                         }
                     }
                     None => {
@@ -755,19 +776,15 @@ fn infer_expr_inner(ctx: &mut InferCtx, b: &BuiltinTyCons, expr: &Expr) -> Type 
                     }
                 }
             } else {
-                // Not a user-defined TyCon. Check if it's a stdlib stub
-                // bound in the env (e.g. Response, Request from std.net.http).
-                // If the scheme has Type::Error, absorb silently.
-                if let Some(scheme) = ctx.env.lookup(ctor_name).cloned() {
-                    // If this is already Type::Error (stub), absorb without T999.
-                    instantiate(ctx, &scheme)
-                } else {
-                    emit_internal(
-                        ctx,
-                        format!("unknown record constructor '{ctor_name}'"),
-                        *span,
-                    )
-                }
+                // Not a user-defined TyCon. A stdlib stub bound in the env
+                // (e.g. Response, Request from std.net.http) instantiates, which
+                // absorbs a stub's Type::Error silently. A genuinely unknown name
+                // is the resolver's job (R010), so absorb it silently here rather
+                // than leaking T999.
+                ctx.env
+                    .lookup(ctor_name)
+                    .cloned()
+                    .map_or(Type::Error, |scheme| instantiate(ctx, &scheme))
             }
         }
 
@@ -1037,13 +1054,25 @@ pub fn infer_pattern(ctx: &mut InferCtx, b: &BuiltinTyCons, pat: &Pattern, expec
                         }
                     }
                 }
-                // Not a known record type — report and keep inference going by
-                // typing any sub-patterns against Error.
-                let _ = emit_internal(
-                    ctx,
-                    format!("record pattern `{}` is not a known record type", name.text),
-                    *span,
-                );
+                // A record-body pattern whose head is not a record type. If the
+                // head names a type (alias/union used as a constructor) or a
+                // record-style union variant, report it here — the resolver
+                // won't. A genuinely unknown name is already an R010, so stay
+                // quiet rather than leaking T999. Either way, keep inference
+                // going by typing any sub-patterns against Error.
+                if ctx.user_tycon_names.contains_key(&name.text) {
+                    ctx.errors.push(TypeError::NotAConstructor {
+                        name: name.text.clone(),
+                        hint: HINT_TYPE_AS_CTOR.to_string(),
+                        span: *span,
+                    });
+                } else if is_user_union_variant(ctx, &name.text) {
+                    ctx.errors.push(TypeError::NotAConstructor {
+                        name: name.text.clone(),
+                        hint: HINT_RECORD_VARIANT.to_string(),
+                        span: *span,
+                    });
+                }
                 for fp in field_pats {
                     if let Some(sub) = &fp.pattern {
                         infer_pattern(ctx, b, sub, &Type::Error);
@@ -1100,18 +1129,18 @@ pub fn infer_pattern(ctx: &mut InferCtx, b: &BuiltinTyCons, pat: &Pattern, expec
                         expected_ty,
                         *span,
                     );
-                } else {
-                    // Truly unknown constructor — Phase 3 R-codes should have caught
-                    // this; T9 falls back to T999 as a defensive measure.
-                    let _ = emit_internal(
-                        ctx,
-                        format!(
-                            "constructor pattern '{}' not found in any union type",
-                            name.text
-                        ),
-                        *span,
-                    );
+                } else if ctx.user_tycon_names.contains_key(&name.text) {
+                    // The name resolves to a type (e.g. an alias) used as a
+                    // constructor pattern. The resolver does not flag this, so
+                    // report it here instead of leaking T999.
+                    ctx.errors.push(TypeError::NotAConstructor {
+                        name: name.text.clone(),
+                        hint: HINT_TYPE_AS_CTOR.to_string(),
+                        span: *span,
+                    });
                 }
+                // else: a genuinely unknown constructor — already reported by the
+                // resolver as R010; stay quiet rather than leaking T999.
             }
         }
 

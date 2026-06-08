@@ -208,6 +208,66 @@ actor Receiver =\n\
     );
 }
 
+// ── Constructor misuse: no T999 leaks ─────────────────────────────────────────
+
+/// A name that resolves to a type but is used as a constructor (the symptom of
+/// a single-variant union written without its leading `|`, which parses as an
+/// alias) must report the user-facing `T044`, never an internal `T999`.
+#[test]
+fn type_used_as_constructor_reports_t044_not_t999() {
+    let src = "type Box = Box Int\n\npub fn make () -> Box = Box 42\n";
+    let codes: Vec<&str> = run_typecheck_on_source("box_alias", src)
+        .iter()
+        .map(TypeError::code)
+        .collect();
+    assert!(
+        codes.contains(&"T044"),
+        "expected T044 for a type used as a constructor; got: {codes:?}"
+    );
+    assert!(
+        !codes.contains(&"T999"),
+        "a type-as-constructor mistake must NOT leak T999; got: {codes:?}"
+    );
+}
+
+/// A genuinely unknown constructor is the resolver's job (`R010`); type-check
+/// must absorb it silently rather than piling on a `T999`.
+#[test]
+fn unknown_constructor_does_not_leak_t999() {
+    let src = "type Boxed = MkBox Int\n\npub fn make () -> Boxed = MkBox 42\n";
+    let codes: Vec<&str> = run_typecheck_on_source("boxed_unknown", src)
+        .iter()
+        .map(TypeError::code)
+        .collect();
+    assert!(
+        !codes.contains(&"T999"),
+        "an unresolved constructor must NOT leak T999 (R010 covers it); got: {codes:?}"
+    );
+}
+
+/// Matching a record-style union variant is not supported yet; it must report
+/// `T044`, not leak a `T999`.
+#[test]
+fn record_style_variant_pattern_reports_t044_not_t999() {
+    let src = "type Msg = Ping | Move { dx: Int, dy: Int }\n\n\
+               pub fn step (m: Msg) -> Int =\n\
+               \x20   match m\n\
+               \x20       Ping -> 0\n\
+               \x20       Move { dx, dy } -> dx + dy\n";
+    let codes: Vec<&str> = run_typecheck_on_source("record_variant", src)
+        .iter()
+        .map(TypeError::code)
+        .collect();
+    assert!(
+        codes.contains(&"T044"),
+        "expected T044 for a record-style variant pattern; got: {codes:?}"
+    );
+    assert!(
+        !codes.contains(&"T999"),
+        "a record-style variant pattern must NOT leak T999; got: {codes:?}"
+    );
+}
+
 // ── Non-parametric type alias transparency ────────────────────────────────────
 
 /// `type Bag = List Int` declares a non-parametric alias.  At use sites

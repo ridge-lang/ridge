@@ -1,0 +1,7 @@
+-- expect: T044
+-- T044 NotAConstructor: `Box` is a type (this declaration parsed as an alias,
+-- because a single-variant union needs a leading `|`), so using it as a value
+-- constructor is rejected here instead of leaking an internal error.
+type Box = Box Int
+
+pub fn make () -> Box = Box 42

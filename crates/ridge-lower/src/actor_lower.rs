@@ -48,7 +48,7 @@
 
 use ridge_ast::{
     decl::{ActorDecl, ActorMember, InitDecl, OnHandler, StateDecl},
-    Expr, Param, Span,
+    Expr, Param, Pattern, Span,
 };
 use ridge_ir::{
     actor::{IrActor, IrHandler, IrInit, IrStateField, MailboxConfig, MailboxPolicy},
@@ -60,7 +60,7 @@ use rustc_hash::FxHashSet;
 
 use crate::ast_type::lower_ast_type;
 use crate::block::lower_block;
-use crate::core::lower_expr;
+use crate::core::{lower_expr, synth_destructure_param, wrap_pattern_params};
 use crate::ctx::LowerCtx;
 
 // ── Public entry point ────────────────────────────────────────────────────────
@@ -206,19 +206,28 @@ fn lower_init_decl(
     ctx.in_actor_body = true;
     ctx.current_state_fields = Some(state_field_names.clone());
 
-    let body = lower_block(ctx, &i.body);
+    let raw_body = lower_block(ctx, &i.body);
+
+    // Bare-param types use structural lookup via init span; a destructuring
+    // param lowers to a synthetic binder plus a `match` wrapper on the body.
+    let mut params: Vec<IrParam> = Vec::with_capacity(i.params.len());
+    let mut pattern_entries: Vec<(String, &Pattern, Span)> = Vec::new();
+    for (idx, p) in i.params.iter().enumerate() {
+        if let Param::PatternAnnotated { pat, ty, span } = p {
+            let (ir, synth) = synth_destructure_param(ctx, ty, *span);
+            params.push(ir);
+            pattern_entries.push((synth, pat, *span));
+        } else {
+            params.push(param_to_ir_param(ctx, i.span, idx, p));
+        }
+    }
+    let body = wrap_pattern_params(ctx, raw_body, pattern_entries);
 
     ctx.in_actor_body = saved_in_actor_body;
     ctx.current_state_fields = saved_state_fields;
 
     IrInit {
-        // Bare-param types use structural lookup via init span.
-        params: i
-            .params
-            .iter()
-            .enumerate()
-            .map(|(idx, p)| param_to_ir_param(ctx, i.span, idx, p))
-            .collect(),
+        params,
         caps: caps_from_ast_decl(&i.caps),
         body,
         span: i.span,
@@ -250,7 +259,22 @@ fn lower_on_handler(
     ctx.in_actor_body = true;
     ctx.current_state_fields = Some(state_field_names.clone());
 
-    let body = lower_expr(ctx, &h.body);
+    let raw_body = lower_expr(ctx, &h.body);
+
+    // Bare-param types use structural lookup via handler span; a destructuring
+    // param lowers to a synthetic binder plus a `match` wrapper on the body.
+    let mut params: Vec<IrParam> = Vec::with_capacity(h.params.len());
+    let mut pattern_entries: Vec<(String, &Pattern, Span)> = Vec::new();
+    for (idx, p) in h.params.iter().enumerate() {
+        if let Param::PatternAnnotated { pat, ty, span } = p {
+            let (ir, synth) = synth_destructure_param(ctx, ty, *span);
+            params.push(ir);
+            pattern_entries.push((synth, pat, *span));
+        } else {
+            params.push(param_to_ir_param(ctx, h.span, idx, p));
+        }
+    }
+    let body = wrap_pattern_params(ctx, raw_body, pattern_entries);
 
     ctx.in_actor_body = saved_in_actor_body;
     ctx.current_state_fields = saved_state_fields;
@@ -281,13 +305,7 @@ fn lower_on_handler(
 
     IrHandler {
         message_name: h.name.text.clone(),
-        // Bare-param types use structural lookup via handler span.
-        params: h
-            .params
-            .iter()
-            .enumerate()
-            .map(|(idx, p)| param_to_ir_param(ctx, h.span, idx, p))
-            .collect(),
+        params,
         ret_ty,
         caps: caps_from_ast_decl(&h.caps),
         body,
@@ -344,6 +362,10 @@ fn param_to_ir_param(
             ty: lower_ast_type(ctx, ty),
             span: *span,
         },
+        // Destructuring params are handled by the handler/init lowering (which
+        // also wraps the body); this arm keeps the synthetic binder correct in
+        // isolation.
+        Param::PatternAnnotated { ty, span, .. } => synth_destructure_param(ctx, ty, *span).0,
     }
 }
 

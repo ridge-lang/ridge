@@ -543,6 +543,14 @@ impl fmt::Display for TypeError {
                 )
             }
 
+            // ── T043 ──────────────────────────────────────────────────────────
+            Self::RefutablePatternParam { witness, ty, .. } => {
+                write!(
+                    f,
+                    "T043: this parameter pattern does not match every value of `{ty}`\n  it would fail on `{witness}`\n  hint: a function parameter must be irrefutable; destructure in the body with `match`/`let`, or use a single-constructor pattern"
+                )
+            }
+
             // ── T999 ──────────────────────────────────────────────────────────
             Self::InternalTypeError { detail, .. } => {
                 write!(f, "T999: internal type error\n  {detail}\n  This is a compiler bug. Please report it.")
@@ -608,6 +616,7 @@ impl HasErrorCode for TypeError {
             | Self::QuoteUnsupportedExpr { span, .. }
             | Self::QuoteComparisonMismatch { span, .. }
             | Self::QuoteEntityUnknown { span, .. }
+            | Self::RefutablePatternParam { span, .. }
             | Self::InternalTypeError { span, .. } => *span,
 
             // T034: uses `totext_span` (the explicit instance) as the primary span.

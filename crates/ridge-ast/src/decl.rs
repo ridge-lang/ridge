@@ -10,7 +10,8 @@
 //!   [`OnHandler`]  — grammar §5
 
 use crate::{
-    typeclass::ClassConstraint, Block, Capability, DocComment, Expr, Ident, Span, Type, Visibility,
+    typeclass::ClassConstraint, Block, Capability, DocComment, Expr, Ident, Pattern, Span, Type,
+    Visibility,
 };
 
 // ── Attribute ─────────────────────────────────────────────────────────────────
@@ -286,9 +287,15 @@ pub struct FnDecl {
 
 /// A top-level function parameter (grammar §4.1 line 459, D037).
 ///
-/// D037 restricts top-level `Param` to bare names or annotated names only.
-/// Full patterns (tuples, constructors) are **not** allowed; use a `let`
-/// binding in the body instead.  See `parse_param_top` (P012 on violation).
+/// A top-level `Param` is a bare name, an annotated name, or — for an
+/// irrefutable destructure — an annotated pattern.
+///
+/// Plain `(name: Type)` stays an [`Param::Annotated`]. A parenthesised
+/// pattern carrying a type annotation (`(Json body: Json NewUser)`,
+/// `(Point { x, y }: Point)`) becomes [`Param::PatternAnnotated`]. The pattern
+/// must be irrefutable; refutability is checked in typecheck where the type is
+/// known. An un-annotated pattern is still rejected by `parse_param_top` with
+/// `P012`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Param {
     /// A bare identifier parameter: `x`, `_foo`.
@@ -302,6 +309,16 @@ pub enum Param {
         /// Span covering `( name : Type )`.
         span: Span,
     },
+    /// An annotated destructuring parameter: `(pat : Type)`, where `pat` is a
+    /// pattern other than a bare name (record, single-ctor union, tuple, …).
+    PatternAnnotated {
+        /// The destructuring pattern. Must be irrefutable for its type.
+        pat: Pattern,
+        /// The type annotation.
+        ty: Type,
+        /// Span covering `( pat : Type )`.
+        span: Span,
+    },
 }
 
 impl Param {
@@ -310,7 +327,7 @@ impl Param {
     pub const fn span(&self) -> Span {
         match self {
             Self::Bare(id) => id.span,
-            Self::Annotated { span, .. } => *span,
+            Self::Annotated { span, .. } | Self::PatternAnnotated { span, .. } => *span,
         }
     }
 }

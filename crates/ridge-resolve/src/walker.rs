@@ -414,9 +414,22 @@ impl ScopeWalker<'_> {
     /// (warn-level).  Top-level fn params naturally skip the check because
     /// `check_r017_state_shadow` early-returns when no actor state is in scope.
     fn add_param(&mut self, p: &Param, kind: LocalKind) {
-        let (name_ident, _ty) = param_parts(p);
-        self.check_r017_state_shadow(name_ident);
-        self.add_local_binding(name_ident, kind);
+        match p {
+            Param::Bare(name_ident) => {
+                self.check_r017_state_shadow(name_ident);
+                self.add_local_binding(name_ident, kind);
+            }
+            Param::Annotated { name, .. } => {
+                self.check_r017_state_shadow(name);
+                self.add_local_binding(name, kind);
+            }
+            // A destructuring param binds every variable of its pattern, reusing
+            // the same machinery as `let`/`match` patterns. The pattern's
+            // irrefutability is enforced later in typecheck.
+            Param::PatternAnnotated { pat, .. } => {
+                self.bind_pattern(pat, kind);
+            }
+        }
     }
 
     /// Attempt to add a local; on R011, emit the error.
@@ -1067,22 +1080,6 @@ impl<'ast> Visit<'ast> for ScopeWalker<'_> {
         // visit_expr and bind_pattern.  The default `walk_*` helpers will NOT
         // be invoked for ident positions that we handle directly.
     }
-}
-
-// ── Param helpers ─────────────────────────────────────────────────────────────
-
-/// Decompose a `Param` into its name `Ident` and optional type annotation.
-const fn param_parts(p: &Param) -> (&Ident, Option<&ridge_ast::Type>) {
-    match p {
-        Param::Bare(id) => (id, None),
-        Param::Annotated { name, ty, .. } => (name, Some(ty)),
-    }
-}
-
-/// Extract the name ident from a param (convenience).
-#[allow(dead_code)]
-const fn param_name(p: &Param) -> &Ident {
-    param_parts(p).0
 }
 
 // ── Tests ─────────────────────────────────────────────────────────────────────

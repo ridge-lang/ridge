@@ -731,6 +731,10 @@ pub fn walk_param<'ast, V: Visit<'ast> + ?Sized>(v: &mut V, p: &'ast Param) {
             v.visit_ident(name);
             v.visit_type(ty);
         }
+        Param::PatternAnnotated { pat, ty, .. } => {
+            v.visit_pattern(pat);
+            v.visit_type(ty);
+        }
     }
 }
 

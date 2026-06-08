@@ -611,11 +611,18 @@ fn typecheck_actor_bodies(
 
             // Bind handler parameters.
             for (param, ty) in handler.params.iter().zip(handler_schema.params.iter()) {
-                let name = match param {
-                    ridge_ast::Param::Bare(id) => id.text.clone(),
-                    ridge_ast::Param::Annotated { name, .. } => name.text.clone(),
-                };
-                ctx.env.bind(name, monoscheme(ty.clone()));
+                match param {
+                    ridge_ast::Param::Bare(id) => {
+                        ctx.env.bind(id.text.clone(), monoscheme(ty.clone()));
+                    }
+                    ridge_ast::Param::Annotated { name, .. } => {
+                        ctx.env.bind(name.text.clone(), monoscheme(ty.clone()));
+                    }
+                    ridge_ast::Param::PatternAnnotated { pat, span, .. } => {
+                        crate::infer::infer_pattern(ctx, b, pat, ty);
+                        crate::exhaustiveness::check_param_irrefutable(ctx, b, pat, ty, *span);
+                    }
+                }
             }
 
             // Walk the body purely for side-effect: populates ctx.node_types_accum.

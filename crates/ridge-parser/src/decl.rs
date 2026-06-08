@@ -495,16 +495,14 @@ pub(crate) fn parse_param_top(cur: &mut Cursor<'_>) -> Result<Param, ParseError>
             Ok(Param::Bare(Ident::new(text, span)))
         }
 
-        // ── Parenthesised form: `(name: Type)` or invalid pattern ────────────
+        // ── Parenthesised form: `(name: Type)` or `(pat: Type)` ──────────────
         Token::LParen => {
             let start = cur.span();
             cur.bump(); // consume `(`
 
-            // Disambiguate: look for `LOWER_IDENT :` (annotated param)
-            // vs anything else (pattern — rejected with P012).  A reserved
-            // keyword in this position (e.g. `(init: Int)`) is recognised
-            // separately so the user sees the actual cause instead of the
-            // misleading "tuple and constructor patterns are not allowed".
+            // A reserved keyword in this position (e.g. `(init: Int)`) is
+            // recognised separately so the user sees the actual cause instead
+            // of a misleading pattern error.
             if let Some(keyword) = cur.peek().keyword_text() {
                 return Err(ParseError::ReservedKeywordAsIdent {
                     span: cur.span(),
@@ -512,36 +510,43 @@ pub(crate) fn parse_param_top(cur: &mut Cursor<'_>) -> Result<Param, ParseError>
                     position: "a function parameter",
                 });
             }
-            match cur.peek().clone() {
-                Token::LowerIdent(ref name_text) => {
-                    // Check if next token (after the ident) is `:`.
-                    match cur.peek_n(1) {
-                        Some(Token::Colon) => {
-                            // Annotated param: `(name: Type)`.
-                            let name_span = cur.span();
-                            let name_text = name_text.clone();
-                            cur.bump(); // consume name
-                            cur.bump(); // consume `:`
-                            let ty = parse_type(cur)?;
-                            let end_span = cur.expect(&Token::RParen)?;
-                            Ok(Param::Annotated {
-                                name: Ident::new(name_text, name_span),
-                                ty,
-                                span: start.merge(end_span),
-                            })
-                        }
-                        _ => {
-                            // Not `name:` — it's a pattern (P012 violation).
-                            Err(ParseError::TopLevelPatternParam {
-                                span: start.merge(cur.span()),
-                            })
-                        }
-                    }
+
+            // Fast path: `(name: Type)` — a bare annotated param. Kept distinct
+            // from the pattern path so the common case stays `Param::Annotated`.
+            if let Token::LowerIdent(name_text) = cur.peek().clone() {
+                if matches!(cur.peek_n(1), Some(Token::Colon)) {
+                    let name_span = cur.span();
+                    cur.bump(); // consume name
+                    cur.bump(); // consume `:`
+                    let ty = parse_type(cur)?;
+                    let end_span = cur.expect(&Token::RParen)?;
+                    return Ok(Param::Annotated {
+                        name: Ident::new(name_text, name_span),
+                        ty,
+                        span: start.merge(end_span),
+                    });
                 }
-                // Any other token inside `(` is a pattern — P012.
-                _ => Err(ParseError::TopLevelPatternParam {
+            }
+
+            // Otherwise: an irrefutable destructuring param `(pat : Type)`.
+            // Parse a full pattern, then require the `: Type` annotation. The
+            // pattern's irrefutability is checked later in typecheck, where the
+            // type is known. Without the annotation it is the historical
+            // un-annotated pattern param, still rejected with P012.
+            let pat = crate::pattern::parse_pattern(cur)?;
+            if matches!(cur.peek(), Token::Colon) {
+                cur.bump(); // consume `:`
+                let ty = parse_type(cur)?;
+                let end_span = cur.expect(&Token::RParen)?;
+                Ok(Param::PatternAnnotated {
+                    pat,
+                    ty,
+                    span: start.merge(end_span),
+                })
+            } else {
+                Err(ParseError::TopLevelPatternParam {
                     span: start.merge(cur.span()),
-                }),
+                })
             }
         }
 
@@ -2512,6 +2517,84 @@ mod tests {
         };
         // try first param — should be P012
         let result = parse_param_top(&mut cur);
+        assert!(result.is_err(), "expected Err(P012), got {result:?}");
+        assert_eq!(result.unwrap_err().code(), "P012");
+    }
+
+    /// Parse the first parameter of `fn foo <here> = …`.
+    fn first_param(src: &str) -> Result<Param, ParseError> {
+        let toks = lex(src);
+        let mut cur = Cursor::new(&toks);
+        let _ = parse_visibility(&mut cur).unwrap();
+        cur.expect(&Token::KwFn).unwrap();
+        let _caps = parse_cap_list(&mut cur);
+        // skip the fn name
+        match cur.peek().clone() {
+            Token::LowerIdent(_) => cur.bump(),
+            _ => panic!("expected fn name"),
+        };
+        parse_param_top(&mut cur)
+    }
+
+    #[test]
+    fn parse_annotated_name_param_stays_annotated() {
+        // The common `(name: Type)` form is unchanged by the L9 pattern path.
+        match first_param("fn foo (count: Int) = count").unwrap() {
+            Param::Annotated { name, .. } => assert_eq!(name.text, "count"),
+            other => panic!("expected Param::Annotated, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parse_record_pattern_param() {
+        // `(Point { x, y }: Point)` destructures in the binder.
+        match first_param("fn area (Point { x, y }: Point) = x").unwrap() {
+            Param::PatternAnnotated { pat, ty, .. } => {
+                assert!(
+                    matches!(
+                        pat,
+                        ridge_ast::Pattern::Constructor {
+                            fields: Some(_),
+                            ..
+                        }
+                    ),
+                    "expected a record-body constructor pattern, got {pat:?}"
+                );
+                assert!(matches!(ty, Type::Named { .. }));
+            }
+            other => panic!("expected Param::PatternAnnotated, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parse_constructor_pattern_param() {
+        // `(Json body: Json NewUser)` unwraps a single-constructor type.
+        match first_param("fn handle (Json body: Json NewUser) = body").unwrap() {
+            Param::PatternAnnotated { pat, .. } => {
+                assert!(
+                    matches!(pat, ridge_ast::Pattern::Constructor { fields: None, .. }),
+                    "expected a constructor pattern, got {pat:?}"
+                );
+            }
+            other => panic!("expected Param::PatternAnnotated, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parse_wildcard_pattern_param() {
+        // `(_: Unit)` is now an irrefutable wildcard param rather than P012.
+        match first_param("fn ignore (_: Unit) = 0").unwrap() {
+            Param::PatternAnnotated { pat, .. } => {
+                assert!(matches!(pat, ridge_ast::Pattern::Wildcard { .. }));
+            }
+            other => panic!("expected Param::PatternAnnotated, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parse_unannotated_pattern_param_still_p012() {
+        // A pattern param without a type annotation is still rejected.
+        let result = first_param("fn f (Some x) = x");
         assert!(result.is_err(), "expected Err(P012), got {result:?}");
         assert_eq!(result.unwrap_err().code(), "P012");
     }

@@ -1116,29 +1116,42 @@ fn resolve_actor_module(ctx: &mut LowerCtx<'_>, actor_ident: &ridge_ast::Ident) 
 ///    dictionaries.
 /// 3. **Fallback**: no resolution available (test scaffolding without a wired
 ///    workspace). Returns `IrExpr::Lit(Unit)` as a defensive placeholder.
-fn build_dict_args(
+pub(crate) fn build_dict_args(
     ctx: &mut LowerCtx<'_>,
     callee: &IrExpr,
     arg_types: &[Option<Type>],
     span: Span,
 ) -> Vec<IrExpr> {
-    // Only `SymbolRef::Local` callees can be constrained top-level fns.
-    let callee_name = match callee {
+    // Constrained callees take one dict arg per constraint. A `SymbolRef::Local`
+    // callee is a (possibly constrained) top-level fn in this module; a
+    // `SymbolRef::Stdlib` callee may be a constrained reconciled stdlib fn (e.g.
+    // std.repo's `all`/`insertRow`, typed `where Adapter a, Row e`), whose
+    // constraints come from the reconciled scheme table rather than this
+    // module's fns. Both feed the same dict-building loop below.
+    let (constraints, param_types) = match callee {
         IrExpr::Symbol {
             sym: SymbolRef::Local { name, .. },
             ..
-        } => name.clone(),
+        } => {
+            let name = name.clone();
+            let constraints = ctx.lookup_fn_constraints(&name).to_vec();
+            if constraints.is_empty() {
+                return vec![];
+            }
+            let param_types = ctx.lookup_fn_param_types(&name).to_vec();
+            (constraints, param_types)
+        }
+        IrExpr::Symbol {
+            sym: SymbolRef::Stdlib { module, name },
+            ..
+        } => match ctx.reconciled_stdlib_fn_dict_sig(module, name) {
+            Some((constraints, param_types)) if !constraints.is_empty() => {
+                (constraints, param_types)
+            }
+            _ => return vec![],
+        },
         _ => return vec![],
     };
-
-    // Look up the callee's constraints. Returns `&[]` for unknown fns.
-    let constraints = ctx.lookup_fn_constraints(&callee_name).to_vec();
-    if constraints.is_empty() {
-        return vec![];
-    }
-    // The callee scheme's parameter types tell us which argument pins each
-    // constraint variable.
-    let param_types = ctx.lookup_fn_param_types(&callee_name).to_vec();
 
     let mut dict_args: Vec<IrExpr> = Vec::with_capacity(constraints.len());
 

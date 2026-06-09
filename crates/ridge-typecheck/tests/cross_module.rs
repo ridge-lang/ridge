@@ -476,6 +476,100 @@ pub fn db bad () -> Result (List (Map Text SqlValue)) Error =
 }
 
 #[test]
+fn repo_all_auto_decodes_to_typed_list() {
+    // A repository pinned to `User` decodes `all` straight into `List User`:
+    // the reconciled `Repo e a` threads the adapter and the entity, the
+    // `Adapter MemAdapter` constraint resolves the in-memory backend, and the
+    // `Row User` constraint resolves the `deriving (Row)` decoder.
+    let main = r#"
+import std.data (memAdapter, MemAdapter)
+import std.repo as Repo
+import std.sql (SqlValue)
+
+pub type User = { id: Int, age: Int, name: Text } deriving (Row)
+
+pub fn db loadUsers () -> Result (List User) Error =
+    let users: Repo User MemAdapter = Repo.repo (memAdapter ()) "users"
+    Repo.all users
+"#;
+    let errors = typecheck_one(main);
+    assert!(
+        errors.is_empty(),
+        "Repo.all must auto-decode to List User clean; got {errors:?}"
+    );
+}
+
+#[test]
+fn repo_full_surface_typechecks_with_pipe_and_inline_predicates() {
+    // The repository verbs read as a pipeline (`repo |> Repo.findBy ...`), the
+    // predicate is an inline annotated lambda captured as a query tree, and the
+    // read verbs auto-decode to `User` while the aggregate/write verbs answer
+    // counts and units. One module exercises the whole surface.
+    let main = r#"
+import std.data (memAdapter, MemAdapter)
+import std.repo as Repo
+import std.sql (SqlValue, toSql)
+import std.map as Map
+
+pub type User = { id: Int, age: Int, name: Text } deriving (Row)
+
+pub fn db users () -> Repo User MemAdapter =
+    Repo.repo (memAdapter ()) "users"
+
+pub fn db adults () -> Result (List User) Error =
+    users () |> Repo.findBy (fn (u: User) -> u.age >= 18)
+
+pub fn db firstAdult () -> Result (Option User) Error =
+    users () |> Repo.find (fn (u: User) -> u.age >= 18)
+
+pub fn db byId () -> Result (Option User) Error =
+    users () |> Repo.getBy "id" (toSql 1)
+
+pub fn db howMany () -> Result Int Error =
+    Repo.count (users ())
+
+pub fn db howManyAdults () -> Result Int Error =
+    users () |> Repo.countBy (fn (u: User) -> u.age >= 18)
+
+pub fn db anyMinors () -> Result Bool Error =
+    users () |> Repo.exists (fn (u: User) -> u.age < 18)
+
+pub fn db add () -> Result Unit Error =
+    users () |> Repo.insertRow (Map.fromList [("id", toSql 1)])
+
+pub fn db purge () -> Result Int Error =
+    users () |> Repo.deleteWhere (fn (u: User) -> u.age < 18)
+"#;
+    let errors = typecheck_one(main);
+    assert!(
+        errors.is_empty(),
+        "the full Repo surface with pipes and inline predicates must be clean; got {errors:?}"
+    );
+}
+
+#[test]
+fn repo_predicate_unknown_column_is_rejected() {
+    // The repository predicate is checked against the entity: a field the record
+    // does not declare is an error, just as at the adapter seam.
+    let main = r#"
+import std.data (memAdapter, MemAdapter)
+import std.repo as Repo
+import std.sql (SqlValue)
+
+pub type User = { id: Int, age: Int, name: Text } deriving (Row)
+
+pub fn db bad () -> Result (List User) Error =
+    let users: Repo User MemAdapter = Repo.repo (memAdapter ()) "users"
+    users |> Repo.findBy (fn (u: User) -> u.nope >= 18)
+"#;
+    let errors = typecheck_one(main);
+    assert!(
+        !errors.is_empty(),
+        "an unknown column in a repository predicate must be rejected; got no errors"
+    );
+}
+
+#[test]
 fn qualified_imported_fn_call_is_type_checked() {
     // `import x as Lib` then `Lib.needsText` resolves to the producer's scheme.
     let main = "import proj.Lib as Lib\nfn ok () -> Text = Lib.needsText \"ok\"\n";

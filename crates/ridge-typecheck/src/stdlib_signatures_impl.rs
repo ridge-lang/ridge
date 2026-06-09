@@ -1549,6 +1549,13 @@ mod tests {
                 {
                     continue;
                 }
+                // std.repo: the reconciled `Repo` type and every verb over it
+                // are seeded from the reconciled arena block
+                // (`reconciled_ctor_scheme` / `reconciled_fn_scheme`), not this
+                // hand-curated table.
+                if module.name == "std.repo" {
+                    continue;
+                }
                 let result = stdlib_signature(module.id, name, &b);
                 if result.is_none() {
                     missing.push((module.name, name));

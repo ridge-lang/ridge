@@ -1,0 +1,131 @@
+-- std.repo — a typed repository over the storage Adapter seam.
+--
+-- The Adapter (std.data) is the untyped storage seam: rows cross it as
+-- `Map Text SqlValue` and a predicate is written against that row map. A
+-- repository is the typed layer one step up. A `Repo e a` pairs a storage
+-- adapter `a` with the name of the table that holds entity `e`; its read
+-- methods run the adapter primitives and decode each row back into `e` through
+-- `deriving (Row)`, so a query answers `List User` rather than a list of raw
+-- column maps.
+--
+-- The entity `e` is a phantom parameter: it names what the repository stores
+-- without appearing in the stored fields, the same way `Quote f` names the
+-- quoted function it wraps. Pin it once where the repository is created —
+-- `let users: Repo User MemAdapter = repo conn "users"` — and every query
+-- auto-decodes to that record with no further annotation.
+--
+-- Methods take the repository last, so a query reads as a pipeline:
+--   users |> Repo.findBy (fn (u: User) -> u.age >= 18)
+-- A predicate is quoted exactly as at the adapter seam: the parameter
+-- annotation pins the row type and the body is captured as a query tree.
+
+import std.data as Db
+import std.sql (SqlValue)
+
+-- A repository: entity `e` stored in `table` through adapter `a`. Opaque, so it
+-- is built only through `repo` and threaded as a handle, never destructured.
+pub opaque type Repo e a = { adapter: a, table: Text }
+
+-- Bind a repository to a table on an open adapter. The entity type is pinned by
+-- the annotation on the binding, not by any stored value.
+pub fn repo (adapter: a) (table: Text) -> Repo e a =
+    Repo { adapter = adapter, table = table }
+
+-- Decode a list of raw rows into entities, stopping at the first decode failure.
+fn decodeRows (rows: List (Map Text SqlValue)) -> Result (List e) Error where Row e =
+    match rows
+        []        -> Ok []
+        r :: rest ->
+            match fromRow r
+                Err err -> Err err
+                Ok x    ->
+                    match decodeRows rest
+                        Err err -> Err err
+                        Ok xs   -> Ok (x :: xs)
+
+-- Count the elements of a list. Used for the aggregate verbs, which answer a
+-- size without decoding the rows.
+fn lengthOf (xs: List x) -> Int =
+    match xs
+        []        -> 0
+        _ :: rest -> 1 + lengthOf rest
+
+-- The head of a row list, decoded; `None` when the list is empty. The single-
+-- result verbs (`find`, `get`) share it.
+fn firstDecoded (rows: List (Map Text SqlValue)) -> Result (Option e) Error where Row e =
+    match rows
+        []       -> Ok None
+        row :: _ ->
+            match fromRow row
+                Err err -> Err err
+                Ok x    -> Ok (Some x)
+
+-- A quoted predicate that keeps every row — an always-true tree. The aggregate
+-- and full-table verbs run `select` with it, so they reach the rows through the
+-- one seam primitive (`select`) rather than a second `all`/`get` entry point.
+-- Built in the runtime: a `Quote`/`QExpr` literal cannot be written in Ridge
+-- source (the compiler only captures quotations, it does not let code construct
+-- the tree), so the always-true tree is assembled on the Erlang side.
+@ffi("ridge_rt", "quote_keep_all", 1)
+fn keepAll (_u: Unit) -> Quote (Map Text SqlValue -> Bool)
+
+-- Every row of the table, decoded into entities.
+pub fn all (r: Repo e a) -> Result (List e) Error where Adapter a, Row e =
+    match select r.adapter r.table (keepAll ())
+        Err err  -> Err err
+        Ok rows  -> decodeRows rows
+
+-- The rows matching a quoted predicate, decoded into entities. The predicate is
+-- written against the entity at the call site (`fn (u: User) -> ...`) and
+-- captured as a query tree; the seam evaluates it against each stored row.
+pub fn findBy (pred: Quote (Map Text SqlValue -> Bool)) (r: Repo e a) -> Result (List e) Error where Adapter a, Row e =
+    match select r.adapter r.table pred
+        Err err  -> Err err
+        Ok rows  -> decodeRows rows
+
+-- The first entity matching a quoted predicate, or `None` when none match.
+pub fn find (pred: Quote (Map Text SqlValue -> Bool)) (r: Repo e a) -> Result (Option e) Error where Adapter a, Row e =
+    match select r.adapter r.table pred
+        Err err  -> Err err
+        Ok rows  -> firstDecoded rows
+
+-- The entity whose `column` holds exactly `key`, or `None`. A lookup by an
+-- exact column match (typically a primary key), decoded into the entity.
+pub fn getBy (column: Text) (key: SqlValue) (r: Repo e a) -> Result (Option e) Error where Adapter a, Row e =
+    match get r.adapter r.table column key
+        Err err       -> Err err
+        Ok None       -> Ok None
+        Ok (Some row) ->
+            match fromRow row
+                Err err -> Err err
+                Ok x    -> Ok (Some x)
+
+-- How many rows the table holds.
+pub fn count (r: Repo e a) -> Result Int Error where Adapter a =
+    match select r.adapter r.table (keepAll ())
+        Err err  -> Err err
+        Ok rows  -> Ok (lengthOf rows)
+
+-- How many rows match a quoted predicate.
+pub fn countBy (pred: Quote (Map Text SqlValue -> Bool)) (r: Repo e a) -> Result Int Error where Adapter a =
+    match select r.adapter r.table pred
+        Err err  -> Err err
+        Ok rows  -> Ok (lengthOf rows)
+
+-- Whether any row matches a quoted predicate.
+pub fn exists (pred: Quote (Map Text SqlValue -> Bool)) (r: Repo e a) -> Result Bool Error where Adapter a =
+    match select r.adapter r.table pred
+        Err err  -> Err err
+        Ok rows  ->
+            match rows
+                []     -> Ok false
+                _ :: _ -> Ok true
+
+-- Append a raw row to the table. The row is a column map built through
+-- `SqlType.toSql`; a typed `insert` awaits the write-side row codec.
+pub fn insertRow (row: Map Text SqlValue) (r: Repo e a) -> Result Unit Error where Adapter a =
+    insert r.adapter r.table row
+
+-- Remove the rows matching a quoted predicate; answer how many were removed.
+pub fn deleteWhere (pred: Quote (Map Text SqlValue -> Bool)) (r: Repo e a) -> Result Int Error where Adapter a =
+    delete r.adapter r.table pred

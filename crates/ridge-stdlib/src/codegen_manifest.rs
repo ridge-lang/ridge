@@ -79,6 +79,7 @@ pub const STDLIB_MODULE_ORDER: &[&str] = &[
     "std.sql",
     "std.query",
     "std.data",
+    "std.repo",
 ];
 
 // ── Core extraction ───────────────────────────────────────────────────────────

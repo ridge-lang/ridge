@@ -152,6 +152,7 @@ const STDLIB_MODULES: &[&str] = &[
     "std.sql",
     "std.query",
     "std.data",
+    "std.repo",
 ];
 
 // ── Entry type ────────────────────────────────────────────────────────────────
@@ -307,7 +308,11 @@ fn extract_ffi(src: &str, module: &str, out: &mut Vec<FfiEntry>) {
                 // entry whose BEAM target is the compiled Ridge stdlib module.
                 // Skip private fns: they are implementation helpers, not public API.
                 if let Some(ridge_fn) = extract_fn_name(rest) {
-                    let arity = count_param_groups(rest, &ridge_fn);
+                    // A constrained fn (`where C a, D b`) compiles with one
+                    // dictionary parameter prepended per constraint, so its BEAM
+                    // arity is the value-parameter count plus the constraint
+                    // count; call sites prepend the matching dict args.
+                    let arity = count_param_groups(rest, &ridge_fn) + count_where_constraints(rest);
                     out.push(FfiEntry {
                         ridge_module: module.to_owned(),
                         ridge_fn: ridge_fn.clone(),
@@ -357,6 +362,22 @@ fn parse_instance_head(rest: &str) -> Option<(String, String)> {
 /// Count the number of top-level `(...)` parameter groups in a Ridge fn
 /// signature, starting from the text after the fn name.
 ///
+/// Count the class constraints in a signature's `where` clause — one dictionary
+/// parameter is compiled per constraint. `where Adapter a` yields 1, `where
+/// Adapter a, Row e` yields 2, no `where` yields 0. The list runs from `where`
+/// to the body's `=` and is comma-separated.
+fn count_where_constraints(rest: &str) -> u32 {
+    let Some(idx) = rest.find(" where ") else {
+        return 0;
+    };
+    let after = &rest[idx + " where ".len()..];
+    let list = after.split('=').next().unwrap_or(after).trim();
+    if list.is_empty() {
+        return 0;
+    }
+    u32::try_from(list.split(',').filter(|c| !c.trim().is_empty()).count()).unwrap_or(0)
+}
+
 /// The scan terminates at `->` (at paren depth 0) or end of string.
 /// Capability keywords between the fn name and the first `(` are skipped.
 fn count_param_groups(rest: &str, fn_name: &str) -> u32 {

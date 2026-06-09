@@ -735,11 +735,35 @@ fn typecheck_module_inner(
     if let Some((ct, _)) = registries {
         seed_class_method_schemes(&mut ctx, b, ct, global_tycon_names);
         seed_prelude_codec_schemes(&mut ctx, b);
-        seed_sql_codec_schemes(&mut ctx, b, ct);
+        // `SqlValue` is a builtin (#20) for user builds, but the standard
+        // library's own build also interns sql.ridge's source `pub type
+        // SqlValue` as a distinct tycon. There, the codec/seam method schemes
+        // must name that source type so a stdlib module importing `SqlValue`
+        // (e.g. std.repo threading rows to the `Adapter` verbs) agrees with the
+        // seeded schemes rather than tripping the source-vs-builtin mismatch.
+        // The reconciled block is empty exactly during the stdlib's own build,
+        // so its emptiness selects the source id; user builds keep the builtin.
+        let sql_value = if stdlib_tycon_names.is_empty() {
+            global_tycon_names
+                .get("SqlValue")
+                .copied()
+                .unwrap_or(b.sql_value)
+        } else {
+            b.sql_value
+        };
+        seed_sql_codec_schemes(&mut ctx, b, ct, sql_value);
     }
 
     // Step B: Seed env with prelude constructors + stdlib qualified bindings.
-    seed_stdlib_env(&mut ctx, b, imports, stdlib_tycon_names);
+    // The class table (when present) lets reconciled stdlib functions be seeded
+    // with their class constraints — e.g. std.repo's verbs over `Adapter`/`Row`.
+    seed_stdlib_env(
+        &mut ctx,
+        b,
+        imports,
+        stdlib_tycon_names,
+        registries.map(|(ct, _)| ct),
+    );
 
     // Step B1: Seed schemes for fns/consts imported from other workspace modules
     // (cross-module value seeding). Bound after stdlib but before local consts and
@@ -1089,6 +1113,7 @@ fn seed_sql_codec_schemes(
     ctx: &mut crate::ctx::InferCtx,
     b: &ridge_types::BuiltinTyCons,
     class_table: &crate::class_env::ClassTable,
+    sql_value: ridge_types::TyConId,
 ) {
     use ridge_types::{CapRow, CapabilitySet, Constraint, Scheme, Type};
     let Some(sqltype) = class_table.id_by_name("SqlType") else {
@@ -1099,7 +1124,7 @@ fn seed_sql_codec_schemes(
         let a = ctx.fresh_tyvid();
         let fn_ty = Type::Fn {
             params: vec![Type::Var(a)],
-            ret: Box::new(Type::Con(b.sql_value, vec![])),
+            ret: Box::new(Type::Con(sql_value, vec![])),
             caps: CapRow::Concrete(CapabilitySet::PURE),
         };
         ctx.env.bind(
@@ -1117,7 +1142,7 @@ fn seed_sql_codec_schemes(
     {
         let a = ctx.fresh_tyvid();
         let fn_ty = Type::Fn {
-            params: vec![Type::Con(b.sql_value, vec![])],
+            params: vec![Type::Con(sql_value, vec![])],
             ret: Box::new(Type::Con(
                 b.result,
                 vec![Type::Var(a), Type::Con(b.error, vec![])],
@@ -1144,7 +1169,7 @@ fn seed_sql_codec_schemes(
         let fn_ty = Type::Fn {
             params: vec![Type::Con(
                 b.map,
-                vec![Type::Con(b.text, vec![]), Type::Con(b.sql_value, vec![])],
+                vec![Type::Con(b.text, vec![]), Type::Con(sql_value, vec![])],
             )],
             ret: Box::new(Type::Con(
                 b.result,
@@ -1171,7 +1196,7 @@ fn seed_sql_codec_schemes(
     if let Some(adapter) = class_table.id_by_name("Adapter") {
         let row_ty = Type::Con(
             b.map,
-            vec![Type::Con(b.text, vec![]), Type::Con(b.sql_value, vec![])],
+            vec![Type::Con(b.text, vec![]), Type::Con(sql_value, vec![])],
         );
         // insert :: ∀a. a -> Text -> Map Text SqlValue -> Result Unit Error where Adapter a
         {
@@ -1222,7 +1247,7 @@ fn seed_sql_codec_schemes(
         let map_row = || {
             Type::Con(
                 b.map,
-                vec![Type::Con(b.text, vec![]), Type::Con(b.sql_value, vec![])],
+                vec![Type::Con(b.text, vec![]), Type::Con(sql_value, vec![])],
             )
         };
         // A quoted predicate `Quote (e -> Bool)`. The entity `e` is the queried
@@ -1277,7 +1302,7 @@ fn seed_sql_codec_schemes(
                     Type::Var(a),
                     Type::Con(b.text, vec![]),
                     Type::Con(b.text, vec![]),
-                    Type::Con(b.sql_value, vec![]),
+                    Type::Con(sql_value, vec![]),
                 ],
                 ret: Box::new(Type::Con(
                     b.result,
@@ -1323,6 +1348,34 @@ fn seed_sql_codec_schemes(
             );
         }
     }
+}
+
+/// Constraint signature of a reconciled stdlib function — its class constraints
+/// plus the scheme's parameter types.
+///
+/// The lowering pass reads this to thread instance dictionaries: a call to a
+/// constrained stdlib function (e.g. `Repo.all`, whose scheme carries `Adapter
+/// a, Row e`) must prepend the resolved dicts, the same as a constrained local
+/// fn. Returns `None` when `(module, name)` is not a reconciled stdlib function
+/// or carries no function type.
+#[must_use]
+#[expect(
+    clippy::implicit_hasher,
+    reason = "callers always pass the workspace's FxHashMap; generalising over the hasher adds noise for no caller benefit"
+)]
+pub fn reconciled_fn_dict_sig(
+    module: &str,
+    name: &str,
+    reconciled: &FxHashMap<String, TyConId>,
+    b: &BuiltinTyCons,
+    classes: &crate::class_env::ClassTable,
+) -> Option<(Vec<ridge_types::Constraint>, Vec<ridge_types::Type>)> {
+    let scheme =
+        crate::stdlib_types::reconciled_fn_scheme(module, name, reconciled, b, Some(classes))?;
+    let ridge_types::Type::Fn { params, .. } = scheme.ty else {
+        return None;
+    };
+    Some((scheme.constraints, params))
 }
 
 // ── Tests ──────────────────────────────────────────────────────────────────────

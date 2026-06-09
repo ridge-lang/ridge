@@ -30,10 +30,13 @@
 
 use ridge_ast::Capability;
 use ridge_types::{
-    BuiltinTyCons, CapRow, CapabilitySet, RecordField, RecordSchema, Scheme, TyConArena, TyConDecl,
-    TyConId, TyConKind, TyVid, Type, UnionSchema, UnionVariant, VariantPayload,
+    BuiltinTyCons, CapRow, CapabilitySet, Constraint, RecordField, RecordSchema, Scheme,
+    TyConArena, TyConDecl, TyConId, TyConKind, TyVid, Type, UnionSchema, UnionVariant,
+    VariantPayload,
 };
 use rustc_hash::FxHashMap;
+
+use crate::class_env::ClassTable;
 
 /// Intern the reconciled stdlib type block into `arena` and return its
 /// `name -> TyConId` map.
@@ -113,6 +116,34 @@ fn reconciled_decls(b: &BuiltinTyCons, base: u32) -> Vec<TyConDecl> {
             opaque: true,
             is_anon: false,
         },
+        // `std.repo` — the typed repository handle. A generic opaque record
+        // `{ adapter: a, table: Text }` declared in Ridge (stdlib/repo.ridge).
+        // The entity `e` (param 0) is phantom — it names what the repository
+        // stores without appearing in a field, the same shape as `Quote f`; the
+        // adapter `a` (param 1) is the stored connection handle. Opaque, so user
+        // code builds one only through `repo` and threads it as a handle.
+        TyConDecl {
+            id: TyConId(base + 2),
+            name: "Repo".to_string(),
+            arity: 2,
+            kind: TyConKind::Record(RecordSchema::new(
+                vec![TyVid(0), TyVid(1)],
+                vec![
+                    RecordField {
+                        name: "adapter".to_string(),
+                        ty: Type::Var(TyVid(1)),
+                    },
+                    RecordField {
+                        name: "table".to_string(),
+                        ty: Type::Con(b.text, vec![]),
+                    },
+                ],
+            )),
+            def_span: None,
+            def_module_raw: None,
+            opaque: true,
+            is_anon: false,
+        },
     ]
 }
 
@@ -163,17 +194,26 @@ pub(crate) fn reconciled_ctor_scheme(
 
 /// Build the value scheme for a stdlib function whose signature references a
 /// reconciled type, so the hand-curated `stdlib_signature` table (which only
-/// sees [`BuiltinTyCons`]) cannot express it. Returns `None` for any name not
-/// in the table.
+/// sees [`BuiltinTyCons`]) cannot express it. Returns `None` for any
+/// `(module, name)` pair not in the table.
+///
+/// Keyed on the declaring module as well as the name: `std.repo`'s query verbs
+/// (`all`, `get`, `delete`) share names with the `std.data` `Adapter` methods,
+/// so a name-only lookup would resolve one module's import to the other's
+/// scheme. `classes` supplies the `Adapter`/`Row` class ids the repository
+/// methods are constrained over; it is `None` only in contexts without a class
+/// table, where those methods cannot be seeded and resolve to `None`.
 pub(crate) fn reconciled_fn_scheme(
+    module: &str,
     name: &str,
     reconciled: &FxHashMap<String, TyConId>,
     b: &BuiltinTyCons,
+    classes: Option<&ClassTable>,
 ) -> Option<Scheme> {
-    match name {
+    match (module, name) {
         // std.query `orderSql : ∀f. SortOrder -> Quote f -> Sql` — compiles a
         // quoted ordering key plus a direction into an `ORDER BY` fragment.
-        "orderSql" => {
+        ("std.query", "orderSql") => {
             let sort_order = *reconciled.get("SortOrder")?;
             let f = TyVid(0);
             Some(Scheme {
@@ -196,7 +236,7 @@ pub(crate) fn reconciled_fn_scheme(
         // the handle returned is the proof of access for the cap-free methods).
         // Its return type names the reconciled `MemAdapter`, so the hand-curated
         // signature table (which only sees `BuiltinTyCons`) cannot express it.
-        "memAdapter" => {
+        ("std.data", "memAdapter") => {
             let mem_adapter = *reconciled.get("MemAdapter")?;
             Some(Scheme {
                 vars: vec![],
@@ -210,6 +250,143 @@ pub(crate) fn reconciled_fn_scheme(
                 constraints: vec![],
             })
         }
+        // std.repo — the typed repository over the `Adapter` seam. Every method
+        // takes (or returns) the reconciled `Repo e a`, and the read verbs are
+        // constrained over `Adapter a` (to reach the storage primitives) and
+        // `Row e` (to decode rows into the entity), so none is expressible in
+        // the hand-curated table.
+        ("std.repo", _) => reconciled_repo_fn_scheme(name, reconciled, b, classes?),
+        _ => None,
+    }
+}
+
+/// The `std.repo` slice of [`reconciled_fn_scheme`]. Split out so the storage
+/// repository's verbs sit together and share the `Repo`/class-id setup.
+fn reconciled_repo_fn_scheme(
+    name: &str,
+    reconciled: &FxHashMap<String, TyConId>,
+    b: &BuiltinTyCons,
+    classes: &ClassTable,
+) -> Option<Scheme> {
+    let repo_con = *reconciled.get("Repo")?;
+    let adapter = classes.id_by_name("Adapter")?;
+    let row = classes.id_by_name("Row")?;
+    // Scheme-level placeholder vars: entity `e` and adapter `a`. Fresh copies
+    // are made on each instantiation, so the fixed ids here are dummies.
+    let e = TyVid(0);
+    let a = TyVid(1);
+    let repo_app = || Type::Con(repo_con, vec![Type::Var(e), Type::Var(a)]);
+    let pure = || CapRow::Concrete(CapabilitySet::PURE);
+    let result = |ok: Type| Type::Con(b.result, vec![ok, Type::Con(b.error, vec![])]);
+    // A list of decoded entities `List e`.
+    let list_e = || Type::Con(b.list, vec![Type::Var(e)]);
+    // An optional decoded entity `Option e`.
+    let option_e = || Type::Con(b.option, vec![Type::Var(e)]);
+    // A raw column map `Map Text SqlValue`.
+    let map_row = || {
+        Type::Con(
+            b.map,
+            vec![Type::Con(b.text, vec![]), Type::Con(b.sql_value, vec![])],
+        )
+    };
+    // A quoted predicate `Quote (e -> Bool)`. The entity `e` is the queried
+    // record at the call site; it is pinned from the predicate's parameter
+    // annotation when the lambda is captured, exactly as at the adapter seam.
+    let quote_pred = || {
+        Type::Con(
+            b.quote,
+            vec![Type::Fn {
+                params: vec![Type::Var(e)],
+                ret: Box::new(Type::Con(b.bool, vec![])),
+                caps: CapRow::Concrete(CapabilitySet::PURE),
+            }],
+        )
+    };
+    // Constraint shorthands. Read verbs decode, so they carry `Row e`; the
+    // aggregate and write verbs touch only the adapter. The order must mirror
+    // the source signatures' constraint order as the type checker stores it —
+    // by the order the constrained variables first appear, so the entity `e`
+    // (in the predicate / `Repo e a`) precedes the adapter `a`. The lowering
+    // prepends one dict parameter per constraint in this order on both the
+    // callee (stdlib build) and the call site, so the two must agree.
+    let with_adapter = || vec![Constraint::single(adapter, a)];
+    let with_adapter_row = || vec![Constraint::single(row, e), Constraint::single(adapter, a)];
+    // Assemble a method scheme: `∀e a. params -> ret`, pure, with `constraints`.
+    let method = |params: Vec<Type>, ret: Type, constraints: Vec<Constraint>| {
+        Some(Scheme {
+            vars: vec![e, a],
+            cap_vars: vec![],
+            row_vars: vec![],
+            ty: Type::Fn {
+                params,
+                ret: Box::new(ret),
+                caps: pure(),
+            },
+            constraints,
+        })
+    };
+    match name {
+        // repo : ∀e a. a -> Text -> Repo e a — bind a repository to a table.
+        "repo" => method(
+            vec![Type::Var(a), Type::Con(b.text, vec![])],
+            repo_app(),
+            vec![],
+        ),
+        // all : ∀e a. Repo e a -> Result (List e) Error where Adapter a, Row e
+        "all" => method(vec![repo_app()], result(list_e()), with_adapter_row()),
+        // findBy : ∀e a. Quote (e -> Bool) -> Repo e a
+        //               -> Result (List e) Error where Adapter a, Row e
+        "findBy" => method(
+            vec![quote_pred(), repo_app()],
+            result(list_e()),
+            with_adapter_row(),
+        ),
+        // find : ∀e a. Quote (e -> Bool) -> Repo e a
+        //             -> Result (Option e) Error where Adapter a, Row e
+        "find" => method(
+            vec![quote_pred(), repo_app()],
+            result(option_e()),
+            with_adapter_row(),
+        ),
+        // getBy : ∀e a. Text -> SqlValue -> Repo e a
+        //              -> Result (Option e) Error where Adapter a, Row e
+        "getBy" => method(
+            vec![
+                Type::Con(b.text, vec![]),
+                Type::Con(b.sql_value, vec![]),
+                repo_app(),
+            ],
+            result(option_e()),
+            with_adapter_row(),
+        ),
+        // count : ∀e a. Repo e a -> Result Int Error where Adapter a
+        "count" => method(
+            vec![repo_app()],
+            result(Type::Con(b.int, vec![])),
+            with_adapter(),
+        ),
+        // countBy / deleteWhere : ∀e a. Quote (e -> Bool) -> Repo e a
+        //   -> Result Int Error where Adapter a. One counts the matching rows,
+        //   the other removes them and answers how many — the same scheme.
+        "countBy" | "deleteWhere" => method(
+            vec![quote_pred(), repo_app()],
+            result(Type::Con(b.int, vec![])),
+            with_adapter(),
+        ),
+        // exists : ∀e a. Quote (e -> Bool) -> Repo e a
+        //               -> Result Bool Error where Adapter a
+        "exists" => method(
+            vec![quote_pred(), repo_app()],
+            result(Type::Con(b.bool, vec![])),
+            with_adapter(),
+        ),
+        // insertRow : ∀e a. Map Text SqlValue -> Repo e a
+        //                  -> Result Unit Error where Adapter a
+        "insertRow" => method(
+            vec![map_row(), repo_app()],
+            result(Type::Con(b.unit, vec![])),
+            with_adapter(),
+        ),
         _ => None,
     }
 }

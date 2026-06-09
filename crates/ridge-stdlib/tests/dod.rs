@@ -235,7 +235,7 @@ fn g5_path_b_dominance() {
 /// is covered by Rust-side tests), so the `.ridge` count runs four ahead.
 #[test]
 fn artefacts_count_matches_plan() {
-    const EXPECTED_RG: usize = 23;
+    const EXPECTED_RG: usize = 24;
     const EXPECTED_TEST_RG: usize = 19;
 
     let stdlib = stdlib_dir();

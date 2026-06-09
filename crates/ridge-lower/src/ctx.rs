@@ -488,6 +488,29 @@ impl<'tw> LowerCtx<'tw> {
             .map_or(&[], |(_, params)| params.as_slice())
     }
 
+    /// Constraint signature of a constrained stdlib function reached through a
+    /// [`SymbolRef::Stdlib`] callee (e.g. `std.repo`'s `all`/`insertRow`, typed
+    /// `where Adapter a, Row e`). Unlike local fns, these are not in the current
+    /// module's scheme table; their constraints come from the reconciled scheme
+    /// table, keyed by `(module, name)`. Returns `None` when the pair is not a
+    /// reconciled stdlib function or no workspace/class table is attached.
+    #[must_use]
+    pub fn reconciled_stdlib_fn_dict_sig(
+        &self,
+        module: &str,
+        name: &str,
+    ) -> Option<(Vec<ridge_types::Constraint>, Vec<Type>)> {
+        let ws = self.workspace?;
+        let classes = self.class_table?;
+        ridge_typecheck::reconciled_fn_dict_sig(
+            module,
+            name,
+            &ws.stdlib_tycons,
+            &ws.builtins,
+            classes,
+        )
+    }
+
     /// Populate `fn_constraint_cache` on first use: one linear scan over the
     /// current module's top-level `fn` decls, recording each fn's scheme
     /// constraints and parameter types keyed by name.

@@ -9,6 +9,15 @@
 -- shape `deriving (Row)` decodes back into a record (see std.sql). A row is
 -- built through `SqlType.toSql` and read back through `fromRow`.
 --
+-- `select` and `delete` take a quoted predicate. A lambda passed where a `Quote`
+-- is expected is captured by the compiler as a `QExpr` tree (see std.query)
+-- rather than a closure; the in-memory adapter hands that tree to the runtime,
+-- which walks it against each stored row, and a backend like Postgres compiles
+-- the same tree to a `WHERE` clause. The predicate is written against the record
+-- being queried — `fn (u: User) -> ...` — so column names and types are checked;
+-- the rows themselves stay untyped `Map`s at the seam and are decoded to records
+-- one layer up.
+--
 -- Capabilities follow the handle-as-proof model that actors use (spec §6.4.1):
 -- opening an adapter requires the `db` capability, and the handle returned is
 -- itself the proof of access, so the query methods are capability-free. The
@@ -18,12 +27,20 @@
 import std.sql (SqlValue)
 
 -- The storage seam. `a` is the connection-handle type; each backend provides an
--- instance. `insert` appends a row to a table; `all` returns every row of a
--- table. Both report failure through `Result`, so a backend that can fail (a
--- real database) and one that cannot (the in-memory store) share one surface.
+-- instance. `insert` appends a row; `all` returns every row of a table;
+-- `select` returns the rows matching a quoted predicate; `get` looks a single
+-- row up by an exact column match; `delete` removes the rows matching a
+-- predicate and answers how many went. Every method reports failure through
+-- `Result`, so a backend that can fail (a real database) and one that cannot
+-- (the in-memory store) share one surface. The predicate's parameter is the
+-- queried record at the call site (`fn (u: User) -> ...`); here it is the
+-- adapter-neutral row map the captured tree is evaluated against.
 pub class Adapter a =
     insert (conn: a) (table: Text) (row: Map Text SqlValue) -> Result Unit Error
     all    (conn: a) (table: Text) -> Result (List (Map Text SqlValue)) Error
+    select (conn: a) (table: Text) (pred: Quote (Map Text SqlValue -> Bool)) -> Result (List (Map Text SqlValue)) Error
+    get    (conn: a) (table: Text) (column: Text) (key: SqlValue) -> Result (Option (Map Text SqlValue)) Error
+    delete (conn: a) (table: Text) (pred: Quote (Map Text SqlValue -> Bool)) -> Result Int Error
 
 -- A handle to an in-memory store. Opaque: `memAdapter` is the only way to make
 -- one, and the `id` it carries selects this handle's private, isolated store,
@@ -39,6 +56,21 @@ fn _memInsert (id: Int) (table: Text) (row: Map Text SqlValue) -> Result Unit Er
 @ffi("ridge_rt", "mem_all", 2)
 fn _memAll (id: Int) (table: Text) -> Result (List (Map Text SqlValue)) Error
 
+-- Return the rows of a table whose columns satisfy the captured predicate tree.
+-- The runtime walks the `QExpr` against each row; this is the in-memory dual of
+-- compiling the tree to a SQL `WHERE` clause.
+@ffi("ridge_rt", "mem_select", 3)
+fn _memSelect (id: Int) (table: Text) (tree: QExpr) -> Result (List (Map Text SqlValue)) Error
+
+-- Return the rows of a table whose `column` holds exactly `key`.
+@ffi("ridge_rt", "mem_get_rows", 4)
+fn _memGetRows (id: Int) (table: Text) (column: Text) (key: SqlValue) -> Result (List (Map Text SqlValue)) Error
+
+-- Remove the rows of a table that satisfy the predicate tree; answer how many
+-- were removed.
+@ffi("ridge_rt", "mem_delete", 3)
+fn _memDelete (id: Int) (table: Text) (tree: QExpr) -> Result Int Error
+
 -- Open a fresh in-memory adapter backed by an empty store. Requires the `db`
 -- capability; the handle returned is the proof of access for every later call.
 @ffi("ridge_rt", "mem_new", 1)
@@ -49,3 +81,18 @@ instance Adapter MemAdapter =
         _memInsert conn.id table row
     all (conn: MemAdapter) (table: Text) -> Result (List (Map Text SqlValue)) Error =
         _memAll conn.id table
+    select (conn: MemAdapter) (table: Text) (pred: Quote (Map Text SqlValue -> Bool)) -> Result (List (Map Text SqlValue)) Error =
+        _memSelect conn.id table pred.tree
+    get (conn: MemAdapter) (table: Text) (column: Text) (key: SqlValue) -> Result (Option (Map Text SqlValue)) Error =
+        match _memGetRows conn.id table column key
+            Ok rows -> Ok (firstRow rows)
+            Err e   -> Err e
+    delete (conn: MemAdapter) (table: Text) (pred: Quote (Map Text SqlValue -> Bool)) -> Result Int Error =
+        _memDelete conn.id table pred.tree
+
+-- The head of a row list as an `Option` — `get` returns at most one row, so it
+-- reads the first match (or `None` when the column held no such key).
+fn firstRow (rows: List (Map Text SqlValue)) -> Option (Map Text SqlValue) =
+    match rows
+        []     -> None
+        r :: _ -> Some r

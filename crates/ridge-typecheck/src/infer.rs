@@ -38,7 +38,7 @@ use ridge_ast::{
     Span, UnaryOp,
 };
 use ridge_resolve::NodeKind;
-use ridge_types::{BuiltinTyCons, CapRow, CapabilitySet, Scheme, TyConKind, Type};
+use ridge_types::{BuiltinTyCons, CapRow, CapabilitySet, Scheme, TyConId, TyConKind, Type};
 
 use crate::ctx::InferCtx;
 use crate::error::TypeError;
@@ -232,7 +232,17 @@ fn infer_expr_inner(ctx: &mut InferCtx, b: &BuiltinTyCons, expr: &Expr) -> Type 
                             let pty = ctx.deep_resolve(pty);
                             if crate::quote::is_quote_param(ctx, &pty) {
                                 let expected_ret = crate::quote::quote_result(ctx, &pty);
-                                return match crate::quote::quote_entity(ctx, &pty) {
+                                // The entity may already be concrete (a wrapper
+                                // `fn p (q: Quote (User -> Bool))`), or still an
+                                // inference variable when the callee is generic
+                                // over it (`Adapter.select : Quote (e -> Bool)`).
+                                // In the generic case, pin it from the predicate's
+                                // annotated parameter — `select c "users"
+                                // (fn (u: User) -> …)` resolves `e` to `User`.
+                                let entity = crate::quote::quote_entity(ctx, &pty).or_else(|| {
+                                    pin_quote_entity_from_annotation(ctx, b, inner, &pty)
+                                });
+                                return match entity {
                                     Some(entity)
                                         if crate::quote::check_quote(
                                             ctx,
@@ -1365,6 +1375,54 @@ fn infer_binary(
             span,
         ),
     }
+}
+
+/// Pin a generic quoted-predicate entity from the lambda's parameter annotation.
+///
+/// Capture needs the entity (the queried record) concrete in the expected
+/// `Quote (entity -> _)` type. A wrapper whose parameter names the record
+/// concretely already provides it; a generic adapter method like
+/// `Adapter.select : Quote (e -> Bool)` instantiates `e` as a fresh inference
+/// variable instead, and no earlier argument constrains it. When the predicate
+/// is written `fn (u: User) -> …`, the annotation is the missing link: unifying
+/// the entity slot with `User` makes the entity concrete so the quotation
+/// checker can validate the body against its columns.
+///
+/// Returns the pinned entity, or `None` when the lambda's first parameter has no
+/// annotation or it does not name a type constructor.
+fn pin_quote_entity_from_annotation(
+    ctx: &mut InferCtx,
+    b: &BuiltinTyCons,
+    lambda: &Expr,
+    quote_ty: &Type,
+) -> Option<TyConId> {
+    let Expr::Lambda { params, .. } = lambda else {
+        return None;
+    };
+    let ann = match params.first()? {
+        LambdaParam::Annotated { ty, .. } => ty,
+        LambdaParam::Pattern(_) => return None,
+    };
+    let ann_ty = ast_type_to_type(ctx, b, ann);
+
+    // Reach the entity slot inside `Quote (entity -> _)` and unify it with the
+    // annotation, turning the previously-free `e` into the annotated record.
+    let Type::Con(_, args) = quote_ty else {
+        return None;
+    };
+    let inner = ctx.deep_resolve(args.first()?);
+    let Type::Fn {
+        params: fn_params, ..
+    } = inner
+    else {
+        return None;
+    };
+    let entity_slot = fn_params.first()?.clone();
+    let _ = unify(ctx, &entity_slot, &ann_ty);
+
+    // Re-resolve now that the slot is pinned; only a concrete record entity is
+    // usable by the quotation checker.
+    crate::quote::quote_entity(ctx, quote_ty)
 }
 
 // ── Inline record helpers ─────────────────────────────────────────────────────

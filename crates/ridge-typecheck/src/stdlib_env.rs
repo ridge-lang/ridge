@@ -13,6 +13,7 @@ use ridge_resolve::{Binding, BuiltinStdlibModule, ImportResolution, ImportTarget
 use ridge_types::{BuiltinTyCons, TyConId};
 use rustc_hash::FxHashMap;
 
+use crate::class_env::ClassTable;
 use crate::ctx::InferCtx;
 use crate::prelude::prelude_types;
 use crate::stdlib_signatures::stdlib_signature;
@@ -39,6 +40,7 @@ pub fn seed_stdlib_env(
     b: &BuiltinTyCons,
     imports: &[ImportResolution],
     reconciled: &FxHashMap<String, TyConId>,
+    classes: Option<&ClassTable>,
 ) {
     // 1. Prelude constructor schemes.
     let (prelude_values, _) = prelude_types(b);
@@ -73,7 +75,15 @@ pub fn seed_stdlib_env(
                     } => {
                         let local = eb.local_name.as_str();
                         if let Some(alias_module) = BUILTINS.get(mid.0 as usize) {
-                            bind_module_qualified(ctx, b, alias_module, local, *mid, reconciled);
+                            bind_module_qualified(
+                                ctx,
+                                b,
+                                alias_module,
+                                local,
+                                *mid,
+                                reconciled,
+                                classes,
+                            );
                         }
                     }
                     // `import std.text (split, trim)` → local_name = "split", binding = StdlibSymbol
@@ -84,9 +94,17 @@ pub fn seed_stdlib_env(
                             // No hand-curated signature: either a constructor of
                             // a reconciled stdlib type, or a stdlib function whose
                             // signature references one. Both are derived from the
-                            // reconciled arena block.
+                            // reconciled arena block; the function lookup is keyed
+                            // on the declaring module so same-named verbs in
+                            // different modules (e.g. std.repo / std.data `all`)
+                            // resolve to the right scheme.
+                            let module_name = BUILTINS.get(mid.0 as usize).map(|m| m.name);
                             let recon = reconciled_ctor_scheme(&ctx.tycon_decls, reconciled, name)
-                                .or_else(|| reconciled_fn_scheme(name, reconciled, b));
+                                .or_else(|| {
+                                    module_name.and_then(|m| {
+                                        reconciled_fn_scheme(m, name, reconciled, b, classes)
+                                    })
+                                });
                             if let Some(scheme) = recon {
                                 ctx.env.bind(eb.local_name.clone(), scheme);
                             }
@@ -106,7 +124,15 @@ pub fn seed_stdlib_env(
 
             if let Some(local_alias) = alias {
                 if !has_module_alias_binding {
-                    bind_module_qualified(ctx, b, module, local_alias, *stdlib_id, reconciled);
+                    bind_module_qualified(
+                        ctx,
+                        b,
+                        module,
+                        local_alias,
+                        *stdlib_id,
+                        reconciled,
+                        classes,
+                    );
                 }
             }
         } else {
@@ -136,11 +162,12 @@ fn bind_module_qualified(
     local_alias: &str,
     stdlib_id: ridge_resolve::StdlibModuleId,
     reconciled: &FxHashMap<String, TyConId>,
+    classes: Option<&ClassTable>,
 ) {
     for &export_name in module.exports {
         let scheme = stdlib_signature(stdlib_id, export_name, b).or_else(|| {
             reconciled_ctor_scheme(&ctx.tycon_decls, reconciled, export_name)
-                .or_else(|| reconciled_fn_scheme(export_name, reconciled, b))
+                .or_else(|| reconciled_fn_scheme(module.name, export_name, reconciled, b, classes))
         });
         if let Some(scheme) = scheme {
             ctx.env.bind(format!("{local_alias}.{export_name}"), scheme);

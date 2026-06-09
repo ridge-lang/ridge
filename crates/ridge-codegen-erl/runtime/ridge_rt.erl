@@ -29,6 +29,7 @@
     ask/3, send/2, send_op/2, send_fn/2, mailbox_size/1, spawn_actor/3,
     mem_new/1, mem_insert/3, mem_all/2,
     mem_select/3, mem_delete/3, mem_get_rows/4,
+    quote_keep_all/1,
     escript_main/1
 ]).
 
@@ -892,6 +893,12 @@ mem_insert(Id, Table, Row) -> mem_call({insert, Id, Table, Row}).
 %% mem_all/2 — every row of Table in store Id, in insertion order.
 %% Result (List Row) Error; an unknown table reads as empty.
 mem_all(Id, Table) -> mem_call({all, Id, Table}).
+
+%% quote_keep_all/1 — std.repo.keepAll. An always-true quoted predicate, the
+%% every-row case the full-table and aggregate verbs run through `select`. A
+%% Quote is `#{tree => QExpr}`; the tree `{'QLitBool', true}` keeps every row.
+%% Built here because a Quote/QExpr literal cannot be written in Ridge source.
+quote_keep_all(_Unit) -> #{tree => {'QLitBool', true}}.
 
 %% mem_select/3 — the rows of Table that satisfy the captured predicate Tree.
 %% The runtime walks the QExpr against each row (the in-memory dual of compiling

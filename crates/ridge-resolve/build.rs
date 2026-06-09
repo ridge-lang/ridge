@@ -59,6 +59,7 @@ const MODULE_ORDER: &[&str] = &[
     "std.sql",
     "std.query",
     "std.data",
+    "std.repo",
 ];
 
 // ── Baseline export table (T10: preserves original API) ───────────────────────
@@ -400,6 +401,25 @@ const BASELINE_EXPORTS: &[(&str, &[&str])] = &[
             "memAdapter",
         ],
     ),
+    (
+        "std.repo",
+        &[
+            // The typed repository layer over the `Adapter` seam: the opaque
+            // `Repo e a` handle, its `repo` constructor, and the query verbs
+            // that auto-decode rows into entities through `deriving (Row)`.
+            "Repo",
+            "repo",
+            "all",
+            "findBy",
+            "find",
+            "getBy",
+            "count",
+            "countBy",
+            "exists",
+            "insertRow",
+            "deleteWhere",
+        ],
+    ),
 ];
 
 /// Per-module list of `pub opaque type` names. Drives the `opaque_types` field
@@ -410,6 +430,7 @@ const BASELINE_OPAQUE: &[(&str, &[&str])] = &[
     ("std.net.http", &["Html", "SecureCookie"]),
     ("std.sql", &["Sql", "SqlValue"]),
     ("std.data", &["MemAdapter"]),
+    ("std.repo", &["Repo"]),
 ];
 
 fn main() {

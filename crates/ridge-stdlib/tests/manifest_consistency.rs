@@ -255,6 +255,12 @@ fn signature_shape_consistency() {
             if dotted == "std.data" && *fn_name == "memAdapter" {
                 continue;
             }
+            // Every std.repo verb takes or returns the reconciled `Repo e a`, so
+            // the whole module is seeded via `reconciled_fn_scheme` rather than
+            // the `stdlib_signature` table this shape check covers.
+            if dotted == "std.repo" {
+                continue;
+            }
             // 1. Signature must resolve to Some.
             let scheme = stdlib_signature(module_id, fn_name, &b).unwrap_or_else(|| {
                 panic!(

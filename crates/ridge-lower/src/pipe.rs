@@ -21,8 +21,10 @@
 
 use ridge_ast::{Expr, Span};
 use ridge_ir::{IrExpr, IrLit};
+use ridge_resolve::NodeKind;
+use ridge_types::Type;
 
-use crate::core::lower_expr;
+use crate::core::{build_dict_args, lower_expr};
 use crate::ctx::LowerCtx;
 use crate::error::LowerError;
 
@@ -53,13 +55,21 @@ pub fn lower_pipe(ctx: &mut LowerCtx<'_>, lhs: &Expr, rhs: &Expr, span: Span) ->
         // ── Call RHS: `xs |> f a b` → `Call(f, [a, b, xs])` ─────────────────
         Expr::Call { callee, args, .. } => {
             let id = ctx.fresh_id(None);
-            let callee_ir = Box::new(lower_expr(ctx, callee));
+            let callee_ir = lower_expr(ctx, callee);
             let mut args_ir: Vec<IrExpr> = args.iter().map(|a| lower_expr(ctx, a)).collect();
             args_ir.push(lhs_ir);
+            // A constrained callee (e.g. a piped `Repo.findBy`, typed
+            // `where Adapter a, Row e`) needs its instance dicts prepended, the
+            // same as the direct-call path. The piped `lhs` is the last value
+            // argument, so its type joins the arg-type list in that position.
+            let mut arg_types: Vec<Option<Type>> = args.iter().map(|a| arg_type(ctx, a)).collect();
+            arg_types.push(arg_type(ctx, lhs));
+            let dict_args = build_dict_args(ctx, &callee_ir, &arg_types, span);
+            let all_args: Vec<IrExpr> = dict_args.into_iter().chain(args_ir).collect();
             IrExpr::Call {
                 id,
-                callee: callee_ir,
-                args: args_ir,
+                callee: Box::new(callee_ir),
+                args: all_args,
                 span,
             }
         }
@@ -71,11 +81,17 @@ pub fn lower_pipe(ctx: &mut LowerCtx<'_>, lhs: &Expr, rhs: &Expr, span: Span) ->
         | Expr::Lambda { .. }
         | Expr::FieldAccessorFn { .. } => {
             let id = ctx.fresh_id(None);
-            let callee_ir = Box::new(lower_expr(ctx, rhs_inner));
+            let callee_ir = lower_expr(ctx, rhs_inner);
+            let arg_types: Vec<Option<Type>> = vec![arg_type(ctx, lhs)];
+            let dict_args = build_dict_args(ctx, &callee_ir, &arg_types, span);
+            let all_args: Vec<IrExpr> = dict_args
+                .into_iter()
+                .chain(std::iter::once(lhs_ir))
+                .collect();
             IrExpr::Call {
                 id,
-                callee: callee_ir,
-                args: vec![lhs_ir],
+                callee: Box::new(callee_ir),
+                args: all_args,
                 span,
             }
         }
@@ -108,6 +124,17 @@ pub fn lower_pipe(ctx: &mut LowerCtx<'_>, lhs: &Expr, rhs: &Expr, span: Span) ->
 }
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
+
+/// The fully-resolved type of a pipe argument, read from the typed workspace by
+/// the expression's `NodeId`. `None` when no type info is wired (e.g. test
+/// scaffolding); `build_dict_args` then leaves the dict slot to its own
+/// fallback. Mirrors the per-argument type collection in the direct-call rule.
+fn arg_type(ctx: &LowerCtx<'_>, e: &Expr) -> Option<Type> {
+    ctx.node_id_map
+        .as_ref()
+        .and_then(|m| m.get(expr_span(e), NodeKind::Expr))
+        .and_then(|nid| ctx.node_type(nid).cloned())
+}
 
 /// Peel one or more `Paren { inner }` wrappers from an expression (paren
 /// erasure — §1.3, §4.1).

@@ -288,7 +288,11 @@ pub fn extract_all_from_source(module: &str, src: &str, out: &mut Vec<FfiDecl>) 
             } else if is_pub {
                 // T11.5: pure-Ridge public fn — BEAM target is compiled Ridge module.
                 if let Some(ridge_fn) = extract_fn_name(rest) {
-                    let arity = count_param_groups(rest, &ridge_fn);
+                    // A constrained fn (`where C a, D b`) is compiled with one
+                    // dictionary parameter prepended per constraint, so its BEAM
+                    // arity is the value-parameter count plus the constraint
+                    // count. Call sites prepend the same dict args.
+                    let arity = count_param_groups(rest, &ridge_fn) + count_where_constraints(rest);
                     out.push(FfiDecl {
                         ridge_module: module.to_owned(),
                         ridge_fn: ridge_fn.clone(),
@@ -343,6 +347,26 @@ pub fn count_param_groups(rest: &str, fn_name: &str) -> u32 {
     }
 
     count
+}
+
+/// Count the class constraints in a signature's `where` clause.
+///
+/// One dictionary parameter is compiled for each: `where Adapter a` yields 1,
+/// `where Adapter a, Row e` yields 2, and a signature with no `where` yields 0.
+/// The constraint list runs from `where` to the body's `=` and is
+/// comma-separated.
+#[must_use]
+pub fn count_where_constraints(rest: &str) -> u32 {
+    let Some(idx) = rest.find(" where ") else {
+        return 0;
+    };
+    let after = &rest[idx + " where ".len()..];
+    // The constraint list ends at the body separator `=`.
+    let list = after.split('=').next().unwrap_or(after).trim();
+    if list.is_empty() {
+        return 0;
+    }
+    u32::try_from(list.split(',').filter(|c| !c.trim().is_empty()).count()).unwrap_or(0)
 }
 
 // ── Internal parsers ──────────────────────────────────────────────────────────

@@ -28,9 +28,10 @@
 //!
 //! [`typecheck_workspace`]: crate::typecheck_workspace
 
+use ridge_ast::Capability;
 use ridge_types::{
-    BuiltinTyCons, CapRow, CapabilitySet, Scheme, TyConArena, TyConDecl, TyConId, TyConKind, TyVid,
-    Type, UnionSchema, UnionVariant, VariantPayload,
+    BuiltinTyCons, CapRow, CapabilitySet, RecordField, RecordSchema, Scheme, TyConArena, TyConDecl,
+    TyConId, TyConKind, TyVid, Type, UnionSchema, UnionVariant, VariantPayload,
 };
 use rustc_hash::FxHashMap;
 
@@ -66,7 +67,7 @@ pub(crate) fn intern_stdlib_types(
 /// after the built-ins). Self- and cross-references inside the block name
 /// `TyConId(base + offset)`, where `offset` is the declaration's position in the
 /// returned vector.
-fn reconciled_decls(_b: &BuiltinTyCons, base: u32) -> Vec<TyConDecl> {
+fn reconciled_decls(b: &BuiltinTyCons, base: u32) -> Vec<TyConDecl> {
     vec![
         // `std.query` — sort direction for query ordering. A plain nullary union
         // declared in Ridge (stdlib/query.ridge) rather than as a built-in.
@@ -90,6 +91,26 @@ fn reconciled_decls(_b: &BuiltinTyCons, base: u32) -> Vec<TyConDecl> {
             def_span: None,
             def_module_raw: None,
             opaque: false,
+            is_anon: false,
+        },
+        // `std.data` — the in-memory adapter handle. An opaque record `{ id: Int }`
+        // declared in Ridge (stdlib/data.ridge); the `id` selects the handle's
+        // private store. Opaque, so user code reaches it only through `memAdapter`
+        // and the `Adapter` methods, never by constructing the record.
+        TyConDecl {
+            id: TyConId(base + 1),
+            name: "MemAdapter".to_string(),
+            arity: 0,
+            kind: TyConKind::Record(RecordSchema::new(
+                vec![],
+                vec![RecordField {
+                    name: "id".to_string(),
+                    ty: Type::Con(b.int, vec![]),
+                }],
+            )),
+            def_span: None,
+            def_module_raw: None,
+            opaque: true,
             is_anon: false,
         },
     ]
@@ -166,6 +187,25 @@ pub(crate) fn reconciled_fn_scheme(
                     ],
                     ret: Box::new(Type::Con(b.sql, vec![])),
                     caps: CapRow::Concrete(CapabilitySet::PURE),
+                },
+                constraints: vec![],
+            })
+        }
+        // std.data `memAdapter : Unit -> MemAdapter` — opens a fresh in-memory
+        // adapter. Requires the `db` capability (opening a store is the gated act;
+        // the handle returned is the proof of access for the cap-free methods).
+        // Its return type names the reconciled `MemAdapter`, so the hand-curated
+        // signature table (which only sees `BuiltinTyCons`) cannot express it.
+        "memAdapter" => {
+            let mem_adapter = *reconciled.get("MemAdapter")?;
+            Some(Scheme {
+                vars: vec![],
+                cap_vars: vec![],
+                row_vars: vec![],
+                ty: Type::Fn {
+                    params: vec![Type::Con(b.unit, vec![])],
+                    ret: Box::new(Type::Con(mem_adapter, vec![])),
+                    caps: CapRow::Concrete(CapabilitySet::singleton(Capability::Db)),
                 },
                 constraints: vec![],
             })

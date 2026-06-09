@@ -1529,6 +1529,19 @@ mod tests {
                 {
                     continue;
                 }
+                // std.data: `Adapter`/`insert`/`all` are a class and its methods
+                // (seeded via `seed_sql_codec_schemes`), `MemAdapter` is a
+                // reconciled opaque type, and `memAdapter` is seeded via
+                // `reconciled_fn_scheme` (its signature names `MemAdapter`), so
+                // none resolves through this hand-curated table.
+                if module.name == "std.data"
+                    && matches!(
+                        name,
+                        "Adapter" | "insert" | "all" | "MemAdapter" | "memAdapter"
+                    )
+                {
+                    continue;
+                }
                 let result = stdlib_signature(module.id, name, &b);
                 if result.is_none() {
                     missing.push((module.name, name));

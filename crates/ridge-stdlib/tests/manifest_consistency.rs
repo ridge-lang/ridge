@@ -249,6 +249,12 @@ fn signature_shape_consistency() {
             if dotted == "std.query" && *fn_name == "orderSql" {
                 continue;
             }
+            // std.data `memAdapter` returns the reconciled `MemAdapter` type, so
+            // it is seeded via `reconciled_fn_scheme`, not the `stdlib_signature`
+            // table this shape check covers.
+            if dotted == "std.data" && *fn_name == "memAdapter" {
+                continue;
+            }
             // 1. Signature must resolve to Some.
             let scheme = stdlib_signature(module_id, fn_name, &b).unwrap_or_else(|| {
                 panic!(

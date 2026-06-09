@@ -139,7 +139,7 @@ pub fn collect_workspace(
     // registered and this call becomes a no-op for those keys. For user
     // workspaces, the source-level declarations are absent and all four entries
     // are inserted here so the constraint solver can discharge them.
-    register_stdlib_instances(&mut instance_env, &class_table);
+    register_stdlib_instances(&mut instance_env, &class_table, user_tycon_names);
 
     // Step 4b: Synthesise instances for every `TypeDecl` that has a
     // `deriving (…)` clause. Derived instances are registered into the same

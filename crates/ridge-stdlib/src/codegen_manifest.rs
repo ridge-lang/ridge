@@ -78,6 +78,7 @@ pub const STDLIB_MODULE_ORDER: &[&str] = &[
     "std.crypto",
     "std.sql",
     "std.query",
+    "std.data",
 ];
 
 // ── Core extraction ───────────────────────────────────────────────────────────
@@ -155,7 +156,7 @@ pub fn module_name_to_path(dotted: &str) -> PathBuf {
 /// and their indented method-impl lines are NOT extracted.
 #[must_use]
 pub fn extract_pub_names_from_source(src: &str) -> Vec<String> {
-    const CAP_KEYWORDS: &[&str] = &["io", "fs", "net", "time", "random", "env", "proc"];
+    const CAP_KEYWORDS: &[&str] = &["io", "fs", "net", "time", "random", "env", "proc", "db"];
 
     let mut names: Vec<String> = Vec::new();
     let mut in_pub_class = false;

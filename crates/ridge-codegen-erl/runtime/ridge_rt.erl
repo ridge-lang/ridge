@@ -28,6 +28,7 @@
     http_get/1, http_post/2, http_put/2, http_delete/1,
     ask/3, send/2, send_op/2, send_fn/2, mailbox_size/1, spawn_actor/3,
     mem_new/1, mem_insert/3, mem_all/2,
+    mem_select/3, mem_delete/3, mem_get_rows/4,
     escript_main/1
 ]).
 
@@ -892,6 +893,19 @@ mem_insert(Id, Table, Row) -> mem_call({insert, Id, Table, Row}).
 %% Result (List Row) Error; an unknown table reads as empty.
 mem_all(Id, Table) -> mem_call({all, Id, Table}).
 
+%% mem_select/3 — the rows of Table that satisfy the captured predicate Tree.
+%% The runtime walks the QExpr against each row (the in-memory dual of compiling
+%% it to a SQL WHERE clause). Result (List Row) Error.
+mem_select(Id, Table, Tree) -> mem_call({select, Id, Table, Tree}).
+
+%% mem_get_rows/4 — the rows of Table whose Column holds exactly Key. std.data's
+%% `get` takes the first. Result (List Row) Error.
+mem_get_rows(Id, Table, Column, Key) -> mem_call({get_rows, Id, Table, Column, Key}).
+
+%% mem_delete/3 — remove the rows of Table that satisfy Tree; answer how many
+%% were removed. Result Int Error.
+mem_delete(Id, Table, Tree) -> mem_call({delete, Id, Table, Tree}).
+
 %% Internal: send a request to the keeper and await its reply.
 mem_call(Req) ->
     mem_ensure(),
@@ -939,8 +953,83 @@ mem_keeper_loop(State) ->
         {{all, Id, Table}, From, Ref} ->
             Rows = maps:get({Id, Table}, State, []),
             From ! {Ref, {ok, Rows}},
-            mem_keeper_loop(State)
+            mem_keeper_loop(State);
+        {{select, Id, Table, Tree}, From, Ref} ->
+            Rows = maps:get({Id, Table}, State, []),
+            Matches = [R || R <- Rows, mem_pred(Tree, R)],
+            From ! {Ref, {ok, Matches}},
+            mem_keeper_loop(State);
+        {{get_rows, Id, Table, Column, Key}, From, Ref} ->
+            Rows = maps:get({Id, Table}, State, []),
+            Matches = [R || R <- Rows, maps:get(Column, R, 'SqlNull') =:= Key],
+            From ! {Ref, {ok, Matches}},
+            mem_keeper_loop(State);
+        {{delete, Id, Table, Tree}, From, Ref} ->
+            Key  = {Id, Table},
+            Rows = maps:get(Key, State, []),
+            Kept = [R || R <- Rows, not mem_pred(Tree, R)],
+            Removed = length(Rows) - length(Kept),
+            From ! {Ref, {ok, Removed}},
+            mem_keeper_loop(State#{Key => Kept})
     end.
+
+%% --- Quoted-predicate interpreter (the in-memory dual of Query.toSql) ---
+%%
+%% A captured predicate reaches the runtime as a QExpr tree: union variants are
+%% tagged tuples ({'QCol', <<"col">>}, {'QLitInt', N}, {'QAnd', L, R}, …) and the
+%% leaf bind values are SqlValue tuples ({'SqlInt', N}, {'SqlText', <<…>>}, …).
+%% `mem_pred/2` answers whether one row satisfies the tree; the quotation checker
+%% has already verified the operand types line up, so a missing column or a
+%% cross-type comparison just fails to match rather than crashing.
+
+%% Evaluate a predicate node against a row.
+mem_pred({'QAnd', L, R}, Row) -> mem_pred(L, Row) andalso mem_pred(R, Row);
+mem_pred({'QOr', L, R}, Row)  -> mem_pred(L, Row) orelse mem_pred(R, Row);
+mem_pred({'QNot', X}, Row)    -> not mem_pred(X, Row);
+mem_pred({'QEq', L, R}, Row)  -> mem_relate(eq, L, R, Row);
+mem_pred({'QNe', L, R}, Row)  -> not mem_relate(eq, L, R, Row);
+mem_pred({'QLt', L, R}, Row)  -> mem_relate(lt, L, R, Row);
+mem_pred({'QGt', L, R}, Row)  -> mem_relate(lt, R, L, Row);
+mem_pred({'QLe', L, R}, Row)  -> not mem_relate(lt, R, L, Row);
+mem_pred({'QGe', L, R}, Row)  -> not mem_relate(lt, L, R, Row);
+%% A bare leaf in predicate position is a boolean column or literal.
+mem_pred({'QCol', C}, Row)      -> mem_truthy(maps:get(C, Row, 'SqlNull'));
+mem_pred({'QLitBool', B}, _Row) -> B;
+mem_pred(_Other, _Row)          -> false.
+
+%% Compare two operands resolved against the row. A node that is not a scalar
+%% (column or literal) has no value, so the comparison fails.
+mem_relate(Op, L, R, Row) ->
+    case {mem_scalar(L, Row), mem_scalar(R, Row)} of
+        {undefined, _} -> false;
+        {_, undefined} -> false;
+        {A, B}         -> mem_sql_cmp(Op, A, B)
+    end.
+
+%% A comparison operand's bind value: a column reads the row, a literal builds
+%% its SqlValue tuple. Anything else has no scalar value.
+mem_scalar({'QCol', C}, Row) ->
+    case maps:find(C, Row) of
+        {ok, V} -> V;
+        error   -> undefined
+    end;
+mem_scalar({'QLitInt', N}, _Row)   -> {'SqlInt', N};
+mem_scalar({'QLitText', S}, _Row)  -> {'SqlText', S};
+mem_scalar({'QLitBool', B}, _Row)  -> {'SqlBool', B};
+mem_scalar({'QLitFloat', F}, _Row) -> {'SqlFloat', F};
+mem_scalar(_Other, _Row)           -> undefined.
+
+%% Equality is exact and type-aware (the tags must match); ordering is defined
+%% only for the ordered base types and answers `false` for anything else.
+mem_sql_cmp(eq, A, B) -> A =:= B;
+mem_sql_cmp(lt, {'SqlInt', X}, {'SqlInt', Y})     -> X < Y;
+mem_sql_cmp(lt, {'SqlText', X}, {'SqlText', Y})   -> X < Y;
+mem_sql_cmp(lt, {'SqlFloat', X}, {'SqlFloat', Y}) -> X < Y;
+mem_sql_cmp(lt, _A, _B) -> false.
+
+%% A SqlValue used directly as a predicate: a SqlBool yields its boolean.
+mem_truthy({'SqlBool', B}) -> B;
+mem_truthy(_Other)         -> false.
 
 %% --- escript bridge ---
 

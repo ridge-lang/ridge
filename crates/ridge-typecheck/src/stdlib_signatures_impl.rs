@@ -1529,15 +1529,22 @@ mod tests {
                 {
                     continue;
                 }
-                // std.data: `Adapter`/`insert`/`all` are a class and its methods
-                // (seeded via `seed_sql_codec_schemes`), `MemAdapter` is a
-                // reconciled opaque type, and `memAdapter` is seeded via
-                // `reconciled_fn_scheme` (its signature names `MemAdapter`), so
-                // none resolves through this hand-curated table.
+                // std.data: `Adapter` and its methods (`insert`/`all`/`select`/
+                // `get`/`delete`) are a class seeded via `seed_sql_codec_schemes`,
+                // `MemAdapter` is a reconciled opaque type, and `memAdapter` is
+                // seeded via `reconciled_fn_scheme` (its signature names
+                // `MemAdapter`), so none resolves through this hand-curated table.
                 if module.name == "std.data"
                     && matches!(
                         name,
-                        "Adapter" | "insert" | "all" | "MemAdapter" | "memAdapter"
+                        "Adapter"
+                            | "insert"
+                            | "all"
+                            | "select"
+                            | "get"
+                            | "delete"
+                            | "MemAdapter"
+                            | "memAdapter"
                     )
                 {
                     continue;

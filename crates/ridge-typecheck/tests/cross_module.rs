@@ -410,6 +410,72 @@ pub fn opensWithoutDb () -> Result (List (Map Text SqlValue)) Error =
 }
 
 #[test]
+fn adapter_select_with_inline_annotated_predicate_typechecks() {
+    // A predicate written inline captures when its parameter is annotated: the
+    // annotation `(u: User)` pins the quoted entity (the method's `Quote (e ->
+    // Bool)` leaves it generic), so the body is checked against User's columns
+    // and `select` dispatches on MemAdapter.
+    let main = r#"
+import std.data (memAdapter, select)
+import std.sql (SqlValue)
+
+pub type User = { id: Int, age: Int }
+
+pub fn db adults () -> Result (List (Map Text SqlValue)) Error =
+    select (memAdapter ()) "users" (fn (u: User) -> u.age >= 18)
+"#;
+    let errors = typecheck_one(main);
+    assert!(
+        errors.is_empty(),
+        "inline annotated predicate must type-check clean; got {errors:?}"
+    );
+}
+
+#[test]
+fn adapter_get_and_delete_typecheck() {
+    // `get` looks a row up by an exact column match; `delete` takes a quoted
+    // predicate and answers the count removed. Both resolve the MemAdapter
+    // instance and type-check clean.
+    let main = r#"
+import std.data (memAdapter, get, delete)
+import std.sql (SqlValue, toSql)
+
+pub type User = { id: Int, age: Int }
+
+pub fn db one () -> Result (Option (Map Text SqlValue)) Error =
+    get (memAdapter ()) "users" "id" (toSql 1)
+
+pub fn db purge () -> Result Int Error =
+    delete (memAdapter ()) "users" (fn (u: User) -> u.age < 18)
+"#;
+    let errors = typecheck_one(main);
+    assert!(
+        errors.is_empty(),
+        "get/delete must type-check clean; got {errors:?}"
+    );
+}
+
+#[test]
+fn adapter_select_predicate_unknown_column_is_rejected() {
+    // The quoted predicate is checked against the entity's columns, so a field
+    // the record does not declare is a real error rather than being absorbed.
+    let main = r#"
+import std.data (memAdapter, select)
+import std.sql (SqlValue)
+
+pub type User = { id: Int, age: Int }
+
+pub fn db bad () -> Result (List (Map Text SqlValue)) Error =
+    select (memAdapter ()) "users" (fn (u: User) -> u.nope >= 18)
+"#;
+    let errors = typecheck_one(main);
+    assert!(
+        !errors.is_empty(),
+        "an unknown column in a quoted predicate must be rejected; got no errors"
+    );
+}
+
+#[test]
 fn qualified_imported_fn_call_is_type_checked() {
     // `import x as Lib` then `Lib.needsText` resolves to the producer's scheme.
     let main = "import proj.Lib as Lib\nfn ok () -> Text = Lib.needsText \"ok\"\n";

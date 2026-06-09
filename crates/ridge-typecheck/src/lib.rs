@@ -1217,6 +1217,111 @@ fn seed_sql_codec_schemes(
                 },
             );
         }
+        // A `Map Text SqlValue` row, rebuilt fresh per scheme (the value above is
+        // already moved into the insert/all schemes).
+        let map_row = || {
+            Type::Con(
+                b.map,
+                vec![Type::Con(b.text, vec![]), Type::Con(b.sql_value, vec![])],
+            )
+        };
+        // A quoted predicate `Quote (e -> Bool)`. The entity `e` is the queried
+        // record at the call site (`fn (u: User) -> ...`); it is its own scheme
+        // variable, free of the `Adapter a` constraint, and is pinned from the
+        // predicate's parameter annotation when the lambda is captured. The
+        // function shape (one parameter, `Bool` result) is what the quotation
+        // checker reads to accept a `where`-style predicate.
+        let quote_pred = |e: ridge_types::TyVid| {
+            Type::Con(
+                b.quote,
+                vec![Type::Fn {
+                    params: vec![Type::Var(e)],
+                    ret: Box::new(Type::Con(b.bool, vec![])),
+                    caps: CapRow::Concrete(CapabilitySet::PURE),
+                }],
+            )
+        };
+        // select :: ∀a e. a -> Text -> Quote (e -> Bool)
+        //                      -> Result (List (Map Text SqlValue)) Error where Adapter a
+        {
+            let a = ctx.fresh_tyvid();
+            let e = ctx.fresh_tyvid();
+            let fn_ty = Type::Fn {
+                params: vec![Type::Var(a), Type::Con(b.text, vec![]), quote_pred(e)],
+                ret: Box::new(Type::Con(
+                    b.result,
+                    vec![
+                        Type::Con(b.list, vec![map_row()]),
+                        Type::Con(b.error, vec![]),
+                    ],
+                )),
+                caps: CapRow::Concrete(CapabilitySet::PURE),
+            };
+            ctx.env.bind(
+                "select".to_owned(),
+                Scheme {
+                    vars: vec![a, e],
+                    cap_vars: vec![],
+                    row_vars: vec![],
+                    ty: fn_ty,
+                    constraints: vec![Constraint::single(adapter, a)],
+                },
+            );
+        }
+        // get :: ∀a. a -> Text -> Text -> SqlValue
+        //                 -> Result (Option (Map Text SqlValue)) Error where Adapter a
+        {
+            let a = ctx.fresh_tyvid();
+            let fn_ty = Type::Fn {
+                params: vec![
+                    Type::Var(a),
+                    Type::Con(b.text, vec![]),
+                    Type::Con(b.text, vec![]),
+                    Type::Con(b.sql_value, vec![]),
+                ],
+                ret: Box::new(Type::Con(
+                    b.result,
+                    vec![
+                        Type::Con(b.option, vec![map_row()]),
+                        Type::Con(b.error, vec![]),
+                    ],
+                )),
+                caps: CapRow::Concrete(CapabilitySet::PURE),
+            };
+            ctx.env.bind(
+                "get".to_owned(),
+                Scheme {
+                    vars: vec![a],
+                    cap_vars: vec![],
+                    row_vars: vec![],
+                    ty: fn_ty,
+                    constraints: vec![Constraint::single(adapter, a)],
+                },
+            );
+        }
+        // delete :: ∀a e. a -> Text -> Quote (e -> Bool) -> Result Int Error where Adapter a
+        {
+            let a = ctx.fresh_tyvid();
+            let e = ctx.fresh_tyvid();
+            let fn_ty = Type::Fn {
+                params: vec![Type::Var(a), Type::Con(b.text, vec![]), quote_pred(e)],
+                ret: Box::new(Type::Con(
+                    b.result,
+                    vec![Type::Con(b.int, vec![]), Type::Con(b.error, vec![])],
+                )),
+                caps: CapRow::Concrete(CapabilitySet::PURE),
+            };
+            ctx.env.bind(
+                "delete".to_owned(),
+                Scheme {
+                    vars: vec![a, e],
+                    cap_vars: vec![],
+                    row_vars: vec![],
+                    ty: fn_ty,
+                    constraints: vec![Constraint::single(adapter, a)],
+                },
+            );
+        }
     }
 }
 

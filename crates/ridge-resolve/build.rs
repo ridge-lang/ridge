@@ -29,7 +29,7 @@ use std::path::{Path, PathBuf};
 
 // ── Capability keywords (Ridge 0.1.0) ────────────────────────────────────────
 
-const CAP_KEYWORDS: &[&str] = &["io", "fs", "net", "time", "random", "env", "proc"];
+const CAP_KEYWORDS: &[&str] = &["io", "fs", "net", "time", "random", "env", "proc", "db"];
 
 // ── Canonical module order ────────────────────────────────────────────────────
 //
@@ -58,6 +58,7 @@ const MODULE_ORDER: &[&str] = &[
     "std.crypto",
     "std.sql",
     "std.query",
+    "std.data",
 ];
 
 // ── Baseline export table (T10: preserves original API) ───────────────────────
@@ -383,6 +384,19 @@ const BASELINE_EXPORTS: &[(&str, &[&str])] = &[
             "Desc",
         ],
     ),
+    (
+        "std.data",
+        &[
+            // The storage seam class and its methods, plus the in-memory adapter
+            // (the opaque handle type and its `db`-gated constructor). The
+            // Postgres adapter (later) implements the same `Adapter` class.
+            "Adapter",
+            "insert",
+            "all",
+            "MemAdapter",
+            "memAdapter",
+        ],
+    ),
 ];
 
 /// Per-module list of `pub opaque type` names. Drives the `opaque_types` field
@@ -392,6 +406,7 @@ const BASELINE_EXPORTS: &[(&str, &[&str])] = &[
 const BASELINE_OPAQUE: &[(&str, &[&str])] = &[
     ("std.net.http", &["Html", "SecureCookie"]),
     ("std.sql", &["Sql", "SqlValue"]),
+    ("std.data", &["MemAdapter"]),
 ];
 
 fn main() {

@@ -13,7 +13,7 @@ items:
     ret_ty: Con(0)
     params:
       - name: l
-        ty: Con(44)
+        ty: Con(45)
     body:
       Match(n0):
         scrutinee:
@@ -21,17 +21,17 @@ items:
         arms:
           -
             pat:
-              Ctor: Ctor(Variant:Info owner=44)
+              Ctor: Ctor(Variant:Info owner=45)
             body:
               Lit(n2): Int(0)
           -
             pat:
-              Ctor: Ctor(Variant:Warn owner=44)
+              Ctor: Ctor(Variant:Warn owner=45)
             body:
               Lit(n3): Int(1)
           -
             pat:
-              Ctor: Ctor(Variant:Error owner=44)
+              Ctor: Ctor(Variant:Error owner=45)
             body:
               Lit(n4): Int(2)
   - kind: fn
@@ -39,7 +39,7 @@ items:
     pub: false
     main: false
     caps: CapabilitySet(0)
-    ret_ty: Con(9) [Con(44)]
+    ret_ty: Con(9) [Con(45)]
     params:
       - name: s
         ty: Con(3)
@@ -58,7 +58,7 @@ items:
                 args:
                   -
                     Construct(n9):
-                      ctor: Ctor(Variant:Info owner=44)
+                      ctor: Ctor(Variant:Info owner=45)
                       fields: []
           -
             pat:
@@ -70,7 +70,7 @@ items:
                 args:
                   -
                     Construct(n12):
-                      ctor: Ctor(Variant:Warn owner=44)
+                      ctor: Ctor(Variant:Warn owner=45)
                       fields: []
           -
             pat:
@@ -82,7 +82,7 @@ items:
                 args:
                   -
                     Construct(n15):
-                      ctor: Ctor(Variant:Error owner=44)
+                      ctor: Ctor(Variant:Error owner=45)
                       fields: []
           -
             pat:
@@ -94,7 +94,7 @@ items:
     pub: false
     main: false
     caps: CapabilitySet(0)
-    ret_ty: Con(9) [Con(45)]
+    ret_ty: Con(9) [Con(46)]
     params:
       - name: raw
         ty: Con(3)
@@ -326,7 +326,7 @@ items:
                                         args:
                                           -
                                             Construct(n86):
-                                              ctor: Ctor(Record:LogEntry owner=45)
+                                              ctor: Ctor(Record:LogEntry owner=46)
                                               fields:
                                                 date:
                                                   Local(n87): date
@@ -375,9 +375,9 @@ items:
     ret_ty: Con(2)
     params:
       - name: threshold
-        ty: Con(44)
-      - name: entry
         ty: Con(45)
+      - name: entry
+        ty: Con(46)
     body:
       Call(n102):
         callee:
@@ -455,7 +455,7 @@ items:
     ret_ty: Con(7) [Con(0), Con(0)]
     params:
       - name: entries
-        ty: Con(6) [Con(45)]
+        ty: Con(6) [Con(46)]
     body:
       Call(n127):
         callee:
@@ -468,7 +468,7 @@ items:
                 - name: acc
                   ty: Con(7) [Con(0), Con(0)]
                 - name: e
-                  ty: Con(45)
+                  ty: Con(46)
               body:
                 Call(n130):
                   callee:
@@ -799,7 +799,7 @@ items:
                                 args:
                                   -
                                     Construct(n244):
-                                      ctor: Ctor(Variant:Warn owner=44)
+                                      ctor: Ctor(Variant:Warn owner=45)
                                       fields: []
                                   -
                                     Call(n245):
@@ -855,7 +855,7 @@ items:
                                               caps: CapabilitySet(0)
                                               params:
                                                 - name: __pa_10
-                                                  ty: Con(45)
+                                                  ty: Con(46)
                                               body:
                                                 Call(n261):
                                                   callee:

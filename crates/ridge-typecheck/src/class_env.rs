@@ -818,6 +818,38 @@ pub fn register_stdlib_classes(ct: &mut ClassTable) {
             def_module: None,
         },
     );
+
+    // `Adapter` from std.data — the storage seam. Both methods (`insert`/`all`)
+    // are seeded directly (see `seed_sql_codec_schemes` in lib.rs), so the sigs
+    // carry no AST types, like `SqlType`/`Row` above. Its instances are the
+    // in-memory adapter (registered in `register_stdlib_instances`) and, later,
+    // backend adapters such as Postgres.
+    let adapter_id = ct.intern("Adapter");
+    ct.insert_with_id(
+        adapter_id,
+        ClassInfo {
+            name: "Adapter".to_string(),
+            arity: 1,
+            method_sigs: vec![
+                MethodSig {
+                    name: "insert".to_string(),
+                    arity: 3,
+                    ast_param_types: vec![],
+                    ast_ret_type: None,
+                    class_ty_vars: Vec::new(),
+                },
+                MethodSig {
+                    name: "all".to_string(),
+                    arity: 2,
+                    ast_param_types: vec![],
+                    ast_ret_type: None,
+                    class_ty_vars: Vec::new(),
+                },
+            ],
+            superclasses: vec![],
+            def_module: None,
+        },
+    );
 }
 
 /// Registers the base-type instances of stdlib-defined classes into `env`.
@@ -832,39 +864,73 @@ pub fn register_stdlib_classes(ct: &mut ClassTable) {
 /// declarations are already in the env and this function is a no-op for those
 /// keys. For user workspaces (which never declare `instance SqlType T`), all
 /// four entries are inserted here and the constraint solver can discharge them.
-pub fn register_stdlib_instances(env: &mut InstanceEnv, ct: &ClassTable) {
-    let Some(sqltype) = ct.id_by_name("SqlType") else {
-        return;
-    };
+/// `reconciled_tycon_names` carries the reserved-block stdlib type ids so the
+/// in-memory `Adapter MemAdapter` instance can be keyed by `MemAdapter`'s id.
+#[expect(
+    clippy::implicit_hasher,
+    reason = "FxHashMap is the workspace-wide hasher; this mirrors collect_workspace's signature"
+)]
+pub fn register_stdlib_instances(
+    env: &mut InstanceEnv,
+    ct: &ClassTable,
+    reconciled_tycon_names: &rustc_hash::FxHashMap<String, TyConId>,
+) {
     let ds = Span::point(0);
-    let inst = || InstanceInfo {
-        def_module: None,
-        methods: vec![
-            ("toSql".to_string(), String::new()),
-            ("fromSql".to_string(), String::new()),
-        ],
-        ctx_constraints: vec![],
-        head_var_positions: vec![],
-        origin: InstanceOrigin::Explicit,
-        span: ds,
-    };
-    // Builtin TyConIds: Int=0, Float=1, Bool=2, Text=3.
-    // Use entry/or_insert rather than the coherence-checking insert so that
-    // source-level declarations (from sql.ridge in the stdlib build) always
-    // win — they got here first, and we never want to overwrite them or
-    // surface a spurious T032.
-    env.instances
-        .entry((sqltype, smallvec![TyConId(0)]))
-        .or_insert_with(inst);
-    env.instances
-        .entry((sqltype, smallvec![TyConId(3)]))
-        .or_insert_with(inst);
-    env.instances
-        .entry((sqltype, smallvec![TyConId(2)]))
-        .or_insert_with(inst);
-    env.instances
-        .entry((sqltype, smallvec![TyConId(1)]))
-        .or_insert_with(inst);
+    if let Some(sqltype) = ct.id_by_name("SqlType") {
+        let inst = || InstanceInfo {
+            def_module: None,
+            methods: vec![
+                ("toSql".to_string(), String::new()),
+                ("fromSql".to_string(), String::new()),
+            ],
+            ctx_constraints: vec![],
+            head_var_positions: vec![],
+            origin: InstanceOrigin::Explicit,
+            span: ds,
+        };
+        // Builtin TyConIds: Int=0, Float=1, Bool=2, Text=3.
+        // Use entry/or_insert rather than the coherence-checking insert so that
+        // source-level declarations (from sql.ridge in the stdlib build) always
+        // win — they got here first, and we never want to overwrite them or
+        // surface a spurious T032.
+        env.instances
+            .entry((sqltype, smallvec![TyConId(0)]))
+            .or_insert_with(inst);
+        env.instances
+            .entry((sqltype, smallvec![TyConId(3)]))
+            .or_insert_with(inst);
+        env.instances
+            .entry((sqltype, smallvec![TyConId(2)]))
+            .or_insert_with(inst);
+        env.instances
+            .entry((sqltype, smallvec![TyConId(1)]))
+            .or_insert_with(inst);
+    }
+
+    // `Adapter MemAdapter` — the in-memory adapter instance from std.data, keyed
+    // by the reconciled `MemAdapter` id. During the stdlib's own build the
+    // reconciled block is skipped (the map has no `MemAdapter`), so data.ridge's
+    // source instance is collected instead and this is a no-op; for user
+    // workspaces the entry is inserted here so the solver discharges the
+    // `Adapter MemAdapter` constraint.
+    if let (Some(adapter), Some(&mem_adapter)) = (
+        ct.id_by_name("Adapter"),
+        reconciled_tycon_names.get("MemAdapter"),
+    ) {
+        env.instances
+            .entry((adapter, smallvec![mem_adapter]))
+            .or_insert_with(|| InstanceInfo {
+                def_module: None,
+                methods: vec![
+                    ("insert".to_string(), String::new()),
+                    ("all".to_string(), String::new()),
+                ],
+                ctx_constraints: vec![],
+                head_var_positions: vec![],
+                origin: InstanceOrigin::Explicit,
+                span: ds,
+            });
+    }
 }
 
 // ── Tests ─────────────────────────────────────────────────────────────────────

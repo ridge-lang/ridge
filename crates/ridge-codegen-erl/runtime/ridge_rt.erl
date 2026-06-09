@@ -27,6 +27,7 @@
     http_listen/2, http_port/0, http_build_response/1,
     http_get/1, http_post/2, http_put/2, http_delete/1,
     ask/3, send/2, send_op/2, send_fn/2, mailbox_size/1, spawn_actor/3,
+    mem_new/1, mem_insert/3, mem_all/2,
     escript_main/1
 ]).
 
@@ -866,6 +867,80 @@ spawn_actor(Mod, Init, _Caps) ->
             false -> unbounded
         end,
     {ridge_handle, Pid, Config}.
+
+%% --- In-memory data store (std.data MemAdapter) ---
+%%
+%% The in-memory adapter keeps every table in one keeper process registered as
+%% `ridge_mem_keeper`, holding a map of {StoreId, Table} => [Row]. mem_new/1
+%% allocates a fresh StoreId, so independent adapters never share rows; the
+%% MemAdapter handle is the record map #{id => StoreId}. Inserts and reads are
+%% serialised through the keeper, so concurrent callers see consistent state.
+%% Rows cross the boundary as opaque maps (#{<<"col">> => SqlValue}); the store
+%% never inspects them. The keeper is spawned unlinked and lives for the node's
+%% lifetime — this is a dev/test store, not durable storage.
+
+%% mem_new/1 — std.data.memAdapter. Returns the MemAdapter record #{id => Id}.
+mem_new(_Unit) ->
+    mem_ensure(),
+    Id = erlang:unique_integer([positive, monotonic]),
+    #{id => Id}.
+
+%% mem_insert/3 — append Row to Table in store Id. Result Unit Error.
+mem_insert(Id, Table, Row) -> mem_call({insert, Id, Table, Row}).
+
+%% mem_all/2 — every row of Table in store Id, in insertion order.
+%% Result (List Row) Error; an unknown table reads as empty.
+mem_all(Id, Table) -> mem_call({all, Id, Table}).
+
+%% Internal: send a request to the keeper and await its reply.
+mem_call(Req) ->
+    mem_ensure(),
+    Ref = make_ref(),
+    ridge_mem_keeper ! {Req, self(), Ref},
+    receive
+        {Ref, Reply} -> Reply
+    after 5000 ->
+        {error, #{code => <<"db.timeout">>,
+                  message => <<"in-memory store request timed out">>}}
+    end.
+
+%% Internal: start the keeper on first use; idempotent and race-tolerant.
+mem_ensure() ->
+    case whereis(ridge_mem_keeper) of
+        undefined ->
+            spawn(fun mem_keeper_init/0),
+            mem_wait_keeper(200);
+        _Pid ->
+            ok
+    end.
+
+mem_wait_keeper(0) -> ok;
+mem_wait_keeper(N) ->
+    case whereis(ridge_mem_keeper) of
+        undefined -> timer:sleep(5), mem_wait_keeper(N - 1);
+        _Pid      -> ok
+    end.
+
+%% Internal: register under the keeper name and run the store loop. If another
+%% process won the registration race, badarg is caught and this one exits.
+mem_keeper_init() ->
+    case catch register(ridge_mem_keeper, self()) of
+        true -> mem_keeper_loop(#{});
+        _    -> ok
+    end.
+
+mem_keeper_loop(State) ->
+    receive
+        {{insert, Id, Table, Row}, From, Ref} ->
+            Key  = {Id, Table},
+            Rows = maps:get(Key, State, []),
+            From ! {Ref, {ok, ok}},
+            mem_keeper_loop(State#{Key => Rows ++ [Row]});
+        {{all, Id, Table}, From, Ref} ->
+            Rows = maps:get({Id, Table}, State, []),
+            From ! {Ref, {ok, Rows}},
+            mem_keeper_loop(State)
+    end.
 
 %% --- escript bridge ---
 

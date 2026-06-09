@@ -282,7 +282,15 @@ pub fn typecheck_workspace(ws: &ResolvedWorkspace) -> TypecheckResult {
         .zip(&ws.module_asts)
         .map(|(rm, ast)| (rm.id.0, ast.as_ref()))
         .collect();
-    let collect_result = collect_workspace(&module_ast_pairs, &workspace_tycon_names);
+    // Enrich the tycon-name map the collect pass sees with the reconciled stdlib
+    // types (e.g. `MemAdapter`) so `register_stdlib_instances` can key the
+    // in-memory `Adapter` instance by its reconciled id. Empty during a stdlib
+    // build, where the source instance in data.ridge is collected directly.
+    let mut collect_tycon_names = workspace_tycon_names.clone();
+    for (name, &id) in &stdlib_tycon_names {
+        collect_tycon_names.entry(name.clone()).or_insert(id);
+    }
+    let collect_result = collect_workspace(&module_ast_pairs, &collect_tycon_names);
     // Coherence errors are workspace-level; accumulate them tagged with the
     // module they originated in (use ModuleId(0) as a fallback — coherence
     // errors carry their own span, so the module tag is informational only).
@@ -1072,6 +1080,11 @@ fn seed_prelude_codec_schemes(ctx: &mut crate::ctx::InferCtx, b: &ridge_types::B
 ///
 /// - `toSql   :: ∀a. a        -> SqlValue        where SqlType a`
 /// - `fromSql :: ∀a. SqlValue -> Result a Error  where SqlType a`
+#[expect(
+    clippy::too_many_lines,
+    reason = "one flat block per stdlib codec/seam method (toSql/fromSql/fromRow/insert/all); \
+              splitting per method would scatter the shared builtin-type setup"
+)]
 fn seed_sql_codec_schemes(
     ctx: &mut crate::ctx::InferCtx,
     b: &ridge_types::BuiltinTyCons,
@@ -1149,6 +1162,61 @@ fn seed_sql_codec_schemes(
                 constraints: vec![Constraint::single(row, a)],
             },
         );
+    }
+    // The `Adapter` seam from std.data. Both methods are cap-free: opening an
+    // adapter is the act gated by `db`, and the handle is the proof of access
+    // thereafter (the actor handle-as-proof model, spec §6.4.1). Seeded here for
+    // the same reason as the codec methods — bare `insert`/`all` type-check once
+    // std.data is imported, dispatching on the connection-handle type.
+    if let Some(adapter) = class_table.id_by_name("Adapter") {
+        let row_ty = Type::Con(
+            b.map,
+            vec![Type::Con(b.text, vec![]), Type::Con(b.sql_value, vec![])],
+        );
+        // insert :: ∀a. a -> Text -> Map Text SqlValue -> Result Unit Error where Adapter a
+        {
+            let a = ctx.fresh_tyvid();
+            let fn_ty = Type::Fn {
+                params: vec![Type::Var(a), Type::Con(b.text, vec![]), row_ty.clone()],
+                ret: Box::new(Type::Con(
+                    b.result,
+                    vec![Type::Con(b.unit, vec![]), Type::Con(b.error, vec![])],
+                )),
+                caps: CapRow::Concrete(CapabilitySet::PURE),
+            };
+            ctx.env.bind(
+                "insert".to_owned(),
+                Scheme {
+                    vars: vec![a],
+                    cap_vars: vec![],
+                    row_vars: vec![],
+                    ty: fn_ty,
+                    constraints: vec![Constraint::single(adapter, a)],
+                },
+            );
+        }
+        // all :: ∀a. a -> Text -> Result (List (Map Text SqlValue)) Error where Adapter a
+        {
+            let a = ctx.fresh_tyvid();
+            let fn_ty = Type::Fn {
+                params: vec![Type::Var(a), Type::Con(b.text, vec![])],
+                ret: Box::new(Type::Con(
+                    b.result,
+                    vec![Type::Con(b.list, vec![row_ty]), Type::Con(b.error, vec![])],
+                )),
+                caps: CapRow::Concrete(CapabilitySet::PURE),
+            };
+            ctx.env.bind(
+                "all".to_owned(),
+                Scheme {
+                    vars: vec![a],
+                    cap_vars: vec![],
+                    row_vars: vec![],
+                    ty: fn_ty,
+                    constraints: vec![Constraint::single(adapter, a)],
+                },
+            );
+        }
     }
 }
 

@@ -348,6 +348,67 @@ fn deriving_row_on_union_is_rejected() {
     );
 }
 
+// ── std.data Adapter seam + in-memory adapter ─────────────────────────────────
+
+#[test]
+fn adapter_mem_insert_and_all_typecheck() {
+    // The in-memory adapter implements `Adapter`, so `insert`/`all` resolve the
+    // instance on `MemAdapter` and type-check clean. `memAdapter` needs `db`, so
+    // the callers declare it; the methods themselves are cap-free.
+    let main = r#"
+import std.data (memAdapter, insert, all)
+import std.sql (toSql, SqlValue)
+import std.map as Map
+
+pub fn db save () -> Result Unit Error =
+    insert (memAdapter ()) "users" (Map.fromList [("id", toSql 1)])
+
+pub fn db load () -> Result (List (Map Text SqlValue)) Error =
+    all (memAdapter ()) "users"
+"#;
+    let errors = typecheck_one(main);
+    assert!(
+        errors.is_empty(),
+        "std.data Adapter surface must type-check clean; got {errors:?}"
+    );
+}
+
+#[test]
+fn adapter_insert_on_non_adapter_type_is_rejected() {
+    // `Int` has no `Adapter` instance, so dispatching `insert` on it must fail
+    // rather than silently resolve.
+    let main = r#"
+import std.data (insert)
+import std.sql (SqlValue)
+
+pub fn bad (row: Map Text SqlValue) -> Result Unit Error =
+    insert 5 "users" row
+"#;
+    let errors = typecheck_one(main);
+    assert!(
+        !errors.is_empty(),
+        "insert on a non-Adapter receiver (Int) must be rejected; got no errors"
+    );
+}
+
+#[test]
+fn adapter_open_requires_db_capability() {
+    // Opening an adapter is the act gated by `db`; a pure function that calls
+    // `memAdapter` must be rejected. (The query methods themselves are cap-free.)
+    let main = r#"
+import std.data (memAdapter, all)
+import std.sql (SqlValue)
+
+pub fn opensWithoutDb () -> Result (List (Map Text SqlValue)) Error =
+    all (memAdapter ()) "users"
+"#;
+    let errors = typecheck_one(main);
+    assert!(
+        !errors.is_empty(),
+        "calling memAdapter (db) from a pure function must be rejected; got no errors"
+    );
+}
+
 #[test]
 fn qualified_imported_fn_call_is_type_checked() {
     // `import x as Lib` then `Lib.needsText` resolves to the producer's scheme.

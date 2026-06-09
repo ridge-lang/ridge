@@ -103,14 +103,14 @@ fn main() {
 
 // ── Capability keywords ───────────────────────────────────────────────────────
 
-const CAP_KEYWORDS: &[&str] = &["io", "fs", "net", "time", "random", "env", "proc"];
+const CAP_KEYWORDS: &[&str] = &["io", "fs", "net", "time", "random", "env", "proc", "db"];
 
 // ── Stdlib typeclass names ────────────────────────────────────────────────────
 //
 // Typeclasses defined in the stdlib whose instance dictionaries are compiled
 // into the stdlib module and must be exported (so user code can reference them
 // cross-module). Each entry is `(class_name, home_ridge_module)`.
-const STDLIB_CLASSES: &[(&str, &str)] = &[("SqlType", "std.sql")];
+const STDLIB_CLASSES: &[(&str, &str)] = &[("SqlType", "std.sql"), ("Adapter", "std.data")];
 
 // Constructor-shaped fns must export arity 0; this invariant catches accidental
 // (_unit: Unit) regressions at build time. Hoisted to module scope (out of
@@ -151,6 +151,7 @@ const STDLIB_MODULES: &[&str] = &[
     "std.crypto",
     "std.sql",
     "std.query",
+    "std.data",
 ];
 
 // ── Entry type ────────────────────────────────────────────────────────────────

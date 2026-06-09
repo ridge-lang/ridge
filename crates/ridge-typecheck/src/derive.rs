@@ -2516,7 +2516,11 @@ mod tests {
     fn make_instance_env_with_sql(ct: &ClassTable) -> InstanceEnv {
         let mut env = InstanceEnv::new();
         register_prelude_instances(&mut env);
-        crate::class_env::register_stdlib_instances(&mut env, ct);
+        crate::class_env::register_stdlib_instances(
+            &mut env,
+            ct,
+            &rustc_hash::FxHashMap::default(),
+        );
         env
     }
 

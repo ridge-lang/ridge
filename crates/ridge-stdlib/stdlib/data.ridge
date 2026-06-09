@@ -1,0 +1,51 @@
+-- std.data — the storage Adapter seam and the in-memory adapter.
+--
+-- An adapter runs storage operations against some backend. `Adapter` is the
+-- seam every backend implements: the in-memory adapter here is the dev and test
+-- backend, and the Postgres adapter (shipping later) implements the same class,
+-- so repository code written against `Adapter` runs unchanged on either.
+--
+-- Rows cross the seam as `Map Text SqlValue` keyed by column name — the same
+-- shape `deriving (Row)` decodes back into a record (see std.sql). A row is
+-- built through `SqlType.toSql` and read back through `fromRow`.
+--
+-- Capabilities follow the handle-as-proof model that actors use (spec §6.4.1):
+-- opening an adapter requires the `db` capability, and the handle returned is
+-- itself the proof of access, so the query methods are capability-free. The
+-- `db` requirement is declared once, where the connection is created, not on
+-- every call site that threads the handle.
+
+import std.sql (SqlValue)
+
+-- The storage seam. `a` is the connection-handle type; each backend provides an
+-- instance. `insert` appends a row to a table; `all` returns every row of a
+-- table. Both report failure through `Result`, so a backend that can fail (a
+-- real database) and one that cannot (the in-memory store) share one surface.
+pub class Adapter a =
+    insert (conn: a) (table: Text) (row: Map Text SqlValue) -> Result Unit Error
+    all    (conn: a) (table: Text) -> Result (List (Map Text SqlValue)) Error
+
+-- A handle to an in-memory store. Opaque: `memAdapter` is the only way to make
+-- one, and the `id` it carries selects this handle's private, isolated store,
+-- so independent adapters (one per test, say) never see each other's rows.
+pub opaque type MemAdapter = { id: Int }
+
+-- Append a row to a table in the store identified by `id`.
+@ffi("ridge_rt", "mem_insert", 3)
+fn _memInsert (id: Int) (table: Text) (row: Map Text SqlValue) -> Result Unit Error
+
+-- Return every row of a table in the store identified by `id`, in insertion
+-- order. An unknown table reads as empty.
+@ffi("ridge_rt", "mem_all", 2)
+fn _memAll (id: Int) (table: Text) -> Result (List (Map Text SqlValue)) Error
+
+-- Open a fresh in-memory adapter backed by an empty store. Requires the `db`
+-- capability; the handle returned is the proof of access for every later call.
+@ffi("ridge_rt", "mem_new", 1)
+pub fn db memAdapter (_unit: Unit) -> MemAdapter
+
+instance Adapter MemAdapter =
+    insert (conn: MemAdapter) (table: Text) (row: Map Text SqlValue) -> Result Unit Error =
+        _memInsert conn.id table row
+    all (conn: MemAdapter) (table: Text) -> Result (List (Map Text SqlValue)) Error =
+        _memAll conn.id table

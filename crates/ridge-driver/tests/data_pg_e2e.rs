@@ -5,9 +5,10 @@
 //! surface the in-memory adapter does — clearing the table, seeding three users,
 //! and reading them back decoded through `deriving (Row)`. It proves the wire
 //! client connects, authenticates, runs parameterised insert/select/delete, and
-//! decodes `RowDescription`/`DataRow` into the entity. A final probe drives the
-//! connection pool with six concurrent reads on one handle, so the pooled path —
-//! concurrent checkout, growth under load, and waiter reuse — is covered too.
+//! decodes `RowDescription`/`DataRow` into the entity. The query builder is
+//! covered too — `orderBy` (ORDER BY) and `limit`/`offset` (LIMIT/OFFSET) compile
+//! into real SQL — and a final probe drives the connection pool with six
+//! concurrent reads on one handle (concurrent checkout, growth, waiter reuse).
 //!
 //! Gated three ways: the `beam-runtime` feature, a `which` guard for `erl`/`erlc`,
 //! and the `RIDGE_TEST_PG_URL` environment variable. Without a reachable database
@@ -32,10 +33,17 @@ use ridge_driver::{compile_workspace, CompileOptions, EmitArtefacts};
 const SOURCE_TEMPLATE: &str = r#"
 import std.data (connect, Config, Postgres)
 import std.repo as Repo
+import std.query (SortOrder, Asc, Desc)
 import std.sql (toSql, SqlValue)
 import std.map as Map
 
 pub type User = { id: Int, age: Int, name: Text } deriving (Row)
+
+fn joinNames (us: List User) -> Text =
+    match us
+        []        -> ""
+        u :: []   -> u.name
+        u :: rest -> Text.concat u.name (Text.concat "," (joinNames rest))
 
 fn pgConfig () -> Config =
     Config { host = "__PG_HOST__", port = __PG_PORT__, database = "__PG_DATABASE__", user = "__PG_USER__", password = "__PG_PASSWORD__", sslMode = "__PG_SSLMODE__", poolSize = 4 }
@@ -117,6 +125,26 @@ pub fn db afterDelete () -> Int =
                     match Repo.count r
                         Ok n  -> n
                         Err _ -> 0 - 3
+
+-- builder: whole table ordered by age descending, names joined -> "lin,max,ada".
+-- Proves the backend compiles ORDER BY into the query.
+pub fn db orderedNames () -> Text =
+    match setup ()
+        Err _ -> "setup-err"
+        Ok r  ->
+            match r |> Repo.query |> Repo.orderBy Desc (fn (u: User) -> u.age) |> Repo.toList
+                Err _ -> "list-err"
+                Ok us -> joinNames us
+
+-- builder: age-ascending, offset 1 then limit 1 -> "max". Proves LIMIT and OFFSET
+-- compile into the query.
+pub fn db pagedName () -> Text =
+    match setup ()
+        Err _ -> "setup-err"
+        Ok r  ->
+            match r |> Repo.query |> Repo.orderBy Asc (fn (u: User) -> u.age) |> Repo.offset 1 |> Repo.limit 1 |> Repo.toList
+                Err _ -> "list-err"
+                Ok us -> joinNames us
 "#;
 
 /// Connection settings parsed out of `RIDGE_TEST_PG_URL`.
@@ -269,6 +297,8 @@ fn postgres_adapter_reads_a_real_table() {
          io:format(\"firstName=~s~n\",[{module}:firstName()]), \
          io:format(\"getName=~s~n\",[{module}:getName()]), \
          io:format(\"afterDelete=~w~n\",[{module}:afterDelete()]), \
+         io:format(\"orderedNames=~s~n\",[{module}:orderedNames()]), \
+         io:format(\"pagedName=~s~n\",[{module}:pagedName()]), \
          {pool_probe} \
          halt()."
     );
@@ -295,6 +325,14 @@ fn postgres_adapter_reads_a_real_table() {
         (
             "afterDelete=2",
             "two rows remain after deleting the under-25 row",
+        ),
+        (
+            "orderedNames=lin,max,ada",
+            "the builder compiles ORDER BY age DESC into the query",
+        ),
+        (
+            "pagedName=max",
+            "the builder compiles LIMIT and OFFSET into the query",
         ),
         (
             "concurrent=true",

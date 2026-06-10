@@ -635,6 +635,97 @@ fn qualified_imported_fn_call_is_type_checked() {
 }
 
 #[test]
+fn query_builder_pipeline_and_terminals_typecheck() {
+    // The query builder reads as a pipeline: `query` lifts a repository, `filter`
+    // narrows it, `orderBy` (multi-key), `limit`, and `offset` page it, and the
+    // `toList`/`first` terminals decode the rows into the pinned entity. The
+    // `orderBy` key is a quoted column whose return type is phantom.
+    let main = r#"
+import std.data (memAdapter, MemAdapter)
+import std.repo as Repo
+import std.query (SortOrder, Asc, Desc)
+import std.sql (SqlValue)
+
+pub type User = { id: Int, age: Int, name: Text } deriving (Row)
+
+pub fn db topAdults () -> Result (List User) Error =
+    let users: Repo User MemAdapter = Repo.repo (memAdapter ()) "users"
+    users
+      |> Repo.query
+      |> Repo.filter (fn (u: User) -> u.age >= 18)
+      |> Repo.orderBy Desc (fn (u: User) -> u.age)
+      |> Repo.orderBy Asc (fn (u: User) -> u.name)
+      |> Repo.limit 10
+      |> Repo.offset 5
+      |> Repo.toList
+
+pub fn db oldest () -> Result (Option User) Error =
+    let users: Repo User MemAdapter = Repo.repo (memAdapter ()) "users"
+    users |> Repo.query |> Repo.orderBy Desc (fn (u: User) -> u.age) |> Repo.first
+"#;
+    let errors = typecheck_one(main);
+    assert!(
+        errors.is_empty(),
+        "the query builder pipeline and terminals must type-check clean; got {errors:?}"
+    );
+}
+
+#[test]
+fn query_builder_over_postgres_typechecks() {
+    // The builder resolves the same `Adapter` constraint on the Postgres backend:
+    // `fetch` is a class method both adapters implement, so a `Query User Postgres`
+    // runs its terminal through the Postgres instance with no extra annotation.
+    let main = r#"
+import std.data (connect, Config, Postgres)
+import std.repo as Repo
+import std.query (SortOrder, Desc)
+import std.sql (SqlValue)
+
+pub type User = { id: Int, age: Int, name: Text } deriving (Row)
+
+pub fn db topAdults () -> Result (List User) Error =
+    match connect (Config { host = "localhost", port = 5432, database = "app", user = "u", password = "p", sslMode = "require", poolSize = 4 })
+        Err e   -> Err e
+        Ok conn ->
+            let users: Repo User Postgres = Repo.repo conn "users"
+            users
+              |> Repo.query
+              |> Repo.filter (fn (u: User) -> u.age >= 18)
+              |> Repo.orderBy Desc (fn (u: User) -> u.age)
+              |> Repo.limit 10
+              |> Repo.toList
+"#;
+    let errors = typecheck_one(main);
+    assert!(
+        errors.is_empty(),
+        "the query builder over the Postgres adapter must type-check clean; got {errors:?}"
+    );
+}
+
+#[test]
+fn query_builder_filter_unknown_column_is_rejected() {
+    // A `filter` predicate is checked against the entity, exactly like `findBy`:
+    // a field the record does not declare is an error, proving the entity-typed
+    // scheme threads through the builder rather than erasing to the row map.
+    let main = r#"
+import std.data (memAdapter, MemAdapter)
+import std.repo as Repo
+import std.sql (SqlValue)
+
+pub type User = { id: Int, age: Int, name: Text } deriving (Row)
+
+pub fn db bad () -> Result (List User) Error =
+    let users: Repo User MemAdapter = Repo.repo (memAdapter ()) "users"
+    users |> Repo.query |> Repo.filter (fn (u: User) -> u.nope >= 18) |> Repo.toList
+"#;
+    let errors = typecheck_one(main);
+    assert!(
+        !errors.is_empty(),
+        "an unknown column in a builder filter must be rejected; got no errors"
+    );
+}
+
+#[test]
 fn qualified_reconciled_fn_resolves_clean() {
     // `Query.orderSql` is seeded via the reconciled arena block (its signature
     // names the reconciled `SortOrder`), not the hand-curated signature table.

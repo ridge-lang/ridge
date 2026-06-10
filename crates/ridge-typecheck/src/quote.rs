@@ -177,12 +177,21 @@ pub(crate) fn check_quote(
     }
 
     // Non-boolean result: an ordering key, which must be a single column (or a
-    // literal) of the quote's result type.
+    // literal). Its type must match the quote's declared result type — except
+    // when that result type is an unbound variable (a polymorphic `orderBy` key,
+    // whose return is phantom), in which case any column is accepted and the
+    // variable is bound to the column's type.
     let want_ty = want.unwrap_or_else(|| Type::Con(b.bool, vec![]));
-    let matches_result = value_type(&qk)
-        .map(|vt| ctx.deep_resolve(vt))
-        .is_some_and(|vt| same_value_type(&vt, &want_ty));
-    if matches_result {
+    let col_ty = value_type(&qk).map(|vt| ctx.deep_resolve(vt));
+    let accepts = match &col_ty {
+        Some(vt) if matches!(want_ty, Type::Var(_)) => {
+            let _ = crate::unify::unify(ctx, &want_ty, vt);
+            true
+        }
+        Some(vt) => same_value_type(vt, &want_ty),
+        None => false,
+    };
+    if accepts {
         ctx.quoted_lambdas_accum
             .insert(*span, QuoteInfo { param_name, entity });
         return true;

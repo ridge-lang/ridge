@@ -769,6 +769,10 @@ pub fn register_prelude_instances(env: &mut InstanceEnv) {
 ///
 /// Must be called once, after `register_prelude_classes`, before the workspace
 /// collect pass, so the dynamically-assigned `ClassId` precedes user classes.
+#[expect(
+    clippy::too_many_lines,
+    reason = "one literal MethodSig per stdlib class method; the list reads best kept together"
+)]
 pub fn register_stdlib_classes(ct: &mut ClassTable) {
     let id = ct.intern("SqlType");
     ct.insert_with_id(
@@ -866,6 +870,20 @@ pub fn register_stdlib_classes(ct: &mut ClassTable) {
                     ast_ret_type: None,
                     class_ty_vars: Vec::new(),
                 },
+                MethodSig {
+                    name: "fetch".to_string(),
+                    arity: 6,
+                    ast_param_types: vec![],
+                    ast_ret_type: None,
+                    class_ty_vars: Vec::new(),
+                },
+                MethodSig {
+                    name: "countWhere".to_string(),
+                    arity: 3,
+                    ast_param_types: vec![],
+                    ast_ret_type: None,
+                    class_ty_vars: Vec::new(),
+                },
             ],
             superclasses: vec![],
             def_module: None,
@@ -941,6 +959,8 @@ pub fn register_stdlib_instances(
             ("select".to_string(), String::new()),
             ("get".to_string(), String::new()),
             ("delete".to_string(), String::new()),
+            ("fetch".to_string(), String::new()),
+            ("countWhere".to_string(), String::new()),
         ]
     };
     if let (Some(adapter), Some(&mem_adapter)) = (

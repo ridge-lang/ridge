@@ -11,7 +11,9 @@
 //! - `find` + decode (a `>` predicate's first row decodes to "lin"),
 //! - `getBy` key (id 2 decodes to "lin"),
 //! - `exists` (a `<` predicate matches the one young row),
-//! - `deleteWhere` predicate (one row goes; the table then holds two).
+//! - `deleteWhere` predicate (one row goes; the table then holds two),
+//! - the query builder: `orderBy` (whole-table ordering), `offset`/`limit`
+//!   paging, and `filter` + `orderBy` + the `first` terminal.
 //!
 //! Gated on `beam-runtime` (real OTP) plus a `which` guard for `erl`/`erlc`.
 
@@ -25,10 +27,19 @@ use ridge_driver::{compile_workspace, CompileOptions, EmitArtefacts};
 const SOURCE: &str = r#"
 import std.data (memAdapter, MemAdapter)
 import std.repo as Repo
+import std.query (SortOrder, Asc, Desc)
 import std.sql (toSql, SqlValue)
 import std.map as Map
 
 pub type User = { id: Int, age: Int, name: Text } deriving (Row)
+
+-- Join the names of a user list with commas, so a query's order is observable
+-- as a single string the probe can assert on.
+fn joinNames (us: List User) -> Text =
+    match us
+        []        -> ""
+        u :: []   -> u.name
+        u :: rest -> Text.concat u.name (Text.concat "," (joinNames rest))
 
 pub fn userRow (uid: Int) (uage: Int) (uname: Text) -> Map Text SqlValue =
     Map.fromList [("id", toSql uid), ("age", toSql uage), ("name", toSql uname)]
@@ -119,6 +130,38 @@ pub fn db afterCount () -> Int =
                     match Repo.count r
                         Ok n  -> n
                         Err _ -> 0 - 3
+
+-- builder: every user ordered by age descending, names joined -> "lin,max,ada"
+-- (ages 30, 25, 18). Proves orderBy threads through the seam and the runtime
+-- sorts.
+pub fn db orderedNames () -> Text =
+    match setup ()
+        Err _ -> "setup-err"
+        Ok r  ->
+            match r |> Repo.query |> Repo.orderBy Desc (fn (u: User) -> u.age) |> Repo.toList
+                Err _ -> "list-err"
+                Ok us -> joinNames us
+
+-- builder: ascending by age, skip 1, take 1 -> "max" (ada 18 skipped, max 25
+-- taken). Proves offset and limit compose.
+pub fn db pagedName () -> Text =
+    match setup ()
+        Err _ -> "setup-err"
+        Ok r  ->
+            match r |> Repo.query |> Repo.orderBy Asc (fn (u: User) -> u.age) |> Repo.offset 1 |> Repo.limit 1 |> Repo.toList
+                Err _ -> "list-err"
+                Ok us -> joinNames us
+
+-- builder: filter to adults, order by age descending, take the first -> "lin".
+-- Proves filter + orderBy + the `first` terminal compose.
+pub fn db firstAdultName () -> Text =
+    match setup ()
+        Err _ -> "setup-err"
+        Ok r  ->
+            match r |> Repo.query |> Repo.filter (fn (u: User) -> u.age >= 25) |> Repo.orderBy Desc (fn (u: User) -> u.age) |> Repo.first
+                Err _       -> "first-err"
+                Ok None     -> "none"
+                Ok (Some u) -> u.name
 "#;
 
 fn write_workspace(root: &std::path::Path) {
@@ -195,6 +238,9 @@ fn repo_surface_runs_on_beam() {
          io:format(\"existsYoung=~w~n\",[{module}:existsYoung()]), \
          io:format(\"deleteCount=~w~n\",[{module}:deleteCount()]), \
          io:format(\"afterCount=~w~n\",[{module}:afterCount()]), \
+         io:format(\"orderedNames=~s~n\",[{module}:orderedNames()]), \
+         io:format(\"pagedName=~s~n\",[{module}:pagedName()]), \
+         io:format(\"firstAdultName=~s~n\",[{module}:firstAdultName()]), \
          halt()."
     );
     let output = Command::new("erl")
@@ -220,6 +266,18 @@ fn repo_surface_runs_on_beam() {
         ("existsYoung=1", "exists finds the one row under 20"),
         ("deleteCount=1", "delete removes the one row under 25"),
         ("afterCount=2", "two rows remain after the delete"),
+        (
+            "orderedNames=lin,max,ada",
+            "the builder orders the whole table by age descending",
+        ),
+        (
+            "pagedName=max",
+            "offset 1 + limit 1 over the age-ascending order yields the second row",
+        ),
+        (
+            "firstAdultName=lin",
+            "filter + orderBy + first yields the oldest adult",
+        ),
     ] {
         assert!(
             stdout.contains(probe),

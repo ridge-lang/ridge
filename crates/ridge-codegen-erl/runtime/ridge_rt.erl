@@ -29,7 +29,8 @@
     ask/3, send/2, send_op/2, send_fn/2, mailbox_size/1, spawn_actor/3,
     mem_new/1, mem_insert/3, mem_all/2,
     mem_select/3, mem_delete/3, mem_get_rows/4,
-    quote_keep_all/1,
+    mem_fetch/6, mem_count_where/3,
+    quote_keep_all/1, quote_and/2,
     escript_main/1
 ]).
 
@@ -900,6 +901,14 @@ mem_all(Id, Table) -> mem_call({all, Id, Table}).
 %% Built here because a Quote/QExpr literal cannot be written in Ridge source.
 quote_keep_all(_Unit) -> #{tree => {'QLitBool', true}}.
 
+%% quote_and/2 — std.repo's query builder combines two quoted predicates with a
+%% boolean AND. A `Quote`/`QExpr` literal cannot be written in Ridge source, so
+%% the `QAnd` node is assembled here from the two captured trees. The builder
+%% starts from `quote_keep_all` and folds each `where` clause in with this, so a
+%% chain of filters becomes a nested `QAnd` the seam compiles or walks as one.
+quote_and(A, B) ->
+    #{tree => {'QAnd', maps:get(tree, A), maps:get(tree, B)}}.
+
 %% mem_select/3 — the rows of Table that satisfy the captured predicate Tree.
 %% The runtime walks the QExpr against each row (the in-memory dual of compiling
 %% it to a SQL WHERE clause). Result (List Row) Error.
@@ -912,6 +921,19 @@ mem_get_rows(Id, Table, Column, Key) -> mem_call({get_rows, Id, Table, Column, K
 %% mem_delete/3 — remove the rows of Table that satisfy Tree; answer how many
 %% were removed. Result Int Error.
 mem_delete(Id, Table, Tree) -> mem_call({delete, Id, Table, Tree}).
+
+%% mem_fetch/6 — the rows of Table that satisfy Tree, ordered by Orders, then
+%% offset and limited. Orders is a list of `{Asc, Column}` where Asc is the
+%% boolean `true` for ascending; sorting is stable and applied major-to-minor
+%% (the first key is the primary sort). Lim < 0 means no limit and Off =< 0 means
+%% no offset. This is the in-memory dual of a backend pushing ORDER BY / LIMIT /
+%% OFFSET into the query. Result (List Row) Error.
+mem_fetch(Id, Table, Tree, Orders, Lim, Off) ->
+    mem_call({fetch, Id, Table, Tree, Orders, Lim, Off}).
+
+%% mem_count_where/3 — how many rows of Table satisfy Tree, counted without
+%% returning them (the in-memory dual of SELECT COUNT(*)). Result Int Error.
+mem_count_where(Id, Table, Tree) -> mem_call({count_where, Id, Table, Tree}).
 
 %% Internal: send a request to the keeper and await its reply.
 mem_call(Req) ->
@@ -977,7 +999,18 @@ mem_keeper_loop(State) ->
             Kept = [R || R <- Rows, not mem_pred(Tree, R)],
             Removed = length(Rows) - length(Kept),
             From ! {Ref, {ok, Removed}},
-            mem_keeper_loop(State#{Key => Kept})
+            mem_keeper_loop(State#{Key => Kept});
+        {{fetch, Id, Table, Tree, Orders, Lim, Off}, From, Ref} ->
+            Rows = maps:get({Id, Table}, State, []),
+            Matches = [R || R <- Rows, mem_pred(Tree, R)],
+            Page = mem_paginate(mem_order(Orders, Matches), Lim, Off),
+            From ! {Ref, {ok, Page}},
+            mem_keeper_loop(State);
+        {{count_where, Id, Table, Tree}, From, Ref} ->
+            Rows = maps:get({Id, Table}, State, []),
+            N = length([R || R <- Rows, mem_pred(Tree, R)]),
+            From ! {Ref, {ok, N}},
+            mem_keeper_loop(State)
     end.
 
 %% --- Quoted-predicate interpreter (the in-memory dual of Query.toSql) ---
@@ -1037,6 +1070,56 @@ mem_sql_cmp(lt, _A, _B) -> false.
 %% A SqlValue used directly as a predicate: a SqlBool yields its boolean.
 mem_truthy({'SqlBool', B}) -> B;
 mem_truthy(_Other)         -> false.
+
+%% --- In-memory ORDER BY / LIMIT / OFFSET ---
+%%
+%% The dual of a backend pushing ordering and paging into SQL. Ordering sorts the
+%% matched rows by the key list (major key first); paging drops `Off` rows then
+%% keeps `Lim` (a negative `Lim` keeps all).
+
+%% Sort rows by the order keys. No keys means no reordering. lists:sort/2 is
+%% stable, so rows equal under every key keep their insertion order.
+mem_order([], Rows) -> Rows;
+mem_order(Orders, Rows) -> lists:sort(fun(A, B) -> mem_le(Orders, A, B) end, Rows).
+
+%% Whether row A should sort no later than row B under the key list. The first
+%% key that distinguishes them decides; ties fall through to the next key. Each
+%% key carries `Asc` as the boolean `true`: A precedes B on `<` when ascending
+%% and on `>` when descending.
+mem_le([], _A, _B) -> true;
+mem_le([{Asc, Col} | Rest], A, B) ->
+    case mem_order_cmp(mem_scalar({'QCol', Col}, A), mem_scalar({'QCol', Col}, B)) of
+        eq -> mem_le(Rest, A, B);
+        lt -> Asc;
+        gt -> not Asc
+    end.
+
+%% Three-way compare of two column values. Incomparable or missing values (a
+%% column absent from the row reads as `undefined`) compare equal, so they keep
+%% insertion order rather than crashing the sort.
+mem_order_cmp(V, V) -> eq;
+mem_order_cmp(A, B) ->
+    case mem_sql_cmp(lt, A, B) of
+        true  -> lt;
+        false ->
+            case mem_sql_cmp(lt, B, A) of
+                true  -> gt;
+                false -> eq
+            end
+    end.
+
+%% Drop `Off` rows (when positive), then keep `Lim` (a negative `Lim` keeps all).
+mem_paginate(Rows, Lim, Off) ->
+    Dropped = if Off > 0 -> mem_drop(Off, Rows); true -> Rows end,
+    if Lim < 0 -> Dropped; true -> mem_take(Lim, Dropped) end.
+
+mem_drop(0, Rows)     -> Rows;
+mem_drop(_, [])       -> [];
+mem_drop(N, [_ | T])  -> mem_drop(N - 1, T).
+
+mem_take(0, _)        -> [];
+mem_take(_, [])       -> [];
+mem_take(N, [H | T])  -> [H | mem_take(N - 1, T)].
 
 %% --- escript bridge ---
 

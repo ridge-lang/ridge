@@ -214,6 +214,65 @@ fn reconciled_decls(b: &BuiltinTyCons, base: u32) -> Vec<TyConDecl> {
             opaque: true,
             is_anon: false,
         },
+        // `std.repo` — a query under construction over a repository. A generic
+        // opaque record declared in Ridge (stdlib/repo.ridge): the repository, the
+        // accumulated filter, the ordering as `(ascending?, column)` keys, and the
+        // page (`lim`, `off`). Opaque, so user code only threads it through the
+        // builder (`query`/`filter`/`orderBy`/`limit`/`offset`) into a terminal.
+        // Field order mirrors the source so the consistency check holds.
+        TyConDecl {
+            id: TyConId(base + 5),
+            name: "Query".to_string(),
+            arity: 2,
+            kind: TyConKind::Record(RecordSchema::new(
+                vec![TyVid(0), TyVid(1)],
+                vec![
+                    RecordField {
+                        name: "repo".to_string(),
+                        ty: Type::Con(
+                            TyConId(base + 2),
+                            vec![Type::Var(TyVid(0)), Type::Var(TyVid(1))],
+                        ),
+                    },
+                    RecordField {
+                        name: "pred".to_string(),
+                        ty: Type::Con(
+                            b.quote,
+                            vec![Type::Fn {
+                                params: vec![Type::Con(
+                                    b.map,
+                                    vec![Type::Con(b.text, vec![]), Type::Con(b.sql_value, vec![])],
+                                )],
+                                ret: Box::new(Type::Con(b.bool, vec![])),
+                                caps: CapRow::Concrete(CapabilitySet::PURE),
+                            }],
+                        ),
+                    },
+                    RecordField {
+                        name: "orders".to_string(),
+                        ty: Type::Con(
+                            b.list,
+                            vec![Type::Tuple(vec![
+                                Type::Con(b.bool, vec![]),
+                                Type::Con(b.text, vec![]),
+                            ])],
+                        ),
+                    },
+                    RecordField {
+                        name: "lim".to_string(),
+                        ty: Type::Con(b.int, vec![]),
+                    },
+                    RecordField {
+                        name: "off".to_string(),
+                        ty: Type::Con(b.int, vec![]),
+                    },
+                ],
+            )),
+            def_span: None,
+            def_module_raw: None,
+            opaque: true,
+            is_anon: false,
+        },
     ]
 }
 
@@ -348,6 +407,22 @@ pub(crate) fn reconciled_fn_scheme(
         // constrained over `Adapter a` (to reach the storage primitives) and
         // `Row e` (to decode rows into the entity), so none is expressible in
         // the hand-curated table.
+        // std.query `ascending : SortOrder -> Bool` — projects a sort direction
+        // to the `ascending?` boolean the query builder and seam read.
+        ("std.query", "ascending") => {
+            let sort_order = *reconciled.get("SortOrder")?;
+            Some(Scheme {
+                vars: vec![],
+                cap_vars: vec![],
+                row_vars: vec![],
+                ty: Type::Fn {
+                    params: vec![Type::Con(sort_order, vec![])],
+                    ret: Box::new(Type::Con(b.bool, vec![])),
+                    caps: CapRow::Concrete(CapabilitySet::PURE),
+                },
+                constraints: vec![],
+            })
+        }
         ("std.repo", _) => reconciled_repo_fn_scheme(name, reconciled, b, classes?),
         _ => None,
     }
@@ -355,6 +430,10 @@ pub(crate) fn reconciled_fn_scheme(
 
 /// The `std.repo` slice of [`reconciled_fn_scheme`]. Split out so the storage
 /// repository's verbs sit together and share the `Repo`/class-id setup.
+#[expect(
+    clippy::too_many_lines,
+    reason = "one scheme per repository verb and query-builder fn; they read best together"
+)]
 fn reconciled_repo_fn_scheme(
     name: &str,
     reconciled: &FxHashMap<String, TyConId>,
@@ -362,6 +441,7 @@ fn reconciled_repo_fn_scheme(
     classes: &ClassTable,
 ) -> Option<Scheme> {
     let repo_con = *reconciled.get("Repo")?;
+    let query_con = *reconciled.get("Query")?;
     let adapter = classes.id_by_name("Adapter")?;
     let row = classes.id_by_name("Row")?;
     // Scheme-level placeholder vars: entity `e` and adapter `a`. Fresh copies
@@ -369,6 +449,7 @@ fn reconciled_repo_fn_scheme(
     let e = TyVid(0);
     let a = TyVid(1);
     let repo_app = || Type::Con(repo_con, vec![Type::Var(e), Type::Var(a)]);
+    let query_app = || Type::Con(query_con, vec![Type::Var(e), Type::Var(a)]);
     let pure = || CapRow::Concrete(CapabilitySet::PURE);
     let result = |ok: Type| Type::Con(b.result, vec![ok, Type::Con(b.error, vec![])]);
     // A list of decoded entities `List e`.
@@ -480,6 +561,48 @@ fn reconciled_repo_fn_scheme(
             result(Type::Con(b.unit, vec![])),
             with_adapter(),
         ),
+        // query : ∀e a. Repo e a -> Query e a — start a query over a repository.
+        // The builder verbs are pure: they assemble a query, and a terminal runs
+        // it.
+        "query" => method(vec![repo_app()], query_app(), vec![]),
+        // filter : ∀e a. Quote (e -> Bool) -> Query e a -> Query e a
+        "filter" => method(vec![quote_pred(), query_app()], query_app(), vec![]),
+        // limit / offset : ∀e a. Int -> Query e a -> Query e a
+        "limit" | "offset" => method(
+            vec![Type::Con(b.int, vec![]), query_app()],
+            query_app(),
+            vec![],
+        ),
+        // orderBy : ∀e a k. SortOrder -> Quote (e -> k) -> Query e a -> Query e a.
+        // The key quote names a column of any type `k` (the return is phantom —
+        // only the column name is read), so this scheme carries the extra var.
+        "orderBy" => {
+            let sort_order = *reconciled.get("SortOrder")?;
+            let k = TyVid(2);
+            let key_quote = Type::Con(
+                b.quote,
+                vec![Type::Fn {
+                    params: vec![Type::Var(e)],
+                    ret: Box::new(Type::Var(k)),
+                    caps: CapRow::Concrete(CapabilitySet::PURE),
+                }],
+            );
+            Some(Scheme {
+                vars: vec![e, a, k],
+                cap_vars: vec![],
+                row_vars: vec![],
+                ty: Type::Fn {
+                    params: vec![Type::Con(sort_order, vec![]), key_quote, query_app()],
+                    ret: Box::new(query_app()),
+                    caps: pure(),
+                },
+                constraints: vec![],
+            })
+        }
+        // toList : ∀e a. Query e a -> Result (List e) Error where Adapter a, Row e
+        "toList" => method(vec![query_app()], result(list_e()), with_adapter_row()),
+        // first : ∀e a. Query e a -> Result (Option e) Error where Adapter a, Row e
+        "first" => method(vec![query_app()], result(option_e()), with_adapter_row()),
         _ => None,
     }
 }

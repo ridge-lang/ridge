@@ -12,7 +12,7 @@ items:
     caps: CapabilitySet(0)
     ret_ty: Con(3)
     params:
-      - name: $dict_Encode_15
+      - name: $dict_Encode_19
         ty: Error
       - name: x
         ty: Error
@@ -25,7 +25,7 @@ items:
             Call(n2):
               callee:
                 Field(n3).encode:
-                  Local(n4): $dict_Encode_15
+                  Local(n4): $dict_Encode_19
               args:
                 -
                   Local(n5): x
@@ -65,7 +65,7 @@ items:
                                   Local(n14): __enc_x
           -
             Construct(n15):
-              ctor: Ctor(Record:Box owner=48)
+              ctor: Ctor(Record:Box owner=49)
               fields:
                 val:
                   Lit(n16): Int(7)
@@ -178,7 +178,7 @@ items:
                                           fields:
                                             $0:
                                               Construct(n45):
-                                                ctor: Ctor(Record:Box owner=48)
+                                                ctor: Ctor(Record:Box owner=49)
                                                 fields:
                                                   val:
                                                     Local(n46): __dec_f_val_1

@@ -1525,16 +1525,16 @@ mod tests {
                 // is a function whose signature references `SortOrder`, so it is
                 // seeded via `reconciled_fn_scheme` rather than this table.
                 if module.name == "std.query"
-                    && matches!(name, "SortOrder" | "Asc" | "Desc" | "orderSql")
+                    && matches!(name, "SortOrder" | "Asc" | "Desc" | "orderSql" | "ascending")
                 {
                     continue;
                 }
                 // std.data: `Adapter` and its methods (`insert`/`all`/`select`/
-                // `get`/`delete`) are a class seeded via `seed_sql_codec_schemes`;
-                // `MemAdapter`/`Postgres`/`Config` are reconciled types, and
-                // `memAdapter`/`connect` are seeded via `reconciled_fn_scheme`
-                // (their signatures name reconciled types), so none resolves
-                // through this hand-curated table.
+                // `get`/`delete`/`fetch`/`countWhere`) are a class seeded via
+                // `seed_sql_codec_schemes`; `MemAdapter`/`Postgres`/`Config` are
+                // reconciled types, and `memAdapter`/`connect` are seeded via
+                // `reconciled_fn_scheme` (their signatures name reconciled types),
+                // so none resolves through this hand-curated table.
                 if module.name == "std.data"
                     && matches!(
                         name,
@@ -1544,6 +1544,8 @@ mod tests {
                             | "select"
                             | "get"
                             | "delete"
+                            | "fetch"
+                            | "countWhere"
                             | "MemAdapter"
                             | "memAdapter"
                             | "Postgres"

@@ -35,12 +35,21 @@ import std.sql (SqlValue)
 -- (the in-memory store) share one surface. The predicate's parameter is the
 -- queried record at the call site (`fn (u: User) -> ...`); here it is the
 -- adapter-neutral row map the captured tree is evaluated against.
+--
+-- `fetch` is `select` with ordering and paging folded in: it returns the
+-- matching rows ordered by a list of `(ascending?, column)` keys, then offset
+-- and limited, so a backend pushes `ORDER BY`/`LIMIT`/`OFFSET` into one query
+-- rather than the caller paging in memory. A negative `lim` means no limit and a
+-- non-positive `off` means no offset. `countWhere` answers how many rows match
+-- without returning them — a `COUNT(*)` push-down for the aggregate verbs.
 pub class Adapter a =
     insert (conn: a) (table: Text) (row: Map Text SqlValue) -> Result Unit Error
     all    (conn: a) (table: Text) -> Result (List (Map Text SqlValue)) Error
     select (conn: a) (table: Text) (pred: Quote (Map Text SqlValue -> Bool)) -> Result (List (Map Text SqlValue)) Error
     get    (conn: a) (table: Text) (column: Text) (key: SqlValue) -> Result (Option (Map Text SqlValue)) Error
     delete (conn: a) (table: Text) (pred: Quote (Map Text SqlValue -> Bool)) -> Result Int Error
+    fetch  (conn: a) (table: Text) (pred: Quote (Map Text SqlValue -> Bool)) (orders: List (Bool, Text)) (lim: Int) (off: Int) -> Result (List (Map Text SqlValue)) Error
+    countWhere (conn: a) (table: Text) (pred: Quote (Map Text SqlValue -> Bool)) -> Result Int Error
 
 -- A handle to an in-memory store. Opaque: `memAdapter` is the only way to make
 -- one, and the `id` it carries selects this handle's private, isolated store,
@@ -71,6 +80,15 @@ fn _memGetRows (id: Int) (table: Text) (column: Text) (key: SqlValue) -> Result 
 @ffi("ridge_rt", "mem_delete", 3)
 fn _memDelete (id: Int) (table: Text) (tree: QExpr) -> Result Int Error
 
+-- Return the rows of a table that satisfy the predicate tree, ordered by the
+-- `(ascending?, column)` keys, then offset and limited.
+@ffi("ridge_rt", "mem_fetch", 6)
+fn _memFetch (id: Int) (table: Text) (tree: QExpr) (orders: List (Bool, Text)) (lim: Int) (off: Int) -> Result (List (Map Text SqlValue)) Error
+
+-- Count the rows of a table that satisfy the predicate tree.
+@ffi("ridge_rt", "mem_count_where", 3)
+fn _memCountWhere (id: Int) (table: Text) (tree: QExpr) -> Result Int Error
+
 -- Open a fresh in-memory adapter backed by an empty store. Requires the `db`
 -- capability; the handle returned is the proof of access for every later call.
 @ffi("ridge_rt", "mem_new", 1)
@@ -89,6 +107,10 @@ instance Adapter MemAdapter =
             Err e   -> Err e
     delete (conn: MemAdapter) (table: Text) (pred: Quote (Map Text SqlValue -> Bool)) -> Result Int Error =
         _memDelete conn.id table pred.tree
+    fetch (conn: MemAdapter) (table: Text) (pred: Quote (Map Text SqlValue -> Bool)) (orders: List (Bool, Text)) (lim: Int) (off: Int) -> Result (List (Map Text SqlValue)) Error =
+        _memFetch conn.id table pred.tree orders lim off
+    countWhere (conn: MemAdapter) (table: Text) (pred: Quote (Map Text SqlValue -> Bool)) -> Result Int Error =
+        _memCountWhere conn.id table pred.tree
 
 -- The head of a row list as an `Option` — `get` returns at most one row, so it
 -- reads the first match (or `None` when the column held no such key).
@@ -136,6 +158,15 @@ fn _pgGetRows (id: Int) (table: Text) (column: Text) (key: SqlValue) -> Result (
 @ffi("ridge_pg", "pg_delete", 3)
 fn _pgDelete (id: Int) (table: Text) (tree: QExpr) -> Result Int Error
 
+-- Return the rows of a table that satisfy the predicate tree, with ordering and
+-- paging compiled into the SQL (ORDER BY / LIMIT / OFFSET).
+@ffi("ridge_pg", "pg_fetch", 6)
+fn _pgFetch (id: Int) (table: Text) (tree: QExpr) (orders: List (Bool, Text)) (lim: Int) (off: Int) -> Result (List (Map Text SqlValue)) Error
+
+-- Count the rows of a table that satisfy the predicate tree via SELECT COUNT(*).
+@ffi("ridge_pg", "pg_count_where", 3)
+fn _pgCountWhere (id: Int) (table: Text) (tree: QExpr) -> Result Int Error
+
 -- Open a Postgres connection with the given settings. Requires the `db`
 -- capability; the handle returned is the proof of access for every later call,
 -- exactly like `memAdapter`. A failed connect or authentication is an `Err`.
@@ -155,3 +186,7 @@ instance Adapter Postgres =
             Err e   -> Err e
     delete (conn: Postgres) (table: Text) (pred: Quote (Map Text SqlValue -> Bool)) -> Result Int Error =
         _pgDelete conn.id table pred.tree
+    fetch (conn: Postgres) (table: Text) (pred: Quote (Map Text SqlValue -> Bool)) (orders: List (Bool, Text)) (lim: Int) (off: Int) -> Result (List (Map Text SqlValue)) Error =
+        _pgFetch conn.id table pred.tree orders lim off
+    countWhere (conn: Postgres) (table: Text) (pred: Quote (Map Text SqlValue -> Bool)) -> Result Int Error =
+        _pgCountWhere conn.id table pred.tree

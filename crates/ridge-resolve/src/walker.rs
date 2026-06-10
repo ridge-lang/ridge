@@ -287,6 +287,43 @@ impl ScopeWalker<'_> {
         }
     }
 
+    /// Rewrite an imported-constructor binding to the [`Binding::Constructor`] a
+    /// local constructor would get.
+    ///
+    /// A constructor imported from a workspace module resolves to a
+    /// [`Binding::ImportedSymbol`] pointing at the producing module's entry. In
+    /// pattern position that has to be stamped as a real constructor, or lowering
+    /// emits a wildcard instead of a constructor match — silently turning the
+    /// first arm into a catch-all. This is reached in the standard library's own
+    /// build, where every `std.*` module is a workspace module so cross-module
+    /// constructor imports come back as `ImportedSymbol` rather than the
+    /// manifest-driven `StdlibSymbol` a user build sees. Returns `None` for any
+    /// binding that is not an imported constructor, so the caller keeps it as is.
+    fn imported_constructor_binding(&self, binding: &Binding) -> Option<Binding> {
+        let Binding::ImportedSymbol { module, symbol, .. } = binding else {
+            return None;
+        };
+        let entry = self
+            .all_symbol_tables
+            .get(module.0 as usize)
+            .and_then(|t| t.entries.get(symbol.0 as usize))?;
+        match entry.kind {
+            SymbolKind::Constructor {
+                owner_type,
+                variant,
+                is_record,
+                owner_module,
+                ..
+            } => Some(Binding::Constructor {
+                owner_type,
+                variant,
+                is_record,
+                owner_module,
+            }),
+            _ => None,
+        }
+    }
+
     /// O3 gate: a constructor of an opaque type may only build or match a value
     /// inside the module that declares the type. Emits `R025` (construction) or
     /// `R026` (pattern) when the use crosses the defining module boundary.
@@ -528,7 +565,12 @@ impl ScopeWalker<'_> {
                         }
                     }
                 } else if let Some(eb) = self.find_import_binding(&name.text) {
-                    let b = eb.binding.clone();
+                    // An imported constructor resolves to an `ImportedSymbol`;
+                    // rewrite it to a `Constructor` binding so pattern lowering
+                    // builds a real constructor match rather than a wildcard.
+                    let b = self
+                        .imported_constructor_binding(&eb.binding)
+                        .unwrap_or_else(|| eb.binding.clone());
                     self.check_opaque_use(&b, &name.text, name.span, true);
                     self.stamp(name.span, NodeKind::Ident, b);
                 } else {
@@ -932,8 +974,15 @@ impl<'ast> Visit<'ast> for ScopeWalker<'_> {
                                 },
                             }
                         } else if let Some(eb) = self.find_import_binding(&ctor_ident.text) {
-                            // Module alias (e.g. `List` from `import std.list as List`).
-                            eb.binding.clone()
+                            // A constructor imported from a workspace module, or a
+                            // module alias (e.g. `List` from `import std.list as
+                            // List`). For an imported constructor, rewrite the
+                            // `ImportedSymbol` to a `Constructor` so it lowers to
+                            // the constructor's tag rather than a cross-module
+                            // symbol reference; aliases and other symbols are left
+                            // unchanged.
+                            self.imported_constructor_binding(&eb.binding)
+                                .unwrap_or_else(|| eb.binding.clone())
                         } else if let Some(local) = self.scope.lookup_local(&ctor_ident.text) {
                             Binding::Local(local.id)
                         } else {

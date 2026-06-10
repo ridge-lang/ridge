@@ -934,6 +934,15 @@ pub fn register_stdlib_instances(
     // source instance is collected instead and this is a no-op; for user
     // workspaces the entry is inserted here so the solver discharges the
     // `Adapter MemAdapter` constraint.
+    let adapter_methods = || {
+        vec![
+            ("insert".to_string(), String::new()),
+            ("all".to_string(), String::new()),
+            ("select".to_string(), String::new()),
+            ("get".to_string(), String::new()),
+            ("delete".to_string(), String::new()),
+        ]
+    };
     if let (Some(adapter), Some(&mem_adapter)) = (
         ct.id_by_name("Adapter"),
         reconciled_tycon_names.get("MemAdapter"),
@@ -942,13 +951,27 @@ pub fn register_stdlib_instances(
             .entry((adapter, smallvec![mem_adapter]))
             .or_insert_with(|| InstanceInfo {
                 def_module: None,
-                methods: vec![
-                    ("insert".to_string(), String::new()),
-                    ("all".to_string(), String::new()),
-                    ("select".to_string(), String::new()),
-                    ("get".to_string(), String::new()),
-                    ("delete".to_string(), String::new()),
-                ],
+                methods: adapter_methods(),
+                ctx_constraints: vec![],
+                head_var_positions: vec![],
+                origin: InstanceOrigin::Explicit,
+                span: ds,
+            });
+    }
+
+    // `Adapter Postgres` — the Postgres adapter instance from std.data, keyed by
+    // the reconciled `Postgres` id, on the same terms as `Adapter MemAdapter`
+    // above: inserted for user workspaces, a no-op during the stdlib's own build
+    // where data.ridge's source instance is collected directly.
+    if let (Some(adapter), Some(&postgres)) = (
+        ct.id_by_name("Adapter"),
+        reconciled_tycon_names.get("Postgres"),
+    ) {
+        env.instances
+            .entry((adapter, smallvec![postgres]))
+            .or_insert_with(|| InstanceInfo {
+                def_module: None,
+                methods: adapter_methods(),
                 ctx_constraints: vec![],
                 head_var_positions: vec![],
                 origin: InstanceOrigin::Explicit,

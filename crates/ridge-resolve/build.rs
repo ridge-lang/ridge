@@ -399,6 +399,12 @@ const BASELINE_EXPORTS: &[(&str, &[&str])] = &[
             "delete",
             "MemAdapter",
             "memAdapter",
+            // The Postgres adapter: the opaque connection handle, its config
+            // record, and the `db`-gated `connect`. Implements the same
+            // `Adapter` class as the in-memory backend.
+            "Postgres",
+            "Config",
+            "connect",
         ],
     ),
     (
@@ -429,7 +435,7 @@ const BASELINE_EXPORTS: &[(&str, &[&str])] = &[
 const BASELINE_OPAQUE: &[(&str, &[&str])] = &[
     ("std.net.http", &["Html", "SecureCookie"]),
     ("std.sql", &["Sql", "SqlValue"]),
-    ("std.data", &["MemAdapter"]),
+    ("std.data", &["MemAdapter", "Postgres"]),
     ("std.repo", &["Repo"]),
 ];
 

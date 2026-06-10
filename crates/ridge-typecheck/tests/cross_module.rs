@@ -500,6 +500,53 @@ pub fn db loadUsers () -> Result (List User) Error =
 }
 
 #[test]
+fn repo_over_postgres_adapter_typechecks() {
+    // The Postgres adapter resolves the same `Adapter` constraint as the
+    // in-memory backend: `connect` (db-gated) builds a `Postgres` handle from a
+    // `Config`, and a `Repo User Postgres` auto-decodes `all` into `List User`.
+    // No database is touched — this exercises the type-level wiring (the
+    // reconciled `Config`/`Postgres`, the `connect` scheme, and the
+    // `Adapter Postgres` instance).
+    let main = r#"
+import std.data (connect, Config, Postgres)
+import std.repo as Repo
+import std.sql (SqlValue)
+
+pub type User = { id: Int, age: Int, name: Text } deriving (Row)
+
+pub fn db loadUsers () -> Result (List User) Error =
+    match connect (Config { host = "localhost", port = 5432, database = "app", user = "u", password = "p", sslMode = "require", poolSize = 1 })
+        Err e   -> Err e
+        Ok conn ->
+            let users: Repo User Postgres = Repo.repo conn "users"
+            Repo.all users
+"#;
+    let errors = typecheck_one(main);
+    assert!(
+        errors.is_empty(),
+        "Repo over the Postgres adapter must typecheck clean; got {errors:?}"
+    );
+}
+
+#[test]
+fn connect_requires_the_db_capability() {
+    // Opening a Postgres connection is the gated act: calling `connect` from a
+    // pure function must be rejected, exactly as for `memAdapter`. (The handle's
+    // later use is cap-free under the handle-as-proof model.)
+    let main = r#"
+import std.data (connect, Config, Postgres)
+
+pub fn openIt () -> Result Postgres Error =
+    connect (Config { host = "localhost", port = 5432, database = "app", user = "u", password = "p", sslMode = "disable", poolSize = 1 })
+"#;
+    let errors = typecheck_one(main);
+    assert!(
+        !errors.is_empty(),
+        "calling connect (db) from a pure function must be rejected; got no errors"
+    );
+}
+
+#[test]
 fn repo_full_surface_typechecks_with_pipe_and_inline_predicates() {
     // The repository verbs read as a pipeline (`repo |> Repo.findBy ...`), the
     // predicate is an inline annotated lambda captured as a query tree, and the

@@ -10,10 +10,10 @@ items:
     pub: false
     main: false
     caps: CapabilitySet(0)
-    ret_ty: Con(46)
+    ret_ty: Con(48)
     params:
       - name: p
-        ty: Con(46)
+        ty: Con(48)
     body:
       LetIn(n0):
         pat:

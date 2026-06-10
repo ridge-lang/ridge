@@ -21,6 +21,7 @@
 
 import std.data as Db
 import std.sql (SqlValue)
+import std.query (SortOrder, ascending)
 
 -- A repository: entity `e` stored in `table` through adapter `a`. Opaque, so it
 -- is built only through `repo` and threaded as a handle, never destructured.
@@ -43,13 +44,6 @@ fn decodeRows (rows: List (Map Text SqlValue)) -> Result (List e) Error where Ro
                         Err err -> Err err
                         Ok xs   -> Ok (x :: xs)
 
--- Count the elements of a list. Used for the aggregate verbs, which answer a
--- size without decoding the rows.
-fn lengthOf (xs: List x) -> Int =
-    match xs
-        []        -> 0
-        _ :: rest -> 1 + lengthOf rest
-
 -- The head of a row list, decoded; `None` when the list is empty. The single-
 -- result verbs (`find`, `get`) share it.
 fn firstDecoded (rows: List (Map Text SqlValue)) -> Result (Option e) Error where Row e =
@@ -69,6 +63,12 @@ fn firstDecoded (rows: List (Map Text SqlValue)) -> Result (Option e) Error wher
 @ffi("ridge_rt", "quote_keep_all", 1)
 fn keepAll (_u: Unit) -> Quote (Map Text SqlValue -> Bool)
 
+-- Combine two quoted predicates with a boolean AND. A `Quote`/`QExpr` literal
+-- cannot be written in Ridge source, so the `QAnd` node is built in the runtime
+-- from the two captured trees. The query builder folds each filter in with this.
+@ffi("ridge_rt", "quote_and", 2)
+fn quoteAnd (a: Quote (Map Text SqlValue -> Bool)) (b: Quote (Map Text SqlValue -> Bool)) -> Quote (Map Text SqlValue -> Bool)
+
 -- Every row of the table, decoded into entities.
 pub fn all (r: Repo e a) -> Result (List e) Error where Adapter a, Row e =
     match select r.adapter r.table (keepAll ())
@@ -84,8 +84,9 @@ pub fn findBy (pred: Quote (Map Text SqlValue -> Bool)) (r: Repo e a) -> Result 
         Ok rows  -> decodeRows rows
 
 -- The first entity matching a quoted predicate, or `None` when none match.
+-- Fetched with a one-row limit, so the backend stops at the first match.
 pub fn find (pred: Quote (Map Text SqlValue -> Bool)) (r: Repo e a) -> Result (Option e) Error where Adapter a, Row e =
-    match select r.adapter r.table pred
+    match fetch r.adapter r.table pred [] 1 0
         Err err  -> Err err
         Ok rows  -> firstDecoded rows
 
@@ -100,21 +101,18 @@ pub fn getBy (column: Text) (key: SqlValue) (r: Repo e a) -> Result (Option e) E
                 Err err -> Err err
                 Ok x    -> Ok (Some x)
 
--- How many rows the table holds.
+-- How many rows the table holds, counted by the backend (a `COUNT(*)` push-down)
+-- rather than by fetching and measuring the rows.
 pub fn count (r: Repo e a) -> Result Int Error where Adapter a =
-    match select r.adapter r.table (keepAll ())
-        Err err  -> Err err
-        Ok rows  -> Ok (lengthOf rows)
+    countWhere r.adapter r.table (keepAll ())
 
--- How many rows match a quoted predicate.
+-- How many rows match a quoted predicate, counted by the backend.
 pub fn countBy (pred: Quote (Map Text SqlValue -> Bool)) (r: Repo e a) -> Result Int Error where Adapter a =
-    match select r.adapter r.table pred
-        Err err  -> Err err
-        Ok rows  -> Ok (lengthOf rows)
+    countWhere r.adapter r.table pred
 
--- Whether any row matches a quoted predicate.
+-- Whether any row matches a quoted predicate. Fetched with a one-row limit.
 pub fn exists (pred: Quote (Map Text SqlValue -> Bool)) (r: Repo e a) -> Result Bool Error where Adapter a =
-    match select r.adapter r.table pred
+    match fetch r.adapter r.table pred [] 1 0
         Err err  -> Err err
         Ok rows  ->
             match rows
@@ -129,3 +127,55 @@ pub fn insertRow (row: Map Text SqlValue) (r: Repo e a) -> Result Unit Error whe
 -- Remove the rows matching a quoted predicate; answer how many were removed.
 pub fn deleteWhere (pred: Quote (Map Text SqlValue -> Bool)) (r: Repo e a) -> Result Int Error where Adapter a =
     delete r.adapter r.table pred
+
+-- A query under construction over a repository: a filter, an ordering, and a
+-- page (offset and limit) accumulated before a terminal runs it. Opaque and
+-- threaded through the builder, so it reads as a pipeline:
+--   users |> Repo.query |> Repo.filter (...) |> Repo.orderBy Desc (...) |> Repo.toList
+-- The ordering is a list of `(ascending?, column)` keys in major-to-minor order;
+-- `lim` is negative for no limit and `off` is non-positive for no offset.
+pub opaque type Query e a = { repo: Repo e a, pred: Quote (Map Text SqlValue -> Bool), orders: List (Bool, Text), lim: Int, off: Int }
+
+-- Start a query over a repository: every row, unordered, unpaged.
+pub fn query (r: Repo e a) -> Query e a =
+    Query { repo = r, pred = keepAll (), orders = [], lim = 0 - 1, off = 0 }
+
+-- Narrow a query by a predicate, AND-combined with any filter already set. The
+-- predicate is written against the entity (`fn (u: User) -> ...`) and captured as
+-- a query tree, exactly as at the adapter seam. (`filter`, not `where`, because
+-- `where` introduces a constraint list in Ridge.)
+pub fn filter (pred: Quote (Map Text SqlValue -> Bool)) (q: Query e a) -> Query e a =
+    Query { repo = q.repo, pred = quoteAnd q.pred pred, orders = q.orders, lim = q.lim, off = q.off }
+
+-- Append an ordering key. Keys order major-to-minor in the order added, each
+-- ascending or descending. The key is a quoted column: `fn (u: User) -> u.age`.
+pub fn orderBy (dir: SortOrder) (key: Quote (Map Text SqlValue -> k)) (q: Query e a) -> Query e a =
+    Query { repo = q.repo, pred = q.pred, orders = q.orders ++ [(ascending dir, orderColumn key)], lim = q.lim, off = q.off }
+
+-- Keep at most `n` rows.
+pub fn limit (n: Int) (q: Query e a) -> Query e a =
+    Query { repo = q.repo, pred = q.pred, orders = q.orders, lim = n, off = q.off }
+
+-- Skip the first `n` rows.
+pub fn offset (n: Int) (q: Query e a) -> Query e a =
+    Query { repo = q.repo, pred = q.pred, orders = q.orders, lim = q.lim, off = n }
+
+-- Run the query and decode the matching rows into entities, in the chosen order.
+pub fn toList (q: Query e a) -> Result (List e) Error where Adapter a, Row e =
+    match fetch q.repo.adapter q.repo.table q.pred q.orders q.lim q.off
+        Err err -> Err err
+        Ok rows -> decodeRows rows
+
+-- Run the query for just its first row, decoded; `None` when none match. The
+-- ordering and offset still apply, with a one-row limit.
+pub fn first (q: Query e a) -> Result (Option e) Error where Adapter a, Row e =
+    match fetch q.repo.adapter q.repo.table q.pred q.orders 1 q.off
+        Err err -> Err err
+        Ok rows -> firstDecoded rows
+
+-- The column an ordering key names. The key quote captures a single column, so
+-- its tree is a `QCol`; anything else contributes an empty key name.
+fn orderColumn (key: Quote (Map Text SqlValue -> k)) -> Text =
+    match key.tree
+        QCol c -> c
+        _      -> ""

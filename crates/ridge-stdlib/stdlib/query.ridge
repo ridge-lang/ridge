@@ -16,6 +16,14 @@ import std.sql (Sql, sql, SqlValue, sqlInt, sqlText, sqlBool, sqlFloat)
 -- modules can name `SortOrder` and build/match `Asc`/`Desc` directly.
 pub type SortOrder = Asc | Desc
 
+-- A sort direction as the `ascending?` boolean a backend (or the query builder)
+-- reads. Defined here, where `Asc`/`Desc` are declared, so the match is over the
+-- module's own constructors.
+pub fn ascending (dir: SortOrder) -> Bool =
+    match dir
+        Asc  -> true
+        Desc -> false
+
 -- Render a captured tree to a readable, SQL-shaped string. Literals show as `?`
 -- placeholders — binding parameters is the SQL-compilation pass's job; this is
 -- here to confirm a quoted body round-trips to a tree.

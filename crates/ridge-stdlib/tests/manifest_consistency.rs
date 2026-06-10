@@ -243,10 +243,10 @@ fn signature_shape_consistency() {
             .collect();
 
         for (fn_name, ast_param_count) in &pub_fns {
-            // std.query `orderSql` references the reconciled `SortOrder` type, so
-            // it is seeded via `reconciled_fn_scheme` rather than the
+            // std.query `orderSql`/`ascending` reference the reconciled `SortOrder`
+            // type, so they are seeded via `reconciled_fn_scheme` rather than the
             // `stdlib_signature` table this shape check covers.
-            if dotted == "std.query" && *fn_name == "orderSql" {
+            if dotted == "std.query" && matches!(*fn_name, "orderSql" | "ascending") {
                 continue;
             }
             // std.data `memAdapter`/`connect` return reconciled types

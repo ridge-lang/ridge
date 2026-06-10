@@ -36,6 +36,8 @@
     pg_select/3,
     pg_get_rows/4,
     pg_delete/3,
+    pg_fetch/6,
+    pg_count_where/3,
     pg_close/1
 ]).
 
@@ -90,6 +92,17 @@ pg_get_rows(Id, Table, Column, Key) -> pg_call(Id, {get_rows, Table, Column, Key
 %% pg_delete/3 — remove the rows of Table that satisfy Tree; answer how many were
 %% removed. Result Int Error.
 pg_delete(Id, Table, Tree) -> pg_call(Id, {delete, Table, Tree}).
+
+%% pg_fetch/6 — the rows of Table that satisfy Tree, ordered by Orders, then
+%% offset and limited, all pushed into the SQL. Orders is a list of `{Asc, Column}`
+%% where Asc is the boolean `true` for ascending. Lim < 0 means no LIMIT and
+%% Off =< 0 means no OFFSET. Result (List Row) Error.
+pg_fetch(Id, Table, Tree, Orders, Lim, Off) ->
+    pg_call(Id, {fetch, Table, Tree, Orders, Lim, Off}).
+
+%% pg_count_where/3 — how many rows of Table satisfy Tree, via SELECT COUNT(*)
+%% so no rows cross the wire. Result Int Error.
+pg_count_where(Id, Table, Tree) -> pg_call(Id, {count_where, Table, Tree}).
 
 %% pg_close/1 — close every connection in the pool and forget the handle.
 %% Result Unit Error.
@@ -458,7 +471,14 @@ run_verb(Conn, {get_rows, Table, Column, Key}) ->
     run_query(Conn, Sql, [Key]);
 run_verb(Conn, {delete, Table, Tree}) ->
     {Where, Binds} = compile_where(Tree),
-    do_exec(Conn, ["DELETE FROM ", quote_ident(Table), " WHERE ", Where], Binds).
+    do_exec(Conn, ["DELETE FROM ", quote_ident(Table), " WHERE ", Where], Binds);
+run_verb(Conn, {fetch, Table, Tree, Orders, Lim, Off}) ->
+    {Where, Binds} = compile_where(Tree),
+    Sql = ["SELECT * FROM ", quote_ident(Table), " WHERE ", Where,
+           order_by_clause(Orders), limit_clause(Lim), offset_clause(Off)],
+    run_query(Conn, Sql, Binds);
+run_verb(Conn, {count_where, Table, Tree}) ->
+    do_count(Conn, Table, Tree).
 
 do_insert(Conn, Table, Row) ->
     Pairs = maps:to_list(Row),
@@ -472,6 +492,42 @@ do_insert(Conn, Table, Row) ->
         {ok, _Count} -> {ok, ok};
         {error, E}   -> {error, E}
     end.
+
+%% SELECT COUNT(*) and read the single integer back out. The result is one row
+%% of one column; its name varies, so the value is taken positionally.
+do_count(Conn, Table, Tree) ->
+    {Where, Binds} = compile_where(Tree),
+    Sql = ["SELECT COUNT(*) FROM ", quote_ident(Table), " WHERE ", Where],
+    case run_query(Conn, Sql, Binds) of
+        {ok, [Row | _]} ->
+            case maps:values(Row) of
+                [{'SqlInt', N} | _]   -> {ok, N};
+                [{'SqlFloat', F} | _] -> {ok, trunc(F)};
+                _                     -> {ok, 0}
+            end;
+        {ok, []}   -> {ok, 0};
+        {error, E} -> {error, E}
+    end.
+
+%% ORDER BY / LIMIT / OFFSET fragments. Identifiers are quoted; the limit and
+%% offset are integers from the typed surface, so they render inline without a
+%% bind. An empty order list, a negative limit, or a non-positive offset each
+%% contributes nothing.
+order_by_clause([])     -> [];
+order_by_clause(Orders) -> [" ORDER BY ", lists:join(", ", [order_term(O) || O <- Orders])].
+
+%% Each order key carries `Asc` as the boolean `true`.
+order_term({Asc, Col}) -> [quote_ident(Col), " ", dir_keyword(Asc)].
+
+dir_keyword(true)  -> "ASC";
+dir_keyword(false) -> "DESC";
+dir_keyword(_)     -> "ASC".
+
+limit_clause(Lim) when is_integer(Lim), Lim >= 0 -> [" LIMIT ", integer_to_list(Lim)];
+limit_clause(_)                                  -> [].
+
+offset_clause(Off) when is_integer(Off), Off > 0 -> [" OFFSET ", integer_to_list(Off)];
+offset_clause(_)                                 -> [].
 
 %% --- QExpr -> parameterised WHERE clause ---
 %%

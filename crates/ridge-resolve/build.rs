@@ -379,10 +379,12 @@ const BASELINE_EXPORTS: &[(&str, &[&str])] = &[
             "orderSql",
             "selectSql",
             // Sort direction, declared in query.ridge. The type plus its two
-            // constructors are importable for ordering.
+            // constructors are importable for ordering, and `ascending` projects
+            // it to the `ascending?` boolean the seam reads.
             "SortOrder",
             "Asc",
             "Desc",
+            "ascending",
         ],
     ),
     (
@@ -397,6 +399,8 @@ const BASELINE_EXPORTS: &[(&str, &[&str])] = &[
             "select",
             "get",
             "delete",
+            "fetch",
+            "countWhere",
             "MemAdapter",
             "memAdapter",
             // The Postgres adapter: the opaque connection handle, its config
@@ -424,6 +428,16 @@ const BASELINE_EXPORTS: &[(&str, &[&str])] = &[
             "exists",
             "insertRow",
             "deleteWhere",
+            // The query builder: the opaque `Query e a` and its pipeline verbs,
+            // ending in the `toList`/`first` terminals.
+            "Query",
+            "query",
+            "filter",
+            "orderBy",
+            "limit",
+            "offset",
+            "toList",
+            "first",
         ],
     ),
 ];
@@ -436,7 +450,7 @@ const BASELINE_OPAQUE: &[(&str, &[&str])] = &[
     ("std.net.http", &["Html", "SecureCookie"]),
     ("std.sql", &["Sql", "SqlValue"]),
     ("std.data", &["MemAdapter", "Postgres"]),
-    ("std.repo", &["Repo"]),
+    ("std.repo", &["Repo", "Query"]),
 ];
 
 fn main() {

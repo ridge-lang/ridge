@@ -12,9 +12,20 @@
 %% predicate or a row value can never be interpolated into SQL text. Only table
 %% and column identifiers are rendered into the statement, and those are quoted.
 %%
-%% This module owns a single connection per handle. The pooled, supervised
-%% substrate lands in a later step; the registry below already maps an integer
-%% handle id to a connection process, which is where a pool will slot in.
+%% Each handle owns a pool, not a lone socket. `connect` opens and authenticates
+%% one connection up front — so a bad host, password, or TLS setting fails fast —
+%% and a pool manager process grows the pool lazily up to `poolSize` as
+%% concurrent callers ask for connections. A verb checks a connection out, talks
+%% to it directly (so N callers run N queries at once), and checks it back in.
+%% The manager monitors every connection: one that drops is removed and replaced
+%% on the next checkout, so a database restart heals without a reconnect storm.
+%%
+%% Transport faults and SQL errors are kept apart. A server-side SQL error
+%% (`{pg_error, _}`) leaves the socket healthy and reusable; a transport fault
+%% (`{pg_fatal, _}`) kills the connection process so a half-broken socket is
+%% never handed out again. A query that races a dropped connection therefore
+%% fails rather than retrying silently — the driver cannot know whether a write
+%% committed, so retrying is the caller's decision.
 
 -module(ridge_pg).
 
@@ -31,6 +42,7 @@
 -define(CONNECT_TIMEOUT, 10000).
 -define(RECV_TIMEOUT, 15000).
 -define(QUERY_TIMEOUT, 30000).
+-define(CHECKOUT_TIMEOUT, 5000).
 
 %% A live connection is `{Transport, Socket}` where Transport is `gen_tcp` or
 %% `ssl`; both expose the same send/recv/close surface, so transport-specific
@@ -38,20 +50,24 @@
 
 %% --- FFI surface (mirrors the MemAdapter verbs in ridge_rt.erl) ---
 
-%% pg_connect/7 — std.data.connect. Open a connection from the config fields and
-%% return the Ridge handle `#{id => Id}` (the same id-as-handle shape MemAdapter
-%% uses). The config crosses the FFI boundary as positional scalars, not a record
-%% map, so it never depends on how a Ridge record lowers its keys. Result
-%% Postgres Error.
-pg_connect(Host, Port, Database, User, Password, SslMode, _PoolSize) ->
+%% pg_connect/7 — std.data.connect. Open and authenticate one connection from the
+%% config fields, then start a pool manager seeded with it and return the Ridge
+%% handle `#{id => Id}` (the same id-as-handle shape MemAdapter uses). The config
+%% crosses the FFI boundary as positional scalars, not a record map, so it never
+%% depends on how a Ridge record lowers its keys. Opening one connection now
+%% means a bad host, password, or TLS mode is reported here rather than on the
+%% first query. Result Postgres Error.
+pg_connect(Host, Port, Database, User, Password, SslMode, PoolSize) ->
     application:ensure_all_started(crypto),
     Config = #{host => Host, port => Port, database => Database,
-               user => User, password => Password, ssl_mode => SslMode},
+               user => User, password => Password, ssl_mode => SslMode,
+               pool_size => clamp_pool(PoolSize)},
     case do_connect(Config) of
         {ok, Conn} ->
-            Pid = spawn(fun() -> pg_conn_loop(Conn) end),
-            set_controlling(Conn, Pid),
-            Id = pg_registry_call({register, Pid}),
+            Worker = spawn(fun() -> pg_conn_loop(Conn) end),
+            set_controlling(Conn, Worker),
+            Pool = spawn(fun() -> pool_init(Config, Worker) end),
+            Id = pg_registry_call({register, Pool}),
             {ok, #{id => Id}};
         {error, E} ->
             {error, E}
@@ -75,30 +91,68 @@ pg_get_rows(Id, Table, Column, Key) -> pg_call(Id, {get_rows, Table, Column, Key
 %% removed. Result Int Error.
 pg_delete(Id, Table, Tree) -> pg_call(Id, {delete, Table, Tree}).
 
-%% pg_close/1 — close a connection and forget its handle. Result Unit Error.
-pg_close(Id) -> pg_call(Id, close).
+%% pg_close/1 — close every connection in the pool and forget the handle.
+%% Result Unit Error.
+pg_close(Id) ->
+    Reply =
+        case pg_registry_call({lookup, Id}) of
+            {ok, Pool} ->
+                Ref = make_ref(),
+                Pool ! {close, self(), Ref},
+                receive
+                    {Ref, R} -> R
+                after 5000 ->
+                    {ok, ok}
+                end;
+            _ ->
+                {ok, ok}
+        end,
+    pg_registry_call({unregister, Id}),
+    Reply.
 
-%% --- Handle registry ---
+clamp_pool(N) when is_integer(N), N > 0 -> N;
+clamp_pool(_)                           -> 1.
+
+%% --- Verb dispatch: check out a connection, run, check it back in ---
 %%
-%% A single registered process maps an integer handle id to its connection
-%% process. Lookups are cheap and queries go straight to the connection, so two
-%% handles never serialise through one another.
+%% A verb resolves the handle to its pool, borrows a connection, sends the
+%% request straight to that connection process, and returns it to the pool. Two
+%% handles never serialise through one another, and two callers on one handle run
+%% concurrently across distinct pooled connections.
 
-pg_call(Id, Req) ->
+pg_call(Id, Verb) ->
     case pg_registry_call({lookup, Id}) of
-        {ok, Pid} ->
-            Ref = make_ref(),
-            Pid ! {Req, self(), Ref},
-            receive
-                {Ref, Reply} -> Reply
-            after ?QUERY_TIMEOUT ->
-                {error, #{code => <<"db.timeout">>,
-                          message => <<"postgres request timed out">>}}
+        {ok, Pool} ->
+            case pool_checkout(Pool) of
+                {ok, Worker} ->
+                    Reply = worker_request(Worker, Verb),
+                    pool_checkin(Pool, Worker),
+                    Reply;
+                {error, E} ->
+                    {error, E}
             end;
         _ ->
             {error, #{code => <<"db.conn.closed">>,
                       message => <<"connection handle not found">>}}
     end.
+
+%% Send a verb to a borrowed connection and await its reply. A connection that
+%% dies mid-request never answers; the timeout turns that into a structured
+%% error, and the pool independently drops the dead connection on its DOWN.
+worker_request(Worker, Verb) ->
+    Ref = make_ref(),
+    Worker ! {Verb, self(), Ref},
+    receive
+        {Ref, Reply} -> Reply
+    after ?QUERY_TIMEOUT ->
+        {error, #{code => <<"db.timeout">>,
+                  message => <<"postgres request timed out">>}}
+    end.
+
+%% --- Handle registry ---
+%%
+%% A single registered process maps an integer handle id to its pool manager.
+%% Lookups are cheap; the verb path then borrows a connection from the pool.
 
 pg_registry_call(Req) ->
     pg_registry_ensure(),
@@ -147,40 +201,264 @@ pg_registry_loop(Map) ->
             pg_registry_loop(maps:remove(Id, Map))
     end.
 
+%% --- Pool manager ---
+%%
+%% One manager per handle owns the connection pool. It keeps the live
+%% connections partitioned into `idle` (ready to lend) and `busy` (lent out),
+%% monitors every one in `mons`, and queues `waiters` that arrived while the pool
+%% was at `max` with nothing free. The live count is map_size(mons), so the pool
+%% grows by opening a connection only when a checkout finds none idle and the
+%% count is still below max.
+%%
+%% Checkout/checkin and DOWN drive every transition:
+%%   - checkout: lend an idle connection, else open one if below max, else wait.
+%%   - checkin:  hand the connection to the oldest waiter, else return it to idle.
+%%   - DOWN:     forget the connection; if a waiter is parked, open a replacement.
+%% A parked waiter is bounded by a manager-side timer, so a caller never blocks
+%% past ?CHECKOUT_TIMEOUT and a connection is never lent to a caller that gave up.
+
+pool_init(Config, FirstWorker) ->
+    Mon = erlang:monitor(process, FirstWorker),
+    State = #{config  => Config,
+              max     => maps:get(pool_size, Config, 1),
+              idle    => [FirstWorker],
+              busy    => #{},
+              mons    => #{FirstWorker => Mon},
+              waiters => queue:new()},
+    pool_loop(State).
+
+pool_loop(State) ->
+    receive
+        {checkout, ReplyTo, Ref} ->
+            pool_loop(handle_checkout(State, ReplyTo, Ref));
+        {checkin, Worker} ->
+            pool_loop(handle_checkin(State, Worker));
+        {checkout_cancel, Ref} ->
+            pool_loop(cancel_waiter(State, Ref));
+        {'DOWN', _MonRef, process, Worker, _Reason} ->
+            pool_loop(handle_down(State, Worker));
+        {timeout, _TimerRef, {waiter_timeout, Ref}} ->
+            pool_loop(timeout_waiter(State, Ref));
+        {close, ReplyTo, Ref} ->
+            close_all(State),
+            ReplyTo ! {Ref, {ok, ok}}
+    end.
+
+%% Lend an idle connection if one is live; otherwise open a fresh one when the
+%% pool has headroom, and park the caller as a waiter when it does not.
+handle_checkout(State, ReplyTo, Ref) ->
+    #{idle := Idle, busy := Busy, mons := Mons, max := Max} = State,
+    case take_live(Idle) of
+        {ok, Worker, Rest} ->
+            ReplyTo ! {Ref, {ok, Worker}},
+            State#{idle := Rest, busy := Busy#{Worker => true}};
+        {none, Rest} ->
+            case maps:size(Mons) < Max of
+                true ->
+                    case open_worker(State) of
+                        {ok, Worker, Mon} ->
+                            ReplyTo ! {Ref, {ok, Worker}},
+                            State#{idle := Rest,
+                                   busy := Busy#{Worker => true},
+                                   mons := Mons#{Worker => Mon}};
+                        {error, E} ->
+                            ReplyTo ! {Ref, {error, E}},
+                            State#{idle := Rest}
+                    end;
+                false ->
+                    enqueue_waiter(State#{idle := Rest}, ReplyTo, Ref)
+            end
+    end.
+
+%% Return a borrowed connection. An unknown one (already dropped on its DOWN) is
+%% ignored, and a dead one is dropped rather than parked back in idle. A live one
+%% is handed to the oldest waiter if any, else parked as idle.
+handle_checkin(State, Worker) ->
+    #{busy := Busy, idle := Idle, waiters := Waiters} = State,
+    case maps:is_key(Worker, Busy) of
+        false ->
+            State;
+        true ->
+            case is_process_alive(Worker) of
+                false ->
+                    State#{busy := maps:remove(Worker, Busy)};
+                true ->
+                    case queue:out(Waiters) of
+                        {{value, {Ref, ReplyTo, Timer}}, Waiters1} ->
+                            erlang:cancel_timer(Timer),
+                            ReplyTo ! {Ref, {ok, Worker}},
+                            State#{waiters := Waiters1};
+                        {empty, _} ->
+                            State#{busy := maps:remove(Worker, Busy),
+                                   idle := [Worker | Idle]}
+                    end
+            end
+    end.
+
+%% A connection died. Forget it everywhere; if a caller is parked and the pool
+%% now has headroom, open a replacement to serve the oldest waiter.
+handle_down(State, Worker) ->
+    #{idle := Idle, busy := Busy, mons := Mons} = State,
+    State1 = State#{mons := maps:remove(Worker, Mons),
+                    idle := lists:delete(Worker, Idle),
+                    busy := maps:remove(Worker, Busy)},
+    serve_waiter(State1).
+
+serve_waiter(State) ->
+    #{waiters := Waiters, mons := Mons, busy := Busy, max := Max} = State,
+    case queue:out(Waiters) of
+        {empty, _} ->
+            State;
+        {{value, {Ref, ReplyTo, Timer}}, Waiters1} ->
+            case maps:size(Mons) < Max of
+                false ->
+                    State;
+                true ->
+                    erlang:cancel_timer(Timer),
+                    case open_worker(State) of
+                        {ok, Worker, Mon} ->
+                            ReplyTo ! {Ref, {ok, Worker}},
+                            State#{waiters := Waiters1,
+                                   busy := Busy#{Worker => true},
+                                   mons := Mons#{Worker => Mon}};
+                        {error, E} ->
+                            ReplyTo ! {Ref, {error, E}},
+                            State#{waiters := Waiters1}
+                    end
+            end
+    end.
+
+%% Pop the first live connection from the idle list, dropping any that died
+%% between being parked and now. Returns {ok, Worker, Rest} or {none, []}.
+take_live([]) ->
+    {none, []};
+take_live([Worker | Rest]) ->
+    case is_process_alive(Worker) of
+        true  -> {ok, Worker, Rest};
+        false -> take_live(Rest)
+    end.
+
+enqueue_waiter(State, ReplyTo, Ref) ->
+    #{waiters := Waiters} = State,
+    Timer = erlang:start_timer(?CHECKOUT_TIMEOUT, self(), {waiter_timeout, Ref}),
+    State#{waiters := queue:in({Ref, ReplyTo, Timer}, Waiters)}.
+
+%% The manager-side checkout timer fired: drop the waiter and tell its caller.
+%% Idempotent — a waiter already served (its timer cancelled, but the timeout
+%% message may have raced ahead) is simply not found.
+timeout_waiter(State, Ref) ->
+    #{waiters := Waiters} = State,
+    case remove_waiter(Waiters, Ref) of
+        {{Ref, ReplyTo, _Timer}, Waiters1} ->
+            ReplyTo ! {Ref, {error, #{code => <<"db.pool.timeout">>,
+                                      message => <<"connection pool checkout timed out">>}}},
+            State#{waiters := Waiters1};
+        notfound ->
+            State
+    end.
+
+%% Caller-side backstop cancel: drop the waiter without answering it.
+cancel_waiter(State, Ref) ->
+    #{waiters := Waiters} = State,
+    case remove_waiter(Waiters, Ref) of
+        {{Ref, _ReplyTo, Timer}, Waiters1} ->
+            erlang:cancel_timer(Timer),
+            State#{waiters := Waiters1};
+        notfound ->
+            State
+    end.
+
+remove_waiter(Waiters, Ref) ->
+    case lists:keytake(Ref, 1, queue:to_list(Waiters)) of
+        {value, Waiter, Rest} -> {Waiter, queue:from_list(Rest)};
+        false                 -> notfound
+    end.
+
+%% Open one connection, spawn its process, hand the socket over, and monitor it.
+%% The manager owns the socket between connect and the handover, so the transfer
+%% is always valid.
+open_worker(#{config := Config}) ->
+    case do_connect(Config) of
+        {ok, Conn} ->
+            Worker = spawn(fun() -> pg_conn_loop(Conn) end),
+            set_controlling(Conn, Worker),
+            Mon = erlang:monitor(process, Worker),
+            {ok, Worker, Mon};
+        {error, E} ->
+            {error, E}
+    end.
+
+%% Tear the pool down: stop monitoring and shut every connection (its socket
+%% closes with the process), then fail any parked waiters.
+close_all(State) ->
+    #{mons := Mons, waiters := Waiters} = State,
+    maps:foreach(
+        fun(Worker, Mon) ->
+            erlang:demonitor(Mon, [flush]),
+            exit(Worker, shutdown)
+        end, Mons),
+    lists:foreach(
+        fun({Ref, ReplyTo, Timer}) ->
+            erlang:cancel_timer(Timer),
+            ReplyTo ! {Ref, {error, #{code => <<"db.conn.closed">>,
+                                      message => <<"connection pool closed">>}}}
+        end, queue:to_list(Waiters)),
+    ok.
+
+%% --- Pool client helpers (run in the calling process) ---
+
+pool_checkout(Pool) ->
+    Ref = make_ref(),
+    Pool ! {checkout, self(), Ref},
+    receive
+        {Ref, Reply} -> Reply
+    after ?CHECKOUT_TIMEOUT + 1000 ->
+        %% Backstop only: the manager enforces ?CHECKOUT_TIMEOUT and replies
+        %% first. Cancel in case the reply was lost (a dead manager, say).
+        Pool ! {checkout_cancel, Ref},
+        {error, #{code => <<"db.pool.timeout">>,
+                  message => <<"connection pool checkout timed out">>}}
+    end.
+
+pool_checkin(Pool, Worker) ->
+    Pool ! {checkin, Worker},
+    ok.
+
 %% --- Connection process ---
 %%
 %% Owns one socket and runs every request to completion before taking the next,
-%% so one connection is never used concurrently. Each verb builds its SQL here,
-%% with all values carried as bind parameters.
+%% so one connection is never used concurrently. A SQL error is returned and the
+%% socket lives on; a transport fault (`pg_fatal`) is answered once and then ends
+%% the process, so the pool drops the broken socket on its DOWN rather than
+%% lending it out again.
 
 pg_conn_loop(Conn) ->
     receive
-        {{insert, Table, Row}, From, Ref} ->
-            From ! {Ref, do_insert(Conn, Table, Row)},
-            pg_conn_loop(Conn);
-        {{all, Table}, From, Ref} ->
-            Sql = ["SELECT * FROM ", quote_ident(Table)],
-            From ! {Ref, run_query(Conn, Sql, [])},
-            pg_conn_loop(Conn);
-        {{select, Table, Tree}, From, Ref} ->
-            {Where, Binds} = compile_where(Tree),
-            Sql = ["SELECT * FROM ", quote_ident(Table), " WHERE ", Where],
-            From ! {Ref, run_query(Conn, Sql, Binds)},
-            pg_conn_loop(Conn);
-        {{get_rows, Table, Column, Key}, From, Ref} ->
-            Sql = ["SELECT * FROM ", quote_ident(Table),
-                   " WHERE ", quote_ident(Column), " = $1"],
-            From ! {Ref, run_query(Conn, Sql, [Key])},
-            pg_conn_loop(Conn);
-        {{delete, Table, Tree}, From, Ref} ->
-            {Where, Binds} = compile_where(Tree),
-            Sql = ["DELETE FROM ", quote_ident(Table), " WHERE ", Where],
-            From ! {Ref, do_exec(Conn, Sql, Binds)},
-            pg_conn_loop(Conn);
-        {close, From, Ref} ->
-            transport_close(Conn),
-            From ! {Ref, {ok, ok}}
+        {Verb, From, Ref} ->
+            try run_verb(Conn, Verb) of
+                Reply ->
+                    From ! {Ref, Reply},
+                    pg_conn_loop(Conn)
+            catch
+                throw:{pg_fatal, E} ->
+                    From ! {Ref, {error, E}},
+                    transport_close(Conn)
+            end
     end.
+
+run_verb(Conn, {insert, Table, Row}) ->
+    do_insert(Conn, Table, Row);
+run_verb(Conn, {all, Table}) ->
+    run_query(Conn, ["SELECT * FROM ", quote_ident(Table)], []);
+run_verb(Conn, {select, Table, Tree}) ->
+    {Where, Binds} = compile_where(Tree),
+    run_query(Conn, ["SELECT * FROM ", quote_ident(Table), " WHERE ", Where], Binds);
+run_verb(Conn, {get_rows, Table, Column, Key}) ->
+    Sql = ["SELECT * FROM ", quote_ident(Table), " WHERE ", quote_ident(Column), " = $1"],
+    run_query(Conn, Sql, [Key]);
+run_verb(Conn, {delete, Table, Tree}) ->
+    {Where, Binds} = compile_where(Tree),
+    do_exec(Conn, ["DELETE FROM ", quote_ident(Table), " WHERE ", Where], Binds).
 
 do_insert(Conn, Table, Row) ->
     Pairs = maps:to_list(Row),
@@ -400,6 +678,9 @@ do_connect(Config) ->
                 {ok, Conn}
             catch
                 throw:{pg_error, E} ->
+                    gen_tcp:close(Sock),
+                    {error, E};
+                throw:{pg_fatal, E} ->
                     gen_tcp:close(Sock),
                     {error, E}
             end;
@@ -630,19 +911,23 @@ read_cstring(Bin) ->
     end.
 
 %% --- Transport ---
+%%
+%% A send or receive failure is a transport fault, thrown as `pg_fatal` so it is
+%% not caught alongside SQL errors: the connection process ends and the pool
+%% replaces it, rather than the broken socket being returned to service.
 
 xsend({Mod, Sock}, Data) ->
     case Mod:send(Sock, Data) of
         ok -> ok;
         {error, Reason} ->
-            throw({pg_error, #{code => <<"db.conn.send">>, message => to_bin(Reason)}})
+            throw({pg_fatal, #{code => <<"db.conn.send">>, message => to_bin(Reason)}})
     end.
 
 xrecv({Mod, Sock}, N) ->
     case Mod:recv(Sock, N, ?RECV_TIMEOUT) of
         {ok, Data} -> Data;
         {error, Reason} ->
-            throw({pg_error, #{code => <<"db.conn.recv">>, message => to_bin(Reason)}})
+            throw({pg_fatal, #{code => <<"db.conn.recv">>, message => to_bin(Reason)}})
     end.
 
 transport_close({Mod, Sock}) -> Mod:close(Sock).

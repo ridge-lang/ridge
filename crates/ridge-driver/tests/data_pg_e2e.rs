@@ -5,7 +5,9 @@
 //! surface the in-memory adapter does — clearing the table, seeding three users,
 //! and reading them back decoded through `deriving (Row)`. It proves the wire
 //! client connects, authenticates, runs parameterised insert/select/delete, and
-//! decodes `RowDescription`/`DataRow` into the entity.
+//! decodes `RowDescription`/`DataRow` into the entity. A final probe drives the
+//! connection pool with six concurrent reads on one handle, so the pooled path —
+//! concurrent checkout, growth under load, and waiter reuse — is covered too.
 //!
 //! Gated three ways: the `beam-runtime` feature, a `which` guard for `erl`/`erlc`,
 //! and the `RIDGE_TEST_PG_URL` environment variable. Without a reachable database
@@ -36,7 +38,7 @@ import std.map as Map
 pub type User = { id: Int, age: Int, name: Text } deriving (Row)
 
 fn pgConfig () -> Config =
-    Config { host = "__PG_HOST__", port = __PG_PORT__, database = "__PG_DATABASE__", user = "__PG_USER__", password = "__PG_PASSWORD__", sslMode = "__PG_SSLMODE__", poolSize = 1 }
+    Config { host = "__PG_HOST__", port = __PG_PORT__, database = "__PG_DATABASE__", user = "__PG_USER__", password = "__PG_PASSWORD__", sslMode = "__PG_SSLMODE__", poolSize = 4 }
 
 pub fn userRow (uid: Int) (uage: Int) (uname: Text) -> Map Text SqlValue =
     Map.fromList [("id", toSql uid), ("age", toSql uage), ("name", toSql uname)]
@@ -241,12 +243,33 @@ fn postgres_adapter_reads_a_real_table() {
         .expect("a user module")
         .to_owned();
 
+    // Drive the connection pool directly: open one handle with room for four
+    // connections, fire six reads at once, and confirm they all come back. This
+    // exercises concurrent checkout, the pool growing under load, and waiters
+    // reusing a connection once it frees — all against the live database.
+    let pool_probe = format!(
+        "{{ok, ProbeConn}} = ridge_pg:pg_connect(<<\"{host}\">>, {port}, <<\"{db}\">>, <<\"{user}\">>, <<\"{pass}\">>, <<\"{ssl}\">>, 4), \
+         ProbeId = maps:get(id, ProbeConn), \
+         ProbeSelf = self(), \
+         [spawn(fun() -> ProbeSelf ! {{probe, ridge_pg:pg_all(ProbeId, <<\"ridge_pg_users\">>)}} end) || _ <- lists:seq(1, 6)], \
+         ProbeRs = [receive {{probe, ProbeX}} -> ProbeX after 15000 -> timeout end || _ <- lists:seq(1, 6)], \
+         ProbeOk = lists:all(fun(ProbeR) -> case ProbeR of {{ok, _}} -> true; _ -> false end end, ProbeRs), \
+         io:format(\"concurrent=~p~n\", [ProbeOk]), \
+         ridge_pg:pg_close(ProbeId), ",
+        host = parts.host,
+        port = parts.port,
+        db = parts.database,
+        user = parts.user,
+        pass = parts.password,
+        ssl = parts.sslmode,
+    );
     let expr = format!(
         "io:format(\"countAll=~w~n\",[{module}:countAll()]), \
          io:format(\"adultsCount=~w~n\",[{module}:adultsCount()]), \
          io:format(\"firstName=~s~n\",[{module}:firstName()]), \
          io:format(\"getName=~s~n\",[{module}:getName()]), \
          io:format(\"afterDelete=~w~n\",[{module}:afterDelete()]), \
+         {pool_probe} \
          halt()."
     );
     let output = Command::new("erl")
@@ -272,6 +295,10 @@ fn postgres_adapter_reads_a_real_table() {
         (
             "afterDelete=2",
             "two rows remain after deleting the under-25 row",
+        ),
+        (
+            "concurrent=true",
+            "the pool serves six concurrent reads on one handle",
         ),
     ] {
         assert!(

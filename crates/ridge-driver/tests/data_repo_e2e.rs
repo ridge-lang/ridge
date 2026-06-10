@@ -33,6 +33,10 @@ import std.map as Map
 
 pub type User = { id: Int, age: Int, name: Text } deriving (Row)
 
+-- A projected shape: the projection renames `name` -> `who` and `age` -> `years`,
+-- so the decode proves the alias (`column AS alias`) and re-keying both work.
+pub type Summary = { who: Text, years: Int } deriving (Row)
+
 -- Join the names of a user list with commas, so a query's order is observable
 -- as a single string the probe can assert on.
 fn joinNames (us: List User) -> Text =
@@ -40,6 +44,14 @@ fn joinNames (us: List User) -> Text =
         []        -> ""
         u :: []   -> u.name
         u :: rest -> Text.concat u.name (Text.concat "," (joinNames rest))
+
+-- The `who` field of each summary, comma-joined, so a projection's order and
+-- column renaming are both observable as one string.
+fn joinWho (ss: List Summary) -> Text =
+    match ss
+        []        -> ""
+        s :: []   -> s.who
+        s :: rest -> Text.concat s.who (Text.concat "," (joinWho rest))
 
 pub fn userRow (uid: Int) (uage: Int) (uname: Text) -> Map Text SqlValue =
     Map.fromList [("id", toSql uid), ("age", toSql uage), ("name", toSql uname)]
@@ -162,6 +174,28 @@ pub fn db firstAdultName () -> Text =
                 Err _       -> "first-err"
                 Ok None     -> "none"
                 Ok (Some u) -> u.name
+
+-- projection: order by age descending, project into the renamed `Summary`, and
+-- join the `who` fields -> "lin,max,ada". Proves selectList pushes the
+-- select-list down and decodes the aliased columns into the named shape.
+pub fn db summaryNames () -> Text =
+    match setup ()
+        Err _ -> "setup-err"
+        Ok r  ->
+            match r |> Repo.query |> Repo.orderBy Desc (fn (u: User) -> u.age) |> Repo.selectList (fn (u: User) -> Summary { who = u.name, years = u.age })
+                Err _ -> "list-err"
+                Ok ss -> joinWho ss
+
+-- projection: order by age descending, take the first summary, read its renamed
+-- `years` column -> 30 (lin). Proves selectFirst + decode of an aliased column.
+pub fn db topYears () -> Int =
+    match setup ()
+        Err _ -> 0 - 1
+        Ok r  ->
+            match r |> Repo.query |> Repo.orderBy Desc (fn (u: User) -> u.age) |> Repo.selectFirst (fn (u: User) -> Summary { who = u.name, years = u.age })
+                Err _       -> 0 - 2
+                Ok None     -> 0 - 3
+                Ok (Some s) -> s.years
 "#;
 
 fn write_workspace(root: &std::path::Path) {
@@ -241,6 +275,8 @@ fn repo_surface_runs_on_beam() {
          io:format(\"orderedNames=~s~n\",[{module}:orderedNames()]), \
          io:format(\"pagedName=~s~n\",[{module}:pagedName()]), \
          io:format(\"firstAdultName=~s~n\",[{module}:firstAdultName()]), \
+         io:format(\"summaryNames=~s~n\",[{module}:summaryNames()]), \
+         io:format(\"topYears=~w~n\",[{module}:topYears()]), \
          halt()."
     );
     let output = Command::new("erl")
@@ -277,6 +313,14 @@ fn repo_surface_runs_on_beam() {
         (
             "firstAdultName=lin",
             "filter + orderBy + first yields the oldest adult",
+        ),
+        (
+            "summaryNames=lin,max,ada",
+            "selectList projects the renamed columns and decodes them in age order",
+        ),
+        (
+            "topYears=30",
+            "selectFirst decodes the aliased `years` column of the oldest row",
         ),
     ] {
         assert!(

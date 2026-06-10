@@ -1530,7 +1530,7 @@ mod tests {
                     continue;
                 }
                 // std.data: `Adapter` and its methods (`insert`/`all`/`select`/
-                // `get`/`delete`/`fetch`/`countWhere`) are a class seeded via
+                // `get`/`delete`/`fetch`/`countWhere`/`project`) are a class seeded via
                 // `seed_sql_codec_schemes`; `MemAdapter`/`Postgres`/`Config` are
                 // reconciled types, and `memAdapter`/`connect` are seeded via
                 // `reconciled_fn_scheme` (their signatures name reconciled types),
@@ -1546,6 +1546,7 @@ mod tests {
                             | "delete"
                             | "fetch"
                             | "countWhere"
+                            | "project"
                             | "MemAdapter"
                             | "memAdapter"
                             | "Postgres"

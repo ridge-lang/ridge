@@ -665,7 +665,15 @@ pub fn lower_expr(ctx: &mut LowerCtx<'_>, expr: &Expr) -> IrExpr {
                         .and_then(|nid| ctx.node_type(nid).cloned())
                 })
                 .collect();
-            let dict_args = build_dict_args(ctx, &ir_callee, &arg_types, *span);
+            // The call's own result type pins a constraint variable that lives
+            // only in the callee's return type (a return-pinned class method).
+            let call_result_ty = ctx
+                .node_id_map
+                .as_ref()
+                .and_then(|m| m.get(*span, NodeKind::Expr))
+                .and_then(|nid| ctx.node_type(nid).cloned());
+            let dict_args =
+                build_dict_args(ctx, &ir_callee, &arg_types, call_result_ty.as_ref(), *span);
             let all_args: Vec<IrExpr> = dict_args.into_iter().chain(ir_args.clone()).collect();
 
             let call = IrExpr::Call {
@@ -987,10 +995,13 @@ fn reify_node(ctx: &mut LowerCtx<'_>, e: &Expr) -> IrExpr {
             qexpr_node(ctx, name, variant, vec![l, r], *span)
         }
 
-        // `{ field = u.col, … }` → `QProj [(alias, QCol "col"), …]` — a
-        // select-list. Each field's name is the output alias (its SQL-cased
-        // column name); the value reifies to the projected column.
-        Expr::RecordLit { fields, span } => {
+        // `{ field = u.col, … }` (and the named `Shape { field = u.col, … }`,
+        // whose constructor only names the decode target) → `QProj [(alias,
+        // QCol "col"), …]` — a select-list. Each field's name is the output
+        // alias (its SQL-cased column name); the value reifies to the projected
+        // column. The constructor name is irrelevant to the SQL, so both record
+        // forms reify the same way.
+        Expr::RecordLit { fields, span } | Expr::Record { fields, span, .. } => {
             let items: Vec<IrExpr> = fields
                 .iter()
                 .map(|fi| {
@@ -1120,6 +1131,7 @@ pub(crate) fn build_dict_args(
     ctx: &mut LowerCtx<'_>,
     callee: &IrExpr,
     arg_types: &[Option<Type>],
+    call_result_ty: Option<&Type>,
     span: Span,
 ) -> Vec<IrExpr> {
     // Constrained callees take one dict arg per constraint. A `SymbolRef::Local`
@@ -1127,8 +1139,10 @@ pub(crate) fn build_dict_args(
     // `SymbolRef::Stdlib` callee may be a constrained reconciled stdlib fn (e.g.
     // std.repo's `all`/`insertRow`, typed `where Adapter a, Row e`), whose
     // constraints come from the reconciled scheme table rather than this
-    // module's fns. Both feed the same dict-building loop below.
-    let (constraints, param_types) = match callee {
+    // module's fns. Both feed the same dict-building loop below. `ret_ty` is the
+    // callee scheme's return type; aligned against the call's own result type it
+    // pins a constraint variable that appears only in the result.
+    let (constraints, param_types, ret_ty) = match callee {
         IrExpr::Symbol {
             sym: SymbolRef::Local { name, .. },
             ..
@@ -1139,19 +1153,34 @@ pub(crate) fn build_dict_args(
                 return vec![];
             }
             let param_types = ctx.lookup_fn_param_types(&name).to_vec();
-            (constraints, param_types)
+            let ret_ty = ctx.lookup_fn_ret_type(&name);
+            (constraints, param_types, ret_ty)
         }
         IrExpr::Symbol {
             sym: SymbolRef::Stdlib { module, name },
             ..
         } => match ctx.reconciled_stdlib_fn_dict_sig(module, name) {
-            Some((constraints, param_types)) if !constraints.is_empty() => {
-                (constraints, param_types)
+            Some((constraints, param_types, ret)) if !constraints.is_empty() => {
+                (constraints, param_types, Some(ret))
             }
             _ => return vec![],
         },
         _ => return vec![],
     };
+
+    // Extend the pinning search with the callee's return type aligned against the
+    // call's own result type. A return-pinned class method (e.g. `Row`'s
+    // `fromRow`, whose class variable sits only in `Result e Error`) is otherwise
+    // unpinnable when no argument carries the variable — which happens for a
+    // piped repository whose type the node map did not record. The result type
+    // always carries it, so this keeps the right instance threaded even with two
+    // `deriving (Row)` records in scope.
+    let mut pin_params: Vec<Type> = param_types;
+    let mut pin_args: Vec<Option<Type>> = arg_types.to_vec();
+    if let (Some(ret), Some(result)) = (ret_ty, call_result_ty) {
+        pin_params.push(ret);
+        pin_args.push(Some(result.clone()));
+    }
 
     let mut dict_args: Vec<IrExpr> = Vec::with_capacity(constraints.len());
 
@@ -1159,11 +1188,12 @@ pub(crate) fn build_dict_args(
         let class_name = ctx.class_name(c.class).unwrap_or("Unknown").to_owned();
 
         // The concrete type the constraint variable was unified to at this call
-        // site: walk the scheme's parameter types in lockstep with the resolved
-        // argument types, find where `c.ty` appears, and read off the matching
-        // sub-type. `None` when the variable cannot be located (no type info).
-        let constraint_ty = constraint_arg_type(&param_types, arg_types, c.sole_ty())
-            .map(|ty| deep_peel_alias(&ty));
+        // site: walk the scheme's parameter (and return) types in lockstep with
+        // the resolved argument (and result) types, find where `c.ty` appears,
+        // and read off the matching sub-type. `None` when the variable cannot be
+        // located (no type info).
+        let constraint_ty =
+            constraint_arg_type(&pin_params, &pin_args, c.sole_ty()).map(|ty| deep_peel_alias(&ty));
 
         let dict_expr = resolve_dict_arg(ctx, c.class, &class_name, constraint_ty.as_ref(), span);
         dict_args.push(dict_expr);

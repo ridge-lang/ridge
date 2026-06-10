@@ -173,6 +173,42 @@ pub fn first (q: Query e a) -> Result (Option e) Error where Adapter a, Row e =
         Err err -> Err err
         Ok rows -> firstDecoded rows
 
+-- Run the query as a projection: select only the columns the shape `s` names and
+-- decode each projected row into `s`. The projection is written by naming the
+-- result record — `fn (u: User) -> Summary { name = u.name, year = u.signupYear }`
+-- — which fixes `s` to that record and lists its columns. The backend pushes the
+-- select-list down (`SELECT name, signup_year AS year …`) so only those columns
+-- cross, in the chosen order and page.
+pub fn selectList (proj: Quote (Map Text SqlValue -> s)) (q: Query e a) -> Result (List s) Error where Adapter a, Row s =
+    match project q.repo.adapter q.repo.table q.pred q.orders q.lim q.off (projColumns proj)
+        Err err -> Err err
+        Ok rows -> decodeRows rows
+
+-- Run a projection for just its first row, decoded into `s`; `None` when none
+-- match. The ordering and offset still apply, with a one-row limit.
+pub fn selectFirst (proj: Quote (Map Text SqlValue -> s)) (q: Query e a) -> Result (Option s) Error where Adapter a, Row s =
+    match project q.repo.adapter q.repo.table q.pred q.orders 1 q.off (projColumns proj)
+        Err err -> Err err
+        Ok rows -> firstDecoded rows
+
+-- The `(alias, column)` pairs a projection names. The projection quote captures
+-- a `QProj` whose select-list is a list of `(alias, QCol column)`; anything else
+-- contributes no columns.
+fn projColumns (proj: Quote (Map Text SqlValue -> s)) -> List (Text, Text) =
+    match proj.tree
+        QProj cols -> projPairs cols
+        _          -> []
+
+fn projPairs (cols: List (Text, QExpr)) -> List (Text, Text) =
+    match cols
+        []                   -> []
+        (alias, col) :: rest -> (alias, qcolName col) :: projPairs rest
+
+fn qcolName (e: QExpr) -> Text =
+    match e
+        QCol c -> c
+        _      -> ""
+
 -- The column an ordering key names. The key quote captures a single column, so
 -- its tree is a `QCol`; anything else contributes an empty key name.
 fn orderColumn (key: Quote (Map Text SqlValue -> k)) -> Text =

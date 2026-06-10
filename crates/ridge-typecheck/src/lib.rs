@@ -1415,6 +1415,58 @@ fn seed_sql_codec_schemes(
                 },
             );
         }
+        // project :: ∀a e. a -> Text -> Quote (e -> Bool) -> List (Bool, Text)
+        //                  -> Int -> Int -> List (Text, Text)
+        //                  -> Result (List (Map Text SqlValue)) Error where Adapter a.
+        // Like `fetch`, plus a `(alias, column)` select-list: each returned row
+        // holds only those columns, keyed by alias.
+        {
+            let a = ctx.fresh_tyvid();
+            let e = ctx.fresh_tyvid();
+            let orders = Type::Con(
+                b.list,
+                vec![Type::Tuple(vec![
+                    Type::Con(b.bool, vec![]),
+                    Type::Con(b.text, vec![]),
+                ])],
+            );
+            let cols = Type::Con(
+                b.list,
+                vec![Type::Tuple(vec![
+                    Type::Con(b.text, vec![]),
+                    Type::Con(b.text, vec![]),
+                ])],
+            );
+            let fn_ty = Type::Fn {
+                params: vec![
+                    Type::Var(a),
+                    Type::Con(b.text, vec![]),
+                    quote_pred(e),
+                    orders,
+                    Type::Con(b.int, vec![]),
+                    Type::Con(b.int, vec![]),
+                    cols,
+                ],
+                ret: Box::new(Type::Con(
+                    b.result,
+                    vec![
+                        Type::Con(b.list, vec![map_row()]),
+                        Type::Con(b.error, vec![]),
+                    ],
+                )),
+                caps: CapRow::Concrete(CapabilitySet::PURE),
+            };
+            ctx.env.bind(
+                "project".to_owned(),
+                Scheme {
+                    vars: vec![a, e],
+                    cap_vars: vec![],
+                    row_vars: vec![],
+                    ty: fn_ty,
+                    constraints: vec![Constraint::single(adapter, a)],
+                },
+            );
+        }
     }
 }
 
@@ -1437,13 +1489,17 @@ pub fn reconciled_fn_dict_sig(
     reconciled: &FxHashMap<String, TyConId>,
     b: &BuiltinTyCons,
     classes: &crate::class_env::ClassTable,
-) -> Option<(Vec<ridge_types::Constraint>, Vec<ridge_types::Type>)> {
+) -> Option<(
+    Vec<ridge_types::Constraint>,
+    Vec<ridge_types::Type>,
+    ridge_types::Type,
+)> {
     let scheme =
         crate::stdlib_types::reconciled_fn_scheme(module, name, reconciled, b, Some(classes))?;
-    let ridge_types::Type::Fn { params, .. } = scheme.ty else {
+    let ridge_types::Type::Fn { params, ret, .. } = scheme.ty else {
         return None;
     };
-    Some((scheme.constraints, params))
+    Some((scheme.constraints, params, *ret))
 }
 
 // ── Tests ──────────────────────────────────────────────────────────────────────

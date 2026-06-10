@@ -947,6 +947,21 @@ pub fn ast_type_to_ridge_type(
         }
     }
 
+    /// Look up a type-constructor `TyConId` by name from the full arena. A
+    /// fallback for names that are not user-defined (absent from `names`) but are
+    /// nonetheless registered constructors — notably reconciled stdlib types like
+    /// `Repo`, `Query`, `MemAdapter`, and `Postgres`, which are imported into a
+    /// user module's arena yet never enter its user-tycon-name map. Without this,
+    /// an annotation such as `Repo User MemAdapter` resolves the head to a fresh
+    /// variable and silently drops its type arguments — including a phantom entity
+    /// the annotation was meant to pin, leaving it free to over-generalise.
+    fn arena_tycon_by_name(ctx: &InferCtx, n: &str) -> Option<TyConId> {
+        ctx.tycon_decls
+            .iter()
+            .position(|d| d.name == n)
+            .map(|i| TyConId(u32::try_from(i).unwrap_or(u32::MAX)))
+    }
+
     /// Wrap an alias use as `Type::Alias { name, body }`, substituting the
     /// alias's own parameters with `arg_tys` when supplied.  Caller is
     /// responsible for arity matching; this helper only runs the
@@ -1010,6 +1025,11 @@ pub fn ast_type_to_ridge_type(
                 }
                 return Type::Con(id, vec![]);
             }
+            // Fallback: a reconciled stdlib type (e.g. `MemAdapter`, `Postgres`)
+            // in the arena but not the user-tycon-name map.
+            if let Some(id) = arena_tycon_by_name(ctx, n) {
+                return Type::Con(id, vec![]);
+            }
             // Unknown — allocate fresh var as fallback.
             Type::Var(ctx.fresh_tyvid())
         }
@@ -1031,6 +1051,19 @@ pub fn ast_type_to_ridge_type(
                 // wrap as `Type::Alias` so `shallow_resolve` peels through
                 // to the body.  Arity mismatches fall through to a bare
                 // `Type::Con` so the kind-error path keeps surfacing.
+                if let Some((params, body)) = alias_params_body(ctx, id) {
+                    if params.len() == arg_tys.len() {
+                        return wrap_alias(id, &params, &body, &arg_tys);
+                    }
+                }
+                return Type::Con(id, arg_tys);
+            }
+            // Fallback: a reconciled stdlib type applied to args (e.g. the
+            // `Repo User MemAdapter` / `Query e a` annotations), present in the
+            // arena but absent from the user-tycon-name map. Resolving the head
+            // here keeps the arguments — without it the whole application would
+            // collapse to a fresh variable and drop them.
+            if let Some(id) = arena_tycon_by_name(ctx, n) {
                 if let Some((params, body)) = alias_params_body(ctx, id) {
                     if params.len() == arg_tys.len() {
                         return wrap_alias(id, &params, &body, &arg_tys);

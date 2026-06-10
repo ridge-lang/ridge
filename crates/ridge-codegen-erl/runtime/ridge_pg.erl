@@ -38,6 +38,7 @@
     pg_delete/3,
     pg_fetch/6,
     pg_count_where/3,
+    pg_project/7,
     pg_close/1
 ]).
 
@@ -103,6 +104,13 @@ pg_fetch(Id, Table, Tree, Orders, Lim, Off) ->
 %% pg_count_where/3 — how many rows of Table satisfy Tree, via SELECT COUNT(*)
 %% so no rows cross the wire. Result Int Error.
 pg_count_where(Id, Table, Tree) -> pg_call(Id, {count_where, Table, Tree}).
+
+%% pg_project/7 — the rows of Table that satisfy Tree, ordered and paged as
+%% pg_fetch, with the `{Alias, Column}` projection compiled into the select-list
+%% (`SELECT column AS alias …`); each row comes back keyed by alias. Result
+%% (List Row) Error.
+pg_project(Id, Table, Tree, Orders, Lim, Off, Cols) ->
+    pg_call(Id, {project, Table, Tree, Orders, Lim, Off, Cols}).
 
 %% pg_close/1 — close every connection in the pool and forget the handle.
 %% Result Unit Error.
@@ -477,6 +485,11 @@ run_verb(Conn, {fetch, Table, Tree, Orders, Lim, Off}) ->
     Sql = ["SELECT * FROM ", quote_ident(Table), " WHERE ", Where,
            order_by_clause(Orders), limit_clause(Lim), offset_clause(Off)],
     run_query(Conn, Sql, Binds);
+run_verb(Conn, {project, Table, Tree, Orders, Lim, Off, Cols}) ->
+    {Where, Binds} = compile_where(Tree),
+    Sql = ["SELECT ", select_list(Cols), " FROM ", quote_ident(Table), " WHERE ", Where,
+           order_by_clause(Orders), limit_clause(Lim), offset_clause(Off)],
+    run_query(Conn, Sql, Binds);
 run_verb(Conn, {count_where, Table, Tree}) ->
     do_count(Conn, Table, Tree).
 
@@ -518,6 +531,15 @@ order_by_clause(Orders) -> [" ORDER BY ", lists:join(", ", [order_term(O) || O <
 
 %% Each order key carries `Asc` as the boolean `true`.
 order_term({Asc, Col}) -> [quote_ident(Col), " ", dir_keyword(Asc)].
+
+%% Projection select-list from `{Alias, Column}` pairs. A field whose alias
+%% matches its source column is emitted bare; otherwise as `column AS alias`. An
+%% empty list (a projection that captured no columns) falls back to `*`.
+select_list([])   -> "*";
+select_list(Cols) -> lists:join(", ", [select_term(C) || C <- Cols]).
+
+select_term({Alias, Col}) when Alias =:= Col -> quote_ident(Col);
+select_term({Alias, Col})                    -> [quote_ident(Col), " AS ", quote_ident(Alias)].
 
 dir_keyword(true)  -> "ASC";
 dir_keyword(false) -> "DESC";

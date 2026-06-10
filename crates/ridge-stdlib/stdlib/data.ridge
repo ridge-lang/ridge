@@ -42,6 +42,12 @@ import std.sql (SqlValue)
 -- rather than the caller paging in memory. A negative `lim` means no limit and a
 -- non-positive `off` means no offset. `countWhere` answers how many rows match
 -- without returning them — a `COUNT(*)` push-down for the aggregate verbs.
+--
+-- `project` is `fetch` with a projection: `cols` is a list of `(alias, column)`
+-- pairs, and each returned row holds only those columns keyed by their alias, so
+-- a backend pushes the select-list into the query (`SELECT column AS alias …`)
+-- rather than returning every column and dropping the rest. The alias is the
+-- field name of the shape the caller decodes into.
 pub class Adapter a =
     insert (conn: a) (table: Text) (row: Map Text SqlValue) -> Result Unit Error
     all    (conn: a) (table: Text) -> Result (List (Map Text SqlValue)) Error
@@ -50,6 +56,7 @@ pub class Adapter a =
     delete (conn: a) (table: Text) (pred: Quote (Map Text SqlValue -> Bool)) -> Result Int Error
     fetch  (conn: a) (table: Text) (pred: Quote (Map Text SqlValue -> Bool)) (orders: List (Bool, Text)) (lim: Int) (off: Int) -> Result (List (Map Text SqlValue)) Error
     countWhere (conn: a) (table: Text) (pred: Quote (Map Text SqlValue -> Bool)) -> Result Int Error
+    project (conn: a) (table: Text) (pred: Quote (Map Text SqlValue -> Bool)) (orders: List (Bool, Text)) (lim: Int) (off: Int) (cols: List (Text, Text)) -> Result (List (Map Text SqlValue)) Error
 
 -- A handle to an in-memory store. Opaque: `memAdapter` is the only way to make
 -- one, and the `id` it carries selects this handle's private, isolated store,
@@ -89,6 +96,12 @@ fn _memFetch (id: Int) (table: Text) (tree: QExpr) (orders: List (Bool, Text)) (
 @ffi("ridge_rt", "mem_count_where", 3)
 fn _memCountWhere (id: Int) (table: Text) (tree: QExpr) -> Result Int Error
 
+-- Return the rows of a table that satisfy the predicate tree, ordered and paged
+-- as `mem_fetch`, then projected down to the `(alias, column)` columns: each row
+-- holds only those columns, re-keyed by alias.
+@ffi("ridge_rt", "mem_project", 7)
+fn _memProject (id: Int) (table: Text) (tree: QExpr) (orders: List (Bool, Text)) (lim: Int) (off: Int) (cols: List (Text, Text)) -> Result (List (Map Text SqlValue)) Error
+
 -- Open a fresh in-memory adapter backed by an empty store. Requires the `db`
 -- capability; the handle returned is the proof of access for every later call.
 @ffi("ridge_rt", "mem_new", 1)
@@ -111,6 +124,8 @@ instance Adapter MemAdapter =
         _memFetch conn.id table pred.tree orders lim off
     countWhere (conn: MemAdapter) (table: Text) (pred: Quote (Map Text SqlValue -> Bool)) -> Result Int Error =
         _memCountWhere conn.id table pred.tree
+    project (conn: MemAdapter) (table: Text) (pred: Quote (Map Text SqlValue -> Bool)) (orders: List (Bool, Text)) (lim: Int) (off: Int) (cols: List (Text, Text)) -> Result (List (Map Text SqlValue)) Error =
+        _memProject conn.id table pred.tree orders lim off cols
 
 -- The head of a row list as an `Option` — `get` returns at most one row, so it
 -- reads the first match (or `None` when the column held no such key).
@@ -167,6 +182,12 @@ fn _pgFetch (id: Int) (table: Text) (tree: QExpr) (orders: List (Bool, Text)) (l
 @ffi("ridge_pg", "pg_count_where", 3)
 fn _pgCountWhere (id: Int) (table: Text) (tree: QExpr) -> Result Int Error
 
+-- Return the rows of a table that satisfy the predicate tree, ordered and paged
+-- as `pg_fetch`, with the `(alias, column)` projection compiled into the
+-- select-list (`SELECT column AS alias …`); each row is keyed by alias.
+@ffi("ridge_pg", "pg_project", 7)
+fn _pgProject (id: Int) (table: Text) (tree: QExpr) (orders: List (Bool, Text)) (lim: Int) (off: Int) (cols: List (Text, Text)) -> Result (List (Map Text SqlValue)) Error
+
 -- Open a Postgres connection with the given settings. Requires the `db`
 -- capability; the handle returned is the proof of access for every later call,
 -- exactly like `memAdapter`. A failed connect or authentication is an `Err`.
@@ -190,3 +211,5 @@ instance Adapter Postgres =
         _pgFetch conn.id table pred.tree orders lim off
     countWhere (conn: Postgres) (table: Text) (pred: Quote (Map Text SqlValue -> Bool)) -> Result Int Error =
         _pgCountWhere conn.id table pred.tree
+    project (conn: Postgres) (table: Text) (pred: Quote (Map Text SqlValue -> Bool)) (orders: List (Bool, Text)) (lim: Int) (off: Int) (cols: List (Text, Text)) -> Result (List (Map Text SqlValue)) Error =
+        _pgProject conn.id table pred.tree orders lim off cols

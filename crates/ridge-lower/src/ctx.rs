@@ -30,10 +30,13 @@ type TyConNameCache = FxHashMap<String, TyConId>;
 /// (deterministic by module-walk order). // OQ-PHASE45-006
 type ActorModuleCache = FxHashMap<String, ModuleId>;
 
-/// Per-fn cache of scheme constraints and parameter types, keyed by fn name.
-/// Built lazily from the current module's schemes; see
-/// [`LowerCtx::lookup_fn_constraints`] and [`LowerCtx::lookup_fn_param_types`].
-type FnConstraintCache = FxHashMap<String, (Vec<Constraint>, Vec<Type>)>;
+/// Per-fn cache of scheme constraints, parameter types, and the return type,
+/// keyed by fn name. Built lazily from the current module's schemes; see
+/// [`LowerCtx::lookup_fn_constraints`], [`LowerCtx::lookup_fn_param_types`], and
+/// [`LowerCtx::lookup_fn_ret_type`]. The return type lets the dictionary resolver
+/// pin a constraint variable that appears only in the result (a return-pinned
+/// class method such as `Row`'s `fromRow`).
+type FnConstraintCache = FxHashMap<String, (Vec<Constraint>, Vec<Type>, Type)>;
 
 /// Per-module state threaded through all Phase 5 lowering rules.
 ///
@@ -469,7 +472,7 @@ impl<'tw> LowerCtx<'tw> {
         self.fn_constraint_cache
             .as_ref()
             .and_then(|c| c.get(fn_name))
-            .map_or(&[], |(constraints, _)| constraints.as_slice())
+            .map_or(&[], |(constraints, _, _)| constraints.as_slice())
     }
 
     /// Look up a top-level fn's scheme parameter types by name.
@@ -485,7 +488,21 @@ impl<'tw> LowerCtx<'tw> {
         self.fn_constraint_cache
             .as_ref()
             .and_then(|c| c.get(fn_name))
-            .map_or(&[], |(_, params)| params.as_slice())
+            .map_or(&[], |(_, params, _)| params.as_slice())
+    }
+
+    /// Look up a top-level fn's scheme return type by name.
+    ///
+    /// Used by the dictionary resolver to pin a constraint variable that appears
+    /// only in the result type (a return-pinned class method): the call's own
+    /// result type, aligned with this return type, yields the concrete type.
+    /// Returns `None` when the fn is unknown or has no wired scheme.
+    pub fn lookup_fn_ret_type(&mut self, fn_name: &str) -> Option<Type> {
+        self.ensure_fn_constraint_cache();
+        self.fn_constraint_cache
+            .as_ref()
+            .and_then(|c| c.get(fn_name))
+            .map(|(_, _, ret)| ret.clone())
     }
 
     /// Constraint signature of a constrained stdlib function reached through a
@@ -499,7 +516,7 @@ impl<'tw> LowerCtx<'tw> {
         &self,
         module: &str,
         name: &str,
-    ) -> Option<(Vec<ridge_types::Constraint>, Vec<Type>)> {
+    ) -> Option<(Vec<ridge_types::Constraint>, Vec<Type>, Type)> {
         let ws = self.workspace?;
         let classes = self.class_table?;
         ridge_typecheck::reconciled_fn_dict_sig(
@@ -551,14 +568,16 @@ impl<'tw> LowerCtx<'tw> {
                 .as_ref()
                 .and_then(|m| m.get(body_span, body_kind))
                 .and_then(|nid| tmod.schemes.get(&nid))
-                .map(|scheme| {
-                    let params = match &scheme.ty {
-                        Type::Fn { params, .. } => params.clone(),
-                        _ => Vec::new(),
-                    };
-                    (scheme.constraints.clone(), params)
-                })
-                .unwrap_or_default();
+                .map_or_else(
+                    || (Vec::new(), Vec::new(), Type::Error),
+                    |scheme| {
+                        let (params, ret) = match &scheme.ty {
+                            Type::Fn { params, ret, .. } => (params.clone(), (**ret).clone()),
+                            _ => (Vec::new(), Type::Error),
+                        };
+                        (scheme.constraints.clone(), params, ret)
+                    },
+                );
             cache.insert(decl.name.text.clone(), entry);
         }
 

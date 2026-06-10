@@ -726,6 +726,122 @@ pub fn db bad () -> Result (List User) Error =
 }
 
 #[test]
+fn query_builder_projection_into_named_shape_typechecks() {
+    // A projection names its result record (`Summary { … }`), which pins the
+    // decode target so `selectList` answers `List Summary` and `selectFirst`
+    // answers `Option Summary` — no binding annotation needed to fix the shape.
+    // The projection runs after the filter/order/page accumulated on the query.
+    let main = r#"
+import std.data (memAdapter, MemAdapter)
+import std.repo as Repo
+import std.query (SortOrder, Desc)
+import std.sql (SqlValue)
+
+pub type User = { id: Int, age: Int, name: Text, signupYear: Int } deriving (Row)
+pub type Summary = { name: Text, year: Int } deriving (Row)
+
+pub fn db summaries () -> Result (List Summary) Error =
+    let users: Repo User MemAdapter = Repo.repo (memAdapter ()) "users"
+    users
+      |> Repo.query
+      |> Repo.filter (fn (u: User) -> u.age >= 18)
+      |> Repo.orderBy Desc (fn (u: User) -> u.age)
+      |> Repo.limit 10
+      |> Repo.selectList (fn (u: User) -> Summary { name = u.name, year = u.signupYear })
+
+pub fn db topSummary () -> Result (Option Summary) Error =
+    let users: Repo User MemAdapter = Repo.repo (memAdapter ()) "users"
+    users
+      |> Repo.query
+      |> Repo.orderBy Desc (fn (u: User) -> u.age)
+      |> Repo.selectFirst (fn (u: User) -> Summary { name = u.name, year = u.signupYear })
+"#;
+    let errors = typecheck_one(main);
+    assert!(
+        errors.is_empty(),
+        "a named-shape projection must type-check clean; got {errors:?}"
+    );
+}
+
+#[test]
+fn query_builder_projection_over_postgres_typechecks() {
+    // The projection resolves the same `Adapter`/`Row` constraints on Postgres:
+    // `project` is a class method both adapters implement, so the select-list is
+    // pushed down with no change to the call.
+    let main = r#"
+import std.data (connect, Config, Postgres)
+import std.repo as Repo
+import std.sql (SqlValue)
+
+pub type User = { id: Int, age: Int, name: Text, signupYear: Int } deriving (Row)
+pub type Summary = { name: Text, year: Int } deriving (Row)
+
+pub fn db summaries () -> Result (List Summary) Error =
+    match connect (Config { host = "localhost", port = 5432, database = "app", user = "u", password = "p", sslMode = "require", poolSize = 4 })
+        Err e   -> Err e
+        Ok conn ->
+            let users: Repo User Postgres = Repo.repo conn "users"
+            users
+              |> Repo.query
+              |> Repo.filter (fn (u: User) -> u.age >= 18)
+              |> Repo.selectList (fn (u: User) -> Summary { name = u.name, year = u.signupYear })
+"#;
+    let errors = typecheck_one(main);
+    assert!(
+        errors.is_empty(),
+        "a named-shape projection over Postgres must type-check clean; got {errors:?}"
+    );
+}
+
+#[test]
+fn query_builder_projection_unknown_column_is_rejected() {
+    // A projection field must be a column of the queried entity, exactly like a
+    // filter predicate. Projecting a field the entity does not declare is an
+    // error, proving the projection is checked against the entity rather than
+    // erasing to the row map.
+    let main = r#"
+import std.data (memAdapter, MemAdapter)
+import std.repo as Repo
+import std.sql (SqlValue)
+
+pub type User = { id: Int, age: Int, name: Text } deriving (Row)
+pub type Summary = { label: Text } deriving (Row)
+
+pub fn db bad () -> Result (List Summary) Error =
+    let users: Repo User MemAdapter = Repo.repo (memAdapter ()) "users"
+    users |> Repo.query |> Repo.selectList (fn (u: User) -> Summary { label = u.nope })
+"#;
+    let errors = typecheck_one(main);
+    assert!(
+        !errors.is_empty(),
+        "an unknown column in a projection must be rejected; got no errors"
+    );
+}
+
+#[test]
+fn query_builder_projection_must_name_its_shape() {
+    // An anonymous projection (`{ … }`, no constructor) cannot pin the decode
+    // target at a generic `selectList`, so it is rejected with guidance to name
+    // the result record rather than failing opaquely.
+    let main = r#"
+import std.data (memAdapter, MemAdapter)
+import std.repo as Repo
+import std.sql (SqlValue)
+
+pub type User = { id: Int, age: Int, name: Text } deriving (Row)
+
+pub fn db bad () -> Result (List Unit) Error =
+    let users: Repo User MemAdapter = Repo.repo (memAdapter ()) "users"
+    users |> Repo.query |> Repo.selectList (fn (u: User) -> { name = u.name })
+"#;
+    let errors = typecheck_one(main);
+    assert!(
+        !errors.is_empty(),
+        "an unnamed projection must be rejected; got no errors"
+    );
+}
+
+#[test]
 fn qualified_reconciled_fn_resolves_clean() {
     // `Query.orderSql` is seeded via the reconciled arena block (its signature
     // names the reconciled `SortOrder`), not the hand-curated signature table.

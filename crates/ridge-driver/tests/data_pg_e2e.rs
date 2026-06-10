@@ -39,11 +39,22 @@ import std.map as Map
 
 pub type User = { id: Int, age: Int, name: Text } deriving (Row)
 
+-- A projected shape: the projection renames `name` -> `who` and `age` -> `years`,
+-- so the select-list compiles to `name AS who, age AS years` and the decode reads
+-- the aliased columns back.
+pub type Summary = { who: Text, years: Int } deriving (Row)
+
 fn joinNames (us: List User) -> Text =
     match us
         []        -> ""
         u :: []   -> u.name
         u :: rest -> Text.concat u.name (Text.concat "," (joinNames rest))
+
+fn joinWho (ss: List Summary) -> Text =
+    match ss
+        []        -> ""
+        s :: []   -> s.who
+        s :: rest -> Text.concat s.who (Text.concat "," (joinWho rest))
 
 fn pgConfig () -> Config =
     Config { host = "__PG_HOST__", port = __PG_PORT__, database = "__PG_DATABASE__", user = "__PG_USER__", password = "__PG_PASSWORD__", sslMode = "__PG_SSLMODE__", poolSize = 4 }
@@ -145,6 +156,28 @@ pub fn db pagedName () -> Text =
             match r |> Repo.query |> Repo.orderBy Asc (fn (u: User) -> u.age) |> Repo.offset 1 |> Repo.limit 1 |> Repo.toList
                 Err _ -> "list-err"
                 Ok us -> joinNames us
+
+-- projection: order by age descending, project into the renamed `Summary`, and
+-- join the `who` fields -> "lin,max,ada". Proves the backend compiles the
+-- select-list (`name AS who, age AS years`) and decodes the aliased columns.
+pub fn db summaryNames () -> Text =
+    match setup ()
+        Err _ -> "setup-err"
+        Ok r  ->
+            match r |> Repo.query |> Repo.orderBy Desc (fn (u: User) -> u.age) |> Repo.selectList (fn (u: User) -> Summary { who = u.name, years = u.age })
+                Err _ -> "list-err"
+                Ok ss -> joinWho ss
+
+-- projection: order by age descending, take the first summary, read its renamed
+-- `years` column -> 30 (lin). Proves selectFirst pushes the projection + LIMIT 1.
+pub fn db topYears () -> Int =
+    match setup ()
+        Err _ -> 0 - 1
+        Ok r  ->
+            match r |> Repo.query |> Repo.orderBy Desc (fn (u: User) -> u.age) |> Repo.selectFirst (fn (u: User) -> Summary { who = u.name, years = u.age })
+                Err _       -> 0 - 2
+                Ok None     -> 0 - 3
+                Ok (Some s) -> s.years
 "#;
 
 /// Connection settings parsed out of `RIDGE_TEST_PG_URL`.
@@ -299,6 +332,8 @@ fn postgres_adapter_reads_a_real_table() {
          io:format(\"afterDelete=~w~n\",[{module}:afterDelete()]), \
          io:format(\"orderedNames=~s~n\",[{module}:orderedNames()]), \
          io:format(\"pagedName=~s~n\",[{module}:pagedName()]), \
+         io:format(\"summaryNames=~s~n\",[{module}:summaryNames()]), \
+         io:format(\"topYears=~w~n\",[{module}:topYears()]), \
          {pool_probe} \
          halt()."
     );
@@ -333,6 +368,14 @@ fn postgres_adapter_reads_a_real_table() {
         (
             "pagedName=max",
             "the builder compiles LIMIT and OFFSET into the query",
+        ),
+        (
+            "summaryNames=lin,max,ada",
+            "selectList compiles the renamed select-list and decodes it in age order",
+        ),
+        (
+            "topYears=30",
+            "selectFirst pushes the projection with LIMIT 1 and decodes `years`",
         ),
         (
             "concurrent=true",

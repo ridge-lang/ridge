@@ -87,6 +87,10 @@ pub(crate) fn quote_result(ctx: &mut InferCtx, param_ty: &Type) -> Option<Type> 
 /// Checks a quoted lambda body against `entity`. On success records a
 /// [`QuoteInfo`] for the lambda span and returns `true`; on failure pushes a
 /// diagnostic and returns `false`.
+#[expect(
+    clippy::too_many_lines,
+    reason = "one linear walk over the quote body shapes (named/anonymous projection, predicate, ordering key); splitting it would scatter the shared setup"
+)]
 pub(crate) fn check_quote(
     ctx: &mut InferCtx,
     b: &BuiltinTyCons,
@@ -140,6 +144,70 @@ pub(crate) fn check_quote(
     // key). With no result type known, fall back to predicate.
     let want = expected_ret.map(|r| ctx.deep_resolve(r));
 
+    // Named-constructor projection: a body like `Summary { name = u.name, … }`
+    // names the result record directly through Ridge's record-construction
+    // syntax. That makes the projection target concrete even when the quote's
+    // declared result type is still an inference variable — which is the usual
+    // case at a generic `selectList` call, where the result `s` is only pinned
+    // by the binding's type *after* the argument is checked. Resolve the
+    // constructor to its record type, check the projection against that record's
+    // fields, and pin the quote's result to it so `List s` becomes the named
+    // record and its `Row s` decode resolves.
+    let mut named: &Expr = body;
+    while let Expr::Paren { inner, .. } = named {
+        named = inner;
+    }
+    if let Expr::Record { constructor, .. } = named {
+        let ctor_name = match constructor {
+            ridge_ast::RecordCtor::Bare(id) => id.text.clone(),
+            ridge_ast::RecordCtor::Qualified(qn) => qn
+                .segments
+                .last()
+                .map_or_else(String::new, |s| s.text.clone()),
+        };
+        let target = ctx.user_tycon_names.get(ctor_name.as_str()).copied();
+        let Some(target_id) = target else {
+            ctx.errors.push(TypeError::QuoteUnsupportedExpr {
+                detail: format!(
+                    "a quoted projection names `{ctor_name}`, which is not a record type"
+                ),
+                span: named.span(),
+            });
+            return false;
+        };
+        let Some(target_fields) = entity_fields(ctx, target_id) else {
+            ctx.errors.push(TypeError::QuoteUnsupportedExpr {
+                detail: format!("a quoted projection names `{ctor_name}`, which is not a record"),
+                span: named.span(),
+            });
+            return false;
+        };
+        if !check_projection(
+            ctx,
+            b,
+            named,
+            &param_name,
+            &fields,
+            &entity_name,
+            &target_fields,
+            *span,
+            entity,
+        ) {
+            return false;
+        }
+        // Pin the quote's result to the named record, filling the record's
+        // type parameters (if any) with fresh variables.
+        if let Some(want_ty) = want.as_ref() {
+            let arity = ctx
+                .tycon_decls
+                .get(target_id.0 as usize)
+                .map_or(0, |d| d.arity);
+            let args = (0..arity).map(|_| Type::Var(ctx.fresh_tyvid())).collect();
+            let _ = crate::unify::unify(ctx, want_ty, &Type::Con(target_id, args));
+        }
+        return true;
+    }
+
     // Projection: a record result is a select-list of columns.
     if let Some(proj) = want.as_ref().and_then(|t| record_fields_of(ctx, t)) {
         return check_projection(
@@ -153,6 +221,20 @@ pub(crate) fn check_quote(
             *span,
             entity,
         );
+    }
+
+    // An anonymous record body whose result type is not a known record (the usual
+    // case at a generic `selectList`, where `s` is still unbound) cannot pin a
+    // decode target. Point the caller at the named form rather than failing later
+    // with an opaque "unsupported expression".
+    if matches!(named, Expr::RecordLit { .. }) {
+        ctx.errors.push(TypeError::QuoteUnsupportedExpr {
+            detail: "a quoted projection must name its result record, e.g. \
+                     `Summary { name = row.name }`"
+                .to_string(),
+            span: named.span(),
+        });
+        return false;
     }
 
     let Some(qk) = check_node(ctx, b, body, &param_name, &fields, &entity_name) else {
@@ -269,7 +351,10 @@ fn check_projection(
     while let Expr::Paren { inner, .. } = body {
         body = inner;
     }
-    let Expr::RecordLit { fields: inits, .. } = body else {
+    // Both the anonymous `{ field = row.col }` and the named `Shape { field =
+    // row.col }` forms project a record of columns; the constructor only names
+    // the decode target, so the field check is identical for both.
+    let (Expr::RecordLit { fields: inits, .. } | Expr::Record { fields: inits, .. }) = body else {
         ctx.errors.push(TypeError::QuoteUnsupportedExpr {
             detail: "a quoted projection must be a record of columns, like `{ id = row.id }`"
                 .to_string(),

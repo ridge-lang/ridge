@@ -29,7 +29,7 @@
     ask/3, send/2, send_op/2, send_fn/2, mailbox_size/1, spawn_actor/3,
     mem_new/1, mem_insert/3, mem_all/2,
     mem_select/3, mem_delete/3, mem_get_rows/4,
-    mem_fetch/6, mem_count_where/3,
+    mem_fetch/6, mem_count_where/3, mem_project/7,
     quote_keep_all/1, quote_and/2,
     escript_main/1
 ]).
@@ -935,6 +935,12 @@ mem_fetch(Id, Table, Tree, Orders, Lim, Off) ->
 %% returning them (the in-memory dual of SELECT COUNT(*)). Result Int Error.
 mem_count_where(Id, Table, Tree) -> mem_call({count_where, Id, Table, Tree}).
 
+%% mem_project/7 — the rows of Table that satisfy Tree, ordered and paged as
+%% mem_fetch, then projected to the `{Alias, Column}` columns: each row keeps
+%% only those columns, re-keyed by alias. Result (List Row) Error.
+mem_project(Id, Table, Tree, Orders, Lim, Off, Cols) ->
+    mem_call({project, Id, Table, Tree, Orders, Lim, Off, Cols}).
+
 %% Internal: send a request to the keeper and await its reply.
 mem_call(Req) ->
     mem_ensure(),
@@ -1010,8 +1016,21 @@ mem_keeper_loop(State) ->
             Rows = maps:get({Id, Table}, State, []),
             N = length([R || R <- Rows, mem_pred(Tree, R)]),
             From ! {Ref, {ok, N}},
+            mem_keeper_loop(State);
+        {{project, Id, Table, Tree, Orders, Lim, Off, Cols}, From, Ref} ->
+            Rows = maps:get({Id, Table}, State, []),
+            Matches = [R || R <- Rows, mem_pred(Tree, R)],
+            Page = mem_paginate(mem_order(Orders, Matches), Lim, Off),
+            Projected = [mem_project_row(Cols, R) || R <- Page],
+            From ! {Ref, {ok, Projected}},
             mem_keeper_loop(State)
     end.
+
+%% Build a projected row from `{Alias, Column}` pairs: each output column reads
+%% the source column from the row and is keyed by its alias. A missing source
+%% column reads as SQL NULL.
+mem_project_row(Cols, Row) ->
+    maps:from_list([{Alias, maps:get(Col, Row, 'SqlNull')} || {Alias, Col} <- Cols]).
 
 %% --- Quoted-predicate interpreter (the in-memory dual of Query.toSql) ---
 %%

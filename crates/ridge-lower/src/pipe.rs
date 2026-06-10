@@ -64,7 +64,11 @@ pub fn lower_pipe(ctx: &mut LowerCtx<'_>, lhs: &Expr, rhs: &Expr, span: Span) ->
             // argument, so its type joins the arg-type list in that position.
             let mut arg_types: Vec<Option<Type>> = args.iter().map(|a| arg_type(ctx, a)).collect();
             arg_types.push(arg_type(ctx, lhs));
-            let dict_args = build_dict_args(ctx, &callee_ir, &arg_types, span);
+            // The piped call's own result type (read at the pipe span) pins a
+            // constraint variable that lives only in the callee's return type.
+            let call_result_ty = type_at_span(ctx, span);
+            let dict_args =
+                build_dict_args(ctx, &callee_ir, &arg_types, call_result_ty.as_ref(), span);
             let all_args: Vec<IrExpr> = dict_args.into_iter().chain(args_ir).collect();
             IrExpr::Call {
                 id,
@@ -83,7 +87,9 @@ pub fn lower_pipe(ctx: &mut LowerCtx<'_>, lhs: &Expr, rhs: &Expr, span: Span) ->
             let id = ctx.fresh_id(None);
             let callee_ir = lower_expr(ctx, rhs_inner);
             let arg_types: Vec<Option<Type>> = vec![arg_type(ctx, lhs)];
-            let dict_args = build_dict_args(ctx, &callee_ir, &arg_types, span);
+            let call_result_ty = type_at_span(ctx, span);
+            let dict_args =
+                build_dict_args(ctx, &callee_ir, &arg_types, call_result_ty.as_ref(), span);
             let all_args: Vec<IrExpr> = dict_args
                 .into_iter()
                 .chain(std::iter::once(lhs_ir))
@@ -130,9 +136,15 @@ pub fn lower_pipe(ctx: &mut LowerCtx<'_>, lhs: &Expr, rhs: &Expr, span: Span) ->
 /// scaffolding); `build_dict_args` then leaves the dict slot to its own
 /// fallback. Mirrors the per-argument type collection in the direct-call rule.
 fn arg_type(ctx: &LowerCtx<'_>, e: &Expr) -> Option<Type> {
+    type_at_span(ctx, expr_span(e))
+}
+
+/// The fully-resolved type recorded at `span` (an expression node), or `None`
+/// when no type info is wired. Used for the whole piped call's result type.
+fn type_at_span(ctx: &LowerCtx<'_>, span: Span) -> Option<Type> {
     ctx.node_id_map
         .as_ref()
-        .and_then(|m| m.get(expr_span(e), NodeKind::Expr))
+        .and_then(|m| m.get(span, NodeKind::Expr))
         .and_then(|nid| ctx.node_type(nid).cloned())
 }
 

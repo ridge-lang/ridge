@@ -401,6 +401,7 @@ const BASELINE_EXPORTS: &[(&str, &[&str])] = &[
             "delete",
             "fetch",
             "countWhere",
+            "project",
             "MemAdapter",
             "memAdapter",
             // The Postgres adapter: the opaque connection handle, its config
@@ -429,7 +430,8 @@ const BASELINE_EXPORTS: &[(&str, &[&str])] = &[
             "insertRow",
             "deleteWhere",
             // The query builder: the opaque `Query e a` and its pipeline verbs,
-            // ending in the `toList`/`first` terminals.
+            // ending in the `toList`/`first` terminals and the `selectList`/
+            // `selectFirst` projections.
             "Query",
             "query",
             "filter",
@@ -438,6 +440,8 @@ const BASELINE_EXPORTS: &[(&str, &[&str])] = &[
             "offset",
             "toList",
             "first",
+            "selectList",
+            "selectFirst",
         ],
     ),
 ];

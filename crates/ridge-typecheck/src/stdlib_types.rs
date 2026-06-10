@@ -603,6 +603,41 @@ fn reconciled_repo_fn_scheme(
         "toList" => method(vec![query_app()], result(list_e()), with_adapter_row()),
         // first : ∀e a. Query e a -> Result (Option e) Error where Adapter a, Row e
         "first" => method(vec![query_app()], result(option_e()), with_adapter_row()),
+        // selectList / selectFirst : ∀e a s. Quote (e -> s) -> Query e a
+        //   -> Result (List s | Option s) Error where Adapter a, Row s.
+        // The projection quote captures a record built by naming the result type
+        // (`Summary { col = row.col }`); `s` is that named record, pinned at the
+        // call from the constructor, and `Row s` decodes the projected columns.
+        // `s` first appears (in the projection param) before the adapter `a`, so
+        // the constraint order is `Row s` then `Adapter a`, matching how the
+        // checker stores the source signature's constraints.
+        "selectList" | "selectFirst" => {
+            let s = TyVid(2);
+            let proj_quote = Type::Con(
+                b.quote,
+                vec![Type::Fn {
+                    params: vec![Type::Var(e)],
+                    ret: Box::new(Type::Var(s)),
+                    caps: CapRow::Concrete(CapabilitySet::PURE),
+                }],
+            );
+            let ok = if name == "selectList" {
+                Type::Con(b.list, vec![Type::Var(s)])
+            } else {
+                Type::Con(b.option, vec![Type::Var(s)])
+            };
+            Some(Scheme {
+                vars: vec![e, a, s],
+                cap_vars: vec![],
+                row_vars: vec![],
+                ty: Type::Fn {
+                    params: vec![proj_quote, query_app()],
+                    ret: Box::new(result(ok)),
+                    caps: pure(),
+                },
+                constraints: vec![Constraint::single(row, s), Constraint::single(adapter, a)],
+            })
+        }
         _ => None,
     }
 }

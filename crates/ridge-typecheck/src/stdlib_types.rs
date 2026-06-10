@@ -70,6 +70,10 @@ pub(crate) fn intern_stdlib_types(
 /// after the built-ins). Self- and cross-references inside the block name
 /// `TyConId(base + offset)`, where `offset` is the declaration's position in the
 /// returned vector.
+#[expect(
+    clippy::too_many_lines,
+    reason = "one literal TyConDecl per reconciled stdlib type; the list reads best kept together"
+)]
 fn reconciled_decls(b: &BuiltinTyCons, base: u32) -> Vec<TyConDecl> {
     vec![
         // `std.query` — sort direction for query ordering. A plain nullary union
@@ -138,6 +142,72 @@ fn reconciled_decls(b: &BuiltinTyCons, base: u32) -> Vec<TyConDecl> {
                         ty: Type::Con(b.text, vec![]),
                     },
                 ],
+            )),
+            def_span: None,
+            def_module_raw: None,
+            opaque: true,
+            is_anon: false,
+        },
+        // `std.data` — connection settings for `connect`. A plain (non-opaque)
+        // record users construct directly; declared in Ridge (stdlib/data.ridge).
+        // Field order mirrors the source declaration so the consistency check
+        // holds.
+        TyConDecl {
+            id: TyConId(base + 3),
+            name: "Config".to_string(),
+            arity: 0,
+            kind: TyConKind::Record(RecordSchema::new(
+                vec![],
+                vec![
+                    RecordField {
+                        name: "host".to_string(),
+                        ty: Type::Con(b.text, vec![]),
+                    },
+                    RecordField {
+                        name: "port".to_string(),
+                        ty: Type::Con(b.int, vec![]),
+                    },
+                    RecordField {
+                        name: "database".to_string(),
+                        ty: Type::Con(b.text, vec![]),
+                    },
+                    RecordField {
+                        name: "user".to_string(),
+                        ty: Type::Con(b.text, vec![]),
+                    },
+                    RecordField {
+                        name: "password".to_string(),
+                        ty: Type::Con(b.text, vec![]),
+                    },
+                    RecordField {
+                        name: "sslMode".to_string(),
+                        ty: Type::Con(b.text, vec![]),
+                    },
+                    RecordField {
+                        name: "poolSize".to_string(),
+                        ty: Type::Con(b.int, vec![]),
+                    },
+                ],
+            )),
+            def_span: None,
+            def_module_raw: None,
+            opaque: false,
+            is_anon: false,
+        },
+        // `std.data` — the Postgres connection handle. Opaque `{ id: Int }`,
+        // declared in Ridge (stdlib/data.ridge); the `id` selects the connection
+        // in the runtime handle registry, the same id-as-handle shape MemAdapter
+        // uses.
+        TyConDecl {
+            id: TyConId(base + 4),
+            name: "Postgres".to_string(),
+            arity: 0,
+            kind: TyConKind::Record(RecordSchema::new(
+                vec![],
+                vec![RecordField {
+                    name: "id".to_string(),
+                    ty: Type::Con(b.int, vec![]),
+                }],
             )),
             def_span: None,
             def_module_raw: None,
@@ -245,6 +315,29 @@ pub(crate) fn reconciled_fn_scheme(
                 ty: Type::Fn {
                     params: vec![Type::Con(b.unit, vec![])],
                     ret: Box::new(Type::Con(mem_adapter, vec![])),
+                    caps: CapRow::Concrete(CapabilitySet::singleton(Capability::Db)),
+                },
+                constraints: vec![],
+            })
+        }
+        // std.data `connect : Config -> Result Postgres Error` — opens a Postgres
+        // connection. Like `memAdapter` it requires the `db` capability, and its
+        // signature names the reconciled `Config` and `Postgres`, so the
+        // hand-curated signature table (which only sees `BuiltinTyCons`) cannot
+        // express it.
+        ("std.data", "connect") => {
+            let postgres = *reconciled.get("Postgres")?;
+            let config = *reconciled.get("Config")?;
+            Some(Scheme {
+                vars: vec![],
+                cap_vars: vec![],
+                row_vars: vec![],
+                ty: Type::Fn {
+                    params: vec![Type::Con(config, vec![])],
+                    ret: Box::new(Type::Con(
+                        b.result,
+                        vec![Type::Con(postgres, vec![]), Type::Con(b.error, vec![])],
+                    )),
                     caps: CapRow::Concrete(CapabilitySet::singleton(Capability::Db)),
                 },
                 constraints: vec![],

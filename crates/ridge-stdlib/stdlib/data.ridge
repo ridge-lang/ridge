@@ -96,3 +96,62 @@ fn firstRow (rows: List (Map Text SqlValue)) -> Option (Map Text SqlValue) =
     match rows
         []     -> None
         r :: _ -> Some r
+
+-- A handle to an open Postgres connection. Opaque: `connect` is the only way to
+-- make one, and the `id` it carries selects this connection in the runtime's
+-- handle registry, the same id-as-handle shape `MemAdapter` uses.
+pub opaque type Postgres = { id: Int }
+
+-- Connection settings for `connect`. `sslMode` is "disable", "require" (encrypt
+-- without verifying the server certificate), or "verify-full" (encrypt and
+-- verify the certificate chain and the host name). `poolSize` is accepted now so
+-- the surface is stable; the pooled connection substrate honours it later.
+pub type Config = { host: Text, port: Int, database: Text, user: Text, password: Text, sslMode: Text, poolSize: Int }
+
+-- Open a connection from the settings; the runtime speaks the Postgres wire
+-- protocol directly. Returns the connection handle, or an `Err` if the connect
+-- or authentication handshake fails.
+@ffi("ridge_pg", "pg_connect", 7)
+fn _pgConnect (host: Text) (port: Int) (database: Text) (user: Text) (password: Text) (sslMode: Text) (poolSize: Int) -> Result Postgres Error
+
+-- Append a row to a table on the connection identified by `id`.
+@ffi("ridge_pg", "pg_insert", 3)
+fn _pgInsert (id: Int) (table: Text) (row: Map Text SqlValue) -> Result Unit Error
+
+-- Return every row of a table on the connection identified by `id`.
+@ffi("ridge_pg", "pg_all", 2)
+fn _pgAll (id: Int) (table: Text) -> Result (List (Map Text SqlValue)) Error
+
+-- Return the rows of a table that satisfy the captured predicate tree, compiled
+-- to a parameterised SQL `WHERE` clause.
+@ffi("ridge_pg", "pg_select", 3)
+fn _pgSelect (id: Int) (table: Text) (tree: QExpr) -> Result (List (Map Text SqlValue)) Error
+
+-- Return the rows of a table whose `column` holds exactly `key`.
+@ffi("ridge_pg", "pg_get_rows", 4)
+fn _pgGetRows (id: Int) (table: Text) (column: Text) (key: SqlValue) -> Result (List (Map Text SqlValue)) Error
+
+-- Remove the rows of a table that satisfy the predicate tree; answer how many
+-- were removed.
+@ffi("ridge_pg", "pg_delete", 3)
+fn _pgDelete (id: Int) (table: Text) (tree: QExpr) -> Result Int Error
+
+-- Open a Postgres connection with the given settings. Requires the `db`
+-- capability; the handle returned is the proof of access for every later call,
+-- exactly like `memAdapter`. A failed connect or authentication is an `Err`.
+pub fn db connect (cfg: Config) -> Result Postgres Error =
+    _pgConnect cfg.host cfg.port cfg.database cfg.user cfg.password cfg.sslMode cfg.poolSize
+
+instance Adapter Postgres =
+    insert (conn: Postgres) (table: Text) (row: Map Text SqlValue) -> Result Unit Error =
+        _pgInsert conn.id table row
+    all (conn: Postgres) (table: Text) -> Result (List (Map Text SqlValue)) Error =
+        _pgAll conn.id table
+    select (conn: Postgres) (table: Text) (pred: Quote (Map Text SqlValue -> Bool)) -> Result (List (Map Text SqlValue)) Error =
+        _pgSelect conn.id table pred.tree
+    get (conn: Postgres) (table: Text) (column: Text) (key: SqlValue) -> Result (Option (Map Text SqlValue)) Error =
+        match _pgGetRows conn.id table column key
+            Ok rows -> Ok (firstRow rows)
+            Err e   -> Err e
+    delete (conn: Postgres) (table: Text) (pred: Quote (Map Text SqlValue -> Bool)) -> Result Int Error =
+        _pgDelete conn.id table pred.tree

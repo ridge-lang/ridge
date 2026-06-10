@@ -190,6 +190,44 @@ jobs:
           key: ${{ runner.os }}-cargo-beam-${{ matrix.otp }}-${{ hashFiles('**/Cargo.lock') }}
           restore-keys: ${{ runner.os }}-cargo-beam-${{ matrix.otp }}-
 
+      # Bring up a TLS-enabled Postgres so the std.data Postgres adapter e2e can
+      # exercise the real wire protocol — SSL upgrade and SCRAM-SHA-256 auth
+      # included — against a live database. A self-signed certificate is enough
+      # for sslmode=require (encrypt without certificate verification); the
+      # adapter e2e skips itself when RIDGE_TEST_PG_URL is unset, so it only runs
+      # here, where the URL is provided.
+      - name: Start Postgres with TLS
+        if: steps.changes.outputs.code == 'true'
+        run: |
+          mkdir -p "$RUNNER_TEMP/pgcerts"
+          openssl req -new -x509 -days 365 -nodes \
+            -out "$RUNNER_TEMP/pgcerts/server.crt" \
+            -keyout "$RUNNER_TEMP/pgcerts/server.key" \
+            -subj "/CN=localhost"
+          chmod 600 "$RUNNER_TEMP/pgcerts/server.key"
+          # The official postgres image runs the server as uid 999; it refuses to
+          # start unless it can read the key file, so hand both certs to that uid.
+          sudo chown 999:999 "$RUNNER_TEMP/pgcerts/server.key" "$RUNNER_TEMP/pgcerts/server.crt"
+          docker run -d --name ridge-pg \
+            -e POSTGRES_PASSWORD=postgres \
+            -e POSTGRES_DB=ridge_test \
+            -p 5432:5432 \
+            -v "$RUNNER_TEMP/pgcerts:/certs:ro" \
+            postgres:16 \
+            -c ssl=on \
+            -c ssl_cert_file=/certs/server.crt \
+            -c ssl_key_file=/certs/server.key
+          for i in $(seq 1 30); do
+            if docker exec ridge-pg pg_isready -U postgres >/dev/null 2>&1; then
+              echo "postgres ready"; break
+            fi
+            echo "waiting for postgres ($i)"; sleep 2
+          done
+          docker exec ridge-pg psql -U postgres -d ridge_test -c \
+            'CREATE TABLE IF NOT EXISTS ridge_pg_users (id integer, name text, age integer);'
+
       - name: Run BEAM runtime e2e
         if: steps.changes.outputs.code == 'true'
+        env:
+          RIDGE_TEST_PG_URL: "postgres://postgres:postgres@localhost:5432/ridge_test?sslmode=require"
         run: cargo test -p ridge-codegen-erl -p ridge-driver -p ridge-cli --features beam-runtime --no-fail-fast --locked

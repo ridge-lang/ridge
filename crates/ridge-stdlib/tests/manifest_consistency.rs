@@ -249,10 +249,11 @@ fn signature_shape_consistency() {
             if dotted == "std.query" && *fn_name == "orderSql" {
                 continue;
             }
-            // std.data `memAdapter` returns the reconciled `MemAdapter` type, so
-            // it is seeded via `reconciled_fn_scheme`, not the `stdlib_signature`
-            // table this shape check covers.
-            if dotted == "std.data" && *fn_name == "memAdapter" {
+            // std.data `memAdapter`/`connect` return reconciled types
+            // (`MemAdapter`/`Postgres`), so they are seeded via
+            // `reconciled_fn_scheme`, not the `stdlib_signature` table this shape
+            // check covers.
+            if dotted == "std.data" && (*fn_name == "memAdapter" || *fn_name == "connect") {
                 continue;
             }
             // Every std.repo verb takes or returns the reconciled `Repo e a`, so

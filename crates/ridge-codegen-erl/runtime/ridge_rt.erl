@@ -30,7 +30,7 @@
     mem_new/1, mem_insert/3, mem_all/2,
     mem_select/3, mem_delete/3, mem_get_rows/4,
     mem_fetch/6, mem_count_where/3, mem_project/7,
-    mem_join/8, mem_join_select/9, mem_left_join/8,
+    mem_join/8, mem_join_select/9, mem_left_join/8, mem_left_join_select/9,
     quote_keep_all/1, quote_and/2,
     escript_main/1
 ]).
@@ -963,6 +963,13 @@ mem_join_select(Id, LeftTable, RightTable, Cond, Pred, Orders, Lim, Off, Proj) -
 mem_left_join(Id, LeftTable, RightTable, Cond, Pred, Orders, Lim, Off) ->
     mem_call({left_join, Id, LeftTable, RightTable, Cond, Pred, Orders, Lim, Off}).
 
+%% mem_left_join_select/9 — as mem_left_join, then project each kept row through
+%% the projection tree Proj into one map keyed by the projection's aliases; an
+%% unmatched left row's right-side columns project to SQL NULL. Result (List Row)
+%% Error.
+mem_left_join_select(Id, LeftTable, RightTable, Cond, Pred, Orders, Lim, Off, Proj) ->
+    mem_call({left_join_select, Id, LeftTable, RightTable, Cond, Pred, Orders, Lim, Off, Proj}).
+
 %% Internal: send a request to the keeper and await its reply.
 mem_call(Req) ->
     mem_ensure(),
@@ -1058,6 +1065,10 @@ mem_keeper_loop(State) ->
         {{left_join, Id, LeftTable, RightTable, Cond, Pred, Orders, Lim, Off}, From, Ref} ->
             Pairs = mem_left_join_pairs(State, Id, LeftTable, RightTable, Cond, Pred, Orders, Lim, Off),
             From ! {Ref, {ok, Pairs}},
+            mem_keeper_loop(State);
+        {{left_join_select, Id, LeftTable, RightTable, Cond, Pred, Orders, Lim, Off, Proj}, From, Ref} ->
+            Rows = mem_left_join_select_rows(State, Id, LeftTable, RightTable, Cond, Pred, Orders, Lim, Off, Proj),
+            From ! {Ref, {ok, Rows}},
             mem_keeper_loop(State)
     end.
 
@@ -1101,6 +1112,30 @@ mem_left_pairs_for(L, RightRows, Cond) ->
     case [R || R <- RightRows, mem_jpred(Cond, L, R)] of
         []      -> [{L, none}];
         Matches -> [{L, {some, R}} || R <- Matches]
+    end.
+
+%% --- In-memory left-outer join projection ---
+%%
+%% As mem_left_join_pairs, but each kept row is projected through Proj. An
+%% unmatched left row pairs with the empty right map, so the projection's
+%% `QColR` columns read SQL NULL — the dual of a `LEFT JOIN` returning NULL for
+%% the right side, which decodes to `None` in the projected shape's `Option`
+%% fields.
+mem_left_join_select_rows(State, Id, LeftTable, RightTable, Cond, Pred, Orders, Lim, Off, Proj) ->
+    LeftRows = maps:get({Id, LeftTable}, State, []),
+    RightRows = maps:get({Id, RightTable}, State, []),
+    LeftMatches = [L || L <- LeftRows, mem_pred(Pred, L)],
+    Pairs = lists:append([mem_left_select_pairs(L, RightRows, Cond) || L <- LeftMatches]),
+    Page = mem_paginate(mem_order_pairs(Orders, Pairs), Lim, Off),
+    [mem_join_project(Proj, L, R) || {L, R} <- Page].
+
+%% The pairs a single left row contributes for a projection: one `{L, R}` per
+%% matching right row, or `[{L, #{}}]` (the empty right map) when none match, so
+%% the right columns project to SQL NULL.
+mem_left_select_pairs(L, RightRows, Cond) ->
+    case [R || R <- RightRows, mem_jpred(Cond, L, R)] of
+        []      -> [{L, #{}}];
+        Matches -> [{L, R} || R <- Matches]
     end.
 
 %% Order joined pairs by the left-column keys (the left query's ordering). The

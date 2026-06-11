@@ -8,11 +8,12 @@
 //! decodes `RowDescription`/`DataRow` into the entity. The query builder is
 //! covered too — `orderBy` (ORDER BY) and `limit`/`offset` (LIMIT/OFFSET) compile
 //! into real SQL. The two-table verbs run against the live database as well:
-//! `joinOn` + `toPairs`/`selectJoin` (the `JOIN` and the `l.*, r.*` split) and
+//! `joinOn` + `toPairs`/`selectJoin` (the `JOIN` and the `l.*, r.*` split),
 //! `leftJoinOn` + `toLeftPairs` (the `LEFT JOIN` and its `__ridge_matched`
-//! sentinel that keeps unmatched left rows). A final probe drives the connection
-//! pool with six concurrent reads on one handle (concurrent checkout, growth,
-//! waiter reuse).
+//! sentinel that keeps unmatched left rows), and `leftJoinOn` + `selectLeftJoin`
+//! (a `LEFT JOIN` with a pushed-down select-list whose NULL right columns decode
+//! to `None`). A final probe drives the connection pool with six concurrent reads
+//! on one handle (concurrent checkout, growth, waiter reuse).
 //!
 //! Gated three ways: the `beam-runtime` feature, a `which` guard for `erl`/`erlc`,
 //! and the `RIDGE_TEST_PG_URL` environment variable. Without a reachable database
@@ -57,6 +58,10 @@ pub type Summary = { who: Text, years: Int } deriving (Row)
 -- title from the right.
 pub type Combo = { person: Text, post: Text } deriving (Row)
 
+-- The shape a left-join projection decodes into: `post` is `Option Text`, so an
+-- unmatched left row's NULL right column decodes to `None`.
+pub type ComboOpt = { person: Text, post: Option Text } deriving (Row)
+
 fn joinNames (us: List User) -> Text =
     match us
         []        -> ""
@@ -82,6 +87,19 @@ fn joinCombos (cs: List Combo) -> Text =
         []          -> ""
         c :: []     -> Text.concat c.person (Text.concat ":" c.post)
         c :: rest   -> Text.concat c.person (Text.concat ":" (Text.concat c.post (Text.concat "," (joinCombos rest))))
+
+-- An optional projected title, or "-" when the column was NULL.
+fn optText (o: Option Text) -> Text =
+    match o
+        None   -> "-"
+        Some s -> s
+
+-- Render each projected `ComboOpt` as `person:post` (or `person:-`), comma-joined.
+fn joinComboOpts (cs: List ComboOpt) -> Text =
+    match cs
+        []          -> ""
+        c :: []     -> Text.concat c.person (Text.concat ":" (optText c.post))
+        c :: rest   -> Text.concat c.person (Text.concat ":" (Text.concat (optText c.post) (Text.concat "," (joinComboOpts rest))))
 
 -- The title of an optional right post, or "-" when the left row matched none.
 fn optTitle (op: Option Post) -> Text =
@@ -290,6 +308,19 @@ pub fn db leftJoinedNames () -> Text =
             match users |> Repo.query |> Repo.orderBy Asc (fn (u: User) -> u.id) |> Repo.leftJoinOn posts (fn (u: User) (p: Post) -> u.id == p.author) |> Repo.toLeftPairs
                 Err _  -> "left-join-err"
                 Ok ps  -> joinLeftPairs ps
+
+-- left-join projection: the same left join projected into `ComboOpt { person,
+-- post }` where `post` is `Option Text` -> "ada:-,lin:hello,max:world". ada's
+-- projected `post` column is NULL (no match) and decodes to `None` (`ada:-`).
+-- Proves the backend compiles a `LEFT JOIN` with a pushed-down select-list and
+-- the NULL right column decodes into the shape's Option field.
+pub fn db leftSelectTitles () -> Text =
+    match setupJoin ()
+        Err _ -> "setup-err"
+        Ok (users, posts) ->
+            match users |> Repo.query |> Repo.orderBy Asc (fn (u: User) -> u.id) |> Repo.leftJoinOn posts (fn (u: User) (p: Post) -> u.id == p.author) |> Repo.selectLeftJoin (fn (u: User) (p: Option Post) -> ComboOpt { person = u.name, post = p.title })
+                Err _  -> "left-select-err"
+                Ok cs  -> joinComboOpts cs
 "#;
 
 /// Connection settings parsed out of `RIDGE_TEST_PG_URL`.
@@ -449,6 +480,7 @@ fn postgres_adapter_reads_a_real_table() {
          io:format(\"joinedNames=~s~n\",[{module}:joinedNames()]), \
          io:format(\"joinedTitles=~s~n\",[{module}:joinedTitles()]), \
          io:format(\"leftJoinedNames=~s~n\",[{module}:leftJoinedNames()]), \
+         io:format(\"leftSelectTitles=~s~n\",[{module}:leftSelectTitles()]), \
          {pool_probe} \
          halt()."
     );
@@ -503,6 +535,10 @@ fn postgres_adapter_reads_a_real_table() {
         (
             "leftJoinedNames=ada:-,lin:hello,max:world",
             "pg_left_join keeps the unmatched ada row via the __ridge_matched sentinel and decodes the right as Option",
+        ),
+        (
+            "leftSelectTitles=ada:-,lin:hello,max:world",
+            "pg_left_join_select keeps the unmatched ada row and decodes its NULL right column into an Option field as None",
         ),
         (
             "concurrent=true",

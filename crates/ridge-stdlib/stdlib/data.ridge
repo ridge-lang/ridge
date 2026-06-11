@@ -75,6 +75,7 @@ pub class Adapter a =
     join (conn: a) (leftTable: Text) (rightTable: Text) (cond: Quote (Map Text SqlValue -> Map Text SqlValue -> Bool)) (pred: Quote (Map Text SqlValue -> Bool)) (orders: List (Bool, Text)) (lim: Int) (off: Int) -> Result (List (Map Text SqlValue, Map Text SqlValue)) Error
     joinSelect (conn: a) (leftTable: Text) (rightTable: Text) (cond: Quote (Map Text SqlValue -> Map Text SqlValue -> Bool)) (pred: Quote (Map Text SqlValue -> Bool)) (orders: List (Bool, Text)) (lim: Int) (off: Int) (proj: Quote (Map Text SqlValue -> Map Text SqlValue -> Map Text SqlValue)) -> Result (List (Map Text SqlValue)) Error
     leftJoin (conn: a) (leftTable: Text) (rightTable: Text) (cond: Quote (Map Text SqlValue -> Map Text SqlValue -> Bool)) (pred: Quote (Map Text SqlValue -> Bool)) (orders: List (Bool, Text)) (lim: Int) (off: Int) -> Result (List (Map Text SqlValue, Option (Map Text SqlValue))) Error
+    leftJoinSelect (conn: a) (leftTable: Text) (rightTable: Text) (cond: Quote (Map Text SqlValue -> Map Text SqlValue -> Bool)) (pred: Quote (Map Text SqlValue -> Bool)) (orders: List (Bool, Text)) (lim: Int) (off: Int) (proj: Quote (Map Text SqlValue -> Map Text SqlValue -> Map Text SqlValue)) -> Result (List (Map Text SqlValue)) Error
 
 -- A handle to an in-memory store. Opaque: `memAdapter` is the only way to make
 -- one, and the `id` it carries selects this handle's private, isolated store,
@@ -138,6 +139,12 @@ fn _memJoinSelect (id: Int) (leftTable: Text) (rightTable: Text) (cond: QExpr) (
 @ffi("ridge_rt", "mem_left_join", 8)
 fn _memLeftJoin (id: Int) (leftTable: Text) (rightTable: Text) (cond: QExpr) (pred: QExpr) (orders: List (Bool, Text)) (lim: Int) (off: Int) -> Result (List (Map Text SqlValue, Option (Map Text SqlValue))) Error
 
+-- As `mem_left_join`, then project each kept row through the projection tree:
+-- each returned row is one map keyed by the projection's aliases, with the
+-- right-side columns NULL for an unmatched left row.
+@ffi("ridge_rt", "mem_left_join_select", 9)
+fn _memLeftJoinSelect (id: Int) (leftTable: Text) (rightTable: Text) (cond: QExpr) (pred: QExpr) (orders: List (Bool, Text)) (lim: Int) (off: Int) (proj: QExpr) -> Result (List (Map Text SqlValue)) Error
+
 -- Open a fresh in-memory adapter backed by an empty store. Requires the `db`
 -- capability; the handle returned is the proof of access for every later call.
 @ffi("ridge_rt", "mem_new", 1)
@@ -168,6 +175,8 @@ instance Adapter MemAdapter =
         _memJoinSelect conn.id leftTable rightTable cond.tree pred.tree orders lim off proj.tree
     leftJoin (conn: MemAdapter) (leftTable: Text) (rightTable: Text) (cond: Quote (Map Text SqlValue -> Map Text SqlValue -> Bool)) (pred: Quote (Map Text SqlValue -> Bool)) (orders: List (Bool, Text)) (lim: Int) (off: Int) -> Result (List (Map Text SqlValue, Option (Map Text SqlValue))) Error =
         _memLeftJoin conn.id leftTable rightTable cond.tree pred.tree orders lim off
+    leftJoinSelect (conn: MemAdapter) (leftTable: Text) (rightTable: Text) (cond: Quote (Map Text SqlValue -> Map Text SqlValue -> Bool)) (pred: Quote (Map Text SqlValue -> Bool)) (orders: List (Bool, Text)) (lim: Int) (off: Int) (proj: Quote (Map Text SqlValue -> Map Text SqlValue -> Map Text SqlValue)) -> Result (List (Map Text SqlValue)) Error =
+        _memLeftJoinSelect conn.id leftTable rightTable cond.tree pred.tree orders lim off proj.tree
 
 -- The head of a row list as an `Option` — `get` returns at most one row, so it
 -- reads the first match (or `None` when the column held no such key).
@@ -248,6 +257,12 @@ fn _pgJoinSelect (id: Int) (leftTable: Text) (rightTable: Text) (cond: QExpr) (p
 @ffi("ridge_pg", "pg_left_join", 8)
 fn _pgLeftJoin (id: Int) (leftTable: Text) (rightTable: Text) (cond: QExpr) (pred: QExpr) (orders: List (Bool, Text)) (lim: Int) (off: Int) -> Result (List (Map Text SqlValue, Option (Map Text SqlValue))) Error
 
+-- As `pg_left_join`, with the projection tree compiled into the select-list; each
+-- row is one map keyed by the projection's aliases, with the right-side columns
+-- NULL for an unmatched left row.
+@ffi("ridge_pg", "pg_left_join_select", 9)
+fn _pgLeftJoinSelect (id: Int) (leftTable: Text) (rightTable: Text) (cond: QExpr) (pred: QExpr) (orders: List (Bool, Text)) (lim: Int) (off: Int) (proj: QExpr) -> Result (List (Map Text SqlValue)) Error
+
 -- Open a Postgres connection with the given settings. Requires the `db`
 -- capability; the handle returned is the proof of access for every later call,
 -- exactly like `memAdapter`. A failed connect or authentication is an `Err`.
@@ -279,3 +294,5 @@ instance Adapter Postgres =
         _pgJoinSelect conn.id leftTable rightTable cond.tree pred.tree orders lim off proj.tree
     leftJoin (conn: Postgres) (leftTable: Text) (rightTable: Text) (cond: Quote (Map Text SqlValue -> Map Text SqlValue -> Bool)) (pred: Quote (Map Text SqlValue -> Bool)) (orders: List (Bool, Text)) (lim: Int) (off: Int) -> Result (List (Map Text SqlValue, Option (Map Text SqlValue))) Error =
         _pgLeftJoin conn.id leftTable rightTable cond.tree pred.tree orders lim off
+    leftJoinSelect (conn: Postgres) (leftTable: Text) (rightTable: Text) (cond: Quote (Map Text SqlValue -> Map Text SqlValue -> Bool)) (pred: Quote (Map Text SqlValue -> Bool)) (orders: List (Bool, Text)) (lim: Int) (off: Int) (proj: Quote (Map Text SqlValue -> Map Text SqlValue -> Map Text SqlValue)) -> Result (List (Map Text SqlValue)) Error =
+        _pgLeftJoinSelect conn.id leftTable rightTable cond.tree pred.tree orders lim off proj.tree

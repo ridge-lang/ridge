@@ -405,6 +405,7 @@ const BASELINE_EXPORTS: &[(&str, &[&str])] = &[
             "join",
             "joinSelect",
             "leftJoin",
+            "leftJoinSelect",
             "MemAdapter",
             "memAdapter",
             // The Postgres adapter: the opaque connection handle, its config
@@ -452,10 +453,11 @@ const BASELINE_EXPORTS: &[(&str, &[&str])] = &[
             "toPairs",
             "selectJoin",
             // The left-outer join: the opaque `LeftJoin e f a`, its `leftJoinOn`
-            // entry, and the `toLeftPairs` terminal returning `(e, Option f)`.
+            // entry, and the `toLeftPairs`/`selectLeftJoin` terminals.
             "LeftJoin",
             "leftJoinOn",
             "toLeftPairs",
+            "selectLeftJoin",
         ],
     ),
 ];

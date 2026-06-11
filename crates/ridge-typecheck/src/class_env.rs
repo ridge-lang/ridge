@@ -912,6 +912,13 @@ pub fn register_stdlib_classes(ct: &mut ClassTable) {
                     ast_ret_type: None,
                     class_ty_vars: Vec::new(),
                 },
+                MethodSig {
+                    name: "leftJoinSelect".to_string(),
+                    arity: 9,
+                    ast_param_types: vec![],
+                    ast_ret_type: None,
+                    class_ty_vars: Vec::new(),
+                },
             ],
             superclasses: vec![],
             def_module: None,
@@ -1013,6 +1020,7 @@ pub fn register_stdlib_instances(
             ("join".to_string(), String::new()),
             ("joinSelect".to_string(), String::new()),
             ("leftJoin".to_string(), String::new()),
+            ("leftJoinSelect".to_string(), String::new()),
         ]
     };
     if let (Some(adapter), Some(&mem_adapter)) = (

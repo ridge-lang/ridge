@@ -1618,6 +1618,58 @@ fn seed_sql_codec_schemes(
                 },
             );
         }
+        // leftJoinSelect :: ∀a c p r. a -> Text -> Text -> Quote c -> Quote p
+        //              -> List (Bool, Text) -> Int -> Int -> Quote r
+        //              -> Result (List (Map Text SqlValue)) Error where Adapter a.
+        // The left-outer form of `joinSelect`: same projection select-list, but a
+        // `LEFT JOIN` keeps every left row and the right-side columns come back
+        // NULL where the row had no match, decoding to `None` in the projected
+        // shape's `Option` fields. The three quotes are phantom — the seam walks
+        // their captured trees.
+        {
+            let a = ctx.fresh_tyvid();
+            let c = ctx.fresh_tyvid();
+            let p = ctx.fresh_tyvid();
+            let r = ctx.fresh_tyvid();
+            let orders = Type::Con(
+                b.list,
+                vec![Type::Tuple(vec![
+                    Type::Con(b.bool, vec![]),
+                    Type::Con(b.text, vec![]),
+                ])],
+            );
+            let fn_ty = Type::Fn {
+                params: vec![
+                    Type::Var(a),
+                    Type::Con(b.text, vec![]),
+                    Type::Con(b.text, vec![]),
+                    Type::Con(b.quote, vec![Type::Var(c)]),
+                    Type::Con(b.quote, vec![Type::Var(p)]),
+                    orders,
+                    Type::Con(b.int, vec![]),
+                    Type::Con(b.int, vec![]),
+                    Type::Con(b.quote, vec![Type::Var(r)]),
+                ],
+                ret: Box::new(Type::Con(
+                    b.result,
+                    vec![
+                        Type::Con(b.list, vec![map_row()]),
+                        Type::Con(b.error, vec![]),
+                    ],
+                )),
+                caps: CapRow::Concrete(CapabilitySet::PURE),
+            };
+            ctx.env.bind(
+                "leftJoinSelect".to_owned(),
+                Scheme {
+                    vars: vec![a, c, p, r],
+                    cap_vars: vec![],
+                    row_vars: vec![],
+                    ty: fn_ty,
+                    constraints: vec![Constraint::single(adapter, a)],
+                },
+            );
+        }
     }
 }
 

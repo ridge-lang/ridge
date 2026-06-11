@@ -153,6 +153,60 @@ pub fn db updateWhereCount () -> Int =
             match r |> Repo.updateWhere (Map.fromList [("age", toSql 40)]) (fn (u: User) -> u.age >= 25)
                 Ok n  -> n
                 Err _ -> 0 - 2
+
+-- typed partial update: `setWhere` sets only `age` on max (id 3) through a typed
+-- setter, then reads it back -> 77. Proves `set` encodes the value through the
+-- column's `SqlType` and `setWhere` routes it through the same seam as
+-- `updateWhere`, with the value checked against the column at compile time.
+pub fn db setBumpedAge () -> Int =
+    match setup ()
+        Err _ -> 0 - 1
+        Ok r  ->
+            match r |> Repo.setWhere [ Repo.set (fn (u: User) -> u.age) 77 ] (fn (u: User) -> u.id == 3)
+                Err _ -> 0 - 2
+                Ok _  ->
+                    match r |> Repo.getBy "id" (toSql 3)
+                        Err _       -> 0 - 3
+                        Ok None     -> 0 - 4
+                        Ok (Some u) -> u.age
+
+-- typed partial update changed-count: two adults (lin 30, max 25) match -> 2.
+pub fn db setWhereCount () -> Int =
+    match setup ()
+        Err _ -> 0 - 1
+        Ok r  ->
+            match r |> Repo.setWhere [ Repo.set (fn (u: User) -> u.age) 40 ] (fn (u: User) -> u.age >= 25)
+                Ok n  -> n
+                Err _ -> 0 - 2
+
+-- multi-column typed setter: one `setWhere` sets both `name` and the nullable
+-- `nick` on ada (id 1); read the name back -> "neo". Proves a list of setters
+-- writes several columns at once, and a nullable column takes an `Option` value.
+pub fn db setMultiName () -> Text =
+    match setup ()
+        Err _ -> "setup-err"
+        Ok r  ->
+            match r |> Repo.setWhere [ Repo.set (fn (u: User) -> u.name) "neo", Repo.set (fn (u: User) -> u.nick) (Some "nx") ] (fn (u: User) -> u.id == 1)
+                Err _ -> "set-err"
+                Ok _  ->
+                    match r |> Repo.getBy "id" (toSql 1)
+                        Err _       -> "get-err"
+                        Ok None     -> "none"
+                        Ok (Some u) -> u.name
+
+-- typed update through the query builder: `applySet` is the write terminal — the
+-- filter picks lin (id 2), the setter assigns her age 88; read it back -> 88.
+pub fn db appliedAge () -> Int =
+    match setup ()
+        Err _ -> 0 - 1
+        Ok r  ->
+            match r |> Repo.query |> Repo.filter (fn (u: User) -> u.id == 2) |> Repo.applySet [ Repo.set (fn (u: User) -> u.age) 88 ]
+                Err _ -> 0 - 2
+                Ok _  ->
+                    match r |> Repo.getBy "id" (toSql 2)
+                        Err _       -> 0 - 3
+                        Ok None     -> 0 - 4
+                        Ok (Some u) -> u.age
 "#;
 
 fn write_workspace(root: &std::path::Path) {
@@ -230,6 +284,10 @@ fn write_path_runs_on_beam() {
          io:format(\"bumpedAge=~w~n\",[{module}:bumpedAge()]), \
          io:format(\"bumpedName=~s~n\",[{module}:bumpedName()]), \
          io:format(\"updateWhereCount=~w~n\",[{module}:updateWhereCount()]), \
+         io:format(\"setBumpedAge=~w~n\",[{module}:setBumpedAge()]), \
+         io:format(\"setWhereCount=~w~n\",[{module}:setWhereCount()]), \
+         io:format(\"setMultiName=~s~n\",[{module}:setMultiName()]), \
+         io:format(\"appliedAge=~w~n\",[{module}:appliedAge()]), \
          halt()."
     );
     let output = Command::new("erl")
@@ -271,6 +329,22 @@ fn write_path_runs_on_beam() {
             "updateWhere leaves the untouched name column alone",
         ),
         ("updateWhereCount=2", "two adults match the partial update"),
+        (
+            "setBumpedAge=77",
+            "a typed setWhere sets the age column on max through SqlType.toSql",
+        ),
+        (
+            "setWhereCount=2",
+            "the typed setWhere matches the same two adults",
+        ),
+        (
+            "setMultiName=neo",
+            "a list of setters writes several columns (name + nullable nick) at once",
+        ),
+        (
+            "appliedAge=88",
+            "applySet is the query-builder write terminal: the filter picks the row, the setter assigns it",
+        ),
     ] {
         assert!(
             stdout.contains(probe),

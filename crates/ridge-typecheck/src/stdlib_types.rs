@@ -398,6 +398,35 @@ fn reconciled_decls(b: &BuiltinTyCons, base: u32) -> Vec<TyConDecl> {
             opaque: true,
             is_anon: false,
         },
+        // `std.repo` — a typed column assignment built by `set`. An opaque record
+        // `{ column: Text, value: SqlValue }` declared in Ridge (stdlib/repo.ridge).
+        // The entity `e` (param 0) is phantom — it ties the setter to the record
+        // whose column the quoted accessor named, so a `List (Setter e)` cannot mix
+        // entities and must match the repository's `e`, the same phantom shape as
+        // `Repo`. Opaque, so user code builds one only through `set`. Field order
+        // mirrors the source.
+        TyConDecl {
+            id: TyConId(base + 8),
+            name: "Setter".to_string(),
+            arity: 1,
+            kind: TyConKind::Record(RecordSchema::new(
+                vec![TyVid(0)],
+                vec![
+                    RecordField {
+                        name: "column".to_string(),
+                        ty: Type::Con(b.text, vec![]),
+                    },
+                    RecordField {
+                        name: "value".to_string(),
+                        ty: Type::Con(b.sql_value, vec![]),
+                    },
+                ],
+            )),
+            def_span: None,
+            def_module_raw: None,
+            opaque: true,
+            is_anon: false,
+        },
     ]
 }
 
@@ -711,6 +740,62 @@ fn reconciled_repo_fn_scheme(
             result(Type::Con(b.int, vec![])),
             with_adapter_row(),
         ),
+        // set : ∀e a v. Quote (e -> v) -> v -> Setter e where SqlType v. Builds a
+        // typed column assignment: the accessor quote names a single column whose
+        // type `v` is read off the entity (exactly as an `orderBy` key), and the
+        // value must match it. `a` is unused but kept so the quantifier shape lines
+        // up with the other repository schemes; `v` is the column/value type, which
+        // the `SqlType v` constraint encodes to a `SqlValue`.
+        "set" => {
+            let setter_con = *reconciled.get("Setter")?;
+            let sqltype = classes.id_by_name("SqlType")?;
+            let v = TyVid(2);
+            let col_quote = Type::Con(
+                b.quote,
+                vec![Type::Fn {
+                    params: vec![Type::Var(e)],
+                    ret: Box::new(Type::Var(v)),
+                    caps: pure(),
+                }],
+            );
+            let setter_e = Type::Con(setter_con, vec![Type::Var(e)]);
+            Some(Scheme {
+                vars: vec![e, a, v],
+                cap_vars: vec![],
+                row_vars: vec![],
+                ty: Type::Fn {
+                    params: vec![col_quote, Type::Var(v)],
+                    ret: Box::new(setter_e),
+                    caps: pure(),
+                },
+                constraints: vec![Constraint::single(sqltype, v)],
+            })
+        }
+        // setWhere : ∀e a. List (Setter e) -> Quote (e -> Bool) -> Repo e a
+        //   -> Result Int Error where Adapter a. The typed front door to the partial
+        //   update: a list of typed setters in place of `updateWhere`'s raw map.
+        "setWhere" => {
+            let setter_con = *reconciled.get("Setter")?;
+            let list_setter = Type::Con(b.list, vec![Type::Con(setter_con, vec![Type::Var(e)])]);
+            method(
+                vec![list_setter, quote_pred(), repo_app()],
+                result(Type::Con(b.int, vec![])),
+                with_adapter(),
+            )
+        }
+        // applySet : ∀e a. List (Setter e) -> Query e a -> Result Int Error
+        //   where Adapter a. The query-builder write terminal: the accumulated
+        //   filter selects the rows, the setters assign their columns — the pipeline
+        //   form of `setWhere`.
+        "applySet" => {
+            let setter_con = *reconciled.get("Setter")?;
+            let list_setter = Type::Con(b.list, vec![Type::Con(setter_con, vec![Type::Var(e)])]);
+            method(
+                vec![list_setter, query_app()],
+                result(Type::Con(b.int, vec![])),
+                with_adapter(),
+            )
+        }
         // query : ∀e a. Repo e a -> Query e a — start a query over a repository.
         // The builder verbs are pure: they assemble a query, and a terminal runs
         // it.

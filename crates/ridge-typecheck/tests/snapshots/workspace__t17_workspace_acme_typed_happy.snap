@@ -5,5 +5,5 @@ expression: snap
 WorkspaceSnapshot {
     errors: [],
     module_count: 2,
-    tycon_count: 53,
+    tycon_count: 54,
 }

@@ -22,6 +22,7 @@
 import std.data as Db
 import std.sql (SqlValue)
 import std.query (SortOrder, ascending)
+import std.map (fromList)
 
 -- A repository: entity `e` stored in `table` through adapter `a`. Opaque, so it
 -- is built only through `repo` and threaded as a handle, never destructured.
@@ -149,6 +150,51 @@ pub fn updateWhere (changes: Map Text SqlValue) (pred: Quote (Map Text SqlValue 
 pub fn update (entity: e) (pred: Quote (Map Text SqlValue -> Bool)) (r: Repo e a) -> Result Int Error where Adapter a, Row e =
     updateWhere (toRow entity) pred r
 
+-- A single typed column assignment, built by `set`: the target column and its
+-- new value encoded to `SqlValue`. The entity `e` is a phantom that ties the
+-- setter to the record whose column the accessor named, so a `List (Setter e)`
+-- cannot mix entities and must match the repository's `e`. Opaque, so user code
+-- builds one only through `set` and hands the list to `setWhere`/`applySet`.
+pub opaque type Setter e = { column: Text, value: SqlValue }
+
+-- Build a typed column assignment. The column is named by a quoted accessor
+-- (`fn (u: User) -> u.status`), which pins the column's type, so the value must
+-- match it — `set (fn (u: User) -> u.age) "x"` is a compile-time type error, the
+-- same way a predicate's comparison is checked. The value is encoded to a
+-- `SqlValue` through `SqlType.toSql`, so a nullable `Option` column writes `None`
+-- as SQL NULL. This is the write-side analogue of an `orderBy` key: both quote a
+-- single column, one to assign it, the other to sort by it.
+pub fn set (col: Quote (e -> v)) (value: v) -> Setter e where SqlType v =
+    Setter { column = setterColumn col, value = toSql value }
+
+-- The column a setter's quoted accessor names. The accessor quote captures a
+-- single column, so its tree is a `QCol`; anything else contributes no column,
+-- the same shape as an ordering key's `orderColumn`.
+fn setterColumn (col: Quote (e -> v)) -> Text =
+    match col.tree
+        QCol c -> c
+        _      -> ""
+
+-- Fold a list of setters into the `(column, value)` pairs the seam's partial
+-- update map is built from.
+fn setterPairs (setters: List (Setter e)) -> List (Text, SqlValue) =
+    match setters
+        []        -> []
+        s :: rest -> (s.column, s.value) :: setterPairs rest
+
+-- The partial column map a list of setters assigns — the typed dual of the raw
+-- `changes` map `updateWhere` takes.
+fn settersToMap (setters: List (Setter e)) -> Map Text SqlValue =
+    fromList (setterPairs setters)
+
+-- Set the columns named by typed setters on every row matching a quoted
+-- predicate; answer how many rows changed. The typed front door to `updateWhere`:
+-- each `set (fn (u: User) -> u.col) value` is checked so the value matches the
+-- column, where `updateWhere` takes an unchecked `Map Text SqlValue`. Reach for
+-- `updateWhere` only to write a column map assembled by hand.
+pub fn setWhere (setters: List (Setter e)) (pred: Quote (Map Text SqlValue -> Bool)) (r: Repo e a) -> Result Int Error where Adapter a =
+    updateRows r.adapter r.table (settersToMap setters) pred
+
 -- A query under construction over a repository: a filter, an ordering, and a
 -- page (offset and limit) accumulated before a terminal runs it. Opaque and
 -- threaded through the builder, so it reads as a pipeline:
@@ -211,6 +257,14 @@ pub fn selectFirst (proj: Quote (Map Text SqlValue -> s)) (q: Query e a) -> Resu
     match project q.repo.adapter q.repo.table q.pred q.orders 1 q.off (projColumns proj)
         Err err -> Err err
         Ok rows -> firstDecoded rows
+
+-- Apply typed setters to the rows the query selects; answer how many changed.
+-- The write terminal of the builder, mirroring how `Where(...).ExecuteUpdate(...)`
+-- reads in LINQ: the accumulated filter picks the rows, the setters assign their
+-- columns. Only the filter is used — ordering and paging do not constrain an
+-- UPDATE — so it is the pipeline form of `setWhere`.
+pub fn applySet (setters: List (Setter e)) (q: Query e a) -> Result Int Error where Adapter a =
+    updateRows q.repo.adapter q.repo.table (settersToMap setters) q.pred
 
 -- A join under construction: the left query, the right repository, and a quoted
 -- condition over both entities. Opaque and threaded from `joinOn` into a

@@ -1264,3 +1264,126 @@ fn qualified_reconciled_fn_resolves_clean() {
         "the reconciled qualified call must type-check clean; got {errors:?}"
     );
 }
+
+#[test]
+fn typed_set_where_typechecks() {
+    // `setWhere` applies a list of typed setters over the repository, with the
+    // predicate explicit. Each `set (fn (u: User) -> u.col) value` quotes a single
+    // column (its type read off the entity) and the value must match it.
+    let main = r#"
+import std.data (memAdapter, MemAdapter)
+import std.repo as Repo
+import std.sql (SqlValue)
+
+pub type User = { id: Int, age: Int, status: Text } deriving (Row)
+
+pub fn db promote () -> Result Int Error =
+    let users: Repo User MemAdapter = Repo.repo (memAdapter ()) "users"
+    let changes =
+        [ Repo.set (fn (u: User) -> u.status) "adult"
+        , Repo.set (fn (u: User) -> u.age) 99 ]
+    users |> Repo.setWhere changes (fn (u: User) -> u.age > 18)
+"#;
+    let errors = typecheck_one(main);
+    assert!(
+        errors.is_empty(),
+        "typed `setWhere` with matching setter values must type-check clean; got {errors:?}"
+    );
+}
+
+#[test]
+fn typed_apply_set_over_query_builder_typechecks() {
+    // `applySet` is the query-builder write terminal: the accumulated `filter`
+    // picks the rows, the setters assign their columns.
+    let main = r#"
+import std.data (memAdapter, MemAdapter)
+import std.repo as Repo
+import std.sql (SqlValue)
+
+pub type User = { id: Int, age: Int, status: Text } deriving (Row)
+
+pub fn db promote () -> Result Int Error =
+    let users: Repo User MemAdapter = Repo.repo (memAdapter ()) "users"
+    users
+      |> Repo.query
+      |> Repo.filter (fn (u: User) -> u.age > 18)
+      |> Repo.applySet [ Repo.set (fn (u: User) -> u.status) "adult" ]
+"#;
+    let errors = typecheck_one(main);
+    assert!(
+        errors.is_empty(),
+        "`applySet` over the query builder must type-check clean; got {errors:?}"
+    );
+}
+
+#[test]
+fn typed_setter_value_type_must_match_column() {
+    // The accessor pins the column's type, so a value of the wrong type is a
+    // compile-time error — `u.age` is `Int`, assigning `Text` must be rejected.
+    // This is the safety the typed setter buys over the untyped `updateWhere` map.
+    let main = r#"
+import std.data (memAdapter, MemAdapter)
+import std.repo as Repo
+import std.sql (SqlValue)
+
+pub type User = { id: Int, age: Int, status: Text } deriving (Row)
+
+pub fn db bad () -> Result Int Error =
+    let users: Repo User MemAdapter = Repo.repo (memAdapter ()) "users"
+    users |> Repo.setWhere [ Repo.set (fn (u: User) -> u.age) "not a number" ] (fn (u: User) -> u.id == 1)
+"#;
+    let errors = typecheck_one(main);
+    assert!(
+        !errors.is_empty(),
+        "a setter whose value type mismatches the column must be rejected; got no errors"
+    );
+}
+
+#[test]
+fn typed_set_nullable_column_typechecks() {
+    // A nullable `Option` column takes an `Option` value: `set` encodes it through
+    // the `SqlType (Option a)` instance, so `None` writes SQL NULL — no special
+    // case over a plain column.
+    let main = r#"
+import std.data (memAdapter, MemAdapter)
+import std.repo as Repo
+import std.sql (SqlValue)
+
+pub type User = { id: Int, nick: Option Text } deriving (Row)
+
+pub fn db clearNick () -> Result Int Error =
+    let users: Repo User MemAdapter = Repo.repo (memAdapter ()) "users"
+    users |> Repo.setWhere [ Repo.set (fn (u: User) -> u.nick) None ] (fn (u: User) -> u.id == 1)
+"#;
+    let errors = typecheck_one(main);
+    assert!(
+        errors.is_empty(),
+        "a setter assigning `None` to a nullable column must type-check clean; got {errors:?}"
+    );
+}
+
+#[test]
+fn typed_set_where_over_postgres_typechecks() {
+    // The same setters resolve the `Adapter` constraint on Postgres: `setWhere`
+    // and `applySet` route through `updateRows`, a class method both adapters
+    // implement.
+    let main = r#"
+import std.data (connect, Config, Postgres)
+import std.repo as Repo
+import std.sql (SqlValue)
+
+pub type User = { id: Int, age: Int, status: Text } deriving (Row)
+
+pub fn db promote () -> Result Int Error =
+    match connect (Config { host = "localhost", port = 5432, database = "app", user = "u", password = "p", sslMode = "require", poolSize = 4 })
+        Err e   -> Err e
+        Ok conn ->
+            let users: Repo User Postgres = Repo.repo conn "users"
+            users |> Repo.setWhere [ Repo.set (fn (u: User) -> u.status) "adult" ] (fn (u: User) -> u.age > 18)
+"#;
+    let errors = typecheck_one(main);
+    assert!(
+        errors.is_empty(),
+        "typed `setWhere` over Postgres must type-check clean; got {errors:?}"
+    );
+}

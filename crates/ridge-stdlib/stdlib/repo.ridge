@@ -252,6 +252,18 @@ pub fn toLeftPairs (j: LeftJoin e f a) -> Result (List (e, Option f)) Error wher
         Err err  -> Err err
         Ok pairs -> decodeLeftPairs pairs
 
+-- Run the left join as a projection: select only the columns the shape `s` names
+-- from across both entities, decoding each row into `s`. The projection's right
+-- parameter is `Option` — `fn (u: User) (p: Option Post) -> Line { who = u.name,
+-- title = p.title }` — so each right column reads as `Option` of its type and the
+-- named shape's right-derived fields are `Option`; an unmatched left row projects
+-- them as `None`. The backend keeps every left row (a `LEFT JOIN`) and pushes the
+-- select-list down so only the named columns cross.
+pub fn selectLeftJoin (proj: Quote (Map Text SqlValue -> Map Text SqlValue -> Map Text SqlValue)) (j: LeftJoin e f a) -> Result (List s) Error where Adapter a, Row s =
+    match leftJoinSelect j.left.repo.adapter j.left.repo.table j.right.table j.cond j.left.pred j.left.orders j.left.lim j.left.off proj
+        Err err  -> Err err
+        Ok rows  -> decodeRows rows
+
 -- Decode a list of `(left, right)` row pairs into entity pairs, stopping at the
 -- first decode failure on either side.
 fn decodePairs (pairs: List (Map Text SqlValue, Map Text SqlValue)) -> Result (List (e, f)) Error where Row e, Row f =

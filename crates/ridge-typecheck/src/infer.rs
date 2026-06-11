@@ -1424,7 +1424,7 @@ fn pin_quote_entity_from_annotation_at(
 
     // Re-resolve now that the slot is pinned; only a concrete record entity is
     // usable by the quotation checker.
-    crate::quote::quote_entity_at(ctx, quote_ty, i)
+    crate::quote::quote_entity_at(ctx, b, quote_ty, i)
 }
 
 /// Pins all `arity` entity slots of a quote, one per parameter. Each slot is
@@ -1436,12 +1436,15 @@ fn pin_quote_entities(
     lambda: &Expr,
     quote_ty: &Type,
     arity: usize,
-) -> Option<Vec<TyConId>> {
+) -> Option<Vec<(TyConId, bool)>> {
     let mut entities = Vec::with_capacity(arity);
     for i in 0..arity {
-        let entity = crate::quote::quote_entity_at(ctx, quote_ty, i)
-            .or_else(|| pin_quote_entity_from_annotation_at(ctx, b, lambda, quote_ty, i));
-        entities.push(entity?);
+        let entity = crate::quote::quote_entity_at(ctx, b, quote_ty, i)
+            .or_else(|| pin_quote_entity_from_annotation_at(ctx, b, lambda, quote_ty, i))?;
+        // After pinning, an `Option e` slot (a left-join projection's right side)
+        // makes the parameter's columns nullable.
+        let nullable = crate::quote::quote_slot_nullable(ctx, b, quote_ty, i);
+        entities.push((entity, nullable));
     }
     Some(entities)
 }

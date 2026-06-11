@@ -909,6 +909,40 @@ fn reconciled_repo_fn_scheme(
                 ],
             })
         }
+        // selectLeftJoin : ∀e f a s. Quote (e -> Option f -> s) -> LeftJoin e f a
+        //                      -> Result (List s) Error where Row s, Adapter a.
+        // The left-outer analogue of `selectJoin`. The right parameter is
+        // `Option f`, so a column read off it (`p.title`) is `Option` of its
+        // type; the named result record's right-derived fields are therefore
+        // `Option`, and an unmatched left row projects them as `None`. `s` first
+        // appears in the projection before the adapter `a`, so the constraint
+        // order is `Row s` then `Adapter a`, as `selectJoin`.
+        "selectLeftJoin" => {
+            let leftjoin_con = *reconciled.get("LeftJoin")?;
+            let f = TyVid(2);
+            let s = TyVid(3);
+            let proj_quote = Type::Con(
+                b.quote,
+                vec![Type::Fn {
+                    params: vec![Type::Var(e), Type::Con(b.option, vec![Type::Var(f)])],
+                    ret: Box::new(Type::Var(s)),
+                    caps: CapRow::Concrete(CapabilitySet::PURE),
+                }],
+            );
+            let leftjoin_e_f_a =
+                Type::Con(leftjoin_con, vec![Type::Var(e), Type::Var(f), Type::Var(a)]);
+            Some(Scheme {
+                vars: vec![e, a, f, s],
+                cap_vars: vec![],
+                row_vars: vec![],
+                ty: Type::Fn {
+                    params: vec![proj_quote, leftjoin_e_f_a],
+                    ret: Box::new(result(Type::Con(b.list, vec![Type::Var(s)]))),
+                    caps: pure(),
+                },
+                constraints: vec![Constraint::single(row, s), Constraint::single(adapter, a)],
+            })
+        }
         _ => None,
     }
 }

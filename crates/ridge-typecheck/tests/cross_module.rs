@@ -1152,6 +1152,98 @@ pub fn db bad () -> Result (List (User, Option Post)) Error =
 }
 
 #[test]
+fn query_builder_select_left_join_into_named_shape_typechecks() {
+    // `selectLeftJoin` projects a left join into a named record. Its right
+    // parameter is `Option Post`, so a right column reads as `Option Text`; the
+    // shape declares the right-derived field as `Option Text` to match, and an
+    // unmatched left row projects it as `None`. The join condition keeps `p: Post`
+    // (the match key), only the projection's right side is optional.
+    let main = r#"
+import std.data (memAdapter, MemAdapter)
+import std.repo as Repo
+import std.sql (SqlValue)
+
+pub type User = { id: Int, name: Text } deriving (Row)
+pub type Post = { id: Int, authorId: Int, title: Text } deriving (Row)
+pub type Line = { who: Text, title: Option Text } deriving (Row)
+
+pub fn db authorLines () -> Result (List Line) Error =
+    let users: Repo User MemAdapter = Repo.repo (memAdapter ()) "users"
+    let posts: Repo Post MemAdapter = Repo.repo (memAdapter ()) "posts"
+    users
+      |> Repo.query
+      |> Repo.leftJoinOn posts (fn (u: User) (p: Post) -> u.id == p.authorId)
+      |> Repo.selectLeftJoin (fn (u: User) (p: Option Post) -> Line { who = u.name, title = p.title })
+"#;
+    let errors = typecheck_one(main);
+    assert!(
+        errors.is_empty(),
+        "a left-join projection into a named shape with Option right fields must type-check clean; got {errors:?}"
+    );
+}
+
+#[test]
+fn query_builder_select_left_join_right_field_must_be_optional() {
+    // A column read off the projection's `Option Post` parameter is `Option Text`,
+    // so the result record's right-derived field must be `Option Text`, not a
+    // plain `Text`. Declaring it `Text` drops the optionality and must be rejected
+    // — proving the right side's columns are nullable in a left-join projection.
+    let main = r#"
+import std.data (memAdapter, MemAdapter)
+import std.repo as Repo
+import std.sql (SqlValue)
+
+pub type User = { id: Int, name: Text } deriving (Row)
+pub type Post = { id: Int, authorId: Int, title: Text } deriving (Row)
+pub type Line = { who: Text, title: Text } deriving (Row)
+
+pub fn db bad () -> Result (List Line) Error =
+    let users: Repo User MemAdapter = Repo.repo (memAdapter ()) "users"
+    let posts: Repo Post MemAdapter = Repo.repo (memAdapter ()) "posts"
+    users
+      |> Repo.query
+      |> Repo.leftJoinOn posts (fn (u: User) (p: Post) -> u.id == p.authorId)
+      |> Repo.selectLeftJoin (fn (u: User) (p: Option Post) -> Line { who = u.name, title = p.title })
+"#;
+    let errors = typecheck_one(main);
+    assert!(
+        !errors.is_empty(),
+        "a left-join projection whose right field is non-optional `Text` must be rejected; got no errors"
+    );
+}
+
+#[test]
+fn query_builder_select_left_join_over_postgres_typechecks() {
+    // The left-join projection resolves the same `Adapter`/`Row` constraints on
+    // Postgres: `leftJoinSelect` is a class method both adapters implement.
+    let main = r#"
+import std.data (connect, Config, Postgres)
+import std.repo as Repo
+import std.sql (SqlValue)
+
+pub type User = { id: Int, name: Text } deriving (Row)
+pub type Post = { id: Int, authorId: Int, title: Text } deriving (Row)
+pub type Line = { who: Text, title: Option Text } deriving (Row)
+
+pub fn db authorLines () -> Result (List Line) Error =
+    match connect (Config { host = "localhost", port = 5432, database = "app", user = "u", password = "p", sslMode = "require", poolSize = 4 })
+        Err e   -> Err e
+        Ok conn ->
+            let users: Repo User Postgres = Repo.repo conn "users"
+            let posts: Repo Post Postgres = Repo.repo conn "posts"
+            users
+              |> Repo.query
+              |> Repo.leftJoinOn posts (fn (u: User) (p: Post) -> u.id == p.authorId)
+              |> Repo.selectLeftJoin (fn (u: User) (p: Option Post) -> Line { who = u.name, title = p.title })
+"#;
+    let errors = typecheck_one(main);
+    assert!(
+        errors.is_empty(),
+        "a left-join projection over Postgres must type-check clean; got {errors:?}"
+    );
+}
+
+#[test]
 fn qualified_reconciled_fn_resolves_clean() {
     // `Query.orderSql` is seeded via the reconciled arena block (its signature
     // names the reconciled `SortOrder`), not the hand-curated signature table.

@@ -42,6 +42,7 @@
     pg_join/8,
     pg_join_select/9,
     pg_left_join/8,
+    pg_left_join_select/9,
     pg_close/1
 ]).
 
@@ -138,6 +139,14 @@ pg_join_select(Id, LeftTable, RightTable, Cond, Pred, Orders, Lim, Off, Proj) ->
 %% (List {Row, Option Row}) Error.
 pg_left_join(Id, LeftTable, RightTable, Cond, Pred, Orders, Lim, Off) ->
     pg_call(Id, {left_join, LeftTable, RightTable, Cond, Pred, Orders, Lim, Off}).
+
+%% pg_left_join_select/9 — as pg_left_join, with the projection tree Proj compiled
+%% into the select-list (each `QCol`/`QColR` qualified and aliased). No sentinel is
+%% needed: an unmatched right column comes back NULL and decodes to `None` in the
+%% projected shape's `Option` field. Each row is one map keyed by the projection's
+%% aliases. Result (List Row) Error.
+pg_left_join_select(Id, LeftTable, RightTable, Cond, Pred, Orders, Lim, Off, Proj) ->
+    pg_call(Id, {left_join_select, LeftTable, RightTable, Cond, Pred, Orders, Lim, Off, Proj}).
 
 %% pg_close/1 — close every connection in the pool and forget the handle.
 %% Result Unit Error.
@@ -542,6 +551,16 @@ run_verb(Conn, {left_join, LeftTable, RightTable, Cond, Pred, Orders, Lim, Off})
            quote_ident(RightTable), ") AS r ON ", OnFrag, " WHERE ", WhereFrag,
            order_by_clause_join(Orders), limit_clause(Lim), offset_clause(Off)],
     run_query_left_join(Conn, Sql, lists:reverse(RevB2));
+run_verb(Conn, {left_join_select, LeftTable, RightTable, Cond, Pred, Orders, Lim, Off, Proj}) ->
+    {OnFrag, RevB1, N1} = cwj(Cond, 1, []),
+    {WhereFrag, RevB2, _N2} = cwj(Pred, N1, RevB1),
+    %% A projection decodes each aliased column on its own, so no sentinel is
+    %% needed: an unmatched right column comes back NULL and decodes to `None` in
+    %% the projected shape's `Option` field. Just a `LEFT JOIN` of the two tables.
+    Sql = ["SELECT ", join_select_list(Proj), " FROM ", quote_ident(LeftTable), " AS l LEFT JOIN ",
+           quote_ident(RightTable), " AS r ON ", OnFrag, " WHERE ", WhereFrag,
+           order_by_clause_join(Orders), limit_clause(Lim), offset_clause(Off)],
+    run_query(Conn, Sql, lists:reverse(RevB2));
 run_verb(Conn, {count_where, Table, Tree}) ->
     do_count(Conn, Table, Tree).
 

@@ -41,6 +41,10 @@ struct Param {
     entity_name: String,
     /// The entity's `(column, type)` fields.
     fields: Vec<(String, Type)>,
+    /// True when the parameter is `Option e` — the nullable right side of a
+    /// left-join projection. Its columns read as `Option` of their declared
+    /// type, so an unmatched row's column decodes to `None`.
+    nullable: bool,
 }
 
 /// The kind a quoted sub-expression evaluates to during checking.
@@ -83,7 +87,12 @@ pub(crate) fn quote_arity(ctx: &mut InferCtx, param_ty: &Type) -> Option<usize> 
 /// Returns `None` when the type is not a `Quote`, when its inner shape is not a
 /// function with an `i`th parameter, or when that parameter is not a concrete
 /// type constructor (e.g. still an inference variable).
-pub(crate) fn quote_entity_at(ctx: &mut InferCtx, param_ty: &Type, i: usize) -> Option<TyConId> {
+pub(crate) fn quote_entity_at(
+    ctx: &mut InferCtx,
+    b: &BuiltinTyCons,
+    param_ty: &Type,
+    i: usize,
+) -> Option<TyConId> {
     let Type::Con(id, args) = param_ty else {
         return None;
     };
@@ -95,9 +104,45 @@ pub(crate) fn quote_entity_at(ctx: &mut InferCtx, param_ty: &Type, i: usize) -> 
         return None;
     };
     match ctx.deep_resolve(params.get(i)?) {
+        // An `Option e` slot — the nullable right side of a left-join projection
+        // (`fn (u: User) (p: Option Post) -> …`) — names the entity `e`, whose
+        // columns are read as `Option` of their type. Unwrap to that entity.
+        Type::Con(opt, opt_args) if opt == b.option => match ctx.deep_resolve(opt_args.first()?) {
+            Type::Con(entity, _) => Some(entity),
+            _ => None,
+        },
         Type::Con(entity, _) => Some(entity),
         _ => None,
     }
+}
+
+/// Whether the `i`th parameter slot of a `Quote (a -> … -> r)` is an `Option e`.
+///
+/// The nullable right side of a left-join projection is written `p: Option Post`,
+/// and each of its columns reads as `Option` of the declared type so an unmatched
+/// row's column decodes to `None`. Returns `false` for an ordinary entity slot.
+pub(crate) fn quote_slot_nullable(
+    ctx: &mut InferCtx,
+    b: &BuiltinTyCons,
+    param_ty: &Type,
+    i: usize,
+) -> bool {
+    let Type::Con(id, args) = param_ty else {
+        return false;
+    };
+    if !is_quote_tycon(ctx, *id) {
+        return false;
+    }
+    let Some(inner) = args.first().map(|a| ctx.deep_resolve(a)) else {
+        return false;
+    };
+    let Type::Fn { params, .. } = inner else {
+        return false;
+    };
+    let Some(slot) = params.get(i).map(|p| ctx.deep_resolve(p)) else {
+        return false;
+    };
+    matches!(slot, Type::Con(opt, _) if opt == b.option)
 }
 
 /// Extracts the resolved result type `r` from a `Quote (a -> … -> r)` type.
@@ -131,7 +176,7 @@ pub(crate) fn check_quote(
     ctx: &mut InferCtx,
     b: &BuiltinTyCons,
     lambda: &Expr,
-    entities: &[TyConId],
+    entities: &[(TyConId, bool)],
     expected_ret: Option<&Type>,
 ) -> bool {
     let Expr::Lambda { params, body, span } = lambda else {
@@ -152,9 +197,10 @@ pub(crate) fn check_quote(
 
     // Build the parameter scope: pair each lambda parameter's name with the
     // entity it ranges over and that entity's columns. A column access resolves
-    // against whichever parameter's record names it.
+    // against whichever parameter's record names it. An `Option e` slot marks the
+    // parameter nullable so its columns read as `Option` of their type.
     let mut scope: Vec<Param> = Vec::with_capacity(params.len());
-    for (lp, &entity) in params.iter().zip(entities) {
+    for (lp, &(entity, nullable)) in params.iter().zip(entities) {
         let name = match lp {
             LambdaParam::Pattern(Pattern::Var { name, .. })
             | LambdaParam::Annotated {
@@ -187,6 +233,7 @@ pub(crate) fn check_quote(
             entity,
             entity_name,
             fields,
+            nullable,
         });
     }
 
@@ -522,7 +569,14 @@ fn check_node(ctx: &mut InferCtx, b: &BuiltinTyCons, e: &Expr, scope: &[Param]) 
                 return None;
             };
             if let Some((_, ty)) = param.fields.iter().find(|(n, _)| n == &field.text) {
-                Some(QKind::Col(ty.clone()))
+                // A column of a nullable (`Option e`) parameter reads as `Option`
+                // of its declared type — an unmatched left-join row has no value.
+                let col_ty = if param.nullable {
+                    Type::Con(b.option, vec![ty.clone()])
+                } else {
+                    ty.clone()
+                };
+                Some(QKind::Col(col_ty))
             } else {
                 let suggestions = ridge_resolve::suggest::suggest(
                     &field.text,

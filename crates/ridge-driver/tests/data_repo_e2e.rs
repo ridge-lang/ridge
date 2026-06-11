@@ -18,7 +18,9 @@
 //!   matched pair) and `joinOn` + `selectJoin` (projecting columns from both
 //!   sides into a named shape).
 //! - the left join: `leftJoinOn` + `toLeftPairs` (keeping every left row and
-//!   decoding the right entity as `Option`, so an unmatched left row survives).
+//!   decoding the right entity as `Option`, so an unmatched left row survives)
+//!   and `leftJoinOn` + `selectLeftJoin` (projecting both sides into a named
+//!   shape whose right-derived fields are `Option`, `None` for an unmatched row).
 //!
 //! Gated on `beam-runtime` (real OTP) plus a `which` guard for `erl`/`erlc`.
 
@@ -52,6 +54,10 @@ pub type Summary = { who: Text, years: Int } deriving (Row)
 -- one named record.
 pub type Combo = { person: Text, post: Text } deriving (Row)
 
+-- The shape a left-join projection decodes into: the right-derived `post` is
+-- `Option Text`, so an unmatched left row projects it as `None`.
+pub type ComboOpt = { person: Text, post: Option Text } deriving (Row)
+
 -- Join the names of a user list with commas, so a query's order is observable
 -- as a single string the probe can assert on.
 fn joinNames (us: List User) -> Text =
@@ -82,6 +88,20 @@ fn joinCombos (cs: List Combo) -> Text =
         []          -> ""
         c :: []     -> Text.concat c.person (Text.concat ":" c.post)
         c :: rest   -> Text.concat c.person (Text.concat ":" (Text.concat c.post (Text.concat "," (joinCombos rest))))
+
+-- An optional projected title, or "-" when the column was NULL (an unmatched
+-- left row).
+fn optText (o: Option Text) -> Text =
+    match o
+        None   -> "-"
+        Some s -> s
+
+-- Render each projected `ComboOpt` as `person:post` (or `person:-`), comma-joined.
+fn joinComboOpts (cs: List ComboOpt) -> Text =
+    match cs
+        []          -> ""
+        c :: []     -> Text.concat c.person (Text.concat ":" (optText c.post))
+        c :: rest   -> Text.concat c.person (Text.concat ":" (Text.concat (optText c.post) (Text.concat "," (joinComboOpts rest))))
 
 -- The title of an optional right post, or "-" when the left row matched none.
 fn optTitle (op: Option Post) -> Text =
@@ -307,6 +327,19 @@ pub fn db leftJoinedNames () -> Text =
             match users |> Repo.query |> Repo.orderBy Asc (fn (u: User) -> u.id) |> Repo.leftJoinOn posts (fn (u: User) (p: Post) -> u.id == p.author) |> Repo.toLeftPairs
                 Err _  -> "left-join-err"
                 Ok ps  -> joinLeftPairs ps
+
+-- left-join projection: the same left join, projected into
+-- `ComboOpt { person, post }` where `post` is `Option Text`, rendered ->
+-- "ada:-,lin:hello,lin:again,max:world". ada has no post, so its projected
+-- `post` column is NULL and decodes to `None` (`ada:-`). Proves selectLeftJoin
+-- keeps unmatched left rows and decodes the right columns into Option fields.
+pub fn db leftSelectTitles () -> Text =
+    match setupJoin ()
+        Err _ -> "setup-err"
+        Ok (users, posts) ->
+            match users |> Repo.query |> Repo.orderBy Asc (fn (u: User) -> u.id) |> Repo.leftJoinOn posts (fn (u: User) (p: Post) -> u.id == p.author) |> Repo.selectLeftJoin (fn (u: User) (p: Option Post) -> ComboOpt { person = u.name, post = p.title })
+                Err _  -> "left-select-err"
+                Ok cs  -> joinComboOpts cs
 "#;
 
 fn write_workspace(root: &std::path::Path) {
@@ -391,6 +424,7 @@ fn repo_surface_runs_on_beam() {
          io:format(\"joinedNames=~s~n\",[{module}:joinedNames()]), \
          io:format(\"joinedTitles=~s~n\",[{module}:joinedTitles()]), \
          io:format(\"leftJoinedNames=~s~n\",[{module}:leftJoinedNames()]), \
+         io:format(\"leftSelectTitles=~s~n\",[{module}:leftSelectTitles()]), \
          halt()."
     );
     let output = Command::new("erl")
@@ -447,6 +481,10 @@ fn repo_surface_runs_on_beam() {
         (
             "leftJoinedNames=ada:-,lin:hello,lin:again,max:world",
             "toLeftPairs keeps the unmatched ada row as `ada:-` and decodes the right entity as Option",
+        ),
+        (
+            "leftSelectTitles=ada:-,lin:hello,lin:again,max:world",
+            "selectLeftJoin keeps the unmatched ada row and decodes its NULL right column into an Option field as None",
         ),
     ] {
         assert!(

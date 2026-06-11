@@ -1531,7 +1531,7 @@ mod tests {
                 }
                 // std.data: `Adapter` and its methods (`insert`/`all`/`select`/
                 // `get`/`delete`/`fetch`/`countWhere`/`project`/`join`/`joinSelect`/
-                // `leftJoin`)
+                // `leftJoin`/`leftJoinSelect`)
                 // are a class seeded via `seed_sql_codec_schemes`;
                 // `MemAdapter`/`Postgres`/`Config` are reconciled types, and
                 // `memAdapter`/`connect` are seeded via `reconciled_fn_scheme`
@@ -1552,6 +1552,7 @@ mod tests {
                             | "join"
                             | "joinSelect"
                             | "leftJoin"
+                            | "leftJoinSelect"
                             | "MemAdapter"
                             | "memAdapter"
                             | "Postgres"

@@ -27,10 +27,12 @@
 import std.sql (SqlValue)
 
 -- The storage seam. `a` is the connection-handle type; each backend provides an
--- instance. `insert` appends a row; `all` returns every row of a table;
+-- instance. `appendRow` appends a row; `all` returns every row of a table;
 -- `select` returns the rows matching a quoted predicate; `get` looks a single
 -- row up by an exact column match; `delete` removes the rows matching a
--- predicate and answers how many went. Every method reports failure through
+-- predicate and answers how many went; `updateRows` sets the columns in a
+-- `changes` map on every row matching a predicate and answers how many changed.
+-- Every method reports failure through
 -- `Result`, so a backend that can fail (a real database) and one that cannot
 -- (the in-memory store) share one surface. The predicate's parameter is the
 -- queried record at the call site (`fn (u: User) -> ...`); here it is the
@@ -64,11 +66,12 @@ import std.sql (SqlValue)
 -- absent. A backend compiles it to a `LEFT JOIN`; the in-memory adapter keeps
 -- the unmatched left rows in the nested loop.
 pub class Adapter a =
-    insert (conn: a) (table: Text) (row: Map Text SqlValue) -> Result Unit Error
+    appendRow (conn: a) (table: Text) (row: Map Text SqlValue) -> Result Unit Error
     all    (conn: a) (table: Text) -> Result (List (Map Text SqlValue)) Error
     select (conn: a) (table: Text) (pred: Quote (Map Text SqlValue -> Bool)) -> Result (List (Map Text SqlValue)) Error
     get    (conn: a) (table: Text) (column: Text) (key: SqlValue) -> Result (Option (Map Text SqlValue)) Error
     delete (conn: a) (table: Text) (pred: Quote (Map Text SqlValue -> Bool)) -> Result Int Error
+    updateRows (conn: a) (table: Text) (changes: Map Text SqlValue) (pred: Quote (Map Text SqlValue -> Bool)) -> Result Int Error
     fetch  (conn: a) (table: Text) (pred: Quote (Map Text SqlValue -> Bool)) (orders: List (Bool, Text)) (lim: Int) (off: Int) -> Result (List (Map Text SqlValue)) Error
     countWhere (conn: a) (table: Text) (pred: Quote (Map Text SqlValue -> Bool)) -> Result Int Error
     project (conn: a) (table: Text) (pred: Quote (Map Text SqlValue -> Bool)) (orders: List (Bool, Text)) (lim: Int) (off: Int) (cols: List (Text, Text)) -> Result (List (Map Text SqlValue)) Error
@@ -105,6 +108,11 @@ fn _memGetRows (id: Int) (table: Text) (column: Text) (key: SqlValue) -> Result 
 -- were removed.
 @ffi("ridge_rt", "mem_delete", 3)
 fn _memDelete (id: Int) (table: Text) (tree: QExpr) -> Result Int Error
+
+-- Set the `changes` columns on the rows of a table that satisfy the predicate
+-- tree; answer how many were changed.
+@ffi("ridge_rt", "mem_update", 4)
+fn _memUpdate (id: Int) (table: Text) (changes: Map Text SqlValue) (tree: QExpr) -> Result Int Error
 
 -- Return the rows of a table that satisfy the predicate tree, ordered by the
 -- `(ascending?, column)` keys, then offset and limited.
@@ -151,7 +159,7 @@ fn _memLeftJoinSelect (id: Int) (leftTable: Text) (rightTable: Text) (cond: QExp
 pub fn db memAdapter (_unit: Unit) -> MemAdapter
 
 instance Adapter MemAdapter =
-    insert (conn: MemAdapter) (table: Text) (row: Map Text SqlValue) -> Result Unit Error =
+    appendRow (conn: MemAdapter) (table: Text) (row: Map Text SqlValue) -> Result Unit Error =
         _memInsert conn.id table row
     all (conn: MemAdapter) (table: Text) -> Result (List (Map Text SqlValue)) Error =
         _memAll conn.id table
@@ -163,6 +171,8 @@ instance Adapter MemAdapter =
             Err e   -> Err e
     delete (conn: MemAdapter) (table: Text) (pred: Quote (Map Text SqlValue -> Bool)) -> Result Int Error =
         _memDelete conn.id table pred.tree
+    updateRows (conn: MemAdapter) (table: Text) (changes: Map Text SqlValue) (pred: Quote (Map Text SqlValue -> Bool)) -> Result Int Error =
+        _memUpdate conn.id table changes pred.tree
     fetch (conn: MemAdapter) (table: Text) (pred: Quote (Map Text SqlValue -> Bool)) (orders: List (Bool, Text)) (lim: Int) (off: Int) -> Result (List (Map Text SqlValue)) Error =
         _memFetch conn.id table pred.tree orders lim off
     countWhere (conn: MemAdapter) (table: Text) (pred: Quote (Map Text SqlValue -> Bool)) -> Result Int Error =
@@ -224,6 +234,12 @@ fn _pgGetRows (id: Int) (table: Text) (column: Text) (key: SqlValue) -> Result (
 @ffi("ridge_pg", "pg_delete", 3)
 fn _pgDelete (id: Int) (table: Text) (tree: QExpr) -> Result Int Error
 
+-- Set the `changes` columns on the rows of a table that satisfy the predicate
+-- tree, compiled to a parameterised `UPDATE … SET … WHERE`; answer the affected
+-- row count.
+@ffi("ridge_pg", "pg_update", 4)
+fn _pgUpdate (id: Int) (table: Text) (changes: Map Text SqlValue) (tree: QExpr) -> Result Int Error
+
 -- Return the rows of a table that satisfy the predicate tree, with ordering and
 -- paging compiled into the SQL (ORDER BY / LIMIT / OFFSET).
 @ffi("ridge_pg", "pg_fetch", 6)
@@ -270,7 +286,7 @@ pub fn db connect (cfg: Config) -> Result Postgres Error =
     _pgConnect cfg.host cfg.port cfg.database cfg.user cfg.password cfg.sslMode cfg.poolSize
 
 instance Adapter Postgres =
-    insert (conn: Postgres) (table: Text) (row: Map Text SqlValue) -> Result Unit Error =
+    appendRow (conn: Postgres) (table: Text) (row: Map Text SqlValue) -> Result Unit Error =
         _pgInsert conn.id table row
     all (conn: Postgres) (table: Text) -> Result (List (Map Text SqlValue)) Error =
         _pgAll conn.id table
@@ -282,6 +298,8 @@ instance Adapter Postgres =
             Err e   -> Err e
     delete (conn: Postgres) (table: Text) (pred: Quote (Map Text SqlValue -> Bool)) -> Result Int Error =
         _pgDelete conn.id table pred.tree
+    updateRows (conn: Postgres) (table: Text) (changes: Map Text SqlValue) (pred: Quote (Map Text SqlValue -> Bool)) -> Result Int Error =
+        _pgUpdate conn.id table changes pred.tree
     fetch (conn: Postgres) (table: Text) (pred: Quote (Map Text SqlValue -> Bool)) (orders: List (Bool, Text)) (lim: Int) (off: Int) -> Result (List (Map Text SqlValue)) Error =
         _pgFetch conn.id table pred.tree orders lim off
     countWhere (conn: Postgres) (table: Text) (pred: Quote (Map Text SqlValue -> Bool)) -> Result Int Error =

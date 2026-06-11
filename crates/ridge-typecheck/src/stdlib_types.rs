@@ -687,6 +687,30 @@ fn reconciled_repo_fn_scheme(
             result(Type::Con(b.unit, vec![])),
             with_adapter(),
         ),
+        // insert : ∀e a. e -> Repo e a -> Result Unit Error where Adapter a, Row e.
+        // The typed dual of `insertRow`: encodes the entity through `toRow` and
+        // appends it. Carries `Row e` because it derives the row.
+        "insert" => method(
+            vec![Type::Var(e), repo_app()],
+            result(Type::Con(b.unit, vec![])),
+            with_adapter_row(),
+        ),
+        // updateWhere : ∀e a. Map Text SqlValue -> Quote (e -> Bool) -> Repo e a
+        //   -> Result Int Error where Adapter a. Sets the columns of a partial map
+        //   on the matching rows and answers how many changed.
+        "updateWhere" => method(
+            vec![map_row(), quote_pred(), repo_app()],
+            result(Type::Con(b.int, vec![])),
+            with_adapter(),
+        ),
+        // update : ∀e a. e -> Quote (e -> Bool) -> Repo e a -> Result Int Error
+        //   where Adapter a, Row e. Overwrites every column of the matching rows
+        //   with the entity, encoded through `toRow`.
+        "update" => method(
+            vec![Type::Var(e), quote_pred(), repo_app()],
+            result(Type::Con(b.int, vec![])),
+            with_adapter_row(),
+        ),
         // query : ∀e a. Repo e a -> Query e a — start a query over a repository.
         // The builder verbs are pure: they assemble a query, and a terminal runs
         // it.

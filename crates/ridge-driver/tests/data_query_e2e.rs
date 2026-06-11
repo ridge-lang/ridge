@@ -22,7 +22,7 @@ use std::process::Command;
 use ridge_driver::{compile_workspace, CompileOptions, EmitArtefacts};
 
 const SOURCE: &str = r#"
-import std.data (memAdapter, insert, select, get, delete)
+import std.data (memAdapter, appendRow, select, get, delete)
 import std.sql (toSql, fromRow, SqlValue)
 import std.map as Map
 
@@ -35,13 +35,13 @@ pub fn userRow (uid: Int) (uage: Int) (uname: Text) -> Map Text SqlValue =
 -- queries its own isolated data.
 pub fn db setup () -> Result MemAdapter Error =
     let conn = memAdapter ()
-    match insert conn "users" (userRow 1 18 "ada")
+    match appendRow conn "users" (userRow 1 18 "ada")
         Err e -> Err e
         Ok _  ->
-            match insert conn "users" (userRow 2 30 "lin")
+            match appendRow conn "users" (userRow 2 30 "lin")
                 Err e -> Err e
                 Ok _  ->
-                    match insert conn "users" (userRow 3 25 "max")
+                    match appendRow conn "users" (userRow 3 25 "max")
                         Err e -> Err e
                         Ok _  -> Ok conn
 

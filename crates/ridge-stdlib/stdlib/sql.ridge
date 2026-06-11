@@ -65,16 +65,20 @@ instance SqlType (Option a) where SqlType a =
                     Err e -> Err e
                     Ok x  -> Ok (Some x)
 
--- ── Row decoder ───────────────────────────────────────────────────────────────
+-- ── Row codec ─────────────────────────────────────────────────────────────────
 --
--- A database row is a `Map Text SqlValue` keyed by column name. `Row` decodes
--- one back into a typed record; `deriving (Row)` on a record synthesises the
--- instance. Each field reads its column (the snake_cased field name) and runs
--- the field type's `SqlType.fromSql`, threading the first failure outward, so a
--- missing column or a type mismatch yields a descriptive `Err`. The storage
--- adapters produce the row; this is the read half of the data layer's mapping.
+-- A database row is a `Map Text SqlValue` keyed by column name. `Row` is the
+-- two-way mapping between a typed record and that row: `fromRow` decodes a row
+-- back into a record, and `toRow` encodes a record into a row to write. Both
+-- halves are synthesised by `deriving (Row)` on a record. Decoding reads each
+-- column (the snake_cased field name) through the field type's `SqlType.fromSql`,
+-- threading the first failure outward, so a missing column or a type mismatch
+-- yields a descriptive `Err`; encoding runs each field through `SqlType.toSql`,
+-- so a nullable `Option` field writes `None` as SQL NULL. The storage adapters
+-- move the row across the seam.
 pub class Row a =
     fromRow (r: Map Text SqlValue) -> Result a Error
+    toRow   (x: a)                 -> Map Text SqlValue
 
 -- ── Safe SQL statement text ───────────────────────────────────────────────────
 --

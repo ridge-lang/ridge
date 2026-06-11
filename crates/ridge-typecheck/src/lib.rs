@@ -1189,18 +1189,41 @@ fn seed_sql_codec_schemes(
                 constraints: vec![Constraint::single(row, a)],
             },
         );
+        // toRow :: ∀a. a -> Map Text SqlValue where Row a — the encode half of the
+        // Row codec, dual to `fromRow`. Bare `toRow` calls type-check once std.sql
+        // is imported; an `Option` field writes `None` as SQL NULL through its
+        // `SqlType` instance.
+        let a = ctx.fresh_tyvid();
+        let to_row_ty = Type::Fn {
+            params: vec![Type::Var(a)],
+            ret: Box::new(Type::Con(
+                b.map,
+                vec![Type::Con(b.text, vec![]), Type::Con(sql_value, vec![])],
+            )),
+            caps: CapRow::Concrete(CapabilitySet::PURE),
+        };
+        ctx.env.bind(
+            "toRow".to_owned(),
+            Scheme {
+                vars: vec![a],
+                cap_vars: vec![],
+                row_vars: vec![],
+                ty: to_row_ty,
+                constraints: vec![Constraint::single(row, a)],
+            },
+        );
     }
     // The `Adapter` seam from std.data. Both methods are cap-free: opening an
     // adapter is the act gated by `db`, and the handle is the proof of access
     // thereafter (the actor handle-as-proof model, spec §6.4.1). Seeded here for
-    // the same reason as the codec methods — bare `insert`/`all` type-check once
+    // the same reason as the codec methods — bare `appendRow`/`all` type-check once
     // std.data is imported, dispatching on the connection-handle type.
     if let Some(adapter) = class_table.id_by_name("Adapter") {
         let row_ty = Type::Con(
             b.map,
             vec![Type::Con(b.text, vec![]), Type::Con(sql_value, vec![])],
         );
-        // insert :: ∀a. a -> Text -> Map Text SqlValue -> Result Unit Error where Adapter a
+        // appendRow :: ∀a. a -> Text -> Map Text SqlValue -> Result Unit Error where Adapter a
         {
             let a = ctx.fresh_tyvid();
             let fn_ty = Type::Fn {
@@ -1212,7 +1235,7 @@ fn seed_sql_codec_schemes(
                 caps: CapRow::Concrete(CapabilitySet::PURE),
             };
             ctx.env.bind(
-                "insert".to_owned(),
+                "appendRow".to_owned(),
                 Scheme {
                     vars: vec![a],
                     cap_vars: vec![],
@@ -1340,6 +1363,36 @@ fn seed_sql_codec_schemes(
             };
             ctx.env.bind(
                 "delete".to_owned(),
+                Scheme {
+                    vars: vec![a, e],
+                    cap_vars: vec![],
+                    row_vars: vec![],
+                    ty: fn_ty,
+                    constraints: vec![Constraint::single(adapter, a)],
+                },
+            );
+        }
+        // updateRows :: ∀a e. a -> Text -> Map Text SqlValue -> Quote (e -> Bool)
+        //                  -> Result Int Error where Adapter a. The changes map
+        //   carries the columns to set; the predicate selects the rows.
+        {
+            let a = ctx.fresh_tyvid();
+            let e = ctx.fresh_tyvid();
+            let fn_ty = Type::Fn {
+                params: vec![
+                    Type::Var(a),
+                    Type::Con(b.text, vec![]),
+                    map_row(),
+                    quote_pred(e),
+                ],
+                ret: Box::new(Type::Con(
+                    b.result,
+                    vec![Type::Con(b.int, vec![]), Type::Con(b.error, vec![])],
+                )),
+                caps: CapRow::Concrete(CapabilitySet::PURE),
+            };
+            ctx.env.bind(
+                "updateRows".to_owned(),
                 Scheme {
                     vars: vec![a, e],
                     cap_vars: vec![],

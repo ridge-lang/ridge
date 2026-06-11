@@ -28,7 +28,7 @@
     http_get/1, http_post/2, http_put/2, http_delete/1,
     ask/3, send/2, send_op/2, send_fn/2, mailbox_size/1, spawn_actor/3,
     mem_new/1, mem_insert/3, mem_all/2,
-    mem_select/3, mem_delete/3, mem_get_rows/4,
+    mem_select/3, mem_delete/3, mem_update/4, mem_get_rows/4,
     mem_fetch/6, mem_count_where/3, mem_project/7,
     mem_join/8, mem_join_select/9, mem_left_join/8, mem_left_join_select/9,
     quote_keep_all/1, quote_and/2,
@@ -923,6 +923,11 @@ mem_get_rows(Id, Table, Column, Key) -> mem_call({get_rows, Id, Table, Column, K
 %% were removed. Result Int Error.
 mem_delete(Id, Table, Tree) -> mem_call({delete, Id, Table, Tree}).
 
+%% mem_update/4 — set the Changes columns on the rows of Table that satisfy Tree;
+%% answer how many rows changed. Changes is a `#{Column => SqlValue}` map merged
+%% over each matching row. Result Int Error.
+mem_update(Id, Table, Changes, Tree) -> mem_call({update, Id, Table, Changes, Tree}).
+
 %% mem_fetch/6 — the rows of Table that satisfy Tree, ordered by Orders, then
 %% offset and limited. Orders is a list of `{Asc, Column}` where Asc is the
 %% boolean `true` for ascending; sorting is stable and applied major-to-minor
@@ -1035,6 +1040,12 @@ mem_keeper_loop(State) ->
             Removed = length(Rows) - length(Kept),
             From ! {Ref, {ok, Removed}},
             mem_keeper_loop(State#{Key => Kept});
+        {{update, Id, Table, Changes, Tree}, From, Ref} ->
+            Key  = {Id, Table},
+            Rows = maps:get(Key, State, []),
+            {Updated, Changed} = mem_update_rows(Changes, Tree, Rows),
+            From ! {Ref, {ok, Changed}},
+            mem_keeper_loop(State#{Key => Updated});
         {{fetch, Id, Table, Tree, Orders, Lim, Off}, From, Ref} ->
             Rows = maps:get({Id, Table}, State, []),
             Matches = [R || R <- Rows, mem_pred(Tree, R)],
@@ -1077,6 +1088,23 @@ mem_keeper_loop(State) ->
 %% column reads as SQL NULL.
 mem_project_row(Cols, Row) ->
     maps:from_list([{Alias, maps:get(Col, Row, 'SqlNull')} || {Alias, Col} <- Cols]).
+
+%% Merge the Changes columns into every row matching the predicate tree, leaving
+%% the rest untouched; return `{UpdatedRows, ChangedCount}`. An empty Changes map
+%% is a no-op — nothing changes and the count is zero — matching the SQL backend,
+%% which cannot emit an empty SET.
+mem_update_rows(Changes, _Tree, Rows) when map_size(Changes) =:= 0 ->
+    {Rows, 0};
+mem_update_rows(Changes, Tree, Rows) ->
+    lists:mapfoldl(
+        fun(R, Count) ->
+            case mem_pred(Tree, R) of
+                true  -> {maps:merge(R, Changes), Count + 1};
+                false -> {R, Count}
+            end
+        end,
+        0,
+        Rows).
 
 %% --- In-memory inner join ---
 %%

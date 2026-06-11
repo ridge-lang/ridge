@@ -1508,13 +1508,13 @@ mod tests {
         for module in BUILTINS {
             for &name in module.exports {
                 // std.sql's `SqlType`/`Row` classes, their methods (`toSql`/
-                // `fromSql`/`fromRow`, seeded via `seed_sql_codec_schemes` rather
-                // than this signature table), and the opaque `SqlValue` type are
-                // not value schemes, so they have no `stdlib_signature` entry.
+                // `fromSql`/`fromRow`/`toRow`, seeded via `seed_sql_codec_schemes`
+                // rather than this signature table), and the opaque `SqlValue` type
+                // are not value schemes, so they have no `stdlib_signature` entry.
                 if module.name == "std.sql"
                     && matches!(
                         name,
-                        "SqlValue" | "SqlType" | "toSql" | "fromSql" | "Row" | "fromRow"
+                        "SqlValue" | "SqlType" | "toSql" | "fromSql" | "Row" | "fromRow" | "toRow"
                     )
                 {
                     continue;
@@ -1529,9 +1529,9 @@ mod tests {
                 {
                     continue;
                 }
-                // std.data: `Adapter` and its methods (`insert`/`all`/`select`/
-                // `get`/`delete`/`fetch`/`countWhere`/`project`/`join`/`joinSelect`/
-                // `leftJoin`/`leftJoinSelect`)
+                // std.data: `Adapter` and its methods (`appendRow`/`all`/`select`/
+                // `get`/`delete`/`updateRows`/`fetch`/`countWhere`/`project`/`join`/
+                // `joinSelect`/`leftJoin`/`leftJoinSelect`)
                 // are a class seeded via `seed_sql_codec_schemes`;
                 // `MemAdapter`/`Postgres`/`Config` are reconciled types, and
                 // `memAdapter`/`connect` are seeded via `reconciled_fn_scheme`
@@ -1541,11 +1541,12 @@ mod tests {
                     && matches!(
                         name,
                         "Adapter"
-                            | "insert"
+                            | "appendRow"
                             | "all"
                             | "select"
                             | "get"
                             | "delete"
+                            | "updateRows"
                             | "fetch"
                             | "countWhere"
                             | "project"

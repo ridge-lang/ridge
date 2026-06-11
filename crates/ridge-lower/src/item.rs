@@ -1111,6 +1111,7 @@ pub fn lower_derived_instance(
             field_names,
             columns,
             field_type_names,
+            optionals,
         } => {
             // fromRow (r: Map Text SqlValue) -> Result T Error
             //   = match Map.get "col1" r { Some sv -> fromSql(sv) >>= f1; None -> Err(missing) };
@@ -1122,6 +1123,7 @@ pub fn lower_derived_instance(
                 field_names,
                 columns,
                 field_type_names,
+                optionals,
                 sp,
             );
             let params = vec![IrParam {
@@ -4202,6 +4204,16 @@ fn build_decode_record_body(
 /// (dispatched cross-module to `std.sql`), and threads the first `Err` outward
 /// via [`decode_seq`]'s `return`. Unlike the JSON record decoder there is no outer
 /// object-shape match — the row map is the scrutinee for every field directly.
+///
+/// An `Option` field (its `optionals` flag set) decodes a missing or NULL column
+/// to `None` instead of failing: a present column runs the `SqlType (Option a)`
+/// instance's `fromSql`, which maps a SQL NULL to `None` and any other value to
+/// `Some (fromSql v)`.
+#[expect(
+    clippy::too_many_arguments,
+    clippy::too_many_lines,
+    reason = "threads the derived record's parallel per-field slices (names, columns, type tags, optionality) and builds one fail-fast match per field; the flat loop reads best kept together"
+)]
 fn build_from_row_record_body(
     ctx: &mut LowerCtx<'_>,
     tycon: ridge_types::TyConId,
@@ -4209,6 +4221,7 @@ fn build_from_row_record_body(
     field_names: &[String],
     columns: &[String],
     field_type_names: &[String],
+    optionals: &[bool],
     sp: Span,
 ) -> IrExpr {
     // Bind names for each successfully decoded field.
@@ -4247,10 +4260,15 @@ fn build_from_row_record_body(
 
     // Sequence the field reads from the last field outward; each wraps the
     // continuation so the first failure short-circuits the whole decode.
-    for ((field_name, column), (bound_name, type_tag)) in field_names
+    for ((field_name, column), ((bound_name, type_tag), optional)) in field_names
         .iter()
         .zip(columns.iter())
-        .zip(bound_names.iter().zip(field_type_names.iter()))
+        .zip(
+            bound_names
+                .iter()
+                .zip(field_type_names.iter())
+                .zip(optionals.iter()),
+        )
         .rev()
     {
         // Map.get "column" r → Option SqlValue
@@ -4265,6 +4283,13 @@ fn build_from_row_record_body(
             span: sp,
         };
         let get_result = map_get_call(ctx, col_key, row_map, sp);
+
+        if *optional {
+            cont = build_optional_field_read(
+                ctx, field_name, type_tag, bound_name, get_result, cont, sp,
+            );
+            continue;
+        }
 
         // Some sv -> decode_seq(fromSql(sv), bound, cont)
         let sv_bound = ctx.fresh_local(&format!("__row_sv_{field_name}"));
@@ -4319,6 +4344,150 @@ fn build_from_row_record_body(
     }
 
     cont
+}
+
+/// Bind an `Option` row field: `let bound = <decode nullable column> in cont`.
+///
+/// `get_result` is `Map.get "column" r : Option SqlValue`. A missing column reads
+/// as `None`; a present value runs the `SqlType (Option a)` instance's `fromSql`,
+/// which maps a SQL NULL to `None` and any other value to `Some (fromSql v)`,
+/// threading a decode `Err` outward via [`decode_seq`]'s `return`. The NULL test
+/// lives in that instance, so the `SqlValue` variants stay opaque to this module.
+fn build_optional_field_read(
+    ctx: &mut LowerCtx<'_>,
+    field_name: &str,
+    type_tag: &str,
+    bound_name: &str,
+    get_result: IrExpr,
+    cont: IrExpr,
+    sp: Span,
+) -> IrExpr {
+    let sv_bound = ctx.fresh_local(&format!("__row_sv_{field_name}"));
+    let opt_bound = ctx.fresh_local(&format!("__row_opt_{field_name}"));
+
+    // Some sv -> (SqlType (Option a)).fromSql sv : Result (Option inner) Error,
+    // unwrapped to its `Option inner` value (an Err short-circuits the decode).
+    let sv_local = IrExpr::Local {
+        id: ctx.fresh_id(None),
+        name: sv_bound.clone(),
+        span: sp,
+    };
+    let from_sql = build_optional_from_sql_call(ctx, type_tag, sv_local, sp);
+    let opt_local = IrExpr::Local {
+        id: ctx.fresh_id(None),
+        name: opt_bound.clone(),
+        span: sp,
+    };
+    let present = decode_seq(ctx, from_sql, opt_bound, opt_local, sp);
+    let some_arm = ridge_ir::IrArm {
+        pat: ridge_ir::IrPat::Ctor {
+            sym: SymbolRef::Prelude {
+                name: "Some".to_string(),
+            },
+            fields: vec![],
+            args: vec![ridge_ir::IrPat::Bind {
+                name: sv_bound,
+                inner: None,
+                span: sp,
+            }],
+            span: sp,
+        },
+        when: None,
+        body: present,
+        span: sp,
+    };
+    // _ (missing column) -> None
+    let none_arm = ridge_ir::IrArm {
+        pat: ridge_ir::IrPat::Wild { span: sp },
+        when: None,
+        body: build_none(ctx, sp),
+        span: sp,
+    };
+    let field_value = IrExpr::Match {
+        id: ctx.fresh_id(None),
+        scrutinee: Box::new(get_result),
+        arms: vec![some_arm, none_arm],
+        span: sp,
+    };
+
+    // let bound_name = field_value in cont
+    IrExpr::Match {
+        id: ctx.fresh_id(None),
+        scrutinee: Box::new(field_value),
+        arms: vec![ridge_ir::IrArm {
+            pat: ridge_ir::IrPat::Bind {
+                name: bound_name.to_string(),
+                inner: None,
+                span: sp,
+            },
+            when: None,
+            body: cont,
+            span: sp,
+        }],
+        span: sp,
+    }
+}
+
+/// `None` as a prelude `Option` value.
+fn build_none(ctx: &mut LowerCtx<'_>, sp: Span) -> IrExpr {
+    IrExpr::Construct {
+        id: ctx.fresh_id(None),
+        ctor: SymbolRef::Prelude {
+            name: "None".to_string(),
+        },
+        fields: vec![],
+        span: sp,
+    }
+}
+
+/// Emit `($inst_SqlType_Option $inst_SqlType_{Type}).fromSql(sv)`
+/// → `Result (Option T) Error`.
+///
+/// A nullable decode goes through the parametric `SqlType (Option a)` instance
+/// applied to the inner primitive's dictionary — the same dict-of-dicts the
+/// constraint solver builds for a concrete `fromSql` at `Option T` (see
+/// `dict_plan_to_expr` in `core.rs`). Keeping the NULL test inside that instance
+/// is what lets this builder stay clear of the opaque `SqlValue` variants.
+fn build_optional_from_sql_call(
+    ctx: &mut LowerCtx<'_>,
+    type_tag: &str,
+    sv: IrExpr,
+    sp: Span,
+) -> IrExpr {
+    let inner_dict = IrExpr::Symbol {
+        id: ctx.fresh_id(None),
+        sym: SymbolRef::Stdlib {
+            module: "std.sql".to_string(),
+            name: format!("$inst_SqlType_{type_tag}"),
+        },
+        span: sp,
+    };
+    let option_ctor = IrExpr::Symbol {
+        id: ctx.fresh_id(None),
+        sym: SymbolRef::Stdlib {
+            module: "std.sql".to_string(),
+            name: "$inst_SqlType_Option".to_string(),
+        },
+        span: sp,
+    };
+    let dict = IrExpr::Call {
+        id: ctx.fresh_id(None),
+        callee: Box::new(option_ctor),
+        args: vec![inner_dict],
+        span: sp,
+    };
+    let from_sql = IrExpr::Field {
+        id: ctx.fresh_id(None),
+        base: Box::new(dict),
+        field: "fromSql".to_string(),
+        span: sp,
+    };
+    IrExpr::Call {
+        id: ctx.fresh_id(None),
+        callee: Box::new(from_sql),
+        args: vec![sv],
+        span: sp,
+    }
 }
 
 /// Emit `(maps:get('fromSql', $inst_SqlType_{Type}))(sv)` → `Result T Error`.

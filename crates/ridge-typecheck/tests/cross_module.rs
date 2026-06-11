@@ -348,6 +348,32 @@ fn deriving_row_on_union_is_rejected() {
     );
 }
 
+#[test]
+fn deriving_row_optional_primitive_field_typechecks() {
+    // An `Option` of a base type is a nullable column: `deriving (Row)` accepts it
+    // and `fromRow` reads a NULL or missing column as `None`, a value as `Some`.
+    let main = "import std.sql (fromRow, SqlValue)\n\
+                pub type User = { id: Int, nick: Option Text } deriving (Row)\n\
+                pub fn decode (r: Map Text SqlValue) -> Result User Error = fromRow r\n";
+    let errors = typecheck_one(main);
+    assert!(
+        errors.is_empty(),
+        "deriving (Row) with an Option-of-primitive field must be clean; got {errors:?}"
+    );
+}
+
+#[test]
+fn deriving_row_optional_non_primitive_field_is_rejected() {
+    // Only an `Option` of a base type is a column; `Option (List Int)` has no
+    // `SqlType` instance for its inner type, so `deriving (Row)` must reject it.
+    let main = "pub type Bad = { tags: Option (List Int) } deriving (Row)\n";
+    let errors = typecheck_one(main);
+    assert!(
+        !errors.is_empty(),
+        "deriving (Row) with an Option of a non-SqlType field must be rejected; got no errors"
+    );
+}
+
 // ── std.data Adapter seam + in-memory adapter ─────────────────────────────────
 
 #[test]

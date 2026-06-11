@@ -144,7 +144,8 @@ pub enum DerivedMethodBody {
     /// from its snake-cased column in a `Map Text SqlValue` and decodes it
     /// through that field type's `SqlType.fromSql`, threading the first `Err`
     /// outward (fail-fast), then assembles `Ok(T { f1 = v1, … })`.  A missing
-    /// column short-circuits to `Err`.
+    /// column short-circuits to `Err`, except for an `Option` field, which reads
+    /// a missing or NULL column as `None`.
     DerivedRowRecord {
         /// Record field names in declaration order.
         field_names: Vec<String>,
@@ -152,8 +153,14 @@ pub enum DerivedMethodBody {
         /// `field_names`.
         columns: Vec<String>,
         /// `SqlType` instance type name used to dispatch `fromSql` for each
-        /// field (`"Int"`, `"Text"`, `"Bool"`, `"Float"`), same order.
+        /// field (`"Int"`, `"Text"`, `"Bool"`, `"Float"`), same order. For an
+        /// `Option T` field this is the inner `T`; the `Option` wrapping is
+        /// recorded in `optionals`.
         field_type_names: Vec<String>,
+        /// Whether each field is `Option`-wrapped, same order as `field_names`.
+        /// An optional field decodes a NULL or missing column to `None` and a
+        /// present value to `Some`, rather than failing.
+        optionals: Vec<bool>,
     },
 
     /// Transparent delegation for an `opaque` single-field wrapper (a newtype).
@@ -1162,11 +1169,12 @@ fn generate_decode(
 /// Produces a [`DerivedMethodBody::DerivedRowRecord`]: each field reads its
 /// snake-cased column from the `Map Text SqlValue` row and decodes it through
 /// the field type's `SqlType.fromSql`. Only records are supported (a union or
-/// alias has no column layout), and each field type must be one of the base
-/// `SqlType` primitives — `Int`, `Text`, `Bool`, or `Float` — which the prelude
-/// `SqlType` instances cover. Anything else (a user type, `Option`, a container)
-/// yields a `NoInstance` error naming the offending field; richer field types
-/// land once their `SqlType` instances exist.
+/// alias has no column layout). A field is either one of the base `SqlType`
+/// primitives — `Int`, `Text`, `Bool`, or `Float` — or an `Option` of one of
+/// them, which reads a NULL or missing column as `None`. Anything else (a user
+/// type, a container, an `Option` of a non-primitive) yields a `NoInstance`
+/// error naming the offending field; richer field types land once their
+/// `SqlType` instances exist.
 fn generate_row(
     body: &TypeBody,
     type_name: &Ident,
@@ -1185,8 +1193,9 @@ fn generate_row(
     let mut field_names = Vec::with_capacity(r.fields.len());
     let mut columns = Vec::with_capacity(r.fields.len());
     let mut field_type_names = Vec::with_capacity(r.fields.len());
+    let mut optionals = Vec::with_capacity(r.fields.len());
     for field in &r.fields {
-        let Some(type_tag) = sql_primitive_type_name(&field.ty) else {
+        let Some((optional, type_tag)) = sql_row_field(&field.ty) else {
             return Err(TypeError::NoInstance {
                 class: "Row".to_string(),
                 ty: type_name.text.clone(),
@@ -1194,7 +1203,7 @@ fn generate_row(
                 fix_hint: format!(
                     "field `{}` of type `{}` has no `SqlType` instance; \
                      `deriving (Row)` currently supports fields of type \
-                     Int, Text, Bool, or Float",
+                     Int, Text, Bool, Float, or an Option of one of them",
                     field.name.text,
                     ast_type_display(&field.ty),
                 ),
@@ -1203,12 +1212,30 @@ fn generate_row(
         field_names.push(field.name.text.clone());
         columns.push(ridge_ast::column_mirror::column_sql_name(&field.name.text));
         field_type_names.push(type_tag);
+        optionals.push(optional);
     }
     Ok(DerivedMethodBody::DerivedRowRecord {
         field_names,
         columns,
         field_type_names,
+        optionals,
     })
+}
+
+/// Classify a `deriving (Row)` field type into `(is_optional, primitive_tag)`.
+///
+/// A bare primitive (`Int`/`Text`/`Bool`/`Float`) is `(false, tag)`; an
+/// `Option P` of a primitive is `(true, inner_tag)`, decoded as a nullable
+/// column. Anything else — a non-primitive, a container, or an `Option` of a
+/// non-primitive — returns `None`, which `generate_row` reports as `NoInstance`.
+fn sql_row_field(ty: &AstType) -> Option<(bool, String)> {
+    match ty {
+        AstType::Paren { inner, .. } => sql_row_field(inner),
+        AstType::App { head, args, .. } if head.text == "Option" && args.len() == 1 => {
+            Some((true, sql_primitive_type_name(&args[0])?))
+        }
+        _ => sql_primitive_type_name(ty).map(|tag| (false, tag)),
+    }
 }
 
 /// The `SqlType` instance type name for a field type, when it is one of the base

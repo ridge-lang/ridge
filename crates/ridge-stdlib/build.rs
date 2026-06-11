@@ -263,18 +263,27 @@ fn extract_ffi(src: &str, module: &str, out: &mut Vec<FfiEntry>) {
         // bridge entry for the generated `$inst_<Class>_<Type>/0` dict const.
         // Matches: `instance <ClassName> <TypeName>` with optional trailing `=`.
         if let Some(rest) = t.strip_prefix("instance ") {
-            if let Some((class_name, type_name)) = parse_instance_head(rest) {
+            if let Some((class_name, type_name, is_parametric)) = parse_instance_head(rest) {
                 let is_stdlib_class = STDLIB_CLASSES
                     .iter()
                     .any(|(c, home)| *c == class_name && *home == module);
                 if is_stdlib_class {
                     let dict_name = format!("$inst_{class_name}_{type_name}");
+                    // A parametric instance (`instance SqlType (Option a) where
+                    // SqlType a`) compiles its dict const as a function of one
+                    // dictionary per `where` constraint; a monomorphic instance's
+                    // dict const is a plain arity-0 value.
+                    let arity = if is_parametric {
+                        count_where_constraints(rest)
+                    } else {
+                        0
+                    };
                     out.push(FfiEntry {
                         ridge_module: module.to_owned(),
                         ridge_fn: dict_name.clone(),
                         beam_module: module.to_owned(),
                         beam_fn: dict_name,
-                        arity: 0,
+                        arity,
                     });
                 }
             }
@@ -333,30 +342,37 @@ fn extract_ffi(src: &str, module: &str, out: &mut Vec<FfiEntry>) {
     }
 }
 
-/// Parse the head of an `instance` declaration to extract `(class_name, type_name)`.
+/// Parse the head of an `instance` declaration to `(class_name, type_name,
+/// is_parametric)`.
 ///
 /// Accepts both `ClassName TypeName =` and `ClassName TypeName` (the `=` may be
-/// on the same line or a subsequent line). Returns `None` for parametric heads
-/// (e.g. `instance SqlType (List a)`) which are not yet supported as stdlib
-/// dict consts.
-fn parse_instance_head(rest: &str) -> Option<(String, String)> {
+/// on the same line or a subsequent line), plus a parametric head such as
+/// `ClassName (Option a)`, whose type constructor is the first token inside the
+/// parens. The `is_parametric` flag is `true` for the parenthesised form, so the
+/// caller can size the dict const's arity by its `where` constraints.
+fn parse_instance_head(rest: &str) -> Option<(String, String, bool)> {
     let mut tokens = rest.split_whitespace();
     let class_name = tokens.next()?;
-    let type_name_raw = tokens.next()?;
-    // Skip parametric heads: they start with `(`.
-    if type_name_raw.starts_with('(') {
+    // Validate class name is a plain identifier.
+    if !is_valid_ident(class_name) {
         return None;
+    }
+    let type_name_raw = tokens.next()?;
+    // Parametric head (`(Option a)`): the constructor is the first token inside
+    // the parens.
+    if let Some(inner) = type_name_raw.strip_prefix('(') {
+        let ctor = inner.split([')', ' ']).next().unwrap_or("").trim();
+        if ctor.is_empty() || !is_valid_ident(ctor) {
+            return None;
+        }
+        return Some((class_name.to_owned(), ctor.to_owned(), true));
     }
     // Strip a trailing `=` if it was joined to the type name token.
     let type_name = type_name_raw.trim_end_matches('=').trim();
     if type_name.is_empty() || !is_valid_ident(type_name) {
         return None;
     }
-    // Validate class name is also a plain identifier.
-    if !is_valid_ident(class_name) {
-        return None;
-    }
-    Some((class_name.to_owned(), type_name.to_owned()))
+    Some((class_name.to_owned(), type_name.to_owned(), false))
 }
 
 /// Count the number of top-level `(...)` parameter groups in a Ridge fn

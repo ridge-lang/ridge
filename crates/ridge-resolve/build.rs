@@ -438,6 +438,12 @@ const BASELINE_EXPORTS: &[(&str, &[&str])] = &[
             "deleteWhere",
             "updateWhere",
             "update",
+            // Typed partial updates: the opaque `Setter e` built by `set`, and the
+            // verbs that apply a list of setters — `setWhere` (over the repo, with
+            // an explicit predicate) and `applySet` (the query-builder terminal).
+            "Setter",
+            "set",
+            "setWhere",
             // The query builder: the opaque `Query e a` and its pipeline verbs,
             // ending in the `toList`/`first` terminals and the `selectList`/
             // `selectFirst` projections.
@@ -451,6 +457,7 @@ const BASELINE_EXPORTS: &[(&str, &[&str])] = &[
             "first",
             "selectList",
             "selectFirst",
+            "applySet",
             // The two-table join builder: the opaque `Join e f a`, its `joinOn`
             // entry, and the `toPairs`/`selectJoin` terminals.
             "Join",
@@ -475,7 +482,7 @@ const BASELINE_OPAQUE: &[(&str, &[&str])] = &[
     ("std.net.http", &["Html", "SecureCookie"]),
     ("std.sql", &["Sql", "SqlValue"]),
     ("std.data", &["MemAdapter", "Postgres"]),
-    ("std.repo", &["Repo", "Query", "Join", "LeftJoin"]),
+    ("std.repo", &["Repo", "Query", "Join", "LeftJoin", "Setter"]),
 ];
 
 fn main() {

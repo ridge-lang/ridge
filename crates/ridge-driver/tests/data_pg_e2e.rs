@@ -404,6 +404,36 @@ pub fn db updateWhereCount () -> Int =
             match r |> Repo.updateWhere (Map.fromList [("age", toSql 40)]) (fn (u: User) -> u.age >= 25)
                 Ok n  -> n
                 Err _ -> 0 - 2
+
+-- typed partial update against Postgres: `setWhere` sets `age = 40` on the adults
+-- through a typed setter, then reads lin's age back -> 40. Proves the backend
+-- compiles the same UPDATE … SET … WHERE for a typed setter as for the raw map,
+-- with the SET bind preceding the WHERE bind.
+pub fn db setBumpedAge () -> Int =
+    match setup ()
+        Err _ -> 0 - 1
+        Ok r  ->
+            match r |> Repo.setWhere [ Repo.set (fn (u: User) -> u.age) 40 ] (fn (u: User) -> u.age >= 25)
+                Err _ -> 0 - 2
+                Ok _  ->
+                    match r |> Repo.getBy "id" (toSql 2)
+                        Err _       -> 0 - 3
+                        Ok None     -> 0 - 4
+                        Ok (Some u) -> u.age
+
+-- typed update through the query builder against Postgres: `applySet` filters to
+-- ada (id 1) and assigns her name "neo"; read it back -> "neo".
+pub fn db appliedName () -> Text =
+    match setup ()
+        Err _ -> "setup-err"
+        Ok r  ->
+            match r |> Repo.query |> Repo.filter (fn (u: User) -> u.id == 1) |> Repo.applySet [ Repo.set (fn (u: User) -> u.name) "neo" ]
+                Err _ -> "set-err"
+                Ok _  ->
+                    match r |> Repo.getBy "id" (toSql 1)
+                        Err _       -> "get-err"
+                        Ok None     -> "none"
+                        Ok (Some u) -> u.name
 "#;
 
 /// Connection settings parsed out of `RIDGE_TEST_PG_URL`.
@@ -569,6 +599,8 @@ fn postgres_adapter_reads_a_real_table() {
          io:format(\"bumpedAge=~w~n\",[{module}:bumpedAge()]), \
          io:format(\"bumpedName=~s~n\",[{module}:bumpedName()]), \
          io:format(\"updateWhereCount=~w~n\",[{module}:updateWhereCount()]), \
+         io:format(\"setBumpedAge=~w~n\",[{module}:setBumpedAge()]), \
+         io:format(\"appliedName=~s~n\",[{module}:appliedName()]), \
          {pool_probe} \
          halt()."
     );
@@ -647,6 +679,14 @@ fn postgres_adapter_reads_a_real_table() {
         (
             "updateWhereCount=2",
             "two adults match the partial update",
+        ),
+        (
+            "setBumpedAge=40",
+            "a typed setWhere compiles the same partial UPDATE on Postgres as the raw map",
+        ),
+        (
+            "appliedName=neo",
+            "applySet is the query-builder write terminal on Postgres: the filter picks the row, the setter assigns it",
         ),
         (
             "concurrent=true",

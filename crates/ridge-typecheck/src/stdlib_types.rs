@@ -338,6 +338,66 @@ fn reconciled_decls(b: &BuiltinTyCons, base: u32) -> Vec<TyConDecl> {
             opaque: true,
             is_anon: false,
         },
+        // `std.repo` — a left (outer) join under construction. Structurally a copy
+        // of `Join`: the same left query, right repository, and quoted condition
+        // over both entities. A distinct type so the terminal it admits differs —
+        // `toLeftPairs` keeps every left row and returns the right side as
+        // `Option f`, where `Join`'s `toPairs` returns it as `f`. Field order
+        // mirrors the source.
+        TyConDecl {
+            id: TyConId(base + 7),
+            name: "LeftJoin".to_string(),
+            arity: 3,
+            kind: TyConKind::Record(RecordSchema::new(
+                vec![TyVid(0), TyVid(1), TyVid(2)],
+                vec![
+                    RecordField {
+                        name: "left".to_string(),
+                        ty: Type::Con(
+                            TyConId(base + 5),
+                            vec![Type::Var(TyVid(0)), Type::Var(TyVid(2))],
+                        ),
+                    },
+                    RecordField {
+                        name: "right".to_string(),
+                        ty: Type::Con(
+                            TyConId(base + 2),
+                            vec![Type::Var(TyVid(1)), Type::Var(TyVid(2))],
+                        ),
+                    },
+                    RecordField {
+                        name: "cond".to_string(),
+                        ty: Type::Con(
+                            b.quote,
+                            vec![Type::Fn {
+                                params: vec![
+                                    Type::Con(
+                                        b.map,
+                                        vec![
+                                            Type::Con(b.text, vec![]),
+                                            Type::Con(b.sql_value, vec![]),
+                                        ],
+                                    ),
+                                    Type::Con(
+                                        b.map,
+                                        vec![
+                                            Type::Con(b.text, vec![]),
+                                            Type::Con(b.sql_value, vec![]),
+                                        ],
+                                    ),
+                                ],
+                                ret: Box::new(Type::Con(b.bool, vec![])),
+                                caps: CapRow::Concrete(CapabilitySet::PURE),
+                            }],
+                        ),
+                    },
+                ],
+            )),
+            def_span: None,
+            def_module_raw: None,
+            opaque: true,
+            is_anon: false,
+        },
     ]
 }
 
@@ -790,6 +850,63 @@ fn reconciled_repo_fn_scheme(
                     caps: pure(),
                 },
                 constraints: vec![Constraint::single(row, s), Constraint::single(adapter, a)],
+            })
+        }
+        // leftJoinOn : ∀e f a. Repo f a -> Quote (e -> f -> Bool) -> Query e a
+        //                  -> LeftJoin e f a. The left-outer builder, identical in
+        // shape to `joinOn` but producing a `LeftJoin` so the terminal keeps every
+        // left row.
+        "leftJoinOn" => {
+            let leftjoin_con = *reconciled.get("LeftJoin")?;
+            let f = TyVid(2);
+            let repo_f_a = Type::Con(repo_con, vec![Type::Var(f), Type::Var(a)]);
+            let cond_quote = Type::Con(
+                b.quote,
+                vec![Type::Fn {
+                    params: vec![Type::Var(e), Type::Var(f)],
+                    ret: Box::new(Type::Con(b.bool, vec![])),
+                    caps: CapRow::Concrete(CapabilitySet::PURE),
+                }],
+            );
+            let leftjoin_e_f_a =
+                Type::Con(leftjoin_con, vec![Type::Var(e), Type::Var(f), Type::Var(a)]);
+            Some(Scheme {
+                vars: vec![e, a, f],
+                cap_vars: vec![],
+                row_vars: vec![],
+                ty: Type::Fn {
+                    params: vec![repo_f_a, cond_quote, query_app()],
+                    ret: Box::new(leftjoin_e_f_a),
+                    caps: pure(),
+                },
+                constraints: vec![],
+            })
+        }
+        // toLeftPairs : ∀e f a. LeftJoin e f a -> Result (List (e, Option f)) Error
+        //                   where Row e, Row f, Adapter a. Runs the left join and
+        // decodes each row into the left entity paired with the right entity, or
+        // with `None` where the left row matched no right row. Constraint order
+        // follows the variables' first appearance (e, then f, then a), as `toPairs`.
+        "toLeftPairs" => {
+            let leftjoin_con = *reconciled.get("LeftJoin")?;
+            let f = TyVid(2);
+            let leftjoin_e_f_a =
+                Type::Con(leftjoin_con, vec![Type::Var(e), Type::Var(f), Type::Var(a)]);
+            let pair = Type::Tuple(vec![Type::Var(e), Type::Con(b.option, vec![Type::Var(f)])]);
+            Some(Scheme {
+                vars: vec![e, a, f],
+                cap_vars: vec![],
+                row_vars: vec![],
+                ty: Type::Fn {
+                    params: vec![leftjoin_e_f_a],
+                    ret: Box::new(result(Type::Con(b.list, vec![pair]))),
+                    caps: pure(),
+                },
+                constraints: vec![
+                    Constraint::single(row, e),
+                    Constraint::single(row, f),
+                    Constraint::single(adapter, a),
+                ],
             })
         }
         _ => None,

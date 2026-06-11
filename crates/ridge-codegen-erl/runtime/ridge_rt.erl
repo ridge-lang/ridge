@@ -30,7 +30,7 @@
     mem_new/1, mem_insert/3, mem_all/2,
     mem_select/3, mem_delete/3, mem_get_rows/4,
     mem_fetch/6, mem_count_where/3, mem_project/7,
-    mem_join/8, mem_join_select/9,
+    mem_join/8, mem_join_select/9, mem_left_join/8,
     quote_keep_all/1, quote_and/2,
     escript_main/1
 ]).
@@ -955,6 +955,14 @@ mem_join(Id, LeftTable, RightTable, Cond, Pred, Orders, Lim, Off) ->
 mem_join_select(Id, LeftTable, RightTable, Cond, Pred, Orders, Lim, Off, Proj) ->
     mem_call({join_select, Id, LeftTable, RightTable, Cond, Pred, Orders, Lim, Off, Proj}).
 
+%% mem_left_join/8 — left-outer-join LeftTable and RightTable on the condition
+%% tree Cond, keep the left rows matching the predicate tree Pred, order and
+%% page. Each result is `{LeftRow, {some, RightRow}}` for a match or
+%% `{LeftRow, none}` for a left row with no match. Result (List {Row, Option Row})
+%% Error.
+mem_left_join(Id, LeftTable, RightTable, Cond, Pred, Orders, Lim, Off) ->
+    mem_call({left_join, Id, LeftTable, RightTable, Cond, Pred, Orders, Lim, Off}).
+
 %% Internal: send a request to the keeper and await its reply.
 mem_call(Req) ->
     mem_ensure(),
@@ -1046,6 +1054,10 @@ mem_keeper_loop(State) ->
             Pairs = mem_join_pairs(State, Id, LeftTable, RightTable, Cond, Pred, Orders, Lim, Off),
             Projected = [mem_join_project(Proj, L, R) || {L, R} <- Pairs],
             From ! {Ref, {ok, Projected}},
+            mem_keeper_loop(State);
+        {{left_join, Id, LeftTable, RightTable, Cond, Pred, Orders, Lim, Off}, From, Ref} ->
+            Pairs = mem_left_join_pairs(State, Id, LeftTable, RightTable, Cond, Pred, Orders, Lim, Off),
+            From ! {Ref, {ok, Pairs}},
             mem_keeper_loop(State)
     end.
 
@@ -1068,6 +1080,28 @@ mem_join_pairs(State, Id, LeftTable, RightTable, Cond, Pred, Orders, Lim, Off) -
     LeftMatches = [L || L <- LeftRows, mem_pred(Pred, L)],
     Pairs = [{L, R} || L <- LeftMatches, R <- RightRows, mem_jpred(Cond, L, R)],
     mem_paginate(mem_order_pairs(Orders, Pairs), Lim, Off).
+
+%% --- In-memory left-outer join ---
+%%
+%% As mem_join_pairs, but a left row with no matching right row is kept: it pairs
+%% with `none` instead of being dropped, and a row with matches pairs with each
+%% as `{some, RightRow}`. Ordering and paging act on the left row of each pair
+%% just as for the inner join.
+
+mem_left_join_pairs(State, Id, LeftTable, RightTable, Cond, Pred, Orders, Lim, Off) ->
+    LeftRows = maps:get({Id, LeftTable}, State, []),
+    RightRows = maps:get({Id, RightTable}, State, []),
+    LeftMatches = [L || L <- LeftRows, mem_pred(Pred, L)],
+    Pairs = lists:append([mem_left_pairs_for(L, RightRows, Cond) || L <- LeftMatches]),
+    mem_paginate(mem_order_pairs(Orders, Pairs), Lim, Off).
+
+%% The pairs a single left row contributes: one `{L, {some, R}}` per matching
+%% right row, or `[{L, none}]` when no right row satisfies the condition.
+mem_left_pairs_for(L, RightRows, Cond) ->
+    case [R || R <- RightRows, mem_jpred(Cond, L, R)] of
+        []      -> [{L, none}];
+        Matches -> [{L, {some, R}} || R <- Matches]
+    end.
 
 %% Order joined pairs by the left-column keys (the left query's ordering). The
 %% key reads from the left row of each pair; lists:sort/2 is stable.

@@ -404,6 +404,7 @@ const BASELINE_EXPORTS: &[(&str, &[&str])] = &[
             "project",
             "join",
             "joinSelect",
+            "leftJoin",
             "MemAdapter",
             "memAdapter",
             // The Postgres adapter: the opaque connection handle, its config
@@ -450,6 +451,11 @@ const BASELINE_EXPORTS: &[(&str, &[&str])] = &[
             "joinOn",
             "toPairs",
             "selectJoin",
+            // The left-outer join: the opaque `LeftJoin e f a`, its `leftJoinOn`
+            // entry, and the `toLeftPairs` terminal returning `(e, Option f)`.
+            "LeftJoin",
+            "leftJoinOn",
+            "toLeftPairs",
         ],
     ),
 ];
@@ -462,7 +468,7 @@ const BASELINE_OPAQUE: &[(&str, &[&str])] = &[
     ("std.net.http", &["Html", "SecureCookie"]),
     ("std.sql", &["Sql", "SqlValue"]),
     ("std.data", &["MemAdapter", "Postgres"]),
-    ("std.repo", &["Repo", "Query", "Join"]),
+    ("std.repo", &["Repo", "Query", "Join", "LeftJoin"]),
 ];
 
 fn main() {

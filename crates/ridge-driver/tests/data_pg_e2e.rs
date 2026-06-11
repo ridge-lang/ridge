@@ -7,8 +7,12 @@
 //! client connects, authenticates, runs parameterised insert/select/delete, and
 //! decodes `RowDescription`/`DataRow` into the entity. The query builder is
 //! covered too — `orderBy` (ORDER BY) and `limit`/`offset` (LIMIT/OFFSET) compile
-//! into real SQL — and a final probe drives the connection pool with six
-//! concurrent reads on one handle (concurrent checkout, growth, waiter reuse).
+//! into real SQL. The two-table verbs run against the live database as well:
+//! `joinOn` + `toPairs`/`selectJoin` (the `JOIN` and the `l.*, r.*` split) and
+//! `leftJoinOn` + `toLeftPairs` (the `LEFT JOIN` and its `__ridge_matched`
+//! sentinel that keeps unmatched left rows). A final probe drives the connection
+//! pool with six concurrent reads on one handle (concurrent checkout, growth,
+//! waiter reuse).
 //!
 //! Gated three ways: the `beam-runtime` feature, a `which` guard for `erl`/`erlc`,
 //! and the `RIDGE_TEST_PG_URL` environment variable. Without a reachable database
@@ -18,8 +22,9 @@
 //!   <postgres://user:password@host:5432/dbname?sslmode=require>
 //!
 //! `sslmode` is optional and defaults to `disable`. The target database must hold
-//! a table `ridge_pg_users (id integer, name text, age integer)`; CI provisions
-//! it on the Postgres service, and a local run expects it to exist.
+//! a table `ridge_pg_users (id integer, name text, age integer)` and, for the
+//! join probes, `ridge_pg_posts (id integer, author integer, title text)`; CI
+//! provisions both on the Postgres service, and a local run expects them to exist.
 
 #![cfg(feature = "beam-runtime")]
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
@@ -77,6 +82,20 @@ fn joinCombos (cs: List Combo) -> Text =
         []          -> ""
         c :: []     -> Text.concat c.person (Text.concat ":" c.post)
         c :: rest   -> Text.concat c.person (Text.concat ":" (Text.concat c.post (Text.concat "," (joinCombos rest))))
+
+-- The title of an optional right post, or "-" when the left row matched none.
+fn optTitle (op: Option Post) -> Text =
+    match op
+        None   -> "-"
+        Some p -> p.title
+
+-- Render each `(User, Option Post)` pair as `name:title` (or `name:-`),
+-- comma-joined, so a left join's unmatched left rows are observable.
+fn joinLeftPairs (ps: List (User, Option Post)) -> Text =
+    match ps
+        []              -> ""
+        (u, op) :: []   -> Text.concat u.name (Text.concat ":" (optTitle op))
+        (u, op) :: rest -> Text.concat u.name (Text.concat ":" (Text.concat (optTitle op) (Text.concat "," (joinLeftPairs rest))))
 
 fn pgConfig () -> Config =
     Config { host = "__PG_HOST__", port = __PG_PORT__, database = "__PG_DATABASE__", user = "__PG_USER__", password = "__PG_PASSWORD__", sslMode = "__PG_SSLMODE__", poolSize = 4 }
@@ -257,6 +276,20 @@ pub fn db joinedTitles () -> Text =
             match users |> Repo.query |> Repo.orderBy Asc (fn (u: User) -> u.id) |> Repo.joinOn posts (fn (u: User) (p: Post) -> u.id == p.author) |> Repo.selectJoin (fn (u: User) (p: Post) -> Combo { person = u.name, post = p.title })
                 Err _  -> "select-err"
                 Ok cs  -> joinCombos cs
+
+-- left join: keep every user, pairing each with its post or with `None`, ordered
+-- by user id, rendered `name:title` (or `name:-`) -> "ada:-,lin:hello,max:world".
+-- ada has no post, so where the inner join dropped it the left join keeps it as
+-- `ada:-`. Proves the backend compiles a `LEFT JOIN`, tells an unmatched row from
+-- a matched one through the `__ridge_matched` sentinel, and decodes the right as
+-- `Option`.
+pub fn db leftJoinedNames () -> Text =
+    match setupJoin ()
+        Err _ -> "setup-err"
+        Ok (users, posts) ->
+            match users |> Repo.query |> Repo.orderBy Asc (fn (u: User) -> u.id) |> Repo.leftJoinOn posts (fn (u: User) (p: Post) -> u.id == p.author) |> Repo.toLeftPairs
+                Err _  -> "left-join-err"
+                Ok ps  -> joinLeftPairs ps
 "#;
 
 /// Connection settings parsed out of `RIDGE_TEST_PG_URL`.
@@ -413,6 +446,9 @@ fn postgres_adapter_reads_a_real_table() {
          io:format(\"pagedName=~s~n\",[{module}:pagedName()]), \
          io:format(\"summaryNames=~s~n\",[{module}:summaryNames()]), \
          io:format(\"topYears=~w~n\",[{module}:topYears()]), \
+         io:format(\"joinedNames=~s~n\",[{module}:joinedNames()]), \
+         io:format(\"joinedTitles=~s~n\",[{module}:joinedTitles()]), \
+         io:format(\"leftJoinedNames=~s~n\",[{module}:leftJoinedNames()]), \
          {pool_probe} \
          halt()."
     );
@@ -455,6 +491,18 @@ fn postgres_adapter_reads_a_real_table() {
         (
             "topYears=30",
             "selectFirst pushes the projection with LIMIT 1 and decodes `years`",
+        ),
+        (
+            "joinedNames=lin:hello,max:world",
+            "pg_join compiles the JOIN and splits each l.*, r.* row back into two entities",
+        ),
+        (
+            "joinedTitles=lin:hello,max:world",
+            "pg_join_select compiles a qualified, aliased select-list and decodes the Combo shape",
+        ),
+        (
+            "leftJoinedNames=ada:-,lin:hello,max:world",
+            "pg_left_join keeps the unmatched ada row via the __ridge_matched sentinel and decodes the right as Option",
         ),
         (
             "concurrent=true",

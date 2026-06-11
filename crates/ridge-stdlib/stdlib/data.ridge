@@ -57,6 +57,12 @@ import std.sql (SqlValue)
 -- `(left, right)` pair of column maps, for a caller decoding both entities;
 -- `joinSelect` instead pushes a projection `proj` (a tree over both rows) into
 -- the select-list and returns one map per row keyed by the projection's aliases.
+--
+-- `leftJoin` is the left-outer form of `join`: it keeps every row the left-side
+-- `pred` matches even when no right row satisfies `cond`, pairing the left map
+-- with `Some` of the matching right map or with `None` when the right side is
+-- absent. A backend compiles it to a `LEFT JOIN`; the in-memory adapter keeps
+-- the unmatched left rows in the nested loop.
 pub class Adapter a =
     insert (conn: a) (table: Text) (row: Map Text SqlValue) -> Result Unit Error
     all    (conn: a) (table: Text) -> Result (List (Map Text SqlValue)) Error
@@ -68,6 +74,7 @@ pub class Adapter a =
     project (conn: a) (table: Text) (pred: Quote (Map Text SqlValue -> Bool)) (orders: List (Bool, Text)) (lim: Int) (off: Int) (cols: List (Text, Text)) -> Result (List (Map Text SqlValue)) Error
     join (conn: a) (leftTable: Text) (rightTable: Text) (cond: Quote (Map Text SqlValue -> Map Text SqlValue -> Bool)) (pred: Quote (Map Text SqlValue -> Bool)) (orders: List (Bool, Text)) (lim: Int) (off: Int) -> Result (List (Map Text SqlValue, Map Text SqlValue)) Error
     joinSelect (conn: a) (leftTable: Text) (rightTable: Text) (cond: Quote (Map Text SqlValue -> Map Text SqlValue -> Bool)) (pred: Quote (Map Text SqlValue -> Bool)) (orders: List (Bool, Text)) (lim: Int) (off: Int) (proj: Quote (Map Text SqlValue -> Map Text SqlValue -> Map Text SqlValue)) -> Result (List (Map Text SqlValue)) Error
+    leftJoin (conn: a) (leftTable: Text) (rightTable: Text) (cond: Quote (Map Text SqlValue -> Map Text SqlValue -> Bool)) (pred: Quote (Map Text SqlValue -> Bool)) (orders: List (Bool, Text)) (lim: Int) (off: Int) -> Result (List (Map Text SqlValue, Option (Map Text SqlValue))) Error
 
 -- A handle to an in-memory store. Opaque: `memAdapter` is the only way to make
 -- one, and the `id` it carries selects this handle's private, isolated store,
@@ -124,6 +131,13 @@ fn _memJoin (id: Int) (leftTable: Text) (rightTable: Text) (cond: QExpr) (pred: 
 @ffi("ridge_rt", "mem_join_select", 9)
 fn _memJoinSelect (id: Int) (leftTable: Text) (rightTable: Text) (cond: QExpr) (pred: QExpr) (orders: List (Bool, Text)) (lim: Int) (off: Int) (proj: QExpr) -> Result (List (Map Text SqlValue)) Error
 
+-- Left-outer-join two tables on the captured condition tree, keep the rows the
+-- left-side predicate tree matches, order and page the result, and return each
+-- joined row as the `(left, right)` pair where the right is `Some` of its column
+-- map for a match or `None` for an unmatched left row.
+@ffi("ridge_rt", "mem_left_join", 8)
+fn _memLeftJoin (id: Int) (leftTable: Text) (rightTable: Text) (cond: QExpr) (pred: QExpr) (orders: List (Bool, Text)) (lim: Int) (off: Int) -> Result (List (Map Text SqlValue, Option (Map Text SqlValue))) Error
+
 -- Open a fresh in-memory adapter backed by an empty store. Requires the `db`
 -- capability; the handle returned is the proof of access for every later call.
 @ffi("ridge_rt", "mem_new", 1)
@@ -152,6 +166,8 @@ instance Adapter MemAdapter =
         _memJoin conn.id leftTable rightTable cond.tree pred.tree orders lim off
     joinSelect (conn: MemAdapter) (leftTable: Text) (rightTable: Text) (cond: Quote (Map Text SqlValue -> Map Text SqlValue -> Bool)) (pred: Quote (Map Text SqlValue -> Bool)) (orders: List (Bool, Text)) (lim: Int) (off: Int) (proj: Quote (Map Text SqlValue -> Map Text SqlValue -> Map Text SqlValue)) -> Result (List (Map Text SqlValue)) Error =
         _memJoinSelect conn.id leftTable rightTable cond.tree pred.tree orders lim off proj.tree
+    leftJoin (conn: MemAdapter) (leftTable: Text) (rightTable: Text) (cond: Quote (Map Text SqlValue -> Map Text SqlValue -> Bool)) (pred: Quote (Map Text SqlValue -> Bool)) (orders: List (Bool, Text)) (lim: Int) (off: Int) -> Result (List (Map Text SqlValue, Option (Map Text SqlValue))) Error =
+        _memLeftJoin conn.id leftTable rightTable cond.tree pred.tree orders lim off
 
 -- The head of a row list as an `Option` — `get` returns at most one row, so it
 -- reads the first match (or `None` when the column held no such key).
@@ -226,6 +242,12 @@ fn _pgJoin (id: Int) (leftTable: Text) (rightTable: Text) (cond: QExpr) (pred: Q
 @ffi("ridge_pg", "pg_join_select", 9)
 fn _pgJoinSelect (id: Int) (leftTable: Text) (rightTable: Text) (cond: QExpr) (pred: QExpr) (orders: List (Bool, Text)) (lim: Int) (off: Int) (proj: QExpr) -> Result (List (Map Text SqlValue)) Error
 
+-- As `pg_join`, but compiled to a `LEFT JOIN`: each row is the `(left, right)`
+-- pair where the right is `Some` of its column map when the join matched or
+-- `None` when the left row had no match.
+@ffi("ridge_pg", "pg_left_join", 8)
+fn _pgLeftJoin (id: Int) (leftTable: Text) (rightTable: Text) (cond: QExpr) (pred: QExpr) (orders: List (Bool, Text)) (lim: Int) (off: Int) -> Result (List (Map Text SqlValue, Option (Map Text SqlValue))) Error
+
 -- Open a Postgres connection with the given settings. Requires the `db`
 -- capability; the handle returned is the proof of access for every later call,
 -- exactly like `memAdapter`. A failed connect or authentication is an `Err`.
@@ -255,3 +277,5 @@ instance Adapter Postgres =
         _pgJoin conn.id leftTable rightTable cond.tree pred.tree orders lim off
     joinSelect (conn: Postgres) (leftTable: Text) (rightTable: Text) (cond: Quote (Map Text SqlValue -> Map Text SqlValue -> Bool)) (pred: Quote (Map Text SqlValue -> Bool)) (orders: List (Bool, Text)) (lim: Int) (off: Int) (proj: Quote (Map Text SqlValue -> Map Text SqlValue -> Map Text SqlValue)) -> Result (List (Map Text SqlValue)) Error =
         _pgJoinSelect conn.id leftTable rightTable cond.tree pred.tree orders lim off proj.tree
+    leftJoin (conn: Postgres) (leftTable: Text) (rightTable: Text) (cond: Quote (Map Text SqlValue -> Map Text SqlValue -> Bool)) (pred: Quote (Map Text SqlValue -> Bool)) (orders: List (Bool, Text)) (lim: Int) (off: Int) -> Result (List (Map Text SqlValue, Option (Map Text SqlValue))) Error =
+        _pgLeftJoin conn.id leftTable rightTable cond.tree pred.tree orders lim off

@@ -226,6 +226,32 @@ pub fn selectJoin (proj: Quote (Map Text SqlValue -> Map Text SqlValue -> Map Te
         Err err  -> Err err
         Ok rows  -> decodeRows rows
 
+-- A left (outer) join under construction. It carries the same three parts as an
+-- inner `Join` — the left query, the right repository, and a quoted condition
+-- over both entities — but its terminal keeps every left row: a left row that
+-- matches no right row is still returned, with the right side reported as
+-- `None`. Opaque and threaded from `leftJoinOn` into `toLeftPairs`:
+--   users
+--     |> Repo.query
+--     |> Repo.leftJoinOn posts (fn (u: User) (p: Post) -> u.id == p.authorId)
+--     |> Repo.toLeftPairs
+pub opaque type LeftJoin e f a = { left: Query e a, right: Repo f a, cond: Quote (Map Text SqlValue -> Map Text SqlValue -> Bool) }
+
+-- Start a left outer join from a query: pair it with a right repository on a
+-- quoted condition over both entities. Unlike `joinOn`, a left row with no
+-- matching right row is kept rather than dropped; the terminal reports the
+-- missing right side as `None`. The left query's filter, ordering, and page
+-- still apply.
+pub fn leftJoinOn (right: Repo f a) (cond: Quote (Map Text SqlValue -> Map Text SqlValue -> Bool)) (q: Query e a) -> LeftJoin e f a =
+    LeftJoin { left = q, right = right, cond = cond }
+
+-- Run the left join and decode each row into the left entity paired with the
+-- right entity, or paired with `None` where the left row matched no right row.
+pub fn toLeftPairs (j: LeftJoin e f a) -> Result (List (e, Option f)) Error where Adapter a, Row e, Row f =
+    match leftJoin j.left.repo.adapter j.left.repo.table j.right.table j.cond j.left.pred j.left.orders j.left.lim j.left.off
+        Err err  -> Err err
+        Ok pairs -> decodeLeftPairs pairs
+
 -- Decode a list of `(left, right)` row pairs into entity pairs, stopping at the
 -- first decode failure on either side.
 fn decodePairs (pairs: List (Map Text SqlValue, Map Text SqlValue)) -> Result (List (e, f)) Error where Row e, Row f =
@@ -241,6 +267,29 @@ fn decodePairs (pairs: List (Map Text SqlValue, Map Text SqlValue)) -> Result (L
                             match decodePairs rest
                                 Err err -> Err err
                                 Ok xs   -> Ok ((x, y) :: xs)
+
+-- Decode a list of `(left, optional-right)` pairs into entity pairs: the left is
+-- always decoded; the right only when present, so an unmatched left row decodes
+-- to `(left, None)`. Stops at the first decode failure on either side.
+fn decodeLeftPairs (pairs: List (Map Text SqlValue, Option (Map Text SqlValue))) -> Result (List (e, Option f)) Error where Row e, Row f =
+    match pairs
+        []                  -> Ok []
+        (lm, optRm) :: rest ->
+            match fromRow lm
+                Err err -> Err err
+                Ok x    ->
+                    match optRm
+                        None ->
+                            match decodeLeftPairs rest
+                                Err err -> Err err
+                                Ok xs   -> Ok ((x, None) :: xs)
+                        Some rm ->
+                            match fromRow rm
+                                Err err -> Err err
+                                Ok y    ->
+                                    match decodeLeftPairs rest
+                                        Err err -> Err err
+                                        Ok xs   -> Ok ((x, Some y) :: xs)
 
 -- The `(alias, column)` pairs a projection names. The projection quote captures
 -- a `QProj` whose select-list is a list of `(alias, QCol column)`; anything else

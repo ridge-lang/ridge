@@ -41,6 +41,7 @@
     pg_project/7,
     pg_join/8,
     pg_join_select/9,
+    pg_left_join/8,
     pg_close/1
 ]).
 
@@ -128,6 +129,15 @@ pg_join(Id, LeftTable, RightTable, Cond, Pred, Orders, Lim, Off) ->
 %% keyed by the projection's aliases. Result (List Row) Error.
 pg_join_select(Id, LeftTable, RightTable, Cond, Pred, Orders, Lim, Off, Proj) ->
     pg_call(Id, {join_select, LeftTable, RightTable, Cond, Pred, Orders, Lim, Off, Proj}).
+
+%% pg_left_join/8 — as pg_join, compiled to a `LEFT JOIN`. The right table is
+%% wrapped in a subquery that tags every real row with a `__ridge_matched`
+%% sentinel, so a null-extended (unmatched) row is told apart from a matched row
+%% whose columns happen to be NULL. Each row comes back as `{left, {some, right}}`
+%% for a match or `{left, none}` for an unmatched left row. Result
+%% (List {Row, Option Row}) Error.
+pg_left_join(Id, LeftTable, RightTable, Cond, Pred, Orders, Lim, Off) ->
+    pg_call(Id, {left_join, LeftTable, RightTable, Cond, Pred, Orders, Lim, Off}).
 
 %% pg_close/1 — close every connection in the pool and forget the handle.
 %% Result Unit Error.
@@ -521,6 +531,17 @@ run_verb(Conn, {join_select, LeftTable, RightTable, Cond, Pred, Orders, Lim, Off
            quote_ident(RightTable), " AS r ON ", OnFrag, " WHERE ", WhereFrag,
            order_by_clause_join(Orders), limit_clause(Lim), offset_clause(Off)],
     run_query(Conn, Sql, lists:reverse(RevB2));
+run_verb(Conn, {left_join, LeftTable, RightTable, Cond, Pred, Orders, Lim, Off}) ->
+    {OnFrag, RevB1, N1} = cwj(Cond, 1, []),
+    {WhereFrag, RevB2, _N2} = cwj(Pred, N1, RevB1),
+    %% The right table is wrapped in a subquery that adds a constant TRUE column;
+    %% the LEFT JOIN null-extends it to NULL for unmatched rows, so the sentinel
+    %% tells a real right row (even one with all-NULL columns) from a missing one.
+    Sql = ["SELECT l.*, r.* FROM ", quote_ident(LeftTable),
+           " AS l LEFT JOIN (SELECT *, TRUE AS \"__ridge_matched\" FROM ",
+           quote_ident(RightTable), ") AS r ON ", OnFrag, " WHERE ", WhereFrag,
+           order_by_clause_join(Orders), limit_clause(Lim), offset_clause(Off)],
+    run_query_left_join(Conn, Sql, lists:reverse(RevB2));
 run_verb(Conn, {count_where, Table, Tree}) ->
     do_count(Conn, Table, Tree).
 
@@ -752,6 +773,31 @@ collect_rows_join(Conn, Cols, Acc) ->
         {_, _}  -> collect_rows_join(Conn, Cols, Acc)
     end.
 
+%% As run_query_join, but the right side is the sentinel-tagged subquery, so each
+%% row decodes the right map into `{some, _}` when the `__ridge_matched` marker is
+%% set and `none` when the left row was null-extended.
+run_query_left_join(Conn, Sql, Binds) ->
+    try
+        send_extended(Conn, iolist_to_binary(Sql), Binds),
+        collect_rows_left_join(Conn, [], [])
+    catch
+        throw:{pg_error, E} ->
+            drain_until_ready(Conn),
+            {error, E}
+    end.
+
+collect_rows_left_join(Conn, Cols, Acc) ->
+    case recv_msg(Conn) of
+        {$1, _} -> collect_rows_left_join(Conn, Cols, Acc);
+        {$2, _} -> collect_rows_left_join(Conn, Cols, Acc);
+        {$T, P} -> collect_rows_left_join(Conn, decode_row_desc_join(P), Acc);
+        {$n, _} -> collect_rows_left_join(Conn, Cols, Acc);
+        {$D, P} -> collect_rows_left_join(Conn, Cols, [decode_data_row_left_join(P, Cols) | Acc]);
+        {$C, _} -> collect_rows_left_join(Conn, Cols, Acc);
+        {$Z, _} -> {ok, lists:reverse(Acc)};
+        {_, _}  -> collect_rows_left_join(Conn, Cols, Acc)
+    end.
+
 send_extended(Conn, SqlBin, Binds) ->
     %% Parse: unnamed statement, the query text, no pre-declared parameter types.
     send_msg(Conn, $P, <<0, SqlBin/binary, 0, 0:16>>),
@@ -875,6 +921,24 @@ split_join_cells([{Name, Attnum, Val} | Rest], LeftAcc, Prev) when Attnum =< Pre
     {lists:reverse(LeftAcc), Right};
 split_join_cells([{Name, Attnum, Val} | Rest], LeftAcc, _Prev) ->
     split_join_cells(Rest, [{Name, Val} | LeftAcc], Attnum).
+
+%% As decode_data_row_join, but the right side carries the `__ridge_matched`
+%% sentinel. A TRUE marker means the row matched, so the right map (with the
+%% marker dropped) is wrapped in `{some, _}`; a NULL or absent marker means the
+%% left row was null-extended by the LEFT JOIN, so the right side is `none`.
+decode_data_row_left_join(<<NCols:16, Rest/binary>>, Cols) ->
+    Vals = decode_cols(NCols, Rest, []),
+    Cells = lists:zipwith(
+        fun({Name, Oid, Attnum}, V) -> {Name, Attnum, decode_cell(Oid, V)} end, Cols, Vals),
+    {Left, Right} = split_join_cells(Cells, [], -1),
+    LeftMap = maps:from_list(Left),
+    RightMap = maps:from_list(Right),
+    case maps:get(<<"__ridge_matched">>, RightMap, 'SqlNull') of
+        {'SqlBool', true} ->
+            {LeftMap, {some, maps:remove(<<"__ridge_matched">>, RightMap)}};
+        _ ->
+            {LeftMap, none}
+    end.
 
 decode_cell(_Oid, null) -> 'SqlNull';
 decode_cell(Oid, Val)   -> decode_value(Oid, Val).

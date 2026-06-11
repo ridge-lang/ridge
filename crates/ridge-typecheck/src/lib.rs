@@ -1569,6 +1569,55 @@ fn seed_sql_codec_schemes(
                 },
             );
         }
+        // leftJoin :: ∀a c p. a -> Text -> Text -> Quote c -> Quote p
+        //              -> List (Bool, Text) -> Int -> Int
+        //              -> Result (List (Map Text SqlValue, Option (Map Text SqlValue))) Error
+        //              where Adapter a.
+        // The left-outer form of `join`: same condition, predicate, ordering, and
+        // paging, but each result row keeps the left map and reports the right as
+        // `Some` of its column map when the join matched or `None` when the left
+        // row had no match. The two quotes are phantom — the seam walks their
+        // captured trees.
+        {
+            let a = ctx.fresh_tyvid();
+            let c = ctx.fresh_tyvid();
+            let p = ctx.fresh_tyvid();
+            let orders = Type::Con(
+                b.list,
+                vec![Type::Tuple(vec![
+                    Type::Con(b.bool, vec![]),
+                    Type::Con(b.text, vec![]),
+                ])],
+            );
+            let pair = Type::Tuple(vec![map_row(), Type::Con(b.option, vec![map_row()])]);
+            let fn_ty = Type::Fn {
+                params: vec![
+                    Type::Var(a),
+                    Type::Con(b.text, vec![]),
+                    Type::Con(b.text, vec![]),
+                    Type::Con(b.quote, vec![Type::Var(c)]),
+                    Type::Con(b.quote, vec![Type::Var(p)]),
+                    orders,
+                    Type::Con(b.int, vec![]),
+                    Type::Con(b.int, vec![]),
+                ],
+                ret: Box::new(Type::Con(
+                    b.result,
+                    vec![Type::Con(b.list, vec![pair]), Type::Con(b.error, vec![])],
+                )),
+                caps: CapRow::Concrete(CapabilitySet::PURE),
+            };
+            ctx.env.bind(
+                "leftJoin".to_owned(),
+                Scheme {
+                    vars: vec![a, c, p],
+                    cap_vars: vec![],
+                    row_vars: vec![],
+                    ty: fn_ty,
+                    constraints: vec![Constraint::single(adapter, a)],
+                },
+            );
+        }
     }
 }
 

@@ -17,6 +17,8 @@
 //! - the inner join: `joinOn` + `toPairs` (decoding both entities of each
 //!   matched pair) and `joinOn` + `selectJoin` (projecting columns from both
 //!   sides into a named shape).
+//! - the left join: `leftJoinOn` + `toLeftPairs` (keeping every left row and
+//!   decoding the right entity as `Option`, so an unmatched left row survives).
 //!
 //! Gated on `beam-runtime` (real OTP) plus a `which` guard for `erl`/`erlc`.
 
@@ -80,6 +82,21 @@ fn joinCombos (cs: List Combo) -> Text =
         []          -> ""
         c :: []     -> Text.concat c.person (Text.concat ":" c.post)
         c :: rest   -> Text.concat c.person (Text.concat ":" (Text.concat c.post (Text.concat "," (joinCombos rest))))
+
+-- The title of an optional right post, or "-" when the left row matched none.
+fn optTitle (op: Option Post) -> Text =
+    match op
+        None   -> "-"
+        Some p -> p.title
+
+-- Render each `(User, Option Post)` pair as `name:title` (or `name:-` for an
+-- unmatched left row), comma-joined, so a left join's kept-but-unmatched rows
+-- are observable as one string alongside the matched ones.
+fn joinLeftPairs (ps: List (User, Option Post)) -> Text =
+    match ps
+        []              -> ""
+        (u, op) :: []   -> Text.concat u.name (Text.concat ":" (optTitle op))
+        (u, op) :: rest -> Text.concat u.name (Text.concat ":" (Text.concat (optTitle op) (Text.concat "," (joinLeftPairs rest))))
 
 pub fn userRow (uid: Int) (uage: Int) (uname: Text) -> Map Text SqlValue =
     Map.fromList [("id", toSql uid), ("age", toSql uage), ("name", toSql uname)]
@@ -277,6 +294,19 @@ pub fn db joinedTitles () -> Text =
             match users |> Repo.query |> Repo.orderBy Asc (fn (u: User) -> u.id) |> Repo.joinOn posts (fn (u: User) (p: Post) -> u.id == p.author) |> Repo.selectJoin (fn (u: User) (p: Post) -> Combo { person = u.name, post = p.title })
                 Err _  -> "select-err"
                 Ok cs  -> joinCombos cs
+
+-- left join: keep every user, pairing each with its posts or with `None`, order
+-- by user id, and render `name:title` (or `name:-`) per pair ->
+-- "ada:-,lin:hello,lin:again,max:world". ada owns no posts, so where the inner
+-- join dropped it the left join keeps it as `ada:-`. Proves toLeftPairs keeps
+-- unmatched left rows and decodes the right entity as `Option`.
+pub fn db leftJoinedNames () -> Text =
+    match setupJoin ()
+        Err _ -> "setup-err"
+        Ok (users, posts) ->
+            match users |> Repo.query |> Repo.orderBy Asc (fn (u: User) -> u.id) |> Repo.leftJoinOn posts (fn (u: User) (p: Post) -> u.id == p.author) |> Repo.toLeftPairs
+                Err _  -> "left-join-err"
+                Ok ps  -> joinLeftPairs ps
 "#;
 
 fn write_workspace(root: &std::path::Path) {
@@ -360,6 +390,7 @@ fn repo_surface_runs_on_beam() {
          io:format(\"topYears=~w~n\",[{module}:topYears()]), \
          io:format(\"joinedNames=~s~n\",[{module}:joinedNames()]), \
          io:format(\"joinedTitles=~s~n\",[{module}:joinedTitles()]), \
+         io:format(\"leftJoinedNames=~s~n\",[{module}:leftJoinedNames()]), \
          halt()."
     );
     let output = Command::new("erl")
@@ -412,6 +443,10 @@ fn repo_surface_runs_on_beam() {
         (
             "joinedTitles=lin:hello,lin:again,max:world",
             "selectJoin projects columns from both entities into the named Combo shape",
+        ),
+        (
+            "leftJoinedNames=ada:-,lin:hello,lin:again,max:world",
+            "toLeftPairs keeps the unmatched ada row as `ada:-` and decodes the right entity as Option",
         ),
     ] {
         assert!(

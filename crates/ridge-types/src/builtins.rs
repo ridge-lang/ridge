@@ -927,6 +927,14 @@ impl BuiltinTyCons {
                             ])],
                         )]),
                     },
+                    // A right-side column reference in a join. `QCol` names a
+                    // column of the left (or only) table; `QColR` names one of the
+                    // right table, so a two-table quote keeps the two sides apart.
+                    // Single-table quotes never produce it.
+                    UnionVariant {
+                        name: "QColR".to_string(),
+                        kind: VariantPayload::Positional(vec![Type::Con(text, vec![])]),
+                    },
                 ],
             }),
             def_span: None,

@@ -842,6 +842,176 @@ pub fn db bad () -> Result (List Unit) Error =
 }
 
 #[test]
+fn query_builder_join_to_pairs_typechecks() {
+    // An inner join pairs the left query with a right repository on a quoted
+    // condition over both entities, and `toPairs` decodes each matched row pair
+    // into `(User, Post)`. The condition's left columns range over `User`, its
+    // right over `Post`; both are pinned from the lambda's own annotations.
+    let main = r#"
+import std.data (memAdapter, MemAdapter)
+import std.repo as Repo
+import std.query (SortOrder, Asc)
+import std.sql (SqlValue)
+
+pub type User = { id: Int, age: Int, name: Text } deriving (Row)
+pub type Post = { id: Int, authorId: Int, title: Text } deriving (Row)
+
+pub fn db authorPosts () -> Result (List (User, Post)) Error =
+    let users: Repo User MemAdapter = Repo.repo (memAdapter ()) "users"
+    let posts: Repo Post MemAdapter = Repo.repo (memAdapter ()) "posts"
+    users
+      |> Repo.query
+      |> Repo.filter (fn (u: User) -> u.age >= 18)
+      |> Repo.orderBy Asc (fn (u: User) -> u.name)
+      |> Repo.joinOn posts (fn (u: User) (p: Post) -> u.id == p.authorId)
+      |> Repo.toPairs
+"#;
+    let errors = typecheck_one(main);
+    assert!(
+        errors.is_empty(),
+        "a typed inner join into entity pairs must type-check clean; got {errors:?}"
+    );
+}
+
+#[test]
+fn query_builder_join_select_into_named_shape_typechecks() {
+    // `selectJoin` names a result record built from columns of both entities,
+    // which pins the decode target so the join answers `List Line` directly —
+    // the two-table analogue of `selectList`.
+    let main = r#"
+import std.data (memAdapter, MemAdapter)
+import std.repo as Repo
+import std.sql (SqlValue)
+
+pub type User = { id: Int, age: Int, name: Text } deriving (Row)
+pub type Post = { id: Int, authorId: Int, title: Text } deriving (Row)
+pub type Line = { who: Text, title: Text } deriving (Row)
+
+pub fn db authorLines () -> Result (List Line) Error =
+    let users: Repo User MemAdapter = Repo.repo (memAdapter ()) "users"
+    let posts: Repo Post MemAdapter = Repo.repo (memAdapter ()) "posts"
+    users
+      |> Repo.query
+      |> Repo.joinOn posts (fn (u: User) (p: Post) -> u.id == p.authorId)
+      |> Repo.selectJoin (fn (u: User) (p: Post) -> Line { who = u.name, title = p.title })
+"#;
+    let errors = typecheck_one(main);
+    assert!(
+        errors.is_empty(),
+        "a named-shape join projection must type-check clean; got {errors:?}"
+    );
+}
+
+#[test]
+fn query_builder_join_over_postgres_typechecks() {
+    // The join resolves the same `Adapter`/`Row` constraints on Postgres: `join`
+    // and `joinSelect` are class methods both adapters implement, so the call is
+    // unchanged across backends.
+    let main = r#"
+import std.data (connect, Config, Postgres)
+import std.repo as Repo
+import std.sql (SqlValue)
+
+pub type User = { id: Int, age: Int, name: Text } deriving (Row)
+pub type Post = { id: Int, authorId: Int, title: Text } deriving (Row)
+pub type Line = { who: Text, title: Text } deriving (Row)
+
+pub fn db authorLines () -> Result (List Line) Error =
+    match connect (Config { host = "localhost", port = 5432, database = "app", user = "u", password = "p", sslMode = "require", poolSize = 4 })
+        Err e   -> Err e
+        Ok conn ->
+            let users: Repo User Postgres = Repo.repo conn "users"
+            let posts: Repo Post Postgres = Repo.repo conn "posts"
+            users
+              |> Repo.query
+              |> Repo.joinOn posts (fn (u: User) (p: Post) -> u.id == p.authorId)
+              |> Repo.selectJoin (fn (u: User) (p: Post) -> Line { who = u.name, title = p.title })
+"#;
+    let errors = typecheck_one(main);
+    assert!(
+        errors.is_empty(),
+        "a join over Postgres must type-check clean; got {errors:?}"
+    );
+}
+
+#[test]
+fn query_builder_join_unknown_column_is_rejected() {
+    // The join condition is checked against both entities: a column neither
+    // entity declares is an error, proving each side resolves against its own
+    // record rather than erasing to the row map.
+    let main = r#"
+import std.data (memAdapter, MemAdapter)
+import std.repo as Repo
+import std.sql (SqlValue)
+
+pub type User = { id: Int, name: Text } deriving (Row)
+pub type Post = { id: Int, authorId: Int } deriving (Row)
+
+pub fn db bad () -> Result (List (User, Post)) Error =
+    let users: Repo User MemAdapter = Repo.repo (memAdapter ()) "users"
+    let posts: Repo Post MemAdapter = Repo.repo (memAdapter ()) "posts"
+    users |> Repo.query |> Repo.joinOn posts (fn (u: User) (p: Post) -> u.id == p.nope) |> Repo.toPairs
+"#;
+    let errors = typecheck_one(main);
+    assert!(
+        !errors.is_empty(),
+        "an unknown column in a join condition must be rejected; got no errors"
+    );
+}
+
+#[test]
+fn query_builder_join_condition_type_mismatch_is_rejected() {
+    // The two sides of a join comparison must have the same column type. Equating
+    // a `Text` column on one entity with an `Int` column on the other is a
+    // mismatch, proving the per-side column types reach the comparison check.
+    let main = r#"
+import std.data (memAdapter, MemAdapter)
+import std.repo as Repo
+import std.sql (SqlValue)
+
+pub type User = { id: Int, name: Text } deriving (Row)
+pub type Post = { id: Int, title: Text } deriving (Row)
+
+pub fn db bad () -> Result (List (User, Post)) Error =
+    let users: Repo User MemAdapter = Repo.repo (memAdapter ()) "users"
+    let posts: Repo Post MemAdapter = Repo.repo (memAdapter ()) "posts"
+    users |> Repo.query |> Repo.joinOn posts (fn (u: User) (p: Post) -> u.id == p.title) |> Repo.toPairs
+"#;
+    let errors = typecheck_one(main);
+    assert!(
+        !errors.is_empty(),
+        "a cross-entity type mismatch in a join condition must be rejected; got no errors"
+    );
+}
+
+#[test]
+fn query_builder_join_select_must_name_its_shape() {
+    // An anonymous join projection cannot pin the decode target, so it is
+    // rejected with the same guidance as a single-table projection.
+    let main = r#"
+import std.data (memAdapter, MemAdapter)
+import std.repo as Repo
+import std.sql (SqlValue)
+
+pub type User = { id: Int, name: Text } deriving (Row)
+pub type Post = { id: Int, authorId: Int, title: Text } deriving (Row)
+
+pub fn db bad () -> Result (List Unit) Error =
+    let users: Repo User MemAdapter = Repo.repo (memAdapter ()) "users"
+    let posts: Repo Post MemAdapter = Repo.repo (memAdapter ()) "posts"
+    users
+      |> Repo.query
+      |> Repo.joinOn posts (fn (u: User) (p: Post) -> u.id == p.authorId)
+      |> Repo.selectJoin (fn (u: User) (p: Post) -> { who = u.name })
+"#;
+    let errors = typecheck_one(main);
+    assert!(
+        !errors.is_empty(),
+        "an unnamed join projection must be rejected; got no errors"
+    );
+}
+
+#[test]
 fn qualified_reconciled_fn_resolves_clean() {
     // `Query.orderSql` is seeded via the reconciled arena block (its signature
     // names the reconciled `SortOrder`), not the hand-curated signature table.

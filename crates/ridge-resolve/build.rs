@@ -402,6 +402,8 @@ const BASELINE_EXPORTS: &[(&str, &[&str])] = &[
             "fetch",
             "countWhere",
             "project",
+            "join",
+            "joinSelect",
             "MemAdapter",
             "memAdapter",
             // The Postgres adapter: the opaque connection handle, its config
@@ -442,6 +444,12 @@ const BASELINE_EXPORTS: &[(&str, &[&str])] = &[
             "first",
             "selectList",
             "selectFirst",
+            // The two-table join builder: the opaque `Join e f a`, its `joinOn`
+            // entry, and the `toPairs`/`selectJoin` terminals.
+            "Join",
+            "joinOn",
+            "toPairs",
+            "selectJoin",
         ],
     ),
 ];
@@ -454,7 +462,7 @@ const BASELINE_OPAQUE: &[(&str, &[&str])] = &[
     ("std.net.http", &["Html", "SecureCookie"]),
     ("std.sql", &["Sql", "SqlValue"]),
     ("std.data", &["MemAdapter", "Postgres"]),
-    ("std.repo", &["Repo", "Query"]),
+    ("std.repo", &["Repo", "Query", "Join"]),
 ];
 
 fn main() {

@@ -191,6 +191,57 @@ pub fn selectFirst (proj: Quote (Map Text SqlValue -> s)) (q: Query e a) -> Resu
         Err err -> Err err
         Ok rows -> firstDecoded rows
 
+-- A join under construction: the left query, the right repository, and a quoted
+-- condition over both entities. Opaque and threaded from `joinOn` into a
+-- terminal, so it reads as a pipeline:
+--   users
+--     |> Repo.query
+--     |> Repo.joinOn posts (fn (u: User) (p: Post) -> u.id == p.authorId)
+--     |> Repo.toPairs
+-- The condition is written against both records at the call site: its left
+-- columns range over the left entity and its right over the right, captured as a
+-- query tree that tags each side so the two tables never collide.
+pub opaque type Join e f a = { left: Query e a, right: Repo f a, cond: Quote (Map Text SqlValue -> Map Text SqlValue -> Bool) }
+
+-- Start an inner join from a query: pair it with a right repository on a quoted
+-- condition over both entities. The left query's filter, ordering, and page
+-- still apply; the join brings the right table.
+pub fn joinOn (right: Repo f a) (cond: Quote (Map Text SqlValue -> Map Text SqlValue -> Bool)) (q: Query e a) -> Join e f a =
+    Join { left = q, right = right, cond = cond }
+
+-- Run the inner join and decode each matched row pair into both entities.
+pub fn toPairs (j: Join e f a) -> Result (List (e, f)) Error where Adapter a, Row e, Row f =
+    match join j.left.repo.adapter j.left.repo.table j.right.table j.cond j.left.pred j.left.orders j.left.lim j.left.off
+        Err err  -> Err err
+        Ok pairs -> decodePairs pairs
+
+-- Run the inner join as a projection: select only the columns the shape `s`
+-- names from across both entities, and decode each projected row into `s`. The
+-- projection is written by naming the result record over both rows —
+-- `fn (u: User) (p: Post) -> Line { who = u.name, title = p.title }` — which
+-- fixes `s` and lists its columns. The backend pushes the select-list down so
+-- only those columns cross, in the chosen order and page.
+pub fn selectJoin (proj: Quote (Map Text SqlValue -> Map Text SqlValue -> Map Text SqlValue)) (j: Join e f a) -> Result (List s) Error where Adapter a, Row s =
+    match joinSelect j.left.repo.adapter j.left.repo.table j.right.table j.cond j.left.pred j.left.orders j.left.lim j.left.off proj
+        Err err  -> Err err
+        Ok rows  -> decodeRows rows
+
+-- Decode a list of `(left, right)` row pairs into entity pairs, stopping at the
+-- first decode failure on either side.
+fn decodePairs (pairs: List (Map Text SqlValue, Map Text SqlValue)) -> Result (List (e, f)) Error where Row e, Row f =
+    match pairs
+        []               -> Ok []
+        (lm, rm) :: rest ->
+            match fromRow lm
+                Err err -> Err err
+                Ok x    ->
+                    match fromRow rm
+                        Err err -> Err err
+                        Ok y    ->
+                            match decodePairs rest
+                                Err err -> Err err
+                                Ok xs   -> Ok ((x, y) :: xs)
+
 -- The `(alias, column)` pairs a projection names. The projection quote captures
 -- a `QProj` whose select-list is a list of `(alias, QCol column)`; anything else
 -- contributes no columns.

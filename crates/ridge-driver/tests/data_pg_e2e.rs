@@ -39,10 +39,18 @@ import std.map as Map
 
 pub type User = { id: Int, age: Int, name: Text } deriving (Row)
 
+-- A second entity for the join, in the `ridge_pg_posts` table; `author` holds the
+-- owning user's id.
+pub type Post = { id: Int, author: Int, title: Text } deriving (Row)
+
 -- A projected shape: the projection renames `name` -> `who` and `age` -> `years`,
 -- so the select-list compiles to `name AS who, age AS years` and the decode reads
 -- the aliased columns back.
 pub type Summary = { who: Text, years: Int } deriving (Row)
+
+-- The shape a join projection decodes into: a name from the left entity and a
+-- title from the right.
+pub type Combo = { person: Text, post: Text } deriving (Row)
 
 fn joinNames (us: List User) -> Text =
     match us
@@ -56,11 +64,28 @@ fn joinWho (ss: List Summary) -> Text =
         s :: []   -> s.who
         s :: rest -> Text.concat s.who (Text.concat "," (joinWho rest))
 
+-- Render each `(User, Post)` pair as `name:title`, comma-joined.
+fn joinPairs (ps: List (User, Post)) -> Text =
+    match ps
+        []             -> ""
+        (u, p) :: []   -> Text.concat u.name (Text.concat ":" p.title)
+        (u, p) :: rest -> Text.concat u.name (Text.concat ":" (Text.concat p.title (Text.concat "," (joinPairs rest))))
+
+-- Render each projected `Combo` as `person:post`, comma-joined.
+fn joinCombos (cs: List Combo) -> Text =
+    match cs
+        []          -> ""
+        c :: []     -> Text.concat c.person (Text.concat ":" c.post)
+        c :: rest   -> Text.concat c.person (Text.concat ":" (Text.concat c.post (Text.concat "," (joinCombos rest))))
+
 fn pgConfig () -> Config =
     Config { host = "__PG_HOST__", port = __PG_PORT__, database = "__PG_DATABASE__", user = "__PG_USER__", password = "__PG_PASSWORD__", sslMode = "__PG_SSLMODE__", poolSize = 4 }
 
 pub fn userRow (uid: Int) (uage: Int) (uname: Text) -> Map Text SqlValue =
     Map.fromList [("id", toSql uid), ("age", toSql uage), ("name", toSql uname)]
+
+pub fn postRow (pid: Int) (pauthor: Int) (ptitle: Text) -> Map Text SqlValue =
+    Map.fromList [("id", toSql pid), ("author", toSql pauthor), ("title", toSql ptitle)]
 
 fn listLen (xs: List x) -> Int =
     match xs
@@ -178,6 +203,60 @@ pub fn db topYears () -> Int =
                 Err _       -> 0 - 2
                 Ok None     -> 0 - 3
                 Ok (Some s) -> s.years
+
+-- Connect, bind a users and a posts repository to the live tables, clear both,
+-- and seed three users plus one post each for lin (id 2 -> "hello") and max
+-- (id 3 -> "world"); ada (id 1) gets none. Return both repositories.
+pub fn db setupJoin () -> Result (Repo User Postgres, Repo Post Postgres) Error =
+    match connect (pgConfig ())
+        Err e   -> Err e
+        Ok conn ->
+            let users: Repo User Postgres = Repo.repo conn "ridge_pg_users"
+            let posts: Repo Post Postgres = Repo.repo conn "ridge_pg_posts"
+            match Repo.deleteWhere (fn (u: User) -> u.id >= 0) users
+                Err e -> Err e
+                Ok _  ->
+                    match Repo.deleteWhere (fn (p: Post) -> p.id >= 0) posts
+                        Err e -> Err e
+                        Ok _  ->
+                            match Repo.insertRow (userRow 1 18 "ada") users
+                                Err e -> Err e
+                                Ok _  ->
+                                    match Repo.insertRow (userRow 2 30 "lin") users
+                                        Err e -> Err e
+                                        Ok _  ->
+                                            match Repo.insertRow (userRow 3 25 "max") users
+                                                Err e -> Err e
+                                                Ok _  ->
+                                                    match Repo.insertRow (postRow 10 2 "hello") posts
+                                                        Err e -> Err e
+                                                        Ok _  ->
+                                                            match Repo.insertRow (postRow 11 3 "world") posts
+                                                                Err e -> Err e
+                                                                Ok _  -> Ok (users, posts)
+
+-- join: inner-join users to their posts on `u.id == p.author`, ordered by user
+-- id, rendered `name:title` per pair -> "lin:hello,max:world" (ada has no post,
+-- so the inner join drops it). Proves the backend compiles the JOIN, qualifies
+-- the condition columns, and splits each `l.*, r.*` row back into two entities.
+pub fn db joinedNames () -> Text =
+    match setupJoin ()
+        Err _ -> "setup-err"
+        Ok (users, posts) ->
+            match users |> Repo.query |> Repo.orderBy Asc (fn (u: User) -> u.id) |> Repo.joinOn posts (fn (u: User) (p: Post) -> u.id == p.author) |> Repo.toPairs
+                Err _  -> "join-err"
+                Ok ps  -> joinPairs ps
+
+-- join projection: the same join projected into `Combo { person, post }`
+-- -> "lin:hello,max:world". Proves the backend compiles a qualified, aliased
+-- select-list (`l.name AS person, r.title AS post`) and decodes it.
+pub fn db joinedTitles () -> Text =
+    match setupJoin ()
+        Err _ -> "setup-err"
+        Ok (users, posts) ->
+            match users |> Repo.query |> Repo.orderBy Asc (fn (u: User) -> u.id) |> Repo.joinOn posts (fn (u: User) (p: Post) -> u.id == p.author) |> Repo.selectJoin (fn (u: User) (p: Post) -> Combo { person = u.name, post = p.title })
+                Err _  -> "select-err"
+                Ok cs  -> joinCombos cs
 "#;
 
 /// Connection settings parsed out of `RIDGE_TEST_PG_URL`.

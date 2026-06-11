@@ -225,6 +225,8 @@ jobs:
           done
           docker exec ridge-pg psql -U postgres -d ridge_test -c \
             'CREATE TABLE IF NOT EXISTS ridge_pg_users (id integer, name text, age integer);'
+          docker exec ridge-pg psql -U postgres -d ridge_test -c \
+            'CREATE TABLE IF NOT EXISTS ridge_pg_posts (id integer, author integer, title text);'
 
       - name: Run BEAM runtime e2e
         if: steps.changes.outputs.code == 'true'

@@ -30,6 +30,7 @@
     mem_new/1, mem_insert/3, mem_all/2,
     mem_select/3, mem_delete/3, mem_get_rows/4,
     mem_fetch/6, mem_count_where/3, mem_project/7,
+    mem_join/8, mem_join_select/9,
     quote_keep_all/1, quote_and/2,
     escript_main/1
 ]).
@@ -941,6 +942,19 @@ mem_count_where(Id, Table, Tree) -> mem_call({count_where, Id, Table, Tree}).
 mem_project(Id, Table, Tree, Orders, Lim, Off, Cols) ->
     mem_call({project, Id, Table, Tree, Orders, Lim, Off, Cols}).
 
+%% mem_join/8 — inner-join LeftTable and RightTable on the condition tree Cond,
+%% keep the left rows matching the predicate tree Pred, order by the left-column
+%% keys, then page. Each result is the `{LeftRow, RightRow}` pair of column maps.
+%% Result (List {Row, Row}) Error.
+mem_join(Id, LeftTable, RightTable, Cond, Pred, Orders, Lim, Off) ->
+    mem_call({join, Id, LeftTable, RightTable, Cond, Pred, Orders, Lim, Off}).
+
+%% mem_join_select/9 — as mem_join, then project each joined pair through the
+%% projection tree Proj into one map keyed by the projection's aliases. Result
+%% (List Row) Error.
+mem_join_select(Id, LeftTable, RightTable, Cond, Pred, Orders, Lim, Off, Proj) ->
+    mem_call({join_select, Id, LeftTable, RightTable, Cond, Pred, Orders, Lim, Off, Proj}).
+
 %% Internal: send a request to the keeper and await its reply.
 mem_call(Req) ->
     mem_ensure(),
@@ -1023,6 +1037,15 @@ mem_keeper_loop(State) ->
             Page = mem_paginate(mem_order(Orders, Matches), Lim, Off),
             Projected = [mem_project_row(Cols, R) || R <- Page],
             From ! {Ref, {ok, Projected}},
+            mem_keeper_loop(State);
+        {{join, Id, LeftTable, RightTable, Cond, Pred, Orders, Lim, Off}, From, Ref} ->
+            Pairs = mem_join_pairs(State, Id, LeftTable, RightTable, Cond, Pred, Orders, Lim, Off),
+            From ! {Ref, {ok, Pairs}},
+            mem_keeper_loop(State);
+        {{join_select, Id, LeftTable, RightTable, Cond, Pred, Orders, Lim, Off, Proj}, From, Ref} ->
+            Pairs = mem_join_pairs(State, Id, LeftTable, RightTable, Cond, Pred, Orders, Lim, Off),
+            Projected = [mem_join_project(Proj, L, R) || {L, R} <- Pairs],
+            From ! {Ref, {ok, Projected}},
             mem_keeper_loop(State)
     end.
 
@@ -1031,6 +1054,77 @@ mem_keeper_loop(State) ->
 %% column reads as SQL NULL.
 mem_project_row(Cols, Row) ->
     maps:from_list([{Alias, maps:get(Col, Row, 'SqlNull')} || {Alias, Col} <- Cols]).
+
+%% --- In-memory inner join ---
+%%
+%% The nested-loop dual of a backend pushing a JOIN into SQL. Keep the left rows
+%% the left-side predicate matches, pair each with every right row the condition
+%% accepts, order the pairs by the left-column keys, then page. The condition is
+%% a QExpr over both rows: a `QCol` reads the left row, a `QColR` the right.
+
+mem_join_pairs(State, Id, LeftTable, RightTable, Cond, Pred, Orders, Lim, Off) ->
+    LeftRows = maps:get({Id, LeftTable}, State, []),
+    RightRows = maps:get({Id, RightTable}, State, []),
+    LeftMatches = [L || L <- LeftRows, mem_pred(Pred, L)],
+    Pairs = [{L, R} || L <- LeftMatches, R <- RightRows, mem_jpred(Cond, L, R)],
+    mem_paginate(mem_order_pairs(Orders, Pairs), Lim, Off).
+
+%% Order joined pairs by the left-column keys (the left query's ordering). The
+%% key reads from the left row of each pair; lists:sort/2 is stable.
+mem_order_pairs([], Pairs) -> Pairs;
+mem_order_pairs(Orders, Pairs) ->
+    lists:sort(fun({LA, _}, {LB, _}) -> mem_le(Orders, LA, LB) end, Pairs).
+
+%% Project a joined pair through a QProj select-list into one map keyed by alias:
+%% each column reads the left or right row depending on its `QCol`/`QColR` tag.
+mem_join_project({'QProj', Cols}, L, R) ->
+    maps:from_list([{Alias, mem_jcell(Col, L, R)} || {Alias, Col} <- Cols]);
+mem_join_project(_Other, _L, _R) ->
+    #{}.
+
+mem_jcell({'QCol', C}, L, _R)  -> maps:get(C, L, 'SqlNull');
+mem_jcell({'QColR', C}, _L, R) -> maps:get(C, R, 'SqlNull');
+mem_jcell(_Other, _L, _R)      -> 'SqlNull'.
+
+%% Evaluate a join condition node against the (left, right) pair. The structure
+%% mirrors mem_pred/2; a `QCol` resolves against the left row and a `QColR`
+%% against the right.
+mem_jpred({'QAnd', A, B}, L, R)    -> mem_jpred(A, L, R) andalso mem_jpred(B, L, R);
+mem_jpred({'QOr', A, B}, L, R)     -> mem_jpred(A, L, R) orelse mem_jpred(B, L, R);
+mem_jpred({'QNot', X}, L, R)       -> not mem_jpred(X, L, R);
+mem_jpred({'QEq', A, B}, L, R)     -> mem_jrelate(eq, A, B, L, R);
+mem_jpred({'QNe', A, B}, L, R)     -> not mem_jrelate(eq, A, B, L, R);
+mem_jpred({'QLt', A, B}, L, R)     -> mem_jrelate(lt, A, B, L, R);
+mem_jpred({'QGt', A, B}, L, R)     -> mem_jrelate(lt, B, A, L, R);
+mem_jpred({'QLe', A, B}, L, R)     -> not mem_jrelate(lt, B, A, L, R);
+mem_jpred({'QGe', A, B}, L, R)     -> not mem_jrelate(lt, A, B, L, R);
+mem_jpred({'QCol', C}, L, _R)      -> mem_truthy(maps:get(C, L, 'SqlNull'));
+mem_jpred({'QColR', C}, _L, R)     -> mem_truthy(maps:get(C, R, 'SqlNull'));
+mem_jpred({'QLitBool', B}, _L, _R) -> B;
+mem_jpred(_Other, _L, _R)          -> false.
+
+mem_jrelate(Op, A, B, L, R) ->
+    case {mem_jscalar(A, L, R), mem_jscalar(B, L, R)} of
+        {undefined, _} -> false;
+        {_, undefined} -> false;
+        {X, Y}         -> mem_sql_cmp(Op, X, Y)
+    end.
+
+mem_jscalar({'QCol', C}, L, _R) ->
+    case maps:find(C, L) of
+        {ok, V} -> V;
+        error   -> undefined
+    end;
+mem_jscalar({'QColR', C}, _L, R) ->
+    case maps:find(C, R) of
+        {ok, V} -> V;
+        error   -> undefined
+    end;
+mem_jscalar({'QLitInt', N}, _L, _R)   -> {'SqlInt', N};
+mem_jscalar({'QLitText', S}, _L, _R)  -> {'SqlText', S};
+mem_jscalar({'QLitBool', B}, _L, _R)  -> {'SqlBool', B};
+mem_jscalar({'QLitFloat', F}, _L, _R) -> {'SqlFloat', F};
+mem_jscalar(_Other, _L, _R)           -> undefined.
 
 %% --- Quoted-predicate interpreter (the in-memory dual of Query.toSql) ---
 %%

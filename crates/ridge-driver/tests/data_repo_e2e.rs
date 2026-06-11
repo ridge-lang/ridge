@@ -14,6 +14,9 @@
 //! - `deleteWhere` predicate (one row goes; the table then holds two),
 //! - the query builder: `orderBy` (whole-table ordering), `offset`/`limit`
 //!   paging, and `filter` + `orderBy` + the `first` terminal.
+//! - the inner join: `joinOn` + `toPairs` (decoding both entities of each
+//!   matched pair) and `joinOn` + `selectJoin` (projecting columns from both
+//!   sides into a named shape).
 //!
 //! Gated on `beam-runtime` (real OTP) plus a `which` guard for `erl`/`erlc`.
 
@@ -33,9 +36,19 @@ import std.map as Map
 
 pub type User = { id: Int, age: Int, name: Text } deriving (Row)
 
+-- A second entity for the join: a post owned by a user (`author` holds the
+-- owner's id). Single-word columns keep the seeded keys identical to the field
+-- names, so the join's column tagging is observable without snake-case mapping.
+pub type Post = { id: Int, author: Int, title: Text } deriving (Row)
+
 -- A projected shape: the projection renames `name` -> `who` and `age` -> `years`,
 -- so the decode proves the alias (`column AS alias`) and re-keying both work.
 pub type Summary = { who: Text, years: Int } deriving (Row)
+
+-- The shape a join projection decodes into: a name from the left entity and a
+-- title from the right, so a `selectJoin` proves columns from both sides reach
+-- one named record.
+pub type Combo = { person: Text, post: Text } deriving (Row)
 
 -- Join the names of a user list with commas, so a query's order is observable
 -- as a single string the probe can assert on.
@@ -53,8 +66,26 @@ fn joinWho (ss: List Summary) -> Text =
         s :: []   -> s.who
         s :: rest -> Text.concat s.who (Text.concat "," (joinWho rest))
 
+-- Render each `(User, Post)` pair as `name:title`, comma-joined, so a join's
+-- decode of both entities and its row order are observable as one string.
+fn joinPairs (ps: List (User, Post)) -> Text =
+    match ps
+        []             -> ""
+        (u, p) :: []   -> Text.concat u.name (Text.concat ":" p.title)
+        (u, p) :: rest -> Text.concat u.name (Text.concat ":" (Text.concat p.title (Text.concat "," (joinPairs rest))))
+
+-- Render each projected `Combo` as `person:post`, comma-joined.
+fn joinCombos (cs: List Combo) -> Text =
+    match cs
+        []          -> ""
+        c :: []     -> Text.concat c.person (Text.concat ":" c.post)
+        c :: rest   -> Text.concat c.person (Text.concat ":" (Text.concat c.post (Text.concat "," (joinCombos rest))))
+
 pub fn userRow (uid: Int) (uage: Int) (uname: Text) -> Map Text SqlValue =
     Map.fromList [("id", toSql uid), ("age", toSql uage), ("name", toSql uname)]
+
+pub fn postRow (pid: Int) (pauthor: Int) (ptitle: Text) -> Map Text SqlValue =
+    Map.fromList [("id", toSql pid), ("author", toSql pauthor), ("title", toSql ptitle)]
 
 fn listLen (xs: List x) -> Int =
     match xs
@@ -196,6 +227,56 @@ pub fn db topYears () -> Int =
                 Err _       -> 0 - 2
                 Ok None     -> 0 - 3
                 Ok (Some s) -> s.years
+
+-- Open one store, bind a users and a posts repository to it (so the join sees
+-- both tables), and seed three users and three posts. Post `author` references a
+-- user id: lin (id 2) owns "hello" and "again", max (id 3) owns "world", ada
+-- (id 1) owns none. Return both repositories.
+pub fn db setupJoin () -> Result (Repo User MemAdapter, Repo Post MemAdapter) Error =
+    let conn = memAdapter ()
+    let users: Repo User MemAdapter = Repo.repo conn "users"
+    let posts: Repo Post MemAdapter = Repo.repo conn "posts"
+    match Repo.insertRow (userRow 1 18 "ada") users
+        Err e -> Err e
+        Ok _  ->
+            match Repo.insertRow (userRow 2 30 "lin") users
+                Err e -> Err e
+                Ok _  ->
+                    match Repo.insertRow (userRow 3 25 "max") users
+                        Err e -> Err e
+                        Ok _  ->
+                            match Repo.insertRow (postRow 10 2 "hello") posts
+                                Err e -> Err e
+                                Ok _  ->
+                                    match Repo.insertRow (postRow 11 3 "world") posts
+                                        Err e -> Err e
+                                        Ok _  ->
+                                            match Repo.insertRow (postRow 12 2 "again") posts
+                                                Err e -> Err e
+                                                Ok _  -> Ok (users, posts)
+
+-- join: inner-join users to their posts on `u.id == p.author`, order by user id,
+-- and render `name:title` per pair -> "lin:hello,lin:again,max:world" (ada has
+-- no posts, so the inner join drops it). Proves toPairs decodes both entities,
+-- the condition tags left/right columns, and the order threads through.
+pub fn db joinedNames () -> Text =
+    match setupJoin ()
+        Err _ -> "setup-err"
+        Ok (users, posts) ->
+            match users |> Repo.query |> Repo.orderBy Asc (fn (u: User) -> u.id) |> Repo.joinOn posts (fn (u: User) (p: Post) -> u.id == p.author) |> Repo.toPairs
+                Err _  -> "join-err"
+                Ok ps  -> joinPairs ps
+
+-- join projection: the same join, projected into `Combo { person, post }` and
+-- rendered -> "lin:hello,lin:again,max:world". Proves selectJoin pushes a
+-- qualified select-list down and decodes the aliased columns into the shape.
+pub fn db joinedTitles () -> Text =
+    match setupJoin ()
+        Err _ -> "setup-err"
+        Ok (users, posts) ->
+            match users |> Repo.query |> Repo.orderBy Asc (fn (u: User) -> u.id) |> Repo.joinOn posts (fn (u: User) (p: Post) -> u.id == p.author) |> Repo.selectJoin (fn (u: User) (p: Post) -> Combo { person = u.name, post = p.title })
+                Err _  -> "select-err"
+                Ok cs  -> joinCombos cs
 "#;
 
 fn write_workspace(root: &std::path::Path) {
@@ -277,6 +358,8 @@ fn repo_surface_runs_on_beam() {
          io:format(\"firstAdultName=~s~n\",[{module}:firstAdultName()]), \
          io:format(\"summaryNames=~s~n\",[{module}:summaryNames()]), \
          io:format(\"topYears=~w~n\",[{module}:topYears()]), \
+         io:format(\"joinedNames=~s~n\",[{module}:joinedNames()]), \
+         io:format(\"joinedTitles=~s~n\",[{module}:joinedTitles()]), \
          halt()."
     );
     let output = Command::new("erl")
@@ -321,6 +404,14 @@ fn repo_surface_runs_on_beam() {
         (
             "topYears=30",
             "selectFirst decodes the aliased `years` column of the oldest row",
+        ),
+        (
+            "joinedNames=lin:hello,lin:again,max:world",
+            "toPairs inner-joins users to posts and decodes both entities in id order",
+        ),
+        (
+            "joinedTitles=lin:hello,lin:again,max:world",
+            "selectJoin projects columns from both entities into the named Combo shape",
         ),
     ] {
         assert!(

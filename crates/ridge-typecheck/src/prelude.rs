@@ -275,6 +275,7 @@ pub fn prelude_types(b: &BuiltinTyCons) -> (FxHashMap<String, Scheme>, FxHashMap
     };
     let text_ty = ty_con(b.text, vec![]);
     values.insert("QCol".to_string(), q_ctor(vec![text_ty.clone()]));
+    values.insert("QColR".to_string(), q_ctor(vec![text_ty.clone()]));
     values.insert("QLitInt".to_string(), q_ctor(vec![ty_con(b.int, vec![])]));
     values.insert("QLitText".to_string(), q_ctor(vec![text_ty]));
     values.insert("QLitBool".to_string(), q_ctor(vec![ty_con(b.bool, vec![])]));

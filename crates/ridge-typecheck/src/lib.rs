@@ -1106,8 +1106,10 @@ fn seed_prelude_codec_schemes(ctx: &mut crate::ctx::InferCtx, b: &ridge_types::B
 /// - `fromSql :: ∀a. SqlValue -> Result a Error  where SqlType a`
 #[expect(
     clippy::too_many_lines,
-    reason = "one flat block per stdlib codec/seam method (toSql/fromSql/fromRow/insert/all); \
-              splitting per method would scatter the shared builtin-type setup"
+    clippy::many_single_char_names,
+    reason = "one flat block per stdlib codec/seam method (toSql/fromSql/fromRow/insert/all/join); \
+              splitting per method would scatter the shared builtin-type setup, and the single-letter \
+              locals mirror the type variables (a, e, c, p, r)"
 )]
 fn seed_sql_codec_schemes(
     ctx: &mut crate::ctx::InferCtx,
@@ -1460,6 +1462,106 @@ fn seed_sql_codec_schemes(
                 "project".to_owned(),
                 Scheme {
                     vars: vec![a, e],
+                    cap_vars: vec![],
+                    row_vars: vec![],
+                    ty: fn_ty,
+                    constraints: vec![Constraint::single(adapter, a)],
+                },
+            );
+        }
+        // join :: ∀a c p. a -> Text -> Text -> Quote c -> Quote p
+        //              -> List (Bool, Text) -> Int -> Int
+        //              -> Result (List (Map Text SqlValue, Map Text SqlValue)) Error
+        //              where Adapter a.
+        // The inner join of two tables: `cond` is the quoted condition over both
+        // entities (its left columns range over the left table, its right over
+        // the right), `pred` the left-side filter, then ordering and paging. Each
+        // result row is the (left, right) pair of column maps the terminal decodes
+        // into both entities. The two quotes are phantom here — the seam only
+        // walks their captured trees.
+        {
+            let a = ctx.fresh_tyvid();
+            let c = ctx.fresh_tyvid();
+            let p = ctx.fresh_tyvid();
+            let orders = Type::Con(
+                b.list,
+                vec![Type::Tuple(vec![
+                    Type::Con(b.bool, vec![]),
+                    Type::Con(b.text, vec![]),
+                ])],
+            );
+            let pair = Type::Tuple(vec![map_row(), map_row()]);
+            let fn_ty = Type::Fn {
+                params: vec![
+                    Type::Var(a),
+                    Type::Con(b.text, vec![]),
+                    Type::Con(b.text, vec![]),
+                    Type::Con(b.quote, vec![Type::Var(c)]),
+                    Type::Con(b.quote, vec![Type::Var(p)]),
+                    orders,
+                    Type::Con(b.int, vec![]),
+                    Type::Con(b.int, vec![]),
+                ],
+                ret: Box::new(Type::Con(
+                    b.result,
+                    vec![Type::Con(b.list, vec![pair]), Type::Con(b.error, vec![])],
+                )),
+                caps: CapRow::Concrete(CapabilitySet::PURE),
+            };
+            ctx.env.bind(
+                "join".to_owned(),
+                Scheme {
+                    vars: vec![a, c, p],
+                    cap_vars: vec![],
+                    row_vars: vec![],
+                    ty: fn_ty,
+                    constraints: vec![Constraint::single(adapter, a)],
+                },
+            );
+        }
+        // joinSelect :: ∀a c p r. a -> Text -> Text -> Quote c -> Quote p
+        //              -> List (Bool, Text) -> Int -> Int -> Quote r
+        //              -> Result (List (Map Text SqlValue)) Error where Adapter a.
+        // Like `join`, plus a quoted projection `r` over both entities: each
+        // result row is a single map keyed by the projection's output aliases,
+        // which the terminal decodes into the named result record.
+        {
+            let a = ctx.fresh_tyvid();
+            let c = ctx.fresh_tyvid();
+            let p = ctx.fresh_tyvid();
+            let r = ctx.fresh_tyvid();
+            let orders = Type::Con(
+                b.list,
+                vec![Type::Tuple(vec![
+                    Type::Con(b.bool, vec![]),
+                    Type::Con(b.text, vec![]),
+                ])],
+            );
+            let fn_ty = Type::Fn {
+                params: vec![
+                    Type::Var(a),
+                    Type::Con(b.text, vec![]),
+                    Type::Con(b.text, vec![]),
+                    Type::Con(b.quote, vec![Type::Var(c)]),
+                    Type::Con(b.quote, vec![Type::Var(p)]),
+                    orders,
+                    Type::Con(b.int, vec![]),
+                    Type::Con(b.int, vec![]),
+                    Type::Con(b.quote, vec![Type::Var(r)]),
+                ],
+                ret: Box::new(Type::Con(
+                    b.result,
+                    vec![
+                        Type::Con(b.list, vec![map_row()]),
+                        Type::Con(b.error, vec![]),
+                    ],
+                )),
+                caps: CapRow::Concrete(CapabilitySet::PURE),
+            };
+            ctx.env.bind(
+                "joinSelect".to_owned(),
+                Scheme {
+                    vars: vec![a, c, p, r],
                     cap_vars: vec![],
                     row_vars: vec![],
                     ty: fn_ty,

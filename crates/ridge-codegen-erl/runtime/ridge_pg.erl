@@ -36,6 +36,7 @@
     pg_select/3,
     pg_get_rows/4,
     pg_delete/3,
+    pg_update/4,
     pg_fetch/6,
     pg_count_where/3,
     pg_project/7,
@@ -97,6 +98,11 @@ pg_get_rows(Id, Table, Column, Key) -> pg_call(Id, {get_rows, Table, Column, Key
 %% pg_delete/3 — remove the rows of Table that satisfy Tree; answer how many were
 %% removed. Result Int Error.
 pg_delete(Id, Table, Tree) -> pg_call(Id, {delete, Table, Tree}).
+
+%% pg_update/4 — set the Changes columns on the rows of Table that satisfy Tree;
+%% answer the affected row count. Changes is a `#{Column => SqlValue}` map.
+%% Result Int Error.
+pg_update(Id, Table, Changes, Tree) -> pg_call(Id, {update, Table, Changes, Tree}).
 
 %% pg_fetch/6 — the rows of Table that satisfy Tree, ordered by Orders, then
 %% offset and limited, all pushed into the SQL. Orders is a list of `{Asc, Column}`
@@ -516,6 +522,8 @@ run_verb(Conn, {get_rows, Table, Column, Key}) ->
 run_verb(Conn, {delete, Table, Tree}) ->
     {Where, Binds} = compile_where(Tree),
     do_exec(Conn, ["DELETE FROM ", quote_ident(Table), " WHERE ", Where], Binds);
+run_verb(Conn, {update, Table, Changes, Tree}) ->
+    do_update(Conn, Table, Changes, Tree);
 run_verb(Conn, {fetch, Table, Tree, Orders, Lim, Off}) ->
     {Where, Binds} = compile_where(Tree),
     Sql = ["SELECT * FROM ", quote_ident(Table), " WHERE ", Where,
@@ -576,6 +584,28 @@ do_insert(Conn, Table, Row) ->
         {ok, _Count} -> {ok, ok};
         {error, E}   -> {error, E}
     end.
+
+%% UPDATE Table SET col = $1, … WHERE <Tree>. The SET binds take placeholders
+%% $1..$K in column order; the WHERE clause is compiled starting at $K+1, seeded
+%% with the SET binds (held reversed, the order `cw` accumulates in), so the two
+%% placeholder runs never collide. An empty Changes map cannot form a valid SET,
+%% so it is a no-op reporting zero rows changed — matching the in-memory store.
+do_update(_Conn, _Table, Changes, _Tree) when map_size(Changes) =:= 0 ->
+    {ok, 0};
+do_update(Conn, Table, Changes, Tree) ->
+    Pairs = maps:to_list(Changes),
+    {SetFragsRev, SetBindsRev, NextN} =
+        lists:foldl(
+            fun({Col, Val}, {Frags, Binds, N}) ->
+                Frag = [quote_ident(Col), " = $", integer_to_list(N)],
+                {[Frag | Frags], [Val | Binds], N + 1}
+            end,
+            {[], [], 1},
+            Pairs),
+    SetClause = lists:join(", ", lists:reverse(SetFragsRev)),
+    {WhereFrag, RevAllBinds, _N} = cw(Tree, NextN, SetBindsRev),
+    Sql = ["UPDATE ", quote_ident(Table), " SET ", SetClause, " WHERE ", WhereFrag],
+    do_exec(Conn, Sql, lists:reverse(RevAllBinds)).
 
 %% SELECT COUNT(*) and read the single integer back out. The result is one row
 %% of one column; its name varies, so the value is taken positionally.

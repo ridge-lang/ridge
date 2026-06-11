@@ -321,6 +321,89 @@ pub fn db leftSelectTitles () -> Text =
             match users |> Repo.query |> Repo.orderBy Asc (fn (u: User) -> u.id) |> Repo.leftJoinOn posts (fn (u: User) (p: Post) -> u.id == p.author) |> Repo.selectLeftJoin (fn (u: User) (p: Option Post) -> ComboOpt { person = u.name, post = p.title })
                 Err _  -> "left-select-err"
                 Ok cs  -> joinComboOpts cs
+
+-- Connect, clear, and seed three users with the TYPED `insert` — the entity is
+-- encoded to a row through `toRow` and the backend compiles the parameterised
+-- INSERT, with no hand-built column map.
+pub fn db setupInsert () -> Result (Repo User Postgres) Error =
+    match connect (pgConfig ())
+        Err e   -> Err e
+        Ok conn ->
+            let r = Repo.repo conn "ridge_pg_users"
+            match Repo.deleteWhere (fn (u: User) -> u.id >= 0) r
+                Err e -> Err e
+                Ok _  ->
+                    match Repo.insert (User { id = 1, age = 18, name = "ada" }) r
+                        Err e -> Err e
+                        Ok _  ->
+                            match Repo.insert (User { id = 2, age = 30, name = "lin" }) r
+                                Err e -> Err e
+                                Ok _  ->
+                                    match Repo.insert (User { id = 3, age = 25, name = "max" }) r
+                                        Err e -> Err e
+                                        Ok _  -> Ok r
+
+-- insert round-trips through Postgres: names ascending by id -> "ada,lin,max".
+-- Proves `toRow` encodes the entity and the backend's INSERT + read-back agree.
+pub fn db addedNames () -> Text =
+    match setupInsert ()
+        Err _ -> "setup-err"
+        Ok r  ->
+            match r |> Repo.query |> Repo.orderBy Asc (fn (u: User) -> u.id) |> Repo.toList
+                Err _ -> "list-err"
+                Ok us -> joinNames us
+
+-- typed update against Postgres: overwrite ada (id 1) with a full entity (age 99)
+-- and read her age back -> 99. Proves the backend compiles UPDATE … SET … WHERE
+-- from `toRow` + the predicate.
+pub fn db updatedAge () -> Int =
+    match setup ()
+        Err _ -> 0 - 1
+        Ok r  ->
+            match r |> Repo.update (User { id = 1, age = 99, name = "ada" }) (fn (u: User) -> u.id == 1)
+                Err _ -> 0 - 2
+                Ok _  ->
+                    match r |> Repo.getBy "id" (toSql 1)
+                        Err _       -> 0 - 3
+                        Ok None     -> 0 - 4
+                        Ok (Some u) -> u.age
+
+-- partial update against Postgres: set age = 40 on every adult and read lin's age
+-- back -> 40. Proves the backend compiles a partial SET whose `$1` bind precedes
+-- the WHERE clause's `$2`, so the two placeholder runs never collide.
+pub fn db bumpedAge () -> Int =
+    match setup ()
+        Err _ -> 0 - 1
+        Ok r  ->
+            match r |> Repo.updateWhere (Map.fromList [("age", toSql 40)]) (fn (u: User) -> u.age >= 25)
+                Err _ -> 0 - 2
+                Ok _  ->
+                    match r |> Repo.getBy "id" (toSql 2)
+                        Err _       -> 0 - 3
+                        Ok None     -> 0 - 4
+                        Ok (Some u) -> u.age
+
+-- the column the partial update did NOT touch: lin's name is still "lin".
+pub fn db bumpedName () -> Text =
+    match setup ()
+        Err _ -> "setup-err"
+        Ok r  ->
+            match r |> Repo.updateWhere (Map.fromList [("age", toSql 40)]) (fn (u: User) -> u.age >= 25)
+                Err _ -> "update-err"
+                Ok _  ->
+                    match r |> Repo.getBy "id" (toSql 2)
+                        Err _       -> "get-err"
+                        Ok None     -> "none"
+                        Ok (Some u) -> u.name
+
+-- partial update changed-count: two adults (lin 30, max 25) match -> 2.
+pub fn db updateWhereCount () -> Int =
+    match setup ()
+        Err _ -> 0 - 1
+        Ok r  ->
+            match r |> Repo.updateWhere (Map.fromList [("age", toSql 40)]) (fn (u: User) -> u.age >= 25)
+                Ok n  -> n
+                Err _ -> 0 - 2
 "#;
 
 /// Connection settings parsed out of `RIDGE_TEST_PG_URL`.
@@ -481,6 +564,11 @@ fn postgres_adapter_reads_a_real_table() {
          io:format(\"joinedTitles=~s~n\",[{module}:joinedTitles()]), \
          io:format(\"leftJoinedNames=~s~n\",[{module}:leftJoinedNames()]), \
          io:format(\"leftSelectTitles=~s~n\",[{module}:leftSelectTitles()]), \
+         io:format(\"addedNames=~s~n\",[{module}:addedNames()]), \
+         io:format(\"updatedAge=~w~n\",[{module}:updatedAge()]), \
+         io:format(\"bumpedAge=~w~n\",[{module}:bumpedAge()]), \
+         io:format(\"bumpedName=~s~n\",[{module}:bumpedName()]), \
+         io:format(\"updateWhereCount=~w~n\",[{module}:updateWhereCount()]), \
          {pool_probe} \
          halt()."
     );
@@ -539,6 +627,26 @@ fn postgres_adapter_reads_a_real_table() {
         (
             "leftSelectTitles=ada:-,lin:hello,max:world",
             "pg_left_join_select keeps the unmatched ada row and decodes its NULL right column into an Option field as None",
+        ),
+        (
+            "addedNames=ada,lin,max",
+            "insert encodes each entity through toRow and the backend's INSERT round-trips",
+        ),
+        (
+            "updatedAge=99",
+            "update compiles UPDATE … SET … WHERE from the whole entity, so ada's age becomes 99",
+        ),
+        (
+            "bumpedAge=40",
+            "updateWhere compiles a partial SET whose $1 bind precedes the WHERE clause's $2",
+        ),
+        (
+            "bumpedName=lin",
+            "updateWhere leaves the untouched name column alone",
+        ),
+        (
+            "updateWhereCount=2",
+            "two adults match the partial update",
         ),
         (
             "concurrent=true",

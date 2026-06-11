@@ -833,6 +833,27 @@ pub fn lower_derived_instance(
         );
     }
 
+    // `Row` is a two-method class (`fromRow` decodes, `toRow` encodes), so its
+    // derived instance emits two method fns and a two-field dict — it does not
+    // fit the single-method structural path below.
+    if let DerivedMethodBody::DerivedRowRecord {
+        field_names,
+        columns,
+        field_type_names,
+        optionals,
+    } = &derived.method_body
+    {
+        return build_row_instance(
+            ctx,
+            derived.key.1,
+            type_name,
+            field_names,
+            columns,
+            field_type_names,
+            optionals,
+        );
+    }
+
     let method_name = derived
         .instance_info
         .methods
@@ -1107,31 +1128,8 @@ pub fn lower_derived_instance(
             (body, params)
         }
 
-        DerivedMethodBody::DerivedRowRecord {
-            field_names,
-            columns,
-            field_type_names,
-            optionals,
-        } => {
-            // fromRow (r: Map Text SqlValue) -> Result T Error
-            //   = match Map.get "col1" r { Some sv -> fromSql(sv) >>= f1; None -> Err(missing) };
-            //     … ; Ok T { f1 = f1, … }
-            let body = build_from_row_record_body(
-                ctx,
-                derived.key.1,
-                type_name,
-                field_names,
-                columns,
-                field_type_names,
-                optionals,
-                sp,
-            );
-            let params = vec![IrParam {
-                name: "r".to_string(),
-                ty: Type::Error,
-                span: sp,
-            }];
-            (body, params)
+        DerivedMethodBody::DerivedRowRecord { .. } => {
+            unreachable!("DerivedRowRecord is handled by the early return above")
         }
 
         DerivedMethodBody::DerivedDelegated { .. } => {
@@ -4517,6 +4515,266 @@ fn build_from_sql_call(ctx: &mut LowerCtx<'_>, type_tag: &str, sv: IrExpr, sp: S
         id: ctx.fresh_id(None),
         callee: Box::new(from_sql),
         args: vec![sv],
+        span: sp,
+    }
+}
+
+/// Lower a derived `Row` instance: emit the `fromRow` and `toRow` method fns and
+/// the `$inst_Row_{Type}` dict that carries both. `Row` is the only structurally
+/// derived class with more than one method, so it has its own builder rather than
+/// the single-method path that follows it in [`lower_derived_instance`].
+fn build_row_instance(
+    ctx: &mut LowerCtx<'_>,
+    tycon: ridge_types::TyConId,
+    type_name: &str,
+    field_names: &[String],
+    columns: &[String],
+    field_type_names: &[String],
+    optionals: &[bool],
+) -> Vec<IrItem> {
+    let sp = Span::point(0);
+    let mut items: Vec<IrItem> = Vec::new();
+
+    // fromRow (r: Map Text SqlValue) -> Result T Error
+    let from_body = build_from_row_record_body(
+        ctx,
+        tycon,
+        type_name,
+        field_names,
+        columns,
+        field_type_names,
+        optionals,
+        sp,
+    );
+    let from_fn_name = format!("Row__{type_name}__fromRow");
+    items.push(IrItem::Fn(IrFn {
+        name: from_fn_name.clone(),
+        module: ctx.module_id,
+        params: vec![IrParam {
+            name: "r".to_string(),
+            ty: Type::Error,
+            span: sp,
+        }],
+        ret_ty: Type::Error,
+        caps: ridge_types::CapabilitySet::PURE,
+        scheme: Scheme::mono(Type::Error),
+        body: from_body,
+        origin: NodeId(0),
+        span: sp,
+        is_pub: false,
+        is_main: false,
+        doc: None,
+    }));
+
+    // toRow (x: T) -> Map Text SqlValue
+    let to_body =
+        build_to_row_record_body(ctx, field_names, columns, field_type_names, optionals, sp);
+    let to_fn_name = format!("Row__{type_name}__toRow");
+    items.push(IrItem::Fn(IrFn {
+        name: to_fn_name.clone(),
+        module: ctx.module_id,
+        params: vec![IrParam {
+            name: "x".to_string(),
+            ty: Type::Error,
+            span: sp,
+        }],
+        ret_ty: Type::Error,
+        caps: ridge_types::CapabilitySet::PURE,
+        scheme: Scheme::mono(Type::Error),
+        body: to_body,
+        origin: NodeId(0),
+        span: sp,
+        is_pub: false,
+        is_main: false,
+        doc: None,
+    }));
+
+    // $inst_Row_{Type} = #{ 'fromRow' => fun fromRowFn, 'toRow' => fun toRowFn }
+    let dict_name = format!("$inst_Row_{type_name}");
+    let dict_value = IrExpr::Construct {
+        id: ctx.fresh_id(None),
+        ctor: SymbolRef::Constructor {
+            ctor_kind: CtorKind::Record,
+            owner_type: ridge_types::TyConId(0),
+            name: dict_name.clone(),
+            variant: 0,
+        },
+        fields: vec![
+            (
+                "fromRow".to_string(),
+                IrExpr::Symbol {
+                    id: ctx.fresh_id(None),
+                    sym: SymbolRef::Local {
+                        name: from_fn_name,
+                        module: ctx.module_id,
+                    },
+                    span: sp,
+                },
+            ),
+            (
+                "toRow".to_string(),
+                IrExpr::Symbol {
+                    id: ctx.fresh_id(None),
+                    sym: SymbolRef::Local {
+                        name: to_fn_name,
+                        module: ctx.module_id,
+                    },
+                    span: sp,
+                },
+            ),
+        ],
+        span: sp,
+    };
+    items.push(IrItem::Const(IrConst {
+        name: dict_name,
+        ty: Type::Error,
+        value: dict_value,
+        origin: NodeId(0),
+        span: sp,
+        is_pub: true,
+    }));
+
+    items
+}
+
+/// Build the `toRow` body for a derived `Row` on a record: encode each field
+/// through its `SqlType.toSql` and assemble the `Map Text SqlValue` keyed by the
+/// snake-cased column name. An `Option` field goes through the `SqlType (Option a)`
+/// instance, which writes `None` as SQL NULL — the encode dual of the NULL read in
+/// [`build_optional_field_read`].
+fn build_to_row_record_body(
+    ctx: &mut LowerCtx<'_>,
+    field_names: &[String],
+    columns: &[String],
+    field_type_names: &[String],
+    optionals: &[bool],
+    sp: Span,
+) -> IrExpr {
+    // [ (<<"col">>, toSql x.field), … ] — one (Text, SqlValue) tuple per field.
+    let pairs: Vec<IrExpr> = field_names
+        .iter()
+        .zip(columns.iter())
+        .zip(field_type_names.iter().zip(optionals.iter()))
+        .map(|((field, column), (type_tag, optional))| {
+            let field_val = IrExpr::Field {
+                id: ctx.fresh_id(None),
+                base: Box::new(IrExpr::Local {
+                    id: ctx.fresh_id(None),
+                    name: "x".to_string(),
+                    span: sp,
+                }),
+                field: field.clone(),
+                span: sp,
+            };
+            let encoded = if *optional {
+                build_optional_to_sql_call(ctx, type_tag, field_val, sp)
+            } else {
+                build_to_sql_call(ctx, type_tag, field_val, sp)
+            };
+            IrExpr::Tuple {
+                id: ctx.fresh_id(None),
+                elems: vec![
+                    IrExpr::Lit {
+                        id: ctx.fresh_id(None),
+                        value: IrLit::Text(column.clone()),
+                        span: sp,
+                    },
+                    encoded,
+                ],
+                span: sp,
+            }
+        })
+        .collect();
+
+    let pairs_list = IrExpr::ListLit {
+        id: ctx.fresh_id(None),
+        elems: pairs,
+        span: sp,
+    };
+    // std.map.fromList(pairs_list) → the row map.
+    IrExpr::Call {
+        id: ctx.fresh_id(None),
+        callee: Box::new(IrExpr::Symbol {
+            id: ctx.fresh_id(None),
+            sym: SymbolRef::Stdlib {
+                module: "std.map".to_string(),
+                name: "fromList".to_string(),
+            },
+            span: sp,
+        }),
+        args: vec![pairs_list],
+        span: sp,
+    }
+}
+
+/// Emit `(maps:get('toSql', $inst_SqlType_{Type}))(val)` → `SqlValue`. The encode
+/// dual of [`build_from_sql_call`]: the same exported base-type dict, with the
+/// `toSql` method projected instead of `fromSql`.
+fn build_to_sql_call(ctx: &mut LowerCtx<'_>, type_tag: &str, val: IrExpr, sp: Span) -> IrExpr {
+    let dict = IrExpr::Symbol {
+        id: ctx.fresh_id(None),
+        sym: SymbolRef::Stdlib {
+            module: "std.sql".to_string(),
+            name: format!("$inst_SqlType_{type_tag}"),
+        },
+        span: sp,
+    };
+    let to_sql = IrExpr::Field {
+        id: ctx.fresh_id(None),
+        base: Box::new(dict),
+        field: "toSql".to_string(),
+        span: sp,
+    };
+    IrExpr::Call {
+        id: ctx.fresh_id(None),
+        callee: Box::new(to_sql),
+        args: vec![val],
+        span: sp,
+    }
+}
+
+/// Emit `($inst_SqlType_Option $inst_SqlType_{Type}).toSql(val)` → `SqlValue`. The
+/// encode dual of [`build_optional_from_sql_call`]: the parametric `SqlType
+/// (Option a)` instance applied to the inner primitive's dict, which writes `None`
+/// as `SqlNull` and `Some v` as the inner `toSql v`.
+fn build_optional_to_sql_call(
+    ctx: &mut LowerCtx<'_>,
+    type_tag: &str,
+    val: IrExpr,
+    sp: Span,
+) -> IrExpr {
+    let inner_dict = IrExpr::Symbol {
+        id: ctx.fresh_id(None),
+        sym: SymbolRef::Stdlib {
+            module: "std.sql".to_string(),
+            name: format!("$inst_SqlType_{type_tag}"),
+        },
+        span: sp,
+    };
+    let option_ctor = IrExpr::Symbol {
+        id: ctx.fresh_id(None),
+        sym: SymbolRef::Stdlib {
+            module: "std.sql".to_string(),
+            name: "$inst_SqlType_Option".to_string(),
+        },
+        span: sp,
+    };
+    let dict = IrExpr::Call {
+        id: ctx.fresh_id(None),
+        callee: Box::new(option_ctor),
+        args: vec![inner_dict],
+        span: sp,
+    };
+    let to_sql = IrExpr::Field {
+        id: ctx.fresh_id(None),
+        base: Box::new(dict),
+        field: "toSql".to_string(),
+        span: sp,
+    };
+    IrExpr::Call {
+        id: ctx.fresh_id(None),
+        callee: Box::new(to_sql),
+        args: vec![val],
         span: sp,
     }
 }

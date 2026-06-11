@@ -801,31 +801,41 @@ pub fn register_stdlib_classes(ct: &mut ClassTable) {
         },
     );
 
-    // `Row` from std.sql — the database-row decoder class. Its single method
-    // `fromRow` is seeded directly (see `seed_sql_codec_schemes` in lib.rs), so
-    // the method sig carries no AST types, exactly like `SqlType` above. The
-    // instances come from `deriving (Row)` on user records, not from the prelude.
+    // `Row` from std.sql — the database-row codec class. Its methods `fromRow`
+    // (decode) and `toRow` (encode) are seeded directly (see
+    // `seed_sql_codec_schemes` in lib.rs), so the method sigs carry no AST types,
+    // exactly like `SqlType` above. The instances come from `deriving (Row)` on
+    // user records, not from the prelude.
     let row_id = ct.intern("Row");
     ct.insert_with_id(
         row_id,
         ClassInfo {
             name: "Row".to_string(),
             arity: 1,
-            method_sigs: vec![MethodSig {
-                name: "fromRow".to_string(),
-                arity: 1,
-                ast_param_types: vec![],
-                ast_ret_type: None,
-                class_ty_vars: Vec::new(),
-            }],
+            method_sigs: vec![
+                MethodSig {
+                    name: "fromRow".to_string(),
+                    arity: 1,
+                    ast_param_types: vec![],
+                    ast_ret_type: None,
+                    class_ty_vars: Vec::new(),
+                },
+                MethodSig {
+                    name: "toRow".to_string(),
+                    arity: 1,
+                    ast_param_types: vec![],
+                    ast_ret_type: None,
+                    class_ty_vars: Vec::new(),
+                },
+            ],
             superclasses: vec![],
             def_module: None,
         },
     );
 
-    // `Adapter` from std.data — the storage seam. Both methods (`insert`/`all`)
-    // are seeded directly (see `seed_sql_codec_schemes` in lib.rs), so the sigs
-    // carry no AST types, like `SqlType`/`Row` above. Its instances are the
+    // `Adapter` from std.data — the storage seam. Its methods (`appendRow`/`all`/
+    // `select`/…) are seeded directly (see `seed_sql_codec_schemes` in lib.rs), so
+    // the sigs carry no AST types, like `SqlType`/`Row` above. Its instances are the
     // in-memory adapter (registered in `register_stdlib_instances`) and, later,
     // backend adapters such as Postgres.
     let adapter_id = ct.intern("Adapter");
@@ -836,7 +846,7 @@ pub fn register_stdlib_classes(ct: &mut ClassTable) {
             arity: 1,
             method_sigs: vec![
                 MethodSig {
-                    name: "insert".to_string(),
+                    name: "appendRow".to_string(),
                     arity: 3,
                     ast_param_types: vec![],
                     ast_ret_type: None,
@@ -866,6 +876,13 @@ pub fn register_stdlib_classes(ct: &mut ClassTable) {
                 MethodSig {
                     name: "delete".to_string(),
                     arity: 3,
+                    ast_param_types: vec![],
+                    ast_ret_type: None,
+                    class_ty_vars: Vec::new(),
+                },
+                MethodSig {
+                    name: "updateRows".to_string(),
+                    arity: 4,
                     ast_param_types: vec![],
                     ast_ret_type: None,
                     class_ty_vars: Vec::new(),
@@ -1009,11 +1026,12 @@ pub fn register_stdlib_instances(
     // `Adapter MemAdapter` constraint.
     let adapter_methods = || {
         vec![
-            ("insert".to_string(), String::new()),
+            ("appendRow".to_string(), String::new()),
             ("all".to_string(), String::new()),
             ("select".to_string(), String::new()),
             ("get".to_string(), String::new()),
             ("delete".to_string(), String::new()),
+            ("updateRows".to_string(), String::new()),
             ("fetch".to_string(), String::new()),
             ("countWhere".to_string(), String::new()),
             ("project".to_string(), String::new()),

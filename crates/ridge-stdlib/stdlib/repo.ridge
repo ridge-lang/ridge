@@ -119,14 +119,35 @@ pub fn exists (pred: Quote (Map Text SqlValue -> Bool)) (r: Repo e a) -> Result 
                 []     -> Ok false
                 _ :: _ -> Ok true
 
--- Append a raw row to the table. The row is a column map built through
--- `SqlType.toSql`; a typed `insert` awaits the write-side row codec.
+-- Append a raw row to the table. The row is a column map built by hand through
+-- `SqlType.toSql`; for a typed entity reach for `insert`, which derives the row.
 pub fn insertRow (row: Map Text SqlValue) (r: Repo e a) -> Result Unit Error where Adapter a =
-    insert r.adapter r.table row
+    appendRow r.adapter r.table row
+
+-- Append a typed entity, encoding it to a row through `deriving (Row)`'s `toRow`.
+-- The repository's table holds entity `e`, so its `Row` instance names the columns
+-- and runs each field through `SqlType.toSql` — a nullable `Option` field writes
+-- `None` as SQL NULL. This is the write-side dual of the decode every read verb
+-- runs, so a record goes in the way one comes out.
+pub fn insert (entity: e) (r: Repo e a) -> Result Unit Error where Adapter a, Row e =
+    insertRow (toRow entity) r
 
 -- Remove the rows matching a quoted predicate; answer how many were removed.
 pub fn deleteWhere (pred: Quote (Map Text SqlValue -> Bool)) (r: Repo e a) -> Result Int Error where Adapter a =
     delete r.adapter r.table pred
+
+-- Set the given columns on every row matching a quoted predicate; answer how many
+-- rows changed. The `changes` map is a partial column map built through
+-- `SqlType.toSql`, so one call can touch a subset of columns. To write a whole
+-- record back, use `update`.
+pub fn updateWhere (changes: Map Text SqlValue) (pred: Quote (Map Text SqlValue -> Bool)) (r: Repo e a) -> Result Int Error where Adapter a =
+    updateRows r.adapter r.table changes pred
+
+-- Overwrite every column of the rows matching a quoted predicate with a typed
+-- entity, encoded through `toRow`. Reach for `updateWhere` when only some columns
+-- change.
+pub fn update (entity: e) (pred: Quote (Map Text SqlValue -> Bool)) (r: Repo e a) -> Result Int Error where Adapter a, Row e =
+    updateWhere (toRow entity) pred r
 
 -- A query under construction over a repository: a filter, an ordering, and a
 -- page (offset and limit) accumulated before a terminal runs it. Opaque and

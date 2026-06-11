@@ -359,9 +359,10 @@ const BASELINE_EXPORTS: &[(&str, &[&str])] = &[
             // The opaque SQL column value plus the SqlType codec class and its
             // methods, all importable from user code.
             "SqlValue", "SqlType", "toSql", "fromSql",
-            // The Row decoder class and its method (`deriving (Row)` generates
-            // the instances). Maps a `Map Text SqlValue` row back to a record.
-            "Row", "fromRow",
+            // The Row codec class and its methods (`deriving (Row)` generates the
+            // instances). `fromRow` maps a `Map Text SqlValue` row back to a
+            // record; `toRow` encodes a record into a row to write.
+            "Row", "fromRow", "toRow",
             // Monomorphic SqlValue factories (the variants stay opaque).
             "sqlInt", "sqlText", "sqlBool", "sqlFloat",
             // The safe SQL statement-text wrapper, its factory, and accessor —
@@ -394,11 +395,12 @@ const BASELINE_EXPORTS: &[(&str, &[&str])] = &[
             // (the opaque handle type and its `db`-gated constructor). The
             // Postgres adapter (later) implements the same `Adapter` class.
             "Adapter",
-            "insert",
+            "appendRow",
             "all",
             "select",
             "get",
             "delete",
+            "updateRows",
             "fetch",
             "countWhere",
             "project",
@@ -432,7 +434,10 @@ const BASELINE_EXPORTS: &[(&str, &[&str])] = &[
             "countBy",
             "exists",
             "insertRow",
+            "insert",
             "deleteWhere",
+            "updateWhere",
+            "update",
             // The query builder: the opaque `Query e a` and its pipeline verbs,
             // ending in the `toList`/`first` terminals and the `selectList`/
             // `selectFirst` projections.

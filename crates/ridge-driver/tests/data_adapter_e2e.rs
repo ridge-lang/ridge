@@ -1,11 +1,11 @@
 //! End-to-end check for the std.data in-memory adapter — proves the storage
 //! seam runs on the BEAM, not just at typecheck.
 //!
-//! `memAdapter` opens a process-backed in-memory store (requires `db`); `insert`
-//! appends a row and `all` reads a table back. This program opens an adapter,
-//! seeds two `users` rows, reads them back, and decodes the first one into a
-//! record via the `deriving (Row)` instance from C6.1.1. It exercises:
-//! - insert -> read-back (two rows go in, two come out, in order),
+//! `memAdapter` opens a process-backed in-memory store (requires `db`);
+//! `appendRow` appends a row and `all` reads a table back. This program opens an
+//! adapter, seeds two `users` rows, reads them back, and decodes the first one
+//! into a record via its `deriving (Row)` instance. It exercises:
+//! - append -> read-back (two rows go in, two come out, in order),
 //! - the row shape round-tripping through `fromRow` (`name` decodes to "ada"),
 //! - handle isolation (each `memAdapter ()` call is an independent store).
 //!
@@ -27,7 +27,7 @@ use ridge_driver::{compile_workspace, CompileOptions, EmitArtefacts};
 /// proves both inserts landed by matching an exactly-two-element list; `firstName`
 /// decodes the first row back into a `User` and reads its `name`.
 const SOURCE: &str = r#"
-import std.data (memAdapter, insert, all)
+import std.data (memAdapter, appendRow, all)
 import std.sql (toSql, fromRow, SqlValue)
 import std.map as Map
 
@@ -38,10 +38,10 @@ pub fn userRow (uid: Int) (uname: Text) -> Map Text SqlValue =
 
 pub fn db seededRows () -> Result (List (Map Text SqlValue)) Error =
     let conn = memAdapter ()
-    match insert conn "users" (userRow 1 "ada")
+    match appendRow conn "users" (userRow 1 "ada")
         Err e -> Err e
         Ok _  ->
-            match insert conn "users" (userRow 2 "lin")
+            match appendRow conn "users" (userRow 2 "lin")
                 Err e -> Err e
                 Ok _  -> all conn "users"
 

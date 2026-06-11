@@ -9,7 +9,9 @@
 //! This test compiles a program that decodes a row into a record and exercises:
 //! - the happy path (every column present and well-typed),
 //! - the snake-case column mapping (`createdAt` reads column `created_at`),
-//! - the failure path (a column whose `SqlValue` type does not match the field).
+//! - the failure path (a column whose `SqlValue` type does not match the field),
+//! - nullable `Option` fields: a present value decodes to `Some`, a SQL NULL and
+//!   a missing column both decode to `None`, and `toSql None` writes a NULL.
 //!
 //! Gated on `beam-runtime` (real OTP) plus a `which` guard for `erl`/`erlc`.
 
@@ -32,10 +34,11 @@ const SOURCE: &str = r#"
 import std.sql (toSql, fromRow, SqlValue)
 import std.map as Map
 
-pub type User = { id: Int, name: Text, createdAt: Int } deriving (Row)
+-- `nick` is a nullable column: a NULL or a missing column decodes to `None`.
+pub type User = { id: Int, name: Text, createdAt: Int, nick: Option Text } deriving (Row)
 
 pub fn userRow () -> Map Text SqlValue =
-    Map.fromList [("id", toSql 7), ("name", toSql "ada"), ("created_at", toSql 1000)]
+    Map.fromList [("id", toSql 7), ("name", toSql "ada"), ("created_at", toSql 1000), ("nick", toSql "lin")]
 
 pub fn decoded () -> Result User Error =
     fromRow (userRow ())
@@ -62,6 +65,35 @@ pub fn badId () -> Int =
     match badRow ()
         Ok u  -> u.id
         Err _ -> 0 - 999
+
+-- A SQL NULL bind value, written through the `Option` SqlType instance.
+fn nullNick () -> SqlValue =
+    let n: Option Text = None
+    toSql n
+
+fn decodeUser (row: Map Text SqlValue) -> Result User Error =
+    fromRow row
+
+-- Render a decoded user's optional nick: the value, "-" for None, "err" on a
+-- decode failure.
+fn nickOf (row: Map Text SqlValue) -> Text =
+    match decodeUser row
+        Err _ -> "err"
+        Ok u  ->
+            match u.nick
+                None   -> "-"
+                Some s -> s
+
+-- nick column holds a value -> Some.
+pub fn nickPresent () -> Text = nickOf (userRow ())
+
+-- nick column holds SQL NULL -> None.
+pub fn nickNull () -> Text =
+    nickOf (Map.fromList [("id", toSql 7), ("name", toSql "ada"), ("created_at", toSql 1000), ("nick", nullNick ())])
+
+-- nick column absent -> None.
+pub fn nickMissing () -> Text =
+    nickOf (Map.fromList [("id", toSql 7), ("name", toSql "ada"), ("created_at", toSql 1000)])
 "#;
 
 // ── Workspace setup ───────────────────────────────────────────────────────────
@@ -142,6 +174,9 @@ fn deriving_row_decodes_record_on_beam() {
          io:format(\"name=~s~n\",[{module}:nameOf()]), \
          io:format(\"created=~w~n\",[{module}:createdOf()]), \
          io:format(\"bad=~w~n\",[{module}:badId()]), \
+         io:format(\"nickPresent=~s~n\",[{module}:nickPresent()]), \
+         io:format(\"nickNull=~s~n\",[{module}:nickNull()]), \
+         io:format(\"nickMissing=~s~n\",[{module}:nickMissing()]), \
          halt()."
     );
     let output = Command::new("erl")
@@ -174,5 +209,20 @@ fn deriving_row_decodes_record_on_beam() {
     assert!(
         stdout.contains("bad=-999"),
         "expected `bad=-999` — fromRow should fail on a type-mismatched column\nstdout:\n{stdout}\nstderr:\n{stderr}"
+    );
+    // A present nullable column decodes to `Some value`.
+    assert!(
+        stdout.contains("nickPresent=lin"),
+        "expected `nickPresent=lin` — Option field decode of a present value failed\nstdout:\n{stdout}\nstderr:\n{stderr}"
+    );
+    // A SQL NULL (written via `toSql None`) decodes to `None`.
+    assert!(
+        stdout.contains("nickNull=-"),
+        "expected `nickNull=-` — Option field decode of a SQL NULL failed\nstdout:\n{stdout}\nstderr:\n{stderr}"
+    );
+    // A missing column decodes to `None`.
+    assert!(
+        stdout.contains("nickMissing=-"),
+        "expected `nickMissing=-` — Option field decode of a missing column failed\nstdout:\n{stdout}\nstderr:\n{stderr}"
     );
 }

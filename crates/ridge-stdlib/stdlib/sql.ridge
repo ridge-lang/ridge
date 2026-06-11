@@ -48,6 +48,23 @@ instance SqlType Float =
             SqlFloat f -> Ok f
             _          -> Err ({ code = "sql.decode.float", message = "expected a SQL float" })
 
+-- A nullable column. `None` encodes SQL NULL; a present value rides the inner
+-- type's codec. This is what lets a `deriving (Row)` record hold an `Option`
+-- field over a nullable column — a NULL decodes to `None` and a value to
+-- `Some (fromSql v)`, where a base-type decode would fail on the NULL.
+instance SqlType (Option a) where SqlType a =
+    toSql (x: Option a) -> SqlValue =
+        match x
+            None   -> SqlNull
+            Some v -> toSql v
+    fromSql (v: SqlValue) -> Result (Option a) Error =
+        match v
+            SqlNull -> Ok None
+            _       ->
+                match fromSql v
+                    Err e -> Err e
+                    Ok x  -> Ok (Some x)
+
 -- ── Row decoder ───────────────────────────────────────────────────────────────
 --
 -- A database row is a `Map Text SqlValue` keyed by column name. `Row` decodes

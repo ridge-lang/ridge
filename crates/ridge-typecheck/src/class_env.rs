@@ -972,6 +972,26 @@ pub fn register_stdlib_instances(
         env.instances
             .entry((sqltype, smallvec![TyConId(1)]))
             .or_insert_with(inst);
+        // Parametric `SqlType (Option a) where SqlType a` — a nullable column.
+        // Keyed by Option's builtin id (TyConId(9), pinned by a debug_assert in
+        // `BuiltinTyCons::allocate`). The context constraint `SqlType a` rides a
+        // sentinel `TyVid(0)`; `head_var_positions` points the solver at Option's
+        // single argument, so discharging `SqlType (Option Text)` recurses to
+        // `SqlType Text`. As with the base types, `or_insert_with` lets the
+        // source-level declaration win during the stdlib's own build.
+        env.instances
+            .entry((sqltype, smallvec![TyConId(9)]))
+            .or_insert_with(|| InstanceInfo {
+                def_module: None,
+                methods: vec![
+                    ("toSql".to_string(), String::new()),
+                    ("fromSql".to_string(), String::new()),
+                ],
+                ctx_constraints: vec![Constraint::single(sqltype, TyVid(0))],
+                head_var_positions: vec![0],
+                origin: InstanceOrigin::Explicit,
+                span: ds,
+            });
     }
 
     // `Adapter MemAdapter` — the in-memory adapter instance from std.data, keyed

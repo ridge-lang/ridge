@@ -249,7 +249,10 @@ fn write_path_runs_on_beam() {
             "addedNames=ada,lin,max",
             "insert encodes each entity through toRow and the rows read back in id order",
         ),
-        ("adaNick=ace", "a present Option column round-trips through the write path"),
+        (
+            "adaNick=ace",
+            "a present Option column round-trips through the write path",
+        ),
         (
             "linNick=-",
             "None is written as SQL NULL by toRow and decodes back to None",

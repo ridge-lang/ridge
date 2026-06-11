@@ -39,6 +39,8 @@
     pg_fetch/6,
     pg_count_where/3,
     pg_project/7,
+    pg_join/8,
+    pg_join_select/9,
     pg_close/1
 ]).
 
@@ -111,6 +113,21 @@ pg_count_where(Id, Table, Tree) -> pg_call(Id, {count_where, Table, Tree}).
 %% (List Row) Error.
 pg_project(Id, Table, Tree, Orders, Lim, Off, Cols) ->
     pg_call(Id, {project, Table, Tree, Orders, Lim, Off, Cols}).
+
+%% pg_join/8 — inner-join LeftTable and RightTable on the condition tree Cond,
+%% compiled into `JOIN … ON`; the left-side predicate Pred into `WHERE`; then
+%% Orders/Lim/Off. Left columns (`QCol`) are qualified to the left table, right
+%% columns (`QColR`) to the right. Each row comes back as the `{left, right}`
+%% pair of column maps, split by the columns' source table. Result
+%% (List {Row, Row}) Error.
+pg_join(Id, LeftTable, RightTable, Cond, Pred, Orders, Lim, Off) ->
+    pg_call(Id, {join, LeftTable, RightTable, Cond, Pred, Orders, Lim, Off}).
+
+%% pg_join_select/9 — as pg_join, with the projection tree Proj compiled into the
+%% select-list (each `QCol`/`QColR` qualified and aliased). Each row is one map
+%% keyed by the projection's aliases. Result (List Row) Error.
+pg_join_select(Id, LeftTable, RightTable, Cond, Pred, Orders, Lim, Off, Proj) ->
+    pg_call(Id, {join_select, LeftTable, RightTable, Cond, Pred, Orders, Lim, Off, Proj}).
 
 %% pg_close/1 — close every connection in the pool and forget the handle.
 %% Result Unit Error.
@@ -490,6 +507,20 @@ run_verb(Conn, {project, Table, Tree, Orders, Lim, Off, Cols}) ->
     Sql = ["SELECT ", select_list(Cols), " FROM ", quote_ident(Table), " WHERE ", Where,
            order_by_clause(Orders), limit_clause(Lim), offset_clause(Off)],
     run_query(Conn, Sql, Binds);
+run_verb(Conn, {join, LeftTable, RightTable, Cond, Pred, Orders, Lim, Off}) ->
+    {OnFrag, RevB1, N1} = cwj(Cond, 1, []),
+    {WhereFrag, RevB2, _N2} = cwj(Pred, N1, RevB1),
+    Sql = ["SELECT l.*, r.* FROM ", quote_ident(LeftTable), " AS l JOIN ",
+           quote_ident(RightTable), " AS r ON ", OnFrag, " WHERE ", WhereFrag,
+           order_by_clause_join(Orders), limit_clause(Lim), offset_clause(Off)],
+    run_query_join(Conn, Sql, lists:reverse(RevB2));
+run_verb(Conn, {join_select, LeftTable, RightTable, Cond, Pred, Orders, Lim, Off, Proj}) ->
+    {OnFrag, RevB1, N1} = cwj(Cond, 1, []),
+    {WhereFrag, RevB2, _N2} = cwj(Pred, N1, RevB1),
+    Sql = ["SELECT ", join_select_list(Proj), " FROM ", quote_ident(LeftTable), " AS l JOIN ",
+           quote_ident(RightTable), " AS r ON ", OnFrag, " WHERE ", WhereFrag,
+           order_by_clause_join(Orders), limit_clause(Lim), offset_clause(Off)],
+    run_query(Conn, Sql, lists:reverse(RevB2));
 run_verb(Conn, {count_where, Table, Tree}) ->
     do_count(Conn, Table, Tree).
 
@@ -540,6 +571,69 @@ select_list(Cols) -> lists:join(", ", [select_term(C) || C <- Cols]).
 
 select_term({Alias, Col}) when Alias =:= Col -> quote_ident(Col);
 select_term({Alias, Col})                    -> [quote_ident(Col), " AS ", quote_ident(Alias)].
+
+%% --- Inner-join SQL fragments ---
+%%
+%% A join qualifies every column: a `QCol` belongs to the left table (aliased
+%% `l`), a `QColR` to the right (`r`). `cwj` is the join-aware dual of `cw`,
+%% emitting `l."col"` / `r."col"` instead of a bare identifier; the rest of the
+%% predicate structure and the bind threading are identical.
+
+cwj({'QAnd', L, R}, N, B) ->
+    {FL, B1, N1} = cwj(L, N, B),
+    {FR, B2, N2} = cwj(R, N1, B1),
+    {["(", FL, " AND ", FR, ")"], B2, N2};
+cwj({'QOr', L, R}, N, B) ->
+    {FL, B1, N1} = cwj(L, N, B),
+    {FR, B2, N2} = cwj(R, N1, B1),
+    {["(", FL, " OR ", FR, ")"], B2, N2};
+cwj({'QNot', X}, N, B) ->
+    {FX, B1, N1} = cwj(X, N, B),
+    {["(NOT ", FX, ")"], B1, N1};
+cwj({'QEq', L, R}, N, B) -> cwj_cmp("=", L, R, N, B);
+cwj({'QNe', L, R}, N, B) -> cwj_cmp("<>", L, R, N, B);
+cwj({'QLt', L, R}, N, B) -> cwj_cmp("<", L, R, N, B);
+cwj({'QGt', L, R}, N, B) -> cwj_cmp(">", L, R, N, B);
+cwj({'QLe', L, R}, N, B) -> cwj_cmp("<=", L, R, N, B);
+cwj({'QGe', L, R}, N, B) -> cwj_cmp(">=", L, R, N, B);
+cwj({'QCol', C}, N, B) -> {qcol_left(C), B, N};
+cwj({'QColR', C}, N, B) -> {qcol_right(C), B, N};
+cwj({'QLitBool', true}, N, B) -> {"TRUE", B, N};
+cwj({'QLitBool', false}, N, B) -> {"FALSE", B, N};
+cwj(Other, N, B) -> cwj_operand(Other, N, B).
+
+cwj_cmp(Op, L, R, N, B) ->
+    {FL, B1, N1} = cwj_operand(L, N, B),
+    {FR, B2, N2} = cwj_operand(R, N1, B1),
+    {[FL, " ", Op, " ", FR], B2, N2}.
+
+cwj_operand({'QCol', C}, N, B)        -> {qcol_left(C), B, N};
+cwj_operand({'QColR', C}, N, B)       -> {qcol_right(C), B, N};
+cwj_operand({'QLitInt', V}, N, B)     -> {[$$ | integer_to_list(N)], [{'SqlInt', V} | B], N + 1};
+cwj_operand({'QLitText', V}, N, B)    -> {[$$ | integer_to_list(N)], [{'SqlText', V} | B], N + 1};
+cwj_operand({'QLitBool', V}, N, B)    -> {[$$ | integer_to_list(N)], [{'SqlBool', V} | B], N + 1};
+cwj_operand({'QLitFloat', V}, N, B)   -> {[$$ | integer_to_list(N)], [{'SqlFloat', V} | B], N + 1};
+cwj_operand(_Other, N, B)             -> {"NULL", B, N}.
+
+qcol_left(C)  -> [$l, $., quote_ident(C)].
+qcol_right(C) -> [$r, $., quote_ident(C)].
+
+%% ORDER BY over a join orders by the left query's keys, qualified to `l`.
+order_by_clause_join([])     -> [];
+order_by_clause_join(Orders) -> [" ORDER BY ", lists:join(", ", [order_term_join(O) || O <- Orders])].
+
+order_term_join({Asc, Col}) -> [qcol_left(Col), " ", dir_keyword(Asc)].
+
+%% A join projection select-list from a `QProj` of `{Alias, Column}` cells: each
+%% column is qualified by its side and aliased to the output field. An empty
+%% projection falls back to every column of both sides.
+join_select_list({'QProj', []})   -> "l.*, r.*";
+join_select_list({'QProj', Cols}) -> lists:join(", ", [join_select_term(C) || C <- Cols]);
+join_select_list(_Other)          -> "l.*, r.*".
+
+join_select_term({Alias, {'QCol', Col}})  -> [qcol_left(Col), " AS ", quote_ident(Alias)];
+join_select_term({Alias, {'QColR', Col}}) -> [qcol_right(Col), " AS ", quote_ident(Alias)];
+join_select_term({Alias, _Other})         -> ["NULL AS ", quote_ident(Alias)].
 
 dir_keyword(true)  -> "ASC";
 dir_keyword(false) -> "DESC";
@@ -632,6 +726,32 @@ run_exec(Conn, Sql, Binds) ->
 
 do_exec(Conn, Sql, Binds) -> run_exec(Conn, Sql, Binds).
 
+%% A join query returns each row as the `{left, right}` pair of column maps. The
+%% row description carries every column's source table and attribute number; the
+%% select is `l.*, r.*`, so the left columns come first in attribute order, then
+%% the right's. The split is at the point where the attribute number resets.
+run_query_join(Conn, Sql, Binds) ->
+    try
+        send_extended(Conn, iolist_to_binary(Sql), Binds),
+        collect_rows_join(Conn, [], [])
+    catch
+        throw:{pg_error, E} ->
+            drain_until_ready(Conn),
+            {error, E}
+    end.
+
+collect_rows_join(Conn, Cols, Acc) ->
+    case recv_msg(Conn) of
+        {$1, _} -> collect_rows_join(Conn, Cols, Acc);
+        {$2, _} -> collect_rows_join(Conn, Cols, Acc);
+        {$T, P} -> collect_rows_join(Conn, decode_row_desc_join(P), Acc);
+        {$n, _} -> collect_rows_join(Conn, Cols, Acc);
+        {$D, P} -> collect_rows_join(Conn, Cols, [decode_data_row_join(P, Cols) | Acc]);
+        {$C, _} -> collect_rows_join(Conn, Cols, Acc);
+        {$Z, _} -> {ok, lists:reverse(Acc)};
+        {_, _}  -> collect_rows_join(Conn, Cols, Acc)
+    end.
+
 send_extended(Conn, SqlBin, Binds) ->
     %% Parse: unnamed statement, the query text, no pre-declared parameter types.
     send_msg(Conn, $P, <<0, SqlBin/binary, 0, 0:16>>),
@@ -718,6 +838,43 @@ decode_cols(N, <<16#FFFFFFFF:32, Rest/binary>>, Acc) ->
     decode_cols(N - 1, Rest, [null | Acc]);
 decode_cols(N, <<Len:32, Val:Len/binary, Rest/binary>>, Acc) ->
     decode_cols(N - 1, Rest, [Val | Acc]).
+
+%% --- Join row decoding ---
+%%
+%% Like the single-table path, but the field descriptors keep each column's
+%% attribute number so a `l.*, r.*` row can be split back into its two source
+%% rows. Within one table `SELECT *` lists columns in ascending attribute order,
+%% so the boundary between the left and right sides is the first column whose
+%% attribute number does not exceed the previous one (this also handles a
+%% self-join, where both sides share a table OID but the numbering still resets).
+
+decode_row_desc_join(<<NFields:16, Rest/binary>>) ->
+    decode_fields_join(NFields, Rest, []).
+
+decode_fields_join(0, _Rest, Acc) ->
+    lists:reverse(Acc);
+decode_fields_join(N, Bin, Acc) ->
+    {Name, R1} = read_cstring(Bin),
+    <<_TableOid:32, Attnum:16, TypeOid:32, _Len:16, _Typmod:32, _Fmt:16, R2/binary>> = R1,
+    decode_fields_join(N - 1, R2, [{Name, TypeOid, Attnum} | Acc]).
+
+decode_data_row_join(<<NCols:16, Rest/binary>>, Cols) ->
+    Vals = decode_cols(NCols, Rest, []),
+    Cells = lists:zipwith(
+        fun({Name, Oid, Attnum}, V) -> {Name, Attnum, decode_cell(Oid, V)} end, Cols, Vals),
+    {Left, Right} = split_join_cells(Cells, [], -1),
+    {maps:from_list(Left), maps:from_list(Right)}.
+
+%% Walk the cells left to right, collecting `{Name, Value}` into the left map
+%% until the attribute number stops increasing; that column and the rest form the
+%% right map.
+split_join_cells([], LeftAcc, _Prev) ->
+    {lists:reverse(LeftAcc), []};
+split_join_cells([{Name, Attnum, Val} | Rest], LeftAcc, Prev) when Attnum =< Prev ->
+    Right = [{N, V} || {N, _A, V} <- [{Name, Attnum, Val} | Rest]],
+    {lists:reverse(LeftAcc), Right};
+split_join_cells([{Name, Attnum, Val} | Rest], LeftAcc, _Prev) ->
+    split_join_cells(Rest, [{Name, Val} | LeftAcc], Attnum).
 
 decode_cell(_Oid, null) -> 'SqlNull';
 decode_cell(Oid, Val)   -> decode_value(Oid, Val).

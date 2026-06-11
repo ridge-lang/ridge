@@ -232,23 +232,24 @@ fn infer_expr_inner(ctx: &mut InferCtx, b: &BuiltinTyCons, expr: &Expr) -> Type 
                             let pty = ctx.deep_resolve(pty);
                             if crate::quote::is_quote_param(ctx, &pty) {
                                 let expected_ret = crate::quote::quote_result(ctx, &pty);
-                                // The entity may already be concrete (a wrapper
-                                // `fn p (q: Quote (User -> Bool))`), or still an
-                                // inference variable when the callee is generic
-                                // over it (`Adapter.select : Quote (e -> Bool)`).
-                                // In the generic case, pin it from the predicate's
-                                // annotated parameter — `select c "users"
-                                // (fn (u: User) -> …)` resolves `e` to `User`.
-                                let entity = crate::quote::quote_entity(ctx, &pty).or_else(|| {
-                                    pin_quote_entity_from_annotation(ctx, b, inner, &pty)
-                                });
-                                return match entity {
-                                    Some(entity)
+                                // One entity per quote parameter. Each slot may
+                                // already be concrete (a wrapper `fn p (q: Quote
+                                // (User -> Bool))`), or still an inference variable
+                                // when the callee is generic over it (`select :
+                                // Quote (e -> Bool)`, or the two entities of a join
+                                // condition). In the generic case, pin it from the
+                                // lambda's own annotated parameter — `(fn (u: User)
+                                // (p: Post) -> …)` resolves `e` to `User` and `f`
+                                // to `Post`.
+                                let arity = crate::quote::quote_arity(ctx, &pty).unwrap_or(1);
+                                let entities = pin_quote_entities(ctx, b, inner, &pty, arity);
+                                return match entities {
+                                    Some(entities)
                                         if crate::quote::check_quote(
                                             ctx,
                                             b,
                                             inner,
-                                            entity,
+                                            &entities,
                                             expected_ret.as_ref(),
                                         ) =>
                                     {
@@ -1390,23 +1391,24 @@ fn infer_binary(
 ///
 /// Returns the pinned entity, or `None` when the lambda's first parameter has no
 /// annotation or it does not name a type constructor.
-fn pin_quote_entity_from_annotation(
+fn pin_quote_entity_from_annotation_at(
     ctx: &mut InferCtx,
     b: &BuiltinTyCons,
     lambda: &Expr,
     quote_ty: &Type,
+    i: usize,
 ) -> Option<TyConId> {
     let Expr::Lambda { params, .. } = lambda else {
         return None;
     };
-    let ann = match params.first()? {
+    let ann = match params.get(i)? {
         LambdaParam::Annotated { ty, .. } => ty,
         LambdaParam::Pattern(_) => return None,
     };
     let ann_ty = ast_type_to_type(ctx, b, ann);
 
-    // Reach the entity slot inside `Quote (entity -> _)` and unify it with the
-    // annotation, turning the previously-free `e` into the annotated record.
+    // Reach the `i`th entity slot inside `Quote (a -> … -> _)` and unify it with
+    // the annotation, turning the previously-free slot into the annotated record.
     let Type::Con(_, args) = quote_ty else {
         return None;
     };
@@ -1417,12 +1419,31 @@ fn pin_quote_entity_from_annotation(
     else {
         return None;
     };
-    let entity_slot = fn_params.first()?.clone();
+    let entity_slot = fn_params.get(i)?.clone();
     let _ = unify(ctx, &entity_slot, &ann_ty);
 
     // Re-resolve now that the slot is pinned; only a concrete record entity is
     // usable by the quotation checker.
-    crate::quote::quote_entity(ctx, quote_ty)
+    crate::quote::quote_entity_at(ctx, quote_ty, i)
+}
+
+/// Pins all `arity` entity slots of a quote, one per parameter. Each slot is
+/// taken from the quote type when already concrete, else from the lambda's own
+/// parameter annotation. Returns `None` if any slot stays unpinned.
+fn pin_quote_entities(
+    ctx: &mut InferCtx,
+    b: &BuiltinTyCons,
+    lambda: &Expr,
+    quote_ty: &Type,
+    arity: usize,
+) -> Option<Vec<TyConId>> {
+    let mut entities = Vec::with_capacity(arity);
+    for i in 0..arity {
+        let entity = crate::quote::quote_entity_at(ctx, quote_ty, i)
+            .or_else(|| pin_quote_entity_from_annotation_at(ctx, b, lambda, quote_ty, i));
+        entities.push(entity?);
+    }
+    Some(entities)
 }
 
 // ── Inline record helpers ─────────────────────────────────────────────────────

@@ -48,6 +48,15 @@ import std.sql (SqlValue)
 -- a backend pushes the select-list into the query (`SELECT column AS alias …`)
 -- rather than returning every column and dropping the rest. The alias is the
 -- field name of the shape the caller decodes into.
+--
+-- `join` and `joinSelect` are the two-table verbs. Both inner-join `leftTable`
+-- and `rightTable` on the quoted `cond`, keep the rows the left-side `pred`
+-- matches, and order and page the joined result. `cond` is a tree over two row
+-- maps; a column tagged `QCol` reads the left row and one tagged `QColR` the
+-- right, so the two tables never collide. `join` returns each joined row as the
+-- `(left, right)` pair of column maps, for a caller decoding both entities;
+-- `joinSelect` instead pushes a projection `proj` (a tree over both rows) into
+-- the select-list and returns one map per row keyed by the projection's aliases.
 pub class Adapter a =
     insert (conn: a) (table: Text) (row: Map Text SqlValue) -> Result Unit Error
     all    (conn: a) (table: Text) -> Result (List (Map Text SqlValue)) Error
@@ -57,6 +66,8 @@ pub class Adapter a =
     fetch  (conn: a) (table: Text) (pred: Quote (Map Text SqlValue -> Bool)) (orders: List (Bool, Text)) (lim: Int) (off: Int) -> Result (List (Map Text SqlValue)) Error
     countWhere (conn: a) (table: Text) (pred: Quote (Map Text SqlValue -> Bool)) -> Result Int Error
     project (conn: a) (table: Text) (pred: Quote (Map Text SqlValue -> Bool)) (orders: List (Bool, Text)) (lim: Int) (off: Int) (cols: List (Text, Text)) -> Result (List (Map Text SqlValue)) Error
+    join (conn: a) (leftTable: Text) (rightTable: Text) (cond: Quote (Map Text SqlValue -> Map Text SqlValue -> Bool)) (pred: Quote (Map Text SqlValue -> Bool)) (orders: List (Bool, Text)) (lim: Int) (off: Int) -> Result (List (Map Text SqlValue, Map Text SqlValue)) Error
+    joinSelect (conn: a) (leftTable: Text) (rightTable: Text) (cond: Quote (Map Text SqlValue -> Map Text SqlValue -> Bool)) (pred: Quote (Map Text SqlValue -> Bool)) (orders: List (Bool, Text)) (lim: Int) (off: Int) (proj: Quote (Map Text SqlValue -> Map Text SqlValue -> Map Text SqlValue)) -> Result (List (Map Text SqlValue)) Error
 
 -- A handle to an in-memory store. Opaque: `memAdapter` is the only way to make
 -- one, and the `id` it carries selects this handle's private, isolated store,
@@ -102,6 +113,17 @@ fn _memCountWhere (id: Int) (table: Text) (tree: QExpr) -> Result Int Error
 @ffi("ridge_rt", "mem_project", 7)
 fn _memProject (id: Int) (table: Text) (tree: QExpr) (orders: List (Bool, Text)) (lim: Int) (off: Int) (cols: List (Text, Text)) -> Result (List (Map Text SqlValue)) Error
 
+-- Inner-join two tables on the captured condition tree, keep the rows the
+-- left-side predicate tree matches, order and page the result, and return each
+-- joined row as the `(left, right)` pair of column maps.
+@ffi("ridge_rt", "mem_join", 8)
+fn _memJoin (id: Int) (leftTable: Text) (rightTable: Text) (cond: QExpr) (pred: QExpr) (orders: List (Bool, Text)) (lim: Int) (off: Int) -> Result (List (Map Text SqlValue, Map Text SqlValue)) Error
+
+-- As `mem_join`, then project each joined pair through the projection tree: each
+-- returned row is one map keyed by the projection's output aliases.
+@ffi("ridge_rt", "mem_join_select", 9)
+fn _memJoinSelect (id: Int) (leftTable: Text) (rightTable: Text) (cond: QExpr) (pred: QExpr) (orders: List (Bool, Text)) (lim: Int) (off: Int) (proj: QExpr) -> Result (List (Map Text SqlValue)) Error
+
 -- Open a fresh in-memory adapter backed by an empty store. Requires the `db`
 -- capability; the handle returned is the proof of access for every later call.
 @ffi("ridge_rt", "mem_new", 1)
@@ -126,6 +148,10 @@ instance Adapter MemAdapter =
         _memCountWhere conn.id table pred.tree
     project (conn: MemAdapter) (table: Text) (pred: Quote (Map Text SqlValue -> Bool)) (orders: List (Bool, Text)) (lim: Int) (off: Int) (cols: List (Text, Text)) -> Result (List (Map Text SqlValue)) Error =
         _memProject conn.id table pred.tree orders lim off cols
+    join (conn: MemAdapter) (leftTable: Text) (rightTable: Text) (cond: Quote (Map Text SqlValue -> Map Text SqlValue -> Bool)) (pred: Quote (Map Text SqlValue -> Bool)) (orders: List (Bool, Text)) (lim: Int) (off: Int) -> Result (List (Map Text SqlValue, Map Text SqlValue)) Error =
+        _memJoin conn.id leftTable rightTable cond.tree pred.tree orders lim off
+    joinSelect (conn: MemAdapter) (leftTable: Text) (rightTable: Text) (cond: Quote (Map Text SqlValue -> Map Text SqlValue -> Bool)) (pred: Quote (Map Text SqlValue -> Bool)) (orders: List (Bool, Text)) (lim: Int) (off: Int) (proj: Quote (Map Text SqlValue -> Map Text SqlValue -> Map Text SqlValue)) -> Result (List (Map Text SqlValue)) Error =
+        _memJoinSelect conn.id leftTable rightTable cond.tree pred.tree orders lim off proj.tree
 
 -- The head of a row list as an `Option` — `get` returns at most one row, so it
 -- reads the first match (or `None` when the column held no such key).
@@ -188,6 +214,18 @@ fn _pgCountWhere (id: Int) (table: Text) (tree: QExpr) -> Result Int Error
 @ffi("ridge_pg", "pg_project", 7)
 fn _pgProject (id: Int) (table: Text) (tree: QExpr) (orders: List (Bool, Text)) (lim: Int) (off: Int) (cols: List (Text, Text)) -> Result (List (Map Text SqlValue)) Error
 
+-- Inner-join two tables, compiling the condition and left-side predicate trees
+-- into `JOIN … ON` / `WHERE` (left columns qualified to the left table, right to
+-- the right), then `ORDER BY` / `LIMIT` / `OFFSET`. Each row comes back as the
+-- `(left, right)` pair of column maps, split by the columns' source table.
+@ffi("ridge_pg", "pg_join", 8)
+fn _pgJoin (id: Int) (leftTable: Text) (rightTable: Text) (cond: QExpr) (pred: QExpr) (orders: List (Bool, Text)) (lim: Int) (off: Int) -> Result (List (Map Text SqlValue, Map Text SqlValue)) Error
+
+-- As `pg_join`, with the projection tree compiled into the select-list; each row
+-- is one map keyed by the projection's output aliases.
+@ffi("ridge_pg", "pg_join_select", 9)
+fn _pgJoinSelect (id: Int) (leftTable: Text) (rightTable: Text) (cond: QExpr) (pred: QExpr) (orders: List (Bool, Text)) (lim: Int) (off: Int) (proj: QExpr) -> Result (List (Map Text SqlValue)) Error
+
 -- Open a Postgres connection with the given settings. Requires the `db`
 -- capability; the handle returned is the proof of access for every later call,
 -- exactly like `memAdapter`. A failed connect or authentication is an `Err`.
@@ -213,3 +251,7 @@ instance Adapter Postgres =
         _pgCountWhere conn.id table pred.tree
     project (conn: Postgres) (table: Text) (pred: Quote (Map Text SqlValue -> Bool)) (orders: List (Bool, Text)) (lim: Int) (off: Int) (cols: List (Text, Text)) -> Result (List (Map Text SqlValue)) Error =
         _pgProject conn.id table pred.tree orders lim off cols
+    join (conn: Postgres) (leftTable: Text) (rightTable: Text) (cond: Quote (Map Text SqlValue -> Map Text SqlValue -> Bool)) (pred: Quote (Map Text SqlValue -> Bool)) (orders: List (Bool, Text)) (lim: Int) (off: Int) -> Result (List (Map Text SqlValue, Map Text SqlValue)) Error =
+        _pgJoin conn.id leftTable rightTable cond.tree pred.tree orders lim off
+    joinSelect (conn: Postgres) (leftTable: Text) (rightTable: Text) (cond: Quote (Map Text SqlValue -> Map Text SqlValue -> Bool)) (pred: Quote (Map Text SqlValue -> Bool)) (orders: List (Bool, Text)) (lim: Int) (off: Int) (proj: Quote (Map Text SqlValue -> Map Text SqlValue -> Map Text SqlValue)) -> Result (List (Map Text SqlValue)) Error =
+        _pgJoinSelect conn.id leftTable rightTable cond.tree pred.tree orders lim off proj.tree

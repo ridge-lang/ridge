@@ -277,7 +277,7 @@ pub fn lower_expr(ctx: &mut LowerCtx<'_>, expr: &Expr) -> IrExpr {
             // Quotation: a lambda captured as a quote during type-checking is
             // reified into a `QExpr` tree rather than lowered to a closure.
             if ctx.lookup_quoted(*span).is_some() {
-                return reify_quote(ctx, body, *span);
+                return reify_quote(ctx, body, *span, params);
             }
             let id = ctx.fresh_id(None);
             // Lower all params; detect any non-Var tuple patterns.
@@ -879,8 +879,14 @@ const QEXPR_TYCON: TyConId = TyConId(25);
 /// `Construct` nodes over the `QExpr` constructors (the same way `Ordering` and
 /// `JsonValue` are synthesised), and the `Quote` wrapper is a record that lowers
 /// to a map. No other module's constructors are referenced.
-fn reify_quote(ctx: &mut LowerCtx<'_>, body: &Expr, span: Span) -> IrExpr {
-    let tree = reify_node(ctx, body);
+///
+/// A two-parameter quote (a join condition or projection) ranges over a left and
+/// a right entity. Columns of the second parameter reify to `QColR` so the seam
+/// keeps the two tables apart; everything else stays `QCol`. `params` carries the
+/// lambda's parameters so the second one's name can be recognised.
+fn reify_quote(ctx: &mut LowerCtx<'_>, body: &Expr, span: Span, params: &[LambdaParam]) -> IrExpr {
+    let right = lambda_param_name(params.get(1));
+    let tree = reify_node(ctx, body, right.as_deref());
     IrExpr::Construct {
         id: ctx.fresh_id(None),
         ctor: SymbolRef::Constructor {
@@ -939,20 +945,43 @@ fn imported_symbol_ref(ctx: &LowerCtx<'_>, module: ModuleId, name: String) -> Sy
     }
 }
 
-fn reify_node(ctx: &mut LowerCtx<'_>, e: &Expr) -> IrExpr {
+/// The bound name of a lambda parameter, if it is a plain (optionally annotated)
+/// name. The quotation checker has already rejected any other parameter shape.
+fn lambda_param_name(p: Option<&LambdaParam>) -> Option<String> {
+    match p? {
+        LambdaParam::Pattern(Pattern::Var { name, .. })
+        | LambdaParam::Annotated {
+            pat: Pattern::Var { name, .. },
+            ..
+        } => Some(name.text.clone()),
+        _ => None,
+    }
+}
+
+/// Reify one node of a quoted body into a `QExpr` value. `right` is the name of
+/// the quote's second parameter (the right side of a join), or `None` for a
+/// single-parameter quote; a column access on `right` reifies to `QColR`.
+fn reify_node(ctx: &mut LowerCtx<'_>, e: &Expr, right: Option<&str>) -> IrExpr {
     use ridge_ast::BinOp;
     match e {
-        Expr::Paren { inner, .. } => reify_node(ctx, inner),
+        Expr::Paren { inner, .. } => reify_node(ctx, inner, right),
 
-        // `u.field` → `QCol "<sql column>"`.
-        Expr::FieldAccess { field, span, .. } => {
+        // `u.field` → `QCol "<sql column>"`; a column of the right join entity
+        // (`p.field`) → `QColR "<sql column>"`.
+        Expr::FieldAccess { base, field, span } => {
             let col = ridge_ast::column_mirror::column_sql_name(&field.text);
             let name_lit = IrExpr::Lit {
                 id: ctx.fresh_id(None),
                 value: IrLit::Text(col),
                 span: *span,
             };
-            qexpr_node(ctx, "QCol", 0, vec![name_lit], *span)
+            let is_right =
+                matches!(base.as_ref(), Expr::Ident(id) if Some(id.text.as_str()) == right);
+            if is_right {
+                qexpr_node(ctx, "QColR", 15, vec![name_lit], *span)
+            } else {
+                qexpr_node(ctx, "QCol", 0, vec![name_lit], *span)
+            }
         }
 
         // A literal → `QLit{Int,Text,Bool,Float} <value>`.
@@ -990,8 +1019,8 @@ fn reify_node(ctx: &mut LowerCtx<'_>, e: &Expr) -> IrExpr {
                     return unit_lit(ctx, *span);
                 }
             };
-            let l = reify_node(ctx, lhs);
-            let r = reify_node(ctx, rhs);
+            let l = reify_node(ctx, lhs, right);
+            let r = reify_node(ctx, rhs, right);
             qexpr_node(ctx, name, variant, vec![l, r], *span)
         }
 
@@ -1012,7 +1041,7 @@ fn reify_node(ctx: &mut LowerCtx<'_>, e: &Expr) -> IrExpr {
                         span: fi.span,
                     };
                     let col = if let Some(v) = &fi.value {
-                        reify_node(ctx, v)
+                        reify_node(ctx, v, right)
                     } else {
                         ctx.errors.push(LowerError::InternalLoweringError {
                             span: fi.span,
@@ -1296,10 +1325,24 @@ fn resolve_dict_arg(
     // This is the correct dispatch for polymorphic call sites:
     //   - `fn announce (x: a) -> Text where Show a = describe x` → forward
     //   - `fn main_static () -> Text = describe Red` → no caller constraint → Static
-    let caller_constraint = ctx
-        .current_fn_constraints
-        .iter()
-        .find(|c| c.class == class)
+    //
+    // When the caller carries more than one constraint for the same class (e.g.
+    // `decodePairs … where Row e, Row f`, which decodes a tuple of two records),
+    // the constraint's resolved type variable selects which incoming dict to
+    // forward, so each call threads its own (`fromRow` on the left row forwards
+    // `$dict_Row_e`, on the right `$dict_Row_f`). With a single constraint — the
+    // overwhelmingly common case — this is just the first (and only) match.
+    let want_var = match constraint_ty {
+        Some(Type::Var(v)) => Some(*v),
+        _ => None,
+    };
+    let caller_constraint = want_var
+        .and_then(|v| {
+            ctx.current_fn_constraints
+                .iter()
+                .find(|c| c.class == class && c.sole_ty() == v)
+        })
+        .or_else(|| ctx.current_fn_constraints.iter().find(|c| c.class == class))
         .cloned();
 
     if let Some(c) = caller_constraint {
@@ -1344,6 +1387,46 @@ fn resolve_dict_arg(
         value: ridge_ir::IrLit::Unit,
         span,
     }
+}
+
+/// When a bare class-method reference is lowered inside a function that carries
+/// several constraints for the *same* class (e.g. `fromRow` under `Row e, Row
+/// f`, which decodes a tuple of two records), the method's instantiated type at
+/// this use mentions exactly one of those constraint variables. Return it as a
+/// `Type::Var` so [`resolve_dict_arg`] forwards the matching incoming dict rather
+/// than always the first. Returns `None` when there is at most one such
+/// constraint (the common case, no ambiguity) or the type does not single one
+/// out, in which case the first match is used as before.
+fn pin_method_dict_var(
+    ctx: &LowerCtx<'_>,
+    class: ridge_types::ClassId,
+    method_ty: &Type,
+) -> Option<Type> {
+    let candidates: Vec<ridge_types::TyVid> = ctx
+        .current_fn_constraints
+        .iter()
+        .filter(|c| c.class == class)
+        .map(ridge_types::Constraint::sole_ty)
+        .collect();
+    if candidates.len() < 2 {
+        return None;
+    }
+    // Reuse the scheme free-variable walk over a throwaway scheme wrapping the
+    // method's instantiated type (no bound variables, so every variable is free).
+    let probe = ridge_types::Scheme {
+        vars: vec![],
+        cap_vars: vec![],
+        row_vars: vec![],
+        ty: method_ty.clone(),
+        constraints: vec![],
+    };
+    let (free, _) = probe.free_vars();
+    let mut hits = candidates.into_iter().filter(|v| free.contains(v));
+    let first = hits.next()?;
+    if hits.next().is_some() {
+        return None; // more than one caller variable appears — ambiguous
+    }
+    Some(Type::Var(first))
 }
 
 /// The unique `DictPlan::Static` for `class` in the current module's resolution
@@ -1605,7 +1688,18 @@ fn stdlib_classmethod_pin_from_return(
             }
         }
     }
-    candidate.map(|tycon| Type::Con(tycon, vec![]))
+    if let Some(tycon) = candidate {
+        return Some(Type::Con(tycon, vec![]));
+    }
+
+    // No concrete instance appears in the return type — the call is in a
+    // polymorphic context (e.g. `fromRow` inside `decodePairs … where Row e, Row
+    // f`, whose result is still `Result e Error`). When the enclosing fn carries
+    // several constraints for this class, the return type mentions exactly one of
+    // their variables; pin it so `resolve_dict_arg` forwards the matching incoming
+    // dict rather than defaulting to the first. With one constraint there is no
+    // ambiguity and this stays `None` (the single dict is forwarded regardless).
+    pin_method_dict_var(ctx, class, &call_type)
 }
 
 /// Return `true` when a bare `Type::Con(needle, [])` (nullary constructor)
@@ -2413,7 +2507,19 @@ fn lower_ident(ctx: &mut LowerCtx<'_>, ident: &Ident) -> IrExpr {
                 // pin the constraint by type; the surrounding call applies the
                 // result. With no pinning type, `resolve_dict_arg` forwards an
                 // enclosing dict param or falls back to the sole Static plan.
-                resolve_dict_arg(ctx, cid, class_name, None, span)
+                //
+                // When the enclosing fn carries several constraints for this class,
+                // the method's instantiated type at this use — stamped under
+                // `NodeKind::Expr` for the ident span — singles out which constraint
+                // variable applies, so the right incoming dict is forwarded instead
+                // of always the first.
+                let pin = ctx
+                    .node_id_map
+                    .as_ref()
+                    .and_then(|m| m.get(span, NodeKind::Expr))
+                    .and_then(|nid| ctx.node_type(nid).cloned())
+                    .and_then(|t| pin_method_dict_var(ctx, cid, &t));
+                resolve_dict_arg(ctx, cid, class_name, pin.as_ref(), span)
             } else {
                 // No workspace or unknown class — fall back to a unit literal.
                 let id = ctx.fresh_id(None);

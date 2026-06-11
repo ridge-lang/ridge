@@ -32,6 +32,7 @@ pub fn debugShow (q: Quote f) -> Text = showExpr q.tree
 fn showExpr (e: QExpr) -> Text =
     match e
         QCol c      -> c
+        QColR c     -> c
         QLitInt _   -> "?"
         QLitText _  -> "?"
         QLitBool _  -> "?"
@@ -66,6 +67,7 @@ pub fn toSql (q: Quote f) -> (Sql, List SqlValue) =
 fn compileExpr (e: QExpr) -> { text: Text, binds: List SqlValue } =
     match e
         QCol c      -> { text = c, binds = [] }
+        QColR c     -> { text = c, binds = [] }
         QLitInt n   -> { text = "?", binds = [sqlInt n] }
         QLitText s  -> { text = "?", binds = [sqlText s] }
         QLitBool b  -> { text = "?", binds = [sqlBool b] }

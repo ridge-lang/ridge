@@ -273,6 +273,71 @@ fn reconciled_decls(b: &BuiltinTyCons, base: u32) -> Vec<TyConDecl> {
             opaque: true,
             is_anon: false,
         },
+        // `std.repo` — a join under construction. A generic opaque record declared
+        // in Ridge (stdlib/repo.ridge): the left query, the right repository, and
+        // the quoted join condition over both entities. The entity `e` (param 0)
+        // is the left side, `f` (param 1) the right, and `a` (param 2) the shared
+        // adapter. Opaque, so user code only threads it from `joinOn` into a
+        // terminal (`toPairs`/`selectJoin`). Field order mirrors the source.
+        TyConDecl {
+            id: TyConId(base + 6),
+            name: "Join".to_string(),
+            arity: 3,
+            kind: TyConKind::Record(RecordSchema::new(
+                vec![TyVid(0), TyVid(1), TyVid(2)],
+                vec![
+                    RecordField {
+                        name: "left".to_string(),
+                        ty: Type::Con(
+                            TyConId(base + 5),
+                            vec![Type::Var(TyVid(0)), Type::Var(TyVid(2))],
+                        ),
+                    },
+                    RecordField {
+                        name: "right".to_string(),
+                        ty: Type::Con(
+                            TyConId(base + 2),
+                            vec![Type::Var(TyVid(1)), Type::Var(TyVid(2))],
+                        ),
+                    },
+                    // The join condition is stored as a captured tree over two
+                    // row maps — the same row-map form `Query.pred` uses, not the
+                    // entity form the user-facing `joinOn` scheme presents. The
+                    // value is a `QExpr` either way; this is the field's static
+                    // type, which must mirror the source repo.ridge declaration.
+                    RecordField {
+                        name: "cond".to_string(),
+                        ty: Type::Con(
+                            b.quote,
+                            vec![Type::Fn {
+                                params: vec![
+                                    Type::Con(
+                                        b.map,
+                                        vec![
+                                            Type::Con(b.text, vec![]),
+                                            Type::Con(b.sql_value, vec![]),
+                                        ],
+                                    ),
+                                    Type::Con(
+                                        b.map,
+                                        vec![
+                                            Type::Con(b.text, vec![]),
+                                            Type::Con(b.sql_value, vec![]),
+                                        ],
+                                    ),
+                                ],
+                                ret: Box::new(Type::Con(b.bool, vec![])),
+                                caps: CapRow::Concrete(CapabilitySet::PURE),
+                            }],
+                        ),
+                    },
+                ],
+            )),
+            def_span: None,
+            def_module_raw: None,
+            opaque: true,
+            is_anon: false,
+        },
     ]
 }
 
@@ -432,7 +497,8 @@ pub(crate) fn reconciled_fn_scheme(
 /// repository's verbs sit together and share the `Repo`/class-id setup.
 #[expect(
     clippy::too_many_lines,
-    reason = "one scheme per repository verb and query-builder fn; they read best together"
+    clippy::many_single_char_names,
+    reason = "one scheme per repository verb and query-builder fn; they read best together, and the single-letter locals mirror the type variables (e, f, a, s)"
 )]
 fn reconciled_repo_fn_scheme(
     name: &str,
@@ -633,6 +699,94 @@ fn reconciled_repo_fn_scheme(
                 ty: Type::Fn {
                     params: vec![proj_quote, query_app()],
                     ret: Box::new(result(ok)),
+                    caps: pure(),
+                },
+                constraints: vec![Constraint::single(row, s), Constraint::single(adapter, a)],
+            })
+        }
+        // joinOn : ∀e f a. Repo f a -> Quote (e -> f -> Bool) -> Query e a
+        //               -> Join e f a. A pure builder: it pairs the left query
+        // with the right repository and a quoted join condition over both
+        // entities. The condition's left columns range over `e`, its right over
+        // `f`; the captured tree tags each side so the seam keeps them apart.
+        "joinOn" => {
+            let join_con = *reconciled.get("Join")?;
+            let f = TyVid(2);
+            let repo_f_a = Type::Con(repo_con, vec![Type::Var(f), Type::Var(a)]);
+            let cond_quote = Type::Con(
+                b.quote,
+                vec![Type::Fn {
+                    params: vec![Type::Var(e), Type::Var(f)],
+                    ret: Box::new(Type::Con(b.bool, vec![])),
+                    caps: CapRow::Concrete(CapabilitySet::PURE),
+                }],
+            );
+            let join_e_f_a = Type::Con(join_con, vec![Type::Var(e), Type::Var(f), Type::Var(a)]);
+            Some(Scheme {
+                vars: vec![e, a, f],
+                cap_vars: vec![],
+                row_vars: vec![],
+                ty: Type::Fn {
+                    params: vec![repo_f_a, cond_quote, query_app()],
+                    ret: Box::new(join_e_f_a),
+                    caps: pure(),
+                },
+                constraints: vec![],
+            })
+        }
+        // toPairs : ∀e f a. Join e f a -> Result (List (e, f)) Error
+        //                where Row e, Row f, Adapter a. Runs the inner join and
+        // decodes each joined row pair into both entities. The constraint order
+        // follows the variables' first appearance in the signature: e, then f,
+        // then a (the three slots of `Join e f a`).
+        "toPairs" => {
+            let join_con = *reconciled.get("Join")?;
+            let f = TyVid(2);
+            let join_e_f_a = Type::Con(join_con, vec![Type::Var(e), Type::Var(f), Type::Var(a)]);
+            let pair = Type::Tuple(vec![Type::Var(e), Type::Var(f)]);
+            Some(Scheme {
+                vars: vec![e, a, f],
+                cap_vars: vec![],
+                row_vars: vec![],
+                ty: Type::Fn {
+                    params: vec![join_e_f_a],
+                    ret: Box::new(result(Type::Con(b.list, vec![pair]))),
+                    caps: pure(),
+                },
+                constraints: vec![
+                    Constraint::single(row, e),
+                    Constraint::single(row, f),
+                    Constraint::single(adapter, a),
+                ],
+            })
+        }
+        // selectJoin : ∀e f a s. Quote (e -> f -> s) -> Join e f a
+        //                  -> Result (List s) Error where Row s, Adapter a.
+        // The projection names a result record built from columns of both
+        // entities (`Line { who = u.name, title = p.title }`), which pins `s` to
+        // that record and lists its (qualified) columns. `s` first appears in the
+        // projection (param 0) before the adapter `a` (in `Join`, param 1), so
+        // the constraint order is `Row s` then `Adapter a`, matching selectList.
+        "selectJoin" => {
+            let join_con = *reconciled.get("Join")?;
+            let f = TyVid(2);
+            let s = TyVid(3);
+            let proj_quote = Type::Con(
+                b.quote,
+                vec![Type::Fn {
+                    params: vec![Type::Var(e), Type::Var(f)],
+                    ret: Box::new(Type::Var(s)),
+                    caps: CapRow::Concrete(CapabilitySet::PURE),
+                }],
+            );
+            let join_e_f_a = Type::Con(join_con, vec![Type::Var(e), Type::Var(f), Type::Var(a)]);
+            Some(Scheme {
+                vars: vec![e, a, f, s],
+                cap_vars: vec![],
+                row_vars: vec![],
+                ty: Type::Fn {
+                    params: vec![proj_quote, join_e_f_a],
+                    ret: Box::new(result(Type::Con(b.list, vec![Type::Var(s)]))),
                     caps: pure(),
                 },
                 constraints: vec![Constraint::single(row, s), Constraint::single(adapter, a)],

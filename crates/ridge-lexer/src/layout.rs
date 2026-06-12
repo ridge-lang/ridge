@@ -50,6 +50,26 @@
 //! style pipe chains.  `=`, `->`, `then`, `else` are NOT in the set; those
 //! introduce new blocks.
 //!
+//! ## Bracket-leading argument continuation (§5.5)
+//!
+//! A logical line that is more indented than the current block and opens with
+//! `[`, `(`, or `{` is treated as a *continuation argument* of the preceding
+//! line rather than a new INDENT block, so multi-line calls such as
+//!
+//! ```text
+//! users
+//!     |> Repo.setWhere
+//!         [ Repo.set (fn (u) -> u.age) 40 ]
+//!         (fn (u) -> u.id == 1)
+//! ```
+//!
+//! parse the bracketed atoms as further arguments (the parser's juxtaposition
+//! rule does the rest).  The suppression fires only when the previous line did
+//! NOT end with a block introducer (`=`, `->`, `then`, `else`, `try`) and the
+//! line is not itself a `match` arm (no top-level `->`).  Those guards mean a
+//! suppressed INDENT could only ever have been a layout error before, so no
+//! previously valid program changes shape.
+//!
 //! ## EOF (§4.6)
 //!
 //! Pop all open stack levels above the sentinel `0`, emitting one `Dedent`
@@ -105,6 +125,11 @@ pub(crate) fn process(tokens: &[(Token, Span)]) -> (Vec<(Token, Span)>, Vec<LexE
     // Whether any non-blank logical line has been emitted yet.
     let mut first_logical_line = true;
 
+    // Last real token of the previous non-blank logical line.  Drives the
+    // bracket-leading argument-continuation rule (§5.5): it separates a
+    // continued call argument from a block body opened by `=`/`->`/`then`/…
+    let mut prev_last_tok: Option<Token> = None;
+
     // Pre-process: group into logical lines.
     // Each logical line is: (col, line_start_byte, tokens_on_line)
     let logical_lines = collect_logical_lines(tokens);
@@ -135,9 +160,15 @@ pub(crate) fn process(tokens: &[(Token, Span)]) -> (Vec<(Token, Span)>, Vec<LexE
                 }
                 first_logical_line = false;
             } else if col > top {
-                // Indent.
-                stack.push(col);
-                out.push((Token::Indent, Span::point(line_tok_span.start)));
+                // A more-indented line normally opens an INDENT block — unless
+                // it is a bracket-leading argument continuation of the previous
+                // logical line (§5.5).  Suppress the INDENT in that case so the
+                // parser folds the bracketed atom in as another call argument;
+                // the real tokens below flow straight onto the previous line.
+                if !is_bracket_arg_continuation(line_tokens, prev_last_tok.as_ref()) {
+                    stack.push(col);
+                    out.push((Token::Indent, Span::point(line_tok_span.start)));
+                }
             } else if col == top {
                 // Same level — emit Newline (not before the very first line).
                 out.push((Token::Newline, Span::point(line_tok_span.start)));
@@ -204,6 +235,12 @@ pub(crate) fn process(tokens: &[(Token, Span)]) -> (Vec<(Token, Span)>, Vec<LexE
             }
             out.push((tok.clone(), *span));
         }
+
+        // Record the last real token so the next line's continuation check
+        // (§5.5) can tell a continued argument from a block-introducing line.
+        if let Some((last, _)) = line_tokens.last() {
+            prev_last_tok = Some(last.clone());
+        }
     }
 
     // At EOF: unwind the layout stack (emit Dedents for each open block above 0).
@@ -229,6 +266,57 @@ pub(crate) fn process(tokens: &[(Token, Span)]) -> (Vec<(Token, Span)>, Vec<LexE
         .collect();
 
     (out, errors)
+}
+
+/// Returns `true` when `line_tokens` is a bracket-leading argument continuation
+/// of the preceding logical line (§5.5) — it should fold onto that line as
+/// another call argument instead of opening a fresh INDENT block.
+///
+/// Three conditions must hold:
+/// - the line leads with an opening bracket (`[`, `(`, `{`);
+/// - the previous line did not end with a block introducer (`=`, `->`, `then`,
+///   `else`, `try`), which would make this line a block body; and
+/// - the line is not a `match` arm (no `->` at bracket depth 0).
+///
+/// Together these mean a suppressed INDENT here could only have been a layout
+/// error before, so enabling the continuation regresses no valid program.
+fn is_bracket_arg_continuation(
+    line_tokens: &[(Token, Span)],
+    prev_last_tok: Option<&Token>,
+) -> bool {
+    let leads_with_bracket = matches!(
+        line_tokens.first(),
+        Some((Token::LParen | Token::LBrack | Token::LBrace, _))
+    );
+    if !leads_with_bracket {
+        return false;
+    }
+
+    if matches!(
+        prev_last_tok,
+        Some(Token::Assign | Token::Arrow | Token::KwThen | Token::KwElse | Token::KwTry)
+    ) {
+        return false;
+    }
+
+    !line_has_top_level_arrow(line_tokens)
+}
+
+/// Returns `true` if `line_tokens` contains an `Arrow` (`->`) at bracket depth 0
+/// (outside every `(`/`[`/`{`/`${`).  This marks a `match` arm pattern such as
+/// `[] -> …` or `(a, b) -> …`, distinguishing it from a bracketed call argument
+/// whose own `->` (e.g. a lambda) is always nested inside a bracket.
+fn line_has_top_level_arrow(line_tokens: &[(Token, Span)]) -> bool {
+    let mut depth: i32 = 0;
+    for (tok, _) in line_tokens {
+        match tok {
+            Token::LParen | Token::LBrack | Token::LBrace | Token::InterpExprStart => depth += 1,
+            Token::RParen | Token::RBrack | Token::RBrace | Token::InterpExprEnd => depth -= 1,
+            Token::Arrow if depth == 0 => return true,
+            _ => {}
+        }
+    }
+    false
 }
 
 /// Returns `true` if `tok` is a binary infix operator that may lead a
@@ -659,6 +747,120 @@ mod tests {
         assert_eq!(
             newline_count, 1,
             "expected exactly 1 NEWLINE between body stmts: {toks:?}"
+        );
+    }
+
+    // ── §5.5 bracket-leading argument continuation ───────────────────────────
+
+    fn indents(src: &str) -> usize {
+        tokens(src).iter().filter(|t| **t == Token::Indent).count()
+    }
+
+    /// A `[`-leading, more-indented line after a non-block-introducer folds onto
+    /// the previous line as a call argument — no extra INDENT.
+    #[test]
+    fn bracket_arg_continuation_suppresses_indent() {
+        // fn body is the only block; `[ a ]` continues `users |> setWhere`.
+        let src = "fn f =\n    users\n        |> setWhere\n            [ a ]";
+        assert_eq!(
+            indents(src),
+            1,
+            "only the fn body should INDENT: {:?}",
+            tokens(src)
+        );
+    }
+
+    /// `(`-leading and `[`-leading continuation lines chain onto the same call.
+    #[test]
+    fn chained_bracket_and_paren_args_suppress_indent() {
+        let src = "fn f =\n    users\n        |> setWhere\n            [ a ]\n            (b)";
+        let toks = tokens(src);
+        assert_eq!(
+            toks.iter().filter(|t| **t == Token::Indent).count(),
+            1,
+            "only the fn body should INDENT: {toks:?}"
+        );
+        // No INDENT/DEDENT separates the call from its bracketed args.
+        assert_eq!(
+            toks.iter().filter(|t| **t == Token::Dedent).count(),
+            1,
+            "exactly one DEDENT (fn body close at EOF): {toks:?}"
+        );
+    }
+
+    /// A `{`-leading record-literal argument is also a continuation.
+    #[test]
+    fn brace_arg_continuation_suppresses_indent() {
+        let src = "fn f =\n    update row\n        { a = 1 }";
+        assert_eq!(indents(src), 1, "{:?}", tokens(src));
+    }
+
+    /// An arrow nested inside the bracketed argument (a lambda) must NOT be read
+    /// as a `match` arm — the continuation still fires.
+    #[test]
+    fn lambda_arrow_inside_bracket_arg_still_continues() {
+        let src = "fn f =\n    users\n        |> setWhere\n            (fn u -> u)";
+        assert_eq!(indents(src), 1, "{:?}", tokens(src));
+    }
+
+    /// A `match` arm whose pattern is `[]` keeps its INDENT — the top-level `->`
+    /// marks it as an arm, not a continuation.
+    #[test]
+    fn match_empty_list_arm_keeps_indent() {
+        let src = "fn f =\n    match xs\n        [] -> 0\n        h :: t -> 1";
+        // fn body + match arms = 2 INDENTs.
+        assert_eq!(indents(src), 2, "{:?}", tokens(src));
+        let arrows = tokens(src).iter().filter(|t| **t == Token::Arrow).count();
+        assert_eq!(arrows, 2, "both arm arrows present: {:?}", tokens(src));
+    }
+
+    /// A `match` arm with a tuple pattern likewise keeps its INDENT.
+    #[test]
+    fn match_tuple_arm_keeps_indent() {
+        let src = "fn f =\n    match p\n        (a, b) -> 0\n        _ -> 1";
+        assert_eq!(indents(src), 2, "{:?}", tokens(src));
+    }
+
+    /// A bracket-leading `let` body (previous line ends in `=`) keeps its INDENT.
+    #[test]
+    fn let_body_bracket_keeps_indent() {
+        let src = "fn f =\n    let x =\n        [ 1 ]\n    x";
+        // fn body + let value block = 2 INDENTs.
+        assert_eq!(indents(src), 2, "{:?}", tokens(src));
+    }
+
+    /// A bracket-leading match-arm body (previous line ends in `->`) keeps its
+    /// INDENT.
+    #[test]
+    fn arm_body_bracket_keeps_indent() {
+        let src = "fn f =\n    match xs\n        A ->\n            [ 1 ]";
+        // fn body + match arms + arm body = 3 INDENTs.
+        assert_eq!(indents(src), 3, "{:?}", tokens(src));
+    }
+
+    /// A `match` nested in a `let` value still indents its arms — the arm shape
+    /// (top-level `->`), not the head keyword, is what protects it.
+    #[test]
+    fn nested_match_in_let_keeps_indent() {
+        let src = "fn f =\n    let r = match xs\n        [] -> 0\n        a :: b -> 1\n    r";
+        // fn body + match arms = 2 INDENTs.
+        assert_eq!(indents(src), 2, "{:?}", tokens(src));
+    }
+
+    /// A bracket-leading line at the SAME column as its sibling is a separate
+    /// statement, not a continuation (the rule only fires for `col > top`).
+    #[test]
+    fn sibling_bracket_at_same_col_not_continuation() {
+        let src = "fn f =\n    compute\n    [ 1 ]";
+        let toks = tokens(src);
+        assert_eq!(
+            toks.iter().filter(|t| **t == Token::Indent).count(),
+            1,
+            "only the fn body INDENTs: {toks:?}"
+        );
+        assert!(
+            toks.contains(&Token::Newline),
+            "sibling statements separated by NEWLINE: {toks:?}"
         );
     }
 }

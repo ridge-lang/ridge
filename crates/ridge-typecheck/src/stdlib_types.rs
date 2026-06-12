@@ -904,8 +904,25 @@ fn reconciled_repo_fn_scheme(
         }
         // toList : ∀e a. Query e a -> Result (List e) Error where Adapter a, Row e
         "toList" => method(vec![query_app()], result(list_e()), with_adapter_row()),
-        // first : ∀e a. Query e a -> Result (Option e) Error where Adapter a, Row e
-        "first" => method(vec![query_app()], result(option_e()), with_adapter_row()),
+        // first / single : ∀e a. Query e a -> Result (Option e) Error
+        //   where Adapter a, Row e. They share a scheme exactly — both fetch and
+        // decode one row, answering `Option e` — and differ only in the body:
+        // `single` fetches a second row to reject a non-unique result.
+        "first" | "single" => method(vec![query_app()], result(option_e()), with_adapter_row()),
+        // singleOrError : ∀e a. Query e a -> Result e Error where Adapter a, Row e.
+        // The strict `single`: it answers the bare entity, turning the empty match
+        // into an error rather than `None`; otherwise the same constraints in the
+        // same order.
+        "singleOrError" => method(vec![query_app()], result(Type::Var(e)), with_adapter_row()),
+        // every : ∀e a. Quote (e -> Bool) -> Query e a -> Result Bool Error
+        //   where Adapter a. The universal dual of `exists`: it only counts (the
+        // query's rows, then the rows once the extra predicate is folded in), so it
+        // carries `Adapter a` alone, the same scheme shape as `exists`/`countBy`.
+        "every" => method(
+            vec![quote_pred(), query_app()],
+            result(Type::Con(b.bool, vec![])),
+            with_adapter(),
+        ),
         // selectList / selectFirst : ∀e a s. Quote (e -> s) -> Query e a
         //   -> Result (List s | Option s) Error where Adapter a, Row s.
         // The projection quote captures a record built by naming the result type

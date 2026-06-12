@@ -739,6 +739,40 @@ pub fn db lastName () -> Result (Option Text) Error =
 }
 
 #[test]
+fn query_builder_unique_and_universal_terminals_typecheck() {
+    // The unique-row terminals decode like `first` but assert how many rows match:
+    // `single` answers `Option User` (`None` for an empty match, an error for more
+    // than one), `singleOrError` answers the bare `User` (the empty match is an
+    // error too). `every` is the universal dual of `exists` — it takes a further
+    // predicate and answers `Bool` — so it composes after the accumulated filter
+    // without decoding a row. The pinned return types prove each terminal's shape.
+    let main = r#"
+import std.data (memAdapter, MemAdapter)
+import std.repo as Repo
+import std.sql (SqlValue)
+
+pub type User = { id: Int, age: Int, name: Text } deriving (Row)
+
+pub fn db maybeAdmin () -> Result (Option User) Error =
+    let users: Repo User MemAdapter = Repo.repo (memAdapter ()) "users"
+    users |> Repo.query |> Repo.filter (fn (u: User) -> u.name == "admin") |> Repo.single
+
+pub fn db theAdmin () -> Result User Error =
+    let users: Repo User MemAdapter = Repo.repo (memAdapter ()) "users"
+    users |> Repo.query |> Repo.filter (fn (u: User) -> u.id == 1) |> Repo.singleOrError
+
+pub fn db allAdult () -> Result Bool Error =
+    let users: Repo User MemAdapter = Repo.repo (memAdapter ()) "users"
+    users |> Repo.query |> Repo.every (fn (u: User) -> u.age >= 18)
+"#;
+    let errors = typecheck_one(main);
+    assert!(
+        errors.is_empty(),
+        "the unique-row and universal terminals must type-check clean; got {errors:?}"
+    );
+}
+
+#[test]
 fn query_builder_over_postgres_typechecks() {
     // The builder resolves the same `Adapter` constraint on the Postgres backend:
     // `fetch` is a class method both adapters implement, so a `Query User Postgres`

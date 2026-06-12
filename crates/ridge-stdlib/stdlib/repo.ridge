@@ -240,6 +240,69 @@ pub fn first (q: Query e a) -> Result (Option e) Error where Adapter a, Row e =
         Err err -> Err err
         Ok rows -> firstDecoded rows
 
+-- Build an `Error` from a code and a message. A bare record literal cannot be
+-- coerced to the nominal `Error` type in a plain function (only an instance-method
+-- body, as the `SqlType` decoders are), so the unique-row terminals tag their
+-- errors through this runtime helper, the same way the query trees are built by
+-- `keepAll`/`quoteAnd`.
+@ffi("ridge_rt", "mk_error", 2)
+fn mkError (code: Text) (message: Text) -> Error
+
+-- The one row the query selects, decoded; `None` when none match and an error
+-- when more than one does. The lenient member of the pair: an empty result is
+-- `Ok None`, not a failure — reach for `singleOrError` when "no row" should fail
+-- too. Fetched with a two-row limit, so the backend stops the moment a second
+-- match proves the result is not unique rather than scanning the whole table.
+-- The filter and offset still apply; an ordering does not change which single row
+-- is meant, only the error or the lone value. (LINQ's `SingleOrDefault`.)
+pub fn single (q: Query e a) -> Result (Option e) Error where Adapter a, Row e =
+    match fetch q.repo.adapter q.repo.table q.pred q.orders 2 q.off
+        Err err -> Err err
+        Ok rows ->
+            match rows
+                []          -> Ok None
+                row :: rest ->
+                    match rest
+                        [] ->
+                            match fromRow row
+                                Err err -> Err err
+                                Ok x    -> Ok (Some x)
+                        _ -> Err (mkError "repo.single.many" "the query matched more than one row")
+
+-- The one row the query selects, decoded, with the empty result an error rather
+-- than `None`: this answers exactly one row or fails. The strict member of the
+-- pair — `single` tolerates no match, this does not — for a query that is meant
+-- to identify a unique row (a lookup by a key the schema makes unique). Like
+-- `single` it fetches a second row only to detect a non-unique result.
+-- (LINQ's `Single`.)
+pub fn singleOrError (q: Query e a) -> Result e Error where Adapter a, Row e =
+    match fetch q.repo.adapter q.repo.table q.pred q.orders 2 q.off
+        Err err -> Err err
+        Ok rows ->
+            match rows
+                []          -> Err (mkError "repo.single.empty" "the query matched no rows")
+                row :: rest ->
+                    match rest
+                        [] ->
+                            match fromRow row
+                                Err err -> Err err
+                                Ok x    -> Ok x
+                        _ -> Err (mkError "repo.single.many" "the query matched more than one row")
+
+-- Whether every row the query selects satisfies a further predicate. The dual of
+-- `exists`: `exists` asks whether any row matches, `every` whether all do. Both
+-- sides are counted by the backend rather than fetched — `every` compares the
+-- query's own row count against the count once the extra predicate is AND-folded
+-- in, and they agree exactly when no selected row fails it. An empty selection is
+-- `true`, the vacuous reading SQL gives a universal over no rows. (LINQ's `All`.)
+pub fn every (pred: Quote (Map Text SqlValue -> Bool)) (q: Query e a) -> Result Bool Error where Adapter a =
+    match countWhere q.repo.adapter q.repo.table q.pred
+        Err err  -> Err err
+        Ok total ->
+            match countWhere q.repo.adapter q.repo.table (quoteAnd q.pred pred)
+                Err err     -> Err err
+                Ok matching -> Ok (total == matching)
+
 -- Run the query as a projection: select only the columns the shape `s` names and
 -- decode each projected row into `s`. The projection is written by naming the
 -- result record — `fn (u: User) -> Summary { name = u.name, year = u.signupYear }`

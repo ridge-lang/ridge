@@ -1292,6 +1292,34 @@ pub fn db promote () -> Result Int Error =
 }
 
 #[test]
+fn typed_set_where_multiline_form_typechecks() {
+    // The natural multi-line shape — pipe into `setWhere`, then the setter list
+    // and the predicate on their own deeper-indented lines — now parses thanks to
+    // the bracket-leading argument continuation (§5.5). Before that it tripped the
+    // P006 layout error and the body never type-checked.
+    let main = r#"
+import std.data (memAdapter, MemAdapter)
+import std.repo as Repo
+import std.sql (SqlValue)
+
+pub type User = { id: Int, age: Int, status: Text } deriving (Row)
+
+pub fn db promote () -> Result Int Error =
+    let users: Repo User MemAdapter = Repo.repo (memAdapter ()) "users"
+    users
+        |> Repo.setWhere
+            [ Repo.set (fn (u: User) -> u.status) "adult"
+            , Repo.set (fn (u: User) -> u.age) 99 ]
+            (fn (u: User) -> u.age > 18)
+"#;
+    let errors = typecheck_one(main);
+    assert!(
+        errors.is_empty(),
+        "the multi-line `setWhere` form must type-check clean; got {errors:?}"
+    );
+}
+
+#[test]
 fn typed_apply_set_over_query_builder_typechecks() {
     // `applySet` is the query-builder write terminal: the accumulated `filter`
     // picks the rows, the setters assign their columns.

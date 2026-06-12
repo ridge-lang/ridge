@@ -89,6 +89,7 @@ pub class Adapter a =
     leftJoin (conn: a) (leftTable: Text) (rightTable: Text) (cond: Quote (Map Text SqlValue -> Map Text SqlValue -> Bool)) (pred: Quote (Map Text SqlValue -> Bool)) (orders: List (Bool, Text)) (lim: Int) (off: Int) -> Result (List (Map Text SqlValue, Option (Map Text SqlValue))) Error
     leftJoinSelect (conn: a) (leftTable: Text) (rightTable: Text) (cond: Quote (Map Text SqlValue -> Map Text SqlValue -> Bool)) (pred: Quote (Map Text SqlValue -> Bool)) (orders: List (Bool, Text)) (lim: Int) (off: Int) (proj: Quote (Map Text SqlValue -> Map Text SqlValue -> Map Text SqlValue)) -> Result (List (Map Text SqlValue)) Error
     groupSummarize (conn: a) (table: Text) (pred: Quote (Map Text SqlValue -> Bool)) (keyCol: Text) (cols: List (Text, Text, Text)) (having: QExpr) -> Result (List (Map Text SqlValue)) Error
+    runPlan (conn: a) (plan: QExpr) -> Result (List (Map Text SqlValue)) Error
 
 -- A handle to an in-memory store. Opaque: `memAdapter` is the only way to make
 -- one, and the `id` it carries selects this handle's private, isolated store,
@@ -178,6 +179,12 @@ fn _memLeftJoinSelect (id: Int) (leftTable: Text) (rightTable: Text) (cond: QExp
 @ffi("ridge_rt", "mem_group_summarize", 6)
 fn _memGroupSummarize (id: Int) (table: Text) (tree: QExpr) (keyCol: Text) (cols: List (Text, Text, Text)) (having: QExpr) -> Result (List (Map Text SqlValue)) Error
 
+-- Run a captured query plan (a set-operation tree) against the in-memory store,
+-- interpreting each `planScan`/`planCombine`/`planRefine` node, and return the
+-- combined rows.
+@ffi("ridge_rt", "mem_run_plan", 2)
+fn _memRunPlan (id: Int) (plan: QExpr) -> Result (List (Map Text SqlValue)) Error
+
 -- Open a fresh in-memory adapter backed by an empty store. Requires the `db`
 -- capability; the handle returned is the proof of access for every later call.
 @ffi("ridge_rt", "mem_new", 1)
@@ -216,6 +223,8 @@ instance Adapter MemAdapter =
         _memLeftJoinSelect conn.id leftTable rightTable cond.tree pred.tree orders lim off proj.tree
     groupSummarize (conn: MemAdapter) (table: Text) (pred: Quote (Map Text SqlValue -> Bool)) (keyCol: Text) (cols: List (Text, Text, Text)) (having: QExpr) -> Result (List (Map Text SqlValue)) Error =
         _memGroupSummarize conn.id table pred.tree keyCol cols having
+    runPlan (conn: MemAdapter) (plan: QExpr) -> Result (List (Map Text SqlValue)) Error =
+        _memRunPlan conn.id plan
 
 -- The head of a row list as an `Option` — `get` returns at most one row, so it
 -- reads the first match (or `None` when the column held no such key).
@@ -320,6 +329,12 @@ fn _pgLeftJoinSelect (id: Int) (leftTable: Text) (rightTable: Text) (cond: QExpr
 @ffi("ridge_pg", "pg_group_summarize", 6)
 fn _pgGroupSummarize (id: Int) (table: Text) (tree: QExpr) (keyCol: Text) (cols: List (Text, Text, Text)) (having: QExpr) -> Result (List (Map Text SqlValue)) Error
 
+-- Compile a captured query plan to nested SQL — each `planScan` a `SELECT`, each
+-- `planCombine` a `UNION`/`INTERSECT`/`EXCEPT`, each `planRefine` a wrapping
+-- subquery — and run it on the connection, returning the combined rows.
+@ffi("ridge_pg", "pg_run_plan", 2)
+fn _pgRunPlan (id: Int) (plan: QExpr) -> Result (List (Map Text SqlValue)) Error
+
 -- Open a Postgres connection with the given settings. Requires the `db`
 -- capability; the handle returned is the proof of access for every later call,
 -- exactly like `memAdapter`. A failed connect or authentication is an `Err`.
@@ -359,3 +374,5 @@ instance Adapter Postgres =
         _pgLeftJoinSelect conn.id leftTable rightTable cond.tree pred.tree orders lim off proj.tree
     groupSummarize (conn: Postgres) (table: Text) (pred: Quote (Map Text SqlValue -> Bool)) (keyCol: Text) (cols: List (Text, Text, Text)) (having: QExpr) -> Result (List (Map Text SqlValue)) Error =
         _pgGroupSummarize conn.id table pred.tree keyCol cols having
+    runPlan (conn: Postgres) (plan: QExpr) -> Result (List (Map Text SqlValue)) Error =
+        _pgRunPlan conn.id plan

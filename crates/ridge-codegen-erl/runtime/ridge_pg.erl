@@ -46,6 +46,7 @@
     pg_left_join/8,
     pg_left_join_select/9,
     pg_group_summarize/6,
+    pg_run_plan/2,
     pg_close/1
 ]).
 
@@ -138,6 +139,11 @@ pg_project(Id, Table, Tree, Orders, Lim, Off, Cols, Dist) ->
 %% projection's output aliases. Result (List Row) Error.
 pg_group_summarize(Id, Table, Tree, KeyCol, Cols, Having) ->
     pg_call(Id, {group_summarize, Table, Tree, KeyCol, Cols, Having}).
+
+%% pg_run_plan/2 — compile a captured query plan to nested SQL and run it, returning
+%% the combined rows. Result (List Row) Error.
+pg_run_plan(Id, Plan) ->
+    pg_call(Id, {run_plan, Plan}).
 
 %% pg_join/8 — inner-join LeftTable and RightTable on the condition tree Cond,
 %% compiled into `JOIN … ON`; the left-side predicate Pred into `WHERE`; then
@@ -591,7 +597,10 @@ run_verb(Conn, {count_where, Table, Tree}) ->
 run_verb(Conn, {aggregate, Table, Tree, Func, Column}) ->
     do_aggregate(Conn, Table, Func, Column, Tree);
 run_verb(Conn, {group_summarize, Table, Tree, KeyCol, Cols, Having}) ->
-    do_group_summarize(Conn, Table, Tree, KeyCol, Cols, Having).
+    do_group_summarize(Conn, Table, Tree, KeyCol, Cols, Having);
+run_verb(Conn, {run_plan, Plan}) ->
+    {Sql, RevBinds, _N} = plan_sql(Plan, 1, []),
+    run_query(Conn, Sql, lists:reverse(RevBinds)).
 
 do_insert(Conn, Table, Row) ->
     Pairs = maps:to_list(Row),
@@ -858,6 +867,29 @@ distinct_kw(_)    -> "".
 compile_where(Tree) ->
     {Frag, RevBinds, _N} = cw(Tree, 1, []),
     {Frag, lists:reverse(RevBinds)}.
+
+%% --- query plan -> nested SQL ---
+%%
+%% Compile a captured query plan, threading the `$N` placeholder counter across
+%% every branch so binds never collide. A scan is a single SELECT; a combine wraps
+%% each branch in parentheses around the set-operation keyword; a refine wraps its
+%% inner plan in a subquery and applies an outer WHERE/ORDER/LIMIT/OFFSET. Returns
+%% {Sql, RevBinds, NextN}, matching cw/3's accumulator shape (binds held reversed).
+plan_sql({scan, Table, Pred, Orders, Lim, Off, Dist}, N, B) ->
+    {Where, B1, N1} = cw(Pred, N, B),
+    Sql = ["SELECT ", distinct_kw(Dist), "* FROM ", quote_ident(Table), " WHERE ", Where,
+           order_by_clause(Orders), limit_clause(Lim), offset_clause(Off)],
+    {Sql, B1, N1};
+plan_sql({combine, Op, Left, Right}, N, B) ->
+    {LSql, B1, N1} = plan_sql(Left, N, B),
+    {RSql, B2, N2} = plan_sql(Right, N1, B1),
+    {["(", LSql, ") ", Op, " (", RSql, ")"], B2, N2};
+plan_sql({refine, Inner, Pred, Orders, Lim, Off, Dist}, N, B) ->
+    {ISql, B1, N1} = plan_sql(Inner, N, B),
+    {Where, B2, N2} = cw(Pred, N1, B1),
+    Sql = ["SELECT ", distinct_kw(Dist), "* FROM (", ISql, ") AS ridge_sub WHERE ", Where,
+           order_by_clause(Orders), limit_clause(Lim), offset_clause(Off)],
+    {Sql, B2, N2}.
 
 cw({'QAnd', L, R}, N, B) ->
     {FL, B1, N1} = cw(L, N, B),

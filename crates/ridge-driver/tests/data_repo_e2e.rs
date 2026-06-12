@@ -32,6 +32,9 @@
 //! - `distinct`: a projection that drops the repeated dept and salary columns to
 //!   their distinct values, and a whole-row `distinct` that collapses exact
 //!   duplicate rows.
+//! - set operations: `union`/`unionAll`/`intersect`/`except` over two overlapping
+//!   filters, with `orderBy`/`filter` composing on the combined result and a
+//!   nested `(eng ∪ sales) ∪ ops`.
 //!
 //! Gated on `beam-runtime` (real OTP) plus a `which` guard for `erl`/`erlc`.
 
@@ -604,6 +607,14 @@ fn salList (rows: List SalAmt) -> Text =
         r :: []   -> Int.toText r.salary
         r :: rest -> Text.concat (Int.toText r.salary) (Text.concat "," (salList rest))
 
+-- Render the ids of a row list, comma-joined. The set-op probes order by id, so
+-- the rendered string is deterministic across backends.
+fn idList (rows: List Emp) -> Text =
+    match rows
+        []        -> ""
+        e :: []   -> Int.toText e.id
+        e :: rest -> Text.concat (Int.toText e.id) (Text.concat "," (idList rest))
+
 -- group + summarize: COUNT(*) per dept, key-ordered -> "eng:2,ops:1,sales:3".
 -- Proves GROUP BY partitions the rows and the result is ordered by the key.
 pub fn db groupCounts () -> Text =
@@ -730,6 +741,82 @@ pub fn db distinctRows () -> Int =
             match r |> Repo.query |> Repo.distinct |> Repo.toList
                 Err _   -> 0 - 1
                 Ok rows -> listLen rows
+
+-- Set operations over two overlapping filters. A = salary >= 150 (ids 2,3,4,5),
+-- B = salary <= 150 (ids 1,3,4,6); ids 3 and 4 (salary 150) are in both. Each
+-- probe orders the combined result by id so the rendered ids are deterministic.
+
+-- union: every row in either, duplicates removed, ordered -> "1,2,3,4,5,6".
+-- Proves UNION dedups the shared rows and that orderBy composes on the result.
+pub fn db unionIds () -> Text =
+    match setupEmps ()
+        Err _ -> "setup-err"
+        Ok r  ->
+            let a = r |> Repo.query |> Repo.filter (fn (e: Emp) -> e.salary >= 150)
+            let b = r |> Repo.query |> Repo.filter (fn (e: Emp) -> e.salary <= 150)
+            match a |> Repo.union b |> Repo.orderBy Asc (fn (e: Emp) -> e.id) |> Repo.toList
+                Err _   -> "err"
+                Ok rows -> idList rows
+
+-- intersect: the rows in both, ordered -> "3,4" (the two salary-150 rows).
+pub fn db intersectIds () -> Text =
+    match setupEmps ()
+        Err _ -> "setup-err"
+        Ok r  ->
+            let a = r |> Repo.query |> Repo.filter (fn (e: Emp) -> e.salary >= 150)
+            let b = r |> Repo.query |> Repo.filter (fn (e: Emp) -> e.salary <= 150)
+            match a |> Repo.intersect b |> Repo.orderBy Asc (fn (e: Emp) -> e.id) |> Repo.toList
+                Err _   -> "err"
+                Ok rows -> idList rows
+
+-- except: the rows in A but not B, ordered -> "2,5" (salary 200 and 300). Order
+-- matters: the piped-in query is the left side.
+pub fn db exceptIds () -> Text =
+    match setupEmps ()
+        Err _ -> "setup-err"
+        Ok r  ->
+            let a = r |> Repo.query |> Repo.filter (fn (e: Emp) -> e.salary >= 150)
+            let b = r |> Repo.query |> Repo.filter (fn (e: Emp) -> e.salary <= 150)
+            match a |> Repo.except b |> Repo.orderBy Asc (fn (e: Emp) -> e.id) |> Repo.toList
+                Err _   -> "err"
+                Ok rows -> idList rows
+
+-- unionAll: every row in either, keeping duplicates -> 8 rows (4 + 4, with 3 and
+-- 4 counted twice). Proves UNION ALL keeps the shared rows.
+pub fn db unionAllCount () -> Int =
+    match setupEmps ()
+        Err _ -> 0 - 1
+        Ok r  ->
+            let a = r |> Repo.query |> Repo.filter (fn (e: Emp) -> e.salary >= 150)
+            let b = r |> Repo.query |> Repo.filter (fn (e: Emp) -> e.salary <= 150)
+            match a |> Repo.unionAll b |> Repo.toList
+                Err _   -> 0 - 1
+                Ok rows -> listLen rows
+
+-- filter after a union: the combined result is filtered again (salary >= 200) ->
+-- "2,5". Proves an outer filter applies on top of the combination.
+pub fn db unionFiltered () -> Text =
+    match setupEmps ()
+        Err _ -> "setup-err"
+        Ok r  ->
+            let a = r |> Repo.query |> Repo.filter (fn (e: Emp) -> e.salary >= 150)
+            let b = r |> Repo.query |> Repo.filter (fn (e: Emp) -> e.salary <= 150)
+            match a |> Repo.union b |> Repo.filter (fn (e: Emp) -> e.salary >= 200) |> Repo.orderBy Asc (fn (e: Emp) -> e.id) |> Repo.toList
+                Err _   -> "err"
+                Ok rows -> idList rows
+
+-- nested unions: (eng ∪ sales) ∪ ops, ordered -> "1,2,3,4,5,6". Proves a combined
+-- query is itself composable — unioning it again nests the plans.
+pub fn db nestedUnionIds () -> Text =
+    match setupEmps ()
+        Err _ -> "setup-err"
+        Ok r  ->
+            let eng = r |> Repo.query |> Repo.filter (fn (e: Emp) -> e.dept == "eng")
+            let sales = r |> Repo.query |> Repo.filter (fn (e: Emp) -> e.dept == "sales")
+            let ops = r |> Repo.query |> Repo.filter (fn (e: Emp) -> e.dept == "ops")
+            match eng |> Repo.union sales |> Repo.union ops |> Repo.orderBy Asc (fn (e: Emp) -> e.id) |> Repo.toList
+                Err _   -> "err"
+                Ok rows -> idList rows
 "#;
 
 fn write_workspace(root: &std::path::Path) {
@@ -840,6 +927,12 @@ fn repo_surface_runs_on_beam() {
          io:format(\"deptsDistinct=~s~n\",[{module}:deptsDistinct()]), \
          io:format(\"salariesDistinct=~s~n\",[{module}:salariesDistinct()]), \
          io:format(\"distinctRows=~w~n\",[{module}:distinctRows()]), \
+         io:format(\"unionIds=~s~n\",[{module}:unionIds()]), \
+         io:format(\"intersectIds=~s~n\",[{module}:intersectIds()]), \
+         io:format(\"exceptIds=~s~n\",[{module}:exceptIds()]), \
+         io:format(\"unionAllCount=~w~n\",[{module}:unionAllCount()]), \
+         io:format(\"unionFiltered=~s~n\",[{module}:unionFiltered()]), \
+         io:format(\"nestedUnionIds=~s~n\",[{module}:nestedUnionIds()]), \
          halt()."
     );
     let output = Command::new("erl")
@@ -988,6 +1081,30 @@ fn repo_surface_runs_on_beam() {
         (
             "distinctRows=2",
             "distinct over whole rows collapses three identical rows, leaving two",
+        ),
+        (
+            "unionIds=1,2,3,4,5,6",
+            "union dedups the rows the two filters share and orderBy composes on the result",
+        ),
+        (
+            "intersectIds=3,4",
+            "intersect keeps the rows present in both filters (the salary-150 rows)",
+        ),
+        (
+            "exceptIds=2,5",
+            "except keeps the left rows not in the right (salary 200 and 300)",
+        ),
+        (
+            "unionAllCount=8",
+            "unionAll keeps the duplicate rows the two branches share (4 + 4)",
+        ),
+        (
+            "unionFiltered=2,5",
+            "an outer filter applies on top of the union result",
+        ),
+        (
+            "nestedUnionIds=1,2,3,4,5,6",
+            "a combined query unions again, nesting the plans",
         ),
     ] {
         assert!(

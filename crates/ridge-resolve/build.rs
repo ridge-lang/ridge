@@ -410,6 +410,7 @@ const BASELINE_EXPORTS: &[(&str, &[&str])] = &[
             "leftJoin",
             "leftJoinSelect",
             "groupSummarize",
+            "runPlan",
             "MemAdapter",
             "memAdapter",
             // The Postgres adapter: the opaque connection handle, its config
@@ -495,6 +496,13 @@ const BASELINE_EXPORTS: &[(&str, &[&str])] = &[
             "groupBy",
             "having",
             "summarize",
+            // Set operations: combine two queries into one that runs the combined
+            // result, each returning a composable `Query` (a SQL `UNION`/`UNION
+            // ALL`/`INTERSECT`/`EXCEPT`).
+            "union",
+            "unionAll",
+            "intersect",
+            "except",
         ],
     ),
 ];

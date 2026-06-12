@@ -727,6 +727,40 @@ pub fn db distinctNames () -> Result (List Name) Error =
 }
 
 #[test]
+fn query_builder_set_operations_typecheck() {
+    // `union`/`unionAll`/`intersect`/`except` combine two queries over the same
+    // entity and adapter into a `Query e a`, so the result keeps composing through
+    // `filter`/`orderBy`/`limit` and a terminal. A combined query also combines
+    // again — `intersect` then `except` nests the plans.
+    let main = r#"
+import std.data (memAdapter, MemAdapter)
+import std.repo as Repo
+import std.query (SortOrder, Asc)
+import std.sql (SqlValue)
+
+pub type User = { id: Int, age: Int, name: Text } deriving (Row)
+
+pub fn db combined () -> Result (List User) Error =
+    let users: Repo User MemAdapter = Repo.repo (memAdapter ()) "users"
+    let adults = users |> Repo.query |> Repo.filter (fn (u: User) -> u.age >= 18)
+    let admins = users |> Repo.query |> Repo.filter (fn (u: User) -> u.name == "admin")
+    adults |> Repo.union admins |> Repo.orderBy Asc (fn (u: User) -> u.name) |> Repo.limit 10 |> Repo.toList
+
+pub fn db nested () -> Result (Option User) Error =
+    let users: Repo User MemAdapter = Repo.repo (memAdapter ()) "users"
+    let a = users |> Repo.query |> Repo.filter (fn (u: User) -> u.age >= 18)
+    let b = users |> Repo.query |> Repo.filter (fn (u: User) -> u.age < 18)
+    let c = users |> Repo.query |> Repo.filter (fn (u: User) -> u.name == "x")
+    a |> Repo.intersect b |> Repo.except c |> Repo.first
+"#;
+    let errors = typecheck_one(main);
+    assert!(
+        errors.is_empty(),
+        "set operations must compose and type-check clean; got {errors:?}"
+    );
+}
+
+#[test]
 fn query_builder_scalar_aggregates_typecheck() {
     // The scalar aggregates are query-builder terminals over a quoted column.
     // `sumOf`/`minOf`/`maxOf` answer `Option` of the column's own type (summing an

@@ -697,6 +697,36 @@ pub fn db oldest () -> Result (Option User) Error =
 }
 
 #[test]
+fn query_builder_distinct_typechecks() {
+    // `distinct` is a query-builder modifier (a `SELECT DISTINCT`) that composes
+    // between `filter`/`orderBy` and a terminal. It drops the result's duplicate
+    // rows over a whole-row `toList` and over the projected columns of a
+    // `selectList`, and resolves through the `Adapter` seam like the other verbs.
+    let main = r#"
+import std.data (memAdapter, MemAdapter)
+import std.repo as Repo
+import std.query (SortOrder, Asc)
+import std.sql (SqlValue)
+
+pub type User = { id: Int, age: Int, name: Text } deriving (Row)
+pub type Name = { name: Text } deriving (Row)
+
+pub fn db distinctUsers () -> Result (List User) Error =
+    let users: Repo User MemAdapter = Repo.repo (memAdapter ()) "users"
+    users |> Repo.query |> Repo.filter (fn (u: User) -> u.age >= 18) |> Repo.distinct |> Repo.toList
+
+pub fn db distinctNames () -> Result (List Name) Error =
+    let users: Repo User MemAdapter = Repo.repo (memAdapter ()) "users"
+    users |> Repo.query |> Repo.distinct |> Repo.orderBy Asc (fn (u: User) -> u.name) |> Repo.selectList (fn (u: User) -> Name { name = u.name })
+"#;
+    let errors = typecheck_one(main);
+    assert!(
+        errors.is_empty(),
+        "distinct must compose in the query pipeline over both terminals; got {errors:?}"
+    );
+}
+
+#[test]
 fn query_builder_scalar_aggregates_typecheck() {
     // The scalar aggregates are query-builder terminals over a quoted column.
     // `sumOf`/`minOf`/`maxOf` answer `Option` of the column's own type (summing an

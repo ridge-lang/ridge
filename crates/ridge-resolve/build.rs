@@ -455,6 +455,7 @@ const BASELINE_EXPORTS: &[(&str, &[&str])] = &[
             "orderBy",
             "limit",
             "offset",
+            "distinct",
             "toList",
             "first",
             // Unique-row terminals: `single` answers the lone matching row or

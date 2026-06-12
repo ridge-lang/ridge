@@ -889,7 +889,7 @@ pub fn register_stdlib_classes(ct: &mut ClassTable) {
                 },
                 MethodSig {
                     name: "fetch".to_string(),
-                    arity: 6,
+                    arity: 7,
                     ast_param_types: vec![],
                     ast_ret_type: None,
                     class_ty_vars: Vec::new(),
@@ -910,7 +910,7 @@ pub fn register_stdlib_classes(ct: &mut ClassTable) {
                 },
                 MethodSig {
                     name: "project".to_string(),
-                    arity: 7,
+                    arity: 8,
                     ast_param_types: vec![],
                     ast_ret_type: None,
                     class_ty_vars: Vec::new(),

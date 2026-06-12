@@ -1403,10 +1403,11 @@ fn seed_sql_codec_schemes(
             );
         }
         // fetch :: ∀a e. a -> Text -> Quote (e -> Bool) -> List (Bool, Text)
-        //                  -> Int -> Int
+        //                  -> Int -> Int -> Bool
         //                  -> Result (List (Map Text SqlValue)) Error where Adapter a.
         // The order keys are `(ascending?, column)` pairs; the two Ints are the
-        // limit (negative for none) and offset (non-positive for none).
+        // limit (negative for none) and offset (non-positive for none); the Bool is
+        // the `distinct` flag (a `SELECT DISTINCT`).
         {
             let a = ctx.fresh_tyvid();
             let e = ctx.fresh_tyvid();
@@ -1425,6 +1426,7 @@ fn seed_sql_codec_schemes(
                     orders,
                     Type::Con(b.int, vec![]),
                     Type::Con(b.int, vec![]),
+                    Type::Con(b.bool, vec![]),
                 ],
                 ret: Box::new(Type::Con(
                     b.result,
@@ -1508,10 +1510,10 @@ fn seed_sql_codec_schemes(
             );
         }
         // project :: ∀a e. a -> Text -> Quote (e -> Bool) -> List (Bool, Text)
-        //                  -> Int -> Int -> List (Text, Text)
+        //                  -> Int -> Int -> List (Text, Text) -> Bool
         //                  -> Result (List (Map Text SqlValue)) Error where Adapter a.
         // Like `fetch`, plus a `(alias, column)` select-list: each returned row
-        // holds only those columns, keyed by alias.
+        // holds only those columns, keyed by alias; the trailing Bool is `distinct`.
         {
             let a = ctx.fresh_tyvid();
             let e = ctx.fresh_tyvid();
@@ -1538,6 +1540,7 @@ fn seed_sql_codec_schemes(
                     Type::Con(b.int, vec![]),
                     Type::Con(b.int, vec![]),
                     cols,
+                    Type::Con(b.bool, vec![]),
                 ],
                 ret: Box::new(Type::Con(
                     b.result,

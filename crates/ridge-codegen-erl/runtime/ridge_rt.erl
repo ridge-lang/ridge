@@ -29,7 +29,7 @@
     ask/3, send/2, send_op/2, send_fn/2, mailbox_size/1, spawn_actor/3,
     mem_new/1, mem_insert/3, mem_all/2,
     mem_select/3, mem_delete/3, mem_update/4, mem_get_rows/4,
-    mem_fetch/6, mem_count_where/3, mem_aggregate/5, mem_project/7,
+    mem_fetch/7, mem_count_where/3, mem_aggregate/5, mem_project/8,
     mem_join/8, mem_join_select/9, mem_left_join/8, mem_left_join_select/9,
     mem_group_summarize/6,
     quote_keep_all/1, quote_and/2,
@@ -944,8 +944,8 @@ mem_update(Id, Table, Changes, Tree) -> mem_call({update, Id, Table, Changes, Tr
 %% (the first key is the primary sort). Lim < 0 means no limit and Off =< 0 means
 %% no offset. This is the in-memory dual of a backend pushing ORDER BY / LIMIT /
 %% OFFSET into the query. Result (List Row) Error.
-mem_fetch(Id, Table, Tree, Orders, Lim, Off) ->
-    mem_call({fetch, Id, Table, Tree, Orders, Lim, Off}).
+mem_fetch(Id, Table, Tree, Orders, Lim, Off, Dist) ->
+    mem_call({fetch, Id, Table, Tree, Orders, Lim, Off, Dist}).
 
 %% mem_count_where/3 — how many rows of Table satisfy Tree, counted without
 %% returning them (the in-memory dual of SELECT COUNT(*)). Result Int Error.
@@ -962,8 +962,8 @@ mem_aggregate(Id, Table, Tree, Func, Column) ->
 %% mem_project/7 — the rows of Table that satisfy Tree, ordered and paged as
 %% mem_fetch, then projected to the `{Alias, Column}` columns: each row keeps
 %% only those columns, re-keyed by alias. Result (List Row) Error.
-mem_project(Id, Table, Tree, Orders, Lim, Off, Cols) ->
-    mem_call({project, Id, Table, Tree, Orders, Lim, Off, Cols}).
+mem_project(Id, Table, Tree, Orders, Lim, Off, Cols, Dist) ->
+    mem_call({project, Id, Table, Tree, Orders, Lim, Off, Cols, Dist}).
 
 %% mem_group_summarize/6 — group the rows of Table that satisfy Tree by KeyCol,
 %% summarize each group into the `{Alias, Func, Column}` aggregates (Func is
@@ -1073,10 +1073,10 @@ mem_keeper_loop(State) ->
             {Updated, Changed} = mem_update_rows(Changes, Tree, Rows),
             From ! {Ref, {ok, Changed}},
             mem_keeper_loop(State#{Key => Updated});
-        {{fetch, Id, Table, Tree, Orders, Lim, Off}, From, Ref} ->
+        {{fetch, Id, Table, Tree, Orders, Lim, Off, Dist}, From, Ref} ->
             Rows = maps:get({Id, Table}, State, []),
             Matches = [R || R <- Rows, mem_pred(Tree, R)],
-            Page = mem_paginate(mem_order(Orders, Matches), Lim, Off),
+            Page = mem_paginate(mem_distinct(Dist, mem_order(Orders, Matches)), Lim, Off),
             From ! {Ref, {ok, Page}},
             mem_keeper_loop(State);
         {{count_where, Id, Table, Tree}, From, Ref} ->
@@ -1100,12 +1100,13 @@ mem_keeper_loop(State) ->
             Result = [mem_group_row(Cols, K, GR) || {K, GR} <- Sorted],
             From ! {Ref, {ok, Result}},
             mem_keeper_loop(State);
-        {{project, Id, Table, Tree, Orders, Lim, Off, Cols}, From, Ref} ->
+        {{project, Id, Table, Tree, Orders, Lim, Off, Cols, Dist}, From, Ref} ->
             Rows = maps:get({Id, Table}, State, []),
             Matches = [R || R <- Rows, mem_pred(Tree, R)],
-            Page = mem_paginate(mem_order(Orders, Matches), Lim, Off),
-            Projected = [mem_project_row(Cols, R) || R <- Page],
-            From ! {Ref, {ok, Projected}},
+            Ordered = mem_order(Orders, Matches),
+            Projected = [mem_project_row(Cols, R) || R <- Ordered],
+            Page = mem_paginate(mem_distinct(Dist, Projected), Lim, Off),
+            From ! {Ref, {ok, Page}},
             mem_keeper_loop(State);
         {{join, Id, LeftTable, RightTable, Cond, Pred, Orders, Lim, Off}, From, Ref} ->
             Pairs = mem_join_pairs(State, Id, LeftTable, RightTable, Cond, Pred, Orders, Lim, Off),
@@ -1131,6 +1132,20 @@ mem_keeper_loop(State) ->
 %% column reads as SQL NULL.
 mem_project_row(Cols, Row) ->
     maps:from_list([{Alias, maps:get(Col, Row, 'SqlNull')} || {Alias, Col} <- Cols]).
+
+%% Drop duplicate rows, keeping the first occurrence of each so the result stays
+%% deterministic. Rows compare by full term equality, the same notion of equality
+%% a `SELECT DISTINCT` applies over the selected columns.
+mem_distinct(false, Rows) -> Rows;
+mem_distinct(true, Rows) ->
+    {Out, _} = lists:foldl(
+        fun(R, {Acc, Seen}) ->
+            case lists:member(R, Seen) of
+                true  -> {Acc, Seen};
+                false -> {[R | Acc], [R | Seen]}
+            end
+        end, {[], []}, Rows),
+    lists:reverse(Out).
 
 %% Fold a scalar aggregate over Column across Rows, returning a SqlValue. NULLs (a
 %% missing column or an explicit SqlNull) are skipped, as in SQL; an empty set —

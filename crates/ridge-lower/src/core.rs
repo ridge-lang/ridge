@@ -275,8 +275,13 @@ pub fn lower_expr(ctx: &mut LowerCtx<'_>, expr: &Expr) -> IrExpr {
         // `IrPat::Tuple`/`IrPat::Bind`, which Phase 6 already handles.
         Expr::Lambda { params, body, span } => {
             // Quotation: a lambda captured as a quote during type-checking is
-            // reified into a `QExpr` tree rather than lowered to a closure.
-            if ctx.lookup_quoted(*span).is_some() {
+            // reified into a `QExpr` tree rather than lowered to a closure. A
+            // grouped-aggregate quote (`having`/`summarize`) reifies over the
+            // group vocabulary (`g.key`, `g.count`, `g.sum(col)`, …) instead.
+            if let Some(qi) = ctx.lookup_quoted(*span) {
+                if qi.group {
+                    return reify_group_quote(ctx, body, *span, &qi.param_name);
+                }
                 return reify_quote(ctx, body, *span, params);
             }
             let id = ctx.fresh_id(None);
@@ -1072,6 +1077,199 @@ fn reify_node(ctx: &mut LowerCtx<'_>, e: &Expr, right: Option<&str>) -> IrExpr {
             unit_lit(ctx, other.span())
         }
     }
+}
+
+// ── Grouped-aggregate quote reification ───────────────────────────────────────
+//
+// A `having`/`summarize` body reifies over the group vocabulary rather than the
+// row columns: `g.key` → `QGroupKey`, `g.count` → `QAggCount`, and
+// `g.sum`/`avg`/`min`/`max (fn u -> u.col)` → `QAgg{Sum,Avg,Min,Max} (QCol col)`.
+// A `summarize` projection record reifies to a `QProj` of these; a `having`
+// predicate reifies its comparisons and connectives the same way a row predicate
+// does, with the aggregate nodes as operands.
+
+/// Reify a grouped-aggregate lambda body into a `Quote { tree }` value. `g_name`
+/// is the group parameter's name (the base of `g.key`/`g.count`/`g.sum(…)`).
+fn reify_group_quote(ctx: &mut LowerCtx<'_>, body: &Expr, span: Span, g_name: &str) -> IrExpr {
+    let tree = reify_group_node(ctx, body, g_name);
+    IrExpr::Construct {
+        id: ctx.fresh_id(None),
+        ctor: SymbolRef::Constructor {
+            ctor_kind: ridge_ir::CtorKind::Record,
+            owner_type: TyConId(0),
+            name: "Quote".to_string(),
+            variant: 0,
+        },
+        fields: vec![("tree".to_string(), tree)],
+        span,
+    }
+}
+
+/// Whether `base` is the group parameter `g_name`.
+fn is_group_base(base: &Expr, g_name: &str) -> bool {
+    matches!(base, Expr::Ident(id) if id.text == g_name)
+}
+
+/// Reify one node of a grouped-aggregate body into a `QExpr` value. The shape was
+/// validated by the quotation checker, so anything unexpected is an internal
+/// invariant violation, not a user error.
+#[expect(
+    clippy::too_many_lines,
+    reason = "one linear walk over the grouped-quote node shapes (g.key/g.count, the scalar aggregates, having comparisons, the projection record); splitting it would scatter the QExpr variant mapping"
+)]
+fn reify_group_node(ctx: &mut LowerCtx<'_>, e: &Expr, g_name: &str) -> IrExpr {
+    use ridge_ast::BinOp;
+    match e {
+        Expr::Paren { inner, .. } => reify_group_node(ctx, inner, g_name),
+
+        // `g.key` → `QGroupKey`; `g.count` → `QAggCount`.
+        Expr::FieldAccess { base, field, span } if is_group_base(base, g_name) => {
+            match field.text.as_str() {
+                "key" => qexpr_node(ctx, "QGroupKey", 16, vec![], *span),
+                "count" => qexpr_node(ctx, "QAggCount", 17, vec![], *span),
+                _ => {
+                    ctx.errors.push(LowerError::InternalLoweringError {
+                        span: *span,
+                        message: "unsupported group field survived quote checking".into(),
+                    });
+                    unit_lit(ctx, *span)
+                }
+            }
+        }
+
+        // `g.sum`/`avg`/`min`/`max (fn u -> u.col)` → `QAgg* (QCol col)`.
+        Expr::Call { callee, args, span } => {
+            if let Expr::FieldAccess { base, field, .. } = callee.as_ref() {
+                if is_group_base(base, g_name) {
+                    let agg = match field.text.as_str() {
+                        "sum" => Some(("QAggSum", 18)),
+                        "avg" => Some(("QAggAvg", 19)),
+                        "min" => Some(("QAggMin", 20)),
+                        "max" => Some(("QAggMax", 21)),
+                        _ => None,
+                    };
+                    if let (Some((name, variant)), Some(arg)) = (agg, args.first()) {
+                        let col = reify_group_agg_col(ctx, arg);
+                        return qexpr_node(ctx, name, variant, vec![col], *span);
+                    }
+                }
+            }
+            ctx.errors.push(LowerError::InternalLoweringError {
+                span: *span,
+                message: "unsupported group call survived quote checking".into(),
+            });
+            unit_lit(ctx, *span)
+        }
+
+        // A literal operand of a `having` comparison.
+        Expr::Literal(lit) => {
+            let span = lit.span();
+            let value = lower_expr(ctx, e);
+            let (name, variant) = match lit {
+                Literal::IntDec { .. }
+                | Literal::IntBin { .. }
+                | Literal::IntOct { .. }
+                | Literal::IntHex { .. } => ("QLitInt", 1),
+                Literal::Float { .. } => ("QLitFloat", 4),
+                Literal::Bool { .. } => ("QLitBool", 3),
+                Literal::Text { .. } | Literal::RawText { .. } => ("QLitText", 2),
+            };
+            qexpr_node(ctx, name, variant, vec![value], span)
+        }
+
+        // A `having` comparison or connective → the matching `QExpr` node, its
+        // operands reified over the group vocabulary.
+        Expr::Binary { op, lhs, rhs, span } => {
+            let (name, variant) = match op {
+                BinOp::And => ("QAnd", 5),
+                BinOp::Or => ("QOr", 6),
+                BinOp::Eq => ("QEq", 8),
+                BinOp::Ne => ("QNe", 9),
+                BinOp::Lt => ("QLt", 10),
+                BinOp::Gt => ("QGt", 11),
+                BinOp::Le => ("QLe", 12),
+                BinOp::Ge => ("QGe", 13),
+                _ => {
+                    ctx.errors.push(LowerError::InternalLoweringError {
+                        span: *span,
+                        message: "unsupported operator survived group quote checking".into(),
+                    });
+                    return unit_lit(ctx, *span);
+                }
+            };
+            let l = reify_group_node(ctx, lhs, g_name);
+            let r = reify_group_node(ctx, rhs, g_name);
+            qexpr_node(ctx, name, variant, vec![l, r], *span)
+        }
+
+        // A `summarize` projection: `Stats { dept = g.key, … }` → `QProj
+        // [(alias, <agg node>), …]`. Each field name is the output alias; the
+        // value reifies to its group aggregate.
+        Expr::RecordLit { fields, span } | Expr::Record { fields, span, .. } => {
+            let items: Vec<IrExpr> = fields
+                .iter()
+                .map(|fi| {
+                    let alias = ridge_ast::column_mirror::column_sql_name(&fi.name.text);
+                    let alias_lit = IrExpr::Lit {
+                        id: ctx.fresh_id(None),
+                        value: IrLit::Text(alias),
+                        span: fi.span,
+                    };
+                    let agg = if let Some(v) = &fi.value {
+                        reify_group_node(ctx, v, g_name)
+                    } else {
+                        ctx.errors.push(LowerError::InternalLoweringError {
+                            span: fi.span,
+                            message: "shorthand group projection field survived quote checking"
+                                .into(),
+                        });
+                        unit_lit(ctx, fi.span)
+                    };
+                    IrExpr::Tuple {
+                        id: ctx.fresh_id(None),
+                        elems: vec![alias_lit, agg],
+                        span: fi.span,
+                    }
+                })
+                .collect();
+            let list = IrExpr::ListLit {
+                id: ctx.fresh_id(None),
+                elems: items,
+                span: *span,
+            };
+            qexpr_node(ctx, "QProj", 14, vec![list], *span)
+        }
+
+        other => {
+            ctx.errors.push(LowerError::InternalLoweringError {
+                span: other.span(),
+                message: "unsupported expression survived group quote checking".into(),
+            });
+            unit_lit(ctx, other.span())
+        }
+    }
+}
+
+/// Reify a group aggregate's inner column accessor `fn u -> u.col` into the
+/// `QCol "col"` it names. The accessor's body is a single column access on its
+/// parameter, so it reifies exactly as a single-parameter row column.
+fn reify_group_agg_col(ctx: &mut LowerCtx<'_>, arg: &Expr) -> IrExpr {
+    let mut inner = arg;
+    while let Expr::Paren { inner: i, .. } = inner {
+        inner = i;
+    }
+    if let Expr::Lambda { body, .. } = inner {
+        let mut bd: &Expr = body;
+        while let Expr::Paren { inner: i, .. } = bd {
+            bd = i;
+        }
+        return reify_node(ctx, bd, None);
+    }
+    ctx.errors.push(LowerError::InternalLoweringError {
+        span: arg.span(),
+        message: "group aggregate column accessor survived quote checking".into(),
+    });
+    unit_lit(ctx, arg.span())
 }
 
 fn unit_lit(ctx: &mut LowerCtx<'_>, span: Span) -> IrExpr {

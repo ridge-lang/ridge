@@ -773,6 +773,74 @@ pub fn db allAdult () -> Result Bool Error =
 }
 
 #[test]
+fn query_builder_group_by_and_summarize_typecheck() {
+    // `groupBy` partitions a query by a key column; `summarize` projects each group
+    // into a named record built from the group vocabulary — `g.key`, `g.count`, and
+    // `g.sum`/`avg`/`min`/`max` over a column accessor. The aggregate types flow
+    // from the columns (`g.sum salary : Int`, `g.avg age : Float`, `g.min age :
+    // Int`), and `having` narrows the groups with a predicate over the same
+    // vocabulary — including a cross-aggregate threshold (`g.sum … >= 100000`). The
+    // pinned `List DeptStats` proves the named shape fixes the result.
+    let main = r#"
+import std.data (memAdapter, MemAdapter)
+import std.repo as Repo
+import std.sql (SqlValue)
+
+pub type User = { id: Int, dept: Text, age: Int, salary: Int } deriving (Row)
+pub type DeptStats = { dept: Text, members: Int, payroll: Int, avgAge: Float, youngest: Int, eldest: Int } deriving (Row)
+
+pub fn db deptStats () -> Result (List DeptStats) Error =
+    let users: Repo User MemAdapter = Repo.repo (memAdapter ()) "users"
+    users
+      |> Repo.query
+      |> Repo.filter (fn (u: User) -> u.age >= 18)
+      |> Repo.groupBy (fn (u: User) -> u.dept)
+      |> Repo.having (fn g -> g.count > 3)
+      |> Repo.summarize (fn g -> DeptStats { dept = g.key, members = g.count, payroll = g.sum (fn (u: User) -> u.salary), avgAge = g.avg (fn (u: User) -> u.age), youngest = g.min (fn (u: User) -> u.age), eldest = g.max (fn (u: User) -> u.age) })
+
+pub fn db wealthyDepts () -> Result (List DeptStats) Error =
+    let users: Repo User MemAdapter = Repo.repo (memAdapter ()) "users"
+    users
+      |> Repo.query
+      |> Repo.groupBy (fn (u: User) -> u.dept)
+      |> Repo.having (fn g -> g.sum (fn (u: User) -> u.salary) >= 100000)
+      |> Repo.summarize (fn g -> DeptStats { dept = g.key, members = g.count, payroll = g.sum (fn (u: User) -> u.salary), avgAge = g.avg (fn (u: User) -> u.age), youngest = g.min (fn (u: User) -> u.age), eldest = g.max (fn (u: User) -> u.age) })
+"#;
+    let errors = typecheck_one(main);
+    assert!(
+        errors.is_empty(),
+        "groupBy/having/summarize must type-check clean; got {errors:?}"
+    );
+}
+
+#[test]
+fn query_builder_group_aggregate_unknown_column_is_rejected() {
+    // A group aggregate's column accessor is checked against the entity, exactly
+    // like a filter or an `orderBy` key: summing a field the record does not
+    // declare is an error, proving the entity threads through the group vocabulary.
+    let main = r#"
+import std.data (memAdapter, MemAdapter)
+import std.repo as Repo
+import std.sql (SqlValue)
+
+pub type User = { id: Int, dept: Text, age: Int } deriving (Row)
+pub type Stats = { dept: Text, total: Int } deriving (Row)
+
+pub fn db bad () -> Result (List Stats) Error =
+    let users: Repo User MemAdapter = Repo.repo (memAdapter ()) "users"
+    users
+      |> Repo.query
+      |> Repo.groupBy (fn (u: User) -> u.dept)
+      |> Repo.summarize (fn g -> Stats { dept = g.key, total = g.sum (fn (u: User) -> u.nope) })
+"#;
+    let errors = typecheck_one(main);
+    assert!(
+        !errors.is_empty(),
+        "an unknown column in a group aggregate must be rejected; got no errors"
+    );
+}
+
+#[test]
 fn query_builder_over_postgres_typechecks() {
     // The builder resolves the same `Adapter` constraint on the Postgres backend:
     // `fetch` is a class method both adapters implement, so a `Query User Postgres`

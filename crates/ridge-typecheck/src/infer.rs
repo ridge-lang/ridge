@@ -232,6 +232,25 @@ fn infer_expr_inner(ctx: &mut InferCtx, b: &BuiltinTyCons, expr: &Expr) -> Type 
                             let pty = ctx.deep_resolve(pty);
                             if crate::quote::is_quote_param(ctx, &pty) {
                                 let expected_ret = crate::quote::quote_result(ctx, &pty);
+                                // A grouped-aggregate quote (`having`/`summarize`)
+                                // ranges over a `Group e k` handle, not a row, with
+                                // its own vocabulary (`g.key`, `g.count`,
+                                // `g.sum(col)`, …). Route it to the group checker.
+                                if let Some((g_e, g_k)) = crate::quote::quote_group_slot(ctx, &pty)
+                                {
+                                    return if crate::quote::check_group_quote(
+                                        ctx,
+                                        b,
+                                        inner,
+                                        &g_e,
+                                        &g_k,
+                                        expected_ret.as_ref(),
+                                    ) {
+                                        pty
+                                    } else {
+                                        Type::Error
+                                    };
+                                }
                                 // One entity per quote parameter. Each slot may
                                 // already be concrete (a wrapper `fn p (q: Quote
                                 // (User -> Bool))`), or still an inference variable
@@ -1188,7 +1207,11 @@ pub const fn type_of_literal(b: &BuiltinTyCons, lit: &Literal) -> Type {
 /// primitive types, named types, type applications (`App`), tuples, list
 /// sugar, and function types.  Unknown named types are resolved to a fresh
 /// unification variable (T7/T8 handle user-defined type resolution).
-fn ast_type_to_type(ctx: &mut InferCtx, b: &BuiltinTyCons, ast_ty: &ridge_ast::Type) -> Type {
+pub(crate) fn ast_type_to_type(
+    ctx: &mut InferCtx,
+    b: &BuiltinTyCons,
+    ast_ty: &ridge_ast::Type,
+) -> Type {
     use ridge_ast::PrimitiveType;
 
     match ast_ty {

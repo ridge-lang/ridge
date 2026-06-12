@@ -23,9 +23,17 @@
 //!   <postgres://user:password@host:5432/dbname?sslmode=require>
 //!
 //! `sslmode` is optional and defaults to `disable`. The target database must hold
-//! a table `ridge_pg_users (id integer, name text, age integer)` and, for the
-//! join probes, `ridge_pg_posts (id integer, author integer, title text)`; CI
-//! provisions both on the Postgres service, and a local run expects them to exist.
+//! a table `ridge_pg_users (id integer, name text, age integer)`, for the join
+//! probes `ridge_pg_posts (id integer, author integer, title text)`, and for the
+//! grouped-aggregate probes `ridge_pg_emps (id integer, dept text, salary
+//! integer)`; CI provisions all three on the Postgres service, and a local run
+//! expects them to exist.
+//!
+//! The grouped aggregates run against the live database too: `groupBy` +
+//! `summarize` compile to `SELECT <aggregates> … GROUP BY <key> ORDER BY <key>`
+//! (count, sum, average, and a min/max range per group), and `having` re-renders
+//! the aggregate into a real `HAVING` clause, including a filter-then-group case
+//! where the `WHERE` binds precede the `HAVING` bind.
 
 #![cfg(feature = "beam-runtime")]
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
@@ -600,6 +608,147 @@ pub fn db everyEmpty () -> Text =
             match r |> Repo.query |> Repo.filter (fn (u: User) -> u.id == 99) |> Repo.every (fn (u: User) -> u.age >= 18)
                 Err _ -> "every-err"
                 Ok b  -> boolText b
+
+-- A grouping dataset in the `ridge_pg_emps` table: employees with a repeated
+-- `dept` key and a salary, so a real GROUP BY partitions several rows per group.
+pub type Emp = { id: Int, dept: Text, salary: Int } deriving (Row)
+
+-- The summarised shapes a `groupBy` projects into, decoded back from the
+-- aggregate columns the backend pushes down.
+pub type DeptCount = { dept: Text, n: Int } deriving (Row)
+pub type DeptSum   = { dept: Text, total: Int } deriving (Row)
+pub type DeptAvg   = { dept: Text, mean: Float } deriving (Row)
+pub type DeptRange = { dept: Text, lo: Int, hi: Int } deriving (Row)
+
+pub fn empRow (eid: Int) (edept: Text) (esalary: Int) -> Map Text SqlValue =
+    Map.fromList [("id", toSql eid), ("dept", toSql edept), ("salary", toSql esalary)]
+
+-- Connect, clear the emps table, and seed six employees across three departments:
+-- eng {100, 200}, sales {150, 150, 300}, ops {50}.
+pub fn db setupEmps () -> Result (Repo Emp Postgres) Error =
+    match connect (pgConfig ())
+        Err e   -> Err e
+        Ok conn ->
+            let r = Repo.repo conn "ridge_pg_emps"
+            match Repo.deleteWhere (fn (em: Emp) -> em.id >= 0) r
+                Err e -> Err e
+                Ok _  ->
+                    match Repo.insertRow (empRow 1 "eng" 100) r
+                        Err e -> Err e
+                        Ok _  ->
+                            match Repo.insertRow (empRow 2 "eng" 200) r
+                                Err e -> Err e
+                                Ok _  ->
+                                    match Repo.insertRow (empRow 3 "sales" 150) r
+                                        Err e -> Err e
+                                        Ok _  ->
+                                            match Repo.insertRow (empRow 4 "sales" 150) r
+                                                Err e -> Err e
+                                                Ok _  ->
+                                                    match Repo.insertRow (empRow 5 "sales" 300) r
+                                                        Err e -> Err e
+                                                        Ok _  ->
+                                                            match Repo.insertRow (empRow 6 "ops" 50) r
+                                                                Err e -> Err e
+                                                                Ok _  -> Ok r
+
+-- Render the grouped result rows as `key:value` cells. Postgres orders the groups
+-- by the key (the backend appends ORDER BY <key>), so the string is deterministic.
+fn countCells (rows: List DeptCount) -> Text =
+    match rows
+        []        -> ""
+        r :: []   -> Text.concat r.dept (Text.concat ":" (Int.toText r.n))
+        r :: rest -> Text.concat r.dept (Text.concat ":" (Text.concat (Int.toText r.n) (Text.concat "," (countCells rest))))
+
+fn sumCells (rows: List DeptSum) -> Text =
+    match rows
+        []        -> ""
+        r :: []   -> Text.concat r.dept (Text.concat ":" (Int.toText r.total))
+        r :: rest -> Text.concat r.dept (Text.concat ":" (Text.concat (Int.toText r.total) (Text.concat "," (sumCells rest))))
+
+fn avgCells (rows: List DeptAvg) -> Text =
+    match rows
+        []        -> ""
+        r :: []   -> Text.concat r.dept (Text.concat ":" (Float.toText r.mean))
+        r :: rest -> Text.concat r.dept (Text.concat ":" (Text.concat (Float.toText r.mean) (Text.concat "," (avgCells rest))))
+
+fn rangeCell (r: DeptRange) -> Text =
+    Text.concat r.dept (Text.concat ":" (Text.concat (Int.toText r.lo) (Text.concat "-" (Int.toText r.hi))))
+
+fn rangeCells (rows: List DeptRange) -> Text =
+    match rows
+        []        -> ""
+        r :: []   -> rangeCell r
+        r :: rest -> Text.concat (rangeCell r) (Text.concat "," (rangeCells rest))
+
+-- group + summarize against Postgres: COUNT(*) per dept -> "eng:2,ops:1,sales:3".
+pub fn db groupCounts () -> Text =
+    match setupEmps ()
+        Err _ -> "setup-err"
+        Ok r  ->
+            match r |> Repo.query |> Repo.groupBy (fn (e: Emp) -> e.dept) |> Repo.summarize (fn g -> DeptCount { dept = g.key, n = g.count })
+                Err _   -> "group-err"
+                Ok rows -> countCells rows
+
+-- group + summarize against Postgres: SUM(salary) per dept -> "eng:300,ops:50,sales:600".
+pub fn db groupSums () -> Text =
+    match setupEmps ()
+        Err _ -> "setup-err"
+        Ok r  ->
+            match r |> Repo.query |> Repo.groupBy (fn (e: Emp) -> e.dept) |> Repo.summarize (fn g -> DeptSum { dept = g.key, total = g.sum (fn (e: Emp) -> e.salary) })
+                Err _   -> "group-err"
+                Ok rows -> sumCells rows
+
+-- group + summarize against Postgres: AVG(salary)::float8 per dept ->
+-- "eng:150.0,ops:50.0,sales:200.0".
+pub fn db groupAvgs () -> Text =
+    match setupEmps ()
+        Err _ -> "setup-err"
+        Ok r  ->
+            match r |> Repo.query |> Repo.groupBy (fn (e: Emp) -> e.dept) |> Repo.summarize (fn g -> DeptAvg { dept = g.key, mean = g.avg (fn (e: Emp) -> e.salary) })
+                Err _   -> "group-err"
+                Ok rows -> avgCells rows
+
+-- group + summarize against Postgres: MIN/MAX(salary) per dept ->
+-- "eng:100-200,ops:50-50,sales:150-300".
+pub fn db groupRanges () -> Text =
+    match setupEmps ()
+        Err _ -> "setup-err"
+        Ok r  ->
+            match r |> Repo.query |> Repo.groupBy (fn (e: Emp) -> e.dept) |> Repo.summarize (fn g -> DeptRange { dept = g.key, lo = g.min (fn (e: Emp) -> e.salary), hi = g.max (fn (e: Emp) -> e.salary) })
+                Err _   -> "group-err"
+                Ok rows -> rangeCells rows
+
+-- group + having (COUNT) against Postgres: depts with more than one member ->
+-- "eng:2,sales:3". The HAVING re-renders COUNT(*) rather than an output alias.
+pub fn db groupHavingCount () -> Text =
+    match setupEmps ()
+        Err _ -> "setup-err"
+        Ok r  ->
+            match r |> Repo.query |> Repo.groupBy (fn (e: Emp) -> e.dept) |> Repo.having (fn g -> g.count > 1) |> Repo.summarize (fn g -> DeptCount { dept = g.key, n = g.count })
+                Err _   -> "group-err"
+                Ok rows -> countCells rows
+
+-- group + having (SUM) against Postgres: depts whose payroll is >= 600 ->
+-- "sales:600". Proves HAVING re-renders SUM(salary) with its own bind parameter.
+pub fn db groupHavingSum () -> Text =
+    match setupEmps ()
+        Err _ -> "setup-err"
+        Ok r  ->
+            match r |> Repo.query |> Repo.groupBy (fn (e: Emp) -> e.dept) |> Repo.having (fn g -> g.sum (fn (e: Emp) -> e.salary) >= 600) |> Repo.summarize (fn g -> DeptSum { dept = g.key, total = g.sum (fn (e: Emp) -> e.salary) })
+                Err _   -> "group-err"
+                Ok rows -> sumCells rows
+
+-- filter + group + having against Postgres: the WHERE drops ops's lone 50, then
+-- the surviving rows group and keep depts with > 1 member -> "eng:2,sales:3".
+-- Proves the WHERE binds precede the HAVING bind in the compiled statement.
+pub fn db groupFilteredHaving () -> Text =
+    match setupEmps ()
+        Err _ -> "setup-err"
+        Ok r  ->
+            match r |> Repo.query |> Repo.filter (fn (e: Emp) -> e.salary >= 100) |> Repo.groupBy (fn (e: Emp) -> e.dept) |> Repo.having (fn g -> g.count > 1) |> Repo.summarize (fn g -> DeptCount { dept = g.key, n = g.count })
+                Err _   -> "group-err"
+                Ok rows -> countCells rows
 "#;
 
 /// Connection settings parsed out of `RIDGE_TEST_PG_URL`.
@@ -781,6 +930,13 @@ fn postgres_adapter_reads_a_real_table() {
          io:format(\"everyAdult=~s~n\",[{module}:everyAdult()]), \
          io:format(\"everyHigh=~s~n\",[{module}:everyHigh()]), \
          io:format(\"everyEmpty=~s~n\",[{module}:everyEmpty()]), \
+         io:format(\"groupCounts=~s~n\",[{module}:groupCounts()]), \
+         io:format(\"groupSums=~s~n\",[{module}:groupSums()]), \
+         io:format(\"groupAvgs=~s~n\",[{module}:groupAvgs()]), \
+         io:format(\"groupRanges=~s~n\",[{module}:groupRanges()]), \
+         io:format(\"groupHavingCount=~s~n\",[{module}:groupHavingCount()]), \
+         io:format(\"groupHavingSum=~s~n\",[{module}:groupHavingSum()]), \
+         io:format(\"groupFilteredHaving=~s~n\",[{module}:groupFilteredHaving()]), \
          {pool_probe} \
          halt()."
     );
@@ -917,6 +1073,34 @@ fn postgres_adapter_reads_a_real_table() {
         (
             "everyEmpty=true",
             "every over an empty selection is vacuously true",
+        ),
+        (
+            "groupCounts=eng:2,ops:1,sales:3",
+            "GROUP BY partitions the emps and COUNT(*) folds each dept, key-ordered",
+        ),
+        (
+            "groupSums=eng:300,ops:50,sales:600",
+            "SUM(salary) is grouped per dept and pushed down",
+        ),
+        (
+            "groupAvgs=eng:150.0,ops:50.0,sales:200.0",
+            "AVG(salary)::float8 crosses the wire as a float per group",
+        ),
+        (
+            "groupRanges=eng:100-200,ops:50-50,sales:150-300",
+            "MIN and MAX over one column compose in a single grouped select-list",
+        ),
+        (
+            "groupHavingCount=eng:2,sales:3",
+            "HAVING COUNT(*) > 1 drops the single-member ops group",
+        ),
+        (
+            "groupHavingSum=sales:600",
+            "HAVING SUM(salary) >= 600 keeps only the sales group",
+        ),
+        (
+            "groupFilteredHaving=eng:2,sales:3",
+            "the WHERE bind precedes the HAVING bind in the compiled statement",
         ),
         (
             "concurrent=true",

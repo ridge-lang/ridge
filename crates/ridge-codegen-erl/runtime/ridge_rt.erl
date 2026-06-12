@@ -31,6 +31,7 @@
     mem_select/3, mem_delete/3, mem_update/4, mem_get_rows/4,
     mem_fetch/6, mem_count_where/3, mem_aggregate/5, mem_project/7,
     mem_join/8, mem_join_select/9, mem_left_join/8, mem_left_join_select/9,
+    mem_group_summarize/6,
     quote_keep_all/1, quote_and/2,
     mk_error/2,
     escript_main/1
@@ -964,6 +965,15 @@ mem_aggregate(Id, Table, Tree, Func, Column) ->
 mem_project(Id, Table, Tree, Orders, Lim, Off, Cols) ->
     mem_call({project, Id, Table, Tree, Orders, Lim, Off, Cols}).
 
+%% mem_group_summarize/6 — group the rows of Table that satisfy Tree by KeyCol,
+%% summarize each group into the `{Alias, Func, Column}` aggregates (Func is
+%% <<"KEY">>/<<"COUNT">>/<<"SUM">>/<<"AVG">>/<<"MIN">>/<<"MAX">>), keep the groups
+%% the Having tree admits, and return one row per group keyed by alias, ordered by
+%% the key. The in-memory dual of SELECT … GROUP BY … HAVING …. Result (List Row)
+%% Error.
+mem_group_summarize(Id, Table, Tree, KeyCol, Cols, Having) ->
+    mem_call({group_summarize, Id, Table, Tree, KeyCol, Cols, Having}).
+
 %% mem_join/8 — inner-join LeftTable and RightTable on the condition tree Cond,
 %% keep the left rows matching the predicate tree Pred, order by the left-column
 %% keys, then page. Each result is the `{LeftRow, RightRow}` pair of column maps.
@@ -1081,6 +1091,15 @@ mem_keeper_loop(State) ->
             Wrapped = case Value of 'SqlNull' -> none; _ -> {some, Value} end,
             From ! {Ref, {ok, Wrapped}},
             mem_keeper_loop(State);
+        {{group_summarize, Id, Table, Tree, KeyCol, Cols, Having}, From, Ref} ->
+            Rows = maps:get({Id, Table}, State, []),
+            Matches = [R || R <- Rows, mem_pred(Tree, R)],
+            Groups = mem_group_by(KeyCol, Matches),
+            Kept = [{K, GR} || {K, GR} <- Groups, mem_having(Having, K, GR)],
+            Sorted = lists:sort(fun({KA, _}, {KB, _}) -> mem_order_cmp(KA, KB) =/= gt end, Kept),
+            Result = [mem_group_row(Cols, K, GR) || {K, GR} <- Sorted],
+            From ! {Ref, {ok, Result}},
+            mem_keeper_loop(State);
         {{project, Id, Table, Tree, Orders, Lim, Off, Cols}, From, Ref} ->
             Rows = maps:get({Id, Table}, State, []),
             Matches = [R || R <- Rows, mem_pred(Tree, R)],
@@ -1168,6 +1187,84 @@ mem_key({'SqlInt', N})   -> N;
 mem_key({'SqlFloat', F}) -> F;
 mem_key({'SqlText', S})  -> S;
 mem_key({'SqlBool', B})  -> B.
+
+%% --- In-memory GROUP BY / HAVING ---
+%%
+%% The nested-loop dual of a backend pushing GROUP BY into SQL. Partition the
+%% matching rows by the key column's value, summarize each group into its
+%% aggregates, drop the groups the HAVING tree rejects, and key each output row by
+%% the projection's aliases. The keeper sorts the surviving groups by key so the
+%% result is deterministic, matching the `ORDER BY <key>` the SQL backend appends.
+
+%% Partition rows by the key column's value, preserving first-seen key order.
+mem_group_by(KeyCol, Rows) ->
+    lists:foldl(
+        fun(R, Acc) ->
+            K = maps:get(KeyCol, R, 'SqlNull'),
+            case lists:keyfind(K, 1, Acc) of
+                {K, GR} -> lists:keyreplace(K, 1, Acc, {K, GR ++ [R]});
+                false   -> Acc ++ [{K, [R]}]
+            end
+        end,
+        [],
+        Rows).
+
+%% Build one output row for a group: each `{Alias, Func, Column}` becomes
+%% `Alias => value`, where the value is the group key, its row count, or a scalar
+%% aggregate over the group's rows.
+mem_group_row(Cols, Key, GroupRows) ->
+    maps:from_list([{Alias, mem_group_value(Func, Column, Key, GroupRows)}
+                    || {Alias, Func, Column} <- Cols]).
+
+mem_group_value(<<"KEY">>, _Col, Key, _GR)   -> Key;
+mem_group_value(<<"COUNT">>, _Col, _Key, GR) -> {'SqlInt', length(GR)};
+mem_group_value(Func, Col, _Key, GR)         -> mem_aggregate_value(Func, Col, GR).
+
+%% Evaluate a HAVING predicate tree over one group (its key and rows). The leaves
+%% are aggregate nodes — `QGroupKey`, `QAggCount`, `QAgg{Sum,Avg,Min,Max}` — that
+%% reduce the group; comparisons and connectives combine them. The always-true
+%% tree (the `keepAll` default) keeps every group.
+mem_having({'QLitBool', true}, _Key, _GR) -> true;
+mem_having({'QAnd', L, R}, Key, GR) -> mem_having(L, Key, GR) andalso mem_having(R, Key, GR);
+mem_having({'QOr', L, R}, Key, GR)  -> mem_having(L, Key, GR) orelse mem_having(R, Key, GR);
+mem_having({'QNot', X}, Key, GR)    -> not mem_having(X, Key, GR);
+mem_having({'QEq', L, R}, Key, GR)  -> mem_hrelate(eq, L, R, Key, GR);
+mem_having({'QNe', L, R}, Key, GR)  -> not mem_hrelate(eq, L, R, Key, GR);
+mem_having({'QLt', L, R}, Key, GR)  -> mem_hrelate(lt, L, R, Key, GR);
+mem_having({'QGt', L, R}, Key, GR)  -> mem_hrelate(lt, R, L, Key, GR);
+mem_having({'QLe', L, R}, Key, GR)  -> not mem_hrelate(lt, R, L, Key, GR);
+mem_having({'QGe', L, R}, Key, GR)  -> not mem_hrelate(lt, L, R, Key, GR);
+mem_having(_Other, _Key, _GR)       -> true.
+
+mem_hrelate(Op, L, R, Key, GR) ->
+    case {mem_hscalar(L, Key, GR), mem_hscalar(R, Key, GR)} of
+        {undefined, _} -> false;
+        {_, undefined} -> false;
+        {A, B}         -> mem_sql_cmp(Op, A, B)
+    end.
+
+%% Resolve a HAVING operand to a SqlValue: an aggregate over the group, the group
+%% key, or a literal. A nullary aggregate node (`QGroupKey`, `QAggCount`) arrives
+%% as a bare atom; the scalar aggregates wrap their `QCol`.
+mem_hscalar('QGroupKey', Key, _GR) -> Key;
+mem_hscalar('QAggCount', _Key, GR) -> {'SqlInt', length(GR)};
+mem_hscalar({'QAggSum', {'QCol', C}}, _Key, GR) -> mem_agg_or_undef(<<"SUM">>, C, GR);
+mem_hscalar({'QAggAvg', {'QCol', C}}, _Key, GR) -> mem_agg_or_undef(<<"AVG">>, C, GR);
+mem_hscalar({'QAggMin', {'QCol', C}}, _Key, GR) -> mem_agg_or_undef(<<"MIN">>, C, GR);
+mem_hscalar({'QAggMax', {'QCol', C}}, _Key, GR) -> mem_agg_or_undef(<<"MAX">>, C, GR);
+mem_hscalar({'QLitInt', N}, _Key, _GR)   -> {'SqlInt', N};
+mem_hscalar({'QLitText', S}, _Key, _GR)  -> {'SqlText', S};
+mem_hscalar({'QLitBool', B}, _Key, _GR)  -> {'SqlBool', B};
+mem_hscalar({'QLitFloat', F}, _Key, _GR) -> {'SqlFloat', F};
+mem_hscalar(_Other, _Key, _GR)           -> undefined.
+
+%% An aggregate over a group as a comparison operand: an all-NULL fold has no
+%% value, so the comparison fails rather than crashing.
+mem_agg_or_undef(Func, Col, GR) ->
+    case mem_aggregate_value(Func, Col, GR) of
+        'SqlNull' -> undefined;
+        V         -> V
+    end.
 
 %% Merge the Changes columns into every row matching the predicate tree, leaving
 %% the rest untouched; return `{UpdatedRows, ChangedCount}`. An empty Changes map

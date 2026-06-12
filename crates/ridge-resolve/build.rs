@@ -409,6 +409,7 @@ const BASELINE_EXPORTS: &[(&str, &[&str])] = &[
             "joinSelect",
             "leftJoin",
             "leftJoinSelect",
+            "groupSummarize",
             "MemAdapter",
             "memAdapter",
             // The Postgres adapter: the opaque connection handle, its config
@@ -484,6 +485,15 @@ const BASELINE_EXPORTS: &[(&str, &[&str])] = &[
             "leftJoinOn",
             "toLeftPairs",
             "selectLeftJoin",
+            // Grouped aggregates: the opaque `GroupedQuery e k a` built by
+            // `groupBy`, narrowed by `having`, and summarised into a named record
+            // by `summarize`. `Group e k` is the handle the `having`/`summarize`
+            // quotes range over (`g.key`, `g.count`, `g.sum`/`avg`/`min`/`max`).
+            "Group",
+            "GroupedQuery",
+            "groupBy",
+            "having",
+            "summarize",
         ],
     ),
 ];
@@ -496,7 +506,18 @@ const BASELINE_OPAQUE: &[(&str, &[&str])] = &[
     ("std.net.http", &["Html", "SecureCookie"]),
     ("std.sql", &["Sql", "SqlValue"]),
     ("std.data", &["MemAdapter", "Postgres"]),
-    ("std.repo", &["Repo", "Query", "Join", "LeftJoin", "Setter"]),
+    (
+        "std.repo",
+        &[
+            "Repo",
+            "Query",
+            "Join",
+            "LeftJoin",
+            "Setter",
+            "Group",
+            "GroupedQuery",
+        ],
+    ),
 ];
 
 fn main() {

@@ -935,6 +935,39 @@ impl BuiltinTyCons {
                         name: "QColR".to_string(),
                         kind: VariantPayload::Positional(vec![Type::Con(text, vec![])]),
                     },
+                    // The group key of a `groupBy` query — the column the rows are
+                    // partitioned by. In a `summarize` projection or a `having`
+                    // predicate it stands for `g.key`. Carries no column of its own:
+                    // the key column travels alongside the tree at the seam.
+                    UnionVariant {
+                        name: "QGroupKey".to_string(),
+                        kind: VariantPayload::Nullary,
+                    },
+                    // A per-group `COUNT(*)` — `g.count`. Nullary: it counts the
+                    // rows of the group, naming no column.
+                    UnionVariant {
+                        name: "QAggCount".to_string(),
+                        kind: VariantPayload::Nullary,
+                    },
+                    // The per-group scalar aggregates over a single column —
+                    // `g.sum(col)`, `g.avg(col)`, `g.min(col)`, `g.max(col)`. Each
+                    // wraps the `QCol` it folds.
+                    UnionVariant {
+                        name: "QAggSum".to_string(),
+                        kind: VariantPayload::Positional(vec![Type::Con(TyConId(25), vec![])]),
+                    },
+                    UnionVariant {
+                        name: "QAggAvg".to_string(),
+                        kind: VariantPayload::Positional(vec![Type::Con(TyConId(25), vec![])]),
+                    },
+                    UnionVariant {
+                        name: "QAggMin".to_string(),
+                        kind: VariantPayload::Positional(vec![Type::Con(TyConId(25), vec![])]),
+                    },
+                    UnionVariant {
+                        name: "QAggMax".to_string(),
+                        kind: VariantPayload::Positional(vec![Type::Con(TyConId(25), vec![])]),
+                    },
                 ],
             }),
             def_span: None,

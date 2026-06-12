@@ -25,6 +25,10 @@
 //!   error for more than one), `singleOrError` (the same, but an empty match is
 //!   an error too), and `every` (the universal dual of `exists`, `true` over an
 //!   empty selection).
+//! - grouped aggregates over a second `Emp` dataset: `groupBy` + `summarize`
+//!   projecting a named record per group (count, sum, average, and a min/max
+//!   range), `having` narrowing by an aggregate (count and sum thresholds), and a
+//!   filter-then-group case where the query's `WHERE` bounds the grouping.
 //!
 //! Gated on `beam-runtime` (real OTP) plus a `which` guard for `erl`/`erlc`.
 
@@ -512,6 +516,143 @@ pub fn db everyEmpty () -> Text =
             match r |> Repo.query |> Repo.filter (fn (u: User) -> u.id == 99) |> Repo.every (fn (u: User) -> u.age >= 18)
                 Err _ -> "every-err"
                 Ok b  -> boolText b
+
+-- A grouping dataset: employees with a repeated `dept` key and a salary, so a
+-- GROUP BY partitions several rows per group (eng has 2, sales 3, ops 1).
+pub type Emp = { id: Int, dept: Text, salary: Int } deriving (Row)
+
+-- The summarised shapes a `groupBy` projects into. Each names the group key
+-- alongside the aggregates a probe reads (count, sum, average, or min/max range).
+pub type DeptCount = { dept: Text, n: Int } deriving (Row)
+pub type DeptSum   = { dept: Text, total: Int } deriving (Row)
+pub type DeptAvg   = { dept: Text, mean: Float } deriving (Row)
+pub type DeptRange = { dept: Text, lo: Int, hi: Int } deriving (Row)
+
+pub fn empRow (eid: Int) (edept: Text) (esalary: Int) -> Map Text SqlValue =
+    Map.fromList [("id", toSql eid), ("dept", toSql edept), ("salary", toSql esalary)]
+
+-- Seed six employees across three departments so each grouped aggregate folds a
+-- different group size: eng {100, 200}, sales {150, 150, 300}, ops {50}.
+pub fn db setupEmps () -> Result (Repo Emp MemAdapter) Error =
+    let r = Repo.repo (memAdapter ()) "emps"
+    match Repo.insertRow (empRow 1 "eng" 100) r
+        Err e -> Err e
+        Ok _  ->
+            match Repo.insertRow (empRow 2 "eng" 200) r
+                Err e -> Err e
+                Ok _  ->
+                    match Repo.insertRow (empRow 3 "sales" 150) r
+                        Err e -> Err e
+                        Ok _  ->
+                            match Repo.insertRow (empRow 4 "sales" 150) r
+                                Err e -> Err e
+                                Ok _  ->
+                                    match Repo.insertRow (empRow 5 "sales" 300) r
+                                        Err e -> Err e
+                                        Ok _  ->
+                                            match Repo.insertRow (empRow 6 "ops" 50) r
+                                                Err e -> Err e
+                                                Ok _  -> Ok r
+
+-- Render the grouped result rows as `key:value` cells joined by commas. Each
+-- backend returns the groups ordered by the key, so the rendered string is
+-- deterministic without sorting here.
+fn countCells (rows: List DeptCount) -> Text =
+    match rows
+        []        -> ""
+        r :: []   -> Text.concat r.dept (Text.concat ":" (Int.toText r.n))
+        r :: rest -> Text.concat r.dept (Text.concat ":" (Text.concat (Int.toText r.n) (Text.concat "," (countCells rest))))
+
+fn sumCells (rows: List DeptSum) -> Text =
+    match rows
+        []        -> ""
+        r :: []   -> Text.concat r.dept (Text.concat ":" (Int.toText r.total))
+        r :: rest -> Text.concat r.dept (Text.concat ":" (Text.concat (Int.toText r.total) (Text.concat "," (sumCells rest))))
+
+fn avgCells (rows: List DeptAvg) -> Text =
+    match rows
+        []        -> ""
+        r :: []   -> Text.concat r.dept (Text.concat ":" (Float.toText r.mean))
+        r :: rest -> Text.concat r.dept (Text.concat ":" (Text.concat (Float.toText r.mean) (Text.concat "," (avgCells rest))))
+
+fn rangeCell (r: DeptRange) -> Text =
+    Text.concat r.dept (Text.concat ":" (Text.concat (Int.toText r.lo) (Text.concat "-" (Int.toText r.hi))))
+
+fn rangeCells (rows: List DeptRange) -> Text =
+    match rows
+        []        -> ""
+        r :: []   -> rangeCell r
+        r :: rest -> Text.concat (rangeCell r) (Text.concat "," (rangeCells rest))
+
+-- group + summarize: COUNT(*) per dept, key-ordered -> "eng:2,ops:1,sales:3".
+-- Proves GROUP BY partitions the rows and the result is ordered by the key.
+pub fn db groupCounts () -> Text =
+    match setupEmps ()
+        Err _ -> "setup-err"
+        Ok r  ->
+            match r |> Repo.query |> Repo.groupBy (fn (e: Emp) -> e.dept) |> Repo.summarize (fn g -> DeptCount { dept = g.key, n = g.count })
+                Err _   -> "group-err"
+                Ok rows -> countCells rows
+
+-- group + summarize: SUM(salary) per dept -> "eng:300,ops:50,sales:600".
+pub fn db groupSums () -> Text =
+    match setupEmps ()
+        Err _ -> "setup-err"
+        Ok r  ->
+            match r |> Repo.query |> Repo.groupBy (fn (e: Emp) -> e.dept) |> Repo.summarize (fn g -> DeptSum { dept = g.key, total = g.sum (fn (e: Emp) -> e.salary) })
+                Err _   -> "group-err"
+                Ok rows -> sumCells rows
+
+-- group + summarize: AVG(salary) per dept -> "eng:150.0,ops:50.0,sales:200.0".
+-- Proves the per-group average is fractional even over an integer column.
+pub fn db groupAvgs () -> Text =
+    match setupEmps ()
+        Err _ -> "setup-err"
+        Ok r  ->
+            match r |> Repo.query |> Repo.groupBy (fn (e: Emp) -> e.dept) |> Repo.summarize (fn g -> DeptAvg { dept = g.key, mean = g.avg (fn (e: Emp) -> e.salary) })
+                Err _   -> "group-err"
+                Ok rows -> avgCells rows
+
+-- group + summarize: MIN/MAX(salary) per dept -> "eng:100-200,ops:50-50,sales:150-300".
+-- Proves two aggregates over one column compose in a single projection.
+pub fn db groupRanges () -> Text =
+    match setupEmps ()
+        Err _ -> "setup-err"
+        Ok r  ->
+            match r |> Repo.query |> Repo.groupBy (fn (e: Emp) -> e.dept) |> Repo.summarize (fn g -> DeptRange { dept = g.key, lo = g.min (fn (e: Emp) -> e.salary), hi = g.max (fn (e: Emp) -> e.salary) })
+                Err _   -> "group-err"
+                Ok rows -> rangeCells rows
+
+-- group + having on the count: only depts with more than one member -> "eng:2,sales:3".
+-- Proves HAVING filters groups by an aggregate (ops, a single member, drops out).
+pub fn db groupHavingCount () -> Text =
+    match setupEmps ()
+        Err _ -> "setup-err"
+        Ok r  ->
+            match r |> Repo.query |> Repo.groupBy (fn (e: Emp) -> e.dept) |> Repo.having (fn g -> g.count > 1) |> Repo.summarize (fn g -> DeptCount { dept = g.key, n = g.count })
+                Err _   -> "group-err"
+                Ok rows -> countCells rows
+
+-- group + having on a summed aggregate: only depts whose payroll is >= 600 ->
+-- "sales:600". Proves HAVING can threshold a different aggregate than COUNT.
+pub fn db groupHavingSum () -> Text =
+    match setupEmps ()
+        Err _ -> "setup-err"
+        Ok r  ->
+            match r |> Repo.query |> Repo.groupBy (fn (e: Emp) -> e.dept) |> Repo.having (fn g -> g.sum (fn (e: Emp) -> e.salary) >= 600) |> Repo.summarize (fn g -> DeptSum { dept = g.key, total = g.sum (fn (e: Emp) -> e.salary) })
+                Err _   -> "group-err"
+                Ok rows -> sumCells rows
+
+-- filter + group + having: the row filter runs first (salary >= 100 drops ops's
+-- lone 50), then the surviving rows group and keep depts with more than one member
+-- -> "eng:2,sales:3". Proves the query's WHERE bounds the grouping.
+pub fn db groupFilteredHaving () -> Text =
+    match setupEmps ()
+        Err _ -> "setup-err"
+        Ok r  ->
+            match r |> Repo.query |> Repo.filter (fn (e: Emp) -> e.salary >= 100) |> Repo.groupBy (fn (e: Emp) -> e.dept) |> Repo.having (fn g -> g.count > 1) |> Repo.summarize (fn g -> DeptCount { dept = g.key, n = g.count })
+                Err _   -> "group-err"
+                Ok rows -> countCells rows
 "#;
 
 fn write_workspace(root: &std::path::Path) {
@@ -611,6 +752,13 @@ fn repo_surface_runs_on_beam() {
          io:format(\"everyAdult=~s~n\",[{module}:everyAdult()]), \
          io:format(\"everyHigh=~s~n\",[{module}:everyHigh()]), \
          io:format(\"everyEmpty=~s~n\",[{module}:everyEmpty()]), \
+         io:format(\"groupCounts=~s~n\",[{module}:groupCounts()]), \
+         io:format(\"groupSums=~s~n\",[{module}:groupSums()]), \
+         io:format(\"groupAvgs=~s~n\",[{module}:groupAvgs()]), \
+         io:format(\"groupRanges=~s~n\",[{module}:groupRanges()]), \
+         io:format(\"groupHavingCount=~s~n\",[{module}:groupHavingCount()]), \
+         io:format(\"groupHavingSum=~s~n\",[{module}:groupHavingSum()]), \
+         io:format(\"groupFilteredHaving=~s~n\",[{module}:groupFilteredHaving()]), \
          halt()."
     );
     let output = Command::new("erl")
@@ -715,6 +863,34 @@ fn repo_surface_runs_on_beam() {
         (
             "everyEmpty=true",
             "every over an empty selection is vacuously true",
+        ),
+        (
+            "groupCounts=eng:2,ops:1,sales:3",
+            "summarize counts the rows of each dept group, ordered by the key",
+        ),
+        (
+            "groupSums=eng:300,ops:50,sales:600",
+            "summarize sums the salary column within each dept group",
+        ),
+        (
+            "groupAvgs=eng:150.0,ops:50.0,sales:200.0",
+            "the per-group average is fractional even over an integer column",
+        ),
+        (
+            "groupRanges=eng:100-200,ops:50-50,sales:150-300",
+            "min and max over one column compose in a single grouped projection",
+        ),
+        (
+            "groupHavingCount=eng:2,sales:3",
+            "having drops the single-member ops group (count > 1)",
+        ),
+        (
+            "groupHavingSum=sales:600",
+            "having thresholds a summed aggregate, keeping only the >= 600 payroll",
+        ),
+        (
+            "groupFilteredHaving=eng:2,sales:3",
+            "the query filter bounds the grouping before having runs",
         ),
     ] {
         assert!(

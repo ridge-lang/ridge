@@ -298,6 +298,13 @@ pub fn prelude_types(b: &BuiltinTyCons) -> (FxHashMap<String, Scheme>, FxHashMap
             vec![Type::Tuple(vec![ty_con(b.text, vec![]), qexpr_ty.clone()])],
         )]),
     );
+    // The grouped-aggregate nodes: `QGroupKey`/`QAggCount` are nullary (like
+    // `None`); the scalar aggregates wrap the column they fold.
+    values.insert("QGroupKey".to_string(), q_ctor(vec![]));
+    values.insert("QAggCount".to_string(), q_ctor(vec![]));
+    for name in ["QAggSum", "QAggAvg", "QAggMin", "QAggMax"] {
+        values.insert(name.to_string(), q_ctor(vec![qexpr_ty.clone()]));
+    }
 
     (values, tycons)
 }

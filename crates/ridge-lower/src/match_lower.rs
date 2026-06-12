@@ -905,6 +905,12 @@ fn qexpr_variant(name: &str) -> Option<u32> {
         "QGe" => 13,
         "QProj" => 14,
         "QColR" => 15,
+        "QGroupKey" => 16,
+        "QAggCount" => 17,
+        "QAggSum" => 18,
+        "QAggAvg" => 19,
+        "QAggMin" => 20,
+        "QAggMax" => 21,
         _ => return None,
     })
 }

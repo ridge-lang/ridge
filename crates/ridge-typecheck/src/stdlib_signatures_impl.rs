@@ -1555,6 +1555,7 @@ mod tests {
                             | "joinSelect"
                             | "leftJoin"
                             | "leftJoinSelect"
+                            | "groupSummarize"
                             | "MemAdapter"
                             | "memAdapter"
                             | "Postgres"

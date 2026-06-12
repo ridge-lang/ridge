@@ -47,9 +47,18 @@ fn showExpr (e: QExpr) -> Text =
         QLe l r     -> binNode l " <= " r
         QGe l r     -> binNode l " >= " r
         QProj cols  -> Text.join ", " (showProjCols cols)
+        QGroupKey   -> "key"
+        QAggCount   -> "count(*)"
+        QAggSum c   -> aggShow "sum" c
+        QAggAvg c   -> aggShow "avg" c
+        QAggMin c   -> aggShow "min" c
+        QAggMax c   -> aggShow "max" c
 
 fn binNode (l: QExpr) (op: Text) (r: QExpr) -> Text =
     Text.concat "(" (Text.concat (showExpr l) (Text.concat op (Text.concat (showExpr r) ")")))
+
+fn aggShow (fnName: Text) (c: QExpr) -> Text =
+    Text.concat fnName (Text.concat "(" (Text.concat (showExpr c) ")"))
 
 fn showProjCols (cols: List (Text, QExpr)) -> List Text =
     match cols
@@ -82,6 +91,16 @@ fn compileExpr (e: QExpr) -> { text: Text, binds: List SqlValue } =
         QLe l r  -> binNodeSql l " <= " r
         QGe l r  -> binNodeSql l " >= " r
         QProj cols -> { text = Text.join ", " (projCols cols), binds = [] }
+        QGroupKey  -> { text = "", binds = [] }
+        QAggCount  -> { text = "COUNT(*)", binds = [] }
+        QAggSum c  -> aggSql "SUM" c
+        QAggAvg c  -> aggSql "AVG" c
+        QAggMin c  -> aggSql "MIN" c
+        QAggMax c  -> aggSql "MAX" c
+
+fn aggSql (fnName: Text) (c: QExpr) -> { text: Text, binds: List SqlValue } =
+    let r = compileExpr c
+    { text = Text.concat fnName (Text.concat "(" (Text.concat r.text ")")), binds = r.binds }
 
 fn unaryNode (pre: Text) (x: QExpr) (post: Text) -> { text: Text, binds: List SqlValue } =
     let r = compileExpr x

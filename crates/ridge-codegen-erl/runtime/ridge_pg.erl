@@ -45,6 +45,7 @@
     pg_join_select/9,
     pg_left_join/8,
     pg_left_join_select/9,
+    pg_group_summarize/6,
     pg_close/1
 ]).
 
@@ -129,6 +130,14 @@ pg_aggregate(Id, Table, Tree, Func, Column) ->
 %% (List Row) Error.
 pg_project(Id, Table, Tree, Orders, Lim, Off, Cols) ->
     pg_call(Id, {project, Table, Tree, Orders, Lim, Off, Cols}).
+
+%% pg_group_summarize/6 — group the rows of Table that satisfy Tree by KeyCol,
+%% summarizing each group into the `{Alias, Func, Column}` aggregates, keeping the
+%% groups the Having tree admits, via `SELECT <aggregates> FROM t WHERE <pred>
+%% GROUP BY <key> HAVING <having> ORDER BY <key>`; each row comes back keyed by the
+%% projection's output aliases. Result (List Row) Error.
+pg_group_summarize(Id, Table, Tree, KeyCol, Cols, Having) ->
+    pg_call(Id, {group_summarize, Table, Tree, KeyCol, Cols, Having}).
 
 %% pg_join/8 — inner-join LeftTable and RightTable on the condition tree Cond,
 %% compiled into `JOIN … ON`; the left-side predicate Pred into `WHERE`; then
@@ -580,7 +589,9 @@ run_verb(Conn, {left_join_select, LeftTable, RightTable, Cond, Pred, Orders, Lim
 run_verb(Conn, {count_where, Table, Tree}) ->
     do_count(Conn, Table, Tree);
 run_verb(Conn, {aggregate, Table, Tree, Func, Column}) ->
-    do_aggregate(Conn, Table, Func, Column, Tree).
+    do_aggregate(Conn, Table, Func, Column, Tree);
+run_verb(Conn, {group_summarize, Table, Tree, KeyCol, Cols, Having}) ->
+    do_group_summarize(Conn, Table, Tree, KeyCol, Cols, Having).
 
 do_insert(Conn, Table, Row) ->
     Pairs = maps:to_list(Row),
@@ -663,6 +674,85 @@ agg_expr(<<"SUM">>, Column) -> ["SUM(", quote_ident(Column), ")"];
 agg_expr(<<"MIN">>, Column) -> ["MIN(", quote_ident(Column), ")"];
 agg_expr(<<"MAX">>, Column) -> ["MAX(", quote_ident(Column), ")"];
 agg_expr(_Other, Column)    -> ["COUNT(", quote_ident(Column), ")"].
+
+%% SELECT <aggregates> FROM Table WHERE <Tree> GROUP BY <KeyCol> [HAVING <Having>]
+%% ORDER BY <KeyCol>. The WHERE binds take placeholders $1..$K; the HAVING binds
+%% continue at $K+1, seeded with the WHERE binds (held reversed, as `cw`/`ch`
+%% accumulate), so the two placeholder runs never collide. Each output row is keyed
+%% by the projection's aliases; the trailing ORDER BY makes the group order
+%% deterministic, matching the in-memory backend.
+do_group_summarize(Conn, Table, Tree, KeyCol, Cols, Having) ->
+    {WhereFrag, RevB1, N1} = cw(Tree, 1, []),
+    {HavingFrag, RevB2, _N2} = compile_having(Having, KeyCol, N1, RevB1),
+    SelectList = lists:join(", ", [group_select_term(C, KeyCol) || C <- Cols]),
+    HavingClause = case HavingFrag of
+        [] -> [];
+        _  -> [" HAVING ", HavingFrag]
+    end,
+    Sql = ["SELECT ", SelectList, " FROM ", quote_ident(Table),
+           " WHERE ", WhereFrag, " GROUP BY ", quote_ident(KeyCol),
+           HavingClause, " ORDER BY ", quote_ident(KeyCol)],
+    run_query(Conn, Sql, lists:reverse(RevB2)).
+
+%% One select-list term for a group aggregate: the key column, COUNT(*), or a
+%% scalar aggregate, each aliased to the projection's output name. Func is matched
+%% against the whitelisted keywords; the column is quoted as an identifier, so
+%% neither is interpolated as raw SQL.
+group_select_term({Alias, <<"KEY">>, _Col}, KeyCol) ->
+    [quote_ident(KeyCol), " AS ", quote_ident(Alias)];
+group_select_term({Alias, <<"COUNT">>, _Col}, _KeyCol) ->
+    ["COUNT(*) AS ", quote_ident(Alias)];
+group_select_term({Alias, Func, Col}, _KeyCol) ->
+    [agg_expr(Func, Col), " AS ", quote_ident(Alias)].
+
+%% --- QExpr -> parameterised HAVING clause ---
+%%
+%% Structurally `cw`, but its operands are group aggregates (`COUNT(*)`,
+%% `SUM(col)`, …) and the group key rather than plain columns. Postgres does not
+%% allow output aliases in HAVING, so each aggregate is re-rendered from its node.
+%% The always-true tree (the `keepAll` default) yields an empty fragment so the
+%% caller omits the HAVING clause entirely.
+compile_having({'QLitBool', true}, _KeyCol, N, B) -> {[], B, N};
+compile_having(Tree, KeyCol, N, B) -> ch(Tree, KeyCol, N, B).
+
+ch({'QAnd', L, R}, K, N, B) ->
+    {FL, B1, N1} = ch(L, K, N, B),
+    {FR, B2, N2} = ch(R, K, N1, B1),
+    {["(", FL, " AND ", FR, ")"], B2, N2};
+ch({'QOr', L, R}, K, N, B) ->
+    {FL, B1, N1} = ch(L, K, N, B),
+    {FR, B2, N2} = ch(R, K, N1, B1),
+    {["(", FL, " OR ", FR, ")"], B2, N2};
+ch({'QNot', X}, K, N, B) ->
+    {FX, B1, N1} = ch(X, K, N, B),
+    {["(NOT ", FX, ")"], B1, N1};
+ch({'QEq', L, R}, K, N, B) -> ch_cmp("=", L, R, K, N, B);
+ch({'QNe', L, R}, K, N, B) -> ch_cmp("<>", L, R, K, N, B);
+ch({'QLt', L, R}, K, N, B) -> ch_cmp("<", L, R, K, N, B);
+ch({'QGt', L, R}, K, N, B) -> ch_cmp(">", L, R, K, N, B);
+ch({'QLe', L, R}, K, N, B) -> ch_cmp("<=", L, R, K, N, B);
+ch({'QGe', L, R}, K, N, B) -> ch_cmp(">=", L, R, K, N, B);
+ch(Other, K, N, B) -> ch_operand(Other, K, N, B).
+
+ch_cmp(Op, L, R, K, N, B) ->
+    {FL, B1, N1} = ch_operand(L, K, N, B),
+    {FR, B2, N2} = ch_operand(R, K, N1, B1),
+    {[FL, " ", Op, " ", FR], B2, N2}.
+
+%% A HAVING operand: an aggregate over the group, the group key, or a literal
+%% placeholder. Nullary aggregate nodes (`QGroupKey`, `QAggCount`) arrive as bare
+%% atoms; the scalar aggregates wrap their `QCol`.
+ch_operand('QAggCount', _K, N, B) -> {"COUNT(*)", B, N};
+ch_operand('QGroupKey', K, N, B)  -> {quote_ident(K), B, N};
+ch_operand({'QAggSum', {'QCol', C}}, _K, N, B) -> {agg_expr(<<"SUM">>, C), B, N};
+ch_operand({'QAggAvg', {'QCol', C}}, _K, N, B) -> {agg_expr(<<"AVG">>, C), B, N};
+ch_operand({'QAggMin', {'QCol', C}}, _K, N, B) -> {agg_expr(<<"MIN">>, C), B, N};
+ch_operand({'QAggMax', {'QCol', C}}, _K, N, B) -> {agg_expr(<<"MAX">>, C), B, N};
+ch_operand({'QLitInt', V}, _K, N, B)   -> {[$$ | integer_to_list(N)], [{'SqlInt', V} | B], N + 1};
+ch_operand({'QLitText', V}, _K, N, B)  -> {[$$ | integer_to_list(N)], [{'SqlText', V} | B], N + 1};
+ch_operand({'QLitBool', V}, _K, N, B)  -> {[$$ | integer_to_list(N)], [{'SqlBool', V} | B], N + 1};
+ch_operand({'QLitFloat', V}, _K, N, B) -> {[$$ | integer_to_list(N)], [{'SqlFloat', V} | B], N + 1};
+ch_operand(_Other, _K, N, B) -> {"NULL", B, N}.
 
 %% ORDER BY / LIMIT / OFFSET fragments. Identifiers are quoted; the limit and
 %% offset are integers from the typed surface, so they render inline without a

@@ -35,7 +35,10 @@
 //! the aggregate into a real `HAVING` clause, including a filter-then-group case
 //! where the `WHERE` binds precede the `HAVING` bind. `distinct` projections
 //! compile to `SELECT DISTINCT <cols> …`, dropping the repeated dept and salary
-//! columns to their distinct values.
+//! columns to their distinct values. The set operations compile to real
+//! `UNION`/`UNION ALL`/`INTERSECT`/`EXCEPT` (each branch a subquery, the bind
+//! placeholders threaded across the statement), with an outer filter wrapping the
+//! combination in a subquery and nested unions nesting the parentheses.
 
 #![cfg(feature = "beam-runtime")]
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
@@ -699,6 +702,14 @@ fn salList (rows: List SalAmt) -> Text =
         r :: []   -> Int.toText r.salary
         r :: rest -> Text.concat (Int.toText r.salary) (Text.concat "," (salList rest))
 
+-- Render the ids of a row list, comma-joined. The set-op probes order by id, so
+-- the rendered string is deterministic.
+fn idList (rows: List Emp) -> Text =
+    match rows
+        []        -> ""
+        e :: []   -> Int.toText e.id
+        e :: rest -> Text.concat (Int.toText e.id) (Text.concat "," (idList rest))
+
 -- group + summarize against Postgres: COUNT(*) per dept -> "eng:2,ops:1,sales:3".
 pub fn db groupCounts () -> Text =
     match setupEmps ()
@@ -797,6 +808,80 @@ pub fn db salariesDistinct () -> Text =
             match r |> Repo.query |> Repo.distinct |> Repo.orderBy Asc (fn (e: Emp) -> e.salary) |> Repo.selectList (fn (e: Emp) -> SalAmt { salary = e.salary })
                 Err _   -> "err"
                 Ok rows -> salList rows
+
+-- Set operations compiled to SQL on Postgres. A = salary >= 150 (ids 2,3,4,5),
+-- B = salary <= 150 (ids 1,3,4,6); ids 3 and 4 are in both. Each orders the
+-- combined result by id so the rendered ids are deterministic.
+
+-- union -> "1,2,3,4,5,6". Compiles to `(SELECT … WHERE …) UNION (SELECT … WHERE …)`
+-- wrapped by the outer ORDER BY, with the WHERE binds of each branch threaded so
+-- the `$N` placeholders never collide.
+pub fn db unionIds () -> Text =
+    match setupEmps ()
+        Err _ -> "setup-err"
+        Ok r  ->
+            let a = r |> Repo.query |> Repo.filter (fn (e: Emp) -> e.salary >= 150)
+            let b = r |> Repo.query |> Repo.filter (fn (e: Emp) -> e.salary <= 150)
+            match a |> Repo.union b |> Repo.orderBy Asc (fn (e: Emp) -> e.id) |> Repo.toList
+                Err _   -> "err"
+                Ok rows -> idList rows
+
+-- intersect -> "3,4" (a SQL `INTERSECT`).
+pub fn db intersectIds () -> Text =
+    match setupEmps ()
+        Err _ -> "setup-err"
+        Ok r  ->
+            let a = r |> Repo.query |> Repo.filter (fn (e: Emp) -> e.salary >= 150)
+            let b = r |> Repo.query |> Repo.filter (fn (e: Emp) -> e.salary <= 150)
+            match a |> Repo.intersect b |> Repo.orderBy Asc (fn (e: Emp) -> e.id) |> Repo.toList
+                Err _   -> "err"
+                Ok rows -> idList rows
+
+-- except -> "2,5" (a SQL `EXCEPT`; the piped-in query is the left side).
+pub fn db exceptIds () -> Text =
+    match setupEmps ()
+        Err _ -> "setup-err"
+        Ok r  ->
+            let a = r |> Repo.query |> Repo.filter (fn (e: Emp) -> e.salary >= 150)
+            let b = r |> Repo.query |> Repo.filter (fn (e: Emp) -> e.salary <= 150)
+            match a |> Repo.except b |> Repo.orderBy Asc (fn (e: Emp) -> e.id) |> Repo.toList
+                Err _   -> "err"
+                Ok rows -> idList rows
+
+-- unionAll -> 8 rows (a SQL `UNION ALL`, keeping the shared rows).
+pub fn db unionAllCount () -> Int =
+    match setupEmps ()
+        Err _ -> 0 - 1
+        Ok r  ->
+            let a = r |> Repo.query |> Repo.filter (fn (e: Emp) -> e.salary >= 150)
+            let b = r |> Repo.query |> Repo.filter (fn (e: Emp) -> e.salary <= 150)
+            match a |> Repo.unionAll b |> Repo.toList
+                Err _   -> 0 - 1
+                Ok rows -> listLen rows
+
+-- filter after a union -> "2,5". The outer filter compiles to a wrapping subquery
+-- `SELECT * FROM (… UNION …) AS sub WHERE …`.
+pub fn db unionFiltered () -> Text =
+    match setupEmps ()
+        Err _ -> "setup-err"
+        Ok r  ->
+            let a = r |> Repo.query |> Repo.filter (fn (e: Emp) -> e.salary >= 150)
+            let b = r |> Repo.query |> Repo.filter (fn (e: Emp) -> e.salary <= 150)
+            match a |> Repo.union b |> Repo.filter (fn (e: Emp) -> e.salary >= 200) |> Repo.orderBy Asc (fn (e: Emp) -> e.id) |> Repo.toList
+                Err _   -> "err"
+                Ok rows -> idList rows
+
+-- nested unions -> "1,2,3,4,5,6". Compiles to nested parenthesised `UNION`s.
+pub fn db nestedUnionIds () -> Text =
+    match setupEmps ()
+        Err _ -> "setup-err"
+        Ok r  ->
+            let eng = r |> Repo.query |> Repo.filter (fn (e: Emp) -> e.dept == "eng")
+            let sales = r |> Repo.query |> Repo.filter (fn (e: Emp) -> e.dept == "sales")
+            let ops = r |> Repo.query |> Repo.filter (fn (e: Emp) -> e.dept == "ops")
+            match eng |> Repo.union sales |> Repo.union ops |> Repo.orderBy Asc (fn (e: Emp) -> e.id) |> Repo.toList
+                Err _   -> "err"
+                Ok rows -> idList rows
 "#;
 
 /// Connection settings parsed out of `RIDGE_TEST_PG_URL`.
@@ -988,6 +1073,12 @@ fn postgres_adapter_reads_a_real_table() {
          io:format(\"deptsAll=~s~n\",[{module}:deptsAll()]), \
          io:format(\"deptsDistinct=~s~n\",[{module}:deptsDistinct()]), \
          io:format(\"salariesDistinct=~s~n\",[{module}:salariesDistinct()]), \
+         io:format(\"unionIds=~s~n\",[{module}:unionIds()]), \
+         io:format(\"intersectIds=~s~n\",[{module}:intersectIds()]), \
+         io:format(\"exceptIds=~s~n\",[{module}:exceptIds()]), \
+         io:format(\"unionAllCount=~w~n\",[{module}:unionAllCount()]), \
+         io:format(\"unionFiltered=~s~n\",[{module}:unionFiltered()]), \
+         io:format(\"nestedUnionIds=~s~n\",[{module}:nestedUnionIds()]), \
          {pool_probe} \
          halt()."
     );
@@ -1164,6 +1255,30 @@ fn postgres_adapter_reads_a_real_table() {
         (
             "salariesDistinct=50,100,150,200,300",
             "SELECT DISTINCT over the salary column drops the duplicate 150",
+        ),
+        (
+            "unionIds=1,2,3,4,5,6",
+            "a SQL UNION dedups the shared rows and the outer ORDER BY composes",
+        ),
+        (
+            "intersectIds=3,4",
+            "a SQL INTERSECT keeps the rows present in both branches",
+        ),
+        (
+            "exceptIds=2,5",
+            "a SQL EXCEPT keeps the left rows not in the right",
+        ),
+        (
+            "unionAllCount=8",
+            "a SQL UNION ALL keeps the duplicate rows the branches share",
+        ),
+        (
+            "unionFiltered=2,5",
+            "an outer filter compiles to a wrapping subquery over the union",
+        ),
+        (
+            "nestedUnionIds=1,2,3,4,5,6",
+            "nested unions compile to nested parenthesised UNIONs with threaded binds",
         ),
         (
             "concurrent=true",

@@ -32,6 +32,7 @@
     mem_fetch/7, mem_count_where/3, mem_aggregate/5, mem_project/8,
     mem_join/8, mem_join_select/9, mem_left_join/8, mem_left_join_select/9,
     mem_group_summarize/6,
+    plan_scan/6, plan_combine/3, plan_refine/6, mem_run_plan/2,
     quote_keep_all/1, quote_and/2,
     mk_error/2,
     escript_main/1
@@ -974,6 +975,32 @@ mem_project(Id, Table, Tree, Orders, Lim, Off, Cols, Dist) ->
 mem_group_summarize(Id, Table, Tree, KeyCol, Cols, Having) ->
     mem_call({group_summarize, Id, Table, Tree, KeyCol, Cols, Having}).
 
+%% --- query plan builders ---
+%% A query plan is a small tree the set-operation terminals run. The three builders
+%% assemble it backend-neutrally (no store access); mem_run_plan/pg_run_plan
+%% interpret or compile it. The tree rides the QExpr term space but is only ever
+%% handled by the plan interpreters, never by mem_pred/compile_where.
+
+%% plan_scan/6 — a single-table read: the rows of Table satisfying Pred, ordered,
+%% deduped (Dist), then paged. The plan form of a fetch.
+plan_scan(Table, Pred, Orders, Lim, Off, Dist) ->
+    {scan, Table, Pred, Orders, Lim, Off, Dist}.
+
+%% plan_combine/3 — a set operation of two plans (Op is <<"UNION">>/<<"UNION ALL">>/
+%% <<"INTERSECT">>/<<"EXCEPT">>).
+plan_combine(Op, Left, Right) ->
+    {combine, Op, Left, Right}.
+
+%% plan_refine/6 — an outer filter, ordering, dedup, and page applied on top of a
+%% plan's result (the wrapper a combined query's own builder steps compile to).
+plan_refine(Inner, Pred, Orders, Lim, Off, Dist) ->
+    {refine, Inner, Pred, Orders, Lim, Off, Dist}.
+
+%% mem_run_plan/2 — interpret a query plan against the in-memory store and return
+%% the combined rows. Result (List Row) Error.
+mem_run_plan(Id, Plan) ->
+    mem_call({run_plan, Id, Plan}).
+
 %% mem_join/8 — inner-join LeftTable and RightTable on the condition tree Cond,
 %% keep the left rows matching the predicate tree Pred, order by the left-column
 %% keys, then page. Each result is the `{LeftRow, RightRow}` pair of column maps.
@@ -1100,6 +1127,10 @@ mem_keeper_loop(State) ->
             Result = [mem_group_row(Cols, K, GR) || {K, GR} <- Sorted],
             From ! {Ref, {ok, Result}},
             mem_keeper_loop(State);
+        {{run_plan, Id, Plan}, From, Ref} ->
+            Rows = mem_eval_plan(State, Id, Plan),
+            From ! {Ref, {ok, Rows}},
+            mem_keeper_loop(State);
         {{project, Id, Table, Tree, Orders, Lim, Off, Cols, Dist}, From, Ref} ->
             Rows = maps:get({Id, Table}, State, []),
             Matches = [R || R <- Rows, mem_pred(Tree, R)],
@@ -1146,6 +1177,32 @@ mem_distinct(true, Rows) ->
             end
         end, {[], []}, Rows),
     lists:reverse(Out).
+
+%% Evaluate a query plan against the store snapshot State, returning its rows. A
+%% scan reads one table (filter, order, dedup, page); a combine evaluates both
+%% branches and applies the set operation; a refine applies an outer filter, order,
+%% dedup, and page on a plan's result. Nested combines recurse.
+mem_eval_plan(State, Id, {scan, Table, Pred, Orders, Lim, Off, Dist}) ->
+    Rows = maps:get({Id, Table}, State, []),
+    Matches = [R || R <- Rows, mem_pred(Pred, R)],
+    mem_paginate(mem_distinct(Dist, mem_order(Orders, Matches)), Lim, Off);
+mem_eval_plan(State, Id, {combine, Op, Left, Right}) ->
+    L = mem_eval_plan(State, Id, Left),
+    R = mem_eval_plan(State, Id, Right),
+    mem_set_op(Op, L, R);
+mem_eval_plan(State, Id, {refine, Inner, Pred, Orders, Lim, Off, Dist}) ->
+    Rows = mem_eval_plan(State, Id, Inner),
+    Matches = [R || R <- Rows, mem_pred(Pred, R)],
+    mem_paginate(mem_distinct(Dist, mem_order(Orders, Matches)), Lim, Off).
+
+%% Apply a set operation to two row lists. UNION, INTERSECT, and EXCEPT de-duplicate
+%% (set semantics); UNION ALL keeps every row. Rows compare by full term equality,
+%% the same notion mem_distinct uses.
+mem_set_op(<<"UNION">>, L, R)     -> mem_distinct(true, L ++ R);
+mem_set_op(<<"UNION ALL">>, L, R) -> L ++ R;
+mem_set_op(<<"INTERSECT">>, L, R) -> mem_distinct(true, [X || X <- L, lists:member(X, R)]);
+mem_set_op(<<"EXCEPT">>, L, R)    -> mem_distinct(true, [X || X <- L, not lists:member(X, R)]);
+mem_set_op(_Op, L, _R)            -> L.
 
 %% Fold a scalar aggregate over Column across Rows, returning a SqlValue. NULLs (a
 %% missing column or an explicit SqlNull) are skipped, as in SQL; an empty set —

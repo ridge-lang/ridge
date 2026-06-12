@@ -217,9 +217,10 @@ fn reconciled_decls(b: &BuiltinTyCons, base: u32) -> Vec<TyConDecl> {
         // `std.repo` — a query under construction over a repository. A generic
         // opaque record declared in Ridge (stdlib/repo.ridge): the repository, the
         // accumulated filter, the ordering as `(ascending?, column)` keys, the
-        // page (`lim`, `off`), and the `dist` flag (a `SELECT DISTINCT`). Opaque, so
-        // user code only threads it through the builder
-        // (`query`/`filter`/`orderBy`/`limit`/`offset`/`distinct`) into a terminal.
+        // page (`lim`, `off`), the `dist` flag (a `SELECT DISTINCT`), and the
+        // optional set-operation `plan`. Opaque, so user code only threads it
+        // through the builder (`query`/`filter`/`orderBy`/`limit`/`offset`/
+        // `distinct`/`union`/`intersect`/`except`) into a terminal.
         // Field order mirrors the source so the consistency check holds.
         TyConDecl {
             id: TyConId(base + 5),
@@ -270,6 +271,10 @@ fn reconciled_decls(b: &BuiltinTyCons, base: u32) -> Vec<TyConDecl> {
                     RecordField {
                         name: "dist".to_string(),
                         ty: Type::Con(b.bool, vec![]),
+                    },
+                    RecordField {
+                        name: "plan".to_string(),
+                        ty: Type::Con(b.option, vec![Type::Con(b.q_expr, vec![])]),
                     },
                 ],
             )),
@@ -948,6 +953,13 @@ fn reconciled_repo_fn_scheme(
         "filter" => method(vec![quote_pred(), query_app()], query_app(), vec![]),
         // distinct : ∀e a. Query e a -> Query e a — drop duplicate result rows.
         "distinct" => method(vec![query_app()], query_app(), vec![]),
+        // union / unionAll / intersect / except : ∀e a. Query e a -> Query e a
+        //   -> Query e a — combine two queries with a set operation. Pure builders
+        // like `filter`: they capture a query plan, and a terminal runs it. Both
+        // branches share the entity `e` and adapter `a`, so the column shapes align.
+        "union" | "unionAll" | "intersect" | "except" => {
+            method(vec![query_app(), query_app()], query_app(), vec![])
+        }
         // limit / offset : ∀e a. Int -> Query e a -> Query e a
         "limit" | "offset" => method(
             vec![Type::Con(b.int, vec![]), query_app()],

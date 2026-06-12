@@ -456,6 +456,12 @@ const BASELINE_EXPORTS: &[(&str, &[&str])] = &[
             "offset",
             "toList",
             "first",
+            // Unique-row terminals: `single` answers the lone matching row or
+            // `None`, `singleOrError` requires it; both fail on more than one. The
+            // `every` terminal is the universal dual of `exists`.
+            "single",
+            "singleOrError",
+            "every",
             "selectList",
             "selectFirst",
             "applySet",

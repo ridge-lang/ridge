@@ -21,6 +21,10 @@
 //!   decoding the right entity as `Option`, so an unmatched left row survives)
 //!   and `leftJoinOn` + `selectLeftJoin` (projecting both sides into a named
 //!   shape whose right-derived fields are `Option`, `None` for an unmatched row).
+//! - the unique-row terminals: `single` (the lone match, `None` for empty, an
+//!   error for more than one), `singleOrError` (the same, but an empty match is
+//!   an error too), and `every` (the universal dual of `exists`, `true` over an
+//!   empty selection).
 //!
 //! Gated on `beam-runtime` (real OTP) plus a `which` guard for `erl`/`erlc`.
 
@@ -420,6 +424,94 @@ pub fn db sumNobody () -> Text =
             match r |> Repo.query |> Repo.filter (fn (u: User) -> u.age > 100) |> Repo.sumOf (fn (u: User) -> u.age)
                 Err _ -> "sum-err"
                 Ok o  -> optIntText o
+
+-- The name of an optional user, or "none" for an empty match.
+fn optUserName (o: Option User) -> Text =
+    match o
+        None   -> "none"
+        Some u -> u.name
+
+-- Render a boolean as text, so an `every` result is observable as one string.
+fn boolText (b: Bool) -> Text =
+    if b then "true" else "false"
+
+-- single: exactly one match (id 2) -> "lin". Proves single decodes the lone row.
+pub fn db singleOne () -> Text =
+    match setup ()
+        Err _ -> "setup-err"
+        Ok r  ->
+            match r |> Repo.query |> Repo.filter (fn (u: User) -> u.id == 2) |> Repo.single
+                Err e -> e.code
+                Ok o  -> optUserName o
+
+-- single: no match (id 99) -> "none". Proves the empty result is `Ok None`, not an
+-- error — the lenient half of the pair.
+pub fn db singleNone () -> Text =
+    match setup ()
+        Err _ -> "setup-err"
+        Ok r  ->
+            match r |> Repo.query |> Repo.filter (fn (u: User) -> u.id == 99) |> Repo.single
+                Err e -> e.code
+                Ok o  -> optUserName o
+
+-- single: more than one match (the whole table) -> "repo.single.many". Proves a
+-- non-unique result fails with that code and that the two-row limit catches it.
+pub fn db singleMany () -> Text =
+    match setup ()
+        Err _ -> "setup-err"
+        Ok r  ->
+            match r |> Repo.query |> Repo.single
+                Err e -> e.code
+                Ok o  -> optUserName o
+
+-- singleOrError: exactly one (id 1) -> "ada". Proves the strict reader answers the
+-- bare entity, not an option.
+pub fn db oneOrErr () -> Text =
+    match setup ()
+        Err _ -> "setup-err"
+        Ok r  ->
+            match r |> Repo.query |> Repo.filter (fn (u: User) -> u.id == 1) |> Repo.singleOrError
+                Err e -> e.code
+                Ok u  -> u.name
+
+-- singleOrError: no match (id 99) -> "repo.single.empty". Proves the empty result
+-- is an error here, where `single` returns None.
+pub fn db noneOrErr () -> Text =
+    match setup ()
+        Err _ -> "setup-err"
+        Ok r  ->
+            match r |> Repo.query |> Repo.filter (fn (u: User) -> u.id == 99) |> Repo.singleOrError
+                Err e -> e.code
+                Ok u  -> u.name
+
+-- every: are all users adults? (18, 30, 25 all >= 18) -> "true". Proves every is
+-- the universal over the selected rows.
+pub fn db everyAdult () -> Text =
+    match setup ()
+        Err _ -> "setup-err"
+        Ok r  ->
+            match r |> Repo.query |> Repo.every (fn (u: User) -> u.age >= 18)
+                Err _ -> "every-err"
+                Ok b  -> boolText b
+
+-- every: are all users at least 26? (ada 18 and max 25 fail) -> "false".
+pub fn db everyHigh () -> Text =
+    match setup ()
+        Err _ -> "setup-err"
+        Ok r  ->
+            match r |> Repo.query |> Repo.every (fn (u: User) -> u.age >= 26)
+                Err _ -> "every-err"
+                Ok b  -> boolText b
+
+-- every over an empty selection (no user with id 99) -> "true", the vacuous reading
+-- of a universal over no rows.
+pub fn db everyEmpty () -> Text =
+    match setup ()
+        Err _ -> "setup-err"
+        Ok r  ->
+            match r |> Repo.query |> Repo.filter (fn (u: User) -> u.id == 99) |> Repo.every (fn (u: User) -> u.age >= 18)
+                Err _ -> "every-err"
+                Ok b  -> boolText b
 "#;
 
 fn write_workspace(root: &std::path::Path) {
@@ -511,6 +603,14 @@ fn repo_surface_runs_on_beam() {
          io:format(\"minAllAges=~s~n\",[{module}:minAllAges()]), \
          io:format(\"maxName=~s~n\",[{module}:maxName()]), \
          io:format(\"sumNobody=~s~n\",[{module}:sumNobody()]), \
+         io:format(\"singleOne=~s~n\",[{module}:singleOne()]), \
+         io:format(\"singleNone=~s~n\",[{module}:singleNone()]), \
+         io:format(\"singleMany=~s~n\",[{module}:singleMany()]), \
+         io:format(\"oneOrErr=~s~n\",[{module}:oneOrErr()]), \
+         io:format(\"noneOrErr=~s~n\",[{module}:noneOrErr()]), \
+         io:format(\"everyAdult=~s~n\",[{module}:everyAdult()]), \
+         io:format(\"everyHigh=~s~n\",[{module}:everyHigh()]), \
+         io:format(\"everyEmpty=~s~n\",[{module}:everyEmpty()]), \
          halt()."
     );
     let output = Command::new("erl")
@@ -589,6 +689,32 @@ fn repo_surface_runs_on_beam() {
         (
             "sumNobody=none",
             "an aggregate over an empty match is NULL, decoded to None",
+        ),
+        ("singleOne=lin", "single decodes the lone matching row (id 2)"),
+        (
+            "singleNone=none",
+            "single answers None for an empty match rather than failing",
+        ),
+        (
+            "singleMany=repo.single.many",
+            "single fails when more than one row matches",
+        ),
+        (
+            "oneOrErr=ada",
+            "singleOrError answers the bare entity for an exact single match (id 1)",
+        ),
+        (
+            "noneOrErr=repo.single.empty",
+            "singleOrError fails on an empty match where single returns None",
+        ),
+        ("everyAdult=true", "every is true when all selected rows match"),
+        (
+            "everyHigh=false",
+            "every is false when a selected row fails the predicate",
+        ),
+        (
+            "everyEmpty=true",
+            "every over an empty selection is vacuously true",
         ),
     ] {
         assert!(

@@ -32,6 +32,7 @@
     mem_fetch/6, mem_count_where/3, mem_aggregate/5, mem_project/7,
     mem_join/8, mem_join_select/9, mem_left_join/8, mem_left_join_select/9,
     quote_keep_all/1, quote_and/2,
+    mk_error/2,
     escript_main/1
 ]).
 
@@ -909,6 +910,14 @@ quote_keep_all(_Unit) -> #{tree => {'QLitBool', true}}.
 %% chain of filters becomes a nested `QAnd` the seam compiles or walks as one.
 quote_and(A, B) ->
     #{tree => {'QAnd', maps:get(tree, A), maps:get(tree, B)}}.
+
+%% mk_error/2 — build an `Error` record from a code and a message. `Error` is a
+%% builtin record `{ code: Text, message: Text }`, which codegen lowers to an
+%% atom-keyed map (field access `e.code` compiles to `maps:get(code, _)`). A bare
+%% record literal cannot be coerced to the nominal `Error` type outside an
+%% instance-method body, so the unique-row terminals build their errors here.
+mk_error(Code, Message) ->
+    #{code => Code, message => Message}.
 
 %% mem_select/3 — the rows of Table that satisfy the captured predicate Tree.
 %% The runtime walks the QExpr against each row (the in-memory dual of compiling

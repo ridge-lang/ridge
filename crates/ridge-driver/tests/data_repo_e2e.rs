@@ -29,6 +29,9 @@
 //!   projecting a named record per group (count, sum, average, and a min/max
 //!   range), `having` narrowing by an aggregate (count and sum thresholds), and a
 //!   filter-then-group case where the query's `WHERE` bounds the grouping.
+//! - `distinct`: a projection that drops the repeated dept and salary columns to
+//!   their distinct values, and a whole-row `distinct` that collapses exact
+//!   duplicate rows.
 //!
 //! Gated on `beam-runtime` (real OTP) plus a `which` guard for `erl`/`erlc`.
 
@@ -528,6 +531,11 @@ pub type DeptSum   = { dept: Text, total: Int } deriving (Row)
 pub type DeptAvg   = { dept: Text, mean: Float } deriving (Row)
 pub type DeptRange = { dept: Text, lo: Int, hi: Int } deriving (Row)
 
+-- Single-column shapes the distinct projections decode into: a list of dept names
+-- and a list of salaries, each deduplicated by `distinct`.
+pub type DeptName = { dept: Text } deriving (Row)
+pub type SalAmt   = { salary: Int } deriving (Row)
+
 pub fn empRow (eid: Int) (edept: Text) (esalary: Int) -> Map Text SqlValue =
     Map.fromList [("id", toSql eid), ("dept", toSql edept), ("salary", toSql esalary)]
 
@@ -583,6 +591,18 @@ fn rangeCells (rows: List DeptRange) -> Text =
         []        -> ""
         r :: []   -> rangeCell r
         r :: rest -> Text.concat (rangeCell r) (Text.concat "," (rangeCells rest))
+
+fn deptList (rows: List DeptName) -> Text =
+    match rows
+        []        -> ""
+        r :: []   -> r.dept
+        r :: rest -> Text.concat r.dept (Text.concat "," (deptList rest))
+
+fn salList (rows: List SalAmt) -> Text =
+    match rows
+        []        -> ""
+        r :: []   -> Int.toText r.salary
+        r :: rest -> Text.concat (Int.toText r.salary) (Text.concat "," (salList rest))
 
 -- group + summarize: COUNT(*) per dept, key-ordered -> "eng:2,ops:1,sales:3".
 -- Proves GROUP BY partitions the rows and the result is ordered by the key.
@@ -653,6 +673,63 @@ pub fn db groupFilteredHaving () -> Text =
             match r |> Repo.query |> Repo.filter (fn (e: Emp) -> e.salary >= 100) |> Repo.groupBy (fn (e: Emp) -> e.dept) |> Repo.having (fn g -> g.count > 1) |> Repo.summarize (fn g -> DeptCount { dept = g.key, n = g.count })
                 Err _   -> "group-err"
                 Ok rows -> countCells rows
+
+-- selectList without distinct: every dept, ordered by dept -> all six rows
+-- "eng,eng,ops,sales,sales,sales". The baseline the distinct probe contrasts with.
+pub fn db deptsAll () -> Text =
+    match setupEmps ()
+        Err _ -> "setup-err"
+        Ok r  ->
+            match r |> Repo.query |> Repo.orderBy Asc (fn (e: Emp) -> e.dept) |> Repo.selectList (fn (e: Emp) -> DeptName { dept = e.dept })
+                Err _   -> "err"
+                Ok rows -> deptList rows
+
+-- distinct + selectList: the distinct dept values, ordered -> "eng,ops,sales".
+-- Proves DISTINCT collapses the repeated dept column (six rows -> three).
+pub fn db deptsDistinct () -> Text =
+    match setupEmps ()
+        Err _ -> "setup-err"
+        Ok r  ->
+            match r |> Repo.query |> Repo.distinct |> Repo.orderBy Asc (fn (e: Emp) -> e.dept) |> Repo.selectList (fn (e: Emp) -> DeptName { dept = e.dept })
+                Err _   -> "err"
+                Ok rows -> deptList rows
+
+-- distinct over a numeric column, ordered ascending -> "50,100,150,200,300".
+-- The two sales rows at 150 collapse to one (six salaries -> five distinct).
+pub fn db salariesDistinct () -> Text =
+    match setupEmps ()
+        Err _ -> "setup-err"
+        Ok r  ->
+            match r |> Repo.query |> Repo.distinct |> Repo.orderBy Asc (fn (e: Emp) -> e.salary) |> Repo.selectList (fn (e: Emp) -> SalAmt { salary = e.salary })
+                Err _   -> "err"
+                Ok rows -> salList rows
+
+-- Seed a fresh store with three identical rows and one different one, so a
+-- whole-row distinct has exact duplicates to collapse.
+pub fn db setupDups () -> Result (Repo Emp MemAdapter) Error =
+    let r = Repo.repo (memAdapter ()) "dups"
+    match Repo.insertRow (empRow 1 "x" 10) r
+        Err e -> Err e
+        Ok _  ->
+            match Repo.insertRow (empRow 1 "x" 10) r
+                Err e -> Err e
+                Ok _  ->
+                    match Repo.insertRow (empRow 1 "x" 10) r
+                        Err e -> Err e
+                        Ok _  ->
+                            match Repo.insertRow (empRow 2 "y" 20) r
+                                Err e -> Err e
+                                Ok _  -> Ok r
+
+-- whole-row distinct: `distinct` over the whole row collapses the three identical
+-- rows, so the count is 2. Proves a `SELECT DISTINCT *` dedups exact-duplicate rows.
+pub fn db distinctRows () -> Int =
+    match setupDups ()
+        Err _ -> 0 - 1
+        Ok r  ->
+            match r |> Repo.query |> Repo.distinct |> Repo.toList
+                Err _   -> 0 - 1
+                Ok rows -> listLen rows
 "#;
 
 fn write_workspace(root: &std::path::Path) {
@@ -759,6 +836,10 @@ fn repo_surface_runs_on_beam() {
          io:format(\"groupHavingCount=~s~n\",[{module}:groupHavingCount()]), \
          io:format(\"groupHavingSum=~s~n\",[{module}:groupHavingSum()]), \
          io:format(\"groupFilteredHaving=~s~n\",[{module}:groupFilteredHaving()]), \
+         io:format(\"deptsAll=~s~n\",[{module}:deptsAll()]), \
+         io:format(\"deptsDistinct=~s~n\",[{module}:deptsDistinct()]), \
+         io:format(\"salariesDistinct=~s~n\",[{module}:salariesDistinct()]), \
+         io:format(\"distinctRows=~w~n\",[{module}:distinctRows()]), \
          halt()."
     );
     let output = Command::new("erl")
@@ -891,6 +972,22 @@ fn repo_surface_runs_on_beam() {
         (
             "groupFilteredHaving=eng:2,sales:3",
             "the query filter bounds the grouping before having runs",
+        ),
+        (
+            "deptsAll=eng,eng,ops,sales,sales,sales",
+            "selectList without distinct returns the dept column for all six rows",
+        ),
+        (
+            "deptsDistinct=eng,ops,sales",
+            "distinct collapses the repeated dept column to its three distinct values",
+        ),
+        (
+            "salariesDistinct=50,100,150,200,300",
+            "distinct over the salary column drops the duplicate 150 (six rows -> five)",
+        ),
+        (
+            "distinctRows=2",
+            "distinct over whole rows collapses three identical rows, leaving two",
         ),
     ] {
         assert!(

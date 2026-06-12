@@ -37,10 +37,10 @@
     pg_get_rows/4,
     pg_delete/3,
     pg_update/4,
-    pg_fetch/6,
+    pg_fetch/7,
     pg_count_where/3,
     pg_aggregate/5,
-    pg_project/7,
+    pg_project/8,
     pg_join/8,
     pg_join_select/9,
     pg_left_join/8,
@@ -110,8 +110,8 @@ pg_update(Id, Table, Changes, Tree) -> pg_call(Id, {update, Table, Changes, Tree
 %% offset and limited, all pushed into the SQL. Orders is a list of `{Asc, Column}`
 %% where Asc is the boolean `true` for ascending. Lim < 0 means no LIMIT and
 %% Off =< 0 means no OFFSET. Result (List Row) Error.
-pg_fetch(Id, Table, Tree, Orders, Lim, Off) ->
-    pg_call(Id, {fetch, Table, Tree, Orders, Lim, Off}).
+pg_fetch(Id, Table, Tree, Orders, Lim, Off, Dist) ->
+    pg_call(Id, {fetch, Table, Tree, Orders, Lim, Off, Dist}).
 
 %% pg_count_where/3 — how many rows of Table satisfy Tree, via SELECT COUNT(*)
 %% so no rows cross the wire. Result Int Error.
@@ -128,8 +128,8 @@ pg_aggregate(Id, Table, Tree, Func, Column) ->
 %% pg_fetch, with the `{Alias, Column}` projection compiled into the select-list
 %% (`SELECT column AS alias …`); each row comes back keyed by alias. Result
 %% (List Row) Error.
-pg_project(Id, Table, Tree, Orders, Lim, Off, Cols) ->
-    pg_call(Id, {project, Table, Tree, Orders, Lim, Off, Cols}).
+pg_project(Id, Table, Tree, Orders, Lim, Off, Cols, Dist) ->
+    pg_call(Id, {project, Table, Tree, Orders, Lim, Off, Cols, Dist}).
 
 %% pg_group_summarize/6 — group the rows of Table that satisfy Tree by KeyCol,
 %% summarizing each group into the `{Alias, Func, Column}` aggregates, keeping the
@@ -541,14 +541,14 @@ run_verb(Conn, {delete, Table, Tree}) ->
     do_exec(Conn, ["DELETE FROM ", quote_ident(Table), " WHERE ", Where], Binds);
 run_verb(Conn, {update, Table, Changes, Tree}) ->
     do_update(Conn, Table, Changes, Tree);
-run_verb(Conn, {fetch, Table, Tree, Orders, Lim, Off}) ->
+run_verb(Conn, {fetch, Table, Tree, Orders, Lim, Off, Dist}) ->
     {Where, Binds} = compile_where(Tree),
-    Sql = ["SELECT * FROM ", quote_ident(Table), " WHERE ", Where,
+    Sql = ["SELECT ", distinct_kw(Dist), "* FROM ", quote_ident(Table), " WHERE ", Where,
            order_by_clause(Orders), limit_clause(Lim), offset_clause(Off)],
     run_query(Conn, Sql, Binds);
-run_verb(Conn, {project, Table, Tree, Orders, Lim, Off, Cols}) ->
+run_verb(Conn, {project, Table, Tree, Orders, Lim, Off, Cols, Dist}) ->
     {Where, Binds} = compile_where(Tree),
-    Sql = ["SELECT ", select_list(Cols), " FROM ", quote_ident(Table), " WHERE ", Where,
+    Sql = ["SELECT ", distinct_kw(Dist), select_list(Cols), " FROM ", quote_ident(Table), " WHERE ", Where,
            order_by_clause(Orders), limit_clause(Lim), offset_clause(Off)],
     run_query(Conn, Sql, Binds);
 run_verb(Conn, {join, LeftTable, RightTable, Cond, Pred, Orders, Lim, Off}) ->
@@ -845,6 +845,9 @@ limit_clause(_)                                  -> [].
 
 offset_clause(Off) when is_integer(Off), Off > 0 -> [" OFFSET ", integer_to_list(Off)];
 offset_clause(_)                                 -> [].
+
+distinct_kw(true) -> "DISTINCT ";
+distinct_kw(_)    -> "".
 
 %% --- QExpr -> parameterised WHERE clause ---
 %%

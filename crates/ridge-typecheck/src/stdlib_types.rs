@@ -216,9 +216,10 @@ fn reconciled_decls(b: &BuiltinTyCons, base: u32) -> Vec<TyConDecl> {
         },
         // `std.repo` — a query under construction over a repository. A generic
         // opaque record declared in Ridge (stdlib/repo.ridge): the repository, the
-        // accumulated filter, the ordering as `(ascending?, column)` keys, and the
-        // page (`lim`, `off`). Opaque, so user code only threads it through the
-        // builder (`query`/`filter`/`orderBy`/`limit`/`offset`) into a terminal.
+        // accumulated filter, the ordering as `(ascending?, column)` keys, the
+        // page (`lim`, `off`), and the `dist` flag (a `SELECT DISTINCT`). Opaque, so
+        // user code only threads it through the builder
+        // (`query`/`filter`/`orderBy`/`limit`/`offset`/`distinct`) into a terminal.
         // Field order mirrors the source so the consistency check holds.
         TyConDecl {
             id: TyConId(base + 5),
@@ -265,6 +266,10 @@ fn reconciled_decls(b: &BuiltinTyCons, base: u32) -> Vec<TyConDecl> {
                     RecordField {
                         name: "off".to_string(),
                         ty: Type::Con(b.int, vec![]),
+                    },
+                    RecordField {
+                        name: "dist".to_string(),
+                        ty: Type::Con(b.bool, vec![]),
                     },
                 ],
             )),
@@ -941,6 +946,8 @@ fn reconciled_repo_fn_scheme(
         "query" => method(vec![repo_app()], query_app(), vec![]),
         // filter : ∀e a. Quote (e -> Bool) -> Query e a -> Query e a
         "filter" => method(vec![quote_pred(), query_app()], query_app(), vec![]),
+        // distinct : ∀e a. Query e a -> Query e a — drop duplicate result rows.
+        "distinct" => method(vec![query_app()], query_app(), vec![]),
         // limit / offset : ∀e a. Int -> Query e a -> Query e a
         "limit" | "offset" => method(
             vec![Type::Con(b.int, vec![]), query_app()],

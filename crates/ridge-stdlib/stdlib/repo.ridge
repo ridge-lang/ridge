@@ -87,7 +87,7 @@ pub fn findBy (pred: Quote (Map Text SqlValue -> Bool)) (r: Repo e a) -> Result 
 -- The first entity matching a quoted predicate, or `None` when none match.
 -- Fetched with a one-row limit, so the backend stops at the first match.
 pub fn find (pred: Quote (Map Text SqlValue -> Bool)) (r: Repo e a) -> Result (Option e) Error where Adapter a, Row e =
-    match fetch r.adapter r.table pred [] 1 0
+    match fetch r.adapter r.table pred [] 1 0 false
         Err err  -> Err err
         Ok rows  -> firstDecoded rows
 
@@ -113,7 +113,7 @@ pub fn countBy (pred: Quote (Map Text SqlValue -> Bool)) (r: Repo e a) -> Result
 
 -- Whether any row matches a quoted predicate. Fetched with a one-row limit.
 pub fn exists (pred: Quote (Map Text SqlValue -> Bool)) (r: Repo e a) -> Result Bool Error where Adapter a =
-    match fetch r.adapter r.table pred [] 1 0
+    match fetch r.adapter r.table pred [] 1 0 false
         Err err  -> Err err
         Ok rows  ->
             match rows
@@ -195,48 +195,57 @@ fn settersToMap (setters: List (Setter e)) -> Map Text SqlValue =
 pub fn setWhere (setters: List (Setter e)) (pred: Quote (Map Text SqlValue -> Bool)) (r: Repo e a) -> Result Int Error where Adapter a =
     updateRows r.adapter r.table (settersToMap setters) pred
 
--- A query under construction over a repository: a filter, an ordering, and a
--- page (offset and limit) accumulated before a terminal runs it. Opaque and
--- threaded through the builder, so it reads as a pipeline:
+-- A query under construction over a repository: a filter, an ordering, a page
+-- (offset and limit), and a `distinct` flag accumulated before a terminal runs
+-- it. Opaque and threaded through the builder, so it reads as a pipeline:
 --   users |> Repo.query |> Repo.filter (...) |> Repo.orderBy Desc (...) |> Repo.toList
 -- The ordering is a list of `(ascending?, column)` keys in major-to-minor order;
--- `lim` is negative for no limit and `off` is non-positive for no offset.
-pub opaque type Query e a = { repo: Repo e a, pred: Quote (Map Text SqlValue -> Bool), orders: List (Bool, Text), lim: Int, off: Int }
+-- `lim` is negative for no limit and `off` is non-positive for no offset; `dist`
+-- asks the terminal to drop duplicate rows (a `SELECT DISTINCT`).
+pub opaque type Query e a = { repo: Repo e a, pred: Quote (Map Text SqlValue -> Bool), orders: List (Bool, Text), lim: Int, off: Int, dist: Bool }
 
 -- Start a query over a repository: every row, unordered, unpaged.
 pub fn query (r: Repo e a) -> Query e a =
-    Query { repo = r, pred = keepAll (), orders = [], lim = 0 - 1, off = 0 }
+    Query { repo = r, pred = keepAll (), orders = [], lim = 0 - 1, off = 0, dist = false }
 
 -- Narrow a query by a predicate, AND-combined with any filter already set. The
 -- predicate is written against the entity (`fn (u: User) -> ...`) and captured as
 -- a query tree, exactly as at the adapter seam. (`filter`, not `where`, because
 -- `where` introduces a constraint list in Ridge.)
 pub fn filter (pred: Quote (Map Text SqlValue -> Bool)) (q: Query e a) -> Query e a =
-    Query { repo = q.repo, pred = quoteAnd q.pred pred, orders = q.orders, lim = q.lim, off = q.off }
+    Query { repo = q.repo, pred = quoteAnd q.pred pred, orders = q.orders, lim = q.lim, off = q.off, dist = q.dist }
 
 -- Append an ordering key. Keys order major-to-minor in the order added, each
 -- ascending or descending. The key is a quoted column: `fn (u: User) -> u.age`.
 pub fn orderBy (dir: SortOrder) (key: Quote (Map Text SqlValue -> k)) (q: Query e a) -> Query e a =
-    Query { repo = q.repo, pred = q.pred, orders = q.orders ++ [(ascending dir, orderColumn key)], lim = q.lim, off = q.off }
+    Query { repo = q.repo, pred = q.pred, orders = q.orders ++ [(ascending dir, orderColumn key)], lim = q.lim, off = q.off, dist = q.dist }
 
 -- Keep at most `n` rows.
 pub fn limit (n: Int) (q: Query e a) -> Query e a =
-    Query { repo = q.repo, pred = q.pred, orders = q.orders, lim = n, off = q.off }
+    Query { repo = q.repo, pred = q.pred, orders = q.orders, lim = n, off = q.off, dist = q.dist }
 
 -- Skip the first `n` rows.
 pub fn offset (n: Int) (q: Query e a) -> Query e a =
-    Query { repo = q.repo, pred = q.pred, orders = q.orders, lim = q.lim, off = n }
+    Query { repo = q.repo, pred = q.pred, orders = q.orders, lim = q.lim, off = n, dist = q.dist }
+
+-- Drop duplicate rows from the query's result — a `SELECT DISTINCT`. Two rows are
+-- duplicates when every selected column matches, so over whole entities it removes
+-- exact repeats and over a projection (`selectList`) it removes repeats of the
+-- projected columns. The backend pushes it down: `SELECT DISTINCT` on Postgres, a
+-- dedup on the in-memory store. Idempotent — a second `distinct` changes nothing.
+pub fn distinct (q: Query e a) -> Query e a =
+    Query { repo = q.repo, pred = q.pred, orders = q.orders, lim = q.lim, off = q.off, dist = true }
 
 -- Run the query and decode the matching rows into entities, in the chosen order.
 pub fn toList (q: Query e a) -> Result (List e) Error where Adapter a, Row e =
-    match fetch q.repo.adapter q.repo.table q.pred q.orders q.lim q.off
+    match fetch q.repo.adapter q.repo.table q.pred q.orders q.lim q.off q.dist
         Err err -> Err err
         Ok rows -> decodeRows rows
 
 -- Run the query for just its first row, decoded; `None` when none match. The
 -- ordering and offset still apply, with a one-row limit.
 pub fn first (q: Query e a) -> Result (Option e) Error where Adapter a, Row e =
-    match fetch q.repo.adapter q.repo.table q.pred q.orders 1 q.off
+    match fetch q.repo.adapter q.repo.table q.pred q.orders 1 q.off q.dist
         Err err -> Err err
         Ok rows -> firstDecoded rows
 
@@ -256,7 +265,7 @@ fn mkError (code: Text) (message: Text) -> Error
 -- The filter and offset still apply; an ordering does not change which single row
 -- is meant, only the error or the lone value. (LINQ's `SingleOrDefault`.)
 pub fn single (q: Query e a) -> Result (Option e) Error where Adapter a, Row e =
-    match fetch q.repo.adapter q.repo.table q.pred q.orders 2 q.off
+    match fetch q.repo.adapter q.repo.table q.pred q.orders 2 q.off q.dist
         Err err -> Err err
         Ok rows ->
             match rows
@@ -276,7 +285,7 @@ pub fn single (q: Query e a) -> Result (Option e) Error where Adapter a, Row e =
 -- `single` it fetches a second row only to detect a non-unique result.
 -- (LINQ's `Single`.)
 pub fn singleOrError (q: Query e a) -> Result e Error where Adapter a, Row e =
-    match fetch q.repo.adapter q.repo.table q.pred q.orders 2 q.off
+    match fetch q.repo.adapter q.repo.table q.pred q.orders 2 q.off q.dist
         Err err -> Err err
         Ok rows ->
             match rows
@@ -310,14 +319,14 @@ pub fn every (pred: Quote (Map Text SqlValue -> Bool)) (q: Query e a) -> Result 
 -- select-list down (`SELECT name, signup_year AS year …`) so only those columns
 -- cross, in the chosen order and page.
 pub fn selectList (proj: Quote (Map Text SqlValue -> s)) (q: Query e a) -> Result (List s) Error where Adapter a, Row s =
-    match project q.repo.adapter q.repo.table q.pred q.orders q.lim q.off (projColumns proj)
+    match project q.repo.adapter q.repo.table q.pred q.orders q.lim q.off (projColumns proj) q.dist
         Err err -> Err err
         Ok rows -> decodeRows rows
 
 -- Run a projection for just its first row, decoded into `s`; `None` when none
 -- match. The ordering and offset still apply, with a one-row limit.
 pub fn selectFirst (proj: Quote (Map Text SqlValue -> s)) (q: Query e a) -> Result (Option s) Error where Adapter a, Row s =
-    match project q.repo.adapter q.repo.table q.pred q.orders 1 q.off (projColumns proj)
+    match project q.repo.adapter q.repo.table q.pred q.orders 1 q.off (projColumns proj) q.dist
         Err err -> Err err
         Ok rows -> firstDecoded rows
 

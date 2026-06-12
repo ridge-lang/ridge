@@ -33,7 +33,9 @@
 //! `summarize` compile to `SELECT <aggregates> … GROUP BY <key> ORDER BY <key>`
 //! (count, sum, average, and a min/max range per group), and `having` re-renders
 //! the aggregate into a real `HAVING` clause, including a filter-then-group case
-//! where the `WHERE` binds precede the `HAVING` bind.
+//! where the `WHERE` binds precede the `HAVING` bind. `distinct` projections
+//! compile to `SELECT DISTINCT <cols> …`, dropping the repeated dept and salary
+//! columns to their distinct values.
 
 #![cfg(feature = "beam-runtime")]
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
@@ -620,6 +622,10 @@ pub type DeptSum   = { dept: Text, total: Int } deriving (Row)
 pub type DeptAvg   = { dept: Text, mean: Float } deriving (Row)
 pub type DeptRange = { dept: Text, lo: Int, hi: Int } deriving (Row)
 
+-- Single-column shapes the distinct projections decode into.
+pub type DeptName = { dept: Text } deriving (Row)
+pub type SalAmt   = { salary: Int } deriving (Row)
+
 pub fn empRow (eid: Int) (edept: Text) (esalary: Int) -> Map Text SqlValue =
     Map.fromList [("id", toSql eid), ("dept", toSql edept), ("salary", toSql esalary)]
 
@@ -680,6 +686,18 @@ fn rangeCells (rows: List DeptRange) -> Text =
         []        -> ""
         r :: []   -> rangeCell r
         r :: rest -> Text.concat (rangeCell r) (Text.concat "," (rangeCells rest))
+
+fn deptList (rows: List DeptName) -> Text =
+    match rows
+        []        -> ""
+        r :: []   -> r.dept
+        r :: rest -> Text.concat r.dept (Text.concat "," (deptList rest))
+
+fn salList (rows: List SalAmt) -> Text =
+    match rows
+        []        -> ""
+        r :: []   -> Int.toText r.salary
+        r :: rest -> Text.concat (Int.toText r.salary) (Text.concat "," (salList rest))
 
 -- group + summarize against Postgres: COUNT(*) per dept -> "eng:2,ops:1,sales:3".
 pub fn db groupCounts () -> Text =
@@ -749,6 +767,36 @@ pub fn db groupFilteredHaving () -> Text =
             match r |> Repo.query |> Repo.filter (fn (e: Emp) -> e.salary >= 100) |> Repo.groupBy (fn (e: Emp) -> e.dept) |> Repo.having (fn g -> g.count > 1) |> Repo.summarize (fn g -> DeptCount { dept = g.key, n = g.count })
                 Err _   -> "group-err"
                 Ok rows -> countCells rows
+
+-- selectList without distinct against Postgres: every dept, ordered by dept ->
+-- "eng,eng,ops,sales,sales,sales". The baseline the distinct probe contrasts with.
+pub fn db deptsAll () -> Text =
+    match setupEmps ()
+        Err _ -> "setup-err"
+        Ok r  ->
+            match r |> Repo.query |> Repo.orderBy Asc (fn (e: Emp) -> e.dept) |> Repo.selectList (fn (e: Emp) -> DeptName { dept = e.dept })
+                Err _   -> "err"
+                Ok rows -> deptList rows
+
+-- distinct + selectList against Postgres: `SELECT DISTINCT dept` ordered ->
+-- "eng,ops,sales". Proves Postgres dedups the repeated dept column.
+pub fn db deptsDistinct () -> Text =
+    match setupEmps ()
+        Err _ -> "setup-err"
+        Ok r  ->
+            match r |> Repo.query |> Repo.distinct |> Repo.orderBy Asc (fn (e: Emp) -> e.dept) |> Repo.selectList (fn (e: Emp) -> DeptName { dept = e.dept })
+                Err _   -> "err"
+                Ok rows -> deptList rows
+
+-- distinct over a numeric column against Postgres, ordered ascending ->
+-- "50,100,150,200,300". The two sales rows at 150 collapse to one.
+pub fn db salariesDistinct () -> Text =
+    match setupEmps ()
+        Err _ -> "setup-err"
+        Ok r  ->
+            match r |> Repo.query |> Repo.distinct |> Repo.orderBy Asc (fn (e: Emp) -> e.salary) |> Repo.selectList (fn (e: Emp) -> SalAmt { salary = e.salary })
+                Err _   -> "err"
+                Ok rows -> salList rows
 "#;
 
 /// Connection settings parsed out of `RIDGE_TEST_PG_URL`.
@@ -937,6 +985,9 @@ fn postgres_adapter_reads_a_real_table() {
          io:format(\"groupHavingCount=~s~n\",[{module}:groupHavingCount()]), \
          io:format(\"groupHavingSum=~s~n\",[{module}:groupHavingSum()]), \
          io:format(\"groupFilteredHaving=~s~n\",[{module}:groupFilteredHaving()]), \
+         io:format(\"deptsAll=~s~n\",[{module}:deptsAll()]), \
+         io:format(\"deptsDistinct=~s~n\",[{module}:deptsDistinct()]), \
+         io:format(\"salariesDistinct=~s~n\",[{module}:salariesDistinct()]), \
          {pool_probe} \
          halt()."
     );
@@ -1101,6 +1152,18 @@ fn postgres_adapter_reads_a_real_table() {
         (
             "groupFilteredHaving=eng:2,sales:3",
             "the WHERE bind precedes the HAVING bind in the compiled statement",
+        ),
+        (
+            "deptsAll=eng,eng,ops,sales,sales,sales",
+            "selectList without distinct returns the dept column for all six rows",
+        ),
+        (
+            "deptsDistinct=eng,ops,sales",
+            "SELECT DISTINCT collapses the repeated dept column to three values",
+        ),
+        (
+            "salariesDistinct=50,100,150,200,300",
+            "SELECT DISTINCT over the salary column drops the duplicate 150",
         ),
         (
             "concurrent=true",

@@ -29,7 +29,7 @@
     ask/3, send/2, send_op/2, send_fn/2, mailbox_size/1, spawn_actor/3,
     mem_new/1, mem_insert/3, mem_all/2,
     mem_select/3, mem_delete/3, mem_update/4, mem_get_rows/4,
-    mem_fetch/6, mem_count_where/3, mem_project/7,
+    mem_fetch/6, mem_count_where/3, mem_aggregate/5, mem_project/7,
     mem_join/8, mem_join_select/9, mem_left_join/8, mem_left_join_select/9,
     quote_keep_all/1, quote_and/2,
     escript_main/1
@@ -941,6 +941,14 @@ mem_fetch(Id, Table, Tree, Orders, Lim, Off) ->
 %% returning them (the in-memory dual of SELECT COUNT(*)). Result Int Error.
 mem_count_where(Id, Table, Tree) -> mem_call({count_where, Id, Table, Tree}).
 
+%% mem_aggregate/5 — fold a scalar aggregate (Func is <<"SUM">>/<<"AVG">>/
+%% <<"MIN">>/<<"MAX">>) over Column across the rows of Table that satisfy Tree.
+%% The single scalar comes back as a SqlValue, or 'SqlNull' when no row matches
+%% (the in-memory dual of a SQL aggregate over an empty set). Result SqlValue
+%% Error.
+mem_aggregate(Id, Table, Tree, Func, Column) ->
+    mem_call({aggregate, Id, Table, Tree, Func, Column}).
+
 %% mem_project/7 — the rows of Table that satisfy Tree, ordered and paged as
 %% mem_fetch, then projected to the `{Alias, Column}` columns: each row keeps
 %% only those columns, re-keyed by alias. Result (List Row) Error.
@@ -1057,6 +1065,13 @@ mem_keeper_loop(State) ->
             N = length([R || R <- Rows, mem_pred(Tree, R)]),
             From ! {Ref, {ok, N}},
             mem_keeper_loop(State);
+        {{aggregate, Id, Table, Tree, Func, Column}, From, Ref} ->
+            Rows = maps:get({Id, Table}, State, []),
+            Matches = [R || R <- Rows, mem_pred(Tree, R)],
+            Value = mem_aggregate_value(Func, Column, Matches),
+            Wrapped = case Value of 'SqlNull' -> none; _ -> {some, Value} end,
+            From ! {Ref, {ok, Wrapped}},
+            mem_keeper_loop(State);
         {{project, Id, Table, Tree, Orders, Lim, Off, Cols}, From, Ref} ->
             Rows = maps:get({Id, Table}, State, []),
             Matches = [R || R <- Rows, mem_pred(Tree, R)],
@@ -1088,6 +1103,62 @@ mem_keeper_loop(State) ->
 %% column reads as SQL NULL.
 mem_project_row(Cols, Row) ->
     maps:from_list([{Alias, maps:get(Col, Row, 'SqlNull')} || {Alias, Col} <- Cols]).
+
+%% Fold a scalar aggregate over Column across Rows, returning a SqlValue. NULLs (a
+%% missing column or an explicit SqlNull) are skipped, as in SQL; an empty set —
+%% no rows, or every value NULL — is SqlNull. SUM keeps the column's numeric type
+%% (an all-integer sum stays an integer, a float anywhere makes it a float); AVG
+%% is always a float; MIN/MAX keep the values' own type, comparing numbers
+%% numerically and text lexicographically.
+mem_aggregate_value(Func, Column, Rows) ->
+    Values = [V || R <- Rows, V <- [maps:get(Column, R, 'SqlNull')], V =/= 'SqlNull'],
+    mem_agg(Func, Values).
+
+mem_agg(_Func, [])         -> 'SqlNull';
+mem_agg(<<"SUM">>, Values) -> mem_sum(Values);
+mem_agg(<<"AVG">>, Values) -> {'SqlFloat', mem_numsum(Values) / length(Values)};
+mem_agg(<<"MIN">>, Values) -> mem_extreme(min, Values);
+mem_agg(<<"MAX">>, Values) -> mem_extreme(max, Values);
+mem_agg(_Other, _Values)   -> 'SqlNull'.
+
+%% SUM stays an integer while every addend is one and becomes a float as soon as
+%% any value is a float, mirroring Postgres where SUM(int) is integral and
+%% SUM(float8) is floating.
+mem_sum(Values) ->
+    Sum = mem_numsum(Values),
+    case lists:any(fun is_float_val/1, Values) of
+        true  -> {'SqlFloat', float(Sum)};
+        false -> {'SqlInt', Sum}
+    end.
+
+mem_numsum(Values) ->
+    lists:foldl(fun(V, Acc) -> Acc + mem_num(V) end, 0, Values).
+
+mem_num({'SqlInt', N})   -> N;
+mem_num({'SqlFloat', F}) -> F.
+
+is_float_val({'SqlFloat', _}) -> true;
+is_float_val(_)               -> false.
+
+%% MIN/MAX by direction over the values' comparison keys, keeping the original
+%% SqlValue so the result carries the column's type. Numbers compare numerically,
+%% text lexicographically.
+mem_extreme(Dir, [V | Rest]) -> mem_extreme(Dir, Rest, V).
+
+mem_extreme(_Dir, [], Best) -> Best;
+mem_extreme(Dir, [V | Rest], Best) ->
+    case mem_better(Dir, mem_key(V), mem_key(Best)) of
+        true  -> mem_extreme(Dir, Rest, V);
+        false -> mem_extreme(Dir, Rest, Best)
+    end.
+
+mem_better(min, A, B) -> A < B;
+mem_better(max, A, B) -> A > B.
+
+mem_key({'SqlInt', N})   -> N;
+mem_key({'SqlFloat', F}) -> F;
+mem_key({'SqlText', S})  -> S;
+mem_key({'SqlBool', B})  -> B.
 
 %% Merge the Changes columns into every row matching the predicate tree, leaving
 %% the rest untouched; return `{UpdatedRows, ChangedCount}`. An empty Changes map

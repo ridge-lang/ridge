@@ -266,6 +266,58 @@ pub fn selectFirst (proj: Quote (Map Text SqlValue -> s)) (q: Query e a) -> Resu
 pub fn applySet (setters: List (Setter e)) (q: Query e a) -> Result Int Error where Adapter a =
     updateRows q.repo.adapter q.repo.table (settersToMap setters) q.pred
 
+-- Decode the optional scalar a `SELECT func(col) …` aggregate returns into an
+-- optional typed value. The seam reports a SQL NULL (an aggregate over zero
+-- matching rows) as `None`, so this only decodes a present value through the
+-- column type's `SqlType` codec and re-wraps it in `Some`. The decode is the base
+-- `fromSql`, riding the `SqlType w` dictionary the aggregate verb already carries
+-- — no nullable-column instance is involved, since the seam, not the codec,
+-- carries the NULL.
+fn decodeScalar (v: Option SqlValue) -> Result (Option w) Error where SqlType w =
+    match v
+        None    -> Ok None
+        Some sv ->
+            match fromSql sv
+                Err e -> Err e
+                Ok x  -> Ok (Some x)
+
+-- Sum the column a quoted accessor names over the rows the query selects; `None`
+-- when no row matches (an empty sum is SQL NULL, not zero — reach for
+-- `Option.withDefault 0` for the LINQ-style zero). The column type `n` flows from
+-- the accessor and the scalar rides its `SqlType` codec, so a `Int` column answers
+-- `Option Int` and a `Float` column `Option Float`. Only the filter bounds the
+-- rows — ordering and paging do not constrain an aggregate — so this is the
+-- pipeline form of a `SELECT SUM(col) … WHERE` push-down.
+pub fn sumOf (col: Quote (Map Text SqlValue -> n)) (q: Query e a) -> Result (Option n) Error where Adapter a, SqlType n =
+    match aggregate q.repo.adapter q.repo.table q.pred "SUM" (aggColumn col)
+        Err err -> Err err
+        Ok v    -> decodeScalar v
+
+-- The average of the column a quoted accessor names over the rows the query
+-- selects, as a `Float`; `None` when no row matches. SQL `AVG` is fractional even
+-- over an integer column, so the result is always `Option Float`, independent of
+-- the column's own type.
+pub fn avgOf (col: Quote (Map Text SqlValue -> n)) (q: Query e a) -> Result (Option Float) Error where Adapter a =
+    match aggregate q.repo.adapter q.repo.table q.pred "AVG" (aggColumn col)
+        Err err -> Err err
+        Ok v    -> decodeScalar v
+
+-- The least value of the column a quoted accessor names over the rows the query
+-- selects; `None` when no row matches. `MIN` keeps the column's own type, so it
+-- answers `Option v` for a column of type `v` (a number or text).
+pub fn minOf (col: Quote (Map Text SqlValue -> v)) (q: Query e a) -> Result (Option v) Error where Adapter a, SqlType v =
+    match aggregate q.repo.adapter q.repo.table q.pred "MIN" (aggColumn col)
+        Err err -> Err err
+        Ok x    -> decodeScalar x
+
+-- The greatest value of the column a quoted accessor names over the rows the
+-- query selects; `None` when no row matches. `MAX` keeps the column's own type,
+-- so it answers `Option v` for a column of type `v` (a number or text).
+pub fn maxOf (col: Quote (Map Text SqlValue -> v)) (q: Query e a) -> Result (Option v) Error where Adapter a, SqlType v =
+    match aggregate q.repo.adapter q.repo.table q.pred "MAX" (aggColumn col)
+        Err err -> Err err
+        Ok x    -> decodeScalar x
+
 -- A join under construction: the left query, the right repository, and a quoted
 -- condition over both entities. Opaque and threaded from `joinOn` into a
 -- terminal, so it reads as a pipeline:
@@ -400,5 +452,13 @@ fn qcolName (e: QExpr) -> Text =
 -- its tree is a `QCol`; anything else contributes an empty key name.
 fn orderColumn (key: Quote (Map Text SqlValue -> k)) -> Text =
     match key.tree
+        QCol c -> c
+        _      -> ""
+
+-- The column an aggregate accessor names. Like an ordering key, the accessor
+-- quote captures a single column (a `QCol`); anything else contributes an empty
+-- column name.
+fn aggColumn (col: Quote (Map Text SqlValue -> v)) -> Text =
+    match col.tree
         QCol c -> c
         _      -> ""

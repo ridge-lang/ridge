@@ -39,6 +39,7 @@
     pg_update/4,
     pg_fetch/6,
     pg_count_where/3,
+    pg_aggregate/5,
     pg_project/7,
     pg_join/8,
     pg_join_select/9,
@@ -114,6 +115,13 @@ pg_fetch(Id, Table, Tree, Orders, Lim, Off) ->
 %% pg_count_where/3 — how many rows of Table satisfy Tree, via SELECT COUNT(*)
 %% so no rows cross the wire. Result Int Error.
 pg_count_where(Id, Table, Tree) -> pg_call(Id, {count_where, Table, Tree}).
+
+%% pg_aggregate/5 — a scalar aggregate (Func is <<"SUM">>/<<"AVG">>/<<"MIN">>/
+%% <<"MAX">>) over Column across the rows of Table that satisfy Tree, via
+%% SELECT func(column) … WHERE so only the scalar crosses the wire. An aggregate
+%% over zero rows is SQL NULL, which decodes to 'SqlNull'. Result SqlValue Error.
+pg_aggregate(Id, Table, Tree, Func, Column) ->
+    pg_call(Id, {aggregate, Table, Tree, Func, Column}).
 
 %% pg_project/7 — the rows of Table that satisfy Tree, ordered and paged as
 %% pg_fetch, with the `{Alias, Column}` projection compiled into the select-list
@@ -570,7 +578,9 @@ run_verb(Conn, {left_join_select, LeftTable, RightTable, Cond, Pred, Orders, Lim
            order_by_clause_join(Orders), limit_clause(Lim), offset_clause(Off)],
     run_query(Conn, Sql, lists:reverse(RevB2));
 run_verb(Conn, {count_where, Table, Tree}) ->
-    do_count(Conn, Table, Tree).
+    do_count(Conn, Table, Tree);
+run_verb(Conn, {aggregate, Table, Tree, Func, Column}) ->
+    do_aggregate(Conn, Table, Func, Column, Tree).
 
 do_insert(Conn, Table, Row) ->
     Pairs = maps:to_list(Row),
@@ -622,6 +632,37 @@ do_count(Conn, Table, Tree) ->
         {ok, []}   -> {ok, 0};
         {error, E} -> {error, E}
     end.
+
+%% SELECT func(col) … WHERE and read the single scalar back out positionally (its
+%% column name is the aggregate keyword, which varies). An aggregate always
+%% returns one row; over zero matching rows its single column is NULL, decoded to
+%% 'SqlNull'. Func is whitelisted to the four aggregate keywords and Column is
+%% quoted as an identifier, so neither is ever interpolated as raw SQL.
+do_aggregate(Conn, Table, Func, Column, Tree) ->
+    {Where, Binds} = compile_where(Tree),
+    Sql = ["SELECT ", agg_expr(Func, Column), " FROM ", quote_ident(Table),
+           " WHERE ", Where],
+    case run_query(Conn, Sql, Binds) of
+        {ok, [Row | _]} ->
+            case maps:values(Row) of
+                ['SqlNull' | _] -> {ok, none};
+                [V | _]         -> {ok, {some, V}};
+                []              -> {ok, none}
+            end;
+        {ok, []}   -> {ok, none};
+        {error, E} -> {error, E}
+    end.
+
+%% The aggregate select expression. The function name is matched against the four
+%% supported keywords (never spliced from the caller's bytes); an unknown keyword
+%% falls back to COUNT, which the typed surface never produces. AVG is cast to
+%% float8 so an integer column's average crosses the wire as a float, matching the
+%% `Float` result the repository verb decodes.
+agg_expr(<<"AVG">>, Column) -> ["AVG(", quote_ident(Column), ")::float8"];
+agg_expr(<<"SUM">>, Column) -> ["SUM(", quote_ident(Column), ")"];
+agg_expr(<<"MIN">>, Column) -> ["MIN(", quote_ident(Column), ")"];
+agg_expr(<<"MAX">>, Column) -> ["MAX(", quote_ident(Column), ")"];
+agg_expr(_Other, Column)    -> ["COUNT(", quote_ident(Column), ")"].
 
 %% ORDER BY / LIMIT / OFFSET fragments. Identifiers are quoted; the limit and
 %% offset are integers from the typed surface, so they render inline without a

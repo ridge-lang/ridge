@@ -42,6 +42,8 @@ import std.repo as Repo
 import std.query (SortOrder, Asc, Desc)
 import std.sql (toSql, SqlValue)
 import std.map as Map
+import std.int as Int
+import std.float as Float
 
 pub type User = { id: Int, age: Int, name: Text } deriving (Row)
 
@@ -434,6 +436,84 @@ pub fn db appliedName () -> Text =
                         Err _       -> "get-err"
                         Ok None     -> "none"
                         Ok (Some u) -> u.name
+
+-- Render an optional Int as its text, or "none" for an empty aggregate.
+fn optIntText (o: Option Int) -> Text =
+    match o
+        None   -> "none"
+        Some n -> Int.toText n
+
+-- Render an optional Float as its text, or "none".
+fn optFloatText (o: Option Float) -> Text =
+    match o
+        None   -> "none"
+        Some f -> Float.toText f
+
+-- Render an optional Text as itself, or "none".
+fn optTextText (o: Option Text) -> Text =
+    match o
+        None   -> "none"
+        Some s -> s
+
+-- aggregate against Postgres: SUM(age) over the whole table (18 + 30 + 25) -> "73".
+-- Proves the backend compiles the aggregate into the query and the bigint result
+-- decodes back to `Int`.
+pub fn db sumAllAges () -> Text =
+    match setup ()
+        Err _ -> "setup-err"
+        Ok r  ->
+            match r |> Repo.query |> Repo.sumOf (fn (u: User) -> u.age)
+                Err _ -> "sum-err"
+                Ok o  -> optIntText o
+
+-- aggregate against Postgres: SUM(age) bounded by the filter to the adults
+-- (30 + 25) -> "55". Proves the WHERE clause bounds the aggregate.
+pub fn db sumAdultAges () -> Text =
+    match setup ()
+        Err _ -> "setup-err"
+        Ok r  ->
+            match r |> Repo.query |> Repo.filter (fn (u: User) -> u.age >= 25) |> Repo.sumOf (fn (u: User) -> u.age)
+                Err _ -> "sum-err"
+                Ok o  -> optIntText o
+
+-- aggregate against Postgres: AVG(age) over the adults ((30 + 25) / 2) -> "27.5".
+-- Proves AVG is cast to float8 so an integer column's average crosses as a float.
+pub fn db avgAdultAges () -> Text =
+    match setup ()
+        Err _ -> "setup-err"
+        Ok r  ->
+            match r |> Repo.query |> Repo.filter (fn (u: User) -> u.age >= 25) |> Repo.avgOf (fn (u: User) -> u.age)
+                Err _ -> "avg-err"
+                Ok o  -> optFloatText o
+
+-- aggregate against Postgres: MIN(age) over the whole table -> "18".
+pub fn db minAllAges () -> Text =
+    match setup ()
+        Err _ -> "setup-err"
+        Ok r  ->
+            match r |> Repo.query |> Repo.minOf (fn (u: User) -> u.age)
+                Err _ -> "min-err"
+                Ok o  -> optIntText o
+
+-- aggregate against Postgres: MAX(name) folds a text column lexicographically
+-- (ada < lin < max) -> "max".
+pub fn db maxName () -> Text =
+    match setup ()
+        Err _ -> "setup-err"
+        Ok r  ->
+            match r |> Repo.query |> Repo.maxOf (fn (u: User) -> u.name)
+                Err _ -> "max-err"
+                Ok o  -> optTextText o
+
+-- aggregate against Postgres over an empty match (no user older than 100) ->
+-- "none". Proves a SQL aggregate of zero rows is NULL, decoded to `None`.
+pub fn db sumNobody () -> Text =
+    match setup ()
+        Err _ -> "setup-err"
+        Ok r  ->
+            match r |> Repo.query |> Repo.filter (fn (u: User) -> u.age > 100) |> Repo.sumOf (fn (u: User) -> u.age)
+                Err _ -> "sum-err"
+                Ok o  -> optIntText o
 "#;
 
 /// Connection settings parsed out of `RIDGE_TEST_PG_URL`.
@@ -601,6 +681,12 @@ fn postgres_adapter_reads_a_real_table() {
          io:format(\"updateWhereCount=~w~n\",[{module}:updateWhereCount()]), \
          io:format(\"setBumpedAge=~w~n\",[{module}:setBumpedAge()]), \
          io:format(\"appliedName=~s~n\",[{module}:appliedName()]), \
+         io:format(\"sumAllAges=~s~n\",[{module}:sumAllAges()]), \
+         io:format(\"sumAdultAges=~s~n\",[{module}:sumAdultAges()]), \
+         io:format(\"avgAdultAges=~s~n\",[{module}:avgAdultAges()]), \
+         io:format(\"minAllAges=~s~n\",[{module}:minAllAges()]), \
+         io:format(\"maxName=~s~n\",[{module}:maxName()]), \
+         io:format(\"sumNobody=~s~n\",[{module}:sumNobody()]), \
          {pool_probe} \
          halt()."
     );
@@ -687,6 +773,30 @@ fn postgres_adapter_reads_a_real_table() {
         (
             "appliedName=neo",
             "applySet is the query-builder write terminal on Postgres: the filter picks the row, the setter assigns it",
+        ),
+        (
+            "sumAllAges=73",
+            "sumOf compiles SUM(age) into the query and decodes the bigint result",
+        ),
+        (
+            "sumAdultAges=55",
+            "the filter compiles a WHERE that bounds the aggregate to the adults",
+        ),
+        (
+            "avgAdultAges=27.5",
+            "avgOf casts AVG to float8 so an integer column's average crosses as a float",
+        ),
+        (
+            "minAllAges=18",
+            "minOf compiles MIN(age) and keeps the column's integer type",
+        ),
+        (
+            "maxName=max",
+            "maxOf compiles MAX(name) over a text column (ada < lin < max)",
+        ),
+        (
+            "sumNobody=none",
+            "an aggregate over an empty match is SQL NULL, decoded to None",
         ),
         (
             "concurrent=true",

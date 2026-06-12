@@ -37,6 +37,8 @@ import std.repo as Repo
 import std.query (SortOrder, Asc, Desc)
 import std.sql (toSql, SqlValue)
 import std.map as Map
+import std.int as Int
+import std.float as Float
 
 pub type User = { id: Int, age: Int, name: Text } deriving (Row)
 
@@ -340,6 +342,84 @@ pub fn db leftSelectTitles () -> Text =
             match users |> Repo.query |> Repo.orderBy Asc (fn (u: User) -> u.id) |> Repo.leftJoinOn posts (fn (u: User) (p: Post) -> u.id == p.author) |> Repo.selectLeftJoin (fn (u: User) (p: Option Post) -> ComboOpt { person = u.name, post = p.title })
                 Err _  -> "left-select-err"
                 Ok cs  -> joinComboOpts cs
+
+-- Render an optional Int as its text, or "none" for an empty aggregate.
+fn optIntText (o: Option Int) -> Text =
+    match o
+        None   -> "none"
+        Some n -> Int.toText n
+
+-- Render an optional Float as its text, or "none".
+fn optFloatText (o: Option Float) -> Text =
+    match o
+        None   -> "none"
+        Some f -> Float.toText f
+
+-- Render an optional Text as itself, or "none".
+fn optTextText (o: Option Text) -> Text =
+    match o
+        None   -> "none"
+        Some s -> s
+
+-- aggregate: sum every age (18 + 30 + 25) -> "73". Proves sumOf folds the column
+-- over the whole table and rides the column's `SqlType` codec back to `Int`.
+pub fn db sumAllAges () -> Text =
+    match setup ()
+        Err _ -> "setup-err"
+        Ok r  ->
+            match r |> Repo.query |> Repo.sumOf (fn (u: User) -> u.age)
+                Err _ -> "sum-err"
+                Ok o  -> optIntText o
+
+-- aggregate: sum the adult ages (30 + 25) -> "55". Proves the accumulated filter
+-- bounds the aggregate (ada's 18 is excluded).
+pub fn db sumAdultAges () -> Text =
+    match setup ()
+        Err _ -> "setup-err"
+        Ok r  ->
+            match r |> Repo.query |> Repo.filter (fn (u: User) -> u.age >= 25) |> Repo.sumOf (fn (u: User) -> u.age)
+                Err _ -> "sum-err"
+                Ok o  -> optIntText o
+
+-- aggregate: the average adult age ((30 + 25) / 2) -> "27.5". Proves avgOf is
+-- fractional (an `Option Float`) even over an integer column.
+pub fn db avgAdultAges () -> Text =
+    match setup ()
+        Err _ -> "setup-err"
+        Ok r  ->
+            match r |> Repo.query |> Repo.filter (fn (u: User) -> u.age >= 25) |> Repo.avgOf (fn (u: User) -> u.age)
+                Err _ -> "avg-err"
+                Ok o  -> optFloatText o
+
+-- aggregate: the least age over the whole table -> "18". Proves minOf keeps the
+-- column's own type.
+pub fn db minAllAges () -> Text =
+    match setup ()
+        Err _ -> "setup-err"
+        Ok r  ->
+            match r |> Repo.query |> Repo.minOf (fn (u: User) -> u.age)
+                Err _ -> "min-err"
+                Ok o  -> optIntText o
+
+-- aggregate: the greatest name lexicographically (ada < lin < max) -> "max".
+-- Proves MIN/MAX fold a text column and keep its type.
+pub fn db maxName () -> Text =
+    match setup ()
+        Err _ -> "setup-err"
+        Ok r  ->
+            match r |> Repo.query |> Repo.maxOf (fn (u: User) -> u.name)
+                Err _ -> "max-err"
+                Ok o  -> optTextText o
+
+-- aggregate over an empty match (no user older than 100) -> "none". Proves a SQL
+-- aggregate of zero rows is NULL, decoded to `None` rather than zero.
+pub fn db sumNobody () -> Text =
+    match setup ()
+        Err _ -> "setup-err"
+        Ok r  ->
+            match r |> Repo.query |> Repo.filter (fn (u: User) -> u.age > 100) |> Repo.sumOf (fn (u: User) -> u.age)
+                Err _ -> "sum-err"
+                Ok o  -> optIntText o
 "#;
 
 fn write_workspace(root: &std::path::Path) {
@@ -425,6 +505,12 @@ fn repo_surface_runs_on_beam() {
          io:format(\"joinedTitles=~s~n\",[{module}:joinedTitles()]), \
          io:format(\"leftJoinedNames=~s~n\",[{module}:leftJoinedNames()]), \
          io:format(\"leftSelectTitles=~s~n\",[{module}:leftSelectTitles()]), \
+         io:format(\"sumAllAges=~s~n\",[{module}:sumAllAges()]), \
+         io:format(\"sumAdultAges=~s~n\",[{module}:sumAdultAges()]), \
+         io:format(\"avgAdultAges=~s~n\",[{module}:avgAdultAges()]), \
+         io:format(\"minAllAges=~s~n\",[{module}:minAllAges()]), \
+         io:format(\"maxName=~s~n\",[{module}:maxName()]), \
+         io:format(\"sumNobody=~s~n\",[{module}:sumNobody()]), \
          halt()."
     );
     let output = Command::new("erl")
@@ -485,6 +571,24 @@ fn repo_surface_runs_on_beam() {
         (
             "leftSelectTitles=ada:-,lin:hello,lin:again,max:world",
             "selectLeftJoin keeps the unmatched ada row and decodes its NULL right column into an Option field as None",
+        ),
+        ("sumAllAges=73", "sumOf folds every age (18 + 30 + 25)"),
+        (
+            "sumAdultAges=55",
+            "the filter bounds sumOf to the adult ages (30 + 25)",
+        ),
+        (
+            "avgAdultAges=27.5",
+            "avgOf is fractional even over an integer column ((30 + 25) / 2)",
+        ),
+        ("minAllAges=18", "minOf keeps the column type and finds the least age"),
+        (
+            "maxName=max",
+            "maxOf folds a text column and keeps its type (ada < lin < max)",
+        ),
+        (
+            "sumNobody=none",
+            "an aggregate over an empty match is NULL, decoded to None",
         ),
     ] {
         assert!(

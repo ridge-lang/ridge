@@ -1470,6 +1470,43 @@ fn seed_sql_codec_schemes(
                 },
             );
         }
+        // aggregate :: ∀a e. a -> Text -> Quote (e -> Bool) -> Text -> Text
+        //                  -> Result (Option SqlValue) Error where Adapter a.
+        // A scalar aggregate push-down: the two trailing `Text`s are the aggregate
+        // keyword (SUM/AVG/MIN/MAX) and the column it folds; the single scalar
+        // comes back wrapped in `Some`, or `None` over an empty match (a SQL
+        // aggregate of zero rows is NULL, which the seam reports as `None`).
+        {
+            let a = ctx.fresh_tyvid();
+            let e = ctx.fresh_tyvid();
+            let fn_ty = Type::Fn {
+                params: vec![
+                    Type::Var(a),
+                    Type::Con(b.text, vec![]),
+                    quote_pred(e),
+                    Type::Con(b.text, vec![]),
+                    Type::Con(b.text, vec![]),
+                ],
+                ret: Box::new(Type::Con(
+                    b.result,
+                    vec![
+                        Type::Con(b.option, vec![Type::Con(sql_value, vec![])]),
+                        Type::Con(b.error, vec![]),
+                    ],
+                )),
+                caps: CapRow::Concrete(CapabilitySet::PURE),
+            };
+            ctx.env.bind(
+                "aggregate".to_owned(),
+                Scheme {
+                    vars: vec![a, e],
+                    cap_vars: vec![],
+                    row_vars: vec![],
+                    ty: fn_ty,
+                    constraints: vec![Constraint::single(adapter, a)],
+                },
+            );
+        }
         // project :: ∀a e. a -> Text -> Quote (e -> Bool) -> List (Bool, Text)
         //                  -> Int -> Int -> List (Text, Text)
         //                  -> Result (List (Map Text SqlValue)) Error where Adapter a.

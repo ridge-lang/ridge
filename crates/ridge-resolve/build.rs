@@ -403,6 +403,7 @@ const BASELINE_EXPORTS: &[(&str, &[&str])] = &[
             "updateRows",
             "fetch",
             "countWhere",
+            "aggregate",
             "project",
             "join",
             "joinSelect",
@@ -458,6 +459,13 @@ const BASELINE_EXPORTS: &[(&str, &[&str])] = &[
             "selectList",
             "selectFirst",
             "applySet",
+            // Scalar aggregates pushed down to the backend over the query's
+            // filter: sum/average/min/max of a quoted column, each `None` over an
+            // empty match (a SQL aggregate of zero rows is NULL).
+            "sumOf",
+            "avgOf",
+            "minOf",
+            "maxOf",
             // The two-table join builder: the opaque `Join e f a`, its `joinOn`
             // entry, and the `toPairs`/`selectJoin` terminals.
             "Join",

@@ -45,6 +45,14 @@ import std.sql (SqlValue)
 -- non-positive `off` means no offset. `countWhere` answers how many rows match
 -- without returning them — a `COUNT(*)` push-down for the aggregate verbs.
 --
+-- `aggregate` runs a scalar aggregate over the matching rows: `func` is the SQL
+-- aggregate keyword (`SUM`/`AVG`/`MIN`/`MAX`) and `column` the column it folds,
+-- and the single scalar comes back as a `SqlValue` — a `SELECT func(column) …
+-- WHERE` push-down that never returns the rows themselves. An aggregate over zero
+-- matching rows is SQL NULL, so the result is `SqlNull`, which the repository
+-- verbs decode to `None`. Ordering and paging do not bound an aggregate, so the
+-- seam does not take them.
+--
 -- `project` is `fetch` with a projection: `cols` is a list of `(alias, column)`
 -- pairs, and each returned row holds only those columns keyed by their alias, so
 -- a backend pushes the select-list into the query (`SELECT column AS alias …`)
@@ -74,6 +82,7 @@ pub class Adapter a =
     updateRows (conn: a) (table: Text) (changes: Map Text SqlValue) (pred: Quote (Map Text SqlValue -> Bool)) -> Result Int Error
     fetch  (conn: a) (table: Text) (pred: Quote (Map Text SqlValue -> Bool)) (orders: List (Bool, Text)) (lim: Int) (off: Int) -> Result (List (Map Text SqlValue)) Error
     countWhere (conn: a) (table: Text) (pred: Quote (Map Text SqlValue -> Bool)) -> Result Int Error
+    aggregate (conn: a) (table: Text) (pred: Quote (Map Text SqlValue -> Bool)) (func: Text) (column: Text) -> Result (Option SqlValue) Error
     project (conn: a) (table: Text) (pred: Quote (Map Text SqlValue -> Bool)) (orders: List (Bool, Text)) (lim: Int) (off: Int) (cols: List (Text, Text)) -> Result (List (Map Text SqlValue)) Error
     join (conn: a) (leftTable: Text) (rightTable: Text) (cond: Quote (Map Text SqlValue -> Map Text SqlValue -> Bool)) (pred: Quote (Map Text SqlValue -> Bool)) (orders: List (Bool, Text)) (lim: Int) (off: Int) -> Result (List (Map Text SqlValue, Map Text SqlValue)) Error
     joinSelect (conn: a) (leftTable: Text) (rightTable: Text) (cond: Quote (Map Text SqlValue -> Map Text SqlValue -> Bool)) (pred: Quote (Map Text SqlValue -> Bool)) (orders: List (Bool, Text)) (lim: Int) (off: Int) (proj: Quote (Map Text SqlValue -> Map Text SqlValue -> Map Text SqlValue)) -> Result (List (Map Text SqlValue)) Error
@@ -122,6 +131,13 @@ fn _memFetch (id: Int) (table: Text) (tree: QExpr) (orders: List (Bool, Text)) (
 -- Count the rows of a table that satisfy the predicate tree.
 @ffi("ridge_rt", "mem_count_where", 3)
 fn _memCountWhere (id: Int) (table: Text) (tree: QExpr) -> Result Int Error
+
+-- Fold a scalar aggregate (`func` is SUM/AVG/MIN/MAX) over `column` across the
+-- rows of a table that satisfy the predicate tree; answer the single scalar
+-- wrapped in `Some`, or `None` when no row matches (an aggregate over zero rows
+-- is SQL NULL).
+@ffi("ridge_rt", "mem_aggregate", 5)
+fn _memAggregate (id: Int) (table: Text) (tree: QExpr) (func: Text) (column: Text) -> Result (Option SqlValue) Error
 
 -- Return the rows of a table that satisfy the predicate tree, ordered and paged
 -- as `mem_fetch`, then projected down to the `(alias, column)` columns: each row
@@ -177,6 +193,8 @@ instance Adapter MemAdapter =
         _memFetch conn.id table pred.tree orders lim off
     countWhere (conn: MemAdapter) (table: Text) (pred: Quote (Map Text SqlValue -> Bool)) -> Result Int Error =
         _memCountWhere conn.id table pred.tree
+    aggregate (conn: MemAdapter) (table: Text) (pred: Quote (Map Text SqlValue -> Bool)) (func: Text) (column: Text) -> Result (Option SqlValue) Error =
+        _memAggregate conn.id table pred.tree func column
     project (conn: MemAdapter) (table: Text) (pred: Quote (Map Text SqlValue -> Bool)) (orders: List (Bool, Text)) (lim: Int) (off: Int) (cols: List (Text, Text)) -> Result (List (Map Text SqlValue)) Error =
         _memProject conn.id table pred.tree orders lim off cols
     join (conn: MemAdapter) (leftTable: Text) (rightTable: Text) (cond: Quote (Map Text SqlValue -> Map Text SqlValue -> Bool)) (pred: Quote (Map Text SqlValue -> Bool)) (orders: List (Bool, Text)) (lim: Int) (off: Int) -> Result (List (Map Text SqlValue, Map Text SqlValue)) Error =
@@ -249,6 +267,12 @@ fn _pgFetch (id: Int) (table: Text) (tree: QExpr) (orders: List (Bool, Text)) (l
 @ffi("ridge_pg", "pg_count_where", 3)
 fn _pgCountWhere (id: Int) (table: Text) (tree: QExpr) -> Result Int Error
 
+-- Fold a scalar aggregate (`func` is SUM/AVG/MIN/MAX) over `column` across the
+-- rows that satisfy the predicate tree, via SELECT func(column) … WHERE; answer
+-- the single scalar wrapped in `Some`, or `None` when no row matches.
+@ffi("ridge_pg", "pg_aggregate", 5)
+fn _pgAggregate (id: Int) (table: Text) (tree: QExpr) (func: Text) (column: Text) -> Result (Option SqlValue) Error
+
 -- Return the rows of a table that satisfy the predicate tree, ordered and paged
 -- as `pg_fetch`, with the `(alias, column)` projection compiled into the
 -- select-list (`SELECT column AS alias …`); each row is keyed by alias.
@@ -304,6 +328,8 @@ instance Adapter Postgres =
         _pgFetch conn.id table pred.tree orders lim off
     countWhere (conn: Postgres) (table: Text) (pred: Quote (Map Text SqlValue -> Bool)) -> Result Int Error =
         _pgCountWhere conn.id table pred.tree
+    aggregate (conn: Postgres) (table: Text) (pred: Quote (Map Text SqlValue -> Bool)) (func: Text) (column: Text) -> Result (Option SqlValue) Error =
+        _pgAggregate conn.id table pred.tree func column
     project (conn: Postgres) (table: Text) (pred: Quote (Map Text SqlValue -> Bool)) (orders: List (Bool, Text)) (lim: Int) (off: Int) (cols: List (Text, Text)) -> Result (List (Map Text SqlValue)) Error =
         _pgProject conn.id table pred.tree orders lim off cols
     join (conn: Postgres) (leftTable: Text) (rightTable: Text) (cond: Quote (Map Text SqlValue -> Map Text SqlValue -> Bool)) (pred: Quote (Map Text SqlValue -> Bool)) (orders: List (Bool, Text)) (lim: Int) (off: Int) -> Result (List (Map Text SqlValue, Map Text SqlValue)) Error =

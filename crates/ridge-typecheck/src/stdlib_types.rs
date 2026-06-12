@@ -796,6 +796,74 @@ fn reconciled_repo_fn_scheme(
                 with_adapter(),
             )
         }
+        // sumOf / minOf / maxOf : ∀e a n. Quote (e -> n) -> Query e a
+        //   -> Result (Option n) Error where SqlType n, Adapter a. The accessor
+        // quote names a single column whose type `n` is read off the entity
+        // (exactly as an `orderBy` key); the scalar rides that type's `SqlType`
+        // codec, so the result is `Option n` (`None` over an empty match).
+        //
+        // The dict-parameter order must match the order the compiled body forwards
+        // them. Each verb runs the `aggregate` seam (an `Adapter a` method) and
+        // then `decodeScalar` (a `SqlType n` helper); the solver retains the codec
+        // constraint ahead of the adapter for this body shape, so the dicts are
+        // `SqlType n` then `Adapter a`. The in-memory and Postgres e2e suites run
+        // every verb, so a wrong order surfaces immediately as a dispatch crash.
+        "sumOf" | "minOf" | "maxOf" => {
+            let sqltype = classes.id_by_name("SqlType")?;
+            let n = TyVid(2);
+            let col_quote = Type::Con(
+                b.quote,
+                vec![Type::Fn {
+                    params: vec![Type::Var(e)],
+                    ret: Box::new(Type::Var(n)),
+                    caps: pure(),
+                }],
+            );
+            Some(Scheme {
+                vars: vec![e, a, n],
+                cap_vars: vec![],
+                row_vars: vec![],
+                ty: Type::Fn {
+                    params: vec![col_quote, query_app()],
+                    ret: Box::new(result(Type::Con(b.option, vec![Type::Var(n)]))),
+                    caps: pure(),
+                },
+                constraints: vec![
+                    Constraint::single(sqltype, n),
+                    Constraint::single(adapter, a),
+                ],
+            })
+        }
+        // avgOf : ∀e a n. Quote (e -> n) -> Query e a
+        //   -> Result (Option Float) Error where Adapter a. The column type `n` is
+        // phantom — only the column name is read — and the result is always
+        // `Option Float`, since a SQL average is fractional even over an integer
+        // column. Carries only `Adapter a`.
+        "avgOf" => {
+            let n = TyVid(2);
+            let col_quote = Type::Con(
+                b.quote,
+                vec![Type::Fn {
+                    params: vec![Type::Var(e)],
+                    ret: Box::new(Type::Var(n)),
+                    caps: pure(),
+                }],
+            );
+            Some(Scheme {
+                vars: vec![e, a, n],
+                cap_vars: vec![],
+                row_vars: vec![],
+                ty: Type::Fn {
+                    params: vec![col_quote, query_app()],
+                    ret: Box::new(result(Type::Con(
+                        b.option,
+                        vec![Type::Con(b.float, vec![])],
+                    ))),
+                    caps: pure(),
+                },
+                constraints: with_adapter(),
+            })
+        }
         // query : ∀e a. Repo e a -> Query e a — start a query over a repository.
         // The builder verbs are pure: they assemble a query, and a terminal runs
         // it.

@@ -697,6 +697,48 @@ pub fn db oldest () -> Result (Option User) Error =
 }
 
 #[test]
+fn query_builder_scalar_aggregates_typecheck() {
+    // The scalar aggregates are query-builder terminals over a quoted column.
+    // `sumOf`/`minOf`/`maxOf` answer `Option` of the column's own type (summing an
+    // `Int` column is `Option Int`; the greatest `name` is `Option Text`), while
+    // `avgOf` is always `Option Float`, since a SQL average is fractional even over
+    // an integer column. Each composes after the accumulated filter, and the
+    // whole-table form is just `query` with no `filter`. The pinned return types
+    // prove the column type flows from the accessor through the result.
+    let main = r#"
+import std.data (memAdapter, MemAdapter)
+import std.repo as Repo
+import std.sql (SqlValue)
+
+pub type User = { id: Int, age: Int, name: Text } deriving (Row)
+
+pub fn db totalAge () -> Result (Option Int) Error =
+    let users: Repo User MemAdapter = Repo.repo (memAdapter ()) "users"
+    users
+      |> Repo.query
+      |> Repo.filter (fn (u: User) -> u.age >= 18)
+      |> Repo.sumOf (fn (u: User) -> u.age)
+
+pub fn db meanAge () -> Result (Option Float) Error =
+    let users: Repo User MemAdapter = Repo.repo (memAdapter ()) "users"
+    users |> Repo.query |> Repo.avgOf (fn (u: User) -> u.age)
+
+pub fn db youngest () -> Result (Option Int) Error =
+    let users: Repo User MemAdapter = Repo.repo (memAdapter ()) "users"
+    users |> Repo.query |> Repo.minOf (fn (u: User) -> u.age)
+
+pub fn db lastName () -> Result (Option Text) Error =
+    let users: Repo User MemAdapter = Repo.repo (memAdapter ()) "users"
+    users |> Repo.query |> Repo.maxOf (fn (u: User) -> u.name)
+"#;
+    let errors = typecheck_one(main);
+    assert!(
+        errors.is_empty(),
+        "the scalar aggregate terminals must type-check clean; got {errors:?}"
+    );
+}
+
+#[test]
 fn query_builder_over_postgres_typechecks() {
     // The builder resolves the same `Adapter` constraint on the Postgres backend:
     // `fetch` is a class method both adapters implement, so a `Query User Postgres`

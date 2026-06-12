@@ -1972,11 +1972,11 @@ mod tests {
     }
 
     // Prelude test 5: 1-module workspace with NO user imports → 5 prelude IRs,
-    // 39 total bindings (6 from option/result prelude + 8 from json prelude +
-    // 17 from quotation prelude + 8 module aliases).
+    // 46 total bindings (6 from option/result prelude + 8 from json prelude +
+    // 24 from quotation prelude + 8 module aliases).
     #[test]
     fn prelude_injected_when_no_user_imports() {
-        // An empty module has no imports → all 39 prelude bindings should appear.
+        // An empty module has no imports → all 46 prelude bindings should appear.
         let (_td, result) = resolve_single("");
         let module_imports = result.imports.first().expect("module 0");
         // Exactly 5 prelude IRs (option + result + json + quotation constructors,
@@ -1992,8 +1992,8 @@ mod tests {
             .map(|ir| ir.effective_bindings.len())
             .sum();
         assert_eq!(
-            total_bindings, 40,
-            "expected 40 total prelude bindings (6 option/result + 8 json + 18 quotation + 8 module aliases); got {total_bindings}"
+            total_bindings, 46,
+            "expected 46 total prelude bindings (6 option/result + 8 json + 24 quotation + 8 module aliases); got {total_bindings}"
         );
     }
 

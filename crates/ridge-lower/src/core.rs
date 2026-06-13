@@ -1687,13 +1687,21 @@ fn same_dict_plan(a: &ridge_typecheck::DictPlan, b: &ridge_typecheck::DictPlan) 
     }
 }
 
-/// Resolve a callee ident to `(class_name, method)` when it binds to a class
-/// method. Mirrors the binding lookup in `lower_ident`.
-fn classmethod_binding(ctx: &LowerCtx<'_>, ident: &Ident) -> Option<(String, String)> {
-    let node_id = ctx
-        .node_id_map
-        .as_ref()
-        .and_then(|m| m.get(ident.span, NodeKind::Ident))?;
+/// Resolve a callee to `(class_name, method)` when it binds to a class method.
+/// Mirrors the binding lookup in `lower_ident`/`lower_qualified`.
+///
+/// Accepts both a bare `Ident` callee (`describe Red`) and a module-qualified
+/// callee (`Sql.toSql n`): a qualified class-method call resolves to a
+/// `StdlibSymbol`/`ClassMethod` binding stamped on the `QualifiedName` node, so
+/// it routes through the same dictionary dispatch as the bare form rather than
+/// being lowered to a plain stdlib symbol (which would miss the bridge map).
+fn classmethod_binding(ctx: &LowerCtx<'_>, callee: &Expr) -> Option<(String, String)> {
+    let (span, kind) = match callee {
+        Expr::Ident(ident) => (ident.span, NodeKind::Ident),
+        Expr::Qualified(qname) => (qname.span, NodeKind::QualifiedName),
+        _ => return None,
+    };
+    let node_id = ctx.node_id_map.as_ref().and_then(|m| m.get(span, kind))?;
     let binding = ctx
         .binding_map
         .and_then(|bm| bm.get(node_id.0 as usize).and_then(Option::as_ref))?;
@@ -1704,12 +1712,25 @@ fn classmethod_binding(ctx: &LowerCtx<'_>, ident: &Ident) -> Option<(String, Str
         // stdlib module's export manifest. However, the class table registers
         // the method under its class, so we can recover the class-method shape
         // here and route through the dictionary dispatch path.
-        Binding::StdlibSymbol { name, .. } => {
+        //
+        // Module-scoping guard: a name can be BOTH a class method AND a plain
+        // `pub fn` in a different module — `toText` is the `ToText` method but
+        // also `std.int`'s own `pub fn toText`, and `filter`/`map` are class-ish
+        // names that exist as plain list/map verbs. A qualified `Int.toText` or
+        // a by-name-imported `toText` must dispatch through the dictionary ONLY
+        // when the symbol's module is the class's home module; otherwise it is
+        // that module's own function and lowers as a plain stdlib symbol. This
+        // matters once qualified callees reach this helper (a bare `Ident` only
+        // hit it for genuinely class-method imports before).
+        Binding::StdlibSymbol { module, name } => {
             let ct = ctx
                 .class_table
                 .or_else(|| ctx.workspace.map(|ws| &ws.class_table))?;
-            ct.class_name_for_method(name)
-                .map(|class_name| (class_name.to_owned(), name.clone()))
+            let class_name = ct.class_name_for_method(name)?;
+            if stdlib_class_home_module(class_name) != Some(stdlib_module_name(*module).as_str()) {
+                return None;
+            }
+            Some((class_name.to_owned(), name.clone()))
         }
         _ => None,
     }
@@ -1794,10 +1815,7 @@ fn try_lower_classmethod_call(
     id: ridge_ir::IrNodeId,
     span: Span,
 ) -> Option<IrExpr> {
-    let Expr::Ident(ident) = callee else {
-        return None;
-    };
-    let (class_name, method) = classmethod_binding(ctx, ident)?;
+    let (class_name, method) = classmethod_binding(ctx, callee)?;
     let cid = ctx
         .class_table
         .or_else(|| ctx.workspace.map(|ws| &ws.class_table))
@@ -2018,6 +2036,7 @@ fn dict_plan_to_expr(
     use ridge_typecheck::DictPlan;
     match plan {
         DictPlan::Static {
+            info,
             tycon,
             extra_head,
             args,
@@ -2082,11 +2101,26 @@ fn dict_plan_to_expr(
             let tycon_is_builtin = decl.is_some_and(|d| d.def_module_raw.is_none());
             let producer = decl.and_then(|d| d.def_module_raw);
             let is_cross_module = producer.is_some_and(|p| p != ctx.module_id.0);
+            // The `$inst_…` constant is generated in the module that DECLARES the
+            // instance — which is not always the module that defines the head
+            // type. A user class with an instance over a builtin type
+            // (`instance Tag Int`) lives in the instance's module, while the
+            // builtin head carries no `def_module_raw`, so the head-type module
+            // alone would mislocate the dict to the use site. Prefer the
+            // instance's own declaring module; fall back to the head type's module
+            // for instances co-located with their type.
+            let inst_module = info.def_module;
+            let inst_is_cross = inst_module.is_some_and(|m| m != ctx.module_id.0);
             let sym = if let Some(home) =
                 stdlib_class_home_module(class_name).filter(|_| tycon_is_builtin)
             {
                 SymbolRef::Stdlib {
                     module: home.to_owned(),
+                    name: dict_const_name,
+                }
+            } else if let Some(m) = inst_module.filter(|_| inst_is_cross) {
+                SymbolRef::External {
+                    module: ridge_resolve::ModuleId(m),
                     name: dict_const_name,
                 }
             } else if let Some(p) = producer.filter(|_| is_cross_module) {
@@ -2105,7 +2139,8 @@ fn dict_plan_to_expr(
             // that must be invoked as a call (its value form is not lowered); a
             // same-module const is usable directly as a value. Parametric
             // instances always apply their sub-dictionaries.
-            if sub_dicts.is_empty() && !is_cross_module {
+            let emit_as_call = inst_is_cross || is_cross_module;
+            if sub_dicts.is_empty() && !emit_as_call {
                 return dict_symbol;
             }
             let call_id = ctx.fresh_id(None);

@@ -213,6 +213,7 @@ impl ScopeWalker<'_> {
             self.my_table,
             self.all_symbol_tables,
             self.module_imports,
+            self.class_method_index,
             self.errors,
         );
         self.stamp(span, NodeKind::QualifiedName, binding);
@@ -1012,6 +1013,7 @@ impl<'ast> Visit<'ast> for ScopeWalker<'_> {
                             self.my_table,
                             self.all_symbol_tables,
                             self.module_imports,
+                            self.class_method_index,
                             self.errors,
                         );
                         let ctor_name = qn.segments.last().map_or("", |s| s.text.as_str());

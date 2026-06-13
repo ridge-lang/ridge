@@ -34,7 +34,7 @@
 #![allow(clippy::redundant_pub_crate)]
 
 use ridge_ast::{
-    typeclass::{ClassConstraint, ClassDecl, InstanceDecl, MethodDef, MethodSig},
+    typeclass::{ClassConstraint, ClassDecl, FunDep, InstanceDecl, MethodDef, MethodSig},
     ActorDecl, ActorMember, Attribute, Body, Capability, ConstDecl, Constructor, DocComment, Expr,
     FieldDecl, FnDecl, Ident, ImportDecl, InitDecl, Item, MailboxConfig, MailboxDecl,
     MailboxPolicy, ModulePath, OnHandler, Param, RecordTypeBody, StateDecl, Type, TypeBody,
@@ -1580,6 +1580,15 @@ fn parse_class_decl(
         });
     }
 
+    // Optional functional dependencies: `| from… -> to… (, …)*`. They sit
+    // between the type variables and the `where` superclass list, e.g.
+    // `class Refinable q p | q -> p where … =`.
+    let fundeps = if cur.peek() == &Token::Pipe {
+        parse_fundeps(cur)?
+    } else {
+        vec![]
+    };
+
     // Optional `where SuperList` (superclass constraints).
     let superclasses = if cur.peek() == &Token::KwWhere {
         parse_where_clause(cur)?
@@ -1677,11 +1686,90 @@ fn parse_class_decl(
     Ok(ClassDecl {
         name,
         ty_vars,
+        fundeps,
         superclasses,
         methods,
         span: start.merge(end_span),
         doc,
     })
+}
+
+/// Parse a functional-dependency list following a class header's type
+/// variables: `| from… -> to… (, from… -> to…)*`.
+///
+/// Each dependency lists one or more determining variables, then `->`, then one
+/// or more determined variables. The variable names are captured as written;
+/// the typecheck collect pass resolves them against the class's `ty_vars` and
+/// rejects any that are not declared.
+///
+/// Precondition: `cur.peek() == &Token::Pipe`.
+fn parse_fundeps(cur: &mut Cursor<'_>) -> Result<Vec<FunDep>, ParseError> {
+    cur.bump(); // consume `|`
+
+    let mut deps: Vec<FunDep> = Vec::new();
+    loop {
+        let dep_start = cur.span();
+
+        // Determining variables (left of `->`): one or more LowerIdent.
+        let mut from: Vec<Ident> = Vec::new();
+        while let Token::LowerIdent(s) = cur.peek().clone() {
+            let sp = cur.span();
+            cur.bump();
+            from.push(Ident::new(s, sp));
+        }
+        if from.is_empty() {
+            return Err(ParseError::MalformedClassDecl {
+                span: cur.span(),
+                reason: "expected a type variable before `->` in the functional dependency; \
+                         write `| determining -> determined`"
+                    .to_string(),
+            });
+        }
+
+        // `->` separates the determining and determined variables.
+        if cur.peek() != &Token::Arrow {
+            return Err(ParseError::MalformedClassDecl {
+                span: cur.span(),
+                reason: "expected `->` in the functional dependency; \
+                         write `| determining -> determined`"
+                    .to_string(),
+            });
+        }
+        cur.bump(); // consume `->`
+
+        // Determined variables (right of `->`): one or more LowerIdent.
+        let mut to: Vec<Ident> = Vec::new();
+        let mut to_end = cur.span();
+        while let Token::LowerIdent(s) = cur.peek().clone() {
+            let sp = cur.span();
+            cur.bump();
+            to_end = sp;
+            to.push(Ident::new(s, sp));
+        }
+        if to.is_empty() {
+            return Err(ParseError::MalformedClassDecl {
+                span: cur.span(),
+                reason: "expected a type variable after `->` in the functional dependency; \
+                         write `| determining -> determined`"
+                    .to_string(),
+            });
+        }
+
+        deps.push(FunDep {
+            from,
+            to,
+            span: dep_start.merge(to_end),
+        });
+
+        // Further dependencies are comma-separated.
+        if cur.peek() == &Token::Comma {
+            cur.bump();
+            continue;
+        }
+        break;
+    }
+
+    Ok(deps)
 }
 
 /// Parse an `instance` declaration.
@@ -3243,6 +3331,44 @@ mod tests {
         assert_eq!(cd.superclasses[0].ty_vars[0].text, "a");
         assert_eq!(cd.methods.len(), 1);
         assert_eq!(cd.methods[0].name.text, "compare");
+    }
+
+    // ── parse_class_decl_with_fundep ─────────────────────────────────────────
+    // `class Refinable q p | q -> p = …` — a single functional dependency.
+    #[test]
+    fn parse_class_decl_with_fundep() {
+        let src = "class Refinable q p | q -> p =\n    refine (pred: p) (x: q) -> q\n";
+        let cd = parse_cls(src).expect("should parse");
+        assert_eq!(cd.ty_vars.len(), 2);
+        assert_eq!(cd.fundeps.len(), 1);
+        let from: Vec<&str> = cd.fundeps[0].from.iter().map(|i| i.text.as_str()).collect();
+        let to: Vec<&str> = cd.fundeps[0].to.iter().map(|i| i.text.as_str()).collect();
+        assert_eq!(from, vec!["q"]);
+        assert_eq!(to, vec!["p"]);
+    }
+
+    // ── parse_class_decl_fundep_multi ────────────────────────────────────────
+    // Several determining variables and comma-separated dependencies.
+    #[test]
+    fn parse_class_decl_fundep_multi() {
+        let src = "class C a b c | a b -> c, c -> a =\n    f (x: a) -> c\n";
+        let cd = parse_cls(src).expect("should parse");
+        assert_eq!(cd.fundeps.len(), 2);
+        let from0: Vec<&str> = cd.fundeps[0].from.iter().map(|i| i.text.as_str()).collect();
+        let to0: Vec<&str> = cd.fundeps[0].to.iter().map(|i| i.text.as_str()).collect();
+        assert_eq!(from0, vec!["a", "b"]);
+        assert_eq!(to0, vec!["c"]);
+        assert_eq!(cd.fundeps[1].from[0].text, "c");
+        assert_eq!(cd.fundeps[1].to[0].text, "a");
+    }
+
+    // ── parse_class_decl_fundep_missing_arrow_p030 ───────────────────────────
+    // A functional dependency without `->` must produce P030.
+    #[test]
+    fn parse_class_decl_fundep_missing_arrow_p030() {
+        let src = "class C a b | a b =\n    f (x: a) -> b\n";
+        let err = parse_cls(src).expect_err("should fail");
+        assert_eq!(err.code(), "P030");
     }
 
     // ── parse_class_decl_empty_body_p030 ─────────────────────────────────────

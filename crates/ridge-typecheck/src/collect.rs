@@ -27,11 +27,12 @@ use std::collections::HashMap;
 use ridge_ast::{self, Item, Module};
 use ridge_types::{Constraint, TyConId, TyVid};
 use rustc_hash::{FxHashMap, FxHashSet};
+use smallvec::SmallVec;
 
 use crate::class_env::{
     register_prelude_classes, register_prelude_instances, register_stdlib_classes,
-    register_stdlib_instances, ClassInfo, ClassTable, InstanceEnv, InstanceHead, InstanceInfo,
-    InstanceOrigin, MethodSig,
+    register_stdlib_instances, ClassInfo, ClassTable, FunDepIdx, InstanceEnv, InstanceHead,
+    InstanceInfo, InstanceOrigin, MethodSig,
 };
 use crate::derive::derive_instances;
 use crate::error::TypeError;
@@ -98,7 +99,7 @@ pub fn collect_workspace(
     // Step 2: Walk all ClassDecl items, registering user-defined classes.
     // The two-pass approach in collect_class_decls ensures forward references
     // in superclass lists resolve correctly.
-    collect_class_decls(modules, &mut class_table);
+    collect_class_decls(modules, &mut class_table, &mut errors);
 
     // Step 3: Check for superclass cycles in the class graph (T035).
     // This must run before instance collection so that superclass DAG traversal
@@ -169,7 +170,11 @@ pub fn collect_workspace(
 
 // ── Class collection ─────────────────────────────────────────────────────────
 
-fn collect_class_decls(modules: &[(u32, &Module)], ct: &mut ClassTable) {
+fn collect_class_decls(
+    modules: &[(u32, &Module)],
+    ct: &mut ClassTable,
+    errors: &mut Vec<TypeError>,
+) {
     // Pass 1: intern every class name across all modules so that forward
     // references in superclass lists resolve correctly (e.g. `class A where B`
     // can see `B` even when `B` is declared after `A` in source order).
@@ -254,6 +259,41 @@ fn collect_class_decls(modules: &[(u32, &Module)], ct: &mut ClassTable) {
                     def_module: Some(module_id),
                 },
             );
+
+            // Record functional dependencies as positions into the class's
+            // type-parameter list. Each variable must be one of the class's own
+            // parameters; a stray name is T045 and drops that dependency.
+            if !decl.fundeps.is_empty() {
+                let resolve_side = |side: &[ridge_ast::Ident],
+                                    errors: &mut Vec<TypeError>|
+                 -> Option<SmallVec<[usize; 2]>> {
+                    let mut positions: SmallVec<[usize; 2]> = SmallVec::new();
+                    let mut ok = true;
+                    for v in side {
+                        if let Some(i) = class_ty_vars.iter().position(|cv| cv == &v.text) {
+                            positions.push(i);
+                        } else {
+                            errors.push(TypeError::UnknownFunDepVar {
+                                class: name.clone(),
+                                var: v.text.clone(),
+                                span: v.span,
+                            });
+                            ok = false;
+                        }
+                    }
+                    ok.then_some(positions)
+                };
+
+                let mut deps: Vec<FunDepIdx> = Vec::with_capacity(decl.fundeps.len());
+                for fd in &decl.fundeps {
+                    let from = resolve_side(&fd.from, errors);
+                    let to = resolve_side(&fd.to, errors);
+                    if let (Some(from), Some(to)) = (from, to) {
+                        deps.push(FunDepIdx { from, to });
+                    }
+                }
+                ct.set_fundeps(class_id, deps);
+            }
         }
     }
 }
@@ -344,8 +384,52 @@ fn collect_instance_decls(
             .collect::<Vec<_>>()
             .join(" ");
 
+        // Functional-dependency coherence (T046): an existing instance of this
+        // class that agrees on a dependency's determining positions but differs
+        // on a determined one would let one determining type map to two
+        // determined types — rejected. (An exact-head duplicate is T032, caught
+        // by `insert_multi`, so only a *differing* determined position is T046.)
+        for fd in ct.fundeps_of(class_id) {
+            for ((c, existing_head), existing) in &env.instances {
+                if *c != class_id {
+                    continue;
+                }
+                let from_agrees = fd
+                    .from
+                    .iter()
+                    .all(|&p| existing_head.get(p) == head_tycons.get(p));
+                let to_differs = fd
+                    .to
+                    .iter()
+                    .any(|&p| existing_head.get(p) != head_tycons.get(p));
+                if from_agrees && to_differs {
+                    let determining = fd
+                        .from
+                        .iter()
+                        .filter_map(|&p| decl.head.get(p))
+                        .map(type_display)
+                        .collect::<Vec<_>>()
+                        .join(" ");
+                    errors.push(TypeError::ConflictingFunDep {
+                        class: decl.class.text.clone(),
+                        determining,
+                        first_span: existing.span,
+                        second_span: decl.span,
+                    });
+                }
+            }
+        }
+
+        let head_for_record = head_tycons.clone();
         match env.insert_multi(class_id, head_tycons, info, class_name, &type_name) {
-            Ok(()) => {}
+            Ok(()) => {
+                // Retain the written head types so the solver can run
+                // functional-dependency improvement against this instance. Only
+                // classes that declare a fundep need it.
+                if !ct.fundeps_of(class_id).is_empty() {
+                    env.record_head_asts(class_id, head_for_record, decl.head.clone());
+                }
+            }
             Err(e) => errors.push(e.into_type_error()),
         }
     }
@@ -945,6 +1029,7 @@ mod tests {
         Item::ClassDecl(ClassDecl {
             name: ident(name),
             ty_vars: vec![ident("a")],
+            fundeps: vec![],
             superclasses,
             methods: vec![AstMethodSig {
                 name: ident(method),

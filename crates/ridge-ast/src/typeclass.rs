@@ -61,6 +61,25 @@ pub struct MethodDef {
     pub span: Span,
 }
 
+// ── FunDep ────────────────────────────────────────────────────────────────────
+
+/// A functional dependency on a class, written `from… -> to…`.
+///
+/// In `class Refinable q p | q -> p`, the dependency `q -> p` declares that the
+/// `from` variables (`q`) uniquely determine the `to` variables (`p`): two
+/// instances that agree on the `from` positions must agree on the `to` ones, and
+/// knowing the `from` types lets the solver infer the `to` types without an
+/// annotation. The variables are drawn from the class's own `ty_vars`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FunDep {
+    /// The determining type variables (left of `->`). Always at least one.
+    pub from: Vec<Ident>,
+    /// The determined type variables (right of `->`). Always at least one.
+    pub to: Vec<Ident>,
+    /// Span covering `from… -> to…`.
+    pub span: Span,
+}
+
 // ── ClassDecl ─────────────────────────────────────────────────────────────────
 
 /// A `class` declaration.
@@ -85,6 +104,10 @@ pub struct ClassDecl {
     /// The class's type variables (`LOWER_IDENT`). One for an ordinary class,
     /// several for a multi-parameter class. Always at least one.
     pub ty_vars: Vec<Ident>,
+    /// Functional dependencies (`| q -> p, …`), empty when none are written.
+    /// Each names variables drawn from [`ClassDecl::ty_vars`]; the determining
+    /// set on the left of `->` fixes the determined set on the right.
+    pub fundeps: Vec<FunDep>,
     /// Optional superclass constraints (`where C a`).
     pub superclasses: Vec<ClassConstraint>,
     /// Method signatures (at least one required).

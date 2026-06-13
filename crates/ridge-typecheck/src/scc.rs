@@ -598,8 +598,14 @@ pub fn typecheck_module_decls(
             .and_then(|did| scc_spans.get(did))
             .copied()
             .unwrap_or_else(|| Span::point(0));
-        let (retained, scc_dict_resolution) =
-            crate::solve::solve_constraints(ctx, instance_env, class_table, &env_snap_ty, scc_span);
+        let (retained, scc_dict_resolution) = crate::solve::solve_constraints(
+            ctx,
+            instance_env,
+            class_table,
+            &env_snap_ty,
+            scc_span,
+            Some(b),
+        );
 
         // The type variables this SCC will generalise over — exactly the free
         // variables of its function signatures after the bodies have been

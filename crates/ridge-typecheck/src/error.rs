@@ -645,6 +645,39 @@ pub enum TypeError {
         span: Span,
     },
 
+    // ── T045 ─────────────────────────────────────────────────────────────────
+    /// A functional dependency on a class names a variable that is not one of
+    /// the class's type parameters.
+    ///
+    /// In `class Refinable q p | q -> z`, the determined variable `z` is not a
+    /// parameter of `Refinable` (whose parameters are `q` and `p`).
+    UnknownFunDepVar {
+        /// Display name of the class.
+        class: String,
+        /// The variable named in the fundep that is not a class parameter.
+        var: String,
+        /// Source span of the functional dependency.
+        span: Span,
+    },
+
+    // ── T046 ─────────────────────────────────────────────────────────────────
+    /// Two instances violate a functional dependency: they agree on the
+    /// determining types but differ on a determined one.
+    ///
+    /// With `class Refinable q p | q -> p`, the dependency `q -> p` means `q`
+    /// fixes `p`. Two instances `Refinable T U1` and `Refinable T U2` with
+    /// `U1 != U2` would let one `q` determine two different `p`s — rejected.
+    ConflictingFunDep {
+        /// Display name of the class.
+        class: String,
+        /// Rendered determining types the two instances share.
+        determining: String,
+        /// Source span of the first instance.
+        first_span: Span,
+        /// Source span of the second (conflicting) instance.
+        second_span: Span,
+    },
+
     // ── T999 ─────────────────────────────────────────────────────────────────
     /// Internal type-checker invariant violation — should never reach users.
     ///
@@ -712,6 +745,8 @@ impl TypeError {
             Self::QuoteEntityUnknown { .. } => "T042",
             Self::RefutablePatternParam { .. } => "T043",
             Self::NotAConstructor { .. } => "T044",
+            Self::UnknownFunDepVar { .. } => "T045",
+            Self::ConflictingFunDep { .. } => "T046",
             Self::InternalTypeError { .. } => "T999",
         }
     }

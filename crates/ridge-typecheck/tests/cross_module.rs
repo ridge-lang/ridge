@@ -1623,3 +1623,81 @@ pub fn db promote () -> Result Int Error =
         "typed `setWhere` over Postgres must type-check clean; got {errors:?}"
     );
 }
+
+// ── Functional dependencies ───────────────────────────────────────────────────
+
+#[test]
+fn fundep_conflicting_instances_are_t046() {
+    // `q -> p` means a determining type fixes the determined one; two instances
+    // mapping `W1` to both `Int` and `Bool` break it.
+    let main = "class Refinable q p | q -> p =\n    refine (pred: p) (x: q) -> q\n\ntype W1 = { a: Int }\n\ninstance Refinable W1 Int =\n    refine (pred: Int) (x: W1) -> W1 = x\n\ninstance Refinable W1 Bool =\n    refine (pred: Bool) (x: W1) -> W1 = x\n";
+    let errors = typecheck_one(main);
+    assert_eq!(
+        count_code(&errors, "T046"),
+        1,
+        "two instances mapping W1 to both Int and Bool must violate the q -> p fundep; got {errors:?}"
+    );
+}
+
+#[test]
+fn fundep_consistent_instances_are_clean() {
+    // Different determining types (`W1` vs `W2`) carry no conflict.
+    let main = "class Refinable q p | q -> p =\n    refine (pred: p) (x: q) -> q\n\ntype W1 = { a: Int }\ntype W2 = { b: Int }\n\ninstance Refinable W1 Int =\n    refine (pred: Int) (x: W1) -> W1 = x\n\ninstance Refinable W2 Bool =\n    refine (pred: Bool) (x: W2) -> W2 = x\n";
+    let errors = typecheck_one(main);
+    assert_eq!(
+        count_code(&errors, "T046"),
+        0,
+        "instances with different determining types do not conflict; got {errors:?}"
+    );
+}
+
+#[test]
+fn fundep_unknown_variable_is_t045() {
+    // `z` is not a parameter of `Bad`.
+    let main = "class Bad q p | q -> z =\n    bad (x: q) -> p\n";
+    let errors = typecheck_one(main);
+    assert_eq!(
+        count_code(&errors, "T045"),
+        1,
+        "a fundep naming a non-parameter `z` must be T045; got {errors:?}"
+    );
+}
+
+#[test]
+fn fundep_determined_type_resolves_clean() {
+    // The supplied determined type (`List Int`) matches what `q -> p` fixes for
+    // `W1`, so the call type-checks clean.
+    let main = "class Tagged q p | q -> p =\n    tagWith (tag: p) (x: q) -> q\n\ntype W1 = { a: Int }\n\ninstance Tagged W1 (List Int) =\n    tagWith (tag: List Int) (x: W1) -> W1 = x\n\nfn good () -> W1 =\n    tagWith [1] (W1 { a = 1 })\n";
+    let errors = typecheck_one(main);
+    assert!(
+        errors.is_empty(),
+        "a determined type matching the fundep must type-check clean; got {errors:?}"
+    );
+}
+
+#[test]
+fn fundep_wrong_determined_type_is_rejected() {
+    // Both instances put `List` in the determined position, so dispatch by the
+    // outer constructor alone would accept `List Bool` for `W1` (whose fundep
+    // fixes `List Int`). Functional-dependency improvement catches the inner
+    // mismatch and rejects it.
+    let main = "class Tagged q p | q -> p =\n    tagWith (tag: p) (x: q) -> q\n\ntype W1 = { a: Int }\ntype W2 = { b: Int }\n\ninstance Tagged W1 (List Int) =\n    tagWith (tag: List Int) (x: W1) -> W1 = x\n\ninstance Tagged W2 (List Bool) =\n    tagWith (tag: List Bool) (x: W2) -> W2 = x\n\nfn bad () -> W1 =\n    tagWith [true] (W1 { a = 1 })\n";
+    let errors = typecheck_one(main);
+    assert!(
+        !errors.is_empty(),
+        "a determined type the fundep forbids (List Bool, not List Int) must be rejected; got {errors:?}"
+    );
+}
+
+#[test]
+fn fundep_open_determined_position_resolves() {
+    // `p` appears only in the result of `zeroOf`, so the determining `q = W1`
+    // fixes it through the fundep; without one this would be T030 ambiguous.
+    let main = "class HasZero q p | q -> p =\n    zeroOf (x: q) -> p\n\ntype W1 = { a: Int }\n\ninstance HasZero W1 Int =\n    zeroOf (x: W1) -> Int = 0\n\nfn use_zero () -> Int =\n    let z = zeroOf (W1 { a = 1 })\n    z\n";
+    let errors = typecheck_one(main);
+    assert_eq!(
+        count_code(&errors, "T030"),
+        0,
+        "the fundep fixes the determined result type, so no ambiguity; got {errors:?}"
+    );
+}

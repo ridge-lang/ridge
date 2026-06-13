@@ -325,12 +325,30 @@ pub(crate) fn check_quote(
         return false;
     };
 
-    let is_bool_result = want
-        .as_ref()
-        .is_none_or(|r| matches!(r, Type::Con(id, _) if *id == b.bool));
+    // `want` selects the accepted body shape. A concrete `Bool` (or no result
+    // type at all) is a predicate; a concrete non-`Bool` scalar is an ordering
+    // key. An *unbound* result variable — the shape a class-method quote arrives
+    // with, since `q -> p` only fixes it in the solver after the argument is
+    // checked — is decided from the body itself: a boolean body is a predicate,
+    // anything else an ordering key. The result variable is then pinned to the
+    // inferred type so the fundep resolves the matching instance (`fn e -> Bool`
+    // for `Refinable`, the key/column type otherwise).
+    let body_is_predicate = as_predicate(b, &qk);
+    let want_is_unbound = matches!(want.as_ref(), Some(Type::Var(_)));
+    let is_bool_result = match want.as_ref() {
+        None => true,
+        Some(Type::Con(id, _)) if *id == b.bool => true,
+        Some(Type::Var(_)) => body_is_predicate,
+        Some(_) => false,
+    };
 
     if is_bool_result {
-        if as_predicate(b, &qk) {
+        if body_is_predicate {
+            if want_is_unbound {
+                if let Some(w) = want.as_ref() {
+                    let _ = crate::unify::unify(ctx, w, &Type::Con(b.bool, vec![]));
+                }
+            }
             ctx.quoted_lambdas_accum.insert(*span, quote_info(&scope));
             return true;
         }

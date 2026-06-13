@@ -264,6 +264,9 @@ pub fn prelude_types(b: &BuiltinTyCons) -> (FxHashMap<String, Scheme>, FxHashMap
     // `JsonValue` constructors carry).
     tycons.insert("QExpr".to_string(), b.q_expr);
     tycons.insert("Quote".to_string(), b.quote);
+    // `Ret/1` — the return-type projection, a prelude builtin so a query-builder
+    // signature can name `Ret p` without an import; reduces during unification.
+    tycons.insert("Ret".to_string(), b.ret);
 
     let qexpr_ty = ty_con(b.q_expr, vec![]);
     let q_ctor = |params: Vec<Type>| Scheme {

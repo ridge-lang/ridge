@@ -1529,7 +1529,7 @@ mod tests {
                 {
                     continue;
                 }
-                // std.data: `Adapter` and its methods (`appendRow`/`all`/`select`/
+                // std.data: `Adapter` and its methods (`appendRow`/`all`/`selectRows`/
                 // `get`/`delete`/`updateRows`/`fetch`/`countWhere`/`aggregate`/
                 // `project`/`join`/`joinSelect`/`leftJoin`/`leftJoinSelect`)
                 // are a class seeded via `seed_sql_codec_schemes`;
@@ -1543,7 +1543,7 @@ mod tests {
                         "Adapter"
                             | "appendRow"
                             | "all"
-                            | "select"
+                            | "selectRows"
                             | "get"
                             | "delete"
                             | "updateRows"

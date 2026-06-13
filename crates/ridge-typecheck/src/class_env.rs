@@ -904,7 +904,7 @@ pub fn register_stdlib_classes(ct: &mut ClassTable) {
     );
 
     // `Adapter` from std.data — the storage seam. Its methods (`appendRow`/`all`/
-    // `select`/…) are seeded directly (see `seed_sql_codec_schemes` in lib.rs), so
+    // `selectRows`/…) are seeded directly (see `seed_sql_codec_schemes` in lib.rs), so
     // the sigs carry no AST types, like `SqlType`/`Row` above. Its instances are the
     // in-memory adapter (registered in `register_stdlib_instances`) and, later,
     // backend adapters such as Postgres.
@@ -930,7 +930,7 @@ pub fn register_stdlib_classes(ct: &mut ClassTable) {
                     class_ty_vars: Vec::new(),
                 },
                 MethodSig {
-                    name: "select".to_string(),
+                    name: "selectRows".to_string(),
                     arity: 3,
                     ast_param_types: vec![],
                     ast_ret_type: None,
@@ -1051,6 +1051,46 @@ pub fn register_stdlib_classes(ct: &mut ClassTable) {
             to: smallvec![1],
         }],
     );
+
+    // `Projectable` from std.repo — the unified `select`/`selectFirst` projection
+    // over a query, inner join, or left join. Like `Refinable`: two parameters
+    // `q p` with the functional dependency `q -> p` (the receiver fixes the
+    // projection's shape), the method schemes seeded directly (see
+    // `seed_projectable_scheme` in lib.rs) with no AST types, and the three
+    // instances registered in `register_stdlib_instances`.
+    let projectable_id = ct.intern("Projectable");
+    ct.insert_with_id(
+        projectable_id,
+        ClassInfo {
+            name: "Projectable".to_string(),
+            arity: 2,
+            method_sigs: vec![
+                MethodSig {
+                    name: "select".to_string(),
+                    arity: 2,
+                    ast_param_types: vec![],
+                    ast_ret_type: None,
+                    class_ty_vars: Vec::new(),
+                },
+                MethodSig {
+                    name: "selectFirst".to_string(),
+                    arity: 2,
+                    ast_param_types: vec![],
+                    ast_ret_type: None,
+                    class_ty_vars: Vec::new(),
+                },
+            ],
+            superclasses: vec![],
+            def_module: None,
+        },
+    );
+    ct.set_fundeps(
+        projectable_id,
+        vec![FunDepIdx {
+            from: smallvec![0],
+            to: smallvec![1],
+        }],
+    );
 }
 
 /// Registers the base-type instances of stdlib-defined classes into `env`.
@@ -1073,7 +1113,11 @@ pub fn register_stdlib_classes(ct: &mut ClassTable) {
 )]
 #[expect(
     clippy::too_many_lines,
-    reason = "one flat block per stdlib instance family (SqlType base types, Adapter backends, Refinable receivers); they read best kept together"
+    reason = "one flat block per stdlib instance family (SqlType base types, Adapter backends, Refinable and Projectable receivers); they read best kept together"
+)]
+#[expect(
+    clippy::cognitive_complexity,
+    reason = "a flat sequence of `if let Some(tycon) = …` instance registrations, one family after another; the nesting is uniform lookup-then-insert, not branching logic"
 )]
 pub fn register_stdlib_instances(
     env: &mut InstanceEnv,
@@ -1224,6 +1268,56 @@ pub fn register_stdlib_instances(
                 env.instances
                     .entry((refinable, smallvec![left_join, fn2]))
                     .or_insert_with(refinable_inst);
+            }
+        }
+    }
+
+    // `Projectable (Query e a) (fn e -> s)`, `Projectable (Join e f a) (fn e f ->
+    // s)`, and the same over `LeftJoin` (its right side read as `Option f`) — the
+    // unified `select`/`selectFirst` projection instances from std.repo. Keyed
+    // like `Refinable` (receiver tycon + projection-arity tycon). Unlike `filter`,
+    // each carries a `where Adapter a, Row s` context: `Adapter a` reaches the
+    // rows through the seam and `Row s` decodes each projected row into the named
+    // shape `s` (= `Ret p`). The context variables are resolved by flattened head
+    // position — flattening `[receiver, projection]` lists the receiver's type
+    // arguments then the projection's parameters and return, so `a` sits in the
+    // receiver and `s` at the projection's return slot (Query: a@1, s@3; a join's
+    // extra right entity shifts both: a@2, s@5).
+    if let (Some(projectable), Some(adapter), Some(row)) = (
+        ct.id_by_name("Projectable"),
+        ct.id_by_name("Adapter"),
+        ct.id_by_name("Row"),
+    ) {
+        if let (Some(fn1), Some(fn2)) = (ridge_types::fn_tycon_id(1), ridge_types::fn_tycon_id(2)) {
+            let ctx_constraints = vec![
+                ridge_types::Constraint::single(adapter, ridge_types::TyVid(0)),
+                ridge_types::Constraint::single(row, ridge_types::TyVid(0)),
+            ];
+            let projectable_inst = |positions: Vec<usize>| InstanceInfo {
+                def_module: None,
+                methods: vec![
+                    ("select".to_string(), String::new()),
+                    ("selectFirst".to_string(), String::new()),
+                ],
+                ctx_constraints: ctx_constraints.clone(),
+                head_var_positions: positions,
+                origin: InstanceOrigin::Explicit,
+                span: ds,
+            };
+            if let Some(&query) = reconciled_tycon_names.get("Query") {
+                env.instances
+                    .entry((projectable, smallvec![query, fn1]))
+                    .or_insert_with(|| projectable_inst(vec![1, 3]));
+            }
+            if let Some(&join) = reconciled_tycon_names.get("Join") {
+                env.instances
+                    .entry((projectable, smallvec![join, fn2]))
+                    .or_insert_with(|| projectable_inst(vec![2, 5]));
+            }
+            if let Some(&left_join) = reconciled_tycon_names.get("LeftJoin") {
+                env.instances
+                    .entry((projectable, smallvec![left_join, fn2]))
+                    .or_insert_with(|| projectable_inst(vec![2, 5]));
             }
         }
     }

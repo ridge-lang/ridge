@@ -241,7 +241,7 @@ pub fn db summaryNames () -> Text =
     match setup ()
         Err _ -> "setup-err"
         Ok r  ->
-            match r |> Repo.query |> Repo.orderBy Desc (fn (u: User) -> u.age) |> Repo.selectList (fn (u: User) -> Summary { who = u.name, years = u.age })
+            match r |> Repo.query |> Repo.orderBy Desc (fn (u: User) -> u.age) |> Repo.select (fn (u: User) -> Summary { who = u.name, years = u.age })
                 Err _ -> "list-err"
                 Ok ss -> joinWho ss
 
@@ -306,7 +306,7 @@ pub fn db joinedTitles () -> Text =
     match setupJoin ()
         Err _ -> "setup-err"
         Ok (users, posts) ->
-            match users |> Repo.query |> Repo.orderBy Asc (fn (u: User) -> u.id) |> Repo.joinOn posts (fn (u: User) (p: Post) -> u.id == p.author) |> Repo.selectJoin (fn (u: User) (p: Post) -> Combo { person = u.name, post = p.title })
+            match users |> Repo.query |> Repo.orderBy Asc (fn (u: User) -> u.id) |> Repo.joinOn posts (fn (u: User) (p: Post) -> u.id == p.author) |> Repo.select (fn (u: User) (p: Post) -> Combo { person = u.name, post = p.title })
                 Err _  -> "select-err"
                 Ok cs  -> joinCombos cs
 
@@ -333,7 +333,7 @@ pub fn db leftSelectTitles () -> Text =
     match setupJoin ()
         Err _ -> "setup-err"
         Ok (users, posts) ->
-            match users |> Repo.query |> Repo.orderBy Asc (fn (u: User) -> u.id) |> Repo.leftJoinOn posts (fn (u: User) (p: Post) -> u.id == p.author) |> Repo.selectLeftJoin (fn (u: User) (p: Option Post) -> ComboOpt { person = u.name, post = p.title })
+            match users |> Repo.query |> Repo.orderBy Asc (fn (u: User) -> u.id) |> Repo.leftJoinOn posts (fn (u: User) (p: Post) -> u.id == p.author) |> Repo.select (fn (u: User) (p: Option Post) -> ComboOpt { person = u.name, post = p.title })
                 Err _  -> "left-select-err"
                 Ok cs  -> joinComboOpts cs
 
@@ -785,7 +785,7 @@ pub fn db deptsAll () -> Text =
     match setupEmps ()
         Err _ -> "setup-err"
         Ok r  ->
-            match r |> Repo.query |> Repo.orderBy Asc (fn (e: Emp) -> e.dept) |> Repo.selectList (fn (e: Emp) -> DeptName { dept = e.dept })
+            match r |> Repo.query |> Repo.orderBy Asc (fn (e: Emp) -> e.dept) |> Repo.select (fn (e: Emp) -> DeptName { dept = e.dept })
                 Err _   -> "err"
                 Ok rows -> deptList rows
 
@@ -795,7 +795,7 @@ pub fn db deptsDistinct () -> Text =
     match setupEmps ()
         Err _ -> "setup-err"
         Ok r  ->
-            match r |> Repo.query |> Repo.distinct |> Repo.orderBy Asc (fn (e: Emp) -> e.dept) |> Repo.selectList (fn (e: Emp) -> DeptName { dept = e.dept })
+            match r |> Repo.query |> Repo.distinct |> Repo.orderBy Asc (fn (e: Emp) -> e.dept) |> Repo.select (fn (e: Emp) -> DeptName { dept = e.dept })
                 Err _   -> "err"
                 Ok rows -> deptList rows
 
@@ -805,7 +805,7 @@ pub fn db salariesDistinct () -> Text =
     match setupEmps ()
         Err _ -> "setup-err"
         Ok r  ->
-            match r |> Repo.query |> Repo.distinct |> Repo.orderBy Asc (fn (e: Emp) -> e.salary) |> Repo.selectList (fn (e: Emp) -> SalAmt { salary = e.salary })
+            match r |> Repo.query |> Repo.distinct |> Repo.orderBy Asc (fn (e: Emp) -> e.salary) |> Repo.select (fn (e: Emp) -> SalAmt { salary = e.salary })
                 Err _   -> "err"
                 Ok rows -> salList rows
 

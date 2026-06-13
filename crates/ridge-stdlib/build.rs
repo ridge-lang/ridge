@@ -114,6 +114,7 @@ const STDLIB_CLASSES: &[(&str, &str)] = &[
     ("SqlType", "std.sql"),
     ("Adapter", "std.data"),
     ("Refinable", "std.repo"),
+    ("Projectable", "std.repo"),
 ];
 
 // Constructor-shaped fns must export arity 0; this invariant catches accidental
@@ -434,7 +435,40 @@ fn instance_head_atom_name(inner: &str) -> Option<String> {
     if is_fn {
         let after = inner.strip_prefix("fn").unwrap_or("").trim_start();
         let params = after.split("->").next().unwrap_or("");
-        let arity = params.split_whitespace().count();
+        // Count top-level params: whitespace-separated groups at paren depth 0, so
+        // a parenthesised parameter type counts once. `fn e f` is arity 2;
+        // `fn e (Option f)` is also arity 2 (the left-join projection's right side),
+        // matching how the type system keys the `Fn{n}` dispatch tycon — a naive
+        // `split_whitespace` would miscount `(Option f)` as two and key `Fn3`.
+        let mut arity = 0u32;
+        let mut depth = 0i32;
+        let mut prev_was_sep = true;
+        for ch in params.chars() {
+            match ch {
+                '(' => {
+                    if depth == 0 && prev_was_sep {
+                        arity += 1;
+                    }
+                    depth += 1;
+                    prev_was_sep = false;
+                }
+                ')' => {
+                    depth -= 1;
+                    prev_was_sep = false;
+                }
+                c if c.is_whitespace() => {
+                    if depth == 0 {
+                        prev_was_sep = true;
+                    }
+                }
+                _ => {
+                    if depth == 0 && prev_was_sep {
+                        arity += 1;
+                    }
+                    prev_was_sep = false;
+                }
+            }
+        }
         return Some(format!("Fn{arity}"));
     }
     let ctor = inner.split([' ', ')']).next().unwrap_or("").trim();

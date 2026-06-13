@@ -1858,7 +1858,19 @@ pub(crate) fn try_lower_classmethod_call(
     }
 
     let ir_args: Vec<IrExpr> = args.iter().map(|a| lower_expr(ctx, a)).collect();
-    let dict_expr = resolve_dict_arg(ctx, cid, &class_name, pin_ty.as_ref(), span);
+    // `Projectable`'s `where Adapter a, Row s` context puts `s` in the projection,
+    // not the receiver `q`, so a dictionary re-derived from the receiver type alone
+    // cannot resolve `Row s`. Augment the receiver with the projected element
+    // (recovered from the call's result type) so that sub-dictionary resolves to a
+    // concrete instance rather than an unbound forward. Other class methods — the
+    // `Adapter` seam, `Refinable.filter` — have no such context and keep the plain
+    // receiver pin.
+    let dict_ty = if class_name == "Projectable" {
+        augment_receiver_with_projection_atoms(ctx, pin_ty.as_ref(), span)
+    } else {
+        pin_ty
+    };
+    let dict_expr = resolve_dict_arg(ctx, cid, &class_name, dict_ty.as_ref(), span);
     let field_id = ctx.fresh_id(None);
     let field = IrExpr::Field {
         id: field_id,
@@ -1948,6 +1960,63 @@ fn type_contains_tycon(haystack: &Type, needle: TyConId) -> bool {
     }
 }
 
+/// Augment a receiver type so a multi-parameter class method's context
+/// constraints whose variable lives in the projection — `Projectable q p |
+/// q -> p` is `… where Adapter a, Row s`, with `s` the projection's return, not
+/// part of the receiver `q` — resolve against a concrete instance instead of an
+/// unbound forward.
+///
+/// The projected element `s` cannot be read from the quoted lambda argument (a
+/// quote carries no lowering-time type), so it is recovered from the call's own
+/// result type (`Result (List s)` / `Result (Option s)` → `s`). The receiver's
+/// arguments are then padded with `s` up to the projection's return position in
+/// the flattened head (3 for a one-entity query, 5 for a two-entity join), where
+/// `resolve_ctx_sub_dicts` reads the `Row s` position. Only that position and the
+/// receiver-resident `Adapter a` position are read, so the padding is inert
+/// everywhere else. A method with no recoverable `s` (a receiver-returning verb
+/// like `filter`) is left unchanged.
+fn augment_receiver_with_projection_atoms(
+    ctx: &LowerCtx<'_>,
+    pin_ty: Option<&Type>,
+    call_span: Span,
+) -> Option<Type> {
+    let Some(Type::Con(tycon, base)) = pin_ty.map(deep_peel_alias) else {
+        return pin_ty.cloned();
+    };
+    let Some(s) = projected_elem_type(ctx, call_span) else {
+        return Some(Type::Con(tycon, base));
+    };
+    // The deepest projection-return position across the query/inner-join/left-join
+    // instances is 5 (a two-entity join: `[e, f, a, e, f, s]`); padding to length
+    // 6 covers it and the shallower query case (`[e, a, e, s]`, position 3).
+    let mut full = base;
+    while full.len() < 6 {
+        full.push(s.clone());
+    }
+    Some(Type::Con(tycon, full))
+}
+
+/// The projected element `s` of a projection call whose result is
+/// `Result (List s) Error` or `Result (Option s) Error` — read from the call
+/// expression's own inferred type. `None` when the call has no recorded type or
+/// its result is not a `Result` wrapping a one-argument container.
+fn projected_elem_type(ctx: &LowerCtx<'_>, call_span: Span) -> Option<Type> {
+    let nid = ctx
+        .node_id_map
+        .as_ref()
+        .and_then(|m| m.get(call_span, NodeKind::Expr))?;
+    let call_ty = ctx.node_type(nid).cloned().map(|t| deep_peel_alias(&t))?;
+    let Type::Con(_result, rargs) = call_ty else {
+        return None;
+    };
+    // `Result <ok> <err>` — the projected container is the `ok` argument.
+    let container = deep_peel_alias(rargs.first()?);
+    let Type::Con(_list_or_option, inner) = container else {
+        return None;
+    };
+    inner.into_iter().next()
+}
+
 /// Build a [`ridge_typecheck::DictPlan`] for `(class, ty)` directly from a
 /// resolved type, recursing through the instance registry.
 ///
@@ -1990,36 +2059,24 @@ fn build_dict_plan_from_type(
                 }
                 let extra_head: smallvec::SmallVec<[TyConId; 1]> =
                     head.iter().skip(1).copied().collect();
+                // Resolve the instance's context constraints (`… where Adapter a`)
+                // from the receiver atom's type arguments — the flattened head
+                // positions index this first atom's args, which is where a
+                // receiver-bound context variable lives.
+                let sub_dicts = resolve_ctx_sub_dicts(ctx, inst, &args);
                 return Some(DictPlan::Static {
+                    class,
                     info: Box::new(inst.clone()),
                     tycon,
                     extra_head,
-                    args: vec![],
+                    args: sub_dicts,
                 });
             };
             // Resolve one sub-dictionary per context constraint, reading the
             // concrete type argument at the constraint's recorded head position.
-            let mut sub_dicts: Vec<DictPlan> = Vec::with_capacity(info.ctx_constraints.len());
-            for (ctx_c, &pos) in info
-                .ctx_constraints
-                .iter()
-                .zip(info.head_var_positions.iter())
-            {
-                let elem_ty = args.get(pos).cloned().unwrap_or(Type::Error);
-                let sub =
-                    build_dict_plan_from_type(ctx, ctx_c.class, &elem_ty).unwrap_or_else(|| {
-                        // The element resolved to a variable (or no instance):
-                        // forward a dictionary parameter. For a well-typed program
-                        // this is a genuine forward; a truly unsatisfiable element
-                        // is reported as T030 by the solver before lowering runs.
-                        DictPlan::Forward(ridge_types::Constraint::single(
-                            ctx_c.class,
-                            forward_var_of(&elem_ty),
-                        ))
-                    });
-                sub_dicts.push(sub);
-            }
+            let sub_dicts = resolve_ctx_sub_dicts(ctx, info, &args);
             Some(DictPlan::Static {
+                class,
                 info: Box::new(info.clone()),
                 tycon,
                 extra_head: smallvec::SmallVec::default(),
@@ -2030,6 +2087,36 @@ fn build_dict_plan_from_type(
         // a concrete instance here.
         _ => None,
     }
+}
+
+/// Resolve one sub-dictionary plan per context constraint of `info`, reading the
+/// concrete type argument at each constraint's recorded head position from
+/// `head_args`. An element that resolves to a variable (or has no instance)
+/// forwards a dictionary parameter; a truly unsatisfiable element is reported as
+/// T030 by the solver before lowering runs. Shared by the single-parameter and
+/// multi-parameter (`extra_head`) branches of [`build_dict_plan_from_type`].
+fn resolve_ctx_sub_dicts(
+    ctx: &LowerCtx<'_>,
+    info: &ridge_typecheck::InstanceInfo,
+    head_args: &[Type],
+) -> Vec<ridge_typecheck::DictPlan> {
+    use ridge_typecheck::DictPlan;
+    let mut sub_dicts: Vec<DictPlan> = Vec::with_capacity(info.ctx_constraints.len());
+    for (ctx_c, &pos) in info
+        .ctx_constraints
+        .iter()
+        .zip(info.head_var_positions.iter())
+    {
+        let elem_ty = head_args.get(pos).cloned().unwrap_or(Type::Error);
+        let sub = build_dict_plan_from_type(ctx, ctx_c.class, &elem_ty).unwrap_or_else(|| {
+            DictPlan::Forward(ridge_types::Constraint::single(
+                ctx_c.class,
+                forward_var_of(&elem_ty),
+            ))
+        });
+        sub_dicts.push(sub);
+    }
+    sub_dicts
 }
 
 /// The forward variable to thread for an unresolved element type. When the
@@ -2055,9 +2142,18 @@ pub(crate) fn stdlib_class_home_module(class_name: &str) -> Option<&'static str>
     match class_name {
         "SqlType" | "Row" => Some("std.sql"),
         "Adapter" => Some("std.data"),
-        "Refinable" => Some("std.repo"),
+        "Refinable" | "Projectable" => Some("std.repo"),
         _ => None,
     }
+}
+
+/// The display name of a class id, read from the workspace class table. Used to
+/// form `$inst_{ClassName}_…` from a plan's own class.
+fn class_name_of(ctx: &LowerCtx<'_>, class: ridge_types::ClassId) -> Option<String> {
+    let ct = ctx
+        .class_table
+        .or_else(|| ctx.workspace.map(|ws| &ws.class_table))?;
+    ct.get(class).map(|info| info.name.clone())
 }
 
 /// Convert a resolved [`DictPlan`] to the `IrExpr` that threads the dictionary.
@@ -2068,12 +2164,23 @@ pub(crate) fn stdlib_class_home_module(class_name: &str) -> Option<&'static str>
 /// `$inst_` constant.
 fn dict_plan_to_expr(
     ctx: &mut LowerCtx<'_>,
-    class: ridge_types::ClassId,
+    _class: ridge_types::ClassId,
     plan: ridge_typecheck::DictPlan,
     class_name: &str,
     span: Span,
 ) -> IrExpr {
     use ridge_typecheck::DictPlan;
+    // Each plan is self-describing: a `Static` carries its instance's class, a
+    // `Forward` its constraint's class. Use the plan's own class for the dict
+    // constant name so a heterogeneous context sub-dictionary (the `Adapter a`
+    // dict inside a `Projectable` instance, say) is named against its own class
+    // rather than the enclosing instance's. Falls back to the caller's class.
+    let class = match &plan {
+        DictPlan::Static { class, .. } => *class,
+        DictPlan::Forward(c) => c.class,
+    };
+    let derived_name = class_name_of(ctx, class);
+    let class_name: &str = derived_name.as_deref().unwrap_or(class_name);
     match plan {
         DictPlan::Static {
             info,
@@ -2082,10 +2189,10 @@ fn dict_plan_to_expr(
             args,
             ..
         } => {
-            // Recursively lower the sub-dictionaries first. For a parametric
-            // instance `Encode (List a)` the args carry the element dict plan;
-            // each sub-dict is resolved through the SAME class (the context
-            // constraint shares the head class for the codec instances).
+            // Recursively lower the sub-dictionaries first. Each sub-dict re-derives
+            // its own class from its plan, so a context constraint of a different
+            // class than the parent (`Adapter`/`Row` inside `Projectable`) is named
+            // and located correctly.
             let sub_dicts: Vec<IrExpr> = args
                 .into_iter()
                 .map(|sub| dict_plan_to_expr(ctx, class, sub, class_name, span))

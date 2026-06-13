@@ -1018,41 +1018,14 @@ fn reconciled_repo_fn_scheme(
             result(Type::Con(b.bool, vec![])),
             with_adapter(),
         ),
-        // selectList / selectFirst : ∀e a s. Quote (e -> s) -> Query e a
-        //   -> Result (List s | Option s) Error where Adapter a, Row s.
-        // The projection quote captures a record built by naming the result type
-        // (`Summary { col = row.col }`); `s` is that named record, pinned at the
-        // call from the constructor, and `Row s` decodes the projected columns.
-        // `s` first appears (in the projection param) before the adapter `a`, so
-        // the constraint order is `Row s` then `Adapter a`, matching how the
-        // checker stores the source signature's constraints.
-        "selectList" | "selectFirst" => {
-            let s = TyVid(2);
-            let proj_quote = Type::Con(
-                b.quote,
-                vec![Type::Fn {
-                    params: vec![Type::Var(e)],
-                    ret: Box::new(Type::Var(s)),
-                    caps: CapRow::Concrete(CapabilitySet::PURE),
-                }],
-            );
-            let ok = if name == "selectList" {
-                Type::Con(b.list, vec![Type::Var(s)])
-            } else {
-                Type::Con(b.option, vec![Type::Var(s)])
-            };
-            Some(Scheme {
-                vars: vec![e, a, s],
-                cap_vars: vec![],
-                row_vars: vec![],
-                ty: Type::Fn {
-                    params: vec![proj_quote, query_app()],
-                    ret: Box::new(result(ok)),
-                    caps: pure(),
-                },
-                constraints: vec![Constraint::single(row, s), Constraint::single(adapter, a)],
-            })
-        }
+        // `select` / `selectFirst` are no longer reconciled here: they became the
+        // methods of the `Projectable q p | q -> p` class (std.repo), one verb
+        // over a query, an inner join, or a left join. A qualified `Repo.select`
+        // resolves to that class method, typed by the seeded `∀q p. Quote p -> q
+        // -> Result (List (Ret p)) Error where Projectable q p` scheme (see
+        // `seed_projectable_scheme`), the fundep fixing the projection per
+        // receiver and `Ret p` naming the projected element. Returning `None`
+        // routes them through the class-method path rather than the old pub fns.
         // groupBy : ∀e a k. Quote (e -> k) -> Query e a -> GroupedQuery e k a.
         // A pure builder: it pins the group-key column (named by the accessor
         // quote, exactly as an `orderBy` key) and carries the query's filter into a
@@ -1202,38 +1175,9 @@ fn reconciled_repo_fn_scheme(
                 ],
             })
         }
-        // selectJoin : ∀e f a s. Quote (e -> f -> s) -> Join e f a
-        //                  -> Result (List s) Error where Row s, Adapter a.
-        // The projection names a result record built from columns of both
-        // entities (`Line { who = u.name, title = p.title }`), which pins `s` to
-        // that record and lists its (qualified) columns. `s` first appears in the
-        // projection (param 0) before the adapter `a` (in `Join`, param 1), so
-        // the constraint order is `Row s` then `Adapter a`, matching selectList.
-        "selectJoin" => {
-            let join_con = *reconciled.get("Join")?;
-            let f = TyVid(2);
-            let s = TyVid(3);
-            let proj_quote = Type::Con(
-                b.quote,
-                vec![Type::Fn {
-                    params: vec![Type::Var(e), Type::Var(f)],
-                    ret: Box::new(Type::Var(s)),
-                    caps: CapRow::Concrete(CapabilitySet::PURE),
-                }],
-            );
-            let join_e_f_a = Type::Con(join_con, vec![Type::Var(e), Type::Var(f), Type::Var(a)]);
-            Some(Scheme {
-                vars: vec![e, a, f, s],
-                cap_vars: vec![],
-                row_vars: vec![],
-                ty: Type::Fn {
-                    params: vec![proj_quote, join_e_f_a],
-                    ret: Box::new(result(Type::Con(b.list, vec![Type::Var(s)]))),
-                    caps: pure(),
-                },
-                constraints: vec![Constraint::single(row, s), Constraint::single(adapter, a)],
-            })
-        }
+        // (`selectJoin` is gone: an inner join's projection is now the
+        // `Projectable (Join e f a) (fn e f -> s)` instance — see
+        // `seed_projectable_scheme`.)
         // leftJoinOn : ∀e f a. Repo f a -> Quote (e -> f -> Bool) -> Query e a
         //                  -> LeftJoin e f a. The left-outer builder, identical in
         // shape to `joinOn` but producing a `LeftJoin` so the terminal keeps every
@@ -1291,40 +1235,9 @@ fn reconciled_repo_fn_scheme(
                 ],
             })
         }
-        // selectLeftJoin : ∀e f a s. Quote (e -> Option f -> s) -> LeftJoin e f a
-        //                      -> Result (List s) Error where Row s, Adapter a.
-        // The left-outer analogue of `selectJoin`. The right parameter is
-        // `Option f`, so a column read off it (`p.title`) is `Option` of its
-        // type; the named result record's right-derived fields are therefore
-        // `Option`, and an unmatched left row projects them as `None`. `s` first
-        // appears in the projection before the adapter `a`, so the constraint
-        // order is `Row s` then `Adapter a`, as `selectJoin`.
-        "selectLeftJoin" => {
-            let leftjoin_con = *reconciled.get("LeftJoin")?;
-            let f = TyVid(2);
-            let s = TyVid(3);
-            let proj_quote = Type::Con(
-                b.quote,
-                vec![Type::Fn {
-                    params: vec![Type::Var(e), Type::Con(b.option, vec![Type::Var(f)])],
-                    ret: Box::new(Type::Var(s)),
-                    caps: CapRow::Concrete(CapabilitySet::PURE),
-                }],
-            );
-            let leftjoin_e_f_a =
-                Type::Con(leftjoin_con, vec![Type::Var(e), Type::Var(f), Type::Var(a)]);
-            Some(Scheme {
-                vars: vec![e, a, f, s],
-                cap_vars: vec![],
-                row_vars: vec![],
-                ty: Type::Fn {
-                    params: vec![proj_quote, leftjoin_e_f_a],
-                    ret: Box::new(result(Type::Con(b.list, vec![Type::Var(s)]))),
-                    caps: pure(),
-                },
-                constraints: vec![Constraint::single(row, s), Constraint::single(adapter, a)],
-            })
-        }
+        // (`selectLeftJoin` is gone: a left join's projection is now the
+        // `Projectable (LeftJoin e f a) (fn e (Option f) -> s)` instance, the
+        // right side read as `Option` — see `seed_projectable_scheme`.)
         _ => None,
     }
 }

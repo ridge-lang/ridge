@@ -56,8 +56,35 @@ use crate::error::TypeError;
     reason = "a/b/r/c/s/d are idiomatic in unification"
 )]
 pub fn unify(ctx: &mut InferCtx, a: &Type, b: &Type) -> Result<(), TypeError> {
+    // `Ret (fn … -> r)` is the return-type extractor: when its argument is a
+    // concrete function type it reduces to that function's return. Returns
+    // `None` for anything else — including `Ret ?p` whose argument is still a
+    // variable, which stays a stuck projection until `p` is pinned.
+    fn reduce_ret(ctx: &mut InferCtx, t: &Type) -> Option<Type> {
+        let Type::Con(id, args) = t else {
+            return None;
+        };
+        if id.0 != ridge_types::RET_TYCON_ID || args.len() != 1 {
+            return None;
+        }
+        match ctx.shallow_resolve(&args[0]) {
+            Type::Fn { ret, .. } => Some(*ret),
+            _ => None,
+        }
+    }
+
     let a = ctx.shallow_resolve(a);
     let b = ctx.shallow_resolve(b);
+
+    // Reduce a top-level `Ret` on either side, then retry. An unreducible `Ret`
+    // (argument not yet a function) falls through to the structural `Con/Con`
+    // arm, where `Ret p ~ Ret q` unifies the arguments.
+    if let Some(reduced) = reduce_ret(ctx, &a) {
+        return unify(ctx, &reduced, &b);
+    }
+    if let Some(reduced) = reduce_ret(ctx, &b) {
+        return unify(ctx, &a, &reduced);
+    }
 
     match (&a, &b) {
         // ── Absorbing element ─────────────────────────────────────────────────
@@ -569,6 +596,107 @@ mod tests {
         let err = unify(&mut ctx, &a, &b).unwrap_err();
         // xs.len() != ys.len() → T001 (wrapped through mismatch)
         assert_eq!(err.code(), "T001");
+    }
+
+    // ─────────────────────────────────────────────────────────────────────────
+    // Ret/1 — the return-type extractor. `Ret (fn … -> r)` reduces to `r`.
+    // ─────────────────────────────────────────────────────────────────────────
+
+    fn pure_fn(params: Vec<Type>, ret: Type) -> Type {
+        Type::Fn {
+            params,
+            ret: Box::new(ret),
+            caps: CapRow::Concrete(CapabilitySet::PURE),
+        }
+    }
+
+    fn ret_of(arg: Type) -> Type {
+        Type::Con(cid(ridge_types::RET_TYCON_ID), vec![arg])
+    }
+
+    /// `deep_resolve(Ret (fn User -> Summary))` reduces to `Summary`.
+    #[test]
+    fn ret_of_concrete_fn_reduces_in_deep_resolve() {
+        let mut ctx = make_ctx();
+        let summary = Type::Con(cid(101), vec![]);
+        let proj = pure_fn(vec![Type::Con(cid(100), vec![])], summary.clone());
+        let resolved = ctx.deep_resolve(&ret_of(proj));
+        assert_eq!(format!("{resolved:?}"), format!("{summary:?}"));
+    }
+
+    /// The keystone: a result type `Result (List (Ret p))` resolves to
+    /// `Result (List Summary)` once the projection arg pins `p = fn User ->
+    /// Summary` — the result-element linkage the unified `select` relies on.
+    #[test]
+    fn ret_links_projection_return_to_result() {
+        let mut ctx = make_ctx();
+        let user = Type::Con(cid(100), vec![]);
+        let summary = Type::Con(cid(101), vec![]);
+        let err = Type::Con(cid(12), vec![]);
+        let p = ctx.fresh_tyvid();
+        // Arg unification pins `p` before the call result is consumed.
+        unify(
+            &mut ctx,
+            &Type::Var(p),
+            &pure_fn(vec![user], summary.clone()),
+        )
+        .unwrap();
+
+        let result_ty = Type::Con(
+            cid(10),
+            vec![Type::Con(cid(6), vec![ret_of(Type::Var(p))]), err.clone()],
+        );
+        let expected = Type::Con(cid(10), vec![Type::Con(cid(6), vec![summary]), err]);
+        let resolved = ctx.deep_resolve(&result_ty);
+        assert_eq!(format!("{resolved:?}"), format!("{expected:?}"));
+    }
+
+    /// `Ret ?p` with `p` still unbound is carried intact (a stuck projection),
+    /// not reduced and not an error — so a wrapper that stays polymorphic over
+    /// the projection can generalise with `Ret p` in its scheme.
+    #[test]
+    fn ret_of_unpinned_var_stays_stuck() {
+        let mut ctx = make_ctx();
+        let p = ctx.fresh_tyvid();
+        let listed = Type::Con(cid(6), vec![ret_of(Type::Var(p))]);
+        match ctx.deep_resolve(&listed) {
+            Type::Con(outer, args) => {
+                assert_eq!(outer, cid(6));
+                assert!(
+                    matches!(&args[0], Type::Con(r, _) if r.0 == ridge_types::RET_TYCON_ID),
+                    "Ret over an unpinned var must stay a Ret application"
+                );
+            }
+            other => panic!("expected List(Ret ?p) to be carried, got {other:?}"),
+        }
+    }
+
+    /// Two stuck projections unify structurally (`Ret p ~ Ret q` ⟹ `p ~ q`):
+    /// pinning one then pins the other. No spurious mismatch.
+    #[test]
+    fn ret_unifies_structurally_when_both_stuck() {
+        let mut ctx = make_ctx();
+        let p = ctx.fresh_tyvid();
+        let q = ctx.fresh_tyvid();
+        unify(&mut ctx, &ret_of(Type::Var(p)), &ret_of(Type::Var(q))).unwrap();
+        let summary = Type::Con(cid(101), vec![]);
+        let proj = pure_fn(vec![], summary);
+        unify(&mut ctx, &Type::Var(p), &proj).unwrap();
+        let resolved = ctx.deep_resolve(&Type::Var(q));
+        assert_eq!(format!("{resolved:?}"), format!("{proj:?}"));
+    }
+
+    /// `Ret (fn … -> Summary)` unified against a fresh var reduces first, binding
+    /// the var to `Summary`.
+    #[test]
+    fn ret_reduces_during_unify_against_var() {
+        let mut ctx = make_ctx();
+        let summary = Type::Con(cid(101), vec![]);
+        let proj = pure_fn(vec![Type::Con(cid(100), vec![])], summary.clone());
+        let r = ctx.fresh_tyvid();
+        unify(&mut ctx, &ret_of(proj), &Type::Var(r)).unwrap();
+        let resolved = ctx.deep_resolve(&Type::Var(r));
+        assert_eq!(format!("{resolved:?}"), format!("{summary:?}"));
     }
 
     // ─────────────────────────────────────────────────────────────────────────

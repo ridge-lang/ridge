@@ -86,6 +86,12 @@ pub enum DictPlan {
     /// from [`TypedWorkspace::tycons`] to form the dict constant name
     /// `$inst_{ClassName}_{TypeName}`.
     Static {
+        /// The class this dictionary satisfies. The lowering pass reads it to
+        /// form the dict constant name `$inst_{ClassName}_…` from the *plan's
+        /// own* class, so a heterogeneous context sub-dictionary (e.g. the
+        /// `Adapter a` dict inside a `Projectable` instance) is named against
+        /// its own class rather than the enclosing instance's class.
+        class: ClassId,
         /// Instance metadata (method names, origin, etc.).
         info: Box<InstanceInfo>,
         /// The first concrete head constructor that was resolved. For a
@@ -431,15 +437,30 @@ fn dispatch_multi_constraint(
             return;
         };
         let info = info.clone();
+        let key = (c.class, c.tys[0]);
+        // Idempotent: a second constraint converging on the same instance must
+        // not re-resolve the context sub-dictionaries (which would re-report any
+        // missing-instance diagnostic).
+        if dict_resolution.contains_key(&key) {
+            return;
+        }
         let extra_head: SmallVec<[TyConId; 1]> = head_tycons.iter().skip(1).copied().collect();
-        dict_resolution
-            .entry((c.class, c.tys[0]))
-            .or_insert_with(|| DictPlan::Static {
+        let tycon = head_tycons[0];
+        // Resolve the instance's context constraints (`instance C (T a) (U b)
+        // where D a`) against the resolved head atoms, threading their resolved
+        // sub-dictionaries into the plan. Empty for a context-free instance.
+        let args =
+            resolve_ctx_dict_args_multi(ctx, instance_env, class_table, scc_span, &info, &resolved);
+        dict_resolution.insert(
+            key,
+            DictPlan::Static {
+                class: c.class,
                 info: Box::new(info),
-                tycon: head_tycons[0],
+                tycon,
                 extra_head,
-                args: vec![],
-            });
+                args,
+            },
+        );
         return;
     }
 
@@ -702,6 +723,7 @@ fn discharge_concrete(
             dict_resolution
                 .entry((c.class, c.sole_ty()))
                 .or_insert_with(|| DictPlan::Static {
+                    class: c.class,
                     info: Box::new(inst_info.clone()),
                     tycon: tyconid,
                     extra_head: SmallVec::new(),
@@ -800,6 +822,65 @@ fn resolve_ctx_dict_args(
     args
 }
 
+/// Resolve the ordered sub-dictionary plans for a **multi-parameter** instance's
+/// context constraints (`instance Projectable (Query e a) (fn e -> s) where
+/// Adapter a`).
+///
+/// The single-parameter [`resolve_ctx_dict_args`] indexes one resolved head
+/// type's arguments. Here the head spans several atoms, so the resolved atoms
+/// are flattened into one positional list — each `Con` contributes its type
+/// arguments, each `Fn` its parameters then its return — exactly the order
+/// `collect::flatten_head_arg_names` used when it recorded `head_var_positions`.
+/// Each context constraint is then resolved against the concrete type at its
+/// recorded position.
+///
+/// Returns an empty vec for a context-free instance (`head_var_positions`
+/// empty), so the caller records a plain `DictPlan::Static { args: [] }`.
+fn resolve_ctx_dict_args_multi(
+    ctx: &mut InferCtx,
+    instance_env: &InstanceEnv,
+    class_table: &ClassTable,
+    scc_span: Span,
+    inst_info: &InstanceInfo,
+    resolved_atoms: &[Type],
+) -> Vec<DictPlan> {
+    if inst_info.head_var_positions.is_empty() {
+        return Vec::new();
+    }
+
+    let mut flat: Vec<Type> = Vec::new();
+    for atom in resolved_atoms {
+        match atom {
+            Type::Con(_, args) => flat.extend(args.iter().cloned()),
+            Type::Fn { params, ret, .. } => {
+                flat.extend(params.iter().cloned());
+                flat.push((**ret).clone());
+            }
+            _ => {}
+        }
+    }
+
+    let mut args: Vec<DictPlan> = Vec::with_capacity(inst_info.ctx_constraints.len());
+    for (ctx_c, &pos) in inst_info
+        .ctx_constraints
+        .iter()
+        .zip(inst_info.head_var_positions.iter())
+    {
+        let arg_ty = flat.get(pos).cloned().unwrap_or(Type::Error);
+        let resolved_arg = ctx.deep_resolve(&arg_ty);
+        let plan = resolve_dict_plan(
+            ctx,
+            instance_env,
+            class_table,
+            scc_span,
+            ctx_c.class,
+            &resolved_arg,
+        );
+        args.push(plan);
+    }
+    args
+}
+
 /// Resolve a `(class, concrete-or-var type)` pair into a [`DictPlan`] without
 /// touching the solver work queue.
 ///
@@ -859,6 +940,7 @@ fn resolve_dict_plan(
                 resolved,
             );
             DictPlan::Static {
+                class,
                 info: Box::new(inst_info),
                 tycon: tyconid,
                 extra_head: SmallVec::new(),
@@ -1441,6 +1523,94 @@ mod tests {
             matches!(outer_plan, Some(DictPlan::Static { tycon, .. }) if *tycon == list_tycon),
             "outer plan must be Static for List; got {outer_plan:?}"
         );
+    }
+
+    /// A multi-parameter instance with a heterogeneous context (`instance Demo
+    /// (Box a) (Tag b) where Encode a`) threads the context sub-dictionary across
+    /// the flattened head: solving `Demo (Box Int) (Tag Bool)` yields a Static
+    /// plan whose one arg is the `Encode Int` sub-dictionary, tagged with its own
+    /// class. Exercises `resolve_ctx_dict_args_multi` and the `Static.class` field.
+    #[test]
+    fn multi_param_instance_context_threads_sub_dict() {
+        let mut ctx = InferCtx::new();
+        let mut arena = TyConArena::new();
+        let b = BuiltinTyCons::allocate(&mut arena);
+        let int_tycon = b.int;
+        // Two arbitrary builtin tycons stand in for the head constructors.
+        let box_tycon = b.list;
+        let tag_tycon = b.set;
+
+        let mut ct = make_class_table();
+        let demo = ct.intern("Demo");
+        ct.insert_with_id(
+            demo,
+            crate::class_env::ClassInfo {
+                name: "Demo".to_string(),
+                arity: 2,
+                method_sigs: vec![],
+                superclasses: vec![],
+                def_module: None,
+            },
+        );
+
+        // q = Box Int, p = Tag Bool.
+        let q = ctx.fresh_tyvid();
+        let p = ctx.fresh_tyvid();
+        ctx.tyvids.union_value(
+            TyVidKey(q.0),
+            TyValue(Some(Type::Con(
+                box_tycon,
+                vec![Type::Con(int_tycon, vec![])],
+            ))),
+        );
+        ctx.tyvids.union_value(
+            TyVidKey(p.0),
+            TyValue(Some(Type::Con(tag_tycon, vec![Type::Con(b.bool, vec![])]))),
+        );
+        ctx.deferred_constraints
+            .push(Constraint::new(demo, [q, p].into_iter().collect()));
+
+        let mut env = InstanceEnv::new();
+        // instance Demo (Box a) (Tag b) where Encode a — `a` at flattened pos 0
+        // (Box is the first atom; its single arg is position 0).
+        let head: crate::class_env::InstanceHead = [box_tycon, tag_tycon].into_iter().collect();
+        env.instances.insert(
+            (demo, head),
+            InstanceInfo {
+                def_module: None,
+                methods: vec![],
+                ctx_constraints: vec![Constraint::single(ENCODE_CLASS, TyVid(0))],
+                head_var_positions: vec![0],
+                origin: InstanceOrigin::Explicit,
+                span: dummy_span(),
+            },
+        );
+        env.insert(
+            (ENCODE_CLASS, int_tycon),
+            make_instance_info(),
+            "Encode",
+            "Int",
+        )
+        .expect("Encode Int insert");
+
+        let env_snap: FxHashSet<TyVid> = FxHashSet::default();
+        let (_retained, dict_res) =
+            solve_constraints(&mut ctx, &env, &ct, &env_snap, dummy_span(), Some(&b));
+
+        assert!(ctx.errors.is_empty(), "no errors; got {:?}", ctx.errors);
+        match dict_res.get(&(demo, q)) {
+            Some(DictPlan::Static { tycon, args, .. }) => {
+                assert_eq!(*tycon, box_tycon, "outer plan keyed on the first head atom");
+                assert_eq!(args.len(), 1, "one context sub-dict (Encode a)");
+                assert!(
+                    matches!(&args[0], DictPlan::Static { tycon: t, class, .. }
+                        if *t == int_tycon && *class == ENCODE_CLASS),
+                    "sub-dict must be `Encode Int` tagged with ENCODE_CLASS; got {:?}",
+                    args[0]
+                );
+            }
+            other => panic!("expected a Static plan for Demo; got {other:?}"),
+        }
     }
 
     /// `Encode (List Int)` without `Encode Int` in the env — must emit T029 for Int.

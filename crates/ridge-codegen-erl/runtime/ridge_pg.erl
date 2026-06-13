@@ -41,10 +41,10 @@
     pg_count_where/3,
     pg_aggregate/5,
     pg_project/8,
-    pg_join/8,
-    pg_join_select/9,
-    pg_left_join/8,
-    pg_left_join_select/9,
+    pg_join/9,
+    pg_join_select/10,
+    pg_left_join/9,
+    pg_left_join_select/10,
     pg_group_summarize/6,
     pg_run_plan/2,
     pg_close/1
@@ -145,37 +145,38 @@ pg_group_summarize(Id, Table, Tree, KeyCol, Cols, Having) ->
 pg_run_plan(Id, Plan) ->
     pg_call(Id, {run_plan, Plan}).
 
-%% pg_join/8 — inner-join LeftTable and RightTable on the condition tree Cond,
-%% compiled into `JOIN … ON`; the left-side predicate Pred into `WHERE`; then
-%% Orders/Lim/Off. Left columns (`QCol`) are qualified to the left table, right
-%% columns (`QColR`) to the right. Each row comes back as the `{left, right}`
-%% pair of column maps, split by the columns' source table. Result
-%% (List {Row, Row}) Error.
-pg_join(Id, LeftTable, RightTable, Cond, Pred, Orders, Lim, Off) ->
-    pg_call(Id, {join, LeftTable, RightTable, Cond, Pred, Orders, Lim, Off}).
+%% pg_join/9 — inner-join LeftTable and RightTable on the condition tree Cond,
+%% compiled into `JOIN … ON`; the two-row post-join WHERE tree Where2 and the
+%% left-side predicate Pred into `WHERE`; then Orders/Lim/Off. Left columns
+%% (`QCol`) are qualified to the left table, right columns (`QColR`) to the right.
+%% Each row comes back as the `{left, right}` pair of column maps, split by the
+%% columns' source table. Result (List {Row, Row}) Error.
+pg_join(Id, LeftTable, RightTable, Cond, Where2, Pred, Orders, Lim, Off) ->
+    pg_call(Id, {join, LeftTable, RightTable, Cond, Where2, Pred, Orders, Lim, Off}).
 
-%% pg_join_select/9 — as pg_join, with the projection tree Proj compiled into the
+%% pg_join_select/10 — as pg_join, with the projection tree Proj compiled into the
 %% select-list (each `QCol`/`QColR` qualified and aliased). Each row is one map
 %% keyed by the projection's aliases. Result (List Row) Error.
-pg_join_select(Id, LeftTable, RightTable, Cond, Pred, Orders, Lim, Off, Proj) ->
-    pg_call(Id, {join_select, LeftTable, RightTable, Cond, Pred, Orders, Lim, Off, Proj}).
+pg_join_select(Id, LeftTable, RightTable, Cond, Where2, Pred, Orders, Lim, Off, Proj) ->
+    pg_call(Id, {join_select, LeftTable, RightTable, Cond, Where2, Pred, Orders, Lim, Off, Proj}).
 
-%% pg_left_join/8 — as pg_join, compiled to a `LEFT JOIN`. The right table is
+%% pg_left_join/9 — as pg_join, compiled to a `LEFT JOIN`. The right table is
 %% wrapped in a subquery that tags every real row with a `__ridge_matched`
 %% sentinel, so a null-extended (unmatched) row is told apart from a matched row
-%% whose columns happen to be NULL. Each row comes back as `{left, {some, right}}`
-%% for a match or `{left, none}` for an unmatched left row. Result
-%% (List {Row, Option Row}) Error.
-pg_left_join(Id, LeftTable, RightTable, Cond, Pred, Orders, Lim, Off) ->
-    pg_call(Id, {left_join, LeftTable, RightTable, Cond, Pred, Orders, Lim, Off}).
+%% whose columns happen to be NULL. The two-row Where2 runs in the post-join
+%% `WHERE`, so a predicate over a right column drops the unmatched rows. Each row
+%% comes back as `{left, {some, right}}` for a match or `{left, none}` for an
+%% unmatched left row. Result (List {Row, Option Row}) Error.
+pg_left_join(Id, LeftTable, RightTable, Cond, Where2, Pred, Orders, Lim, Off) ->
+    pg_call(Id, {left_join, LeftTable, RightTable, Cond, Where2, Pred, Orders, Lim, Off}).
 
-%% pg_left_join_select/9 — as pg_left_join, with the projection tree Proj compiled
+%% pg_left_join_select/10 — as pg_left_join, with the projection tree Proj compiled
 %% into the select-list (each `QCol`/`QColR` qualified and aliased). No sentinel is
 %% needed: an unmatched right column comes back NULL and decodes to `None` in the
 %% projected shape's `Option` field. Each row is one map keyed by the projection's
 %% aliases. Result (List Row) Error.
-pg_left_join_select(Id, LeftTable, RightTable, Cond, Pred, Orders, Lim, Off, Proj) ->
-    pg_call(Id, {left_join_select, LeftTable, RightTable, Cond, Pred, Orders, Lim, Off, Proj}).
+pg_left_join_select(Id, LeftTable, RightTable, Cond, Where2, Pred, Orders, Lim, Off, Proj) ->
+    pg_call(Id, {left_join_select, LeftTable, RightTable, Cond, Where2, Pred, Orders, Lim, Off, Proj}).
 
 %% pg_close/1 — close every connection in the pool and forget the handle.
 %% Result Unit Error.
@@ -557,39 +558,50 @@ run_verb(Conn, {project, Table, Tree, Orders, Lim, Off, Cols, Dist}) ->
     Sql = ["SELECT ", distinct_kw(Dist), select_list(Cols), " FROM ", quote_ident(Table), " WHERE ", Where,
            order_by_clause(Orders), limit_clause(Lim), offset_clause(Off)],
     run_query(Conn, Sql, Binds);
-run_verb(Conn, {join, LeftTable, RightTable, Cond, Pred, Orders, Lim, Off}) ->
+run_verb(Conn, {join, LeftTable, RightTable, Cond, Where2, Pred, Orders, Lim, Off}) ->
     {OnFrag, RevB1, N1} = cwj(Cond, 1, []),
-    {WhereFrag, RevB2, _N2} = cwj(Pred, N1, RevB1),
+    {W2Frag, RevBw, Nw} = cwj(Where2, N1, RevB1),
+    {WhereFrag, RevB2, _N2} = cwj(Pred, Nw, RevBw),
     Sql = ["SELECT l.*, r.* FROM ", quote_ident(LeftTable), " AS l JOIN ",
-           quote_ident(RightTable), " AS r ON ", OnFrag, " WHERE ", WhereFrag,
+           quote_ident(RightTable), " AS r ON ", OnFrag,
+           " WHERE (", WhereFrag, ") AND (", W2Frag, ")",
            order_by_clause_join(Orders), limit_clause(Lim), offset_clause(Off)],
     run_query_join(Conn, Sql, lists:reverse(RevB2));
-run_verb(Conn, {join_select, LeftTable, RightTable, Cond, Pred, Orders, Lim, Off, Proj}) ->
+run_verb(Conn, {join_select, LeftTable, RightTable, Cond, Where2, Pred, Orders, Lim, Off, Proj}) ->
     {OnFrag, RevB1, N1} = cwj(Cond, 1, []),
-    {WhereFrag, RevB2, _N2} = cwj(Pred, N1, RevB1),
+    {W2Frag, RevBw, Nw} = cwj(Where2, N1, RevB1),
+    {WhereFrag, RevB2, _N2} = cwj(Pred, Nw, RevBw),
     Sql = ["SELECT ", join_select_list(Proj), " FROM ", quote_ident(LeftTable), " AS l JOIN ",
-           quote_ident(RightTable), " AS r ON ", OnFrag, " WHERE ", WhereFrag,
+           quote_ident(RightTable), " AS r ON ", OnFrag,
+           " WHERE (", WhereFrag, ") AND (", W2Frag, ")",
            order_by_clause_join(Orders), limit_clause(Lim), offset_clause(Off)],
     run_query(Conn, Sql, lists:reverse(RevB2));
-run_verb(Conn, {left_join, LeftTable, RightTable, Cond, Pred, Orders, Lim, Off}) ->
+run_verb(Conn, {left_join, LeftTable, RightTable, Cond, Where2, Pred, Orders, Lim, Off}) ->
     {OnFrag, RevB1, N1} = cwj(Cond, 1, []),
-    {WhereFrag, RevB2, _N2} = cwj(Pred, N1, RevB1),
+    {W2Frag, RevBw, Nw} = cwj(Where2, N1, RevB1),
+    {WhereFrag, RevB2, _N2} = cwj(Pred, Nw, RevBw),
     %% The right table is wrapped in a subquery that adds a constant TRUE column;
     %% the LEFT JOIN null-extends it to NULL for unmatched rows, so the sentinel
     %% tells a real right row (even one with all-NULL columns) from a missing one.
+    %% `Where2` runs in the post-join WHERE: a predicate over a right column reads
+    %% NULL for an unmatched row and drops it, narrowing the outer join to matches.
     Sql = ["SELECT l.*, r.* FROM ", quote_ident(LeftTable),
            " AS l LEFT JOIN (SELECT *, TRUE AS \"__ridge_matched\" FROM ",
-           quote_ident(RightTable), ") AS r ON ", OnFrag, " WHERE ", WhereFrag,
+           quote_ident(RightTable), ") AS r ON ", OnFrag,
+           " WHERE (", WhereFrag, ") AND (", W2Frag, ")",
            order_by_clause_join(Orders), limit_clause(Lim), offset_clause(Off)],
     run_query_left_join(Conn, Sql, lists:reverse(RevB2));
-run_verb(Conn, {left_join_select, LeftTable, RightTable, Cond, Pred, Orders, Lim, Off, Proj}) ->
+run_verb(Conn, {left_join_select, LeftTable, RightTable, Cond, Where2, Pred, Orders, Lim, Off, Proj}) ->
     {OnFrag, RevB1, N1} = cwj(Cond, 1, []),
-    {WhereFrag, RevB2, _N2} = cwj(Pred, N1, RevB1),
+    {W2Frag, RevBw, Nw} = cwj(Where2, N1, RevB1),
+    {WhereFrag, RevB2, _N2} = cwj(Pred, Nw, RevBw),
     %% A projection decodes each aliased column on its own, so no sentinel is
     %% needed: an unmatched right column comes back NULL and decodes to `None` in
-    %% the projected shape's `Option` field. Just a `LEFT JOIN` of the two tables.
+    %% the projected shape's `Option` field. Just a `LEFT JOIN` of the two tables,
+    %% with `Where2` in the post-join WHERE.
     Sql = ["SELECT ", join_select_list(Proj), " FROM ", quote_ident(LeftTable), " AS l LEFT JOIN ",
-           quote_ident(RightTable), " AS r ON ", OnFrag, " WHERE ", WhereFrag,
+           quote_ident(RightTable), " AS r ON ", OnFrag,
+           " WHERE (", WhereFrag, ") AND (", W2Frag, ")",
            order_by_clause_join(Orders), limit_clause(Lim), offset_clause(Off)],
     run_query(Conn, Sql, lists:reverse(RevB2));
 run_verb(Conn, {count_where, Table, Tree}) ->

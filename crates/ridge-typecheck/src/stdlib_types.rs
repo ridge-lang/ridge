@@ -949,8 +949,13 @@ fn reconciled_repo_fn_scheme(
         // The builder verbs are pure: they assemble a query, and a terminal runs
         // it.
         "query" => method(vec![repo_app()], query_app(), vec![]),
-        // filter : ∀e a. Quote (e -> Bool) -> Query e a -> Query e a
-        "filter" => method(vec![quote_pred(), query_app()], query_app(), vec![]),
+        // `filter` is no longer reconciled here: it became the method of the
+        // `Refinable q p | q -> p` class (std.repo), one verb over a query or a
+        // join. A qualified `Repo.filter` resolves to that class method and is
+        // typed by the seeded `∀q p. Quote p -> q -> q where Refinable q p`
+        // scheme (see `seed_refinable_scheme`), the fundep fixing the predicate's
+        // arity per receiver. Returning `None` here routes it through the
+        // class-method path rather than the old single-receiver pub fn.
         // distinct : ∀e a. Query e a -> Query e a — drop duplicate result rows.
         "distinct" => method(vec![query_app()], query_app(), vec![]),
         // union / unionAll / intersect / except : ∀e a. Query e a -> Query e a

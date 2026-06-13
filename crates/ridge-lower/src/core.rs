@@ -1695,7 +1695,7 @@ fn same_dict_plan(a: &ridge_typecheck::DictPlan, b: &ridge_typecheck::DictPlan) 
 /// `StdlibSymbol`/`ClassMethod` binding stamped on the `QualifiedName` node, so
 /// it routes through the same dictionary dispatch as the bare form rather than
 /// being lowered to a plain stdlib symbol (which would miss the bridge map).
-fn classmethod_binding(ctx: &LowerCtx<'_>, callee: &Expr) -> Option<(String, String)> {
+pub(crate) fn classmethod_binding(ctx: &LowerCtx<'_>, callee: &Expr) -> Option<(String, String)> {
     let (span, kind) = match callee {
         Expr::Ident(ident) => (ident.span, NodeKind::Ident),
         Expr::Qualified(qname) => (qname.span, NodeKind::QualifiedName),
@@ -1776,17 +1776,29 @@ fn classmethod_pin_type(
     // without requiring AST annotation data.
     let env = ctx.instance_env?;
     for arg in args {
-        let node_id = ctx
+        let Some(node_id) = ctx
             .node_id_map
             .as_ref()
-            .and_then(|m| m.get(arg.span(), NodeKind::Expr))?;
-        let arg_ty = ctx
-            .node_type(node_id)
-            .cloned()
-            .map(|t| deep_peel_alias(&t))?;
-        // Check if this argument type has a registered instance for `class`.
+            .and_then(|m| m.get(arg.span(), NodeKind::Expr))
+        else {
+            continue;
+        };
+        let Some(arg_ty) = ctx.node_type(node_id).cloned().map(|t| deep_peel_alias(&t)) else {
+            continue;
+        };
+        // Check if this argument type pins an instance for `class`. A single-
+        // parameter instance is keyed by the bare head tycon; a multi-parameter
+        // instance with a functional dependency from the first position
+        // (`Refinable q p | q -> p`) is keyed by the full head tuple, so also
+        // accept an argument whose head is the first atom of some instance head —
+        // the receiver of `Repo.filter` pins `Query`/`Join`/`LeftJoin` this way.
         if let Type::Con(tycon, _) = &arg_ty {
-            if env.get((class, *tycon)).is_some() {
+            let single = env.get((class, *tycon)).is_some();
+            let multi = env
+                .instances
+                .keys()
+                .any(|(cid, head)| *cid == class && head.first() == Some(tycon));
+            if single || multi {
                 return Some(arg_ty);
             }
         }
@@ -1808,7 +1820,7 @@ fn classmethod_pin_type(
 /// node type is examined to extract the concrete class type argument. This lets
 /// both `toSql n` and `fromSql v` resolve their dictionaries at the right
 /// instance without falling back to the unreliable sole-static-plan heuristic.
-fn try_lower_classmethod_call(
+pub(crate) fn try_lower_classmethod_call(
     ctx: &mut LowerCtx<'_>,
     callee: &Expr,
     args: &[Expr],
@@ -1957,7 +1969,34 @@ fn build_dict_plan_from_type(
     match deep_peel_alias(ty) {
         Type::Con(tycon, args) => {
             let env = ctx.instance_env?;
-            let info = env.get((class, tycon))?;
+            let Some(info) = env.get((class, tycon)) else {
+                // A multi-parameter instance with a functional dependency from the
+                // first position (`Refinable q p | q -> p`) is keyed by the whole
+                // head tuple (`[Query, Fn1]`), so the single-tycon lookup above
+                // misses. The receiver pins the first head (`Query`) and the
+                // dependency determines the rest, so the instance is the unique one
+                // whose head starts with `tycon`. Build its plan with the trailing
+                // head constructors as `extra_head` so the dict const name matches
+                // the definition (`$inst_Refinable_Query_Fn1`).
+                let mut hits = env
+                    .instances
+                    .iter()
+                    .filter(|((cid, head), _)| *cid == class && head.first() == Some(&tycon));
+                let ((_, head), inst) = hits.next()?;
+                if hits.next().is_some() {
+                    // Two instances share the first head with no dependency to pick
+                    // between them — do not guess.
+                    return None;
+                }
+                let extra_head: smallvec::SmallVec<[TyConId; 1]> =
+                    head.iter().skip(1).copied().collect();
+                return Some(DictPlan::Static {
+                    info: Box::new(inst.clone()),
+                    tycon,
+                    extra_head,
+                    args: vec![],
+                });
+            };
             // Resolve one sub-dictionary per context constraint, reading the
             // concrete type argument at the constraint's recorded head position.
             let mut sub_dicts: Vec<DictPlan> = Vec::with_capacity(info.ctx_constraints.len());
@@ -2016,6 +2055,7 @@ pub(crate) fn stdlib_class_home_module(class_name: &str) -> Option<&'static str>
     match class_name {
         "SqlType" | "Row" => Some("std.sql"),
         "Adapter" => Some("std.data"),
+        "Refinable" => Some("std.repo"),
         _ => None,
     }
 }

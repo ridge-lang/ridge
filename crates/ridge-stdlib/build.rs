@@ -110,7 +110,11 @@ const CAP_KEYWORDS: &[&str] = &["io", "fs", "net", "time", "random", "env", "pro
 // Typeclasses defined in the stdlib whose instance dictionaries are compiled
 // into the stdlib module and must be exported (so user code can reference them
 // cross-module). Each entry is `(class_name, home_ridge_module)`.
-const STDLIB_CLASSES: &[(&str, &str)] = &[("SqlType", "std.sql"), ("Adapter", "std.data")];
+const STDLIB_CLASSES: &[(&str, &str)] = &[
+    ("SqlType", "std.sql"),
+    ("Adapter", "std.data"),
+    ("Refinable", "std.repo"),
+];
 
 // Constructor-shaped fns must export arity 0; this invariant catches accidental
 // (_unit: Unit) regressions at build time. Hoisted to module scope (out of
@@ -351,28 +355,93 @@ fn extract_ffi(src: &str, module: &str, out: &mut Vec<FfiEntry>) {
 /// parens. The `is_parametric` flag is `true` for the parenthesised form, so the
 /// caller can size the dict const's arity by its `where` constraints.
 fn parse_instance_head(rest: &str) -> Option<(String, String, bool)> {
-    let mut tokens = rest.split_whitespace();
-    let class_name = tokens.next()?;
-    // Validate class name is a plain identifier.
+    let rest = rest.trim();
+    // The class name is the first whitespace-delimited token.
+    let class_end = rest.find(char::is_whitespace)?;
+    let class_name = &rest[..class_end];
     if !is_valid_ident(class_name) {
         return None;
     }
-    let type_name_raw = tokens.next()?;
-    // Parametric head (`(Option a)`): the constructor is the first token inside
-    // the parens.
-    if let Some(inner) = type_name_raw.strip_prefix('(') {
-        let ctor = inner.split([')', ' ']).next().unwrap_or("").trim();
-        if ctor.is_empty() || !is_valid_ident(ctor) {
-            return None;
-        }
-        return Some((class_name.to_owned(), ctor.to_owned(), true));
+
+    // The head atoms run from after the class name to the body `=` or a `where`
+    // clause. A single-parameter class (`SqlType Int`, `Adapter MemAdapter`) has
+    // one atom; a multi-parameter class (`Refinable (Query e a) (fn e -> Bool)`)
+    // has one per type argument, joined with `_` so the generated dict const name
+    // matches the call-site reference (`$inst_Refinable_Query_Fn1`). A function-
+    // type atom keys by its arity tycon `Fn{n}`, exactly as the arena and the
+    // instance-definition lowering name it.
+    let mut head = &rest[class_end..];
+    if let Some(w) = head.find(" where ") {
+        head = &head[..w];
     }
-    // Strip a trailing `=` if it was joined to the type name token.
-    let type_name = type_name_raw.trim_end_matches('=').trim();
-    if type_name.is_empty() || !is_valid_ident(type_name) {
+
+    let bytes = head.as_bytes();
+    let mut i = 0;
+    let mut names: Vec<String> = Vec::new();
+    let mut any_paren = false;
+    while i < bytes.len() {
+        while i < bytes.len() && bytes[i].is_ascii_whitespace() {
+            i += 1;
+        }
+        if i >= bytes.len() || bytes[i] == b'=' {
+            break;
+        }
+        if bytes[i] == b'(' {
+            any_paren = true;
+            let start = i;
+            let mut depth = 0;
+            while i < bytes.len() {
+                match bytes[i] {
+                    b'(' => depth += 1,
+                    b')' => {
+                        depth -= 1;
+                        if depth == 0 {
+                            i += 1;
+                            break;
+                        }
+                    }
+                    _ => {}
+                }
+                i += 1;
+            }
+            let inner = head[start..i].trim_matches(|c| c == '(' || c == ')').trim();
+            names.push(instance_head_atom_name(inner)?);
+        } else {
+            let start = i;
+            while i < bytes.len() && !bytes[i].is_ascii_whitespace() && bytes[i] != b'(' {
+                i += 1;
+            }
+            let tok = head[start..i].trim_end_matches('=').trim();
+            if tok.is_empty() {
+                continue;
+            }
+            names.push(instance_head_atom_name(tok)?);
+        }
+    }
+
+    if names.is_empty() {
         return None;
     }
-    Some((class_name.to_owned(), type_name.to_owned(), false))
+    Some((class_name.to_owned(), names.join("_"), any_paren))
+}
+
+/// The dict-const name fragment for one instance-head atom. A function type
+/// (`fn e -> Bool`) keys by its arity tycon (`Fn1`); any other atom keys by its
+/// head type constructor (`Query e a` → `Query`, `Int` → `Int`).
+fn instance_head_atom_name(inner: &str) -> Option<String> {
+    let inner = inner.trim();
+    let is_fn = inner == "fn" || inner.starts_with("fn ");
+    if is_fn {
+        let after = inner.strip_prefix("fn").unwrap_or("").trim_start();
+        let params = after.split("->").next().unwrap_or("");
+        let arity = params.split_whitespace().count();
+        return Some(format!("Fn{arity}"));
+    }
+    let ctor = inner.split([' ', ')']).next().unwrap_or("").trim();
+    if ctor.is_empty() || !is_valid_ident(ctor) {
+        return None;
+    }
+    Some(ctor.to_owned())
 }
 
 /// Count the number of top-level `(...)` parameter groups in a Ridge fn

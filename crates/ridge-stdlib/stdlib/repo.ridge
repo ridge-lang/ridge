@@ -67,8 +67,26 @@ fn keepAll (_u: Unit) -> Quote (Map Text SqlValue -> Bool)
 -- Combine two quoted predicates with a boolean AND. A `Quote`/`QExpr` literal
 -- cannot be written in Ridge source, so the `QAnd` node is built in the runtime
 -- from the two captured trees. The query builder folds each filter in with this.
+-- The second tree's phantom function type is free (`Quote p`): the runtime ANDs
+-- the captured trees regardless of their shape, so the unified `filter`'s
+-- entity-typed predicate (`Quote (e -> Bool)`) folds into the row-typed query
+-- field without a coercion.
 @ffi("ridge_rt", "quote_and", 2)
-fn quoteAnd (a: Quote (Map Text SqlValue -> Bool)) (b: Quote (Map Text SqlValue -> Bool)) -> Quote (Map Text SqlValue -> Bool)
+fn quoteAnd (a: Quote (Map Text SqlValue -> Bool)) (b: Quote p) -> Quote (Map Text SqlValue -> Bool)
+
+-- An always-true two-row predicate — the post-join `WHERE` default before
+-- `filter` narrows a join. The always-true tree a `true` literal builds is
+-- arity-agnostic, so this reuses `quote_keep_all`, typed over the two rows a
+-- join condition ranges over.
+@ffi("ridge_rt", "quote_keep_all", 1)
+fn keepAll2 (_u: Unit) -> Quote (Map Text SqlValue -> Map Text SqlValue -> Bool)
+
+-- Combine two quoted two-row predicates with a boolean AND — the two-row dual of
+-- `quoteAnd`, reusing the same runtime `QAnd` builder (it ANDs two captured
+-- trees independent of their arity). The second tree's phantom shape is free so
+-- a join `filter`'s entity-typed predicate folds into the row-typed `WHERE`.
+@ffi("ridge_rt", "quote_and", 2)
+fn quoteAnd2 (a: Quote (Map Text SqlValue -> Map Text SqlValue -> Bool)) (b: Quote p) -> Quote (Map Text SqlValue -> Map Text SqlValue -> Bool)
 
 -- A query plan is a small captured tree the set-operation terminals run, the same
 -- way a predicate is a captured tree the filter verbs run. It rides the `QExpr`
@@ -233,12 +251,16 @@ pub opaque type Query e a = { repo: Repo e a, pred: Quote (Map Text SqlValue -> 
 pub fn query (r: Repo e a) -> Query e a =
     Query { repo = r, pred = keepAll (), orders = [], lim = 0 - 1, off = 0, dist = false, plan = None }
 
--- Narrow a query by a predicate, AND-combined with any filter already set. The
--- predicate is written against the entity (`fn (u: User) -> ...`) and captured as
--- a query tree, exactly as at the adapter seam. (`filter`, not `where`, because
--- `where` introduces a constraint list in Ridge.)
-pub fn filter (pred: Quote (Map Text SqlValue -> Bool)) (q: Query e a) -> Query e a =
-    Query { repo = q.repo, pred = quoteAnd q.pred pred, orders = q.orders, lim = q.lim, off = q.off, dist = q.dist, plan = q.plan }
+-- One `filter` for both a query and a join. A query is narrowed by a one-row
+-- predicate over its entity; a join by a two-row predicate over both. The class
+-- ties the predicate's shape to the receiver through a functional dependency, so
+-- `q` alone fixes `p`: a `Query e a` takes a `Quote (e -> Bool)` and a
+-- `Join e f a`/`LeftJoin e f a` takes a `Quote (e -> f -> Bool)`. Writing a
+-- two-row predicate on a query (or a one-row one on a join) is a compile-time
+-- arity error, not a silent mismatch. (`filter`, not `where`, because `where`
+-- introduces a constraint list in Ridge.)
+pub class Refinable q p | q -> p =
+    filter (pred: Quote p) (x: q) -> q
 
 -- Append an ordering key. Keys order major-to-minor in the order added, each
 -- ascending or descending. The key is a quoted column: `fn (u: User) -> u.age`.
@@ -543,17 +565,17 @@ pub fn summarize (proj: Quote (Group e k -> s)) (g: GroupedQuery e k a) -> Resul
 -- The condition is written against both records at the call site: its left
 -- columns range over the left entity and its right over the right, captured as a
 -- query tree that tags each side so the two tables never collide.
-pub opaque type Join e f a = { left: Query e a, right: Repo f a, cond: Quote (Map Text SqlValue -> Map Text SqlValue -> Bool) }
+pub opaque type Join e f a = { left: Query e a, right: Repo f a, cond: Quote (Map Text SqlValue -> Map Text SqlValue -> Bool), where2: Quote (Map Text SqlValue -> Map Text SqlValue -> Bool) }
 
 -- Start an inner join from a query: pair it with a right repository on a quoted
 -- condition over both entities. The left query's filter, ordering, and page
 -- still apply; the join brings the right table.
 pub fn joinOn (right: Repo f a) (cond: Quote (Map Text SqlValue -> Map Text SqlValue -> Bool)) (q: Query e a) -> Join e f a =
-    Join { left = q, right = right, cond = cond }
+    Join { left = q, right = right, cond = cond, where2 = keepAll2 () }
 
 -- Run the inner join and decode each matched row pair into both entities.
 pub fn toPairs (j: Join e f a) -> Result (List (e, f)) Error where Adapter a, Row e, Row f =
-    match join j.left.repo.adapter j.left.repo.table j.right.table j.cond j.left.pred j.left.orders j.left.lim j.left.off
+    match join j.left.repo.adapter j.left.repo.table j.right.table j.cond j.where2 j.left.pred j.left.orders j.left.lim j.left.off
         Err err  -> Err err
         Ok pairs -> decodePairs pairs
 
@@ -564,7 +586,7 @@ pub fn toPairs (j: Join e f a) -> Result (List (e, f)) Error where Adapter a, Ro
 -- fixes `s` and lists its columns. The backend pushes the select-list down so
 -- only those columns cross, in the chosen order and page.
 pub fn selectJoin (proj: Quote (Map Text SqlValue -> Map Text SqlValue -> Map Text SqlValue)) (j: Join e f a) -> Result (List s) Error where Adapter a, Row s =
-    match joinSelect j.left.repo.adapter j.left.repo.table j.right.table j.cond j.left.pred j.left.orders j.left.lim j.left.off proj
+    match joinSelect j.left.repo.adapter j.left.repo.table j.right.table j.cond j.where2 j.left.pred j.left.orders j.left.lim j.left.off proj
         Err err  -> Err err
         Ok rows  -> decodeRows rows
 
@@ -577,7 +599,7 @@ pub fn selectJoin (proj: Quote (Map Text SqlValue -> Map Text SqlValue -> Map Te
 --     |> Repo.query
 --     |> Repo.leftJoinOn posts (fn (u: User) (p: Post) -> u.id == p.authorId)
 --     |> Repo.toLeftPairs
-pub opaque type LeftJoin e f a = { left: Query e a, right: Repo f a, cond: Quote (Map Text SqlValue -> Map Text SqlValue -> Bool) }
+pub opaque type LeftJoin e f a = { left: Query e a, right: Repo f a, cond: Quote (Map Text SqlValue -> Map Text SqlValue -> Bool), where2: Quote (Map Text SqlValue -> Map Text SqlValue -> Bool) }
 
 -- Start a left outer join from a query: pair it with a right repository on a
 -- quoted condition over both entities. Unlike `joinOn`, a left row with no
@@ -585,12 +607,12 @@ pub opaque type LeftJoin e f a = { left: Query e a, right: Repo f a, cond: Quote
 -- missing right side as `None`. The left query's filter, ordering, and page
 -- still apply.
 pub fn leftJoinOn (right: Repo f a) (cond: Quote (Map Text SqlValue -> Map Text SqlValue -> Bool)) (q: Query e a) -> LeftJoin e f a =
-    LeftJoin { left = q, right = right, cond = cond }
+    LeftJoin { left = q, right = right, cond = cond, where2 = keepAll2 () }
 
 -- Run the left join and decode each row into the left entity paired with the
 -- right entity, or paired with `None` where the left row matched no right row.
 pub fn toLeftPairs (j: LeftJoin e f a) -> Result (List (e, Option f)) Error where Adapter a, Row e, Row f =
-    match leftJoin j.left.repo.adapter j.left.repo.table j.right.table j.cond j.left.pred j.left.orders j.left.lim j.left.off
+    match leftJoin j.left.repo.adapter j.left.repo.table j.right.table j.cond j.where2 j.left.pred j.left.orders j.left.lim j.left.off
         Err err  -> Err err
         Ok pairs -> decodeLeftPairs pairs
 
@@ -602,9 +624,32 @@ pub fn toLeftPairs (j: LeftJoin e f a) -> Result (List (e, Option f)) Error wher
 -- them as `None`. The backend keeps every left row (a `LEFT JOIN`) and pushes the
 -- select-list down so only the named columns cross.
 pub fn selectLeftJoin (proj: Quote (Map Text SqlValue -> Map Text SqlValue -> Map Text SqlValue)) (j: LeftJoin e f a) -> Result (List s) Error where Adapter a, Row s =
-    match leftJoinSelect j.left.repo.adapter j.left.repo.table j.right.table j.cond j.left.pred j.left.orders j.left.lim j.left.off proj
+    match leftJoinSelect j.left.repo.adapter j.left.repo.table j.right.table j.cond j.where2 j.left.pred j.left.orders j.left.lim j.left.off proj
         Err err  -> Err err
         Ok rows  -> decodeRows rows
+
+-- A query's `filter`: AND the one-row predicate into the query's accumulated
+-- `WHERE`, exactly as the original single-receiver verb did. The predicate is
+-- entity-typed (`Quote (e -> Bool)`) and the stored field row-typed; `quoteAnd`
+-- folds one into the other (the captured tree is what runs).
+instance Refinable (Query e a) (fn e -> Bool) =
+    filter (pred: Quote (fn e -> Bool)) (x: Query e a) -> Query e a =
+        Query { repo = x.repo, pred = quoteAnd x.pred pred, orders = x.orders, lim = x.lim, off = x.off, dist = x.dist, plan = x.plan }
+
+-- An inner join's `filter`: AND the two-row predicate into the join's post-join
+-- `WHERE`. The condition the join pairs rows on stays separate; the terminals
+-- fold `where2` in when they run the join.
+instance Refinable (Join e f a) (fn e f -> Bool) =
+    filter (pred: Quote (fn e f -> Bool)) (x: Join e f a) -> Join e f a =
+        Join { left = x.left, right = x.right, cond = x.cond, where2 = quoteAnd2 x.where2 pred }
+
+-- A left join's `filter`: AND the two-row predicate into the post-join `WHERE`.
+-- A predicate that reads a right column drops the unmatched left rows (their
+-- right side is NULL, so the predicate is false), narrowing the outer join to
+-- its matches — the three-valued reading SQL gives a `WHERE` after a `LEFT JOIN`.
+instance Refinable (LeftJoin e f a) (fn e f -> Bool) =
+    filter (pred: Quote (fn e f -> Bool)) (x: LeftJoin e f a) -> LeftJoin e f a =
+        LeftJoin { left = x.left, right = x.right, cond = x.cond, where2 = quoteAnd2 x.where2 pred }
 
 -- Decode a list of `(left, right)` row pairs into entity pairs, stopping at the
 -- first decode failure on either side.

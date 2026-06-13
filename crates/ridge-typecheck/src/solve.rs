@@ -395,6 +395,16 @@ fn dispatch_multi_constraint(
     for r in &resolved {
         match r {
             Type::Con(id, _) => head_tycons.push(*id),
+            // A function-type head position (a `Refinable`/`Run`-style instance
+            // over `e -> Bool` / `e -> f -> Bool`) keys on the reserved arity
+            // tycon `Fn/N`, exactly as the single-parameter dispatch path does.
+            // The arity distinguishes a 1-row predicate from a 2-row one, which is
+            // how the fundep tells a `Query` filter from a `Join` filter.
+            Type::Fn { params, .. } => {
+                if let Some(id) = ridge_types::fn_tycon_id(params.len()) {
+                    head_tycons.push(id);
+                }
+            }
             Type::Var(v) => head_vars.push(*v),
             _ => {}
         }
@@ -498,7 +508,6 @@ fn improve_via_fundeps(
         .collect();
 
     let empty_names: FxHashMap<String, TyConId> = FxHashMap::default();
-    let empty_params: FxHashMap<&str, TyVid> = FxHashMap::default();
 
     for fd in fundeps {
         // The determining positions must all be concrete head constructors.
@@ -525,14 +534,37 @@ fn improve_via_fundeps(
             matches[0].1.clone()
         };
 
+        // The instance head may be parametric — `instance Refinable (Query e a)
+        // (fn e -> Bool)` determines `p = e -> Bool`, a type that mentions the
+        // instance's own variable `e`. Give every head variable a fresh inference
+        // variable, then bind them by unifying each determining position's written
+        // head against the resolved constraint type: `Query e a` against a concrete
+        // `Query User Mem` fixes `e = User`. The determined position then converts
+        // to a concrete type through the same shared map.
+        let head_var_names = collect_head_vars(&head_asts);
+        let param_map: FxHashMap<&str, TyVid> = head_var_names
+            .iter()
+            .map(|n| (n.as_str(), ctx.fresh_tyvid()))
+            .collect();
+
+        for &p in &fd.from {
+            if let (Some(from_ast), Some(actual)) = (head_asts.get(p), resolved.get(p)) {
+                let from_ty = ast_type_to_ridge_type(b, ctx, from_ast, &empty_names, &param_map);
+                let _ = unify(ctx, &from_ty, actual);
+            }
+        }
+
         for &p in &fd.to {
             let Some(to_ast) = head_asts.get(p) else {
                 continue;
             };
-            let to_ty = ast_type_to_ridge_type(b, ctx, to_ast, &empty_names, &empty_params);
-            // Act only on a fully concrete determined head. A parametric one (or
-            // an unresolved name that fell back to a fresh variable) is left for
-            // an annotation rather than risking an unsound pin.
+            let to_ty = ast_type_to_ridge_type(b, ctx, to_ast, &empty_names, &param_map);
+            // Re-resolve so the variables the determining positions just bound are
+            // substituted in (`e -> Bool` becomes `User -> Bool`).
+            let to_ty = ctx.deep_resolve(&to_ty);
+            // Act only on a fully concrete determined head. A position no
+            // determining variable reached stays open — left for an annotation
+            // rather than risking an unsound pin.
             if type_contains_var(&to_ty) {
                 continue;
             }
@@ -564,6 +596,39 @@ fn type_contains_var(t: &Type) -> bool {
         // as not-fully-concrete, so we never pin a determined position against it.
         _ => true,
     }
+}
+
+/// Collect every type-variable name written in an instance head's types, in
+/// first-seen order with no duplicates. Fundep improvement gives each one a
+/// shared fresh inference variable so a parametric determined position
+/// (`e -> Bool`) can be fixed from the determining position (`Query e a`).
+fn collect_head_vars(head_asts: &[ridge_ast::Type]) -> Vec<String> {
+    fn walk(t: &ridge_ast::Type, out: &mut Vec<String>) {
+        match t {
+            ridge_ast::Type::Var { name, .. } => {
+                if !out.iter().any(|n| n == &name.text) {
+                    out.push(name.text.clone());
+                }
+            }
+            ridge_ast::Type::App { args, .. } => args.iter().for_each(|a| walk(a, out)),
+            ridge_ast::Type::Tuple { elems, .. } => elems.iter().for_each(|e| walk(e, out)),
+            ridge_ast::Type::List { elem, .. } => walk(elem, out),
+            ridge_ast::Type::Fn { fn_ty, .. } => {
+                fn_ty.params.iter().for_each(|p| walk(p, out));
+                walk(&fn_ty.ret, out);
+            }
+            ridge_ast::Type::Paren { inner, .. } => walk(inner, out),
+            ridge_ast::Type::Record { fields, .. } => {
+                fields.iter().for_each(|f| walk(&f.ty, out));
+            }
+            ridge_ast::Type::Named { .. } | ridge_ast::Type::Primitive { .. } => {}
+        }
+    }
+    let mut out = Vec::new();
+    for t in head_asts {
+        walk(t, &mut out);
+    }
+    out
 }
 
 /// Attempt to discharge a concrete `(ClassId, TyConId)` constraint.

@@ -752,6 +752,7 @@ fn typecheck_module_inner(
             b.sql_value
         };
         seed_sql_codec_schemes(&mut ctx, b, ct, sql_value);
+        seed_refinable_scheme(&mut ctx, b, ct);
     }
 
     // Step B: Seed env with prelude constructors + stdlib qualified bindings.
@@ -1031,6 +1032,46 @@ fn seed_class_method_schemes(
             ctx.env.bind(sig.name.clone(), scheme);
         }
     }
+}
+
+/// Seed the env scheme for `Refinable.filter` — std.repo's unified query/join
+/// `filter`. Registered in Rust rather than through the AST-driven
+/// `seed_class_method_schemes` path because the stdlib class carries no source
+/// AST (its `MethodSig` leaves `ast_param_types` empty, like `Adapter`/`SqlType`/
+/// `Row`).
+///
+/// Scheme: `∀q p. Quote p -> q -> q where Refinable q p`. The receiver `q` pins
+/// the instance; the functional dependency `q -> p` then fixes the predicate's
+/// shape `p`, so the one binding serves a `Query`'s one-row predicate and a
+/// `Join`/`LeftJoin`'s two-row predicate alike, and a wrong-arity predicate is
+/// rejected when the determined `p` fails to unify with the captured lambda.
+fn seed_refinable_scheme(
+    ctx: &mut crate::ctx::InferCtx,
+    b: &ridge_types::BuiltinTyCons,
+    class_table: &crate::class_env::ClassTable,
+) {
+    use ridge_types::{CapRow, CapabilitySet, Constraint, Scheme, Type};
+    let Some(refinable) = class_table.id_by_name("Refinable") else {
+        return;
+    };
+    let q = ctx.fresh_tyvid();
+    let p = ctx.fresh_tyvid();
+    let fn_ty = Type::Fn {
+        params: vec![Type::Con(b.quote, vec![Type::Var(p)]), Type::Var(q)],
+        ret: Box::new(Type::Var(q)),
+        caps: CapRow::Concrete(CapabilitySet::PURE),
+    };
+    let constraint_tys: smallvec::SmallVec<[ridge_types::TyVid; 1]> = [q, p].into_iter().collect();
+    ctx.env.bind(
+        "filter".to_owned(),
+        Scheme {
+            vars: vec![q, p],
+            cap_vars: vec![],
+            row_vars: vec![],
+            ty: fn_ty,
+            constraints: vec![Constraint::new(refinable, constraint_tys)],
+        },
+    );
 }
 
 /// Seed type-environment schemes for the two prelude codec methods (`encode`,
@@ -1575,6 +1616,7 @@ fn seed_sql_codec_schemes(
         {
             let a = ctx.fresh_tyvid();
             let c = ctx.fresh_tyvid();
+            let w = ctx.fresh_tyvid();
             let p = ctx.fresh_tyvid();
             let orders = Type::Con(
                 b.list,
@@ -1590,6 +1632,7 @@ fn seed_sql_codec_schemes(
                     Type::Con(b.text, vec![]),
                     Type::Con(b.text, vec![]),
                     Type::Con(b.quote, vec![Type::Var(c)]),
+                    Type::Con(b.quote, vec![Type::Var(w)]),
                     Type::Con(b.quote, vec![Type::Var(p)]),
                     orders,
                     Type::Con(b.int, vec![]),
@@ -1604,7 +1647,7 @@ fn seed_sql_codec_schemes(
             ctx.env.bind(
                 "join".to_owned(),
                 Scheme {
-                    vars: vec![a, c, p],
+                    vars: vec![a, c, w, p],
                     cap_vars: vec![],
                     row_vars: vec![],
                     ty: fn_ty,
@@ -1621,6 +1664,7 @@ fn seed_sql_codec_schemes(
         {
             let a = ctx.fresh_tyvid();
             let c = ctx.fresh_tyvid();
+            let w = ctx.fresh_tyvid();
             let p = ctx.fresh_tyvid();
             let r = ctx.fresh_tyvid();
             let orders = Type::Con(
@@ -1636,6 +1680,7 @@ fn seed_sql_codec_schemes(
                     Type::Con(b.text, vec![]),
                     Type::Con(b.text, vec![]),
                     Type::Con(b.quote, vec![Type::Var(c)]),
+                    Type::Con(b.quote, vec![Type::Var(w)]),
                     Type::Con(b.quote, vec![Type::Var(p)]),
                     orders,
                     Type::Con(b.int, vec![]),
@@ -1654,7 +1699,7 @@ fn seed_sql_codec_schemes(
             ctx.env.bind(
                 "joinSelect".to_owned(),
                 Scheme {
-                    vars: vec![a, c, p, r],
+                    vars: vec![a, c, w, p, r],
                     cap_vars: vec![],
                     row_vars: vec![],
                     ty: fn_ty,
@@ -1674,6 +1719,7 @@ fn seed_sql_codec_schemes(
         {
             let a = ctx.fresh_tyvid();
             let c = ctx.fresh_tyvid();
+            let w = ctx.fresh_tyvid();
             let p = ctx.fresh_tyvid();
             let orders = Type::Con(
                 b.list,
@@ -1689,6 +1735,7 @@ fn seed_sql_codec_schemes(
                     Type::Con(b.text, vec![]),
                     Type::Con(b.text, vec![]),
                     Type::Con(b.quote, vec![Type::Var(c)]),
+                    Type::Con(b.quote, vec![Type::Var(w)]),
                     Type::Con(b.quote, vec![Type::Var(p)]),
                     orders,
                     Type::Con(b.int, vec![]),
@@ -1703,7 +1750,7 @@ fn seed_sql_codec_schemes(
             ctx.env.bind(
                 "leftJoin".to_owned(),
                 Scheme {
-                    vars: vec![a, c, p],
+                    vars: vec![a, c, w, p],
                     cap_vars: vec![],
                     row_vars: vec![],
                     ty: fn_ty,
@@ -1722,6 +1769,7 @@ fn seed_sql_codec_schemes(
         {
             let a = ctx.fresh_tyvid();
             let c = ctx.fresh_tyvid();
+            let w = ctx.fresh_tyvid();
             let p = ctx.fresh_tyvid();
             let r = ctx.fresh_tyvid();
             let orders = Type::Con(
@@ -1737,6 +1785,7 @@ fn seed_sql_codec_schemes(
                     Type::Con(b.text, vec![]),
                     Type::Con(b.text, vec![]),
                     Type::Con(b.quote, vec![Type::Var(c)]),
+                    Type::Con(b.quote, vec![Type::Var(w)]),
                     Type::Con(b.quote, vec![Type::Var(p)]),
                     orders,
                     Type::Con(b.int, vec![]),
@@ -1755,7 +1804,7 @@ fn seed_sql_codec_schemes(
             ctx.env.bind(
                 "leftJoinSelect".to_owned(),
                 Scheme {
-                    vars: vec![a, c, p, r],
+                    vars: vec![a, c, w, p, r],
                     cap_vars: vec![],
                     row_vars: vec![],
                     ty: fn_ty,

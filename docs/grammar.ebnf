@@ -108,11 +108,13 @@
    4. Multi-line string literals and raw strings are deferred to 0.2.0 (D047).
       Only single-line TEXT_LIT and $"…" interpolated forms are defined here.
    5. Binary, hex, and octal numeric literal forms are defined in §1.5 (D046).
-   6. "class" and "instance" are reserved keywords per §4.1 but have no
-      productions in 0.1.0 (typeclasses deferred to 0.2.0, D010); they are
-      listed in the keyword table only.
-   7. "deriving" is a reserved keyword; no deriving syntax is defined in 0.1.0.
-   8. "in", "catch", "where" are reserved keywords without syntax in 0.1.0.
+   6. "class" and "instance" introduce typeclass declarations (§5.5–§5.7,
+      D010): single- and multi-parameter classes, optional functional
+      dependencies, superclasses, and the instances that satisfy them.
+   7. "deriving" introduces a deriving clause on a type declaration (§3.1, §5.7).
+   8. "where" introduces a constraint list — on a function signature (§5.7), a
+      class superclass list, or an instance context (§5.6). "in" and "catch"
+      remain reserved keywords without syntax.
    ============================================================================ *)
 
 
@@ -151,9 +153,10 @@ OCT_DIGIT     ::= "0" | "1" | "2" | "3" | "4" | "5" | "6" | "7" ;
      state    then     true     try       type      var       when
      where    with
 
-   "class", "instance", "deriving", "where", "catch", "in" are reserved
-   but have no productions in 0.1.0 (see simplifying assumption 6-8).
-   "do" was previously reserved but has been removed entirely per D056.       *)
+   "class", "instance", "deriving", "where" now have productions (§3.1, §5);
+   "catch" and "in" remain reserved without productions (see simplifying
+   assumption 6-8). "do" was previously reserved but has been removed
+   entirely per D056.                                                         *)
 
 KEYWORD       ::= "actor"    | "as"       | "catch"    | "class"
                |  "const"    | "deriving" | "else"     | "false"
@@ -326,7 +329,8 @@ TopLevel      ::= ImportDecl
                |  TypeDecl
                |  FnDecl
                |  ActorDecl
-               (* ClassDecl and InstanceDecl reserved for 0.2.0 *) ;
+               |  ClassDecl
+               |  InstanceDecl ;
 
 
 (* === 2.2  Import declarations === *)
@@ -375,7 +379,7 @@ ConstDecl     ::= [ Visibility ] "const" LOWER_IDENT ":" Type "=" Expr ;
 
 (* === 3.1  Type declaration === *)
 
-TypeDecl      ::= [ Visibility ] "type" UPPER_IDENT { TypeParam } "=" TypeBody ;
+TypeDecl      ::= [ Visibility ] "type" UPPER_IDENT { TypeParam } "=" TypeBody [ Deriving ] ;
 
 TypeParam     ::= LOWER_IDENT ;   (* lowercase type variable *)
 
@@ -473,7 +477,7 @@ Capability    ::= "io" | "fs" | "net" | "time" | "random"
 
 (* === 4.1  Function declaration === *)
 
-FnDecl        ::= [ Visibility ] "fn" { Capability } FnName { Param } [ "->" Type ] "=" Body ;
+FnDecl        ::= [ Visibility ] "fn" { Capability } FnName { Param } [ "->" Type ] [ WhereClause ] "=" Body ;
 
 FnName        ::= LOWER_IDENT | PRIV_IDENT ;
 
@@ -510,7 +514,7 @@ Body          ::= Expr ;
 
 
 (* ============================================================================
-   §5  ACTOR DECLARATIONS
+   §5  ACTOR AND TYPECLASS DECLARATIONS
    ============================================================================ *)
 
 (* === 5.1  Actor declaration === *)
@@ -578,6 +582,85 @@ HandlerName   ::= LOWER_IDENT ;
 
          on get -> Int =
              count                                                           *)
+
+
+(* === 5.5  Class declarations === *)
+
+(* Typeclasses (D010); multi-parameter classes and functional dependencies were
+   added after 0.2.x.  A class names an interface as a list of bare method
+   signatures — no "fn" keyword and no body.  One or more type variables follow
+   the class name, then optional functional dependencies, then an optional
+   superclass list.                                                          *)
+ClassDecl     ::= "class" UPPER_IDENT LOWER_IDENT { LOWER_IDENT }
+                  [ "|" FunDeps ] [ "where" SuperList ] "=" ClassBody ;
+
+ClassBody     ::= INDENT { MethodSig NEWLINE } DEDENT ;
+
+MethodSig     ::= LOWER_IDENT { Param } "->" Type ;
+
+(* A functional dependency states that the determining variables (left of
+   "->") fix the determined ones (right).  Several are comma-separated, e.g.
+   "| a -> b, b -> a"; every name must be one of the class's own type
+   variables.                                                                *)
+FunDeps       ::= FunDep { "," FunDep } ;
+
+FunDep        ::= LOWER_IDENT { LOWER_IDENT } "->" LOWER_IDENT { LOWER_IDENT } ;
+
+(* Superclass constraints, e.g. "class Ord a where Eq a".  Shares
+   ClassConstraint with the function where-clause (§5.7).                    *)
+SuperList     ::= ClassConstraint { "," ClassConstraint } ;
+
+ClassConstraint ::= UPPER_IDENT LOWER_IDENT { LOWER_IDENT } ;
+
+(* Examples:
+     class ToText a =
+         toText (x: a) -> Text
+
+     class Ord a where Eq a =
+         compare (x: a) (y: a) -> Ordering
+
+     class Convert a b =
+         convert (x: a) -> b
+
+     class Tagged q p | q -> p =
+         tagWith (tag: p) (x: q) -> q                                        *)
+
+
+(* === 5.6  Instance declarations === *)
+
+(* An instance supplies method bodies for a head of one type atom per class
+   parameter.  A constructor-applied head is parenthesised ("(List a)").  A
+   parametric head names its element constraints in a trailing "where"
+   clause.                                                                   *)
+InstanceDecl  ::= "instance" UPPER_IDENT TypeAtom { TypeAtom }
+                  [ WhereClause ] "=" InstanceBody ;
+
+InstanceBody  ::= INDENT { MethodDef NEWLINE } DEDENT ;
+
+MethodDef     ::= LOWER_IDENT { Param } "->" Type "=" Body ;
+
+(* Examples:
+     instance ToText Color =
+         toText (c: Color) -> Text = "..."
+
+     instance Encode (List a) where Encode a =
+         encode (xs: List a) -> JsonValue = ...
+
+     instance Convert Celsius Fahrenheit =
+         convert (c: Celsius) -> Fahrenheit = ...                            *)
+
+
+(* === 5.7  Constraints and deriving === *)
+
+(* A where-clause requires class instances for a signature's type variables.
+   It is appended to a function signature between the return type and "=", and
+   reused as the class superclass list (§5.5) and the instance context (§5.6). *)
+WhereClause   ::= "where" ClassConstraint { "," ClassConstraint } ;
+
+(* A deriving clause on a type declaration (§3.1) generates instances
+   automatically: "deriving (Eq, ToText, Ord, Encode, Decode)".  "Show" is an
+   alias for "ToText".                                                       *)
+Deriving      ::= "deriving" "(" UPPER_IDENT { "," UPPER_IDENT } ")" ;
 
 
 (* ============================================================================
@@ -1090,13 +1173,16 @@ ListConsPattern ::= PatternAtom "::" Pattern ;
    Declarations:     ImportDecl ModulePath ImportList
                      Visibility
                      ConstDecl
-                     TypeDecl TypeParam TypeBody
+                     TypeDecl TypeParam TypeBody Deriving
                      RecordType FieldDecl
                      UnionType Constructor
-                     FnDecl FnName Param Body
+                     FnDecl FnName Param Body WhereClause
                      ActorDecl ActorBody ActorMember
                      StateDecl InitDecl CapList ParamList Block
                      OnHandler HandlerName
+                     ClassDecl ClassBody MethodSig FunDeps FunDep
+                     SuperList ClassConstraint
+                     InstanceDecl InstanceBody MethodDef
 
    Types:            Type FunctionType CapFunctionType PlainFunctionType
                      TypeAtom PrimitiveType TypeApp TupleType ListTypeApply

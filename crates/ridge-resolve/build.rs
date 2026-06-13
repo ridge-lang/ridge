@@ -452,6 +452,10 @@ const BASELINE_EXPORTS: &[(&str, &[&str])] = &[
             // `selectFirst` projections.
             "Query",
             "query",
+            // The unified `filter` is the method of the `Refinable q p | q -> p`
+            // class, so one verb narrows a query (one-row predicate) and a join
+            // (two-row predicate), the arity following the receiver.
+            "Refinable",
             "filter",
             "orderBy",
             "limit",

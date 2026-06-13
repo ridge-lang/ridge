@@ -54,13 +54,15 @@
 //!   layer, so the depth is bounded by the structural depth of the type.
 
 use ridge_ast::Span;
-use ridge_types::{ClassId, Constraint, TyConId, TyVid, Type};
+use ridge_types::{BuiltinTyCons, ClassId, Constraint, TyConId, TyVid, Type};
 use rustc_hash::{FxHashMap, FxHashSet};
 use smallvec::SmallVec;
 
 use crate::class_env::{ClassTable, InstanceEnv, InstanceInfo};
 use crate::ctx::InferCtx;
 use crate::error::TypeError;
+use crate::tycon_collect::ast_type_to_ridge_type;
+use crate::unify::unify;
 
 // ── Dictionary resolution record ─────────────────────────────────────────────
 
@@ -160,6 +162,7 @@ pub fn solve_constraints(
     class_table: &ClassTable,
     env_snap_ty: &FxHashSet<TyVid>,
     scc_span: Span,
+    builtins: Option<&BuiltinTyCons>,
 ) -> (Vec<Constraint>, DictResolution) {
     // Drain the deferred list. We process it as a work queue so that recursive
     // superclass / ctx_constraint requirements can be appended and processed in
@@ -203,6 +206,7 @@ pub fn solve_constraints(
                 &c,
                 &mut retained,
                 &mut dict_resolution,
+                builtins,
             );
         }
     }
@@ -367,8 +371,19 @@ fn dispatch_multi_constraint(
     c: &Constraint,
     retained: &mut Vec<Constraint>,
     dict_resolution: &mut DictResolution,
+    builtins: Option<&BuiltinTyCons>,
 ) {
     let n = c.tys.len();
+
+    // Functional-dependency improvement runs before classification. For a class
+    // that declares a fundep it pins each determined position to the matching
+    // instance's head type — resolving an open position, and *verifying* an
+    // already-fixed one. A determined type the fundep forbids is a hard error
+    // (reported inside), and we stop. For a class with no fundep this is a no-op.
+    if improve_via_fundeps(ctx, instance_env, class_table, scc_span, c, builtins) {
+        return;
+    }
+
     let resolved: Vec<Type> = c
         .tys
         .iter()
@@ -438,7 +453,7 @@ fn dispatch_multi_constraint(
         return;
     }
 
-    // ── Mixed: an open position cannot be resolved without fundeps. ──
+    // ── Mixed: an open position no fundep could determine. ──
     let var = head_vars
         .first()
         .map_or_else(|| format!("?{}", c.tys[0].0), |v| format!("?{}", v.0));
@@ -447,6 +462,108 @@ fn dispatch_multi_constraint(
         ty_var: var,
         span: scc_span,
     });
+}
+
+/// Functional-dependency improvement for a multi-parameter constraint. For every
+/// fundep whose determining positions all resolved to a concrete head
+/// constructor, find the single matching instance and unify each determined
+/// position against that instance's written head type — but only when that head
+/// type is itself fully concrete. This both *pins* an open determined position
+/// (so a result-determined method resolves with no annotation) and *verifies* an
+/// already-fixed one: a determined type that disagrees with the instance's head
+/// is exactly the type the fundep forbids, and the disagreement is reported.
+///
+/// Returns `true` when a conflict was reported and the caller should stop. A
+/// no-op without `builtins` (the unit-test path) or for a class with no fundep.
+fn improve_via_fundeps(
+    ctx: &mut InferCtx,
+    instance_env: &InstanceEnv,
+    class_table: &ClassTable,
+    scc_span: Span,
+    c: &Constraint,
+    builtins: Option<&BuiltinTyCons>,
+) -> bool {
+    let Some(b) = builtins else {
+        return false;
+    };
+    let fundeps = class_table.fundeps_of(c.class);
+    if fundeps.is_empty() {
+        return false;
+    }
+
+    let resolved: Vec<Type> = c
+        .tys
+        .iter()
+        .map(|&v| ctx.deep_resolve(&Type::Var(v)))
+        .collect();
+
+    let empty_names: FxHashMap<String, TyConId> = FxHashMap::default();
+    let empty_params: FxHashMap<&str, TyVid> = FxHashMap::default();
+
+    for fd in fundeps {
+        // The determining positions must all be concrete head constructors.
+        let mut fixed: SmallVec<[(usize, TyConId); 2]> = SmallVec::new();
+        let mut from_ok = true;
+        for &p in &fd.from {
+            if let Some(Type::Con(id, _)) = resolved.get(p) {
+                fixed.push((p, *id));
+            } else {
+                from_ok = false;
+                break;
+            }
+        }
+        if !from_ok {
+            continue;
+        }
+
+        // Coherence guarantees at most one instance per determining tuple.
+        let head_asts: Vec<ridge_ast::Type> = {
+            let matches = instance_env.instances_matching(c.class, &fixed);
+            if matches.len() != 1 {
+                continue;
+            }
+            matches[0].1.clone()
+        };
+
+        for &p in &fd.to {
+            let Some(to_ast) = head_asts.get(p) else {
+                continue;
+            };
+            let to_ty = ast_type_to_ridge_type(b, ctx, to_ast, &empty_names, &empty_params);
+            // Act only on a fully concrete determined head. A parametric one (or
+            // an unresolved name that fell back to a fresh variable) is left for
+            // an annotation rather than risking an unsound pin.
+            if type_contains_var(&to_ty) {
+                continue;
+            }
+            // Pin an open determined position, or verify an already-fixed one. A
+            // disagreement is the determined type the fundep forbids — report it.
+            if let Err(e) = unify(ctx, &Type::Var(c.tys[p]), &to_ty) {
+                ctx.errors
+                    .push(crate::records::attach_span_pub(e, scc_span));
+                return true;
+            }
+        }
+    }
+
+    false
+}
+
+/// Whether a resolved type still mentions any inference variable. Used by
+/// fundep improvement to refuse pinning a determined position against a head
+/// type that is not fully concrete.
+fn type_contains_var(t: &Type) -> bool {
+    match t {
+        Type::Con(_, args) => args.iter().any(type_contains_var),
+        Type::Fn { params, ret, .. } => {
+            params.iter().any(type_contains_var) || type_contains_var(ret)
+        }
+        Type::Tuple(elems) => elems.iter().any(type_contains_var),
+        Type::Alias { body, .. } => type_contains_var(body),
+        // A bare variable, a record row, an error, or any other shape is treated
+        // as not-fully-concrete, so we never pin a determined position against it.
+        _ => true,
+    }
 }
 
 /// Attempt to discharge a concrete `(ClassId, TyConId)` constraint.
@@ -865,7 +982,8 @@ mod tests {
         let env = make_instance_env_with(TOTEXT_CLASS, int_tycon);
         let env_snap: FxHashSet<TyVid> = FxHashSet::default();
 
-        let (retained, dict_res) = solve_constraints(&mut ctx, &env, &ct, &env_snap, dummy_span());
+        let (retained, dict_res) =
+            solve_constraints(&mut ctx, &env, &ct, &env_snap, dummy_span(), None);
 
         // The constraint was satisfied: no errors, not retained.
         assert!(
@@ -904,7 +1022,7 @@ mod tests {
         let env = InstanceEnv::new(); // empty — no instances
         let env_snap: FxHashSet<TyVid> = FxHashSet::default();
 
-        let (retained, _) = solve_constraints(&mut ctx, &env, &ct, &env_snap, dummy_span());
+        let (retained, _) = solve_constraints(&mut ctx, &env, &ct, &env_snap, dummy_span(), None);
 
         assert!(
             ctx.errors.iter().any(|e| e.code() == "T029"),
@@ -930,7 +1048,8 @@ mod tests {
         // env_snap does NOT contain `a` → case (b).
         let env_snap: FxHashSet<TyVid> = FxHashSet::default();
 
-        let (retained, dict_res) = solve_constraints(&mut ctx, &env, &ct, &env_snap, dummy_span());
+        let (retained, dict_res) =
+            solve_constraints(&mut ctx, &env, &ct, &env_snap, dummy_span(), None);
 
         assert!(
             ctx.errors.is_empty(),
@@ -963,7 +1082,7 @@ mod tests {
         let mut env_snap: FxHashSet<TyVid> = FxHashSet::default();
         env_snap.insert(a);
 
-        let (retained, _) = solve_constraints(&mut ctx, &env, &ct, &env_snap, dummy_span());
+        let (retained, _) = solve_constraints(&mut ctx, &env, &ct, &env_snap, dummy_span(), None);
 
         assert!(
             ctx.errors.iter().any(|e| e.code() == "T030"),
@@ -983,7 +1102,8 @@ mod tests {
         let env = InstanceEnv::new();
         let env_snap: FxHashSet<TyVid> = FxHashSet::default();
 
-        let (retained, dict_res) = solve_constraints(&mut ctx, &env, &ct, &env_snap, dummy_span());
+        let (retained, dict_res) =
+            solve_constraints(&mut ctx, &env, &ct, &env_snap, dummy_span(), None);
 
         assert!(ctx.errors.is_empty());
         assert!(retained.is_empty());
@@ -1017,7 +1137,7 @@ mod tests {
             .expect("Eq Int insert");
 
         let env_snap: FxHashSet<TyVid> = FxHashSet::default();
-        let (retained, _) = solve_constraints(&mut ctx, &env, &ct, &env_snap, dummy_span());
+        let (retained, _) = solve_constraints(&mut ctx, &env, &ct, &env_snap, dummy_span(), None);
 
         assert!(
             ctx.errors.is_empty(),
@@ -1051,7 +1171,7 @@ mod tests {
             .expect("Ord Int insert");
 
         let env_snap: FxHashSet<TyVid> = FxHashSet::default();
-        let (_, _) = solve_constraints(&mut ctx, &env, &ct, &env_snap, dummy_span());
+        let (_, _) = solve_constraints(&mut ctx, &env, &ct, &env_snap, dummy_span(), None);
 
         assert!(
             ctx.errors.iter().any(|e| e.code() == "T029"),
@@ -1148,7 +1268,7 @@ mod tests {
         // Neither `a` nor `b` in env_snap → case (b) for both.
         let env_snap: FxHashSet<TyVid> = FxHashSet::default();
 
-        let (retained, _) = solve_constraints(&mut ctx, &env, &ct, &env_snap, dummy_span());
+        let (retained, _) = solve_constraints(&mut ctx, &env, &ct, &env_snap, dummy_span(), None);
 
         assert!(ctx.errors.is_empty());
         assert_eq!(retained.len(), 2, "both constraints must be retained");
@@ -1240,7 +1360,8 @@ mod tests {
         .expect("Encode Int insert");
 
         let env_snap: FxHashSet<TyVid> = FxHashSet::default();
-        let (retained, dict_res) = solve_constraints(&mut ctx, &env, &ct, &env_snap, dummy_span());
+        let (retained, dict_res) =
+            solve_constraints(&mut ctx, &env, &ct, &env_snap, dummy_span(), None);
 
         assert!(
             ctx.errors.is_empty(),
@@ -1290,7 +1411,7 @@ mod tests {
         .expect("parametric Encode List insert");
 
         let env_snap: FxHashSet<TyVid> = FxHashSet::default();
-        let _ = solve_constraints(&mut ctx, &env, &ct, &env_snap, dummy_span());
+        let _ = solve_constraints(&mut ctx, &env, &ct, &env_snap, dummy_span(), None);
 
         assert!(
             ctx.errors.iter().any(|e| e.code() == "T029"),
@@ -1345,7 +1466,7 @@ mod tests {
         // it would emit T029 for Text.
 
         let env_snap: FxHashSet<TyVid> = FxHashSet::default();
-        let (retained, _) = solve_constraints(&mut ctx, &env, &ct, &env_snap, dummy_span());
+        let (retained, _) = solve_constraints(&mut ctx, &env, &ct, &env_snap, dummy_span(), None);
 
         assert!(
             ctx.errors.is_empty(),
@@ -1405,7 +1526,7 @@ mod tests {
         .expect("Encode Text insert");
 
         let env_snap: FxHashSet<TyVid> = FxHashSet::default();
-        let (retained, _) = solve_constraints(&mut ctx, &env, &ct, &env_snap, dummy_span());
+        let (retained, _) = solve_constraints(&mut ctx, &env, &ct, &env_snap, dummy_span(), None);
 
         assert!(
             ctx.errors.is_empty(),

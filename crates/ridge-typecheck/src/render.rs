@@ -556,6 +556,24 @@ impl fmt::Display for TypeError {
                 write!(f, "T044: `{name}` is not a constructor\n  {hint}")
             }
 
+            // ── T045 ──────────────────────────────────────────────────────────
+            Self::UnknownFunDepVar { class, var, .. } => {
+                write!(
+                    f,
+                    "T045: unknown variable in functional dependency\n  `{var}` is not a type parameter of class `{class}`\n  hint: a functional dependency may only mention the class's own type parameters"
+                )
+            }
+
+            // ── T046 ──────────────────────────────────────────────────────────
+            Self::ConflictingFunDep {
+                class, determining, ..
+            } => {
+                write!(
+                    f,
+                    "T046: conflicting functional dependency\n  two instances of `{class}` agree on `{determining}` but determine different types, which the class's functional dependency forbids\n  hint: a determining type may map to only one determined type"
+                )
+            }
+
             // ── T999 ──────────────────────────────────────────────────────────
             Self::InternalTypeError { detail, .. } => {
                 write!(f, "T999: internal type error\n  {detail}\n  This is a compiler bug. Please report it.")
@@ -623,6 +641,10 @@ impl HasErrorCode for TypeError {
             | Self::QuoteEntityUnknown { span, .. }
             | Self::RefutablePatternParam { span, .. }
             | Self::NotAConstructor { span, .. }
+            | Self::UnknownFunDepVar { span, .. }
+            | Self::ConflictingFunDep {
+                second_span: span, ..
+            }
             | Self::InternalTypeError { span, .. } => *span,
 
             // T034: uses `totext_span` (the explicit instance) as the primary span.

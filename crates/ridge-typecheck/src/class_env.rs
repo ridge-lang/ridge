@@ -75,6 +75,22 @@ pub struct ClassInfo {
     pub def_module: Option<u32>,
 }
 
+// ── FunDepIdx ──────────────────────────────────────────────────────────────────
+
+/// A functional dependency on a class, stored as positions into the class's
+/// type-parameter list: the `from` positions determine the `to` positions.
+///
+/// `class Refinable q p | q -> p` (with `ty_vars = [q, p]`) yields one
+/// `FunDepIdx { from: [0], to: [1] }`. Held in [`ClassTable`] rather than
+/// [`ClassInfo`] so the many prelude/stdlib `ClassInfo` literals stay untouched.
+#[derive(Debug, Clone)]
+pub struct FunDepIdx {
+    /// Determining positions (left of `->`).
+    pub from: SmallVec<[usize; 2]>,
+    /// Determined positions (right of `->`).
+    pub to: SmallVec<[usize; 2]>,
+}
+
 // ── ClassTable ────────────────────────────────────────────────────────────────
 
 /// Workspace-level class registry: name → [`ClassId`] + [`ClassInfo`].
@@ -91,6 +107,9 @@ pub struct ClassTable {
     by_name: FxHashMap<String, ClassId>,
     /// Next id to allocate (starts at 3, below that are prelude constants).
     next_id: u32,
+    /// Functional dependencies per class, by position. Empty for the classes
+    /// that declare none (every prelude/stdlib class). Populated by collect.
+    fundeps: FxHashMap<ClassId, Vec<FunDepIdx>>,
 }
 
 impl ClassTable {
@@ -101,6 +120,7 @@ impl ClassTable {
             classes: FxHashMap::default(),
             by_name: FxHashMap::default(),
             next_id: 5, // 0..=4 reserved for prelude constants (ToText/Eq/Ord/Encode/Decode)
+            fundeps: FxHashMap::default(),
         }
     }
 
@@ -170,6 +190,20 @@ impl ClassTable {
             }
         }
         found
+    }
+
+    /// Records the functional dependencies a class declares. A no-op for an
+    /// empty list, so classes without fundeps keep no entry.
+    pub fn set_fundeps(&mut self, id: ClassId, deps: Vec<FunDepIdx>) {
+        if !deps.is_empty() {
+            self.fundeps.insert(id, deps);
+        }
+    }
+
+    /// The functional dependencies of a class — empty when none were declared.
+    #[must_use]
+    pub fn fundeps_of(&self, id: ClassId) -> &[FunDepIdx] {
+        self.fundeps.get(&id).map_or(&[], Vec::as_slice)
     }
 }
 
@@ -305,6 +339,12 @@ impl CoherenceError {
 pub struct InstanceEnv {
     /// The canonical instance map.
     pub instances: FxHashMap<(ClassId, InstanceHead), InstanceInfo>,
+    /// The written head types of each instance, keyed like `instances`. Kept
+    /// for functional-dependency improvement, which unifies a determined
+    /// position against the matching instance's head type. Populated for
+    /// AST-collected instances; absent for prelude/derived ones, whose classes
+    /// carry no fundeps.
+    pub head_asts: FxHashMap<(ClassId, InstanceHead), Vec<AstType>>,
 }
 
 impl InstanceEnv {
@@ -313,6 +353,7 @@ impl InstanceEnv {
     pub fn new() -> Self {
         Self {
             instances: FxHashMap::default(),
+            head_asts: FxHashMap::default(),
         }
     }
 
@@ -388,6 +429,35 @@ impl InstanceEnv {
     pub fn get_multi(&self, class: ClassId, head: &[TyConId]) -> Option<&InstanceInfo> {
         let key = (class, InstanceHead::from_slice(head));
         self.instances.get(&key)
+    }
+
+    /// Records the written head types for an instance, for fundep improvement.
+    pub fn record_head_asts(&mut self, class: ClassId, head: InstanceHead, heads: Vec<AstType>) {
+        self.head_asts.insert((class, head), heads);
+    }
+
+    /// Instances of `class` whose head matches `fixed` (position → outer
+    /// `TyConId`) on the given — determining — positions. Each match yields its
+    /// full head `TyCon` tuple and its written head types. Used by fundep
+    /// improvement: the determining positions are concrete, the determined ones
+    /// open. Coherence guarantees at most one match per distinct determining
+    /// tuple.
+    #[must_use]
+    pub fn instances_matching(
+        &self,
+        class: ClassId,
+        fixed: &[(usize, TyConId)],
+    ) -> Vec<(&InstanceHead, &Vec<AstType>)> {
+        self.head_asts
+            .iter()
+            .filter(|((c, head), _)| {
+                *c == class
+                    && fixed
+                        .iter()
+                        .all(|&(pos, tycon)| head.get(pos) == Some(&tycon))
+            })
+            .map(|((_, head), heads)| (head, heads))
+            .collect()
     }
 }
 

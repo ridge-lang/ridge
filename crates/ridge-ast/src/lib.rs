@@ -51,7 +51,7 @@ pub use lit::Literal;
 pub use module::{Item, Module};
 pub use pattern::{FieldPattern, ListPatElem, Pattern};
 pub use ty::{FnType, RecordTypeField, Type};
-pub use typeclass::{ClassConstraint, ClassDecl, InstanceDecl, MethodDef, MethodSig};
+pub use typeclass::{ClassConstraint, ClassDecl, FunDep, InstanceDecl, MethodDef, MethodSig};
 pub use visit::Visit;
 
 #[cfg(test)]

@@ -821,7 +821,7 @@ Ridge has typeclasses: named interfaces that a type can satisfy, with coherence 
 
 #### 5.6.1. Class declarations
 
-A class declaration names an interface and lists bare method signatures. The `class` keyword is followed by the class name, a single type variable, an optional superclass list, and `=`:
+A class declaration names an interface and lists bare method signatures. The `class` keyword is followed by the class name, one or more type variables, optional functional dependencies, an optional superclass list, and `=`:
 
 ```ridge
 class ToText a =
@@ -839,10 +839,12 @@ Method signatures inside a class body are **bare**: no `fn` keyword, no body. A 
 Superclasses are declared with a `where` clause between the type variable and `=`. `class Ord a where Eq a` means every `Ord` instance requires a corresponding `Eq` instance for the same type. An empty class body is rejected (`P030 MalformedClassDecl`).
 
 ```ebnf
-ClassDecl    ::= "class" UpperIdent TyVar [ "where" SuperList ] "=" NEWLINE
+ClassDecl    ::= "class" UpperIdent TyVar+ [ "|" FunDeps ] [ "where" SuperList ] "=" NEWLINE
                  INDENT MethodSig+ DEDENT
+FunDeps      ::= FunDep { "," FunDep }
+FunDep       ::= TyVar+ "->" TyVar+
 SuperList    ::= ClassConstraint { "," ClassConstraint }
-ClassConstraint ::= UpperIdent TyVar
+ClassConstraint ::= UpperIdent TyVar+
 MethodSig    ::= LowerIdent ParamList "->" Type NEWLINE
 ```
 
@@ -880,7 +882,26 @@ The element type must be determinable where the method is used. The dictionary f
 
 The prelude already provides parametric `Encode` and `Decode` instances for `List a`, `Option a`, `Map Text a`, and `Result a e`. These four type constructors are **reserved** for the prelude — a user instance such as `instance Encode (List MyType)` overlaps the prelude instance and is rejected (`T032 OverlappingInstance`). To customise encoding for a contained type, write the instance for that element type, not for the container.
 
-Only single-parameter classes are supported.
+A class may take more than one type variable. The head of each instance then lists one type per parameter:
+
+```ridge
+class Convert a b =
+    convert (x: a) -> b
+
+instance Convert Celsius Fahrenheit =
+    convert (c: Celsius) -> Fahrenheit = ...
+```
+
+Coherence is keyed by the whole head tuple, so instances that share a leading type but differ later coexist (`Convert Celsius Fahrenheit` and `Convert Celsius Kelvin` are distinct). A call selects the instance from the types at every head position; a position the caller leaves undetermined is reported as an ambiguous constraint to annotate (`T030 AmbiguousConstraint`).
+
+A **functional dependency** records that some parameters determine others, written after the type variables as `| determining -> determined`:
+
+```ridge
+class Tagged q p | q -> p =
+    tagWith (tag: p) (x: q) -> q
+```
+
+`| q -> p` declares that `q` fixes `p`. No two instances may agree on `q` while differing on `p` — a violation is `T046 ConflictingFunDep` — and once `q` is known the compiler infers `p` from the matching instance. This both resolves a determined position the call site leaves open, so a method whose result type the dependency fixes needs no annotation, and *checks* a determined position the call site supplies: a type the dependency forbids is rejected at compile time rather than dispatched by the head's outer constructor alone. A dependency may name several variables on either side (`| a b -> c`), and a class may list several, comma-separated (`| a -> b, b -> a`). Every name must be one of the class's own type variables, or it is reported as `T045 UnknownFunDepVar`.
 
 #### 5.6.3. Constraints on function signatures
 

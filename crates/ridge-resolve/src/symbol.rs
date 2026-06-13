@@ -644,11 +644,16 @@ impl<'ast> Visit<'ast> for TopLevelCollector {
 /// use site.
 #[derive(Debug, Default, Clone)]
 pub struct ClassMethodIndex {
-    /// Method name → `(class_name, arity)`.
+    /// Method name → `(class_name, arity, declaring_module)`.
+    ///
+    /// `declaring_module` is the workspace [`ModuleId`] of the module whose
+    /// `class` declares the method, or `None` for the prelude-seeded classes
+    /// (which have no source module). It lets qualified resolution accept
+    /// `Module.method` only when `method`'s class is declared in `Module`.
     ///
     /// When a collision is detected the first-seen entry is retained and the
     /// name is also inserted into `collisions` so the walker knows to emit R024.
-    entries: rustc_hash::FxHashMap<String, (String, usize)>,
+    entries: rustc_hash::FxHashMap<String, (String, usize, Option<ModuleId>)>,
     /// Method names that appear in more than one class.
     ///
     /// Value is `(first_class, second_class)` — the two class names involved.
@@ -677,14 +682,19 @@ impl ClassMethodIndex {
     pub fn build(modules: &[&ridge_ast::Module]) -> Self {
         let mut index = Self::default();
         index.seed_prelude();
-        for ast in modules {
+        // `modules` is passed in `ModuleId` order at every call site (it is built
+        // from `g.modules`, whose `i`-th entry has `id == ModuleId(i)`), so the
+        // enumeration index is the declaring module's id. A future caller that
+        // reorders the slice would break this mapping.
+        for (mi, ast) in modules.iter().enumerate() {
+            let module_id = ModuleId(u32::try_from(mi).unwrap_or(u32::MAX));
             for item in &ast.items {
                 if let ridge_ast::Item::ClassDecl(decl) = item {
                     let class_name = &decl.name.text;
                     for method in &decl.methods {
                         let method_name = method.name.text.clone();
                         let arity = method.params.len();
-                        if let Some((existing_class, _)) = index.entries.get(&method_name) {
+                        if let Some((existing_class, _, _)) = index.entries.get(&method_name) {
                             // Collision — two distinct classes declare the same name.
                             if existing_class != class_name {
                                 let first = existing_class.clone();
@@ -696,7 +706,7 @@ impl ClassMethodIndex {
                         } else {
                             index
                                 .entries
-                                .insert(method_name, (class_name.clone(), arity));
+                                .insert(method_name, (class_name.clone(), arity, Some(module_id)));
                         }
                     }
                 }
@@ -720,7 +730,7 @@ impl ClassMethodIndex {
         ];
         for &(method, class, arity) in prelude {
             self.entries
-                .insert(method.to_owned(), (class.to_owned(), arity));
+                .insert(method.to_owned(), (class.to_owned(), arity, None));
         }
     }
 
@@ -733,7 +743,16 @@ impl ClassMethodIndex {
     pub fn lookup(&self, name: &str) -> Option<(&str, usize)> {
         self.entries
             .get(name)
-            .map(|(class, arity)| (class.as_str(), *arity))
+            .map(|(class, arity, _)| (class.as_str(), *arity))
+    }
+
+    /// The workspace [`ModuleId`] whose class declares `name`, or `None` when the
+    /// name is unknown or belongs to a prelude-seeded class (which has no source
+    /// module). Used by qualified resolution to accept `Module.method` only when
+    /// `method`'s class is declared in that module.
+    #[must_use]
+    pub fn declaring_module(&self, name: &str) -> Option<ModuleId> {
+        self.entries.get(name).and_then(|(_, _, m)| *m)
     }
 }
 
@@ -1365,6 +1384,31 @@ mod tests {
             "distinct-class method collision must be recorded; collisions: {:?}",
             idx.collisions
         );
+    }
+
+    // Test 19: ClassMethodIndex — records the declaring module so qualified
+    // resolution can scope `Module.method` to the module that declares the class.
+    #[test]
+    fn t19_class_method_index_records_declaring_module() {
+        // A user class declared in the second module (ModuleId(1)); the build
+        // slice is in ModuleId order, so the enumeration index is the module id.
+        let m0 = empty_module();
+        let m1 = module_with(vec![class_item("Describe", "describe", 1)]);
+        let idx = ClassMethodIndex::build(&[&m0, &m1]);
+
+        assert_eq!(
+            idx.declaring_module("describe"),
+            Some(ModuleId(1)),
+            "a user method records its declaring module's id"
+        );
+        // Prelude-seeded methods have no source module.
+        assert_eq!(
+            idx.declaring_module("toText"),
+            None,
+            "prelude methods have no declaring workspace module"
+        );
+        // An unknown name has no declaring module.
+        assert_eq!(idx.declaring_module("nope"), None);
     }
 
     // Test 15: actor with init member — init is NOT added as a handler

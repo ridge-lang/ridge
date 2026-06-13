@@ -38,7 +38,7 @@ use crate::{
     imports::{Binding, EffectiveBinding, ImportResolution, ImportTarget},
     stdlib_builtin::BUILTINS,
     suggest,
-    symbol::{SymbolKind, SymbolTable},
+    symbol::{ClassMethodIndex, SymbolKind, SymbolTable},
     ModuleId, NodeId, SymbolId,
 };
 
@@ -67,6 +67,7 @@ pub fn resolve_qualified_record_constructor(
     my_table: Option<&SymbolTable>,
     all_symbol_tables: &[SymbolTable],
     module_imports: &[ImportResolution],
+    class_method_index: Option<&ClassMethodIndex>,
     errors: &mut Vec<ResolveError>,
 ) -> Binding {
     // Delegate to the general qualified-name resolver.
@@ -80,6 +81,7 @@ pub fn resolve_qualified_record_constructor(
         my_table,
         all_symbol_tables,
         module_imports,
+        class_method_index,
         errors,
     )
 }
@@ -103,6 +105,7 @@ pub fn resolve_qualified_name(
     my_table: Option<&SymbolTable>,
     all_symbol_tables: &[SymbolTable],
     module_imports: &[ImportResolution],
+    class_method_index: Option<&ClassMethodIndex>,
     errors: &mut Vec<ResolveError>,
 ) -> Binding {
     if qn.segments.is_empty() {
@@ -123,7 +126,14 @@ pub fn resolve_qualified_name(
             Binding::ModuleAlias { target, .. } => {
                 let target = target.clone();
                 // ── Step 2: ModuleAlias descent ──────────────────────────────
-                resolve_in_target(&target, qn, &all_segs, all_symbol_tables, errors)
+                resolve_in_target(
+                    &target,
+                    qn,
+                    &all_segs,
+                    all_symbol_tables,
+                    class_method_index,
+                    errors,
+                )
             }
             Binding::ImportedSymbol { module, symbol, .. } => {
                 // The head bound to a symbol (e.g. prelude StdlibSymbol is more
@@ -241,6 +251,7 @@ fn resolve_in_target(
     qn: &QualifiedName,
     all_segs: &[String],
     all_symbol_tables: &[SymbolTable],
+    class_method_index: Option<&ClassMethodIndex>,
     errors: &mut Vec<ResolveError>,
 ) -> Binding {
     let last_seg = &qn.segments[qn.segments.len() - 1];
@@ -276,6 +287,25 @@ fn resolve_in_target(
                         symbol: sym.id,
                         via_import: NodeId(0),
                     };
+                }
+                // Module-scoped class method: `M.method` resolves to a class
+                // method when `method`'s class is declared in module `M`. Class
+                // declarations add no entry to the symbol table, so the lookup
+                // above misses; the class-method index carries the declaring
+                // module, and we accept the qualified name only when it matches
+                // `mid`. A plain `pub fn` of the same name would have been found
+                // by the symbol-table lookup and taken precedence. Dispatch on
+                // the receiver still happens at type-check; this only makes the
+                // qualified method reachable instead of an R012.
+                if let Some(index) = class_method_index {
+                    if index.declaring_module(last_text) == Some(*mid) {
+                        if let Some((class_name, _)) = index.lookup(last_text) {
+                            return Binding::ClassMethod {
+                                class_name: class_name.to_owned(),
+                                method: last_text.clone(),
+                            };
+                        }
+                    }
                 }
                 // Symbol not found in workspace module — R012 with member-
                 // replacement suggestions.  Note: we don't apply
@@ -664,6 +694,29 @@ mod tests {
             my_table,
             all_tables,
             imports,
+            None,
+            &mut errors,
+        );
+        (binding, errors)
+    }
+
+    /// As [`resolve`], but threads a [`ClassMethodIndex`] so the module-scoped
+    /// qualified class-method path can be exercised.
+    fn resolve_with_index(
+        qn_val: &QualifiedName,
+        my_table: Option<&SymbolTable>,
+        all_tables: &[SymbolTable],
+        imports: &[ImportResolution],
+        index: &ClassMethodIndex,
+    ) -> (Binding, Vec<ResolveError>) {
+        let mut errors = Vec::new();
+        let binding = resolve_qualified_name(
+            qn_val,
+            ModuleId(0),
+            my_table,
+            all_tables,
+            imports,
+            Some(index),
             &mut errors,
         );
         (binding, errors)
@@ -984,6 +1037,7 @@ mod tests {
             Some(&table),
             &all,
             &[],
+            None,
             &mut errors,
         );
         assert!(errors.is_empty(), "expected no errors; got {errors:?}");
@@ -1012,5 +1066,92 @@ mod tests {
             suggestions.contains(&"Result.Ok".to_owned()),
             "must suggest `Result.Ok`; got {suggestions:?}"
         );
+    }
+
+    // ── Module-scoped qualified class methods (workspace) ─────────────────────
+
+    /// Build a `ClassMethodIndex` over `num_modules` empty modules except the one
+    /// at `class_module`, which declares `class` with the single method `method`.
+    fn index_with_class(
+        num_modules: usize,
+        class_module: usize,
+        class: &str,
+        method: &str,
+    ) -> ClassMethodIndex {
+        use ridge_ast::{ClassDecl, Item, MethodSig, Module, PrimitiveType, Type};
+        let decl = Item::ClassDecl(ClassDecl {
+            name: ident(class),
+            ty_vars: vec![ident("a")],
+            fundeps: vec![],
+            superclasses: vec![],
+            methods: vec![MethodSig {
+                name: ident(method),
+                params: vec![],
+                ret: Type::Primitive {
+                    name: PrimitiveType::Int,
+                    span: sp(),
+                },
+                span: sp(),
+            }],
+            span: sp(),
+            doc: None,
+        });
+        let modules: Vec<Module> = (0..num_modules)
+            .map(|i| Module {
+                items: if i == class_module {
+                    vec![decl.clone()]
+                } else {
+                    vec![]
+                },
+                doc: vec![],
+                span: sp(),
+            })
+            .collect();
+        let refs: Vec<&Module> = modules.iter().collect();
+        ClassMethodIndex::build(&refs)
+    }
+
+    // A class method declared in the aliased module resolves to a `ClassMethod`
+    // binding instead of R012, so it dispatches at type-check like a bare method.
+    #[test]
+    fn qualified_workspace_class_method_resolves_to_classmethod() {
+        let idx = index_with_class(2, 1, "Tag", "describe");
+        let tables = vec![empty_table(0), empty_table(1)];
+        let l_ir = alias_ir("L", ImportTarget::WorkspaceModule(ModuleId(1)));
+        let (binding, errors) = resolve_with_index(
+            &qn(&["L", "describe"]),
+            Some(&tables[0]),
+            &tables,
+            &[l_ir],
+            &idx,
+        );
+        assert!(errors.is_empty(), "expected no errors; got {errors:?}");
+        assert!(
+            matches!(binding, Binding::ClassMethod { ref method, .. } if method == "describe"),
+            "expected ClassMethod(describe); got {binding:?}"
+        );
+    }
+
+    // Module-scoping: the same method name reached through a module that does NOT
+    // declare its class stays R012 — the qualified name is scoped to the class's
+    // declaring module, so it never misroutes onto an unrelated alias.
+    #[test]
+    fn qualified_class_method_wrong_module_is_r012() {
+        let idx = index_with_class(2, 0, "Tag", "describe");
+        let tables = vec![empty_table(0), empty_table(1)];
+        let l_ir = alias_ir("L", ImportTarget::WorkspaceModule(ModuleId(1)));
+        let (binding, errors) = resolve_with_index(
+            &qn(&["L", "describe"]),
+            Some(&tables[0]),
+            &tables,
+            &[l_ir],
+            &idx,
+        );
+        assert!(
+            matches!(binding, Binding::Error),
+            "expected Error; got {binding:?}"
+        );
+        assert_eq!(errors.len(), 1, "expected 1 R012; got {errors:?}");
+        assert_eq!(errors[0].code(), "R012");
     }
 }

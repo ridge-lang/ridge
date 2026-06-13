@@ -1701,3 +1701,85 @@ fn fundep_open_determined_position_resolves() {
         "the fundep fixes the determined result type, so no ambiguity; got {errors:?}"
     );
 }
+
+// ── Module-qualified class-method access (workspace user classes) ─────────────
+//
+// A type-class method declared in one module can be called through that module's
+// alias from another (`L.describe x`), exactly like a bare method, with the
+// receiver still selecting the instance. The qualified name resolves to the
+// class method only when the method's class is declared in the aliased module.
+
+/// Run discover -> resolve -> typecheck over a two-module project and return the
+/// resolve-error codes alongside the type errors, so a resolve-stage R012 is
+/// observable (the `typecheck_two_modules` helper drops resolve errors).
+fn pipeline_two_modules(main_src: &str, lib_src: &str) -> (Vec<String>, Vec<TypeError>) {
+    let td = TempDir::new().expect("tempdir");
+    write_file(
+        td.path(),
+        "ridge.toml",
+        "[workspace]\nname = \"ws\"\nversion = \"0.1.0\"\nmembers = [\"libs/*\"]\n",
+    );
+    write_file(
+        td.path(),
+        "libs/proj/ridge.toml",
+        "[project]\nname = \"proj\"\nversion = \"0.1.0\"\nkind = \"library\"\n\n[project.exports]\npublic = [\"**\"]\n",
+    );
+    write_file(td.path(), "libs/proj/src/Main.ridge", main_src);
+    write_file(td.path(), "libs/proj/src/Lib.ridge", lib_src);
+
+    let disc = discover_workspace(td.path());
+    let resolved = resolve_workspace(disc.graph.expect("workspace graph"));
+    let resolve_codes: Vec<String> = resolved
+        .errors
+        .iter()
+        .map(|(_, e)| e.code().to_owned())
+        .collect();
+    let result = typecheck_workspace(&resolved);
+    let type_errors: Vec<TypeError> = result.errors.into_iter().map(|(_, e)| e).collect();
+    (resolve_codes, type_errors)
+}
+
+const LIB_DESCRIBE: &str =
+    "pub class Describe a =\n    describe (x: a) -> Text\n\ninstance Describe Int =\n    describe (x: Int) -> Text = \"int\"\n";
+
+#[test]
+fn qualified_workspace_class_method_resolves_and_typechecks() {
+    // `L.describe` is the `Describe` method declared in `Lib`; reaching it through
+    // the module alias resolves (no R012) and type-checks clean.
+    let main = "import proj.Lib as L\n\nfn use (n: Int) -> Text =\n    L.describe n\n";
+    let (resolve_codes, type_errors) = pipeline_two_modules(main, LIB_DESCRIBE);
+    assert!(
+        !resolve_codes.iter().any(|c| c == "R012"),
+        "qualified workspace class method must not raise R012; got {resolve_codes:?}"
+    );
+    assert!(
+        type_errors.is_empty(),
+        "qualified workspace class method must type-check clean; got {type_errors:?}"
+    );
+}
+
+#[test]
+fn qualified_workspace_class_method_result_type_flows() {
+    // `describe` returns `Text`; returning its result as `Int` must mismatch —
+    // proving the qualified call dispatched to a real method scheme rather than
+    // being absorbed as an unresolved-name error.
+    let main = "import proj.Lib as L\n\nfn bad (n: Int) -> Int =\n    L.describe n\n";
+    let (_resolve_codes, type_errors) = pipeline_two_modules(main, LIB_DESCRIBE);
+    assert_eq!(
+        count_code(&type_errors, "T001"),
+        1,
+        "Text result returned as Int must be one T001; got {type_errors:?}"
+    );
+}
+
+#[test]
+fn qualified_unknown_member_still_r012() {
+    // A name that is neither a symbol nor a class method of the aliased module
+    // keeps the existing unresolved-qualified-name diagnostic.
+    let main = "import proj.Lib as L\n\nfn use (n: Int) -> Text =\n    L.bogus n\n";
+    let (resolve_codes, _type_errors) = pipeline_two_modules(main, LIB_DESCRIBE);
+    assert!(
+        resolve_codes.iter().any(|c| c == "R012"),
+        "an unknown qualified member must still raise R012; got {resolve_codes:?}"
+    );
+}

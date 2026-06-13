@@ -24,7 +24,7 @@ use ridge_ir::{IrExpr, IrLit};
 use ridge_resolve::NodeKind;
 use ridge_types::Type;
 
-use crate::core::{build_dict_args, lower_expr};
+use crate::core::{build_dict_args, classmethod_binding, lower_expr, try_lower_classmethod_call};
 use crate::ctx::LowerCtx;
 use crate::error::LowerError;
 
@@ -45,11 +45,41 @@ use crate::error::LowerError;
 /// Never panics on any input — all error paths push a [`LowerError`] and
 /// return a structurally valid stub.
 pub fn lower_pipe(ctx: &mut LowerCtx<'_>, lhs: &Expr, rhs: &Expr, span: Span) -> IrExpr {
-    // Lower the LHS first (strict LTR order per IR invariant §4, point 4).
-    let lhs_ir = lower_expr(ctx, lhs);
-
     // Peel any number of parentheses from the RHS before dispatching.
     let rhs_inner = peel_paren(rhs);
+
+    // Class-method fast path: a piped call onto a class method
+    // (`q |> Repo.filter pred`) must dispatch through the instance dictionary,
+    // exactly as the direct-call form does. The pipe rule's generic lowering
+    // would lower the qualified callee as a plain stdlib symbol, which a
+    // dictionary-dispatched method (e.g. std.repo's `Refinable.filter`) has no
+    // bridge for. Reconstruct the flat argument list — the RHS's own arguments
+    // followed by the piped `lhs` as the final receiver — and route it through
+    // the class-method lowering before the generic rules.
+    //
+    // The callee is checked with the side-effect-free `classmethod_binding`
+    // first: only a genuine class method takes this path (allocating IR ids and
+    // lowering the receiver inside the dispatch). A plain callee allocates
+    // nothing here and falls through to the generic pipe lowering unchanged, so
+    // its IR-node numbering is untouched.
+    let (cm_callee, pre_args): (Option<&Expr>, &[Expr]) = match rhs_inner {
+        Expr::Call { callee, args, .. } => (Some(callee), args.as_slice()),
+        Expr::Ident(_) | Expr::Qualified(_) => (Some(rhs_inner), &[]),
+        _ => (None, &[]),
+    };
+    if let Some(callee) = cm_callee {
+        if classmethod_binding(ctx, callee).is_some() {
+            let mut full: Vec<Expr> = pre_args.to_vec();
+            full.push(lhs.clone());
+            let id = ctx.fresh_id(None);
+            if let Some(call) = try_lower_classmethod_call(ctx, callee, &full, id, span) {
+                return call;
+            }
+        }
+    }
+
+    // Lower the LHS first (strict LTR order per IR invariant §4, point 4).
+    let lhs_ir = lower_expr(ctx, lhs);
 
     match rhs_inner {
         // ── Call RHS: `xs |> f a b` → `Call(f, [a, b, xs])` ─────────────────

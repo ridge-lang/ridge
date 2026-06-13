@@ -357,6 +357,44 @@ pub fn db leftSelectTitles () -> Text =
                 Err _  -> "left-select-err"
                 Ok cs  -> joinComboOpts cs
 
+-- join + filter on a RIGHT column: the same inner join, narrowed by a two-row
+-- predicate over the post title -> only `lin:hello` survives. Proves the one
+-- `Repo.filter` takes a two-row predicate on a `Join` (the arity follows the
+-- receiver) and the post-join WHERE folds into the join the seam runs.
+pub fn db joinFilterRight () -> Text =
+    match setupJoin ()
+        Err _ -> "setup-err"
+        Ok (users, posts) ->
+            match users |> Repo.query |> Repo.orderBy Asc (fn (u: User) -> u.id) |> Repo.joinOn posts (fn (u: User) (p: Post) -> u.id == p.author) |> Repo.filter (fn (u: User) (p: Post) -> p.title == "hello") |> Repo.toPairs
+                Err _  -> "join-filter-err"
+                Ok ps  -> joinPairs ps
+
+-- left join + filter on a RIGHT column: a predicate over the post title drops
+-- both the unmatched `ada` (its right side is NULL, so the predicate is false)
+-- and the non-matching posts -> only `lin:hello`. Proves a `LeftJoin` filter
+-- over a right column narrows the outer join to its matches — the three-valued
+-- reading SQL gives a WHERE after a LEFT JOIN.
+pub fn db leftJoinFilterRight () -> Text =
+    match setupJoin ()
+        Err _ -> "setup-err"
+        Ok (users, posts) ->
+            match users |> Repo.query |> Repo.orderBy Asc (fn (u: User) -> u.id) |> Repo.leftJoinOn posts (fn (u: User) (p: Post) -> u.id == p.author) |> Repo.filter (fn (u: User) (p: Post) -> p.title == "hello") |> Repo.toLeftPairs
+                Err _  -> "left-filter-err"
+                Ok ps  -> joinLeftPairs ps
+
+-- left join + filter on a LEFT column: a predicate over the user id keeps every
+-- left row it admits, including the unmatched `ada` (the predicate never reads
+-- the NULL right side), and drops `max` (id 3) -> "ada:-,lin:hello,lin:again".
+-- Proves a `LeftJoin` filter that touches only the left row preserves the
+-- kept-but-unmatched rows.
+pub fn db leftJoinFilterLeft () -> Text =
+    match setupJoin ()
+        Err _ -> "setup-err"
+        Ok (users, posts) ->
+            match users |> Repo.query |> Repo.orderBy Asc (fn (u: User) -> u.id) |> Repo.leftJoinOn posts (fn (u: User) (p: Post) -> u.id == p.author) |> Repo.filter (fn (u: User) (p: Post) -> u.id <= 2) |> Repo.toLeftPairs
+                Err _  -> "left-filter-err"
+                Ok ps  -> joinLeftPairs ps
+
 -- Render an optional Int as its text, or "none" for an empty aggregate.
 fn optIntText (o: Option Int) -> Text =
     match o
@@ -902,6 +940,9 @@ fn repo_surface_runs_on_beam() {
          io:format(\"joinedTitles=~s~n\",[{module}:joinedTitles()]), \
          io:format(\"leftJoinedNames=~s~n\",[{module}:leftJoinedNames()]), \
          io:format(\"leftSelectTitles=~s~n\",[{module}:leftSelectTitles()]), \
+         io:format(\"joinFilterRight=~s~n\",[{module}:joinFilterRight()]), \
+         io:format(\"leftJoinFilterRight=~s~n\",[{module}:leftJoinFilterRight()]), \
+         io:format(\"leftJoinFilterLeft=~s~n\",[{module}:leftJoinFilterLeft()]), \
          io:format(\"sumAllAges=~s~n\",[{module}:sumAllAges()]), \
          io:format(\"sumAdultAges=~s~n\",[{module}:sumAdultAges()]), \
          io:format(\"avgAdultAges=~s~n\",[{module}:avgAdultAges()]), \
@@ -993,6 +1034,18 @@ fn repo_surface_runs_on_beam() {
         (
             "leftSelectTitles=ada:-,lin:hello,lin:again,max:world",
             "selectLeftJoin keeps the unmatched ada row and decodes its NULL right column into an Option field as None",
+        ),
+        (
+            "joinFilterRight=lin:hello",
+            "the unified filter narrows an inner join by a two-row predicate over a right column",
+        ),
+        (
+            "leftJoinFilterRight=lin:hello",
+            "a left-join filter over a right column drops the unmatched and non-matching rows (NULL right reads false)",
+        ),
+        (
+            "leftJoinFilterLeft=ada:-,lin:hello,lin:again",
+            "a left-join filter over a left column keeps the unmatched ada row and drops max",
         ),
         ("sumAllAges=73", "sumOf folds every age (18 + 30 + 25)"),
         (

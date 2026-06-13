@@ -987,28 +987,28 @@ pub fn register_stdlib_classes(ct: &mut ClassTable) {
                 },
                 MethodSig {
                     name: "join".to_string(),
-                    arity: 8,
+                    arity: 9,
                     ast_param_types: vec![],
                     ast_ret_type: None,
                     class_ty_vars: Vec::new(),
                 },
                 MethodSig {
                     name: "joinSelect".to_string(),
-                    arity: 9,
+                    arity: 10,
                     ast_param_types: vec![],
                     ast_ret_type: None,
                     class_ty_vars: Vec::new(),
                 },
                 MethodSig {
                     name: "leftJoin".to_string(),
-                    arity: 8,
+                    arity: 9,
                     ast_param_types: vec![],
                     ast_ret_type: None,
                     class_ty_vars: Vec::new(),
                 },
                 MethodSig {
                     name: "leftJoinSelect".to_string(),
-                    arity: 9,
+                    arity: 10,
                     ast_param_types: vec![],
                     ast_ret_type: None,
                     class_ty_vars: Vec::new(),
@@ -1017,6 +1017,39 @@ pub fn register_stdlib_classes(ct: &mut ClassTable) {
             superclasses: vec![],
             def_module: None,
         },
+    );
+
+    // `Refinable` from std.repo — the unified `filter` over a query or a join.
+    // Two type parameters `q p` with a functional dependency `q -> p`: the
+    // receiver (`Query`/`Join`/`LeftJoin`) fixes the predicate's arity, so one
+    // `filter` serves both the one-row and two-row cases and a wrong-arity
+    // predicate is a compile error rather than a silent mismatch. The method
+    // scheme is seeded directly (see `seed_refinable_scheme` in lib.rs), so the
+    // sig carries no AST types, like the other stdlib classes above; the three
+    // instances are registered in `register_stdlib_instances`.
+    let refinable_id = ct.intern("Refinable");
+    ct.insert_with_id(
+        refinable_id,
+        ClassInfo {
+            name: "Refinable".to_string(),
+            arity: 2,
+            method_sigs: vec![MethodSig {
+                name: "filter".to_string(),
+                arity: 2,
+                ast_param_types: vec![],
+                ast_ret_type: None,
+                class_ty_vars: Vec::new(),
+            }],
+            superclasses: vec![],
+            def_module: None,
+        },
+    );
+    ct.set_fundeps(
+        refinable_id,
+        vec![FunDepIdx {
+            from: smallvec![0],
+            to: smallvec![1],
+        }],
     );
 }
 
@@ -1037,6 +1070,10 @@ pub fn register_stdlib_classes(ct: &mut ClassTable) {
 #[expect(
     clippy::implicit_hasher,
     reason = "FxHashMap is the workspace-wide hasher; this mirrors collect_workspace's signature"
+)]
+#[expect(
+    clippy::too_many_lines,
+    reason = "one flat block per stdlib instance family (SqlType base types, Adapter backends, Refinable receivers); they read best kept together"
 )]
 pub fn register_stdlib_instances(
     env: &mut InstanceEnv,
@@ -1153,6 +1190,42 @@ pub fn register_stdlib_instances(
                 origin: InstanceOrigin::Explicit,
                 span: ds,
             });
+    }
+
+    // `Refinable (Query e a) (e -> Bool)`, `Refinable (Join e f a) (e -> f ->
+    // Bool)`, and the same over `LeftJoin` — the unified `filter` instances from
+    // std.repo. Each is keyed by the full head tuple: the receiver's reconciled
+    // tycon and the predicate's function-arity tycon (`Fn/1` for a query's
+    // one-row predicate, `Fn/2` for a join's two-row one), so the `q -> p`
+    // functional dependency selects exactly one instance per receiver. Inserted
+    // for user workspaces; a no-op during the stdlib's own build, where
+    // repo.ridge's source instances are collected directly.
+    if let Some(refinable) = ct.id_by_name("Refinable") {
+        if let (Some(fn1), Some(fn2)) = (ridge_types::fn_tycon_id(1), ridge_types::fn_tycon_id(2)) {
+            let refinable_inst = || InstanceInfo {
+                def_module: None,
+                methods: vec![("filter".to_string(), String::new())],
+                ctx_constraints: vec![],
+                head_var_positions: vec![],
+                origin: InstanceOrigin::Explicit,
+                span: ds,
+            };
+            if let Some(&query) = reconciled_tycon_names.get("Query") {
+                env.instances
+                    .entry((refinable, smallvec![query, fn1]))
+                    .or_insert_with(refinable_inst);
+            }
+            if let Some(&join) = reconciled_tycon_names.get("Join") {
+                env.instances
+                    .entry((refinable, smallvec![join, fn2]))
+                    .or_insert_with(refinable_inst);
+            }
+            if let Some(&left_join) = reconciled_tycon_names.get("LeftJoin") {
+                env.instances
+                    .entry((refinable, smallvec![left_join, fn2]))
+                    .or_insert_with(refinable_inst);
+            }
+        }
     }
 }
 

@@ -1108,6 +1108,62 @@ pub fn db authorPosts () -> Result (List (User, Post)) Error =
 }
 
 #[test]
+fn query_builder_filter_on_join_typechecks() {
+    // The one `Repo.filter` takes a two-row predicate on a `Join`, narrowing the
+    // join by a post-join `WHERE` over both entities — the same verb that takes a
+    // one-row predicate on a `Query`. The functional dependency on `Refinable`
+    // makes the predicate's arity follow the receiver.
+    let main = r#"
+import std.data (memAdapter, MemAdapter)
+import std.repo as Repo
+import std.sql (SqlValue)
+
+pub type User = { id: Int, age: Int, name: Text } deriving (Row)
+pub type Post = { id: Int, authorId: Int, title: Text } deriving (Row)
+
+pub fn db publishedPosts () -> Result (List (User, Post)) Error =
+    let users: Repo User MemAdapter = Repo.repo (memAdapter ()) "users"
+    let posts: Repo Post MemAdapter = Repo.repo (memAdapter ()) "posts"
+    users
+      |> Repo.query
+      |> Repo.joinOn posts (fn (u: User) (p: Post) -> u.id == p.authorId)
+      |> Repo.filter (fn (u: User) (p: Post) -> p.title == "hello")
+      |> Repo.toPairs
+"#;
+    let errors = typecheck_one(main);
+    assert!(
+        errors.is_empty(),
+        "a two-row filter on a join must type-check clean; got {errors:?}"
+    );
+}
+
+#[test]
+fn query_builder_two_row_filter_on_query_is_rejected() {
+    // The functional dependency fixes the predicate's arity to the receiver: a
+    // `Query` takes a one-row predicate, so a two-row predicate is an arity
+    // error rather than a silent mismatch.
+    let main = r#"
+import std.data (memAdapter, MemAdapter)
+import std.repo as Repo
+import std.sql (SqlValue)
+
+pub type User = { id: Int, age: Int, name: Text } deriving (Row)
+
+pub fn db bad () -> Result (List User) Error =
+    let users: Repo User MemAdapter = Repo.repo (memAdapter ()) "users"
+    users
+      |> Repo.query
+      |> Repo.filter (fn (u: User) (v: User) -> u.age >= 18)
+      |> Repo.toList
+"#;
+    let errors = typecheck_one(main);
+    assert!(
+        !errors.is_empty(),
+        "a two-row predicate on a query must be rejected by the arity functional dependency"
+    );
+}
+
+#[test]
 fn query_builder_join_select_into_named_shape_typechecks() {
     // `selectJoin` names a result record built from columns of both entities,
     // which pins the decode target so the join answers `List Line` directly —

@@ -231,6 +231,20 @@ fn infer_expr_inner(ctx: &mut InferCtx, b: &BuiltinTyCons, expr: &Expr) -> Type 
                         if let Some(pty) = callee_params.as_ref().and_then(|p| p.get(i)) {
                             let pty = ctx.deep_resolve(pty);
                             if crate::quote::is_quote_param(ctx, &pty) {
+                                // A class-method quote parameter (`filter (pred:
+                                // Quote p)`) arrives with `p` an unconstrained
+                                // variable — the `q -> p` functional dependency only
+                                // fixes it in the constraint solver, after the
+                                // arguments are synthesised. With no arrow skeleton
+                                // there is nothing for arity or entity-pinning to
+                                // read. Synthesize the predicate shape from the
+                                // lambda's own parameter count — one fresh slot per
+                                // parameter, a Bool result — and unify it into `p`.
+                                // The fresh slots then pin from the lambda
+                                // annotations like any structured quote, and the
+                                // fixed arity flows into the constraint so the fundep
+                                // rejects a wrong-arity lambda.
+                                let pty = synth_open_quote_shape(ctx, b, &pty, inner);
                                 let expected_ret = crate::quote::quote_result(ctx, &pty);
                                 // A grouped-aggregate quote (`having`/`summarize`)
                                 // ranges over a `Group e k` handle, not a row, with
@@ -1470,6 +1484,52 @@ fn pin_quote_entities(
         entities.push((entity, nullable));
     }
     Some(entities)
+}
+
+/// Give an open quote parameter (`Quote p` with `p` still a bare variable) a
+/// predicate skeleton drawn from the lambda actually passed.
+///
+/// A type-class method like `filter (pred: Quote p)` reaches the call site with
+/// `p` unconstrained — the `q -> p` functional dependency only pins it once the
+/// receiver is checked, which is after argument synthesis. Until then the quote
+/// has no `a -> … -> Bool` shape, so [`quote_arity`](crate::quote::quote_arity)
+/// and entity-pinning find nothing. Synthesize one fresh entity slot per lambda
+/// parameter and a `Bool` result and unify that into `p`. The fresh slots are
+/// then pinned from the lambda's parameter annotations exactly as a structured
+/// quote's are, and the now-fixed arity flows into the constraint: when the
+/// fundep determines the instance's `p`, a wrong-arity lambda fails to unify.
+///
+/// Only fires when the quote's inner type is still a variable; a quote that
+/// already carries an arrow skeleton (every `select`/`joinOn`/`selectJoin`
+/// callee) is returned unchanged.
+fn synth_open_quote_shape(
+    ctx: &mut InferCtx,
+    b: &BuiltinTyCons,
+    pty: &Type,
+    lambda: &Expr,
+) -> Type {
+    let Type::Con(_, args) = pty else {
+        return pty.clone();
+    };
+    let Some(inner) = args.first() else {
+        return pty.clone();
+    };
+    if !matches!(ctx.deep_resolve(inner), Type::Var(_)) {
+        return pty.clone();
+    }
+    let Expr::Lambda { params, .. } = lambda else {
+        return pty.clone();
+    };
+    let slots: Vec<Type> = (0..params.len())
+        .map(|_| Type::Var(ctx.fresh_tyvid()))
+        .collect();
+    let synth = Type::Fn {
+        params: slots,
+        ret: Box::new(Type::Con(b.bool, vec![])),
+        caps: CapRow::Concrete(CapabilitySet::PURE),
+    };
+    let _ = unify(ctx, inner, &synth);
+    ctx.deep_resolve(pty)
 }
 
 // ── Inline record helpers ─────────────────────────────────────────────────────

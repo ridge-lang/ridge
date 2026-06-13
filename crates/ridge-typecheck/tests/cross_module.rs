@@ -1783,3 +1783,54 @@ fn qualified_unknown_member_still_r012() {
         "an unknown qualified member must still raise R012; got {resolve_codes:?}"
     );
 }
+
+// ── Unified quote-predicate method over a functional dependency ───────────────
+//
+// A class `Refinable q p | q -> p` gives one `filter` method whose quoted
+// predicate ranges over a 1-row receiver (`Qr`) or a 2-row one (`Jn`). The fundep
+// fixes the predicate's arity from the receiver, so a 1-arg lambda works on `Qr`
+// and a 2-arg lambda on `Jn` — and the wrong arity on either is rejected. This is
+// the type-level core of the unified `Repo.filter` over `Query`/`Join`. The
+// determined head is a function type written with the `fn` keyword so its arity
+// (`Fn/1` vs `Fn/2`) distinguishes the instances.
+const REFINABLE_BASE: &str = "class Refinable q p | q -> p =\n    filter (pred: Quote p) (x: q) -> q\n\ntype User = { age: Int, active: Bool }\ntype Post = { title: Text, published: Bool }\ntype Qr e = { marker: Int }\ntype Jn e f = { marker: Int }\n\ninstance Refinable (Qr e) (fn e -> Bool) =\n    filter (pred: Quote (fn e -> Bool)) (x: Qr e) -> Qr e = x\n\ninstance Refinable (Jn e f) (fn e f -> Bool) =\n    filter (pred: Quote (fn e f -> Bool)) (x: Jn e f) -> Jn e f = x\n\n";
+
+#[test]
+fn refinable_filter_dispatches_per_receiver_arity() {
+    // A 1-arg predicate on the 1-row receiver and a 2-arg predicate on the 2-row
+    // receiver both type-check through the single `filter` name.
+    let src = format!(
+        "{REFINABLE_BASE}fn useQuery (q: Qr User) -> Qr User =\n    q |> filter (fn (u: User) -> u.active)\n\nfn useJoin (j: Jn User Post) -> Jn User Post =\n    j |> filter (fn (u: User) (p: Post) -> p.published)\n"
+    );
+    let errors = typecheck_one(&src);
+    assert!(
+        errors.is_empty(),
+        "unified filter must type-check a 1-arg predicate on Qr and a 2-arg on Jn; got {errors:?}"
+    );
+}
+
+#[test]
+fn refinable_filter_rejects_two_arg_predicate_on_one_row_receiver() {
+    // The fundep fixes `Qr`'s predicate to one row, so a 2-arg lambda is rejected.
+    let src = format!(
+        "{REFINABLE_BASE}fn bad (q: Qr User) -> Qr User =\n    q |> filter (fn (u: User) (p: Post) -> p.published)\n"
+    );
+    let errors = typecheck_one(&src);
+    assert!(
+        !errors.is_empty(),
+        "a 2-arg predicate on a 1-row receiver must be rejected; got {errors:?}"
+    );
+}
+
+#[test]
+fn refinable_filter_rejects_one_arg_predicate_on_two_row_receiver() {
+    // The fundep fixes `Jn`'s predicate to two rows, so a 1-arg lambda is rejected.
+    let src = format!(
+        "{REFINABLE_BASE}fn bad (j: Jn User Post) -> Jn User Post =\n    j |> filter (fn (u: User) -> u.active)\n"
+    );
+    let errors = typecheck_one(&src);
+    assert!(
+        !errors.is_empty(),
+        "a 1-arg predicate on a 2-row receiver must be rejected; got {errors:?}"
+    );
+}

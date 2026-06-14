@@ -485,6 +485,76 @@ pub fn db sumNobody () -> Text =
                 Err _ -> "sum-err"
                 Ok o  -> optIntText o
 
+-- join aggregate over a RIGHT column: sum the post ids over the inner join (lin
+-- owns hello(10) and again(12), max owns world(11)) -> 10+12+11 = "33". Proves the
+-- one `Repo.sumOf` takes a two-row accessor on a `Join` and folds a right-table
+-- column through the `aggregateJoin` seam.
+pub fn db joinSumRightId () -> Text =
+    match setupJoin ()
+        Err _ -> "setup-err"
+        Ok (users, posts) ->
+            match users |> Repo.query |> Repo.joinOn posts (fn (u: User) (p: Post) -> u.id == p.author) |> Repo.sumOf (fn (u: User) (p: Post) -> p.id)
+                Err _ -> "join-sum-err"
+                Ok o  -> optIntText o
+
+-- join aggregate over a LEFT column: sum the user age over the inner join. lin
+-- matches two posts so its 30 counts twice, max's 25 once, and ada (no posts) is
+-- dropped by the inner join -> 30+30+25 = "85". Proves a left-column fold counts
+-- once per matched pair and the inner join excludes the unmatched left row.
+pub fn db joinSumLeftAge () -> Text =
+    match setupJoin ()
+        Err _ -> "setup-err"
+        Ok (users, posts) ->
+            match users |> Repo.query |> Repo.joinOn posts (fn (u: User) (p: Post) -> u.id == p.author) |> Repo.sumOf (fn (u: User) (p: Post) -> u.age)
+                Err _ -> "join-sum-err"
+                Ok o  -> optIntText o
+
+-- join aggregate over a RIGHT text column: the greatest post title over the inner
+-- join (again < hello < world) -> "world". Proves maxOf folds a right text column
+-- and keeps its type.
+pub fn db joinMaxRightTitle () -> Text =
+    match setupJoin ()
+        Err _ -> "setup-err"
+        Ok (users, posts) ->
+            match users |> Repo.query |> Repo.joinOn posts (fn (u: User) (p: Post) -> u.id == p.author) |> Repo.maxOf (fn (u: User) (p: Post) -> p.title)
+                Err _ -> "join-max-err"
+                Ok o  -> optTextText o
+
+-- join aggregate average over a RIGHT column: the mean post id over the inner join
+-- ((10+12+11)/3) -> "11.0". Proves avgOf over a join is fractional (Option Float).
+pub fn db joinAvgRightId () -> Text =
+    match setupJoin ()
+        Err _ -> "setup-err"
+        Ok (users, posts) ->
+            match users |> Repo.query |> Repo.joinOn posts (fn (u: User) (p: Post) -> u.id == p.author) |> Repo.avgOf (fn (u: User) (p: Post) -> p.id)
+                Err _ -> "join-avg-err"
+                Ok o  -> optFloatText o
+
+-- left-join aggregate over a LEFT column: sum the user age over the LEFT join,
+-- which keeps the unmatched ada. lin's 30 counts twice (two posts), max's 25 once,
+-- and ada's 18 once (kept though it owns no post) -> 18+30+30+25 = "103". The
+-- discriminator: the inner join's same sum is "85" (ada excluded), so "103" proves
+-- the left-join aggregate counts the kept-but-unmatched left row.
+pub fn db leftJoinSumLeftAge () -> Text =
+    match setupJoin ()
+        Err _ -> "setup-err"
+        Ok (users, posts) ->
+            match users |> Repo.query |> Repo.leftJoinOn posts (fn (u: User) (p: Post) -> u.id == p.author) |> Repo.sumOf (fn (u: User) (p: Post) -> u.age)
+                Err _ -> "left-sum-err"
+                Ok o  -> optIntText o
+
+-- left-join aggregate over a RIGHT column: the greatest post title over the LEFT
+-- join -> "world". ada's right side is absent (a NULL the fold skips), so only the
+-- matched titles fold. Proves a left-join right-column aggregate ignores the
+-- unmatched rows rather than faulting on the missing right value.
+pub fn db leftJoinMaxRightTitle () -> Text =
+    match setupJoin ()
+        Err _ -> "setup-err"
+        Ok (users, posts) ->
+            match users |> Repo.query |> Repo.leftJoinOn posts (fn (u: User) (p: Post) -> u.id == p.author) |> Repo.maxOf (fn (u: User) (p: Post) -> p.title)
+                Err _ -> "left-max-err"
+                Ok o  -> optTextText o
+
 -- The name of an optional user, or "none" for an empty match.
 fn optUserName (o: Option User) -> Text =
     match o
@@ -962,6 +1032,12 @@ fn repo_surface_runs_on_beam() {
          io:format(\"minAllAges=~s~n\",[{module}:minAllAges()]), \
          io:format(\"maxName=~s~n\",[{module}:maxName()]), \
          io:format(\"sumNobody=~s~n\",[{module}:sumNobody()]), \
+         io:format(\"joinSumRightId=~s~n\",[{module}:joinSumRightId()]), \
+         io:format(\"joinSumLeftAge=~s~n\",[{module}:joinSumLeftAge()]), \
+         io:format(\"joinMaxRightTitle=~s~n\",[{module}:joinMaxRightTitle()]), \
+         io:format(\"joinAvgRightId=~s~n\",[{module}:joinAvgRightId()]), \
+         io:format(\"leftJoinSumLeftAge=~s~n\",[{module}:leftJoinSumLeftAge()]), \
+         io:format(\"leftJoinMaxRightTitle=~s~n\",[{module}:leftJoinMaxRightTitle()]), \
          io:format(\"singleOne=~s~n\",[{module}:singleOne()]), \
          io:format(\"singleNone=~s~n\",[{module}:singleNone()]), \
          io:format(\"singleMany=~s~n\",[{module}:singleMany()]), \
@@ -1081,6 +1157,30 @@ fn repo_surface_runs_on_beam() {
         (
             "sumNobody=none",
             "an aggregate over an empty match is NULL, decoded to None",
+        ),
+        (
+            "joinSumRightId=33",
+            "sumOf folds a right-table column over an inner join (10+12+11)",
+        ),
+        (
+            "joinSumLeftAge=85",
+            "a left-column join fold counts once per matched pair (30+30+25)",
+        ),
+        (
+            "joinMaxRightTitle=world",
+            "maxOf folds a right text column over a join (again < hello < world)",
+        ),
+        (
+            "joinAvgRightId=11.0",
+            "avgOf over a join is fractional Option Float ((10+12+11)/3)",
+        ),
+        (
+            "leftJoinSumLeftAge=103",
+            "a left join's left-column fold counts the unmatched ada (18+30+30+25), unlike the inner join's 85",
+        ),
+        (
+            "leftJoinMaxRightTitle=world",
+            "a left join's right-column fold skips the unmatched ada's NULL",
         ),
         ("singleOne=lin", "single decodes the lone matching row (id 2)"),
         (

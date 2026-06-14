@@ -1555,6 +1555,8 @@ mod tests {
                             | "joinSelect"
                             | "leftJoin"
                             | "leftJoinSelect"
+                            | "aggregateJoin"
+                            | "aggregateLeftJoin"
                             | "groupSummarize"
                             | "runPlan"
                             | "MemAdapter"

@@ -540,6 +540,75 @@ pub fn db sumNobody () -> Text =
                 Err _ -> "sum-err"
                 Ok o  -> optIntText o
 
+-- join aggregate over a RIGHT column against Postgres: SUM(r.id) over the inner
+-- join (lin->hello(10), max->world(11)) -> 10+11 = "21". Proves the backend
+-- compiles `SUM(r."id")` over `l JOIN r` and qualifies the column to the right
+-- table alias through the `aggregateJoin` seam.
+pub fn db joinSumRightId () -> Text =
+    match setupJoin ()
+        Err _ -> "setup-err"
+        Ok (users, posts) ->
+            match users |> Repo.query |> Repo.joinOn posts (fn (u: User) (p: Post) -> u.id == p.author) |> Repo.sumOf (fn (u: User) (p: Post) -> p.id)
+                Err _ -> "join-sum-err"
+                Ok o  -> optIntText o
+
+-- join aggregate over a LEFT column against Postgres: SUM(l.age) over the inner
+-- join -> 30+25 = "55" (each of lin, max owns one post; ada is dropped). Proves the
+-- backend qualifies a left-column aggregate to the `l` alias.
+pub fn db joinSumLeftAge () -> Text =
+    match setupJoin ()
+        Err _ -> "setup-err"
+        Ok (users, posts) ->
+            match users |> Repo.query |> Repo.joinOn posts (fn (u: User) (p: Post) -> u.id == p.author) |> Repo.sumOf (fn (u: User) (p: Post) -> u.age)
+                Err _ -> "join-sum-err"
+                Ok o  -> optIntText o
+
+-- join aggregate over a RIGHT text column against Postgres: MAX(r.title) over the
+-- inner join (hello < world) -> "world". Proves MAX folds a qualified right text
+-- column and keeps its type.
+pub fn db joinMaxRightTitle () -> Text =
+    match setupJoin ()
+        Err _ -> "setup-err"
+        Ok (users, posts) ->
+            match users |> Repo.query |> Repo.joinOn posts (fn (u: User) (p: Post) -> u.id == p.author) |> Repo.maxOf (fn (u: User) (p: Post) -> p.title)
+                Err _ -> "join-max-err"
+                Ok o  -> optTextText o
+
+-- join aggregate average over a RIGHT column against Postgres: AVG(r.id)::float8
+-- over the inner join ((10+11)/2) -> "10.5". Proves avgOf over a join casts to
+-- float8 and decodes the fractional result.
+pub fn db joinAvgRightId () -> Text =
+    match setupJoin ()
+        Err _ -> "setup-err"
+        Ok (users, posts) ->
+            match users |> Repo.query |> Repo.joinOn posts (fn (u: User) (p: Post) -> u.id == p.author) |> Repo.avgOf (fn (u: User) (p: Post) -> p.id)
+                Err _ -> "join-avg-err"
+                Ok o  -> optFloatText o
+
+-- left-join aggregate over a LEFT column against Postgres: SUM(l.age) over the LEFT
+-- join, which keeps the unmatched ada -> 18+30+25 = "73". The discriminator: the
+-- inner join's same sum is "55" (ada excluded), so "73" proves the backend compiles
+-- a `LEFT JOIN` whose left-column aggregate counts the kept-but-unmatched row.
+pub fn db leftJoinSumLeftAge () -> Text =
+    match setupJoin ()
+        Err _ -> "setup-err"
+        Ok (users, posts) ->
+            match users |> Repo.query |> Repo.leftJoinOn posts (fn (u: User) (p: Post) -> u.id == p.author) |> Repo.sumOf (fn (u: User) (p: Post) -> u.age)
+                Err _ -> "left-sum-err"
+                Ok o  -> optIntText o
+
+-- left-join aggregate over a RIGHT column against Postgres: MAX(r.title) over the
+-- LEFT join -> "world". ada's right columns are NULL (skipped by the aggregate), so
+-- only the matched titles fold. Proves the `LEFT JOIN` right-column aggregate needs
+-- no matched sentinel — SQL's NULL handling drops the unmatched row on its own.
+pub fn db leftJoinMaxRightTitle () -> Text =
+    match setupJoin ()
+        Err _ -> "setup-err"
+        Ok (users, posts) ->
+            match users |> Repo.query |> Repo.leftJoinOn posts (fn (u: User) (p: Post) -> u.id == p.author) |> Repo.maxOf (fn (u: User) (p: Post) -> p.title)
+                Err _ -> "left-max-err"
+                Ok o  -> optTextText o
+
 -- The name of an optional user, or "none" for an empty match.
 fn optUserName (o: Option User) -> Text =
     match o
@@ -1068,6 +1137,12 @@ fn postgres_adapter_reads_a_real_table() {
          io:format(\"minAllAges=~s~n\",[{module}:minAllAges()]), \
          io:format(\"maxName=~s~n\",[{module}:maxName()]), \
          io:format(\"sumNobody=~s~n\",[{module}:sumNobody()]), \
+         io:format(\"joinSumRightId=~s~n\",[{module}:joinSumRightId()]), \
+         io:format(\"joinSumLeftAge=~s~n\",[{module}:joinSumLeftAge()]), \
+         io:format(\"joinMaxRightTitle=~s~n\",[{module}:joinMaxRightTitle()]), \
+         io:format(\"joinAvgRightId=~s~n\",[{module}:joinAvgRightId()]), \
+         io:format(\"leftJoinSumLeftAge=~s~n\",[{module}:leftJoinSumLeftAge()]), \
+         io:format(\"leftJoinMaxRightTitle=~s~n\",[{module}:leftJoinMaxRightTitle()]), \
          io:format(\"singleOne=~s~n\",[{module}:singleOne()]), \
          io:format(\"singleNone=~s~n\",[{module}:singleNone()]), \
          io:format(\"singleMany=~s~n\",[{module}:singleMany()]), \
@@ -1205,7 +1280,31 @@ fn postgres_adapter_reads_a_real_table() {
         ),
         (
             "sumNobody=none",
-            "an aggregate over an empty match is SQL NULL, decoded to None",
+            "an aggregate over an empty match is NULL, decoded to None",
+        ),
+        (
+            "joinSumRightId=21",
+            "pg compiles SUM(r.id) over l JOIN r, qualifying the column to the right alias (10+11)",
+        ),
+        (
+            "joinSumLeftAge=55",
+            "pg qualifies a left-column aggregate to the l alias over the inner join (30+25)",
+        ),
+        (
+            "joinMaxRightTitle=world",
+            "pg folds MAX(r.title), a right text column, over the join",
+        ),
+        (
+            "joinAvgRightId=10.5",
+            "pg casts AVG(r.id) to float8 over the join ((10+11)/2)",
+        ),
+        (
+            "leftJoinSumLeftAge=73",
+            "pg compiles a LEFT JOIN whose left-column aggregate counts the unmatched ada (18+30+25), unlike the inner join's 55",
+        ),
+        (
+            "leftJoinMaxRightTitle=world",
+            "pg's LEFT JOIN right-column aggregate skips the unmatched ada's NULL with no sentinel",
         ),
         ("singleOne=lin", "single decodes the lone matching row (id 2)"),
         (

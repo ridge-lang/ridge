@@ -409,6 +409,8 @@ const BASELINE_EXPORTS: &[(&str, &[&str])] = &[
             "joinSelect",
             "leftJoin",
             "leftJoinSelect",
+            "aggregateJoin",
+            "aggregateLeftJoin",
             "groupSummarize",
             "runPlan",
             "MemAdapter",
@@ -480,9 +482,13 @@ const BASELINE_EXPORTS: &[(&str, &[&str])] = &[
             "select",
             "selectFirst",
             "applySet",
-            // Scalar aggregates pushed down to the backend over the query's
-            // filter: sum/average/min/max of a quoted column, each `None` over an
-            // empty match (a SQL aggregate of zero rows is NULL).
+            // Scalar aggregates are the methods of the `Aggregable q p | q -> p`
+            // class, pushed down to the backend over the query's (or join's) filter:
+            // sum/average/min/max of a quoted column, each `None` over an empty match
+            // (a SQL aggregate of zero rows is NULL). One set of verbs folds a query
+            // column (a one-row accessor) or a join column from either side (a
+            // two-row accessor).
+            "Aggregable",
             "sumOf",
             "avgOf",
             "minOf",

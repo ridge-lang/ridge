@@ -285,6 +285,25 @@ pub class Projectable q p | q -> p =
 pub class Orderable q p | q -> p =
     orderBy (dir: SortOrder) (key: Quote p) (x: q) -> q
 
+-- One set of scalar aggregates for a query and a join. `sumOf`/`minOf`/`maxOf`
+-- fold the column an accessor names — a one-row accessor over a query
+-- (`fn (u: User) -> u.age`), a two-row one over a join naming a column from
+-- either side (`fn (u: User) (p: Post) -> p.amount` folds the right table) — and
+-- answer that column's own type wrapped in `Option`, with `None` over an empty
+-- match (a SQL aggregate of zero rows is NULL). `Ret p` is the column type — the
+-- accessor's return — so a `Int` column answers `Option Int` and a `Text` column
+-- `Option Text`. `avgOf` is always `Option Float`, since a SQL average is
+-- fractional even over an integer column. The class ties the accessor's arity to
+-- the receiver through the functional dependency `q -> p`, so one set of verbs
+-- serves a query and a join alike and a wrong-arity accessor is a compile-time
+-- error. Ordering and paging do not bound an aggregate — only the filter (and,
+-- on a join, the join condition) narrows the folded rows.
+pub class Aggregable q p | q -> p =
+    sumOf (col: Quote p) (x: q) -> Result (Option (Ret p)) Error
+    avgOf (col: Quote p) (x: q) -> Result (Option Float)   Error
+    minOf (col: Quote p) (x: q) -> Result (Option (Ret p)) Error
+    maxOf (col: Quote p) (x: q) -> Result (Option (Ret p)) Error
+
 -- Keep at most `n` rows.
 pub fn limit (n: Int) (q: Query e a) -> Query e a =
     Query { repo = q.repo, pred = q.pred, orders = q.orders, lim = n, off = q.off, dist = q.dist, plan = q.plan }
@@ -465,42 +484,13 @@ fn decodeScalar (v: Option SqlValue) -> Result (Option w) Error where SqlType w 
                 Err e -> Err e
                 Ok x  -> Ok (Some x)
 
--- Sum the column a quoted accessor names over the rows the query selects; `None`
--- when no row matches (an empty sum is SQL NULL, not zero — reach for
--- `Option.withDefault 0` for the LINQ-style zero). The column type `n` flows from
--- the accessor and the scalar rides its `SqlType` codec, so a `Int` column answers
--- `Option Int` and a `Float` column `Option Float`. Only the filter bounds the
--- rows — ordering and paging do not constrain an aggregate — so this is the
--- pipeline form of a `SELECT SUM(col) … WHERE` push-down.
-pub fn sumOf (col: Quote (Map Text SqlValue -> n)) (q: Query e a) -> Result (Option n) Error where Adapter a, SqlType n =
-    match aggregate q.repo.adapter q.repo.table q.pred "SUM" (aggColumn col)
-        Err err -> Err err
-        Ok v    -> decodeScalar v
-
--- The average of the column a quoted accessor names over the rows the query
--- selects, as a `Float`; `None` when no row matches. SQL `AVG` is fractional even
--- over an integer column, so the result is always `Option Float`, independent of
--- the column's own type.
-pub fn avgOf (col: Quote (Map Text SqlValue -> n)) (q: Query e a) -> Result (Option Float) Error where Adapter a =
-    match aggregate q.repo.adapter q.repo.table q.pred "AVG" (aggColumn col)
-        Err err -> Err err
-        Ok v    -> decodeScalar v
-
--- The least value of the column a quoted accessor names over the rows the query
--- selects; `None` when no row matches. `MIN` keeps the column's own type, so it
--- answers `Option v` for a column of type `v` (a number or text).
-pub fn minOf (col: Quote (Map Text SqlValue -> v)) (q: Query e a) -> Result (Option v) Error where Adapter a, SqlType v =
-    match aggregate q.repo.adapter q.repo.table q.pred "MIN" (aggColumn col)
-        Err err -> Err err
-        Ok x    -> decodeScalar x
-
--- The greatest value of the column a quoted accessor names over the rows the
--- query selects; `None` when no row matches. `MAX` keeps the column's own type,
--- so it answers `Option v` for a column of type `v` (a number or text).
-pub fn maxOf (col: Quote (Map Text SqlValue -> v)) (q: Query e a) -> Result (Option v) Error where Adapter a, SqlType v =
-    match aggregate q.repo.adapter q.repo.table q.pred "MAX" (aggColumn col)
-        Err err -> Err err
-        Ok x    -> decodeScalar x
+-- The scalar aggregates `sumOf`/`avgOf`/`minOf`/`maxOf` are the methods of the
+-- `Aggregable q p | q -> p` class (declared above), so one set of verbs folds a
+-- column over a query (a one-row accessor) and over a join (a two-row accessor
+-- naming a column from either side). The instances are defined below, next to the
+-- `Refinable`/`Projectable`/`Orderable` ones; each runs the `aggregate` seam (for
+-- a query) or the `aggregateJoin`/`aggregateLeftJoin` seam (for a join) and
+-- decodes the scalar through `decodeScalar`.
 
 -- The group handle the grouped-aggregate quotes range over. It is never built by
 -- user code: it only names the parameter of a `having`/`summarize` lambda so the
@@ -693,6 +683,79 @@ instance Orderable (LeftJoin e f a) (fn e (Option f) -> k) =
     orderBy (dir: SortOrder) (key: Quote (fn e (Option f) -> k)) (x: LeftJoin e f a) -> LeftJoin e f a =
         LeftJoin { left = x.left, right = x.right, cond = x.cond, where2 = x.where2, orders = snoc x.orders (orderEntry2 dir key) }
 
+-- A query's scalar aggregates: fold the column the one-row accessor names over
+-- the rows the query's filter selects, through the `aggregate` seam push-down.
+-- The behaviour the single-receiver `sumOf`/`avgOf`/`minOf`/`maxOf` had before
+-- they unified with the join form. `sumOf`/`minOf`/`maxOf` keep the column's own
+-- type (`Ret p` = `n`); `avgOf` is always a `Float`.
+instance Aggregable (Query e a) (fn e -> n) where Adapter a, SqlType n =
+    sumOf (col: Quote (fn e -> n)) (x: Query e a) -> Result (Option n) Error =
+        match aggregate x.repo.adapter x.repo.table x.pred "SUM" (aggColumn col)
+            Err err -> Err err
+            Ok v    -> decodeScalar v
+    avgOf (col: Quote (fn e -> n)) (x: Query e a) -> Result (Option Float) Error =
+        match aggregate x.repo.adapter x.repo.table x.pred "AVG" (aggColumn col)
+            Err err -> Err err
+            Ok v    -> decodeScalar v
+    minOf (col: Quote (fn e -> n)) (x: Query e a) -> Result (Option n) Error =
+        match aggregate x.repo.adapter x.repo.table x.pred "MIN" (aggColumn col)
+            Err err -> Err err
+            Ok v    -> decodeScalar v
+    maxOf (col: Quote (fn e -> n)) (x: Query e a) -> Result (Option n) Error =
+        match aggregate x.repo.adapter x.repo.table x.pred "MAX" (aggColumn col)
+            Err err -> Err err
+            Ok v    -> decodeScalar v
+
+-- An inner join's scalar aggregates: fold a column the two-row accessor names —
+-- from either side (`fn (u: User) (p: Post) -> p.amount` folds the right table) —
+-- over the joined rows the condition and post-join filter keep, through the
+-- `aggregateJoin` seam. `aggSide` reads which side the column belongs to so the
+-- seam qualifies it to the right table alias; `aggColumn` reads its name.
+instance Aggregable (Join e f a) (fn e f -> n) where Adapter a, SqlType n =
+    sumOf (col: Quote (fn e f -> n)) (x: Join e f a) -> Result (Option n) Error =
+        match aggregateJoin x.left.repo.adapter x.left.repo.table x.right.table x.cond x.where2 x.left.pred "SUM" (aggColumn col) (aggSide col)
+            Err err -> Err err
+            Ok v    -> decodeScalar v
+    avgOf (col: Quote (fn e f -> n)) (x: Join e f a) -> Result (Option Float) Error =
+        match aggregateJoin x.left.repo.adapter x.left.repo.table x.right.table x.cond x.where2 x.left.pred "AVG" (aggColumn col) (aggSide col)
+            Err err -> Err err
+            Ok v    -> decodeScalar v
+    minOf (col: Quote (fn e f -> n)) (x: Join e f a) -> Result (Option n) Error =
+        match aggregateJoin x.left.repo.adapter x.left.repo.table x.right.table x.cond x.where2 x.left.pred "MIN" (aggColumn col) (aggSide col)
+            Err err -> Err err
+            Ok v    -> decodeScalar v
+    maxOf (col: Quote (fn e f -> n)) (x: Join e f a) -> Result (Option n) Error =
+        match aggregateJoin x.left.repo.adapter x.left.repo.table x.right.table x.cond x.where2 x.left.pred "MAX" (aggColumn col) (aggSide col)
+            Err err -> Err err
+            Ok v    -> decodeScalar v
+
+-- A left join's scalar aggregates: the two-row dual over a `LeftJoin`, run through
+-- the `aggregateLeftJoin` seam. Unlike a left join's `select`/`orderBy` — whose
+-- per-row accessor reads the right side as `Option` because an unmatched row has
+-- no right value — an aggregate folds values rather than producing one per row, so
+-- it reads the right side as the plain entity `f` and answers the column's own
+-- type. A right-column fold skips the unmatched left rows (their right column is
+-- NULL, which a SQL aggregate ignores); a left-column fold still counts them. The
+-- nullability lives in the result (`Option n` is `None` over an empty fold), not
+-- in the accessor.
+instance Aggregable (LeftJoin e f a) (fn e f -> n) where Adapter a, SqlType n =
+    sumOf (col: Quote (fn e f -> n)) (x: LeftJoin e f a) -> Result (Option n) Error =
+        match aggregateLeftJoin x.left.repo.adapter x.left.repo.table x.right.table x.cond x.where2 x.left.pred "SUM" (aggColumn col) (aggSide col)
+            Err err -> Err err
+            Ok v    -> decodeScalar v
+    avgOf (col: Quote (fn e f -> n)) (x: LeftJoin e f a) -> Result (Option Float) Error =
+        match aggregateLeftJoin x.left.repo.adapter x.left.repo.table x.right.table x.cond x.where2 x.left.pred "AVG" (aggColumn col) (aggSide col)
+            Err err -> Err err
+            Ok v    -> decodeScalar v
+    minOf (col: Quote (fn e f -> n)) (x: LeftJoin e f a) -> Result (Option n) Error =
+        match aggregateLeftJoin x.left.repo.adapter x.left.repo.table x.right.table x.cond x.where2 x.left.pred "MIN" (aggColumn col) (aggSide col)
+            Err err -> Err err
+            Ok v    -> decodeScalar v
+    maxOf (col: Quote (fn e f -> n)) (x: LeftJoin e f a) -> Result (Option n) Error =
+        match aggregateLeftJoin x.left.repo.adapter x.left.repo.table x.right.table x.cond x.where2 x.left.pred "MAX" (aggColumn col) (aggSide col)
+            Err err -> Err err
+            Ok v    -> decodeScalar v
+
 -- Decode a list of `(left, right)` row pairs into entity pairs, stopping at the
 -- first decode failure on either side.
 fn decodePairs (pairs: List (Map Text SqlValue, Map Text SqlValue)) -> Result (List (e, f)) Error where Row e, Row f =
@@ -788,12 +851,25 @@ fn orderEntry2 (dir: SortOrder) (key: Quote p) -> (Bool, Bool, Text) =
         _       -> (ascending dir, false, "")
 
 -- The column an aggregate accessor names. Like an ordering key, the accessor
--- quote captures a single column (a `QCol`); anything else contributes an empty
--- column name.
-fn aggColumn (col: Quote (Map Text SqlValue -> v)) -> Text =
+-- quote captures a single column — a `QCol` on the left/single table or a `QColR`
+-- on a join's right table — and anything else contributes an empty column name.
+-- Generic over the quote's function type (like `orderColumn`) so it reads a
+-- query's `fn e -> n` accessor and a join's `fn e f -> n` accessor alike — only
+-- the captured `tree` matters.
+fn aggColumn (col: Quote p) -> Text =
     match col.tree
-        QCol c -> c
-        _      -> ""
+        QCol c  -> c
+        QColR c -> c
+        _       -> ""
+
+-- Which side of a join an aggregate accessor names: a `QColR` tree is the right
+-- table, anything else the left (or single) table. The seam qualifies the column
+-- to the right alias when this is true — the aggregate dual of how `orderEntry2`
+-- tags an ordering key's side.
+fn aggSide (col: Quote p) -> Bool =
+    match col.tree
+        QColR _ -> true
+        _       -> false
 
 -- An always-true `HAVING` tree — the group default before `having` narrows it. A
 -- `Quote`/`QExpr` literal cannot be written in Ridge source, so the always-true

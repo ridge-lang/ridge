@@ -1124,6 +1124,62 @@ pub fn register_stdlib_classes(ct: &mut ClassTable) {
             to: smallvec![1],
         }],
     );
+
+    // `Aggregable` from std.repo — the unified scalar aggregates (`sumOf`/`avgOf`/
+    // `minOf`/`maxOf`) over a query or a join. Like `Projectable`: two parameters
+    // `q p` with the functional dependency `q -> p` (the receiver fixes the
+    // accessor's arity), the four method schemes seeded directly (see
+    // `seed_aggregable_scheme` in lib.rs) with no AST types, and the three
+    // instances (carrying a `where Adapter a, SqlType n` context) registered in
+    // `register_stdlib_instances`. Each method takes the accessor quote and the
+    // receiver, so its sig arity is 2.
+    let aggregable_id = ct.intern("Aggregable");
+    ct.insert_with_id(
+        aggregable_id,
+        ClassInfo {
+            name: "Aggregable".to_string(),
+            arity: 2,
+            method_sigs: vec![
+                MethodSig {
+                    name: "sumOf".to_string(),
+                    arity: 2,
+                    ast_param_types: vec![],
+                    ast_ret_type: None,
+                    class_ty_vars: Vec::new(),
+                },
+                MethodSig {
+                    name: "avgOf".to_string(),
+                    arity: 2,
+                    ast_param_types: vec![],
+                    ast_ret_type: None,
+                    class_ty_vars: Vec::new(),
+                },
+                MethodSig {
+                    name: "minOf".to_string(),
+                    arity: 2,
+                    ast_param_types: vec![],
+                    ast_ret_type: None,
+                    class_ty_vars: Vec::new(),
+                },
+                MethodSig {
+                    name: "maxOf".to_string(),
+                    arity: 2,
+                    ast_param_types: vec![],
+                    ast_ret_type: None,
+                    class_ty_vars: Vec::new(),
+                },
+            ],
+            superclasses: vec![],
+            def_module: None,
+        },
+    );
+    ct.set_fundeps(
+        aggregable_id,
+        vec![FunDepIdx {
+            from: smallvec![0],
+            to: smallvec![1],
+        }],
+    );
 }
 
 /// Registers the base-type instances of stdlib-defined classes into `env`.
@@ -1386,6 +1442,57 @@ pub fn register_stdlib_instances(
                 env.instances
                     .entry((orderable, smallvec![left_join, fn2]))
                     .or_insert_with(orderable_inst);
+            }
+        }
+    }
+
+    // `Aggregable (Query e a) (fn e -> n)`, `Aggregable (Join e f a) (fn e f -> n)`,
+    // and the same over `LeftJoin` (its right side read as `Option f`) — the
+    // unified scalar-aggregate instances from std.repo. Keyed like `Projectable`
+    // (receiver tycon + accessor-arity tycon) and carrying the same `where Adapter
+    // a, SqlType n` context: `Adapter a` reaches the rows through the seam and
+    // `SqlType n` decodes the folded scalar (`n` = the accessor's column type =
+    // `Ret p`). The context variables sit at the same flattened head positions as
+    // `Projectable`'s — Query: a@1, n@3; a join's extra right entity shifts both to
+    // a@2, n@5. `avgOf` ignores the `SqlType n` dict (it decodes a fixed `Float`),
+    // but the instance still carries it for `sumOf`/`minOf`/`maxOf`.
+    if let (Some(aggregable), Some(adapter), Some(sqltype)) = (
+        ct.id_by_name("Aggregable"),
+        ct.id_by_name("Adapter"),
+        ct.id_by_name("SqlType"),
+    ) {
+        if let (Some(fn1), Some(fn2)) = (ridge_types::fn_tycon_id(1), ridge_types::fn_tycon_id(2)) {
+            let ctx_constraints = vec![
+                ridge_types::Constraint::single(adapter, ridge_types::TyVid(0)),
+                ridge_types::Constraint::single(sqltype, ridge_types::TyVid(0)),
+            ];
+            let aggregable_inst = |positions: Vec<usize>| InstanceInfo {
+                def_module: None,
+                methods: vec![
+                    ("sumOf".to_string(), String::new()),
+                    ("avgOf".to_string(), String::new()),
+                    ("minOf".to_string(), String::new()),
+                    ("maxOf".to_string(), String::new()),
+                ],
+                ctx_constraints: ctx_constraints.clone(),
+                head_var_positions: positions,
+                origin: InstanceOrigin::Explicit,
+                span: ds,
+            };
+            if let Some(&query) = reconciled_tycon_names.get("Query") {
+                env.instances
+                    .entry((aggregable, smallvec![query, fn1]))
+                    .or_insert_with(|| aggregable_inst(vec![1, 3]));
+            }
+            if let Some(&join) = reconciled_tycon_names.get("Join") {
+                env.instances
+                    .entry((aggregable, smallvec![join, fn2]))
+                    .or_insert_with(|| aggregable_inst(vec![2, 5]));
+            }
+            if let Some(&left_join) = reconciled_tycon_names.get("LeftJoin") {
+                env.instances
+                    .entry((aggregable, smallvec![left_join, fn2]))
+                    .or_insert_with(|| aggregable_inst(vec![2, 5]));
             }
         }
     }

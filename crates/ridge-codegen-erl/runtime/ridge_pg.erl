@@ -45,6 +45,8 @@
     pg_join_select/10,
     pg_left_join/9,
     pg_left_join_select/10,
+    pg_aggregate_join/9,
+    pg_aggregate_left_join/9,
     pg_group_summarize/6,
     pg_run_plan/2,
     pg_close/1
@@ -177,6 +179,22 @@ pg_left_join(Id, LeftTable, RightTable, Cond, Where2, Pred, Orders, Lim, Off) ->
 %% aliases. Result (List Row) Error.
 pg_left_join_select(Id, LeftTable, RightTable, Cond, Where2, Pred, Orders, Lim, Off, Proj) ->
     pg_call(Id, {left_join_select, LeftTable, RightTable, Cond, Where2, Pred, Orders, Lim, Off, Proj}).
+
+%% pg_aggregate_join/9 — a scalar aggregate over an inner join, compiled to
+%% `SELECT func(<side>.col) FROM l JOIN r ON <cond> WHERE <pred> AND <where2>`.
+%% IsRight qualifies the column to the `r` alias (true) or `l` alias (false); Func
+%% is whitelisted to the four aggregate keywords. The single scalar comes back as
+%% `{some, SqlValue}`, or `none` when the aggregate is NULL. Result (Option
+%% SqlValue) Error.
+pg_aggregate_join(Id, LeftTable, RightTable, Cond, Where2, Pred, Func, Column, IsRight) ->
+    pg_call(Id, {aggregate_join, LeftTable, RightTable, Cond, Where2, Pred, Func, Column, IsRight}).
+
+%% pg_aggregate_left_join/9 — as pg_aggregate_join, compiled to a `LEFT JOIN`: a
+%% right-column aggregate skips the unmatched left rows (their right columns are
+%% NULL) while a left-column one still folds them in. No matched sentinel is needed
+%% — the aggregate ignores NULL on its own.
+pg_aggregate_left_join(Id, LeftTable, RightTable, Cond, Where2, Pred, Func, Column, IsRight) ->
+    pg_call(Id, {aggregate_left_join, LeftTable, RightTable, Cond, Where2, Pred, Func, Column, IsRight}).
 
 %% pg_close/1 — close every connection in the pool and forget the handle.
 %% Result Unit Error.
@@ -604,6 +622,28 @@ run_verb(Conn, {left_join_select, LeftTable, RightTable, Cond, Where2, Pred, Ord
            " WHERE (", WhereFrag, ") AND (", W2Frag, ")",
            order_by_clause_join(Orders), limit_clause(Lim), offset_clause(Off)],
     run_query(Conn, Sql, lists:reverse(RevB2));
+run_verb(Conn, {aggregate_join, LeftTable, RightTable, Cond, Where2, Pred, Func, Column, IsRight}) ->
+    {OnFrag, RevB1, N1} = cwj(Cond, 1, []),
+    {W2Frag, RevBw, Nw} = cwj(Where2, N1, RevB1),
+    {WhereFrag, RevB2, _N2} = cwj(Pred, Nw, RevBw),
+    %% No ordering or paging — an aggregate folds every joined row. `Where2` runs
+    %% in the post-join WHERE exactly as in `join`, so a join `filter` narrows the
+    %% folded rows.
+    Sql = ["SELECT ", agg_expr_join(Func, IsRight, Column), " FROM ", quote_ident(LeftTable),
+           " AS l JOIN ", quote_ident(RightTable), " AS r ON ", OnFrag,
+           " WHERE (", WhereFrag, ") AND (", W2Frag, ")"],
+    agg_result(run_query(Conn, Sql, lists:reverse(RevB2)));
+run_verb(Conn, {aggregate_left_join, LeftTable, RightTable, Cond, Where2, Pred, Func, Column, IsRight}) ->
+    {OnFrag, RevB1, N1} = cwj(Cond, 1, []),
+    {W2Frag, RevBw, Nw} = cwj(Where2, N1, RevB1),
+    {WhereFrag, RevB2, _N2} = cwj(Pred, Nw, RevBw),
+    %% A plain `LEFT JOIN`: no `__ridge_matched` sentinel is needed because the
+    %% aggregate ignores NULL, so an unmatched left row's NULL right column simply
+    %% drops out of a right-side fold while its left columns still count.
+    Sql = ["SELECT ", agg_expr_join(Func, IsRight, Column), " FROM ", quote_ident(LeftTable),
+           " AS l LEFT JOIN ", quote_ident(RightTable), " AS r ON ", OnFrag,
+           " WHERE (", WhereFrag, ") AND (", W2Frag, ")"],
+    agg_result(run_query(Conn, Sql, lists:reverse(RevB2)));
 run_verb(Conn, {count_where, Table, Tree}) ->
     do_count(Conn, Table, Tree);
 run_verb(Conn, {aggregate, Table, Tree, Func, Column}) ->
@@ -674,16 +714,20 @@ do_aggregate(Conn, Table, Func, Column, Tree) ->
     {Where, Binds} = compile_where(Tree),
     Sql = ["SELECT ", agg_expr(Func, Column), " FROM ", quote_ident(Table),
            " WHERE ", Where],
-    case run_query(Conn, Sql, Binds) of
-        {ok, [Row | _]} ->
-            case maps:values(Row) of
-                ['SqlNull' | _] -> {ok, none};
-                [V | _]         -> {ok, {some, V}};
-                []              -> {ok, none}
-            end;
-        {ok, []}   -> {ok, none};
-        {error, E} -> {error, E}
-    end.
+    agg_result(run_query(Conn, Sql, Binds)).
+
+%% Read the single scalar an aggregate SELECT returns, positionally (the result
+%% column's name is the aggregate keyword, which varies). An aggregate always
+%% returns one row; over zero matching rows its single column is NULL, decoded to
+%% 'SqlNull' and reported as `none`. Shared by the single-table and join aggregates.
+agg_result({ok, [Row | _]}) ->
+    case maps:values(Row) of
+        ['SqlNull' | _] -> {ok, none};
+        [V | _]         -> {ok, {some, V}};
+        []              -> {ok, none}
+    end;
+agg_result({ok, []})   -> {ok, none};
+agg_result({error, E}) -> {error, E}.
 
 %% The aggregate select expression. The function name is matched against the four
 %% supported keywords (never spliced from the caller's bytes); an unknown keyword
@@ -695,6 +739,19 @@ agg_expr(<<"SUM">>, Column) -> ["SUM(", quote_ident(Column), ")"];
 agg_expr(<<"MIN">>, Column) -> ["MIN(", quote_ident(Column), ")"];
 agg_expr(<<"MAX">>, Column) -> ["MAX(", quote_ident(Column), ")"];
 agg_expr(_Other, Column)    -> ["COUNT(", quote_ident(Column), ")"].
+
+%% The join form of `agg_expr`: the column qualified to the `l` (left) or `r`
+%% (right) alias by IsRight, wrapped in the same whitelisted aggregate keyword.
+%% AVG is cast to float8 so an integer column's average crosses the wire as a
+%% float, matching the `Float` the repository's `avgOf` decodes.
+agg_expr_join(<<"AVG">>, IsRight, Column) -> ["AVG(", agg_col_join(IsRight, Column), ")::float8"];
+agg_expr_join(<<"SUM">>, IsRight, Column) -> ["SUM(", agg_col_join(IsRight, Column), ")"];
+agg_expr_join(<<"MIN">>, IsRight, Column) -> ["MIN(", agg_col_join(IsRight, Column), ")"];
+agg_expr_join(<<"MAX">>, IsRight, Column) -> ["MAX(", agg_col_join(IsRight, Column), ")"];
+agg_expr_join(_Other, IsRight, Column)    -> ["COUNT(", agg_col_join(IsRight, Column), ")"].
+
+agg_col_join(true,  Column) -> qcol_right(Column);
+agg_col_join(false, Column) -> qcol_left(Column).
 
 %% SELECT <aggregates> FROM Table WHERE <Tree> GROUP BY <KeyCol> [HAVING <Having>]
 %% ORDER BY <KeyCol>. The WHERE binds take placeholders $1..$K; the HAVING binds

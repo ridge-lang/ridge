@@ -35,6 +35,7 @@
     mem_count_join/6, mem_count_left_join/6,
     mem_group_summarize/6,
     mem_group_summarize_join/10, mem_group_summarize_left_join/10,
+    mem_begin/1, mem_commit/1, mem_rollback/1,
     plan_scan/6, plan_combine/3, plan_refine/6, mem_run_plan/2,
     quote_keep_all/1, quote_and/2,
     mk_error/2,
@@ -993,6 +994,19 @@ mem_group_summarize_join(Id, LeftTable, RightTable, Cond, Where2, Pred, KeyCol, 
 mem_group_summarize_left_join(Id, LeftTable, RightTable, Cond, Where2, Pred, KeyCol, KeySide, Cols, Having) ->
     mem_call({group_summarize_left_join, Id, LeftTable, RightTable, Cond, Where2, Pred, KeyCol, KeySide, Cols, Having}).
 
+%% mem_begin/1 — open a transaction on store Id: snapshot its tables onto a
+%% per-store stack the keeper holds. A nested begin snapshots again (a savepoint).
+%% Result Unit Error.
+mem_begin(Id) -> mem_call({begin_tx, Id}).
+
+%% mem_commit/1 — commit the innermost open transaction on store Id: drop its
+%% snapshot, keeping the current rows. Result Unit Error.
+mem_commit(Id) -> mem_call({commit_tx, Id}).
+
+%% mem_rollback/1 — roll back the innermost open transaction on store Id: restore
+%% the tables to the snapshot taken at the matching begin. Result Unit Error.
+mem_rollback(Id) -> mem_call({rollback_tx, Id}).
+
 %% --- query plan builders ---
 %% A query plan is a small tree the set-operation terminals run. The three builders
 %% assemble it backend-neutrally (no store access); mem_run_plan/pg_run_plan
@@ -1115,8 +1129,50 @@ mem_keeper_init() ->
         _    -> ok
     end.
 
+%% The slice of the keeper State belonging to store Id — its {Id, Table} entries.
+%% A transaction snapshots and restores this slice, leaving other stores untouched.
+mem_slice(Id, State) ->
+    maps:filter(fun(K, _) -> mem_key_of(Id, K) end, State).
+
+%% The transaction snapshot stack for store Id (newest first); [] when none open.
+%% Kept in the keeper's own process dictionary, one stack per store, so nesting a
+%% begin pushes another snapshot (a savepoint) without disturbing other stores.
+mem_tx_stack(Id) ->
+    case get({mem_tx, Id}) of
+        undefined -> [];
+        Stack     -> Stack
+    end.
+
+%% Whether map key K is a {Id, Table} entry of store Id (an atom bookkeeping key
+%% never matches, so the snapshot/restore ignores non-table state).
+mem_key_of(Id, {I, _Table}) -> I =:= Id;
+mem_key_of(_Id, _K)         -> false.
+
 mem_keeper_loop(State) ->
     receive
+        {{begin_tx, Id}, From, Ref} ->
+            put({mem_tx, Id}, [mem_slice(Id, State) | mem_tx_stack(Id)]),
+            From ! {Ref, {ok, ok}},
+            mem_keeper_loop(State);
+        {{commit_tx, Id}, From, Ref} ->
+            case mem_tx_stack(Id) of
+                [_Top | Rest] -> put({mem_tx, Id}, Rest);
+                _             -> ok
+            end,
+            From ! {Ref, {ok, ok}},
+            mem_keeper_loop(State);
+        {{rollback_tx, Id}, From, Ref} ->
+            State1 =
+                case mem_tx_stack(Id) of
+                    [Snap | Rest] ->
+                        put({mem_tx, Id}, Rest),
+                        Without = maps:filter(fun(K, _) -> not mem_key_of(Id, K) end, State),
+                        maps:merge(Without, Snap);
+                    _ ->
+                        State
+                end,
+            From ! {Ref, {ok, ok}},
+            mem_keeper_loop(State1);
         {{insert, Id, Table, Row}, From, Ref} ->
             Key  = {Id, Table},
             Rows = maps:get(Key, State, []),

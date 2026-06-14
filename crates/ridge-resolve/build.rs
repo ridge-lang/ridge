@@ -417,6 +417,12 @@ const BASELINE_EXPORTS: &[(&str, &[&str])] = &[
             "groupSummarizeJoin",
             "groupSummarizeLeftJoin",
             "runPlan",
+            // Transaction control: open, commit, and roll back a transaction
+            // (nesting opens a savepoint). The `Repo.transaction` combinator runs
+            // these around a body.
+            "begin",
+            "commit",
+            "rollback",
             "MemAdapter",
             "memAdapter",
             // The Postgres adapter: the opaque connection handle, its config
@@ -450,6 +456,9 @@ const BASELINE_EXPORTS: &[(&str, &[&str])] = &[
             "Setter",
             "set",
             "setWhere",
+            // Run a body inside a transaction on the connection: commit on `Ok`,
+            // roll back on `Err`. Nesting opens a savepoint.
+            "transaction",
             // The query builder: the opaque `Query e a` and its pipeline verbs,
             // ending in the `toList`/`first` terminals and the `selectList`/
             // `selectFirst` projections.

@@ -221,6 +221,36 @@ fn settersToMap (setters: List (Setter e)) -> Map Text SqlValue =
 pub fn setWhere (setters: List (Setter e)) (pred: Quote (Map Text SqlValue -> Bool)) (r: Repo e a) -> Result Int Error where Adapter a =
     updateRows r.adapter r.table (settersToMap setters) pred
 
+-- Run `body` inside a database transaction on the connection. The body receives
+-- the same connection, so every repository built on it (`repo conn "..."`) runs
+-- within the transaction. It commits and returns the value when the body answers
+-- `Ok`, and rolls back — leaving the store as it was — when the body answers
+-- `Err`, so a multi-step write is all-or-nothing:
+--   Repo.transaction conn (fn (tx) ->
+--     let users: Repo User Postgres = repo tx "users"
+--     match Repo.insert alice users
+--       Err e -> Err e
+--       Ok _  -> Repo.insert bob users)
+-- Here both inserts land together or, if the second fails, neither does. A
+-- `transaction` nested inside another opens a savepoint: an inner `Err` rolls
+-- back only the inner work and the outer transaction carries on, so a failable
+-- sub-step can be attempted without abandoning the whole transaction. A `commit`
+-- or `rollback` that itself fails (a dropped connection, say) surfaces as the
+-- result's `Err`; otherwise a rolled-back transaction returns the body's own error.
+pub fn transaction (conn: a) (body: fn a -> Result r Error) -> Result r Error where Adapter a =
+    match begin conn
+        Err e -> Err e
+        Ok _  ->
+            match body conn
+                Ok value ->
+                    match commit conn
+                        Ok _  -> Ok value
+                        Err e -> Err e
+                Err e ->
+                    match rollback conn
+                        Ok _   -> Err e
+                        Err e2 -> Err e2
+
 -- A query under construction over a repository: a filter, an ordering, a page
 -- (offset and limit), a `distinct` flag, and an optional set-operation `plan`
 -- accumulated before a terminal runs it. Opaque and threaded through the builder,

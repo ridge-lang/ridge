@@ -1258,6 +1258,80 @@ pub fn register_stdlib_classes(ct: &mut ClassTable) {
             def_module: None,
         },
     );
+
+    // `Countable` from std.repo — the unified size-and-presence terminals
+    // (`count`/`exists`) over a query, an inner join, or a left join. A single
+    // parameter, the receiver `q`, with no functional dependency (like `Pageable`/
+    // `Decodable`): these terminals take no quoted argument, so the receiver alone
+    // pins the instance — there is no predicate whose arity a dependency would fix.
+    // The two method schemes are seeded directly (see `seed_countable_scheme` in
+    // lib.rs) with no AST types, and the three instances (each carrying a `where
+    // Adapter a` context to reach the store) are registered in
+    // `register_stdlib_instances`. Each method takes only the receiver, so its sig
+    // arity is 1.
+    let countable_id = ct.intern("Countable");
+    ct.insert_with_id(
+        countable_id,
+        ClassInfo {
+            name: "Countable".to_string(),
+            arity: 1,
+            method_sigs: vec![
+                MethodSig {
+                    name: "count".to_string(),
+                    arity: 1,
+                    ast_param_types: vec![],
+                    ast_ret_type: None,
+                    class_ty_vars: Vec::new(),
+                },
+                MethodSig {
+                    name: "exists".to_string(),
+                    arity: 1,
+                    ast_param_types: vec![],
+                    ast_ret_type: None,
+                    class_ty_vars: Vec::new(),
+                },
+            ],
+            superclasses: vec![],
+            def_module: None,
+        },
+    );
+
+    // `Every` from std.repo — the unified universal-predicate terminal (`every`,
+    // LINQ's `All`) over a query, an inner join, or a left join. Two parameters `q p`
+    // with the functional dependency `q -> p`, exactly like `Refinable`: the receiver
+    // fixes the predicate's arity (`Fn1` for a query, `Fn2` for a join), pinned from
+    // the lambda at the call site. It is its own class rather than a method of
+    // `Countable` because it carries the predicate the dependency keys on, where
+    // `count`/`exists` take no argument — a determined parameter cannot be resolved
+    // from a receiver alone when no argument pins it. The method scheme is seeded
+    // directly (see `seed_every_scheme` in lib.rs) with no AST types, and the three
+    // instances (each carrying a `where Adapter a` context) are registered in
+    // `register_stdlib_instances`. `every` takes the predicate quote and the receiver
+    // (sig arity 2).
+    let every_id = ct.intern("Every");
+    ct.insert_with_id(
+        every_id,
+        ClassInfo {
+            name: "Every".to_string(),
+            arity: 2,
+            method_sigs: vec![MethodSig {
+                name: "every".to_string(),
+                arity: 2,
+                ast_param_types: vec![],
+                ast_ret_type: None,
+                class_ty_vars: Vec::new(),
+            }],
+            superclasses: vec![],
+            def_module: None,
+        },
+    );
+    ct.set_fundeps(
+        every_id,
+        vec![FunDepIdx {
+            from: smallvec![0],
+            to: smallvec![1],
+        }],
+    );
 }
 
 /// Registers the base-type instances of stdlib-defined classes into `env`.
@@ -1684,6 +1758,86 @@ pub fn register_stdlib_instances(
             env.instances
                 .entry((pageable, smallvec![left_join]))
                 .or_insert_with(pageable_inst);
+        }
+    }
+
+    // `Countable (Query e a)`, `Countable (Join e f a)`, and `Countable (LeftJoin e f
+    // a)` — the unified `count`/`exists` instances from std.repo. A single-parameter
+    // class, so each instance is keyed by the receiver tycon alone (no predicate
+    // atom): these terminals take no quoted argument, so the receiver pins them. Each
+    // carries a single `where Adapter a` context to reach the store (they count and
+    // probe, they do not decode, so no `Row`), at the flattened head position the
+    // adapter occupies — `a@1` in a query, `a@2` in a join (its extra right entity
+    // shifts the slot), the same positions `Decodable` gives its `Adapter a`.
+    if let (Some(countable), Some(adapter)) = (ct.id_by_name("Countable"), ct.id_by_name("Adapter"))
+    {
+        let countable_inst = |position: usize| InstanceInfo {
+            def_module: None,
+            methods: vec![
+                ("count".to_string(), String::new()),
+                ("exists".to_string(), String::new()),
+            ],
+            ctx_constraints: vec![ridge_types::Constraint::single(
+                adapter,
+                ridge_types::TyVid(0),
+            )],
+            head_var_positions: vec![position],
+            origin: InstanceOrigin::Explicit,
+            span: ds,
+        };
+        if let Some(&query) = reconciled_tycon_names.get("Query") {
+            env.instances
+                .entry((countable, smallvec![query]))
+                .or_insert_with(|| countable_inst(1));
+        }
+        if let Some(&join) = reconciled_tycon_names.get("Join") {
+            env.instances
+                .entry((countable, smallvec![join]))
+                .or_insert_with(|| countable_inst(2));
+        }
+        if let Some(&left_join) = reconciled_tycon_names.get("LeftJoin") {
+            env.instances
+                .entry((countable, smallvec![left_join]))
+                .or_insert_with(|| countable_inst(2));
+        }
+    }
+
+    // `Every (Query e a) (fn e -> Bool)`, `Every (Join e f a) (fn e f -> Bool)`, and
+    // the same over `LeftJoin` — the unified `every` instances from std.repo. Keyed
+    // like `Refinable` (receiver tycon + predicate-arity tycon: `Fn1` for a query's
+    // one-row predicate, `Fn2` for a join's two-row one), the `q -> p` dependency
+    // fixing the predicate's arity per receiver and the lambda pinning it at the call
+    // site. Each carries a single `where Adapter a` context at the same flattened head
+    // positions as the `Countable` instances above — `a@1` in a query, `a@2` in a
+    // join.
+    if let (Some(every), Some(adapter)) = (ct.id_by_name("Every"), ct.id_by_name("Adapter")) {
+        if let (Some(fn1), Some(fn2)) = (ridge_types::fn_tycon_id(1), ridge_types::fn_tycon_id(2)) {
+            let every_inst = |position: usize| InstanceInfo {
+                def_module: None,
+                methods: vec![("every".to_string(), String::new())],
+                ctx_constraints: vec![ridge_types::Constraint::single(
+                    adapter,
+                    ridge_types::TyVid(0),
+                )],
+                head_var_positions: vec![position],
+                origin: InstanceOrigin::Explicit,
+                span: ds,
+            };
+            if let Some(&query) = reconciled_tycon_names.get("Query") {
+                env.instances
+                    .entry((every, smallvec![query, fn1]))
+                    .or_insert_with(|| every_inst(1));
+            }
+            if let Some(&join) = reconciled_tycon_names.get("Join") {
+                env.instances
+                    .entry((every, smallvec![join, fn2]))
+                    .or_insert_with(|| every_inst(2));
+            }
+            if let Some(&left_join) = reconciled_tycon_names.get("LeftJoin") {
+                env.instances
+                    .entry((every, smallvec![left_join, fn2]))
+                    .or_insert_with(|| every_inst(2));
+            }
         }
     }
 }

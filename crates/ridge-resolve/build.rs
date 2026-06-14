@@ -411,6 +411,8 @@ const BASELINE_EXPORTS: &[(&str, &[&str])] = &[
             "leftJoinSelect",
             "aggregateJoin",
             "aggregateLeftJoin",
+            "countJoin",
+            "countLeftJoin",
             "groupSummarize",
             "runPlan",
             "MemAdapter",
@@ -435,9 +437,6 @@ const BASELINE_EXPORTS: &[(&str, &[&str])] = &[
             "findBy",
             "find",
             "getBy",
-            "count",
-            "countBy",
-            "exists",
             "insertRow",
             "insert",
             "deleteWhere",
@@ -479,10 +478,19 @@ const BASELINE_EXPORTS: &[(&str, &[&str])] = &[
             "toList",
             "first",
             // Unique-row terminals: `single` answers the lone matching row or
-            // `None`, `singleOrError` requires it; both fail on more than one. The
-            // `every` terminal is the universal dual of `exists`.
+            // `None`, `singleOrError` requires it; both fail on more than one.
             "single",
             "singleOrError",
+            // The unified size-and-presence terminals `count`/`exists` are the methods
+            // of the single-parameter `Countable q` class, so one pair counts a query,
+            // an inner join, or a left join. The universal-predicate terminal `every`
+            // (LINQ's `All`, the dual of `exists`) is the method of `Every q p | q ->
+            // p`, the dependency fixing its predicate's arity per receiver — a one-row
+            // predicate over a query, a two-row one over a join.
+            "Countable",
+            "count",
+            "exists",
+            "Every",
             "every",
             // The unified projection verb is the method of `Projectable q p |
             // q -> p`: `select` projects a query/join/left-join down to a named

@@ -47,6 +47,8 @@
     pg_left_join_select/11,
     pg_aggregate_join/9,
     pg_aggregate_left_join/9,
+    pg_count_join/6,
+    pg_count_left_join/6,
     pg_group_summarize/6,
     pg_run_plan/2,
     pg_close/1
@@ -199,6 +201,18 @@ pg_aggregate_join(Id, LeftTable, RightTable, Cond, Where2, Pred, Func, Column, I
 %% — the aggregate ignores NULL on its own.
 pg_aggregate_left_join(Id, LeftTable, RightTable, Cond, Where2, Pred, Func, Column, IsRight) ->
     pg_call(Id, {aggregate_left_join, LeftTable, RightTable, Cond, Where2, Pred, Func, Column, IsRight}).
+
+%% pg_count_join/6 — how many rows the inner join holds, compiled to `SELECT
+%% COUNT(*) FROM l JOIN r ON <cond> WHERE <pred> AND <where2>`. No ordering or
+%% paging. Result Int Error.
+pg_count_join(Id, LeftTable, RightTable, Cond, Where2, Pred) ->
+    pg_call(Id, {count_join, LeftTable, RightTable, Cond, Where2, Pred}).
+
+%% pg_count_left_join/6 — as pg_count_join, compiled to a `LEFT JOIN`: every left
+%% row Where2 admits is counted, an unmatched one (its right columns NULL)
+%% included. Result Int Error.
+pg_count_left_join(Id, LeftTable, RightTable, Cond, Where2, Pred) ->
+    pg_call(Id, {count_left_join, LeftTable, RightTable, Cond, Where2, Pred}).
 
 %% pg_close/1 — close every connection in the pool and forget the handle.
 %% Result Unit Error.
@@ -648,6 +662,26 @@ run_verb(Conn, {aggregate_left_join, LeftTable, RightTable, Cond, Where2, Pred, 
            " AS l LEFT JOIN ", quote_ident(RightTable), " AS r ON ", OnFrag,
            " WHERE (", WhereFrag, ") AND (", W2Frag, ")"],
     agg_result(run_query(Conn, Sql, lists:reverse(RevB2)));
+run_verb(Conn, {count_join, LeftTable, RightTable, Cond, Where2, Pred}) ->
+    {OnFrag, RevB1, N1} = cwj(Cond, 1, []),
+    {W2Frag, RevBw, Nw} = cwj(Where2, N1, RevB1),
+    {WhereFrag, RevB2, _N2} = cwj(Pred, Nw, RevBw),
+    %% No ordering or paging — a count answers the size of the matched join. `Where2`
+    %% runs in the post-join WHERE exactly as in `join`, so a join `filter` narrows it.
+    Sql = ["SELECT COUNT(*) FROM ", quote_ident(LeftTable),
+           " AS l JOIN ", quote_ident(RightTable), " AS r ON ", OnFrag,
+           " WHERE (", WhereFrag, ") AND (", W2Frag, ")"],
+    count_result(run_query(Conn, Sql, lists:reverse(RevB2)));
+run_verb(Conn, {count_left_join, LeftTable, RightTable, Cond, Where2, Pred}) ->
+    {OnFrag, RevB1, N1} = cwj(Cond, 1, []),
+    {W2Frag, RevBw, Nw} = cwj(Where2, N1, RevB1),
+    {WhereFrag, RevB2, _N2} = cwj(Pred, Nw, RevBw),
+    %% A `LEFT JOIN`: every left row `Where2` admits is counted, an unmatched one
+    %% (its right columns NULL) included.
+    Sql = ["SELECT COUNT(*) FROM ", quote_ident(LeftTable),
+           " AS l LEFT JOIN ", quote_ident(RightTable), " AS r ON ", OnFrag,
+           " WHERE (", WhereFrag, ") AND (", W2Frag, ")"],
+    count_result(run_query(Conn, Sql, lists:reverse(RevB2)));
 run_verb(Conn, {count_where, Table, Tree}) ->
     do_count(Conn, Table, Tree);
 run_verb(Conn, {aggregate, Table, Tree, Func, Column}) ->
@@ -732,6 +766,18 @@ agg_result({ok, [Row | _]}) ->
     end;
 agg_result({ok, []})   -> {ok, none};
 agg_result({error, E}) -> {error, E}.
+
+%% Read the integer a `SELECT COUNT(*)` returns, positionally — shared by the inner
+%% and left-outer join counts. A COUNT is never NULL (zero rows count 0), so an
+%% empty result decodes to 0. Mirrors the extraction in `do_count`.
+count_result({ok, [Row | _]}) ->
+    case maps:values(Row) of
+        [{'SqlInt', N} | _]   -> {ok, N};
+        [{'SqlFloat', F} | _] -> {ok, trunc(F)};
+        _                     -> {ok, 0}
+    end;
+count_result({ok, []})   -> {ok, 0};
+count_result({error, E}) -> {error, E}.
 
 %% The aggregate select expression. The function name is matched against the four
 %% supported keywords (never spliced from the caller's bytes); an unknown keyword

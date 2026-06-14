@@ -32,6 +32,7 @@
     mem_fetch/7, mem_count_where/3, mem_aggregate/5, mem_project/8,
     mem_join/10, mem_join_select/11, mem_left_join/10, mem_left_join_select/11,
     mem_aggregate_join/9, mem_aggregate_left_join/9,
+    mem_count_join/6, mem_count_left_join/6,
     mem_group_summarize/6,
     plan_scan/6, plan_combine/3, plan_refine/6, mem_run_plan/2,
     quote_keep_all/1, quote_and/2,
@@ -1049,6 +1050,18 @@ mem_aggregate_join(Id, LeftTable, RightTable, Cond, Where2, Pred, Func, Column, 
 mem_aggregate_left_join(Id, LeftTable, RightTable, Cond, Where2, Pred, Func, Column, IsRight) ->
     mem_call({aggregate_left_join, Id, LeftTable, RightTable, Cond, Where2, Pred, Func, Column, IsRight}).
 
+%% mem_count_join/6 — how many rows the inner join of LeftTable and RightTable
+%% holds once Cond pairs them, Where2 narrows the pairs, and Pred filters the left
+%% side. The join is neither ordered nor paged. Result Int Error.
+mem_count_join(Id, LeftTable, RightTable, Cond, Where2, Pred) ->
+    mem_call({count_join, Id, LeftTable, RightTable, Cond, Where2, Pred}).
+
+%% mem_count_left_join/6 — as mem_count_join, but a left-outer join: every left row
+%% Pred and Where2 admit is counted, an unmatched one (its right side absent)
+%% included, so the count is the number of left-outer rows. Result Int Error.
+mem_count_left_join(Id, LeftTable, RightTable, Cond, Where2, Pred) ->
+    mem_call({count_left_join, Id, LeftTable, RightTable, Cond, Where2, Pred}).
+
 %% Internal: send a request to the keeper and await its reply.
 mem_call(Req) ->
     mem_ensure(),
@@ -1192,6 +1205,14 @@ mem_keeper_loop(State) ->
             Value = mem_aggregate_value(Func, Column, Rows),
             Wrapped = case Value of 'SqlNull' -> none; _ -> {some, Value} end,
             From ! {Ref, {ok, Wrapped}},
+            mem_keeper_loop(State);
+        {{count_join, Id, LeftTable, RightTable, Cond, Where2, Pred}, From, Ref} ->
+            Pairs = mem_join_pairs(State, Id, LeftTable, RightTable, Cond, Where2, Pred, []),
+            From ! {Ref, {ok, length(Pairs)}},
+            mem_keeper_loop(State);
+        {{count_left_join, Id, LeftTable, RightTable, Cond, Where2, Pred}, From, Ref} ->
+            Pairs = mem_left_join_pairs(State, Id, LeftTable, RightTable, Cond, Where2, Pred, []),
+            From ! {Ref, {ok, length(Pairs)}},
             mem_keeper_loop(State)
     end.
 

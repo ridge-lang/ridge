@@ -769,25 +769,20 @@ fn reconciled_repo_fn_scheme(
             result(option_e()),
             with_adapter_row(),
         ),
-        // count : ∀e a. Repo e a -> Result Int Error where Adapter a
-        "count" => method(
-            vec![repo_app()],
-            result(Type::Con(b.int, vec![])),
-            with_adapter(),
-        ),
-        // countBy / deleteWhere : ∀e a. Quote (e -> Bool) -> Repo e a
-        //   -> Result Int Error where Adapter a. One counts the matching rows,
-        //   the other removes them and answers how many — the same scheme.
-        "countBy" | "deleteWhere" => method(
+        // `count` and `exists` are no longer reconciled here: they became the methods
+        // of the `Countable q p | q -> p` class (std.repo), one count-and-test pair
+        // over a query, an inner join, or a left join. A qualified `Repo.count`/
+        // `Repo.exists` resolves to that class method, typed by the seeded `∀q p. q ->
+        // Result Int/Bool Error where Countable q p` scheme (see
+        // `seed_countable_scheme`), the receiver pinning the instance and the
+        // dependency fixing the predicate arity for the sibling `every`. Omitting the
+        // arm routes them through the class-method path; the old `countBy` (count over
+        // a predicate) is gone with them — it is `query |> filter pred |> count`.
+        // `deleteWhere` keeps its own scheme (it removes the matching rows, not a
+        // count, and is unrelated to the receiver-polymorphic query builder).
+        "deleteWhere" => method(
             vec![quote_pred(), repo_app()],
             result(Type::Con(b.int, vec![])),
-            with_adapter(),
-        ),
-        // exists : ∀e a. Quote (e -> Bool) -> Repo e a
-        //               -> Result Bool Error where Adapter a
-        "exists" => method(
-            vec![quote_pred(), repo_app()],
-            result(Type::Con(b.bool, vec![])),
             with_adapter(),
         ),
         // insertRow : ∀e a. Map Text SqlValue -> Repo e a
@@ -945,15 +940,13 @@ fn reconciled_repo_fn_scheme(
         // into an error rather than `None`; otherwise the same constraints in the
         // same order.
         "singleOrError" => method(vec![query_app()], result(Type::Var(e)), with_adapter_row()),
-        // every : ∀e a. Quote (e -> Bool) -> Query e a -> Result Bool Error
-        //   where Adapter a. The universal dual of `exists`: it only counts (the
-        // query's rows, then the rows once the extra predicate is folded in), so it
-        // carries `Adapter a` alone, the same scheme shape as `exists`/`countBy`.
-        "every" => method(
-            vec![quote_pred(), query_app()],
-            result(Type::Con(b.bool, vec![])),
-            with_adapter(),
-        ),
+        // `every` is no longer reconciled here: it joined `count`/`exists` as a method
+        // of the `Countable q p | q -> p` class (std.repo), the universal dual of
+        // `exists` over a query, an inner join, or a left join. A qualified
+        // `Repo.every` resolves to that class method, typed by the seeded `∀q p. Quote
+        // p -> q -> Result Bool Error where Countable q p` scheme (see
+        // `seed_countable_scheme`), the dependency fixing the predicate's arity per
+        // receiver. Omitting the arm routes it through the class-method path.
         // `select` / `selectFirst` are no longer reconciled here: they became the
         // methods of the `Projectable q p | q -> p` class (std.repo), one verb
         // over a query, an inner join, or a left join. A qualified `Repo.select`

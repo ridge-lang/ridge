@@ -766,6 +766,8 @@ fn typecheck_module_inner(
         seed_aggregable_scheme(&mut ctx, b, ct);
         seed_decodable_scheme(&mut ctx, b, ct);
         seed_pageable_scheme(&mut ctx, b, ct);
+        seed_countable_scheme(&mut ctx, b, ct);
+        seed_every_scheme(&mut ctx, b, ct);
 
         // Wire the reconciled receiver ids the `Rows q` projection reduces against,
         // so the decode terminals' result types (`Result (List (Rows q))`)
@@ -1385,6 +1387,98 @@ fn seed_pageable_scheme(
             },
         );
     }
+}
+
+/// Seed the env schemes for `Countable.count`/`exists` — std.repo's unified size-
+/// and-presence terminals over a query, an inner join, or a left join. Registered in
+/// Rust for the same reason as [`seed_refinable_scheme`]: the stdlib class carries no
+/// source AST, so the AST-driven [`seed_class_method_schemes`] path skips it.
+///
+/// Schemes:
+/// - `count  :: ∀q. q -> Result Int  Error where Countable q`
+/// - `exists :: ∀q. q -> Result Bool Error where Countable q`
+///
+/// One class parameter, the receiver `q`, with no functional dependency (like
+/// `Pageable`/`Decodable`): these terminals take no quoted argument, so the receiver
+/// alone pins the instance — there is no determined parameter to resolve, and so no
+/// argument-less ambiguity. The universal-predicate dual `every` lives in its own
+/// [`Every`](seed_every_scheme) class because it carries a predicate the dependency
+/// keys on.
+fn seed_countable_scheme(
+    ctx: &mut crate::ctx::InferCtx,
+    b: &ridge_types::BuiltinTyCons,
+    class_table: &crate::class_env::ClassTable,
+) {
+    use ridge_types::{CapRow, CapabilitySet, Constraint, Scheme, Type};
+    let Some(countable) = class_table.id_by_name("Countable") else {
+        return;
+    };
+    let result = |ok: Type| Type::Con(b.result, vec![ok, Type::Con(b.error, vec![])]);
+    // `count` answers an `Int` and `exists` a `Bool`, both from the bare receiver.
+    let int_ok = Type::Con(b.int, vec![]);
+    let bool_ok = Type::Con(b.bool, vec![]);
+    for (name, ok) in [("count", &int_ok), ("exists", &bool_ok)] {
+        let q = ctx.fresh_tyvid();
+        let fn_ty = Type::Fn {
+            params: vec![Type::Var(q)],
+            ret: Box::new(result(ok.clone())),
+            caps: CapRow::Concrete(CapabilitySet::PURE),
+        };
+        let constraint_tys: smallvec::SmallVec<[ridge_types::TyVid; 1]> = smallvec::smallvec![q];
+        ctx.env.bind(
+            name.to_owned(),
+            Scheme {
+                vars: vec![q],
+                cap_vars: vec![],
+                row_vars: vec![],
+                ty: fn_ty,
+                constraints: vec![Constraint::new(countable, constraint_tys)],
+            },
+        );
+    }
+}
+
+/// Seed the env scheme for `Every.every` — std.repo's unified universal-predicate
+/// terminal over a query, an inner join, or a left join. Registered in Rust for the
+/// same reason as [`seed_refinable_scheme`]: the stdlib class carries no source AST.
+///
+/// Scheme: `∀q p. Quote p -> q -> Result Bool Error where Every q p`. Two parameters
+/// `q p` with the functional dependency `q -> p`, exactly like `Refinable.filter`:
+/// the receiver `q` pins the instance and the dependency fixes the predicate's shape
+/// `p`, pinned from the captured lambda, so one binding serves a query's one-row
+/// predicate and a join's two-row one and a wrong-arity predicate is rejected when the
+/// determined `p` fails to unify. `every` is the universal dual of `Countable.exists`.
+fn seed_every_scheme(
+    ctx: &mut crate::ctx::InferCtx,
+    b: &ridge_types::BuiltinTyCons,
+    class_table: &crate::class_env::ClassTable,
+) {
+    use ridge_types::{CapRow, CapabilitySet, Constraint, Scheme, Type};
+    let Some(every) = class_table.id_by_name("Every") else {
+        return;
+    };
+    let q = ctx.fresh_tyvid();
+    let p = ctx.fresh_tyvid();
+    let result_bool = Type::Con(
+        b.result,
+        vec![Type::Con(b.bool, vec![]), Type::Con(b.error, vec![])],
+    );
+    let fn_ty = Type::Fn {
+        params: vec![Type::Con(b.quote, vec![Type::Var(p)]), Type::Var(q)],
+        ret: Box::new(result_bool),
+        caps: CapRow::Concrete(CapabilitySet::PURE),
+    };
+    let constraint_tys: smallvec::SmallVec<[ridge_types::TyVid; 1]> = [q, p].into_iter().collect();
+    ctx.env.bind(
+        "every".to_owned(),
+        Scheme {
+            vars: vec![q, p],
+            cap_vars: vec![],
+            row_vars: vec![],
+            ty: fn_ty,
+            constraints: vec![Constraint::new(every, constraint_tys)],
+        },
+    );
 }
 
 /// Seed type-environment schemes for the two prelude codec methods (`encode`,

@@ -267,6 +267,10 @@ pub fn prelude_types(b: &BuiltinTyCons) -> (FxHashMap<String, Scheme>, FxHashMap
     // `Ret/1` — the return-type projection, a prelude builtin so a query-builder
     // signature can name `Ret p` without an import; reduces during unification.
     tycons.insert("Ret".to_string(), b.ret);
+    // `Rows/1` — the row-shape projection for the decode terminals, a prelude
+    // builtin so a query-builder signature can name `Rows q` without an import;
+    // reduces during unification.
+    tycons.insert("Rows".to_string(), b.rows);
 
     let qexpr_ty = ty_con(b.q_expr, vec![]);
     let q_ctor = |params: Vec<Type>| Scheme {

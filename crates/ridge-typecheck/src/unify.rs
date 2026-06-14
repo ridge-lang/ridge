@@ -73,6 +73,22 @@ pub fn unify(ctx: &mut InferCtx, a: &Type, b: &Type) -> Result<(), TypeError> {
         }
     }
 
+    // `Rows q` is the row-shape extractor: when its argument is one of the decode
+    // terminals' receivers it reduces to that receiver's row (`Query e a` to `e`,
+    // `Join e f a` to `(e, f)`, `LeftJoin e f a` to `(e, Option f)`). Returns
+    // `None` for anything else — including `Rows ?q` whose argument is still a
+    // variable, which stays a stuck projection until `q` is a receiver.
+    fn reduce_rows(ctx: &mut InferCtx, t: &Type) -> Option<Type> {
+        let Type::Con(id, args) = t else {
+            return None;
+        };
+        if id.0 != ridge_types::ROWS_TYCON_ID || args.len() != 1 {
+            return None;
+        }
+        let q = ctx.shallow_resolve(&args[0]);
+        ctx.reduce_rows_arg(&q)
+    }
+
     let a = ctx.shallow_resolve(a);
     let b = ctx.shallow_resolve(b);
 
@@ -83,6 +99,16 @@ pub fn unify(ctx: &mut InferCtx, a: &Type, b: &Type) -> Result<(), TypeError> {
         return unify(ctx, &reduced, &b);
     }
     if let Some(reduced) = reduce_ret(ctx, &b) {
+        return unify(ctx, &a, &reduced);
+    }
+
+    // Reduce a top-level `Rows` on either side, then retry. An unreducible `Rows`
+    // (argument not yet a receiver) falls through to the structural `Con/Con`
+    // arm, where `Rows q ~ Rows r` unifies the arguments.
+    if let Some(reduced) = reduce_rows(ctx, &a) {
+        return unify(ctx, &reduced, &b);
+    }
+    if let Some(reduced) = reduce_rows(ctx, &b) {
         return unify(ctx, &a, &reduced);
     }
 

@@ -70,6 +70,22 @@ pub fn fn_tycon_arity(id: TyConId) -> Option<usize> {
 )]
 pub const RET_TYCON_ID: u32 = FN_TYCON_BASE + FN_ARITY_COUNT as u32;
 
+/// `TyConId` of `Rows/1` — the built-in row-shape extractor for the query
+/// builder's decode terminals.
+///
+/// `Rows q` is a type-level projection that reduces to the row a receiver decodes
+/// into: `Rows (Query e a)` to the entity `e`, `Rows (Join e f a)` to the pair
+/// `(e, f)`, and `Rows (LeftJoin e f a)` to `(e, Option f)`. It is the result
+/// linkage the unified `toList`/`first` use — one pair of terminals over a query,
+/// an inner join, or a left join — naming "the row of the receiver" in their result
+/// (`Result (List (Rows q))`) without an associated-type family. Unlike `Ret`,
+/// whose reduction is structural over a function type, `Rows` reduces by the
+/// receiver's own type constructor, so the reduction reads the reconciled
+/// `Query`/`Join`/`LeftJoin` ids from the inference context. Reserved immediately
+/// after `Ret/1`; the constructor is internal (never written in user surface
+/// syntax) and the reduction lives in unification and `deep_resolve`.
+pub const ROWS_TYCON_ID: u32 = RET_TYCON_ID + 1;
+
 /// The arena/dictionary name of the synthetic `Fn/arity` constructor.
 ///
 /// Returns `"Fn0"`, `"Fn1"`, … . This name is the bridge that keeps the
@@ -206,6 +222,11 @@ pub struct BuiltinTyCons {
     /// concrete function `p`. Internal: it appears only in Rust-seeded schemes,
     /// never in surface syntax. See [`RET_TYCON_ID`].
     pub ret: TyConId,
+    /// `Rows/1` — the row-shape extractor for the decode terminals. `Rows q`
+    /// reduces to the row a query/join receiver decodes into. Internal; the
+    /// reduction reads the reconciled receiver ids from the context. See
+    /// [`ROWS_TYCON_ID`].
+    pub rows: TyConId,
 }
 
 impl BuiltinTyCons {
@@ -249,6 +270,7 @@ impl BuiltinTyCons {
             quote: SENTINEL,
             fns: [SENTINEL; FN_ARITY_COUNT],
             ret: SENTINEL,
+            rows: SENTINEL,
         }
     }
 
@@ -1053,6 +1075,21 @@ impl BuiltinTyCons {
             is_anon: false,
         });
 
+        // Rows/1 — the row-shape extractor for the decode terminals, interned
+        // right after Ret/1 (ROWS_TYCON_ID = 44). Applied as `Type::Con(rows, [q])`;
+        // the reduction `Rows (Query e a) -> e` (and the join shapes) lives in the
+        // unifier and `deep_resolve`, keyed on the receiver's reconciled tycon.
+        let rows = arena.intern(TyConDecl {
+            id: TyConId(0),
+            name: "Rows".to_string(),
+            arity: 1,
+            kind: TyConKind::Builtin,
+            def_span: None,
+            def_module_raw: None,
+            opaque: false,
+            is_anon: false,
+        });
+
         // Verify assignment order matches spec §4.1 indices 0..16.
         debug_assert_eq!(int.0, 0);
         debug_assert_eq!(float.0, 1);
@@ -1088,6 +1125,9 @@ impl BuiltinTyCons {
         // Ret/1 sits immediately after the Fn/N block (RET_TYCON_ID = 43).
         debug_assert_eq!(ret.0, RET_TYCON_ID);
         debug_assert_eq!(ret.0, 43);
+        // Rows/1 sits immediately after Ret/1 (ROWS_TYCON_ID = 44).
+        debug_assert_eq!(rows.0, ROWS_TYCON_ID);
+        debug_assert_eq!(rows.0, 44);
 
         // Suppress the "unused" lint — CapabilitySet is imported for future use
         // in T4 (actor schemas carry CapabilitySet).
@@ -1123,6 +1163,7 @@ impl BuiltinTyCons {
             quote,
             fns,
             ret,
+            rows,
         }
     }
 }
@@ -1202,15 +1243,16 @@ mod tests {
     }
 
     #[test]
-    fn arena_len_is_44() {
+    fn arena_len_is_45() {
         // 15 original builtins + Ordering + JsonValue + the std.net.http taint
         // wrappers Sql / Html / SecureCookie + std.sql's SqlValue + the
         // column-codegen builtins Column / Table + the schema-codegen builtins
         // FieldSchema / Schema + the quotation builtins QExpr / Quote (27 total)
-        // + the 16 synthetic function-type constructors Fn/0 … Fn/15 + Ret/1.
+        // + the 16 synthetic function-type constructors Fn/0 … Fn/15 + Ret/1 +
+        // Rows/1.
         let (arena, _) = make_arena_with_builtins();
-        assert_eq!(arena.len(), 27 + FN_ARITY_COUNT + 1);
-        assert_eq!(arena.len(), 44);
+        assert_eq!(arena.len(), 27 + FN_ARITY_COUNT + 2);
+        assert_eq!(arena.len(), 45);
     }
 
     #[test]

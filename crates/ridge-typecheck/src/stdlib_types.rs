@@ -288,7 +288,7 @@ fn reconciled_decls(b: &BuiltinTyCons, base: u32) -> Vec<TyConDecl> {
         // the quoted join condition over both entities. The entity `e` (param 0)
         // is the left side, `f` (param 1) the right, and `a` (param 2) the shared
         // adapter. Opaque, so user code only threads it from `joinOn` into a
-        // terminal (`toPairs`/`selectJoin`). Field order mirrors the source.
+        // terminal (`toList`/`select`). Field order mirrors the source.
         TyConDecl {
             id: TyConId(base + 6),
             name: "Join".to_string(),
@@ -350,10 +350,10 @@ fn reconciled_decls(b: &BuiltinTyCons, base: u32) -> Vec<TyConDecl> {
         },
         // `std.repo` — a left (outer) join under construction. Structurally a copy
         // of `Join`: the same left query, right repository, and quoted condition
-        // over both entities. A distinct type so the terminal it admits differs —
-        // `toLeftPairs` keeps every left row and returns the right side as
-        // `Option f`, where `Join`'s `toPairs` returns it as `f`. Field order
-        // mirrors the source.
+        // over both entities. A distinct type so the row its `toList`/`first`
+        // decode into differs — a left join keeps every left row and returns the
+        // right side as `Option f`, where an inner `Join` returns it as `f`. Field
+        // order mirrors the source.
         TyConDecl {
             id: TyConId(base + 7),
             name: "LeftJoin".to_string(),
@@ -923,13 +923,18 @@ fn reconciled_repo_fn_scheme(
         // per receiver and a two-row key naming a column from either side of a
         // join. Returning `None` here routes it through the class-method path
         // rather than the old single-receiver pub fn.
-        // toList : ∀e a. Query e a -> Result (List e) Error where Adapter a, Row e
-        "toList" => method(vec![query_app()], result(list_e()), with_adapter_row()),
-        // first / single : ∀e a. Query e a -> Result (Option e) Error
-        //   where Adapter a, Row e. They share a scheme exactly — both fetch and
-        // decode one row, answering `Option e` — and differ only in the body:
-        // `single` fetches a second row to reject a non-unique result.
-        "first" | "single" => method(vec![query_app()], result(option_e()), with_adapter_row()),
+        // `toList` / `first` are no longer reconciled here: they became the methods
+        // of the `Decodable q p | q -> p` class (std.repo), one pair of terminals
+        // that decode a query, an inner join, or a left join. A qualified
+        // `Repo.toList`/`Repo.first` resolves to that class method, typed by the
+        // seeded `∀q p. q -> Result (List (Ret p)) Error where Decodable q p` scheme
+        // (see `seed_decodable_scheme`), the fundep fixing the row shape per receiver
+        // and `Ret p` naming the decoded element. Omitting the arm routes them
+        // through the class-method path rather than the old single-receiver pub fns.
+        // single : ∀e a. Query e a -> Result (Option e) Error where Adapter a, Row e.
+        // The unique-row terminal stays a reconciled pub fn: it fetches a second row
+        // to reject a non-unique result, so it is not part of the decode family.
+        "single" => method(vec![query_app()], result(option_e()), with_adapter_row()),
         // singleOrError : ∀e a. Query e a -> Result e Error where Adapter a, Row e.
         // The strict `single`: it answers the bare entity, turning the empty match
         // into an error rather than `None`; otherwise the same constraints in the
@@ -1075,32 +1080,11 @@ fn reconciled_repo_fn_scheme(
                 constraints: vec![],
             })
         }
-        // toPairs : ∀e f a. Join e f a -> Result (List (e, f)) Error
-        //                where Row e, Row f, Adapter a. Runs the inner join and
-        // decodes each joined row pair into both entities. The constraint order
-        // follows the variables' first appearance in the signature: e, then f,
-        // then a (the three slots of `Join e f a`).
-        "toPairs" => {
-            let join_con = *reconciled.get("Join")?;
-            let f = TyVid(2);
-            let join_e_f_a = Type::Con(join_con, vec![Type::Var(e), Type::Var(f), Type::Var(a)]);
-            let pair = Type::Tuple(vec![Type::Var(e), Type::Var(f)]);
-            Some(Scheme {
-                vars: vec![e, a, f],
-                cap_vars: vec![],
-                row_vars: vec![],
-                ty: Type::Fn {
-                    params: vec![join_e_f_a],
-                    ret: Box::new(result(Type::Con(b.list, vec![pair]))),
-                    caps: pure(),
-                },
-                constraints: vec![
-                    Constraint::single(row, e),
-                    Constraint::single(row, f),
-                    Constraint::single(adapter, a),
-                ],
-            })
-        }
+        // `toPairs` is gone: an inner join's `toList`/`first` are now the
+        // `Decodable (Join e f a) …` methods (std.repo), so the join shares the
+        // query's decode terminals. `Repo.toList` over a `Join` resolves to that
+        // class method (see `seed_decodable_scheme`), `Ret p` naming the decoded
+        // pair `(e, f)`; omitting the arm routes it through the class-method path.
         // (`selectJoin` is gone: an inner join's projection is now the
         // `Projectable (Join e f a) (fn e f -> s)` instance — see
         // `seed_projectable_scheme`.)
@@ -1134,33 +1118,12 @@ fn reconciled_repo_fn_scheme(
                 constraints: vec![],
             })
         }
-        // toLeftPairs : ∀e f a. LeftJoin e f a -> Result (List (e, Option f)) Error
-        //                   where Row e, Row f, Adapter a. Runs the left join and
-        // decodes each row into the left entity paired with the right entity, or
-        // with `None` where the left row matched no right row. Constraint order
-        // follows the variables' first appearance (e, then f, then a), as `toPairs`.
-        "toLeftPairs" => {
-            let leftjoin_con = *reconciled.get("LeftJoin")?;
-            let f = TyVid(2);
-            let leftjoin_e_f_a =
-                Type::Con(leftjoin_con, vec![Type::Var(e), Type::Var(f), Type::Var(a)]);
-            let pair = Type::Tuple(vec![Type::Var(e), Type::Con(b.option, vec![Type::Var(f)])]);
-            Some(Scheme {
-                vars: vec![e, a, f],
-                cap_vars: vec![],
-                row_vars: vec![],
-                ty: Type::Fn {
-                    params: vec![leftjoin_e_f_a],
-                    ret: Box::new(result(Type::Con(b.list, vec![pair]))),
-                    caps: pure(),
-                },
-                constraints: vec![
-                    Constraint::single(row, e),
-                    Constraint::single(row, f),
-                    Constraint::single(adapter, a),
-                ],
-            })
-        }
+        // `toLeftPairs` is gone: a left join's `toList`/`first` are now the
+        // `Decodable (LeftJoin e f a) …` methods (std.repo). `Repo.toList` over a
+        // `LeftJoin` resolves to that class method (see `seed_decodable_scheme`),
+        // `Ret p` naming the decoded pair `(e, Option f)` — the right side `None`
+        // where a left row matched none; omitting the arm routes it through the
+        // class-method path.
         // (`selectLeftJoin` is gone: a left join's projection is now the
         // `Projectable (LeftJoin e f a) (fn e (Option f) -> s)` instance, the
         // right side read as `Option` — see `seed_projectable_scheme`.)

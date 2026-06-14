@@ -960,6 +960,9 @@ pub fn prelude_resolutions() -> Vec<ImportResolution> {
                 // `Ret/1` — the return-type projection, in scope for query-builder
                 // signatures that name the element of a projection's result.
                 query_binding("Ret"),
+                // `Rows/1` — the row-shape projection, in scope for the decode
+                // terminals' signatures that name the row of their receiver.
+                query_binding("Rows"),
             ],
             span: synth_span,
         },
@@ -1995,8 +1998,8 @@ mod tests {
             .map(|ir| ir.effective_bindings.len())
             .sum();
         assert_eq!(
-            total_bindings, 47,
-            "expected 47 total prelude bindings (6 option/result + 8 json + 25 quotation + 8 module aliases); got {total_bindings}"
+            total_bindings, 48,
+            "expected 48 total prelude bindings (6 option/result + 8 json + 26 quotation + 8 module aliases); got {total_bindings}"
         );
     }
 

@@ -1076,11 +1076,11 @@ pub fn db bad () -> Result (List Unit) Error =
 }
 
 #[test]
-fn query_builder_join_to_pairs_typechecks() {
+fn query_builder_join_to_list_typechecks() {
     // An inner join pairs the left query with a right repository on a quoted
-    // condition over both entities, and `toPairs` decodes each matched row pair
-    // into `(User, Post)`. The condition's left columns range over `User`, its
-    // right over `Post`; both are pinned from the lambda's own annotations.
+    // condition over both entities, and the unified `toList` decodes each matched
+    // row pair into `(User, Post)`. The condition's left columns range over `User`,
+    // its right over `Post`; both are pinned from the lambda's own annotations.
     let main = r#"
 import std.data (memAdapter, MemAdapter)
 import std.repo as Repo
@@ -1098,7 +1098,7 @@ pub fn db authorPosts () -> Result (List (User, Post)) Error =
       |> Repo.filter (fn (u: User) -> u.age >= 18)
       |> Repo.orderBy Asc (fn (u: User) -> u.name)
       |> Repo.joinOn posts (fn (u: User) (p: Post) -> u.id == p.authorId)
-      |> Repo.toPairs
+      |> Repo.toList
 "#;
     let errors = typecheck_one(main);
     assert!(
@@ -1128,7 +1128,7 @@ pub fn db publishedPosts () -> Result (List (User, Post)) Error =
       |> Repo.query
       |> Repo.joinOn posts (fn (u: User) (p: Post) -> u.id == p.authorId)
       |> Repo.filter (fn (u: User) (p: Post) -> p.title == "hello")
-      |> Repo.toPairs
+      |> Repo.toList
 "#;
     let errors = typecheck_one(main);
     assert!(
@@ -1240,7 +1240,7 @@ pub type Post = { id: Int, authorId: Int } deriving (Row)
 pub fn db bad () -> Result (List (User, Post)) Error =
     let users: Repo User MemAdapter = Repo.repo (memAdapter ()) "users"
     let posts: Repo Post MemAdapter = Repo.repo (memAdapter ()) "posts"
-    users |> Repo.query |> Repo.joinOn posts (fn (u: User) (p: Post) -> u.id == p.nope) |> Repo.toPairs
+    users |> Repo.query |> Repo.joinOn posts (fn (u: User) (p: Post) -> u.id == p.nope) |> Repo.toList
 "#;
     let errors = typecheck_one(main);
     assert!(
@@ -1265,7 +1265,7 @@ pub type Post = { id: Int, title: Text } deriving (Row)
 pub fn db bad () -> Result (List (User, Post)) Error =
     let users: Repo User MemAdapter = Repo.repo (memAdapter ()) "users"
     let posts: Repo Post MemAdapter = Repo.repo (memAdapter ()) "posts"
-    users |> Repo.query |> Repo.joinOn posts (fn (u: User) (p: Post) -> u.id == p.title) |> Repo.toPairs
+    users |> Repo.query |> Repo.joinOn posts (fn (u: User) (p: Post) -> u.id == p.title) |> Repo.toList
 "#;
     let errors = typecheck_one(main);
     assert!(
@@ -1302,8 +1302,8 @@ pub fn db bad () -> Result (List Unit) Error =
 }
 
 #[test]
-fn query_builder_left_join_to_pairs_typechecks() {
-    // A left join keeps every left row, so `toLeftPairs` decodes each into
+fn query_builder_left_join_to_list_typechecks() {
+    // A left join keeps every left row, so the unified `toList` decodes each into
     // `(User, Option Post)` — the right entity is present only where the row
     // matched. The condition is written and checked exactly as for an inner join.
     let main = r#"
@@ -1323,7 +1323,7 @@ pub fn db authorPosts () -> Result (List (User, Option Post)) Error =
       |> Repo.filter (fn (u: User) -> u.age >= 18)
       |> Repo.orderBy Asc (fn (u: User) -> u.name)
       |> Repo.leftJoinOn posts (fn (u: User) (p: Post) -> u.id == p.authorId)
-      |> Repo.toLeftPairs
+      |> Repo.toList
 "#;
     let errors = typecheck_one(main);
     assert!(
@@ -1351,7 +1351,7 @@ pub fn db bad () -> Result (List (User, Post)) Error =
     users
       |> Repo.query
       |> Repo.leftJoinOn posts (fn (u: User) (p: Post) -> u.id == p.authorId)
-      |> Repo.toLeftPairs
+      |> Repo.toList
 "#;
     let errors = typecheck_one(main);
     assert!(
@@ -1382,7 +1382,7 @@ pub fn db authorPosts () -> Result (List (User, Option Post)) Error =
             users
               |> Repo.query
               |> Repo.leftJoinOn posts (fn (u: User) (p: Post) -> u.id == p.authorId)
-              |> Repo.toLeftPairs
+              |> Repo.toList
 "#;
     let errors = typecheck_one(main);
     assert!(
@@ -1406,12 +1406,123 @@ pub type Post = { id: Int, authorId: Int } deriving (Row)
 pub fn db bad () -> Result (List (User, Option Post)) Error =
     let users: Repo User MemAdapter = Repo.repo (memAdapter ()) "users"
     let posts: Repo Post MemAdapter = Repo.repo (memAdapter ()) "posts"
-    users |> Repo.query |> Repo.leftJoinOn posts (fn (u: User) (p: Post) -> u.id == p.nope) |> Repo.toLeftPairs
+    users |> Repo.query |> Repo.leftJoinOn posts (fn (u: User) (p: Post) -> u.id == p.nope) |> Repo.toList
 "#;
     let errors = typecheck_one(main);
     assert!(
         !errors.is_empty(),
         "an unknown column in a left-join condition must be rejected; got no errors"
+    );
+}
+
+#[test]
+fn query_builder_query_first_typechecks() {
+    // `first` is now a `Decodable` method, so a query still answers its first
+    // decoded entity (`Option User`) — the behaviour it had as a pub fn, now shared
+    // with the join receivers through the functional dependency.
+    let main = r#"
+import std.data (memAdapter, MemAdapter)
+import std.repo as Repo
+import std.sql (SqlValue)
+
+pub type User = { id: Int, age: Int, name: Text } deriving (Row)
+
+pub fn db firstAdult () -> Result (Option User) Error =
+    let users: Repo User MemAdapter = Repo.repo (memAdapter ()) "users"
+    users
+      |> Repo.query
+      |> Repo.filter (fn (u: User) -> u.age >= 18)
+      |> Repo.first
+"#;
+    let errors = typecheck_one(main);
+    assert!(
+        errors.is_empty(),
+        "`first` over a query must answer `Option User`; got {errors:?}"
+    );
+}
+
+#[test]
+fn query_builder_join_first_typechecks() {
+    // The unified `first` gives an inner join a terminal it never had: the first
+    // matched row pair, decoded into `Option (User, Post)`. The fundep fixes the
+    // row shape from the `Join` receiver exactly as `toList` does.
+    let main = r#"
+import std.data (memAdapter, MemAdapter)
+import std.repo as Repo
+import std.sql (SqlValue)
+
+pub type User = { id: Int, age: Int, name: Text } deriving (Row)
+pub type Post = { id: Int, authorId: Int, title: Text } deriving (Row)
+
+pub fn db firstPair () -> Result (Option (User, Post)) Error =
+    let users: Repo User MemAdapter = Repo.repo (memAdapter ()) "users"
+    let posts: Repo Post MemAdapter = Repo.repo (memAdapter ()) "posts"
+    users
+      |> Repo.query
+      |> Repo.joinOn posts (fn (u: User) (p: Post) -> u.id == p.authorId)
+      |> Repo.first
+"#;
+    let errors = typecheck_one(main);
+    assert!(
+        errors.is_empty(),
+        "`first` over an inner join must answer `Option (User, Post)`; got {errors:?}"
+    );
+}
+
+#[test]
+fn query_builder_left_join_first_typechecks() {
+    // `first` over a left join keeps the left-row guarantee in its shape: the first
+    // row decodes into `Option (User, Option Post)`, the inner `Option` empty where
+    // the first left row matched no right row.
+    let main = r#"
+import std.data (memAdapter, MemAdapter)
+import std.repo as Repo
+import std.sql (SqlValue)
+
+pub type User = { id: Int, age: Int, name: Text } deriving (Row)
+pub type Post = { id: Int, authorId: Int, title: Text } deriving (Row)
+
+pub fn db firstOptional () -> Result (Option (User, Option Post)) Error =
+    let users: Repo User MemAdapter = Repo.repo (memAdapter ()) "users"
+    let posts: Repo Post MemAdapter = Repo.repo (memAdapter ()) "posts"
+    users
+      |> Repo.query
+      |> Repo.leftJoinOn posts (fn (u: User) (p: Post) -> u.id == p.authorId)
+      |> Repo.first
+"#;
+    let errors = typecheck_one(main);
+    assert!(
+        errors.is_empty(),
+        "`first` over a left join must answer `Option (User, Option Post)`; got {errors:?}"
+    );
+}
+
+#[test]
+fn query_builder_join_first_wrong_shape_is_rejected() {
+    // The fundep fixes the row shape from the receiver: an inner join's `first` is
+    // `Option (User, Post)`, so declaring it `Option (User, Option Post)` (the
+    // left-join shape) must be rejected — the right side of an inner join is not
+    // optional.
+    let main = r#"
+import std.data (memAdapter, MemAdapter)
+import std.repo as Repo
+import std.sql (SqlValue)
+
+pub type User = { id: Int, name: Text } deriving (Row)
+pub type Post = { id: Int, authorId: Int, title: Text } deriving (Row)
+
+pub fn db bad () -> Result (Option (User, Option Post)) Error =
+    let users: Repo User MemAdapter = Repo.repo (memAdapter ()) "users"
+    let posts: Repo Post MemAdapter = Repo.repo (memAdapter ()) "posts"
+    users
+      |> Repo.query
+      |> Repo.joinOn posts (fn (u: User) (p: Post) -> u.id == p.authorId)
+      |> Repo.first
+"#;
+    let errors = typecheck_one(main);
+    assert!(
+        !errors.is_empty(),
+        "an inner join's `first` with an optional right side must be rejected; got no errors"
     );
 }
 
@@ -2100,7 +2211,7 @@ pub fn db ordered () -> Result (List (User, Post)) Error =
       |> Repo.query
       |> Repo.joinOn posts (fn (u: User) (p: Post) -> u.id == p.authorId)
       |> Repo.orderBy Asc (fn (u: User) (p: Post) -> u.name)
-      |> Repo.toPairs
+      |> Repo.toList
 "#;
     let errors = typecheck_one(main);
     assert!(
@@ -2131,7 +2242,7 @@ pub fn db ordered () -> Result (List (User, Post)) Error =
       |> Repo.query
       |> Repo.joinOn posts (fn (u: User) (p: Post) -> u.id == p.authorId)
       |> Repo.orderBy Desc (fn (u: User) (p: Post) -> p.title)
-      |> Repo.toPairs
+      |> Repo.toList
 "#;
     let errors = typecheck_one(main);
     assert!(
@@ -2162,7 +2273,7 @@ pub fn db ordered () -> Result (List (User, Option Post)) Error =
       |> Repo.query
       |> Repo.leftJoinOn posts (fn (u: User) (p: Post) -> u.id == p.authorId)
       |> Repo.orderBy Asc (fn (u: User) (p: Option Post) -> p.title)
-      |> Repo.toLeftPairs
+      |> Repo.toList
 "#;
     let errors = typecheck_one(main);
     assert!(
@@ -2218,7 +2329,7 @@ pub fn db bad () -> Result (List (User, Post)) Error =
       |> Repo.query
       |> Repo.joinOn posts (fn (u: User) (p: Post) -> u.id == p.authorId)
       |> Repo.orderBy Asc (fn (u: User) -> u.name)
-      |> Repo.toPairs
+      |> Repo.toList
 "#;
     let errors = typecheck_one(main);
     assert!(
@@ -2276,7 +2387,7 @@ pub fn db bad () -> Result (List (User, Post)) Error =
       |> Repo.query
       |> Repo.joinOn posts (fn (u: User) (p: Post) -> u.id == p.authorId)
       |> Repo.orderBy Asc (fn (u: User) (p: Post) -> p.nope)
-      |> Repo.toPairs
+      |> Repo.toList
 "#;
     let errors = typecheck_one(main);
     assert!(

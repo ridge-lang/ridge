@@ -467,6 +467,11 @@ const BASELINE_EXPORTS: &[(&str, &[&str])] = &[
             "limit",
             "offset",
             "distinct",
+            // The unified decode terminals `toList`/`first` are the methods of the
+            // `Decodable q p | q -> p` class, so one pair decodes a query (to its
+            // entity), an inner join (to a pair), or a left join (to a pair whose
+            // right side is optional), the row shape following the receiver.
+            "Decodable",
             "toList",
             "first",
             // Unique-row terminals: `single` answers the lone matching row or
@@ -493,16 +498,17 @@ const BASELINE_EXPORTS: &[(&str, &[&str])] = &[
             "avgOf",
             "minOf",
             "maxOf",
-            // The two-table join builder: the opaque `Join e f a`, its `joinOn`
-            // entry, and the `toPairs` terminal (projection via `Projectable`).
+            // The two-table join builder: the opaque `Join e f a` and its `joinOn`
+            // entry. Its decode terminals (`toList`/`first`) and projection
+            // (`select`/`selectFirst`) are the `Decodable`/`Projectable` methods
+            // above.
             "Join",
             "joinOn",
-            "toPairs",
-            // The left-outer join: the opaque `LeftJoin e f a`, its `leftJoinOn`
-            // entry, and the `toLeftPairs` terminal (projection via `Projectable`).
+            // The left-outer join: the opaque `LeftJoin e f a` and its `leftJoinOn`
+            // entry. Decode and projection unify through `Decodable`/`Projectable`,
+            // the right side read as `Option`.
             "LeftJoin",
             "leftJoinOn",
-            "toLeftPairs",
             // Grouped aggregates: the opaque `GroupedQuery e k a` built by
             // `groupBy`, narrowed by `having`, and summarised into a named record
             // by `summarize`. `Group e k` is the handle the `having`/`summarize`

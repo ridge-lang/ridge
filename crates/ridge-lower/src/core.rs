@@ -1411,8 +1411,31 @@ pub(crate) fn build_dict_args(
 
     let mut dict_args: Vec<IrExpr> = Vec::with_capacity(constraints.len());
 
+    // How many constraints of each class this call takes in total. When a class
+    // appears more than once (`decodePairs … where Row e, Row f`), each is forwarded
+    // by ORDER rather than by variable, since a forwarding instance method's
+    // incoming dicts carry positional sentinels, not the real variables.
+    let mut class_total: rustc_hash::FxHashMap<ridge_types::ClassId, usize> =
+        rustc_hash::FxHashMap::default();
+    for c in &constraints {
+        *class_total.entry(c.class).or_insert(0) += 1;
+    }
+
+    // Count how many constraints of each class precede the current one in this
+    // call's own list — its occurrence index within the class.
+    let mut class_seen: rustc_hash::FxHashMap<ridge_types::ClassId, usize> =
+        rustc_hash::FxHashMap::default();
+
     for c in &constraints {
         let class_name = ctx.class_name(c.class).unwrap_or("Unknown").to_owned();
+
+        let occurrence = {
+            let seen = class_seen.entry(c.class).or_insert(0);
+            let n = *seen;
+            *seen += 1;
+            n
+        };
+        let call_needs_multiple = class_total.get(&c.class).copied().unwrap_or(0) > 1;
 
         // The concrete type the constraint variable was unified to at this call
         // site: walk the scheme's parameter (and return) types in lockstep with
@@ -1422,7 +1445,15 @@ pub(crate) fn build_dict_args(
         let constraint_ty =
             constraint_arg_type(&pin_params, &pin_args, c.sole_ty()).map(|ty| deep_peel_alias(&ty));
 
-        let dict_expr = resolve_dict_arg(ctx, c.class, &class_name, constraint_ty.as_ref(), span);
+        let dict_expr = resolve_dict_arg(
+            ctx,
+            c.class,
+            &class_name,
+            constraint_ty.as_ref(),
+            occurrence,
+            call_needs_multiple,
+            span,
+        );
         dict_args.push(dict_expr);
     }
 
@@ -1516,6 +1547,8 @@ fn resolve_dict_arg(
     class: ridge_types::ClassId,
     class_name: &str,
     constraint_ty: Option<&Type>,
+    occurrence: usize,
+    call_needs_multiple: bool,
     span: Span,
 ) -> IrExpr {
     // Determine whether the CALLER is itself constrained for this class.
@@ -1524,12 +1557,21 @@ fn resolve_dict_arg(
     //   - `fn announce (x: a) -> Text where Show a = describe x` → forward
     //   - `fn main_static () -> Text = describe Red` → no caller constraint → Static
     //
-    // When the caller carries more than one constraint for the same class (e.g.
-    // `decodePairs … where Row e, Row f`, which decodes a tuple of two records),
-    // the constraint's resolved type variable selects which incoming dict to
-    // forward, so each call threads its own (`fromRow` on the left row forwards
-    // `$dict_Row_e`, on the right `$dict_Row_f`). With a single constraint — the
-    // overwhelmingly common case — this is just the first (and only) match.
+    // Disambiguating WHICH incoming dict to forward depends on how many of this
+    // class the CALL itself takes:
+    //   - One (the overwhelmingly common case): the constraint's resolved type
+    //     variable selects the matching incoming dict — `fromRow` on a left row
+    //     forwards `$dict_Row_e`, on a right row `$dict_Row_f` — falling back to
+    //     the first when the variable cannot be matched.
+    //   - Several of the same class (e.g. `decodePairs … where Row e, Row f`,
+    //     which decodes a tuple of two records): the `occurrence` index — which
+    //     same-class constraint of this call we are resolving — picks the matching
+    //     incoming dict by ORDER. This is used instead of the variable match
+    //     because an instance method's `current_fn_constraints` carry positional
+    //     sentinels (`TyVid(i)` per `where` slot, not the real variable), so a
+    //     variable match would either miss or, worse, hit the wrong sentinel by
+    //     coincidence. By order, a join's `toList` threads `$dict_Row_e` to the
+    //     left decode and `$dict_Row_f` to the right rather than the same twice.
     let want_var = match constraint_ty {
         Some(Type::Var(v)) => Some(*v),
         _ => None,
@@ -1540,7 +1582,21 @@ fn resolve_dict_arg(
                 .iter()
                 .find(|c| c.class == class && c.sole_ty() == v)
         })
-        .or_else(|| ctx.current_fn_constraints.iter().find(|c| c.class == class))
+        .or_else(|| {
+            if call_needs_multiple {
+                // The exact variable did not match a caller constraint — which is
+                // the instance-method case, where the incoming dicts carry
+                // positional sentinels. Forward the `occurrence`-th same-class dict
+                // by order. (Constraint order follows the `where` clause, so an
+                // instance's `Row e`, `Row f` line up with the callee's.)
+                ctx.current_fn_constraints
+                    .iter()
+                    .filter(|c| c.class == class)
+                    .nth(occurrence)
+            } else {
+                ctx.current_fn_constraints.iter().find(|c| c.class == class)
+            }
+        })
         .cloned();
 
     if let Some(c) = caller_constraint {
@@ -1874,7 +1930,9 @@ pub(crate) fn try_lower_classmethod_call(
     } else {
         pin_ty
     };
-    let dict_expr = resolve_dict_arg(ctx, cid, &class_name, dict_ty.as_ref(), span);
+    // A class-method call resolves one dictionary for its own class; there is no
+    // sibling same-class constraint to order against (occurrence 0, single).
+    let dict_expr = resolve_dict_arg(ctx, cid, &class_name, dict_ty.as_ref(), 0, false, span);
     let field_id = ctx.fresh_id(None);
     let field = IrExpr::Field {
         id: field_id,
@@ -2146,7 +2204,7 @@ pub(crate) fn stdlib_class_home_module(class_name: &str) -> Option<&'static str>
     match class_name {
         "SqlType" | "Row" => Some("std.sql"),
         "Adapter" => Some("std.data"),
-        "Refinable" | "Projectable" | "Orderable" | "Aggregable" => Some("std.repo"),
+        "Refinable" | "Projectable" | "Orderable" | "Aggregable" | "Decodable" => Some("std.repo"),
         _ => None,
     }
 }
@@ -2903,7 +2961,7 @@ fn lower_ident(ctx: &mut LowerCtx<'_>, ident: &Ident) -> IrExpr {
                     .and_then(|m| m.get(span, NodeKind::Expr))
                     .and_then(|nid| ctx.node_type(nid).cloned())
                     .and_then(|t| pin_method_dict_var(ctx, cid, &t));
-                resolve_dict_arg(ctx, cid, class_name, pin.as_ref(), span)
+                resolve_dict_arg(ctx, cid, class_name, pin.as_ref(), 0, false, span)
             } else {
                 // No workspace or unknown class — fall back to a unit literal.
                 let id = ctx.fresh_id(None);

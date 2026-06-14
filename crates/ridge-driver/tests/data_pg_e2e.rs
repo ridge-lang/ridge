@@ -8,9 +8,9 @@
 //! decodes `RowDescription`/`DataRow` into the entity. The query builder is
 //! covered too — `orderBy` (ORDER BY) and `limit`/`offset` (LIMIT/OFFSET) compile
 //! into real SQL. The two-table verbs run against the live database as well:
-//! `joinOn` + `toPairs`/`selectJoin` (the `JOIN` and the `l.*, r.*` split),
-//! `leftJoinOn` + `toLeftPairs` (the `LEFT JOIN` and its `__ridge_matched`
-//! sentinel that keeps unmatched left rows), and `leftJoinOn` + `selectLeftJoin`
+//! `joinOn` + `toList`/`select` (the `JOIN` and the `l.*, r.*` split),
+//! `leftJoinOn` + `toList` (the `LEFT JOIN` and its `__ridge_matched`
+//! sentinel that keeps unmatched left rows), and `leftJoinOn` + `select`
 //! (a `LEFT JOIN` with a pushed-down select-list whose NULL right columns decode
 //! to `None`). A final probe drives the connection pool with six concurrent reads
 //! on one handle (concurrent checkout, growth, waiter reuse).
@@ -295,7 +295,7 @@ pub fn db joinedNames () -> Text =
     match setupJoin ()
         Err _ -> "setup-err"
         Ok (users, posts) ->
-            match users |> Repo.query |> Repo.orderBy Asc (fn (u: User) -> u.id) |> Repo.joinOn posts (fn (u: User) (p: Post) -> u.id == p.author) |> Repo.toPairs
+            match users |> Repo.query |> Repo.orderBy Asc (fn (u: User) -> u.id) |> Repo.joinOn posts (fn (u: User) (p: Post) -> u.id == p.author) |> Repo.toList
                 Err _  -> "join-err"
                 Ok ps  -> joinPairs ps
 
@@ -318,7 +318,7 @@ pub fn db joinOrderByRight () -> Text =
     match setupJoin ()
         Err _ -> "setup-err"
         Ok (users, posts) ->
-            match users |> Repo.query |> Repo.joinOn posts (fn (u: User) (p: Post) -> u.id == p.author) |> Repo.orderBy Desc (fn (u: User) (p: Post) -> p.title) |> Repo.toPairs
+            match users |> Repo.query |> Repo.joinOn posts (fn (u: User) (p: Post) -> u.id == p.author) |> Repo.orderBy Desc (fn (u: User) (p: Post) -> p.title) |> Repo.toList
                 Err _  -> "join-order-err"
                 Ok ps  -> joinPairs ps
 
@@ -332,7 +332,7 @@ pub fn db leftJoinedNames () -> Text =
     match setupJoin ()
         Err _ -> "setup-err"
         Ok (users, posts) ->
-            match users |> Repo.query |> Repo.orderBy Asc (fn (u: User) -> u.id) |> Repo.leftJoinOn posts (fn (u: User) (p: Post) -> u.id == p.author) |> Repo.toLeftPairs
+            match users |> Repo.query |> Repo.orderBy Asc (fn (u: User) -> u.id) |> Repo.leftJoinOn posts (fn (u: User) (p: Post) -> u.id == p.author) |> Repo.toList
                 Err _  -> "left-join-err"
                 Ok ps  -> joinLeftPairs ps
 

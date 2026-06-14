@@ -966,6 +966,58 @@ pub fn db groupFilteredHaving () -> Text =
                 Err _   -> "group-err"
                 Ok rows -> countCells rows
 
+-- group a join by the left key (user name) against Postgres, counting the pairs ->
+-- "lin:1,max:1" (each authors one of the two posts; ada joins nothing). Proves the
+-- GROUP BY compiles over a real JOIN.
+pub fn db joinGroupCounts () -> Text =
+    match setupJoin ()
+        Err _ -> "setup-err"
+        Ok (users, posts) ->
+            match users |> Repo.query |> Repo.joinOn posts (fn (u: User) (p: Post) -> u.id == p.author) |> Repo.groupBy (fn (u: User) (p: Post) -> u.name) |> Repo.summarize (fn g -> DeptCount { dept = g.key, n = g.count })
+                Err _   -> "group-err"
+                Ok rows -> countCells rows
+
+-- group a join by the left key, summing a RIGHT column (post id) -> "lin:10,max:11".
+-- Proves a grouped aggregate qualifies the fold to the right table.
+pub fn db joinGroupRightIds () -> Text =
+    match setupJoin ()
+        Err _ -> "setup-err"
+        Ok (users, posts) ->
+            match users |> Repo.query |> Repo.joinOn posts (fn (u: User) (p: Post) -> u.id == p.author) |> Repo.groupBy (fn (u: User) (p: Post) -> u.name) |> Repo.summarize (fn g -> DeptSum { dept = g.key, total = g.sum (fn (u: User) (p: Post) -> p.id) })
+                Err _   -> "group-err"
+                Ok rows -> sumCells rows
+
+-- group a join by the left key with HAVING on a right-side sum -> "max:11" (only
+-- max's post id clears 11; lin's 10 drops). Proves HAVING re-renders a side-qualified
+-- aggregate.
+pub fn db joinGroupHaving () -> Text =
+    match setupJoin ()
+        Err _ -> "setup-err"
+        Ok (users, posts) ->
+            match users |> Repo.query |> Repo.joinOn posts (fn (u: User) (p: Post) -> u.id == p.author) |> Repo.groupBy (fn (u: User) (p: Post) -> u.name) |> Repo.having (fn g -> g.sum (fn (u: User) (p: Post) -> p.id) >= 11) |> Repo.summarize (fn g -> DeptSum { dept = g.key, total = g.sum (fn (u: User) (p: Post) -> p.id) })
+                Err _   -> "group-err"
+                Ok rows -> sumCells rows
+
+-- group a join by a RIGHT key (post title) -> "hello:1,world:1" (each title its own
+-- group). Proves the group key qualifies to the right table.
+pub fn db joinGroupByTitle () -> Text =
+    match setupJoin ()
+        Err _ -> "setup-err"
+        Ok (users, posts) ->
+            match users |> Repo.query |> Repo.joinOn posts (fn (u: User) (p: Post) -> u.id == p.author) |> Repo.groupBy (fn (u: User) (p: Post) -> p.title) |> Repo.summarize (fn g -> DeptCount { dept = g.key, n = g.count })
+                Err _   -> "group-err"
+                Ok rows -> countCells rows
+
+-- group a LEFT join by the left key -> "ada:1,lin:1,max:1" (ada, matching no post,
+-- still forms a one-row group). Proves a real LEFT JOIN keeps every left row.
+pub fn db leftJoinGroupCounts () -> Text =
+    match setupJoin ()
+        Err _ -> "setup-err"
+        Ok (users, posts) ->
+            match users |> Repo.query |> Repo.leftJoinOn posts (fn (u: User) (p: Post) -> u.id == p.author) |> Repo.groupBy (fn (u: User) (p: Post) -> u.name) |> Repo.summarize (fn g -> DeptCount { dept = g.key, n = g.count })
+                Err _   -> "group-err"
+                Ok rows -> countCells rows
+
 -- selectList without distinct against Postgres: every dept, ordered by dept ->
 -- "eng,eng,ops,sales,sales,sales". The baseline the distinct probe contrasts with.
 pub fn db deptsAll () -> Text =
@@ -1274,6 +1326,11 @@ fn postgres_adapter_reads_a_real_table() {
          io:format(\"groupHavingCount=~s~n\",[{module}:groupHavingCount()]), \
          io:format(\"groupHavingSum=~s~n\",[{module}:groupHavingSum()]), \
          io:format(\"groupFilteredHaving=~s~n\",[{module}:groupFilteredHaving()]), \
+         io:format(\"joinGroupCounts=~s~n\",[{module}:joinGroupCounts()]), \
+         io:format(\"joinGroupRightIds=~s~n\",[{module}:joinGroupRightIds()]), \
+         io:format(\"joinGroupHaving=~s~n\",[{module}:joinGroupHaving()]), \
+         io:format(\"joinGroupByTitle=~s~n\",[{module}:joinGroupByTitle()]), \
+         io:format(\"leftJoinGroupCounts=~s~n\",[{module}:leftJoinGroupCounts()]), \
          io:format(\"deptsAll=~s~n\",[{module}:deptsAll()]), \
          io:format(\"deptsDistinct=~s~n\",[{module}:deptsDistinct()]), \
          io:format(\"salariesDistinct=~s~n\",[{module}:salariesDistinct()]), \
@@ -1508,6 +1565,26 @@ fn postgres_adapter_reads_a_real_table() {
         (
             "groupHavingSum=sales:600",
             "HAVING SUM(salary) >= 600 keeps only the sales group",
+        ),
+        (
+            "joinGroupCounts=lin:1,max:1",
+            "group a real join by the left key: lin and max each author one post",
+        ),
+        (
+            "joinGroupRightIds=lin:10,max:11",
+            "a grouped join aggregate folds the right table's post id per group",
+        ),
+        (
+            "joinGroupHaving=max:11",
+            "having re-renders a right-side sum: only max's post id clears 11",
+        ),
+        (
+            "joinGroupByTitle=hello:1,world:1",
+            "the group key qualifies to the right table, one group per post title",
+        ),
+        (
+            "leftJoinGroupCounts=ada:1,lin:1,max:1",
+            "a real LEFT JOIN keeps ada as a one-row group though it matches no post",
         ),
         (
             "groupFilteredHaving=eng:2,sales:3",

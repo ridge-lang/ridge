@@ -50,6 +50,8 @@
     pg_count_join/6,
     pg_count_left_join/6,
     pg_group_summarize/6,
+    pg_group_summarize_join/10,
+    pg_group_summarize_left_join/10,
     pg_run_plan/2,
     pg_close/1
 ]).
@@ -143,6 +145,20 @@ pg_project(Id, Table, Tree, Orders, Lim, Off, Cols, Dist) ->
 %% projection's output aliases. Result (List Row) Error.
 pg_group_summarize(Id, Table, Tree, KeyCol, Cols, Having) ->
     pg_call(Id, {group_summarize, Table, Tree, KeyCol, Cols, Having}).
+
+%% pg_group_summarize_join/10 — the inner-join dual: pair LeftTable and RightTable on
+%% Cond (narrowed by Where2 and the left Pred), group by KeyCol qualified to the
+%% KeySide table, summarize each group into the `{Alias, Func, Column, IsRight}`
+%% aggregates (IsRight qualifies a scalar fold to the l/r alias), keep the groups
+%% Having admits, ordered by the key. Result (List Row) Error.
+pg_group_summarize_join(Id, LeftTable, RightTable, Cond, Where2, Pred, KeyCol, KeySide, Cols, Having) ->
+    pg_call(Id, {group_summarize_join, LeftTable, RightTable, Cond, Where2, Pred, KeyCol, KeySide, Cols, Having}).
+
+%% pg_group_summarize_left_join/10 — as pg_group_summarize_join, but a plain `LEFT
+%% JOIN`: every left row is kept, an unmatched one's right columns come back NULL and
+%% drop out of a right-side fold, grouping under the NULL key for a right-side key.
+pg_group_summarize_left_join(Id, LeftTable, RightTable, Cond, Where2, Pred, KeyCol, KeySide, Cols, Having) ->
+    pg_call(Id, {group_summarize_left_join, LeftTable, RightTable, Cond, Where2, Pred, KeyCol, KeySide, Cols, Having}).
 
 %% pg_run_plan/2 — compile a captured query plan to nested SQL and run it, returning
 %% the combined rows. Result (List Row) Error.
@@ -688,6 +704,10 @@ run_verb(Conn, {aggregate, Table, Tree, Func, Column}) ->
     do_aggregate(Conn, Table, Func, Column, Tree);
 run_verb(Conn, {group_summarize, Table, Tree, KeyCol, Cols, Having}) ->
     do_group_summarize(Conn, Table, Tree, KeyCol, Cols, Having);
+run_verb(Conn, {group_summarize_join, LeftTable, RightTable, Cond, Where2, Pred, KeyCol, KeySide, Cols, Having}) ->
+    do_group_summarize_join(Conn, "JOIN", LeftTable, RightTable, Cond, Where2, Pred, KeyCol, KeySide, Cols, Having);
+run_verb(Conn, {group_summarize_left_join, LeftTable, RightTable, Cond, Where2, Pred, KeyCol, KeySide, Cols, Having}) ->
+    do_group_summarize_join(Conn, "LEFT JOIN", LeftTable, RightTable, Cond, Where2, Pred, KeyCol, KeySide, Cols, Having);
 run_verb(Conn, {run_plan, Plan}) ->
     {Sql, RevBinds, _N} = plan_sql(Plan, 1, []),
     run_query(Conn, Sql, lists:reverse(RevBinds)).
@@ -826,11 +846,11 @@ do_group_summarize(Conn, Table, Tree, KeyCol, Cols, Having) ->
 %% scalar aggregate, each aliased to the projection's output name. Func is matched
 %% against the whitelisted keywords; the column is quoted as an identifier, so
 %% neither is interpolated as raw SQL.
-group_select_term({Alias, <<"KEY">>, _Col}, KeyCol) ->
+group_select_term({Alias, <<"KEY">>, _Col, _IsRight}, KeyCol) ->
     [quote_ident(KeyCol), " AS ", quote_ident(Alias)];
-group_select_term({Alias, <<"COUNT">>, _Col}, _KeyCol) ->
+group_select_term({Alias, <<"COUNT">>, _Col, _IsRight}, _KeyCol) ->
     ["COUNT(*) AS ", quote_ident(Alias)];
-group_select_term({Alias, Func, Col}, _KeyCol) ->
+group_select_term({Alias, Func, Col, _IsRight}, _KeyCol) ->
     [agg_expr(Func, Col), " AS ", quote_ident(Alias)].
 
 %% --- QExpr -> parameterised HAVING clause ---
@@ -881,6 +901,90 @@ ch_operand({'QLitText', V}, _K, N, B)  -> {[$$ | integer_to_list(N)], [{'SqlText
 ch_operand({'QLitBool', V}, _K, N, B)  -> {[$$ | integer_to_list(N)], [{'SqlBool', V} | B], N + 1};
 ch_operand({'QLitFloat', V}, _K, N, B) -> {[$$ | integer_to_list(N)], [{'SqlFloat', V} | B], N + 1};
 ch_operand(_Other, _K, N, B) -> {"NULL", B, N}.
+
+%% --- Grouped join SQL ---
+%%
+%% SELECT <aggregates> FROM lt AS l <JOIN|LEFT JOIN> rt AS r ON <cond>
+%%   WHERE (<pred>) AND (<where2>) GROUP BY <l|r.key> [HAVING <having>] ORDER BY <key>
+%% Every column is qualified to its table alias: the key by KeySide, each scalar
+%% aggregate by its IsRight flag. `JoinKw` selects the inner or left-outer join (a
+%% plain LEFT JOIN needs no sentinel — an unmatched right column is NULL, which the
+%% folds skip). Binds thread Cond, Where2, Pred, then the HAVING literals.
+do_group_summarize_join(Conn, JoinKw, LeftTable, RightTable, Cond, Where2, Pred, KeyCol, KeySide, Cols, Having) ->
+    {OnFrag, RevB1, N1} = cwj(Cond, 1, []),
+    {W2Frag, RevBw, Nw} = cwj(Where2, N1, RevB1),
+    {WhereFrag, RevB2, N2} = cwj(Pred, Nw, RevBw),
+    {HavingFrag, RevB3, _N3} = compile_having_join(Having, KeySide, KeyCol, N2, RevB2),
+    KeyExpr = qcol_side(KeySide, KeyCol),
+    SelectList = lists:join(", ", [group_join_select_term(C, KeyExpr) || C <- Cols]),
+    HavingClause = case HavingFrag of
+        [] -> [];
+        _  -> [" HAVING ", HavingFrag]
+    end,
+    Sql = ["SELECT ", SelectList, " FROM ", quote_ident(LeftTable), " AS l ", JoinKw, " ",
+           quote_ident(RightTable), " AS r ON ", OnFrag,
+           " WHERE (", WhereFrag, ") AND (", W2Frag, ") GROUP BY ", KeyExpr,
+           HavingClause, " ORDER BY ", KeyExpr],
+    run_query(Conn, Sql, lists:reverse(RevB3)).
+
+qcol_side(true,  Col) -> qcol_right(Col);
+qcol_side(false, Col) -> qcol_left(Col).
+
+%% One select-list term for a grouped-join aggregate: the side-qualified key, COUNT,
+%% or a scalar aggregate qualified to its side, each aliased to the output name.
+group_join_select_term({Alias, <<"KEY">>, _Col, _IsRight}, KeyExpr) ->
+    [KeyExpr, " AS ", quote_ident(Alias)];
+group_join_select_term({Alias, <<"COUNT">>, _Col, _IsRight}, _KeyExpr) ->
+    ["COUNT(*) AS ", quote_ident(Alias)];
+group_join_select_term({Alias, Func, Col, IsRight}, _KeyExpr) ->
+    [agg_expr_join(Func, IsRight, Col), " AS ", quote_ident(Alias)].
+
+%% HAVING over a join group: structurally `compile_having`, but the group key and
+%% each scalar aggregate's column are qualified to the l/r table alias by their side.
+compile_having_join({'QLitBool', true}, _KeySide, _KeyCol, N, B) -> {[], B, N};
+compile_having_join(Tree, KeySide, KeyCol, N, B) -> chj(Tree, KeySide, KeyCol, N, B).
+
+chj({'QAnd', L, R}, KS, K, N, B) ->
+    {FL, B1, N1} = chj(L, KS, K, N, B),
+    {FR, B2, N2} = chj(R, KS, K, N1, B1),
+    {["(", FL, " AND ", FR, ")"], B2, N2};
+chj({'QOr', L, R}, KS, K, N, B) ->
+    {FL, B1, N1} = chj(L, KS, K, N, B),
+    {FR, B2, N2} = chj(R, KS, K, N1, B1),
+    {["(", FL, " OR ", FR, ")"], B2, N2};
+chj({'QNot', X}, KS, K, N, B) ->
+    {FX, B1, N1} = chj(X, KS, K, N, B),
+    {["(NOT ", FX, ")"], B1, N1};
+chj({'QEq', L, R}, KS, K, N, B) -> chj_cmp("=", L, R, KS, K, N, B);
+chj({'QNe', L, R}, KS, K, N, B) -> chj_cmp("<>", L, R, KS, K, N, B);
+chj({'QLt', L, R}, KS, K, N, B) -> chj_cmp("<", L, R, KS, K, N, B);
+chj({'QGt', L, R}, KS, K, N, B) -> chj_cmp(">", L, R, KS, K, N, B);
+chj({'QLe', L, R}, KS, K, N, B) -> chj_cmp("<=", L, R, KS, K, N, B);
+chj({'QGe', L, R}, KS, K, N, B) -> chj_cmp(">=", L, R, KS, K, N, B);
+chj(Other, KS, K, N, B) -> chj_operand(Other, KS, K, N, B).
+
+chj_cmp(Op, L, R, KS, K, N, B) ->
+    {FL, B1, N1} = chj_operand(L, KS, K, N, B),
+    {FR, B2, N2} = chj_operand(R, KS, K, N1, B1),
+    {[FL, " ", Op, " ", FR], B2, N2}.
+
+chj_operand('QAggCount', _KS, _K, N, B) -> {"COUNT(*)", B, N};
+chj_operand('QGroupKey', KS, K, N, B)   -> {qcol_side(KS, K), B, N};
+chj_operand({'QAggSum', Node}, _KS, _K, N, B) -> {agg_expr_node(<<"SUM">>, Node), B, N};
+chj_operand({'QAggAvg', Node}, _KS, _K, N, B) -> {agg_expr_node(<<"AVG">>, Node), B, N};
+chj_operand({'QAggMin', Node}, _KS, _K, N, B) -> {agg_expr_node(<<"MIN">>, Node), B, N};
+chj_operand({'QAggMax', Node}, _KS, _K, N, B) -> {agg_expr_node(<<"MAX">>, Node), B, N};
+chj_operand({'QLitInt', V}, _KS, _K, N, B)   -> {[$$ | integer_to_list(N)], [{'SqlInt', V} | B], N + 1};
+chj_operand({'QLitText', V}, _KS, _K, N, B)  -> {[$$ | integer_to_list(N)], [{'SqlText', V} | B], N + 1};
+chj_operand({'QLitBool', V}, _KS, _K, N, B)  -> {[$$ | integer_to_list(N)], [{'SqlBool', V} | B], N + 1};
+chj_operand({'QLitFloat', V}, _KS, _K, N, B) -> {[$$ | integer_to_list(N)], [{'SqlFloat', V} | B], N + 1};
+chj_operand(_Other, _KS, _K, N, B) -> {"NULL", B, N}.
+
+%% A scalar aggregate's column in a join HAVING, qualified to the side its node
+%% names (`QCol` left, `QColR` right).
+agg_expr_node(Func, {'QCol', C})  -> agg_expr_join(Func, false, C);
+agg_expr_node(Func, {'QColR', C}) -> agg_expr_join(Func, true, C);
+agg_expr_node(_Func, _Node)       -> "NULL".
 
 %% ORDER BY / LIMIT / OFFSET fragments. Identifiers are quoted; the limit and
 %% offset are integers from the typed surface, so they render inline without a

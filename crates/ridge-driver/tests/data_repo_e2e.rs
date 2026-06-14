@@ -955,6 +955,69 @@ pub fn db groupFilteredHaving () -> Text =
                 Err _   -> "group-err"
                 Ok rows -> countCells rows
 
+-- group a join by the left key (user name), counting the joined pairs ->
+-- "lin:2,max:1" (lin authored two posts, max one; ada joins nothing). Proves
+-- GROUP BY over a join partitions the pairs and orders by the key.
+pub fn db joinGroupCounts () -> Text =
+    match setupJoin ()
+        Err _ -> "setup-err"
+        Ok (users, posts) ->
+            match users |> Repo.query |> Repo.joinOn posts (fn (u: User) (p: Post) -> u.id == p.author) |> Repo.groupBy (fn (u: User) (p: Post) -> u.name) |> Repo.summarize (fn g -> DeptCount { dept = g.key, n = g.count })
+                Err _   -> "group-err"
+                Ok rows -> countCells rows
+
+-- group a join by the left key, summing a RIGHT column (post id) -> "lin:22,max:11"
+-- (lin folds 10+12, max 11). Proves a grouped aggregate folds the right table.
+pub fn db joinGroupRightIds () -> Text =
+    match setupJoin ()
+        Err _ -> "setup-err"
+        Ok (users, posts) ->
+            match users |> Repo.query |> Repo.joinOn posts (fn (u: User) (p: Post) -> u.id == p.author) |> Repo.groupBy (fn (u: User) (p: Post) -> u.name) |> Repo.summarize (fn g -> DeptSum { dept = g.key, total = g.sum (fn (u: User) (p: Post) -> p.id) })
+                Err _   -> "group-err"
+                Ok rows -> sumCells rows
+
+-- group a join by the left key, summing a LEFT column (user age) -> "lin:60,max:25"
+-- (lin appears in two pairs, each age 30; max once at 25). Proves a left-column fold
+-- counts each joined pair.
+pub fn db joinGroupLeftAges () -> Text =
+    match setupJoin ()
+        Err _ -> "setup-err"
+        Ok (users, posts) ->
+            match users |> Repo.query |> Repo.joinOn posts (fn (u: User) (p: Post) -> u.id == p.author) |> Repo.groupBy (fn (u: User) (p: Post) -> u.name) |> Repo.summarize (fn g -> DeptSum { dept = g.key, total = g.sum (fn (u: User) -> u.age) })
+                Err _   -> "group-err"
+                Ok rows -> sumCells rows
+
+-- group a join by the left key with HAVING count > 1 -> "lin:2" (max, a single pair,
+-- drops out). Proves HAVING filters join groups.
+pub fn db joinGroupHaving () -> Text =
+    match setupJoin ()
+        Err _ -> "setup-err"
+        Ok (users, posts) ->
+            match users |> Repo.query |> Repo.joinOn posts (fn (u: User) (p: Post) -> u.id == p.author) |> Repo.groupBy (fn (u: User) (p: Post) -> u.name) |> Repo.having (fn g -> g.count > 1) |> Repo.summarize (fn g -> DeptCount { dept = g.key, n = g.count })
+                Err _   -> "group-err"
+                Ok rows -> countCells rows
+
+-- group a join by a RIGHT key (post title), counting -> "again:1,hello:1,world:1"
+-- (each title once, key-ordered). Proves the group key qualifies to the right table.
+pub fn db joinGroupByTitle () -> Text =
+    match setupJoin ()
+        Err _ -> "setup-err"
+        Ok (users, posts) ->
+            match users |> Repo.query |> Repo.joinOn posts (fn (u: User) (p: Post) -> u.id == p.author) |> Repo.groupBy (fn (u: User) (p: Post) -> p.title) |> Repo.summarize (fn g -> DeptCount { dept = g.key, n = g.count })
+                Err _   -> "group-err"
+                Ok rows -> countCells rows
+
+-- group a LEFT join by the left key, counting -> "ada:1,lin:2,max:1" (ada, matching
+-- no post, still forms a one-row group). Proves a left join keeps every left row in
+-- the grouping.
+pub fn db leftJoinGroupCounts () -> Text =
+    match setupJoin ()
+        Err _ -> "setup-err"
+        Ok (users, posts) ->
+            match users |> Repo.query |> Repo.leftJoinOn posts (fn (u: User) (p: Post) -> u.id == p.author) |> Repo.groupBy (fn (u: User) (p: Post) -> u.name) |> Repo.summarize (fn g -> DeptCount { dept = g.key, n = g.count })
+                Err _   -> "group-err"
+                Ok rows -> countCells rows
+
 -- selectList without distinct: every dept, ordered by dept -> all six rows
 -- "eng,eng,ops,sales,sales,sales". The baseline the distinct probe contrasts with.
 pub fn db deptsAll () -> Text =
@@ -1215,6 +1278,12 @@ fn repo_surface_runs_on_beam() {
          io:format(\"groupHavingCount=~s~n\",[{module}:groupHavingCount()]), \
          io:format(\"groupHavingSum=~s~n\",[{module}:groupHavingSum()]), \
          io:format(\"groupFilteredHaving=~s~n\",[{module}:groupFilteredHaving()]), \
+         io:format(\"joinGroupCounts=~s~n\",[{module}:joinGroupCounts()]), \
+         io:format(\"joinGroupRightIds=~s~n\",[{module}:joinGroupRightIds()]), \
+         io:format(\"joinGroupLeftAges=~s~n\",[{module}:joinGroupLeftAges()]), \
+         io:format(\"joinGroupHaving=~s~n\",[{module}:joinGroupHaving()]), \
+         io:format(\"joinGroupByTitle=~s~n\",[{module}:joinGroupByTitle()]), \
+         io:format(\"leftJoinGroupCounts=~s~n\",[{module}:leftJoinGroupCounts()]), \
          io:format(\"deptsAll=~s~n\",[{module}:deptsAll()]), \
          io:format(\"deptsDistinct=~s~n\",[{module}:deptsDistinct()]), \
          io:format(\"salariesDistinct=~s~n\",[{module}:salariesDistinct()]), \
@@ -1439,6 +1508,30 @@ fn repo_surface_runs_on_beam() {
         (
             "groupFilteredHaving=eng:2,sales:3",
             "the query filter bounds the grouping before having runs",
+        ),
+        (
+            "joinGroupCounts=lin:2,max:1",
+            "group a join by the left key: lin joins two posts, max one, ada none",
+        ),
+        (
+            "joinGroupRightIds=lin:22,max:11",
+            "a grouped aggregate folds a right column: lin sums post ids 10+12, max 11",
+        ),
+        (
+            "joinGroupLeftAges=lin:60,max:25",
+            "a grouped aggregate folds a left column once per joined pair (lin twice at 30)",
+        ),
+        (
+            "joinGroupHaving=lin:2",
+            "having filters join groups: max's single pair drops on count > 1",
+        ),
+        (
+            "joinGroupByTitle=again:1,hello:1,world:1",
+            "group a join by a right key: each post title forms its own group",
+        ),
+        (
+            "leftJoinGroupCounts=ada:1,lin:2,max:1",
+            "a left join keeps ada as a one-row group though it matches no post",
         ),
         (
             "deptsAll=eng,eng,ops,sales,sales,sales",

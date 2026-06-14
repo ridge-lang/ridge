@@ -121,6 +121,8 @@ const STDLIB_CLASSES: &[(&str, &str)] = &[
     ("Pageable", "std.repo"),
     ("Countable", "std.repo"),
     ("Every", "std.repo"),
+    ("Groupable", "std.repo"),
+    ("Summarizable", "std.repo"),
 ];
 
 // Constructor-shaped fns must export arity 0; this invariant catches accidental

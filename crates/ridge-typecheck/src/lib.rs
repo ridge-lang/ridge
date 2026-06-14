@@ -786,6 +786,14 @@ fn typecheck_module_inner(
         let query_id = receiver_id("Query");
         let join_id = receiver_id("Join");
         let left_join_id = receiver_id("LeftJoin");
+        // `groupBy` returns the reconciled `Grouped q p` builder, so its seed needs
+        // that tycon id (resolved like the receivers above); `runGroups`'s result is
+        // all builtins, so its seed needs only the class table. Bound here, before the
+        // seeds borrow `ctx` mutably, so the `receiver_id` closure's immutable borrow
+        // has ended.
+        let grouped_id = receiver_id("Grouped");
+        seed_groupable_scheme(&mut ctx, b, ct, grouped_id);
+        seed_summarizable_scheme(&mut ctx, b, ct, sql_value);
         if let (Some(query), Some(join), Some(left_join)) = (query_id, join_id, left_join_id) {
             ctx.rows_tycons = Some(crate::ctx::RowsTycons {
                 query,
@@ -1477,6 +1485,94 @@ fn seed_every_scheme(
             row_vars: vec![],
             ty: fn_ty,
             constraints: vec![Constraint::new(every, constraint_tys)],
+        },
+    );
+}
+
+/// Seeds the `groupBy` class-method scheme: `∀q p. Quote p -> q -> Grouped q p`
+/// `where Groupable q p`. The receiver `q` and the key-accessor type `p` are both
+/// pinned at the call site (the receiver by the value, `p` by the key lambda the
+/// `q -> p` dependency keys on), so the unified `Grouped q p` builder it returns
+/// needs no projection — both of its parameters are already in hand. `grouped` is
+/// the reconciled `Grouped` tycon id; without it (a workspace lacking the query
+/// builder) the scheme is not seeded.
+fn seed_groupable_scheme(
+    ctx: &mut crate::ctx::InferCtx,
+    b: &ridge_types::BuiltinTyCons,
+    class_table: &crate::class_env::ClassTable,
+    grouped: Option<ridge_types::TyConId>,
+) {
+    use ridge_types::{CapRow, CapabilitySet, Constraint, Scheme, Type};
+    let (Some(groupable), Some(grouped)) = (class_table.id_by_name("Groupable"), grouped) else {
+        return;
+    };
+    let q = ctx.fresh_tyvid();
+    let p = ctx.fresh_tyvid();
+    let fn_ty = Type::Fn {
+        params: vec![Type::Con(b.quote, vec![Type::Var(p)]), Type::Var(q)],
+        ret: Box::new(Type::Con(grouped, vec![Type::Var(q), Type::Var(p)])),
+        caps: CapRow::Concrete(CapabilitySet::PURE),
+    };
+    let constraint_tys: smallvec::SmallVec<[ridge_types::TyVid; 1]> = [q, p].into_iter().collect();
+    ctx.env.bind(
+        "groupBy".to_owned(),
+        Scheme {
+            vars: vec![q, p],
+            cap_vars: vec![],
+            row_vars: vec![],
+            ty: fn_ty,
+            constraints: vec![Constraint::new(groupable, constraint_tys)],
+        },
+    );
+}
+
+/// Seeds the `runGroups` class-method scheme behind `summarize`'s per-source
+/// dispatch: `∀q. q -> Text -> Bool -> QExpr -> QExpr -> Result (List (Map Text
+/// SqlValue)) Error where Summarizable q`. It hands the source, the group-key column
+/// and side, the projection tree, and the HAVING tree to the seam the instance
+/// selects (a query's `groupSummarize` or a join's `groupSummarizeJoin`/`…LeftJoin`),
+/// returning the raw summarised rows that `summarize` then decodes through `Row s`.
+fn seed_summarizable_scheme(
+    ctx: &mut crate::ctx::InferCtx,
+    b: &ridge_types::BuiltinTyCons,
+    class_table: &crate::class_env::ClassTable,
+    sql_value: ridge_types::TyConId,
+) {
+    use ridge_types::{CapRow, CapabilitySet, Constraint, Scheme, Type};
+    let Some(summarizable) = class_table.id_by_name("Summarizable") else {
+        return;
+    };
+    let q = ctx.fresh_tyvid();
+    let text = || Type::Con(b.text, vec![]);
+    // The raw row maps `runGroups` returns are `Map Text SqlValue`. `SqlValue` is the
+    // builtin in user builds but the source `pub type SqlValue` in the stdlib's own
+    // build, so take the threaded id rather than `b.sql_value` (the codec seeds do the
+    // same) — otherwise the source instance body mismatches the seeded scheme.
+    let map_row = Type::Con(b.map, vec![text(), Type::Con(sql_value, vec![])]);
+    let result_rows = Type::Con(
+        b.result,
+        vec![Type::Con(b.list, vec![map_row]), Type::Con(b.error, vec![])],
+    );
+    let fn_ty = Type::Fn {
+        params: vec![
+            Type::Var(q),
+            text(),
+            Type::Con(b.bool, vec![]),
+            Type::Con(b.q_expr, vec![]),
+            Type::Con(b.q_expr, vec![]),
+        ],
+        ret: Box::new(result_rows),
+        caps: CapRow::Concrete(CapabilitySet::PURE),
+    };
+    let constraint_tys: smallvec::SmallVec<[ridge_types::TyVid; 1]> = smallvec::smallvec![q];
+    ctx.env.bind(
+        "runGroups".to_owned(),
+        Scheme {
+            vars: vec![q],
+            cap_vars: vec![],
+            row_vars: vec![],
+            ty: fn_ty,
+            constraints: vec![Constraint::new(summarizable, constraint_tys)],
         },
     );
 }

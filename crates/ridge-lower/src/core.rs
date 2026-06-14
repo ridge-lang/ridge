@@ -1250,20 +1250,23 @@ fn reify_group_node(ctx: &mut LowerCtx<'_>, e: &Expr, g_name: &str) -> IrExpr {
     }
 }
 
-/// Reify a group aggregate's inner column accessor `fn u -> u.col` into the
-/// `QCol "col"` it names. The accessor's body is a single column access on its
-/// parameter, so it reifies exactly as a single-parameter row column.
+/// Reify a group aggregate's inner column accessor into the `QCol`/`QColR` it
+/// names. A one-row accessor (`fn u -> u.col`) names a single left column; a two-row
+/// accessor over a join (`fn u p -> p.col`) names a column from either side, so the
+/// second parameter's name marks the right entity exactly as in a row quote — a
+/// field access on it reifies to `QColR`, on the first to `QCol`.
 fn reify_group_agg_col(ctx: &mut LowerCtx<'_>, arg: &Expr) -> IrExpr {
     let mut inner = arg;
     while let Expr::Paren { inner: i, .. } = inner {
         inner = i;
     }
-    if let Expr::Lambda { body, .. } = inner {
+    if let Expr::Lambda { params, body, .. } = inner {
+        let right = lambda_param_name(params.get(1));
         let mut bd: &Expr = body;
         while let Expr::Paren { inner: i, .. } = bd {
             bd = i;
         }
-        return reify_node(ctx, bd, None);
+        return reify_node(ctx, bd, right.as_deref());
     }
     ctx.errors.push(LowerError::InternalLoweringError {
         span: arg.span(),
@@ -2205,7 +2208,7 @@ pub(crate) fn stdlib_class_home_module(class_name: &str) -> Option<&'static str>
         "SqlType" | "Row" => Some("std.sql"),
         "Adapter" => Some("std.data"),
         "Refinable" | "Projectable" | "Orderable" | "Aggregable" | "Decodable" | "Pageable"
-        | "Countable" | "Every" => Some("std.repo"),
+        | "Countable" | "Every" | "Groupable" | "Summarizable" => Some("std.repo"),
         _ => None,
     }
 }

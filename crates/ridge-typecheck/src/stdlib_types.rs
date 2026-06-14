@@ -437,68 +437,36 @@ fn reconciled_decls(b: &BuiltinTyCons, base: u32) -> Vec<TyConDecl> {
             opaque: true,
             is_anon: false,
         },
-        // `std.repo` — the group handle the grouped-aggregate quotes range over.
-        // Never constructed by user code: it only names the parameter of a
-        // `having`/`summarize` lambda so the group vocabulary (`g.key`, `g.count`,
-        // `g.sum`/`avg`/`min`/`max`) is available inside the quote. The entity `e`
-        // (param 0) is phantom, like `Repo`'s; `k` (param 1) is the group-key type
-        // `g.key` answers. Field order mirrors the source.
+        // `std.repo` — a grouped builder under construction, unified across a query
+        // and a join. A generic opaque record declared in Ridge (stdlib/repo.ridge):
+        // it carries the source queryable it groups (`source`, of type `q`), the
+        // group-key column and which side of a join it belongs to (`keyCol`,
+        // `keySide`), and the captured `HAVING` tree. The source type `q` (param 0)
+        // is the `Query`/`Join`/`LeftJoin` being grouped; the key-accessor type `p`
+        // (param 1) is phantom, kept only so the `having`/`summarize` quotes can read
+        // the key type off it. Opaque, so user code only threads it from `groupBy`
+        // through `having` into `summarize`.
         TyConDecl {
             id: TyConId(base + 9),
-            name: "Group".to_string(),
+            name: "Grouped".to_string(),
             arity: 2,
             kind: TyConKind::Record(RecordSchema::new(
                 vec![TyVid(0), TyVid(1)],
-                vec![RecordField {
-                    name: "key".to_string(),
-                    ty: Type::Var(TyVid(1)),
-                }],
-            )),
-            def_span: None,
-            def_module_raw: None,
-            opaque: true,
-            is_anon: false,
-        },
-        // `std.repo` — a grouped query under construction. A generic opaque record
-        // declared in Ridge (stdlib/repo.ridge): the repository, the accumulated
-        // filter, the group-key column, and the captured `HAVING` tree. The entity
-        // `e` (param 0), the key `k` (param 1), and the adapter `a` (param 2).
-        // Opaque, so user code only threads it from `groupBy` through `having` into
-        // `summarize`. Field order mirrors the source.
-        TyConDecl {
-            id: TyConId(base + 10),
-            name: "GroupedQuery".to_string(),
-            arity: 3,
-            kind: TyConKind::Record(RecordSchema::new(
-                vec![TyVid(0), TyVid(1), TyVid(2)],
                 vec![
                     RecordField {
-                        name: "repo".to_string(),
-                        ty: Type::Con(
-                            TyConId(base + 2),
-                            vec![Type::Var(TyVid(0)), Type::Var(TyVid(2))],
-                        ),
-                    },
-                    RecordField {
-                        name: "pred".to_string(),
-                        ty: Type::Con(
-                            b.quote,
-                            vec![Type::Fn {
-                                params: vec![Type::Con(
-                                    b.map,
-                                    vec![Type::Con(b.text, vec![]), Type::Con(b.sql_value, vec![])],
-                                )],
-                                ret: Box::new(Type::Con(b.bool, vec![])),
-                                caps: CapRow::Concrete(CapabilitySet::PURE),
-                            }],
-                        ),
+                        name: "source".to_string(),
+                        ty: Type::Var(TyVid(0)),
                     },
                     RecordField {
                         name: "keyCol".to_string(),
                         ty: Type::Con(b.text, vec![]),
                     },
                     RecordField {
-                        name: "having".to_string(),
+                        name: "keySide".to_string(),
+                        ty: Type::Con(b.bool, vec![]),
+                    },
+                    RecordField {
+                        name: "havingTree".to_string(),
                         ty: Type::Con(b.q_expr, vec![]),
                     },
                 ],
@@ -955,54 +923,34 @@ fn reconciled_repo_fn_scheme(
         // `seed_projectable_scheme`), the fundep fixing the projection per
         // receiver and `Ret p` naming the projected element. Returning `None`
         // routes them through the class-method path rather than the old pub fns.
-        // groupBy : ∀e a k. Quote (e -> k) -> Query e a -> GroupedQuery e k a.
-        // A pure builder: it pins the group-key column (named by the accessor
-        // quote, exactly as an `orderBy` key) and carries the query's filter into a
-        // grouped query. `k` is the key type `g.key` later answers.
-        "groupBy" => {
-            let grouped_con = *reconciled.get("GroupedQuery")?;
-            let k = TyVid(2);
-            let key_quote = Type::Con(
-                b.quote,
-                vec![Type::Fn {
-                    params: vec![Type::Var(e)],
-                    ret: Box::new(Type::Var(k)),
-                    caps: pure(),
-                }],
-            );
-            let grouped = Type::Con(grouped_con, vec![Type::Var(e), Type::Var(k), Type::Var(a)]);
-            Some(Scheme {
-                vars: vec![e, a, k],
-                cap_vars: vec![],
-                row_vars: vec![],
-                ty: Type::Fn {
-                    params: vec![key_quote, query_app()],
-                    ret: Box::new(grouped),
-                    caps: pure(),
-                },
-                constraints: vec![],
-            })
-        }
-        // having : ∀e a k. Quote (Group e k -> Bool) -> GroupedQuery e k a
-        //   -> GroupedQuery e k a. A pure builder: it captures a predicate over the
-        // group aggregates (`g.count`, `g.sum(col)`, …) and stores it as the query's
-        // `HAVING`. The quote ranges over the `Group e k` handle, not a row.
+        // `groupBy` is no longer reconciled here: it became the method of the
+        // `Groupable q p | q -> p` class (std.repo), one verb that groups a query,
+        // an inner join, or a left join by a key column the accessor names. A
+        // qualified `Repo.groupBy` resolves to that class method, typed by the
+        // seeded `∀q p. Quote p -> q -> Grouped q p where Groupable q p` scheme
+        // (see `seed_groupable_scheme`), the fundep fixing the key accessor's arity
+        // per receiver. Omitting the arm routes it through the class-method path.
+        // having : ∀q p. Quote (Grouped q p -> Bool) -> Grouped q p -> Grouped q p.
+        // A pure builder: it captures a predicate over the group aggregates
+        // (`g.count`, `g.sum(col)`, …) and stores it as the grouped builder's
+        // `HAVING`. The quote ranges over the `Grouped q p` handle, not a row; the
+        // source `q` (a query or a join) carries the entities the column accessors
+        // read.
         "having" => {
-            let grouped_con = *reconciled.get("GroupedQuery")?;
-            let group_con = *reconciled.get("Group")?;
-            let k = TyVid(2);
-            let group = Type::Con(group_con, vec![Type::Var(e), Type::Var(k)]);
+            let grouped_con = *reconciled.get("Grouped")?;
+            let q = TyVid(0);
+            let p = TyVid(1);
+            let grouped = Type::Con(grouped_con, vec![Type::Var(q), Type::Var(p)]);
             let having_quote = Type::Con(
                 b.quote,
                 vec![Type::Fn {
-                    params: vec![group],
+                    params: vec![grouped.clone()],
                     ret: Box::new(Type::Con(b.bool, vec![])),
                     caps: pure(),
                 }],
             );
-            let grouped = Type::Con(grouped_con, vec![Type::Var(e), Type::Var(k), Type::Var(a)]);
             Some(Scheme {
-                vars: vec![e, a, k],
+                vars: vec![q, p],
                 cap_vars: vec![],
                 row_vars: vec![],
                 ty: Type::Fn {
@@ -1013,31 +961,32 @@ fn reconciled_repo_fn_scheme(
                 constraints: vec![],
             })
         }
-        // summarize : ∀e a k s. Quote (Group e k -> s) -> GroupedQuery e k a
-        //   -> Result (List s) Error where Row s, Adapter a. The projection names a
-        // result record built from group aggregates (`Stats { dept = g.key, n =
-        // g.count, total = g.sum (fn u -> u.salary) }`), which pins `s` to that
-        // record; the backend pushes the GROUP BY down and `Row s` decodes each
-        // summarised row. `s` first appears in the projection (param 0) before the
-        // adapter `a` (in `GroupedQuery`, param 2), so the constraint order is
-        // `Row s` then `Adapter a`, matching `selectList`.
+        // summarize : ∀q p s. Quote (Grouped q p -> s) -> Grouped q p
+        //   -> Result (List s) Error where Summarizable q, Row s. The projection
+        // names a result record built from group aggregates (`Stats { dept = g.key,
+        // n = g.count, total = g.sum (fn u -> u.salary) }`), which pins `s`; the
+        // `Summarizable q` instance runs the GROUP BY against the source's seam (a
+        // query, an inner join, or a left join) and `Row s` decodes each summarised
+        // row. `q` first appears in the `Grouped q p` handle (param 0) before `s` (the
+        // projection's result), so the constraint order is `Summarizable q` then
+        // `Row s`.
         "summarize" => {
-            let grouped_con = *reconciled.get("GroupedQuery")?;
-            let group_con = *reconciled.get("Group")?;
-            let k = TyVid(2);
-            let s = TyVid(3);
-            let group = Type::Con(group_con, vec![Type::Var(e), Type::Var(k)]);
+            let grouped_con = *reconciled.get("Grouped")?;
+            let summarizable = classes.id_by_name("Summarizable")?;
+            let q = TyVid(0);
+            let p = TyVid(1);
+            let s = TyVid(2);
+            let grouped = Type::Con(grouped_con, vec![Type::Var(q), Type::Var(p)]);
             let proj_quote = Type::Con(
                 b.quote,
                 vec![Type::Fn {
-                    params: vec![group],
+                    params: vec![grouped.clone()],
                     ret: Box::new(Type::Var(s)),
                     caps: pure(),
                 }],
             );
-            let grouped = Type::Con(grouped_con, vec![Type::Var(e), Type::Var(k), Type::Var(a)]);
             Some(Scheme {
-                vars: vec![e, a, k, s],
+                vars: vec![q, p, s],
                 cap_vars: vec![],
                 row_vars: vec![],
                 ty: Type::Fn {
@@ -1045,7 +994,10 @@ fn reconciled_repo_fn_scheme(
                     ret: Box::new(result(Type::Con(b.list, vec![Type::Var(s)]))),
                     caps: pure(),
                 },
-                constraints: vec![Constraint::single(row, s), Constraint::single(adapter, a)],
+                constraints: vec![
+                    Constraint::single(row, s),
+                    Constraint::single(summarizable, q),
+                ],
             })
         }
         // joinOn : ∀e f a. Repo f a -> Quote (e -> f -> Bool) -> Query e a

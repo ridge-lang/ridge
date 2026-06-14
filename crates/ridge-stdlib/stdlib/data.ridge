@@ -94,7 +94,9 @@ pub class Adapter a =
     aggregateLeftJoin (conn: a) (leftTable: Text) (rightTable: Text) (cond: Quote (Map Text SqlValue -> Map Text SqlValue -> Bool)) (where2: Quote (Map Text SqlValue -> Map Text SqlValue -> Bool)) (pred: Quote (Map Text SqlValue -> Bool)) (func: Text) (column: Text) (isRight: Bool) -> Result (Option SqlValue) Error
     countJoin (conn: a) (leftTable: Text) (rightTable: Text) (cond: Quote (Map Text SqlValue -> Map Text SqlValue -> Bool)) (where2: Quote (Map Text SqlValue -> Map Text SqlValue -> Bool)) (pred: Quote (Map Text SqlValue -> Bool)) -> Result Int Error
     countLeftJoin (conn: a) (leftTable: Text) (rightTable: Text) (cond: Quote (Map Text SqlValue -> Map Text SqlValue -> Bool)) (where2: Quote (Map Text SqlValue -> Map Text SqlValue -> Bool)) (pred: Quote (Map Text SqlValue -> Bool)) -> Result Int Error
-    groupSummarize (conn: a) (table: Text) (pred: Quote (Map Text SqlValue -> Bool)) (keyCol: Text) (cols: List (Text, Text, Text)) (having: QExpr) -> Result (List (Map Text SqlValue)) Error
+    groupSummarize (conn: a) (table: Text) (pred: Quote (Map Text SqlValue -> Bool)) (keyCol: Text) (cols: List (Text, Text, Text, Bool)) (having: QExpr) -> Result (List (Map Text SqlValue)) Error
+    groupSummarizeJoin (conn: a) (leftTable: Text) (rightTable: Text) (cond: Quote (Map Text SqlValue -> Map Text SqlValue -> Bool)) (where2: Quote (Map Text SqlValue -> Map Text SqlValue -> Bool)) (pred: Quote (Map Text SqlValue -> Bool)) (keyCol: Text) (keySide: Bool) (cols: List (Text, Text, Text, Bool)) (having: QExpr) -> Result (List (Map Text SqlValue)) Error
+    groupSummarizeLeftJoin (conn: a) (leftTable: Text) (rightTable: Text) (cond: Quote (Map Text SqlValue -> Map Text SqlValue -> Bool)) (where2: Quote (Map Text SqlValue -> Map Text SqlValue -> Bool)) (pred: Quote (Map Text SqlValue -> Bool)) (keyCol: Text) (keySide: Bool) (cols: List (Text, Text, Text, Bool)) (having: QExpr) -> Result (List (Map Text SqlValue)) Error
     runPlan (conn: a) (plan: QExpr) -> Result (List (Map Text SqlValue)) Error
 
 -- A handle to an in-memory store. Opaque: `memAdapter` is the only way to make
@@ -214,7 +216,13 @@ fn _memCountLeftJoin (id: Int) (leftTable: Text) (rightTable: Text) (cond: QExpr
 -- ordered by the key. The in-memory dual of a `SELECT … GROUP BY … HAVING …`
 -- push-down.
 @ffi("ridge_rt", "mem_group_summarize", 6)
-fn _memGroupSummarize (id: Int) (table: Text) (tree: QExpr) (keyCol: Text) (cols: List (Text, Text, Text)) (having: QExpr) -> Result (List (Map Text SqlValue)) Error
+fn _memGroupSummarize (id: Int) (table: Text) (tree: QExpr) (keyCol: Text) (cols: List (Text, Text, Text, Bool)) (having: QExpr) -> Result (List (Map Text SqlValue)) Error
+
+@ffi("ridge_rt", "mem_group_summarize_join", 10)
+fn _memGroupSummarizeJoin (id: Int) (leftTable: Text) (rightTable: Text) (cond: QExpr) (where2: QExpr) (pred: QExpr) (keyCol: Text) (keySide: Bool) (cols: List (Text, Text, Text, Bool)) (having: QExpr) -> Result (List (Map Text SqlValue)) Error
+
+@ffi("ridge_rt", "mem_group_summarize_left_join", 10)
+fn _memGroupSummarizeLeftJoin (id: Int) (leftTable: Text) (rightTable: Text) (cond: QExpr) (where2: QExpr) (pred: QExpr) (keyCol: Text) (keySide: Bool) (cols: List (Text, Text, Text, Bool)) (having: QExpr) -> Result (List (Map Text SqlValue)) Error
 
 -- Run a captured query plan (a set-operation tree) against the in-memory store,
 -- interpreting each `planScan`/`planCombine`/`planRefine` node, and return the
@@ -266,8 +274,12 @@ instance Adapter MemAdapter =
         _memCountJoin conn.id leftTable rightTable cond.tree where2.tree pred.tree
     countLeftJoin (conn: MemAdapter) (leftTable: Text) (rightTable: Text) (cond: Quote (Map Text SqlValue -> Map Text SqlValue -> Bool)) (where2: Quote (Map Text SqlValue -> Map Text SqlValue -> Bool)) (pred: Quote (Map Text SqlValue -> Bool)) -> Result Int Error =
         _memCountLeftJoin conn.id leftTable rightTable cond.tree where2.tree pred.tree
-    groupSummarize (conn: MemAdapter) (table: Text) (pred: Quote (Map Text SqlValue -> Bool)) (keyCol: Text) (cols: List (Text, Text, Text)) (having: QExpr) -> Result (List (Map Text SqlValue)) Error =
+    groupSummarize (conn: MemAdapter) (table: Text) (pred: Quote (Map Text SqlValue -> Bool)) (keyCol: Text) (cols: List (Text, Text, Text, Bool)) (having: QExpr) -> Result (List (Map Text SqlValue)) Error =
         _memGroupSummarize conn.id table pred.tree keyCol cols having
+    groupSummarizeJoin (conn: MemAdapter) (leftTable: Text) (rightTable: Text) (cond: Quote (Map Text SqlValue -> Map Text SqlValue -> Bool)) (where2: Quote (Map Text SqlValue -> Map Text SqlValue -> Bool)) (pred: Quote (Map Text SqlValue -> Bool)) (keyCol: Text) (keySide: Bool) (cols: List (Text, Text, Text, Bool)) (having: QExpr) -> Result (List (Map Text SqlValue)) Error =
+        _memGroupSummarizeJoin conn.id leftTable rightTable cond.tree where2.tree pred.tree keyCol keySide cols having
+    groupSummarizeLeftJoin (conn: MemAdapter) (leftTable: Text) (rightTable: Text) (cond: Quote (Map Text SqlValue -> Map Text SqlValue -> Bool)) (where2: Quote (Map Text SqlValue -> Map Text SqlValue -> Bool)) (pred: Quote (Map Text SqlValue -> Bool)) (keyCol: Text) (keySide: Bool) (cols: List (Text, Text, Text, Bool)) (having: QExpr) -> Result (List (Map Text SqlValue)) Error =
+        _memGroupSummarizeLeftJoin conn.id leftTable rightTable cond.tree where2.tree pred.tree keyCol keySide cols having
     runPlan (conn: MemAdapter) (plan: QExpr) -> Result (List (Map Text SqlValue)) Error =
         _memRunPlan conn.id plan
 
@@ -398,7 +410,13 @@ fn _pgCountLeftJoin (id: Int) (leftTable: Text) (rightTable: Text) (cond: QExpr)
 -- `SELECT <aggregates> FROM t WHERE <pred> GROUP BY <key> HAVING <having> ORDER BY
 -- <key>`; each row comes back keyed by the projection's output aliases.
 @ffi("ridge_pg", "pg_group_summarize", 6)
-fn _pgGroupSummarize (id: Int) (table: Text) (tree: QExpr) (keyCol: Text) (cols: List (Text, Text, Text)) (having: QExpr) -> Result (List (Map Text SqlValue)) Error
+fn _pgGroupSummarize (id: Int) (table: Text) (tree: QExpr) (keyCol: Text) (cols: List (Text, Text, Text, Bool)) (having: QExpr) -> Result (List (Map Text SqlValue)) Error
+
+@ffi("ridge_pg", "pg_group_summarize_join", 10)
+fn _pgGroupSummarizeJoin (id: Int) (leftTable: Text) (rightTable: Text) (cond: QExpr) (where2: QExpr) (pred: QExpr) (keyCol: Text) (keySide: Bool) (cols: List (Text, Text, Text, Bool)) (having: QExpr) -> Result (List (Map Text SqlValue)) Error
+
+@ffi("ridge_pg", "pg_group_summarize_left_join", 10)
+fn _pgGroupSummarizeLeftJoin (id: Int) (leftTable: Text) (rightTable: Text) (cond: QExpr) (where2: QExpr) (pred: QExpr) (keyCol: Text) (keySide: Bool) (cols: List (Text, Text, Text, Bool)) (having: QExpr) -> Result (List (Map Text SqlValue)) Error
 
 -- Compile a captured query plan to nested SQL — each `planScan` a `SELECT`, each
 -- `planCombine` a `UNION`/`INTERSECT`/`EXCEPT`, each `planRefine` a wrapping
@@ -451,7 +469,11 @@ instance Adapter Postgres =
         _pgCountJoin conn.id leftTable rightTable cond.tree where2.tree pred.tree
     countLeftJoin (conn: Postgres) (leftTable: Text) (rightTable: Text) (cond: Quote (Map Text SqlValue -> Map Text SqlValue -> Bool)) (where2: Quote (Map Text SqlValue -> Map Text SqlValue -> Bool)) (pred: Quote (Map Text SqlValue -> Bool)) -> Result Int Error =
         _pgCountLeftJoin conn.id leftTable rightTable cond.tree where2.tree pred.tree
-    groupSummarize (conn: Postgres) (table: Text) (pred: Quote (Map Text SqlValue -> Bool)) (keyCol: Text) (cols: List (Text, Text, Text)) (having: QExpr) -> Result (List (Map Text SqlValue)) Error =
+    groupSummarize (conn: Postgres) (table: Text) (pred: Quote (Map Text SqlValue -> Bool)) (keyCol: Text) (cols: List (Text, Text, Text, Bool)) (having: QExpr) -> Result (List (Map Text SqlValue)) Error =
         _pgGroupSummarize conn.id table pred.tree keyCol cols having
+    groupSummarizeJoin (conn: Postgres) (leftTable: Text) (rightTable: Text) (cond: Quote (Map Text SqlValue -> Map Text SqlValue -> Bool)) (where2: Quote (Map Text SqlValue -> Map Text SqlValue -> Bool)) (pred: Quote (Map Text SqlValue -> Bool)) (keyCol: Text) (keySide: Bool) (cols: List (Text, Text, Text, Bool)) (having: QExpr) -> Result (List (Map Text SqlValue)) Error =
+        _pgGroupSummarizeJoin conn.id leftTable rightTable cond.tree where2.tree pred.tree keyCol keySide cols having
+    groupSummarizeLeftJoin (conn: Postgres) (leftTable: Text) (rightTable: Text) (cond: Quote (Map Text SqlValue -> Map Text SqlValue -> Bool)) (where2: Quote (Map Text SqlValue -> Map Text SqlValue -> Bool)) (pred: Quote (Map Text SqlValue -> Bool)) (keyCol: Text) (keySide: Bool) (cols: List (Text, Text, Text, Bool)) (having: QExpr) -> Result (List (Map Text SqlValue)) Error =
+        _pgGroupSummarizeLeftJoin conn.id leftTable rightTable cond.tree where2.tree pred.tree keyCol keySide cols having
     runPlan (conn: Postgres) (plan: QExpr) -> Result (List (Map Text SqlValue)) Error =
         _pgRunPlan conn.id plan

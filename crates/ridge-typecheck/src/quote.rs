@@ -359,16 +359,12 @@ pub(crate) fn check_quote(
         return false;
     }
 
-    // A non-boolean scalar result is an ordering key, which is only meaningful
-    // for a single-parameter quote (`orderBy`). A multi-parameter quote must be
-    // a predicate or a named projection.
-    if scope.len() != 1 {
-        ctx.errors.push(TypeError::QuoteUnsupportedExpr {
-            detail: "a multi-parameter quote must be a predicate or a named projection".to_string(),
-            span: body.span(),
-        });
-        return false;
-    }
+    // A non-boolean scalar result is an ordering key: a single column to sort by.
+    // A one-parameter quote is a query's `orderBy`; a two-parameter quote is a
+    // join's, whose key may name a column from either side (`fn u p -> p.title`).
+    // The key must still be a single column, checked next, so a multi-parameter
+    // body that is neither a predicate nor a projection nor a column is rejected
+    // there with the same "must be a single column" diagnostic.
 
     // The ordering key must be a single column (or a literal). Its type must
     // match the quote's declared result type — except when that result type is

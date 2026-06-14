@@ -331,6 +331,18 @@ pub fn db joinedTitles () -> Text =
                 Err _  -> "select-err"
                 Ok cs  -> joinCombos cs
 
+-- join ordered by a RIGHT column: the same inner join, ordered by the post title
+-- (a right-table column) instead of the user id -> "lin:again,lin:hello,max:world"
+-- (titles sort again < hello < world). Proves the unified `orderBy` takes a
+-- two-row key on a `Join` and the seam orders by a column of the right table.
+pub fn db joinOrderByRight () -> Text =
+    match setupJoin ()
+        Err _ -> "setup-err"
+        Ok (users, posts) ->
+            match users |> Repo.query |> Repo.joinOn posts (fn (u: User) (p: Post) -> u.id == p.author) |> Repo.orderBy Asc (fn (u: User) (p: Post) -> p.title) |> Repo.toPairs
+                Err _  -> "join-order-err"
+                Ok ps  -> joinPairs ps
+
 -- left join: keep every user, pairing each with its posts or with `None`, order
 -- by user id, and render `name:title` (or `name:-`) per pair ->
 -- "ada:-,lin:hello,lin:again,max:world". ada owns no posts, so where the inner
@@ -938,6 +950,7 @@ fn repo_surface_runs_on_beam() {
          io:format(\"topYears=~w~n\",[{module}:topYears()]), \
          io:format(\"joinedNames=~s~n\",[{module}:joinedNames()]), \
          io:format(\"joinedTitles=~s~n\",[{module}:joinedTitles()]), \
+         io:format(\"joinOrderByRight=~s~n\",[{module}:joinOrderByRight()]), \
          io:format(\"leftJoinedNames=~s~n\",[{module}:leftJoinedNames()]), \
          io:format(\"leftSelectTitles=~s~n\",[{module}:leftSelectTitles()]), \
          io:format(\"joinFilterRight=~s~n\",[{module}:joinFilterRight()]), \
@@ -1026,6 +1039,10 @@ fn repo_surface_runs_on_beam() {
         (
             "joinedTitles=lin:hello,lin:again,max:world",
             "selectJoin projects columns from both entities into the named Combo shape",
+        ),
+        (
+            "joinOrderByRight=lin:again,lin:hello,max:world",
+            "the unified orderBy sorts the join by a right-table column (post title), so the pairs come back title-ordered",
         ),
         (
             "leftJoinedNames=ada:-,lin:hello,lin:again,max:world",

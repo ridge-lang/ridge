@@ -2142,7 +2142,7 @@ pub(crate) fn stdlib_class_home_module(class_name: &str) -> Option<&'static str>
     match class_name {
         "SqlType" | "Row" => Some("std.sql"),
         "Adapter" => Some("std.data"),
-        "Refinable" | "Projectable" => Some("std.repo"),
+        "Refinable" | "Projectable" | "Orderable" => Some("std.repo"),
         _ => None,
     }
 }

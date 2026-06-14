@@ -457,6 +457,10 @@ const BASELINE_EXPORTS: &[(&str, &[&str])] = &[
             // (two-row predicate), the arity following the receiver.
             "Refinable",
             "filter",
+            // The unified `orderBy` is the method of the `Orderable q p | q -> p`
+            // class, so one verb orders a query (one-row key) and a join (two-row
+            // key over either side), the arity following the receiver.
+            "Orderable",
             "orderBy",
             "limit",
             "offset",

@@ -754,6 +754,15 @@ fn typecheck_module_inner(
         seed_sql_codec_schemes(&mut ctx, b, ct, sql_value);
         seed_refinable_scheme(&mut ctx, b, ct);
         seed_projectable_scheme(&mut ctx, b, ct);
+        // `SortOrder` is `orderBy`'s leading parameter; it lives in the reconciled
+        // stdlib block (std.query) for user builds and the global arena for the
+        // incremental path, so try both. Empty in the stdlib's own build, where
+        // the source class types `orderBy` directly and the seed is unused.
+        let sort_order = stdlib_tycon_names
+            .get("SortOrder")
+            .or_else(|| global_tycon_names.get("SortOrder"))
+            .copied();
+        seed_orderable_scheme(&mut ctx, b, ct, sort_order);
     }
 
     // Step B: Seed env with prelude constructors + stdlib qualified bindings.
@@ -1126,6 +1135,57 @@ fn seed_projectable_scheme(
             },
         );
     }
+}
+
+/// Seed the env scheme for `Orderable.orderBy` — std.repo's unified query/join
+/// `orderBy`. Registered in Rust like [`seed_refinable_scheme`] because the
+/// stdlib class carries no source AST.
+///
+/// Scheme: `∀q p. SortOrder -> Quote p -> q -> q where Orderable q p`. The
+/// receiver `q` pins the instance; the functional dependency `q -> p` then fixes
+/// the key's shape `p`, so one binding serves a `Query`'s one-row key and a
+/// `Join`/`LeftJoin`'s two-row key alike, and a wrong-arity key is rejected when
+/// the determined `p` fails to unify with the captured lambda. The key's column
+/// type is phantom — the quote's return is left free, so a column of any type
+/// orders — exactly as the reconciled single-receiver `orderBy` left it.
+/// `sort_order` is `SortOrder`'s reconciled tycon (from std.query); the scheme is
+/// not seeded without it (during the stdlib's own build the source class types
+/// `orderBy` directly).
+fn seed_orderable_scheme(
+    ctx: &mut crate::ctx::InferCtx,
+    b: &ridge_types::BuiltinTyCons,
+    class_table: &crate::class_env::ClassTable,
+    sort_order: Option<ridge_types::TyConId>,
+) {
+    use ridge_types::{CapRow, CapabilitySet, Constraint, Scheme, Type};
+    let Some(orderable) = class_table.id_by_name("Orderable") else {
+        return;
+    };
+    let Some(sort_order) = sort_order else {
+        return;
+    };
+    let q = ctx.fresh_tyvid();
+    let p = ctx.fresh_tyvid();
+    let fn_ty = Type::Fn {
+        params: vec![
+            Type::Con(sort_order, vec![]),
+            Type::Con(b.quote, vec![Type::Var(p)]),
+            Type::Var(q),
+        ],
+        ret: Box::new(Type::Var(q)),
+        caps: CapRow::Concrete(CapabilitySet::PURE),
+    };
+    let constraint_tys: smallvec::SmallVec<[ridge_types::TyVid; 1]> = [q, p].into_iter().collect();
+    ctx.env.bind(
+        "orderBy".to_owned(),
+        Scheme {
+            vars: vec![q, p],
+            cap_vars: vec![],
+            row_vars: vec![],
+            ty: fn_ty,
+            constraints: vec![Constraint::new(orderable, constraint_tys)],
+        },
+    );
 }
 
 /// Seed type-environment schemes for the two prelude codec methods (`encode`,
@@ -1658,7 +1718,7 @@ fn seed_sql_codec_schemes(
             );
         }
         // join :: ∀a c p. a -> Text -> Text -> Quote c -> Quote p
-        //              -> List (Bool, Text) -> Int -> Int
+        //              -> List (Bool, Bool, Text) -> Int -> Int
         //              -> Result (List (Map Text SqlValue, Map Text SqlValue)) Error
         //              where Adapter a.
         // The inner join of two tables: `cond` is the quoted condition over both
@@ -1672,9 +1732,12 @@ fn seed_sql_codec_schemes(
             let c = ctx.fresh_tyvid();
             let w = ctx.fresh_tyvid();
             let p = ctx.fresh_tyvid();
+            // A join orders by a column from either side, so each key carries an
+            // `isRight?` tag: `(ascending?, isRight?, column)`.
             let orders = Type::Con(
                 b.list,
                 vec![Type::Tuple(vec![
+                    Type::Con(b.bool, vec![]),
                     Type::Con(b.bool, vec![]),
                     Type::Con(b.text, vec![]),
                 ])],
@@ -1710,7 +1773,7 @@ fn seed_sql_codec_schemes(
             );
         }
         // joinSelect :: ∀a c p r. a -> Text -> Text -> Quote c -> Quote p
-        //              -> List (Bool, Text) -> Int -> Int -> Quote r
+        //              -> List (Bool, Bool, Text) -> Int -> Int -> Quote r
         //              -> Result (List (Map Text SqlValue)) Error where Adapter a.
         // Like `join`, plus a quoted projection `r` over both entities: each
         // result row is a single map keyed by the projection's output aliases,
@@ -1721,9 +1784,12 @@ fn seed_sql_codec_schemes(
             let w = ctx.fresh_tyvid();
             let p = ctx.fresh_tyvid();
             let r = ctx.fresh_tyvid();
+            // A join orders by a column from either side, so each key carries an
+            // `isRight?` tag: `(ascending?, isRight?, column)`.
             let orders = Type::Con(
                 b.list,
                 vec![Type::Tuple(vec![
+                    Type::Con(b.bool, vec![]),
                     Type::Con(b.bool, vec![]),
                     Type::Con(b.text, vec![]),
                 ])],
@@ -1762,7 +1828,7 @@ fn seed_sql_codec_schemes(
             );
         }
         // leftJoin :: ∀a c p. a -> Text -> Text -> Quote c -> Quote p
-        //              -> List (Bool, Text) -> Int -> Int
+        //              -> List (Bool, Bool, Text) -> Int -> Int
         //              -> Result (List (Map Text SqlValue, Option (Map Text SqlValue))) Error
         //              where Adapter a.
         // The left-outer form of `join`: same condition, predicate, ordering, and
@@ -1775,9 +1841,12 @@ fn seed_sql_codec_schemes(
             let c = ctx.fresh_tyvid();
             let w = ctx.fresh_tyvid();
             let p = ctx.fresh_tyvid();
+            // A join orders by a column from either side, so each key carries an
+            // `isRight?` tag: `(ascending?, isRight?, column)`.
             let orders = Type::Con(
                 b.list,
                 vec![Type::Tuple(vec![
+                    Type::Con(b.bool, vec![]),
                     Type::Con(b.bool, vec![]),
                     Type::Con(b.text, vec![]),
                 ])],
@@ -1813,7 +1882,7 @@ fn seed_sql_codec_schemes(
             );
         }
         // leftJoinSelect :: ∀a c p r. a -> Text -> Text -> Quote c -> Quote p
-        //              -> List (Bool, Text) -> Int -> Int -> Quote r
+        //              -> List (Bool, Bool, Text) -> Int -> Int -> Quote r
         //              -> Result (List (Map Text SqlValue)) Error where Adapter a.
         // The left-outer form of `joinSelect`: same projection select-list, but a
         // `LEFT JOIN` keeps every left row and the right-side columns come back
@@ -1826,9 +1895,12 @@ fn seed_sql_codec_schemes(
             let w = ctx.fresh_tyvid();
             let p = ctx.fresh_tyvid();
             let r = ctx.fresh_tyvid();
+            // A join orders by a column from either side, so each key carries an
+            // `isRight?` tag: `(ascending?, isRight?, column)`.
             let orders = Type::Con(
                 b.list,
                 vec![Type::Tuple(vec![
+                    Type::Con(b.bool, vec![]),
                     Type::Con(b.bool, vec![]),
                     Type::Con(b.text, vec![]),
                 ])],

@@ -971,32 +971,14 @@ fn reconciled_repo_fn_scheme(
             query_app(),
             vec![],
         ),
-        // orderBy : ∀e a k. SortOrder -> Quote (e -> k) -> Query e a -> Query e a.
-        // The key quote names a column of any type `k` (the return is phantom —
-        // only the column name is read), so this scheme carries the extra var.
-        "orderBy" => {
-            let sort_order = *reconciled.get("SortOrder")?;
-            let k = TyVid(2);
-            let key_quote = Type::Con(
-                b.quote,
-                vec![Type::Fn {
-                    params: vec![Type::Var(e)],
-                    ret: Box::new(Type::Var(k)),
-                    caps: CapRow::Concrete(CapabilitySet::PURE),
-                }],
-            );
-            Some(Scheme {
-                vars: vec![e, a, k],
-                cap_vars: vec![],
-                row_vars: vec![],
-                ty: Type::Fn {
-                    params: vec![Type::Con(sort_order, vec![]), key_quote, query_app()],
-                    ret: Box::new(query_app()),
-                    caps: pure(),
-                },
-                constraints: vec![],
-            })
-        }
+        // `orderBy` is no longer reconciled here: it became the method of the
+        // `Orderable q p | q -> p` class (std.repo), one verb over a query or a
+        // join. A qualified `Repo.orderBy` resolves to that class method, typed by
+        // the seeded `∀q p. SortOrder -> Quote p -> q -> q where Orderable q p`
+        // scheme (see `seed_orderable_scheme`), the fundep fixing the key's arity
+        // per receiver and a two-row key naming a column from either side of a
+        // join. Returning `None` here routes it through the class-method path
+        // rather than the old single-receiver pub fn.
         // toList : ∀e a. Query e a -> Result (List e) Error where Adapter a, Row e
         "toList" => method(vec![query_app()], result(list_e()), with_adapter_row()),
         // first / single : ∀e a. Query e a -> Result (Option e) Error

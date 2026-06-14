@@ -2284,3 +2284,228 @@ pub fn db bad () -> Result (List (User, Post)) Error =
         "an order key naming a column absent from the right entity must be rejected; got no errors"
     );
 }
+
+// ── Unified aggregates (Aggregable) ──────────────────────────────────────────
+
+#[test]
+fn query_builder_aggregate_join_by_left_column_typechecks() {
+    // The one `Repo.sumOf` takes a two-row accessor on a `Join`. An accessor over
+    // the left entity folds a left-table column — the same verb that takes a
+    // one-row accessor on a `Query`, the arity following the receiver through the
+    // `Aggregable` functional dependency. The result keeps the column's own type
+    // (`Ret p` = `Int`).
+    let main = r#"
+import std.data (memAdapter, MemAdapter)
+import std.repo as Repo
+import std.sql (SqlValue)
+
+pub type User = { id: Int, age: Int, name: Text } deriving (Row)
+pub type Post = { id: Int, authorId: Int, title: Text } deriving (Row)
+
+pub fn db totalAge () -> Result (Option Int) Error =
+    let users: Repo User MemAdapter = Repo.repo (memAdapter ()) "users"
+    let posts: Repo Post MemAdapter = Repo.repo (memAdapter ()) "posts"
+    users
+      |> Repo.query
+      |> Repo.joinOn posts (fn (u: User) (p: Post) -> u.id == p.authorId)
+      |> Repo.sumOf (fn (u: User) (p: Post) -> u.age)
+"#;
+    let errors = typecheck_one(main);
+    assert!(
+        errors.is_empty(),
+        "a two-row aggregate accessor over the left entity must type-check clean; got {errors:?}"
+    );
+}
+
+#[test]
+fn query_builder_aggregate_join_by_right_column_typechecks() {
+    // A join's aggregate accessor may name a column of the *right* entity, folding
+    // a right-table column. `p.id` reads the right side, which the seam qualifies
+    // to the right table; only the verb's arity is fixed by the receiver, not which
+    // side a column names. `maxOf` keeps the column's own type (`Int`).
+    let main = r#"
+import std.data (memAdapter, MemAdapter)
+import std.repo as Repo
+import std.sql (SqlValue)
+
+pub type User = { id: Int, age: Int, name: Text } deriving (Row)
+pub type Post = { id: Int, authorId: Int, title: Text } deriving (Row)
+
+pub fn db topPostId () -> Result (Option Int) Error =
+    let users: Repo User MemAdapter = Repo.repo (memAdapter ()) "users"
+    let posts: Repo Post MemAdapter = Repo.repo (memAdapter ()) "posts"
+    users
+      |> Repo.query
+      |> Repo.joinOn posts (fn (u: User) (p: Post) -> u.id == p.authorId)
+      |> Repo.maxOf (fn (u: User) (p: Post) -> p.id)
+"#;
+    let errors = typecheck_one(main);
+    assert!(
+        errors.is_empty(),
+        "a two-row aggregate accessor over the right entity must type-check clean; got {errors:?}"
+    );
+}
+
+#[test]
+fn query_builder_avg_join_returns_float_typechecks() {
+    // `avgOf` over a join answers `Option Float` regardless of the folded column's
+    // type — a SQL average is fractional even over an integer column — so averaging
+    // a right `Int` column type-checks against a `Float` result, not `Int`.
+    let main = r#"
+import std.data (memAdapter, MemAdapter)
+import std.repo as Repo
+import std.sql (SqlValue)
+
+pub type User = { id: Int, age: Int, name: Text } deriving (Row)
+pub type Post = { id: Int, authorId: Int, title: Text } deriving (Row)
+
+pub fn db avgPostId () -> Result (Option Float) Error =
+    let users: Repo User MemAdapter = Repo.repo (memAdapter ()) "users"
+    let posts: Repo Post MemAdapter = Repo.repo (memAdapter ()) "posts"
+    users
+      |> Repo.query
+      |> Repo.joinOn posts (fn (u: User) (p: Post) -> u.id == p.authorId)
+      |> Repo.avgOf (fn (u: User) (p: Post) -> p.id)
+"#;
+    let errors = typecheck_one(main);
+    assert!(
+        errors.is_empty(),
+        "avgOf over a join must answer Option Float; got {errors:?}"
+    );
+}
+
+#[test]
+fn query_builder_aggregate_left_join_by_right_column_typechecks() {
+    // A left join's aggregate reads its right side as the plain entity `f` (not
+    // `Option f` the way its per-row `select`/`orderBy` do), because an aggregate
+    // folds values rather than producing one per row. `maxOf` over the right `Text`
+    // column answers `Option Text` (the column's type, `None` over an empty fold);
+    // an unmatched left row's right column is a NULL the fold skips.
+    let main = r#"
+import std.data (memAdapter, MemAdapter)
+import std.repo as Repo
+import std.sql (SqlValue)
+
+pub type User = { id: Int, age: Int, name: Text } deriving (Row)
+pub type Post = { id: Int, authorId: Int, title: Text } deriving (Row)
+
+pub fn db latestTitle () -> Result (Option Text) Error =
+    let users: Repo User MemAdapter = Repo.repo (memAdapter ()) "users"
+    let posts: Repo Post MemAdapter = Repo.repo (memAdapter ()) "posts"
+    users
+      |> Repo.query
+      |> Repo.leftJoinOn posts (fn (u: User) (p: Post) -> u.id == p.authorId)
+      |> Repo.maxOf (fn (u: User) (p: Post) -> p.title)
+"#;
+    let errors = typecheck_one(main);
+    assert!(
+        errors.is_empty(),
+        "a left join's two-row aggregate over the right entity must type-check clean; got {errors:?}"
+    );
+}
+
+#[test]
+fn query_builder_two_row_aggregate_accessor_on_query_is_rejected() {
+    // The `Aggregable` functional dependency fixes the accessor's arity to the
+    // receiver: a `Query` takes a one-row accessor, so a two-row one is an arity
+    // error — the aggregate dual of the filter/orderBy arity checks.
+    let main = r#"
+import std.data (memAdapter, MemAdapter)
+import std.repo as Repo
+import std.sql (SqlValue)
+
+pub type User = { id: Int, age: Int, name: Text } deriving (Row)
+
+pub fn db bad () -> Result (Option Int) Error =
+    let users: Repo User MemAdapter = Repo.repo (memAdapter ()) "users"
+    users
+      |> Repo.query
+      |> Repo.sumOf (fn (u: User) (v: User) -> u.age)
+"#;
+    let errors = typecheck_one(main);
+    assert!(
+        !errors.is_empty(),
+        "a two-row aggregate accessor on a query must be rejected by the arity functional dependency"
+    );
+}
+
+#[test]
+fn query_builder_one_row_aggregate_accessor_on_join_is_rejected() {
+    // The dual rejection: a `Join` takes a two-row accessor, so a one-row one is an
+    // arity error.
+    let main = r#"
+import std.data (memAdapter, MemAdapter)
+import std.repo as Repo
+import std.sql (SqlValue)
+
+pub type User = { id: Int, age: Int, name: Text } deriving (Row)
+pub type Post = { id: Int, authorId: Int, title: Text } deriving (Row)
+
+pub fn db bad () -> Result (Option Int) Error =
+    let users: Repo User MemAdapter = Repo.repo (memAdapter ()) "users"
+    let posts: Repo Post MemAdapter = Repo.repo (memAdapter ()) "posts"
+    users
+      |> Repo.query
+      |> Repo.joinOn posts (fn (u: User) (p: Post) -> u.id == p.authorId)
+      |> Repo.sumOf (fn (u: User) -> u.age)
+"#;
+    let errors = typecheck_one(main);
+    assert!(
+        !errors.is_empty(),
+        "a one-row aggregate accessor on a join must be rejected by the arity functional dependency"
+    );
+}
+
+#[test]
+fn query_builder_aggregate_accessor_is_column_only_no_injection() {
+    // Security: an aggregate accessor may only name a single column, checked
+    // against the entity's schema. A computed expression — the shape a raw-SQL
+    // injection would take — is rejected, so nothing but a schema-validated column
+    // reaches the generated `SUM(...)`.
+    let injection = r#"
+import std.data (memAdapter, MemAdapter)
+import std.repo as Repo
+import std.sql (SqlValue)
+
+pub type User = { id: Int, age: Int, name: Text } deriving (Row)
+
+pub fn db bad () -> Result (Option Int) Error =
+    let users: Repo User MemAdapter = Repo.repo (memAdapter ()) "users"
+    users
+      |> Repo.query
+      |> Repo.sumOf (fn (u: User) -> u.age + 1)
+"#;
+    let errors = typecheck_one(injection);
+    assert!(
+        !errors.is_empty(),
+        "a computed aggregate accessor (a non-column expression) must be rejected; got no errors"
+    );
+}
+
+#[test]
+fn query_builder_aggregate_join_unknown_right_column_is_rejected() {
+    // The two-row aggregate accessor resolves a right column against the right
+    // entity's schema: a column the right entity does not declare is rejected, so a
+    // join's aggregate can never name a column that is not there.
+    let main = r#"
+import std.data (memAdapter, MemAdapter)
+import std.repo as Repo
+import std.sql (SqlValue)
+
+pub type User = { id: Int, age: Int, name: Text } deriving (Row)
+pub type Post = { id: Int, authorId: Int, title: Text } deriving (Row)
+
+pub fn db bad () -> Result (Option Int) Error =
+    let users: Repo User MemAdapter = Repo.repo (memAdapter ()) "users"
+    let posts: Repo Post MemAdapter = Repo.repo (memAdapter ()) "posts"
+    users
+      |> Repo.query
+      |> Repo.joinOn posts (fn (u: User) (p: Post) -> u.id == p.authorId)
+      |> Repo.sumOf (fn (u: User) (p: Post) -> p.nope)
+"#;
+    let errors = typecheck_one(main);
+    assert!(
+        !errors.is_empty(),
+        "an aggregate accessor naming a column absent from the right entity must be rejected; got no errors"
+    );
+}

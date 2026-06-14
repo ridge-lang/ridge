@@ -1862,10 +1862,14 @@ pub(crate) fn try_lower_classmethod_call(
     // not the receiver `q`, so a dictionary re-derived from the receiver type alone
     // cannot resolve `Row s`. Augment the receiver with the projected element
     // (recovered from the call's result type) so that sub-dictionary resolves to a
-    // concrete instance rather than an unbound forward. Other class methods — the
-    // `Adapter` seam, `Refinable.filter` — have no such context and keep the plain
-    // receiver pin.
-    let dict_ty = if class_name == "Projectable" {
+    // concrete instance rather than an unbound forward. `Aggregable`'s `where
+    // Adapter a, SqlType n` is the same shape (`n` = the folded column's type, the
+    // accessor's return), so it augments too: `sumOf`/`minOf`/`maxOf` recover `n`
+    // from their `Option n` result, and `avgOf` recovers a `Float` it never reads
+    // (its `SqlType n` dict is inert). Other class methods — the `Adapter` seam,
+    // `Refinable.filter`, `Orderable.orderBy` — have no such context and keep the
+    // plain receiver pin.
+    let dict_ty = if class_name == "Projectable" || class_name == "Aggregable" {
         augment_receiver_with_projection_atoms(ctx, pin_ty.as_ref(), span)
     } else {
         pin_ty
@@ -2142,7 +2146,7 @@ pub(crate) fn stdlib_class_home_module(class_name: &str) -> Option<&'static str>
     match class_name {
         "SqlType" | "Row" => Some("std.sql"),
         "Adapter" => Some("std.data"),
-        "Refinable" | "Projectable" | "Orderable" => Some("std.repo"),
+        "Refinable" | "Projectable" | "Orderable" | "Aggregable" => Some("std.repo"),
         _ => None,
     }
 }

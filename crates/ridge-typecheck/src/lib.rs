@@ -763,6 +763,7 @@ fn typecheck_module_inner(
             .or_else(|| global_tycon_names.get("SortOrder"))
             .copied();
         seed_orderable_scheme(&mut ctx, b, ct, sort_order);
+        seed_aggregable_scheme(&mut ctx, b, ct);
     }
 
     // Step B: Seed env with prelude constructors + stdlib qualified bindings.
@@ -1186,6 +1187,73 @@ fn seed_orderable_scheme(
             constraints: vec![Constraint::new(orderable, constraint_tys)],
         },
     );
+}
+
+/// Seed the env schemes for `Aggregable.sumOf`/`avgOf`/`minOf`/`maxOf` — std.repo's
+/// unified scalar aggregates over a query, an inner join, or a left join.
+/// Registered in Rust for the same reason as [`seed_refinable_scheme`]: the stdlib
+/// class carries no source AST, so the AST-driven [`seed_class_method_schemes`]
+/// path skips it.
+///
+/// Schemes:
+/// - `sumOf :: ∀q p. Quote p -> q -> Result (Option (Ret p)) Error where Aggregable q p`
+/// - `minOf :: ∀q p. Quote p -> q -> Result (Option (Ret p)) Error where Aggregable q p`
+/// - `maxOf :: ∀q p. Quote p -> q -> Result (Option (Ret p)) Error where Aggregable q p`
+/// - `avgOf :: ∀q p. Quote p -> q -> Result (Option Float)   Error where Aggregable q p`
+///
+/// The receiver `q` pins the instance; the functional dependency `q -> p` fixes
+/// the accessor's shape `p`. `Ret p` is the accessor's own return — the folded
+/// column's type — so `sumOf`/`minOf`/`maxOf` answer the column's type, while
+/// `avgOf` is always a `Float` (a SQL average is fractional even over an integer
+/// column). One binding each serves a `Query`'s one-row accessor and a `Join`/
+/// `LeftJoin`'s two-row one, and a wrong-arity accessor is rejected when the
+/// determined `p` fails to unify with the captured lambda.
+fn seed_aggregable_scheme(
+    ctx: &mut crate::ctx::InferCtx,
+    b: &ridge_types::BuiltinTyCons,
+    class_table: &crate::class_env::ClassTable,
+) {
+    use ridge_types::{CapRow, CapabilitySet, Constraint, Scheme, Type};
+    let Some(aggregable) = class_table.id_by_name("Aggregable") else {
+        return;
+    };
+    // `sumOf`/`minOf`/`maxOf` answer the column's own type (`Ret p`); `avgOf` is
+    // always a `Float`. Otherwise the four schemes are identical.
+    for (name, ret_is_column) in [
+        ("sumOf", true),
+        ("avgOf", false),
+        ("minOf", true),
+        ("maxOf", true),
+    ] {
+        let q = ctx.fresh_tyvid();
+        let p = ctx.fresh_tyvid();
+        let elem = if ret_is_column {
+            Type::Con(b.ret, vec![Type::Var(p)])
+        } else {
+            Type::Con(b.float, vec![])
+        };
+        let result_ty = Type::Con(
+            b.result,
+            vec![Type::Con(b.option, vec![elem]), Type::Con(b.error, vec![])],
+        );
+        let fn_ty = Type::Fn {
+            params: vec![Type::Con(b.quote, vec![Type::Var(p)]), Type::Var(q)],
+            ret: Box::new(result_ty),
+            caps: CapRow::Concrete(CapabilitySet::PURE),
+        };
+        let constraint_tys: smallvec::SmallVec<[ridge_types::TyVid; 1]> =
+            [q, p].into_iter().collect();
+        ctx.env.bind(
+            name.to_owned(),
+            Scheme {
+                vars: vec![q, p],
+                cap_vars: vec![],
+                row_vars: vec![],
+                ty: fn_ty,
+                constraints: vec![Constraint::new(aggregable, constraint_tys)],
+            },
+        );
+    }
 }
 
 /// Seed type-environment schemes for the two prelude codec methods (`encode`,
@@ -1937,6 +2005,59 @@ fn seed_sql_codec_schemes(
                     constraints: vec![Constraint::single(adapter, a)],
                 },
             );
+        }
+        // aggregateJoin :: ∀a c w p. a -> Text -> Text -> Quote c -> Quote w
+        //              -> Quote p -> Text -> Text -> Bool
+        //              -> Result (Option SqlValue) Error where Adapter a.
+        // A scalar aggregate pushed into an inner join: the two table names, the
+        // quoted condition `c`, post-join `where2` `w`, and left-side predicate `p`
+        // (all phantom — the seam walks their captured trees), then the aggregate
+        // keyword, the column it folds, and an `isRight` tag selecting which side's
+        // column the fold reads. The single scalar comes back wrapped in `Some`, or
+        // `None` over an empty join. Ordering and paging do not bound an aggregate,
+        // so there are no `orders`/`lim`/`off` parameters.
+        {
+            let agg_join_fn = |ctx: &mut crate::ctx::InferCtx, name: &str| {
+                let a = ctx.fresh_tyvid();
+                let c = ctx.fresh_tyvid();
+                let w = ctx.fresh_tyvid();
+                let p = ctx.fresh_tyvid();
+                let fn_ty = Type::Fn {
+                    params: vec![
+                        Type::Var(a),
+                        Type::Con(b.text, vec![]),
+                        Type::Con(b.text, vec![]),
+                        Type::Con(b.quote, vec![Type::Var(c)]),
+                        Type::Con(b.quote, vec![Type::Var(w)]),
+                        Type::Con(b.quote, vec![Type::Var(p)]),
+                        Type::Con(b.text, vec![]),
+                        Type::Con(b.text, vec![]),
+                        Type::Con(b.bool, vec![]),
+                    ],
+                    ret: Box::new(Type::Con(
+                        b.result,
+                        vec![
+                            Type::Con(b.option, vec![Type::Con(sql_value, vec![])]),
+                            Type::Con(b.error, vec![]),
+                        ],
+                    )),
+                    caps: CapRow::Concrete(CapabilitySet::PURE),
+                };
+                ctx.env.bind(
+                    name.to_owned(),
+                    Scheme {
+                        vars: vec![a, c, w, p],
+                        cap_vars: vec![],
+                        row_vars: vec![],
+                        ty: fn_ty,
+                        constraints: vec![Constraint::single(adapter, a)],
+                    },
+                );
+            };
+            // The left-outer form shares the scheme exactly; only the body differs
+            // (a `LEFT JOIN`, keeping unmatched left rows).
+            agg_join_fn(ctx, "aggregateJoin");
+            agg_join_fn(ctx, "aggregateLeftJoin");
         }
     }
 }

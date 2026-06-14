@@ -31,6 +31,7 @@
     mem_select/3, mem_delete/3, mem_update/4, mem_get_rows/4,
     mem_fetch/7, mem_count_where/3, mem_aggregate/5, mem_project/8,
     mem_join/9, mem_join_select/10, mem_left_join/9, mem_left_join_select/10,
+    mem_aggregate_join/9, mem_aggregate_left_join/9,
     mem_group_summarize/6,
     plan_scan/6, plan_combine/3, plan_refine/6, mem_run_plan/2,
     quote_keep_all/1, quote_and/2,
@@ -1030,6 +1031,21 @@ mem_left_join(Id, LeftTable, RightTable, Cond, Where2, Pred, Orders, Lim, Off) -
 mem_left_join_select(Id, LeftTable, RightTable, Cond, Where2, Pred, Orders, Lim, Off, Proj) ->
     mem_call({left_join_select, Id, LeftTable, RightTable, Cond, Where2, Pred, Orders, Lim, Off, Proj}).
 
+%% mem_aggregate_join/9 — fold a scalar aggregate (Func is <<"SUM">>/<<"AVG">>/
+%% <<"MIN">>/<<"MAX">>) over Column across the rows of the inner join of LeftTable
+%% and RightTable. IsRight picks the column from the right row (true) or the left
+%% row (false). The scalar comes back as `{some, SqlValue}`, or `none` over an
+%% empty join (the in-memory dual of a SQL aggregate over no rows). Result (Option
+%% SqlValue) Error.
+mem_aggregate_join(Id, LeftTable, RightTable, Cond, Where2, Pred, Func, Column, IsRight) ->
+    mem_call({aggregate_join, Id, LeftTable, RightTable, Cond, Where2, Pred, Func, Column, IsRight}).
+
+%% mem_aggregate_left_join/9 — as mem_aggregate_join, but a left-outer join keeps
+%% every left row. A left-column aggregate folds the unmatched left rows in; a
+%% right-column one skips them (their right side is absent, a NULL the fold drops).
+mem_aggregate_left_join(Id, LeftTable, RightTable, Cond, Where2, Pred, Func, Column, IsRight) ->
+    mem_call({aggregate_left_join, Id, LeftTable, RightTable, Cond, Where2, Pred, Func, Column, IsRight}).
+
 %% Internal: send a request to the keeper and await its reply.
 mem_call(Req) ->
     mem_ensure(),
@@ -1156,8 +1172,29 @@ mem_keeper_loop(State) ->
         {{left_join_select, Id, LeftTable, RightTable, Cond, Where2, Pred, Orders, Lim, Off, Proj}, From, Ref} ->
             Rows = mem_left_join_select_rows(State, Id, LeftTable, RightTable, Cond, Where2, Pred, Orders, Lim, Off, Proj),
             From ! {Ref, {ok, Rows}},
+            mem_keeper_loop(State);
+        {{aggregate_join, Id, LeftTable, RightTable, Cond, Where2, Pred, Func, Column, IsRight}, From, Ref} ->
+            Pairs = mem_join_pairs(State, Id, LeftTable, RightTable, Cond, Where2, Pred, [], -1, 0),
+            Rows = [mem_agg_side_row(IsRight, L, R) || {L, R} <- Pairs],
+            Value = mem_aggregate_value(Func, Column, Rows),
+            Wrapped = case Value of 'SqlNull' -> none; _ -> {some, Value} end,
+            From ! {Ref, {ok, Wrapped}},
+            mem_keeper_loop(State);
+        {{aggregate_left_join, Id, LeftTable, RightTable, Cond, Where2, Pred, Func, Column, IsRight}, From, Ref} ->
+            Pairs = mem_left_join_pairs(State, Id, LeftTable, RightTable, Cond, Where2, Pred, [], -1, 0),
+            Rows = [mem_agg_side_row(IsRight, L, mem_right_row(OptR)) || {L, OptR} <- Pairs],
+            Value = mem_aggregate_value(Func, Column, Rows),
+            Wrapped = case Value of 'SqlNull' -> none; _ -> {some, Value} end,
+            From ! {Ref, {ok, Wrapped}},
             mem_keeper_loop(State)
     end.
+
+%% The row a join aggregate folds its column from: the right row when IsRight,
+%% otherwise the left. For a left join the right row is normalised through
+%% `mem_right_row` first (an unmatched left row's `none` becomes `#{}`, so its
+%% column reads SqlNull and the fold skips it).
+mem_agg_side_row(true,  _L, R) -> R;
+mem_agg_side_row(false, L, _R) -> L.
 
 %% Build a projected row from `{Alias, Column}` pairs: each output column reads
 %% the source column from the row and is keyed by its alias. A missing source

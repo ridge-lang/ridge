@@ -2907,3 +2907,86 @@ pub fn db bad () -> Result (Option Int) Error =
         "an aggregate accessor naming a column absent from the right entity must be rejected; got no errors"
     );
 }
+
+#[test]
+fn transaction_over_a_multi_step_write_typechecks() {
+    // `Repo.transaction` runs a body on the connection and threads its result out.
+    // Here the body inserts two users and answers `Ok unit`, so the whole call is
+    // `Result Unit Error`: the `Adapter MemAdapter` constraint resolves the
+    // backend, and the body is a live callback whose capability row the call site
+    // absorbs (a pure body keeps the call pure, like a list HOF).
+    let main = r#"
+import std.data (memAdapter, MemAdapter)
+import std.repo as Repo
+import std.sql (SqlValue)
+
+pub type User = { id: Int, name: Text } deriving (Row)
+
+pub fn db seed () -> Result Unit Error =
+    let conn = memAdapter ()
+    Repo.transaction conn (fn (tx) ->
+        let users: Repo User MemAdapter = Repo.repo tx "users"
+        match Repo.insert (User { id = 1, name = "ada" }) users
+            Err e -> Err e
+            Ok _  -> Repo.insert (User { id = 2, name = "lin" }) users)
+"#;
+    let errors = typecheck_one(main);
+    assert!(
+        errors.is_empty(),
+        "Repo.transaction over a multi-step write must typecheck clean; got {errors:?}"
+    );
+}
+
+#[test]
+fn transaction_threads_the_body_result_type() {
+    // The result is the body's own success type, not fixed to the entity or Unit:
+    // a body answering `Result Int Error` makes `transaction` answer `Result Int
+    // Error`. The body counts the rows it just inserted through the query builder.
+    let main = r#"
+import std.data (memAdapter, MemAdapter)
+import std.repo as Repo
+import std.sql (SqlValue)
+
+pub type User = { id: Int, name: Text } deriving (Row)
+
+pub fn db seededCount () -> Result Int Error =
+    let conn = memAdapter ()
+    Repo.transaction conn (fn (tx) ->
+        let users: Repo User MemAdapter = Repo.repo tx "users"
+        match Repo.insert (User { id = 1, name = "ada" }) users
+            Err e -> Err e
+            Ok _  -> users |> Repo.query |> Repo.count)
+"#;
+    let errors = typecheck_one(main);
+    assert!(
+        errors.is_empty(),
+        "Repo.transaction must thread the body's Result Int out; got {errors:?}"
+    );
+}
+
+#[test]
+fn transaction_over_postgres_adapter_typechecks() {
+    // The same combinator resolves the `Adapter` constraint for the Postgres
+    // backend: `connect` builds the handle, and `transaction` runs the body on it.
+    // No database is touched — this is the type-level wiring for the other backend.
+    let main = r#"
+import std.data (connect, Config, Postgres)
+import std.repo as Repo
+import std.sql (SqlValue)
+
+pub type User = { id: Int, name: Text } deriving (Row)
+
+pub fn db seed () -> Result Unit Error =
+    match connect (Config { host = "localhost", port = 5432, database = "app", user = "u", password = "p", sslMode = "require", poolSize = 1 })
+        Err e   -> Err e
+        Ok conn ->
+            Repo.transaction conn (fn (tx) ->
+                let users: Repo User Postgres = Repo.repo tx "users"
+                Repo.insert (User { id = 1, name = "ada" }) users)
+"#;
+    let errors = typecheck_one(main);
+    assert!(
+        errors.is_empty(),
+        "Repo.transaction over the Postgres adapter must typecheck clean; got {errors:?}"
+    );
+}

@@ -53,6 +53,9 @@
     pg_group_summarize_join/10,
     pg_group_summarize_left_join/10,
     pg_run_plan/2,
+    pg_begin/1,
+    pg_commit/1,
+    pg_rollback/1,
     pg_close/1
 ]).
 
@@ -230,6 +233,87 @@ pg_count_join(Id, LeftTable, RightTable, Cond, Where2, Pred) ->
 pg_count_left_join(Id, LeftTable, RightTable, Cond, Where2, Pred) ->
     pg_call(Id, {count_left_join, LeftTable, RightTable, Cond, Where2, Pred}).
 
+%% pg_begin/1 — open a transaction on handle Id, pinning one pooled connection in
+%% this process for its span so every later verb on Id runs on it. A nested begin
+%% issues a `SAVEPOINT` on the pinned connection rather than a second `BEGIN`.
+%% Result Unit Error.
+pg_begin(Id) ->
+    case get({pg_pin, Id}) of
+        undefined ->
+            case pg_registry_call({lookup, Id}) of
+                {ok, Pool} ->
+                    case pool_checkout(Pool) of
+                        {ok, Worker} ->
+                            case worker_request(Worker, {tx, <<"BEGIN">>}) of
+                                {ok, _} ->
+                                    put({pg_pin, Id}, {Pool, Worker, 1}),
+                                    {ok, ok};
+                                {error, E} ->
+                                    pool_checkin(Pool, Worker),
+                                    {error, E}
+                            end;
+                        {error, E} ->
+                            {error, E}
+                    end;
+                _ ->
+                    {error, #{code => <<"db.conn.closed">>,
+                              message => <<"connection handle not found">>}}
+            end;
+        {Pool, Worker, Depth} ->
+            case worker_request(Worker, {tx, [<<"SAVEPOINT ">>, savepoint_name(Depth)]}) of
+                {ok, _} ->
+                    put({pg_pin, Id}, {Pool, Worker, Depth + 1}),
+                    {ok, ok};
+                {error, E} ->
+                    {error, E}
+            end
+    end.
+
+%% pg_commit/1 — commit the innermost open transaction on handle Id. At the
+%% outermost level this is `COMMIT` and the pinned connection returns to the pool;
+%% a nested commit is `RELEASE SAVEPOINT`. Result Unit Error.
+pg_commit(Id) ->
+    case get({pg_pin, Id}) of
+        {Pool, Worker, 1} ->
+            R = worker_request(Worker, {tx, <<"COMMIT">>}),
+            pool_checkin(Pool, Worker),
+            erase({pg_pin, Id}),
+            tx_unit(R);
+        {Pool, Worker, Depth} when Depth > 1 ->
+            R = worker_request(Worker, {tx, [<<"RELEASE SAVEPOINT ">>, savepoint_name(Depth - 1)]}),
+            put({pg_pin, Id}, {Pool, Worker, Depth - 1}),
+            tx_unit(R);
+        _ ->
+            {ok, ok}
+    end.
+
+%% pg_rollback/1 — roll back the innermost open transaction on handle Id. At the
+%% outermost level this is `ROLLBACK` and the pinned connection returns to the
+%% pool; a nested rollback is `ROLLBACK TO SAVEPOINT`. Result Unit Error.
+pg_rollback(Id) ->
+    case get({pg_pin, Id}) of
+        {Pool, Worker, 1} ->
+            R = worker_request(Worker, {tx, <<"ROLLBACK">>}),
+            pool_checkin(Pool, Worker),
+            erase({pg_pin, Id}),
+            tx_unit(R);
+        {Pool, Worker, Depth} when Depth > 1 ->
+            R = worker_request(Worker, {tx, [<<"ROLLBACK TO SAVEPOINT ">>, savepoint_name(Depth - 1)]}),
+            put({pg_pin, Id}, {Pool, Worker, Depth - 1}),
+            tx_unit(R);
+        _ ->
+            {ok, ok}
+    end.
+
+%% A savepoint identifier for nesting level N (1-based). It names a savepoint the
+%% runtime creates, never user data, so it needs no quoting.
+savepoint_name(N) -> [<<"ridge_sp_">>, integer_to_binary(N)].
+
+%% Map an exec reply (`{ok, AffectedCount}`) to the Unit a transaction verb
+%% answers, passing an error through unchanged.
+tx_unit({ok, _})    -> {ok, ok};
+tx_unit({error, E}) -> {error, E}.
+
 %% pg_close/1 — close every connection in the pool and forget the handle.
 %% Result Unit Error.
 pg_close(Id) ->
@@ -260,19 +344,28 @@ clamp_pool(_)                           -> 1.
 %% concurrently across distinct pooled connections.
 
 pg_call(Id, Verb) ->
-    case pg_registry_call({lookup, Id}) of
-        {ok, Pool} ->
-            case pool_checkout(Pool) of
-                {ok, Worker} ->
-                    Reply = worker_request(Worker, Verb),
-                    pool_checkin(Pool, Worker),
-                    Reply;
-                {error, E} ->
-                    {error, E}
-            end;
-        _ ->
-            {error, #{code => <<"db.conn.closed">>,
-                      message => <<"connection handle not found">>}}
+    case get({pg_pin, Id}) of
+        {_Pool, Worker, _Depth} ->
+            %% A transaction is open on this handle in this process: run the verb
+            %% on the pinned connection so every op between begin and the matching
+            %% commit/rollback shares one session. No checkout/checkin — the
+            %% connection stays borrowed for the transaction's whole span.
+            worker_request(Worker, Verb);
+        undefined ->
+            case pg_registry_call({lookup, Id}) of
+                {ok, Pool} ->
+                    case pool_checkout(Pool) of
+                        {ok, Worker} ->
+                            Reply = worker_request(Worker, Verb),
+                            pool_checkin(Pool, Worker),
+                            Reply;
+                        {error, E} ->
+                            {error, E}
+                    end;
+                _ ->
+                    {error, #{code => <<"db.conn.closed">>,
+                              message => <<"connection handle not found">>}}
+            end
     end.
 
 %% Send a verb to a borrowed connection and await its reply. A connection that
@@ -585,6 +678,8 @@ pg_conn_loop(Conn) ->
             end
     end.
 
+run_verb(Conn, {tx, Sql}) ->
+    do_exec(Conn, Sql, []);
 run_verb(Conn, {insert, Table, Row}) ->
     do_insert(Conn, Table, Row);
 run_verb(Conn, {all, Table}) ->

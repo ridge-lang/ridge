@@ -1121,6 +1121,91 @@ pub fn db nestedUnionIds () -> Text =
             match eng |> Repo.union sales |> Repo.union ops |> Repo.orderBy Asc (fn (e: Emp) -> e.id) |> Repo.toList
                 Err _   -> "err"
                 Ok rows -> idList rows
+
+-- A deliberate failure with no SQL fault: a single-row query filtered to match
+-- nothing answers `Err` ("matched no rows"), which a transaction body returns to
+-- roll back. It is a plain SELECT, so it never aborts the session.
+fn pgForceFail (conn: Postgres) -> Result Unit Error =
+    let r = Repo.repo conn "ridge_pg_users"
+    match r |> Repo.query |> Repo.filter (fn (u: User) -> u.id == 999999) |> Repo.singleOrError
+        Err e -> Err e
+        Ok _  -> Ok ()
+
+fn pgCountUsers (conn: Postgres) -> Int =
+    let r = Repo.repo conn "ridge_pg_users"
+    match r |> Repo.query |> Repo.count
+        Ok n  -> n
+        Err _ -> 0 - 9
+
+fn pgClearUsers (conn: Postgres) -> Result Int Error =
+    let r = Repo.repo conn "ridge_pg_users"
+    Repo.deleteWhere (fn (u: User) -> u.id >= 0) r
+
+-- A transaction body that inserts two rows and succeeds.
+fn pgInsertTwo (tx: Postgres) -> Result Unit Error =
+    let r = Repo.repo tx "ridge_pg_users"
+    match Repo.insert (User { id = 1, age = 18, name = "ada" }) r
+        Err e -> Err e
+        Ok _  -> Repo.insert (User { id = 2, age = 30, name = "lin" }) r
+
+-- A transaction body that inserts a row and then fails, so it rolls back.
+fn pgInsertThenFail (tx: Postgres) -> Result Unit Error =
+    let r = Repo.repo tx "ridge_pg_users"
+    match Repo.insert (User { id = 2, age = 30, name = "lin" }) r
+        Err e -> Err e
+        Ok _  -> pgForceFail tx
+
+-- A transaction body whose nested transaction inserts a row and fails (rewinding
+-- to its savepoint); this body commits its own row.
+fn pgOuterKeepsInnerRollsBack (tx: Postgres) -> Result Unit Error =
+    let r = Repo.repo tx "ridge_pg_users"
+    match Repo.insert (User { id = 1, age = 18, name = "ada" }) r
+        Err e -> Err e
+        Ok _  ->
+            let _inner = Repo.transaction tx pgInsertThenFail
+            Ok ()
+
+-- A committed transaction makes both inserts durable: COMMIT, then count -> 2.
+pub fn db txCommittedCount () -> Int =
+    match connect (pgConfig ())
+        Err _ -> 0 - 1
+        Ok conn ->
+            match pgClearUsers conn
+                Err _ -> 0 - 2
+                Ok _  ->
+                    match Repo.transaction conn pgInsertTwo
+                        Err _ -> 0 - 3
+                        Ok _  -> pgCountUsers conn
+
+-- A failing transaction rolls back its insert over a committed baseline: ROLLBACK
+-- leaves only the baseline row -> 1.
+pub fn db txRolledBackCount () -> Int =
+    match connect (pgConfig ())
+        Err _ -> 0 - 1
+        Ok conn ->
+            match pgClearUsers conn
+                Err _ -> 0 - 2
+                Ok _  ->
+                    let r = Repo.repo conn "ridge_pg_users"
+                    match Repo.insert (User { id = 1, age = 18, name = "ada" }) r
+                        Err _ -> 0 - 3
+                        Ok _  ->
+                            match Repo.transaction conn pgInsertThenFail
+                                Ok _  -> 0 - 4
+                                Err _ -> pgCountUsers conn
+
+-- A nested transaction opens a SAVEPOINT: the inner fails (ROLLBACK TO SAVEPOINT,
+-- undoing its insert), the outer commits its own row -> 1.
+pub fn db txSavepointCount () -> Int =
+    match connect (pgConfig ())
+        Err _ -> 0 - 1
+        Ok conn ->
+            match pgClearUsers conn
+                Err _ -> 0 - 2
+                Ok _  ->
+                    match Repo.transaction conn pgOuterKeepsInnerRollsBack
+                        Err _ -> 0 - 3
+                        Ok _  -> pgCountUsers conn
 "#;
 
 /// Connection settings parsed out of `RIDGE_TEST_PG_URL`.
@@ -1340,6 +1425,9 @@ fn postgres_adapter_reads_a_real_table() {
          io:format(\"unionAllCount=~w~n\",[{module}:unionAllCount()]), \
          io:format(\"unionFiltered=~s~n\",[{module}:unionFiltered()]), \
          io:format(\"nestedUnionIds=~s~n\",[{module}:nestedUnionIds()]), \
+         io:format(\"txCommittedCount=~w~n\",[{module}:txCommittedCount()]), \
+         io:format(\"txRolledBackCount=~w~n\",[{module}:txRolledBackCount()]), \
+         io:format(\"txSavepointCount=~w~n\",[{module}:txSavepointCount()]), \
          {pool_probe} \
          halt()."
     );
@@ -1625,6 +1713,18 @@ fn postgres_adapter_reads_a_real_table() {
         (
             "nestedUnionIds=1,2,3,4,5,6",
             "nested unions compile to nested parenthesised UNIONs with threaded binds",
+        ),
+        (
+            "txCommittedCount=2",
+            "a committed transaction persists both inserts on the live database",
+        ),
+        (
+            "txRolledBackCount=1",
+            "a failed transaction rolls back its insert, leaving the committed baseline",
+        ),
+        (
+            "txSavepointCount=1",
+            "a nested transaction's failure rewinds to its savepoint while the outer commits",
         ),
         (
             "concurrent=true",

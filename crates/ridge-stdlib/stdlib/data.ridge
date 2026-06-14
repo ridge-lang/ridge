@@ -75,6 +75,16 @@ import std.sql (SqlValue)
 -- with `Some` of the matching right map or with `None` when the right side is
 -- absent. A backend compiles it to a `LEFT JOIN`; the in-memory adapter keeps
 -- the unmatched left rows in the nested loop.
+--
+-- `begin`, `commit`, and `rollback` are the transaction-control primitives the
+-- `Repo.transaction` combinator runs around a body: `begin` opens a transaction,
+-- `commit` makes its writes durable, `rollback` discards them. A `begin` issued
+-- inside an open transaction opens a savepoint instead, and the matching
+-- `commit`/`rollback` releases or rewinds to it, so transactions nest. The
+-- in-memory adapter snapshots the affected tables and restores them on rollback;
+-- Postgres issues `BEGIN`/`COMMIT`/`ROLLBACK` (or `SAVEPOINT`/`RELEASE SAVEPOINT`/
+-- `ROLLBACK TO SAVEPOINT`) on a single connection pinned for the transaction's
+-- span, so every operation between `begin` and the matching terminal runs on it.
 pub class Adapter a =
     appendRow (conn: a) (table: Text) (row: Map Text SqlValue) -> Result Unit Error
     all    (conn: a) (table: Text) -> Result (List (Map Text SqlValue)) Error
@@ -98,6 +108,9 @@ pub class Adapter a =
     groupSummarizeJoin (conn: a) (leftTable: Text) (rightTable: Text) (cond: Quote (Map Text SqlValue -> Map Text SqlValue -> Bool)) (where2: Quote (Map Text SqlValue -> Map Text SqlValue -> Bool)) (pred: Quote (Map Text SqlValue -> Bool)) (keyCol: Text) (keySide: Bool) (cols: List (Text, Text, Text, Bool)) (having: QExpr) -> Result (List (Map Text SqlValue)) Error
     groupSummarizeLeftJoin (conn: a) (leftTable: Text) (rightTable: Text) (cond: Quote (Map Text SqlValue -> Map Text SqlValue -> Bool)) (where2: Quote (Map Text SqlValue -> Map Text SqlValue -> Bool)) (pred: Quote (Map Text SqlValue -> Bool)) (keyCol: Text) (keySide: Bool) (cols: List (Text, Text, Text, Bool)) (having: QExpr) -> Result (List (Map Text SqlValue)) Error
     runPlan (conn: a) (plan: QExpr) -> Result (List (Map Text SqlValue)) Error
+    begin    (conn: a) -> Result Unit Error
+    commit   (conn: a) -> Result Unit Error
+    rollback (conn: a) -> Result Unit Error
 
 -- A handle to an in-memory store. Opaque: `memAdapter` is the only way to make
 -- one, and the `id` it carries selects this handle's private, isolated store,
@@ -230,6 +243,21 @@ fn _memGroupSummarizeLeftJoin (id: Int) (leftTable: Text) (rightTable: Text) (co
 @ffi("ridge_rt", "mem_run_plan", 2)
 fn _memRunPlan (id: Int) (plan: QExpr) -> Result (List (Map Text SqlValue)) Error
 
+-- Open a transaction on the store identified by `id` — snapshot its tables onto
+-- a per-store stack. A nested `begin` snapshots again (a savepoint).
+@ffi("ridge_rt", "mem_begin", 1)
+fn _memBegin (id: Int) -> Result Unit Error
+
+-- Commit the innermost open transaction: drop its snapshot, keeping the current
+-- rows. At the outermost level the writes simply stay.
+@ffi("ridge_rt", "mem_commit", 1)
+fn _memCommit (id: Int) -> Result Unit Error
+
+-- Roll back the innermost open transaction: restore the store's tables to the
+-- snapshot taken at the matching `begin`, discarding the writes made since.
+@ffi("ridge_rt", "mem_rollback", 1)
+fn _memRollback (id: Int) -> Result Unit Error
+
 -- Open a fresh in-memory adapter backed by an empty store. Requires the `db`
 -- capability; the handle returned is the proof of access for every later call.
 @ffi("ridge_rt", "mem_new", 1)
@@ -282,6 +310,12 @@ instance Adapter MemAdapter =
         _memGroupSummarizeLeftJoin conn.id leftTable rightTable cond.tree where2.tree pred.tree keyCol keySide cols having
     runPlan (conn: MemAdapter) (plan: QExpr) -> Result (List (Map Text SqlValue)) Error =
         _memRunPlan conn.id plan
+    begin (conn: MemAdapter) -> Result Unit Error =
+        _memBegin conn.id
+    commit (conn: MemAdapter) -> Result Unit Error =
+        _memCommit conn.id
+    rollback (conn: MemAdapter) -> Result Unit Error =
+        _memRollback conn.id
 
 -- The head of a row list as an `Option` — `get` returns at most one row, so it
 -- reads the first match (or `None` when the column held no such key).
@@ -424,6 +458,23 @@ fn _pgGroupSummarizeLeftJoin (id: Int) (leftTable: Text) (rightTable: Text) (con
 @ffi("ridge_pg", "pg_run_plan", 2)
 fn _pgRunPlan (id: Int) (plan: QExpr) -> Result (List (Map Text SqlValue)) Error
 
+-- Begin a transaction on the connection identified by `id`, pinning one pooled
+-- connection for its span. A nested `begin` issues a `SAVEPOINT` on that same
+-- connection rather than a second `BEGIN`.
+@ffi("ridge_pg", "pg_begin", 1)
+fn _pgBegin (id: Int) -> Result Unit Error
+
+-- Commit the innermost open transaction: `COMMIT` at the outermost level (and
+-- release the pinned connection back to the pool), or `RELEASE SAVEPOINT` for a
+-- nested one.
+@ffi("ridge_pg", "pg_commit", 1)
+fn _pgCommit (id: Int) -> Result Unit Error
+
+-- Roll back the innermost open transaction: `ROLLBACK` at the outermost level
+-- (releasing the pinned connection), or `ROLLBACK TO SAVEPOINT` for a nested one.
+@ffi("ridge_pg", "pg_rollback", 1)
+fn _pgRollback (id: Int) -> Result Unit Error
+
 -- Open a Postgres connection with the given settings. Requires the `db`
 -- capability; the handle returned is the proof of access for every later call,
 -- exactly like `memAdapter`. A failed connect or authentication is an `Err`.
@@ -477,3 +528,9 @@ instance Adapter Postgres =
         _pgGroupSummarizeLeftJoin conn.id leftTable rightTable cond.tree where2.tree pred.tree keyCol keySide cols having
     runPlan (conn: Postgres) (plan: QExpr) -> Result (List (Map Text SqlValue)) Error =
         _pgRunPlan conn.id plan
+    begin (conn: Postgres) -> Result Unit Error =
+        _pgBegin conn.id
+    commit (conn: Postgres) -> Result Unit Error =
+        _pgCommit conn.id
+    rollback (conn: Postgres) -> Result Unit Error =
+        _pgRollback conn.id

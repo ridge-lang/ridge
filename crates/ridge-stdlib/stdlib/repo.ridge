@@ -322,21 +322,28 @@ pub class Decodable q =
     toList (x: q) -> Result (List (Rows q))   Error
     first  (x: q) -> Result (Option (Rows q)) Error
 
--- Keep at most `n` rows.
-pub fn limit (n: Int) (q: Query e a) -> Query e a =
-    Query { repo = q.repo, pred = q.pred, orders = q.orders, lim = n, off = q.off, dist = q.dist, plan = q.plan }
+-- One set of result-narrowing builder steps for a query and a join. `limit` keeps
+-- at most `n` rows, `offset` skips the first `n`, and `distinct` drops duplicate
+-- result rows (a `SELECT DISTINCT`); each answers the receiver, so they keep
+-- composing in a pipeline. The class has the single receiver parameter and no
+-- functional dependency: these verbs take no quoted argument and do not change the
+-- row shape, so there is no second parameter to determine — a `Query e a`, a
+-- `Join e f a`, and a `LeftJoin e f a` all carry the same three methods. On a join
+-- the page and distinct apply to the joined rows a terminal decodes, the same way
+-- a query's apply to its own rows. Two rows are duplicates when every selected
+-- column matches, so `distinct` over whole entities removes exact repeats and over
+-- a projection removes repeats of the projected columns; a second `distinct`
+-- changes nothing. The backend pushes each down: `LIMIT`/`OFFSET`/`SELECT DISTINCT`
+-- on Postgres, a take/drop/dedup on the in-memory store.
+pub class Pageable q =
+    limit    (n: Int) (x: q) -> q
+    offset   (n: Int) (x: q) -> q
+    distinct (x: q) -> q
 
--- Skip the first `n` rows.
-pub fn offset (n: Int) (q: Query e a) -> Query e a =
-    Query { repo = q.repo, pred = q.pred, orders = q.orders, lim = q.lim, off = n, dist = q.dist, plan = q.plan }
-
--- Drop duplicate rows from the query's result — a `SELECT DISTINCT`. Two rows are
--- duplicates when every selected column matches, so over whole entities it removes
--- exact repeats and over a projection (`selectList`) it removes repeats of the
--- projected columns. The backend pushes it down: `SELECT DISTINCT` on Postgres, a
--- dedup on the in-memory store. Idempotent — a second `distinct` changes nothing.
-pub fn distinct (q: Query e a) -> Query e a =
-    Query { repo = q.repo, pred = q.pred, orders = q.orders, lim = q.lim, off = q.off, dist = true, plan = q.plan }
+-- `limit`/`offset`/`distinct` over a query, an inner join, or a left join are the
+-- methods of the `Pageable q` class (declared above); the instances are defined
+-- below, next to the `Refinable`/`Orderable`/`Decodable` ones. The query instance
+-- sets the field on its `Query`, carrying every other field through.
 
 -- The raw rows a query selects: a single-table `fetch` for a plain query, or the
 -- captured set-operation plan run through `runPlan` once `union`/`intersect`/
@@ -560,14 +567,14 @@ pub fn summarize (proj: Quote (Group e k -> s)) (g: GroupedQuery e k a) -> Resul
 -- The condition is written against both records at the call site: its left
 -- columns range over the left entity and its right over the right, captured as a
 -- query tree that tags each side so the two tables never collide.
-pub opaque type Join e f a = { left: Query e a, right: Repo f a, cond: Quote (Map Text SqlValue -> Map Text SqlValue -> Bool), where2: Quote (Map Text SqlValue -> Map Text SqlValue -> Bool), orders: List (Bool, Bool, Text) }
+pub opaque type Join e f a = { left: Query e a, right: Repo f a, cond: Quote (Map Text SqlValue -> Map Text SqlValue -> Bool), where2: Quote (Map Text SqlValue -> Map Text SqlValue -> Bool), orders: List (Bool, Bool, Text), lim: Int, off: Int, dist: Bool }
 
 -- Start an inner join from a query: pair it with a right repository on a quoted
 -- condition over both entities. The left query's filter, ordering, and page
 -- still apply — the ordering it accumulated carries in as left-side keys — and
 -- the join brings the right table.
 pub fn joinOn (right: Repo f a) (cond: Quote (Map Text SqlValue -> Map Text SqlValue -> Bool)) (q: Query e a) -> Join e f a =
-    Join { left = q, right = right, cond = cond, where2 = keepAll2 (), orders = liftOrders q.orders }
+    Join { left = q, right = right, cond = cond, where2 = keepAll2 (), orders = liftOrders q.orders, lim = q.lim, off = q.off, dist = q.dist }
 
 -- `toList` and `first` over an inner join are the `Decodable (Join e f a) …`
 -- methods (instance below), so the join shares the query's decode terminals:
@@ -582,7 +589,7 @@ pub fn joinOn (right: Repo f a) (cond: Quote (Map Text SqlValue -> Map Text SqlV
 --     |> Repo.query
 --     |> Repo.leftJoinOn posts (fn (u: User) (p: Post) -> u.id == p.authorId)
 --     |> Repo.toList
-pub opaque type LeftJoin e f a = { left: Query e a, right: Repo f a, cond: Quote (Map Text SqlValue -> Map Text SqlValue -> Bool), where2: Quote (Map Text SqlValue -> Map Text SqlValue -> Bool), orders: List (Bool, Bool, Text) }
+pub opaque type LeftJoin e f a = { left: Query e a, right: Repo f a, cond: Quote (Map Text SqlValue -> Map Text SqlValue -> Bool), where2: Quote (Map Text SqlValue -> Map Text SqlValue -> Bool), orders: List (Bool, Bool, Text), lim: Int, off: Int, dist: Bool }
 
 -- Start a left outer join from a query: pair it with a right repository on a
 -- quoted condition over both entities. Unlike `joinOn`, a left row with no
@@ -590,7 +597,7 @@ pub opaque type LeftJoin e f a = { left: Query e a, right: Repo f a, cond: Quote
 -- missing right side as `None`. The left query's filter, ordering, and page
 -- still apply.
 pub fn leftJoinOn (right: Repo f a) (cond: Quote (Map Text SqlValue -> Map Text SqlValue -> Bool)) (q: Query e a) -> LeftJoin e f a =
-    LeftJoin { left = q, right = right, cond = cond, where2 = keepAll2 (), orders = liftOrders q.orders }
+    LeftJoin { left = q, right = right, cond = cond, where2 = keepAll2 (), orders = liftOrders q.orders, lim = q.lim, off = q.off, dist = q.dist }
 
 -- `toList` and `first` over a left join are the `Decodable (LeftJoin e f a) …`
 -- methods (instance below): `toList` decodes each row into the left entity
@@ -610,7 +617,7 @@ instance Refinable (Query e a) (fn e -> Bool) =
 -- fold `where2` in when they run the join.
 instance Refinable (Join e f a) (fn e f -> Bool) =
     filter (pred: Quote (fn e f -> Bool)) (x: Join e f a) -> Join e f a =
-        Join { left = x.left, right = x.right, cond = x.cond, where2 = quoteAnd2 x.where2 pred, orders = x.orders }
+        Join { left = x.left, right = x.right, cond = x.cond, where2 = quoteAnd2 x.where2 pred, orders = x.orders, lim = x.lim, off = x.off, dist = x.dist }
 
 -- A left join's `filter`: AND the two-row predicate into the post-join `WHERE`.
 -- A predicate that reads a right column drops the unmatched left rows (their
@@ -618,7 +625,7 @@ instance Refinable (Join e f a) (fn e f -> Bool) =
 -- its matches — the three-valued reading SQL gives a `WHERE` after a `LEFT JOIN`.
 instance Refinable (LeftJoin e f a) (fn e f -> Bool) =
     filter (pred: Quote (fn e f -> Bool)) (x: LeftJoin e f a) -> LeftJoin e f a =
-        LeftJoin { left = x.left, right = x.right, cond = x.cond, where2 = quoteAnd2 x.where2 pred, orders = x.orders }
+        LeftJoin { left = x.left, right = x.right, cond = x.cond, where2 = quoteAnd2 x.where2 pred, orders = x.orders, lim = x.lim, off = x.off, dist = x.dist }
 
 -- A query's `select`: project one entity down to the named shape `s` and decode
 -- each row into it. The backend pushes the select-list down so only the named
@@ -638,11 +645,11 @@ instance Projectable (Query e a) (fn e -> s) where Adapter a, Row s =
 -- backend pushes that select-list into the `JOIN` and each row decodes into `s`.
 instance Projectable (Join e f a) (fn e f -> s) where Adapter a, Row s =
     select (proj: Quote (fn e f -> s)) (x: Join e f a) -> Result (List s) Error =
-        match joinSelect x.left.repo.adapter x.left.repo.table x.right.table x.cond x.where2 x.left.pred x.orders x.left.lim x.left.off proj
+        match joinSelect x.left.repo.adapter x.left.repo.table x.right.table x.cond x.where2 x.left.pred x.orders x.lim x.off proj x.dist
             Err err  -> Err err
             Ok rows  -> decodeRows rows
     selectFirst (proj: Quote (fn e f -> s)) (x: Join e f a) -> Result (Option s) Error =
-        match joinSelect x.left.repo.adapter x.left.repo.table x.right.table x.cond x.where2 x.left.pred x.orders 1 x.left.off proj
+        match joinSelect x.left.repo.adapter x.left.repo.table x.right.table x.cond x.where2 x.left.pred x.orders 1 x.off proj x.dist
             Err err  -> Err err
             Ok rows  -> firstDecoded rows
 
@@ -652,11 +659,11 @@ instance Projectable (Join e f a) (fn e f -> s) where Adapter a, Row s =
 -- `LEFT JOIN`) and only the named columns cross.
 instance Projectable (LeftJoin e f a) (fn e (Option f) -> s) where Adapter a, Row s =
     select (proj: Quote (fn e (Option f) -> s)) (x: LeftJoin e f a) -> Result (List s) Error =
-        match leftJoinSelect x.left.repo.adapter x.left.repo.table x.right.table x.cond x.where2 x.left.pred x.orders x.left.lim x.left.off proj
+        match leftJoinSelect x.left.repo.adapter x.left.repo.table x.right.table x.cond x.where2 x.left.pred x.orders x.lim x.off proj x.dist
             Err err  -> Err err
             Ok rows  -> decodeRows rows
     selectFirst (proj: Quote (fn e (Option f) -> s)) (x: LeftJoin e f a) -> Result (Option s) Error =
-        match leftJoinSelect x.left.repo.adapter x.left.repo.table x.right.table x.cond x.where2 x.left.pred x.orders 1 x.left.off proj
+        match leftJoinSelect x.left.repo.adapter x.left.repo.table x.right.table x.cond x.where2 x.left.pred x.orders 1 x.off proj x.dist
             Err err  -> Err err
             Ok rows  -> firstDecoded rows
 
@@ -674,7 +681,7 @@ instance Orderable (Query e a) (fn e -> k) =
 -- belongs to so the seam qualifies it to the right table alias.
 instance Orderable (Join e f a) (fn e f -> k) =
     orderBy (dir: SortOrder) (key: Quote (fn e f -> k)) (x: Join e f a) -> Join e f a =
-        Join { left = x.left, right = x.right, cond = x.cond, where2 = x.where2, orders = snoc x.orders (orderEntry2 dir key) }
+        Join { left = x.left, right = x.right, cond = x.cond, where2 = x.where2, orders = snoc x.orders (orderEntry2 dir key), lim = x.lim, off = x.off, dist = x.dist }
 
 -- A left join's `orderBy`: the two-row dual over a `LeftJoin`. The right side is
 -- read as `Option` in the key (`fn (u: User) (p: Option Post) -> p.title`); an
@@ -682,7 +689,7 @@ instance Orderable (Join e f a) (fn e f -> k) =
 -- key (it keeps its place).
 instance Orderable (LeftJoin e f a) (fn e (Option f) -> k) =
     orderBy (dir: SortOrder) (key: Quote (fn e (Option f) -> k)) (x: LeftJoin e f a) -> LeftJoin e f a =
-        LeftJoin { left = x.left, right = x.right, cond = x.cond, where2 = x.where2, orders = snoc x.orders (orderEntry2 dir key) }
+        LeftJoin { left = x.left, right = x.right, cond = x.cond, where2 = x.where2, orders = snoc x.orders (orderEntry2 dir key), lim = x.lim, off = x.off, dist = x.dist }
 
 -- A query's scalar aggregates: fold the column the one-row accessor names over
 -- the rows the query's filter selects, through the `aggregate` seam push-down.
@@ -793,11 +800,11 @@ instance Decodable (Query e a) where Adapter a, Row e =
 -- right. (`Adapter a` stays first; it is a different class and never collides.)
 instance Decodable (Join e f a) where Adapter a, Row f, Row e =
     toList (x: Join e f a) -> Result (List (e, f)) Error =
-        match join x.left.repo.adapter x.left.repo.table x.right.table x.cond x.where2 x.left.pred x.orders x.left.lim x.left.off
+        match join x.left.repo.adapter x.left.repo.table x.right.table x.cond x.where2 x.left.pred x.orders x.lim x.off x.dist
             Err err  -> Err err
             Ok pairs -> decodePairs pairs
     first (x: Join e f a) -> Result (Option (e, f)) Error =
-        match join x.left.repo.adapter x.left.repo.table x.right.table x.cond x.where2 x.left.pred x.orders 1 x.left.off
+        match join x.left.repo.adapter x.left.repo.table x.right.table x.cond x.where2 x.left.pred x.orders 1 x.off x.dist
             Err err  -> Err err
             Ok pairs -> firstDecodedPair pairs
 
@@ -812,13 +819,47 @@ instance Decodable (Join e f a) where Adapter a, Row f, Row e =
 -- the forwarded dictionaries land in the right slots.
 instance Decodable (LeftJoin e f a) where Adapter a, Row f, Row e =
     toList (x: LeftJoin e f a) -> Result (List (e, Option f)) Error =
-        match leftJoin x.left.repo.adapter x.left.repo.table x.right.table x.cond x.where2 x.left.pred x.orders x.left.lim x.left.off
+        match leftJoin x.left.repo.adapter x.left.repo.table x.right.table x.cond x.where2 x.left.pred x.orders x.lim x.off x.dist
             Err err  -> Err err
             Ok pairs -> decodeLeftPairs pairs
     first (x: LeftJoin e f a) -> Result (Option (e, Option f)) Error =
-        match leftJoin x.left.repo.adapter x.left.repo.table x.right.table x.cond x.where2 x.left.pred x.orders 1 x.left.off
+        match leftJoin x.left.repo.adapter x.left.repo.table x.right.table x.cond x.where2 x.left.pred x.orders 1 x.off x.dist
             Err err  -> Err err
             Ok pairs -> firstDecodedLeftPair pairs
+
+-- A query's page and distinct: set the field on the query, carrying every other
+-- field through. The behaviour the single-receiver `limit`/`offset`/`distinct`
+-- pub fns had before they unified with the join form.
+instance Pageable (Query e a) =
+    limit (n: Int) (x: Query e a) -> Query e a =
+        Query { repo = x.repo, pred = x.pred, orders = x.orders, lim = n, off = x.off, dist = x.dist, plan = x.plan }
+    offset (n: Int) (x: Query e a) -> Query e a =
+        Query { repo = x.repo, pred = x.pred, orders = x.orders, lim = x.lim, off = n, dist = x.dist, plan = x.plan }
+    distinct (x: Query e a) -> Query e a =
+        Query { repo = x.repo, pred = x.pred, orders = x.orders, lim = x.lim, off = x.off, dist = true, plan = x.plan }
+
+-- An inner join's page and distinct: set the field on the join. The join carries
+-- its own `lim`/`off`/`dist` (lifted from the left query at `joinOn`), so a `limit`
+-- or `distinct` on the join bounds or de-duplicates the joined rows the terminal
+-- decodes, not the left table alone.
+instance Pageable (Join e f a) =
+    limit (n: Int) (x: Join e f a) -> Join e f a =
+        Join { left = x.left, right = x.right, cond = x.cond, where2 = x.where2, orders = x.orders, lim = n, off = x.off, dist = x.dist }
+    offset (n: Int) (x: Join e f a) -> Join e f a =
+        Join { left = x.left, right = x.right, cond = x.cond, where2 = x.where2, orders = x.orders, lim = x.lim, off = n, dist = x.dist }
+    distinct (x: Join e f a) -> Join e f a =
+        Join { left = x.left, right = x.right, cond = x.cond, where2 = x.where2, orders = x.orders, lim = x.lim, off = x.off, dist = true }
+
+-- A left join's page and distinct: the dual over a `LeftJoin`, setting the same
+-- fields. `distinct` de-duplicates the `(left, right)` rows the terminal returns,
+-- the unmatched-right rows (right side reported as `None`) included.
+instance Pageable (LeftJoin e f a) =
+    limit (n: Int) (x: LeftJoin e f a) -> LeftJoin e f a =
+        LeftJoin { left = x.left, right = x.right, cond = x.cond, where2 = x.where2, orders = x.orders, lim = n, off = x.off, dist = x.dist }
+    offset (n: Int) (x: LeftJoin e f a) -> LeftJoin e f a =
+        LeftJoin { left = x.left, right = x.right, cond = x.cond, where2 = x.where2, orders = x.orders, lim = x.lim, off = n, dist = x.dist }
+    distinct (x: LeftJoin e f a) -> LeftJoin e f a =
+        LeftJoin { left = x.left, right = x.right, cond = x.cond, where2 = x.where2, orders = x.orders, lim = x.lim, off = x.off, dist = true }
 
 -- Decode a list of `(left, right)` row pairs into entity pairs, stopping at the
 -- first decode failure on either side.

@@ -900,8 +900,14 @@ fn reconciled_repo_fn_scheme(
         // scheme (see `seed_refinable_scheme`), the fundep fixing the predicate's
         // arity per receiver. Returning `None` here routes it through the
         // class-method path rather than the old single-receiver pub fn.
-        // distinct : ∀e a. Query e a -> Query e a — drop duplicate result rows.
-        "distinct" => method(vec![query_app()], query_app(), vec![]),
+        // `distinct` is no longer reconciled here: it became a method of the
+        // `Pageable q` class (std.repo), one of `limit`/`offset`/`distinct` over a
+        // query, an inner join, or a left join. A qualified `Repo.distinct` resolves
+        // to that class method, typed by the seeded `∀q. q -> q where Pageable q`
+        // scheme (see `seed_pageable_scheme`), the single receiver parameter pinning
+        // the instance. Returning `None` here (falling through to the final arm)
+        // routes it through the class-method path rather than the old single-receiver
+        // pub fn.
         // union / unionAll / intersect / except : ∀e a. Query e a -> Query e a
         //   -> Query e a — combine two queries with a set operation. Pure builders
         // like `filter`: they capture a query plan, and a terminal runs it. Both
@@ -909,12 +915,11 @@ fn reconciled_repo_fn_scheme(
         "union" | "unionAll" | "intersect" | "except" => {
             method(vec![query_app(), query_app()], query_app(), vec![])
         }
-        // limit / offset : ∀e a. Int -> Query e a -> Query e a
-        "limit" | "offset" => method(
-            vec![Type::Con(b.int, vec![]), query_app()],
-            query_app(),
-            vec![],
-        ),
+        // `limit` / `offset` are no longer reconciled here: they joined `distinct`
+        // as methods of the `Pageable q` class (std.repo), typed by the seeded
+        // `∀q. Int -> q -> q where Pageable q` scheme (see `seed_pageable_scheme`).
+        // Omitting the arm routes them through the class-method path rather than the
+        // old single-receiver pub fns.
         // `orderBy` is no longer reconciled here: it became the method of the
         // `Orderable q p | q -> p` class (std.repo), one verb over a query or a
         // join. A qualified `Repo.orderBy` resolves to that class method, typed by

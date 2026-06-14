@@ -1091,6 +1091,39 @@ pub fn register_stdlib_classes(ct: &mut ClassTable) {
             to: smallvec![1],
         }],
     );
+
+    // `Orderable` from std.repo — the unified `orderBy` over a query or a join.
+    // Like `Refinable`: two parameters `q p` with the functional dependency
+    // `q -> p` (the receiver fixes the key's arity), the method scheme seeded
+    // directly (see `seed_orderable_scheme` in lib.rs) with no AST types, and the
+    // three instances registered in `register_stdlib_instances`. `orderBy` takes
+    // three arguments (the direction, the key quote, and the receiver), so the sig
+    // arity is 3 where `filter`/`select` are 2; the receiver still pins the
+    // instance and the dependency determines the key shape.
+    let orderable_id = ct.intern("Orderable");
+    ct.insert_with_id(
+        orderable_id,
+        ClassInfo {
+            name: "Orderable".to_string(),
+            arity: 2,
+            method_sigs: vec![MethodSig {
+                name: "orderBy".to_string(),
+                arity: 3,
+                ast_param_types: vec![],
+                ast_ret_type: None,
+                class_ty_vars: Vec::new(),
+            }],
+            superclasses: vec![],
+            def_module: None,
+        },
+    );
+    ct.set_fundeps(
+        orderable_id,
+        vec![FunDepIdx {
+            from: smallvec![0],
+            to: smallvec![1],
+        }],
+    );
 }
 
 /// Registers the base-type instances of stdlib-defined classes into `env`.
@@ -1318,6 +1351,41 @@ pub fn register_stdlib_instances(
                 env.instances
                     .entry((projectable, smallvec![left_join, fn2]))
                     .or_insert_with(|| projectable_inst(vec![2, 5]));
+            }
+        }
+    }
+
+    // `Orderable (Query e a) (fn e -> k)`, `Orderable (Join e f a) (fn e f -> k)`,
+    // and the same over `LeftJoin` (its right side read as `Option f`) — the
+    // unified `orderBy` instances from std.repo. Keyed like `Refinable` (receiver
+    // tycon + key-arity tycon), and like `filter` they return the receiver
+    // unchanged, so they carry no context constraints: `orderBy` only records the
+    // key, it does not reach the store. The key's column type `k` is free in each
+    // head, the fundep fixing only the key's arity per receiver.
+    if let Some(orderable) = ct.id_by_name("Orderable") {
+        if let (Some(fn1), Some(fn2)) = (ridge_types::fn_tycon_id(1), ridge_types::fn_tycon_id(2)) {
+            let orderable_inst = || InstanceInfo {
+                def_module: None,
+                methods: vec![("orderBy".to_string(), String::new())],
+                ctx_constraints: vec![],
+                head_var_positions: vec![],
+                origin: InstanceOrigin::Explicit,
+                span: ds,
+            };
+            if let Some(&query) = reconciled_tycon_names.get("Query") {
+                env.instances
+                    .entry((orderable, smallvec![query, fn1]))
+                    .or_insert_with(orderable_inst);
+            }
+            if let Some(&join) = reconciled_tycon_names.get("Join") {
+                env.instances
+                    .entry((orderable, smallvec![join, fn2]))
+                    .or_insert_with(orderable_inst);
+            }
+            if let Some(&left_join) = reconciled_tycon_names.get("LeftJoin") {
+                env.instances
+                    .entry((orderable, smallvec![left_join, fn2]))
+                    .or_insert_with(orderable_inst);
             }
         }
     }

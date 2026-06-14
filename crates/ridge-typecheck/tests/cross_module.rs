@@ -2075,3 +2075,212 @@ pub fn db bad () -> Result (List Summary) Error =
         "a projection field absent from the result record must be rejected; got no errors"
     );
 }
+
+// ── Unified orderBy ──────────────────────────────────────────────────────────
+
+#[test]
+fn query_builder_order_join_by_left_column_typechecks() {
+    // The one `Repo.orderBy` takes a two-row key on a `Join`. A key over the left
+    // entity sorts the join by a left-table column — the same verb that takes a
+    // one-row key on a `Query`, the arity following the receiver through the
+    // `Orderable` functional dependency.
+    let main = r#"
+import std.data (memAdapter, MemAdapter)
+import std.repo as Repo
+import std.query (SortOrder, Asc)
+import std.sql (SqlValue)
+
+pub type User = { id: Int, age: Int, name: Text } deriving (Row)
+pub type Post = { id: Int, authorId: Int, title: Text } deriving (Row)
+
+pub fn db ordered () -> Result (List (User, Post)) Error =
+    let users: Repo User MemAdapter = Repo.repo (memAdapter ()) "users"
+    let posts: Repo Post MemAdapter = Repo.repo (memAdapter ()) "posts"
+    users
+      |> Repo.query
+      |> Repo.joinOn posts (fn (u: User) (p: Post) -> u.id == p.authorId)
+      |> Repo.orderBy Asc (fn (u: User) (p: Post) -> u.name)
+      |> Repo.toPairs
+"#;
+    let errors = typecheck_one(main);
+    assert!(
+        errors.is_empty(),
+        "a two-row order key over the left entity must type-check clean; got {errors:?}"
+    );
+}
+
+#[test]
+fn query_builder_order_join_by_right_column_typechecks() {
+    // A join's `orderBy` key may name a column of the *right* entity, sorting the
+    // join by a right-table column. The key reads `p.title` (the right side), which
+    // the seam qualifies to the right table; only the verb's arity is fixed by the
+    // receiver, not which side a key names.
+    let main = r#"
+import std.data (memAdapter, MemAdapter)
+import std.repo as Repo
+import std.query (SortOrder, Desc)
+import std.sql (SqlValue)
+
+pub type User = { id: Int, age: Int, name: Text } deriving (Row)
+pub type Post = { id: Int, authorId: Int, title: Text } deriving (Row)
+
+pub fn db ordered () -> Result (List (User, Post)) Error =
+    let users: Repo User MemAdapter = Repo.repo (memAdapter ()) "users"
+    let posts: Repo Post MemAdapter = Repo.repo (memAdapter ()) "posts"
+    users
+      |> Repo.query
+      |> Repo.joinOn posts (fn (u: User) (p: Post) -> u.id == p.authorId)
+      |> Repo.orderBy Desc (fn (u: User) (p: Post) -> p.title)
+      |> Repo.toPairs
+"#;
+    let errors = typecheck_one(main);
+    assert!(
+        errors.is_empty(),
+        "a two-row order key over the right entity must type-check clean; got {errors:?}"
+    );
+}
+
+#[test]
+fn query_builder_order_left_join_by_right_option_column_typechecks() {
+    // A left join's `orderBy` reads its right side as `Option` in the key
+    // (`fn (u: User) (p: Option Post) -> p.title`), the same shape its projection
+    // uses. The key still names a single right column; an unmatched row sorts as a
+    // missing key.
+    let main = r#"
+import std.data (memAdapter, MemAdapter)
+import std.repo as Repo
+import std.query (SortOrder, Asc)
+import std.sql (SqlValue)
+
+pub type User = { id: Int, age: Int, name: Text } deriving (Row)
+pub type Post = { id: Int, authorId: Int, title: Text } deriving (Row)
+
+pub fn db ordered () -> Result (List (User, Option Post)) Error =
+    let users: Repo User MemAdapter = Repo.repo (memAdapter ()) "users"
+    let posts: Repo Post MemAdapter = Repo.repo (memAdapter ()) "posts"
+    users
+      |> Repo.query
+      |> Repo.leftJoinOn posts (fn (u: User) (p: Post) -> u.id == p.authorId)
+      |> Repo.orderBy Asc (fn (u: User) (p: Option Post) -> p.title)
+      |> Repo.toLeftPairs
+"#;
+    let errors = typecheck_one(main);
+    assert!(
+        errors.is_empty(),
+        "a left join's two-row order key over the optional right entity must type-check clean; got {errors:?}"
+    );
+}
+
+#[test]
+fn query_builder_two_row_order_key_on_query_is_rejected() {
+    // The `Orderable` functional dependency fixes the key's arity to the receiver:
+    // a `Query` takes a one-row key, so a two-row key is an arity error rather than
+    // a silent mismatch — the orderBy dual of the filter arity check.
+    let main = r#"
+import std.data (memAdapter, MemAdapter)
+import std.repo as Repo
+import std.query (SortOrder, Asc)
+import std.sql (SqlValue)
+
+pub type User = { id: Int, age: Int, name: Text } deriving (Row)
+
+pub fn db bad () -> Result (List User) Error =
+    let users: Repo User MemAdapter = Repo.repo (memAdapter ()) "users"
+    users
+      |> Repo.query
+      |> Repo.orderBy Asc (fn (u: User) (v: User) -> u.name)
+      |> Repo.toList
+"#;
+    let errors = typecheck_one(main);
+    assert!(
+        !errors.is_empty(),
+        "a two-row order key on a query must be rejected by the arity functional dependency"
+    );
+}
+
+#[test]
+fn query_builder_one_row_order_key_on_join_is_rejected() {
+    // The dual rejection: a `Join` takes a two-row key, so a one-row key is an
+    // arity error.
+    let main = r#"
+import std.data (memAdapter, MemAdapter)
+import std.repo as Repo
+import std.query (SortOrder, Asc)
+import std.sql (SqlValue)
+
+pub type User = { id: Int, age: Int, name: Text } deriving (Row)
+pub type Post = { id: Int, authorId: Int, title: Text } deriving (Row)
+
+pub fn db bad () -> Result (List (User, Post)) Error =
+    let users: Repo User MemAdapter = Repo.repo (memAdapter ()) "users"
+    let posts: Repo Post MemAdapter = Repo.repo (memAdapter ()) "posts"
+    users
+      |> Repo.query
+      |> Repo.joinOn posts (fn (u: User) (p: Post) -> u.id == p.authorId)
+      |> Repo.orderBy Asc (fn (u: User) -> u.name)
+      |> Repo.toPairs
+"#;
+    let errors = typecheck_one(main);
+    assert!(
+        !errors.is_empty(),
+        "a one-row order key on a join must be rejected by the arity functional dependency"
+    );
+}
+
+#[test]
+fn query_builder_order_key_is_column_only_no_injection() {
+    // Security: an ordering key may only name a single column, checked against the
+    // entity's schema. A computed expression — the shape a raw-`ORDER BY` injection
+    // would take — is rejected, so nothing but a schema-validated column reference
+    // reaches the generated `ORDER BY`.
+    let injection = r#"
+import std.data (memAdapter, MemAdapter)
+import std.repo as Repo
+import std.query (SortOrder, Asc)
+import std.sql (SqlValue)
+
+pub type User = { id: Int, age: Int, name: Text } deriving (Row)
+
+pub fn db bad () -> Result (List User) Error =
+    let users: Repo User MemAdapter = Repo.repo (memAdapter ()) "users"
+    users
+      |> Repo.query
+      |> Repo.orderBy Asc (fn (u: User) -> u.age + 1)
+      |> Repo.toList
+"#;
+    let errors = typecheck_one(injection);
+    assert!(
+        !errors.is_empty(),
+        "a computed ordering key (a non-column expression) must be rejected; got no errors"
+    );
+}
+
+#[test]
+fn query_builder_order_join_by_unknown_right_column_is_rejected() {
+    // The two-row order key resolves a right column against the right entity's
+    // schema: a column the right entity does not declare is rejected, so a join's
+    // ordering can never name a column that is not there.
+    let main = r#"
+import std.data (memAdapter, MemAdapter)
+import std.repo as Repo
+import std.query (SortOrder, Asc)
+import std.sql (SqlValue)
+
+pub type User = { id: Int, age: Int, name: Text } deriving (Row)
+pub type Post = { id: Int, authorId: Int, title: Text } deriving (Row)
+
+pub fn db bad () -> Result (List (User, Post)) Error =
+    let users: Repo User MemAdapter = Repo.repo (memAdapter ()) "users"
+    let posts: Repo Post MemAdapter = Repo.repo (memAdapter ()) "posts"
+    users
+      |> Repo.query
+      |> Repo.joinOn posts (fn (u: User) (p: Post) -> u.id == p.authorId)
+      |> Repo.orderBy Asc (fn (u: User) (p: Post) -> p.nope)
+      |> Repo.toPairs
+"#;
+    let errors = typecheck_one(main);
+    assert!(
+        !errors.is_empty(),
+        "an order key naming a column absent from the right entity must be rejected; got no errors"
+    );
+}

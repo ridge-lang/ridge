@@ -1435,11 +1435,38 @@ mem_left_select_pairs(L, RightRows, Cond, Where2) ->
         Matches -> [{L, R} || R <- Matches, mem_jpred(Where2, L, R)]
     end.
 
-%% Order joined pairs by the left-column keys (the left query's ordering). The
-%% key reads from the left row of each pair; lists:sort/2 is stable.
+%% Order joined pairs by the side-tagged key list. Each key reads the left or the
+%% right row of a pair by its side tag, so a join orders by a column from either
+%% table; lists:sort/2 is stable, so pairs equal under every key keep their order.
 mem_order_pairs([], Pairs) -> Pairs;
 mem_order_pairs(Orders, Pairs) ->
-    lists:sort(fun({LA, _}, {LB, _}) -> mem_le(Orders, LA, LB) end, Pairs).
+    lists:sort(fun(A, B) -> mem_le_pair(Orders, A, B) end, Pairs).
+
+%% Whether pair A sorts no later than pair B under the side-tagged key list. The
+%% first key that distinguishes them decides; ties fall through to the next. A
+%% `false` tag reads the pair's left row, a `true` tag its right row (normalised
+%% from a left join's `none`/`{some, R}` wrapper), so a right-side key over an
+%% unmatched left-join row reads as a missing value and keeps its place.
+mem_le_pair([], _A, _B) -> true;
+mem_le_pair([{Asc, IsRight, Col} | Rest], {LA, RA} = A, {LB, RB} = B) ->
+    {RowA, RowB} =
+        case IsRight of
+            true  -> {mem_right_row(RA), mem_right_row(RB)};
+            false -> {LA, LB}
+        end,
+    case mem_order_cmp(mem_scalar({'QCol', Col}, RowA), mem_scalar({'QCol', Col}, RowB)) of
+        eq -> mem_le_pair(Rest, A, B);
+        lt -> Asc;
+        gt -> not Asc
+    end.
+
+%% The right row of a join pair as a map: an inner join carries the row directly;
+%% a left join wraps a match as `{some, R}` and a non-match as `none` (or the empty
+%% map in the projection path), both of which read as the empty map so a right-side
+%% key over an unmatched row has no value.
+mem_right_row(R) when is_map(R) -> R;
+mem_right_row({some, R})        -> R;
+mem_right_row(_)                -> #{}.
 
 %% Project a joined pair through a QProj select-list into one map keyed by alias:
 %% each column reads the left or right row depending on its `QCol`/`QColR` tag.

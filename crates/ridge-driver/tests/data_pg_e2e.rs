@@ -310,6 +310,18 @@ pub fn db joinedTitles () -> Text =
                 Err _  -> "select-err"
                 Ok cs  -> joinCombos cs
 
+-- join ordered by a RIGHT column, descending: the same inner join ordered by post
+-- title `DESC` (a right-table column) -> "max:world,lin:hello", the reverse of the
+-- id order, so the ordering is driven by the right column rather than the left.
+-- Proves the backend qualifies the `ORDER BY` key to the right table alias (`r`).
+pub fn db joinOrderByRight () -> Text =
+    match setupJoin ()
+        Err _ -> "setup-err"
+        Ok (users, posts) ->
+            match users |> Repo.query |> Repo.joinOn posts (fn (u: User) (p: Post) -> u.id == p.author) |> Repo.orderBy Desc (fn (u: User) (p: Post) -> p.title) |> Repo.toPairs
+                Err _  -> "join-order-err"
+                Ok ps  -> joinPairs ps
+
 -- left join: keep every user, pairing each with its post or with `None`, ordered
 -- by user id, rendered `name:title` (or `name:-`) -> "ada:-,lin:hello,max:world".
 -- ada has no post, so where the inner join dropped it the left join keeps it as
@@ -1040,6 +1052,7 @@ fn postgres_adapter_reads_a_real_table() {
          io:format(\"topYears=~w~n\",[{module}:topYears()]), \
          io:format(\"joinedNames=~s~n\",[{module}:joinedNames()]), \
          io:format(\"joinedTitles=~s~n\",[{module}:joinedTitles()]), \
+         io:format(\"joinOrderByRight=~s~n\",[{module}:joinOrderByRight()]), \
          io:format(\"leftJoinedNames=~s~n\",[{module}:leftJoinedNames()]), \
          io:format(\"leftSelectTitles=~s~n\",[{module}:leftSelectTitles()]), \
          io:format(\"addedNames=~s~n\",[{module}:addedNames()]), \
@@ -1129,6 +1142,10 @@ fn postgres_adapter_reads_a_real_table() {
         (
             "joinedTitles=lin:hello,max:world",
             "pg_join_select compiles a qualified, aliased select-list and decodes the Combo shape",
+        ),
+        (
+            "joinOrderByRight=max:world,lin:hello",
+            "the unified orderBy qualifies the ORDER BY key to the right table (r.title DESC), reversing the id order",
         ),
         (
             "leftJoinedNames=ada:-,lin:hello,max:world",

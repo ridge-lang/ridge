@@ -840,11 +840,13 @@ cwj_operand(_Other, N, B)             -> {"NULL", B, N}.
 qcol_left(C)  -> [$l, $., quote_ident(C)].
 qcol_right(C) -> [$r, $., quote_ident(C)].
 
-%% ORDER BY over a join orders by the left query's keys, qualified to `l`.
+%% ORDER BY over a join: each key carries which side its column belongs to, so it
+%% is qualified to the left (`l`) or right (`r`) table alias accordingly.
 order_by_clause_join([])     -> [];
 order_by_clause_join(Orders) -> [" ORDER BY ", lists:join(", ", [order_term_join(O) || O <- Orders])].
 
-order_term_join({Asc, Col}) -> [qcol_left(Col), " ", dir_keyword(Asc)].
+order_term_join({Asc, true,  Col}) -> [qcol_right(Col), " ", dir_keyword(Asc)];
+order_term_join({Asc, false, Col}) -> [qcol_left(Col),  " ", dir_keyword(Asc)].
 
 %% A join projection select-list from a `QProj` of `{Alias, Column}` cells: each
 %% column is qualified by its side and aliased to the output field. An empty

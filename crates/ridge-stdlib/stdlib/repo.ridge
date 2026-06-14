@@ -274,10 +274,16 @@ pub class Projectable q p | q -> p =
     select      (proj: Quote p) (x: q) -> Result (List (Ret p))   Error
     selectFirst (proj: Quote p) (x: q) -> Result (Option (Ret p)) Error
 
--- Append an ordering key. Keys order major-to-minor in the order added, each
--- ascending or descending. The key is a quoted column: `fn (u: User) -> u.age`.
-pub fn orderBy (dir: SortOrder) (key: Quote (Map Text SqlValue -> k)) (q: Query e a) -> Query e a =
-    Query { repo = q.repo, pred = q.pred, orders = q.orders ++ [(ascending dir, orderColumn key)], lim = q.lim, off = q.off, dist = q.dist, plan = q.plan }
+-- One `orderBy` for a query and a join. A query orders by a one-row key over its
+-- entity; a join by a two-row key over both, naming a column from either side
+-- (`fn (u: User) (p: Post) -> p.title` orders by the right table). The class ties
+-- the key's arity to the receiver through a functional dependency, so `q` alone
+-- fixes `p`: a `Query e a` takes a `Quote (e -> k)` and a `Join e f a`/
+-- `LeftJoin e f a` takes a `Quote (e -> f -> k)`. The key's column type `k` is
+-- phantom — only the column it names is read — so a column of any type orders.
+-- Keys order major-to-minor in the order added, each ascending or descending.
+pub class Orderable q p | q -> p =
+    orderBy (dir: SortOrder) (key: Quote p) (x: q) -> q
 
 -- Keep at most `n` rows.
 pub fn limit (n: Int) (q: Query e a) -> Query e a =
@@ -559,17 +565,18 @@ pub fn summarize (proj: Quote (Group e k -> s)) (g: GroupedQuery e k a) -> Resul
 -- The condition is written against both records at the call site: its left
 -- columns range over the left entity and its right over the right, captured as a
 -- query tree that tags each side so the two tables never collide.
-pub opaque type Join e f a = { left: Query e a, right: Repo f a, cond: Quote (Map Text SqlValue -> Map Text SqlValue -> Bool), where2: Quote (Map Text SqlValue -> Map Text SqlValue -> Bool) }
+pub opaque type Join e f a = { left: Query e a, right: Repo f a, cond: Quote (Map Text SqlValue -> Map Text SqlValue -> Bool), where2: Quote (Map Text SqlValue -> Map Text SqlValue -> Bool), orders: List (Bool, Bool, Text) }
 
 -- Start an inner join from a query: pair it with a right repository on a quoted
 -- condition over both entities. The left query's filter, ordering, and page
--- still apply; the join brings the right table.
+-- still apply — the ordering it accumulated carries in as left-side keys — and
+-- the join brings the right table.
 pub fn joinOn (right: Repo f a) (cond: Quote (Map Text SqlValue -> Map Text SqlValue -> Bool)) (q: Query e a) -> Join e f a =
-    Join { left = q, right = right, cond = cond, where2 = keepAll2 () }
+    Join { left = q, right = right, cond = cond, where2 = keepAll2 (), orders = liftOrders q.orders }
 
 -- Run the inner join and decode each matched row pair into both entities.
 pub fn toPairs (j: Join e f a) -> Result (List (e, f)) Error where Adapter a, Row e, Row f =
-    match join j.left.repo.adapter j.left.repo.table j.right.table j.cond j.where2 j.left.pred j.left.orders j.left.lim j.left.off
+    match join j.left.repo.adapter j.left.repo.table j.right.table j.cond j.where2 j.left.pred j.orders j.left.lim j.left.off
         Err err  -> Err err
         Ok pairs -> decodePairs pairs
 
@@ -582,7 +589,7 @@ pub fn toPairs (j: Join e f a) -> Result (List (e, f)) Error where Adapter a, Ro
 --     |> Repo.query
 --     |> Repo.leftJoinOn posts (fn (u: User) (p: Post) -> u.id == p.authorId)
 --     |> Repo.toLeftPairs
-pub opaque type LeftJoin e f a = { left: Query e a, right: Repo f a, cond: Quote (Map Text SqlValue -> Map Text SqlValue -> Bool), where2: Quote (Map Text SqlValue -> Map Text SqlValue -> Bool) }
+pub opaque type LeftJoin e f a = { left: Query e a, right: Repo f a, cond: Quote (Map Text SqlValue -> Map Text SqlValue -> Bool), where2: Quote (Map Text SqlValue -> Map Text SqlValue -> Bool), orders: List (Bool, Bool, Text) }
 
 -- Start a left outer join from a query: pair it with a right repository on a
 -- quoted condition over both entities. Unlike `joinOn`, a left row with no
@@ -590,12 +597,12 @@ pub opaque type LeftJoin e f a = { left: Query e a, right: Repo f a, cond: Quote
 -- missing right side as `None`. The left query's filter, ordering, and page
 -- still apply.
 pub fn leftJoinOn (right: Repo f a) (cond: Quote (Map Text SqlValue -> Map Text SqlValue -> Bool)) (q: Query e a) -> LeftJoin e f a =
-    LeftJoin { left = q, right = right, cond = cond, where2 = keepAll2 () }
+    LeftJoin { left = q, right = right, cond = cond, where2 = keepAll2 (), orders = liftOrders q.orders }
 
 -- Run the left join and decode each row into the left entity paired with the
 -- right entity, or paired with `None` where the left row matched no right row.
 pub fn toLeftPairs (j: LeftJoin e f a) -> Result (List (e, Option f)) Error where Adapter a, Row e, Row f =
-    match leftJoin j.left.repo.adapter j.left.repo.table j.right.table j.cond j.where2 j.left.pred j.left.orders j.left.lim j.left.off
+    match leftJoin j.left.repo.adapter j.left.repo.table j.right.table j.cond j.where2 j.left.pred j.orders j.left.lim j.left.off
         Err err  -> Err err
         Ok pairs -> decodeLeftPairs pairs
 
@@ -612,7 +619,7 @@ instance Refinable (Query e a) (fn e -> Bool) =
 -- fold `where2` in when they run the join.
 instance Refinable (Join e f a) (fn e f -> Bool) =
     filter (pred: Quote (fn e f -> Bool)) (x: Join e f a) -> Join e f a =
-        Join { left = x.left, right = x.right, cond = x.cond, where2 = quoteAnd2 x.where2 pred }
+        Join { left = x.left, right = x.right, cond = x.cond, where2 = quoteAnd2 x.where2 pred, orders = x.orders }
 
 -- A left join's `filter`: AND the two-row predicate into the post-join `WHERE`.
 -- A predicate that reads a right column drops the unmatched left rows (their
@@ -620,7 +627,7 @@ instance Refinable (Join e f a) (fn e f -> Bool) =
 -- its matches — the three-valued reading SQL gives a `WHERE` after a `LEFT JOIN`.
 instance Refinable (LeftJoin e f a) (fn e f -> Bool) =
     filter (pred: Quote (fn e f -> Bool)) (x: LeftJoin e f a) -> LeftJoin e f a =
-        LeftJoin { left = x.left, right = x.right, cond = x.cond, where2 = quoteAnd2 x.where2 pred }
+        LeftJoin { left = x.left, right = x.right, cond = x.cond, where2 = quoteAnd2 x.where2 pred, orders = x.orders }
 
 -- A query's `select`: project one entity down to the named shape `s` and decode
 -- each row into it. The backend pushes the select-list down so only the named
@@ -640,11 +647,11 @@ instance Projectable (Query e a) (fn e -> s) where Adapter a, Row s =
 -- backend pushes that select-list into the `JOIN` and each row decodes into `s`.
 instance Projectable (Join e f a) (fn e f -> s) where Adapter a, Row s =
     select (proj: Quote (fn e f -> s)) (x: Join e f a) -> Result (List s) Error =
-        match joinSelect x.left.repo.adapter x.left.repo.table x.right.table x.cond x.where2 x.left.pred x.left.orders x.left.lim x.left.off proj
+        match joinSelect x.left.repo.adapter x.left.repo.table x.right.table x.cond x.where2 x.left.pred x.orders x.left.lim x.left.off proj
             Err err  -> Err err
             Ok rows  -> decodeRows rows
     selectFirst (proj: Quote (fn e f -> s)) (x: Join e f a) -> Result (Option s) Error =
-        match joinSelect x.left.repo.adapter x.left.repo.table x.right.table x.cond x.where2 x.left.pred x.left.orders 1 x.left.off proj
+        match joinSelect x.left.repo.adapter x.left.repo.table x.right.table x.cond x.where2 x.left.pred x.orders 1 x.left.off proj
             Err err  -> Err err
             Ok rows  -> firstDecoded rows
 
@@ -654,13 +661,37 @@ instance Projectable (Join e f a) (fn e f -> s) where Adapter a, Row s =
 -- `LEFT JOIN`) and only the named columns cross.
 instance Projectable (LeftJoin e f a) (fn e (Option f) -> s) where Adapter a, Row s =
     select (proj: Quote (fn e (Option f) -> s)) (x: LeftJoin e f a) -> Result (List s) Error =
-        match leftJoinSelect x.left.repo.adapter x.left.repo.table x.right.table x.cond x.where2 x.left.pred x.left.orders x.left.lim x.left.off proj
+        match leftJoinSelect x.left.repo.adapter x.left.repo.table x.right.table x.cond x.where2 x.left.pred x.orders x.left.lim x.left.off proj
             Err err  -> Err err
             Ok rows  -> decodeRows rows
     selectFirst (proj: Quote (fn e (Option f) -> s)) (x: LeftJoin e f a) -> Result (Option s) Error =
-        match leftJoinSelect x.left.repo.adapter x.left.repo.table x.right.table x.cond x.where2 x.left.pred x.left.orders 1 x.left.off proj
+        match leftJoinSelect x.left.repo.adapter x.left.repo.table x.right.table x.cond x.where2 x.left.pred x.orders 1 x.left.off proj
             Err err  -> Err err
             Ok rows  -> firstDecoded rows
+
+-- A query's `orderBy`: append the one-row key as an ordering column over the
+-- query's own `orders`. The key (`fn (u: User) -> u.age`) names a single column;
+-- the direction rides alongside it. The behaviour the single-receiver `orderBy`
+-- had before it unified with the join form.
+instance Orderable (Query e a) (fn e -> k) =
+    orderBy (dir: SortOrder) (key: Quote (fn e -> k)) (x: Query e a) -> Query e a =
+        Query { repo = x.repo, pred = x.pred, orders = snoc x.orders (ascending dir, orderColumn key), lim = x.lim, off = x.off, dist = x.dist, plan = x.plan }
+
+-- An inner join's `orderBy`: append a two-row key to the join's own ordering. The
+-- key may name a column from either side (`fn (u: User) (p: Post) -> p.title`
+-- orders by the right table); `orderEntry2` reads the column and which side it
+-- belongs to so the seam qualifies it to the right table alias.
+instance Orderable (Join e f a) (fn e f -> k) =
+    orderBy (dir: SortOrder) (key: Quote (fn e f -> k)) (x: Join e f a) -> Join e f a =
+        Join { left = x.left, right = x.right, cond = x.cond, where2 = x.where2, orders = snoc x.orders (orderEntry2 dir key) }
+
+-- A left join's `orderBy`: the two-row dual over a `LeftJoin`. The right side is
+-- read as `Option` in the key (`fn (u: User) (p: Option Post) -> p.title`); an
+-- unmatched left row has no right value, so a right-side key sorts it as a missing
+-- key (it keeps its place).
+instance Orderable (LeftJoin e f a) (fn e (Option f) -> k) =
+    orderBy (dir: SortOrder) (key: Quote (fn e (Option f) -> k)) (x: LeftJoin e f a) -> LeftJoin e f a =
+        LeftJoin { left = x.left, right = x.right, cond = x.cond, where2 = x.where2, orders = snoc x.orders (orderEntry2 dir key) }
 
 -- Decode a list of `(left, right)` row pairs into entity pairs, stopping at the
 -- first decode failure on either side.
@@ -722,11 +753,39 @@ fn qcolName (e: QExpr) -> Text =
         _      -> ""
 
 -- The column an ordering key names. The key quote captures a single column, so
--- its tree is a `QCol`; anything else contributes an empty key name.
-fn orderColumn (key: Quote (Map Text SqlValue -> k)) -> Text =
+-- its tree is a `QCol`; anything else contributes an empty key name. Generic over
+-- the quote's function type (like `projColumns`) so it reads an entity-typed key
+-- (`fn (u: User) -> u.age`, the unified `orderBy`'s shape) and a row-map one alike
+-- — only the captured `tree` matters.
+fn orderColumn (key: Quote p) -> Text =
     match key.tree
         QCol c -> c
         _      -> ""
+
+-- Append one element to the end of a list. The ordering builders add each new key
+-- after the keys already accumulated, so the keys sort major-to-minor in the order
+-- written.
+fn snoc (xs: List a) (x: a) -> List a =
+    xs ++ [x]
+
+-- Lift a query's one-row ordering keys into a join's side-tagged ordering: a
+-- query's keys all range over its (left) entity, so each `(ascending?, column)`
+-- becomes `(ascending?, false, column)`. The ordering a query accumulated before
+-- it was joined carries into the join as left-side keys.
+fn liftOrders (os: List (Bool, Text)) -> List (Bool, Bool, Text) =
+    match os
+        []               -> []
+        (asc, c) :: rest -> (asc, false, c) :: liftOrders rest
+
+-- A join ordering entry from a quoted key: the direction, which side the column
+-- belongs to (a `QColR` names the right table), and the column name. A key that
+-- does not name a single column contributes an empty left-side entry — the inert
+-- shape `orderColumn` also falls back to.
+fn orderEntry2 (dir: SortOrder) (key: Quote p) -> (Bool, Bool, Text) =
+    match key.tree
+        QCol c  -> (ascending dir, false, c)
+        QColR c -> (ascending dir, true, c)
+        _       -> (ascending dir, false, "")
 
 -- The column an aggregate accessor names. Like an ordering key, the accessor
 -- quote captures a single column (a `QCol`); anything else contributes an empty

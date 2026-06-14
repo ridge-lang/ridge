@@ -753,6 +753,7 @@ fn typecheck_module_inner(
         };
         seed_sql_codec_schemes(&mut ctx, b, ct, sql_value);
         seed_refinable_scheme(&mut ctx, b, ct);
+        seed_projectable_scheme(&mut ctx, b, ct);
     }
 
     // Step B: Seed env with prelude constructors + stdlib qualified bindings.
@@ -1074,6 +1075,59 @@ fn seed_refinable_scheme(
     );
 }
 
+/// Seed the env schemes for `Projectable.select` / `Projectable.selectFirst` —
+/// std.repo's unified projection over a query, inner join, or left join.
+/// Registered in Rust for the same reason as [`seed_refinable_scheme`]: the
+/// stdlib class carries no source AST, so the AST-driven
+/// [`seed_class_method_schemes`] path skips it.
+///
+/// Schemes:
+/// - `select      :: ∀q p. Quote p -> q -> Result (List   (Ret p)) Error where Projectable q p`
+/// - `selectFirst :: ∀q p. Quote p -> q -> Result (Option (Ret p)) Error where Projectable q p`
+///
+/// The receiver `q` pins the instance; the functional dependency `q -> p` fixes
+/// the projection's shape `p`. `Ret p` is the projection's own return type — the
+/// projected element — decoded through the instance's `Row (Ret p)`. The one
+/// binding serves a `Query`'s one-row projection and a `Join`/`LeftJoin`'s
+/// two-row projection alike.
+fn seed_projectable_scheme(
+    ctx: &mut crate::ctx::InferCtx,
+    b: &ridge_types::BuiltinTyCons,
+    class_table: &crate::class_env::ClassTable,
+) {
+    use ridge_types::{CapRow, CapabilitySet, Constraint, Scheme, Type};
+    let Some(projectable) = class_table.id_by_name("Projectable") else {
+        return;
+    };
+    // `select` answers a `List`, `selectFirst` an `Option`; otherwise identical.
+    for (name, wrap) in [("select", b.list), ("selectFirst", b.option)] {
+        let q = ctx.fresh_tyvid();
+        let p = ctx.fresh_tyvid();
+        let ret_p = Type::Con(b.ret, vec![Type::Var(p)]);
+        let result_ty = Type::Con(
+            b.result,
+            vec![Type::Con(wrap, vec![ret_p]), Type::Con(b.error, vec![])],
+        );
+        let fn_ty = Type::Fn {
+            params: vec![Type::Con(b.quote, vec![Type::Var(p)]), Type::Var(q)],
+            ret: Box::new(result_ty),
+            caps: CapRow::Concrete(CapabilitySet::PURE),
+        };
+        let constraint_tys: smallvec::SmallVec<[ridge_types::TyVid; 1]> =
+            [q, p].into_iter().collect();
+        ctx.env.bind(
+            name.to_owned(),
+            Scheme {
+                vars: vec![q, p],
+                cap_vars: vec![],
+                row_vars: vec![],
+                ty: fn_ty,
+                constraints: vec![Constraint::new(projectable, constraint_tys)],
+            },
+        );
+    }
+}
+
 /// Seed type-environment schemes for the two prelude codec methods (`encode`,
 /// `decode`) so that bare calls work without an inline `class` redeclaration.
 ///
@@ -1349,7 +1403,7 @@ fn seed_sql_codec_schemes(
                 caps: CapRow::Concrete(CapabilitySet::PURE),
             };
             ctx.env.bind(
-                "select".to_owned(),
+                "selectRows".to_owned(),
                 Scheme {
                     vars: vec![a, e],
                     cap_vars: vec![],

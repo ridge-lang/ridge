@@ -397,7 +397,7 @@ const BASELINE_EXPORTS: &[(&str, &[&str])] = &[
             "Adapter",
             "appendRow",
             "all",
-            "select",
+            "selectRows",
             "get",
             "delete",
             "updateRows",
@@ -469,7 +469,11 @@ const BASELINE_EXPORTS: &[(&str, &[&str])] = &[
             "single",
             "singleOrError",
             "every",
-            "selectList",
+            // The unified projection verb is the method of `Projectable q p |
+            // q -> p`: `select` projects a query/join/left-join down to a named
+            // shape, `selectFirst` returns the first projected row (`LIMIT 1`).
+            "Projectable",
+            "select",
             "selectFirst",
             "applySet",
             // Scalar aggregates pushed down to the backend over the query's
@@ -480,17 +484,15 @@ const BASELINE_EXPORTS: &[(&str, &[&str])] = &[
             "minOf",
             "maxOf",
             // The two-table join builder: the opaque `Join e f a`, its `joinOn`
-            // entry, and the `toPairs`/`selectJoin` terminals.
+            // entry, and the `toPairs` terminal (projection via `Projectable`).
             "Join",
             "joinOn",
             "toPairs",
-            "selectJoin",
             // The left-outer join: the opaque `LeftJoin e f a`, its `leftJoinOn`
-            // entry, and the `toLeftPairs`/`selectLeftJoin` terminals.
+            // entry, and the `toLeftPairs` terminal (projection via `Projectable`).
             "LeftJoin",
             "leftJoinOn",
             "toLeftPairs",
-            "selectLeftJoin",
             // Grouped aggregates: the opaque `GroupedQuery e k a` built by
             // `groupBy`, narrowed by `having`, and summarised into a named record
             // by `summarize`. `Group e k` is the handle the `having`/`summarize`

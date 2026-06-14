@@ -56,8 +56,8 @@ fn firstDecoded (rows: List (Map Text SqlValue)) -> Result (Option e) Error wher
                 Ok x    -> Ok (Some x)
 
 -- A quoted predicate that keeps every row — an always-true tree. The aggregate
--- and full-table verbs run `select` with it, so they reach the rows through the
--- one seam primitive (`select`) rather than a second `all`/`get` entry point.
+-- and full-table verbs run `selectRows` with it, so they reach the rows through the
+-- one seam primitive (`selectRows`) rather than a second `all`/`get` entry point.
 -- Built in the runtime: a `Quote`/`QExpr` literal cannot be written in Ridge
 -- source (the compiler only captures quotations, it does not let code construct
 -- the tree), so the always-true tree is assembled on the Erlang side.
@@ -109,7 +109,7 @@ fn planRefine (inner: QExpr) (pred: QExpr) (orders: List (Bool, Text)) (lim: Int
 
 -- Every row of the table, decoded into entities.
 pub fn all (r: Repo e a) -> Result (List e) Error where Adapter a, Row e =
-    match select r.adapter r.table (keepAll ())
+    match selectRows r.adapter r.table (keepAll ())
         Err err  -> Err err
         Ok rows  -> decodeRows rows
 
@@ -117,7 +117,7 @@ pub fn all (r: Repo e a) -> Result (List e) Error where Adapter a, Row e =
 -- written against the entity at the call site (`fn (u: User) -> ...`) and
 -- captured as a query tree; the seam evaluates it against each stored row.
 pub fn findBy (pred: Quote (Map Text SqlValue -> Bool)) (r: Repo e a) -> Result (List e) Error where Adapter a, Row e =
-    match select r.adapter r.table pred
+    match selectRows r.adapter r.table pred
         Err err  -> Err err
         Ok rows  -> decodeRows rows
 
@@ -261,6 +261,18 @@ pub fn query (r: Repo e a) -> Query e a =
 -- introduces a constraint list in Ridge.)
 pub class Refinable q p | q -> p =
     filter (pred: Quote p) (x: q) -> q
+
+-- Project a query or join down to a chosen shape `s` — a `SELECT` whose list is
+-- the columns the projection names, decoded into `s`. One verb across all three
+-- receivers, the projection's arity following the receiver: a query projects one
+-- entity (`fn (u: User) -> Summary { who = u.name }`), an inner join projects
+-- both (`fn (u: User) (p: Post) -> Line { ... }`), a left join reads its right
+-- side as `Option` (`fn (u: User) (p: Option Post) -> ...`). The result element
+-- is the projection's own return type. `select` returns the whole list;
+-- `selectFirst` returns the first row — a pushed-down `LIMIT 1` — or `None`.
+pub class Projectable q p | q -> p =
+    select      (proj: Quote p) (x: q) -> Result (List (Ret p))   Error
+    selectFirst (proj: Quote p) (x: q) -> Result (Option (Ret p)) Error
 
 -- Append an ordering key. Keys order major-to-minor in the order added, each
 -- ascending or descending. The key is a quoted column: `fn (u: User) -> u.age`.
@@ -424,24 +436,6 @@ pub fn every (pred: Quote (Map Text SqlValue -> Bool)) (q: Query e a) -> Result 
                 Err err     -> Err err
                 Ok matching -> Ok (total == matching)
 
--- Run the query as a projection: select only the columns the shape `s` names and
--- decode each projected row into `s`. The projection is written by naming the
--- result record — `fn (u: User) -> Summary { name = u.name, year = u.signupYear }`
--- — which fixes `s` to that record and lists its columns. The backend pushes the
--- select-list down (`SELECT name, signup_year AS year …`) so only those columns
--- cross, in the chosen order and page.
-pub fn selectList (proj: Quote (Map Text SqlValue -> s)) (q: Query e a) -> Result (List s) Error where Adapter a, Row s =
-    match project q.repo.adapter q.repo.table q.pred q.orders q.lim q.off (projColumns proj) q.dist
-        Err err -> Err err
-        Ok rows -> decodeRows rows
-
--- Run a projection for just its first row, decoded into `s`; `None` when none
--- match. The ordering and offset still apply, with a one-row limit.
-pub fn selectFirst (proj: Quote (Map Text SqlValue -> s)) (q: Query e a) -> Result (Option s) Error where Adapter a, Row s =
-    match project q.repo.adapter q.repo.table q.pred q.orders 1 q.off (projColumns proj) q.dist
-        Err err -> Err err
-        Ok rows -> firstDecoded rows
-
 -- Apply typed setters to the rows the query selects; answer how many changed.
 -- The write terminal of the builder, mirroring how `Where(...).ExecuteUpdate(...)`
 -- reads in LINQ: the accumulated filter picks the rows, the setters assign their
@@ -579,17 +573,6 @@ pub fn toPairs (j: Join e f a) -> Result (List (e, f)) Error where Adapter a, Ro
         Err err  -> Err err
         Ok pairs -> decodePairs pairs
 
--- Run the inner join as a projection: select only the columns the shape `s`
--- names from across both entities, and decode each projected row into `s`. The
--- projection is written by naming the result record over both rows —
--- `fn (u: User) (p: Post) -> Line { who = u.name, title = p.title }` — which
--- fixes `s` and lists its columns. The backend pushes the select-list down so
--- only those columns cross, in the chosen order and page.
-pub fn selectJoin (proj: Quote (Map Text SqlValue -> Map Text SqlValue -> Map Text SqlValue)) (j: Join e f a) -> Result (List s) Error where Adapter a, Row s =
-    match joinSelect j.left.repo.adapter j.left.repo.table j.right.table j.cond j.where2 j.left.pred j.left.orders j.left.lim j.left.off proj
-        Err err  -> Err err
-        Ok rows  -> decodeRows rows
-
 -- A left (outer) join under construction. It carries the same three parts as an
 -- inner `Join` — the left query, the right repository, and a quoted condition
 -- over both entities — but its terminal keeps every left row: a left row that
@@ -616,18 +599,6 @@ pub fn toLeftPairs (j: LeftJoin e f a) -> Result (List (e, Option f)) Error wher
         Err err  -> Err err
         Ok pairs -> decodeLeftPairs pairs
 
--- Run the left join as a projection: select only the columns the shape `s` names
--- from across both entities, decoding each row into `s`. The projection's right
--- parameter is `Option` — `fn (u: User) (p: Option Post) -> Line { who = u.name,
--- title = p.title }` — so each right column reads as `Option` of its type and the
--- named shape's right-derived fields are `Option`; an unmatched left row projects
--- them as `None`. The backend keeps every left row (a `LEFT JOIN`) and pushes the
--- select-list down so only the named columns cross.
-pub fn selectLeftJoin (proj: Quote (Map Text SqlValue -> Map Text SqlValue -> Map Text SqlValue)) (j: LeftJoin e f a) -> Result (List s) Error where Adapter a, Row s =
-    match leftJoinSelect j.left.repo.adapter j.left.repo.table j.right.table j.cond j.where2 j.left.pred j.left.orders j.left.lim j.left.off proj
-        Err err  -> Err err
-        Ok rows  -> decodeRows rows
-
 -- A query's `filter`: AND the one-row predicate into the query's accumulated
 -- `WHERE`, exactly as the original single-receiver verb did. The predicate is
 -- entity-typed (`Quote (e -> Bool)`) and the stored field row-typed; `quoteAnd`
@@ -650,6 +621,46 @@ instance Refinable (Join e f a) (fn e f -> Bool) =
 instance Refinable (LeftJoin e f a) (fn e f -> Bool) =
     filter (pred: Quote (fn e f -> Bool)) (x: LeftJoin e f a) -> LeftJoin e f a =
         LeftJoin { left = x.left, right = x.right, cond = x.cond, where2 = quoteAnd2 x.where2 pred }
+
+-- A query's `select`: project one entity down to the named shape `s` and decode
+-- each row into it. The backend pushes the select-list down so only the named
+-- columns cross, in the query's order and page; `selectFirst` adds `LIMIT 1`.
+instance Projectable (Query e a) (fn e -> s) where Adapter a, Row s =
+    select (proj: Quote (fn e -> s)) (x: Query e a) -> Result (List s) Error =
+        match project x.repo.adapter x.repo.table x.pred x.orders x.lim x.off (projColumns proj) x.dist
+            Err err -> Err err
+            Ok rows -> decodeRows rows
+    selectFirst (proj: Quote (fn e -> s)) (x: Query e a) -> Result (Option s) Error =
+        match project x.repo.adapter x.repo.table x.pred x.orders 1 x.off (projColumns proj) x.dist
+            Err err -> Err err
+            Ok rows -> firstDecoded rows
+
+-- An inner join's `select`: project across both entities into `s`. The projection
+-- names columns from either row (`fn (u: User) (p: Post) -> Line { ... }`); the
+-- backend pushes that select-list into the `JOIN` and each row decodes into `s`.
+instance Projectable (Join e f a) (fn e f -> s) where Adapter a, Row s =
+    select (proj: Quote (fn e f -> s)) (x: Join e f a) -> Result (List s) Error =
+        match joinSelect x.left.repo.adapter x.left.repo.table x.right.table x.cond x.where2 x.left.pred x.left.orders x.left.lim x.left.off proj
+            Err err  -> Err err
+            Ok rows  -> decodeRows rows
+    selectFirst (proj: Quote (fn e f -> s)) (x: Join e f a) -> Result (Option s) Error =
+        match joinSelect x.left.repo.adapter x.left.repo.table x.right.table x.cond x.where2 x.left.pred x.left.orders 1 x.left.off proj
+            Err err  -> Err err
+            Ok rows  -> firstDecoded rows
+
+-- A left join's `select`: project across both entities into `s`, the right side
+-- read as `Option` (`fn (u: User) (p: Option Post) -> ...`) so an unmatched left
+-- row projects its right-derived fields as `None`. Every left row is kept (a
+-- `LEFT JOIN`) and only the named columns cross.
+instance Projectable (LeftJoin e f a) (fn e (Option f) -> s) where Adapter a, Row s =
+    select (proj: Quote (fn e (Option f) -> s)) (x: LeftJoin e f a) -> Result (List s) Error =
+        match leftJoinSelect x.left.repo.adapter x.left.repo.table x.right.table x.cond x.where2 x.left.pred x.left.orders x.left.lim x.left.off proj
+            Err err  -> Err err
+            Ok rows  -> decodeRows rows
+    selectFirst (proj: Quote (fn e (Option f) -> s)) (x: LeftJoin e f a) -> Result (Option s) Error =
+        match leftJoinSelect x.left.repo.adapter x.left.repo.table x.right.table x.cond x.where2 x.left.pred x.left.orders 1 x.left.off proj
+            Err err  -> Err err
+            Ok rows  -> firstDecoded rows
 
 -- Decode a list of `(left, right)` row pairs into entity pairs, stopping at the
 -- first decode failure on either side.
@@ -692,8 +703,10 @@ fn decodeLeftPairs (pairs: List (Map Text SqlValue, Option (Map Text SqlValue)))
 
 -- The `(alias, column)` pairs a projection names. The projection quote captures
 -- a `QProj` whose select-list is a list of `(alias, QCol column)`; anything else
--- contributes no columns.
-fn projColumns (proj: Quote (Map Text SqlValue -> s)) -> List (Text, Text) =
+-- contributes no columns. Generic over the quote's function type so it reads an
+-- entity-typed projection (`fn e -> s`) and a row-map one alike — only the
+-- captured `tree` matters.
+fn projColumns (proj: Quote p) -> List (Text, Text) =
     match proj.tree
         QProj cols -> projPairs cols
         _          -> []

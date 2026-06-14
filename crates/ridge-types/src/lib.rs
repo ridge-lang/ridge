@@ -22,6 +22,7 @@ pub mod witness;
 
 pub use builtins::{
     fn_tycon_arity, fn_tycon_id, fn_tycon_name, BuiltinTyCons, FN_ARITY_COUNT, FN_TYCON_BASE,
+    RET_TYCON_ID,
 };
 pub use capability_set::CapabilitySet;
 pub use constraint::{

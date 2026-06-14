@@ -54,6 +54,22 @@ pub fn fn_tycon_arity(id: TyConId) -> Option<usize> {
     (offset < FN_ARITY_COUNT).then_some(offset)
 }
 
+/// `TyConId` of `Ret/1` — the built-in return-type extractor.
+///
+/// `Ret p` is a type-level projection that reduces to the return type of a
+/// concrete function type: `Ret (fn a -> r)` normalises to `r`. It exists so a
+/// receiver-polymorphic builder method can name "the return of the projection"
+/// in its result type (`Result (List (Ret p))`) without an associated-type
+/// family — the one place a determined function's return must flow to a result.
+/// Reserved immediately after the `Fn/N` block, so user allocation never
+/// collides; the reduction lives in unification and `deep_resolve`, and the
+/// constructor is internal (never written in surface syntax).
+#[expect(
+    clippy::cast_possible_truncation,
+    reason = "FN_ARITY_COUNT is 16 — far within u32"
+)]
+pub const RET_TYCON_ID: u32 = FN_TYCON_BASE + FN_ARITY_COUNT as u32;
+
 /// The arena/dictionary name of the synthetic `Fn/arity` constructor.
 ///
 /// Returns `"Fn0"`, `"Fn1"`, … . This name is the bridge that keeps the
@@ -186,6 +202,10 @@ pub struct BuiltinTyCons {
     /// (index = arity). Dispatch keys only — never applied as `Type::Con`.
     /// See [`fn_tycon_id`] / [`FN_ARITY_COUNT`].
     pub fns: [TyConId; FN_ARITY_COUNT],
+    /// `Ret/1` — the return-type extractor. `Ret p` reduces to the return of a
+    /// concrete function `p`. Internal: it appears only in Rust-seeded schemes,
+    /// never in surface syntax. See [`RET_TYCON_ID`].
+    pub ret: TyConId,
 }
 
 impl BuiltinTyCons {
@@ -228,6 +248,7 @@ impl BuiltinTyCons {
             q_expr: SENTINEL,
             quote: SENTINEL,
             fns: [SENTINEL; FN_ARITY_COUNT],
+            ret: SENTINEL,
         }
     }
 
@@ -1017,6 +1038,21 @@ impl BuiltinTyCons {
             });
         }
 
+        // Ret/1 — the return-type extractor, interned right after the Fn/N block
+        // (RET_TYCON_ID = 43). Unlike the Fn dispatch keys it IS applied as
+        // `Type::Con(ret, [p])`, so its arity is 1; the reduction `Ret (fn .. -> r)
+        // -> r` lives in the unifier and `deep_resolve`.
+        let ret = arena.intern(TyConDecl {
+            id: TyConId(0),
+            name: "Ret".to_string(),
+            arity: 1,
+            kind: TyConKind::Builtin,
+            def_span: None,
+            def_module_raw: None,
+            opaque: false,
+            is_anon: false,
+        });
+
         // Verify assignment order matches spec §4.1 indices 0..16.
         debug_assert_eq!(int.0, 0);
         debug_assert_eq!(float.0, 1);
@@ -1049,6 +1085,9 @@ impl BuiltinTyCons {
         debug_assert_eq!(fns[0].0, FN_TYCON_BASE);
         debug_assert_eq!(fns[0].0, 27);
         debug_assert_eq!(fns[FN_ARITY_COUNT - 1].0, 42);
+        // Ret/1 sits immediately after the Fn/N block (RET_TYCON_ID = 43).
+        debug_assert_eq!(ret.0, RET_TYCON_ID);
+        debug_assert_eq!(ret.0, 43);
 
         // Suppress the "unused" lint — CapabilitySet is imported for future use
         // in T4 (actor schemas carry CapabilitySet).
@@ -1083,6 +1122,7 @@ impl BuiltinTyCons {
             q_expr,
             quote,
             fns,
+            ret,
         }
     }
 }
@@ -1162,15 +1202,15 @@ mod tests {
     }
 
     #[test]
-    fn arena_len_is_43() {
+    fn arena_len_is_44() {
         // 15 original builtins + Ordering + JsonValue + the std.net.http taint
         // wrappers Sql / Html / SecureCookie + std.sql's SqlValue + the
         // column-codegen builtins Column / Table + the schema-codegen builtins
         // FieldSchema / Schema + the quotation builtins QExpr / Quote (27 total)
-        // + the 16 synthetic function-type constructors Fn/0 … Fn/15.
+        // + the 16 synthetic function-type constructors Fn/0 … Fn/15 + Ret/1.
         let (arena, _) = make_arena_with_builtins();
-        assert_eq!(arena.len(), 27 + FN_ARITY_COUNT);
-        assert_eq!(arena.len(), 43);
+        assert_eq!(arena.len(), 27 + FN_ARITY_COUNT + 1);
+        assert_eq!(arena.len(), 44);
     }
 
     #[test]

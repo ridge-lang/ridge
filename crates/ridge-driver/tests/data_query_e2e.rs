@@ -22,7 +22,7 @@ use std::process::Command;
 use ridge_driver::{compile_workspace, CompileOptions, EmitArtefacts};
 
 const SOURCE: &str = r#"
-import std.data (memAdapter, appendRow, select, get, delete)
+import std.data (memAdapter, appendRow, selectRows, get, delete)
 import std.sql (toSql, fromRow, SqlValue)
 import std.map as Map
 
@@ -58,7 +58,7 @@ pub fn db selectCount () -> Int =
     match setup ()
         Err _ -> 0 - 1
         Ok conn ->
-            match select conn "users" (fn (u: User) -> u.age >= 25)
+            match selectRows conn "users" (fn (u: User) -> u.age >= 25)
                 Ok rows -> lengthOf rows
                 Err _   -> 0 - 2
 
@@ -67,7 +67,7 @@ pub fn db selectName () -> Text =
     match setup ()
         Err _ -> "setup-err"
         Ok conn ->
-            match select conn "users" (fn (u: User) -> u.age > 28)
+            match selectRows conn "users" (fn (u: User) -> u.age > 28)
                 Err _   -> "select-err"
                 Ok rows ->
                     match rows
@@ -117,7 +117,7 @@ pub fn db afterDelete () -> Int =
             match delete conn "users" (fn (u: User) -> u.age < 25)
                 Err _ -> 0 - 2
                 Ok _  ->
-                    match select conn "users" (fn (u: User) -> u.age >= 0)
+                    match selectRows conn "users" (fn (u: User) -> u.age >= 0)
                         Ok rows -> lengthOf rows
                         Err _   -> 0 - 3
 "#;

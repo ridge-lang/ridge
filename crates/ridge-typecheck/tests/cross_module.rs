@@ -436,19 +436,19 @@ pub fn opensWithoutDb () -> Result (List (Map Text SqlValue)) Error =
 }
 
 #[test]
-fn adapter_select_with_inline_annotated_predicate_typechecks() {
+fn adapter_select_rows_with_inline_annotated_predicate_typechecks() {
     // A predicate written inline captures when its parameter is annotated: the
     // annotation `(u: User)` pins the quoted entity (the method's `Quote (e ->
     // Bool)` leaves it generic), so the body is checked against User's columns
-    // and `select` dispatches on MemAdapter.
+    // and `selectRows` dispatches on MemAdapter.
     let main = r#"
-import std.data (memAdapter, select)
+import std.data (memAdapter, selectRows)
 import std.sql (SqlValue)
 
 pub type User = { id: Int, age: Int }
 
 pub fn db adults () -> Result (List (Map Text SqlValue)) Error =
-    select (memAdapter ()) "users" (fn (u: User) -> u.age >= 18)
+    selectRows (memAdapter ()) "users" (fn (u: User) -> u.age >= 18)
 "#;
     let errors = typecheck_one(main);
     assert!(
@@ -486,13 +486,13 @@ fn adapter_select_predicate_unknown_column_is_rejected() {
     // The quoted predicate is checked against the entity's columns, so a field
     // the record does not declare is a real error rather than being absorbed.
     let main = r#"
-import std.data (memAdapter, select)
+import std.data (memAdapter, selectRows)
 import std.sql (SqlValue)
 
 pub type User = { id: Int, age: Int }
 
 pub fn db bad () -> Result (List (Map Text SqlValue)) Error =
-    select (memAdapter ()) "users" (fn (u: User) -> u.nope >= 18)
+    selectRows (memAdapter ()) "users" (fn (u: User) -> u.nope >= 18)
 "#;
     let errors = typecheck_one(main);
     assert!(
@@ -717,7 +717,7 @@ pub fn db distinctUsers () -> Result (List User) Error =
 
 pub fn db distinctNames () -> Result (List Name) Error =
     let users: Repo User MemAdapter = Repo.repo (memAdapter ()) "users"
-    users |> Repo.query |> Repo.distinct |> Repo.orderBy Asc (fn (u: User) -> u.name) |> Repo.selectList (fn (u: User) -> Name { name = u.name })
+    users |> Repo.query |> Repo.distinct |> Repo.orderBy Asc (fn (u: User) -> u.name) |> Repo.select (fn (u: User) -> Name { name = u.name })
 "#;
     let errors = typecheck_one(main);
     assert!(
@@ -981,7 +981,7 @@ pub fn db summaries () -> Result (List Summary) Error =
       |> Repo.filter (fn (u: User) -> u.age >= 18)
       |> Repo.orderBy Desc (fn (u: User) -> u.age)
       |> Repo.limit 10
-      |> Repo.selectList (fn (u: User) -> Summary { name = u.name, year = u.signupYear })
+      |> Repo.select (fn (u: User) -> Summary { name = u.name, year = u.signupYear })
 
 pub fn db topSummary () -> Result (Option Summary) Error =
     let users: Repo User MemAdapter = Repo.repo (memAdapter ()) "users"
@@ -1018,7 +1018,7 @@ pub fn db summaries () -> Result (List Summary) Error =
             users
               |> Repo.query
               |> Repo.filter (fn (u: User) -> u.age >= 18)
-              |> Repo.selectList (fn (u: User) -> Summary { name = u.name, year = u.signupYear })
+              |> Repo.select (fn (u: User) -> Summary { name = u.name, year = u.signupYear })
 "#;
     let errors = typecheck_one(main);
     assert!(
@@ -1043,7 +1043,7 @@ pub type Summary = { label: Text } deriving (Row)
 
 pub fn db bad () -> Result (List Summary) Error =
     let users: Repo User MemAdapter = Repo.repo (memAdapter ()) "users"
-    users |> Repo.query |> Repo.selectList (fn (u: User) -> Summary { label = u.nope })
+    users |> Repo.query |> Repo.select (fn (u: User) -> Summary { label = u.nope })
 "#;
     let errors = typecheck_one(main);
     assert!(
@@ -1066,7 +1066,7 @@ pub type User = { id: Int, age: Int, name: Text } deriving (Row)
 
 pub fn db bad () -> Result (List Unit) Error =
     let users: Repo User MemAdapter = Repo.repo (memAdapter ()) "users"
-    users |> Repo.query |> Repo.selectList (fn (u: User) -> { name = u.name })
+    users |> Repo.query |> Repo.select (fn (u: User) -> { name = u.name })
 "#;
     let errors = typecheck_one(main);
     assert!(
@@ -1183,7 +1183,7 @@ pub fn db authorLines () -> Result (List Line) Error =
     users
       |> Repo.query
       |> Repo.joinOn posts (fn (u: User) (p: Post) -> u.id == p.authorId)
-      |> Repo.selectJoin (fn (u: User) (p: Post) -> Line { who = u.name, title = p.title })
+      |> Repo.select (fn (u: User) (p: Post) -> Line { who = u.name, title = p.title })
 "#;
     let errors = typecheck_one(main);
     assert!(
@@ -1215,7 +1215,7 @@ pub fn db authorLines () -> Result (List Line) Error =
             users
               |> Repo.query
               |> Repo.joinOn posts (fn (u: User) (p: Post) -> u.id == p.authorId)
-              |> Repo.selectJoin (fn (u: User) (p: Post) -> Line { who = u.name, title = p.title })
+              |> Repo.select (fn (u: User) (p: Post) -> Line { who = u.name, title = p.title })
 "#;
     let errors = typecheck_one(main);
     assert!(
@@ -1292,7 +1292,7 @@ pub fn db bad () -> Result (List Unit) Error =
     users
       |> Repo.query
       |> Repo.joinOn posts (fn (u: User) (p: Post) -> u.id == p.authorId)
-      |> Repo.selectJoin (fn (u: User) (p: Post) -> { who = u.name })
+      |> Repo.select (fn (u: User) (p: Post) -> { who = u.name })
 "#;
     let errors = typecheck_one(main);
     assert!(
@@ -1437,7 +1437,7 @@ pub fn db authorLines () -> Result (List Line) Error =
     users
       |> Repo.query
       |> Repo.leftJoinOn posts (fn (u: User) (p: Post) -> u.id == p.authorId)
-      |> Repo.selectLeftJoin (fn (u: User) (p: Option Post) -> Line { who = u.name, title = p.title })
+      |> Repo.select (fn (u: User) (p: Option Post) -> Line { who = u.name, title = p.title })
 "#;
     let errors = typecheck_one(main);
     assert!(
@@ -1467,7 +1467,7 @@ pub fn db bad () -> Result (List Line) Error =
     users
       |> Repo.query
       |> Repo.leftJoinOn posts (fn (u: User) (p: Post) -> u.id == p.authorId)
-      |> Repo.selectLeftJoin (fn (u: User) (p: Option Post) -> Line { who = u.name, title = p.title })
+      |> Repo.select (fn (u: User) (p: Option Post) -> Line { who = u.name, title = p.title })
 "#;
     let errors = typecheck_one(main);
     assert!(
@@ -1498,7 +1498,7 @@ pub fn db authorLines () -> Result (List Line) Error =
             users
               |> Repo.query
               |> Repo.leftJoinOn posts (fn (u: User) (p: Post) -> u.id == p.authorId)
-              |> Repo.selectLeftJoin (fn (u: User) (p: Option Post) -> Line { who = u.name, title = p.title })
+              |> Repo.select (fn (u: User) (p: Option Post) -> Line { who = u.name, title = p.title })
 "#;
     let errors = typecheck_one(main);
     assert!(
@@ -1888,5 +1888,190 @@ fn refinable_filter_rejects_one_arg_predicate_on_two_row_receiver() {
     assert!(
         !errors.is_empty(),
         "a 1-arg predicate on a 2-row receiver must be rejected; got {errors:?}"
+    );
+}
+
+// ── Unified `select` / `selectFirst` — first-row, arity, and injection ──────────
+
+#[test]
+fn query_builder_select_first_into_named_shape_typechecks() {
+    // `selectFirst` is the one-row projection: the same named-record capture as
+    // `select`, but answering `Option s` (a pushed-down `LIMIT 1`).
+    let main = r#"
+import std.data (memAdapter, MemAdapter)
+import std.repo as Repo
+import std.query (SortOrder, Desc)
+import std.sql (SqlValue)
+
+pub type User = { id: Int, age: Int, name: Text, signupYear: Int } deriving (Row)
+pub type Summary = { name: Text, year: Int } deriving (Row)
+
+pub fn db topSummary () -> Result (Option Summary) Error =
+    let users: Repo User MemAdapter = Repo.repo (memAdapter ()) "users"
+    users
+      |> Repo.query
+      |> Repo.orderBy Desc (fn (u: User) -> u.age)
+      |> Repo.selectFirst (fn (u: User) -> Summary { name = u.name, year = u.signupYear })
+"#;
+    let errors = typecheck_one(main);
+    assert!(
+        errors.is_empty(),
+        "a named-shape selectFirst must type-check clean; got {errors:?}"
+    );
+}
+
+#[test]
+fn query_builder_join_select_first_typechecks() {
+    // `selectFirst` over an inner join — new under the unified `Projectable` class
+    // (the old API had no first-row join projection). Answers `Option Line`.
+    let main = r#"
+import std.data (memAdapter, MemAdapter)
+import std.repo as Repo
+import std.sql (SqlValue)
+
+pub type User = { id: Int, age: Int, name: Text } deriving (Row)
+pub type Post = { id: Int, authorId: Int, title: Text } deriving (Row)
+pub type Line = { who: Text, title: Text } deriving (Row)
+
+pub fn db firstAuthorLine () -> Result (Option Line) Error =
+    let users: Repo User MemAdapter = Repo.repo (memAdapter ()) "users"
+    let posts: Repo Post MemAdapter = Repo.repo (memAdapter ()) "posts"
+    users
+      |> Repo.query
+      |> Repo.joinOn posts (fn (u: User) (p: Post) -> u.id == p.authorId)
+      |> Repo.selectFirst (fn (u: User) (p: Post) -> Line { who = u.name, title = p.title })
+"#;
+    let errors = typecheck_one(main);
+    assert!(
+        errors.is_empty(),
+        "selectFirst over a join must type-check clean; got {errors:?}"
+    );
+}
+
+#[test]
+fn query_builder_left_join_select_first_typechecks() {
+    // `selectFirst` over a left join — the right side is `Option`, so an unmatched
+    // left row projects its right-derived fields as `None`. Answers `Option ComboOpt`.
+    let main = r#"
+import std.data (memAdapter, MemAdapter)
+import std.repo as Repo
+import std.sql (SqlValue)
+
+pub type User = { id: Int, age: Int, name: Text } deriving (Row)
+pub type Post = { id: Int, authorId: Int, title: Text } deriving (Row)
+pub type ComboOpt = { person: Text, post: Option Text } deriving (Row)
+
+pub fn db firstLeftCombo () -> Result (Option ComboOpt) Error =
+    let users: Repo User MemAdapter = Repo.repo (memAdapter ()) "users"
+    let posts: Repo Post MemAdapter = Repo.repo (memAdapter ()) "posts"
+    users
+      |> Repo.query
+      |> Repo.leftJoinOn posts (fn (u: User) (p: Post) -> u.id == p.authorId)
+      |> Repo.selectFirst (fn (u: User) (p: Option Post) -> ComboOpt { person = u.name, post = p.title })
+"#;
+    let errors = typecheck_one(main);
+    assert!(
+        errors.is_empty(),
+        "selectFirst over a left join must type-check clean; got {errors:?}"
+    );
+}
+
+#[test]
+fn query_builder_select_rejects_two_row_projection_on_a_query() {
+    // The fundep `q -> p` fixes a single-table query's projection to one row, so a
+    // two-parameter projection lambda is a compile error, not a silent mismatch.
+    let main = r#"
+import std.data (memAdapter, MemAdapter)
+import std.repo as Repo
+import std.sql (SqlValue)
+
+pub type User = { id: Int, name: Text } deriving (Row)
+pub type Summary = { name: Text } deriving (Row)
+
+pub fn db bad () -> Result (List Summary) Error =
+    let users: Repo User MemAdapter = Repo.repo (memAdapter ()) "users"
+    users |> Repo.query |> Repo.select (fn (u: User) (x: User) -> Summary { name = u.name })
+"#;
+    let errors = typecheck_one(main);
+    assert!(
+        !errors.is_empty(),
+        "a two-row projection on a single-table query must be rejected; got no errors"
+    );
+}
+
+#[test]
+fn query_builder_join_select_rejects_one_row_projection() {
+    // The fundep fixes a join's projection to two rows (one per joined entity), so
+    // a one-parameter projection lambda is rejected.
+    let main = r#"
+import std.data (memAdapter, MemAdapter)
+import std.repo as Repo
+import std.sql (SqlValue)
+
+pub type User = { id: Int, name: Text } deriving (Row)
+pub type Post = { id: Int, authorId: Int, title: Text } deriving (Row)
+pub type Line = { who: Text } deriving (Row)
+
+pub fn db bad () -> Result (List Line) Error =
+    let users: Repo User MemAdapter = Repo.repo (memAdapter ()) "users"
+    let posts: Repo Post MemAdapter = Repo.repo (memAdapter ()) "posts"
+    users
+      |> Repo.query
+      |> Repo.joinOn posts (fn (u: User) (p: Post) -> u.id == p.authorId)
+      |> Repo.select (fn (u: User) -> Line { who = u.name })
+"#;
+    let errors = typecheck_one(main);
+    assert!(
+        !errors.is_empty(),
+        "a one-row projection on a join must be rejected; got no errors"
+    );
+}
+
+#[test]
+fn query_builder_select_projection_is_column_only_no_injection() {
+    // Security: a projection's select-list can only name entity columns, each
+    // checked against the entity's schema. A field bound to a *literal* — the
+    // shape a raw-SQL injection payload would take — is rejected, so nothing but a
+    // schema-validated column reference ever reaches the generated `SELECT` list.
+    // The opaque `Sql`/quotation seam never sees user-authored SQL text.
+    let injection = r#"
+import std.data (memAdapter, MemAdapter)
+import std.repo as Repo
+import std.sql (SqlValue)
+
+pub type User = { id: Int, name: Text } deriving (Row)
+pub type Summary = { name: Text } deriving (Row)
+
+pub fn db bad () -> Result (List Summary) Error =
+    let users: Repo User MemAdapter = Repo.repo (memAdapter ()) "users"
+    users |> Repo.query |> Repo.select (fn (u: User) -> Summary { name = "x'; DROP TABLE users; --" })
+"#;
+    let errors = typecheck_one(injection);
+    assert!(
+        !errors.is_empty(),
+        "a literal projection field (a SQL-injection vector) must be rejected; got no errors"
+    );
+}
+
+#[test]
+fn query_builder_select_projection_rejects_field_not_in_shape() {
+    // A projection field that the named result record does not declare is rejected,
+    // so the decode target and the select-list can never drift apart.
+    let main = r#"
+import std.data (memAdapter, MemAdapter)
+import std.repo as Repo
+import std.sql (SqlValue)
+
+pub type User = { id: Int, name: Text } deriving (Row)
+pub type Summary = { name: Text } deriving (Row)
+
+pub fn db bad () -> Result (List Summary) Error =
+    let users: Repo User MemAdapter = Repo.repo (memAdapter ()) "users"
+    users |> Repo.query |> Repo.select (fn (u: User) -> Summary { id = u.id })
+"#;
+    let errors = typecheck_one(main);
+    assert!(
+        !errors.is_empty(),
+        "a projection field absent from the result record must be rejected; got no errors"
     );
 }

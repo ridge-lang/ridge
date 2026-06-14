@@ -549,6 +549,15 @@ impl InferCtx {
             }
             Type::Con(id, args) => {
                 let new_args: Vec<Type> = args.iter().map(|a| self.deep_resolve(a)).collect();
+                // `Ret (fn … -> r)` normalises to `r`. The argument is already
+                // deep-resolved, so its return is fully resolved too. While the
+                // argument is still a variable (`Ret ?p`), the projection is left
+                // intact — it reduces once `p` is pinned to a function type.
+                if id.0 == ridge_types::RET_TYCON_ID && new_args.len() == 1 {
+                    if let Type::Fn { ret, .. } = &new_args[0] {
+                        return (**ret).clone();
+                    }
+                }
                 Type::Con(*id, new_args)
             }
             Type::Fn { params, ret, caps } => {

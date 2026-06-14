@@ -358,14 +358,13 @@ fn collect_instance_decls(
             .map(|m| (m.name.text.clone(), String::new())) // placeholder symbol
             .collect();
 
-        // Context constraints (parametric element dictionaries) are modelled for
-        // the single-head case only in this release; multi-parameter instance
-        // heads are concrete.
-        let (ctx_constraints, head_var_positions) = if decl.head.len() == 1 {
-            build_ctx_constraints(&decl.constraints, &decl.head[0], ct, user_tycon_names)
-        } else {
-            (vec![], vec![])
-        };
+        // Context constraints (parametric element dictionaries). The head's type
+        // arguments are flattened across every atom, so a context variable is
+        // found whether it sits in a single head (`Encode (List a)`) or in one
+        // atom of a multi-parameter head (`Projectable (Query e a) … where
+        // Adapter a`).
+        let (ctx_constraints, head_var_positions) =
+            build_ctx_constraints(&decl.constraints, &decl.head, ct, user_tycon_names);
 
         let info = InstanceInfo {
             def_module: Some(module_id),
@@ -798,6 +797,38 @@ fn peel_paren(ty: &ridge_ast::Type) -> &ridge_ast::Type {
     cur
 }
 
+/// The type-variable name of a head argument, or `None` when it is not a bare
+/// variable (a concrete type, a nested application, …).
+fn head_arg_name(ty: &ridge_ast::Type) -> Option<&str> {
+    match peel_paren(ty) {
+        ridge_ast::Type::Var { name, .. } => Some(name.text.as_str()),
+        _ => None,
+    }
+}
+
+/// Flatten every head atom's type arguments into one positional list of their
+/// variable names (`None` for a non-variable argument). Each `App`/`List`
+/// contributes its arguments, each `Fn` its parameters then its return — the
+/// same order the solver uses when it flattens the resolved head types. A
+/// single-atom head yields exactly that atom's arguments, so single-parameter
+/// contexts keep the positions they had before multi-parameter contexts existed.
+fn flatten_head_arg_names(head_atoms: &[ridge_ast::Type]) -> Vec<Option<&str>> {
+    use ridge_ast::Type as AstType;
+    let mut out = Vec::new();
+    for atom in head_atoms {
+        match peel_paren(atom) {
+            AstType::App { args, .. } => out.extend(args.iter().map(head_arg_name)),
+            AstType::List { elem, .. } => out.push(head_arg_name(elem)),
+            AstType::Fn { fn_ty, .. } => {
+                out.extend(fn_ty.params.iter().map(head_arg_name));
+                out.push(head_arg_name(&fn_ty.ret));
+            }
+            _ => {}
+        }
+    }
+    out
+}
+
 fn extract_tycon_id(
     ty: &ridge_ast::Type,
     user_tycon_names: &FxHashMap<String, TyConId>,
@@ -868,6 +899,10 @@ fn builtin_tycon_id_by_name(name: &str) -> Option<TyConId> {
         "JsonValue" => Some(TyConId(16)),
         "QExpr" => Some(TyConId(25)),
         "Quote" => Some(TyConId(26)),
+        // `Ret/1` — the return-type projection. Surfaced for stdlib query-builder
+        // signatures (`Result (List (Ret p)) Error`); reduces during unification.
+        // Interned right after the Fn/N block (see `ridge_types::RET_TYCON_ID`).
+        "Ret" => Some(TyConId(ridge_types::RET_TYCON_ID)),
         _ => None,
     }
 }
@@ -893,32 +928,22 @@ fn builtin_tycon_id_by_name(name: &str) -> Option<TyConId> {
 /// Returns `(vec![], vec![])` when `where_constraints` is empty (non-parametric
 /// instances). Silently skips constraints whose class is unknown or whose
 /// type variable is not found among the head's positional args.
+///
+/// The positions index a single list formed by flattening every head atom's
+/// type arguments in order (see [`flatten_head_arg_names`]); for a single-atom
+/// head this is exactly that atom's args, unchanged from before multi-parameter
+/// contexts existed. The solver flattens the resolved head types the same way.
 fn build_ctx_constraints(
     where_constraints: &[ridge_ast::typeclass::ClassConstraint],
-    head_ty: &ridge_ast::Type,
+    head_atoms: &[ridge_ast::Type],
     ct: &ClassTable,
     _user_tycon_names: &FxHashMap<String, TyConId>,
 ) -> (Vec<Constraint>, Vec<usize>) {
-    use ridge_ast::Type as AstType;
-
     if where_constraints.is_empty() {
         return (vec![], vec![]);
     }
 
-    // Collect the positional args from the head type, together with their
-    // variable names for lookup. Only `App` heads have args; `Named`/`Primitive`
-    // heads have no args (non-parametric). A parenthesised head `(List a)` is
-    // peeled first so the `App` is visible.
-    let head_args: Vec<Option<&str>> = match peel_paren(head_ty) {
-        AstType::App { args, .. } => args
-            .iter()
-            .map(|a| match a {
-                AstType::Var { name, .. } => Some(name.text.as_str()),
-                _ => None,
-            })
-            .collect(),
-        _ => vec![],
-    };
+    let head_args = flatten_head_arg_names(head_atoms);
 
     let mut ctx_constraints = Vec::new();
     let mut head_var_positions = Vec::new();
@@ -1449,8 +1474,12 @@ mod tests {
         let head = app_type("List", "a");
         let wcs = vec![make_class_constraint("Encode", "a")];
 
-        let (constraints, positions) =
-            build_ctx_constraints(&wcs, &head, &ct, &FxHashMap::default());
+        let (constraints, positions) = build_ctx_constraints(
+            &wcs,
+            std::slice::from_ref(&head),
+            &ct,
+            &FxHashMap::default(),
+        );
 
         assert_eq!(constraints.len(), 1, "one ctx_constraint for Encode a");
         assert_eq!(constraints[0].class, ENCODE_CLASS);
@@ -1464,7 +1493,12 @@ mod tests {
         let head = app2_named_var_type("Map", "Text", "a");
         let wcs = vec![make_class_constraint("Encode", "a")];
 
-        let (_, positions) = build_ctx_constraints(&wcs, &head, &ct, &FxHashMap::default());
+        let (_, positions) = build_ctx_constraints(
+            &wcs,
+            std::slice::from_ref(&head),
+            &ct,
+            &FxHashMap::default(),
+        );
 
         assert_eq!(positions, vec![1], "a is at arg position 1 in Map Text a");
     }
@@ -1481,8 +1515,12 @@ mod tests {
             make_class_constraint("Encode", "e"),
         ];
 
-        let (constraints, positions) =
-            build_ctx_constraints(&wcs, &head, &ct, &FxHashMap::default());
+        let (constraints, positions) = build_ctx_constraints(
+            &wcs,
+            std::slice::from_ref(&head),
+            &ct,
+            &FxHashMap::default(),
+        );
 
         assert_eq!(constraints.len(), 2, "two constraints for Result a e");
         assert_eq!(
@@ -1492,6 +1530,35 @@ mod tests {
         assert_eq!(positions, vec![0, 1], "a at 0, e at 1");
     }
 
+    /// A multi-atom head flattens its atoms' arguments in order: a context var in
+    /// the first atom keeps its position, one in a later atom lands at its
+    /// flattened position. Mirrors `Projectable (Query e a) (Tag s) where
+    /// Encode a, Encode s` (two atoms → flattened arg names `[e, a, s]`).
+    #[test]
+    fn ctx_constraints_multi_atom_flattened_positions() {
+        use ridge_types::ENCODE_CLASS;
+        let ct = prelude_class_table();
+        let head = vec![app2_vars_type("Query", "e", "a"), app_type("Tag", "s")];
+        let wcs = vec![
+            make_class_constraint("Encode", "a"),
+            make_class_constraint("Encode", "s"),
+        ];
+
+        let (constraints, positions) =
+            build_ctx_constraints(&wcs, &head, &ct, &FxHashMap::default());
+
+        assert_eq!(constraints.len(), 2);
+        assert_eq!(
+            constraints.iter().map(|c| c.class).collect::<Vec<_>>(),
+            vec![ENCODE_CLASS, ENCODE_CLASS]
+        );
+        assert_eq!(
+            positions,
+            vec![1, 2],
+            "a at flat pos 1 (in Query e a), s at flat pos 2 (in Tag s)"
+        );
+    }
+
     /// A plain named head (non-parametric) produces empty constraint/position lists.
     #[test]
     fn ctx_constraints_named_head_empty() {
@@ -1499,7 +1566,7 @@ mod tests {
         let head = named_type("Int");
 
         let (constraints, positions) =
-            build_ctx_constraints(&[], &head, &ct, &FxHashMap::default());
+            build_ctx_constraints(&[], std::slice::from_ref(&head), &ct, &FxHashMap::default());
 
         assert!(constraints.is_empty());
         assert!(positions.is_empty());

@@ -903,6 +903,10 @@ fn builtin_tycon_id_by_name(name: &str) -> Option<TyConId> {
         // signatures (`Result (List (Ret p)) Error`); reduces during unification.
         // Interned right after the Fn/N block (see `ridge_types::RET_TYCON_ID`).
         "Ret" => Some(TyConId(ridge_types::RET_TYCON_ID)),
+        // `Rows/1` — the row-shape projection for the decode terminals
+        // (`Result (List (Rows q)) Error`); reduces during unification. Interned
+        // right after `Ret/1` (see `ridge_types::ROWS_TYCON_ID`).
+        "Rows" => Some(TyConId(ridge_types::ROWS_TYCON_ID)),
         _ => None,
     }
 }

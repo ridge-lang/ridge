@@ -764,6 +764,33 @@ fn typecheck_module_inner(
             .copied();
         seed_orderable_scheme(&mut ctx, b, ct, sort_order);
         seed_aggregable_scheme(&mut ctx, b, ct);
+        seed_decodable_scheme(&mut ctx, b, ct);
+
+        // Wire the reconciled receiver ids the `Rows q` projection reduces against,
+        // so the decode terminals' result types (`Result (List (Rows q))`)
+        // normalise during inference. `Query`/`Join`/`LeftJoin` come from the
+        // reconciled stdlib block (user builds), the global arena (incremental
+        // path), or this module's own names (the stdlib's own build, where they are
+        // source types); `Option` is the builtin. Left unset when any is absent —
+        // a workspace without the query builder never produces a `Rows` to reduce.
+        let receiver_id = |name: &str| {
+            stdlib_tycon_names
+                .get(name)
+                .or_else(|| global_tycon_names.get(name))
+                .or_else(|| ctx.user_tycon_names.get(name))
+                .copied()
+        };
+        let query_id = receiver_id("Query");
+        let join_id = receiver_id("Join");
+        let left_join_id = receiver_id("LeftJoin");
+        if let (Some(query), Some(join), Some(left_join)) = (query_id, join_id, left_join_id) {
+            ctx.rows_tycons = Some(crate::ctx::RowsTycons {
+                query,
+                join,
+                left_join,
+                option: b.option,
+            });
+        }
     }
 
     // Step B: Seed env with prelude constructors + stdlib qualified bindings.
@@ -1251,6 +1278,59 @@ fn seed_aggregable_scheme(
                 row_vars: vec![],
                 ty: fn_ty,
                 constraints: vec![Constraint::new(aggregable, constraint_tys)],
+            },
+        );
+    }
+}
+
+/// Seed the env schemes for `Decodable.toList`/`first` — std.repo's unified
+/// decode terminals over a query, an inner join, or a left join. Registered in
+/// Rust for the same reason as [`seed_refinable_scheme`]: the stdlib class carries
+/// no source AST, so the AST-driven [`seed_class_method_schemes`] path skips it.
+///
+/// Schemes:
+/// - `toList :: ∀q. q -> Result (List (Rows q))   Error where Decodable q`
+/// - `first  :: ∀q. q -> Result (Option (Rows q)) Error where Decodable q`
+///
+/// One class parameter, the receiver `q`. The result row is the `Rows q`
+/// projection — `e` for a query, `(e, f)` for an inner join, `(e, Option f)` for a
+/// left join — which reduces from the receiver's own type constructor during
+/// unification. Because `Rows (Query e a)` reduces to the bare entity, a query's
+/// entity (phantom, so not pinned forward) flows backward from the declared result
+/// type the same way the old direct-`e` terminals resolved it; an associated-type
+/// projection over the receiver, not a functional dependency, since the terminals
+/// take no quoted argument to carry a second parameter.
+fn seed_decodable_scheme(
+    ctx: &mut crate::ctx::InferCtx,
+    b: &ridge_types::BuiltinTyCons,
+    class_table: &crate::class_env::ClassTable,
+) {
+    use ridge_types::{CapRow, CapabilitySet, Constraint, Scheme, Type};
+    let Some(decodable) = class_table.id_by_name("Decodable") else {
+        return;
+    };
+    // `toList` answers a `List`, `first` an `Option`; otherwise identical.
+    for (name, wrap) in [("toList", b.list), ("first", b.option)] {
+        let q = ctx.fresh_tyvid();
+        let rows_q = Type::Con(b.rows, vec![Type::Var(q)]);
+        let result_ty = Type::Con(
+            b.result,
+            vec![Type::Con(wrap, vec![rows_q]), Type::Con(b.error, vec![])],
+        );
+        let fn_ty = Type::Fn {
+            params: vec![Type::Var(q)],
+            ret: Box::new(result_ty),
+            caps: CapRow::Concrete(CapabilitySet::PURE),
+        };
+        let constraint_tys: smallvec::SmallVec<[ridge_types::TyVid; 1]> = smallvec::smallvec![q];
+        ctx.env.bind(
+            name.to_owned(),
+            Scheme {
+                vars: vec![q],
+                cap_vars: vec![],
+                row_vars: vec![],
+                ty: fn_ty,
+                constraints: vec![Constraint::new(decodable, constraint_tys)],
             },
         );
     }

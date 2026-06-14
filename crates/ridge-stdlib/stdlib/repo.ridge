@@ -304,6 +304,24 @@ pub class Aggregable q p | q -> p =
     minOf (col: Quote p) (x: q) -> Result (Option (Ret p)) Error
     maxOf (col: Quote p) (x: q) -> Result (Option (Ret p)) Error
 
+-- One pair of decode terminals for a query and a join. `toList` runs the
+-- accumulated query (or join) and decodes every matching row; `first` runs it
+-- for just the first row, decoded, or `None` when none match. The row shape
+-- follows the receiver: a query decodes to its entity (`e`), an inner join to a
+-- pair (`(e, f)`), and a left join to a pair whose right side is optional
+-- (`(e, Option f)`) — a left row that matched no right row pairs with `None`.
+-- `Rows q` is that row, a type-level projection over the receiver: it reduces to
+-- `e` for a query, `(e, f)` for an inner join, and `(e, Option f)` for a left
+-- join. The terminals take no quoted argument, so the row is named through this
+-- projection on the receiver rather than a second class parameter — and because
+-- `Rows (Query e a)` reduces to the bare entity, a query whose entity the call
+-- site never pins still resolves it from the declared result type, exactly as the
+-- old direct-`e` terminals did. It replaces the old per-receiver `toPairs`/
+-- `toLeftPairs`, and gives a join a `first` it never had.
+pub class Decodable q =
+    toList (x: q) -> Result (List (Rows q))   Error
+    first  (x: q) -> Result (Option (Rows q)) Error
+
 -- Keep at most `n` rows.
 pub fn limit (n: Int) (q: Query e a) -> Query e a =
     Query { repo = q.repo, pred = q.pred, orders = q.orders, lim = n, off = q.off, dist = q.dist, plan = q.plan }
@@ -329,25 +347,12 @@ fn queryRows (q: Query e a) -> Result (List (Map Text SqlValue)) Error where Ada
         None   -> fetch q.repo.adapter q.repo.table q.pred q.orders q.lim q.off q.dist
         Some _ -> runPlan q.repo.adapter (planOf q)
 
--- Run the query and decode the matching rows into entities, in the chosen order.
-pub fn toList (q: Query e a) -> Result (List e) Error where Adapter a, Row e =
-    match queryRows q
-        Err err -> Err err
-        Ok rows -> decodeRows rows
-
--- Run the query for just its first row, decoded; `None` when none match. The
--- ordering and offset still apply, with a one-row limit on a plain query; over a
--- set-operation result the plan runs and the first decoded row is kept.
-pub fn first (q: Query e a) -> Result (Option e) Error where Adapter a, Row e =
-    match q.plan
-        None ->
-            match fetch q.repo.adapter q.repo.table q.pred q.orders 1 q.off q.dist
-                Err err -> Err err
-                Ok rows -> firstDecoded rows
-        Some _ ->
-            match runPlan q.repo.adapter (planOf q)
-                Err err -> Err err
-                Ok rows -> firstDecoded rows
+-- `toList` and `first` over a query are the methods of the `Decodable q p |
+-- q -> p` class (declared above), so one pair of terminals decodes a query, an
+-- inner join, or a left join. The instances are defined below, next to the
+-- `Refinable`/`Projectable`/`Orderable`/`Aggregable` ones; the query instance
+-- runs `queryRows` (a single-table fetch, or the captured set-operation plan)
+-- and decodes through `decodeRows`/`firstDecoded`.
 
 -- The query plan a query runs: for a plain single-table query, a `planScan` over
 -- its table with the filter, ordering, page, and distinct it accumulated; for a
@@ -551,7 +556,7 @@ pub fn summarize (proj: Quote (Group e k -> s)) (g: GroupedQuery e k a) -> Resul
 --   users
 --     |> Repo.query
 --     |> Repo.joinOn posts (fn (u: User) (p: Post) -> u.id == p.authorId)
---     |> Repo.toPairs
+--     |> Repo.toList
 -- The condition is written against both records at the call site: its left
 -- columns range over the left entity and its right over the right, captured as a
 -- query tree that tags each side so the two tables never collide.
@@ -564,21 +569,19 @@ pub opaque type Join e f a = { left: Query e a, right: Repo f a, cond: Quote (Ma
 pub fn joinOn (right: Repo f a) (cond: Quote (Map Text SqlValue -> Map Text SqlValue -> Bool)) (q: Query e a) -> Join e f a =
     Join { left = q, right = right, cond = cond, where2 = keepAll2 (), orders = liftOrders q.orders }
 
--- Run the inner join and decode each matched row pair into both entities.
-pub fn toPairs (j: Join e f a) -> Result (List (e, f)) Error where Adapter a, Row e, Row f =
-    match join j.left.repo.adapter j.left.repo.table j.right.table j.cond j.where2 j.left.pred j.orders j.left.lim j.left.off
-        Err err  -> Err err
-        Ok pairs -> decodePairs pairs
+-- `toList` and `first` over an inner join are the `Decodable (Join e f a) …`
+-- methods (instance below), so the join shares the query's decode terminals:
+-- `toList` decodes every matched row pair into `(e, f)`, `first` the first pair.
 
 -- A left (outer) join under construction. It carries the same three parts as an
 -- inner `Join` — the left query, the right repository, and a quoted condition
 -- over both entities — but its terminal keeps every left row: a left row that
 -- matches no right row is still returned, with the right side reported as
--- `None`. Opaque and threaded from `leftJoinOn` into `toLeftPairs`:
+-- `None`. Opaque and threaded from `leftJoinOn` into a decode terminal:
 --   users
 --     |> Repo.query
 --     |> Repo.leftJoinOn posts (fn (u: User) (p: Post) -> u.id == p.authorId)
---     |> Repo.toLeftPairs
+--     |> Repo.toList
 pub opaque type LeftJoin e f a = { left: Query e a, right: Repo f a, cond: Quote (Map Text SqlValue -> Map Text SqlValue -> Bool), where2: Quote (Map Text SqlValue -> Map Text SqlValue -> Bool), orders: List (Bool, Bool, Text) }
 
 -- Start a left outer join from a query: pair it with a right repository on a
@@ -589,12 +592,10 @@ pub opaque type LeftJoin e f a = { left: Query e a, right: Repo f a, cond: Quote
 pub fn leftJoinOn (right: Repo f a) (cond: Quote (Map Text SqlValue -> Map Text SqlValue -> Bool)) (q: Query e a) -> LeftJoin e f a =
     LeftJoin { left = q, right = right, cond = cond, where2 = keepAll2 (), orders = liftOrders q.orders }
 
--- Run the left join and decode each row into the left entity paired with the
--- right entity, or paired with `None` where the left row matched no right row.
-pub fn toLeftPairs (j: LeftJoin e f a) -> Result (List (e, Option f)) Error where Adapter a, Row e, Row f =
-    match leftJoin j.left.repo.adapter j.left.repo.table j.right.table j.cond j.where2 j.left.pred j.orders j.left.lim j.left.off
-        Err err  -> Err err
-        Ok pairs -> decodeLeftPairs pairs
+-- `toList` and `first` over a left join are the `Decodable (LeftJoin e f a) …`
+-- methods (instance below): `toList` decodes each row into the left entity
+-- paired with the right entity, or with `None` where the left row matched no
+-- right row; `first` keeps the first such pair.
 
 -- A query's `filter`: AND the one-row predicate into the query's accumulated
 -- `WHERE`, exactly as the original single-receiver verb did. The predicate is
@@ -756,6 +757,69 @@ instance Aggregable (LeftJoin e f a) (fn e f -> n) where Adapter a, SqlType n =
             Err err -> Err err
             Ok v    -> decodeScalar v
 
+-- A query's decode terminals: `toList` runs the accumulated query (a single-
+-- table fetch, or the captured set-operation plan) and decodes every row into
+-- the entity; `first` runs it for one row. The behaviour the single-receiver
+-- `toList`/`first` had before they unified with the join form. `Rows (Query e a)`
+-- reduces to the entity `e`, so the result is `List e`/`Option e`.
+instance Decodable (Query e a) where Adapter a, Row e =
+    toList (x: Query e a) -> Result (List e) Error =
+        match queryRows x
+            Err err -> Err err
+            Ok rows -> decodeRows rows
+    first (x: Query e a) -> Result (Option e) Error =
+        match x.plan
+            None ->
+                match fetch x.repo.adapter x.repo.table x.pred x.orders 1 x.off x.dist
+                    Err err -> Err err
+                    Ok rows -> firstDecoded rows
+            Some _ ->
+                match runPlan x.repo.adapter (planOf x)
+                    Err err -> Err err
+                    Ok rows -> firstDecoded rows
+
+-- An inner join's decode terminals: `toList` runs the join and decodes each
+-- matched row pair into `(e, f)`; `first` fetches a one-row join and keeps the
+-- first pair. `Rows (Join e f a)` reduces to the pair `(e, f)`, so the result is
+-- `List (e, f)`/`Option (e, f)`. Both sides decode, so the instance carries
+-- `Row e, Row f` alongside `Adapter a`.
+-- The two `Row` constraints are written `Row f, Row e` (right before left) so the
+-- instance dictionary lists them in the same order the decode helper's own scheme
+-- does. A helper like `decodePairs` constrains both entities, and a generalised
+-- scheme orders its dictionary parameters by the constraint variables' inference
+-- ids — the later-appearing `f` ahead of `e`. An instance method forwards its
+-- incoming `Row` dictionaries into that helper by position, so matching the order
+-- here threads the left entity's decoder to the left row and the right's to the
+-- right. (`Adapter a` stays first; it is a different class and never collides.)
+instance Decodable (Join e f a) where Adapter a, Row f, Row e =
+    toList (x: Join e f a) -> Result (List (e, f)) Error =
+        match join x.left.repo.adapter x.left.repo.table x.right.table x.cond x.where2 x.left.pred x.orders x.left.lim x.left.off
+            Err err  -> Err err
+            Ok pairs -> decodePairs pairs
+    first (x: Join e f a) -> Result (Option (e, f)) Error =
+        match join x.left.repo.adapter x.left.repo.table x.right.table x.cond x.where2 x.left.pred x.orders 1 x.left.off
+            Err err  -> Err err
+            Ok pairs -> firstDecodedPair pairs
+
+-- A left join's decode terminals: `toList` keeps every left row, decoding each
+-- into `(e, Option f)` — the right side `None` where the left row matched no
+-- right row — and `first` keeps the first such pair. `Rows (LeftJoin e f a)`
+-- reduces to the pair `(e, Option f)`, so the result is `List (e, Option f)`/
+-- `Option (e, Option f)`. Like the inner join it carries `Row e, Row f`: the
+-- right side is decoded only when present.
+-- `Row f, Row e` order, as on the inner-join instance above: it matches the
+-- order `decodeLeftPairs`/`firstDecodedLeftPair` list their entity constraints, so
+-- the forwarded dictionaries land in the right slots.
+instance Decodable (LeftJoin e f a) where Adapter a, Row f, Row e =
+    toList (x: LeftJoin e f a) -> Result (List (e, Option f)) Error =
+        match leftJoin x.left.repo.adapter x.left.repo.table x.right.table x.cond x.where2 x.left.pred x.orders x.left.lim x.left.off
+            Err err  -> Err err
+            Ok pairs -> decodeLeftPairs pairs
+    first (x: LeftJoin e f a) -> Result (Option (e, Option f)) Error =
+        match leftJoin x.left.repo.adapter x.left.repo.table x.right.table x.cond x.where2 x.left.pred x.orders 1 x.left.off
+            Err err  -> Err err
+            Ok pairs -> firstDecodedLeftPair pairs
+
 -- Decode a list of `(left, right)` row pairs into entity pairs, stopping at the
 -- first decode failure on either side.
 fn decodePairs (pairs: List (Map Text SqlValue, Map Text SqlValue)) -> Result (List (e, f)) Error where Row e, Row f =
@@ -794,6 +858,38 @@ fn decodeLeftPairs (pairs: List (Map Text SqlValue, Option (Map Text SqlValue)))
                                     match decodeLeftPairs rest
                                         Err err -> Err err
                                         Ok xs   -> Ok ((x, Some y) :: xs)
+
+-- The head of a `(left, right)` pair list, decoded into an entity pair; `None`
+-- when the list is empty. The inner-join dual of `firstDecoded`, for `first`
+-- over a `Join`: a one-row join was fetched, so only the first pair is decoded.
+fn firstDecodedPair (pairs: List (Map Text SqlValue, Map Text SqlValue)) -> Result (Option (e, f)) Error where Row e, Row f =
+    match pairs
+        []            -> Ok None
+        (lm, rm) :: _ ->
+            match fromRow lm
+                Err err -> Err err
+                Ok x    ->
+                    match fromRow rm
+                        Err err -> Err err
+                        Ok y    -> Ok (Some (x, y))
+
+-- The head of a `(left, optional-right)` pair list, decoded; `None` when empty.
+-- The left-join dual of `firstDecodedPair`, for `first` over a `LeftJoin`: the
+-- left is always decoded; the right only when present, so an unmatched first
+-- left row yields `Some (left, None)`.
+fn firstDecodedLeftPair (pairs: List (Map Text SqlValue, Option (Map Text SqlValue))) -> Result (Option (e, Option f)) Error where Row e, Row f =
+    match pairs
+        []                -> Ok None
+        (lm, optRm) :: _ ->
+            match fromRow lm
+                Err err -> Err err
+                Ok x    ->
+                    match optRm
+                        None    -> Ok (Some (x, None))
+                        Some rm ->
+                            match fromRow rm
+                                Err err -> Err err
+                                Ok y    -> Ok (Some (x, Some y))
 
 -- The `(alias, column)` pairs a projection names. The projection quote captures
 -- a `QProj` whose select-list is a list of `(alias, QCol column)`; anything else

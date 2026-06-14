@@ -1180,6 +1180,41 @@ pub fn register_stdlib_classes(ct: &mut ClassTable) {
             to: smallvec![1],
         }],
     );
+
+    // `Decodable` from std.repo — the unified decode terminals (`toList`/`first`)
+    // over a query, an inner join, or a left join. A single parameter, the
+    // receiver `q`, with no functional dependency: the result row is the `Rows q`
+    // projection (reduced during unification), not a second class parameter. The
+    // two method schemes are seeded directly (see `seed_decodable_scheme` in
+    // lib.rs) with no AST types, and the three instances are registered in
+    // `register_stdlib_instances`. Each method takes only the receiver, so its sig
+    // arity is 1.
+    let decodable_id = ct.intern("Decodable");
+    ct.insert_with_id(
+        decodable_id,
+        ClassInfo {
+            name: "Decodable".to_string(),
+            arity: 1,
+            method_sigs: vec![
+                MethodSig {
+                    name: "toList".to_string(),
+                    arity: 1,
+                    ast_param_types: vec![],
+                    ast_ret_type: None,
+                    class_ty_vars: Vec::new(),
+                },
+                MethodSig {
+                    name: "first".to_string(),
+                    arity: 1,
+                    ast_param_types: vec![],
+                    ast_ret_type: None,
+                    class_ty_vars: Vec::new(),
+                },
+            ],
+            superclasses: vec![],
+            def_module: None,
+        },
+    );
 }
 
 /// Registers the base-type instances of stdlib-defined classes into `env`.
@@ -1494,6 +1529,79 @@ pub fn register_stdlib_instances(
                     .entry((aggregable, smallvec![left_join, fn2]))
                     .or_insert_with(|| aggregable_inst(vec![2, 5]));
             }
+        }
+    }
+
+    // `Decodable (Query e a) (fn raw -> e)`, `Decodable (Join e f a) (fn (raw,
+    // raw) -> (e, f))`, and `Decodable (LeftJoin e f a) (fn (raw, Option raw) ->
+    // (e, Option f))` — the unified `toList`/`first` decode terminals from
+    // std.repo. The decoder's parameter shape is immaterial (only its return is
+    // read, through `Ret p`), so every head keys on `Fn1`; the receiver tycon
+    // disambiguates the three. Unlike `Projectable`/`Aggregable`, every context
+    // variable lives in the receiver, not the decoder, so no projection-atom
+    // augmentation is needed: `Adapter a` reaches the rows and `Row e`/`Row f`
+    // decode each side. The context variables sit at flattened head positions that
+    // list the receiver's args, then the decoder's param and return — a query gives
+    // `a@1, e@0`; a join's extra right entity gives `a@2, e@0, f@1`. A join carries
+    // three constraints (`Adapter a, Row e, Row f`) where a query carries two.
+    if let (Some(decodable), Some(adapter), Some(row)) = (
+        ct.id_by_name("Decodable"),
+        ct.id_by_name("Adapter"),
+        ct.id_by_name("Row"),
+    ) {
+        // A single-parameter class, so each instance is keyed by the receiver tycon
+        // alone (no decoder-arity atom). Every context variable lives in the
+        // receiver: `Adapter a` reaches the rows and `Row e`/`Row f` decode each
+        // side, at flattened head positions over the receiver's own args. A query
+        // carries two constraints (`a@1, e@0`); a join carries three. The join's two
+        // `Row` constraints are listed right-before-left (`Row f, Row e`) to match
+        // the order the decode helpers' generalised schemes order them — see the
+        // source instances in repo.ridge — so positions are `a@2, f@1, e@0`.
+        let query_inst = || InstanceInfo {
+            def_module: None,
+            methods: vec![
+                ("toList".to_string(), String::new()),
+                ("first".to_string(), String::new()),
+            ],
+            ctx_constraints: vec![
+                ridge_types::Constraint::single(adapter, ridge_types::TyVid(0)),
+                ridge_types::Constraint::single(row, ridge_types::TyVid(0)),
+            ],
+            head_var_positions: vec![1, 0],
+            origin: InstanceOrigin::Explicit,
+            span: ds,
+        };
+        // Source order `Adapter a, Row f, Row e`: Adapter from the receiver's
+        // adapter slot (`a@2`), then `Row f` (`f@1`), then `Row e` (`e@0`).
+        let join_inst = || InstanceInfo {
+            def_module: None,
+            methods: vec![
+                ("toList".to_string(), String::new()),
+                ("first".to_string(), String::new()),
+            ],
+            ctx_constraints: vec![
+                ridge_types::Constraint::single(adapter, ridge_types::TyVid(0)),
+                ridge_types::Constraint::single(row, ridge_types::TyVid(0)),
+                ridge_types::Constraint::single(row, ridge_types::TyVid(0)),
+            ],
+            head_var_positions: vec![2, 1, 0],
+            origin: InstanceOrigin::Explicit,
+            span: ds,
+        };
+        if let Some(&query) = reconciled_tycon_names.get("Query") {
+            env.instances
+                .entry((decodable, smallvec![query]))
+                .or_insert_with(query_inst);
+        }
+        if let Some(&join) = reconciled_tycon_names.get("Join") {
+            env.instances
+                .entry((decodable, smallvec![join]))
+                .or_insert_with(join_inst);
+        }
+        if let Some(&left_join) = reconciled_tycon_names.get("LeftJoin") {
+            env.instances
+                .entry((decodable, smallvec![left_join]))
+                .or_insert_with(join_inst);
         }
     }
 }

@@ -371,6 +371,33 @@ pub struct InferCtx {
     /// so the lowering pass knows which lambda bodies to reify into `QExpr`
     /// trees. Empty for any module that uses no quotation.
     pub quoted_lambdas_accum: FxHashMap<ridge_ast::Span, crate::quote::QuoteInfo>,
+
+    /// Reconciled tycon ids the `Rows q` projection reduces against — the decode
+    /// terminals' receivers (`Query`/`Join`/`LeftJoin`) and `Option`.
+    ///
+    /// `Rows q` reduces to the row a receiver decodes into (`Rows (Query e a)` to
+    /// `e`, `Rows (Join e f a)` to `(e, f)`, `Rows (LeftJoin e f a)` to
+    /// `(e, Option f)`), so the reduction in [`crate::unify`] and [`Self::deep_resolve`]
+    /// must recognise those receivers by id. Populated once per module from the
+    /// reconciled stdlib names; `None` in scaffolding (or a workspace without the
+    /// query builder), where the projection simply stays stuck.
+    pub rows_tycons: Option<RowsTycons>,
+}
+
+/// The reconciled tycon ids the `Rows q` projection reduces against. `Query`,
+/// `Join`, and `LeftJoin` are the decode terminals' receivers; `option` builds a
+/// left join's optional right side (`Option f`).
+#[derive(Debug, Clone, Copy)]
+pub struct RowsTycons {
+    /// `Query`'s reconciled tycon id — `Rows (Query e a)` reduces to `e`.
+    pub query: TyConId,
+    /// `Join`'s reconciled tycon id — `Rows (Join e f a)` reduces to `(e, f)`.
+    pub join: TyConId,
+    /// `LeftJoin`'s reconciled tycon id — `Rows (LeftJoin e f a)` reduces to
+    /// `(e, Option f)`.
+    pub left_join: TyConId,
+    /// `Option`'s tycon id, wrapping a left join's right side.
+    pub option: TyConId,
 }
 
 impl InferCtx {
@@ -398,6 +425,7 @@ impl InferCtx {
             current_module_raw: None,
             name_schemes_accum: FxHashMap::default(),
             quoted_lambdas_accum: FxHashMap::default(),
+            rows_tycons: None,
         }
     }
 
@@ -531,6 +559,33 @@ impl InferCtx {
         }
     }
 
+    /// Reduce `Rows q`'s already-resolved argument `q` to the row its receiver
+    /// decodes into: `Rows (Query e a)` to `e`, `Rows (Join e f a)` to `(e, f)`,
+    /// and `Rows (LeftJoin e f a)` to `(e, Option f)`. Returns `None` when `q` is
+    /// not one of the three receivers (or still a variable, or the receiver ids
+    /// are unknown), leaving the projection stuck.
+    #[must_use]
+    pub fn reduce_rows_arg(&self, q: &Type) -> Option<Type> {
+        let rt = self.rows_tycons?;
+        let Type::Con(qid, qargs) = q else {
+            return None;
+        };
+        if *qid == rt.query {
+            return qargs.first().cloned();
+        }
+        if *qid == rt.join {
+            let e = qargs.first()?.clone();
+            let f = qargs.get(1)?.clone();
+            return Some(Type::Tuple(vec![e, f]));
+        }
+        if *qid == rt.left_join {
+            let e = qargs.first()?.clone();
+            let f = qargs.get(1)?.clone();
+            return Some(Type::Tuple(vec![e, Type::Con(rt.option, vec![f])]));
+        }
+        None
+    }
+
     /// Deep-resolves a type: like [`Self::shallow_resolve`] but walks recursively into
     /// all sub-terms.  Every [`Type::Var`] encountered is replaced by its
     /// shallow-resolved representative (or left as a free var if unbound).
@@ -556,6 +611,17 @@ impl InferCtx {
                 if id.0 == ridge_types::RET_TYCON_ID && new_args.len() == 1 {
                     if let Type::Fn { ret, .. } = &new_args[0] {
                         return (**ret).clone();
+                    }
+                }
+                // `Rows q` normalises to the row its receiver decodes into — `e`
+                // for a query, `(e, f)` for an inner join, `(e, Option f)` for a
+                // left join. The argument is already deep-resolved, so reducing a
+                // query exposes its (possibly still-free) entity for the declared
+                // result type to pin. While the argument is a variable (`Rows ?q`),
+                // the projection is left intact, reducing once `q` is a receiver.
+                if id.0 == ridge_types::ROWS_TYCON_ID && new_args.len() == 1 {
+                    if let Some(reduced) = self.reduce_rows_arg(&new_args[0]) {
+                        return reduced;
                     }
                 }
                 Type::Con(*id, new_args)

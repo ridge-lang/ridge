@@ -14,11 +14,11 @@
 //! - `deleteWhere` predicate (one row goes; the table then holds two),
 //! - the query builder: `orderBy` (whole-table ordering), `offset`/`limit`
 //!   paging, and `filter` + `orderBy` + the `first` terminal.
-//! - the inner join: `joinOn` + `toPairs` (decoding both entities of each
-//!   matched pair) and `joinOn` + `selectJoin` (projecting columns from both
-//!   sides into a named shape).
-//! - the left join: `leftJoinOn` + `toLeftPairs` (keeping every left row and
-//!   decoding the right entity as `Option`, so an unmatched left row survives)
+//! - the inner join: `joinOn` + `toList` (decoding both entities of each matched
+//!   pair) and `joinOn` + `select` (projecting columns from both sides into a
+//!   named shape).
+//! - the left join: `leftJoinOn` + `toList` (keeping every left row and decoding
+//!   the right entity as `Option`, so an unmatched left row survives)
 //!   and `leftJoinOn` + `selectLeftJoin` (projecting both sides into a named
 //!   shape whose right-derived fields are `Option`, `None` for an unmatched row).
 //! - the unique-row terminals: `single` (the lone match, `None` for empty, an
@@ -310,13 +310,14 @@ pub fn db setupJoin () -> Result (Repo User MemAdapter, Repo Post MemAdapter) Er
 
 -- join: inner-join users to their posts on `u.id == p.author`, order by user id,
 -- and render `name:title` per pair -> "lin:hello,lin:again,max:world" (ada has
--- no posts, so the inner join drops it). Proves toPairs decodes both entities,
--- the condition tags left/right columns, and the order threads through.
+-- no posts, so the inner join drops it). Proves the unified `toList` decodes both
+-- entities of a join, the condition tags left/right columns, and the order threads
+-- through.
 pub fn db joinedNames () -> Text =
     match setupJoin ()
         Err _ -> "setup-err"
         Ok (users, posts) ->
-            match users |> Repo.query |> Repo.orderBy Asc (fn (u: User) -> u.id) |> Repo.joinOn posts (fn (u: User) (p: Post) -> u.id == p.author) |> Repo.toPairs
+            match users |> Repo.query |> Repo.orderBy Asc (fn (u: User) -> u.id) |> Repo.joinOn posts (fn (u: User) (p: Post) -> u.id == p.author) |> Repo.toList
                 Err _  -> "join-err"
                 Ok ps  -> joinPairs ps
 
@@ -339,20 +340,21 @@ pub fn db joinOrderByRight () -> Text =
     match setupJoin ()
         Err _ -> "setup-err"
         Ok (users, posts) ->
-            match users |> Repo.query |> Repo.joinOn posts (fn (u: User) (p: Post) -> u.id == p.author) |> Repo.orderBy Asc (fn (u: User) (p: Post) -> p.title) |> Repo.toPairs
+            match users |> Repo.query |> Repo.joinOn posts (fn (u: User) (p: Post) -> u.id == p.author) |> Repo.orderBy Asc (fn (u: User) (p: Post) -> p.title) |> Repo.toList
                 Err _  -> "join-order-err"
                 Ok ps  -> joinPairs ps
 
 -- left join: keep every user, pairing each with its posts or with `None`, order
 -- by user id, and render `name:title` (or `name:-`) per pair ->
 -- "ada:-,lin:hello,lin:again,max:world". ada owns no posts, so where the inner
--- join dropped it the left join keeps it as `ada:-`. Proves toLeftPairs keeps
--- unmatched left rows and decodes the right entity as `Option`.
+-- join dropped it the left join keeps it as `ada:-`. Proves the unified `toList`
+-- over a left join keeps unmatched left rows and decodes the right entity as
+-- `Option`.
 pub fn db leftJoinedNames () -> Text =
     match setupJoin ()
         Err _ -> "setup-err"
         Ok (users, posts) ->
-            match users |> Repo.query |> Repo.orderBy Asc (fn (u: User) -> u.id) |> Repo.leftJoinOn posts (fn (u: User) (p: Post) -> u.id == p.author) |> Repo.toLeftPairs
+            match users |> Repo.query |> Repo.orderBy Asc (fn (u: User) -> u.id) |> Repo.leftJoinOn posts (fn (u: User) (p: Post) -> u.id == p.author) |> Repo.toList
                 Err _  -> "left-join-err"
                 Ok ps  -> joinLeftPairs ps
 
@@ -377,7 +379,7 @@ pub fn db joinFilterRight () -> Text =
     match setupJoin ()
         Err _ -> "setup-err"
         Ok (users, posts) ->
-            match users |> Repo.query |> Repo.orderBy Asc (fn (u: User) -> u.id) |> Repo.joinOn posts (fn (u: User) (p: Post) -> u.id == p.author) |> Repo.filter (fn (u: User) (p: Post) -> p.title == "hello") |> Repo.toPairs
+            match users |> Repo.query |> Repo.orderBy Asc (fn (u: User) -> u.id) |> Repo.joinOn posts (fn (u: User) (p: Post) -> u.id == p.author) |> Repo.filter (fn (u: User) (p: Post) -> p.title == "hello") |> Repo.toList
                 Err _  -> "join-filter-err"
                 Ok ps  -> joinPairs ps
 
@@ -390,7 +392,7 @@ pub fn db leftJoinFilterRight () -> Text =
     match setupJoin ()
         Err _ -> "setup-err"
         Ok (users, posts) ->
-            match users |> Repo.query |> Repo.orderBy Asc (fn (u: User) -> u.id) |> Repo.leftJoinOn posts (fn (u: User) (p: Post) -> u.id == p.author) |> Repo.filter (fn (u: User) (p: Post) -> p.title == "hello") |> Repo.toLeftPairs
+            match users |> Repo.query |> Repo.orderBy Asc (fn (u: User) -> u.id) |> Repo.leftJoinOn posts (fn (u: User) (p: Post) -> u.id == p.author) |> Repo.filter (fn (u: User) (p: Post) -> p.title == "hello") |> Repo.toList
                 Err _  -> "left-filter-err"
                 Ok ps  -> joinLeftPairs ps
 
@@ -403,7 +405,7 @@ pub fn db leftJoinFilterLeft () -> Text =
     match setupJoin ()
         Err _ -> "setup-err"
         Ok (users, posts) ->
-            match users |> Repo.query |> Repo.orderBy Asc (fn (u: User) -> u.id) |> Repo.leftJoinOn posts (fn (u: User) (p: Post) -> u.id == p.author) |> Repo.filter (fn (u: User) (p: Post) -> u.id <= 2) |> Repo.toLeftPairs
+            match users |> Repo.query |> Repo.orderBy Asc (fn (u: User) -> u.id) |> Repo.leftJoinOn posts (fn (u: User) (p: Post) -> u.id == p.author) |> Repo.filter (fn (u: User) (p: Post) -> u.id <= 2) |> Repo.toList
                 Err _  -> "left-filter-err"
                 Ok ps  -> joinLeftPairs ps
 
@@ -1110,7 +1112,7 @@ fn repo_surface_runs_on_beam() {
         ),
         (
             "joinedNames=lin:hello,lin:again,max:world",
-            "toPairs inner-joins users to posts and decodes both entities in id order",
+            "toList inner-joins users to posts and decodes both entities in id order",
         ),
         (
             "joinedTitles=lin:hello,lin:again,max:world",
@@ -1122,7 +1124,7 @@ fn repo_surface_runs_on_beam() {
         ),
         (
             "leftJoinedNames=ada:-,lin:hello,lin:again,max:world",
-            "toLeftPairs keeps the unmatched ada row as `ada:-` and decodes the right entity as Option",
+            "toList over a left join keeps the unmatched ada row as `ada:-` and decodes the right entity as Option",
         ),
         (
             "leftSelectTitles=ada:-,lin:hello,lin:again,max:world",

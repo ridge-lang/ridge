@@ -414,6 +414,8 @@ const BASELINE_EXPORTS: &[(&str, &[&str])] = &[
             "countJoin",
             "countLeftJoin",
             "groupSummarize",
+            "groupSummarizeJoin",
+            "groupSummarizeLeftJoin",
             "runPlan",
             "MemAdapter",
             "memAdapter",
@@ -521,15 +523,20 @@ const BASELINE_EXPORTS: &[(&str, &[&str])] = &[
             // the right side read as `Option`.
             "LeftJoin",
             "leftJoinOn",
-            // Grouped aggregates: the opaque `GroupedQuery e k a` built by
-            // `groupBy`, narrowed by `having`, and summarised into a named record
-            // by `summarize`. `Group e k` is the handle the `having`/`summarize`
-            // quotes range over (`g.key`, `g.count`, `g.sum`/`avg`/`min`/`max`).
-            "Group",
-            "GroupedQuery",
+            // Grouped aggregates unified across a query and a join: the opaque
+            // `Grouped q p` builder produced by the `Groupable` class's `groupBy`,
+            // narrowed by `having`, and summarised into a named record by
+            // `summarize` (which dispatches the GROUP BY through the `Summarizable`
+            // class's `runGroups`). The `having`/`summarize` quotes range over the
+            // `Grouped q p` handle (`g.key`, `g.count`, `g.sum`/`avg`/`min`/`max`),
+            // the source `q` carrying the entities the column accessors read.
+            "Grouped",
+            "Groupable",
             "groupBy",
             "having",
             "summarize",
+            "Summarizable",
+            "runGroups",
             // Set operations: combine two queries into one that runs the combined
             // result, each returning a composable `Query` (a SQL `UNION`/`UNION
             // ALL`/`INTERSECT`/`EXCEPT`).
@@ -551,15 +558,7 @@ const BASELINE_OPAQUE: &[(&str, &[&str])] = &[
     ("std.data", &["MemAdapter", "Postgres"]),
     (
         "std.repo",
-        &[
-            "Repo",
-            "Query",
-            "Join",
-            "LeftJoin",
-            "Setter",
-            "Group",
-            "GroupedQuery",
-        ],
+        &["Repo", "Query", "Join", "LeftJoin", "Setter", "Grouped"],
     ),
 ];
 

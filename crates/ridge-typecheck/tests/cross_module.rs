@@ -1287,6 +1287,116 @@ pub fn db leftJoinEvery () -> Result Bool Error =
 }
 
 #[test]
+fn query_builder_group_by_on_join_typechecks() {
+    // `groupBy`/`having`/`summarize` compose on a `Join` through the `Groupable`/
+    // `Summarizable` classes: the key is a two-row accessor naming a column from
+    // either side (`p.title` groups by the right table), `having` reads the group
+    // vocabulary, and a `summarize` aggregate folds a column from either side —
+    // `g.sum (fn u p -> p.score)` the right, `g.sum (fn u -> u.age)` the left. The
+    // pinned `List CatStats` proves the named shape fixes the result.
+    let main = r#"
+import std.data (memAdapter, MemAdapter)
+import std.repo as Repo
+import std.sql (SqlValue)
+
+pub type User = { id: Int, age: Int, name: Text } deriving (Row)
+pub type Post = { id: Int, authorId: Int, title: Text, score: Int } deriving (Row)
+pub type CatStats = { cat: Text, n: Int, scores: Int, ages: Int } deriving (Row)
+
+pub fn db joinGroup () -> Result (List CatStats) Error =
+    let users: Repo User MemAdapter = Repo.repo (memAdapter ()) "users"
+    let posts: Repo Post MemAdapter = Repo.repo (memAdapter ()) "posts"
+    users
+      |> Repo.query
+      |> Repo.joinOn posts (fn (u: User) (p: Post) -> u.id == p.authorId)
+      |> Repo.groupBy (fn (u: User) (p: Post) -> p.title)
+      |> Repo.having (fn g -> g.count > 1)
+      |> Repo.summarize (fn g -> CatStats { cat = g.key, n = g.count,
+           scores = g.sum (fn (u: User) (p: Post) -> p.score), ages = g.sum (fn (u: User) -> u.age) })
+
+pub fn db joinGroupHavingRight () -> Result (List CatStats) Error =
+    let users: Repo User MemAdapter = Repo.repo (memAdapter ()) "users"
+    let posts: Repo Post MemAdapter = Repo.repo (memAdapter ()) "posts"
+    users
+      |> Repo.query
+      |> Repo.joinOn posts (fn (u: User) (p: Post) -> u.id == p.authorId)
+      |> Repo.groupBy (fn (u: User) (p: Post) -> p.title)
+      |> Repo.having (fn g -> g.sum (fn (u: User) (p: Post) -> p.score) >= 100)
+      |> Repo.summarize (fn g -> CatStats { cat = g.key, n = g.count,
+           scores = g.sum (fn (u: User) (p: Post) -> p.score), ages = g.sum (fn (u: User) -> u.age) })
+"#;
+    let errors = typecheck_one(main);
+    assert!(
+        errors.is_empty(),
+        "groupBy/having/summarize must compose on a join through Groupable/Summarizable; got {errors:?}"
+    );
+}
+
+#[test]
+fn query_builder_group_by_on_left_join_typechecks() {
+    // The same grouped pipeline over a `LeftJoin`: the right side reads as the plain
+    // entity `f` (as the left-join aggregates do), so the key and the right-column
+    // aggregate name `p.title`/`p.score` directly. Every left row joins a group; an
+    // unmatched one contributes a NULL right side.
+    let main = r#"
+import std.data (memAdapter, MemAdapter)
+import std.repo as Repo
+import std.sql (SqlValue)
+
+pub type User = { id: Int, age: Int, name: Text } deriving (Row)
+pub type Post = { id: Int, authorId: Int, title: Text, score: Int } deriving (Row)
+pub type CatStats = { cat: Text, n: Int, scores: Int } deriving (Row)
+
+pub fn db leftJoinGroup () -> Result (List CatStats) Error =
+    let users: Repo User MemAdapter = Repo.repo (memAdapter ()) "users"
+    let posts: Repo Post MemAdapter = Repo.repo (memAdapter ()) "posts"
+    users
+      |> Repo.query
+      |> Repo.leftJoinOn posts (fn (u: User) (p: Post) -> u.id == p.authorId)
+      |> Repo.groupBy (fn (u: User) (p: Post) -> p.title)
+      |> Repo.having (fn g -> g.count > 0)
+      |> Repo.summarize (fn g -> CatStats { cat = g.key, n = g.count,
+           scores = g.sum (fn (u: User) (p: Post) -> p.score) })
+"#;
+    let errors = typecheck_one(main);
+    assert!(
+        errors.is_empty(),
+        "groupBy/having/summarize must compose on a left join; got {errors:?}"
+    );
+}
+
+#[test]
+fn query_builder_group_aggregate_unknown_join_column_is_rejected() {
+    // A grouped-join aggregate's column accessor is checked against the side it
+    // reads: summing `p.nope`, a column the right entity does not declare, is an
+    // error, proving both entities thread through the join group vocabulary.
+    let main = r#"
+import std.data (memAdapter, MemAdapter)
+import std.repo as Repo
+import std.sql (SqlValue)
+
+pub type User = { id: Int, age: Int, name: Text } deriving (Row)
+pub type Post = { id: Int, authorId: Int, title: Text, score: Int } deriving (Row)
+pub type CatStats = { cat: Text, total: Int } deriving (Row)
+
+pub fn db badJoinGroup () -> Result (List CatStats) Error =
+    let users: Repo User MemAdapter = Repo.repo (memAdapter ()) "users"
+    let posts: Repo Post MemAdapter = Repo.repo (memAdapter ()) "posts"
+    users
+      |> Repo.query
+      |> Repo.joinOn posts (fn (u: User) (p: Post) -> u.id == p.authorId)
+      |> Repo.groupBy (fn (u: User) (p: Post) -> p.title)
+      |> Repo.summarize (fn g -> CatStats { cat = g.key,
+           total = g.sum (fn (u: User) (p: Post) -> p.nope) })
+"#;
+    let errors = typecheck_one(main);
+    assert!(
+        !errors.is_empty(),
+        "summing a column the right entity does not declare must be rejected"
+    );
+}
+
+#[test]
 fn query_builder_one_row_every_on_join_is_rejected() {
     // The dependency fixes `every`'s predicate arity to the receiver, exactly as for
     // `filter`: a `Join` takes a two-row predicate, so a one-row one is an arity

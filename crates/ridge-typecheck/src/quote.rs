@@ -708,10 +708,17 @@ fn check_binary(
 // result types; the lowering pass reifies them into the `QAgg*`/`QGroupKey`
 // tree the seam interprets.
 
-/// Detects a grouped-aggregate quote: a `Quote (Group e k -> r)` whose first
-/// parameter is the `Group` handle. Returns the entity `e` and key `k` types so
-/// the group checker can resolve the inner aggregate columns and the `g.key`
-/// type. `None` for an ordinary row quote.
+/// Detects a grouped-aggregate quote: a `Quote (Grouped q p -> r)` whose first
+/// parameter is the `Grouped` handle. The source `q` carries the grouped entities
+/// (a `Query e a` / `Join e f a` / `LeftJoin e f a`) and the key-accessor type `p`
+/// carries the key. Returns the primary entity and the key type so the group checker
+/// can resolve the inner aggregate columns and the `g.key` type. `None` for an
+/// ordinary row quote.
+///
+/// The entity is `q`'s first type argument; when `q` is not yet resolved (the quote
+/// is synthesised before the receiver pins it) it stays open and the inner aggregate
+/// accessors' own annotations pin it, exactly as a row quote recovers its entity. The
+/// key is `p`'s result type; an open `p` leaves it open until the projection pins it.
 pub(crate) fn quote_group_slot(ctx: &mut InferCtx, param_ty: &Type) -> Option<(Type, Type)> {
     let Type::Con(id, args) = param_ty else {
         return None;
@@ -730,15 +737,31 @@ pub(crate) fn quote_group_slot(ctx: &mut InferCtx, param_ty: &Type) -> Option<(T
     if !is_group_tycon(ctx, gid) {
         return None;
     }
-    let e = ctx.deep_resolve(gargs.first()?);
-    let k = ctx.deep_resolve(gargs.get(1)?);
+    let q = ctx.deep_resolve(gargs.first()?);
+    let p = ctx.deep_resolve(gargs.get(1)?);
+    // The entity is `q`'s first type argument. When `q` is still an inference variable
+    // (the quote is synthesised before the receiver pins it), use a *fresh* entity
+    // variable rather than `q` itself: the inner accessors' annotations unify the
+    // entity with their row type, and aliasing it to `q` would corrupt the source —
+    // pinning `q` to the entity instead of to its `Query`/`Join`/`LeftJoin`.
+    let e = match &q {
+        Type::Con(_, qargs) => match qargs.first() {
+            Some(a) => ctx.deep_resolve(a),
+            None => Type::Var(ctx.fresh_tyvid()),
+        },
+        _ => Type::Var(ctx.fresh_tyvid()),
+    };
+    let k = match &p {
+        Type::Fn { ret, .. } => ctx.deep_resolve(ret),
+        _ => Type::Var(ctx.fresh_tyvid()),
+    };
     Some((e, k))
 }
 
 fn is_group_tycon(ctx: &InferCtx, id: TyConId) -> bool {
     ctx.tycon_decls
         .get(id.0 as usize)
-        .is_some_and(|d| d.name == "Group")
+        .is_some_and(|d| d.name == "Grouped")
 }
 
 /// Checks a grouped-aggregate lambda body. On success records a [`QuoteInfo`]
@@ -1129,30 +1152,43 @@ fn group_agg_col_type(
         });
         return None;
     };
-    if params.len() != 1 {
+    // One row parameter for a query group, two for a join (naming a column from
+    // either side, `fn (u: User) (p: Post) -> p.col`). The first parameter ties
+    // `e_ty` (the single-entity fallback); each further parameter — a join's right
+    // side — is pinned only from its own annotation. The lowering tags which table
+    // a column belongs to by which parameter it reads.
+    if params.is_empty() || params.len() > 2 {
         ctx.errors.push(TypeError::QuoteUnsupportedExpr {
-            detail: "a group aggregate's column accessor takes one row parameter".to_string(),
+            detail: "a group aggregate's column accessor takes one or two row parameters"
+                .to_string(),
             span: *span,
         });
         return None;
     }
-    let pname = match &params[0] {
-        LambdaParam::Pattern(Pattern::Var { name, .. })
-        | LambdaParam::Annotated {
-            pat: Pattern::Var { name, .. },
-            ..
-        } => name.text.clone(),
-        _ => {
-            ctx.errors.push(TypeError::QuoteUnsupportedExpr {
-                detail: "a group aggregate's row parameter must be a plain name".to_string(),
-                span: *span,
-            });
-            return None;
-        }
-    };
-    // Resolve the entity from the parameter annotation (tying `e_ty` to it), or
-    // fall back to a concrete `e_ty`.
-    let entity = inner_lambda_entity(ctx, b, &params[0], e_ty, *span)?;
+    let mut bindings: Vec<(String, TyConId)> = Vec::new();
+    for (i, param) in params.iter().enumerate() {
+        let pname = match param {
+            LambdaParam::Pattern(Pattern::Var { name, .. })
+            | LambdaParam::Annotated {
+                pat: Pattern::Var { name, .. },
+                ..
+            } => name.text.clone(),
+            _ => {
+                ctx.errors.push(TypeError::QuoteUnsupportedExpr {
+                    detail: "a group aggregate's row parameter must be a plain name".to_string(),
+                    span: *span,
+                });
+                return None;
+            }
+        };
+        let entity = if i == 0 {
+            inner_lambda_entity(ctx, b, param, e_ty, *span)?
+        } else {
+            let slot = Type::Var(ctx.fresh_tyvid());
+            inner_lambda_entity(ctx, b, param, &slot, *span)?
+        };
+        bindings.push((pname, entity));
+    }
 
     let mut bd: &Expr = body;
     while let Expr::Paren { inner: i, .. } = bd {
@@ -1171,13 +1207,26 @@ fn group_agg_col_type(
         });
         return None;
     };
-    if !matches!(base.as_ref(), Expr::Ident(id) if id.text == pname) {
+    let Expr::Ident(bid) = base.as_ref() else {
         ctx.errors.push(TypeError::QuoteUnsupportedExpr {
-            detail: format!("a group aggregate's column must be a column of `{pname}`"),
+            detail: "a group aggregate's column must read one of the accessor's row parameters"
+                .to_string(),
             span: *fspan,
         });
         return None;
-    }
+    };
+    let Some(&(_, entity)) = bindings.iter().find(|(n, _)| n == &bid.text) else {
+        let names = bindings
+            .iter()
+            .map(|(n, _)| format!("`{n}`"))
+            .collect::<Vec<_>>()
+            .join(" or ");
+        ctx.errors.push(TypeError::QuoteUnsupportedExpr {
+            detail: format!("a group aggregate's column must be a column of {names}"),
+            span: *fspan,
+        });
+        return None;
+    };
     let fields = entity_fields(ctx, entity)?;
     if let Some((_, ty)) = fields.iter().find(|(n, _)| n == &field.text) {
         Some(ty.clone())

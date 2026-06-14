@@ -1332,6 +1332,71 @@ pub fn register_stdlib_classes(ct: &mut ClassTable) {
             to: smallvec![1],
         }],
     );
+
+    // `Groupable` from std.repo — the unified `groupBy` over a query, an inner join,
+    // or a left join. Two parameters `q p` with the functional dependency `q -> p`,
+    // exactly like `Orderable`/`Refinable`: the receiver fixes the key accessor's
+    // arity (`Fn1` for a query, `Fn2` for a join), pinned from the lambda at the call
+    // site. `groupBy` returns the unified `Grouped q p` builder, whose two type
+    // parameters are both pinned here (the source by the receiver, the key accessor
+    // by the lambda), so its result needs no projection. The method scheme is seeded
+    // directly (see `seed_groupable_scheme` in lib.rs) with no AST types; the
+    // instances build the `Grouped` record with no context dict. `groupBy` takes the
+    // key quote and the receiver (sig arity 2).
+    let groupable_id = ct.intern("Groupable");
+    ct.insert_with_id(
+        groupable_id,
+        ClassInfo {
+            name: "Groupable".to_string(),
+            arity: 2,
+            method_sigs: vec![MethodSig {
+                name: "groupBy".to_string(),
+                arity: 2,
+                ast_param_types: vec![],
+                ast_ret_type: None,
+                class_ty_vars: Vec::new(),
+            }],
+            superclasses: vec![],
+            def_module: None,
+        },
+    );
+    ct.set_fundeps(
+        groupable_id,
+        vec![FunDepIdx {
+            from: smallvec![0],
+            to: smallvec![1],
+        }],
+    );
+
+    // `Summarizable` from std.repo — the per-source dispatch behind the `summarize`
+    // terminal. A single parameter, the source `q` (the query or join a `Grouped`
+    // builder groups), with no functional dependency (like `Countable`/`Pageable`):
+    // `summarize` itself is a plain reconciled fn over `Grouped q p`, and its body
+    // calls this class's `runGroups` to run the GROUP BY against `q`'s own seam
+    // (`groupSummarize` for a query, `groupSummarizeJoin`/`groupSummarizeLeftJoin`
+    // for a join), returning the raw summarised rows; `summarize` then decodes them
+    // through its own `Row s`. Keeping the seam call here (single `Adapter a` context)
+    // and the decode in `summarize` separates the two dicts cleanly. The method
+    // scheme is seeded directly (see `seed_summarizable_scheme` in lib.rs).
+    // `runGroups` takes the source, the key column and side, the projection tree, and
+    // the HAVING tree (sig arity 5).
+    let summarizable_id = ct.intern("Summarizable");
+    ct.insert_with_id(
+        summarizable_id,
+        ClassInfo {
+            name: "Summarizable".to_string(),
+            arity: 1,
+            method_sigs: vec![MethodSig {
+                name: "runGroups".to_string(),
+                arity: 5,
+                ast_param_types: vec![],
+                ast_ret_type: None,
+                class_ty_vars: Vec::new(),
+            }],
+            superclasses: vec![],
+            def_module: None,
+        },
+    );
 }
 
 /// Registers the base-type instances of stdlib-defined classes into `env`.
@@ -1838,6 +1903,77 @@ pub fn register_stdlib_instances(
                     .entry((every, smallvec![left_join, fn2]))
                     .or_insert_with(|| every_inst(2));
             }
+        }
+    }
+
+    // `Groupable (Query e a) (fn e -> k)` and the same over `Join`/`LeftJoin` — the
+    // unified `groupBy` instances from std.repo. Keyed like `Every`/`Refinable`
+    // (receiver tycon + key-accessor-arity tycon: `Fn1` for a query's one-row key,
+    // `Fn2` for a join's two-row one), the `q -> p` dependency fixing the key's arity
+    // per receiver. Each instance only builds the `Grouped` record and reaches no
+    // store, so it carries no context constraints (like `Pageable`).
+    if let Some(groupable) = ct.id_by_name("Groupable") {
+        if let (Some(fn1), Some(fn2)) = (ridge_types::fn_tycon_id(1), ridge_types::fn_tycon_id(2)) {
+            let groupable_inst = || InstanceInfo {
+                def_module: None,
+                methods: vec![("groupBy".to_string(), String::new())],
+                ctx_constraints: vec![],
+                head_var_positions: vec![],
+                origin: InstanceOrigin::Explicit,
+                span: ds,
+            };
+            if let Some(&query) = reconciled_tycon_names.get("Query") {
+                env.instances
+                    .entry((groupable, smallvec![query, fn1]))
+                    .or_insert_with(groupable_inst);
+            }
+            if let Some(&join) = reconciled_tycon_names.get("Join") {
+                env.instances
+                    .entry((groupable, smallvec![join, fn2]))
+                    .or_insert_with(groupable_inst);
+            }
+            if let Some(&left_join) = reconciled_tycon_names.get("LeftJoin") {
+                env.instances
+                    .entry((groupable, smallvec![left_join, fn2]))
+                    .or_insert_with(groupable_inst);
+            }
+        }
+    }
+
+    // `Summarizable (Query e a)`, `Summarizable (Join e f a)`, and the same over
+    // `LeftJoin` — the per-source seam dispatch behind `summarize`. A single-parameter
+    // class keyed by the source receiver tycon alone, carrying one `where Adapter a`
+    // context to reach the store at the adapter's flattened head position (`a@1` in a
+    // query, `a@2` in a join). `summarize` decodes the rows it returns through its own
+    // `Row s`.
+    if let (Some(summarizable), Some(adapter)) =
+        (ct.id_by_name("Summarizable"), ct.id_by_name("Adapter"))
+    {
+        let summarizable_inst = |position: usize| InstanceInfo {
+            def_module: None,
+            methods: vec![("runGroups".to_string(), String::new())],
+            ctx_constraints: vec![ridge_types::Constraint::single(
+                adapter,
+                ridge_types::TyVid(0),
+            )],
+            head_var_positions: vec![position],
+            origin: InstanceOrigin::Explicit,
+            span: ds,
+        };
+        if let Some(&query) = reconciled_tycon_names.get("Query") {
+            env.instances
+                .entry((summarizable, smallvec![query]))
+                .or_insert_with(|| summarizable_inst(1));
+        }
+        if let Some(&join) = reconciled_tycon_names.get("Join") {
+            env.instances
+                .entry((summarizable, smallvec![join]))
+                .or_insert_with(|| summarizable_inst(2));
+        }
+        if let Some(&left_join) = reconciled_tycon_names.get("LeftJoin") {
+            env.instances
+                .entry((summarizable, smallvec![left_join]))
+                .or_insert_with(|| summarizable_inst(2));
         }
     }
 }

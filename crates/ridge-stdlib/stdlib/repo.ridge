@@ -356,6 +356,29 @@ pub class Countable q =
 pub class Every q p | q -> p =
     every (pred: Quote p) (x: q) -> Result Bool Error
 
+-- `groupBy` over a query, an inner join, or a left join. The key accessor's arity
+-- follows the receiver through the functional dependency `q -> p`, exactly as
+-- `orderBy` does — a `Query e a` takes a one-row `Quote (e -> k)`, a `Join e f a`/
+-- `LeftJoin e f a` a two-row `Quote (e -> f -> k)` naming a column from either side —
+-- so a wrong-arity key is a compile-time error. It returns the unified `Grouped q p`
+-- builder: both of its parameters are pinned here (the source `q` by the receiver,
+-- the key accessor `p` by the lambda), so the result needs no projection. (LINQ's
+-- `GroupBy`.)
+pub class Groupable q p | q -> p =
+    groupBy (key: Quote p) (x: q) -> Grouped q p
+
+-- The per-source seam dispatch behind `summarize`. A single parameter, the source
+-- `q` a `Grouped` builder groups, with no functional dependency (like `Countable`):
+-- `summarize` is a plain function over `Grouped q p`, and its body calls `runGroups`
+-- to run the `GROUP BY` (and any `HAVING`) against `q`'s own backend — a query's
+-- `groupSummarize`, a join's `groupSummarizeJoin`/`groupSummarizeLeftJoin` — handing
+-- it the key column and side, the projection tree, and the `HAVING` tree, and
+-- returning the raw summarised rows for `summarize` to decode through `Row s`. It is
+-- its own class so the seam call (one `Adapter a` context) stays separate from that
+-- decode.
+pub class Summarizable q =
+    runGroups (src: q) (keyCol: Text) (keySide: Bool) (projTree: QExpr) (havingTree: QExpr) -> Result (List (Map Text SqlValue)) Error
+
 -- `limit`/`offset`/`distinct` over a query, an inner join, or a left join are the
 -- methods of the `Pageable q` class (declared above); the instances are defined
 -- below, next to the `Refinable`/`Orderable`/`Decodable` ones. The query instance
@@ -512,44 +535,37 @@ fn decodeScalar (v: Option SqlValue) -> Result (Option w) Error where SqlType w 
 -- a query) or the `aggregateJoin`/`aggregateLeftJoin` seam (for a join) and
 -- decodes the scalar through `decodeScalar`.
 
--- The group handle the grouped-aggregate quotes range over. It is never built by
--- user code: it only names the parameter of a `having`/`summarize` lambda so the
--- group vocabulary is available inside the quote — `g.key` (the group key),
--- `g.count` (the row count of the group), and `g.sum`/`avg`/`min`/`max` over a
--- column accessor (`g.sum (fn (u: User) -> u.salary)`). The entity `e` is phantom,
--- like `Repo`'s — it ties the column accessors to the grouped record without being
--- stored; `k` is the key type `g.key` answers. Opaque, and never constructed: the
--- quote body is captured as a tree, not run.
-pub opaque type Group e k = { key: k }
-
--- A grouped query under construction: a query whose rows are partitioned by a key
--- column, ready for a per-group summary. Opaque and threaded from `groupBy`
--- through an optional `having` into `summarize`, so it reads as a pipeline:
+-- A grouped builder under construction, unified across a query and a join. It is
+-- threaded from `groupBy` through an optional `having` into `summarize`, so the
+-- pipeline reads the same over either source:
 --   users
 --     |> Repo.query
 --     |> Repo.groupBy (fn (u: User) -> u.dept)
 --     |> Repo.having (fn g -> g.count > 3)
 --     |> Repo.summarize (fn g -> DeptStats { dept = g.key, members = g.count })
--- `keyCol` is the group-key column the rows partition by; `having` is the captured
--- `HAVING` tree, an always-true tree until `having` narrows it. Only the filter
--- bounds the rows — ordering and paging do not constrain a grouping — so the
--- underlying query's ordering and page do not carry over.
-pub opaque type GroupedQuery e k a = { repo: Repo e a, pred: Quote (Map Text SqlValue -> Bool), keyCol: Text, having: QExpr }
+-- `source` is the queryable it groups (a `Query`, `Join`, or `LeftJoin`); `keyCol`
+-- and `keySide` name the group-key column and, for a join, which side it belongs to;
+-- `having` is the captured `HAVING` tree, always-true until `having` narrows it. The
+-- key-accessor type `p` is phantom — kept only so the `having`/`summarize` quotes can
+-- read the key type `g.key` answers off it. Only the source's filter (and a join's
+-- condition) bounds the rows: ordering and paging do not constrain a grouping, so the
+-- source's ordering and page do not carry over. Opaque, never built by user code.
+pub opaque type Grouped q p = { source: q, keyCol: Text, keySide: Bool, havingTree: QExpr }
 
--- Group a query's rows by a key column, named by an accessor quote exactly as an
--- `orderBy` key (`fn (u: User) -> u.dept`). The query's filter carries over as the
--- grouped `WHERE`; a terminal then answers one row per distinct key.
-pub fn groupBy (key: Quote (Map Text SqlValue -> k)) (q: Query e a) -> GroupedQuery e k a =
-    GroupedQuery { repo = q.repo, pred = q.pred, keyCol = orderColumn key, having = keepAllTree () }
+-- `groupBy` over a query, an inner join, or a left join is the method of the
+-- `Groupable q p | q -> p` class (instances below): the receiver fixes the key
+-- accessor's arity, a one-row key for a query and a two-row key naming a column from
+-- either side for a join. It returns the unified `Grouped q p` builder.
 
 -- Keep only the groups whose aggregate condition holds — a SQL `HAVING`. The
 -- predicate is written over the group with the same vocabulary as `summarize`:
 --   |> Repo.having (fn g -> g.count > 3)
 --   |> Repo.having (fn g -> g.sum (fn (u: User) -> u.salary) >= 100000)
 -- Several conditions combine in one predicate with `&&`/`||`; a later `having`
--- replaces an earlier one.
-pub fn having (pred: Quote (Group e k -> Bool)) (g: GroupedQuery e k a) -> GroupedQuery e k a =
-    GroupedQuery { repo = g.repo, pred = g.pred, keyCol = g.keyCol, having = pred.tree }
+-- replaces an earlier one. The quote ranges over the `Grouped q p` handle, so over a
+-- join its column accessors name a column from either side.
+pub fn having (pred: Quote (Grouped q p -> Bool)) (g: Grouped q p) -> Grouped q p =
+    Grouped { source = g.source, keyCol = g.keyCol, keySide = g.keySide, havingTree = pred.tree }
 
 -- Summarize each surviving group into a named record built from group aggregates:
 --   fn g -> DeptStats { dept    = g.key
@@ -557,11 +573,12 @@ pub fn having (pred: Quote (Group e k -> Bool)) (g: GroupedQuery e k a) -> Group
 --                     , payroll = g.sum (fn (u: User) -> u.salary) }
 -- Each field is a group aggregate — `g.key`, `g.count`, or `g.sum`/`avg`/`min`/
 -- `max` over a column accessor — and the named record fixes the result shape `s`,
--- which `Row s` decodes. The backend pushes the `GROUP BY` (and any `HAVING`)
--- down and returns one row per group, ordered by the key. This is the grouped
--- dual of `selectList`: a projection, but over groups instead of rows.
-pub fn summarize (proj: Quote (Group e k -> s)) (g: GroupedQuery e k a) -> Result (List s) Error where Adapter a, Row s =
-    match groupSummarize g.repo.adapter g.repo.table g.pred g.keyCol (groupCols g.keyCol proj.tree) g.having
+-- which `Row s` decodes. The `Summarizable q` instance runs the `GROUP BY` (and any
+-- `HAVING`) against the source's own seam — a query, an inner join, or a left join —
+-- and returns one row per group, ordered by the key; `summarize` then decodes each.
+-- This is the grouped dual of `select`: a projection, but over groups instead of rows.
+pub fn summarize (proj: Quote (Grouped q p -> s)) (g: Grouped q p) -> Result (List s) Error where Summarizable q, Row s =
+    match runGroups g.source g.keyCol g.keySide proj.tree g.havingTree
         Err err -> Err err
         Ok rows -> decodeRows rows
 
@@ -977,6 +994,53 @@ instance Every (LeftJoin e f a) (fn e f -> Bool) where Adapter a =
                     Err err     -> Err err
                     Ok matching -> Ok (total == matching)
 
+-- A query's `groupBy`: name the group-key column with a one-row accessor (`fn (u:
+-- User) -> u.dept`, exactly as an `orderBy` key) and wrap the query into the unified
+-- `Grouped` builder. `aggColumn`/`aggSide` read the column and its side from the
+-- captured key; a query has no right table, so the side is always the left.
+instance Groupable (Query e a) (fn e -> k) =
+    groupBy (key: Quote (fn e -> k)) (x: Query e a) -> Grouped (Query e a) (fn e -> k) =
+        Grouped { source = x, keyCol = aggColumn key, keySide = aggSide key, havingTree = keepAllTree () }
+
+-- A query's `summarize` seam: run the `GROUP BY` (and any `HAVING`) over the query's
+-- own filter through the `groupSummarize` push-down, returning one raw row per group
+-- for `summarize` to decode. The key side is unused for a query (no right table).
+instance Summarizable (Query e a) where Adapter a =
+    runGroups (src: Query e a) (keyCol: Text) (keySide: Bool) (projTree: QExpr) (havingTree: QExpr) -> Result (List (Map Text SqlValue)) Error =
+        groupSummarize src.repo.adapter src.repo.table src.pred keyCol (groupCols keyCol projTree) havingTree
+
+-- An inner join's `groupBy`: the key is a two-row accessor naming a column from
+-- either side (`fn (u: User) (p: Post) -> p.category` groups by the right table);
+-- `aggColumn`/`aggSide` read the column and its side off the captured key, and the
+-- join is wrapped into the unified `Grouped` builder. The right side is read as the
+-- plain entity `f`, like the join aggregates — a grouped aggregate folds values, it
+-- does not produce one per row.
+instance Groupable (Join e f a) (fn e f -> k) =
+    groupBy (key: Quote (fn e f -> k)) (x: Join e f a) -> Grouped (Join e f a) (fn e f -> k) =
+        Grouped { source = x, keyCol = aggColumn key, keySide = aggSide key, havingTree = keepAllTree () }
+
+-- A left join's `groupBy`: the two-row dual over a `LeftJoin`, the right side read as
+-- the plain entity `f` as in the left-join aggregates. A right-side key groups the
+-- unmatched left rows under the NULL key the backend gives them.
+instance Groupable (LeftJoin e f a) (fn e f -> k) =
+    groupBy (key: Quote (fn e f -> k)) (x: LeftJoin e f a) -> Grouped (LeftJoin e f a) (fn e f -> k) =
+        Grouped { source = x, keyCol = aggColumn key, keySide = aggSide key, havingTree = keepAllTree () }
+
+-- An inner join's `summarize` seam: run the `GROUP BY` (and any `HAVING`) over the
+-- joined rows through the `groupSummarizeJoin` push-down, side-qualifying the key and
+-- each aggregate column to its table. Returns one raw row per group for `summarize`
+-- to decode.
+instance Summarizable (Join e f a) where Adapter a =
+    runGroups (src: Join e f a) (keyCol: Text) (keySide: Bool) (projTree: QExpr) (havingTree: QExpr) -> Result (List (Map Text SqlValue)) Error =
+        groupSummarizeJoin src.left.repo.adapter src.left.repo.table src.right.table src.cond src.where2 src.left.pred keyCol keySide (groupCols keyCol projTree) havingTree
+
+-- A left join's `summarize` seam: the dual over a `LeftJoin`, run through the
+-- `groupSummarizeLeftJoin` push-down. Every left row the post-join `WHERE` admits
+-- joins a group; an unmatched one contributes its left columns and a NULL right side.
+instance Summarizable (LeftJoin e f a) where Adapter a =
+    runGroups (src: LeftJoin e f a) (keyCol: Text) (keySide: Bool) (projTree: QExpr) (havingTree: QExpr) -> Result (List (Map Text SqlValue)) Error =
+        groupSummarizeLeftJoin src.left.repo.adapter src.left.repo.table src.right.table src.cond src.where2 src.left.pred keyCol keySide (groupCols keyCol projTree) havingTree
+
 -- Decode a list of `(left, right)` row pairs into entity pairs, stopping at the
 -- first decode failure on either side.
 fn decodePairs (pairs: List (Map Text SqlValue, Map Text SqlValue)) -> Result (List (e, f)) Error where Row e, Row f =
@@ -1065,8 +1129,9 @@ fn projPairs (cols: List (Text, QExpr)) -> List (Text, Text) =
 
 fn qcolName (e: QExpr) -> Text =
     match e
-        QCol c -> c
-        _      -> ""
+        QCol c  -> c
+        QColR c -> c
+        _       -> ""
 
 -- The column an ordering key names. The key quote captures a single column, so
 -- its tree is a `QCol`; anything else contributes an empty key name. Generic over
@@ -1134,15 +1199,32 @@ fn keepAllTree (_u: Unit) -> QExpr = (keepAll ()).tree
 -- tree is a `QProj` whose every entry pairs an output alias with a group aggregate
 -- node; each maps to its SQL aggregate keyword and the column it folds — the key
 -- column for `g.key`, none for `g.count`. Anything else contributes no columns.
-fn groupCols (keyCol: Text) (tree: QExpr) -> List (Text, Text, Text) =
+fn groupCols (keyCol: Text) (tree: QExpr) -> List (Text, Text, Text, Bool) =
     match tree
         QProj cols -> groupColPairs keyCol cols
         _          -> []
 
-fn groupColPairs (keyCol: Text) (cols: List (Text, QExpr)) -> List (Text, Text, Text) =
+fn groupColPairs (keyCol: Text) (cols: List (Text, QExpr)) -> List (Text, Text, Text, Bool) =
     match cols
         []                  -> []
-        (alias, ex) :: rest -> (alias, aggFunc ex, aggCol keyCol ex) :: groupColPairs keyCol rest
+        (alias, ex) :: rest -> (alias, aggFunc ex, aggCol keyCol ex, aggColSide ex) :: groupColPairs keyCol rest
+
+-- Which side of a join a group aggregate folds: a right-side column (`QColR`) inside
+-- a `g.sum`/`avg`/`min`/`max` node folds the right table. `g.key` and `g.count` fold
+-- no column of their own — the key column is side-tagged on the grouped builder
+-- (`keySide`) and a count names no column — so they default to the left.
+fn aggColSide (ex: QExpr) -> Bool =
+    match ex
+        QAggSum c -> aggNodeSide c
+        QAggAvg c -> aggNodeSide c
+        QAggMin c -> aggNodeSide c
+        QAggMax c -> aggNodeSide c
+        _         -> false
+
+fn aggNodeSide (c: QExpr) -> Bool =
+    match c
+        QColR _ -> true
+        _       -> false
 
 -- The SQL aggregate keyword a group aggregate node names.
 fn aggFunc (ex: QExpr) -> Text =

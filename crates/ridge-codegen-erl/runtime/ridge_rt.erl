@@ -34,6 +34,7 @@
     mem_aggregate_join/9, mem_aggregate_left_join/9,
     mem_count_join/6, mem_count_left_join/6,
     mem_group_summarize/6,
+    mem_group_summarize_join/10, mem_group_summarize_left_join/10,
     plan_scan/6, plan_combine/3, plan_refine/6, mem_run_plan/2,
     quote_keep_all/1, quote_and/2,
     mk_error/2,
@@ -977,6 +978,21 @@ mem_project(Id, Table, Tree, Orders, Lim, Off, Cols, Dist) ->
 mem_group_summarize(Id, Table, Tree, KeyCol, Cols, Having) ->
     mem_call({group_summarize, Id, Table, Tree, KeyCol, Cols, Having}).
 
+%% mem_group_summarize_join/10 — the inner-join dual of mem_group_summarize: pair
+%% LeftTable and RightTable on Cond (narrowed by Where2 and the left-side Pred),
+%% group the pairs by KeyCol read off the KeySide table, summarize each group into
+%% the `{Alias, Func, Column, IsRight}` aggregates (IsRight selects the table a
+%% scalar aggregate folds), keep the groups Having admits, and return one row per
+%% group ordered by the key. Result (List Row) Error.
+mem_group_summarize_join(Id, LeftTable, RightTable, Cond, Where2, Pred, KeyCol, KeySide, Cols, Having) ->
+    mem_call({group_summarize_join, Id, LeftTable, RightTable, Cond, Where2, Pred, KeyCol, KeySide, Cols, Having}).
+
+%% mem_group_summarize_left_join/10 — as mem_group_summarize_join, but a left-outer
+%% join keeps every left row Pred and Where2 admit; an unmatched one groups with its
+%% right columns absent (read as SqlNull), so a right-side key groups it under NULL.
+mem_group_summarize_left_join(Id, LeftTable, RightTable, Cond, Where2, Pred, KeyCol, KeySide, Cols, Having) ->
+    mem_call({group_summarize_left_join, Id, LeftTable, RightTable, Cond, Where2, Pred, KeyCol, KeySide, Cols, Having}).
+
 %% --- query plan builders ---
 %% A query plan is a small tree the set-operation terminals run. The three builders
 %% assemble it backend-neutrally (no store access); mem_run_plan/pg_run_plan
@@ -1158,6 +1174,17 @@ mem_keeper_loop(State) ->
             Kept = [{K, GR} || {K, GR} <- Groups, mem_having(Having, K, GR)],
             Sorted = lists:sort(fun({KA, _}, {KB, _}) -> mem_order_cmp(KA, KB) =/= gt end, Kept),
             Result = [mem_group_row(Cols, K, GR) || {K, GR} <- Sorted],
+            From ! {Ref, {ok, Result}},
+            mem_keeper_loop(State);
+        {{group_summarize_join, Id, LeftTable, RightTable, Cond, Where2, Pred, KeyCol, KeySide, Cols, Having}, From, Ref} ->
+            Pairs = mem_join_pairs(State, Id, LeftTable, RightTable, Cond, Where2, Pred, []),
+            Result = mem_group_join(Pairs, KeyCol, KeySide, Cols, Having),
+            From ! {Ref, {ok, Result}},
+            mem_keeper_loop(State);
+        {{group_summarize_left_join, Id, LeftTable, RightTable, Cond, Where2, Pred, KeyCol, KeySide, Cols, Having}, From, Ref} ->
+            Pairs0 = mem_left_join_pairs(State, Id, LeftTable, RightTable, Cond, Where2, Pred, []),
+            Pairs = [{L, mem_right_row(OptR)} || {L, OptR} <- Pairs0],
+            Result = mem_group_join(Pairs, KeyCol, KeySide, Cols, Having),
             From ! {Ref, {ok, Result}},
             mem_keeper_loop(State);
         {{run_plan, Id, Plan}, From, Ref} ->
@@ -1346,12 +1373,13 @@ mem_group_by(KeyCol, Rows) ->
         [],
         Rows).
 
-%% Build one output row for a group: each `{Alias, Func, Column}` becomes
+%% Build one output row for a group: each `{Alias, Func, Column, IsRight}` becomes
 %% `Alias => value`, where the value is the group key, its row count, or a scalar
-%% aggregate over the group's rows.
+%% aggregate over the group's rows. `IsRight` tags a join column's side and is unused
+%% for a single-table group (every column is the left side).
 mem_group_row(Cols, Key, GroupRows) ->
     maps:from_list([{Alias, mem_group_value(Func, Column, Key, GroupRows)}
-                    || {Alias, Func, Column} <- Cols]).
+                    || {Alias, Func, Column, _IsRight} <- Cols]).
 
 mem_group_value(<<"KEY">>, _Col, Key, _GR)   -> Key;
 mem_group_value(<<"COUNT">>, _Col, _Key, GR) -> {'SqlInt', length(GR)};
@@ -1402,6 +1430,87 @@ mem_agg_or_undef(Func, Col, GR) ->
         'SqlNull' -> undefined;
         V         -> V
     end.
+
+%% --- In-memory grouped join ---
+%%
+%% Group a join's `{L,R}` pairs by a key column read off one side, narrow the groups
+%% by a HAVING tree over the group aggregates, and summarise each surviving group.
+%% A grouped aggregate folds values rather than producing one per row, so it reads a
+%% right column as the plain right row (an unmatched left join row's right side is
+%% `#{}`, whose columns read SqlNull and so drop out of the fold), exactly as the
+%% join scalar aggregates do.
+mem_group_join(Pairs, KeyCol, KeySide, Cols, Having) ->
+    Groups = mem_group_pairs(KeyCol, KeySide, Pairs),
+    Kept = [{K, GP} || {K, GP} <- Groups, mem_having_join(Having, K, GP)],
+    Sorted = lists:sort(fun({KA, _}, {KB, _}) -> mem_order_cmp(KA, KB) =/= gt end, Kept),
+    [mem_group_join_row(Cols, K, GP) || {K, GP} <- Sorted].
+
+%% Partition the pairs by the key value, read from the right side when KeySide is
+%% true (a join grouped by a right column) and the left otherwise. First-seen order.
+mem_group_pairs(KeyCol, KeySide, Pairs) ->
+    lists:foldl(
+        fun({L, R}, Acc) ->
+            K = mem_pair_key(KeySide, KeyCol, L, R),
+            case lists:keyfind(K, 1, Acc) of
+                {K, GP} -> lists:keyreplace(K, 1, Acc, {K, GP ++ [{L, R}]});
+                false   -> Acc ++ [{K, [{L, R}]}]
+            end
+        end,
+        [],
+        Pairs).
+
+mem_pair_key(true,  KeyCol, _L, R) -> maps:get(KeyCol, R, 'SqlNull');
+mem_pair_key(false, KeyCol, L, _R) -> maps:get(KeyCol, L, 'SqlNull').
+
+%% One output row per join group: each `{Alias, Func, Column, IsRight}` folds the
+%% column from its side, COUNT counts the pairs, KEY answers the group key.
+mem_group_join_row(Cols, Key, GP) ->
+    maps:from_list([{Alias, mem_group_join_value(Func, Column, IsRight, Key, GP)}
+                    || {Alias, Func, Column, IsRight} <- Cols]).
+
+mem_group_join_value(<<"KEY">>, _Col, _IsRight, Key, _GP)   -> Key;
+mem_group_join_value(<<"COUNT">>, _Col, _IsRight, _Key, GP) -> {'SqlInt', length(GP)};
+mem_group_join_value(Func, Col, IsRight, _Key, GP) ->
+    Rows = [mem_agg_side_row(IsRight, L, R) || {L, R} <- GP],
+    mem_aggregate_value(Func, Col, Rows).
+
+%% HAVING over a join group: as mem_having, but its scalar-aggregate leaves fold a
+%% left (`QCol`) or right (`QColR`) column off the `{L,R}` pairs.
+mem_having_join({'QLitBool', true}, _Key, _GP) -> true;
+mem_having_join({'QAnd', L, R}, Key, GP) -> mem_having_join(L, Key, GP) andalso mem_having_join(R, Key, GP);
+mem_having_join({'QOr', L, R}, Key, GP)  -> mem_having_join(L, Key, GP) orelse mem_having_join(R, Key, GP);
+mem_having_join({'QNot', X}, Key, GP)    -> not mem_having_join(X, Key, GP);
+mem_having_join({'QEq', L, R}, Key, GP)  -> mem_hrelate_join(eq, L, R, Key, GP);
+mem_having_join({'QNe', L, R}, Key, GP)  -> not mem_hrelate_join(eq, L, R, Key, GP);
+mem_having_join({'QLt', L, R}, Key, GP)  -> mem_hrelate_join(lt, L, R, Key, GP);
+mem_having_join({'QGt', L, R}, Key, GP)  -> mem_hrelate_join(lt, R, L, Key, GP);
+mem_having_join({'QLe', L, R}, Key, GP)  -> not mem_hrelate_join(lt, R, L, Key, GP);
+mem_having_join({'QGe', L, R}, Key, GP)  -> not mem_hrelate_join(lt, L, R, Key, GP);
+mem_having_join(_Other, _Key, _GP)       -> true.
+
+mem_hrelate_join(Op, L, R, Key, GP) ->
+    case {mem_hscalar_join(L, Key, GP), mem_hscalar_join(R, Key, GP)} of
+        {undefined, _} -> false;
+        {_, undefined} -> false;
+        {A, B}         -> mem_sql_cmp(Op, A, B)
+    end.
+
+mem_hscalar_join('QGroupKey', Key, _GP) -> Key;
+mem_hscalar_join('QAggCount', _Key, GP) -> {'SqlInt', length(GP)};
+mem_hscalar_join({'QAggSum', Node}, _Key, GP) -> mem_agg_node_join(<<"SUM">>, Node, GP);
+mem_hscalar_join({'QAggAvg', Node}, _Key, GP) -> mem_agg_node_join(<<"AVG">>, Node, GP);
+mem_hscalar_join({'QAggMin', Node}, _Key, GP) -> mem_agg_node_join(<<"MIN">>, Node, GP);
+mem_hscalar_join({'QAggMax', Node}, _Key, GP) -> mem_agg_node_join(<<"MAX">>, Node, GP);
+mem_hscalar_join({'QLitInt', N}, _Key, _GP)   -> {'SqlInt', N};
+mem_hscalar_join({'QLitText', S}, _Key, _GP)  -> {'SqlText', S};
+mem_hscalar_join({'QLitBool', B}, _Key, _GP)  -> {'SqlBool', B};
+mem_hscalar_join({'QLitFloat', F}, _Key, _GP) -> {'SqlFloat', F};
+mem_hscalar_join(_Other, _Key, _GP)           -> undefined.
+
+%% A scalar aggregate over a join group's left (`QCol`) or right (`QColR`) column.
+mem_agg_node_join(Func, {'QCol', C}, GP)  -> mem_agg_or_undef(Func, C, [L || {L, _R} <- GP]);
+mem_agg_node_join(Func, {'QColR', C}, GP) -> mem_agg_or_undef(Func, C, [R || {_L, R} <- GP]);
+mem_agg_node_join(_Func, _Node, _GP)      -> undefined.
 
 %% Merge the Changes columns into every row matching the predicate tree, leaving
 %% the rest untouched; return `{UpdatedRows, ChangedCount}`. An empty Changes map

@@ -1561,6 +1561,8 @@ mod tests {
                             | "countJoin"
                             | "countLeftJoin"
                             | "groupSummarize"
+                            | "groupSummarizeJoin"
+                            | "groupSummarizeLeftJoin"
                             | "runPlan"
                             | "MemAdapter"
                             | "memAdapter"

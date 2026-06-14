@@ -599,13 +599,13 @@ pub fn db byId () -> Result (Option User) Error =
     users () |> Repo.getBy "id" (toSql 1)
 
 pub fn db howMany () -> Result Int Error =
-    Repo.count (users ())
+    users () |> Repo.query |> Repo.count
 
 pub fn db howManyAdults () -> Result Int Error =
-    users () |> Repo.countBy (fn (u: User) -> u.age >= 18)
+    users () |> Repo.query |> Repo.filter (fn (u: User) -> u.age >= 18) |> Repo.count
 
 pub fn db anyMinors () -> Result Bool Error =
-    users () |> Repo.exists (fn (u: User) -> u.age < 18)
+    users () |> Repo.query |> Repo.filter (fn (u: User) -> u.age < 18) |> Repo.exists
 
 pub fn db add () -> Result Unit Error =
     users () |> Repo.insertRow (Map.fromList [("id", toSql 1)])
@@ -1199,6 +1199,118 @@ pub fn db pagedLeftJoin () -> Result (List (User, Option Post)) Error =
     assert!(
         errors.is_empty(),
         "limit/offset/distinct must compose on a left join; got {errors:?}"
+    );
+}
+
+#[test]
+fn query_builder_count_exists_every_on_join_typechecks() {
+    // `count`/`exists`/`every` are the methods of the two-parameter `Countable q p
+    // | q -> p` class, so they apply to a `Join` exactly as to a `Query`: `count`
+    // answers the joined-row count, `exists` whether any pair joins, and `every`
+    // takes a two-row predicate over both entities (the arity the dependency fixes
+    // for a join) and answers `Bool`. The pinned return types prove each shape.
+    let main = r#"
+import std.data (memAdapter, MemAdapter)
+import std.repo as Repo
+import std.sql (SqlValue)
+
+pub type User = { id: Int, age: Int, name: Text } deriving (Row)
+pub type Post = { id: Int, authorId: Int, title: Text } deriving (Row)
+
+pub fn db joinCount () -> Result Int Error =
+    let users: Repo User MemAdapter = Repo.repo (memAdapter ()) "users"
+    let posts: Repo Post MemAdapter = Repo.repo (memAdapter ()) "posts"
+    users
+      |> Repo.query
+      |> Repo.joinOn posts (fn (u: User) (p: Post) -> u.id == p.authorId)
+      |> Repo.count
+
+pub fn db joinExists () -> Result Bool Error =
+    let users: Repo User MemAdapter = Repo.repo (memAdapter ()) "users"
+    let posts: Repo Post MemAdapter = Repo.repo (memAdapter ()) "posts"
+    users
+      |> Repo.query
+      |> Repo.joinOn posts (fn (u: User) (p: Post) -> u.id == p.authorId)
+      |> Repo.exists
+
+pub fn db joinEvery () -> Result Bool Error =
+    let users: Repo User MemAdapter = Repo.repo (memAdapter ()) "users"
+    let posts: Repo Post MemAdapter = Repo.repo (memAdapter ()) "posts"
+    users
+      |> Repo.query
+      |> Repo.joinOn posts (fn (u: User) (p: Post) -> u.id == p.authorId)
+      |> Repo.every (fn (u: User) (p: Post) -> p.title == "x")
+"#;
+    let errors = typecheck_one(main);
+    assert!(
+        errors.is_empty(),
+        "count/exists/every must compose on a join through the Countable class; got {errors:?}"
+    );
+}
+
+#[test]
+fn query_builder_count_exists_every_on_left_join_typechecks() {
+    // The same `Countable` methods over a `LeftJoin`: `count`/`exists` ignore the
+    // optional right side entirely, and `every` takes the two-row predicate (its
+    // right side the plain entity, as a left join's `filter` does) and answers
+    // `Bool`. The left join keeps every left row, so `exists` is true whenever a
+    // left row the predicate admits exists.
+    let main = r#"
+import std.data (memAdapter, MemAdapter)
+import std.repo as Repo
+import std.sql (SqlValue)
+
+pub type User = { id: Int, age: Int, name: Text } deriving (Row)
+pub type Post = { id: Int, authorId: Int, title: Text } deriving (Row)
+
+pub fn db leftJoinCount () -> Result Int Error =
+    let users: Repo User MemAdapter = Repo.repo (memAdapter ()) "users"
+    let posts: Repo Post MemAdapter = Repo.repo (memAdapter ()) "posts"
+    users
+      |> Repo.query
+      |> Repo.leftJoinOn posts (fn (u: User) (p: Post) -> u.id == p.authorId)
+      |> Repo.count
+
+pub fn db leftJoinEvery () -> Result Bool Error =
+    let users: Repo User MemAdapter = Repo.repo (memAdapter ()) "users"
+    let posts: Repo Post MemAdapter = Repo.repo (memAdapter ()) "posts"
+    users
+      |> Repo.query
+      |> Repo.leftJoinOn posts (fn (u: User) (p: Post) -> u.id == p.authorId)
+      |> Repo.every (fn (u: User) (p: Post) -> p.authorId == u.id)
+"#;
+    let errors = typecheck_one(main);
+    assert!(
+        errors.is_empty(),
+        "count/exists/every must compose on a left join through the Countable class; got {errors:?}"
+    );
+}
+
+#[test]
+fn query_builder_one_row_every_on_join_is_rejected() {
+    // The dependency fixes `every`'s predicate arity to the receiver, exactly as for
+    // `filter`: a `Join` takes a two-row predicate, so a one-row one is an arity
+    // error rather than a silent mismatch.
+    let main = r#"
+import std.data (memAdapter, MemAdapter)
+import std.repo as Repo
+import std.sql (SqlValue)
+
+pub type User = { id: Int, age: Int, name: Text } deriving (Row)
+pub type Post = { id: Int, authorId: Int, title: Text } deriving (Row)
+
+pub fn db bad () -> Result Bool Error =
+    let users: Repo User MemAdapter = Repo.repo (memAdapter ()) "users"
+    let posts: Repo Post MemAdapter = Repo.repo (memAdapter ()) "posts"
+    users
+      |> Repo.query
+      |> Repo.joinOn posts (fn (u: User) (p: Post) -> u.id == p.authorId)
+      |> Repo.every (fn (u: User) -> u.age >= 18)
+"#;
+    let errors = typecheck_one(main);
+    assert!(
+        !errors.is_empty(),
+        "a one-row every predicate on a join must be rejected by the arity functional dependency"
     );
 }
 

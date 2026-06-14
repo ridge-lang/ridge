@@ -176,7 +176,7 @@ pub fn db countAll () -> Int =
     match setup ()
         Err _ -> 0 - 1
         Ok r  ->
-            match Repo.count r
+            match r |> Repo.query |> Repo.count
                 Ok n  -> n
                 Err _ -> 0 - 2
 
@@ -214,7 +214,7 @@ pub fn db existsYoung () -> Int =
     match setup ()
         Err _ -> 0 - 1
         Ok r  ->
-            match r |> Repo.exists (fn (u: User) -> u.age < 20)
+            match r |> Repo.query |> Repo.filter (fn (u: User) -> u.age < 20) |> Repo.exists
                 Err _ -> 0 - 2
                 Ok b  -> if b then 1 else 0
 
@@ -235,7 +235,7 @@ pub fn db afterCount () -> Int =
             match r |> Repo.deleteWhere (fn (u: User) -> u.age < 25)
                 Err _ -> 0 - 2
                 Ok _  ->
-                    match Repo.count r
+                    match r |> Repo.query |> Repo.count
                         Ok n  -> n
                         Err _ -> 0 - 3
 
@@ -716,6 +716,83 @@ pub fn db everyEmpty () -> Text =
                 Err _ -> "every-err"
                 Ok b  -> boolText b
 
+-- count over an inner join: how many user-post pairs join on `u.id == p.author`?
+-- (lin:hello, lin:again, max:world) -> 3. Proves the unified `count` pushes a
+-- `COUNT(*)` over the join down, ada (no posts) contributing none.
+pub fn db joinCount () -> Int =
+    match setupJoin ()
+        Err _ -> 0 - 1
+        Ok (users, posts) ->
+            match users |> Repo.query |> Repo.joinOn posts (fn (u: User) (p: Post) -> u.id == p.author) |> Repo.count
+                Ok n  -> n
+                Err _ -> 0 - 2
+
+-- exists over an inner join: does any user-post pair join? -> "true". Proves the
+-- unified `exists` probes the join with a one-row limit.
+pub fn db joinAny () -> Text =
+    match setupJoin ()
+        Err _ -> "setup-err"
+        Ok (users, posts) ->
+            match users |> Repo.query |> Repo.joinOn posts (fn (u: User) (p: Post) -> u.id == p.author) |> Repo.exists
+                Err _ -> "exists-err"
+                Ok b  -> boolText b
+
+-- every over an inner join (left column): are all joined users adults? (lin 30,
+-- lin 30, max 25 all >= 18) -> "true". Proves `every` folds a two-row predicate
+-- into the join's count comparison.
+pub fn db joinEveryAdult () -> Text =
+    match setupJoin ()
+        Err _ -> "setup-err"
+        Ok (users, posts) ->
+            match users |> Repo.query |> Repo.joinOn posts (fn (u: User) (p: Post) -> u.id == p.author) |> Repo.every (fn (u: User) (p: Post) -> u.age >= 18)
+                Err _ -> "every-err"
+                Ok b  -> boolText b
+
+-- every over an inner join (right column): is every joined post titled "hello"?
+-- (world and again fail) -> "false". Proves a two-row predicate over the right side
+-- narrows the matching count below the total.
+pub fn db joinEveryHello () -> Text =
+    match setupJoin ()
+        Err _ -> "setup-err"
+        Ok (users, posts) ->
+            match users |> Repo.query |> Repo.joinOn posts (fn (u: User) (p: Post) -> u.id == p.author) |> Repo.every (fn (u: User) (p: Post) -> p.title == "hello")
+                Err _ -> "every-err"
+                Ok b  -> boolText b
+
+-- count over a left join: how many left-outer rows? ada (no post, kept), lin
+-- (hello), lin (again), max (world) -> 4. Proves `countLeftJoin` counts every left
+-- row, the unmatched one included.
+pub fn db leftJoinCount () -> Int =
+    match setupJoin ()
+        Err _ -> 0 - 1
+        Ok (users, posts) ->
+            match users |> Repo.query |> Repo.leftJoinOn posts (fn (u: User) (p: Post) -> u.id == p.author) |> Repo.count
+                Ok n  -> n
+                Err _ -> 0 - 2
+
+-- exists over a left join: a left join keeps every left row, so it is non-empty
+-- whenever any user exists -> "true". Proves the unified `exists` probes a left join
+-- too.
+pub fn db leftJoinAny () -> Text =
+    match setupJoin ()
+        Err _ -> "setup-err"
+        Ok (users, posts) ->
+            match users |> Repo.query |> Repo.leftJoinOn posts (fn (u: User) (p: Post) -> u.id == p.author) |> Repo.exists
+                Err _ -> "exists-err"
+                Ok b  -> boolText b
+
+-- every over a left join (right column): does every kept row have a post of its
+-- own? ada is kept with no post, so its right side is NULL and fails the predicate
+-- -> "false". Proves a right-column `every` drops the unmatched rows, as SQL's
+-- three-valued reading gives.
+pub fn db leftJoinEveryAuthored () -> Text =
+    match setupJoin ()
+        Err _ -> "setup-err"
+        Ok (users, posts) ->
+            match users |> Repo.query |> Repo.leftJoinOn posts (fn (u: User) (p: Post) -> u.id == p.author) |> Repo.every (fn (u: User) (p: Post) -> p.author == u.id)
+                Err _ -> "every-err"
+                Ok b  -> boolText b
+
 -- A grouping dataset: employees with a repeated `dept` key and a salary, so a
 -- GROUP BY partitions several rows per group (eng has 2, sales 3, ops 1).
 pub type Emp = { id: Int, dept: Text, salary: Int } deriving (Row)
@@ -1124,6 +1201,13 @@ fn repo_surface_runs_on_beam() {
          io:format(\"everyAdult=~s~n\",[{module}:everyAdult()]), \
          io:format(\"everyHigh=~s~n\",[{module}:everyHigh()]), \
          io:format(\"everyEmpty=~s~n\",[{module}:everyEmpty()]), \
+         io:format(\"joinCount=~w~n\",[{module}:joinCount()]), \
+         io:format(\"joinAny=~s~n\",[{module}:joinAny()]), \
+         io:format(\"joinEveryAdult=~s~n\",[{module}:joinEveryAdult()]), \
+         io:format(\"joinEveryHello=~s~n\",[{module}:joinEveryHello()]), \
+         io:format(\"leftJoinCount=~w~n\",[{module}:leftJoinCount()]), \
+         io:format(\"leftJoinAny=~s~n\",[{module}:leftJoinAny()]), \
+         io:format(\"leftJoinEveryAuthored=~s~n\",[{module}:leftJoinEveryAuthored()]), \
          io:format(\"groupCounts=~s~n\",[{module}:groupCounts()]), \
          io:format(\"groupSums=~s~n\",[{module}:groupSums()]), \
          io:format(\"groupAvgs=~s~n\",[{module}:groupAvgs()]), \
@@ -1237,6 +1321,28 @@ fn repo_surface_runs_on_beam() {
         (
             "leftJoinLimited=ada:-,lin:hello",
             "limit bounds a left join, the kept-but-unmatched ada row included in the page",
+        ),
+        (
+            "joinCount=3",
+            "count pushes a COUNT(*) over the inner join (three user-post pairs)",
+        ),
+        ("joinAny=true", "exists probes the inner join for any pair"),
+        (
+            "joinEveryAdult=true",
+            "every folds a two-row left-column predicate into the join's count comparison",
+        ),
+        (
+            "joinEveryHello=false",
+            "a right-column every narrows the matching count below the join total",
+        ),
+        (
+            "leftJoinCount=4",
+            "countLeftJoin counts every left-outer row, the unmatched ada included",
+        ),
+        ("leftJoinAny=true", "exists probes a left join, always non-empty here"),
+        (
+            "leftJoinEveryAuthored=false",
+            "a right-column every over a left join fails the unmatched ada row (its post is NULL)",
         ),
         ("sumAllAges=73", "sumOf folds every age (18 + 30 + 25)"),
         (

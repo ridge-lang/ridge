@@ -169,7 +169,7 @@ pub fn db countAll () -> Int =
     match setup ()
         Err _ -> 0 - 1
         Ok r  ->
-            match Repo.count r
+            match r |> Repo.query |> Repo.count
                 Ok n  -> n
                 Err _ -> 0 - 2
 
@@ -210,7 +210,7 @@ pub fn db afterDelete () -> Int =
             match r |> Repo.deleteWhere (fn (u: User) -> u.age < 25)
                 Err _ -> 0 - 2
                 Ok _  ->
-                    match Repo.count r
+                    match r |> Repo.query |> Repo.count
                         Ok n  -> n
                         Err _ -> 0 - 3
 
@@ -740,6 +740,67 @@ pub fn db everyEmpty () -> Text =
                 Err _ -> "every-err"
                 Ok b  -> boolText b
 
+-- count over an inner join against Postgres: how many user-post pairs? (lin:hello,
+-- max:world) -> 2. Proves `countJoin` compiles a `SELECT COUNT(*) FROM l JOIN r`.
+pub fn db joinCount () -> Int =
+    match setupJoin ()
+        Err _ -> 0 - 1
+        Ok (users, posts) ->
+            match users |> Repo.query |> Repo.joinOn posts (fn (u: User) (p: Post) -> u.id == p.author) |> Repo.count
+                Ok n  -> n
+                Err _ -> 0 - 2
+
+-- exists over an inner join against Postgres: does any pair join? -> "true".
+pub fn db joinAny () -> Text =
+    match setupJoin ()
+        Err _ -> "setup-err"
+        Ok (users, posts) ->
+            match users |> Repo.query |> Repo.joinOn posts (fn (u: User) (p: Post) -> u.id == p.author) |> Repo.exists
+                Err _ -> "exists-err"
+                Ok b  -> boolText b
+
+-- every over an inner join against Postgres (left column): are all joined users
+-- adults? (lin 30, max 25 both >= 18) -> "true".
+pub fn db joinEveryAdult () -> Text =
+    match setupJoin ()
+        Err _ -> "setup-err"
+        Ok (users, posts) ->
+            match users |> Repo.query |> Repo.joinOn posts (fn (u: User) (p: Post) -> u.id == p.author) |> Repo.every (fn (u: User) (p: Post) -> u.age >= 18)
+                Err _ -> "every-err"
+                Ok b  -> boolText b
+
+-- every over an inner join against Postgres (right column): is every joined post
+-- titled "hello"? (world fails) -> "false".
+pub fn db joinEveryHello () -> Text =
+    match setupJoin ()
+        Err _ -> "setup-err"
+        Ok (users, posts) ->
+            match users |> Repo.query |> Repo.joinOn posts (fn (u: User) (p: Post) -> u.id == p.author) |> Repo.every (fn (u: User) (p: Post) -> p.title == "hello")
+                Err _ -> "every-err"
+                Ok b  -> boolText b
+
+-- count over a left join against Postgres: how many left-outer rows? ada (no post,
+-- kept), lin (hello), max (world) -> 3. Proves `countLeftJoin` compiles a `SELECT
+-- COUNT(*) FROM l LEFT JOIN r`, the unmatched ada counted.
+pub fn db leftJoinCount () -> Int =
+    match setupJoin ()
+        Err _ -> 0 - 1
+        Ok (users, posts) ->
+            match users |> Repo.query |> Repo.leftJoinOn posts (fn (u: User) (p: Post) -> u.id == p.author) |> Repo.count
+                Ok n  -> n
+                Err _ -> 0 - 2
+
+-- every over a left join against Postgres (right column): does every kept row have
+-- a post of its own? ada is kept with a NULL post and fails -> "false". Proves a
+-- right-column every drops the unmatched rows under SQL's three-valued WHERE.
+pub fn db leftJoinEveryAuthored () -> Text =
+    match setupJoin ()
+        Err _ -> "setup-err"
+        Ok (users, posts) ->
+            match users |> Repo.query |> Repo.leftJoinOn posts (fn (u: User) (p: Post) -> u.id == p.author) |> Repo.every (fn (u: User) (p: Post) -> p.author == u.id)
+                Err _ -> "every-err"
+                Ok b  -> boolText b
+
 -- A grouping dataset in the `ridge_pg_emps` table: employees with a repeated
 -- `dept` key and a salary, so a real GROUP BY partitions several rows per group.
 pub type Emp = { id: Int, dept: Text, salary: Int } deriving (Row)
@@ -1200,6 +1261,12 @@ fn postgres_adapter_reads_a_real_table() {
          io:format(\"everyAdult=~s~n\",[{module}:everyAdult()]), \
          io:format(\"everyHigh=~s~n\",[{module}:everyHigh()]), \
          io:format(\"everyEmpty=~s~n\",[{module}:everyEmpty()]), \
+         io:format(\"joinCount=~w~n\",[{module}:joinCount()]), \
+         io:format(\"joinAny=~s~n\",[{module}:joinAny()]), \
+         io:format(\"joinEveryAdult=~s~n\",[{module}:joinEveryAdult()]), \
+         io:format(\"joinEveryHello=~s~n\",[{module}:joinEveryHello()]), \
+         io:format(\"leftJoinCount=~w~n\",[{module}:leftJoinCount()]), \
+         io:format(\"leftJoinEveryAuthored=~s~n\",[{module}:leftJoinEveryAuthored()]), \
          io:format(\"groupCounts=~s~n\",[{module}:groupCounts()]), \
          io:format(\"groupSums=~s~n\",[{module}:groupSums()]), \
          io:format(\"groupAvgs=~s~n\",[{module}:groupAvgs()]), \
@@ -1396,6 +1463,27 @@ fn postgres_adapter_reads_a_real_table() {
         (
             "everyEmpty=true",
             "every over an empty selection is vacuously true",
+        ),
+        (
+            "joinCount=2",
+            "count compiles a COUNT(*) over the inner join (two user-post pairs)",
+        ),
+        ("joinAny=true", "exists probes the inner join for any pair"),
+        (
+            "joinEveryAdult=true",
+            "every folds a two-row left-column predicate into the join's count comparison",
+        ),
+        (
+            "joinEveryHello=false",
+            "a right-column every narrows the matching count below the join total (world fails)",
+        ),
+        (
+            "leftJoinCount=3",
+            "countLeftJoin counts every left-outer row, the unmatched ada included",
+        ),
+        (
+            "leftJoinEveryAuthored=false",
+            "a right-column every over a left join fails the unmatched ada row (its post is NULL)",
         ),
         (
             "groupCounts=eng:2,ops:1,sales:3",

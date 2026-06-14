@@ -139,23 +139,12 @@ pub fn getBy (column: Text) (key: SqlValue) (r: Repo e a) -> Result (Option e) E
                 Err err -> Err err
                 Ok x    -> Ok (Some x)
 
--- How many rows the table holds, counted by the backend (a `COUNT(*)` push-down)
--- rather than by fetching and measuring the rows.
-pub fn count (r: Repo e a) -> Result Int Error where Adapter a =
-    countWhere r.adapter r.table (keepAll ())
-
--- How many rows match a quoted predicate, counted by the backend.
-pub fn countBy (pred: Quote (Map Text SqlValue -> Bool)) (r: Repo e a) -> Result Int Error where Adapter a =
-    countWhere r.adapter r.table pred
-
--- Whether any row matches a quoted predicate. Fetched with a one-row limit.
-pub fn exists (pred: Quote (Map Text SqlValue -> Bool)) (r: Repo e a) -> Result Bool Error where Adapter a =
-    match fetch r.adapter r.table pred [] 1 0 false
-        Err err  -> Err err
-        Ok rows  ->
-            match rows
-                []     -> Ok false
-                _ :: _ -> Ok true
+-- `count` and `exists` are the methods of the `Countable q p | q -> p` class
+-- (declared below, next to `Pageable`), so one `count`/`exists` serves a query, an
+-- inner join, and a left join. They run off the query builder rather than the bare
+-- repository: a whole-table count reads `users |> Repo.query |> Repo.count`, and a
+-- count over a predicate folds a `filter` in first (`users |> Repo.query |>
+-- Repo.filter pred |> Repo.count`) — the form the old `countBy` spelled directly.
 
 -- Append a raw row to the table. The row is a column map built by hand through
 -- `SqlType.toSql`; for a typed entity reach for `insert`, which derives the row.
@@ -340,6 +329,33 @@ pub class Pageable q =
     offset   (n: Int) (x: q) -> q
     distinct (x: q) -> q
 
+-- The size-and-presence terminals for a query and a join. `count` answers how many
+-- rows the receiver selects, `exists` whether it selects any at all — each counted
+-- by the backend (a `COUNT(*)` push-down, or a one-row `LIMIT` for `exists`) rather
+-- than by fetching the rows and measuring them. Neither takes a quoted argument, so
+-- the receiver alone fixes the instance and the class has the single parameter `q`,
+-- like `Pageable`/`Decodable`. Both reflect the receiver's filter (and, on a join,
+-- its condition and post-join `WHERE`); like the scalar aggregates, ordering and
+-- paging do not bound them, and a query's set-operation plan is honoured the way the
+-- decode terminals honour it. An empty selection counts 0, so `exists` is false over
+-- it. (LINQ's `Count`/`Any`.)
+pub class Countable q =
+    count  (x: q) -> Result Int Error
+    exists (x: q) -> Result Bool Error
+
+-- The universal-predicate terminal for a query and a join — the dual of `exists`.
+-- `every` answers whether all the rows the receiver selects satisfy a further
+-- predicate, comparing the receiver's row count against the count once the predicate
+-- is folded in (so it is counted by the backend, never fetched). The predicate's
+-- arity follows the receiver through the functional dependency `q -> p`, exactly as
+-- `filter` does — a `Query e a` takes a one-row `Quote (e -> Bool)` and a
+-- `Join e f a`/`LeftJoin e f a` a two-row `Quote (e -> f -> Bool)` — so a wrong-arity
+-- predicate is a compile-time error. An empty selection is vacuously `true`. It sits
+-- in its own class rather than beside `count`/`exists` because it carries the
+-- predicate the dependency keys on, where they take no argument. (LINQ's `All`.)
+pub class Every q p | q -> p =
+    every (pred: Quote p) (x: q) -> Result Bool Error
+
 -- `limit`/`offset`/`distinct` over a query, an inner join, or a left join are the
 -- methods of the `Pageable q` class (declared above); the instances are defined
 -- below, next to the `Refinable`/`Orderable`/`Decodable` ones. The query instance
@@ -459,19 +475,11 @@ pub fn singleOrError (q: Query e a) -> Result e Error where Adapter a, Row e =
                                 Ok x    -> Ok x
                         _ -> Err (mkError "repo.single.many" "the query matched more than one row")
 
--- Whether every row the query selects satisfies a further predicate. The dual of
--- `exists`: `exists` asks whether any row matches, `every` whether all do. Both
--- sides are counted by the backend rather than fetched — `every` compares the
--- query's own row count against the count once the extra predicate is AND-folded
--- in, and they agree exactly when no selected row fails it. An empty selection is
--- `true`, the vacuous reading SQL gives a universal over no rows. (LINQ's `All`.)
-pub fn every (pred: Quote (Map Text SqlValue -> Bool)) (q: Query e a) -> Result Bool Error where Adapter a =
-    match countWhere q.repo.adapter q.repo.table q.pred
-        Err err  -> Err err
-        Ok total ->
-            match countWhere q.repo.adapter q.repo.table (quoteAnd q.pred pred)
-                Err err     -> Err err
-                Ok matching -> Ok (total == matching)
+-- `every` is the universal dual of `exists` and now joins it as a method of the
+-- `Countable q p | q -> p` class (declared above), so one `every` tests a query, an
+-- inner join, or a left join. Its instance compares the receiver's row count
+-- against the count once the extra predicate is AND-folded in: they agree exactly
+-- when no selected row fails it, and an empty selection is vacuously `true`.
 
 -- Apply typed setters to the rows the query selects; answer how many changed.
 -- The write terminal of the builder, mirroring how `Where(...).ExecuteUpdate(...)`
@@ -860,6 +868,114 @@ instance Pageable (LeftJoin e f a) =
         LeftJoin { left = x.left, right = x.right, cond = x.cond, where2 = x.where2, orders = x.orders, lim = x.lim, off = n, dist = x.dist }
     distinct (x: LeftJoin e f a) -> LeftJoin e f a =
         LeftJoin { left = x.left, right = x.right, cond = x.cond, where2 = x.where2, orders = x.orders, lim = x.lim, off = x.off, dist = true }
+
+-- The count of a query's rows, honouring its set-operation plan. A plain query
+-- counts through the backend's `COUNT(*)` over its filter (a push-down, no rows
+-- fetched); a query a set operation already built counts the combined result,
+-- materialised through `runPlan` and measured. The filter applies either way,
+-- ordering and paging do not — a count answers the size of the matched row set,
+-- not a paged window of it, the same rule the scalar aggregates follow.
+fn countQuery (x: Query e a) -> Result Int Error where Adapter a =
+    match x.plan
+        None   -> countWhere x.repo.adapter x.repo.table x.pred
+        Some p ->
+            match runPlan x.repo.adapter (planRefine p x.pred.tree [] (0 - 1) 0 false)
+                Err err -> Err err
+                Ok rows -> Ok (lengthOf rows)
+
+-- Whether a row list holds anything — the answer `exists` gives once the backend
+-- returns a one-row probe of the query or join.
+fn nonEmpty (xs: List t) -> Bool =
+    match xs
+        []     -> false
+        _ :: _ -> true
+
+-- The length of a row list, for measuring a materialised set-operation result.
+fn lengthOf (xs: List t) -> Int =
+    match xs
+        []        -> 0
+        _ :: rest -> 1 + lengthOf rest
+
+-- A query's `count`/`exists`: count its filtered rows (honouring a set-operation
+-- plan through `countQuery`) or probe for a single row. The behaviour the single-
+-- receiver `count`/`exists` pub fns had before they unified with the join form.
+instance Countable (Query e a) where Adapter a =
+    count (x: Query e a) -> Result Int Error =
+        countQuery x
+    exists (x: Query e a) -> Result Bool Error =
+        match x.plan
+            None ->
+                match fetch x.repo.adapter x.repo.table x.pred [] 1 0 false
+                    Err err -> Err err
+                    Ok rows -> Ok (nonEmpty rows)
+            Some p ->
+                match runPlan x.repo.adapter (planRefine p x.pred.tree [] 1 0 false)
+                    Err err -> Err err
+                    Ok rows -> Ok (nonEmpty rows)
+
+-- An inner join's `count`/`exists`: count the joined pairs through the `countJoin`
+-- seam (a `COUNT(*)` over the join) or probe the join for a single pair. As with the
+-- join aggregates, the join is neither ordered nor paged — these answer the matched
+-- set, not a window.
+instance Countable (Join e f a) where Adapter a =
+    count (x: Join e f a) -> Result Int Error =
+        countJoin x.left.repo.adapter x.left.repo.table x.right.table x.cond x.where2 x.left.pred
+    exists (x: Join e f a) -> Result Bool Error =
+        match join x.left.repo.adapter x.left.repo.table x.right.table x.cond x.where2 x.left.pred [] 1 0 false
+            Err err  -> Err err
+            Ok pairs -> Ok (nonEmpty pairs)
+
+-- A left join's `count`/`exists`: the dual over a `LeftJoin`, counted through
+-- `countLeftJoin` (a `COUNT(*)` over the left-outer join, every left row kept).
+-- `exists` is true whenever the join keeps any row — a left join keeps one per left
+-- row the `where2` admits.
+instance Countable (LeftJoin e f a) where Adapter a =
+    count (x: LeftJoin e f a) -> Result Int Error =
+        countLeftJoin x.left.repo.adapter x.left.repo.table x.right.table x.cond x.where2 x.left.pred
+    exists (x: LeftJoin e f a) -> Result Bool Error =
+        match leftJoin x.left.repo.adapter x.left.repo.table x.right.table x.cond x.where2 x.left.pred [] 1 0 false
+            Err err  -> Err err
+            Ok pairs -> Ok (nonEmpty pairs)
+
+-- A query's `every`: compare the query's count against the count once the further
+-- predicate is folded into its filter, equal exactly when no selected row fails it.
+-- The predicate is AND-folded with `quoteAnd` (the same fold `filter` runs) and the
+-- query re-counted through `countQuery`, so it tracks the query's own filter and a
+-- set-operation plan alike. The fold is inlined rather than routed through `filter`
+-- so the instance body stays a plain record reconstruction with no cross-class
+-- dictionary to thread.
+instance Every (Query e a) (fn e -> Bool) where Adapter a =
+    every (pred: Quote (fn e -> Bool)) (x: Query e a) -> Result Bool Error =
+        match countQuery x
+            Err err  -> Err err
+            Ok total ->
+                match countQuery (Query { repo = x.repo, pred = quoteAnd x.pred pred, orders = x.orders, lim = x.lim, off = x.off, dist = x.dist, plan = x.plan })
+                    Err err     -> Err err
+                    Ok matching -> Ok (total == matching)
+
+-- An inner join's `every`: compare the join's count against the count once the
+-- predicate folds into the post-join `WHERE`, both pushed down through `countJoin`.
+instance Every (Join e f a) (fn e f -> Bool) where Adapter a =
+    every (pred: Quote (fn e f -> Bool)) (x: Join e f a) -> Result Bool Error =
+        match countJoin x.left.repo.adapter x.left.repo.table x.right.table x.cond x.where2 x.left.pred
+            Err err  -> Err err
+            Ok total ->
+                match countJoin x.left.repo.adapter x.left.repo.table x.right.table x.cond (quoteAnd2 x.where2 pred) x.left.pred
+                    Err err     -> Err err
+                    Ok matching -> Ok (total == matching)
+
+-- A left join's `every`: the dual over a `LeftJoin`, counted through
+-- `countLeftJoin`. The predicate folds into the post-join `WHERE`, where a test over
+-- a right column drops the unmatched rows, so they fail `every` as SQL's three-valued
+-- reading gives.
+instance Every (LeftJoin e f a) (fn e f -> Bool) where Adapter a =
+    every (pred: Quote (fn e f -> Bool)) (x: LeftJoin e f a) -> Result Bool Error =
+        match countLeftJoin x.left.repo.adapter x.left.repo.table x.right.table x.cond x.where2 x.left.pred
+            Err err  -> Err err
+            Ok total ->
+                match countLeftJoin x.left.repo.adapter x.left.repo.table x.right.table x.cond (quoteAnd2 x.where2 pred) x.left.pred
+                    Err err     -> Err err
+                    Ok matching -> Ok (total == matching)
 
 -- Decode a list of `(left, right)` row pairs into entity pairs, stopping at the
 -- first decode failure on either side.

@@ -1215,6 +1215,49 @@ pub fn register_stdlib_classes(ct: &mut ClassTable) {
             def_module: None,
         },
     );
+
+    // `Pageable` from std.repo — the unified page-and-distinct builder steps
+    // (`limit`/`offset`/`distinct`) over a query, an inner join, or a left join. A
+    // single parameter, the receiver `q`, with no functional dependency (like
+    // `Decodable`): these verbs take no quoted argument and return the receiver, so
+    // there is no second parameter to determine. The three method schemes are
+    // seeded directly (see `seed_pageable_scheme` in lib.rs) with no AST types, and
+    // the three instances are registered in `register_stdlib_instances`.
+    // `limit`/`offset` take a count and the receiver (sig arity 2); `distinct`
+    // takes only the receiver (arity 1).
+    let pageable_id = ct.intern("Pageable");
+    ct.insert_with_id(
+        pageable_id,
+        ClassInfo {
+            name: "Pageable".to_string(),
+            arity: 1,
+            method_sigs: vec![
+                MethodSig {
+                    name: "limit".to_string(),
+                    arity: 2,
+                    ast_param_types: vec![],
+                    ast_ret_type: None,
+                    class_ty_vars: Vec::new(),
+                },
+                MethodSig {
+                    name: "offset".to_string(),
+                    arity: 2,
+                    ast_param_types: vec![],
+                    ast_ret_type: None,
+                    class_ty_vars: Vec::new(),
+                },
+                MethodSig {
+                    name: "distinct".to_string(),
+                    arity: 1,
+                    ast_param_types: vec![],
+                    ast_ret_type: None,
+                    class_ty_vars: Vec::new(),
+                },
+            ],
+            superclasses: vec![],
+            def_module: None,
+        },
+    );
 }
 
 /// Registers the base-type instances of stdlib-defined classes into `env`.
@@ -1602,6 +1645,45 @@ pub fn register_stdlib_instances(
             env.instances
                 .entry((decodable, smallvec![left_join]))
                 .or_insert_with(join_inst);
+        }
+    }
+
+    // `Pageable (Query e a)`, `Pageable (Join e f a)`, and `Pageable (LeftJoin e f
+    // a)` — the unified `limit`/`offset`/`distinct` instances from std.repo. A
+    // single-parameter class, so each instance is keyed by the receiver tycon alone
+    // (no second atom). Like `Refinable`/`Orderable` they return the receiver
+    // changed in one field, so they carry no context constraints and need no
+    // head-position augmentation: these verbs only record the page bound or the
+    // distinct flag, they do not reach the store. Inserted for user workspaces; a
+    // no-op during the stdlib's own build, where repo.ridge's source instances are
+    // collected directly.
+    if let Some(pageable) = ct.id_by_name("Pageable") {
+        let pageable_inst = || InstanceInfo {
+            def_module: None,
+            methods: vec![
+                ("limit".to_string(), String::new()),
+                ("offset".to_string(), String::new()),
+                ("distinct".to_string(), String::new()),
+            ],
+            ctx_constraints: vec![],
+            head_var_positions: vec![],
+            origin: InstanceOrigin::Explicit,
+            span: ds,
+        };
+        if let Some(&query) = reconciled_tycon_names.get("Query") {
+            env.instances
+                .entry((pageable, smallvec![query]))
+                .or_insert_with(pageable_inst);
+        }
+        if let Some(&join) = reconciled_tycon_names.get("Join") {
+            env.instances
+                .entry((pageable, smallvec![join]))
+                .or_insert_with(pageable_inst);
+        }
+        if let Some(&left_join) = reconciled_tycon_names.get("LeftJoin") {
+            env.instances
+                .entry((pageable, smallvec![left_join]))
+                .or_insert_with(pageable_inst);
         }
     }
 }

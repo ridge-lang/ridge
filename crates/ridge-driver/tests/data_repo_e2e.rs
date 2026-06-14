@@ -74,6 +74,11 @@ pub type Combo = { person: Text, post: Text } deriving (Row)
 -- `Option Text`, so an unmatched left row projects it as `None`.
 pub type ComboOpt = { person: Text, post: Option Text } deriving (Row)
 
+-- A single-name projection shape for a join, so a `distinct` over a join's
+-- projection collapses the repeated left entity (one person, several posts) to its
+-- distinct values.
+pub type Person = { person: Text } deriving (Row)
+
 -- Join the names of a user list with commas, so a query's order is observable
 -- as a single string the probe can assert on.
 fn joinNames (us: List User) -> Text =
@@ -133,6 +138,13 @@ fn joinLeftPairs (ps: List (User, Option Post)) -> Text =
         []              -> ""
         (u, op) :: []   -> Text.concat u.name (Text.concat ":" (optTitle op))
         (u, op) :: rest -> Text.concat u.name (Text.concat ":" (Text.concat (optTitle op) (Text.concat "," (joinLeftPairs rest))))
+
+-- Render the `person` field of each projected join row, comma-joined.
+fn personList (ps: List Person) -> Text =
+    match ps
+        []        -> ""
+        p :: []   -> p.person
+        p :: rest -> Text.concat p.person (Text.concat "," (personList rest))
 
 pub fn userRow (uid: Int) (uage: Int) (uname: Text) -> Map Text SqlValue =
     Map.fromList [("id", toSql uid), ("age", toSql uage), ("name", toSql uname)]
@@ -407,6 +419,65 @@ pub fn db leftJoinFilterLeft () -> Text =
         Ok (users, posts) ->
             match users |> Repo.query |> Repo.orderBy Asc (fn (u: User) -> u.id) |> Repo.leftJoinOn posts (fn (u: User) (p: Post) -> u.id == p.author) |> Repo.filter (fn (u: User) (p: Post) -> u.id <= 2) |> Repo.toList
                 Err _  -> "left-filter-err"
+                Ok ps  -> joinLeftPairs ps
+
+-- join + limit: the inner join ordered by the post id (a right column, unique:
+-- hello 10, world 11, again 12), keeping the first two pairs ->
+-- "lin:hello,max:world". Proves the unified `limit` bounds a join through its own
+-- page (carried on the `Join`), not the left query alone.
+pub fn db joinLimited () -> Text =
+    match setupJoin ()
+        Err _ -> "setup-err"
+        Ok (users, posts) ->
+            match users |> Repo.query |> Repo.joinOn posts (fn (u: User) (p: Post) -> u.id == p.author) |> Repo.orderBy Asc (fn (u: User) (p: Post) -> p.id) |> Repo.limit 2 |> Repo.toList
+                Err _  -> "join-limit-err"
+                Ok ps  -> joinPairs ps
+
+-- join + offset + limit: the same ordered join, skipping the first pair and keeping
+-- one -> "max:world" (after hello comes world). Proves `offset` and `limit` compose
+-- on a join.
+pub fn db joinOffsetLimited () -> Text =
+    match setupJoin ()
+        Err _ -> "setup-err"
+        Ok (users, posts) ->
+            match users |> Repo.query |> Repo.joinOn posts (fn (u: User) (p: Post) -> u.id == p.author) |> Repo.orderBy Asc (fn (u: User) (p: Post) -> p.id) |> Repo.offset 1 |> Repo.limit 1 |> Repo.toList
+                Err _  -> "join-page-err"
+                Ok ps  -> joinPairs ps
+
+-- join + distinct + toList: `distinct` over the whole join, ordered by the post id
+-- -> "lin:hello,max:world,lin:again". The three pairs are already distinct, so the
+-- result is unchanged: this proves `distinct` threads through the `join` seam (a
+-- `SELECT DISTINCT l.*, r.*`) without dropping distinct rows.
+pub fn db joinDistinctAll () -> Text =
+    match setupJoin ()
+        Err _ -> "setup-err"
+        Ok (users, posts) ->
+            match users |> Repo.query |> Repo.joinOn posts (fn (u: User) (p: Post) -> u.id == p.author) |> Repo.distinct |> Repo.orderBy Asc (fn (u: User) (p: Post) -> p.id) |> Repo.toList
+                Err _  -> "join-distinct-err"
+                Ok ps  -> joinPairs ps
+
+-- join + distinct + projection: project the join down to just the left person, so
+-- lin's two posts collapse, then `distinct` -> "lin,max". Proves `distinct` over a
+-- join's projection dedups the projected rows (a `SELECT DISTINCT person`), not the
+-- underlying pairs.
+pub fn db joinDistinctPersons () -> Text =
+    match setupJoin ()
+        Err _ -> "setup-err"
+        Ok (users, posts) ->
+            match users |> Repo.query |> Repo.joinOn posts (fn (u: User) (p: Post) -> u.id == p.author) |> Repo.distinct |> Repo.orderBy Asc (fn (u: User) (p: Post) -> u.name) |> Repo.select (fn (u: User) (p: Post) -> Person { person = u.name })
+                Err _  -> "join-distinct-select-err"
+                Ok ps  -> personList ps
+
+-- left join + limit: the left join with the user-id order lifted from the query
+-- (ada 1, lin 2, lin 2, max 3), keeping the first two rows -> "ada:-,lin:hello".
+-- Proves the unified `limit` bounds a left join, the kept-but-unmatched ada row
+-- included in the page.
+pub fn db leftJoinLimited () -> Text =
+    match setupJoin ()
+        Err _ -> "setup-err"
+        Ok (users, posts) ->
+            match users |> Repo.query |> Repo.orderBy Asc (fn (u: User) -> u.id) |> Repo.leftJoinOn posts (fn (u: User) (p: Post) -> u.id == p.author) |> Repo.limit 2 |> Repo.toList
+                Err _  -> "left-limit-err"
                 Ok ps  -> joinLeftPairs ps
 
 -- Render an optional Int as its text, or "none" for an empty aggregate.
@@ -1028,6 +1099,11 @@ fn repo_surface_runs_on_beam() {
          io:format(\"joinFilterRight=~s~n\",[{module}:joinFilterRight()]), \
          io:format(\"leftJoinFilterRight=~s~n\",[{module}:leftJoinFilterRight()]), \
          io:format(\"leftJoinFilterLeft=~s~n\",[{module}:leftJoinFilterLeft()]), \
+         io:format(\"joinLimited=~s~n\",[{module}:joinLimited()]), \
+         io:format(\"joinOffsetLimited=~s~n\",[{module}:joinOffsetLimited()]), \
+         io:format(\"joinDistinctAll=~s~n\",[{module}:joinDistinctAll()]), \
+         io:format(\"joinDistinctPersons=~s~n\",[{module}:joinDistinctPersons()]), \
+         io:format(\"leftJoinLimited=~s~n\",[{module}:leftJoinLimited()]), \
          io:format(\"sumAllAges=~s~n\",[{module}:sumAllAges()]), \
          io:format(\"sumAdultAges=~s~n\",[{module}:sumAdultAges()]), \
          io:format(\"avgAdultAges=~s~n\",[{module}:avgAdultAges()]), \
@@ -1141,6 +1217,26 @@ fn repo_surface_runs_on_beam() {
         (
             "leftJoinFilterLeft=ada:-,lin:hello,lin:again",
             "a left-join filter over a left column keeps the unmatched ada row and drops max",
+        ),
+        (
+            "joinLimited=lin:hello,max:world",
+            "limit bounds the join's own page, keeping the first two post-id-ordered pairs",
+        ),
+        (
+            "joinOffsetLimited=max:world",
+            "offset and limit compose on a join (skip hello, keep world)",
+        ),
+        (
+            "joinDistinctAll=lin:hello,max:world,lin:again",
+            "distinct threads through the join seam and keeps the three already-distinct pairs",
+        ),
+        (
+            "joinDistinctPersons=lin,max",
+            "distinct over a join's projection dedups the repeated person (lin's two posts collapse)",
+        ),
+        (
+            "leftJoinLimited=ada:-,lin:hello",
+            "limit bounds a left join, the kept-but-unmatched ada row included in the page",
         ),
         ("sumAllAges=73", "sumOf folds every age (18 + 30 + 25)"),
         (

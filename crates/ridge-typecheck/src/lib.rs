@@ -765,6 +765,7 @@ fn typecheck_module_inner(
         seed_orderable_scheme(&mut ctx, b, ct, sort_order);
         seed_aggregable_scheme(&mut ctx, b, ct);
         seed_decodable_scheme(&mut ctx, b, ct);
+        seed_pageable_scheme(&mut ctx, b, ct);
 
         // Wire the reconciled receiver ids the `Rows q` projection reduces against,
         // so the decode terminals' result types (`Result (List (Rows q))`)
@@ -1331,6 +1332,56 @@ fn seed_decodable_scheme(
                 row_vars: vec![],
                 ty: fn_ty,
                 constraints: vec![Constraint::new(decodable, constraint_tys)],
+            },
+        );
+    }
+}
+
+/// Seed the env schemes for `Pageable.limit`/`offset`/`distinct` — std.repo's
+/// unified page-and-distinct builder steps over a query, an inner join, or a
+/// left join. Registered in Rust rather than through the AST-driven
+/// `seed_class_method_schemes` path because the stdlib class carries no source
+/// AST (its `MethodSig` leaves `ast_param_types` empty, like `Decodable`/
+/// `Refinable`).
+///
+/// Schemes: `∀q. Int -> q -> q where Pageable q` for `limit`/`offset`, and
+/// `∀q. q -> q where Pageable q` for `distinct`. The single receiver parameter
+/// pins the instance, so the one binding serves a `Query`, a `Join`, and a
+/// `LeftJoin` alike — these verbs take no quoted argument and return the
+/// receiver, so there is no second parameter to determine and no functional
+/// dependency, unlike `Refinable`/`Orderable`.
+fn seed_pageable_scheme(
+    ctx: &mut crate::ctx::InferCtx,
+    b: &ridge_types::BuiltinTyCons,
+    class_table: &crate::class_env::ClassTable,
+) {
+    use ridge_types::{CapRow, CapabilitySet, Constraint, Scheme, Type};
+    let Some(pageable) = class_table.id_by_name("Pageable") else {
+        return;
+    };
+    // `limit`/`offset` take a leading `Int` count; `distinct` takes only the
+    // receiver. Each answers the receiver unchanged.
+    for (name, has_count) in [("limit", true), ("offset", true), ("distinct", false)] {
+        let q = ctx.fresh_tyvid();
+        let params = if has_count {
+            vec![Type::Con(b.int, vec![]), Type::Var(q)]
+        } else {
+            vec![Type::Var(q)]
+        };
+        let fn_ty = Type::Fn {
+            params,
+            ret: Box::new(Type::Var(q)),
+            caps: CapRow::Concrete(CapabilitySet::PURE),
+        };
+        let constraint_tys: smallvec::SmallVec<[ridge_types::TyVid; 1]> = smallvec::smallvec![q];
+        ctx.env.bind(
+            name.to_owned(),
+            Scheme {
+                vars: vec![q],
+                cap_vars: vec![],
+                row_vars: vec![],
+                ty: fn_ty,
+                constraints: vec![Constraint::new(pageable, constraint_tys)],
             },
         );
     }

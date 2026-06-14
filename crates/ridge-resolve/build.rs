@@ -464,6 +464,10 @@ const BASELINE_EXPORTS: &[(&str, &[&str])] = &[
             // key over either side), the arity following the receiver.
             "Orderable",
             "orderBy",
+            // The unified `limit`/`offset`/`distinct` are the methods of the
+            // `Pageable q` class, so one set of page-and-distinct builder steps
+            // applies to a query (one receiver), an inner join, or a left join.
+            "Pageable",
             "limit",
             "offset",
             "distinct",

@@ -1138,6 +1138,71 @@ pub fn db publishedPosts () -> Result (List (User, Post)) Error =
 }
 
 #[test]
+fn query_builder_paging_on_join_typechecks() {
+    // The unified `limit`/`offset`/`distinct` are the methods of the single-
+    // parameter `Pageable q` class, so they apply to a `Join` exactly as to a
+    // `Query` — bounding the join's page and de-duplicating its rows — and the join
+    // still decodes into `(User, Post)` through `toList`.
+    let main = r#"
+import std.data (memAdapter, MemAdapter)
+import std.repo as Repo
+import std.query (SortOrder, Asc)
+import std.sql (SqlValue)
+
+pub type User = { id: Int, age: Int, name: Text } deriving (Row)
+pub type Post = { id: Int, authorId: Int, title: Text } deriving (Row)
+
+pub fn db pagedJoin () -> Result (List (User, Post)) Error =
+    let users: Repo User MemAdapter = Repo.repo (memAdapter ()) "users"
+    let posts: Repo Post MemAdapter = Repo.repo (memAdapter ()) "posts"
+    users
+      |> Repo.query
+      |> Repo.joinOn posts (fn (u: User) (p: Post) -> u.id == p.authorId)
+      |> Repo.distinct
+      |> Repo.orderBy Asc (fn (u: User) (p: Post) -> p.id)
+      |> Repo.offset 1
+      |> Repo.limit 2
+      |> Repo.toList
+"#;
+    let errors = typecheck_one(main);
+    assert!(
+        errors.is_empty(),
+        "limit/offset/distinct must compose on a join through the Pageable class; got {errors:?}"
+    );
+}
+
+#[test]
+fn query_builder_paging_on_left_join_typechecks() {
+    // The same `Pageable` methods over a `LeftJoin`: it keeps every left row and
+    // decodes the right entity as `Option`, while `limit`/`offset`/`distinct` bound
+    // and de-duplicate the kept rows.
+    let main = r#"
+import std.data (memAdapter, MemAdapter)
+import std.repo as Repo
+import std.sql (SqlValue)
+
+pub type User = { id: Int, age: Int, name: Text } deriving (Row)
+pub type Post = { id: Int, authorId: Int, title: Text } deriving (Row)
+
+pub fn db pagedLeftJoin () -> Result (List (User, Option Post)) Error =
+    let users: Repo User MemAdapter = Repo.repo (memAdapter ()) "users"
+    let posts: Repo Post MemAdapter = Repo.repo (memAdapter ()) "posts"
+    users
+      |> Repo.query
+      |> Repo.leftJoinOn posts (fn (u: User) (p: Post) -> u.id == p.authorId)
+      |> Repo.distinct
+      |> Repo.offset 1
+      |> Repo.limit 5
+      |> Repo.toList
+"#;
+    let errors = typecheck_one(main);
+    assert!(
+        errors.is_empty(),
+        "limit/offset/distinct must compose on a left join; got {errors:?}"
+    );
+}
+
+#[test]
 fn query_builder_two_row_filter_on_query_is_rejected() {
     // The functional dependency fixes the predicate's arity to the receiver: a
     // `Query` takes a one-row predicate, so a two-row predicate is an arity

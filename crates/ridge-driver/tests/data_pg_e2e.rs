@@ -349,6 +349,51 @@ pub fn db leftSelectTitles () -> Text =
                 Err _  -> "left-select-err"
                 Ok cs  -> joinComboOpts cs
 
+-- join + limit against Postgres: the inner join ordered by the post id (hello 10,
+-- world 11), keeping the first pair -> "lin:hello". Proves the backend compiles the
+-- join's own LIMIT (carried on the `Join`), bounding the joined result.
+pub fn db joinLimited () -> Text =
+    match setupJoin ()
+        Err _ -> "setup-err"
+        Ok (users, posts) ->
+            match users |> Repo.query |> Repo.joinOn posts (fn (u: User) (p: Post) -> u.id == p.author) |> Repo.orderBy Asc (fn (u: User) (p: Post) -> p.id) |> Repo.limit 1 |> Repo.toList
+                Err _  -> "join-limit-err"
+                Ok ps  -> joinPairs ps
+
+-- join + offset + limit against Postgres: the same ordered join, skipping the first
+-- pair and keeping one -> "max:world". Proves LIMIT and OFFSET compile on a join.
+pub fn db joinOffsetLimited () -> Text =
+    match setupJoin ()
+        Err _ -> "setup-err"
+        Ok (users, posts) ->
+            match users |> Repo.query |> Repo.joinOn posts (fn (u: User) (p: Post) -> u.id == p.author) |> Repo.orderBy Asc (fn (u: User) (p: Post) -> p.id) |> Repo.offset 1 |> Repo.limit 1 |> Repo.toList
+                Err _  -> "join-page-err"
+                Ok ps  -> joinPairs ps
+
+-- join + distinct against Postgres: `distinct` over the inner join, ordered by post
+-- id -> "lin:hello,max:world". The two pairs are already distinct, so the result is
+-- unchanged: this proves the backend compiles `SELECT DISTINCT l.*, r.*` over the
+-- join and runs it.
+pub fn db joinDistinctAll () -> Text =
+    match setupJoin ()
+        Err _ -> "setup-err"
+        Ok (users, posts) ->
+            match users |> Repo.query |> Repo.joinOn posts (fn (u: User) (p: Post) -> u.id == p.author) |> Repo.distinct |> Repo.orderBy Asc (fn (u: User) (p: Post) -> p.id) |> Repo.toList
+                Err _  -> "join-distinct-err"
+                Ok ps  -> joinPairs ps
+
+-- left join + limit against Postgres: the left join with the user-id order lifted
+-- from the query (ada 1, lin 2, max 3), keeping the first two rows ->
+-- "ada:-,lin:hello". Proves the backend compiles a `LEFT JOIN … LIMIT`, the
+-- kept-but-unmatched ada row included in the page.
+pub fn db leftJoinLimited () -> Text =
+    match setupJoin ()
+        Err _ -> "setup-err"
+        Ok (users, posts) ->
+            match users |> Repo.query |> Repo.orderBy Asc (fn (u: User) -> u.id) |> Repo.leftJoinOn posts (fn (u: User) (p: Post) -> u.id == p.author) |> Repo.limit 2 |> Repo.toList
+                Err _  -> "left-limit-err"
+                Ok ps  -> joinLeftPairs ps
+
 -- Connect, clear, and seed three users with the TYPED `insert` — the entity is
 -- encoded to a row through `toRow` and the backend compiles the parameterised
 -- INSERT, with no hand-built column map.
@@ -1124,6 +1169,10 @@ fn postgres_adapter_reads_a_real_table() {
          io:format(\"joinOrderByRight=~s~n\",[{module}:joinOrderByRight()]), \
          io:format(\"leftJoinedNames=~s~n\",[{module}:leftJoinedNames()]), \
          io:format(\"leftSelectTitles=~s~n\",[{module}:leftSelectTitles()]), \
+         io:format(\"joinLimited=~s~n\",[{module}:joinLimited()]), \
+         io:format(\"joinOffsetLimited=~s~n\",[{module}:joinOffsetLimited()]), \
+         io:format(\"joinDistinctAll=~s~n\",[{module}:joinDistinctAll()]), \
+         io:format(\"leftJoinLimited=~s~n\",[{module}:leftJoinLimited()]), \
          io:format(\"addedNames=~s~n\",[{module}:addedNames()]), \
          io:format(\"updatedAge=~w~n\",[{module}:updatedAge()]), \
          io:format(\"bumpedAge=~w~n\",[{module}:bumpedAge()]), \
@@ -1228,7 +1277,23 @@ fn postgres_adapter_reads_a_real_table() {
         ),
         (
             "leftSelectTitles=ada:-,lin:hello,max:world",
-            "pg_left_join_select keeps the unmatched ada row and decodes its NULL right column into an Option field as None",
+            "selectLeftJoin keeps the unmatched ada row and decodes its NULL right column into None",
+        ),
+        (
+            "joinLimited=lin:hello",
+            "the backend compiles the join's own LIMIT, keeping the first post-id-ordered pair",
+        ),
+        (
+            "joinOffsetLimited=max:world",
+            "LIMIT and OFFSET compile on a join (skip hello, keep world)",
+        ),
+        (
+            "joinDistinctAll=lin:hello,max:world",
+            "the backend compiles SELECT DISTINCT l.*, r.* over the join and keeps the two distinct pairs",
+        ),
+        (
+            "leftJoinLimited=ada:-,lin:hello",
+            "the backend compiles a LEFT JOIN with LIMIT, the unmatched ada row included in the page",
         ),
         (
             "addedNames=ada,lin,max",

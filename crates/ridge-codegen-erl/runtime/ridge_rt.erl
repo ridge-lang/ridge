@@ -37,7 +37,7 @@
     mem_group_summarize/6,
     mem_group_summarize_join/10, mem_group_summarize_left_join/10,
     mem_group_summarize_right_join/10,
-    mem_begin/1, mem_commit/1, mem_rollback/1,
+    mem_begin/1, mem_commit/1, mem_rollback/1, mem_close/1,
     mem_ddl_create/3, mem_ddl_drop/2, mem_ddl_add_column/3,
     mem_ddl_drop_column/3, mem_ddl_index/5,
     mem_migrations_applied/1, mem_record_migration/2,
@@ -1020,6 +1020,12 @@ mem_commit(Id) -> mem_call({commit_tx, Id}).
 %% the tables to the snapshot taken at the matching begin. Result Unit Error.
 mem_rollback(Id) -> mem_call({rollback_tx, Id}).
 
+%% mem_close/1 — std.data.close. Forget every table (and any open transaction
+%% snapshot) of store Id, freeing its rows. The in-memory store lives in the keeper
+%% for the BEAM's lifetime, so a program opening many adapters without closing them
+%% would accumulate; close releases the store. Result Unit Error.
+mem_close(Id) -> mem_call({close_store, Id}).
+
 %% --- schema / migrations ---
 %% The in-memory store is schemaless: a create materialises an empty table so it
 %% exists for reads and drops, a drop forgets it, and column/index changes are
@@ -1270,6 +1276,13 @@ mem_keeper_loop(State) ->
                 end,
             From ! {Ref, {ok, ok}},
             mem_keeper_loop(State1);
+        {{close_store, Id}, From, Ref} ->
+            %% Drop every table of store Id and any open transaction snapshot,
+            %% leaving other stores untouched.
+            erase({mem_tx, Id}),
+            Without = maps:filter(fun(K, _) -> not mem_key_of(Id, K) end, State),
+            From ! {Ref, {ok, ok}},
+            mem_keeper_loop(Without);
         {{create_table, Id, Table}, From, Ref} ->
             Key = {Id, Table},
             From ! {Ref, {ok, ok}},

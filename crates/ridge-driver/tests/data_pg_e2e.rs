@@ -207,6 +207,27 @@ pub fn db setup () -> Result (Repo User Postgres) Error =
                                         Err e -> Err e
                                         Ok _  -> Ok r
 
+-- The body `withConnRuns` runs inside `withConnection`: count the seeded users. A
+-- named fn because a multi-line lambda in call-arg position does not parse.
+fn wcCountUsers (c: Postgres) -> Result Int Error =
+    let r = Repo.repo c "ridge_pg_users"
+    r |> Repo.query |> Repo.count
+
+-- withConnection: seed the table, then open a connection and read its count through
+-- `withConnection`, which closes the handle on the way out without a manual `close`
+-- -> "rows:3". Proves the scoped combinator runs the body over the real wire and
+-- releases the connection after.
+pub fn db withConnRuns () -> Text =
+    match setup ()
+        Err _ -> "setup-err"
+        Ok _  ->
+            match connect (pgConfig ())
+                Err _ -> "connect-err"
+                Ok conn ->
+                    match Repo.withConnection conn wcCountUsers
+                        Err _ -> "wc-err"
+                        Ok n  -> Text.concat "rows:" (Int.toText n)
+
 -- count: the whole table -> 3
 pub fn db countAll () -> Int =
     match setup ()
@@ -1614,6 +1635,7 @@ fn postgres_adapter_reads_a_real_table() {
     );
     let expr = format!(
         "io:format(\"countAll=~w~n\",[{module}:countAll()]), \
+         io:format(\"withConnRuns=~s~n\",[{module}:withConnRuns()]), \
          io:format(\"adultsCount=~w~n\",[{module}:adultsCount()]), \
          io:format(\"firstName=~s~n\",[{module}:firstName()]), \
          io:format(\"getName=~s~n\",[{module}:getName()]), \
@@ -1718,6 +1740,10 @@ fn postgres_adapter_reads_a_real_table() {
 
     for (probe, want) in [
         ("countAll=3", "count answers the whole seeded table"),
+        (
+            "withConnRuns=rows:3",
+            "withConnection runs the body over the real wire (counting the seeded rows) and closes the handle on the way out",
+        ),
         ("adultsCount=2", "findBy keeps the two rows with age >= 25"),
         (
             "firstName=lin",

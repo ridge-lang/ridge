@@ -1171,15 +1171,17 @@ fn reconciled_repo_fn_scheme(
                 with_adapter(),
             )
         }
-        // transaction : ∀a r. a -> (fn a -> Result r Error) -> Result r Error
-        //   where Adapter a. Runs the body inside a transaction on the connection —
-        // `begin`, then the body, then `commit` on `Ok` or `rollback` on `Err`. The
-        // body is a live callback (the first reconciled repo fn that takes one), so
-        // like the std.list/std.result HOFs its capability row is a fresh cap var the
-        // call site absorbs — a pure body keeps the call pure. `r` is the body's own
-        // success type, threaded straight out; `a` carries the `Adapter` dictionary
-        // the begin/commit/rollback methods dispatch on.
-        "transaction" => {
+        // transaction / withConnection : ∀a r. a -> (fn a -> Result r Error)
+        //   -> Result r Error where Adapter a. Two Adapter-constrained HOFs sharing one
+        // reconciled scheme. `transaction` runs the body inside a transaction (`begin`,
+        // body, then `commit` on `Ok` or `rollback` on `Err`); `withConnection` runs the
+        // body then `close`s the connection on every path, returning the body's own
+        // result so a scoped connection is never leaked. The body is a live callback
+        // (the first reconciled repo fns that take one), so like the std.list/std.result
+        // HOFs its capability row is a fresh cap var the call site absorbs — a pure body
+        // keeps the call pure. `r` is the body's own success type, threaded straight out;
+        // `a` carries the `Adapter` dictionary the methods dispatch on.
+        "transaction" | "withConnection" => {
             let r = TyVid(2);
             let cap_c = CapVid(0);
             let body = Type::Fn {

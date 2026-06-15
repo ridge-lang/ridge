@@ -1838,6 +1838,124 @@ pub fn db postAuthors () -> Result (List (Option User, Post)) Error =
 }
 
 #[test]
+fn query_builder_full_join_to_list_typechecks() {
+    // A full join keeps every row of both tables, so the unified `toList` decodes each
+    // into `(Option User, Option Post)` — both sides present only where the row
+    // matched. The condition is written exactly as for an inner, left, or right join.
+    let main = r#"
+import std.data (memAdapter, MemAdapter)
+import std.repo as Repo
+import std.query (SortOrder, Asc)
+import std.sql (SqlValue)
+
+pub type User = { id: Int, age: Int, name: Text } deriving (Row)
+pub type Post = { id: Int, authorId: Int, title: Text } deriving (Row)
+
+pub fn db everyone () -> Result (List (Option User, Option Post)) Error =
+    let users: Repo User MemAdapter = Repo.repo (memAdapter ()) "users"
+    let posts: Repo Post MemAdapter = Repo.repo (memAdapter ()) "posts"
+    users
+      |> Repo.query
+      |> Repo.filter (fn (u: User) -> u.age >= 18)
+      |> Repo.fullJoinOn posts (fn (u: User) (p: Post) -> u.id == p.authorId)
+      |> Repo.toList
+"#;
+    let errors = typecheck_one(main);
+    assert!(
+        errors.is_empty(),
+        "a full join into both-optional entity pairs must type-check clean; got {errors:?}"
+    );
+}
+
+#[test]
+fn query_builder_full_join_both_sides_optional() {
+    // Both entities of a full join are optional: an unmatched left row has no right
+    // entity and an unmatched right row has no left. Declaring the result as
+    // `(User, Post)` drops both `Option`s and must be rejected.
+    let main = r#"
+import std.data (memAdapter, MemAdapter)
+import std.repo as Repo
+import std.sql (SqlValue)
+
+pub type User = { id: Int, name: Text } deriving (Row)
+pub type Post = { id: Int, authorId: Int, title: Text } deriving (Row)
+
+pub fn db bad () -> Result (List (User, Post)) Error =
+    let users: Repo User MemAdapter = Repo.repo (memAdapter ()) "users"
+    let posts: Repo Post MemAdapter = Repo.repo (memAdapter ()) "posts"
+    users
+      |> Repo.query
+      |> Repo.fullJoinOn posts (fn (u: User) (p: Post) -> u.id == p.authorId)
+      |> Repo.toList
+"#;
+    let errors = typecheck_one(main);
+    assert!(
+        !errors.is_empty(),
+        "a full join paired as non-optional `(User, Post)` must be rejected; got no errors"
+    );
+}
+
+#[test]
+fn query_builder_full_join_select_both_sides_optional() {
+    // A full-join projection reads BOTH sides as `Option`, so a projection that names
+    // a column on a plain `User`/`Post` parameter is rejected; reading them as
+    // `Option User`/`Option Post` type-checks clean.
+    let main = r#"
+import std.data (memAdapter, MemAdapter)
+import std.repo as Repo
+import std.sql (SqlValue)
+
+pub type User = { id: Int, name: Text } deriving (Row)
+pub type Post = { id: Int, authorId: Int, title: Text } deriving (Row)
+pub type Combo = { who: Option Text, title: Option Text } deriving (Row)
+
+pub fn db pairs () -> Result (List Combo) Error =
+    let users: Repo User MemAdapter = Repo.repo (memAdapter ()) "users"
+    let posts: Repo Post MemAdapter = Repo.repo (memAdapter ()) "posts"
+    users
+      |> Repo.query
+      |> Repo.fullJoinOn posts (fn (u: User) (p: Post) -> u.id == p.authorId)
+      |> Repo.select (fn (u: Option User) (p: Option Post) -> Combo { who = u.name, title = p.title })
+"#;
+    let errors = typecheck_one(main);
+    assert!(
+        errors.is_empty(),
+        "a full-join projection reading both sides as Option must type-check clean; got {errors:?}"
+    );
+}
+
+#[test]
+fn query_builder_full_join_over_postgres_typechecks() {
+    // The full join resolves the same `Adapter`/`Row` constraints on Postgres:
+    // `fullJoin` is a class method both adapters implement, so the call is unchanged
+    // across backends.
+    let main = r#"
+import std.data (connect, Config, Postgres)
+import std.repo as Repo
+import std.sql (SqlValue)
+
+pub type User = { id: Int, age: Int, name: Text } deriving (Row)
+pub type Post = { id: Int, authorId: Int, title: Text } deriving (Row)
+
+pub fn db everyone () -> Result (List (Option User, Option Post)) Error =
+    match connect (Config { host = "localhost", port = 5432, database = "app", user = "u", password = "p", sslMode = "require", poolSize = 4 })
+        Err e   -> Err e
+        Ok conn ->
+            let users: Repo User Postgres = Repo.repo conn "users"
+            let posts: Repo Post Postgres = Repo.repo conn "posts"
+            users
+              |> Repo.query
+              |> Repo.fullJoinOn posts (fn (u: User) (p: Post) -> u.id == p.authorId)
+              |> Repo.toList
+"#;
+    let errors = typecheck_one(main);
+    assert!(
+        errors.is_empty(),
+        "a full join over Postgres must type-check clean; got {errors:?}"
+    );
+}
+
+#[test]
 fn query_builder_left_join_unknown_column_is_rejected() {
     // The left-join condition is checked against both entities just like an inner
     // join: a column neither entity declares is an error.

@@ -82,6 +82,10 @@ pub type ComboOptL = { person: Option Text, post: Text } deriving (Row)
 -- right join can group by a right-side column and decode the integer key.
 pub type AuthorCount = { author: Int, n: Int } deriving (Row)
 
+-- The shape a full-join projection decodes into: BOTH derived fields are `Option Text`,
+-- so an unmatched row projects the missing side's field as `None`.
+pub type FullCombo = { who: Option Text, title: Option Text } deriving (Row)
+
 -- A single-name projection shape for a join, so a `distinct` over a join's
 -- projection collapses the repeated left entity (one person, several posts) to its
 -- distinct values.
@@ -176,6 +180,55 @@ fn authorCounts (cs: List AuthorCount) -> Text =
         []        -> ""
         c :: []   -> Text.concat (Int.toText c.author) (Text.concat ":" (Int.toText c.n))
         c :: rest -> Text.concat (Int.toText c.author) (Text.concat ":" (Text.concat (Int.toText c.n) (Text.concat "," (authorCounts rest))))
+
+-- Format the three full-join row categories as `both:B,left:L,right:R`.
+fn fullSigFmt (b: Int) (l: Int) (r: Int) -> Text =
+    Text.concat "both:" (Text.concat (Int.toText b) (Text.concat ",left:" (Text.concat (Int.toText l) (Text.concat ",right:" (Int.toText r)))))
+
+-- Classify each `(Option User, Option Post)` pair into matched (`both`), left-only
+-- (`left`, the right side `None`), or right-only (`right`, the left side `None`) and
+-- count them. Order-independent, so it pins the full-join semantics without depending
+-- on the backend's NULL ordering.
+fn fullSigGo (ps: List (Option User, Option Post)) (b: Int) (l: Int) (r: Int) -> Text =
+    match ps
+        []               -> fullSigFmt b l r
+        (ou, op) :: rest ->
+            match ou
+                Some _ ->
+                    match op
+                        Some _ -> fullSigGo rest (b + 1) l r
+                        None   -> fullSigGo rest b (l + 1) r
+                None ->
+                    match op
+                        Some _ -> fullSigGo rest b l (r + 1)
+                        None   -> fullSigGo rest b l r
+
+fn fullSig (ps: List (Option User, Option Post)) -> Text =
+    fullSigGo ps 0 0 0
+
+-- Format a full-join projection summary as `rows:N,noWho:M,noTitle:K`.
+fn fullSelFmt (n: Int) (nw: Int) (nt: Int) -> Text =
+    Text.concat "rows:" (Text.concat (Int.toText n) (Text.concat ",noWho:" (Text.concat (Int.toText nw) (Text.concat ",noTitle:" (Int.toText nt)))))
+
+-- Count projected `FullCombo` rows and how many have a `None` `who` (a right-only row,
+-- left side absent) or a `None` `title` (a left-only row, right side absent).
+-- Order-independent.
+fn fullSelGo (cs: List FullCombo) (n: Int) (nw: Int) (nt: Int) -> Text =
+    match cs
+        []        -> fullSelFmt n nw nt
+        c :: rest ->
+            match c.who
+                Some _ ->
+                    match c.title
+                        Some _ -> fullSelGo rest (n + 1) nw nt
+                        None   -> fullSelGo rest (n + 1) nw (nt + 1)
+                None ->
+                    match c.title
+                        Some _ -> fullSelGo rest (n + 1) (nw + 1) nt
+                        None   -> fullSelGo rest (n + 1) (nw + 1) (nt + 1)
+
+fn fullSel (cs: List FullCombo) -> Text =
+    fullSelGo cs 0 0 0
 
 -- Render the `person` field of each projected join row, comma-joined.
 fn personList (ps: List Person) -> Text =
@@ -503,6 +556,69 @@ pub fn db rightJoinGroupAuthors () -> Text =
         Ok (users, posts) ->
             match users |> Repo.query |> Repo.rightJoinOn posts (fn (u: User) (p: Post) -> u.id == p.author) |> Repo.groupBy (fn (u: User) (p: Post) -> p.author) |> Repo.summarize (fn g -> AuthorCount { author = g.key, n = g.count })
                 Err _  -> "right-group-err"
+                Ok cs  -> authorCounts cs
+
+-- full join: keep every user AND every post. The left query is narrowed to ids <= 2,
+-- so ada (1) and lin (2) enter and max (3) is filtered out. The full join then yields
+-- two matched rows (lin owns hello and again), one left-only row (ada has no post,
+-- right side None), and one right-only row (world, authored by the filtered-out max,
+-- left side None) -> "both:2,left:1,right:1". Proves `fullJoin` decodes a
+-- `(Option User, Option Post)` pair and keeps the unmatched rows of both tables.
+pub fn db fullJoinCategories () -> Text =
+    match setupJoin ()
+        Err _ -> "setup-err"
+        Ok (users, posts) ->
+            match users |> Repo.query |> Repo.filter (fn (u: User) -> u.id <= 2) |> Repo.fullJoinOn posts (fn (u: User) (p: Post) -> u.id == p.author) |> Repo.toList
+                Err _  -> "full-join-err"
+                Ok ps  -> fullSig ps
+
+-- full-join projection: the same full join, projected into `FullCombo` where both
+-- fields are `Option Text`. Four rows come back; the right-only `world` projects
+-- `who = None` and the left-only `ada` projects `title = None`
+-- -> "rows:4,noWho:1,noTitle:1". Proves `fullJoinSelect` reads both sides as Option.
+pub fn db fullSelectShape () -> Text =
+    match setupJoin ()
+        Err _ -> "setup-err"
+        Ok (users, posts) ->
+            match users |> Repo.query |> Repo.filter (fn (u: User) -> u.id <= 2) |> Repo.fullJoinOn posts (fn (u: User) (p: Post) -> u.id == p.author) |> Repo.select (fn (u: Option User) (p: Option Post) -> FullCombo { who = u.name, title = p.title })
+                Err _  -> "full-select-err"
+                Ok cs  -> fullSel cs
+
+-- full-join count: the same narrowed full join keeps all four rows (two matched, one
+-- left-only ada, one right-only world) -> 4. Proves `countFullJoin` counts every row
+-- of both tables where an inner join would count only the two matches.
+pub fn db fullJoinCount () -> Int =
+    match setupJoin ()
+        Err _ -> 0 - 1
+        Ok (users, posts) ->
+            match users |> Repo.query |> Repo.filter (fn (u: User) -> u.id <= 2) |> Repo.fullJoinOn posts (fn (u: User) (p: Post) -> u.id == p.author) |> Repo.count
+                Ok n  -> n
+                Err _ -> 0 - 2
+
+-- full-join aggregate over a RIGHT column: sum the post ids across the narrowed full
+-- join. hello (10), again (12), and the right-only world (11) all contribute; the
+-- left-only ada has no post (a NULL the fold skips) -> 33. Proves `aggregateFullJoin`
+-- folds a right column over the matched and right-only rows, skipping the left-only NULL.
+pub fn db fullJoinSumPostId () -> Int =
+    match setupJoin ()
+        Err _ -> 0 - 1
+        Ok (users, posts) ->
+            match users |> Repo.query |> Repo.filter (fn (u: User) -> u.id <= 2) |> Repo.fullJoinOn posts (fn (u: User) (p: Post) -> u.id == p.author) |> Repo.sumOf (fn (u: User) (p: Post) -> p.id)
+                Ok None     -> 0 - 2
+                Ok (Some n) -> n
+                Err _       -> 0 - 3
+
+-- full-join grouped summary: group every post by its author id (a right column) over a
+-- full join narrowed to user ids >= 2, so both lin (2) and max (3) match their posts
+-- and the group key is never NULL. lin owns hello + again (2), max owns world (1)
+-- -> "2:2,3:1". Proves `groupSummarizeFullJoin` runs the GROUP BY over the full-outer
+-- join and decodes the integer key.
+pub fn db fullJoinGroupAuthors () -> Text =
+    match setupJoin ()
+        Err _ -> "setup-err"
+        Ok (users, posts) ->
+            match users |> Repo.query |> Repo.filter (fn (u: User) -> u.id >= 2) |> Repo.fullJoinOn posts (fn (u: User) (p: Post) -> u.id == p.author) |> Repo.groupBy (fn (u: User) (p: Post) -> p.author) |> Repo.summarize (fn g -> AuthorCount { author = g.key, n = g.count })
+                Err _  -> "full-group-err"
                 Ok cs  -> authorCounts cs
 
 -- left join: keep every user, pairing each with its posts or with `None`, order
@@ -1391,6 +1507,11 @@ fn repo_surface_runs_on_beam() {
          io:format(\"rightJoinCount=~w~n\",[{module}:rightJoinCount()]), \
          io:format(\"rightJoinSumLeftId=~w~n\",[{module}:rightJoinSumLeftId()]), \
          io:format(\"rightJoinGroupAuthors=~s~n\",[{module}:rightJoinGroupAuthors()]), \
+         io:format(\"fullJoinCategories=~s~n\",[{module}:fullJoinCategories()]), \
+         io:format(\"fullSelectShape=~s~n\",[{module}:fullSelectShape()]), \
+         io:format(\"fullJoinCount=~w~n\",[{module}:fullJoinCount()]), \
+         io:format(\"fullJoinSumPostId=~w~n\",[{module}:fullJoinSumPostId()]), \
+         io:format(\"fullJoinGroupAuthors=~s~n\",[{module}:fullJoinGroupAuthors()]), \
          io:format(\"leftJoinedNames=~s~n\",[{module}:leftJoinedNames()]), \
          io:format(\"leftSelectTitles=~s~n\",[{module}:leftSelectTitles()]), \
          io:format(\"joinFilterRight=~s~n\",[{module}:joinFilterRight()]), \
@@ -1539,6 +1660,26 @@ fn repo_surface_runs_on_beam() {
         (
             "rightJoinGroupAuthors=2:2,3:1",
             "groupSummarizeRightJoin groups every post by author id: author 2 owns two posts, author 3 one",
+        ),
+        (
+            "fullJoinCategories=both:2,left:1,right:1",
+            "fullJoin keeps both matched rows (lin's two posts), the left-only ada (no post), and the right-only world (filtered-out author)",
+        ),
+        (
+            "fullSelectShape=rows:4,noWho:1,noTitle:1",
+            "fullJoinSelect reads both sides as Option: the right-only world projects who=None, the left-only ada projects title=None",
+        ),
+        (
+            "fullJoinCount=4",
+            "countFullJoin counts every row of both tables (two matched, one left-only, one right-only)",
+        ),
+        (
+            "fullJoinSumPostId=33",
+            "aggregateFullJoin folds the post id over the matched and right-only rows (10+12+11), skipping the left-only ada's NULL",
+        ),
+        (
+            "fullJoinGroupAuthors=2:2,3:1",
+            "groupSummarizeFullJoin groups every post by author id over the full join (key total here, ids >= 2)",
         ),
         (
             "leftJoinedNames=ada:-,lin:hello,lin:again,max:world",

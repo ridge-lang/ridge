@@ -135,6 +135,11 @@ pub class Adapter a =
     aggregateRightJoin (conn: a) (leftTable: Text) (rightTable: Text) (cond: Quote (Map Text SqlValue -> Map Text SqlValue -> Bool)) (where2: Quote (Map Text SqlValue -> Map Text SqlValue -> Bool)) (pred: Quote (Map Text SqlValue -> Bool)) (func: Text) (column: Text) (isRight: Bool) -> Result (Option SqlValue) Error
     countRightJoin (conn: a) (leftTable: Text) (rightTable: Text) (cond: Quote (Map Text SqlValue -> Map Text SqlValue -> Bool)) (where2: Quote (Map Text SqlValue -> Map Text SqlValue -> Bool)) (pred: Quote (Map Text SqlValue -> Bool)) -> Result Int Error
     groupSummarizeRightJoin (conn: a) (leftTable: Text) (rightTable: Text) (cond: Quote (Map Text SqlValue -> Map Text SqlValue -> Bool)) (where2: Quote (Map Text SqlValue -> Map Text SqlValue -> Bool)) (pred: Quote (Map Text SqlValue -> Bool)) (keyCol: Text) (keySide: Bool) (cols: List (Text, Text, Text, Bool)) (having: QExpr) -> Result (List (Map Text SqlValue)) Error
+    fullJoin (conn: a) (leftTable: Text) (rightTable: Text) (cond: Quote (Map Text SqlValue -> Map Text SqlValue -> Bool)) (where2: Quote (Map Text SqlValue -> Map Text SqlValue -> Bool)) (pred: Quote (Map Text SqlValue -> Bool)) (orders: List (Bool, Bool, Text)) (lim: Int) (off: Int) (dist: Bool) -> Result (List (Option (Map Text SqlValue), Option (Map Text SqlValue))) Error
+    fullJoinSelect (conn: a) (leftTable: Text) (rightTable: Text) (cond: Quote (Map Text SqlValue -> Map Text SqlValue -> Bool)) (where2: Quote (Map Text SqlValue -> Map Text SqlValue -> Bool)) (pred: Quote (Map Text SqlValue -> Bool)) (orders: List (Bool, Bool, Text)) (lim: Int) (off: Int) (proj: Quote p) (dist: Bool) -> Result (List (Map Text SqlValue)) Error
+    aggregateFullJoin (conn: a) (leftTable: Text) (rightTable: Text) (cond: Quote (Map Text SqlValue -> Map Text SqlValue -> Bool)) (where2: Quote (Map Text SqlValue -> Map Text SqlValue -> Bool)) (pred: Quote (Map Text SqlValue -> Bool)) (func: Text) (column: Text) (isRight: Bool) -> Result (Option SqlValue) Error
+    countFullJoin (conn: a) (leftTable: Text) (rightTable: Text) (cond: Quote (Map Text SqlValue -> Map Text SqlValue -> Bool)) (where2: Quote (Map Text SqlValue -> Map Text SqlValue -> Bool)) (pred: Quote (Map Text SqlValue -> Bool)) -> Result Int Error
+    groupSummarizeFullJoin (conn: a) (leftTable: Text) (rightTable: Text) (cond: Quote (Map Text SqlValue -> Map Text SqlValue -> Bool)) (where2: Quote (Map Text SqlValue -> Map Text SqlValue -> Bool)) (pred: Quote (Map Text SqlValue -> Bool)) (keyCol: Text) (keySide: Bool) (cols: List (Text, Text, Text, Bool)) (having: QExpr) -> Result (List (Map Text SqlValue)) Error
     runPlan (conn: a) (plan: QExpr) -> Result (List (Map Text SqlValue)) Error
     begin    (conn: a) -> Result Unit Error
     commit   (conn: a) -> Result Unit Error
@@ -301,6 +306,32 @@ fn _memCountRightJoin (id: Int) (leftTable: Text) (rightTable: Text) (cond: QExp
 @ffi("ridge_rt", "mem_group_summarize_right_join", 10)
 fn _memGroupSummarizeRightJoin (id: Int) (leftTable: Text) (rightTable: Text) (cond: QExpr) (where2: QExpr) (pred: QExpr) (keyCol: Text) (keySide: Bool) (cols: List (Text, Text, Text, Bool)) (having: QExpr) -> Result (List (Map Text SqlValue)) Error
 
+-- The full-outer join of `mem_left_join` and `mem_right_join`: every row of both
+-- tables is kept, the left query's predicate restricting which left rows enter the
+-- join, and each row comes back as `(Option left, Option right)` — `None` on whichever
+-- side the row matched none.
+@ffi("ridge_rt", "mem_full_join", 10)
+fn _memFullJoin (id: Int) (leftTable: Text) (rightTable: Text) (cond: QExpr) (where2: QExpr) (pred: QExpr) (orders: List (Bool, Bool, Text)) (lim: Int) (off: Int) (dist: Bool) -> Result (List (Option (Map Text SqlValue), Option (Map Text SqlValue))) Error
+
+-- As `mem_full_join`, then project each kept row through the projection tree, with the
+-- columns of an unmatched side NULL.
+@ffi("ridge_rt", "mem_full_join_select", 11)
+fn _memFullJoinSelect (id: Int) (leftTable: Text) (rightTable: Text) (cond: QExpr) (where2: QExpr) (pred: QExpr) (orders: List (Bool, Bool, Text)) (lim: Int) (off: Int) (proj: QExpr) (dist: Bool) -> Result (List (Map Text SqlValue)) Error
+
+-- As `mem_aggregate_right_join`, but the full-outer join: a fold over either side
+-- skips the rows unmatched on that side (their column there is absent, a NULL the fold
+-- drops).
+@ffi("ridge_rt", "mem_aggregate_full_join", 9)
+fn _memAggregateFullJoin (id: Int) (leftTable: Text) (rightTable: Text) (cond: QExpr) (where2: QExpr) (pred: QExpr) (func: Text) (column: Text) (isRight: Bool) -> Result (Option SqlValue) Error
+
+-- As `mem_count_right_join`, but a full-outer join: every row of both tables the
+-- predicate and `where2` admit is counted.
+@ffi("ridge_rt", "mem_count_full_join", 6)
+fn _memCountFullJoin (id: Int) (leftTable: Text) (rightTable: Text) (cond: QExpr) (where2: QExpr) (pred: QExpr) -> Result Int Error
+
+@ffi("ridge_rt", "mem_group_summarize_full_join", 10)
+fn _memGroupSummarizeFullJoin (id: Int) (leftTable: Text) (rightTable: Text) (cond: QExpr) (where2: QExpr) (pred: QExpr) (keyCol: Text) (keySide: Bool) (cols: List (Text, Text, Text, Bool)) (having: QExpr) -> Result (List (Map Text SqlValue)) Error
+
 -- Run a captured query plan (a set-operation tree) against the in-memory store,
 -- interpreting each `planScan`/`planCombine`/`planRefine` node, and return the
 -- combined rows.
@@ -427,6 +458,16 @@ instance Adapter MemAdapter =
         _memCountRightJoin conn.id leftTable rightTable cond.tree where2.tree pred.tree
     groupSummarizeRightJoin (conn: MemAdapter) (leftTable: Text) (rightTable: Text) (cond: Quote (Map Text SqlValue -> Map Text SqlValue -> Bool)) (where2: Quote (Map Text SqlValue -> Map Text SqlValue -> Bool)) (pred: Quote (Map Text SqlValue -> Bool)) (keyCol: Text) (keySide: Bool) (cols: List (Text, Text, Text, Bool)) (having: QExpr) -> Result (List (Map Text SqlValue)) Error =
         _memGroupSummarizeRightJoin conn.id leftTable rightTable cond.tree where2.tree pred.tree keyCol keySide cols having
+    fullJoin (conn: MemAdapter) (leftTable: Text) (rightTable: Text) (cond: Quote (Map Text SqlValue -> Map Text SqlValue -> Bool)) (where2: Quote (Map Text SqlValue -> Map Text SqlValue -> Bool)) (pred: Quote (Map Text SqlValue -> Bool)) (orders: List (Bool, Bool, Text)) (lim: Int) (off: Int) (dist: Bool) -> Result (List (Option (Map Text SqlValue), Option (Map Text SqlValue))) Error =
+        _memFullJoin conn.id leftTable rightTable cond.tree where2.tree pred.tree orders lim off dist
+    fullJoinSelect (conn: MemAdapter) (leftTable: Text) (rightTable: Text) (cond: Quote (Map Text SqlValue -> Map Text SqlValue -> Bool)) (where2: Quote (Map Text SqlValue -> Map Text SqlValue -> Bool)) (pred: Quote (Map Text SqlValue -> Bool)) (orders: List (Bool, Bool, Text)) (lim: Int) (off: Int) (proj: Quote p) (dist: Bool) -> Result (List (Map Text SqlValue)) Error =
+        _memFullJoinSelect conn.id leftTable rightTable cond.tree where2.tree pred.tree orders lim off proj.tree dist
+    aggregateFullJoin (conn: MemAdapter) (leftTable: Text) (rightTable: Text) (cond: Quote (Map Text SqlValue -> Map Text SqlValue -> Bool)) (where2: Quote (Map Text SqlValue -> Map Text SqlValue -> Bool)) (pred: Quote (Map Text SqlValue -> Bool)) (func: Text) (column: Text) (isRight: Bool) -> Result (Option SqlValue) Error =
+        _memAggregateFullJoin conn.id leftTable rightTable cond.tree where2.tree pred.tree func column isRight
+    countFullJoin (conn: MemAdapter) (leftTable: Text) (rightTable: Text) (cond: Quote (Map Text SqlValue -> Map Text SqlValue -> Bool)) (where2: Quote (Map Text SqlValue -> Map Text SqlValue -> Bool)) (pred: Quote (Map Text SqlValue -> Bool)) -> Result Int Error =
+        _memCountFullJoin conn.id leftTable rightTable cond.tree where2.tree pred.tree
+    groupSummarizeFullJoin (conn: MemAdapter) (leftTable: Text) (rightTable: Text) (cond: Quote (Map Text SqlValue -> Map Text SqlValue -> Bool)) (where2: Quote (Map Text SqlValue -> Map Text SqlValue -> Bool)) (pred: Quote (Map Text SqlValue -> Bool)) (keyCol: Text) (keySide: Bool) (cols: List (Text, Text, Text, Bool)) (having: QExpr) -> Result (List (Map Text SqlValue)) Error =
+        _memGroupSummarizeFullJoin conn.id leftTable rightTable cond.tree where2.tree pred.tree keyCol keySide cols having
     runPlan (conn: MemAdapter) (plan: QExpr) -> Result (List (Map Text SqlValue)) Error =
         _memRunPlan conn.id plan
     begin (conn: MemAdapter) -> Result Unit Error =
@@ -617,6 +658,32 @@ fn _pgCountRightJoin (id: Int) (leftTable: Text) (rightTable: Text) (cond: QExpr
 @ffi("ridge_pg", "pg_group_summarize_right_join", 10)
 fn _pgGroupSummarizeRightJoin (id: Int) (leftTable: Text) (rightTable: Text) (cond: QExpr) (where2: QExpr) (pred: QExpr) (keyCol: Text) (keySide: Bool) (cols: List (Text, Text, Text, Bool)) (having: QExpr) -> Result (List (Map Text SqlValue)) Error
 
+-- The full-outer join, compiled to a `FULL JOIN`. Both tables are wrapped in sentinel
+-- subqueries (`__ridge_l_matched`/`__ridge_r_matched`) so a real-but-all-NULL row is
+-- told from a null-extended one, and the left query's predicate filters its subquery;
+-- each row comes back as `(Option left, Option right)`.
+@ffi("ridge_pg", "pg_full_join", 10)
+fn _pgFullJoin (id: Int) (leftTable: Text) (rightTable: Text) (cond: QExpr) (where2: QExpr) (pred: QExpr) (orders: List (Bool, Bool, Text)) (lim: Int) (off: Int) (dist: Bool) -> Result (List (Option (Map Text SqlValue), Option (Map Text SqlValue))) Error
+
+-- As `pg_full_join`, with the projection tree compiled into the select-list; the
+-- columns of an unmatched side come back NULL.
+@ffi("ridge_pg", "pg_full_join_select", 11)
+fn _pgFullJoinSelect (id: Int) (leftTable: Text) (rightTable: Text) (cond: QExpr) (where2: QExpr) (pred: QExpr) (orders: List (Bool, Bool, Text)) (lim: Int) (off: Int) (proj: QExpr) (dist: Bool) -> Result (List (Map Text SqlValue)) Error
+
+-- As `pg_aggregate_right_join`, compiled to a `FULL JOIN`: a fold over either side
+-- skips the rows unmatched on that side (their column there is NULL, which a SQL
+-- aggregate ignores).
+@ffi("ridge_pg", "pg_aggregate_full_join", 9)
+fn _pgAggregateFullJoin (id: Int) (leftTable: Text) (rightTable: Text) (cond: QExpr) (where2: QExpr) (pred: QExpr) (func: Text) (column: Text) (isRight: Bool) -> Result (Option SqlValue) Error
+
+-- As `pg_count_right_join`, compiled to a `FULL JOIN`: every row of both tables
+-- `where2` admits is counted.
+@ffi("ridge_pg", "pg_count_full_join", 6)
+fn _pgCountFullJoin (id: Int) (leftTable: Text) (rightTable: Text) (cond: QExpr) (where2: QExpr) (pred: QExpr) -> Result Int Error
+
+@ffi("ridge_pg", "pg_group_summarize_full_join", 10)
+fn _pgGroupSummarizeFullJoin (id: Int) (leftTable: Text) (rightTable: Text) (cond: QExpr) (where2: QExpr) (pred: QExpr) (keyCol: Text) (keySide: Bool) (cols: List (Text, Text, Text, Bool)) (having: QExpr) -> Result (List (Map Text SqlValue)) Error
+
 -- Compile a captured query plan to nested SQL — each `planScan` a `SELECT`, each
 -- `planCombine` a `UNION`/`INTERSECT`/`EXCEPT`, each `planRefine` a wrapping
 -- subquery — and run it on the connection, returning the combined rows.
@@ -745,6 +812,16 @@ instance Adapter Postgres =
         _pgCountRightJoin conn.id leftTable rightTable cond.tree where2.tree pred.tree
     groupSummarizeRightJoin (conn: Postgres) (leftTable: Text) (rightTable: Text) (cond: Quote (Map Text SqlValue -> Map Text SqlValue -> Bool)) (where2: Quote (Map Text SqlValue -> Map Text SqlValue -> Bool)) (pred: Quote (Map Text SqlValue -> Bool)) (keyCol: Text) (keySide: Bool) (cols: List (Text, Text, Text, Bool)) (having: QExpr) -> Result (List (Map Text SqlValue)) Error =
         _pgGroupSummarizeRightJoin conn.id leftTable rightTable cond.tree where2.tree pred.tree keyCol keySide cols having
+    fullJoin (conn: Postgres) (leftTable: Text) (rightTable: Text) (cond: Quote (Map Text SqlValue -> Map Text SqlValue -> Bool)) (where2: Quote (Map Text SqlValue -> Map Text SqlValue -> Bool)) (pred: Quote (Map Text SqlValue -> Bool)) (orders: List (Bool, Bool, Text)) (lim: Int) (off: Int) (dist: Bool) -> Result (List (Option (Map Text SqlValue), Option (Map Text SqlValue))) Error =
+        _pgFullJoin conn.id leftTable rightTable cond.tree where2.tree pred.tree orders lim off dist
+    fullJoinSelect (conn: Postgres) (leftTable: Text) (rightTable: Text) (cond: Quote (Map Text SqlValue -> Map Text SqlValue -> Bool)) (where2: Quote (Map Text SqlValue -> Map Text SqlValue -> Bool)) (pred: Quote (Map Text SqlValue -> Bool)) (orders: List (Bool, Bool, Text)) (lim: Int) (off: Int) (proj: Quote p) (dist: Bool) -> Result (List (Map Text SqlValue)) Error =
+        _pgFullJoinSelect conn.id leftTable rightTable cond.tree where2.tree pred.tree orders lim off proj.tree dist
+    aggregateFullJoin (conn: Postgres) (leftTable: Text) (rightTable: Text) (cond: Quote (Map Text SqlValue -> Map Text SqlValue -> Bool)) (where2: Quote (Map Text SqlValue -> Map Text SqlValue -> Bool)) (pred: Quote (Map Text SqlValue -> Bool)) (func: Text) (column: Text) (isRight: Bool) -> Result (Option SqlValue) Error =
+        _pgAggregateFullJoin conn.id leftTable rightTable cond.tree where2.tree pred.tree func column isRight
+    countFullJoin (conn: Postgres) (leftTable: Text) (rightTable: Text) (cond: Quote (Map Text SqlValue -> Map Text SqlValue -> Bool)) (where2: Quote (Map Text SqlValue -> Map Text SqlValue -> Bool)) (pred: Quote (Map Text SqlValue -> Bool)) -> Result Int Error =
+        _pgCountFullJoin conn.id leftTable rightTable cond.tree where2.tree pred.tree
+    groupSummarizeFullJoin (conn: Postgres) (leftTable: Text) (rightTable: Text) (cond: Quote (Map Text SqlValue -> Map Text SqlValue -> Bool)) (where2: Quote (Map Text SqlValue -> Map Text SqlValue -> Bool)) (pred: Quote (Map Text SqlValue -> Bool)) (keyCol: Text) (keySide: Bool) (cols: List (Text, Text, Text, Bool)) (having: QExpr) -> Result (List (Map Text SqlValue)) Error =
+        _pgGroupSummarizeFullJoin conn.id leftTable rightTable cond.tree where2.tree pred.tree keyCol keySide cols having
     runPlan (conn: Postgres) (plan: QExpr) -> Result (List (Map Text SqlValue)) Error =
         _pgRunPlan conn.id plan
     begin (conn: Postgres) -> Result Unit Error =

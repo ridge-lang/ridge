@@ -715,6 +715,31 @@ pub fn rightJoinOn (right: Repo f a) (cond: Quote (Map Text SqlValue -> Map Text
 -- with the left entity, or with `None` where the right row matched no left row;
 -- `first` keeps the first such pair.
 
+-- A full (outer) join under construction. The union of a left and a right join:
+-- the same left query, right repository, and quoted condition over both entities,
+-- but its terminal keeps every row of BOTH tables — an unmatched left row pairs
+-- with `None` on the right, an unmatched right row pairs with `None` on the left.
+-- Opaque and threaded from `fullJoinOn` into a decode terminal:
+--   users
+--     |> Repo.query
+--     |> Repo.fullJoinOn posts (fn (u: User) (p: Post) -> u.id == p.authorId)
+--     |> Repo.toList
+pub opaque type FullJoin e f a = { left: Query e a, right: Repo f a, cond: Quote (Map Text SqlValue -> Map Text SqlValue -> Bool), where2: Quote (Map Text SqlValue -> Map Text SqlValue -> Bool), orders: List (Bool, Bool, Text), lim: Int, off: Int, dist: Bool }
+
+-- Start a full outer join from a query: pair it with a right repository on a quoted
+-- condition over both entities. Unlike `leftJoinOn`/`rightJoinOn`, neither side is
+-- dropped — every left row and every right row is kept, the missing side reported as
+-- `None`. The left query's filter restricts which left rows enter the join (a left
+-- row it rejects never appears, not even unmatched); its ordering and page still
+-- apply.
+pub fn fullJoinOn (right: Repo f a) (cond: Quote (Map Text SqlValue -> Map Text SqlValue -> Bool)) (q: Query e a) -> FullJoin e f a =
+    FullJoin { left = q, right = right, cond = cond, where2 = keepAll2 (), orders = liftOrders q.orders, lim = q.lim, off = q.off, dist = q.dist }
+
+-- `toList` and `first` over a full join are the `Decodable (FullJoin e f a) …`
+-- methods (instance below): `toList` decodes each row into a pair of optionals
+-- `(Option e, Option f)` — `None` on whichever side the row matched none; `first`
+-- keeps the first such pair.
+
 -- A query's `filter`: AND the one-row predicate into the query's accumulated
 -- `WHERE`, exactly as the original single-receiver verb did. The predicate is
 -- entity-typed (`Quote (e -> Bool)`) and the stored field row-typed; `quoteAnd`
@@ -745,6 +770,15 @@ instance Refinable (LeftJoin e f a) (fn e f -> Bool) =
 instance Refinable (RightJoin e f a) (fn e f -> Bool) =
     filter (pred: Quote (fn e f -> Bool)) (x: RightJoin e f a) -> RightJoin e f a =
         RightJoin { left = x.left, right = x.right, cond = x.cond, where2 = quoteAnd2 x.where2 pred, orders = x.orders, lim = x.lim, off = x.off, dist = x.dist }
+
+-- A full join's `filter`: AND the two-row predicate into the post-join `WHERE`. A
+-- predicate that reads either side's column drops the rows unmatched on that side
+-- (their columns there are NULL, so the predicate is false), narrowing the outer
+-- join toward its matches — the same three-valued `WHERE` reading a left or right
+-- join's `filter` gives, here over both sides.
+instance Refinable (FullJoin e f a) (fn e f -> Bool) =
+    filter (pred: Quote (fn e f -> Bool)) (x: FullJoin e f a) -> FullJoin e f a =
+        FullJoin { left = x.left, right = x.right, cond = x.cond, where2 = quoteAnd2 x.where2 pred, orders = x.orders, lim = x.lim, off = x.off, dist = x.dist }
 
 -- A query's `select`: project one entity down to the named shape `s` and decode
 -- each row into it. The backend pushes the select-list down so only the named
@@ -800,6 +834,20 @@ instance Projectable (RightJoin e f a) (fn (Option e) f -> s) where Adapter a, R
             Err err  -> Err err
             Ok rows  -> firstDecoded rows
 
+-- A full join's `select`: project across both entities into `s`, BOTH sides read as
+-- `Option` (`fn (u: Option User) (p: Option Post) -> ...`) so an unmatched row
+-- projects the missing side's fields as `None`. Every row of both tables is kept (a
+-- `FULL JOIN`) and only the named columns cross.
+instance Projectable (FullJoin e f a) (fn (Option e) (Option f) -> s) where Adapter a, Row s =
+    select (proj: Quote (fn (Option e) (Option f) -> s)) (x: FullJoin e f a) -> Result (List s) Error =
+        match fullJoinSelect x.left.repo.adapter x.left.repo.table x.right.table x.cond x.where2 x.left.pred x.orders x.lim x.off proj x.dist
+            Err err  -> Err err
+            Ok rows  -> decodeRows rows
+    selectFirst (proj: Quote (fn (Option e) (Option f) -> s)) (x: FullJoin e f a) -> Result (Option s) Error =
+        match fullJoinSelect x.left.repo.adapter x.left.repo.table x.right.table x.cond x.where2 x.left.pred x.orders 1 x.off proj x.dist
+            Err err  -> Err err
+            Ok rows  -> firstDecoded rows
+
 -- A query's `orderBy`: append the one-row key as an ordering column over the
 -- query's own `orders`. The key (`fn (u: User) -> u.age`) names a single column;
 -- the direction rides alongside it. The behaviour the single-receiver `orderBy`
@@ -831,6 +879,14 @@ instance Orderable (LeftJoin e f a) (fn e (Option f) -> k) =
 instance Orderable (RightJoin e f a) (fn (Option e) f -> k) =
     orderBy (dir: SortOrder) (key: Quote (fn (Option e) f -> k)) (x: RightJoin e f a) -> RightJoin e f a =
         RightJoin { left = x.left, right = x.right, cond = x.cond, where2 = x.where2, orders = snoc x.orders (orderEntry2 dir key), lim = x.lim, off = x.off, dist = x.dist }
+
+-- A full join's `orderBy`: the two-row dual over a `FullJoin`, BOTH sides read as
+-- `Option` in the key (`fn (u: Option User) (p: Option Post) -> ...`). A key over a
+-- side an unmatched row lacks reads that row as a missing key, so it sorts in place
+-- (the backend's NULL ordering decides where).
+instance Orderable (FullJoin e f a) (fn (Option e) (Option f) -> k) =
+    orderBy (dir: SortOrder) (key: Quote (fn (Option e) (Option f) -> k)) (x: FullJoin e f a) -> FullJoin e f a =
+        FullJoin { left = x.left, right = x.right, cond = x.cond, where2 = x.where2, orders = snoc x.orders (orderEntry2 dir key), lim = x.lim, off = x.off, dist = x.dist }
 
 -- A query's scalar aggregates: fold the column the one-row accessor names over
 -- the rows the query's filter selects, through the `aggregate` seam push-down.
@@ -929,6 +985,30 @@ instance Aggregable (RightJoin e f a) (fn e f -> n) where Adapter a, SqlType n =
             Err err -> Err err
             Ok v    -> decodeScalar v
 
+-- A full join's scalar aggregates: the two-row dual over a `FullJoin`, run through
+-- the `aggregateFullJoin` seam. An aggregate folds values rather than producing one
+-- per row, so it reads both sides as the plain entities `e`/`f` and answers the
+-- column's own type. A fold over either side skips the rows unmatched on that side
+-- (their column there is NULL, which a SQL aggregate ignores). The nullability lives
+-- in the result.
+instance Aggregable (FullJoin e f a) (fn e f -> n) where Adapter a, SqlType n =
+    sumOf (col: Quote (fn e f -> n)) (x: FullJoin e f a) -> Result (Option n) Error =
+        match aggregateFullJoin x.left.repo.adapter x.left.repo.table x.right.table x.cond x.where2 x.left.pred "SUM" (aggColumn col) (aggSide col)
+            Err err -> Err err
+            Ok v    -> decodeScalar v
+    avgOf (col: Quote (fn e f -> n)) (x: FullJoin e f a) -> Result (Option Float) Error =
+        match aggregateFullJoin x.left.repo.adapter x.left.repo.table x.right.table x.cond x.where2 x.left.pred "AVG" (aggColumn col) (aggSide col)
+            Err err -> Err err
+            Ok v    -> decodeScalar v
+    minOf (col: Quote (fn e f -> n)) (x: FullJoin e f a) -> Result (Option n) Error =
+        match aggregateFullJoin x.left.repo.adapter x.left.repo.table x.right.table x.cond x.where2 x.left.pred "MIN" (aggColumn col) (aggSide col)
+            Err err -> Err err
+            Ok v    -> decodeScalar v
+    maxOf (col: Quote (fn e f -> n)) (x: FullJoin e f a) -> Result (Option n) Error =
+        match aggregateFullJoin x.left.repo.adapter x.left.repo.table x.right.table x.cond x.where2 x.left.pred "MAX" (aggColumn col) (aggSide col)
+            Err err -> Err err
+            Ok v    -> decodeScalar v
+
 -- A query's decode terminals: `toList` runs the accumulated query (a single-
 -- table fetch, or the captured set-operation plan) and decodes every row into
 -- the entity; `first` runs it for one row. The behaviour the single-receiver
@@ -1010,6 +1090,25 @@ instance Decodable (RightJoin e f a) where Adapter a, Row f, Row e =
             Err err  -> Err err
             Ok pairs -> firstDecodedRightPair pairs
 
+-- A full join's decode terminals: `toList` keeps every row of both tables, decoding
+-- each into `(Option e, Option f)` — `None` on whichever side the row matched none —
+-- and `first` keeps the first such pair. `Rows (FullJoin e f a)` reduces to the pair
+-- `(Option e, Option f)`, so the result is `List (Option e, Option f)`/
+-- `Option (Option e, Option f)`. Both sides are decoded only when present, so it
+-- carries `Row e, Row f`. The `Row f, Row e` order matches the left/right instances
+-- above: `decodeFullPairs`/`firstDecodedFullPair` decode the left side first, so
+-- their generalised schemes list the entity dictionaries the same way and the
+-- forwarded dictionaries land in the right slots.
+instance Decodable (FullJoin e f a) where Adapter a, Row f, Row e =
+    toList (x: FullJoin e f a) -> Result (List (Option e, Option f)) Error =
+        match fullJoin x.left.repo.adapter x.left.repo.table x.right.table x.cond x.where2 x.left.pred x.orders x.lim x.off x.dist
+            Err err  -> Err err
+            Ok pairs -> decodeFullPairs pairs
+    first (x: FullJoin e f a) -> Result (Option (Option e, Option f)) Error =
+        match fullJoin x.left.repo.adapter x.left.repo.table x.right.table x.cond x.where2 x.left.pred x.orders 1 x.off x.dist
+            Err err  -> Err err
+            Ok pairs -> firstDecodedFullPair pairs
+
 -- A query's page and distinct: set the field on the query, carrying every other
 -- field through. The behaviour the single-receiver `limit`/`offset`/`distinct`
 -- pub fns had before they unified with the join form.
@@ -1054,6 +1153,18 @@ instance Pageable (RightJoin e f a) =
         RightJoin { left = x.left, right = x.right, cond = x.cond, where2 = x.where2, orders = x.orders, lim = x.lim, off = n, dist = x.dist }
     distinct (x: RightJoin e f a) -> RightJoin e f a =
         RightJoin { left = x.left, right = x.right, cond = x.cond, where2 = x.where2, orders = x.orders, lim = x.lim, off = x.off, dist = true }
+
+-- A full join's page and distinct: the dual over a `FullJoin`, setting the same
+-- fields. `distinct` de-duplicates the `(left, right)` rows the terminal returns,
+-- both the unmatched-left and unmatched-right rows (the missing side reported as
+-- `None`) included.
+instance Pageable (FullJoin e f a) =
+    limit (n: Int) (x: FullJoin e f a) -> FullJoin e f a =
+        FullJoin { left = x.left, right = x.right, cond = x.cond, where2 = x.where2, orders = x.orders, lim = n, off = x.off, dist = x.dist }
+    offset (n: Int) (x: FullJoin e f a) -> FullJoin e f a =
+        FullJoin { left = x.left, right = x.right, cond = x.cond, where2 = x.where2, orders = x.orders, lim = x.lim, off = n, dist = x.dist }
+    distinct (x: FullJoin e f a) -> FullJoin e f a =
+        FullJoin { left = x.left, right = x.right, cond = x.cond, where2 = x.where2, orders = x.orders, lim = x.lim, off = x.off, dist = true }
 
 -- The count of a query's rows, honouring its set-operation plan. A plain query
 -- counts through the backend's `COUNT(*)` over its filter (a push-down, no rows
@@ -1135,6 +1246,18 @@ instance Countable (RightJoin e f a) where Adapter a =
             Err err  -> Err err
             Ok pairs -> Ok (nonEmpty pairs)
 
+-- A full join's `count`/`exists`: the dual over a `FullJoin`, counted through
+-- `countFullJoin` (a `COUNT(*)` over the full-outer join, every row of both tables
+-- kept). `exists` is true whenever the join keeps any row — a full join keeps one per
+-- row of either table the `where2` admits.
+instance Countable (FullJoin e f a) where Adapter a =
+    count (x: FullJoin e f a) -> Result Int Error =
+        countFullJoin x.left.repo.adapter x.left.repo.table x.right.table x.cond x.where2 x.left.pred
+    exists (x: FullJoin e f a) -> Result Bool Error =
+        match fullJoin x.left.repo.adapter x.left.repo.table x.right.table x.cond x.where2 x.left.pred [] 1 0 false
+            Err err  -> Err err
+            Ok pairs -> Ok (nonEmpty pairs)
+
 -- A query's `every`: compare the query's count against the count once the further
 -- predicate is folded into its filter, equal exactly when no selected row fails it.
 -- The predicate is AND-folded with `quoteAnd` (the same fold `filter` runs) and the
@@ -1188,6 +1311,19 @@ instance Every (RightJoin e f a) (fn e f -> Bool) where Adapter a =
                     Err err     -> Err err
                     Ok matching -> Ok (total == matching)
 
+-- A full join's `every`: the dual over a `FullJoin`, counted through `countFullJoin`.
+-- The predicate folds into the post-join `WHERE`, where a test over a column of an
+-- unmatched side drops those rows, so they fail `every` as SQL's three-valued reading
+-- gives.
+instance Every (FullJoin e f a) (fn e f -> Bool) where Adapter a =
+    every (pred: Quote (fn e f -> Bool)) (x: FullJoin e f a) -> Result Bool Error =
+        match countFullJoin x.left.repo.adapter x.left.repo.table x.right.table x.cond x.where2 x.left.pred
+            Err err  -> Err err
+            Ok total ->
+                match countFullJoin x.left.repo.adapter x.left.repo.table x.right.table x.cond (quoteAnd2 x.where2 pred) x.left.pred
+                    Err err     -> Err err
+                    Ok matching -> Ok (total == matching)
+
 -- A query's `groupBy`: name the group-key column with a one-row accessor (`fn (u:
 -- User) -> u.dept`, exactly as an `orderBy` key) and wrap the query into the unified
 -- `Grouped` builder. `aggColumn`/`aggSide` read the column and its side from the
@@ -1227,6 +1363,13 @@ instance Groupable (RightJoin e f a) (fn e f -> k) =
     groupBy (key: Quote (fn e f -> k)) (x: RightJoin e f a) -> Grouped (RightJoin e f a) (fn e f -> k) =
         Grouped { source = x, keyCol = aggColumn key, keySide = aggSide key, havingTree = keepAllTree () }
 
+-- A full join's `groupBy`: the two-row dual over a `FullJoin`, both sides read as the
+-- plain entities `e`/`f` as in the full-join aggregates. A key over a side groups the
+-- rows unmatched on that side under the NULL key the backend gives them.
+instance Groupable (FullJoin e f a) (fn e f -> k) =
+    groupBy (key: Quote (fn e f -> k)) (x: FullJoin e f a) -> Grouped (FullJoin e f a) (fn e f -> k) =
+        Grouped { source = x, keyCol = aggColumn key, keySide = aggSide key, havingTree = keepAllTree () }
+
 -- An inner join's `summarize` seam: run the `GROUP BY` (and any `HAVING`) over the
 -- joined rows through the `groupSummarizeJoin` push-down, side-qualifying the key and
 -- each aggregate column to its table. Returns one raw row per group for `summarize`
@@ -1248,6 +1391,14 @@ instance Summarizable (LeftJoin e f a) where Adapter a =
 instance Summarizable (RightJoin e f a) where Adapter a =
     runGroups (src: RightJoin e f a) (keyCol: Text) (keySide: Bool) (projTree: QExpr) (havingTree: QExpr) -> Result (List (Map Text SqlValue)) Error =
         groupSummarizeRightJoin src.left.repo.adapter src.left.repo.table src.right.table src.cond src.where2 src.left.pred keyCol keySide (groupCols keyCol projTree) havingTree
+
+-- A full join's `summarize` seam: the dual over a `FullJoin`, run through the
+-- `groupSummarizeFullJoin` push-down. Every row of both tables the post-join `WHERE`
+-- admits joins a group; an unmatched one contributes its present side's columns and a
+-- NULL on the missing side, grouping under the NULL key for a key over that side.
+instance Summarizable (FullJoin e f a) where Adapter a =
+    runGroups (src: FullJoin e f a) (keyCol: Text) (keySide: Bool) (projTree: QExpr) (havingTree: QExpr) -> Result (List (Map Text SqlValue)) Error =
+        groupSummarizeFullJoin src.left.repo.adapter src.left.repo.table src.right.table src.cond src.where2 src.left.pred keyCol keySide (groupCols keyCol projTree) havingTree
 
 -- Decode a list of `(left, right)` row pairs into entity pairs, stopping at the
 -- first decode failure on either side.
@@ -1371,6 +1522,76 @@ fn firstDecodedRightPair (pairs: List (Option (Map Text SqlValue), Map Text SqlV
                     match fromRow rm
                         Err err -> Err err
                         Ok y    -> Ok (Some (None, y))
+
+-- Decode a list of `(optional-left, optional-right)` pairs into entity pairs: each
+-- side is decoded only when present, so an unmatched left row decodes to `(None,
+-- right)` and an unmatched right row to `(left, None)`. The full-join terminal of the
+-- decode helpers. Stops at the first decode failure on either side.
+-- Like `decodeRightPairs`, the `Some lm` arm decodes the left entity `e` before the
+-- right `f`, so the helper's generalised scheme orders its `Row` dictionaries `Row f,
+-- Row e` and the `Decodable (FullJoin …)` instance forwards them into the matching
+-- slots — the left map decoded with the left decoder, the right with the right.
+fn decodeFullPairs (pairs: List (Option (Map Text SqlValue), Option (Map Text SqlValue))) -> Result (List (Option e, Option f)) Error where Row e, Row f =
+    match pairs
+        []                     -> Ok []
+        (optLm, optRm) :: rest ->
+            match optLm
+                Some lm ->
+                    match fromRow lm
+                        Err err -> Err err
+                        Ok x    ->
+                            match optRm
+                                Some rm ->
+                                    match fromRow rm
+                                        Err err -> Err err
+                                        Ok y    ->
+                                            match decodeFullPairs rest
+                                                Err err -> Err err
+                                                Ok xs   -> Ok ((Some x, Some y) :: xs)
+                                None ->
+                                    match decodeFullPairs rest
+                                        Err err -> Err err
+                                        Ok xs   -> Ok ((Some x, None) :: xs)
+                None ->
+                    match optRm
+                        Some rm ->
+                            match fromRow rm
+                                Err err -> Err err
+                                Ok y    ->
+                                    match decodeFullPairs rest
+                                        Err err -> Err err
+                                        Ok xs   -> Ok ((None, Some y) :: xs)
+                        None ->
+                            match decodeFullPairs rest
+                                Err err -> Err err
+                                Ok xs   -> Ok ((None, None) :: xs)
+
+-- The head of a `(optional-left, optional-right)` pair list, decoded; `None` when
+-- empty. The full-join dual of `firstDecodedRightPair`: each side is decoded only when
+-- present, so an unmatched first row yields `Some` of a pair with `None` on the
+-- missing side.
+fn firstDecodedFullPair (pairs: List (Option (Map Text SqlValue), Option (Map Text SqlValue))) -> Result (Option (Option e, Option f)) Error where Row e, Row f =
+    match pairs
+        []                   -> Ok None
+        (optLm, optRm) :: _ ->
+            match optLm
+                Some lm ->
+                    match fromRow lm
+                        Err err -> Err err
+                        Ok x    ->
+                            match optRm
+                                Some rm ->
+                                    match fromRow rm
+                                        Err err -> Err err
+                                        Ok y    -> Ok (Some (Some x, Some y))
+                                None -> Ok (Some (Some x, None))
+                None ->
+                    match optRm
+                        Some rm ->
+                            match fromRow rm
+                                Err err -> Err err
+                                Ok y    -> Ok (Some (None, Some y))
+                        None -> Ok (Some (None, None))
 
 -- The `(alias, column)` pairs a projection names. The projection quote captures
 -- a `QProj` whose select-list is a list of `(alias, QCol column)`; anything else

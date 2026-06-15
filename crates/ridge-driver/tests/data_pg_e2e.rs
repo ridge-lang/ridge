@@ -92,6 +92,10 @@ pub type ComboOptL = { person: Option Text, post: Text } deriving (Row)
 -- A grouped-count shape keyed by an integer column (a post's author id).
 pub type AuthorCount = { author: Int, n: Int } deriving (Row)
 
+-- The shape a full-join projection decodes into: BOTH derived fields are `Option Text`,
+-- so an unmatched row projects the missing side's field as `None`.
+pub type FullCombo = { who: Option Text, title: Option Text } deriving (Row)
+
 fn joinNames (us: List User) -> Text =
     match us
         []        -> ""
@@ -172,6 +176,53 @@ fn authorCounts (cs: List AuthorCount) -> Text =
         []        -> ""
         c :: []   -> Text.concat (Int.toText c.author) (Text.concat ":" (Int.toText c.n))
         c :: rest -> Text.concat (Int.toText c.author) (Text.concat ":" (Text.concat (Int.toText c.n) (Text.concat "," (authorCounts rest))))
+
+-- Format the three full-join row categories as `both:B,left:L,right:R`.
+fn fullSigFmt (b: Int) (l: Int) (r: Int) -> Text =
+    Text.concat "both:" (Text.concat (Int.toText b) (Text.concat ",left:" (Text.concat (Int.toText l) (Text.concat ",right:" (Int.toText r)))))
+
+-- Classify each `(Option User, Option Post)` pair into matched (`both`), left-only
+-- (`left`), or right-only (`right`) and count them. Order-independent, so it pins the
+-- full-join semantics without depending on the backend's NULL ordering.
+fn fullSigGo (ps: List (Option User, Option Post)) (b: Int) (l: Int) (r: Int) -> Text =
+    match ps
+        []               -> fullSigFmt b l r
+        (ou, op) :: rest ->
+            match ou
+                Some _ ->
+                    match op
+                        Some _ -> fullSigGo rest (b + 1) l r
+                        None   -> fullSigGo rest b (l + 1) r
+                None ->
+                    match op
+                        Some _ -> fullSigGo rest b l (r + 1)
+                        None   -> fullSigGo rest b l r
+
+fn fullSig (ps: List (Option User, Option Post)) -> Text =
+    fullSigGo ps 0 0 0
+
+-- Format a full-join projection summary as `rows:N,noWho:M,noTitle:K`.
+fn fullSelFmt (n: Int) (nw: Int) (nt: Int) -> Text =
+    Text.concat "rows:" (Text.concat (Int.toText n) (Text.concat ",noWho:" (Text.concat (Int.toText nw) (Text.concat ",noTitle:" (Int.toText nt)))))
+
+-- Count projected `FullCombo` rows and how many have a `None` `who` (a right-only row)
+-- or a `None` `title` (a left-only row). Order-independent.
+fn fullSelGo (cs: List FullCombo) (n: Int) (nw: Int) (nt: Int) -> Text =
+    match cs
+        []        -> fullSelFmt n nw nt
+        c :: rest ->
+            match c.who
+                Some _ ->
+                    match c.title
+                        Some _ -> fullSelGo rest (n + 1) nw nt
+                        None   -> fullSelGo rest (n + 1) nw (nt + 1)
+                None ->
+                    match c.title
+                        Some _ -> fullSelGo rest (n + 1) (nw + 1) nt
+                        None   -> fullSelGo rest (n + 1) (nw + 1) (nt + 1)
+
+fn fullSel (cs: List FullCombo) -> Text =
+    fullSelGo cs 0 0 0
 
 fn pgConfig () -> Config =
     Config { host = "__PG_HOST__", port = __PG_PORT__, database = "__PG_DATABASE__", user = "__PG_USER__", password = "__PG_PASSWORD__", sslMode = "__PG_SSLMODE__", poolSize = 4 }
@@ -351,6 +402,34 @@ pub fn db setupJoin () -> Result (Repo User Postgres, Repo Post Postgres) Error 
                                                                 Err e -> Err e
                                                                 Ok _  -> Ok (users, posts)
 
+-- Seed the join tables on connection `c`: clear both and insert 3 users + 2 posts.
+-- The full-join probes call this from the body they hand to `Repo.withConnection`, so
+-- the connection that owns the seeded data is closed on the way out.
+fn db seedJoinData (c: Postgres) -> Result Unit Error =
+    let users: Repo User Postgres = Repo.repo c "ridge_pg_users"
+    let posts: Repo Post Postgres = Repo.repo c "ridge_pg_posts"
+    match Repo.deleteWhere (fn (u: User) -> u.id >= 0) users
+        Err e -> Err e
+        Ok _  ->
+            match Repo.deleteWhere (fn (p: Post) -> p.id >= 0) posts
+                Err e -> Err e
+                Ok _  ->
+                    match Repo.insertRow (userRow 1 18 "ada") users
+                        Err e -> Err e
+                        Ok _  ->
+                            match Repo.insertRow (userRow 2 30 "lin") users
+                                Err e -> Err e
+                                Ok _  ->
+                                    match Repo.insertRow (userRow 3 25 "max") users
+                                        Err e -> Err e
+                                        Ok _  ->
+                                            match Repo.insertRow (postRow 10 2 "hello") posts
+                                                Err e -> Err e
+                                                Ok _  ->
+                                                    match Repo.insertRow (postRow 11 3 "world") posts
+                                                        Err e -> Err e
+                                                        Ok _  -> Ok ()
+
 -- join: inner-join users to their posts on `u.id == p.author`, ordered by user
 -- id, rendered `name:title` per pair -> "lin:hello,max:world" (ada has no post,
 -- so the inner join drops it). Proves the backend compiles the JOIN, qualifies
@@ -471,6 +550,119 @@ pub fn db rightJoinGroupAuthors () -> Text =
             match users |> Repo.query |> Repo.rightJoinOn posts (fn (u: User) (p: Post) -> u.id == p.author) |> Repo.groupBy (fn (u: User) (p: Post) -> p.author) |> Repo.summarize (fn g -> AuthorCount { author = g.key, n = g.count })
                 Err _  -> "right-group-err"
                 Ok cs  -> authorCounts cs
+
+-- full join: keep every user AND every post. The left query is narrowed to ids <= 2,
+-- so ada (1) and lin (2) enter and max (3) is filtered out. The full join then yields
+-- one matched row (lin owns hello), one left-only row (ada has no post), and one
+-- right-only row (world, authored by the filtered-out max) -> "both:1,left:1,right:1".
+-- Proves the backend compiles a `FULL JOIN` with both sentinel subqueries and decodes
+-- the `(Option User, Option Post)` pair across the marker split. Each full-join probe
+-- runs its body through `Repo.withConnection`, so its connection is closed on the way
+-- out and the probe holds none after it returns.
+fn db fullCatBody (c: Postgres) -> Result Text Error =
+    match seedJoinData c
+        Err e -> Err e
+        Ok _  ->
+            let users: Repo User Postgres = Repo.repo c "ridge_pg_users"
+            let posts: Repo Post Postgres = Repo.repo c "ridge_pg_posts"
+            match users |> Repo.query |> Repo.filter (fn (u: User) -> u.id <= 2) |> Repo.fullJoinOn posts (fn (u: User) (p: Post) -> u.id == p.author) |> Repo.toList
+                Err e -> Err e
+                Ok ps -> Ok (fullSig ps)
+
+pub fn db fullJoinCategories () -> Text =
+    match connect (pgConfig ())
+        Err _ -> "connect-err"
+        Ok conn ->
+            match Repo.withConnection conn fullCatBody
+                Err _ -> "full-join-err"
+                Ok s  -> s
+
+-- full-join projection: the same full join, projected into `FullCombo` where both
+-- fields are `Option Text`. Three rows; the right-only `world` projects `who = None`
+-- and the left-only `ada` projects `title = None` -> "rows:3,noWho:1,noTitle:1".
+-- Proves `fullJoinSelect` reads both sides as Option over Postgres.
+fn db fullSelBody (c: Postgres) -> Result Text Error =
+    match seedJoinData c
+        Err e -> Err e
+        Ok _  ->
+            let users: Repo User Postgres = Repo.repo c "ridge_pg_users"
+            let posts: Repo Post Postgres = Repo.repo c "ridge_pg_posts"
+            match users |> Repo.query |> Repo.filter (fn (u: User) -> u.id <= 2) |> Repo.fullJoinOn posts (fn (u: User) (p: Post) -> u.id == p.author) |> Repo.select (fn (u: Option User) (p: Option Post) -> FullCombo { who = u.name, title = p.title })
+                Err e -> Err e
+                Ok cs -> Ok (fullSel cs)
+
+pub fn db fullSelectShape () -> Text =
+    match connect (pgConfig ())
+        Err _ -> "connect-err"
+        Ok conn ->
+            match Repo.withConnection conn fullSelBody
+                Err _ -> "full-select-err"
+                Ok s  -> s
+
+-- full-join count: the same narrowed full join keeps all three rows (one matched, one
+-- left-only ada, one right-only world) -> 3. Proves `countFullJoin` over a real
+-- `FULL JOIN`.
+fn db fullCountBody (c: Postgres) -> Result Int Error =
+    match seedJoinData c
+        Err e -> Err e
+        Ok _  ->
+            let users: Repo User Postgres = Repo.repo c "ridge_pg_users"
+            let posts: Repo Post Postgres = Repo.repo c "ridge_pg_posts"
+            users |> Repo.query |> Repo.filter (fn (u: User) -> u.id <= 2) |> Repo.fullJoinOn posts (fn (u: User) (p: Post) -> u.id == p.author) |> Repo.count
+
+pub fn db fullJoinCount () -> Int =
+    match connect (pgConfig ())
+        Err _ -> 0 - 1
+        Ok conn ->
+            match Repo.withConnection conn fullCountBody
+                Ok n  -> n
+                Err _ -> 0 - 2
+
+-- full-join aggregate over a RIGHT column: sum the post ids across the narrowed full
+-- join. hello (10) and the right-only world (11) contribute; the left-only ada has no
+-- post (a NULL the fold skips) -> 21. Proves `aggregateFullJoin` over Postgres folds a
+-- right column over the matched and right-only rows, skipping the left-only NULL.
+fn db fullSumBody (c: Postgres) -> Result Int Error =
+    match seedJoinData c
+        Err e -> Err e
+        Ok _  ->
+            let users: Repo User Postgres = Repo.repo c "ridge_pg_users"
+            let posts: Repo Post Postgres = Repo.repo c "ridge_pg_posts"
+            match users |> Repo.query |> Repo.filter (fn (u: User) -> u.id <= 2) |> Repo.fullJoinOn posts (fn (u: User) (p: Post) -> u.id == p.author) |> Repo.sumOf (fn (u: User) (p: Post) -> p.id)
+                Err e       -> Err e
+                Ok None     -> Ok (0 - 2)
+                Ok (Some n) -> Ok n
+
+pub fn db fullJoinSumPostId () -> Int =
+    match connect (pgConfig ())
+        Err _ -> 0 - 1
+        Ok conn ->
+            match Repo.withConnection conn fullSumBody
+                Ok n  -> n
+                Err _ -> 0 - 3
+
+-- full-join grouped summary: group every post by its author id (a right column) over a
+-- full join narrowed to user ids >= 2, so both lin (2) and max (3) match their posts
+-- and the group key is never NULL. lin owns hello (1), max owns world (1)
+-- -> "2:1,3:1". Proves `groupSummarizeFullJoin` runs the GROUP BY over the FULL JOIN
+-- and decodes the integer key.
+fn db fullGroupBody (c: Postgres) -> Result Text Error =
+    match seedJoinData c
+        Err e -> Err e
+        Ok _  ->
+            let users: Repo User Postgres = Repo.repo c "ridge_pg_users"
+            let posts: Repo Post Postgres = Repo.repo c "ridge_pg_posts"
+            match users |> Repo.query |> Repo.filter (fn (u: User) -> u.id >= 2) |> Repo.fullJoinOn posts (fn (u: User) (p: Post) -> u.id == p.author) |> Repo.groupBy (fn (u: User) (p: Post) -> p.author) |> Repo.summarize (fn g -> AuthorCount { author = g.key, n = g.count })
+                Err e -> Err e
+                Ok cs -> Ok (authorCounts cs)
+
+pub fn db fullJoinGroupAuthors () -> Text =
+    match connect (pgConfig ())
+        Err _ -> "connect-err"
+        Ok conn ->
+            match Repo.withConnection conn fullGroupBody
+                Err _ -> "full-group-err"
+                Ok s  -> s
 
 -- left join: keep every user, pairing each with its post or with `None`, ordered
 -- by user id, rendered `name:title` (or `name:-`) -> "ada:-,lin:hello,max:world".
@@ -1654,6 +1846,11 @@ fn postgres_adapter_reads_a_real_table() {
          io:format(\"rightJoinCount=~w~n\",[{module}:rightJoinCount()]), \
          io:format(\"rightJoinSumLeftId=~w~n\",[{module}:rightJoinSumLeftId()]), \
          io:format(\"rightJoinGroupAuthors=~s~n\",[{module}:rightJoinGroupAuthors()]), \
+         io:format(\"fullJoinCategories=~s~n\",[{module}:fullJoinCategories()]), \
+         io:format(\"fullSelectShape=~s~n\",[{module}:fullSelectShape()]), \
+         io:format(\"fullJoinCount=~w~n\",[{module}:fullJoinCount()]), \
+         io:format(\"fullJoinSumPostId=~w~n\",[{module}:fullJoinSumPostId()]), \
+         io:format(\"fullJoinGroupAuthors=~s~n\",[{module}:fullJoinGroupAuthors()]), \
          io:format(\"leftJoinedNames=~s~n\",[{module}:leftJoinedNames()]), \
          io:format(\"leftSelectTitles=~s~n\",[{module}:leftSelectTitles()]), \
          io:format(\"joinLimited=~s~n\",[{module}:joinLimited()]), \
@@ -1809,6 +2006,26 @@ fn postgres_adapter_reads_a_real_table() {
         (
             "rightJoinGroupAuthors=2:1,3:1",
             "pg_group_summarize_right_join groups every post by author id over the RIGHT JOIN",
+        ),
+        (
+            "fullJoinCategories=both:1,left:1,right:1",
+            "pg_full_join keeps the matched lin:hello, the left-only ada, and the right-only world across the marker split",
+        ),
+        (
+            "fullSelectShape=rows:3,noWho:1,noTitle:1",
+            "pg_full_join_select reads both sides as Option: world projects who=None, ada projects title=None",
+        ),
+        (
+            "fullJoinCount=3",
+            "pg_count_full_join counts every row of both tables (one matched, one left-only, one right-only)",
+        ),
+        (
+            "fullJoinSumPostId=21",
+            "pg_aggregate_full_join folds the post id over the matched and right-only rows (10+11), skipping the left-only ada's NULL",
+        ),
+        (
+            "fullJoinGroupAuthors=2:1,3:1",
+            "pg_group_summarize_full_join groups every post by author id over the FULL JOIN (key total here, ids >= 2)",
         ),
         (
             "leftJoinedNames=ada:-,lin:hello,max:world",

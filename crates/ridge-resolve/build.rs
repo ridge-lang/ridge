@@ -423,6 +423,11 @@ const BASELINE_EXPORTS: &[(&str, &[&str])] = &[
             "aggregateRightJoin",
             "countRightJoin",
             "groupSummarizeRightJoin",
+            "fullJoin",
+            "fullJoinSelect",
+            "aggregateFullJoin",
+            "countFullJoin",
+            "groupSummarizeFullJoin",
             "runPlan",
             // Transaction control: open, commit, and roll back a transaction
             // (nesting opens a savepoint). The `Repo.transaction` combinator runs
@@ -566,6 +571,10 @@ const BASELINE_EXPORTS: &[(&str, &[&str])] = &[
             // entry, the mirror of the left join with the left side read as `Option`.
             "RightJoin",
             "rightJoinOn",
+            // The full-outer join: the opaque `FullJoin e f a` and its `fullJoinOn`
+            // entry, keeping every row of both tables with both sides read as `Option`.
+            "FullJoin",
+            "fullJoinOn",
             // Grouped aggregates unified across a query and a join: the opaque
             // `Grouped q p` builder produced by the `Groupable` class's `groupBy`,
             // narrowed by `having`, and summarised into a named record by
@@ -646,6 +655,7 @@ const BASELINE_OPAQUE: &[(&str, &[&str])] = &[
             "Join",
             "LeftJoin",
             "RightJoin",
+            "FullJoin",
             "Setter",
             "Grouped",
         ],

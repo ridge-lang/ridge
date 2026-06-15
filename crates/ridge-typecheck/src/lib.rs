@@ -787,6 +787,7 @@ fn typecheck_module_inner(
         let join_id = receiver_id("Join");
         let left_join_id = receiver_id("LeftJoin");
         let right_join_id = receiver_id("RightJoin");
+        let full_join_id = receiver_id("FullJoin");
         // `groupBy` returns the reconciled `Grouped q p` builder, so its seed needs
         // that tycon id (resolved like the receivers above); `runGroups`'s result is
         // all builtins, so its seed needs only the class table. Bound here, before the
@@ -804,6 +805,8 @@ fn typecheck_module_inner(
                 // to the left-join id if it is somehow absent, since no `Rows
                 // (RightJoin …)` can then form and the alias stays inert.
                 right_join: right_join_id.unwrap_or(left_join),
+                // `FullJoin` likewise lands in std.repo; same fallback as `RightJoin`.
+                full_join: full_join_id.unwrap_or(left_join),
                 option: b.option,
             });
         }
@@ -2437,6 +2440,114 @@ fn seed_sql_codec_schemes(
                 },
             );
         }
+        // fullJoin :: ∀a c p. a -> Text -> Text -> Quote c -> Quote p
+        //              -> List (Bool, Bool, Text) -> Int -> Int
+        //              -> Result (List (Option (Map Text SqlValue), Option (Map Text SqlValue))) Error
+        //              where Adapter a.
+        // The full-outer join: each result row reports BOTH sides as `Some` of their
+        // column map where they matched and `None` where they did not, so the result
+        // element is a pair of optionals. The two quotes are phantom — the seam walks
+        // their captured trees.
+        {
+            let a = ctx.fresh_tyvid();
+            let c = ctx.fresh_tyvid();
+            let w = ctx.fresh_tyvid();
+            let p = ctx.fresh_tyvid();
+            let orders = Type::Con(
+                b.list,
+                vec![Type::Tuple(vec![
+                    Type::Con(b.bool, vec![]),
+                    Type::Con(b.bool, vec![]),
+                    Type::Con(b.text, vec![]),
+                ])],
+            );
+            let pair = Type::Tuple(vec![
+                Type::Con(b.option, vec![map_row()]),
+                Type::Con(b.option, vec![map_row()]),
+            ]);
+            let fn_ty = Type::Fn {
+                params: vec![
+                    Type::Var(a),
+                    Type::Con(b.text, vec![]),
+                    Type::Con(b.text, vec![]),
+                    Type::Con(b.quote, vec![Type::Var(c)]),
+                    Type::Con(b.quote, vec![Type::Var(w)]),
+                    Type::Con(b.quote, vec![Type::Var(p)]),
+                    orders,
+                    Type::Con(b.int, vec![]),
+                    Type::Con(b.int, vec![]),
+                ],
+                ret: Box::new(Type::Con(
+                    b.result,
+                    vec![Type::Con(b.list, vec![pair]), Type::Con(b.error, vec![])],
+                )),
+                caps: CapRow::Concrete(CapabilitySet::PURE),
+            };
+            ctx.env.bind(
+                "fullJoin".to_owned(),
+                Scheme {
+                    vars: vec![a, c, w, p],
+                    cap_vars: vec![],
+                    row_vars: vec![],
+                    ty: fn_ty,
+                    constraints: vec![Constraint::single(adapter, a)],
+                },
+            );
+        }
+        // fullJoinSelect :: ∀a c p r. a -> Text -> Text -> Quote c -> Quote p
+        //              -> List (Bool, Bool, Text) -> Int -> Int -> Quote r
+        //              -> Result (List (Map Text SqlValue)) Error where Adapter a.
+        // The full-outer form of `joinSelect`: a `FULL JOIN` keeps every row of both
+        // tables, the columns of an unmatched side coming back NULL and decoding to
+        // `None` in the projected shape's `Option` fields. The three quotes are
+        // phantom — the seam walks their captured trees.
+        {
+            let a = ctx.fresh_tyvid();
+            let c = ctx.fresh_tyvid();
+            let w = ctx.fresh_tyvid();
+            let p = ctx.fresh_tyvid();
+            let r = ctx.fresh_tyvid();
+            let orders = Type::Con(
+                b.list,
+                vec![Type::Tuple(vec![
+                    Type::Con(b.bool, vec![]),
+                    Type::Con(b.bool, vec![]),
+                    Type::Con(b.text, vec![]),
+                ])],
+            );
+            let fn_ty = Type::Fn {
+                params: vec![
+                    Type::Var(a),
+                    Type::Con(b.text, vec![]),
+                    Type::Con(b.text, vec![]),
+                    Type::Con(b.quote, vec![Type::Var(c)]),
+                    Type::Con(b.quote, vec![Type::Var(w)]),
+                    Type::Con(b.quote, vec![Type::Var(p)]),
+                    orders,
+                    Type::Con(b.int, vec![]),
+                    Type::Con(b.int, vec![]),
+                    Type::Con(b.quote, vec![Type::Var(r)]),
+                ],
+                ret: Box::new(Type::Con(
+                    b.result,
+                    vec![
+                        Type::Con(b.list, vec![map_row()]),
+                        Type::Con(b.error, vec![]),
+                    ],
+                )),
+                caps: CapRow::Concrete(CapabilitySet::PURE),
+            };
+            ctx.env.bind(
+                "fullJoinSelect".to_owned(),
+                Scheme {
+                    vars: vec![a, c, w, p, r],
+                    cap_vars: vec![],
+                    row_vars: vec![],
+                    ty: fn_ty,
+                    constraints: vec![Constraint::single(adapter, a)],
+                },
+            );
+        }
         // aggregateJoin :: ∀a c w p. a -> Text -> Text -> Quote c -> Quote w
         //              -> Quote p -> Text -> Text -> Bool
         //              -> Result (Option SqlValue) Error where Adapter a.
@@ -2485,12 +2596,13 @@ fn seed_sql_codec_schemes(
                     },
                 );
             };
-            // The left- and right-outer forms share the scheme exactly; only the body
-            // differs (a `LEFT JOIN`/`RIGHT JOIN`, keeping the unmatched rows of the
-            // preserved side).
+            // The inner, left-, right-, and full-outer forms share the scheme exactly;
+            // only the body differs (the join kind, keeping the unmatched rows of the
+            // preserved side(s)).
             agg_join_fn(ctx, "aggregateJoin");
             agg_join_fn(ctx, "aggregateLeftJoin");
             agg_join_fn(ctx, "aggregateRightJoin");
+            agg_join_fn(ctx, "aggregateFullJoin");
         }
     }
 }

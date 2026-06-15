@@ -36,6 +36,9 @@
     mem_group_summarize/6,
     mem_group_summarize_join/10, mem_group_summarize_left_join/10,
     mem_begin/1, mem_commit/1, mem_rollback/1,
+    mem_ddl_create/3, mem_ddl_drop/2, mem_ddl_add_column/3,
+    mem_ddl_drop_column/3, mem_ddl_index/5,
+    mem_migrations_applied/1, mem_record_migration/2,
     plan_scan/6, plan_combine/3, plan_refine/6, mem_run_plan/2,
     quote_keep_all/1, quote_and/2,
     mk_error/2,
@@ -1007,6 +1010,47 @@ mem_commit(Id) -> mem_call({commit_tx, Id}).
 %% the tables to the snapshot taken at the matching begin. Result Unit Error.
 mem_rollback(Id) -> mem_call({rollback_tx, Id}).
 
+%% --- schema / migrations ---
+%% The in-memory store is schemaless: a create materialises an empty table so it
+%% exists for reads and drops, a drop forgets it, and column/index changes are
+%% no-ops (a missing column already reads as SqlNull, and there are no indexes).
+
+%% mem_ddl_create/3 — materialise an empty table in store Id; columns ignored.
+%% Result Unit Error.
+mem_ddl_create(Id, Table, _Cols) -> mem_call({create_table, Id, Table}).
+
+%% mem_ddl_drop/2 — forget Table and its rows in store Id. Result Unit Error.
+mem_ddl_drop(Id, Table) -> mem_call({drop_table, Id, Table}).
+
+%% mem_ddl_add_column/3 — no-op on the schemaless store. Result Unit Error.
+mem_ddl_add_column(_Id, _Table, _Col) -> {ok, ok}.
+
+%% mem_ddl_drop_column/3 — no-op on the schemaless store. Result Unit Error.
+mem_ddl_drop_column(_Id, _Table, _Column) -> {ok, ok}.
+
+%% mem_ddl_index/5 — no-op on the schemaless store. Result Unit Error.
+mem_ddl_index(_Id, _Name, _Table, _Cols, _Unique) -> {ok, ok}.
+
+%% mem_migrations_applied/1 — the names already recorded in store Id's tracking
+%% table, oldest first; an absent table reads as empty. Result (List Text) Error.
+mem_migrations_applied(Id) ->
+    case mem_all(Id, <<"_ridge_migrations">>) of
+        {ok, Rows} -> {ok, [mem_migration_name(R) || R <- Rows]};
+        {error, E} -> {error, E}
+    end.
+
+%% mem_record_migration/2 — append Name to store Id's tracking table, the same
+%% row shape a `name text` column holds. Result Unit Error.
+mem_record_migration(Id, Name) ->
+    mem_insert(Id, <<"_ridge_migrations">>, #{<<"name">> => {'SqlText', Name}}).
+
+%% The `name` text out of a tracking-table row.
+mem_migration_name(Row) ->
+    case maps:get(<<"name">>, Row, 'SqlNull') of
+        {'SqlText', N} -> N;
+        _              -> <<>>
+    end.
+
 %% --- query plan builders ---
 %% A query plan is a small tree the set-operation terminals run. The three builders
 %% assemble it backend-neutrally (no store access); mem_run_plan/pg_run_plan
@@ -1173,6 +1217,13 @@ mem_keeper_loop(State) ->
                 end,
             From ! {Ref, {ok, ok}},
             mem_keeper_loop(State1);
+        {{create_table, Id, Table}, From, Ref} ->
+            Key = {Id, Table},
+            From ! {Ref, {ok, ok}},
+            mem_keeper_loop(State#{Key => maps:get(Key, State, [])});
+        {{drop_table, Id, Table}, From, Ref} ->
+            From ! {Ref, {ok, ok}},
+            mem_keeper_loop(maps:remove({Id, Table}, State));
         {{insert, Id, Table, Row}, From, Ref} ->
             Key  = {Id, Table},
             Rows = maps:get(Key, State, []),

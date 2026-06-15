@@ -60,6 +60,7 @@ const MODULE_ORDER: &[&str] = &[
     "std.query",
     "std.data",
     "std.repo",
+    "std.migrate",
 ];
 
 // ── Baseline export table (T10: preserves original API) ───────────────────────
@@ -423,6 +424,16 @@ const BASELINE_EXPORTS: &[(&str, &[&str])] = &[
             "begin",
             "commit",
             "rollback",
+            // Schema seam the `std.migrate` runner compiles a migration onto:
+            // create/drop a table, add/drop a column, create an index, and the
+            // migration tracking-table reads and writes.
+            "ddlCreate",
+            "ddlDrop",
+            "ddlAddColumn",
+            "ddlDropColumn",
+            "ddlIndex",
+            "migrationsApplied",
+            "recordMigration",
             "MemAdapter",
             "memAdapter",
             // The Postgres adapter: the opaque connection handle, its config
@@ -555,6 +566,34 @@ const BASELINE_EXPORTS: &[(&str, &[&str])] = &[
             "except",
         ],
     ),
+    (
+        "std.migrate",
+        &[
+            // The schema-DSL: the opaque `Column` and its typed declarators and
+            // modifiers, the opaque `SchemaOp` and its factories, and the
+            // `Migration` batch and its `migration` builder.
+            "Column",
+            "intCol",
+            "textCol",
+            "boolCol",
+            "floatCol",
+            "nullable",
+            "primaryKey",
+            "unique",
+            "SchemaOp",
+            "createTable",
+            "dropTable",
+            "addColumn",
+            "dropColumn",
+            "createIndex",
+            "uniqueIndex",
+            "Migration",
+            "migration",
+            // The migration runner: apply the pending migrations in order, each in
+            // its own transaction, and answer the names applied.
+            "run",
+        ],
+    ),
 ];
 
 /// Per-module list of `pub opaque type` names. Drives the `opaque_types` field
@@ -569,6 +608,7 @@ const BASELINE_OPAQUE: &[(&str, &[&str])] = &[
         "std.repo",
         &["Repo", "Query", "Join", "LeftJoin", "Setter", "Grouped"],
     ),
+    ("std.migrate", &["Column"]),
 ];
 
 fn main() {

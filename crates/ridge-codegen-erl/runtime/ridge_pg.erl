@@ -56,6 +56,13 @@
     pg_begin/1,
     pg_commit/1,
     pg_rollback/1,
+    pg_ddl_create/3,
+    pg_ddl_drop/2,
+    pg_ddl_add_column/3,
+    pg_ddl_drop_column/3,
+    pg_ddl_index/5,
+    pg_migrations_applied/1,
+    pg_record_migration/2,
     pg_close/1
 ]).
 
@@ -313,6 +320,87 @@ savepoint_name(N) -> [<<"ridge_sp_">>, integer_to_binary(N)].
 %% answers, passing an error through unchanged.
 tx_unit({ok, _})    -> {ok, ok};
 tx_unit({error, E}) -> {error, E}.
+
+%% --- schema / migrations ---
+%%
+%% The schema verbs compile the typed DSL to DDL and run it through `{tx, Sql}`,
+%% the pin-aware transaction verb, so a migration's schema changes run on the same
+%% connection as its `BEGIN`. A column crosses as the tuple
+%% `{Name, TypeName, Nullable, PrimaryKey, Unique}`.
+
+%% pg_ddl_create/3 — CREATE TABLE from the column tuples. Result Unit Error.
+pg_ddl_create(Id, Table, Cols) ->
+    tx_unit(pg_call(Id, {tx, ddl_create_sql(Table, Cols)})).
+
+%% pg_ddl_drop/2 — DROP TABLE. Result Unit Error.
+pg_ddl_drop(Id, Table) ->
+    tx_unit(pg_call(Id, {tx, ["DROP TABLE ", quote_ident(Table)]})).
+
+%% pg_ddl_add_column/3 — ALTER TABLE … ADD COLUMN from the column tuple. Result
+%% Unit Error.
+pg_ddl_add_column(Id, Table, Col) ->
+    tx_unit(pg_call(Id, {tx, ["ALTER TABLE ", quote_ident(Table), " ADD COLUMN ", add_col_frag(Col)]})).
+
+%% pg_ddl_drop_column/3 — ALTER TABLE … DROP COLUMN. Result Unit Error.
+pg_ddl_drop_column(Id, Table, Column) ->
+    tx_unit(pg_call(Id, {tx, ["ALTER TABLE ", quote_ident(Table), " DROP COLUMN ", quote_ident(Column)]})).
+
+%% pg_ddl_index/5 — CREATE [UNIQUE] INDEX name ON table (cols). Result Unit Error.
+pg_ddl_index(Id, Name, Table, Cols, Unique) ->
+    UniqKw = case Unique of true -> "UNIQUE "; _ -> "" end,
+    IdxCols = lists:join(", ", [quote_ident(C) || C <- Cols]),
+    Sql = ["CREATE ", UniqKw, "INDEX ", quote_ident(Name), " ON ", quote_ident(Table),
+           " (", IdxCols, ")"],
+    tx_unit(pg_call(Id, {tx, Sql})).
+
+%% pg_migrations_applied/1 — ensure the tracking table and read the applied names.
+%% Result (List Text) Error.
+pg_migrations_applied(Id) ->
+    pg_call(Id, migrations_init).
+
+%% pg_record_migration/2 — insert a migration name into the tracking table, reusing
+%% the insert verb so it runs on the migration's pinned connection. Result Unit
+%% Error.
+pg_record_migration(Id, Name) ->
+    pg_call(Id, {insert, <<"_ridge_migrations">>, #{<<"name">> => {'SqlText', Name}}}).
+
+%% CREATE TABLE with the column definitions compiled from the seam tuples.
+ddl_create_sql(Table, Cols) ->
+    ["CREATE TABLE ", quote_ident(Table), " (",
+     lists:join(", ", [create_col_frag(C) || C <- Cols]), ")"].
+
+%% A column definition for CREATE TABLE: name, type, then the modifiers it carries.
+create_col_frag({Name, TypeName, Nullable, Pk, Uniq}) ->
+    [quote_ident(Name), " ", pg_col_type(TypeName),
+     null_frag(Nullable), pk_frag(Pk), uniq_frag(Uniq)].
+
+%% A column definition for ADD COLUMN: like create, but a primary key cannot be
+%% added against existing rows this way, so the key flag is dropped here.
+add_col_frag({Name, TypeName, Nullable, _Pk, Uniq}) ->
+    [quote_ident(Name), " ", pg_col_type(TypeName), null_frag(Nullable), uniq_frag(Uniq)].
+
+%% Map a column's base-type name to a concrete Postgres column type.
+pg_col_type(<<"int">>)   -> "bigint";
+pg_col_type(<<"text">>)  -> "text";
+pg_col_type(<<"bool">>)  -> "boolean";
+pg_col_type(<<"float">>) -> "double precision";
+pg_col_type(_)           -> "text".
+
+null_frag(true) -> "";
+null_frag(_)    -> " NOT NULL".
+
+pk_frag(true) -> " PRIMARY KEY";
+pk_frag(_)    -> "".
+
+uniq_frag(true) -> " UNIQUE";
+uniq_frag(_)    -> "".
+
+%% The `name` text out of a tracking-table row.
+pg_migration_name(Row) ->
+    case maps:get(<<"name">>, Row, 'SqlNull') of
+        {'SqlText', N} -> N;
+        _              -> <<>>
+    end.
 
 %% pg_close/1 — close every connection in the pool and forget the handle.
 %% Result Unit Error.
@@ -680,6 +768,22 @@ pg_conn_loop(Conn) ->
 
 run_verb(Conn, {tx, Sql}) ->
     do_exec(Conn, Sql, []);
+run_verb(Conn, migrations_init) ->
+    %% Ensure the tracking table exists, then read the applied migration names in
+    %% order. Both run on one connection (the pool path borrows it for the verb).
+    CreateSql = ["CREATE TABLE IF NOT EXISTS ", quote_ident(<<"_ridge_migrations">>),
+                 " (", quote_ident(<<"name">>), " text PRIMARY KEY, ",
+                 quote_ident(<<"applied_at">>), " timestamptz NOT NULL DEFAULT now())"],
+    case do_exec(Conn, CreateSql, []) of
+        {error, E} -> {error, E};
+        {ok, _} ->
+            SelectSql = ["SELECT ", quote_ident(<<"name">>), " FROM ",
+                         quote_ident(<<"_ridge_migrations">>), " ORDER BY ", quote_ident(<<"name">>)],
+            case run_query(Conn, SelectSql, []) of
+                {ok, Rows} -> {ok, [pg_migration_name(R) || R <- Rows]};
+                {error, E} -> {error, E}
+            end
+    end;
 run_verb(Conn, {insert, Table, Row}) ->
     do_insert(Conn, Table, Row);
 run_verb(Conn, {all, Table}) ->

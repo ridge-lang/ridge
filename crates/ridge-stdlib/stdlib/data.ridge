@@ -139,6 +139,7 @@ pub class Adapter a =
     begin    (conn: a) -> Result Unit Error
     commit   (conn: a) -> Result Unit Error
     rollback (conn: a) -> Result Unit Error
+    close    (conn: a) -> Result Unit Error
     ddlCreate (conn: a) (table: Text) (cols: List (Text, Text, Bool, Bool, Bool)) -> Result Unit Error
     ddlDrop (conn: a) (table: Text) -> Result Unit Error
     ddlAddColumn (conn: a) (table: Text) (col: (Text, Text, Bool, Bool, Bool)) -> Result Unit Error
@@ -321,6 +322,12 @@ fn _memCommit (id: Int) -> Result Unit Error
 @ffi("ridge_rt", "mem_rollback", 1)
 fn _memRollback (id: Int) -> Result Unit Error
 
+-- Close the store identified by `id` — forget every table (and any open
+-- transaction snapshot) it holds, freeing its rows. The in-memory store lives in
+-- the keeper for the BEAM's lifetime, so closing releases it.
+@ffi("ridge_rt", "mem_close", 1)
+fn _memClose (id: Int) -> Result Unit Error
+
 -- Materialise an empty table in the store (schemaless, so the columns are not
 -- enforced — the create only makes the table exist for reads and drops).
 @ffi("ridge_rt", "mem_ddl_create", 3)
@@ -428,6 +435,8 @@ instance Adapter MemAdapter =
         _memCommit conn.id
     rollback (conn: MemAdapter) -> Result Unit Error =
         _memRollback conn.id
+    close (conn: MemAdapter) -> Result Unit Error =
+        _memClose conn.id
     ddlCreate (conn: MemAdapter) (table: Text) (cols: List (Text, Text, Bool, Bool, Bool)) -> Result Unit Error =
         _memDdlCreate conn.id table cols
     ddlDrop (conn: MemAdapter) (table: Text) -> Result Unit Error =
@@ -631,6 +640,12 @@ fn _pgCommit (id: Int) -> Result Unit Error
 @ffi("ridge_pg", "pg_rollback", 1)
 fn _pgRollback (id: Int) -> Result Unit Error
 
+-- Close the connection handle `id` — shut every socket in its pool and forget the
+-- handle, releasing the connections back to the database. After this the handle is
+-- spent; a fresh `connect` opens a new pool.
+@ffi("ridge_pg", "pg_close", 1)
+fn _pgClose (id: Int) -> Result Unit Error
+
 -- Compile a `CREATE TABLE` from the column tuples and run it on the connection.
 @ffi("ridge_pg", "pg_ddl_create", 3)
 fn _pgDdlCreate (id: Int) (table: Text) (cols: List (Text, Text, Bool, Bool, Bool)) -> Result Unit Error
@@ -738,6 +753,8 @@ instance Adapter Postgres =
         _pgCommit conn.id
     rollback (conn: Postgres) -> Result Unit Error =
         _pgRollback conn.id
+    close (conn: Postgres) -> Result Unit Error =
+        _pgClose conn.id
     ddlCreate (conn: Postgres) (table: Text) (cols: List (Text, Text, Bool, Bool, Bool)) -> Result Unit Error =
         _pgDdlCreate conn.id table cols
     ddlDrop (conn: Postgres) (table: Text) -> Result Unit Error =

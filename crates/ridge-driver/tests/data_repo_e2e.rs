@@ -218,6 +218,28 @@ pub fn db countAll () -> Int =
                 Ok n  -> n
                 Err _ -> 0 - 2
 
+-- The body `withConnForgets` runs inside `withConnection`: insert a row, then count
+-- (sees 1). A named fn because a multi-line lambda in call-arg position does not parse.
+fn wcInsertCount (c: MemAdapter) -> Result Int Error =
+    let r = Repo.repo c "users"
+    match Repo.insertRow (userRow 1 18 "ada") r
+        Err e -> Err e
+        Ok _  -> r |> Repo.query |> Repo.count
+
+-- withConnection: run a body that inserts and counts (sees 1), then `withConnection`
+-- closes the adapter; a fresh repo on the same handle afterward sees the forgotten
+-- store (0) -> "inside:1,after:0". Proves the scoped combinator closes on the way out,
+-- so the connection is released without a manual `close`.
+pub fn db withConnForgets () -> Text =
+    let conn = memAdapter ()
+    match Repo.withConnection conn wcInsertCount
+        Err _     -> "wc-err"
+        Ok inside ->
+            let r2 = Repo.repo conn "users"
+            match r2 |> Repo.query |> Repo.count
+                Err _    -> "after-err"
+                Ok after -> Text.concat "inside:" (Text.concat (Int.toText inside) (Text.concat ",after:" (Int.toText after)))
+
 -- findBy + decode: how many users are 25 or older? (lin 30, max 25) -> 2
 pub fn db adultsCount () -> Int =
     match setup ()
@@ -1347,6 +1369,7 @@ fn repo_surface_runs_on_beam() {
 
     let expr = format!(
         "io:format(\"countAll=~w~n\",[{module}:countAll()]), \
+         io:format(\"withConnForgets=~s~n\",[{module}:withConnForgets()]), \
          io:format(\"adultsCount=~w~n\",[{module}:adultsCount()]), \
          io:format(\"firstName=~s~n\",[{module}:firstName()]), \
          io:format(\"getName=~s~n\",[{module}:getName()]), \
@@ -1444,6 +1467,10 @@ fn repo_surface_runs_on_beam() {
 
     for (probe, want) in [
         ("countAll=3", "count answers the whole table"),
+        (
+            "withConnForgets=inside:1,after:0",
+            "withConnection runs the body (sees the row) then closes the adapter on the way out, so the store is forgotten afterward",
+        ),
         ("adultsCount=2", "findBy keeps the two rows with age >= 25"),
         (
             "firstName=lin",

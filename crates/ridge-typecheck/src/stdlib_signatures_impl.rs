@@ -1573,6 +1573,7 @@ mod tests {
                             | "begin"
                             | "commit"
                             | "rollback"
+                            | "close"
                             | "ddlCreate"
                             | "ddlDrop"
                             | "ddlAddColumn"

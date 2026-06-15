@@ -251,6 +251,23 @@ pub fn transaction (conn: a) (body: fn a -> Result r Error) -> Result r Error wh
                         Ok _   -> Err e
                         Err e2 -> Err e2
 
+-- Run a body with the connection, then `close` it on every path — whether the body
+-- answers `Ok` or `Err`. The result is the body's own; the close is guaranteed
+-- teardown, so a scoped connection is never leaked even when the body returns early or
+-- fails. This is the recommended way to hold a short-lived connection:
+--   match connect cfg
+--     Ok conn -> conn |> Repo.withConnection (fn c -> useTheConnection c)
+--     Err e   -> Err e
+-- where a bare `connect`/`close` pair leaks the connection on any path that skips the
+-- close. For a long-running application, prefer to `connect` once and reuse the handle
+-- (its pool reuses connections) over opening one per operation. Closing is
+-- best-effort: a failure to close on teardown does not turn a successful body into an
+-- error.
+pub fn withConnection (conn: a) (body: fn a -> Result r Error) -> Result r Error where Adapter a =
+    let outcome = body conn
+    match close conn
+        _ -> outcome
+
 -- A query under construction over a repository: a filter, an ordering, a page
 -- (offset and limit), a `distinct` flag, and an optional set-operation `plan`
 -- accumulated before a terminal runs it. Opaque and threaded through the builder,

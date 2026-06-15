@@ -430,6 +430,9 @@ const BASELINE_EXPORTS: &[(&str, &[&str])] = &[
             "begin",
             "commit",
             "rollback",
+            // Connection lifecycle: release a connection's pool (Postgres) or forget
+            // the in-memory store, the counterpart to `connect`/`memAdapter`.
+            "close",
             // Schema seam the `std.migrate` runner compiles a migration onto:
             // create/drop a table, add/drop a column, create an index, and the
             // migration tracking-table reads and writes.
@@ -480,6 +483,9 @@ const BASELINE_EXPORTS: &[(&str, &[&str])] = &[
             // Run a body inside a transaction on the connection: commit on `Ok`,
             // roll back on `Err`. Nesting opens a savepoint.
             "transaction",
+            // Run a body with the connection, then close it on every path — the
+            // leak-safe scoped-connection combinator.
+            "withConnection",
             // The query builder: the opaque `Query e a` and its pipeline verbs,
             // ending in the `toList`/`first` terminals and the `selectList`/
             // `selectFirst` projections.

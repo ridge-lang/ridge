@@ -1108,6 +1108,46 @@ pub fn db authorPosts () -> Result (List (User, Post)) Error =
 }
 
 #[test]
+fn query_builder_cross_join_typechecks() {
+    // A cross join pairs the left query with a right repository and no condition —
+    // the cartesian product — and reuses the inner-join `Join e f a`, so the whole
+    // join vocabulary follows: `toList` decodes each pair into `(User, Color)`, and
+    // a later `filter`/`orderBy` compose exactly as on an inner join.
+    let main = r#"
+import std.data (memAdapter, MemAdapter)
+import std.repo as Repo
+import std.query (SortOrder, Asc)
+import std.sql (SqlValue)
+
+pub type User = { id: Int, age: Int, name: Text } deriving (Row)
+pub type Color = { id: Int, label: Text } deriving (Row)
+
+pub fn db pairs () -> Result (List (User, Color)) Error =
+    let users: Repo User MemAdapter = Repo.repo (memAdapter ()) "users"
+    let colors: Repo Color MemAdapter = Repo.repo (memAdapter ()) "colors"
+    users
+      |> Repo.query
+      |> Repo.crossJoin colors
+      |> Repo.toList
+
+pub fn db filteredOrdered () -> Result (List (User, Color)) Error =
+    let users: Repo User MemAdapter = Repo.repo (memAdapter ()) "users"
+    let colors: Repo Color MemAdapter = Repo.repo (memAdapter ()) "colors"
+    users
+      |> Repo.query
+      |> Repo.crossJoin colors
+      |> Repo.filter (fn (u: User) (c: Color) -> u.age >= 18)
+      |> Repo.orderBy Asc (fn (u: User) (c: Color) -> c.label)
+      |> Repo.toList
+"#;
+    let errors = typecheck_one(main);
+    assert!(
+        errors.is_empty(),
+        "a cross join into entity pairs and its inherited vocabulary must type-check clean; got {errors:?}"
+    );
+}
+
+#[test]
 fn query_builder_filter_on_join_typechecks() {
     // The one `Repo.filter` takes a two-row predicate on a `Join`, narrowing the
     // join by a post-join `WHERE` over both entities — the same verb that takes a

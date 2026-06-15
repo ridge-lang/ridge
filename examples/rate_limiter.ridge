@@ -59,9 +59,14 @@ actor Collector =
         totalDenied <- totalDenied + denied
         received <- received + 1
         if received == 5 then
+            -- The exact allowed/denied split depends on the wall-clock timing of the
+            -- concurrent workers refilling the bucket, so it goes to stderr as a
+            -- diagnostic. stdout keeps only the deterministic total (every request is
+            -- either allowed or denied), so a golden-output test stays stable across
+            -- platforms.
+            Io.eprintln $"  Allowed : ${totalAllowed}"
+            Io.eprintln $"  Denied  : ${totalDenied}"
             Io.println $"-- Rate limiter results --------------"
-            Io.println $"  Allowed : ${totalAllowed}"
-            Io.println $"  Denied  : ${totalDenied}"
             Io.println $"  Total   : ${totalAllowed + totalDenied}"
         else
             ()

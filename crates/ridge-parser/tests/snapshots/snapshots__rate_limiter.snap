@@ -1475,68 +1475,21 @@ Module {
                                                                         Ident {
                                                                             text: "Io",
                                                                             span: Span {
-                                                                                start: 2805,
-                                                                                end: 2807,
+                                                                                start: 3172,
+                                                                                end: 3174,
                                                                             },
                                                                         },
                                                                         Ident {
-                                                                            text: "println",
+                                                                            text: "eprintln",
                                                                             span: Span {
-                                                                                start: 2808,
-                                                                                end: 2815,
+                                                                                start: 3175,
+                                                                                end: 3183,
                                                                             },
                                                                         },
                                                                     ],
                                                                     span: Span {
-                                                                        start: 2805,
-                                                                        end: 2815,
-                                                                    },
-                                                                },
-                                                            ),
-                                                            args: [
-                                                                Interp {
-                                                                    parts: [
-                                                                        Text {
-                                                                            raw: "-- Rate limiter results --------------",
-                                                                            span: Span {
-                                                                                start: 2818,
-                                                                                end: 2856,
-                                                                            },
-                                                                        },
-                                                                    ],
-                                                                    span: Span {
-                                                                        start: 2816,
-                                                                        end: 2857,
-                                                                    },
-                                                                },
-                                                            ],
-                                                            span: Span {
-                                                                start: 2805,
-                                                                end: 2857,
-                                                            },
-                                                        },
-                                                        Call {
-                                                            callee: Qualified(
-                                                                QualifiedName {
-                                                                    segments: [
-                                                                        Ident {
-                                                                            text: "Io",
-                                                                            span: Span {
-                                                                                start: 2870,
-                                                                                end: 2872,
-                                                                            },
-                                                                        },
-                                                                        Ident {
-                                                                            text: "println",
-                                                                            span: Span {
-                                                                                start: 2873,
-                                                                                end: 2880,
-                                                                            },
-                                                                        },
-                                                                    ],
-                                                                    span: Span {
-                                                                        start: 2870,
-                                                                        end: 2880,
+                                                                        start: 3172,
+                                                                        end: 3183,
                                                                     },
                                                                 },
                                                             ),
@@ -1546,8 +1499,8 @@ Module {
                                                                         Text {
                                                                             raw: "  Allowed : ",
                                                                             span: Span {
-                                                                                start: 2883,
-                                                                                end: 2895,
+                                                                                start: 3186,
+                                                                                end: 3198,
                                                                             },
                                                                         },
                                                                         Expr {
@@ -1555,26 +1508,26 @@ Module {
                                                                                 Ident {
                                                                                     text: "totalAllowed",
                                                                                     span: Span {
-                                                                                        start: 2897,
-                                                                                        end: 2909,
+                                                                                        start: 3200,
+                                                                                        end: 3212,
                                                                                     },
                                                                                 },
                                                                             ),
                                                                             span: Span {
-                                                                                start: 2895,
-                                                                                end: 2910,
+                                                                                start: 3198,
+                                                                                end: 3213,
                                                                             },
                                                                         },
                                                                     ],
                                                                     span: Span {
-                                                                        start: 2881,
-                                                                        end: 2911,
+                                                                        start: 3184,
+                                                                        end: 3214,
                                                                     },
                                                                 },
                                                             ],
                                                             span: Span {
-                                                                start: 2870,
-                                                                end: 2911,
+                                                                start: 3172,
+                                                                end: 3214,
                                                             },
                                                         },
                                                         Call {
@@ -1584,21 +1537,21 @@ Module {
                                                                         Ident {
                                                                             text: "Io",
                                                                             span: Span {
-                                                                                start: 2924,
-                                                                                end: 2926,
+                                                                                start: 3227,
+                                                                                end: 3229,
                                                                             },
                                                                         },
                                                                         Ident {
-                                                                            text: "println",
+                                                                            text: "eprintln",
                                                                             span: Span {
-                                                                                start: 2927,
-                                                                                end: 2934,
+                                                                                start: 3230,
+                                                                                end: 3238,
                                                                             },
                                                                         },
                                                                     ],
                                                                     span: Span {
-                                                                        start: 2924,
-                                                                        end: 2934,
+                                                                        start: 3227,
+                                                                        end: 3238,
                                                                     },
                                                                 },
                                                             ),
@@ -1608,8 +1561,8 @@ Module {
                                                                         Text {
                                                                             raw: "  Denied  : ",
                                                                             span: Span {
-                                                                                start: 2937,
-                                                                                end: 2949,
+                                                                                start: 3241,
+                                                                                end: 3253,
                                                                             },
                                                                         },
                                                                         Expr {
@@ -1617,26 +1570,26 @@ Module {
                                                                                 Ident {
                                                                                     text: "totalDenied",
                                                                                     span: Span {
-                                                                                        start: 2951,
-                                                                                        end: 2962,
+                                                                                        start: 3255,
+                                                                                        end: 3266,
                                                                                     },
                                                                                 },
                                                                             ),
                                                                             span: Span {
-                                                                                start: 2949,
-                                                                                end: 2963,
+                                                                                start: 3253,
+                                                                                end: 3267,
                                                                             },
                                                                         },
                                                                     ],
                                                                     span: Span {
-                                                                        start: 2935,
-                                                                        end: 2964,
+                                                                        start: 3239,
+                                                                        end: 3268,
                                                                     },
                                                                 },
                                                             ],
                                                             span: Span {
-                                                                start: 2924,
-                                                                end: 2964,
+                                                                start: 3227,
+                                                                end: 3268,
                                                             },
                                                         },
                                                         Call {
@@ -1646,21 +1599,68 @@ Module {
                                                                         Ident {
                                                                             text: "Io",
                                                                             span: Span {
-                                                                                start: 2977,
-                                                                                end: 2979,
+                                                                                start: 3281,
+                                                                                end: 3283,
                                                                             },
                                                                         },
                                                                         Ident {
                                                                             text: "println",
                                                                             span: Span {
-                                                                                start: 2980,
-                                                                                end: 2987,
+                                                                                start: 3284,
+                                                                                end: 3291,
                                                                             },
                                                                         },
                                                                     ],
                                                                     span: Span {
-                                                                        start: 2977,
-                                                                        end: 2987,
+                                                                        start: 3281,
+                                                                        end: 3291,
+                                                                    },
+                                                                },
+                                                            ),
+                                                            args: [
+                                                                Interp {
+                                                                    parts: [
+                                                                        Text {
+                                                                            raw: "-- Rate limiter results --------------",
+                                                                            span: Span {
+                                                                                start: 3294,
+                                                                                end: 3332,
+                                                                            },
+                                                                        },
+                                                                    ],
+                                                                    span: Span {
+                                                                        start: 3292,
+                                                                        end: 3333,
+                                                                    },
+                                                                },
+                                                            ],
+                                                            span: Span {
+                                                                start: 3281,
+                                                                end: 3333,
+                                                            },
+                                                        },
+                                                        Call {
+                                                            callee: Qualified(
+                                                                QualifiedName {
+                                                                    segments: [
+                                                                        Ident {
+                                                                            text: "Io",
+                                                                            span: Span {
+                                                                                start: 3346,
+                                                                                end: 3348,
+                                                                            },
+                                                                        },
+                                                                        Ident {
+                                                                            text: "println",
+                                                                            span: Span {
+                                                                                start: 3349,
+                                                                                end: 3356,
+                                                                            },
+                                                                        },
+                                                                    ],
+                                                                    span: Span {
+                                                                        start: 3346,
+                                                                        end: 3356,
                                                                     },
                                                                 },
                                                             ),
@@ -1670,8 +1670,8 @@ Module {
                                                                         Text {
                                                                             raw: "  Total   : ",
                                                                             span: Span {
-                                                                                start: 2990,
-                                                                                end: 3002,
+                                                                                start: 3359,
+                                                                                end: 3371,
                                                                             },
                                                                         },
                                                                         Expr {
@@ -1681,8 +1681,8 @@ Module {
                                                                                     Ident {
                                                                                         text: "totalAllowed",
                                                                                         span: Span {
-                                                                                            start: 3004,
-                                                                                            end: 3016,
+                                                                                            start: 3373,
+                                                                                            end: 3385,
                                                                                         },
                                                                                     },
                                                                                 ),
@@ -1690,37 +1690,37 @@ Module {
                                                                                     Ident {
                                                                                         text: "totalDenied",
                                                                                         span: Span {
-                                                                                            start: 3019,
-                                                                                            end: 3030,
+                                                                                            start: 3388,
+                                                                                            end: 3399,
                                                                                         },
                                                                                     },
                                                                                 ),
                                                                                 span: Span {
-                                                                                    start: 3004,
-                                                                                    end: 3030,
+                                                                                    start: 3373,
+                                                                                    end: 3399,
                                                                                 },
                                                                             },
                                                                             span: Span {
-                                                                                start: 3002,
-                                                                                end: 3031,
+                                                                                start: 3371,
+                                                                                end: 3400,
                                                                             },
                                                                         },
                                                                     ],
                                                                     span: Span {
-                                                                        start: 2988,
-                                                                        end: 3032,
+                                                                        start: 3357,
+                                                                        end: 3401,
                                                                     },
                                                                 },
                                                             ],
                                                             span: Span {
-                                                                start: 2977,
-                                                                end: 3032,
+                                                                start: 3346,
+                                                                end: 3401,
                                                             },
                                                         },
                                                     ],
                                                     span: Span {
-                                                        start: 2805,
-                                                        end: 3041,
+                                                        start: 3172,
+                                                        end: 3410,
                                                     },
                                                 },
                                             ),
@@ -1730,33 +1730,33 @@ Module {
                                                         stmts: [
                                                             Unit(
                                                                 Span {
-                                                                    start: 3058,
-                                                                    end: 3060,
+                                                                    start: 3427,
+                                                                    end: 3429,
                                                                 },
                                                             ),
                                                         ],
                                                         span: Span {
-                                                            start: 3058,
-                                                            end: 3259,
+                                                            start: 3427,
+                                                            end: 3628,
                                                         },
                                                     },
                                                 ),
                                             ),
                                             span: Span {
                                                 start: 2771,
-                                                end: 3259,
+                                                end: 3628,
                                             },
                                         },
                                     ],
                                     span: Span {
                                         start: 2647,
-                                        end: 3259,
+                                        end: 3628,
                                     },
                                 },
                             ),
                             span: Span {
                                 start: 2587,
-                                end: 3259,
+                                end: 3628,
                             },
                             doc: None,
                         },
@@ -1764,7 +1764,7 @@ Module {
                 ],
                 span: Span {
                     start: 2465,
-                    end: 3259,
+                    end: 3628,
                 },
                 doc: None,
             },
@@ -1775,29 +1775,29 @@ Module {
                 name: Ident {
                     text: "requestsPerWorker",
                     span: Span {
-                        start: 3265,
-                        end: 3282,
+                        start: 3634,
+                        end: 3651,
                     },
                 },
                 ty: Primitive {
                     name: Int,
                     span: Span {
-                        start: 3284,
-                        end: 3287,
+                        start: 3653,
+                        end: 3656,
                     },
                 },
                 value: Literal(
                     IntDec {
                         raw: "20",
                         span: Span {
-                            start: 3290,
-                            end: 3292,
+                            start: 3659,
+                            end: 3661,
                         },
                     },
                 ),
                 span: Span {
-                    start: 3259,
-                    end: 3292,
+                    start: 3628,
+                    end: 3661,
                 },
                 doc: None,
             },
@@ -1808,8 +1808,8 @@ Module {
                 name: Ident {
                     text: "Worker",
                     span: Span {
-                        start: 3446,
-                        end: 3452,
+                        start: 3815,
+                        end: 3821,
                     },
                 },
                 members: [
@@ -1818,21 +1818,21 @@ Module {
                             name: Ident {
                                 text: "workerId",
                                 span: Span {
-                                    start: 3465,
-                                    end: 3473,
+                                    start: 3834,
+                                    end: 3842,
                                 },
                             },
                             ty: Primitive {
                                 name: Int,
                                 span: Span {
-                                    start: 3476,
-                                    end: 3479,
+                                    start: 3845,
+                                    end: 3848,
                                 },
                             },
                             default: None,
                             span: Span {
-                                start: 3459,
-                                end: 3479,
+                                start: 3828,
+                                end: 3848,
                             },
                         },
                     ),
@@ -1841,16 +1841,16 @@ Module {
                             name: Ident {
                                 text: "limiter",
                                 span: Span {
-                                    start: 3490,
-                                    end: 3497,
+                                    start: 3859,
+                                    end: 3866,
                                 },
                             },
                             ty: App {
                                 head: Ident {
                                     text: "Handle",
                                     span: Span {
-                                        start: 3501,
-                                        end: 3507,
+                                        start: 3870,
+                                        end: 3876,
                                     },
                                 },
                                 args: [
@@ -1858,25 +1858,25 @@ Module {
                                         name: Ident {
                                             text: "Limiter",
                                             span: Span {
-                                                start: 3508,
-                                                end: 3515,
+                                                start: 3877,
+                                                end: 3884,
                                             },
                                         },
                                         span: Span {
-                                            start: 3508,
-                                            end: 3515,
+                                            start: 3877,
+                                            end: 3884,
                                         },
                                     },
                                 ],
                                 span: Span {
-                                    start: 3501,
-                                    end: 3515,
+                                    start: 3870,
+                                    end: 3884,
                                 },
                             },
                             default: None,
                             span: Span {
-                                start: 3484,
-                                end: 3515,
+                                start: 3853,
+                                end: 3884,
                             },
                         },
                     ),
@@ -1885,16 +1885,16 @@ Module {
                             name: Ident {
                                 text: "collector",
                                 span: Span {
-                                    start: 3526,
-                                    end: 3535,
+                                    start: 3895,
+                                    end: 3904,
                                 },
                             },
                             ty: App {
                                 head: Ident {
                                     text: "Handle",
                                     span: Span {
-                                        start: 3537,
-                                        end: 3543,
+                                        start: 3906,
+                                        end: 3912,
                                     },
                                 },
                                 args: [
@@ -1902,25 +1902,25 @@ Module {
                                         name: Ident {
                                             text: "Collector",
                                             span: Span {
-                                                start: 3544,
-                                                end: 3553,
+                                                start: 3913,
+                                                end: 3922,
                                             },
                                         },
                                         span: Span {
-                                            start: 3544,
-                                            end: 3553,
+                                            start: 3913,
+                                            end: 3922,
                                         },
                                     },
                                 ],
                                 span: Span {
-                                    start: 3537,
-                                    end: 3553,
+                                    start: 3906,
+                                    end: 3922,
                                 },
                             },
                             default: None,
                             span: Span {
-                                start: 3520,
-                                end: 3553,
+                                start: 3889,
+                                end: 3922,
                             },
                         },
                     ),
@@ -1932,36 +1932,36 @@ Module {
                                     name: Ident {
                                         text: "id",
                                         span: Span {
-                                            start: 3565,
-                                            end: 3567,
+                                            start: 3934,
+                                            end: 3936,
                                         },
                                     },
                                     ty: Primitive {
                                         name: Int,
                                         span: Span {
-                                            start: 3569,
-                                            end: 3572,
+                                            start: 3938,
+                                            end: 3941,
                                         },
                                     },
                                     span: Span {
-                                        start: 3564,
-                                        end: 3573,
+                                        start: 3933,
+                                        end: 3942,
                                     },
                                 },
                                 Annotated {
                                     name: Ident {
                                         text: "l",
                                         span: Span {
-                                            start: 3575,
-                                            end: 3576,
+                                            start: 3944,
+                                            end: 3945,
                                         },
                                     },
                                     ty: App {
                                         head: Ident {
                                             text: "Handle",
                                             span: Span {
-                                                start: 3578,
-                                                end: 3584,
+                                                start: 3947,
+                                                end: 3953,
                                             },
                                         },
                                         args: [
@@ -1969,40 +1969,40 @@ Module {
                                                 name: Ident {
                                                     text: "Limiter",
                                                     span: Span {
-                                                        start: 3585,
-                                                        end: 3592,
+                                                        start: 3954,
+                                                        end: 3961,
                                                     },
                                                 },
                                                 span: Span {
-                                                    start: 3585,
-                                                    end: 3592,
+                                                    start: 3954,
+                                                    end: 3961,
                                                 },
                                             },
                                         ],
                                         span: Span {
-                                            start: 3578,
-                                            end: 3592,
+                                            start: 3947,
+                                            end: 3961,
                                         },
                                     },
                                     span: Span {
-                                        start: 3574,
-                                        end: 3593,
+                                        start: 3943,
+                                        end: 3962,
                                     },
                                 },
                                 Annotated {
                                     name: Ident {
                                         text: "col",
                                         span: Span {
-                                            start: 3595,
-                                            end: 3598,
+                                            start: 3964,
+                                            end: 3967,
                                         },
                                     },
                                     ty: App {
                                         head: Ident {
                                             text: "Handle",
                                             span: Span {
-                                                start: 3600,
-                                                end: 3606,
+                                                start: 3969,
+                                                end: 3975,
                                             },
                                         },
                                         args: [
@@ -2010,24 +2010,24 @@ Module {
                                                 name: Ident {
                                                     text: "Collector",
                                                     span: Span {
-                                                        start: 3607,
-                                                        end: 3616,
+                                                        start: 3976,
+                                                        end: 3985,
                                                     },
                                                 },
                                                 span: Span {
-                                                    start: 3607,
-                                                    end: 3616,
+                                                    start: 3976,
+                                                    end: 3985,
                                                 },
                                             },
                                         ],
                                         span: Span {
-                                            start: 3600,
-                                            end: 3616,
+                                            start: 3969,
+                                            end: 3985,
                                         },
                                     },
                                     span: Span {
-                                        start: 3594,
-                                        end: 3617,
+                                        start: 3963,
+                                        end: 3986,
                                     },
                                 },
                             ],
@@ -2038,8 +2038,8 @@ Module {
                                             Ident {
                                                 text: "workerId",
                                                 span: Span {
-                                                    start: 3628,
-                                                    end: 3636,
+                                                    start: 3997,
+                                                    end: 4005,
                                                 },
                                             },
                                         ),
@@ -2047,14 +2047,14 @@ Module {
                                             Ident {
                                                 text: "id",
                                                 span: Span {
-                                                    start: 3640,
-                                                    end: 3642,
+                                                    start: 4009,
+                                                    end: 4011,
                                                 },
                                             },
                                         ),
                                         span: Span {
-                                            start: 3628,
-                                            end: 3642,
+                                            start: 3997,
+                                            end: 4011,
                                         },
                                     },
                                     Assign {
@@ -2062,8 +2062,8 @@ Module {
                                             Ident {
                                                 text: "limiter",
                                                 span: Span {
-                                                    start: 3651,
-                                                    end: 3658,
+                                                    start: 4020,
+                                                    end: 4027,
                                                 },
                                             },
                                         ),
@@ -2071,14 +2071,14 @@ Module {
                                             Ident {
                                                 text: "l",
                                                 span: Span {
-                                                    start: 3662,
-                                                    end: 3663,
+                                                    start: 4031,
+                                                    end: 4032,
                                                 },
                                             },
                                         ),
                                         span: Span {
-                                            start: 3651,
-                                            end: 3663,
+                                            start: 4020,
+                                            end: 4032,
                                         },
                                     },
                                     Assign {
@@ -2086,8 +2086,8 @@ Module {
                                             Ident {
                                                 text: "collector",
                                                 span: Span {
-                                                    start: 3672,
-                                                    end: 3681,
+                                                    start: 4041,
+                                                    end: 4050,
                                                 },
                                             },
                                         ),
@@ -2095,25 +2095,25 @@ Module {
                                             Ident {
                                                 text: "col",
                                                 span: Span {
-                                                    start: 3685,
-                                                    end: 3688,
+                                                    start: 4054,
+                                                    end: 4057,
                                                 },
                                             },
                                         ),
                                         span: Span {
-                                            start: 3672,
-                                            end: 3688,
+                                            start: 4041,
+                                            end: 4057,
                                         },
                                     },
                                 ],
                                 span: Span {
-                                    start: 3628,
-                                    end: 3693,
+                                    start: 3997,
+                                    end: 4062,
                                 },
                             },
                             span: Span {
-                                start: 3559,
-                                end: 3693,
+                                start: 3928,
+                                end: 4062,
                             },
                         },
                     ),
@@ -2127,8 +2127,8 @@ Module {
                             name: Ident {
                                 text: "run",
                                 span: Span {
-                                    start: 3711,
-                                    end: 3714,
+                                    start: 4080,
+                                    end: 4083,
                                 },
                             },
                             params: [],
@@ -2136,8 +2136,8 @@ Module {
                                 Primitive {
                                     name: Unit,
                                     span: Span {
-                                        start: 3721,
-                                        end: 3725,
+                                        start: 4090,
+                                        end: 4094,
                                     },
                                 },
                             ),
@@ -2156,8 +2156,8 @@ Module {
                                                 name: Ident {
                                                     text: "sendRequests",
                                                     span: Span {
-                                                        start: 3822,
-                                                        end: 3834,
+                                                        start: 4191,
+                                                        end: 4203,
                                                     },
                                                 },
                                                 params: [
@@ -2165,60 +2165,60 @@ Module {
                                                         name: Ident {
                                                             text: "remaining",
                                                             span: Span {
-                                                                start: 3836,
-                                                                end: 3845,
+                                                                start: 4205,
+                                                                end: 4214,
                                                             },
                                                         },
                                                         ty: Primitive {
                                                             name: Int,
                                                             span: Span {
-                                                                start: 3847,
-                                                                end: 3850,
+                                                                start: 4216,
+                                                                end: 4219,
                                                             },
                                                         },
                                                         span: Span {
-                                                            start: 3835,
-                                                            end: 3851,
+                                                            start: 4204,
+                                                            end: 4220,
                                                         },
                                                     },
                                                     Annotated {
                                                         name: Ident {
                                                             text: "allowed",
                                                             span: Span {
-                                                                start: 3853,
-                                                                end: 3860,
+                                                                start: 4222,
+                                                                end: 4229,
                                                             },
                                                         },
                                                         ty: Primitive {
                                                             name: Int,
                                                             span: Span {
-                                                                start: 3862,
-                                                                end: 3865,
+                                                                start: 4231,
+                                                                end: 4234,
                                                             },
                                                         },
                                                         span: Span {
-                                                            start: 3852,
-                                                            end: 3866,
+                                                            start: 4221,
+                                                            end: 4235,
                                                         },
                                                     },
                                                     Annotated {
                                                         name: Ident {
                                                             text: "denied",
                                                             span: Span {
-                                                                start: 3868,
-                                                                end: 3874,
+                                                                start: 4237,
+                                                                end: 4243,
                                                             },
                                                         },
                                                         ty: Primitive {
                                                             name: Int,
                                                             span: Span {
-                                                                start: 3876,
-                                                                end: 3879,
+                                                                start: 4245,
+                                                                end: 4248,
                                                             },
                                                         },
                                                         span: Span {
-                                                            start: 3867,
-                                                            end: 3880,
+                                                            start: 4236,
+                                                            end: 4249,
                                                         },
                                                     },
                                                 ],
@@ -2226,8 +2226,8 @@ Module {
                                                     Primitive {
                                                         name: Unit,
                                                         span: Span {
-                                                            start: 3884,
-                                                            end: 3888,
+                                                            start: 4253,
+                                                            end: 4257,
                                                         },
                                                     },
                                                 ),
@@ -2244,8 +2244,8 @@ Module {
                                                                                 Ident {
                                                                                     text: "remaining",
                                                                                     span: Span {
-                                                                                        start: 3910,
-                                                                                        end: 3919,
+                                                                                        start: 4279,
+                                                                                        end: 4288,
                                                                                     },
                                                                                 },
                                                                             ),
@@ -2253,19 +2253,19 @@ Module {
                                                                                 IntDec {
                                                                                     raw: "0",
                                                                                     span: Span {
-                                                                                        start: 3922,
-                                                                                        end: 3923,
+                                                                                        start: 4291,
+                                                                                        end: 4292,
                                                                                     },
                                                                                 },
                                                                             ),
                                                                             span: Span {
-                                                                                start: 3910,
-                                                                                end: 3923,
+                                                                                start: 4279,
+                                                                                end: 4292,
                                                                             },
                                                                         },
                                                                         span: Span {
-                                                                            start: 3909,
-                                                                            end: 3924,
+                                                                            start: 4278,
+                                                                            end: 4293,
                                                                         },
                                                                     },
                                                                     else_branch: Block {
@@ -2277,8 +2277,8 @@ Module {
                                                                                             Ident {
                                                                                                 text: "collector",
                                                                                                 span: Span {
-                                                                                                    start: 3954,
-                                                                                                    end: 3963,
+                                                                                                    start: 4323,
+                                                                                                    end: 4332,
                                                                                                 },
                                                                                             },
                                                                                         ),
@@ -2287,8 +2287,8 @@ Module {
                                                                                                 Ident {
                                                                                                     text: "report",
                                                                                                     span: Span {
-                                                                                                        start: 3966,
-                                                                                                        end: 3972,
+                                                                                                        start: 4335,
+                                                                                                        end: 4341,
                                                                                                     },
                                                                                                 },
                                                                                             ),
@@ -2297,8 +2297,8 @@ Module {
                                                                                                     Ident {
                                                                                                         text: "allowed",
                                                                                                         span: Span {
-                                                                                                            start: 3973,
-                                                                                                            end: 3980,
+                                                                                                            start: 4342,
+                                                                                                            end: 4349,
                                                                                                         },
                                                                                                     },
                                                                                                 ),
@@ -2306,41 +2306,41 @@ Module {
                                                                                                     Ident {
                                                                                                         text: "denied",
                                                                                                         span: Span {
-                                                                                                            start: 3981,
-                                                                                                            end: 3987,
+                                                                                                            start: 4350,
+                                                                                                            end: 4356,
                                                                                                         },
                                                                                                     },
                                                                                                 ),
                                                                                             ],
                                                                                             span: Span {
-                                                                                                start: 3966,
-                                                                                                end: 3987,
+                                                                                                start: 4335,
+                                                                                                end: 4356,
                                                                                             },
                                                                                         },
                                                                                         span: Span {
-                                                                                            start: 3954,
-                                                                                            end: 3987,
+                                                                                            start: 4323,
+                                                                                            end: 4356,
                                                                                         },
                                                                                     },
                                                                                     span: Span {
-                                                                                        start: 3953,
-                                                                                        end: 3988,
+                                                                                        start: 4322,
+                                                                                        end: 4357,
                                                                                     },
                                                                                 },
                                                                                 span: Span {
-                                                                                    start: 3946,
-                                                                                    end: 3988,
+                                                                                    start: 4315,
+                                                                                    end: 4357,
                                                                                 },
                                                                             },
                                                                         ],
                                                                         span: Span {
-                                                                            start: 3946,
-                                                                            end: 4001,
+                                                                            start: 4315,
+                                                                            end: 4370,
                                                                         },
                                                                     },
                                                                     span: Span {
-                                                                        start: 3903,
-                                                                        end: 4001,
+                                                                        start: 4272,
+                                                                        end: 4370,
                                                                     },
                                                                 },
                                                                 Let {
@@ -2348,13 +2348,13 @@ Module {
                                                                         name: Ident {
                                                                             text: "delayMs",
                                                                             span: Span {
-                                                                                start: 4005,
-                                                                                end: 4012,
+                                                                                start: 4374,
+                                                                                end: 4381,
                                                                             },
                                                                         },
                                                                         span: Span {
-                                                                            start: 4005,
-                                                                            end: 4012,
+                                                                            start: 4374,
+                                                                            end: 4381,
                                                                         },
                                                                     },
                                                                     ty: None,
@@ -2365,21 +2365,21 @@ Module {
                                                                                     Ident {
                                                                                         text: "Random",
                                                                                         span: Span {
-                                                                                            start: 4015,
-                                                                                            end: 4021,
+                                                                                            start: 4384,
+                                                                                            end: 4390,
                                                                                         },
                                                                                     },
                                                                                     Ident {
                                                                                         text: "int",
                                                                                         span: Span {
-                                                                                            start: 4022,
-                                                                                            end: 4025,
+                                                                                            start: 4391,
+                                                                                            end: 4394,
                                                                                         },
                                                                                     },
                                                                                 ],
                                                                                 span: Span {
-                                                                                    start: 4015,
-                                                                                    end: 4025,
+                                                                                    start: 4384,
+                                                                                    end: 4394,
                                                                                 },
                                                                             },
                                                                         ),
@@ -2388,8 +2388,8 @@ Module {
                                                                                 IntDec {
                                                                                     raw: "0",
                                                                                     span: Span {
-                                                                                        start: 4026,
-                                                                                        end: 4027,
+                                                                                        start: 4395,
+                                                                                        end: 4396,
                                                                                     },
                                                                                 },
                                                                             ),
@@ -2397,20 +2397,20 @@ Module {
                                                                                 IntDec {
                                                                                     raw: "50",
                                                                                     span: Span {
-                                                                                        start: 4028,
-                                                                                        end: 4030,
+                                                                                        start: 4397,
+                                                                                        end: 4399,
                                                                                     },
                                                                                 },
                                                                             ),
                                                                         ],
                                                                         span: Span {
-                                                                            start: 4015,
-                                                                            end: 4030,
+                                                                            start: 4384,
+                                                                            end: 4399,
                                                                         },
                                                                     },
                                                                     span: Span {
-                                                                        start: 4001,
-                                                                        end: 4030,
+                                                                        start: 4370,
+                                                                        end: 4399,
                                                                     },
                                                                 },
                                                                 Call {
@@ -2420,21 +2420,21 @@ Module {
                                                                                 Ident {
                                                                                     text: "Time",
                                                                                     span: Span {
-                                                                                        start: 4070,
-                                                                                        end: 4074,
+                                                                                        start: 4439,
+                                                                                        end: 4443,
                                                                                     },
                                                                                 },
                                                                                 Ident {
                                                                                     text: "sleep",
                                                                                     span: Span {
-                                                                                        start: 4075,
-                                                                                        end: 4080,
+                                                                                        start: 4444,
+                                                                                        end: 4449,
                                                                                     },
                                                                                 },
                                                                             ],
                                                                             span: Span {
-                                                                                start: 4070,
-                                                                                end: 4080,
+                                                                                start: 4439,
+                                                                                end: 4449,
                                                                             },
                                                                         },
                                                                     ),
@@ -2443,15 +2443,15 @@ Module {
                                                                             Ident {
                                                                                 text: "delayMs",
                                                                                 span: Span {
-                                                                                    start: 4081,
-                                                                                    end: 4088,
+                                                                                    start: 4450,
+                                                                                    end: 4457,
                                                                                 },
                                                                             },
                                                                         ),
                                                                     ],
                                                                     span: Span {
-                                                                        start: 4070,
-                                                                        end: 4088,
+                                                                        start: 4439,
+                                                                        end: 4457,
                                                                     },
                                                                 },
                                                                 Let {
@@ -2459,13 +2459,13 @@ Module {
                                                                         name: Ident {
                                                                             text: "granted",
                                                                             span: Span {
-                                                                                start: 4155,
-                                                                                end: 4162,
+                                                                                start: 4524,
+                                                                                end: 4531,
                                                                             },
                                                                         },
                                                                         span: Span {
-                                                                            start: 4155,
-                                                                            end: 4162,
+                                                                            start: 4524,
+                                                                            end: 4531,
                                                                         },
                                                                     },
                                                                     ty: None,
@@ -2474,35 +2474,35 @@ Module {
                                                                             Ident {
                                                                                 text: "limiter",
                                                                                 span: Span {
-                                                                                    start: 4165,
-                                                                                    end: 4172,
+                                                                                    start: 4534,
+                                                                                    end: 4541,
                                                                                 },
                                                                             },
                                                                         ),
                                                                         message: Ident {
                                                                             text: "allow",
                                                                             span: Span {
-                                                                                start: 4176,
-                                                                                end: 4181,
+                                                                                start: 4545,
+                                                                                end: 4550,
                                                                             },
                                                                         },
                                                                         args: [
                                                                             Unit(
                                                                                 Span {
-                                                                                    start: 4182,
-                                                                                    end: 4184,
+                                                                                    start: 4551,
+                                                                                    end: 4553,
                                                                                 },
                                                                             ),
                                                                         ],
                                                                         timeout: None,
                                                                         span: Span {
-                                                                            start: 4165,
-                                                                            end: 4184,
+                                                                            start: 4534,
+                                                                            end: 4553,
                                                                         },
                                                                     },
                                                                     span: Span {
-                                                                        start: 4151,
-                                                                        end: 4184,
+                                                                        start: 4520,
+                                                                        end: 4553,
                                                                     },
                                                                 },
                                                                 If {
@@ -2510,8 +2510,8 @@ Module {
                                                                         Ident {
                                                                             text: "granted",
                                                                             span: Span {
-                                                                                start: 4200,
-                                                                                end: 4207,
+                                                                                start: 4569,
+                                                                                end: 4576,
                                                                             },
                                                                         },
                                                                     ),
@@ -2523,8 +2523,8 @@ Module {
                                                                                         Ident {
                                                                                             text: "sendRequests",
                                                                                             span: Span {
-                                                                                                start: 4229,
-                                                                                                end: 4241,
+                                                                                                start: 4598,
+                                                                                                end: 4610,
                                                                                             },
                                                                                         },
                                                                                     ),
@@ -2536,8 +2536,8 @@ Module {
                                                                                                     Ident {
                                                                                                         text: "remaining",
                                                                                                         span: Span {
-                                                                                                            start: 4243,
-                                                                                                            end: 4252,
+                                                                                                            start: 4612,
+                                                                                                            end: 4621,
                                                                                                         },
                                                                                                     },
                                                                                                 ),
@@ -2545,19 +2545,19 @@ Module {
                                                                                                     IntDec {
                                                                                                         raw: "1",
                                                                                                         span: Span {
-                                                                                                            start: 4255,
-                                                                                                            end: 4256,
+                                                                                                            start: 4624,
+                                                                                                            end: 4625,
                                                                                                         },
                                                                                                     },
                                                                                                 ),
                                                                                                 span: Span {
-                                                                                                    start: 4243,
-                                                                                                    end: 4256,
+                                                                                                    start: 4612,
+                                                                                                    end: 4625,
                                                                                                 },
                                                                                             },
                                                                                             span: Span {
-                                                                                                start: 4242,
-                                                                                                end: 4257,
+                                                                                                start: 4611,
+                                                                                                end: 4626,
                                                                                             },
                                                                                         },
                                                                                         Paren {
@@ -2567,8 +2567,8 @@ Module {
                                                                                                     Ident {
                                                                                                         text: "allowed",
                                                                                                         span: Span {
-                                                                                                            start: 4259,
-                                                                                                            end: 4266,
+                                                                                                            start: 4628,
+                                                                                                            end: 4635,
                                                                                                         },
                                                                                                     },
                                                                                                 ),
@@ -2576,40 +2576,40 @@ Module {
                                                                                                     IntDec {
                                                                                                         raw: "1",
                                                                                                         span: Span {
-                                                                                                            start: 4269,
-                                                                                                            end: 4270,
+                                                                                                            start: 4638,
+                                                                                                            end: 4639,
                                                                                                         },
                                                                                                     },
                                                                                                 ),
                                                                                                 span: Span {
-                                                                                                    start: 4259,
-                                                                                                    end: 4270,
+                                                                                                    start: 4628,
+                                                                                                    end: 4639,
                                                                                                 },
                                                                                             },
                                                                                             span: Span {
-                                                                                                start: 4258,
-                                                                                                end: 4271,
+                                                                                                start: 4627,
+                                                                                                end: 4640,
                                                                                             },
                                                                                         },
                                                                                         Ident(
                                                                                             Ident {
                                                                                                 text: "denied",
                                                                                                 span: Span {
-                                                                                                    start: 4272,
-                                                                                                    end: 4278,
+                                                                                                    start: 4641,
+                                                                                                    end: 4647,
                                                                                                 },
                                                                                             },
                                                                                         ),
                                                                                     ],
                                                                                     span: Span {
-                                                                                        start: 4229,
-                                                                                        end: 4278,
+                                                                                        start: 4598,
+                                                                                        end: 4647,
                                                                                     },
                                                                                 },
                                                                             ],
                                                                             span: Span {
-                                                                                start: 4229,
-                                                                                end: 4291,
+                                                                                start: 4598,
+                                                                                end: 4660,
                                                                             },
                                                                         },
                                                                     ),
@@ -2622,8 +2622,8 @@ Module {
                                                                                             Ident {
                                                                                                 text: "sendRequests",
                                                                                                 span: Span {
-                                                                                                    start: 4312,
-                                                                                                    end: 4324,
+                                                                                                    start: 4681,
+                                                                                                    end: 4693,
                                                                                                 },
                                                                                             },
                                                                                         ),
@@ -2635,8 +2635,8 @@ Module {
                                                                                                         Ident {
                                                                                                             text: "remaining",
                                                                                                             span: Span {
-                                                                                                                start: 4326,
-                                                                                                                end: 4335,
+                                                                                                                start: 4695,
+                                                                                                                end: 4704,
                                                                                                             },
                                                                                                         },
                                                                                                     ),
@@ -2644,27 +2644,27 @@ Module {
                                                                                                         IntDec {
                                                                                                             raw: "1",
                                                                                                             span: Span {
-                                                                                                                start: 4338,
-                                                                                                                end: 4339,
+                                                                                                                start: 4707,
+                                                                                                                end: 4708,
                                                                                                             },
                                                                                                         },
                                                                                                     ),
                                                                                                     span: Span {
-                                                                                                        start: 4326,
-                                                                                                        end: 4339,
+                                                                                                        start: 4695,
+                                                                                                        end: 4708,
                                                                                                     },
                                                                                                 },
                                                                                                 span: Span {
-                                                                                                    start: 4325,
-                                                                                                    end: 4340,
+                                                                                                    start: 4694,
+                                                                                                    end: 4709,
                                                                                                 },
                                                                                             },
                                                                                             Ident(
                                                                                                 Ident {
                                                                                                     text: "allowed",
                                                                                                     span: Span {
-                                                                                                        start: 4341,
-                                                                                                        end: 4348,
+                                                                                                        start: 4710,
+                                                                                                        end: 4717,
                                                                                                     },
                                                                                                 },
                                                                                             ),
@@ -2675,8 +2675,8 @@ Module {
                                                                                                         Ident {
                                                                                                             text: "denied",
                                                                                                             span: Span {
-                                                                                                                start: 4350,
-                                                                                                                end: 4356,
+                                                                                                                start: 4719,
+                                                                                                                end: 4725,
                                                                                                             },
                                                                                                         },
                                                                                                     ),
@@ -2684,57 +2684,57 @@ Module {
                                                                                                         IntDec {
                                                                                                             raw: "1",
                                                                                                             span: Span {
-                                                                                                                start: 4359,
-                                                                                                                end: 4360,
+                                                                                                                start: 4728,
+                                                                                                                end: 4729,
                                                                                                             },
                                                                                                         },
                                                                                                     ),
                                                                                                     span: Span {
-                                                                                                        start: 4350,
-                                                                                                        end: 4360,
+                                                                                                        start: 4719,
+                                                                                                        end: 4729,
                                                                                                     },
                                                                                                 },
                                                                                                 span: Span {
-                                                                                                    start: 4349,
-                                                                                                    end: 4361,
+                                                                                                    start: 4718,
+                                                                                                    end: 4730,
                                                                                                 },
                                                                                             },
                                                                                         ],
                                                                                         span: Span {
-                                                                                            start: 4312,
-                                                                                            end: 4361,
+                                                                                            start: 4681,
+                                                                                            end: 4730,
                                                                                         },
                                                                                     },
                                                                                 ],
                                                                                 span: Span {
-                                                                                    start: 4312,
-                                                                                    end: 4370,
+                                                                                    start: 4681,
+                                                                                    end: 4739,
                                                                                 },
                                                                             },
                                                                         ),
                                                                     ),
                                                                     span: Span {
-                                                                        start: 4197,
-                                                                        end: 4370,
+                                                                        start: 4566,
+                                                                        end: 4739,
                                                                     },
                                                                 },
                                                             ],
                                                             span: Span {
-                                                                start: 3903,
-                                                                end: 4370,
+                                                                start: 4272,
+                                                                end: 4739,
                                                             },
                                                         },
                                                     ),
                                                 ),
                                                 span: Span {
-                                                    start: 3804,
-                                                    end: 4370,
+                                                    start: 4173,
+                                                    end: 4739,
                                                 },
                                                 doc: None,
                                             },
                                             span: Span {
-                                                start: 3804,
-                                                end: 4370,
+                                                start: 4173,
+                                                end: 4739,
                                             },
                                         },
                                         Call {
@@ -2742,8 +2742,8 @@ Module {
                                                 Ident {
                                                     text: "sendRequests",
                                                     span: Span {
-                                                        start: 4370,
-                                                        end: 4382,
+                                                        start: 4739,
+                                                        end: 4751,
                                                     },
                                                 },
                                             ),
@@ -2752,8 +2752,8 @@ Module {
                                                     Ident {
                                                         text: "requestsPerWorker",
                                                         span: Span {
-                                                            start: 4383,
-                                                            end: 4400,
+                                                            start: 4752,
+                                                            end: 4769,
                                                         },
                                                     },
                                                 ),
@@ -2761,8 +2761,8 @@ Module {
                                                     IntDec {
                                                         raw: "0",
                                                         span: Span {
-                                                            start: 4401,
-                                                            end: 4402,
+                                                            start: 4770,
+                                                            end: 4771,
                                                         },
                                                     },
                                                 ),
@@ -2770,35 +2770,35 @@ Module {
                                                     IntDec {
                                                         raw: "0",
                                                         span: Span {
-                                                            start: 4403,
-                                                            end: 4404,
+                                                            start: 4772,
+                                                            end: 4773,
                                                         },
                                                     },
                                                 ),
                                             ],
                                             span: Span {
-                                                start: 4370,
-                                                end: 4404,
+                                                start: 4739,
+                                                end: 4773,
                                             },
                                         },
                                     ],
                                     span: Span {
-                                        start: 3804,
-                                        end: 4654,
+                                        start: 4173,
+                                        end: 5023,
                                     },
                                 },
                             ),
                             span: Span {
-                                start: 3693,
-                                end: 4654,
+                                start: 4062,
+                                end: 5023,
                             },
                             doc: None,
                         },
                     ),
                 ],
                 span: Span {
-                    start: 3440,
-                    end: 4654,
+                    start: 3809,
+                    end: 5023,
                 },
                 doc: None,
             },
@@ -2815,8 +2815,8 @@ Module {
                 name: Ident {
                     text: "main",
                     span: Span {
-                        start: 4671,
-                        end: 4675,
+                        start: 5040,
+                        end: 5044,
                     },
                 },
                 params: [],
@@ -2825,35 +2825,35 @@ Module {
                         head: Ident {
                             text: "Result",
                             span: Span {
-                                start: 4682,
-                                end: 4688,
+                                start: 5051,
+                                end: 5057,
                             },
                         },
                         args: [
                             Primitive {
                                 name: Unit,
                                 span: Span {
-                                    start: 4689,
-                                    end: 4693,
+                                    start: 5058,
+                                    end: 5062,
                                 },
                             },
                             Named {
                                 name: Ident {
                                     text: "Error",
                                     span: Span {
-                                        start: 4694,
-                                        end: 4699,
+                                        start: 5063,
+                                        end: 5068,
                                     },
                                 },
                                 span: Span {
-                                    start: 4694,
-                                    end: 4699,
+                                    start: 5063,
+                                    end: 5068,
                                 },
                             },
                         ],
                         span: Span {
-                            start: 4682,
-                            end: 4699,
+                            start: 5051,
+                            end: 5068,
                         },
                     },
                 ),
@@ -2867,13 +2867,13 @@ Module {
                                         name: Ident {
                                             text: "limiter",
                                             span: Span {
-                                                start: 4784,
-                                                end: 4791,
+                                                start: 5153,
+                                                end: 5160,
                                             },
                                         },
                                         span: Span {
-                                            start: 4784,
-                                            end: 4791,
+                                            start: 5153,
+                                            end: 5160,
                                         },
                                     },
                                     ty: None,
@@ -2881,8 +2881,8 @@ Module {
                                         actor: Ident {
                                             text: "Limiter",
                                             span: Span {
-                                                start: 4802,
-                                                end: 4809,
+                                                start: 5171,
+                                                end: 5178,
                                             },
                                         },
                                         args: [
@@ -2890,8 +2890,8 @@ Module {
                                                 IntDec {
                                                     raw: "10",
                                                     span: Span {
-                                                        start: 4810,
-                                                        end: 4812,
+                                                        start: 5179,
+                                                        end: 5181,
                                                     },
                                                 },
                                             ),
@@ -2899,20 +2899,20 @@ Module {
                                                 Float {
                                                     raw: "2.0",
                                                     span: Span {
-                                                        start: 4813,
-                                                        end: 4816,
+                                                        start: 5182,
+                                                        end: 5185,
                                                     },
                                                 },
                                             ),
                                         ],
                                         span: Span {
-                                            start: 4796,
-                                            end: 4816,
+                                            start: 5165,
+                                            end: 5185,
                                         },
                                     },
                                     span: Span {
-                                        start: 4780,
-                                        end: 4816,
+                                        start: 5149,
+                                        end: 5185,
                                     },
                                 },
                                 Let {
@@ -2920,13 +2920,13 @@ Module {
                                         name: Ident {
                                             text: "collector",
                                             span: Span {
-                                                start: 4825,
-                                                end: 4834,
+                                                start: 5194,
+                                                end: 5203,
                                             },
                                         },
                                         span: Span {
-                                            start: 4825,
-                                            end: 4834,
+                                            start: 5194,
+                                            end: 5203,
                                         },
                                     },
                                     ty: None,
@@ -2934,19 +2934,19 @@ Module {
                                         actor: Ident {
                                             text: "Collector",
                                             span: Span {
-                                                start: 4843,
-                                                end: 4852,
+                                                start: 5212,
+                                                end: 5221,
                                             },
                                         },
                                         args: [],
                                         span: Span {
-                                            start: 4837,
-                                            end: 4852,
+                                            start: 5206,
+                                            end: 5221,
                                         },
                                     },
                                     span: Span {
-                                        start: 4821,
-                                        end: 4852,
+                                        start: 5190,
+                                        end: 5221,
                                     },
                                 },
                                 Let {
@@ -2954,13 +2954,13 @@ Module {
                                         name: Ident {
                                             text: "workers",
                                             span: Span {
-                                                start: 4925,
-                                                end: 4932,
+                                                start: 5294,
+                                                end: 5301,
                                             },
                                         },
                                         span: Span {
-                                            start: 4925,
-                                            end: 4932,
+                                            start: 5294,
+                                            end: 5301,
                                         },
                                     },
                                     ty: None,
@@ -2975,21 +2975,21 @@ Module {
                                                                     Ident {
                                                                         text: "List",
                                                                         span: Span {
-                                                                            start: 4943,
-                                                                            end: 4947,
+                                                                            start: 5312,
+                                                                            end: 5316,
                                                                         },
                                                                     },
                                                                     Ident {
                                                                         text: "range",
                                                                         span: Span {
-                                                                            start: 4948,
-                                                                            end: 4953,
+                                                                            start: 5317,
+                                                                            end: 5322,
                                                                         },
                                                                     },
                                                                 ],
                                                                 span: Span {
-                                                                    start: 4943,
-                                                                    end: 4953,
+                                                                    start: 5312,
+                                                                    end: 5322,
                                                                 },
                                                             },
                                                         ),
@@ -2998,8 +2998,8 @@ Module {
                                                                 IntDec {
                                                                     raw: "1",
                                                                     span: Span {
-                                                                        start: 4954,
-                                                                        end: 4955,
+                                                                        start: 5323,
+                                                                        end: 5324,
                                                                     },
                                                                 },
                                                             ),
@@ -3007,15 +3007,15 @@ Module {
                                                                 IntDec {
                                                                     raw: "5",
                                                                     span: Span {
-                                                                        start: 4956,
-                                                                        end: 4957,
+                                                                        start: 5325,
+                                                                        end: 5326,
                                                                     },
                                                                 },
                                                             ),
                                                         ],
                                                         span: Span {
-                                                            start: 4943,
-                                                            end: 4957,
+                                                            start: 5312,
+                                                            end: 5326,
                                                         },
                                                     },
                                                     rhs: Call {
@@ -3025,21 +3025,21 @@ Module {
                                                                     Ident {
                                                                         text: "List",
                                                                         span: Span {
-                                                                            start: 4962,
-                                                                            end: 4966,
+                                                                            start: 5331,
+                                                                            end: 5335,
                                                                         },
                                                                     },
                                                                     Ident {
                                                                         text: "map",
                                                                         span: Span {
-                                                                            start: 4967,
-                                                                            end: 4970,
+                                                                            start: 5336,
+                                                                            end: 5339,
                                                                         },
                                                                     },
                                                                 ],
                                                                 span: Span {
-                                                                    start: 4962,
-                                                                    end: 4970,
+                                                                    start: 5331,
+                                                                    end: 5339,
                                                                 },
                                                             },
                                                         ),
@@ -3052,13 +3052,13 @@ Module {
                                                                                 name: Ident {
                                                                                     text: "id",
                                                                                     span: Span {
-                                                                                        start: 4975,
-                                                                                        end: 4977,
+                                                                                        start: 5344,
+                                                                                        end: 5346,
                                                                                     },
                                                                                 },
                                                                                 span: Span {
-                                                                                    start: 4975,
-                                                                                    end: 4977,
+                                                                                    start: 5344,
+                                                                                    end: 5346,
                                                                                 },
                                                                             },
                                                                         ),
@@ -3067,8 +3067,8 @@ Module {
                                                                         actor: Ident {
                                                                             text: "Worker",
                                                                             span: Span {
-                                                                                start: 4987,
-                                                                                end: 4993,
+                                                                                start: 5356,
+                                                                                end: 5362,
                                                                             },
                                                                         },
                                                                         args: [
@@ -3076,8 +3076,8 @@ Module {
                                                                                 Ident {
                                                                                     text: "id",
                                                                                     span: Span {
-                                                                                        start: 4994,
-                                                                                        end: 4996,
+                                                                                        start: 5363,
+                                                                                        end: 5365,
                                                                                     },
                                                                                 },
                                                                             ),
@@ -3085,8 +3085,8 @@ Module {
                                                                                 Ident {
                                                                                     text: "limiter",
                                                                                     span: Span {
-                                                                                        start: 4997,
-                                                                                        end: 5004,
+                                                                                        start: 5366,
+                                                                                        end: 5373,
                                                                                     },
                                                                                 },
                                                                             ),
@@ -3094,48 +3094,48 @@ Module {
                                                                                 Ident {
                                                                                     text: "collector",
                                                                                     span: Span {
-                                                                                        start: 5005,
-                                                                                        end: 5014,
+                                                                                        start: 5374,
+                                                                                        end: 5383,
                                                                                     },
                                                                                 },
                                                                             ),
                                                                         ],
                                                                         span: Span {
-                                                                            start: 4981,
-                                                                            end: 5014,
+                                                                            start: 5350,
+                                                                            end: 5383,
                                                                         },
                                                                     },
                                                                     span: Span {
-                                                                        start: 4972,
-                                                                        end: 5014,
+                                                                        start: 5341,
+                                                                        end: 5383,
                                                                     },
                                                                 },
                                                                 span: Span {
-                                                                    start: 4971,
-                                                                    end: 5015,
+                                                                    start: 5340,
+                                                                    end: 5384,
                                                                 },
                                                             },
                                                         ],
                                                         span: Span {
-                                                            start: 4962,
-                                                            end: 5015,
+                                                            start: 5331,
+                                                            end: 5384,
                                                         },
                                                     },
                                                     span: Span {
-                                                        start: 4943,
-                                                        end: 5015,
+                                                        start: 5312,
+                                                        end: 5384,
                                                     },
                                                 },
                                             ],
                                             span: Span {
-                                                start: 4943,
-                                                end: 5050,
+                                                start: 5312,
+                                                end: 5419,
                                             },
                                         },
                                     ),
                                     span: Span {
-                                        start: 4921,
-                                        end: 5050,
+                                        start: 5290,
+                                        end: 5419,
                                     },
                                 },
                                 Pipe {
@@ -3143,8 +3143,8 @@ Module {
                                         Ident {
                                             text: "workers",
                                             span: Span {
-                                                start: 5050,
-                                                end: 5057,
+                                                start: 5419,
+                                                end: 5426,
                                             },
                                         },
                                     ),
@@ -3155,21 +3155,21 @@ Module {
                                                     Ident {
                                                         text: "List",
                                                         span: Span {
-                                                            start: 5061,
-                                                            end: 5065,
+                                                            start: 5430,
+                                                            end: 5434,
                                                         },
                                                     },
                                                     Ident {
                                                         text: "forEach",
                                                         span: Span {
-                                                            start: 5066,
-                                                            end: 5073,
+                                                            start: 5435,
+                                                            end: 5442,
                                                         },
                                                     },
                                                 ],
                                                 span: Span {
-                                                    start: 5061,
-                                                    end: 5073,
+                                                    start: 5430,
+                                                    end: 5442,
                                                 },
                                             },
                                         ),
@@ -3182,13 +3182,13 @@ Module {
                                                                 name: Ident {
                                                                     text: "w",
                                                                     span: Span {
-                                                                        start: 5078,
-                                                                        end: 5079,
+                                                                        start: 5447,
+                                                                        end: 5448,
                                                                     },
                                                                 },
                                                                 span: Span {
-                                                                    start: 5078,
-                                                                    end: 5079,
+                                                                    start: 5447,
+                                                                    end: 5448,
                                                                 },
                                                             },
                                                         ),
@@ -3198,8 +3198,8 @@ Module {
                                                             Ident {
                                                                 text: "w",
                                                                 span: Span {
-                                                                    start: 5083,
-                                                                    end: 5084,
+                                                                    start: 5452,
+                                                                    end: 5453,
                                                                 },
                                                             },
                                                         ),
@@ -3208,48 +3208,48 @@ Module {
                                                                 Ident {
                                                                     text: "run",
                                                                     span: Span {
-                                                                        start: 5087,
-                                                                        end: 5090,
+                                                                        start: 5456,
+                                                                        end: 5459,
                                                                     },
                                                                 },
                                                             ),
                                                             args: [
                                                                 Unit(
                                                                     Span {
-                                                                        start: 5091,
-                                                                        end: 5093,
+                                                                        start: 5460,
+                                                                        end: 5462,
                                                                     },
                                                                 ),
                                                             ],
                                                             span: Span {
-                                                                start: 5087,
-                                                                end: 5093,
+                                                                start: 5456,
+                                                                end: 5462,
                                                             },
                                                         },
                                                         span: Span {
-                                                            start: 5083,
-                                                            end: 5093,
+                                                            start: 5452,
+                                                            end: 5462,
                                                         },
                                                     },
                                                     span: Span {
-                                                        start: 5075,
-                                                        end: 5093,
+                                                        start: 5444,
+                                                        end: 5462,
                                                     },
                                                 },
                                                 span: Span {
-                                                    start: 5074,
-                                                    end: 5094,
+                                                    start: 5443,
+                                                    end: 5463,
                                                 },
                                             },
                                         ],
                                         span: Span {
-                                            start: 5061,
-                                            end: 5094,
+                                            start: 5430,
+                                            end: 5463,
                                         },
                                     },
                                     span: Span {
-                                        start: 5050,
-                                        end: 5094,
+                                        start: 5419,
+                                        end: 5463,
                                     },
                                 },
                                 Call {
@@ -3259,21 +3259,21 @@ Module {
                                                 Ident {
                                                     text: "Time",
                                                     span: Span {
-                                                        start: 5345,
-                                                        end: 5349,
+                                                        start: 5714,
+                                                        end: 5718,
                                                     },
                                                 },
                                                 Ident {
                                                     text: "sleep",
                                                     span: Span {
-                                                        start: 5350,
-                                                        end: 5355,
+                                                        start: 5719,
+                                                        end: 5724,
                                                     },
                                                 },
                                             ],
                                             span: Span {
-                                                start: 5345,
-                                                end: 5355,
+                                                start: 5714,
+                                                end: 5724,
                                             },
                                         },
                                     ),
@@ -3282,15 +3282,15 @@ Module {
                                             IntDec {
                                                 raw: "6_000",
                                                 span: Span {
-                                                    start: 5356,
-                                                    end: 5361,
+                                                    start: 5725,
+                                                    end: 5730,
                                                 },
                                             },
                                         ),
                                     ],
                                     span: Span {
-                                        start: 5345,
-                                        end: 5361,
+                                        start: 5714,
+                                        end: 5730,
                                     },
                                 },
                                 Call {
@@ -3300,21 +3300,21 @@ Module {
                                                 Ident {
                                                     text: "Io",
                                                     span: Span {
-                                                        start: 5366,
-                                                        end: 5368,
+                                                        start: 5735,
+                                                        end: 5737,
                                                     },
                                                 },
                                                 Ident {
                                                     text: "println",
                                                     span: Span {
-                                                        start: 5369,
-                                                        end: 5376,
+                                                        start: 5738,
+                                                        end: 5745,
                                                     },
                                                 },
                                             ],
                                             span: Span {
-                                                start: 5366,
-                                                end: 5376,
+                                                start: 5735,
+                                                end: 5745,
                                             },
                                         },
                                     ),
@@ -3323,15 +3323,15 @@ Module {
                                             Text {
                                                 raw: "Done.",
                                                 span: Span {
-                                                    start: 5377,
-                                                    end: 5384,
+                                                    start: 5746,
+                                                    end: 5753,
                                                 },
                                             },
                                         ),
                                     ],
                                     span: Span {
-                                        start: 5366,
-                                        end: 5384,
+                                        start: 5735,
+                                        end: 5753,
                                     },
                                 },
                                 Call {
@@ -3340,41 +3340,41 @@ Module {
                                             Ident {
                                                 text: "Ok",
                                                 span: Span {
-                                                    start: 5389,
-                                                    end: 5391,
+                                                    start: 5758,
+                                                    end: 5760,
                                                 },
                                             },
                                         ),
                                         fields: [],
                                         span: Span {
-                                            start: 5389,
-                                            end: 5391,
+                                            start: 5758,
+                                            end: 5760,
                                         },
                                     },
                                     args: [
                                         Unit(
                                             Span {
-                                                start: 5392,
-                                                end: 5394,
+                                                start: 5761,
+                                                end: 5763,
                                             },
                                         ),
                                     ],
                                     span: Span {
-                                        start: 5389,
-                                        end: 5394,
+                                        start: 5758,
+                                        end: 5763,
                                     },
                                 },
                             ],
                             span: Span {
-                                start: 4780,
-                                end: 5395,
+                                start: 5149,
+                                end: 5764,
                             },
                         },
                     ),
                 ),
                 span: Span {
-                    start: 4654,
-                    end: 5395,
+                    start: 5023,
+                    end: 5764,
                 },
                 doc: None,
             },
@@ -3383,6 +3383,6 @@ Module {
     doc: [],
     span: Span {
         start: 0,
-        end: 5395,
+        end: 5764,
     },
 }

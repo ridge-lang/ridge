@@ -265,50 +265,50 @@ items:
                         Block(n102):
                           Call(n103):
                             callee:
-                              Symbol(n104): Stdlib(std.io.println)
+                              Symbol(n104): Stdlib(std.io.eprintln)
                             args:
                               -
-                                Lit(n105): Text("-- Rate limiter results --------------")
-                          Block(n106):
-                            Call(n107):
+                                Call(n105):
+                                  callee:
+                                    Symbol(n106): Stdlib(std.text.concat)
+                                  args:
+                                    -
+                                      Lit(n107): Text("  Allowed : ")
+                                    -
+                                      Call(n108):
+                                        callee:
+                                          Symbol(n109): Stdlib(std.int.toText)
+                                        args:
+                                          -
+                                            Field(n110).totalAllowed:
+                                              Local(n111): __state
+                          Block(n112):
+                            Call(n113):
                               callee:
-                                Symbol(n108): Stdlib(std.io.println)
+                                Symbol(n114): Stdlib(std.io.eprintln)
                               args:
                                 -
-                                  Call(n109):
+                                  Call(n115):
                                     callee:
-                                      Symbol(n110): Stdlib(std.text.concat)
+                                      Symbol(n116): Stdlib(std.text.concat)
                                     args:
                                       -
-                                        Lit(n111): Text("  Allowed : ")
+                                        Lit(n117): Text("  Denied  : ")
                                       -
-                                        Call(n112):
+                                        Call(n118):
                                           callee:
-                                            Symbol(n113): Stdlib(std.int.toText)
+                                            Symbol(n119): Stdlib(std.int.toText)
                                           args:
                                             -
-                                              Field(n114).totalAllowed:
-                                                Local(n115): __state
-                            Block(n116):
-                              Call(n117):
+                                              Field(n120).totalDenied:
+                                                Local(n121): __state
+                            Block(n122):
+                              Call(n123):
                                 callee:
-                                  Symbol(n118): Stdlib(std.io.println)
+                                  Symbol(n124): Stdlib(std.io.println)
                                 args:
                                   -
-                                    Call(n119):
-                                      callee:
-                                        Symbol(n120): Stdlib(std.text.concat)
-                                      args:
-                                        -
-                                          Lit(n121): Text("  Denied  : ")
-                                        -
-                                          Call(n122):
-                                            callee:
-                                              Symbol(n123): Stdlib(std.int.toText)
-                                            args:
-                                              -
-                                                Field(n124).totalDenied:
-                                                  Local(n125): __state
+                                    Lit(n125): Text("-- Rate limiter results --------------")
                               Call(n126):
                                 callee:
                                   Symbol(n127): Stdlib(std.io.println)

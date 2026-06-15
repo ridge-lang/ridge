@@ -1574,6 +1574,8 @@ mod tests {
                             | "ddlIndex"
                             | "migrationsApplied"
                             | "recordMigration"
+                            | "rawQuery"
+                            | "rawExec"
                             | "MemAdapter"
                             | "memAdapter"
                             | "Postgres"
@@ -1595,6 +1597,12 @@ mod tests {
                 // via `reconciled_ctor_scheme` / `reconciled_fn_scheme`, not this
                 // hand-curated table.
                 if module.name == "std.migrate" {
+                    continue;
+                }
+                // std.raw: its escape-hatch verbs are constrained over `Adapter a`
+                // (and `Row e` for the decoding ones), so they are seeded via
+                // `reconciled_fn_scheme`, not this hand-curated table.
+                if module.name == "std.raw" {
                     continue;
                 }
                 let result = stdlib_signature(module.id, name, &b);

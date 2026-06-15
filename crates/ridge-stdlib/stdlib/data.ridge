@@ -100,6 +100,14 @@ import std.sql (SqlValue)
 -- one applied; the runner reads the first to skip applied migrations and writes the
 -- second inside each migration's transaction, so the record and the schema change
 -- commit or roll back together.
+--
+-- `rawQuery` and `rawExec` are the raw-SQL escape hatch (the typed front door is
+-- std.raw): `rawQuery` runs a statement that returns rows and answers them as
+-- column maps, `rawExec` runs one that returns none and answers the affected row
+-- count. Both take the SQL text and a `List SqlValue` of bind values, which a
+-- backend binds as positional parameters rather than splicing into the text, so a
+-- raw query is injection-safe. A SQL backend runs them; the in-memory adapter,
+-- which has no SQL engine, reports a clear error instead.
 pub class Adapter a =
     appendRow (conn: a) (table: Text) (row: Map Text SqlValue) -> Result Unit Error
     all    (conn: a) (table: Text) -> Result (List (Map Text SqlValue)) Error
@@ -133,6 +141,8 @@ pub class Adapter a =
     ddlIndex (conn: a) (name: Text) (table: Text) (cols: List Text) (unique: Bool) -> Result Unit Error
     migrationsApplied (conn: a) -> Result (List Text) Error
     recordMigration (conn: a) (name: Text) -> Result Unit Error
+    rawQuery (conn: a) (sql: Text) (params: List SqlValue) -> Result (List (Map Text SqlValue)) Error
+    rawExec (conn: a) (sql: Text) (params: List SqlValue) -> Result Int Error
 
 -- A handle to an in-memory store. Opaque: `memAdapter` is the only way to make
 -- one, and the `id` it carries selects this handle's private, isolated store,
@@ -311,6 +321,14 @@ fn _memMigrationsApplied (id: Int) -> Result (List Text) Error
 @ffi("ridge_rt", "mem_record_migration", 2)
 fn _memRecordMigration (id: Int) (name: Text) -> Result Unit Error
 
+-- Raw SQL has no meaning on the schemaless in-memory store (no SQL engine), so
+-- both raw verbs report a clear error rather than silently doing nothing.
+@ffi("ridge_rt", "mem_raw_query", 3)
+fn _memRawQuery (id: Int) (sql: Text) (params: List SqlValue) -> Result (List (Map Text SqlValue)) Error
+
+@ffi("ridge_rt", "mem_raw_exec", 3)
+fn _memRawExec (id: Int) (sql: Text) (params: List SqlValue) -> Result Int Error
+
 -- Open a fresh in-memory adapter backed by an empty store. Requires the `db`
 -- capability; the handle returned is the proof of access for every later call.
 @ffi("ridge_rt", "mem_new", 1)
@@ -383,6 +401,10 @@ instance Adapter MemAdapter =
         _memMigrationsApplied conn.id
     recordMigration (conn: MemAdapter) (name: Text) -> Result Unit Error =
         _memRecordMigration conn.id name
+    rawQuery (conn: MemAdapter) (sql: Text) (params: List SqlValue) -> Result (List (Map Text SqlValue)) Error =
+        _memRawQuery conn.id sql params
+    rawExec (conn: MemAdapter) (sql: Text) (params: List SqlValue) -> Result Int Error =
+        _memRawExec conn.id sql params
 
 -- The head of a row list as an `Option` — `get` returns at most one row, so it
 -- reads the first match (or `None` when the column held no such key).
@@ -571,6 +593,15 @@ fn _pgMigrationsApplied (id: Int) -> Result (List Text) Error
 @ffi("ridge_pg", "pg_record_migration", 2)
 fn _pgRecordMigration (id: Int) (name: Text) -> Result Unit Error
 
+-- Run a raw SQL query with positional `$N` parameters bound from `params`,
+-- returning the rows as column maps. Result (List Row) Error.
+@ffi("ridge_pg", "pg_raw_query", 3)
+fn _pgRawQuery (id: Int) (sql: Text) (params: List SqlValue) -> Result (List (Map Text SqlValue)) Error
+
+-- Run a raw SQL statement with bound parameters; answer the affected row count.
+@ffi("ridge_pg", "pg_raw_exec", 3)
+fn _pgRawExec (id: Int) (sql: Text) (params: List SqlValue) -> Result Int Error
+
 -- Open a Postgres connection with the given settings. Requires the `db`
 -- capability; the handle returned is the proof of access for every later call,
 -- exactly like `memAdapter`. A failed connect or authentication is an `Err`.
@@ -644,3 +675,7 @@ instance Adapter Postgres =
         _pgMigrationsApplied conn.id
     recordMigration (conn: Postgres) (name: Text) -> Result Unit Error =
         _pgRecordMigration conn.id name
+    rawQuery (conn: Postgres) (sql: Text) (params: List SqlValue) -> Result (List (Map Text SqlValue)) Error =
+        _pgRawQuery conn.id sql params
+    rawExec (conn: Postgres) (sql: Text) (params: List SqlValue) -> Result Int Error =
+        _pgRawExec conn.id sql params

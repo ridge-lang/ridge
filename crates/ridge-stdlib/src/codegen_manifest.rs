@@ -81,6 +81,7 @@ pub const STDLIB_MODULE_ORDER: &[&str] = &[
     "std.data",
     "std.repo",
     "std.migrate",
+    "std.raw",
 ];
 
 // ── Core extraction ───────────────────────────────────────────────────────────

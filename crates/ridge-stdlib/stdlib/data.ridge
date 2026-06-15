@@ -85,6 +85,21 @@ import std.sql (SqlValue)
 -- Postgres issues `BEGIN`/`COMMIT`/`ROLLBACK` (or `SAVEPOINT`/`RELEASE SAVEPOINT`/
 -- `ROLLBACK TO SAVEPOINT`) on a single connection pinned for the transaction's
 -- span, so every operation between `begin` and the matching terminal runs on it.
+--
+-- `ddlCreate`, `ddlDrop`, `ddlAddColumn`, `ddlDropColumn`, and `ddlIndex` are the
+-- schema seam the `std.migrate` runner compiles a migration onto: create or drop a
+-- table, add or drop a column, and create an index. A column crosses as the tuple
+-- `(name, typeName, nullable?, primaryKey?, unique?)`, the schema-side counterpart
+-- of the `(ascending?, column)` tuples the query seam takes — `typeName` is the
+-- base type (`"int"`/`"text"`/`"bool"`/`"float"`) the backend maps to its own
+-- column type. Postgres compiles each to a `CREATE TABLE`/`ALTER TABLE`/`CREATE
+-- INDEX`; the in-memory adapter, which is schemaless, materialises an empty table
+-- for a create and forgets one on a drop, and treats the column and index changes
+-- as no-ops. `migrationsApplied` answers the names of the migrations already
+-- applied (creating the tracking table on first use), and `recordMigration` marks
+-- one applied; the runner reads the first to skip applied migrations and writes the
+-- second inside each migration's transaction, so the record and the schema change
+-- commit or roll back together.
 pub class Adapter a =
     appendRow (conn: a) (table: Text) (row: Map Text SqlValue) -> Result Unit Error
     all    (conn: a) (table: Text) -> Result (List (Map Text SqlValue)) Error
@@ -111,6 +126,13 @@ pub class Adapter a =
     begin    (conn: a) -> Result Unit Error
     commit   (conn: a) -> Result Unit Error
     rollback (conn: a) -> Result Unit Error
+    ddlCreate (conn: a) (table: Text) (cols: List (Text, Text, Bool, Bool, Bool)) -> Result Unit Error
+    ddlDrop (conn: a) (table: Text) -> Result Unit Error
+    ddlAddColumn (conn: a) (table: Text) (col: (Text, Text, Bool, Bool, Bool)) -> Result Unit Error
+    ddlDropColumn (conn: a) (table: Text) (column: Text) -> Result Unit Error
+    ddlIndex (conn: a) (name: Text) (table: Text) (cols: List Text) (unique: Bool) -> Result Unit Error
+    migrationsApplied (conn: a) -> Result (List Text) Error
+    recordMigration (conn: a) (name: Text) -> Result Unit Error
 
 -- A handle to an in-memory store. Opaque: `memAdapter` is the only way to make
 -- one, and the `id` it carries selects this handle's private, isolated store,
@@ -258,6 +280,37 @@ fn _memCommit (id: Int) -> Result Unit Error
 @ffi("ridge_rt", "mem_rollback", 1)
 fn _memRollback (id: Int) -> Result Unit Error
 
+-- Materialise an empty table in the store (schemaless, so the columns are not
+-- enforced — the create only makes the table exist for reads and drops).
+@ffi("ridge_rt", "mem_ddl_create", 3)
+fn _memDdlCreate (id: Int) (table: Text) (cols: List (Text, Text, Bool, Bool, Bool)) -> Result Unit Error
+
+-- Forget a table and its rows.
+@ffi("ridge_rt", "mem_ddl_drop", 2)
+fn _memDdlDrop (id: Int) (table: Text) -> Result Unit Error
+
+-- A no-op on the schemaless store: a missing column already reads as SQL NULL.
+@ffi("ridge_rt", "mem_ddl_add_column", 3)
+fn _memDdlAddColumn (id: Int) (table: Text) (col: (Text, Text, Bool, Bool, Bool)) -> Result Unit Error
+
+-- A no-op on the schemaless store.
+@ffi("ridge_rt", "mem_ddl_drop_column", 3)
+fn _memDdlDropColumn (id: Int) (table: Text) (column: Text) -> Result Unit Error
+
+-- A no-op on the schemaless store: the in-memory adapter has no indexes.
+@ffi("ridge_rt", "mem_ddl_index", 5)
+fn _memDdlIndex (id: Int) (name: Text) (table: Text) (cols: List Text) (unique: Bool) -> Result Unit Error
+
+-- The names of the migrations already applied to this store, oldest first; the
+-- tracking table reads as empty until the first migration records into it.
+@ffi("ridge_rt", "mem_migrations_applied", 1)
+fn _memMigrationsApplied (id: Int) -> Result (List Text) Error
+
+-- Record a migration name as applied — appended to the tracking table so a later
+-- `migrationsApplied` reports it.
+@ffi("ridge_rt", "mem_record_migration", 2)
+fn _memRecordMigration (id: Int) (name: Text) -> Result Unit Error
+
 -- Open a fresh in-memory adapter backed by an empty store. Requires the `db`
 -- capability; the handle returned is the proof of access for every later call.
 @ffi("ridge_rt", "mem_new", 1)
@@ -316,6 +369,20 @@ instance Adapter MemAdapter =
         _memCommit conn.id
     rollback (conn: MemAdapter) -> Result Unit Error =
         _memRollback conn.id
+    ddlCreate (conn: MemAdapter) (table: Text) (cols: List (Text, Text, Bool, Bool, Bool)) -> Result Unit Error =
+        _memDdlCreate conn.id table cols
+    ddlDrop (conn: MemAdapter) (table: Text) -> Result Unit Error =
+        _memDdlDrop conn.id table
+    ddlAddColumn (conn: MemAdapter) (table: Text) (col: (Text, Text, Bool, Bool, Bool)) -> Result Unit Error =
+        _memDdlAddColumn conn.id table col
+    ddlDropColumn (conn: MemAdapter) (table: Text) (column: Text) -> Result Unit Error =
+        _memDdlDropColumn conn.id table column
+    ddlIndex (conn: MemAdapter) (name: Text) (table: Text) (cols: List Text) (unique: Bool) -> Result Unit Error =
+        _memDdlIndex conn.id name table cols unique
+    migrationsApplied (conn: MemAdapter) -> Result (List Text) Error =
+        _memMigrationsApplied conn.id
+    recordMigration (conn: MemAdapter) (name: Text) -> Result Unit Error =
+        _memRecordMigration conn.id name
 
 -- The head of a row list as an `Option` — `get` returns at most one row, so it
 -- reads the first match (or `None` when the column held no such key).
@@ -475,6 +542,35 @@ fn _pgCommit (id: Int) -> Result Unit Error
 @ffi("ridge_pg", "pg_rollback", 1)
 fn _pgRollback (id: Int) -> Result Unit Error
 
+-- Compile a `CREATE TABLE` from the column tuples and run it on the connection.
+@ffi("ridge_pg", "pg_ddl_create", 3)
+fn _pgDdlCreate (id: Int) (table: Text) (cols: List (Text, Text, Bool, Bool, Bool)) -> Result Unit Error
+
+-- Run a `DROP TABLE` on the connection.
+@ffi("ridge_pg", "pg_ddl_drop", 2)
+fn _pgDdlDrop (id: Int) (table: Text) -> Result Unit Error
+
+-- Run an `ALTER TABLE … ADD COLUMN` from the column tuple on the connection.
+@ffi("ridge_pg", "pg_ddl_add_column", 3)
+fn _pgDdlAddColumn (id: Int) (table: Text) (col: (Text, Text, Bool, Bool, Bool)) -> Result Unit Error
+
+-- Run an `ALTER TABLE … DROP COLUMN` on the connection.
+@ffi("ridge_pg", "pg_ddl_drop_column", 3)
+fn _pgDdlDropColumn (id: Int) (table: Text) (column: Text) -> Result Unit Error
+
+-- Run a `CREATE [UNIQUE] INDEX … ON table (cols)` on the connection.
+@ffi("ridge_pg", "pg_ddl_index", 5)
+fn _pgDdlIndex (id: Int) (name: Text) (table: Text) (cols: List Text) (unique: Bool) -> Result Unit Error
+
+-- Create the tracking table if absent, then read the applied migration names back
+-- in order. Result (List Text) Error.
+@ffi("ridge_pg", "pg_migrations_applied", 1)
+fn _pgMigrationsApplied (id: Int) -> Result (List Text) Error
+
+-- Insert a migration name into the tracking table.
+@ffi("ridge_pg", "pg_record_migration", 2)
+fn _pgRecordMigration (id: Int) (name: Text) -> Result Unit Error
+
 -- Open a Postgres connection with the given settings. Requires the `db`
 -- capability; the handle returned is the proof of access for every later call,
 -- exactly like `memAdapter`. A failed connect or authentication is an `Err`.
@@ -534,3 +630,17 @@ instance Adapter Postgres =
         _pgCommit conn.id
     rollback (conn: Postgres) -> Result Unit Error =
         _pgRollback conn.id
+    ddlCreate (conn: Postgres) (table: Text) (cols: List (Text, Text, Bool, Bool, Bool)) -> Result Unit Error =
+        _pgDdlCreate conn.id table cols
+    ddlDrop (conn: Postgres) (table: Text) -> Result Unit Error =
+        _pgDdlDrop conn.id table
+    ddlAddColumn (conn: Postgres) (table: Text) (col: (Text, Text, Bool, Bool, Bool)) -> Result Unit Error =
+        _pgDdlAddColumn conn.id table col
+    ddlDropColumn (conn: Postgres) (table: Text) (column: Text) -> Result Unit Error =
+        _pgDdlDropColumn conn.id table column
+    ddlIndex (conn: Postgres) (name: Text) (table: Text) (cols: List Text) (unique: Bool) -> Result Unit Error =
+        _pgDdlIndex conn.id name table cols unique
+    migrationsApplied (conn: Postgres) -> Result (List Text) Error =
+        _pgMigrationsApplied conn.id
+    recordMigration (conn: Postgres) (name: Text) -> Result Unit Error =
+        _pgRecordMigration conn.id name

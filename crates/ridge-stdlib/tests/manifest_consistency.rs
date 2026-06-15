@@ -262,6 +262,12 @@ fn signature_shape_consistency() {
             if dotted == "std.repo" {
                 continue;
             }
+            // Every std.migrate builder/runner references the reconciled
+            // `Column`/`SchemaOp`/`Migration` block, so the whole module is seeded
+            // via `reconciled_fn_scheme` rather than the `stdlib_signature` table.
+            if dotted == "std.migrate" {
+                continue;
+            }
             // 1. Signature must resolve to Some.
             let scheme = stdlib_signature(module_id, fn_name, &b).unwrap_or_else(|| {
                 panic!(

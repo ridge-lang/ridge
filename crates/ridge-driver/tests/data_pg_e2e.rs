@@ -52,13 +52,20 @@ use ridge_driver::{compile_workspace, CompileOptions, EmitArtefacts};
 const SOURCE_TEMPLATE: &str = r#"
 import std.data (connect, Config, Postgres)
 import std.repo as Repo
+import std.migrate as Migrate
+import std.migrate (SchemaOp)
 import std.query (SortOrder, Asc, Desc)
 import std.sql (toSql, SqlValue)
 import std.map as Map
 import std.int as Int
 import std.float as Float
+import std.list (length)
 
 pub type User = { id: Int, age: Int, name: Text } deriving (Row)
+
+-- A throwaway entity for the migration probes, in a table the probes themselves
+-- create via `Migrate.run` rather than one the CI harness sets up.
+pub type Widget = { id: Int, name: Text } deriving (Row)
 
 -- A second entity for the join, in the `ridge_pg_posts` table; `author` holds the
 -- owning user's id.
@@ -1206,6 +1213,67 @@ pub fn db txSavepointCount () -> Int =
                     match Repo.transaction conn pgOuterKeepsInnerRollsBack
                         Err _ -> 0 - 3
                         Ok _  -> pgCountUsers conn
+
+-- The migration probes create their own table on the live database through the
+-- schema DSL: `CREATE TABLE ridge_mig_widgets (id bigint PRIMARY KEY, name text)`,
+-- recorded in the `_ridge_migrations` tracking table. Applying the same schema again
+-- is a no-op, so the probes stay deterministic against the persistent test database
+-- (the tracking table outlives any one probe).
+fn widgetsTable () -> SchemaOp =
+    Migrate.createTable "ridge_mig_widgets"
+        [ Migrate.intCol  "id"   |> Migrate.primaryKey
+        , Migrate.textCol "name" ]
+
+fn runWidgets (conn: Postgres) -> Result (List Text) Error =
+    Migrate.run conn [ Migrate.migration "0001_widgets" [ widgetsTable () ] ]
+
+fn pgClearWidgets (conn: Postgres) -> Result Int Error =
+    let r = Repo.repo conn "ridge_mig_widgets"
+    Repo.deleteWhere (fn (w: Widget) -> w.id >= 0) r
+
+fn pgAddWidget (conn: Postgres) (wid: Int) (wname: Text) -> Result Unit Error =
+    let r = Repo.repo conn "ridge_mig_widgets"
+    Repo.insert (Widget { id = wid, name = wname }) r
+
+fn pgCountWidgets (conn: Postgres) -> Int =
+    let r = Repo.repo conn "ridge_mig_widgets"
+    match r |> Repo.query |> Repo.count
+        Ok n  -> n
+        Err _ -> 0 - 9
+
+-- Applying a recorded migration again applies nothing: the second run answers an
+-- empty list -> 0. Holds whatever the database's prior state, since the first run
+-- here records the migration if it was not already.
+pub fn db pgMigrateIdempotent () -> Int =
+    match connect (pgConfig ())
+        Err _ -> 0 - 1
+        Ok conn ->
+            match runWidgets conn
+                Err _ -> 0 - 2
+                Ok _  ->
+                    match runWidgets conn
+                        Ok names -> length names
+                        Err _    -> 0 - 3
+
+-- The migrated table is real and typed: after the CREATE TABLE lands, two rows
+-- insert and count back -> 2. Clears the table first so the count is deterministic
+-- across runs.
+pub fn db pgMigratedUsable () -> Int =
+    match connect (pgConfig ())
+        Err _ -> 0 - 1
+        Ok conn ->
+            match runWidgets conn
+                Err _ -> 0 - 2
+                Ok _  ->
+                    match pgClearWidgets conn
+                        Err _ -> 0 - 3
+                        Ok _  ->
+                            match pgAddWidget conn 1 "left"
+                                Err _ -> 0 - 4
+                                Ok _  ->
+                                    match pgAddWidget conn 2 "right"
+                                        Err _ -> 0 - 5
+                                        Ok _  -> pgCountWidgets conn
 "#;
 
 /// Connection settings parsed out of `RIDGE_TEST_PG_URL`.
@@ -1428,6 +1496,8 @@ fn postgres_adapter_reads_a_real_table() {
          io:format(\"txCommittedCount=~w~n\",[{module}:txCommittedCount()]), \
          io:format(\"txRolledBackCount=~w~n\",[{module}:txRolledBackCount()]), \
          io:format(\"txSavepointCount=~w~n\",[{module}:txSavepointCount()]), \
+         io:format(\"pgMigrateIdempotent=~w~n\",[{module}:pgMigrateIdempotent()]), \
+         io:format(\"pgMigratedUsable=~w~n\",[{module}:pgMigratedUsable()]), \
          {pool_probe} \
          halt()."
     );
@@ -1725,6 +1795,14 @@ fn postgres_adapter_reads_a_real_table() {
         (
             "txSavepointCount=1",
             "a nested transaction's failure rewinds to its savepoint while the outer commits",
+        ),
+        (
+            "pgMigrateIdempotent=0",
+            "re-running a recorded migration applies nothing on the live database",
+        ),
+        (
+            "pgMigratedUsable=2",
+            "a CREATE TABLE migration lands and the typed table accepts two inserts",
         ),
         (
             "concurrent=true",

@@ -2990,3 +2990,104 @@ pub fn db seed () -> Result Unit Error =
         "Repo.transaction over the Postgres adapter must typecheck clean; got {errors:?}"
     );
 }
+
+#[test]
+fn migrate_run_over_schema_typechecks() {
+    // `Migrate.run` applies a list of migrations and answers the names applied
+    // (`Result (List Text) Error`). The schema DSL builds each `createTable` from
+    // typed columns with their modifiers, and an index over a column; the
+    // `Adapter MemAdapter` constraint resolves the backend the runner drives.
+    let main = r#"
+import std.data (memAdapter, MemAdapter)
+import std.migrate as Migrate
+import std.migrate (SchemaOp)
+
+fn usersTable () -> SchemaOp =
+    Migrate.createTable "users"
+        [ Migrate.intCol  "id"    |> Migrate.primaryKey
+        , Migrate.textCol "name"
+        , Migrate.textCol "email" |> Migrate.unique
+        , Migrate.textCol "bio"   |> Migrate.nullable ]
+
+fn postsTable () -> SchemaOp =
+    Migrate.createTable "posts"
+        [ Migrate.intCol   "id"     |> Migrate.primaryKey
+        , Migrate.intCol   "author"
+        , Migrate.floatCol "score"
+        , Migrate.boolCol  "live" ]
+
+pub fn db setup () -> Result (List Text) Error =
+    let conn = memAdapter ()
+    let schema = [ Migrate.migration "0001_users" [ usersTable () ], Migrate.migration "0002_posts" [ postsTable (), Migrate.createIndex "posts_author_idx" "posts" ["author"] ] ]
+    Migrate.run conn schema
+"#;
+    let errors = typecheck_one(main);
+    assert!(
+        errors.is_empty(),
+        "Migrate.run over a typed schema must typecheck clean; got {errors:?}"
+    );
+}
+
+#[test]
+fn migrate_full_schema_op_surface_typechecks() {
+    // The rest of the schema verbs — `addColumn`, `dropColumn`, `uniqueIndex`,
+    // `dropTable` — all build `SchemaOp` values the `migration` builder and runner
+    // accept.
+    let main = r#"
+import std.data (memAdapter, MemAdapter)
+import std.migrate as Migrate
+
+pub fn db alter () -> Result (List Text) Error =
+    let conn = memAdapter ()
+    let ops = [ Migrate.addColumn "users" (Migrate.intCol "age" |> Migrate.nullable), Migrate.dropColumn "users" "bio", Migrate.uniqueIndex "users_name_idx" "users" ["name"], Migrate.dropTable "posts" ]
+    let schema = [ Migrate.migration "0003_alter" ops ]
+    Migrate.run conn schema
+"#;
+    let errors = typecheck_one(main);
+    assert!(
+        errors.is_empty(),
+        "the full schema-op surface must typecheck clean; got {errors:?}"
+    );
+}
+
+#[test]
+fn migrate_run_over_postgres_typechecks() {
+    // The same runner resolves the `Adapter` constraint for the Postgres backend:
+    // given a Postgres handle, `Migrate.run` applies the schema on it. No database
+    // is touched — this is the type-level wiring for the other backend.
+    let main = r#"
+import std.data (Postgres)
+import std.migrate as Migrate
+import std.migrate (SchemaOp)
+
+fn usersTable () -> SchemaOp =
+    Migrate.createTable "users"
+        [ Migrate.intCol  "id"   |> Migrate.primaryKey
+        , Migrate.textCol "name" ]
+
+pub fn setup (conn: Postgres) -> Result (List Text) Error =
+    let schema = [ Migrate.migration "0001_users" [ usersTable () ] ]
+    Migrate.run conn schema
+"#;
+    let errors = typecheck_one(main);
+    assert!(
+        errors.is_empty(),
+        "Migrate.run over the Postgres adapter must typecheck clean; got {errors:?}"
+    );
+}
+
+#[test]
+fn migrate_column_is_opaque_cross_module() {
+    // `Column` is opaque: reading its representation from user code is rejected, so
+    // the only way to build one is through the typed declarators and modifier steps.
+    let main = r"
+import std.migrate (Column)
+
+fn leak (c: Column) -> Text = c.name
+";
+    let errors = typecheck_one(main);
+    assert!(
+        !errors.is_empty(),
+        "reading an opaque Column's field from user code must be rejected; got no errors"
+    );
+}

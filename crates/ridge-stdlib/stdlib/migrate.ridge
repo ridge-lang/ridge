@@ -1,0 +1,223 @@
+-- std.migrate — versioned schema migrations over the storage Adapter seam.
+--
+-- A migration is a named, ordered batch of schema changes. `run` applies the
+-- migrations a project declares against a connection, in order, skipping the
+-- ones already applied and recording each it runs in a tracking table, so the
+-- same list run twice applies each migration exactly once. Every migration runs
+-- inside a transaction: its schema changes and the record of it landing commit
+-- together, or roll back together if any step fails, so a half-applied migration
+-- never leaves the database — and is never marked as applied.
+--
+-- Schema changes are built through a typed DSL rather than raw SQL: `createTable`
+-- with a list of columns, `dropTable`, `addColumn`/`dropColumn`, and
+-- `createIndex`/`uniqueIndex`. A column is declared by its base type —
+-- `intCol`/`textCol`/`boolCol`/`floatCol` — and carries the modifiers `nullable`,
+-- `primaryKey`, and `unique`, each a pipe-friendly step:
+--   textCol "email" |> unique
+-- The DSL compiles to the backend's data-definition language — `CREATE TABLE …`
+-- on Postgres, an in-store table on the in-memory adapter — so the same
+-- migrations run on either backend with no SQL written by hand.
+--
+-- A typical project defines each table in its own helper and keeps the schema as
+-- one growing list of migrations, run on startup:
+--   fn usersTable () -> SchemaOp =
+--     createTable "users"
+--       [ intCol  "id"    |> primaryKey
+--       , textCol "name"
+--       , textCol "email" |> unique
+--       , textCol "bio"   |> nullable ]
+--
+--   fn schema () -> List Migration =
+--     [ migration "0001_users" [ usersTable () ]
+--     , migration "0002_users_index" [ createIndex "users_email_idx" "users" ["email"] ] ]
+--
+--   match Migrate.run conn (schema ())
+--     Ok applied -> ...   -- the names applied on this run
+--     Err e      -> ...
+
+-- The schema seam (`ddlCreate`/`ddlDrop`/`ddlAddColumn`/`ddlDropColumn`/`ddlIndex`/
+-- `migrationsApplied`/`recordMigration`) and the transaction primitives
+-- (`begin`/`commit`/`rollback`) are `Adapter` class methods, brought into scope by
+-- importing the module and called against the connection, the same way `std.repo`
+-- reaches the seam.
+import std.data as Db
+
+-- A column in a table definition: its name, its base type, and the three
+-- modifiers a schema cares about — whether it admits SQL NULL, whether it is the
+-- table's primary key, and whether it carries a uniqueness constraint. The type
+-- is held as the seam's base-type name (`"int"`/`"text"`/`"bool"`/`"float"`), the
+-- schema-side counterpart of the values `SqlType` moves across the seam. Opaque: a
+-- value is built only through the `intCol`/`textCol`/`boolCol`/`floatCol`
+-- declarators and refined with the `nullable`/`primaryKey`/`unique` steps, so the
+-- defaults (a non-null, non-key, non-unique column) hold until a step changes them.
+pub opaque type Column = { name: Text, ty: Text, nullable: Bool, primaryKey: Bool, unique: Bool }
+
+-- The base declarator: a column of a base type, not null, not a key, not unique.
+-- The four typed front doors below pin the type so a declaration reads as
+-- `intCol "id"` rather than naming a separate type value.
+fn baseColumn (name: Text) (ty: Text) -> Column =
+    Column { name = name, ty = ty, nullable = false, primaryKey = false, unique = false }
+
+-- An integer column (`bigint` on Postgres).
+pub fn intCol (name: Text) -> Column = baseColumn name "int"
+
+-- A text column.
+pub fn textCol (name: Text) -> Column = baseColumn name "text"
+
+-- A boolean column.
+pub fn boolCol (name: Text) -> Column = baseColumn name "bool"
+
+-- A floating-point column (`double precision` on Postgres).
+pub fn floatCol (name: Text) -> Column = baseColumn name "float"
+
+-- Let the column admit SQL NULL — the schema dual of an `Option` field. A column
+-- is non-null until this marks it nullable.
+pub fn nullable (c: Column) -> Column =
+    Column { name = c.name, ty = c.ty, nullable = true, primaryKey = c.primaryKey, unique = c.unique }
+
+-- Make the column the table's primary key. A primary key is implicitly unique and
+-- non-null, so a backend may not need the other modifiers spelled out alongside.
+pub fn primaryKey (c: Column) -> Column =
+    Column { name = c.name, ty = c.ty, nullable = c.nullable, primaryKey = true, unique = c.unique }
+
+-- Give the column a uniqueness constraint: no two rows may share its value.
+pub fn unique (c: Column) -> Column =
+    Column { name = c.name, ty = c.ty, nullable = c.nullable, primaryKey = c.primaryKey, unique = true }
+
+-- A single schema change. Its constructors are not exported — a value is built
+-- only through the `createTable`/`dropTable`/`addColumn`/`dropColumn`/`createIndex`/
+-- `uniqueIndex` factories and handed to `migration`, and the runner decomposes it
+-- onto the adapter's schema seam — so user code names the type but never the
+-- variants.
+pub type SchemaOp = CreateTable Text (List Column) | DropTable Text | AddColumn Text Column | DropColumn Text Text | CreateIndex Text Text (List Text) Bool
+
+-- Create a table with the given columns.
+pub fn createTable (table: Text) (cols: List Column) -> SchemaOp =
+    CreateTable table cols
+
+-- Drop a table.
+pub fn dropTable (table: Text) -> SchemaOp =
+    DropTable table
+
+-- Add a column to an existing table. A non-null column added to a table that
+-- already holds rows needs a value for them, so add it `nullable` (or seed the
+-- rows in the same migration).
+pub fn addColumn (table: Text) (col: Column) -> SchemaOp =
+    AddColumn table col
+
+-- Drop a column from a table, named by its text.
+pub fn dropColumn (table: Text) (col: Text) -> SchemaOp =
+    DropColumn table col
+
+-- Create an index over one or more columns of a table.
+pub fn createIndex (name: Text) (table: Text) (cols: List Text) -> SchemaOp =
+    CreateIndex name table cols false
+
+-- Create a unique index over one or more columns of a table — the index doubles
+-- as a uniqueness constraint across the named columns together.
+pub fn uniqueIndex (name: Text) (table: Text) (cols: List Text) -> SchemaOp =
+    CreateIndex name table cols true
+
+-- A named, ordered batch of schema changes. The name identifies the migration in
+-- the tracking table, so it must be stable and unique across a project's
+-- migrations (a zero-padded ordinal prefix keeps them sorted, e.g.
+-- "0001_users"); `steps` are applied in order.
+pub type Migration = { name: Text, steps: List SchemaOp }
+
+-- Build a migration from a name and its ordered steps. The ergonomic front door
+-- to the `Migration` record:
+--   migration "0001_users" [ createTable "users" [ ... ] ]
+pub fn migration (name: Text) (steps: List SchemaOp) -> Migration =
+    Migration { name = name, steps = steps }
+
+-- A column flattened to the tuple the schema seam takes: name, base-type name, and
+-- the three modifier flags. The seam stays untyped (primitives only), the same way
+-- the query seam takes `(ascending?, column)` tuples rather than a typed key.
+fn colTuple (c: Column) -> (Text, Text, Bool, Bool, Bool) =
+    (c.name, c.ty, c.nullable, c.primaryKey, c.unique)
+
+-- A list of columns flattened to the seam tuples.
+fn colTuples (cols: List Column) -> List (Text, Text, Bool, Bool, Bool) =
+    match cols
+        []        -> []
+        c :: rest -> colTuple c :: colTuples rest
+
+-- Run one schema change against the adapter's schema seam, dispatching on its kind.
+fn runStep (conn: a) (op: SchemaOp) -> Result Unit Error where Adapter a =
+    match op
+        CreateTable table cols      -> ddlCreate conn table (colTuples cols)
+        DropTable table             -> ddlDrop conn table
+        AddColumn table col         -> ddlAddColumn conn table (colTuple col)
+        DropColumn table col        -> ddlDropColumn conn table col
+        CreateIndex name table cols uniq -> ddlIndex conn name table cols uniq
+
+-- Run a migration's steps in order, stopping at the first failure.
+fn runSteps (conn: a) (steps: List SchemaOp) -> Result Unit Error where Adapter a =
+    match steps
+        []        -> Ok ()
+        s :: rest ->
+            match runStep conn s
+                Err e -> Err e
+                Ok _  -> runSteps conn rest
+
+-- Apply one migration inside a transaction: its steps and the record that it ran
+-- commit together, or roll back together on any failure. A `rollback` that itself
+-- fails surfaces as the result's error; otherwise a failed migration returns the
+-- step's own error and leaves the database as it was.
+fn applyOne (conn: a) (m: Migration) -> Result Unit Error where Adapter a =
+    match begin conn
+        Err e -> Err e
+        Ok _  ->
+            match runSteps conn m.steps
+                Err e -> abort conn e
+                Ok _  ->
+                    match recordMigration conn m.name
+                        Err e -> abort conn e
+                        Ok _  ->
+                            match commit conn
+                                Ok _  -> Ok ()
+                                Err e -> Err e
+
+-- Roll the open transaction back and report the original error, preferring a
+-- rollback failure (a dropped connection, say) if one happens.
+fn abort (conn: a) (orig: Error) -> Result Unit Error where Adapter a =
+    match rollback conn
+        Ok _   -> Err orig
+        Err e2 -> Err e2
+
+-- Whether a migration name is already in the applied set.
+fn alreadyApplied (name: Text) (applied: List Text) -> Bool =
+    match applied
+        []        -> false
+        n :: rest ->
+            match n == name
+                true  -> true
+                false -> alreadyApplied name rest
+
+-- Apply each not-yet-applied migration in order, returning the names applied on
+-- this run (in order). An already-applied migration is skipped without rerunning
+-- its steps.
+fn runPending (conn: a) (migrations: List Migration) (applied: List Text) -> Result (List Text) Error where Adapter a =
+    match migrations
+        []        -> Ok []
+        m :: rest ->
+            match alreadyApplied m.name applied
+                true  -> runPending conn rest applied
+                false ->
+                    match applyOne conn m
+                        Err e -> Err e
+                        Ok _  ->
+                            match runPending conn rest applied
+                                Err e   -> Err e
+                                Ok more -> Ok (m.name :: more)
+
+-- Apply the migrations against the connection. Reads the tracking table (creating
+-- it on first use) for the names already applied, then runs each pending migration
+-- in order — every one in its own transaction — and answers the names applied on
+-- this run, oldest first. Running the same list again applies nothing and answers
+-- `[]`. The first migration that fails stops the run and returns its error, with
+-- the migrations before it already committed and the failed one rolled back.
+pub fn run (conn: a) (migrations: List Migration) -> Result (List Text) Error where Adapter a =
+    match migrationsApplied conn
+        Err e      -> Err e
+        Ok applied -> runPending conn migrations applied

@@ -476,6 +476,126 @@ fn reconciled_decls(b: &BuiltinTyCons, base: u32) -> Vec<TyConDecl> {
             opaque: true,
             is_anon: false,
         },
+        // `std.migrate` — a column in a table definition. An opaque record declared
+        // in Ridge (stdlib/migrate.ridge): the column name, its base-type name
+        // (`"int"`/`"text"`/`"bool"`/`"float"`), and the three schema modifiers
+        // (`nullable`, `primaryKey`, `unique`). Opaque, so user code builds one only
+        // through the `intCol`/`textCol`/… declarators and the modifier steps. Field
+        // order mirrors the source.
+        TyConDecl {
+            id: TyConId(base + 10),
+            name: "Column".to_string(),
+            arity: 0,
+            kind: TyConKind::Record(RecordSchema::new(
+                vec![],
+                vec![
+                    RecordField {
+                        name: "name".to_string(),
+                        ty: Type::Con(b.text, vec![]),
+                    },
+                    RecordField {
+                        name: "ty".to_string(),
+                        ty: Type::Con(b.text, vec![]),
+                    },
+                    RecordField {
+                        name: "nullable".to_string(),
+                        ty: Type::Con(b.bool, vec![]),
+                    },
+                    RecordField {
+                        name: "primaryKey".to_string(),
+                        ty: Type::Con(b.bool, vec![]),
+                    },
+                    RecordField {
+                        name: "unique".to_string(),
+                        ty: Type::Con(b.bool, vec![]),
+                    },
+                ],
+            )),
+            def_span: None,
+            def_module_raw: None,
+            opaque: true,
+            is_anon: false,
+        },
+        // `std.migrate` — a single schema change. An opaque union declared in Ridge
+        // (stdlib/migrate.ridge); its variants are built only through the
+        // `createTable`/`dropTable`/`addColumn`/`dropColumn`/`createIndex` factories
+        // and decomposed onto the adapter's schema seam by the migration runner, so
+        // the constructors stay confined to the module. Variant order mirrors the
+        // source.
+        TyConDecl {
+            id: TyConId(base + 11),
+            name: "SchemaOp".to_string(),
+            arity: 0,
+            kind: TyConKind::Union(UnionSchema {
+                params: vec![],
+                variants: vec![
+                    UnionVariant {
+                        name: "CreateTable".to_string(),
+                        kind: VariantPayload::Positional(vec![
+                            Type::Con(b.text, vec![]),
+                            Type::Con(b.list, vec![Type::Con(TyConId(base + 10), vec![])]),
+                        ]),
+                    },
+                    UnionVariant {
+                        name: "DropTable".to_string(),
+                        kind: VariantPayload::Positional(vec![Type::Con(b.text, vec![])]),
+                    },
+                    UnionVariant {
+                        name: "AddColumn".to_string(),
+                        kind: VariantPayload::Positional(vec![
+                            Type::Con(b.text, vec![]),
+                            Type::Con(TyConId(base + 10), vec![]),
+                        ]),
+                    },
+                    UnionVariant {
+                        name: "DropColumn".to_string(),
+                        kind: VariantPayload::Positional(vec![
+                            Type::Con(b.text, vec![]),
+                            Type::Con(b.text, vec![]),
+                        ]),
+                    },
+                    UnionVariant {
+                        name: "CreateIndex".to_string(),
+                        kind: VariantPayload::Positional(vec![
+                            Type::Con(b.text, vec![]),
+                            Type::Con(b.text, vec![]),
+                            Type::Con(b.list, vec![Type::Con(b.text, vec![])]),
+                            Type::Con(b.bool, vec![]),
+                        ]),
+                    },
+                ],
+            }),
+            def_span: None,
+            def_module_raw: None,
+            opaque: false,
+            is_anon: false,
+        },
+        // `std.migrate` — a named, ordered batch of schema changes. A plain record
+        // declared in Ridge (stdlib/migrate.ridge): the migration name (its key in
+        // the tracking table) and the ordered `SchemaOp` steps. Users construct it
+        // through `migration` or the record literal; field order mirrors the source.
+        TyConDecl {
+            id: TyConId(base + 12),
+            name: "Migration".to_string(),
+            arity: 0,
+            kind: TyConKind::Record(RecordSchema::new(
+                vec![],
+                vec![
+                    RecordField {
+                        name: "name".to_string(),
+                        ty: Type::Con(b.text, vec![]),
+                    },
+                    RecordField {
+                        name: "steps".to_string(),
+                        ty: Type::Con(b.list, vec![Type::Con(TyConId(base + 11), vec![])]),
+                    },
+                ],
+            )),
+            def_span: None,
+            def_module_raw: None,
+            opaque: false,
+            is_anon: false,
+        },
     ]
 }
 
@@ -627,6 +747,83 @@ pub(crate) fn reconciled_fn_scheme(
             })
         }
         ("std.repo", _) => reconciled_repo_fn_scheme(name, reconciled, b, classes?),
+        ("std.migrate", _) => reconciled_migrate_fn_scheme(name, reconciled, b, classes?),
+        _ => None,
+    }
+}
+
+/// The `std.migrate` slice of [`reconciled_fn_scheme`]: the schema-DSL builders and
+/// the migration runner. The builders are pure and reference the reconciled
+/// `Column`/`SchemaOp`/`Migration` types; `run` is the only constrained verb
+/// (`where Adapter a`, to reach the schema seam).
+fn reconciled_migrate_fn_scheme(
+    name: &str,
+    reconciled: &FxHashMap<String, TyConId>,
+    b: &BuiltinTyCons,
+    classes: &ClassTable,
+) -> Option<Scheme> {
+    let column = *reconciled.get("Column")?;
+    let schema_op = *reconciled.get("SchemaOp")?;
+    let migration = *reconciled.get("Migration")?;
+    let text = || Type::Con(b.text, vec![]);
+    let list = |x: Type| Type::Con(b.list, vec![x]);
+    let pure = || CapRow::Concrete(CapabilitySet::PURE);
+    let result = |ok: Type| Type::Con(b.result, vec![ok, Type::Con(b.error, vec![])]);
+    let column_ty = || Type::Con(column, vec![]);
+    let schema_op_ty = || Type::Con(schema_op, vec![]);
+    // A monomorphic pure builder: `params -> ret`, no quantified vars or constraints.
+    let mono = |params: Vec<Type>, ret: Type| {
+        Some(Scheme {
+            vars: vec![],
+            cap_vars: vec![],
+            row_vars: vec![],
+            ty: Type::Fn {
+                params,
+                ret: Box::new(ret),
+                caps: pure(),
+            },
+            constraints: vec![],
+        })
+    };
+    match name {
+        // intCol / textCol / boolCol / floatCol : Text -> Column — the typed column
+        // declarators, each pinning the base type.
+        "intCol" | "textCol" | "boolCol" | "floatCol" => mono(vec![text()], column_ty()),
+        // nullable / primaryKey / unique : Column -> Column
+        "nullable" | "primaryKey" | "unique" => mono(vec![column_ty()], column_ty()),
+        // createTable : Text -> List Column -> SchemaOp
+        "createTable" => mono(vec![text(), list(column_ty())], schema_op_ty()),
+        // dropTable : Text -> SchemaOp
+        "dropTable" => mono(vec![text()], schema_op_ty()),
+        // addColumn : Text -> Column -> SchemaOp
+        "addColumn" => mono(vec![text(), column_ty()], schema_op_ty()),
+        // dropColumn : Text -> Text -> SchemaOp
+        "dropColumn" => mono(vec![text(), text()], schema_op_ty()),
+        // createIndex / uniqueIndex : Text -> Text -> List Text -> SchemaOp
+        "createIndex" | "uniqueIndex" => mono(vec![text(), text(), list(text())], schema_op_ty()),
+        // migration : Text -> List SchemaOp -> Migration
+        "migration" => mono(
+            vec![text(), list(schema_op_ty())],
+            Type::Con(migration, vec![]),
+        ),
+        // run : ∀a. a -> List Migration -> Result (List Text) Error where Adapter a.
+        // The runner reaches the schema seam through the `Adapter a` dictionary, the
+        // same shape `transaction` carries; `a` is the only quantified variable.
+        "run" => {
+            let adapter = classes.id_by_name("Adapter")?;
+            let a = TyVid(0);
+            Some(Scheme {
+                vars: vec![a],
+                cap_vars: vec![],
+                row_vars: vec![],
+                ty: Type::Fn {
+                    params: vec![Type::Var(a), list(Type::Con(migration, vec![]))],
+                    ret: Box::new(result(list(text()))),
+                    caps: pure(),
+                },
+                constraints: vec![Constraint::single(adapter, a)],
+            })
+        }
         _ => None,
     }
 }

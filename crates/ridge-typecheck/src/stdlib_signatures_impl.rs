@@ -1567,6 +1567,13 @@ mod tests {
                             | "begin"
                             | "commit"
                             | "rollback"
+                            | "ddlCreate"
+                            | "ddlDrop"
+                            | "ddlAddColumn"
+                            | "ddlDropColumn"
+                            | "ddlIndex"
+                            | "migrationsApplied"
+                            | "recordMigration"
                             | "MemAdapter"
                             | "memAdapter"
                             | "Postgres"
@@ -1581,6 +1588,13 @@ mod tests {
                 // (`reconciled_ctor_scheme` / `reconciled_fn_scheme`), not this
                 // hand-curated table.
                 if module.name == "std.repo" {
+                    continue;
+                }
+                // std.migrate: its DSL types and builders/runner reference the
+                // reconciled `Column`/`SchemaOp`/`Migration` block and are seeded
+                // via `reconciled_ctor_scheme` / `reconciled_fn_scheme`, not this
+                // hand-curated table.
+                if module.name == "std.migrate" {
                     continue;
                 }
                 let result = stdlib_signature(module.id, name, &b);

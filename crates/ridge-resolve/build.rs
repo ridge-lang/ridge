@@ -543,6 +543,9 @@ const BASELINE_EXPORTS: &[(&str, &[&str])] = &[
             // above.
             "Join",
             "joinOn",
+            // The cross join: `crossJoin` pairs a query with a right repository and
+            // no condition (the cartesian product), reusing the same `Join e f a`.
+            "crossJoin",
             // The left-outer join: the opaque `LeftJoin e f a` and its `leftJoinOn`
             // entry. Decode and projection unify through `Decodable`/`Projectable`,
             // the right side read as `Option`.

@@ -356,6 +356,29 @@ pub fn db joinOrderByRight () -> Text =
                 Err _  -> "join-order-err"
                 Ok ps  -> joinPairs ps
 
+-- cross join: pair every left row with every right row (the cartesian product).
+-- Narrow the left query to lin (id 2), cross with all three posts, order by post
+-- id, and render `name:title` per pair -> "lin:hello,lin:world,lin:again". lin
+-- pairs with "world" too — a post it does not own — so the product is
+-- unconditional, unlike the inner join that keeps only lin's own posts.
+pub fn db crossJoined () -> Text =
+    match setupJoin ()
+        Err _ -> "setup-err"
+        Ok (users, posts) ->
+            match users |> Repo.query |> Repo.filter (fn (u: User) -> u.id == 2) |> Repo.crossJoin posts |> Repo.orderBy Asc (fn (u: User) (p: Post) -> p.id) |> Repo.toList
+                Err _  -> "cross-err"
+                Ok ps  -> joinPairs ps
+
+-- cross-join count: every user crossed with every post -> 3 * 3 = 9. Proves the
+-- product is the full cartesian and that `count` threads through the join seam.
+pub fn db crossCount () -> Int =
+    match setupJoin ()
+        Err _ -> 0 - 1
+        Ok (users, posts) ->
+            match users |> Repo.query |> Repo.crossJoin posts |> Repo.count
+                Ok n  -> n
+                Err _ -> 0 - 2
+
 -- left join: keep every user, pairing each with its posts or with `None`, order
 -- by user id, and render `name:title` (or `name:-`) per pair ->
 -- "ada:-,lin:hello,lin:again,max:world". ada owns no posts, so where the inner
@@ -1234,6 +1257,8 @@ fn repo_surface_runs_on_beam() {
          io:format(\"joinedNames=~s~n\",[{module}:joinedNames()]), \
          io:format(\"joinedTitles=~s~n\",[{module}:joinedTitles()]), \
          io:format(\"joinOrderByRight=~s~n\",[{module}:joinOrderByRight()]), \
+         io:format(\"crossJoined=~s~n\",[{module}:crossJoined()]), \
+         io:format(\"crossCount=~w~n\",[{module}:crossCount()]), \
          io:format(\"leftJoinedNames=~s~n\",[{module}:leftJoinedNames()]), \
          io:format(\"leftSelectTitles=~s~n\",[{module}:leftSelectTitles()]), \
          io:format(\"joinFilterRight=~s~n\",[{module}:joinFilterRight()]), \
@@ -1350,6 +1375,14 @@ fn repo_surface_runs_on_beam() {
         (
             "joinOrderByRight=lin:again,lin:hello,max:world",
             "the unified orderBy sorts the join by a right-table column (post title), so the pairs come back title-ordered",
+        ),
+        (
+            "crossJoined=lin:hello,lin:world,lin:again",
+            "a cross join pairs lin with every post, including world (author 3) that lin does not own, so the cartesian product spans all three posts",
+        ),
+        (
+            "crossCount=9",
+            "count over the full cross join is 3 users * 3 posts = 9 pairs",
         ),
         (
             "leftJoinedNames=ada:-,lin:hello,lin:again,max:world",

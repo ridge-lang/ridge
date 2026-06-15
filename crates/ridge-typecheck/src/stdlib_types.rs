@@ -1328,6 +1328,28 @@ fn reconciled_repo_fn_scheme(
                 constraints: vec![],
             })
         }
+        // crossJoin : ∀e f a. Repo f a -> Query e a -> Join e f a. The cartesian
+        // builder: it pairs the left query with the right repository and no
+        // condition, so it carries no quoted predicate. A cross join is an inner
+        // join whose `ON` is always true, so it produces the same `Join e f a` and
+        // shares its terminals, projection, and the rest of the join vocabulary.
+        "crossJoin" => {
+            let join_con = *reconciled.get("Join")?;
+            let f = TyVid(2);
+            let repo_f_a = Type::Con(repo_con, vec![Type::Var(f), Type::Var(a)]);
+            let join_e_f_a = Type::Con(join_con, vec![Type::Var(e), Type::Var(f), Type::Var(a)]);
+            Some(Scheme {
+                vars: vec![e, a, f],
+                cap_vars: vec![],
+                row_vars: vec![],
+                ty: Type::Fn {
+                    params: vec![repo_f_a, query_app()],
+                    ret: Box::new(join_e_f_a),
+                    caps: pure(),
+                },
+                constraints: vec![],
+            })
+        }
         // `toPairs` is gone: an inner join's `toList`/`first` are now the
         // `Decodable (Join e f a) …` methods (std.repo), so the join shares the
         // query's decode terminals. `Repo.toList` over a `Join` resolves to that

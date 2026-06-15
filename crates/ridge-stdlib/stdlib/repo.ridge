@@ -659,6 +659,20 @@ pub fn leftJoinOn (right: Repo f a) (cond: Quote (Map Text SqlValue -> Map Text 
 -- paired with the right entity, or with `None` where the left row matched no
 -- right row; `first` keeps the first such pair.
 
+-- A cross join: pair a query with a right repository and no condition, so every
+-- left row matches every right row — the cartesian product of the two tables. A
+-- cross join is just an inner join whose condition is always true, so it builds a
+-- `Join e f a` with `keepAll2` for both the `ON` and the post-join `WHERE` and
+-- inherits the whole join vocabulary. A later `filter` narrows the product into a
+-- non-equi join, `select` projects both sides, and the terminals decode each pair
+-- into `(e, f)`:
+--
+--     users
+--       |> Repo.query
+--       |> Repo.crossJoin colors
+pub fn crossJoin (right: Repo f a) (q: Query e a) -> Join e f a =
+    Join { left = q, right = right, cond = keepAll2 (), where2 = keepAll2 (), orders = liftOrders q.orders, lim = q.lim, off = q.off, dist = q.dist }
+
 -- A query's `filter`: AND the one-row predicate into the query's accumulated
 -- `WHERE`, exactly as the original single-receiver verb did. The predicate is
 -- entity-typed (`Quote (e -> Bool)`) and the stored field row-typed; `quoteAnd`

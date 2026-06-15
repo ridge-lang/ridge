@@ -330,6 +330,29 @@ pub fn db joinOrderByRight () -> Text =
                 Err _  -> "join-order-err"
                 Ok ps  -> joinPairs ps
 
+-- cross join: pair every left row with every right row (the cartesian product).
+-- Narrow the left query to lin (id 2), cross with both posts, order by post id
+-- -> "lin:hello,lin:world". lin pairs with "world" (author 3) too — a post it
+-- does not own — so the backend compiles an unconditional join (`JOIN r ON true`),
+-- unlike the inner join that keeps only lin's own post.
+pub fn db crossJoined () -> Text =
+    match setupJoin ()
+        Err _ -> "setup-err"
+        Ok (users, posts) ->
+            match users |> Repo.query |> Repo.filter (fn (u: User) -> u.id == 2) |> Repo.crossJoin posts |> Repo.orderBy Asc (fn (u: User) (p: Post) -> p.id) |> Repo.toList
+                Err _  -> "cross-err"
+                Ok ps  -> joinPairs ps
+
+-- cross-join count: every user crossed with every post -> 3 * 2 = 6. Proves the
+-- backend's unconditional join is the full cartesian and `COUNT(*)` counts it.
+pub fn db crossCount () -> Int =
+    match setupJoin ()
+        Err _ -> 0 - 1
+        Ok (users, posts) ->
+            match users |> Repo.query |> Repo.crossJoin posts |> Repo.count
+                Ok n  -> n
+                Err _ -> 0 - 2
+
 -- left join: keep every user, pairing each with its post or with `None`, ordered
 -- by user id, rendered `name:title` (or `name:-`) -> "ada:-,lin:hello,max:world".
 -- ada has no post, so where the inner join dropped it the left join keeps it as
@@ -1504,6 +1527,8 @@ fn postgres_adapter_reads_a_real_table() {
          io:format(\"joinedNames=~s~n\",[{module}:joinedNames()]), \
          io:format(\"joinedTitles=~s~n\",[{module}:joinedTitles()]), \
          io:format(\"joinOrderByRight=~s~n\",[{module}:joinOrderByRight()]), \
+         io:format(\"crossJoined=~s~n\",[{module}:crossJoined()]), \
+         io:format(\"crossCount=~w~n\",[{module}:crossCount()]), \
          io:format(\"leftJoinedNames=~s~n\",[{module}:leftJoinedNames()]), \
          io:format(\"leftSelectTitles=~s~n\",[{module}:leftSelectTitles()]), \
          io:format(\"joinLimited=~s~n\",[{module}:joinLimited()]), \
@@ -1627,6 +1652,14 @@ fn postgres_adapter_reads_a_real_table() {
         (
             "joinOrderByRight=max:world,lin:hello",
             "the unified orderBy qualifies the ORDER BY key to the right table (r.title DESC), reversing the id order",
+        ),
+        (
+            "crossJoined=lin:hello,lin:world",
+            "a cross join pairs lin with every post, including world (author 3) that lin does not own, so the backend's unconditional join spans both posts",
+        ),
+        (
+            "crossCount=6",
+            "COUNT(*) over the full cross join is 3 users * 2 posts = 6 pairs",
         ),
         (
             "leftJoinedNames=ada:-,lin:hello,max:world",

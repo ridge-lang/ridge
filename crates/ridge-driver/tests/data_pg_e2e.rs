@@ -1414,7 +1414,10 @@ fn write_workspace(root: &std::path::Path, source: &str) {
 }
 
 #[test]
-#[allow(clippy::too_many_lines, reason = "one probe-and-assertion block per verb reads best in one place")]
+#[allow(
+    clippy::too_many_lines,
+    reason = "one probe-and-assertion block per verb reads best in one place"
+)]
 fn postgres_adapter_reads_a_real_table() {
     if which::which("erlc").is_err() || which::which("erl").is_err() {
         eprintln!("erl/erlc not on PATH — skipping postgres_adapter_reads_a_real_table");

@@ -54,6 +54,7 @@ import std.data (connect, Config, Postgres)
 import std.repo as Repo
 import std.migrate as Migrate
 import std.migrate (SchemaOp)
+import std.raw as Raw
 import std.query (SortOrder, Asc, Desc)
 import std.sql (toSql, SqlValue)
 import std.map as Map
@@ -1274,6 +1275,72 @@ pub fn db pgMigratedUsable () -> Int =
                                     match pgAddWidget conn 2 "right"
                                         Err _ -> 0 - 5
                                         Ok _  -> pgCountWidgets conn
+
+-- Raw-SQL escape hatch against the live database. Each probe seeds the users table
+-- through `setup` (clearing and inserting ada/lin/max), then opens a fresh
+-- connection and runs raw SQL over `ridge_pg_users`: a parameterised SELECT decoded
+-- into `User`, its first-row form, a row-less UPDATE for its affected count, and a
+-- scalar aliased into a one-field record — the patterns std.raw documents.
+pub type RawCount = { n: Int } deriving (Row)
+
+-- raw query + decode: adults (age >= 25) ordered by id, names joined -> "lin,max".
+-- Proves the backend binds `$1` and decodes each row into `User` through Row.
+pub fn db rawAdults () -> Text =
+    match setup ()
+        Err _ -> "setup-err"
+        Ok _  ->
+            match connect (pgConfig ())
+                Err _ -> "conn-err"
+                Ok conn ->
+                    let q: Result (List User) Error = Raw.query conn "SELECT id, age, name FROM ridge_pg_users WHERE age >= $1 ORDER BY id" [toSql 25]
+                    match q
+                        Err _ -> "raw-err"
+                        Ok us -> joinNames us
+
+-- raw queryFirst: the oldest user by age descending -> "lin" (30). Proves the
+-- first-row form decodes a single row, with no bind parameters.
+pub fn db rawFirstName () -> Text =
+    match setup ()
+        Err _ -> "setup-err"
+        Ok _  ->
+            match connect (pgConfig ())
+                Err _ -> "conn-err"
+                Ok conn ->
+                    let q: Result (Option User) Error = Raw.queryFirst conn "SELECT id, age, name FROM ridge_pg_users ORDER BY age DESC" []
+                    match q
+                        Err _       -> "raw-err"
+                        Ok None     -> "none"
+                        Ok (Some u) -> u.name
+
+-- raw exec: a parameterised UPDATE over the two adults -> affected 2. Proves a
+-- row-less statement binds its parameters and answers the affected row count.
+pub fn db rawBumpCount () -> Int =
+    match setup ()
+        Err _ -> 0 - 1
+        Ok _  ->
+            match connect (pgConfig ())
+                Err _ -> 0 - 2
+                Ok conn ->
+                    match Raw.exec conn "UPDATE ridge_pg_users SET age = $1 WHERE age >= $2" [toSql 40, toSql 25]
+                        Ok n  -> n
+                        Err _ -> 0 - 3
+
+-- raw scalar via the alias-into-record pattern: SELECT count(*) AS n -> 3. Proves a
+-- computed column aliased to a field decodes through Row like any other row.
+pub fn db rawUserCount () -> Int =
+    match setup ()
+        Err _ -> 0 - 1
+        Ok _  ->
+            match connect (pgConfig ())
+                Err _ -> 0 - 2
+                Ok conn ->
+                    let q: Result (List RawCount) Error = Raw.query conn "SELECT count(*) AS n FROM ridge_pg_users" []
+                    match q
+                        Err _ -> 0 - 3
+                        Ok rows ->
+                            match rows
+                                []     -> 0 - 4
+                                c :: _ -> c.n
 "#;
 
 /// Connection settings parsed out of `RIDGE_TEST_PG_URL`.
@@ -1347,6 +1414,10 @@ fn write_workspace(root: &std::path::Path, source: &str) {
 }
 
 #[test]
+#[allow(
+    clippy::too_many_lines,
+    reason = "one probe-and-assertion block per verb reads best in one place"
+)]
 fn postgres_adapter_reads_a_real_table() {
     if which::which("erlc").is_err() || which::which("erl").is_err() {
         eprintln!("erl/erlc not on PATH — skipping postgres_adapter_reads_a_real_table");
@@ -1498,6 +1569,10 @@ fn postgres_adapter_reads_a_real_table() {
          io:format(\"txSavepointCount=~w~n\",[{module}:txSavepointCount()]), \
          io:format(\"pgMigrateIdempotent=~w~n\",[{module}:pgMigrateIdempotent()]), \
          io:format(\"pgMigratedUsable=~w~n\",[{module}:pgMigratedUsable()]), \
+         io:format(\"rawAdults=~s~n\",[{module}:rawAdults()]), \
+         io:format(\"rawFirstName=~s~n\",[{module}:rawFirstName()]), \
+         io:format(\"rawBumpCount=~w~n\",[{module}:rawBumpCount()]), \
+         io:format(\"rawUserCount=~w~n\",[{module}:rawUserCount()]), \
          {pool_probe} \
          halt()."
     );
@@ -1803,6 +1878,22 @@ fn postgres_adapter_reads_a_real_table() {
         (
             "pgMigratedUsable=2",
             "a CREATE TABLE migration lands and the typed table accepts two inserts",
+        ),
+        (
+            "rawAdults=lin,max",
+            "Raw.query binds $1 and decodes the adult rows into User through Row",
+        ),
+        (
+            "rawFirstName=lin",
+            "Raw.queryFirst decodes the single oldest row with no bind parameters",
+        ),
+        (
+            "rawBumpCount=2",
+            "Raw.exec binds an UPDATE's parameters and answers the affected row count",
+        ),
+        (
+            "rawUserCount=3",
+            "a raw scalar aliased to a record field decodes through Row (count(*) AS n)",
         ),
         (
             "concurrent=true",

@@ -1,0 +1,74 @@
+-- std.raw — the raw-SQL escape hatch over the storage Adapter seam.
+--
+-- The query builder (std.repo) covers the typed, composable common case; std.raw
+-- is the deliberate drop to a database's own SQL for what the builder cannot
+-- express — a recursive CTE, a window function, a vendor extension, a hand-tuned
+-- statement. A query is always parameterised: placeholders (`$1`, `$2`, … on
+-- Postgres) carry the values as bound `SqlValue`s, so a value is never spliced
+-- into the SQL text and the statement is injection-safe. Build the binds with the
+-- `sqlInt`/`sqlText`/`sqlBool`/`sqlFloat` factories from std.sql:
+--   Raw.query conn "SELECT id, name FROM users WHERE age > $1" [sqlInt 18]
+--
+-- `query` decodes each returned row into the entity `e` through `deriving (Row)`,
+-- exactly as the repository read verbs do, so a raw SELECT answers `List User`
+-- rather than raw column maps; the selected columns must match the record's
+-- fields, so alias with `AS` where a computed column does not (`SELECT count(*) AS
+-- n` to fill an `n` field). `queryFirst` keeps the first row, or `None` when the
+-- query returned nothing. `exec` runs a statement that returns no rows — an
+-- INSERT, UPDATE, DELETE, or DDL — and answers the affected row count. For a
+-- single scalar, alias it into a one-field record and decode that.
+--
+-- Raw SQL is a SQL backend's surface: it runs on Postgres, and the in-memory
+-- adapter (which has no SQL engine) reports a clear error instead. A function that
+-- mixes builder queries with a raw one stays `where Adapter a`, so it still runs on
+-- either backend — only the raw call fails on the memory store.
+
+import std.data as Db
+import std.sql (SqlValue)
+
+-- Decode a list of raw rows into entities, stopping at the first decode failure —
+-- the same row-by-row decode the repository runs, kept module-local so std.raw
+-- does not reach into std.repo's internals.
+fn decodeRows (rows: List (Map Text SqlValue)) -> Result (List e) Error where Row e =
+    match rows
+        []        -> Ok []
+        r :: rest ->
+            match fromRow r
+                Err err -> Err err
+                Ok x    ->
+                    match decodeRows rest
+                        Err err -> Err err
+                        Ok xs   -> Ok (x :: xs)
+
+-- The head of a raw-row list, decoded; `None` when the query returned nothing.
+fn firstDecoded (rows: List (Map Text SqlValue)) -> Result (Option e) Error where Row e =
+    match rows
+        []       -> Ok None
+        row :: _ ->
+            match fromRow row
+                Err err -> Err err
+                Ok x    -> Ok (Some x)
+
+-- Run a raw SQL query and decode every row into the entity `e`. The SQL carries
+-- its values as `$N` placeholders bound from `params`, so nothing is spliced into
+-- the text. The result element is pinned at the call site, the same way the
+-- repository's `all` pins it:
+--   let admins: Result (List User) Error =
+--     Raw.query conn "SELECT * FROM users WHERE role = $1" [sqlText "admin"]
+pub fn query (conn: a) (sql: Text) (params: List SqlValue) -> Result (List e) Error where Adapter a, Row e =
+    match rawQuery conn sql params
+        Err err  -> Err err
+        Ok rows  -> decodeRows rows
+
+-- The first row of a raw SQL query, decoded into `e`, or `None` when the query
+-- returned no rows. Reach for it when a statement identifies at most one row.
+pub fn queryFirst (conn: a) (sql: Text) (params: List SqlValue) -> Result (Option e) Error where Adapter a, Row e =
+    match rawQuery conn sql params
+        Err err  -> Err err
+        Ok rows  -> firstDecoded rows
+
+-- Run a raw SQL statement that returns no rows — an INSERT, UPDATE, DELETE, or a
+-- DDL statement — with its values bound from `params`; answer how many rows it
+-- affected. The write-side dual of `query`.
+pub fn exec (conn: a) (sql: Text) (params: List SqlValue) -> Result Int Error where Adapter a =
+    rawExec conn sql params

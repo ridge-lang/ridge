@@ -39,6 +39,7 @@
     mem_ddl_create/3, mem_ddl_drop/2, mem_ddl_add_column/3,
     mem_ddl_drop_column/3, mem_ddl_index/5,
     mem_migrations_applied/1, mem_record_migration/2,
+    mem_raw_query/3, mem_raw_exec/3,
     plan_scan/6, plan_combine/3, plan_refine/6, mem_run_plan/2,
     quote_keep_all/1, quote_and/2,
     mk_error/2,
@@ -1043,6 +1044,22 @@ mem_migrations_applied(Id) ->
 %% row shape a `name text` column holds. Result Unit Error.
 mem_record_migration(Id, Name) ->
     mem_insert(Id, <<"_ridge_migrations">>, #{<<"name">> => {'SqlText', Name}}).
+
+%% --- raw SQL ---
+%% The in-memory store has no SQL engine, so the raw-SQL escape hatch cannot run
+%% against it. Both verbs report a clear error pointing at a SQL backend rather
+%% than silently doing nothing — raw SQL is a deliberate drop to a database's own
+%% dialect (std.raw), so a program reaching for it on the memory store is told so.
+
+%% mem_raw_query/3 — unsupported on the in-memory store. Result (List Row) Error.
+mem_raw_query(_Id, _Sql, _Params) -> {error, raw_unsupported_error()}.
+
+%% mem_raw_exec/3 — unsupported on the in-memory store. Result Int Error.
+mem_raw_exec(_Id, _Sql, _Params) -> {error, raw_unsupported_error()}.
+
+raw_unsupported_error() ->
+    #{code => <<"raw.unsupported">>,
+      message => <<"raw SQL needs a SQL backend; the in-memory adapter has none — run it against Postgres">>}.
 
 %% The `name` text out of a tracking-table row.
 mem_migration_name(Row) ->

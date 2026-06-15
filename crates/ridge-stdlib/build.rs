@@ -167,6 +167,7 @@ const STDLIB_MODULES: &[&str] = &[
     "std.data",
     "std.repo",
     "std.migrate",
+    "std.raw",
 ];
 
 // ── Entry type ────────────────────────────────────────────────────────────────

@@ -61,6 +61,7 @@ const MODULE_ORDER: &[&str] = &[
     "std.data",
     "std.repo",
     "std.migrate",
+    "std.raw",
 ];
 
 // ── Baseline export table (T10: preserves original API) ───────────────────────
@@ -434,6 +435,10 @@ const BASELINE_EXPORTS: &[(&str, &[&str])] = &[
             "ddlIndex",
             "migrationsApplied",
             "recordMigration",
+            // Raw-SQL escape hatch (typed front door in std.raw): a parameterised
+            // query returning rows, and a statement returning an affected count.
+            "rawQuery",
+            "rawExec",
             "MemAdapter",
             "memAdapter",
             // The Postgres adapter: the opaque connection handle, its config
@@ -592,6 +597,17 @@ const BASELINE_EXPORTS: &[(&str, &[&str])] = &[
             // The migration runner: apply the pending migrations in order, each in
             // its own transaction, and answer the names applied.
             "run",
+        ],
+    ),
+    (
+        "std.raw",
+        &[
+            // The raw-SQL escape hatch over the `Adapter` seam: a parameterised
+            // query decoded into entities, its first-row form, and a row-less
+            // statement returning the affected row count.
+            "query",
+            "queryFirst",
+            "exec",
         ],
     ),
 ];

@@ -268,6 +268,12 @@ fn signature_shape_consistency() {
             if dotted == "std.migrate" {
                 continue;
             }
+            // Every std.raw verb is constrained over the `Adapter` seam, so the
+            // whole module is seeded via `reconciled_fn_scheme` rather than the
+            // `stdlib_signature` table this shape check covers.
+            if dotted == "std.raw" {
+                continue;
+            }
             // 1. Signature must resolve to Some.
             let scheme = stdlib_signature(module_id, fn_name, &b).unwrap_or_else(|| {
                 panic!(

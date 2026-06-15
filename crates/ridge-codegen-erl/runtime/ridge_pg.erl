@@ -63,6 +63,8 @@
     pg_ddl_index/5,
     pg_migrations_applied/1,
     pg_record_migration/2,
+    pg_raw_query/3,
+    pg_raw_exec/3,
     pg_close/1
 ]).
 
@@ -174,6 +176,15 @@ pg_group_summarize_left_join(Id, LeftTable, RightTable, Cond, Where2, Pred, KeyC
 %% the combined rows. Result (List Row) Error.
 pg_run_plan(Id, Plan) ->
     pg_call(Id, {run_plan, Plan}).
+
+%% pg_raw_query/3 — run raw SQL with positional `$N` parameters bound from Params
+%% (a `List SqlValue`), returning the rows as column maps. The escape hatch for a
+%% SELECT the query builder cannot express. Result (List Row) Error.
+pg_raw_query(Id, Sql, Params) -> pg_call(Id, {raw_query, Sql, Params}).
+
+%% pg_raw_exec/3 — run a raw SQL statement (INSERT/UPDATE/DELETE/DDL) with bound
+%% parameters; answer the affected row count. Result Int Error.
+pg_raw_exec(Id, Sql, Params) -> pg_call(Id, {raw_exec, Sql, Params}).
 
 %% pg_join/10 — inner-join LeftTable and RightTable on the condition tree Cond,
 %% compiled into `JOIN … ON`; the two-row post-join WHERE tree Where2 and the
@@ -768,6 +779,13 @@ pg_conn_loop(Conn) ->
 
 run_verb(Conn, {tx, Sql}) ->
     do_exec(Conn, Sql, []);
+%% Raw SQL from std.raw: the user's statement text run with its `SqlValue` binds
+%% as positional `$N` parameters, so a value is never spliced into the SQL. A
+%% query returns the rows as column maps; an exec returns the affected row count.
+run_verb(Conn, {raw_query, Sql, Params}) ->
+    run_query(Conn, Sql, Params);
+run_verb(Conn, {raw_exec, Sql, Params}) ->
+    do_exec(Conn, Sql, Params);
 run_verb(Conn, migrations_init) ->
     %% Ensure the tracking table exists, then read the applied migration names in
     %% order. Both run on one connection (the pool path borrows it for the verb).

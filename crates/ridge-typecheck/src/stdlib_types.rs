@@ -748,6 +748,7 @@ pub(crate) fn reconciled_fn_scheme(
         }
         ("std.repo", _) => reconciled_repo_fn_scheme(name, reconciled, b, classes?),
         ("std.migrate", _) => reconciled_migrate_fn_scheme(name, reconciled, b, classes?),
+        ("std.raw", _) => reconciled_raw_fn_scheme(name, b, classes?),
         _ => None,
     }
 }
@@ -824,6 +825,78 @@ fn reconciled_migrate_fn_scheme(
                 constraints: vec![Constraint::single(adapter, a)],
             })
         }
+        _ => None,
+    }
+}
+
+/// The `std.raw` slice of [`reconciled_fn_scheme`]: the raw-SQL escape hatch.
+/// `query`/`queryFirst` run a raw statement and decode the returned rows into the
+/// entity (`where Adapter a, Row e`); `exec` runs a row-less statement for its
+/// affected-row count (`where Adapter a`). Every verb takes the connection, the
+/// SQL text, and a `List SqlValue` of bound parameters.
+fn reconciled_raw_fn_scheme(name: &str, b: &BuiltinTyCons, classes: &ClassTable) -> Option<Scheme> {
+    let adapter = classes.id_by_name("Adapter")?;
+    let row = classes.id_by_name("Row")?;
+    // Placeholder scheme vars: entity `e` and adapter `a`. The constraint order
+    // must mirror what the stdlib build stores when it compiles the `std.raw`
+    // source, since the lowering prepends one dictionary parameter per constraint
+    // in that order on both the callee and the call site. The build generalises the
+    // entity `e` (the decoded result) ahead of the adapter `a`, so `Row e` precedes
+    // `Adapter a` — the same order the repository verbs use (`with_adapter_row`),
+    // even though `a` appears first in the parameter list. The data-raw BEAM e2e is
+    // what catches a flipped order: the adapter dictionary lands in the row slot.
+    let e = TyVid(0);
+    let a = TyVid(1);
+    let pure = || CapRow::Concrete(CapabilitySet::PURE);
+    let result = |ok: Type| Type::Con(b.result, vec![ok, Type::Con(b.error, vec![])]);
+    // conn, sql, params — the three arguments shared by every raw verb.
+    let raw_params = || {
+        vec![
+            Type::Var(a),
+            Type::Con(b.text, vec![]),
+            Type::Con(b.list, vec![Type::Con(b.sql_value, vec![])]),
+        ]
+    };
+    let with_adapter_row = || vec![Constraint::single(row, e), Constraint::single(adapter, a)];
+    match name {
+        // query : ∀a e. a -> Text -> List SqlValue -> Result (List e) Error
+        //              where Adapter a, Row e
+        "query" => Some(Scheme {
+            vars: vec![e, a],
+            cap_vars: vec![],
+            row_vars: vec![],
+            ty: Type::Fn {
+                params: raw_params(),
+                ret: Box::new(result(Type::Con(b.list, vec![Type::Var(e)]))),
+                caps: pure(),
+            },
+            constraints: with_adapter_row(),
+        }),
+        // queryFirst : ∀a e. a -> Text -> List SqlValue -> Result (Option e) Error
+        //                   where Adapter a, Row e
+        "queryFirst" => Some(Scheme {
+            vars: vec![e, a],
+            cap_vars: vec![],
+            row_vars: vec![],
+            ty: Type::Fn {
+                params: raw_params(),
+                ret: Box::new(result(Type::Con(b.option, vec![Type::Var(e)]))),
+                caps: pure(),
+            },
+            constraints: with_adapter_row(),
+        }),
+        // exec : ∀a. a -> Text -> List SqlValue -> Result Int Error where Adapter a
+        "exec" => Some(Scheme {
+            vars: vec![a],
+            cap_vars: vec![],
+            row_vars: vec![],
+            ty: Type::Fn {
+                params: raw_params(),
+                ret: Box::new(result(Type::Con(b.int, vec![]))),
+                caps: pure(),
+            },
+            constraints: vec![Constraint::single(adapter, a)],
+        }),
         _ => None,
     }
 }

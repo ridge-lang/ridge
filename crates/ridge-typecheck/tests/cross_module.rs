@@ -3091,3 +3091,82 @@ fn leak (c: Column) -> Text = c.name
         "reading an opaque Column's field from user code must be rejected; got no errors"
     );
 }
+
+#[test]
+fn raw_query_decode_and_exec_typecheck() {
+    // The raw escape hatch over the in-memory adapter: `query` decodes the rows of a
+    // parameterised SELECT into a `deriving (Row)` entity, `queryFirst` keeps the
+    // first, and `exec` runs a row-less statement for its affected count. The
+    // `Adapter MemAdapter` and `Row User` constraints both resolve.
+    let main = r#"
+import std.data (memAdapter)
+import std.raw as Raw
+import std.sql (sqlInt, sqlText, sqlBool)
+
+pub type User = { id: Int, name: Text } deriving (Row)
+
+pub fn db loadAdults () -> Result (List User) Error =
+    let conn = memAdapter ()
+    Raw.query conn "SELECT id, name FROM users WHERE age > $1" [sqlInt 18]
+
+pub fn db firstNamed () -> Result (Option User) Error =
+    let conn = memAdapter ()
+    Raw.queryFirst conn "SELECT id, name FROM users WHERE name = $1" [sqlText "ada"]
+
+pub fn db deactivate () -> Result Int Error =
+    let conn = memAdapter ()
+    Raw.exec conn "UPDATE users SET active = $1 WHERE id = $2" [sqlBool false, sqlInt 1]
+"#;
+    let errors = typecheck_one(main);
+    assert!(
+        errors.is_empty(),
+        "the raw escape hatch must typecheck clean; got {errors:?}"
+    );
+}
+
+#[test]
+fn raw_over_postgres_typechecks() {
+    // The same verbs resolve the `Adapter` constraint for the Postgres backend:
+    // given a Postgres handle, the raw query and statement type-check. No database
+    // is touched — this is the type-level wiring for the other backend.
+    let main = r#"
+import std.data (Postgres)
+import std.raw as Raw
+import std.sql (sqlInt)
+
+pub type User = { id: Int, name: Text } deriving (Row)
+
+pub fn loadAdults (conn: Postgres) -> Result (List User) Error =
+    Raw.query conn "SELECT id, name FROM users WHERE age > $1" [sqlInt 18]
+
+pub fn affected (conn: Postgres) -> Result Int Error =
+    Raw.exec conn "DELETE FROM users WHERE id = $1" [sqlInt 1]
+"#;
+    let errors = typecheck_one(main);
+    assert!(
+        errors.is_empty(),
+        "the raw escape hatch over Postgres must typecheck clean; got {errors:?}"
+    );
+}
+
+#[test]
+fn raw_query_params_must_be_sql_values() {
+    // `params` is a `List SqlValue`: a bare value that did not go through a `sqlInt`/
+    // `sqlText`/… factory is a type error, so a bind can never smuggle an unencoded
+    // value into the statement.
+    let main = r#"
+import std.data (memAdapter)
+import std.raw as Raw
+
+pub type User = { id: Int, name: Text } deriving (Row)
+
+pub fn db bad () -> Result (List User) Error =
+    let conn = memAdapter ()
+    Raw.query conn "SELECT * FROM users WHERE age > $1" [18]
+"#;
+    let errors = typecheck_one(main);
+    assert!(
+        !errors.is_empty(),
+        "a non-SqlValue bind must be rejected; got no errors"
+    );
+}

@@ -1,5 +1,3 @@
 -- Rate limiter results --------------
-  Allowed : 9
-  Denied  : 91
   Total   : 100
 Done.

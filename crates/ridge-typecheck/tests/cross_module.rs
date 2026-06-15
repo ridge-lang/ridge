@@ -1719,6 +1719,125 @@ pub fn db authorPosts () -> Result (List (User, Option Post)) Error =
 }
 
 #[test]
+fn query_builder_right_join_to_list_typechecks() {
+    // A right join keeps every right row, so the unified `toList` decodes each into
+    // `(Option User, Post)` — the mirror of a left join, with the left entity present
+    // only where the row matched. The condition is written exactly as for an inner or
+    // left join.
+    let main = r#"
+import std.data (memAdapter, MemAdapter)
+import std.repo as Repo
+import std.query (SortOrder, Asc)
+import std.sql (SqlValue)
+
+pub type User = { id: Int, age: Int, name: Text } deriving (Row)
+pub type Post = { id: Int, authorId: Int, title: Text } deriving (Row)
+
+pub fn db postAuthors () -> Result (List (Option User, Post)) Error =
+    let users: Repo User MemAdapter = Repo.repo (memAdapter ()) "users"
+    let posts: Repo Post MemAdapter = Repo.repo (memAdapter ()) "posts"
+    users
+      |> Repo.query
+      |> Repo.filter (fn (u: User) -> u.age >= 18)
+      |> Repo.rightJoinOn posts (fn (u: User) (p: Post) -> u.id == p.authorId)
+      |> Repo.toList
+"#;
+    let errors = typecheck_one(main);
+    assert!(
+        errors.is_empty(),
+        "a right join into optional-left entity pairs must type-check clean; got {errors:?}"
+    );
+}
+
+#[test]
+fn query_builder_right_join_left_side_is_optional() {
+    // The left entity of a right join is `Option User`, not `User`: an unmatched
+    // right row has no left entity. Declaring the result as `(User, Post)` drops the
+    // `Option` and must be rejected, proving the optionality moved to the left side.
+    let main = r#"
+import std.data (memAdapter, MemAdapter)
+import std.repo as Repo
+import std.sql (SqlValue)
+
+pub type User = { id: Int, name: Text } deriving (Row)
+pub type Post = { id: Int, authorId: Int, title: Text } deriving (Row)
+
+pub fn db bad () -> Result (List (User, Post)) Error =
+    let users: Repo User MemAdapter = Repo.repo (memAdapter ()) "users"
+    let posts: Repo Post MemAdapter = Repo.repo (memAdapter ()) "posts"
+    users
+      |> Repo.query
+      |> Repo.rightJoinOn posts (fn (u: User) (p: Post) -> u.id == p.authorId)
+      |> Repo.toList
+"#;
+    let errors = typecheck_one(main);
+    assert!(
+        !errors.is_empty(),
+        "a right join paired as non-optional `(User, Post)` must be rejected; got no errors"
+    );
+}
+
+#[test]
+fn query_builder_right_join_select_left_side_is_optional() {
+    // A right-join projection reads the left side as `Option User`, so a projection
+    // that names a left column on a plain `User` parameter must be rejected — the
+    // nullable side is the left for a right join, the mirror of a left join's right.
+    let main = r#"
+import std.data (memAdapter, MemAdapter)
+import std.repo as Repo
+import std.sql (SqlValue)
+
+pub type User = { id: Int, name: Text } deriving (Row)
+pub type Post = { id: Int, authorId: Int, title: Text } deriving (Row)
+pub type Combo = { who: Option Text, title: Text } deriving (Row)
+
+pub fn db postAuthors () -> Result (List Combo) Error =
+    let users: Repo User MemAdapter = Repo.repo (memAdapter ()) "users"
+    let posts: Repo Post MemAdapter = Repo.repo (memAdapter ()) "posts"
+    users
+      |> Repo.query
+      |> Repo.rightJoinOn posts (fn (u: User) (p: Post) -> u.id == p.authorId)
+      |> Repo.select (fn (u: Option User) (p: Post) -> Combo { who = u.name, title = p.title })
+"#;
+    let errors = typecheck_one(main);
+    assert!(
+        errors.is_empty(),
+        "a right-join projection reading the left side as Option must type-check clean; got {errors:?}"
+    );
+}
+
+#[test]
+fn query_builder_right_join_over_postgres_typechecks() {
+    // The right join resolves the same `Adapter`/`Row` constraints on Postgres:
+    // `rightJoin` is a class method both adapters implement, so the call is unchanged
+    // across backends.
+    let main = r#"
+import std.data (connect, Config, Postgres)
+import std.repo as Repo
+import std.sql (SqlValue)
+
+pub type User = { id: Int, age: Int, name: Text } deriving (Row)
+pub type Post = { id: Int, authorId: Int, title: Text } deriving (Row)
+
+pub fn db postAuthors () -> Result (List (Option User, Post)) Error =
+    match connect (Config { host = "localhost", port = 5432, database = "app", user = "u", password = "p", sslMode = "require", poolSize = 4 })
+        Err e   -> Err e
+        Ok conn ->
+            let users: Repo User Postgres = Repo.repo conn "users"
+            let posts: Repo Post Postgres = Repo.repo conn "posts"
+            users
+              |> Repo.query
+              |> Repo.rightJoinOn posts (fn (u: User) (p: Post) -> u.id == p.authorId)
+              |> Repo.toList
+"#;
+    let errors = typecheck_one(main);
+    assert!(
+        errors.is_empty(),
+        "a right join over Postgres must type-check clean; got {errors:?}"
+    );
+}
+
+#[test]
 fn query_builder_left_join_unknown_column_is_rejected() {
     // The left-join condition is checked against both entities just like an inner
     // join: a column neither entity declares is an error.

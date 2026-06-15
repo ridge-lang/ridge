@@ -45,13 +45,18 @@
     pg_join_select/11,
     pg_left_join/10,
     pg_left_join_select/11,
+    pg_right_join/10,
+    pg_right_join_select/11,
     pg_aggregate_join/9,
     pg_aggregate_left_join/9,
+    pg_aggregate_right_join/9,
     pg_count_join/6,
     pg_count_left_join/6,
+    pg_count_right_join/6,
     pg_group_summarize/6,
     pg_group_summarize_join/10,
     pg_group_summarize_left_join/10,
+    pg_group_summarize_right_join/10,
     pg_run_plan/2,
     pg_begin/1,
     pg_commit/1,
@@ -172,6 +177,13 @@ pg_group_summarize_join(Id, LeftTable, RightTable, Cond, Where2, Pred, KeyCol, K
 pg_group_summarize_left_join(Id, LeftTable, RightTable, Cond, Where2, Pred, KeyCol, KeySide, Cols, Having) ->
     pg_call(Id, {group_summarize_left_join, LeftTable, RightTable, Cond, Where2, Pred, KeyCol, KeySide, Cols, Having}).
 
+%% pg_group_summarize_right_join/10 — as pg_group_summarize_left_join, but a `RIGHT
+%% JOIN`: every right row is grouped, the left query's Pred folds into the `ON` so an
+%% unmatched right row keeps a NULL left side and groups under the NULL key for a
+%% left-side key. Result (List Row) Error.
+pg_group_summarize_right_join(Id, LeftTable, RightTable, Cond, Where2, Pred, KeyCol, KeySide, Cols, Having) ->
+    pg_call(Id, {group_summarize_right_join, LeftTable, RightTable, Cond, Where2, Pred, KeyCol, KeySide, Cols, Having}).
+
 %% pg_run_plan/2 — compile a captured query plan to nested SQL and run it, returning
 %% the combined rows. Result (List Row) Error.
 pg_run_plan(Id, Plan) ->
@@ -223,6 +235,23 @@ pg_left_join(Id, LeftTable, RightTable, Cond, Where2, Pred, Orders, Lim, Off, Di
 pg_left_join_select(Id, LeftTable, RightTable, Cond, Where2, Pred, Orders, Lim, Off, Proj, Dist) ->
     pg_call(Id, {left_join_select, LeftTable, RightTable, Cond, Where2, Pred, Orders, Lim, Off, Proj, Dist}).
 
+%% pg_right_join/10 — the right-outer mirror of pg_left_join, compiled to a `RIGHT
+%% JOIN`. The left table is wrapped in the `__ridge_matched` sentinel subquery (the
+%% null-extended side is now the left), and the left query's Pred folds into the `ON`
+%% so an unmatched right row is kept with a NULL left side rather than dropped. The
+%% two-row Where2 runs in the post-join `WHERE`; `SELECT DISTINCT` when Dist. Each
+%% row comes back as `{{some, left}, right}` for a match or `{none, right}` for an
+%% unmatched right row. Result (List {Option Row, Row}) Error.
+pg_right_join(Id, LeftTable, RightTable, Cond, Where2, Pred, Orders, Lim, Off, Dist) ->
+    pg_call(Id, {right_join, LeftTable, RightTable, Cond, Where2, Pred, Orders, Lim, Off, Dist}).
+
+%% pg_right_join_select/11 — as pg_right_join, with the projection tree Proj compiled
+%% into the select-list; no sentinel is needed (an unmatched left column comes back
+%% NULL and decodes to `None` in the projected shape's `Option` field). `SELECT
+%% DISTINCT` over the projection when Dist. Result (List Row) Error.
+pg_right_join_select(Id, LeftTable, RightTable, Cond, Where2, Pred, Orders, Lim, Off, Proj, Dist) ->
+    pg_call(Id, {right_join_select, LeftTable, RightTable, Cond, Where2, Pred, Orders, Lim, Off, Proj, Dist}).
+
 %% pg_aggregate_join/9 — a scalar aggregate over an inner join, compiled to
 %% `SELECT func(<side>.col) FROM l JOIN r ON <cond> WHERE <pred> AND <where2>`.
 %% IsRight qualifies the column to the `r` alias (true) or `l` alias (false); Func
@@ -239,6 +268,13 @@ pg_aggregate_join(Id, LeftTable, RightTable, Cond, Where2, Pred, Func, Column, I
 pg_aggregate_left_join(Id, LeftTable, RightTable, Cond, Where2, Pred, Func, Column, IsRight) ->
     pg_call(Id, {aggregate_left_join, LeftTable, RightTable, Cond, Where2, Pred, Func, Column, IsRight}).
 
+%% pg_aggregate_right_join/9 — as pg_aggregate_left_join, compiled to a `RIGHT JOIN`
+%% with the left Pred folded into the `ON`: a left-column aggregate skips the
+%% unmatched right rows (their left columns are NULL) while a right-column one still
+%% folds them in.
+pg_aggregate_right_join(Id, LeftTable, RightTable, Cond, Where2, Pred, Func, Column, IsRight) ->
+    pg_call(Id, {aggregate_right_join, LeftTable, RightTable, Cond, Where2, Pred, Func, Column, IsRight}).
+
 %% pg_count_join/6 — how many rows the inner join holds, compiled to `SELECT
 %% COUNT(*) FROM l JOIN r ON <cond> WHERE <pred> AND <where2>`. No ordering or
 %% paging. Result Int Error.
@@ -250,6 +286,12 @@ pg_count_join(Id, LeftTable, RightTable, Cond, Where2, Pred) ->
 %% included. Result Int Error.
 pg_count_left_join(Id, LeftTable, RightTable, Cond, Where2, Pred) ->
     pg_call(Id, {count_left_join, LeftTable, RightTable, Cond, Where2, Pred}).
+
+%% pg_count_right_join/6 — as pg_count_left_join, compiled to a `RIGHT JOIN` with the
+%% left Pred folded into the `ON`: every right row Where2 admits is counted, an
+%% unmatched one (its left columns NULL) included. Result Int Error.
+pg_count_right_join(Id, LeftTable, RightTable, Cond, Where2, Pred) ->
+    pg_call(Id, {count_right_join, LeftTable, RightTable, Cond, Where2, Pred}).
 
 %% pg_begin/1 — open a transaction on handle Id, pinning one pooled connection in
 %% this process for its span so every later verb on Id runs on it. A nested begin
@@ -915,6 +957,53 @@ run_verb(Conn, {count_left_join, LeftTable, RightTable, Cond, Where2, Pred}) ->
            " AS l LEFT JOIN ", quote_ident(RightTable), " AS r ON ", OnFrag,
            " WHERE (", WhereFrag, ") AND (", W2Frag, ")"],
     count_result(run_query(Conn, Sql, lists:reverse(RevB2)));
+run_verb(Conn, {right_join, LeftTable, RightTable, Cond, Where2, Pred, Orders, Lim, Off, Dist}) ->
+    {OnFrag, RevB1, N1} = cwj(Cond, 1, []),
+    {PredFrag, RevBp, Np} = cwj(Pred, N1, RevB1),
+    {W2Frag, RevB2, _N2} = cwj(Where2, Np, RevBp),
+    %% Mirror of left_join with the preserved side flipped to the right table: the
+    %% LEFT table is wrapped in the sentinel subquery and a RIGHT JOIN keeps every
+    %% right row, null-extending the left side to NULL for an unmatched right row, so
+    %% the sentinel tells a real left row from a missing one. The left query's `Pred`
+    %% folds into the ON (rather than the post-join WHERE, which would drop the
+    %% unmatched right rows). `Where2` runs in the post-join WHERE, where a test over a
+    %% left column drops the unmatched rows.
+    Sql = ["SELECT ", distinct_kw(Dist), "l.*, r.* FROM (SELECT *, TRUE AS \"__ridge_matched\" FROM ",
+           quote_ident(LeftTable), ") AS l RIGHT JOIN ", quote_ident(RightTable),
+           " AS r ON (", OnFrag, ") AND (", PredFrag, ") WHERE (", W2Frag, ")",
+           order_by_clause_join(Orders), limit_clause(Lim), offset_clause(Off)],
+    run_query_right_join(Conn, Sql, lists:reverse(RevB2));
+run_verb(Conn, {right_join_select, LeftTable, RightTable, Cond, Where2, Pred, Orders, Lim, Off, Proj, Dist}) ->
+    {OnFrag, RevB1, N1} = cwj(Cond, 1, []),
+    {PredFrag, RevBp, Np} = cwj(Pred, N1, RevB1),
+    {W2Frag, RevB2, _N2} = cwj(Where2, Np, RevBp),
+    %% A projection decodes each aliased column on its own, so no sentinel is needed:
+    %% an unmatched left column comes back NULL and decodes to `None` in the projected
+    %% shape's `Option` field. A plain `RIGHT JOIN` with the left `Pred` folded into
+    %% the ON, `Where2` in the post-join WHERE.
+    Sql = ["SELECT ", distinct_kw(Dist), join_select_list(Proj), " FROM ", quote_ident(LeftTable),
+           " AS l RIGHT JOIN ", quote_ident(RightTable), " AS r ON (", OnFrag, ") AND (", PredFrag, ") WHERE (", W2Frag, ")",
+           order_by_clause_join(Orders), limit_clause(Lim), offset_clause(Off)],
+    run_query(Conn, Sql, lists:reverse(RevB2));
+run_verb(Conn, {aggregate_right_join, LeftTable, RightTable, Cond, Where2, Pred, Func, Column, IsRight}) ->
+    {OnFrag, RevB1, N1} = cwj(Cond, 1, []),
+    {PredFrag, RevBp, Np} = cwj(Pred, N1, RevB1),
+    {W2Frag, RevB2, _N2} = cwj(Where2, Np, RevBp),
+    %% A plain `RIGHT JOIN` with the left `Pred` folded into the ON: a left-side fold
+    %% skips the unmatched right rows (their left columns NULL) while a right-side fold
+    %% still counts them.
+    Sql = ["SELECT ", agg_expr_join(Func, IsRight, Column), " FROM ", quote_ident(LeftTable),
+           " AS l RIGHT JOIN ", quote_ident(RightTable), " AS r ON (", OnFrag, ") AND (", PredFrag, ") WHERE (", W2Frag, ")"],
+    agg_result(run_query(Conn, Sql, lists:reverse(RevB2)));
+run_verb(Conn, {count_right_join, LeftTable, RightTable, Cond, Where2, Pred}) ->
+    {OnFrag, RevB1, N1} = cwj(Cond, 1, []),
+    {PredFrag, RevBp, Np} = cwj(Pred, N1, RevB1),
+    {W2Frag, RevB2, _N2} = cwj(Where2, Np, RevBp),
+    %% A `RIGHT JOIN` with the left `Pred` folded into the ON: every right row `Where2`
+    %% admits is counted, an unmatched one (its left columns NULL) included.
+    Sql = ["SELECT COUNT(*) FROM ", quote_ident(LeftTable),
+           " AS l RIGHT JOIN ", quote_ident(RightTable), " AS r ON (", OnFrag, ") AND (", PredFrag, ") WHERE (", W2Frag, ")"],
+    count_result(run_query(Conn, Sql, lists:reverse(RevB2)));
 run_verb(Conn, {count_where, Table, Tree}) ->
     do_count(Conn, Table, Tree);
 run_verb(Conn, {aggregate, Table, Tree, Func, Column}) ->
@@ -925,6 +1014,8 @@ run_verb(Conn, {group_summarize_join, LeftTable, RightTable, Cond, Where2, Pred,
     do_group_summarize_join(Conn, "JOIN", LeftTable, RightTable, Cond, Where2, Pred, KeyCol, KeySide, Cols, Having);
 run_verb(Conn, {group_summarize_left_join, LeftTable, RightTable, Cond, Where2, Pred, KeyCol, KeySide, Cols, Having}) ->
     do_group_summarize_join(Conn, "LEFT JOIN", LeftTable, RightTable, Cond, Where2, Pred, KeyCol, KeySide, Cols, Having);
+run_verb(Conn, {group_summarize_right_join, LeftTable, RightTable, Cond, Where2, Pred, KeyCol, KeySide, Cols, Having}) ->
+    do_group_summarize_right_join(Conn, LeftTable, RightTable, Cond, Where2, Pred, KeyCol, KeySide, Cols, Having);
 run_verb(Conn, {run_plan, Plan}) ->
     {Sql, RevBinds, _N} = plan_sql(Plan, 1, []),
     run_query(Conn, Sql, lists:reverse(RevBinds)).
@@ -1141,6 +1232,28 @@ do_group_summarize_join(Conn, JoinKw, LeftTable, RightTable, Cond, Where2, Pred,
     Sql = ["SELECT ", SelectList, " FROM ", quote_ident(LeftTable), " AS l ", JoinKw, " ",
            quote_ident(RightTable), " AS r ON ", OnFrag,
            " WHERE (", WhereFrag, ") AND (", W2Frag, ") GROUP BY ", KeyExpr,
+           HavingClause, " ORDER BY ", KeyExpr],
+    run_query(Conn, Sql, lists:reverse(RevB3)).
+
+%% As do_group_summarize_join, but a `RIGHT JOIN` whose preserved side is the right
+%% table: the left query's `Pred` folds into the ON (not the post-join WHERE, which
+%% would drop the unmatched right rows), so every right row is grouped and an
+%% unmatched one groups under the NULL key for a left-side key. `Where2` stays in the
+%% post-join WHERE. Binds thread Cond, Pred, Where2, then the HAVING literals.
+do_group_summarize_right_join(Conn, LeftTable, RightTable, Cond, Where2, Pred, KeyCol, KeySide, Cols, Having) ->
+    {OnFrag, RevB1, N1} = cwj(Cond, 1, []),
+    {PredFrag, RevBp, Np} = cwj(Pred, N1, RevB1),
+    {W2Frag, RevB2, N2} = cwj(Where2, Np, RevBp),
+    {HavingFrag, RevB3, _N3} = compile_having_join(Having, KeySide, KeyCol, N2, RevB2),
+    KeyExpr = qcol_side(KeySide, KeyCol),
+    SelectList = lists:join(", ", [group_join_select_term(C, KeyExpr) || C <- Cols]),
+    HavingClause = case HavingFrag of
+        [] -> [];
+        _  -> [" HAVING ", HavingFrag]
+    end,
+    Sql = ["SELECT ", SelectList, " FROM ", quote_ident(LeftTable), " AS l RIGHT JOIN ",
+           quote_ident(RightTable), " AS r ON (", OnFrag, ") AND (", PredFrag, ")",
+           " WHERE (", W2Frag, ") GROUP BY ", KeyExpr,
            HavingClause, " ORDER BY ", KeyExpr],
     run_query(Conn, Sql, lists:reverse(RevB3)).
 
@@ -1455,6 +1568,31 @@ collect_rows_left_join(Conn, Cols, Acc) ->
         {_, _}  -> collect_rows_left_join(Conn, Cols, Acc)
     end.
 
+%% As run_query_left_join, but the sentinel-tagged subquery is the left side, so each
+%% row decodes the left map into `{some, _}` when the `__ridge_matched` marker is set
+%% and `none` when the right row was null-extended (an unmatched right row).
+run_query_right_join(Conn, Sql, Binds) ->
+    try
+        send_extended(Conn, iolist_to_binary(Sql), Binds),
+        collect_rows_right_join(Conn, [], [])
+    catch
+        throw:{pg_error, E} ->
+            drain_until_ready(Conn),
+            {error, E}
+    end.
+
+collect_rows_right_join(Conn, Cols, Acc) ->
+    case recv_msg(Conn) of
+        {$1, _} -> collect_rows_right_join(Conn, Cols, Acc);
+        {$2, _} -> collect_rows_right_join(Conn, Cols, Acc);
+        {$T, P} -> collect_rows_right_join(Conn, decode_row_desc_join(P), Acc);
+        {$n, _} -> collect_rows_right_join(Conn, Cols, Acc);
+        {$D, P} -> collect_rows_right_join(Conn, Cols, [decode_data_row_right_join(P, Cols) | Acc]);
+        {$C, _} -> collect_rows_right_join(Conn, Cols, Acc);
+        {$Z, _} -> {ok, lists:reverse(Acc)};
+        {_, _}  -> collect_rows_right_join(Conn, Cols, Acc)
+    end.
+
 send_extended(Conn, SqlBin, Binds) ->
     %% Parse: unnamed statement, the query text, no pre-declared parameter types.
     send_msg(Conn, $P, <<0, SqlBin/binary, 0, 0:16>>),
@@ -1595,6 +1733,25 @@ decode_data_row_left_join(<<NCols:16, Rest/binary>>, Cols) ->
             {LeftMap, {some, maps:remove(<<"__ridge_matched">>, RightMap)}};
         _ ->
             {LeftMap, none}
+    end.
+
+%% The right-join mirror of decode_data_row_left_join: the LEFT side carries the
+%% `__ridge_matched` sentinel (the left subquery in a RIGHT JOIN), so a TRUE marker
+%% wraps the left map (with the marker dropped) in `{some, _}` and a NULL or absent
+%% marker — the left null-extended by the RIGHT JOIN for an unmatched right row —
+%% yields `none`. The right map always carries the real right row.
+decode_data_row_right_join(<<NCols:16, Rest/binary>>, Cols) ->
+    Vals = decode_cols(NCols, Rest, []),
+    Cells = lists:zipwith(
+        fun({Name, Oid, Attnum}, V) -> {Name, Attnum, decode_cell(Oid, V)} end, Cols, Vals),
+    {Left, Right} = split_join_cells(Cells, [], -1),
+    LeftMap = maps:from_list(Left),
+    RightMap = maps:from_list(Right),
+    case maps:get(<<"__ridge_matched">>, LeftMap, 'SqlNull') of
+        {'SqlBool', true} ->
+            {{some, maps:remove(<<"__ridge_matched">>, LeftMap)}, RightMap};
+        _ ->
+            {none, RightMap}
     end.
 
 decode_cell(_Oid, null) -> 'SqlNull';

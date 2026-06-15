@@ -1504,6 +1504,8 @@ pub fn register_stdlib_instances(
             ("joinSelect".to_string(), String::new()),
             ("leftJoin".to_string(), String::new()),
             ("leftJoinSelect".to_string(), String::new()),
+            ("rightJoin".to_string(), String::new()),
+            ("rightJoinSelect".to_string(), String::new()),
         ]
     };
     if let (Some(adapter), Some(&mem_adapter)) = (
@@ -1575,6 +1577,11 @@ pub fn register_stdlib_instances(
                     .entry((refinable, smallvec![left_join, fn2]))
                     .or_insert_with(refinable_inst);
             }
+            if let Some(&right_join) = reconciled_tycon_names.get("RightJoin") {
+                env.instances
+                    .entry((refinable, smallvec![right_join, fn2]))
+                    .or_insert_with(refinable_inst);
+            }
         }
     }
 
@@ -1625,6 +1632,11 @@ pub fn register_stdlib_instances(
                     .entry((projectable, smallvec![left_join, fn2]))
                     .or_insert_with(|| projectable_inst(vec![2, 5]));
             }
+            if let Some(&right_join) = reconciled_tycon_names.get("RightJoin") {
+                env.instances
+                    .entry((projectable, smallvec![right_join, fn2]))
+                    .or_insert_with(|| projectable_inst(vec![2, 5]));
+            }
         }
     }
 
@@ -1658,6 +1670,11 @@ pub fn register_stdlib_instances(
             if let Some(&left_join) = reconciled_tycon_names.get("LeftJoin") {
                 env.instances
                     .entry((orderable, smallvec![left_join, fn2]))
+                    .or_insert_with(orderable_inst);
+            }
+            if let Some(&right_join) = reconciled_tycon_names.get("RightJoin") {
+                env.instances
+                    .entry((orderable, smallvec![right_join, fn2]))
                     .or_insert_with(orderable_inst);
             }
         }
@@ -1709,6 +1726,11 @@ pub fn register_stdlib_instances(
             if let Some(&left_join) = reconciled_tycon_names.get("LeftJoin") {
                 env.instances
                     .entry((aggregable, smallvec![left_join, fn2]))
+                    .or_insert_with(|| aggregable_inst(vec![2, 5]));
+            }
+            if let Some(&right_join) = reconciled_tycon_names.get("RightJoin") {
+                env.instances
+                    .entry((aggregable, smallvec![right_join, fn2]))
                     .or_insert_with(|| aggregable_inst(vec![2, 5]));
             }
         }
@@ -1785,6 +1807,11 @@ pub fn register_stdlib_instances(
                 .entry((decodable, smallvec![left_join]))
                 .or_insert_with(join_inst);
         }
+        if let Some(&right_join) = reconciled_tycon_names.get("RightJoin") {
+            env.instances
+                .entry((decodable, smallvec![right_join]))
+                .or_insert_with(join_inst);
+        }
     }
 
     // `Pageable (Query e a)`, `Pageable (Join e f a)`, and `Pageable (LeftJoin e f
@@ -1822,6 +1849,11 @@ pub fn register_stdlib_instances(
         if let Some(&left_join) = reconciled_tycon_names.get("LeftJoin") {
             env.instances
                 .entry((pageable, smallvec![left_join]))
+                .or_insert_with(pageable_inst);
+        }
+        if let Some(&right_join) = reconciled_tycon_names.get("RightJoin") {
+            env.instances
+                .entry((pageable, smallvec![right_join]))
                 .or_insert_with(pageable_inst);
         }
     }
@@ -1865,6 +1897,11 @@ pub fn register_stdlib_instances(
                 .entry((countable, smallvec![left_join]))
                 .or_insert_with(|| countable_inst(2));
         }
+        if let Some(&right_join) = reconciled_tycon_names.get("RightJoin") {
+            env.instances
+                .entry((countable, smallvec![right_join]))
+                .or_insert_with(|| countable_inst(2));
+        }
     }
 
     // `Every (Query e a) (fn e -> Bool)`, `Every (Join e f a) (fn e f -> Bool)`, and
@@ -1903,6 +1940,11 @@ pub fn register_stdlib_instances(
                     .entry((every, smallvec![left_join, fn2]))
                     .or_insert_with(|| every_inst(2));
             }
+            if let Some(&right_join) = reconciled_tycon_names.get("RightJoin") {
+                env.instances
+                    .entry((every, smallvec![right_join, fn2]))
+                    .or_insert_with(|| every_inst(2));
+            }
         }
     }
 
@@ -1935,6 +1977,11 @@ pub fn register_stdlib_instances(
             if let Some(&left_join) = reconciled_tycon_names.get("LeftJoin") {
                 env.instances
                     .entry((groupable, smallvec![left_join, fn2]))
+                    .or_insert_with(groupable_inst);
+            }
+            if let Some(&right_join) = reconciled_tycon_names.get("RightJoin") {
+                env.instances
+                    .entry((groupable, smallvec![right_join, fn2]))
                     .or_insert_with(groupable_inst);
             }
         }
@@ -1973,6 +2020,11 @@ pub fn register_stdlib_instances(
         if let Some(&left_join) = reconciled_tycon_names.get("LeftJoin") {
             env.instances
                 .entry((summarizable, smallvec![left_join]))
+                .or_insert_with(|| summarizable_inst(2));
+        }
+        if let Some(&right_join) = reconciled_tycon_names.get("RightJoin") {
+            env.instances
+                .entry((summarizable, smallvec![right_join]))
                 .or_insert_with(|| summarizable_inst(2));
         }
     }

@@ -968,7 +968,14 @@ run_verb(Conn, {right_join, LeftTable, RightTable, Cond, Where2, Pred, Orders, L
     %% folds into the ON (rather than the post-join WHERE, which would drop the
     %% unmatched right rows). `Where2` runs in the post-join WHERE, where a test over a
     %% left column drops the unmatched rows.
-    Sql = ["SELECT ", distinct_kw(Dist), "l.*, r.* FROM (SELECT *, TRUE AS \"__ridge_matched\" FROM ",
+    %%
+    %% The select list is `r.*, l.*` — the real right table first, the wrapped left
+    %% subquery second — so the row splits back the same way `left_join` does:
+    %% `split_join_cells` walks the leading real-table columns by ascending attribute
+    %% number and breaks at the first subquery column, whose attribute number is 0.
+    %% (A `l.*, r.*` order puts the all-zero subquery columns first, where the split
+    %% would fire on the second one and strand the sentinel on the wrong side.)
+    Sql = ["SELECT ", distinct_kw(Dist), "r.*, l.* FROM (SELECT *, TRUE AS \"__ridge_matched\" FROM ",
            quote_ident(LeftTable), ") AS l RIGHT JOIN ", quote_ident(RightTable),
            " AS r ON (", OnFrag, ") AND (", PredFrag, ") WHERE (", W2Frag, ")",
            order_by_clause_join(Orders), limit_clause(Lim), offset_clause(Off)],
@@ -1735,16 +1742,18 @@ decode_data_row_left_join(<<NCols:16, Rest/binary>>, Cols) ->
             {LeftMap, none}
     end.
 
-%% The right-join mirror of decode_data_row_left_join: the LEFT side carries the
-%% `__ridge_matched` sentinel (the left subquery in a RIGHT JOIN), so a TRUE marker
-%% wraps the left map (with the marker dropped) in `{some, _}` and a NULL or absent
-%% marker — the left null-extended by the RIGHT JOIN for an unmatched right row —
-%% yields `none`. The right map always carries the real right row.
+%% The right-join mirror of decode_data_row_left_join. The select list is `r.*, l.*`
+%% (see the {right_join, …} clause), so `split_join_cells` returns the real right
+%% table's columns first and the wrapped left subquery's columns — carrying the
+%% `__ridge_matched` sentinel — second. A TRUE marker wraps the left map (with the
+%% marker dropped) in `{some, _}`; a NULL or absent marker — the left null-extended by
+%% the RIGHT JOIN for an unmatched right row — yields `none`. The right map always
+%% carries the real right row.
 decode_data_row_right_join(<<NCols:16, Rest/binary>>, Cols) ->
     Vals = decode_cols(NCols, Rest, []),
     Cells = lists:zipwith(
         fun({Name, Oid, Attnum}, V) -> {Name, Attnum, decode_cell(Oid, V)} end, Cols, Vals),
-    {Left, Right} = split_join_cells(Cells, [], -1),
+    {Right, Left} = split_join_cells(Cells, [], -1),
     LeftMap = maps:from_list(Left),
     RightMap = maps:from_list(Right),
     case maps:get(<<"__ridge_matched">>, LeftMap, 'SqlNull') of

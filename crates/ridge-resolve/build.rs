@@ -418,6 +418,11 @@ const BASELINE_EXPORTS: &[(&str, &[&str])] = &[
             "groupSummarize",
             "groupSummarizeJoin",
             "groupSummarizeLeftJoin",
+            "rightJoin",
+            "rightJoinSelect",
+            "aggregateRightJoin",
+            "countRightJoin",
+            "groupSummarizeRightJoin",
             "runPlan",
             // Transaction control: open, commit, and roll back a transaction
             // (nesting opens a savepoint). The `Repo.transaction` combinator runs
@@ -551,6 +556,10 @@ const BASELINE_EXPORTS: &[(&str, &[&str])] = &[
             // the right side read as `Option`.
             "LeftJoin",
             "leftJoinOn",
+            // The right-outer join: the opaque `RightJoin e f a` and its `rightJoinOn`
+            // entry, the mirror of the left join with the left side read as `Option`.
+            "RightJoin",
+            "rightJoinOn",
             // Grouped aggregates unified across a query and a join: the opaque
             // `Grouped q p` builder produced by the `Groupable` class's `groupBy`,
             // narrowed by `having`, and summarised into a named record by
@@ -625,7 +634,15 @@ const BASELINE_OPAQUE: &[(&str, &[&str])] = &[
     ("std.data", &["MemAdapter", "Postgres"]),
     (
         "std.repo",
-        &["Repo", "Query", "Join", "LeftJoin", "Setter", "Grouped"],
+        &[
+            "Repo",
+            "Query",
+            "Join",
+            "LeftJoin",
+            "RightJoin",
+            "Setter",
+            "Grouped",
+        ],
     ),
     ("std.migrate", &["Column"]),
 ];

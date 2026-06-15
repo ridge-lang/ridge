@@ -396,7 +396,10 @@ pub struct RowsTycons {
     /// `LeftJoin`'s reconciled tycon id — `Rows (LeftJoin e f a)` reduces to
     /// `(e, Option f)`.
     pub left_join: TyConId,
-    /// `Option`'s tycon id, wrapping a left join's right side.
+    /// `RightJoin`'s reconciled tycon id — `Rows (RightJoin e f a)` reduces to
+    /// `(Option e, f)`.
+    pub right_join: TyConId,
+    /// `Option`'s tycon id, wrapping an outer join's nullable side.
     pub option: TyConId,
 }
 
@@ -561,9 +564,10 @@ impl InferCtx {
 
     /// Reduce `Rows q`'s already-resolved argument `q` to the row its receiver
     /// decodes into: `Rows (Query e a)` to `e`, `Rows (Join e f a)` to `(e, f)`,
-    /// and `Rows (LeftJoin e f a)` to `(e, Option f)`. Returns `None` when `q` is
-    /// not one of the three receivers (or still a variable, or the receiver ids
-    /// are unknown), leaving the projection stuck.
+    /// `Rows (LeftJoin e f a)` to `(e, Option f)`, and `Rows (RightJoin e f a)` to
+    /// `(Option e, f)`. Returns `None` when `q` is not one of those receivers (or
+    /// still a variable, or the receiver ids are unknown), leaving the projection
+    /// stuck.
     #[must_use]
     pub fn reduce_rows_arg(&self, q: &Type) -> Option<Type> {
         let rt = self.rows_tycons?;
@@ -582,6 +586,11 @@ impl InferCtx {
             let e = qargs.first()?.clone();
             let f = qargs.get(1)?.clone();
             return Some(Type::Tuple(vec![e, Type::Con(rt.option, vec![f])]));
+        }
+        if *qid == rt.right_join {
+            let e = qargs.first()?.clone();
+            let f = qargs.get(1)?.clone();
+            return Some(Type::Tuple(vec![Type::Con(rt.option, vec![e]), f]));
         }
         None
     }

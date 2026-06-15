@@ -85,6 +85,13 @@ pub type Combo = { person: Text, post: Text } deriving (Row)
 -- unmatched left row's NULL right column decodes to `None`.
 pub type ComboOpt = { person: Text, post: Option Text } deriving (Row)
 
+-- The mirror shape a right-join projection decodes into: `person` is `Option Text`,
+-- so an unmatched right row's NULL left column decodes to `None`.
+pub type ComboOptL = { person: Option Text, post: Text } deriving (Row)
+
+-- A grouped-count shape keyed by an integer column (a post's author id).
+pub type AuthorCount = { author: Int, n: Int } deriving (Row)
+
 fn joinNames (us: List User) -> Text =
     match us
         []        -> ""
@@ -137,6 +144,34 @@ fn joinLeftPairs (ps: List (User, Option Post)) -> Text =
         []              -> ""
         (u, op) :: []   -> Text.concat u.name (Text.concat ":" (optTitle op))
         (u, op) :: rest -> Text.concat u.name (Text.concat ":" (Text.concat (optTitle op) (Text.concat "," (joinLeftPairs rest))))
+
+-- The name of an optional left user, or "-" when the right row matched none.
+fn optName (ou: Option User) -> Text =
+    match ou
+        None   -> "-"
+        Some u -> u.name
+
+-- Render each `(Option User, Post)` pair as `name:title` (or `-:title`),
+-- comma-joined, so a right join's unmatched right rows are observable.
+fn joinRightPairs (ps: List (Option User, Post)) -> Text =
+    match ps
+        []              -> ""
+        (ou, p) :: []   -> Text.concat (optName ou) (Text.concat ":" p.title)
+        (ou, p) :: rest -> Text.concat (optName ou) (Text.concat ":" (Text.concat p.title (Text.concat "," (joinRightPairs rest))))
+
+-- Render each projected `ComboOptL` as `person:post` (or `-:post`), comma-joined.
+fn joinComboOptLs (cs: List ComboOptL) -> Text =
+    match cs
+        []          -> ""
+        c :: []     -> Text.concat (optText c.person) (Text.concat ":" c.post)
+        c :: rest   -> Text.concat (optText c.person) (Text.concat ":" (Text.concat c.post (Text.concat "," (joinComboOptLs rest))))
+
+-- Render each `AuthorCount` as `author:n`, comma-joined.
+fn authorCounts (cs: List AuthorCount) -> Text =
+    match cs
+        []        -> ""
+        c :: []   -> Text.concat (Int.toText c.author) (Text.concat ":" (Int.toText c.n))
+        c :: rest -> Text.concat (Int.toText c.author) (Text.concat ":" (Text.concat (Int.toText c.n) (Text.concat "," (authorCounts rest))))
 
 fn pgConfig () -> Config =
     Config { host = "__PG_HOST__", port = __PG_PORT__, database = "__PG_DATABASE__", user = "__PG_USER__", password = "__PG_PASSWORD__", sslMode = "__PG_SSLMODE__", poolSize = 4 }
@@ -352,6 +387,69 @@ pub fn db crossCount () -> Int =
             match users |> Repo.query |> Repo.crossJoin posts |> Repo.count
                 Ok n  -> n
                 Err _ -> 0 - 2
+
+-- right join: keep every post, pairing each with its author or with `None`. The left
+-- query is narrowed to ids <= 2 (so max, id 3, drops out of the match), then a RIGHT
+-- JOIN keeps every post and folds that filter into the ON — `world` (authored by max)
+-- keeps its place with a `None` left side. Ordered by post id and rendered
+-- `name:title` (or `-:title`) -> "lin:hello,-:world". Proves the `RIGHT JOIN` and its
+-- `__ridge_matched` sentinel on the left subquery keep unmatched right rows.
+pub fn db rightJoinedNames () -> Text =
+    match setupJoin ()
+        Err _ -> "setup-err"
+        Ok (users, posts) ->
+            match users |> Repo.query |> Repo.filter (fn (u: User) -> u.id <= 2) |> Repo.rightJoinOn posts (fn (u: User) (p: Post) -> u.id == p.author) |> Repo.orderBy Asc (fn (u: Option User) (p: Post) -> p.id) |> Repo.toList
+                Err _  -> "right-join-err"
+                Ok ps  -> joinRightPairs ps
+
+-- right-join projection: the same right join, projected into `ComboOptL` where
+-- `person` is `Option Text` -> "lin:hello,-:world". `world` has no matching author,
+-- so its projected `person` column is NULL and decodes to `None`. Proves
+-- `rightJoinSelect` keeps unmatched right rows and decodes the left columns into
+-- Option fields.
+pub fn db rightSelectNames () -> Text =
+    match setupJoin ()
+        Err _ -> "setup-err"
+        Ok (users, posts) ->
+            match users |> Repo.query |> Repo.filter (fn (u: User) -> u.id <= 2) |> Repo.rightJoinOn posts (fn (u: User) (p: Post) -> u.id == p.author) |> Repo.orderBy Asc (fn (u: Option User) (p: Post) -> p.id) |> Repo.select (fn (u: Option User) (p: Post) -> ComboOptL { person = u.name, post = p.title })
+                Err _  -> "right-select-err"
+                Ok cs  -> joinComboOptLs cs
+
+-- right-join count: the narrowed right join keeps both posts, one matched and one
+-- (`world`) unmatched, so the count is 2 -> proving `countRightJoin` keeps every
+-- right row where the inner join would count only the one match.
+pub fn db rightJoinCount () -> Int =
+    match setupJoin ()
+        Err _ -> 0 - 1
+        Ok (users, posts) ->
+            match users |> Repo.query |> Repo.filter (fn (u: User) -> u.id <= 2) |> Repo.rightJoinOn posts (fn (u: User) (p: Post) -> u.id == p.author) |> Repo.count
+                Ok n  -> n
+                Err _ -> 0 - 2
+
+-- right-join aggregate over a LEFT column: sum the matched users' ids across the
+-- narrowed right join. `hello` matches lin (id 2); `world` matches no one (its left
+-- side is NULL), so the fold skips it -> 2. Proves `aggregateRightJoin` folds a left
+-- column only over the matched rows.
+pub fn db rightJoinSumLeftId () -> Int =
+    match setupJoin ()
+        Err _ -> 0 - 1
+        Ok (users, posts) ->
+            match users |> Repo.query |> Repo.filter (fn (u: User) -> u.id <= 2) |> Repo.rightJoinOn posts (fn (u: User) (p: Post) -> u.id == p.author) |> Repo.sumOf (fn (u: User) (p: Post) -> u.id)
+                Err _       -> 0 - 2
+                Ok None     -> 0 - 3
+                Ok (Some n) -> n
+
+-- right-join grouped summary: group every post by its author id (a right column) and
+-- count each group -> author 2 owns hello, author 3 owns world, so "2:1,3:1" ordered
+-- by the key. Proves `groupSummarizeRightJoin` runs the GROUP BY over the RIGHT JOIN
+-- and decodes the integer key.
+pub fn db rightJoinGroupAuthors () -> Text =
+    match setupJoin ()
+        Err _ -> "setup-err"
+        Ok (users, posts) ->
+            match users |> Repo.query |> Repo.rightJoinOn posts (fn (u: User) (p: Post) -> u.id == p.author) |> Repo.groupBy (fn (u: User) (p: Post) -> p.author) |> Repo.summarize (fn g -> AuthorCount { author = g.key, n = g.count })
+                Err _  -> "right-group-err"
+                Ok cs  -> authorCounts cs
 
 -- left join: keep every user, pairing each with its post or with `None`, ordered
 -- by user id, rendered `name:title` (or `name:-`) -> "ada:-,lin:hello,max:world".
@@ -1529,6 +1627,11 @@ fn postgres_adapter_reads_a_real_table() {
          io:format(\"joinOrderByRight=~s~n\",[{module}:joinOrderByRight()]), \
          io:format(\"crossJoined=~s~n\",[{module}:crossJoined()]), \
          io:format(\"crossCount=~w~n\",[{module}:crossCount()]), \
+         io:format(\"rightJoinedNames=~s~n\",[{module}:rightJoinedNames()]), \
+         io:format(\"rightSelectNames=~s~n\",[{module}:rightSelectNames()]), \
+         io:format(\"rightJoinCount=~w~n\",[{module}:rightJoinCount()]), \
+         io:format(\"rightJoinSumLeftId=~w~n\",[{module}:rightJoinSumLeftId()]), \
+         io:format(\"rightJoinGroupAuthors=~s~n\",[{module}:rightJoinGroupAuthors()]), \
          io:format(\"leftJoinedNames=~s~n\",[{module}:leftJoinedNames()]), \
          io:format(\"leftSelectTitles=~s~n\",[{module}:leftSelectTitles()]), \
          io:format(\"joinLimited=~s~n\",[{module}:joinLimited()]), \
@@ -1660,6 +1763,26 @@ fn postgres_adapter_reads_a_real_table() {
         (
             "crossCount=6",
             "COUNT(*) over the full cross join is 3 users * 2 posts = 6 pairs",
+        ),
+        (
+            "rightJoinedNames=lin:hello,-:world",
+            "pg_right_join keeps every post and folds the left filter into the ON, so world (authored by the filtered-out max) keeps a None left side as `-:world`",
+        ),
+        (
+            "rightSelectNames=lin:hello,-:world",
+            "pg_right_join_select keeps the unmatched world row and decodes its NULL left column into an Option field as None",
+        ),
+        (
+            "rightJoinCount=2",
+            "pg_count_right_join keeps both posts (one matched, world unmatched) where an inner join would count only one",
+        ),
+        (
+            "rightJoinSumLeftId=2",
+            "pg_aggregate_right_join folds the left id only over the matched row (lin = 2), skipping the unmatched world",
+        ),
+        (
+            "rightJoinGroupAuthors=2:1,3:1",
+            "pg_group_summarize_right_join groups every post by author id over the RIGHT JOIN",
         ),
         (
             "leftJoinedNames=ada:-,lin:hello,max:world",

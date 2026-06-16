@@ -1161,6 +1161,13 @@ run_verb(Conn, {run_plan, {'PlanAggregate', Func, Column, IsRight, {'PlanJoin', 
         {ok, {some, V}} -> {ok, [#{<<"agg">> => V}]};
         Err             -> Err
     end;
+run_verb(Conn, {run_plan, {'PlanGroup', KeyCol, KeySide, Cols, Having, {'PlanJoin', <<"INNER">>, Left, Right, Cond, Where2, _Orders, _Lim, _Off, _Dist}}}) ->
+    %% Shim: a grouped inner-join plan reuses the existing group_summarize_join SQL —
+    %% the GROUP BY/HAVING push-down over the join, one row per group. The real
+    %% renderer lands with planToSql.
+    {LeftTable, Pred} = plan_scan_table_pred(Left),
+    {RightTable, _RPred} = plan_scan_table_pred(Right),
+    run_verb(Conn, {group_summarize_join, LeftTable, RightTable, Cond, Where2, Pred, KeyCol, KeySide, Cols, Having});
 run_verb(Conn, {run_plan, Plan}) ->
     {Sql, RevBinds, _N} = plan_sql(Plan, 1, []),
     run_query(Conn, Sql, lists:reverse(RevBinds)).

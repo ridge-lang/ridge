@@ -827,6 +827,28 @@ fn reconciled_decls(b: &BuiltinTyCons, base: u32) -> Vec<TyConDecl> {
                             Type::Con(TyConId(base + 15), vec![]),
                         ]),
                     },
+                    // `PlanGroup keyCol keySide cols having child` — group a sub-plan's
+                    // rows by `keyCol` (on side `keySide`), summarise each group into the
+                    // `(alias, func, column, isRight)` aggregate columns, keep the groups
+                    // `having` admits. One row per group. Wraps a `PlanJoin`.
+                    UnionVariant {
+                        name: "PlanGroup".to_string(),
+                        kind: VariantPayload::Positional(vec![
+                            Type::Con(b.text, vec![]),
+                            Type::Con(b.bool, vec![]),
+                            Type::Con(
+                                b.list,
+                                vec![Type::Tuple(vec![
+                                    Type::Con(b.text, vec![]),
+                                    Type::Con(b.text, vec![]),
+                                    Type::Con(b.text, vec![]),
+                                    Type::Con(b.bool, vec![]),
+                                ])],
+                            ),
+                            Type::Con(b.q_expr, vec![]),
+                            Type::Con(TyConId(base + 15), vec![]),
+                        ]),
+                    },
                 ],
             }),
             def_span: None,
@@ -989,7 +1011,7 @@ pub(crate) fn reconciled_fn_scheme(
         (
             "std.query",
             "planScan" | "planCombine" | "planRefine" | "planJoin" | "planProject"
-            | "planAggregate",
+            | "planAggregate" | "planGroup",
         ) => reconciled_query_plan_fn_scheme(name, reconciled, b),
         ("std.repo", _) => reconciled_repo_fn_scheme(name, reconciled, b, classes?),
         ("std.migrate", _) => reconciled_migrate_fn_scheme(name, reconciled, b, classes?),
@@ -999,9 +1021,9 @@ pub(crate) fn reconciled_fn_scheme(
 }
 
 /// The `std.query` plan-builder slice of [`reconciled_fn_scheme`]: `planScan`/
-/// `planCombine`/`planRefine`/`planJoin`/`planProject`/`planAggregate`, the factories
-/// that build a `QueryPlan` node. Each is pure and returns the reconciled `QueryPlan`,
-/// so none is expressible in the hand-curated signature table.
+/// `planCombine`/`planRefine`/`planJoin`/`planProject`/`planAggregate`/`planGroup`, the
+/// factories that build a `QueryPlan` node. Each is pure and returns the reconciled
+/// `QueryPlan`, so none is expressible in the hand-curated signature table.
 fn reconciled_query_plan_fn_scheme(
     name: &str,
     reconciled: &FxHashMap<String, TyConId>,
@@ -1018,6 +1040,14 @@ fn reconciled_query_plan_fn_scheme(
     // The side-tagged join ordering keys: `List (Bool, Bool, Text)` — the
     // (ascending?, isRight?, column) triples.
     let join_orders = || Type::Con(b.list, vec![Type::Tuple(vec![bool_(), bool_(), text()])]);
+    // The grouped-aggregate columns: `List (Text, Text, Text, Bool)` — the
+    // (alias, func, column, isRight?) quadruples a `GROUP BY` summary projects.
+    let group_cols = || {
+        Type::Con(
+            b.list,
+            vec![Type::Tuple(vec![text(), text(), text(), bool_()])],
+        )
+    };
     let pure = |params: Vec<Type>| Scheme {
         vars: vec![],
         cap_vars: vec![],
@@ -1053,6 +1083,9 @@ fn reconciled_query_plan_fn_scheme(
         "planProject" => Some(pure(vec![qexpr(), plan(), int(), int(), bool_()])),
         // planAggregate : Text -> Text -> Bool -> QueryPlan -> QueryPlan
         "planAggregate" => Some(pure(vec![text(), text(), bool_(), plan()])),
+        // planGroup : Text -> Bool -> List (Text, Text, Text, Bool) -> QExpr ->
+        //             QueryPlan -> QueryPlan
+        "planGroup" => Some(pure(vec![text(), bool_(), group_cols(), qexpr(), plan()])),
         _ => None,
     }
 }

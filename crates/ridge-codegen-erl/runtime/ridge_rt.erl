@@ -1555,7 +1555,26 @@ mem_eval_plan(State, Id, {'PlanAggregate', Func, Column, IsRight, Child}) ->
     case mem_aggregate_value(Func, mem_agg_prefixed_col(IsRight, Column), Rows) of
         'SqlNull' -> [];
         Value     -> [#{<<"agg">> => Value}]
-    end.
+    end;
+mem_eval_plan(State, Id, {'PlanGroup', KeyCol, KeySide, Cols, Having, Child}) ->
+    Rows = mem_eval_plan(State, Id, Child),
+    Pairs = [mem_unprefix_pair(Row) || Row <- Rows],
+    mem_group_join(Pairs, KeyCol, KeySide, Cols, Having).
+
+%% Split a flat, source-prefixed join row back into its {LeftMap, RightMap} pair —
+%% the inverse of mem_prefix_pair — so the grouped-join interpreter can read each
+%% group key and folded column off its side. A t0$-prefixed key restores a left
+%% column, a t1$-prefixed key a right one.
+mem_unprefix_pair(Row) ->
+    maps:fold(
+        fun(K, V, {L, R}) ->
+            case K of
+                <<"t0$", Rest/binary>> -> {L#{Rest => V}, R};
+                <<"t1$", Rest/binary>> -> {L, R#{Rest => V}};
+                _                      -> {L, R}
+            end
+        end,
+        {#{}, #{}}, Row).
 
 %% The prefixed column name a join aggregate folds: the right source's column (the
 %% t1$ prefix) when IsRight, otherwise the left source's (t0$). A `PlanAggregate`

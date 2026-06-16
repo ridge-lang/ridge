@@ -21,7 +21,7 @@
 
 import std.data as Db
 import std.sql (SqlValue)
-import std.query (SortOrder, ascending, QueryPlan, planScan, planCombine, planRefine, planJoin, planProject, planAggregate)
+import std.query (SortOrder, ascending, QueryPlan, planScan, planCombine, planRefine, planJoin, planProject, planAggregate, planGroup)
 import std.map (fromList, toList)
 
 -- A repository: entity `e` stored in `table` through adapter `a`. Opaque, so it
@@ -1431,12 +1431,12 @@ instance Groupable (FullJoin e f a) (fn e f -> k) =
         Grouped { source = x, keyCol = aggColumn key, keySide = aggSide key, havingTree = keepAllTree () }
 
 -- An inner join's `summarize` seam: run the `GROUP BY` (and any `HAVING`) over the
--- joined rows through the `groupSummarizeJoin` push-down, side-qualifying the key and
--- each aggregate column to its table. Returns one raw row per group for `summarize`
--- to decode.
+-- joined rows through a `PlanGroup` over the all-pairs join plan, side-qualifying the
+-- key and each aggregate column to its table. Returns one raw row per group for
+-- `summarize` to decode.
 instance Summarizable (Join e f a) where Adapter a =
     runGroups (src: Join e f a) (keyCol: Text) (keySide: Bool) (projTree: QExpr) (havingTree: QExpr) -> Result (List (Map Text SqlValue)) Error =
-        groupSummarizeJoin src.left.repo.adapter src.left.repo.table src.right.table src.cond src.where2 src.left.pred keyCol keySide (groupCols keyCol projTree) havingTree
+        runPlan src.left.repo.adapter (planGroup keyCol keySide (groupCols keyCol projTree) havingTree (reduceJoin src src.where2.tree (0 - 1)))
 
 -- A left join's `summarize` seam: the dual over a `LeftJoin`, run through the
 -- `groupSummarizeLeftJoin` push-down. Every left row the post-join `WHERE` admits

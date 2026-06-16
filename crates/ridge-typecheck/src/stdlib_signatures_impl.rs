@@ -1547,12 +1547,14 @@ mod tests {
                             | "PlanJoin"
                             | "PlanProject"
                             | "PlanAggregate"
+                            | "PlanGroup"
                             | "planScan"
                             | "planCombine"
                             | "planRefine"
                             | "planJoin"
                             | "planProject"
                             | "planAggregate"
+                            | "planGroup"
                     )
                 {
                     continue;

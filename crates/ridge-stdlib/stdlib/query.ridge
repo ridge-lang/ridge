@@ -57,7 +57,13 @@ pub fn ascending (dir: SortOrder) -> Bool =
 -- the scalar, or no row at all when the aggregate is SQL NULL (an empty fold) — so a
 -- reader takes the lone cell as the value and an empty result as "none". A `COUNT` is
 -- never NULL, so it always yields its row.
-pub type QueryPlan = PlanScan Text QExpr (List (Bool, Text)) Int Int Bool | PlanCombine Text QueryPlan QueryPlan | PlanRefine QueryPlan QExpr (List (Bool, Text)) Int Int Bool | PlanJoin Text QueryPlan QueryPlan QExpr QExpr (List (Bool, Bool, Text)) Int Int Bool | PlanProject QExpr QueryPlan Int Int Bool | PlanAggregate Text Text Bool QueryPlan
+-- `PlanGroup` groups a sub-plan's rows by `keyCol` (read off the join side `keySide`
+-- selects) and summarises each group into the `(alias, func, column, isRight)`
+-- aggregate columns, keeping the groups the `HAVING` tree admits; it yields one row
+-- per group, keyed by alias and ordered by the key — the plan form of a grouped
+-- join `summarize`. It wraps a `PlanJoin`, whose flat source-prefixed rows it splits
+-- back per side to read each group key and folded column.
+pub type QueryPlan = PlanScan Text QExpr (List (Bool, Text)) Int Int Bool | PlanCombine Text QueryPlan QueryPlan | PlanRefine QueryPlan QExpr (List (Bool, Text)) Int Int Bool | PlanJoin Text QueryPlan QueryPlan QExpr QExpr (List (Bool, Bool, Text)) Int Int Bool | PlanProject QExpr QueryPlan Int Int Bool | PlanAggregate Text Text Bool QueryPlan | PlanGroup Text Bool (List (Text, Text, Text, Bool)) QExpr QueryPlan
 
 -- A single-table scan plan — the plan form of `fetch`.
 pub fn planScan (table: Text) (pred: QExpr) (orders: List (Bool, Text)) (lim: Int) (off: Int) (dist: Bool) -> QueryPlan =
@@ -91,6 +97,13 @@ pub fn planProject (proj: QExpr) (child: QueryPlan) (lim: Int) (off: Int) (dist:
 -- is SQL NULL.
 pub fn planAggregate (func: Text) (column: Text) (isRight: Bool) (child: QueryPlan) -> QueryPlan =
     PlanAggregate func column isRight child
+
+-- Group a sub-plan's rows by `keyCol` (on the join side `keySide`), summarise each
+-- group into the `(alias, func, column, isRight)` aggregate columns, and keep the
+-- groups the `having` tree admits. The result is one row per group keyed by alias,
+-- ordered by the key.
+pub fn planGroup (keyCol: Text) (keySide: Bool) (cols: List (Text, Text, Text, Bool)) (having: QExpr) (child: QueryPlan) -> QueryPlan =
+    PlanGroup keyCol keySide cols having child
 
 -- Render a captured tree to a readable, SQL-shaped string. Literals show as `?`
 -- placeholders — binding parameters is the SQL-compilation pass's job; this is

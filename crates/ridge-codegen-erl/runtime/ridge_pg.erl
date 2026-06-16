@@ -1168,24 +1168,23 @@ run_verb(Conn, {run_plan, {'PlanJoin', <<"FULL">>, Left, Right, Cond, Where2, Or
         {ok, Pairs} -> {ok, [pg_prefix_full_pair(OptL, OptR) || {OptL, OptR} <- Pairs]};
         Err -> Err
     end;
-run_verb(Conn, {run_plan, {'PlanAggregate', <<"COUNT">>, _Column, _IsRight, {'PlanJoin', <<"INNER">>, Left, Right, Cond, Where2, _Orders, _Lim, _Off, _Dist}}}) ->
-    %% Shim: a COUNT over an inner-join plan reuses the existing count_join SQL, then
+run_verb(Conn, {run_plan, {'PlanAggregate', <<"COUNT">>, _Column, _IsRight, {'PlanJoin', Kind, Left, Right, Cond, Where2, _Orders, _Lim, _Off, _Dist}}}) ->
+    %% Shim: a COUNT over a join plan reuses the existing count SQL for its kind, then
     %% wraps the integer into the aggregate plan's one-row `agg` cell. The reader takes
     %% the lone cell as the scalar. The real renderer lands with planToSql.
     {LeftTable, Pred} = plan_scan_table_pred(Left),
     {RightTable, _RPred} = plan_scan_table_pred(Right),
-    case run_verb(Conn, {count_join, LeftTable, RightTable, Cond, Where2, Pred}) of
+    case run_verb(Conn, {count_join_verb(Kind), LeftTable, RightTable, Cond, Where2, Pred}) of
         {ok, N} -> {ok, [#{<<"agg">> => {'SqlInt', N}}]};
         Err     -> Err
     end;
-run_verb(Conn, {run_plan, {'PlanAggregate', Func, Column, IsRight, {'PlanJoin', <<"INNER">>, Left, Right, Cond, Where2, _Orders, _Lim, _Off, _Dist}}}) ->
-    %% Shim: a scalar aggregate over an inner-join plan reuses the existing
-    %% aggregate_join SQL. A present scalar becomes the plan's one-row `agg` cell; a
-    %% SQL NULL aggregate (an empty fold) becomes no row at all, which the reader takes
-    %% as "none".
+run_verb(Conn, {run_plan, {'PlanAggregate', Func, Column, IsRight, {'PlanJoin', Kind, Left, Right, Cond, Where2, _Orders, _Lim, _Off, _Dist}}}) ->
+    %% Shim: a scalar aggregate over a join plan reuses the existing aggregate SQL for
+    %% its kind. A present scalar becomes the plan's one-row `agg` cell; a SQL NULL
+    %% aggregate (an empty fold) becomes no row at all, which the reader takes as "none".
     {LeftTable, Pred} = plan_scan_table_pred(Left),
     {RightTable, _RPred} = plan_scan_table_pred(Right),
-    case run_verb(Conn, {aggregate_join, LeftTable, RightTable, Cond, Where2, Pred, Func, Column, IsRight}) of
+    case run_verb(Conn, {aggregate_join_verb(Kind), LeftTable, RightTable, Cond, Where2, Pred, Func, Column, IsRight}) of
         {ok, none}      -> {ok, []};
         {ok, {some, V}} -> {ok, [#{<<"agg">> => V}]};
         Err             -> Err
@@ -1247,6 +1246,18 @@ join_select_verb(<<"INNER">>) -> join_select;
 join_select_verb(<<"LEFT">>)  -> left_join_select;
 join_select_verb(<<"RIGHT">>) -> right_join_select;
 join_select_verb(<<"FULL">>)  -> full_join_select.
+
+%% The count seam verb a COUNT `PlanAggregate` over a join of the given kind uses.
+count_join_verb(<<"INNER">>) -> count_join;
+count_join_verb(<<"LEFT">>)  -> count_left_join;
+count_join_verb(<<"RIGHT">>) -> count_right_join;
+count_join_verb(<<"FULL">>)  -> count_full_join.
+
+%% The scalar-aggregate seam verb a `PlanAggregate` over a join of the given kind uses.
+aggregate_join_verb(<<"INNER">>) -> aggregate_join;
+aggregate_join_verb(<<"LEFT">>)  -> aggregate_left_join;
+aggregate_join_verb(<<"RIGHT">>) -> aggregate_right_join;
+aggregate_join_verb(<<"FULL">>)  -> aggregate_full_join.
 
 do_insert(Conn, Table, Row) ->
     Pairs = maps:to_list(Row),

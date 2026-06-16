@@ -934,21 +934,21 @@ instance Aggregable (Join e f a) (fn e f -> n) where Adapter a, SqlType n =
 -- in the accessor.
 instance Aggregable (LeftJoin e f a) (fn e f -> n) where Adapter a, SqlType n =
     sumOf (col: Quote (fn e f -> n)) (x: LeftJoin e f a) -> Result (Option n) Error =
-        match aggregateLeftJoin x.left.repo.adapter x.left.repo.table x.right.table x.cond x.where2 x.left.pred "SUM" (aggColumn col) (aggSide col)
+        match runPlan x.left.repo.adapter (leftScalarPlan x "SUM" col)
             Err err -> Err err
-            Ok v    -> decodeScalar v
+            Ok rows -> decodeScalar (firstAggCell rows)
     avgOf (col: Quote (fn e f -> n)) (x: LeftJoin e f a) -> Result (Option Float) Error =
-        match aggregateLeftJoin x.left.repo.adapter x.left.repo.table x.right.table x.cond x.where2 x.left.pred "AVG" (aggColumn col) (aggSide col)
+        match runPlan x.left.repo.adapter (leftScalarPlan x "AVG" col)
             Err err -> Err err
-            Ok v    -> decodeScalar v
+            Ok rows -> decodeScalar (firstAggCell rows)
     minOf (col: Quote (fn e f -> n)) (x: LeftJoin e f a) -> Result (Option n) Error =
-        match aggregateLeftJoin x.left.repo.adapter x.left.repo.table x.right.table x.cond x.where2 x.left.pred "MIN" (aggColumn col) (aggSide col)
+        match runPlan x.left.repo.adapter (leftScalarPlan x "MIN" col)
             Err err -> Err err
-            Ok v    -> decodeScalar v
+            Ok rows -> decodeScalar (firstAggCell rows)
     maxOf (col: Quote (fn e f -> n)) (x: LeftJoin e f a) -> Result (Option n) Error =
-        match aggregateLeftJoin x.left.repo.adapter x.left.repo.table x.right.table x.cond x.where2 x.left.pred "MAX" (aggColumn col) (aggSide col)
+        match runPlan x.left.repo.adapter (leftScalarPlan x "MAX" col)
             Err err -> Err err
-            Ok v    -> decodeScalar v
+            Ok rows -> decodeScalar (firstAggCell rows)
 
 -- A right join's scalar aggregates: the two-row dual over a `RightJoin`, run through
 -- the `aggregateRightJoin` seam. As with a left join, an aggregate folds values
@@ -958,21 +958,21 @@ instance Aggregable (LeftJoin e f a) (fn e f -> n) where Adapter a, SqlType n =
 -- right-column fold still counts them. The nullability lives in the result.
 instance Aggregable (RightJoin e f a) (fn e f -> n) where Adapter a, SqlType n =
     sumOf (col: Quote (fn e f -> n)) (x: RightJoin e f a) -> Result (Option n) Error =
-        match aggregateRightJoin x.left.repo.adapter x.left.repo.table x.right.table x.cond x.where2 x.left.pred "SUM" (aggColumn col) (aggSide col)
+        match runPlan x.left.repo.adapter (rightScalarPlan x "SUM" col)
             Err err -> Err err
-            Ok v    -> decodeScalar v
+            Ok rows -> decodeScalar (firstAggCell rows)
     avgOf (col: Quote (fn e f -> n)) (x: RightJoin e f a) -> Result (Option Float) Error =
-        match aggregateRightJoin x.left.repo.adapter x.left.repo.table x.right.table x.cond x.where2 x.left.pred "AVG" (aggColumn col) (aggSide col)
+        match runPlan x.left.repo.adapter (rightScalarPlan x "AVG" col)
             Err err -> Err err
-            Ok v    -> decodeScalar v
+            Ok rows -> decodeScalar (firstAggCell rows)
     minOf (col: Quote (fn e f -> n)) (x: RightJoin e f a) -> Result (Option n) Error =
-        match aggregateRightJoin x.left.repo.adapter x.left.repo.table x.right.table x.cond x.where2 x.left.pred "MIN" (aggColumn col) (aggSide col)
+        match runPlan x.left.repo.adapter (rightScalarPlan x "MIN" col)
             Err err -> Err err
-            Ok v    -> decodeScalar v
+            Ok rows -> decodeScalar (firstAggCell rows)
     maxOf (col: Quote (fn e f -> n)) (x: RightJoin e f a) -> Result (Option n) Error =
-        match aggregateRightJoin x.left.repo.adapter x.left.repo.table x.right.table x.cond x.where2 x.left.pred "MAX" (aggColumn col) (aggSide col)
+        match runPlan x.left.repo.adapter (rightScalarPlan x "MAX" col)
             Err err -> Err err
-            Ok v    -> decodeScalar v
+            Ok rows -> decodeScalar (firstAggCell rows)
 
 -- A full join's scalar aggregates: the two-row dual over a `FullJoin`, run through
 -- the `aggregateFullJoin` seam. An aggregate folds values rather than producing one
@@ -982,21 +982,21 @@ instance Aggregable (RightJoin e f a) (fn e f -> n) where Adapter a, SqlType n =
 -- in the result.
 instance Aggregable (FullJoin e f a) (fn e f -> n) where Adapter a, SqlType n =
     sumOf (col: Quote (fn e f -> n)) (x: FullJoin e f a) -> Result (Option n) Error =
-        match aggregateFullJoin x.left.repo.adapter x.left.repo.table x.right.table x.cond x.where2 x.left.pred "SUM" (aggColumn col) (aggSide col)
+        match runPlan x.left.repo.adapter (fullScalarPlan x "SUM" col)
             Err err -> Err err
-            Ok v    -> decodeScalar v
+            Ok rows -> decodeScalar (firstAggCell rows)
     avgOf (col: Quote (fn e f -> n)) (x: FullJoin e f a) -> Result (Option Float) Error =
-        match aggregateFullJoin x.left.repo.adapter x.left.repo.table x.right.table x.cond x.where2 x.left.pred "AVG" (aggColumn col) (aggSide col)
+        match runPlan x.left.repo.adapter (fullScalarPlan x "AVG" col)
             Err err -> Err err
-            Ok v    -> decodeScalar v
+            Ok rows -> decodeScalar (firstAggCell rows)
     minOf (col: Quote (fn e f -> n)) (x: FullJoin e f a) -> Result (Option n) Error =
-        match aggregateFullJoin x.left.repo.adapter x.left.repo.table x.right.table x.cond x.where2 x.left.pred "MIN" (aggColumn col) (aggSide col)
+        match runPlan x.left.repo.adapter (fullScalarPlan x "MIN" col)
             Err err -> Err err
-            Ok v    -> decodeScalar v
+            Ok rows -> decodeScalar (firstAggCell rows)
     maxOf (col: Quote (fn e f -> n)) (x: FullJoin e f a) -> Result (Option n) Error =
-        match aggregateFullJoin x.left.repo.adapter x.left.repo.table x.right.table x.cond x.where2 x.left.pred "MAX" (aggColumn col) (aggSide col)
+        match runPlan x.left.repo.adapter (fullScalarPlan x "MAX" col)
             Err err -> Err err
-            Ok v    -> decodeScalar v
+            Ok rows -> decodeScalar (firstAggCell rows)
 
 -- A query's decode terminals: `toList` runs the accumulated query (a single-
 -- table fetch, or the captured set-operation plan) and decodes every row into
@@ -1088,7 +1088,45 @@ fn fullJoinSelectPlan (x: FullJoin e f a) (proj: QExpr) (lim: Int) -> QueryPlan 
 -- narrows) and `lim`, which `exists` sets to one to answer from a single row. Its
 -- flat source-prefixed rows are what the scalar nodes fold.
 fn reduceJoin (x: Join e f a) (where2: QExpr) (lim: Int) -> QueryPlan =
-    planJoin "INNER" (planScan x.left.repo.table x.left.pred.tree [] (0 - 1) 0 false) (planScan x.right.table (keepAllTree ()) [] (0 - 1) 0 false) x.cond.tree where2 [] lim 0 false
+    reduceJoinOf "INNER" x.left.repo.table x.left.pred.tree x.right.table x.cond.tree where2 lim
+
+-- Build the base reduction join from raw fields: all matched (or outer) rows with
+-- neither ordering, offset, nor distinct. The four join receivers are distinct opaque
+-- types that cannot share a typed helper, so each shape's wrapper unpacks its receiver
+-- and calls this. `lim` bounds it only for `exists`.
+fn reduceJoinOf (kind: Text) (leftTable: Text) (leftPred: QExpr) (rightTable: Text) (cond: QExpr) (where2: QExpr) (lim: Int) -> QueryPlan =
+    planJoin kind (planScan leftTable leftPred [] (0 - 1) 0 false) (planScan rightTable (keepAllTree ()) [] (0 - 1) 0 false) cond where2 [] lim 0 false
+
+-- The outer-shape reduction-join wrappers, the duals of `reduceJoin` over a
+-- `LeftJoin`/`RightJoin`/`FullJoin`. The join `kind` keeps the outer rows; an
+-- unmatched side comes back with its columns absent, so a fold over that side skips
+-- it and a count still counts the outer row.
+fn leftReduceJoin (x: LeftJoin e f a) (where2: QExpr) (lim: Int) -> QueryPlan =
+    reduceJoinOf "LEFT" x.left.repo.table x.left.pred.tree x.right.table x.cond.tree where2 lim
+
+fn rightReduceJoin (x: RightJoin e f a) (where2: QExpr) (lim: Int) -> QueryPlan =
+    reduceJoinOf "RIGHT" x.left.repo.table x.left.pred.tree x.right.table x.cond.tree where2 lim
+
+fn fullReduceJoin (x: FullJoin e f a) (where2: QExpr) (lim: Int) -> QueryPlan =
+    reduceJoinOf "FULL" x.left.repo.table x.left.pred.tree x.right.table x.cond.tree where2 lim
+
+-- Run a `COUNT` aggregate plan over an outer join narrowed by `where2` and read the
+-- count off its lone row — the outer-shape duals of `countJoinPlan`, shared by each
+-- shape's `count` and `every`.
+fn leftCountPlan (x: LeftJoin e f a) (where2: QExpr) -> Result Int Error where Adapter a =
+    match runPlan x.left.repo.adapter (planAggregate "COUNT" "" false (leftReduceJoin x where2 (0 - 1)))
+        Err err -> Err err
+        Ok rows -> aggCount rows
+
+fn rightCountPlan (x: RightJoin e f a) (where2: QExpr) -> Result Int Error where Adapter a =
+    match runPlan x.left.repo.adapter (planAggregate "COUNT" "" false (rightReduceJoin x where2 (0 - 1)))
+        Err err -> Err err
+        Ok rows -> aggCount rows
+
+fn fullCountPlan (x: FullJoin e f a) (where2: QExpr) -> Result Int Error where Adapter a =
+    match runPlan x.left.repo.adapter (planAggregate "COUNT" "" false (fullReduceJoin x where2 (0 - 1)))
+        Err err -> Err err
+        Ok rows -> aggCount rows
 
 -- Run a `COUNT` aggregate plan over the inner join narrowed by `where2` and read the
 -- count off its lone row. Shared by the join's `count` and `every` (which counts
@@ -1127,6 +1165,17 @@ fn aggCount (rows: List (Map Text SqlValue)) -> Result Int Error =
 -- ordering and paging, so `reduceJoin` leaves them off.
 fn scalarJoinPlan (x: Join e f a) (func: Text) (col: Quote p) -> QueryPlan =
     planAggregate func (aggColumn col) (aggSide col) (reduceJoin x x.where2.tree (0 - 1))
+
+-- The outer-shape scalar-aggregate plans, the duals of `scalarJoinPlan`. A fold over
+-- an unmatched side reads its column as absent (SQL NULL) and skips it.
+fn leftScalarPlan (x: LeftJoin e f a) (func: Text) (col: Quote p) -> QueryPlan =
+    planAggregate func (aggColumn col) (aggSide col) (leftReduceJoin x x.where2.tree (0 - 1))
+
+fn rightScalarPlan (x: RightJoin e f a) (func: Text) (col: Quote p) -> QueryPlan =
+    planAggregate func (aggColumn col) (aggSide col) (rightReduceJoin x x.where2.tree (0 - 1))
+
+fn fullScalarPlan (x: FullJoin e f a) (func: Text) (col: Quote p) -> QueryPlan =
+    planAggregate func (aggColumn col) (aggSide col) (fullReduceJoin x x.where2.tree (0 - 1))
 
 instance Decodable (Join e f a) where Adapter a, Row f, Row e =
     toList (x: Join e f a) -> Result (List (e, f)) Error =
@@ -1314,11 +1363,11 @@ instance Countable (Join e f a) where Adapter a =
 -- row the `where2` admits.
 instance Countable (LeftJoin e f a) where Adapter a =
     count (x: LeftJoin e f a) -> Result Int Error =
-        countLeftJoin x.left.repo.adapter x.left.repo.table x.right.table x.cond x.where2 x.left.pred
+        leftCountPlan x x.where2.tree
     exists (x: LeftJoin e f a) -> Result Bool Error =
-        match leftJoin x.left.repo.adapter x.left.repo.table x.right.table x.cond x.where2 x.left.pred [] 1 0 false
+        match runPlan x.left.repo.adapter (leftReduceJoin x x.where2.tree 1)
             Err err  -> Err err
-            Ok pairs -> Ok (nonEmpty pairs)
+            Ok rows  -> Ok (nonEmpty rows)
 
 -- A right join's `count`/`exists`: the dual over a `RightJoin`, counted through
 -- `countRightJoin` (a `COUNT(*)` over the right-outer join, every right row kept).
@@ -1326,11 +1375,11 @@ instance Countable (LeftJoin e f a) where Adapter a =
 -- row the `where2` admits.
 instance Countable (RightJoin e f a) where Adapter a =
     count (x: RightJoin e f a) -> Result Int Error =
-        countRightJoin x.left.repo.adapter x.left.repo.table x.right.table x.cond x.where2 x.left.pred
+        rightCountPlan x x.where2.tree
     exists (x: RightJoin e f a) -> Result Bool Error =
-        match rightJoin x.left.repo.adapter x.left.repo.table x.right.table x.cond x.where2 x.left.pred [] 1 0 false
+        match runPlan x.left.repo.adapter (rightReduceJoin x x.where2.tree 1)
             Err err  -> Err err
-            Ok pairs -> Ok (nonEmpty pairs)
+            Ok rows  -> Ok (nonEmpty rows)
 
 -- A full join's `count`/`exists`: the dual over a `FullJoin`, counted through
 -- `countFullJoin` (a `COUNT(*)` over the full-outer join, every row of both tables
@@ -1338,11 +1387,11 @@ instance Countable (RightJoin e f a) where Adapter a =
 -- row of either table the `where2` admits.
 instance Countable (FullJoin e f a) where Adapter a =
     count (x: FullJoin e f a) -> Result Int Error =
-        countFullJoin x.left.repo.adapter x.left.repo.table x.right.table x.cond x.where2 x.left.pred
+        fullCountPlan x x.where2.tree
     exists (x: FullJoin e f a) -> Result Bool Error =
-        match fullJoin x.left.repo.adapter x.left.repo.table x.right.table x.cond x.where2 x.left.pred [] 1 0 false
+        match runPlan x.left.repo.adapter (fullReduceJoin x x.where2.tree 1)
             Err err  -> Err err
-            Ok pairs -> Ok (nonEmpty pairs)
+            Ok rows  -> Ok (nonEmpty rows)
 
 -- A query's `every`: compare the query's count against the count once the further
 -- predicate is folded into its filter, equal exactly when no selected row fails it.
@@ -1380,10 +1429,11 @@ instance Every (Join e f a) (fn e f -> Bool) where Adapter a =
 -- reading gives.
 instance Every (LeftJoin e f a) (fn e f -> Bool) where Adapter a =
     every (pred: Quote (fn e f -> Bool)) (x: LeftJoin e f a) -> Result Bool Error =
-        match countLeftJoin x.left.repo.adapter x.left.repo.table x.right.table x.cond x.where2 x.left.pred
+        let folded = quoteAnd2 x.where2 pred
+        match leftCountPlan x x.where2.tree
             Err err  -> Err err
             Ok total ->
-                match countLeftJoin x.left.repo.adapter x.left.repo.table x.right.table x.cond (quoteAnd2 x.where2 pred) x.left.pred
+                match leftCountPlan x folded.tree
                     Err err     -> Err err
                     Ok matching -> Ok (total == matching)
 
@@ -1393,10 +1443,11 @@ instance Every (LeftJoin e f a) (fn e f -> Bool) where Adapter a =
 -- reading gives.
 instance Every (RightJoin e f a) (fn e f -> Bool) where Adapter a =
     every (pred: Quote (fn e f -> Bool)) (x: RightJoin e f a) -> Result Bool Error =
-        match countRightJoin x.left.repo.adapter x.left.repo.table x.right.table x.cond x.where2 x.left.pred
+        let folded = quoteAnd2 x.where2 pred
+        match rightCountPlan x x.where2.tree
             Err err  -> Err err
             Ok total ->
-                match countRightJoin x.left.repo.adapter x.left.repo.table x.right.table x.cond (quoteAnd2 x.where2 pred) x.left.pred
+                match rightCountPlan x folded.tree
                     Err err     -> Err err
                     Ok matching -> Ok (total == matching)
 
@@ -1406,10 +1457,11 @@ instance Every (RightJoin e f a) (fn e f -> Bool) where Adapter a =
 -- gives.
 instance Every (FullJoin e f a) (fn e f -> Bool) where Adapter a =
     every (pred: Quote (fn e f -> Bool)) (x: FullJoin e f a) -> Result Bool Error =
-        match countFullJoin x.left.repo.adapter x.left.repo.table x.right.table x.cond x.where2 x.left.pred
+        let folded = quoteAnd2 x.where2 pred
+        match fullCountPlan x x.where2.tree
             Err err  -> Err err
             Ok total ->
-                match countFullJoin x.left.repo.adapter x.left.repo.table x.right.table x.cond (quoteAnd2 x.where2 pred) x.left.pred
+                match fullCountPlan x folded.tree
                     Err err     -> Err err
                     Ok matching -> Ok (total == matching)
 

@@ -114,6 +114,7 @@ const CONSTRUCTOR_EXPORTS: &[(&str, &str)] = &[
     ("std.query", "PlanScan"),
     ("std.query", "PlanCombine"),
     ("std.query", "PlanRefine"),
+    ("std.query", "PlanJoin"),
 ];
 
 /// Return `true` if `(module, sym)` is a known exported union constructor that is
@@ -257,7 +258,12 @@ fn signature_shape_consistency() {
             if dotted == "std.query"
                 && matches!(
                     *fn_name,
-                    "orderSql" | "ascending" | "planScan" | "planCombine" | "planRefine"
+                    "orderSql"
+                        | "ascending"
+                        | "planScan"
+                        | "planCombine"
+                        | "planRefine"
+                        | "planJoin"
                 )
             {
                 continue;

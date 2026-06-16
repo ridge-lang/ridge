@@ -38,8 +38,12 @@ pub fn ascending (dir: SortOrder) -> Bool =
 -- SQL keyword `UNION`/`UNION ALL`/`INTERSECT`/`EXCEPT`. `PlanRefine` re-applies an
 -- outer filter, ordering, page, and distinct on top of a plan's result — the
 -- wrapper a combined query's own builder steps compile to. A combined query nests
--- the plans, so `(a ∪ b) ∪ c` runs as nested operations.
-pub type QueryPlan = PlanScan Text QExpr (List (Bool, Text)) Int Int Bool | PlanCombine Text QueryPlan QueryPlan | PlanRefine QueryPlan QExpr (List (Bool, Text)) Int Int Bool
+-- the plans, so `(a ∪ b) ∪ c` runs as nested operations. `PlanJoin` pairs two
+-- sub-plans on a join condition (`kind` is `INNER` for now) with the two-row
+-- post-join `WHERE`, ordering, page, and distinct folded in; its rows come back
+-- flat with each source's columns prefixed (`t0$col`/`t1$col`) so the columns of
+-- the two sides never collide and the result stays a single row map per pair.
+pub type QueryPlan = PlanScan Text QExpr (List (Bool, Text)) Int Int Bool | PlanCombine Text QueryPlan QueryPlan | PlanRefine QueryPlan QExpr (List (Bool, Text)) Int Int Bool | PlanJoin Text QueryPlan QueryPlan QExpr QExpr (List (Bool, Bool, Text)) Int Int Bool
 
 -- A single-table scan plan — the plan form of `fetch`.
 pub fn planScan (table: Text) (pred: QExpr) (orders: List (Bool, Text)) (lim: Int) (off: Int) (dist: Bool) -> QueryPlan =
@@ -53,6 +57,13 @@ pub fn planCombine (op: Text) (left: QueryPlan) (right: QueryPlan) -> QueryPlan 
 -- combined query's own builder steps apply on top of the combination.
 pub fn planRefine (inner: QueryPlan) (pred: QExpr) (orders: List (Bool, Text)) (lim: Int) (off: Int) (dist: Bool) -> QueryPlan =
     PlanRefine inner pred orders lim off dist
+
+-- Pair two sub-plans on a join. `kind` is the join shape (`INNER` for now), `cond`
+-- the join condition and `where2` the post-join `WHERE` (both two-row trees over the
+-- left and right rows), and `orders` the side-tagged ordering keys. The result rows
+-- are flat with each side's columns prefixed (`t0$`/`t1$`).
+pub fn planJoin (kind: Text) (left: QueryPlan) (right: QueryPlan) (cond: QExpr) (where2: QExpr) (orders: List (Bool, Bool, Text)) (lim: Int) (off: Int) (dist: Bool) -> QueryPlan =
+    PlanJoin kind left right cond where2 orders lim off dist
 
 -- Render a captured tree to a readable, SQL-shaped string. Literals show as `?`
 -- placeholders — binding parameters is the SQL-compilation pass's job; this is

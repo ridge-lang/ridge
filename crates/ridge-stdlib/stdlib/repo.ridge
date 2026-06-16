@@ -21,8 +21,8 @@
 
 import std.data as Db
 import std.sql (SqlValue)
-import std.query (SortOrder, ascending, QueryPlan, planScan, planCombine, planRefine)
-import std.map (fromList)
+import std.query (SortOrder, ascending, QueryPlan, planScan, planCombine, planRefine, planJoin)
+import std.map (fromList, toList)
 
 -- A repository: entity `e` stored in `table` through adapter `a`. Opaque, so it
 -- is built only through `repo` and threaded as a handle, never destructured.
@@ -1029,15 +1029,24 @@ instance Decodable (Query e a) where Adapter a, Row e =
 -- incoming `Row` dictionaries into that helper by position, so matching the order
 -- here threads the left entity's decoder to the left row and the right's to the
 -- right. (`Adapter a` stays first; it is a different class and never collides.)
+-- The query plan an inner join runs: a `PlanJoin` pairing a scan of the left table
+-- (carrying the left query's filter) with a scan of the right, on the join's
+-- condition and post-join `WHERE`, with the join's side-tagged ordering, page, and
+-- distinct folded in. `lim` is passed explicitly so `first` can run the same plan
+-- with a one-row limit. The decode terminals run it through `runPlan` and decode the
+-- flat, source-prefixed rows.
+fn innerJoinPlan (x: Join e f a) (lim: Int) -> QueryPlan =
+    planJoin "INNER" (planScan x.left.repo.table x.left.pred.tree [] (0 - 1) 0 false) (planScan x.right.table (keepAllTree ()) [] (0 - 1) 0 false) x.cond.tree x.where2.tree x.orders lim x.off x.dist
+
 instance Decodable (Join e f a) where Adapter a, Row f, Row e =
     toList (x: Join e f a) -> Result (List (e, f)) Error =
-        match join x.left.repo.adapter x.left.repo.table x.right.table x.cond x.where2 x.left.pred x.orders x.lim x.off x.dist
+        match runPlan x.left.repo.adapter (innerJoinPlan x x.lim)
             Err err  -> Err err
-            Ok pairs -> decodePairs pairs
+            Ok rows  -> decodePrefixedPairs rows
     first (x: Join e f a) -> Result (Option (e, f)) Error =
-        match join x.left.repo.adapter x.left.repo.table x.right.table x.cond x.where2 x.left.pred x.orders 1 x.off x.dist
+        match runPlan x.left.repo.adapter (innerJoinPlan x 1)
             Err err  -> Err err
-            Ok pairs -> firstDecodedPair pairs
+            Ok rows  -> firstDecodedPrefixedPair rows
 
 -- A left join's decode terminals: `toList` keeps every left row, decoding each
 -- into `(e, Option f)` — the right side `None` where the left row matched no
@@ -1436,6 +1445,51 @@ fn firstDecodedPair (pairs: List (Map Text SqlValue, Map Text SqlValue)) -> Resu
                 Err err -> Err err
                 Ok x    ->
                     match fromRow rm
+                        Err err -> Err err
+                        Ok y    -> Ok (Some (x, y))
+
+-- Strip a source prefix (`t0$`/`t1$`) from the keys of a flat joined row, keeping
+-- only the columns of that source and re-keying them by their bare column name. A
+-- `PlanJoin` returns each pair flattened with the two sides' columns prefixed so they
+-- never collide; this recovers one side's row map for `fromRow` to decode.
+fn unprefix (prefix: Text) (row: Map Text SqlValue) -> Map Text SqlValue =
+    fromList (unprefixPairs prefix (Text.length prefix) (toList row))
+
+fn unprefixPairs (prefix: Text) (plen: Int) (kvs: List (Text, SqlValue)) -> List (Text, SqlValue) =
+    match kvs
+        []             -> []
+        (k, v) :: rest ->
+            if Text.startsWith prefix k then (Text.slice plen (Text.length k - plen) k, v) :: unprefixPairs prefix plen rest
+            else unprefixPairs prefix plen rest
+
+-- Decode the flat, source-prefixed rows a `PlanJoin` returns into entity pairs: the
+-- `t0$`-prefixed columns decode the left entity and the `t1$`-prefixed the right. The
+-- prefixed dual of `decodePairs`. Stops at the first decode failure on either side.
+fn decodePrefixedPairs (rows: List (Map Text SqlValue)) -> Result (List (e, f)) Error where Row e, Row f =
+    match rows
+        []          -> Ok []
+        row :: rest ->
+            match fromRow (unprefix "t0$" row)
+                Err err -> Err err
+                Ok x    ->
+                    match fromRow (unprefix "t1$" row)
+                        Err err -> Err err
+                        Ok y    ->
+                            match decodePrefixedPairs rest
+                                Err err -> Err err
+                                Ok xs   -> Ok ((x, y) :: xs)
+
+-- The head of a flat source-prefixed join row list, decoded into an entity pair;
+-- `None` when empty. The prefixed dual of `firstDecodedPair`, for `first` over a
+-- `Join` run through the plan.
+fn firstDecodedPrefixedPair (rows: List (Map Text SqlValue)) -> Result (Option (e, f)) Error where Row e, Row f =
+    match rows
+        []       -> Ok None
+        row :: _ ->
+            match fromRow (unprefix "t0$" row)
+                Err err -> Err err
+                Ok x    ->
+                    match fromRow (unprefix "t1$" row)
                         Err err -> Err err
                         Ok y    -> Ok (Some (x, y))
 

@@ -1535,7 +1535,23 @@ mem_eval_plan(State, Id, {'PlanCombine', Op, Left, Right}) ->
 mem_eval_plan(State, Id, {'PlanRefine', Inner, Pred, Orders, Lim, Off, Dist}) ->
     Rows = mem_eval_plan(State, Id, Inner),
     Matches = [R || R <- Rows, mem_pred(Pred, R)],
-    mem_paginate(mem_distinct(Dist, mem_order(Orders, Matches)), Lim, Off).
+    mem_paginate(mem_distinct(Dist, mem_order(Orders, Matches)), Lim, Off);
+mem_eval_plan(State, Id, {'PlanJoin', <<"INNER">>, Left, Right, Cond, Where2, Orders, Lim, Off, Dist}) ->
+    LeftRows = mem_eval_plan(State, Id, Left),
+    RightRows = mem_eval_plan(State, Id, Right),
+    Pairs = [{L, R} || L <- LeftRows, R <- RightRows,
+                       mem_jpred(Cond, L, R), mem_jpred(Where2, L, R)],
+    Flat = [mem_prefix_pair(L, R) || {L, R} <- mem_order_pairs(Orders, Pairs)],
+    mem_paginate(mem_distinct(Dist, Flat), Lim, Off).
+
+%% Flatten a joined {LeftMap, RightMap} pair into one row map with each side's columns
+%% prefixed (t0$ for the left source, t1$ for the right) so the two sides never
+%% collide on a shared column name. The Ridge decoder strips the prefix per side.
+mem_prefix_pair(L, R) ->
+    maps:merge(mem_prefix_keys(<<"t0$">>, L), mem_prefix_keys(<<"t1$">>, R)).
+
+mem_prefix_keys(Prefix, M) ->
+    maps:fold(fun(K, V, Acc) -> Acc#{<<Prefix/binary, K/binary>> => V} end, #{}, M).
 
 %% Apply a set operation to two row lists. UNION, INTERSECT, and EXCEPT de-duplicate
 %% (set semantics); UNION ALL keeps every row. Rows compare by full term equality,

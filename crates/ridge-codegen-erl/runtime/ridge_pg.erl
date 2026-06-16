@@ -913,14 +913,7 @@ run_verb(Conn, {project, Table, Tree, Orders, Lim, Off, Cols, Dist}) ->
            order_by_clause(Orders), limit_clause(Lim), offset_clause(Off)],
     run_query(Conn, Sql, Binds);
 run_verb(Conn, {join, LeftTable, RightTable, Cond, Where2, Pred, Orders, Lim, Off, Dist}) ->
-    {OnFrag, RevB1, N1} = cwj(Cond, 1, []),
-    {W2Frag, RevBw, Nw} = cwj(Where2, N1, RevB1),
-    {WhereFrag, RevB2, _N2} = cwj(Pred, Nw, RevBw),
-    Sql = ["SELECT ", distinct_kw(Dist), "l.*, r.* FROM ", quote_ident(LeftTable), " AS l JOIN ",
-           quote_ident(RightTable), " AS r ON ", OnFrag,
-           " WHERE (", WhereFrag, ") AND (", W2Frag, ")",
-           order_by_clause_join(Orders), limit_clause(Lim), offset_clause(Off)],
-    run_query_join(Conn, Sql, lists:reverse(RevB2));
+    run_join_pairs(Conn, LeftTable, RightTable, Cond, Where2, Pred, Orders, Lim, Off, Dist);
 run_verb(Conn, {join_select, LeftTable, RightTable, Cond, Where2, Pred, Orders, Lim, Off, Proj, Dist}) ->
     {OnFrag, RevB1, N1} = cwj(Cond, 1, []),
     {W2Frag, RevBw, Nw} = cwj(Where2, N1, RevB1),
@@ -1128,9 +1121,44 @@ run_verb(Conn, {group_summarize_right_join, LeftTable, RightTable, Cond, Where2,
     do_group_summarize_right_join(Conn, LeftTable, RightTable, Cond, Where2, Pred, KeyCol, KeySide, Cols, Having);
 run_verb(Conn, {group_summarize_full_join, LeftTable, RightTable, Cond, Where2, Pred, KeyCol, KeySide, Cols, Having}) ->
     do_group_summarize_full_join(Conn, LeftTable, RightTable, Cond, Where2, Pred, KeyCol, KeySide, Cols, Having);
+run_verb(Conn, {run_plan, {'PlanJoin', <<"INNER">>, Left, Right, Cond, Where2, Orders, Lim, Off, Dist}}) ->
+    %% Shim: an inner-join plan reuses the existing inner-join SQL and split, then
+    %% re-keys each {LeftMap, RightMap} pair into one flat row with the two sides'
+    %% columns prefixed (t0$/t1$). The real prefixed-SQL renderer lands with planToSql.
+    {LeftTable, Pred} = plan_scan_table_pred(Left),
+    {RightTable, _RPred} = plan_scan_table_pred(Right),
+    case run_join_pairs(Conn, LeftTable, RightTable, Cond, Where2, Pred, Orders, Lim, Off, Dist) of
+        {ok, Pairs} -> {ok, [pg_prefix_pair(L, R) || {L, R} <- Pairs]};
+        Err -> Err
+    end;
 run_verb(Conn, {run_plan, Plan}) ->
     {Sql, RevBinds, _N} = plan_sql(Plan, 1, []),
     run_query(Conn, Sql, lists:reverse(RevBinds)).
+
+%% Build, run, and split an inner join into {LeftMap, RightMap} pairs. Shared by the
+%% `join` verb and the inner-join plan shim. The select list is `l.*, r.*`, so
+%% run_query_join splits each row by the attribute-number reset between the tables.
+run_join_pairs(Conn, LeftTable, RightTable, Cond, Where2, Pred, Orders, Lim, Off, Dist) ->
+    {OnFrag, RevB1, N1} = cwj(Cond, 1, []),
+    {W2Frag, RevBw, Nw} = cwj(Where2, N1, RevB1),
+    {WhereFrag, RevB2, _N2} = cwj(Pred, Nw, RevBw),
+    Sql = ["SELECT ", distinct_kw(Dist), "l.*, r.* FROM ", quote_ident(LeftTable), " AS l JOIN ",
+           quote_ident(RightTable), " AS r ON ", OnFrag,
+           " WHERE (", WhereFrag, ") AND (", W2Frag, ")",
+           order_by_clause_join(Orders), limit_clause(Lim), offset_clause(Off)],
+    run_query_join(Conn, Sql, lists:reverse(RevB2)).
+
+%% Flatten a joined {LeftMap, RightMap} pair into one row map with each side's columns
+%% prefixed (t0$ left, t1$ right) so the two sides never collide on a shared column.
+pg_prefix_pair(L, R) ->
+    maps:merge(pg_prefix_keys(<<"t0$">>, L), pg_prefix_keys(<<"t1$">>, R)).
+
+pg_prefix_keys(Prefix, M) ->
+    maps:fold(fun(K, V, Acc) -> Acc#{<<Prefix/binary, K/binary>> => V} end, #{}, M).
+
+%% The table and left-filter predicate of a `PlanScan` sub-plan. The inner-join plan
+%% shim's two sub-plans are always single-table scans.
+plan_scan_table_pred({'PlanScan', Table, Pred, _Orders, _Lim, _Off, _Dist}) -> {Table, Pred}.
 
 do_insert(Conn, Table, Row) ->
     Pairs = maps:to_list(Row),

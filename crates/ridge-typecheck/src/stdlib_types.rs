@@ -777,6 +777,30 @@ fn reconciled_decls(b: &BuiltinTyCons, base: u32) -> Vec<TyConDecl> {
                             Type::Con(b.bool, vec![]),
                         ]),
                     },
+                    // `PlanJoin kind left right cond where2 orders lim off dist` — two
+                    // sub-plans paired on a join. `orders` is the side-tagged
+                    // `(ascending?, isRight?, column)` ordering keys.
+                    UnionVariant {
+                        name: "PlanJoin".to_string(),
+                        kind: VariantPayload::Positional(vec![
+                            Type::Con(b.text, vec![]),
+                            Type::Con(TyConId(base + 15), vec![]),
+                            Type::Con(TyConId(base + 15), vec![]),
+                            Type::Con(b.q_expr, vec![]),
+                            Type::Con(b.q_expr, vec![]),
+                            Type::Con(
+                                b.list,
+                                vec![Type::Tuple(vec![
+                                    Type::Con(b.bool, vec![]),
+                                    Type::Con(b.bool, vec![]),
+                                    Type::Con(b.text, vec![]),
+                                ])],
+                            ),
+                            Type::Con(b.int, vec![]),
+                            Type::Con(b.int, vec![]),
+                            Type::Con(b.bool, vec![]),
+                        ]),
+                    },
                 ],
             }),
             def_span: None,
@@ -934,8 +958,9 @@ pub(crate) fn reconciled_fn_scheme(
                 constraints: vec![],
             })
         }
-        // std.query `planScan`/`planCombine`/`planRefine` — the `QueryPlan` factories.
-        ("std.query", "planScan" | "planCombine" | "planRefine") => {
+        // std.query `planScan`/`planCombine`/`planRefine`/`planJoin` — the `QueryPlan`
+        // factories.
+        ("std.query", "planScan" | "planCombine" | "planRefine" | "planJoin") => {
             reconciled_query_plan_fn_scheme(name, reconciled, b)
         }
         ("std.repo", _) => reconciled_repo_fn_scheme(name, reconciled, b, classes?),
@@ -962,6 +987,9 @@ fn reconciled_query_plan_fn_scheme(
     let qexpr = || Type::Con(b.q_expr, vec![]);
     // The ordering keys: `List (Bool, Text)` — the (ascending?, column) pairs.
     let orders = || Type::Con(b.list, vec![Type::Tuple(vec![bool_(), text()])]);
+    // The side-tagged join ordering keys: `List (Bool, Bool, Text)` — the
+    // (ascending?, isRight?, column) triples.
+    let join_orders = || Type::Con(b.list, vec![Type::Tuple(vec![bool_(), bool_(), text()])]);
     let pure = |params: Vec<Type>| Scheme {
         vars: vec![],
         cap_vars: vec![],
@@ -980,6 +1008,19 @@ fn reconciled_query_plan_fn_scheme(
         "planCombine" => Some(pure(vec![text(), plan(), plan()])),
         // planRefine : QueryPlan -> QExpr -> List (Bool, Text) -> Int -> Int -> Bool -> QueryPlan
         "planRefine" => Some(pure(vec![plan(), qexpr(), orders(), int(), int(), bool_()])),
+        // planJoin : Text -> QueryPlan -> QueryPlan -> QExpr -> QExpr ->
+        //            List (Bool, Bool, Text) -> Int -> Int -> Bool -> QueryPlan
+        "planJoin" => Some(pure(vec![
+            text(),
+            plan(),
+            plan(),
+            qexpr(),
+            qexpr(),
+            join_orders(),
+            int(),
+            int(),
+            bool_(),
+        ])),
         _ => None,
     }
 }

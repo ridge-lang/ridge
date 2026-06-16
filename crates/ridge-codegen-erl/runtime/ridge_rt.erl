@@ -30,16 +30,7 @@
     mem_new/1, mem_insert/3, mem_all/2,
     mem_select/3, mem_delete/3, mem_update/4, mem_get_rows/4,
     mem_fetch/7, mem_count_where/3, mem_aggregate/5, mem_project/8,
-    mem_join/10, mem_join_select/11, mem_left_join/10, mem_left_join_select/11,
-    mem_right_join/10, mem_right_join_select/11,
-    mem_full_join/10, mem_full_join_select/11,
-    mem_aggregate_join/9, mem_aggregate_left_join/9, mem_aggregate_right_join/9,
-    mem_aggregate_full_join/9,
-    mem_count_join/6, mem_count_left_join/6, mem_count_right_join/6,
-    mem_count_full_join/6,
     mem_group_summarize/6,
-    mem_group_summarize_join/10, mem_group_summarize_left_join/10,
-    mem_group_summarize_right_join/10, mem_group_summarize_full_join/10,
     mem_begin/1, mem_commit/1, mem_rollback/1, mem_close/1,
     mem_ddl_create/3, mem_ddl_drop/2, mem_ddl_add_column/3,
     mem_ddl_drop_column/3, mem_ddl_index/5,
@@ -988,35 +979,6 @@ mem_project(Id, Table, Tree, Orders, Lim, Off, Cols, Dist) ->
 mem_group_summarize(Id, Table, Tree, KeyCol, Cols, Having) ->
     mem_call({group_summarize, Id, Table, Tree, KeyCol, Cols, Having}).
 
-%% mem_group_summarize_join/10 — the inner-join dual of mem_group_summarize: pair
-%% LeftTable and RightTable on Cond (narrowed by Where2 and the left-side Pred),
-%% group the pairs by KeyCol read off the KeySide table, summarize each group into
-%% the `{Alias, Func, Column, IsRight}` aggregates (IsRight selects the table a
-%% scalar aggregate folds), keep the groups Having admits, and return one row per
-%% group ordered by the key. Result (List Row) Error.
-mem_group_summarize_join(Id, LeftTable, RightTable, Cond, Where2, Pred, KeyCol, KeySide, Cols, Having) ->
-    mem_call({group_summarize_join, Id, LeftTable, RightTable, Cond, Where2, Pred, KeyCol, KeySide, Cols, Having}).
-
-%% mem_group_summarize_left_join/10 — as mem_group_summarize_join, but a left-outer
-%% join keeps every left row Pred and Where2 admit; an unmatched one groups with its
-%% right columns absent (read as SqlNull), so a right-side key groups it under NULL.
-mem_group_summarize_left_join(Id, LeftTable, RightTable, Cond, Where2, Pred, KeyCol, KeySide, Cols, Having) ->
-    mem_call({group_summarize_left_join, Id, LeftTable, RightTable, Cond, Where2, Pred, KeyCol, KeySide, Cols, Having}).
-
-%% mem_group_summarize_right_join/10 — as mem_group_summarize_left_join, but the
-%% right-outer mirror: every right row is grouped, the left query's Pred folds into
-%% the join match so an unmatched right row keeps a NULL (absent) left side, and a
-%% left-side key groups it under NULL.
-mem_group_summarize_right_join(Id, LeftTable, RightTable, Cond, Where2, Pred, KeyCol, KeySide, Cols, Having) ->
-    mem_call({group_summarize_right_join, Id, LeftTable, RightTable, Cond, Where2, Pred, KeyCol, KeySide, Cols, Having}).
-
-%% mem_group_summarize_full_join/10 — as mem_group_summarize_right_join, but the
-%% full-outer join: every row of both tables is grouped, the left query's Pred
-%% restricting which left rows enter, and a key over a side groups the rows unmatched
-%% on that side under the NULL (absent) key.
-mem_group_summarize_full_join(Id, LeftTable, RightTable, Cond, Where2, Pred, KeyCol, KeySide, Cols, Having) ->
-    mem_call({group_summarize_full_join, Id, LeftTable, RightTable, Cond, Where2, Pred, KeyCol, KeySide, Cols, Having}).
-
 %% mem_begin/1 — open a transaction on store Id: snapshot its tables onto a
 %% per-store stack the keeper holds. A nested begin snapshots again (a savepoint).
 %% Result Unit Error.
@@ -1093,13 +1055,8 @@ mem_migration_name(Row) ->
         _              -> <<>>
     end.
 
-%% --- query plan builders ---
-%% A query plan is a small tree the set-operation terminals run. The three builders
-%% assemble it backend-neutrally (no store access); mem_run_plan/pg_run_plan
-%% interpret or compile it. The tree rides the QExpr term space but is only ever
-%% handled by the plan interpreters, never by mem_pred/compile_where.
-
-%% A query plan is now built in Ridge (std.query's planScan/planCombine/planRefine
+%% --- query plan ---
+%% A query plan is built in Ridge (std.query's planScan/planCombine/planRefine
 %% over the typed QueryPlan tree) and crosses the FFI as a tagged tuple
 %% ({'PlanScan', …}/{'PlanCombine', …}/{'PlanRefine', …}); mem_eval_plan/3
 %% interprets those tags directly, so no Erlang-side plan builders are needed.
@@ -1108,117 +1065,6 @@ mem_migration_name(Row) ->
 %% the combined rows. Result (List Row) Error.
 mem_run_plan(Id, Plan) ->
     mem_call({run_plan, Id, Plan}).
-
-%% mem_join/10 — inner-join LeftTable and RightTable on the condition tree Cond,
-%% apply the two-row post-join WHERE tree Where2, keep the left rows matching the
-%% predicate tree Pred, order by the column keys, drop duplicate pairs when Dist,
-%% then page. Each result is the `{LeftRow, RightRow}` pair of column maps. Result
-%% (List {Row, Row}) Error.
-mem_join(Id, LeftTable, RightTable, Cond, Where2, Pred, Orders, Lim, Off, Dist) ->
-    mem_call({join, Id, LeftTable, RightTable, Cond, Where2, Pred, Orders, Lim, Off, Dist}).
-
-%% mem_join_select/11 — as mem_join, then project each joined pair through the
-%% projection tree Proj into one map keyed by the projection's aliases; Dist drops
-%% duplicate projected rows (a `SELECT DISTINCT` over the projection). Result
-%% (List Row) Error.
-mem_join_select(Id, LeftTable, RightTable, Cond, Where2, Pred, Orders, Lim, Off, Proj, Dist) ->
-    mem_call({join_select, Id, LeftTable, RightTable, Cond, Where2, Pred, Orders, Lim, Off, Proj, Dist}).
-
-%% mem_left_join/10 — left-outer-join LeftTable and RightTable on the condition
-%% tree Cond, apply the two-row post-join WHERE tree Where2 (an unmatched left
-%% row reads its right columns as NULL, so a Where2 over a right column drops it),
-%% keep the left rows matching the predicate tree Pred, order, drop duplicate
-%% pairs when Dist, then page. Each result is `{LeftRow, {some, RightRow}}` for a
-%% match or `{LeftRow, none}` for a left row with no match. Result (List {Row,
-%% Option Row}) Error.
-mem_left_join(Id, LeftTable, RightTable, Cond, Where2, Pred, Orders, Lim, Off, Dist) ->
-    mem_call({left_join, Id, LeftTable, RightTable, Cond, Where2, Pred, Orders, Lim, Off, Dist}).
-
-%% mem_left_join_select/11 — as mem_left_join, then project each kept row through
-%% the projection tree Proj into one map keyed by the projection's aliases (an
-%% unmatched left row's right-side columns project to SQL NULL); Dist drops
-%% duplicate projected rows. Result (List Row) Error.
-mem_left_join_select(Id, LeftTable, RightTable, Cond, Where2, Pred, Orders, Lim, Off, Proj, Dist) ->
-    mem_call({left_join_select, Id, LeftTable, RightTable, Cond, Where2, Pred, Orders, Lim, Off, Proj, Dist}).
-
-%% mem_aggregate_join/9 — fold a scalar aggregate (Func is <<"SUM">>/<<"AVG">>/
-%% <<"MIN">>/<<"MAX">>) over Column across the rows of the inner join of LeftTable
-%% and RightTable. IsRight picks the column from the right row (true) or the left
-%% row (false). The scalar comes back as `{some, SqlValue}`, or `none` over an
-%% empty join (the in-memory dual of a SQL aggregate over no rows). Result (Option
-%% SqlValue) Error.
-mem_aggregate_join(Id, LeftTable, RightTable, Cond, Where2, Pred, Func, Column, IsRight) ->
-    mem_call({aggregate_join, Id, LeftTable, RightTable, Cond, Where2, Pred, Func, Column, IsRight}).
-
-%% mem_aggregate_left_join/9 — as mem_aggregate_join, but a left-outer join keeps
-%% every left row. A left-column aggregate folds the unmatched left rows in; a
-%% right-column one skips them (their right side is absent, a NULL the fold drops).
-mem_aggregate_left_join(Id, LeftTable, RightTable, Cond, Where2, Pred, Func, Column, IsRight) ->
-    mem_call({aggregate_left_join, Id, LeftTable, RightTable, Cond, Where2, Pred, Func, Column, IsRight}).
-
-%% mem_count_join/6 — how many rows the inner join of LeftTable and RightTable
-%% holds once Cond pairs them, Where2 narrows the pairs, and Pred filters the left
-%% side. The join is neither ordered nor paged. Result Int Error.
-mem_count_join(Id, LeftTable, RightTable, Cond, Where2, Pred) ->
-    mem_call({count_join, Id, LeftTable, RightTable, Cond, Where2, Pred}).
-
-%% mem_count_left_join/6 — as mem_count_join, but a left-outer join: every left row
-%% Pred and Where2 admit is counted, an unmatched one (its right side absent)
-%% included, so the count is the number of left-outer rows. Result Int Error.
-mem_count_left_join(Id, LeftTable, RightTable, Cond, Where2, Pred) ->
-    mem_call({count_left_join, Id, LeftTable, RightTable, Cond, Where2, Pred}).
-
-%% mem_right_join/10 — right-outer-join LeftTable and RightTable: every right row is
-%% kept, the left query's Pred folds into the join match so an unmatched right row
-%% pairs with `none` for its left side. Each result is `{{some, LeftRow}, RightRow}`
-%% for a match or `{none, RightRow}` for a right row with no match. Result (List
-%% {Option Row, Row}) Error.
-mem_right_join(Id, LeftTable, RightTable, Cond, Where2, Pred, Orders, Lim, Off, Dist) ->
-    mem_call({right_join, Id, LeftTable, RightTable, Cond, Where2, Pred, Orders, Lim, Off, Dist}).
-
-%% mem_right_join_select/11 — as mem_right_join, then project each kept row through
-%% the projection tree Proj (an unmatched right row's left-side columns project to
-%% SQL NULL); Dist drops duplicate projected rows. Result (List Row) Error.
-mem_right_join_select(Id, LeftTable, RightTable, Cond, Where2, Pred, Orders, Lim, Off, Proj, Dist) ->
-    mem_call({right_join_select, Id, LeftTable, RightTable, Cond, Where2, Pred, Orders, Lim, Off, Proj, Dist}).
-
-%% mem_aggregate_right_join/9 — as mem_aggregate_left_join, but the right-outer
-%% mirror: every right row is kept. A right-column aggregate folds the unmatched
-%% right rows in; a left-column one skips them (their left side is absent, a NULL the
-%% fold drops).
-mem_aggregate_right_join(Id, LeftTable, RightTable, Cond, Where2, Pred, Func, Column, IsRight) ->
-    mem_call({aggregate_right_join, Id, LeftTable, RightTable, Cond, Where2, Pred, Func, Column, IsRight}).
-
-%% mem_count_right_join/6 — as mem_count_left_join, but a right-outer join: every
-%% right row Pred (folded into the match) and Where2 admit is counted, an unmatched
-%% one (its left side absent) included. Result Int Error.
-mem_count_right_join(Id, LeftTable, RightTable, Cond, Where2, Pred) ->
-    mem_call({count_right_join, Id, LeftTable, RightTable, Cond, Where2, Pred}).
-
-%% mem_full_join/10 — full-outer-join LeftTable and RightTable: every row of both
-%% tables is kept, the left query's Pred restricting which left rows enter the join.
-%% Each result is `{{some, LeftRow}, {some, RightRow}}` for a match, `{{some, LeftRow},
-%% none}` for a left row with no match, or `{none, {some, RightRow}}` for a right row
-%% with no match. Result (List {Option Row, Option Row}) Error.
-mem_full_join(Id, LeftTable, RightTable, Cond, Where2, Pred, Orders, Lim, Off, Dist) ->
-    mem_call({full_join, Id, LeftTable, RightTable, Cond, Where2, Pred, Orders, Lim, Off, Dist}).
-
-%% mem_full_join_select/11 — as mem_full_join, then project each kept row through the
-%% projection tree Proj (the columns of an unmatched side project to SQL NULL); Dist
-%% drops duplicate projected rows. Result (List Row) Error.
-mem_full_join_select(Id, LeftTable, RightTable, Cond, Where2, Pred, Orders, Lim, Off, Proj, Dist) ->
-    mem_call({full_join_select, Id, LeftTable, RightTable, Cond, Where2, Pred, Orders, Lim, Off, Proj, Dist}).
-
-%% mem_aggregate_full_join/9 — as mem_aggregate_right_join, but the full-outer join: a
-%% fold over either side skips the rows unmatched on that side (their column there is
-%% absent, a NULL the fold drops).
-mem_aggregate_full_join(Id, LeftTable, RightTable, Cond, Where2, Pred, Func, Column, IsRight) ->
-    mem_call({aggregate_full_join, Id, LeftTable, RightTable, Cond, Where2, Pred, Func, Column, IsRight}).
-
-%% mem_count_full_join/6 — as mem_count_right_join, but a full-outer join: every row of
-%% both tables Pred and Where2 admit is counted. Result Int Error.
-mem_count_full_join(Id, LeftTable, RightTable, Cond, Where2, Pred) ->
-    mem_call({count_full_join, Id, LeftTable, RightTable, Cond, Where2, Pred}).
 
 %% Internal: send a request to the keeper and await its reply.
 mem_call(Req) ->
@@ -1374,17 +1220,6 @@ mem_keeper_loop(State) ->
             Result = [mem_group_row(Cols, K, GR) || {K, GR} <- Sorted],
             From ! {Ref, {ok, Result}},
             mem_keeper_loop(State);
-        {{group_summarize_join, Id, LeftTable, RightTable, Cond, Where2, Pred, KeyCol, KeySide, Cols, Having}, From, Ref} ->
-            Pairs = mem_join_pairs(State, Id, LeftTable, RightTable, Cond, Where2, Pred, []),
-            Result = mem_group_join(Pairs, KeyCol, KeySide, Cols, Having),
-            From ! {Ref, {ok, Result}},
-            mem_keeper_loop(State);
-        {{group_summarize_left_join, Id, LeftTable, RightTable, Cond, Where2, Pred, KeyCol, KeySide, Cols, Having}, From, Ref} ->
-            Pairs0 = mem_left_join_pairs(State, Id, LeftTable, RightTable, Cond, Where2, Pred, []),
-            Pairs = [{L, mem_right_row(OptR)} || {L, OptR} <- Pairs0],
-            Result = mem_group_join(Pairs, KeyCol, KeySide, Cols, Having),
-            From ! {Ref, {ok, Result}},
-            mem_keeper_loop(State);
         {{run_plan, Id, Plan}, From, Ref} ->
             Rows = mem_eval_plan(State, Id, Plan),
             From ! {Ref, {ok, Rows}},
@@ -1396,100 +1231,6 @@ mem_keeper_loop(State) ->
             Projected = [mem_project_row(Cols, R) || R <- Ordered],
             Page = mem_paginate(mem_distinct(Dist, Projected), Lim, Off),
             From ! {Ref, {ok, Page}},
-            mem_keeper_loop(State);
-        {{join, Id, LeftTable, RightTable, Cond, Where2, Pred, Orders, Lim, Off, Dist}, From, Ref} ->
-            Pairs = mem_join_pairs(State, Id, LeftTable, RightTable, Cond, Where2, Pred, Orders),
-            Page = mem_paginate(mem_distinct(Dist, Pairs), Lim, Off),
-            From ! {Ref, {ok, Page}},
-            mem_keeper_loop(State);
-        {{join_select, Id, LeftTable, RightTable, Cond, Where2, Pred, Orders, Lim, Off, Proj, Dist}, From, Ref} ->
-            Pairs = mem_join_pairs(State, Id, LeftTable, RightTable, Cond, Where2, Pred, Orders),
-            Projected = [mem_join_project(Proj, L, R) || {L, R} <- Pairs],
-            Page = mem_paginate(mem_distinct(Dist, Projected), Lim, Off),
-            From ! {Ref, {ok, Page}},
-            mem_keeper_loop(State);
-        {{left_join, Id, LeftTable, RightTable, Cond, Where2, Pred, Orders, Lim, Off, Dist}, From, Ref} ->
-            Pairs = mem_left_join_pairs(State, Id, LeftTable, RightTable, Cond, Where2, Pred, Orders),
-            Page = mem_paginate(mem_distinct(Dist, Pairs), Lim, Off),
-            From ! {Ref, {ok, Page}},
-            mem_keeper_loop(State);
-        {{left_join_select, Id, LeftTable, RightTable, Cond, Where2, Pred, Orders, Lim, Off, Proj, Dist}, From, Ref} ->
-            Rows = mem_left_join_select_rows(State, Id, LeftTable, RightTable, Cond, Where2, Pred, Orders, Lim, Off, Proj, Dist),
-            From ! {Ref, {ok, Rows}},
-            mem_keeper_loop(State);
-        {{aggregate_join, Id, LeftTable, RightTable, Cond, Where2, Pred, Func, Column, IsRight}, From, Ref} ->
-            Pairs = mem_join_pairs(State, Id, LeftTable, RightTable, Cond, Where2, Pred, []),
-            Rows = [mem_agg_side_row(IsRight, L, R) || {L, R} <- Pairs],
-            Value = mem_aggregate_value(Func, Column, Rows),
-            Wrapped = case Value of 'SqlNull' -> none; _ -> {some, Value} end,
-            From ! {Ref, {ok, Wrapped}},
-            mem_keeper_loop(State);
-        {{aggregate_left_join, Id, LeftTable, RightTable, Cond, Where2, Pred, Func, Column, IsRight}, From, Ref} ->
-            Pairs = mem_left_join_pairs(State, Id, LeftTable, RightTable, Cond, Where2, Pred, []),
-            Rows = [mem_agg_side_row(IsRight, L, mem_right_row(OptR)) || {L, OptR} <- Pairs],
-            Value = mem_aggregate_value(Func, Column, Rows),
-            Wrapped = case Value of 'SqlNull' -> none; _ -> {some, Value} end,
-            From ! {Ref, {ok, Wrapped}},
-            mem_keeper_loop(State);
-        {{count_join, Id, LeftTable, RightTable, Cond, Where2, Pred}, From, Ref} ->
-            Pairs = mem_join_pairs(State, Id, LeftTable, RightTable, Cond, Where2, Pred, []),
-            From ! {Ref, {ok, length(Pairs)}},
-            mem_keeper_loop(State);
-        {{count_left_join, Id, LeftTable, RightTable, Cond, Where2, Pred}, From, Ref} ->
-            Pairs = mem_left_join_pairs(State, Id, LeftTable, RightTable, Cond, Where2, Pred, []),
-            From ! {Ref, {ok, length(Pairs)}},
-            mem_keeper_loop(State);
-        {{right_join, Id, LeftTable, RightTable, Cond, Where2, Pred, Orders, Lim, Off, Dist}, From, Ref} ->
-            Pairs = mem_right_join_pairs(State, Id, LeftTable, RightTable, Cond, Where2, Pred, Orders),
-            Page = mem_paginate(mem_distinct(Dist, Pairs), Lim, Off),
-            From ! {Ref, {ok, Page}},
-            mem_keeper_loop(State);
-        {{right_join_select, Id, LeftTable, RightTable, Cond, Where2, Pred, Orders, Lim, Off, Proj, Dist}, From, Ref} ->
-            Rows = mem_right_join_select_rows(State, Id, LeftTable, RightTable, Cond, Where2, Pred, Orders, Lim, Off, Proj, Dist),
-            From ! {Ref, {ok, Rows}},
-            mem_keeper_loop(State);
-        {{aggregate_right_join, Id, LeftTable, RightTable, Cond, Where2, Pred, Func, Column, IsRight}, From, Ref} ->
-            Pairs = mem_right_join_pairs(State, Id, LeftTable, RightTable, Cond, Where2, Pred, []),
-            Rows = [mem_agg_side_row(IsRight, mem_left_row(OptL), R) || {OptL, R} <- Pairs],
-            Value = mem_aggregate_value(Func, Column, Rows),
-            Wrapped = case Value of 'SqlNull' -> none; _ -> {some, Value} end,
-            From ! {Ref, {ok, Wrapped}},
-            mem_keeper_loop(State);
-        {{count_right_join, Id, LeftTable, RightTable, Cond, Where2, Pred}, From, Ref} ->
-            Pairs = mem_right_join_pairs(State, Id, LeftTable, RightTable, Cond, Where2, Pred, []),
-            From ! {Ref, {ok, length(Pairs)}},
-            mem_keeper_loop(State);
-        {{group_summarize_right_join, Id, LeftTable, RightTable, Cond, Where2, Pred, KeyCol, KeySide, Cols, Having}, From, Ref} ->
-            Pairs0 = mem_right_join_pairs(State, Id, LeftTable, RightTable, Cond, Where2, Pred, []),
-            Pairs = [{mem_left_row(OptL), R} || {OptL, R} <- Pairs0],
-            Result = mem_group_join(Pairs, KeyCol, KeySide, Cols, Having),
-            From ! {Ref, {ok, Result}},
-            mem_keeper_loop(State);
-        {{full_join, Id, LeftTable, RightTable, Cond, Where2, Pred, Orders, Lim, Off, Dist}, From, Ref} ->
-            Pairs = mem_full_join_pairs(State, Id, LeftTable, RightTable, Cond, Where2, Pred, Orders),
-            Page = mem_paginate(mem_distinct(Dist, Pairs), Lim, Off),
-            From ! {Ref, {ok, Page}},
-            mem_keeper_loop(State);
-        {{full_join_select, Id, LeftTable, RightTable, Cond, Where2, Pred, Orders, Lim, Off, Proj, Dist}, From, Ref} ->
-            Rows = mem_full_join_select_rows(State, Id, LeftTable, RightTable, Cond, Where2, Pred, Orders, Lim, Off, Proj, Dist),
-            From ! {Ref, {ok, Rows}},
-            mem_keeper_loop(State);
-        {{aggregate_full_join, Id, LeftTable, RightTable, Cond, Where2, Pred, Func, Column, IsRight}, From, Ref} ->
-            Pairs = mem_full_join_pairs(State, Id, LeftTable, RightTable, Cond, Where2, Pred, []),
-            Rows = [mem_agg_side_row(IsRight, mem_left_row(OptL), mem_right_row(OptR)) || {OptL, OptR} <- Pairs],
-            Value = mem_aggregate_value(Func, Column, Rows),
-            Wrapped = case Value of 'SqlNull' -> none; _ -> {some, Value} end,
-            From ! {Ref, {ok, Wrapped}},
-            mem_keeper_loop(State);
-        {{count_full_join, Id, LeftTable, RightTable, Cond, Where2, Pred}, From, Ref} ->
-            Pairs = mem_full_join_pairs(State, Id, LeftTable, RightTable, Cond, Where2, Pred, []),
-            From ! {Ref, {ok, length(Pairs)}},
-            mem_keeper_loop(State);
-        {{group_summarize_full_join, Id, LeftTable, RightTable, Cond, Where2, Pred, KeyCol, KeySide, Cols, Having}, From, Ref} ->
-            Pairs0 = mem_full_join_pairs(State, Id, LeftTable, RightTable, Cond, Where2, Pred, []),
-            Pairs = [{mem_left_row(OptL), mem_right_row(OptR)} || {OptL, OptR} <- Pairs0],
-            Result = mem_group_join(Pairs, KeyCol, KeySide, Cols, Having),
-            From ! {Ref, {ok, Result}},
             mem_keeper_loop(State)
     end.
 
@@ -1605,8 +1346,7 @@ mem_agg_prefixed_col(false, Column) -> <<"t0$", Column/binary>>.
 %% Project a flat, source-prefixed join row through a projection tree into one row
 %% keyed by the projection's output aliases. A `QCol` names a left-source column
 %% (the t0$ prefix the join flattened the left side under), a `QColR` a right-source
-%% column (t1$); a missing column reads SQL NULL. The prefixed dual of
-%% `mem_join_project`, which reads the unprefixed {LeftMap, RightMap} pair directly.
+%% column (t1$); a missing column reads SQL NULL.
 mem_project_prefixed({'QProj', Cols}, Row) ->
     maps:from_list([{Alias, mem_pcell(Col, Row)} || {Alias, Col} <- Cols]);
 mem_project_prefixed(_Other, _Row) ->
@@ -1883,36 +1623,14 @@ mem_update_rows(Changes, Tree, Rows) ->
         0,
         Rows).
 
-%% --- In-memory inner join ---
-%%
-%% The nested-loop dual of a backend pushing a JOIN into SQL. Keep the left rows
-%% the left-side predicate matches, pair each with every right row the condition
-%% accepts and the two-row post-join WHERE keeps, order the pairs by the
-%% left-column keys, then page. Both trees are QExprs over both rows: a `QCol`
-%% reads the left row, a `QColR` the right. `Where2` is always-true until a join
-%% `filter` narrows it.
-
-mem_join_pairs(State, Id, LeftTable, RightTable, Cond, Where2, Pred, Orders) ->
-    LeftRows = maps:get({Id, LeftTable}, State, []),
-    RightRows = maps:get({Id, RightTable}, State, []),
-    LeftMatches = [L || L <- LeftRows, mem_pred(Pred, L)],
-    Pairs = [{L, R} || L <- LeftMatches, R <- RightRows,
-                       mem_jpred(Cond, L, R), mem_jpred(Where2, L, R)],
-    mem_order_pairs(Orders, Pairs).
-
 %% --- In-memory left-outer join ---
 %%
-%% As mem_join_pairs, but a left row with no matching right row is kept: it pairs
-%% with `none` instead of being dropped, and a row with matches pairs with each
-%% as `{some, RightRow}`. Ordering and paging act on the left row of each pair
-%% just as for the inner join.
-
-mem_left_join_pairs(State, Id, LeftTable, RightTable, Cond, Where2, Pred, Orders) ->
-    LeftRows = maps:get({Id, LeftTable}, State, []),
-    RightRows = maps:get({Id, RightTable}, State, []),
-    LeftMatches = [L || L <- LeftRows, mem_pred(Pred, L)],
-    Pairs = lists:append([mem_left_pairs_for(L, RightRows, Cond, Where2) || L <- LeftMatches]),
-    mem_order_pairs(Orders, Pairs).
+%% The nested-loop dual of a backend pushing a LEFT JOIN into SQL: keep the left
+%% rows the left-side predicate matches, pair each with every right row the
+%% condition accepts and the two-row post-join WHERE keeps, but keep a left row
+%% with no matching right row as `{L, none}` instead of dropping it. Both trees are
+%% QExprs over both rows: a `QCol` reads the left row, a `QColR` the right.
+%% `Where2` is always-true until a join `filter` narrows it.
 
 %% The pairs a single left row contributes under `LEFT JOIN … ON Cond WHERE
 %% Where2`. A left row with condition-matching right rows yields one
@@ -1932,51 +1650,12 @@ mem_left_pairs_for(L, RightRows, Cond, Where2) ->
         Matches -> [{L, {some, R}} || R <- Matches, mem_jpred(Where2, L, R)]
     end.
 
-%% --- In-memory left-outer join projection ---
-%%
-%% As mem_left_join_pairs, but each kept row is projected through Proj. An
-%% unmatched left row pairs with the empty right map, so the projection's
-%% `QColR` columns read SQL NULL — the dual of a `LEFT JOIN` returning NULL for
-%% the right side, which decodes to `None` in the projected shape's `Option`
-%% fields.
-mem_left_join_select_rows(State, Id, LeftTable, RightTable, Cond, Where2, Pred, Orders, Lim, Off, Proj, Dist) ->
-    LeftRows = maps:get({Id, LeftTable}, State, []),
-    RightRows = maps:get({Id, RightTable}, State, []),
-    LeftMatches = [L || L <- LeftRows, mem_pred(Pred, L)],
-    Pairs = lists:append([mem_left_select_pairs(L, RightRows, Cond, Where2) || L <- LeftMatches]),
-    Ordered = mem_order_pairs(Orders, Pairs),
-    Projected = [mem_join_project(Proj, L, R) || {L, R} <- Ordered],
-    mem_paginate(mem_distinct(Dist, Projected), Lim, Off).
-
-%% The pairs a single left row contributes for a projection, under the same
-%% `ON Cond WHERE Where2` rule as `mem_left_pairs_for`: one `{L, R}` per
-%% condition match the post-join Where2 keeps; or `[{L, #{}}]` (the empty right
-%% map, so the right columns project to SQL NULL) when no right row matches the
-%% condition and Where2 holds with the right side NULL; otherwise nothing.
-mem_left_select_pairs(L, RightRows, Cond, Where2) ->
-    case [R || R <- RightRows, mem_jpred(Cond, L, R)] of
-        []      ->
-            case mem_jpred(Where2, L, #{}) of
-                true  -> [{L, #{}}];
-                false -> []
-            end;
-        Matches -> [{L, R} || R <- Matches, mem_jpred(Where2, L, R)]
-    end.
-
 %% --- In-memory right-outer join ---
 %%
-%% The mirror of mem_left_join_pairs with the preserved side flipped to the right
-%% table: every right row is kept, and the left query's Pred folds into the match
-%% (so an unmatched right row keeps a `none` left side rather than being dropped, the
-%% way Pred in the post-join WHERE would). Each pair is `{OptLeft, RightRow}` — the
+%% Every right row is kept, and the left query's Pred folds into the match (so an
+%% unmatched right row keeps a `none` left side rather than being dropped, the way
+%% Pred in the post-join WHERE would). Each pair is `{OptLeft, RightRow}` — the
 %% left side wrapped `{some, L}` for a match or `none` for an unmatched right row.
-
-mem_right_join_pairs(State, Id, LeftTable, RightTable, Cond, Where2, Pred, Orders) ->
-    LeftRows = maps:get({Id, LeftTable}, State, []),
-    RightRows = maps:get({Id, RightTable}, State, []),
-    LeftMatches = [L || L <- LeftRows, mem_pred(Pred, L)],
-    Pairs = lists:append([mem_right_pairs_for(R, LeftMatches, Cond, Where2) || R <- RightRows]),
-    mem_order_pairs(Orders, Pairs).
 
 %% The pairs a single right row contributes under `… RIGHT JOIN R ON Cond AND Pred
 %% WHERE Where2`. A right row with condition-matching left rows (already narrowed by
@@ -1994,52 +1673,15 @@ mem_right_pairs_for(R, LeftMatches, Cond, Where2) ->
         Matches -> [{{some, L}, R} || L <- Matches, mem_jpred(Where2, L, R)]
     end.
 
-%% --- In-memory right-outer join projection ---
-%%
-%% As mem_right_join_select_rows, but each kept row is projected through Proj. An
-%% unmatched right row pairs with the empty left map, so the projection's `QCol`
-%% columns read SQL NULL — the dual of a `RIGHT JOIN` returning NULL for the left
-%% side, which decodes to `None` in the projected shape's `Option` fields.
-mem_right_join_select_rows(State, Id, LeftTable, RightTable, Cond, Where2, Pred, Orders, Lim, Off, Proj, Dist) ->
-    LeftRows = maps:get({Id, LeftTable}, State, []),
-    RightRows = maps:get({Id, RightTable}, State, []),
-    LeftMatches = [L || L <- LeftRows, mem_pred(Pred, L)],
-    Pairs = lists:append([mem_right_select_pairs(R, LeftMatches, Cond, Where2) || R <- RightRows]),
-    Ordered = mem_order_pairs(Orders, Pairs),
-    Projected = [mem_join_project(Proj, L, R) || {L, R} <- Ordered],
-    mem_paginate(mem_distinct(Dist, Projected), Lim, Off).
-
-%% The pairs a single right row contributes for a projection, under the same
-%% `ON Cond AND Pred WHERE Where2` rule as `mem_right_pairs_for`: one `{L, R}` per
-%% match the post-join Where2 keeps; or `[{#{}, R}]` (the empty left map, so the
-%% left columns project to SQL NULL) when no left row matches and Where2 holds with
-%% the left side NULL; otherwise nothing.
-mem_right_select_pairs(R, LeftMatches, Cond, Where2) ->
-    case [L || L <- LeftMatches, mem_jpred(Cond, L, R)] of
-        []      ->
-            case mem_jpred(Where2, #{}, R) of
-                true  -> [{#{}, R}];
-                false -> []
-            end;
-        Matches -> [{L, R} || L <- Matches, mem_jpred(Where2, L, R)]
-    end.
-
 %% --- In-memory full-outer join ---
 %%
-%% The union of mem_left_join_pairs and mem_right_join_pairs: every row of both tables
-%% is kept. The left query's Pred restricts which left rows enter the join — a left row
-%% it rejects never appears, not even unmatched. (A right join can fold Pred into the
-%% ON because its unmatched left rows are dropped anyway; a full join keeps them, so
-%% Pred must filter the left input instead.) The matched and left-only rows come from
-%% the left walk; the right-only rows (a right row matching no surviving left row) come
-%% from the right walk, so neither is counted twice. Each pair is `{OptLeft, OptRight}`.
-mem_full_join_pairs(State, Id, LeftTable, RightTable, Cond, Where2, Pred, Orders) ->
-    LeftRows = maps:get({Id, LeftTable}, State, []),
-    RightRows = maps:get({Id, RightTable}, State, []),
-    LeftMatches = [L || L <- LeftRows, mem_pred(Pred, L)],
-    LeftSide = lists:append([mem_full_left_pairs_for(L, RightRows, Cond, Where2) || L <- LeftMatches]),
-    RightOnly = lists:append([mem_full_right_only_for(R, LeftMatches, Cond, Where2) || R <- RightRows]),
-    mem_order_pairs(Orders, LeftSide ++ RightOnly).
+%% Every row of both tables is kept. The left query's Pred restricts which left rows
+%% enter the join — a left row it rejects never appears, not even unmatched. (A right
+%% join can fold Pred into the ON because its unmatched left rows are dropped anyway; a
+%% full join keeps them, so Pred must filter the left input instead.) The matched and
+%% left-only rows come from the left walk; the right-only rows (a right row matching no
+%% surviving left row) come from the right walk, so neither is counted twice. Each pair
+%% is `{OptLeft, OptRight}`.
 
 %% The matched and left-only pairs a single (surviving) left row contributes — the dual
 %% of mem_left_pairs_for with the right side wrapped: one `{{some, L}, {some, R}}` per
@@ -2064,46 +1706,6 @@ mem_full_right_only_for(R, LeftMatches, Cond, Where2) ->
         []      ->
             case mem_jpred(Where2, #{}, R) of
                 true  -> [{none, {some, R}}];
-                false -> []
-            end;
-        _Matches -> []
-    end.
-
-%% --- In-memory full-outer join projection ---
-%%
-%% As mem_full_join_pairs, but each kept row is projected through Proj. The columns of
-%% an unmatched side read the empty map (SQL NULL), decoding to `None` in the projected
-%% shape's `Option` fields.
-mem_full_join_select_rows(State, Id, LeftTable, RightTable, Cond, Where2, Pred, Orders, Lim, Off, Proj, Dist) ->
-    LeftRows = maps:get({Id, LeftTable}, State, []),
-    RightRows = maps:get({Id, RightTable}, State, []),
-    LeftMatches = [L || L <- LeftRows, mem_pred(Pred, L)],
-    LeftSide = lists:append([mem_full_left_select_pairs(L, RightRows, Cond, Where2) || L <- LeftMatches]),
-    RightOnly = lists:append([mem_full_right_only_select_pairs(R, LeftMatches, Cond, Where2) || R <- RightRows]),
-    Ordered = mem_order_pairs(Orders, LeftSide ++ RightOnly),
-    Projected = [mem_join_project(Proj, L, R) || {L, R} <- Ordered],
-    mem_paginate(mem_distinct(Dist, Projected), Lim, Off).
-
-%% The matched and left-only `{L, R}` map pairs a single left row contributes for a
-%% projection (the empty right map where the left row matched none).
-mem_full_left_select_pairs(L, RightRows, Cond, Where2) ->
-    case [R || R <- RightRows, mem_jpred(Cond, L, R)] of
-        []      ->
-            case mem_jpred(Where2, L, #{}) of
-                true  -> [{L, #{}}];
-                false -> []
-            end;
-        Matches -> [{L, R} || R <- Matches, mem_jpred(Where2, L, R)]
-    end.
-
-%% The right-only `{#{}, R}` map pair (empty left map) a right row contributes for a
-%% projection when no surviving left row matches; a matched right row is emitted by the
-%% left walk instead.
-mem_full_right_only_select_pairs(R, LeftMatches, Cond, Where2) ->
-    case [L || L <- LeftMatches, mem_jpred(Cond, L, R)] of
-        []      ->
-            case mem_jpred(Where2, #{}, R) of
-                true  -> [{#{}, R}];
                 false -> []
             end;
         _Matches -> []
@@ -2149,17 +1751,6 @@ mem_right_row(_)                -> #{}.
 mem_left_row(L) when is_map(L) -> L;
 mem_left_row({some, L})        -> L;
 mem_left_row(_)                -> #{}.
-
-%% Project a joined pair through a QProj select-list into one map keyed by alias:
-%% each column reads the left or right row depending on its `QCol`/`QColR` tag.
-mem_join_project({'QProj', Cols}, L, R) ->
-    maps:from_list([{Alias, mem_jcell(Col, L, R)} || {Alias, Col} <- Cols]);
-mem_join_project(_Other, _L, _R) ->
-    #{}.
-
-mem_jcell({'QCol', C}, L, _R)  -> maps:get(C, L, 'SqlNull');
-mem_jcell({'QColR', C}, _L, R) -> maps:get(C, R, 'SqlNull');
-mem_jcell(_Other, _L, _R)      -> 'SqlNull'.
 
 %% Evaluate a join condition node against the (left, right) pair. The structure
 %% mirrors mem_pred/2; a `QCol` resolves against the left row and a `QColR`

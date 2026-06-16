@@ -403,12 +403,6 @@ fn _pgProject (id: Int) (table: Text) (tree: QExpr) (orders: List (Bool, Text)) 
 @ffi("ridge_pg", "pg_group_summarize", 6)
 fn _pgGroupSummarize (id: Int) (table: Text) (tree: QExpr) (keyCol: Text) (cols: List (Text, Text, Text, Bool)) (having: QExpr) -> Result (List (Map Text SqlValue)) Error
 
--- Compile a captured query plan to nested SQL — each `planScan` a `SELECT`, each
--- `planCombine` a `UNION`/`INTERSECT`/`EXCEPT`, each `planRefine` a wrapping
--- subquery — and run it on the connection, returning the combined rows.
-@ffi("ridge_pg", "pg_run_plan", 2)
-fn _pgRunPlan (id: Int) (plan: QueryPlan) -> Result (List (Map Text SqlValue)) Error
-
 -- Begin a transaction on the connection identified by `id`, pinning one pooled
 -- connection for its span. A nested `begin` issues a `SAVEPOINT` on that same
 -- connection rather than a second `BEGIN`.

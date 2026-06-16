@@ -115,6 +115,7 @@ const CONSTRUCTOR_EXPORTS: &[(&str, &str)] = &[
     ("std.query", "PlanCombine"),
     ("std.query", "PlanRefine"),
     ("std.query", "PlanJoin"),
+    ("std.query", "PlanProject"),
 ];
 
 /// Return `true` if `(module, sym)` is a known exported union constructor that is
@@ -264,6 +265,7 @@ fn signature_shape_consistency() {
                         | "planCombine"
                         | "planRefine"
                         | "planJoin"
+                        | "planProject"
                 )
             {
                 continue;

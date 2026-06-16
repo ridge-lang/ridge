@@ -21,7 +21,7 @@
 
 import std.data as Db
 import std.sql (SqlValue)
-import std.query (SortOrder, ascending, QueryPlan, planScan, planCombine, planRefine, planJoin)
+import std.query (SortOrder, ascending, QueryPlan, planScan, planCombine, planRefine, planJoin, planProject)
 import std.map (fromList, toList)
 
 -- A repository: entity `e` stored in `table` through adapter `a`. Opaque, so it
@@ -781,14 +781,15 @@ instance Projectable (Query e a) (fn e -> s) where Adapter a, Row s =
 
 -- An inner join's `select`: project across both entities into `s`. The projection
 -- names columns from either row (`fn (u: User) (p: Post) -> Line { ... }`); the
--- backend pushes that select-list into the `JOIN` and each row decodes into `s`.
+-- plan pushes that select-list onto the join through `innerJoinSelectPlan` and each
+-- projected row decodes into `s`.
 instance Projectable (Join e f a) (fn e f -> s) where Adapter a, Row s =
     select (proj: Quote (fn e f -> s)) (x: Join e f a) -> Result (List s) Error =
-        match joinSelect x.left.repo.adapter x.left.repo.table x.right.table x.cond x.where2 x.left.pred x.orders x.lim x.off proj x.dist
+        match runPlan x.left.repo.adapter (innerJoinSelectPlan x proj.tree x.lim)
             Err err  -> Err err
             Ok rows  -> decodeRows rows
     selectFirst (proj: Quote (fn e f -> s)) (x: Join e f a) -> Result (Option s) Error =
-        match joinSelect x.left.repo.adapter x.left.repo.table x.right.table x.cond x.where2 x.left.pred x.orders 1 x.off proj x.dist
+        match runPlan x.left.repo.adapter (innerJoinSelectPlan x proj.tree 1)
             Err err  -> Err err
             Ok rows  -> firstDecoded rows
 
@@ -1037,6 +1038,17 @@ instance Decodable (Query e a) where Adapter a, Row e =
 -- flat, source-prefixed rows.
 fn innerJoinPlan (x: Join e f a) (lim: Int) -> QueryPlan =
     planJoin "INNER" (planScan x.left.repo.table x.left.pred.tree [] (0 - 1) 0 false) (planScan x.right.table (keepAllTree ()) [] (0 - 1) 0 false) x.cond.tree x.where2.tree x.orders lim x.off x.dist
+
+-- The query plan an inner-join `select` runs: a `PlanProject` over the all-pairs
+-- join. The inner `PlanJoin` keeps the join's ordering but leaves its page and
+-- distinct off (`(0 - 1) 0 false`) — `distinct` de-duplicates the projected columns
+-- and the page bounds the projected rows, so both move onto the `PlanProject` and
+-- apply after the projection, the same order the old `joinSelect` seam ran them
+-- (pair, order, project, distinct, page). The projection tree is read against the
+-- flat, source-prefixed join rows. `lim` is passed explicitly so `selectFirst` runs
+-- the same plan with a one-row limit.
+fn innerJoinSelectPlan (x: Join e f a) (proj: QExpr) (lim: Int) -> QueryPlan =
+    planProject proj (planJoin "INNER" (planScan x.left.repo.table x.left.pred.tree [] (0 - 1) 0 false) (planScan x.right.table (keepAllTree ()) [] (0 - 1) 0 false) x.cond.tree x.where2.tree x.orders (0 - 1) 0 false) lim x.off x.dist
 
 instance Decodable (Join e f a) where Adapter a, Row f, Row e =
     toList (x: Join e f a) -> Result (List (e, f)) Error =

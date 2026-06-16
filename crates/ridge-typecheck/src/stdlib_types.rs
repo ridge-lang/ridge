@@ -801,6 +801,19 @@ fn reconciled_decls(b: &BuiltinTyCons, base: u32) -> Vec<TyConDecl> {
                             Type::Con(b.bool, vec![]),
                         ]),
                     },
+                    // `PlanProject proj child lim off dist` — project a sub-plan's rows
+                    // through the projection tree (a `QProj`) into rows keyed by its
+                    // output aliases, then de-duplicate and page. Wraps a `PlanJoin`.
+                    UnionVariant {
+                        name: "PlanProject".to_string(),
+                        kind: VariantPayload::Positional(vec![
+                            Type::Con(b.q_expr, vec![]),
+                            Type::Con(TyConId(base + 15), vec![]),
+                            Type::Con(b.int, vec![]),
+                            Type::Con(b.int, vec![]),
+                            Type::Con(b.bool, vec![]),
+                        ]),
+                    },
                 ],
             }),
             def_span: None,
@@ -960,7 +973,7 @@ pub(crate) fn reconciled_fn_scheme(
         }
         // std.query `planScan`/`planCombine`/`planRefine`/`planJoin` — the `QueryPlan`
         // factories.
-        ("std.query", "planScan" | "planCombine" | "planRefine" | "planJoin") => {
+        ("std.query", "planScan" | "planCombine" | "planRefine" | "planJoin" | "planProject") => {
             reconciled_query_plan_fn_scheme(name, reconciled, b)
         }
         ("std.repo", _) => reconciled_repo_fn_scheme(name, reconciled, b, classes?),
@@ -971,9 +984,9 @@ pub(crate) fn reconciled_fn_scheme(
 }
 
 /// The `std.query` plan-builder slice of [`reconciled_fn_scheme`]: `planScan`/
-/// `planCombine`/`planRefine`, the factories that build a `QueryPlan` node. Each is
-/// pure and returns the reconciled `QueryPlan`, so none is expressible in the
-/// hand-curated signature table.
+/// `planCombine`/`planRefine`/`planJoin`/`planProject`, the factories that build a
+/// `QueryPlan` node. Each is pure and returns the reconciled `QueryPlan`, so none is
+/// expressible in the hand-curated signature table.
 fn reconciled_query_plan_fn_scheme(
     name: &str,
     reconciled: &FxHashMap<String, TyConId>,
@@ -1021,6 +1034,8 @@ fn reconciled_query_plan_fn_scheme(
             int(),
             bool_(),
         ])),
+        // planProject : QExpr -> QueryPlan -> Int -> Int -> Bool -> QueryPlan
+        "planProject" => Some(pure(vec![qexpr(), plan(), int(), int(), bool_()])),
         _ => None,
     }
 }

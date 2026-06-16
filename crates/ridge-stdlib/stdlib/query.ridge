@@ -43,7 +43,14 @@ pub fn ascending (dir: SortOrder) -> Bool =
 -- post-join `WHERE`, ordering, page, and distinct folded in; its rows come back
 -- flat with each source's columns prefixed (`t0$col`/`t1$col`) so the columns of
 -- the two sides never collide and the result stays a single row map per pair.
-pub type QueryPlan = PlanScan Text QExpr (List (Bool, Text)) Int Int Bool | PlanCombine Text QueryPlan QueryPlan | PlanRefine QueryPlan QExpr (List (Bool, Text)) Int Int Bool | PlanJoin Text QueryPlan QueryPlan QExpr QExpr (List (Bool, Bool, Text)) Int Int Bool
+-- `PlanProject` projects a sub-plan's rows through a projection tree (a `QProj`)
+-- into rows keyed by the projection's output aliases, then de-duplicates and pages
+-- — the plan form of a join `select`. It wraps a `PlanJoin`, whose flat
+-- source-prefixed rows it reads (`QCol` names a left-source column, `QColR` a
+-- right-source one); the join itself leaves its page and distinct off, since
+-- `distinct` de-duplicates the projected columns and the page bounds the projected
+-- rows, so both belong on the projection.
+pub type QueryPlan = PlanScan Text QExpr (List (Bool, Text)) Int Int Bool | PlanCombine Text QueryPlan QueryPlan | PlanRefine QueryPlan QExpr (List (Bool, Text)) Int Int Bool | PlanJoin Text QueryPlan QueryPlan QExpr QExpr (List (Bool, Bool, Text)) Int Int Bool | PlanProject QExpr QueryPlan Int Int Bool
 
 -- A single-table scan plan — the plan form of `fetch`.
 pub fn planScan (table: Text) (pred: QExpr) (orders: List (Bool, Text)) (lim: Int) (off: Int) (dist: Bool) -> QueryPlan =
@@ -64,6 +71,12 @@ pub fn planRefine (inner: QueryPlan) (pred: QExpr) (orders: List (Bool, Text)) (
 -- are flat with each side's columns prefixed (`t0$`/`t1$`).
 pub fn planJoin (kind: Text) (left: QueryPlan) (right: QueryPlan) (cond: QExpr) (where2: QExpr) (orders: List (Bool, Bool, Text)) (lim: Int) (off: Int) (dist: Bool) -> QueryPlan =
     PlanJoin kind left right cond where2 orders lim off dist
+
+-- Project a sub-plan's rows through the projection tree `proj` (a `QProj`), then
+-- de-duplicate (when `dist`) and page. Wraps a `PlanJoin`, projecting its flat
+-- source-prefixed rows into rows keyed by the projection's output aliases.
+pub fn planProject (proj: QExpr) (child: QueryPlan) (lim: Int) (off: Int) (dist: Bool) -> QueryPlan =
+    PlanProject proj child lim off dist
 
 -- Render a captured tree to a readable, SQL-shaped string. Literals show as `?`
 -- placeholders — binding parameters is the SQL-compilation pass's job; this is

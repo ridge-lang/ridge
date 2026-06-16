@@ -1542,7 +1542,25 @@ mem_eval_plan(State, Id, {'PlanJoin', <<"INNER">>, Left, Right, Cond, Where2, Or
     Pairs = [{L, R} || L <- LeftRows, R <- RightRows,
                        mem_jpred(Cond, L, R), mem_jpred(Where2, L, R)],
     Flat = [mem_prefix_pair(L, R) || {L, R} <- mem_order_pairs(Orders, Pairs)],
-    mem_paginate(mem_distinct(Dist, Flat), Lim, Off).
+    mem_paginate(mem_distinct(Dist, Flat), Lim, Off);
+mem_eval_plan(State, Id, {'PlanProject', Proj, Child, Lim, Off, Dist}) ->
+    Rows = mem_eval_plan(State, Id, Child),
+    Projected = [mem_project_prefixed(Proj, Row) || Row <- Rows],
+    mem_paginate(mem_distinct(Dist, Projected), Lim, Off).
+
+%% Project a flat, source-prefixed join row through a projection tree into one row
+%% keyed by the projection's output aliases. A `QCol` names a left-source column
+%% (the t0$ prefix the join flattened the left side under), a `QColR` a right-source
+%% column (t1$); a missing column reads SQL NULL. The prefixed dual of
+%% `mem_join_project`, which reads the unprefixed {LeftMap, RightMap} pair directly.
+mem_project_prefixed({'QProj', Cols}, Row) ->
+    maps:from_list([{Alias, mem_pcell(Col, Row)} || {Alias, Col} <- Cols]);
+mem_project_prefixed(_Other, _Row) ->
+    #{}.
+
+mem_pcell({'QCol', C}, Row)  -> maps:get(<<"t0$", C/binary>>, Row, 'SqlNull');
+mem_pcell({'QColR', C}, Row) -> maps:get(<<"t1$", C/binary>>, Row, 'SqlNull');
+mem_pcell(_Other, _Row)      -> 'SqlNull'.
 
 %% Flatten a joined {LeftMap, RightMap} pair into one row map with each side's columns
 %% prefixed (t0$ for the left source, t1$ for the right) so the two sides never

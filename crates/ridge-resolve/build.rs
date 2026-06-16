@@ -418,6 +418,9 @@ const BASELINE_EXPORTS: &[(&str, &[&str])] = &[
             "planProject",
             "planAggregate",
             "planGroup",
+            // The plan-to-SQL renderer: lowers a whole `QueryPlan` to one
+            // parameterized statement plus its ordered bind values.
+            "planToSql",
         ],
     ),
     (

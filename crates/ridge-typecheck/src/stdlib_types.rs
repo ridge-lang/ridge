@@ -1016,7 +1016,7 @@ pub(crate) fn reconciled_fn_scheme(
         (
             "std.query",
             "planScan" | "planCombine" | "planRefine" | "planJoin" | "planProject"
-            | "planAggregate" | "planGroup",
+            | "planAggregate" | "planGroup" | "planToSql",
         ) => reconciled_query_plan_fn_scheme(name, reconciled, b),
         ("std.repo", _) => reconciled_repo_fn_scheme(name, reconciled, b, classes?),
         ("std.migrate", _) => reconciled_migrate_fn_scheme(name, reconciled, b, classes?),
@@ -1096,6 +1096,24 @@ fn reconciled_query_plan_fn_scheme(
         // planGroup : Text -> Bool -> List (Text, Text, Text, Bool) -> QExpr ->
         //             QueryPlan -> QueryPlan
         "planGroup" => Some(pure(vec![text(), bool_(), group_cols(), qexpr(), plan()])),
+        // planToSql : QueryPlan -> (Sql, List SqlValue) — the renderer, lowering a
+        // whole plan to one parameterized statement plus its ordered bind values.
+        // Unlike the builders it does not return a `QueryPlan`, so its scheme is
+        // spelled out rather than built through `pure`.
+        "planToSql" => Some(Scheme {
+            vars: vec![],
+            cap_vars: vec![],
+            row_vars: vec![],
+            ty: Type::Fn {
+                params: vec![plan()],
+                ret: Box::new(Type::Tuple(vec![
+                    Type::Con(b.sql, vec![]),
+                    Type::Con(b.list, vec![Type::Con(b.sql_value, vec![])]),
+                ])),
+                caps: CapRow::Concrete(CapabilitySet::PURE),
+            },
+            constraints: vec![],
+        }),
         _ => None,
     }
 }

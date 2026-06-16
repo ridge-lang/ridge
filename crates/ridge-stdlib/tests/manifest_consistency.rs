@@ -270,6 +270,7 @@ fn signature_shape_consistency() {
                         | "planProject"
                         | "planAggregate"
                         | "planGroup"
+                        | "planToSql"
                 )
             {
                 continue;

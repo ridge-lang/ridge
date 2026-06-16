@@ -11,6 +11,7 @@
 -- or compiling it to parameterized SQL plus its bind values (`toSql`).
 
 import std.sql (Sql, sql, SqlValue, sqlInt, sqlText, sqlBool, sqlFloat)
+import std.int as Int
 
 -- Sort direction for query ordering. A plain union declared in Ridge: importing
 -- modules can name `SortOrder` and build/match `Asc`/`Desc` directly.
@@ -230,3 +231,362 @@ fn projCols (cols: List (Text, QExpr)) -> List Text =
 fn aliasedCol (alias: Text) (colSql: Text) -> Text =
     if alias == colSql then colSql
     else Text.concat colSql (Text.concat " AS " alias)
+
+-- ── Plan → SQL renderer ───────────────────────────────────────────────────────
+--
+-- Compile a whole query plan to one parameterized SQL statement plus its ordered
+-- bind values — the Postgres dual of the in-memory tree-walk. Every literal in a
+-- captured predicate becomes a positional `$N` placeholder and its value is
+-- collected, left to right, so the statement is safe to hand to a parameterized
+-- adapter without ever interpolating a value. Identifiers (tables, columns) are
+-- double-quoted, with any embedded quote doubled.
+--
+-- A join renders its rows flat with each source's columns prefixed
+-- (`l."col" AS "t0$col"` / `r."col" AS "t1$col"`), spelled from the `leftCols` and
+-- `rightCols` the plan carries, so the two sides never collide and the decoder
+-- recovers each entity by its prefix. An outer join also selects a presence marker
+-- (`TRUE AS "__present"` off the null-extended side, aliased `t0$__present__` /
+-- `t1$__present__`): the unmatched side's real columns all read NULL, so the marker
+-- is what tells a matched-but-all-NULL row from an absent one. A projection,
+-- aggregate, or group over a join reads those NULLs directly and needs no marker.
+pub fn planToSql (plan: QueryPlan) -> (Sql, List SqlValue) =
+    let r = renderPlan plan 1
+    (sql r.text, r.binds)
+
+fn renderPlan (plan: QueryPlan) (n: Int) -> { text: Text, binds: List SqlValue, next: Int } =
+    match plan
+        PlanScan table pred orders lim off dist ->
+            let w = renderPred false pred n
+            { text = Text.join "" ["SELECT ", distinctKw dist, "* FROM ", quoteIdent table, " WHERE ", w.text, orderByClause orders, limitClause lim, offsetClause off], binds = w.binds, next = w.next }
+        PlanCombine op left right ->
+            let l = renderPlan left n
+            let r = renderPlan right l.next
+            { text = Text.join "" ["(", l.text, ") ", op, " (", r.text, ")"], binds = l.binds ++ r.binds, next = r.next }
+        PlanRefine inner pred orders lim off dist ->
+            let i = renderPlan inner n
+            let w = renderPred false pred i.next
+            { text = Text.join "" ["SELECT ", distinctKw dist, "* FROM (", i.text, ") AS ridge_sub WHERE ", w.text, orderByClause orders, limitClause lim, offsetClause off], binds = i.binds ++ w.binds, next = w.next }
+        PlanJoin kind left right cond where2 orders lim off dist leftCols rightCols ->
+            renderBareJoin kind left right cond where2 orders lim off dist leftCols rightCols n
+        PlanProject proj child lim off dist ->
+            renderProject proj child lim off dist n
+        PlanAggregate func column isRight child ->
+            renderAggregate func column isRight child n
+        PlanGroup keyCol keySide cols having child ->
+            renderGroup keyCol keySide cols having child n
+
+-- A captured predicate to a parameterized fragment. `qualified` picks how a column
+-- reads: bare (`"col"`) for a single-table scan, or qualified to its join side
+-- (`l."col"` / `r."col"`) for a join's ON/WHERE. A boolean column stands alone as a
+-- predicate; a comparison's literal binds as a `$N` placeholder.
+fn renderPred (qualified: Bool) (e: QExpr) (n: Int) -> { text: Text, binds: List SqlValue, next: Int } =
+    match e
+        QAnd l r -> binPred qualified l " AND " r n
+        QOr l r  -> binPred qualified l " OR " r n
+        QNot x   ->
+            let r = renderPred qualified x n
+            { text = Text.join "" ["(NOT ", r.text, ")"], binds = r.binds, next = r.next }
+        QEq l r -> cmpPred qualified l " = " r n
+        QNe l r -> cmpPred qualified l " <> " r n
+        QLt l r -> cmpPred qualified l " < " r n
+        QGt l r -> cmpPred qualified l " > " r n
+        QLe l r -> cmpPred qualified l " <= " r n
+        QGe l r -> cmpPred qualified l " >= " r n
+        QCol c  -> { text = renderColRef qualified false c, binds = [], next = n }
+        QColR c -> { text = renderColRef qualified true c, binds = [], next = n }
+        QLitBool b -> { text = boolLit b, binds = [], next = n }
+        _ -> renderOperand qualified e n
+
+fn cmpPred (qualified: Bool) (l: QExpr) (op: Text) (r: QExpr) (n: Int) -> { text: Text, binds: List SqlValue, next: Int } =
+    let lr = renderOperand qualified l n
+    let rr = renderOperand qualified r lr.next
+    { text = Text.join "" [lr.text, op, rr.text], binds = lr.binds ++ rr.binds, next = rr.next }
+
+fn binPred (qualified: Bool) (l: QExpr) (op: Text) (r: QExpr) (n: Int) -> { text: Text, binds: List SqlValue, next: Int } =
+    let lr = renderPred qualified l n
+    let rr = renderPred qualified r lr.next
+    { text = Text.join "" ["(", lr.text, op, rr.text, ")"], binds = lr.binds ++ rr.binds, next = rr.next }
+
+-- A comparison operand: a column reads by name (qualified to its side in a join), a
+-- literal binds as a `$N` placeholder pushing its value, anything else is `NULL`.
+fn renderOperand (qualified: Bool) (e: QExpr) (n: Int) -> { text: Text, binds: List SqlValue, next: Int } =
+    match e
+        QCol c      -> { text = renderColRef qualified false c, binds = [], next = n }
+        QColR c     -> { text = renderColRef qualified true c, binds = [], next = n }
+        QLitInt v   -> { text = placeholder n, binds = [sqlInt v], next = n + 1 }
+        QLitText v  -> { text = placeholder n, binds = [sqlText v], next = n + 1 }
+        QLitBool v  -> { text = placeholder n, binds = [sqlBool v], next = n + 1 }
+        QLitFloat v -> { text = placeholder n, binds = [sqlFloat v], next = n + 1 }
+        _           -> { text = "NULL", binds = [], next = n }
+
+fn renderColRef (qualified: Bool) (isRight: Bool) (c: Text) -> Text =
+    if qualified then
+        if isRight then Text.concat "r." (quoteIdent c) else Text.concat "l." (quoteIdent c)
+    else quoteIdent c
+
+fn boolLit (b: Bool) -> Text = if b then "TRUE" else "FALSE"
+
+fn placeholder (n: Int) -> Text = Text.concat "$" (Int.toText n)
+
+-- Double-quote an identifier, doubling any embedded quote — the SQL escape for a
+-- delimited identifier, matching the backend's own `quote_ident`.
+fn quoteIdent (name: Text) -> Text = Text.join "" ["\"", Text.replace "\"" "\"\"" name, "\""]
+
+fn distinctKw (dist: Bool) -> Text = if dist then "DISTINCT " else ""
+
+fn limitClause (lim: Int) -> Text = if lim >= 0 then Text.concat " LIMIT " (Int.toText lim) else ""
+
+fn offsetClause (off: Int) -> Text = if off > 0 then Text.concat " OFFSET " (Int.toText off) else ""
+
+fn dirKw (asc: Bool) -> Text = if asc then "ASC" else "DESC"
+
+-- ORDER BY for a single-table scan: each `(ascending?, column)` key as a quoted
+-- column with its direction. An empty list contributes nothing.
+fn orderByClause (orders: List (Bool, Text)) -> Text =
+    match orders
+        [] -> ""
+        _  -> Text.concat " ORDER BY " (Text.join ", " (orderTerms orders))
+
+fn orderTerms (orders: List (Bool, Text)) -> List Text =
+    match orders
+        []                 -> []
+        (asc, col) :: rest -> Text.join "" [quoteIdent col, " ", dirKw asc] :: orderTerms rest
+
+-- ORDER BY for a join: each `(ascending?, isRight?, column)` key qualified to its
+-- source side.
+fn orderByClauseJoin (orders: List (Bool, Bool, Text)) -> Text =
+    match orders
+        [] -> ""
+        _  -> Text.concat " ORDER BY " (Text.join ", " (orderTermsJoin orders))
+
+fn orderTermsJoin (orders: List (Bool, Bool, Text)) -> List Text =
+    match orders
+        []                          -> []
+        (asc, isRight, col) :: rest -> Text.join "" [renderColRef true isRight col, " ", dirKw asc] :: orderTermsJoin rest
+
+-- The FROM/JOIN/ON/WHERE core of a join, per kind, with the left filter `lp` placed
+-- where the kind needs it (the inner/left join's post-join WHERE, the right join's
+-- ON, the full join's left subquery) and the `$N` counter threaded in the order the
+-- backend binds: cond, where2, pred for inner/left; cond, pred, where2 for right;
+-- pred, cond, where2 for full. `marker` wraps the null-extended side in a
+-- `TRUE AS "__present"` subquery so a bare join can tell an absent outer side from a
+-- matched one; a projection/aggregate/group reads the NULLs directly and passes false.
+fn joinSkeleton (kind: Text) (lt: Text) (lp: QExpr) (rt: Text) (cond: QExpr) (where2: QExpr) (marker: Bool) (n: Int) -> { text: Text, binds: List SqlValue, next: Int } =
+    if kind == "RIGHT" then
+        let c = renderPred true cond n
+        let p = renderPred true lp c.next
+        let w = renderPred true where2 p.next
+        let lexpr = if marker then markerSub lt else quoteIdent lt
+        { text = Text.join "" [lexpr, " AS l RIGHT JOIN ", quoteIdent rt, " AS r ON (", c.text, ") AND (", p.text, ") WHERE (", w.text, ")"], binds = c.binds ++ p.binds ++ w.binds, next = w.next }
+    else if kind == "FULL" then
+        let p = renderPred false lp n
+        let c = renderPred true cond p.next
+        let w = renderPred true where2 c.next
+        let lexpr = if marker then fullSubLeftMarked lt p.text else fullSubLeft lt p.text
+        let rexpr = if marker then markerSub rt else quoteIdent rt
+        { text = Text.join "" [lexpr, " AS l FULL JOIN ", rexpr, " AS r ON (", c.text, ") WHERE (", w.text, ")"], binds = p.binds ++ c.binds ++ w.binds, next = w.next }
+    else if kind == "LEFT" then
+        let c = renderPred true cond n
+        let w = renderPred true where2 c.next
+        let p = renderPred true lp w.next
+        let rexpr = if marker then markerSub rt else quoteIdent rt
+        { text = Text.join "" [quoteIdent lt, " AS l LEFT JOIN ", rexpr, " AS r ON ", c.text, " WHERE (", p.text, ") AND (", w.text, ")"], binds = c.binds ++ w.binds ++ p.binds, next = p.next }
+    else
+        let c = renderPred true cond n
+        let w = renderPred true where2 c.next
+        let p = renderPred true lp w.next
+        { text = Text.join "" [quoteIdent lt, " AS l JOIN ", quoteIdent rt, " AS r ON ", c.text, " WHERE (", p.text, ") AND (", w.text, ")"], binds = c.binds ++ w.binds ++ p.binds, next = p.next }
+
+fn markerSub (table: Text) -> Text = Text.join "" ["(SELECT *, TRUE AS \"__present\" FROM ", quoteIdent table, ")"]
+
+fn fullSubLeft (table: Text) (pred: Text) -> Text = Text.join "" ["(SELECT * FROM ", quoteIdent table, " WHERE (", pred, "))"]
+
+fn fullSubLeftMarked (table: Text) (pred: Text) -> Text = Text.join "" ["(SELECT *, TRUE AS \"__present\" FROM ", quoteIdent table, " WHERE (", pred, "))"]
+
+-- A bare join terminal (`toList`/`first` over a join): the join's flat rows with each
+-- source's columns prefixed, plus a presence marker on each outer side, decoded back
+-- into entity pairs. The sub-plans are the two single-table scans the join pairs.
+fn renderBareJoin (kind: Text) (left: QueryPlan) (right: QueryPlan) (cond: QExpr) (where2: QExpr) (orders: List (Bool, Bool, Text)) (lim: Int) (off: Int) (dist: Bool) (leftCols: List Text) (rightCols: List Text) (n: Int) -> { text: Text, binds: List SqlValue, next: Int } =
+    match left
+        PlanScan lt lp _ _ _ _ ->
+            match right
+                PlanScan rt _ _ _ _ _ ->
+                    let sk = joinSkeleton kind lt lp rt cond where2 true n
+                    let sel = prefixedSelect leftCols rightCols (leftCanBeAbsent kind) (rightCanBeAbsent kind)
+                    { text = Text.join "" ["SELECT ", distinctKw dist, sel, " FROM ", sk.text, orderByClauseJoin orders, limitClause lim, offsetClause off], binds = sk.binds, next = sk.next }
+                _ -> emptyRender n
+        _ -> emptyRender n
+
+fn emptyRender (n: Int) -> { text: Text, binds: List SqlValue, next: Int } = { text = "", binds = [], next = n }
+
+fn leftCanBeAbsent (kind: Text) -> Bool = if kind == "RIGHT" then true else kind == "FULL"
+
+fn rightCanBeAbsent (kind: Text) -> Bool = if kind == "LEFT" then true else kind == "FULL"
+
+-- The prefixed select-list a bare join decodes from: each left column as
+-- `l."col" AS "t0$col"` and each right as `r."col" AS "t1$col"`, plus a presence
+-- marker column on whichever side can be null-extended.
+fn prefixedSelect (leftCols: List Text) (rightCols: List Text) (leftMarker: Bool) (rightMarker: Bool) -> Text =
+    Text.join ", " ((prefixCols "l." "t0$" leftCols) ++ (markerCol "l." "t0$" leftMarker) ++ (prefixCols "r." "t1$" rightCols) ++ (markerCol "r." "t1$" rightMarker))
+
+fn prefixCols (alias: Text) (prefix: Text) (cols: List Text) -> List Text =
+    match cols
+        []        -> []
+        c :: rest -> prefixOne alias prefix c :: prefixCols alias prefix rest
+
+fn prefixOne (alias: Text) (prefix: Text) (c: Text) -> Text =
+    Text.join "" [alias, quoteIdent c, " AS ", quoteIdent (Text.concat prefix c)]
+
+fn markerCol (alias: Text) (prefix: Text) (present: Bool) -> List Text =
+    if present then [markerTerm alias prefix] else []
+
+fn markerTerm (alias: Text) (prefix: Text) -> Text =
+    Text.join "" [alias, "\"__present\" AS ", quoteIdent (Text.concat prefix "__present__")]
+
+-- A projected join (`select` over a join): the projection's own select-list over the
+-- joined tables, paged and de-duplicated by the projection. An unmatched outer column
+-- projects NULL, decoded as the projected shape's `Option` field, so no marker is
+-- needed; the ORDER BY keys come from the join the projection wraps.
+fn renderProject (proj: QExpr) (child: QueryPlan) (lim: Int) (off: Int) (dist: Bool) (n: Int) -> { text: Text, binds: List SqlValue, next: Int } =
+    match child
+        PlanJoin kind left right cond where2 joinOrders _ _ _ _ _ ->
+            match left
+                PlanScan lt lp _ _ _ _ ->
+                    match right
+                        PlanScan rt _ _ _ _ _ ->
+                            let sk = joinSkeleton kind lt lp rt cond where2 false n
+                            { text = Text.join "" ["SELECT ", distinctKw dist, joinSelectList proj, " FROM ", sk.text, orderByClauseJoin joinOrders, limitClause lim, offsetClause off], binds = sk.binds, next = sk.next }
+                        _ -> emptyRender n
+                _ -> emptyRender n
+        _ -> emptyRender n
+
+fn joinSelectList (proj: QExpr) -> Text =
+    match proj
+        QProj cols -> Text.join ", " (joinSelectTerms cols)
+        _          -> "*"
+
+fn joinSelectTerms (cols: List (Text, QExpr)) -> List Text =
+    match cols
+        []                   -> []
+        (alias, col) :: rest -> joinSelectTerm alias col :: joinSelectTerms rest
+
+fn joinSelectTerm (alias: Text) (col: QExpr) -> Text =
+    match col
+        QCol c  -> Text.join "" ["l.", quoteIdent c, " AS ", quoteIdent alias]
+        QColR c -> Text.join "" ["r.", quoteIdent c, " AS ", quoteIdent alias]
+        _       -> Text.join "" ["NULL AS ", quoteIdent alias]
+
+-- A scalar aggregate over a join: the lone folded value, read off the first cell. A
+-- `COUNT` counts rows; the others fold a side-qualified column (`AVG` casts to
+-- `float8`, as the single-table aggregate does). No ordering or paging — an aggregate
+-- folds every joined row.
+fn renderAggregate (func: Text) (column: Text) (isRight: Bool) (child: QueryPlan) (n: Int) -> { text: Text, binds: List SqlValue, next: Int } =
+    match child
+        PlanJoin kind left right cond where2 _ _ _ _ _ _ ->
+            match left
+                PlanScan lt lp _ _ _ _ ->
+                    match right
+                        PlanScan rt _ _ _ _ _ ->
+                            let sk = joinSkeleton kind lt lp rt cond where2 false n
+                            { text = Text.join "" ["SELECT ", aggExprJoin func isRight column, " FROM ", sk.text], binds = sk.binds, next = sk.next }
+                        _ -> emptyRender n
+                _ -> emptyRender n
+        _ -> emptyRender n
+
+fn aggExprJoin (func: Text) (isRight: Bool) (column: Text) -> Text =
+    if func == "COUNT" then "COUNT(*)"
+    else if func == "AVG" then Text.join "" ["AVG(", aggColJoin isRight column, ")::float8"]
+    else if func == "SUM" then Text.join "" ["SUM(", aggColJoin isRight column, ")"]
+    else if func == "MIN" then Text.join "" ["MIN(", aggColJoin isRight column, ")"]
+    else if func == "MAX" then Text.join "" ["MAX(", aggColJoin isRight column, ")"]
+    else "COUNT(*)"
+
+fn aggColJoin (isRight: Bool) (column: Text) -> Text =
+    if isRight then Text.concat "r." (quoteIdent column) else Text.concat "l." (quoteIdent column)
+
+-- A grouped join (`groupBy` + `summarize`): one row per group, keyed by the
+-- side-qualified group key and summarised into the aggregate columns, keeping the
+-- groups the HAVING admits, ordered by the key.
+fn renderGroup (keyCol: Text) (keySide: Bool) (cols: List (Text, Text, Text, Bool)) (having: QExpr) (child: QueryPlan) (n: Int) -> { text: Text, binds: List SqlValue, next: Int } =
+    match child
+        PlanJoin kind left right cond where2 _ _ _ _ _ _ ->
+            match left
+                PlanScan lt lp _ _ _ _ ->
+                    match right
+                        PlanScan rt _ _ _ _ _ ->
+                            let sk = joinSkeleton kind lt lp rt cond where2 false n
+                            let keyExpr = renderColRef true keySide keyCol
+                            let h = renderHaving having keySide keyCol sk.next
+                            { text = Text.join "" ["SELECT ", Text.join ", " (groupSelectTerms cols keyExpr), " FROM ", sk.text, " GROUP BY ", keyExpr, h.text, " ORDER BY ", keyExpr], binds = sk.binds ++ h.binds, next = h.next }
+                        _ -> emptyRender n
+                _ -> emptyRender n
+        _ -> emptyRender n
+
+fn groupSelectTerms (cols: List (Text, Text, Text, Bool)) (keyExpr: Text) -> List Text =
+    match cols
+        []                                  -> []
+        (alias, func, col, isRight) :: rest -> groupSelectTerm alias func col isRight keyExpr :: groupSelectTerms rest keyExpr
+
+fn groupSelectTerm (alias: Text) (func: Text) (col: Text) (isRight: Bool) (keyExpr: Text) -> Text =
+    if func == "KEY" then Text.join "" [keyExpr, " AS ", quoteIdent alias]
+    else if func == "COUNT" then Text.join "" ["COUNT(*) AS ", quoteIdent alias]
+    else Text.join "" [aggExprJoin func isRight col, " AS ", quoteIdent alias]
+
+-- A join HAVING fragment, with the leading ` HAVING ` folded in — empty for the
+-- always-true default, so the clause is omitted. Structurally a predicate, but its
+-- operands are group aggregates (`COUNT(*)`, `SUM(col)`, …) and the side-qualified
+-- group key rather than plain columns; Postgres rejects an output alias in HAVING, so
+-- each aggregate is re-rendered from its node.
+fn renderHaving (having: QExpr) (keySide: Bool) (keyCol: Text) (n: Int) -> { text: Text, binds: List SqlValue, next: Int } =
+    match having
+        QLitBool b -> if b then { text = "", binds = [], next = n } else havingClause having keySide keyCol n
+        _          -> havingClause having keySide keyCol n
+
+fn havingClause (having: QExpr) (keySide: Bool) (keyCol: Text) (n: Int) -> { text: Text, binds: List SqlValue, next: Int } =
+    let h = renderHavingExpr having keySide keyCol n
+    { text = Text.concat " HAVING " h.text, binds = h.binds, next = h.next }
+
+fn renderHavingExpr (e: QExpr) (keySide: Bool) (keyCol: Text) (n: Int) -> { text: Text, binds: List SqlValue, next: Int } =
+    match e
+        QAnd l r -> havingBin l " AND " r keySide keyCol n
+        QOr l r  -> havingBin l " OR " r keySide keyCol n
+        QNot x   ->
+            let r = renderHavingExpr x keySide keyCol n
+            { text = Text.join "" ["(NOT ", r.text, ")"], binds = r.binds, next = r.next }
+        QEq l r -> havingCmp l " = " r keySide keyCol n
+        QNe l r -> havingCmp l " <> " r keySide keyCol n
+        QLt l r -> havingCmp l " < " r keySide keyCol n
+        QGt l r -> havingCmp l " > " r keySide keyCol n
+        QLe l r -> havingCmp l " <= " r keySide keyCol n
+        QGe l r -> havingCmp l " >= " r keySide keyCol n
+        _       -> renderHavingOperand e keySide keyCol n
+
+fn havingCmp (l: QExpr) (op: Text) (r: QExpr) (keySide: Bool) (keyCol: Text) (n: Int) -> { text: Text, binds: List SqlValue, next: Int } =
+    let lr = renderHavingOperand l keySide keyCol n
+    let rr = renderHavingOperand r keySide keyCol lr.next
+    { text = Text.join "" [lr.text, op, rr.text], binds = lr.binds ++ rr.binds, next = rr.next }
+
+fn havingBin (l: QExpr) (op: Text) (r: QExpr) (keySide: Bool) (keyCol: Text) (n: Int) -> { text: Text, binds: List SqlValue, next: Int } =
+    let lr = renderHavingExpr l keySide keyCol n
+    let rr = renderHavingExpr r keySide keyCol lr.next
+    { text = Text.join "" ["(", lr.text, op, rr.text, ")"], binds = lr.binds ++ rr.binds, next = rr.next }
+
+fn renderHavingOperand (e: QExpr) (keySide: Bool) (keyCol: Text) (n: Int) -> { text: Text, binds: List SqlValue, next: Int } =
+    match e
+        QAggCount    -> { text = "COUNT(*)", binds = [], next = n }
+        QGroupKey    -> { text = renderColRef true keySide keyCol, binds = [], next = n }
+        QAggSum node -> { text = aggExprNode "SUM" node, binds = [], next = n }
+        QAggAvg node -> { text = aggExprNode "AVG" node, binds = [], next = n }
+        QAggMin node -> { text = aggExprNode "MIN" node, binds = [], next = n }
+        QAggMax node -> { text = aggExprNode "MAX" node, binds = [], next = n }
+        QLitInt v    -> { text = placeholder n, binds = [sqlInt v], next = n + 1 }
+        QLitText v   -> { text = placeholder n, binds = [sqlText v], next = n + 1 }
+        QLitBool v   -> { text = placeholder n, binds = [sqlBool v], next = n + 1 }
+        QLitFloat v  -> { text = placeholder n, binds = [sqlFloat v], next = n + 1 }
+        _            -> { text = "NULL", binds = [], next = n }
+
+fn aggExprNode (func: Text) (node: QExpr) -> Text =
+    match node
+        QCol c  -> aggExprJoin func false c
+        QColR c -> aggExprJoin func true c
+        _       -> "NULL"

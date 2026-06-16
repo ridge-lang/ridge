@@ -1563,6 +1563,10 @@ mod tests {
                             | "planProject"
                             | "planAggregate"
                             | "planGroup"
+                            // `planToSql` takes the reconciled `QueryPlan`, so its
+                            // scheme is seeded via `reconciled_query_plan_fn_scheme`,
+                            // not this hand-curated table.
+                            | "planToSql"
                     )
                 {
                     continue;

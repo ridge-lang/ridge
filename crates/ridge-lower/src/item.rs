@@ -4519,10 +4519,42 @@ fn build_from_sql_call(ctx: &mut LowerCtx<'_>, type_tag: &str, sv: IrExpr, sp: S
     }
 }
 
-/// Lower a derived `Row` instance: emit the `fromRow` and `toRow` method fns and
-/// the `$inst_Row_{Type}` dict that carries both. `Row` is the only structurally
-/// derived class with more than one method, so it has its own builder rather than
-/// the single-method path that follows it in [`lower_derived_instance`].
+/// Push one synthesized `Row` method fn (a single param, pure, untyped scheme)
+/// onto `items`. The three `Row` methods differ only in name, parameter, and body,
+/// so they share this boilerplate.
+fn push_row_method(
+    ctx: &LowerCtx<'_>,
+    items: &mut Vec<IrItem>,
+    name: String,
+    param_name: &str,
+    body: IrExpr,
+    sp: Span,
+) {
+    items.push(IrItem::Fn(IrFn {
+        name,
+        module: ctx.module_id,
+        params: vec![IrParam {
+            name: param_name.to_string(),
+            ty: Type::Error,
+            span: sp,
+        }],
+        ret_ty: Type::Error,
+        caps: ridge_types::CapabilitySet::PURE,
+        scheme: Scheme::mono(Type::Error),
+        body,
+        origin: NodeId(0),
+        span: sp,
+        is_pub: false,
+        is_main: false,
+        doc: None,
+    }));
+}
+
+/// Lower a derived `Row` instance: emit the `fromRow`, `toRow`, and `rowColumns`
+/// method fns and the `$inst_Row_{Type}` dict that carries all three. `Row` is the
+/// only structurally derived class with more than one method, so it has its own
+/// builder rather than the single-method path that follows it in
+/// [`lower_derived_instance`].
 fn build_row_instance(
     ctx: &mut LowerCtx<'_>,
     tycon: ridge_types::TyConId,
@@ -4547,47 +4579,13 @@ fn build_row_instance(
         sp,
     );
     let from_fn_name = format!("Row__{type_name}__fromRow");
-    items.push(IrItem::Fn(IrFn {
-        name: from_fn_name.clone(),
-        module: ctx.module_id,
-        params: vec![IrParam {
-            name: "r".to_string(),
-            ty: Type::Error,
-            span: sp,
-        }],
-        ret_ty: Type::Error,
-        caps: ridge_types::CapabilitySet::PURE,
-        scheme: Scheme::mono(Type::Error),
-        body: from_body,
-        origin: NodeId(0),
-        span: sp,
-        is_pub: false,
-        is_main: false,
-        doc: None,
-    }));
+    push_row_method(ctx, &mut items, from_fn_name.clone(), "r", from_body, sp);
 
     // toRow (x: T) -> Map Text SqlValue
     let to_body =
         build_to_row_record_body(ctx, field_names, columns, field_type_names, optionals, sp);
     let to_fn_name = format!("Row__{type_name}__toRow");
-    items.push(IrItem::Fn(IrFn {
-        name: to_fn_name.clone(),
-        module: ctx.module_id,
-        params: vec![IrParam {
-            name: "x".to_string(),
-            ty: Type::Error,
-            span: sp,
-        }],
-        ret_ty: Type::Error,
-        caps: ridge_types::CapabilitySet::PURE,
-        scheme: Scheme::mono(Type::Error),
-        body: to_body,
-        origin: NodeId(0),
-        span: sp,
-        is_pub: false,
-        is_main: false,
-        doc: None,
-    }));
+    push_row_method(ctx, &mut items, to_fn_name.clone(), "x", to_body, sp);
 
     // rowColumns (w: Option T) -> List Text — a literal list of the snake-cased
     // column names in declaration order. The witness `w` is ignored; only its type
@@ -4605,24 +4603,7 @@ fn build_row_instance(
         span: sp,
     };
     let cols_fn_name = format!("Row__{type_name}__rowColumns");
-    items.push(IrItem::Fn(IrFn {
-        name: cols_fn_name.clone(),
-        module: ctx.module_id,
-        params: vec![IrParam {
-            name: "w".to_string(),
-            ty: Type::Error,
-            span: sp,
-        }],
-        ret_ty: Type::Error,
-        caps: ridge_types::CapabilitySet::PURE,
-        scheme: Scheme::mono(Type::Error),
-        body: cols_body,
-        origin: NodeId(0),
-        span: sp,
-        is_pub: false,
-        is_main: false,
-        doc: None,
-    }));
+    push_row_method(ctx, &mut items, cols_fn_name.clone(), "w", cols_body, sp);
 
     // $inst_Row_{Type} = #{ 'fromRow' => fun fromRowFn, 'toRow' => fun toRowFn,
     //                       'rowColumns' => fun rowColumnsFn }

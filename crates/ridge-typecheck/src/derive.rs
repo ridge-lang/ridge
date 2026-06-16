@@ -420,14 +420,16 @@ pub fn derive_instances(
             match generate_row(&type_decl.body, &type_decl.name, span) {
                 Err(e) => errors.push(e),
                 Ok(body) => {
-                    // `Row` is a two-method class: `fromRow` decodes a row and
-                    // `toRow` encodes one. The derived instance provides both,
-                    // built from the same field layout (see `generate_row`).
+                    // `Row` is a three-method class: `fromRow` decodes a row,
+                    // `toRow` encodes one, and `rowColumns` names the columns. The
+                    // derived instance provides all three, built from the same field
+                    // layout (see `generate_row`).
                     let info = InstanceInfo {
                         def_module: Some(module_id),
                         methods: vec![
                             ("fromRow".to_string(), String::new()),
                             ("toRow".to_string(), String::new()),
+                            ("rowColumns".to_string(), String::new()),
                         ],
                         ctx_constraints: vec![],
                         head_var_positions: vec![],

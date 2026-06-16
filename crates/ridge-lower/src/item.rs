@@ -4589,7 +4589,43 @@ fn build_row_instance(
         doc: None,
     }));
 
-    // $inst_Row_{Type} = #{ 'fromRow' => fun fromRowFn, 'toRow' => fun toRowFn }
+    // rowColumns (w: Option T) -> List Text — a literal list of the snake-cased
+    // column names in declaration order. The witness `w` is ignored; only its type
+    // selected this instance.
+    let cols_body = IrExpr::ListLit {
+        id: ctx.fresh_id(None),
+        elems: columns
+            .iter()
+            .map(|c| IrExpr::Lit {
+                id: ctx.fresh_id(None),
+                value: IrLit::Text(c.clone()),
+                span: sp,
+            })
+            .collect(),
+        span: sp,
+    };
+    let cols_fn_name = format!("Row__{type_name}__rowColumns");
+    items.push(IrItem::Fn(IrFn {
+        name: cols_fn_name.clone(),
+        module: ctx.module_id,
+        params: vec![IrParam {
+            name: "w".to_string(),
+            ty: Type::Error,
+            span: sp,
+        }],
+        ret_ty: Type::Error,
+        caps: ridge_types::CapabilitySet::PURE,
+        scheme: Scheme::mono(Type::Error),
+        body: cols_body,
+        origin: NodeId(0),
+        span: sp,
+        is_pub: false,
+        is_main: false,
+        doc: None,
+    }));
+
+    // $inst_Row_{Type} = #{ 'fromRow' => fun fromRowFn, 'toRow' => fun toRowFn,
+    //                       'rowColumns' => fun rowColumnsFn }
     let dict_name = format!("$inst_Row_{type_name}");
     let dict_value = IrExpr::Construct {
         id: ctx.fresh_id(None),
@@ -4617,6 +4653,17 @@ fn build_row_instance(
                     id: ctx.fresh_id(None),
                     sym: SymbolRef::Local {
                         name: to_fn_name,
+                        module: ctx.module_id,
+                    },
+                    span: sp,
+                },
+            ),
+            (
+                "rowColumns".to_string(),
+                IrExpr::Symbol {
+                    id: ctx.fresh_id(None),
+                    sym: SymbolRef::Local {
+                        name: cols_fn_name,
                         module: ctx.module_id,
                     },
                     span: sp,

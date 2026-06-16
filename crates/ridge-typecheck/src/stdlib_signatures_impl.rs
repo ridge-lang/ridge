@@ -1512,13 +1512,21 @@ mod tests {
         for module in BUILTINS {
             for &name in module.exports {
                 // std.sql's `SqlType`/`Row` classes, their methods (`toSql`/
-                // `fromSql`/`fromRow`/`toRow`, seeded via `seed_sql_codec_schemes`
-                // rather than this signature table), and the opaque `SqlValue` type
-                // are not value schemes, so they have no `stdlib_signature` entry.
+                // `fromSql`/`fromRow`/`toRow`/`rowColumns`, seeded via
+                // `seed_sql_codec_schemes` rather than this signature table), and the
+                // opaque `SqlValue` type are not value schemes, so they have no
+                // `stdlib_signature` entry.
                 if module.name == "std.sql"
                     && matches!(
                         name,
-                        "SqlValue" | "SqlType" | "toSql" | "fromSql" | "Row" | "fromRow" | "toRow"
+                        "SqlValue"
+                            | "SqlType"
+                            | "toSql"
+                            | "fromSql"
+                            | "Row"
+                            | "fromRow"
+                            | "toRow"
+                            | "rowColumns"
                     )
                 {
                     continue;

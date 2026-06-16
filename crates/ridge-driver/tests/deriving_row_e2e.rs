@@ -31,7 +31,7 @@ use ridge_driver::{compile_workspace, CompileOptions, EmitArtefacts};
 /// value in the `id` column, so the `Int` field's `fromSql` fails and `fromRow`
 /// returns `Err` — the `badId` sentinel catches it.
 const SOURCE: &str = r#"
-import std.sql (toSql, fromRow, SqlValue)
+import std.sql (toSql, fromRow, rowColumns, SqlValue)
 import std.map as Map
 
 -- `nick` is a nullable column: a NULL or a missing column decodes to `None`.
@@ -94,6 +94,19 @@ pub fn nickNull () -> Text =
 -- nick column absent -> None.
 pub fn nickMissing () -> Text =
     nickOf (Map.fromList [("id", toSql 7), ("name", toSql "ada"), ("created_at", toSql 1000)])
+
+-- A phantom `Option User` witness for rowColumns: its value is ignored, its type
+-- selects the `Row User` instance. `rowColumns` answers the columns from the type
+-- alone, with no row to read them off.
+fn userWitness () -> Option User =
+    let w: Option User = None
+    w
+
+-- The snake-cased column names rowColumns reports, joined for printing. Proves the
+-- derived `rowColumns` runs on the BEAM and lists the columns in declaration order
+-- (with `createdAt` mapped to `created_at`).
+pub fn columns () -> Text =
+    Text.join "," (rowColumns (userWitness ()))
 "#;
 
 // ── Workspace setup ───────────────────────────────────────────────────────────
@@ -177,6 +190,7 @@ fn deriving_row_decodes_record_on_beam() {
          io:format(\"nickPresent=~s~n\",[{module}:nickPresent()]), \
          io:format(\"nickNull=~s~n\",[{module}:nickNull()]), \
          io:format(\"nickMissing=~s~n\",[{module}:nickMissing()]), \
+         io:format(\"cols=~s~n\",[{module}:columns()]), \
          halt()."
     );
     let output = Command::new("erl")
@@ -224,5 +238,11 @@ fn deriving_row_decodes_record_on_beam() {
     assert!(
         stdout.contains("nickMissing=-"),
         "expected `nickMissing=-` — Option field decode of a missing column failed\nstdout:\n{stdout}\nstderr:\n{stderr}"
+    );
+    // `rowColumns` names the columns from the type alone, in declaration order, with
+    // `createdAt` mapped to its snake_cased `created_at` column.
+    assert!(
+        stdout.contains("cols=id,name,created_at,nick"),
+        "expected `cols=id,name,created_at,nick` — rowColumns column list wrong\nstdout:\n{stdout}\nstderr:\n{stderr}"
     );
 }

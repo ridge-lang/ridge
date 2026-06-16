@@ -1764,6 +1764,28 @@ fn seed_sql_codec_schemes(
                 constraints: vec![Constraint::single(row, a)],
             },
         );
+        // rowColumns :: ∀a. Option a -> List Text where Row a — the record's
+        // column names, keyed only by the type. The `Option a` argument is a
+        // phantom witness (its value is ignored); it carries `a` so the instance
+        // resolves, since the `List Text` result mentions no `a` and would
+        // otherwise be ambiguous. Seeded alongside the codec methods so bare
+        // `rowColumns` calls type-check once std.sql is imported.
+        let a = ctx.fresh_tyvid();
+        let row_cols_ty = Type::Fn {
+            params: vec![Type::Con(b.option, vec![Type::Var(a)])],
+            ret: Box::new(Type::Con(b.list, vec![Type::Con(b.text, vec![])])),
+            caps: CapRow::Concrete(CapabilitySet::PURE),
+        };
+        ctx.env.bind(
+            "rowColumns".to_owned(),
+            Scheme {
+                vars: vec![a],
+                cap_vars: vec![],
+                row_vars: vec![],
+                ty: row_cols_ty,
+                constraints: vec![Constraint::single(row, a)],
+            },
+        );
     }
     // The `Adapter` seam from std.data. Both methods are cap-free: opening an
     // adapter is the act gated by `db`, and the handle is the proof of access

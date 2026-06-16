@@ -360,16 +360,28 @@ const BASELINE_EXPORTS: &[(&str, &[&str])] = &[
         &[
             // The opaque SQL column value plus the SqlType codec class and its
             // methods, all importable from user code.
-            "SqlValue", "SqlType", "toSql", "fromSql",
+            "SqlValue",
+            "SqlType",
+            "toSql",
+            "fromSql",
             // The Row codec class and its methods (`deriving (Row)` generates the
             // instances). `fromRow` maps a `Map Text SqlValue` row back to a
-            // record; `toRow` encodes a record into a row to write.
-            "Row", "fromRow", "toRow",
+            // record; `toRow` encodes a record into a row to write; `rowColumns`
+            // names the columns from the type alone (a phantom `Option a` witness).
+            "Row",
+            "fromRow",
+            "toRow",
+            "rowColumns",
             // Monomorphic SqlValue factories (the variants stay opaque).
-            "sqlInt", "sqlText", "sqlBool", "sqlFloat",
+            "sqlInt",
+            "sqlText",
+            "sqlBool",
+            "sqlFloat",
             // The safe SQL statement-text wrapper, its factory, and accessor —
             // a data-layer concern, declared in sql.ridge.
-            "Sql", "sql", "sqlValue",
+            "Sql",
+            "sql",
+            "sqlValue",
         ],
     ),
     (

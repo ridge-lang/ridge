@@ -1658,10 +1658,8 @@ fn seed_prelude_codec_schemes(ctx: &mut crate::ctx::InferCtx, b: &ridge_types::B
 /// - `fromSql :: ∀a. SqlValue -> Result a Error  where SqlType a`
 #[expect(
     clippy::too_many_lines,
-    clippy::many_single_char_names,
-    reason = "one flat block per stdlib codec/seam method (toSql/fromSql/fromRow/insert/all/join); \
-              splitting per method would scatter the shared builtin-type setup, and the single-letter \
-              locals mirror the type variables (a, e, c, p, r)"
+    reason = "one flat block per stdlib codec/seam method (toSql/fromSql/fromRow/insert/all/project); \
+              splitting per method would scatter the shared builtin-type setup"
 )]
 fn seed_sql_codec_schemes(
     ctx: &mut crate::ctx::InferCtx,

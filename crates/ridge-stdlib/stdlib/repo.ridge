@@ -21,7 +21,7 @@
 
 import std.data as Db
 import std.sql (SqlValue)
-import std.query (SortOrder, ascending)
+import std.query (SortOrder, ascending, QueryPlan, planScan, planCombine, planRefine)
 import std.map (fromList)
 
 -- A repository: entity `e` stored in `table` through adapter `a`. Opaque, so it
@@ -88,24 +88,10 @@ fn keepAll2 (_u: Unit) -> Quote (Map Text SqlValue -> Map Text SqlValue -> Bool)
 @ffi("ridge_rt", "quote_and", 2)
 fn quoteAnd2 (a: Quote (Map Text SqlValue -> Map Text SqlValue -> Bool)) (b: Quote p) -> Quote (Map Text SqlValue -> Map Text SqlValue -> Bool)
 
--- A query plan is a small captured tree the set-operation terminals run, the same
--- way a predicate is a captured tree the filter verbs run. It rides the `QExpr`
--- type — a plan node cannot be written in Ridge source any more than a `QExpr`
--- literal can, so the three node builders assemble it on the Erlang side and a
--- backend's `runPlan` interprets it (the in-memory store) or compiles it to nested
--- SQL (Postgres). `planScan` is a single-table read with its filter, ordering,
--- page, and distinct folded in — the plan form of a `fetch`. `planCombine` joins
--- two plans with a set operation (`op` is `UNION`/`UNION ALL`/`INTERSECT`/`EXCEPT`).
--- `planRefine` applies an outer filter, ordering, page, and distinct on top of a
--- plan's result — the wrapper a combined query's own builder steps compile to.
-@ffi("ridge_rt", "plan_scan", 6)
-fn planScan (table: Text) (pred: QExpr) (orders: List (Bool, Text)) (lim: Int) (off: Int) (dist: Bool) -> QExpr
-
-@ffi("ridge_rt", "plan_combine", 3)
-fn planCombine (op: Text) (left: QExpr) (right: QExpr) -> QExpr
-
-@ffi("ridge_rt", "plan_refine", 6)
-fn planRefine (inner: QExpr) (pred: QExpr) (orders: List (Bool, Text)) (lim: Int) (off: Int) (dist: Bool) -> QExpr
+-- The set-operation plan a query runs is built from `std.query`'s `planScan`/
+-- `planCombine`/`planRefine` over the typed `QueryPlan` tree, threaded through the
+-- builder's `plan` field and handed to a backend's `runPlan` — which interprets it
+-- (the in-memory store) or compiles it to nested SQL (Postgres).
 
 -- Every row of the table, decoded into entities.
 pub fn all (r: Repo e a) -> Result (List e) Error where Adapter a, Row e =
@@ -281,7 +267,7 @@ pub fn withConnection (conn: a) (body: fn a -> Result r Error) -> Result r Error
 -- query plan the terminal runs in place of the single-table fetch, and the outer
 -- fields (filter, ordering, page, distinct) then apply on top of the combined
 -- result.
-pub opaque type Query e a = { repo: Repo e a, pred: Quote (Map Text SqlValue -> Bool), orders: List (Bool, Text), lim: Int, off: Int, dist: Bool, plan: Option QExpr }
+pub opaque type Query e a = { repo: Repo e a, pred: Quote (Map Text SqlValue -> Bool), orders: List (Bool, Text), lim: Int, off: Int, dist: Bool, plan: Option QueryPlan }
 
 -- Start a query over a repository: every row, unordered, unpaged.
 pub fn query (r: Repo e a) -> Query e a =
@@ -454,7 +440,7 @@ fn queryRows (q: Query e a) -> Result (List (Map Text SqlValue)) Error where Ada
 -- distinct on top of the combined result. A branch is captured this way, so
 -- combining a combined query nests the plans — `(a ∪ b) ∪ c` runs as nested
 -- operations.
-fn planOf (q: Query e a) -> QExpr =
+fn planOf (q: Query e a) -> QueryPlan =
     match q.plan
         None   -> planScan q.repo.table q.pred.tree q.orders q.lim q.off q.dist
         Some p -> planRefine p q.pred.tree q.orders q.lim q.off q.dist

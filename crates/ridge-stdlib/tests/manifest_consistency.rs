@@ -106,7 +106,15 @@ fn is_prelude_reexport(module: &str, sym: &str) -> bool {
 /// so the manifest→source direction needs these listed explicitly. A future
 /// pub-type-constructor export mechanism in the resolver will derive them from
 /// source and retire this list (the same trajectory as `PRELUDE_REEXPORTS`).
-const CONSTRUCTOR_EXPORTS: &[(&str, &str)] = &[("std.query", "Asc"), ("std.query", "Desc")];
+const CONSTRUCTOR_EXPORTS: &[(&str, &str)] = &[
+    ("std.query", "Asc"),
+    ("std.query", "Desc"),
+    // The `QueryPlan` variants: exported so the set-operation terminals can build a
+    // plan, but surfaced by text extraction only through the type name `QueryPlan`.
+    ("std.query", "PlanScan"),
+    ("std.query", "PlanCombine"),
+    ("std.query", "PlanRefine"),
+];
 
 /// Return `true` if `(module, sym)` is a known exported union constructor that is
 /// legitimately in the manifest but not surfaced by text extraction.
@@ -246,7 +254,12 @@ fn signature_shape_consistency() {
             // std.query `orderSql`/`ascending` reference the reconciled `SortOrder`
             // type, so they are seeded via `reconciled_fn_scheme` rather than the
             // `stdlib_signature` table this shape check covers.
-            if dotted == "std.query" && matches!(*fn_name, "orderSql" | "ascending") {
+            if dotted == "std.query"
+                && matches!(
+                    *fn_name,
+                    "orderSql" | "ascending" | "planScan" | "planCombine" | "planRefine"
+                )
+            {
                 continue;
             }
             // std.data `memAdapter`/`connect` return reconciled types

@@ -24,6 +24,36 @@ pub fn ascending (dir: SortOrder) -> Bool =
         Asc  -> true
         Desc -> false
 
+-- A query plan: the captured tree the set-operation terminals run, the dual at the
+-- plan layer of what `QExpr` is at the predicate layer. A plan node is an ordinary
+-- Ridge value, built here and threaded through the query builder; a backend then
+-- interprets it (the in-memory store walks the tree) or compiles it to nested SQL
+-- (Postgres). Declared in this module, where the `QExpr` compiler lives, so the
+-- renderer that turns a plan into SQL sits beside the predicate compiler it reuses.
+--
+-- `PlanScan` is a single-table read with its filter, ordering, page, and distinct
+-- folded in — the plan form of a `fetch`: the table, its filter tree, the ordering
+-- keys, the limit (negative for none) and offset (non-positive for none), and the
+-- distinct flag. `PlanCombine` joins two plans with a set operation — `op` is the
+-- SQL keyword `UNION`/`UNION ALL`/`INTERSECT`/`EXCEPT`. `PlanRefine` re-applies an
+-- outer filter, ordering, page, and distinct on top of a plan's result — the
+-- wrapper a combined query's own builder steps compile to. A combined query nests
+-- the plans, so `(a ∪ b) ∪ c` runs as nested operations.
+pub type QueryPlan = PlanScan Text QExpr (List (Bool, Text)) Int Int Bool | PlanCombine Text QueryPlan QueryPlan | PlanRefine QueryPlan QExpr (List (Bool, Text)) Int Int Bool
+
+-- A single-table scan plan — the plan form of `fetch`.
+pub fn planScan (table: Text) (pred: QExpr) (orders: List (Bool, Text)) (lim: Int) (off: Int) (dist: Bool) -> QueryPlan =
+    PlanScan table pred orders lim off dist
+
+-- Combine two plans with a set operation. `op` is the SQL keyword the backend runs.
+pub fn planCombine (op: Text) (left: QueryPlan) (right: QueryPlan) -> QueryPlan =
+    PlanCombine op left right
+
+-- Wrap a plan in an outer filter, ordering, page, and distinct — the refinement a
+-- combined query's own builder steps apply on top of the combination.
+pub fn planRefine (inner: QueryPlan) (pred: QExpr) (orders: List (Bool, Text)) (lim: Int) (off: Int) (dist: Bool) -> QueryPlan =
+    PlanRefine inner pred orders lim off dist
+
 -- Render a captured tree to a readable, SQL-shaped string. Literals show as `?`
 -- placeholders — binding parameters is the SQL-compilation pass's job; this is
 -- here to confirm a quoted body round-trips to a tree.

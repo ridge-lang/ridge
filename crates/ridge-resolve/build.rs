@@ -388,6 +388,16 @@ const BASELINE_EXPORTS: &[(&str, &[&str])] = &[
             "Asc",
             "Desc",
             "ascending",
+            // The query-plan tree, its three constructors, and the builders that
+            // wrap them, declared in query.ridge. The set-operation terminals build a
+            // `QueryPlan` through the builders and hand it to a backend's `runPlan`.
+            "QueryPlan",
+            "PlanScan",
+            "PlanCombine",
+            "PlanRefine",
+            "planScan",
+            "planCombine",
+            "planRefine",
         ],
     ),
     (

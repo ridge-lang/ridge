@@ -274,7 +274,10 @@ fn reconciled_decls(b: &BuiltinTyCons, base: u32) -> Vec<TyConDecl> {
                     },
                     RecordField {
                         name: "plan".to_string(),
-                        ty: Type::Con(b.option, vec![Type::Con(b.q_expr, vec![])]),
+                        // `Option QueryPlan` — the captured set-operation plan, a
+                        // typed `QueryPlan` (TyConId base + 15) declared in
+                        // query.ridge, `None` for a plain single-table query.
+                        ty: Type::Con(b.option, vec![Type::Con(TyConId(base + 15), vec![])]),
                     },
                 ],
             )),
@@ -718,6 +721,69 @@ fn reconciled_decls(b: &BuiltinTyCons, base: u32) -> Vec<TyConDecl> {
             opaque: true,
             is_anon: false,
         },
+        // `std.query` — a captured query plan, the dual at the plan layer of what
+        // `QExpr` is at the predicate layer. A plain (non-opaque) union declared in
+        // Ridge (stdlib/query.ridge): a `PlanScan` single-table read, a `PlanCombine`
+        // set operation over two plans, or a `PlanRefine` wrapping an outer filter/
+        // order/page/distinct on a plan. The set-operation terminals build one through
+        // the `planScan`/`planCombine`/`planRefine` factories and hand it to a
+        // backend's `runPlan`. Variant order mirrors the source.
+        TyConDecl {
+            id: TyConId(base + 15),
+            name: "QueryPlan".to_string(),
+            arity: 0,
+            kind: TyConKind::Union(UnionSchema {
+                params: vec![],
+                variants: vec![
+                    UnionVariant {
+                        name: "PlanScan".to_string(),
+                        kind: VariantPayload::Positional(vec![
+                            Type::Con(b.text, vec![]),
+                            Type::Con(b.q_expr, vec![]),
+                            Type::Con(
+                                b.list,
+                                vec![Type::Tuple(vec![
+                                    Type::Con(b.bool, vec![]),
+                                    Type::Con(b.text, vec![]),
+                                ])],
+                            ),
+                            Type::Con(b.int, vec![]),
+                            Type::Con(b.int, vec![]),
+                            Type::Con(b.bool, vec![]),
+                        ]),
+                    },
+                    UnionVariant {
+                        name: "PlanCombine".to_string(),
+                        kind: VariantPayload::Positional(vec![
+                            Type::Con(b.text, vec![]),
+                            Type::Con(TyConId(base + 15), vec![]),
+                            Type::Con(TyConId(base + 15), vec![]),
+                        ]),
+                    },
+                    UnionVariant {
+                        name: "PlanRefine".to_string(),
+                        kind: VariantPayload::Positional(vec![
+                            Type::Con(TyConId(base + 15), vec![]),
+                            Type::Con(b.q_expr, vec![]),
+                            Type::Con(
+                                b.list,
+                                vec![Type::Tuple(vec![
+                                    Type::Con(b.bool, vec![]),
+                                    Type::Con(b.text, vec![]),
+                                ])],
+                            ),
+                            Type::Con(b.int, vec![]),
+                            Type::Con(b.int, vec![]),
+                            Type::Con(b.bool, vec![]),
+                        ]),
+                    },
+                ],
+            }),
+            def_span: None,
+            def_module_raw: None,
+            opaque: false,
+            is_anon: false,
+        },
     ]
 }
 
@@ -868,9 +934,52 @@ pub(crate) fn reconciled_fn_scheme(
                 constraints: vec![],
             })
         }
+        // std.query `planScan`/`planCombine`/`planRefine` — the `QueryPlan` factories.
+        ("std.query", "planScan" | "planCombine" | "planRefine") => {
+            reconciled_query_plan_fn_scheme(name, reconciled, b)
+        }
         ("std.repo", _) => reconciled_repo_fn_scheme(name, reconciled, b, classes?),
         ("std.migrate", _) => reconciled_migrate_fn_scheme(name, reconciled, b, classes?),
         ("std.raw", _) => reconciled_raw_fn_scheme(name, b, classes?),
+        _ => None,
+    }
+}
+
+/// The `std.query` plan-builder slice of [`reconciled_fn_scheme`]: `planScan`/
+/// `planCombine`/`planRefine`, the factories that build a `QueryPlan` node. Each is
+/// pure and returns the reconciled `QueryPlan`, so none is expressible in the
+/// hand-curated signature table.
+fn reconciled_query_plan_fn_scheme(
+    name: &str,
+    reconciled: &FxHashMap<String, TyConId>,
+    b: &BuiltinTyCons,
+) -> Option<Scheme> {
+    let query_plan = *reconciled.get("QueryPlan")?;
+    let plan = || Type::Con(query_plan, vec![]);
+    let text = || Type::Con(b.text, vec![]);
+    let int = || Type::Con(b.int, vec![]);
+    let bool_ = || Type::Con(b.bool, vec![]);
+    let qexpr = || Type::Con(b.q_expr, vec![]);
+    // The ordering keys: `List (Bool, Text)` — the (ascending?, column) pairs.
+    let orders = || Type::Con(b.list, vec![Type::Tuple(vec![bool_(), text()])]);
+    let pure = |params: Vec<Type>| Scheme {
+        vars: vec![],
+        cap_vars: vec![],
+        row_vars: vec![],
+        ty: Type::Fn {
+            params,
+            ret: Box::new(plan()),
+            caps: CapRow::Concrete(CapabilitySet::PURE),
+        },
+        constraints: vec![],
+    };
+    match name {
+        // planScan : Text -> QExpr -> List (Bool, Text) -> Int -> Int -> Bool -> QueryPlan
+        "planScan" => Some(pure(vec![text(), qexpr(), orders(), int(), int(), bool_()])),
+        // planCombine : Text -> QueryPlan -> QueryPlan -> QueryPlan
+        "planCombine" => Some(pure(vec![text(), plan(), plan()])),
+        // planRefine : QueryPlan -> QExpr -> List (Bool, Text) -> Int -> Int -> Bool -> QueryPlan
+        "planRefine" => Some(pure(vec![plan(), qexpr(), orders(), int(), int(), bool_()])),
         _ => None,
     }
 }

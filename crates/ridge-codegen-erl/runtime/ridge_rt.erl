@@ -45,7 +45,7 @@
     mem_ddl_drop_column/3, mem_ddl_index/5,
     mem_migrations_applied/1, mem_record_migration/2,
     mem_raw_query/3, mem_raw_exec/3,
-    plan_scan/6, plan_combine/3, plan_refine/6, mem_run_plan/2,
+    mem_run_plan/2,
     quote_keep_all/1, quote_and/2,
     mk_error/2,
     escript_main/1
@@ -1099,20 +1099,10 @@ mem_migration_name(Row) ->
 %% interpret or compile it. The tree rides the QExpr term space but is only ever
 %% handled by the plan interpreters, never by mem_pred/compile_where.
 
-%% plan_scan/6 — a single-table read: the rows of Table satisfying Pred, ordered,
-%% deduped (Dist), then paged. The plan form of a fetch.
-plan_scan(Table, Pred, Orders, Lim, Off, Dist) ->
-    {scan, Table, Pred, Orders, Lim, Off, Dist}.
-
-%% plan_combine/3 — a set operation of two plans (Op is <<"UNION">>/<<"UNION ALL">>/
-%% <<"INTERSECT">>/<<"EXCEPT">>).
-plan_combine(Op, Left, Right) ->
-    {combine, Op, Left, Right}.
-
-%% plan_refine/6 — an outer filter, ordering, dedup, and page applied on top of a
-%% plan's result (the wrapper a combined query's own builder steps compile to).
-plan_refine(Inner, Pred, Orders, Lim, Off, Dist) ->
-    {refine, Inner, Pred, Orders, Lim, Off, Dist}.
+%% A query plan is now built in Ridge (std.query's planScan/planCombine/planRefine
+%% over the typed QueryPlan tree) and crosses the FFI as a tagged tuple
+%% ({'PlanScan', …}/{'PlanCombine', …}/{'PlanRefine', …}); mem_eval_plan/3
+%% interprets those tags directly, so no Erlang-side plan builders are needed.
 
 %% mem_run_plan/2 — interpret a query plan against the in-memory store and return
 %% the combined rows. Result (List Row) Error.
@@ -1534,15 +1524,15 @@ mem_distinct(true, Rows) ->
 %% scan reads one table (filter, order, dedup, page); a combine evaluates both
 %% branches and applies the set operation; a refine applies an outer filter, order,
 %% dedup, and page on a plan's result. Nested combines recurse.
-mem_eval_plan(State, Id, {scan, Table, Pred, Orders, Lim, Off, Dist}) ->
+mem_eval_plan(State, Id, {'PlanScan', Table, Pred, Orders, Lim, Off, Dist}) ->
     Rows = maps:get({Id, Table}, State, []),
     Matches = [R || R <- Rows, mem_pred(Pred, R)],
     mem_paginate(mem_distinct(Dist, mem_order(Orders, Matches)), Lim, Off);
-mem_eval_plan(State, Id, {combine, Op, Left, Right}) ->
+mem_eval_plan(State, Id, {'PlanCombine', Op, Left, Right}) ->
     L = mem_eval_plan(State, Id, Left),
     R = mem_eval_plan(State, Id, Right),
     mem_set_op(Op, L, R);
-mem_eval_plan(State, Id, {refine, Inner, Pred, Orders, Lim, Off, Dist}) ->
+mem_eval_plan(State, Id, {'PlanRefine', Inner, Pred, Orders, Lim, Off, Dist}) ->
     Rows = mem_eval_plan(State, Id, Inner),
     Matches = [R || R <- Rows, mem_pred(Pred, R)],
     mem_paginate(mem_distinct(Dist, mem_order(Orders, Matches)), Lim, Off).

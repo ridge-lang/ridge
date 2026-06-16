@@ -1502,6 +1502,10 @@ mod tests {
     ///
     /// This is the `DoD` requirement from §10 T3 / §3.4 of the plan.
     #[test]
+    #[expect(
+        clippy::too_many_lines,
+        reason = "one skip-guard block per reconciled stdlib module; the guards read best kept together"
+    )]
     fn every_builtins_export_resolves_to_some_scheme() {
         let b = builtins();
         let mut missing: Vec<(&str, &str)> = Vec::new();
@@ -1525,7 +1529,25 @@ mod tests {
                 // is a function whose signature references `SortOrder`, so it is
                 // seeded via `reconciled_fn_scheme` rather than this table.
                 if module.name == "std.query"
-                    && matches!(name, "SortOrder" | "Asc" | "Desc" | "orderSql" | "ascending")
+                    && matches!(
+                        name,
+                        "SortOrder"
+                            | "Asc"
+                            | "Desc"
+                            | "orderSql"
+                            | "ascending"
+                            // The reconciled `QueryPlan` tree, its constructors, and
+                            // its builders are seeded via `reconciled_decls` /
+                            // `reconciled_ctor_scheme` / `reconciled_fn_scheme`, not
+                            // this hand-curated table.
+                            | "QueryPlan"
+                            | "PlanScan"
+                            | "PlanCombine"
+                            | "PlanRefine"
+                            | "planScan"
+                            | "planCombine"
+                            | "planRefine"
+                    )
                 {
                     continue;
                 }

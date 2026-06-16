@@ -25,6 +25,7 @@
 -- every call site that threads the handle.
 
 import std.sql (SqlValue)
+import std.query (QueryPlan)
 
 -- The storage seam. `a` is the connection-handle type; each backend provides an
 -- instance. `appendRow` appends a row; `all` returns every row of a table;
@@ -140,7 +141,7 @@ pub class Adapter a =
     aggregateFullJoin (conn: a) (leftTable: Text) (rightTable: Text) (cond: Quote (Map Text SqlValue -> Map Text SqlValue -> Bool)) (where2: Quote (Map Text SqlValue -> Map Text SqlValue -> Bool)) (pred: Quote (Map Text SqlValue -> Bool)) (func: Text) (column: Text) (isRight: Bool) -> Result (Option SqlValue) Error
     countFullJoin (conn: a) (leftTable: Text) (rightTable: Text) (cond: Quote (Map Text SqlValue -> Map Text SqlValue -> Bool)) (where2: Quote (Map Text SqlValue -> Map Text SqlValue -> Bool)) (pred: Quote (Map Text SqlValue -> Bool)) -> Result Int Error
     groupSummarizeFullJoin (conn: a) (leftTable: Text) (rightTable: Text) (cond: Quote (Map Text SqlValue -> Map Text SqlValue -> Bool)) (where2: Quote (Map Text SqlValue -> Map Text SqlValue -> Bool)) (pred: Quote (Map Text SqlValue -> Bool)) (keyCol: Text) (keySide: Bool) (cols: List (Text, Text, Text, Bool)) (having: QExpr) -> Result (List (Map Text SqlValue)) Error
-    runPlan (conn: a) (plan: QExpr) -> Result (List (Map Text SqlValue)) Error
+    runPlan (conn: a) (plan: QueryPlan) -> Result (List (Map Text SqlValue)) Error
     begin    (conn: a) -> Result Unit Error
     commit   (conn: a) -> Result Unit Error
     rollback (conn: a) -> Result Unit Error
@@ -336,7 +337,7 @@ fn _memGroupSummarizeFullJoin (id: Int) (leftTable: Text) (rightTable: Text) (co
 -- interpreting each `planScan`/`planCombine`/`planRefine` node, and return the
 -- combined rows.
 @ffi("ridge_rt", "mem_run_plan", 2)
-fn _memRunPlan (id: Int) (plan: QExpr) -> Result (List (Map Text SqlValue)) Error
+fn _memRunPlan (id: Int) (plan: QueryPlan) -> Result (List (Map Text SqlValue)) Error
 
 -- Open a transaction on the store identified by `id` — snapshot its tables onto
 -- a per-store stack. A nested `begin` snapshots again (a savepoint).
@@ -468,7 +469,7 @@ instance Adapter MemAdapter =
         _memCountFullJoin conn.id leftTable rightTable cond.tree where2.tree pred.tree
     groupSummarizeFullJoin (conn: MemAdapter) (leftTable: Text) (rightTable: Text) (cond: Quote (Map Text SqlValue -> Map Text SqlValue -> Bool)) (where2: Quote (Map Text SqlValue -> Map Text SqlValue -> Bool)) (pred: Quote (Map Text SqlValue -> Bool)) (keyCol: Text) (keySide: Bool) (cols: List (Text, Text, Text, Bool)) (having: QExpr) -> Result (List (Map Text SqlValue)) Error =
         _memGroupSummarizeFullJoin conn.id leftTable rightTable cond.tree where2.tree pred.tree keyCol keySide cols having
-    runPlan (conn: MemAdapter) (plan: QExpr) -> Result (List (Map Text SqlValue)) Error =
+    runPlan (conn: MemAdapter) (plan: QueryPlan) -> Result (List (Map Text SqlValue)) Error =
         _memRunPlan conn.id plan
     begin (conn: MemAdapter) -> Result Unit Error =
         _memBegin conn.id
@@ -688,7 +689,7 @@ fn _pgGroupSummarizeFullJoin (id: Int) (leftTable: Text) (rightTable: Text) (con
 -- `planCombine` a `UNION`/`INTERSECT`/`EXCEPT`, each `planRefine` a wrapping
 -- subquery — and run it on the connection, returning the combined rows.
 @ffi("ridge_pg", "pg_run_plan", 2)
-fn _pgRunPlan (id: Int) (plan: QExpr) -> Result (List (Map Text SqlValue)) Error
+fn _pgRunPlan (id: Int) (plan: QueryPlan) -> Result (List (Map Text SqlValue)) Error
 
 -- Begin a transaction on the connection identified by `id`, pinning one pooled
 -- connection for its span. A nested `begin` issues a `SAVEPOINT` on that same
@@ -822,7 +823,7 @@ instance Adapter Postgres =
         _pgCountFullJoin conn.id leftTable rightTable cond.tree where2.tree pred.tree
     groupSummarizeFullJoin (conn: Postgres) (leftTable: Text) (rightTable: Text) (cond: Quote (Map Text SqlValue -> Map Text SqlValue -> Bool)) (where2: Quote (Map Text SqlValue -> Map Text SqlValue -> Bool)) (pred: Quote (Map Text SqlValue -> Bool)) (keyCol: Text) (keySide: Bool) (cols: List (Text, Text, Text, Bool)) (having: QExpr) -> Result (List (Map Text SqlValue)) Error =
         _pgGroupSummarizeFullJoin conn.id leftTable rightTable cond.tree where2.tree pred.tree keyCol keySide cols having
-    runPlan (conn: Postgres) (plan: QExpr) -> Result (List (Map Text SqlValue)) Error =
+    runPlan (conn: Postgres) (plan: QueryPlan) -> Result (List (Map Text SqlValue)) Error =
         _pgRunPlan conn.id plan
     begin (conn: Postgres) -> Result Unit Error =
         _pgBegin conn.id

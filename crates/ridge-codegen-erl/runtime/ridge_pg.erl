@@ -1565,16 +1565,16 @@ compile_where(Tree) ->
 %% each branch in parentheses around the set-operation keyword; a refine wraps its
 %% inner plan in a subquery and applies an outer WHERE/ORDER/LIMIT/OFFSET. Returns
 %% {Sql, RevBinds, NextN}, matching cw/3's accumulator shape (binds held reversed).
-plan_sql({scan, Table, Pred, Orders, Lim, Off, Dist}, N, B) ->
+plan_sql({'PlanScan', Table, Pred, Orders, Lim, Off, Dist}, N, B) ->
     {Where, B1, N1} = cw(Pred, N, B),
     Sql = ["SELECT ", distinct_kw(Dist), "* FROM ", quote_ident(Table), " WHERE ", Where,
            order_by_clause(Orders), limit_clause(Lim), offset_clause(Off)],
     {Sql, B1, N1};
-plan_sql({combine, Op, Left, Right}, N, B) ->
+plan_sql({'PlanCombine', Op, Left, Right}, N, B) ->
     {LSql, B1, N1} = plan_sql(Left, N, B),
     {RSql, B2, N2} = plan_sql(Right, N1, B1),
     {["(", LSql, ") ", Op, " (", RSql, ")"], B2, N2};
-plan_sql({refine, Inner, Pred, Orders, Lim, Off, Dist}, N, B) ->
+plan_sql({'PlanRefine', Inner, Pred, Orders, Lim, Off, Dist}, N, B) ->
     {ISql, B1, N1} = plan_sql(Inner, N, B),
     {Where, B2, N2} = cw(Pred, N1, B1),
     Sql = ["SELECT ", distinct_kw(Dist), "* FROM (", ISql, ") AS ridge_sub WHERE ", Where,

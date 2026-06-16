@@ -1038,22 +1038,29 @@ instance Decodable (Query e a) where Adapter a, Row e =
 -- distinct folded in. `lim` is passed explicitly so `first` can run the same plan
 -- with a one-row limit. The decode terminals run it through `runPlan` and decode the
 -- flat, source-prefixed rows.
-fn innerJoinPlan (x: Join e f a) (lim: Int) -> QueryPlan =
-    planJoin "INNER" (planScan x.left.repo.table x.left.pred.tree [] (0 - 1) 0 false) (planScan x.right.table (keepAllTree ()) [] (0 - 1) 0 false) x.cond.tree x.where2.tree x.orders lim x.off x.dist
+-- A phantom `Option e` witness for `rowColumns`, drawn from a repository that already
+-- carries the entity type. `Row.rowColumns` answers an entity's columns from the type
+-- alone but needs a value to fix that type; a `Repo e a` carries `e` in its type, so this
+-- projects out an ignored `Option e` to select the `Row e` instance. The join read
+-- terminals call it on their left and right repositories to spell each side's columns.
+fn entityWitness (_r: Repo e a) -> Option e = None
+
+fn innerJoinPlan (x: Join e f a) (lim: Int) (leftCols: List Text) (rightCols: List Text) -> QueryPlan =
+    planJoin "INNER" (planScan x.left.repo.table x.left.pred.tree [] (0 - 1) 0 false) (planScan x.right.table (keepAllTree ()) [] (0 - 1) 0 false) x.cond.tree x.where2.tree x.orders lim x.off x.dist leftCols rightCols
 
 -- The plan a left/right/full outer-join decode runs: the same shape as
 -- `innerJoinPlan` but with the join `kind` set, so the backend keeps the outer rows.
 -- An unmatched side comes back with its `t0$`/`t1$` columns absent, which the outer
 -- decoders read as `None`. `lim` is explicit so `first` runs the same plan with a
 -- one-row limit.
-fn leftJoinPlan (x: LeftJoin e f a) (lim: Int) -> QueryPlan =
-    planJoin "LEFT" (planScan x.left.repo.table x.left.pred.tree [] (0 - 1) 0 false) (planScan x.right.table (keepAllTree ()) [] (0 - 1) 0 false) x.cond.tree x.where2.tree x.orders lim x.off x.dist
+fn leftJoinPlan (x: LeftJoin e f a) (lim: Int) (leftCols: List Text) (rightCols: List Text) -> QueryPlan =
+    planJoin "LEFT" (planScan x.left.repo.table x.left.pred.tree [] (0 - 1) 0 false) (planScan x.right.table (keepAllTree ()) [] (0 - 1) 0 false) x.cond.tree x.where2.tree x.orders lim x.off x.dist leftCols rightCols
 
-fn rightJoinPlan (x: RightJoin e f a) (lim: Int) -> QueryPlan =
-    planJoin "RIGHT" (planScan x.left.repo.table x.left.pred.tree [] (0 - 1) 0 false) (planScan x.right.table (keepAllTree ()) [] (0 - 1) 0 false) x.cond.tree x.where2.tree x.orders lim x.off x.dist
+fn rightJoinPlan (x: RightJoin e f a) (lim: Int) (leftCols: List Text) (rightCols: List Text) -> QueryPlan =
+    planJoin "RIGHT" (planScan x.left.repo.table x.left.pred.tree [] (0 - 1) 0 false) (planScan x.right.table (keepAllTree ()) [] (0 - 1) 0 false) x.cond.tree x.where2.tree x.orders lim x.off x.dist leftCols rightCols
 
-fn fullJoinPlan (x: FullJoin e f a) (lim: Int) -> QueryPlan =
-    planJoin "FULL" (planScan x.left.repo.table x.left.pred.tree [] (0 - 1) 0 false) (planScan x.right.table (keepAllTree ()) [] (0 - 1) 0 false) x.cond.tree x.where2.tree x.orders lim x.off x.dist
+fn fullJoinPlan (x: FullJoin e f a) (lim: Int) (leftCols: List Text) (rightCols: List Text) -> QueryPlan =
+    planJoin "FULL" (planScan x.left.repo.table x.left.pred.tree [] (0 - 1) 0 false) (planScan x.right.table (keepAllTree ()) [] (0 - 1) 0 false) x.cond.tree x.where2.tree x.orders lim x.off x.dist leftCols rightCols
 
 -- The query plan an inner-join `select` runs: a `PlanProject` over the all-pairs
 -- join. The inner `PlanJoin` keeps the join's ordering but leaves its page and
@@ -1064,7 +1071,7 @@ fn fullJoinPlan (x: FullJoin e f a) (lim: Int) -> QueryPlan =
 -- flat, source-prefixed join rows. `lim` is passed explicitly so `selectFirst` runs
 -- the same plan with a one-row limit.
 fn innerJoinSelectPlan (x: Join e f a) (proj: QExpr) (lim: Int) -> QueryPlan =
-    planProject proj (planJoin "INNER" (planScan x.left.repo.table x.left.pred.tree [] (0 - 1) 0 false) (planScan x.right.table (keepAllTree ()) [] (0 - 1) 0 false) x.cond.tree x.where2.tree x.orders (0 - 1) 0 false) lim x.off x.dist
+    planProject proj (planJoin "INNER" (planScan x.left.repo.table x.left.pred.tree [] (0 - 1) 0 false) (planScan x.right.table (keepAllTree ()) [] (0 - 1) 0 false) x.cond.tree x.where2.tree x.orders (0 - 1) 0 false [] []) lim x.off x.dist
 
 -- The plan a left/right/full outer-join `select` runs: a `PlanProject` over the
 -- all-rows outer join (its page and distinct deferred to the projection, as for the
@@ -1073,13 +1080,13 @@ fn innerJoinSelectPlan (x: Join e f a) (proj: QExpr) (lim: Int) -> QueryPlan =
 -- projected shape's `Option` fields. `lim` is explicit so `selectFirst` runs with a
 -- one-row limit.
 fn leftJoinSelectPlan (x: LeftJoin e f a) (proj: QExpr) (lim: Int) -> QueryPlan =
-    planProject proj (planJoin "LEFT" (planScan x.left.repo.table x.left.pred.tree [] (0 - 1) 0 false) (planScan x.right.table (keepAllTree ()) [] (0 - 1) 0 false) x.cond.tree x.where2.tree x.orders (0 - 1) 0 false) lim x.off x.dist
+    planProject proj (planJoin "LEFT" (planScan x.left.repo.table x.left.pred.tree [] (0 - 1) 0 false) (planScan x.right.table (keepAllTree ()) [] (0 - 1) 0 false) x.cond.tree x.where2.tree x.orders (0 - 1) 0 false [] []) lim x.off x.dist
 
 fn rightJoinSelectPlan (x: RightJoin e f a) (proj: QExpr) (lim: Int) -> QueryPlan =
-    planProject proj (planJoin "RIGHT" (planScan x.left.repo.table x.left.pred.tree [] (0 - 1) 0 false) (planScan x.right.table (keepAllTree ()) [] (0 - 1) 0 false) x.cond.tree x.where2.tree x.orders (0 - 1) 0 false) lim x.off x.dist
+    planProject proj (planJoin "RIGHT" (planScan x.left.repo.table x.left.pred.tree [] (0 - 1) 0 false) (planScan x.right.table (keepAllTree ()) [] (0 - 1) 0 false) x.cond.tree x.where2.tree x.orders (0 - 1) 0 false [] []) lim x.off x.dist
 
 fn fullJoinSelectPlan (x: FullJoin e f a) (proj: QExpr) (lim: Int) -> QueryPlan =
-    planProject proj (planJoin "FULL" (planScan x.left.repo.table x.left.pred.tree [] (0 - 1) 0 false) (planScan x.right.table (keepAllTree ()) [] (0 - 1) 0 false) x.cond.tree x.where2.tree x.orders (0 - 1) 0 false) lim x.off x.dist
+    planProject proj (planJoin "FULL" (planScan x.left.repo.table x.left.pred.tree [] (0 - 1) 0 false) (planScan x.right.table (keepAllTree ()) [] (0 - 1) 0 false) x.cond.tree x.where2.tree x.orders (0 - 1) 0 false [] []) lim x.off x.dist
 
 -- The base inner-join plan a reduction terminal (`count`, `exists`, a scalar
 -- aggregate) folds over. A reduction measures or folds the matched set rather than a
@@ -1095,7 +1102,7 @@ fn reduceJoin (x: Join e f a) (where2: QExpr) (lim: Int) -> QueryPlan =
 -- types that cannot share a typed helper, so each shape's wrapper unpacks its receiver
 -- and calls this. `lim` bounds it only for `exists`.
 fn reduceJoinOf (kind: Text) (leftTable: Text) (leftPred: QExpr) (rightTable: Text) (cond: QExpr) (where2: QExpr) (lim: Int) -> QueryPlan =
-    planJoin kind (planScan leftTable leftPred [] (0 - 1) 0 false) (planScan rightTable (keepAllTree ()) [] (0 - 1) 0 false) cond where2 [] lim 0 false
+    planJoin kind (planScan leftTable leftPred [] (0 - 1) 0 false) (planScan rightTable (keepAllTree ()) [] (0 - 1) 0 false) cond where2 [] lim 0 false [] []
 
 -- The outer-shape reduction-join wrappers, the duals of `reduceJoin` over a
 -- `LeftJoin`/`RightJoin`/`FullJoin`. The join `kind` keeps the outer rows; an
@@ -1179,11 +1186,11 @@ fn fullScalarPlan (x: FullJoin e f a) (func: Text) (col: Quote p) -> QueryPlan =
 
 instance Decodable (Join e f a) where Adapter a, Row f, Row e =
     toList (x: Join e f a) -> Result (List (e, f)) Error =
-        match runPlan x.left.repo.adapter (innerJoinPlan x x.lim)
+        match runPlan x.left.repo.adapter (innerJoinPlan x x.lim (rowColumns (entityWitness x.left.repo)) (rowColumns (entityWitness x.right)))
             Err err  -> Err err
             Ok rows  -> decodePrefixedPairs rows
     first (x: Join e f a) -> Result (Option (e, f)) Error =
-        match runPlan x.left.repo.adapter (innerJoinPlan x 1)
+        match runPlan x.left.repo.adapter (innerJoinPlan x 1 (rowColumns (entityWitness x.left.repo)) (rowColumns (entityWitness x.right)))
             Err err  -> Err err
             Ok rows  -> firstDecodedPrefixedPair rows
 
@@ -1198,11 +1205,11 @@ instance Decodable (Join e f a) where Adapter a, Row f, Row e =
 -- the forwarded dictionaries land in the right slots.
 instance Decodable (LeftJoin e f a) where Adapter a, Row f, Row e =
     toList (x: LeftJoin e f a) -> Result (List (e, Option f)) Error =
-        match runPlan x.left.repo.adapter (leftJoinPlan x x.lim)
+        match runPlan x.left.repo.adapter (leftJoinPlan x x.lim (rowColumns (entityWitness x.left.repo)) (rowColumns (entityWitness x.right)))
             Err err  -> Err err
             Ok rows  -> decodeLeftPrefixed rows
     first (x: LeftJoin e f a) -> Result (Option (e, Option f)) Error =
-        match runPlan x.left.repo.adapter (leftJoinPlan x 1)
+        match runPlan x.left.repo.adapter (leftJoinPlan x 1 (rowColumns (entityWitness x.left.repo)) (rowColumns (entityWitness x.right)))
             Err err  -> Err err
             Ok rows  -> firstDecodedLeftPrefixed rows
 
@@ -1216,11 +1223,11 @@ instance Decodable (LeftJoin e f a) where Adapter a, Row f, Row e =
 -- forwarded dictionaries land in the right slots.
 instance Decodable (RightJoin e f a) where Adapter a, Row f, Row e =
     toList (x: RightJoin e f a) -> Result (List (Option e, f)) Error =
-        match runPlan x.left.repo.adapter (rightJoinPlan x x.lim)
+        match runPlan x.left.repo.adapter (rightJoinPlan x x.lim (rowColumns (entityWitness x.left.repo)) (rowColumns (entityWitness x.right)))
             Err err  -> Err err
             Ok rows  -> decodeRightPrefixed rows
     first (x: RightJoin e f a) -> Result (Option (Option e, f)) Error =
-        match runPlan x.left.repo.adapter (rightJoinPlan x 1)
+        match runPlan x.left.repo.adapter (rightJoinPlan x 1 (rowColumns (entityWitness x.left.repo)) (rowColumns (entityWitness x.right)))
             Err err  -> Err err
             Ok rows  -> firstDecodedRightPrefixed rows
 
@@ -1235,11 +1242,11 @@ instance Decodable (RightJoin e f a) where Adapter a, Row f, Row e =
 -- forwarded dictionaries land in the right slots.
 instance Decodable (FullJoin e f a) where Adapter a, Row f, Row e =
     toList (x: FullJoin e f a) -> Result (List (Option e, Option f)) Error =
-        match runPlan x.left.repo.adapter (fullJoinPlan x x.lim)
+        match runPlan x.left.repo.adapter (fullJoinPlan x x.lim (rowColumns (entityWitness x.left.repo)) (rowColumns (entityWitness x.right)))
             Err err  -> Err err
             Ok rows  -> decodeFullPrefixed rows
     first (x: FullJoin e f a) -> Result (Option (Option e, Option f)) Error =
-        match runPlan x.left.repo.adapter (fullJoinPlan x 1)
+        match runPlan x.left.repo.adapter (fullJoinPlan x 1 (rowColumns (entityWitness x.left.repo)) (rowColumns (entityWitness x.right)))
             Err err  -> Err err
             Ok rows  -> firstDecodedFullPrefixed rows
 

@@ -777,9 +777,12 @@ fn reconciled_decls(b: &BuiltinTyCons, base: u32) -> Vec<TyConDecl> {
                             Type::Con(b.bool, vec![]),
                         ]),
                     },
-                    // `PlanJoin kind left right cond where2 orders lim off dist` — two
-                    // sub-plans paired on a join. `orders` is the side-tagged
-                    // `(ascending?, isRight?, column)` ordering keys.
+                    // `PlanJoin kind left right cond where2 orders lim off dist leftCols
+                    // rightCols` — two sub-plans paired on a join. `orders` is the
+                    // side-tagged `(ascending?, isRight?, column)` ordering keys;
+                    // `leftCols`/`rightCols` are each source entity's column names (from
+                    // `Row.rowColumns`), spelled into the renderer's prefixed select list
+                    // and ignored by the in-memory backend.
                     UnionVariant {
                         name: "PlanJoin".to_string(),
                         kind: VariantPayload::Positional(vec![
@@ -799,6 +802,8 @@ fn reconciled_decls(b: &BuiltinTyCons, base: u32) -> Vec<TyConDecl> {
                             Type::Con(b.int, vec![]),
                             Type::Con(b.int, vec![]),
                             Type::Con(b.bool, vec![]),
+                            Type::Con(b.list, vec![Type::Con(b.text, vec![])]),
+                            Type::Con(b.list, vec![Type::Con(b.text, vec![])]),
                         ]),
                     },
                     // `PlanProject proj child lim off dist` — project a sub-plan's rows
@@ -1040,6 +1045,8 @@ fn reconciled_query_plan_fn_scheme(
     // The side-tagged join ordering keys: `List (Bool, Bool, Text)` — the
     // (ascending?, isRight?, column) triples.
     let join_orders = || Type::Con(b.list, vec![Type::Tuple(vec![bool_(), bool_(), text()])]);
+    // A `List Text` — a join's per-source column names (`leftCols`/`rightCols`).
+    let text_list = || Type::Con(b.list, vec![text()]);
     // The grouped-aggregate columns: `List (Text, Text, Text, Bool)` — the
     // (alias, func, column, isRight?) quadruples a `GROUP BY` summary projects.
     let group_cols = || {
@@ -1067,7 +1074,8 @@ fn reconciled_query_plan_fn_scheme(
         // planRefine : QueryPlan -> QExpr -> List (Bool, Text) -> Int -> Int -> Bool -> QueryPlan
         "planRefine" => Some(pure(vec![plan(), qexpr(), orders(), int(), int(), bool_()])),
         // planJoin : Text -> QueryPlan -> QueryPlan -> QExpr -> QExpr ->
-        //            List (Bool, Bool, Text) -> Int -> Int -> Bool -> QueryPlan
+        //            List (Bool, Bool, Text) -> Int -> Int -> Bool ->
+        //            List Text -> List Text -> QueryPlan
         "planJoin" => Some(pure(vec![
             text(),
             plan(),
@@ -1078,6 +1086,8 @@ fn reconciled_query_plan_fn_scheme(
             int(),
             int(),
             bool_(),
+            text_list(),
+            text_list(),
         ])),
         // planProject : QExpr -> QueryPlan -> Int -> Int -> Bool -> QueryPlan
         "planProject" => Some(pure(vec![qexpr(), plan(), int(), int(), bool_()])),

@@ -1121,7 +1121,7 @@ run_verb(Conn, {group_summarize_right_join, LeftTable, RightTable, Cond, Where2,
     do_group_summarize_right_join(Conn, LeftTable, RightTable, Cond, Where2, Pred, KeyCol, KeySide, Cols, Having);
 run_verb(Conn, {group_summarize_full_join, LeftTable, RightTable, Cond, Where2, Pred, KeyCol, KeySide, Cols, Having}) ->
     do_group_summarize_full_join(Conn, LeftTable, RightTable, Cond, Where2, Pred, KeyCol, KeySide, Cols, Having);
-run_verb(Conn, {run_plan, {'PlanProject', Proj, {'PlanJoin', Kind, Left, Right, Cond, Where2, Orders, _ILim, _IOff, _IDist}, Lim, Off, Dist}}) ->
+run_verb(Conn, {run_plan, {'PlanProject', Proj, {'PlanJoin', Kind, Left, Right, Cond, Where2, Orders, _ILim, _IOff, _IDist, _ILeftCols, _IRightCols}, Lim, Off, Dist}}) ->
     %% Shim: a projected join plan reuses the existing *_join_select SQL for its kind —
     %% the projection compiled into the select list, the page and distinct taken from
     %% the PlanProject node (the inner join leaves its own off). An unmatched outer side
@@ -1129,7 +1129,7 @@ run_verb(Conn, {run_plan, {'PlanProject', Proj, {'PlanJoin', Kind, Left, Right, 
     {LeftTable, Pred} = plan_scan_table_pred(Left),
     {RightTable, _RPred} = plan_scan_table_pred(Right),
     run_verb(Conn, {join_select_verb(Kind), LeftTable, RightTable, Cond, Where2, Pred, Orders, Lim, Off, Proj, Dist});
-run_verb(Conn, {run_plan, {'PlanJoin', <<"INNER">>, Left, Right, Cond, Where2, Orders, Lim, Off, Dist}}) ->
+run_verb(Conn, {run_plan, {'PlanJoin', <<"INNER">>, Left, Right, Cond, Where2, Orders, Lim, Off, Dist, _LeftCols, _RightCols}}) ->
     %% Shim: an inner-join plan reuses the existing inner-join SQL and split, then
     %% re-keys each {LeftMap, RightMap} pair into one flat row with the two sides'
     %% columns prefixed (t0$/t1$). The real prefixed-SQL renderer lands with planToSql.
@@ -1139,7 +1139,7 @@ run_verb(Conn, {run_plan, {'PlanJoin', <<"INNER">>, Left, Right, Cond, Where2, O
         {ok, Pairs} -> {ok, [pg_prefix_pair(L, R) || {L, R} <- Pairs]};
         Err -> Err
     end;
-run_verb(Conn, {run_plan, {'PlanJoin', <<"LEFT">>, Left, Right, Cond, Where2, Orders, Lim, Off, Dist}}) ->
+run_verb(Conn, {run_plan, {'PlanJoin', <<"LEFT">>, Left, Right, Cond, Where2, Orders, Lim, Off, Dist, _LeftCols, _RightCols}}) ->
     %% Shim: a left-outer-join plan reuses the existing left_join SQL+split (sentinel),
     %% then re-flattens each {LeftMap, Option RightMap} pair into one prefixed row —
     %% OMITTING the right columns (t1$) for an unmatched left row, so a missing t1$
@@ -1150,7 +1150,7 @@ run_verb(Conn, {run_plan, {'PlanJoin', <<"LEFT">>, Left, Right, Cond, Where2, Or
         {ok, Pairs} -> {ok, [pg_prefix_left_pair(L, OptR) || {L, OptR} <- Pairs]};
         Err -> Err
     end;
-run_verb(Conn, {run_plan, {'PlanJoin', <<"RIGHT">>, Left, Right, Cond, Where2, Orders, Lim, Off, Dist}}) ->
+run_verb(Conn, {run_plan, {'PlanJoin', <<"RIGHT">>, Left, Right, Cond, Where2, Orders, Lim, Off, Dist, _LeftCols, _RightCols}}) ->
     %% Shim: the right-outer mirror, reusing right_join. An unmatched right row omits
     %% its left columns (t0$).
     {LeftTable, Pred} = plan_scan_table_pred(Left),
@@ -1159,7 +1159,7 @@ run_verb(Conn, {run_plan, {'PlanJoin', <<"RIGHT">>, Left, Right, Cond, Where2, O
         {ok, Pairs} -> {ok, [pg_prefix_right_pair(OptL, R) || {OptL, R} <- Pairs]};
         Err -> Err
     end;
-run_verb(Conn, {run_plan, {'PlanJoin', <<"FULL">>, Left, Right, Cond, Where2, Orders, Lim, Off, Dist}}) ->
+run_verb(Conn, {run_plan, {'PlanJoin', <<"FULL">>, Left, Right, Cond, Where2, Orders, Lim, Off, Dist, _LeftCols, _RightCols}}) ->
     %% Shim: the full-outer join, reusing full_join. Either side's columns are omitted
     %% when that side matched none.
     {LeftTable, Pred} = plan_scan_table_pred(Left),
@@ -1168,7 +1168,7 @@ run_verb(Conn, {run_plan, {'PlanJoin', <<"FULL">>, Left, Right, Cond, Where2, Or
         {ok, Pairs} -> {ok, [pg_prefix_full_pair(OptL, OptR) || {OptL, OptR} <- Pairs]};
         Err -> Err
     end;
-run_verb(Conn, {run_plan, {'PlanAggregate', <<"COUNT">>, _Column, _IsRight, {'PlanJoin', Kind, Left, Right, Cond, Where2, _Orders, _Lim, _Off, _Dist}}}) ->
+run_verb(Conn, {run_plan, {'PlanAggregate', <<"COUNT">>, _Column, _IsRight, {'PlanJoin', Kind, Left, Right, Cond, Where2, _Orders, _Lim, _Off, _Dist, _LeftCols, _RightCols}}}) ->
     %% Shim: a COUNT over a join plan reuses the existing count SQL for its kind, then
     %% wraps the integer into the aggregate plan's one-row `agg` cell. The reader takes
     %% the lone cell as the scalar. The real renderer lands with planToSql.
@@ -1178,7 +1178,7 @@ run_verb(Conn, {run_plan, {'PlanAggregate', <<"COUNT">>, _Column, _IsRight, {'Pl
         {ok, N} -> {ok, [#{<<"agg">> => {'SqlInt', N}}]};
         Err     -> Err
     end;
-run_verb(Conn, {run_plan, {'PlanAggregate', Func, Column, IsRight, {'PlanJoin', Kind, Left, Right, Cond, Where2, _Orders, _Lim, _Off, _Dist}}}) ->
+run_verb(Conn, {run_plan, {'PlanAggregate', Func, Column, IsRight, {'PlanJoin', Kind, Left, Right, Cond, Where2, _Orders, _Lim, _Off, _Dist, _LeftCols, _RightCols}}}) ->
     %% Shim: a scalar aggregate over a join plan reuses the existing aggregate SQL for
     %% its kind. A present scalar becomes the plan's one-row `agg` cell; a SQL NULL
     %% aggregate (an empty fold) becomes no row at all, which the reader takes as "none".
@@ -1189,7 +1189,7 @@ run_verb(Conn, {run_plan, {'PlanAggregate', Func, Column, IsRight, {'PlanJoin', 
         {ok, {some, V}} -> {ok, [#{<<"agg">> => V}]};
         Err             -> Err
     end;
-run_verb(Conn, {run_plan, {'PlanGroup', KeyCol, KeySide, Cols, Having, {'PlanJoin', Kind, Left, Right, Cond, Where2, _Orders, _Lim, _Off, _Dist}}}) ->
+run_verb(Conn, {run_plan, {'PlanGroup', KeyCol, KeySide, Cols, Having, {'PlanJoin', Kind, Left, Right, Cond, Where2, _Orders, _Lim, _Off, _Dist, _LeftCols, _RightCols}}}) ->
     %% Shim: a grouped join plan reuses the existing group_summarize SQL for its kind —
     %% the GROUP BY/HAVING push-down over the join, one row per group. An unmatched
     %% outer side groups under its NULL key and folds skip its columns. The real

@@ -1536,26 +1536,26 @@ mem_eval_plan(State, Id, {'PlanRefine', Inner, Pred, Orders, Lim, Off, Dist}) ->
     Rows = mem_eval_plan(State, Id, Inner),
     Matches = [R || R <- Rows, mem_pred(Pred, R)],
     mem_paginate(mem_distinct(Dist, mem_order(Orders, Matches)), Lim, Off);
-mem_eval_plan(State, Id, {'PlanJoin', <<"INNER">>, Left, Right, Cond, Where2, Orders, Lim, Off, Dist}) ->
+mem_eval_plan(State, Id, {'PlanJoin', <<"INNER">>, Left, Right, Cond, Where2, Orders, Lim, Off, Dist, _LeftCols, _RightCols}) ->
     LeftRows = mem_eval_plan(State, Id, Left),
     RightRows = mem_eval_plan(State, Id, Right),
     Pairs = [{L, R} || L <- LeftRows, R <- RightRows,
                        mem_jpred(Cond, L, R), mem_jpred(Where2, L, R)],
     Flat = [mem_prefix_pair(L, R) || {L, R} <- mem_order_pairs(Orders, Pairs)],
     mem_paginate(mem_distinct(Dist, Flat), Lim, Off);
-mem_eval_plan(State, Id, {'PlanJoin', <<"LEFT">>, Left, Right, Cond, Where2, Orders, Lim, Off, Dist}) ->
+mem_eval_plan(State, Id, {'PlanJoin', <<"LEFT">>, Left, Right, Cond, Where2, Orders, Lim, Off, Dist, _LeftCols, _RightCols}) ->
     LeftRows = mem_eval_plan(State, Id, Left),
     RightRows = mem_eval_plan(State, Id, Right),
     Pairs = lists:append([mem_left_pairs_for(L, RightRows, Cond, Where2) || L <- LeftRows]),
     Flat = [mem_prefix_left_pair(L, OptR) || {L, OptR} <- mem_order_pairs(Orders, Pairs)],
     mem_paginate(mem_distinct(Dist, Flat), Lim, Off);
-mem_eval_plan(State, Id, {'PlanJoin', <<"RIGHT">>, Left, Right, Cond, Where2, Orders, Lim, Off, Dist}) ->
+mem_eval_plan(State, Id, {'PlanJoin', <<"RIGHT">>, Left, Right, Cond, Where2, Orders, Lim, Off, Dist, _LeftCols, _RightCols}) ->
     LeftRows = mem_eval_plan(State, Id, Left),
     RightRows = mem_eval_plan(State, Id, Right),
     Pairs = lists:append([mem_right_pairs_for(R, LeftRows, Cond, Where2) || R <- RightRows]),
     Flat = [mem_prefix_right_pair(OptL, R) || {OptL, R} <- mem_order_pairs(Orders, Pairs)],
     mem_paginate(mem_distinct(Dist, Flat), Lim, Off);
-mem_eval_plan(State, Id, {'PlanJoin', <<"FULL">>, Left, Right, Cond, Where2, Orders, Lim, Off, Dist}) ->
+mem_eval_plan(State, Id, {'PlanJoin', <<"FULL">>, Left, Right, Cond, Where2, Orders, Lim, Off, Dist, _LeftCols, _RightCols}) ->
     LeftRows = mem_eval_plan(State, Id, Left),
     RightRows = mem_eval_plan(State, Id, Right),
     LeftSide = lists:append([mem_full_left_pairs_for(L, RightRows, Cond, Where2) || L <- LeftRows]),

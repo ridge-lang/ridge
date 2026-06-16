@@ -39,10 +39,14 @@ pub fn ascending (dir: SortOrder) -> Bool =
 -- outer filter, ordering, page, and distinct on top of a plan's result — the
 -- wrapper a combined query's own builder steps compile to. A combined query nests
 -- the plans, so `(a ∪ b) ∪ c` runs as nested operations. `PlanJoin` pairs two
--- sub-plans on a join condition (`kind` is `INNER` for now) with the two-row
--- post-join `WHERE`, ordering, page, and distinct folded in; its rows come back
--- flat with each source's columns prefixed (`t0$col`/`t1$col`) so the columns of
--- the two sides never collide and the result stays a single row map per pair.
+-- sub-plans on a join condition (`kind` is `INNER`/`LEFT`/`RIGHT`/`FULL`) with the
+-- two-row post-join `WHERE`, ordering, page, and distinct folded in; its rows come
+-- back flat with each source's columns prefixed (`t0$col`/`t1$col`) so the columns of
+-- the two sides never collide and the result stays a single row map per pair. The two
+-- trailing `List Text` carry each source entity's column names (`leftCols`/`rightCols`,
+-- from `Row.rowColumns`): the SQL renderer needs them to spell the prefixed select list
+-- (`t0."col" AS "t0$col"`) before any row exists, since the node itself knows only the
+-- table names. The in-memory backend ignores them — it prefixes the row keys it holds.
 -- `PlanProject` projects a sub-plan's rows through a projection tree (a `QProj`)
 -- into rows keyed by the projection's output aliases, then de-duplicates and pages
 -- — the plan form of a join `select`. It wraps a `PlanJoin`, whose flat
@@ -63,7 +67,7 @@ pub fn ascending (dir: SortOrder) -> Bool =
 -- per group, keyed by alias and ordered by the key — the plan form of a grouped
 -- join `summarize`. It wraps a `PlanJoin`, whose flat source-prefixed rows it splits
 -- back per side to read each group key and folded column.
-pub type QueryPlan = PlanScan Text QExpr (List (Bool, Text)) Int Int Bool | PlanCombine Text QueryPlan QueryPlan | PlanRefine QueryPlan QExpr (List (Bool, Text)) Int Int Bool | PlanJoin Text QueryPlan QueryPlan QExpr QExpr (List (Bool, Bool, Text)) Int Int Bool | PlanProject QExpr QueryPlan Int Int Bool | PlanAggregate Text Text Bool QueryPlan | PlanGroup Text Bool (List (Text, Text, Text, Bool)) QExpr QueryPlan
+pub type QueryPlan = PlanScan Text QExpr (List (Bool, Text)) Int Int Bool | PlanCombine Text QueryPlan QueryPlan | PlanRefine QueryPlan QExpr (List (Bool, Text)) Int Int Bool | PlanJoin Text QueryPlan QueryPlan QExpr QExpr (List (Bool, Bool, Text)) Int Int Bool (List Text) (List Text) | PlanProject QExpr QueryPlan Int Int Bool | PlanAggregate Text Text Bool QueryPlan | PlanGroup Text Bool (List (Text, Text, Text, Bool)) QExpr QueryPlan
 
 -- A single-table scan plan — the plan form of `fetch`.
 pub fn planScan (table: Text) (pred: QExpr) (orders: List (Bool, Text)) (lim: Int) (off: Int) (dist: Bool) -> QueryPlan =
@@ -78,12 +82,14 @@ pub fn planCombine (op: Text) (left: QueryPlan) (right: QueryPlan) -> QueryPlan 
 pub fn planRefine (inner: QueryPlan) (pred: QExpr) (orders: List (Bool, Text)) (lim: Int) (off: Int) (dist: Bool) -> QueryPlan =
     PlanRefine inner pred orders lim off dist
 
--- Pair two sub-plans on a join. `kind` is the join shape (`INNER` for now), `cond`
--- the join condition and `where2` the post-join `WHERE` (both two-row trees over the
--- left and right rows), and `orders` the side-tagged ordering keys. The result rows
--- are flat with each side's columns prefixed (`t0$`/`t1$`).
-pub fn planJoin (kind: Text) (left: QueryPlan) (right: QueryPlan) (cond: QExpr) (where2: QExpr) (orders: List (Bool, Bool, Text)) (lim: Int) (off: Int) (dist: Bool) -> QueryPlan =
-    PlanJoin kind left right cond where2 orders lim off dist
+-- Pair two sub-plans on a join. `kind` is the join shape (`INNER`/`LEFT`/`RIGHT`/
+-- `FULL`), `cond` the join condition and `where2` the post-join `WHERE` (both two-row
+-- trees over the left and right rows), and `orders` the side-tagged ordering keys.
+-- `leftCols`/`rightCols` are each source entity's column names (from `Row.rowColumns`),
+-- which the SQL renderer spells into the prefixed select list; the in-memory backend
+-- ignores them. The result rows are flat with each side's columns prefixed (`t0$`/`t1$`).
+pub fn planJoin (kind: Text) (left: QueryPlan) (right: QueryPlan) (cond: QExpr) (where2: QExpr) (orders: List (Bool, Bool, Text)) (lim: Int) (off: Int) (dist: Bool) (leftCols: List Text) (rightCols: List Text) -> QueryPlan =
+    PlanJoin kind left right cond where2 orders lim off dist leftCols rightCols
 
 -- Project a sub-plan's rows through the projection tree `proj` (a `QProj`), then
 -- de-duplicate (when `dist`) and page. Wraps a `PlanJoin`, projecting its flat

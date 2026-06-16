@@ -1121,14 +1121,14 @@ run_verb(Conn, {group_summarize_right_join, LeftTable, RightTable, Cond, Where2,
     do_group_summarize_right_join(Conn, LeftTable, RightTable, Cond, Where2, Pred, KeyCol, KeySide, Cols, Having);
 run_verb(Conn, {group_summarize_full_join, LeftTable, RightTable, Cond, Where2, Pred, KeyCol, KeySide, Cols, Having}) ->
     do_group_summarize_full_join(Conn, LeftTable, RightTable, Cond, Where2, Pred, KeyCol, KeySide, Cols, Having);
-run_verb(Conn, {run_plan, {'PlanProject', Proj, {'PlanJoin', <<"INNER">>, Left, Right, Cond, Where2, Orders, _ILim, _IOff, _IDist}, Lim, Off, Dist}}) ->
-    %% Shim: a projected inner-join plan reuses the existing join_select SQL — the
-    %% projection compiled into the select list, the page and distinct taken from the
-    %% PlanProject node (the inner join leaves its own off). The real prefixed-SQL
-    %% renderer lands with planToSql.
+run_verb(Conn, {run_plan, {'PlanProject', Proj, {'PlanJoin', Kind, Left, Right, Cond, Where2, Orders, _ILim, _IOff, _IDist}, Lim, Off, Dist}}) ->
+    %% Shim: a projected join plan reuses the existing *_join_select SQL for its kind —
+    %% the projection compiled into the select list, the page and distinct taken from
+    %% the PlanProject node (the inner join leaves its own off). An unmatched outer side
+    %% projects NULL columns. The real prefixed-SQL renderer lands with planToSql.
     {LeftTable, Pred} = plan_scan_table_pred(Left),
     {RightTable, _RPred} = plan_scan_table_pred(Right),
-    run_verb(Conn, {join_select, LeftTable, RightTable, Cond, Where2, Pred, Orders, Lim, Off, Proj, Dist});
+    run_verb(Conn, {join_select_verb(Kind), LeftTable, RightTable, Cond, Where2, Pred, Orders, Lim, Off, Proj, Dist});
 run_verb(Conn, {run_plan, {'PlanJoin', <<"INNER">>, Left, Right, Cond, Where2, Orders, Lim, Off, Dist}}) ->
     %% Shim: an inner-join plan reuses the existing inner-join SQL and split, then
     %% re-keys each {LeftMap, RightMap} pair into one flat row with the two sides'
@@ -1240,6 +1240,13 @@ pg_prefix_opt(_Prefix, none)     -> #{}.
 %% The table and left-filter predicate of a `PlanScan` sub-plan. The inner-join plan
 %% shim's two sub-plans are always single-table scans.
 plan_scan_table_pred({'PlanScan', Table, Pred, _Orders, _Lim, _Off, _Dist}) -> {Table, Pred}.
+
+%% The projection seam verb a `PlanProject` over a join of the given kind dispatches
+%% to. Each compiles the projection into the matching join's select list.
+join_select_verb(<<"INNER">>) -> join_select;
+join_select_verb(<<"LEFT">>)  -> left_join_select;
+join_select_verb(<<"RIGHT">>) -> right_join_select;
+join_select_verb(<<"FULL">>)  -> full_join_select.
 
 do_insert(Conn, Table, Row) ->
     Pairs = maps:to_list(Row),

@@ -799,11 +799,11 @@ instance Projectable (Join e f a) (fn e f -> s) where Adapter a, Row s =
 -- `LEFT JOIN`) and only the named columns cross.
 instance Projectable (LeftJoin e f a) (fn e (Option f) -> s) where Adapter a, Row s =
     select (proj: Quote (fn e (Option f) -> s)) (x: LeftJoin e f a) -> Result (List s) Error =
-        match leftJoinSelect x.left.repo.adapter x.left.repo.table x.right.table x.cond x.where2 x.left.pred x.orders x.lim x.off proj x.dist
+        match runPlan x.left.repo.adapter (leftJoinSelectPlan x proj.tree x.lim)
             Err err  -> Err err
             Ok rows  -> decodeRows rows
     selectFirst (proj: Quote (fn e (Option f) -> s)) (x: LeftJoin e f a) -> Result (Option s) Error =
-        match leftJoinSelect x.left.repo.adapter x.left.repo.table x.right.table x.cond x.where2 x.left.pred x.orders 1 x.off proj x.dist
+        match runPlan x.left.repo.adapter (leftJoinSelectPlan x proj.tree 1)
             Err err  -> Err err
             Ok rows  -> firstDecoded rows
 
@@ -813,11 +813,11 @@ instance Projectable (LeftJoin e f a) (fn e (Option f) -> s) where Adapter a, Ro
 -- JOIN`) and only the named columns cross — the mirror of a left join's `select`.
 instance Projectable (RightJoin e f a) (fn (Option e) f -> s) where Adapter a, Row s =
     select (proj: Quote (fn (Option e) f -> s)) (x: RightJoin e f a) -> Result (List s) Error =
-        match rightJoinSelect x.left.repo.adapter x.left.repo.table x.right.table x.cond x.where2 x.left.pred x.orders x.lim x.off proj x.dist
+        match runPlan x.left.repo.adapter (rightJoinSelectPlan x proj.tree x.lim)
             Err err  -> Err err
             Ok rows  -> decodeRows rows
     selectFirst (proj: Quote (fn (Option e) f -> s)) (x: RightJoin e f a) -> Result (Option s) Error =
-        match rightJoinSelect x.left.repo.adapter x.left.repo.table x.right.table x.cond x.where2 x.left.pred x.orders 1 x.off proj x.dist
+        match runPlan x.left.repo.adapter (rightJoinSelectPlan x proj.tree 1)
             Err err  -> Err err
             Ok rows  -> firstDecoded rows
 
@@ -827,11 +827,11 @@ instance Projectable (RightJoin e f a) (fn (Option e) f -> s) where Adapter a, R
 -- `FULL JOIN`) and only the named columns cross.
 instance Projectable (FullJoin e f a) (fn (Option e) (Option f) -> s) where Adapter a, Row s =
     select (proj: Quote (fn (Option e) (Option f) -> s)) (x: FullJoin e f a) -> Result (List s) Error =
-        match fullJoinSelect x.left.repo.adapter x.left.repo.table x.right.table x.cond x.where2 x.left.pred x.orders x.lim x.off proj x.dist
+        match runPlan x.left.repo.adapter (fullJoinSelectPlan x proj.tree x.lim)
             Err err  -> Err err
             Ok rows  -> decodeRows rows
     selectFirst (proj: Quote (fn (Option e) (Option f) -> s)) (x: FullJoin e f a) -> Result (Option s) Error =
-        match fullJoinSelect x.left.repo.adapter x.left.repo.table x.right.table x.cond x.where2 x.left.pred x.orders 1 x.off proj x.dist
+        match runPlan x.left.repo.adapter (fullJoinSelectPlan x proj.tree 1)
             Err err  -> Err err
             Ok rows  -> firstDecoded rows
 
@@ -1065,6 +1065,21 @@ fn fullJoinPlan (x: FullJoin e f a) (lim: Int) -> QueryPlan =
 -- the same plan with a one-row limit.
 fn innerJoinSelectPlan (x: Join e f a) (proj: QExpr) (lim: Int) -> QueryPlan =
     planProject proj (planJoin "INNER" (planScan x.left.repo.table x.left.pred.tree [] (0 - 1) 0 false) (planScan x.right.table (keepAllTree ()) [] (0 - 1) 0 false) x.cond.tree x.where2.tree x.orders (0 - 1) 0 false) lim x.off x.dist
+
+-- The plan a left/right/full outer-join `select` runs: a `PlanProject` over the
+-- all-rows outer join (its page and distinct deferred to the projection, as for the
+-- inner join). The unmatched side comes back with its columns absent, so the
+-- projection's accessors on that side read SQL NULL, decoding to `None` in the
+-- projected shape's `Option` fields. `lim` is explicit so `selectFirst` runs with a
+-- one-row limit.
+fn leftJoinSelectPlan (x: LeftJoin e f a) (proj: QExpr) (lim: Int) -> QueryPlan =
+    planProject proj (planJoin "LEFT" (planScan x.left.repo.table x.left.pred.tree [] (0 - 1) 0 false) (planScan x.right.table (keepAllTree ()) [] (0 - 1) 0 false) x.cond.tree x.where2.tree x.orders (0 - 1) 0 false) lim x.off x.dist
+
+fn rightJoinSelectPlan (x: RightJoin e f a) (proj: QExpr) (lim: Int) -> QueryPlan =
+    planProject proj (planJoin "RIGHT" (planScan x.left.repo.table x.left.pred.tree [] (0 - 1) 0 false) (planScan x.right.table (keepAllTree ()) [] (0 - 1) 0 false) x.cond.tree x.where2.tree x.orders (0 - 1) 0 false) lim x.off x.dist
+
+fn fullJoinSelectPlan (x: FullJoin e f a) (proj: QExpr) (lim: Int) -> QueryPlan =
+    planProject proj (planJoin "FULL" (planScan x.left.repo.table x.left.pred.tree [] (0 - 1) 0 false) (planScan x.right.table (keepAllTree ()) [] (0 - 1) 0 false) x.cond.tree x.where2.tree x.orders (0 - 1) 0 false) lim x.off x.dist
 
 -- The base inner-join plan a reduction terminal (`count`, `exists`, a scalar
 -- aggregate) folds over. A reduction measures or folds the matched set rather than a

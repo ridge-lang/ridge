@@ -546,19 +546,20 @@ pub fn applySet (setters: List (Setter e)) (q: Query e a) -> Result Int Error wh
     updateRows q.repo.adapter q.repo.table (settersToMap setters) q.pred
 
 -- Decode the optional scalar a `SELECT func(col) …` aggregate returns into an
--- optional typed value. The seam reports a SQL NULL (an aggregate over zero
--- matching rows) as `None`, so this only decodes a present value through the
--- column type's `SqlType` codec and re-wraps it in `Some`. The decode is the base
--- `fromSql`, riding the `SqlType w` dictionary the aggregate verb already carries
--- — no nullable-column instance is involved, since the seam, not the codec,
--- carries the NULL.
+-- optional typed value. An aggregate over zero matching rows is SQL NULL: the
+-- in-memory backend reports that as no row at all (`None` here), while the Postgres
+-- renderer returns one row holding NULL. A present cell decodes through the column
+-- type's `SqlType` codec; a NULL cell fails that typed decode and reads as `None`.
+-- An aggregate cell is only ever its own type or SQL NULL — never a mismatched
+-- value — so reading a failed decode as the empty fold is safe and folds both
+-- backends to the same `None`.
 fn decodeScalar (v: Option SqlValue) -> Result (Option w) Error where SqlType w =
     match v
         None    -> Ok None
         Some sv ->
             match fromSql sv
-                Err e -> Err e
                 Ok x  -> Ok (Some x)
+                Err _ -> Ok None
 
 -- The scalar aggregates `sumOf`/`avgOf`/`minOf`/`maxOf` are the methods of the
 -- `Aggregable q p | q -> p` class (declared above), so one set of verbs folds a
@@ -1658,15 +1659,39 @@ fn anyKeyHasPrefix (prefix: Text) (kvs: List (Text, SqlValue)) -> Bool =
         []             -> false
         (k, _) :: rest -> if Text.startsWith prefix k then true else anyKeyHasPrefix prefix rest
 
--- Decode one optional side of an outer-join row: `None` when the side's prefixed
--- columns are absent (it matched no row), else `Some` of the entity decoded from the
--- un-prefixed side. The presence-based dual of the old `Option`-pair decode.
+-- Decode one optional side of an outer-join row: `None` when the side matched no
+-- row, else `Some` of the entity decoded from the un-prefixed side.
 fn decodeOptSide (prefix: Text) (row: Map Text SqlValue) -> Result (Option g) Error where Row g =
-    if hasPrefix prefix row then
+    if sidePresent prefix row then
         match fromRow (unprefix prefix row)
             Err err -> Err err
             Ok y    -> Ok (Some y)
     else Ok None
+
+-- Whether an outer-join row's `prefix` side matched a row. The Postgres renderer tags
+-- each null-extendable side with a presence marker column (`<prefix>__present__`): a
+-- non-null value (`TRUE`) means the side matched, SQL NULL means it did not — needed
+-- because Postgres returns an unmatched side's real columns as NULL rather than
+-- omitting them. The in-memory backend emits no marker and instead drops an unmatched
+-- side's columns, so when the marker is absent the side is present exactly when it
+-- still carries any prefixed column.
+fn sidePresent (prefix: Text) (row: Map Text SqlValue) -> Bool =
+    match markerValue (Text.concat prefix "__present__") (toList row)
+        Some v -> markerTrue v
+        None   -> hasPrefix prefix row
+
+fn markerValue (key: Text) (kvs: List (Text, SqlValue)) -> Option SqlValue =
+    match kvs
+        []             -> None
+        (k, v) :: rest -> if k == key then Some v else markerValue key rest
+
+-- A presence marker is `TRUE` when its side matched and SQL NULL when it did not, so
+-- decoding it as a `Bool` answers presence: `TRUE` decodes to `true`, while SQL NULL
+-- (or anything unexpected) fails the base decode and reads as absent.
+fn markerTrue (v: SqlValue) -> Bool =
+    match fromSql v
+        Ok b  -> b
+        Err _ -> false
 
 -- Decode the flat, source-prefixed rows a `LEFT` join plan returns into `(e, Option f)`
 -- pairs: the left side (`t0$`) is always present and decoded; the right (`t1$`) decodes

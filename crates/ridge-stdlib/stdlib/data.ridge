@@ -24,8 +24,8 @@
 -- `db` requirement is declared once, where the connection is created, not on
 -- every call site that threads the handle.
 
-import std.sql (SqlValue)
-import std.query (QueryPlan)
+import std.sql (SqlValue, sqlValue)
+import std.query (QueryPlan, planToSql)
 
 -- The storage seam. `a` is the connection-handle type; each backend provides an
 -- instance. `appendRow` appends a row; `all` returns every row of a table;
@@ -824,7 +824,8 @@ instance Adapter Postgres =
     groupSummarizeFullJoin (conn: Postgres) (leftTable: Text) (rightTable: Text) (cond: Quote (Map Text SqlValue -> Map Text SqlValue -> Bool)) (where2: Quote (Map Text SqlValue -> Map Text SqlValue -> Bool)) (pred: Quote (Map Text SqlValue -> Bool)) (keyCol: Text) (keySide: Bool) (cols: List (Text, Text, Text, Bool)) (having: QExpr) -> Result (List (Map Text SqlValue)) Error =
         _pgGroupSummarizeFullJoin conn.id leftTable rightTable cond.tree where2.tree pred.tree keyCol keySide cols having
     runPlan (conn: Postgres) (plan: QueryPlan) -> Result (List (Map Text SqlValue)) Error =
-        _pgRunPlan conn.id plan
+        match planToSql plan
+            (s, binds) -> _pgRawQuery conn.id (sqlValue s) binds
     begin (conn: Postgres) -> Result Unit Error =
         _pgBegin conn.id
     commit (conn: Postgres) -> Result Unit Error =

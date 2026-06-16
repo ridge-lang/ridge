@@ -1139,6 +1139,35 @@ run_verb(Conn, {run_plan, {'PlanJoin', <<"INNER">>, Left, Right, Cond, Where2, O
         {ok, Pairs} -> {ok, [pg_prefix_pair(L, R) || {L, R} <- Pairs]};
         Err -> Err
     end;
+run_verb(Conn, {run_plan, {'PlanJoin', <<"LEFT">>, Left, Right, Cond, Where2, Orders, Lim, Off, Dist}}) ->
+    %% Shim: a left-outer-join plan reuses the existing left_join SQL+split (sentinel),
+    %% then re-flattens each {LeftMap, Option RightMap} pair into one prefixed row —
+    %% OMITTING the right columns (t1$) for an unmatched left row, so a missing t1$
+    %% prefix is the decoder's "right matched none" signal. Renderer lands with planToSql.
+    {LeftTable, Pred} = plan_scan_table_pred(Left),
+    {RightTable, _RPred} = plan_scan_table_pred(Right),
+    case run_verb(Conn, {left_join, LeftTable, RightTable, Cond, Where2, Pred, Orders, Lim, Off, Dist}) of
+        {ok, Pairs} -> {ok, [pg_prefix_left_pair(L, OptR) || {L, OptR} <- Pairs]};
+        Err -> Err
+    end;
+run_verb(Conn, {run_plan, {'PlanJoin', <<"RIGHT">>, Left, Right, Cond, Where2, Orders, Lim, Off, Dist}}) ->
+    %% Shim: the right-outer mirror, reusing right_join. An unmatched right row omits
+    %% its left columns (t0$).
+    {LeftTable, Pred} = plan_scan_table_pred(Left),
+    {RightTable, _RPred} = plan_scan_table_pred(Right),
+    case run_verb(Conn, {right_join, LeftTable, RightTable, Cond, Where2, Pred, Orders, Lim, Off, Dist}) of
+        {ok, Pairs} -> {ok, [pg_prefix_right_pair(OptL, R) || {OptL, R} <- Pairs]};
+        Err -> Err
+    end;
+run_verb(Conn, {run_plan, {'PlanJoin', <<"FULL">>, Left, Right, Cond, Where2, Orders, Lim, Off, Dist}}) ->
+    %% Shim: the full-outer join, reusing full_join. Either side's columns are omitted
+    %% when that side matched none.
+    {LeftTable, Pred} = plan_scan_table_pred(Left),
+    {RightTable, _RPred} = plan_scan_table_pred(Right),
+    case run_verb(Conn, {full_join, LeftTable, RightTable, Cond, Where2, Pred, Orders, Lim, Off, Dist}) of
+        {ok, Pairs} -> {ok, [pg_prefix_full_pair(OptL, OptR) || {OptL, OptR} <- Pairs]};
+        Err -> Err
+    end;
 run_verb(Conn, {run_plan, {'PlanAggregate', <<"COUNT">>, _Column, _IsRight, {'PlanJoin', <<"INNER">>, Left, Right, Cond, Where2, _Orders, _Lim, _Off, _Dist}}}) ->
     %% Shim: a COUNT over an inner-join plan reuses the existing count_join SQL, then
     %% wraps the integer into the aggregate plan's one-row `agg` cell. The reader takes
@@ -1192,6 +1221,21 @@ pg_prefix_pair(L, R) ->
 
 pg_prefix_keys(Prefix, M) ->
     maps:fold(fun(K, V, Acc) -> Acc#{<<Prefix/binary, K/binary>> => V} end, #{}, M).
+
+%% Flatten an outer-join pair into one prefixed row, omitting the columns of an
+%% unmatched side (so a missing prefix is the decoder's "matched none" signal). The
+%% left/right/full duals mirror the in-memory `mem_prefix_*_pair` flatteners.
+pg_prefix_left_pair(L, {some, R}) -> pg_prefix_pair(L, R);
+pg_prefix_left_pair(L, none)      -> pg_prefix_keys(<<"t0$">>, L).
+
+pg_prefix_right_pair({some, L}, R) -> pg_prefix_pair(L, R);
+pg_prefix_right_pair(none, R)      -> pg_prefix_keys(<<"t1$">>, R).
+
+pg_prefix_full_pair(OptL, OptR) ->
+    maps:merge(pg_prefix_opt(<<"t0$">>, OptL), pg_prefix_opt(<<"t1$">>, OptR)).
+
+pg_prefix_opt(Prefix, {some, M}) -> pg_prefix_keys(Prefix, M);
+pg_prefix_opt(_Prefix, none)     -> #{}.
 
 %% The table and left-filter predicate of a `PlanScan` sub-plan. The inner-join plan
 %% shim's two sub-plans are always single-table scans.

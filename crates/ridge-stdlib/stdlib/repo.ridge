@@ -1041,6 +1041,20 @@ instance Decodable (Query e a) where Adapter a, Row e =
 fn innerJoinPlan (x: Join e f a) (lim: Int) -> QueryPlan =
     planJoin "INNER" (planScan x.left.repo.table x.left.pred.tree [] (0 - 1) 0 false) (planScan x.right.table (keepAllTree ()) [] (0 - 1) 0 false) x.cond.tree x.where2.tree x.orders lim x.off x.dist
 
+-- The plan a left/right/full outer-join decode runs: the same shape as
+-- `innerJoinPlan` but with the join `kind` set, so the backend keeps the outer rows.
+-- An unmatched side comes back with its `t0$`/`t1$` columns absent, which the outer
+-- decoders read as `None`. `lim` is explicit so `first` runs the same plan with a
+-- one-row limit.
+fn leftJoinPlan (x: LeftJoin e f a) (lim: Int) -> QueryPlan =
+    planJoin "LEFT" (planScan x.left.repo.table x.left.pred.tree [] (0 - 1) 0 false) (planScan x.right.table (keepAllTree ()) [] (0 - 1) 0 false) x.cond.tree x.where2.tree x.orders lim x.off x.dist
+
+fn rightJoinPlan (x: RightJoin e f a) (lim: Int) -> QueryPlan =
+    planJoin "RIGHT" (planScan x.left.repo.table x.left.pred.tree [] (0 - 1) 0 false) (planScan x.right.table (keepAllTree ()) [] (0 - 1) 0 false) x.cond.tree x.where2.tree x.orders lim x.off x.dist
+
+fn fullJoinPlan (x: FullJoin e f a) (lim: Int) -> QueryPlan =
+    planJoin "FULL" (planScan x.left.repo.table x.left.pred.tree [] (0 - 1) 0 false) (planScan x.right.table (keepAllTree ()) [] (0 - 1) 0 false) x.cond.tree x.where2.tree x.orders lim x.off x.dist
+
 -- The query plan an inner-join `select` runs: a `PlanProject` over the all-pairs
 -- join. The inner `PlanJoin` keeps the join's ordering but leaves its page and
 -- distinct off (`(0 - 1) 0 false`) — `distinct` de-duplicates the projected columns
@@ -1120,13 +1134,13 @@ instance Decodable (Join e f a) where Adapter a, Row f, Row e =
 -- the forwarded dictionaries land in the right slots.
 instance Decodable (LeftJoin e f a) where Adapter a, Row f, Row e =
     toList (x: LeftJoin e f a) -> Result (List (e, Option f)) Error =
-        match leftJoin x.left.repo.adapter x.left.repo.table x.right.table x.cond x.where2 x.left.pred x.orders x.lim x.off x.dist
+        match runPlan x.left.repo.adapter (leftJoinPlan x x.lim)
             Err err  -> Err err
-            Ok pairs -> decodeLeftPairs pairs
+            Ok rows  -> decodeLeftPrefixed rows
     first (x: LeftJoin e f a) -> Result (Option (e, Option f)) Error =
-        match leftJoin x.left.repo.adapter x.left.repo.table x.right.table x.cond x.where2 x.left.pred x.orders 1 x.off x.dist
+        match runPlan x.left.repo.adapter (leftJoinPlan x 1)
             Err err  -> Err err
-            Ok pairs -> firstDecodedLeftPair pairs
+            Ok rows  -> firstDecodedLeftPrefixed rows
 
 -- A right join's decode terminals: `toList` keeps every right row, decoding each into
 -- `(Option e, f)` — the left side `None` where the right row matched no left row —
@@ -1138,13 +1152,13 @@ instance Decodable (LeftJoin e f a) where Adapter a, Row f, Row e =
 -- forwarded dictionaries land in the right slots.
 instance Decodable (RightJoin e f a) where Adapter a, Row f, Row e =
     toList (x: RightJoin e f a) -> Result (List (Option e, f)) Error =
-        match rightJoin x.left.repo.adapter x.left.repo.table x.right.table x.cond x.where2 x.left.pred x.orders x.lim x.off x.dist
+        match runPlan x.left.repo.adapter (rightJoinPlan x x.lim)
             Err err  -> Err err
-            Ok pairs -> decodeRightPairs pairs
+            Ok rows  -> decodeRightPrefixed rows
     first (x: RightJoin e f a) -> Result (Option (Option e, f)) Error =
-        match rightJoin x.left.repo.adapter x.left.repo.table x.right.table x.cond x.where2 x.left.pred x.orders 1 x.off x.dist
+        match runPlan x.left.repo.adapter (rightJoinPlan x 1)
             Err err  -> Err err
-            Ok pairs -> firstDecodedRightPair pairs
+            Ok rows  -> firstDecodedRightPrefixed rows
 
 -- A full join's decode terminals: `toList` keeps every row of both tables, decoding
 -- each into `(Option e, Option f)` — `None` on whichever side the row matched none —
@@ -1157,13 +1171,13 @@ instance Decodable (RightJoin e f a) where Adapter a, Row f, Row e =
 -- forwarded dictionaries land in the right slots.
 instance Decodable (FullJoin e f a) where Adapter a, Row f, Row e =
     toList (x: FullJoin e f a) -> Result (List (Option e, Option f)) Error =
-        match fullJoin x.left.repo.adapter x.left.repo.table x.right.table x.cond x.where2 x.left.pred x.orders x.lim x.off x.dist
+        match runPlan x.left.repo.adapter (fullJoinPlan x x.lim)
             Err err  -> Err err
-            Ok pairs -> decodeFullPairs pairs
+            Ok rows  -> decodeFullPrefixed rows
     first (x: FullJoin e f a) -> Result (Option (Option e, Option f)) Error =
-        match fullJoin x.left.repo.adapter x.left.repo.table x.right.table x.cond x.where2 x.left.pred x.orders 1 x.off x.dist
+        match runPlan x.left.repo.adapter (fullJoinPlan x 1)
             Err err  -> Err err
-            Ok pairs -> firstDecodedFullPair pairs
+            Ok rows  -> firstDecodedFullPrefixed rows
 
 -- A query's page and distinct: set the field on the query, carrying every other
 -- field through. The behaviour the single-receiver `limit`/`offset`/`distinct`
@@ -1557,6 +1571,115 @@ fn firstDecodedPrefixedPair (rows: List (Map Text SqlValue)) -> Result (Option (
                     match fromRow (unprefix "t1$" row)
                         Err err -> Err err
                         Ok y    -> Ok (Some (x, y))
+
+-- Whether an outer-join row carries any column of the source under `prefix`. An
+-- unmatched side contributes no prefixed columns, so a missing prefix means that
+-- side matched no row — the presence marker the outer-join plan uses in place of the
+-- inner join's always-both-sides flat row.
+fn hasPrefix (prefix: Text) (row: Map Text SqlValue) -> Bool =
+    anyKeyHasPrefix prefix (toList row)
+
+fn anyKeyHasPrefix (prefix: Text) (kvs: List (Text, SqlValue)) -> Bool =
+    match kvs
+        []             -> false
+        (k, _) :: rest -> if Text.startsWith prefix k then true else anyKeyHasPrefix prefix rest
+
+-- Decode one optional side of an outer-join row: `None` when the side's prefixed
+-- columns are absent (it matched no row), else `Some` of the entity decoded from the
+-- un-prefixed side. The presence-based dual of the old `Option`-pair decode.
+fn decodeOptSide (prefix: Text) (row: Map Text SqlValue) -> Result (Option g) Error where Row g =
+    if hasPrefix prefix row then
+        match fromRow (unprefix prefix row)
+            Err err -> Err err
+            Ok y    -> Ok (Some y)
+    else Ok None
+
+-- Decode the flat, source-prefixed rows a `LEFT` join plan returns into `(e, Option f)`
+-- pairs: the left side (`t0$`) is always present and decoded; the right (`t1$`) decodes
+-- to `Some` when present and `None` when the left row matched no right row. The
+-- prefixed dual of `decodeLeftPairs`; the left entity decodes first so the instance's
+-- `Row f, Row e` dictionary order threads to the right slots.
+fn decodeLeftPrefixed (rows: List (Map Text SqlValue)) -> Result (List (e, Option f)) Error where Row e, Row f =
+    match rows
+        []          -> Ok []
+        row :: rest ->
+            match fromRow (unprefix "t0$" row)
+                Err err -> Err err
+                Ok x    ->
+                    match decodeOptSide "t1$" row
+                        Err err -> Err err
+                        Ok optY ->
+                            match decodeLeftPrefixed rest
+                                Err err -> Err err
+                                Ok xs   -> Ok ((x, optY) :: xs)
+
+fn firstDecodedLeftPrefixed (rows: List (Map Text SqlValue)) -> Result (Option (e, Option f)) Error where Row e, Row f =
+    match rows
+        []       -> Ok None
+        row :: _ ->
+            match fromRow (unprefix "t0$" row)
+                Err err -> Err err
+                Ok x    ->
+                    match decodeOptSide "t1$" row
+                        Err err -> Err err
+                        Ok optY -> Ok (Some (x, optY))
+
+-- Decode the flat, source-prefixed rows a `RIGHT` join plan returns into
+-- `(Option e, f)` pairs: the right side (`t1$`) is always present, the left (`t0$`)
+-- decodes to `None` when the right row matched no left row. The left entity decodes
+-- first (its optional side), as in `decodeRightPairs`, to keep the dictionary order.
+fn decodeRightPrefixed (rows: List (Map Text SqlValue)) -> Result (List (Option e, f)) Error where Row e, Row f =
+    match rows
+        []          -> Ok []
+        row :: rest ->
+            match decodeOptSide "t0$" row
+                Err err -> Err err
+                Ok optX ->
+                    match fromRow (unprefix "t1$" row)
+                        Err err -> Err err
+                        Ok y    ->
+                            match decodeRightPrefixed rest
+                                Err err -> Err err
+                                Ok xs   -> Ok ((optX, y) :: xs)
+
+fn firstDecodedRightPrefixed (rows: List (Map Text SqlValue)) -> Result (Option (Option e, f)) Error where Row e, Row f =
+    match rows
+        []       -> Ok None
+        row :: _ ->
+            match decodeOptSide "t0$" row
+                Err err -> Err err
+                Ok optX ->
+                    match fromRow (unprefix "t1$" row)
+                        Err err -> Err err
+                        Ok y    -> Ok (Some (optX, y))
+
+-- Decode the flat, source-prefixed rows a `FULL` join plan returns into
+-- `(Option e, Option f)` pairs: each side decodes to `Some` when present and `None`
+-- when that side matched none. The left entity decodes first, as in `decodeFullPairs`.
+fn decodeFullPrefixed (rows: List (Map Text SqlValue)) -> Result (List (Option e, Option f)) Error where Row e, Row f =
+    match rows
+        []          -> Ok []
+        row :: rest ->
+            match decodeOptSide "t0$" row
+                Err err -> Err err
+                Ok optX ->
+                    match decodeOptSide "t1$" row
+                        Err err -> Err err
+                        Ok optY ->
+                            match decodeFullPrefixed rest
+                                Err err -> Err err
+                                Ok xs   -> Ok ((optX, optY) :: xs)
+
+fn firstDecodedFullPrefixed (rows: List (Map Text SqlValue)) -> Result (Option (Option e, Option f)) Error where Row e, Row f =
+    match rows
+        []       -> Ok None
+        row :: _ ->
+            match decodeOptSide "t0$" row
+                Err err -> Err err
+                Ok optX ->
+                    match decodeOptSide "t1$" row
+                        Err err -> Err err
+                        Ok optY -> Ok (Some (optX, optY))
 
 -- The head of a `(left, optional-right)` pair list, decoded; `None` when empty.
 -- The left-join dual of `firstDecodedPair`, for `first` over a `LeftJoin`: the

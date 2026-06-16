@@ -1543,6 +1543,25 @@ mem_eval_plan(State, Id, {'PlanJoin', <<"INNER">>, Left, Right, Cond, Where2, Or
                        mem_jpred(Cond, L, R), mem_jpred(Where2, L, R)],
     Flat = [mem_prefix_pair(L, R) || {L, R} <- mem_order_pairs(Orders, Pairs)],
     mem_paginate(mem_distinct(Dist, Flat), Lim, Off);
+mem_eval_plan(State, Id, {'PlanJoin', <<"LEFT">>, Left, Right, Cond, Where2, Orders, Lim, Off, Dist}) ->
+    LeftRows = mem_eval_plan(State, Id, Left),
+    RightRows = mem_eval_plan(State, Id, Right),
+    Pairs = lists:append([mem_left_pairs_for(L, RightRows, Cond, Where2) || L <- LeftRows]),
+    Flat = [mem_prefix_left_pair(L, OptR) || {L, OptR} <- mem_order_pairs(Orders, Pairs)],
+    mem_paginate(mem_distinct(Dist, Flat), Lim, Off);
+mem_eval_plan(State, Id, {'PlanJoin', <<"RIGHT">>, Left, Right, Cond, Where2, Orders, Lim, Off, Dist}) ->
+    LeftRows = mem_eval_plan(State, Id, Left),
+    RightRows = mem_eval_plan(State, Id, Right),
+    Pairs = lists:append([mem_right_pairs_for(R, LeftRows, Cond, Where2) || R <- RightRows]),
+    Flat = [mem_prefix_right_pair(OptL, R) || {OptL, R} <- mem_order_pairs(Orders, Pairs)],
+    mem_paginate(mem_distinct(Dist, Flat), Lim, Off);
+mem_eval_plan(State, Id, {'PlanJoin', <<"FULL">>, Left, Right, Cond, Where2, Orders, Lim, Off, Dist}) ->
+    LeftRows = mem_eval_plan(State, Id, Left),
+    RightRows = mem_eval_plan(State, Id, Right),
+    LeftSide = lists:append([mem_full_left_pairs_for(L, RightRows, Cond, Where2) || L <- LeftRows]),
+    RightOnly = lists:append([mem_full_right_only_for(R, LeftRows, Cond, Where2) || R <- RightRows]),
+    Flat = [mem_prefix_full_pair(OptL, OptR) || {OptL, OptR} <- mem_order_pairs(Orders, LeftSide ++ RightOnly)],
+    mem_paginate(mem_distinct(Dist, Flat), Lim, Off);
 mem_eval_plan(State, Id, {'PlanProject', Proj, Child, Lim, Off, Dist}) ->
     Rows = mem_eval_plan(State, Id, Child),
     Projected = [mem_project_prefixed(Proj, Row) || Row <- Rows],
@@ -1605,6 +1624,22 @@ mem_prefix_pair(L, R) ->
 
 mem_prefix_keys(Prefix, M) ->
     maps:fold(fun(K, V, Acc) -> Acc#{<<Prefix/binary, K/binary>> => V} end, #{}, M).
+
+%% Flatten an outer-join pair into one prefixed row, OMITTING the columns of an
+%% unmatched side: a left-join row keeps the right columns (t1$) only when the right
+%% matched (`{some, R}`), so a missing t1$ prefix in the flat row is the decoder's
+%% signal that the right side matched no row. The right- and full-join duals mirror it.
+mem_prefix_left_pair(L, {some, R}) -> mem_prefix_pair(L, R);
+mem_prefix_left_pair(L, none)      -> mem_prefix_keys(<<"t0$">>, L).
+
+mem_prefix_right_pair({some, L}, R) -> mem_prefix_pair(L, R);
+mem_prefix_right_pair(none, R)      -> mem_prefix_keys(<<"t1$">>, R).
+
+mem_prefix_full_pair(OptL, OptR) ->
+    maps:merge(mem_prefix_opt(<<"t0$">>, OptL), mem_prefix_opt(<<"t1$">>, OptR)).
+
+mem_prefix_opt(Prefix, {some, M}) -> mem_prefix_keys(Prefix, M);
+mem_prefix_opt(_Prefix, none)     -> #{}.
 
 %% Apply a set operation to two row lists. UNION, INTERSECT, and EXCEPT de-duplicate
 %% (set semantics); UNION ALL keeps every row. Rows compare by full term equality,

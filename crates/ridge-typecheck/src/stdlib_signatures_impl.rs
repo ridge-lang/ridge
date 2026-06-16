@@ -1573,10 +1573,8 @@ mod tests {
                 }
                 // std.data: `Adapter` and its methods (`appendRow`/`all`/`selectRows`/
                 // `get`/`delete`/`updateRows`/`fetch`/`countWhere`/`aggregate`/
-                // `project`/`join`/`joinSelect`/`leftJoin`/`leftJoinSelect`/
-                // `rightJoin`/`rightJoinSelect`/`aggregateJoin`/`aggregateLeftJoin`/
-                // `aggregateRightJoin`/`countJoin`/`countLeftJoin`/`countRightJoin`)
-                // are a class seeded via `seed_sql_codec_schemes`;
+                // `project`/`groupSummarize`/`runPlan`) are a class seeded via
+                // `seed_sql_codec_schemes`;
                 // `MemAdapter`/`Postgres`/`Config` are reconciled types, and
                 // `memAdapter`/`connect` are seeded via `reconciled_fn_scheme`
                 // (their signatures name reconciled types), so none resolves
@@ -1595,27 +1593,7 @@ mod tests {
                             | "countWhere"
                             | "aggregate"
                             | "project"
-                            | "join"
-                            | "joinSelect"
-                            | "leftJoin"
-                            | "leftJoinSelect"
-                            | "aggregateJoin"
-                            | "aggregateLeftJoin"
-                            | "countJoin"
-                            | "countLeftJoin"
                             | "groupSummarize"
-                            | "groupSummarizeJoin"
-                            | "groupSummarizeLeftJoin"
-                            | "rightJoin"
-                            | "rightJoinSelect"
-                            | "aggregateRightJoin"
-                            | "countRightJoin"
-                            | "groupSummarizeRightJoin"
-                            | "fullJoin"
-                            | "fullJoinSelect"
-                            | "aggregateFullJoin"
-                            | "countFullJoin"
-                            | "groupSummarizeFullJoin"
                             | "runPlan"
                             | "begin"
                             | "commit"

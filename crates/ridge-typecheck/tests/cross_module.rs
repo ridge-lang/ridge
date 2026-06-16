@@ -1521,9 +1521,9 @@ pub fn db authorLines () -> Result (List Line) Error =
 
 #[test]
 fn query_builder_join_over_postgres_typechecks() {
-    // The join resolves the same `Adapter`/`Row` constraints on Postgres: `join`
-    // and `joinSelect` are class methods both adapters implement, so the call is
-    // unchanged across backends.
+    // The join resolves the same `Adapter`/`Row` constraints on Postgres: it
+    // lowers onto `runPlan`, a class method both adapters implement, so the call
+    // is unchanged across backends.
     let main = r#"
 import std.data (connect, Config, Postgres)
 import std.repo as Repo
@@ -1689,9 +1689,9 @@ pub fn db bad () -> Result (List (User, Post)) Error =
 
 #[test]
 fn query_builder_left_join_over_postgres_typechecks() {
-    // The left join resolves the same `Adapter`/`Row` constraints on Postgres:
-    // `leftJoin` is a class method both adapters implement, so the call is
-    // unchanged across backends.
+    // The left join resolves the same `Adapter`/`Row` constraints on Postgres: it
+    // lowers onto `runPlan`, a class method both adapters implement, so the call
+    // is unchanged across backends.
     let main = r#"
 import std.data (connect, Config, Postgres)
 import std.repo as Repo
@@ -1808,9 +1808,9 @@ pub fn db postAuthors () -> Result (List Combo) Error =
 
 #[test]
 fn query_builder_right_join_over_postgres_typechecks() {
-    // The right join resolves the same `Adapter`/`Row` constraints on Postgres:
-    // `rightJoin` is a class method both adapters implement, so the call is unchanged
-    // across backends.
+    // The right join resolves the same `Adapter`/`Row` constraints on Postgres: it
+    // lowers onto `runPlan`, a class method both adapters implement, so the call is
+    // unchanged across backends.
     let main = r#"
 import std.data (connect, Config, Postgres)
 import std.repo as Repo
@@ -1926,9 +1926,9 @@ pub fn db pairs () -> Result (List Combo) Error =
 
 #[test]
 fn query_builder_full_join_over_postgres_typechecks() {
-    // The full join resolves the same `Adapter`/`Row` constraints on Postgres:
-    // `fullJoin` is a class method both adapters implement, so the call is unchanged
-    // across backends.
+    // The full join resolves the same `Adapter`/`Row` constraints on Postgres: it
+    // lowers onto `runPlan`, a class method both adapters implement, so the call is
+    // unchanged across backends.
     let main = r#"
 import std.data (connect, Config, Postgres)
 import std.repo as Repo
@@ -2154,7 +2154,7 @@ pub fn db bad () -> Result (List Line) Error =
 #[test]
 fn query_builder_select_left_join_over_postgres_typechecks() {
     // The left-join projection resolves the same `Adapter`/`Row` constraints on
-    // Postgres: `leftJoinSelect` is a class method both adapters implement.
+    // Postgres: it lowers onto `runPlan`, a class method both adapters implement.
     let main = r#"
 import std.data (connect, Config, Postgres)
 import std.repo as Repo

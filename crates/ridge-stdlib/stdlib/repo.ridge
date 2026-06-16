@@ -1524,14 +1524,14 @@ instance Summarizable (Join e f a) where Adapter a =
 -- joins a group; an unmatched one contributes its left columns and a NULL right side.
 instance Summarizable (LeftJoin e f a) where Adapter a =
     runGroups (src: LeftJoin e f a) (keyCol: Text) (keySide: Bool) (projTree: QExpr) (havingTree: QExpr) -> Result (List (Map Text SqlValue)) Error =
-        groupSummarizeLeftJoin src.left.repo.adapter src.left.repo.table src.right.table src.cond src.where2 src.left.pred keyCol keySide (groupCols keyCol projTree) havingTree
+        runPlan src.left.repo.adapter (planGroup keyCol keySide (groupCols keyCol projTree) havingTree (leftReduceJoin src src.where2.tree (0 - 1)))
 
 -- A right join's `summarize` seam: the dual over a `RightJoin`, run through the
 -- `groupSummarizeRightJoin` push-down. Every right row the post-join `WHERE` admits
 -- joins a group; an unmatched one contributes its right columns and a NULL left side.
 instance Summarizable (RightJoin e f a) where Adapter a =
     runGroups (src: RightJoin e f a) (keyCol: Text) (keySide: Bool) (projTree: QExpr) (havingTree: QExpr) -> Result (List (Map Text SqlValue)) Error =
-        groupSummarizeRightJoin src.left.repo.adapter src.left.repo.table src.right.table src.cond src.where2 src.left.pred keyCol keySide (groupCols keyCol projTree) havingTree
+        runPlan src.left.repo.adapter (planGroup keyCol keySide (groupCols keyCol projTree) havingTree (rightReduceJoin src src.where2.tree (0 - 1)))
 
 -- A full join's `summarize` seam: the dual over a `FullJoin`, run through the
 -- `groupSummarizeFullJoin` push-down. Every row of both tables the post-join `WHERE`
@@ -1539,7 +1539,7 @@ instance Summarizable (RightJoin e f a) where Adapter a =
 -- NULL on the missing side, grouping under the NULL key for a key over that side.
 instance Summarizable (FullJoin e f a) where Adapter a =
     runGroups (src: FullJoin e f a) (keyCol: Text) (keySide: Bool) (projTree: QExpr) (havingTree: QExpr) -> Result (List (Map Text SqlValue)) Error =
-        groupSummarizeFullJoin src.left.repo.adapter src.left.repo.table src.right.table src.cond src.where2 src.left.pred keyCol keySide (groupCols keyCol projTree) havingTree
+        runPlan src.left.repo.adapter (planGroup keyCol keySide (groupCols keyCol projTree) havingTree (fullReduceJoin src src.where2.tree (0 - 1)))
 
 -- Decode a list of `(left, right)` row pairs into entity pairs, stopping at the
 -- first decode failure on either side.

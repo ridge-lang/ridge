@@ -1189,13 +1189,14 @@ run_verb(Conn, {run_plan, {'PlanAggregate', Func, Column, IsRight, {'PlanJoin', 
         {ok, {some, V}} -> {ok, [#{<<"agg">> => V}]};
         Err             -> Err
     end;
-run_verb(Conn, {run_plan, {'PlanGroup', KeyCol, KeySide, Cols, Having, {'PlanJoin', <<"INNER">>, Left, Right, Cond, Where2, _Orders, _Lim, _Off, _Dist}}}) ->
-    %% Shim: a grouped inner-join plan reuses the existing group_summarize_join SQL —
-    %% the GROUP BY/HAVING push-down over the join, one row per group. The real
+run_verb(Conn, {run_plan, {'PlanGroup', KeyCol, KeySide, Cols, Having, {'PlanJoin', Kind, Left, Right, Cond, Where2, _Orders, _Lim, _Off, _Dist}}}) ->
+    %% Shim: a grouped join plan reuses the existing group_summarize SQL for its kind —
+    %% the GROUP BY/HAVING push-down over the join, one row per group. An unmatched
+    %% outer side groups under its NULL key and folds skip its columns. The real
     %% renderer lands with planToSql.
     {LeftTable, Pred} = plan_scan_table_pred(Left),
     {RightTable, _RPred} = plan_scan_table_pred(Right),
-    run_verb(Conn, {group_summarize_join, LeftTable, RightTable, Cond, Where2, Pred, KeyCol, KeySide, Cols, Having});
+    run_verb(Conn, {group_summarize_verb(Kind), LeftTable, RightTable, Cond, Where2, Pred, KeyCol, KeySide, Cols, Having});
 run_verb(Conn, {run_plan, Plan}) ->
     {Sql, RevBinds, _N} = plan_sql(Plan, 1, []),
     run_query(Conn, Sql, lists:reverse(RevBinds)).
@@ -1258,6 +1259,12 @@ aggregate_join_verb(<<"INNER">>) -> aggregate_join;
 aggregate_join_verb(<<"LEFT">>)  -> aggregate_left_join;
 aggregate_join_verb(<<"RIGHT">>) -> aggregate_right_join;
 aggregate_join_verb(<<"FULL">>)  -> aggregate_full_join.
+
+%% The group-summarize seam verb a `PlanGroup` over a join of the given kind uses.
+group_summarize_verb(<<"INNER">>) -> group_summarize_join;
+group_summarize_verb(<<"LEFT">>)  -> group_summarize_left_join;
+group_summarize_verb(<<"RIGHT">>) -> group_summarize_right_join;
+group_summarize_verb(<<"FULL">>)  -> group_summarize_full_join.
 
 do_insert(Conn, Table, Row) ->
     Pairs = maps:to_list(Row),

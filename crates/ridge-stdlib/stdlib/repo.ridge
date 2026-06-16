@@ -21,7 +21,7 @@
 
 import std.data as Db
 import std.sql (SqlValue)
-import std.query (SortOrder, ascending, QueryPlan, planScan, planCombine, planRefine, planJoin, planProject)
+import std.query (SortOrder, ascending, QueryPlan, planScan, planCombine, planRefine, planJoin, planProject, planAggregate)
 import std.map (fromList, toList)
 
 -- A repository: entity `e` stored in `table` through adapter `a`. Opaque, so it
@@ -900,26 +900,28 @@ instance Aggregable (Query e a) (fn e -> n) where Adapter a, SqlType n =
 
 -- An inner join's scalar aggregates: fold a column the two-row accessor names —
 -- from either side (`fn (u: User) (p: Post) -> p.amount` folds the right table) —
--- over the joined rows the condition and post-join filter keep, through the
--- `aggregateJoin` seam. `aggSide` reads which side the column belongs to so the
--- seam qualifies it to the right table alias; `aggColumn` reads its name.
+-- over the joined rows the condition and post-join filter keep, through a
+-- `PlanAggregate` over the join plan (`scalarJoinPlan`). `aggSide` reads which side
+-- the column belongs to so the fold reads it under that source's prefix; `aggColumn`
+-- reads its name. The plan's lone row carries the scalar (`firstAggCell`), or no row
+-- when the fold is empty, which `decodeScalar` reads as `None`.
 instance Aggregable (Join e f a) (fn e f -> n) where Adapter a, SqlType n =
     sumOf (col: Quote (fn e f -> n)) (x: Join e f a) -> Result (Option n) Error =
-        match aggregateJoin x.left.repo.adapter x.left.repo.table x.right.table x.cond x.where2 x.left.pred "SUM" (aggColumn col) (aggSide col)
+        match runPlan x.left.repo.adapter (scalarJoinPlan x "SUM" col)
             Err err -> Err err
-            Ok v    -> decodeScalar v
+            Ok rows -> decodeScalar (firstAggCell rows)
     avgOf (col: Quote (fn e f -> n)) (x: Join e f a) -> Result (Option Float) Error =
-        match aggregateJoin x.left.repo.adapter x.left.repo.table x.right.table x.cond x.where2 x.left.pred "AVG" (aggColumn col) (aggSide col)
+        match runPlan x.left.repo.adapter (scalarJoinPlan x "AVG" col)
             Err err -> Err err
-            Ok v    -> decodeScalar v
+            Ok rows -> decodeScalar (firstAggCell rows)
     minOf (col: Quote (fn e f -> n)) (x: Join e f a) -> Result (Option n) Error =
-        match aggregateJoin x.left.repo.adapter x.left.repo.table x.right.table x.cond x.where2 x.left.pred "MIN" (aggColumn col) (aggSide col)
+        match runPlan x.left.repo.adapter (scalarJoinPlan x "MIN" col)
             Err err -> Err err
-            Ok v    -> decodeScalar v
+            Ok rows -> decodeScalar (firstAggCell rows)
     maxOf (col: Quote (fn e f -> n)) (x: Join e f a) -> Result (Option n) Error =
-        match aggregateJoin x.left.repo.adapter x.left.repo.table x.right.table x.cond x.where2 x.left.pred "MAX" (aggColumn col) (aggSide col)
+        match runPlan x.left.repo.adapter (scalarJoinPlan x "MAX" col)
             Err err -> Err err
-            Ok v    -> decodeScalar v
+            Ok rows -> decodeScalar (firstAggCell rows)
 
 -- A left join's scalar aggregates: the two-row dual over a `LeftJoin`, run through
 -- the `aggregateLeftJoin` seam. Unlike a left join's `select`/`orderBy` — whose
@@ -1049,6 +1051,53 @@ fn innerJoinPlan (x: Join e f a) (lim: Int) -> QueryPlan =
 -- the same plan with a one-row limit.
 fn innerJoinSelectPlan (x: Join e f a) (proj: QExpr) (lim: Int) -> QueryPlan =
     planProject proj (planJoin "INNER" (planScan x.left.repo.table x.left.pred.tree [] (0 - 1) 0 false) (planScan x.right.table (keepAllTree ()) [] (0 - 1) 0 false) x.cond.tree x.where2.tree x.orders (0 - 1) 0 false) lim x.off x.dist
+
+-- The base inner-join plan a reduction terminal (`count`, `exists`, a scalar
+-- aggregate) folds over. A reduction measures or folds the matched set rather than a
+-- paged, ordered window of it, so the join carries neither ordering, offset, nor
+-- distinct — only `where2` (which a join `filter`, or `every`'s extra predicate,
+-- narrows) and `lim`, which `exists` sets to one to answer from a single row. Its
+-- flat source-prefixed rows are what the scalar nodes fold.
+fn reduceJoin (x: Join e f a) (where2: QExpr) (lim: Int) -> QueryPlan =
+    planJoin "INNER" (planScan x.left.repo.table x.left.pred.tree [] (0 - 1) 0 false) (planScan x.right.table (keepAllTree ()) [] (0 - 1) 0 false) x.cond.tree where2 [] lim 0 false
+
+-- Run a `COUNT` aggregate plan over the inner join narrowed by `where2` and read the
+-- count off its lone row. Shared by the join's `count` and `every` (which counts
+-- twice, once with the extra predicate folded in).
+fn countJoinPlan (x: Join e f a) (where2: QExpr) -> Result Int Error where Adapter a =
+    match runPlan x.left.repo.adapter (planAggregate "COUNT" "" false (reduceJoin x where2 (0 - 1)))
+        Err err -> Err err
+        Ok rows -> aggCount rows
+
+-- The lone scalar an aggregate plan carries: its single row holds the value (under
+-- the `agg` alias the backends key it by), or the plan returns no row at all when the
+-- aggregate is SQL NULL (an empty fold). Reading the first row's first cell recovers
+-- the scalar without naming the alias; no row reads as `None`, which `decodeScalar`
+-- turns into the `None` an empty aggregate answers.
+fn firstAggCell (rows: List (Map Text SqlValue)) -> Option SqlValue =
+    match rows
+        []       -> None
+        row :: _ ->
+            match toList row
+                []          -> None
+                (_, v) :: _ -> Some v
+
+-- The integer a `COUNT` aggregate plan returns, decoded off its lone cell. A `COUNT`
+-- is never SQL NULL (zero rows count 0), but the empty guard keeps the read total.
+fn aggCount (rows: List (Map Text SqlValue)) -> Result Int Error =
+    match firstAggCell rows
+        None    -> Ok 0
+        Some sv ->
+            match fromSql sv
+                Err err -> Err err
+                Ok n    -> Ok n
+
+-- The scalar-aggregate plan an inner-join `sumOf`/`avgOf`/`minOf`/`maxOf` runs: a
+-- `PlanAggregate` over the all-pairs join, folding the column the two-row accessor
+-- names (`aggColumn`) on whichever side it belongs to (`aggSide`). The fold ignores
+-- ordering and paging, so `reduceJoin` leaves them off.
+fn scalarJoinPlan (x: Join e f a) (func: Text) (col: Quote p) -> QueryPlan =
+    planAggregate func (aggColumn col) (aggSide col) (reduceJoin x x.where2.tree (0 - 1))
 
 instance Decodable (Join e f a) where Adapter a, Row f, Row e =
     toList (x: Join e f a) -> Result (List (e, f)) Error =
@@ -1217,17 +1266,18 @@ instance Countable (Query e a) where Adapter a =
                     Err err -> Err err
                     Ok rows -> Ok (nonEmpty rows)
 
--- An inner join's `count`/`exists`: count the joined pairs through the `countJoin`
--- seam (a `COUNT(*)` over the join) or probe the join for a single pair. As with the
--- join aggregates, the join is neither ordered nor paged — these answer the matched
--- set, not a window.
+-- An inner join's `count`/`exists`: count the joined pairs through a `PlanAggregate`
+-- `COUNT` over the join plan (`countJoinPlan`), or probe the join plan for a single
+-- row. As with the join aggregates, the join is neither ordered nor paged — these
+-- answer the matched set, not a window — so `reduceJoin` leaves ordering and paging
+-- off, save the one-row limit `exists` reads its answer from.
 instance Countable (Join e f a) where Adapter a =
     count (x: Join e f a) -> Result Int Error =
-        countJoin x.left.repo.adapter x.left.repo.table x.right.table x.cond x.where2 x.left.pred
+        countJoinPlan x x.where2.tree
     exists (x: Join e f a) -> Result Bool Error =
-        match join x.left.repo.adapter x.left.repo.table x.right.table x.cond x.where2 x.left.pred [] 1 0 false
+        match runPlan x.left.repo.adapter (reduceJoin x x.where2.tree 1)
             Err err  -> Err err
-            Ok pairs -> Ok (nonEmpty pairs)
+            Ok rows  -> Ok (nonEmpty rows)
 
 -- A left join's `count`/`exists`: the dual over a `LeftJoin`, counted through
 -- `countLeftJoin` (a `COUNT(*)` over the left-outer join, every left row kept).
@@ -1282,13 +1332,16 @@ instance Every (Query e a) (fn e -> Bool) where Adapter a =
                     Ok matching -> Ok (total == matching)
 
 -- An inner join's `every`: compare the join's count against the count once the
--- predicate folds into the post-join `WHERE`, both pushed down through `countJoin`.
+-- predicate folds into the post-join `WHERE`, both counted through a `PlanAggregate`
+-- `COUNT` over the join plan (`countJoinPlan`), the second narrowing `where2` with the
+-- extra predicate AND-folded in.
 instance Every (Join e f a) (fn e f -> Bool) where Adapter a =
     every (pred: Quote (fn e f -> Bool)) (x: Join e f a) -> Result Bool Error =
-        match countJoin x.left.repo.adapter x.left.repo.table x.right.table x.cond x.where2 x.left.pred
+        let folded = quoteAnd2 x.where2 pred
+        match countJoinPlan x x.where2.tree
             Err err  -> Err err
             Ok total ->
-                match countJoin x.left.repo.adapter x.left.repo.table x.right.table x.cond (quoteAnd2 x.where2 pred) x.left.pred
+                match countJoinPlan x folded.tree
                     Err err     -> Err err
                     Ok matching -> Ok (total == matching)
 

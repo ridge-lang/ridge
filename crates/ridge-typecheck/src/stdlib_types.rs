@@ -814,6 +814,19 @@ fn reconciled_decls(b: &BuiltinTyCons, base: u32) -> Vec<TyConDecl> {
                             Type::Con(b.bool, vec![]),
                         ]),
                     },
+                    // `PlanAggregate func column isRight child` — reduce a sub-plan to a
+                    // single scalar (`COUNT`/`SUM`/`AVG`/`MIN`/`MAX` of `column`, on the
+                    // join side `isRight` selects). Yields one row carrying the scalar,
+                    // or none when the aggregate is SQL NULL.
+                    UnionVariant {
+                        name: "PlanAggregate".to_string(),
+                        kind: VariantPayload::Positional(vec![
+                            Type::Con(b.text, vec![]),
+                            Type::Con(b.text, vec![]),
+                            Type::Con(b.bool, vec![]),
+                            Type::Con(TyConId(base + 15), vec![]),
+                        ]),
+                    },
                 ],
             }),
             def_span: None,
@@ -973,9 +986,11 @@ pub(crate) fn reconciled_fn_scheme(
         }
         // std.query `planScan`/`planCombine`/`planRefine`/`planJoin` — the `QueryPlan`
         // factories.
-        ("std.query", "planScan" | "planCombine" | "planRefine" | "planJoin" | "planProject") => {
-            reconciled_query_plan_fn_scheme(name, reconciled, b)
-        }
+        (
+            "std.query",
+            "planScan" | "planCombine" | "planRefine" | "planJoin" | "planProject"
+            | "planAggregate",
+        ) => reconciled_query_plan_fn_scheme(name, reconciled, b),
         ("std.repo", _) => reconciled_repo_fn_scheme(name, reconciled, b, classes?),
         ("std.migrate", _) => reconciled_migrate_fn_scheme(name, reconciled, b, classes?),
         ("std.raw", _) => reconciled_raw_fn_scheme(name, b, classes?),
@@ -984,9 +999,9 @@ pub(crate) fn reconciled_fn_scheme(
 }
 
 /// The `std.query` plan-builder slice of [`reconciled_fn_scheme`]: `planScan`/
-/// `planCombine`/`planRefine`/`planJoin`/`planProject`, the factories that build a
-/// `QueryPlan` node. Each is pure and returns the reconciled `QueryPlan`, so none is
-/// expressible in the hand-curated signature table.
+/// `planCombine`/`planRefine`/`planJoin`/`planProject`/`planAggregate`, the factories
+/// that build a `QueryPlan` node. Each is pure and returns the reconciled `QueryPlan`,
+/// so none is expressible in the hand-curated signature table.
 fn reconciled_query_plan_fn_scheme(
     name: &str,
     reconciled: &FxHashMap<String, TyConId>,
@@ -1036,6 +1051,8 @@ fn reconciled_query_plan_fn_scheme(
         ])),
         // planProject : QExpr -> QueryPlan -> Int -> Int -> Bool -> QueryPlan
         "planProject" => Some(pure(vec![qexpr(), plan(), int(), int(), bool_()])),
+        // planAggregate : Text -> Text -> Bool -> QueryPlan -> QueryPlan
+        "planAggregate" => Some(pure(vec![text(), text(), bool_(), plan()])),
         _ => None,
     }
 }

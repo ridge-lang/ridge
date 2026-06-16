@@ -397,11 +397,13 @@ const BASELINE_EXPORTS: &[(&str, &[&str])] = &[
             "PlanRefine",
             "PlanJoin",
             "PlanProject",
+            "PlanAggregate",
             "planScan",
             "planCombine",
             "planRefine",
             "planJoin",
             "planProject",
+            "planAggregate",
         ],
     ),
     (

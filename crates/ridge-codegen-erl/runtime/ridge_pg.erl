@@ -1139,6 +1139,28 @@ run_verb(Conn, {run_plan, {'PlanJoin', <<"INNER">>, Left, Right, Cond, Where2, O
         {ok, Pairs} -> {ok, [pg_prefix_pair(L, R) || {L, R} <- Pairs]};
         Err -> Err
     end;
+run_verb(Conn, {run_plan, {'PlanAggregate', <<"COUNT">>, _Column, _IsRight, {'PlanJoin', <<"INNER">>, Left, Right, Cond, Where2, _Orders, _Lim, _Off, _Dist}}}) ->
+    %% Shim: a COUNT over an inner-join plan reuses the existing count_join SQL, then
+    %% wraps the integer into the aggregate plan's one-row `agg` cell. The reader takes
+    %% the lone cell as the scalar. The real renderer lands with planToSql.
+    {LeftTable, Pred} = plan_scan_table_pred(Left),
+    {RightTable, _RPred} = plan_scan_table_pred(Right),
+    case run_verb(Conn, {count_join, LeftTable, RightTable, Cond, Where2, Pred}) of
+        {ok, N} -> {ok, [#{<<"agg">> => {'SqlInt', N}}]};
+        Err     -> Err
+    end;
+run_verb(Conn, {run_plan, {'PlanAggregate', Func, Column, IsRight, {'PlanJoin', <<"INNER">>, Left, Right, Cond, Where2, _Orders, _Lim, _Off, _Dist}}}) ->
+    %% Shim: a scalar aggregate over an inner-join plan reuses the existing
+    %% aggregate_join SQL. A present scalar becomes the plan's one-row `agg` cell; a
+    %% SQL NULL aggregate (an empty fold) becomes no row at all, which the reader takes
+    %% as "none".
+    {LeftTable, Pred} = plan_scan_table_pred(Left),
+    {RightTable, _RPred} = plan_scan_table_pred(Right),
+    case run_verb(Conn, {aggregate_join, LeftTable, RightTable, Cond, Where2, Pred, Func, Column, IsRight}) of
+        {ok, none}      -> {ok, []};
+        {ok, {some, V}} -> {ok, [#{<<"agg">> => V}]};
+        Err             -> Err
+    end;
 run_verb(Conn, {run_plan, Plan}) ->
     {Sql, RevBinds, _N} = plan_sql(Plan, 1, []),
     run_query(Conn, Sql, lists:reverse(RevBinds)).

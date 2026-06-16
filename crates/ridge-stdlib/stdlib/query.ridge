@@ -50,7 +50,14 @@ pub fn ascending (dir: SortOrder) -> Bool =
 -- right-source one); the join itself leaves its page and distinct off, since
 -- `distinct` de-duplicates the projected columns and the page bounds the projected
 -- rows, so both belong on the projection.
-pub type QueryPlan = PlanScan Text QExpr (List (Bool, Text)) Int Int Bool | PlanCombine Text QueryPlan QueryPlan | PlanRefine QueryPlan QExpr (List (Bool, Text)) Int Int Bool | PlanJoin Text QueryPlan QueryPlan QExpr QExpr (List (Bool, Bool, Text)) Int Int Bool | PlanProject QExpr QueryPlan Int Int Bool
+-- `PlanAggregate` reduces a sub-plan to a single scalar: `func` is the SQL aggregate
+-- keyword (`COUNT`/`SUM`/`AVG`/`MIN`/`MAX`), `column` the column it folds (empty for
+-- `COUNT`, which counts rows) and `isRight` which join source the column belongs to
+-- (`t0$`/`t1$` over a `PlanJoin`'s prefixed rows). It yields exactly one row carrying
+-- the scalar, or no row at all when the aggregate is SQL NULL (an empty fold) — so a
+-- reader takes the lone cell as the value and an empty result as "none". A `COUNT` is
+-- never NULL, so it always yields its row.
+pub type QueryPlan = PlanScan Text QExpr (List (Bool, Text)) Int Int Bool | PlanCombine Text QueryPlan QueryPlan | PlanRefine QueryPlan QExpr (List (Bool, Text)) Int Int Bool | PlanJoin Text QueryPlan QueryPlan QExpr QExpr (List (Bool, Bool, Text)) Int Int Bool | PlanProject QExpr QueryPlan Int Int Bool | PlanAggregate Text Text Bool QueryPlan
 
 -- A single-table scan plan — the plan form of `fetch`.
 pub fn planScan (table: Text) (pred: QExpr) (orders: List (Bool, Text)) (lim: Int) (off: Int) (dist: Bool) -> QueryPlan =
@@ -77,6 +84,13 @@ pub fn planJoin (kind: Text) (left: QueryPlan) (right: QueryPlan) (cond: QExpr) 
 -- source-prefixed rows into rows keyed by the projection's output aliases.
 pub fn planProject (proj: QExpr) (child: QueryPlan) (lim: Int) (off: Int) (dist: Bool) -> QueryPlan =
     PlanProject proj child lim off dist
+
+-- Reduce a sub-plan to a single scalar through the aggregate `func` over `column`
+-- (`isRight` picks the join source the column belongs to; `column` is unused for
+-- `COUNT`). The result is one row carrying the scalar, or no row when the aggregate
+-- is SQL NULL.
+pub fn planAggregate (func: Text) (column: Text) (isRight: Bool) (child: QueryPlan) -> QueryPlan =
+    PlanAggregate func column isRight child
 
 -- Render a captured tree to a readable, SQL-shaped string. Literals show as `?`
 -- placeholders — binding parameters is the SQL-compilation pass's job; this is

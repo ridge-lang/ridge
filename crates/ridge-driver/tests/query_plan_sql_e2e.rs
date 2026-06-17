@@ -121,6 +121,54 @@ pub fn groupSql () -> Text =
 pub fn inner3Sql () -> Text = renderSql (inner3 ())
 
 pub fn inner3Binds () -> Text = renderBinds (inner3 ())
+
+-- A mixed-shape chain extends the inner `Join` of users and posts with a third table
+-- under an outer step. The left child is the inner `PlanJoin`; the outer node's kind
+-- (`LEFT`/`RIGHT`/`FULL`) sets how the new leaf joins and which leaves it null-extends.
+-- A left step makes the new comments leaf optional (a `t2$__present__` marker); a right
+-- or full step makes the whole `(users, posts)` composite optional as a unit (markers
+-- on `t0`/`t1`). The base scan rides inside its own subquery when its leaf can be
+-- null-extended, so its filter binds before the join.
+fn innerLeftMix () -> QueryPlan =
+    planJoin "LEFT"
+        (planJoin "INNER" (usersScan ()) (postsScan ()) (joinCond ()) (keepAllJoin ()) [] (0 - 1) 0 false (leftCols ()) (rightCols ()))
+        (commentsScan ())
+        (joinCond2 ())
+        (keepAllJoin ())
+        []
+        (0 - 1) 0 false
+        []
+        (commentCols ())
+
+fn innerRightMix () -> QueryPlan =
+    planJoin "RIGHT"
+        (planJoin "INNER" (usersScan ()) (postsScan ()) (joinCond ()) (keepAllJoin ()) [] (0 - 1) 0 false (leftCols ()) (rightCols ()))
+        (commentsScan ())
+        (joinCond2 ())
+        (keepAllJoin ())
+        []
+        (0 - 1) 0 false
+        []
+        (commentCols ())
+
+fn innerFullMix () -> QueryPlan =
+    planJoin "FULL"
+        (planJoin "INNER" (adultsScan ()) (postsScan ()) (joinCond ()) (keepAllJoin ()) [] (0 - 1) 0 false (leftCols ()) (rightCols ()))
+        (commentsScan ())
+        (joinCond2 ())
+        (keepAllJoin ())
+        []
+        (0 - 1) 0 false
+        []
+        (commentCols ())
+
+pub fn innerLeftMixSql () -> Text = renderSql (innerLeftMix ())
+
+pub fn innerRightMixSql () -> Text = renderSql (innerRightMix ())
+
+pub fn innerFullMixSql () -> Text = renderSql (innerFullMix ())
+
+pub fn innerFullMixBinds () -> Text = renderBinds (innerFullMix ())
 "#;
 
 fn write_workspace(root: &std::path::Path) {
@@ -185,7 +233,7 @@ fn query_plan_compiles_to_parameterized_sql() {
 
     let expr = format!(
         "F=fun(N)->io:format(\"~s=~s~n\",[N,{module}:N()])end, \
-         lists:foreach(F,['scanSql','scanBinds','combineSql','refineSql','innerSql','leftSql','rightSql','fullSql','fullBinds','projectSql','aggSql','groupSql','inner3Sql','inner3Binds']), halt()."
+         lists:foreach(F,['scanSql','scanBinds','combineSql','refineSql','innerSql','leftSql','rightSql','fullSql','fullBinds','projectSql','aggSql','groupSql','inner3Sql','inner3Binds','innerLeftMixSql','innerRightMixSql','innerFullMixSql','innerFullMixBinds']), halt()."
     );
     let output = Command::new("erl")
         .arg("-noshell")
@@ -269,4 +317,29 @@ fn query_plan_compiles_to_parameterized_sql() {
         r#"inner3Sql=SELECT t0."id" AS "t0$id", t0."age" AS "t0$age", t0."name" AS "t0$name", t1."id" AS "t1$id", t1."author" AS "t1$author", t1."title" AS "t1$title", t2."id" AS "t2$id", t2."post" AS "t2$post", t2."body" AS "t2$body" FROM "users" AS t0 JOIN "posts" AS t1 ON t0."id" = t1."author" JOIN "comments" AS t2 ON t1."id" = t2."post" WHERE (t0."age" >= $1)"#,
     );
     want("inner3Binds=1");
+
+    // A mixed chain `users JOIN posts LEFT JOIN comments`: the inner pair renders flat,
+    // then the left step wraps the new comments leaf in the `__present` marker subquery
+    // and selects it as `t2$__present__`. Only the new leaf is optional, so only `t2`
+    // carries a marker.
+    want(
+        r#"innerLeftMixSql=SELECT t0."id" AS "t0$id", t0."age" AS "t0$age", t0."name" AS "t0$name", t1."id" AS "t1$id", t1."author" AS "t1$author", t1."title" AS "t1$title", t2."id" AS "t2$id", t2."post" AS "t2$post", t2."body" AS "t2$body", t2."__present" AS "t2$__present__" FROM "users" AS t0 JOIN "posts" AS t1 ON t0."id" = t1."author" LEFT JOIN (SELECT *, TRUE AS "__present" FROM "comments") AS t2 ON t1."id" = t2."post""#,
+    );
+
+    // A mixed chain `users JOIN posts RIGHT JOIN comments`: the right step keeps every
+    // comments row and null-extends the whole `(users, posts)` composite as a unit, so
+    // both `t0` and `t1` wrap in marker subqueries while the always-present comments
+    // leaf `t2` stays bare. SQL's left-associative nesting nulls `t0` and `t1` together.
+    want(
+        r#"innerRightMixSql=SELECT t0."id" AS "t0$id", t0."age" AS "t0$age", t0."name" AS "t0$name", t0."__present" AS "t0$__present__", t1."id" AS "t1$id", t1."author" AS "t1$author", t1."title" AS "t1$title", t1."__present" AS "t1$__present__", t2."id" AS "t2$id", t2."post" AS "t2$post", t2."body" AS "t2$body" FROM (SELECT *, TRUE AS "__present" FROM "users") AS t0 JOIN (SELECT *, TRUE AS "__present" FROM "posts") AS t1 ON t0."id" = t1."author" RIGHT JOIN "comments" AS t2 ON t1."id" = t2."post""#,
+    );
+
+    // A mixed chain `adults JOIN posts FULL JOIN comments`: the full step null-extends
+    // both the composite and the new leaf, so all three leaves carry markers. The base
+    // `adults` filter rides inside `t0`'s subquery (bare column, `$1`), so it restricts
+    // which users enter the join rather than dropping a null-extended row afterward.
+    want(
+        r#"innerFullMixSql=SELECT t0."id" AS "t0$id", t0."age" AS "t0$age", t0."name" AS "t0$name", t0."__present" AS "t0$__present__", t1."id" AS "t1$id", t1."author" AS "t1$author", t1."title" AS "t1$title", t1."__present" AS "t1$__present__", t2."id" AS "t2$id", t2."post" AS "t2$post", t2."body" AS "t2$body", t2."__present" AS "t2$__present__" FROM (SELECT *, TRUE AS "__present" FROM "users" WHERE "age" >= $1) AS t0 JOIN (SELECT *, TRUE AS "__present" FROM "posts") AS t1 ON t0."id" = t1."author" FULL JOIN (SELECT *, TRUE AS "__present" FROM "comments") AS t2 ON t1."id" = t2."post""#,
+    );
+    want("innerFullMixBinds=1");
 }

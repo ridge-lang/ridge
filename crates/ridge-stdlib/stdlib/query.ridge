@@ -418,11 +418,16 @@ fn renderBareJoin (kind: Text) (left: QueryPlan) (right: QueryPlan) (cond: QExpr
                     { text = Text.join "" ["SELECT ", distinctKw dist, sel, " FROM ", sk.text, orderByClauseJoin orders, limitClause lim, offsetClause off], binds = sk.binds, next = sk.next }
                 _ -> emptyRender n
         _ ->
-            -- A nested left child is a join of three or more tables. Inner chains
-            -- flatten into one flat multi-way join; the outer shapes are still binary.
-            if kind == "INNER" then
-                renderNaryInner (PlanJoin kind left right cond where2 orders lim off dist leftCols rightCols) orders lim off dist n
-            else emptyRender n
+            -- A nested left child is a join of three or more tables. An all-inner spine
+            -- flattens into one flat multi-way INNER join; a spine with any outer step
+            -- renders each step by its own kind, with a presence marker on every leaf a
+            -- left, right, or full step can null-extend (the whole composite as a unit
+            -- for a right or full step).
+            let plan = PlanJoin kind left right cond where2 orders lim off dist leftCols rightCols
+            if allInnerSteps (flattenJoin plan).steps then
+                renderNaryInner plan orders lim off dist n
+            else
+                renderNaryMixed plan orders lim off dist n
 
 fn emptyRender (n: Int) -> { text: Text, binds: List SqlValue, next: Int } = { text = "", binds = [], next = n }
 
@@ -510,21 +515,22 @@ fn qualOperand (q0: Int) (e: QExpr) (n: Int) -> { text: Text, binds: List SqlVal
         QLitFloat v -> { text = placeholder n, binds = [sqlFloat v], next = n + 1 }
         _           -> { text = "NULL", binds = [], next = n }
 
--- The flattened inner-join spine: each leaf's (table, scan filter, columns) left to
--- right, and the (condition, post-join WHERE) that joins each leaf after the first.
+-- The flattened join spine: each leaf's (table, scan filter, columns) left to right,
+-- and the (kind, condition, post-join WHERE) that joins each leaf after the first.
 -- Walking the left spine, the innermost `PlanJoin`'s two scans are leaves 0 and 1, and
--- each enclosing `PlanJoin` adds its right scan as the next leaf.
-fn flattenInner (plan: QueryPlan) -> { leaves: List (Text, QExpr, List Text), steps: List (QExpr, QExpr) } =
+-- each enclosing `PlanJoin` adds its right scan as the next leaf, carrying that node's
+-- join kind so a mixed-shape spine can render each step by its own kind.
+fn flattenJoin (plan: QueryPlan) -> { leaves: List (Text, QExpr, List Text), steps: List (Text, QExpr, QExpr) } =
     match plan
-        PlanJoin _ left right cond where2 _ _ _ _ leftCols rightCols ->
+        PlanJoin kind left right cond where2 _ _ _ _ leftCols rightCols ->
             match right
                 PlanScan rt rp _ _ _ _ ->
                     match left
                         PlanScan lt lp _ _ _ _ ->
-                            { leaves = [(lt, lp, leftCols), (rt, rp, rightCols)], steps = [(cond, where2)] }
+                            { leaves = [(lt, lp, leftCols), (rt, rp, rightCols)], steps = [(kind, cond, where2)] }
                         _ ->
-                            let inner = flattenInner left
-                            { leaves = inner.leaves ++ [(rt, rp, rightCols)], steps = inner.steps ++ [(cond, where2)] }
+                            let inner = flattenJoin left
+                            { leaves = inner.leaves ++ [(rt, rp, rightCols)], steps = inner.steps ++ [(kind, cond, where2)] }
                 _ -> { leaves = [], steps = [] }
         _ -> { leaves = [], steps = [] }
 
@@ -542,26 +548,26 @@ fn narySelectCols (leaves: List (Text, QExpr, List Text)) (idx: Int) -> List Tex
 -- The `FROM t0 AS … JOIN t1 AS … ON … JOIN t2 …` text. The first leaf is the base
 -- table; each later leaf is joined on its step condition, the bind counter threaded
 -- so the `$N` placeholders stay sequential.
-fn naryFrom (leaves: List (Text, QExpr, List Text)) (steps: List (QExpr, QExpr)) (n: Int) -> { text: Text, binds: List SqlValue, next: Int } =
+fn naryFrom (leaves: List (Text, QExpr, List Text)) (steps: List (Text, QExpr, QExpr)) (n: Int) -> { text: Text, binds: List SqlValue, next: Int } =
     match leaves
         [] -> { text = "", binds = [], next = n }
         (t0, _, _) :: rest ->
             naryFromRest rest steps 1 (Text.join "" [quoteIdent t0, " AS ", tAlias 0]) [] n
 
-fn naryFromRest (leaves: List (Text, QExpr, List Text)) (steps: List (QExpr, QExpr)) (idx: Int) (acc: Text) (binds: List SqlValue) (n: Int) -> { text: Text, binds: List SqlValue, next: Int } =
+fn naryFromRest (leaves: List (Text, QExpr, List Text)) (steps: List (Text, QExpr, QExpr)) (idx: Int) (acc: Text) (binds: List SqlValue) (n: Int) -> { text: Text, binds: List SqlValue, next: Int } =
     match leaves
         [] -> { text = acc, binds = binds, next = n }
         (tk, _, _) :: restLeaves ->
             match steps
                 [] -> { text = acc, binds = binds, next = n }
-                (cond, _) :: restSteps ->
+                (_, cond, _) :: restSteps ->
                     let c = renderQual 0 cond n
                     naryFromRest restLeaves restSteps (idx + 1) (Text.join "" [acc, " JOIN ", quoteIdent tk, " AS ", tAlias idx, " ON ", c.text]) (binds ++ c.binds) c.next
 
 -- The WHERE conjuncts: each leaf's own scan filter (qualified to its leaf) and each
 -- step's post-join filter, dropping the always-true defaults so the clause stays
 -- clean — an empty result omits the WHERE entirely.
-fn naryWhere (leaves: List (Text, QExpr, List Text)) (steps: List (QExpr, QExpr)) (n: Int) -> { text: Text, binds: List SqlValue, next: Int } =
+fn naryWhere (leaves: List (Text, QExpr, List Text)) (steps: List (Text, QExpr, QExpr)) (n: Int) -> { text: Text, binds: List SqlValue, next: Int } =
     let lp = leafConds leaves 0 n
     let sp = stepConds steps lp.next
     let conds = lp.texts ++ sp.texts
@@ -580,10 +586,10 @@ fn leafConds (leaves: List (Text, QExpr, List Text)) (idx: Int) (n: Int) -> { te
                 let more = leafConds rest (idx + 1) r.next
                 { texts = Text.join "" ["(", r.text, ")"] :: more.texts, binds = r.binds ++ more.binds, next = more.next }
 
-fn stepConds (steps: List (QExpr, QExpr)) (n: Int) -> { texts: List Text, binds: List SqlValue, next: Int } =
+fn stepConds (steps: List (Text, QExpr, QExpr)) (n: Int) -> { texts: List Text, binds: List SqlValue, next: Int } =
     match steps
         [] -> { texts = [], binds = [], next = n }
-        (_, where2) :: rest ->
+        (_, _, where2) :: rest ->
             if isAlwaysTrue where2 then
                 stepConds rest n
             else
@@ -614,13 +620,163 @@ fn boolToLeaf (b: Bool) -> Int = if b then 1 else 0
 -- A bare N-ary inner join terminal (`toList`/`first`): the flattened multi-way join's
 -- flat prefixed rows, which the decoder reads back into the nested entity tuple.
 fn renderNaryInner (plan: QueryPlan) (orders: List (Bool, Bool, Text)) (lim: Int) (off: Int) (dist: Bool) (n: Int) -> { text: Text, binds: List SqlValue, next: Int } =
-    let f = flattenInner plan
+    let f = flattenJoin plan
     match f.leaves
         [] -> emptyRender n
         _  ->
             let from = naryFrom f.leaves f.steps n
             let wh = naryWhere f.leaves f.steps from.next
             { text = Text.join "" ["SELECT ", distinctKw dist, narySelect f.leaves, " FROM ", from.text, wh.text, naryOrderBy orders, limitClause lim, offsetClause off], binds = from.binds ++ wh.binds, next = wh.next }
+
+-- ── Mixed-shape (3+ table) join rendering ─────────────────────────────────────
+--
+-- A join chain that mixes inner with left, right, or full steps renders each step by
+-- its own kind: `FROM t0 JOIN t1 ON … LEFT JOIN t2 ON … RIGHT JOIN t3 ON …`. SQL's
+-- left-associative nesting gives the locked "composite as a unit" semantics for free —
+-- a right or full step's left operand is the whole accumulated `(… JOIN …)`, so an
+-- unmatched new row null-extends every composite leaf together. Each leaf a step can
+-- null-extend carries a presence marker (`TRUE AS "__present"`, selected as
+-- `t<i>$__present__`): the backend returns a null-extended leaf's real columns as NULL
+-- rather than omitting them, so the decoder reads the marker — present when the leaf
+-- matched, absent (NULL) when it did not — to tell an absent entity from a present one
+-- whose own columns are NULL. The base leaf's scan filter rides inside its subquery so
+-- it restricts which base rows enter the join (correct under every kind, including a
+-- right or full step that would otherwise drop a null-extended row a top-level WHERE
+-- rejected).
+
+-- Whether every join step is inner — an all-inner spine takes the marker-free
+-- `renderNaryInner` path; any outer step falls to `renderNaryMixed`.
+fn allInnerSteps (steps: List (Text, QExpr, QExpr)) -> Bool =
+    match steps
+        []                -> true
+        (kind, _, _) :: rest -> if kind == "INNER" then allInnerSteps rest else false
+
+-- The leaf indices a left, right, or full step can null-extend, so the renderer marks
+-- them and the decoder reads them as optional. A left or full step makes its new leaf
+-- optional; a right or full step makes every prior composite leaf optional as a unit.
+fn nullableLeaves (steps: List (Text, QExpr, QExpr)) -> List Int =
+    nullableFold steps 1 []
+
+fn nullableFold (steps: List (Text, QExpr, QExpr)) (idx: Int) (acc: List Int) -> List Int =
+    match steps
+        []                   -> acc
+        (kind, _, _) :: rest ->
+            let acc2 =
+                if kind == "LEFT" then addLeaf idx acc
+                else if kind == "RIGHT" then addRange 0 idx acc
+                else if kind == "FULL" then addLeaf idx (addRange 0 idx acc)
+                else acc
+            nullableFold rest (idx + 1) acc2
+
+fn addLeaf (i: Int) (acc: List Int) -> List Int =
+    if leafMember i acc then acc else i :: acc
+
+fn addRange (lo: Int) (hi: Int) (acc: List Int) -> List Int =
+    if lo >= hi then acc else addRange (lo + 1) hi (addLeaf lo acc)
+
+fn leafMember (i: Int) (xs: List Int) -> Bool =
+    match xs
+        []        -> false
+        x :: rest -> if x == i then true else leafMember i rest
+
+-- The SQL join keyword for a step's kind.
+fn joinKeyword (kind: Text) -> Text =
+    if kind == "LEFT" then "LEFT JOIN"
+    else if kind == "RIGHT" then "RIGHT JOIN"
+    else if kind == "FULL" then "FULL JOIN"
+    else "JOIN"
+
+-- A mixed-shape join terminal: the flattened spine rendered with per-kind joins and a
+-- presence marker on every null-extendable leaf, so the decoder reads each entity (and
+-- each composite) as present or absent.
+fn renderNaryMixed (plan: QueryPlan) (orders: List (Bool, Bool, Text)) (lim: Int) (off: Int) (dist: Bool) (n: Int) -> { text: Text, binds: List SqlValue, next: Int } =
+    let f = flattenJoin plan
+    match f.leaves
+        [] -> emptyRender n
+        _  ->
+            let nulls = nullableLeaves f.steps
+            let from = mixedFrom f.leaves f.steps nulls n
+            let wh = mixedWhere f.steps from.next
+            { text = Text.join "" ["SELECT ", distinctKw dist, mixedSelect f.leaves nulls, " FROM ", from.text, wh.text, naryOrderBy orders, limitClause lim, offsetClause off], binds = from.binds ++ wh.binds, next = wh.next }
+
+-- The prefixed select-list over every leaf, plus a `t<i>$__present__` marker for each
+-- null-extendable leaf.
+fn mixedSelect (leaves: List (Text, QExpr, List Text)) (nulls: List Int) -> Text =
+    Text.join ", " (mixedSelectCols leaves nulls 0)
+
+fn mixedSelectCols (leaves: List (Text, QExpr, List Text)) (nulls: List Int) (idx: Int) -> List Text =
+    match leaves
+        [] -> []
+        (_, _, cols) :: rest ->
+            let alias = Text.concat (tAlias idx) "."
+            let prefix = Text.concat (tAlias idx) "$"
+            let base = prefixCols alias prefix cols
+            let marked = if leafMember idx nulls then base ++ [markerTerm alias prefix] else base
+            marked ++ mixedSelectCols rest nulls (idx + 1)
+
+-- The `FROM <leaf0> AS t0 <KIND> JOIN <leaf1> AS t1 ON … …` text. A null-extendable or
+-- filtered leaf renders as a subquery carrying its marker and/or scan filter; a plain
+-- leaf stays a bare aliased table.
+fn mixedFrom (leaves: List (Text, QExpr, List Text)) (steps: List (Text, QExpr, QExpr)) (nulls: List Int) (n: Int) -> { text: Text, binds: List SqlValue, next: Int } =
+    match leaves
+        [] -> { text = "", binds = [], next = n }
+        (t0, p0, _) :: rest ->
+            let src0 = leafSource 0 t0 p0 (leafMember 0 nulls) n
+            mixedFromRest rest steps 1 nulls src0.text src0.binds src0.next
+
+fn mixedFromRest (leaves: List (Text, QExpr, List Text)) (steps: List (Text, QExpr, QExpr)) (idx: Int) (nulls: List Int) (acc: Text) (binds: List SqlValue) (n: Int) -> { text: Text, binds: List SqlValue, next: Int } =
+    match leaves
+        [] -> { text = acc, binds = binds, next = n }
+        (tk, pk, _) :: restLeaves ->
+            match steps
+                [] -> { text = acc, binds = binds, next = n }
+                (kind, cond, _) :: restSteps ->
+                    let src = leafSource idx tk pk (leafMember idx nulls) n
+                    let c = renderQual 0 cond src.next
+                    let seg = Text.join "" [acc, " ", joinKeyword kind, " ", src.text, " ON ", c.text]
+                    mixedFromRest restLeaves restSteps (idx + 1) nulls seg (binds ++ src.binds ++ c.binds) c.next
+
+-- One leaf's FROM term. A plain leaf is `"table" AS t<i>`; a null-extendable one wraps
+-- in `(SELECT *, TRUE AS "__present" FROM "table" [WHERE filter]) AS t<i>` so its
+-- marker null-extends with it; a filtered base leaf wraps to push its own scan filter
+-- into the subquery (bare columns, evaluated before the join).
+fn leafSource (idx: Int) (table: Text) (pred: QExpr) (nullable: Bool) (n: Int) -> { text: Text, binds: List SqlValue, next: Int } =
+    let alias = tAlias idx
+    if isAlwaysTrue pred then
+        if nullable then
+            { text = Text.join "" ["(SELECT *, TRUE AS \"__present\" FROM ", quoteIdent table, ") AS ", alias], binds = [], next = n }
+        else
+            { text = Text.join "" [quoteIdent table, " AS ", alias], binds = [], next = n }
+    else
+        let w = renderPred false pred n
+        if nullable then
+            { text = Text.join "" ["(SELECT *, TRUE AS \"__present\" FROM ", quoteIdent table, " WHERE ", w.text, ") AS ", alias], binds = w.binds, next = w.next }
+        else
+            { text = Text.join "" ["(SELECT * FROM ", quoteIdent table, " WHERE ", w.text, ") AS ", alias], binds = w.binds, next = w.next }
+
+-- The WHERE conjuncts of a mixed join: each inner step's post-join filter, qualified to
+-- its leaves. An outer step's post-join filter is left for a later slice (it is always
+-- true here, since a `filter` over a composite is not yet built); base and leaf scan
+-- filters ride inside their subqueries, so they never reach this clause.
+fn mixedWhere (steps: List (Text, QExpr, QExpr)) (n: Int) -> { text: Text, binds: List SqlValue, next: Int } =
+    let sp = innerStepConds steps n
+    match sp.texts
+        [] -> { text = "", binds = sp.binds, next = sp.next }
+        _  -> { text = Text.concat " WHERE " (Text.join " AND " sp.texts), binds = sp.binds, next = sp.next }
+
+fn innerStepConds (steps: List (Text, QExpr, QExpr)) (n: Int) -> { texts: List Text, binds: List SqlValue, next: Int } =
+    match steps
+        [] -> { texts = [], binds = [], next = n }
+        (kind, _, where2) :: rest ->
+            if kind == "INNER" then
+                if isAlwaysTrue where2 then
+                    innerStepConds rest n
+                else
+                    let r = renderQual 0 where2 n
+                    let more = innerStepConds rest r.next
+                    { texts = Text.join "" ["(", r.text, ")"] :: more.texts, binds = r.binds ++ more.binds, next = more.next }
+            else
+                innerStepConds rest n
 
 -- A projected join (`select` over a join): the projection's own select-list over the
 -- joined tables, paged and de-duplicated by the projection. An unmatched outer column

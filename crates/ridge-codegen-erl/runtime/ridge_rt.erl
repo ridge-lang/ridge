@@ -1277,13 +1277,17 @@ mem_eval_plan(State, Id, {'PlanRefine', Inner, Pred, Orders, Lim, Off, Dist}) ->
     Rows = mem_eval_plan(State, Id, Inner),
     Matches = [R || R <- Rows, mem_pred(Pred, R)],
     mem_paginate(mem_distinct(Dist, mem_order(Orders, Matches)), Lim, Off);
-mem_eval_plan(State, Id, {'PlanJoin', <<"INNER">>, Left, _Right, _Cond, _Where2, Orders, Lim, Off, Dist, _LeftCols, _RightCols} = Plan)
+mem_eval_plan(State, Id, {'PlanJoin', _Kind, Left, _Right, _Cond, _Where2, Orders, Lim, Off, Dist, _LeftCols, _RightCols} = Plan)
   when element(1, Left) =:= 'PlanJoin' ->
-    %% A nested inner join of three or more tables: flatten the left-nested spine into
-    %% ordered leaf scans and per-step join filters, evaluate each leaf, then build the
-    %% N-way product as flat rows with each leaf's columns under its `t<i>$` prefix —
-    %% the same flat shape a binary join produces, one leaf wider.
-    {Leaves, Steps} = mem_flatten_inner(Plan),
+    %% A nested join of three or more tables (its left child is itself a join): flatten
+    %% the left-nested spine into ordered leaf scans and the per-step {Kind, Cond,
+    %% Where2}, evaluate each leaf, then fold the leaves left to right into flat rows
+    %% with each leaf's columns under its `t<i>$` prefix — the same flat shape a binary
+    %% join produces, one leaf wider. Each step joins its new leaf by its own kind: an
+    %% inner step keeps only the matches, an outer step keeps the unmatched side with
+    %% the absent side's columns dropped — a right or full step null-extends the whole
+    %% accumulated composite as a unit, so its leaves all read absent together.
+    {Leaves, Steps} = mem_flatten_join(Plan),
     LeafRows = [mem_eval_plan(State, Id, Leaf) || Leaf <- Leaves],
     Flat = mem_nary_product(LeafRows, Steps),
     mem_paginate(mem_distinct(Dist, mem_order_nary(Orders, Flat)), Lim, Off);
@@ -1815,20 +1819,21 @@ mem_jscalar(_Other, _L, _R)           -> undefined.
 %% The `t<i>$` key prefix of leaf `i`.
 mem_leaf_prefix(Idx) -> <<"t", (integer_to_binary(Idx))/binary, "$">>.
 
-%% Flatten a left-nested inner join into its ordered leaf scan-plans and the per-step
-%% {Cond, Where2} that joins each leaf after the first. The innermost join's two scans
-%% are leaves 0 and 1; each enclosing join adds its right scan as the next leaf.
-mem_flatten_inner({'PlanJoin', _Kind, Left, Right, Cond, Where2, _O, _L, _Off, _D, _LC, _RC}) ->
+%% Flatten a left-nested join into its ordered leaf scan-plans and the per-step
+%% {Kind, Cond, Where2} that joins each leaf after the first. The innermost join's two
+%% scans are leaves 0 and 1; each enclosing join adds its right scan as the next leaf,
+%% carrying that node's join kind so the fold can apply each step's shape.
+mem_flatten_join({'PlanJoin', Kind, Left, Right, Cond, Where2, _O, _L, _Off, _D, _LC, _RC}) ->
     case element(1, Left) of
         'PlanJoin' ->
-            {InnerLeaves, InnerSteps} = mem_flatten_inner(Left),
-            {InnerLeaves ++ [Right], InnerSteps ++ [{Cond, Where2}]};
+            {InnerLeaves, InnerSteps} = mem_flatten_join(Left),
+            {InnerLeaves ++ [Right], InnerSteps ++ [{Kind, Cond, Where2}]};
         _ ->
-            {[Left, Right], [{Cond, Where2}]}
+            {[Left, Right], [{Kind, Cond, Where2}]}
     end.
 
-%% The N-way product of the per-leaf row lists, each combination kept only when every
-%% step's condition and post-join filter hold, merged into one flat row.
+%% Fold the per-leaf row lists left to right into flat rows. Leaf 0 seeds the
+%% accumulator under `t0$`; each later leaf is joined on by its step's kind.
 mem_nary_product([], _Steps) -> [];
 mem_nary_product([Rows0 | RestLeaves], Steps) ->
     Acc0 = [mem_prefix_keys(<<"t0$">>, R) || R <- Rows0],
@@ -1836,15 +1841,82 @@ mem_nary_product([Rows0 | RestLeaves], Steps) ->
 
 mem_nary_fold(Acc, _Idx, [], _Steps) -> Acc;
 mem_nary_fold(Acc, _Idx, _Leaves, []) -> Acc;
-mem_nary_fold(Acc, Idx, [LeafRows | RestLeaves], [{Cond, Where2} | RestSteps]) ->
+mem_nary_fold(Acc, Idx, [LeafRows | RestLeaves], [{Kind, Cond, Where2} | RestSteps]) ->
     Prefix = mem_leaf_prefix(Idx),
-    Acc2 = [Merged
-            || AccRow <- Acc,
-               Rk <- LeafRows,
-               Merged <- [maps:merge(AccRow, mem_prefix_keys(Prefix, Rk))],
-               mem_npred(Cond, Merged),
-               mem_npred(Where2, Merged)],
+    Acc2 = mem_join_step(Kind, Acc, LeafRows, Prefix, Cond, Where2),
     mem_nary_fold(Acc2, Idx + 1, RestLeaves, RestSteps).
+
+%% One step of the fold: join the next leaf's rows onto the accumulated flat rows by
+%% the step's kind. An inner step keeps only the combinations the condition and
+%% post-join WHERE accept; an outer step keeps the unmatched side, with the absent
+%% side's columns dropped — for a right or full step the whole accumulated composite is
+%% dropped as a unit, so its leaves all read absent together. The condition reads its
+%% sources by leaf index against the merged row (`QCol` leaf 0, `QColR` leaf 1,
+%% `QColAt i` leaf i), the same way the inner product does.
+mem_join_step(<<"INNER">>, Acc, LeafRows, Prefix, Cond, Where2) ->
+    [Merged
+     || AccRow <- Acc,
+        Rk <- LeafRows,
+        Merged <- [maps:merge(AccRow, mem_prefix_keys(Prefix, Rk))],
+        mem_npred(Cond, Merged),
+        mem_npred(Where2, Merged)];
+mem_join_step(<<"LEFT">>, Acc, LeafRows, Prefix, Cond, Where2) ->
+    lists:append([mem_left_step(AccRow, LeafRows, Prefix, Cond, Where2) || AccRow <- Acc]);
+mem_join_step(<<"RIGHT">>, Acc, LeafRows, Prefix, Cond, Where2) ->
+    lists:append([mem_right_step(Rk, Acc, Prefix, Cond, Where2) || Rk <- LeafRows]);
+mem_join_step(<<"FULL">>, Acc, LeafRows, Prefix, Cond, Where2) ->
+    LeftSide  = lists:append([mem_left_step(AccRow, LeafRows, Prefix, Cond, Where2) || AccRow <- Acc]),
+    RightOnly = lists:append([mem_full_right_only_step(Rk, Acc, Prefix, Cond, Where2) || Rk <- LeafRows]),
+    LeftSide ++ RightOnly.
+
+%% The rows an accumulated composite row contributes under a LEFT step (and the left
+%% walk of a FULL step): one merged row per leaf row the condition and post-join WHERE
+%% accept, or the composite alone (the new leaf's columns absent) when no leaf row
+%% matches and the WHERE holds with that leaf read as absent — the N-ary dual of
+%% mem_left_pairs_for, the accumulated composite standing in for the single left row.
+mem_left_step(AccRow, LeafRows, Prefix, Cond, Where2) ->
+    Merges = [maps:merge(AccRow, mem_prefix_keys(Prefix, Rk)) || Rk <- LeafRows],
+    case [M || M <- Merges, mem_npred(Cond, M)] of
+        []      ->
+            case mem_npred(Where2, AccRow) of
+                true  -> [AccRow];
+                false -> []
+            end;
+        Matches -> [M || M <- Matches, mem_npred(Where2, M)]
+    end.
+
+%% The rows a new-leaf row contributes under a RIGHT step: one merged row per
+%% accumulated composite row the condition and post-join WHERE accept, or the leaf
+%% alone (the whole composite absent as a unit) when no composite row matches and the
+%% WHERE holds with the composite read as absent — the N-ary dual of
+%% mem_right_pairs_for, the accumulated composite standing in for the single left row.
+mem_right_step(Rk, Acc, Prefix, Cond, Where2) ->
+    LeafMap = mem_prefix_keys(Prefix, Rk),
+    Merges = [maps:merge(AccRow, LeafMap) || AccRow <- Acc],
+    case [M || M <- Merges, mem_npred(Cond, M)] of
+        []      ->
+            case mem_npred(Where2, LeafMap) of
+                true  -> [LeafMap];
+                false -> []
+            end;
+        Matches -> [M || M <- Matches, mem_npred(Where2, M)]
+    end.
+
+%% The right-only rows of a FULL step: a new-leaf row that matched no composite row,
+%% kept when the WHERE holds with the composite absent. A leaf row that did match is
+%% already emitted by the left walk, so it contributes nothing here — that keeps a
+%% matched row from being counted twice, the N-ary dual of mem_full_right_only_for.
+mem_full_right_only_step(Rk, Acc, Prefix, Cond, Where2) ->
+    LeafMap = mem_prefix_keys(Prefix, Rk),
+    Merges = [maps:merge(AccRow, LeafMap) || AccRow <- Acc],
+    case [M || M <- Merges, mem_npred(Cond, M)] of
+        []      ->
+            case mem_npred(Where2, LeafMap) of
+                true  -> [LeafMap];
+                false -> []
+            end;
+        _Matches -> []
+    end.
 
 %% Order flat N-ary rows by the side-tagged key list. The keys range over the base
 %% query's leaves (0 and 1), read off the row's `t0$`/`t1$`-prefixed cells.

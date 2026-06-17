@@ -131,6 +131,15 @@ pub const LEFTJOINRESULT_TYCON_ID: u32 = JOINRESULT_TYCON_ID + 1;
 /// syntax.
 pub const RIGHTJOINRESULT_TYCON_ID: u32 = LEFTJOINRESULT_TYCON_ID + 1;
 
+/// `TyConId` of `FullJoinResult/2` — the FULL outer-join result extractor.
+///
+/// `FullJoinResult q f` reduces to the type `fullJoinOn` produces from receiver
+/// `q` and the new right entity `f`: a binary `FullJoin e f a` from a query, the
+/// nested `FullJoined q f a` from a composite. Reserved immediately after
+/// `RightJoinResult/2`; same reduction sites. Internal — never written in surface
+/// syntax.
+pub const FULLJOINRESULT_TYCON_ID: u32 = RIGHTJOINRESULT_TYCON_ID + 1;
+
 /// The arena/dictionary name of the synthetic `Fn/arity` constructor.
 ///
 /// Returns `"Fn0"`, `"Fn1"`, … . This name is the bridge that keeps the
@@ -294,6 +303,11 @@ pub struct BuiltinTyCons {
     /// query, the nested `RightJoined` from a composite). Internal; reads the
     /// reconciled receiver ids from the context. See [`RIGHTJOINRESULT_TYCON_ID`].
     pub right_joinresult: TyConId,
+    /// `FullJoinResult/2` — the FULL outer-join result extractor. `FullJoinResult q
+    /// f` reduces to the type `fullJoinOn` produces (a binary `FullJoin` from a
+    /// query, the nested `FullJoined` from a composite). Internal; reads the
+    /// reconciled receiver ids from the context. See [`FULLJOINRESULT_TYCON_ID`].
+    pub full_joinresult: TyConId,
 }
 
 impl BuiltinTyCons {
@@ -342,6 +356,7 @@ impl BuiltinTyCons {
             joinresult: SENTINEL,
             left_joinresult: SENTINEL,
             right_joinresult: SENTINEL,
+            full_joinresult: SENTINEL,
         }
     }
 
@@ -1242,6 +1257,22 @@ impl BuiltinTyCons {
             is_anon: false,
         });
 
+        // FullJoinResult/2 — the FULL outer-join result extractor, interned right
+        // after RightJoinResult/2 (FULLJOINRESULT_TYCON_ID = 49). Applied as
+        // `Type::Con(full_joinresult, [q, f])`; the reduction `FullJoinResult
+        // (Query e a) f -> FullJoin e f a` (binary) and `FullJoinResult <composite> f
+        // -> FullJoined …` lives in the unifier and `deep_resolve`.
+        let full_joinresult = arena.intern(TyConDecl {
+            id: TyConId(0),
+            name: "FullJoinResult".to_string(),
+            arity: 2,
+            kind: TyConKind::Builtin,
+            def_span: None,
+            def_module_raw: None,
+            opaque: false,
+            is_anon: false,
+        });
+
         // Verify assignment order matches spec §4.1 indices 0..16.
         debug_assert_eq!(int.0, 0);
         debug_assert_eq!(float.0, 1);
@@ -1292,6 +1323,9 @@ impl BuiltinTyCons {
         // RightJoinResult/2 sits right after it (RIGHTJOINRESULT_TYCON_ID = 48).
         debug_assert_eq!(right_joinresult.0, RIGHTJOINRESULT_TYCON_ID);
         debug_assert_eq!(right_joinresult.0, 48);
+        // FullJoinResult/2 sits right after it (FULLJOINRESULT_TYCON_ID = 49).
+        debug_assert_eq!(full_joinresult.0, FULLJOINRESULT_TYCON_ID);
+        debug_assert_eq!(full_joinresult.0, 49);
 
         // Suppress the "unused" lint — CapabilitySet is imported for future use
         // in T4 (actor schemas carry CapabilitySet).
@@ -1332,6 +1366,7 @@ impl BuiltinTyCons {
             joinresult,
             left_joinresult,
             right_joinresult,
+            full_joinresult,
         }
     }
 }
@@ -1417,10 +1452,10 @@ mod tests {
         // column-codegen builtins Column / Table + the schema-codegen builtins
         // FieldSchema / Schema + the quotation builtins QExpr / Quote (27 total)
         // + the 16 synthetic function-type constructors Fn/0 … Fn/15 + Ret/1 +
-        // Rows/1 + JoinCond/2 + JoinResult/2 + LeftJoinResult/2 + RightJoinResult/2.
+        // Rows/1 + JoinCond/2 + the four join-result extractors (Join/Left/Right/Full).
         let (arena, _) = make_arena_with_builtins();
-        assert_eq!(arena.len(), 27 + FN_ARITY_COUNT + 6);
-        assert_eq!(arena.len(), 49);
+        assert_eq!(arena.len(), 27 + FN_ARITY_COUNT + 7);
+        assert_eq!(arena.len(), 50);
     }
 
     #[test]

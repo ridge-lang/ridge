@@ -803,6 +803,8 @@ fn typecheck_module_inner(
         let left_joined_id = receiver_id("LeftJoined");
         // `RightJoined` (the nested N-ary RIGHT outer join) resolved here too.
         let right_joined_id = receiver_id("RightJoined");
+        // `FullJoined` (the nested N-ary FULL outer join) resolved here too.
+        let full_joined_id = receiver_id("FullJoined");
         // `joinOn` takes the right `Repo f a`, so its `Joinable` seed needs the
         // reconciled `Repo` id; resolved here, before the mutable seed borrows.
         let repo_id = receiver_id("Repo");
@@ -811,6 +813,7 @@ fn typecheck_module_inner(
         seed_joinable_scheme(&mut ctx, b, ct, repo_id);
         seed_leftjoinable_scheme(&mut ctx, b, ct, repo_id);
         seed_rightjoinable_scheme(&mut ctx, b, ct, repo_id);
+        seed_fulljoinable_scheme(&mut ctx, b, ct, repo_id);
         if let (Some(query), Some(join), Some(left_join)) = (query_id, join_id, left_join_id) {
             ctx.rows_tycons = Some(crate::ctx::RowsTycons {
                 query,
@@ -831,6 +834,8 @@ fn typecheck_module_inner(
                 left_joined: left_joined_id,
                 // `RightJoined` (the nested N-ary RIGHT outer join) — same fallback.
                 right_joined: right_joined_id,
+                // `FullJoined` (the nested N-ary FULL outer join) — same fallback.
+                full_joined: full_joined_id,
                 option: b.option,
                 bool: b.bool,
             });
@@ -1525,6 +1530,51 @@ fn seed_rightjoinable_scheme(
             row_vars: vec![],
             ty: fn_ty,
             constraints: vec![Constraint::new(right_joinable, constraint_tys)],
+        },
+    );
+}
+
+/// Seed the env scheme for `FullJoinable.fullJoinOn` — std.repo's full outer-join
+/// verb, the FULL dual of `seed_leftjoinable_scheme`/`seed_rightjoinable_scheme`.
+///
+/// Scheme: `∀q f a. Repo f a -> Quote (JoinCond q f) -> q -> FullJoinResult q f
+/// where FullJoinable q`. The condition reuses `JoinCond q f`; the result is the
+/// `FullJoinResult q f` projection — a binary `FullJoin e f a` from a query, the
+/// nested `FullJoined q f a` from a composite.
+fn seed_fulljoinable_scheme(
+    ctx: &mut crate::ctx::InferCtx,
+    b: &ridge_types::BuiltinTyCons,
+    class_table: &crate::class_env::ClassTable,
+    repo_id: Option<ridge_types::TyConId>,
+) {
+    use ridge_types::{CapRow, CapabilitySet, Constraint, Scheme, Type};
+    let (Some(full_joinable), Some(repo)) = (class_table.id_by_name("FullJoinable"), repo_id)
+    else {
+        return;
+    };
+    let q = ctx.fresh_tyvid();
+    let f = ctx.fresh_tyvid();
+    let a = ctx.fresh_tyvid();
+    let repo_f_a = Type::Con(repo, vec![Type::Var(f), Type::Var(a)]);
+    let cond_quote = Type::Con(
+        b.quote,
+        vec![Type::Con(b.joincond, vec![Type::Var(q), Type::Var(f)])],
+    );
+    let full_join_result = Type::Con(b.full_joinresult, vec![Type::Var(q), Type::Var(f)]);
+    let fn_ty = Type::Fn {
+        params: vec![repo_f_a, cond_quote, Type::Var(q)],
+        ret: Box::new(full_join_result),
+        caps: CapRow::Concrete(CapabilitySet::PURE),
+    };
+    let constraint_tys: smallvec::SmallVec<[ridge_types::TyVid; 1]> = smallvec::smallvec![q];
+    ctx.env.bind(
+        "fullJoinOn".to_owned(),
+        Scheme {
+            vars: vec![q, f, a],
+            cap_vars: vec![],
+            row_vars: vec![],
+            ty: fn_ty,
+            constraints: vec![Constraint::new(full_joinable, constraint_tys)],
         },
     );
 }

@@ -606,6 +606,12 @@ const BASELINE_EXPORTS: &[(&str, &[&str])] = &[
             // composite (nested `RightJoined`).
             "RightJoined",
             "RightJoinable",
+            // The N-ary FULL outer join: chaining `fullJoinOn` onto a composite
+            // produces the opaque nested `FullJoined q f a`, the `FullJoinable` class
+            // unifying the verb across a query (binary `FullJoin`) and a composite
+            // (nested `FullJoined`).
+            "FullJoined",
+            "FullJoinable",
             // Grouped aggregates unified across a query and a join: the opaque
             // `Grouped q p` builder produced by the `Groupable` class's `groupBy`,
             // narrowed by `having`, and summarised into a named record by
@@ -690,6 +696,7 @@ const BASELINE_OPAQUE: &[(&str, &[&str])] = &[
             "Joined",
             "LeftJoined",
             "RightJoined",
+            "FullJoined",
             "Setter",
             "Grouped",
         ],

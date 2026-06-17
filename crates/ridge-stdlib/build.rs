@@ -127,6 +127,7 @@ const STDLIB_CLASSES: &[(&str, &str)] = &[
     ("JoinShape", "std.repo"),
     ("LeftJoinable", "std.repo"),
     ("RightJoinable", "std.repo"),
+    ("FullJoinable", "std.repo"),
 ];
 
 // Constructor-shaped fns must export arity 0; this invariant catches accidental

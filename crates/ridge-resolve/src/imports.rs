@@ -974,6 +974,8 @@ pub fn prelude_resolutions() -> Vec<ImportResolution> {
                 query_binding("LeftJoinResult"),
                 // `RightJoinResult/2` — the RIGHT outer-join verb's result projection.
                 query_binding("RightJoinResult"),
+                // `FullJoinResult/2` — the FULL outer-join verb's result projection.
+                query_binding("FullJoinResult"),
             ],
             span: synth_span,
         },
@@ -2009,8 +2011,8 @@ mod tests {
             .map(|ir| ir.effective_bindings.len())
             .sum();
         assert_eq!(
-            total_bindings, 53,
-            "expected 53 total prelude bindings (6 option/result + 8 json + 31 quotation + 8 module aliases); got {total_bindings}"
+            total_bindings, 54,
+            "expected 54 total prelude bindings (6 option/result + 8 json + 32 quotation + 8 module aliases); got {total_bindings}"
         );
     }
 

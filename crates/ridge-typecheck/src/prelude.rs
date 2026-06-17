@@ -283,6 +283,8 @@ pub fn prelude_types(b: &BuiltinTyCons) -> (FxHashMap<String, Scheme>, FxHashMap
     tycons.insert("LeftJoinResult".to_string(), b.left_joinresult);
     // `RightJoinResult/2` — the RIGHT outer-join verb's result projection.
     tycons.insert("RightJoinResult".to_string(), b.right_joinresult);
+    // `FullJoinResult/2` — the FULL outer-join verb's result projection.
+    tycons.insert("FullJoinResult".to_string(), b.full_joinresult);
 
     let qexpr_ty = ty_con(b.q_expr, vec![]);
     let q_ctor = |params: Vec<Type>| Scheme {

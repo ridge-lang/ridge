@@ -151,6 +151,20 @@ pub fn unify(ctx: &mut InferCtx, a: &Type, b: &Type) -> Result<(), TypeError> {
         ctx.reduce_rightjoinresult_arg(&q, &f)
     }
 
+    // `FullJoinResult q f` is the FULL outer-join result extractor: a binary
+    // `FullJoin` from a query receiver, the nested `FullJoined` from a composite.
+    fn reduce_fulljoinresult(ctx: &mut InferCtx, t: &Type) -> Option<Type> {
+        let Type::Con(id, args) = t else {
+            return None;
+        };
+        if id.0 != ridge_types::FULLJOINRESULT_TYCON_ID || args.len() != 2 {
+            return None;
+        }
+        let q = ctx.shallow_resolve(&args[0]);
+        let f = ctx.shallow_resolve(&args[1]);
+        ctx.reduce_fulljoinresult_arg(&q, &f)
+    }
+
     let a = ctx.shallow_resolve(a);
     let b = ctx.shallow_resolve(b);
 
@@ -199,6 +213,12 @@ pub fn unify(ctx: &mut InferCtx, a: &Type, b: &Type) -> Result<(), TypeError> {
         return unify(ctx, &reduced, &b);
     }
     if let Some(reduced) = reduce_rightjoinresult(ctx, &b) {
+        return unify(ctx, &a, &reduced);
+    }
+    if let Some(reduced) = reduce_fulljoinresult(ctx, &a) {
+        return unify(ctx, &reduced, &b);
+    }
+    if let Some(reduced) = reduce_fulljoinresult(ctx, &b) {
         return unify(ctx, &a, &reduced);
     }
 

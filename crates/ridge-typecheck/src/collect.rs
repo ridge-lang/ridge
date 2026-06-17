@@ -923,6 +923,10 @@ fn builtin_tycon_id_by_name(name: &str) -> Option<TyConId> {
         // verb (`rightJoinOn`'s return); reduces during unification. Interned right
         // after `LeftJoinResult/2` (see `ridge_types::RIGHTJOINRESULT_TYCON_ID`).
         "RightJoinResult" => Some(TyConId(ridge_types::RIGHTJOINRESULT_TYCON_ID)),
+        // `FullJoinResult/2` — the result projection for the N-ary FULL outer-join
+        // verb (`fullJoinOn`'s return); reduces during unification. Interned right
+        // after `RightJoinResult/2` (see `ridge_types::FULLJOINRESULT_TYCON_ID`).
+        "FullJoinResult" => Some(TyConId(ridge_types::FULLJOINRESULT_TYCON_ID)),
         _ => None,
     }
 }

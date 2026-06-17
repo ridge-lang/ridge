@@ -676,6 +676,21 @@ pub opaque type LeftJoined q f a = { source: q, right: Repo f a, cond: Quote (Ma
 -- yields `List (Option (User, Post), Comment)`.
 pub opaque type RightJoined q f a = { source: q, right: Repo f a, cond: Quote (Map Text SqlValue -> Map Text SqlValue -> Bool), where2: Quote (Map Text SqlValue -> Map Text SqlValue -> Bool), orders: List (Bool, Bool, Text), lim: Int, off: Int, dist: Bool }
 
+-- A full outer join extending a composite of three or more tables, built by
+-- chaining `fullJoinOn` past the first join. The union of a left and a right
+-- extend: the terminal keeps every composite row and every new-table row, reading
+-- whichever matched none as `None` — the composite optional as a unit, the new
+-- table optional. The result decodes into `(Option (Rows source), Option f)`:
+--
+--     users
+--       |> Repo.query
+--       |> Repo.joinOn     posts    (fn u p   -> u.id == p.author)
+--       |> Repo.fullJoinOn comments (fn u p c -> p.id == c.post)
+--       |> Repo.toList
+--
+-- yields `List (Option (User, Post), Option Comment)`.
+pub opaque type FullJoined q f a = { source: q, right: Repo f a, cond: Quote (Map Text SqlValue -> Map Text SqlValue -> Bool), where2: Quote (Map Text SqlValue -> Map Text SqlValue -> Bool), orders: List (Bool, Bool, Text), lim: Int, off: Int, dist: Bool }
+
 -- Start or extend an inner join. One verb across every receiver: a query pairs
 -- with the right repository into a binary `Join`, and a join (binary or nested)
 -- absorbs one more table into a `Joined`. The receiver fixes both the result
@@ -1115,8 +1130,104 @@ pub opaque type FullJoin e f a = { left: Query e a, right: Repo f a, cond: Quote
 -- `None`. The left query's filter restricts which left rows enter the join (a left
 -- row it rejects never appears, not even unmatched); its ordering and page still
 -- apply.
-pub fn fullJoinOn (right: Repo f a) (cond: Quote (Map Text SqlValue -> Map Text SqlValue -> Bool)) (q: Query e a) -> FullJoin e f a =
-    FullJoin { left = q, right = right, cond = cond, where2 = keepAll2 (), orders = liftOrders q.orders, lim = q.lim, off = q.off, dist = q.dist }
+pub class FullJoinable q =
+    fullJoinOn (right: Repo f a) (cond: Quote (Map Text SqlValue -> Map Text SqlValue -> Bool)) (x: q) -> FullJoinResult q f
+
+-- A query's `fullJoinOn`: the binary full outer join, identical to the original
+-- builder.
+instance FullJoinable (Query e a) =
+    fullJoinOn (right: Repo f a) (cond: Quote (Map Text SqlValue -> Map Text SqlValue -> Bool)) (x: Query e a) -> FullJoin e f a =
+        FullJoin { left = x, right = right, cond = cond, where2 = keepAll2 (), orders = liftOrders x.orders, lim = x.lim, off = x.off, dist = x.dist }
+
+-- A binary join's `fullJoinOn`: full-join a third table onto the inner pair.
+instance FullJoinable (Join e g a) =
+    fullJoinOn (right: Repo f a) (cond: Quote (Map Text SqlValue -> Map Text SqlValue -> Bool)) (x: Join e g a) -> FullJoined (Join e g a) f a =
+        FullJoined { source = x, right = right, cond = cond, where2 = keepAll2 (), orders = x.orders, lim = x.lim, off = x.off, dist = x.dist }
+
+-- A nested inner join's `fullJoinOn`.
+instance FullJoinable (Joined q g a) =
+    fullJoinOn (right: Repo f a) (cond: Quote (Map Text SqlValue -> Map Text SqlValue -> Bool)) (x: Joined q g a) -> FullJoined (Joined q g a) f a =
+        FullJoined { source = x, right = right, cond = cond, where2 = keepAll2 (), orders = x.orders, lim = x.lim, off = x.off, dist = x.dist }
+
+-- A nested left join's `fullJoinOn`.
+instance FullJoinable (LeftJoined q g a) =
+    fullJoinOn (right: Repo f a) (cond: Quote (Map Text SqlValue -> Map Text SqlValue -> Bool)) (x: LeftJoined q g a) -> FullJoined (LeftJoined q g a) f a =
+        FullJoined { source = x, right = right, cond = cond, where2 = keepAll2 (), orders = x.orders, lim = x.lim, off = x.off, dist = x.dist }
+
+-- A nested right join's `fullJoinOn`.
+instance FullJoinable (RightJoined q g a) =
+    fullJoinOn (right: Repo f a) (cond: Quote (Map Text SqlValue -> Map Text SqlValue -> Bool)) (x: RightJoined q g a) -> FullJoined (RightJoined q g a) f a =
+        FullJoined { source = x, right = right, cond = cond, where2 = keepAll2 (), orders = x.orders, lim = x.lim, off = x.off, dist = x.dist }
+
+-- A nested full join's `fullJoinOn`: chain another full join onto a composite that
+-- already ends in one.
+instance FullJoinable (FullJoined q g a) =
+    fullJoinOn (right: Repo f a) (cond: Quote (Map Text SqlValue -> Map Text SqlValue -> Bool)) (x: FullJoined q g a) -> FullJoined (FullJoined q g a) f a =
+        FullJoined { source = x, right = right, cond = cond, where2 = keepAll2 (), orders = x.orders, lim = x.lim, off = x.off, dist = x.dist }
+
+-- The recursion a nested full join's terminal stands on. A `FullJoined` decodes
+-- BOTH sides optionally: the new leaf via `decodeOptSide`, and the whole composite
+-- source via its presence (any composite leaf surviving).
+instance JoinShape (FullJoined q f a) where JoinShape q, Row f =
+    joinedLeaves (w: Option (FullJoined q f a)) -> Int =
+        joinedLeaves (fullInnerWitness w) + 1
+    joinedSourcePlan (x: FullJoined q f a) -> QueryPlan =
+        planJoin "FULL" (joinedSourcePlan x.source) (planScan x.right.table (keepAllTree ()) [] (0 - 1) 0 false) x.cond.tree x.where2.tree x.orders (0 - 1) 0 false [] (rowColumns (entityWitness x.right))
+    decodeJoined (w: Option (FullJoined q f a)) (row: Map Text SqlValue) -> Result (Option (Rows q), Option f) Error =
+        match decodeOptSide (leafPrefix (joinedLeaves (fullInnerWitness w))) row
+            Err err -> Err err
+            Ok optF ->
+                match decodeRightOptComposite (fullInnerWitness w) (joinedLeaves (fullInnerWitness w)) row
+                    Err err   -> Err err
+                    Ok optSrc -> Ok (optSrc, optF)
+
+-- Phantom witnesses: narrow a `FullJoined`'s type to its source's.
+fn fullInnerWitness (w: Option (FullJoined q f a)) -> Option q = None
+fn fullSourceWitness (x: FullJoined q f a) -> Option q = None
+
+-- The plan of a whole `FullJoined`: its source's plan with the new right table
+-- FULL-joined on, carrying the top-level page/ordering/distinct.
+fn fullJoinedPlan (x: FullJoined q f a) (lim: Int) -> QueryPlan where JoinShape q, Row f =
+    planJoin "FULL" (joinedSourcePlan x.source) (planScan x.right.table (keepAllTree ()) [] (0 - 1) 0 false) x.cond.tree x.where2.tree x.orders lim x.off x.dist [] (rowColumns (entityWitness x.right))
+
+-- Decode each flat result row of a `FullJoined` into `(Option (Rows q), Option f)`:
+-- the new table optionally from its `t<n>$` leaf, the composite source optionally.
+fn decodeFullJoinedRows (w: Option q) (n: Int) (rows: List (Map Text SqlValue)) -> Result (List (Option (Rows q), Option f)) Error where JoinShape q, Row f =
+    match rows
+        []        -> Ok []
+        r :: rest ->
+            match decodeOptSide (leafPrefix n) r
+                Err err -> Err err
+                Ok optF ->
+                    match decodeRightOptComposite w n r
+                        Err err -> Err err
+                        Ok optSrc ->
+                            match decodeFullJoinedRows w n rest
+                                Err err -> Err err
+                                Ok more -> Ok ((optSrc, optF) :: more)
+
+fn firstDecodedFullJoined (w: Option q) (n: Int) (rows: List (Map Text SqlValue)) -> Result (Option (Option (Rows q), Option f)) Error where JoinShape q, Row f =
+    match rows
+        []     -> Ok None
+        r :: _ ->
+            match decodeOptSide (leafPrefix n) r
+                Err err -> Err err
+                Ok optF ->
+                    match decodeRightOptComposite w n r
+                        Err err   -> Err err
+                        Ok optSrc -> Ok (Some (optSrc, optF))
+
+-- `toList`/`first` over a nested full join: run the flattened FULL plan and decode
+-- each row into `(Option (Rows q), Option f)`.
+instance Decodable (FullJoined q f a) where Adapter a, JoinShape q, Row f =
+    toList (x: FullJoined q f a) -> Result (List (Option (Rows q), Option f)) Error =
+        match runPlan x.right.adapter (fullJoinedPlan x x.lim)
+            Err err -> Err err
+            Ok rows -> decodeFullJoinedRows (fullSourceWitness x) (joinedLeaves (fullSourceWitness x)) rows
+    first (x: FullJoined q f a) -> Result (Option (Option (Rows q), Option f)) Error =
+        match runPlan x.right.adapter (fullJoinedPlan x 1)
+            Err err -> Err err
+            Ok rows -> firstDecodedFullJoined (fullSourceWitness x) (joinedLeaves (fullSourceWitness x)) rows
 
 -- `toList` and `first` over a full join are the `Decodable (FullJoin e f a) …`
 -- methods (instance below): `toList` decodes each row into a pair of optionals

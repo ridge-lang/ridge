@@ -1310,6 +1310,28 @@ pub fn register_stdlib_classes(ct: &mut ClassTable) {
         },
     );
 
+    // `FullJoinable` from std.repo — the N-ary FULL outer-join entry point, the FULL
+    // dual of `Left`/`RightJoinable`. The result follows the receiver through
+    // `FullJoinResult q f`. Seeded by `seed_fulljoinable_scheme`; instances in
+    // `register_stdlib_instances`. `fullJoinOn` sig arity 3.
+    let full_joinable_id = ct.intern("FullJoinable");
+    ct.insert_with_id(
+        full_joinable_id,
+        ClassInfo {
+            name: "FullJoinable".to_string(),
+            arity: 1,
+            method_sigs: vec![MethodSig {
+                name: "fullJoinOn".to_string(),
+                arity: 3,
+                ast_param_types: vec![],
+                ast_ret_type: None,
+                class_ty_vars: Vec::new(),
+            }],
+            superclasses: vec![],
+            def_module: None,
+        },
+    );
+
     // `Pageable` from std.repo — the unified page-and-distinct builder steps
     // (`limit`/`offset`/`distinct`) over a query, an inner join, or a left join. A
     // single parameter, the receiver `q`, with no functional dependency (like
@@ -1970,6 +1992,12 @@ pub fn register_stdlib_instances(
                 .entry((joinable, smallvec![right_joined]))
                 .or_insert_with(joinable_inst);
         }
+        // Inner-join after a full join, likewise.
+        if let Some(&full_joined) = reconciled_tycon_names.get("FullJoined") {
+            env.instances
+                .entry((joinable, smallvec![full_joined]))
+                .or_insert_with(joinable_inst);
+        }
     }
 
     // `LeftJoinable (Query e a)`, `(Join e f a)`, `(Joined q f a)`, and `(LeftJoined
@@ -2011,12 +2039,16 @@ pub fn register_stdlib_instances(
                 .entry((left_joinable, smallvec![right_joined]))
                 .or_insert_with(left_joinable_inst);
         }
+        if let Some(&full_joined) = reconciled_tycon_names.get("FullJoined") {
+            env.instances
+                .entry((left_joinable, smallvec![full_joined]))
+                .or_insert_with(left_joinable_inst);
+        }
     }
 
-    // `RightJoinable (Query e a)`, `(Join …)`, `(Joined …)`, `(LeftJoined …)`, and
-    // `(RightJoined …)` — the N-ary RIGHT outer-join entry points, the RIGHT dual of
-    // `LeftJoinable`. Single-parameter, keyed by the receiver tycon; no context
-    // constraints (the verb only builds a fresh join object).
+    // `RightJoinable` — the N-ary RIGHT outer-join entry points over a query and every
+    // composite, the RIGHT dual of `LeftJoinable`. Single-parameter, keyed by the
+    // receiver tycon; no context constraints (the verb only builds a fresh join).
     if let Some(right_joinable) = ct.id_by_name("RightJoinable") {
         let right_joinable_inst = || InstanceInfo {
             def_module: None,
@@ -2026,11 +2058,46 @@ pub fn register_stdlib_instances(
             origin: InstanceOrigin::Explicit,
             span: ds,
         };
-        for name in ["Query", "Join", "Joined", "LeftJoined", "RightJoined"] {
+        for name in [
+            "Query",
+            "Join",
+            "Joined",
+            "LeftJoined",
+            "RightJoined",
+            "FullJoined",
+        ] {
             if let Some(&tycon) = reconciled_tycon_names.get(name) {
                 env.instances
                     .entry((right_joinable, smallvec![tycon]))
                     .or_insert_with(right_joinable_inst);
+            }
+        }
+    }
+
+    // `FullJoinable` — the N-ary FULL outer-join entry points over a query and every
+    // composite. Single-parameter, keyed by the receiver tycon; no context
+    // constraints.
+    if let Some(full_joinable) = ct.id_by_name("FullJoinable") {
+        let full_joinable_inst = || InstanceInfo {
+            def_module: None,
+            methods: vec![("fullJoinOn".to_string(), String::new())],
+            ctx_constraints: vec![],
+            head_var_positions: vec![],
+            origin: InstanceOrigin::Explicit,
+            span: ds,
+        };
+        for name in [
+            "Query",
+            "Join",
+            "Joined",
+            "LeftJoined",
+            "RightJoined",
+            "FullJoined",
+        ] {
+            if let Some(&tycon) = reconciled_tycon_names.get(name) {
+                env.instances
+                    .entry((full_joinable, smallvec![tycon]))
+                    .or_insert_with(full_joinable_inst);
             }
         }
     }
@@ -2131,6 +2198,28 @@ pub fn register_stdlib_instances(
                     span: ds,
                 });
         }
+        // `JoinShape (FullJoined q f a)` — decode both sides optionally: the new leaf
+        // via `Row f`, the source (as a unit) via `JoinShape q`. Same `q@0, f@1`
+        // context shape (`JoinShape q, Row f`).
+        if let Some(&full_joined) = reconciled_tycon_names.get("FullJoined") {
+            env.instances
+                .entry((joinshape, smallvec![full_joined]))
+                .or_insert_with(|| InstanceInfo {
+                    def_module: None,
+                    methods: vec![
+                        ("joinedLeaves".to_string(), String::new()),
+                        ("joinedSourcePlan".to_string(), String::new()),
+                        ("decodeJoined".to_string(), String::new()),
+                    ],
+                    ctx_constraints: vec![
+                        ridge_types::Constraint::single(joinshape, ridge_types::TyVid(0)),
+                        ridge_types::Constraint::single(row, ridge_types::TyVid(0)),
+                    ],
+                    head_var_positions: vec![0, 1],
+                    origin: InstanceOrigin::Explicit,
+                    span: ds,
+                });
+        }
     }
 
     // `Decodable (Joined q f a)` — the nested join's `toList`/`first`. Single
@@ -2190,6 +2279,27 @@ pub fn register_stdlib_instances(
         if let Some(&right_joined) = reconciled_tycon_names.get("RightJoined") {
             env.instances
                 .entry((decodable, smallvec![right_joined]))
+                .or_insert_with(|| InstanceInfo {
+                    def_module: None,
+                    methods: vec![
+                        ("toList".to_string(), String::new()),
+                        ("first".to_string(), String::new()),
+                    ],
+                    ctx_constraints: vec![
+                        ridge_types::Constraint::single(adapter, ridge_types::TyVid(0)),
+                        ridge_types::Constraint::single(joinshape, ridge_types::TyVid(0)),
+                        ridge_types::Constraint::single(row, ridge_types::TyVid(0)),
+                    ],
+                    head_var_positions: vec![2, 0, 1],
+                    origin: InstanceOrigin::Explicit,
+                    span: ds,
+                });
+        }
+        // `Decodable (FullJoined q f a)` — the FULL outer composite's `toList`/`first`.
+        // Same context shape: `Adapter a, JoinShape q, Row f` at `a@2, q@0, f@1`.
+        if let Some(&full_joined) = reconciled_tycon_names.get("FullJoined") {
+            env.instances
+                .entry((decodable, smallvec![full_joined]))
                 .or_insert_with(|| InstanceInfo {
                     def_module: None,
                     methods: vec![

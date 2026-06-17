@@ -30,6 +30,7 @@ import std.list as List
 
 pub type User = { id: Int, age: Int, name: Text } deriving (Row)
 pub type Post = { id: Int, author: Int, title: Text } deriving (Row)
+pub type Comment = { id: Int, post: Int, body: Text } deriving (Row)
 pub type Combo = { person: Text, post: Text } deriving (Row)
 
 -- A captured predicate's reified tree. `Quote` is a prelude record whose `tree`
@@ -39,6 +40,7 @@ pub type Combo = { person: Text, post: Text } deriving (Row)
 -- to the right side (`QColR`).
 fn pred1 (q: Quote (User -> Bool)) -> QExpr = q.tree
 fn cond2 (q: Quote (fn User Post -> Bool)) -> QExpr = q.tree
+fn cond3 (q: Quote (fn User Post Comment -> Bool)) -> QExpr = q.tree
 fn proj2 (q: Quote (fn User Post -> Combo)) -> QExpr = q.tree
 
 -- An always-true tree, the "keep all" filter a scan or a join's WHERE defaults to.
@@ -52,6 +54,26 @@ fn joinCond () -> QExpr = cond2 (fn (u: User) (p: Post) -> u.id == p.author)
 
 fn leftCols () -> List Text = ["id", "age", "name"]
 fn rightCols () -> List Text = ["id", "author", "title"]
+fn commentCols () -> List Text = ["id", "post", "body"]
+
+fn commentsScan () -> QueryPlan = planScan "comments" (keepAll ()) [] (0 - 1) 0 false
+fn joinCond2 () -> QExpr = cond3 (fn (u: User) (p: Post) (c: Comment) -> p.id == c.post)
+
+-- A three-table inner join: an inner `Join` of users and posts, joined again to
+-- comments. The left child is a `PlanJoin`, so the renderer flattens the whole tree
+-- into one flat multi-way join over leaf aliases `t0`/`t1`/`t2`. The third table's
+-- column reifies to `QColAt 2`, qualified to `t2`. The base scan filters adults, so
+-- the leaf filter qualifies to `t0` and binds `$1`.
+fn inner3 () -> QueryPlan =
+    planJoin "INNER"
+        (planJoin "INNER" (adultsScan ()) (postsScan ()) (joinCond ()) (keepAllJoin ()) [] (0 - 1) 0 false (leftCols ()) (rightCols ()))
+        (commentsScan ())
+        (joinCond2 ())
+        (keepAllJoin ())
+        []
+        (0 - 1) 0 false
+        []
+        (commentCols ())
 
 fn bareJoin (kind: Text) (left: QueryPlan) -> QueryPlan =
     planJoin kind left (postsScan ()) (joinCond ()) (keepAllJoin ()) [] (0 - 1) 0 false (leftCols ()) (rightCols ())
@@ -95,6 +117,10 @@ pub fn aggSql () -> Text =
 
 pub fn groupSql () -> Text =
     renderSql (planGroup "author" true [("author", "KEY", "", true), ("n", "COUNT", "", false)] (keepAllJoin ()) (wrapJoin ()))
+
+pub fn inner3Sql () -> Text = renderSql (inner3 ())
+
+pub fn inner3Binds () -> Text = renderBinds (inner3 ())
 "#;
 
 fn write_workspace(root: &std::path::Path) {
@@ -159,7 +185,7 @@ fn query_plan_compiles_to_parameterized_sql() {
 
     let expr = format!(
         "F=fun(N)->io:format(\"~s=~s~n\",[N,{module}:N()])end, \
-         lists:foreach(F,['scanSql','scanBinds','combineSql','refineSql','innerSql','leftSql','rightSql','fullSql','fullBinds','projectSql','aggSql','groupSql']), halt()."
+         lists:foreach(F,['scanSql','scanBinds','combineSql','refineSql','innerSql','leftSql','rightSql','fullSql','fullBinds','projectSql','aggSql','groupSql','inner3Sql','inner3Binds']), halt()."
     );
     let output = Command::new("erl")
         .arg("-noshell")
@@ -233,4 +259,14 @@ fn query_plan_compiles_to_parameterized_sql() {
     want(
         r#"groupSql=SELECT r."author" AS "author", COUNT(*) AS "n" FROM "users" AS l JOIN "posts" AS r ON l."id" = r."author" WHERE (TRUE) AND (TRUE) GROUP BY r."author" ORDER BY r."author""#,
     );
+
+    // A three-table inner join flattens into one multi-way join over leaf aliases
+    // t0/t1/t2: every leaf's columns prefixed by its index, both conditions qualified
+    // to their leaves (the third table's column is `QColAt 2`, qualified `t2`), and the
+    // base scan's adult filter qualified to `t0` binding `$1`. The always-true defaults
+    // drop out of the WHERE.
+    want(
+        r#"inner3Sql=SELECT t0."id" AS "t0$id", t0."age" AS "t0$age", t0."name" AS "t0$name", t1."id" AS "t1$id", t1."author" AS "t1$author", t1."title" AS "t1$title", t2."id" AS "t2$id", t2."post" AS "t2$post", t2."body" AS "t2$body" FROM "users" AS t0 JOIN "posts" AS t1 ON t0."id" = t1."author" JOIN "comments" AS t2 ON t1."id" = t2."post" WHERE (t0."age" >= $1)"#,
+    );
+    want("inner3Binds=1");
 }

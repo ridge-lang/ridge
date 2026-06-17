@@ -417,7 +417,12 @@ fn renderBareJoin (kind: Text) (left: QueryPlan) (right: QueryPlan) (cond: QExpr
                     let sel = prefixedSelect leftCols rightCols (leftCanBeAbsent kind) (rightCanBeAbsent kind)
                     { text = Text.join "" ["SELECT ", distinctKw dist, sel, " FROM ", sk.text, orderByClauseJoin orders, limitClause lim, offsetClause off], binds = sk.binds, next = sk.next }
                 _ -> emptyRender n
-        _ -> emptyRender n
+        _ ->
+            -- A nested left child is a join of three or more tables. Inner chains
+            -- flatten into one flat multi-way join; the outer shapes are still binary.
+            if kind == "INNER" then
+                renderNaryInner (PlanJoin kind left right cond where2 orders lim off dist leftCols rightCols) orders lim off dist n
+            else emptyRender n
 
 fn emptyRender (n: Int) -> { text: Text, binds: List SqlValue, next: Int } = { text = "", binds = [], next = n }
 
@@ -444,6 +449,178 @@ fn markerCol (alias: Text) (prefix: Text) (present: Bool) -> List Text =
 
 fn markerTerm (alias: Text) (prefix: Text) -> Text =
     Text.join "" [alias, "\"__present\" AS ", quoteIdent (Text.concat prefix "__present__")]
+
+-- ── N-ary (3+ table) inner join rendering ─────────────────────────────────────
+--
+-- A join of three or more tables arrives as a left-nested `PlanJoin` whose left
+-- child is itself a `PlanJoin`. It renders to one flat multi-way join over leaf
+-- aliases `t0`..`tN` — `FROM t0 JOIN t1 ON … JOIN t2 ON …` — with every leaf's
+-- columns selected prefixed (`t<i>."col" AS "t<i>$col"`), the same flat row shape a
+-- binary join produces, so the decoder recovers each entity by its prefix. A column
+-- in a join condition names its source by leaf index: `QCol` is leaf 0, `QColR` leaf
+-- 1, `QColAt i` leaf i. A leaf's own scan filter names only that leaf, so its bare
+-- columns qualify to that leaf's alias.
+
+-- The alias of leaf `i` in the flattened join — `t0`, `t1`, ….
+fn tAlias (i: Int) -> Text = Text.concat "t" (Int.toText i)
+
+-- A column reference qualified to its leaf alias (`t<i>."col"`).
+fn naryColRef (leaf: Int) (c: Text) -> Text = Text.concat (Text.concat (tAlias leaf) ".") (quoteIdent c)
+
+-- Render a captured predicate with each column qualified to its leaf alias. `q0` is
+-- the leaf a bare `QCol` names — 0 in a join condition (the left source), or the
+-- leaf's own index in a single-table scan filter, whose columns are all that leaf's.
+fn renderQual (q0: Int) (e: QExpr) (n: Int) -> { text: Text, binds: List SqlValue, next: Int } =
+    match e
+        QAnd l r -> qualBin q0 l " AND " r n
+        QOr l r  -> qualBin q0 l " OR " r n
+        QNot x   ->
+            let r = renderQual q0 x n
+            { text = Text.join "" ["(NOT ", r.text, ")"], binds = r.binds, next = r.next }
+        QEq l r -> qualCmp q0 l " = " r n
+        QNe l r -> qualCmp q0 l " <> " r n
+        QLt l r -> qualCmp q0 l " < " r n
+        QGt l r -> qualCmp q0 l " > " r n
+        QLe l r -> qualCmp q0 l " <= " r n
+        QGe l r -> qualCmp q0 l " >= " r n
+        QCol c     -> { text = naryColRef q0 c, binds = [], next = n }
+        QColR c    -> { text = naryColRef 1 c, binds = [], next = n }
+        QColAt i c -> { text = naryColRef i c, binds = [], next = n }
+        QLitBool b -> { text = boolLit b, binds = [], next = n }
+        _ -> qualOperand q0 e n
+
+fn qualCmp (q0: Int) (l: QExpr) (op: Text) (r: QExpr) (n: Int) -> { text: Text, binds: List SqlValue, next: Int } =
+    let lr = qualOperand q0 l n
+    let rr = qualOperand q0 r lr.next
+    { text = Text.join "" [lr.text, op, rr.text], binds = lr.binds ++ rr.binds, next = rr.next }
+
+fn qualBin (q0: Int) (l: QExpr) (op: Text) (r: QExpr) (n: Int) -> { text: Text, binds: List SqlValue, next: Int } =
+    let lr = renderQual q0 l n
+    let rr = renderQual q0 r lr.next
+    { text = Text.join "" ["(", lr.text, op, rr.text, ")"], binds = lr.binds ++ rr.binds, next = rr.next }
+
+fn qualOperand (q0: Int) (e: QExpr) (n: Int) -> { text: Text, binds: List SqlValue, next: Int } =
+    match e
+        QCol c      -> { text = naryColRef q0 c, binds = [], next = n }
+        QColR c     -> { text = naryColRef 1 c, binds = [], next = n }
+        QColAt i c  -> { text = naryColRef i c, binds = [], next = n }
+        QLitInt v   -> { text = placeholder n, binds = [sqlInt v], next = n + 1 }
+        QLitText v  -> { text = placeholder n, binds = [sqlText v], next = n + 1 }
+        QLitBool v  -> { text = placeholder n, binds = [sqlBool v], next = n + 1 }
+        QLitFloat v -> { text = placeholder n, binds = [sqlFloat v], next = n + 1 }
+        _           -> { text = "NULL", binds = [], next = n }
+
+-- The flattened inner-join spine: each leaf's (table, scan filter, columns) left to
+-- right, and the (condition, post-join WHERE) that joins each leaf after the first.
+-- Walking the left spine, the innermost `PlanJoin`'s two scans are leaves 0 and 1, and
+-- each enclosing `PlanJoin` adds its right scan as the next leaf.
+fn flattenInner (plan: QueryPlan) -> { leaves: List (Text, QExpr, List Text), steps: List (QExpr, QExpr) } =
+    match plan
+        PlanJoin _ left right cond where2 _ _ _ _ leftCols rightCols ->
+            match right
+                PlanScan rt rp _ _ _ _ ->
+                    match left
+                        PlanScan lt lp _ _ _ _ ->
+                            { leaves = [(lt, lp, leftCols), (rt, rp, rightCols)], steps = [(cond, where2)] }
+                        _ ->
+                            let inner = flattenInner left
+                            { leaves = inner.leaves ++ [(rt, rp, rightCols)], steps = inner.steps ++ [(cond, where2)] }
+                _ -> { leaves = [], steps = [] }
+        _ -> { leaves = [], steps = [] }
+
+-- The prefixed select-list over every leaf: leaf `i`'s columns as `t<i>."col" AS
+-- "t<i>$col"`, so the flat row carries each source's columns under its own prefix.
+fn narySelect (leaves: List (Text, QExpr, List Text)) -> Text =
+    Text.join ", " (narySelectCols leaves 0)
+
+fn narySelectCols (leaves: List (Text, QExpr, List Text)) (idx: Int) -> List Text =
+    match leaves
+        [] -> []
+        (_, _, cols) :: rest ->
+            (prefixCols (Text.concat (tAlias idx) ".") (Text.concat (tAlias idx) "$") cols) ++ narySelectCols rest (idx + 1)
+
+-- The `FROM t0 AS … JOIN t1 AS … ON … JOIN t2 …` text. The first leaf is the base
+-- table; each later leaf is joined on its step condition, the bind counter threaded
+-- so the `$N` placeholders stay sequential.
+fn naryFrom (leaves: List (Text, QExpr, List Text)) (steps: List (QExpr, QExpr)) (n: Int) -> { text: Text, binds: List SqlValue, next: Int } =
+    match leaves
+        [] -> { text = "", binds = [], next = n }
+        (t0, _, _) :: rest ->
+            naryFromRest rest steps 1 (Text.join "" [quoteIdent t0, " AS ", tAlias 0]) [] n
+
+fn naryFromRest (leaves: List (Text, QExpr, List Text)) (steps: List (QExpr, QExpr)) (idx: Int) (acc: Text) (binds: List SqlValue) (n: Int) -> { text: Text, binds: List SqlValue, next: Int } =
+    match leaves
+        [] -> { text = acc, binds = binds, next = n }
+        (tk, _, _) :: restLeaves ->
+            match steps
+                [] -> { text = acc, binds = binds, next = n }
+                (cond, _) :: restSteps ->
+                    let c = renderQual 0 cond n
+                    naryFromRest restLeaves restSteps (idx + 1) (Text.join "" [acc, " JOIN ", quoteIdent tk, " AS ", tAlias idx, " ON ", c.text]) (binds ++ c.binds) c.next
+
+-- The WHERE conjuncts: each leaf's own scan filter (qualified to its leaf) and each
+-- step's post-join filter, dropping the always-true defaults so the clause stays
+-- clean — an empty result omits the WHERE entirely.
+fn naryWhere (leaves: List (Text, QExpr, List Text)) (steps: List (QExpr, QExpr)) (n: Int) -> { text: Text, binds: List SqlValue, next: Int } =
+    let lp = leafConds leaves 0 n
+    let sp = stepConds steps lp.next
+    let conds = lp.texts ++ sp.texts
+    match conds
+        [] -> { text = "", binds = lp.binds ++ sp.binds, next = sp.next }
+        _  -> { text = Text.concat " WHERE " (Text.join " AND " conds), binds = lp.binds ++ sp.binds, next = sp.next }
+
+fn leafConds (leaves: List (Text, QExpr, List Text)) (idx: Int) (n: Int) -> { texts: List Text, binds: List SqlValue, next: Int } =
+    match leaves
+        [] -> { texts = [], binds = [], next = n }
+        (_, pred, _) :: rest ->
+            if isAlwaysTrue pred then
+                leafConds rest (idx + 1) n
+            else
+                let r = renderQual idx pred n
+                let more = leafConds rest (idx + 1) r.next
+                { texts = Text.join "" ["(", r.text, ")"] :: more.texts, binds = r.binds ++ more.binds, next = more.next }
+
+fn stepConds (steps: List (QExpr, QExpr)) (n: Int) -> { texts: List Text, binds: List SqlValue, next: Int } =
+    match steps
+        [] -> { texts = [], binds = [], next = n }
+        (_, where2) :: rest ->
+            if isAlwaysTrue where2 then
+                stepConds rest n
+            else
+                let r = renderQual 0 where2 n
+                let more = stepConds rest r.next
+                { texts = Text.join "" ["(", r.text, ")"] :: more.texts, binds = r.binds ++ more.binds, next = more.next }
+
+fn isAlwaysTrue (e: QExpr) -> Bool =
+    match e
+        QLitBool b -> b
+        _          -> false
+
+-- ORDER BY for an N-ary join: each side-tagged key qualified to its leaf alias. The
+-- bare-join orders range over the base query's leaves (0 and 1), the keys lifted in
+-- when it was joined.
+fn naryOrderBy (orders: List (Bool, Bool, Text)) -> Text =
+    match orders
+        [] -> ""
+        _  -> Text.concat " ORDER BY " (Text.join ", " (naryOrderTerms orders))
+
+fn naryOrderTerms (orders: List (Bool, Bool, Text)) -> List Text =
+    match orders
+        []                          -> []
+        (asc, isRight, col) :: rest -> Text.join "" [naryColRef (boolToLeaf isRight) col, " ", dirKw asc] :: naryOrderTerms rest
+
+fn boolToLeaf (b: Bool) -> Int = if b then 1 else 0
+
+-- A bare N-ary inner join terminal (`toList`/`first`): the flattened multi-way join's
+-- flat prefixed rows, which the decoder reads back into the nested entity tuple.
+fn renderNaryInner (plan: QueryPlan) (orders: List (Bool, Bool, Text)) (lim: Int) (off: Int) (dist: Bool) (n: Int) -> { text: Text, binds: List SqlValue, next: Int } =
+    let f = flattenInner plan
+    match f.leaves
+        [] -> emptyRender n
+        _  ->
+            let from = naryFrom f.leaves f.steps n
+            let wh = naryWhere f.leaves f.steps from.next
+            { text = Text.join "" ["SELECT ", distinctKw dist, narySelect f.leaves, " FROM ", from.text, wh.text, naryOrderBy orders, limitClause lim, offsetClause off], binds = from.binds ++ wh.binds, next = wh.next }
 
 -- A projected join (`select` over a join): the projection's own select-list over the
 -- joined tables, paged and de-duplicated by the projection. An unmatched outer column

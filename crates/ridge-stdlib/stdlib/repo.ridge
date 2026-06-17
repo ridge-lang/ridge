@@ -1370,6 +1370,22 @@ instance Projectable (FullJoin e f a) (fn (Option e) (Option f) -> s) where Adap
             Err err  -> Err err
             Ok rows  -> firstDecoded rows
 
+-- A composite (three-or-more table) inner join's `select`: project across every joined
+-- entity into `s`. The projection names columns from any leaf — `fn u p c -> Line { who
+-- = u.name, what = p.title, note = c.body }` reads all three — the positional leaf form
+-- the receiver determines, as the composite aggregates' accessor does. Only the columns
+-- it names cross, decoded into `s`. The plan pushes the select-list down through
+-- `joinedSelectPlan`; `selectFirst` runs it with a one-row limit.
+instance Projectable (Joined q f a) (Map Text SqlValue -> s) where Adapter a, JoinShape q, Row s =
+    select (proj: Quote (Map Text SqlValue -> s)) (x: Joined q f a) -> Result (List s) Error =
+        match runPlan x.right.adapter (joinedSelectPlan x proj.tree x.lim)
+            Err err -> Err err
+            Ok rows -> decodeRows rows
+    selectFirst (proj: Quote (Map Text SqlValue -> s)) (x: Joined q f a) -> Result (Option s) Error =
+        match runPlan x.right.adapter (joinedSelectPlan x proj.tree 1)
+            Err err -> Err err
+            Ok rows -> firstDecoded rows
+
 -- A query's `orderBy`: append the one-row key as an ordering column over the
 -- query's own `orders`. The key (`fn (u: User) -> u.age`) names a single column;
 -- the direction rides alongside it. The behaviour the single-receiver `orderBy`
@@ -1852,6 +1868,26 @@ fn rightScalarComposite (x: RightJoined q f a) (func: Text) (col: Quote p) -> Qu
 
 fn fullScalarComposite (x: FullJoined q f a) (func: Text) (col: Quote p) -> QueryPlan where JoinShape q, Row f =
     planAggregate func (aggColumn col) (aggLeaf col) (fullReducePlan x x.where2.tree (0 - 1))
+
+-- The query plan a composite `select` runs: a `PlanProject` over the whole nested join.
+-- The inner join keeps the composite's ordering but defers its page and distinct to the
+-- `PlanProject` (`(0 - 1) 0 false` on the join), the same order the binary-join select
+-- runs them — pair, order, project, distinct, page. The projection tree is read against
+-- the flat, leaf-prefixed rows: a `QColAt i` cell names the i-th leaf's column. The
+-- left-nested source plan comes from `JoinShape`, the new leaf its scan and columns.
+fn compositeSelectPlan (kind: Text) (sourcePlan: QueryPlan) (rightTable: Text) (cond: QExpr) (where2: QExpr) (orders: List (Bool, Bool, Text)) (rightCols: List Text) (proj: QExpr) (lim: Int) (off: Int) (dist: Bool) -> QueryPlan =
+    planProject proj (planJoin kind sourcePlan (planScan rightTable (keepAllTree ()) [] (0 - 1) 0 false) cond where2 orders (0 - 1) 0 false [] rightCols) lim off dist
+
+-- The per-shape composite select-plan wrappers, one per composite. Each unpacks its
+-- receiver (the four composites are distinct opaque types that cannot share a typed
+-- helper) and projects through the nested join at its own kind, carrying the composite's
+-- accumulated ordering, page, and distinct. `lim` is passed explicitly so `selectFirst`
+-- runs the same plan with a one-row limit. The new leaf carries no column list (`[]`, as
+-- the binary-join select plans do): a projection names its own select-list through the
+-- `QProj`, so the leaf's full column set is never read — which keeps the wrapper off
+-- `Row f`, leaving only `Row s` to decode the projected shape.
+fn joinedSelectPlan (x: Joined q f a) (proj: QExpr) (lim: Int) -> QueryPlan where JoinShape q =
+    compositeSelectPlan "INNER" (joinedSourcePlan x.source) x.right.table x.cond.tree x.where2.tree x.orders [] proj lim x.off x.dist
 
 instance Decodable (Join e f a) where Adapter a, Row f, Row e =
     toList (x: Join e f a) -> Result (List (e, f)) Error =

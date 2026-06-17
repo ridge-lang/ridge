@@ -1361,15 +1361,17 @@ mem_agg_prefixed_col(Leaf, Column) ->
 %% Project a flat, source-prefixed join row through a projection tree into one row
 %% keyed by the projection's output aliases. A `QCol` names a left-source column
 %% (the t0$ prefix the join flattened the left side under), a `QColR` a right-source
-%% column (t1$); a missing column reads SQL NULL.
+%% column (t1$), a `QColAt I` the I-th leaf of a multi-table composite (t<I>$); a
+%% missing column reads SQL NULL.
 mem_project_prefixed({'QProj', Cols}, Row) ->
     maps:from_list([{Alias, mem_pcell(Col, Row)} || {Alias, Col} <- Cols]);
 mem_project_prefixed(_Other, _Row) ->
     #{}.
 
-mem_pcell({'QCol', C}, Row)  -> maps:get(<<"t0$", C/binary>>, Row, 'SqlNull');
-mem_pcell({'QColR', C}, Row) -> maps:get(<<"t1$", C/binary>>, Row, 'SqlNull');
-mem_pcell(_Other, _Row)      -> 'SqlNull'.
+mem_pcell({'QCol', C}, Row)     -> maps:get(<<"t0$", C/binary>>, Row, 'SqlNull');
+mem_pcell({'QColR', C}, Row)    -> maps:get(<<"t1$", C/binary>>, Row, 'SqlNull');
+mem_pcell({'QColAt', I, C}, Row) -> maps:get(mem_agg_prefixed_col(I, C), Row, 'SqlNull');
+mem_pcell(_Other, _Row)         -> 'SqlNull'.
 
 %% Flatten a joined {LeftMap, RightMap} pair into one row map with each side's columns
 %% prefixed (t0$ for the left source, t1$ for the right) so the two sides never

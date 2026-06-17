@@ -789,9 +789,49 @@ fn renderProject (proj: QExpr) (child: QueryPlan) (lim: Int) (off: Int) (dist: B
                         PlanScan rt _ _ _ _ _ ->
                             let sk = joinSkeleton kind lt lp rt cond where2 false n
                             { text = Text.join "" ["SELECT ", distinctKw dist, joinSelectList proj, " FROM ", sk.text, orderByClauseJoin joinOrders, limitClause lim, offsetClause off], binds = sk.binds, next = sk.next }
-                        _ -> emptyRender n
-                _ -> emptyRender n
+                        _ -> naryProject proj child joinOrders lim off dist n
+                _ -> naryProject proj child joinOrders lim off dist n
         _ -> emptyRender n
+
+-- A projected composite (`select` over a three-or-more table join): the projection's
+-- own select-list over the flattened spine, paged and de-duplicated by the projection.
+-- An all-inner spine renders its plain multi-way join; a mixed-shape spine renders each
+-- step by its own kind, with no presence markers — a projection reads a null-extended
+-- leaf's column as NULL directly, decoding it into the projected shape's `Option` field.
+-- The ORDER BY keys ride on the join the projection wraps, qualified to their leaf alias.
+fn naryProject (proj: QExpr) (child: QueryPlan) (orders: List (Bool, Bool, Text)) (lim: Int) (off: Int) (dist: Bool) (n: Int) -> { text: Text, binds: List SqlValue, next: Int } =
+    let f = flattenJoin child
+    match f.leaves
+        [] -> emptyRender n
+        _  ->
+            if allInnerSteps f.steps then
+                let from = naryFrom f.leaves f.steps n
+                let wh = naryWhere f.leaves f.steps from.next
+                { text = Text.join "" ["SELECT ", distinctKw dist, naryProjectList proj, " FROM ", from.text, wh.text, naryOrderBy orders, limitClause lim, offsetClause off], binds = from.binds ++ wh.binds, next = wh.next }
+            else
+                let from = mixedFrom f.leaves f.steps [] n
+                let wh = mixedWhere f.steps from.next
+                { text = Text.join "" ["SELECT ", distinctKw dist, naryProjectList proj, " FROM ", from.text, wh.text, naryOrderBy orders, limitClause lim, offsetClause off], binds = from.binds ++ wh.binds, next = wh.next }
+
+-- The projection's select-list over a flattened composite: each named column qualified
+-- to its leaf alias (`t<i>."col" AS "alias"`). A `QCol` names leaf 0, a `QColR` leaf 1,
+-- a `QColAt i` the i-th leaf of a deeper composite; a cell naming no column reads NULL.
+fn naryProjectList (proj: QExpr) -> Text =
+    match proj
+        QProj cols -> Text.join ", " (naryProjectTerms cols)
+        _          -> "*"
+
+fn naryProjectTerms (cols: List (Text, QExpr)) -> List Text =
+    match cols
+        []                   -> []
+        (alias, col) :: rest -> naryProjectTerm alias col :: naryProjectTerms rest
+
+fn naryProjectTerm (alias: Text) (col: QExpr) -> Text =
+    match col
+        QCol c     -> Text.join "" [naryColRef 0 c, " AS ", quoteIdent alias]
+        QColR c    -> Text.join "" [naryColRef 1 c, " AS ", quoteIdent alias]
+        QColAt i c -> Text.join "" [naryColRef i c, " AS ", quoteIdent alias]
+        _          -> Text.join "" ["NULL AS ", quoteIdent alias]
 
 fn joinSelectList (proj: QExpr) -> Text =
     match proj

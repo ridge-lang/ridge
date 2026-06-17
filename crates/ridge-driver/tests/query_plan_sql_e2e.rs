@@ -32,6 +32,7 @@ pub type User = { id: Int, age: Int, name: Text } deriving (Row)
 pub type Post = { id: Int, author: Int, title: Text } deriving (Row)
 pub type Comment = { id: Int, post: Int, body: Text } deriving (Row)
 pub type Combo = { person: Text, post: Text } deriving (Row)
+pub type Trio = { who: Text, what: Text, note: Text } deriving (Row)
 
 -- A captured predicate's reified tree. `Quote` is a prelude record whose `tree`
 -- field is the `QExpr` the compiler built from the lambda. A single-table filter is
@@ -42,6 +43,7 @@ fn pred1 (q: Quote (User -> Bool)) -> QExpr = q.tree
 fn cond2 (q: Quote (fn User Post -> Bool)) -> QExpr = q.tree
 fn cond3 (q: Quote (fn User Post Comment -> Bool)) -> QExpr = q.tree
 fn proj2 (q: Quote (fn User Post -> Combo)) -> QExpr = q.tree
+fn proj3 (q: Quote (fn User Post Comment -> Trio)) -> QExpr = q.tree
 
 -- An always-true tree, the "keep all" filter a scan or a join's WHERE defaults to.
 fn keepAll () -> QExpr = pred1 (fn (u: User) -> true)
@@ -213,6 +215,17 @@ pub fn sumThreeSql () -> Text = renderSql (sumThree ())
 fn avgThree () -> QueryPlan = planAggregate "AVG" "post" 2 (inner3 ())
 
 pub fn avgThreeSql () -> Text = renderSql (avgThree ())
+
+-- A projection over the three-table inner composite: a `PlanProject` whose `QProj` names
+-- one column from each leaf (`u.name`, `p.title`, `c.body`). The deep leaf reifies to a
+-- `QColAt 2` cell the renderer qualifies to `t2`, so the select-list reads
+-- `t0."name" AS "who", t1."title" AS "what", t2."body" AS "note"` over the flattened
+-- multi-way join, the base adult filter qualified to t0 ($1). Proves the renderer pushes
+-- a leaf-spanning projection down a composite the same way it does a binary join's.
+fn projectThree () -> QueryPlan =
+    planProject (proj3 (fn (u: User) (p: Post) (c: Comment) -> Trio { who = u.name, what = p.title, note = c.body })) (inner3 ()) (0 - 1) 0 false
+
+pub fn projectThreeSql () -> Text = renderSql (projectThree ())
 "#;
 
 fn write_workspace(root: &std::path::Path) {
@@ -277,7 +290,7 @@ fn query_plan_compiles_to_parameterized_sql() {
 
     let expr = format!(
         "F=fun(N)->io:format(\"~s=~s~n\",[N,{module}:N()])end, \
-         lists:foreach(F,['scanSql','scanBinds','combineSql','refineSql','innerSql','leftSql','rightSql','fullSql','fullBinds','projectSql','aggSql','groupSql','inner3Sql','inner3Binds','innerLeftMixSql','innerRightMixSql','innerFullMixSql','innerFullMixBinds','countThreeSql','countThreeBinds','countLeftMixSql','countLeftMixBinds','sumThreeSql','avgThreeSql']), halt()."
+         lists:foreach(F,['scanSql','scanBinds','combineSql','refineSql','innerSql','leftSql','rightSql','fullSql','fullBinds','projectSql','aggSql','groupSql','inner3Sql','inner3Binds','innerLeftMixSql','innerRightMixSql','innerFullMixSql','innerFullMixBinds','countThreeSql','countThreeBinds','countLeftMixSql','countLeftMixBinds','sumThreeSql','avgThreeSql','projectThreeSql']), halt()."
     );
     let output = Command::new("erl")
         .arg("-noshell")
@@ -409,5 +422,13 @@ fn query_plan_compiles_to_parameterized_sql() {
     );
     want(
         r#"avgThreeSql=SELECT AVG(t2."post")::float8 FROM "users" AS t0 JOIN "posts" AS t1 ON t0."id" = t1."author" JOIN "comments" AS t2 ON t1."id" = t2."post" WHERE (t0."age" >= $1)"#,
+    );
+
+    // A projection over the three-table composite names one column per leaf, the deep
+    // leaf qualified to t2 through its QColAt cell, over the flattened multi-way join with
+    // the base adult filter bound to $1 — a leaf-spanning select-list pushed down a
+    // composite exactly as a binary join's projection is.
+    want(
+        r#"projectThreeSql=SELECT t0."name" AS "who", t1."title" AS "what", t2."body" AS "note" FROM "users" AS t0 JOIN "posts" AS t1 ON t0."id" = t1."author" JOIN "comments" AS t2 ON t1."id" = t2."post" WHERE (t0."age" >= $1)"#,
     );
 }

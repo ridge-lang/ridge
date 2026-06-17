@@ -91,6 +91,11 @@ pub type AuthorCount = { author: Int, n: Int } deriving (Row)
 -- so an unmatched row projects the missing side's field as `None`.
 pub type FullCombo = { who: Option Text, title: Option Text } deriving (Row)
 
+-- The shape a three-table composite projection decodes into: one column drawn from each
+-- of the three leaves (user name, post title, comment body), proving a `select` over an
+-- inner composite names columns across every leaf and pushes them down as one row.
+pub type Trio = { who: Text, what: Text, note: Text } deriving (Row)
+
 -- A single-name projection shape for a join, so a `distinct` over a join's
 -- projection collapses the repeated left entity (one person, several posts) to its
 -- distinct values.
@@ -128,6 +133,13 @@ fn join3Rows (rs: List ((User, Post), Comment)) -> Text =
         []                   -> ""
         ((u, p), c) :: []    -> Text.concat u.name (Text.concat ":" (Text.concat p.title (Text.concat ":" c.body)))
         ((u, p), c) :: rest  -> Text.concat u.name (Text.concat ":" (Text.concat p.title (Text.concat ":" (Text.concat c.body (Text.concat "," (join3Rows rest))))))
+
+-- Render each projected `Trio` as `who:what:note`, comma-joined.
+fn trioRows (ts: List Trio) -> Text =
+    match ts
+        []           -> ""
+        t :: []      -> Text.concat t.who (Text.concat ":" (Text.concat t.what (Text.concat ":" t.note)))
+        t :: rest    -> Text.concat t.who (Text.concat ":" (Text.concat t.what (Text.concat ":" (Text.concat t.note (Text.concat "," (trioRows rest))))))
 
 -- Render each projected `Combo` as `person:post`, comma-joined.
 fn joinCombos (cs: List Combo) -> Text =
@@ -599,6 +611,33 @@ pub fn db filteredJoined3 () -> Text =
             match users |> Repo.query |> Repo.orderBy Asc (fn (u: User) -> u.id) |> Repo.joinOn posts (fn (u: User) (p: Post) -> u.id == p.author) |> Repo.joinOn comments (fn (u: User) (p: Post) (c: Comment) -> p.id == c.post) |> Repo.filter (fn (u: User) (p: Post) (c: Comment) -> c.post >= 11) |> Repo.toList
                 Err _  -> "filter-join3-err"
                 Ok rs  -> join3Rows rs
+
+-- `select` over a three-table inner composite: chain `joinOn` twice, then project a
+-- column from each leaf into `Trio { who, what, note }` (`u.name`, `p.title`, `c.body`).
+-- The projection names the third leaf via `c`, so its column reifies as a `QColAt 2`
+-- cell the backend qualifies to the `t2` alias. Ordered by user id and rendered ->
+-- "ada:hello:nice,lin:world:wow,max:again:ok". Proves the composite `Projectable`
+-- instance dispatches (keyed by the receiver alone, like the composite aggregates) and
+-- pushes the leaf-spanning select-list down through the flattened N-ary join.
+pub fn db selectJoined3 () -> Text =
+    match setupJoin3 ()
+        Err _ -> "setup-err"
+        Ok (users, posts, comments) ->
+            match users |> Repo.query |> Repo.orderBy Asc (fn (u: User) -> u.id) |> Repo.joinOn posts (fn (u: User) (p: Post) -> u.id == p.author) |> Repo.joinOn comments (fn (u: User) (p: Post) (c: Comment) -> p.id == c.post) |> Repo.select (fn (u: User) (p: Post) (c: Comment) -> Trio { who = u.name, what = p.title, note = c.body })
+                Err _  -> "select-join3-err"
+                Ok ts  -> trioRows ts
+
+-- `selectFirst` over the same three-table composite: project the leaf-spanning shape and
+-- push a LIMIT 1, decoding the single projected row -> "ada:hello:nice" (ada sorts first
+-- by user id). Proves the composite `selectFirst` pages the projection to one row.
+pub fn db selectJoined3First () -> Text =
+    match setupJoin3 ()
+        Err _ -> "setup-err"
+        Ok (users, posts, comments) ->
+            match users |> Repo.query |> Repo.orderBy Asc (fn (u: User) -> u.id) |> Repo.joinOn posts (fn (u: User) (p: Post) -> u.id == p.author) |> Repo.joinOn comments (fn (u: User) (p: Post) (c: Comment) -> p.id == c.post) |> Repo.selectFirst (fn (u: User) (p: Post) (c: Comment) -> Trio { who = u.name, what = p.title, note = c.body })
+                Err _       -> "select-first3-err"
+                Ok None     -> "none"
+                Ok (Some t) -> Text.concat t.who (Text.concat ":" (Text.concat t.what (Text.concat ":" t.note)))
 
 -- `filter` over a LEFT composite: chain `joinOn` then `leftJoinOn`, then narrow with
 -- a leaf predicate over the left-most leaf (`u.id >= 2`). The predicate ANDs into the
@@ -1917,6 +1956,8 @@ fn repo_surface_runs_on_beam() {
          io:format(\"joined3=~s~n\",[{module}:joined3()]), \
          io:format(\"joined3First=~s~n\",[{module}:joined3First()]), \
          io:format(\"filteredJoined3=~s~n\",[{module}:filteredJoined3()]), \
+         io:format(\"selectJoined3=~s~n\",[{module}:selectJoined3()]), \
+         io:format(\"selectJoined3First=~s~n\",[{module}:selectJoined3First()]), \
          io:format(\"filteredLeftJoined3=~s~n\",[{module}:filteredLeftJoined3()]), \
          io:format(\"countJoined3=~w~n\",[{module}:countJoined3()]), \
          io:format(\"existsJoined3=~w~n\",[{module}:existsJoined3()]), \
@@ -2074,6 +2115,14 @@ fn repo_surface_runs_on_beam() {
         (
             "filteredJoined3=lin:world:wow,max:again:ok",
             "filter over the three-table composite ANDs a leaf predicate (c.post >= 11, naming the third leaf) into the post-join WHERE, dropping ada's row whose comment sits on post 10",
+        ),
+        (
+            "selectJoined3=ada:hello:nice,lin:world:wow,max:again:ok",
+            "select over the three-table inner composite projects one column from each leaf into Trio (u.name, p.title, c.body), reifying c's column as a QColAt 2 cell, and pushes the leaf-spanning select-list down the flattened join in user-id order",
+        ),
+        (
+            "selectJoined3First=ada:hello:nice",
+            "selectFirst over the three-table composite pushes a LIMIT 1 on the projection and decodes the single leaf-spanning row (ada sorts first by user id)",
         ),
         (
             "filteredLeftJoined3=lin:world:-,max:again:ok",

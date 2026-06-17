@@ -1936,6 +1936,46 @@ pub fn register_stdlib_instances(
         }
     }
 
+    // `Projectable (Joined q f a)` — the inner composite's `select`/`selectFirst`. A
+    // fundep terminal keyed by the RECEIVER ALONE (the projection's leaf arity grows
+    // with the join depth), like the composite `Aggregable`/`Refinable`. Source `where
+    // Adapter a, JoinShape q, Row s`: `a@2, q@0` in the receiver, and `Row s` — the
+    // projected shape (`Ret p`) — at the projection's return, whose flattened position
+    // grows with the join depth, so it resolves through the `PREDICATE_RETURN_POS`
+    // sentinel. The new leaf carries no column list in the plan (a projection names its
+    // own select-list), so the instance never touches `Row f` — only `Row s`, which
+    // would otherwise collide with `Row f` as a same-class context dictionary. Only the
+    // inner `Joined` registers here: an outer composite's projection reads its
+    // null-extended leaves as `Option`, a per-leaf wrapping the plain leaf list does not
+    // carry, so those shapes wait on it.
+    if let (Some(projectable), Some(adapter), Some(joinshape), Some(row)) = (
+        ct.id_by_name("Projectable"),
+        ct.id_by_name("Adapter"),
+        ct.id_by_name("JoinShape"),
+        ct.id_by_name("Row"),
+    ) {
+        let composite_projectable_inst = || InstanceInfo {
+            def_module: None,
+            methods: vec![
+                ("select".to_string(), String::new()),
+                ("selectFirst".to_string(), String::new()),
+            ],
+            ctx_constraints: vec![
+                ridge_types::Constraint::single(adapter, ridge_types::TyVid(0)),
+                ridge_types::Constraint::single(joinshape, ridge_types::TyVid(0)),
+                ridge_types::Constraint::single(row, ridge_types::TyVid(0)),
+            ],
+            head_var_positions: vec![2, 0, PREDICATE_RETURN_POS],
+            origin: InstanceOrigin::Explicit,
+            span: ds,
+        };
+        if let Some(&joined) = reconciled_tycon_names.get("Joined") {
+            env.instances
+                .entry((projectable, smallvec![joined]))
+                .or_insert_with(composite_projectable_inst);
+        }
+    }
+
     // `Decodable (Query e a) (fn raw -> e)`, `Decodable (Join e f a) (fn (raw,
     // raw) -> (e, f))`, and `Decodable (LeftJoin e f a) (fn (raw, Option raw) ->
     // (e, Option f))` — the unified `toList`/`first` decode terminals from

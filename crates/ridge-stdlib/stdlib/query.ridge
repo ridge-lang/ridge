@@ -68,7 +68,7 @@ pub fn ascending (dir: SortOrder) -> Bool =
 -- per group, keyed by alias and ordered by the key — the plan form of a grouped
 -- join `summarize`. It wraps a `PlanJoin`, whose flat source-prefixed rows it splits
 -- back per side to read each group key and folded column.
-pub type QueryPlan = PlanScan Text QExpr (List (Bool, Text)) Int Int Bool | PlanCombine Text QueryPlan QueryPlan | PlanRefine QueryPlan QExpr (List (Bool, Text)) Int Int Bool | PlanJoin Text QueryPlan QueryPlan QExpr QExpr (List (Bool, Bool, Text)) Int Int Bool (List Text) (List Text) | PlanProject QExpr QueryPlan Int Int Bool | PlanAggregate Text Text Bool QueryPlan | PlanGroup Text Bool (List (Text, Text, Text, Bool)) QExpr QueryPlan
+pub type QueryPlan = PlanScan Text QExpr (List (Bool, Text)) Int Int Bool | PlanCombine Text QueryPlan QueryPlan | PlanRefine QueryPlan QExpr (List (Bool, Text)) Int Int Bool | PlanJoin Text QueryPlan QueryPlan QExpr QExpr (List (Bool, Bool, Text)) Int Int Bool (List Text) (List Text) | PlanProject QExpr QueryPlan Int Int Bool | PlanAggregate Text Text Int QueryPlan | PlanGroup Text Bool (List (Text, Text, Text, Bool)) QExpr QueryPlan
 
 -- A single-table scan plan — the plan form of `fetch`.
 pub fn planScan (table: Text) (pred: QExpr) (orders: List (Bool, Text)) (lim: Int) (off: Int) (dist: Bool) -> QueryPlan =
@@ -99,11 +99,11 @@ pub fn planProject (proj: QExpr) (child: QueryPlan) (lim: Int) (off: Int) (dist:
     PlanProject proj child lim off dist
 
 -- Reduce a sub-plan to a single scalar through the aggregate `func` over `column`
--- (`isRight` picks the join source the column belongs to; `column` is unused for
--- `COUNT`). The result is one row carrying the scalar, or no row when the aggregate
--- is SQL NULL.
-pub fn planAggregate (func: Text) (column: Text) (isRight: Bool) (child: QueryPlan) -> QueryPlan =
-    PlanAggregate func column isRight child
+-- (`leaf` is the index of the join leaf the column belongs to — 0/1 for a binary
+-- join's two sides, higher for a deeper composite; `column` is unused for `COUNT`).
+-- The result is one row carrying the scalar, or no row when the aggregate is SQL NULL.
+pub fn planAggregate (func: Text) (column: Text) (leaf: Int) (child: QueryPlan) -> QueryPlan =
+    PlanAggregate func column leaf child
 
 -- Group a sub-plan's rows by `keyCol` (on the join side `keySide`), summarise each
 -- group into the `(alias, func, column, isRight)` aggregate columns, and keep the
@@ -272,8 +272,8 @@ fn renderPlan (plan: QueryPlan) (n: Int) -> { text: Text, binds: List SqlValue, 
             renderBareJoin kind left right cond where2 orders lim off dist leftCols rightCols n
         PlanProject proj child lim off dist ->
             renderProject proj child lim off dist n
-        PlanAggregate func column isRight child ->
-            renderAggregate func column isRight child n
+        PlanAggregate func column leaf child ->
+            renderAggregate func column leaf child n
         PlanGroup keyCol keySide cols having child ->
             renderGroup keyCol keySide cols having child n
 
@@ -813,7 +813,7 @@ fn joinSelectTerm (alias: Text) (col: QExpr) -> Text =
 -- `COUNT` counts rows; the others fold a side-qualified column (`AVG` casts to
 -- `float8`, as the single-table aggregate does). No ordering or paging — an aggregate
 -- folds every joined row.
-fn renderAggregate (func: Text) (column: Text) (isRight: Bool) (child: QueryPlan) (n: Int) -> { text: Text, binds: List SqlValue, next: Int } =
+fn renderAggregate (func: Text) (column: Text) (leaf: Int) (child: QueryPlan) (n: Int) -> { text: Text, binds: List SqlValue, next: Int } =
     match child
         PlanJoin kind left right cond where2 _ _ _ _ _ _ ->
             match left
@@ -821,9 +821,9 @@ fn renderAggregate (func: Text) (column: Text) (isRight: Bool) (child: QueryPlan
                     match right
                         PlanScan rt _ _ _ _ _ ->
                             let sk = joinSkeleton kind lt lp rt cond where2 false n
-                            { text = Text.join "" ["SELECT ", aggExprJoin func isRight column, " FROM ", sk.text], binds = sk.binds, next = sk.next }
-                        _ -> naryAggregate func child n
-                _ -> naryAggregate func child n
+                            { text = Text.join "" ["SELECT ", aggExprJoin func (leaf == 1) column, " FROM ", sk.text], binds = sk.binds, next = sk.next }
+                        _ -> naryAggregate func leaf column child n
+                _ -> naryAggregate func leaf column child n
         _ -> emptyRender n
 
 -- A scalar aggregate over a composite (three-or-more table) join: the flattened spine
@@ -832,9 +832,8 @@ fn renderAggregate (func: Text) (column: Text) (isRight: Bool) (child: QueryPlan
 -- bound the fold. An all-inner spine renders its plain multi-way join; a mixed-shape
 -- spine renders each step by its own kind, the presence markers a bare terminal needs
 -- left off (an aggregate reads the null-extended NULLs directly). `COUNT(*)` counts the
--- joined rows; the column-folding aggregates arrive once a composite carries a
--- leaf-indexed aggregate column.
-fn naryAggregate (func: Text) (child: QueryPlan) (n: Int) -> { text: Text, binds: List SqlValue, next: Int } =
+-- joined rows; a column-folding aggregate folds `column` on its leaf alias `t<leaf>`.
+fn naryAggregate (func: Text) (leaf: Int) (column: Text) (child: QueryPlan) (n: Int) -> { text: Text, binds: List SqlValue, next: Int } =
     let f = flattenJoin child
     match f.leaves
         [] -> emptyRender n
@@ -842,19 +841,25 @@ fn naryAggregate (func: Text) (child: QueryPlan) (n: Int) -> { text: Text, binds
             if allInnerSteps f.steps then
                 let from = naryFrom f.leaves f.steps n
                 let wh = naryWhere f.leaves f.steps from.next
-                { text = Text.join "" ["SELECT ", naryAggExpr func, " FROM ", from.text, wh.text], binds = from.binds ++ wh.binds, next = wh.next }
+                { text = Text.join "" ["SELECT ", naryAggExpr func leaf column, " FROM ", from.text, wh.text], binds = from.binds ++ wh.binds, next = wh.next }
             else
                 -- A reduction reads the null-extended NULLs directly, so it needs no
                 -- presence markers — the marker-free `mixedFrom` (empty nullable set,
                 -- though a filtered base leaf still wraps to push its scan filter).
                 let from = mixedFrom f.leaves f.steps [] n
                 let wh = mixedWhere f.steps from.next
-                { text = Text.join "" ["SELECT ", naryAggExpr func, " FROM ", from.text, wh.text], binds = from.binds ++ wh.binds, next = wh.next }
+                { text = Text.join "" ["SELECT ", naryAggExpr func leaf column, " FROM ", from.text, wh.text], binds = from.binds ++ wh.binds, next = wh.next }
 
--- The aggregate expression over a composite join. `COUNT` counts the joined rows; the
--- column-folding aggregates are added with the leaf-indexed aggregate column.
-fn naryAggExpr (func: Text) -> Text =
-    if func == "COUNT" then "COUNT(*)" else "COUNT(*)"
+-- The aggregate expression over a composite join: `COUNT(*)` counts the joined rows; a
+-- column-folding aggregate qualifies its column to the leaf alias `t<leaf>` (`AVG` casts
+-- to `float8`, as the single-table and binary-join aggregates do).
+fn naryAggExpr (func: Text) (leaf: Int) (column: Text) -> Text =
+    if func == "COUNT" then "COUNT(*)"
+    else Text.join "" [func, "(", naryColRef leaf column, ")", avgCast func]
+
+-- The `::float8` cast an `AVG` carries so an integer column averages to a float, matching
+-- the single-table and binary-join aggregate renderers; the other folds add nothing.
+fn avgCast (func: Text) -> Text = if func == "AVG" then "::float8" else ""
 
 fn aggExprJoin (func: Text) (isRight: Bool) (column: Text) -> Text =
     if func == "COUNT" then "COUNT(*)"

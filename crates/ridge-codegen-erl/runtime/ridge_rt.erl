@@ -1324,9 +1324,9 @@ mem_eval_plan(State, Id, {'PlanProject', Proj, Child, Lim, Off, Dist}) ->
 mem_eval_plan(State, Id, {'PlanAggregate', <<"COUNT">>, _Column, _IsRight, Child}) ->
     Rows = mem_eval_plan(State, Id, Child),
     [#{<<"agg">> => {'SqlInt', length(Rows)}}];
-mem_eval_plan(State, Id, {'PlanAggregate', Func, Column, IsRight, Child}) ->
+mem_eval_plan(State, Id, {'PlanAggregate', Func, Column, Leaf, Child}) ->
     Rows = mem_eval_plan(State, Id, Child),
-    case mem_aggregate_value(Func, mem_agg_prefixed_col(IsRight, Column), Rows) of
+    case mem_aggregate_value(Func, mem_agg_prefixed_col(Leaf, Column), Rows) of
         'SqlNull' -> [];
         Value     -> [#{<<"agg">> => Value}]
     end;
@@ -1350,12 +1350,13 @@ mem_unprefix_pair(Row) ->
         end,
         {#{}, #{}}, Row).
 
-%% The prefixed column name a join aggregate folds: the right source's column (the
-%% t1$ prefix) when IsRight, otherwise the left source's (t0$). A `PlanAggregate`
-%% over a join folds its child's flat source-prefixed rows, so the column it reads
-%% carries the side's prefix, mirroring how `mem_pcell` resolves a projection cell.
-mem_agg_prefixed_col(true,  Column) -> <<"t1$", Column/binary>>;
-mem_agg_prefixed_col(false, Column) -> <<"t0$", Column/binary>>.
+%% The prefixed column name a join aggregate folds: the column under its leaf's
+%% `t<Leaf>$` prefix (t0$ for the first leaf, t1$ for a binary join's right, higher
+%% for a deeper composite). A `PlanAggregate` over a join folds its child's flat
+%% source-prefixed rows, so the column it reads carries the leaf's prefix, mirroring
+%% how `mem_pcell` resolves a projection cell.
+mem_agg_prefixed_col(Leaf, Column) ->
+    <<"t", (integer_to_binary(Leaf))/binary, "$", Column/binary>>.
 
 %% Project a flat, source-prefixed join row through a projection tree into one row
 %% keyed by the projection's output aliases. A `QCol` names a left-source column

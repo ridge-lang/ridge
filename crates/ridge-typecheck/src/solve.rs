@@ -919,7 +919,15 @@ fn resolve_ctx_dict_args_multi(
         .iter()
         .zip(inst_info.head_var_positions.iter())
     {
-        let arg_ty = flat.get(pos).cloned().unwrap_or(Type::Error);
+        // The sentinel resolves to the determined predicate's return type — the
+        // last flattened element — so a constraint over a composite terminal's
+        // variable-arity result (`SqlType n`, `Row s`) lands on `n`/`s` whatever
+        // the join depth. A fixed index reads its own flattened position.
+        let arg_ty = if pos == crate::class_env::PREDICATE_RETURN_POS {
+            flat.last().cloned().unwrap_or(Type::Error)
+        } else {
+            flat.get(pos).cloned().unwrap_or(Type::Error)
+        };
         let resolved_arg = ctx.deep_resolve(&arg_ty);
         let plan = resolve_dict_plan(
             ctx,

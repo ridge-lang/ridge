@@ -659,6 +659,53 @@ pub fn db countLeftJoined3 () -> Int =
                 Err _ -> 0 - 2
                 Ok n  -> n
 
+-- `sumOf` over a three-table inner composite, folding the FIRST leaf's column
+-- (`u.age`): 18 + 30 + 25 = 73. Proves the composite Aggregable instance dispatches and
+-- the fold reads the left-most leaf (t0).
+pub fn db sumAgesJoined3 () -> Int =
+    match setupJoin3 ()
+        Err _ -> 0 - 1
+        Ok (users, posts, comments) ->
+            match users |> Repo.query |> Repo.joinOn posts (fn (u: User) (p: Post) -> u.id == p.author) |> Repo.joinOn comments (fn (u: User) (p: Post) (c: Comment) -> p.id == c.post) |> Repo.sumOf (fn (u: User) (p: Post) (c: Comment) -> u.age)
+                Err _       -> 0 - 2
+                Ok None     -> 0 - 3
+                Ok (Some n) -> n
+
+-- `sumOf` over the same composite, folding the THIRD leaf's column (`c.post`):
+-- 10 + 11 + 12 = 33. Proves the aggregate qualifies the column to the deep leaf (t2).
+pub fn db sumPostsJoined3 () -> Int =
+    match setupJoin3 ()
+        Err _ -> 0 - 1
+        Ok (users, posts, comments) ->
+            match users |> Repo.query |> Repo.joinOn posts (fn (u: User) (p: Post) -> u.id == p.author) |> Repo.joinOn comments (fn (u: User) (p: Post) (c: Comment) -> p.id == c.post) |> Repo.sumOf (fn (u: User) (p: Post) (c: Comment) -> c.post)
+                Err _       -> 0 - 2
+                Ok None     -> 0 - 3
+                Ok (Some n) -> n
+
+-- `maxOf` over the same composite, folding the first leaf (`u.age`): max(18, 30, 25) =
+-- 30. Proves the other folds (MAX here) carry the column's own type.
+pub fn db maxAgeJoined3 () -> Int =
+    match setupJoin3 ()
+        Err _ -> 0 - 1
+        Ok (users, posts, comments) ->
+            match users |> Repo.query |> Repo.joinOn posts (fn (u: User) (p: Post) -> u.id == p.author) |> Repo.joinOn comments (fn (u: User) (p: Post) (c: Comment) -> p.id == c.post) |> Repo.maxOf (fn (u: User) (p: Post) (c: Comment) -> u.age)
+                Err _       -> 0 - 2
+                Ok None     -> 0 - 3
+                Ok (Some n) -> n
+
+-- `sumOf` over a LEFT composite, folding the deep leaf (`c.post`): lin's post has no
+-- comment, so its row's comment leaf is null-extended and the SQL aggregate skips it —
+-- 10 (ada) + 12 (max) = 22. Proves an outer-shape scalar aggregate folds a null-extended
+-- leaf the way a binary outer aggregate does, skipping the absent rows.
+pub fn db sumPostsLeftJoined3 () -> Int =
+    match setupLeftJoin3 ()
+        Err _ -> 0 - 1
+        Ok (users, posts, comments) ->
+            match users |> Repo.query |> Repo.joinOn posts (fn (u: User) (p: Post) -> u.id == p.author) |> Repo.leftJoinOn comments (fn (u: User) (p: Post) (c: Comment) -> p.id == c.post) |> Repo.sumOf (fn (u: User) (p: Post) (c: Comment) -> c.post)
+                Err _       -> 0 - 2
+                Ok None     -> 0 - 3
+                Ok (Some n) -> n
+
 -- Render each `((User, Post), Option Comment)` row of a mixed inner-then-left chain
 -- as `name:title:body`, or `name:title:-` when the post has no comment, comma-joined
 -- — so the LEFT extend's kept-but-unmatched composite rows are observable.
@@ -1875,6 +1922,10 @@ fn repo_surface_runs_on_beam() {
          io:format(\"existsJoined3=~w~n\",[{module}:existsJoined3()]), \
          io:format(\"everyJoined3=~w~n\",[{module}:everyJoined3()]), \
          io:format(\"countLeftJoined3=~w~n\",[{module}:countLeftJoined3()]), \
+         io:format(\"sumAgesJoined3=~w~n\",[{module}:sumAgesJoined3()]), \
+         io:format(\"sumPostsJoined3=~w~n\",[{module}:sumPostsJoined3()]), \
+         io:format(\"maxAgeJoined3=~w~n\",[{module}:maxAgeJoined3()]), \
+         io:format(\"sumPostsLeftJoined3=~w~n\",[{module}:sumPostsLeftJoined3()]), \
          io:format(\"leftJoined3=~s~n\",[{module}:leftJoined3()]), \
          io:format(\"leftJoined3First=~s~n\",[{module}:leftJoined3First()]), \
          io:format(\"rightJoined3=~s~n\",[{module}:rightJoined3()]), \
@@ -2043,6 +2094,22 @@ fn repo_surface_runs_on_beam() {
         (
             "countLeftJoined3=3",
             "count over a left composite counts every kept row, lin's post (no comment) included, so three",
+        ),
+        (
+            "sumAgesJoined3=73",
+            "sumOf over the three-table composite folds the first leaf's column (u.age): 18 + 30 + 25",
+        ),
+        (
+            "sumPostsJoined3=33",
+            "sumOf folds the third leaf's column (c.post, qualified to t2): 10 + 11 + 12",
+        ),
+        (
+            "maxAgeJoined3=30",
+            "maxOf over the composite folds the first leaf (u.age) and answers the column's own type",
+        ),
+        (
+            "sumPostsLeftJoined3=22",
+            "sumOf over a left composite folds the deep leaf, skipping lin's null-extended comment: 10 + 12",
         ),
         (
             "leftJoined3=ada:hello:nice,lin:world:-,max:again:ok",

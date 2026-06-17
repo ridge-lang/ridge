@@ -113,7 +113,7 @@ pub fn projectSql () -> Text =
     renderSql (planProject (proj2 (fn (u: User) (p: Post) -> Combo { person = u.name, post = p.title })) (wrapJoin ()) (0 - 1) 0 false)
 
 pub fn aggSql () -> Text =
-    renderSql (planAggregate "AVG" "author" true (wrapJoin ()))
+    renderSql (planAggregate "AVG" "author" 1 (wrapJoin ()))
 
 pub fn groupSql () -> Text =
     renderSql (planGroup "author" true [("author", "KEY", "", true), ("n", "COUNT", "", false)] (keepAllJoin ()) (wrapJoin ()))
@@ -173,7 +173,7 @@ pub fn innerFullMixBinds () -> Text = renderBinds (innerFullMix ())
 -- A count over the three-table inner composite: COUNT(*) over the flattened multi-way
 -- join, the base adult filter qualified to t0 binding $1. A reduction selects no leaf
 -- columns and reads no markers — just the count.
-fn countThree () -> QueryPlan = planAggregate "COUNT" "" false (inner3 ())
+fn countThree () -> QueryPlan = planAggregate "COUNT" "" 0 (inner3 ())
 
 pub fn countThreeSql () -> Text = renderSql (countThree ())
 
@@ -195,11 +195,24 @@ fn leftMixFiltered () -> QueryPlan =
         []
         (commentCols ())
 
-fn countLeftMix () -> QueryPlan = planAggregate "COUNT" "" false (leftMixFiltered ())
+fn countLeftMix () -> QueryPlan = planAggregate "COUNT" "" 0 (leftMixFiltered ())
 
 pub fn countLeftMixSql () -> Text = renderSql (countLeftMix ())
 
 pub fn countLeftMixBinds () -> Text = renderBinds (countLeftMix ())
+
+-- A scalar SUM over the three-table inner composite, folding the deep leaf's column
+-- (`post`, leaf 2): `SUM(t2."post")` over the flattened multi-way join, the base adult
+-- filter qualified to t0 ($1).
+fn sumThree () -> QueryPlan = planAggregate "SUM" "post" 2 (inner3 ())
+
+pub fn sumThreeSql () -> Text = renderSql (sumThree ())
+
+-- An AVG over the same composite leaf, carrying the `::float8` cast so an integer column
+-- averages to a float, as the single-table and binary-join aggregates do.
+fn avgThree () -> QueryPlan = planAggregate "AVG" "post" 2 (inner3 ())
+
+pub fn avgThreeSql () -> Text = renderSql (avgThree ())
 "#;
 
 fn write_workspace(root: &std::path::Path) {
@@ -264,7 +277,7 @@ fn query_plan_compiles_to_parameterized_sql() {
 
     let expr = format!(
         "F=fun(N)->io:format(\"~s=~s~n\",[N,{module}:N()])end, \
-         lists:foreach(F,['scanSql','scanBinds','combineSql','refineSql','innerSql','leftSql','rightSql','fullSql','fullBinds','projectSql','aggSql','groupSql','inner3Sql','inner3Binds','innerLeftMixSql','innerRightMixSql','innerFullMixSql','innerFullMixBinds','countThreeSql','countThreeBinds','countLeftMixSql','countLeftMixBinds']), halt()."
+         lists:foreach(F,['scanSql','scanBinds','combineSql','refineSql','innerSql','leftSql','rightSql','fullSql','fullBinds','projectSql','aggSql','groupSql','inner3Sql','inner3Binds','innerLeftMixSql','innerRightMixSql','innerFullMixSql','innerFullMixBinds','countThreeSql','countThreeBinds','countLeftMixSql','countLeftMixBinds','sumThreeSql','avgThreeSql']), halt()."
     );
     let output = Command::new("erl")
         .arg("-noshell")
@@ -388,4 +401,13 @@ fn query_plan_compiles_to_parameterized_sql() {
         r#"countLeftMixSql=SELECT COUNT(*) FROM "users" AS t0 JOIN "posts" AS t1 ON t0."id" = t1."author" LEFT JOIN "comments" AS t2 ON t1."id" = t2."post" WHERE (t2."post" >= $1)"#,
     );
     want("countLeftMixBinds=1");
+
+    // A scalar SUM over the three-table composite folds the deep leaf's column, qualified
+    // to its alias t2; AVG carries the ::float8 cast. The base adult filter binds $1.
+    want(
+        r#"sumThreeSql=SELECT SUM(t2."post") FROM "users" AS t0 JOIN "posts" AS t1 ON t0."id" = t1."author" JOIN "comments" AS t2 ON t1."id" = t2."post" WHERE (t0."age" >= $1)"#,
+    );
+    want(
+        r#"avgThreeSql=SELECT AVG(t2."post")::float8 FROM "users" AS t0 JOIN "posts" AS t1 ON t0."id" = t1."author" JOIN "comments" AS t2 ON t1."id" = t2."post" WHERE (t0."age" >= $1)"#,
+    );
 }

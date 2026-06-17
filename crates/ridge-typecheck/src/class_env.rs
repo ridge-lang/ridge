@@ -227,6 +227,15 @@ pub enum InstanceOrigin {
 
 // ── InstanceInfo ─────────────────────────────────────────────────────────────
 
+/// Sentinel `head_var_positions` entry for "the determined predicate's return
+/// type" — the last element of the flattened head — rather than a fixed index.
+///
+/// Used for a context constraint over a composite terminal's variable-arity
+/// predicate result (`SqlType n` on a scalar aggregate, `Row s` on a projection),
+/// whose variable's flattened position grows with the join depth. Resolved in
+/// [`crate::solve`]'s context-dictionary resolution.
+pub const PREDICATE_RETURN_POS: usize = usize::MAX;
+
 /// Metadata for a registered typeclass instance.
 #[derive(Debug, Clone)]
 pub struct InstanceInfo {
@@ -258,6 +267,12 @@ pub struct InstanceInfo {
     ///
     /// Always the same length as `ctx_constraints`. Empty for non-parametric
     /// instances.
+    ///
+    /// A position of [`PREDICATE_RETURN_POS`] is a sentinel for "the determined
+    /// predicate's return type" — the last element of the flattened head — used
+    /// for a context constraint over a variable-arity predicate's result (a
+    /// composite terminal's `SqlType n`/`Row s`, whose `n`/`s` sits at a position
+    /// that grows with the join depth rather than a fixed index).
     pub head_var_positions: Vec<usize>,
     /// How this instance was created.
     pub origin: InstanceOrigin,
@@ -1876,6 +1891,47 @@ pub fn register_stdlib_instances(
                 env.instances
                     .entry((aggregable, smallvec![full_join, fn2]))
                     .or_insert_with(|| aggregable_inst(vec![2, 5]));
+            }
+        }
+    }
+
+    // `Aggregable (Joined q f a)` and the three outer composites — the nested join's
+    // scalar aggregates. A fundep terminal, keyed by the RECEIVER ALONE (the accessor's
+    // leaf arity grows with the join depth); discharge falls back to the receiver-only
+    // key, as for the composite `Refinable`/`Every`. Source `where Adapter a, JoinShape
+    // q, Row f, SqlType n`: `a@2, q@0, f@1` in the receiver, and `n` — the folded
+    // column's type (`Ret p`) — at the accessor's return, whose flattened position grows
+    // with the join depth, so it resolves through the `PREDICATE_RETURN_POS` sentinel.
+    if let (Some(aggregable), Some(adapter), Some(joinshape), Some(row), Some(sqltype)) = (
+        ct.id_by_name("Aggregable"),
+        ct.id_by_name("Adapter"),
+        ct.id_by_name("JoinShape"),
+        ct.id_by_name("Row"),
+        ct.id_by_name("SqlType"),
+    ) {
+        let composite_aggregable_inst = || InstanceInfo {
+            def_module: None,
+            methods: vec![
+                ("sumOf".to_string(), String::new()),
+                ("avgOf".to_string(), String::new()),
+                ("minOf".to_string(), String::new()),
+                ("maxOf".to_string(), String::new()),
+            ],
+            ctx_constraints: vec![
+                ridge_types::Constraint::single(adapter, ridge_types::TyVid(0)),
+                ridge_types::Constraint::single(joinshape, ridge_types::TyVid(0)),
+                ridge_types::Constraint::single(row, ridge_types::TyVid(0)),
+                ridge_types::Constraint::single(sqltype, ridge_types::TyVid(0)),
+            ],
+            head_var_positions: vec![2, 0, 1, PREDICATE_RETURN_POS],
+            origin: InstanceOrigin::Explicit,
+            span: ds,
+        };
+        for name in ["Joined", "LeftJoined", "RightJoined", "FullJoined"] {
+            if let Some(&tycon) = reconciled_tycon_names.get(name) {
+                env.instances
+                    .entry((aggregable, smallvec![tycon]))
+                    .or_insert_with(composite_aggregable_inst);
             }
         }
     }

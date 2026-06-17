@@ -1738,6 +1738,32 @@ fn single_static_plan_for_class(
     found.cloned()
 }
 
+/// The solved `DictPlan::Static` for `class` whose receiver tycon is `tycon`, from
+/// this module's resolution table. Used to recover the constraint solver's plan for a
+/// receiver-keyed terminal whose context constraint over its predicate's return type
+/// (`SqlType n`/`Row s`) the lowering cannot rebuild from the receiver type alone — the
+/// solver resolved it against the full head, including the predicate. Returns `None`
+/// when no such plan exists.
+fn stored_static_plan_for_tycon(
+    ctx: &LowerCtx<'_>,
+    class: ridge_types::ClassId,
+    tycon: TyConId,
+) -> Option<ridge_typecheck::DictPlan> {
+    let tmod = ctx
+        .workspace
+        .and_then(|ws| ws.modules.get(ctx.module_id.0 as usize))?;
+    for ((cid, _), plan) in &tmod.dict_resolution {
+        if *cid == class {
+            if let ridge_typecheck::DictPlan::Static { tycon: t, .. } = plan {
+                if *t == tycon {
+                    return Some(plan.clone());
+                }
+            }
+        }
+    }
+    None
+}
+
 /// Structural equality for two dictionary plans, used to tell "the same instance
 /// registered by two call sites" apart from "two distinct instances".
 ///
@@ -2128,6 +2154,22 @@ fn build_dict_plan_from_type(
     match deep_peel_alias(ty) {
         Type::Con(tycon, args) => {
             let env = ctx.instance_env?;
+            // An instance with a context constraint over its predicate's return type
+            // (a composite terminal's `SqlType n`/`Row s`, marked `PREDICATE_RETURN_POS`)
+            // cannot be rebuilt from the receiver type alone — the variable lives in the
+            // predicate, not the receiver's arguments. The constraint solver already
+            // resolved it against the full head, so reuse that stored plan, keyed by the
+            // receiver tycon.
+            if let Some(info) = env.get((class, tycon)) {
+                if info
+                    .head_var_positions
+                    .contains(&ridge_typecheck::class_env::PREDICATE_RETURN_POS)
+                {
+                    if let Some(stored) = stored_static_plan_for_tycon(ctx, class, tycon) {
+                        return Some(stored);
+                    }
+                }
+            }
             let Some(info) = env.get((class, tycon)) else {
                 // A multi-parameter instance with a functional dependency from the
                 // first position (`Refinable q p | q -> p`) is keyed by the whole

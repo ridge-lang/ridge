@@ -1321,8 +1321,8 @@ fn reconciled_query_plan_fn_scheme(
         ])),
         // planProject : QExpr -> QueryPlan -> Int -> Int -> Bool -> QueryPlan
         "planProject" => Some(pure(vec![qexpr(), plan(), int(), int(), bool_()])),
-        // planAggregate : Text -> Text -> Bool -> QueryPlan -> QueryPlan
-        "planAggregate" => Some(pure(vec![text(), text(), bool_(), plan()])),
+        // planAggregate : Text -> Text -> Int -> QueryPlan -> QueryPlan
+        "planAggregate" => Some(pure(vec![text(), text(), int(), plan()])),
         // planGroup : Text -> Bool -> List (Text, Text, Text, Bool) -> QExpr ->
         //             QueryPlan -> QueryPlan
         "planGroup" => Some(pure(vec![text(), bool_(), group_cols(), qexpr(), plan()])),

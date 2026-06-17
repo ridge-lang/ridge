@@ -1533,6 +1533,86 @@ instance Aggregable (FullJoin e f a) (fn e f -> n) where Adapter a, SqlType n =
             Err err -> Err err
             Ok rows -> decodeScalar (firstAggCell rows)
 
+-- A composite join's scalar aggregates: fold a column the leaf accessor names — from any
+-- joined table (`fn u p c -> c.amount` folds the third leaf) — over the rows the
+-- conditions and post-join filters keep, through a `PlanAggregate` over the composite's
+-- reduction. The accessor is the positional leaf form the receiver determines; only its
+-- captured column matters, so its stored single-column form folds the named leaf. One
+-- shape per composite. As with the binary outer aggregates, the nullability lives in the
+-- result (`Option n` over an empty fold), not the accessor — an outer shape folds a leaf
+-- the same way, skipping the rows where that leaf is null-extended.
+instance Aggregable (Joined q f a) (Map Text SqlValue -> n) where Adapter a, JoinShape q, Row f, SqlType n =
+    sumOf (col: Quote (Map Text SqlValue -> n)) (x: Joined q f a) -> Result (Option n) Error =
+        match runPlan x.right.adapter (joinedScalarPlan x "SUM" col)
+            Err err -> Err err
+            Ok rows -> decodeScalar (firstAggCell rows)
+    avgOf (col: Quote (Map Text SqlValue -> n)) (x: Joined q f a) -> Result (Option Float) Error =
+        match runPlan x.right.adapter (joinedScalarPlan x "AVG" col)
+            Err err -> Err err
+            Ok rows -> decodeScalar (firstAggCell rows)
+    minOf (col: Quote (Map Text SqlValue -> n)) (x: Joined q f a) -> Result (Option n) Error =
+        match runPlan x.right.adapter (joinedScalarPlan x "MIN" col)
+            Err err -> Err err
+            Ok rows -> decodeScalar (firstAggCell rows)
+    maxOf (col: Quote (Map Text SqlValue -> n)) (x: Joined q f a) -> Result (Option n) Error =
+        match runPlan x.right.adapter (joinedScalarPlan x "MAX" col)
+            Err err -> Err err
+            Ok rows -> decodeScalar (firstAggCell rows)
+
+instance Aggregable (LeftJoined q f a) (Map Text SqlValue -> n) where Adapter a, JoinShape q, Row f, SqlType n =
+    sumOf (col: Quote (Map Text SqlValue -> n)) (x: LeftJoined q f a) -> Result (Option n) Error =
+        match runPlan x.right.adapter (leftScalarComposite x "SUM" col)
+            Err err -> Err err
+            Ok rows -> decodeScalar (firstAggCell rows)
+    avgOf (col: Quote (Map Text SqlValue -> n)) (x: LeftJoined q f a) -> Result (Option Float) Error =
+        match runPlan x.right.adapter (leftScalarComposite x "AVG" col)
+            Err err -> Err err
+            Ok rows -> decodeScalar (firstAggCell rows)
+    minOf (col: Quote (Map Text SqlValue -> n)) (x: LeftJoined q f a) -> Result (Option n) Error =
+        match runPlan x.right.adapter (leftScalarComposite x "MIN" col)
+            Err err -> Err err
+            Ok rows -> decodeScalar (firstAggCell rows)
+    maxOf (col: Quote (Map Text SqlValue -> n)) (x: LeftJoined q f a) -> Result (Option n) Error =
+        match runPlan x.right.adapter (leftScalarComposite x "MAX" col)
+            Err err -> Err err
+            Ok rows -> decodeScalar (firstAggCell rows)
+
+instance Aggregable (RightJoined q f a) (Map Text SqlValue -> n) where Adapter a, JoinShape q, Row f, SqlType n =
+    sumOf (col: Quote (Map Text SqlValue -> n)) (x: RightJoined q f a) -> Result (Option n) Error =
+        match runPlan x.right.adapter (rightScalarComposite x "SUM" col)
+            Err err -> Err err
+            Ok rows -> decodeScalar (firstAggCell rows)
+    avgOf (col: Quote (Map Text SqlValue -> n)) (x: RightJoined q f a) -> Result (Option Float) Error =
+        match runPlan x.right.adapter (rightScalarComposite x "AVG" col)
+            Err err -> Err err
+            Ok rows -> decodeScalar (firstAggCell rows)
+    minOf (col: Quote (Map Text SqlValue -> n)) (x: RightJoined q f a) -> Result (Option n) Error =
+        match runPlan x.right.adapter (rightScalarComposite x "MIN" col)
+            Err err -> Err err
+            Ok rows -> decodeScalar (firstAggCell rows)
+    maxOf (col: Quote (Map Text SqlValue -> n)) (x: RightJoined q f a) -> Result (Option n) Error =
+        match runPlan x.right.adapter (rightScalarComposite x "MAX" col)
+            Err err -> Err err
+            Ok rows -> decodeScalar (firstAggCell rows)
+
+instance Aggregable (FullJoined q f a) (Map Text SqlValue -> n) where Adapter a, JoinShape q, Row f, SqlType n =
+    sumOf (col: Quote (Map Text SqlValue -> n)) (x: FullJoined q f a) -> Result (Option n) Error =
+        match runPlan x.right.adapter (fullScalarComposite x "SUM" col)
+            Err err -> Err err
+            Ok rows -> decodeScalar (firstAggCell rows)
+    avgOf (col: Quote (Map Text SqlValue -> n)) (x: FullJoined q f a) -> Result (Option Float) Error =
+        match runPlan x.right.adapter (fullScalarComposite x "AVG" col)
+            Err err -> Err err
+            Ok rows -> decodeScalar (firstAggCell rows)
+    minOf (col: Quote (Map Text SqlValue -> n)) (x: FullJoined q f a) -> Result (Option n) Error =
+        match runPlan x.right.adapter (fullScalarComposite x "MIN" col)
+            Err err -> Err err
+            Ok rows -> decodeScalar (firstAggCell rows)
+    maxOf (col: Quote (Map Text SqlValue -> n)) (x: FullJoined q f a) -> Result (Option n) Error =
+        match runPlan x.right.adapter (fullScalarComposite x "MAX" col)
+            Err err -> Err err
+            Ok rows -> decodeScalar (firstAggCell rows)
+
 -- A query's decode terminals: `toList` runs the accumulated query (a single-
 -- table fetch, or the captured set-operation plan) and decodes every row into
 -- the entity; `first` runs it for one row. The behaviour the single-receiver
@@ -1656,17 +1736,17 @@ fn fullReduceJoin (x: FullJoin e f a) (where2: QExpr) (lim: Int) -> QueryPlan =
 -- count off its lone row — the outer-shape duals of `countJoinPlan`, shared by each
 -- shape's `count` and `every`.
 fn leftCountPlan (x: LeftJoin e f a) (where2: QExpr) -> Result Int Error where Adapter a =
-    match runPlan x.left.repo.adapter (planAggregate "COUNT" "" false (leftReduceJoin x where2 (0 - 1)))
+    match runPlan x.left.repo.adapter (planAggregate "COUNT" "" 0 (leftReduceJoin x where2 (0 - 1)))
         Err err -> Err err
         Ok rows -> aggCount rows
 
 fn rightCountPlan (x: RightJoin e f a) (where2: QExpr) -> Result Int Error where Adapter a =
-    match runPlan x.left.repo.adapter (planAggregate "COUNT" "" false (rightReduceJoin x where2 (0 - 1)))
+    match runPlan x.left.repo.adapter (planAggregate "COUNT" "" 0 (rightReduceJoin x where2 (0 - 1)))
         Err err -> Err err
         Ok rows -> aggCount rows
 
 fn fullCountPlan (x: FullJoin e f a) (where2: QExpr) -> Result Int Error where Adapter a =
-    match runPlan x.left.repo.adapter (planAggregate "COUNT" "" false (fullReduceJoin x where2 (0 - 1)))
+    match runPlan x.left.repo.adapter (planAggregate "COUNT" "" 0 (fullReduceJoin x where2 (0 - 1)))
         Err err -> Err err
         Ok rows -> aggCount rows
 
@@ -1674,7 +1754,7 @@ fn fullCountPlan (x: FullJoin e f a) (where2: QExpr) -> Result Int Error where A
 -- count off its lone row. Shared by the join's `count` and `every` (which counts
 -- twice, once with the extra predicate folded in).
 fn countJoinPlan (x: Join e f a) (where2: QExpr) -> Result Int Error where Adapter a =
-    match runPlan x.left.repo.adapter (planAggregate "COUNT" "" false (reduceJoin x where2 (0 - 1)))
+    match runPlan x.left.repo.adapter (planAggregate "COUNT" "" 0 (reduceJoin x where2 (0 - 1)))
         Err err -> Err err
         Ok rows -> aggCount rows
 
@@ -1706,18 +1786,18 @@ fn aggCount (rows: List (Map Text SqlValue)) -> Result Int Error =
 -- names (`aggColumn`) on whichever side it belongs to (`aggSide`). The fold ignores
 -- ordering and paging, so `reduceJoin` leaves them off.
 fn scalarJoinPlan (x: Join e f a) (func: Text) (col: Quote p) -> QueryPlan =
-    planAggregate func (aggColumn col) (aggSide col) (reduceJoin x x.where2.tree (0 - 1))
+    planAggregate func (aggColumn col) (aggLeaf col) (reduceJoin x x.where2.tree (0 - 1))
 
 -- The outer-shape scalar-aggregate plans, the duals of `scalarJoinPlan`. A fold over
 -- an unmatched side reads its column as absent (SQL NULL) and skips it.
 fn leftScalarPlan (x: LeftJoin e f a) (func: Text) (col: Quote p) -> QueryPlan =
-    planAggregate func (aggColumn col) (aggSide col) (leftReduceJoin x x.where2.tree (0 - 1))
+    planAggregate func (aggColumn col) (aggLeaf col) (leftReduceJoin x x.where2.tree (0 - 1))
 
 fn rightScalarPlan (x: RightJoin e f a) (func: Text) (col: Quote p) -> QueryPlan =
-    planAggregate func (aggColumn col) (aggSide col) (rightReduceJoin x x.where2.tree (0 - 1))
+    planAggregate func (aggColumn col) (aggLeaf col) (rightReduceJoin x x.where2.tree (0 - 1))
 
 fn fullScalarPlan (x: FullJoin e f a) (func: Text) (col: Quote p) -> QueryPlan =
-    planAggregate func (aggColumn col) (aggSide col) (fullReduceJoin x x.where2.tree (0 - 1))
+    planAggregate func (aggColumn col) (aggLeaf col) (fullReduceJoin x x.where2.tree (0 - 1))
 
 -- The base reduction plan a composite terminal (`count`/`exists`/`every`) folds over:
 -- the whole nested join carrying its condition and post-join WHERE, with neither
@@ -1748,7 +1828,7 @@ fn fullReducePlan (x: FullJoined q f a) (where2: QExpr) (lim: Int) -> QueryPlan 
 -- lone row, or probe the plan for a single row. Shared by every composite's `count`,
 -- `exists`, and `every` (which counts twice).
 fn compositeCount (conn: a) (plan: QueryPlan) -> Result Int Error where Adapter a =
-    match runPlan conn (planAggregate "COUNT" "" false plan)
+    match runPlan conn (planAggregate "COUNT" "" 0 plan)
         Err err -> Err err
         Ok rows -> aggCount rows
 
@@ -1756,6 +1836,22 @@ fn compositeExists (conn: a) (plan: QueryPlan) -> Result Bool Error where Adapte
     match runPlan conn plan
         Err err -> Err err
         Ok rows -> Ok (nonEmpty rows)
+
+-- The scalar-aggregate plan a composite `sumOf`/`avgOf`/`minOf`/`maxOf` runs: a
+-- `PlanAggregate` over the composite's reduction, folding the column the accessor names
+-- (`aggColumn`) on whichever leaf it belongs to (`aggLeaf` — 0/1 for the first two
+-- tables, higher for a deeper one). One per shape, the kind carried by the reduction.
+fn joinedScalarPlan (x: Joined q f a) (func: Text) (col: Quote p) -> QueryPlan where JoinShape q, Row f =
+    planAggregate func (aggColumn col) (aggLeaf col) (joinedReducePlan x x.where2.tree (0 - 1))
+
+fn leftScalarComposite (x: LeftJoined q f a) (func: Text) (col: Quote p) -> QueryPlan where JoinShape q, Row f =
+    planAggregate func (aggColumn col) (aggLeaf col) (leftReducePlan x x.where2.tree (0 - 1))
+
+fn rightScalarComposite (x: RightJoined q f a) (func: Text) (col: Quote p) -> QueryPlan where JoinShape q, Row f =
+    planAggregate func (aggColumn col) (aggLeaf col) (rightReducePlan x x.where2.tree (0 - 1))
+
+fn fullScalarComposite (x: FullJoined q f a) (func: Text) (col: Quote p) -> QueryPlan where JoinShape q, Row f =
+    planAggregate func (aggColumn col) (aggLeaf col) (fullReducePlan x x.where2.tree (0 - 1))
 
 instance Decodable (Join e f a) where Adapter a, Row f, Row e =
     toList (x: Join e f a) -> Result (List (e, f)) Error =
@@ -2438,14 +2534,25 @@ fn orderEntry2 (dir: SortOrder) (key: Quote p) -> (Bool, Bool, Text) =
 -- the captured `tree` matters.
 fn aggColumn (col: Quote p) -> Text =
     match col.tree
-        QCol c  -> c
-        QColR c -> c
-        _       -> ""
+        QCol c      -> c
+        QColR c     -> c
+        QColAt _ c  -> c
+        _           -> ""
 
--- Which side of a join an aggregate accessor names: a `QColR` tree is the right
--- table, anything else the left (or single) table. The seam qualifies the column
--- to the right alias when this is true — the aggregate dual of how `orderEntry2`
--- tags an ordering key's side.
+-- Which join leaf an aggregate accessor names: a `QCol` is the first leaf (0, the
+-- left/single table), a `QColR` the second (1, a binary join's right), and a
+-- `QColAt i` the `i`-th leaf of a deeper composite. The seam qualifies the column to
+-- that leaf's alias — the aggregate dual of how `orderEntry2` tags an ordering key's
+-- side, generalised from two sides to an unbounded number of leaves.
+fn aggLeaf (col: Quote p) -> Int =
+    match col.tree
+        QColR _    -> 1
+        QColAt i _ -> i
+        _          -> 0
+
+-- Which side of a binary join an aggregate or group key names: a `QColR` tree is the
+-- right table, anything else the left (or single) table. The two-table form `aggLeaf`
+-- generalises; this stays for the group key's `keySide`, still a left/right boolean.
 fn aggSide (col: Quote p) -> Bool =
     match col.tree
         QColR _ -> true

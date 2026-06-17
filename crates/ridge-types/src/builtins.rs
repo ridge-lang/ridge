@@ -113,6 +113,15 @@ pub const JOINCOND_TYCON_ID: u32 = ROWS_TYCON_ID + 1;
 /// reduction sites as the others. Internal — never written in surface syntax.
 pub const JOINRESULT_TYCON_ID: u32 = JOINCOND_TYCON_ID + 1;
 
+/// `TyConId` of `LeftJoinResult/2` — the LEFT outer-join result extractor.
+///
+/// `LeftJoinResult q f` reduces to the type `leftJoinOn` produces from receiver
+/// `q` and the new right entity `f`: a binary `LeftJoin e f a` from a query, the
+/// nested `LeftJoined q f a` from a composite. Reserved immediately after
+/// `JoinResult/2`; same reduction sites. Internal — never written in surface
+/// syntax.
+pub const LEFTJOINRESULT_TYCON_ID: u32 = JOINRESULT_TYCON_ID + 1;
+
 /// The arena/dictionary name of the synthetic `Fn/arity` constructor.
 ///
 /// Returns `"Fn0"`, `"Fn1"`, … . This name is the bridge that keeps the
@@ -265,6 +274,12 @@ pub struct BuiltinTyCons {
     /// reduction reads the reconciled receiver ids from the context. See
     /// [`JOINRESULT_TYCON_ID`].
     pub joinresult: TyConId,
+    /// `LeftJoinResult/2` — the LEFT outer-join result extractor. `LeftJoinResult
+    /// q f` reduces to the type `leftJoinOn` produces from receiver `q` and the
+    /// new right entity `f` (a binary `LeftJoin` from a query, the nested
+    /// `LeftJoined` from a composite). Internal; the reduction reads the
+    /// reconciled receiver ids from the context. See [`LEFTJOINRESULT_TYCON_ID`].
+    pub left_joinresult: TyConId,
 }
 
 impl BuiltinTyCons {
@@ -311,6 +326,7 @@ impl BuiltinTyCons {
             rows: SENTINEL,
             joincond: SENTINEL,
             joinresult: SENTINEL,
+            left_joinresult: SENTINEL,
         }
     }
 
@@ -1178,6 +1194,23 @@ impl BuiltinTyCons {
             is_anon: false,
         });
 
+        // LeftJoinResult/2 — the LEFT outer-join result extractor, interned right
+        // after JoinResult/2 (LEFTJOINRESULT_TYCON_ID = 47). Applied as
+        // `Type::Con(left_joinresult, [q, f])`; the reduction `LeftJoinResult
+        // (Query e a) f -> LeftJoin e f a` (binary) and `LeftJoinResult <composite>
+        // f -> LeftJoined …` lives in the unifier and `deep_resolve`, keyed on the
+        // receiver's reconciled tycon.
+        let left_joinresult = arena.intern(TyConDecl {
+            id: TyConId(0),
+            name: "LeftJoinResult".to_string(),
+            arity: 2,
+            kind: TyConKind::Builtin,
+            def_span: None,
+            def_module_raw: None,
+            opaque: false,
+            is_anon: false,
+        });
+
         // Verify assignment order matches spec §4.1 indices 0..16.
         debug_assert_eq!(int.0, 0);
         debug_assert_eq!(float.0, 1);
@@ -1222,6 +1255,9 @@ impl BuiltinTyCons {
         // JoinResult/2 sits immediately after JoinCond/2 (JOINRESULT_TYCON_ID = 46).
         debug_assert_eq!(joinresult.0, JOINRESULT_TYCON_ID);
         debug_assert_eq!(joinresult.0, 46);
+        // LeftJoinResult/2 sits right after JoinResult/2 (LEFTJOINRESULT_TYCON_ID = 47).
+        debug_assert_eq!(left_joinresult.0, LEFTJOINRESULT_TYCON_ID);
+        debug_assert_eq!(left_joinresult.0, 47);
 
         // Suppress the "unused" lint — CapabilitySet is imported for future use
         // in T4 (actor schemas carry CapabilitySet).
@@ -1260,6 +1296,7 @@ impl BuiltinTyCons {
             rows,
             joincond,
             joinresult,
+            left_joinresult,
         }
     }
 }
@@ -1345,10 +1382,10 @@ mod tests {
         // column-codegen builtins Column / Table + the schema-codegen builtins
         // FieldSchema / Schema + the quotation builtins QExpr / Quote (27 total)
         // + the 16 synthetic function-type constructors Fn/0 … Fn/15 + Ret/1 +
-        // Rows/1.
+        // Rows/1 + JoinCond/2 + JoinResult/2 + LeftJoinResult/2.
         let (arena, _) = make_arena_with_builtins();
-        assert_eq!(arena.len(), 27 + FN_ARITY_COUNT + 4);
-        assert_eq!(arena.len(), 47);
+        assert_eq!(arena.len(), 27 + FN_ARITY_COUNT + 5);
+        assert_eq!(arena.len(), 48);
     }
 
     #[test]

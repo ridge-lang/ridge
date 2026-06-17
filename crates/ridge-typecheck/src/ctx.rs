@@ -408,6 +408,12 @@ pub struct RowsTycons {
     /// `Joined` is reconciled (a workspace without the N-ary builder leaves the
     /// projections stuck on it).
     pub joined: Option<TyConId>,
+    /// `LeftJoined`'s reconciled tycon id — the nested N-ary LEFT outer join.
+    /// `Rows (LeftJoined q f a)` reduces to `(Rows q, Option f)` — the composite's
+    /// own row paired with the newly left-joined entity made optional. The
+    /// `JoinCond`/`LeftJoinResult`/`Rows` projections key on it. `None` until
+    /// std.repo's `LeftJoined` is reconciled.
+    pub left_joined: Option<TyConId>,
     /// `Option`'s tycon id, wrapping an outer join's nullable side.
     pub option: TyConId,
     /// `Bool`'s tycon id, the result of a `JoinCond` condition. Carried here so
@@ -623,6 +629,17 @@ impl InferCtx {
             let inner_rows = self.reduce_rows_arg(q_inner)?;
             return Some(Type::Tuple(vec![inner_rows, f]));
         }
+        // `Rows (LeftJoined q' f a)` reduces to `(Rows q', Option f)` — the left
+        // composite's own row paired with the newly left-joined entity made
+        // optional, since a composite row that matched no new row keeps it `None`.
+        // The composite itself is always present (a left join keeps every left row),
+        // so only the new entity is wrapped.
+        if rt.left_joined == Some(*qid) {
+            let q_inner = qargs.first()?;
+            let f = qargs.get(1)?.clone();
+            let inner_rows = self.reduce_rows_arg(q_inner)?;
+            return Some(Type::Tuple(vec![inner_rows, Type::Con(rt.option, vec![f])]));
+        }
         None
     }
 
@@ -645,7 +662,11 @@ impl InferCtx {
             let g = qargs.get(1)?.clone();
             return Some(vec![e, g]);
         }
-        if rt.joined == Some(*qid) {
+        // A nested receiver — inner `Joined` or the outer `LeftJoined` — carries its
+        // composite's entities followed by the newly joined one. The condition ranges
+        // over every leaf positionally, present or null-extended, so a left join's
+        // optional new entity still contributes its (plain) entity to the leaf list.
+        if rt.joined == Some(*qid) || rt.left_joined == Some(*qid) {
             let q_inner = qargs.first()?;
             let g = qargs.get(1)?.clone();
             let mut es = self.join_entities(q_inner)?;
@@ -666,7 +687,7 @@ impl InferCtx {
         if *qid == rt.query {
             return qargs.get(1).cloned();
         }
-        if *qid == rt.join || rt.joined == Some(*qid) {
+        if *qid == rt.join || rt.joined == Some(*qid) || rt.left_joined == Some(*qid) {
             return qargs.get(2).cloned();
         }
         None
@@ -709,9 +730,36 @@ impl InferCtx {
             };
             return Some(Type::Con(rt.join, vec![e, f.clone(), a]));
         }
-        if *qid == rt.join || rt.joined == Some(*qid) {
+        if *qid == rt.join || rt.joined == Some(*qid) || rt.left_joined == Some(*qid) {
             let joined = rt.joined?;
             return Some(Type::Con(joined, vec![q.clone(), f.clone(), a]));
+        }
+        None
+    }
+
+    /// Reduces `LeftJoinResult q f` to the type a `leftJoinOn` over receiver `q`
+    /// adding right entity `f` produces: the binary `LeftJoin e f a` from a
+    /// `Query e a`, and the nested `LeftJoined q f a` from any composite receiver
+    /// (`Join`/`Joined`/`LeftJoined`). The dual of [`Self::reduce_joinresult_arg`]
+    /// for the left outer verb. Returns `None` while `q` is not yet a recognised
+    /// receiver, or when `LeftJoined` is not reconciled in this workspace.
+    #[must_use]
+    pub fn reduce_leftjoinresult_arg(&self, q: &Type, f: &Type) -> Option<Type> {
+        let rt = self.rows_tycons?;
+        let Type::Con(qid, _) = q else {
+            return None;
+        };
+        let a = self.join_adapter(q)?;
+        if *qid == rt.query {
+            let e = match q {
+                Type::Con(_, args) => args.first()?.clone(),
+                _ => return None,
+            };
+            return Some(Type::Con(rt.left_join, vec![e, f.clone(), a]));
+        }
+        if *qid == rt.join || rt.joined == Some(*qid) || rt.left_joined == Some(*qid) {
+            let left_joined = rt.left_joined?;
+            return Some(Type::Con(left_joined, vec![q.clone(), f.clone(), a]));
         }
         None
     }
@@ -768,6 +816,17 @@ impl InferCtx {
                 // Stuck while `q` is a variable or `Joined` is unreconciled.
                 if id.0 == ridge_types::JOINRESULT_TYCON_ID && new_args.len() == 2 {
                     if let Some(reduced) = self.reduce_joinresult_arg(&new_args[0], &new_args[1]) {
+                        return reduced;
+                    }
+                }
+                // `LeftJoinResult q f` normalises to the type `leftJoinOn` produces —
+                // a binary `LeftJoin` from a query, the nested `LeftJoined` from a
+                // composite. Stuck while `q` is a variable or `LeftJoined` is
+                // unreconciled.
+                if id.0 == ridge_types::LEFTJOINRESULT_TYCON_ID && new_args.len() == 2 {
+                    if let Some(reduced) =
+                        self.reduce_leftjoinresult_arg(&new_args[0], &new_args[1])
+                    {
                         return reduced;
                     }
                 }

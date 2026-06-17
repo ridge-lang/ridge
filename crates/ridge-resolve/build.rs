@@ -594,6 +594,12 @@ const BASELINE_EXPORTS: &[(&str, &[&str])] = &[
             // Its decode terminals (`toList`/`first`) are the `Decodable` methods.
             "Joined",
             "Joinable",
+            // The N-ary LEFT outer join: chaining `leftJoinOn` onto a composite
+            // produces the opaque nested `LeftJoined q f a`, the `LeftJoinable` class
+            // unifying the verb across a query (binary `LeftJoin`) and a composite
+            // (nested `LeftJoined`). Its decode terminals are the `Decodable` methods.
+            "LeftJoined",
+            "LeftJoinable",
             // Grouped aggregates unified across a query and a join: the opaque
             // `Grouped q p` builder produced by the `Groupable` class's `groupBy`,
             // narrowed by `having`, and summarised into a named record by
@@ -676,6 +682,7 @@ const BASELINE_OPAQUE: &[(&str, &[&str])] = &[
             "RightJoin",
             "FullJoin",
             "Joined",
+            "LeftJoined",
             "Setter",
             "Grouped",
         ],

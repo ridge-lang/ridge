@@ -922,6 +922,62 @@ fn reconciled_decls(b: &BuiltinTyCons, base: u32) -> Vec<TyConDecl> {
             opaque: true,
             is_anon: false,
         },
+        // `std.repo` — a nested LEFT outer join of three or more tables, declared in
+        // Ridge (stdlib/repo.ridge). The same shape as `Joined`: the left `source` is
+        // a composite, `f` the newly left-joined entity (read optional in the result),
+        // `a` the shared adapter. Opaque; threaded from `leftJoinOn` into a terminal.
+        // Interned after `Joined` so every existing reconciled offset is unchanged.
+        TyConDecl {
+            id: TyConId(base + 17),
+            name: "LeftJoined".to_string(),
+            arity: 3,
+            kind: TyConKind::Record(RecordSchema::new(
+                vec![TyVid(0), TyVid(1), TyVid(2)],
+                vec![
+                    RecordField {
+                        name: "source".to_string(),
+                        ty: Type::Var(TyVid(0)),
+                    },
+                    RecordField {
+                        name: "right".to_string(),
+                        ty: Type::Con(
+                            TyConId(base + 2),
+                            vec![Type::Var(TyVid(1)), Type::Var(TyVid(2))],
+                        ),
+                    },
+                    RecordField {
+                        name: "cond".to_string(),
+                        ty: Type::Con(
+                            b.quote,
+                            vec![Type::Fn {
+                                params: vec![
+                                    Type::Con(
+                                        b.map,
+                                        vec![
+                                            Type::Con(b.text, vec![]),
+                                            Type::Con(b.sql_value, vec![]),
+                                        ],
+                                    ),
+                                    Type::Con(
+                                        b.map,
+                                        vec![
+                                            Type::Con(b.text, vec![]),
+                                            Type::Con(b.sql_value, vec![]),
+                                        ],
+                                    ),
+                                ],
+                                ret: Box::new(Type::Con(b.bool, vec![])),
+                                caps: CapRow::Concrete(CapabilitySet::PURE),
+                            }],
+                        ),
+                    },
+                ],
+            )),
+            def_span: None,
+            def_module_raw: None,
+            opaque: true,
+            is_anon: false,
+        },
     ]
 }
 
@@ -1761,36 +1817,12 @@ fn reconciled_repo_fn_scheme(
         // (`selectJoin` is gone: an inner join's projection is now the
         // `Projectable (Join e f a) (fn e f -> s)` instance — see
         // `seed_projectable_scheme`.)
-        // leftJoinOn : ∀e f a. Repo f a -> Quote (e -> f -> Bool) -> Query e a
-        //                  -> LeftJoin e f a. The left-outer builder, identical in
-        // shape to `joinOn` but producing a `LeftJoin` so the terminal keeps every
-        // left row.
-        "leftJoinOn" => {
-            let leftjoin_con = *reconciled.get("LeftJoin")?;
-            let f = TyVid(2);
-            let repo_f_a = Type::Con(repo_con, vec![Type::Var(f), Type::Var(a)]);
-            let cond_quote = Type::Con(
-                b.quote,
-                vec![Type::Fn {
-                    params: vec![Type::Var(e), Type::Var(f)],
-                    ret: Box::new(Type::Con(b.bool, vec![])),
-                    caps: CapRow::Concrete(CapabilitySet::PURE),
-                }],
-            );
-            let leftjoin_e_f_a =
-                Type::Con(leftjoin_con, vec![Type::Var(e), Type::Var(f), Type::Var(a)]);
-            Some(Scheme {
-                vars: vec![e, a, f],
-                cap_vars: vec![],
-                row_vars: vec![],
-                ty: Type::Fn {
-                    params: vec![repo_f_a, cond_quote, query_app()],
-                    ret: Box::new(leftjoin_e_f_a),
-                    caps: pure(),
-                },
-                constraints: vec![],
-            })
-        }
+        // `leftJoinOn` is no longer a standalone scheme: it became the `LeftJoinable`
+        // class method, seeded by `seed_leftjoinable_scheme` so its condition
+        // (`JoinCond q f`) and result (`LeftJoinResult q f`) follow the receiver — a
+        // binary `LeftJoin` from a query, the nested `LeftJoined` from a composite.
+        // Omitting the arm routes it through that class path, the same way `joinOn`
+        // routes through `seed_joinable_scheme`.
         // rightJoinOn : ∀e f a. Repo f a -> Quote (e -> f -> Bool) -> Query e a
         //                  -> RightJoin e f a. The right-outer builder, identical in
         // shape to `leftJoinOn` but producing a `RightJoin` so the terminal keeps

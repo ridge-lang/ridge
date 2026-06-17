@@ -121,6 +121,22 @@ pub fn unify(ctx: &mut InferCtx, a: &Type, b: &Type) -> Result<(), TypeError> {
         ctx.reduce_joinresult_arg(&q, &f)
     }
 
+    // `LeftJoinResult q f` is the LEFT outer-join result extractor: a binary
+    // `LeftJoin` from a query receiver, the nested `LeftJoined` from a composite
+    // one. Returns `None` for anything else — a still-variable receiver or an
+    // unreconciled `LeftJoined`.
+    fn reduce_leftjoinresult(ctx: &mut InferCtx, t: &Type) -> Option<Type> {
+        let Type::Con(id, args) = t else {
+            return None;
+        };
+        if id.0 != ridge_types::LEFTJOINRESULT_TYCON_ID || args.len() != 2 {
+            return None;
+        }
+        let q = ctx.shallow_resolve(&args[0]);
+        let f = ctx.shallow_resolve(&args[1]);
+        ctx.reduce_leftjoinresult_arg(&q, &f)
+    }
+
     let a = ctx.shallow_resolve(a);
     let b = ctx.shallow_resolve(b);
 
@@ -157,6 +173,12 @@ pub fn unify(ctx: &mut InferCtx, a: &Type, b: &Type) -> Result<(), TypeError> {
         return unify(ctx, &reduced, &b);
     }
     if let Some(reduced) = reduce_joinresult(ctx, &b) {
+        return unify(ctx, &a, &reduced);
+    }
+    if let Some(reduced) = reduce_leftjoinresult(ctx, &a) {
+        return unify(ctx, &reduced, &b);
+    }
+    if let Some(reduced) = reduce_leftjoinresult(ctx, &b) {
         return unify(ctx, &a, &reduced);
     }
 

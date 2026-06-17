@@ -125,6 +125,7 @@ const STDLIB_CLASSES: &[(&str, &str)] = &[
     ("Summarizable", "std.repo"),
     ("Joinable", "std.repo"),
     ("JoinShape", "std.repo"),
+    ("LeftJoinable", "std.repo"),
 ];
 
 // Constructor-shaped fns must export arity 0; this invariant catches accidental

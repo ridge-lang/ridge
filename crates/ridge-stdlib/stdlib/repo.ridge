@@ -644,6 +644,22 @@ pub opaque type Join e f a = { left: Query e a, right: Repo f a, cond: Quote (Ma
 -- of nesting per table past the first.
 pub opaque type Joined q f a = { source: q, right: Repo f a, cond: Quote (Map Text SqlValue -> Map Text SqlValue -> Bool), where2: Quote (Map Text SqlValue -> Map Text SqlValue -> Bool), orders: List (Bool, Bool, Text), lim: Int, off: Int, dist: Bool }
 
+-- A left outer join extending a composite of three or more tables, built by
+-- chaining `leftJoinOn` past the first join. The same shape as `Joined`: the
+-- `source` is the composite already accumulated and `right` the new table joined
+-- onto it, but the terminal keeps every composite row and reads the new table as
+-- `Option` — a composite row that matched no new row pairs with `None`. The result
+-- decodes into `(Rows source, Option f)`:
+--
+--     users
+--       |> Repo.query
+--       |> Repo.joinOn     posts    (fn u p   -> u.id == p.author)
+--       |> Repo.leftJoinOn comments (fn u p c -> p.id == c.post)
+--       |> Repo.toList
+--
+-- yields `List ((User, Post), Option Comment)`.
+pub opaque type LeftJoined q f a = { source: q, right: Repo f a, cond: Quote (Map Text SqlValue -> Map Text SqlValue -> Bool), where2: Quote (Map Text SqlValue -> Map Text SqlValue -> Bool), orders: List (Bool, Bool, Text), lim: Int, off: Int, dist: Bool }
+
 -- Start or extend an inner join. One verb across every receiver: a query pairs
 -- with the right repository into a binary `Join`, and a join (binary or nested)
 -- absorbs one more table into a `Joined`. The receiver fixes both the result
@@ -797,13 +813,113 @@ instance Decodable (Joined q f a) where Adapter a, JoinShape q, Row f =
 --     |> Repo.toList
 pub opaque type LeftJoin e f a = { left: Query e a, right: Repo f a, cond: Quote (Map Text SqlValue -> Map Text SqlValue -> Bool), where2: Quote (Map Text SqlValue -> Map Text SqlValue -> Bool), orders: List (Bool, Bool, Text), lim: Int, off: Int, dist: Bool }
 
--- Start a left outer join from a query: pair it with a right repository on a
--- quoted condition over both entities. Unlike `joinOn`, a left row with no
--- matching right row is kept rather than dropped; the terminal reports the
--- missing right side as `None`. The left query's filter, ordering, and page
--- still apply.
-pub fn leftJoinOn (right: Repo f a) (cond: Quote (Map Text SqlValue -> Map Text SqlValue -> Bool)) (q: Query e a) -> LeftJoin e f a =
-    LeftJoin { left = q, right = right, cond = cond, where2 = keepAll2 (), orders = liftOrders q.orders, lim = q.lim, off = q.off, dist = q.dist }
+-- Start or extend a left outer join. One verb across every receiver, the LEFT
+-- dual of `joinOn`: a query pairs with the right repository into a binary
+-- `LeftJoin`, and a join (binary or nested) absorbs one more table into a
+-- `LeftJoined`, keeping every composite row and reading the new table as `Option`.
+-- The receiver fixes both the result through `LeftJoinResult q f` and the
+-- condition's shape through `JoinCond q f` (the same condition an inner join takes
+-- — its nullability lives in the result, not the condition). Unlike `joinOn`, a
+-- composite row with no matching new row is kept, the new entity reported as
+-- `None`.
+pub class LeftJoinable q =
+    leftJoinOn (right: Repo f a) (cond: Quote (Map Text SqlValue -> Map Text SqlValue -> Bool)) (x: q) -> LeftJoinResult q f
+
+-- A query's `leftJoinOn`: the binary left outer join, identical to the original
+-- builder. The left query's accumulated ordering lifts in as left-side keys, and
+-- it produces a `LeftJoin e f a` that carries the whole left-join vocabulary.
+instance LeftJoinable (Query e a) =
+    leftJoinOn (right: Repo f a) (cond: Quote (Map Text SqlValue -> Map Text SqlValue -> Bool)) (x: Query e a) -> LeftJoin e f a =
+        LeftJoin { left = x, right = right, cond = cond, where2 = keepAll2 (), orders = liftOrders x.orders, lim = x.lim, off = x.off, dist = x.dist }
+
+-- A binary join's `leftJoinOn`: left-join a third table onto the inner pair. The
+-- existing two-table join becomes the `source` of a `LeftJoined`, the new
+-- repository its right, read optional in the result.
+instance LeftJoinable (Join e g a) =
+    leftJoinOn (right: Repo f a) (cond: Quote (Map Text SqlValue -> Map Text SqlValue -> Bool)) (x: Join e g a) -> LeftJoined (Join e g a) f a =
+        LeftJoined { source = x, right = right, cond = cond, where2 = keepAll2 (), orders = x.orders, lim = x.lim, off = x.off, dist = x.dist }
+
+-- A nested inner join's `leftJoinOn`: left-join one more table onto a composite
+-- already three or more wide.
+instance LeftJoinable (Joined q g a) =
+    leftJoinOn (right: Repo f a) (cond: Quote (Map Text SqlValue -> Map Text SqlValue -> Bool)) (x: Joined q g a) -> LeftJoined (Joined q g a) f a =
+        LeftJoined { source = x, right = right, cond = cond, where2 = keepAll2 (), orders = x.orders, lim = x.lim, off = x.off, dist = x.dist }
+
+-- A nested left join's `leftJoinOn`: chain another left join onto a composite that
+-- already ends in one, nesting the source one level deeper.
+instance LeftJoinable (LeftJoined q g a) =
+    leftJoinOn (right: Repo f a) (cond: Quote (Map Text SqlValue -> Map Text SqlValue -> Bool)) (x: LeftJoined q g a) -> LeftJoined (LeftJoined q g a) f a =
+        LeftJoined { source = x, right = right, cond = cond, where2 = keepAll2 (), orders = x.orders, lim = x.lim, off = x.off, dist = x.dist }
+
+-- The recursion a nested left join's terminal stands on. A `LeftJoined` is its
+-- source plus one more leaf, read optional: its leaf count, plan, and row each
+-- extend the source's by one. The source is always present (a left join keeps
+-- every left row), so only the new leaf decodes through `decodeOptSide`.
+instance JoinShape (LeftJoined q f a) where JoinShape q, Row f =
+    joinedLeaves (w: Option (LeftJoined q f a)) -> Int =
+        joinedLeaves (leftInnerWitness w) + 1
+    joinedSourcePlan (x: LeftJoined q f a) -> QueryPlan =
+        planJoin "LEFT" (joinedSourcePlan x.source) (planScan x.right.table (keepAllTree ()) [] (0 - 1) 0 false) x.cond.tree x.where2.tree x.orders (0 - 1) 0 false [] (rowColumns (entityWitness x.right))
+    decodeJoined (w: Option (LeftJoined q f a)) (row: Map Text SqlValue) -> Result (Rows q, Option f) Error =
+        match decodeJoined (leftInnerWitness w) row
+            Err err -> Err err
+            Ok srcRow ->
+                match decodeOptSide (leafPrefix (joinedLeaves (leftInnerWitness w))) row
+                    Err err  -> Err err
+                    Ok optF  -> Ok (srcRow, optF)
+
+-- Phantom witnesses: narrow a `LeftJoined`'s type to its source's, so the
+-- recursion can read the source row count and decoder from the type alone.
+fn leftInnerWitness (w: Option (LeftJoined q f a)) -> Option q = None
+fn leftSourceWitness (x: LeftJoined q f a) -> Option q = None
+
+-- The plan of a whole `LeftJoined`: its source's left-nested plan with the new
+-- right table LEFT-joined on, carrying the top-level page/ordering/distinct the
+-- terminal runs it with.
+fn leftJoinedPlan (x: LeftJoined q f a) (lim: Int) -> QueryPlan where JoinShape q, Row f =
+    planJoin "LEFT" (joinedSourcePlan x.source) (planScan x.right.table (keepAllTree ()) [] (0 - 1) 0 false) x.cond.tree x.where2.tree x.orders lim x.off x.dist [] (rowColumns (entityWitness x.right))
+
+-- Decode each flat result row of a `LeftJoined` into `(Rows q, Option f)`: the
+-- source row from `decodeJoined`, the new table from its `t<n>$` leaf where `n` is
+-- the source's leaf count — `Some` when it matched, `None` when the composite row
+-- matched no new row.
+fn decodeLeftJoinedRows (w: Option q) (n: Int) (rows: List (Map Text SqlValue)) -> Result (List (Rows q, Option f)) Error where JoinShape q, Row f =
+    match rows
+        []        -> Ok []
+        r :: rest ->
+            match decodeJoined w r
+                Err err -> Err err
+                Ok srcRow ->
+                    match decodeOptSide (leafPrefix n) r
+                        Err err -> Err err
+                        Ok optF ->
+                            match decodeLeftJoinedRows w n rest
+                                Err err -> Err err
+                                Ok more -> Ok ((srcRow, optF) :: more)
+
+fn firstDecodedLeftJoined (w: Option q) (n: Int) (rows: List (Map Text SqlValue)) -> Result (Option (Rows q, Option f)) Error where JoinShape q, Row f =
+    match rows
+        []     -> Ok None
+        r :: _ ->
+            match decodeJoined w r
+                Err err -> Err err
+                Ok srcRow ->
+                    match decodeOptSide (leafPrefix n) r
+                        Err err -> Err err
+                        Ok optF -> Ok (Some (srcRow, optF))
+
+-- `toList`/`first` over a nested left join: run the flattened LEFT plan and decode
+-- each row into `(Rows q, Option f)`. The leaf count and decoder both come from
+-- `JoinShape q`, so the same two terminals serve every depth.
+instance Decodable (LeftJoined q f a) where Adapter a, JoinShape q, Row f =
+    toList (x: LeftJoined q f a) -> Result (List (Rows q, Option f)) Error =
+        match runPlan x.right.adapter (leftJoinedPlan x x.lim)
+            Err err -> Err err
+            Ok rows -> decodeLeftJoinedRows (leftSourceWitness x) (joinedLeaves (leftSourceWitness x)) rows
+    first (x: LeftJoined q f a) -> Result (Option (Rows q, Option f)) Error =
+        match runPlan x.right.adapter (leftJoinedPlan x 1)
+            Err err -> Err err
+            Ok rows -> firstDecodedLeftJoined (leftSourceWitness x) (joinedLeaves (leftSourceWitness x)) rows
 
 -- `toList` and `first` over a left join are the `Decodable (LeftJoin e f a) …`
 -- methods (instance below): `toList` decodes each row into the left entity

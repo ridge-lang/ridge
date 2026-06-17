@@ -2234,7 +2234,7 @@ pub(crate) fn stdlib_class_home_module(class_name: &str) -> Option<&'static str>
         "Adapter" => Some("std.data"),
         "Refinable" | "Projectable" | "Orderable" | "Aggregable" | "Decodable" | "Pageable"
         | "Countable" | "Every" | "Groupable" | "Summarizable" | "Joinable" | "JoinShape"
-        | "LeftJoinable" => Some("std.repo"),
+        | "LeftJoinable" | "RightJoinable" => Some("std.repo"),
         _ => None,
     }
 }

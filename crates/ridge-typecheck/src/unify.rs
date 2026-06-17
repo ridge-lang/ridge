@@ -137,6 +137,20 @@ pub fn unify(ctx: &mut InferCtx, a: &Type, b: &Type) -> Result<(), TypeError> {
         ctx.reduce_leftjoinresult_arg(&q, &f)
     }
 
+    // `RightJoinResult q f` is the RIGHT outer-join result extractor: a binary
+    // `RightJoin` from a query receiver, the nested `RightJoined` from a composite.
+    fn reduce_rightjoinresult(ctx: &mut InferCtx, t: &Type) -> Option<Type> {
+        let Type::Con(id, args) = t else {
+            return None;
+        };
+        if id.0 != ridge_types::RIGHTJOINRESULT_TYCON_ID || args.len() != 2 {
+            return None;
+        }
+        let q = ctx.shallow_resolve(&args[0]);
+        let f = ctx.shallow_resolve(&args[1]);
+        ctx.reduce_rightjoinresult_arg(&q, &f)
+    }
+
     let a = ctx.shallow_resolve(a);
     let b = ctx.shallow_resolve(b);
 
@@ -179,6 +193,12 @@ pub fn unify(ctx: &mut InferCtx, a: &Type, b: &Type) -> Result<(), TypeError> {
         return unify(ctx, &reduced, &b);
     }
     if let Some(reduced) = reduce_leftjoinresult(ctx, &b) {
+        return unify(ctx, &a, &reduced);
+    }
+    if let Some(reduced) = reduce_rightjoinresult(ctx, &a) {
+        return unify(ctx, &reduced, &b);
+    }
+    if let Some(reduced) = reduce_rightjoinresult(ctx, &b) {
         return unify(ctx, &a, &reduced);
     }
 

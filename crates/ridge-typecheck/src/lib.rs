@@ -801,6 +801,8 @@ fn typecheck_module_inner(
         // `LeftJoined` (the nested N-ary LEFT outer join) resolved here too, alongside
         // `Joined`, for the same `RowsTycons`-before-mutable-borrow reason.
         let left_joined_id = receiver_id("LeftJoined");
+        // `RightJoined` (the nested N-ary RIGHT outer join) resolved here too.
+        let right_joined_id = receiver_id("RightJoined");
         // `joinOn` takes the right `Repo f a`, so its `Joinable` seed needs the
         // reconciled `Repo` id; resolved here, before the mutable seed borrows.
         let repo_id = receiver_id("Repo");
@@ -808,6 +810,7 @@ fn typecheck_module_inner(
         seed_summarizable_scheme(&mut ctx, b, ct, sql_value);
         seed_joinable_scheme(&mut ctx, b, ct, repo_id);
         seed_leftjoinable_scheme(&mut ctx, b, ct, repo_id);
+        seed_rightjoinable_scheme(&mut ctx, b, ct, repo_id);
         if let (Some(query), Some(join), Some(left_join)) = (query_id, join_id, left_join_id) {
             ctx.rows_tycons = Some(crate::ctx::RowsTycons {
                 query,
@@ -826,6 +829,8 @@ fn typecheck_module_inner(
                 // `LeftJoined` (the nested N-ary LEFT outer join) likewise stays
                 // `None` without std.repo, leaving its projections inert.
                 left_joined: left_joined_id,
+                // `RightJoined` (the nested N-ary RIGHT outer join) — same fallback.
+                right_joined: right_joined_id,
                 option: b.option,
                 bool: b.bool,
             });
@@ -1475,6 +1480,51 @@ fn seed_leftjoinable_scheme(
             row_vars: vec![],
             ty: fn_ty,
             constraints: vec![Constraint::new(left_joinable, constraint_tys)],
+        },
+    );
+}
+
+/// Seed the env scheme for `RightJoinable.rightJoinOn` — std.repo's right
+/// outer-join verb, the RIGHT dual of `seed_leftjoinable_scheme`.
+///
+/// Scheme: `∀q f a. Repo f a -> Quote (JoinCond q f) -> q -> RightJoinResult q f
+/// where RightJoinable q`. The condition reuses `JoinCond q f`; the result is the
+/// `RightJoinResult q f` projection — a binary `RightJoin e f a` from a query, the
+/// nested `RightJoined q f a` from a composite.
+fn seed_rightjoinable_scheme(
+    ctx: &mut crate::ctx::InferCtx,
+    b: &ridge_types::BuiltinTyCons,
+    class_table: &crate::class_env::ClassTable,
+    repo_id: Option<ridge_types::TyConId>,
+) {
+    use ridge_types::{CapRow, CapabilitySet, Constraint, Scheme, Type};
+    let (Some(right_joinable), Some(repo)) = (class_table.id_by_name("RightJoinable"), repo_id)
+    else {
+        return;
+    };
+    let q = ctx.fresh_tyvid();
+    let f = ctx.fresh_tyvid();
+    let a = ctx.fresh_tyvid();
+    let repo_f_a = Type::Con(repo, vec![Type::Var(f), Type::Var(a)]);
+    let cond_quote = Type::Con(
+        b.quote,
+        vec![Type::Con(b.joincond, vec![Type::Var(q), Type::Var(f)])],
+    );
+    let right_join_result = Type::Con(b.right_joinresult, vec![Type::Var(q), Type::Var(f)]);
+    let fn_ty = Type::Fn {
+        params: vec![repo_f_a, cond_quote, Type::Var(q)],
+        ret: Box::new(right_join_result),
+        caps: CapRow::Concrete(CapabilitySet::PURE),
+    };
+    let constraint_tys: smallvec::SmallVec<[ridge_types::TyVid; 1]> = smallvec::smallvec![q];
+    ctx.env.bind(
+        "rightJoinOn".to_owned(),
+        Scheme {
+            vars: vec![q, f, a],
+            cap_vars: vec![],
+            row_vars: vec![],
+            ty: fn_ty,
+            constraints: vec![Constraint::new(right_joinable, constraint_tys)],
         },
     );
 }

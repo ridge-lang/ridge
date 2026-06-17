@@ -281,6 +281,8 @@ pub fn prelude_types(b: &BuiltinTyCons) -> (FxHashMap<String, Scheme>, FxHashMap
     // builtin so the `LeftJoinable` method signature can name `LeftJoinResult q f`
     // without an import; reduces during unification.
     tycons.insert("LeftJoinResult".to_string(), b.left_joinresult);
+    // `RightJoinResult/2` — the RIGHT outer-join verb's result projection.
+    tycons.insert("RightJoinResult".to_string(), b.right_joinresult);
 
     let qexpr_ty = ty_con(b.q_expr, vec![]);
     let q_ctor = |params: Vec<Type>| Scheme {

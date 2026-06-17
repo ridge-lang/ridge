@@ -629,6 +629,71 @@ pub fn db leftJoined3First () -> Text =
                 Ok None                -> "none"
                 Ok (Some ((u, p), oc)) -> leftRowCell u p oc
 
+-- The same three tables, but one comment (200) points at a post that does not
+-- exist (99), so a RIGHT join onto comments keeps that comment with the whole
+-- (user, post) composite absent. ada(1) -> hello(10) -> nice, lin(2) -> world(11)
+-- -> wow, and an orphan comment(200) -> post 99 (no such post).
+pub fn db setupRightJoin3 () -> Result (Repo User MemAdapter, Repo Post MemAdapter, Repo Comment MemAdapter) Error =
+    let conn = memAdapter ()
+    let users: Repo User MemAdapter = Repo.repo conn "users"
+    let posts: Repo Post MemAdapter = Repo.repo conn "posts"
+    let comments: Repo Comment MemAdapter = Repo.repo conn "comments"
+    match Repo.insertRow (userRow 1 18 "ada") users
+        Err e -> Err e
+        Ok _  ->
+            match Repo.insertRow (userRow 2 30 "lin") users
+                Err e -> Err e
+                Ok _  ->
+                    match Repo.insertRow (userRow 3 25 "max") users
+                        Err e -> Err e
+                        Ok _  ->
+                            match Repo.insertRow (postRow 10 1 "hello") posts
+                                Err e -> Err e
+                                Ok _  ->
+                                    match Repo.insertRow (postRow 11 2 "world") posts
+                                        Err e -> Err e
+                                        Ok _  ->
+                                            match Repo.insertRow (postRow 12 3 "again") posts
+                                                Err e -> Err e
+                                                Ok _  ->
+                                                    match Repo.insertRow (commentRow 100 10 "nice") comments
+                                                        Err e -> Err e
+                                                        Ok _  ->
+                                                            match Repo.insertRow (commentRow 101 11 "wow") comments
+                                                                Err e -> Err e
+                                                                Ok _  ->
+                                                                    match Repo.insertRow (commentRow 200 99 "orphan") comments
+                                                                        Err e -> Err e
+                                                                        Ok _  -> Ok (users, posts, comments)
+
+-- Render each `(Option (User, Post), Comment)` row of a mixed inner-then-right chain
+-- as `name:title:body`, or `-:body` when the comment matched no (user, post)
+-- composite, comma-joined.
+fn join3RightRows (rs: List (Option (User, Post), Comment)) -> Text =
+    match rs
+        []              -> "(none)"
+        (osp, c) :: []  -> rightRowCell osp c
+        (osp, c) :: rest -> Text.concat (rightRowCell osp c) (Text.concat "," (join3RightRows rest))
+
+fn rightRowCell (osp: Option (User, Post)) (c: Comment) -> Text =
+    match osp
+        Some (u, p) -> Text.concat u.name (Text.concat ":" (Text.concat p.title (Text.concat ":" c.body)))
+        None        -> Text.concat "-:" c.body
+
+-- N-ary mixed join: chain `joinOn` then `rightJoinOn` to keep every comment and read
+-- the whole (user, post) composite as `Option` — `None` for the orphan comment that
+-- matched no post. Ordered by user id (lifted from the query through the join),
+-- rendered `name:title:body` or `-:body`. Proves the chain type-checks to
+-- `(Option (User, Post), Comment)`, the backend null-extends the whole composite as a
+-- unit, and `toList` decodes the optional composite via its presence markers.
+pub fn db rightJoined3 () -> Text =
+    match setupRightJoin3 ()
+        Err _ -> "setup-err"
+        Ok (users, posts, comments) ->
+            match users |> Repo.query |> Repo.orderBy Asc (fn (u: User) -> u.id) |> Repo.joinOn posts (fn (u: User) (p: Post) -> u.id == p.author) |> Repo.rightJoinOn comments (fn (u: User) (p: Post) (c: Comment) -> p.id == c.post) |> Repo.toList
+                Err _  -> "right-join3-err"
+                Ok rs  -> join3RightRows rs
+
 -- cross join: pair every left row with every right row (the cartesian product).
 -- Narrow the left query to lin (id 2), cross with all three posts, order by post
 -- id, and render `name:title` per pair -> "lin:hello,lin:world,lin:again". lin
@@ -1664,6 +1729,7 @@ fn repo_surface_runs_on_beam() {
          io:format(\"joined3First=~s~n\",[{module}:joined3First()]), \
          io:format(\"leftJoined3=~s~n\",[{module}:leftJoined3()]), \
          io:format(\"leftJoined3First=~s~n\",[{module}:leftJoined3First()]), \
+         io:format(\"rightJoined3=~s~n\",[{module}:rightJoined3()]), \
          io:format(\"crossJoined=~s~n\",[{module}:crossJoined()]), \
          io:format(\"crossCount=~w~n\",[{module}:crossCount()]), \
          io:format(\"rightJoinedNames=~s~n\",[{module}:rightJoinedNames()]), \
@@ -1812,6 +1878,10 @@ fn repo_surface_runs_on_beam() {
         (
             "leftJoined3First=ada:hello:nice",
             "first over the inner-then-left chain pushes a LIMIT 1 and decodes the single nested row with its optional comment leaf (ada sorts first, its post is commented)",
+        ),
+        (
+            "rightJoined3=ada:hello:nice,lin:world:wow,-:orphan",
+            "an inner-then-right chain keeps every comment and reads the whole (user, post) composite as Option: the orphan comment matched no post, so its composite is None while the matched rows decode both sides",
         ),
         (
             "crossJoined=lin:hello,lin:world,lin:again",

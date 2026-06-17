@@ -122,6 +122,15 @@ pub const JOINRESULT_TYCON_ID: u32 = JOINCOND_TYCON_ID + 1;
 /// syntax.
 pub const LEFTJOINRESULT_TYCON_ID: u32 = JOINRESULT_TYCON_ID + 1;
 
+/// `TyConId` of `RightJoinResult/2` — the RIGHT outer-join result extractor.
+///
+/// `RightJoinResult q f` reduces to the type `rightJoinOn` produces from receiver
+/// `q` and the new right entity `f`: a binary `RightJoin e f a` from a query, the
+/// nested `RightJoined q f a` from a composite. Reserved immediately after
+/// `LeftJoinResult/2`; same reduction sites. Internal — never written in surface
+/// syntax.
+pub const RIGHTJOINRESULT_TYCON_ID: u32 = LEFTJOINRESULT_TYCON_ID + 1;
+
 /// The arena/dictionary name of the synthetic `Fn/arity` constructor.
 ///
 /// Returns `"Fn0"`, `"Fn1"`, … . This name is the bridge that keeps the
@@ -280,6 +289,11 @@ pub struct BuiltinTyCons {
     /// `LeftJoined` from a composite). Internal; the reduction reads the
     /// reconciled receiver ids from the context. See [`LEFTJOINRESULT_TYCON_ID`].
     pub left_joinresult: TyConId,
+    /// `RightJoinResult/2` — the RIGHT outer-join result extractor. `RightJoinResult
+    /// q f` reduces to the type `rightJoinOn` produces (a binary `RightJoin` from a
+    /// query, the nested `RightJoined` from a composite). Internal; reads the
+    /// reconciled receiver ids from the context. See [`RIGHTJOINRESULT_TYCON_ID`].
+    pub right_joinresult: TyConId,
 }
 
 impl BuiltinTyCons {
@@ -327,6 +341,7 @@ impl BuiltinTyCons {
             joincond: SENTINEL,
             joinresult: SENTINEL,
             left_joinresult: SENTINEL,
+            right_joinresult: SENTINEL,
         }
     }
 
@@ -1211,6 +1226,22 @@ impl BuiltinTyCons {
             is_anon: false,
         });
 
+        // RightJoinResult/2 — the RIGHT outer-join result extractor, interned right
+        // after LeftJoinResult/2 (RIGHTJOINRESULT_TYCON_ID = 48). Applied as
+        // `Type::Con(right_joinresult, [q, f])`; the reduction `RightJoinResult
+        // (Query e a) f -> RightJoin e f a` (binary) and `RightJoinResult <composite>
+        // f -> RightJoined …` lives in the unifier and `deep_resolve`.
+        let right_joinresult = arena.intern(TyConDecl {
+            id: TyConId(0),
+            name: "RightJoinResult".to_string(),
+            arity: 2,
+            kind: TyConKind::Builtin,
+            def_span: None,
+            def_module_raw: None,
+            opaque: false,
+            is_anon: false,
+        });
+
         // Verify assignment order matches spec §4.1 indices 0..16.
         debug_assert_eq!(int.0, 0);
         debug_assert_eq!(float.0, 1);
@@ -1258,6 +1289,9 @@ impl BuiltinTyCons {
         // LeftJoinResult/2 sits right after JoinResult/2 (LEFTJOINRESULT_TYCON_ID = 47).
         debug_assert_eq!(left_joinresult.0, LEFTJOINRESULT_TYCON_ID);
         debug_assert_eq!(left_joinresult.0, 47);
+        // RightJoinResult/2 sits right after it (RIGHTJOINRESULT_TYCON_ID = 48).
+        debug_assert_eq!(right_joinresult.0, RIGHTJOINRESULT_TYCON_ID);
+        debug_assert_eq!(right_joinresult.0, 48);
 
         // Suppress the "unused" lint — CapabilitySet is imported for future use
         // in T4 (actor schemas carry CapabilitySet).
@@ -1297,6 +1331,7 @@ impl BuiltinTyCons {
             joincond,
             joinresult,
             left_joinresult,
+            right_joinresult,
         }
     }
 }
@@ -1382,10 +1417,10 @@ mod tests {
         // column-codegen builtins Column / Table + the schema-codegen builtins
         // FieldSchema / Schema + the quotation builtins QExpr / Quote (27 total)
         // + the 16 synthetic function-type constructors Fn/0 … Fn/15 + Ret/1 +
-        // Rows/1 + JoinCond/2 + JoinResult/2 + LeftJoinResult/2.
+        // Rows/1 + JoinCond/2 + JoinResult/2 + LeftJoinResult/2 + RightJoinResult/2.
         let (arena, _) = make_arena_with_builtins();
-        assert_eq!(arena.len(), 27 + FN_ARITY_COUNT + 5);
-        assert_eq!(arena.len(), 48);
+        assert_eq!(arena.len(), 27 + FN_ARITY_COUNT + 6);
+        assert_eq!(arena.len(), 49);
     }
 
     #[test]

@@ -2229,7 +2229,9 @@ pub(crate) fn stdlib_class_home_module(class_name: &str) -> Option<&'static str>
         "SqlType" | "Row" => Some("std.sql"),
         "Adapter" => Some("std.data"),
         "Refinable" | "Projectable" | "Orderable" | "Aggregable" | "Decodable" | "Pageable"
-        | "Countable" | "Every" | "Groupable" | "Summarizable" => Some("std.repo"),
+        | "Countable" | "Every" | "Groupable" | "Summarizable" | "Joinable" | "JoinShape" => {
+            Some("std.repo")
+        }
         _ => None,
     }
 }

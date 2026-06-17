@@ -628,12 +628,159 @@ pub fn summarize (proj: Quote (Grouped q p -> s)) (g: Grouped q p) -> Result (Li
 -- query tree that tags each side so the two tables never collide.
 pub opaque type Join e f a = { left: Query e a, right: Repo f a, cond: Quote (Map Text SqlValue -> Map Text SqlValue -> Bool), where2: Quote (Map Text SqlValue -> Map Text SqlValue -> Bool), orders: List (Bool, Bool, Text), lim: Int, off: Int, dist: Bool }
 
--- Start an inner join from a query: pair it with a right repository on a quoted
--- condition over both entities. The left query's filter, ordering, and page
--- still apply — the ordering it accumulated carries in as left-side keys — and
--- the join brings the right table.
-pub fn joinOn (right: Repo f a) (cond: Quote (Map Text SqlValue -> Map Text SqlValue -> Bool)) (q: Query e a) -> Join e f a =
-    Join { left = q, right = right, cond = cond, where2 = keepAll2 (), orders = liftOrders q.orders, lim = q.lim, off = q.off, dist = q.dist }
+-- A join of three or more tables, built by chaining `joinOn` past the first.
+-- The left side `source` is itself a join — a binary `Join` for the third table,
+-- another `Joined` for the fourth and beyond — so the chain nests left as it
+-- grows. The new right table `f` joins onto the whole composite on a condition
+-- over every table so far, written as a positional lambda whose parameters range
+-- over the leaves left to right (`fn u p c -> p.id == c.post`). Opaque and
+-- threaded from `joinOn` into a terminal, exactly like the binary `Join`:
+--   users
+--     |> Repo.query
+--     |> Repo.joinOn posts    (fn u p   -> u.id == p.author)
+--     |> Repo.joinOn comments (fn u p c -> p.id == c.post)
+--     |> Repo.toList
+-- The result decodes into a left-nested pair `((User, Post), Comment)`, one level
+-- of nesting per table past the first.
+pub opaque type Joined q f a = { source: q, right: Repo f a, cond: Quote (Map Text SqlValue -> Map Text SqlValue -> Bool), where2: Quote (Map Text SqlValue -> Map Text SqlValue -> Bool), orders: List (Bool, Bool, Text), lim: Int, off: Int, dist: Bool }
+
+-- Start or extend an inner join. One verb across every receiver: a query pairs
+-- with the right repository into a binary `Join`, and a join (binary or nested)
+-- absorbs one more table into a `Joined`. The receiver fixes both the result
+-- through `JoinResult q f` — `Join e f a` from a query, `Joined q f a` from a
+-- composite — and the condition's shape through `JoinCond q f`, whose arity and
+-- per-leaf entities follow the receiver's leaves so a wrong-arity condition is a
+-- compile-time error. The accumulated filter, ordering, and page carry forward
+-- (a query's ordering lifts in as left-side keys); the join brings the new table.
+pub class Joinable q =
+    joinOn (right: Repo f a) (cond: Quote (Map Text SqlValue -> Map Text SqlValue -> Bool)) (x: q) -> JoinResult q f
+
+-- A query's `joinOn`: the binary inner join, identical to the original builder.
+-- It pairs the left query with the right repository, lifting the query's
+-- accumulated ordering in as left-side keys, and produces a `Join e f a` that
+-- keeps the whole existing two-table vocabulary.
+instance Joinable (Query e a) =
+    joinOn (right: Repo f a) (cond: Quote (Map Text SqlValue -> Map Text SqlValue -> Bool)) (x: Query e a) -> Join e f a =
+        Join { left = x, right = right, cond = cond, where2 = keepAll2 (), orders = liftOrders x.orders, lim = x.lim, off = x.off, dist = x.dist }
+
+-- A binary join's `joinOn`: absorb a third table. The existing two-table join
+-- becomes the `source` of a `Joined`, the new repository its right, and the
+-- accumulated page/ordering carry across unchanged.
+instance Joinable (Join e g a) =
+    joinOn (right: Repo f a) (cond: Quote (Map Text SqlValue -> Map Text SqlValue -> Bool)) (x: Join e g a) -> Joined (Join e g a) f a =
+        Joined { source = x, right = right, cond = cond, where2 = keepAll2 (), orders = x.orders, lim = x.lim, off = x.off, dist = x.dist }
+
+-- A nested join's `joinOn`: absorb one more table onto a composite already three
+-- or more wide. The chain nests left another level, the new repository joining
+-- onto everything accumulated so far.
+instance Joinable (Joined q g a) =
+    joinOn (right: Repo f a) (cond: Quote (Map Text SqlValue -> Map Text SqlValue -> Bool)) (x: Joined q g a) -> Joined (Joined q g a) f a =
+        Joined { source = x, right = right, cond = cond, where2 = keepAll2 (), orders = x.orders, lim = x.lim, off = x.off, dist = x.dist }
+
+-- The recursion a nested join's terminal stands on. `JoinShape` walks the
+-- left-nested source of a `Joined` to count its leaves, rebuild its plan, and
+-- decode a flat prefixed result row into the nested row. The source `q` of a
+-- `Joined` is always a binary `Join` (the base) or another `Joined` (one level
+-- deeper), never a bare query — a query's `joinOn` yields a binary `Join`, so a
+-- `Joined` only ever forms over a join.
+class JoinShape q =
+    -- How many leaf tables the receiver carries: 2 for a binary join, one more
+    -- per nesting level.
+    joinedLeaves (w: Option q) -> Int
+    -- The receiver's query plan, a left-nested `PlanJoin` over its leaves.
+    joinedSourcePlan (x: q) -> QueryPlan
+    -- Decode one flat result row (leaves under `t0$`, `t1$`, … prefixes) into the
+    -- receiver's nested row — `(e, f)` for a binary join, `(Rows q, f)` deeper.
+    decodeJoined (w: Option q) (row: Map Text SqlValue) -> Result (Rows q) Error
+
+-- The base of the recursion: a binary join is two leaves under `t0$`/`t1$`, its
+-- plan the existing binary `innerJoinPlan`, its row the pair `(e, f)`.
+instance JoinShape (Join e f a) where Row f, Row e =
+    joinedLeaves (w: Option (Join e f a)) -> Int = 2
+    joinedSourcePlan (x: Join e f a) -> QueryPlan =
+        innerJoinPlan x (0 - 1) (rowColumns (entityWitness x.left.repo)) (rowColumns (entityWitness x.right))
+    -- Decode the t0$/t1$ pair by delegating to `decodePrefixedPairs` over a
+    -- one-row list: a direct `fromRow` for each side would, inside an instance
+    -- body, resolve both to the same `Row` dictionary (the lowering picks a
+    -- context dict by class alone), so the two-row decode is threaded through the
+    -- free helper whose call site distinguishes the two `Row` dicts by position —
+    -- exactly as the binary `Decodable (Join e f a)` instance does.
+    decodeJoined (w: Option (Join e f a)) (row: Map Text SqlValue) -> Result (e, f) Error =
+        match decodePrefixedPairs [row]
+            Err err     -> Err err
+            Ok []       -> Err (mkError "repo.join.decode" "the join produced no row to decode")
+            Ok (p :: _) -> Ok p
+
+-- The recursive step: a nested join is its source plus one more leaf. Its leaf
+-- count, plan, and row each extend the source's by one — the new table joins onto
+-- the whole composite, decoded under the next `t<n>$` prefix.
+instance JoinShape (Joined q f a) where JoinShape q, Row f =
+    joinedLeaves (w: Option (Joined q f a)) -> Int =
+        joinedLeaves (innerJoinWitness w) + 1
+    joinedSourcePlan (x: Joined q f a) -> QueryPlan =
+        planJoin "INNER" (joinedSourcePlan x.source) (planScan x.right.table (keepAllTree ()) [] (0 - 1) 0 false) x.cond.tree x.where2.tree x.orders (0 - 1) 0 false [] (rowColumns (entityWitness x.right))
+    decodeJoined (w: Option (Joined q f a)) (row: Map Text SqlValue) -> Result (Rows q, f) Error =
+        match decodeJoined (innerJoinWitness w) row
+            Err err -> Err err
+            Ok qr ->
+                match fromRow (unprefix (leafPrefix (joinedLeaves (innerJoinWitness w))) row)
+                    Err err -> Err err
+                    Ok fv -> Ok (qr, fv)
+
+-- Phantom witnesses: narrow a `Joined`'s type to its source's, so the recursion
+-- can ask the source for its leaf count, plan, and decoder.
+fn innerJoinWitness (w: Option (Joined q f a)) -> Option q = None
+fn sourceWitness (x: Joined q f a) -> Option q = None
+
+-- The column prefix a leaf at index `n` carries in a joined result row: `t<n>$`.
+fn leafPrefix (n: Int) -> Text = Text.concat (Text.concat "t" (Int.toText n)) "$"
+
+-- The plan of a whole `Joined`: its source's left-nested plan with the new right
+-- table joined on, carrying the top-level page/ordering/distinct the terminal
+-- runs it with.
+fn joinedPlan (x: Joined q f a) (lim: Int) -> QueryPlan where JoinShape q, Row f =
+    planJoin "INNER" (joinedSourcePlan x.source) (planScan x.right.table (keepAllTree ()) [] (0 - 1) 0 false) x.cond.tree x.where2.tree x.orders lim x.off x.dist [] (rowColumns (entityWitness x.right))
+
+-- Decode every flat result row into the nested pair `(Rows q, f)`: the source's
+-- row from `decodeJoined`, the new table from its `t<n>$` leaf where `n` is the
+-- source's leaf count.
+fn decodeJoinedRows (w: Option q) (n: Int) (rows: List (Map Text SqlValue)) -> Result (List (Rows q, f)) Error where JoinShape q, Row f =
+    match rows
+        []        -> Ok []
+        r :: rest ->
+            match decodeJoined w r
+                Err err -> Err err
+                Ok qr ->
+                    match fromRow (unprefix (leafPrefix n) r)
+                        Err err -> Err err
+                        Ok fv ->
+                            match decodeJoinedRows w n rest
+                                Err err -> Err err
+                                Ok more -> Ok ((qr, fv) :: more)
+
+fn firstDecodedJoined (w: Option q) (n: Int) (rows: List (Map Text SqlValue)) -> Result (Option (Rows q, f)) Error where JoinShape q, Row f =
+    match rows
+        []     -> Ok None
+        r :: _ ->
+            match decodeJoined w r
+                Err err -> Err err
+                Ok qr ->
+                    match fromRow (unprefix (leafPrefix n) r)
+                        Err err -> Err err
+                        Ok fv -> Ok (Some (qr, fv))
+
+-- `toList`/`first` over a nested join: run the flattened plan and decode each row
+-- into the nested tuple `(Rows q, f)`. The plan, decode, and row shape all come
+-- from `JoinShape q`, so the same two terminals serve every depth.
+instance Decodable (Joined q f a) where Adapter a, JoinShape q, Row f =
+    toList (x: Joined q f a) -> Result (List (Rows q, f)) Error =
+        match runPlan x.right.adapter (joinedPlan x x.lim)
+            Err err -> Err err
+            Ok rows -> decodeJoinedRows (sourceWitness x) (joinedLeaves (sourceWitness x)) rows
+    first (x: Joined q f a) -> Result (Option (Rows q, f)) Error =
+        match runPlan x.right.adapter (joinedPlan x 1)
+            Err err -> Err err
+            Ok rows -> firstDecodedJoined (sourceWitness x) (joinedLeaves (sourceWitness x)) rows
 
 -- `toList` and `first` over an inner join are the `Decodable (Join e f a) …`
 -- methods (instance below), so the join shares the query's decode terminals:

@@ -1195,6 +1195,73 @@ pub fn register_stdlib_classes(ct: &mut ClassTable) {
         },
     );
 
+    // `Joinable` from std.repo — the N-ary inner-join entry point. A single
+    // parameter, the receiver `q` (a query, a binary join, or a nested join), with
+    // no functional dependency: the condition shape and the result type both follow
+    // the receiver through the `JoinCond q f` / `JoinResult q f` projections, not a
+    // second class parameter. The one method scheme is seeded directly (see
+    // `seed_joinable_scheme` in lib.rs) with no AST types, and the instances are
+    // registered in `register_stdlib_instances`. `joinOn` takes the right
+    // repository, the condition quote, and the receiver — sig arity 3.
+    let joinable_id = ct.intern("Joinable");
+    ct.insert_with_id(
+        joinable_id,
+        ClassInfo {
+            name: "Joinable".to_string(),
+            arity: 1,
+            method_sigs: vec![MethodSig {
+                name: "joinOn".to_string(),
+                arity: 3,
+                ast_param_types: vec![],
+                ast_ret_type: None,
+                class_ty_vars: Vec::new(),
+            }],
+            superclasses: vec![],
+            def_module: None,
+        },
+    );
+
+    // `JoinShape` from std.repo — the internal recursion a nested join's terminal
+    // stands on. A single parameter, the join source `q` (a binary `Join` or a
+    // nested `Joined`), no functional dependency. Its methods are never called by
+    // user code — only the `Decodable (Joined q f a)` instance reaches them, and
+    // the dicts come from the compiled stdlib — so the schemes are not seeded into
+    // the env; only the class and its instances are registered (the latter in
+    // `register_stdlib_instances`) so the `JoinShape q` constraint discharges.
+    let joinshape_id = ct.intern("JoinShape");
+    ct.insert_with_id(
+        joinshape_id,
+        ClassInfo {
+            name: "JoinShape".to_string(),
+            arity: 1,
+            method_sigs: vec![
+                MethodSig {
+                    name: "joinedLeaves".to_string(),
+                    arity: 1,
+                    ast_param_types: vec![],
+                    ast_ret_type: None,
+                    class_ty_vars: Vec::new(),
+                },
+                MethodSig {
+                    name: "joinedSourcePlan".to_string(),
+                    arity: 1,
+                    ast_param_types: vec![],
+                    ast_ret_type: None,
+                    class_ty_vars: Vec::new(),
+                },
+                MethodSig {
+                    name: "decodeJoined".to_string(),
+                    arity: 2,
+                    ast_param_types: vec![],
+                    ast_ret_type: None,
+                    class_ty_vars: Vec::new(),
+                },
+            ],
+            superclasses: vec![],
+            def_module: None,
+        },
+    );
+
     // `Pageable` from std.repo — the unified page-and-distinct builder steps
     // (`limit`/`offset`/`distinct`) over a query, an inner join, or a left join. A
     // single parameter, the receiver `q`, with no functional dependency (like
@@ -1809,6 +1876,121 @@ pub fn register_stdlib_instances(
             env.instances
                 .entry((decodable, smallvec![full_join]))
                 .or_insert_with(join_inst);
+        }
+    }
+
+    // `Joinable (Query e a)`, `Joinable (Join e f a)`, and `Joinable (Joined q f
+    // a)` — the N-ary inner-join entry points from std.repo. A single-parameter
+    // class keyed by the receiver tycon alone. Like `Refinable`/`Pageable`, `joinOn`
+    // only builds a fresh join object (it never reaches the store), so these carry
+    // no context constraints and need no head-position augmentation.
+    if let Some(joinable) = ct.id_by_name("Joinable") {
+        let joinable_inst = || InstanceInfo {
+            def_module: None,
+            methods: vec![("joinOn".to_string(), String::new())],
+            ctx_constraints: vec![],
+            head_var_positions: vec![],
+            origin: InstanceOrigin::Explicit,
+            span: ds,
+        };
+        if let Some(&query) = reconciled_tycon_names.get("Query") {
+            env.instances
+                .entry((joinable, smallvec![query]))
+                .or_insert_with(joinable_inst);
+        }
+        if let Some(&join) = reconciled_tycon_names.get("Join") {
+            env.instances
+                .entry((joinable, smallvec![join]))
+                .or_insert_with(joinable_inst);
+        }
+        if let Some(&joined) = reconciled_tycon_names.get("Joined") {
+            env.instances
+                .entry((joinable, smallvec![joined]))
+                .or_insert_with(joinable_inst);
+        }
+    }
+
+    // `JoinShape (Join e f a)` and `JoinShape (Joined q f a)` — the internal
+    // recursion the nested-join terminal stands on (a `Joined`'s source is always a
+    // binary join or another nested join, never a bare query). The binary base
+    // carries `Row e, Row f` at the receiver's two entity slots (`e@0, f@1`); the
+    // nested step carries `JoinShape q, Row f` at `q@0, f@1`. Both single-parameter,
+    // keyed by the receiver tycon alone.
+    if let (Some(joinshape), Some(row)) = (ct.id_by_name("JoinShape"), ct.id_by_name("Row")) {
+        if let Some(&join) = reconciled_tycon_names.get("Join") {
+            // Source `where Row f, Row e`: the two Row dicts right-before-left
+            // (`f@1, e@0`). The instance delegates its pair decode to the same
+            // `decodePrefixedPairs` helper the binary `Decodable (Join e f a)` uses,
+            // so its two same-class Row dicts thread in the same order.
+            env.instances
+                .entry((joinshape, smallvec![join]))
+                .or_insert_with(|| InstanceInfo {
+                    def_module: None,
+                    methods: vec![
+                        ("joinedLeaves".to_string(), String::new()),
+                        ("joinedSourcePlan".to_string(), String::new()),
+                        ("decodeJoined".to_string(), String::new()),
+                    ],
+                    ctx_constraints: vec![
+                        ridge_types::Constraint::single(row, ridge_types::TyVid(0)),
+                        ridge_types::Constraint::single(row, ridge_types::TyVid(0)),
+                    ],
+                    head_var_positions: vec![1, 0],
+                    origin: InstanceOrigin::Explicit,
+                    span: ds,
+                });
+        }
+        if let Some(&joined) = reconciled_tycon_names.get("Joined") {
+            // Source `where JoinShape q, Row f`: body-appearance order (`q@0` then
+            // `f@1`).
+            env.instances
+                .entry((joinshape, smallvec![joined]))
+                .or_insert_with(|| InstanceInfo {
+                    def_module: None,
+                    methods: vec![
+                        ("joinedLeaves".to_string(), String::new()),
+                        ("joinedSourcePlan".to_string(), String::new()),
+                        ("decodeJoined".to_string(), String::new()),
+                    ],
+                    ctx_constraints: vec![
+                        ridge_types::Constraint::single(joinshape, ridge_types::TyVid(0)),
+                        ridge_types::Constraint::single(row, ridge_types::TyVid(0)),
+                    ],
+                    head_var_positions: vec![0, 1],
+                    origin: InstanceOrigin::Explicit,
+                    span: ds,
+                });
+        }
+    }
+
+    // `Decodable (Joined q f a)` — the nested join's `toList`/`first`. Single
+    // parameter, keyed by `Joined`. Source `where Adapter a, JoinShape q, Row f`:
+    // the dicts in body-appearance order (`a@2` for runPlan, then `q@0`/`f@1` for
+    // the decode), the order the compiled instance binds them.
+    if let (Some(decodable), Some(adapter), Some(joinshape), Some(row)) = (
+        ct.id_by_name("Decodable"),
+        ct.id_by_name("Adapter"),
+        ct.id_by_name("JoinShape"),
+        ct.id_by_name("Row"),
+    ) {
+        if let Some(&joined) = reconciled_tycon_names.get("Joined") {
+            env.instances
+                .entry((decodable, smallvec![joined]))
+                .or_insert_with(|| InstanceInfo {
+                    def_module: None,
+                    methods: vec![
+                        ("toList".to_string(), String::new()),
+                        ("first".to_string(), String::new()),
+                    ],
+                    ctx_constraints: vec![
+                        ridge_types::Constraint::single(adapter, ridge_types::TyVid(0)),
+                        ridge_types::Constraint::single(joinshape, ridge_types::TyVid(0)),
+                        ridge_types::Constraint::single(row, ridge_types::TyVid(0)),
+                    ],
+                    head_var_positions: vec![2, 0, 1],
+                    origin: InstanceOrigin::Explicit,
+                    span: ds,
+                });
         }
     }
 

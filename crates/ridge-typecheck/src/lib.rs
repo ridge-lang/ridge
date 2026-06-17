@@ -798,8 +798,12 @@ fn typecheck_module_inner(
         // seeds borrow `ctx` mutably, so the `receiver_id` closure's immutable
         // borrow has ended by the time the `RowsTycons` is built.
         let joined_id = receiver_id("Joined");
+        // `joinOn` takes the right `Repo f a`, so its `Joinable` seed needs the
+        // reconciled `Repo` id; resolved here, before the mutable seed borrows.
+        let repo_id = receiver_id("Repo");
         seed_groupable_scheme(&mut ctx, b, ct, grouped_id);
         seed_summarizable_scheme(&mut ctx, b, ct, sql_value);
+        seed_joinable_scheme(&mut ctx, b, ct, repo_id);
         if let (Some(query), Some(join), Some(left_join)) = (query_id, join_id, left_join_id) {
             ctx.rows_tycons = Some(crate::ctx::RowsTycons {
                 query,
@@ -1362,6 +1366,59 @@ fn seed_decodable_scheme(
             },
         );
     }
+}
+
+/// Seed the env scheme for `Joinable.joinOn` — std.repo's unified N-ary inner-join
+/// entry point. Registered in Rust for the same reason as [`seed_decodable_scheme`]:
+/// the stdlib class carries no source AST, so the AST-driven
+/// [`seed_class_method_schemes`] path skips it.
+///
+/// Scheme: `∀q f a. Repo f a -> Quote (JoinCond q f) -> q -> JoinResult q f
+/// where Joinable q`.
+///
+/// One class parameter, the receiver `q` (a query, a binary join, or a nested
+/// join). The condition's shape is the `JoinCond q f` projection — the receiver's
+/// leaf entities then the new right entity `f`, returning `Bool` — and the result
+/// is the `JoinResult q f` projection — a binary `Join e f a` from a query, the
+/// nested `Joined q f a` from a composite. Both reduce from the receiver's own type
+/// during unification, so one method serves every depth and a wrong-arity condition
+/// is a compile-time error. `repo_id` is the reconciled `Repo` tycon (the right
+/// repository's type); the seed is skipped when it or the class is absent.
+fn seed_joinable_scheme(
+    ctx: &mut crate::ctx::InferCtx,
+    b: &ridge_types::BuiltinTyCons,
+    class_table: &crate::class_env::ClassTable,
+    repo_id: Option<ridge_types::TyConId>,
+) {
+    use ridge_types::{CapRow, CapabilitySet, Constraint, Scheme, Type};
+    let (Some(joinable), Some(repo)) = (class_table.id_by_name("Joinable"), repo_id) else {
+        return;
+    };
+    let q = ctx.fresh_tyvid();
+    let f = ctx.fresh_tyvid();
+    let a = ctx.fresh_tyvid();
+    let repo_f_a = Type::Con(repo, vec![Type::Var(f), Type::Var(a)]);
+    let cond_quote = Type::Con(
+        b.quote,
+        vec![Type::Con(b.joincond, vec![Type::Var(q), Type::Var(f)])],
+    );
+    let join_result = Type::Con(b.joinresult, vec![Type::Var(q), Type::Var(f)]);
+    let fn_ty = Type::Fn {
+        params: vec![repo_f_a, cond_quote, Type::Var(q)],
+        ret: Box::new(join_result),
+        caps: CapRow::Concrete(CapabilitySet::PURE),
+    };
+    let constraint_tys: smallvec::SmallVec<[ridge_types::TyVid; 1]> = smallvec::smallvec![q];
+    ctx.env.bind(
+        "joinOn".to_owned(),
+        Scheme {
+            vars: vec![q, f, a],
+            cap_vars: vec![],
+            row_vars: vec![],
+            ty: fn_ty,
+            constraints: vec![Constraint::new(joinable, constraint_tys)],
+        },
+    );
 }
 
 /// Seed the env schemes for `Pageable.limit`/`offset`/`distinct` — std.repo's

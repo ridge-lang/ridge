@@ -861,6 +861,67 @@ fn reconciled_decls(b: &BuiltinTyCons, base: u32) -> Vec<TyConDecl> {
             opaque: false,
             is_anon: false,
         },
+        // `std.repo` — a nested inner join of three or more tables, declared in
+        // Ridge (stdlib/repo.ridge). The left side `source` is itself a join (a
+        // binary `Join` or another `Joined`), `f` the newly joined entity, `a` the
+        // shared adapter. Opaque, so user code only threads it from `joinOn` into a
+        // terminal (`toList`/`first`). Interned after `QueryPlan` so every existing
+        // reconciled offset is unchanged.
+        TyConDecl {
+            id: TyConId(base + 16),
+            name: "Joined".to_string(),
+            arity: 3,
+            kind: TyConKind::Record(RecordSchema::new(
+                vec![TyVid(0), TyVid(1), TyVid(2)],
+                vec![
+                    RecordField {
+                        name: "source".to_string(),
+                        ty: Type::Var(TyVid(0)),
+                    },
+                    RecordField {
+                        name: "right".to_string(),
+                        ty: Type::Con(
+                            TyConId(base + 2),
+                            vec![Type::Var(TyVid(1)), Type::Var(TyVid(2))],
+                        ),
+                    },
+                    // Same captured-tree-over-two-row-maps form `Join.cond` uses,
+                    // mirroring the source field; the entity view the user-facing
+                    // `joinOn` presents is the `JoinCond` projection, reconciled
+                    // separately.
+                    RecordField {
+                        name: "cond".to_string(),
+                        ty: Type::Con(
+                            b.quote,
+                            vec![Type::Fn {
+                                params: vec![
+                                    Type::Con(
+                                        b.map,
+                                        vec![
+                                            Type::Con(b.text, vec![]),
+                                            Type::Con(b.sql_value, vec![]),
+                                        ],
+                                    ),
+                                    Type::Con(
+                                        b.map,
+                                        vec![
+                                            Type::Con(b.text, vec![]),
+                                            Type::Con(b.sql_value, vec![]),
+                                        ],
+                                    ),
+                                ],
+                                ret: Box::new(Type::Con(b.bool, vec![])),
+                                caps: CapRow::Concrete(CapabilitySet::PURE),
+                            }],
+                        ),
+                    },
+                ],
+            )),
+            def_span: None,
+            def_module_raw: None,
+            opaque: true,
+            is_anon: false,
+        },
     ]
 }
 
@@ -1665,36 +1726,11 @@ fn reconciled_repo_fn_scheme(
                 ],
             })
         }
-        // joinOn : ∀e f a. Repo f a -> Quote (e -> f -> Bool) -> Query e a
-        //               -> Join e f a. A pure builder: it pairs the left query
-        // with the right repository and a quoted join condition over both
-        // entities. The condition's left columns range over `e`, its right over
-        // `f`; the captured tree tags each side so the seam keeps them apart.
-        "joinOn" => {
-            let join_con = *reconciled.get("Join")?;
-            let f = TyVid(2);
-            let repo_f_a = Type::Con(repo_con, vec![Type::Var(f), Type::Var(a)]);
-            let cond_quote = Type::Con(
-                b.quote,
-                vec![Type::Fn {
-                    params: vec![Type::Var(e), Type::Var(f)],
-                    ret: Box::new(Type::Con(b.bool, vec![])),
-                    caps: CapRow::Concrete(CapabilitySet::PURE),
-                }],
-            );
-            let join_e_f_a = Type::Con(join_con, vec![Type::Var(e), Type::Var(f), Type::Var(a)]);
-            Some(Scheme {
-                vars: vec![e, a, f],
-                cap_vars: vec![],
-                row_vars: vec![],
-                ty: Type::Fn {
-                    params: vec![repo_f_a, cond_quote, query_app()],
-                    ret: Box::new(join_e_f_a),
-                    caps: pure(),
-                },
-                constraints: vec![],
-            })
-        }
+        // `joinOn` is no longer a standalone scheme: it is the `Joinable` class
+        // method, seeded by `seed_joinable_scheme` so its condition (`JoinCond q f`)
+        // and result (`JoinResult q f`) follow the receiver. Omitting the arm routes
+        // it through that class path, the same way `toList`/`first` route through
+        // `seed_decodable_scheme`.
         // crossJoin : ∀e f a. Repo f a -> Query e a -> Join e f a. The cartesian
         // builder: it pairs the left query with the right repository and no
         // condition, so it carries no quoted predicate. A cross join is an inner

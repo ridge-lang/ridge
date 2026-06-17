@@ -220,10 +220,40 @@ fn infer_expr_inner(ctx: &mut InferCtx, b: &BuiltinTyCons, expr: &Expr) -> Type 
                 Type::Fn { params, .. } => Some(params),
                 _ => None,
             };
+            // Pre-pin: when a quote parameter's shape depends on other arguments —
+            // a join condition's `Quote (JoinCond q f)`, whose arity and per-leaf
+            // entities follow the receiver `q` and the new entity `f` carried by
+            // the non-lambda arguments — infer and unify those arguments first, so
+            // the projection has reduced to a concrete arrow by the time the lambda
+            // is routed to the quote checker. Scoped to that case so an ordinary
+            // call keeps its single left-to-right pass. The pre-computed types are
+            // reused below (no argument is inferred twice).
+            let prepin = callee_params
+                .as_ref()
+                .is_some_and(|p| p.iter().any(|t| is_joincond_quote_param(ctx, t)));
+            let mut pre_types: Vec<Option<Type>> = vec![None; args.len()];
+            if prepin {
+                for (i, a) in args.iter().enumerate() {
+                    if matches!(peel_parens(a), Expr::Lambda { .. }) {
+                        continue;
+                    }
+                    let at = infer_expr(ctx, b, a);
+                    if let Some(pty) = callee_params.as_ref().and_then(|p| p.get(i)) {
+                        let pty = ctx.deep_resolve(pty);
+                        let _ = unify(ctx, &at, &pty);
+                    }
+                    pre_types[i] = Some(at);
+                }
+            }
             let arg_types: Vec<Type> = args
                 .iter()
                 .enumerate()
                 .map(|(i, a)| {
+                    // A non-lambda argument already inferred (and pinned) by the
+                    // pre-pin pass is reused as-is.
+                    if let Some(t) = pre_types[i].clone() {
+                        return t;
+                    }
                     // The lambda is usually parenthesised at the call site
                     // (`f (fn u -> …)`), so look through `Paren` to find it.
                     let inner = peel_parens(a);
@@ -1484,6 +1514,25 @@ fn pin_quote_entities(
         entities.push((entity, nullable));
     }
     Some(entities)
+}
+
+/// Whether `t` is a `Quote (JoinCond …)` — a join condition whose arrow shape is
+/// still a stuck projection because the receiver is not yet pinned. Such a
+/// parameter triggers the call's pre-pin pass, so the other arguments fix the
+/// receiver `q` and the new entity `f` before the lambda is routed to the quote
+/// checker and `JoinCond q f` has reduced to a concrete arrow.
+fn is_joincond_quote_param(ctx: &mut InferCtx, t: &Type) -> bool {
+    let resolved = ctx.deep_resolve(t);
+    if !crate::quote::is_quote_param(ctx, &resolved) {
+        return false;
+    }
+    let Type::Con(_, args) = &resolved else {
+        return false;
+    };
+    let Some(inner) = args.first() else {
+        return false;
+    };
+    matches!(ctx.deep_resolve(inner), Type::Con(id, _) if id.0 == ridge_types::JOINCOND_TYCON_ID)
 }
 
 /// Give an open quote parameter (`Quote p` with `p` still a bare variable) a

@@ -588,6 +588,12 @@ const BASELINE_EXPORTS: &[(&str, &[&str])] = &[
             // entry, keeping every row of both tables with both sides read as `Option`.
             "FullJoin",
             "fullJoinOn",
+            // The N-ary inner join: chaining `joinOn` past the first table produces
+            // the opaque nested `Joined q f a`, the `Joinable` class unifying the
+            // builder across a query (binary `Join`) and a join (nested `Joined`).
+            // Its decode terminals (`toList`/`first`) are the `Decodable` methods.
+            "Joined",
+            "Joinable",
             // Grouped aggregates unified across a query and a join: the opaque
             // `Grouped q p` builder produced by the `Groupable` class's `groupBy`,
             // narrowed by `having`, and summarised into a named record by
@@ -669,6 +675,7 @@ const BASELINE_OPAQUE: &[(&str, &[&str])] = &[
             "LeftJoin",
             "RightJoin",
             "FullJoin",
+            "Joined",
             "Setter",
             "Grouped",
         ],

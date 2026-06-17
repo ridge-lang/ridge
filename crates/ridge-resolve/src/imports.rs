@@ -2004,8 +2004,8 @@ mod tests {
             .map(|ir| ir.effective_bindings.len())
             .sum();
         assert_eq!(
-            total_bindings, 48,
-            "expected 48 total prelude bindings (6 option/result + 8 json + 26 quotation + 8 module aliases); got {total_bindings}"
+            total_bindings, 51,
+            "expected 51 total prelude bindings (6 option/result + 8 json + 29 quotation + 8 module aliases); got {total_bindings}"
         );
     }
 

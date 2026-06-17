@@ -96,6 +96,15 @@ pub type FullCombo = { who: Option Text, title: Option Text } deriving (Row)
 -- inner composite names columns across every leaf and pushes them down as one row.
 pub type Trio = { who: Text, what: Text, note: Text } deriving (Row)
 
+-- The shapes an outer composite projection decodes into: a leaf an enclosing join can
+-- null-extend projects an `Option` field. A left composite reads only its new leaf
+-- (`note`) as optional; a right composite reads its prior leaves (`who`/`what`) as
+-- optional; a full composite reads every leaf as optional. A null-extended leaf's column
+-- comes back NULL and decodes to `None`.
+pub type LeftTrio = { who: Text, what: Text, note: Option Text } deriving (Row)
+pub type RightTrio = { who: Option Text, what: Option Text, note: Text } deriving (Row)
+pub type FullTrio = { who: Option Text, what: Option Text, note: Option Text } deriving (Row)
+
 -- A single-name projection shape for a join, so a `distinct` over a join's
 -- projection collapses the repeated left entity (one person, several posts) to its
 -- distinct values.
@@ -140,6 +149,26 @@ fn trioRows (ts: List Trio) -> Text =
         []           -> ""
         t :: []      -> Text.concat t.who (Text.concat ":" (Text.concat t.what (Text.concat ":" t.note)))
         t :: rest    -> Text.concat t.who (Text.concat ":" (Text.concat t.what (Text.concat ":" (Text.concat t.note (Text.concat "," (trioRows rest))))))
+
+-- Render each projected outer-composite trio as `who:what:note`, an `Option` field shown
+-- as its value or `-` when the leaf was null-extended (`optText`), comma-joined.
+fn leftTrioRows (ts: List LeftTrio) -> Text =
+    match ts
+        []        -> ""
+        t :: []   -> Text.concat t.who (Text.concat ":" (Text.concat t.what (Text.concat ":" (optText t.note))))
+        t :: rest -> Text.concat t.who (Text.concat ":" (Text.concat t.what (Text.concat ":" (Text.concat (optText t.note) (Text.concat "," (leftTrioRows rest))))))
+
+fn rightTrioRows (ts: List RightTrio) -> Text =
+    match ts
+        []        -> ""
+        t :: []   -> Text.concat (optText t.who) (Text.concat ":" (Text.concat (optText t.what) (Text.concat ":" t.note)))
+        t :: rest -> Text.concat (optText t.who) (Text.concat ":" (Text.concat (optText t.what) (Text.concat ":" (Text.concat t.note (Text.concat "," (rightTrioRows rest))))))
+
+fn fullTrioRows (ts: List FullTrio) -> Text =
+    match ts
+        []        -> ""
+        t :: []   -> Text.concat (optText t.who) (Text.concat ":" (Text.concat (optText t.what) (Text.concat ":" (optText t.note))))
+        t :: rest -> Text.concat (optText t.who) (Text.concat ":" (Text.concat (optText t.what) (Text.concat ":" (Text.concat (optText t.note) (Text.concat "," (fullTrioRows rest))))))
 
 -- Render each projected `Combo` as `person:post`, comma-joined.
 fn joinCombos (cs: List Combo) -> Text =
@@ -638,6 +667,46 @@ pub fn db selectJoined3First () -> Text =
                 Err _       -> "select-first3-err"
                 Ok None     -> "none"
                 Ok (Some t) -> Text.concat t.who (Text.concat ":" (Text.concat t.what (Text.concat ":" t.note)))
+
+-- `select` over a LEFT composite: chain `joinOn` then `leftJoinOn`, then project each
+-- leaf into `LeftTrio`. The optional new leaf comes in as `Option Comment`, so its column
+-- projects to an `Option Text` field — `None` for lin's uncommented post. Ordered by user
+-- id -> "ada:hello:nice,lin:world:-,max:again:ok". Proves the LEFT composite `Projectable`
+-- instance dispatches and `improve` reads the new leaf as `Option` (`leaf_proj_opt`).
+pub fn db selectLeftJoined3 () -> Text =
+    match setupLeftJoin3 ()
+        Err _ -> "setup-err"
+        Ok (users, posts, comments) ->
+            match users |> Repo.query |> Repo.orderBy Asc (fn (u: User) -> u.id) |> Repo.joinOn posts (fn (u: User) (p: Post) -> u.id == p.author) |> Repo.leftJoinOn comments (fn (u: User) (p: Post) (c: Comment) -> p.id == c.post) |> Repo.select (fn (u: User) (p: Post) (c: Option Comment) -> LeftTrio { who = u.name, what = p.title, note = c.body })
+                Err _  -> "select-left3-err"
+                Ok ts  -> leftTrioRows ts
+
+-- `select` over a RIGHT composite: keep every comment and read the prior `(user, post)`
+-- leaves as `Option`, each projecting to an `Option Text` field. The orphan comment whose
+-- post is missing projects both `who` and `what` as `None`, the new leaf's `note` always
+-- present -> "ada:hello:nice,lin:world:wow,-:-:orphan". Proves the RIGHT composite reads
+-- every prior leaf as optional (`leaf_proj_opt` wraps the whole source as a unit).
+pub fn db selectRightJoined3 () -> Text =
+    match setupRightJoin3 ()
+        Err _ -> "setup-err"
+        Ok (users, posts, comments) ->
+            match users |> Repo.query |> Repo.orderBy Asc (fn (u: User) -> u.id) |> Repo.joinOn posts (fn (u: User) (p: Post) -> u.id == p.author) |> Repo.rightJoinOn comments (fn (u: User) (p: Post) (c: Comment) -> p.id == c.post) |> Repo.select (fn (u: Option User) (p: Option Post) (c: Comment) -> RightTrio { who = u.name, what = p.title, note = c.body })
+                Err _  -> "select-right3-err"
+                Ok ts  -> rightTrioRows ts
+
+-- `select` over a FULL composite: keep every `(user, post)` row and every comment, reading
+-- whichever matched none as `Option`, so every leaf projects an `Option Text` field. The
+-- matched ada row fills all three; lin/max keep their composite with `note` `None`; the
+-- orphan comment keeps `note` with `who`/`what` `None` ->
+-- "ada:hello:nice,lin:world:-,max:again:-,-:-:orphan". Proves the FULL composite reads
+-- every leaf as optional.
+pub fn db selectFullJoined3 () -> Text =
+    match setupFullJoin3 ()
+        Err _ -> "setup-err"
+        Ok (users, posts, comments) ->
+            match users |> Repo.query |> Repo.orderBy Asc (fn (u: User) -> u.id) |> Repo.joinOn posts (fn (u: User) (p: Post) -> u.id == p.author) |> Repo.fullJoinOn comments (fn (u: User) (p: Post) (c: Comment) -> p.id == c.post) |> Repo.select (fn (u: Option User) (p: Option Post) (c: Option Comment) -> FullTrio { who = u.name, what = p.title, note = c.body })
+                Err _  -> "select-full3-err"
+                Ok ts  -> fullTrioRows ts
 
 -- `filter` over a LEFT composite: chain `joinOn` then `leftJoinOn`, then narrow with
 -- a leaf predicate over the left-most leaf (`u.id >= 2`). The predicate ANDs into the
@@ -1958,6 +2027,9 @@ fn repo_surface_runs_on_beam() {
          io:format(\"filteredJoined3=~s~n\",[{module}:filteredJoined3()]), \
          io:format(\"selectJoined3=~s~n\",[{module}:selectJoined3()]), \
          io:format(\"selectJoined3First=~s~n\",[{module}:selectJoined3First()]), \
+         io:format(\"selectLeftJoined3=~s~n\",[{module}:selectLeftJoined3()]), \
+         io:format(\"selectRightJoined3=~s~n\",[{module}:selectRightJoined3()]), \
+         io:format(\"selectFullJoined3=~s~n\",[{module}:selectFullJoined3()]), \
          io:format(\"filteredLeftJoined3=~s~n\",[{module}:filteredLeftJoined3()]), \
          io:format(\"countJoined3=~w~n\",[{module}:countJoined3()]), \
          io:format(\"existsJoined3=~w~n\",[{module}:existsJoined3()]), \
@@ -2123,6 +2195,18 @@ fn repo_surface_runs_on_beam() {
         (
             "selectJoined3First=ada:hello:nice",
             "selectFirst over the three-table composite pushes a LIMIT 1 on the projection and decodes the single leaf-spanning row (ada sorts first by user id)",
+        ),
+        (
+            "selectLeftJoined3=ada:hello:nice,lin:world:-,max:again:ok",
+            "select over a LEFT composite projects the optional comment leaf as an Option Text field, None for lin's uncommented post, while the always-present user and post leaves stay plain",
+        ),
+        (
+            "selectRightJoined3=ada:hello:nice,lin:world:wow,-:-:orphan",
+            "select over a RIGHT composite projects the prior user and post leaves as Option Text fields, both None for the orphan comment whose post is missing, the always-present comment leaf plain",
+        ),
+        (
+            "selectFullJoined3=ada:hello:nice,lin:world:-,max:again:-,-:-:orphan",
+            "select over a FULL composite projects every leaf as an Option Text field: ada fills all three, lin and max keep None notes, the orphan keeps its note with None user and post",
         ),
         (
             "filteredLeftJoined3=lin:world:-,max:again:ok",

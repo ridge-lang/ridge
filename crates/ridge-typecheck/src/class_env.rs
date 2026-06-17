@@ -1936,18 +1936,18 @@ pub fn register_stdlib_instances(
         }
     }
 
-    // `Projectable (Joined q f a)` — the inner composite's `select`/`selectFirst`. A
-    // fundep terminal keyed by the RECEIVER ALONE (the projection's leaf arity grows
-    // with the join depth), like the composite `Aggregable`/`Refinable`. Source `where
-    // Adapter a, JoinShape q, Row s`: `a@2, q@0` in the receiver, and `Row s` — the
-    // projected shape (`Ret p`) — at the projection's return, whose flattened position
-    // grows with the join depth, so it resolves through the `PREDICATE_RETURN_POS`
-    // sentinel. The new leaf carries no column list in the plan (a projection names its
-    // own select-list), so the instance never touches `Row f` — only `Row s`, which
-    // would otherwise collide with `Row f` as a same-class context dictionary. Only the
-    // inner `Joined` registers here: an outer composite's projection reads its
-    // null-extended leaves as `Option`, a per-leaf wrapping the plain leaf list does not
-    // carry, so those shapes wait on it.
+    // `Projectable (Joined q f a)` and the three outer composites — the nested join's
+    // `select`/`selectFirst`. A fundep terminal keyed by the RECEIVER ALONE (the
+    // projection's leaf arity grows with the join depth), like the composite
+    // `Aggregable`/`Refinable`. Source `where Adapter a, JoinShape q, Row s`: `a@2, q@0`
+    // in the receiver, and `Row s` — the projected shape (`Ret p`) — at the projection's
+    // return, whose flattened position grows with the join depth, so it resolves through
+    // the `PREDICATE_RETURN_POS` sentinel. The new leaf carries no column list in the
+    // plan (a projection names its own select-list), so the instance never touches `Row
+    // f` — only `Row s`, which would otherwise collide with `Row f` as a same-class
+    // context dictionary. The outer shapes improve the projection over `Option`-wrapped
+    // leaves (`leaf_proj_opt`), so a null-extended leaf decodes as `None`; that wrapping
+    // is internal to `improve_via_fundeps` and does not change the instance's key.
     if let (Some(projectable), Some(adapter), Some(joinshape), Some(row)) = (
         ct.id_by_name("Projectable"),
         ct.id_by_name("Adapter"),
@@ -1969,10 +1969,12 @@ pub fn register_stdlib_instances(
             origin: InstanceOrigin::Explicit,
             span: ds,
         };
-        if let Some(&joined) = reconciled_tycon_names.get("Joined") {
-            env.instances
-                .entry((projectable, smallvec![joined]))
-                .or_insert_with(composite_projectable_inst);
+        for name in ["Joined", "LeftJoined", "RightJoined", "FullJoined"] {
+            if let Some(&tycon) = reconciled_tycon_names.get(name) {
+                env.instances
+                    .entry((projectable, smallvec![tycon]))
+                    .or_insert_with(composite_projectable_inst);
+            }
         }
     }
 

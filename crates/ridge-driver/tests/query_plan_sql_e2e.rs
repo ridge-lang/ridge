@@ -226,6 +226,26 @@ fn projectThree () -> QueryPlan =
     planProject (proj3 (fn (u: User) (p: Post) (c: Comment) -> Trio { who = u.name, what = p.title, note = c.body })) (inner3 ()) (0 - 1) 0 false
 
 pub fn projectThreeSql () -> Text = renderSql (projectThree ())
+
+-- A projection over an outer (mixed-shape) composite: the same leaf-spanning select-list
+-- over a chain that joins the third table under a LEFT/RIGHT/FULL step. The renderer reads
+-- each null-extended leaf's column directly (NULL, decoded as the shape's Option field), so
+-- it needs no presence markers — the marker-free FROM the aggregates also render. Proves a
+-- projection pushes down a mixed composite as it does an all-inner one.
+fn projectLeftMix () -> QueryPlan =
+    planProject (proj3 (fn (u: User) (p: Post) (c: Comment) -> Trio { who = u.name, what = p.title, note = c.body })) (innerLeftMix ()) (0 - 1) 0 false
+
+fn projectRightMix () -> QueryPlan =
+    planProject (proj3 (fn (u: User) (p: Post) (c: Comment) -> Trio { who = u.name, what = p.title, note = c.body })) (innerRightMix ()) (0 - 1) 0 false
+
+fn projectFullMix () -> QueryPlan =
+    planProject (proj3 (fn (u: User) (p: Post) (c: Comment) -> Trio { who = u.name, what = p.title, note = c.body })) (innerFullMix ()) (0 - 1) 0 false
+
+pub fn projectLeftMixSql () -> Text = renderSql (projectLeftMix ())
+
+pub fn projectRightMixSql () -> Text = renderSql (projectRightMix ())
+
+pub fn projectFullMixSql () -> Text = renderSql (projectFullMix ())
 "#;
 
 fn write_workspace(root: &std::path::Path) {
@@ -290,7 +310,7 @@ fn query_plan_compiles_to_parameterized_sql() {
 
     let expr = format!(
         "F=fun(N)->io:format(\"~s=~s~n\",[N,{module}:N()])end, \
-         lists:foreach(F,['scanSql','scanBinds','combineSql','refineSql','innerSql','leftSql','rightSql','fullSql','fullBinds','projectSql','aggSql','groupSql','inner3Sql','inner3Binds','innerLeftMixSql','innerRightMixSql','innerFullMixSql','innerFullMixBinds','countThreeSql','countThreeBinds','countLeftMixSql','countLeftMixBinds','sumThreeSql','avgThreeSql','projectThreeSql']), halt()."
+         lists:foreach(F,['scanSql','scanBinds','combineSql','refineSql','innerSql','leftSql','rightSql','fullSql','fullBinds','projectSql','aggSql','groupSql','inner3Sql','inner3Binds','innerLeftMixSql','innerRightMixSql','innerFullMixSql','innerFullMixBinds','countThreeSql','countThreeBinds','countLeftMixSql','countLeftMixBinds','sumThreeSql','avgThreeSql','projectThreeSql','projectLeftMixSql','projectRightMixSql','projectFullMixSql']), halt()."
     );
     let output = Command::new("erl")
         .arg("-noshell")
@@ -430,5 +450,23 @@ fn query_plan_compiles_to_parameterized_sql() {
     // composite exactly as a binary join's projection is.
     want(
         r#"projectThreeSql=SELECT t0."name" AS "who", t1."title" AS "what", t2."body" AS "note" FROM "users" AS t0 JOIN "posts" AS t1 ON t0."id" = t1."author" JOIN "comments" AS t2 ON t1."id" = t2."post" WHERE (t0."age" >= $1)"#,
+    );
+
+    // The same projection over a mixed-shape composite renders the third leaf under its
+    // own join kind and reads each null-extendable leaf's column directly, no presence
+    // markers — the marker-free FROM the aggregates render. The select-list is identical
+    // regardless of the step kind; only the FROM changes.
+    want(
+        r#"projectLeftMixSql=SELECT t0."name" AS "who", t1."title" AS "what", t2."body" AS "note" FROM "users" AS t0 JOIN "posts" AS t1 ON t0."id" = t1."author" LEFT JOIN "comments" AS t2 ON t1."id" = t2."post""#,
+    );
+    want(
+        r#"projectRightMixSql=SELECT t0."name" AS "who", t1."title" AS "what", t2."body" AS "note" FROM "users" AS t0 JOIN "posts" AS t1 ON t0."id" = t1."author" RIGHT JOIN "comments" AS t2 ON t1."id" = t2."post""#,
+    );
+    // A full step's base scan rides inside its own subquery so its adult filter restricts
+    // which base rows enter the join (correct under a FULL JOIN that would otherwise keep a
+    // null-extended row the filter rejects), binding $1 — the same base-scan handling the
+    // mixed bare terminals and aggregates use.
+    want(
+        r#"projectFullMixSql=SELECT t0."name" AS "who", t1."title" AS "what", t2."body" AS "note" FROM (SELECT * FROM "users" WHERE "age" >= $1) AS t0 JOIN "posts" AS t1 ON t0."id" = t1."author" FULL JOIN "comments" AS t2 ON t1."id" = t2."post""#,
     );
 }

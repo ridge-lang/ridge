@@ -714,6 +714,76 @@ impl InferCtx {
         None
     }
 
+    /// The per-leaf entities a join receiver `q` carries for a projection, each leaf
+    /// wrapped in `Option` when some enclosing join can null-extend it. The flat dual
+    /// of `Rows q`: where `Rows` nests the optionality at the composite-unit level
+    /// (`Option (Rows q')`), a projection reads one leaf column at a time, so every
+    /// leaf that sits under a null-extending step becomes `Option e`. An inner
+    /// `Joined` adds a present leaf; a `LeftJoined` an optional new leaf; a
+    /// `RightJoined` makes every prior leaf optional as a unit; a `FullJoined` both.
+    /// `None` when `q` is not a recognised join receiver. This is what `select` over
+    /// an outer composite improves its projection to, so a null-extended leaf's column
+    /// reads `Option`, decoding to `None`, exactly as a binary outer join's projection
+    /// reads its `Option` side.
+    pub(crate) fn leaf_proj_opt(&self, q: &Type) -> Option<Vec<Type>> {
+        let rt = self.rows_tycons?;
+        let leaves = self.join_entities(q)?;
+        let nullable = self.leaf_nullable(q)?;
+        Some(
+            leaves
+                .into_iter()
+                .zip(nullable)
+                .map(|(e, n)| if n { Type::Con(rt.option, vec![e]) } else { e })
+                .collect(),
+        )
+    }
+
+    /// Which leaves of a join receiver `q` an enclosing join can null-extend, left to
+    /// right — parallel to [`Self::join_entities`], one boolean per leaf. A leaf turns
+    /// null-extendable once a step above it keeps the other side: a left step makes its
+    /// own new leaf optional, a right step every prior leaf, a full step both.
+    fn leaf_nullable(&self, q: &Type) -> Option<Vec<bool>> {
+        let rt = self.rows_tycons?;
+        let Type::Con(qid, qargs) = q else {
+            return None;
+        };
+        if *qid == rt.query {
+            return Some(vec![false]);
+        }
+        if *qid == rt.join {
+            return Some(vec![false, false]);
+        }
+        if rt.joined == Some(*qid) {
+            let mut ns = self.leaf_nullable(qargs.first()?)?;
+            ns.push(false);
+            return Some(ns);
+        }
+        if rt.left_joined == Some(*qid) {
+            let mut ns = self.leaf_nullable(qargs.first()?)?;
+            ns.push(true);
+            return Some(ns);
+        }
+        if rt.right_joined == Some(*qid) {
+            let mut ns: Vec<bool> = self
+                .leaf_nullable(qargs.first()?)?
+                .iter()
+                .map(|_| true)
+                .collect();
+            ns.push(false);
+            return Some(ns);
+        }
+        if rt.full_joined == Some(*qid) {
+            let mut ns: Vec<bool> = self
+                .leaf_nullable(qargs.first()?)?
+                .iter()
+                .map(|_| true)
+                .collect();
+            ns.push(true);
+            return Some(ns);
+        }
+        None
+    }
+
     /// Whether `tycon` is one of the nested-join composite constructors
     /// (`Joined`/`LeftJoined`/`RightJoined`/`FullJoined`). These are the
     /// recursively-nested receivers whose terminal predicate ranges over an

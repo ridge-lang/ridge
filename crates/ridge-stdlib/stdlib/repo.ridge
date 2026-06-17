@@ -1386,6 +1386,44 @@ instance Projectable (Joined q f a) (Map Text SqlValue -> s) where Adapter a, Jo
             Err err -> Err err
             Ok rows -> firstDecoded rows
 
+-- An outer composite's `select`: project across every leaf into `s`, reading each
+-- leaf an enclosing join can null-extend as `Option` (`fn (u: Option User) (p: Post)
+-- (c: Comment) -> ...` over a right composite whose first leaf is the optional one).
+-- The projection's optional leaves are the per-leaf dual of the receiver's `Rows`
+-- optionality, so a leaf a left/right/full step left unmatched projects its columns as
+-- `None`. Every leaf-spanning column the projection names crosses; the unmatched ones
+-- decode to `None`. The three shapes mirror the inner `Joined` instance, the join kind
+-- carried by each plan wrapper.
+instance Projectable (LeftJoined q f a) (Map Text SqlValue -> s) where Adapter a, JoinShape q, Row s =
+    select (proj: Quote (Map Text SqlValue -> s)) (x: LeftJoined q f a) -> Result (List s) Error =
+        match runPlan x.right.adapter (leftSelectComposite x proj.tree x.lim)
+            Err err -> Err err
+            Ok rows -> decodeRows rows
+    selectFirst (proj: Quote (Map Text SqlValue -> s)) (x: LeftJoined q f a) -> Result (Option s) Error =
+        match runPlan x.right.adapter (leftSelectComposite x proj.tree 1)
+            Err err -> Err err
+            Ok rows -> firstDecoded rows
+
+instance Projectable (RightJoined q f a) (Map Text SqlValue -> s) where Adapter a, JoinShape q, Row s =
+    select (proj: Quote (Map Text SqlValue -> s)) (x: RightJoined q f a) -> Result (List s) Error =
+        match runPlan x.right.adapter (rightSelectComposite x proj.tree x.lim)
+            Err err -> Err err
+            Ok rows -> decodeRows rows
+    selectFirst (proj: Quote (Map Text SqlValue -> s)) (x: RightJoined q f a) -> Result (Option s) Error =
+        match runPlan x.right.adapter (rightSelectComposite x proj.tree 1)
+            Err err -> Err err
+            Ok rows -> firstDecoded rows
+
+instance Projectable (FullJoined q f a) (Map Text SqlValue -> s) where Adapter a, JoinShape q, Row s =
+    select (proj: Quote (Map Text SqlValue -> s)) (x: FullJoined q f a) -> Result (List s) Error =
+        match runPlan x.right.adapter (fullSelectComposite x proj.tree x.lim)
+            Err err -> Err err
+            Ok rows -> decodeRows rows
+    selectFirst (proj: Quote (Map Text SqlValue -> s)) (x: FullJoined q f a) -> Result (Option s) Error =
+        match runPlan x.right.adapter (fullSelectComposite x proj.tree 1)
+            Err err -> Err err
+            Ok rows -> firstDecoded rows
+
 -- A query's `orderBy`: append the one-row key as an ordering column over the
 -- query's own `orders`. The key (`fn (u: User) -> u.age`) names a single column;
 -- the direction rides alongside it. The behaviour the single-receiver `orderBy`
@@ -1888,6 +1926,21 @@ fn compositeSelectPlan (kind: Text) (sourcePlan: QueryPlan) (rightTable: Text) (
 -- `Row f`, leaving only `Row s` to decode the projected shape.
 fn joinedSelectPlan (x: Joined q f a) (proj: QExpr) (lim: Int) -> QueryPlan where JoinShape q =
     compositeSelectPlan "INNER" (joinedSourcePlan x.source) x.right.table x.cond.tree x.where2.tree x.orders [] proj lim x.off x.dist
+
+-- The outer-shape composite select-plan wrappers, the duals of `joinedSelectPlan` over a
+-- `LeftJoined`/`RightJoined`/`FullJoined`. Each projects through the nested join at its
+-- own kind: an unmatched leaf comes back with its columns absent, so the projection reads
+-- them as SQL NULL and the projected shape's `Option` field decodes to `None`. The new
+-- leaf carries no column list, as the inner wrapper does — a projection names its own
+-- select-list — so none of these touches `Row f` either.
+fn leftSelectComposite (x: LeftJoined q f a) (proj: QExpr) (lim: Int) -> QueryPlan where JoinShape q =
+    compositeSelectPlan "LEFT" (joinedSourcePlan x.source) x.right.table x.cond.tree x.where2.tree x.orders [] proj lim x.off x.dist
+
+fn rightSelectComposite (x: RightJoined q f a) (proj: QExpr) (lim: Int) -> QueryPlan where JoinShape q =
+    compositeSelectPlan "RIGHT" (joinedSourcePlan x.source) x.right.table x.cond.tree x.where2.tree x.orders [] proj lim x.off x.dist
+
+fn fullSelectComposite (x: FullJoined q f a) (proj: QExpr) (lim: Int) -> QueryPlan where JoinShape q =
+    compositeSelectPlan "FULL" (joinedSourcePlan x.source) x.right.table x.cond.tree x.where2.tree x.orders [] proj lim x.off x.dist
 
 instance Decodable (Join e f a) where Adapter a, Row f, Row e =
     toList (x: Join e f a) -> Result (List (e, f)) Error =

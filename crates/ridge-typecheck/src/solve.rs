@@ -581,7 +581,18 @@ fn improve_via_fundeps(
         if fd.from.len() == 1 && fd.to.len() == 1 {
             if let Some(recv) = resolved.get(fd.from[0]) {
                 if ctx.is_composite_join_receiver(recv) {
-                    if let Some(leaves) = ctx.join_entities(recv) {
+                    // `select` reads one leaf column at a time into the projected
+                    // shape, so an outer composite's null-extendable leaves come in as
+                    // `Option` (the flat per-leaf dual of `Rows`); every other terminal
+                    // (`filter`, `every`, the aggregates) ranges over plain leaves. The
+                    // wrapping is what lets a projection from a null-extended leaf decode
+                    // as `None`, matching a binary outer join's `Option`-sided select.
+                    let leaves = if class_table.id_by_name("Projectable") == Some(c.class) {
+                        ctx.leaf_proj_opt(recv)
+                    } else {
+                        ctx.join_entities(recv)
+                    };
+                    if let Some(leaves) = leaves {
                         let ret = ctx.fresh_tyvid();
                         let leaf_fn = Type::Fn {
                             params: leaves,

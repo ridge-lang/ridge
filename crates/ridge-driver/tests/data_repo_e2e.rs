@@ -61,6 +61,11 @@ pub type User = { id: Int, age: Int, name: Text } deriving (Row)
 -- names, so the join's column tagging is observable without snake-case mapping.
 pub type Post = { id: Int, author: Int, title: Text } deriving (Row)
 
+-- A third table for the N-ary inner join: a comment references a post by id
+-- (`post` is the owning post's id), so a three-table chain joins users to their
+-- posts to each post's comments.
+pub type Comment = { id: Int, post: Int, body: Text } deriving (Row)
+
 -- A projected shape: the projection renames `name` -> `who` and `age` -> `years`,
 -- so the decode proves the alias (`column AS alias`) and re-keying both work.
 pub type Summary = { who: Text, years: Int } deriving (Row)
@@ -114,6 +119,15 @@ fn joinPairs (ps: List (User, Post)) -> Text =
         []             -> ""
         (u, p) :: []   -> Text.concat u.name (Text.concat ":" p.title)
         (u, p) :: rest -> Text.concat u.name (Text.concat ":" (Text.concat p.title (Text.concat "," (joinPairs rest))))
+
+-- Render each nested `((User, Post), Comment)` row of a three-table inner join as
+-- `name:title:body`, comma-joined, so the N-ary join's decode of the left-nested
+-- tuple and its row order are both observable as one string.
+fn join3Rows (rs: List ((User, Post), Comment)) -> Text =
+    match rs
+        []                   -> ""
+        ((u, p), c) :: []    -> Text.concat u.name (Text.concat ":" (Text.concat p.title (Text.concat ":" c.body)))
+        ((u, p), c) :: rest  -> Text.concat u.name (Text.concat ":" (Text.concat p.title (Text.concat ":" (Text.concat c.body (Text.concat "," (join3Rows rest))))))
 
 -- Render each projected `Combo` as `person:post`, comma-joined.
 fn joinCombos (cs: List Combo) -> Text =
@@ -242,6 +256,9 @@ pub fn userRow (uid: Int) (uage: Int) (uname: Text) -> Map Text SqlValue =
 
 pub fn postRow (pid: Int) (pauthor: Int) (ptitle: Text) -> Map Text SqlValue =
     Map.fromList [("id", toSql pid), ("author", toSql pauthor), ("title", toSql ptitle)]
+
+pub fn commentRow (cid: Int) (cpost: Int) (cbody: Text) -> Map Text SqlValue =
+    Map.fromList [("id", toSql cid), ("post", toSql cpost), ("body", toSql cbody)]
 
 fn listLen (xs: List x) -> Int =
     match xs
@@ -468,6 +485,70 @@ pub fn db joinOrderByRight () -> Text =
             match users |> Repo.query |> Repo.joinOn posts (fn (u: User) (p: Post) -> u.id == p.author) |> Repo.orderBy Asc (fn (u: User) (p: Post) -> p.title) |> Repo.toList
                 Err _  -> "join-order-err"
                 Ok ps  -> joinPairs ps
+
+-- Open one store, bind a users, a posts, and a comments repository to it, and seed
+-- each so a three-table inner join has a clean one-to-one chain: every user owns
+-- one post (`p.author == u.id`) and every post has one comment (`c.post == p.id`).
+-- ada(1) -> hello(10) -> nice, lin(2) -> world(11) -> wow, max(3) -> again(12) -> ok.
+pub fn db setupJoin3 () -> Result (Repo User MemAdapter, Repo Post MemAdapter, Repo Comment MemAdapter) Error =
+    let conn = memAdapter ()
+    let users: Repo User MemAdapter = Repo.repo conn "users"
+    let posts: Repo Post MemAdapter = Repo.repo conn "posts"
+    let comments: Repo Comment MemAdapter = Repo.repo conn "comments"
+    match Repo.insertRow (userRow 1 18 "ada") users
+        Err e -> Err e
+        Ok _  ->
+            match Repo.insertRow (userRow 2 30 "lin") users
+                Err e -> Err e
+                Ok _  ->
+                    match Repo.insertRow (userRow 3 25 "max") users
+                        Err e -> Err e
+                        Ok _  ->
+                            match Repo.insertRow (postRow 10 1 "hello") posts
+                                Err e -> Err e
+                                Ok _  ->
+                                    match Repo.insertRow (postRow 11 2 "world") posts
+                                        Err e -> Err e
+                                        Ok _  ->
+                                            match Repo.insertRow (postRow 12 3 "again") posts
+                                                Err e -> Err e
+                                                Ok _  ->
+                                                    match Repo.insertRow (commentRow 100 10 "nice") comments
+                                                        Err e -> Err e
+                                                        Ok _  ->
+                                                            match Repo.insertRow (commentRow 101 11 "wow") comments
+                                                                Err e -> Err e
+                                                                Ok _  ->
+                                                                    match Repo.insertRow (commentRow 102 12 "ok") comments
+                                                                        Err e -> Err e
+                                                                        Ok _  -> Ok (users, posts, comments)
+
+-- N-ary inner join: chain `joinOn` twice to join users to their posts to each
+-- post's comments, order by user id, and decode each row into the left-nested
+-- tuple `((User, Post), Comment)`, rendered `name:title:body` ->
+-- "ada:hello:nice,lin:world:wow,max:again:ok". Proves the three-table chain
+-- type-checks (the second condition names a third leaf via `c`), the renderer and
+-- in-memory backend flatten the nested plan into one flat product, and `toList`
+-- decodes the nested pair.
+pub fn db joined3 () -> Text =
+    match setupJoin3 ()
+        Err _ -> "setup-err"
+        Ok (users, posts, comments) ->
+            match users |> Repo.query |> Repo.orderBy Asc (fn (u: User) -> u.id) |> Repo.joinOn posts (fn (u: User) (p: Post) -> u.id == p.author) |> Repo.joinOn comments (fn (u: User) (p: Post) (c: Comment) -> p.id == c.post) |> Repo.toList
+                Err _  -> "join3-err"
+                Ok rs  -> join3Rows rs
+
+-- `first` over the same three-table join: one row, decoded into the nested tuple
+-- and rendered `name:title:body` -> "ada:hello:nice" (ada sorts first by user id).
+-- Proves the N-ary `first` pushes a LIMIT 1 and decodes the single nested row.
+pub fn db joined3First () -> Text =
+    match setupJoin3 ()
+        Err _ -> "setup-err"
+        Ok (users, posts, comments) ->
+            match users |> Repo.query |> Repo.orderBy Asc (fn (u: User) -> u.id) |> Repo.joinOn posts (fn (u: User) (p: Post) -> u.id == p.author) |> Repo.joinOn comments (fn (u: User) (p: Post) (c: Comment) -> p.id == c.post) |> Repo.first
+                Err _       -> "join3-first-err"
+                Ok None     -> "none"
+                Ok (Some ((u, p), c)) -> Text.concat u.name (Text.concat ":" (Text.concat p.title (Text.concat ":" c.body)))
 
 -- cross join: pair every left row with every right row (the cartesian product).
 -- Narrow the left query to lin (id 2), cross with all three posts, order by post
@@ -1500,6 +1581,8 @@ fn repo_surface_runs_on_beam() {
          io:format(\"joinedNames=~s~n\",[{module}:joinedNames()]), \
          io:format(\"joinedTitles=~s~n\",[{module}:joinedTitles()]), \
          io:format(\"joinOrderByRight=~s~n\",[{module}:joinOrderByRight()]), \
+         io:format(\"joined3=~s~n\",[{module}:joined3()]), \
+         io:format(\"joined3First=~s~n\",[{module}:joined3First()]), \
          io:format(\"crossJoined=~s~n\",[{module}:crossJoined()]), \
          io:format(\"crossCount=~w~n\",[{module}:crossCount()]), \
          io:format(\"rightJoinedNames=~s~n\",[{module}:rightJoinedNames()]), \
@@ -1632,6 +1715,14 @@ fn repo_surface_runs_on_beam() {
         (
             "joinOrderByRight=lin:again,lin:hello,max:world",
             "the unified orderBy sorts the join by a right-table column (post title), so the pairs come back title-ordered",
+        ),
+        (
+            "joined3=ada:hello:nice,lin:world:wow,max:again:ok",
+            "the three-table inner join chains joinOn twice, flattens the nested plan into one flat product, and decodes each row into the left-nested tuple ((User, Post), Comment) in user-id order",
+        ),
+        (
+            "joined3First=ada:hello:nice",
+            "first over the three-table join pushes a LIMIT 1 and decodes the single nested row (ada sorts first by user id)",
         ),
         (
             "crossJoined=lin:hello,lin:world,lin:again",

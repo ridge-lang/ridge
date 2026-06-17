@@ -585,6 +585,36 @@ pub fn db joined3First () -> Text =
                 Ok None     -> "none"
                 Ok (Some ((u, p), c)) -> Text.concat u.name (Text.concat ":" (Text.concat p.title (Text.concat ":" c.body)))
 
+-- `filter` over a three-table composite: chain `joinOn` twice, then narrow with a
+-- leaf predicate over all three tables (`c.post >= 11` names the third leaf). The
+-- predicate ANDs into the composite's post-join `WHERE`, so ada's row — whose
+-- comment sits on post 10 — drops, leaving "lin:world:wow,max:again:ok". Proves the
+-- composite `Refinable` instance dispatches (keyed by the receiver alone), the
+-- three-argument predicate reifies its third leaf as a `QColAt 2` column, and the
+-- in-memory backend applies it.
+pub fn db filteredJoined3 () -> Text =
+    match setupJoin3 ()
+        Err _ -> "setup-err"
+        Ok (users, posts, comments) ->
+            match users |> Repo.query |> Repo.orderBy Asc (fn (u: User) -> u.id) |> Repo.joinOn posts (fn (u: User) (p: Post) -> u.id == p.author) |> Repo.joinOn comments (fn (u: User) (p: Post) (c: Comment) -> p.id == c.post) |> Repo.filter (fn (u: User) (p: Post) (c: Comment) -> c.post >= 11) |> Repo.toList
+                Err _  -> "filter-join3-err"
+                Ok rs  -> join3Rows rs
+
+-- `filter` over a LEFT composite: chain `joinOn` then `leftJoinOn`, then narrow with
+-- a leaf predicate over the left-most leaf (`u.id >= 2`). The predicate ANDs into the
+-- composite's post-join `WHERE` as the non-nullable two-row form a binary left join's
+-- `filter` takes; reading only `u` (always present), it drops ada and keeps lin's
+-- kept-but-unmatched row -> "lin:world:-,max:again:ok". Proves the composite
+-- `Refinable` instance serves the outer shapes too, the outer row surviving the
+-- narrowed `WHERE`.
+pub fn db filteredLeftJoined3 () -> Text =
+    match setupLeftJoin3 ()
+        Err _ -> "setup-err"
+        Ok (users, posts, comments) ->
+            match users |> Repo.query |> Repo.orderBy Asc (fn (u: User) -> u.id) |> Repo.joinOn posts (fn (u: User) (p: Post) -> u.id == p.author) |> Repo.leftJoinOn comments (fn (u: User) (p: Post) (c: Comment) -> p.id == c.post) |> Repo.filter (fn (u: User) (p: Post) (c: Comment) -> u.id >= 2) |> Repo.toList
+                Err _  -> "filter-left3-err"
+                Ok rs  -> join3LeftRows rs
+
 -- Render each `((User, Post), Option Comment)` row of a mixed inner-then-left chain
 -- as `name:title:body`, or `name:title:-` when the post has no comment, comma-joined
 -- — so the LEFT extend's kept-but-unmatched composite rows are observable.
@@ -1795,6 +1825,8 @@ fn repo_surface_runs_on_beam() {
          io:format(\"joinOrderByRight=~s~n\",[{module}:joinOrderByRight()]), \
          io:format(\"joined3=~s~n\",[{module}:joined3()]), \
          io:format(\"joined3First=~s~n\",[{module}:joined3First()]), \
+         io:format(\"filteredJoined3=~s~n\",[{module}:filteredJoined3()]), \
+         io:format(\"filteredLeftJoined3=~s~n\",[{module}:filteredLeftJoined3()]), \
          io:format(\"leftJoined3=~s~n\",[{module}:leftJoined3()]), \
          io:format(\"leftJoined3First=~s~n\",[{module}:leftJoined3First()]), \
          io:format(\"rightJoined3=~s~n\",[{module}:rightJoined3()]), \
@@ -1939,6 +1971,14 @@ fn repo_surface_runs_on_beam() {
         (
             "joined3First=ada:hello:nice",
             "first over the three-table join pushes a LIMIT 1 and decodes the single nested row (ada sorts first by user id)",
+        ),
+        (
+            "filteredJoined3=lin:world:wow,max:again:ok",
+            "filter over the three-table composite ANDs a leaf predicate (c.post >= 11, naming the third leaf) into the post-join WHERE, dropping ada's row whose comment sits on post 10",
+        ),
+        (
+            "filteredLeftJoined3=lin:world:-,max:again:ok",
+            "filter over a left composite narrows by the left-most leaf (u.id >= 2), dropping ada while keeping lin's kept-but-unmatched (None comment) row",
         ),
         (
             "leftJoined3=ada:hello:nice,lin:world:-,max:again:ok",

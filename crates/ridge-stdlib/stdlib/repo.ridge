@@ -1274,6 +1274,33 @@ instance Refinable (FullJoin e f a) (fn e f -> Bool) =
     filter (pred: Quote (fn e f -> Bool)) (x: FullJoin e f a) -> FullJoin e f a =
         FullJoin { left = x.left, right = x.right, cond = x.cond, where2 = quoteAnd2 x.where2 pred, orders = x.orders, lim = x.lim, off = x.off, dist = x.dist }
 
+-- A composite join's `filter`: AND a leaf predicate over every table joined so far
+-- into the composite's post-join `WHERE`. The predicate ranges over all the
+-- receiver's leaves positionally (`fn u p c -> …` for a three-table join), its arity
+-- and per-leaf entities determined by the receiver — the same `JoinCond q f` shape
+-- a join condition takes. The condition each step pairs on stays separate; the
+-- terminals fold `where2` in when they run the join. The instance's written
+-- predicate is the raw two-row form `quoteAnd2` folds; the user-facing leaf arity is
+-- supplied by the determined `JoinCond q f`, so a wrong-arity predicate is a
+-- compile-time error. One body serves every depth and shape (`Joined`/`LeftJoined`/
+-- `RightJoined`/`FullJoined`) — an outer step's predicate reads its columns the same
+-- three-valued way a binary outer join's `filter` does.
+instance Refinable (Joined q f a) (Map Text SqlValue -> Map Text SqlValue -> Bool) =
+    filter (pred: Quote (Map Text SqlValue -> Map Text SqlValue -> Bool)) (x: Joined q f a) -> Joined q f a =
+        Joined { source = x.source, right = x.right, cond = x.cond, where2 = quoteAnd2 x.where2 pred, orders = x.orders, lim = x.lim, off = x.off, dist = x.dist }
+
+instance Refinable (LeftJoined q f a) (Map Text SqlValue -> Map Text SqlValue -> Bool) =
+    filter (pred: Quote (Map Text SqlValue -> Map Text SqlValue -> Bool)) (x: LeftJoined q f a) -> LeftJoined q f a =
+        LeftJoined { source = x.source, right = x.right, cond = x.cond, where2 = quoteAnd2 x.where2 pred, orders = x.orders, lim = x.lim, off = x.off, dist = x.dist }
+
+instance Refinable (RightJoined q f a) (Map Text SqlValue -> Map Text SqlValue -> Bool) =
+    filter (pred: Quote (Map Text SqlValue -> Map Text SqlValue -> Bool)) (x: RightJoined q f a) -> RightJoined q f a =
+        RightJoined { source = x.source, right = x.right, cond = x.cond, where2 = quoteAnd2 x.where2 pred, orders = x.orders, lim = x.lim, off = x.off, dist = x.dist }
+
+instance Refinable (FullJoined q f a) (Map Text SqlValue -> Map Text SqlValue -> Bool) =
+    filter (pred: Quote (Map Text SqlValue -> Map Text SqlValue -> Bool)) (x: FullJoined q f a) -> FullJoined q f a =
+        FullJoined { source = x.source, right = x.right, cond = x.cond, where2 = quoteAnd2 x.where2 pred, orders = x.orders, lim = x.lim, off = x.off, dist = x.dist }
+
 -- A query's `select`: project one entity down to the named shape `s` and decode
 -- each row into it. The backend pushes the select-list down so only the named
 -- columns cross, in the query's order and page; `selectFirst` adds `LIMIT 1`.

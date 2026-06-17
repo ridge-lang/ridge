@@ -1697,6 +1697,20 @@ pub fn register_stdlib_instances(
                     .entry((refinable, smallvec![full_join, fn2]))
                     .or_insert_with(refinable_inst);
             }
+            // The nested-join composites (`Joined`/`LeftJoined`/`RightJoined`/
+            // `FullJoined`) key their `filter` by the RECEIVER ALONE: the functional
+            // dependency collapses the predicate, whose leaf arity grows with the join
+            // depth, so one instance per receiver serves every depth. Discharge falls
+            // back to this receiver-only key when the full `[receiver, Fn/N]` head
+            // misses, and the dictionary is named for the receiver alone to match
+            // (see `discharge` and `lower_instance`).
+            for name in ["Joined", "LeftJoined", "RightJoined", "FullJoined"] {
+                if let Some(&tycon) = reconciled_tycon_names.get(name) {
+                    env.instances
+                        .entry((refinable, smallvec![tycon]))
+                        .or_insert_with(refinable_inst);
+                }
+            }
         }
     }
 

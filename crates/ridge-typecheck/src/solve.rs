@@ -368,6 +368,10 @@ fn dispatch_constraint(
 ///   without an annotation needs functional dependencies, which this release
 ///   does not implement; the user annotates the open position instead.
 #[allow(clippy::too_many_arguments)]
+#[expect(
+    clippy::too_many_lines,
+    reason = "one linear dispatch over the three resolution cases (all-concrete with the composite-receiver fallback, all-variable retention, mixed-ambiguity); splitting it would scatter the shared head/dict-resolution state"
+)]
 fn dispatch_multi_constraint(
     ctx: &mut InferCtx,
     instance_env: &InstanceEnv,
@@ -422,7 +426,26 @@ fn dispatch_multi_constraint(
 
     // ── All concrete: resolve the instance by the head tuple. ──
     if head_tycons.len() == n {
-        let Some(info) = instance_env.get_multi(c.class, &head_tycons) else {
+        // A nested-join composite receiver keys its terminal instance (and dict) by
+        // the receiver alone: the functional dependency collapses the predicate, so
+        // there is one instance per receiver, not one per predicate arity. Match the
+        // full head first (binary receivers, keyed `[receiver, Fn/N]`); on a miss for
+        // a composite-join receiver, fall back to the determining position alone.
+        let recv_is_composite =
+            !head_tycons.is_empty() && ctx.is_composite_join_tycon(head_tycons[0]);
+        let matched: Option<(&InstanceInfo, &[TyConId])> = instance_env
+            .get_multi(c.class, &head_tycons)
+            .map(|i| (i, &head_tycons[..]))
+            .or_else(|| {
+                if head_tycons.len() > 1 && recv_is_composite {
+                    instance_env
+                        .get_multi(c.class, &head_tycons[..1])
+                        .map(|i| (i, &head_tycons[..1]))
+                } else {
+                    None
+                }
+            });
+        let Some((info, matched_head)) = matched else {
             let head_disp = head_tycons
                 .iter()
                 .map(|t| format!("{t:?}"))
@@ -437,6 +460,8 @@ fn dispatch_multi_constraint(
             return;
         };
         let info = info.clone();
+        let extra_head: SmallVec<[TyConId; 1]> = matched_head.iter().skip(1).copied().collect();
+        let tycon = matched_head[0];
         let key = (c.class, c.tys[0]);
         // Idempotent: a second constraint converging on the same instance must
         // not re-resolve the context sub-dictionaries (which would re-report any
@@ -444,8 +469,6 @@ fn dispatch_multi_constraint(
         if dict_resolution.contains_key(&key) {
             return;
         }
-        let extra_head: SmallVec<[TyConId; 1]> = head_tycons.iter().skip(1).copied().collect();
-        let tycon = head_tycons[0];
         // Resolve the instance's context constraints (`instance C (T a) (U b)
         // where D a`) against the resolved head atoms, threading their resolved
         // sub-dictionaries into the plan. Empty for a context-free instance.
@@ -544,6 +567,36 @@ fn improve_via_fundeps(
         }
         if !from_ok {
             continue;
+        }
+
+        // A nested-join composite receiver (`Joined`/`LeftJoined`/…) determines its
+        // terminal predicate directly: the positional leaf list of the receiver,
+        // returning a free result the lambda body fixes (`Bool` for `filter`/`every`,
+        // the projected shape for `select`, the column type for an aggregate). The
+        // arity is the leaf count, so a wrong-arity lambda fails to unify here — the
+        // compile-time arity check the binary instances get from `Fn/N`-keyed
+        // dispatch, here for an unbounded number of leaves. No `head_asts` entry is
+        // needed (the seeded instances carry none); the receiver alone keys the
+        // instance and its dictionary.
+        if fd.from.len() == 1 && fd.to.len() == 1 {
+            if let Some(recv) = resolved.get(fd.from[0]) {
+                if ctx.is_composite_join_receiver(recv) {
+                    if let Some(leaves) = ctx.join_entities(recv) {
+                        let ret = ctx.fresh_tyvid();
+                        let leaf_fn = Type::Fn {
+                            params: leaves,
+                            ret: Box::new(Type::Var(ret)),
+                            caps: ridge_types::CapRow::Concrete(ridge_types::CapabilitySet::PURE),
+                        };
+                        if let Err(e) = unify(ctx, &Type::Var(c.tys[fd.to[0]]), &leaf_fn) {
+                            ctx.errors
+                                .push(crate::records::attach_span_pub(e, scc_span));
+                            return true;
+                        }
+                        continue;
+                    }
+                }
+            }
         }
 
         // Coherence guarantees at most one instance per determining tuple.

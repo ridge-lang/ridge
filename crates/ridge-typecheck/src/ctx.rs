@@ -683,7 +683,7 @@ impl InferCtx {
     /// nested `Joined q' g a` carries `q'`'s entities followed by `g`. Returns
     /// `None` when `q` is not a recognised inner-join receiver (or still a
     /// variable), leaving the projection stuck.
-    fn join_entities(&self, q: &Type) -> Option<Vec<Type>> {
+    pub(crate) fn join_entities(&self, q: &Type) -> Option<Vec<Type>> {
         let rt = self.rows_tycons?;
         let Type::Con(qid, qargs) = q else {
             return None;
@@ -712,6 +712,30 @@ impl InferCtx {
             return Some(es);
         }
         None
+    }
+
+    /// Whether `tycon` is one of the nested-join composite constructors
+    /// (`Joined`/`LeftJoined`/`RightJoined`/`FullJoined`). These are the
+    /// recursively-nested receivers whose terminal predicate ranges over an
+    /// unbounded number of leaves, so a fundep terminal class keys its instance
+    /// (and dictionary) by the receiver alone rather than by the predicate's
+    /// per-depth arity. `false` until the rows-tycon reconciliation has run.
+    #[must_use]
+    pub(crate) fn is_composite_join_tycon(&self, tycon: TyConId) -> bool {
+        let Some(rt) = self.rows_tycons else {
+            return false;
+        };
+        rt.joined == Some(tycon)
+            || rt.left_joined == Some(tycon)
+            || rt.right_joined == Some(tycon)
+            || rt.full_joined == Some(tycon)
+    }
+
+    /// Whether `q` is a nested-join composite receiver — the type-level dual of
+    /// [`Self::is_composite_join_tycon`], reading the head constructor of `q`.
+    #[must_use]
+    pub(crate) fn is_composite_join_receiver(&self, q: &Type) -> bool {
+        matches!(q, Type::Con(id, _) if self.is_composite_join_tycon(*id))
     }
 
     /// The adapter `a` a join receiver `q` threads — the last type argument of

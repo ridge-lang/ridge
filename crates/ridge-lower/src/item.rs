@@ -520,6 +520,10 @@ pub fn lower_fn(ctx: &mut LowerCtx<'_>, decl: &FnDecl) -> IrFn {
 /// When the class name or type name cannot be resolved (missing class table or
 /// unknown type), lowering is skipped and an empty vec is returned. This is a
 /// defensive no-op for test scaffolding that does not wire the full pipeline.
+#[expect(
+    clippy::too_many_lines,
+    reason = "one linear pass building an instance's head name, dict params, method fns, and dict const; splitting it would scatter the shared head/constraint state"
+)]
 pub fn lower_instance(ctx: &mut LowerCtx<'_>, decl: &InstanceDecl) -> Vec<IrItem> {
     let class_name = decl.class.text.clone();
 
@@ -566,7 +570,26 @@ pub fn lower_instance(ctx: &mut LowerCtx<'_>, decl: &InstanceDecl) -> Vec<IrItem
         };
         head_names.push(name);
     }
-    let type_name = head_names.join("_");
+    // A fundep terminal class (`Refinable`/`Projectable`/…) over a nested-join
+    // composite receiver (`Joined`/`LeftJoined`/`RightJoined`/`FullJoined`) keys its
+    // dictionary by the RECEIVER ALONE: the dependency collapses the predicate, whose
+    // leaf arity grows with the join depth, so the per-arity predicate atom is dropped
+    // to match the receiver-only instance the typechecker resolves (see `discharge` in
+    // ridge-typecheck). A multi-atom head over one of these composites is only ever a
+    // fundep terminal — the receiver-keyed single-param classes (`Joinable`/`JoinShape`/
+    // `Decodable`) carry a one-atom head — so the receiver-name test alone is exact.
+    // Binary receivers keep their full multi-atom name unchanged.
+    let receiver_is_composite_join = head_names.first().is_some_and(|n| {
+        matches!(
+            n.as_str(),
+            "Joined" | "LeftJoined" | "RightJoined" | "FullJoined"
+        )
+    });
+    let type_name = if head_names.len() > 1 && receiver_is_composite_join {
+        head_names[0].clone()
+    } else {
+        head_names.join("_")
+    };
 
     // Build the implicit dictionary parameters for a parametric instance, one
     // per `where` constraint. Each is named `$dict_{CtxClass}_{i}` where `i` is

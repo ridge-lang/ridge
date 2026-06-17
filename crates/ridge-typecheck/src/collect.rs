@@ -907,6 +907,14 @@ fn builtin_tycon_id_by_name(name: &str) -> Option<TyConId> {
         // (`Result (List (Rows q)) Error`); reduces during unification. Interned
         // right after `Ret/1` (see `ridge_types::ROWS_TYCON_ID`).
         "Rows" => Some(TyConId(ridge_types::ROWS_TYCON_ID)),
+        // `JoinCond/2` — the join-condition shape projection for the N-ary
+        // `joinOn` (`Quote (JoinCond q f)`); reduces during unification. Interned
+        // right after `Rows/1` (see `ridge_types::JOINCOND_TYCON_ID`).
+        "JoinCond" => Some(TyConId(ridge_types::JOINCOND_TYCON_ID)),
+        // `JoinResult/2` — the result projection for the N-ary `joinOn`
+        // (the method's return); reduces during unification. Interned right after
+        // `JoinCond/2` (see `ridge_types::JOINRESULT_TYCON_ID`).
+        "JoinResult" => Some(TyConId(ridge_types::JOINRESULT_TYCON_ID)),
         _ => None,
     }
 }

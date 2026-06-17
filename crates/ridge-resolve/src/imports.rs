@@ -964,6 +964,11 @@ pub fn prelude_resolutions() -> Vec<ImportResolution> {
                 // `Rows/1` — the row-shape projection, in scope for the decode
                 // terminals' signatures that name the row of their receiver.
                 query_binding("Rows"),
+                // `JoinCond/2` / `JoinResult/2` — the N-ary join builder's
+                // condition-shape and result projections, in scope for the
+                // `Joinable` method signature.
+                query_binding("JoinCond"),
+                query_binding("JoinResult"),
             ],
             span: synth_span,
         },

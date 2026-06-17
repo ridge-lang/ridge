@@ -794,6 +794,10 @@ fn typecheck_module_inner(
         // seeds borrow `ctx` mutably, so the `receiver_id` closure's immutable borrow
         // has ended.
         let grouped_id = receiver_id("Grouped");
+        // `Joined` (the nested N-ary inner join) resolved here too, before the
+        // seeds borrow `ctx` mutably, so the `receiver_id` closure's immutable
+        // borrow has ended by the time the `RowsTycons` is built.
+        let joined_id = receiver_id("Joined");
         seed_groupable_scheme(&mut ctx, b, ct, grouped_id);
         seed_summarizable_scheme(&mut ctx, b, ct, sql_value);
         if let (Some(query), Some(join), Some(left_join)) = (query_id, join_id, left_join_id) {
@@ -807,7 +811,12 @@ fn typecheck_module_inner(
                 right_join: right_join_id.unwrap_or(left_join),
                 // `FullJoin` likewise lands in std.repo; same fallback as `RightJoin`.
                 full_join: full_join_id.unwrap_or(left_join),
+                // `Joined` (the nested N-ary inner join) lands in std.repo too, but
+                // stays `None` in a workspace without it so the `JoinCond`/
+                // `JoinResult`/`Rows` projections over a composite stay inert.
+                joined: joined_id,
                 option: b.option,
+                bool: b.bool,
             });
         }
     }

@@ -89,6 +89,38 @@ pub fn unify(ctx: &mut InferCtx, a: &Type, b: &Type) -> Result<(), TypeError> {
         ctx.reduce_rows_arg(&q)
     }
 
+    // `JoinCond q f` is the join-condition shape extractor: when `q` is a
+    // recognised inner-join receiver it reduces to that receiver's leaf entities
+    // followed by `f`, returning `Bool`. Returns `None` for anything else —
+    // including `JoinCond ?q f` whose receiver is still a variable.
+    fn reduce_joincond(ctx: &mut InferCtx, t: &Type) -> Option<Type> {
+        let Type::Con(id, args) = t else {
+            return None;
+        };
+        if id.0 != ridge_types::JOINCOND_TYCON_ID || args.len() != 2 {
+            return None;
+        }
+        let q = ctx.shallow_resolve(&args[0]);
+        let f = ctx.shallow_resolve(&args[1]);
+        ctx.reduce_joincond_arg(&q, &f)
+    }
+
+    // `JoinResult q f` is the join-result extractor: a binary `Join` from a query
+    // receiver, the nested `Joined` from a composite one. Returns `None` for
+    // anything else — including a still-variable receiver or an unreconciled
+    // `Joined`.
+    fn reduce_joinresult(ctx: &mut InferCtx, t: &Type) -> Option<Type> {
+        let Type::Con(id, args) = t else {
+            return None;
+        };
+        if id.0 != ridge_types::JOINRESULT_TYCON_ID || args.len() != 2 {
+            return None;
+        }
+        let q = ctx.shallow_resolve(&args[0]);
+        let f = ctx.shallow_resolve(&args[1]);
+        ctx.reduce_joinresult_arg(&q, &f)
+    }
+
     let a = ctx.shallow_resolve(a);
     let b = ctx.shallow_resolve(b);
 
@@ -109,6 +141,22 @@ pub fn unify(ctx: &mut InferCtx, a: &Type, b: &Type) -> Result<(), TypeError> {
         return unify(ctx, &reduced, &b);
     }
     if let Some(reduced) = reduce_rows(ctx, &b) {
+        return unify(ctx, &a, &reduced);
+    }
+
+    // Reduce a top-level `JoinCond`/`JoinResult` on either side, then retry. An
+    // unreducible one (receiver not yet pinned) falls through to the structural
+    // `Con/Con` arm, where the arguments unify component-wise.
+    if let Some(reduced) = reduce_joincond(ctx, &a) {
+        return unify(ctx, &reduced, &b);
+    }
+    if let Some(reduced) = reduce_joincond(ctx, &b) {
+        return unify(ctx, &a, &reduced);
+    }
+    if let Some(reduced) = reduce_joinresult(ctx, &a) {
+        return unify(ctx, &reduced, &b);
+    }
+    if let Some(reduced) = reduce_joinresult(ctx, &b) {
         return unify(ctx, &a, &reduced);
     }
 

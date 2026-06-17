@@ -86,6 +86,33 @@ pub const RET_TYCON_ID: u32 = FN_TYCON_BASE + FN_ARITY_COUNT as u32;
 /// syntax) and the reduction lives in unification and `deep_resolve`.
 pub const ROWS_TYCON_ID: u32 = RET_TYCON_ID + 1;
 
+/// `TyConId` of `JoinCond/2` — the join-condition shape extractor for the N-ary
+/// join builder.
+///
+/// `JoinCond q f` is a type-level projection that reduces to the curried
+/// condition a `joinOn` over receiver `q` adding right entity `f` accepts:
+/// `JoinCond (Query e a) f` to `e -> f -> Bool`, `JoinCond (Join e g a) f` to
+/// `e -> g -> f -> Bool`, and `JoinCond (Joined q' g a) f` to the left
+/// composite's entities followed by `g` and `f`. It lets the single `Joinable`
+/// method name "the condition over this receiver's leaves plus the new table"
+/// without an associated-type family, so the lambda's arity and per-leaf
+/// entities are fixed at compile time. Reserved immediately after `Rows/1`; the
+/// reduction reads the reconciled receiver ids from the context and lives in
+/// unification and `deep_resolve`. Internal — never written in surface syntax.
+pub const JOINCOND_TYCON_ID: u32 = ROWS_TYCON_ID + 1;
+
+/// `TyConId` of `JoinResult/2` — the result-type extractor for the N-ary join
+/// builder.
+///
+/// `JoinResult q f` reduces to the type `joinOn` produces from receiver `q` and
+/// new right entity `f`: `JoinResult (Query e a) f` to the binary `Join e f a`
+/// (the depth-2 inner join keeps its existing vocabulary), and any composite
+/// receiver (`Join`/`Joined`) to `Joined q f a`, the nested form. It lets the
+/// single `Joinable` method return the receiver-determined shape without an
+/// associated-type family. Reserved immediately after `JoinCond/2`; same
+/// reduction sites as the others. Internal — never written in surface syntax.
+pub const JOINRESULT_TYCON_ID: u32 = JOINCOND_TYCON_ID + 1;
+
 /// The arena/dictionary name of the synthetic `Fn/arity` constructor.
 ///
 /// Returns `"Fn0"`, `"Fn1"`, … . This name is the bridge that keeps the
@@ -227,6 +254,17 @@ pub struct BuiltinTyCons {
     /// reduction reads the reconciled receiver ids from the context. See
     /// [`ROWS_TYCON_ID`].
     pub rows: TyConId,
+    /// `JoinCond/2` — the join-condition shape extractor. `JoinCond q f` reduces
+    /// to the curried condition `joinOn` accepts over receiver `q` and new right
+    /// entity `f`. Internal; the reduction reads the reconciled receiver ids from
+    /// the context. See [`JOINCOND_TYCON_ID`].
+    pub joincond: TyConId,
+    /// `JoinResult/2` — the join-result extractor. `JoinResult q f` reduces to the
+    /// type `joinOn` produces from receiver `q` and new right entity `f` (a binary
+    /// `Join` from a query, the nested `Joined` from a composite). Internal; the
+    /// reduction reads the reconciled receiver ids from the context. See
+    /// [`JOINRESULT_TYCON_ID`].
+    pub joinresult: TyConId,
 }
 
 impl BuiltinTyCons {
@@ -271,6 +309,8 @@ impl BuiltinTyCons {
             fns: [SENTINEL; FN_ARITY_COUNT],
             ret: SENTINEL,
             rows: SENTINEL,
+            joincond: SENTINEL,
+            joinresult: SENTINEL,
         }
     }
 
@@ -1105,6 +1145,39 @@ impl BuiltinTyCons {
             is_anon: false,
         });
 
+        // JoinCond/2 — the join-condition shape extractor, interned right after
+        // Rows/1 (JOINCOND_TYCON_ID = 45). Applied as `Type::Con(joincond, [q, f])`;
+        // the reduction `JoinCond (Query e a) f -> e -> f -> Bool` (and the
+        // composite shapes) lives in the unifier and `deep_resolve`, keyed on the
+        // receiver's reconciled tycon.
+        let joincond = arena.intern(TyConDecl {
+            id: TyConId(0),
+            name: "JoinCond".to_string(),
+            arity: 2,
+            kind: TyConKind::Builtin,
+            def_span: None,
+            def_module_raw: None,
+            opaque: false,
+            is_anon: false,
+        });
+
+        // JoinResult/2 — the join-result extractor, interned right after
+        // JoinCond/2 (JOINRESULT_TYCON_ID = 46). Applied as
+        // `Type::Con(joinresult, [q, f])`; the reduction `JoinResult (Query e a) f
+        // -> Join e f a` (binary) and `JoinResult <composite> f -> Joined …` lives
+        // in the unifier and `deep_resolve`, keyed on the receiver's reconciled
+        // tycon.
+        let joinresult = arena.intern(TyConDecl {
+            id: TyConId(0),
+            name: "JoinResult".to_string(),
+            arity: 2,
+            kind: TyConKind::Builtin,
+            def_span: None,
+            def_module_raw: None,
+            opaque: false,
+            is_anon: false,
+        });
+
         // Verify assignment order matches spec §4.1 indices 0..16.
         debug_assert_eq!(int.0, 0);
         debug_assert_eq!(float.0, 1);
@@ -1143,6 +1216,12 @@ impl BuiltinTyCons {
         // Rows/1 sits immediately after Ret/1 (ROWS_TYCON_ID = 44).
         debug_assert_eq!(rows.0, ROWS_TYCON_ID);
         debug_assert_eq!(rows.0, 44);
+        // JoinCond/2 sits immediately after Rows/1 (JOINCOND_TYCON_ID = 45).
+        debug_assert_eq!(joincond.0, JOINCOND_TYCON_ID);
+        debug_assert_eq!(joincond.0, 45);
+        // JoinResult/2 sits immediately after JoinCond/2 (JOINRESULT_TYCON_ID = 46).
+        debug_assert_eq!(joinresult.0, JOINRESULT_TYCON_ID);
+        debug_assert_eq!(joinresult.0, 46);
 
         // Suppress the "unused" lint — CapabilitySet is imported for future use
         // in T4 (actor schemas carry CapabilitySet).
@@ -1179,6 +1258,8 @@ impl BuiltinTyCons {
             fns,
             ret,
             rows,
+            joincond,
+            joinresult,
         }
     }
 }
@@ -1266,8 +1347,8 @@ mod tests {
         // + the 16 synthetic function-type constructors Fn/0 … Fn/15 + Ret/1 +
         // Rows/1.
         let (arena, _) = make_arena_with_builtins();
-        assert_eq!(arena.len(), 27 + FN_ARITY_COUNT + 2);
-        assert_eq!(arena.len(), 45);
+        assert_eq!(arena.len(), 27 + FN_ARITY_COUNT + 4);
+        assert_eq!(arena.len(), 47);
     }
 
     #[test]

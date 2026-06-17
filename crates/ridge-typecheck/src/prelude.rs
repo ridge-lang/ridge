@@ -271,6 +271,12 @@ pub fn prelude_types(b: &BuiltinTyCons) -> (FxHashMap<String, Scheme>, FxHashMap
     // builtin so a query-builder signature can name `Rows q` without an import;
     // reduces during unification.
     tycons.insert("Rows".to_string(), b.rows);
+    // `JoinCond/2` / `JoinResult/2` — the N-ary join builder's condition-shape and
+    // result projections, prelude builtins so the `Joinable` method signature can
+    // name `JoinCond q f` / `JoinResult q f` without an import; both reduce during
+    // unification.
+    tycons.insert("JoinCond".to_string(), b.joincond);
+    tycons.insert("JoinResult".to_string(), b.joinresult);
 
     let qexpr_ty = ty_con(b.q_expr, vec![]);
     let q_ctor = |params: Vec<Type>| Scheme {

@@ -754,29 +754,27 @@ fn leafSource (idx: Int) (table: Text) (pred: QExpr) (nullable: Bool) (n: Int) -
         else
             { text = Text.join "" ["(SELECT * FROM ", quoteIdent table, " WHERE ", w.text, ") AS ", alias], binds = w.binds, next = w.next }
 
--- The WHERE conjuncts of a mixed join: each inner step's post-join filter, qualified to
--- its leaves. An outer step's post-join filter is left for a later slice (it is always
--- true here, since a `filter` over a composite is not yet built); base and leaf scan
--- filters ride inside their subqueries, so they never reach this clause.
+-- The WHERE conjuncts of a mixed join: every step's post-join filter, qualified to its
+-- leaves — an inner step's narrowing and an outer step's three-valued post-join filter
+-- alike (a `filter` over an outer composite ANDs into that step's `where2`, dropping the
+-- rows its predicate rejects the way a binary outer join's post-join WHERE does). Base
+-- and leaf scan filters ride inside their subqueries, so they never reach this clause.
 fn mixedWhere (steps: List (Text, QExpr, QExpr)) (n: Int) -> { text: Text, binds: List SqlValue, next: Int } =
-    let sp = innerStepConds steps n
+    let sp = mixedStepConds steps n
     match sp.texts
         [] -> { text = "", binds = sp.binds, next = sp.next }
         _  -> { text = Text.concat " WHERE " (Text.join " AND " sp.texts), binds = sp.binds, next = sp.next }
 
-fn innerStepConds (steps: List (Text, QExpr, QExpr)) (n: Int) -> { texts: List Text, binds: List SqlValue, next: Int } =
+fn mixedStepConds (steps: List (Text, QExpr, QExpr)) (n: Int) -> { texts: List Text, binds: List SqlValue, next: Int } =
     match steps
         [] -> { texts = [], binds = [], next = n }
-        (kind, _, where2) :: rest ->
-            if kind == "INNER" then
-                if isAlwaysTrue where2 then
-                    innerStepConds rest n
-                else
-                    let r = renderQual 0 where2 n
-                    let more = innerStepConds rest r.next
-                    { texts = Text.join "" ["(", r.text, ")"] :: more.texts, binds = r.binds ++ more.binds, next = more.next }
+        (_, _, where2) :: rest ->
+            if isAlwaysTrue where2 then
+                mixedStepConds rest n
             else
-                innerStepConds rest n
+                let r = renderQual 0 where2 n
+                let more = mixedStepConds rest r.next
+                { texts = Text.join "" ["(", r.text, ")"] :: more.texts, binds = r.binds ++ more.binds, next = more.next }
 
 -- A projected join (`select` over a join): the projection's own select-list over the
 -- joined tables, paged and de-duplicated by the projection. An unmatched outer column
@@ -824,9 +822,39 @@ fn renderAggregate (func: Text) (column: Text) (isRight: Bool) (child: QueryPlan
                         PlanScan rt _ _ _ _ _ ->
                             let sk = joinSkeleton kind lt lp rt cond where2 false n
                             { text = Text.join "" ["SELECT ", aggExprJoin func isRight column, " FROM ", sk.text], binds = sk.binds, next = sk.next }
-                        _ -> emptyRender n
-                _ -> emptyRender n
+                        _ -> naryAggregate func child n
+                _ -> naryAggregate func child n
         _ -> emptyRender n
+
+-- A scalar aggregate over a composite (three-or-more table) join: the flattened spine
+-- as the `FROM`, folding the aggregate over its joined rows. A reduction is neither
+-- ordered nor paged, so only the leaves' scan filters and the steps' post-join WHEREs
+-- bound the fold. An all-inner spine renders its plain multi-way join; a mixed-shape
+-- spine renders each step by its own kind, the presence markers a bare terminal needs
+-- left off (an aggregate reads the null-extended NULLs directly). `COUNT(*)` counts the
+-- joined rows; the column-folding aggregates arrive once a composite carries a
+-- leaf-indexed aggregate column.
+fn naryAggregate (func: Text) (child: QueryPlan) (n: Int) -> { text: Text, binds: List SqlValue, next: Int } =
+    let f = flattenJoin child
+    match f.leaves
+        [] -> emptyRender n
+        _  ->
+            if allInnerSteps f.steps then
+                let from = naryFrom f.leaves f.steps n
+                let wh = naryWhere f.leaves f.steps from.next
+                { text = Text.join "" ["SELECT ", naryAggExpr func, " FROM ", from.text, wh.text], binds = from.binds ++ wh.binds, next = wh.next }
+            else
+                -- A reduction reads the null-extended NULLs directly, so it needs no
+                -- presence markers — the marker-free `mixedFrom` (empty nullable set,
+                -- though a filtered base leaf still wraps to push its scan filter).
+                let from = mixedFrom f.leaves f.steps [] n
+                let wh = mixedWhere f.steps from.next
+                { text = Text.join "" ["SELECT ", naryAggExpr func, " FROM ", from.text, wh.text], binds = from.binds ++ wh.binds, next = wh.next }
+
+-- The aggregate expression over a composite join. `COUNT` counts the joined rows; the
+-- column-folding aggregates are added with the leaf-indexed aggregate column.
+fn naryAggExpr (func: Text) -> Text =
+    if func == "COUNT" then "COUNT(*)" else "COUNT(*)"
 
 fn aggExprJoin (func: Text) (isRight: Bool) (column: Text) -> Text =
     if func == "COUNT" then "COUNT(*)"

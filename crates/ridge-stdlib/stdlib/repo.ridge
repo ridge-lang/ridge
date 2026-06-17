@@ -1719,6 +1719,44 @@ fn rightScalarPlan (x: RightJoin e f a) (func: Text) (col: Quote p) -> QueryPlan
 fn fullScalarPlan (x: FullJoin e f a) (func: Text) (col: Quote p) -> QueryPlan =
     planAggregate func (aggColumn col) (aggSide col) (fullReduceJoin x x.where2.tree (0 - 1))
 
+-- The base reduction plan a composite terminal (`count`/`exists`/`every`) folds over:
+-- the whole nested join carrying its condition and post-join WHERE, with neither
+-- ordering nor distinct — a reduction measures the matched set, not a window of it.
+-- `lim` bounds it only for `exists`, which reads its answer from a single row. The
+-- source's left-nested plan comes from `JoinShape`, the new leaf its scan and columns.
+fn compositeReducePlan (kind: Text) (sourcePlan: QueryPlan) (rightTable: Text) (cond: QExpr) (where2: QExpr) (lim: Int) (rightCols: List Text) -> QueryPlan =
+    planJoin kind sourcePlan (planScan rightTable (keepAllTree ()) [] (0 - 1) 0 false) cond where2 [] lim 0 false [] rightCols
+
+-- The per-shape reduction-join wrappers, one per composite. Each unpacks its receiver
+-- (the four composites are distinct opaque types that cannot share a typed helper) and
+-- builds the base reduction at its own join kind, the `where2` and `lim` passed in so
+-- `every` can re-count with the extra predicate folded in and `exists` can bound to one
+-- row.
+fn joinedReducePlan (x: Joined q f a) (where2: QExpr) (lim: Int) -> QueryPlan where JoinShape q, Row f =
+    compositeReducePlan "INNER" (joinedSourcePlan x.source) x.right.table x.cond.tree where2 lim (rowColumns (entityWitness x.right))
+
+fn leftReducePlan (x: LeftJoined q f a) (where2: QExpr) (lim: Int) -> QueryPlan where JoinShape q, Row f =
+    compositeReducePlan "LEFT" (joinedSourcePlan x.source) x.right.table x.cond.tree where2 lim (rowColumns (entityWitness x.right))
+
+fn rightReducePlan (x: RightJoined q f a) (where2: QExpr) (lim: Int) -> QueryPlan where JoinShape q, Row f =
+    compositeReducePlan "RIGHT" (joinedSourcePlan x.source) x.right.table x.cond.tree where2 lim (rowColumns (entityWitness x.right))
+
+fn fullReducePlan (x: FullJoined q f a) (where2: QExpr) (lim: Int) -> QueryPlan where JoinShape q, Row f =
+    compositeReducePlan "FULL" (joinedSourcePlan x.source) x.right.table x.cond.tree where2 lim (rowColumns (entityWitness x.right))
+
+-- Run a `COUNT(*)` aggregate over a composite reduction plan and read the count off its
+-- lone row, or probe the plan for a single row. Shared by every composite's `count`,
+-- `exists`, and `every` (which counts twice).
+fn compositeCount (conn: a) (plan: QueryPlan) -> Result Int Error where Adapter a =
+    match runPlan conn (planAggregate "COUNT" "" false plan)
+        Err err -> Err err
+        Ok rows -> aggCount rows
+
+fn compositeExists (conn: a) (plan: QueryPlan) -> Result Bool Error where Adapter a =
+    match runPlan conn plan
+        Err err -> Err err
+        Ok rows -> Ok (nonEmpty rows)
+
 instance Decodable (Join e f a) where Adapter a, Row f, Row e =
     toList (x: Join e f a) -> Result (List (e, f)) Error =
         match runPlan x.left.repo.adapter (innerJoinPlan x x.lim (rowColumns (entityWitness x.left.repo)) (rowColumns (entityWitness x.right)))
@@ -2004,6 +2042,81 @@ instance Every (FullJoin e f a) (fn e f -> Bool) where Adapter a =
             Err err  -> Err err
             Ok total ->
                 match fullCountPlan x folded.tree
+                    Err err     -> Err err
+                    Ok matching -> Ok (total == matching)
+
+-- A composite join's `count`/`exists`: count the joined rows of a three-or-more table
+-- chain through a `COUNT(*)` over its reduction plan, or probe it for one row. One pair
+-- per composite shape, each folding over its own join kind — an outer shape counts its
+-- kept-but-unmatched rows the same way the binary outer `count` does. Like the binary
+-- counts, the reduction is neither ordered nor paged: these answer the matched set, not
+-- a window of it.
+instance Countable (Joined q f a) where Adapter a, JoinShape q, Row f =
+    count (x: Joined q f a) -> Result Int Error =
+        compositeCount x.right.adapter (joinedReducePlan x x.where2.tree (0 - 1))
+    exists (x: Joined q f a) -> Result Bool Error =
+        compositeExists x.right.adapter (joinedReducePlan x x.where2.tree 1)
+
+instance Countable (LeftJoined q f a) where Adapter a, JoinShape q, Row f =
+    count (x: LeftJoined q f a) -> Result Int Error =
+        compositeCount x.right.adapter (leftReducePlan x x.where2.tree (0 - 1))
+    exists (x: LeftJoined q f a) -> Result Bool Error =
+        compositeExists x.right.adapter (leftReducePlan x x.where2.tree 1)
+
+instance Countable (RightJoined q f a) where Adapter a, JoinShape q, Row f =
+    count (x: RightJoined q f a) -> Result Int Error =
+        compositeCount x.right.adapter (rightReducePlan x x.where2.tree (0 - 1))
+    exists (x: RightJoined q f a) -> Result Bool Error =
+        compositeExists x.right.adapter (rightReducePlan x x.where2.tree 1)
+
+instance Countable (FullJoined q f a) where Adapter a, JoinShape q, Row f =
+    count (x: FullJoined q f a) -> Result Int Error =
+        compositeCount x.right.adapter (fullReducePlan x x.where2.tree (0 - 1))
+    exists (x: FullJoined q f a) -> Result Bool Error =
+        compositeExists x.right.adapter (fullReducePlan x x.where2.tree 1)
+
+-- A composite join's `every`: compare the chain's count against the count once the
+-- further predicate folds into the post-join `WHERE`, equal exactly when no joined row
+-- fails it. The predicate is the positional leaf form the receiver determines; its
+-- stored two-row form is what `quoteAnd2` folds into `where2`. One pair per composite
+-- shape, each re-counting at its own kind through the shared reduction plan.
+instance Every (Joined q f a) (Map Text SqlValue -> Map Text SqlValue -> Bool) where Adapter a, JoinShape q, Row f =
+    every (pred: Quote (Map Text SqlValue -> Map Text SqlValue -> Bool)) (x: Joined q f a) -> Result Bool Error =
+        let folded = quoteAnd2 x.where2 pred
+        match compositeCount x.right.adapter (joinedReducePlan x x.where2.tree (0 - 1))
+            Err err  -> Err err
+            Ok total ->
+                match compositeCount x.right.adapter (joinedReducePlan x folded.tree (0 - 1))
+                    Err err     -> Err err
+                    Ok matching -> Ok (total == matching)
+
+instance Every (LeftJoined q f a) (Map Text SqlValue -> Map Text SqlValue -> Bool) where Adapter a, JoinShape q, Row f =
+    every (pred: Quote (Map Text SqlValue -> Map Text SqlValue -> Bool)) (x: LeftJoined q f a) -> Result Bool Error =
+        let folded = quoteAnd2 x.where2 pred
+        match compositeCount x.right.adapter (leftReducePlan x x.where2.tree (0 - 1))
+            Err err  -> Err err
+            Ok total ->
+                match compositeCount x.right.adapter (leftReducePlan x folded.tree (0 - 1))
+                    Err err     -> Err err
+                    Ok matching -> Ok (total == matching)
+
+instance Every (RightJoined q f a) (Map Text SqlValue -> Map Text SqlValue -> Bool) where Adapter a, JoinShape q, Row f =
+    every (pred: Quote (Map Text SqlValue -> Map Text SqlValue -> Bool)) (x: RightJoined q f a) -> Result Bool Error =
+        let folded = quoteAnd2 x.where2 pred
+        match compositeCount x.right.adapter (rightReducePlan x x.where2.tree (0 - 1))
+            Err err  -> Err err
+            Ok total ->
+                match compositeCount x.right.adapter (rightReducePlan x folded.tree (0 - 1))
+                    Err err     -> Err err
+                    Ok matching -> Ok (total == matching)
+
+instance Every (FullJoined q f a) (Map Text SqlValue -> Map Text SqlValue -> Bool) where Adapter a, JoinShape q, Row f =
+    every (pred: Quote (Map Text SqlValue -> Map Text SqlValue -> Bool)) (x: FullJoined q f a) -> Result Bool Error =
+        let folded = quoteAnd2 x.where2 pred
+        match compositeCount x.right.adapter (fullReducePlan x x.where2.tree (0 - 1))
+            Err err  -> Err err
+            Ok total ->
+                match compositeCount x.right.adapter (fullReducePlan x folded.tree (0 - 1))
                     Err err     -> Err err
                     Ok matching -> Ok (total == matching)
 

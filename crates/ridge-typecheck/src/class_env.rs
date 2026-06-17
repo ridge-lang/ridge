@@ -2432,6 +2432,41 @@ pub fn register_stdlib_instances(
         }
     }
 
+    // `Countable (Joined q f a)` and the three outer composites — the nested join's
+    // `count`/`exists`. Single-parameter, keyed by the receiver alone. Source
+    // `where Adapter a, JoinShape q, Row f`: the dicts in body-appearance order
+    // (`a@2` to run the count, `q@0`/`f@1` to rebuild the source plan and read the new
+    // leaf's columns), the same context shape `Decodable` gives these composites.
+    if let (Some(countable), Some(adapter), Some(joinshape), Some(row)) = (
+        ct.id_by_name("Countable"),
+        ct.id_by_name("Adapter"),
+        ct.id_by_name("JoinShape"),
+        ct.id_by_name("Row"),
+    ) {
+        let composite_countable_inst = || InstanceInfo {
+            def_module: None,
+            methods: vec![
+                ("count".to_string(), String::new()),
+                ("exists".to_string(), String::new()),
+            ],
+            ctx_constraints: vec![
+                ridge_types::Constraint::single(adapter, ridge_types::TyVid(0)),
+                ridge_types::Constraint::single(joinshape, ridge_types::TyVid(0)),
+                ridge_types::Constraint::single(row, ridge_types::TyVid(0)),
+            ],
+            head_var_positions: vec![2, 0, 1],
+            origin: InstanceOrigin::Explicit,
+            span: ds,
+        };
+        for name in ["Joined", "LeftJoined", "RightJoined", "FullJoined"] {
+            if let Some(&tycon) = reconciled_tycon_names.get(name) {
+                env.instances
+                    .entry((countable, smallvec![tycon]))
+                    .or_insert_with(composite_countable_inst);
+            }
+        }
+    }
+
     // `Every (Query e a) (fn e -> Bool)`, `Every (Join e f a) (fn e f -> Bool)`, and
     // the same over `LeftJoin` — the unified `every` instances from std.repo. Keyed
     // like `Refinable` (receiver tycon + predicate-arity tycon: `Fn1` for a query's
@@ -2477,6 +2512,40 @@ pub fn register_stdlib_instances(
                 env.instances
                     .entry((every, smallvec![full_join, fn2]))
                     .or_insert_with(|| every_inst(2));
+            }
+        }
+    }
+
+    // `Every (Joined q f a)` and the three outer composites — the nested join's
+    // `every`. A fundep terminal, so keyed by the RECEIVER ALONE (the predicate's leaf
+    // arity grows with the join depth); discharge falls back to this receiver-only key,
+    // exactly as for the composite `Refinable`. Source `where Adapter a, JoinShape q,
+    // Row f` at `a@2, q@0, f@1` — the same context shape `Countable`/`Decodable` give
+    // these composites; only the receiver portion is read, so the determined predicate
+    // does not shift the positions.
+    if let (Some(every), Some(adapter), Some(joinshape), Some(row)) = (
+        ct.id_by_name("Every"),
+        ct.id_by_name("Adapter"),
+        ct.id_by_name("JoinShape"),
+        ct.id_by_name("Row"),
+    ) {
+        let composite_every_inst = || InstanceInfo {
+            def_module: None,
+            methods: vec![("every".to_string(), String::new())],
+            ctx_constraints: vec![
+                ridge_types::Constraint::single(adapter, ridge_types::TyVid(0)),
+                ridge_types::Constraint::single(joinshape, ridge_types::TyVid(0)),
+                ridge_types::Constraint::single(row, ridge_types::TyVid(0)),
+            ],
+            head_var_positions: vec![2, 0, 1],
+            origin: InstanceOrigin::Explicit,
+            span: ds,
+        };
+        for name in ["Joined", "LeftJoined", "RightJoined", "FullJoined"] {
+            if let Some(&tycon) = reconciled_tycon_names.get(name) {
+                env.instances
+                    .entry((every, smallvec![tycon]))
+                    .or_insert_with(composite_every_inst);
             }
         }
     }

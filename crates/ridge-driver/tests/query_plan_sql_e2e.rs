@@ -169,6 +169,37 @@ pub fn innerRightMixSql () -> Text = renderSql (innerRightMix ())
 pub fn innerFullMixSql () -> Text = renderSql (innerFullMix ())
 
 pub fn innerFullMixBinds () -> Text = renderBinds (innerFullMix ())
+
+-- A count over the three-table inner composite: COUNT(*) over the flattened multi-way
+-- join, the base adult filter qualified to t0 binding $1. A reduction selects no leaf
+-- columns and reads no markers — just the count.
+fn countThree () -> QueryPlan = planAggregate "COUNT" "" false (inner3 ())
+
+pub fn countThreeSql () -> Text = renderSql (countThree ())
+
+pub fn countThreeBinds () -> Text = renderBinds (countThree ())
+
+-- A count over a mixed inner-then-left composite carrying a post-join filter on the left
+-- step (`c.post >= 11`). The marker-free FROM keeps the LEFT JOIN but drops the presence
+-- markers a bare terminal needs (a reduction reads the null-extended NULLs directly), and
+-- the step's where2 renders in the top-level WHERE qualified to t2 — proving an outer
+-- step's post-join filter reaches the clause.
+fn leftMixFiltered () -> QueryPlan =
+    planJoin "LEFT"
+        (planJoin "INNER" (usersScan ()) (postsScan ()) (joinCond ()) (keepAllJoin ()) [] (0 - 1) 0 false (leftCols ()) (rightCols ()))
+        (commentsScan ())
+        (joinCond2 ())
+        (cond3 (fn (u: User) (p: Post) (c: Comment) -> c.post >= 11))
+        []
+        (0 - 1) 0 false
+        []
+        (commentCols ())
+
+fn countLeftMix () -> QueryPlan = planAggregate "COUNT" "" false (leftMixFiltered ())
+
+pub fn countLeftMixSql () -> Text = renderSql (countLeftMix ())
+
+pub fn countLeftMixBinds () -> Text = renderBinds (countLeftMix ())
 "#;
 
 fn write_workspace(root: &std::path::Path) {
@@ -233,7 +264,7 @@ fn query_plan_compiles_to_parameterized_sql() {
 
     let expr = format!(
         "F=fun(N)->io:format(\"~s=~s~n\",[N,{module}:N()])end, \
-         lists:foreach(F,['scanSql','scanBinds','combineSql','refineSql','innerSql','leftSql','rightSql','fullSql','fullBinds','projectSql','aggSql','groupSql','inner3Sql','inner3Binds','innerLeftMixSql','innerRightMixSql','innerFullMixSql','innerFullMixBinds']), halt()."
+         lists:foreach(F,['scanSql','scanBinds','combineSql','refineSql','innerSql','leftSql','rightSql','fullSql','fullBinds','projectSql','aggSql','groupSql','inner3Sql','inner3Binds','innerLeftMixSql','innerRightMixSql','innerFullMixSql','innerFullMixBinds','countThreeSql','countThreeBinds','countLeftMixSql','countLeftMixBinds']), halt()."
     );
     let output = Command::new("erl")
         .arg("-noshell")
@@ -342,4 +373,19 @@ fn query_plan_compiles_to_parameterized_sql() {
         r#"innerFullMixSql=SELECT t0."id" AS "t0$id", t0."age" AS "t0$age", t0."name" AS "t0$name", t0."__present" AS "t0$__present__", t1."id" AS "t1$id", t1."author" AS "t1$author", t1."title" AS "t1$title", t1."__present" AS "t1$__present__", t2."id" AS "t2$id", t2."post" AS "t2$post", t2."body" AS "t2$body", t2."__present" AS "t2$__present__" FROM (SELECT *, TRUE AS "__present" FROM "users" WHERE "age" >= $1) AS t0 JOIN (SELECT *, TRUE AS "__present" FROM "posts") AS t1 ON t0."id" = t1."author" FULL JOIN (SELECT *, TRUE AS "__present" FROM "comments") AS t2 ON t1."id" = t2."post""#,
     );
     want("innerFullMixBinds=1");
+
+    // A count over the three-table inner composite: COUNT(*) over the flattened multi-way
+    // join, the base adult filter qualified to t0 ($1). No leaf select-list, no markers.
+    want(
+        r#"countThreeSql=SELECT COUNT(*) FROM "users" AS t0 JOIN "posts" AS t1 ON t0."id" = t1."author" JOIN "comments" AS t2 ON t1."id" = t2."post" WHERE (t0."age" >= $1)"#,
+    );
+    want("countThreeBinds=1");
+
+    // A count over a mixed inner-then-left composite with a post-join filter on the left
+    // step: the marker-free FROM keeps the LEFT JOIN but drops the presence markers, and
+    // the step's where2 (`c.post >= 11`) renders in the top-level WHERE qualified to t2.
+    want(
+        r#"countLeftMixSql=SELECT COUNT(*) FROM "users" AS t0 JOIN "posts" AS t1 ON t0."id" = t1."author" LEFT JOIN "comments" AS t2 ON t1."id" = t2."post" WHERE (t2."post" >= $1)"#,
+    );
+    want("countLeftMixBinds=1");
 }

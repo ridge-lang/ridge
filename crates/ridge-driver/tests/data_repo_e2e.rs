@@ -615,6 +615,50 @@ pub fn db filteredLeftJoined3 () -> Text =
                 Err _  -> "filter-left3-err"
                 Ok rs  -> join3LeftRows rs
 
+-- `count` over a three-table inner composite: COUNT(*) over the flattened join, every
+-- user-post-comment row counted -> 3. Proves the composite Countable instance
+-- dispatches (keyed by the receiver alone) and the COUNT aggregate folds the N-ary join.
+pub fn db countJoined3 () -> Int =
+    match setupJoin3 ()
+        Err _ -> 0 - 1
+        Ok (users, posts, comments) ->
+            match users |> Repo.query |> Repo.joinOn posts (fn (u: User) (p: Post) -> u.id == p.author) |> Repo.joinOn comments (fn (u: User) (p: Post) (c: Comment) -> p.id == c.post) |> Repo.count
+                Err _ -> 0 - 2
+                Ok n  -> n
+
+-- `exists` over the same three-table composite: the join keeps rows, so true. Proves
+-- the composite `exists` probes the reduction plan for a single row.
+pub fn db existsJoined3 () -> Bool =
+    match setupJoin3 ()
+        Err _ -> false
+        Ok (users, posts, comments) ->
+            match users |> Repo.query |> Repo.joinOn posts (fn (u: User) (p: Post) -> u.id == p.author) |> Repo.joinOn comments (fn (u: User) (p: Post) (c: Comment) -> p.id == c.post) |> Repo.exists
+                Err _ -> false
+                Ok b  -> b
+
+-- `every` over the three-table composite: whether every joined row satisfies a further
+-- leaf predicate (`c.post >= 11`). ada's comment sits on post 10, so not all rows pass
+-- -> false. Proves the composite `every` compares the chain's count against the count
+-- with the predicate folded in, and that the leaf predicate discriminates.
+pub fn db everyJoined3 () -> Bool =
+    match setupJoin3 ()
+        Err _ -> true
+        Ok (users, posts, comments) ->
+            match users |> Repo.query |> Repo.joinOn posts (fn (u: User) (p: Post) -> u.id == p.author) |> Repo.joinOn comments (fn (u: User) (p: Post) (c: Comment) -> p.id == c.post) |> Repo.every (fn (u: User) (p: Post) (c: Comment) -> c.post >= 11)
+                Err _ -> true
+                Ok b  -> b
+
+-- `count` over a LEFT composite: a left join keeps every (user, post) row, lin's
+-- included though its post has no comment, so the count is 3. Proves the composite
+-- `count` over an outer shape counts the kept-but-unmatched rows.
+pub fn db countLeftJoined3 () -> Int =
+    match setupLeftJoin3 ()
+        Err _ -> 0 - 1
+        Ok (users, posts, comments) ->
+            match users |> Repo.query |> Repo.joinOn posts (fn (u: User) (p: Post) -> u.id == p.author) |> Repo.leftJoinOn comments (fn (u: User) (p: Post) (c: Comment) -> p.id == c.post) |> Repo.count
+                Err _ -> 0 - 2
+                Ok n  -> n
+
 -- Render each `((User, Post), Option Comment)` row of a mixed inner-then-left chain
 -- as `name:title:body`, or `name:title:-` when the post has no comment, comma-joined
 -- — so the LEFT extend's kept-but-unmatched composite rows are observable.
@@ -1827,6 +1871,10 @@ fn repo_surface_runs_on_beam() {
          io:format(\"joined3First=~s~n\",[{module}:joined3First()]), \
          io:format(\"filteredJoined3=~s~n\",[{module}:filteredJoined3()]), \
          io:format(\"filteredLeftJoined3=~s~n\",[{module}:filteredLeftJoined3()]), \
+         io:format(\"countJoined3=~w~n\",[{module}:countJoined3()]), \
+         io:format(\"existsJoined3=~w~n\",[{module}:existsJoined3()]), \
+         io:format(\"everyJoined3=~w~n\",[{module}:everyJoined3()]), \
+         io:format(\"countLeftJoined3=~w~n\",[{module}:countLeftJoined3()]), \
          io:format(\"leftJoined3=~s~n\",[{module}:leftJoined3()]), \
          io:format(\"leftJoined3First=~s~n\",[{module}:leftJoined3First()]), \
          io:format(\"rightJoined3=~s~n\",[{module}:rightJoined3()]), \
@@ -1979,6 +2027,22 @@ fn repo_surface_runs_on_beam() {
         (
             "filteredLeftJoined3=lin:world:-,max:again:ok",
             "filter over a left composite narrows by the left-most leaf (u.id >= 2), dropping ada while keeping lin's kept-but-unmatched (None comment) row",
+        ),
+        (
+            "countJoined3=3",
+            "count over the three-table inner composite folds a COUNT(*) over the flattened join — all three user-post-comment rows",
+        ),
+        (
+            "existsJoined3=true",
+            "exists over the three-table composite probes the reduction plan for a single row and finds one",
+        ),
+        (
+            "everyJoined3=false",
+            "every over the three-table composite is false: ada's comment sits on post 10, so not every joined row satisfies c.post >= 11",
+        ),
+        (
+            "countLeftJoined3=3",
+            "count over a left composite counts every kept row, lin's post (no comment) included, so three",
         ),
         (
             "leftJoined3=ada:hello:nice,lin:world:-,max:again:ok",

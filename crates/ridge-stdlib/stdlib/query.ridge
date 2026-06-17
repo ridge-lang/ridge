@@ -69,7 +69,7 @@ pub fn ascending (dir: SortOrder) -> Bool =
 -- per group, keyed by alias and ordered by the key — the plan form of a grouped
 -- join `summarize`. It wraps a `PlanJoin`, reading each group key and folded column
 -- off the flat source-prefixed rows by their leaf's `t<leaf>$` prefix.
-pub type QueryPlan = PlanScan Text QExpr (List (Bool, Text)) Int Int Bool | PlanCombine Text QueryPlan QueryPlan | PlanRefine QueryPlan QExpr (List (Bool, Text)) Int Int Bool | PlanJoin Text QueryPlan QueryPlan QExpr QExpr (List (Bool, Bool, Text)) Int Int Bool (List Text) (List Text) | PlanProject QExpr QueryPlan Int Int Bool | PlanAggregate Text Text Int QueryPlan | PlanGroup Text Int (List (Text, Text, Text, Int)) QExpr QueryPlan
+pub type QueryPlan = PlanScan Text QExpr (List (Bool, Text)) Int Int Bool | PlanCombine Text QueryPlan QueryPlan | PlanRefine QueryPlan QExpr (List (Bool, Text)) Int Int Bool | PlanJoin Text QueryPlan QueryPlan QExpr QExpr (List (Bool, Int, Text)) Int Int Bool (List Text) (List Text) | PlanProject QExpr QueryPlan Int Int Bool | PlanAggregate Text Text Int QueryPlan | PlanGroup Text Int (List (Text, Text, Text, Int)) QExpr QueryPlan
 
 -- A single-table scan plan — the plan form of `fetch`.
 pub fn planScan (table: Text) (pred: QExpr) (orders: List (Bool, Text)) (lim: Int) (off: Int) (dist: Bool) -> QueryPlan =
@@ -90,7 +90,7 @@ pub fn planRefine (inner: QueryPlan) (pred: QExpr) (orders: List (Bool, Text)) (
 -- `leftCols`/`rightCols` are each source entity's column names (from `Row.rowColumns`),
 -- which the SQL renderer spells into the prefixed select list; the in-memory backend
 -- ignores them. The result rows are flat with each side's columns prefixed (`t0$`/`t1$`).
-pub fn planJoin (kind: Text) (left: QueryPlan) (right: QueryPlan) (cond: QExpr) (where2: QExpr) (orders: List (Bool, Bool, Text)) (lim: Int) (off: Int) (dist: Bool) (leftCols: List Text) (rightCols: List Text) -> QueryPlan =
+pub fn planJoin (kind: Text) (left: QueryPlan) (right: QueryPlan) (cond: QExpr) (where2: QExpr) (orders: List (Bool, Int, Text)) (lim: Int) (off: Int) (dist: Bool) (leftCols: List Text) (rightCols: List Text) -> QueryPlan =
     PlanJoin kind left right cond where2 orders lim off dist leftCols rightCols
 
 -- Project a sub-plan's rows through the projection tree `proj` (a `QProj`), then
@@ -355,17 +355,17 @@ fn orderTerms (orders: List (Bool, Text)) -> List Text =
         []                 -> []
         (asc, col) :: rest -> Text.join "" [quoteIdent col, " ", dirKw asc] :: orderTerms rest
 
--- ORDER BY for a join: each `(ascending?, isRight?, column)` key qualified to its
--- source side.
-fn orderByClauseJoin (orders: List (Bool, Bool, Text)) -> Text =
+-- ORDER BY for a binary join: each `(ascending?, leaf, column)` key qualified to its
+-- source side — leaf 0 is the left table, leaf 1 the right.
+fn orderByClauseJoin (orders: List (Bool, Int, Text)) -> Text =
     match orders
         [] -> ""
         _  -> Text.concat " ORDER BY " (Text.join ", " (orderTermsJoin orders))
 
-fn orderTermsJoin (orders: List (Bool, Bool, Text)) -> List Text =
+fn orderTermsJoin (orders: List (Bool, Int, Text)) -> List Text =
     match orders
-        []                          -> []
-        (asc, isRight, col) :: rest -> Text.join "" [renderColRef true isRight col, " ", dirKw asc] :: orderTermsJoin rest
+        []                       -> []
+        (asc, leaf, col) :: rest -> Text.join "" [renderColRef true (leaf == 1) col, " ", dirKw asc] :: orderTermsJoin rest
 
 -- The FROM/JOIN/ON/WHERE core of a join, per kind, with the left filter `lp` placed
 -- where the kind needs it (the inner/left join's post-join WHERE, the right join's
@@ -409,7 +409,7 @@ fn fullSubLeftMarked (table: Text) (pred: Text) -> Text = Text.join "" ["(SELECT
 -- A bare join terminal (`toList`/`first` over a join): the join's flat rows with each
 -- source's columns prefixed, plus a presence marker on each outer side, decoded back
 -- into entity pairs. The sub-plans are the two single-table scans the join pairs.
-fn renderBareJoin (kind: Text) (left: QueryPlan) (right: QueryPlan) (cond: QExpr) (where2: QExpr) (orders: List (Bool, Bool, Text)) (lim: Int) (off: Int) (dist: Bool) (leftCols: List Text) (rightCols: List Text) (n: Int) -> { text: Text, binds: List SqlValue, next: Int } =
+fn renderBareJoin (kind: Text) (left: QueryPlan) (right: QueryPlan) (cond: QExpr) (where2: QExpr) (orders: List (Bool, Int, Text)) (lim: Int) (off: Int) (dist: Bool) (leftCols: List Text) (rightCols: List Text) (n: Int) -> { text: Text, binds: List SqlValue, next: Int } =
     match left
         PlanScan lt lp _ _ _ _ ->
             match right
@@ -603,24 +603,22 @@ fn isAlwaysTrue (e: QExpr) -> Bool =
         QLitBool b -> b
         _          -> false
 
--- ORDER BY for an N-ary join: each side-tagged key qualified to its leaf alias. The
--- bare-join orders range over the base query's leaves (0 and 1), the keys lifted in
--- when it was joined.
-fn naryOrderBy (orders: List (Bool, Bool, Text)) -> Text =
+-- ORDER BY for an N-ary join: each leaf-tagged key qualified to its leaf alias on the
+-- flattened spine. The keys carried in from the binary base range over leaves 0 and 1;
+-- a key added on the composite names whichever deeper leaf it reads.
+fn naryOrderBy (orders: List (Bool, Int, Text)) -> Text =
     match orders
         [] -> ""
         _  -> Text.concat " ORDER BY " (Text.join ", " (naryOrderTerms orders))
 
-fn naryOrderTerms (orders: List (Bool, Bool, Text)) -> List Text =
+fn naryOrderTerms (orders: List (Bool, Int, Text)) -> List Text =
     match orders
-        []                          -> []
-        (asc, isRight, col) :: rest -> Text.join "" [naryColRef (boolToLeaf isRight) col, " ", dirKw asc] :: naryOrderTerms rest
-
-fn boolToLeaf (b: Bool) -> Int = if b then 1 else 0
+        []                       -> []
+        (asc, leaf, col) :: rest -> Text.join "" [naryColRef leaf col, " ", dirKw asc] :: naryOrderTerms rest
 
 -- A bare N-ary inner join terminal (`toList`/`first`): the flattened multi-way join's
 -- flat prefixed rows, which the decoder reads back into the nested entity tuple.
-fn renderNaryInner (plan: QueryPlan) (orders: List (Bool, Bool, Text)) (lim: Int) (off: Int) (dist: Bool) (n: Int) -> { text: Text, binds: List SqlValue, next: Int } =
+fn renderNaryInner (plan: QueryPlan) (orders: List (Bool, Int, Text)) (lim: Int) (off: Int) (dist: Bool) (n: Int) -> { text: Text, binds: List SqlValue, next: Int } =
     let f = flattenJoin plan
     match f.leaves
         [] -> emptyRender n
@@ -690,7 +688,7 @@ fn joinKeyword (kind: Text) -> Text =
 -- A mixed-shape join terminal: the flattened spine rendered with per-kind joins and a
 -- presence marker on every null-extendable leaf, so the decoder reads each entity (and
 -- each composite) as present or absent.
-fn renderNaryMixed (plan: QueryPlan) (orders: List (Bool, Bool, Text)) (lim: Int) (off: Int) (dist: Bool) (n: Int) -> { text: Text, binds: List SqlValue, next: Int } =
+fn renderNaryMixed (plan: QueryPlan) (orders: List (Bool, Int, Text)) (lim: Int) (off: Int) (dist: Bool) (n: Int) -> { text: Text, binds: List SqlValue, next: Int } =
     let f = flattenJoin plan
     match f.leaves
         [] -> emptyRender n
@@ -800,7 +798,7 @@ fn renderProject (proj: QExpr) (child: QueryPlan) (lim: Int) (off: Int) (dist: B
 -- step by its own kind, with no presence markers — a projection reads a null-extended
 -- leaf's column as NULL directly, decoding it into the projected shape's `Option` field.
 -- The ORDER BY keys ride on the join the projection wraps, qualified to their leaf alias.
-fn naryProject (proj: QExpr) (child: QueryPlan) (orders: List (Bool, Bool, Text)) (lim: Int) (off: Int) (dist: Bool) (n: Int) -> { text: Text, binds: List SqlValue, next: Int } =
+fn naryProject (proj: QExpr) (child: QueryPlan) (orders: List (Bool, Int, Text)) (lim: Int) (off: Int) (dist: Bool) (n: Int) -> { text: Text, binds: List SqlValue, next: Int } =
     let f = flattenJoin child
     match f.leaves
         [] -> emptyRender n

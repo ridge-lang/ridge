@@ -1712,17 +1712,18 @@ mem_order_pairs([], Pairs) -> Pairs;
 mem_order_pairs(Orders, Pairs) ->
     lists:sort(fun(A, B) -> mem_le_pair(Orders, A, B) end, Pairs).
 
-%% Whether pair A sorts no later than pair B under the side-tagged key list. The
-%% first key that distinguishes them decides; ties fall through to the next. A
-%% `false` tag reads the pair's left row, a `true` tag its right row (normalised
-%% from a left join's `none`/`{some, R}` wrapper), so a right-side key over an
-%% unmatched left-join row reads as a missing value and keeps its place.
+%% Whether pair A sorts no later than pair B under the leaf-tagged key list. The
+%% first key that distinguishes them decides; ties fall through to the next. Leaf 0
+%% reads the pair's left row, any other leaf its right row (a binary pair has only
+%% these two, normalised from a left join's `none`/`{some, R}` wrapper), so a
+%% right-side key over an unmatched left-join row reads as a missing value and keeps
+%% its place.
 mem_le_pair([], _A, _B) -> true;
-mem_le_pair([{Asc, IsRight, Col} | Rest], {LA, RA} = A, {LB, RB} = B) ->
+mem_le_pair([{Asc, Leaf, Col} | Rest], {LA, RA} = A, {LB, RB} = B) ->
     {RowA, RowB} =
-        case IsRight of
-            true  -> {mem_right_row(RA), mem_right_row(RB)};
-            false -> {mem_left_row(LA), mem_left_row(LB)}
+        case Leaf of
+            0 -> {mem_left_row(LA), mem_left_row(LB)};
+            _ -> {mem_right_row(RA), mem_right_row(RB)}
         end,
     case mem_order_cmp(mem_scalar({'QCol', Col}, RowA), mem_scalar({'QCol', Col}, RowB)) of
         eq -> mem_le_pair(Rest, A, B);
@@ -1898,23 +1899,21 @@ mem_full_right_only_step(Rk, Acc, Prefix, Cond, Where2) ->
         _Matches -> []
     end.
 
-%% Order flat N-ary rows by the side-tagged key list. The keys range over the base
-%% query's leaves (0 and 1), read off the row's `t0$`/`t1$`-prefixed cells.
+%% Order flat N-ary rows by the leaf-tagged key list. Each key names its leaf by
+%% index and reads off the row's `t<leaf>$`-prefixed cell, so a key over any leaf of
+%% the flattened spine sorts the joined rows.
 mem_order_nary([], Rows) -> Rows;
 mem_order_nary(Orders, Rows) ->
     lists:sort(fun(A, B) -> mem_le_nary(Orders, A, B) end, Rows).
 
 mem_le_nary([], _A, _B) -> true;
-mem_le_nary([{Asc, IsRight, Col} | Rest], A, B) ->
-    Key = <<(mem_leaf_prefix(mem_bool_leaf(IsRight)))/binary, Col/binary>>,
+mem_le_nary([{Asc, Leaf, Col} | Rest], A, B) ->
+    Key = <<(mem_leaf_prefix(Leaf))/binary, Col/binary>>,
     case mem_order_cmp(maps:get(Key, A, undefined), maps:get(Key, B, undefined)) of
         eq -> mem_le_nary(Rest, A, B);
         lt -> Asc;
         gt -> not Asc
     end.
-
-mem_bool_leaf(true)  -> 1;
-mem_bool_leaf(false) -> 0.
 
 %% Evaluate a join condition against one flat, leaf-prefixed N-ary row — the dual of
 %% mem_jpred for the multi-way join. A column names its leaf by index and resolves

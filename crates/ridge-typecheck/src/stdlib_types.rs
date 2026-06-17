@@ -779,7 +779,7 @@ fn reconciled_decls(b: &BuiltinTyCons, base: u32) -> Vec<TyConDecl> {
                     },
                     // `PlanJoin kind left right cond where2 orders lim off dist leftCols
                     // rightCols` — two sub-plans paired on a join. `orders` is the
-                    // side-tagged `(ascending?, isRight?, column)` ordering keys;
+                    // leaf-tagged `(ascending?, leaf, column)` ordering keys;
                     // `leftCols`/`rightCols` are each source entity's column names (from
                     // `Row.rowColumns`), spelled into the renderer's prefixed select list
                     // and ignored by the in-memory backend.
@@ -795,7 +795,7 @@ fn reconciled_decls(b: &BuiltinTyCons, base: u32) -> Vec<TyConDecl> {
                                 b.list,
                                 vec![Type::Tuple(vec![
                                     Type::Con(b.bool, vec![]),
-                                    Type::Con(b.bool, vec![]),
+                                    Type::Con(b.int, vec![]),
                                     Type::Con(b.text, vec![]),
                                 ])],
                             ),
@@ -1272,9 +1272,9 @@ fn reconciled_query_plan_fn_scheme(
     let qexpr = || Type::Con(b.q_expr, vec![]);
     // The ordering keys: `List (Bool, Text)` — the (ascending?, column) pairs.
     let orders = || Type::Con(b.list, vec![Type::Tuple(vec![bool_(), text()])]);
-    // The side-tagged join ordering keys: `List (Bool, Bool, Text)` — the
-    // (ascending?, isRight?, column) triples.
-    let join_orders = || Type::Con(b.list, vec![Type::Tuple(vec![bool_(), bool_(), text()])]);
+    // The leaf-tagged join ordering keys: `List (Bool, Int, Text)` — the
+    // (ascending?, leaf, column) triples.
+    let join_orders = || Type::Con(b.list, vec![Type::Tuple(vec![bool_(), int(), text()])]);
     // A `List Text` — a join's per-source column names (`leftCols`/`rightCols`).
     let text_list = || Type::Con(b.list, vec![text()]);
     // The grouped-aggregate columns: `List (Text, Text, Text, Int)` — the
@@ -1305,7 +1305,7 @@ fn reconciled_query_plan_fn_scheme(
         // planRefine : QueryPlan -> QExpr -> List (Bool, Text) -> Int -> Int -> Bool -> QueryPlan
         "planRefine" => Some(pure(vec![plan(), qexpr(), orders(), int(), int(), bool_()])),
         // planJoin : Text -> QueryPlan -> QueryPlan -> QExpr -> QExpr ->
-        //            List (Bool, Bool, Text) -> Int -> Int -> Bool ->
+        //            List (Bool, Int, Text) -> Int -> Int -> Bool ->
         //            List Text -> List Text -> QueryPlan
         "planJoin" => Some(pure(vec![
             text(),

@@ -628,7 +628,7 @@ pub fn summarize (proj: Quote (Grouped q p -> s)) (g: Grouped q p) -> Result (Li
 -- The condition is written against both records at the call site: its left
 -- columns range over the left entity and its right over the right, captured as a
 -- query tree that tags each side so the two tables never collide.
-pub opaque type Join e f a = { left: Query e a, right: Repo f a, cond: Quote (Map Text SqlValue -> Map Text SqlValue -> Bool), where2: Quote (Map Text SqlValue -> Map Text SqlValue -> Bool), orders: List (Bool, Bool, Text), lim: Int, off: Int, dist: Bool }
+pub opaque type Join e f a = { left: Query e a, right: Repo f a, cond: Quote (Map Text SqlValue -> Map Text SqlValue -> Bool), where2: Quote (Map Text SqlValue -> Map Text SqlValue -> Bool), orders: List (Bool, Int, Text), lim: Int, off: Int, dist: Bool }
 
 -- A join of three or more tables, built by chaining `joinOn` past the first.
 -- The left side `source` is itself a join — a binary `Join` for the third table,
@@ -644,7 +644,7 @@ pub opaque type Join e f a = { left: Query e a, right: Repo f a, cond: Quote (Ma
 --     |> Repo.toList
 -- The result decodes into a left-nested pair `((User, Post), Comment)`, one level
 -- of nesting per table past the first.
-pub opaque type Joined q f a = { source: q, right: Repo f a, cond: Quote (Map Text SqlValue -> Map Text SqlValue -> Bool), where2: Quote (Map Text SqlValue -> Map Text SqlValue -> Bool), orders: List (Bool, Bool, Text), lim: Int, off: Int, dist: Bool }
+pub opaque type Joined q f a = { source: q, right: Repo f a, cond: Quote (Map Text SqlValue -> Map Text SqlValue -> Bool), where2: Quote (Map Text SqlValue -> Map Text SqlValue -> Bool), orders: List (Bool, Int, Text), lim: Int, off: Int, dist: Bool }
 
 -- A left outer join extending a composite of three or more tables, built by
 -- chaining `leftJoinOn` past the first join. The same shape as `Joined`: the
@@ -660,7 +660,7 @@ pub opaque type Joined q f a = { source: q, right: Repo f a, cond: Quote (Map Te
 --       |> Repo.toList
 --
 -- yields `List ((User, Post), Option Comment)`.
-pub opaque type LeftJoined q f a = { source: q, right: Repo f a, cond: Quote (Map Text SqlValue -> Map Text SqlValue -> Bool), where2: Quote (Map Text SqlValue -> Map Text SqlValue -> Bool), orders: List (Bool, Bool, Text), lim: Int, off: Int, dist: Bool }
+pub opaque type LeftJoined q f a = { source: q, right: Repo f a, cond: Quote (Map Text SqlValue -> Map Text SqlValue -> Bool), where2: Quote (Map Text SqlValue -> Map Text SqlValue -> Bool), orders: List (Bool, Int, Text), lim: Int, off: Int, dist: Bool }
 
 -- A right outer join extending a composite of three or more tables, built by
 -- chaining `rightJoinOn` past the first join. The mirror of `LeftJoined`: the
@@ -676,7 +676,7 @@ pub opaque type LeftJoined q f a = { source: q, right: Repo f a, cond: Quote (Ma
 --       |> Repo.toList
 --
 -- yields `List (Option (User, Post), Comment)`.
-pub opaque type RightJoined q f a = { source: q, right: Repo f a, cond: Quote (Map Text SqlValue -> Map Text SqlValue -> Bool), where2: Quote (Map Text SqlValue -> Map Text SqlValue -> Bool), orders: List (Bool, Bool, Text), lim: Int, off: Int, dist: Bool }
+pub opaque type RightJoined q f a = { source: q, right: Repo f a, cond: Quote (Map Text SqlValue -> Map Text SqlValue -> Bool), where2: Quote (Map Text SqlValue -> Map Text SqlValue -> Bool), orders: List (Bool, Int, Text), lim: Int, off: Int, dist: Bool }
 
 -- A full outer join extending a composite of three or more tables, built by
 -- chaining `fullJoinOn` past the first join. The union of a left and a right
@@ -691,7 +691,7 @@ pub opaque type RightJoined q f a = { source: q, right: Repo f a, cond: Quote (M
 --       |> Repo.toList
 --
 -- yields `List (Option (User, Post), Option Comment)`.
-pub opaque type FullJoined q f a = { source: q, right: Repo f a, cond: Quote (Map Text SqlValue -> Map Text SqlValue -> Bool), where2: Quote (Map Text SqlValue -> Map Text SqlValue -> Bool), orders: List (Bool, Bool, Text), lim: Int, off: Int, dist: Bool }
+pub opaque type FullJoined q f a = { source: q, right: Repo f a, cond: Quote (Map Text SqlValue -> Map Text SqlValue -> Bool), where2: Quote (Map Text SqlValue -> Map Text SqlValue -> Bool), orders: List (Bool, Int, Text), lim: Int, off: Int, dist: Bool }
 
 -- Start or extend an inner join. One verb across every receiver: a query pairs
 -- with the right repository into a binary `Join`, and a join (binary or nested)
@@ -844,7 +844,7 @@ instance Decodable (Joined q f a) where Adapter a, JoinShape q, Row f =
 --     |> Repo.query
 --     |> Repo.leftJoinOn posts (fn (u: User) (p: Post) -> u.id == p.authorId)
 --     |> Repo.toList
-pub opaque type LeftJoin e f a = { left: Query e a, right: Repo f a, cond: Quote (Map Text SqlValue -> Map Text SqlValue -> Bool), where2: Quote (Map Text SqlValue -> Map Text SqlValue -> Bool), orders: List (Bool, Bool, Text), lim: Int, off: Int, dist: Bool }
+pub opaque type LeftJoin e f a = { left: Query e a, right: Repo f a, cond: Quote (Map Text SqlValue -> Map Text SqlValue -> Bool), where2: Quote (Map Text SqlValue -> Map Text SqlValue -> Bool), orders: List (Bool, Int, Text), lim: Int, off: Int, dist: Bool }
 
 -- Start or extend a left outer join. One verb across every receiver, the LEFT
 -- dual of `joinOn`: a query pairs with the right repository into a binary
@@ -982,7 +982,7 @@ pub fn crossJoin (right: Repo f a) (q: Query e a) -> Join e f a =
 --     |> Repo.query
 --     |> Repo.rightJoinOn posts (fn (u: User) (p: Post) -> u.id == p.authorId)
 --     |> Repo.toList
-pub opaque type RightJoin e f a = { left: Query e a, right: Repo f a, cond: Quote (Map Text SqlValue -> Map Text SqlValue -> Bool), where2: Quote (Map Text SqlValue -> Map Text SqlValue -> Bool), orders: List (Bool, Bool, Text), lim: Int, off: Int, dist: Bool }
+pub opaque type RightJoin e f a = { left: Query e a, right: Repo f a, cond: Quote (Map Text SqlValue -> Map Text SqlValue -> Bool), where2: Quote (Map Text SqlValue -> Map Text SqlValue -> Bool), orders: List (Bool, Int, Text), lim: Int, off: Int, dist: Bool }
 
 -- Start a right outer join from a query: pair it with a right repository on a quoted
 -- Start or extend a right outer join. One verb across every receiver, the RIGHT
@@ -1124,7 +1124,7 @@ instance Decodable (RightJoined q f a) where Adapter a, JoinShape q, Row f =
 --     |> Repo.query
 --     |> Repo.fullJoinOn posts (fn (u: User) (p: Post) -> u.id == p.authorId)
 --     |> Repo.toList
-pub opaque type FullJoin e f a = { left: Query e a, right: Repo f a, cond: Quote (Map Text SqlValue -> Map Text SqlValue -> Bool), where2: Quote (Map Text SqlValue -> Map Text SqlValue -> Bool), orders: List (Bool, Bool, Text), lim: Int, off: Int, dist: Bool }
+pub opaque type FullJoin e f a = { left: Query e a, right: Repo f a, cond: Quote (Map Text SqlValue -> Map Text SqlValue -> Bool), where2: Quote (Map Text SqlValue -> Map Text SqlValue -> Bool), orders: List (Bool, Int, Text), lim: Int, off: Int, dist: Bool }
 
 -- Start a full outer join from a query: pair it with a right repository on a quoted
 -- condition over both entities. Unlike `leftJoinOn`/`rightJoinOn`, neither side is
@@ -1436,11 +1436,11 @@ instance Orderable (Query e a) (fn e -> k) =
 
 -- An inner join's `orderBy`: append a two-row key to the join's own ordering. The
 -- key may name a column from either side (`fn (u: User) (p: Post) -> p.title`
--- orders by the right table); `orderEntry2` reads the column and which side it
--- belongs to so the seam qualifies it to the right table alias.
+-- orders by the right table); `orderEntryLeaf` reads the column and which leaf it
+-- belongs to so the seam qualifies it to that table's alias.
 instance Orderable (Join e f a) (fn e f -> k) =
     orderBy (dir: SortOrder) (key: Quote (fn e f -> k)) (x: Join e f a) -> Join e f a =
-        Join { left = x.left, right = x.right, cond = x.cond, where2 = x.where2, orders = snoc x.orders (orderEntry2 dir key), lim = x.lim, off = x.off, dist = x.dist }
+        Join { left = x.left, right = x.right, cond = x.cond, where2 = x.where2, orders = snoc x.orders (orderEntryLeaf dir key), lim = x.lim, off = x.off, dist = x.dist }
 
 -- A left join's `orderBy`: the two-row dual over a `LeftJoin`. The right side is
 -- read as `Option` in the key (`fn (u: User) (p: Option Post) -> p.title`); an
@@ -1448,7 +1448,7 @@ instance Orderable (Join e f a) (fn e f -> k) =
 -- key (it keeps its place).
 instance Orderable (LeftJoin e f a) (fn e (Option f) -> k) =
     orderBy (dir: SortOrder) (key: Quote (fn e (Option f) -> k)) (x: LeftJoin e f a) -> LeftJoin e f a =
-        LeftJoin { left = x.left, right = x.right, cond = x.cond, where2 = x.where2, orders = snoc x.orders (orderEntry2 dir key), lim = x.lim, off = x.off, dist = x.dist }
+        LeftJoin { left = x.left, right = x.right, cond = x.cond, where2 = x.where2, orders = snoc x.orders (orderEntryLeaf dir key), lim = x.lim, off = x.off, dist = x.dist }
 
 -- A right join's `orderBy`: the two-row dual over a `RightJoin`. The left side is
 -- read as `Option` in the key (`fn (u: Option User) (p: Post) -> u.name`); an
@@ -1456,7 +1456,7 @@ instance Orderable (LeftJoin e f a) (fn e (Option f) -> k) =
 -- (it keeps its place).
 instance Orderable (RightJoin e f a) (fn (Option e) f -> k) =
     orderBy (dir: SortOrder) (key: Quote (fn (Option e) f -> k)) (x: RightJoin e f a) -> RightJoin e f a =
-        RightJoin { left = x.left, right = x.right, cond = x.cond, where2 = x.where2, orders = snoc x.orders (orderEntry2 dir key), lim = x.lim, off = x.off, dist = x.dist }
+        RightJoin { left = x.left, right = x.right, cond = x.cond, where2 = x.where2, orders = snoc x.orders (orderEntryLeaf dir key), lim = x.lim, off = x.off, dist = x.dist }
 
 -- A full join's `orderBy`: the two-row dual over a `FullJoin`, BOTH sides read as
 -- `Option` in the key (`fn (u: Option User) (p: Option Post) -> ...`). A key over a
@@ -1464,7 +1464,30 @@ instance Orderable (RightJoin e f a) (fn (Option e) f -> k) =
 -- (the backend's NULL ordering decides where).
 instance Orderable (FullJoin e f a) (fn (Option e) (Option f) -> k) =
     orderBy (dir: SortOrder) (key: Quote (fn (Option e) (Option f) -> k)) (x: FullJoin e f a) -> FullJoin e f a =
-        FullJoin { left = x.left, right = x.right, cond = x.cond, where2 = x.where2, orders = snoc x.orders (orderEntry2 dir key), lim = x.lim, off = x.off, dist = x.dist }
+        FullJoin { left = x.left, right = x.right, cond = x.cond, where2 = x.where2, orders = snoc x.orders (orderEntryLeaf dir key), lim = x.lim, off = x.off, dist = x.dist }
+
+-- A nested-join composite's `orderBy`: name the sort column with a leaf accessor
+-- (`fn (u: User) (p: Post) (c: Comment) -> c.body`), exactly as the composite
+-- aggregates and `groupBy` do, and append it to the composite's own ordering.
+-- `orderEntryLeaf` reads the column and its leaf off the captured key so the seam
+-- qualifies it to that leaf's alias on the flattened spine. The key head is the
+-- variable-arity `Map Text SqlValue -> k` placeholder the functional dependency
+-- refines to the receiver's leaves, so a deeper join just adds more leaves.
+instance Orderable (Joined q f a) (Map Text SqlValue -> k) =
+    orderBy (dir: SortOrder) (key: Quote (Map Text SqlValue -> k)) (x: Joined q f a) -> Joined q f a =
+        Joined { source = x.source, right = x.right, cond = x.cond, where2 = x.where2, orders = snoc x.orders (orderEntryLeaf dir key), lim = x.lim, off = x.off, dist = x.dist }
+
+instance Orderable (LeftJoined q f a) (Map Text SqlValue -> k) =
+    orderBy (dir: SortOrder) (key: Quote (Map Text SqlValue -> k)) (x: LeftJoined q f a) -> LeftJoined q f a =
+        LeftJoined { source = x.source, right = x.right, cond = x.cond, where2 = x.where2, orders = snoc x.orders (orderEntryLeaf dir key), lim = x.lim, off = x.off, dist = x.dist }
+
+instance Orderable (RightJoined q f a) (Map Text SqlValue -> k) =
+    orderBy (dir: SortOrder) (key: Quote (Map Text SqlValue -> k)) (x: RightJoined q f a) -> RightJoined q f a =
+        RightJoined { source = x.source, right = x.right, cond = x.cond, where2 = x.where2, orders = snoc x.orders (orderEntryLeaf dir key), lim = x.lim, off = x.off, dist = x.dist }
+
+instance Orderable (FullJoined q f a) (Map Text SqlValue -> k) =
+    orderBy (dir: SortOrder) (key: Quote (Map Text SqlValue -> k)) (x: FullJoined q f a) -> FullJoined q f a =
+        FullJoined { source = x.source, right = x.right, cond = x.cond, where2 = x.where2, orders = snoc x.orders (orderEntryLeaf dir key), lim = x.lim, off = x.off, dist = x.dist }
 
 -- A query's scalar aggregates: fold the column the one-row accessor names over
 -- the rows the query's filter selects, through the `aggregate` seam push-down.
@@ -1915,7 +1938,7 @@ fn fullScalarComposite (x: FullJoined q f a) (func: Text) (col: Quote p) -> Quer
 -- runs them — pair, order, project, distinct, page. The projection tree is read against
 -- the flat, leaf-prefixed rows: a `QColAt i` cell names the i-th leaf's column. The
 -- left-nested source plan comes from `JoinShape`, the new leaf its scan and columns.
-fn compositeSelectPlan (kind: Text) (sourcePlan: QueryPlan) (rightTable: Text) (cond: QExpr) (where2: QExpr) (orders: List (Bool, Bool, Text)) (rightCols: List Text) (proj: QExpr) (lim: Int) (off: Int) (dist: Bool) -> QueryPlan =
+fn compositeSelectPlan (kind: Text) (sourcePlan: QueryPlan) (rightTable: Text) (cond: QExpr) (where2: QExpr) (orders: List (Bool, Int, Text)) (rightCols: List Text) (proj: QExpr) (lim: Int) (off: Int) (dist: Bool) -> QueryPlan =
     planProject proj (planJoin kind sourcePlan (planScan rightTable (keepAllTree ()) [] (0 - 1) 0 false) cond where2 orders (0 - 1) 0 false [] rightCols) lim off dist
 
 -- The per-shape composite select-plan wrappers, one per composite. Each unpacks its
@@ -2640,24 +2663,27 @@ fn orderColumn (key: Quote p) -> Text =
 fn snoc (xs: List a) (x: a) -> List a =
     xs ++ [x]
 
--- Lift a query's one-row ordering keys into a join's side-tagged ordering: a
+-- Lift a query's one-row ordering keys into a join's leaf-tagged ordering: a
 -- query's keys all range over its (left) entity, so each `(ascending?, column)`
--- becomes `(ascending?, false, column)`. The ordering a query accumulated before
--- it was joined carries into the join as left-side keys.
-fn liftOrders (os: List (Bool, Text)) -> List (Bool, Bool, Text) =
+-- becomes `(ascending?, 0, column)` — the first leaf. The ordering a query
+-- accumulated before it was joined carries into the join as first-leaf keys.
+fn liftOrders (os: List (Bool, Text)) -> List (Bool, Int, Text) =
     match os
         []               -> []
-        (asc, c) :: rest -> (asc, false, c) :: liftOrders rest
+        (asc, c) :: rest -> (asc, 0, c) :: liftOrders rest
 
--- A join ordering entry from a quoted key: the direction, which side the column
--- belongs to (a `QColR` names the right table), and the column name. A key that
--- does not name a single column contributes an empty left-side entry — the inert
--- shape `orderColumn` also falls back to.
-fn orderEntry2 (dir: SortOrder) (key: Quote p) -> (Bool, Bool, Text) =
+-- A join ordering entry from a quoted key: the direction, the join leaf the column
+-- belongs to, and the column name. A `QCol` is the first leaf (0, the left/single
+-- table), a `QColR` the second (1, a binary join's right), and a `QColAt i` the
+-- `i`-th leaf of a deeper composite — the same leaf indexing an aggregate accessor
+-- uses. A key that does not name a single column contributes an empty first-leaf
+-- entry, the inert shape `orderColumn` also falls back to.
+fn orderEntryLeaf (dir: SortOrder) (key: Quote p) -> (Bool, Int, Text) =
     match key.tree
-        QCol c  -> (ascending dir, false, c)
-        QColR c -> (ascending dir, true, c)
-        _       -> (ascending dir, false, "")
+        QCol c     -> (ascending dir, 0, c)
+        QColR c    -> (ascending dir, 1, c)
+        QColAt i c -> (ascending dir, i, c)
+        _          -> (ascending dir, 0, "")
 
 -- The column an aggregate accessor names. Like an ordering key, the accessor
 -- quote captures a single column — a `QCol` on the left/single table or a `QColR`
@@ -2675,8 +2701,8 @@ fn aggColumn (col: Quote p) -> Text =
 -- Which join leaf an aggregate accessor names: a `QCol` is the first leaf (0, the
 -- left/single table), a `QColR` the second (1, a binary join's right), and a
 -- `QColAt i` the `i`-th leaf of a deeper composite. The seam qualifies the column to
--- that leaf's alias — the aggregate dual of how `orderEntry2` tags an ordering key's
--- side, generalised from two sides to an unbounded number of leaves.
+-- that leaf's alias — the same leaf indexing `orderEntryLeaf` tags an ordering key
+-- with, over an unbounded number of leaves.
 fn aggLeaf (col: Quote p) -> Int =
     match col.tree
         QColR _    -> 1

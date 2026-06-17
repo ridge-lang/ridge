@@ -1907,6 +1907,57 @@ pub fn db groupRightJoined3 () -> Text =
                 Err _   -> "group-right3-err"
                 Ok rows -> countCells rows
 
+-- An inner-join composite's `orderBy` on a deeper leaf: sort the three-table join by
+-- the comment body (leaf 2, the third table), ascending. Bodies nice/wow/ok sort to
+-- nice, ok, wow, reordering the rows from their id order -> "ada:hello:nice,
+-- max:again:ok,lin:world:wow". Proves the composite `Orderable` instance names a leaf
+-- past the binary pair and the backend sorts the flattened spine by it.
+pub fn db orderJoined3 () -> Text =
+    match setupJoin3 ()
+        Err _ -> "setup-err"
+        Ok (users, posts, comments) ->
+            match users |> Repo.query |> Repo.joinOn posts (fn (u: User) (p: Post) -> u.id == p.author) |> Repo.joinOn comments (fn (u: User) (p: Post) (c: Comment) -> p.id == c.post) |> Repo.orderBy Asc (fn (u: User) (p: Post) (c: Comment) -> c.body) |> Repo.toList
+                Err _  -> "order-join3-err"
+                Ok rs  -> join3Rows rs
+
+-- The descending dual on a middle leaf: sort the same join by the post title (leaf 1),
+-- descending. Titles hello/world/again sort to world, hello, again -> "lin:world:wow,
+-- ada:hello:nice,max:again:ok". Proves the direction and a non-terminal leaf.
+pub fn db orderJoined3Desc () -> Text =
+    match setupJoin3 ()
+        Err _ -> "setup-err"
+        Ok (users, posts, comments) ->
+            match users |> Repo.query |> Repo.joinOn posts (fn (u: User) (p: Post) -> u.id == p.author) |> Repo.joinOn comments (fn (u: User) (p: Post) (c: Comment) -> p.id == c.post) |> Repo.orderBy Desc (fn (u: User) (p: Post) (c: Comment) -> p.title) |> Repo.toList
+                Err _  -> "order-join3-desc-err"
+                Ok rs  -> join3Rows rs
+
+-- A left-outer composite's `orderBy` on the always-present base leaf: sort the mixed
+-- chain by user name (leaf 0), descending -> max, lin, ada. lin's post has no comment,
+-- so its row keeps the `None` -> "max:again:ok,lin:world:-,ada:hello:nice". Ordering on
+-- a base leaf avoids the optional new leaf's NULL key. Proves the `Orderable (LeftJoined
+-- ...)` instance over plain leaves.
+pub fn db orderLeftJoined3 () -> Text =
+    match setupLeftJoin3 ()
+        Err _ -> "setup-err"
+        Ok (users, posts, comments) ->
+            match users |> Repo.query |> Repo.joinOn posts (fn (u: User) (p: Post) -> u.id == p.author) |> Repo.leftJoinOn comments (fn (u: User) (p: Post) (c: Comment) -> p.id == c.post) |> Repo.orderBy Desc (fn (u: User) (p: Post) (c: Comment) -> u.name) |> Repo.toList
+                Err _  -> "order-left3-err"
+                Ok rs  -> join3LeftRows rs
+
+-- A right-outer composite's `orderBy` on the always-present new leaf: sort the
+-- inner-then-right chain by the comment body (leaf 2), which every kept comment has,
+-- ascending. Bodies nice/wow/orphan sort to nice, orphan, wow; the orphan comment
+-- matched no (user, post) composite, so it renders `-:orphan` ->
+-- "ada:hello:nice,-:orphan,lin:world:wow". Proves the `Orderable (RightJoined ...)`
+-- instance and a leaf-2 key on the kept side.
+pub fn db orderRightJoined3 () -> Text =
+    match setupRightJoin3 ()
+        Err _ -> "setup-err"
+        Ok (users, posts, comments) ->
+            match users |> Repo.query |> Repo.joinOn posts (fn (u: User) (p: Post) -> u.id == p.author) |> Repo.rightJoinOn comments (fn (u: User) (p: Post) (c: Comment) -> p.id == c.post) |> Repo.orderBy Asc (fn (u: User) (p: Post) (c: Comment) -> c.body) |> Repo.toList
+                Err _  -> "order-right3-err"
+                Ok rs  -> join3RightRows rs
+
 -- selectList without distinct: every dept, ordered by dept -> all six rows
 -- "eng,eng,ops,sales,sales,sales". The baseline the distinct probe contrasts with.
 pub fn db deptsAll () -> Text =
@@ -2147,6 +2198,10 @@ fn repo_surface_runs_on_beam() {
          io:format(\"groupJoined3Having=~s~n\",[{module}:groupJoined3Having()]), \
          io:format(\"groupLeftJoined3=~s~n\",[{module}:groupLeftJoined3()]), \
          io:format(\"groupRightJoined3=~s~n\",[{module}:groupRightJoined3()]), \
+         io:format(\"orderJoined3=~s~n\",[{module}:orderJoined3()]), \
+         io:format(\"orderJoined3Desc=~s~n\",[{module}:orderJoined3Desc()]), \
+         io:format(\"orderLeftJoined3=~s~n\",[{module}:orderLeftJoined3()]), \
+         io:format(\"orderRightJoined3=~s~n\",[{module}:orderRightJoined3()]), \
          io:format(\"leftJoined3=~s~n\",[{module}:leftJoined3()]), \
          io:format(\"leftJoined3First=~s~n\",[{module}:leftJoined3First()]), \
          io:format(\"rightJoined3=~s~n\",[{module}:rightJoined3()]), \
@@ -2375,6 +2430,22 @@ fn repo_surface_runs_on_beam() {
         (
             "groupRightJoined3=nice:1,orphan:1,wow:1",
             "groupBy over a right composite by the new leaf's key keeps the orphan comment (matching no composite) as its own group, key-ordered",
+        ),
+        (
+            "orderJoined3=ada:hello:nice,max:again:ok,lin:world:wow",
+            "orderBy over an inner composite by the comment body (leaf 2) sorts the flattened spine ascending, reordering the rows past their id order",
+        ),
+        (
+            "orderJoined3Desc=lin:world:wow,ada:hello:nice,max:again:ok",
+            "orderBy descending over an inner composite by the post title (leaf 1) sorts world, hello, again",
+        ),
+        (
+            "orderLeftJoined3=max:again:ok,lin:world:-,ada:hello:nice",
+            "orderBy over a left composite by the base user name (leaf 0) descending sorts max, lin, ada and keeps lin's null-extended comment",
+        ),
+        (
+            "orderRightJoined3=ada:hello:nice,-:orphan,lin:world:wow",
+            "orderBy over a right composite by the always-present comment body (leaf 2) ascending sorts nice, orphan, wow, keeping the orphan comment whose composite is absent",
         ),
         (
             "leftJoined3=ada:hello:nice,lin:world:-,max:again:ok",

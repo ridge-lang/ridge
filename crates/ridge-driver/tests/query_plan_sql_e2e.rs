@@ -276,6 +276,66 @@ pub fn groupLeftMixSql () -> Text = renderSql (groupLeftMix ())
 pub fn groupRightMixSql () -> Text = renderSql (groupRightMix ())
 
 pub fn groupFullMixSql () -> Text = renderSql (groupFullMix ())
+
+-- A bare three-table inner composite carrying an `orderBy` on a deeper leaf: a one-key
+-- ordering over the comment body (leaf 2), ascending. The renderer qualifies the key to
+-- its leaf alias t2 and emits ORDER BY after the flattened multi-way join, the dual of a
+-- binary join's leaf-tagged ORDER BY generalised to an unbounded leaf.
+fn orderThree () -> QueryPlan =
+    planJoin "INNER"
+        (planJoin "INNER" (adultsScan ()) (postsScan ()) (joinCond ()) (keepAllJoin ()) [] (0 - 1) 0 false (leftCols ()) (rightCols ()))
+        (commentsScan ())
+        (joinCond2 ())
+        (keepAllJoin ())
+        [(true, 2, "body")]
+        (0 - 1) 0 false
+        []
+        (commentCols ())
+
+pub fn orderThreeSql () -> Text = renderSql (orderThree ())
+
+-- The same ordering over the three mixed-shape steps: a LEFT chain ordered by the base
+-- user name (leaf 0) descending, a RIGHT chain by the always-present comment body (leaf
+-- 2) ascending, a FULL chain by the post title (leaf 1) descending. The key qualifies to
+-- its leaf alias regardless of which leaf the step null-extends.
+fn orderLeftMix () -> QueryPlan =
+    planJoin "LEFT"
+        (planJoin "INNER" (usersScan ()) (postsScan ()) (joinCond ()) (keepAllJoin ()) [] (0 - 1) 0 false (leftCols ()) (rightCols ()))
+        (commentsScan ())
+        (joinCond2 ())
+        (keepAllJoin ())
+        [(false, 0, "name")]
+        (0 - 1) 0 false
+        []
+        (commentCols ())
+
+fn orderRightMix () -> QueryPlan =
+    planJoin "RIGHT"
+        (planJoin "INNER" (usersScan ()) (postsScan ()) (joinCond ()) (keepAllJoin ()) [] (0 - 1) 0 false (leftCols ()) (rightCols ()))
+        (commentsScan ())
+        (joinCond2 ())
+        (keepAllJoin ())
+        [(true, 2, "body")]
+        (0 - 1) 0 false
+        []
+        (commentCols ())
+
+fn orderFullMix () -> QueryPlan =
+    planJoin "FULL"
+        (planJoin "INNER" (adultsScan ()) (postsScan ()) (joinCond ()) (keepAllJoin ()) [] (0 - 1) 0 false (leftCols ()) (rightCols ()))
+        (commentsScan ())
+        (joinCond2 ())
+        (keepAllJoin ())
+        [(false, 1, "title")]
+        (0 - 1) 0 false
+        []
+        (commentCols ())
+
+pub fn orderLeftMixSql () -> Text = renderSql (orderLeftMix ())
+
+pub fn orderRightMixSql () -> Text = renderSql (orderRightMix ())
+
+pub fn orderFullMixSql () -> Text = renderSql (orderFullMix ())
 "#;
 
 fn write_workspace(root: &std::path::Path) {
@@ -340,7 +400,7 @@ fn query_plan_compiles_to_parameterized_sql() {
 
     let expr = format!(
         "F=fun(N)->io:format(\"~s=~s~n\",[N,{module}:N()])end, \
-         lists:foreach(F,['scanSql','scanBinds','combineSql','refineSql','innerSql','leftSql','rightSql','fullSql','fullBinds','projectSql','aggSql','groupSql','inner3Sql','inner3Binds','innerLeftMixSql','innerRightMixSql','innerFullMixSql','innerFullMixBinds','countThreeSql','countThreeBinds','countLeftMixSql','countLeftMixBinds','sumThreeSql','avgThreeSql','projectThreeSql','projectLeftMixSql','projectRightMixSql','projectFullMixSql','groupThreeSql','groupLeftMixSql','groupRightMixSql','groupFullMixSql']), halt()."
+         lists:foreach(F,['scanSql','scanBinds','combineSql','refineSql','innerSql','leftSql','rightSql','fullSql','fullBinds','projectSql','aggSql','groupSql','inner3Sql','inner3Binds','innerLeftMixSql','innerRightMixSql','innerFullMixSql','innerFullMixBinds','countThreeSql','countThreeBinds','countLeftMixSql','countLeftMixBinds','sumThreeSql','avgThreeSql','projectThreeSql','projectLeftMixSql','projectRightMixSql','projectFullMixSql','groupThreeSql','groupLeftMixSql','groupRightMixSql','groupFullMixSql','orderThreeSql','orderLeftMixSql','orderRightMixSql','orderFullMixSql']), halt()."
     );
     let output = Command::new("erl")
         .arg("-noshell")
@@ -521,5 +581,24 @@ fn query_plan_compiles_to_parameterized_sql() {
     );
     want(
         r#"groupFullMixSql=SELECT t0."name" AS "label", COUNT(*) AS "n" FROM (SELECT * FROM "users" WHERE "age" >= $1) AS t0 JOIN "posts" AS t1 ON t0."id" = t1."author" FULL JOIN "comments" AS t2 ON t1."id" = t2."post" GROUP BY t0."name" ORDER BY t0."name""#,
+    );
+
+    // An `orderBy` over the three-table inner composite emits ORDER BY after the
+    // flattened multi-way join, the key qualified to its leaf alias t2 with its direction.
+    want(
+        r#"orderThreeSql=SELECT t0."id" AS "t0$id", t0."age" AS "t0$age", t0."name" AS "t0$name", t1."id" AS "t1$id", t1."author" AS "t1$author", t1."title" AS "t1$title", t2."id" AS "t2$id", t2."post" AS "t2$post", t2."body" AS "t2$body" FROM "users" AS t0 JOIN "posts" AS t1 ON t0."id" = t1."author" JOIN "comments" AS t2 ON t1."id" = t2."post" WHERE (t0."age" >= $1) ORDER BY t2."body" ASC"#,
+    );
+
+    // The same ORDER BY over the mixed-shape composites: the key qualifies to whichever
+    // leaf names it regardless of which leaf the step null-extends — t0 (left) for LEFT,
+    // t2 (new leaf) for RIGHT, t1 (middle) for FULL with the base scan in its subquery.
+    want(
+        r#"orderLeftMixSql=SELECT t0."id" AS "t0$id", t0."age" AS "t0$age", t0."name" AS "t0$name", t1."id" AS "t1$id", t1."author" AS "t1$author", t1."title" AS "t1$title", t2."id" AS "t2$id", t2."post" AS "t2$post", t2."body" AS "t2$body", t2."__present" AS "t2$__present__" FROM "users" AS t0 JOIN "posts" AS t1 ON t0."id" = t1."author" LEFT JOIN (SELECT *, TRUE AS "__present" FROM "comments") AS t2 ON t1."id" = t2."post" ORDER BY t0."name" DESC"#,
+    );
+    want(
+        r#"orderRightMixSql=SELECT t0."id" AS "t0$id", t0."age" AS "t0$age", t0."name" AS "t0$name", t0."__present" AS "t0$__present__", t1."id" AS "t1$id", t1."author" AS "t1$author", t1."title" AS "t1$title", t1."__present" AS "t1$__present__", t2."id" AS "t2$id", t2."post" AS "t2$post", t2."body" AS "t2$body" FROM (SELECT *, TRUE AS "__present" FROM "users") AS t0 JOIN (SELECT *, TRUE AS "__present" FROM "posts") AS t1 ON t0."id" = t1."author" RIGHT JOIN "comments" AS t2 ON t1."id" = t2."post" ORDER BY t2."body" ASC"#,
+    );
+    want(
+        r#"orderFullMixSql=SELECT t0."id" AS "t0$id", t0."age" AS "t0$age", t0."name" AS "t0$name", t0."__present" AS "t0$__present__", t1."id" AS "t1$id", t1."author" AS "t1$author", t1."title" AS "t1$title", t1."__present" AS "t1$__present__", t2."id" AS "t2$id", t2."post" AS "t2$post", t2."body" AS "t2$body", t2."__present" AS "t2$__present__" FROM (SELECT *, TRUE AS "__present" FROM "users" WHERE "age" >= $1) AS t0 JOIN (SELECT *, TRUE AS "__present" FROM "posts") AS t1 ON t0."id" = t1."author" FULL JOIN (SELECT *, TRUE AS "__present" FROM "comments") AS t2 ON t1."id" = t2."post" ORDER BY t1."title" DESC"#,
     );
 }

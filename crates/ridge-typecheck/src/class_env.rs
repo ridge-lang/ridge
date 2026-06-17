@@ -2001,6 +2001,29 @@ pub fn register_stdlib_instances(
         }
     }
 
+    // `Orderable (Joined q f a)` and the three outer composites — the nested join's
+    // `orderBy`. A fundep terminal keyed by the RECEIVER ALONE (the key accessor's leaf
+    // arity grows with the join depth), like the composite `Groupable`/`Aggregable`.
+    // `orderBy` only appends the key to the composite's `orders` and reaches no store,
+    // so it carries no context constraints, exactly as the binary `Orderable` does.
+    if let Some(orderable) = ct.id_by_name("Orderable") {
+        let composite_orderable_inst = || InstanceInfo {
+            def_module: None,
+            methods: vec![("orderBy".to_string(), String::new())],
+            ctx_constraints: vec![],
+            head_var_positions: vec![],
+            origin: InstanceOrigin::Explicit,
+            span: ds,
+        };
+        for name in ["Joined", "LeftJoined", "RightJoined", "FullJoined"] {
+            if let Some(&tycon) = reconciled_tycon_names.get(name) {
+                env.instances
+                    .entry((orderable, smallvec![tycon]))
+                    .or_insert_with(composite_orderable_inst);
+            }
+        }
+    }
+
     // `Summarizable (Joined q f a)` and the three outer composites — the nested join's
     // `summarize` seam. A single-parameter class keyed by the RECEIVER tycon alone,
     // carrying `where Adapter a, JoinShape q` to reach the store (`a@2`) and plan the

@@ -832,22 +832,22 @@ fn reconciled_decls(b: &BuiltinTyCons, base: u32) -> Vec<TyConDecl> {
                             Type::Con(TyConId(base + 15), vec![]),
                         ]),
                     },
-                    // `PlanGroup keyCol keySide cols having child` — group a sub-plan's
-                    // rows by `keyCol` (on side `keySide`), summarise each group into the
-                    // `(alias, func, column, isRight)` aggregate columns, keep the groups
+                    // `PlanGroup keyCol keyLeaf cols having child` — group a sub-plan's
+                    // rows by `keyCol` (on leaf `keyLeaf`), summarise each group into the
+                    // `(alias, func, column, leaf)` aggregate columns, keep the groups
                     // `having` admits. One row per group. Wraps a `PlanJoin`.
                     UnionVariant {
                         name: "PlanGroup".to_string(),
                         kind: VariantPayload::Positional(vec![
                             Type::Con(b.text, vec![]),
-                            Type::Con(b.bool, vec![]),
+                            Type::Con(b.int, vec![]),
                             Type::Con(
                                 b.list,
                                 vec![Type::Tuple(vec![
                                     Type::Con(b.text, vec![]),
                                     Type::Con(b.text, vec![]),
                                     Type::Con(b.text, vec![]),
-                                    Type::Con(b.bool, vec![]),
+                                    Type::Con(b.int, vec![]),
                                 ])],
                             ),
                             Type::Con(b.q_expr, vec![]),
@@ -1277,12 +1277,13 @@ fn reconciled_query_plan_fn_scheme(
     let join_orders = || Type::Con(b.list, vec![Type::Tuple(vec![bool_(), bool_(), text()])]);
     // A `List Text` — a join's per-source column names (`leftCols`/`rightCols`).
     let text_list = || Type::Con(b.list, vec![text()]);
-    // The grouped-aggregate columns: `List (Text, Text, Text, Bool)` — the
-    // (alias, func, column, isRight?) quadruples a `GROUP BY` summary projects.
+    // The grouped-aggregate columns: `List (Text, Text, Text, Int)` — the
+    // (alias, func, column, leaf) quadruples a `GROUP BY` summary projects, the leaf
+    // index naming which join leaf each aggregate folds.
     let group_cols = || {
         Type::Con(
             b.list,
-            vec![Type::Tuple(vec![text(), text(), text(), bool_()])],
+            vec![Type::Tuple(vec![text(), text(), text(), int()])],
         )
     };
     let pure = |params: Vec<Type>| Scheme {
@@ -1323,9 +1324,9 @@ fn reconciled_query_plan_fn_scheme(
         "planProject" => Some(pure(vec![qexpr(), plan(), int(), int(), bool_()])),
         // planAggregate : Text -> Text -> Int -> QueryPlan -> QueryPlan
         "planAggregate" => Some(pure(vec![text(), text(), int(), plan()])),
-        // planGroup : Text -> Bool -> List (Text, Text, Text, Bool) -> QExpr ->
+        // planGroup : Text -> Int -> List (Text, Text, Text, Int) -> QExpr ->
         //             QueryPlan -> QueryPlan
-        "planGroup" => Some(pure(vec![text(), bool_(), group_cols(), qexpr(), plan()])),
+        "planGroup" => Some(pure(vec![text(), int(), group_cols(), qexpr(), plan()])),
         // planToSql : QueryPlan -> (Sql, List SqlValue) — the renderer, lowering a
         // whole plan to one parameterized statement plus its ordered bind values.
         // Unlike the builders it does not return a `QueryPlan`, so its scheme is

@@ -1805,6 +1805,108 @@ pub fn db leftJoinGroupCounts () -> Text =
                 Err _   -> "group-err"
                 Ok rows -> countCells rows
 
+-- A three-table dataset tuned for grouping: posts share a title (red, red, blue) and
+-- comments a body (hi, hi, yo), so a group keyed on a deeper leaf folds more than one
+-- composite row. ada(18) -> red(p10) -> hi, lin(30) -> red(p11) -> hi, max(25) ->
+-- blue(p12) -> yo.
+pub fn db setupGroup3 () -> Result (Repo User MemAdapter, Repo Post MemAdapter, Repo Comment MemAdapter) Error =
+    let conn = memAdapter ()
+    let users: Repo User MemAdapter = Repo.repo conn "users"
+    let posts: Repo Post MemAdapter = Repo.repo conn "posts"
+    let comments: Repo Comment MemAdapter = Repo.repo conn "comments"
+    match Repo.insertRow (userRow 1 18 "ada") users
+        Err e -> Err e
+        Ok _  ->
+            match Repo.insertRow (userRow 2 30 "lin") users
+                Err e -> Err e
+                Ok _  ->
+                    match Repo.insertRow (userRow 3 25 "max") users
+                        Err e -> Err e
+                        Ok _  ->
+                            match Repo.insertRow (postRow 10 1 "red") posts
+                                Err e -> Err e
+                                Ok _  ->
+                                    match Repo.insertRow (postRow 11 2 "red") posts
+                                        Err e -> Err e
+                                        Ok _  ->
+                                            match Repo.insertRow (postRow 12 3 "blue") posts
+                                                Err e -> Err e
+                                                Ok _  ->
+                                                    match Repo.insertRow (commentRow 100 10 "hi") comments
+                                                        Err e -> Err e
+                                                        Ok _  ->
+                                                            match Repo.insertRow (commentRow 101 11 "hi") comments
+                                                                Err e -> Err e
+                                                                Ok _  ->
+                                                                    match Repo.insertRow (commentRow 102 12 "yo") comments
+                                                                        Err e -> Err e
+                                                                        Ok _  -> Ok (users, posts, comments)
+
+-- group a three-table inner composite by a middle-leaf key (post title), counting the
+-- composite rows per title -> "blue:1,red:2". Proves the composite `Summarizable`
+-- instance runs the GROUP BY over the flattened spine and qualifies the key to its leaf.
+pub fn db groupJoined3 () -> Text =
+    match setupGroup3 ()
+        Err _ -> "setup-err"
+        Ok (users, posts, comments) ->
+            match users |> Repo.query |> Repo.joinOn posts (fn (u: User) (p: Post) -> u.id == p.author) |> Repo.joinOn comments (fn (u: User) (p: Post) (c: Comment) -> p.id == c.post) |> Repo.groupBy (fn (u: User) (p: Post) (c: Comment) -> p.title) |> Repo.summarize (fn g -> DeptCount { dept = g.key, n = g.count })
+                Err _   -> "group3-err"
+                Ok rows -> countCells rows
+
+-- the same composite grouped by post title, summing the FIRST leaf's column (user age)
+-- per title -> "blue:25,red:48" (red folds ada 18 + lin 30). Proves a grouped fold
+-- qualifies its column to a leaf other than the key's.
+pub fn db groupJoined3Sum () -> Text =
+    match setupGroup3 ()
+        Err _ -> "setup-err"
+        Ok (users, posts, comments) ->
+            match users |> Repo.query |> Repo.joinOn posts (fn (u: User) (p: Post) -> u.id == p.author) |> Repo.joinOn comments (fn (u: User) (p: Post) (c: Comment) -> p.id == c.post) |> Repo.groupBy (fn (u: User) (p: Post) (c: Comment) -> p.title) |> Repo.summarize (fn g -> DeptSum { dept = g.key, total = g.sum (fn (u: User) (p: Post) (c: Comment) -> u.age) })
+                Err _   -> "group3-err"
+                Ok rows -> sumCells rows
+
+-- the composite grouped by the DEEPEST leaf's key (comment body) -> "hi:2,yo:1" (hi
+-- folds ada's and lin's rows). Proves the group key qualifies to a leaf beyond the
+-- binary two.
+pub fn db groupJoined3Deep () -> Text =
+    match setupGroup3 ()
+        Err _ -> "setup-err"
+        Ok (users, posts, comments) ->
+            match users |> Repo.query |> Repo.joinOn posts (fn (u: User) (p: Post) -> u.id == p.author) |> Repo.joinOn comments (fn (u: User) (p: Post) (c: Comment) -> p.id == c.post) |> Repo.groupBy (fn (u: User) (p: Post) (c: Comment) -> c.body) |> Repo.summarize (fn g -> DeptCount { dept = g.key, n = g.count })
+                Err _   -> "group3-err"
+                Ok rows -> countCells rows
+
+-- the composite grouped by post title with HAVING count > 1 -> "red:2" (blue, a single
+-- row, drops). Proves HAVING narrows composite groups.
+pub fn db groupJoined3Having () -> Text =
+    match setupGroup3 ()
+        Err _ -> "setup-err"
+        Ok (users, posts, comments) ->
+            match users |> Repo.query |> Repo.joinOn posts (fn (u: User) (p: Post) -> u.id == p.author) |> Repo.joinOn comments (fn (u: User) (p: Post) (c: Comment) -> p.id == c.post) |> Repo.groupBy (fn (u: User) (p: Post) (c: Comment) -> p.title) |> Repo.having (fn g -> g.count > 1) |> Repo.summarize (fn g -> DeptCount { dept = g.key, n = g.count })
+                Err _   -> "group3-err"
+                Ok rows -> countCells rows
+
+-- group a LEFT composite by a left-leaf key (user name), counting -> "ada:1,lin:1,max:1".
+-- lin's post has no comment, yet its null-extended row still forms a group, so the LEFT
+-- extend keeps every composite row in the grouping.
+pub fn db groupLeftJoined3 () -> Text =
+    match setupLeftJoin3 ()
+        Err _ -> "setup-err"
+        Ok (users, posts, comments) ->
+            match users |> Repo.query |> Repo.joinOn posts (fn (u: User) (p: Post) -> u.id == p.author) |> Repo.leftJoinOn comments (fn (u: User) (p: Post) (c: Comment) -> p.id == c.post) |> Repo.groupBy (fn (u: User) (p: Post) (c: Comment) -> u.name) |> Repo.summarize (fn g -> DeptCount { dept = g.key, n = g.count })
+                Err _   -> "group-left3-err"
+                Ok rows -> countCells rows
+
+-- group a RIGHT composite by the new leaf's key (comment body), counting ->
+-- "nice:1,orphan:1,wow:1". The orphan comment, matching no (user, post) composite, still
+-- forms a group keyed by its own body, so the RIGHT extend keeps every new-leaf row.
+pub fn db groupRightJoined3 () -> Text =
+    match setupRightJoin3 ()
+        Err _ -> "setup-err"
+        Ok (users, posts, comments) ->
+            match users |> Repo.query |> Repo.joinOn posts (fn (u: User) (p: Post) -> u.id == p.author) |> Repo.rightJoinOn comments (fn (u: User) (p: Post) (c: Comment) -> p.id == c.post) |> Repo.groupBy (fn (u: User) (p: Post) (c: Comment) -> c.body) |> Repo.summarize (fn g -> DeptCount { dept = g.key, n = g.count })
+                Err _   -> "group-right3-err"
+                Ok rows -> countCells rows
+
 -- selectList without distinct: every dept, ordered by dept -> all six rows
 -- "eng,eng,ops,sales,sales,sales". The baseline the distinct probe contrasts with.
 pub fn db deptsAll () -> Text =
@@ -2039,6 +2141,12 @@ fn repo_surface_runs_on_beam() {
          io:format(\"sumPostsJoined3=~w~n\",[{module}:sumPostsJoined3()]), \
          io:format(\"maxAgeJoined3=~w~n\",[{module}:maxAgeJoined3()]), \
          io:format(\"sumPostsLeftJoined3=~w~n\",[{module}:sumPostsLeftJoined3()]), \
+         io:format(\"groupJoined3=~s~n\",[{module}:groupJoined3()]), \
+         io:format(\"groupJoined3Sum=~s~n\",[{module}:groupJoined3Sum()]), \
+         io:format(\"groupJoined3Deep=~s~n\",[{module}:groupJoined3Deep()]), \
+         io:format(\"groupJoined3Having=~s~n\",[{module}:groupJoined3Having()]), \
+         io:format(\"groupLeftJoined3=~s~n\",[{module}:groupLeftJoined3()]), \
+         io:format(\"groupRightJoined3=~s~n\",[{module}:groupRightJoined3()]), \
          io:format(\"leftJoined3=~s~n\",[{module}:leftJoined3()]), \
          io:format(\"leftJoined3First=~s~n\",[{module}:leftJoined3First()]), \
          io:format(\"rightJoined3=~s~n\",[{module}:rightJoined3()]), \
@@ -2243,6 +2351,30 @@ fn repo_surface_runs_on_beam() {
         (
             "sumPostsLeftJoined3=22",
             "sumOf over a left composite folds the deep leaf, skipping lin's null-extended comment: 10 + 12",
+        ),
+        (
+            "groupJoined3=blue:1,red:2",
+            "groupBy over a three-table inner composite partitions by a middle-leaf key (post title) and counts the composite rows per group, key-ordered: blue 1, red 2",
+        ),
+        (
+            "groupJoined3Sum=blue:25,red:48",
+            "a grouped composite folds the first leaf's column (u.age) per title group, qualified to t0 while the key is t1: blue 25, red 18 + 30",
+        ),
+        (
+            "groupJoined3Deep=hi:2,yo:1",
+            "groupBy over the composite keyed on the deepest leaf (c.body) groups ada's and lin's rows under hi and max's under yo",
+        ),
+        (
+            "groupJoined3Having=red:2",
+            "HAVING count > 1 over the composite groups drops blue (a single row) and keeps red",
+        ),
+        (
+            "groupLeftJoined3=ada:1,lin:1,max:1",
+            "groupBy over a left composite by a left-leaf key keeps lin's null-extended row as its own group, so every user counts one",
+        ),
+        (
+            "groupRightJoined3=nice:1,orphan:1,wow:1",
+            "groupBy over a right composite by the new leaf's key keeps the orphan comment (matching no composite) as its own group, key-ordered",
         ),
         (
             "leftJoined3=ada:hello:nice,lin:world:-,max:again:ok",

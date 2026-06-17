@@ -1152,14 +1152,15 @@ fn group_agg_col_type(
         });
         return None;
     };
-    // One row parameter for a query group, two for a join (naming a column from
-    // either side, `fn (u: User) (p: Post) -> p.col`). The first parameter ties
-    // `e_ty` (the single-entity fallback); each further parameter — a join's right
-    // side — is pinned only from its own annotation. The lowering tags which table
-    // a column belongs to by which parameter it reads.
-    if params.is_empty() || params.len() > 2 {
+    // One row parameter for a query group, two for a binary join, and one per leaf
+    // for a deeper composite (naming a column from any leaf, `fn (u: User) (p: Post)
+    // (c: Comment) -> c.col`). The first parameter ties `e_ty` (the single-entity
+    // fallback); each further parameter — a join's right side or a composite's deeper
+    // leaf — is pinned only from its own annotation. The lowering tags which leaf a
+    // column belongs to by which parameter it reads (`QCol`/`QColR`/`QColAt`).
+    if params.is_empty() {
         ctx.errors.push(TypeError::QuoteUnsupportedExpr {
-            detail: "a group aggregate's column accessor takes one or two row parameters"
+            detail: "a group aggregate's column accessor takes at least one row parameter"
                 .to_string(),
             span: *span,
         });

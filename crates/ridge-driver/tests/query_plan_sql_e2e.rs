@@ -118,7 +118,7 @@ pub fn aggSql () -> Text =
     renderSql (planAggregate "AVG" "author" 1 (wrapJoin ()))
 
 pub fn groupSql () -> Text =
-    renderSql (planGroup "author" true [("author", "KEY", "", true), ("n", "COUNT", "", false)] (keepAllJoin ()) (wrapJoin ()))
+    renderSql (planGroup "author" 1 [("author", "KEY", "", 1), ("n", "COUNT", "", 0)] (keepAllJoin ()) (wrapJoin ()))
 
 pub fn inner3Sql () -> Text = renderSql (inner3 ())
 
@@ -246,6 +246,36 @@ pub fn projectLeftMixSql () -> Text = renderSql (projectLeftMix ())
 pub fn projectRightMixSql () -> Text = renderSql (projectRightMix ())
 
 pub fn projectFullMixSql () -> Text = renderSql (projectFullMix ())
+
+-- A grouped summary over the three-table inner composite: a `PlanGroup` keyed on a
+-- middle leaf (post title, t1) summarising a COUNT and a SUM that folds the first
+-- leaf's column (user age, t0). Proves the renderer leaf-qualifies the group key and
+-- each aggregate independently over the flattened multi-way join, GROUP BY and ORDER BY
+-- carrying the same key expression, the base adult filter qualified to t0 ($1).
+fn groupThree () -> QueryPlan =
+    planGroup "title" 1 [("label", "KEY", "", 1), ("n", "COUNT", "", 0), ("ages", "SUM", "age", 0)] (keepAllJoin ()) (inner3 ())
+
+pub fn groupThreeSql () -> Text = renderSql (groupThree ())
+
+-- A grouped summary over an outer (mixed-shape) composite: the same leaf-qualified
+-- GROUP BY over a chain that joins the third table under a LEFT/RIGHT/FULL step. The
+-- group reads the null-extended leaves directly (no presence markers, the marker-free
+-- FROM the aggregates render). The LEFT case keys on a left leaf (t0), the RIGHT on the
+-- new leaf (t2), the FULL on a left leaf with the base scan riding inside its subquery.
+fn groupLeftMix () -> QueryPlan =
+    planGroup "name" 0 [("label", "KEY", "", 0), ("n", "COUNT", "", 0)] (keepAllJoin ()) (innerLeftMix ())
+
+fn groupRightMix () -> QueryPlan =
+    planGroup "body" 2 [("label", "KEY", "", 2), ("n", "COUNT", "", 0)] (keepAllJoin ()) (innerRightMix ())
+
+fn groupFullMix () -> QueryPlan =
+    planGroup "name" 0 [("label", "KEY", "", 0), ("n", "COUNT", "", 0)] (keepAllJoin ()) (innerFullMix ())
+
+pub fn groupLeftMixSql () -> Text = renderSql (groupLeftMix ())
+
+pub fn groupRightMixSql () -> Text = renderSql (groupRightMix ())
+
+pub fn groupFullMixSql () -> Text = renderSql (groupFullMix ())
 "#;
 
 fn write_workspace(root: &std::path::Path) {
@@ -310,7 +340,7 @@ fn query_plan_compiles_to_parameterized_sql() {
 
     let expr = format!(
         "F=fun(N)->io:format(\"~s=~s~n\",[N,{module}:N()])end, \
-         lists:foreach(F,['scanSql','scanBinds','combineSql','refineSql','innerSql','leftSql','rightSql','fullSql','fullBinds','projectSql','aggSql','groupSql','inner3Sql','inner3Binds','innerLeftMixSql','innerRightMixSql','innerFullMixSql','innerFullMixBinds','countThreeSql','countThreeBinds','countLeftMixSql','countLeftMixBinds','sumThreeSql','avgThreeSql','projectThreeSql','projectLeftMixSql','projectRightMixSql','projectFullMixSql']), halt()."
+         lists:foreach(F,['scanSql','scanBinds','combineSql','refineSql','innerSql','leftSql','rightSql','fullSql','fullBinds','projectSql','aggSql','groupSql','inner3Sql','inner3Binds','innerLeftMixSql','innerRightMixSql','innerFullMixSql','innerFullMixBinds','countThreeSql','countThreeBinds','countLeftMixSql','countLeftMixBinds','sumThreeSql','avgThreeSql','projectThreeSql','projectLeftMixSql','projectRightMixSql','projectFullMixSql','groupThreeSql','groupLeftMixSql','groupRightMixSql','groupFullMixSql']), halt()."
     );
     let output = Command::new("erl")
         .arg("-noshell")
@@ -468,5 +498,28 @@ fn query_plan_compiles_to_parameterized_sql() {
     // mixed bare terminals and aggregates use.
     want(
         r#"projectFullMixSql=SELECT t0."name" AS "who", t1."title" AS "what", t2."body" AS "note" FROM (SELECT * FROM "users" WHERE "age" >= $1) AS t0 JOIN "posts" AS t1 ON t0."id" = t1."author" FULL JOIN "comments" AS t2 ON t1."id" = t2."post""#,
+    );
+
+    // A grouped summary over the three-table composite leaf-qualifies the group key (t1)
+    // and each aggregate independently — COUNT(*) over the rows, SUM folding the first
+    // leaf's column (t0) — with GROUP BY and ORDER BY carrying the key expression and the
+    // base adult filter bound to $1, the grouped dual of the composite projection.
+    want(
+        r#"groupThreeSql=SELECT t1."title" AS "label", COUNT(*) AS "n", SUM(t0."age") AS "ages" FROM "users" AS t0 JOIN "posts" AS t1 ON t0."id" = t1."author" JOIN "comments" AS t2 ON t1."id" = t2."post" WHERE (t0."age" >= $1) GROUP BY t1."title" ORDER BY t1."title""#,
+    );
+
+    // The same grouped summary over a mixed-shape composite renders the third leaf under
+    // its own join kind and qualifies the key to whichever leaf names it — a left leaf (t0)
+    // for the LEFT/FULL cases, the new leaf (t2) for the RIGHT case — reading the
+    // null-extended leaves directly with no presence markers, the FULL base scan riding
+    // inside its subquery.
+    want(
+        r#"groupLeftMixSql=SELECT t0."name" AS "label", COUNT(*) AS "n" FROM "users" AS t0 JOIN "posts" AS t1 ON t0."id" = t1."author" LEFT JOIN "comments" AS t2 ON t1."id" = t2."post" GROUP BY t0."name" ORDER BY t0."name""#,
+    );
+    want(
+        r#"groupRightMixSql=SELECT t2."body" AS "label", COUNT(*) AS "n" FROM "users" AS t0 JOIN "posts" AS t1 ON t0."id" = t1."author" RIGHT JOIN "comments" AS t2 ON t1."id" = t2."post" GROUP BY t2."body" ORDER BY t2."body""#,
+    );
+    want(
+        r#"groupFullMixSql=SELECT t0."name" AS "label", COUNT(*) AS "n" FROM (SELECT * FROM "users" WHERE "age" >= $1) AS t0 JOIN "posts" AS t1 ON t0."id" = t1."author" FULL JOIN "comments" AS t2 ON t1."id" = t2."post" GROUP BY t0."name" ORDER BY t0."name""#,
     );
 }

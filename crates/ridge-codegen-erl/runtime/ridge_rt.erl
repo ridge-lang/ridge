@@ -1234,13 +1234,6 @@ mem_keeper_loop(State) ->
             mem_keeper_loop(State)
     end.
 
-%% The row a join aggregate folds its column from: the right row when IsRight,
-%% otherwise the left. For a left join the right row is normalised through
-%% `mem_right_row` first (an unmatched left row's `none` becomes `#{}`, so its
-%% column reads SqlNull and the fold skips it).
-mem_agg_side_row(true,  _L, R) -> R;
-mem_agg_side_row(false, L, _R) -> L.
-
 %% Build a projected row from `{Alias, Column}` pairs: each output column reads
 %% the source column from the row and is keyed by its alias. A missing source
 %% column reads as SQL NULL.
@@ -1330,25 +1323,9 @@ mem_eval_plan(State, Id, {'PlanAggregate', Func, Column, Leaf, Child}) ->
         'SqlNull' -> [];
         Value     -> [#{<<"agg">> => Value}]
     end;
-mem_eval_plan(State, Id, {'PlanGroup', KeyCol, KeySide, Cols, Having, Child}) ->
+mem_eval_plan(State, Id, {'PlanGroup', KeyCol, KeyLeaf, Cols, Having, Child}) ->
     Rows = mem_eval_plan(State, Id, Child),
-    Pairs = [mem_unprefix_pair(Row) || Row <- Rows],
-    mem_group_join(Pairs, KeyCol, KeySide, Cols, Having).
-
-%% Split a flat, source-prefixed join row back into its {LeftMap, RightMap} pair —
-%% the inverse of mem_prefix_pair — so the grouped-join interpreter can read each
-%% group key and folded column off its side. A t0$-prefixed key restores a left
-%% column, a t1$-prefixed key a right one.
-mem_unprefix_pair(Row) ->
-    maps:fold(
-        fun(K, V, {L, R}) ->
-            case K of
-                <<"t0$", Rest/binary>> -> {L#{Rest => V}, R};
-                <<"t1$", Rest/binary>> -> {L, R#{Rest => V}};
-                _                      -> {L, R}
-            end
-        end,
-        {#{}, #{}}, Row).
+    mem_group_nary(Rows, KeyLeaf, KeyCol, Cols, Having).
 
 %% The prefixed column name a join aggregate folds: the column under its leaf's
 %% `t<Leaf>$` prefix (t0$ for the first leaf, t1$ for a binary join's right, higher
@@ -1544,84 +1521,84 @@ mem_agg_or_undef(Func, Col, GR) ->
 
 %% --- In-memory grouped join ---
 %%
-%% Group a join's `{L,R}` pairs by a key column read off one side, narrow the groups
-%% by a HAVING tree over the group aggregates, and summarise each surviving group.
-%% A grouped aggregate folds values rather than producing one per row, so it reads a
-%% right column as the plain right row (an unmatched left join row's right side is
-%% `#{}`, whose columns read SqlNull and so drop out of the fold), exactly as the
-%% join scalar aggregates do.
-mem_group_join(Pairs, KeyCol, KeySide, Cols, Having) ->
-    Groups = mem_group_pairs(KeyCol, KeySide, Pairs),
-    Kept = [{K, GP} || {K, GP} <- Groups, mem_having_join(Having, K, GP)],
+%% Group a join's flat, source-prefixed rows by a key column read off its leaf
+%% (`t<KeyLeaf>$KeyCol`), narrow the groups by a HAVING tree over the group
+%% aggregates, and summarise each surviving group. One interpreter for a binary or a
+%% deeper composite join: every join leaf prefixes its columns the same way (`t0$`
+%% for the first, `t1$` for a binary right, higher for a composite), so a grouped
+%% aggregate folds the leaf-prefixed column directly — an unmatched outer row simply
+%% lacks that leaf's columns, which read SqlNull and drop out of the fold, exactly as
+%% the composite scalar aggregates do.
+mem_group_nary(Rows, KeyLeaf, KeyCol, Cols, Having) ->
+    KeyName = mem_agg_prefixed_col(KeyLeaf, KeyCol),
+    Groups = mem_group_nary_by(KeyName, Rows),
+    Kept = [{K, GR} || {K, GR} <- Groups, mem_having_nary(Having, K, GR)],
     Sorted = lists:sort(fun({KA, _}, {KB, _}) -> mem_order_cmp(KA, KB) =/= gt end, Kept),
-    [mem_group_join_row(Cols, K, GP) || {K, GP} <- Sorted].
+    [mem_group_nary_row(Cols, K, GR) || {K, GR} <- Sorted].
 
-%% Partition the pairs by the key value, read from the right side when KeySide is
-%% true (a join grouped by a right column) and the left otherwise. First-seen order.
-mem_group_pairs(KeyCol, KeySide, Pairs) ->
+%% Partition the rows by the leaf-prefixed key column value, first-seen order.
+mem_group_nary_by(KeyName, Rows) ->
     lists:foldl(
-        fun({L, R}, Acc) ->
-            K = mem_pair_key(KeySide, KeyCol, L, R),
+        fun(R, Acc) ->
+            K = maps:get(KeyName, R, 'SqlNull'),
             case lists:keyfind(K, 1, Acc) of
-                {K, GP} -> lists:keyreplace(K, 1, Acc, {K, GP ++ [{L, R}]});
-                false   -> Acc ++ [{K, [{L, R}]}]
+                {K, GR} -> lists:keyreplace(K, 1, Acc, {K, GR ++ [R]});
+                false   -> Acc ++ [{K, [R]}]
             end
         end,
         [],
-        Pairs).
+        Rows).
 
-mem_pair_key(true,  KeyCol, _L, R) -> maps:get(KeyCol, R, 'SqlNull');
-mem_pair_key(false, KeyCol, L, _R) -> maps:get(KeyCol, L, 'SqlNull').
+%% One output row per join group: each `{Alias, Func, Column, Leaf}` folds the
+%% leaf-prefixed column, COUNT counts the rows, KEY answers the group key.
+mem_group_nary_row(Cols, Key, GR) ->
+    maps:from_list([{Alias, mem_group_nary_value(Func, Column, Leaf, Key, GR)}
+                    || {Alias, Func, Column, Leaf} <- Cols]).
 
-%% One output row per join group: each `{Alias, Func, Column, IsRight}` folds the
-%% column from its side, COUNT counts the pairs, KEY answers the group key.
-mem_group_join_row(Cols, Key, GP) ->
-    maps:from_list([{Alias, mem_group_join_value(Func, Column, IsRight, Key, GP)}
-                    || {Alias, Func, Column, IsRight} <- Cols]).
-
-mem_group_join_value(<<"KEY">>, _Col, _IsRight, Key, _GP)   -> Key;
-mem_group_join_value(<<"COUNT">>, _Col, _IsRight, _Key, GP) -> {'SqlInt', length(GP)};
-mem_group_join_value(Func, Col, IsRight, _Key, GP) ->
-    Rows = [mem_agg_side_row(IsRight, L, R) || {L, R} <- GP],
-    mem_aggregate_value(Func, Col, Rows).
+mem_group_nary_value(<<"KEY">>, _Col, _Leaf, Key, _GR)   -> Key;
+mem_group_nary_value(<<"COUNT">>, _Col, _Leaf, _Key, GR) -> {'SqlInt', length(GR)};
+mem_group_nary_value(Func, Col, Leaf, _Key, GR) ->
+    mem_aggregate_value(Func, mem_agg_prefixed_col(Leaf, Col), GR).
 
 %% HAVING over a join group: as mem_having, but its scalar-aggregate leaves fold a
-%% left (`QCol`) or right (`QColR`) column off the `{L,R}` pairs.
-mem_having_join({'QLitBool', true}, _Key, _GP) -> true;
-mem_having_join({'QAnd', L, R}, Key, GP) -> mem_having_join(L, Key, GP) andalso mem_having_join(R, Key, GP);
-mem_having_join({'QOr', L, R}, Key, GP)  -> mem_having_join(L, Key, GP) orelse mem_having_join(R, Key, GP);
-mem_having_join({'QNot', X}, Key, GP)    -> not mem_having_join(X, Key, GP);
-mem_having_join({'QEq', L, R}, Key, GP)  -> mem_hrelate_join(eq, L, R, Key, GP);
-mem_having_join({'QNe', L, R}, Key, GP)  -> not mem_hrelate_join(eq, L, R, Key, GP);
-mem_having_join({'QLt', L, R}, Key, GP)  -> mem_hrelate_join(lt, L, R, Key, GP);
-mem_having_join({'QGt', L, R}, Key, GP)  -> mem_hrelate_join(lt, R, L, Key, GP);
-mem_having_join({'QLe', L, R}, Key, GP)  -> not mem_hrelate_join(lt, R, L, Key, GP);
-mem_having_join({'QGe', L, R}, Key, GP)  -> not mem_hrelate_join(lt, L, R, Key, GP);
-mem_having_join(_Other, _Key, _GP)       -> true.
+%% leaf-prefixed column (`QCol`/`QColR`/`QColAt`) off the flat group rows.
+mem_having_nary({'QLitBool', true}, _Key, _GR) -> true;
+mem_having_nary({'QAnd', L, R}, Key, GR) -> mem_having_nary(L, Key, GR) andalso mem_having_nary(R, Key, GR);
+mem_having_nary({'QOr', L, R}, Key, GR)  -> mem_having_nary(L, Key, GR) orelse mem_having_nary(R, Key, GR);
+mem_having_nary({'QNot', X}, Key, GR)    -> not mem_having_nary(X, Key, GR);
+mem_having_nary({'QEq', L, R}, Key, GR)  -> mem_hrelate_nary(eq, L, R, Key, GR);
+mem_having_nary({'QNe', L, R}, Key, GR)  -> not mem_hrelate_nary(eq, L, R, Key, GR);
+mem_having_nary({'QLt', L, R}, Key, GR)  -> mem_hrelate_nary(lt, L, R, Key, GR);
+mem_having_nary({'QGt', L, R}, Key, GR)  -> mem_hrelate_nary(lt, R, L, Key, GR);
+mem_having_nary({'QLe', L, R}, Key, GR)  -> not mem_hrelate_nary(lt, R, L, Key, GR);
+mem_having_nary({'QGe', L, R}, Key, GR)  -> not mem_hrelate_nary(lt, L, R, Key, GR);
+mem_having_nary(_Other, _Key, _GR)       -> true.
 
-mem_hrelate_join(Op, L, R, Key, GP) ->
-    case {mem_hscalar_join(L, Key, GP), mem_hscalar_join(R, Key, GP)} of
+mem_hrelate_nary(Op, L, R, Key, GR) ->
+    case {mem_hscalar_nary(L, Key, GR), mem_hscalar_nary(R, Key, GR)} of
         {undefined, _} -> false;
         {_, undefined} -> false;
         {A, B}         -> mem_sql_cmp(Op, A, B)
     end.
 
-mem_hscalar_join('QGroupKey', Key, _GP) -> Key;
-mem_hscalar_join('QAggCount', _Key, GP) -> {'SqlInt', length(GP)};
-mem_hscalar_join({'QAggSum', Node}, _Key, GP) -> mem_agg_node_join(<<"SUM">>, Node, GP);
-mem_hscalar_join({'QAggAvg', Node}, _Key, GP) -> mem_agg_node_join(<<"AVG">>, Node, GP);
-mem_hscalar_join({'QAggMin', Node}, _Key, GP) -> mem_agg_node_join(<<"MIN">>, Node, GP);
-mem_hscalar_join({'QAggMax', Node}, _Key, GP) -> mem_agg_node_join(<<"MAX">>, Node, GP);
-mem_hscalar_join({'QLitInt', N}, _Key, _GP)   -> {'SqlInt', N};
-mem_hscalar_join({'QLitText', S}, _Key, _GP)  -> {'SqlText', S};
-mem_hscalar_join({'QLitBool', B}, _Key, _GP)  -> {'SqlBool', B};
-mem_hscalar_join({'QLitFloat', F}, _Key, _GP) -> {'SqlFloat', F};
-mem_hscalar_join(_Other, _Key, _GP)           -> undefined.
+mem_hscalar_nary('QGroupKey', Key, _GR) -> Key;
+mem_hscalar_nary('QAggCount', _Key, GR) -> {'SqlInt', length(GR)};
+mem_hscalar_nary({'QAggSum', Node}, _Key, GR) -> mem_agg_node_nary(<<"SUM">>, Node, GR);
+mem_hscalar_nary({'QAggAvg', Node}, _Key, GR) -> mem_agg_node_nary(<<"AVG">>, Node, GR);
+mem_hscalar_nary({'QAggMin', Node}, _Key, GR) -> mem_agg_node_nary(<<"MIN">>, Node, GR);
+mem_hscalar_nary({'QAggMax', Node}, _Key, GR) -> mem_agg_node_nary(<<"MAX">>, Node, GR);
+mem_hscalar_nary({'QLitInt', N}, _Key, _GR)   -> {'SqlInt', N};
+mem_hscalar_nary({'QLitText', S}, _Key, _GR)  -> {'SqlText', S};
+mem_hscalar_nary({'QLitBool', B}, _Key, _GR)  -> {'SqlBool', B};
+mem_hscalar_nary({'QLitFloat', F}, _Key, _GR) -> {'SqlFloat', F};
+mem_hscalar_nary(_Other, _Key, _GR)           -> undefined.
 
-%% A scalar aggregate over a join group's left (`QCol`) or right (`QColR`) column.
-mem_agg_node_join(Func, {'QCol', C}, GP)  -> mem_agg_or_undef(Func, C, [L || {L, _R} <- GP]);
-mem_agg_node_join(Func, {'QColR', C}, GP) -> mem_agg_or_undef(Func, C, [R || {_L, R} <- GP]);
-mem_agg_node_join(_Func, _Node, _GP)      -> undefined.
+%% A scalar aggregate over a join group's leaf-prefixed column: the first leaf for a
+%% `QCol`, the second for a `QColR`, the i-th for a `QColAt`.
+mem_agg_node_nary(Func, {'QCol', C}, GR)      -> mem_agg_or_undef(Func, mem_agg_prefixed_col(0, C), GR);
+mem_agg_node_nary(Func, {'QColR', C}, GR)     -> mem_agg_or_undef(Func, mem_agg_prefixed_col(1, C), GR);
+mem_agg_node_nary(Func, {'QColAt', I, C}, GR) -> mem_agg_or_undef(Func, mem_agg_prefixed_col(I, C), GR);
+mem_agg_node_nary(_Func, _Node, _GR)          -> undefined.
 
 %% Merge the Changes columns into every row matching the predicate tree, leaving
 %% the rest untouched; return `{UpdatedRows, ChangedCount}`. An empty Changes map

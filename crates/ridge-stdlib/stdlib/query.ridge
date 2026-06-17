@@ -62,13 +62,14 @@ pub fn ascending (dir: SortOrder) -> Bool =
 -- the scalar, or no row at all when the aggregate is SQL NULL (an empty fold) — so a
 -- reader takes the lone cell as the value and an empty result as "none". A `COUNT` is
 -- never NULL, so it always yields its row.
--- `PlanGroup` groups a sub-plan's rows by `keyCol` (read off the join side `keySide`
--- selects) and summarises each group into the `(alias, func, column, isRight)`
+-- `PlanGroup` groups a sub-plan's rows by `keyCol` (qualified to the join leaf
+-- `keyLeaf` selects — `t0`/`t1` for a binary join's two sides, higher for a deeper
+-- composite) and summarises each group into the `(alias, func, column, leaf)`
 -- aggregate columns, keeping the groups the `HAVING` tree admits; it yields one row
 -- per group, keyed by alias and ordered by the key — the plan form of a grouped
--- join `summarize`. It wraps a `PlanJoin`, whose flat source-prefixed rows it splits
--- back per side to read each group key and folded column.
-pub type QueryPlan = PlanScan Text QExpr (List (Bool, Text)) Int Int Bool | PlanCombine Text QueryPlan QueryPlan | PlanRefine QueryPlan QExpr (List (Bool, Text)) Int Int Bool | PlanJoin Text QueryPlan QueryPlan QExpr QExpr (List (Bool, Bool, Text)) Int Int Bool (List Text) (List Text) | PlanProject QExpr QueryPlan Int Int Bool | PlanAggregate Text Text Int QueryPlan | PlanGroup Text Bool (List (Text, Text, Text, Bool)) QExpr QueryPlan
+-- join `summarize`. It wraps a `PlanJoin`, reading each group key and folded column
+-- off the flat source-prefixed rows by their leaf's `t<leaf>$` prefix.
+pub type QueryPlan = PlanScan Text QExpr (List (Bool, Text)) Int Int Bool | PlanCombine Text QueryPlan QueryPlan | PlanRefine QueryPlan QExpr (List (Bool, Text)) Int Int Bool | PlanJoin Text QueryPlan QueryPlan QExpr QExpr (List (Bool, Bool, Text)) Int Int Bool (List Text) (List Text) | PlanProject QExpr QueryPlan Int Int Bool | PlanAggregate Text Text Int QueryPlan | PlanGroup Text Int (List (Text, Text, Text, Int)) QExpr QueryPlan
 
 -- A single-table scan plan — the plan form of `fetch`.
 pub fn planScan (table: Text) (pred: QExpr) (orders: List (Bool, Text)) (lim: Int) (off: Int) (dist: Bool) -> QueryPlan =
@@ -105,12 +106,12 @@ pub fn planProject (proj: QExpr) (child: QueryPlan) (lim: Int) (off: Int) (dist:
 pub fn planAggregate (func: Text) (column: Text) (leaf: Int) (child: QueryPlan) -> QueryPlan =
     PlanAggregate func column leaf child
 
--- Group a sub-plan's rows by `keyCol` (on the join side `keySide`), summarise each
--- group into the `(alias, func, column, isRight)` aggregate columns, and keep the
+-- Group a sub-plan's rows by `keyCol` (on the join leaf `keyLeaf`), summarise each
+-- group into the `(alias, func, column, leaf)` aggregate columns, and keep the
 -- groups the `having` tree admits. The result is one row per group keyed by alias,
 -- ordered by the key.
-pub fn planGroup (keyCol: Text) (keySide: Bool) (cols: List (Text, Text, Text, Bool)) (having: QExpr) (child: QueryPlan) -> QueryPlan =
-    PlanGroup keyCol keySide cols having child
+pub fn planGroup (keyCol: Text) (keyLeaf: Int) (cols: List (Text, Text, Text, Int)) (having: QExpr) (child: QueryPlan) -> QueryPlan =
+    PlanGroup keyCol keyLeaf cols having child
 
 -- Render a captured tree to a readable, SQL-shaped string. Literals show as `?`
 -- placeholders — binding parameters is the SQL-compilation pass's job; this is
@@ -274,8 +275,8 @@ fn renderPlan (plan: QueryPlan) (n: Int) -> { text: Text, binds: List SqlValue, 
             renderProject proj child lim off dist n
         PlanAggregate func column leaf child ->
             renderAggregate func column leaf child n
-        PlanGroup keyCol keySide cols having child ->
-            renderGroup keyCol keySide cols having child n
+        PlanGroup keyCol keyLeaf cols having child ->
+            renderGroup keyCol keyLeaf cols having child n
 
 -- A captured predicate to a parameterized fragment. `qualified` picks how a column
 -- reads: bare (`"col"`) for a single-table scan, or qualified to its join side
@@ -915,7 +916,7 @@ fn aggColJoin (isRight: Bool) (column: Text) -> Text =
 -- A grouped join (`groupBy` + `summarize`): one row per group, keyed by the
 -- side-qualified group key and summarised into the aggregate columns, keeping the
 -- groups the HAVING admits, ordered by the key.
-fn renderGroup (keyCol: Text) (keySide: Bool) (cols: List (Text, Text, Text, Bool)) (having: QExpr) (child: QueryPlan) (n: Int) -> { text: Text, binds: List SqlValue, next: Int } =
+fn renderGroup (keyCol: Text) (keyLeaf: Int) (cols: List (Text, Text, Text, Int)) (having: QExpr) (child: QueryPlan) (n: Int) -> { text: Text, binds: List SqlValue, next: Int } =
     match child
         PlanJoin kind left right cond where2 _ _ _ _ _ _ ->
             match left
@@ -923,22 +924,114 @@ fn renderGroup (keyCol: Text) (keySide: Bool) (cols: List (Text, Text, Text, Boo
                     match right
                         PlanScan rt _ _ _ _ _ ->
                             let sk = joinSkeleton kind lt lp rt cond where2 false n
-                            let keyExpr = renderColRef true keySide keyCol
-                            let h = renderHaving having keySide keyCol sk.next
+                            let keyExpr = renderColRef true (keyLeaf == 1) keyCol
+                            let h = renderHaving having (keyLeaf == 1) keyCol sk.next
                             { text = Text.join "" ["SELECT ", Text.join ", " (groupSelectTerms cols keyExpr), " FROM ", sk.text, " GROUP BY ", keyExpr, h.text, " ORDER BY ", keyExpr], binds = sk.binds ++ h.binds, next = h.next }
-                        _ -> emptyRender n
-                _ -> emptyRender n
+                        _ -> naryGroup keyCol keyLeaf cols having child n
+                _ -> naryGroup keyCol keyLeaf cols having child n
         _ -> emptyRender n
 
-fn groupSelectTerms (cols: List (Text, Text, Text, Bool)) (keyExpr: Text) -> List Text =
+fn groupSelectTerms (cols: List (Text, Text, Text, Int)) (keyExpr: Text) -> List Text =
     match cols
-        []                                  -> []
-        (alias, func, col, isRight) :: rest -> groupSelectTerm alias func col isRight keyExpr :: groupSelectTerms rest keyExpr
+        []                               -> []
+        (alias, func, col, leaf) :: rest -> groupSelectTerm alias func col leaf keyExpr :: groupSelectTerms rest keyExpr
 
-fn groupSelectTerm (alias: Text) (func: Text) (col: Text) (isRight: Bool) (keyExpr: Text) -> Text =
+fn groupSelectTerm (alias: Text) (func: Text) (col: Text) (leaf: Int) (keyExpr: Text) -> Text =
     if func == "KEY" then Text.join "" [keyExpr, " AS ", quoteIdent alias]
     else if func == "COUNT" then Text.join "" ["COUNT(*) AS ", quoteIdent alias]
-    else Text.join "" [aggExprJoin func isRight col, " AS ", quoteIdent alias]
+    else Text.join "" [aggExprJoin func (leaf == 1) col, " AS ", quoteIdent alias]
+
+-- A grouped composite (three-or-more table) join: the flattened spine as the `FROM`,
+-- one row per group keyed by the leaf-qualified group key and summarised into the
+-- aggregate columns, keeping the groups the HAVING admits, ordered by the key. The
+-- mirror of `naryAggregate` for a grouped fold: an all-inner spine renders its plain
+-- multi-way join, a mixed-shape spine each step by its own kind with the presence
+-- markers a bare terminal needs left off (a grouped fold reads the null-extended NULLs
+-- directly). Each aggregate column folds `column` on its leaf alias `t<leaf>`.
+fn naryGroup (keyCol: Text) (keyLeaf: Int) (cols: List (Text, Text, Text, Int)) (having: QExpr) (child: QueryPlan) (n: Int) -> { text: Text, binds: List SqlValue, next: Int } =
+    let f = flattenJoin child
+    match f.leaves
+        [] -> emptyRender n
+        _  ->
+            let keyExpr = naryColRef keyLeaf keyCol
+            if allInnerSteps f.steps then
+                let from = naryFrom f.leaves f.steps n
+                let wh = naryWhere f.leaves f.steps from.next
+                let h = naryHaving having keyLeaf keyCol wh.next
+                { text = Text.join "" ["SELECT ", Text.join ", " (naryGroupSelectTerms cols keyExpr), " FROM ", from.text, wh.text, " GROUP BY ", keyExpr, h.text, " ORDER BY ", keyExpr], binds = from.binds ++ wh.binds ++ h.binds, next = h.next }
+            else
+                let from = mixedFrom f.leaves f.steps [] n
+                let wh = mixedWhere f.steps from.next
+                let h = naryHaving having keyLeaf keyCol wh.next
+                { text = Text.join "" ["SELECT ", Text.join ", " (naryGroupSelectTerms cols keyExpr), " FROM ", from.text, wh.text, " GROUP BY ", keyExpr, h.text, " ORDER BY ", keyExpr], binds = from.binds ++ wh.binds ++ h.binds, next = h.next }
+
+fn naryGroupSelectTerms (cols: List (Text, Text, Text, Int)) (keyExpr: Text) -> List Text =
+    match cols
+        []                               -> []
+        (alias, func, col, leaf) :: rest -> naryGroupSelectTerm alias func col leaf keyExpr :: naryGroupSelectTerms rest keyExpr
+
+fn naryGroupSelectTerm (alias: Text) (func: Text) (col: Text) (leaf: Int) (keyExpr: Text) -> Text =
+    if func == "KEY" then Text.join "" [keyExpr, " AS ", quoteIdent alias]
+    else Text.join "" [naryAggExpr func leaf col, " AS ", quoteIdent alias]
+
+-- A composite-join HAVING fragment, the leaf-qualified dual of `renderHaving`: its
+-- aggregate operands fold a leaf-qualified column (`t<leaf>`) and its group-key
+-- operand reads the key off its leaf, where the binary form reads the left/right
+-- side. Empty for the always-true default, so the clause is omitted.
+fn naryHaving (having: QExpr) (keyLeaf: Int) (keyCol: Text) (n: Int) -> { text: Text, binds: List SqlValue, next: Int } =
+    match having
+        QLitBool b -> if b then { text = "", binds = [], next = n } else naryHavingClause having keyLeaf keyCol n
+        _          -> naryHavingClause having keyLeaf keyCol n
+
+fn naryHavingClause (having: QExpr) (keyLeaf: Int) (keyCol: Text) (n: Int) -> { text: Text, binds: List SqlValue, next: Int } =
+    let h = naryHavingExpr having keyLeaf keyCol n
+    { text = Text.concat " HAVING " h.text, binds = h.binds, next = h.next }
+
+fn naryHavingExpr (e: QExpr) (keyLeaf: Int) (keyCol: Text) (n: Int) -> { text: Text, binds: List SqlValue, next: Int } =
+    match e
+        QAnd l r -> naryHavingBin l " AND " r keyLeaf keyCol n
+        QOr l r  -> naryHavingBin l " OR " r keyLeaf keyCol n
+        QNot x   ->
+            let r = naryHavingExpr x keyLeaf keyCol n
+            { text = Text.join "" ["(NOT ", r.text, ")"], binds = r.binds, next = r.next }
+        QEq l r -> naryHavingCmp l " = " r keyLeaf keyCol n
+        QNe l r -> naryHavingCmp l " <> " r keyLeaf keyCol n
+        QLt l r -> naryHavingCmp l " < " r keyLeaf keyCol n
+        QGt l r -> naryHavingCmp l " > " r keyLeaf keyCol n
+        QLe l r -> naryHavingCmp l " <= " r keyLeaf keyCol n
+        QGe l r -> naryHavingCmp l " >= " r keyLeaf keyCol n
+        _       -> naryHavingOperand e keyLeaf keyCol n
+
+fn naryHavingCmp (l: QExpr) (op: Text) (r: QExpr) (keyLeaf: Int) (keyCol: Text) (n: Int) -> { text: Text, binds: List SqlValue, next: Int } =
+    let lr = naryHavingOperand l keyLeaf keyCol n
+    let rr = naryHavingOperand r keyLeaf keyCol lr.next
+    { text = Text.join "" [lr.text, op, rr.text], binds = lr.binds ++ rr.binds, next = rr.next }
+
+fn naryHavingBin (l: QExpr) (op: Text) (r: QExpr) (keyLeaf: Int) (keyCol: Text) (n: Int) -> { text: Text, binds: List SqlValue, next: Int } =
+    let lr = naryHavingExpr l keyLeaf keyCol n
+    let rr = naryHavingExpr r keyLeaf keyCol lr.next
+    { text = Text.join "" ["(", lr.text, op, rr.text, ")"], binds = lr.binds ++ rr.binds, next = rr.next }
+
+fn naryHavingOperand (e: QExpr) (keyLeaf: Int) (keyCol: Text) (n: Int) -> { text: Text, binds: List SqlValue, next: Int } =
+    match e
+        QAggCount    -> { text = "COUNT(*)", binds = [], next = n }
+        QGroupKey    -> { text = naryColRef keyLeaf keyCol, binds = [], next = n }
+        QAggSum node -> { text = naryAggExprNode "SUM" node, binds = [], next = n }
+        QAggAvg node -> { text = naryAggExprNode "AVG" node, binds = [], next = n }
+        QAggMin node -> { text = naryAggExprNode "MIN" node, binds = [], next = n }
+        QAggMax node -> { text = naryAggExprNode "MAX" node, binds = [], next = n }
+        QLitInt v    -> { text = placeholder n, binds = [sqlInt v], next = n + 1 }
+        QLitText v   -> { text = placeholder n, binds = [sqlText v], next = n + 1 }
+        QLitBool v   -> { text = placeholder n, binds = [sqlBool v], next = n + 1 }
+        QLitFloat v  -> { text = placeholder n, binds = [sqlFloat v], next = n + 1 }
+        _            -> { text = "NULL", binds = [], next = n }
+
+fn naryAggExprNode (func: Text) (node: QExpr) -> Text =
+    match node
+        QCol c     -> naryAggExpr func 0 c
+        QColR c    -> naryAggExpr func 1 c
+        QColAt i c -> naryAggExpr func i c
+        _          -> "NULL"
 
 -- A join HAVING fragment, with the leading ` HAVING ` folded in — empty for the
 -- always-true default, so the clause is omitted. Structurally a predicate, but its

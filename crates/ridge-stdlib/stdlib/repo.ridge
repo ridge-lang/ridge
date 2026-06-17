@@ -410,7 +410,7 @@ pub class Groupable q p | q -> p =
 -- its own class so the seam call (one `Adapter a` context) stays separate from that
 -- decode.
 pub class Summarizable q =
-    runGroups (src: q) (keyCol: Text) (keySide: Bool) (projTree: QExpr) (havingTree: QExpr) -> Result (List (Map Text SqlValue)) Error
+    runGroups (src: q) (keyCol: Text) (keyLeaf: Int) (projTree: QExpr) (havingTree: QExpr) -> Result (List (Map Text SqlValue)) Error
 
 -- `limit`/`offset`/`distinct` over a query, an inner join, or a left join are the
 -- methods of the `Pageable q` class (declared above); the instances are defined
@@ -577,14 +577,16 @@ fn decodeScalar (v: Option SqlValue) -> Result (Option w) Error where SqlType w 
 --     |> Repo.groupBy (fn (u: User) -> u.dept)
 --     |> Repo.having (fn g -> g.count > 3)
 --     |> Repo.summarize (fn g -> DeptStats { dept = g.key, members = g.count })
--- `source` is the queryable it groups (a `Query`, `Join`, or `LeftJoin`); `keyCol`
--- and `keySide` name the group-key column and, for a join, which side it belongs to;
--- `having` is the captured `HAVING` tree, always-true until `having` narrows it. The
--- key-accessor type `p` is phantom — kept only so the `having`/`summarize` quotes can
--- read the key type `g.key` answers off it. Only the source's filter (and a join's
--- condition) bounds the rows: ordering and paging do not constrain a grouping, so the
--- source's ordering and page do not carry over. Opaque, never built by user code.
-pub opaque type Grouped q p = { source: q, keyCol: Text, keySide: Bool, havingTree: QExpr }
+-- `source` is the queryable it groups (a `Query`, a binary `Join`, or a nested-join
+-- composite); `keyCol` and `keyLeaf` name the group-key column and, for a join, which
+-- leaf it belongs to (`0`/`1` for a binary join's two sides, higher for a deeper
+-- composite); `having` is the captured `HAVING` tree, always-true until `having`
+-- narrows it. The key-accessor type `p` is phantom — kept only so the
+-- `having`/`summarize` quotes can read the key type `g.key` answers off it. Only the
+-- source's filter (and a join's condition) bounds the rows: ordering and paging do not
+-- constrain a grouping, so the source's ordering and page do not carry over. Opaque,
+-- never built by user code.
+pub opaque type Grouped q p = { source: q, keyCol: Text, keyLeaf: Int, havingTree: QExpr }
 
 -- `groupBy` over a query, an inner join, or a left join is the method of the
 -- `Groupable q p | q -> p` class (instances below): the receiver fixes the key
@@ -599,7 +601,7 @@ pub opaque type Grouped q p = { source: q, keyCol: Text, keySide: Bool, havingTr
 -- replaces an earlier one. The quote ranges over the `Grouped q p` handle, so over a
 -- join its column accessors name a column from either side.
 pub fn having (pred: Quote (Grouped q p -> Bool)) (g: Grouped q p) -> Grouped q p =
-    Grouped { source = g.source, keyCol = g.keyCol, keySide = g.keySide, havingTree = pred.tree }
+    Grouped { source = g.source, keyCol = g.keyCol, keyLeaf = g.keyLeaf, havingTree = pred.tree }
 
 -- Summarize each surviving group into a named record built from group aggregates:
 --   fn g -> DeptStats { dept    = g.key
@@ -612,7 +614,7 @@ pub fn having (pred: Quote (Grouped q p -> Bool)) (g: Grouped q p) -> Grouped q 
 -- and returns one row per group, ordered by the key; `summarize` then decodes each.
 -- This is the grouped dual of `select`: a projection, but over groups instead of rows.
 pub fn summarize (proj: Quote (Grouped q p -> s)) (g: Grouped q p) -> Result (List s) Error where Summarizable q, Row s =
-    match runGroups g.source g.keyCol g.keySide proj.tree g.havingTree
+    match runGroups g.source g.keyCol g.keyLeaf proj.tree g.havingTree
         Err err -> Err err
         Ok rows -> decodeRows rows
 
@@ -2311,13 +2313,13 @@ instance Every (FullJoined q f a) (Map Text SqlValue -> Map Text SqlValue -> Boo
 -- captured key; a query has no right table, so the side is always the left.
 instance Groupable (Query e a) (fn e -> k) =
     groupBy (key: Quote (fn e -> k)) (x: Query e a) -> Grouped (Query e a) (fn e -> k) =
-        Grouped { source = x, keyCol = aggColumn key, keySide = aggSide key, havingTree = keepAllTree () }
+        Grouped { source = x, keyCol = aggColumn key, keyLeaf = aggLeaf key, havingTree = keepAllTree () }
 
 -- A query's `summarize` seam: run the `GROUP BY` (and any `HAVING`) over the query's
 -- own filter through the `groupSummarize` push-down, returning one raw row per group
 -- for `summarize` to decode. The key side is unused for a query (no right table).
 instance Summarizable (Query e a) where Adapter a =
-    runGroups (src: Query e a) (keyCol: Text) (keySide: Bool) (projTree: QExpr) (havingTree: QExpr) -> Result (List (Map Text SqlValue)) Error =
+    runGroups (src: Query e a) (keyCol: Text) (keyLeaf: Int) (projTree: QExpr) (havingTree: QExpr) -> Result (List (Map Text SqlValue)) Error =
         groupSummarize src.repo.adapter src.repo.table src.pred keyCol (groupCols keyCol projTree) havingTree
 
 -- An inner join's `groupBy`: the key is a two-row accessor naming a column from
@@ -2328,58 +2330,100 @@ instance Summarizable (Query e a) where Adapter a =
 -- does not produce one per row.
 instance Groupable (Join e f a) (fn e f -> k) =
     groupBy (key: Quote (fn e f -> k)) (x: Join e f a) -> Grouped (Join e f a) (fn e f -> k) =
-        Grouped { source = x, keyCol = aggColumn key, keySide = aggSide key, havingTree = keepAllTree () }
+        Grouped { source = x, keyCol = aggColumn key, keyLeaf = aggLeaf key, havingTree = keepAllTree () }
 
 -- A left join's `groupBy`: the two-row dual over a `LeftJoin`, the right side read as
 -- the plain entity `f` as in the left-join aggregates. A right-side key groups the
 -- unmatched left rows under the NULL key the backend gives them.
 instance Groupable (LeftJoin e f a) (fn e f -> k) =
     groupBy (key: Quote (fn e f -> k)) (x: LeftJoin e f a) -> Grouped (LeftJoin e f a) (fn e f -> k) =
-        Grouped { source = x, keyCol = aggColumn key, keySide = aggSide key, havingTree = keepAllTree () }
+        Grouped { source = x, keyCol = aggColumn key, keyLeaf = aggLeaf key, havingTree = keepAllTree () }
 
 -- A right join's `groupBy`: the two-row dual over a `RightJoin`, both sides read as
 -- the plain entities `e`/`f` as in the right-join aggregates. A left-side key groups
 -- the unmatched right rows under the NULL key the backend gives them.
 instance Groupable (RightJoin e f a) (fn e f -> k) =
     groupBy (key: Quote (fn e f -> k)) (x: RightJoin e f a) -> Grouped (RightJoin e f a) (fn e f -> k) =
-        Grouped { source = x, keyCol = aggColumn key, keySide = aggSide key, havingTree = keepAllTree () }
+        Grouped { source = x, keyCol = aggColumn key, keyLeaf = aggLeaf key, havingTree = keepAllTree () }
 
 -- A full join's `groupBy`: the two-row dual over a `FullJoin`, both sides read as the
 -- plain entities `e`/`f` as in the full-join aggregates. A key over a side groups the
 -- rows unmatched on that side under the NULL key the backend gives them.
 instance Groupable (FullJoin e f a) (fn e f -> k) =
     groupBy (key: Quote (fn e f -> k)) (x: FullJoin e f a) -> Grouped (FullJoin e f a) (fn e f -> k) =
-        Grouped { source = x, keyCol = aggColumn key, keySide = aggSide key, havingTree = keepAllTree () }
+        Grouped { source = x, keyCol = aggColumn key, keyLeaf = aggLeaf key, havingTree = keepAllTree () }
 
 -- An inner join's `summarize` seam: run the `GROUP BY` (and any `HAVING`) over the
 -- joined rows through a `PlanGroup` over the all-pairs join plan, side-qualifying the
 -- key and each aggregate column to its table. Returns one raw row per group for
 -- `summarize` to decode.
 instance Summarizable (Join e f a) where Adapter a =
-    runGroups (src: Join e f a) (keyCol: Text) (keySide: Bool) (projTree: QExpr) (havingTree: QExpr) -> Result (List (Map Text SqlValue)) Error =
-        runPlan src.left.repo.adapter (planGroup keyCol keySide (groupCols keyCol projTree) havingTree (reduceJoin src src.where2.tree (0 - 1)))
+    runGroups (src: Join e f a) (keyCol: Text) (keyLeaf: Int) (projTree: QExpr) (havingTree: QExpr) -> Result (List (Map Text SqlValue)) Error =
+        runPlan src.left.repo.adapter (planGroup keyCol keyLeaf (groupColsLeaf keyCol projTree) havingTree (reduceJoin src src.where2.tree (0 - 1)))
 
 -- A left join's `summarize` seam: the dual over a `LeftJoin`, run through the
 -- `groupSummarizeLeftJoin` push-down. Every left row the post-join `WHERE` admits
 -- joins a group; an unmatched one contributes its left columns and a NULL right side.
 instance Summarizable (LeftJoin e f a) where Adapter a =
-    runGroups (src: LeftJoin e f a) (keyCol: Text) (keySide: Bool) (projTree: QExpr) (havingTree: QExpr) -> Result (List (Map Text SqlValue)) Error =
-        runPlan src.left.repo.adapter (planGroup keyCol keySide (groupCols keyCol projTree) havingTree (leftReduceJoin src src.where2.tree (0 - 1)))
+    runGroups (src: LeftJoin e f a) (keyCol: Text) (keyLeaf: Int) (projTree: QExpr) (havingTree: QExpr) -> Result (List (Map Text SqlValue)) Error =
+        runPlan src.left.repo.adapter (planGroup keyCol keyLeaf (groupColsLeaf keyCol projTree) havingTree (leftReduceJoin src src.where2.tree (0 - 1)))
 
 -- A right join's `summarize` seam: the dual over a `RightJoin`, run through the
 -- `groupSummarizeRightJoin` push-down. Every right row the post-join `WHERE` admits
 -- joins a group; an unmatched one contributes its right columns and a NULL left side.
 instance Summarizable (RightJoin e f a) where Adapter a =
-    runGroups (src: RightJoin e f a) (keyCol: Text) (keySide: Bool) (projTree: QExpr) (havingTree: QExpr) -> Result (List (Map Text SqlValue)) Error =
-        runPlan src.left.repo.adapter (planGroup keyCol keySide (groupCols keyCol projTree) havingTree (rightReduceJoin src src.where2.tree (0 - 1)))
+    runGroups (src: RightJoin e f a) (keyCol: Text) (keyLeaf: Int) (projTree: QExpr) (havingTree: QExpr) -> Result (List (Map Text SqlValue)) Error =
+        runPlan src.left.repo.adapter (planGroup keyCol keyLeaf (groupColsLeaf keyCol projTree) havingTree (rightReduceJoin src src.where2.tree (0 - 1)))
 
 -- A full join's `summarize` seam: the dual over a `FullJoin`, run through the
 -- `groupSummarizeFullJoin` push-down. Every row of both tables the post-join `WHERE`
 -- admits joins a group; an unmatched one contributes its present side's columns and a
 -- NULL on the missing side, grouping under the NULL key for a key over that side.
 instance Summarizable (FullJoin e f a) where Adapter a =
-    runGroups (src: FullJoin e f a) (keyCol: Text) (keySide: Bool) (projTree: QExpr) (havingTree: QExpr) -> Result (List (Map Text SqlValue)) Error =
-        runPlan src.left.repo.adapter (planGroup keyCol keySide (groupCols keyCol projTree) havingTree (fullReduceJoin src src.where2.tree (0 - 1)))
+    runGroups (src: FullJoin e f a) (keyCol: Text) (keyLeaf: Int) (projTree: QExpr) (havingTree: QExpr) -> Result (List (Map Text SqlValue)) Error =
+        runPlan src.left.repo.adapter (planGroup keyCol keyLeaf (groupColsLeaf keyCol projTree) havingTree (fullReduceJoin src src.where2.tree (0 - 1)))
+
+-- An inner-join composite's `groupBy`: name the group-key column with a leaf accessor
+-- (`fn (u: User) (p: Post) (c: Comment) -> c.body`), exactly as the composite scalar
+-- aggregates do, and wrap the composite into the unified `Grouped` builder.
+-- `aggColumn`/`aggLeaf` read the column and its leaf off the captured key.
+instance Groupable (Joined q f a) (Map Text SqlValue -> k) =
+    groupBy (key: Quote (Map Text SqlValue -> k)) (x: Joined q f a) -> Grouped (Joined q f a) (Map Text SqlValue -> k) =
+        Grouped { source = x, keyCol = aggColumn key, keyLeaf = aggLeaf key, havingTree = keepAllTree () }
+
+instance Groupable (LeftJoined q f a) (Map Text SqlValue -> k) =
+    groupBy (key: Quote (Map Text SqlValue -> k)) (x: LeftJoined q f a) -> Grouped (LeftJoined q f a) (Map Text SqlValue -> k) =
+        Grouped { source = x, keyCol = aggColumn key, keyLeaf = aggLeaf key, havingTree = keepAllTree () }
+
+instance Groupable (RightJoined q f a) (Map Text SqlValue -> k) =
+    groupBy (key: Quote (Map Text SqlValue -> k)) (x: RightJoined q f a) -> Grouped (RightJoined q f a) (Map Text SqlValue -> k) =
+        Grouped { source = x, keyCol = aggColumn key, keyLeaf = aggLeaf key, havingTree = keepAllTree () }
+
+instance Groupable (FullJoined q f a) (Map Text SqlValue -> k) =
+    groupBy (key: Quote (Map Text SqlValue -> k)) (x: FullJoined q f a) -> Grouped (FullJoined q f a) (Map Text SqlValue -> k) =
+        Grouped { source = x, keyCol = aggColumn key, keyLeaf = aggLeaf key, havingTree = keepAllTree () }
+
+-- A composite's `summarize` seam: run the `GROUP BY` (and any `HAVING`) over the
+-- nested join's all-pairs reduction through a `PlanGroup`, leaf-qualifying the key and
+-- each aggregate column to its table. The new leaf carries no column list in the plan
+-- (a grouped projection names its own select-list), so the instance needs no `Row f` —
+-- only `Adapter a` to reach the store and `JoinShape q` to plan the source spine.
+-- Returns one raw row per group for `summarize` to decode through its own `Row s`.
+instance Summarizable (Joined q f a) where Adapter a, JoinShape q =
+    runGroups (src: Joined q f a) (keyCol: Text) (keyLeaf: Int) (projTree: QExpr) (havingTree: QExpr) -> Result (List (Map Text SqlValue)) Error =
+        runPlan src.right.adapter (planGroup keyCol keyLeaf (groupColsLeaf keyCol projTree) havingTree (compositeReducePlan "INNER" (joinedSourcePlan src.source) src.right.table src.cond.tree src.where2.tree (0 - 1) []))
+
+instance Summarizable (LeftJoined q f a) where Adapter a, JoinShape q =
+    runGroups (src: LeftJoined q f a) (keyCol: Text) (keyLeaf: Int) (projTree: QExpr) (havingTree: QExpr) -> Result (List (Map Text SqlValue)) Error =
+        runPlan src.right.adapter (planGroup keyCol keyLeaf (groupColsLeaf keyCol projTree) havingTree (compositeReducePlan "LEFT" (joinedSourcePlan src.source) src.right.table src.cond.tree src.where2.tree (0 - 1) []))
+
+instance Summarizable (RightJoined q f a) where Adapter a, JoinShape q =
+    runGroups (src: RightJoined q f a) (keyCol: Text) (keyLeaf: Int) (projTree: QExpr) (havingTree: QExpr) -> Result (List (Map Text SqlValue)) Error =
+        runPlan src.right.adapter (planGroup keyCol keyLeaf (groupColsLeaf keyCol projTree) havingTree (compositeReducePlan "RIGHT" (joinedSourcePlan src.source) src.right.table src.cond.tree src.where2.tree (0 - 1) []))
+
+instance Summarizable (FullJoined q f a) where Adapter a, JoinShape q =
+    runGroups (src: FullJoined q f a) (keyCol: Text) (keyLeaf: Int) (projTree: QExpr) (havingTree: QExpr) -> Result (List (Map Text SqlValue)) Error =
+        runPlan src.right.adapter (planGroup keyCol keyLeaf (groupColsLeaf keyCol projTree) havingTree (compositeReducePlan "FULL" (joinedSourcePlan src.source) src.right.table src.cond.tree src.where2.tree (0 - 1) []))
 
 -- Strip a source prefix (`t0$`/`t1$`) from the keys of a flat joined row, keeping
 -- only the columns of that source and re-keying them by their bare column name. A
@@ -2639,14 +2683,6 @@ fn aggLeaf (col: Quote p) -> Int =
         QColAt i _ -> i
         _          -> 0
 
--- Which side of a binary join an aggregate or group key names: a `QColR` tree is the
--- right table, anything else the left (or single) table. The two-table form `aggLeaf`
--- generalises; this stays for the group key's `keySide`, still a left/right boolean.
-fn aggSide (col: Quote p) -> Bool =
-    match col.tree
-        QColR _ -> true
-        _       -> false
-
 -- An always-true `HAVING` tree — the group default before `having` narrows it. A
 -- `Quote`/`QExpr` literal cannot be written in Ridge source, so the always-true
 -- tree is taken from `keepAll`'s captured tree, the same one the query builder
@@ -2667,6 +2703,20 @@ fn groupColPairs (keyCol: Text) (cols: List (Text, QExpr)) -> List (Text, Text, 
         []                  -> []
         (alias, ex) :: rest -> (alias, aggFunc ex, aggCol keyCol ex, aggColSide ex) :: groupColPairs keyCol rest
 
+-- The leaf-indexed dual of `groupCols`, for a join or composite run through a
+-- `PlanGroup`: each aggregate column carries the join leaf it folds (`0`/`1` for a
+-- binary join's two sides, higher for a deeper composite) rather than a left/right
+-- boolean, so the renderer and the in-memory backend qualify it to its leaf alias.
+fn groupColsLeaf (keyCol: Text) (tree: QExpr) -> List (Text, Text, Text, Int) =
+    match tree
+        QProj cols -> groupColLeafPairs keyCol cols
+        _          -> []
+
+fn groupColLeafPairs (keyCol: Text) (cols: List (Text, QExpr)) -> List (Text, Text, Text, Int) =
+    match cols
+        []                  -> []
+        (alias, ex) :: rest -> (alias, aggFunc ex, aggCol keyCol ex, aggColLeaf ex) :: groupColLeafPairs keyCol rest
+
 -- Which side of a join a group aggregate folds: a right-side column (`QColR`) inside
 -- a `g.sum`/`avg`/`min`/`max` node folds the right table. `g.key` and `g.count` fold
 -- no column of their own — the key column is side-tagged on the grouped builder
@@ -2683,6 +2733,24 @@ fn aggNodeSide (c: QExpr) -> Bool =
     match c
         QColR _ -> true
         _       -> false
+
+-- Which join leaf a group aggregate folds: the leaf-indexed dual of `aggColSide`. A
+-- column inside a `g.sum`/`avg`/`min`/`max` node names its leaf (`QCol` the first,
+-- `QColR` the second, `QColAt i` the i-th); `g.key`/`g.count` fold no column of their
+-- own and default to the first leaf.
+fn aggColLeaf (ex: QExpr) -> Int =
+    match ex
+        QAggSum c -> aggNodeLeaf c
+        QAggAvg c -> aggNodeLeaf c
+        QAggMin c -> aggNodeLeaf c
+        QAggMax c -> aggNodeLeaf c
+        _         -> 0
+
+fn aggNodeLeaf (c: QExpr) -> Int =
+    match c
+        QColR _    -> 1
+        QColAt i _ -> i
+        _          -> 0
 
 -- The SQL aggregate keyword a group aggregate node names.
 fn aggFunc (ex: QExpr) -> Text =

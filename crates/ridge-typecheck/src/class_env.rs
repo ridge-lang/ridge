@@ -1978,6 +1978,60 @@ pub fn register_stdlib_instances(
         }
     }
 
+    // `Groupable (Joined q f a)` and the three outer composites — the nested join's
+    // `groupBy`. A fundep terminal keyed by the RECEIVER ALONE (the key accessor's leaf
+    // arity grows with the join depth), like the composite `Aggregable`/`Refinable`.
+    // `groupBy` only builds the `Grouped` record and reaches no store, so it carries no
+    // context constraints, exactly as the binary `Groupable` does.
+    if let Some(groupable) = ct.id_by_name("Groupable") {
+        let composite_groupable_inst = || InstanceInfo {
+            def_module: None,
+            methods: vec![("groupBy".to_string(), String::new())],
+            ctx_constraints: vec![],
+            head_var_positions: vec![],
+            origin: InstanceOrigin::Explicit,
+            span: ds,
+        };
+        for name in ["Joined", "LeftJoined", "RightJoined", "FullJoined"] {
+            if let Some(&tycon) = reconciled_tycon_names.get(name) {
+                env.instances
+                    .entry((groupable, smallvec![tycon]))
+                    .or_insert_with(composite_groupable_inst);
+            }
+        }
+    }
+
+    // `Summarizable (Joined q f a)` and the three outer composites — the nested join's
+    // `summarize` seam. A single-parameter class keyed by the RECEIVER tycon alone,
+    // carrying `where Adapter a, JoinShape q` to reach the store (`a@2`) and plan the
+    // source spine (`q@0`). The grouped projection names its own select-list, so the
+    // instance never touches `Row f`. `summarize` decodes the rows through its own
+    // `Row s`.
+    if let (Some(summarizable), Some(adapter), Some(joinshape)) = (
+        ct.id_by_name("Summarizable"),
+        ct.id_by_name("Adapter"),
+        ct.id_by_name("JoinShape"),
+    ) {
+        let composite_summarizable_inst = || InstanceInfo {
+            def_module: None,
+            methods: vec![("runGroups".to_string(), String::new())],
+            ctx_constraints: vec![
+                ridge_types::Constraint::single(adapter, ridge_types::TyVid(0)),
+                ridge_types::Constraint::single(joinshape, ridge_types::TyVid(0)),
+            ],
+            head_var_positions: vec![2, 0],
+            origin: InstanceOrigin::Explicit,
+            span: ds,
+        };
+        for name in ["Joined", "LeftJoined", "RightJoined", "FullJoined"] {
+            if let Some(&tycon) = reconciled_tycon_names.get(name) {
+                env.instances
+                    .entry((summarizable, smallvec![tycon]))
+                    .or_insert_with(composite_summarizable_inst);
+            }
+        }
+    }
+
     // `Decodable (Query e a) (fn raw -> e)`, `Decodable (Join e f a) (fn (raw,
     // raw) -> (e, f))`, and `Decodable (LeftJoin e f a) (fn (raw, Option raw) ->
     // (e, Option f))` — the unified `toList`/`first` decode terminals from

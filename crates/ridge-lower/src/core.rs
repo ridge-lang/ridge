@@ -974,6 +974,10 @@ fn lambda_param_name(p: Option<&LambdaParam>) -> Option<String> {
 /// leaf index: the first parameter reifies to `QCol`, the second to `QColR`, and
 /// the third onward to `QColAt <i>`. A single-parameter quote passes one name and
 /// every column stays `QCol`.
+#[expect(
+    clippy::too_many_lines,
+    reason = "one linear walk over the quoted-body node shapes (column access, literals, comparisons, boolean operators); splitting it would scatter the shared reification setup"
+)]
 fn reify_node(ctx: &mut LowerCtx<'_>, e: &Expr, params: &[String]) -> IrExpr {
     use ridge_ast::BinOp;
     match e {
@@ -998,7 +1002,7 @@ fn reify_node(ctx: &mut LowerCtx<'_>, e: &Expr, params: &[String]) -> IrExpr {
                 Some(i) if i >= 2 => {
                     let idx_lit = IrExpr::Lit {
                         id: ctx.fresh_id(None),
-                        value: IrLit::Int(i as i64),
+                        value: IrLit::Int(i64::try_from(i).unwrap_or(i64::MAX)),
                         span: *span,
                     };
                     qexpr_node(ctx, "QColAt", 22, vec![idx_lit, name_lit], *span)

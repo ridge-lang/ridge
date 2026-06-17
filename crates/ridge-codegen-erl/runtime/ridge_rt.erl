@@ -1277,6 +1277,16 @@ mem_eval_plan(State, Id, {'PlanRefine', Inner, Pred, Orders, Lim, Off, Dist}) ->
     Rows = mem_eval_plan(State, Id, Inner),
     Matches = [R || R <- Rows, mem_pred(Pred, R)],
     mem_paginate(mem_distinct(Dist, mem_order(Orders, Matches)), Lim, Off);
+mem_eval_plan(State, Id, {'PlanJoin', <<"INNER">>, Left, _Right, _Cond, _Where2, Orders, Lim, Off, Dist, _LeftCols, _RightCols} = Plan)
+  when element(1, Left) =:= 'PlanJoin' ->
+    %% A nested inner join of three or more tables: flatten the left-nested spine into
+    %% ordered leaf scans and per-step join filters, evaluate each leaf, then build the
+    %% N-way product as flat rows with each leaf's columns under its `t<i>$` prefix —
+    %% the same flat shape a binary join produces, one leaf wider.
+    {Leaves, Steps} = mem_flatten_inner(Plan),
+    LeafRows = [mem_eval_plan(State, Id, Leaf) || Leaf <- Leaves],
+    Flat = mem_nary_product(LeafRows, Steps),
+    mem_paginate(mem_distinct(Dist, mem_order_nary(Orders, Flat)), Lim, Off);
 mem_eval_plan(State, Id, {'PlanJoin', <<"INNER">>, Left, Right, Cond, Where2, Orders, Lim, Off, Dist, _LeftCols, _RightCols}) ->
     LeftRows = mem_eval_plan(State, Id, Left),
     RightRows = mem_eval_plan(State, Id, Right),
@@ -1791,6 +1801,108 @@ mem_jscalar({'QLitText', S}, _L, _R)  -> {'SqlText', S};
 mem_jscalar({'QLitBool', B}, _L, _R)  -> {'SqlBool', B};
 mem_jscalar({'QLitFloat', F}, _L, _R) -> {'SqlFloat', F};
 mem_jscalar(_Other, _L, _R)           -> undefined.
+
+%% --- N-ary (3+ table) inner join evaluation ---
+%%
+%% A join of three or more tables reaches the runtime as a left-nested PlanJoin. It
+%% is evaluated by flattening that spine into ordered leaf scans and the per-step
+%% {Cond, Where2}, then building the N-way product of the leaf rows into one flat row
+%% per combination, each leaf's columns merged under its own `t<i>$` prefix — the same
+%% flat shape mem_prefix_pair produces for two tables, generalised to N. A condition
+%% reads its source by leaf index against that flat row (`QCol` leaf 0, `QColR` leaf 1,
+%% `QColAt i` leaf i), the dual of how the renderer qualifies columns to `t<i>`.
+
+%% The `t<i>$` key prefix of leaf `i`.
+mem_leaf_prefix(Idx) -> <<"t", (integer_to_binary(Idx))/binary, "$">>.
+
+%% Flatten a left-nested inner join into its ordered leaf scan-plans and the per-step
+%% {Cond, Where2} that joins each leaf after the first. The innermost join's two scans
+%% are leaves 0 and 1; each enclosing join adds its right scan as the next leaf.
+mem_flatten_inner({'PlanJoin', _Kind, Left, Right, Cond, Where2, _O, _L, _Off, _D, _LC, _RC}) ->
+    case element(1, Left) of
+        'PlanJoin' ->
+            {InnerLeaves, InnerSteps} = mem_flatten_inner(Left),
+            {InnerLeaves ++ [Right], InnerSteps ++ [{Cond, Where2}]};
+        _ ->
+            {[Left, Right], [{Cond, Where2}]}
+    end.
+
+%% The N-way product of the per-leaf row lists, each combination kept only when every
+%% step's condition and post-join filter hold, merged into one flat row.
+mem_nary_product([], _Steps) -> [];
+mem_nary_product([Rows0 | RestLeaves], Steps) ->
+    Acc0 = [mem_prefix_keys(<<"t0$">>, R) || R <- Rows0],
+    mem_nary_fold(Acc0, 1, RestLeaves, Steps).
+
+mem_nary_fold(Acc, _Idx, [], _Steps) -> Acc;
+mem_nary_fold(Acc, _Idx, _Leaves, []) -> Acc;
+mem_nary_fold(Acc, Idx, [LeafRows | RestLeaves], [{Cond, Where2} | RestSteps]) ->
+    Prefix = mem_leaf_prefix(Idx),
+    Acc2 = [Merged
+            || AccRow <- Acc,
+               Rk <- LeafRows,
+               Merged <- [maps:merge(AccRow, mem_prefix_keys(Prefix, Rk))],
+               mem_npred(Cond, Merged),
+               mem_npred(Where2, Merged)],
+    mem_nary_fold(Acc2, Idx + 1, RestLeaves, RestSteps).
+
+%% Order flat N-ary rows by the side-tagged key list. The keys range over the base
+%% query's leaves (0 and 1), read off the row's `t0$`/`t1$`-prefixed cells.
+mem_order_nary([], Rows) -> Rows;
+mem_order_nary(Orders, Rows) ->
+    lists:sort(fun(A, B) -> mem_le_nary(Orders, A, B) end, Rows).
+
+mem_le_nary([], _A, _B) -> true;
+mem_le_nary([{Asc, IsRight, Col} | Rest], A, B) ->
+    Key = <<(mem_leaf_prefix(mem_bool_leaf(IsRight)))/binary, Col/binary>>,
+    case mem_order_cmp(maps:get(Key, A, undefined), maps:get(Key, B, undefined)) of
+        eq -> mem_le_nary(Rest, A, B);
+        lt -> Asc;
+        gt -> not Asc
+    end.
+
+mem_bool_leaf(true)  -> 1;
+mem_bool_leaf(false) -> 0.
+
+%% Evaluate a join condition against one flat, leaf-prefixed N-ary row — the dual of
+%% mem_jpred for the multi-way join. A column names its leaf by index and resolves
+%% against the row's `t<i>$col` cell.
+mem_npred({'QAnd', A, B}, Row)   -> mem_npred(A, Row) andalso mem_npred(B, Row);
+mem_npred({'QOr', A, B}, Row)    -> mem_npred(A, Row) orelse mem_npred(B, Row);
+mem_npred({'QNot', X}, Row)      -> not mem_npred(X, Row);
+mem_npred({'QEq', A, B}, Row)    -> mem_nrelate(eq, A, B, Row);
+mem_npred({'QNe', A, B}, Row)    -> not mem_nrelate(eq, A, B, Row);
+mem_npred({'QLt', A, B}, Row)    -> mem_nrelate(lt, A, B, Row);
+mem_npred({'QGt', A, B}, Row)    -> mem_nrelate(lt, B, A, Row);
+mem_npred({'QLe', A, B}, Row)    -> not mem_nrelate(lt, B, A, Row);
+mem_npred({'QGe', A, B}, Row)    -> not mem_nrelate(lt, A, B, Row);
+mem_npred({'QCol', C}, Row)      -> mem_truthy(maps:get(<<"t0$", C/binary>>, Row, 'SqlNull'));
+mem_npred({'QColR', C}, Row)     -> mem_truthy(maps:get(<<"t1$", C/binary>>, Row, 'SqlNull'));
+mem_npred({'QColAt', I, C}, Row) -> mem_truthy(maps:get(<<(mem_leaf_prefix(I))/binary, C/binary>>, Row, 'SqlNull'));
+mem_npred({'QLitBool', B}, _Row) -> B;
+mem_npred(_Other, _Row)          -> false.
+
+mem_nrelate(Op, A, B, Row) ->
+    case {mem_nscalar(A, Row), mem_nscalar(B, Row)} of
+        {undefined, _} -> false;
+        {_, undefined} -> false;
+        {X, Y}         -> mem_sql_cmp(Op, X, Y)
+    end.
+
+mem_nscalar({'QCol', C}, Row)      -> mem_ncell(<<"t0$", C/binary>>, Row);
+mem_nscalar({'QColR', C}, Row)     -> mem_ncell(<<"t1$", C/binary>>, Row);
+mem_nscalar({'QColAt', I, C}, Row) -> mem_ncell(<<(mem_leaf_prefix(I))/binary, C/binary>>, Row);
+mem_nscalar({'QLitInt', N}, _Row)   -> {'SqlInt', N};
+mem_nscalar({'QLitText', S}, _Row)  -> {'SqlText', S};
+mem_nscalar({'QLitBool', B}, _Row)  -> {'SqlBool', B};
+mem_nscalar({'QLitFloat', F}, _Row) -> {'SqlFloat', F};
+mem_nscalar(_Other, _Row)           -> undefined.
+
+mem_ncell(Key, Row) ->
+    case maps:find(Key, Row) of
+        {ok, V} -> V;
+        error   -> undefined
+    end.
 
 %% --- Quoted-predicate interpreter (the in-memory dual of Query.toSql) ---
 %%

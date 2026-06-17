@@ -885,13 +885,19 @@ const QEXPR_TYCON: TyConId = TyConId(25);
 /// `JsonValue` are synthesised), and the `Quote` wrapper is a record that lowers
 /// to a map. No other module's constructors are referenced.
 ///
-/// A two-parameter quote (a join condition or projection) ranges over a left and
-/// a right entity. Columns of the second parameter reify to `QColR` so the seam
-/// keeps the two tables apart; everything else stays `QCol`. `params` carries the
-/// lambda's parameters so the second one's name can be recognised.
+/// A multi-parameter quote (a join condition or projection) ranges over one
+/// entity per parameter — a left and a right for a binary join, three or more
+/// for an N-ary one. A column reifies to the node for its source's leaf index:
+/// `QCol` for the first (or only) parameter, `QColR` for the second, and
+/// `QColAt <i>` for the third onward. The leaf order is the parameter order, so
+/// it lines up with the left-to-right walk of the join tree. `params` carries
+/// the lambda's parameters so each one's name can be matched to its index.
 fn reify_quote(ctx: &mut LowerCtx<'_>, body: &Expr, span: Span, params: &[LambdaParam]) -> IrExpr {
-    let right = lambda_param_name(params.get(1));
-    let tree = reify_node(ctx, body, right.as_deref());
+    let names: Vec<String> = params
+        .iter()
+        .map(|p| lambda_param_name(Some(p)).unwrap_or_default())
+        .collect();
+    let tree = reify_node(ctx, body, &names);
     IrExpr::Construct {
         id: ctx.fresh_id(None),
         ctor: SymbolRef::Constructor {
@@ -963,16 +969,19 @@ fn lambda_param_name(p: Option<&LambdaParam>) -> Option<String> {
     }
 }
 
-/// Reify one node of a quoted body into a `QExpr` value. `right` is the name of
-/// the quote's second parameter (the right side of a join), or `None` for a
-/// single-parameter quote; a column access on `right` reifies to `QColR`.
-fn reify_node(ctx: &mut LowerCtx<'_>, e: &Expr, right: Option<&str>) -> IrExpr {
+/// Reify one node of a quoted body into a `QExpr` value. `params` is the quote's
+/// parameter names in order, so a column access can be tagged with its source's
+/// leaf index: the first parameter reifies to `QCol`, the second to `QColR`, and
+/// the third onward to `QColAt <i>`. A single-parameter quote passes one name and
+/// every column stays `QCol`.
+fn reify_node(ctx: &mut LowerCtx<'_>, e: &Expr, params: &[String]) -> IrExpr {
     use ridge_ast::BinOp;
     match e {
-        Expr::Paren { inner, .. } => reify_node(ctx, inner, right),
+        Expr::Paren { inner, .. } => reify_node(ctx, inner, params),
 
-        // `u.field` → `QCol "<sql column>"`; a column of the right join entity
-        // (`p.field`) → `QColR "<sql column>"`.
+        // `u.field` → the column node for `u`'s leaf: `QCol` for the first
+        // parameter (or a single-table quote), `QColR` for the second, and
+        // `QColAt <i>` for the third onward.
         Expr::FieldAccess { base, field, span } => {
             let col = ridge_ast::column_mirror::column_sql_name(&field.text);
             let name_lit = IrExpr::Lit {
@@ -980,12 +989,21 @@ fn reify_node(ctx: &mut LowerCtx<'_>, e: &Expr, right: Option<&str>) -> IrExpr {
                 value: IrLit::Text(col),
                 span: *span,
             };
-            let is_right =
-                matches!(base.as_ref(), Expr::Ident(id) if Some(id.text.as_str()) == right);
-            if is_right {
-                qexpr_node(ctx, "QColR", 15, vec![name_lit], *span)
-            } else {
-                qexpr_node(ctx, "QCol", 0, vec![name_lit], *span)
+            let leaf = match base.as_ref() {
+                Expr::Ident(id) => params.iter().position(|n| n == &id.text),
+                _ => None,
+            };
+            match leaf {
+                Some(1) => qexpr_node(ctx, "QColR", 15, vec![name_lit], *span),
+                Some(i) if i >= 2 => {
+                    let idx_lit = IrExpr::Lit {
+                        id: ctx.fresh_id(None),
+                        value: IrLit::Int(i as i64),
+                        span: *span,
+                    };
+                    qexpr_node(ctx, "QColAt", 22, vec![idx_lit, name_lit], *span)
+                }
+                _ => qexpr_node(ctx, "QCol", 0, vec![name_lit], *span),
             }
         }
 
@@ -1024,8 +1042,8 @@ fn reify_node(ctx: &mut LowerCtx<'_>, e: &Expr, right: Option<&str>) -> IrExpr {
                     return unit_lit(ctx, *span);
                 }
             };
-            let l = reify_node(ctx, lhs, right);
-            let r = reify_node(ctx, rhs, right);
+            let l = reify_node(ctx, lhs, params);
+            let r = reify_node(ctx, rhs, params);
             qexpr_node(ctx, name, variant, vec![l, r], *span)
         }
 
@@ -1046,7 +1064,7 @@ fn reify_node(ctx: &mut LowerCtx<'_>, e: &Expr, right: Option<&str>) -> IrExpr {
                         span: fi.span,
                     };
                     let col = if let Some(v) = &fi.value {
-                        reify_node(ctx, v, right)
+                        reify_node(ctx, v, params)
                     } else {
                         ctx.errors.push(LowerError::InternalLoweringError {
                             span: fi.span,
@@ -1250,23 +1268,26 @@ fn reify_group_node(ctx: &mut LowerCtx<'_>, e: &Expr, g_name: &str) -> IrExpr {
     }
 }
 
-/// Reify a group aggregate's inner column accessor into the `QCol`/`QColR` it
-/// names. A one-row accessor (`fn u -> u.col`) names a single left column; a two-row
-/// accessor over a join (`fn u p -> p.col`) names a column from either side, so the
-/// second parameter's name marks the right entity exactly as in a row quote — a
-/// field access on it reifies to `QColR`, on the first to `QCol`.
+/// Reify a group aggregate's inner column accessor into the column node it names.
+/// A one-row accessor (`fn u -> u.col`) names a single left column; a join accessor
+/// (`fn u p -> p.col`) names a column from either side, tagged by leaf index exactly
+/// as a row quote tags one — `QCol` for the first parameter, `QColR` for the second,
+/// `QColAt <i>` for the third onward.
 fn reify_group_agg_col(ctx: &mut LowerCtx<'_>, arg: &Expr) -> IrExpr {
     let mut inner = arg;
     while let Expr::Paren { inner: i, .. } = inner {
         inner = i;
     }
     if let Expr::Lambda { params, body, .. } = inner {
-        let right = lambda_param_name(params.get(1));
+        let names: Vec<String> = params
+            .iter()
+            .map(|p| lambda_param_name(Some(p)).unwrap_or_default())
+            .collect();
         let mut bd: &Expr = body;
         while let Expr::Paren { inner: i, .. } = bd {
             bd = i;
         }
-        return reify_node(ctx, bd, right.as_deref());
+        return reify_node(ctx, bd, &names);
     }
     ctx.errors.push(LowerError::InternalLoweringError {
         span: arg.span(),

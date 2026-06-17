@@ -121,6 +121,7 @@ fn showExpr (e: QExpr) -> Text =
     match e
         QCol c      -> c
         QColR c     -> c
+        QColAt _ c  -> c
         QLitInt _   -> "?"
         QLitText _  -> "?"
         QLitBool _  -> "?"
@@ -165,6 +166,7 @@ fn compileExpr (e: QExpr) -> { text: Text, binds: List SqlValue } =
     match e
         QCol c      -> { text = c, binds = [] }
         QColR c     -> { text = c, binds = [] }
+        QColAt _ c  -> { text = c, binds = [] }
         QLitInt n   -> { text = "?", binds = [sqlInt n] }
         QLitText s  -> { text = "?", binds = [sqlText s] }
         QLitBool b  -> { text = "?", binds = [sqlBool b] }

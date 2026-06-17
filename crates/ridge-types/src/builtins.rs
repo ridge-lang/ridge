@@ -1011,6 +1011,21 @@ impl BuiltinTyCons {
                         name: "QAggMax".to_string(),
                         kind: VariantPayload::Positional(vec![Type::Con(TyConId(25), vec![])]),
                     },
+                    // A column reference tagged by source index in an N-ary join.
+                    // `QCol` names a column of leaf 0 (the left or only table) and
+                    // `QColR` one of leaf 1 (the binary right table); `QColAt`
+                    // carries the leaf index explicitly so a join of three or more
+                    // tables can name a column of any source. The leaf order is the
+                    // left-to-right walk of the join tree, so `QColAt 2` is the
+                    // third table joined. Two-table quotes never produce it — they
+                    // stay `QCol`/`QColR` so the binary path is byte-identical.
+                    UnionVariant {
+                        name: "QColAt".to_string(),
+                        kind: VariantPayload::Positional(vec![
+                            Type::Con(int, vec![]),
+                            Type::Con(text, vec![]),
+                        ]),
+                    },
                 ],
             }),
             def_span: None,

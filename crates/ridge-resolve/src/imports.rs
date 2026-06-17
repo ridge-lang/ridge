@@ -951,6 +951,7 @@ pub fn prelude_resolutions() -> Vec<ImportResolution> {
                 query_binding("QGe"),
                 query_binding("QProj"),
                 query_binding("QColR"),
+                query_binding("QColAt"),
                 query_binding("QGroupKey"),
                 query_binding("QAggCount"),
                 query_binding("QAggSum"),

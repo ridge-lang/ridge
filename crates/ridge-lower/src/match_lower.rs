@@ -911,6 +911,7 @@ fn qexpr_variant(name: &str) -> Option<u32> {
         "QAggAvg" => 19,
         "QAggMin" => 20,
         "QAggMax" => 21,
+        "QColAt" => 22,
         _ => return None,
     })
 }

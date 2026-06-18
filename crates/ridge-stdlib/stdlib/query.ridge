@@ -113,6 +113,70 @@ pub fn planAggregate (func: Text) (column: Text) (leaf: Int) (child: QueryPlan) 
 pub fn planGroup (keyCol: Text) (keyLeaf: Int) (cols: List (Text, Text, Text, Int)) (having: QExpr) (child: QueryPlan) -> QueryPlan =
     PlanGroup keyCol keyLeaf cols having child
 
+-- ── Plan optimization ─────────────────────────────────────────────────────────
+--
+-- A plan-to-plan rewrite run before the SQL renderer: it rewrites a `QueryPlan` into
+-- an equivalent one that compiles to tighter SQL. Every rewrite is a semantic
+-- identity, so a backend reads back the same rows — just reached through cleaner SQL.
+-- The first rule folds the boolean constants out of every captured predicate, so the
+-- always-true filter a builder step leaves behind (an unrefined query's `WHERE`, a
+-- join with no extra condition) collapses to a bare `TRUE` the renderer then drops,
+-- and a compound predicate carrying a constant (`p AND TRUE`, `p OR FALSE`) reduces to
+-- `p`. The in-memory backend walks the plan tree directly and does not run this; it is
+-- the Postgres renderer's pre-pass, applied once in `planToSql`.
+pub fn optimize (plan: QueryPlan) -> QueryPlan =
+    match plan
+        PlanScan table pred orders lim off dist ->
+            PlanScan table (simplifyPred pred) orders lim off dist
+        PlanCombine op left right ->
+            PlanCombine op (optimize left) (optimize right)
+        PlanRefine inner pred orders lim off dist ->
+            PlanRefine (optimize inner) (simplifyPred pred) orders lim off dist
+        PlanJoin kind left right cond where2 orders lim off dist leftCols rightCols ->
+            PlanJoin kind (optimize left) (optimize right) (simplifyPred cond) (simplifyPred where2) orders lim off dist leftCols rightCols
+        PlanProject proj child lim off dist ->
+            PlanProject proj (optimize child) lim off dist
+        PlanAggregate func column leaf child ->
+            PlanAggregate func column leaf (optimize child)
+        PlanGroup keyCol keyLeaf cols having child ->
+            PlanGroup keyCol keyLeaf cols (simplifyPred having) (optimize child)
+
+-- Fold the boolean constants out of a captured predicate, bottom-up: a conjunction
+-- with a `TRUE` arm drops it and with a `FALSE` arm collapses to `FALSE`; a disjunction
+-- is the dual; a negated literal flips and a double negation cancels. A comparison or
+-- column leaf has nothing to fold and returns unchanged.
+fn simplifyPred (e: QExpr) -> QExpr =
+    match e
+        QAnd l r -> andOf (simplifyPred l) (simplifyPred r)
+        QOr l r  -> orOf (simplifyPred l) (simplifyPred r)
+        QNot x   -> notOf (simplifyPred x)
+        _        -> e
+
+fn andOf (l: QExpr) (r: QExpr) -> QExpr =
+    if isFalse l then QLitBool false
+    else if isFalse r then QLitBool false
+    else if isAlwaysTrue l then r
+    else if isAlwaysTrue r then l
+    else QAnd l r
+
+fn orOf (l: QExpr) (r: QExpr) -> QExpr =
+    if isAlwaysTrue l then QLitBool true
+    else if isAlwaysTrue r then QLitBool true
+    else if isFalse l then r
+    else if isFalse r then l
+    else QOr l r
+
+fn notOf (x: QExpr) -> QExpr =
+    match x
+        QLitBool b -> if b then QLitBool false else QLitBool true
+        QNot y     -> y
+        _          -> QNot x
+
+fn isFalse (e: QExpr) -> Bool =
+    match e
+        QLitBool b -> if b then false else true
+        _          -> false
+
 -- Render a captured tree to a readable, SQL-shaped string. Literals show as `?`
 -- placeholders — binding parameters is the SQL-compilation pass's job; this is
 -- here to confirm a quoted body round-trips to a tree.
@@ -253,22 +317,22 @@ fn aliasedCol (alias: Text) (colSql: Text) -> Text =
 -- is what tells a matched-but-all-NULL row from an absent one. A projection,
 -- aggregate, or group over a join reads those NULLs directly and needs no marker.
 pub fn planToSql (plan: QueryPlan) -> (Sql, List SqlValue) =
-    let r = renderPlan plan 1
+    let r = renderPlan (optimize plan) 1
     (sql r.text, r.binds)
 
 fn renderPlan (plan: QueryPlan) (n: Int) -> { text: Text, binds: List SqlValue, next: Int } =
     match plan
         PlanScan table pred orders lim off dist ->
-            let w = renderPred false pred n
-            { text = Text.join "" ["SELECT ", distinctKw dist, "* FROM ", quoteIdent table, " WHERE ", w.text, orderByClause orders, limitClause lim, offsetClause off], binds = w.binds, next = w.next }
+            let w = whereClause false pred n
+            { text = Text.join "" ["SELECT ", distinctKw dist, "* FROM ", quoteIdent table, w.text, orderByClause orders, limitClause lim, offsetClause off], binds = w.binds, next = w.next }
         PlanCombine op left right ->
             let l = renderPlan left n
             let r = renderPlan right l.next
             { text = Text.join "" ["(", l.text, ") ", op, " (", r.text, ")"], binds = l.binds ++ r.binds, next = r.next }
         PlanRefine inner pred orders lim off dist ->
             let i = renderPlan inner n
-            let w = renderPred false pred i.next
-            { text = Text.join "" ["SELECT ", distinctKw dist, "* FROM (", i.text, ") AS ridge_sub WHERE ", w.text, orderByClause orders, limitClause lim, offsetClause off], binds = i.binds ++ w.binds, next = w.next }
+            let w = whereClause false pred i.next
+            { text = Text.join "" ["SELECT ", distinctKw dist, "* FROM (", i.text, ") AS ridge_sub", w.text, orderByClause orders, limitClause lim, offsetClause off], binds = i.binds ++ w.binds, next = w.next }
         PlanJoin kind left right cond where2 orders lim off dist leftCols rightCols ->
             renderBareJoin kind left right cond where2 orders lim off dist leftCols rightCols n
         PlanProject proj child lim off dist ->
@@ -377,34 +441,78 @@ fn orderTermsJoin (orders: List (Bool, Int, Text)) -> List Text =
 fn joinSkeleton (kind: Text) (lt: Text) (lp: QExpr) (rt: Text) (cond: QExpr) (where2: QExpr) (marker: Bool) (n: Int) -> { text: Text, binds: List SqlValue, next: Int } =
     if kind == "RIGHT" then
         let c = renderPred true cond n
-        let p = renderPred true lp c.next
-        let w = renderPred true where2 p.next
+        let pOn = andClause true lp c.next
+        let w = whereConj true [where2] pOn.next
         let lexpr = if marker then markerSub lt else quoteIdent lt
-        { text = Text.join "" [lexpr, " AS l RIGHT JOIN ", quoteIdent rt, " AS r ON (", c.text, ") AND (", p.text, ") WHERE (", w.text, ")"], binds = c.binds ++ p.binds ++ w.binds, next = w.next }
+        { text = Text.join "" [lexpr, " AS l RIGHT JOIN ", quoteIdent rt, " AS r ON (", c.text, ")", pOn.text, w.text], binds = c.binds ++ pOn.binds ++ w.binds, next = w.next }
     else if kind == "FULL" then
-        let p = renderPred false lp n
-        let c = renderPred true cond p.next
-        let w = renderPred true where2 c.next
-        let lexpr = if marker then fullSubLeftMarked lt p.text else fullSubLeft lt p.text
+        let ls = fullLeftSource lt lp marker n
+        let c = renderPred true cond ls.next
+        let w = whereConj true [where2] c.next
         let rexpr = if marker then markerSub rt else quoteIdent rt
-        { text = Text.join "" [lexpr, " AS l FULL JOIN ", rexpr, " AS r ON (", c.text, ") WHERE (", w.text, ")"], binds = p.binds ++ c.binds ++ w.binds, next = w.next }
+        { text = Text.join "" [ls.text, " AS l FULL JOIN ", rexpr, " AS r ON (", c.text, ")", w.text], binds = ls.binds ++ c.binds ++ w.binds, next = w.next }
     else if kind == "LEFT" then
         let c = renderPred true cond n
-        let w = renderPred true where2 c.next
-        let p = renderPred true lp w.next
         let rexpr = if marker then markerSub rt else quoteIdent rt
-        { text = Text.join "" [quoteIdent lt, " AS l LEFT JOIN ", rexpr, " AS r ON ", c.text, " WHERE (", p.text, ") AND (", w.text, ")"], binds = c.binds ++ w.binds ++ p.binds, next = p.next }
+        let w = whereConj true [lp, where2] c.next
+        { text = Text.join "" [quoteIdent lt, " AS l LEFT JOIN ", rexpr, " AS r ON ", c.text, w.text], binds = c.binds ++ w.binds, next = w.next }
     else
         let c = renderPred true cond n
-        let w = renderPred true where2 c.next
-        let p = renderPred true lp w.next
-        { text = Text.join "" [quoteIdent lt, " AS l JOIN ", quoteIdent rt, " AS r ON ", c.text, " WHERE (", p.text, ") AND (", w.text, ")"], binds = c.binds ++ w.binds ++ p.binds, next = p.next }
+        let w = whereConj true [lp, where2] c.next
+        { text = Text.join "" [quoteIdent lt, " AS l JOIN ", quoteIdent rt, " AS r ON ", c.text, w.text], binds = c.binds ++ w.binds, next = w.next }
 
 fn markerSub (table: Text) -> Text = Text.join "" ["(SELECT *, TRUE AS \"__present\" FROM ", quoteIdent table, ")"]
 
-fn fullSubLeft (table: Text) (pred: Text) -> Text = Text.join "" ["(SELECT * FROM ", quoteIdent table, " WHERE (", pred, "))"]
+-- The left operand of a binary FULL join: its scan filter pushed into a subquery (bare
+-- columns, evaluated before the join), wrapping the presence marker too when a bare
+-- terminal needs it. An always-true filter drops the subquery's WHERE — the optimizer
+-- folds an unrefined left side to bare TRUE, so a FULL join with no left filter reads
+-- the table cleanly.
+fn fullLeftSource (table: Text) (pred: QExpr) (marker: Bool) (n: Int) -> { text: Text, binds: List SqlValue, next: Int } =
+    if isAlwaysTrue pred then
+        if marker then { text = Text.join "" ["(SELECT *, TRUE AS \"__present\" FROM ", quoteIdent table, ")"], binds = [], next = n }
+        else { text = Text.join "" ["(SELECT * FROM ", quoteIdent table, ")"], binds = [], next = n }
+    else
+        let w = renderPred false pred n
+        if marker then { text = Text.join "" ["(SELECT *, TRUE AS \"__present\" FROM ", quoteIdent table, " WHERE (", w.text, "))"], binds = w.binds, next = w.next }
+        else { text = Text.join "" ["(SELECT * FROM ", quoteIdent table, " WHERE (", w.text, "))"], binds = w.binds, next = w.next }
 
-fn fullSubLeftMarked (table: Text) (pred: Text) -> Text = Text.join "" ["(SELECT *, TRUE AS \"__present\" FROM ", quoteIdent table, " WHERE (", pred, "))"]
+-- A trailing `WHERE` clause from a single predicate, or nothing when the predicate is
+-- the always-true default a builder step leaves behind. The `$N` counter only advances
+-- when a real clause renders.
+fn whereClause (qualified: Bool) (pred: QExpr) (n: Int) -> { text: Text, binds: List SqlValue, next: Int } =
+    if isAlwaysTrue pred then { text = "", binds = [], next = n }
+    else
+        let w = renderPred qualified pred n
+        { text = Text.concat " WHERE " w.text, binds = w.binds, next = w.next }
+
+-- A `WHERE` clause conjoining the predicates that are not the always-true default, each
+-- parenthesised — the binary-join dual of the N-ary `naryWhere`. Empty when every
+-- predicate is trivial, so a join with no post-join filters carries no WHERE at all.
+fn whereConj (qualified: Bool) (preds: List QExpr) (n: Int) -> { text: Text, binds: List SqlValue, next: Int } =
+    let r = conjTerms qualified preds n
+    match r.texts
+        [] -> { text = "", binds = r.binds, next = r.next }
+        _  -> { text = Text.concat " WHERE " (Text.join " AND " r.texts), binds = r.binds, next = r.next }
+
+fn conjTerms (qualified: Bool) (preds: List QExpr) (n: Int) -> { texts: List Text, binds: List SqlValue, next: Int } =
+    match preds
+        [] -> { texts = [], binds = [], next = n }
+        p :: rest ->
+            if isAlwaysTrue p then conjTerms qualified rest n
+            else
+                let r = renderPred qualified p n
+                let more = conjTerms qualified rest r.next
+                { texts = Text.join "" ["(", r.text, ")"] :: more.texts, binds = r.binds ++ more.binds, next = more.next }
+
+-- An ` AND (<pred>)` segment appended to a join's `ON`, or nothing when the predicate is
+-- the always-true default — a RIGHT join folds its left filter into the `ON`, and an
+-- unrefined left side adds nothing.
+fn andClause (qualified: Bool) (pred: QExpr) (n: Int) -> { text: Text, binds: List SqlValue, next: Int } =
+    if isAlwaysTrue pred then { text = "", binds = [], next = n }
+    else
+        let r = renderPred qualified pred n
+        { text = Text.join "" [" AND (", r.text, ")"], binds = r.binds, next = r.next }
 
 -- A bare join terminal (`toList`/`first` over a join): the join's flat rows with each
 -- source's columns prefixed, plus a presence marker on each outer side, decoded back

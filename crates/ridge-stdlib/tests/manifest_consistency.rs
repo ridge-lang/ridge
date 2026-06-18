@@ -271,6 +271,7 @@ fn signature_shape_consistency() {
                         | "planAggregate"
                         | "planGroup"
                         | "planToSql"
+                        | "optimize"
                 )
             {
                 continue;

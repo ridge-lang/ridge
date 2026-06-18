@@ -1565,8 +1565,10 @@ mod tests {
                             | "planGroup"
                             // `planToSql` takes the reconciled `QueryPlan`, so its
                             // scheme is seeded via `reconciled_query_plan_fn_scheme`,
-                            // not this hand-curated table.
+                            // not this hand-curated table. `optimize` takes and returns
+                            // one, so it is seeded the same way.
                             | "planToSql"
+                            | "optimize"
                     )
                 {
                     continue;

@@ -1215,7 +1215,7 @@ pub(crate) fn reconciled_fn_scheme(
         (
             "std.query",
             "planScan" | "planCombine" | "planRefine" | "planJoin" | "planProject"
-            | "planAggregate" | "planGroup" | "planToSql",
+            | "planAggregate" | "planGroup" | "planToSql" | "optimize",
         ) => reconciled_query_plan_fn_scheme(name, reconciled, b),
         ("std.repo", _) => reconciled_repo_fn_scheme(name, reconciled, b, classes?),
         ("std.migrate", _) => reconciled_migrate_fn_scheme(name, reconciled, b, classes?),
@@ -1296,6 +1296,8 @@ fn reconciled_query_plan_fn_scheme(
         // planGroup : Text -> Int -> List (Text, Text, Text, Int) -> QExpr ->
         //             QueryPlan -> QueryPlan
         "planGroup" => Some(pure(vec![text(), int(), group_cols(), qexpr(), plan()])),
+        // optimize : QueryPlan -> QueryPlan — the renderer's plan-to-plan pre-pass.
+        "optimize" => Some(pure(vec![plan()])),
         // planToSql : QueryPlan -> (Sql, List SqlValue) — the renderer, lowering a
         // whole plan to one parameterized statement plus its ordered bind values.
         // Unlike the builders it does not return a `QueryPlan`, so its scheme is

@@ -103,6 +103,11 @@ pub fn scanSql () -> Text = renderSql (planScan "users" (pred1 (fn u -> u.age >=
 
 pub fn scanBinds () -> Text = renderBinds (planScan "users" (pred1 (fn u -> u.age >= 18)) [] (0 - 1) 0 false)
 
+-- The optimizer folds the boolean constants out of a predicate before rendering, so a
+-- filter carrying a redundant `&& true` compiles to the same SQL as the bare
+-- comparison — the always-true arm drops and no clause survives for it.
+pub fn foldSql () -> Text = renderSql (planScan "users" (pred1 (fn (u: User) -> u.age >= 18 && true)) [] (0 - 1) 0 false)
+
 pub fn combineSql () -> Text =
     renderSql (planCombine "UNION" (adultsScan ()) (usersScan ()))
 
@@ -459,7 +464,7 @@ fn query_plan_compiles_to_parameterized_sql() {
 
     let expr = format!(
         "F=fun(N)->io:format(\"~s=~s~n\",[N,{module}:N()])end, \
-         lists:foreach(F,['scanSql','scanBinds','combineSql','refineSql','innerSql','leftSql','rightSql','fullSql','fullBinds','projectSql','aggSql','groupSql','inner3Sql','inner3Binds','innerLeftMixSql','innerRightMixSql','innerFullMixSql','innerFullMixBinds','countThreeSql','countThreeBinds','countLeftMixSql','countLeftMixBinds','sumThreeSql','avgThreeSql','projectThreeSql','projectLeftMixSql','projectRightMixSql','projectFullMixSql','groupThreeSql','groupLeftMixSql','groupRightMixSql','groupFullMixSql','orderThreeSql','orderLeftMixSql','orderRightMixSql','orderFullMixSql','inner4Sql','sumFourSql','projectFourSql','orderFourSql']), halt()."
+         lists:foreach(F,['scanSql','scanBinds','foldSql','combineSql','refineSql','innerSql','leftSql','rightSql','fullSql','fullBinds','projectSql','aggSql','groupSql','inner3Sql','inner3Binds','innerLeftMixSql','innerRightMixSql','innerFullMixSql','innerFullMixBinds','countThreeSql','countThreeBinds','countLeftMixSql','countLeftMixBinds','sumThreeSql','avgThreeSql','projectThreeSql','projectLeftMixSql','projectRightMixSql','projectFullMixSql','groupThreeSql','groupLeftMixSql','groupRightMixSql','groupFullMixSql','orderThreeSql','orderLeftMixSql','orderRightMixSql','orderFullMixSql','inner4Sql','sumFourSql','projectFourSql','orderFourSql']), halt()."
     );
     let output = Command::new("erl")
         .arg("-noshell")
@@ -484,54 +489,59 @@ fn query_plan_compiles_to_parameterized_sql() {
     want(r#"scanSql=SELECT * FROM "users" WHERE "age" >= $1"#);
     want("scanBinds=1");
 
+    // The optimizer folds the `&& true` away before rendering, so the filter compiles to
+    // the same SQL as the bare comparison — no redundant `AND (TRUE)` survives.
+    want(r#"foldSql=SELECT * FROM "users" WHERE "age" >= $1"#);
+
     // A set-operation combine wraps each branch in parens around the keyword; a
-    // refine wraps the combination in a subquery and re-applies the outer WHERE.
-    want(
-        r#"combineSql=(SELECT * FROM "users" WHERE "age" >= $1) UNION (SELECT * FROM "users" WHERE TRUE)"#,
-    );
+    // refine wraps the combination in a subquery and re-applies the outer WHERE. The
+    // unfiltered branch carries no WHERE — the optimizer drops its always-true default.
+    want(r#"combineSql=(SELECT * FROM "users" WHERE "age" >= $1) UNION (SELECT * FROM "users")"#);
     // The `$N` counter threads across the whole plan: the inner combine's filter
     // binds `$1`, so the outer refine's filter binds `$2`.
     want(
-        r#"refineSql=SELECT * FROM ((SELECT * FROM "users" WHERE "age" >= $1) UNION (SELECT * FROM "users" WHERE TRUE)) AS ridge_sub WHERE "age" >= $2"#,
+        r#"refineSql=SELECT * FROM ((SELECT * FROM "users" WHERE "age" >= $1) UNION (SELECT * FROM "users")) AS ridge_sub WHERE "age" >= $2"#,
     );
 
     // An inner join: each source's columns prefixed (`t0$`/`t1$`), the condition
-    // qualified to its side, no marker.
+    // qualified to its side, no marker. With no post-join filters the WHERE drops out.
     want(
-        r#"innerSql=SELECT l."id" AS "t0$id", l."age" AS "t0$age", l."name" AS "t0$name", r."id" AS "t1$id", r."author" AS "t1$author", r."title" AS "t1$title" FROM "users" AS l JOIN "posts" AS r ON l."id" = r."author" WHERE (TRUE) AND (TRUE)"#,
+        r#"innerSql=SELECT l."id" AS "t0$id", l."age" AS "t0$age", l."name" AS "t0$name", r."id" AS "t1$id", r."author" AS "t1$author", r."title" AS "t1$title" FROM "users" AS l JOIN "posts" AS r ON l."id" = r."author""#,
     );
 
     // A left join wraps the right table in the `__present` marker subquery and
-    // selects the marker as `t1$__present__`.
+    // selects the marker as `t1$__present__`; its trivial post-join WHERE drops out.
     want(
-        r#"leftSql=SELECT l."id" AS "t0$id", l."age" AS "t0$age", l."name" AS "t0$name", r."id" AS "t1$id", r."author" AS "t1$author", r."title" AS "t1$title", r."__present" AS "t1$__present__" FROM "users" AS l LEFT JOIN (SELECT *, TRUE AS "__present" FROM "posts") AS r ON l."id" = r."author" WHERE (TRUE) AND (TRUE)"#,
+        r#"leftSql=SELECT l."id" AS "t0$id", l."age" AS "t0$age", l."name" AS "t0$name", r."id" AS "t1$id", r."author" AS "t1$author", r."title" AS "t1$title", r."__present" AS "t1$__present__" FROM "users" AS l LEFT JOIN (SELECT *, TRUE AS "__present" FROM "posts") AS r ON l."id" = r."author""#,
     );
 
-    // A right join wraps the left table and folds the left filter into the ON.
+    // A right join wraps the left table and folds the left filter into the ON; with no
+    // left filter and no post-join WHERE the ON carries the bare condition alone.
     want(
-        r#"rightSql=SELECT l."id" AS "t0$id", l."age" AS "t0$age", l."name" AS "t0$name", l."__present" AS "t0$__present__", r."id" AS "t1$id", r."author" AS "t1$author", r."title" AS "t1$title" FROM (SELECT *, TRUE AS "__present" FROM "users") AS l RIGHT JOIN "posts" AS r ON (l."id" = r."author") AND (TRUE) WHERE (TRUE)"#,
+        r#"rightSql=SELECT l."id" AS "t0$id", l."age" AS "t0$age", l."name" AS "t0$name", l."__present" AS "t0$__present__", r."id" AS "t1$id", r."author" AS "t1$author", r."title" AS "t1$title" FROM (SELECT *, TRUE AS "__present" FROM "users") AS l RIGHT JOIN "posts" AS r ON (l."id" = r."author")"#,
     );
 
     // A full join wraps both sides; the left filter goes inside the left subquery
-    // and compiles with bare column names (so `$1`, one bind).
+    // and compiles with bare column names (so `$1`, one bind). The trivial top-level
+    // WHERE drops out, leaving the bare join condition.
     want(
-        r#"fullSql=SELECT l."id" AS "t0$id", l."age" AS "t0$age", l."name" AS "t0$name", l."__present" AS "t0$__present__", r."id" AS "t1$id", r."author" AS "t1$author", r."title" AS "t1$title", r."__present" AS "t1$__present__" FROM (SELECT *, TRUE AS "__present" FROM "users" WHERE ("age" >= $1)) AS l FULL JOIN (SELECT *, TRUE AS "__present" FROM "posts") AS r ON (l."id" = r."author") WHERE (TRUE)"#,
+        r#"fullSql=SELECT l."id" AS "t0$id", l."age" AS "t0$age", l."name" AS "t0$name", l."__present" AS "t0$__present__", r."id" AS "t1$id", r."author" AS "t1$author", r."title" AS "t1$title", r."__present" AS "t1$__present__" FROM (SELECT *, TRUE AS "__present" FROM "users" WHERE ("age" >= $1)) AS l FULL JOIN (SELECT *, TRUE AS "__present" FROM "posts") AS r ON (l."id" = r."author")"#,
     );
     want("fullBinds=1");
 
     // A projected join: the projection's own aliased select-list, no prefixing.
     want(
-        r#"projectSql=SELECT l."name" AS "person", r."title" AS "post" FROM "users" AS l JOIN "posts" AS r ON l."id" = r."author" WHERE (TRUE) AND (TRUE)"#,
+        r#"projectSql=SELECT l."name" AS "person", r."title" AS "post" FROM "users" AS l JOIN "posts" AS r ON l."id" = r."author""#,
     );
 
     // A scalar aggregate over a join: the side-qualified column, AVG cast to float8.
     want(
-        r#"aggSql=SELECT AVG(r."author")::float8 FROM "users" AS l JOIN "posts" AS r ON l."id" = r."author" WHERE (TRUE) AND (TRUE)"#,
+        r#"aggSql=SELECT AVG(r."author")::float8 FROM "users" AS l JOIN "posts" AS r ON l."id" = r."author""#,
     );
 
     // A grouped join: the side-qualified key, COUNT(*), GROUP BY and ORDER BY the key.
     want(
-        r#"groupSql=SELECT r."author" AS "author", COUNT(*) AS "n" FROM "users" AS l JOIN "posts" AS r ON l."id" = r."author" WHERE (TRUE) AND (TRUE) GROUP BY r."author" ORDER BY r."author""#,
+        r#"groupSql=SELECT r."author" AS "author", COUNT(*) AS "n" FROM "users" AS l JOIN "posts" AS r ON l."id" = r."author" GROUP BY r."author" ORDER BY r."author""#,
     );
 
     // A three-table inner join flattens into one multi-way join over leaf aliases

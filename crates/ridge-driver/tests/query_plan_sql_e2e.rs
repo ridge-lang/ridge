@@ -185,6 +185,35 @@ pub fn innerFullMixSql () -> Text = renderSql (innerFullMix ())
 
 pub fn innerFullMixBinds () -> Text = renderBinds (innerFullMix ())
 
+-- A mixed chain whose base leaf carries a scan filter under an inner-then-left spine
+-- (`adults JOIN posts LEFT JOIN comments`). Only the new comments leaf is optional, so the
+-- base `adults` leaf is never null-extended; the renderer lifts its filter to the flat
+-- top-level WHERE (qualified to t0) and reads the table directly, rather than wrapping the
+-- base in a `(SELECT * FROM "users" WHERE …)` subquery. A subquery survives only where it
+-- helps — on the genuinely-optional comments leaf, which still rides in its marker subquery.
+fn adultLeftMix () -> QueryPlan =
+    planJoin "LEFT"
+        (planJoin "INNER" (adultsScan ()) (postsScan ()) (joinCond ()) (keepAllJoin ()) [] (0 - 1) 0 false (leftCols ()) (rightCols ()))
+        (commentsScan ())
+        (joinCond2 ())
+        (keepAllJoin ())
+        []
+        (0 - 1) 0 false
+        []
+        (commentCols ())
+
+pub fn adultLeftMixSql () -> Text = renderSql (adultLeftMix ())
+
+pub fn adultLeftMixBinds () -> Text = renderBinds (adultLeftMix ())
+
+-- A count over the same filtered-base inner-then-left composite. The reduction path emits no
+-- presence markers, and the base `adults` leaf is never null-extended, so its filter lifts to
+-- the flat top-level WHERE rather than a `(SELECT * FROM "users" WHERE …)` subquery — the same
+-- "subquery only where it helps" lift the bare terminal makes, now through the aggregate path.
+fn countAdultLeftMix () -> QueryPlan = planAggregate "COUNT" "" 0 (adultLeftMix ())
+
+pub fn countAdultLeftMixSql () -> Text = renderSql (countAdultLeftMix ())
+
 -- A count over the three-table inner composite: COUNT(*) over the flattened multi-way
 -- join, the base adult filter qualified to t0 binding $1. A reduction selects no leaf
 -- columns and reads no markers — just the count.
@@ -464,7 +493,7 @@ fn query_plan_compiles_to_parameterized_sql() {
 
     let expr = format!(
         "F=fun(N)->io:format(\"~s=~s~n\",[N,{module}:N()])end, \
-         lists:foreach(F,['scanSql','scanBinds','foldSql','combineSql','refineSql','innerSql','leftSql','rightSql','fullSql','fullBinds','projectSql','aggSql','groupSql','inner3Sql','inner3Binds','innerLeftMixSql','innerRightMixSql','innerFullMixSql','innerFullMixBinds','countThreeSql','countThreeBinds','countLeftMixSql','countLeftMixBinds','sumThreeSql','avgThreeSql','projectThreeSql','projectLeftMixSql','projectRightMixSql','projectFullMixSql','groupThreeSql','groupLeftMixSql','groupRightMixSql','groupFullMixSql','orderThreeSql','orderLeftMixSql','orderRightMixSql','orderFullMixSql','inner4Sql','sumFourSql','projectFourSql','orderFourSql']), halt()."
+         lists:foreach(F,['scanSql','scanBinds','foldSql','combineSql','refineSql','innerSql','leftSql','rightSql','fullSql','fullBinds','projectSql','aggSql','groupSql','inner3Sql','inner3Binds','innerLeftMixSql','innerRightMixSql','innerFullMixSql','innerFullMixBinds','adultLeftMixSql','adultLeftMixBinds','countAdultLeftMixSql','countThreeSql','countThreeBinds','countLeftMixSql','countLeftMixBinds','sumThreeSql','avgThreeSql','projectThreeSql','projectLeftMixSql','projectRightMixSql','projectFullMixSql','groupThreeSql','groupLeftMixSql','groupRightMixSql','groupFullMixSql','orderThreeSql','orderLeftMixSql','orderRightMixSql','orderFullMixSql','inner4Sql','sumFourSql','projectFourSql','orderFourSql']), halt()."
     );
     let output = Command::new("erl")
         .arg("-noshell")
@@ -578,6 +607,22 @@ fn query_plan_compiles_to_parameterized_sql() {
         r#"innerFullMixSql=SELECT t0."id" AS "t0$id", t0."age" AS "t0$age", t0."name" AS "t0$name", t0."__present" AS "t0$__present__", t1."id" AS "t1$id", t1."author" AS "t1$author", t1."title" AS "t1$title", t1."__present" AS "t1$__present__", t2."id" AS "t2$id", t2."post" AS "t2$post", t2."body" AS "t2$body", t2."__present" AS "t2$__present__" FROM (SELECT *, TRUE AS "__present" FROM "users" WHERE "age" >= $1) AS t0 JOIN (SELECT *, TRUE AS "__present" FROM "posts") AS t1 ON t0."id" = t1."author" FULL JOIN (SELECT *, TRUE AS "__present" FROM "comments") AS t2 ON t1."id" = t2."post""#,
     );
     want("innerFullMixBinds=1");
+
+    // The same inner-then-left chain with a filtered base: the base `adults` leaf is never
+    // null-extended, so its filter lifts to the flat top-level WHERE (`t0."age" >= $1`) and
+    // `t0` reads `"users"` directly — no `(SELECT * FROM "users" WHERE …)` wrapper. Only the
+    // optional comments leaf keeps its marker subquery, so a subquery survives only where it
+    // helps. Contrast `innerFullMixSql`, whose FULL step makes the base nullable and keeps it.
+    want(
+        r#"adultLeftMixSql=SELECT t0."id" AS "t0$id", t0."age" AS "t0$age", t0."name" AS "t0$name", t1."id" AS "t1$id", t1."author" AS "t1$author", t1."title" AS "t1$title", t2."id" AS "t2$id", t2."post" AS "t2$post", t2."body" AS "t2$body", t2."__present" AS "t2$__present__" FROM "users" AS t0 JOIN "posts" AS t1 ON t0."id" = t1."author" LEFT JOIN (SELECT *, TRUE AS "__present" FROM "comments") AS t2 ON t1."id" = t2."post" WHERE (t0."age" >= $1)"#,
+    );
+    want("adultLeftMixBinds=1");
+
+    // The same filtered-base lift through the marker-free aggregate path: COUNT(*) over the
+    // composite, the base `adults` leaf bare with its filter in the flat top-level WHERE.
+    want(
+        r#"countAdultLeftMixSql=SELECT COUNT(*) FROM "users" AS t0 JOIN "posts" AS t1 ON t0."id" = t1."author" LEFT JOIN "comments" AS t2 ON t1."id" = t2."post" WHERE (t0."age" >= $1)"#,
+    );
 
     // A count over the three-table inner composite: COUNT(*) over the flattened multi-way
     // join, the base adult filter qualified to t0 ($1). No leaf select-list, no markers.

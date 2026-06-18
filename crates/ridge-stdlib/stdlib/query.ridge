@@ -746,10 +746,11 @@ fn renderNaryInner (plan: QueryPlan) (orders: List (Bool, Int, Text)) (lim: Int)
 -- `t<i>$__present__`): the backend returns a null-extended leaf's real columns as NULL
 -- rather than omitting them, so the decoder reads the marker — present when the leaf
 -- matched, absent (NULL) when it did not — to tell an absent entity from a present one
--- whose own columns are NULL. The base leaf's scan filter rides inside its subquery so
--- it restricts which base rows enter the join (correct under every kind, including a
--- right or full step that would otherwise drop a null-extended row a top-level WHERE
--- rejected).
+-- whose own columns are NULL. A null-extendable leaf's scan filter rides inside its
+-- subquery so it restricts which rows enter the join before the step null-extends them
+-- (correct under a right or full step that a top-level WHERE would otherwise break by
+-- rejecting a null-extended row); a leaf no step null-extends needs no such guard, so its
+-- filter lifts to the flat top-level WHERE and the leaf reads its table directly.
 
 -- Whether every join step is inner — an all-inner spine takes the marker-free
 -- `renderNaryInner` path; any outer step falls to `renderNaryMixed`.
@@ -802,8 +803,8 @@ fn renderNaryMixed (plan: QueryPlan) (orders: List (Bool, Int, Text)) (lim: Int)
         [] -> emptyRender n
         _  ->
             let nulls = nullableLeaves f.steps
-            let from = mixedFrom f.leaves f.steps nulls n
-            let wh = mixedWhere f.steps from.next
+            let from = mixedFrom f.leaves f.steps nulls true n
+            let wh = mixedWhere f.leaves f.steps nulls from.next
             { text = Text.join "" ["SELECT ", distinctKw dist, mixedSelect f.leaves nulls, " FROM ", from.text, wh.text, naryOrderBy orders, limitClause lim, offsetClause off], binds = from.binds ++ wh.binds, next = wh.next }
 
 -- The prefixed select-list over every leaf, plus a `t<i>$__present__` marker for each
@@ -821,56 +822,89 @@ fn mixedSelectCols (leaves: List (Text, QExpr, List Text)) (nulls: List Int) (id
             let marked = if leafMember idx nulls then base ++ [markerTerm alias prefix] else base
             marked ++ mixedSelectCols rest nulls (idx + 1)
 
--- The `FROM <leaf0> AS t0 <KIND> JOIN <leaf1> AS t1 ON … …` text. A null-extendable or
--- filtered leaf renders as a subquery carrying its marker and/or scan filter; a plain
--- leaf stays a bare aliased table.
-fn mixedFrom (leaves: List (Text, QExpr, List Text)) (steps: List (Text, QExpr, QExpr)) (nulls: List Int) (n: Int) -> { text: Text, binds: List SqlValue, next: Int } =
+-- The `FROM <leaf0> AS t0 <KIND> JOIN <leaf1> AS t1 ON … …` text. `nulls` is the genuine
+-- set of leaves a later step null-extends; `marks` says whether this render path emits
+-- presence markers (a bare terminal does, a projection/aggregate/group reads the NULLs
+-- directly and does not). A leaf gets a marker only when both hold; either way its FROM
+-- term comes from `leafSource`.
+fn mixedFrom (leaves: List (Text, QExpr, List Text)) (steps: List (Text, QExpr, QExpr)) (nulls: List Int) (marks: Bool) (n: Int) -> { text: Text, binds: List SqlValue, next: Int } =
     match leaves
         [] -> { text = "", binds = [], next = n }
         (t0, p0, _) :: rest ->
-            let src0 = leafSource 0 t0 p0 (leafMember 0 nulls) n
-            mixedFromRest rest steps 1 nulls src0.text src0.binds src0.next
+            let ext0 = leafMember 0 nulls
+            let mk0 = if marks then ext0 else false
+            let src0 = leafSource 0 t0 p0 mk0 ext0 n
+            mixedFromRest rest steps 1 nulls marks src0.text src0.binds src0.next
 
-fn mixedFromRest (leaves: List (Text, QExpr, List Text)) (steps: List (Text, QExpr, QExpr)) (idx: Int) (nulls: List Int) (acc: Text) (binds: List SqlValue) (n: Int) -> { text: Text, binds: List SqlValue, next: Int } =
+fn mixedFromRest (leaves: List (Text, QExpr, List Text)) (steps: List (Text, QExpr, QExpr)) (idx: Int) (nulls: List Int) (marks: Bool) (acc: Text) (binds: List SqlValue) (n: Int) -> { text: Text, binds: List SqlValue, next: Int } =
     match leaves
         [] -> { text = acc, binds = binds, next = n }
         (tk, pk, _) :: restLeaves ->
             match steps
                 [] -> { text = acc, binds = binds, next = n }
                 (kind, cond, _) :: restSteps ->
-                    let src = leafSource idx tk pk (leafMember idx nulls) n
+                    let ext = leafMember idx nulls
+                    let mk = if marks then ext else false
+                    let src = leafSource idx tk pk mk ext n
                     let c = renderQual 0 cond src.next
                     let seg = Text.join "" [acc, " ", joinKeyword kind, " ", src.text, " ON ", c.text]
-                    mixedFromRest restLeaves restSteps (idx + 1) nulls seg (binds ++ src.binds ++ c.binds) c.next
+                    mixedFromRest restLeaves restSteps (idx + 1) nulls marks seg (binds ++ src.binds ++ c.binds) c.next
 
--- One leaf's FROM term. A plain leaf is `"table" AS t<i>`; a null-extendable one wraps
--- in `(SELECT *, TRUE AS "__present" FROM "table" [WHERE filter]) AS t<i>` so its
--- marker null-extends with it; a filtered base leaf wraps to push its own scan filter
--- into the subquery (bare columns, evaluated before the join).
-fn leafSource (idx: Int) (table: Text) (pred: QExpr) (nullable: Bool) (n: Int) -> { text: Text, binds: List SqlValue, next: Int } =
+-- One leaf's FROM term, given whether the leaf emits a presence marker and whether a later
+-- step null-extends it. A marker forces a `(SELECT *, TRUE AS "__present" FROM "table"
+-- [WHERE filter]) AS t<i>` subquery so the marker — and any scan filter — rides with the
+-- leaf. With no marker, a null-extended leaf still wraps a filtered scan in a plain `(SELECT
+-- * FROM "table" WHERE filter) AS t<i>` so the filter applies before the outer step (a
+-- top-level WHERE would reject its null-extended rows); every other leaf is the bare
+-- `"table" AS t<i>`, its scan filter lifted to the flat top-level WHERE instead.
+fn leafSource (idx: Int) (table: Text) (pred: QExpr) (marker: Bool) (nullExtended: Bool) (n: Int) -> { text: Text, binds: List SqlValue, next: Int } =
     let alias = tAlias idx
-    if isAlwaysTrue pred then
-        if nullable then
+    if marker then
+        if isAlwaysTrue pred then
             { text = Text.join "" ["(SELECT *, TRUE AS \"__present\" FROM ", quoteIdent table, ") AS ", alias], binds = [], next = n }
         else
-            { text = Text.join "" [quoteIdent table, " AS ", alias], binds = [], next = n }
-    else
-        let w = renderPred false pred n
-        if nullable then
+            let w = renderPred false pred n
             { text = Text.join "" ["(SELECT *, TRUE AS \"__present\" FROM ", quoteIdent table, " WHERE ", w.text, ") AS ", alias], binds = w.binds, next = w.next }
+    else if nullExtended then
+        if isAlwaysTrue pred then
+            { text = Text.join "" [quoteIdent table, " AS ", alias], binds = [], next = n }
         else
+            let w = renderPred false pred n
             { text = Text.join "" ["(SELECT * FROM ", quoteIdent table, " WHERE ", w.text, ") AS ", alias], binds = w.binds, next = w.next }
+    else
+        { text = Text.join "" [quoteIdent table, " AS ", alias], binds = [], next = n }
 
--- The WHERE conjuncts of a mixed join: every step's post-join filter, qualified to its
+-- The WHERE conjuncts of a mixed join: each non-null-extendable leaf's own scan filter
+-- (qualified to its leaf) first, then every step's post-join filter qualified to its
 -- leaves — an inner step's narrowing and an outer step's three-valued post-join filter
 -- alike (a `filter` over an outer composite ANDs into that step's `where2`, dropping the
--- rows its predicate rejects the way a binary outer join's post-join WHERE does). Base
--- and leaf scan filters ride inside their subqueries, so they never reach this clause.
-fn mixedWhere (steps: List (Text, QExpr, QExpr)) (n: Int) -> { text: Text, binds: List SqlValue, next: Int } =
-    let sp = mixedStepConds steps n
-    match sp.texts
-        [] -> { text = "", binds = sp.binds, next = sp.next }
-        _  -> { text = Text.concat " WHERE " (Text.join " AND " sp.texts), binds = sp.binds, next = sp.next }
+-- rows its predicate rejects the way a binary outer join's post-join WHERE does). A
+-- null-extendable leaf's scan filter rides inside its subquery instead, so only the
+-- leaves no step null-extends contribute their filter to this clause.
+fn mixedWhere (leaves: List (Text, QExpr, List Text)) (steps: List (Text, QExpr, QExpr)) (nulls: List Int) (n: Int) -> { text: Text, binds: List SqlValue, next: Int } =
+    let lp = mixedLeafConds leaves nulls 0 n
+    let sp = mixedStepConds steps lp.next
+    let conds = lp.texts ++ sp.texts
+    match conds
+        [] -> { text = "", binds = lp.binds ++ sp.binds, next = sp.next }
+        _  -> { text = Text.concat " WHERE " (Text.join " AND " conds), binds = lp.binds ++ sp.binds, next = sp.next }
+
+-- Each non-null-extendable leaf's own scan filter, qualified to its leaf alias and
+-- dropping the always-true default. A null-extendable leaf is skipped — its filter rides
+-- inside the subquery that carries its presence marker, where it must apply before the
+-- outer step null-extends the leaf rather than after.
+fn mixedLeafConds (leaves: List (Text, QExpr, List Text)) (nulls: List Int) (idx: Int) (n: Int) -> { texts: List Text, binds: List SqlValue, next: Int } =
+    match leaves
+        [] -> { texts = [], binds = [], next = n }
+        (_, pred, _) :: rest ->
+            if leafMember idx nulls then
+                mixedLeafConds rest nulls (idx + 1) n
+            else if isAlwaysTrue pred then
+                mixedLeafConds rest nulls (idx + 1) n
+            else
+                let r = renderQual idx pred n
+                let more = mixedLeafConds rest nulls (idx + 1) r.next
+                { texts = Text.join "" ["(", r.text, ")"] :: more.texts, binds = r.binds ++ more.binds, next = more.next }
 
 fn mixedStepConds (steps: List (Text, QExpr, QExpr)) (n: Int) -> { texts: List Text, binds: List SqlValue, next: Int } =
     match steps
@@ -916,8 +950,9 @@ fn naryProject (proj: QExpr) (child: QueryPlan) (orders: List (Bool, Int, Text))
                 let wh = naryWhere f.leaves f.steps from.next
                 { text = Text.join "" ["SELECT ", distinctKw dist, naryProjectList proj, " FROM ", from.text, wh.text, naryOrderBy orders, limitClause lim, offsetClause off], binds = from.binds ++ wh.binds, next = wh.next }
             else
-                let from = mixedFrom f.leaves f.steps [] n
-                let wh = mixedWhere f.steps from.next
+                let nulls = nullableLeaves f.steps
+                let from = mixedFrom f.leaves f.steps nulls false n
+                let wh = mixedWhere f.leaves f.steps nulls from.next
                 { text = Text.join "" ["SELECT ", distinctKw dist, naryProjectList proj, " FROM ", from.text, wh.text, naryOrderBy orders, limitClause lim, offsetClause off], binds = from.binds ++ wh.binds, next = wh.next }
 
 -- The projection's select-list over a flattened composite: each named column qualified
@@ -990,11 +1025,13 @@ fn naryAggregate (func: Text) (leaf: Int) (column: Text) (child: QueryPlan) (n: 
                 let wh = naryWhere f.leaves f.steps from.next
                 { text = Text.join "" ["SELECT ", naryAggExpr func leaf column, " FROM ", from.text, wh.text], binds = from.binds ++ wh.binds, next = wh.next }
             else
-                -- A reduction reads the null-extended NULLs directly, so it needs no
-                -- presence markers — the marker-free `mixedFrom` (empty nullable set,
-                -- though a filtered base leaf still wraps to push its scan filter).
-                let from = mixedFrom f.leaves f.steps [] n
-                let wh = mixedWhere f.steps from.next
+                -- A reduction reads the null-extended NULLs directly, so it emits no presence
+                -- markers (`marks = false`); a genuinely null-extended leaf still wraps a
+                -- filtered scan in a subquery so the filter applies before the outer step,
+                -- while every other leaf's filter lifts to the flat top-level WHERE.
+                let nulls = nullableLeaves f.steps
+                let from = mixedFrom f.leaves f.steps nulls false n
+                let wh = mixedWhere f.leaves f.steps nulls from.next
                 { text = Text.join "" ["SELECT ", naryAggExpr func leaf column, " FROM ", from.text, wh.text], binds = from.binds ++ wh.binds, next = wh.next }
 
 -- The aggregate expression over a composite join: `COUNT(*)` counts the joined rows; a
@@ -1066,8 +1103,9 @@ fn naryGroup (keyCol: Text) (keyLeaf: Int) (cols: List (Text, Text, Text, Int)) 
                 let h = naryHaving having keyLeaf keyCol wh.next
                 { text = Text.join "" ["SELECT ", Text.join ", " (naryGroupSelectTerms cols keyExpr), " FROM ", from.text, wh.text, " GROUP BY ", keyExpr, h.text, " ORDER BY ", keyExpr], binds = from.binds ++ wh.binds ++ h.binds, next = h.next }
             else
-                let from = mixedFrom f.leaves f.steps [] n
-                let wh = mixedWhere f.steps from.next
+                let nulls = nullableLeaves f.steps
+                let from = mixedFrom f.leaves f.steps nulls false n
+                let wh = mixedWhere f.leaves f.steps nulls from.next
                 let h = naryHaving having keyLeaf keyCol wh.next
                 { text = Text.join "" ["SELECT ", Text.join ", " (naryGroupSelectTerms cols keyExpr), " FROM ", from.text, wh.text, " GROUP BY ", keyExpr, h.text, " ORDER BY ", keyExpr], binds = from.binds ++ wh.binds ++ h.binds, next = h.next }
 

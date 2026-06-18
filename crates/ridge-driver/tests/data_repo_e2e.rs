@@ -749,7 +749,7 @@ pub fn db selectJoined3First () -> Text =
 -- leaf into `LeftTrio`. The optional new leaf comes in as `Option Comment`, so its column
 -- projects to an `Option Text` field — `None` for lin's uncommented post. Ordered by user
 -- id -> "ada:hello:nice,lin:world:-,max:again:ok". Proves the LEFT composite `Projectable`
--- instance dispatches and `improve` reads the new leaf as `Option` (`leaf_proj_opt`).
+-- instance dispatches and the composite decode reads the new leaf as `Option`.
 pub fn db selectLeftJoined3 () -> Text =
     match setupLeftJoin3 ()
         Err _ -> "setup-err"
@@ -762,7 +762,7 @@ pub fn db selectLeftJoined3 () -> Text =
 -- leaves as `Option`, each projecting to an `Option Text` field. The orphan comment whose
 -- post is missing projects both `who` and `what` as `None`, the new leaf's `note` always
 -- present -> "ada:hello:nice,lin:world:wow,-:-:orphan". Proves the RIGHT composite reads
--- every prior leaf as optional (`leaf_proj_opt` wraps the whole source as a unit).
+-- every prior leaf as optional (the composite decode wraps the whole source as a unit).
 pub fn db selectRightJoined3 () -> Text =
     match setupRightJoin3 ()
         Err _ -> "setup-err"

@@ -1692,11 +1692,6 @@ pub fn register_stdlib_instances(
                     .entry((refinable, smallvec![query, fn1]))
                     .or_insert_with(refinable_inst);
             }
-            if let Some(&join) = reconciled_tycon_names.get("Join") {
-                env.instances
-                    .entry((refinable, smallvec![join, fn2]))
-                    .or_insert_with(refinable_inst);
-            }
             if let Some(&left_join) = reconciled_tycon_names.get("LeftJoin") {
                 env.instances
                     .entry((refinable, smallvec![left_join, fn2]))
@@ -1766,11 +1761,6 @@ pub fn register_stdlib_instances(
                     .entry((projectable, smallvec![query, fn1]))
                     .or_insert_with(|| projectable_inst(vec![1, 3]));
             }
-            if let Some(&join) = reconciled_tycon_names.get("Join") {
-                env.instances
-                    .entry((projectable, smallvec![join, fn2]))
-                    .or_insert_with(|| projectable_inst(vec![2, 5]));
-            }
             if let Some(&left_join) = reconciled_tycon_names.get("LeftJoin") {
                 env.instances
                     .entry((projectable, smallvec![left_join, fn2]))
@@ -1809,11 +1799,6 @@ pub fn register_stdlib_instances(
             if let Some(&query) = reconciled_tycon_names.get("Query") {
                 env.instances
                     .entry((orderable, smallvec![query, fn1]))
-                    .or_insert_with(orderable_inst);
-            }
-            if let Some(&join) = reconciled_tycon_names.get("Join") {
-                env.instances
-                    .entry((orderable, smallvec![join, fn2]))
                     .or_insert_with(orderable_inst);
             }
             if let Some(&left_join) = reconciled_tycon_names.get("LeftJoin") {
@@ -1871,11 +1856,6 @@ pub fn register_stdlib_instances(
                 env.instances
                     .entry((aggregable, smallvec![query, fn1]))
                     .or_insert_with(|| aggregable_inst(vec![1, 3]));
-            }
-            if let Some(&join) = reconciled_tycon_names.get("Join") {
-                env.instances
-                    .entry((aggregable, smallvec![join, fn2]))
-                    .or_insert_with(|| aggregable_inst(vec![2, 5]));
             }
             if let Some(&left_join) = reconciled_tycon_names.get("LeftJoin") {
                 env.instances
@@ -1946,8 +1926,8 @@ pub fn register_stdlib_instances(
     // plan (a projection names its own select-list), so the instance never touches `Row
     // f` — only `Row s`, which would otherwise collide with `Row f` as a same-class
     // context dictionary. The outer shapes improve the projection over `Option`-wrapped
-    // leaves (`leaf_proj_opt`), so a null-extended leaf decodes as `None`; that wrapping
-    // is internal to `improve_via_fundeps` and does not change the instance's key.
+    // leaves optionally, so a null-extended leaf decodes as `None`; the `Map Text
+    // SqlValue -> s` projection shape is determined via the source instance lookup.
     if let (Some(projectable), Some(adapter), Some(joinshape), Some(row)) = (
         ct.id_by_name("Projectable"),
         ct.id_by_name("Adapter"),
@@ -2116,11 +2096,6 @@ pub fn register_stdlib_instances(
                 .entry((decodable, smallvec![query]))
                 .or_insert_with(query_inst);
         }
-        if let Some(&join) = reconciled_tycon_names.get("Join") {
-            env.instances
-                .entry((decodable, smallvec![join]))
-                .or_insert_with(join_inst);
-        }
         if let Some(&left_join) = reconciled_tycon_names.get("LeftJoin") {
             env.instances
                 .entry((decodable, smallvec![left_join]))
@@ -2155,11 +2130,6 @@ pub fn register_stdlib_instances(
         if let Some(&query) = reconciled_tycon_names.get("Query") {
             env.instances
                 .entry((joinable, smallvec![query]))
-                .or_insert_with(joinable_inst);
-        }
-        if let Some(&join) = reconciled_tycon_names.get("Join") {
-            env.instances
-                .entry((joinable, smallvec![join]))
                 .or_insert_with(joinable_inst);
         }
         if let Some(&joined) = reconciled_tycon_names.get("Joined") {
@@ -2208,11 +2178,6 @@ pub fn register_stdlib_instances(
                 .entry((left_joinable, smallvec![query]))
                 .or_insert_with(left_joinable_inst);
         }
-        if let Some(&join) = reconciled_tycon_names.get("Join") {
-            env.instances
-                .entry((left_joinable, smallvec![join]))
-                .or_insert_with(left_joinable_inst);
-        }
         if let Some(&joined) = reconciled_tycon_names.get("Joined") {
             env.instances
                 .entry((left_joinable, smallvec![joined]))
@@ -2247,14 +2212,7 @@ pub fn register_stdlib_instances(
             origin: InstanceOrigin::Explicit,
             span: ds,
         };
-        for name in [
-            "Query",
-            "Join",
-            "Joined",
-            "LeftJoined",
-            "RightJoined",
-            "FullJoined",
-        ] {
+        for name in ["Query", "Joined", "LeftJoined", "RightJoined", "FullJoined"] {
             if let Some(&tycon) = reconciled_tycon_names.get(name) {
                 env.instances
                     .entry((right_joinable, smallvec![tycon]))
@@ -2275,14 +2233,7 @@ pub fn register_stdlib_instances(
             origin: InstanceOrigin::Explicit,
             span: ds,
         };
-        for name in [
-            "Query",
-            "Join",
-            "Joined",
-            "LeftJoined",
-            "RightJoined",
-            "FullJoined",
-        ] {
+        for name in ["Query", "Joined", "LeftJoined", "RightJoined", "FullJoined"] {
             if let Some(&tycon) = reconciled_tycon_names.get(name) {
                 env.instances
                     .entry((full_joinable, smallvec![tycon]))
@@ -2291,20 +2242,16 @@ pub fn register_stdlib_instances(
         }
     }
 
-    // `JoinShape (Join e f a)` and `JoinShape (Joined q f a)` — the internal
-    // recursion the nested-join terminal stands on (a `Joined`'s source is always a
-    // binary join or another nested join, never a bare query). The binary base
-    // carries `Row e, Row f` at the receiver's two entity slots (`e@0, f@1`); the
-    // nested step carries `JoinShape q, Row f` at `q@0, f@1`. Both single-parameter,
-    // keyed by the receiver tycon alone.
+    // `JoinShape (Query e a)` — the one-leaf base of the recursion, and
+    // `JoinShape (Joined q f a)` — the recursive step. Both single-parameter,
+    // keyed by the receiver tycon alone. The base carries `Row e` at `e@0`
+    // (the entity param); the step carries `JoinShape q, Row f` at `q@0, f@1`.
     if let (Some(joinshape), Some(row)) = (ct.id_by_name("JoinShape"), ct.id_by_name("Row")) {
-        if let Some(&join) = reconciled_tycon_names.get("Join") {
-            // Source `where Row f, Row e`: the two Row dicts right-before-left
-            // (`f@1, e@0`). The instance delegates its pair decode to the same
-            // `decodePrefixedPairs` helper the binary `Decodable (Join e f a)` uses,
-            // so its two same-class Row dicts thread in the same order.
+        if let Some(&query) = reconciled_tycon_names.get("Query") {
+            // Base case `where Row e`: single `Row` dict at `e@0` (the first
+            // type param of `Query e a`).
             env.instances
-                .entry((joinshape, smallvec![join]))
+                .entry((joinshape, smallvec![query]))
                 .or_insert_with(|| InstanceInfo {
                     def_module: None,
                     methods: vec![
@@ -2312,11 +2259,11 @@ pub fn register_stdlib_instances(
                         ("joinedSourcePlan".to_string(), String::new()),
                         ("decodeJoined".to_string(), String::new()),
                     ],
-                    ctx_constraints: vec![
-                        ridge_types::Constraint::single(row, ridge_types::TyVid(0)),
-                        ridge_types::Constraint::single(row, ridge_types::TyVid(0)),
-                    ],
-                    head_var_positions: vec![1, 0],
+                    ctx_constraints: vec![ridge_types::Constraint::single(
+                        row,
+                        ridge_types::TyVid(0),
+                    )],
+                    head_var_positions: vec![0],
                     origin: InstanceOrigin::Explicit,
                     span: ds,
                 });
@@ -2534,11 +2481,6 @@ pub fn register_stdlib_instances(
                 .entry((pageable, smallvec![query]))
                 .or_insert_with(pageable_inst);
         }
-        if let Some(&join) = reconciled_tycon_names.get("Join") {
-            env.instances
-                .entry((pageable, smallvec![join]))
-                .or_insert_with(pageable_inst);
-        }
         if let Some(&left_join) = reconciled_tycon_names.get("LeftJoin") {
             env.instances
                 .entry((pageable, smallvec![left_join]))
@@ -2553,6 +2495,16 @@ pub fn register_stdlib_instances(
             env.instances
                 .entry((pageable, smallvec![full_join]))
                 .or_insert_with(pageable_inst);
+        }
+        // `Pageable (Joined q f a)` — the composite's paging. No context
+        // constraints: the three paging fields (`lim`, `off`, `dist`) live at the
+        // outer `Joined` level and are set without reaching the adapter.
+        for name in ["Joined", "LeftJoined", "RightJoined", "FullJoined"] {
+            if let Some(&tycon) = reconciled_tycon_names.get(name) {
+                env.instances
+                    .entry((pageable, smallvec![tycon]))
+                    .or_insert_with(pageable_inst);
+            }
         }
     }
 
@@ -2584,11 +2536,6 @@ pub fn register_stdlib_instances(
             env.instances
                 .entry((countable, smallvec![query]))
                 .or_insert_with(|| countable_inst(1));
-        }
-        if let Some(&join) = reconciled_tycon_names.get("Join") {
-            env.instances
-                .entry((countable, smallvec![join]))
-                .or_insert_with(|| countable_inst(2));
         }
         if let Some(&left_join) = reconciled_tycon_names.get("LeftJoin") {
             env.instances
@@ -2668,11 +2615,6 @@ pub fn register_stdlib_instances(
                     .entry((every, smallvec![query, fn1]))
                     .or_insert_with(|| every_inst(1));
             }
-            if let Some(&join) = reconciled_tycon_names.get("Join") {
-                env.instances
-                    .entry((every, smallvec![join, fn2]))
-                    .or_insert_with(|| every_inst(2));
-            }
             if let Some(&left_join) = reconciled_tycon_names.get("LeftJoin") {
                 env.instances
                     .entry((every, smallvec![left_join, fn2]))
@@ -2746,11 +2688,6 @@ pub fn register_stdlib_instances(
                     .entry((groupable, smallvec![query, fn1]))
                     .or_insert_with(groupable_inst);
             }
-            if let Some(&join) = reconciled_tycon_names.get("Join") {
-                env.instances
-                    .entry((groupable, smallvec![join, fn2]))
-                    .or_insert_with(groupable_inst);
-            }
             if let Some(&left_join) = reconciled_tycon_names.get("LeftJoin") {
                 env.instances
                     .entry((groupable, smallvec![left_join, fn2]))
@@ -2793,11 +2730,6 @@ pub fn register_stdlib_instances(
             env.instances
                 .entry((summarizable, smallvec![query]))
                 .or_insert_with(|| summarizable_inst(1));
-        }
-        if let Some(&join) = reconciled_tycon_names.get("Join") {
-            env.instances
-                .entry((summarizable, smallvec![join]))
-                .or_insert_with(|| summarizable_inst(2));
         }
         if let Some(&left_join) = reconciled_tycon_names.get("LeftJoin") {
             env.instances

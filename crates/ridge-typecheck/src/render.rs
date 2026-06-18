@@ -758,14 +758,16 @@ fn render_var(v: u32) -> String {
     }
 }
 
-/// Recognises the eight join-builder tycons. For one join step it reports
-/// whether the step makes its right (newly joined) leaf optional, whether it
-/// makes its left (everything accumulated so far) side optional, and whether it
-/// is a composite (a `source` plus one new table) rather than a binary base
-/// (two leaves). Returns `None` for any other type.
+/// Recognises the join-step tycons. For one join step it reports whether the
+/// step makes its right (newly joined) leaf optional, whether it makes its left
+/// (everything accumulated so far) side optional, and whether it is a composite
+/// (a `source` plus one new table). Returns `None` for any other type.
+///
+/// `Join e f a` is a transparent alias for `Joined (Query e a) f a`; after
+/// alias expansion the typechecker surfaces it as the composite `Joined`, so
+/// there is no separate binary-base entry here.
 fn join_family(name: &str) -> Option<(bool, bool, bool)> {
     Some(match name {
-        "Join" => (false, false, false),
         "Joined" => (false, false, true),
         "LeftJoin" => (true, false, false),
         "LeftJoined" => (true, false, true),
@@ -781,7 +783,7 @@ fn join_family(name: &str) -> Option<(bool, bool, bool)> {
 /// with whether the decoded row leaves it optional. `left_optional` carries the
 /// nullability an enclosing right/full step has already imposed on everything
 /// beneath it. Returns `false` (and the caller falls back to the default
-/// rendering) if the spine does not bottom out in a binary join base — for
+/// rendering) if the spine does not bottom out in a `Query e a` base — for
 /// instance when the `source` is still an unresolved variable.
 fn flatten_join_spine<'a>(
     ty: &'a ridge_types::Type,
@@ -799,23 +801,25 @@ fn flatten_join_spine<'a>(
     let Some(decl) = tycons.get(id.0 as usize) else {
         return false;
     };
-    let Some((right_optional, source_optional, is_composite)) = join_family(&decl.name) else {
+    // One-leaf base: a single-table `Query e a` — push the entity type and stop.
+    if decl.name == "Query" {
+        if args.is_empty() {
+            return false;
+        }
+        out.push((&args[0], left_optional));
+        return true;
+    }
+    let Some((right_optional, source_optional, _is_composite)) = join_family(&decl.name) else {
         return false;
     };
     if args.len() != 3 {
         return false;
     }
-    if is_composite {
-        // [source, new table, adapter]: flatten the left-nested source first.
-        if !flatten_join_spine(&args[0], tycons, left_optional || source_optional, out) {
-            return false;
-        }
-    } else {
-        // Binary base [left leaf, right leaf, adapter]: the left leaf leads.
-        out.push((&args[0], source_optional || left_optional));
+    // Composite step [source, new table, adapter]: flatten the nested source first,
+    // then push the right table.
+    if !flatten_join_spine(&args[0], tycons, left_optional || source_optional, out) {
+        return false;
     }
-    // The right side — a composite's new table or the base's right leaf — is the
-    // next leaf in join order either way.
     out.push((&args[1], right_optional || left_optional));
     true
 }
@@ -850,10 +854,10 @@ fn render_at_depth(ty: &ridge_types::Type, tycons: &[ridge_types::TyConDecl], de
             // `Join (User, Post, Comment, Reaction) a` instead of nesting four
             // `Joined` constructors deep. Tables an outer join can leave absent
             // render as `Option <table>`. Only composites flatten; a two-table
-            // binary join (`Join`/`LeftJoin User Post a`) is already flat and
-            // keeps its own name. Bails to the default rendering when the spine
-            // bottoms out in anything but a binary base, so a half-built type
-            // still prints.
+            // binary join (`LeftJoin`/`RightJoin`/`FullJoin User Post a`) is
+            // already flat and keeps its own name. Bails to default rendering
+            // when the spine does not bottom out at a `Query`, so a half-built
+            // type still prints.
             if matches!(join_family(&decl.name), Some((_, _, true))) && args.len() == 3 {
                 let mut leaves: Vec<(&Type, bool)> = Vec::new();
                 if flatten_join_spine(ty, tycons, false, &mut leaves) {
@@ -977,14 +981,20 @@ mod tests {
         }
     }
 
-    /// Tycon table for the join tests: three leaf tables, the join families
-    /// under test, and an adapter, each at the slot matching its id.
+    /// Tycon table for the join tests: three entity types, the join families
+    /// under test, a bare `Query` tycon, and an adapter — each at the slot
+    /// matching its id.
+    ///
+    /// Slot layout:
+    ///   0 = User, 1 = Post, 2 = Comment,
+    ///   3 = `Query`, 4 = `Joined`, 5 = `LeftJoin`,
+    ///   6 = `LeftJoined`, 7 = `RightJoined`, 8 = Mem
     fn join_tycons() -> Vec<ridge_types::TyConDecl> {
         vec![
             tc(0, "User"),
             tc(1, "Post"),
             tc(2, "Comment"),
-            tc(3, "Join"),
+            tc(3, "Query"),
             tc(4, "Joined"),
             tc(5, "LeftJoin"),
             tc(6, "LeftJoined"),
@@ -997,8 +1007,8 @@ mod tests {
         ridge_types::Type::Con(ridge_types::TyConId(id), vec![])
     }
 
-    /// `Con id [a, b, c]` — the `[source/left, new/right, adapter]` shape every
-    /// join tycon carries.
+    /// `Con id [a, b, c]` — the `[source, new table, adapter]` shape every
+    /// composite join tycon carries.
     fn join3(
         id: u32,
         a: ridge_types::Type,
@@ -1008,9 +1018,14 @@ mod tests {
         ridge_types::Type::Con(ridge_types::TyConId(id), vec![a, b, c])
     }
 
+    /// `Query entity adapter` — the one-leaf base of a join spine.
+    fn query(entity: ridge_types::Type, adapter: ridge_types::Type) -> ridge_types::Type {
+        ridge_types::Type::Con(ridge_types::TyConId(3), vec![entity, adapter])
+    }
+
     #[test]
     fn binary_join_keeps_its_natural_name() {
-        // A two-table join is already flat, so it renders by its own name.
+        // A two-table LeftJoin is already flat; it renders by its own name.
         let t = join3(5, leaf(0), leaf(1), leaf(8)); // LeftJoin User Post Mem
         assert_eq!(
             render_type_with(&t, &join_tycons()),
@@ -1020,9 +1035,21 @@ mod tests {
 
     #[test]
     fn inner_composite_flattens_to_table_list() {
-        // Joined (Join User Post Mem) Comment Mem
-        let base = join3(3, leaf(0), leaf(1), leaf(8));
-        let t = join3(4, base, leaf(2), leaf(8));
+        // Joined (Query User Mem) Post Mem — two-table inner join via composite.
+        let base = query(leaf(0), leaf(8));
+        let t = join3(4, base, leaf(1), leaf(8));
+        assert_eq!(
+            render_type_with(&t, &join_tycons()),
+            "Join (User, Post) Mem"
+        );
+    }
+
+    #[test]
+    fn three_table_inner_composite_flattens() {
+        // Joined (Joined (Query User Mem) Post Mem) Comment Mem — three tables.
+        let base = query(leaf(0), leaf(8));
+        let mid = join3(4, base, leaf(1), leaf(8));
+        let t = join3(4, mid, leaf(2), leaf(8));
         assert_eq!(
             render_type_with(&t, &join_tycons()),
             "Join (User, Post, Comment) Mem"
@@ -1031,9 +1058,11 @@ mod tests {
 
     #[test]
     fn left_joined_leaf_renders_optional() {
-        // LeftJoined (Join User Post Mem) Comment Mem — the new table may be absent.
-        let base = join3(3, leaf(0), leaf(1), leaf(8));
-        let t = join3(6, base, leaf(2), leaf(8));
+        // LeftJoined (Joined (Query User Mem) Post Mem) Comment Mem
+        // — the new table (Comment) may be absent.
+        let base = query(leaf(0), leaf(8));
+        let mid = join3(4, base, leaf(1), leaf(8));
+        let t = join3(6, mid, leaf(2), leaf(8));
         assert_eq!(
             render_type_with(&t, &join_tycons()),
             "Join (User, Post, Option Comment) Mem"
@@ -1042,10 +1071,11 @@ mod tests {
 
     #[test]
     fn right_joined_makes_the_accumulated_side_optional() {
-        // RightJoined (Join User Post Mem) Comment Mem — the whole left side
-        // becomes optional as a unit, the newly joined table stays present.
-        let base = join3(3, leaf(0), leaf(1), leaf(8));
-        let t = join3(7, base, leaf(2), leaf(8));
+        // RightJoined (Joined (Query User Mem) Post Mem) Comment Mem
+        // — the whole left side becomes optional, the newly joined table stays.
+        let base = query(leaf(0), leaf(8));
+        let mid = join3(4, base, leaf(1), leaf(8));
+        let t = join3(7, mid, leaf(2), leaf(8));
         assert_eq!(
             render_type_with(&t, &join_tycons()),
             "Join (Option User, Option Post, Comment) Mem"

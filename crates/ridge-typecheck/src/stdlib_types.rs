@@ -286,69 +286,38 @@ fn reconciled_decls(b: &BuiltinTyCons, base: u32) -> Vec<TyConDecl> {
             opaque: true,
             is_anon: false,
         },
-        // `std.repo` — a join under construction. A generic opaque record declared
-        // in Ridge (stdlib/repo.ridge): the left query, the right repository, and
-        // the quoted join condition over both entities. The entity `e` (param 0)
-        // is the left side, `f` (param 1) the right, and `a` (param 2) the shared
-        // adapter. Opaque, so user code only threads it from `joinOn` into a
-        // terminal (`toList`/`select`). Field order mirrors the source.
+        // `std.repo` — a transparent alias for the 2-table inner join.
+        // `pub type Join e f a = Joined (Query e a) f a`
+        //
+        // The alias keeps the slot at base + 6 so no downstream offset shifts.
+        // Type-checking resolves `Join e f a` to `Joined (Query e a) f a` via
+        // shallow_resolve, so the existing `Joined`-family class instances cover
+        // the 2-table case without any separate verb implementations.
         TyConDecl {
             id: TyConId(base + 6),
             name: "Join".to_string(),
             arity: 3,
-            kind: TyConKind::Record(RecordSchema::new(
-                vec![TyVid(0), TyVid(1), TyVid(2)],
-                vec![
-                    RecordField {
-                        name: "left".to_string(),
-                        ty: Type::Con(
-                            TyConId(base + 5),
-                            vec![Type::Var(TyVid(0)), Type::Var(TyVid(2))],
+            kind: TyConKind::Alias {
+                params: vec![TyVid(0), TyVid(1), TyVid(2)],
+                // body = Joined (Query e a) f a
+                //   = TyConId(base + 16) applied to [Query e a, f, a]
+                //   = TyConId(base + 16) [ TyConId(base+5) [TyVid(0), TyVid(2)],
+                //                          TyVid(1), TyVid(2) ]
+                body: Type::Con(
+                    TyConId(base + 16), // Joined
+                    vec![
+                        Type::Con(
+                            TyConId(base + 5),                              // Query
+                            vec![Type::Var(TyVid(0)), Type::Var(TyVid(2))], // Query e a
                         ),
-                    },
-                    RecordField {
-                        name: "right".to_string(),
-                        ty: Type::Con(
-                            TyConId(base + 2),
-                            vec![Type::Var(TyVid(1)), Type::Var(TyVid(2))],
-                        ),
-                    },
-                    // The join condition is stored as a captured tree over two
-                    // row maps — the same row-map form `Query.pred` uses, not the
-                    // entity form the user-facing `joinOn` scheme presents. The
-                    // value is a `QExpr` either way; this is the field's static
-                    // type, which must mirror the source repo.ridge declaration.
-                    RecordField {
-                        name: "cond".to_string(),
-                        ty: Type::Con(
-                            b.quote,
-                            vec![Type::Fn {
-                                params: vec![
-                                    Type::Con(
-                                        b.map,
-                                        vec![
-                                            Type::Con(b.text, vec![]),
-                                            Type::Con(b.sql_value, vec![]),
-                                        ],
-                                    ),
-                                    Type::Con(
-                                        b.map,
-                                        vec![
-                                            Type::Con(b.text, vec![]),
-                                            Type::Con(b.sql_value, vec![]),
-                                        ],
-                                    ),
-                                ],
-                                ret: Box::new(Type::Con(b.bool, vec![])),
-                                caps: CapRow::Concrete(CapabilitySet::PURE),
-                            }],
-                        ),
-                    },
-                ],
-            )),
+                        Type::Var(TyVid(1)), // f
+                        Type::Var(TyVid(2)), // a
+                    ],
+                ),
+            },
             def_span: None,
             def_module_raw: None,
-            opaque: true,
+            opaque: false,
             is_anon: false,
         },
         // `std.repo` — a left (outer) join under construction. Structurally a copy

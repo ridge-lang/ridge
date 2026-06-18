@@ -561,6 +561,15 @@ fn decodeScalar (v: Option SqlValue) -> Result (Option w) Error where SqlType w 
                 Ok x  -> Ok (Some x)
                 Err _ -> Ok None
 
+-- `avgOf` always answers `Option Float`, whatever the column's own type, since a
+-- SQL average is fractional. Decoding it through the polymorphic `decodeScalar`
+-- relies on the result type pinning its `SqlType` to `Float`; inside a composite
+-- aggregate instance that pin is not in scope and the inert column dictionary is
+-- threaded instead, decoding the float cell as the wrong type and folding to
+-- `None`. Pinning `Float` here keeps every shape's average decoding the same way.
+fn decodeFloatScalar (v: Option SqlValue) -> Result (Option Float) Error =
+    decodeScalar v
+
 -- The scalar aggregates `sumOf`/`avgOf`/`minOf`/`maxOf` are the methods of the
 -- `Aggregable q p | q -> p` class (declared above), so one set of verbs folds a
 -- column over a query (a one-row accessor) and over a join (a two-row accessor
@@ -618,17 +627,8 @@ pub fn summarize (proj: Quote (Grouped q p -> s)) (g: Grouped q p) -> Result (Li
         Err err -> Err err
         Ok rows -> decodeRows rows
 
--- A join under construction: the left query, the right repository, and a quoted
--- condition over both entities. Opaque and threaded from `joinOn` into a
--- terminal, so it reads as a pipeline:
---   users
---     |> Repo.query
---     |> Repo.joinOn posts (fn (u: User) (p: Post) -> u.id == p.authorId)
---     |> Repo.toList
--- The condition is written against both records at the call site: its left
--- columns range over the left entity and its right over the right, captured as a
--- query tree that tags each side so the two tables never collide.
-pub opaque type Join e f a = { left: Query e a, right: Repo f a, cond: Quote (Map Text SqlValue -> Map Text SqlValue -> Bool), where2: Quote (Map Text SqlValue -> Map Text SqlValue -> Bool), orders: List (Bool, Int, Text), lim: Int, off: Int, dist: Bool }
+-- (Join is declared below as a transparent alias for `Joined (Query e a) f a`,
+-- after `Joined` itself is in scope.)
 
 -- A join of three or more tables, built by chaining `joinOn` past the first.
 -- The left side `source` is itself a join — a binary `Join` for the third table,
@@ -645,6 +645,13 @@ pub opaque type Join e f a = { left: Query e a, right: Repo f a, cond: Quote (Ma
 -- The result decodes into a left-nested pair `((User, Post), Comment)`, one level
 -- of nesting per table past the first.
 pub opaque type Joined q f a = { source: q, right: Repo f a, cond: Quote (Map Text SqlValue -> Map Text SqlValue -> Bool), where2: Quote (Map Text SqlValue -> Map Text SqlValue -> Bool), orders: List (Bool, Int, Text), lim: Int, off: Int, dist: Bool }
+
+-- A two-table inner join. Aliased to `Joined (Query e a) f a` so a query paired
+-- with one right repository through `joinOn` is the same shape the composite
+-- instances already handle; the alias is transparent and peels away during type
+-- checking, letting the existing `Joined`-family class instances cover the
+-- two-table case without a separate set of duplicated verb implementations.
+pub type Join e f a = Joined (Query e a) f a
 
 -- A left outer join extending a composite of three or more tables, built by
 -- chaining `leftJoinOn` past the first join. The same shape as `Joined`: the
@@ -704,20 +711,13 @@ pub opaque type FullJoined q f a = { source: q, right: Repo f a, cond: Quote (Ma
 pub class Joinable q =
     joinOn (right: Repo f a) (cond: Quote (Map Text SqlValue -> Map Text SqlValue -> Bool)) (x: q) -> JoinResult q f
 
--- A query's `joinOn`: the binary inner join, identical to the original builder.
--- It pairs the left query with the right repository, lifting the query's
--- accumulated ordering in as left-side keys, and produces a `Join e f a` that
--- keeps the whole existing two-table vocabulary.
+-- A query's `joinOn`: pair it with the right repository into a two-table inner
+-- join. Lifts the query's accumulated ordering in as left-side keys and
+-- produces a `Join e f a` (the alias for `Joined (Query e a) f a`), so the
+-- composite `Joined` instances immediately cover the two-table case.
 instance Joinable (Query e a) =
     joinOn (right: Repo f a) (cond: Quote (Map Text SqlValue -> Map Text SqlValue -> Bool)) (x: Query e a) -> Join e f a =
-        Join { left = x, right = right, cond = cond, where2 = keepAll2 (), orders = liftOrders x.orders, lim = x.lim, off = x.off, dist = x.dist }
-
--- A binary join's `joinOn`: absorb a third table. The existing two-table join
--- becomes the `source` of a `Joined`, the new repository its right, and the
--- accumulated page/ordering carry across unchanged.
-instance Joinable (Join e g a) =
-    joinOn (right: Repo f a) (cond: Quote (Map Text SqlValue -> Map Text SqlValue -> Bool)) (x: Join e g a) -> Joined (Join e g a) f a =
-        Joined { source = x, right = right, cond = cond, where2 = keepAll2 (), orders = x.orders, lim = x.lim, off = x.off, dist = x.dist }
+        Joined { source = x, right = right, cond = cond, where2 = keepAll2 (), orders = liftOrders x.orders, lim = x.lim, off = x.off, dist = x.dist }
 
 -- A nested join's `joinOn`: absorb one more table onto a composite already three
 -- or more wide. The chain nests left another level, the new repository joining
@@ -728,37 +728,29 @@ instance Joinable (Joined q g a) =
 
 -- The recursion a nested join's terminal stands on. `JoinShape` walks the
 -- left-nested source of a `Joined` to count its leaves, rebuild its plan, and
--- decode a flat prefixed result row into the nested row. The source `q` of a
--- `Joined` is always a binary `Join` (the base) or another `Joined` (one level
--- deeper), never a bare query — a query's `joinOn` yields a binary `Join`, so a
--- `Joined` only ever forms over a join.
+-- decode a flat prefixed result row into the nested row. The recursion bottoms
+-- out at a single `Query e a` (the new base case below); each `Joined` step
+-- adds one more leaf on top.
 class JoinShape q =
-    -- How many leaf tables the receiver carries: 2 for a binary join, one more
+    -- How many leaf tables the receiver carries: 1 for a bare query, one more
     -- per nesting level.
     joinedLeaves (w: Option q) -> Int
     -- The receiver's query plan, a left-nested `PlanJoin` over its leaves.
     joinedSourcePlan (x: q) -> QueryPlan
     -- Decode one flat result row (leaves under `t0$`, `t1$`, … prefixes) into the
-    -- receiver's nested row — `(e, f)` for a binary join, `(Rows q, f)` deeper.
+    -- receiver's nested row — `e` for a bare query, `(Rows q, f)` at each step.
     decodeJoined (w: Option q) (row: Map Text SqlValue) -> Result (Rows q) Error
 
--- The base of the recursion: a binary join is two leaves under `t0$`/`t1$`, its
--- plan the existing binary `innerJoinPlan`, its row the pair `(e, f)`.
-instance JoinShape (Join e f a) where Row f, Row e =
-    joinedLeaves (w: Option (Join e f a)) -> Int = 2
-    joinedSourcePlan (x: Join e f a) -> QueryPlan =
-        innerJoinPlan x (0 - 1) (rowColumns (entityWitness x.left.repo)) (rowColumns (entityWitness x.right))
-    -- Decode the t0$/t1$ pair by delegating to `decodePrefixedPairs` over a
-    -- one-row list: a direct `fromRow` for each side would, inside an instance
-    -- body, resolve both to the same `Row` dictionary (the lowering picks a
-    -- context dict by class alone), so the two-row decode is threaded through the
-    -- free helper whose call site distinguishes the two `Row` dicts by position —
-    -- exactly as the binary `Decodable (Join e f a)` instance does.
-    decodeJoined (w: Option (Join e f a)) (row: Map Text SqlValue) -> Result (e, f) Error =
-        match decodePrefixedPairs [row]
-            Err err     -> Err err
-            Ok []       -> Err (mkError "repo.join.decode" "the join produced no row to decode")
-            Ok (p :: _) -> Ok p
+-- The base of the recursion: a single-table query is one leaf, its plan a bare
+-- scan of the repository carrying the query's filter (ordering and page are
+-- lifted into the enclosing join by `Joinable`), and its row the single decoded
+-- entity under the `t0$` prefix.
+instance JoinShape (Query e a) where Row e =
+    joinedLeaves (w: Option (Query e a)) -> Int = 1
+    joinedSourcePlan (x: Query e a) -> QueryPlan =
+        planScan x.repo.table x.pred.tree [] (0 - 1) 0 false
+    decodeJoined (w: Option (Query e a)) (row: Map Text SqlValue) -> Result e Error =
+        fromRow (unprefix (leafPrefix 0) row)
 
 -- The recursive step: a nested join is its source plus one more leaf. Its leaf
 -- count, plan, and row each extend the source's by one — the new table joins onto
@@ -971,7 +963,7 @@ instance Decodable (LeftJoined q f a) where Adapter a, JoinShape q, Row f =
 --       |> Repo.query
 --       |> Repo.crossJoin colors
 pub fn crossJoin (right: Repo f a) (q: Query e a) -> Join e f a =
-    Join { left = q, right = right, cond = keepAll2 (), where2 = keepAll2 (), orders = liftOrders q.orders, lim = q.lim, off = q.off, dist = q.dist }
+    Joined { source = q, right = right, cond = keepAll2 (), where2 = keepAll2 (), orders = liftOrders q.orders, lim = q.lim, off = q.off, dist = q.dist }
 
 -- A right (outer) join under construction. The mirror of `LeftJoin`: the same left
 -- query, right repository, and quoted condition over both entities, but its terminal
@@ -1244,13 +1236,6 @@ instance Refinable (Query e a) (fn e -> Bool) =
     filter (pred: Quote (fn e -> Bool)) (x: Query e a) -> Query e a =
         Query { repo = x.repo, pred = quoteAnd x.pred pred, orders = x.orders, lim = x.lim, off = x.off, dist = x.dist, plan = x.plan }
 
--- An inner join's `filter`: AND the two-row predicate into the join's post-join
--- `WHERE`. The condition the join pairs rows on stays separate; the terminals
--- fold `where2` in when they run the join.
-instance Refinable (Join e f a) (fn e f -> Bool) =
-    filter (pred: Quote (fn e f -> Bool)) (x: Join e f a) -> Join e f a =
-        Join { left = x.left, right = x.right, cond = x.cond, where2 = quoteAnd2 x.where2 pred, orders = x.orders, lim = x.lim, off = x.off, dist = x.dist }
-
 -- A left join's `filter`: AND the two-row predicate into the post-join `WHERE`.
 -- A predicate that reads a right column drops the unmatched left rows (their
 -- right side is NULL, so the predicate is false), narrowing the outer join to
@@ -1315,20 +1300,6 @@ instance Projectable (Query e a) (fn e -> s) where Adapter a, Row s =
         match project x.repo.adapter x.repo.table x.pred x.orders 1 x.off (projColumns proj) x.dist
             Err err -> Err err
             Ok rows -> firstDecoded rows
-
--- An inner join's `select`: project across both entities into `s`. The projection
--- names columns from either row (`fn (u: User) (p: Post) -> Line { ... }`); the
--- plan pushes that select-list onto the join through `innerJoinSelectPlan` and each
--- projected row decodes into `s`.
-instance Projectable (Join e f a) (fn e f -> s) where Adapter a, Row s =
-    select (proj: Quote (fn e f -> s)) (x: Join e f a) -> Result (List s) Error =
-        match runPlan x.left.repo.adapter (innerJoinSelectPlan x proj.tree x.lim)
-            Err err  -> Err err
-            Ok rows  -> decodeRows rows
-    selectFirst (proj: Quote (fn e f -> s)) (x: Join e f a) -> Result (Option s) Error =
-        match runPlan x.left.repo.adapter (innerJoinSelectPlan x proj.tree 1)
-            Err err  -> Err err
-            Ok rows  -> firstDecoded rows
 
 -- A left join's `select`: project across both entities into `s`, the right side
 -- read as `Option` (`fn (u: User) (p: Option Post) -> ...`) so an unmatched left
@@ -1434,14 +1405,6 @@ instance Orderable (Query e a) (fn e -> k) =
     orderBy (dir: SortOrder) (key: Quote (fn e -> k)) (x: Query e a) -> Query e a =
         Query { repo = x.repo, pred = x.pred, orders = snoc x.orders (ascending dir, orderColumn key), lim = x.lim, off = x.off, dist = x.dist, plan = x.plan }
 
--- An inner join's `orderBy`: append a two-row key to the join's own ordering. The
--- key may name a column from either side (`fn (u: User) (p: Post) -> p.title`
--- orders by the right table); `orderEntryLeaf` reads the column and which leaf it
--- belongs to so the seam qualifies it to that table's alias.
-instance Orderable (Join e f a) (fn e f -> k) =
-    orderBy (dir: SortOrder) (key: Quote (fn e f -> k)) (x: Join e f a) -> Join e f a =
-        Join { left = x.left, right = x.right, cond = x.cond, where2 = x.where2, orders = snoc x.orders (orderEntryLeaf dir key), lim = x.lim, off = x.off, dist = x.dist }
-
 -- A left join's `orderBy`: the two-row dual over a `LeftJoin`. The right side is
 -- read as `Option` in the key (`fn (u: User) (p: Option Post) -> p.title`); an
 -- unmatched left row has no right value, so a right-side key sorts it as a missing
@@ -1502,7 +1465,7 @@ instance Aggregable (Query e a) (fn e -> n) where Adapter a, SqlType n =
     avgOf (col: Quote (fn e -> n)) (x: Query e a) -> Result (Option Float) Error =
         match aggregate x.repo.adapter x.repo.table x.pred "AVG" (aggColumn col)
             Err err -> Err err
-            Ok v    -> decodeScalar v
+            Ok v    -> decodeFloatScalar v
     minOf (col: Quote (fn e -> n)) (x: Query e a) -> Result (Option n) Error =
         match aggregate x.repo.adapter x.repo.table x.pred "MIN" (aggColumn col)
             Err err -> Err err
@@ -1511,31 +1474,6 @@ instance Aggregable (Query e a) (fn e -> n) where Adapter a, SqlType n =
         match aggregate x.repo.adapter x.repo.table x.pred "MAX" (aggColumn col)
             Err err -> Err err
             Ok v    -> decodeScalar v
-
--- An inner join's scalar aggregates: fold a column the two-row accessor names —
--- from either side (`fn (u: User) (p: Post) -> p.amount` folds the right table) —
--- over the joined rows the condition and post-join filter keep, through a
--- `PlanAggregate` over the join plan (`scalarJoinPlan`). `aggSide` reads which side
--- the column belongs to so the fold reads it under that source's prefix; `aggColumn`
--- reads its name. The plan's lone row carries the scalar (`firstAggCell`), or no row
--- when the fold is empty, which `decodeScalar` reads as `None`.
-instance Aggregable (Join e f a) (fn e f -> n) where Adapter a, SqlType n =
-    sumOf (col: Quote (fn e f -> n)) (x: Join e f a) -> Result (Option n) Error =
-        match runPlan x.left.repo.adapter (scalarJoinPlan x "SUM" col)
-            Err err -> Err err
-            Ok rows -> decodeScalar (firstAggCell rows)
-    avgOf (col: Quote (fn e f -> n)) (x: Join e f a) -> Result (Option Float) Error =
-        match runPlan x.left.repo.adapter (scalarJoinPlan x "AVG" col)
-            Err err -> Err err
-            Ok rows -> decodeScalar (firstAggCell rows)
-    minOf (col: Quote (fn e f -> n)) (x: Join e f a) -> Result (Option n) Error =
-        match runPlan x.left.repo.adapter (scalarJoinPlan x "MIN" col)
-            Err err -> Err err
-            Ok rows -> decodeScalar (firstAggCell rows)
-    maxOf (col: Quote (fn e f -> n)) (x: Join e f a) -> Result (Option n) Error =
-        match runPlan x.left.repo.adapter (scalarJoinPlan x "MAX" col)
-            Err err -> Err err
-            Ok rows -> decodeScalar (firstAggCell rows)
 
 -- A left join's scalar aggregates: the two-row dual over a `LeftJoin`, run through
 -- the `aggregateLeftJoin` seam. Unlike a left join's `select`/`orderBy` — whose
@@ -1554,7 +1492,7 @@ instance Aggregable (LeftJoin e f a) (fn e f -> n) where Adapter a, SqlType n =
     avgOf (col: Quote (fn e f -> n)) (x: LeftJoin e f a) -> Result (Option Float) Error =
         match runPlan x.left.repo.adapter (leftScalarPlan x "AVG" col)
             Err err -> Err err
-            Ok rows -> decodeScalar (firstAggCell rows)
+            Ok rows -> decodeFloatScalar (firstAggCell rows)
     minOf (col: Quote (fn e f -> n)) (x: LeftJoin e f a) -> Result (Option n) Error =
         match runPlan x.left.repo.adapter (leftScalarPlan x "MIN" col)
             Err err -> Err err
@@ -1578,7 +1516,7 @@ instance Aggregable (RightJoin e f a) (fn e f -> n) where Adapter a, SqlType n =
     avgOf (col: Quote (fn e f -> n)) (x: RightJoin e f a) -> Result (Option Float) Error =
         match runPlan x.left.repo.adapter (rightScalarPlan x "AVG" col)
             Err err -> Err err
-            Ok rows -> decodeScalar (firstAggCell rows)
+            Ok rows -> decodeFloatScalar (firstAggCell rows)
     minOf (col: Quote (fn e f -> n)) (x: RightJoin e f a) -> Result (Option n) Error =
         match runPlan x.left.repo.adapter (rightScalarPlan x "MIN" col)
             Err err -> Err err
@@ -1602,7 +1540,7 @@ instance Aggregable (FullJoin e f a) (fn e f -> n) where Adapter a, SqlType n =
     avgOf (col: Quote (fn e f -> n)) (x: FullJoin e f a) -> Result (Option Float) Error =
         match runPlan x.left.repo.adapter (fullScalarPlan x "AVG" col)
             Err err -> Err err
-            Ok rows -> decodeScalar (firstAggCell rows)
+            Ok rows -> decodeFloatScalar (firstAggCell rows)
     minOf (col: Quote (fn e f -> n)) (x: FullJoin e f a) -> Result (Option n) Error =
         match runPlan x.left.repo.adapter (fullScalarPlan x "MIN" col)
             Err err -> Err err
@@ -1628,7 +1566,7 @@ instance Aggregable (Joined q f a) (Map Text SqlValue -> n) where Adapter a, Joi
     avgOf (col: Quote (Map Text SqlValue -> n)) (x: Joined q f a) -> Result (Option Float) Error =
         match runPlan x.right.adapter (joinedScalarPlan x "AVG" col)
             Err err -> Err err
-            Ok rows -> decodeScalar (firstAggCell rows)
+            Ok rows -> decodeFloatScalar (firstAggCell rows)
     minOf (col: Quote (Map Text SqlValue -> n)) (x: Joined q f a) -> Result (Option n) Error =
         match runPlan x.right.adapter (joinedScalarPlan x "MIN" col)
             Err err -> Err err
@@ -1646,7 +1584,7 @@ instance Aggregable (LeftJoined q f a) (Map Text SqlValue -> n) where Adapter a,
     avgOf (col: Quote (Map Text SqlValue -> n)) (x: LeftJoined q f a) -> Result (Option Float) Error =
         match runPlan x.right.adapter (leftScalarComposite x "AVG" col)
             Err err -> Err err
-            Ok rows -> decodeScalar (firstAggCell rows)
+            Ok rows -> decodeFloatScalar (firstAggCell rows)
     minOf (col: Quote (Map Text SqlValue -> n)) (x: LeftJoined q f a) -> Result (Option n) Error =
         match runPlan x.right.adapter (leftScalarComposite x "MIN" col)
             Err err -> Err err
@@ -1664,7 +1602,7 @@ instance Aggregable (RightJoined q f a) (Map Text SqlValue -> n) where Adapter a
     avgOf (col: Quote (Map Text SqlValue -> n)) (x: RightJoined q f a) -> Result (Option Float) Error =
         match runPlan x.right.adapter (rightScalarComposite x "AVG" col)
             Err err -> Err err
-            Ok rows -> decodeScalar (firstAggCell rows)
+            Ok rows -> decodeFloatScalar (firstAggCell rows)
     minOf (col: Quote (Map Text SqlValue -> n)) (x: RightJoined q f a) -> Result (Option n) Error =
         match runPlan x.right.adapter (rightScalarComposite x "MIN" col)
             Err err -> Err err
@@ -1682,7 +1620,7 @@ instance Aggregable (FullJoined q f a) (Map Text SqlValue -> n) where Adapter a,
     avgOf (col: Quote (Map Text SqlValue -> n)) (x: FullJoined q f a) -> Result (Option Float) Error =
         match runPlan x.right.adapter (fullScalarComposite x "AVG" col)
             Err err -> Err err
-            Ok rows -> decodeScalar (firstAggCell rows)
+            Ok rows -> decodeFloatScalar (firstAggCell rows)
     minOf (col: Quote (Map Text SqlValue -> n)) (x: FullJoined q f a) -> Result (Option n) Error =
         match runPlan x.right.adapter (fullScalarComposite x "MIN" col)
             Err err -> Err err
@@ -1713,40 +1651,19 @@ instance Decodable (Query e a) where Adapter a, Row e =
                     Err err -> Err err
                     Ok rows -> firstDecoded rows
 
--- An inner join's decode terminals: `toList` runs the join and decodes each
--- matched row pair into `(e, f)`; `first` fetches a one-row join and keeps the
--- first pair. `Rows (Join e f a)` reduces to the pair `(e, f)`, so the result is
--- `List (e, f)`/`Option (e, f)`. Both sides decode, so the instance carries
--- `Row e, Row f` alongside `Adapter a`.
--- The two `Row` constraints are written `Row f, Row e` (right before left) so the
--- instance dictionary lists them in the same order the decode helper's own scheme
--- does. A helper like `decodePrefixedPairs` constrains both entities, and a generalised
--- scheme orders its dictionary parameters by the constraint variables' inference
--- ids — the later-appearing `f` ahead of `e`. An instance method forwards its
--- incoming `Row` dictionaries into that helper by position, so matching the order
--- here threads the left entity's decoder to the left row and the right's to the
--- right. (`Adapter a` stays first; it is a different class and never collides.)
--- The query plan an inner join runs: a `PlanJoin` pairing a scan of the left table
--- (carrying the left query's filter) with a scan of the right, on the join's
--- condition and post-join `WHERE`, with the join's side-tagged ordering, page, and
--- distinct folded in. `lim` is passed explicitly so `first` can run the same plan
--- with a one-row limit. The decode terminals run it through `runPlan` and decode the
--- flat, source-prefixed rows.
--- A phantom `Option e` witness for `rowColumns`, drawn from a repository that already
--- carries the entity type. `Row.rowColumns` answers an entity's columns from the type
--- alone but needs a value to fix that type; a `Repo e a` carries `e` in its type, so this
--- projects out an ignored `Option e` to select the `Row e` instance. The join read
--- terminals call it on their left and right repositories to spell each side's columns.
+-- A phantom `Option e` witness for `rowColumns`, drawn from a repository that
+-- already carries the entity type. `Row.rowColumns` answers an entity's columns
+-- from the type alone but needs a value to fix that type; a `Repo e a` carries
+-- `e` in its type, so this projects out an ignored `Option e` to select the
+-- `Row e` instance. The outer-join decode terminals call it on their left and
+-- right repositories to spell each side's columns.
 fn entityWitness (_r: Repo e a) -> Option e = None
 
-fn innerJoinPlan (x: Join e f a) (lim: Int) (leftCols: List Text) (rightCols: List Text) -> QueryPlan =
-    planJoin "INNER" (planScan x.left.repo.table x.left.pred.tree [] (0 - 1) 0 false) (planScan x.right.table (keepAllTree ()) [] (0 - 1) 0 false) x.cond.tree x.where2.tree x.orders lim x.off x.dist leftCols rightCols
-
--- The plan a left/right/full outer-join decode runs: the same shape as
--- `innerJoinPlan` but with the join `kind` set, so the backend keeps the outer rows.
--- An unmatched side comes back with its `t0$`/`t1$` columns absent, which the outer
--- decoders read as `None`. `lim` is explicit so `first` runs the same plan with a
--- one-row limit.
+-- The plan a left/right/full outer-join decode runs: the same shape as an INNER
+-- join plan, but with the join `kind` set so the backend keeps the outer rows.
+-- An unmatched side comes back with its `t0$`/`t1$` columns absent, which the
+-- outer decoders read as `None`. `lim` is explicit so `first` runs the same plan
+-- with a one-row limit.
 fn leftJoinPlan (x: LeftJoin e f a) (lim: Int) (leftCols: List Text) (rightCols: List Text) -> QueryPlan =
     planJoin "LEFT" (planScan x.left.repo.table x.left.pred.tree [] (0 - 1) 0 false) (planScan x.right.table (keepAllTree ()) [] (0 - 1) 0 false) x.cond.tree x.where2.tree x.orders lim x.off x.dist leftCols rightCols
 
@@ -1755,17 +1672,6 @@ fn rightJoinPlan (x: RightJoin e f a) (lim: Int) (leftCols: List Text) (rightCol
 
 fn fullJoinPlan (x: FullJoin e f a) (lim: Int) (leftCols: List Text) (rightCols: List Text) -> QueryPlan =
     planJoin "FULL" (planScan x.left.repo.table x.left.pred.tree [] (0 - 1) 0 false) (planScan x.right.table (keepAllTree ()) [] (0 - 1) 0 false) x.cond.tree x.where2.tree x.orders lim x.off x.dist leftCols rightCols
-
--- The query plan an inner-join `select` runs: a `PlanProject` over the all-pairs
--- join. The inner `PlanJoin` keeps the join's ordering but leaves its page and
--- distinct off (`(0 - 1) 0 false`) — `distinct` de-duplicates the projected columns
--- and the page bounds the projected rows, so both move onto the `PlanProject` and
--- apply after the projection, the same order the old `joinSelect` seam ran them
--- (pair, order, project, distinct, page). The projection tree is read against the
--- flat, source-prefixed join rows. `lim` is passed explicitly so `selectFirst` runs
--- the same plan with a one-row limit.
-fn innerJoinSelectPlan (x: Join e f a) (proj: QExpr) (lim: Int) -> QueryPlan =
-    planProject proj (planJoin "INNER" (planScan x.left.repo.table x.left.pred.tree [] (0 - 1) 0 false) (planScan x.right.table (keepAllTree ()) [] (0 - 1) 0 false) x.cond.tree x.where2.tree x.orders (0 - 1) 0 false [] []) lim x.off x.dist
 
 -- The plan a left/right/full outer-join `select` runs: a `PlanProject` over the
 -- all-rows outer join (its page and distinct deferred to the projection, as for the
@@ -1781,15 +1687,6 @@ fn rightJoinSelectPlan (x: RightJoin e f a) (proj: QExpr) (lim: Int) -> QueryPla
 
 fn fullJoinSelectPlan (x: FullJoin e f a) (proj: QExpr) (lim: Int) -> QueryPlan =
     planProject proj (planJoin "FULL" (planScan x.left.repo.table x.left.pred.tree [] (0 - 1) 0 false) (planScan x.right.table (keepAllTree ()) [] (0 - 1) 0 false) x.cond.tree x.where2.tree x.orders (0 - 1) 0 false [] []) lim x.off x.dist
-
--- The base inner-join plan a reduction terminal (`count`, `exists`, a scalar
--- aggregate) folds over. A reduction measures or folds the matched set rather than a
--- paged, ordered window of it, so the join carries neither ordering, offset, nor
--- distinct — only `where2` (which a join `filter`, or `every`'s extra predicate,
--- narrows) and `lim`, which `exists` sets to one to answer from a single row. Its
--- flat source-prefixed rows are what the scalar nodes fold.
-fn reduceJoin (x: Join e f a) (where2: QExpr) (lim: Int) -> QueryPlan =
-    reduceJoinOf "INNER" x.left.repo.table x.left.pred.tree x.right.table x.cond.tree where2 lim
 
 -- Build the base reduction join from raw fields: all matched (or outer) rows with
 -- neither ordering, offset, nor distinct. The four join receivers are distinct opaque
@@ -1829,14 +1726,6 @@ fn fullCountPlan (x: FullJoin e f a) (where2: QExpr) -> Result Int Error where A
         Err err -> Err err
         Ok rows -> aggCount rows
 
--- Run a `COUNT` aggregate plan over the inner join narrowed by `where2` and read the
--- count off its lone row. Shared by the join's `count` and `every` (which counts
--- twice, once with the extra predicate folded in).
-fn countJoinPlan (x: Join e f a) (where2: QExpr) -> Result Int Error where Adapter a =
-    match runPlan x.left.repo.adapter (planAggregate "COUNT" "" 0 (reduceJoin x where2 (0 - 1)))
-        Err err -> Err err
-        Ok rows -> aggCount rows
-
 -- The lone scalar an aggregate plan carries: its single row holds the value (under
 -- the `agg` alias the backends key it by), or the plan returns no row at all when the
 -- aggregate is SQL NULL (an empty fold). Reading the first row's first cell recovers
@@ -1860,14 +1749,7 @@ fn aggCount (rows: List (Map Text SqlValue)) -> Result Int Error =
                 Err err -> Err err
                 Ok n    -> Ok n
 
--- The scalar-aggregate plan an inner-join `sumOf`/`avgOf`/`minOf`/`maxOf` runs: a
--- `PlanAggregate` over the all-pairs join, folding the column the two-row accessor
--- names (`aggColumn`) on whichever side it belongs to (`aggSide`). The fold ignores
--- ordering and paging, so `reduceJoin` leaves them off.
-fn scalarJoinPlan (x: Join e f a) (func: Text) (col: Quote p) -> QueryPlan =
-    planAggregate func (aggColumn col) (aggLeaf col) (reduceJoin x x.where2.tree (0 - 1))
-
--- The outer-shape scalar-aggregate plans, the duals of `scalarJoinPlan`. A fold over
+-- The outer-shape scalar-aggregate plans. A fold over
 -- an unmatched side reads its column as absent (SQL NULL) and skips it.
 fn leftScalarPlan (x: LeftJoin e f a) (func: Text) (col: Quote p) -> QueryPlan =
     planAggregate func (aggColumn col) (aggLeaf col) (leftReduceJoin x x.where2.tree (0 - 1))
@@ -1967,16 +1849,6 @@ fn rightSelectComposite (x: RightJoined q f a) (proj: QExpr) (lim: Int) -> Query
 fn fullSelectComposite (x: FullJoined q f a) (proj: QExpr) (lim: Int) -> QueryPlan where JoinShape q =
     compositeSelectPlan "FULL" (joinedSourcePlan x.source) x.right.table x.cond.tree x.where2.tree x.orders [] proj lim x.off x.dist
 
-instance Decodable (Join e f a) where Adapter a, Row f, Row e =
-    toList (x: Join e f a) -> Result (List (e, f)) Error =
-        match runPlan x.left.repo.adapter (innerJoinPlan x x.lim (rowColumns (entityWitness x.left.repo)) (rowColumns (entityWitness x.right)))
-            Err err  -> Err err
-            Ok rows  -> decodePrefixedPairs rows
-    first (x: Join e f a) -> Result (Option (e, f)) Error =
-        match runPlan x.left.repo.adapter (innerJoinPlan x 1 (rowColumns (entityWitness x.left.repo)) (rowColumns (entityWitness x.right)))
-            Err err  -> Err err
-            Ok rows  -> firstDecodedPrefixedPair rows
-
 -- A left join's decode terminals: `toList` keeps every left row, decoding each
 -- into `(e, Option f)` — the right side `None` where the left row matched no
 -- right row — and `first` keeps the first such pair. `Rows (LeftJoin e f a)`
@@ -2044,18 +1916,6 @@ instance Pageable (Query e a) =
     distinct (x: Query e a) -> Query e a =
         Query { repo = x.repo, pred = x.pred, orders = x.orders, lim = x.lim, off = x.off, dist = true, plan = x.plan }
 
--- An inner join's page and distinct: set the field on the join. The join carries
--- its own `lim`/`off`/`dist` (lifted from the left query at `joinOn`), so a `limit`
--- or `distinct` on the join bounds or de-duplicates the joined rows the terminal
--- decodes, not the left table alone.
-instance Pageable (Join e f a) =
-    limit (n: Int) (x: Join e f a) -> Join e f a =
-        Join { left = x.left, right = x.right, cond = x.cond, where2 = x.where2, orders = x.orders, lim = n, off = x.off, dist = x.dist }
-    offset (n: Int) (x: Join e f a) -> Join e f a =
-        Join { left = x.left, right = x.right, cond = x.cond, where2 = x.where2, orders = x.orders, lim = x.lim, off = n, dist = x.dist }
-    distinct (x: Join e f a) -> Join e f a =
-        Join { left = x.left, right = x.right, cond = x.cond, where2 = x.where2, orders = x.orders, lim = x.lim, off = x.off, dist = true }
-
 -- A left join's page and distinct: the dual over a `LeftJoin`, setting the same
 -- fields. `distinct` de-duplicates the `(left, right)` rows the terminal returns,
 -- the unmatched-right rows (right side reported as `None`) included.
@@ -2089,6 +1949,18 @@ instance Pageable (FullJoin e f a) =
         FullJoin { left = x.left, right = x.right, cond = x.cond, where2 = x.where2, orders = x.orders, lim = x.lim, off = n, dist = x.dist }
     distinct (x: FullJoin e f a) -> FullJoin e f a =
         FullJoin { left = x.left, right = x.right, cond = x.cond, where2 = x.where2, orders = x.orders, lim = x.lim, off = x.off, dist = true }
+
+-- A composite join's page and distinct: the same three paging fields but over
+-- the `Joined q f a` composite shape. The fields sit at the outer `Joined`
+-- level so a single `limit`/`offset`/`distinct` bounds the whole flattened
+-- result regardless of how many tables the spine holds.
+instance Pageable (Joined q f a) =
+    limit (n: Int) (x: Joined q f a) -> Joined q f a =
+        Joined { source = x.source, right = x.right, cond = x.cond, where2 = x.where2, orders = x.orders, lim = n, off = x.off, dist = x.dist }
+    offset (n: Int) (x: Joined q f a) -> Joined q f a =
+        Joined { source = x.source, right = x.right, cond = x.cond, where2 = x.where2, orders = x.orders, lim = x.lim, off = n, dist = x.dist }
+    distinct (x: Joined q f a) -> Joined q f a =
+        Joined { source = x.source, right = x.right, cond = x.cond, where2 = x.where2, orders = x.orders, lim = x.lim, off = x.off, dist = true }
 
 -- The count of a query's rows, honouring its set-operation plan. A plain query
 -- counts through the backend's `COUNT(*)` over its filter (a push-down, no rows
@@ -2133,19 +2005,6 @@ instance Countable (Query e a) where Adapter a =
                 match runPlan x.repo.adapter (planRefine p x.pred.tree [] 1 0 false)
                     Err err -> Err err
                     Ok rows -> Ok (nonEmpty rows)
-
--- An inner join's `count`/`exists`: count the joined pairs through a `PlanAggregate`
--- `COUNT` over the join plan (`countJoinPlan`), or probe the join plan for a single
--- row. As with the join aggregates, the join is neither ordered nor paged — these
--- answer the matched set, not a window — so `reduceJoin` leaves ordering and paging
--- off, save the one-row limit `exists` reads its answer from.
-instance Countable (Join e f a) where Adapter a =
-    count (x: Join e f a) -> Result Int Error =
-        countJoinPlan x x.where2.tree
-    exists (x: Join e f a) -> Result Bool Error =
-        match runPlan x.left.repo.adapter (reduceJoin x x.where2.tree 1)
-            Err err  -> Err err
-            Ok rows  -> Ok (nonEmpty rows)
 
 -- A left join's `count`/`exists`: the dual over a `LeftJoin`, counted through
 -- `countLeftJoin` (a `COUNT(*)` over the left-outer join, every left row kept).
@@ -2196,20 +2055,6 @@ instance Every (Query e a) (fn e -> Bool) where Adapter a =
             Err err  -> Err err
             Ok total ->
                 match countQuery (Query { repo = x.repo, pred = quoteAnd x.pred pred, orders = x.orders, lim = x.lim, off = x.off, dist = x.dist, plan = x.plan })
-                    Err err     -> Err err
-                    Ok matching -> Ok (total == matching)
-
--- An inner join's `every`: compare the join's count against the count once the
--- predicate folds into the post-join `WHERE`, both counted through a `PlanAggregate`
--- `COUNT` over the join plan (`countJoinPlan`), the second narrowing `where2` with the
--- extra predicate AND-folded in.
-instance Every (Join e f a) (fn e f -> Bool) where Adapter a =
-    every (pred: Quote (fn e f -> Bool)) (x: Join e f a) -> Result Bool Error =
-        let folded = quoteAnd2 x.where2 pred
-        match countJoinPlan x x.where2.tree
-            Err err  -> Err err
-            Ok total ->
-                match countJoinPlan x folded.tree
                     Err err     -> Err err
                     Ok matching -> Ok (total == matching)
 
@@ -2345,16 +2190,6 @@ instance Summarizable (Query e a) where Adapter a =
     runGroups (src: Query e a) (keyCol: Text) (keyLeaf: Int) (projTree: QExpr) (havingTree: QExpr) -> Result (List (Map Text SqlValue)) Error =
         groupSummarize src.repo.adapter src.repo.table src.pred keyCol (groupCols keyCol projTree) havingTree
 
--- An inner join's `groupBy`: the key is a two-row accessor naming a column from
--- either side (`fn (u: User) (p: Post) -> p.category` groups by the right table);
--- `aggColumn`/`aggSide` read the column and its side off the captured key, and the
--- join is wrapped into the unified `Grouped` builder. The right side is read as the
--- plain entity `f`, like the join aggregates — a grouped aggregate folds values, it
--- does not produce one per row.
-instance Groupable (Join e f a) (fn e f -> k) =
-    groupBy (key: Quote (fn e f -> k)) (x: Join e f a) -> Grouped (Join e f a) (fn e f -> k) =
-        Grouped { source = x, keyCol = aggColumn key, keyLeaf = aggLeaf key, havingTree = keepAllTree () }
-
 -- A left join's `groupBy`: the two-row dual over a `LeftJoin`, the right side read as
 -- the plain entity `f` as in the left-join aggregates. A right-side key groups the
 -- unmatched left rows under the NULL key the backend gives them.
@@ -2375,14 +2210,6 @@ instance Groupable (RightJoin e f a) (fn e f -> k) =
 instance Groupable (FullJoin e f a) (fn e f -> k) =
     groupBy (key: Quote (fn e f -> k)) (x: FullJoin e f a) -> Grouped (FullJoin e f a) (fn e f -> k) =
         Grouped { source = x, keyCol = aggColumn key, keyLeaf = aggLeaf key, havingTree = keepAllTree () }
-
--- An inner join's `summarize` seam: run the `GROUP BY` (and any `HAVING`) over the
--- joined rows through a `PlanGroup` over the all-pairs join plan, side-qualifying the
--- key and each aggregate column to its table. Returns one raw row per group for
--- `summarize` to decode.
-instance Summarizable (Join e f a) where Adapter a =
-    runGroups (src: Join e f a) (keyCol: Text) (keyLeaf: Int) (projTree: QExpr) (havingTree: QExpr) -> Result (List (Map Text SqlValue)) Error =
-        runPlan src.left.repo.adapter (planGroup keyCol keyLeaf (groupColsLeaf keyCol projTree) havingTree (reduceJoin src src.where2.tree (0 - 1)))
 
 -- A left join's `summarize` seam: the dual over a `LeftJoin`, run through the
 -- `groupSummarizeLeftJoin` push-down. Every left row the post-join `WHERE` admits
@@ -2461,37 +2288,6 @@ fn unprefixPairs (prefix: Text) (plen: Int) (kvs: List (Text, SqlValue)) -> List
         (k, v) :: rest ->
             if Text.startsWith prefix k then (Text.slice plen (Text.length k - plen) k, v) :: unprefixPairs prefix plen rest
             else unprefixPairs prefix plen rest
-
--- Decode the flat, source-prefixed rows a `PlanJoin` returns into entity pairs: the
--- `t0$`-prefixed columns decode the left entity and the `t1$`-prefixed the right. The
--- prefixed dual of `decodePairs`. Stops at the first decode failure on either side.
-fn decodePrefixedPairs (rows: List (Map Text SqlValue)) -> Result (List (e, f)) Error where Row e, Row f =
-    match rows
-        []          -> Ok []
-        row :: rest ->
-            match fromRow (unprefix "t0$" row)
-                Err err -> Err err
-                Ok x    ->
-                    match fromRow (unprefix "t1$" row)
-                        Err err -> Err err
-                        Ok y    ->
-                            match decodePrefixedPairs rest
-                                Err err -> Err err
-                                Ok xs   -> Ok ((x, y) :: xs)
-
--- The head of a flat source-prefixed join row list, decoded into an entity pair;
--- `None` when empty. The prefixed dual of `firstDecodedPair`, for `first` over a
--- `Join` run through the plan.
-fn firstDecodedPrefixedPair (rows: List (Map Text SqlValue)) -> Result (Option (e, f)) Error where Row e, Row f =
-    match rows
-        []       -> Ok None
-        row :: _ ->
-            match fromRow (unprefix "t0$" row)
-                Err err -> Err err
-                Ok x    ->
-                    match fromRow (unprefix "t1$" row)
-                        Err err -> Err err
-                        Ok y    -> Ok (Some (x, y))
 
 -- Whether an outer-join row carries any column of the source under `prefix`. An
 -- unmatched side contributes no prefixed columns, so a missing prefix means that

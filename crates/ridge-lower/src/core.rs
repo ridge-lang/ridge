@@ -59,7 +59,7 @@ use ridge_ast::{
 };
 use ridge_ir::{IrExpr, IrLit, IrParam, IrPat, SymbolRef};
 use ridge_resolve::{imports::Binding, ModuleId, NodeKind, StdlibModuleId, BUILTINS};
-use ridge_types::{CapRow, TyConId, Type};
+use ridge_types::{CapRow, TyConId, TyConKind, Type};
 
 use crate::ast_type::lower_ast_type;
 use crate::block::{lower_assign, lower_block};
@@ -1496,6 +1496,67 @@ fn deep_peel_alias(ty: &Type) -> Type {
     }
 }
 
+/// Substitute alias parameters with concrete arguments in a type body.
+fn subst_alias_params(t: &Type, params: &[ridge_types::TyVid], args: &[Type]) -> Type {
+    match t {
+        Type::Var(v) => params
+            .iter()
+            .position(|p| p == v)
+            .and_then(|i| args.get(i))
+            .cloned()
+            .unwrap_or_else(|| t.clone()),
+        Type::Con(id, sub_args) => Type::Con(
+            *id,
+            sub_args
+                .iter()
+                .map(|a| subst_alias_params(a, params, args))
+                .collect(),
+        ),
+        Type::Tuple(ts) => Type::Tuple(
+            ts.iter()
+                .map(|a| subst_alias_params(a, params, args))
+                .collect(),
+        ),
+        _ => t.clone(),
+    }
+}
+
+/// If `ty` is a `Type::Con` whose tycon is declared as a `TyConKind::Alias`,
+/// substitute the alias parameters and return the expanded body; otherwise
+/// return the type unchanged.
+///
+/// Used so that a transparent alias such as `Join e f a = Joined (Query e a) f a`
+/// dispatches through `Joined`'s instances when building sub-dictionary plans.
+///
+/// If the outer type carried more arguments than the alias has parameters (e.g. an
+/// augmented receiver `Join e f a s s s` padded for `Row s`), the extra arguments
+/// are appended to the expanded body's argument list so the augmented spine survives
+/// the expansion.
+fn expand_tycon_alias_once(ctx: &LowerCtx<'_>, ty: &Type) -> Type {
+    let Type::Con(tycon, args) = ty else {
+        return ty.clone();
+    };
+    let Some(decl) = ctx.workspace.and_then(|ws| ws.tycons.get(tycon.0 as usize)) else {
+        return ty.clone();
+    };
+    let TyConKind::Alias { params, body } = &decl.kind else {
+        return ty.clone();
+    };
+    let n_params = params.len();
+    let expanded = subst_alias_params(body, params, args);
+    // When the outer type had more args than the alias's parameter count, those
+    // extra slots are application arguments on the expanded body (the alias was
+    // over-applied with augmentation padding). Append them to the expanded Con's
+    // arg list so they remain accessible at the expected head positions.
+    if args.len() > n_params {
+        if let Type::Con(exp_id, mut exp_args) = expanded {
+            exp_args.extend_from_slice(&args[n_params..]);
+            return Type::Con(exp_id, exp_args);
+        }
+    }
+    expanded
+}
+
 /// Find the concrete type a constraint variable was unified to at a call site.
 ///
 /// Walks each scheme parameter type alongside the resolved type of the
@@ -1765,7 +1826,14 @@ fn stored_static_plan_for_receiver(
     let tmod = ctx
         .workspace
         .and_then(|ws| ws.modules.get(ctx.module_id.0 as usize))?;
-    let mut fallback: Option<&DictPlan> = None;
+    // Prefer a strict match (join spine plus the projected record/column the
+    // receiver was augmented with); fall back to the first plan whose join spine
+    // alone agrees when no strict match exists — an average's `Float` result has
+    // no `SqlType Float` plan to match, yet its return dict is inert, so the
+    // spine decides. The final `any` fallback keeps the pre-spine behaviour for a
+    // receiver that carries no comparable spine at all.
+    let mut spine_fallback: Option<&DictPlan> = None;
+    let mut any_fallback: Option<&DictPlan> = None;
     for ((cid, _), plan) in &tmod.dict_resolution {
         if *cid != class {
             continue;
@@ -1776,12 +1844,15 @@ fn stored_static_plan_for_receiver(
         if *t != tycon {
             continue;
         }
-        fallback.get_or_insert(plan);
-        if dict_plan_matches_receiver(plan, recv_ty) {
+        any_fallback.get_or_insert(plan);
+        if dict_plan_matches_receiver(ctx, plan, recv_ty, true) {
             return Some(plan.clone());
         }
+        if spine_fallback.is_none() && dict_plan_matches_receiver(ctx, plan, recv_ty, false) {
+            spine_fallback = Some(plan);
+        }
     }
-    fallback.cloned()
+    spine_fallback.or(any_fallback).cloned()
 }
 
 /// Whether a stored dictionary plan's tycon spine agrees with the receiver type the
@@ -1790,11 +1861,21 @@ fn stored_static_plan_for_receiver(
 ///
 /// Walks both in lockstep: a `Static` plan's `tycon` must equal the type's head
 /// constructor, then each receiver-bound sub-dictionary (every context whose head
-/// position is not the predicate-return sentinel, which the receiver does not encode)
-/// must match the type argument at that position, recursively. A `Forward` plan or a
-/// variable type carries no tycon to compare on, so it is treated as a match — it never
-/// discriminates, only the concrete spine does.
-fn dict_plan_matches_receiver(plan: &ridge_typecheck::DictPlan, ty: &Type) -> bool {
+/// position is not the predicate-return sentinel) must match the type argument at
+/// that position, recursively. A `Forward` plan or a variable type carries no tycon
+/// to compare on, so it is treated as a match — it never discriminates, only the
+/// concrete spine does.
+///
+/// `strict` also compares the determined predicate-return position (`Row s`/`SqlType
+/// n`), which the lowering pads into the receiver's trailing slots. This tells two
+/// same-shape joins projecting different records (or folding different column types)
+/// apart. Non-strict skips it, matching the join spine alone — used for the fallback.
+fn dict_plan_matches_receiver(
+    ctx: &LowerCtx<'_>,
+    plan: &ridge_typecheck::DictPlan,
+    ty: &Type,
+    strict: bool,
+) -> bool {
     use ridge_typecheck::class_env::PREDICATE_RETURN_POS;
     use ridge_typecheck::DictPlan;
     let DictPlan::Static {
@@ -1803,23 +1884,70 @@ fn dict_plan_matches_receiver(plan: &ridge_typecheck::DictPlan, ty: &Type) -> bo
     else {
         return true;
     };
-    let Type::Con(head, targs) = deep_peel_alias(ty) else {
+    // Expand a transparent tycon alias on the receiver before comparing heads. A
+    // join spine mixes representations: the base step `Joinable (Query e a)`
+    // yields the alias `Join e f a`, while each composite step yields `Joined`.
+    // The stored plan was built against the expanded `Joined (Query e a) f a`
+    // (the alias has no instances of its own), so the receiver's `Join` atom must
+    // expand to `Joined` here or the spine walk would mismatch one level early and
+    // thread a shallower plan into a deeper join.
+    let expanded = expand_tycon_alias_once(ctx, &deep_peel_alias(ty));
+    let Type::Con(head, targs) = expanded else {
         return true;
     };
+    // A plan never matches a receiver of a different head constructor — this is
+    // what tells `JoinShape (Query e a)` (the one-leaf base) apart from
+    // `JoinShape (Joined …)` (the recursive step) when both are stored for the
+    // same nested-join spine. Check it before any structural short-circuit.
     if *tycon != head {
         return false;
     }
+    // A non-parametric instance (no head variable positions) has matched on its
+    // tycon alone and carries no further type structure to compare — for example
+    // a `Row` or `Adapter` sub-dictionary whose head is already pinned. Accept it.
+    if info.head_var_positions.is_empty() {
+        return true;
+    }
+    // Where the lowering's projection padding begins: one past the highest
+    // receiver-bound head position. A `Projectable`/`Aggregable` receiver is
+    // augmented with the determined predicate-return type (`Row s`/`SqlType n`)
+    // repeated into its trailing argument slots, so this matcher can compare it
+    // even though no receiver-bound position names it. Two joins of the same
+    // shape projecting different records share every receiver-bound position and
+    // differ only here, so without this check the spine walk picks whichever plan
+    // is stored first and threads the wrong row decoder. `None` when the receiver
+    // carries no such padding (a non-augmented call), where the predicate return
+    // is left unconstrained and the spine alone decides, as before.
+    let proj_start = info
+        .head_var_positions
+        .iter()
+        .filter(|&&p| p != PREDICATE_RETURN_POS)
+        .map(|&p| p + 1)
+        .max();
     for (i, sub) in args.iter().enumerate() {
         let Some(&pos) = info.head_var_positions.get(i) else {
             continue;
         };
         if pos == PREDICATE_RETURN_POS {
+            // The determined predicate return (`Row s`/`SqlType n`), padded into the
+            // receiver's trailing slots by the lowering. In strict mode a plan whose
+            // return dict names a different type than this call records is rejected;
+            // non-strict leaves it to the spine. An average's `Float` result has no
+            // matching `SqlType` plan but its return dict is inert, so it relies on
+            // the non-strict spine fallback in `stored_static_plan_for_receiver`.
+            if strict {
+                if let Some(proj_ty) = proj_start.and_then(|start| targs.get(start)) {
+                    if !dict_plan_matches_receiver(ctx, sub, proj_ty, strict) {
+                        return false;
+                    }
+                }
+            }
             continue;
         }
         let Some(arg_ty) = targs.get(pos) else {
             continue;
         };
-        if !dict_plan_matches_receiver(sub, arg_ty) {
+        if !dict_plan_matches_receiver(ctx, sub, arg_ty, strict) {
             return false;
         }
     }
@@ -1964,6 +2092,10 @@ fn classmethod_pin_type(
         // (`Refinable q p | q -> p`) is keyed by the full head tuple, so also
         // accept an argument whose head is the first atom of some instance head —
         // the receiver of `Repo.filter` pins `Query`/`Join`/`LeftJoin` this way.
+        //
+        // If no direct instance is found, try expanding a transparent tycon alias
+        // (e.g. `Join e f a = Joined (Query e a) f a`) and check the expansion.
+        // When found, return the expanded type so callers build the right dict.
         if let Type::Con(tycon, _) = &arg_ty {
             let single = env.get((class, *tycon)).is_some();
             let multi = env
@@ -1972,6 +2104,20 @@ fn classmethod_pin_type(
                 .any(|(cid, head)| *cid == class && head.first() == Some(tycon));
             if single || multi {
                 return Some(arg_ty);
+            }
+            // Try alias expansion.
+            let expanded = expand_tycon_alias_once(ctx, &arg_ty);
+            if let Type::Con(exp_tycon, _) = &expanded {
+                if exp_tycon != tycon {
+                    let exp_single = env.get((class, *exp_tycon)).is_some();
+                    let exp_multi = env
+                        .instances
+                        .keys()
+                        .any(|(cid, head)| *cid == class && head.first() == Some(exp_tycon));
+                    if exp_single || exp_multi {
+                        return Some(expanded);
+                    }
+                }
             }
         }
     }
@@ -2213,7 +2359,17 @@ fn build_dict_plan_from_type(
 ) -> Option<ridge_typecheck::DictPlan> {
     use ridge_typecheck::DictPlan;
 
-    match deep_peel_alias(ty) {
+    // Expand a transparent tycon alias (e.g. `Join e f a = Joined (Query e a) f a`)
+    // before instance lookup so alias tycons dispatch through their expansions.
+    let peeled = deep_peel_alias(ty);
+    let expanded = expand_tycon_alias_once(ctx, &peeled);
+    // Use the expanded type only when the alias body names a different tycon.
+    let effective_ty = match (&peeled, &expanded) {
+        (Type::Con(orig, _), Type::Con(new_id, _)) if orig != new_id => expanded,
+        _ => peeled,
+    };
+
+    match effective_ty {
         Type::Con(tycon, args) => {
             let env = ctx.instance_env?;
             // An instance with a context constraint over its predicate's return type

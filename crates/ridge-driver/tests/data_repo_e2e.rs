@@ -66,6 +66,12 @@ pub type Post = { id: Int, author: Int, title: Text } deriving (Row)
 -- posts to each post's comments.
 pub type Comment = { id: Int, post: Int, body: Text } deriving (Row)
 
+-- A fourth table for the depth-4 inner join: a reaction references a comment by id
+-- (`comment` is the reacted-to comment's id), so a four-table chain joins users to
+-- their posts to each post's comments to each comment's reactions, exercising the
+-- fourth leaf (`QColAt 3`).
+pub type Reaction = { id: Int, comment: Int, kind: Text } deriving (Row)
+
 -- A projected shape: the projection renames `name` -> `who` and `age` -> `years`,
 -- so the decode proves the alias (`column AS alias`) and re-keying both work.
 pub type Summary = { who: Text, years: Int } deriving (Row)
@@ -95,6 +101,11 @@ pub type FullCombo = { who: Option Text, title: Option Text } deriving (Row)
 -- of the three leaves (user name, post title, comment body), proving a `select` over an
 -- inner composite names columns across every leaf and pushes them down as one row.
 pub type Trio = { who: Text, what: Text, note: Text } deriving (Row)
+
+-- The shape a four-table composite projection decodes into: one column from each of the
+-- four leaves (user name, post title, comment body, reaction kind), proving a `select`
+-- over a depth-4 composite names a column on the fourth leaf (`QColAt 3`).
+pub type Quad = { who: Text, what: Text, note: Text, react: Text } deriving (Row)
 
 -- The shapes an outer composite projection decodes into: a leaf an enclosing join can
 -- null-extend projects an `Option` field. A left composite reads only its new leaf
@@ -142,6 +153,22 @@ fn join3Rows (rs: List ((User, Post), Comment)) -> Text =
         []                   -> ""
         ((u, p), c) :: []    -> Text.concat u.name (Text.concat ":" (Text.concat p.title (Text.concat ":" c.body)))
         ((u, p), c) :: rest  -> Text.concat u.name (Text.concat ":" (Text.concat p.title (Text.concat ":" (Text.concat c.body (Text.concat "," (join3Rows rest))))))
+
+-- Render each nested `(((User, Post), Comment), Reaction)` row of a four-table inner
+-- join as `name:title:body:kind`, comma-joined, so the depth-4 join's decode of the
+-- deeply left-nested tuple and its row order are both observable as one string.
+fn join4Rows (rs: List (((User, Post), Comment), Reaction)) -> Text =
+    match rs
+        []                       -> ""
+        (((u, p), c), r) :: []   -> Text.concat u.name (Text.concat ":" (Text.concat p.title (Text.concat ":" (Text.concat c.body (Text.concat ":" r.kind)))))
+        (((u, p), c), r) :: rest -> Text.concat u.name (Text.concat ":" (Text.concat p.title (Text.concat ":" (Text.concat c.body (Text.concat ":" (Text.concat r.kind (Text.concat "," (join4Rows rest))))))))
+
+-- Render each projected `Quad` as `who:what:note:react`, comma-joined.
+fn quadRows (qs: List Quad) -> Text =
+    match qs
+        []        -> ""
+        q :: []   -> Text.concat q.who (Text.concat ":" (Text.concat q.what (Text.concat ":" (Text.concat q.note (Text.concat ":" q.react)))))
+        q :: rest -> Text.concat q.who (Text.concat ":" (Text.concat q.what (Text.concat ":" (Text.concat q.note (Text.concat ":" (Text.concat q.react (Text.concat "," (quadRows rest))))))))
 
 -- Render each projected `Trio` as `who:what:note`, comma-joined.
 fn trioRows (ts: List Trio) -> Text =
@@ -300,6 +327,9 @@ pub fn postRow (pid: Int) (pauthor: Int) (ptitle: Text) -> Map Text SqlValue =
 
 pub fn commentRow (cid: Int) (cpost: Int) (cbody: Text) -> Map Text SqlValue =
     Map.fromList [("id", toSql cid), ("post", toSql cpost), ("body", toSql cbody)]
+
+pub fn reactionRow (rid: Int) (rcomment: Int) (rkind: Text) -> Map Text SqlValue =
+    Map.fromList [("id", toSql rid), ("comment", toSql rcomment), ("kind", toSql rkind)]
 
 fn listLen (xs: List x) -> Int =
     match xs
@@ -563,6 +593,53 @@ pub fn db setupJoin3 () -> Result (Repo User MemAdapter, Repo Post MemAdapter, R
                                                                     match Repo.insertRow (commentRow 102 12 "ok") comments
                                                                         Err e -> Err e
                                                                         Ok _  -> Ok (users, posts, comments)
+
+-- The same three tables as `setupJoin3`, plus a fourth: every comment has one reaction
+-- (`r.comment == c.id`), so a four-table chain joins users to posts to comments to
+-- reactions one-to-one. nice(100) -> up, wow(101) -> down, ok(102) -> meh. Lets a depth-4
+-- join exercise the fourth leaf (`QColAt 3`).
+pub fn db setupJoin4 () -> Result (Repo User MemAdapter, Repo Post MemAdapter, Repo Comment MemAdapter, Repo Reaction MemAdapter) Error =
+    let conn = memAdapter ()
+    let users: Repo User MemAdapter = Repo.repo conn "users"
+    let posts: Repo Post MemAdapter = Repo.repo conn "posts"
+    let comments: Repo Comment MemAdapter = Repo.repo conn "comments"
+    let reactions: Repo Reaction MemAdapter = Repo.repo conn "reactions"
+    match Repo.insertRow (userRow 1 18 "ada") users
+        Err e -> Err e
+        Ok _  ->
+            match Repo.insertRow (userRow 2 30 "lin") users
+                Err e -> Err e
+                Ok _  ->
+                    match Repo.insertRow (userRow 3 25 "max") users
+                        Err e -> Err e
+                        Ok _  ->
+                            match Repo.insertRow (postRow 10 1 "hello") posts
+                                Err e -> Err e
+                                Ok _  ->
+                                    match Repo.insertRow (postRow 11 2 "world") posts
+                                        Err e -> Err e
+                                        Ok _  ->
+                                            match Repo.insertRow (postRow 12 3 "again") posts
+                                                Err e -> Err e
+                                                Ok _  ->
+                                                    match Repo.insertRow (commentRow 100 10 "nice") comments
+                                                        Err e -> Err e
+                                                        Ok _  ->
+                                                            match Repo.insertRow (commentRow 101 11 "wow") comments
+                                                                Err e -> Err e
+                                                                Ok _  ->
+                                                                    match Repo.insertRow (commentRow 102 12 "ok") comments
+                                                                        Err e -> Err e
+                                                                        Ok _  ->
+                                                                            match Repo.insertRow (reactionRow 1000 100 "up") reactions
+                                                                                Err e -> Err e
+                                                                                Ok _  ->
+                                                                                    match Repo.insertRow (reactionRow 1001 101 "down") reactions
+                                                                                        Err e -> Err e
+                                                                                        Ok _  ->
+                                                                                            match Repo.insertRow (reactionRow 1002 102 "meh") reactions
+                                                                                                Err e -> Err e
+                                                                                                Ok _  -> Ok (users, posts, comments, reactions)
 
 -- The same three tables as `setupJoin3`, but lin's post (world, id 11) has no
 -- comment: only posts 10 and 12 are commented. A LEFT join onto comments then keeps
@@ -1958,6 +2035,74 @@ pub fn db orderRightJoined3 () -> Text =
                 Err _  -> "order-right3-err"
                 Ok rs  -> join3RightRows rs
 
+-- N-ary inner join at depth 4: chain `joinOn` three times to join users to posts to
+-- comments to each comment's reactions, order by user id, and decode each row into the
+-- deeply left-nested tuple `(((User, Post), Comment), Reaction)`, rendered
+-- `name:title:body:kind` -> "ada:hello:nice:up,lin:world:wow:down,max:again:ok:meh".
+-- Proves the four-table chain type-checks (the fourth condition names a fourth leaf via
+-- `r`, so `joinOn` over a composite receiver recurses through `Joinable (Joined ...)`),
+-- the renderer and in-memory backend flatten the doubly-nested plan into one flat
+-- four-way product, and `toList` decodes the depth-3 nested tuple.
+pub fn db joined4 () -> Text =
+    match setupJoin4 ()
+        Err _ -> "setup-err"
+        Ok (users, posts, comments, reactions) ->
+            match users |> Repo.query |> Repo.orderBy Asc (fn (u: User) -> u.id) |> Repo.joinOn posts (fn (u: User) (p: Post) -> u.id == p.author) |> Repo.joinOn comments (fn (u: User) (p: Post) (c: Comment) -> p.id == c.post) |> Repo.joinOn reactions (fn (u: User) (p: Post) (c: Comment) (r: Reaction) -> c.id == r.comment) |> Repo.toList
+                Err _  -> "join4-err"
+                Ok rs  -> join4Rows rs
+
+-- `select` over a four-table inner composite: project a column from each leaf into
+-- `Quad { who, what, note, react }`, the fourth (`r.kind`) reifying as a `QColAt 3` cell
+-- the backend qualifies to the `t3` alias. Ordered by user id ->
+-- "ada:hello:nice:up,lin:world:wow:down,max:again:ok:meh". Proves a depth-4 projection
+-- names the fourth leaf and pushes the leaf-spanning select-list down the flattened
+-- four-way join.
+pub fn db selectJoined4 () -> Text =
+    match setupJoin4 ()
+        Err _ -> "setup-err"
+        Ok (users, posts, comments, reactions) ->
+            match users |> Repo.query |> Repo.orderBy Asc (fn (u: User) -> u.id) |> Repo.joinOn posts (fn (u: User) (p: Post) -> u.id == p.author) |> Repo.joinOn comments (fn (u: User) (p: Post) (c: Comment) -> p.id == c.post) |> Repo.joinOn reactions (fn (u: User) (p: Post) (c: Comment) (r: Reaction) -> c.id == r.comment) |> Repo.select (fn (u: User) (p: Post) (c: Comment) (r: Reaction) -> Quad { who = u.name, what = p.title, note = c.body, react = r.kind })
+                Err _  -> "select-join4-err"
+                Ok qs  -> quadRows qs
+
+-- `filter` over a four-table composite: narrow with a predicate naming the fourth leaf
+-- (`r.comment >= 101`, a `QColAt 3` column). ada's reaction sits on comment 100, so its
+-- row drops -> "lin:world:wow:down,max:again:ok:meh". Proves the composite `Refinable`
+-- still dispatches at depth 4 and the four-argument predicate reifies its fourth leaf.
+pub fn db filteredJoined4 () -> Text =
+    match setupJoin4 ()
+        Err _ -> "setup-err"
+        Ok (users, posts, comments, reactions) ->
+            match users |> Repo.query |> Repo.orderBy Asc (fn (u: User) -> u.id) |> Repo.joinOn posts (fn (u: User) (p: Post) -> u.id == p.author) |> Repo.joinOn comments (fn (u: User) (p: Post) (c: Comment) -> p.id == c.post) |> Repo.joinOn reactions (fn (u: User) (p: Post) (c: Comment) (r: Reaction) -> c.id == r.comment) |> Repo.filter (fn (u: User) (p: Post) (c: Comment) (r: Reaction) -> r.comment >= 101) |> Repo.toList
+                Err _  -> "filter-join4-err"
+                Ok rs  -> join4Rows rs
+
+-- `sumOf` over a four-table inner composite, folding the FOURTH leaf's column
+-- (`r.comment`): 100 + 101 + 102 = 303. Proves a depth-4 scalar aggregate qualifies the
+-- column to the deep leaf (t3).
+pub fn db sumReactsJoined4 () -> Int =
+    match setupJoin4 ()
+        Err _ -> 0 - 1
+        Ok (users, posts, comments, reactions) ->
+            match users |> Repo.query |> Repo.joinOn posts (fn (u: User) (p: Post) -> u.id == p.author) |> Repo.joinOn comments (fn (u: User) (p: Post) (c: Comment) -> p.id == c.post) |> Repo.joinOn reactions (fn (u: User) (p: Post) (c: Comment) (r: Reaction) -> c.id == r.comment) |> Repo.sumOf (fn (u: User) (p: Post) (c: Comment) (r: Reaction) -> r.comment)
+                Err _       -> 0 - 2
+                Ok None     -> 0 - 3
+                Ok (Some n) -> n
+
+-- A four-table composite's `orderBy` on the deepest leaf: sort the depth-4 join by the
+-- reaction kind (leaf 3, the fourth table), ascending. Kinds up/down/meh sort to down,
+-- meh, up, reordering the rows from their user-id order ->
+-- "lin:world:wow:down,max:again:ok:meh,ada:hello:nice:up". Proves the composite
+-- `Orderable` instance names the fourth leaf (`QColAt 3`) and the backend sorts the
+-- flattened spine by it.
+pub fn db orderJoined4 () -> Text =
+    match setupJoin4 ()
+        Err _ -> "setup-err"
+        Ok (users, posts, comments, reactions) ->
+            match users |> Repo.query |> Repo.joinOn posts (fn (u: User) (p: Post) -> u.id == p.author) |> Repo.joinOn comments (fn (u: User) (p: Post) (c: Comment) -> p.id == c.post) |> Repo.joinOn reactions (fn (u: User) (p: Post) (c: Comment) (r: Reaction) -> c.id == r.comment) |> Repo.orderBy Asc (fn (u: User) (p: Post) (c: Comment) (r: Reaction) -> r.kind) |> Repo.toList
+                Err _  -> "order-join4-err"
+                Ok rs  -> join4Rows rs
+
 -- selectList without distinct: every dept, ordered by dept -> all six rows
 -- "eng,eng,ops,sales,sales,sales". The baseline the distinct probe contrasts with.
 pub fn db deptsAll () -> Text =
@@ -2202,6 +2347,11 @@ fn repo_surface_runs_on_beam() {
          io:format(\"orderJoined3Desc=~s~n\",[{module}:orderJoined3Desc()]), \
          io:format(\"orderLeftJoined3=~s~n\",[{module}:orderLeftJoined3()]), \
          io:format(\"orderRightJoined3=~s~n\",[{module}:orderRightJoined3()]), \
+         io:format(\"joined4=~s~n\",[{module}:joined4()]), \
+         io:format(\"selectJoined4=~s~n\",[{module}:selectJoined4()]), \
+         io:format(\"filteredJoined4=~s~n\",[{module}:filteredJoined4()]), \
+         io:format(\"sumReactsJoined4=~w~n\",[{module}:sumReactsJoined4()]), \
+         io:format(\"orderJoined4=~s~n\",[{module}:orderJoined4()]), \
          io:format(\"leftJoined3=~s~n\",[{module}:leftJoined3()]), \
          io:format(\"leftJoined3First=~s~n\",[{module}:leftJoined3First()]), \
          io:format(\"rightJoined3=~s~n\",[{module}:rightJoined3()]), \
@@ -2446,6 +2596,26 @@ fn repo_surface_runs_on_beam() {
         (
             "orderRightJoined3=ada:hello:nice,-:orphan,lin:world:wow",
             "orderBy over a right composite by the always-present comment body (leaf 2) ascending sorts nice, orphan, wow, keeping the orphan comment whose composite is absent",
+        ),
+        (
+            "joined4=ada:hello:nice:up,lin:world:wow:down,max:again:ok:meh",
+            "a four-table inner join chains joinOn through a composite receiver to depth 4, flattens the doubly-nested plan into one four-way product, and decodes the (((User, Post), Comment), Reaction) tuple in user-id order",
+        ),
+        (
+            "selectJoined4=ada:hello:nice:up,lin:world:wow:down,max:again:ok:meh",
+            "select over the four-table composite projects one column from each leaf into Quad, reifying the reaction kind as a QColAt 3 cell qualified to the t3 alias",
+        ),
+        (
+            "filteredJoined4=lin:world:wow:down,max:again:ok:meh",
+            "filter over the four-table composite narrows by a fourth-leaf predicate (r.comment >= 101, a QColAt 3 column), dropping ada's reaction on comment 100",
+        ),
+        (
+            "sumReactsJoined4=303",
+            "sumOf over the four-table composite folds the fourth leaf's column (r.comment): 100 + 101 + 102 = 303, qualifying the aggregate to the t3 alias",
+        ),
+        (
+            "orderJoined4=lin:world:wow:down,max:again:ok:meh,ada:hello:nice:up",
+            "orderBy over the four-table composite by the reaction kind (leaf 3) sorts down, meh, up, reordering the rows past their user-id order",
         ),
         (
             "leftJoined3=ada:hello:nice,lin:world:-,max:again:ok",

@@ -31,8 +31,10 @@ import std.list as List
 pub type User = { id: Int, age: Int, name: Text } deriving (Row)
 pub type Post = { id: Int, author: Int, title: Text } deriving (Row)
 pub type Comment = { id: Int, post: Int, body: Text } deriving (Row)
+pub type Reaction = { id: Int, comment: Int, kind: Text } deriving (Row)
 pub type Combo = { person: Text, post: Text } deriving (Row)
 pub type Trio = { who: Text, what: Text, note: Text } deriving (Row)
+pub type Quad = { who: Text, what: Text, note: Text, react: Text } deriving (Row)
 
 -- A captured predicate's reified tree. `Quote` is a prelude record whose `tree`
 -- field is the `QExpr` the compiler built from the lambda. A single-table filter is
@@ -42,8 +44,10 @@ pub type Trio = { who: Text, what: Text, note: Text } deriving (Row)
 fn pred1 (q: Quote (User -> Bool)) -> QExpr = q.tree
 fn cond2 (q: Quote (fn User Post -> Bool)) -> QExpr = q.tree
 fn cond3 (q: Quote (fn User Post Comment -> Bool)) -> QExpr = q.tree
+fn cond4 (q: Quote (fn User Post Comment Reaction -> Bool)) -> QExpr = q.tree
 fn proj2 (q: Quote (fn User Post -> Combo)) -> QExpr = q.tree
 fn proj3 (q: Quote (fn User Post Comment -> Trio)) -> QExpr = q.tree
+fn proj4 (q: Quote (fn User Post Comment Reaction -> Quad)) -> QExpr = q.tree
 
 -- An always-true tree, the "keep all" filter a scan or a join's WHERE defaults to.
 fn keepAll () -> QExpr = pred1 (fn (u: User) -> true)
@@ -60,6 +64,10 @@ fn commentCols () -> List Text = ["id", "post", "body"]
 
 fn commentsScan () -> QueryPlan = planScan "comments" (keepAll ()) [] (0 - 1) 0 false
 fn joinCond2 () -> QExpr = cond3 (fn (u: User) (p: Post) (c: Comment) -> p.id == c.post)
+
+fn reactionCols () -> List Text = ["id", "comment", "kind"]
+fn reactionsScan () -> QueryPlan = planScan "reactions" (keepAll ()) [] (0 - 1) 0 false
+fn joinCond3 () -> QExpr = cond4 (fn (u: User) (p: Post) (c: Comment) (r: Reaction) -> c.id == r.comment)
 
 -- A three-table inner join: an inner `Join` of users and posts, joined again to
 -- comments. The left child is a `PlanJoin`, so the renderer flattens the whole tree
@@ -336,6 +344,57 @@ pub fn orderLeftMixSql () -> Text = renderSql (orderLeftMix ())
 pub fn orderRightMixSql () -> Text = renderSql (orderRightMix ())
 
 pub fn orderFullMixSql () -> Text = renderSql (orderFullMix ())
+
+-- A four-table inner join: the three-table composite joined again to reactions. The left
+-- child is itself a composite `PlanJoin`, so the renderer flattens the whole tree into one
+-- flat multi-way join over leaf aliases t0/t1/t2/t3. The fourth table's join condition
+-- names its column via `r`, reifying to `QColAt 3`, qualified to t3; the base scan filters
+-- adults, so the leaf filter qualifies to t0 and binds $1. Proves the spine scales past
+-- three leaves with no per-depth machinery.
+fn inner4 () -> QueryPlan =
+    planJoin "INNER"
+        (inner3 ())
+        (reactionsScan ())
+        (joinCond3 ())
+        (keepAllJoin ())
+        []
+        (0 - 1) 0 false
+        []
+        (reactionCols ())
+
+pub fn inner4Sql () -> Text = renderSql (inner4 ())
+
+-- A scalar SUM over the four-table inner composite, folding the deepest leaf's column
+-- (`comment`, leaf 3): `SUM(t3."comment")` over the flattened four-way join, the base adult
+-- filter qualified to t0 ($1).
+fn sumFour () -> QueryPlan = planAggregate "SUM" "comment" 3 (inner4 ())
+
+pub fn sumFourSql () -> Text = renderSql (sumFour ())
+
+-- A projection over the four-table inner composite naming one column from each leaf into
+-- `Quad`. The deepest leaf reifies to a `QColAt 3` cell the renderer qualifies to t3, so the
+-- select-list reads `t0."name" AS "who", t1."title" AS "what", t2."body" AS "note",
+-- t3."kind" AS "react"` over the flattened four-way join.
+fn projectFour () -> QueryPlan =
+    planProject (proj4 (fn (u: User) (p: Post) (c: Comment) (r: Reaction) -> Quad { who = u.name, what = p.title, note = c.body, react = r.kind })) (inner4 ()) (0 - 1) 0 false
+
+pub fn projectFourSql () -> Text = renderSql (projectFour ())
+
+-- A bare four-table inner composite carrying an `orderBy` on the deepest leaf: a one-key
+-- ordering over the reaction kind (leaf 3), ascending. The renderer qualifies the key to
+-- its leaf alias t3 and emits ORDER BY after the flattened four-way join.
+fn orderFour () -> QueryPlan =
+    planJoin "INNER"
+        (inner3 ())
+        (reactionsScan ())
+        (joinCond3 ())
+        (keepAllJoin ())
+        [(true, 3, "kind")]
+        (0 - 1) 0 false
+        []
+        (reactionCols ())
+
+pub fn orderFourSql () -> Text = renderSql (orderFour ())
 "#;
 
 fn write_workspace(root: &std::path::Path) {
@@ -400,7 +459,7 @@ fn query_plan_compiles_to_parameterized_sql() {
 
     let expr = format!(
         "F=fun(N)->io:format(\"~s=~s~n\",[N,{module}:N()])end, \
-         lists:foreach(F,['scanSql','scanBinds','combineSql','refineSql','innerSql','leftSql','rightSql','fullSql','fullBinds','projectSql','aggSql','groupSql','inner3Sql','inner3Binds','innerLeftMixSql','innerRightMixSql','innerFullMixSql','innerFullMixBinds','countThreeSql','countThreeBinds','countLeftMixSql','countLeftMixBinds','sumThreeSql','avgThreeSql','projectThreeSql','projectLeftMixSql','projectRightMixSql','projectFullMixSql','groupThreeSql','groupLeftMixSql','groupRightMixSql','groupFullMixSql','orderThreeSql','orderLeftMixSql','orderRightMixSql','orderFullMixSql']), halt()."
+         lists:foreach(F,['scanSql','scanBinds','combineSql','refineSql','innerSql','leftSql','rightSql','fullSql','fullBinds','projectSql','aggSql','groupSql','inner3Sql','inner3Binds','innerLeftMixSql','innerRightMixSql','innerFullMixSql','innerFullMixBinds','countThreeSql','countThreeBinds','countLeftMixSql','countLeftMixBinds','sumThreeSql','avgThreeSql','projectThreeSql','projectLeftMixSql','projectRightMixSql','projectFullMixSql','groupThreeSql','groupLeftMixSql','groupRightMixSql','groupFullMixSql','orderThreeSql','orderLeftMixSql','orderRightMixSql','orderFullMixSql','inner4Sql','sumFourSql','projectFourSql','orderFourSql']), halt()."
     );
     let output = Command::new("erl")
         .arg("-noshell")
@@ -600,5 +659,23 @@ fn query_plan_compiles_to_parameterized_sql() {
     );
     want(
         r#"orderFullMixSql=SELECT t0."id" AS "t0$id", t0."age" AS "t0$age", t0."name" AS "t0$name", t0."__present" AS "t0$__present__", t1."id" AS "t1$id", t1."author" AS "t1$author", t1."title" AS "t1$title", t1."__present" AS "t1$__present__", t2."id" AS "t2$id", t2."post" AS "t2$post", t2."body" AS "t2$body", t2."__present" AS "t2$__present__" FROM (SELECT *, TRUE AS "__present" FROM "users" WHERE "age" >= $1) AS t0 JOIN (SELECT *, TRUE AS "__present" FROM "posts") AS t1 ON t0."id" = t1."author" FULL JOIN (SELECT *, TRUE AS "__present" FROM "comments") AS t2 ON t1."id" = t2."post" ORDER BY t1."title" DESC"#,
+    );
+
+    // Depth 4: the four-table inner composite flattens into one multi-way join over leaf
+    // aliases t0/t1/t2/t3 — the fourth table joined on `t2."id" = t3."comment"` (its
+    // condition naming the deep leaf via `QColAt 3`), the base adult filter qualified to t0
+    // ($1). The aggregate, projection, and ORDER BY each name the deepest leaf and qualify
+    // it to t3, proving the spine scales past three leaves with no per-depth machinery.
+    want(
+        r#"inner4Sql=SELECT t0."id" AS "t0$id", t0."age" AS "t0$age", t0."name" AS "t0$name", t1."id" AS "t1$id", t1."author" AS "t1$author", t1."title" AS "t1$title", t2."id" AS "t2$id", t2."post" AS "t2$post", t2."body" AS "t2$body", t3."id" AS "t3$id", t3."comment" AS "t3$comment", t3."kind" AS "t3$kind" FROM "users" AS t0 JOIN "posts" AS t1 ON t0."id" = t1."author" JOIN "comments" AS t2 ON t1."id" = t2."post" JOIN "reactions" AS t3 ON t2."id" = t3."comment" WHERE (t0."age" >= $1)"#,
+    );
+    want(
+        r#"sumFourSql=SELECT SUM(t3."comment") FROM "users" AS t0 JOIN "posts" AS t1 ON t0."id" = t1."author" JOIN "comments" AS t2 ON t1."id" = t2."post" JOIN "reactions" AS t3 ON t2."id" = t3."comment" WHERE (t0."age" >= $1)"#,
+    );
+    want(
+        r#"projectFourSql=SELECT t0."name" AS "who", t1."title" AS "what", t2."body" AS "note", t3."kind" AS "react" FROM "users" AS t0 JOIN "posts" AS t1 ON t0."id" = t1."author" JOIN "comments" AS t2 ON t1."id" = t2."post" JOIN "reactions" AS t3 ON t2."id" = t3."comment" WHERE (t0."age" >= $1)"#,
+    );
+    want(
+        r#"orderFourSql=SELECT t0."id" AS "t0$id", t0."age" AS "t0$age", t0."name" AS "t0$name", t1."id" AS "t1$id", t1."author" AS "t1$author", t1."title" AS "t1$title", t2."id" AS "t2$id", t2."post" AS "t2$post", t2."body" AS "t2$body", t3."id" AS "t3$id", t3."comment" AS "t3$comment", t3."kind" AS "t3$kind" FROM "users" AS t0 JOIN "posts" AS t1 ON t0."id" = t1."author" JOIN "comments" AS t2 ON t1."id" = t2."post" JOIN "reactions" AS t3 ON t2."id" = t3."comment" WHERE (t0."age" >= $1) ORDER BY t3."kind" ASC"#,
     );
 }

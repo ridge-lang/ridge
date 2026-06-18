@@ -1738,30 +1738,92 @@ fn single_static_plan_for_class(
     found.cloned()
 }
 
-/// The solved `DictPlan::Static` for `class` whose receiver tycon is `tycon`, from
+/// The solved `DictPlan::Static` for `class` over the receiver type `recv_ty`, from
 /// this module's resolution table. Used to recover the constraint solver's plan for a
 /// receiver-keyed terminal whose context constraint over its predicate's return type
 /// (`SqlType n`/`Row s`) the lowering cannot rebuild from the receiver type alone — the
-/// solver resolved it against the full head, including the predicate. Returns `None`
-/// when no such plan exists.
-fn stored_static_plan_for_tycon(
+/// solver resolved it against the full head, including the predicate.
+///
+/// A composite join terminal is keyed by its receiver tycon alone (`Joined`,
+/// `LeftJoined`, …), yet the same tycon serves every join depth: `select` over a
+/// three-table `Joined (Join …) f` and over a four-table `Joined (Joined …) f` both
+/// store a plan under that tycon. The two differ only in their receiver-bound context
+/// sub-dictionaries — a deeper source resolves `JoinShape q` to the composite instance,
+/// a shallower one to the binary. Keying the lookup on the tycon alone would return an
+/// arbitrary one (the resolution table is unordered), threading a composite `JoinShape`
+/// dictionary into a binary join (or the reverse) and crashing the decode. So when more
+/// than one plan shares the tycon, pick the one whose receiver-bound sub-dictionaries
+/// match the type spine the receiver carries; the single-plan case returns that plan
+/// unconditionally (the fallback). Returns `None` when no plan shares the tycon.
+fn stored_static_plan_for_receiver(
     ctx: &LowerCtx<'_>,
     class: ridge_types::ClassId,
     tycon: TyConId,
+    recv_ty: &Type,
 ) -> Option<ridge_typecheck::DictPlan> {
+    use ridge_typecheck::DictPlan;
     let tmod = ctx
         .workspace
         .and_then(|ws| ws.modules.get(ctx.module_id.0 as usize))?;
+    let mut fallback: Option<&DictPlan> = None;
     for ((cid, _), plan) in &tmod.dict_resolution {
-        if *cid == class {
-            if let ridge_typecheck::DictPlan::Static { tycon: t, .. } = plan {
-                if *t == tycon {
-                    return Some(plan.clone());
-                }
-            }
+        if *cid != class {
+            continue;
+        }
+        let DictPlan::Static { tycon: t, .. } = plan else {
+            continue;
+        };
+        if *t != tycon {
+            continue;
+        }
+        fallback.get_or_insert(plan);
+        if dict_plan_matches_receiver(plan, recv_ty) {
+            return Some(plan.clone());
         }
     }
-    None
+    fallback.cloned()
+}
+
+/// Whether a stored dictionary plan's tycon spine agrees with the receiver type the
+/// call carries — the discriminator that tells two stored plans for one composite tycon
+/// at different join depths apart.
+///
+/// Walks both in lockstep: a `Static` plan's `tycon` must equal the type's head
+/// constructor, then each receiver-bound sub-dictionary (every context whose head
+/// position is not the predicate-return sentinel, which the receiver does not encode)
+/// must match the type argument at that position, recursively. A `Forward` plan or a
+/// variable type carries no tycon to compare on, so it is treated as a match — it never
+/// discriminates, only the concrete spine does.
+fn dict_plan_matches_receiver(plan: &ridge_typecheck::DictPlan, ty: &Type) -> bool {
+    use ridge_typecheck::class_env::PREDICATE_RETURN_POS;
+    use ridge_typecheck::DictPlan;
+    let DictPlan::Static {
+        tycon, info, args, ..
+    } = plan
+    else {
+        return true;
+    };
+    let Type::Con(head, targs) = deep_peel_alias(ty) else {
+        return true;
+    };
+    if *tycon != head {
+        return false;
+    }
+    for (i, sub) in args.iter().enumerate() {
+        let Some(&pos) = info.head_var_positions.get(i) else {
+            continue;
+        };
+        if pos == PREDICATE_RETURN_POS {
+            continue;
+        }
+        let Some(arg_ty) = targs.get(pos) else {
+            continue;
+        };
+        if !dict_plan_matches_receiver(sub, arg_ty) {
+            return false;
+        }
+    }
+    true
 }
 
 /// Structural equality for two dictionary plans, used to tell "the same instance
@@ -2158,14 +2220,15 @@ fn build_dict_plan_from_type(
             // (a composite terminal's `SqlType n`/`Row s`, marked `PREDICATE_RETURN_POS`)
             // cannot be rebuilt from the receiver type alone — the variable lives in the
             // predicate, not the receiver's arguments. The constraint solver already
-            // resolved it against the full head, so reuse that stored plan, keyed by the
-            // receiver tycon.
+            // resolved it against the full head, so reuse that stored plan, selected by
+            // the receiver type (its tycon plus the spine its sub-dictionaries must
+            // match, so two depths sharing the tycon do not cross their plans).
             if let Some(info) = env.get((class, tycon)) {
                 if info
                     .head_var_positions
                     .contains(&ridge_typecheck::class_env::PREDICATE_RETURN_POS)
                 {
-                    if let Some(stored) = stored_static_plan_for_tycon(ctx, class, tycon) {
+                    if let Some(stored) = stored_static_plan_for_receiver(ctx, class, tycon, ty) {
                         return Some(stored);
                     }
                 }

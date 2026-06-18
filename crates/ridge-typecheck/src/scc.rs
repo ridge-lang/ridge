@@ -573,9 +573,11 @@ pub fn typecheck_module_decls(
                         .get(&did)
                         .copied()
                         .unwrap_or_else(|| Span::point(0));
+                    let expected_ty = ctx.deep_resolve(ret_ty_box);
+                    let found_ty = ctx.deep_resolve(&body_ty);
                     ctx.errors.push(TypeError::TypeMismatch {
-                        expected: format!("{ret_ty_box:?}"),
-                        found: format!("{body_ty:?}"),
+                        expected: crate::render::render_type_with(&expected_ty, &ctx.tycon_decls),
+                        found: crate::render::render_type_with(&found_ty, &ctx.tycon_decls),
                         span,
                     });
                 }

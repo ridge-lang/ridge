@@ -636,6 +636,19 @@ impl<'tw> LowerCtx<'tw> {
                 _ => {}
             }
         }
+        // `QExpr` is a prelude builtin (not in the stdlib block), but resolve binds
+        // its `Q*` constructors as `StdlibSymbol` like the reconciled ones, so they
+        // route here too. Fall back to its union so a stdlib body can construct a node
+        // the quotation reifier never emits — e.g. `every`'s `QNotTrue` violator —
+        // rather than dropping to the record fallback (which would emit an empty map).
+        if let Some(decl) = ws.tycons.get(ws.builtins.q_expr.0 as usize) {
+            if let TyConKind::Union(u) = &decl.kind {
+                if let Some((i, v)) = u.variants.iter().enumerate().find(|(_, v)| v.name == name) {
+                    let is_record = matches!(v.kind, VariantPayload::Record(_));
+                    return Some((decl.id, i as u32, is_record));
+                }
+            }
+        }
         None
     }
 

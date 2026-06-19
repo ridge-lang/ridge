@@ -1112,6 +1112,16 @@ impl BuiltinTyCons {
                             Type::Con(text, vec![]),
                         ]),
                     },
+                    // A `<expr> IS NOT TRUE` test: true when the inner predicate is
+                    // false OR unknown (NULL). The three-valued dual of `QNot` — `QNot`
+                    // of a NULL is still NULL, this is TRUE — so `every` can probe for a
+                    // row that violates its predicate, an outer join's unmatched side
+                    // (whose columns read NULL) counting as a violation. Appended last so
+                    // the existing variant indices the lowering pass hardcodes stay put.
+                    UnionVariant {
+                        name: "QNotTrue".to_string(),
+                        kind: VariantPayload::Positional(vec![Type::Con(TyConId(25), vec![])]),
+                    },
                 ],
             }),
             def_span: None,

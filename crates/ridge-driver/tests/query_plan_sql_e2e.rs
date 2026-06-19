@@ -148,6 +148,21 @@ pub fn existsThreeSql () -> Text = renderSql (planExists (inner3 ()))
 
 pub fn existsThreeBinds () -> Text = renderBinds (planExists (inner3 ()))
 
+-- `every` reuses the same `SELECT 1 … LIMIT 1` probe, but over a violator predicate: a
+-- row the receiver keeps whose further predicate is `IS NOT TRUE`. `IS NOT TRUE` (not a
+-- plain `NOT`) so a NULL predicate — an outer join's unmatched side — counts as a
+-- violation rather than slipping through, the three-valued reading that makes the
+-- unmatched row fail `every`. A returned row is one that fails it, so `every` is the
+-- emptiness of this probe.
+fn everyJoin () -> QueryPlan =
+    planJoin "INNER" (usersScan ()) (postsScan ()) (joinCond ())
+        (QNotTrue (cond2 (fn (u: User) (p: Post) -> p.title == "hello")))
+        [] (0 - 1) 0 false (leftCols ()) (rightCols ())
+
+pub fn everyJoinSql () -> Text = renderSql (planExists (everyJoin ()))
+
+pub fn everyJoinBinds () -> Text = renderBinds (planExists (everyJoin ()))
+
 -- A mixed-shape chain extends the inner `Join` of users and posts with a third table
 -- under an outer step. The left child is the inner `PlanJoin`; the outer node's kind
 -- (`LEFT`/`RIGHT`/`FULL`) sets how the new leaf joins and which leaves it null-extends.
@@ -504,7 +519,7 @@ fn query_plan_compiles_to_parameterized_sql() {
 
     let expr = format!(
         "F=fun(N)->io:format(\"~s=~s~n\",[N,{module}:N()])end, \
-         lists:foreach(F,['scanSql','scanBinds','foldSql','combineSql','refineSql','innerSql','leftSql','rightSql','fullSql','fullBinds','projectSql','aggSql','groupSql','inner3Sql','inner3Binds','existsSql','existsThreeSql','existsThreeBinds','innerLeftMixSql','innerRightMixSql','innerFullMixSql','innerFullMixBinds','adultLeftMixSql','adultLeftMixBinds','countAdultLeftMixSql','countThreeSql','countThreeBinds','countLeftMixSql','countLeftMixBinds','sumThreeSql','avgThreeSql','projectThreeSql','projectLeftMixSql','projectRightMixSql','projectFullMixSql','groupThreeSql','groupLeftMixSql','groupRightMixSql','groupFullMixSql','orderThreeSql','orderLeftMixSql','orderRightMixSql','orderFullMixSql','inner4Sql','sumFourSql','projectFourSql','orderFourSql']), halt()."
+         lists:foreach(F,['scanSql','scanBinds','foldSql','combineSql','refineSql','innerSql','leftSql','rightSql','fullSql','fullBinds','projectSql','aggSql','groupSql','inner3Sql','inner3Binds','existsSql','existsThreeSql','existsThreeBinds','everyJoinSql','everyJoinBinds','innerLeftMixSql','innerRightMixSql','innerFullMixSql','innerFullMixBinds','adultLeftMixSql','adultLeftMixBinds','countAdultLeftMixSql','countThreeSql','countThreeBinds','countLeftMixSql','countLeftMixBinds','sumThreeSql','avgThreeSql','projectThreeSql','projectLeftMixSql','projectRightMixSql','projectFullMixSql','groupThreeSql','groupLeftMixSql','groupRightMixSql','groupFullMixSql','orderThreeSql','orderLeftMixSql','orderRightMixSql','orderFullMixSql','inner4Sql','sumFourSql','projectFourSql','orderFourSql']), halt()."
     );
     let output = Command::new("erl")
         .arg("-noshell")
@@ -606,6 +621,16 @@ fn query_plan_compiles_to_parameterized_sql() {
         r#"existsThreeSql=SELECT 1 FROM "users" AS t0 JOIN "posts" AS t1 ON t0."id" = t1."author" JOIN "comments" AS t2 ON t1."id" = t2."post" WHERE (t0."age" >= $1) LIMIT 1"#,
     );
     want("existsThreeBinds=1");
+
+    // `every` runs the same probe over a violator predicate: a kept row whose further
+    // predicate is `IS NOT TRUE`. The renderer emits `(<pred> IS NOT TRUE)`, the
+    // three-valued test that flags a row where the predicate is false or NULL — so an
+    // outer join's unmatched side fails `every` rather than slipping through a plain
+    // `NOT`. `every` is true exactly when this probe returns no row.
+    want(
+        r#"everyJoinSql=SELECT 1 FROM "users" AS l JOIN "posts" AS r ON l."id" = r."author" WHERE ((r."title" = $1 IS NOT TRUE)) LIMIT 1"#,
+    );
+    want("everyJoinBinds=1");
 
     // A mixed chain `users JOIN posts LEFT JOIN comments`: the inner pair renders flat,
     // then the left step wraps the new comments leaf in the `__present` marker subquery

@@ -37,7 +37,7 @@
     mem_migrations_applied/1, mem_record_migration/2,
     mem_raw_query/3, mem_raw_exec/3,
     mem_run_plan/2,
-    quote_keep_all/1, quote_and/2,
+    quote_keep_all/1, quote_and/2, quote_not_true/1,
     mk_error/2,
     escript_main/1
 ]).
@@ -917,6 +917,16 @@ quote_keep_all(_Unit) -> #{tree => {'QLitBool', true}}.
 quote_and(A, B) ->
     #{tree => {'QAnd', maps:get(tree, A), maps:get(tree, B)}}.
 
+%% quote_not_true/1 — std.repo's `every` wraps its predicate in `IS NOT TRUE` to
+%% probe for a violating row. A `Quote`/`QExpr` literal cannot be written in Ridge
+%% source, so the `QNotTrue` node is built here from the captured tree. In the SQL
+%% backend it renders `(<expr> IS NOT TRUE)`, the three-valued test that counts an
+%% unknown (NULL) predicate as a violation; in this interpreter `mem_pred` reads it
+%% as `not <expr>` (a column absent from the row already compares as false), so the
+%% two backends agree on which rows violate `every`.
+quote_not_true(A) ->
+    #{tree => {'QNotTrue', maps:get(tree, A)}}.
+
 %% mk_error/2 — build an `Error` record from a code and a message. `Error` is a
 %% builtin record `{ code: Text, message: Text }`, which codegen lowers to an
 %% atom-keyed map (field access `e.code` compiles to `maps:get(code, _)`). A bare
@@ -1760,6 +1770,7 @@ mem_left_row(_)                -> #{}.
 mem_jpred({'QAnd', A, B}, L, R)    -> mem_jpred(A, L, R) andalso mem_jpred(B, L, R);
 mem_jpred({'QOr', A, B}, L, R)     -> mem_jpred(A, L, R) orelse mem_jpred(B, L, R);
 mem_jpred({'QNot', X}, L, R)       -> not mem_jpred(X, L, R);
+mem_jpred({'QNotTrue', X}, L, R)   -> not mem_jpred(X, L, R);
 mem_jpred({'QEq', A, B}, L, R)     -> mem_jrelate(eq, A, B, L, R);
 mem_jpred({'QNe', A, B}, L, R)     -> not mem_jrelate(eq, A, B, L, R);
 mem_jpred({'QLt', A, B}, L, R)     -> mem_jrelate(lt, A, B, L, R);
@@ -1928,6 +1939,7 @@ mem_le_nary([{Asc, Leaf, Col} | Rest], A, B) ->
 mem_npred({'QAnd', A, B}, Row)   -> mem_npred(A, Row) andalso mem_npred(B, Row);
 mem_npred({'QOr', A, B}, Row)    -> mem_npred(A, Row) orelse mem_npred(B, Row);
 mem_npred({'QNot', X}, Row)      -> not mem_npred(X, Row);
+mem_npred({'QNotTrue', X}, Row)  -> not mem_npred(X, Row);
 mem_npred({'QEq', A, B}, Row)    -> mem_nrelate(eq, A, B, Row);
 mem_npred({'QNe', A, B}, Row)    -> not mem_nrelate(eq, A, B, Row);
 mem_npred({'QLt', A, B}, Row)    -> mem_nrelate(lt, A, B, Row);
@@ -1975,6 +1987,7 @@ mem_ncell(Key, Row) ->
 mem_pred({'QAnd', L, R}, Row) -> mem_pred(L, Row) andalso mem_pred(R, Row);
 mem_pred({'QOr', L, R}, Row)  -> mem_pred(L, Row) orelse mem_pred(R, Row);
 mem_pred({'QNot', X}, Row)    -> not mem_pred(X, Row);
+mem_pred({'QNotTrue', X}, Row) -> not mem_pred(X, Row);
 mem_pred({'QEq', L, R}, Row)  -> mem_relate(eq, L, R, Row);
 mem_pred({'QNe', L, R}, Row)  -> not mem_relate(eq, L, R, Row);
 mem_pred({'QLt', L, R}, Row)  -> mem_relate(lt, L, R, Row);

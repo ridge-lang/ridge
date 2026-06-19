@@ -88,6 +88,18 @@ fn keepAll2 (_u: Unit) -> Quote (Map Text SqlValue -> Map Text SqlValue -> Bool)
 @ffi("ridge_rt", "quote_and", 2)
 fn quoteAnd2 (a: Quote (Map Text SqlValue -> Map Text SqlValue -> Bool)) (b: Quote p) -> Quote (Map Text SqlValue -> Map Text SqlValue -> Bool)
 
+-- Wrap a quoted predicate in an `IS NOT TRUE` test — `every`'s violator probe. A
+-- `Quote`/`QExpr` literal cannot be written in Ridge source, so the `QNotTrue` node
+-- is built in the runtime from the captured tree. `every` folds this into the row
+-- source and asks whether any row survives: a row whose predicate is false or, for an
+-- outer join's unmatched side, unknown (NULL). Plain `NOT` would let a NULL predicate
+-- slip through (`NOT NULL` is NULL, which a `WHERE` drops); `IS NOT TRUE` catches it,
+-- the three-valued reading that makes the unmatched row fail `every`. The phantom
+-- function shape is free so the one builder wraps a query, a join, and a composite
+-- predicate alike.
+@ffi("ridge_rt", "quote_not_true", 1)
+fn notTrue (a: Quote p) -> Quote p
+
 -- The set-operation plan a query runs is built from `std.query`'s `planScan`/
 -- `planCombine`/`planRefine` over the typed `QueryPlan` tree, threaded through the
 -- builder's `plan` field and handed to a backend's `runPlan` — which interprets it
@@ -1798,6 +1810,14 @@ fn compositeExists (conn: a) (plan: QueryPlan) -> Result Bool Error where Adapte
         Err err -> Err err
         Ok rows -> Ok (nonEmpty rows)
 
+-- The composite dual of `compositeExists` for `every`: probe the violator plan for a
+-- single row and answer `true` when none is found. The plan already folds the further
+-- predicate as `IS NOT TRUE`, so a returned row is a joined row that fails `every`.
+fn compositeNotExists (conn: a) (plan: QueryPlan) -> Result Bool Error where Adapter a =
+    match runPlan conn (planExists plan)
+        Err err -> Err err
+        Ok rows -> emptyOk rows
+
 -- The scalar-aggregate plan a composite `sumOf`/`avgOf`/`minOf`/`maxOf` runs: a
 -- `PlanAggregate` over the composite's reduction, folding the column the accessor names
 -- (`aggColumn`) on whichever leaf it belongs to (`aggLeaf` — 0/1 for the first two
@@ -1983,6 +2003,16 @@ fn nonEmpty (xs: List t) -> Bool =
         []     -> false
         _ :: _ -> true
 
+-- The answer `every` reads off its violator probe: `true` exactly when the probe
+-- comes back empty, since `every` runs a one-row probe for a row that violates the
+-- predicate and is satisfied precisely when none does. The dual of `nonEmpty`, kept
+-- as a `Result` so the seven `every` instances close over it without restating the
+-- empty/non-empty match.
+fn emptyOk (xs: List t) -> Result Bool Error =
+    match xs
+        []     -> Ok true
+        _ :: _ -> Ok false
+
 -- The length of a row list, for measuring a materialised set-operation result.
 fn lengthOf (xs: List t) -> Int =
     match xs
@@ -2042,63 +2072,61 @@ instance Countable (FullJoin e f a) where Adapter a =
             Err err  -> Err err
             Ok rows  -> Ok (nonEmpty rows)
 
--- A query's `every`: compare the query's count against the count once the further
--- predicate is folded into its filter, equal exactly when no selected row fails it.
--- The predicate is AND-folded with `quoteAnd` (the same fold `filter` runs) and the
--- query re-counted through `countQuery`, so it tracks the query's own filter and a
--- set-operation plan alike. The fold is inlined rather than routed through `filter`
--- so the instance body stays a plain record reconstruction with no cross-class
--- dictionary to thread.
+-- A query's `every`: probe for one row that violates the predicate, true exactly when
+-- none does. The further predicate is AND-folded with the query's own filter as `IS NOT
+-- TRUE` (`notTrue`), so the probe selects a row the query keeps whose predicate is false
+-- — or, where a column is NULL, not true — and `every` answers `true` when that probe
+-- comes back empty. One probe replaces the two counts the comparison used to run, and a
+-- `LIMIT 1` lets it stop at the first violator. The plan path tracks the query's own
+-- filter and a set-operation plan alike, the same split `exists` makes.
 instance Every (Query e a) (fn e -> Bool) where Adapter a =
     every (pred: Quote (fn e -> Bool)) (x: Query e a) -> Result Bool Error =
-        match countQuery x
-            Err err  -> Err err
-            Ok total ->
-                match countQuery (Query { repo = x.repo, pred = quoteAnd x.pred pred, orders = x.orders, lim = x.lim, off = x.off, dist = x.dist, plan = x.plan })
-                    Err err     -> Err err
-                    Ok matching -> Ok (total == matching)
+        let violator = quoteAnd x.pred (notTrue pred)
+        match x.plan
+            None ->
+                match fetch x.repo.adapter x.repo.table violator [] 1 0 false
+                    Err err -> Err err
+                    Ok rows -> emptyOk rows
+            Some p ->
+                match runPlan x.repo.adapter (planRefine p violator.tree [] 1 0 false)
+                    Err err -> Err err
+                    Ok rows -> emptyOk rows
 
--- A left join's `every`: the dual over a `LeftJoin`, counted through
--- `countLeftJoin`. The predicate folds into the post-join `WHERE`, where a test over
--- a right column drops the unmatched rows, so they fail `every` as SQL's three-valued
--- reading gives.
+-- A left join's `every`: the dual over a `LeftJoin`, probing the reduction join for a
+-- violator. The predicate folds into the post-join `WHERE` as `IS NOT TRUE`, where a
+-- test over a right column reads NULL on the unmatched rows and so flags them as
+-- violations — they fail `every`, the same three-valued reading the count comparison
+-- gave, now in one probe.
 instance Every (LeftJoin e f a) (fn e f -> Bool) where Adapter a =
     every (pred: Quote (fn e f -> Bool)) (x: LeftJoin e f a) -> Result Bool Error =
-        let folded = quoteAnd2 x.where2 pred
-        match leftCountPlan x x.where2.tree
+        let folded = quoteAnd2 x.where2 (notTrue pred)
+        match runPlan x.left.repo.adapter (planExists (leftReduceJoin x folded.tree 1))
             Err err  -> Err err
-            Ok total ->
-                match leftCountPlan x folded.tree
-                    Err err     -> Err err
-                    Ok matching -> Ok (total == matching)
+            Ok rows  -> emptyOk rows
 
--- A right join's `every`: the dual over a `RightJoin`, counted through
--- `countRightJoin`. The predicate folds into the post-join `WHERE`, where a test over
--- a left column drops the unmatched rows, so they fail `every` as SQL's three-valued
--- reading gives.
+-- A right join's `every`: the dual over a `RightJoin`, probing the reduction join for a
+-- violator. The predicate folds into the post-join `WHERE` as `IS NOT TRUE`, where a
+-- test over a left column reads NULL on the unmatched rows and so flags them as
+-- violations — they fail `every`, the same three-valued reading the count comparison
+-- gave, now in one probe.
 instance Every (RightJoin e f a) (fn e f -> Bool) where Adapter a =
     every (pred: Quote (fn e f -> Bool)) (x: RightJoin e f a) -> Result Bool Error =
-        let folded = quoteAnd2 x.where2 pred
-        match rightCountPlan x x.where2.tree
+        let folded = quoteAnd2 x.where2 (notTrue pred)
+        match runPlan x.left.repo.adapter (planExists (rightReduceJoin x folded.tree 1))
             Err err  -> Err err
-            Ok total ->
-                match rightCountPlan x folded.tree
-                    Err err     -> Err err
-                    Ok matching -> Ok (total == matching)
+            Ok rows  -> emptyOk rows
 
--- A full join's `every`: the dual over a `FullJoin`, counted through `countFullJoin`.
--- The predicate folds into the post-join `WHERE`, where a test over a column of an
--- unmatched side drops those rows, so they fail `every` as SQL's three-valued reading
--- gives.
+-- A full join's `every`: the dual over a `FullJoin`, probing the reduction join for a
+-- violator. The predicate folds into the post-join `WHERE` as `IS NOT TRUE`, where a
+-- test over a column of an unmatched side reads NULL and so flags those rows as
+-- violations — they fail `every`, the same three-valued reading the count comparison
+-- gave, now in one probe.
 instance Every (FullJoin e f a) (fn e f -> Bool) where Adapter a =
     every (pred: Quote (fn e f -> Bool)) (x: FullJoin e f a) -> Result Bool Error =
-        let folded = quoteAnd2 x.where2 pred
-        match fullCountPlan x x.where2.tree
+        let folded = quoteAnd2 x.where2 (notTrue pred)
+        match runPlan x.left.repo.adapter (planExists (fullReduceJoin x folded.tree 1))
             Err err  -> Err err
-            Ok total ->
-                match fullCountPlan x folded.tree
-                    Err err     -> Err err
-                    Ok matching -> Ok (total == matching)
+            Ok rows  -> emptyOk rows
 
 -- A composite join's `count`/`exists`: count the joined rows of a three-or-more table
 -- chain through a `COUNT(*)` over its reduction plan, or probe it for one row. One pair
@@ -2130,50 +2158,31 @@ instance Countable (FullJoined q f a) where Adapter a, JoinShape q, Row f =
     exists (x: FullJoined q f a) -> Result Bool Error =
         compositeExists x.right.adapter (fullReducePlan x x.where2.tree 1)
 
--- A composite join's `every`: compare the chain's count against the count once the
--- further predicate folds into the post-join `WHERE`, equal exactly when no joined row
--- fails it. The predicate is the positional leaf form the receiver determines; its
--- stored two-row form is what `quoteAnd2` folds into `where2`. One pair per composite
--- shape, each re-counting at its own kind through the shared reduction plan.
+-- A composite join's `every`: probe the chain's reduction join for a row that violates
+-- the further predicate, true exactly when none does. The predicate is the positional
+-- leaf form the receiver determines; its stored two-row form folds into `where2` as `IS
+-- NOT TRUE` (`notTrue` over `quoteAnd2`), so an unmatched leaf's NULL column counts as a
+-- violation just as the count comparison made it. One probe per composite shape, each at
+-- its own kind through the shared reduction plan, bounded to one row.
 instance Every (Joined q f a) (Map Text SqlValue -> Map Text SqlValue -> Bool) where Adapter a, JoinShape q, Row f =
     every (pred: Quote (Map Text SqlValue -> Map Text SqlValue -> Bool)) (x: Joined q f a) -> Result Bool Error =
-        let folded = quoteAnd2 x.where2 pred
-        match compositeCount x.right.adapter (joinedReducePlan x x.where2.tree (0 - 1))
-            Err err  -> Err err
-            Ok total ->
-                match compositeCount x.right.adapter (joinedReducePlan x folded.tree (0 - 1))
-                    Err err     -> Err err
-                    Ok matching -> Ok (total == matching)
+        let folded = quoteAnd2 x.where2 (notTrue pred)
+        compositeNotExists x.right.adapter (joinedReducePlan x folded.tree 1)
 
 instance Every (LeftJoined q f a) (Map Text SqlValue -> Map Text SqlValue -> Bool) where Adapter a, JoinShape q, Row f =
     every (pred: Quote (Map Text SqlValue -> Map Text SqlValue -> Bool)) (x: LeftJoined q f a) -> Result Bool Error =
-        let folded = quoteAnd2 x.where2 pred
-        match compositeCount x.right.adapter (leftReducePlan x x.where2.tree (0 - 1))
-            Err err  -> Err err
-            Ok total ->
-                match compositeCount x.right.adapter (leftReducePlan x folded.tree (0 - 1))
-                    Err err     -> Err err
-                    Ok matching -> Ok (total == matching)
+        let folded = quoteAnd2 x.where2 (notTrue pred)
+        compositeNotExists x.right.adapter (leftReducePlan x folded.tree 1)
 
 instance Every (RightJoined q f a) (Map Text SqlValue -> Map Text SqlValue -> Bool) where Adapter a, JoinShape q, Row f =
     every (pred: Quote (Map Text SqlValue -> Map Text SqlValue -> Bool)) (x: RightJoined q f a) -> Result Bool Error =
-        let folded = quoteAnd2 x.where2 pred
-        match compositeCount x.right.adapter (rightReducePlan x x.where2.tree (0 - 1))
-            Err err  -> Err err
-            Ok total ->
-                match compositeCount x.right.adapter (rightReducePlan x folded.tree (0 - 1))
-                    Err err     -> Err err
-                    Ok matching -> Ok (total == matching)
+        let folded = quoteAnd2 x.where2 (notTrue pred)
+        compositeNotExists x.right.adapter (rightReducePlan x folded.tree 1)
 
 instance Every (FullJoined q f a) (Map Text SqlValue -> Map Text SqlValue -> Bool) where Adapter a, JoinShape q, Row f =
     every (pred: Quote (Map Text SqlValue -> Map Text SqlValue -> Bool)) (x: FullJoined q f a) -> Result Bool Error =
-        let folded = quoteAnd2 x.where2 pred
-        match compositeCount x.right.adapter (fullReducePlan x x.where2.tree (0 - 1))
-            Err err  -> Err err
-            Ok total ->
-                match compositeCount x.right.adapter (fullReducePlan x folded.tree (0 - 1))
-                    Err err     -> Err err
-                    Ok matching -> Ok (total == matching)
+        let folded = quoteAnd2 x.where2 (notTrue pred)
+        compositeNotExists x.right.adapter (fullReducePlan x folded.tree 1)
 
 -- A query's `groupBy`: name the group-key column with a one-row accessor (`fn (u:
 -- User) -> u.dept`, exactly as an `orderBy` key) and wrap the query into the unified

@@ -943,6 +943,7 @@ pub fn prelude_resolutions() -> Vec<ImportResolution> {
                 query_binding("QAnd"),
                 query_binding("QOr"),
                 query_binding("QNot"),
+                query_binding("QNotTrue"),
                 query_binding("QEq"),
                 query_binding("QNe"),
                 query_binding("QLt"),
@@ -2011,8 +2012,8 @@ mod tests {
             .map(|ir| ir.effective_bindings.len())
             .sum();
         assert_eq!(
-            total_bindings, 54,
-            "expected 54 total prelude bindings (6 option/result + 8 json + 32 quotation + 8 module aliases); got {total_bindings}"
+            total_bindings, 55,
+            "expected 55 total prelude bindings (6 option/result + 8 json + 33 quotation + 8 module aliases); got {total_bindings}"
         );
     }
 

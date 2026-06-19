@@ -309,6 +309,7 @@ pub fn prelude_types(b: &BuiltinTyCons) -> (FxHashMap<String, Scheme>, FxHashMap
         q_ctor(vec![ty_con(b.float, vec![])]),
     );
     values.insert("QNot".to_string(), q_ctor(vec![qexpr_ty.clone()]));
+    values.insert("QNotTrue".to_string(), q_ctor(vec![qexpr_ty.clone()]));
     for name in ["QAnd", "QOr", "QEq", "QNe", "QLt", "QGt", "QLe", "QGe"] {
         values.insert(
             name.to_string(),

@@ -205,6 +205,7 @@ fn showExpr (e: QExpr) -> Text =
         QLitBool _  -> "?"
         QLitFloat _ -> "?"
         QNot x      -> Text.concat "(NOT " (Text.concat (showExpr x) ")")
+        QNotTrue x  -> Text.concat "(" (Text.concat (showExpr x) " IS NOT TRUE)")
         QAnd l r    -> binNode l " AND " r
         QOr l r     -> binNode l " OR " r
         QEq l r     -> binNode l " = " r
@@ -250,6 +251,7 @@ fn compileExpr (e: QExpr) -> { text: Text, binds: List SqlValue } =
         QLitBool b  -> { text = "?", binds = [sqlBool b] }
         QLitFloat x -> { text = "?", binds = [sqlFloat x] }
         QNot x      -> unaryNode "(NOT " x ")"
+        QNotTrue x  -> unaryNode "(" x " IS NOT TRUE)"
         QAnd l r -> binNodeSql l " AND " r
         QOr l r  -> binNodeSql l " OR " r
         QEq l r  -> binNodeSql l " = " r
@@ -406,6 +408,9 @@ fn renderPred (qualified: Bool) (e: QExpr) (n: Int) -> { text: Text, binds: List
         QNot x   ->
             let r = renderPred qualified x n
             { text = Text.join "" ["(NOT ", r.text, ")"], binds = r.binds, next = r.next }
+        QNotTrue x ->
+            let r = renderPred qualified x n
+            { text = Text.join "" ["(", r.text, " IS NOT TRUE)"], binds = r.binds, next = r.next }
         QEq l r -> cmpPred qualified l " = " r n
         QNe l r -> cmpPred qualified l " <> " r n
         QLt l r -> cmpPred qualified l " < " r n
@@ -644,6 +649,9 @@ fn renderQual (q0: Int) (e: QExpr) (n: Int) -> { text: Text, binds: List SqlValu
         QNot x   ->
             let r = renderQual q0 x n
             { text = Text.join "" ["(NOT ", r.text, ")"], binds = r.binds, next = r.next }
+        QNotTrue x ->
+            let r = renderQual q0 x n
+            { text = Text.join "" ["(", r.text, " IS NOT TRUE)"], binds = r.binds, next = r.next }
         QEq l r -> qualCmp q0 l " = " r n
         QNe l r -> qualCmp q0 l " <> " r n
         QLt l r -> qualCmp q0 l " < " r n

@@ -1676,13 +1676,21 @@ instance Decodable (Query e a) where Adapter a, Row e =
                     Ok rows -> firstDecoded rows
 
 -- An in-memory sequence of records lifted into the query world. `from` snapshots a
--- `List a` as a `PlanList` query plan; the same decode terminals the database path
--- uses run that plan through the in-memory interpreter and read the rows back. Opaque,
--- built only through `from`. The element `a` is carried in the type (like `Query`'s
--- entity), so `Rows (Seq a)` reduces to `a` and `toList` answers `List a`. The query
--- verbs refine `plan` the same way they refine a database query's plan, so one plan IR
--- and one interpreter serve both — the in-memory path is not a separate engine.
-pub opaque type Seq a = { plan: QueryPlan }
+-- `List a` as a `PlanList` and the sequence then accumulates the same builder state a
+-- database query does — a filter, an ordering, a page, and a `distinct` flag — over
+-- that inline source. The decode terminals materialise it into one `planRefine` and run
+-- it through the in-memory interpreter, reading the rows back. Opaque, built only
+-- through `from`. The element `a` is carried in the type (like `Query`'s entity), so
+-- `Rows (Seq a)` reduces to `a` and `toList` answers `List a`.
+--
+-- The fields mirror `Query`'s one-for-one (minus the repository, since the source is the
+-- inline rows): `pred` is the accumulated row predicate, `orders` the major-to-minor sort
+-- keys, `lim`/`off` the page (negative `lim` and non-positive `off` mean unbounded), and
+-- `dist` the distinct flag. Holding builder state — rather than nesting a fresh plan per
+-- verb — makes the in-memory page mean exactly what the database page does: `offset` then
+-- `limit` over the ordered rows, independent of the order the verbs were chained, so the
+-- same pipeline reads the same on a `Seq` and on a `Repo`.
+pub opaque type Seq a = { source: QueryPlan, pred: Quote (Map Text SqlValue -> Bool), orders: List (Bool, Text), lim: Int, off: Int, dist: Bool }
 
 -- Encode each record to a row, eagerly. The mirror of `decodeRows` on the way in.
 fn encodeRows (xs: List a) -> List (Map Text SqlValue) where Row a =
@@ -1696,28 +1704,38 @@ fn encodeRows (xs: List a) -> List (Map Text SqlValue) where Row a =
 @ffi("ridge_rt", "eval_plan_pure", 1)
 fn _evalPlanPure (plan: QueryPlan) -> List (Map Text SqlValue)
 
--- Lift a plain in-memory list into the query world. The element type needs only `Row`
--- (auto-synthesised for a record of SqlType fields) — no repository, table, or
--- connection. `from xs |> toList` round-trips the list back.
+-- The plan a sequence runs: one `planRefine` over its inline source carrying the whole
+-- accumulated builder state — filter, ordering, page, distinct — exactly as `planOf`
+-- builds a single-table query's `planScan`. One refine, applied bottom-up by the
+-- interpreter, so the page and ordering compose the way the database backend's do.
+fn seqPlan (x: Seq a) -> QueryPlan =
+    planRefine x.source x.pred.tree x.orders x.lim x.off x.dist
+
+-- Lift a plain in-memory list into the query world: snapshot it as the inline source,
+-- with an empty builder on top (keep every row, unordered, unpaged). The element type
+-- needs only `Row` (auto-synthesised for a record of SqlType fields) — no repository,
+-- table, or connection. `from xs |> toList` round-trips the list back.
 pub fn from (xs: List a) -> Seq a where Row a =
-    Seq { plan = planList (encodeRows xs) }
+    Seq { source = planList (encodeRows xs), pred = keepAll (), orders = [], lim = 0 - 1, off = 0, dist = false }
 
 -- An in-memory sequence runs the same `toList`/`first` the database path exposes:
--- evaluate its plan through the in-memory interpreter, then decode the rows back into
--- records. No connection is touched, so the instance carries only `Row a` — no `Adapter`.
+-- materialise its builder state into one plan, evaluate it through the in-memory
+-- interpreter, then decode the rows back into records. No connection is touched, so the
+-- instance carries only `Row a` — no `Adapter`.
 instance Decodable (Seq a) where Row a =
     toList (x: Seq a) -> Result (List a) Error =
-        decodeRows (_evalPlanPure x.plan)
+        decodeRows (_evalPlanPure (seqPlan x))
     first (x: Seq a) -> Result (Option a) Error =
-        firstDecoded (_evalPlanPure x.plan)
+        firstDecoded (_evalPlanPure (seqPlan x))
 
--- `filter` over an in-memory sequence refines its plan with the predicate, exactly
--- as the same verb narrows a database query — one verb, one plan IR. The wrapped
--- `PlanRefine` runs through the interpreter, keeping only the rows the predicate
--- accepts. `0 - 1` is the "no limit" sentinel; no ordering, offset, or distinct.
+-- `filter` over an in-memory sequence ANDs the predicate into its accumulated filter,
+-- exactly as the same verb narrows a database query — one verb, one builder. The
+-- entity-typed predicate folds into the row-typed field through `quoteAnd` (whose second
+-- tree is free), and the terminal's one `planRefine` runs it through the interpreter,
+-- keeping only the rows it accepts.
 instance Refinable (Seq a) (fn a -> Bool) =
     filter (pred: Quote (fn a -> Bool)) (x: Seq a) -> Seq a =
-        Seq { plan = planRefine x.plan pred.tree [] (0 - 1) 0 false }
+        Seq { source = x.source, pred = quoteAnd x.pred pred, orders = x.orders, lim = x.lim, off = x.off, dist = x.dist }
 
 -- A phantom `Option e` witness for `rowColumns`, drawn from a repository that
 -- already carries the entity type. `Row.rowColumns` answers an entity's columns

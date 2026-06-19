@@ -1084,20 +1084,60 @@ fn reconciled_decls(b: &BuiltinTyCons, base: u32) -> Vec<TyConDecl> {
             is_anon: false,
         },
         // `std.repo` — an in-memory sequence of records lifted into the query world
-        // by `from`. Opaque; holds the snapshotted rows as `List (Map Text SqlValue)`.
-        // The element `a` is phantom (carried in the type so `Rows (Seq a)` reduces to
-        // `a`), not stored. Interned after `FullJoined` so existing offsets are
-        // unchanged.
+        // by `from`. Opaque; mirrors `Query`'s builder fields one-for-one minus the
+        // repository: `source` is the inline `PlanList` of snapshotted rows, then the
+        // accumulated `pred`/`orders`/`lim`/`off`/`dist` a terminal materialises into one
+        // `planRefine`. The element `a` is phantom (carried in the type so `Rows (Seq a)`
+        // reduces to `a`), not stored. Field order mirrors the source so the consistency
+        // check holds. Interned after `FullJoined` so existing offsets are unchanged.
         TyConDecl {
             id: TyConId(base + 20),
             name: "Seq".to_string(),
             arity: 1,
             kind: TyConKind::Record(RecordSchema::new(
                 vec![TyVid(0)],
-                vec![RecordField {
-                    name: "plan".to_string(),
-                    ty: Type::Con(TyConId(base + 15), vec![]),
-                }],
+                vec![
+                    RecordField {
+                        name: "source".to_string(),
+                        ty: Type::Con(TyConId(base + 15), vec![]),
+                    },
+                    RecordField {
+                        name: "pred".to_string(),
+                        ty: Type::Con(
+                            b.quote,
+                            vec![Type::Fn {
+                                params: vec![Type::Con(
+                                    b.map,
+                                    vec![Type::Con(b.text, vec![]), Type::Con(b.sql_value, vec![])],
+                                )],
+                                ret: Box::new(Type::Con(b.bool, vec![])),
+                                caps: CapRow::Concrete(CapabilitySet::PURE),
+                            }],
+                        ),
+                    },
+                    RecordField {
+                        name: "orders".to_string(),
+                        ty: Type::Con(
+                            b.list,
+                            vec![Type::Tuple(vec![
+                                Type::Con(b.bool, vec![]),
+                                Type::Con(b.text, vec![]),
+                            ])],
+                        ),
+                    },
+                    RecordField {
+                        name: "lim".to_string(),
+                        ty: Type::Con(b.int, vec![]),
+                    },
+                    RecordField {
+                        name: "off".to_string(),
+                        ty: Type::Con(b.int, vec![]),
+                    },
+                    RecordField {
+                        name: "dist".to_string(),
+                        ty: Type::Con(b.bool, vec![]),
+                    },
+                ],
             )),
             def_span: None,
             def_module_raw: None,

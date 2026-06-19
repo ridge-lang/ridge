@@ -64,7 +64,9 @@ pub use ridge_types::{MatchWitness, WitnessKind, WitnessPat};
 
 use ridge_ast::Item;
 use ridge_resolve::{ModuleId, NodeId, ResolvedWorkspace};
-use ridge_types::{AnonRecordTable, CapabilitySet, Scheme, TyConArena, TyConDecl, TyConId, Type};
+use ridge_types::{
+    AnonRecordTable, CapabilitySet, Scheme, TyConArena, TyConDecl, TyConId, TyVid, Type,
+};
 use rustc_hash::FxHashMap;
 use std::sync::Arc;
 
@@ -193,6 +195,18 @@ pub struct TypedModule {
     /// The lowering pass reads this to reify a quoted body into a `QExpr` tree
     /// instead of a closure. Empty for any module that uses no quotation.
     pub quoted_lambdas: FxHashMap<ridge_ast::Span, crate::quote::QuoteInfo>,
+    /// Per parametric `instance` declaration, the REAL inference [`TyVid`] of
+    /// each `where`-clause constraint's head variable, indexed in `where`-clause
+    /// order (one entry per constraint). Keyed by the `InstanceDecl` span.
+    ///
+    /// Produced by [`crate::scc::infer_instance_methods`], which type-checks
+    /// instance method bodies (so `node_types` carry real variables) and records
+    /// the head variables the bodies forward dictionaries over. The lowering
+    /// reads this to build `current_fn_constraints` with real variables instead
+    /// of positional sentinels, so a class-method call on the left vs. the right
+    /// entity of a multi-`Row` instance forwards the matching dictionary rather
+    /// than always the first. Empty for modules with no parametric instances.
+    pub instance_dict_constraints: FxHashMap<ridge_ast::Span, Vec<TyVid>>,
 }
 
 // ── Entry points ──────────────────────────────────────────────────────────────
@@ -325,6 +339,7 @@ pub fn typecheck_workspace(ws: &ResolvedWorkspace) -> TypecheckResult {
                 match_witnesses: FxHashMap::default(),
                 dict_resolution: FxHashMap::default(),
                 quoted_lambdas: FxHashMap::default(),
+                instance_dict_constraints: FxHashMap::default(),
             });
             continue;
         };
@@ -419,6 +434,7 @@ fn empty_module_result(module_id: ModuleId) -> ModuleTypecheckResult {
             match_witnesses: FxHashMap::default(),
             dict_resolution: FxHashMap::default(),
             quoted_lambdas: FxHashMap::default(),
+            instance_dict_constraints: FxHashMap::default(),
         },
         errors: Vec::new(),
         anon_records: AnonRecordTable::default(),
@@ -914,6 +930,19 @@ fn typecheck_module_inner(
     // Int default, which emits `erlang:div/2` and crashes on Float operands.
     typecheck_actor_bodies(&mut ctx, b, ast, arena);
 
+    // Step D3: Type-check instance method bodies. They are otherwise never
+    // inferred, so node_types carries nothing for the expressions inside them and
+    // the lowering can only forward instance dictionaries by positional order —
+    // which collapses two same-class constraints (`Row e, Row f`) onto one entity
+    // for a binary outer join's left/right `rowColumns`. Inferring the bodies
+    // populates node_types with the real head variables and records, per
+    // parametric instance, the `where` constraints with those variables so the
+    // lowering forwards the matching dictionary. `record_errors` is false during
+    // the staged rollout: node_types are populated without yet changing which
+    // programs are rejected. No-op without the class/instance registries.
+    let instance_dict_constraints =
+        crate::scc::infer_instance_methods(&mut ctx, b, ast, ct, ie, false);
+
     // Step E: Actor encapsulation checks + mailbox config validation.
     for item in &ast.items {
         if let Item::Actor(ad) = item {
@@ -996,6 +1025,7 @@ fn typecheck_module_inner(
         match_witnesses: FxHashMap::default(), // T17: populated by infer_expr
         dict_resolution, // populated by the constraint solver when classes are used
         quoted_lambdas,  // populated by the quotation checker when quotes are used
+        instance_dict_constraints, // populated by Step D3 (infer_instance_methods)
     };
 
     // Move the anon_records table out so the workspace driver can merge it.

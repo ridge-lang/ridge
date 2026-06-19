@@ -592,10 +592,20 @@ pub fn lower_instance(ctx: &mut LowerCtx<'_>, decl: &InstanceDecl) -> Vec<IrItem
     };
 
     // Build the implicit dictionary parameters for a parametric instance, one
-    // per `where` constraint. Each is named `$dict_{CtxClass}_{i}` where `i` is
-    // the constraint's position; the matching `current_fn_constraints` entry
-    // (set below) carries `TyVid(i)` so the Forward path in method-body lowering
-    // projects this exact parameter. Empty for non-parametric instances.
+    // per `where` constraint. Each is named `$dict_{CtxClass}_{var}` where `var`
+    // is the constraint head variable's real inference `TyVid`, recorded by the
+    // typecheck's instance-body inference (keyed by the `InstanceDecl` span,
+    // indexed in `where` order). The matching `current_fn_constraints` entry (set
+    // below) carries that same `TyVid`, so the Forward path in method-body
+    // lowering — which reads the variable a class-method call pins from
+    // `node_types` — projects the dictionary for the right entity rather than the
+    // first same-class one. When the table is absent (unit tests, or a module
+    // whose instance bodies were not inferred) the positional sentinel `TyVid(i)`
+    // is the fallback, preserving the prior order-based behaviour. Empty for
+    // non-parametric instances.
+    let real_vars = ctx
+        .instance_dict_constraints
+        .and_then(|m| m.get(&decl.span));
     let mut dict_params: Vec<IrParam> = Vec::new();
     let mut body_constraints: Vec<ridge_types::Constraint> = Vec::new();
     for (i, cc) in decl.constraints.iter().enumerate() {
@@ -604,7 +614,9 @@ pub fn lower_instance(ctx: &mut LowerCtx<'_>, decl: &InstanceDecl) -> Vec<IrItem
             .class_table
             .and_then(|ct| ct.id_by_name(&ctx_class_name));
         #[allow(clippy::cast_possible_truncation)]
-        let tyvid = ridge_types::TyVid(i as u32);
+        let tyvid = real_vars
+            .and_then(|v| v.get(i).copied())
+            .unwrap_or(ridge_types::TyVid(i as u32));
         dict_params.push(IrParam {
             name: format!("$dict_{ctx_class_name}_{}", tyvid.0),
             ty: Type::Error, // untyped in IR — dicts are plain BEAM maps

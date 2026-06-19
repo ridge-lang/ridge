@@ -123,6 +123,16 @@ pub struct LowerCtx<'tw> {
     /// rather than lowered to a closure. `None` for unit tests that do not run
     /// the full pipeline; empty for modules with no quotation.
     pub quoted_lambdas: Option<&'tw FxHashMap<Span, QuoteInfo>>,
+    /// Per parametric `instance` declaration, its `where` constraints paired with
+    /// each constraint's real head-variable `TyVid`, keyed by the `InstanceDecl`
+    /// span. Produced by the typecheck's instance-body inference.
+    ///
+    /// [`crate::item::lower_instance`] reads this to build `current_fn_constraints`
+    /// with real variables instead of positional sentinels, so a class-method call
+    /// on one head variable forwards the matching dictionary by variable rather
+    /// than always the first same-class one. `None` for unit tests; empty for
+    /// modules with no parametric instances.
+    pub instance_dict_constraints: Option<&'tw FxHashMap<Span, Vec<ridge_types::TyVid>>>,
     /// Lazy name→`TyConId` cache populated on first call to
     /// [`LowerCtx::lookup_tycon_by_name`].
     tycon_name_cache: Option<TyConNameCache>,
@@ -211,6 +221,7 @@ impl<'tw> LowerCtx<'tw> {
             workspace: None,
             inferred_caps: None,
             quoted_lambdas: None,
+            instance_dict_constraints: None,
             tycon_name_cache: None,
             class_table: None,
             instance_env: None,
@@ -301,6 +312,17 @@ impl<'tw> LowerCtx<'tw> {
     /// so [`Self::lookup_quoted`] can tell which lambda bodies to reify.
     pub const fn attach_quoted_lambdas(&mut self, quoted: &'tw FxHashMap<Span, QuoteInfo>) {
         self.quoted_lambdas = Some(quoted);
+    }
+
+    /// Attach the current module's instance-dictionary-constraint side-table.
+    ///
+    /// Read by [`crate::item::lower_instance`] to forward instance dictionaries
+    /// by real variable rather than positional sentinel.
+    pub const fn attach_instance_dict_constraints(
+        &mut self,
+        table: &'tw FxHashMap<Span, Vec<ridge_types::TyVid>>,
+    ) {
+        self.instance_dict_constraints = Some(table);
     }
 
     /// Returns the [`QuoteInfo`] for a lambda at `span`, if it was captured as a

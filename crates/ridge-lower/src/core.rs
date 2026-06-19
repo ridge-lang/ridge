@@ -2036,13 +2036,69 @@ pub(crate) fn classmethod_binding(ctx: &LowerCtx<'_>, callee: &Expr) -> Option<(
     }
 }
 
+/// Align an argument's inferred type against a method parameter's AST annotation
+/// and return the sub-type sitting where a class type variable appears in the
+/// annotation.
+///
+/// For `rowColumns (witness: Option a)` called with an argument of inferred type
+/// `Option e`, the annotation `Option a` carries the class variable `a` inside
+/// the `Option` constructor; walking both in lockstep yields `e`. Used to pin a
+/// class method whose class variable is nested in a parameter rather than the
+/// bare parameter itself. Returns `None` when the shapes do not line up or the
+/// annotation holds no class variable.
+fn align_classvar_in_arg(
+    param_ast: &ridge_ast::Type,
+    arg_ty: &Type,
+    class_vars: &[String],
+) -> Option<Type> {
+    use ridge_ast::Type as A;
+    match param_ast {
+        // The annotation IS a class variable: the aligned concrete type is the
+        // argument type at this position.
+        A::Var { name, .. } if class_vars.contains(&name.text) => Some(arg_ty.clone()),
+        // `Option a`, `Map k v`, … — recurse positionally into the constructor's
+        // arguments. The inferred side is a `Con` (peel any transparent alias).
+        A::App { args, .. } => {
+            if let Type::Con(_, ty_args) = deep_peel_alias(arg_ty) {
+                args.iter()
+                    .zip(ty_args.iter())
+                    .find_map(|(a, t)| align_classvar_in_arg(a, t, class_vars))
+            } else {
+                None
+            }
+        }
+        // `[a]` — the inferred side is the list `Con` with one element argument.
+        A::List { elem, .. } => {
+            if let Type::Con(_, ty_args) = deep_peel_alias(arg_ty) {
+                ty_args
+                    .first()
+                    .and_then(|t| align_classvar_in_arg(elem, t, class_vars))
+            } else {
+                None
+            }
+        }
+        A::Tuple { elems, .. } => {
+            if let Type::Tuple(ty_elems) = arg_ty {
+                elems
+                    .iter()
+                    .zip(ty_elems.iter())
+                    .find_map(|(a, t)| align_classvar_in_arg(a, t, class_vars))
+            } else {
+                None
+            }
+        }
+        _ => None,
+    }
+}
+
 /// The concrete type pinning the class variable at a bare class-method call.
 ///
-/// Locates the method parameter declared as the bare class type variable and
-/// reads the resolved type of the argument in that position. Returns `None` when
-/// the class variable is not a direct parameter — a nested occurrence
-/// (`describe (xs: List a)`) or a return-only one (`decode (j) -> a`) — leaving
-/// those to the generic lowering path.
+/// Locates the method parameter that carries the class type variable — either as
+/// the bare parameter (`toRow (x: a)`) or nested inside a constructor
+/// (`rowColumns (witness: Option a)`, aligned via [`align_classvar_in_arg`]) —
+/// and reads the resolved type of the argument in that position. Returns `None`
+/// for a return-only class variable (`decode (j) -> a`) or when no argument
+/// carries the variable, leaving those to the generic lowering path.
 fn classmethod_pin_type(
     ctx: &LowerCtx<'_>,
     class: ridge_types::ClassId,
@@ -2056,18 +2112,46 @@ fn classmethod_pin_type(
     let sig = info.method_sigs.iter().find(|m| m.name == method)?;
 
     // For source-declared class methods, `ast_param_types` carries the AST
-    // annotations; find the parameter where the class type variable appears.
+    // annotations; find the parameter that carries the class type variable.
     if !sig.ast_param_types.is_empty() {
-        let pos = sig.ast_param_types.iter().position(|t| {
+        // (1) A parameter that IS the class variable (`toRow (x: a)`): pin from
+        //     its full argument type.
+        if let Some(pos) = sig.ast_param_types.iter().position(|t| {
             matches!(t, ridge_ast::Type::Var { name, .. }
                 if sig.class_ty_vars.contains(&name.text))
-        })?;
-        let arg = args.get(pos)?;
-        let node_id = ctx
-            .node_id_map
-            .as_ref()
-            .and_then(|m| m.get(arg.span(), NodeKind::Expr))?;
-        return ctx.node_type(node_id).cloned().map(|t| deep_peel_alias(&t));
+        }) {
+            let arg = args.get(pos)?;
+            let node_id = ctx
+                .node_id_map
+                .as_ref()
+                .and_then(|m| m.get(arg.span(), NodeKind::Expr))?;
+            return ctx.node_type(node_id).cloned().map(|t| deep_peel_alias(&t));
+        }
+        // (2) A parameter whose type CONTAINS the class variable nested in a
+        //     constructor (`rowColumns (witness: Option a)`): align the argument's
+        //     inferred type against the annotation and read off the sub-type at the
+        //     class variable's position. This pins the forward variable the call
+        //     resolves — `Option e` against `Option a` yields `e` — so two such
+        //     calls on different entities (a binary outer join's left and right
+        //     `rowColumns`) forward their own dictionary instead of both collapsing
+        //     onto the first same-class one. The direct case above never matches
+        //     here, so this only runs when the variable is genuinely nested.
+        for (param_ast, arg) in sig.ast_param_types.iter().zip(args.iter()) {
+            let Some(node_id) = ctx
+                .node_id_map
+                .as_ref()
+                .and_then(|m| m.get(arg.span(), NodeKind::Expr))
+            else {
+                continue;
+            };
+            let Some(arg_ty) = ctx.node_type(node_id).cloned() else {
+                continue;
+            };
+            if let Some(found) = align_classvar_in_arg(param_ast, &arg_ty, &sig.class_ty_vars) {
+                return Some(deep_peel_alias(&found));
+            }
+        }
+        return None;
     }
 
     // For stdlib-registered methods (no AST param types), try each argument

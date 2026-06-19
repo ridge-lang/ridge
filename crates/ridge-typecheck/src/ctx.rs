@@ -14,7 +14,7 @@ use ridge_types::{
     AnonRecordTable, CapRow, CapVid, CapabilitySet, Row, RowTail, RowVid, Scheme, TyConDecl,
     TyConId, TyVid, Type,
 };
-use rustc_hash::FxHashMap;
+use rustc_hash::{FxHashMap, FxHashSet};
 
 use crate::error::TypeError;
 
@@ -313,6 +313,17 @@ pub struct InferCtx {
     /// `Pattern::Record` inference arms (T5).
     pub anon_records: AnonRecordTable,
 
+    /// Records whose `Row` instance was demanded while discharging constraints
+    /// in this module.
+    ///
+    /// A structurally-synthesised (implicit) `Row` instance is registered in
+    /// `InstanceEnv` for every eligible record, but its dictionary IR is only
+    /// emitted for records that are actually used as rows. The solver records
+    /// each demanded record's `TyConId` here as it discharges a `Row`
+    /// constraint; the workspace driver unions these across modules and moves
+    /// the matching stashed instances into the emitted set.
+    pub demanded_rows: FxHashSet<TyConId>,
+
     // ── Constraint solving (0.2.13 typeclasses) ──────────────────────────────
     /// Class constraints deferred during inference, waiting to be solved.
     ///
@@ -453,6 +464,7 @@ impl InferCtx {
             node_types_accum: Vec::new(),
             schemes_accum: FxHashMap::default(),
             anon_records: AnonRecordTable::default(),
+            demanded_rows: FxHashSet::default(),
             deferred_constraints: Vec::new(),
             dict_resolution_accum: rustc_hash::FxHashMap::default(),
             to_text_tycons: None,

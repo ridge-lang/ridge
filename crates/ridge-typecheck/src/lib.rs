@@ -67,7 +67,7 @@ use ridge_resolve::{ModuleId, NodeId, ResolvedWorkspace};
 use ridge_types::{
     AnonRecordTable, CapabilitySet, Scheme, TyConArena, TyConDecl, TyConId, TyVid, Type,
 };
-use rustc_hash::FxHashMap;
+use rustc_hash::{FxHashMap, FxHashSet};
 use std::sync::Arc;
 
 // ── Result types ──────────────────────────────────────────────────────────────
@@ -99,6 +99,12 @@ pub struct ModuleTypecheckResult {
     /// The workspace driver stores these so importing modules (checked later in
     /// dependency order) can seed them into their environment.
     pub name_schemes: FxHashMap<String, ridge_types::Scheme>,
+    /// Records whose `Row` instance this module demanded while solving.
+    ///
+    /// The workspace driver moves the matching stashed implicit `Row`
+    /// instances into the emitted `derived_instances` set, so an unused
+    /// implicit `Row` produces no IR.
+    pub demanded_rows: FxHashSet<ridge_types::TyConId>,
 }
 
 /// Result of incrementally type-checking a single edited module.
@@ -313,6 +319,10 @@ pub fn typecheck_workspace(ws: &ResolvedWorkspace) -> TypecheckResult {
     }
     let class_table = collect_result.class_table;
     let instance_env = collect_result.instance_env;
+    let mut derived_instances = collect_result.derived_instances;
+    // Stashed implicit `Row` instances, pulled into `derived_instances` as
+    // modules demand them in the loop below.
+    let mut implicit_row_instances = collect_result.implicit_row_instances;
 
     // Step 3: Type-check each module in dependency order (producers first).
     for &mid in &check_order {
@@ -386,6 +396,15 @@ pub fn typecheck_workspace(ws: &ResolvedWorkspace) -> TypecheckResult {
         // Expose this module's schemes to modules that import it (checked later).
         exported_schemes[rm.id.0 as usize] = result.name_schemes;
         typed_slots[rm.id.0 as usize] = Some(result.typed);
+        // Emit a dictionary only for the implicit `Row` instances this module
+        // actually demanded. A record that never touches the row machinery keeps
+        // its instance in `instance_env` but produces no IR. `remove` also dedups
+        // across modules that demand the same record.
+        for tycon in result.demanded_rows {
+            if let Some(inst) = implicit_row_instances.remove(&tycon) {
+                derived_instances.push(inst);
+            }
+        }
     }
 
     // Re-assemble typed modules in `ModuleId` order for downstream consumers.
@@ -410,7 +429,7 @@ pub fn typecheck_workspace(ws: &ResolvedWorkspace) -> TypecheckResult {
             anon_records: workspace_anon_records,
             class_table,
             instance_env,
-            derived_instances: collect_result.derived_instances,
+            derived_instances,
             stdlib_tycons: stdlib_tycon_names,
         },
         errors: all_errors,
@@ -439,6 +458,7 @@ fn empty_module_result(module_id: ModuleId) -> ModuleTypecheckResult {
         errors: Vec::new(),
         anon_records: AnonRecordTable::default(),
         name_schemes: FxHashMap::default(),
+        demanded_rows: FxHashSet::default(),
     }
 }
 
@@ -1036,6 +1056,7 @@ fn typecheck_module_inner(
         errors: ctx.errors,
         anon_records,
         name_schemes: ctx.name_schemes_accum,
+        demanded_rows: ctx.demanded_rows,
     }
 }
 

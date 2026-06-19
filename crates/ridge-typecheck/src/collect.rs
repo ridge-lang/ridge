@@ -53,6 +53,14 @@ pub struct CollectResult {
     /// stored so the lowering pass can emit the method fns and dict values for
     /// each derived class. Instances that failed coherence (T032) are absent.
     pub derived_instances: Vec<crate::derive::DerivedInstance>,
+    /// Structurally-synthesised `Row` instances for records that did not write
+    /// `deriving (Row)`, keyed by the record's `TyConId`.
+    ///
+    /// Registered in `instance_env` (so the solver discharges `Row` for them)
+    /// but kept OUT of `derived_instances` until a module actually demands one.
+    /// The workspace driver moves the demanded entries across, so a record that
+    /// never touches the row machinery emits no codec.
+    pub implicit_row_instances: FxHashMap<TyConId, crate::derive::DerivedInstance>,
 }
 
 /// Runs the collect + coherence pass over every module in a workspace.
@@ -146,7 +154,7 @@ pub fn collect_workspace(
     // `deriving (…)` clause. Derived instances are registered into the same
     // InstanceEnv as explicit ones; coherence (T032 overlap) is enforced
     // by the same InstanceEnv::insert path.
-    let derived_instances = collect_derived_instances(
+    let (derived_instances, implicit_row_instances) = collect_derived_instances(
         modules,
         user_tycon_names,
         &class_table,
@@ -165,6 +173,7 @@ pub fn collect_workspace(
         instance_env,
         errors,
         derived_instances,
+        implicit_row_instances,
     }
 }
 
@@ -545,8 +554,15 @@ fn collect_derived_instances(
     class_table: &ClassTable,
     instance_env: &mut InstanceEnv,
     errors: &mut Vec<TypeError>,
-) -> Vec<crate::derive::DerivedInstance> {
+) -> (
+    Vec<crate::derive::DerivedInstance>,
+    FxHashMap<TyConId, crate::derive::DerivedInstance>,
+) {
     let mut all_derived: Vec<crate::derive::DerivedInstance> = Vec::new();
+    // Implicit `Row` instances are stashed here, not in `all_derived`, so the
+    // workspace driver emits only the ones a module demands.
+    let mut implicit_rows: FxHashMap<TyConId, crate::derive::DerivedInstance> =
+        FxHashMap::default();
 
     for &(module_id, ast) in modules {
         for item in &ast.items {
@@ -577,7 +593,34 @@ fn collect_derived_instances(
         }
     }
 
-    all_derived
+    // Implicit structural `Row`: any record whose fields are all `SqlType`
+    // primitives can become a row without `deriving (Row)`, so an in-memory
+    // `List record` is queryable with no annotation. The instance is registered
+    // in `instance_env` here (so the solver discharges it) but its dictionary IR
+    // is stashed, not emitted — the workspace driver pulls in only the records a
+    // module actually demands. Runs after the explicit pass, so a hand-written
+    // or derived `Row` is already registered and wins (its key is skipped).
+    for &(module_id, ast) in modules {
+        for item in &ast.items {
+            let Item::Type(type_decl) = item else {
+                continue;
+            };
+            let Some(&tycon_id) = user_tycon_names.get(type_decl.name.text.as_str()) else {
+                continue;
+            };
+            if let Some(inst) = crate::derive::synthesize_implicit_row(
+                type_decl,
+                tycon_id,
+                module_id,
+                class_table,
+                instance_env,
+            ) {
+                implicit_rows.insert(inst.key.1, inst);
+            }
+        }
+    }
+
+    (all_derived, implicit_rows)
 }
 
 // ── Coherence checks ─────────────────────────────────────────────────────────

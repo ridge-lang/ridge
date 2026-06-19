@@ -894,6 +894,14 @@ fn discharge_concrete(
         Some(inst_info) => {
             let inst_info = inst_info.clone();
 
+            // A structurally-synthesised `Row` instance is registered for every
+            // eligible record but its dictionary IR is only emitted when used.
+            // Record that this module discharged `Row` for `tyconid` so the
+            // workspace driver pulls the stashed dictionary into the emitted set.
+            if class_name == ridge_ast::column_mirror::ROW_DERIVE {
+                ctx.demanded_rows.insert(tyconid);
+            }
+
             // For a parametric instance, resolve each context constraint's
             // sub-dictionary plan against the concrete type arguments. For a
             // non-parametric instance `head_var_positions` is empty, so this is

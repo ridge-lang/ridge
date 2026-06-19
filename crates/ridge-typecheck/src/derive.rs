@@ -1230,6 +1230,71 @@ fn generate_row(
     })
 }
 
+/// Structurally synthesise a `Row` instance for a record that did not ask for
+/// one with `deriving (Row)`.
+///
+/// `Row` is a structural capability: any record whose fields are all `SqlType`
+/// primitives can be turned into a `Map Text SqlValue` and back. Synthesising
+/// it on sight lets a plain in-memory `List record` flow through the query
+/// verbs (filter/select/orderBy/…) with no annotation, the same way the
+/// database path works for entities that `deriving (Row)`.
+///
+/// Returns `None` — leaving the type alone — when it
+/// - already requested `Row` explicitly (the `deriving` pass owns those),
+/// - already has a `Row` instance (hand-written or previously synthesised), or
+/// - is not a record, or has a field with no `SqlType` (a user type, a
+///   container, a type variable); `generate_row` rejects those.
+///
+/// The generated instance carries the same shape an explicit `deriving (Row)`
+/// would, so both the constraint solver (via `InstanceEnv`) and the lowering
+/// (via the returned `DerivedInstance`) treat it identically.
+pub(crate) fn synthesize_implicit_row(
+    type_decl: &ridge_ast::decl::TypeDecl,
+    tycon_id: TyConId,
+    module_id: u32,
+    class_table: &ClassTable,
+    instance_env: &mut InstanceEnv,
+) -> Option<DerivedInstance> {
+    // The `deriving` pass already handled an explicit request.
+    if type_decl
+        .deriving
+        .iter()
+        .any(|d| d.text == ridge_ast::column_mirror::ROW_DERIVE)
+    {
+        return None;
+    }
+    let row_class_id = class_table.id_by_name(ridge_ast::column_mirror::ROW_DERIVE)?;
+    // Something already covers this key — leave it; an explicit instance wins.
+    if instance_env.get((row_class_id, tycon_id)).is_some() {
+        return None;
+    }
+    // Non-record or non-primitive field → no implicit Row.
+    let body = generate_row(&type_decl.body, &type_decl.name, type_decl.name.span).ok()?;
+    let info = InstanceInfo {
+        def_module: Some(module_id),
+        methods: vec![
+            ("fromRow".to_string(), String::new()),
+            ("toRow".to_string(), String::new()),
+            ("rowColumns".to_string(), String::new()),
+        ],
+        ctx_constraints: vec![],
+        head_var_positions: vec![],
+        origin: InstanceOrigin::Explicit,
+        span: type_decl.name.span,
+    };
+    let key = (row_class_id, tycon_id);
+    // A coherence clash means an instance we did not see registered first; the
+    // existing one wins, so drop the implicit one silently.
+    instance_env
+        .insert(key, info.clone(), "Row", &type_decl.name.text)
+        .ok()?;
+    Some(DerivedInstance {
+        key,
+        instance_info: info,
+        method_body: body,
+    })
+}
+
 /// Classify a `deriving (Row)` field type into `(is_optional, primitive_tag)`.
 ///
 /// A bare primitive (`Int`/`Text`/`Bool`/`Float`) is `(false, tag)`; an

@@ -888,6 +888,9 @@ ch({'QOr', L, R}, K, N, B) ->
 ch({'QNot', X}, K, N, B) ->
     {FX, B1, N1} = ch(X, K, N, B),
     {["(NOT ", FX, ")"], B1, N1};
+ch({'QNotTrue', X}, K, N, B) ->
+    {FX, B1, N1} = ch(X, K, N, B),
+    {["(", FX, " IS NOT TRUE)"], B1, N1};
 ch({'QEq', L, R}, K, N, B) -> ch_cmp("=", L, R, K, N, B);
 ch({'QNe', L, R}, K, N, B) -> ch_cmp("<>", L, R, K, N, B);
 ch({'QLt', L, R}, K, N, B) -> ch_cmp("<", L, R, K, N, B);
@@ -969,6 +972,12 @@ cw({'QOr', L, R}, N, B) ->
 cw({'QNot', X}, N, B) ->
     {FX, B1, N1} = cw(X, N, B),
     {["(NOT ", FX, ")"], B1, N1};
+%% `IS NOT TRUE` — std.repo's `every` folds its predicate as `notTrue` so a row
+%% the query keeps whose predicate is false (or NULL) counts as a violator. The
+%% three-valued test reads a NULL the same as FALSE, which `(NOT ...)` would not.
+cw({'QNotTrue', X}, N, B) ->
+    {FX, B1, N1} = cw(X, N, B),
+    {["(", FX, " IS NOT TRUE)"], B1, N1};
 cw({'QEq', L, R}, N, B) -> cw_cmp("=", L, R, N, B);
 cw({'QNe', L, R}, N, B) -> cw_cmp("<>", L, R, N, B);
 cw({'QLt', L, R}, N, B) -> cw_cmp("<", L, R, N, B);

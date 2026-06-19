@@ -21,7 +21,7 @@
 
 import std.data as Db
 import std.sql (SqlValue)
-import std.query (SortOrder, ascending, QueryPlan, planScan, planCombine, planRefine, planJoin, planProject, planAggregate, planGroup)
+import std.query (SortOrder, ascending, QueryPlan, planScan, planCombine, planRefine, planJoin, planProject, planAggregate, planGroup, planExists)
 import std.map (fromList, toList)
 
 -- A repository: entity `e` stored in `table` through adapter `a`. Opaque, so it
@@ -1794,7 +1794,7 @@ fn compositeCount (conn: a) (plan: QueryPlan) -> Result Int Error where Adapter 
         Ok rows -> aggCount rows
 
 fn compositeExists (conn: a) (plan: QueryPlan) -> Result Bool Error where Adapter a =
-    match runPlan conn plan
+    match runPlan conn (planExists plan)
         Err err -> Err err
         Ok rows -> Ok (nonEmpty rows)
 
@@ -2014,7 +2014,7 @@ instance Countable (LeftJoin e f a) where Adapter a =
     count (x: LeftJoin e f a) -> Result Int Error =
         leftCountPlan x x.where2.tree
     exists (x: LeftJoin e f a) -> Result Bool Error =
-        match runPlan x.left.repo.adapter (leftReduceJoin x x.where2.tree 1)
+        match runPlan x.left.repo.adapter (planExists (leftReduceJoin x x.where2.tree 1))
             Err err  -> Err err
             Ok rows  -> Ok (nonEmpty rows)
 
@@ -2026,7 +2026,7 @@ instance Countable (RightJoin e f a) where Adapter a =
     count (x: RightJoin e f a) -> Result Int Error =
         rightCountPlan x x.where2.tree
     exists (x: RightJoin e f a) -> Result Bool Error =
-        match runPlan x.left.repo.adapter (rightReduceJoin x x.where2.tree 1)
+        match runPlan x.left.repo.adapter (planExists (rightReduceJoin x x.where2.tree 1))
             Err err  -> Err err
             Ok rows  -> Ok (nonEmpty rows)
 
@@ -2038,7 +2038,7 @@ instance Countable (FullJoin e f a) where Adapter a =
     count (x: FullJoin e f a) -> Result Int Error =
         fullCountPlan x x.where2.tree
     exists (x: FullJoin e f a) -> Result Bool Error =
-        match runPlan x.left.repo.adapter (fullReduceJoin x x.where2.tree 1)
+        match runPlan x.left.repo.adapter (planExists (fullReduceJoin x x.where2.tree 1))
             Err err  -> Err err
             Ok rows  -> Ok (nonEmpty rows)
 

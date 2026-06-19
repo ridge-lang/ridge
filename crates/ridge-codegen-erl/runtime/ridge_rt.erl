@@ -1270,6 +1270,13 @@ mem_eval_plan(State, Id, {'PlanRefine', Inner, Pred, Orders, Lim, Off, Dist}) ->
     Rows = mem_eval_plan(State, Id, Inner),
     Matches = [R || R <- Rows, mem_pred(Pred, R)],
     mem_paginate(mem_distinct(Dist, mem_order(Orders, Matches)), Lim, Off);
+mem_eval_plan(State, Id, {'PlanExists', Child}) ->
+    %% An existence probe: yield one trivial row when the sub-plan matches anything, none
+    %% otherwise, so the caller's emptiness check answers the same Bool the SQL probe does.
+    case mem_eval_plan(State, Id, Child) of
+        []      -> [];
+        [_ | _] -> [#{<<"exists">> => {'SqlInt', 1}}]
+    end;
 mem_eval_plan(State, Id, {'PlanJoin', _Kind, Left, _Right, _Cond, _Where2, Orders, Lim, Off, Dist, _LeftCols, _RightCols} = Plan)
   when element(1, Left) =:= 'PlanJoin' ->
     %% A nested join of three or more tables (its left child is itself a join): flatten

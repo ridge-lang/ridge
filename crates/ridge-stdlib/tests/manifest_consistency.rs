@@ -272,6 +272,7 @@ fn signature_shape_consistency() {
                         | "planGroup"
                         | "planToSql"
                         | "optimize"
+                        | "planExists"
                 )
             {
                 continue;

@@ -23,7 +23,7 @@ use std::process::Command;
 use ridge_driver::{compile_workspace, CompileOptions, EmitArtefacts};
 
 const SOURCE: &str = r#"
-import std.query as Query (QueryPlan, planScan, planCombine, planRefine, planJoin, planProject, planAggregate, planGroup, planToSql)
+import std.query as Query (QueryPlan, planScan, planCombine, planRefine, planJoin, planProject, planAggregate, planGroup, planToSql, planExists)
 import std.sql (Sql, SqlValue, sqlValue)
 import std.int as Int
 import std.list as List
@@ -136,6 +136,17 @@ pub fn groupSql () -> Text =
 pub fn inner3Sql () -> Text = renderSql (inner3 ())
 
 pub fn inner3Binds () -> Text = renderBinds (inner3 ())
+
+-- An existence probe over a binary join: `SELECT 1 FROM … LIMIT 1`, short-circuiting at the
+-- first matching row rather than fetching every column of a row the caller never reads. No
+-- presence markers — existence reads none.
+pub fn existsSql () -> Text = renderSql (planExists (bareJoin "INNER" (usersScan ())))
+
+-- The same probe over the three-table composite: the flattened spine's FROM/WHERE under
+-- `SELECT 1 … LIMIT 1`, the base adult filter still bound as $1.
+pub fn existsThreeSql () -> Text = renderSql (planExists (inner3 ()))
+
+pub fn existsThreeBinds () -> Text = renderBinds (planExists (inner3 ()))
 
 -- A mixed-shape chain extends the inner `Join` of users and posts with a third table
 -- under an outer step. The left child is the inner `PlanJoin`; the outer node's kind
@@ -493,7 +504,7 @@ fn query_plan_compiles_to_parameterized_sql() {
 
     let expr = format!(
         "F=fun(N)->io:format(\"~s=~s~n\",[N,{module}:N()])end, \
-         lists:foreach(F,['scanSql','scanBinds','foldSql','combineSql','refineSql','innerSql','leftSql','rightSql','fullSql','fullBinds','projectSql','aggSql','groupSql','inner3Sql','inner3Binds','innerLeftMixSql','innerRightMixSql','innerFullMixSql','innerFullMixBinds','adultLeftMixSql','adultLeftMixBinds','countAdultLeftMixSql','countThreeSql','countThreeBinds','countLeftMixSql','countLeftMixBinds','sumThreeSql','avgThreeSql','projectThreeSql','projectLeftMixSql','projectRightMixSql','projectFullMixSql','groupThreeSql','groupLeftMixSql','groupRightMixSql','groupFullMixSql','orderThreeSql','orderLeftMixSql','orderRightMixSql','orderFullMixSql','inner4Sql','sumFourSql','projectFourSql','orderFourSql']), halt()."
+         lists:foreach(F,['scanSql','scanBinds','foldSql','combineSql','refineSql','innerSql','leftSql','rightSql','fullSql','fullBinds','projectSql','aggSql','groupSql','inner3Sql','inner3Binds','existsSql','existsThreeSql','existsThreeBinds','innerLeftMixSql','innerRightMixSql','innerFullMixSql','innerFullMixBinds','adultLeftMixSql','adultLeftMixBinds','countAdultLeftMixSql','countThreeSql','countThreeBinds','countLeftMixSql','countLeftMixBinds','sumThreeSql','avgThreeSql','projectThreeSql','projectLeftMixSql','projectRightMixSql','projectFullMixSql','groupThreeSql','groupLeftMixSql','groupRightMixSql','groupFullMixSql','orderThreeSql','orderLeftMixSql','orderRightMixSql','orderFullMixSql','inner4Sql','sumFourSql','projectFourSql','orderFourSql']), halt()."
     );
     let output = Command::new("erl")
         .arg("-noshell")
@@ -582,6 +593,19 @@ fn query_plan_compiles_to_parameterized_sql() {
         r#"inner3Sql=SELECT t0."id" AS "t0$id", t0."age" AS "t0$age", t0."name" AS "t0$name", t1."id" AS "t1$id", t1."author" AS "t1$author", t1."title" AS "t1$title", t2."id" AS "t2$id", t2."post" AS "t2$post", t2."body" AS "t2$body" FROM "users" AS t0 JOIN "posts" AS t1 ON t0."id" = t1."author" JOIN "comments" AS t2 ON t1."id" = t2."post" WHERE (t0."age" >= $1)"#,
     );
     want("inner3Binds=1");
+
+    // An existence probe renders `SELECT 1 FROM … LIMIT 1`: it short-circuits at the first
+    // matching row and transfers one trivial column instead of every column of a row the
+    // caller discards. The binary join keeps its ON; no presence markers, no select-list.
+    want(
+        r#"existsSql=SELECT 1 FROM "users" AS l JOIN "posts" AS r ON l."id" = r."author" LIMIT 1"#,
+    );
+    // The same probe over the three-table composite reuses the flattened spine's FROM and
+    // WHERE (the base adult filter still bound as $1) under `SELECT 1 … LIMIT 1`.
+    want(
+        r#"existsThreeSql=SELECT 1 FROM "users" AS t0 JOIN "posts" AS t1 ON t0."id" = t1."author" JOIN "comments" AS t2 ON t1."id" = t2."post" WHERE (t0."age" >= $1) LIMIT 1"#,
+    );
+    want("existsThreeBinds=1");
 
     // A mixed chain `users JOIN posts LEFT JOIN comments`: the inner pair renders flat,
     // then the left step wraps the new comments leaf in the `__present` marker subquery

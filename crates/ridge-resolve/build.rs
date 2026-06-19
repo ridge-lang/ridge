@@ -424,6 +424,9 @@ const BASELINE_EXPORTS: &[(&str, &[&str])] = &[
             // The plan-to-plan optimizer: rewrites a `QueryPlan` into an
             // equivalent one that compiles to tighter SQL (the renderer's pre-pass).
             "optimize",
+            // The existence-probe wrapper: compiles a sub-plan to
+            // `SELECT 1 FROM … LIMIT 1` for an `exists` terminal.
+            "planExists",
         ],
     ),
     (

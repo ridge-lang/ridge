@@ -1556,6 +1556,7 @@ mod tests {
                             | "PlanProject"
                             | "PlanAggregate"
                             | "PlanGroup"
+                            | "PlanExists"
                             | "planScan"
                             | "planCombine"
                             | "planRefine"
@@ -1569,6 +1570,7 @@ mod tests {
                             // one, so it is seeded the same way.
                             | "planToSql"
                             | "optimize"
+                            | "planExists"
                     )
                 {
                     continue;

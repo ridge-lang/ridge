@@ -69,7 +69,12 @@ pub fn ascending (dir: SortOrder) -> Bool =
 -- per group, keyed by alias and ordered by the key — the plan form of a grouped
 -- join `summarize`. It wraps a `PlanJoin`, reading each group key and folded column
 -- off the flat source-prefixed rows by their leaf's `t<leaf>$` prefix.
-pub type QueryPlan = PlanScan Text QExpr (List (Bool, Text)) Int Int Bool | PlanCombine Text QueryPlan QueryPlan | PlanRefine QueryPlan QExpr (List (Bool, Text)) Int Int Bool | PlanJoin Text QueryPlan QueryPlan QExpr QExpr (List (Bool, Int, Text)) Int Int Bool (List Text) (List Text) | PlanProject QExpr QueryPlan Int Int Bool | PlanAggregate Text Text Int QueryPlan | PlanGroup Text Int (List (Text, Text, Text, Int)) QExpr QueryPlan
+-- `PlanExists` wraps a sub-plan in an existence probe: it asks only whether the plan
+-- yields any row, compiling to `SELECT 1 FROM … LIMIT 1` — the short-circuiting form an
+-- `exists` terminal needs, leaner than fetching every column of a row it never reads. The
+-- backend returns one trivial row when the sub-plan matches and none when it does not, so
+-- the caller's emptiness check answers the same Bool as before.
+pub type QueryPlan = PlanScan Text QExpr (List (Bool, Text)) Int Int Bool | PlanCombine Text QueryPlan QueryPlan | PlanRefine QueryPlan QExpr (List (Bool, Text)) Int Int Bool | PlanJoin Text QueryPlan QueryPlan QExpr QExpr (List (Bool, Int, Text)) Int Int Bool (List Text) (List Text) | PlanProject QExpr QueryPlan Int Int Bool | PlanAggregate Text Text Int QueryPlan | PlanGroup Text Int (List (Text, Text, Text, Int)) QExpr QueryPlan | PlanExists QueryPlan
 
 -- A single-table scan plan — the plan form of `fetch`.
 pub fn planScan (table: Text) (pred: QExpr) (orders: List (Bool, Text)) (lim: Int) (off: Int) (dist: Bool) -> QueryPlan =
@@ -113,6 +118,12 @@ pub fn planAggregate (func: Text) (column: Text) (leaf: Int) (child: QueryPlan) 
 pub fn planGroup (keyCol: Text) (keyLeaf: Int) (cols: List (Text, Text, Text, Int)) (having: QExpr) (child: QueryPlan) -> QueryPlan =
     PlanGroup keyCol keyLeaf cols having child
 
+-- Wrap a plan in an existence probe — the plan form of `exists`. It compiles to a
+-- single-row `SELECT 1 FROM … LIMIT 1` that short-circuits at the first match, rather
+-- than fetching every column of a row whose contents the caller discards.
+pub fn planExists (child: QueryPlan) -> QueryPlan =
+    PlanExists child
+
 -- ── Plan optimization ─────────────────────────────────────────────────────────
 --
 -- A plan-to-plan rewrite run before the SQL renderer: it rewrites a `QueryPlan` into
@@ -140,6 +151,8 @@ pub fn optimize (plan: QueryPlan) -> QueryPlan =
             PlanAggregate func column leaf (optimize child)
         PlanGroup keyCol keyLeaf cols having child ->
             PlanGroup keyCol keyLeaf cols (simplifyPred having) (optimize child)
+        PlanExists child ->
+            PlanExists (optimize child)
 
 -- Fold the boolean constants out of a captured predicate, bottom-up: a conjunction
 -- with a `TRUE` arm drops it and with a `FALSE` arm collapses to `FALSE`; a disjunction
@@ -341,6 +354,46 @@ fn renderPlan (plan: QueryPlan) (n: Int) -> { text: Text, binds: List SqlValue, 
             renderAggregate func column leaf child n
         PlanGroup keyCol keyLeaf cols having child ->
             renderGroup keyCol keyLeaf cols having child n
+        PlanExists child ->
+            renderExists child n
+
+-- An existence probe: `SELECT 1 FROM <child's FROM/WHERE> LIMIT 1`, which short-circuits
+-- at the first matching row and transfers one trivial column rather than every column of a
+-- row the caller never reads. The child is the reduction join an `exists` terminal builds,
+-- so the probe reuses its FROM/JOIN/WHERE with no presence markers (existence needs none).
+-- A non-join child (a set-operation query) falls back to probing it as a subquery.
+fn renderExists (child: QueryPlan) (n: Int) -> { text: Text, binds: List SqlValue, next: Int } =
+    match child
+        PlanJoin kind left right cond where2 _ _ _ _ _ _ ->
+            match left
+                PlanScan lt lp _ _ _ _ ->
+                    match right
+                        PlanScan rt _ _ _ _ _ ->
+                            let sk = joinSkeleton kind lt lp rt cond where2 false n
+                            { text = Text.join "" ["SELECT 1 FROM ", sk.text, " LIMIT 1"], binds = sk.binds, next = sk.next }
+                        _ -> existsNary child n
+                _ -> existsNary child n
+        _ ->
+            let r = renderPlan child n
+            { text = Text.join "" ["SELECT 1 FROM (", r.text, ") AS ridge_exists LIMIT 1"], binds = r.binds, next = r.next }
+
+-- The existence probe over a composite (three-or-more table) reduction join: the flattened
+-- spine's FROM/WHERE with `SELECT 1 … LIMIT 1`, the all-inner and mixed-shape paths the
+-- bare terminal renders but with no select-list and no markers — existence reads neither.
+fn existsNary (plan: QueryPlan) (n: Int) -> { text: Text, binds: List SqlValue, next: Int } =
+    let f = flattenJoin plan
+    match f.leaves
+        [] -> emptyRender n
+        _  ->
+            if allInnerSteps f.steps then
+                let from = naryFrom f.leaves f.steps n
+                let wh = naryWhere f.leaves f.steps from.next
+                { text = Text.join "" ["SELECT 1 FROM ", from.text, wh.text, " LIMIT 1"], binds = from.binds ++ wh.binds, next = wh.next }
+            else
+                let nulls = nullableLeaves f.steps
+                let from = mixedFrom f.leaves f.steps nulls false n
+                let wh = mixedWhere f.leaves f.steps nulls from.next
+                { text = Text.join "" ["SELECT 1 FROM ", from.text, wh.text, " LIMIT 1"], binds = from.binds ++ wh.binds, next = wh.next }
 
 -- A captured predicate to a parameterized fragment. `qualified` picks how a column
 -- reads: bare (`"col"`) for a single-table scan, or qualified to its join side

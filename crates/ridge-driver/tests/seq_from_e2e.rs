@@ -64,6 +64,18 @@ pub fn firstName () -> Text =
             match opt
                 None   -> "(empty)"
                 Some u -> u.name
+
+-- `filter` over a Seq: keep age >= 30 (Ana 34, Cami 41; drop Beto 28). Proves the
+-- predicate runs through the in-memory interpreter, not just a pass-through.
+pub fn filteredCount () -> Int =
+    match (sample () |> Repo.from |> Repo.filter (fn (u: User) -> u.age >= 30) |> Repo.toList)
+        Err _   -> 0 - 1
+        Ok back -> lenOf back
+
+pub fn filteredTotal () -> Int =
+    match (sample () |> Repo.from |> Repo.filter (fn (u: User) -> u.age >= 30) |> Repo.toList)
+        Err _   -> 0 - 1
+        Ok back -> ageSum back
 "#;
 
 // ── Workspace setup ───────────────────────────────────────────────────────────
@@ -140,6 +152,8 @@ fn seq_from_round_trips_on_beam() {
         "io:format(\"count=~w~n\",[{module}:count()]), \
          io:format(\"total=~w~n\",[{module}:totalAge()]), \
          io:format(\"first=~s~n\",[{module}:firstName()]), \
+         io:format(\"filteredCount=~w~n\",[{module}:filteredCount()]), \
+         io:format(\"filteredTotal=~w~n\",[{module}:filteredTotal()]), \
          halt()."
     );
     let output = Command::new("erl")
@@ -168,5 +182,15 @@ fn seq_from_round_trips_on_beam() {
     assert!(
         stdout.contains("first=Ana"),
         "expected `first=Ana` — Seq first terminal wrong\nstdout:\n{stdout}\nstderr:\n{stderr}"
+    );
+    // `filter (age >= 30)` keeps Ana(34) and Cami(41), drops Beto(28): two rows.
+    assert!(
+        stdout.contains("filteredCount=2"),
+        "expected `filteredCount=2` — Seq filter did not run through the interpreter\nstdout:\n{stdout}\nstderr:\n{stderr}"
+    );
+    // 34 + 41 = 75: the surviving rows decoded to the right records.
+    assert!(
+        stdout.contains("filteredTotal=75"),
+        "expected `filteredTotal=75` — Seq filter kept the wrong rows\nstdout:\n{stdout}\nstderr:\n{stderr}"
     );
 }

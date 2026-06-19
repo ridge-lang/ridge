@@ -1711,6 +1711,14 @@ instance Decodable (Seq a) where Row a =
     first (x: Seq a) -> Result (Option a) Error =
         firstDecoded (_evalPlanPure x.plan)
 
+-- `filter` over an in-memory sequence refines its plan with the predicate, exactly
+-- as the same verb narrows a database query — one verb, one plan IR. The wrapped
+-- `PlanRefine` runs through the interpreter, keeping only the rows the predicate
+-- accepts. `0 - 1` is the "no limit" sentinel; no ordering, offset, or distinct.
+instance Refinable (Seq a) (fn a -> Bool) =
+    filter (pred: Quote (fn a -> Bool)) (x: Seq a) -> Seq a =
+        Seq { plan = planRefine x.plan pred.tree [] (0 - 1) 0 false }
+
 -- A phantom `Option e` witness for `rowColumns`, drawn from a repository that
 -- already carries the entity type. `Row.rowColumns` answers an entity's columns
 -- from the type alone but needs a value to fix that type; a `Repo e a` carries

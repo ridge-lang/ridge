@@ -1692,6 +1692,15 @@ pub fn register_stdlib_instances(
                     .entry((refinable, smallvec![query, fn1]))
                     .or_insert_with(refinable_inst);
             }
+            // `Refinable (Seq a) (a -> Bool)` — the in-memory sequence's `filter`,
+            // keyed like a query (receiver + single-param predicate `Fn1`). It carries
+            // no context (filter only refines the plan), so the shared `refinable_inst`
+            // applies unchanged.
+            if let Some(&seq) = reconciled_tycon_names.get("Seq") {
+                env.instances
+                    .entry((refinable, smallvec![seq, fn1]))
+                    .or_insert_with(refinable_inst);
+            }
             if let Some(&left_join) = reconciled_tycon_names.get("LeftJoin") {
                 env.instances
                     .entry((refinable, smallvec![left_join, fn2]))

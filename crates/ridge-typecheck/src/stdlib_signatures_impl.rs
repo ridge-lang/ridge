@@ -1557,6 +1557,7 @@ mod tests {
                             | "PlanAggregate"
                             | "PlanGroup"
                             | "PlanExists"
+                            | "PlanList"
                             | "planScan"
                             | "planCombine"
                             | "planRefine"
@@ -1571,6 +1572,7 @@ mod tests {
                             | "planToSql"
                             | "optimize"
                             | "planExists"
+                            | "planList"
                     )
                 {
                     continue;

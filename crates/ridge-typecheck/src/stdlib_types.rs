@@ -833,6 +833,19 @@ fn reconciled_decls(b: &BuiltinTyCons, base: u32) -> Vec<TyConDecl> {
                             vec![],
                         )]),
                     },
+                    // `PlanList rows` — the in-memory `Seq` source: the rows `from`
+                    // snapshotted, carried inline. Mem-only; the interpreter returns them
+                    // as-is and the verbs wrap this leaf to refine it.
+                    UnionVariant {
+                        name: "PlanList".to_string(),
+                        kind: VariantPayload::Positional(vec![Type::Con(
+                            b.list,
+                            vec![Type::Con(
+                                b.map,
+                                vec![Type::Con(b.text, vec![]), Type::Con(b.sql_value, vec![])],
+                            )],
+                        )]),
+                    },
                 ],
             }),
             def_span: None,
@@ -1082,14 +1095,8 @@ fn reconciled_decls(b: &BuiltinTyCons, base: u32) -> Vec<TyConDecl> {
             kind: TyConKind::Record(RecordSchema::new(
                 vec![TyVid(0)],
                 vec![RecordField {
-                    name: "rows".to_string(),
-                    ty: Type::Con(
-                        b.list,
-                        vec![Type::Con(
-                            b.map,
-                            vec![Type::Con(b.text, vec![]), Type::Con(b.sql_value, vec![])],
-                        )],
-                    ),
+                    name: "plan".to_string(),
+                    ty: Type::Con(TyConId(base + 15), vec![]),
                 }],
             )),
             def_span: None,
@@ -1336,6 +1343,15 @@ fn reconciled_query_plan_fn_scheme(
         // QueryPlan -> QueryPlan, both: `optimize` is the renderer's plan-to-plan pre-pass,
         // `planExists` the existence-probe wrapper an `exists` terminal builds.
         "optimize" | "planExists" => Some(pure(vec![plan()])),
+        // planList : List (Map Text SqlValue) -> QueryPlan — the in-memory `Seq`
+        // source leaf, wrapping the rows `from` snapshotted inline.
+        "planList" => Some(pure(vec![Type::Con(
+            b.list,
+            vec![Type::Con(
+                b.map,
+                vec![Type::Con(b.text, vec![]), Type::Con(b.sql_value, vec![])],
+            )],
+        )])),
         // planToSql : QueryPlan -> (Sql, List SqlValue) — the renderer, lowering a
         // whole plan to one parameterized statement plus its ordered bind values.
         // Unlike the builders it does not return a `QueryPlan`, so its scheme is

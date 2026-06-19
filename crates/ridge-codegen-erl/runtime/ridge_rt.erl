@@ -37,6 +37,7 @@
     mem_migrations_applied/1, mem_record_migration/2,
     mem_raw_query/3, mem_raw_exec/3,
     mem_run_plan/2,
+    eval_plan_pure/1,
     quote_keep_all/1, quote_and/2, quote_not_true/1,
     mk_error/2,
     escript_main/1
@@ -1076,6 +1077,13 @@ mem_migration_name(Row) ->
 mem_run_plan(Id, Plan) ->
     mem_call({run_plan, Id, Plan}).
 
+%% eval_plan_pure/1 — interpret a plan with no keeper store, for the in-memory `Seq`
+%% query source. The plan is rooted at a `PlanList` (rows carried inline), so the empty
+%% state is never consulted; returns the rows directly (no Result — a pure in-memory
+%% walk over inline rows cannot fail).
+eval_plan_pure(Plan) ->
+    mem_eval_plan(#{}, 0, Plan).
+
 %% Internal: send a request to the keeper and await its reply.
 mem_call(Req) ->
     mem_ensure(),
@@ -1280,6 +1288,10 @@ mem_eval_plan(State, Id, {'PlanRefine', Inner, Pred, Orders, Lim, Off, Dist}) ->
     Rows = mem_eval_plan(State, Id, Inner),
     Matches = [R || R <- Rows, mem_pred(Pred, R)],
     mem_paginate(mem_distinct(Dist, mem_order(Orders, Matches)), Lim, Off);
+mem_eval_plan(_State, _Id, {'PlanList', Rows}) ->
+    %% The in-memory `Seq` source: the rows `from` snapshotted, carried inline in the
+    %% plan. No store lookup — they are returned as-is for the wrapping verbs to refine.
+    Rows;
 mem_eval_plan(State, Id, {'PlanExists', Child}) ->
     %% An existence probe: yield one trivial row when the sub-plan matches anything, none
     %% otherwise, so the caller's emptiness check answers the same Bool the SQL probe does.

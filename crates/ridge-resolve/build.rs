@@ -427,6 +427,9 @@ const BASELINE_EXPORTS: &[(&str, &[&str])] = &[
             // The existence-probe wrapper: compiles a sub-plan to
             // `SELECT 1 FROM … LIMIT 1` for an `exists` terminal.
             "planExists",
+            // The in-memory source leaf: wraps the rows `from` snapshotted, so an
+            // in-memory `Seq` runs through the same plan/interpreter as a query.
+            "planList",
         ],
     ),
     (

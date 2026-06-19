@@ -752,6 +752,13 @@ class JoinShape q =
     -- Decode one flat result row (leaves under `t0$`, `t1$`, … prefixes) into the
     -- receiver's nested row — `e` for a bare query, `(Rows q, f)` at each step.
     decodeJoined (w: Option q) (row: Map Text SqlValue) -> Result (Rows q) Error
+    -- The leftmost leaf's columns, for an enclosing join to spell into its prefixed
+    -- select-list. A bare query is a single scan whose columns nothing else names, so
+    -- it returns them; a composite already spells every leaf through its own nested
+    -- plan, so it returns `[]`. The in-memory backend ignores these (it prefixes its
+    -- own row keys); the SQL backend needs them to emit `t0."col" AS "t0$col"` for the
+    -- base entity, without which a joined row decodes with the left side absent.
+    sourceCols (src: q) -> List Text
 
 -- The base of the recursion: a single-table query is one leaf, its plan a bare
 -- scan of the repository carrying the query's filter (ordering and page are
@@ -763,6 +770,7 @@ instance JoinShape (Query e a) where Row e =
         planScan x.repo.table x.pred.tree [] (0 - 1) 0 false
     decodeJoined (w: Option (Query e a)) (row: Map Text SqlValue) -> Result e Error =
         fromRow (unprefix (leafPrefix 0) row)
+    sourceCols (src: Query e a) -> List Text = rowColumns (entityWitness src.repo)
 
 -- The recursive step: a nested join is its source plus one more leaf. Its leaf
 -- count, plan, and row each extend the source's by one — the new table joins onto
@@ -771,7 +779,8 @@ instance JoinShape (Joined q f a) where JoinShape q, Row f =
     joinedLeaves (w: Option (Joined q f a)) -> Int =
         joinedLeaves (innerJoinWitness w) + 1
     joinedSourcePlan (x: Joined q f a) -> QueryPlan =
-        planJoin "INNER" (joinedSourcePlan x.source) (planScan x.right.table (keepAllTree ()) [] (0 - 1) 0 false) x.cond.tree x.where2.tree x.orders (0 - 1) 0 false [] (rowColumns (entityWitness x.right))
+        planJoin "INNER" (joinedSourcePlan x.source) (planScan x.right.table (keepAllTree ()) [] (0 - 1) 0 false) x.cond.tree x.where2.tree x.orders (0 - 1) 0 false (sourceCols x.source) (rowColumns (entityWitness x.right))
+    sourceCols (src: Joined q f a) -> List Text = []
     decodeJoined (w: Option (Joined q f a)) (row: Map Text SqlValue) -> Result (Rows q, f) Error =
         match decodeJoined (innerJoinWitness w) row
             Err err -> Err err
@@ -792,7 +801,7 @@ fn leafPrefix (n: Int) -> Text = Text.concat (Text.concat "t" (Int.toText n)) "$
 -- table joined on, carrying the top-level page/ordering/distinct the terminal
 -- runs it with.
 fn joinedPlan (x: Joined q f a) (lim: Int) -> QueryPlan where JoinShape q, Row f =
-    planJoin "INNER" (joinedSourcePlan x.source) (planScan x.right.table (keepAllTree ()) [] (0 - 1) 0 false) x.cond.tree x.where2.tree x.orders lim x.off x.dist [] (rowColumns (entityWitness x.right))
+    planJoin "INNER" (joinedSourcePlan x.source) (planScan x.right.table (keepAllTree ()) [] (0 - 1) 0 false) x.cond.tree x.where2.tree x.orders lim x.off x.dist (sourceCols x.source) (rowColumns (entityWitness x.right))
 
 -- Decode every flat result row into the nested pair `(Rows q, f)`: the source's
 -- row from `decodeJoined`, the new table from its `t<n>$` leaf where `n` is the
@@ -896,7 +905,8 @@ instance JoinShape (LeftJoined q f a) where JoinShape q, Row f =
     joinedLeaves (w: Option (LeftJoined q f a)) -> Int =
         joinedLeaves (leftInnerWitness w) + 1
     joinedSourcePlan (x: LeftJoined q f a) -> QueryPlan =
-        planJoin "LEFT" (joinedSourcePlan x.source) (planScan x.right.table (keepAllTree ()) [] (0 - 1) 0 false) x.cond.tree x.where2.tree x.orders (0 - 1) 0 false [] (rowColumns (entityWitness x.right))
+        planJoin "LEFT" (joinedSourcePlan x.source) (planScan x.right.table (keepAllTree ()) [] (0 - 1) 0 false) x.cond.tree x.where2.tree x.orders (0 - 1) 0 false (sourceCols x.source) (rowColumns (entityWitness x.right))
+    sourceCols (src: LeftJoined q f a) -> List Text = []
     decodeJoined (w: Option (LeftJoined q f a)) (row: Map Text SqlValue) -> Result (Rows q, Option f) Error =
         match decodeJoined (leftInnerWitness w) row
             Err err -> Err err
@@ -914,7 +924,7 @@ fn leftSourceWitness (x: LeftJoined q f a) -> Option q = None
 -- right table LEFT-joined on, carrying the top-level page/ordering/distinct the
 -- terminal runs it with.
 fn leftJoinedPlan (x: LeftJoined q f a) (lim: Int) -> QueryPlan where JoinShape q, Row f =
-    planJoin "LEFT" (joinedSourcePlan x.source) (planScan x.right.table (keepAllTree ()) [] (0 - 1) 0 false) x.cond.tree x.where2.tree x.orders lim x.off x.dist [] (rowColumns (entityWitness x.right))
+    planJoin "LEFT" (joinedSourcePlan x.source) (planScan x.right.table (keepAllTree ()) [] (0 - 1) 0 false) x.cond.tree x.where2.tree x.orders lim x.off x.dist (sourceCols x.source) (rowColumns (entityWitness x.right))
 
 -- Decode each flat result row of a `LeftJoined` into `(Rows q, Option f)`: the
 -- source row from `decodeJoined`, the new table from its `t<n>$` leaf where `n` is
@@ -1048,7 +1058,8 @@ instance JoinShape (RightJoined q f a) where JoinShape q, Row f =
     joinedLeaves (w: Option (RightJoined q f a)) -> Int =
         joinedLeaves (rightInnerWitness w) + 1
     joinedSourcePlan (x: RightJoined q f a) -> QueryPlan =
-        planJoin "RIGHT" (joinedSourcePlan x.source) (planScan x.right.table (keepAllTree ()) [] (0 - 1) 0 false) x.cond.tree x.where2.tree x.orders (0 - 1) 0 false [] (rowColumns (entityWitness x.right))
+        planJoin "RIGHT" (joinedSourcePlan x.source) (planScan x.right.table (keepAllTree ()) [] (0 - 1) 0 false) x.cond.tree x.where2.tree x.orders (0 - 1) 0 false (sourceCols x.source) (rowColumns (entityWitness x.right))
+    sourceCols (src: RightJoined q f a) -> List Text = []
     decodeJoined (w: Option (RightJoined q f a)) (row: Map Text SqlValue) -> Result (Option (Rows q), f) Error =
         match fromRow (unprefix (leafPrefix (joinedLeaves (rightInnerWitness w))) row)
             Err err -> Err err
@@ -1073,7 +1084,7 @@ fn decodeRightOptComposite (w: Option q) (n: Int) (r: Map Text SqlValue) -> Resu
 -- The plan of a whole `RightJoined`: its source's plan with the new right table
 -- RIGHT-joined on, carrying the top-level page/ordering/distinct.
 fn rightJoinedPlan (x: RightJoined q f a) (lim: Int) -> QueryPlan where JoinShape q, Row f =
-    planJoin "RIGHT" (joinedSourcePlan x.source) (planScan x.right.table (keepAllTree ()) [] (0 - 1) 0 false) x.cond.tree x.where2.tree x.orders lim x.off x.dist [] (rowColumns (entityWitness x.right))
+    planJoin "RIGHT" (joinedSourcePlan x.source) (planScan x.right.table (keepAllTree ()) [] (0 - 1) 0 false) x.cond.tree x.where2.tree x.orders lim x.off x.dist (sourceCols x.source) (rowColumns (entityWitness x.right))
 
 -- Decode each flat result row of a `RightJoined` into `(Option (Rows q), f)`: the
 -- new table from its `t<n>$` leaf (always present), the composite source optionally.
@@ -1178,7 +1189,8 @@ instance JoinShape (FullJoined q f a) where JoinShape q, Row f =
     joinedLeaves (w: Option (FullJoined q f a)) -> Int =
         joinedLeaves (fullInnerWitness w) + 1
     joinedSourcePlan (x: FullJoined q f a) -> QueryPlan =
-        planJoin "FULL" (joinedSourcePlan x.source) (planScan x.right.table (keepAllTree ()) [] (0 - 1) 0 false) x.cond.tree x.where2.tree x.orders (0 - 1) 0 false [] (rowColumns (entityWitness x.right))
+        planJoin "FULL" (joinedSourcePlan x.source) (planScan x.right.table (keepAllTree ()) [] (0 - 1) 0 false) x.cond.tree x.where2.tree x.orders (0 - 1) 0 false (sourceCols x.source) (rowColumns (entityWitness x.right))
+    sourceCols (src: FullJoined q f a) -> List Text = []
     decodeJoined (w: Option (FullJoined q f a)) (row: Map Text SqlValue) -> Result (Option (Rows q), Option f) Error =
         match decodeOptSide (leafPrefix (joinedLeaves (fullInnerWitness w))) row
             Err err -> Err err
@@ -1194,7 +1206,7 @@ fn fullSourceWitness (x: FullJoined q f a) -> Option q = None
 -- The plan of a whole `FullJoined`: its source's plan with the new right table
 -- FULL-joined on, carrying the top-level page/ordering/distinct.
 fn fullJoinedPlan (x: FullJoined q f a) (lim: Int) -> QueryPlan where JoinShape q, Row f =
-    planJoin "FULL" (joinedSourcePlan x.source) (planScan x.right.table (keepAllTree ()) [] (0 - 1) 0 false) x.cond.tree x.where2.tree x.orders lim x.off x.dist [] (rowColumns (entityWitness x.right))
+    planJoin "FULL" (joinedSourcePlan x.source) (planScan x.right.table (keepAllTree ()) [] (0 - 1) 0 false) x.cond.tree x.where2.tree x.orders lim x.off x.dist (sourceCols x.source) (rowColumns (entityWitness x.right))
 
 -- Decode each flat result row of a `FullJoined` into `(Option (Rows q), Option f)`:
 -- the new table optionally from its `t<n>$` leaf, the composite source optionally.

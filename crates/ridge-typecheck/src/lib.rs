@@ -64,7 +64,9 @@ pub use ridge_types::{MatchWitness, WitnessKind, WitnessPat};
 
 use ridge_ast::Item;
 use ridge_resolve::{ModuleId, NodeId, ResolvedWorkspace};
-use ridge_types::{AnonRecordTable, CapabilitySet, Scheme, TyConArena, TyConDecl, TyConId, Type};
+use ridge_types::{
+    AnonRecordTable, CapabilitySet, Scheme, TyConArena, TyConDecl, TyConId, TyVid, Type,
+};
 use rustc_hash::FxHashMap;
 use std::sync::Arc;
 
@@ -193,6 +195,18 @@ pub struct TypedModule {
     /// The lowering pass reads this to reify a quoted body into a `QExpr` tree
     /// instead of a closure. Empty for any module that uses no quotation.
     pub quoted_lambdas: FxHashMap<ridge_ast::Span, crate::quote::QuoteInfo>,
+    /// Per parametric `instance` declaration, the REAL inference [`TyVid`] of
+    /// each `where`-clause constraint's head variable, indexed in `where`-clause
+    /// order (one entry per constraint). Keyed by the `InstanceDecl` span.
+    ///
+    /// Produced by [`crate::scc::infer_instance_methods`], which type-checks
+    /// instance method bodies (so `node_types` carry real variables) and records
+    /// the head variables the bodies forward dictionaries over. The lowering
+    /// reads this to build `current_fn_constraints` with real variables instead
+    /// of positional sentinels, so a class-method call on the left vs. the right
+    /// entity of a multi-`Row` instance forwards the matching dictionary rather
+    /// than always the first. Empty for modules with no parametric instances.
+    pub instance_dict_constraints: FxHashMap<ridge_ast::Span, Vec<TyVid>>,
 }
 
 // ── Entry points ──────────────────────────────────────────────────────────────
@@ -325,6 +339,7 @@ pub fn typecheck_workspace(ws: &ResolvedWorkspace) -> TypecheckResult {
                 match_witnesses: FxHashMap::default(),
                 dict_resolution: FxHashMap::default(),
                 quoted_lambdas: FxHashMap::default(),
+                instance_dict_constraints: FxHashMap::default(),
             });
             continue;
         };
@@ -419,6 +434,7 @@ fn empty_module_result(module_id: ModuleId) -> ModuleTypecheckResult {
             match_witnesses: FxHashMap::default(),
             dict_resolution: FxHashMap::default(),
             quoted_lambdas: FxHashMap::default(),
+            instance_dict_constraints: FxHashMap::default(),
         },
         errors: Vec::new(),
         anon_records: AnonRecordTable::default(),
@@ -794,8 +810,26 @@ fn typecheck_module_inner(
         // seeds borrow `ctx` mutably, so the `receiver_id` closure's immutable borrow
         // has ended.
         let grouped_id = receiver_id("Grouped");
+        // `Joined` (the nested N-ary inner join) resolved here too, before the
+        // seeds borrow `ctx` mutably, so the `receiver_id` closure's immutable
+        // borrow has ended by the time the `RowsTycons` is built.
+        let joined_id = receiver_id("Joined");
+        // `LeftJoined` (the nested N-ary LEFT outer join) resolved here too, alongside
+        // `Joined`, for the same `RowsTycons`-before-mutable-borrow reason.
+        let left_joined_id = receiver_id("LeftJoined");
+        // `RightJoined` (the nested N-ary RIGHT outer join) resolved here too.
+        let right_joined_id = receiver_id("RightJoined");
+        // `FullJoined` (the nested N-ary FULL outer join) resolved here too.
+        let full_joined_id = receiver_id("FullJoined");
+        // `joinOn` takes the right `Repo f a`, so its `Joinable` seed needs the
+        // reconciled `Repo` id; resolved here, before the mutable seed borrows.
+        let repo_id = receiver_id("Repo");
         seed_groupable_scheme(&mut ctx, b, ct, grouped_id);
         seed_summarizable_scheme(&mut ctx, b, ct, sql_value);
+        seed_joinable_scheme(&mut ctx, b, ct, repo_id);
+        seed_leftjoinable_scheme(&mut ctx, b, ct, repo_id);
+        seed_rightjoinable_scheme(&mut ctx, b, ct, repo_id);
+        seed_fulljoinable_scheme(&mut ctx, b, ct, repo_id);
         if let (Some(query), Some(join), Some(left_join)) = (query_id, join_id, left_join_id) {
             ctx.rows_tycons = Some(crate::ctx::RowsTycons {
                 query,
@@ -807,7 +841,19 @@ fn typecheck_module_inner(
                 right_join: right_join_id.unwrap_or(left_join),
                 // `FullJoin` likewise lands in std.repo; same fallback as `RightJoin`.
                 full_join: full_join_id.unwrap_or(left_join),
+                // `Joined` (the nested N-ary inner join) lands in std.repo too, but
+                // stays `None` in a workspace without it so the `JoinCond`/
+                // `JoinResult`/`Rows` projections over a composite stay inert.
+                joined: joined_id,
+                // `LeftJoined` (the nested N-ary LEFT outer join) likewise stays
+                // `None` without std.repo, leaving its projections inert.
+                left_joined: left_joined_id,
+                // `RightJoined` (the nested N-ary RIGHT outer join) — same fallback.
+                right_joined: right_joined_id,
+                // `FullJoined` (the nested N-ary FULL outer join) — same fallback.
+                full_joined: full_joined_id,
                 option: b.option,
+                bool: b.bool,
             });
         }
     }
@@ -883,6 +929,19 @@ fn typecheck_module_inner(
     // for `BinOp::Div`) can't tell which family to pick and fall back to the
     // Int default, which emits `erlang:div/2` and crashes on Float operands.
     typecheck_actor_bodies(&mut ctx, b, ast, arena);
+
+    // Step D3: Type-check instance method bodies. They are otherwise never
+    // inferred, so node_types carries nothing for the expressions inside them and
+    // the lowering can only forward instance dictionaries by positional order —
+    // which collapses two same-class constraints (`Row e, Row f`) onto one entity
+    // for a binary outer join's left/right `rowColumns`. Inferring the bodies
+    // populates node_types with the real head variables and records, per
+    // parametric instance, the `where` constraints with those variables so the
+    // lowering forwards the matching dictionary. `record_errors` is false during
+    // the staged rollout: node_types are populated without yet changing which
+    // programs are rejected. No-op without the class/instance registries.
+    let instance_dict_constraints =
+        crate::scc::infer_instance_methods(&mut ctx, b, ast, ct, ie, false);
 
     // Step E: Actor encapsulation checks + mailbox config validation.
     for item in &ast.items {
@@ -966,6 +1025,7 @@ fn typecheck_module_inner(
         match_witnesses: FxHashMap::default(), // T17: populated by infer_expr
         dict_resolution, // populated by the constraint solver when classes are used
         quoted_lambdas,  // populated by the quotation checker when quotes are used
+        instance_dict_constraints, // populated by Step D3 (infer_instance_methods)
     };
 
     // Move the anon_records table out so the workspace driver can merge it.
@@ -1355,6 +1415,200 @@ fn seed_decodable_scheme(
     }
 }
 
+/// Seed the env scheme for `Joinable.joinOn` — std.repo's unified N-ary inner-join
+/// entry point. Registered in Rust for the same reason as [`seed_decodable_scheme`]:
+/// the stdlib class carries no source AST, so the AST-driven
+/// [`seed_class_method_schemes`] path skips it.
+///
+/// Scheme: `∀q f a. Repo f a -> Quote (JoinCond q f) -> q -> JoinResult q f
+/// where Joinable q`.
+///
+/// One class parameter, the receiver `q` (a query, a binary join, or a nested
+/// join). The condition's shape is the `JoinCond q f` projection — the receiver's
+/// leaf entities then the new right entity `f`, returning `Bool` — and the result
+/// is the `JoinResult q f` projection — a binary `Join e f a` from a query, the
+/// nested `Joined q f a` from a composite. Both reduce from the receiver's own type
+/// during unification, so one method serves every depth and a wrong-arity condition
+/// is a compile-time error. `repo_id` is the reconciled `Repo` tycon (the right
+/// repository's type); the seed is skipped when it or the class is absent.
+fn seed_joinable_scheme(
+    ctx: &mut crate::ctx::InferCtx,
+    b: &ridge_types::BuiltinTyCons,
+    class_table: &crate::class_env::ClassTable,
+    repo_id: Option<ridge_types::TyConId>,
+) {
+    use ridge_types::{CapRow, CapabilitySet, Constraint, Scheme, Type};
+    let (Some(joinable), Some(repo)) = (class_table.id_by_name("Joinable"), repo_id) else {
+        return;
+    };
+    let q = ctx.fresh_tyvid();
+    let f = ctx.fresh_tyvid();
+    let a = ctx.fresh_tyvid();
+    let repo_f_a = Type::Con(repo, vec![Type::Var(f), Type::Var(a)]);
+    let cond_quote = Type::Con(
+        b.quote,
+        vec![Type::Con(b.joincond, vec![Type::Var(q), Type::Var(f)])],
+    );
+    let join_result = Type::Con(b.joinresult, vec![Type::Var(q), Type::Var(f)]);
+    let fn_ty = Type::Fn {
+        params: vec![repo_f_a, cond_quote, Type::Var(q)],
+        ret: Box::new(join_result),
+        caps: CapRow::Concrete(CapabilitySet::PURE),
+    };
+    let constraint_tys: smallvec::SmallVec<[ridge_types::TyVid; 1]> = smallvec::smallvec![q];
+    ctx.env.bind(
+        "joinOn".to_owned(),
+        Scheme {
+            vars: vec![q, f, a],
+            cap_vars: vec![],
+            row_vars: vec![],
+            ty: fn_ty,
+            constraints: vec![Constraint::new(joinable, constraint_tys)],
+        },
+    );
+}
+
+/// Seed the env scheme for `LeftJoinable.leftJoinOn` — std.repo's left outer-join
+/// verb, the LEFT dual of `seed_joinable_scheme`. Registered in Rust for the same
+/// reason as `seed_joinable_scheme`: the AST-driven path skips it.
+///
+/// Scheme: `∀q f a. Repo f a -> Quote (JoinCond q f) -> q -> LeftJoinResult q f
+/// where LeftJoinable q`.
+///
+/// The condition's shape reuses the `JoinCond q f` projection (a left join's
+/// condition ranges over the same present leaves as an inner one — its
+/// nullability lives in the result, not the condition), and the result is the
+/// `LeftJoinResult q f` projection — a binary `LeftJoin e f a` from a query, the
+/// nested `LeftJoined q f a` from a composite. `repo_id` is the reconciled `Repo`
+/// tycon; the seed is skipped when it or the class is absent.
+fn seed_leftjoinable_scheme(
+    ctx: &mut crate::ctx::InferCtx,
+    b: &ridge_types::BuiltinTyCons,
+    class_table: &crate::class_env::ClassTable,
+    repo_id: Option<ridge_types::TyConId>,
+) {
+    use ridge_types::{CapRow, CapabilitySet, Constraint, Scheme, Type};
+    let (Some(left_joinable), Some(repo)) = (class_table.id_by_name("LeftJoinable"), repo_id)
+    else {
+        return;
+    };
+    let q = ctx.fresh_tyvid();
+    let f = ctx.fresh_tyvid();
+    let a = ctx.fresh_tyvid();
+    let repo_f_a = Type::Con(repo, vec![Type::Var(f), Type::Var(a)]);
+    let cond_quote = Type::Con(
+        b.quote,
+        vec![Type::Con(b.joincond, vec![Type::Var(q), Type::Var(f)])],
+    );
+    let left_join_result = Type::Con(b.left_joinresult, vec![Type::Var(q), Type::Var(f)]);
+    let fn_ty = Type::Fn {
+        params: vec![repo_f_a, cond_quote, Type::Var(q)],
+        ret: Box::new(left_join_result),
+        caps: CapRow::Concrete(CapabilitySet::PURE),
+    };
+    let constraint_tys: smallvec::SmallVec<[ridge_types::TyVid; 1]> = smallvec::smallvec![q];
+    ctx.env.bind(
+        "leftJoinOn".to_owned(),
+        Scheme {
+            vars: vec![q, f, a],
+            cap_vars: vec![],
+            row_vars: vec![],
+            ty: fn_ty,
+            constraints: vec![Constraint::new(left_joinable, constraint_tys)],
+        },
+    );
+}
+
+/// Seed the env scheme for `RightJoinable.rightJoinOn` — std.repo's right
+/// outer-join verb, the RIGHT dual of `seed_leftjoinable_scheme`.
+///
+/// Scheme: `∀q f a. Repo f a -> Quote (JoinCond q f) -> q -> RightJoinResult q f
+/// where RightJoinable q`. The condition reuses `JoinCond q f`; the result is the
+/// `RightJoinResult q f` projection — a binary `RightJoin e f a` from a query, the
+/// nested `RightJoined q f a` from a composite.
+fn seed_rightjoinable_scheme(
+    ctx: &mut crate::ctx::InferCtx,
+    b: &ridge_types::BuiltinTyCons,
+    class_table: &crate::class_env::ClassTable,
+    repo_id: Option<ridge_types::TyConId>,
+) {
+    use ridge_types::{CapRow, CapabilitySet, Constraint, Scheme, Type};
+    let (Some(right_joinable), Some(repo)) = (class_table.id_by_name("RightJoinable"), repo_id)
+    else {
+        return;
+    };
+    let q = ctx.fresh_tyvid();
+    let f = ctx.fresh_tyvid();
+    let a = ctx.fresh_tyvid();
+    let repo_f_a = Type::Con(repo, vec![Type::Var(f), Type::Var(a)]);
+    let cond_quote = Type::Con(
+        b.quote,
+        vec![Type::Con(b.joincond, vec![Type::Var(q), Type::Var(f)])],
+    );
+    let right_join_result = Type::Con(b.right_joinresult, vec![Type::Var(q), Type::Var(f)]);
+    let fn_ty = Type::Fn {
+        params: vec![repo_f_a, cond_quote, Type::Var(q)],
+        ret: Box::new(right_join_result),
+        caps: CapRow::Concrete(CapabilitySet::PURE),
+    };
+    let constraint_tys: smallvec::SmallVec<[ridge_types::TyVid; 1]> = smallvec::smallvec![q];
+    ctx.env.bind(
+        "rightJoinOn".to_owned(),
+        Scheme {
+            vars: vec![q, f, a],
+            cap_vars: vec![],
+            row_vars: vec![],
+            ty: fn_ty,
+            constraints: vec![Constraint::new(right_joinable, constraint_tys)],
+        },
+    );
+}
+
+/// Seed the env scheme for `FullJoinable.fullJoinOn` — std.repo's full outer-join
+/// verb, the FULL dual of `seed_leftjoinable_scheme`/`seed_rightjoinable_scheme`.
+///
+/// Scheme: `∀q f a. Repo f a -> Quote (JoinCond q f) -> q -> FullJoinResult q f
+/// where FullJoinable q`. The condition reuses `JoinCond q f`; the result is the
+/// `FullJoinResult q f` projection — a binary `FullJoin e f a` from a query, the
+/// nested `FullJoined q f a` from a composite.
+fn seed_fulljoinable_scheme(
+    ctx: &mut crate::ctx::InferCtx,
+    b: &ridge_types::BuiltinTyCons,
+    class_table: &crate::class_env::ClassTable,
+    repo_id: Option<ridge_types::TyConId>,
+) {
+    use ridge_types::{CapRow, CapabilitySet, Constraint, Scheme, Type};
+    let (Some(full_joinable), Some(repo)) = (class_table.id_by_name("FullJoinable"), repo_id)
+    else {
+        return;
+    };
+    let q = ctx.fresh_tyvid();
+    let f = ctx.fresh_tyvid();
+    let a = ctx.fresh_tyvid();
+    let repo_f_a = Type::Con(repo, vec![Type::Var(f), Type::Var(a)]);
+    let cond_quote = Type::Con(
+        b.quote,
+        vec![Type::Con(b.joincond, vec![Type::Var(q), Type::Var(f)])],
+    );
+    let full_join_result = Type::Con(b.full_joinresult, vec![Type::Var(q), Type::Var(f)]);
+    let fn_ty = Type::Fn {
+        params: vec![repo_f_a, cond_quote, Type::Var(q)],
+        ret: Box::new(full_join_result),
+        caps: CapRow::Concrete(CapabilitySet::PURE),
+    };
+    let constraint_tys: smallvec::SmallVec<[ridge_types::TyVid; 1]> = smallvec::smallvec![q];
+    ctx.env.bind(
+        "fullJoinOn".to_owned(),
+        Scheme {
+            vars: vec![q, f, a],
+            cap_vars: vec![],
+            row_vars: vec![],
+            ty: fn_ty,
+            constraints: vec![Constraint::new(full_joinable, constraint_tys)],
+        },
+    );
+}
+
 /// Seed the env schemes for `Pageable.limit`/`offset`/`distinct` — std.repo's
 /// unified page-and-distinct builder steps over a query, an inner join, or a
 /// left join. Registered in Rust rather than through the AST-driven
@@ -1535,10 +1789,10 @@ fn seed_groupable_scheme(
 }
 
 /// Seeds the `runGroups` class-method scheme behind `summarize`'s per-source
-/// dispatch: `∀q. q -> Text -> Bool -> QExpr -> QExpr -> Result (List (Map Text
+/// dispatch: `∀q. q -> Text -> Int -> QExpr -> QExpr -> Result (List (Map Text
 /// SqlValue)) Error where Summarizable q`. It hands the source, the group-key column
-/// and side, the projection tree, and the HAVING tree to the seam the instance
-/// selects (a query's `groupSummarize` or a join's `groupSummarizeJoin`/`…LeftJoin`),
+/// and leaf, the projection tree, and the HAVING tree to the seam the instance
+/// selects (a query's `groupSummarize`, or `runPlan` over a group plan for a join),
 /// returning the raw summarised rows that `summarize` then decodes through `Row s`.
 fn seed_summarizable_scheme(
     ctx: &mut crate::ctx::InferCtx,
@@ -1565,7 +1819,7 @@ fn seed_summarizable_scheme(
         params: vec![
             Type::Var(q),
             text(),
-            Type::Con(b.bool, vec![]),
+            Type::Con(b.int, vec![]),
             Type::Con(b.q_expr, vec![]),
             Type::Con(b.q_expr, vec![]),
         ],
@@ -1658,10 +1912,8 @@ fn seed_prelude_codec_schemes(ctx: &mut crate::ctx::InferCtx, b: &ridge_types::B
 /// - `fromSql :: ∀a. SqlValue -> Result a Error  where SqlType a`
 #[expect(
     clippy::too_many_lines,
-    clippy::many_single_char_names,
-    reason = "one flat block per stdlib codec/seam method (toSql/fromSql/fromRow/insert/all/join); \
-              splitting per method would scatter the shared builtin-type setup, and the single-letter \
-              locals mirror the type variables (a, e, c, p, r)"
+    reason = "one flat block per stdlib codec/seam method (toSql/fromSql/fromRow/insert/all/project); \
+              splitting per method would scatter the shared builtin-type setup"
 )]
 fn seed_sql_codec_schemes(
     ctx: &mut crate::ctx::InferCtx,
@@ -1761,6 +2013,28 @@ fn seed_sql_codec_schemes(
                 cap_vars: vec![],
                 row_vars: vec![],
                 ty: to_row_ty,
+                constraints: vec![Constraint::single(row, a)],
+            },
+        );
+        // rowColumns :: ∀a. Option a -> List Text where Row a — the record's
+        // column names, keyed only by the type. The `Option a` argument is a
+        // phantom witness (its value is ignored); it carries `a` so the instance
+        // resolves, since the `List Text` result mentions no `a` and would
+        // otherwise be ambiguous. Seeded alongside the codec methods so bare
+        // `rowColumns` calls type-check once std.sql is imported.
+        let a = ctx.fresh_tyvid();
+        let row_cols_ty = Type::Fn {
+            params: vec![Type::Con(b.option, vec![Type::Var(a)])],
+            ret: Box::new(Type::Con(b.list, vec![Type::Con(b.text, vec![])])),
+            caps: CapRow::Concrete(CapabilitySet::PURE),
+        };
+        ctx.env.bind(
+            "rowColumns".to_owned(),
+            Scheme {
+                vars: vec![a],
+                cap_vars: vec![],
+                row_vars: vec![],
+                ty: row_cols_ty,
                 constraints: vec![Constraint::single(row, a)],
             },
         );
@@ -2113,496 +2387,6 @@ fn seed_sql_codec_schemes(
                     constraints: vec![Constraint::single(adapter, a)],
                 },
             );
-        }
-        // join :: ∀a c p. a -> Text -> Text -> Quote c -> Quote p
-        //              -> List (Bool, Bool, Text) -> Int -> Int
-        //              -> Result (List (Map Text SqlValue, Map Text SqlValue)) Error
-        //              where Adapter a.
-        // The inner join of two tables: `cond` is the quoted condition over both
-        // entities (its left columns range over the left table, its right over
-        // the right), `pred` the left-side filter, then ordering and paging. Each
-        // result row is the (left, right) pair of column maps the terminal decodes
-        // into both entities. The two quotes are phantom here — the seam only
-        // walks their captured trees.
-        {
-            let a = ctx.fresh_tyvid();
-            let c = ctx.fresh_tyvid();
-            let w = ctx.fresh_tyvid();
-            let p = ctx.fresh_tyvid();
-            // A join orders by a column from either side, so each key carries an
-            // `isRight?` tag: `(ascending?, isRight?, column)`.
-            let orders = Type::Con(
-                b.list,
-                vec![Type::Tuple(vec![
-                    Type::Con(b.bool, vec![]),
-                    Type::Con(b.bool, vec![]),
-                    Type::Con(b.text, vec![]),
-                ])],
-            );
-            let pair = Type::Tuple(vec![map_row(), map_row()]);
-            let fn_ty = Type::Fn {
-                params: vec![
-                    Type::Var(a),
-                    Type::Con(b.text, vec![]),
-                    Type::Con(b.text, vec![]),
-                    Type::Con(b.quote, vec![Type::Var(c)]),
-                    Type::Con(b.quote, vec![Type::Var(w)]),
-                    Type::Con(b.quote, vec![Type::Var(p)]),
-                    orders,
-                    Type::Con(b.int, vec![]),
-                    Type::Con(b.int, vec![]),
-                ],
-                ret: Box::new(Type::Con(
-                    b.result,
-                    vec![Type::Con(b.list, vec![pair]), Type::Con(b.error, vec![])],
-                )),
-                caps: CapRow::Concrete(CapabilitySet::PURE),
-            };
-            ctx.env.bind(
-                "join".to_owned(),
-                Scheme {
-                    vars: vec![a, c, w, p],
-                    cap_vars: vec![],
-                    row_vars: vec![],
-                    ty: fn_ty,
-                    constraints: vec![Constraint::single(adapter, a)],
-                },
-            );
-        }
-        // joinSelect :: ∀a c p r. a -> Text -> Text -> Quote c -> Quote p
-        //              -> List (Bool, Bool, Text) -> Int -> Int -> Quote r
-        //              -> Result (List (Map Text SqlValue)) Error where Adapter a.
-        // Like `join`, plus a quoted projection `r` over both entities: each
-        // result row is a single map keyed by the projection's output aliases,
-        // which the terminal decodes into the named result record.
-        {
-            let a = ctx.fresh_tyvid();
-            let c = ctx.fresh_tyvid();
-            let w = ctx.fresh_tyvid();
-            let p = ctx.fresh_tyvid();
-            let r = ctx.fresh_tyvid();
-            // A join orders by a column from either side, so each key carries an
-            // `isRight?` tag: `(ascending?, isRight?, column)`.
-            let orders = Type::Con(
-                b.list,
-                vec![Type::Tuple(vec![
-                    Type::Con(b.bool, vec![]),
-                    Type::Con(b.bool, vec![]),
-                    Type::Con(b.text, vec![]),
-                ])],
-            );
-            let fn_ty = Type::Fn {
-                params: vec![
-                    Type::Var(a),
-                    Type::Con(b.text, vec![]),
-                    Type::Con(b.text, vec![]),
-                    Type::Con(b.quote, vec![Type::Var(c)]),
-                    Type::Con(b.quote, vec![Type::Var(w)]),
-                    Type::Con(b.quote, vec![Type::Var(p)]),
-                    orders,
-                    Type::Con(b.int, vec![]),
-                    Type::Con(b.int, vec![]),
-                    Type::Con(b.quote, vec![Type::Var(r)]),
-                ],
-                ret: Box::new(Type::Con(
-                    b.result,
-                    vec![
-                        Type::Con(b.list, vec![map_row()]),
-                        Type::Con(b.error, vec![]),
-                    ],
-                )),
-                caps: CapRow::Concrete(CapabilitySet::PURE),
-            };
-            ctx.env.bind(
-                "joinSelect".to_owned(),
-                Scheme {
-                    vars: vec![a, c, w, p, r],
-                    cap_vars: vec![],
-                    row_vars: vec![],
-                    ty: fn_ty,
-                    constraints: vec![Constraint::single(adapter, a)],
-                },
-            );
-        }
-        // leftJoin :: ∀a c p. a -> Text -> Text -> Quote c -> Quote p
-        //              -> List (Bool, Bool, Text) -> Int -> Int
-        //              -> Result (List (Map Text SqlValue, Option (Map Text SqlValue))) Error
-        //              where Adapter a.
-        // The left-outer form of `join`: same condition, predicate, ordering, and
-        // paging, but each result row keeps the left map and reports the right as
-        // `Some` of its column map when the join matched or `None` when the left
-        // row had no match. The two quotes are phantom — the seam walks their
-        // captured trees.
-        {
-            let a = ctx.fresh_tyvid();
-            let c = ctx.fresh_tyvid();
-            let w = ctx.fresh_tyvid();
-            let p = ctx.fresh_tyvid();
-            // A join orders by a column from either side, so each key carries an
-            // `isRight?` tag: `(ascending?, isRight?, column)`.
-            let orders = Type::Con(
-                b.list,
-                vec![Type::Tuple(vec![
-                    Type::Con(b.bool, vec![]),
-                    Type::Con(b.bool, vec![]),
-                    Type::Con(b.text, vec![]),
-                ])],
-            );
-            let pair = Type::Tuple(vec![map_row(), Type::Con(b.option, vec![map_row()])]);
-            let fn_ty = Type::Fn {
-                params: vec![
-                    Type::Var(a),
-                    Type::Con(b.text, vec![]),
-                    Type::Con(b.text, vec![]),
-                    Type::Con(b.quote, vec![Type::Var(c)]),
-                    Type::Con(b.quote, vec![Type::Var(w)]),
-                    Type::Con(b.quote, vec![Type::Var(p)]),
-                    orders,
-                    Type::Con(b.int, vec![]),
-                    Type::Con(b.int, vec![]),
-                ],
-                ret: Box::new(Type::Con(
-                    b.result,
-                    vec![Type::Con(b.list, vec![pair]), Type::Con(b.error, vec![])],
-                )),
-                caps: CapRow::Concrete(CapabilitySet::PURE),
-            };
-            ctx.env.bind(
-                "leftJoin".to_owned(),
-                Scheme {
-                    vars: vec![a, c, w, p],
-                    cap_vars: vec![],
-                    row_vars: vec![],
-                    ty: fn_ty,
-                    constraints: vec![Constraint::single(adapter, a)],
-                },
-            );
-        }
-        // leftJoinSelect :: ∀a c p r. a -> Text -> Text -> Quote c -> Quote p
-        //              -> List (Bool, Bool, Text) -> Int -> Int -> Quote r
-        //              -> Result (List (Map Text SqlValue)) Error where Adapter a.
-        // The left-outer form of `joinSelect`: same projection select-list, but a
-        // `LEFT JOIN` keeps every left row and the right-side columns come back
-        // NULL where the row had no match, decoding to `None` in the projected
-        // shape's `Option` fields. The three quotes are phantom — the seam walks
-        // their captured trees.
-        {
-            let a = ctx.fresh_tyvid();
-            let c = ctx.fresh_tyvid();
-            let w = ctx.fresh_tyvid();
-            let p = ctx.fresh_tyvid();
-            let r = ctx.fresh_tyvid();
-            // A join orders by a column from either side, so each key carries an
-            // `isRight?` tag: `(ascending?, isRight?, column)`.
-            let orders = Type::Con(
-                b.list,
-                vec![Type::Tuple(vec![
-                    Type::Con(b.bool, vec![]),
-                    Type::Con(b.bool, vec![]),
-                    Type::Con(b.text, vec![]),
-                ])],
-            );
-            let fn_ty = Type::Fn {
-                params: vec![
-                    Type::Var(a),
-                    Type::Con(b.text, vec![]),
-                    Type::Con(b.text, vec![]),
-                    Type::Con(b.quote, vec![Type::Var(c)]),
-                    Type::Con(b.quote, vec![Type::Var(w)]),
-                    Type::Con(b.quote, vec![Type::Var(p)]),
-                    orders,
-                    Type::Con(b.int, vec![]),
-                    Type::Con(b.int, vec![]),
-                    Type::Con(b.quote, vec![Type::Var(r)]),
-                ],
-                ret: Box::new(Type::Con(
-                    b.result,
-                    vec![
-                        Type::Con(b.list, vec![map_row()]),
-                        Type::Con(b.error, vec![]),
-                    ],
-                )),
-                caps: CapRow::Concrete(CapabilitySet::PURE),
-            };
-            ctx.env.bind(
-                "leftJoinSelect".to_owned(),
-                Scheme {
-                    vars: vec![a, c, w, p, r],
-                    cap_vars: vec![],
-                    row_vars: vec![],
-                    ty: fn_ty,
-                    constraints: vec![Constraint::single(adapter, a)],
-                },
-            );
-        }
-        // rightJoin :: ∀a c p. a -> Text -> Text -> Quote c -> Quote p
-        //              -> List (Bool, Bool, Text) -> Int -> Int
-        //              -> Result (List (Option (Map Text SqlValue), Map Text SqlValue)) Error
-        //              where Adapter a.
-        // The right-outer mirror of `leftJoin`: each result row keeps the right map
-        // and reports the left as `Some` of its column map when the join matched or
-        // `None` when the right row had no match. The two quotes are phantom — the
-        // seam walks their captured trees.
-        {
-            let a = ctx.fresh_tyvid();
-            let c = ctx.fresh_tyvid();
-            let w = ctx.fresh_tyvid();
-            let p = ctx.fresh_tyvid();
-            let orders = Type::Con(
-                b.list,
-                vec![Type::Tuple(vec![
-                    Type::Con(b.bool, vec![]),
-                    Type::Con(b.bool, vec![]),
-                    Type::Con(b.text, vec![]),
-                ])],
-            );
-            let pair = Type::Tuple(vec![Type::Con(b.option, vec![map_row()]), map_row()]);
-            let fn_ty = Type::Fn {
-                params: vec![
-                    Type::Var(a),
-                    Type::Con(b.text, vec![]),
-                    Type::Con(b.text, vec![]),
-                    Type::Con(b.quote, vec![Type::Var(c)]),
-                    Type::Con(b.quote, vec![Type::Var(w)]),
-                    Type::Con(b.quote, vec![Type::Var(p)]),
-                    orders,
-                    Type::Con(b.int, vec![]),
-                    Type::Con(b.int, vec![]),
-                ],
-                ret: Box::new(Type::Con(
-                    b.result,
-                    vec![Type::Con(b.list, vec![pair]), Type::Con(b.error, vec![])],
-                )),
-                caps: CapRow::Concrete(CapabilitySet::PURE),
-            };
-            ctx.env.bind(
-                "rightJoin".to_owned(),
-                Scheme {
-                    vars: vec![a, c, w, p],
-                    cap_vars: vec![],
-                    row_vars: vec![],
-                    ty: fn_ty,
-                    constraints: vec![Constraint::single(adapter, a)],
-                },
-            );
-        }
-        // rightJoinSelect :: ∀a c p r. a -> Text -> Text -> Quote c -> Quote p
-        //              -> List (Bool, Bool, Text) -> Int -> Int -> Quote r
-        //              -> Result (List (Map Text SqlValue)) Error where Adapter a.
-        // The right-outer form of `joinSelect`: a `RIGHT JOIN` keeps every right row,
-        // the left-side columns coming back NULL where the right row had no match,
-        // decoding to `None` in the projected shape's `Option` fields. The three
-        // quotes are phantom — the seam walks their captured trees.
-        {
-            let a = ctx.fresh_tyvid();
-            let c = ctx.fresh_tyvid();
-            let w = ctx.fresh_tyvid();
-            let p = ctx.fresh_tyvid();
-            let r = ctx.fresh_tyvid();
-            let orders = Type::Con(
-                b.list,
-                vec![Type::Tuple(vec![
-                    Type::Con(b.bool, vec![]),
-                    Type::Con(b.bool, vec![]),
-                    Type::Con(b.text, vec![]),
-                ])],
-            );
-            let fn_ty = Type::Fn {
-                params: vec![
-                    Type::Var(a),
-                    Type::Con(b.text, vec![]),
-                    Type::Con(b.text, vec![]),
-                    Type::Con(b.quote, vec![Type::Var(c)]),
-                    Type::Con(b.quote, vec![Type::Var(w)]),
-                    Type::Con(b.quote, vec![Type::Var(p)]),
-                    orders,
-                    Type::Con(b.int, vec![]),
-                    Type::Con(b.int, vec![]),
-                    Type::Con(b.quote, vec![Type::Var(r)]),
-                ],
-                ret: Box::new(Type::Con(
-                    b.result,
-                    vec![
-                        Type::Con(b.list, vec![map_row()]),
-                        Type::Con(b.error, vec![]),
-                    ],
-                )),
-                caps: CapRow::Concrete(CapabilitySet::PURE),
-            };
-            ctx.env.bind(
-                "rightJoinSelect".to_owned(),
-                Scheme {
-                    vars: vec![a, c, w, p, r],
-                    cap_vars: vec![],
-                    row_vars: vec![],
-                    ty: fn_ty,
-                    constraints: vec![Constraint::single(adapter, a)],
-                },
-            );
-        }
-        // fullJoin :: ∀a c p. a -> Text -> Text -> Quote c -> Quote p
-        //              -> List (Bool, Bool, Text) -> Int -> Int
-        //              -> Result (List (Option (Map Text SqlValue), Option (Map Text SqlValue))) Error
-        //              where Adapter a.
-        // The full-outer join: each result row reports BOTH sides as `Some` of their
-        // column map where they matched and `None` where they did not, so the result
-        // element is a pair of optionals. The two quotes are phantom — the seam walks
-        // their captured trees.
-        {
-            let a = ctx.fresh_tyvid();
-            let c = ctx.fresh_tyvid();
-            let w = ctx.fresh_tyvid();
-            let p = ctx.fresh_tyvid();
-            let orders = Type::Con(
-                b.list,
-                vec![Type::Tuple(vec![
-                    Type::Con(b.bool, vec![]),
-                    Type::Con(b.bool, vec![]),
-                    Type::Con(b.text, vec![]),
-                ])],
-            );
-            let pair = Type::Tuple(vec![
-                Type::Con(b.option, vec![map_row()]),
-                Type::Con(b.option, vec![map_row()]),
-            ]);
-            let fn_ty = Type::Fn {
-                params: vec![
-                    Type::Var(a),
-                    Type::Con(b.text, vec![]),
-                    Type::Con(b.text, vec![]),
-                    Type::Con(b.quote, vec![Type::Var(c)]),
-                    Type::Con(b.quote, vec![Type::Var(w)]),
-                    Type::Con(b.quote, vec![Type::Var(p)]),
-                    orders,
-                    Type::Con(b.int, vec![]),
-                    Type::Con(b.int, vec![]),
-                ],
-                ret: Box::new(Type::Con(
-                    b.result,
-                    vec![Type::Con(b.list, vec![pair]), Type::Con(b.error, vec![])],
-                )),
-                caps: CapRow::Concrete(CapabilitySet::PURE),
-            };
-            ctx.env.bind(
-                "fullJoin".to_owned(),
-                Scheme {
-                    vars: vec![a, c, w, p],
-                    cap_vars: vec![],
-                    row_vars: vec![],
-                    ty: fn_ty,
-                    constraints: vec![Constraint::single(adapter, a)],
-                },
-            );
-        }
-        // fullJoinSelect :: ∀a c p r. a -> Text -> Text -> Quote c -> Quote p
-        //              -> List (Bool, Bool, Text) -> Int -> Int -> Quote r
-        //              -> Result (List (Map Text SqlValue)) Error where Adapter a.
-        // The full-outer form of `joinSelect`: a `FULL JOIN` keeps every row of both
-        // tables, the columns of an unmatched side coming back NULL and decoding to
-        // `None` in the projected shape's `Option` fields. The three quotes are
-        // phantom — the seam walks their captured trees.
-        {
-            let a = ctx.fresh_tyvid();
-            let c = ctx.fresh_tyvid();
-            let w = ctx.fresh_tyvid();
-            let p = ctx.fresh_tyvid();
-            let r = ctx.fresh_tyvid();
-            let orders = Type::Con(
-                b.list,
-                vec![Type::Tuple(vec![
-                    Type::Con(b.bool, vec![]),
-                    Type::Con(b.bool, vec![]),
-                    Type::Con(b.text, vec![]),
-                ])],
-            );
-            let fn_ty = Type::Fn {
-                params: vec![
-                    Type::Var(a),
-                    Type::Con(b.text, vec![]),
-                    Type::Con(b.text, vec![]),
-                    Type::Con(b.quote, vec![Type::Var(c)]),
-                    Type::Con(b.quote, vec![Type::Var(w)]),
-                    Type::Con(b.quote, vec![Type::Var(p)]),
-                    orders,
-                    Type::Con(b.int, vec![]),
-                    Type::Con(b.int, vec![]),
-                    Type::Con(b.quote, vec![Type::Var(r)]),
-                ],
-                ret: Box::new(Type::Con(
-                    b.result,
-                    vec![
-                        Type::Con(b.list, vec![map_row()]),
-                        Type::Con(b.error, vec![]),
-                    ],
-                )),
-                caps: CapRow::Concrete(CapabilitySet::PURE),
-            };
-            ctx.env.bind(
-                "fullJoinSelect".to_owned(),
-                Scheme {
-                    vars: vec![a, c, w, p, r],
-                    cap_vars: vec![],
-                    row_vars: vec![],
-                    ty: fn_ty,
-                    constraints: vec![Constraint::single(adapter, a)],
-                },
-            );
-        }
-        // aggregateJoin :: ∀a c w p. a -> Text -> Text -> Quote c -> Quote w
-        //              -> Quote p -> Text -> Text -> Bool
-        //              -> Result (Option SqlValue) Error where Adapter a.
-        // A scalar aggregate pushed into an inner join: the two table names, the
-        // quoted condition `c`, post-join `where2` `w`, and left-side predicate `p`
-        // (all phantom — the seam walks their captured trees), then the aggregate
-        // keyword, the column it folds, and an `isRight` tag selecting which side's
-        // column the fold reads. The single scalar comes back wrapped in `Some`, or
-        // `None` over an empty join. Ordering and paging do not bound an aggregate,
-        // so there are no `orders`/`lim`/`off` parameters.
-        {
-            let agg_join_fn = |ctx: &mut crate::ctx::InferCtx, name: &str| {
-                let a = ctx.fresh_tyvid();
-                let c = ctx.fresh_tyvid();
-                let w = ctx.fresh_tyvid();
-                let p = ctx.fresh_tyvid();
-                let fn_ty = Type::Fn {
-                    params: vec![
-                        Type::Var(a),
-                        Type::Con(b.text, vec![]),
-                        Type::Con(b.text, vec![]),
-                        Type::Con(b.quote, vec![Type::Var(c)]),
-                        Type::Con(b.quote, vec![Type::Var(w)]),
-                        Type::Con(b.quote, vec![Type::Var(p)]),
-                        Type::Con(b.text, vec![]),
-                        Type::Con(b.text, vec![]),
-                        Type::Con(b.bool, vec![]),
-                    ],
-                    ret: Box::new(Type::Con(
-                        b.result,
-                        vec![
-                            Type::Con(b.option, vec![Type::Con(sql_value, vec![])]),
-                            Type::Con(b.error, vec![]),
-                        ],
-                    )),
-                    caps: CapRow::Concrete(CapabilitySet::PURE),
-                };
-                ctx.env.bind(
-                    name.to_owned(),
-                    Scheme {
-                        vars: vec![a, c, w, p],
-                        cap_vars: vec![],
-                        row_vars: vec![],
-                        ty: fn_ty,
-                        constraints: vec![Constraint::single(adapter, a)],
-                    },
-                );
-            };
-            // The inner, left-, right-, and full-outer forms share the scheme exactly;
-            // only the body differs (the join kind, keeping the unmatched rows of the
-            // preserved side(s)).
-            agg_join_fn(ctx, "aggregateJoin");
-            agg_join_fn(ctx, "aggregateLeftJoin");
-            agg_join_fn(ctx, "aggregateRightJoin");
-            agg_join_fn(ctx, "aggregateFullJoin");
         }
     }
 }

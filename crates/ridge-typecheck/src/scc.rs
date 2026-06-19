@@ -36,7 +36,7 @@
 //! We detect this post-generalisation by scanning the final types and checking
 //! for residual free vars.
 
-use ridge_ast::{Body, Expr, FnDecl, Param, Span};
+use ridge_ast::{Body, Expr, FnDecl, Item, Param, Span};
 use ridge_resolve::NodeKind;
 use ridge_types::{
     BuiltinTyCons, CapRow, CapVid, CapabilitySet, Constraint, RowVid, Scheme, TyVid, Type,
@@ -44,10 +44,12 @@ use ridge_types::{
 use rustc_hash::{FxHashMap, FxHashSet};
 
 use crate::caps_check::caps_from_ast_slice;
+use crate::class_env::{ClassTable, InstanceEnv};
 use crate::ctx::InferCtx;
 use crate::error::TypeError;
 use crate::infer::{infer_expr, infer_pattern};
 use crate::instantiate::{collect_free_vars, generalise_with_env, monoscheme};
+use crate::solve::solve_constraints;
 use crate::tycon_collect::ast_type_to_ridge_type;
 use crate::unify::unify;
 
@@ -573,9 +575,11 @@ pub fn typecheck_module_decls(
                         .get(&did)
                         .copied()
                         .unwrap_or_else(|| Span::point(0));
+                    let expected_ty = ctx.deep_resolve(ret_ty_box);
+                    let found_ty = ctx.deep_resolve(&body_ty);
                     ctx.errors.push(TypeError::TypeMismatch {
-                        expected: format!("{ret_ty_box:?}"),
-                        found: format!("{body_ty:?}"),
+                        expected: crate::render::render_type_with(&expected_ty, &ctx.tycon_decls),
+                        found: crate::render::render_type_with(&found_ty, &ctx.tycon_decls),
                         span,
                     });
                 }
@@ -653,6 +657,199 @@ pub fn typecheck_module_decls(
     detect_unsolved_type_vars(ctx);
 }
 
+/// Type-check the bodies of every source `instance` declaration's methods.
+///
+/// Instance method bodies are otherwise never inferred (only `Item::Fn` decls
+/// go through [`typecheck_module_decls`]), so `node_types` carry nothing for the
+/// expressions inside them and the lowering can only forward dictionaries by
+/// positional order. That collapses two same-class constraints (`Row e, Row f`)
+/// onto one entity whenever the body makes two separate single-dictionary calls
+/// (a binary outer join's `rowColumns` on the left and the right entity).
+///
+/// This pass mirrors the per-fn inference of [`typecheck_module_decls`] steps
+/// (a)/(b): one shared [`TyVid`] per instance head/`where` variable (so the head
+/// variables the body references are the same variables the `where` constraints
+/// name), the method params and return resolved against that map, the body
+/// inferred and unified with the declared return. The inferred types are written
+/// to `node_types`, which flow to the lowering unchanged.
+///
+/// Returns, per parametric instance (keyed by the `InstanceDecl` span), the
+/// `where`-clause constraints paired with each constraint's head-variable real
+/// `TyVid`, in source order — the lowering builds `current_fn_constraints` from
+/// this so a class-method call's variable selects the matching dictionary. The
+/// returned `TyVid`s are deep-resolved, matching the resolution applied to
+/// `node_types`, so a body variable read from `node_types` compares equal.
+///
+/// Derived and prelude instances are not source `InstanceDecl`s and are left
+/// untouched. With `record_errors` false the bodies are inferred for their
+/// node-type side effects only; diagnostics they raise are discarded (the staged
+/// rollout populates `node_types` before it changes which programs are rejected).
+#[must_use]
+#[expect(
+    clippy::too_many_lines,
+    reason = "one linear pass mirroring the per-fn SCC inference; splitting the method loop would obscure the shared tyvar-map setup"
+)]
+pub fn infer_instance_methods(
+    ctx: &mut InferCtx,
+    b: &BuiltinTyCons,
+    ast: &ridge_ast::Module,
+    class_table: &ClassTable,
+    instance_env: &InstanceEnv,
+    record_errors: bool,
+) -> FxHashMap<Span, Vec<TyVid>> {
+    let mut recorded: FxHashMap<Span, Vec<TyVid>> = FxHashMap::default();
+    let err_snapshot = ctx.errors.len();
+    // Instance bodies own their deferred constraints; restore the module list after.
+    let saved_deferred = std::mem::take(&mut ctx.deferred_constraints);
+
+    for item in &ast.items {
+        let Item::InstanceDecl(decl) = item else {
+            continue;
+        };
+
+        // One shared TyVid per head/`where` type variable, allocated before any
+        // body so a head variable reads the same way in the receiver type, the
+        // method bodies, and the recorded `where` constraints.
+        let mut tyvar_map: FxHashMap<&str, TyVid> = FxHashMap::default();
+        for atom in &decl.head {
+            collect_tyvars_from_ast_type(atom, &mut tyvar_map, ctx);
+        }
+        for c in &decl.constraints {
+            for tv in &c.ty_vars {
+                tyvar_map
+                    .entry(tv.text.as_str())
+                    .or_insert_with(|| ctx.fresh_tyvid());
+            }
+        }
+
+        // The real head-variable TyVid of each `where` constraint's first
+        // variable, one entry per constraint in source order so the index aligns
+        // with `decl.constraints` in the lowering. The sentinel `TyVid(i)` is the
+        // fallback (matching the lowering's positional default) for a variable
+        // not found in the head — which a well-formed parametric instance never
+        // hits, but keeps the index alignment exact.
+        #[allow(clippy::cast_possible_truncation)]
+        let head_vars: Vec<TyVid> = decl
+            .constraints
+            .iter()
+            .enumerate()
+            .map(|(i, c)| {
+                c.ty_vars
+                    .first()
+                    .and_then(|tv| tyvar_map.get(tv.text.as_str()).copied())
+                    .unwrap_or(TyVid(i as u32))
+            })
+            .collect();
+
+        // The free variables in scope before this instance's own variables, so
+        // the solver treats a class-method call on a head variable as a forward
+        // rather than an unsatisfiable concrete requirement.
+        let env_snap_ty = ctx.env_free_tyvids();
+
+        for method in &decl.methods {
+            // Method-local variables (only in this method's signature) extend the
+            // shared head/`where` map.
+            let mut method_map = tyvar_map.clone();
+            for p in &method.params {
+                if let Param::Annotated { ty, .. } | Param::PatternAnnotated { ty, .. } = p {
+                    collect_tyvars_from_ast_type(ty, &mut method_map, ctx);
+                }
+            }
+            collect_tyvars_from_ast_type(&method.ret, &mut method_map, ctx);
+
+            let user_tycon_names = ctx.user_tycon_names.clone();
+            let param_types: Vec<Type> = method
+                .params
+                .iter()
+                .map(|p| match p {
+                    Param::Bare(_) => Type::Var(ctx.fresh_tyvid()),
+                    Param::Annotated { ty, .. } | Param::PatternAnnotated { ty, .. } => {
+                        ast_type_to_ridge_type(b, ctx, ty, &user_tycon_names, &method_map)
+                    }
+                })
+                .collect();
+            let ret_ty =
+                ast_type_to_ridge_type(b, ctx, &method.ret, &user_tycon_names, &method_map);
+
+            ctx.env.push_frame();
+            let saved_ret = ctx.current_fn_ret.take();
+            ctx.current_fn_ret = Some(ret_ty.clone());
+
+            for (param, ty) in method.params.iter().zip(param_types.iter()) {
+                match param {
+                    Param::Bare(id) => {
+                        ctx.env.bind(id.text.clone(), monoscheme(ty.clone()));
+                    }
+                    Param::Annotated { name, .. } => {
+                        ctx.env.bind(name.text.clone(), monoscheme(ty.clone()));
+                    }
+                    Param::PatternAnnotated { pat, span, .. } => {
+                        infer_pattern(ctx, b, pat, ty);
+                        crate::exhaustiveness::check_param_irrefutable(ctx, b, pat, ty, *span);
+                    }
+                }
+            }
+
+            let body_ty = infer_expr(ctx, b, &method.body);
+            if unify(ctx, &body_ty, &ret_ty).is_err() {
+                let expected_ty = ctx.deep_resolve(&ret_ty);
+                let found_ty = ctx.deep_resolve(&body_ty);
+                ctx.errors.push(TypeError::TypeMismatch {
+                    expected: crate::render::render_type_with(&expected_ty, &ctx.tycon_decls),
+                    found: crate::render::render_type_with(&found_ty, &ctx.tycon_decls),
+                    span: method.span,
+                });
+            }
+
+            ctx.current_fn_ret = saved_ret;
+            ctx.env.pop_frame();
+        }
+
+        // Drain the bodies' deferred constraints. The dictionary plan is unused
+        // (the lowering forwards via `current_fn_constraints`); this resolves the
+        // body unifications so the recorded variables and `node_types` agree.
+        let _ = solve_constraints(
+            ctx,
+            instance_env,
+            class_table,
+            &env_snap_ty,
+            decl.span,
+            Some(b),
+        );
+
+        if !head_vars.is_empty() {
+            recorded.insert(decl.span, head_vars);
+        }
+    }
+
+    // Deep-resolve the recorded variables against the now-complete union-find,
+    // matching the resolution `node_types` receives at module end.
+    for vars in recorded.values_mut() {
+        for tyvid in vars.iter_mut() {
+            if let Type::Var(rep) = ctx.deep_resolve(&Type::Var(*tyvid)) {
+                *tyvid = rep;
+            }
+        }
+    }
+
+    ctx.deferred_constraints = saved_deferred;
+
+    if !record_errors {
+        // The bodies are inferred for their node-type side effects only. Some
+        // stdlib instances trip the source-vs-builtin `SqlValue` split that exists
+        // only during the standard library's own build (two distinct `SqlValue`
+        // tycons), which the seeded class-method schemes reconcile for ordinary
+        // functions but not yet for instance bodies. Those diagnostics are not
+        // real — user builds carry a single `SqlValue` — so discard everything
+        // raised here until that reconciliation is extended (then flip to true to
+        // gain compile-time checking of instance bodies). A failed body-vs-return
+        // unify binds nothing, so it leaves the sub-expression node_types intact.
+        ctx.errors.truncate(err_snapshot);
+    }
+
+    recorded
+}
+
 /// Collect all lower-case type variable names from an AST type annotation.
 ///
 /// Used by the SCC step (a) to pre-allocate `TyVid`s for all type variables
@@ -677,6 +874,17 @@ fn collect_tyvars_from_ast_type<'a>(
             if is_tyvar {
                 map.entry(n).or_insert_with(|| ctx.fresh_tyvid());
             }
+        }
+        // A type variable that the parser/resolver already tagged as `Var` (rather
+        // than the lowercase-`Named` heuristic above). `ast_type_to_ridge_type`
+        // resolves both forms through this same map, so both must seed it —
+        // otherwise the two halves of a signature that share a variable only in
+        // `Var` form (e.g. `entityWitness (_r: Repo e a) -> Option e`, whose body
+        // ignores the parameter so nothing else links them) each allocate a fresh
+        // variable and the return type decouples from the parameter.
+        ridge_ast::Type::Var { name, .. } => {
+            map.entry(name.text.as_str())
+                .or_insert_with(|| ctx.fresh_tyvid());
         }
         ridge_ast::Type::App { args, .. } => {
             for a in args {

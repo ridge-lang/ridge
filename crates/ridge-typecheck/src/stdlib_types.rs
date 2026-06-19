@@ -274,7 +274,10 @@ fn reconciled_decls(b: &BuiltinTyCons, base: u32) -> Vec<TyConDecl> {
                     },
                     RecordField {
                         name: "plan".to_string(),
-                        ty: Type::Con(b.option, vec![Type::Con(b.q_expr, vec![])]),
+                        // `Option QueryPlan` — the captured set-operation plan, a
+                        // typed `QueryPlan` (TyConId base + 15) declared in
+                        // query.ridge, `None` for a plain single-table query.
+                        ty: Type::Con(b.option, vec![Type::Con(TyConId(base + 15), vec![])]),
                     },
                 ],
             )),
@@ -283,69 +286,38 @@ fn reconciled_decls(b: &BuiltinTyCons, base: u32) -> Vec<TyConDecl> {
             opaque: true,
             is_anon: false,
         },
-        // `std.repo` — a join under construction. A generic opaque record declared
-        // in Ridge (stdlib/repo.ridge): the left query, the right repository, and
-        // the quoted join condition over both entities. The entity `e` (param 0)
-        // is the left side, `f` (param 1) the right, and `a` (param 2) the shared
-        // adapter. Opaque, so user code only threads it from `joinOn` into a
-        // terminal (`toList`/`select`). Field order mirrors the source.
+        // `std.repo` — a transparent alias for the 2-table inner join.
+        // `pub type Join e f a = Joined (Query e a) f a`
+        //
+        // The alias keeps the slot at base + 6 so no downstream offset shifts.
+        // Type-checking resolves `Join e f a` to `Joined (Query e a) f a` via
+        // shallow_resolve, so the existing `Joined`-family class instances cover
+        // the 2-table case without any separate verb implementations.
         TyConDecl {
             id: TyConId(base + 6),
             name: "Join".to_string(),
             arity: 3,
-            kind: TyConKind::Record(RecordSchema::new(
-                vec![TyVid(0), TyVid(1), TyVid(2)],
-                vec![
-                    RecordField {
-                        name: "left".to_string(),
-                        ty: Type::Con(
-                            TyConId(base + 5),
-                            vec![Type::Var(TyVid(0)), Type::Var(TyVid(2))],
+            kind: TyConKind::Alias {
+                params: vec![TyVid(0), TyVid(1), TyVid(2)],
+                // body = Joined (Query e a) f a
+                //   = TyConId(base + 16) applied to [Query e a, f, a]
+                //   = TyConId(base + 16) [ TyConId(base+5) [TyVid(0), TyVid(2)],
+                //                          TyVid(1), TyVid(2) ]
+                body: Type::Con(
+                    TyConId(base + 16), // Joined
+                    vec![
+                        Type::Con(
+                            TyConId(base + 5),                              // Query
+                            vec![Type::Var(TyVid(0)), Type::Var(TyVid(2))], // Query e a
                         ),
-                    },
-                    RecordField {
-                        name: "right".to_string(),
-                        ty: Type::Con(
-                            TyConId(base + 2),
-                            vec![Type::Var(TyVid(1)), Type::Var(TyVid(2))],
-                        ),
-                    },
-                    // The join condition is stored as a captured tree over two
-                    // row maps — the same row-map form `Query.pred` uses, not the
-                    // entity form the user-facing `joinOn` scheme presents. The
-                    // value is a `QExpr` either way; this is the field's static
-                    // type, which must mirror the source repo.ridge declaration.
-                    RecordField {
-                        name: "cond".to_string(),
-                        ty: Type::Con(
-                            b.quote,
-                            vec![Type::Fn {
-                                params: vec![
-                                    Type::Con(
-                                        b.map,
-                                        vec![
-                                            Type::Con(b.text, vec![]),
-                                            Type::Con(b.sql_value, vec![]),
-                                        ],
-                                    ),
-                                    Type::Con(
-                                        b.map,
-                                        vec![
-                                            Type::Con(b.text, vec![]),
-                                            Type::Con(b.sql_value, vec![]),
-                                        ],
-                                    ),
-                                ],
-                                ret: Box::new(Type::Con(b.bool, vec![])),
-                                caps: CapRow::Concrete(CapabilitySet::PURE),
-                            }],
-                        ),
-                    },
-                ],
-            )),
+                        Type::Var(TyVid(1)), // f
+                        Type::Var(TyVid(2)), // a
+                    ],
+                ),
+            },
             def_span: None,
             def_module_raw: None,
-            opaque: true,
+            opaque: false,
             is_anon: false,
         },
         // `std.repo` — a left (outer) join under construction. Structurally a copy
@@ -718,6 +690,386 @@ fn reconciled_decls(b: &BuiltinTyCons, base: u32) -> Vec<TyConDecl> {
             opaque: true,
             is_anon: false,
         },
+        // `std.query` — a captured query plan, the dual at the plan layer of what
+        // `QExpr` is at the predicate layer. A plain (non-opaque) union declared in
+        // Ridge (stdlib/query.ridge): a `PlanScan` single-table read, a `PlanCombine`
+        // set operation over two plans, or a `PlanRefine` wrapping an outer filter/
+        // order/page/distinct on a plan. The set-operation terminals build one through
+        // the `planScan`/`planCombine`/`planRefine` factories and hand it to a
+        // backend's `runPlan`. Variant order mirrors the source.
+        TyConDecl {
+            id: TyConId(base + 15),
+            name: "QueryPlan".to_string(),
+            arity: 0,
+            kind: TyConKind::Union(UnionSchema {
+                params: vec![],
+                variants: vec![
+                    UnionVariant {
+                        name: "PlanScan".to_string(),
+                        kind: VariantPayload::Positional(vec![
+                            Type::Con(b.text, vec![]),
+                            Type::Con(b.q_expr, vec![]),
+                            Type::Con(
+                                b.list,
+                                vec![Type::Tuple(vec![
+                                    Type::Con(b.bool, vec![]),
+                                    Type::Con(b.text, vec![]),
+                                ])],
+                            ),
+                            Type::Con(b.int, vec![]),
+                            Type::Con(b.int, vec![]),
+                            Type::Con(b.bool, vec![]),
+                        ]),
+                    },
+                    UnionVariant {
+                        name: "PlanCombine".to_string(),
+                        kind: VariantPayload::Positional(vec![
+                            Type::Con(b.text, vec![]),
+                            Type::Con(TyConId(base + 15), vec![]),
+                            Type::Con(TyConId(base + 15), vec![]),
+                        ]),
+                    },
+                    UnionVariant {
+                        name: "PlanRefine".to_string(),
+                        kind: VariantPayload::Positional(vec![
+                            Type::Con(TyConId(base + 15), vec![]),
+                            Type::Con(b.q_expr, vec![]),
+                            Type::Con(
+                                b.list,
+                                vec![Type::Tuple(vec![
+                                    Type::Con(b.bool, vec![]),
+                                    Type::Con(b.text, vec![]),
+                                ])],
+                            ),
+                            Type::Con(b.int, vec![]),
+                            Type::Con(b.int, vec![]),
+                            Type::Con(b.bool, vec![]),
+                        ]),
+                    },
+                    // `PlanJoin kind left right cond where2 orders lim off dist leftCols
+                    // rightCols` — two sub-plans paired on a join. `orders` is the
+                    // leaf-tagged `(ascending?, leaf, column)` ordering keys;
+                    // `leftCols`/`rightCols` are each source entity's column names (from
+                    // `Row.rowColumns`), spelled into the renderer's prefixed select list
+                    // and ignored by the in-memory backend.
+                    UnionVariant {
+                        name: "PlanJoin".to_string(),
+                        kind: VariantPayload::Positional(vec![
+                            Type::Con(b.text, vec![]),
+                            Type::Con(TyConId(base + 15), vec![]),
+                            Type::Con(TyConId(base + 15), vec![]),
+                            Type::Con(b.q_expr, vec![]),
+                            Type::Con(b.q_expr, vec![]),
+                            Type::Con(
+                                b.list,
+                                vec![Type::Tuple(vec![
+                                    Type::Con(b.bool, vec![]),
+                                    Type::Con(b.int, vec![]),
+                                    Type::Con(b.text, vec![]),
+                                ])],
+                            ),
+                            Type::Con(b.int, vec![]),
+                            Type::Con(b.int, vec![]),
+                            Type::Con(b.bool, vec![]),
+                            Type::Con(b.list, vec![Type::Con(b.text, vec![])]),
+                            Type::Con(b.list, vec![Type::Con(b.text, vec![])]),
+                        ]),
+                    },
+                    // `PlanProject proj child lim off dist` — project a sub-plan's rows
+                    // through the projection tree (a `QProj`) into rows keyed by its
+                    // output aliases, then de-duplicate and page. Wraps a `PlanJoin`.
+                    UnionVariant {
+                        name: "PlanProject".to_string(),
+                        kind: VariantPayload::Positional(vec![
+                            Type::Con(b.q_expr, vec![]),
+                            Type::Con(TyConId(base + 15), vec![]),
+                            Type::Con(b.int, vec![]),
+                            Type::Con(b.int, vec![]),
+                            Type::Con(b.bool, vec![]),
+                        ]),
+                    },
+                    // `PlanAggregate func column isRight child` — reduce a sub-plan to a
+                    // single scalar (`COUNT`/`SUM`/`AVG`/`MIN`/`MAX` of `column`, on the
+                    // join side `isRight` selects). Yields one row carrying the scalar,
+                    // or none when the aggregate is SQL NULL.
+                    UnionVariant {
+                        name: "PlanAggregate".to_string(),
+                        kind: VariantPayload::Positional(vec![
+                            Type::Con(b.text, vec![]),
+                            Type::Con(b.text, vec![]),
+                            Type::Con(b.bool, vec![]),
+                            Type::Con(TyConId(base + 15), vec![]),
+                        ]),
+                    },
+                    // `PlanGroup keyCol keyLeaf cols having child` — group a sub-plan's
+                    // rows by `keyCol` (on leaf `keyLeaf`), summarise each group into the
+                    // `(alias, func, column, leaf)` aggregate columns, keep the groups
+                    // `having` admits. One row per group. Wraps a `PlanJoin`.
+                    UnionVariant {
+                        name: "PlanGroup".to_string(),
+                        kind: VariantPayload::Positional(vec![
+                            Type::Con(b.text, vec![]),
+                            Type::Con(b.int, vec![]),
+                            Type::Con(
+                                b.list,
+                                vec![Type::Tuple(vec![
+                                    Type::Con(b.text, vec![]),
+                                    Type::Con(b.text, vec![]),
+                                    Type::Con(b.text, vec![]),
+                                    Type::Con(b.int, vec![]),
+                                ])],
+                            ),
+                            Type::Con(b.q_expr, vec![]),
+                            Type::Con(TyConId(base + 15), vec![]),
+                        ]),
+                    },
+                    // `PlanExists child` — wrap a sub-plan in an existence probe, asking
+                    // only whether it yields any row. Compiles to `SELECT 1 FROM … LIMIT
+                    // 1`; the backend answers one trivial row or none.
+                    UnionVariant {
+                        name: "PlanExists".to_string(),
+                        kind: VariantPayload::Positional(vec![Type::Con(
+                            TyConId(base + 15),
+                            vec![],
+                        )]),
+                    },
+                ],
+            }),
+            def_span: None,
+            def_module_raw: None,
+            opaque: false,
+            is_anon: false,
+        },
+        // `std.repo` — a nested inner join of three or more tables, declared in
+        // Ridge (stdlib/repo.ridge). The left side `source` is itself a join (a
+        // binary `Join` or another `Joined`), `f` the newly joined entity, `a` the
+        // shared adapter. Opaque, so user code only threads it from `joinOn` into a
+        // terminal (`toList`/`first`). Interned after `QueryPlan` so every existing
+        // reconciled offset is unchanged.
+        TyConDecl {
+            id: TyConId(base + 16),
+            name: "Joined".to_string(),
+            arity: 3,
+            kind: TyConKind::Record(RecordSchema::new(
+                vec![TyVid(0), TyVid(1), TyVid(2)],
+                vec![
+                    RecordField {
+                        name: "source".to_string(),
+                        ty: Type::Var(TyVid(0)),
+                    },
+                    RecordField {
+                        name: "right".to_string(),
+                        ty: Type::Con(
+                            TyConId(base + 2),
+                            vec![Type::Var(TyVid(1)), Type::Var(TyVid(2))],
+                        ),
+                    },
+                    // Same captured-tree-over-two-row-maps form `Join.cond` uses,
+                    // mirroring the source field; the entity view the user-facing
+                    // `joinOn` presents is the `JoinCond` projection, reconciled
+                    // separately.
+                    RecordField {
+                        name: "cond".to_string(),
+                        ty: Type::Con(
+                            b.quote,
+                            vec![Type::Fn {
+                                params: vec![
+                                    Type::Con(
+                                        b.map,
+                                        vec![
+                                            Type::Con(b.text, vec![]),
+                                            Type::Con(b.sql_value, vec![]),
+                                        ],
+                                    ),
+                                    Type::Con(
+                                        b.map,
+                                        vec![
+                                            Type::Con(b.text, vec![]),
+                                            Type::Con(b.sql_value, vec![]),
+                                        ],
+                                    ),
+                                ],
+                                ret: Box::new(Type::Con(b.bool, vec![])),
+                                caps: CapRow::Concrete(CapabilitySet::PURE),
+                            }],
+                        ),
+                    },
+                ],
+            )),
+            def_span: None,
+            def_module_raw: None,
+            opaque: true,
+            is_anon: false,
+        },
+        // `std.repo` — a nested LEFT outer join of three or more tables, declared in
+        // Ridge (stdlib/repo.ridge). The same shape as `Joined`: the left `source` is
+        // a composite, `f` the newly left-joined entity (read optional in the result),
+        // `a` the shared adapter. Opaque; threaded from `leftJoinOn` into a terminal.
+        // Interned after `Joined` so every existing reconciled offset is unchanged.
+        TyConDecl {
+            id: TyConId(base + 17),
+            name: "LeftJoined".to_string(),
+            arity: 3,
+            kind: TyConKind::Record(RecordSchema::new(
+                vec![TyVid(0), TyVid(1), TyVid(2)],
+                vec![
+                    RecordField {
+                        name: "source".to_string(),
+                        ty: Type::Var(TyVid(0)),
+                    },
+                    RecordField {
+                        name: "right".to_string(),
+                        ty: Type::Con(
+                            TyConId(base + 2),
+                            vec![Type::Var(TyVid(1)), Type::Var(TyVid(2))],
+                        ),
+                    },
+                    RecordField {
+                        name: "cond".to_string(),
+                        ty: Type::Con(
+                            b.quote,
+                            vec![Type::Fn {
+                                params: vec![
+                                    Type::Con(
+                                        b.map,
+                                        vec![
+                                            Type::Con(b.text, vec![]),
+                                            Type::Con(b.sql_value, vec![]),
+                                        ],
+                                    ),
+                                    Type::Con(
+                                        b.map,
+                                        vec![
+                                            Type::Con(b.text, vec![]),
+                                            Type::Con(b.sql_value, vec![]),
+                                        ],
+                                    ),
+                                ],
+                                ret: Box::new(Type::Con(b.bool, vec![])),
+                                caps: CapRow::Concrete(CapabilitySet::PURE),
+                            }],
+                        ),
+                    },
+                ],
+            )),
+            def_span: None,
+            def_module_raw: None,
+            opaque: true,
+            is_anon: false,
+        },
+        // `std.repo` — a nested RIGHT outer join of three or more tables. The same
+        // shape as `LeftJoined`: `source` the composite, `f` the new table (always
+        // present), `a` the adapter — but the terminal keeps every new row and reads
+        // the whole composite as `Option`. Opaque; threaded from `rightJoinOn` into a
+        // terminal. Interned after `LeftJoined` so existing offsets are unchanged.
+        TyConDecl {
+            id: TyConId(base + 18),
+            name: "RightJoined".to_string(),
+            arity: 3,
+            kind: TyConKind::Record(RecordSchema::new(
+                vec![TyVid(0), TyVid(1), TyVid(2)],
+                vec![
+                    RecordField {
+                        name: "source".to_string(),
+                        ty: Type::Var(TyVid(0)),
+                    },
+                    RecordField {
+                        name: "right".to_string(),
+                        ty: Type::Con(
+                            TyConId(base + 2),
+                            vec![Type::Var(TyVid(1)), Type::Var(TyVid(2))],
+                        ),
+                    },
+                    RecordField {
+                        name: "cond".to_string(),
+                        ty: Type::Con(
+                            b.quote,
+                            vec![Type::Fn {
+                                params: vec![
+                                    Type::Con(
+                                        b.map,
+                                        vec![
+                                            Type::Con(b.text, vec![]),
+                                            Type::Con(b.sql_value, vec![]),
+                                        ],
+                                    ),
+                                    Type::Con(
+                                        b.map,
+                                        vec![
+                                            Type::Con(b.text, vec![]),
+                                            Type::Con(b.sql_value, vec![]),
+                                        ],
+                                    ),
+                                ],
+                                ret: Box::new(Type::Con(b.bool, vec![])),
+                                caps: CapRow::Concrete(CapabilitySet::PURE),
+                            }],
+                        ),
+                    },
+                ],
+            )),
+            def_span: None,
+            def_module_raw: None,
+            opaque: true,
+            is_anon: false,
+        },
+        // `std.repo` — a nested FULL outer join of three or more tables. The same
+        // shape as `Left`/`RightJoined`: `source` the composite, `f` the new table,
+        // `a` the adapter — but the terminal keeps every row of both sides, reading
+        // the composite (as a unit) and the new table each as `Option`. Opaque;
+        // threaded from `fullJoinOn` into a terminal. Interned after `RightJoined` so
+        // existing offsets are unchanged.
+        TyConDecl {
+            id: TyConId(base + 19),
+            name: "FullJoined".to_string(),
+            arity: 3,
+            kind: TyConKind::Record(RecordSchema::new(
+                vec![TyVid(0), TyVid(1), TyVid(2)],
+                vec![
+                    RecordField {
+                        name: "source".to_string(),
+                        ty: Type::Var(TyVid(0)),
+                    },
+                    RecordField {
+                        name: "right".to_string(),
+                        ty: Type::Con(
+                            TyConId(base + 2),
+                            vec![Type::Var(TyVid(1)), Type::Var(TyVid(2))],
+                        ),
+                    },
+                    RecordField {
+                        name: "cond".to_string(),
+                        ty: Type::Con(
+                            b.quote,
+                            vec![Type::Fn {
+                                params: vec![
+                                    Type::Con(
+                                        b.map,
+                                        vec![
+                                            Type::Con(b.text, vec![]),
+                                            Type::Con(b.sql_value, vec![]),
+                                        ],
+                                    ),
+                                    Type::Con(
+                                        b.map,
+                                        vec![
+                                            Type::Con(b.text, vec![]),
+                                            Type::Con(b.sql_value, vec![]),
+                                        ],
+                                    ),
+                                ],
+                                ret: Box::new(Type::Con(b.bool, vec![])),
+                                caps: CapRow::Concrete(CapabilitySet::PURE),
+                            }],
+                        ),
+                    },
+                ],
+            )),
+            def_span: None,
+            def_module_raw: None,
+            opaque: true,
+            is_anon: false,
+        },
     ]
 }
 
@@ -868,9 +1220,113 @@ pub(crate) fn reconciled_fn_scheme(
                 constraints: vec![],
             })
         }
+        // std.query `planScan`/`planCombine`/`planRefine`/`planJoin` — the `QueryPlan`
+        // factories.
+        (
+            "std.query",
+            "planScan" | "planCombine" | "planRefine" | "planJoin" | "planProject"
+            | "planAggregate" | "planGroup" | "planToSql" | "optimize" | "planExists",
+        ) => reconciled_query_plan_fn_scheme(name, reconciled, b),
         ("std.repo", _) => reconciled_repo_fn_scheme(name, reconciled, b, classes?),
         ("std.migrate", _) => reconciled_migrate_fn_scheme(name, reconciled, b, classes?),
         ("std.raw", _) => reconciled_raw_fn_scheme(name, b, classes?),
+        _ => None,
+    }
+}
+
+/// The `std.query` plan-builder slice of [`reconciled_fn_scheme`]: `planScan`/
+/// `planCombine`/`planRefine`/`planJoin`/`planProject`/`planAggregate`/`planGroup`, the
+/// factories that build a `QueryPlan` node. Each is pure and returns the reconciled
+/// `QueryPlan`, so none is expressible in the hand-curated signature table.
+fn reconciled_query_plan_fn_scheme(
+    name: &str,
+    reconciled: &FxHashMap<String, TyConId>,
+    b: &BuiltinTyCons,
+) -> Option<Scheme> {
+    let query_plan = *reconciled.get("QueryPlan")?;
+    let plan = || Type::Con(query_plan, vec![]);
+    let text = || Type::Con(b.text, vec![]);
+    let int = || Type::Con(b.int, vec![]);
+    let bool_ = || Type::Con(b.bool, vec![]);
+    let qexpr = || Type::Con(b.q_expr, vec![]);
+    // The ordering keys: `List (Bool, Text)` — the (ascending?, column) pairs.
+    let orders = || Type::Con(b.list, vec![Type::Tuple(vec![bool_(), text()])]);
+    // The leaf-tagged join ordering keys: `List (Bool, Int, Text)` — the
+    // (ascending?, leaf, column) triples.
+    let join_orders = || Type::Con(b.list, vec![Type::Tuple(vec![bool_(), int(), text()])]);
+    // A `List Text` — a join's per-source column names (`leftCols`/`rightCols`).
+    let text_list = || Type::Con(b.list, vec![text()]);
+    // The grouped-aggregate columns: `List (Text, Text, Text, Int)` — the
+    // (alias, func, column, leaf) quadruples a `GROUP BY` summary projects, the leaf
+    // index naming which join leaf each aggregate folds.
+    let group_cols = || {
+        Type::Con(
+            b.list,
+            vec![Type::Tuple(vec![text(), text(), text(), int()])],
+        )
+    };
+    let pure = |params: Vec<Type>| Scheme {
+        vars: vec![],
+        cap_vars: vec![],
+        row_vars: vec![],
+        ty: Type::Fn {
+            params,
+            ret: Box::new(plan()),
+            caps: CapRow::Concrete(CapabilitySet::PURE),
+        },
+        constraints: vec![],
+    };
+    match name {
+        // planScan : Text -> QExpr -> List (Bool, Text) -> Int -> Int -> Bool -> QueryPlan
+        "planScan" => Some(pure(vec![text(), qexpr(), orders(), int(), int(), bool_()])),
+        // planCombine : Text -> QueryPlan -> QueryPlan -> QueryPlan
+        "planCombine" => Some(pure(vec![text(), plan(), plan()])),
+        // planRefine : QueryPlan -> QExpr -> List (Bool, Text) -> Int -> Int -> Bool -> QueryPlan
+        "planRefine" => Some(pure(vec![plan(), qexpr(), orders(), int(), int(), bool_()])),
+        // planJoin : Text -> QueryPlan -> QueryPlan -> QExpr -> QExpr ->
+        //            List (Bool, Int, Text) -> Int -> Int -> Bool ->
+        //            List Text -> List Text -> QueryPlan
+        "planJoin" => Some(pure(vec![
+            text(),
+            plan(),
+            plan(),
+            qexpr(),
+            qexpr(),
+            join_orders(),
+            int(),
+            int(),
+            bool_(),
+            text_list(),
+            text_list(),
+        ])),
+        // planProject : QExpr -> QueryPlan -> Int -> Int -> Bool -> QueryPlan
+        "planProject" => Some(pure(vec![qexpr(), plan(), int(), int(), bool_()])),
+        // planAggregate : Text -> Text -> Int -> QueryPlan -> QueryPlan
+        "planAggregate" => Some(pure(vec![text(), text(), int(), plan()])),
+        // planGroup : Text -> Int -> List (Text, Text, Text, Int) -> QExpr ->
+        //             QueryPlan -> QueryPlan
+        "planGroup" => Some(pure(vec![text(), int(), group_cols(), qexpr(), plan()])),
+        // QueryPlan -> QueryPlan, both: `optimize` is the renderer's plan-to-plan pre-pass,
+        // `planExists` the existence-probe wrapper an `exists` terminal builds.
+        "optimize" | "planExists" => Some(pure(vec![plan()])),
+        // planToSql : QueryPlan -> (Sql, List SqlValue) — the renderer, lowering a
+        // whole plan to one parameterized statement plus its ordered bind values.
+        // Unlike the builders it does not return a `QueryPlan`, so its scheme is
+        // spelled out rather than built through `pure`.
+        "planToSql" => Some(Scheme {
+            vars: vec![],
+            cap_vars: vec![],
+            row_vars: vec![],
+            ty: Type::Fn {
+                params: vec![plan()],
+                ret: Box::new(Type::Tuple(vec![
+                    Type::Con(b.sql, vec![]),
+                    Type::Con(b.list, vec![Type::Con(b.sql_value, vec![])]),
+                ])),
+                caps: CapRow::Concrete(CapabilitySet::PURE),
+            },
+            constraints: vec![],
+        }),
         _ => None,
     }
 }
@@ -1422,36 +1878,11 @@ fn reconciled_repo_fn_scheme(
                 ],
             })
         }
-        // joinOn : ∀e f a. Repo f a -> Quote (e -> f -> Bool) -> Query e a
-        //               -> Join e f a. A pure builder: it pairs the left query
-        // with the right repository and a quoted join condition over both
-        // entities. The condition's left columns range over `e`, its right over
-        // `f`; the captured tree tags each side so the seam keeps them apart.
-        "joinOn" => {
-            let join_con = *reconciled.get("Join")?;
-            let f = TyVid(2);
-            let repo_f_a = Type::Con(repo_con, vec![Type::Var(f), Type::Var(a)]);
-            let cond_quote = Type::Con(
-                b.quote,
-                vec![Type::Fn {
-                    params: vec![Type::Var(e), Type::Var(f)],
-                    ret: Box::new(Type::Con(b.bool, vec![])),
-                    caps: CapRow::Concrete(CapabilitySet::PURE),
-                }],
-            );
-            let join_e_f_a = Type::Con(join_con, vec![Type::Var(e), Type::Var(f), Type::Var(a)]);
-            Some(Scheme {
-                vars: vec![e, a, f],
-                cap_vars: vec![],
-                row_vars: vec![],
-                ty: Type::Fn {
-                    params: vec![repo_f_a, cond_quote, query_app()],
-                    ret: Box::new(join_e_f_a),
-                    caps: pure(),
-                },
-                constraints: vec![],
-            })
-        }
+        // `joinOn` is no longer a standalone scheme: it is the `Joinable` class
+        // method, seeded by `seed_joinable_scheme` so its condition (`JoinCond q f`)
+        // and result (`JoinResult q f`) follow the receiver. Omitting the arm routes
+        // it through that class path, the same way `toList`/`first` route through
+        // `seed_decodable_scheme`.
         // crossJoin : ∀e f a. Repo f a -> Query e a -> Join e f a. The cartesian
         // builder: it pairs the left query with the right repository and no
         // condition, so it carries no quoted predicate. A cross join is an inner
@@ -1482,98 +1913,22 @@ fn reconciled_repo_fn_scheme(
         // (`selectJoin` is gone: an inner join's projection is now the
         // `Projectable (Join e f a) (fn e f -> s)` instance — see
         // `seed_projectable_scheme`.)
-        // leftJoinOn : ∀e f a. Repo f a -> Quote (e -> f -> Bool) -> Query e a
-        //                  -> LeftJoin e f a. The left-outer builder, identical in
-        // shape to `joinOn` but producing a `LeftJoin` so the terminal keeps every
-        // left row.
-        "leftJoinOn" => {
-            let leftjoin_con = *reconciled.get("LeftJoin")?;
-            let f = TyVid(2);
-            let repo_f_a = Type::Con(repo_con, vec![Type::Var(f), Type::Var(a)]);
-            let cond_quote = Type::Con(
-                b.quote,
-                vec![Type::Fn {
-                    params: vec![Type::Var(e), Type::Var(f)],
-                    ret: Box::new(Type::Con(b.bool, vec![])),
-                    caps: CapRow::Concrete(CapabilitySet::PURE),
-                }],
-            );
-            let leftjoin_e_f_a =
-                Type::Con(leftjoin_con, vec![Type::Var(e), Type::Var(f), Type::Var(a)]);
-            Some(Scheme {
-                vars: vec![e, a, f],
-                cap_vars: vec![],
-                row_vars: vec![],
-                ty: Type::Fn {
-                    params: vec![repo_f_a, cond_quote, query_app()],
-                    ret: Box::new(leftjoin_e_f_a),
-                    caps: pure(),
-                },
-                constraints: vec![],
-            })
-        }
-        // rightJoinOn : ∀e f a. Repo f a -> Quote (e -> f -> Bool) -> Query e a
-        //                  -> RightJoin e f a. The right-outer builder, identical in
-        // shape to `leftJoinOn` but producing a `RightJoin` so the terminal keeps
-        // every right row.
-        "rightJoinOn" => {
-            let rightjoin_con = *reconciled.get("RightJoin")?;
-            let f = TyVid(2);
-            let repo_f_a = Type::Con(repo_con, vec![Type::Var(f), Type::Var(a)]);
-            let cond_quote = Type::Con(
-                b.quote,
-                vec![Type::Fn {
-                    params: vec![Type::Var(e), Type::Var(f)],
-                    ret: Box::new(Type::Con(b.bool, vec![])),
-                    caps: CapRow::Concrete(CapabilitySet::PURE),
-                }],
-            );
-            let rightjoin_e_f_a = Type::Con(
-                rightjoin_con,
-                vec![Type::Var(e), Type::Var(f), Type::Var(a)],
-            );
-            Some(Scheme {
-                vars: vec![e, a, f],
-                cap_vars: vec![],
-                row_vars: vec![],
-                ty: Type::Fn {
-                    params: vec![repo_f_a, cond_quote, query_app()],
-                    ret: Box::new(rightjoin_e_f_a),
-                    caps: pure(),
-                },
-                constraints: vec![],
-            })
-        }
-        // fullJoinOn : ∀e f a. Repo f a -> Quote (e -> f -> Bool) -> Query e a
-        //                  -> FullJoin e f a. The full-outer builder, identical in
-        // shape to `leftJoinOn`/`rightJoinOn` but producing a `FullJoin` so the
-        // terminal keeps every row of both tables.
-        "fullJoinOn" => {
-            let fulljoin_con = *reconciled.get("FullJoin")?;
-            let f = TyVid(2);
-            let repo_f_a = Type::Con(repo_con, vec![Type::Var(f), Type::Var(a)]);
-            let cond_quote = Type::Con(
-                b.quote,
-                vec![Type::Fn {
-                    params: vec![Type::Var(e), Type::Var(f)],
-                    ret: Box::new(Type::Con(b.bool, vec![])),
-                    caps: CapRow::Concrete(CapabilitySet::PURE),
-                }],
-            );
-            let fulljoin_e_f_a =
-                Type::Con(fulljoin_con, vec![Type::Var(e), Type::Var(f), Type::Var(a)]);
-            Some(Scheme {
-                vars: vec![e, a, f],
-                cap_vars: vec![],
-                row_vars: vec![],
-                ty: Type::Fn {
-                    params: vec![repo_f_a, cond_quote, query_app()],
-                    ret: Box::new(fulljoin_e_f_a),
-                    caps: pure(),
-                },
-                constraints: vec![],
-            })
-        }
+        // `leftJoinOn` is no longer a standalone scheme: it became the `LeftJoinable`
+        // class method, seeded by `seed_leftjoinable_scheme` so its condition
+        // (`JoinCond q f`) and result (`LeftJoinResult q f`) follow the receiver — a
+        // binary `LeftJoin` from a query, the nested `LeftJoined` from a composite.
+        // Omitting the arm routes it through that class path, the same way `joinOn`
+        // routes through `seed_joinable_scheme`.
+        // `rightJoinOn` is no longer a standalone scheme: it became the
+        // `RightJoinable` class method, seeded by `seed_rightjoinable_scheme` so its
+        // condition (`JoinCond q f`) and result (`RightJoinResult q f`) follow the
+        // receiver — a binary `RightJoin` from a query, the nested `RightJoined` from
+        // a composite. Omitting the arm routes it through that class path.
+        // `fullJoinOn` is no longer a standalone scheme: it became the `FullJoinable`
+        // class method, seeded by `seed_fulljoinable_scheme` so its condition
+        // (`JoinCond q f`) and result (`FullJoinResult q f`) follow the receiver — a
+        // binary `FullJoin` from a query, the nested `FullJoined` from a composite.
+        // Omitting the arm routes it through that class path.
         // `toLeftPairs` is gone: a left join's `toList`/`first` are now the
         // `Decodable (LeftJoin e f a) …` methods (std.repo). `Repo.toList` over a
         // `LeftJoin` resolves to that class method (see `seed_decodable_scheme`),

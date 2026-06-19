@@ -402,8 +402,36 @@ pub struct RowsTycons {
     /// `FullJoin`'s reconciled tycon id — `Rows (FullJoin e f a)` reduces to
     /// `(Option e, Option f)`.
     pub full_join: TyConId,
+    /// `Joined`'s reconciled tycon id — the nested N-ary inner join. `Rows
+    /// (Joined q f a)` reduces to `(Rows q, f)`, and the `JoinCond`/`JoinResult`
+    /// projections key on it for a composite receiver. `None` until std.repo's
+    /// `Joined` is reconciled (a workspace without the N-ary builder leaves the
+    /// projections stuck on it).
+    pub joined: Option<TyConId>,
+    /// `LeftJoined`'s reconciled tycon id — the nested N-ary LEFT outer join.
+    /// `Rows (LeftJoined q f a)` reduces to `(Rows q, Option f)` — the composite's
+    /// own row paired with the newly left-joined entity made optional. The
+    /// `JoinCond`/`LeftJoinResult`/`Rows` projections key on it. `None` until
+    /// std.repo's `LeftJoined` is reconciled.
+    pub left_joined: Option<TyConId>,
+    /// `RightJoined`'s reconciled tycon id — the nested N-ary RIGHT outer join.
+    /// `Rows (RightJoined q f a)` reduces to `(Option (Rows q), f)` — the composite's
+    /// own row made optional as a unit, paired with the always-present new entity.
+    /// The `JoinCond`/`RightJoinResult`/`Rows` projections key on it. `None` until
+    /// std.repo's `RightJoined` is reconciled.
+    pub right_joined: Option<TyConId>,
+    /// `FullJoined`'s reconciled tycon id — the nested N-ary FULL outer join.
+    /// `Rows (FullJoined q f a)` reduces to `(Option (Rows q), Option f)` — both the
+    /// composite (optional as a unit) and the new entity optional. The
+    /// `JoinCond`/`FullJoinResult`/`Rows` projections key on it. `None` until
+    /// std.repo's `FullJoined` is reconciled.
+    pub full_joined: Option<TyConId>,
     /// `Option`'s tycon id, wrapping an outer join's nullable side.
     pub option: TyConId,
+    /// `Bool`'s tycon id, the result of a `JoinCond` condition. Carried here so
+    /// the projection reductions can build `… -> Bool` without a `BuiltinTyCons`
+    /// handle (the context holds none).
+    pub bool: TyConId,
 }
 
 impl InferCtx {
@@ -603,6 +631,275 @@ impl InferCtx {
                 Type::Con(rt.option, vec![f]),
             ]));
         }
+        // `Rows (Joined q' f a)` reduces to `(Rows q', f)` — the left composite's
+        // own row paired with the newly joined entity, nesting recursively: a
+        // depth-3 inner join `Joined (Join e f a) g a` decodes to `((e, f), g)`.
+        // The inner `Rows q'` is reduced here so the result is fully normalised.
+        if rt.joined == Some(*qid) {
+            let q_inner = qargs.first()?;
+            let f = qargs.get(1)?.clone();
+            let inner_rows = self.reduce_rows_arg(q_inner)?;
+            return Some(Type::Tuple(vec![inner_rows, f]));
+        }
+        // `Rows (LeftJoined q' f a)` reduces to `(Rows q', Option f)` — the left
+        // composite's own row paired with the newly left-joined entity made
+        // optional, since a composite row that matched no new row keeps it `None`.
+        // The composite itself is always present (a left join keeps every left row),
+        // so only the new entity is wrapped.
+        if rt.left_joined == Some(*qid) {
+            let q_inner = qargs.first()?;
+            let f = qargs.get(1)?.clone();
+            let inner_rows = self.reduce_rows_arg(q_inner)?;
+            return Some(Type::Tuple(vec![inner_rows, Type::Con(rt.option, vec![f])]));
+        }
+        // `Rows (RightJoined q' f a)` reduces to `(Option (Rows q'), f)` — the left
+        // composite's own row made optional AS A UNIT (a right join null-extends the
+        // whole composite when a new row matched none), paired with the new entity a
+        // right join always keeps.
+        if rt.right_joined == Some(*qid) {
+            let q_inner = qargs.first()?;
+            let f = qargs.get(1)?.clone();
+            let inner_rows = self.reduce_rows_arg(q_inner)?;
+            return Some(Type::Tuple(vec![Type::Con(rt.option, vec![inner_rows]), f]));
+        }
+        // `Rows (FullJoined q' f a)` reduces to `(Option (Rows q'), Option f)` — a full
+        // join keeps every row of both sides and null-extends whichever matched none,
+        // so both the composite (as a unit) and the new entity are optional.
+        if rt.full_joined == Some(*qid) {
+            let q_inner = qargs.first()?;
+            let f = qargs.get(1)?.clone();
+            let inner_rows = self.reduce_rows_arg(q_inner)?;
+            return Some(Type::Tuple(vec![
+                Type::Con(rt.option, vec![inner_rows]),
+                Type::Con(rt.option, vec![f]),
+            ]));
+        }
+        None
+    }
+
+    /// The ordered leaf entities a join receiver `q` carries, left to right — the
+    /// list a `JoinCond q f` condition ranges over before the new right entity.
+    /// `Query e a` carries `[e]`, a binary `Join e g a` carries `[e, g]`, and a
+    /// nested `Joined q' g a` carries `q'`'s entities followed by `g`. Returns
+    /// `None` when `q` is not a recognised inner-join receiver (or still a
+    /// variable), leaving the projection stuck.
+    pub(crate) fn join_entities(&self, q: &Type) -> Option<Vec<Type>> {
+        let rt = self.rows_tycons?;
+        let Type::Con(qid, qargs) = q else {
+            return None;
+        };
+        if *qid == rt.query {
+            return Some(vec![qargs.first()?.clone()]);
+        }
+        if *qid == rt.join {
+            let e = qargs.first()?.clone();
+            let g = qargs.get(1)?.clone();
+            return Some(vec![e, g]);
+        }
+        // A nested receiver — inner `Joined` or the outer `LeftJoined` — carries its
+        // composite's entities followed by the newly joined one. The condition ranges
+        // over every leaf positionally, present or null-extended, so a left join's
+        // optional new entity still contributes its (plain) entity to the leaf list.
+        if rt.joined == Some(*qid)
+            || rt.left_joined == Some(*qid)
+            || rt.right_joined == Some(*qid)
+            || rt.full_joined == Some(*qid)
+        {
+            let q_inner = qargs.first()?;
+            let g = qargs.get(1)?.clone();
+            let mut es = self.join_entities(q_inner)?;
+            es.push(g);
+            return Some(es);
+        }
+        None
+    }
+
+    /// Whether `tycon` is one of the nested-join composite constructors
+    /// (`Joined`/`LeftJoined`/`RightJoined`/`FullJoined`). These are the
+    /// recursively-nested receivers whose terminal predicate ranges over an
+    /// unbounded number of leaves, so a fundep terminal class keys its instance
+    /// (and dictionary) by the receiver alone rather than by the predicate's
+    /// per-depth arity. `false` until the rows-tycon reconciliation has run.
+    #[must_use]
+    pub(crate) fn is_composite_join_tycon(&self, tycon: TyConId) -> bool {
+        let Some(rt) = self.rows_tycons else {
+            return false;
+        };
+        rt.joined == Some(tycon)
+            || rt.left_joined == Some(tycon)
+            || rt.right_joined == Some(tycon)
+            || rt.full_joined == Some(tycon)
+    }
+
+    /// Whether `q` is a nested-join composite receiver — the type-level dual of
+    /// [`Self::is_composite_join_tycon`], reading the head constructor of `q`.
+    #[must_use]
+    pub(crate) fn is_composite_join_receiver(&self, q: &Type) -> bool {
+        matches!(q, Type::Con(id, _) if self.is_composite_join_tycon(*id))
+    }
+
+    /// The adapter `a` a join receiver `q` threads — the last type argument of
+    /// `Query e a`, and the third of a binary `Join e g a` or a nested
+    /// `Joined q' g a`. Used to rebuild the receiver-determined result type.
+    fn join_adapter(&self, q: &Type) -> Option<Type> {
+        let rt = self.rows_tycons?;
+        let Type::Con(qid, qargs) = q else {
+            return None;
+        };
+        if *qid == rt.query {
+            return qargs.get(1).cloned();
+        }
+        if *qid == rt.join
+            || rt.joined == Some(*qid)
+            || rt.left_joined == Some(*qid)
+            || rt.right_joined == Some(*qid)
+            || rt.full_joined == Some(*qid)
+        {
+            return qargs.get(2).cloned();
+        }
+        None
+    }
+
+    /// Reduces `JoinCond q f` to the curried condition a `joinOn` over receiver
+    /// `q` adding right entity `f` accepts: the receiver's leaf entities followed
+    /// by `f`, returning `Bool`. `JoinCond (Query e a) f` becomes `e -> f -> Bool`,
+    /// `JoinCond (Join e g a) f` becomes `e -> g -> f -> Bool`. Returns `None`
+    /// while `q` is not yet a recognised receiver, leaving the projection stuck.
+    #[must_use]
+    pub fn reduce_joincond_arg(&self, q: &Type, f: &Type) -> Option<Type> {
+        let rt = self.rows_tycons?;
+        let mut params = self.join_entities(q)?;
+        params.push(f.clone());
+        Some(Type::Fn {
+            params,
+            ret: Box::new(Type::Con(rt.bool, vec![])),
+            caps: CapRow::Concrete(CapabilitySet::PURE),
+        })
+    }
+
+    /// Reduces `JoinResult q f` to the type a `joinOn` over receiver `q` adding
+    /// right entity `f` produces: the binary `Join e f a` from a `Query e a` (the
+    /// depth-2 inner join keeps its existing vocabulary), and the nested
+    /// `Joined q f a` from any composite receiver (`Join`/`Joined`). Returns
+    /// `None` while `q` is not yet a recognised receiver, or when `Joined` is not
+    /// reconciled in this workspace.
+    #[must_use]
+    pub fn reduce_joinresult_arg(&self, q: &Type, f: &Type) -> Option<Type> {
+        let rt = self.rows_tycons?;
+        let Type::Con(qid, _) = q else {
+            return None;
+        };
+        let a = self.join_adapter(q)?;
+        if *qid == rt.query {
+            let e = match q {
+                Type::Con(_, args) => args.first()?.clone(),
+                _ => return None,
+            };
+            return Some(Type::Con(rt.join, vec![e, f.clone(), a]));
+        }
+        if *qid == rt.join
+            || rt.joined == Some(*qid)
+            || rt.left_joined == Some(*qid)
+            || rt.right_joined == Some(*qid)
+            || rt.full_joined == Some(*qid)
+        {
+            let joined = rt.joined?;
+            return Some(Type::Con(joined, vec![q.clone(), f.clone(), a]));
+        }
+        None
+    }
+
+    /// Reduces `LeftJoinResult q f` to the type a `leftJoinOn` over receiver `q`
+    /// adding right entity `f` produces: the binary `LeftJoin e f a` from a
+    /// `Query e a`, and the nested `LeftJoined q f a` from any composite receiver
+    /// (`Join`/`Joined`/`LeftJoined`). The dual of [`Self::reduce_joinresult_arg`]
+    /// for the left outer verb. Returns `None` while `q` is not yet a recognised
+    /// receiver, or when `LeftJoined` is not reconciled in this workspace.
+    #[must_use]
+    pub fn reduce_leftjoinresult_arg(&self, q: &Type, f: &Type) -> Option<Type> {
+        let rt = self.rows_tycons?;
+        let Type::Con(qid, _) = q else {
+            return None;
+        };
+        let a = self.join_adapter(q)?;
+        if *qid == rt.query {
+            let e = match q {
+                Type::Con(_, args) => args.first()?.clone(),
+                _ => return None,
+            };
+            return Some(Type::Con(rt.left_join, vec![e, f.clone(), a]));
+        }
+        if *qid == rt.join
+            || rt.joined == Some(*qid)
+            || rt.left_joined == Some(*qid)
+            || rt.right_joined == Some(*qid)
+            || rt.full_joined == Some(*qid)
+        {
+            let left_joined = rt.left_joined?;
+            return Some(Type::Con(left_joined, vec![q.clone(), f.clone(), a]));
+        }
+        None
+    }
+
+    /// Reduces `RightJoinResult q f` to the type a `rightJoinOn` over receiver `q`
+    /// adding right entity `f` produces: the binary `RightJoin e f a` from a
+    /// `Query e a`, and the nested `RightJoined q f a` from any composite receiver.
+    /// The RIGHT dual of [`Self::reduce_leftjoinresult_arg`]. Returns `None` while
+    /// `q` is not a recognised receiver, or when `RightJoined` is not reconciled.
+    #[must_use]
+    pub fn reduce_rightjoinresult_arg(&self, q: &Type, f: &Type) -> Option<Type> {
+        let rt = self.rows_tycons?;
+        let Type::Con(qid, _) = q else {
+            return None;
+        };
+        let a = self.join_adapter(q)?;
+        if *qid == rt.query {
+            let e = match q {
+                Type::Con(_, args) => args.first()?.clone(),
+                _ => return None,
+            };
+            return Some(Type::Con(rt.right_join, vec![e, f.clone(), a]));
+        }
+        if *qid == rt.join
+            || rt.joined == Some(*qid)
+            || rt.left_joined == Some(*qid)
+            || rt.right_joined == Some(*qid)
+            || rt.full_joined == Some(*qid)
+        {
+            let right_joined = rt.right_joined?;
+            return Some(Type::Con(right_joined, vec![q.clone(), f.clone(), a]));
+        }
+        None
+    }
+
+    /// Reduces `FullJoinResult q f` to the type a `fullJoinOn` over receiver `q`
+    /// adding right entity `f` produces: the binary `FullJoin e f a` from a
+    /// `Query e a`, and the nested `FullJoined q f a` from any composite receiver.
+    /// The FULL dual of [`Self::reduce_rightjoinresult_arg`]. Returns `None` while
+    /// `q` is not a recognised receiver, or when `FullJoined` is not reconciled.
+    #[must_use]
+    pub fn reduce_fulljoinresult_arg(&self, q: &Type, f: &Type) -> Option<Type> {
+        let rt = self.rows_tycons?;
+        let Type::Con(qid, _) = q else {
+            return None;
+        };
+        let a = self.join_adapter(q)?;
+        if *qid == rt.query {
+            let e = match q {
+                Type::Con(_, args) => args.first()?.clone(),
+                _ => return None,
+            };
+            return Some(Type::Con(rt.full_join, vec![e, f.clone(), a]));
+        }
+        if *qid == rt.join
+            || rt.joined == Some(*qid)
+            || rt.left_joined == Some(*qid)
+            || rt.right_joined == Some(*qid)
+            || rt.full_joined == Some(*qid)
+        {
+            let full_joined = rt.full_joined?;
+            return Some(Type::Con(full_joined, vec![q.clone(), f.clone(), a]));
+        }
         None
     }
 
@@ -641,6 +938,56 @@ impl InferCtx {
                 // the projection is left intact, reducing once `q` is a receiver.
                 if id.0 == ridge_types::ROWS_TYCON_ID && new_args.len() == 1 {
                     if let Some(reduced) = self.reduce_rows_arg(&new_args[0]) {
+                        return reduced;
+                    }
+                }
+                // `JoinCond q f` normalises to the curried condition `joinOn`
+                // accepts over `q` and the new right entity `f` — the receiver's
+                // leaf entities then `f`, returning `Bool`. While `q` is a variable
+                // the projection is left intact, reducing once `q` is a receiver.
+                if id.0 == ridge_types::JOINCOND_TYCON_ID && new_args.len() == 2 {
+                    if let Some(reduced) = self.reduce_joincond_arg(&new_args[0], &new_args[1]) {
+                        return reduced;
+                    }
+                }
+                // `JoinResult q f` normalises to the type `joinOn` produces — a
+                // binary `Join` from a query, the nested `Joined` from a composite.
+                // Stuck while `q` is a variable or `Joined` is unreconciled.
+                if id.0 == ridge_types::JOINRESULT_TYCON_ID && new_args.len() == 2 {
+                    if let Some(reduced) = self.reduce_joinresult_arg(&new_args[0], &new_args[1]) {
+                        return reduced;
+                    }
+                }
+                // `LeftJoinResult q f` normalises to the type `leftJoinOn` produces —
+                // a binary `LeftJoin` from a query, the nested `LeftJoined` from a
+                // composite. Stuck while `q` is a variable or `LeftJoined` is
+                // unreconciled.
+                if id.0 == ridge_types::LEFTJOINRESULT_TYCON_ID && new_args.len() == 2 {
+                    if let Some(reduced) =
+                        self.reduce_leftjoinresult_arg(&new_args[0], &new_args[1])
+                    {
+                        return reduced;
+                    }
+                }
+                // `RightJoinResult q f` normalises to the type `rightJoinOn` produces —
+                // a binary `RightJoin` from a query, the nested `RightJoined` from a
+                // composite. Stuck while `q` is a variable or `RightJoined` is
+                // unreconciled.
+                if id.0 == ridge_types::RIGHTJOINRESULT_TYCON_ID && new_args.len() == 2 {
+                    if let Some(reduced) =
+                        self.reduce_rightjoinresult_arg(&new_args[0], &new_args[1])
+                    {
+                        return reduced;
+                    }
+                }
+                // `FullJoinResult q f` normalises to the type `fullJoinOn` produces —
+                // a binary `FullJoin` from a query, the nested `FullJoined` from a
+                // composite. Stuck while `q` is a variable or `FullJoined` is
+                // unreconciled.
+                if id.0 == ridge_types::FULLJOINRESULT_TYCON_ID && new_args.len() == 2 {
+                    if let Some(reduced) =
+                        self.reduce_fulljoinresult_arg(&new_args[0], &new_args[1])
+                    {
                         return reduced;
                     }
                 }

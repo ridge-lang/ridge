@@ -271,6 +271,20 @@ pub fn prelude_types(b: &BuiltinTyCons) -> (FxHashMap<String, Scheme>, FxHashMap
     // builtin so a query-builder signature can name `Rows q` without an import;
     // reduces during unification.
     tycons.insert("Rows".to_string(), b.rows);
+    // `JoinCond/2` / `JoinResult/2` — the N-ary join builder's condition-shape and
+    // result projections, prelude builtins so the `Joinable` method signature can
+    // name `JoinCond q f` / `JoinResult q f` without an import; both reduce during
+    // unification.
+    tycons.insert("JoinCond".to_string(), b.joincond);
+    tycons.insert("JoinResult".to_string(), b.joinresult);
+    // `LeftJoinResult/2` — the LEFT outer-join verb's result projection, a prelude
+    // builtin so the `LeftJoinable` method signature can name `LeftJoinResult q f`
+    // without an import; reduces during unification.
+    tycons.insert("LeftJoinResult".to_string(), b.left_joinresult);
+    // `RightJoinResult/2` — the RIGHT outer-join verb's result projection.
+    tycons.insert("RightJoinResult".to_string(), b.right_joinresult);
+    // `FullJoinResult/2` — the FULL outer-join verb's result projection.
+    tycons.insert("FullJoinResult".to_string(), b.full_joinresult);
 
     let qexpr_ty = ty_con(b.q_expr, vec![]);
     let q_ctor = |params: Vec<Type>| Scheme {
@@ -283,6 +297,10 @@ pub fn prelude_types(b: &BuiltinTyCons) -> (FxHashMap<String, Scheme>, FxHashMap
     let text_ty = ty_con(b.text, vec![]);
     values.insert("QCol".to_string(), q_ctor(vec![text_ty.clone()]));
     values.insert("QColR".to_string(), q_ctor(vec![text_ty.clone()]));
+    values.insert(
+        "QColAt".to_string(),
+        q_ctor(vec![ty_con(b.int, vec![]), text_ty.clone()]),
+    );
     values.insert("QLitInt".to_string(), q_ctor(vec![ty_con(b.int, vec![])]));
     values.insert("QLitText".to_string(), q_ctor(vec![text_ty]));
     values.insert("QLitBool".to_string(), q_ctor(vec![ty_con(b.bool, vec![])]));
@@ -291,6 +309,7 @@ pub fn prelude_types(b: &BuiltinTyCons) -> (FxHashMap<String, Scheme>, FxHashMap
         q_ctor(vec![ty_con(b.float, vec![])]),
     );
     values.insert("QNot".to_string(), q_ctor(vec![qexpr_ty.clone()]));
+    values.insert("QNotTrue".to_string(), q_ctor(vec![qexpr_ty.clone()]));
     for name in ["QAnd", "QOr", "QEq", "QNe", "QLt", "QGt", "QLe", "QGe"] {
         values.insert(
             name.to_string(),

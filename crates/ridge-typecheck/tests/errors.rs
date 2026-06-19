@@ -585,3 +585,46 @@ fn quoted_non_boolean_body_is_rejected() {
         "a non-boolean quoted predicate body must be T040; got: {codes:?}"
     );
 }
+
+// ── T001 message rendering: real type names, never `#N` ───────────────────────
+
+/// Pull the `(expected, found)` strings of the first `T001 TypeMismatch`.
+fn first_mismatch(stem: &str, src: &str) -> (String, String) {
+    run_typecheck_on_source(stem, src)
+        .into_iter()
+        .find_map(|e| match e {
+            TypeError::TypeMismatch {
+                expected, found, ..
+            } => Some((expected, found)),
+            _ => None,
+        })
+        .unwrap_or_else(|| panic!("no T001 produced for {stem}"))
+}
+
+/// A type mismatch renders both sides by their declared names, not the
+/// arena-free `#N` placeholder nor a Debug `Con(TyConId(..))` dump. Covers
+/// both the return-vs-body path (built in `scc`) and the unify path
+/// (`unify::mismatch`).
+#[test]
+fn type_mismatch_renders_real_type_names() {
+    // Return type vs body — constructed in `scc`.
+    let (expected, found) = first_mismatch("mismatch_ret", "pub fn f () -> Text = 5\n");
+    assert_eq!(expected, "Text", "expected side; got {expected:?}");
+    assert_eq!(found, "Int", "found side; got {found:?}");
+
+    // Annotation vs value inside an expression — flows through `unify::mismatch`.
+    let (expected, found) = first_mismatch(
+        "mismatch_let",
+        "pub fn g () -> Int =\n    let x: Text = 5\n    0\n",
+    );
+    for side in [&expected, &found] {
+        assert!(
+            !side.contains('#') && !side.contains("Con(") && !side.contains("TyConId"),
+            "type names must be readable, not `#N`/Debug; got {side:?}"
+        );
+    }
+    assert!(
+        expected == "Text" || found == "Text",
+        "one side must name `Text`; got expected={expected:?} found={found:?}"
+    );
+}

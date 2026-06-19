@@ -54,7 +54,7 @@
 //!   layer, so the depth is bounded by the structural depth of the type.
 
 use ridge_ast::Span;
-use ridge_types::{BuiltinTyCons, ClassId, Constraint, TyConId, TyVid, Type};
+use ridge_types::{BuiltinTyCons, ClassId, Constraint, TyConId, TyConKind, TyVid, Type};
 use rustc_hash::{FxHashMap, FxHashSet};
 use smallvec::SmallVec;
 
@@ -368,6 +368,10 @@ fn dispatch_constraint(
 ///   without an annotation needs functional dependencies, which this release
 ///   does not implement; the user annotates the open position instead.
 #[allow(clippy::too_many_arguments)]
+#[expect(
+    clippy::too_many_lines,
+    reason = "one linear dispatch over the three resolution cases (all-concrete with the composite-receiver fallback, all-variable retention, mixed-ambiguity); splitting it would scatter the shared head/dict-resolution state"
+)]
 fn dispatch_multi_constraint(
     ctx: &mut InferCtx,
     instance_env: &InstanceEnv,
@@ -420,9 +424,58 @@ fn dispatch_multi_constraint(
         .get(c.class)
         .map_or("?", |info| info.name.as_str());
 
+    // ── Transparent alias expansion ──────────────────────────────────────────
+    // If the receiver (position 0) is a transparent alias, expand it before
+    // instance lookup. This lets `Join e f a = Joined (Query e a) f a` forward
+    // all multi-parameter fundep dispatch to the `Joined` instances.
+    let (mut head_tycons, mut resolved) = (head_tycons, resolved);
+    'alias: {
+        let Some(&recv_id) = head_tycons.first() else {
+            break 'alias;
+        };
+        let Some(decl) = ctx.tycon_decls.get(recv_id.0 as usize) else {
+            break 'alias;
+        };
+        let TyConKind::Alias { params, body } = &decl.kind else {
+            break 'alias;
+        };
+        let recv_args = match &resolved[0] {
+            Type::Con(_, args) => args.clone(),
+            _ => Vec::new(),
+        };
+        let expanded = subst_alias(body, params, &recv_args);
+        let Type::Con(expanded_id, _) = &expanded else {
+            break 'alias;
+        };
+        if *expanded_id == recv_id {
+            break 'alias;
+        }
+        head_tycons[0] = *expanded_id;
+        resolved[0] = expanded;
+    }
+
     // ── All concrete: resolve the instance by the head tuple. ──
     if head_tycons.len() == n {
-        let Some(info) = instance_env.get_multi(c.class, &head_tycons) else {
+        // A nested-join composite receiver keys its terminal instance (and dict) by
+        // the receiver alone: the functional dependency collapses the predicate, so
+        // there is one instance per receiver, not one per predicate arity. Match the
+        // full head first (binary receivers, keyed `[receiver, Fn/N]`); on a miss for
+        // a composite-join receiver, fall back to the determining position alone.
+        let recv_is_composite =
+            !head_tycons.is_empty() && ctx.is_composite_join_tycon(head_tycons[0]);
+        let matched: Option<(&InstanceInfo, &[TyConId])> = instance_env
+            .get_multi(c.class, &head_tycons)
+            .map(|i| (i, &head_tycons[..]))
+            .or_else(|| {
+                if head_tycons.len() > 1 && recv_is_composite {
+                    instance_env
+                        .get_multi(c.class, &head_tycons[..1])
+                        .map(|i| (i, &head_tycons[..1]))
+                } else {
+                    None
+                }
+            });
+        let Some((info, matched_head)) = matched else {
             let head_disp = head_tycons
                 .iter()
                 .map(|t| format!("{t:?}"))
@@ -437,6 +490,8 @@ fn dispatch_multi_constraint(
             return;
         };
         let info = info.clone();
+        let extra_head: SmallVec<[TyConId; 1]> = matched_head.iter().skip(1).copied().collect();
+        let tycon = matched_head[0];
         let key = (c.class, c.tys[0]);
         // Idempotent: a second constraint converging on the same instance must
         // not re-resolve the context sub-dictionaries (which would re-report any
@@ -444,8 +499,6 @@ fn dispatch_multi_constraint(
         if dict_resolution.contains_key(&key) {
             return;
         }
-        let extra_head: SmallVec<[TyConId; 1]> = head_tycons.iter().skip(1).copied().collect();
-        let tycon = head_tycons[0];
         // Resolve the instance's context constraints (`instance C (T a) (U b)
         // where D a`) against the resolved head atoms, threading their resolved
         // sub-dictionaries into the plan. Empty for a context-free instance.
@@ -506,6 +559,10 @@ fn dispatch_multi_constraint(
 ///
 /// Returns `true` when a conflict was reported and the caller should stop. A
 /// no-op without `builtins` (the unit-test path) or for a class with no fundep.
+#[expect(
+    clippy::too_many_lines,
+    reason = "one linear pass over determining/determined positions with three distinct cases; splitting would scatter shared state"
+)]
 fn improve_via_fundeps(
     ctx: &mut InferCtx,
     instance_env: &InstanceEnv,
@@ -532,6 +589,23 @@ fn improve_via_fundeps(
 
     for fd in fundeps {
         // The determining positions must all be concrete head constructors.
+        // Expand any transparent alias at a determining position so that alias
+        // tycons (e.g. `Join = Joined (Query e a) f a`) route correctly through
+        // the composite-receiver branch and through instance lookup below.
+        let resolved: Vec<Type> = {
+            let mut r = resolved.clone();
+            for &p in &fd.from {
+                if let Some(Type::Con(id, args)) = r.get(p).cloned() {
+                    if let Some(decl) = ctx.tycon_decls.get(id.0 as usize) {
+                        if let TyConKind::Alias { params, body } = &decl.kind {
+                            let expanded = subst_alias(body, params, &args);
+                            r[p] = expanded;
+                        }
+                    }
+                }
+            }
+            r
+        };
         let mut fixed: SmallVec<[(usize, TyConId); 2]> = SmallVec::new();
         let mut from_ok = true;
         for &p in &fd.from {
@@ -544,6 +618,59 @@ fn improve_via_fundeps(
         }
         if !from_ok {
             continue;
+        }
+
+        // A nested-join composite receiver (`Joined`/`LeftJoined`/…) determines its
+        // terminal predicate directly: the positional leaf list of the receiver,
+        // returning a free result the lambda body fixes (`Bool` for `filter`/`every`,
+        // the projected shape for `select`, the column type for an aggregate). The
+        // arity is the leaf count, so a wrong-arity lambda fails to unify here — the
+        // compile-time arity check the binary instances got from `Fn/N`-keyed
+        // dispatch, here for an unbounded number of leaves.
+        if fd.from.len() == 1 && fd.to.len() == 1 {
+            if let Some(recv) = resolved.get(fd.from[0]) {
+                if ctx.is_composite_join_receiver(recv) {
+                    if let Some(leaves) = ctx.join_entities(recv) {
+                        let is_projectable = class_table.id_by_name("Projectable") == Some(c.class);
+                        if is_projectable {
+                            // `select` over a composite lowers a row-map projection
+                            // (`Map Text SqlValue -> s`), so determining `p` to a
+                            // per-leaf function would corrupt the reification. The
+                            // join still requires one projection parameter per leaf,
+                            // so enforce that arity directly against the lambda
+                            // skeleton already unified into `p`, without binding it.
+                            let p_ty = ctx.deep_resolve(&Type::Var(c.tys[fd.to[0]]));
+                            if let Type::Fn { params, .. } = &p_ty {
+                                if params.len() != leaves.len() {
+                                    ctx.errors.push(TypeError::QuoteUnsupportedExpr {
+                                        detail: format!(
+                                            "a projection over a {}-table join takes {} parameter(s), one per table, but {} were written",
+                                            leaves.len(),
+                                            leaves.len(),
+                                            params.len()
+                                        ),
+                                        span: scc_span,
+                                    });
+                                    return true;
+                                }
+                            }
+                            continue;
+                        }
+                        let ret = ctx.fresh_tyvid();
+                        let leaf_fn = Type::Fn {
+                            params: leaves,
+                            ret: Box::new(Type::Var(ret)),
+                            caps: ridge_types::CapRow::Concrete(ridge_types::CapabilitySet::PURE),
+                        };
+                        if let Err(e) = unify(ctx, &Type::Var(c.tys[fd.to[0]]), &leaf_fn) {
+                            ctx.errors
+                                .push(crate::records::attach_span_pub(e, scc_span));
+                            return true;
+                        }
+                        continue;
+                    }
+                }
+            }
         }
 
         // Coherence guarantees at most one instance per determining tuple.
@@ -652,6 +779,31 @@ fn collect_head_vars(head_asts: &[ridge_ast::Type]) -> Vec<String> {
     out
 }
 
+/// Substitute `params[i]` → `args[i]` throughout `ty`. Used to expand a
+/// transparent type alias before instance lookup so that `Join e f a` (an alias
+/// for `Joined (Query e a) f a`) dispatches to the `Joined` instances rather
+/// than failing with T029.
+fn subst_alias(ty: &Type, params: &[TyVid], args: &[Type]) -> Type {
+    match ty {
+        Type::Var(v) => params.iter().position(|p| p == v).map_or_else(
+            || ty.clone(),
+            |pos| args.get(pos).cloned().unwrap_or_else(|| ty.clone()),
+        ),
+        Type::Con(id, sub_args) => {
+            let new_sub = sub_args
+                .iter()
+                .map(|a| subst_alias(a, params, args))
+                .collect();
+            Type::Con(*id, new_sub)
+        }
+        Type::Tuple(ts) => {
+            let new_ts = ts.iter().map(|t| subst_alias(t, params, args)).collect();
+            Type::Tuple(new_ts)
+        }
+        _ => ty.clone(),
+    }
+}
+
 /// Attempt to discharge a concrete `(ClassId, TyConId)` constraint.
 ///
 /// On success: record a [`DictPlan::Static`] entry and enqueue the instance's
@@ -690,6 +842,45 @@ fn discharge_concrete(
 
     match instance_env.get(key) {
         None => {
+            // Before emitting T029, check whether the tycon is a transparent
+            // alias. If so, substitute the alias body with the concrete type
+            // arguments and dispatch against the expanded type instead. This
+            // covers cases like `Join e f a = Joined (Query e a) f a` where the
+            // alias tycon has no instances of its own — its instances live under
+            // the target `Joined` tycon.
+            if let Some(decl) = ctx.tycon_decls.get(tyconid.0 as usize) {
+                if let TyConKind::Alias { params, body } = &decl.kind {
+                    let params = params.clone();
+                    let body = body.clone();
+                    // Recover the concrete type arguments from the resolved type.
+                    let con_args = match resolved_con {
+                        Type::Con(_, args) => args.clone(),
+                        _ => Vec::new(),
+                    };
+                    // Substitute alias parameters with actual arguments.
+                    let expanded = subst_alias(&body, &params, &con_args);
+                    if let Type::Con(expanded_id, _) = &expanded {
+                        let expanded_id = *expanded_id;
+                        // Only recurse when the expansion changed the head tycon
+                        // (avoids infinite loops on identity-like aliases).
+                        if expanded_id != tyconid {
+                            discharge_concrete(
+                                ctx,
+                                instance_env,
+                                class_table,
+                                scc_span,
+                                c,
+                                expanded_id,
+                                &expanded,
+                                work,
+                                visited,
+                                dict_resolution,
+                            );
+                            return;
+                        }
+                    }
+                }
+            }
             // T029 — no instance for this (class, type) pair.
             let fix_hint = build_fix_hint(class_name, tyconid);
             ctx.errors.push(TypeError::NoInstance {
@@ -866,7 +1057,15 @@ fn resolve_ctx_dict_args_multi(
         .iter()
         .zip(inst_info.head_var_positions.iter())
     {
-        let arg_ty = flat.get(pos).cloned().unwrap_or(Type::Error);
+        // The sentinel resolves to the determined predicate's return type — the
+        // last flattened element — so a constraint over a composite terminal's
+        // variable-arity result (`SqlType n`, `Row s`) lands on `n`/`s` whatever
+        // the join depth. A fixed index reads its own flattened position.
+        let arg_ty = if pos == crate::class_env::PREDICATE_RETURN_POS {
+            flat.last().cloned().unwrap_or(Type::Error)
+        } else {
+            flat.get(pos).cloned().unwrap_or(Type::Error)
+        };
         let resolved_arg = ctx.deep_resolve(&arg_ty);
         let plan = resolve_dict_plan(
             ctx,
@@ -914,6 +1113,32 @@ fn resolve_dict_plan(
             // `instance_env` is released before the recursive call below borrows
             // `ctx` mutably.
             let Some(inst_info) = instance_env.get((class, tyconid)).cloned() else {
+                // Before giving up, try expanding a transparent alias so that
+                // `Join e f a` (which has no instances of its own) transparently
+                // dispatches through its expansion `Joined (Query e a) f a`.
+                if let Some(decl) = ctx.tycon_decls.get(tyconid.0 as usize) {
+                    if let TyConKind::Alias { params, body } = &decl.kind {
+                        let params = params.clone();
+                        let body = body.clone();
+                        let con_args = match resolved {
+                            Type::Con(_, args) => args.clone(),
+                            _ => Vec::new(),
+                        };
+                        let expanded = subst_alias(&body, &params, &con_args);
+                        if let Type::Con(expanded_id, _) = &expanded {
+                            if *expanded_id != tyconid {
+                                return resolve_dict_plan(
+                                    ctx,
+                                    instance_env,
+                                    class_table,
+                                    scc_span,
+                                    class,
+                                    &expanded,
+                                );
+                            }
+                        }
+                    }
+                }
                 // No instance for this element type → T029. The element type is a
                 // concrete `Type::Con`, so this is a genuine missing-instance
                 // error (e.g. `Encode (List SomeType)` where `SomeType` has no

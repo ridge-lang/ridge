@@ -520,6 +520,10 @@ pub fn lower_fn(ctx: &mut LowerCtx<'_>, decl: &FnDecl) -> IrFn {
 /// When the class name or type name cannot be resolved (missing class table or
 /// unknown type), lowering is skipped and an empty vec is returned. This is a
 /// defensive no-op for test scaffolding that does not wire the full pipeline.
+#[expect(
+    clippy::too_many_lines,
+    reason = "one linear pass building an instance's head name, dict params, method fns, and dict const; splitting it would scatter the shared head/constraint state"
+)]
 pub fn lower_instance(ctx: &mut LowerCtx<'_>, decl: &InstanceDecl) -> Vec<IrItem> {
     let class_name = decl.class.text.clone();
 
@@ -566,13 +570,42 @@ pub fn lower_instance(ctx: &mut LowerCtx<'_>, decl: &InstanceDecl) -> Vec<IrItem
         };
         head_names.push(name);
     }
-    let type_name = head_names.join("_");
+    // A fundep terminal class (`Refinable`/`Projectable`/…) over a nested-join
+    // composite receiver (`Joined`/`LeftJoined`/`RightJoined`/`FullJoined`) keys its
+    // dictionary by the RECEIVER ALONE: the dependency collapses the predicate, whose
+    // leaf arity grows with the join depth, so the per-arity predicate atom is dropped
+    // to match the receiver-only instance the typechecker resolves (see `discharge` in
+    // ridge-typecheck). A multi-atom head over one of these composites is only ever a
+    // fundep terminal — the receiver-keyed single-param classes (`Joinable`/`JoinShape`/
+    // `Decodable`) carry a one-atom head — so the receiver-name test alone is exact.
+    // Binary receivers keep their full multi-atom name unchanged.
+    let receiver_is_composite_join = head_names.first().is_some_and(|n| {
+        matches!(
+            n.as_str(),
+            "Joined" | "LeftJoined" | "RightJoined" | "FullJoined"
+        )
+    });
+    let type_name = if head_names.len() > 1 && receiver_is_composite_join {
+        head_names[0].clone()
+    } else {
+        head_names.join("_")
+    };
 
     // Build the implicit dictionary parameters for a parametric instance, one
-    // per `where` constraint. Each is named `$dict_{CtxClass}_{i}` where `i` is
-    // the constraint's position; the matching `current_fn_constraints` entry
-    // (set below) carries `TyVid(i)` so the Forward path in method-body lowering
-    // projects this exact parameter. Empty for non-parametric instances.
+    // per `where` constraint. Each is named `$dict_{CtxClass}_{var}` where `var`
+    // is the constraint head variable's real inference `TyVid`, recorded by the
+    // typecheck's instance-body inference (keyed by the `InstanceDecl` span,
+    // indexed in `where` order). The matching `current_fn_constraints` entry (set
+    // below) carries that same `TyVid`, so the Forward path in method-body
+    // lowering — which reads the variable a class-method call pins from
+    // `node_types` — projects the dictionary for the right entity rather than the
+    // first same-class one. When the table is absent (unit tests, or a module
+    // whose instance bodies were not inferred) the positional sentinel `TyVid(i)`
+    // is the fallback, preserving the prior order-based behaviour. Empty for
+    // non-parametric instances.
+    let real_vars = ctx
+        .instance_dict_constraints
+        .and_then(|m| m.get(&decl.span));
     let mut dict_params: Vec<IrParam> = Vec::new();
     let mut body_constraints: Vec<ridge_types::Constraint> = Vec::new();
     for (i, cc) in decl.constraints.iter().enumerate() {
@@ -581,7 +614,9 @@ pub fn lower_instance(ctx: &mut LowerCtx<'_>, decl: &InstanceDecl) -> Vec<IrItem
             .class_table
             .and_then(|ct| ct.id_by_name(&ctx_class_name));
         #[allow(clippy::cast_possible_truncation)]
-        let tyvid = ridge_types::TyVid(i as u32);
+        let tyvid = real_vars
+            .and_then(|v| v.get(i).copied())
+            .unwrap_or(ridge_types::TyVid(i as u32));
         dict_params.push(IrParam {
             name: format!("$dict_{ctx_class_name}_{}", tyvid.0),
             ty: Type::Error, // untyped in IR — dicts are plain BEAM maps
@@ -4519,10 +4554,42 @@ fn build_from_sql_call(ctx: &mut LowerCtx<'_>, type_tag: &str, sv: IrExpr, sp: S
     }
 }
 
-/// Lower a derived `Row` instance: emit the `fromRow` and `toRow` method fns and
-/// the `$inst_Row_{Type}` dict that carries both. `Row` is the only structurally
-/// derived class with more than one method, so it has its own builder rather than
-/// the single-method path that follows it in [`lower_derived_instance`].
+/// Push one synthesized `Row` method fn (a single param, pure, untyped scheme)
+/// onto `items`. The three `Row` methods differ only in name, parameter, and body,
+/// so they share this boilerplate.
+fn push_row_method(
+    ctx: &LowerCtx<'_>,
+    items: &mut Vec<IrItem>,
+    name: String,
+    param_name: &str,
+    body: IrExpr,
+    sp: Span,
+) {
+    items.push(IrItem::Fn(IrFn {
+        name,
+        module: ctx.module_id,
+        params: vec![IrParam {
+            name: param_name.to_string(),
+            ty: Type::Error,
+            span: sp,
+        }],
+        ret_ty: Type::Error,
+        caps: ridge_types::CapabilitySet::PURE,
+        scheme: Scheme::mono(Type::Error),
+        body,
+        origin: NodeId(0),
+        span: sp,
+        is_pub: false,
+        is_main: false,
+        doc: None,
+    }));
+}
+
+/// Lower a derived `Row` instance: emit the `fromRow`, `toRow`, and `rowColumns`
+/// method fns and the `$inst_Row_{Type}` dict that carries all three. `Row` is the
+/// only structurally derived class with more than one method, so it has its own
+/// builder rather than the single-method path that follows it in
+/// [`lower_derived_instance`].
 fn build_row_instance(
     ctx: &mut LowerCtx<'_>,
     tycon: ridge_types::TyConId,
@@ -4547,49 +4614,34 @@ fn build_row_instance(
         sp,
     );
     let from_fn_name = format!("Row__{type_name}__fromRow");
-    items.push(IrItem::Fn(IrFn {
-        name: from_fn_name.clone(),
-        module: ctx.module_id,
-        params: vec![IrParam {
-            name: "r".to_string(),
-            ty: Type::Error,
-            span: sp,
-        }],
-        ret_ty: Type::Error,
-        caps: ridge_types::CapabilitySet::PURE,
-        scheme: Scheme::mono(Type::Error),
-        body: from_body,
-        origin: NodeId(0),
-        span: sp,
-        is_pub: false,
-        is_main: false,
-        doc: None,
-    }));
+    push_row_method(ctx, &mut items, from_fn_name.clone(), "r", from_body, sp);
 
     // toRow (x: T) -> Map Text SqlValue
     let to_body =
         build_to_row_record_body(ctx, field_names, columns, field_type_names, optionals, sp);
     let to_fn_name = format!("Row__{type_name}__toRow");
-    items.push(IrItem::Fn(IrFn {
-        name: to_fn_name.clone(),
-        module: ctx.module_id,
-        params: vec![IrParam {
-            name: "x".to_string(),
-            ty: Type::Error,
-            span: sp,
-        }],
-        ret_ty: Type::Error,
-        caps: ridge_types::CapabilitySet::PURE,
-        scheme: Scheme::mono(Type::Error),
-        body: to_body,
-        origin: NodeId(0),
-        span: sp,
-        is_pub: false,
-        is_main: false,
-        doc: None,
-    }));
+    push_row_method(ctx, &mut items, to_fn_name.clone(), "x", to_body, sp);
 
-    // $inst_Row_{Type} = #{ 'fromRow' => fun fromRowFn, 'toRow' => fun toRowFn }
+    // rowColumns (w: Option T) -> List Text — a literal list of the snake-cased
+    // column names in declaration order. The witness `w` is ignored; only its type
+    // selected this instance.
+    let cols_body = IrExpr::ListLit {
+        id: ctx.fresh_id(None),
+        elems: columns
+            .iter()
+            .map(|c| IrExpr::Lit {
+                id: ctx.fresh_id(None),
+                value: IrLit::Text(c.clone()),
+                span: sp,
+            })
+            .collect(),
+        span: sp,
+    };
+    let cols_fn_name = format!("Row__{type_name}__rowColumns");
+    push_row_method(ctx, &mut items, cols_fn_name.clone(), "w", cols_body, sp);
+
+    // $inst_Row_{Type} = #{ 'fromRow' => fun fromRowFn, 'toRow' => fun toRowFn,
+    //                       'rowColumns' => fun rowColumnsFn }
     let dict_name = format!("$inst_Row_{type_name}");
     let dict_value = IrExpr::Construct {
         id: ctx.fresh_id(None),
@@ -4617,6 +4669,17 @@ fn build_row_instance(
                     id: ctx.fresh_id(None),
                     sym: SymbolRef::Local {
                         name: to_fn_name,
+                        module: ctx.module_id,
+                    },
+                    span: sp,
+                },
+            ),
+            (
+                "rowColumns".to_string(),
+                IrExpr::Symbol {
+                    id: ctx.fresh_id(None),
+                    sym: SymbolRef::Local {
+                        name: cols_fn_name,
                         module: ctx.module_id,
                     },
                     span: sp,

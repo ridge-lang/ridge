@@ -360,16 +360,28 @@ const BASELINE_EXPORTS: &[(&str, &[&str])] = &[
         &[
             // The opaque SQL column value plus the SqlType codec class and its
             // methods, all importable from user code.
-            "SqlValue", "SqlType", "toSql", "fromSql",
+            "SqlValue",
+            "SqlType",
+            "toSql",
+            "fromSql",
             // The Row codec class and its methods (`deriving (Row)` generates the
             // instances). `fromRow` maps a `Map Text SqlValue` row back to a
-            // record; `toRow` encodes a record into a row to write.
-            "Row", "fromRow", "toRow",
+            // record; `toRow` encodes a record into a row to write; `rowColumns`
+            // names the columns from the type alone (a phantom `Option a` witness).
+            "Row",
+            "fromRow",
+            "toRow",
+            "rowColumns",
             // Monomorphic SqlValue factories (the variants stay opaque).
-            "sqlInt", "sqlText", "sqlBool", "sqlFloat",
+            "sqlInt",
+            "sqlText",
+            "sqlBool",
+            "sqlFloat",
             // The safe SQL statement-text wrapper, its factory, and accessor —
             // a data-layer concern, declared in sql.ridge.
-            "Sql", "sql", "sqlValue",
+            "Sql",
+            "sql",
+            "sqlValue",
         ],
     ),
     (
@@ -388,6 +400,33 @@ const BASELINE_EXPORTS: &[(&str, &[&str])] = &[
             "Asc",
             "Desc",
             "ascending",
+            // The query-plan tree, its three constructors, and the builders that
+            // wrap them, declared in query.ridge. The set-operation terminals build a
+            // `QueryPlan` through the builders and hand it to a backend's `runPlan`.
+            "QueryPlan",
+            "PlanScan",
+            "PlanCombine",
+            "PlanRefine",
+            "PlanJoin",
+            "PlanProject",
+            "PlanAggregate",
+            "PlanGroup",
+            "planScan",
+            "planCombine",
+            "planRefine",
+            "planJoin",
+            "planProject",
+            "planAggregate",
+            "planGroup",
+            // The plan-to-SQL renderer: lowers a whole `QueryPlan` to one
+            // parameterized statement plus its ordered bind values.
+            "planToSql",
+            // The plan-to-plan optimizer: rewrites a `QueryPlan` into an
+            // equivalent one that compiles to tighter SQL (the renderer's pre-pass).
+            "optimize",
+            // The existence-probe wrapper: compiles a sub-plan to
+            // `SELECT 1 FROM … LIMIT 1` for an `exists` terminal.
+            "planExists",
         ],
     ),
     (
@@ -407,27 +446,7 @@ const BASELINE_EXPORTS: &[(&str, &[&str])] = &[
             "countWhere",
             "aggregate",
             "project",
-            "join",
-            "joinSelect",
-            "leftJoin",
-            "leftJoinSelect",
-            "aggregateJoin",
-            "aggregateLeftJoin",
-            "countJoin",
-            "countLeftJoin",
             "groupSummarize",
-            "groupSummarizeJoin",
-            "groupSummarizeLeftJoin",
-            "rightJoin",
-            "rightJoinSelect",
-            "aggregateRightJoin",
-            "countRightJoin",
-            "groupSummarizeRightJoin",
-            "fullJoin",
-            "fullJoinSelect",
-            "aggregateFullJoin",
-            "countFullJoin",
-            "groupSummarizeFullJoin",
             "runPlan",
             // Transaction control: open, commit, and roll back a transaction
             // (nesting opens a savepoint). The `Repo.transaction` combinator runs
@@ -575,6 +594,30 @@ const BASELINE_EXPORTS: &[(&str, &[&str])] = &[
             // entry, keeping every row of both tables with both sides read as `Option`.
             "FullJoin",
             "fullJoinOn",
+            // The N-ary inner join: chaining `joinOn` past the first table produces
+            // the opaque nested `Joined q f a`, the `Joinable` class unifying the
+            // builder across a query (binary `Join`) and a join (nested `Joined`).
+            // Its decode terminals (`toList`/`first`) are the `Decodable` methods.
+            "Joined",
+            "Joinable",
+            // The N-ary LEFT outer join: chaining `leftJoinOn` onto a composite
+            // produces the opaque nested `LeftJoined q f a`, the `LeftJoinable` class
+            // unifying the verb across a query (binary `LeftJoin`) and a composite
+            // (nested `LeftJoined`). Its decode terminals are the `Decodable` methods.
+            "LeftJoined",
+            "LeftJoinable",
+            // The N-ary RIGHT outer join: chaining `rightJoinOn` onto a composite
+            // produces the opaque nested `RightJoined q f a`, the `RightJoinable`
+            // class unifying the verb across a query (binary `RightJoin`) and a
+            // composite (nested `RightJoined`).
+            "RightJoined",
+            "RightJoinable",
+            // The N-ary FULL outer join: chaining `fullJoinOn` onto a composite
+            // produces the opaque nested `FullJoined q f a`, the `FullJoinable` class
+            // unifying the verb across a query (binary `FullJoin`) and a composite
+            // (nested `FullJoined`).
+            "FullJoined",
+            "FullJoinable",
             // Grouped aggregates unified across a query and a join: the opaque
             // `Grouped q p` builder produced by the `Groupable` class's `groupBy`,
             // narrowed by `having`, and summarised into a named record by
@@ -656,6 +699,10 @@ const BASELINE_OPAQUE: &[(&str, &[&str])] = &[
             "LeftJoin",
             "RightJoin",
             "FullJoin",
+            "Joined",
+            "LeftJoined",
+            "RightJoined",
+            "FullJoined",
             "Setter",
             "Grouped",
         ],

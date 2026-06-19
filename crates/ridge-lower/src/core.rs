@@ -59,7 +59,7 @@ use ridge_ast::{
 };
 use ridge_ir::{IrExpr, IrLit, IrParam, IrPat, SymbolRef};
 use ridge_resolve::{imports::Binding, ModuleId, NodeKind, StdlibModuleId, BUILTINS};
-use ridge_types::{CapRow, TyConId, Type};
+use ridge_types::{CapRow, TyConId, TyConKind, Type};
 
 use crate::ast_type::lower_ast_type;
 use crate::block::{lower_assign, lower_block};
@@ -885,13 +885,19 @@ const QEXPR_TYCON: TyConId = TyConId(25);
 /// `JsonValue` are synthesised), and the `Quote` wrapper is a record that lowers
 /// to a map. No other module's constructors are referenced.
 ///
-/// A two-parameter quote (a join condition or projection) ranges over a left and
-/// a right entity. Columns of the second parameter reify to `QColR` so the seam
-/// keeps the two tables apart; everything else stays `QCol`. `params` carries the
-/// lambda's parameters so the second one's name can be recognised.
+/// A multi-parameter quote (a join condition or projection) ranges over one
+/// entity per parameter — a left and a right for a binary join, three or more
+/// for an N-ary one. A column reifies to the node for its source's leaf index:
+/// `QCol` for the first (or only) parameter, `QColR` for the second, and
+/// `QColAt <i>` for the third onward. The leaf order is the parameter order, so
+/// it lines up with the left-to-right walk of the join tree. `params` carries
+/// the lambda's parameters so each one's name can be matched to its index.
 fn reify_quote(ctx: &mut LowerCtx<'_>, body: &Expr, span: Span, params: &[LambdaParam]) -> IrExpr {
-    let right = lambda_param_name(params.get(1));
-    let tree = reify_node(ctx, body, right.as_deref());
+    let names: Vec<String> = params
+        .iter()
+        .map(|p| lambda_param_name(Some(p)).unwrap_or_default())
+        .collect();
+    let tree = reify_node(ctx, body, &names);
     IrExpr::Construct {
         id: ctx.fresh_id(None),
         ctor: SymbolRef::Constructor {
@@ -963,16 +969,23 @@ fn lambda_param_name(p: Option<&LambdaParam>) -> Option<String> {
     }
 }
 
-/// Reify one node of a quoted body into a `QExpr` value. `right` is the name of
-/// the quote's second parameter (the right side of a join), or `None` for a
-/// single-parameter quote; a column access on `right` reifies to `QColR`.
-fn reify_node(ctx: &mut LowerCtx<'_>, e: &Expr, right: Option<&str>) -> IrExpr {
+/// Reify one node of a quoted body into a `QExpr` value. `params` is the quote's
+/// parameter names in order, so a column access can be tagged with its source's
+/// leaf index: the first parameter reifies to `QCol`, the second to `QColR`, and
+/// the third onward to `QColAt <i>`. A single-parameter quote passes one name and
+/// every column stays `QCol`.
+#[expect(
+    clippy::too_many_lines,
+    reason = "one linear walk over the quoted-body node shapes (column access, literals, comparisons, boolean operators); splitting it would scatter the shared reification setup"
+)]
+fn reify_node(ctx: &mut LowerCtx<'_>, e: &Expr, params: &[String]) -> IrExpr {
     use ridge_ast::BinOp;
     match e {
-        Expr::Paren { inner, .. } => reify_node(ctx, inner, right),
+        Expr::Paren { inner, .. } => reify_node(ctx, inner, params),
 
-        // `u.field` → `QCol "<sql column>"`; a column of the right join entity
-        // (`p.field`) → `QColR "<sql column>"`.
+        // `u.field` → the column node for `u`'s leaf: `QCol` for the first
+        // parameter (or a single-table quote), `QColR` for the second, and
+        // `QColAt <i>` for the third onward.
         Expr::FieldAccess { base, field, span } => {
             let col = ridge_ast::column_mirror::column_sql_name(&field.text);
             let name_lit = IrExpr::Lit {
@@ -980,12 +993,21 @@ fn reify_node(ctx: &mut LowerCtx<'_>, e: &Expr, right: Option<&str>) -> IrExpr {
                 value: IrLit::Text(col),
                 span: *span,
             };
-            let is_right =
-                matches!(base.as_ref(), Expr::Ident(id) if Some(id.text.as_str()) == right);
-            if is_right {
-                qexpr_node(ctx, "QColR", 15, vec![name_lit], *span)
-            } else {
-                qexpr_node(ctx, "QCol", 0, vec![name_lit], *span)
+            let leaf = match base.as_ref() {
+                Expr::Ident(id) => params.iter().position(|n| n == &id.text),
+                _ => None,
+            };
+            match leaf {
+                Some(1) => qexpr_node(ctx, "QColR", 15, vec![name_lit], *span),
+                Some(i) if i >= 2 => {
+                    let idx_lit = IrExpr::Lit {
+                        id: ctx.fresh_id(None),
+                        value: IrLit::Int(i64::try_from(i).unwrap_or(i64::MAX)),
+                        span: *span,
+                    };
+                    qexpr_node(ctx, "QColAt", 22, vec![idx_lit, name_lit], *span)
+                }
+                _ => qexpr_node(ctx, "QCol", 0, vec![name_lit], *span),
             }
         }
 
@@ -1024,8 +1046,8 @@ fn reify_node(ctx: &mut LowerCtx<'_>, e: &Expr, right: Option<&str>) -> IrExpr {
                     return unit_lit(ctx, *span);
                 }
             };
-            let l = reify_node(ctx, lhs, right);
-            let r = reify_node(ctx, rhs, right);
+            let l = reify_node(ctx, lhs, params);
+            let r = reify_node(ctx, rhs, params);
             qexpr_node(ctx, name, variant, vec![l, r], *span)
         }
 
@@ -1046,7 +1068,7 @@ fn reify_node(ctx: &mut LowerCtx<'_>, e: &Expr, right: Option<&str>) -> IrExpr {
                         span: fi.span,
                     };
                     let col = if let Some(v) = &fi.value {
-                        reify_node(ctx, v, right)
+                        reify_node(ctx, v, params)
                     } else {
                         ctx.errors.push(LowerError::InternalLoweringError {
                             span: fi.span,
@@ -1250,23 +1272,26 @@ fn reify_group_node(ctx: &mut LowerCtx<'_>, e: &Expr, g_name: &str) -> IrExpr {
     }
 }
 
-/// Reify a group aggregate's inner column accessor into the `QCol`/`QColR` it
-/// names. A one-row accessor (`fn u -> u.col`) names a single left column; a two-row
-/// accessor over a join (`fn u p -> p.col`) names a column from either side, so the
-/// second parameter's name marks the right entity exactly as in a row quote — a
-/// field access on it reifies to `QColR`, on the first to `QCol`.
+/// Reify a group aggregate's inner column accessor into the column node it names.
+/// A one-row accessor (`fn u -> u.col`) names a single left column; a join accessor
+/// (`fn u p -> p.col`) names a column from either side, tagged by leaf index exactly
+/// as a row quote tags one — `QCol` for the first parameter, `QColR` for the second,
+/// `QColAt <i>` for the third onward.
 fn reify_group_agg_col(ctx: &mut LowerCtx<'_>, arg: &Expr) -> IrExpr {
     let mut inner = arg;
     while let Expr::Paren { inner: i, .. } = inner {
         inner = i;
     }
     if let Expr::Lambda { params, body, .. } = inner {
-        let right = lambda_param_name(params.get(1));
+        let names: Vec<String> = params
+            .iter()
+            .map(|p| lambda_param_name(Some(p)).unwrap_or_default())
+            .collect();
         let mut bd: &Expr = body;
         while let Expr::Paren { inner: i, .. } = bd {
             bd = i;
         }
-        return reify_node(ctx, bd, right.as_deref());
+        return reify_node(ctx, bd, &names);
     }
     ctx.errors.push(LowerError::InternalLoweringError {
         span: arg.span(),
@@ -1469,6 +1494,67 @@ fn deep_peel_alias(ty: &Type) -> Type {
         Type::Alias { body, .. } => deep_peel_alias(body),
         other => other.clone(),
     }
+}
+
+/// Substitute alias parameters with concrete arguments in a type body.
+fn subst_alias_params(t: &Type, params: &[ridge_types::TyVid], args: &[Type]) -> Type {
+    match t {
+        Type::Var(v) => params
+            .iter()
+            .position(|p| p == v)
+            .and_then(|i| args.get(i))
+            .cloned()
+            .unwrap_or_else(|| t.clone()),
+        Type::Con(id, sub_args) => Type::Con(
+            *id,
+            sub_args
+                .iter()
+                .map(|a| subst_alias_params(a, params, args))
+                .collect(),
+        ),
+        Type::Tuple(ts) => Type::Tuple(
+            ts.iter()
+                .map(|a| subst_alias_params(a, params, args))
+                .collect(),
+        ),
+        _ => t.clone(),
+    }
+}
+
+/// If `ty` is a `Type::Con` whose tycon is declared as a `TyConKind::Alias`,
+/// substitute the alias parameters and return the expanded body; otherwise
+/// return the type unchanged.
+///
+/// Used so that a transparent alias such as `Join e f a = Joined (Query e a) f a`
+/// dispatches through `Joined`'s instances when building sub-dictionary plans.
+///
+/// If the outer type carried more arguments than the alias has parameters (e.g. an
+/// augmented receiver `Join e f a s s s` padded for `Row s`), the extra arguments
+/// are appended to the expanded body's argument list so the augmented spine survives
+/// the expansion.
+fn expand_tycon_alias_once(ctx: &LowerCtx<'_>, ty: &Type) -> Type {
+    let Type::Con(tycon, args) = ty else {
+        return ty.clone();
+    };
+    let Some(decl) = ctx.workspace.and_then(|ws| ws.tycons.get(tycon.0 as usize)) else {
+        return ty.clone();
+    };
+    let TyConKind::Alias { params, body } = &decl.kind else {
+        return ty.clone();
+    };
+    let n_params = params.len();
+    let expanded = subst_alias_params(body, params, args);
+    // When the outer type had more args than the alias's parameter count, those
+    // extra slots are application arguments on the expanded body (the alias was
+    // over-applied with augmentation padding). Append them to the expanded Con's
+    // arg list so they remain accessible at the expected head positions.
+    if args.len() > n_params {
+        if let Type::Con(exp_id, mut exp_args) = expanded {
+            exp_args.extend_from_slice(&args[n_params..]);
+            return Type::Con(exp_id, exp_args);
+        }
+    }
+    expanded
 }
 
 /// Find the concrete type a constraint variable was unified to at a call site.
@@ -1713,6 +1799,161 @@ fn single_static_plan_for_class(
     found.cloned()
 }
 
+/// The solved `DictPlan::Static` for `class` over the receiver type `recv_ty`, from
+/// this module's resolution table. Used to recover the constraint solver's plan for a
+/// receiver-keyed terminal whose context constraint over its predicate's return type
+/// (`SqlType n`/`Row s`) the lowering cannot rebuild from the receiver type alone — the
+/// solver resolved it against the full head, including the predicate.
+///
+/// A composite join terminal is keyed by its receiver tycon alone (`Joined`,
+/// `LeftJoined`, …), yet the same tycon serves every join depth: `select` over a
+/// three-table `Joined (Join …) f` and over a four-table `Joined (Joined …) f` both
+/// store a plan under that tycon. The two differ only in their receiver-bound context
+/// sub-dictionaries — a deeper source resolves `JoinShape q` to the composite instance,
+/// a shallower one to the binary. Keying the lookup on the tycon alone would return an
+/// arbitrary one (the resolution table is unordered), threading a composite `JoinShape`
+/// dictionary into a binary join (or the reverse) and crashing the decode. So when more
+/// than one plan shares the tycon, pick the one whose receiver-bound sub-dictionaries
+/// match the type spine the receiver carries; the single-plan case returns that plan
+/// unconditionally (the fallback). Returns `None` when no plan shares the tycon.
+fn stored_static_plan_for_receiver(
+    ctx: &LowerCtx<'_>,
+    class: ridge_types::ClassId,
+    tycon: TyConId,
+    recv_ty: &Type,
+) -> Option<ridge_typecheck::DictPlan> {
+    use ridge_typecheck::DictPlan;
+    let tmod = ctx
+        .workspace
+        .and_then(|ws| ws.modules.get(ctx.module_id.0 as usize))?;
+    // Prefer a strict match (join spine plus the projected record/column the
+    // receiver was augmented with); fall back to the first plan whose join spine
+    // alone agrees when no strict match exists — an average's `Float` result has
+    // no `SqlType Float` plan to match, yet its return dict is inert, so the
+    // spine decides. The final `any` fallback keeps the pre-spine behaviour for a
+    // receiver that carries no comparable spine at all.
+    let mut spine_fallback: Option<&DictPlan> = None;
+    let mut any_fallback: Option<&DictPlan> = None;
+    for ((cid, _), plan) in &tmod.dict_resolution {
+        if *cid != class {
+            continue;
+        }
+        let DictPlan::Static { tycon: t, .. } = plan else {
+            continue;
+        };
+        if *t != tycon {
+            continue;
+        }
+        any_fallback.get_or_insert(plan);
+        if dict_plan_matches_receiver(ctx, plan, recv_ty, true) {
+            return Some(plan.clone());
+        }
+        if spine_fallback.is_none() && dict_plan_matches_receiver(ctx, plan, recv_ty, false) {
+            spine_fallback = Some(plan);
+        }
+    }
+    spine_fallback.or(any_fallback).cloned()
+}
+
+/// Whether a stored dictionary plan's tycon spine agrees with the receiver type the
+/// call carries — the discriminator that tells two stored plans for one composite tycon
+/// at different join depths apart.
+///
+/// Walks both in lockstep: a `Static` plan's `tycon` must equal the type's head
+/// constructor, then each receiver-bound sub-dictionary (every context whose head
+/// position is not the predicate-return sentinel) must match the type argument at
+/// that position, recursively. A `Forward` plan or a variable type carries no tycon
+/// to compare on, so it is treated as a match — it never discriminates, only the
+/// concrete spine does.
+///
+/// `strict` also compares the determined predicate-return position (`Row s`/`SqlType
+/// n`), which the lowering pads into the receiver's trailing slots. This tells two
+/// same-shape joins projecting different records (or folding different column types)
+/// apart. Non-strict skips it, matching the join spine alone — used for the fallback.
+fn dict_plan_matches_receiver(
+    ctx: &LowerCtx<'_>,
+    plan: &ridge_typecheck::DictPlan,
+    ty: &Type,
+    strict: bool,
+) -> bool {
+    use ridge_typecheck::class_env::PREDICATE_RETURN_POS;
+    use ridge_typecheck::DictPlan;
+    let DictPlan::Static {
+        tycon, info, args, ..
+    } = plan
+    else {
+        return true;
+    };
+    // Expand a transparent tycon alias on the receiver before comparing heads. A
+    // join spine mixes representations: the base step `Joinable (Query e a)`
+    // yields the alias `Join e f a`, while each composite step yields `Joined`.
+    // The stored plan was built against the expanded `Joined (Query e a) f a`
+    // (the alias has no instances of its own), so the receiver's `Join` atom must
+    // expand to `Joined` here or the spine walk would mismatch one level early and
+    // thread a shallower plan into a deeper join.
+    let expanded = expand_tycon_alias_once(ctx, &deep_peel_alias(ty));
+    let Type::Con(head, targs) = expanded else {
+        return true;
+    };
+    // A plan never matches a receiver of a different head constructor — this is
+    // what tells `JoinShape (Query e a)` (the one-leaf base) apart from
+    // `JoinShape (Joined …)` (the recursive step) when both are stored for the
+    // same nested-join spine. Check it before any structural short-circuit.
+    if *tycon != head {
+        return false;
+    }
+    // A non-parametric instance (no head variable positions) has matched on its
+    // tycon alone and carries no further type structure to compare — for example
+    // a `Row` or `Adapter` sub-dictionary whose head is already pinned. Accept it.
+    if info.head_var_positions.is_empty() {
+        return true;
+    }
+    // Where the lowering's projection padding begins: one past the highest
+    // receiver-bound head position. A `Projectable`/`Aggregable` receiver is
+    // augmented with the determined predicate-return type (`Row s`/`SqlType n`)
+    // repeated into its trailing argument slots, so this matcher can compare it
+    // even though no receiver-bound position names it. Two joins of the same
+    // shape projecting different records share every receiver-bound position and
+    // differ only here, so without this check the spine walk picks whichever plan
+    // is stored first and threads the wrong row decoder. `None` when the receiver
+    // carries no such padding (a non-augmented call), where the predicate return
+    // is left unconstrained and the spine alone decides, as before.
+    let proj_start = info
+        .head_var_positions
+        .iter()
+        .filter(|&&p| p != PREDICATE_RETURN_POS)
+        .map(|&p| p + 1)
+        .max();
+    for (i, sub) in args.iter().enumerate() {
+        let Some(&pos) = info.head_var_positions.get(i) else {
+            continue;
+        };
+        if pos == PREDICATE_RETURN_POS {
+            // The determined predicate return (`Row s`/`SqlType n`), padded into the
+            // receiver's trailing slots by the lowering. In strict mode a plan whose
+            // return dict names a different type than this call records is rejected;
+            // non-strict leaves it to the spine. An average's `Float` result has no
+            // matching `SqlType` plan but its return dict is inert, so it relies on
+            // the non-strict spine fallback in `stored_static_plan_for_receiver`.
+            if strict {
+                if let Some(proj_ty) = proj_start.and_then(|start| targs.get(start)) {
+                    if !dict_plan_matches_receiver(ctx, sub, proj_ty, strict) {
+                        return false;
+                    }
+                }
+            }
+            continue;
+        }
+        let Some(arg_ty) = targs.get(pos) else {
+            continue;
+        };
+        if !dict_plan_matches_receiver(ctx, sub, arg_ty, strict) {
+            return false;
+        }
+    }
+    true
+}
+
 /// Structural equality for two dictionary plans, used to tell "the same instance
 /// registered by two call sites" apart from "two distinct instances".
 ///
@@ -1795,13 +2036,69 @@ pub(crate) fn classmethod_binding(ctx: &LowerCtx<'_>, callee: &Expr) -> Option<(
     }
 }
 
+/// Align an argument's inferred type against a method parameter's AST annotation
+/// and return the sub-type sitting where a class type variable appears in the
+/// annotation.
+///
+/// For `rowColumns (witness: Option a)` called with an argument of inferred type
+/// `Option e`, the annotation `Option a` carries the class variable `a` inside
+/// the `Option` constructor; walking both in lockstep yields `e`. Used to pin a
+/// class method whose class variable is nested in a parameter rather than the
+/// bare parameter itself. Returns `None` when the shapes do not line up or the
+/// annotation holds no class variable.
+fn align_classvar_in_arg(
+    param_ast: &ridge_ast::Type,
+    arg_ty: &Type,
+    class_vars: &[String],
+) -> Option<Type> {
+    use ridge_ast::Type as A;
+    match param_ast {
+        // The annotation IS a class variable: the aligned concrete type is the
+        // argument type at this position.
+        A::Var { name, .. } if class_vars.contains(&name.text) => Some(arg_ty.clone()),
+        // `Option a`, `Map k v`, … — recurse positionally into the constructor's
+        // arguments. The inferred side is a `Con` (peel any transparent alias).
+        A::App { args, .. } => {
+            if let Type::Con(_, ty_args) = deep_peel_alias(arg_ty) {
+                args.iter()
+                    .zip(ty_args.iter())
+                    .find_map(|(a, t)| align_classvar_in_arg(a, t, class_vars))
+            } else {
+                None
+            }
+        }
+        // `[a]` — the inferred side is the list `Con` with one element argument.
+        A::List { elem, .. } => {
+            if let Type::Con(_, ty_args) = deep_peel_alias(arg_ty) {
+                ty_args
+                    .first()
+                    .and_then(|t| align_classvar_in_arg(elem, t, class_vars))
+            } else {
+                None
+            }
+        }
+        A::Tuple { elems, .. } => {
+            if let Type::Tuple(ty_elems) = arg_ty {
+                elems
+                    .iter()
+                    .zip(ty_elems.iter())
+                    .find_map(|(a, t)| align_classvar_in_arg(a, t, class_vars))
+            } else {
+                None
+            }
+        }
+        _ => None,
+    }
+}
+
 /// The concrete type pinning the class variable at a bare class-method call.
 ///
-/// Locates the method parameter declared as the bare class type variable and
-/// reads the resolved type of the argument in that position. Returns `None` when
-/// the class variable is not a direct parameter — a nested occurrence
-/// (`describe (xs: List a)`) or a return-only one (`decode (j) -> a`) — leaving
-/// those to the generic lowering path.
+/// Locates the method parameter that carries the class type variable — either as
+/// the bare parameter (`toRow (x: a)`) or nested inside a constructor
+/// (`rowColumns (witness: Option a)`, aligned via [`align_classvar_in_arg`]) —
+/// and reads the resolved type of the argument in that position. Returns `None`
+/// for a return-only class variable (`decode (j) -> a`) or when no argument
+/// carries the variable, leaving those to the generic lowering path.
 fn classmethod_pin_type(
     ctx: &LowerCtx<'_>,
     class: ridge_types::ClassId,
@@ -1815,18 +2112,46 @@ fn classmethod_pin_type(
     let sig = info.method_sigs.iter().find(|m| m.name == method)?;
 
     // For source-declared class methods, `ast_param_types` carries the AST
-    // annotations; find the parameter where the class type variable appears.
+    // annotations; find the parameter that carries the class type variable.
     if !sig.ast_param_types.is_empty() {
-        let pos = sig.ast_param_types.iter().position(|t| {
+        // (1) A parameter that IS the class variable (`toRow (x: a)`): pin from
+        //     its full argument type.
+        if let Some(pos) = sig.ast_param_types.iter().position(|t| {
             matches!(t, ridge_ast::Type::Var { name, .. }
                 if sig.class_ty_vars.contains(&name.text))
-        })?;
-        let arg = args.get(pos)?;
-        let node_id = ctx
-            .node_id_map
-            .as_ref()
-            .and_then(|m| m.get(arg.span(), NodeKind::Expr))?;
-        return ctx.node_type(node_id).cloned().map(|t| deep_peel_alias(&t));
+        }) {
+            let arg = args.get(pos)?;
+            let node_id = ctx
+                .node_id_map
+                .as_ref()
+                .and_then(|m| m.get(arg.span(), NodeKind::Expr))?;
+            return ctx.node_type(node_id).cloned().map(|t| deep_peel_alias(&t));
+        }
+        // (2) A parameter whose type CONTAINS the class variable nested in a
+        //     constructor (`rowColumns (witness: Option a)`): align the argument's
+        //     inferred type against the annotation and read off the sub-type at the
+        //     class variable's position. This pins the forward variable the call
+        //     resolves — `Option e` against `Option a` yields `e` — so two such
+        //     calls on different entities (a binary outer join's left and right
+        //     `rowColumns`) forward their own dictionary instead of both collapsing
+        //     onto the first same-class one. The direct case above never matches
+        //     here, so this only runs when the variable is genuinely nested.
+        for (param_ast, arg) in sig.ast_param_types.iter().zip(args.iter()) {
+            let Some(node_id) = ctx
+                .node_id_map
+                .as_ref()
+                .and_then(|m| m.get(arg.span(), NodeKind::Expr))
+            else {
+                continue;
+            };
+            let Some(arg_ty) = ctx.node_type(node_id).cloned() else {
+                continue;
+            };
+            if let Some(found) = align_classvar_in_arg(param_ast, &arg_ty, &sig.class_ty_vars) {
+                return Some(deep_peel_alias(&found));
+            }
+        }
+        return None;
     }
 
     // For stdlib-registered methods (no AST param types), try each argument
@@ -1851,6 +2176,10 @@ fn classmethod_pin_type(
         // (`Refinable q p | q -> p`) is keyed by the full head tuple, so also
         // accept an argument whose head is the first atom of some instance head —
         // the receiver of `Repo.filter` pins `Query`/`Join`/`LeftJoin` this way.
+        //
+        // If no direct instance is found, try expanding a transparent tycon alias
+        // (e.g. `Join e f a = Joined (Query e a) f a`) and check the expansion.
+        // When found, return the expanded type so callers build the right dict.
         if let Type::Con(tycon, _) = &arg_ty {
             let single = env.get((class, *tycon)).is_some();
             let multi = env
@@ -1859,6 +2188,20 @@ fn classmethod_pin_type(
                 .any(|(cid, head)| *cid == class && head.first() == Some(tycon));
             if single || multi {
                 return Some(arg_ty);
+            }
+            // Try alias expansion.
+            let expanded = expand_tycon_alias_once(ctx, &arg_ty);
+            if let Type::Con(exp_tycon, _) = &expanded {
+                if exp_tycon != tycon {
+                    let exp_single = env.get((class, *exp_tycon)).is_some();
+                    let exp_multi = env
+                        .instances
+                        .keys()
+                        .any(|(cid, head)| *cid == class && head.first() == Some(exp_tycon));
+                    if exp_single || exp_multi {
+                        return Some(expanded);
+                    }
+                }
             }
         }
     }
@@ -2100,9 +2443,36 @@ fn build_dict_plan_from_type(
 ) -> Option<ridge_typecheck::DictPlan> {
     use ridge_typecheck::DictPlan;
 
-    match deep_peel_alias(ty) {
+    // Expand a transparent tycon alias (e.g. `Join e f a = Joined (Query e a) f a`)
+    // before instance lookup so alias tycons dispatch through their expansions.
+    let peeled = deep_peel_alias(ty);
+    let expanded = expand_tycon_alias_once(ctx, &peeled);
+    // Use the expanded type only when the alias body names a different tycon.
+    let effective_ty = match (&peeled, &expanded) {
+        (Type::Con(orig, _), Type::Con(new_id, _)) if orig != new_id => expanded,
+        _ => peeled,
+    };
+
+    match effective_ty {
         Type::Con(tycon, args) => {
             let env = ctx.instance_env?;
+            // An instance with a context constraint over its predicate's return type
+            // (a composite terminal's `SqlType n`/`Row s`, marked `PREDICATE_RETURN_POS`)
+            // cannot be rebuilt from the receiver type alone — the variable lives in the
+            // predicate, not the receiver's arguments. The constraint solver already
+            // resolved it against the full head, so reuse that stored plan, selected by
+            // the receiver type (its tycon plus the spine its sub-dictionaries must
+            // match, so two depths sharing the tycon do not cross their plans).
+            if let Some(info) = env.get((class, tycon)) {
+                if info
+                    .head_var_positions
+                    .contains(&ridge_typecheck::class_env::PREDICATE_RETURN_POS)
+                {
+                    if let Some(stored) = stored_static_plan_for_receiver(ctx, class, tycon, ty) {
+                        return Some(stored);
+                    }
+                }
+            }
             let Some(info) = env.get((class, tycon)) else {
                 // A multi-parameter instance with a functional dependency from the
                 // first position (`Refinable q p | q -> p`) is keyed by the whole
@@ -2208,7 +2578,8 @@ pub(crate) fn stdlib_class_home_module(class_name: &str) -> Option<&'static str>
         "SqlType" | "Row" => Some("std.sql"),
         "Adapter" => Some("std.data"),
         "Refinable" | "Projectable" | "Orderable" | "Aggregable" | "Decodable" | "Pageable"
-        | "Countable" | "Every" | "Groupable" | "Summarizable" => Some("std.repo"),
+        | "Countable" | "Every" | "Groupable" | "Summarizable" | "Joinable" | "JoinShape"
+        | "LeftJoinable" | "RightJoinable" | "FullJoinable" => Some("std.repo"),
         _ => None,
     }
 }

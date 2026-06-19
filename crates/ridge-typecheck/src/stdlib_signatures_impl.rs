@@ -1502,19 +1502,31 @@ mod tests {
     ///
     /// This is the `DoD` requirement from §10 T3 / §3.4 of the plan.
     #[test]
+    #[expect(
+        clippy::too_many_lines,
+        reason = "one skip-guard block per reconciled stdlib module; the guards read best kept together"
+    )]
     fn every_builtins_export_resolves_to_some_scheme() {
         let b = builtins();
         let mut missing: Vec<(&str, &str)> = Vec::new();
         for module in BUILTINS {
             for &name in module.exports {
                 // std.sql's `SqlType`/`Row` classes, their methods (`toSql`/
-                // `fromSql`/`fromRow`/`toRow`, seeded via `seed_sql_codec_schemes`
-                // rather than this signature table), and the opaque `SqlValue` type
-                // are not value schemes, so they have no `stdlib_signature` entry.
+                // `fromSql`/`fromRow`/`toRow`/`rowColumns`, seeded via
+                // `seed_sql_codec_schemes` rather than this signature table), and the
+                // opaque `SqlValue` type are not value schemes, so they have no
+                // `stdlib_signature` entry.
                 if module.name == "std.sql"
                     && matches!(
                         name,
-                        "SqlValue" | "SqlType" | "toSql" | "fromSql" | "Row" | "fromRow" | "toRow"
+                        "SqlValue"
+                            | "SqlType"
+                            | "toSql"
+                            | "fromSql"
+                            | "Row"
+                            | "fromRow"
+                            | "toRow"
+                            | "rowColumns"
                     )
                 {
                     continue;
@@ -1525,16 +1537,48 @@ mod tests {
                 // is a function whose signature references `SortOrder`, so it is
                 // seeded via `reconciled_fn_scheme` rather than this table.
                 if module.name == "std.query"
-                    && matches!(name, "SortOrder" | "Asc" | "Desc" | "orderSql" | "ascending")
+                    && matches!(
+                        name,
+                        "SortOrder"
+                            | "Asc"
+                            | "Desc"
+                            | "orderSql"
+                            | "ascending"
+                            // The reconciled `QueryPlan` tree, its constructors, and
+                            // its builders are seeded via `reconciled_decls` /
+                            // `reconciled_ctor_scheme` / `reconciled_fn_scheme`, not
+                            // this hand-curated table.
+                            | "QueryPlan"
+                            | "PlanScan"
+                            | "PlanCombine"
+                            | "PlanRefine"
+                            | "PlanJoin"
+                            | "PlanProject"
+                            | "PlanAggregate"
+                            | "PlanGroup"
+                            | "PlanExists"
+                            | "planScan"
+                            | "planCombine"
+                            | "planRefine"
+                            | "planJoin"
+                            | "planProject"
+                            | "planAggregate"
+                            | "planGroup"
+                            // `planToSql` takes the reconciled `QueryPlan`, so its
+                            // scheme is seeded via `reconciled_query_plan_fn_scheme`,
+                            // not this hand-curated table. `optimize` takes and returns
+                            // one, so it is seeded the same way.
+                            | "planToSql"
+                            | "optimize"
+                            | "planExists"
+                    )
                 {
                     continue;
                 }
                 // std.data: `Adapter` and its methods (`appendRow`/`all`/`selectRows`/
                 // `get`/`delete`/`updateRows`/`fetch`/`countWhere`/`aggregate`/
-                // `project`/`join`/`joinSelect`/`leftJoin`/`leftJoinSelect`/
-                // `rightJoin`/`rightJoinSelect`/`aggregateJoin`/`aggregateLeftJoin`/
-                // `aggregateRightJoin`/`countJoin`/`countLeftJoin`/`countRightJoin`)
-                // are a class seeded via `seed_sql_codec_schemes`;
+                // `project`/`groupSummarize`/`runPlan`) are a class seeded via
+                // `seed_sql_codec_schemes`;
                 // `MemAdapter`/`Postgres`/`Config` are reconciled types, and
                 // `memAdapter`/`connect` are seeded via `reconciled_fn_scheme`
                 // (their signatures name reconciled types), so none resolves
@@ -1553,27 +1597,7 @@ mod tests {
                             | "countWhere"
                             | "aggregate"
                             | "project"
-                            | "join"
-                            | "joinSelect"
-                            | "leftJoin"
-                            | "leftJoinSelect"
-                            | "aggregateJoin"
-                            | "aggregateLeftJoin"
-                            | "countJoin"
-                            | "countLeftJoin"
                             | "groupSummarize"
-                            | "groupSummarizeJoin"
-                            | "groupSummarizeLeftJoin"
-                            | "rightJoin"
-                            | "rightJoinSelect"
-                            | "aggregateRightJoin"
-                            | "countRightJoin"
-                            | "groupSummarizeRightJoin"
-                            | "fullJoin"
-                            | "fullJoinSelect"
-                            | "aggregateFullJoin"
-                            | "countFullJoin"
-                            | "groupSummarizeFullJoin"
                             | "runPlan"
                             | "begin"
                             | "commit"

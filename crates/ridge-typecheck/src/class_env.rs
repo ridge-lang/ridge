@@ -227,6 +227,15 @@ pub enum InstanceOrigin {
 
 // ── InstanceInfo ─────────────────────────────────────────────────────────────
 
+/// Sentinel `head_var_positions` entry for "the determined predicate's return
+/// type" — the last element of the flattened head — rather than a fixed index.
+///
+/// Used for a context constraint over a composite terminal's variable-arity
+/// predicate result (`SqlType n` on a scalar aggregate, `Row s` on a projection),
+/// whose variable's flattened position grows with the join depth. Resolved in
+/// [`crate::solve`]'s context-dictionary resolution.
+pub const PREDICATE_RETURN_POS: usize = usize::MAX;
+
 /// Metadata for a registered typeclass instance.
 #[derive(Debug, Clone)]
 pub struct InstanceInfo {
@@ -258,6 +267,12 @@ pub struct InstanceInfo {
     ///
     /// Always the same length as `ctx_constraints`. Empty for non-parametric
     /// instances.
+    ///
+    /// A position of [`PREDICATE_RETURN_POS`] is a sentinel for "the determined
+    /// predicate's return type" — the last element of the flattened head — used
+    /// for a context constraint over a variable-arity predicate's result (a
+    /// composite terminal's `SqlType n`/`Row s`, whose `n`/`s` sits at a position
+    /// that grows with the join depth rather than a fixed index).
     pub head_var_positions: Vec<usize>,
     /// How this instance was created.
     pub origin: InstanceOrigin,
@@ -897,6 +912,13 @@ pub fn register_stdlib_classes(ct: &mut ClassTable) {
                     ast_ret_type: None,
                     class_ty_vars: Vec::new(),
                 },
+                MethodSig {
+                    name: "rowColumns".to_string(),
+                    arity: 1,
+                    ast_param_types: vec![],
+                    ast_ret_type: None,
+                    class_ty_vars: Vec::new(),
+                },
             ],
             superclasses: vec![],
             def_module: None,
@@ -981,34 +1003,6 @@ pub fn register_stdlib_classes(ct: &mut ClassTable) {
                 MethodSig {
                     name: "project".to_string(),
                     arity: 8,
-                    ast_param_types: vec![],
-                    ast_ret_type: None,
-                    class_ty_vars: Vec::new(),
-                },
-                MethodSig {
-                    name: "join".to_string(),
-                    arity: 9,
-                    ast_param_types: vec![],
-                    ast_ret_type: None,
-                    class_ty_vars: Vec::new(),
-                },
-                MethodSig {
-                    name: "joinSelect".to_string(),
-                    arity: 10,
-                    ast_param_types: vec![],
-                    ast_ret_type: None,
-                    class_ty_vars: Vec::new(),
-                },
-                MethodSig {
-                    name: "leftJoin".to_string(),
-                    arity: 9,
-                    ast_param_types: vec![],
-                    ast_ret_type: None,
-                    class_ty_vars: Vec::new(),
-                },
-                MethodSig {
-                    name: "leftJoinSelect".to_string(),
-                    arity: 10,
                     ast_param_types: vec![],
                     ast_ret_type: None,
                     class_ty_vars: Vec::new(),
@@ -1211,6 +1205,143 @@ pub fn register_stdlib_classes(ct: &mut ClassTable) {
                     class_ty_vars: Vec::new(),
                 },
             ],
+            superclasses: vec![],
+            def_module: None,
+        },
+    );
+
+    // `Joinable` from std.repo — the N-ary inner-join entry point. A single
+    // parameter, the receiver `q` (a query, a binary join, or a nested join), with
+    // no functional dependency: the condition shape and the result type both follow
+    // the receiver through the `JoinCond q f` / `JoinResult q f` projections, not a
+    // second class parameter. The one method scheme is seeded directly (see
+    // `seed_joinable_scheme` in lib.rs) with no AST types, and the instances are
+    // registered in `register_stdlib_instances`. `joinOn` takes the right
+    // repository, the condition quote, and the receiver — sig arity 3.
+    let joinable_id = ct.intern("Joinable");
+    ct.insert_with_id(
+        joinable_id,
+        ClassInfo {
+            name: "Joinable".to_string(),
+            arity: 1,
+            method_sigs: vec![MethodSig {
+                name: "joinOn".to_string(),
+                arity: 3,
+                ast_param_types: vec![],
+                ast_ret_type: None,
+                class_ty_vars: Vec::new(),
+            }],
+            superclasses: vec![],
+            def_module: None,
+        },
+    );
+
+    // `JoinShape` from std.repo — the internal recursion a nested join's terminal
+    // stands on. A single parameter, the join source `q` (a binary `Join` or a
+    // nested `Joined`), no functional dependency. Its methods are never called by
+    // user code — only the `Decodable (Joined q f a)` instance reaches them, and
+    // the dicts come from the compiled stdlib — so the schemes are not seeded into
+    // the env; only the class and its instances are registered (the latter in
+    // `register_stdlib_instances`) so the `JoinShape q` constraint discharges.
+    let joinshape_id = ct.intern("JoinShape");
+    ct.insert_with_id(
+        joinshape_id,
+        ClassInfo {
+            name: "JoinShape".to_string(),
+            arity: 1,
+            method_sigs: vec![
+                MethodSig {
+                    name: "joinedLeaves".to_string(),
+                    arity: 1,
+                    ast_param_types: vec![],
+                    ast_ret_type: None,
+                    class_ty_vars: Vec::new(),
+                },
+                MethodSig {
+                    name: "joinedSourcePlan".to_string(),
+                    arity: 1,
+                    ast_param_types: vec![],
+                    ast_ret_type: None,
+                    class_ty_vars: Vec::new(),
+                },
+                MethodSig {
+                    name: "decodeJoined".to_string(),
+                    arity: 2,
+                    ast_param_types: vec![],
+                    ast_ret_type: None,
+                    class_ty_vars: Vec::new(),
+                },
+            ],
+            superclasses: vec![],
+            def_module: None,
+        },
+    );
+
+    // `LeftJoinable` from std.repo — the N-ary LEFT outer-join entry point, the
+    // LEFT dual of `Joinable`. A single parameter, the receiver `q` (a query, a
+    // binary join, or a nested join); the condition shape follows the receiver
+    // through `JoinCond q f` and the result through `LeftJoinResult q f`. The method
+    // scheme is seeded directly (see `seed_leftjoinable_scheme` in lib.rs) with no
+    // AST types, and the instances are registered in `register_stdlib_instances`.
+    // `leftJoinOn` takes the right repository, the condition quote, and the
+    // receiver — sig arity 3.
+    let left_joinable_id = ct.intern("LeftJoinable");
+    ct.insert_with_id(
+        left_joinable_id,
+        ClassInfo {
+            name: "LeftJoinable".to_string(),
+            arity: 1,
+            method_sigs: vec![MethodSig {
+                name: "leftJoinOn".to_string(),
+                arity: 3,
+                ast_param_types: vec![],
+                ast_ret_type: None,
+                class_ty_vars: Vec::new(),
+            }],
+            superclasses: vec![],
+            def_module: None,
+        },
+    );
+
+    // `RightJoinable` from std.repo — the N-ary RIGHT outer-join entry point, the
+    // RIGHT dual of `LeftJoinable`. The result follows the receiver through
+    // `RightJoinResult q f`. Seeded by `seed_rightjoinable_scheme`; instances in
+    // `register_stdlib_instances`. `rightJoinOn` sig arity 3.
+    let right_joinable_id = ct.intern("RightJoinable");
+    ct.insert_with_id(
+        right_joinable_id,
+        ClassInfo {
+            name: "RightJoinable".to_string(),
+            arity: 1,
+            method_sigs: vec![MethodSig {
+                name: "rightJoinOn".to_string(),
+                arity: 3,
+                ast_param_types: vec![],
+                ast_ret_type: None,
+                class_ty_vars: Vec::new(),
+            }],
+            superclasses: vec![],
+            def_module: None,
+        },
+    );
+
+    // `FullJoinable` from std.repo — the N-ary FULL outer-join entry point, the FULL
+    // dual of `Left`/`RightJoinable`. The result follows the receiver through
+    // `FullJoinResult q f`. Seeded by `seed_fulljoinable_scheme`; instances in
+    // `register_stdlib_instances`. `fullJoinOn` sig arity 3.
+    let full_joinable_id = ct.intern("FullJoinable");
+    ct.insert_with_id(
+        full_joinable_id,
+        ClassInfo {
+            name: "FullJoinable".to_string(),
+            arity: 1,
+            method_sigs: vec![MethodSig {
+                name: "fullJoinOn".to_string(),
+                arity: 3,
+                ast_param_types: vec![],
+                ast_ret_type: None,
+                class_ty_vars: Vec::new(),
+            }],
             superclasses: vec![],
             def_module: None,
         },
@@ -1500,14 +1631,6 @@ pub fn register_stdlib_instances(
             ("countWhere".to_string(), String::new()),
             ("aggregate".to_string(), String::new()),
             ("project".to_string(), String::new()),
-            ("join".to_string(), String::new()),
-            ("joinSelect".to_string(), String::new()),
-            ("leftJoin".to_string(), String::new()),
-            ("leftJoinSelect".to_string(), String::new()),
-            ("rightJoin".to_string(), String::new()),
-            ("rightJoinSelect".to_string(), String::new()),
-            ("fullJoin".to_string(), String::new()),
-            ("fullJoinSelect".to_string(), String::new()),
         ]
     };
     if let (Some(adapter), Some(&mem_adapter)) = (
@@ -1569,11 +1692,6 @@ pub fn register_stdlib_instances(
                     .entry((refinable, smallvec![query, fn1]))
                     .or_insert_with(refinable_inst);
             }
-            if let Some(&join) = reconciled_tycon_names.get("Join") {
-                env.instances
-                    .entry((refinable, smallvec![join, fn2]))
-                    .or_insert_with(refinable_inst);
-            }
             if let Some(&left_join) = reconciled_tycon_names.get("LeftJoin") {
                 env.instances
                     .entry((refinable, smallvec![left_join, fn2]))
@@ -1588,6 +1706,20 @@ pub fn register_stdlib_instances(
                 env.instances
                     .entry((refinable, smallvec![full_join, fn2]))
                     .or_insert_with(refinable_inst);
+            }
+            // The nested-join composites (`Joined`/`LeftJoined`/`RightJoined`/
+            // `FullJoined`) key their `filter` by the RECEIVER ALONE: the functional
+            // dependency collapses the predicate, whose leaf arity grows with the join
+            // depth, so one instance per receiver serves every depth. Discharge falls
+            // back to this receiver-only key when the full `[receiver, Fn/N]` head
+            // misses, and the dictionary is named for the receiver alone to match
+            // (see `discharge` and `lower_instance`).
+            for name in ["Joined", "LeftJoined", "RightJoined", "FullJoined"] {
+                if let Some(&tycon) = reconciled_tycon_names.get(name) {
+                    env.instances
+                        .entry((refinable, smallvec![tycon]))
+                        .or_insert_with(refinable_inst);
+                }
             }
         }
     }
@@ -1629,11 +1761,6 @@ pub fn register_stdlib_instances(
                     .entry((projectable, smallvec![query, fn1]))
                     .or_insert_with(|| projectable_inst(vec![1, 3]));
             }
-            if let Some(&join) = reconciled_tycon_names.get("Join") {
-                env.instances
-                    .entry((projectable, smallvec![join, fn2]))
-                    .or_insert_with(|| projectable_inst(vec![2, 5]));
-            }
             if let Some(&left_join) = reconciled_tycon_names.get("LeftJoin") {
                 env.instances
                     .entry((projectable, smallvec![left_join, fn2]))
@@ -1672,11 +1799,6 @@ pub fn register_stdlib_instances(
             if let Some(&query) = reconciled_tycon_names.get("Query") {
                 env.instances
                     .entry((orderable, smallvec![query, fn1]))
-                    .or_insert_with(orderable_inst);
-            }
-            if let Some(&join) = reconciled_tycon_names.get("Join") {
-                env.instances
-                    .entry((orderable, smallvec![join, fn2]))
                     .or_insert_with(orderable_inst);
             }
             if let Some(&left_join) = reconciled_tycon_names.get("LeftJoin") {
@@ -1735,11 +1857,6 @@ pub fn register_stdlib_instances(
                     .entry((aggregable, smallvec![query, fn1]))
                     .or_insert_with(|| aggregable_inst(vec![1, 3]));
             }
-            if let Some(&join) = reconciled_tycon_names.get("Join") {
-                env.instances
-                    .entry((aggregable, smallvec![join, fn2]))
-                    .or_insert_with(|| aggregable_inst(vec![2, 5]));
-            }
             if let Some(&left_join) = reconciled_tycon_names.get("LeftJoin") {
                 env.instances
                     .entry((aggregable, smallvec![left_join, fn2]))
@@ -1754,6 +1871,166 @@ pub fn register_stdlib_instances(
                 env.instances
                     .entry((aggregable, smallvec![full_join, fn2]))
                     .or_insert_with(|| aggregable_inst(vec![2, 5]));
+            }
+        }
+    }
+
+    // `Aggregable (Joined q f a)` and the three outer composites — the nested join's
+    // scalar aggregates. A fundep terminal, keyed by the RECEIVER ALONE (the accessor's
+    // leaf arity grows with the join depth); discharge falls back to the receiver-only
+    // key, as for the composite `Refinable`/`Every`. Source `where Adapter a, JoinShape
+    // q, Row f, SqlType n`: `a@2, q@0, f@1` in the receiver, and `n` — the folded
+    // column's type (`Ret p`) — at the accessor's return, whose flattened position grows
+    // with the join depth, so it resolves through the `PREDICATE_RETURN_POS` sentinel.
+    if let (Some(aggregable), Some(adapter), Some(joinshape), Some(row), Some(sqltype)) = (
+        ct.id_by_name("Aggregable"),
+        ct.id_by_name("Adapter"),
+        ct.id_by_name("JoinShape"),
+        ct.id_by_name("Row"),
+        ct.id_by_name("SqlType"),
+    ) {
+        let composite_aggregable_inst = || InstanceInfo {
+            def_module: None,
+            methods: vec![
+                ("sumOf".to_string(), String::new()),
+                ("avgOf".to_string(), String::new()),
+                ("minOf".to_string(), String::new()),
+                ("maxOf".to_string(), String::new()),
+            ],
+            ctx_constraints: vec![
+                ridge_types::Constraint::single(adapter, ridge_types::TyVid(0)),
+                ridge_types::Constraint::single(joinshape, ridge_types::TyVid(0)),
+                ridge_types::Constraint::single(row, ridge_types::TyVid(0)),
+                ridge_types::Constraint::single(sqltype, ridge_types::TyVid(0)),
+            ],
+            head_var_positions: vec![2, 0, 1, PREDICATE_RETURN_POS],
+            origin: InstanceOrigin::Explicit,
+            span: ds,
+        };
+        for name in ["Joined", "LeftJoined", "RightJoined", "FullJoined"] {
+            if let Some(&tycon) = reconciled_tycon_names.get(name) {
+                env.instances
+                    .entry((aggregable, smallvec![tycon]))
+                    .or_insert_with(composite_aggregable_inst);
+            }
+        }
+    }
+
+    // `Projectable (Joined q f a)` and the three outer composites — the nested join's
+    // `select`/`selectFirst`. A fundep terminal keyed by the RECEIVER ALONE (the
+    // projection's leaf arity grows with the join depth), like the composite
+    // `Aggregable`/`Refinable`. Source `where Adapter a, JoinShape q, Row s`: `a@2, q@0`
+    // in the receiver, and `Row s` — the projected shape (`Ret p`) — at the projection's
+    // return, whose flattened position grows with the join depth, so it resolves through
+    // the `PREDICATE_RETURN_POS` sentinel. The new leaf carries no column list in the
+    // plan (a projection names its own select-list), so the instance never touches `Row
+    // f` — only `Row s`, which would otherwise collide with `Row f` as a same-class
+    // context dictionary. The outer shapes improve the projection over `Option`-wrapped
+    // leaves optionally, so a null-extended leaf decodes as `None`; the `Map Text
+    // SqlValue -> s` projection shape is determined via the source instance lookup.
+    if let (Some(projectable), Some(adapter), Some(joinshape), Some(row)) = (
+        ct.id_by_name("Projectable"),
+        ct.id_by_name("Adapter"),
+        ct.id_by_name("JoinShape"),
+        ct.id_by_name("Row"),
+    ) {
+        let composite_projectable_inst = || InstanceInfo {
+            def_module: None,
+            methods: vec![
+                ("select".to_string(), String::new()),
+                ("selectFirst".to_string(), String::new()),
+            ],
+            ctx_constraints: vec![
+                ridge_types::Constraint::single(adapter, ridge_types::TyVid(0)),
+                ridge_types::Constraint::single(joinshape, ridge_types::TyVid(0)),
+                ridge_types::Constraint::single(row, ridge_types::TyVid(0)),
+            ],
+            head_var_positions: vec![2, 0, PREDICATE_RETURN_POS],
+            origin: InstanceOrigin::Explicit,
+            span: ds,
+        };
+        for name in ["Joined", "LeftJoined", "RightJoined", "FullJoined"] {
+            if let Some(&tycon) = reconciled_tycon_names.get(name) {
+                env.instances
+                    .entry((projectable, smallvec![tycon]))
+                    .or_insert_with(composite_projectable_inst);
+            }
+        }
+    }
+
+    // `Groupable (Joined q f a)` and the three outer composites — the nested join's
+    // `groupBy`. A fundep terminal keyed by the RECEIVER ALONE (the key accessor's leaf
+    // arity grows with the join depth), like the composite `Aggregable`/`Refinable`.
+    // `groupBy` only builds the `Grouped` record and reaches no store, so it carries no
+    // context constraints, exactly as the binary `Groupable` does.
+    if let Some(groupable) = ct.id_by_name("Groupable") {
+        let composite_groupable_inst = || InstanceInfo {
+            def_module: None,
+            methods: vec![("groupBy".to_string(), String::new())],
+            ctx_constraints: vec![],
+            head_var_positions: vec![],
+            origin: InstanceOrigin::Explicit,
+            span: ds,
+        };
+        for name in ["Joined", "LeftJoined", "RightJoined", "FullJoined"] {
+            if let Some(&tycon) = reconciled_tycon_names.get(name) {
+                env.instances
+                    .entry((groupable, smallvec![tycon]))
+                    .or_insert_with(composite_groupable_inst);
+            }
+        }
+    }
+
+    // `Orderable (Joined q f a)` and the three outer composites — the nested join's
+    // `orderBy`. A fundep terminal keyed by the RECEIVER ALONE (the key accessor's leaf
+    // arity grows with the join depth), like the composite `Groupable`/`Aggregable`.
+    // `orderBy` only appends the key to the composite's `orders` and reaches no store,
+    // so it carries no context constraints, exactly as the binary `Orderable` does.
+    if let Some(orderable) = ct.id_by_name("Orderable") {
+        let composite_orderable_inst = || InstanceInfo {
+            def_module: None,
+            methods: vec![("orderBy".to_string(), String::new())],
+            ctx_constraints: vec![],
+            head_var_positions: vec![],
+            origin: InstanceOrigin::Explicit,
+            span: ds,
+        };
+        for name in ["Joined", "LeftJoined", "RightJoined", "FullJoined"] {
+            if let Some(&tycon) = reconciled_tycon_names.get(name) {
+                env.instances
+                    .entry((orderable, smallvec![tycon]))
+                    .or_insert_with(composite_orderable_inst);
+            }
+        }
+    }
+
+    // `Summarizable (Joined q f a)` and the three outer composites — the nested join's
+    // `summarize` seam. A single-parameter class keyed by the RECEIVER tycon alone,
+    // carrying `where Adapter a, JoinShape q` to reach the store (`a@2`) and plan the
+    // source spine (`q@0`). The grouped projection names its own select-list, so the
+    // instance never touches `Row f`. `summarize` decodes the rows through its own
+    // `Row s`.
+    if let (Some(summarizable), Some(adapter), Some(joinshape)) = (
+        ct.id_by_name("Summarizable"),
+        ct.id_by_name("Adapter"),
+        ct.id_by_name("JoinShape"),
+    ) {
+        let composite_summarizable_inst = || InstanceInfo {
+            def_module: None,
+            methods: vec![("runGroups".to_string(), String::new())],
+            ctx_constraints: vec![
+                ridge_types::Constraint::single(adapter, ridge_types::TyVid(0)),
+                ridge_types::Constraint::single(joinshape, ridge_types::TyVid(0)),
+            ],
+            head_var_positions: vec![2, 0],
+            origin: InstanceOrigin::Explicit,
+            span: ds,
+        };
+        for name in ["Joined", "LeftJoined", "RightJoined", "FullJoined"] {
+            if let Some(&tycon) = reconciled_tycon_names.get(name) {
+                env.instances
+                    .entry((summarizable, smallvec![tycon]))
+                    .or_insert_with(composite_summarizable_inst);
             }
         }
     }
@@ -1819,11 +2096,6 @@ pub fn register_stdlib_instances(
                 .entry((decodable, smallvec![query]))
                 .or_insert_with(query_inst);
         }
-        if let Some(&join) = reconciled_tycon_names.get("Join") {
-            env.instances
-                .entry((decodable, smallvec![join]))
-                .or_insert_with(join_inst);
-        }
         if let Some(&left_join) = reconciled_tycon_names.get("LeftJoin") {
             env.instances
                 .entry((decodable, smallvec![left_join]))
@@ -1838,6 +2110,347 @@ pub fn register_stdlib_instances(
             env.instances
                 .entry((decodable, smallvec![full_join]))
                 .or_insert_with(join_inst);
+        }
+    }
+
+    // `Joinable (Query e a)`, `Joinable (Join e f a)`, and `Joinable (Joined q f
+    // a)` — the N-ary inner-join entry points from std.repo. A single-parameter
+    // class keyed by the receiver tycon alone. Like `Refinable`/`Pageable`, `joinOn`
+    // only builds a fresh join object (it never reaches the store), so these carry
+    // no context constraints and need no head-position augmentation.
+    if let Some(joinable) = ct.id_by_name("Joinable") {
+        let joinable_inst = || InstanceInfo {
+            def_module: None,
+            methods: vec![("joinOn".to_string(), String::new())],
+            ctx_constraints: vec![],
+            head_var_positions: vec![],
+            origin: InstanceOrigin::Explicit,
+            span: ds,
+        };
+        if let Some(&query) = reconciled_tycon_names.get("Query") {
+            env.instances
+                .entry((joinable, smallvec![query]))
+                .or_insert_with(joinable_inst);
+        }
+        if let Some(&joined) = reconciled_tycon_names.get("Joined") {
+            env.instances
+                .entry((joinable, smallvec![joined]))
+                .or_insert_with(joinable_inst);
+        }
+        // Inner-join after a left join: `joinOn` extends a `LeftJoined` composite
+        // into a deeper `Joined`, so the receiver carries a `Joinable (LeftJoined …)`
+        // instance too.
+        if let Some(&left_joined) = reconciled_tycon_names.get("LeftJoined") {
+            env.instances
+                .entry((joinable, smallvec![left_joined]))
+                .or_insert_with(joinable_inst);
+        }
+        // Inner-join after a right join, likewise.
+        if let Some(&right_joined) = reconciled_tycon_names.get("RightJoined") {
+            env.instances
+                .entry((joinable, smallvec![right_joined]))
+                .or_insert_with(joinable_inst);
+        }
+        // Inner-join after a full join, likewise.
+        if let Some(&full_joined) = reconciled_tycon_names.get("FullJoined") {
+            env.instances
+                .entry((joinable, smallvec![full_joined]))
+                .or_insert_with(joinable_inst);
+        }
+    }
+
+    // `LeftJoinable (Query e a)`, `(Join e f a)`, `(Joined q f a)`, and `(LeftJoined
+    // q f a)` — the N-ary LEFT outer-join entry points from std.repo, the LEFT dual
+    // of `Joinable`. Single-parameter, keyed by the receiver tycon alone; like
+    // `joinOn`, `leftJoinOn` only builds a fresh join object, so these carry no
+    // context constraints.
+    if let Some(left_joinable) = ct.id_by_name("LeftJoinable") {
+        let left_joinable_inst = || InstanceInfo {
+            def_module: None,
+            methods: vec![("leftJoinOn".to_string(), String::new())],
+            ctx_constraints: vec![],
+            head_var_positions: vec![],
+            origin: InstanceOrigin::Explicit,
+            span: ds,
+        };
+        if let Some(&query) = reconciled_tycon_names.get("Query") {
+            env.instances
+                .entry((left_joinable, smallvec![query]))
+                .or_insert_with(left_joinable_inst);
+        }
+        if let Some(&joined) = reconciled_tycon_names.get("Joined") {
+            env.instances
+                .entry((left_joinable, smallvec![joined]))
+                .or_insert_with(left_joinable_inst);
+        }
+        if let Some(&left_joined) = reconciled_tycon_names.get("LeftJoined") {
+            env.instances
+                .entry((left_joinable, smallvec![left_joined]))
+                .or_insert_with(left_joinable_inst);
+        }
+        if let Some(&right_joined) = reconciled_tycon_names.get("RightJoined") {
+            env.instances
+                .entry((left_joinable, smallvec![right_joined]))
+                .or_insert_with(left_joinable_inst);
+        }
+        if let Some(&full_joined) = reconciled_tycon_names.get("FullJoined") {
+            env.instances
+                .entry((left_joinable, smallvec![full_joined]))
+                .or_insert_with(left_joinable_inst);
+        }
+    }
+
+    // `RightJoinable` — the N-ary RIGHT outer-join entry points over a query and every
+    // composite, the RIGHT dual of `LeftJoinable`. Single-parameter, keyed by the
+    // receiver tycon; no context constraints (the verb only builds a fresh join).
+    if let Some(right_joinable) = ct.id_by_name("RightJoinable") {
+        let right_joinable_inst = || InstanceInfo {
+            def_module: None,
+            methods: vec![("rightJoinOn".to_string(), String::new())],
+            ctx_constraints: vec![],
+            head_var_positions: vec![],
+            origin: InstanceOrigin::Explicit,
+            span: ds,
+        };
+        for name in ["Query", "Joined", "LeftJoined", "RightJoined", "FullJoined"] {
+            if let Some(&tycon) = reconciled_tycon_names.get(name) {
+                env.instances
+                    .entry((right_joinable, smallvec![tycon]))
+                    .or_insert_with(right_joinable_inst);
+            }
+        }
+    }
+
+    // `FullJoinable` — the N-ary FULL outer-join entry points over a query and every
+    // composite. Single-parameter, keyed by the receiver tycon; no context
+    // constraints.
+    if let Some(full_joinable) = ct.id_by_name("FullJoinable") {
+        let full_joinable_inst = || InstanceInfo {
+            def_module: None,
+            methods: vec![("fullJoinOn".to_string(), String::new())],
+            ctx_constraints: vec![],
+            head_var_positions: vec![],
+            origin: InstanceOrigin::Explicit,
+            span: ds,
+        };
+        for name in ["Query", "Joined", "LeftJoined", "RightJoined", "FullJoined"] {
+            if let Some(&tycon) = reconciled_tycon_names.get(name) {
+                env.instances
+                    .entry((full_joinable, smallvec![tycon]))
+                    .or_insert_with(full_joinable_inst);
+            }
+        }
+    }
+
+    // `JoinShape (Query e a)` — the one-leaf base of the recursion, and
+    // `JoinShape (Joined q f a)` — the recursive step. Both single-parameter,
+    // keyed by the receiver tycon alone. The base carries `Row e` at `e@0`
+    // (the entity param); the step carries `JoinShape q, Row f` at `q@0, f@1`.
+    if let (Some(joinshape), Some(row)) = (ct.id_by_name("JoinShape"), ct.id_by_name("Row")) {
+        if let Some(&query) = reconciled_tycon_names.get("Query") {
+            // Base case `where Row e`: single `Row` dict at `e@0` (the first
+            // type param of `Query e a`).
+            env.instances
+                .entry((joinshape, smallvec![query]))
+                .or_insert_with(|| InstanceInfo {
+                    def_module: None,
+                    methods: vec![
+                        ("joinedLeaves".to_string(), String::new()),
+                        ("joinedSourcePlan".to_string(), String::new()),
+                        ("decodeJoined".to_string(), String::new()),
+                    ],
+                    ctx_constraints: vec![ridge_types::Constraint::single(
+                        row,
+                        ridge_types::TyVid(0),
+                    )],
+                    head_var_positions: vec![0],
+                    origin: InstanceOrigin::Explicit,
+                    span: ds,
+                });
+        }
+        if let Some(&joined) = reconciled_tycon_names.get("Joined") {
+            // Source `where JoinShape q, Row f`: body-appearance order (`q@0` then
+            // `f@1`).
+            env.instances
+                .entry((joinshape, smallvec![joined]))
+                .or_insert_with(|| InstanceInfo {
+                    def_module: None,
+                    methods: vec![
+                        ("joinedLeaves".to_string(), String::new()),
+                        ("joinedSourcePlan".to_string(), String::new()),
+                        ("decodeJoined".to_string(), String::new()),
+                    ],
+                    ctx_constraints: vec![
+                        ridge_types::Constraint::single(joinshape, ridge_types::TyVid(0)),
+                        ridge_types::Constraint::single(row, ridge_types::TyVid(0)),
+                    ],
+                    head_var_positions: vec![0, 1],
+                    origin: InstanceOrigin::Explicit,
+                    span: ds,
+                });
+        }
+        // `JoinShape (LeftJoined q f a)` — the recursion for decoding a LEFT outer
+        // composite as a source: decode the source via `JoinShape q`, then the new
+        // leaf optionally via `Row f`. Same context shape as the inner `Joined` step
+        // (`JoinShape q, Row f` at `q@0, f@1`).
+        if let Some(&left_joined) = reconciled_tycon_names.get("LeftJoined") {
+            env.instances
+                .entry((joinshape, smallvec![left_joined]))
+                .or_insert_with(|| InstanceInfo {
+                    def_module: None,
+                    methods: vec![
+                        ("joinedLeaves".to_string(), String::new()),
+                        ("joinedSourcePlan".to_string(), String::new()),
+                        ("decodeJoined".to_string(), String::new()),
+                    ],
+                    ctx_constraints: vec![
+                        ridge_types::Constraint::single(joinshape, ridge_types::TyVid(0)),
+                        ridge_types::Constraint::single(row, ridge_types::TyVid(0)),
+                    ],
+                    head_var_positions: vec![0, 1],
+                    origin: InstanceOrigin::Explicit,
+                    span: ds,
+                });
+        }
+        // `JoinShape (RightJoined q f a)` — decode the always-present new leaf via
+        // `Row f`, then the source optionally (as a unit) via `JoinShape q`. The
+        // source `where JoinShape q, Row f` keeps the same `q@0, f@1` context shape.
+        if let Some(&right_joined) = reconciled_tycon_names.get("RightJoined") {
+            env.instances
+                .entry((joinshape, smallvec![right_joined]))
+                .or_insert_with(|| InstanceInfo {
+                    def_module: None,
+                    methods: vec![
+                        ("joinedLeaves".to_string(), String::new()),
+                        ("joinedSourcePlan".to_string(), String::new()),
+                        ("decodeJoined".to_string(), String::new()),
+                    ],
+                    ctx_constraints: vec![
+                        ridge_types::Constraint::single(joinshape, ridge_types::TyVid(0)),
+                        ridge_types::Constraint::single(row, ridge_types::TyVid(0)),
+                    ],
+                    head_var_positions: vec![0, 1],
+                    origin: InstanceOrigin::Explicit,
+                    span: ds,
+                });
+        }
+        // `JoinShape (FullJoined q f a)` — decode both sides optionally: the new leaf
+        // via `Row f`, the source (as a unit) via `JoinShape q`. Same `q@0, f@1`
+        // context shape (`JoinShape q, Row f`).
+        if let Some(&full_joined) = reconciled_tycon_names.get("FullJoined") {
+            env.instances
+                .entry((joinshape, smallvec![full_joined]))
+                .or_insert_with(|| InstanceInfo {
+                    def_module: None,
+                    methods: vec![
+                        ("joinedLeaves".to_string(), String::new()),
+                        ("joinedSourcePlan".to_string(), String::new()),
+                        ("decodeJoined".to_string(), String::new()),
+                    ],
+                    ctx_constraints: vec![
+                        ridge_types::Constraint::single(joinshape, ridge_types::TyVid(0)),
+                        ridge_types::Constraint::single(row, ridge_types::TyVid(0)),
+                    ],
+                    head_var_positions: vec![0, 1],
+                    origin: InstanceOrigin::Explicit,
+                    span: ds,
+                });
+        }
+    }
+
+    // `Decodable (Joined q f a)` — the nested join's `toList`/`first`. Single
+    // parameter, keyed by `Joined`. Source `where Adapter a, JoinShape q, Row f`:
+    // the dicts in body-appearance order (`a@2` for runPlan, then `q@0`/`f@1` for
+    // the decode), the order the compiled instance binds them.
+    if let (Some(decodable), Some(adapter), Some(joinshape), Some(row)) = (
+        ct.id_by_name("Decodable"),
+        ct.id_by_name("Adapter"),
+        ct.id_by_name("JoinShape"),
+        ct.id_by_name("Row"),
+    ) {
+        if let Some(&joined) = reconciled_tycon_names.get("Joined") {
+            env.instances
+                .entry((decodable, smallvec![joined]))
+                .or_insert_with(|| InstanceInfo {
+                    def_module: None,
+                    methods: vec![
+                        ("toList".to_string(), String::new()),
+                        ("first".to_string(), String::new()),
+                    ],
+                    ctx_constraints: vec![
+                        ridge_types::Constraint::single(adapter, ridge_types::TyVid(0)),
+                        ridge_types::Constraint::single(joinshape, ridge_types::TyVid(0)),
+                        ridge_types::Constraint::single(row, ridge_types::TyVid(0)),
+                    ],
+                    head_var_positions: vec![2, 0, 1],
+                    origin: InstanceOrigin::Explicit,
+                    span: ds,
+                });
+        }
+        // `Decodable (LeftJoined q f a)` — the LEFT outer composite's `toList`/`first`.
+        // Same context shape as `Decodable (Joined …)`: `Adapter a, JoinShape q,
+        // Row f` at `a@2, q@0, f@1`.
+        if let Some(&left_joined) = reconciled_tycon_names.get("LeftJoined") {
+            env.instances
+                .entry((decodable, smallvec![left_joined]))
+                .or_insert_with(|| InstanceInfo {
+                    def_module: None,
+                    methods: vec![
+                        ("toList".to_string(), String::new()),
+                        ("first".to_string(), String::new()),
+                    ],
+                    ctx_constraints: vec![
+                        ridge_types::Constraint::single(adapter, ridge_types::TyVid(0)),
+                        ridge_types::Constraint::single(joinshape, ridge_types::TyVid(0)),
+                        ridge_types::Constraint::single(row, ridge_types::TyVid(0)),
+                    ],
+                    head_var_positions: vec![2, 0, 1],
+                    origin: InstanceOrigin::Explicit,
+                    span: ds,
+                });
+        }
+        // `Decodable (RightJoined q f a)` — the RIGHT outer composite's `toList`/
+        // `first`. Same context shape: `Adapter a, JoinShape q, Row f` at
+        // `a@2, q@0, f@1`.
+        if let Some(&right_joined) = reconciled_tycon_names.get("RightJoined") {
+            env.instances
+                .entry((decodable, smallvec![right_joined]))
+                .or_insert_with(|| InstanceInfo {
+                    def_module: None,
+                    methods: vec![
+                        ("toList".to_string(), String::new()),
+                        ("first".to_string(), String::new()),
+                    ],
+                    ctx_constraints: vec![
+                        ridge_types::Constraint::single(adapter, ridge_types::TyVid(0)),
+                        ridge_types::Constraint::single(joinshape, ridge_types::TyVid(0)),
+                        ridge_types::Constraint::single(row, ridge_types::TyVid(0)),
+                    ],
+                    head_var_positions: vec![2, 0, 1],
+                    origin: InstanceOrigin::Explicit,
+                    span: ds,
+                });
+        }
+        // `Decodable (FullJoined q f a)` — the FULL outer composite's `toList`/`first`.
+        // Same context shape: `Adapter a, JoinShape q, Row f` at `a@2, q@0, f@1`.
+        if let Some(&full_joined) = reconciled_tycon_names.get("FullJoined") {
+            env.instances
+                .entry((decodable, smallvec![full_joined]))
+                .or_insert_with(|| InstanceInfo {
+                    def_module: None,
+                    methods: vec![
+                        ("toList".to_string(), String::new()),
+                        ("first".to_string(), String::new()),
+                    ],
+                    ctx_constraints: vec![
+                        ridge_types::Constraint::single(adapter, ridge_types::TyVid(0)),
+                        ridge_types::Constraint::single(joinshape, ridge_types::TyVid(0)),
+                        ridge_types::Constraint::single(row, ridge_types::TyVid(0)),
+                    ],
+                    head_var_positions: vec![2, 0, 1],
+                    origin: InstanceOrigin::Explicit,
+                    span: ds,
+                });
         }
     }
 
@@ -1868,11 +2481,6 @@ pub fn register_stdlib_instances(
                 .entry((pageable, smallvec![query]))
                 .or_insert_with(pageable_inst);
         }
-        if let Some(&join) = reconciled_tycon_names.get("Join") {
-            env.instances
-                .entry((pageable, smallvec![join]))
-                .or_insert_with(pageable_inst);
-        }
         if let Some(&left_join) = reconciled_tycon_names.get("LeftJoin") {
             env.instances
                 .entry((pageable, smallvec![left_join]))
@@ -1887,6 +2495,16 @@ pub fn register_stdlib_instances(
             env.instances
                 .entry((pageable, smallvec![full_join]))
                 .or_insert_with(pageable_inst);
+        }
+        // `Pageable (Joined q f a)` — the composite's paging. No context
+        // constraints: the three paging fields (`lim`, `off`, `dist`) live at the
+        // outer `Joined` level and are set without reaching the adapter.
+        for name in ["Joined", "LeftJoined", "RightJoined", "FullJoined"] {
+            if let Some(&tycon) = reconciled_tycon_names.get(name) {
+                env.instances
+                    .entry((pageable, smallvec![tycon]))
+                    .or_insert_with(pageable_inst);
+            }
         }
     }
 
@@ -1919,11 +2537,6 @@ pub fn register_stdlib_instances(
                 .entry((countable, smallvec![query]))
                 .or_insert_with(|| countable_inst(1));
         }
-        if let Some(&join) = reconciled_tycon_names.get("Join") {
-            env.instances
-                .entry((countable, smallvec![join]))
-                .or_insert_with(|| countable_inst(2));
-        }
         if let Some(&left_join) = reconciled_tycon_names.get("LeftJoin") {
             env.instances
                 .entry((countable, smallvec![left_join]))
@@ -1938,6 +2551,41 @@ pub fn register_stdlib_instances(
             env.instances
                 .entry((countable, smallvec![full_join]))
                 .or_insert_with(|| countable_inst(2));
+        }
+    }
+
+    // `Countable (Joined q f a)` and the three outer composites — the nested join's
+    // `count`/`exists`. Single-parameter, keyed by the receiver alone. Source
+    // `where Adapter a, JoinShape q, Row f`: the dicts in body-appearance order
+    // (`a@2` to run the count, `q@0`/`f@1` to rebuild the source plan and read the new
+    // leaf's columns), the same context shape `Decodable` gives these composites.
+    if let (Some(countable), Some(adapter), Some(joinshape), Some(row)) = (
+        ct.id_by_name("Countable"),
+        ct.id_by_name("Adapter"),
+        ct.id_by_name("JoinShape"),
+        ct.id_by_name("Row"),
+    ) {
+        let composite_countable_inst = || InstanceInfo {
+            def_module: None,
+            methods: vec![
+                ("count".to_string(), String::new()),
+                ("exists".to_string(), String::new()),
+            ],
+            ctx_constraints: vec![
+                ridge_types::Constraint::single(adapter, ridge_types::TyVid(0)),
+                ridge_types::Constraint::single(joinshape, ridge_types::TyVid(0)),
+                ridge_types::Constraint::single(row, ridge_types::TyVid(0)),
+            ],
+            head_var_positions: vec![2, 0, 1],
+            origin: InstanceOrigin::Explicit,
+            span: ds,
+        };
+        for name in ["Joined", "LeftJoined", "RightJoined", "FullJoined"] {
+            if let Some(&tycon) = reconciled_tycon_names.get(name) {
+                env.instances
+                    .entry((countable, smallvec![tycon]))
+                    .or_insert_with(composite_countable_inst);
+            }
         }
     }
 
@@ -1967,11 +2615,6 @@ pub fn register_stdlib_instances(
                     .entry((every, smallvec![query, fn1]))
                     .or_insert_with(|| every_inst(1));
             }
-            if let Some(&join) = reconciled_tycon_names.get("Join") {
-                env.instances
-                    .entry((every, smallvec![join, fn2]))
-                    .or_insert_with(|| every_inst(2));
-            }
             if let Some(&left_join) = reconciled_tycon_names.get("LeftJoin") {
                 env.instances
                     .entry((every, smallvec![left_join, fn2]))
@@ -1986,6 +2629,40 @@ pub fn register_stdlib_instances(
                 env.instances
                     .entry((every, smallvec![full_join, fn2]))
                     .or_insert_with(|| every_inst(2));
+            }
+        }
+    }
+
+    // `Every (Joined q f a)` and the three outer composites — the nested join's
+    // `every`. A fundep terminal, so keyed by the RECEIVER ALONE (the predicate's leaf
+    // arity grows with the join depth); discharge falls back to this receiver-only key,
+    // exactly as for the composite `Refinable`. Source `where Adapter a, JoinShape q,
+    // Row f` at `a@2, q@0, f@1` — the same context shape `Countable`/`Decodable` give
+    // these composites; only the receiver portion is read, so the determined predicate
+    // does not shift the positions.
+    if let (Some(every), Some(adapter), Some(joinshape), Some(row)) = (
+        ct.id_by_name("Every"),
+        ct.id_by_name("Adapter"),
+        ct.id_by_name("JoinShape"),
+        ct.id_by_name("Row"),
+    ) {
+        let composite_every_inst = || InstanceInfo {
+            def_module: None,
+            methods: vec![("every".to_string(), String::new())],
+            ctx_constraints: vec![
+                ridge_types::Constraint::single(adapter, ridge_types::TyVid(0)),
+                ridge_types::Constraint::single(joinshape, ridge_types::TyVid(0)),
+                ridge_types::Constraint::single(row, ridge_types::TyVid(0)),
+            ],
+            head_var_positions: vec![2, 0, 1],
+            origin: InstanceOrigin::Explicit,
+            span: ds,
+        };
+        for name in ["Joined", "LeftJoined", "RightJoined", "FullJoined"] {
+            if let Some(&tycon) = reconciled_tycon_names.get(name) {
+                env.instances
+                    .entry((every, smallvec![tycon]))
+                    .or_insert_with(composite_every_inst);
             }
         }
     }
@@ -2009,11 +2686,6 @@ pub fn register_stdlib_instances(
             if let Some(&query) = reconciled_tycon_names.get("Query") {
                 env.instances
                     .entry((groupable, smallvec![query, fn1]))
-                    .or_insert_with(groupable_inst);
-            }
-            if let Some(&join) = reconciled_tycon_names.get("Join") {
-                env.instances
-                    .entry((groupable, smallvec![join, fn2]))
                     .or_insert_with(groupable_inst);
             }
             if let Some(&left_join) = reconciled_tycon_names.get("LeftJoin") {
@@ -2058,11 +2730,6 @@ pub fn register_stdlib_instances(
             env.instances
                 .entry((summarizable, smallvec![query]))
                 .or_insert_with(|| summarizable_inst(1));
-        }
-        if let Some(&join) = reconciled_tycon_names.get("Join") {
-            env.instances
-                .entry((summarizable, smallvec![join]))
-                .or_insert_with(|| summarizable_inst(2));
         }
         if let Some(&left_join) = reconciled_tycon_names.get("LeftJoin") {
             env.instances

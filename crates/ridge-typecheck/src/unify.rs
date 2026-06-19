@@ -89,6 +89,82 @@ pub fn unify(ctx: &mut InferCtx, a: &Type, b: &Type) -> Result<(), TypeError> {
         ctx.reduce_rows_arg(&q)
     }
 
+    // `JoinCond q f` is the join-condition shape extractor: when `q` is a
+    // recognised inner-join receiver it reduces to that receiver's leaf entities
+    // followed by `f`, returning `Bool`. Returns `None` for anything else —
+    // including `JoinCond ?q f` whose receiver is still a variable.
+    fn reduce_joincond(ctx: &mut InferCtx, t: &Type) -> Option<Type> {
+        let Type::Con(id, args) = t else {
+            return None;
+        };
+        if id.0 != ridge_types::JOINCOND_TYCON_ID || args.len() != 2 {
+            return None;
+        }
+        let q = ctx.shallow_resolve(&args[0]);
+        let f = ctx.shallow_resolve(&args[1]);
+        ctx.reduce_joincond_arg(&q, &f)
+    }
+
+    // `JoinResult q f` is the join-result extractor: a binary `Join` from a query
+    // receiver, the nested `Joined` from a composite one. Returns `None` for
+    // anything else — including a still-variable receiver or an unreconciled
+    // `Joined`.
+    fn reduce_joinresult(ctx: &mut InferCtx, t: &Type) -> Option<Type> {
+        let Type::Con(id, args) = t else {
+            return None;
+        };
+        if id.0 != ridge_types::JOINRESULT_TYCON_ID || args.len() != 2 {
+            return None;
+        }
+        let q = ctx.shallow_resolve(&args[0]);
+        let f = ctx.shallow_resolve(&args[1]);
+        ctx.reduce_joinresult_arg(&q, &f)
+    }
+
+    // `LeftJoinResult q f` is the LEFT outer-join result extractor: a binary
+    // `LeftJoin` from a query receiver, the nested `LeftJoined` from a composite
+    // one. Returns `None` for anything else — a still-variable receiver or an
+    // unreconciled `LeftJoined`.
+    fn reduce_leftjoinresult(ctx: &mut InferCtx, t: &Type) -> Option<Type> {
+        let Type::Con(id, args) = t else {
+            return None;
+        };
+        if id.0 != ridge_types::LEFTJOINRESULT_TYCON_ID || args.len() != 2 {
+            return None;
+        }
+        let q = ctx.shallow_resolve(&args[0]);
+        let f = ctx.shallow_resolve(&args[1]);
+        ctx.reduce_leftjoinresult_arg(&q, &f)
+    }
+
+    // `RightJoinResult q f` is the RIGHT outer-join result extractor: a binary
+    // `RightJoin` from a query receiver, the nested `RightJoined` from a composite.
+    fn reduce_rightjoinresult(ctx: &mut InferCtx, t: &Type) -> Option<Type> {
+        let Type::Con(id, args) = t else {
+            return None;
+        };
+        if id.0 != ridge_types::RIGHTJOINRESULT_TYCON_ID || args.len() != 2 {
+            return None;
+        }
+        let q = ctx.shallow_resolve(&args[0]);
+        let f = ctx.shallow_resolve(&args[1]);
+        ctx.reduce_rightjoinresult_arg(&q, &f)
+    }
+
+    // `FullJoinResult q f` is the FULL outer-join result extractor: a binary
+    // `FullJoin` from a query receiver, the nested `FullJoined` from a composite.
+    fn reduce_fulljoinresult(ctx: &mut InferCtx, t: &Type) -> Option<Type> {
+        let Type::Con(id, args) = t else {
+            return None;
+        };
+        if id.0 != ridge_types::FULLJOINRESULT_TYCON_ID || args.len() != 2 {
+            return None;
+        }
+        let q = ctx.shallow_resolve(&args[0]);
+        let f = ctx.shallow_resolve(&args[1]);
+        ctx.reduce_fulljoinresult_arg(&q, &f)
+    }
+
     let a = ctx.shallow_resolve(a);
     let b = ctx.shallow_resolve(b);
 
@@ -109,6 +185,40 @@ pub fn unify(ctx: &mut InferCtx, a: &Type, b: &Type) -> Result<(), TypeError> {
         return unify(ctx, &reduced, &b);
     }
     if let Some(reduced) = reduce_rows(ctx, &b) {
+        return unify(ctx, &a, &reduced);
+    }
+
+    // Reduce a top-level `JoinCond`/`JoinResult` on either side, then retry. An
+    // unreducible one (receiver not yet pinned) falls through to the structural
+    // `Con/Con` arm, where the arguments unify component-wise.
+    if let Some(reduced) = reduce_joincond(ctx, &a) {
+        return unify(ctx, &reduced, &b);
+    }
+    if let Some(reduced) = reduce_joincond(ctx, &b) {
+        return unify(ctx, &a, &reduced);
+    }
+    if let Some(reduced) = reduce_joinresult(ctx, &a) {
+        return unify(ctx, &reduced, &b);
+    }
+    if let Some(reduced) = reduce_joinresult(ctx, &b) {
+        return unify(ctx, &a, &reduced);
+    }
+    if let Some(reduced) = reduce_leftjoinresult(ctx, &a) {
+        return unify(ctx, &reduced, &b);
+    }
+    if let Some(reduced) = reduce_leftjoinresult(ctx, &b) {
+        return unify(ctx, &a, &reduced);
+    }
+    if let Some(reduced) = reduce_rightjoinresult(ctx, &a) {
+        return unify(ctx, &reduced, &b);
+    }
+    if let Some(reduced) = reduce_rightjoinresult(ctx, &b) {
+        return unify(ctx, &a, &reduced);
+    }
+    if let Some(reduced) = reduce_fulljoinresult(ctx, &a) {
+        return unify(ctx, &reduced, &b);
+    }
+    if let Some(reduced) = reduce_fulljoinresult(ctx, &b) {
         return unify(ctx, &a, &reduced);
     }
 
@@ -155,7 +265,7 @@ pub fn unify(ctx: &mut InferCtx, a: &Type, b: &Type) -> Result<(), TypeError> {
         // ── Two type-constructor applications ─────────────────────────────────
         (Type::Con(c, xs), Type::Con(d, ys)) => {
             if c != d || xs.len() != ys.len() {
-                return Err(mismatch(&a, &b));
+                return Err(mismatch(ctx, &a, &b));
             }
             for (x, y) in xs.iter().zip(ys.iter()) {
                 unify(ctx, x, y)?;
@@ -248,7 +358,7 @@ pub fn unify(ctx: &mut InferCtx, a: &Type, b: &Type) -> Result<(), TypeError> {
         }
 
         // ── Structural mismatch ────────────────────────────────────────────────
-        _ => Err(mismatch(&a, &b)),
+        _ => Err(mismatch(ctx, &a, &b)),
     }
 }
 
@@ -395,7 +505,7 @@ pub fn unify_rows(
             if only1.is_empty() && only2.is_empty() {
                 Ok(())
             } else {
-                Err(row_mismatch(&f1, &t1, &f2, &t2, &only1, &only2))
+                Err(row_mismatch(ctx, &f1, &t1, &f2, &t2, &only1, &only2))
             }
         }
         // Left is exact: it cannot carry the right's extra explicit fields, but
@@ -404,14 +514,14 @@ pub fn unify_rows(
             if only2.is_empty() {
                 bind_row(ctx, *rv2, only1, RowTail::Closed)
             } else {
-                Err(row_mismatch(&f1, &t1, &f2, &t2, &only1, &only2))
+                Err(row_mismatch(ctx, &f1, &t1, &f2, &t2, &only1, &only2))
             }
         }
         (RowTail::Open(rv1), RowTail::Closed) => {
             if only1.is_empty() {
                 bind_row(ctx, *rv1, only2, RowTail::Closed)
             } else {
-                Err(row_mismatch(&f1, &t1, &f2, &t2, &only1, &only2))
+                Err(row_mismatch(ctx, &f1, &t1, &f2, &t2, &only1, &only2))
             }
         }
         (RowTail::Open(rv1), RowTail::Open(rv2)) => {
@@ -421,7 +531,7 @@ pub fn unify_rows(
                 if only1.is_empty() && only2.is_empty() {
                     Ok(())
                 } else {
-                    Err(row_mismatch(&f1, &t1, &f2, &t2, &only1, &only2))
+                    Err(row_mismatch(ctx, &f1, &t1, &f2, &t2, &only1, &only2))
                 }
             } else {
                 let fresh = ctx.fresh_rowvid();
@@ -430,7 +540,7 @@ pub fn unify_rows(
             }
         }
         // RowTail is #[non_exhaustive] — forward-compat wildcard.
-        _ => Err(row_mismatch(&f1, &t1, &f2, &t2, &only1, &only2)),
+        _ => Err(row_mismatch(ctx, &f1, &t1, &f2, &t2, &only1, &only2)),
     }
 }
 
@@ -502,6 +612,7 @@ fn ty_occurs_rowvid(ctx: &mut InferCtx, rv: RowVid, t: &Type) -> bool {
 /// orientation). `only1` are the expected-only labels (missing from the found
 /// row) and `only2` the found-only labels (not allowed by the expected row).
 fn row_mismatch(
+    ctx: &mut InferCtx,
     f1: &[(String, Type)],
     t1: &RowTail,
     f2: &[(String, Type)],
@@ -509,9 +620,11 @@ fn row_mismatch(
     only1: &[(String, Type)],
     only2: &[(String, Type)],
 ) -> TypeError {
+    let expected = ctx.deep_resolve(&Type::record(f1.to_vec(), t1.clone()));
+    let found = ctx.deep_resolve(&Type::record(f2.to_vec(), t2.clone()));
     TypeError::RowMismatch {
-        expected: format!("{}", Type::record(f1.to_vec(), t1.clone())),
-        found: format!("{}", Type::record(f2.to_vec(), t2.clone())),
+        expected: crate::render::render_type_with(&expected, &ctx.tycon_decls),
+        found: crate::render::render_type_with(&found, &ctx.tycon_decls),
         missing_fields: only1.iter().map(|(label, _)| label.clone()).collect(),
         extra_fields: only2.iter().map(|(label, _)| label.clone()).collect(),
         span: dummy_span(),
@@ -520,19 +633,18 @@ fn row_mismatch(
 
 /// Constructs a `T001 TypeMismatch` error with a dummy span.
 ///
-/// # T001 rendering note
-///
-/// `Type::Display` (the `{expected}` / `{found}` format) renders `Type::Con`
-/// as `#N` — it has no arena access.  Named records therefore print as `#N`
-/// today; anon records inherit the same limitation.  To render structural
-/// shapes here the arena would need to be threaded into `UnifyCtx` and this
-/// helper.  That is a non-trivial refactor deferred to a follow-on cut:
-// TODO(0.2.12/T7b): thread the arena into UnifyCtx so anon records render
-// as `{ … }` in T001 strings rather than `#N`.
-fn mismatch(expected: &Type, found: &Type) -> TypeError {
+/// Both operands are deep-resolved and rendered through the shared
+/// [`render_type_with`](crate::render::render_type_with) pretty-printer, so a
+/// constructor prints by its declared name and a structural record as `{ … }`,
+/// rather than the arena-free `Type::Display` form (`#N`). The resolve and
+/// render run only when a unification has already failed, so they add nothing
+/// to the cost of a successful one.
+fn mismatch(ctx: &mut InferCtx, expected: &Type, found: &Type) -> TypeError {
+    let expected = ctx.deep_resolve(expected);
+    let found = ctx.deep_resolve(found);
     TypeError::TypeMismatch {
-        expected: format!("{expected}"),
-        found: format!("{found}"),
+        expected: crate::render::render_type_with(&expected, &ctx.tycon_decls),
+        found: crate::render::render_type_with(&found, &ctx.tycon_decls),
         span: dummy_span(),
     }
 }

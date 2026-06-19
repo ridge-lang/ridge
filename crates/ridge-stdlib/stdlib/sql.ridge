@@ -76,9 +76,19 @@ instance SqlType (Option a) where SqlType a =
 -- yields a descriptive `Err`; encoding runs each field through `SqlType.toSql`,
 -- so a nullable `Option` field writes `None` as SQL NULL. The storage adapters
 -- move the row across the seam.
+--
+-- `rowColumns` answers the record's column names — the same snake_cased columns
+-- `toRow` writes and `fromRow` reads, in declaration order — without a row to read
+-- them off. It is keyed only by the type, so it takes a phantom `Option a` witness
+-- whose value is ignored and whose sole job is to fix `a` (the result `List Text`
+-- mentions no `a`, so without the witness the instance would be ambiguous). Pass
+-- `None` typed at the entity, or thread an `Option e` out of a value that already
+-- carries `e`. The query builder uses it to qualify a join's columns to their
+-- source table before a row exists to inspect.
 pub class Row a =
     fromRow (r: Map Text SqlValue) -> Result a Error
     toRow   (x: a)                 -> Map Text SqlValue
+    rowColumns (witness: Option a) -> List Text
 
 -- ── Safe SQL statement text ───────────────────────────────────────────────────
 --

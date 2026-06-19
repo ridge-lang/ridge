@@ -943,6 +943,7 @@ pub fn prelude_resolutions() -> Vec<ImportResolution> {
                 query_binding("QAnd"),
                 query_binding("QOr"),
                 query_binding("QNot"),
+                query_binding("QNotTrue"),
                 query_binding("QEq"),
                 query_binding("QNe"),
                 query_binding("QLt"),
@@ -951,6 +952,7 @@ pub fn prelude_resolutions() -> Vec<ImportResolution> {
                 query_binding("QGe"),
                 query_binding("QProj"),
                 query_binding("QColR"),
+                query_binding("QColAt"),
                 query_binding("QGroupKey"),
                 query_binding("QAggCount"),
                 query_binding("QAggSum"),
@@ -963,6 +965,18 @@ pub fn prelude_resolutions() -> Vec<ImportResolution> {
                 // `Rows/1` — the row-shape projection, in scope for the decode
                 // terminals' signatures that name the row of their receiver.
                 query_binding("Rows"),
+                // `JoinCond/2` / `JoinResult/2` — the N-ary join builder's
+                // condition-shape and result projections, in scope for the
+                // `Joinable` method signature.
+                query_binding("JoinCond"),
+                query_binding("JoinResult"),
+                // `LeftJoinResult/2` — the LEFT outer-join verb's result projection,
+                // in scope for the `LeftJoinable` method signature.
+                query_binding("LeftJoinResult"),
+                // `RightJoinResult/2` — the RIGHT outer-join verb's result projection.
+                query_binding("RightJoinResult"),
+                // `FullJoinResult/2` — the FULL outer-join verb's result projection.
+                query_binding("FullJoinResult"),
             ],
             span: synth_span,
         },
@@ -1998,8 +2012,8 @@ mod tests {
             .map(|ir| ir.effective_bindings.len())
             .sum();
         assert_eq!(
-            total_bindings, 48,
-            "expected 48 total prelude bindings (6 option/result + 8 json + 26 quotation + 8 module aliases); got {total_bindings}"
+            total_bindings, 55,
+            "expected 55 total prelude bindings (6 option/result + 8 json + 33 quotation + 8 module aliases); got {total_bindings}"
         );
     }
 

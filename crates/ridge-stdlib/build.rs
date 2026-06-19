@@ -123,6 +123,11 @@ const STDLIB_CLASSES: &[(&str, &str)] = &[
     ("Every", "std.repo"),
     ("Groupable", "std.repo"),
     ("Summarizable", "std.repo"),
+    ("Joinable", "std.repo"),
+    ("JoinShape", "std.repo"),
+    ("LeftJoinable", "std.repo"),
+    ("RightJoinable", "std.repo"),
+    ("FullJoinable", "std.repo"),
 ];
 
 // Constructor-shaped fns must export arity 0; this invariant catches accidental
@@ -433,7 +438,23 @@ fn parse_instance_head(rest: &str) -> Option<(String, String, bool)> {
     if names.is_empty() {
         return None;
     }
-    Some((class_name.to_owned(), names.join("_"), any_paren))
+    // A fundep terminal class (`Refinable`/`Projectable`/…) over a nested-join
+    // composite receiver (`Joined`/`LeftJoined`/`RightJoined`/`FullJoined`) keys its
+    // dict by the RECEIVER ALONE: the dependency collapses the predicate, whose leaf
+    // arity grows with the join depth, so the per-arity predicate atom is dropped to
+    // match the receiver-only instance the typechecker resolves (see `discharge` in
+    // ridge-typecheck and `lower_instance` in ridge-lower). A multi-atom head over one
+    // of these composites is only ever a fundep terminal.
+    let receiver_is_composite_join = matches!(
+        names[0].as_str(),
+        "Joined" | "LeftJoined" | "RightJoined" | "FullJoined"
+    );
+    let type_name = if names.len() > 1 && receiver_is_composite_join {
+        names[0].clone()
+    } else {
+        names.join("_")
+    };
+    Some((class_name.to_owned(), type_name, any_paren))
 }
 
 /// The dict-const name fragment for one instance-head atom. A function type

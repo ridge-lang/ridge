@@ -515,6 +515,11 @@ const BASELINE_EXPORTS: &[(&str, &[&str])] = &[
             // `selectFirst` projections.
             "Query",
             "query",
+            // The in-memory query source: `from` lifts a `List a` into the query
+            // world as an opaque `Seq a`, read back by the same `toList`/`first`
+            // terminals. No repository, table, or adapter.
+            "Seq",
+            "from",
             // The unified `filter` is the method of the `Refinable q p | q -> p`
             // class, so one verb narrows a query (one-row predicate) and a join
             // (two-row predicate), the arity following the receiver.
@@ -705,6 +710,7 @@ const BASELINE_OPAQUE: &[(&str, &[&str])] = &[
             "FullJoined",
             "Setter",
             "Grouped",
+            "Seq",
         ],
     ),
     ("std.migrate", &["Column"]),

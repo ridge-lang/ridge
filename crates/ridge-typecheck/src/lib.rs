@@ -834,6 +834,9 @@ fn typecheck_module_inner(
         // seeds borrow `ctx` mutably, so the `receiver_id` closure's immutable
         // borrow has ended by the time the `RowsTycons` is built.
         let joined_id = receiver_id("Joined");
+        // `Seq` (the in-memory query source) resolved here too, before the seeds
+        // borrow `ctx` mutably, for the same `RowsTycons`-before-borrow reason.
+        let seq_id = receiver_id("Seq");
         // `LeftJoined` (the nested N-ary LEFT outer join) resolved here too, alongside
         // `Joined`, for the same `RowsTycons`-before-mutable-borrow reason.
         let left_joined_id = receiver_id("LeftJoined");
@@ -853,6 +856,7 @@ fn typecheck_module_inner(
         if let (Some(query), Some(join), Some(left_join)) = (query_id, join_id, left_join_id) {
             ctx.rows_tycons = Some(crate::ctx::RowsTycons {
                 query,
+                seq: seq_id,
                 join,
                 left_join,
                 // `RightJoin` lands alongside `LeftJoin` (both in std.repo); fall back

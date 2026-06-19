@@ -402,6 +402,10 @@ pub struct InferCtx {
 pub struct RowsTycons {
     /// `Query`'s reconciled tycon id — `Rows (Query e a)` reduces to `e`.
     pub query: TyConId,
+    /// `Seq`'s reconciled tycon id — `Rows (Seq a)` reduces to `a`. `None` until
+    /// std.repo's in-memory `Seq` is reconciled (a workspace without it leaves the
+    /// projection stuck).
+    pub seq: Option<TyConId>,
     /// `Join`'s reconciled tycon id — `Rows (Join e f a)` reduces to `(e, f)`.
     pub join: TyConId,
     /// `LeftJoin`'s reconciled tycon id — `Rows (LeftJoin e f a)` reduces to
@@ -618,6 +622,11 @@ impl InferCtx {
             return None;
         };
         if *qid == rt.query {
+            return qargs.first().cloned();
+        }
+        // `Rows (Seq a)` reduces to the element `a` — an in-memory sequence decodes
+        // straight back to its element type, exactly like a bare `Query`.
+        if rt.seq == Some(*qid) {
             return qargs.first().cloned();
         }
         if *qid == rt.join {

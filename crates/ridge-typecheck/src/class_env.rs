@@ -2091,10 +2091,29 @@ pub fn register_stdlib_instances(
             origin: InstanceOrigin::Explicit,
             span: ds,
         };
+        // `Decodable (Seq a) where Row a` — the in-memory sequence's decode
+        // terminals. No adapter (the rows are already in hand), so a single
+        // `Row a` constraint at the receiver's sole arg position (`a@0`).
+        let seq_inst = || InstanceInfo {
+            def_module: None,
+            methods: vec![
+                ("toList".to_string(), String::new()),
+                ("first".to_string(), String::new()),
+            ],
+            ctx_constraints: vec![ridge_types::Constraint::single(row, ridge_types::TyVid(0))],
+            head_var_positions: vec![0],
+            origin: InstanceOrigin::Explicit,
+            span: ds,
+        };
         if let Some(&query) = reconciled_tycon_names.get("Query") {
             env.instances
                 .entry((decodable, smallvec![query]))
                 .or_insert_with(query_inst);
+        }
+        if let Some(&seq) = reconciled_tycon_names.get("Seq") {
+            env.instances
+                .entry((decodable, smallvec![seq]))
+                .or_insert_with(seq_inst);
         }
         if let Some(&left_join) = reconciled_tycon_names.get("LeftJoin") {
             env.instances

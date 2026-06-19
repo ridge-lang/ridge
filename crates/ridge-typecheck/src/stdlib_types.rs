@@ -1070,6 +1070,33 @@ fn reconciled_decls(b: &BuiltinTyCons, base: u32) -> Vec<TyConDecl> {
             opaque: true,
             is_anon: false,
         },
+        // `std.repo` — an in-memory sequence of records lifted into the query world
+        // by `from`. Opaque; holds the snapshotted rows as `List (Map Text SqlValue)`.
+        // The element `a` is phantom (carried in the type so `Rows (Seq a)` reduces to
+        // `a`), not stored. Interned after `FullJoined` so existing offsets are
+        // unchanged.
+        TyConDecl {
+            id: TyConId(base + 20),
+            name: "Seq".to_string(),
+            arity: 1,
+            kind: TyConKind::Record(RecordSchema::new(
+                vec![TyVid(0)],
+                vec![RecordField {
+                    name: "rows".to_string(),
+                    ty: Type::Con(
+                        b.list,
+                        vec![Type::Con(
+                            b.map,
+                            vec![Type::Con(b.text, vec![]), Type::Con(b.sql_value, vec![])],
+                        )],
+                    ),
+                }],
+            )),
+            def_span: None,
+            def_module_raw: None,
+            opaque: true,
+            is_anon: false,
+        },
     ]
 }
 
@@ -1558,6 +1585,24 @@ fn reconciled_repo_fn_scheme(
             repo_app(),
             vec![],
         ),
+        // from : ∀e. List e -> Seq e where Row e — lift an in-memory list into the
+        // query world. The element `e` needs only `Row` (auto-synthesised for a
+        // record of SqlType fields); no adapter, since the rows are snapshotted in
+        // hand. Single-var scheme — there is no adapter `a`.
+        "from" => {
+            let seq_con = *reconciled.get("Seq")?;
+            Some(Scheme {
+                vars: vec![e],
+                cap_vars: vec![],
+                row_vars: vec![],
+                ty: Type::Fn {
+                    params: vec![Type::Con(b.list, vec![Type::Var(e)])],
+                    ret: Box::new(Type::Con(seq_con, vec![Type::Var(e)])),
+                    caps: pure(),
+                },
+                constraints: vec![Constraint::single(row, e)],
+            })
+        }
         // all : ∀e a. Repo e a -> Result (List e) Error where Adapter a, Row e
         "all" => method(vec![repo_app()], result(list_e()), with_adapter_row()),
         // findBy : ∀e a. Quote (e -> Bool) -> Repo e a

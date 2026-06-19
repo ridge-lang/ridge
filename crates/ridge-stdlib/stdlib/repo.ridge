@@ -1675,6 +1675,34 @@ instance Decodable (Query e a) where Adapter a, Row e =
                     Err err -> Err err
                     Ok rows -> firstDecoded rows
 
+-- An in-memory sequence of records lifted into the query world. `from` snapshots
+-- a `List a` as raw rows; the same decode terminals the database path uses read
+-- them back. Opaque, built only through `from`. The element `a` is carried in the
+-- type (like `Query`'s entity), so `Rows (Seq a)` reduces to `a` and `toList`
+-- answers `List a`.
+pub opaque type Seq a = { rows: List (Map Text SqlValue) }
+
+-- Encode each record to a row, eagerly. The mirror of `decodeRows` on the way out.
+fn encodeRows (xs: List a) -> List (Map Text SqlValue) where Row a =
+    match xs
+        []        -> []
+        x :: rest -> toRow x :: encodeRows rest
+
+-- Lift a plain in-memory list into the query world. The element type needs only
+-- `Row` (auto-synthesised for a record of SqlType fields) — no repository, table,
+-- or connection. `from xs |> toList` round-trips the list back.
+pub fn from (xs: List a) -> Seq a where Row a =
+    Seq { rows = encodeRows xs }
+
+-- An in-memory sequence runs the same `toList`/`first` the database path exposes,
+-- reading its snapshotted rows back into records. The rows are already in hand, so
+-- the instance carries only `Row a` — no `Adapter`.
+instance Decodable (Seq a) where Row a =
+    toList (x: Seq a) -> Result (List a) Error =
+        decodeRows x.rows
+    first (x: Seq a) -> Result (Option a) Error =
+        firstDecoded x.rows
+
 -- A phantom `Option e` witness for `rowColumns`, drawn from a repository that
 -- already carries the entity type. `Row.rowColumns` answers an entity's columns
 -- from the type alone but needs a value to fix that type; a `Repo e a` carries

@@ -447,6 +447,10 @@ impl LanguageServer for RidgeLanguageServer {
                 hover_provider: Some(HoverProviderCapability::Simple(true)),
                 definition_provider: Some(OneOf::Left(true)),
                 references_provider: Some(OneOf::Left(true)),
+                rename_provider: Some(OneOf::Right(RenameOptions {
+                    prepare_provider: Some(true),
+                    work_done_progress_options: WorkDoneProgressOptions::default(),
+                })),
                 completion_provider: Some(CompletionOptions {
                     trigger_characters: Some(vec![".".to_owned()]),
                     resolve_provider: Some(false),
@@ -614,6 +618,41 @@ impl LanguageServer for RidgeLanguageServer {
             return Ok(None);
         };
         Ok(index.references_at(&uri, pos.line, pos.character, include_declaration))
+    }
+
+    async fn prepare_rename(
+        &self,
+        params: TextDocumentPositionParams,
+    ) -> LspResult<Option<PrepareRenameResponse>> {
+        let uri = params.text_document.uri;
+        let pos = params.position;
+
+        let index = {
+            let snap = self.state.lock().await;
+            snap.index.clone()
+        };
+        let Some(index) = index else {
+            return Ok(None);
+        };
+        Ok(index.prepare_rename_at(&uri, pos.line, pos.character))
+    }
+
+    async fn rename(&self, params: RenameParams) -> LspResult<Option<WorkspaceEdit>> {
+        let uri = params.text_document_position.text_document.uri;
+        let pos = params.text_document_position.position;
+        let new_name = params.new_name;
+
+        let index = {
+            let snap = self.state.lock().await;
+            snap.index.clone()
+        };
+        let Some(index) = index else {
+            return Ok(None);
+        };
+        match index.rename_at(&uri, pos.line, pos.character, &new_name) {
+            Ok(edit) => Ok(edit),
+            Err(message) => Err(tower_lsp::jsonrpc::Error::invalid_params(message)),
+        }
     }
 
     async fn completion(&self, params: CompletionParams) -> LspResult<Option<CompletionResponse>> {

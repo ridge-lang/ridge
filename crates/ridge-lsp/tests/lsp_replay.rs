@@ -976,6 +976,29 @@ async fn test_hover_literal_and_local_and_misses() {
     assert!(h.is_none(), "hover past end-of-line must be null");
 }
 
+#[tokio::test]
+async fn test_hover_labels_class_method() {
+    // A user-defined class method used by its bare name hovers with the
+    // "(class method)" role label — the same way locals get "(local)".
+    let src = "pub class Show a =\n  render (x: a) -> Text\npub type T = { n: Int }\ninstance Show T =\n  render (x: T) -> Text = \"t\"\npub fn run -> Text = render (T { n = 1 })\n";
+    let (service, _socket, uri) = hover_fixture(src).await;
+    let server = service.inner();
+
+    // `render` on the last line (line 5) → labelled as a class method.
+    let line5 = "pub fn run -> Text = render (T { n = 1 })";
+    let col =
+        u32::try_from(line5.find("render").expect("render use") + 1).expect("offset fits u32");
+    let h = server
+        .hover(hover_at(&uri, 5, col))
+        .await
+        .expect("hover ok");
+    let md = hover_markdown(h).expect("hover over a class method returns markup");
+    assert!(
+        md.contains("(class method) render"),
+        "class-method hover should label the binding, got {md:?}"
+    );
+}
+
 // ── Test 17: textDocument/definition ──────────────────────────────────────────
 
 fn goto_at(uri: &Url, line: u32, character: u32) -> GotoDefinitionParams {
@@ -1223,6 +1246,31 @@ async fn test_completion_member_access() {
         items.iter().any(|i| i.label == "helper"),
         "member access should offer `helper`, got {:?}",
         items.iter().map(|i| &i.label).collect::<Vec<_>>()
+    );
+}
+
+#[tokio::test]
+async fn test_completion_stdlib_member_access() {
+    // `import std.list as L` plus a point-free reference to a builtin function so
+    // the workspace compiles and the retained index carries the `L.` line. The
+    // member completion for a stdlib alias must offer that module's exports, the
+    // way it already does for a workspace-module alias.
+    let line1 = "pub fn run = L.map";
+    let (service, _socket, uri) = hover_fixture("import std.list as L\npub fn run = L.map\n").await;
+    let server = service.inner();
+
+    // Right after `L.` on line 1 → std.list's exported names.
+    let col = u32::try_from(line1.find("L.").expect("alias use") + 2).expect("offset fits u32");
+    let items = completion_items(
+        server
+            .completion(complete_at(&uri, 1, col))
+            .await
+            .expect("ok"),
+    );
+    let labels: Vec<String> = items.into_iter().map(|i| i.label).collect();
+    assert!(
+        labels.iter().any(|l| l == "map"),
+        "stdlib member access should offer `map`, got {labels:?}"
     );
 }
 

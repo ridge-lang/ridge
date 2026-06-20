@@ -20,7 +20,7 @@ use ridge_lexer::{LineIndex, Span};
 use ridge_resolve::imports::{Binding, ImportResolution, ImportTarget};
 use ridge_resolve::{
     LocalId, ModuleId, NodeId, NodeIdMap, NodeKind, ResolvedVisibility, ResolvedWorkspace,
-    ScopeIndex, SymbolTable,
+    ScopeIndex, StdlibModuleId, SymbolTable, BUILTINS,
 };
 use ridge_typecheck::{render_type_with, TypedWorkspace};
 use ridge_types::TyConDecl;
@@ -440,6 +440,14 @@ impl WorkspaceIndex {
                             }
                         }
                     }
+                } else if let Some(sid) = stdlib_alias_target(&m.imports, &alias) {
+                    // A stdlib alias (`import std.repo as Repo`) resolves to a
+                    // builtin module whose exported names live in `BUILTINS`.
+                    for &name in stdlib_exports(sid) {
+                        if name.starts_with(&prefix) {
+                            out.push(item(name.to_owned(), stdlib_export_kind(name), '0'));
+                        }
+                    }
                 }
             }
             Context::Type { prefix } => {
@@ -490,6 +498,37 @@ fn alias_target(imports: &[ImportResolution], alias: &str) -> Option<ModuleId> {
         })
 }
 
+/// The builtin stdlib module an import `alias` resolves to, if any.
+fn stdlib_alias_target(imports: &[ImportResolution], alias: &str) -> Option<StdlibModuleId> {
+    imports
+        .iter()
+        .find_map(|imp| match (&imp.alias, &imp.target) {
+            (Some(a), ImportTarget::BuiltinStdlib(id)) if a == alias => Some(*id),
+            _ => None,
+        })
+}
+
+/// Exported symbol names of a builtin stdlib module, or an empty slice when the
+/// id is out of range. The builtin manifest carries names only — no kinds or
+/// definition spans — so completion infers the icon from the name's case (see
+/// [`stdlib_export_kind`]) and go-to-definition does not yet reach these.
+fn stdlib_exports(id: StdlibModuleId) -> &'static [&'static str] {
+    match BUILTINS.get(id.0 as usize) {
+        Some(m) => m.exports,
+        None => &[],
+    }
+}
+
+/// Heuristic completion kind for a stdlib export: an uppercase-initial name is a
+/// type or constructor, anything else a function or value.
+fn stdlib_export_kind(name: &str) -> CompletionItemKind {
+    if name.chars().next().is_some_and(char::is_uppercase) {
+        CompletionItemKind::CLASS
+    } else {
+        CompletionItemKind::FUNCTION
+    }
+}
+
 /// Shape a completion candidate, grouping it by a leading sort digit.
 fn item(label: String, kind: CompletionItemKind, group: char) -> CompletionItemData {
     CompletionItemData {
@@ -509,6 +548,7 @@ const fn binding_label(binding: Option<&Binding>) -> &'static str {
         Some(Binding::Local(_)) => "(local) ",
         Some(Binding::Constructor { .. }) => "constructor ",
         Some(Binding::StdlibSymbol { .. }) => "(stdlib) ",
+        Some(Binding::ClassMethod { .. }) => "(class method) ",
         _ => "",
     }
 }
@@ -587,5 +627,17 @@ mod tests {
             .map(|(span, _, _)| span.end - span.start)
             .expect("hit present in entries");
         assert_eq!(lit_span_width, 1, "expected the 1-byte literal `2`");
+    }
+
+    #[test]
+    fn stdlib_export_kind_uses_initial_case() {
+        // The builtin manifest carries names only; the icon is inferred from case.
+        assert_eq!(stdlib_export_kind("filter"), CompletionItemKind::FUNCTION);
+        assert_eq!(stdlib_export_kind("Query"), CompletionItemKind::CLASS);
+    }
+
+    #[test]
+    fn stdlib_exports_out_of_range_is_empty() {
+        assert!(stdlib_exports(StdlibModuleId(u32::MAX)).is_empty());
     }
 }

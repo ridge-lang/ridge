@@ -2836,6 +2836,14 @@ pub fn register_stdlib_instances(
                     .entry((groupable, smallvec![query, fn1]))
                     .or_insert_with(groupable_inst);
             }
+            // `Groupable (Seq a)` — the in-memory sequence's `groupBy`. Keyed on the
+            // receiver + the one-row key arity (`Fn1`); like the query instance it only
+            // builds the `Grouped` record and reaches no store, so it carries no context.
+            if let Some(&seq) = reconciled_tycon_names.get("Seq") {
+                env.instances
+                    .entry((groupable, smallvec![seq, fn1]))
+                    .or_insert_with(groupable_inst);
+            }
             if let Some(&left_join) = reconciled_tycon_names.get("LeftJoin") {
                 env.instances
                     .entry((groupable, smallvec![left_join, fn2]))
@@ -2894,6 +2902,27 @@ pub fn register_stdlib_instances(
                 .entry((summarizable, smallvec![full_join]))
                 .or_insert_with(|| summarizable_inst(2));
         }
+    }
+
+    // `Summarizable (Seq a)` — the in-memory sequence's `summarize` seam. Single receiver
+    // parameter, and — unlike the query and join instances — no context: `runGroups` runs
+    // the `PlanGroup` through the in-memory interpreter without a connection and hands back
+    // the raw rows for `summarize` to decode, so it carries no `Adapter`, like the sequence's
+    // `Pageable`/`Countable`.
+    if let (Some(summarizable), Some(&seq)) = (
+        ct.id_by_name("Summarizable"),
+        reconciled_tycon_names.get("Seq"),
+    ) {
+        env.instances
+            .entry((summarizable, smallvec![seq]))
+            .or_insert_with(|| InstanceInfo {
+                def_module: None,
+                methods: vec![("runGroups".to_string(), String::new())],
+                ctx_constraints: vec![],
+                head_var_positions: vec![],
+                origin: InstanceOrigin::Explicit,
+                span: ds,
+            });
     }
 }
 

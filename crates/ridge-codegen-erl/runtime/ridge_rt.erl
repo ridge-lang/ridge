@@ -1575,16 +1575,16 @@ mem_agg_or_undef(Func, Col, GR) ->
 
 %% --- In-memory grouped join ---
 %%
-%% Group a join's flat, source-prefixed rows by a key column read off its leaf
-%% (`t<KeyLeaf>$KeyCol`), narrow the groups by a HAVING tree over the group
-%% aggregates, and summarise each surviving group. One interpreter for a binary or a
-%% deeper composite join: every join leaf prefixes its columns the same way (`t0$`
-%% for the first, `t1$` for a binary right, higher for a composite), so a grouped
-%% aggregate folds the leaf-prefixed column directly — an unmatched outer row simply
-%% lacks that leaf's columns, which read SqlNull and drop out of the fold, exactly as
-%% the composite scalar aggregates do.
+%% Group a source's rows by a key column, narrow the groups by a HAVING tree over the
+%% group aggregates, and summarise each surviving group. One interpreter for a binary or
+%% a deeper composite join — whose flat rows prefix every leaf's columns (`t0$` for the
+%% first, `t1$` for a binary right, higher for a composite) — and for a single-leaf
+%% in-memory `Seq`, whose rows are unprefixed: `mem_agg_col` resolves each column to its
+%% leaf-prefixed name when the rows carry it and the bare name otherwise, so the key and
+%% every grouped aggregate fold the right column either way. An unmatched outer row simply
+%% lacks that leaf's columns, which read SqlNull and drop out of the fold.
 mem_group_nary(Rows, KeyLeaf, KeyCol, Cols, Having) ->
-    KeyName = mem_agg_prefixed_col(KeyLeaf, KeyCol),
+    KeyName = mem_agg_col(KeyLeaf, KeyCol, Rows),
     Groups = mem_group_nary_by(KeyName, Rows),
     Kept = [{K, GR} || {K, GR} <- Groups, mem_having_nary(Having, K, GR)],
     Sorted = lists:sort(fun({KA, _}, {KB, _}) -> mem_order_cmp(KA, KB) =/= gt end, Kept),
@@ -1612,7 +1612,7 @@ mem_group_nary_row(Cols, Key, GR) ->
 mem_group_nary_value(<<"KEY">>, _Col, _Leaf, Key, _GR)   -> Key;
 mem_group_nary_value(<<"COUNT">>, _Col, _Leaf, _Key, GR) -> {'SqlInt', length(GR)};
 mem_group_nary_value(Func, Col, Leaf, _Key, GR) ->
-    mem_aggregate_value(Func, mem_agg_prefixed_col(Leaf, Col), GR).
+    mem_aggregate_value(Func, mem_agg_col(Leaf, Col, GR), GR).
 
 %% HAVING over a join group: as mem_having, but its scalar-aggregate leaves fold a
 %% leaf-prefixed column (`QCol`/`QColR`/`QColAt`) off the flat group rows.
@@ -1647,11 +1647,12 @@ mem_hscalar_nary({'QLitBool', B}, _Key, _GR)  -> {'SqlBool', B};
 mem_hscalar_nary({'QLitFloat', F}, _Key, _GR) -> {'SqlFloat', F};
 mem_hscalar_nary(_Other, _Key, _GR)           -> undefined.
 
-%% A scalar aggregate over a join group's leaf-prefixed column: the first leaf for a
-%% `QCol`, the second for a `QColR`, the i-th for a `QColAt`.
-mem_agg_node_nary(Func, {'QCol', C}, GR)      -> mem_agg_or_undef(Func, mem_agg_prefixed_col(0, C), GR);
-mem_agg_node_nary(Func, {'QColR', C}, GR)     -> mem_agg_or_undef(Func, mem_agg_prefixed_col(1, C), GR);
-mem_agg_node_nary(Func, {'QColAt', I, C}, GR) -> mem_agg_or_undef(Func, mem_agg_prefixed_col(I, C), GR);
+%% A scalar aggregate over a group's column: the first leaf for a `QCol`, the second for
+%% a `QColR`, the i-th for a `QColAt`. `mem_agg_col` reads the leaf-prefixed column off a
+%% join's flat rows or the bare column off an unprefixed `Seq` group.
+mem_agg_node_nary(Func, {'QCol', C}, GR)      -> mem_agg_or_undef(Func, mem_agg_col(0, C, GR), GR);
+mem_agg_node_nary(Func, {'QColR', C}, GR)     -> mem_agg_or_undef(Func, mem_agg_col(1, C, GR), GR);
+mem_agg_node_nary(Func, {'QColAt', I, C}, GR) -> mem_agg_or_undef(Func, mem_agg_col(I, C, GR), GR);
 mem_agg_node_nary(_Func, _Node, _GR)          -> undefined.
 
 %% Merge the Changes columns into every row matching the predicate tree, leaving

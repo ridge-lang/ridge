@@ -1839,6 +1839,24 @@ instance Aggregable (Seq a) (fn a -> n) where SqlType n =
     maxOf (col: Quote (fn a -> n)) (x: Seq a) -> Result (Option n) Error =
         decodeScalar (firstAggCell (_evalPlanPure (seqScalarPlan x "MAX" col)))
 
+-- `groupBy` over an in-memory sequence: name the group-key column with the one-row accessor
+-- (`aggColumn`/`aggLeaf`), the same way a query's `groupBy` does, and wrap the sequence into
+-- the unified `Grouped` builder. `having`/`summarize` then range over the `Grouped (Seq a) p`
+-- handle exactly as they do over a query's, one builder vocabulary, no connection touched.
+instance Groupable (Seq a) (fn a -> k) =
+    groupBy (key: Quote (fn a -> k)) (x: Seq a) -> Grouped (Seq a) (fn a -> k) =
+        Grouped { source = x, keyCol = aggColumn key, keyLeaf = aggLeaf key, havingTree = keepAllTree () }
+
+-- An in-memory sequence's `summarize` seam: run the `GROUP BY` (and any `HAVING`) over the
+-- sequence's filtered rows through the same `PlanGroup` node the join `summarize` uses, one
+-- plan IR, and return the raw summarised rows for `summarize` to decode through `Row s`. The
+-- aggregate columns carry their leaf (`groupColsLeaf`); the interpreter reads them off the
+-- unprefixed single-leaf rows by their bare names. No connection is touched, so the instance
+-- carries no context, and the in-memory evaluation cannot fail, so the rows come back `Ok`.
+instance Summarizable (Seq a) =
+    runGroups (src: Seq a) (keyCol: Text) (keyLeaf: Int) (projTree: QExpr) (havingTree: QExpr) -> Result (List (Map Text SqlValue)) Error =
+        Ok (_evalPlanPure (planGroup keyCol keyLeaf (groupColsLeaf keyCol projTree) havingTree (seqCountPlan src (0 - 1))))
+
 -- A phantom `Option e` witness for `rowColumns`, drawn from a repository that
 -- already carries the entity type. `Row.rowColumns` answers an entity's columns
 -- from the type alone but needs a value to fix that type; a `Repo e a` carries

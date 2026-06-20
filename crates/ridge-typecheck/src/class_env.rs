@@ -2727,6 +2727,27 @@ pub fn register_stdlib_instances(
         }
     }
 
+    // `Every (Seq a) (fn a -> Bool)` — the in-memory sequence's `every`. Keyed like
+    // `Refinable (Seq a)` (receiver tycon + `Fn1` for the one-row predicate), the `q -> p`
+    // dependency fixing the arity. Unlike the query and join instances it carries no
+    // context: the violator probe runs through the in-memory interpreter without reaching a
+    // store and does not decode (it only tests the probe empty), so neither `Adapter` nor
+    // `Row`, and no head-position augmentation, like `Countable (Seq a)`.
+    if let (Some(every), Some(&seq)) = (ct.id_by_name("Every"), reconciled_tycon_names.get("Seq")) {
+        if let Some(fn1) = ridge_types::fn_tycon_id(1) {
+            env.instances
+                .entry((every, smallvec![seq, fn1]))
+                .or_insert_with(|| InstanceInfo {
+                    def_module: None,
+                    methods: vec![("every".to_string(), String::new())],
+                    ctx_constraints: vec![],
+                    head_var_positions: vec![],
+                    origin: InstanceOrigin::Explicit,
+                    span: ds,
+                });
+        }
+    }
+
     // `Every (Joined q f a)` and the three outer composites — the nested join's
     // `every`. A fundep terminal, so keyed by the RECEIVER ALONE (the predicate's leaf
     // arity grows with the join depth); discharge falls back to this receiver-only key,

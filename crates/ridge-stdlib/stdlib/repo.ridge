@@ -1799,6 +1799,20 @@ instance Countable (Seq a) =
     exists (x: Seq a) -> Result Bool Error =
         Ok (nonEmpty (_evalPlanPure (seqCountPlan x 1)))
 
+-- `every` over an in-memory sequence: probe for one row the sequence keeps that violates
+-- the predicate, true exactly when none does — the same universal-predicate terminal the
+-- database path probes, one plan IR. The further predicate is AND-folded with the
+-- sequence's own filter wrapped `IS NOT TRUE` (`notTrue`), so the probe selects a kept row
+-- whose predicate is false (or, where a column is NULL, not true), bounded to one row; the
+-- ordering, page, and distinct are stripped, exactly as the database `every` folds its
+-- violator. The probe runs through the in-memory interpreter without a connection and never
+-- decodes — it only tests the rows empty — so the instance carries no context, and the
+-- evaluation cannot fail, so `emptyOk` reads the answer straight off the probed rows.
+instance Every (Seq a) (fn a -> Bool) =
+    every (pred: Quote (fn a -> Bool)) (x: Seq a) -> Result Bool Error =
+        let violator = quoteAnd x.pred (notTrue pred)
+        emptyOk (_evalPlanPure (planRefine x.source violator.tree [] 1 0 false))
+
 -- A phantom `Option e` witness for `rowColumns`, drawn from a repository that
 -- already carries the entity type. `Row.rowColumns` answers an entity's columns
 -- from the type alone but needs a value to fix that type; a `Repo e a` carries

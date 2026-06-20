@@ -6,6 +6,8 @@
   "patterns": [
     { "include": "#block-comment" },
     { "include": "#line-comment" },
+    { "include": "#raw-string" },
+    { "include": "#triple-string" },
     { "include": "#string" },
     { "include": "#interp-string" },
     { "include": "#attribute" },
@@ -28,6 +30,24 @@
       "comment": "Line comment starting with -- but NOT ---, which is a block comment opener.",
       "match": "--(?!-).*$",
       "name": "comment.line.double-dash.ridge"
+    },
+    "raw-string": {
+      "comment": "Raw string literal: r, optional # fences, then a quote (r\"...\", r#\"...\"#, r##\"...\"##). No escapes are processed; the closer matches the opener fence count via the \\1 backreference. Listed before #string so the r-prefixed form wins.",
+      "begin": "\\br(#*)\"",
+      "end": "\"\\1",
+      "name": "string.quoted.other.raw.ridge"
+    },
+    "triple-string": {
+      "comment": "Triple-quoted string delimited by three double-quotes. Listed before #string so the triple delimiter wins over a single quote.",
+      "begin": "\"\"\"",
+      "end": "\"\"\"",
+      "name": "string.quoted.triple.ridge",
+      "patterns": [
+        {
+          "match": "\\\\(?:[nrt\"\\\\]|u\\{[0-9a-fA-F]+\\})",
+          "name": "constant.character.escape.ridge"
+        }
+      ]
     },
     "string": {
       "comment": "Plain double-quoted string literal.",
@@ -83,7 +103,7 @@
     },
     "keyword-other": {
       "comment": "Declaration and modifier keywords.",
-      "match": "\\b(actor|as|class|const|deriving|fn|import|init|instance|let|pub|spawn|state|type|var)\\b",
+      "match": "\\b(actor|as|class|const|deriving|fn|import|init|instance|let|opaque|pub|spawn|state|type|var)\\b",
       "name": "keyword.other.ridge"
     },
     "number": {

@@ -13,6 +13,11 @@ whatever Ridge release is installed.
 
 ## [Unreleased]
 
+### Added
+
+- Syntax highlighting for the `opaque` keyword, raw string literals
+  (`r"..."`, `r#"..."#`), and triple-quoted strings (`"""..."""`).
+
 ## [0.2.1] - 2026-05-21
 
 First publication to Open VSX. No source changes since 0.2.0; the bump

@@ -10,7 +10,7 @@
 /// the layout post-processor and carry zero-width spans.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum Token {
-    // ── Keywords (grammar §1.2, 30 total) ────────────────────────────────────
+    // ── Keywords (grammar §1.2, 31 total) ────────────────────────────────────
     KwActor,
     KwAs,
     KwCatch,

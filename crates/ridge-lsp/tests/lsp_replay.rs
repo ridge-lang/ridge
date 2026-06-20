@@ -7,15 +7,15 @@
 //!
 //! # Test organisation
 //!
-//! - **8 protocol-replay tests** — `initialize`, `didOpen`, `didChange`,
-//!   `didSave`, type-error diagnostics, capability-error diagnostics,
-//!   multi-file workspace cross-module reference, `shutdown`+`exit`.
-//! - **3 span-recovery tests** — synthesised `ToText` node, stdlib
-//!   `IrExpr::Call` synthesis, fully-synthetic prelude node.
-//! - **1 debounce test** — rapid `didChange` flurries trigger exactly one compile.
-//! - **1 cancellation test** — `didChange` mid-compile cancels the in-flight compile.
-//!
-//! Total: 13 tests.
+//! - **Protocol-replay** — `initialize`, `didOpen`, `didChange`, `didSave`,
+//!   type-error diagnostics, capability-error diagnostics, multi-file workspace
+//!   cross-module reference, `shutdown`+`exit`.
+//! - **Span recovery** — synthesised `ToText` node, stdlib `IrExpr::Call`
+//!   synthesis, fully-synthetic prelude node, span attribution without an open doc.
+//! - **Debounce / cancellation** — rapid `didChange` flurries collapse to one
+//!   compile; a mid-compile `didChange` cancels the in-flight compile.
+//! - **Editor queries** — retained index, scope tree, hover, definition,
+//!   completion, find-references, and rename / prepareRename.
 
 #![allow(
     clippy::unwrap_used,
@@ -1684,4 +1684,190 @@ async fn test_references_class_method() {
         hits.contains(&2) && hits.contains(&3),
         "both bare `filter` use-sites are found, got {hits:?}"
     );
+}
+
+// ── Test 21: textDocument/rename + prepareRename ──────────────────────────────
+
+fn prepare_rename_at(uri: &Url, line: u32, character: u32) -> TextDocumentPositionParams {
+    TextDocumentPositionParams {
+        text_document: TextDocumentIdentifier { uri: uri.clone() },
+        position: Position { line, character },
+    }
+}
+
+fn rename_at(uri: &Url, line: u32, character: u32, new_name: &str) -> RenameParams {
+    RenameParams {
+        text_document_position: TextDocumentPositionParams {
+            text_document: TextDocumentIdentifier { uri: uri.clone() },
+            position: Position { line, character },
+        },
+        new_name: new_name.to_owned(),
+        work_done_progress_params: WorkDoneProgressParams::default(),
+    }
+}
+
+/// The `(start.character, new_text)` of every edit a rename produced for `uri`,
+/// sorted by start character.
+fn rename_edits(edit: Option<&WorkspaceEdit>, uri: &Url) -> Vec<(u32, String)> {
+    let Some(edit) = edit else {
+        return Vec::new();
+    };
+    let Some(changes) = &edit.changes else {
+        return Vec::new();
+    };
+    let mut out: Vec<(u32, String)> = changes
+        .get(uri)
+        .map(|edits| {
+            edits
+                .iter()
+                .map(|e| (e.range.start.character, e.new_text.clone()))
+                .collect()
+        })
+        .unwrap_or_default();
+    out.sort_by_key(|(col, _)| *col);
+    out
+}
+
+#[tokio::test]
+async fn test_rename_local() {
+    // `foo` binds `x` at character 11; the body uses it at 15 and 19. Renaming
+    // from a body use rewrites the binder and both uses to the new name.
+    let src = "pub fn foo x = x + x\n";
+    let (service, _socket, uri) = hover_fixture(src).await;
+    let server = service.inner();
+
+    // prepareRename underlines the identifier and offers its current text.
+    let prep = server
+        .prepare_rename(prepare_rename_at(&uri, 0, 15))
+        .await
+        .expect("ok")
+        .expect("a local is renameable");
+    match prep {
+        PrepareRenameResponse::RangeWithPlaceholder { range, placeholder } => {
+            assert_eq!(range.start.character, 15, "underlines the use under cursor");
+            assert_eq!(placeholder, "x", "placeholder is the current name");
+        }
+        other => panic!("expected RangeWithPlaceholder, got {other:?}"),
+    }
+
+    let edit = server
+        .rename(rename_at(&uri, 0, 15, "y"))
+        .await
+        .expect("ok");
+    let edits = rename_edits(edit.as_ref(), &uri);
+    assert_eq!(
+        edits,
+        vec![
+            (11, "y".to_owned()),
+            (15, "y".to_owned()),
+            (19, "y".to_owned()),
+        ],
+        "rename rewrites the binder and both uses"
+    );
+}
+
+#[tokio::test]
+async fn test_rename_cross_module_fn_preserves_qualifier() {
+    // `helper` is defined in Lib.ridge and used as `Lib.helper` in the app.
+    // Renaming it must rewrite the declaration and only the `helper` segment of
+    // the qualified use — the `Lib.` qualifier must survive.
+    let (service, _socket, app_uri, lib_uri) = two_member_fixture().await;
+    let server = service.inner();
+
+    let edit = server
+        .rename(rename_at(&app_uri, 1, 26, "helper2"))
+        .await
+        .expect("ok");
+
+    // The app edit lands on `helper` (char 24), NOT on `Lib.helper` (char 20).
+    assert_eq!(
+        rename_edits(edit.as_ref(), &app_uri),
+        vec![(24, "helper2".to_owned())],
+        "only the final segment of `Lib.helper` is rewritten"
+    );
+    // The declaration in Lib.ridge is rewritten at the name token (char 7).
+    assert_eq!(
+        rename_edits(edit.as_ref(), &lib_uri),
+        vec![(7, "helper2".to_owned())],
+        "the declaration name is rewritten"
+    );
+}
+
+#[tokio::test]
+async fn test_rename_from_declaration() {
+    // Renaming from the declaration name itself (which carries no binding) is
+    // resolved through the symbol table.
+    let src = "pub fn foo x = x\n";
+    let (service, _socket, uri) = hover_fixture(src).await;
+    let server = service.inner();
+
+    let prep = server
+        .prepare_rename(prepare_rename_at(&uri, 0, 7))
+        .await
+        .expect("ok")
+        .expect("a declaration name is renameable");
+    match prep {
+        PrepareRenameResponse::RangeWithPlaceholder { placeholder, .. } => {
+            assert_eq!(placeholder, "foo");
+        }
+        other => panic!("expected RangeWithPlaceholder, got {other:?}"),
+    }
+
+    let edit = server
+        .rename(rename_at(&uri, 0, 7, "bar"))
+        .await
+        .expect("ok");
+    assert_eq!(
+        rename_edits(edit.as_ref(), &uri),
+        vec![(7, "bar".to_owned())],
+        "the declaration name is rewritten"
+    );
+}
+
+#[tokio::test]
+async fn test_rename_rejects_invalid_name_and_non_renameable() {
+    let src = "pub fn foo x = x + x\n";
+    let (service, _socket, uri) = hover_fixture(src).await;
+    let server = service.inner();
+
+    // A reserved keyword is rejected with an error.
+    let err = server.rename(rename_at(&uri, 0, 15, "if")).await;
+    assert!(err.is_err(), "renaming to a keyword must error");
+
+    // An empty name is rejected.
+    let err = server.rename(rename_at(&uri, 0, 15, "")).await;
+    assert!(err.is_err(), "renaming to an empty name must error");
+
+    // A capitalised name is invalid for a local.
+    let err = server.rename(rename_at(&uri, 0, 15, "X")).await;
+    assert!(err.is_err(), "a local must stay a lowercase identifier");
+
+    // A keyword has no renameable referent.
+    let prep = server
+        .prepare_rename(prepare_rename_at(&uri, 0, 4))
+        .await
+        .expect("ok");
+    assert!(prep.is_none(), "a keyword cannot be renamed");
+}
+
+#[tokio::test]
+async fn test_rename_stdlib_symbol_is_not_renameable() {
+    // A stdlib symbol is defined outside the workspace, so it cannot be renamed
+    // (its use-sites would drift from the unchanged stdlib definition).
+    let line1 = "pub fn a = L.map";
+    let (service, _socket, uri) = hover_fixture("import std.list as L\npub fn a = L.map\n").await;
+    let server = service.inner();
+
+    let col = u32::try_from(line1.find("L.map").expect("alias use") + 3).expect("offset fits u32");
+    let prep = server
+        .prepare_rename(prepare_rename_at(&uri, 1, col))
+        .await
+        .expect("ok");
+    assert!(prep.is_none(), "a stdlib symbol must not be renameable");
+
+    let edit = server
+        .rename(rename_at(&uri, 1, col, "myMap"))
+        .await
+        .expect("ok");
+    assert!(edit.is_none(), "rename of a stdlib symbol yields no edit");
 }

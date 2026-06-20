@@ -20,11 +20,14 @@ use ridge_lexer::{LineIndex, Span};
 use ridge_resolve::imports::{Binding, ImportResolution, ImportTarget};
 use ridge_resolve::{
     LocalId, ModuleId, NodeId, NodeIdMap, NodeKind, ResolvedVisibility, ResolvedWorkspace,
-    ScopeIndex, StdlibModuleId, SymbolTable, BUILTINS,
+    ScopeIndex, StdlibModuleId, SymbolKind, SymbolTable, BUILTINS,
 };
 use ridge_typecheck::{render_type_with, TypedWorkspace};
 use ridge_types::{TyConDecl, TyConKind, Type};
-use tower_lsp::lsp_types::{CompletionItemKind, Location, Position, Range, Url};
+use tower_lsp::lsp_types::{
+    CompletionItemKind, Location, Position, PrepareRenameResponse, Range, TextEdit, Url,
+    WorkspaceEdit,
+};
 
 use crate::completion::{detect_context, symbol_kind, CompletionItemData, Context, KEYWORDS};
 use crate::diagnostics::source_id_to_uri;
@@ -477,6 +480,309 @@ impl WorkspaceIndex {
         }
     }
 
+    /// Answer a `prepareRename` request at an LSP `(line, utf16_col)` position.
+    ///
+    /// Returns the exact identifier range the editor should select plus its
+    /// current text (the rename placeholder), or `None` when the cursor is not
+    /// on a name this server can rename. Renameable: a local (parameter, `let`,
+    /// state field) and a top-level `fn` / `const`. Not yet renameable (returns
+    /// `None`): a type, constructor, actor, field accessor, stdlib symbol, class
+    /// method, or module alias — see the deferred follow-ups. Reads only this
+    /// immutable snapshot.
+    #[must_use]
+    pub fn prepare_rename_at(
+        &self,
+        uri: &Url,
+        line: u32,
+        utf16_col: u32,
+    ) -> Option<PrepareRenameResponse> {
+        let target = self.rename_target_at(uri, line, utf16_col)?;
+        Some(PrepareRenameResponse::RangeWithPlaceholder {
+            range: target.cursor_range,
+            placeholder: target.name,
+        })
+    }
+
+    /// Answer a `rename` request: a [`WorkspaceEdit`] that renames every
+    /// occurrence of the symbol under the cursor to `new_name`.
+    ///
+    /// The edit set is exact: a qualified use (`Mod.item`) renames only the
+    /// final segment, a top-level declaration renames only its name, and a
+    /// selectively-imported symbol (`import p (item)`) has its import-clause
+    /// item rewritten too, so a workspace `fn` / `const` rename stays
+    /// compilable across files.
+    ///
+    /// Returns `Ok(None)` when the cursor is not on a renameable name (the same
+    /// gate as [`Self::prepare_rename_at`]) and `Err(message)` when `new_name`
+    /// is not a valid replacement (empty, a reserved keyword, or not a lowercase
+    /// identifier) — the server forwards the message to the editor. Reads only
+    /// this immutable snapshot.
+    pub fn rename_at(
+        &self,
+        uri: &Url,
+        line: u32,
+        utf16_col: u32,
+        new_name: &str,
+    ) -> Result<Option<WorkspaceEdit>, String> {
+        let Some(target) = self.rename_target_at(uri, line, utf16_col) else {
+            return Ok(None);
+        };
+        validate_new_name(new_name, &target.name)?;
+
+        // Every site to edit, as a name-only `(module, span)`. Locals never
+        // escape their module and their binder is stamped, so the scan of that
+        // one module already covers the declaration. A workspace symbol can be
+        // referenced (and selectively imported) from any module, and its
+        // top-level declaration name carries no binding, so it is added apart.
+        let mut sites: Vec<(ModuleId, Span)> = Vec::new();
+        if let ReferentKey::Local(module, _) = &target.key {
+            let smi = module.0 as usize;
+            if let (Some(view), Some(spatial)) = (self.modules.get(smi), self.spatial.get(smi)) {
+                for (span, _kind, nid) in &spatial.entries {
+                    let Some(b) = view.bindings.get(nid.0 as usize).and_then(Option::as_ref) else {
+                        continue;
+                    };
+                    if referent_key(b, *module).as_ref() == Some(&target.key) {
+                        sites.push((*module, self.final_ident_span(smi, *span)));
+                    }
+                }
+            }
+        } else {
+            for (smi, view) in self.modules.iter().enumerate() {
+                let Ok(raw) = u32::try_from(smi) else {
+                    continue;
+                };
+                let smid = ModuleId(raw);
+                if let Some(spatial) = self.spatial.get(smi) {
+                    for (span, _kind, nid) in &spatial.entries {
+                        let Some(b) = view.bindings.get(nid.0 as usize).and_then(Option::as_ref)
+                        else {
+                            continue;
+                        };
+                        if referent_key(b, smid).as_ref() == Some(&target.key) {
+                            sites.push((smid, self.final_ident_span(smi, *span)));
+                        }
+                    }
+                }
+                // A selective import (`import p (item)`) names the symbol in its
+                // clause; rewrite that name too so the import stays valid.
+                for imp in &view.imports {
+                    let Some(items) = &imp.explicit_items else {
+                        continue;
+                    };
+                    for item in items {
+                        if let Some(b) = &item.resolved {
+                            if referent_key(b, smid).as_ref() == Some(&target.key) {
+                                sites.push((smid, item.span));
+                            }
+                        }
+                    }
+                }
+            }
+            if let Some(site) = self.referent_decl_name_span(&target.key, &target.name) {
+                sites.push(site);
+            }
+        }
+
+        // Resolve every site to a `Location`, bucket by file, and dedup so an
+        // overlapping declaration/use collapses to one edit.
+        let mut ranges: HashMap<Url, Vec<Range>> = HashMap::new();
+        for (mid, span) in sites {
+            if let Some(loc) = self.location_in(mid, span) {
+                ranges.entry(loc.uri).or_default().push(loc.range);
+            }
+        }
+        let mut changes: HashMap<Url, Vec<TextEdit>> = HashMap::new();
+        for (edit_uri, mut rs) in ranges {
+            rs.sort_by(|a, b| {
+                (a.start.line, a.start.character, a.end.line, a.end.character).cmp(&(
+                    b.start.line,
+                    b.start.character,
+                    b.end.line,
+                    b.end.character,
+                ))
+            });
+            rs.dedup();
+            changes.insert(
+                edit_uri,
+                rs.into_iter()
+                    .map(|range| TextEdit {
+                        range,
+                        new_text: new_name.to_owned(),
+                    })
+                    .collect(),
+            );
+        }
+        if changes.is_empty() {
+            return Ok(None);
+        }
+        Ok(Some(WorkspaceEdit {
+            changes: Some(changes),
+            document_changes: None,
+            change_annotations: None,
+        }))
+    }
+
+    /// The renameable thing under the cursor: its referent, the exact name range
+    /// to select, and the current name text. Resolves both a use-site (a name
+    /// node carrying a binding, including a local binder) and a top-level
+    /// declaration name (which carries no binding — resolved via the symbol
+    /// table). `None` when the cursor is not on a renameable name.
+    fn rename_target_at(&self, uri: &Url, line: u32, utf16_col: u32) -> Option<RenameTarget> {
+        let mid = *self.uri_to_module.get(uri)?;
+        let mi = mid.0 as usize;
+        let offset = self.line_indices.get(mi)?.utf16_to_byte(line, utf16_col);
+        let spatial = self.spatial.get(mi)?;
+        let view = self.modules.get(mi)?;
+
+        // A name node carrying a binding: a use-site, or a local binder (locals
+        // are stamped at their definition site).
+        if let Some((binding, span)) = spatial
+            .enclosing(offset, &[NodeKind::Ident, NodeKind::QualifiedName])
+            .into_iter()
+            .find_map(|(nid, _, span)| {
+                view.bindings
+                    .get(nid.0 as usize)
+                    .and_then(Option::as_ref)
+                    .map(|b| (b, span))
+            })
+        {
+            let key = self.renameable_referent(binding, mid)?;
+            let name_span = self.final_ident_span(mi, span);
+            return Some(RenameTarget {
+                key,
+                cursor_range: self.range_in(mid, name_span)?,
+                name: self.text_slice(mi, name_span).to_owned(),
+            });
+        }
+
+        // A top-level declaration name carries no binding; resolve it through
+        // the symbol table (its def span encloses the cursor and the name
+        // matches the ident under it).
+        let (_, _, name_span) = spatial.narrowest_containing(offset, &[NodeKind::Ident])?;
+        let name = self.text_slice(mi, name_span);
+        if name.is_empty() {
+            return None;
+        }
+        let key = self.symbol_decl_referent(mid, offset, name)?;
+        Some(RenameTarget {
+            key,
+            cursor_range: self.range_in(mid, name_span)?,
+            name: name.to_owned(),
+        })
+    }
+
+    /// The [`ReferentKey`] a binding denotes, but only for the kinds this server
+    /// can rename completely: a local, or a top-level `fn` / `const`. A type is
+    /// excluded because its type-position uses carry no binding (the rename
+    /// would miss them); constructors, actors, field accessors, stdlib symbols,
+    /// class methods, and module aliases are deferred.
+    fn renameable_referent(&self, binding: &Binding, module: ModuleId) -> Option<ReferentKey> {
+        match binding {
+            Binding::Local(id) => Some(ReferentKey::Local(module, *id)),
+            Binding::ModuleSymbol { module, symbol }
+            | Binding::ImportedSymbol { module, symbol, .. } => {
+                match self.symbol_kind(*module, *symbol)? {
+                    SymbolKind::Fn { .. } | SymbolKind::Const => {
+                        Some(ReferentKey::Symbol(*module, *symbol))
+                    }
+                    _ => None,
+                }
+            }
+            _ => None,
+        }
+    }
+
+    /// Resolve a top-level declaration name at `offset` to a renameable
+    /// referent: the symbol whose def span encloses the cursor and whose name
+    /// matches. Only `fn` / `const` declarations are renameable here.
+    fn symbol_decl_referent(&self, mid: ModuleId, offset: u32, name: &str) -> Option<ReferentKey> {
+        let entries = &self.modules.get(mid.0 as usize)?.symbols.entries;
+        entries.iter().enumerate().find_map(|(i, e)| {
+            if e.name != name {
+                return None;
+            }
+            if !(e.def_span.start <= offset && offset < e.def_span.end) {
+                return None;
+            }
+            match e.kind {
+                SymbolKind::Fn { .. } | SymbolKind::Const => {
+                    let raw = u32::try_from(i).ok()?;
+                    Some(ReferentKey::Symbol(mid, ridge_resolve::SymbolId(raw)))
+                }
+                _ => None,
+            }
+        })
+    }
+
+    /// The name-only span of a referent's declaration, for the rename edit set.
+    ///
+    /// Locals are stamped at their binder (the scan covers them), so this is
+    /// used only for workspace symbols: their `def_span` covers the whole
+    /// declaration, so the name is recovered as the leftmost stamped `Ident`
+    /// inside it whose text matches.
+    fn referent_decl_name_span(&self, key: &ReferentKey, name: &str) -> Option<(ModuleId, Span)> {
+        match key {
+            ReferentKey::Local(module, local_id) => {
+                let span = self.find_local_def_span(module.0 as usize, *local_id)?;
+                Some((*module, span))
+            }
+            ReferentKey::Symbol(module, symbol) => {
+                let decl = self.symbol_def_span(*module, *symbol)?;
+                let span = self.decl_name_span(*module, decl, name)?;
+                Some((*module, span))
+            }
+            _ => None,
+        }
+    }
+
+    /// The leftmost stamped `Ident` span inside `decl_span` whose text equals
+    /// `name` — the declaration's name token (params and body uses come after).
+    fn decl_name_span(&self, mid: ModuleId, decl_span: Span, name: &str) -> Option<Span> {
+        let mi = mid.0 as usize;
+        self.spatial
+            .get(mi)?
+            .entries
+            .iter()
+            .filter(|(span, kind, _)| {
+                *kind == NodeKind::Ident
+                    && decl_span.start <= span.start
+                    && span.end <= decl_span.end
+                    && self.text_slice(mi, *span) == name
+            })
+            .map(|(span, _, _)| *span)
+            .min_by_key(|span| span.start)
+    }
+
+    /// Narrow a reference `span` in module `mi` to its trailing identifier run.
+    ///
+    /// A plain ident returns itself; a qualified name (`Mod.item`) returns just
+    /// the final `item` segment, so renaming never disturbs the qualifier.
+    /// Identifiers are ASCII (`[A-Za-z0-9_]`), so byte offsets are char
+    /// boundaries.
+    fn final_ident_span(&self, mi: usize, span: Span) -> Span {
+        let bytes = self.text_slice(mi, span).as_bytes();
+        let mut start = bytes.len();
+        while start > 0 && (bytes[start - 1].is_ascii_alphanumeric() || bytes[start - 1] == b'_') {
+            start -= 1;
+        }
+        Span::new(span.start + u32::try_from(start).unwrap_or(0), span.end)
+    }
+
+    /// The [`SymbolKind`] of `symbol` in `module`, if present.
+    fn symbol_kind(
+        &self,
+        module: ModuleId,
+        symbol: ridge_resolve::SymbolId,
+    ) -> Option<&SymbolKind> {
+        self.modules
+            .get(module.0 as usize)?
+            .symbols
+            .entries
+            .get(symbol.0 as usize)
+            .map(|e| &e.kind)
+    }
+
     /// `def_span` of symbol `symbol` in module `module`.
     fn symbol_def_span(&self, module: ModuleId, symbol: ridge_resolve::SymbolId) -> Option<Span> {
         self.modules
@@ -676,6 +982,14 @@ enum ReferentKey {
     ClassMethod(String, String),
 }
 
+/// The renameable thing under the cursor: what it denotes, the exact name range
+/// to select (the `prepareRename` result), and its current text.
+struct RenameTarget {
+    key: ReferentKey,
+    cursor_range: Range,
+    name: String,
+}
+
 /// The referent a binding points at, as a value comparable across modules.
 ///
 /// `module` is the module the binding was found in — used only to scope a
@@ -707,6 +1021,42 @@ fn referent_key(binding: &Binding, module: ModuleId) -> Option<ReferentKey> {
         }
         _ => None,
     }
+}
+
+/// Validate a rename's `new_name` against `old_name`.
+///
+/// A no-op rename (same name) is allowed. Otherwise the new name must be a
+/// non-empty lowercase identifier and not a reserved keyword — every name this
+/// server renames (a local, `fn`, or `const`) is a `LOWER_IDENT`. The `Err`
+/// message is surfaced to the editor.
+fn validate_new_name(new_name: &str, old_name: &str) -> Result<(), String> {
+    if new_name == old_name {
+        return Ok(());
+    }
+    if new_name.is_empty() {
+        return Err("Cannot rename to an empty name.".to_owned());
+    }
+    if KEYWORDS.contains(&new_name) {
+        return Err(format!("`{new_name}` is a reserved keyword."));
+    }
+    if !is_lower_ident(new_name) {
+        return Err(format!(
+            "`{new_name}` is not a valid name — use a lowercase identifier \
+             (letters, digits and underscore, not starting with a digit or capital)."
+        ));
+    }
+    Ok(())
+}
+
+/// True when `s` is a Ridge `LOWER_IDENT`: `[a-z][a-zA-Z0-9_]*` or the private
+/// form `_[a-zA-Z0-9][a-zA-Z0-9_]*`.
+fn is_lower_ident(s: &str) -> bool {
+    let Some(first) = s.chars().next() else {
+        return false;
+    };
+    let first_ok = first.is_ascii_lowercase()
+        || (first == '_' && s.chars().nth(1).is_some_and(|c| c.is_ascii_alphanumeric()));
+    first_ok && s.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')
 }
 
 /// The workspace module an import `alias` resolves to, if any.

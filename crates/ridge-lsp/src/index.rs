@@ -20,10 +20,10 @@ use ridge_lexer::{LineIndex, Span};
 use ridge_resolve::imports::{Binding, ImportResolution, ImportTarget};
 use ridge_resolve::{
     LocalId, ModuleId, NodeId, NodeIdMap, NodeKind, ResolvedVisibility, ResolvedWorkspace,
-    ScopeIndex, SymbolTable,
+    ScopeIndex, StdlibModuleId, SymbolTable, BUILTINS,
 };
 use ridge_typecheck::{render_type_with, TypedWorkspace};
-use ridge_types::TyConDecl;
+use ridge_types::{TyConDecl, TyConKind, Type};
 use tower_lsp::lsp_types::{CompletionItemKind, Location, Position, Range, Url};
 
 use crate::completion::{detect_context, symbol_kind, CompletionItemData, Context, KEYWORDS};
@@ -440,6 +440,18 @@ impl WorkspaceIndex {
                             }
                         }
                     }
+                } else if let Some(sid) = stdlib_alias_target(&m.imports, &alias) {
+                    // A stdlib alias (`import std.repo as Repo`) resolves to a
+                    // builtin module whose exported names live in `BUILTINS`.
+                    for &name in stdlib_exports(sid) {
+                        if name.starts_with(&prefix) {
+                            out.push(item(name.to_owned(), stdlib_export_kind(name), '0'));
+                        }
+                    }
+                } else {
+                    // Not a module alias: complete the fields of a value of record
+                    // type sitting just before the dot.
+                    out.extend(self.record_field_completions(mi, byte, &prefix));
                 }
             }
             Context::Type { prefix } => {
@@ -478,6 +490,51 @@ impl WorkspaceIndex {
         }
         Some(out)
     }
+
+    /// Field-name completions for `value.` where the value ending just before the
+    /// dot at the cursor has a record type. Empty when that value has no record
+    /// type or cannot be located. The value's last byte sits two back from the
+    /// cursor past the dot — value and dot are contiguous in any text the index
+    /// actually holds, since an incomplete `value.` does not type-check.
+    fn record_field_completions(
+        &self,
+        mi: usize,
+        byte: u32,
+        prefix: &str,
+    ) -> Vec<CompletionItemData> {
+        let Some(value_byte) = byte
+            .checked_sub(u32::try_from(prefix.len()).unwrap_or(u32::MAX))
+            .and_then(|b| b.checked_sub(2))
+        else {
+            return Vec::new();
+        };
+        let Some((tnode, _, _)) = self.spatial.get(mi).and_then(|sp| {
+            sp.narrowest_containing(
+                value_byte,
+                &[
+                    NodeKind::Expr,
+                    NodeKind::Block,
+                    NodeKind::Try,
+                    NodeKind::Type,
+                ],
+            )
+        }) else {
+            return Vec::new();
+        };
+        let Some(ty) = self
+            .modules
+            .get(mi)
+            .and_then(|m| m.node_types.get(tnode.0 as usize))
+            .and_then(Option::as_ref)
+        else {
+            return Vec::new();
+        };
+        record_field_names(ty, &self.tycons)
+            .into_iter()
+            .filter(|name| name.starts_with(prefix))
+            .map(|name| item(name, CompletionItemKind::FIELD, '0'))
+            .collect()
+    }
 }
 
 /// The workspace module an import `alias` resolves to, if any.
@@ -488,6 +545,61 @@ fn alias_target(imports: &[ImportResolution], alias: &str) -> Option<ModuleId> {
             (Some(a), ImportTarget::WorkspaceModule(m)) if a == alias => Some(*m),
             _ => None,
         })
+}
+
+/// The builtin stdlib module an import `alias` resolves to, if any.
+fn stdlib_alias_target(imports: &[ImportResolution], alias: &str) -> Option<StdlibModuleId> {
+    imports
+        .iter()
+        .find_map(|imp| match (&imp.alias, &imp.target) {
+            (Some(a), ImportTarget::BuiltinStdlib(id)) if a == alias => Some(*id),
+            _ => None,
+        })
+}
+
+/// Exported symbol names of a builtin stdlib module, or an empty slice when the
+/// id is out of range. The builtin manifest carries names only — no kinds or
+/// definition spans — so completion infers the icon from the name's case (see
+/// [`stdlib_export_kind`]) and go-to-definition does not yet reach these.
+fn stdlib_exports(id: StdlibModuleId) -> &'static [&'static str] {
+    match BUILTINS.get(id.0 as usize) {
+        Some(m) => m.exports,
+        None => &[],
+    }
+}
+
+/// Heuristic completion kind for a stdlib export: an uppercase-initial name is a
+/// type or constructor, anything else a function or value.
+fn stdlib_export_kind(name: &str) -> CompletionItemKind {
+    if name.chars().next().is_some_and(char::is_uppercase) {
+        CompletionItemKind::CLASS
+    } else {
+        CompletionItemKind::FUNCTION
+    }
+}
+
+/// Field names of a record type, resolving through aliases and nominal record
+/// `TyCon`s. Empty for any non-record type. `tycons` is the index's declaration
+/// table, looked up by id for nominal records (`Type::Con`).
+fn record_field_names(ty: &Type, tycons: &[TyConDecl]) -> Vec<String> {
+    match ty {
+        Type::Record { fields, .. } => fields.iter().map(|(label, _)| label.clone()).collect(),
+        Type::Alias { body, .. } => record_field_names(body, tycons),
+        Type::Con(id, _) => tycons
+            .iter()
+            .find(|d| d.id.0 == id.0)
+            .map(|d| match &d.kind {
+                TyConKind::Record(schema) => schema
+                    .record_fields()
+                    .iter()
+                    .map(|f| f.name.clone())
+                    .collect(),
+                TyConKind::Alias { body, .. } => record_field_names(body, tycons),
+                _ => Vec::new(),
+            })
+            .unwrap_or_default(),
+        _ => Vec::new(),
+    }
 }
 
 /// Shape a completion candidate, grouping it by a leading sort digit.
@@ -509,6 +621,7 @@ const fn binding_label(binding: Option<&Binding>) -> &'static str {
         Some(Binding::Local(_)) => "(local) ",
         Some(Binding::Constructor { .. }) => "constructor ",
         Some(Binding::StdlibSymbol { .. }) => "(stdlib) ",
+        Some(Binding::ClassMethod { .. }) => "(class method) ",
         _ => "",
     }
 }
@@ -587,5 +700,17 @@ mod tests {
             .map(|(span, _, _)| span.end - span.start)
             .expect("hit present in entries");
         assert_eq!(lit_span_width, 1, "expected the 1-byte literal `2`");
+    }
+
+    #[test]
+    fn stdlib_export_kind_uses_initial_case() {
+        // The builtin manifest carries names only; the icon is inferred from case.
+        assert_eq!(stdlib_export_kind("filter"), CompletionItemKind::FUNCTION);
+        assert_eq!(stdlib_export_kind("Query"), CompletionItemKind::CLASS);
+    }
+
+    #[test]
+    fn stdlib_exports_out_of_range_is_empty() {
+        assert!(stdlib_exports(StdlibModuleId(u32::MAX)).is_empty());
     }
 }

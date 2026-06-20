@@ -13,6 +13,17 @@ whatever Ridge release is installed.
 
 ## [Unreleased]
 
+### Added
+
+- Syntax highlighting for the `opaque` keyword, raw string literals
+  (`r"..."`, `r#"..."#`), and triple-quoted strings (`"""..."""`).
+
+### Fixed
+
+- The README and Marketplace description listed hover, completion, and
+  go-to-definition as unavailable. `ridge-lsp` provides them, so the docs
+  now describe what actually ships.
+
 ## [0.2.1] - 2026-05-21
 
 First publication to Open VSX. No source changes since 0.2.0; the bump

@@ -500,11 +500,11 @@ fn process (user: User) -> Result Unit Error =
 #### Keywords (reserved)
 
 ```
-actor    as       catch    class     const     deriving  else
-false    fn       guard    if        import    in        init
-instance let      match    on        pub       return    spawn
-state    then     true     try       type      var       when
-where    with
+actor    as       catch    class    const    deriving else
+false    fn       guard    if       import   in       init
+instance let      match    on       opaque   pub      return
+spawn    state    then     true     try      type     var
+when     where    with
 ```
 
 #### Capability keywords (soft-reserved, contextual)

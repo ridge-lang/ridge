@@ -42,5 +42,6 @@ pub mod diagnostics;
 pub mod index;
 pub mod server;
 pub mod span_recovery;
+pub mod stdlib_defs;
 
 pub use server::RidgeLanguageServer;

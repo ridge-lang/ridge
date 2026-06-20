@@ -1509,3 +1509,179 @@ async fn test_didchange_incremental_reflects_buffer() {
         "hover after the edit must report the buffer's Text type, not disk's Int"
     );
 }
+
+// ── Test 20: textDocument/references ───────────────────────────────────────────
+
+fn references_at(
+    uri: &Url,
+    line: u32,
+    character: u32,
+    include_declaration: bool,
+) -> ReferenceParams {
+    ReferenceParams {
+        text_document_position: TextDocumentPositionParams {
+            text_document: TextDocumentIdentifier { uri: uri.clone() },
+            position: Position { line, character },
+        },
+        work_done_progress_params: WorkDoneProgressParams::default(),
+        partial_result_params: PartialResultParams::default(),
+        context: ReferenceContext {
+            include_declaration,
+        },
+    }
+}
+
+/// The start lines (sorted) of the references that land in `uri`.
+fn ref_lines(locs: &[Location], uri: &Url) -> Vec<u32> {
+    let mut lines: Vec<u32> = locs
+        .iter()
+        .filter(|l| &l.uri == uri)
+        .map(|l| l.range.start.line)
+        .collect();
+    lines.sort_unstable();
+    lines
+}
+
+#[tokio::test]
+async fn test_references_local() {
+    // `foo` binds `x` at character 11; the body uses it at 15 and 19.
+    let src = "pub fn foo x = x + x\n";
+    let (service, _socket, uri) = hover_fixture(src).await;
+    let server = service.inner();
+
+    // From a body use, includeDeclaration=true returns the parameter (col 11)
+    // plus both body uses (cols 15 and 19), all on line 0.
+    let with_decl = server
+        .references(references_at(&uri, 0, 15, true))
+        .await
+        .expect("ok")
+        .expect("references of local `x`");
+    let cols: Vec<u32> = with_decl
+        .iter()
+        .filter(|l| l.uri == uri)
+        .map(|l| l.range.start.character)
+        .collect();
+    assert_eq!(
+        cols,
+        vec![11, 15, 19],
+        "includeDeclaration=true returns the binder and both uses"
+    );
+
+    // includeDeclaration=false drops the parameter, leaving the two body uses.
+    let without_decl = server
+        .references(references_at(&uri, 0, 15, false))
+        .await
+        .expect("ok")
+        .expect("references of local `x`");
+    let cols: Vec<u32> = without_decl
+        .iter()
+        .filter(|l| l.uri == uri)
+        .map(|l| l.range.start.character)
+        .collect();
+    assert_eq!(
+        cols,
+        vec![15, 19],
+        "includeDeclaration=false drops the binder"
+    );
+
+    // A keyword has no referent.
+    let kw = server
+        .references(references_at(&uri, 0, 4, true))
+        .await
+        .expect("ok");
+    assert!(kw.is_none(), "a keyword has no references");
+}
+
+#[tokio::test]
+async fn test_references_cross_module() {
+    // `helper` is defined in Lib.ridge (line 0) and used as `Lib.helper` in the
+    // app (line 1). A references query from the use-site must reach both files.
+    let (service, _socket, app_uri, lib_uri) = two_member_fixture().await;
+    let server = service.inner();
+
+    // Cursor inside `helper` of `Lib.helper` (line 1, char 26).
+    let with_decl = server
+        .references(references_at(&app_uri, 1, 26, true))
+        .await
+        .expect("ok")
+        .expect("references of `helper`");
+    assert_eq!(
+        ref_lines(&with_decl, &lib_uri),
+        vec![0],
+        "includeDeclaration=true reaches the definition in Lib.ridge"
+    );
+    assert_eq!(
+        ref_lines(&with_decl, &app_uri),
+        vec![1],
+        "the app use-site is reported"
+    );
+
+    // includeDeclaration=false drops the Lib.ridge declaration, keeping the use.
+    let without_decl = server
+        .references(references_at(&app_uri, 1, 26, false))
+        .await
+        .expect("ok")
+        .expect("references of `helper`");
+    assert!(
+        ref_lines(&without_decl, &lib_uri).is_empty(),
+        "includeDeclaration=false drops the declaration"
+    );
+    assert_eq!(
+        ref_lines(&without_decl, &app_uri),
+        vec![1],
+        "the app use-site survives"
+    );
+}
+
+#[tokio::test]
+async fn test_references_stdlib_symbol() {
+    // Two point-free uses of `L.map`; references on one must find both. The
+    // definition lives in the stdlib (outside the workspace), so the result is
+    // the workspace use-sites regardless of the includeDeclaration flag.
+    let line1 = "pub fn a = L.map";
+    let (service, _socket, uri) =
+        hover_fixture("import std.list as L\npub fn a = L.map\npub fn b = L.map\n").await;
+    let server = service.inner();
+
+    let col = u32::try_from(line1.find("L.map").expect("alias use") + 3).expect("offset fits u32");
+    let refs = server
+        .references(references_at(&uri, 1, col, true))
+        .await
+        .expect("ok")
+        .expect("references of stdlib `map`");
+    assert_eq!(
+        ref_lines(&refs, &uri),
+        vec![1, 2],
+        "both `L.map` use-sites are found"
+    );
+}
+
+#[tokio::test]
+async fn test_references_class_method() {
+    // The fundep verb `filter` is used on two lines. References on one use must
+    // find the other; the class method itself lives in the stdlib, so the result
+    // is the workspace use-sites. The class is redeclared so the resolver's
+    // class-method index stamps the bindings (the same trick the goto test uses).
+    let src = concat!(
+        "pub class Refinable q p | q -> p =\n",
+        "  filter (pred: p) (x: q) -> q\n",
+        "pub fn run1 q p -> q = filter p q\n",
+        "pub fn run2 q p -> q = filter p q\n",
+    );
+    let (service, _socket, uri) = hover_fixture(src).await;
+    let server = service.inner();
+
+    let line2 = "pub fn run1 q p -> q = filter p q";
+    let col =
+        u32::try_from(line2.find("filter").expect("filter use") + 1).expect("offset fits u32");
+    let refs = server
+        .references(references_at(&uri, 2, col, true))
+        .await
+        .expect("ok")
+        .expect("references of class method `filter`");
+    let hits = ref_lines(&refs, &uri);
+    assert!(
+        hits.contains(&2) && hits.contains(&3),
+        "both bare `filter` use-sites are found, got {hits:?}"
+    );
+}

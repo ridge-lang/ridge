@@ -446,6 +446,7 @@ impl LanguageServer for RidgeLanguageServer {
                 position_encoding: Some(PositionEncodingKind::UTF16),
                 hover_provider: Some(HoverProviderCapability::Simple(true)),
                 definition_provider: Some(OneOf::Left(true)),
+                references_provider: Some(OneOf::Left(true)),
                 completion_provider: Some(CompletionOptions {
                     trigger_characters: Some(vec![".".to_owned()]),
                     resolve_provider: Some(false),
@@ -598,6 +599,21 @@ impl LanguageServer for RidgeLanguageServer {
         Ok(index
             .definition_at(&uri, pos.line, pos.character)
             .map(GotoDefinitionResponse::Scalar))
+    }
+
+    async fn references(&self, params: ReferenceParams) -> LspResult<Option<Vec<Location>>> {
+        let uri = params.text_document_position.text_document.uri;
+        let pos = params.text_document_position.position;
+        let include_declaration = params.context.include_declaration;
+
+        let index = {
+            let snap = self.state.lock().await;
+            snap.index.clone()
+        };
+        let Some(index) = index else {
+            return Ok(None);
+        };
+        Ok(index.references_at(&uri, pos.line, pos.character, include_declaration))
     }
 
     async fn completion(&self, params: CompletionParams) -> LspResult<Option<CompletionResponse>> {

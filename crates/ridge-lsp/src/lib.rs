@@ -16,11 +16,13 @@
 //! - File outside any workspace member → one-time `L803 LspFileOrphan` warning, skipped.
 //! - Driver internal error → `tracing::error!` + `L804 LspInternal` surfaced as LSP error.
 //!
-//! # 0.1.0 ceiling
+//! # Limitations
 //!
-//! Single-root only.  No incremental compilation.  Compile latency grows with
-//! workspace size; 0.2.0 introduces incremental.  See `README.md` for
-//! documented behaviour and known limitations.
+//! Single-root workspaces only; a multi-root window falls back to the first
+//! root with the `L802` warning above.  Recompilation is incremental and
+//! debounced (see the `didChange`/`didSave` notes), so edit-to-diagnostic
+//! latency stays flat as a workspace grows.  See `README.md` for documented
+//! behaviour and known limitations.
 
 #![warn(missing_docs)]
 #![deny(clippy::unwrap_used, clippy::expect_used, clippy::panic)]

@@ -640,9 +640,12 @@ const BASELINE_EXPORTS: &[(&str, &[&str])] = &[
             "summarize",
             "Summarizable",
             "runGroups",
-            // Set operations: combine two queries into one that runs the combined
-            // result, each returning a composable `Query` (a SQL `UNION`/`UNION
-            // ALL`/`INTERSECT`/`EXCEPT`).
+            // Set operations unified across a query and an in-memory sequence: the
+            // `Combinable` class's `union`/`unionAll`/`intersect`/`except` combine two
+            // receivers into one that runs the combined result, each returning a
+            // composable receiver (a SQL `UNION`/`UNION ALL`/`INTERSECT`/`EXCEPT`, or an
+            // in-memory combine over a `Seq`).
+            "Combinable",
             "union",
             "unionAll",
             "intersect",

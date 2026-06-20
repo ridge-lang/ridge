@@ -123,6 +123,7 @@ const STDLIB_CLASSES: &[(&str, &str)] = &[
     ("Every", "std.repo"),
     ("Groupable", "std.repo"),
     ("Summarizable", "std.repo"),
+    ("Combinable", "std.repo"),
     ("Joinable", "std.repo"),
     ("JoinShape", "std.repo"),
     ("LeftJoinable", "std.repo"),

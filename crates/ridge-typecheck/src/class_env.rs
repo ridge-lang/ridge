@@ -1528,6 +1528,56 @@ pub fn register_stdlib_classes(ct: &mut ClassTable) {
             def_module: None,
         },
     );
+
+    // `Combinable` from std.repo — the set-operation builders (`union`/`unionAll`/
+    // `intersect`/`except`) that combine two queries, or two in-memory sequences, of the
+    // same row shape. A single parameter, the receiver `q`, with no functional dependency
+    // (like `Pageable`/`Countable`): each verb takes the other receiver and the piped
+    // receiver and answers a combined receiver, so there is no second parameter to
+    // determine. The four method schemes are seeded directly (see `seed_combinable_scheme`
+    // in lib.rs) with no AST types, and the instances (`Query e a`, `Seq a`) are registered
+    // in `register_stdlib_instances`. Each verb takes the other receiver and the piped
+    // receiver (sig arity 2). Interned last so no existing class id shifts.
+    let combinable_id = ct.intern("Combinable");
+    ct.insert_with_id(
+        combinable_id,
+        ClassInfo {
+            name: "Combinable".to_string(),
+            arity: 1,
+            method_sigs: vec![
+                MethodSig {
+                    name: "union".to_string(),
+                    arity: 2,
+                    ast_param_types: vec![],
+                    ast_ret_type: None,
+                    class_ty_vars: Vec::new(),
+                },
+                MethodSig {
+                    name: "unionAll".to_string(),
+                    arity: 2,
+                    ast_param_types: vec![],
+                    ast_ret_type: None,
+                    class_ty_vars: Vec::new(),
+                },
+                MethodSig {
+                    name: "intersect".to_string(),
+                    arity: 2,
+                    ast_param_types: vec![],
+                    ast_ret_type: None,
+                    class_ty_vars: Vec::new(),
+                },
+                MethodSig {
+                    name: "except".to_string(),
+                    arity: 2,
+                    ast_param_types: vec![],
+                    ast_ret_type: None,
+                    class_ty_vars: Vec::new(),
+                },
+            ],
+            superclasses: vec![],
+            def_module: None,
+        },
+    );
 }
 
 /// Registers the base-type instances of stdlib-defined classes into `env`.
@@ -2608,6 +2658,42 @@ pub fn register_stdlib_instances(
                     .entry((pageable, smallvec![tycon]))
                     .or_insert_with(pageable_inst);
             }
+        }
+    }
+
+    // `Combinable (Query e a)` and `Combinable (Seq a)` — the set-operation builders
+    // (`union`/`unionAll`/`intersect`/`except`) from std.repo. A single-parameter class,
+    // so each instance is keyed by the receiver tycon alone (no second atom). Like
+    // `Pageable`, the verbs combine two receivers into one captured set-operation plan and
+    // carry no context constraints: the combine records a `planCombine` over the two
+    // sources without reaching the store, so no `Adapter`/`Row` and no head-position
+    // augmentation. Set operations apply to a query or an in-memory sequence (not to a
+    // join), so only those two receivers are keyed. Inserted for user workspaces; a no-op
+    // during the stdlib's own build, where repo.ridge's source instances are collected
+    // directly.
+    if let Some(combinable) = ct.id_by_name("Combinable") {
+        let combinable_inst = || InstanceInfo {
+            def_module: None,
+            methods: vec![
+                ("union".to_string(), String::new()),
+                ("unionAll".to_string(), String::new()),
+                ("intersect".to_string(), String::new()),
+                ("except".to_string(), String::new()),
+            ],
+            ctx_constraints: vec![],
+            head_var_positions: vec![],
+            origin: InstanceOrigin::Explicit,
+            span: ds,
+        };
+        if let Some(&query) = reconciled_tycon_names.get("Query") {
+            env.instances
+                .entry((combinable, smallvec![query]))
+                .or_insert_with(combinable_inst);
+        }
+        if let Some(&seq) = reconciled_tycon_names.get("Seq") {
+            env.instances
+                .entry((combinable, smallvec![seq]))
+                .or_insert_with(combinable_inst);
         }
     }
 

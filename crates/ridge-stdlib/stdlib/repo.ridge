@@ -424,6 +424,23 @@ pub class Groupable q p | q -> p =
 pub class Summarizable q =
     runGroups (src: q) (keyCol: Text) (keyLeaf: Int) (projTree: QExpr) (havingTree: QExpr) -> Result (List (Map Text SqlValue)) Error
 
+-- The set-operation builders (`union`/`unionAll`/`intersect`/`except`) that combine
+-- two queries, or two in-memory sequences, of the same row shape. A single parameter,
+-- the receiver `q`, with no functional dependency (like `Pageable`/`Countable`): each
+-- verb takes the other receiver and the piped receiver and answers a combined receiver,
+-- so there is no second parameter to determine. The piped receiver is the left branch
+-- and the argument the right, which matters for `except` (the left rows not in the
+-- right); `union`/`intersect` are symmetric. The result is the same receiver type, so it
+-- keeps composing — a further `orderBy`/`limit` or a terminal applies to the combined
+-- rows. The backend runs each as a set operation (`UNION`/`UNION ALL`/`INTERSECT`/
+-- `EXCEPT` on Postgres, an in-memory combine over the two evaluated row lists), one
+-- captured plan, one IR.
+pub class Combinable q =
+    union     (other: q) (x: q) -> q
+    unionAll  (other: q) (x: q) -> q
+    intersect (other: q) (x: q) -> q
+    except    (other: q) (x: q) -> q
+
 -- `limit`/`offset`/`distinct` over a query, an inner join, or a left join are the
 -- methods of the `Pageable q` class (declared above); the instances are defined
 -- below, next to the `Refinable`/`Orderable`/`Decodable` ones. The query instance
@@ -465,34 +482,25 @@ fn planOf (q: Query e a) -> QueryPlan =
 fn combineWith (op: Text) (other: Query e a) (q: Query e a) -> Query e a =
     Query { repo = q.repo, pred = keepAll (), orders = [], lim = 0 - 1, off = 0, dist = false, plan = Some (planCombine op (planOf q) (planOf other)) }
 
--- Set union of two queries — every row in either, with duplicates removed
--- (`UNION`). Reads as a pipeline: `active |> Repo.union admins`. The result is a
--- query, so it keeps composing — `active |> Repo.union admins |> Repo.orderBy Asc
--- (fn (u: User) -> u.name) |> Repo.limit 10 |> Repo.toList` — and runs the
--- operation in the backend (a SQL `UNION` on Postgres, an in-memory combine for the
--- memory store), not by fetching both sides and merging in the caller. Both
--- branches range over the same entity and adapter, so the column shapes line up
--- and the type pins which backend runs it.
-pub fn union (other: Query e a) (q: Query e a) -> Query e a =
-    combineWith "UNION" other q
-
--- Set union keeping duplicates — every row in either branch, repeats and all
--- (`UNION ALL`). The multiset counterpart of `union`: where `union` drops the
--- duplicate rows the two branches share, `unionAll` keeps every one.
-pub fn unionAll (other: Query e a) (q: Query e a) -> Query e a =
-    combineWith "UNION ALL" other q
-
--- Set intersection — the rows present in both queries, with duplicates removed
--- (`INTERSECT`): `active |> Repo.intersect admins` keeps the users who are both.
-pub fn intersect (other: Query e a) (q: Query e a) -> Query e a =
-    combineWith "INTERSECT" other q
-
--- Set difference — the rows in the left query that are not in the right, with
--- duplicates removed (`EXCEPT`): `active |> Repo.except admins` keeps the active
--- non-admins. Order matters here, unlike `union`/`intersect`: the piped-in query
--- is the left side, the argument the right.
-pub fn except (other: Query e a) (q: Query e a) -> Query e a =
-    combineWith "EXCEPT" other q
+-- The set operations over a query — every row in either branch (`union`), in either
+-- with repeats kept (`unionAll`), in both (`intersect`), or in the left and not the
+-- right (`except`). Each reads as a pipeline: `active |> Repo.union admins`, which keeps
+-- composing — `active |> Repo.union admins |> Repo.orderBy Asc (fn (u: User) -> u.name)
+-- |> Repo.limit 10 |> Repo.toList` — and runs the operation in the backend (a SQL
+-- `UNION`/`INTERSECT`/`EXCEPT` on Postgres, an in-memory combine for the memory store),
+-- not by fetching both sides and merging in the caller. Both branches range over the
+-- same entity and adapter, so the column shapes line up and the type pins which backend
+-- runs it. `union`/`intersect` are symmetric; `except` keeps the piped-in (left) rows
+-- absent from the argument (right).
+instance Combinable (Query e a) =
+    union (other: Query e a) (q: Query e a) -> Query e a =
+        combineWith "UNION" other q
+    unionAll (other: Query e a) (q: Query e a) -> Query e a =
+        combineWith "UNION ALL" other q
+    intersect (other: Query e a) (q: Query e a) -> Query e a =
+        combineWith "INTERSECT" other q
+    except (other: Query e a) (q: Query e a) -> Query e a =
+        combineWith "EXCEPT" other q
 
 -- Build an `Error` from a code and a message. A bare record literal cannot be
 -- coerced to the nominal `Error` type in a plain function (only an instance-method
@@ -1856,6 +1864,33 @@ instance Groupable (Seq a) (fn a -> k) =
 instance Summarizable (Seq a) =
     runGroups (src: Seq a) (keyCol: Text) (keyLeaf: Int) (projTree: QExpr) (havingTree: QExpr) -> Result (List (Map Text SqlValue)) Error =
         Ok (_evalPlanPure (planGroup keyCol keyLeaf (groupColsLeaf keyCol projTree) havingTree (seqCountPlan src (0 - 1))))
+
+-- Combine two in-memory sequences into one fresh sequence carrying the captured set-
+-- operation plan: each side is materialised through `seqPlan` (its own filter, ordering,
+-- page, and distinct folded in), then `planCombine` joins them — the piped sequence `x`
+-- as the left branch and `other` as the right, the same order the query's `combineWith`
+-- uses, so `except` keeps the left rows absent from the right. The result is a sequence
+-- with an empty builder over the combined plan, so a further `filter`/`orderBy`/`limit`
+-- or a terminal applies on top of the combination, exactly as it does over a query.
+fn seqCombine (op: Text) (other: Seq a) (x: Seq a) -> Seq a =
+    Seq { source = planCombine op (seqPlan x) (seqPlan other), pred = keepAll (), orders = [], lim = 0 - 1, off = 0, dist = false }
+
+-- The set operations over an in-memory sequence: combine two sequences of the same row
+-- shape through the same `PlanCombine` node the database path captures, one plan IR, and
+-- the in-memory interpreter applies the operation over the two evaluated row lists —
+-- `union`/`intersect`/`except` drop duplicate rows (set semantics), `unionAll` keeps
+-- every one — comparing rows by their full contents, the in-memory dual of SQL's
+-- `UNION`/`INTERSECT`/`EXCEPT`. No connection is touched, so the instance carries no
+-- context, like the query instance; the combined sequence keeps composing as any other.
+instance Combinable (Seq a) =
+    union (other: Seq a) (x: Seq a) -> Seq a =
+        seqCombine "UNION" other x
+    unionAll (other: Seq a) (x: Seq a) -> Seq a =
+        seqCombine "UNION ALL" other x
+    intersect (other: Seq a) (x: Seq a) -> Seq a =
+        seqCombine "INTERSECT" other x
+    except (other: Seq a) (x: Seq a) -> Seq a =
+        seqCombine "EXCEPT" other x
 
 -- A phantom `Option e` witness for `rowColumns`, drawn from a repository that
 -- already carries the entity type. `Row.rowColumns` answers an entity's columns

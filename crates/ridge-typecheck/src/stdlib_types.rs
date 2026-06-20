@@ -1850,13 +1850,15 @@ fn reconciled_repo_fn_scheme(
         // the instance. Returning `None` here (falling through to the final arm)
         // routes it through the class-method path rather than the old single-receiver
         // pub fn.
-        // union / unionAll / intersect / except : ∀e a. Query e a -> Query e a
-        //   -> Query e a — combine two queries with a set operation. Pure builders
-        // like `filter`: they capture a query plan, and a terminal runs it. Both
-        // branches share the entity `e` and adapter `a`, so the column shapes align.
-        "union" | "unionAll" | "intersect" | "except" => {
-            method(vec![query_app(), query_app()], query_app(), vec![])
-        }
+        // `union`/`unionAll`/`intersect`/`except` are no longer reconciled here: they
+        // became the methods of the `Combinable q` class (std.repo), one set of
+        // set-operation builders over a query or an in-memory sequence. A qualified
+        // `Repo.union` resolves to that class method, typed by the seeded `∀q. q -> q ->
+        // q where Combinable q` scheme (see `seed_combinable_scheme`), the single receiver
+        // parameter pinning the instance — so one binding serves a query and a `Seq`
+        // alike, and a `Seq` gains the same set operations the query path has. Omitting
+        // the arm routes them through the class-method path rather than the old
+        // single-receiver pub fns.
         // `limit` / `offset` are no longer reconciled here: they joined `distinct`
         // as methods of the `Pageable q` class (std.repo), typed by the seeded
         // `∀q. Int -> q -> q where Pageable q` scheme (see `seed_pageable_scheme`).

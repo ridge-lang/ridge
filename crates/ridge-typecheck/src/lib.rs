@@ -803,6 +803,7 @@ fn typecheck_module_inner(
         seed_decodable_scheme(&mut ctx, b, ct);
         seed_pageable_scheme(&mut ctx, b, ct);
         seed_countable_scheme(&mut ctx, b, ct);
+        seed_combinable_scheme(&mut ctx, ct);
         seed_every_scheme(&mut ctx, b, ct);
 
         // Wire the reconciled receiver ids the `Rows q` projection reduces against,
@@ -1728,6 +1729,48 @@ fn seed_countable_scheme(
                 row_vars: vec![],
                 ty: fn_ty,
                 constraints: vec![Constraint::new(countable, constraint_tys)],
+            },
+        );
+    }
+}
+
+/// Seed the env schemes for `Combinable`'s set-operation builders — std.repo's unified
+/// `union`/`unionAll`/`intersect`/`except` over a query or an in-memory sequence.
+/// Registered in Rust for the same reason as [`seed_pageable_scheme`]: the stdlib class
+/// carries no source AST, so the AST-driven [`seed_class_method_schemes`] path skips it.
+///
+/// Scheme (each of the four): `∀q. q -> q -> q where Combinable q`. The single receiver
+/// parameter pins the instance, so one binding serves a `Query` and a `Seq` alike — each
+/// verb takes the other receiver and the piped receiver and answers a combined receiver,
+/// with no functional dependency (like `Pageable`/`Countable`): no quoted argument, so no
+/// determined parameter and no argument-less ambiguity. The piped receiver is the left
+/// branch and the argument the right, which the backend honours for `except`.
+fn seed_combinable_scheme(
+    ctx: &mut crate::ctx::InferCtx,
+    class_table: &crate::class_env::ClassTable,
+) {
+    use ridge_types::{CapRow, CapabilitySet, Constraint, Scheme, Type};
+    let Some(combinable) = class_table.id_by_name("Combinable") else {
+        return;
+    };
+    // The two branches and the result share the receiver type `q`; the operation is
+    // captured into a plan a terminal runs, so the call itself is pure.
+    for name in ["union", "unionAll", "intersect", "except"] {
+        let q = ctx.fresh_tyvid();
+        let fn_ty = Type::Fn {
+            params: vec![Type::Var(q), Type::Var(q)],
+            ret: Box::new(Type::Var(q)),
+            caps: CapRow::Concrete(CapabilitySet::PURE),
+        };
+        let constraint_tys: smallvec::SmallVec<[ridge_types::TyVid; 1]> = smallvec::smallvec![q];
+        ctx.env.bind(
+            name.to_owned(),
+            Scheme {
+                vars: vec![q],
+                cap_vars: vec![],
+                row_vars: vec![],
+                ty: fn_ty,
+                constraints: vec![Constraint::new(combinable, constraint_tys)],
             },
         );
     }

@@ -1810,6 +1810,15 @@ pub fn register_stdlib_instances(
                     .entry((orderable, smallvec![query, fn1]))
                     .or_insert_with(orderable_inst);
             }
+            // `Orderable (Seq a) (a -> k)` — the in-memory sequence's `orderBy`, keyed
+            // like a query (receiver + single-param key `Fn1`). It carries no context
+            // (orderBy only appends an ordering key), so the shared `orderable_inst`
+            // applies unchanged.
+            if let Some(&seq) = reconciled_tycon_names.get("Seq") {
+                env.instances
+                    .entry((orderable, smallvec![seq, fn1]))
+                    .or_insert_with(orderable_inst);
+            }
             if let Some(&left_join) = reconciled_tycon_names.get("LeftJoin") {
                 env.instances
                     .entry((orderable, smallvec![left_join, fn2]))
@@ -2507,6 +2516,14 @@ pub fn register_stdlib_instances(
         if let Some(&query) = reconciled_tycon_names.get("Query") {
             env.instances
                 .entry((pageable, smallvec![query]))
+                .or_insert_with(pageable_inst);
+        }
+        // `Pageable (Seq a)` — the in-memory sequence's `limit`/`offset`/`distinct`.
+        // Single receiver parameter, no functional dependency (these verbs take no
+        // quoted argument), so it carries no context, like the query instance.
+        if let Some(&seq) = reconciled_tycon_names.get("Seq") {
+            env.instances
+                .entry((pageable, smallvec![seq]))
                 .or_insert_with(pageable_inst);
         }
         if let Some(&left_join) = reconciled_tycon_names.get("LeftJoin") {

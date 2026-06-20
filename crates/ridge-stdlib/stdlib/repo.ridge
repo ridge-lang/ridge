@@ -1737,6 +1737,28 @@ instance Refinable (Seq a) (fn a -> Bool) =
     filter (pred: Quote (fn a -> Bool)) (x: Seq a) -> Seq a =
         Seq { source = x.source, pred = quoteAnd x.pred pred, orders = x.orders, lim = x.lim, off = x.off, dist = x.dist }
 
+-- `orderBy` over an in-memory sequence appends the key as an ordering column, the same
+-- way a query's `orderBy` does — one verb, one builder. The key (`fn (u: User) -> u.age`)
+-- names a single column and the direction rides alongside it; keys order major-to-minor
+-- in the order added. The interpreter sorts the rows by these keys before paging, so the
+-- ordering means exactly what it does on the database path.
+instance Orderable (Seq a) (fn a -> k) =
+    orderBy (dir: SortOrder) (key: Quote (fn a -> k)) (x: Seq a) -> Seq a =
+        Seq { source = x.source, pred = x.pred, orders = snoc x.orders (ascending dir, orderColumn key), lim = x.lim, off = x.off, dist = x.dist }
+
+-- `limit`/`offset`/`distinct` over an in-memory sequence set the page and distinct flag
+-- on its builder, exactly as the same verbs do over a query — each returns the sequence,
+-- so they keep composing in a pipeline. The terminal's one `planRefine` carries them, so
+-- the interpreter pages with a single offset-then-limit over the ordered rows and drops
+-- duplicate result rows for `distinct`, the same semantics the database backend gives.
+instance Pageable (Seq a) =
+    limit (n: Int) (x: Seq a) -> Seq a =
+        Seq { source = x.source, pred = x.pred, orders = x.orders, lim = n, off = x.off, dist = x.dist }
+    offset (n: Int) (x: Seq a) -> Seq a =
+        Seq { source = x.source, pred = x.pred, orders = x.orders, lim = x.lim, off = n, dist = x.dist }
+    distinct (x: Seq a) -> Seq a =
+        Seq { source = x.source, pred = x.pred, orders = x.orders, lim = x.lim, off = x.off, dist = true }
+
 -- A phantom `Option e` witness for `rowColumns`, drawn from a repository that
 -- already carries the entity type. `Row.rowColumns` answers an entity's columns
 -- from the type alone but needs a value to fix that type; a `Repo e a` carries

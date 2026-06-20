@@ -1348,7 +1348,7 @@ mem_eval_plan(State, Id, {'PlanAggregate', <<"COUNT">>, _Column, _IsRight, Child
     [#{<<"agg">> => {'SqlInt', length(Rows)}}];
 mem_eval_plan(State, Id, {'PlanAggregate', Func, Column, Leaf, Child}) ->
     Rows = mem_eval_plan(State, Id, Child),
-    case mem_aggregate_value(Func, mem_agg_prefixed_col(Leaf, Column), Rows) of
+    case mem_aggregate_value(Func, mem_agg_col(Leaf, Column, Rows), Rows) of
         'SqlNull' -> [];
         Value     -> [#{<<"agg">> => Value}]
     end;
@@ -1363,6 +1363,21 @@ mem_eval_plan(State, Id, {'PlanGroup', KeyCol, KeyLeaf, Cols, Having, Child}) ->
 %% how `mem_pcell` resolves a projection cell.
 mem_agg_prefixed_col(Leaf, Column) ->
     <<"t", (integer_to_binary(Leaf))/binary, "$", Column/binary>>.
+
+%% The column a scalar `PlanAggregate` folds: the leaf-prefixed name when the child's
+%% rows carry it (a join's flat source-prefixed rows), or the bare column when none do
+%% (an unprefixed single-leaf `Seq` source). An outer join's unmatched rows can lack the
+%% folded leaf's columns, so it asks whether ANY row carries the prefixed key rather than
+%% probing one row — the first might be an unmatched outer row missing that leaf. A `Seq`
+%% row never carries a `t<n>$` prefix, so none match and the bare column is read; a join
+%% folding a side with no matched rows reads SqlNull either way. Mirrors how `mem_pcell`
+%% resolves a left-source projection cell.
+mem_agg_col(Leaf, Column, Rows) ->
+    Prefixed = mem_agg_prefixed_col(Leaf, Column),
+    case lists:any(fun(Row) -> maps:is_key(Prefixed, Row) end, Rows) of
+        true  -> Prefixed;
+        false -> Column
+    end.
 
 %% Project a row through a projection tree into one row keyed by the projection's
 %% output aliases. A `QCol` names a left-source column (the t0$ prefix a join

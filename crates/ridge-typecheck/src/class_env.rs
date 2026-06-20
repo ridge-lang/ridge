@@ -1918,6 +1918,39 @@ pub fn register_stdlib_instances(
         }
     }
 
+    // `Aggregable (Seq a) (fn a -> n)` — the in-memory sequence's scalar aggregates. Keyed
+    // like `Projectable (Seq a)` (receiver tycon + accessor-arity tycon `Fn1`), but unlike
+    // the query and join instances it carries NO `Adapter`: the fold runs through the
+    // in-memory interpreter without a connection. It keeps the `SqlType n` that decodes the
+    // folded scalar, at `n`'s flattened head position — `n@2` in `[Seq a, fn a -> n]`
+    // (a@0, a@1, n@2), the single-leaf analogue of the query's `n@3`.
+    if let (Some(aggregable), Some(sqltype), Some(&seq)) = (
+        ct.id_by_name("Aggregable"),
+        ct.id_by_name("SqlType"),
+        reconciled_tycon_names.get("Seq"),
+    ) {
+        if let Some(fn1) = ridge_types::fn_tycon_id(1) {
+            env.instances
+                .entry((aggregable, smallvec![seq, fn1]))
+                .or_insert_with(|| InstanceInfo {
+                    def_module: None,
+                    methods: vec![
+                        ("sumOf".to_string(), String::new()),
+                        ("avgOf".to_string(), String::new()),
+                        ("minOf".to_string(), String::new()),
+                        ("maxOf".to_string(), String::new()),
+                    ],
+                    ctx_constraints: vec![ridge_types::Constraint::single(
+                        sqltype,
+                        ridge_types::TyVid(0),
+                    )],
+                    head_var_positions: vec![2],
+                    origin: InstanceOrigin::Explicit,
+                    span: ds,
+                });
+        }
+    }
+
     // `Aggregable (Joined q f a)` and the three outer composites — the nested join's
     // scalar aggregates. A fundep terminal, keyed by the RECEIVER ALONE (the accessor's
     // leaf arity grows with the join depth); discharge falls back to the receiver-only

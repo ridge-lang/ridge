@@ -451,6 +451,7 @@ impl LanguageServer for RidgeLanguageServer {
                     prepare_provider: Some(true),
                     work_done_progress_options: WorkDoneProgressOptions::default(),
                 })),
+                document_highlight_provider: Some(OneOf::Left(true)),
                 completion_provider: Some(CompletionOptions {
                     trigger_characters: Some(vec![".".to_owned()]),
                     resolve_provider: Some(false),
@@ -618,6 +619,23 @@ impl LanguageServer for RidgeLanguageServer {
             return Ok(None);
         };
         Ok(index.references_at(&uri, pos.line, pos.character, include_declaration))
+    }
+
+    async fn document_highlight(
+        &self,
+        params: DocumentHighlightParams,
+    ) -> LspResult<Option<Vec<DocumentHighlight>>> {
+        let uri = params.text_document_position_params.text_document.uri;
+        let pos = params.text_document_position_params.position;
+
+        let index = {
+            let snap = self.state.lock().await;
+            snap.index.clone()
+        };
+        let Some(index) = index else {
+            return Ok(None);
+        };
+        Ok(index.document_highlights_at(&uri, pos.line, pos.character))
     }
 
     async fn prepare_rename(

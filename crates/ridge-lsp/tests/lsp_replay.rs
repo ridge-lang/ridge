@@ -1871,3 +1871,133 @@ async fn test_rename_stdlib_symbol_is_not_renameable() {
         .expect("ok");
     assert!(edit.is_none(), "rename of a stdlib symbol yields no edit");
 }
+
+// ── Test 22: textDocument/documentHighlight ───────────────────────────────────
+
+fn highlight_at(uri: &Url, line: u32, character: u32) -> DocumentHighlightParams {
+    DocumentHighlightParams {
+        text_document_position_params: TextDocumentPositionParams {
+            text_document: TextDocumentIdentifier { uri: uri.clone() },
+            position: Position { line, character },
+        },
+        work_done_progress_params: WorkDoneProgressParams::default(),
+        partial_result_params: PartialResultParams::default(),
+    }
+}
+
+/// The `(start.line, start.character, kind)` of every highlight, sorted.
+fn highlight_spots(hs: &[DocumentHighlight]) -> Vec<(u32, u32, DocumentHighlightKind)> {
+    let mut out: Vec<(u32, u32, DocumentHighlightKind)> = hs
+        .iter()
+        .map(|h| {
+            (
+                h.range.start.line,
+                h.range.start.character,
+                h.kind.expect("a highlight carries a kind"),
+            )
+        })
+        .collect();
+    out.sort_by_key(|(line, ch, _)| (*line, *ch));
+    out
+}
+
+#[tokio::test]
+async fn test_highlight_local() {
+    // `foo` binds `x` at character 11; the body uses it at 15 and 19. A highlight
+    // from a body use marks the binder as a write and both uses as reads.
+    let src = "pub fn foo x = x + x\n";
+    let (service, _socket, uri) = hover_fixture(src).await;
+    let server = service.inner();
+
+    let hs = server
+        .document_highlight(highlight_at(&uri, 0, 15))
+        .await
+        .expect("ok")
+        .expect("highlights of local `x`");
+    assert_eq!(
+        highlight_spots(&hs),
+        vec![
+            (0, 11, DocumentHighlightKind::WRITE),
+            (0, 15, DocumentHighlightKind::READ),
+            (0, 19, DocumentHighlightKind::READ),
+        ],
+        "the binder is a write, both uses are reads"
+    );
+}
+
+#[tokio::test]
+async fn test_highlight_is_same_file_only() {
+    // `helper` is declared in Lib.ridge and used as `Lib.helper` in the app.
+    // documentHighlight never leaves the cursor's file: from the app use it marks
+    // only the `helper` segment there; from the Lib declaration it marks only the
+    // declaration name.
+    let (service, _socket, app_uri, lib_uri) = two_member_fixture().await;
+    let server = service.inner();
+
+    // From the app use-site: only `helper` (char 24), not `Lib.helper` (char 20),
+    // and nothing from Lib.ridge — same file only.
+    let app = server
+        .document_highlight(highlight_at(&app_uri, 1, 26))
+        .await
+        .expect("ok")
+        .expect("highlights of `helper` in the app");
+    assert_eq!(
+        highlight_spots(&app),
+        vec![(1, 24, DocumentHighlightKind::READ)],
+        "only the final segment of `Lib.helper`, this file only"
+    );
+
+    // From the Lib declaration name: the declaration is the write site, with no
+    // uses inside Lib.ridge.
+    let lib = server
+        .document_highlight(highlight_at(&lib_uri, 0, 7))
+        .await
+        .expect("ok")
+        .expect("highlights of `helper` in Lib.ridge");
+    assert_eq!(
+        highlight_spots(&lib),
+        vec![(0, 7, DocumentHighlightKind::WRITE)],
+        "the declaration name is the write site"
+    );
+}
+
+#[tokio::test]
+async fn test_highlight_stdlib_symbol_same_file() {
+    // Two point-free uses of `L.map` in one file; a highlight on one marks both
+    // (reads), narrowed to the `map` segment. The definition lives in the stdlib,
+    // so there is no write site.
+    let line1 = "pub fn a = L.map";
+    let (service, _socket, uri) =
+        hover_fixture("import std.list as L\npub fn a = L.map\npub fn b = L.map\n").await;
+    let server = service.inner();
+
+    let cursor = u32::try_from(line1.find("L.map").expect("alias use") + 3).expect("fits u32");
+    let map_col = u32::try_from(line1.find("L.map").expect("alias use") + 2).expect("fits u32");
+    let hs = server
+        .document_highlight(highlight_at(&uri, 1, cursor))
+        .await
+        .expect("ok")
+        .expect("highlights of stdlib `map`");
+    assert_eq!(
+        highlight_spots(&hs),
+        vec![
+            (1, map_col, DocumentHighlightKind::READ),
+            (2, map_col, DocumentHighlightKind::READ),
+        ],
+        "both `map` uses are reads, narrowed to the final segment"
+    );
+}
+
+#[tokio::test]
+async fn test_highlight_none_on_keyword() {
+    // A keyword is not a name; documentHighlight yields nothing.
+    let src = "pub fn foo x = x + x\n";
+    let (service, _socket, uri) = hover_fixture(src).await;
+    let server = service.inner();
+
+    let hs = server
+        .document_highlight(highlight_at(&uri, 0, 4))
+        .await
+        .expect("ok");
+    assert!(hs.is_none(), "a keyword has no highlights");
+}

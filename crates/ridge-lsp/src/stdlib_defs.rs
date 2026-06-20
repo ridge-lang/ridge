@@ -132,6 +132,56 @@ fn collect_defs(items: &[Item]) -> HashMap<String, Span> {
     defs
 }
 
+/// Collect `(class_name, method_name) → (module-id, method-name span)` pairs
+/// from a parsed module's `class` declarations.
+///
+/// Only `class` declarations are walked; `instance` bodies are skipped, since
+/// goto targets the method signature in the class, not an instance's definition
+/// of it. The span used is the method name's identifier span. `module` is the
+/// owning builtin id, carried so the global index can recover the module's
+/// materialised URI and line index later.
+fn collect_class_methods(
+    module: StdlibModuleId,
+    items: &[Item],
+    out: &mut HashMap<(String, String), (u32, Span)>,
+) {
+    for item in items {
+        if let Item::ClassDecl(decl) = item {
+            for method in &decl.methods {
+                // Keep the first declaration of a given `(class, method)`; a
+                // redeclaration is a resolver error and not this layer's concern.
+                out.entry((decl.name.text.clone(), method.name.text.clone()))
+                    .or_insert((module.0, method.name.span));
+            }
+        }
+    }
+}
+
+/// Process-global index of stdlib class methods, keyed by `(class, method)`.
+///
+/// A class method binding (`Binding::ClassMethod`) carries only the class and
+/// method names — no owning module — so the lookup must span every stdlib
+/// module. The index is built once by parsing all embedded sources and pairs
+/// each `(class, method)` with the owning module id and the method-name span,
+/// which together resolve to a [`Location`] through the per-module cache.
+fn class_method_index() -> &'static HashMap<(String, String), (u32, Span)> {
+    static INDEX: OnceLock<HashMap<(String, String), (u32, Span)>> = OnceLock::new();
+    INDEX.get_or_init(|| {
+        let mut index = HashMap::new();
+        for builtin in BUILTINS {
+            let Some(rel) = relative_source_path(builtin.name) else {
+                continue;
+            };
+            let Some(source) = source_for(&rel) else {
+                continue;
+            };
+            let parsed = ridge_parser::parse_source(source);
+            collect_class_methods(builtin.id, &parsed.module.items, &mut index);
+        }
+        index
+    })
+}
+
 /// Build the [`StdlibModuleDef`] for a builtin module by parsing its embedded
 /// source. Returns `None` if the id is unknown, the name has no source path, or
 /// the source text is missing.
@@ -219,6 +269,24 @@ pub fn stdlib_module_location(module: StdlibModuleId) -> Option<Location> {
     })
 }
 
+/// Resolve a stdlib class method to the method-name signature in its `class`
+/// declaration.
+///
+/// Looks `(class_name, method)` up in the process-global class-method index and
+/// turns the owning module's method-name span into a [`Location`] through the
+/// per-module cache. Returns `None` when the pair is not a stdlib class method —
+/// for example a class declared in the workspace, which this layer does not
+/// resolve — so goto reports "no definition" rather than failing.
+#[must_use]
+pub fn stdlib_class_method_location(class_name: &str, method: &str) -> Option<Location> {
+    let &(module_id, span) =
+        class_method_index().get(&(class_name.to_owned(), method.to_owned()))?;
+    with_module_def(StdlibModuleId(module_id), |def| Location {
+        uri: def.uri.clone(),
+        range: span_to_range(&def.line_index, span),
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -282,5 +350,33 @@ mod tests {
     fn out_of_range_module_resolves_to_none() {
         assert!(stdlib_location(StdlibModuleId(u32::MAX), "map").is_none());
         assert!(stdlib_module_location(StdlibModuleId(u32::MAX)).is_none());
+    }
+
+    #[test]
+    fn class_method_location_points_at_method_signature() {
+        // `filter` is a method of the `Refinable q p | q -> p` class declared in
+        // the repo module.
+        let loc = stdlib_class_method_location("Refinable", "filter")
+            .expect("Refinable.filter should be a locatable stdlib class method");
+        let path = loc.uri.to_file_path().expect("location uri is a file path");
+        assert!(
+            path.ends_with("repo.ridge"),
+            "expected a path ending in repo.ridge, got {path:?}"
+        );
+        // The signature sits well past the start of the file, so the range is
+        // non-trivial and points at the method name, not `(0, 0)`.
+        assert!(
+            loc.range.start.line > 0 || loc.range.start.character > 0,
+            "expected a real method position, got {:?}",
+            loc.range.start
+        );
+    }
+
+    #[test]
+    fn unknown_class_method_resolves_to_none() {
+        // A real method name on the wrong class, and a wholly made-up pair, both
+        // miss the index.
+        assert!(stdlib_class_method_location("Refinable", "definitelyNotAMethod").is_none());
+        assert!(stdlib_class_method_location("NotAStdlibClass", "filter").is_none());
     }
 }

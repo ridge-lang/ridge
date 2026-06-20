@@ -1225,6 +1225,48 @@ async fn test_definition_into_stdlib_module_alias() {
     );
 }
 
+#[tokio::test]
+async fn test_definition_into_stdlib_class_method() {
+    // A bare use of the fundep verb `filter` carries a `ClassMethod` binding
+    // naming the `Refinable` class. The class is redeclared in the workspace so
+    // the resolver's class-method index stamps the binding (the same trick the
+    // deriving e2e tests use for `encode`/`decode`) without the full ridge.data
+    // setup; go-to-def then resolves the verb to the canonical signature in the
+    // materialised stdlib `repo.ridge`, not the workspace redeclaration.
+    let src = concat!(
+        "pub class Refinable q p | q -> p =\n",
+        "  filter (pred: p) (x: q) -> q\n",
+        "pub fn run q p -> q = filter p q\n",
+    );
+    let (service, _socket, uri) = hover_fixture(src).await;
+    let server = service.inner();
+
+    // Cursor inside the bare `filter` use on the last line (line 2).
+    let line2 = "pub fn run q p -> q = filter p q";
+    let col =
+        u32::try_from(line2.find("filter").expect("filter use") + 1).expect("offset fits u32");
+    let resp = server
+        .goto_definition(goto_at(&uri, 2, col))
+        .await
+        .expect("ok");
+    let loc = scalar_location(resp).expect("definition of stdlib class method `filter`");
+    let path = loc
+        .uri
+        .to_file_path()
+        .expect("definition uri is a file path");
+    assert!(
+        path.ends_with("repo.ridge"),
+        "class-method definition must land in repo.ridge, got {path:?}"
+    );
+    // `filter` is declared well past the start of the file, so the range points
+    // at the method signature rather than the file start.
+    assert!(
+        loc.range.start.line > 0 || loc.range.start.character > 0,
+        "class-method definition range must not be the file start, got {:?}",
+        loc.range.start
+    );
+}
+
 // ── Test 19: textDocument/completion ──────────────────────────────────────────
 
 fn complete_at(uri: &Url, line: u32, character: u32) -> CompletionParams {

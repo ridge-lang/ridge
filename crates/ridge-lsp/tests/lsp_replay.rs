@@ -1161,6 +1161,70 @@ async fn test_definition_cross_module() {
     assert_eq!(loc.range.start.line, 0, "helper is on line 1 of Lib.ridge");
 }
 
+#[tokio::test]
+async fn test_definition_into_stdlib_symbol() {
+    // `import std.list as L` plus a point-free use of `L.map` so the workspace
+    // compiles and the index carries the qualified-name binding. Go-to-def on
+    // `map` must land in the materialised stdlib source for `std.list`.
+    let line1 = "pub fn run = L.map";
+    let (service, _socket, uri) = hover_fixture("import std.list as L\npub fn run = L.map\n").await;
+    let server = service.inner();
+
+    // Cursor inside `map` (one char past the start of `map`).
+    let col = u32::try_from(line1.find("L.map").expect("alias use") + 3).expect("offset fits u32");
+    let resp = server
+        .goto_definition(goto_at(&uri, 1, col))
+        .await
+        .expect("ok");
+    let loc = scalar_location(resp).expect("definition of stdlib `map`");
+    let path = loc
+        .uri
+        .to_file_path()
+        .expect("definition uri is a file path");
+    assert!(
+        path.ends_with("list.ridge"),
+        "stdlib definition must land in list.ridge, got {path:?}"
+    );
+    // `map` is declared well past the start of the file, so the range is real.
+    assert!(
+        loc.range.start.line > 0 || loc.range.start.character > 0,
+        "stdlib definition range must not be the file start, got {:?}",
+        loc.range.start
+    );
+}
+
+#[tokio::test]
+async fn test_definition_into_stdlib_module_alias() {
+    // A bare reference to the alias `L` in value position carries the
+    // `ModuleAlias` binding (the qualified `L.map` form binds the whole name as a
+    // stdlib symbol instead). Go-to-def on that bare `L` resolves to the stdlib
+    // module file at its start. The body has a type error — a module is not a
+    // value — but the retained index still stamps the resolved binding.
+    let line1 = "pub fn run = L";
+    let (service, _socket, uri) = hover_fixture("import std.list as L\npub fn run = L\n").await;
+    let server = service.inner();
+
+    let col = u32::try_from(line1.rfind('L').expect("alias use")).expect("offset fits u32");
+    let resp = server
+        .goto_definition(goto_at(&uri, 1, col))
+        .await
+        .expect("ok");
+    let loc = scalar_location(resp).expect("definition of stdlib module alias");
+    let path = loc
+        .uri
+        .to_file_path()
+        .expect("definition uri is a file path");
+    assert!(
+        path.ends_with("list.ridge"),
+        "module-alias definition must land in list.ridge, got {path:?}"
+    );
+    assert_eq!(loc.range.start.line, 0, "module alias points at file start");
+    assert_eq!(
+        loc.range.start.character, 0,
+        "module alias points at file start"
+    );
+}
+
 // ── Test 19: textDocument/completion ──────────────────────────────────────────
 
 fn complete_at(uri: &Url, line: u32, character: u32) -> CompletionParams {

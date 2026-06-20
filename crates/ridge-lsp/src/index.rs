@@ -309,8 +309,9 @@ impl WorkspaceIndex {
     /// Answer a go-to-definition request at an LSP `(line, utf16_col)` position.
     ///
     /// Returns the definition site, or `None` for whitespace, a keyword, a
-    /// literal, a stdlib/builtin symbol, or an unresolved name. Reads only this
-    /// immutable snapshot — never triggers a compile.
+    /// literal, or an unresolved name. A stdlib symbol or stdlib module alias
+    /// resolves into the materialised stdlib source (see [`crate::stdlib_defs`]).
+    /// Reads only this immutable snapshot — never triggers a compile.
     #[must_use]
     pub fn definition_at(&self, uri: &Url, line: u32, utf16_col: u32) -> Option<Location> {
         let mid = *self.uri_to_module.get(uri)?;
@@ -351,8 +352,15 @@ impl WorkspaceIndex {
                 target: ImportTarget::WorkspaceModule(target),
                 ..
             } => self.location_in(*target, Span::point(0)),
-            // Stdlib aliases/symbols, field accessors, class methods, and errors
-            // have no in-workspace definition site.
+            Binding::StdlibSymbol { module, name } => {
+                crate::stdlib_defs::stdlib_location(*module, name)
+            }
+            Binding::ModuleAlias {
+                target: ImportTarget::BuiltinStdlib(id),
+                ..
+            } => crate::stdlib_defs::stdlib_module_location(*id),
+            // Field accessors, class methods, and errors have no resolvable
+            // definition site here.
             _ => None,
         }
     }

@@ -1670,6 +1670,7 @@ dependencies = [
 name = "ridge-lsp"
 version = "0.3.0-rc4"
 dependencies = [
+ "ridge-ast",
  "ridge-diagnostics",
  "ridge-driver",
  "ridge-ir",
@@ -1677,6 +1678,7 @@ dependencies = [
  "ridge-manifest",
  "ridge-parser",
  "ridge-resolve",
+ "ridge-stdlib",
  "ridge-typecheck",
  "ridge-types",
  "serde_json",

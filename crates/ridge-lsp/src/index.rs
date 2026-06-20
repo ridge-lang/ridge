@@ -370,6 +370,113 @@ impl WorkspaceIndex {
         }
     }
 
+    /// Answer a find-references request at an LSP `(line, utf16_col)` position.
+    ///
+    /// Returns every use-site of the symbol under the cursor across the whole
+    /// workspace, or `None` for whitespace, a keyword, or a name with no
+    /// findable referent (a field accessor, a module alias, or an unresolved
+    /// name). `include_declaration` mirrors the LSP `context.includeDeclaration`
+    /// flag: when set, the definition site is part of the result. Reads only
+    /// this immutable snapshot — never triggers a compile.
+    #[must_use]
+    pub fn references_at(
+        &self,
+        uri: &Url,
+        line: u32,
+        utf16_col: u32,
+        include_declaration: bool,
+    ) -> Option<Vec<Location>> {
+        let mid = *self.uri_to_module.get(uri)?;
+        let mi = mid.0 as usize;
+        let offset = self.line_indices.get(mi)?.utf16_to_byte(line, utf16_col);
+
+        // The binding under the cursor — same lookup as go-to-definition.
+        let bindings = &self.modules.get(mi)?.bindings;
+        let binding = self
+            .spatial
+            .get(mi)?
+            .enclosing(offset, &[NodeKind::Ident, NodeKind::QualifiedName])
+            .into_iter()
+            .find_map(|(nid, _, _)| bindings.get(nid.0 as usize).and_then(Option::as_ref))?;
+        let target = referent_key(binding, mid)?;
+
+        // Locals never escape their module, so a local search stays in the
+        // cursor's module. Everything else can be referenced from any module
+        // that imports it, so scan the whole workspace.
+        let scan_self_only = matches!(target, ReferentKey::Local(..));
+
+        let mut locations: Vec<Location> = Vec::new();
+        for (smi, view) in self.modules.iter().enumerate() {
+            if scan_self_only && smi != mi {
+                continue;
+            }
+            let Ok(raw) = u32::try_from(smi) else {
+                continue;
+            };
+            let smid = ModuleId(raw);
+            let Some(spatial) = self.spatial.get(smi) else {
+                continue;
+            };
+            for (span, _kind, nid) in &spatial.entries {
+                let Some(b) = view.bindings.get(nid.0 as usize).and_then(Option::as_ref) else {
+                    continue;
+                };
+                if referent_key(b, smid).as_ref() != Some(&target) {
+                    continue;
+                }
+                if let Some(loc) = self.location_in(smid, *span) {
+                    locations.push(loc);
+                }
+            }
+        }
+
+        // The declaration site: included when the client asked for it (the scan
+        // may already carry it — dedup below collapses the duplicate), dropped
+        // otherwise. Moot for stdlib symbols and class methods, whose definition
+        // lives outside the workspace.
+        if let Some(def) = self.referent_def_location(&target) {
+            if include_declaration {
+                locations.push(def);
+            } else {
+                locations.retain(|loc| *loc != def);
+            }
+        }
+
+        // Deterministic order, no duplicates.
+        locations.sort_by(|a, b| {
+            (a.uri.as_str(), a.range.start.line, a.range.start.character).cmp(&(
+                b.uri.as_str(),
+                b.range.start.line,
+                b.range.start.character,
+            ))
+        });
+        locations.dedup();
+        Some(locations)
+    }
+
+    /// The definition site of a referent, when it lives in the workspace.
+    ///
+    /// `None` for stdlib symbols and class methods — their definitions sit in
+    /// the materialised stdlib sources, not in a workspace module, so the
+    /// `includeDeclaration` toggle has nothing to add or remove for them.
+    fn referent_def_location(&self, key: &ReferentKey) -> Option<Location> {
+        match key {
+            ReferentKey::Local(module, local_id) => {
+                let span = self.find_local_def_span(module.0 as usize, *local_id)?;
+                self.location_in(*module, span)
+            }
+            ReferentKey::Symbol(module, symbol) => {
+                let span = self.symbol_def_span(*module, *symbol)?;
+                self.location_in(*module, span)
+            }
+            ReferentKey::Constructor(owner_module, owner_type, _) => {
+                let span = self.symbol_def_span(*owner_module, *owner_type)?;
+                self.location_in(*owner_module, span)
+            }
+            ReferentKey::Stdlib(..) | ReferentKey::ClassMethod(..) => None,
+        }
+    }
+
     /// `def_span` of symbol `symbol` in module `module`.
     fn symbol_def_span(&self, module: ModuleId, symbol: ridge_resolve::SymbolId) -> Option<Span> {
         self.modules
@@ -547,6 +654,58 @@ impl WorkspaceIndex {
             .filter(|name| name.starts_with(prefix))
             .map(|name| item(name, CompletionItemKind::FIELD, '0'))
             .collect()
+    }
+}
+
+/// Identity of the thing a [`Binding`] refers to, for grouping use-sites in
+/// find-references: two bindings denote the same definition exactly when their
+/// keys compare equal. `ModuleSymbol`, `ImportedSymbol`, and `ActorName` all
+/// collapse to [`ReferentKey::Symbol`] so a reference from an importing module
+/// unifies with the definition in the owning module.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum ReferentKey {
+    /// A local, scoped to the module that introduced it.
+    Local(ModuleId, LocalId),
+    /// A top-level workspace symbol (fn / const / type / actor).
+    Symbol(ModuleId, ridge_resolve::SymbolId),
+    /// A constructor, keyed by owning module, owning type, and variant index.
+    Constructor(ModuleId, ridge_resolve::SymbolId, u32),
+    /// A stdlib export, globally unique by (module, name).
+    Stdlib(StdlibModuleId, String),
+    /// A class method, globally unique by (class, method).
+    ClassMethod(String, String),
+}
+
+/// The referent a binding points at, as a value comparable across modules.
+///
+/// `module` is the module the binding was found in — used only to scope a
+/// [`Binding::Local`]. Returns `None` for bindings with no findable workspace
+/// referent: [`Binding::Error`], and — deferred to a follow-up —
+/// [`Binding::FieldAccessor`] (keyed only by a field name, which would conflate
+/// distinct records) and [`Binding::ModuleAlias`] (a module-local alias).
+fn referent_key(binding: &Binding, module: ModuleId) -> Option<ReferentKey> {
+    match binding {
+        Binding::Local(id) => Some(ReferentKey::Local(module, *id)),
+        Binding::ModuleSymbol { module, symbol }
+        | Binding::ImportedSymbol { module, symbol, .. } => {
+            Some(ReferentKey::Symbol(*module, *symbol))
+        }
+        Binding::ActorName { module, actor } => Some(ReferentKey::Symbol(*module, *actor)),
+        Binding::Constructor {
+            owner_module,
+            owner_type,
+            variant,
+            ..
+        } => Some(ReferentKey::Constructor(
+            *owner_module,
+            *owner_type,
+            *variant,
+        )),
+        Binding::StdlibSymbol { module, name } => Some(ReferentKey::Stdlib(*module, name.clone())),
+        Binding::ClassMethod { class_name, method } => {
+            Some(ReferentKey::ClassMethod(class_name.clone(), method.clone()))
+        }
+        _ => None,
     }
 }
 

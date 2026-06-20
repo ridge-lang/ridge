@@ -25,8 +25,8 @@ use ridge_resolve::{
 use ridge_typecheck::{render_type_with, TypedWorkspace};
 use ridge_types::{TyConDecl, TyConKind, Type};
 use tower_lsp::lsp_types::{
-    CompletionItemKind, Location, Position, PrepareRenameResponse, Range, TextEdit, Url,
-    WorkspaceEdit,
+    CompletionItemKind, DocumentHighlight, DocumentHighlightKind, Location, Position,
+    PrepareRenameResponse, Range, TextEdit, Url, WorkspaceEdit,
 };
 
 use crate::completion::{detect_context, symbol_kind, CompletionItemData, Context, KEYWORDS};
@@ -455,6 +455,143 @@ impl WorkspaceIndex {
         });
         locations.dedup();
         Some(locations)
+    }
+
+    /// Answer a `documentHighlight` request at an LSP `(line, utf16_col)`
+    /// position.
+    ///
+    /// The same-file companion to find-references: every occurrence of the
+    /// symbol under the cursor *within this document*, each tagged read or
+    /// write. The definition — a local's binder, or a `fn` / `const` / `type` /
+    /// actor declaration name that lives in this file — is the write; every use
+    /// is a read. Coverage matches find-references restricted to one module, so a
+    /// name with no findable referent (whitespace, a keyword, a field accessor, a
+    /// module alias) yields `None`. A qualified use (`Mod.item`) highlights only
+    /// its final segment. Reads only this immutable snapshot.
+    #[must_use]
+    pub fn document_highlights_at(
+        &self,
+        uri: &Url,
+        line: u32,
+        utf16_col: u32,
+    ) -> Option<Vec<DocumentHighlight>> {
+        let mid = *self.uri_to_module.get(uri)?;
+        let mi = mid.0 as usize;
+        let offset = self.line_indices.get(mi)?.utf16_to_byte(line, utf16_col);
+        let (target, name) = self.highlight_target_at(mid, offset)?;
+        let view = self.modules.get(mi)?;
+        let spatial = self.spatial.get(mi)?;
+
+        // The definition's name span, but only when it lives in this file: a
+        // local's binder always does; a workspace symbol's only if declared here.
+        // It is the write site; everything the scan finds is a read.
+        let decl_se: Option<(u32, u32)> = self
+            .referent_decl_name_span(&target, &name)
+            .and_then(|(decl_mid, span)| (decl_mid == mid).then_some(span))
+            .map(|span| (span.start, span.end));
+
+        // Keyed by byte span so each occurrence is emitted once; the write
+        // overrides a read on the same span (a local's binder is both stamped as
+        // a use and the definition).
+        let mut spots: HashMap<(u32, u32), DocumentHighlightKind> = HashMap::new();
+        for (span, _kind, nid) in &spatial.entries {
+            let Some(b) = view.bindings.get(nid.0 as usize).and_then(Option::as_ref) else {
+                continue;
+            };
+            if referent_key(b, mid).as_ref() != Some(&target) {
+                continue;
+            }
+            let s = self.final_ident_span(mi, *span);
+            let kind = if decl_se == Some((s.start, s.end)) {
+                DocumentHighlightKind::WRITE
+            } else {
+                DocumentHighlightKind::READ
+            };
+            spots.entry((s.start, s.end)).or_insert(kind);
+        }
+        // A top-level declaration name carries no binding, so the scan misses it;
+        // add it as the write site.
+        if let Some((start, end)) = decl_se {
+            spots.insert((start, end), DocumentHighlightKind::WRITE);
+        }
+        if spots.is_empty() {
+            return None;
+        }
+
+        let mut highlights: Vec<DocumentHighlight> = spots
+            .into_iter()
+            .filter_map(|((start, end), kind)| {
+                Some(DocumentHighlight {
+                    range: self.range_in(mid, Span::new(start, end))?,
+                    kind: Some(kind),
+                })
+            })
+            .collect();
+        highlights.sort_by(|a, b| {
+            (a.range.start.line, a.range.start.character)
+                .cmp(&(b.range.start.line, b.range.start.character))
+        });
+        Some(highlights)
+    }
+
+    /// The referent under the cursor for a same-file highlight, plus its name.
+    ///
+    /// Resolves a use-site or local binder (a name node carrying a binding) for
+    /// any referent kind, and — when the cursor sits on a top-level declaration
+    /// name, which carries no binding — the symbol it declares. `None` when the
+    /// cursor is not on a highlightable name.
+    fn highlight_target_at(&self, mid: ModuleId, offset: u32) -> Option<(ReferentKey, String)> {
+        let mi = mid.0 as usize;
+        let spatial = self.spatial.get(mi)?;
+        let view = self.modules.get(mi)?;
+
+        if let Some((binding, span)) = spatial
+            .enclosing(offset, &[NodeKind::Ident, NodeKind::QualifiedName])
+            .into_iter()
+            .find_map(|(nid, _, span)| {
+                view.bindings
+                    .get(nid.0 as usize)
+                    .and_then(Option::as_ref)
+                    .map(|b| (b, span))
+            })
+        {
+            let key = referent_key(binding, mid)?;
+            let name_span = self.final_ident_span(mi, span);
+            return Some((key, self.text_slice(mi, name_span).to_owned()));
+        }
+
+        let (_, _, name_span) = spatial.narrowest_containing(offset, &[NodeKind::Ident])?;
+        let name = self.text_slice(mi, name_span);
+        if name.is_empty() {
+            return None;
+        }
+        let key = self.decl_referent_at(mid, offset, name)?;
+        Some((key, name.to_owned()))
+    }
+
+    /// The top-level symbol whose declaration name sits at `offset`, as a
+    /// [`ReferentKey::Symbol`]. Unlike [`Self::symbol_decl_referent`] (rename,
+    /// `fn` / `const` only) this accepts any declaration whose uses key to a
+    /// symbol — `fn`, `const`, `type`, actor — because a highlight is read-only
+    /// and same-file. A constructor's declaration is excluded: its uses key to
+    /// [`ReferentKey::Constructor`], so a symbol key would match nothing.
+    fn decl_referent_at(&self, mid: ModuleId, offset: u32, name: &str) -> Option<ReferentKey> {
+        let entries = &self.modules.get(mid.0 as usize)?.symbols.entries;
+        entries.iter().enumerate().find_map(|(i, e)| {
+            if e.name != name || !(e.def_span.start <= offset && offset < e.def_span.end) {
+                return None;
+            }
+            match e.kind {
+                SymbolKind::Fn { .. }
+                | SymbolKind::Const
+                | SymbolKind::Type { .. }
+                | SymbolKind::Actor { .. } => {
+                    let raw = u32::try_from(i).ok()?;
+                    Some(ReferentKey::Symbol(mid, ridge_resolve::SymbolId(raw)))
+                }
+                _ => None,
+            }
+        })
     }
 
     /// The definition site of a referent, when it lives in the workspace.

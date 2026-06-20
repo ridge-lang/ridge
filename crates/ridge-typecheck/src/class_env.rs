@@ -2624,6 +2624,30 @@ pub fn register_stdlib_instances(
         }
     }
 
+    // `Countable (Seq a)` — the in-memory sequence's `count`/`exists`. Single receiver
+    // parameter, no functional dependency, and — unlike the query and join instances —
+    // no context: the terminals measure or probe the inline rows through the in-memory
+    // interpreter without reaching any store or decoding, so they carry neither `Adapter`
+    // nor `Row` and need no head-position augmentation, like `Pageable (Seq a)`.
+    if let (Some(countable), Some(&seq)) = (
+        ct.id_by_name("Countable"),
+        reconciled_tycon_names.get("Seq"),
+    ) {
+        env.instances
+            .entry((countable, smallvec![seq]))
+            .or_insert_with(|| InstanceInfo {
+                def_module: None,
+                methods: vec![
+                    ("count".to_string(), String::new()),
+                    ("exists".to_string(), String::new()),
+                ],
+                ctx_constraints: vec![],
+                head_var_positions: vec![],
+                origin: InstanceOrigin::Explicit,
+                span: ds,
+            });
+    }
+
     // `Countable (Joined q f a)` and the three outer composites — the nested join's
     // `count`/`exists`. Single-parameter, keyed by the receiver alone. Source
     // `where Adapter a, JoinShape q, Row f`: the dicts in body-appearance order

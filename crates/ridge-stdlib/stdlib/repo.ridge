@@ -1780,6 +1780,25 @@ instance Projectable (Seq a) (fn a -> s) where Row s =
     selectFirst (proj: Quote (fn a -> s)) (x: Seq a) -> Result (Option s) Error =
         firstDecoded (_evalPlanPure (seqSelectPlan x proj.tree 1))
 
+-- The plan a sequence's `count`/`exists` reduces over: its inline source carrying only the
+-- accumulated filter, with ordering, page, and distinct stripped (`[] (0 - 1) 0 false`) —
+-- exactly as a query's `countQuery` strips them, since these terminals answer the size of
+-- the matched row set, not a paged window of it. `exists` bounds `lim` to a single row;
+-- `count` leaves it unbounded.
+fn seqCountPlan (x: Seq a) (lim: Int) -> QueryPlan =
+    planRefine x.source x.pred.tree [] lim 0 false
+
+-- `count`/`exists` over an in-memory sequence: measure or probe the filtered rows through
+-- the in-memory interpreter — the same size-and-presence terminals the database path counts
+-- through its backend, one plan IR. Neither reaches a connection, so the instance carries no
+-- context (no `Adapter`, no `Row`): the filter alone bounds the answer, the way the database
+-- count does, and the in-memory evaluation cannot fail, so each result is an `Ok`.
+instance Countable (Seq a) =
+    count (x: Seq a) -> Result Int Error =
+        Ok (lengthOf (_evalPlanPure (seqCountPlan x (0 - 1))))
+    exists (x: Seq a) -> Result Bool Error =
+        Ok (nonEmpty (_evalPlanPure (seqCountPlan x 1)))
+
 -- A phantom `Option e` witness for `rowColumns`, drawn from a repository that
 -- already carries the entity type. `Row.rowColumns` answers an entity's columns
 -- from the type alone but needs a value to fix that type; a `Repo e a` carries

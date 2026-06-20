@@ -1164,6 +1164,17 @@ fn resolve_dict_plan(
                 });
                 return forward_placeholder();
             };
+            // A structurally-synthesised `Row` instance is emitted only when used.
+            // When `Row` is reached as a nested sub-dictionary — a `Projectable`/
+            // `Decodable` instance's `Row s` requirement, resolved through this plan
+            // path rather than `discharge_concrete` — the demand must still be
+            // recorded, or the workspace driver never pulls the stashed dictionary
+            // into the emitted set and lowering references an undefined `$inst_Row_*`.
+            if class_table.get(class).map(|info| info.name.as_str())
+                == Some(ridge_ast::column_mirror::ROW_DERIVE)
+            {
+                ctx.demanded_rows.insert(tyconid);
+            }
             let args = resolve_ctx_dict_args(
                 ctx,
                 instance_env,

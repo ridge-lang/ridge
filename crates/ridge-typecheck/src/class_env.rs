@@ -1770,6 +1770,31 @@ pub fn register_stdlib_instances(
                     .entry((projectable, smallvec![query, fn1]))
                     .or_insert_with(|| projectable_inst(vec![1, 3]));
             }
+            // `Projectable (Seq a) (fn a -> s) where Row s` — the in-memory sequence's
+            // `select`/`selectFirst`. Unlike a query it has no adapter, so its only
+            // context is `Row s`, the projected shape's row codec. Flattening
+            // `[Seq a, fn a -> s]` lists the receiver's `a@0` then the projection's
+            // `a@1`, `s@2`, so `s` sits at flattened position 2; a fresh inline
+            // `InstanceInfo` carries the single `Row` constraint there (the shared
+            // `projectable_inst` bakes in `Adapter a`, which a sequence lacks).
+            if let Some(&seq) = reconciled_tycon_names.get("Seq") {
+                env.instances
+                    .entry((projectable, smallvec![seq, fn1]))
+                    .or_insert_with(|| InstanceInfo {
+                        def_module: None,
+                        methods: vec![
+                            ("select".to_string(), String::new()),
+                            ("selectFirst".to_string(), String::new()),
+                        ],
+                        ctx_constraints: vec![ridge_types::Constraint::single(
+                            row,
+                            ridge_types::TyVid(0),
+                        )],
+                        head_var_positions: vec![2],
+                        origin: InstanceOrigin::Explicit,
+                        span: ds,
+                    });
+            }
             if let Some(&left_join) = reconciled_tycon_names.get("LeftJoin") {
                 env.instances
                     .entry((projectable, smallvec![left_join, fn2]))

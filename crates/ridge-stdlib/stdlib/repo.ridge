@@ -1759,6 +1759,27 @@ instance Pageable (Seq a) =
     distinct (x: Seq a) -> Seq a =
         Seq { source = x.source, pred = x.pred, orders = x.orders, lim = x.lim, off = x.off, dist = true }
 
+-- The plan a `select` over a sequence runs: project the filtered, ordered rows into the
+-- chosen shape, then page and dedupe the projected rows. The child `planRefine` carries
+-- the accumulated filter and ordering (no page or distinct), and the wrapping
+-- `planProject` carries the page and distinct — the same split the join `select` plans
+-- use, so a projected `distinct` dedupes the projected columns and the page applies to
+-- the projected result. The projection quote reifies directly to a `QProj` of unprefixed
+-- `(alias, column)` pairs, read straight off the inline rows.
+fn seqSelectPlan (x: Seq a) (proj: QExpr) (lim: Int) -> QueryPlan =
+    planProject proj (planRefine x.source x.pred.tree x.orders (0 - 1) 0 false) lim x.off x.dist
+
+-- `select` over an in-memory sequence projects each row into the named shape `s` and
+-- decodes it — the same verb that projects a database query, one plan IR. There is no
+-- adapter, so the instance carries only `Row s`: the projected shape decodes through its
+-- row codec with no connection. `select` returns the whole list; `selectFirst` pushes a
+-- one-row limit.
+instance Projectable (Seq a) (fn a -> s) where Row s =
+    select (proj: Quote (fn a -> s)) (x: Seq a) -> Result (List s) Error =
+        decodeRows (_evalPlanPure (seqSelectPlan x proj.tree x.lim))
+    selectFirst (proj: Quote (fn a -> s)) (x: Seq a) -> Result (Option s) Error =
+        firstDecoded (_evalPlanPure (seqSelectPlan x proj.tree 1))
+
 -- A phantom `Option e` witness for `rowColumns`, drawn from a repository that
 -- already carries the entity type. `Row.rowColumns` answers an entity's columns
 -- from the type alone but needs a value to fix that type; a `Repo e a` carries

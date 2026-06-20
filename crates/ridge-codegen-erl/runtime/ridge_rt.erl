@@ -1364,17 +1364,27 @@ mem_eval_plan(State, Id, {'PlanGroup', KeyCol, KeyLeaf, Cols, Having, Child}) ->
 mem_agg_prefixed_col(Leaf, Column) ->
     <<"t", (integer_to_binary(Leaf))/binary, "$", Column/binary>>.
 
-%% Project a flat, source-prefixed join row through a projection tree into one row
-%% keyed by the projection's output aliases. A `QCol` names a left-source column
-%% (the t0$ prefix the join flattened the left side under), a `QColR` a right-source
-%% column (t1$), a `QColAt I` the I-th leaf of a multi-table composite (t<I>$); a
-%% missing column reads SQL NULL.
+%% Project a row through a projection tree into one row keyed by the projection's
+%% output aliases. A `QCol` names a left-source column (the t0$ prefix a join
+%% flattens the left side under, or the bare column for an unprefixed single-leaf
+%% source like an in-memory `Seq`), a `QColR` a right-source column (t1$), a
+%% `QColAt I` the I-th leaf of a multi-table composite (t<I>$); a missing column
+%% reads SQL NULL.
 mem_project_prefixed({'QProj', Cols}, Row) ->
     maps:from_list([{Alias, mem_pcell(Col, Row)} || {Alias, Col} <- Cols]);
 mem_project_prefixed(_Other, _Row) ->
     #{}.
 
-mem_pcell({'QCol', C}, Row)     -> maps:get(<<"t0$", C/binary>>, Row, 'SqlNull');
+%% A left-source `QCol` resolves under the `t0$` join prefix when present, and
+%% falls back to the bare column name otherwise — a join row always carries the
+%% prefixed key, an unprefixed `Seq` row only the bare one, so one clause projects
+%% both. (`'SqlNull'` is a real stored value, so the sentinel for "absent" is
+%% `undefined`, kept distinct from a genuine NULL cell.)
+mem_pcell({'QCol', C}, Row)     ->
+    case maps:get(<<"t0$", C/binary>>, Row, undefined) of
+        undefined -> maps:get(C, Row, 'SqlNull');
+        Val       -> Val
+    end;
 mem_pcell({'QColR', C}, Row)    -> maps:get(<<"t1$", C/binary>>, Row, 'SqlNull');
 mem_pcell({'QColAt', I, C}, Row) -> maps:get(mem_agg_prefixed_col(I, C), Row, 'SqlNull');
 mem_pcell(_Other, _Row)         -> 'SqlNull'.

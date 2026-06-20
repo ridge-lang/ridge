@@ -1274,6 +1274,34 @@ async fn test_completion_stdlib_member_access() {
     );
 }
 
+#[tokio::test]
+async fn test_completion_record_fields() {
+    // A parameter of record type; `p.` should offer the record's field names,
+    // resolved from the value's type rather than any module alias.
+    let line1 = "pub fn run (p: P) -> Int = p.x";
+    let (service, _socket, uri) =
+        hover_fixture("pub type P = { x: Int, y: Int }\npub fn run (p: P) -> Int = p.x\n").await;
+    let server = service.inner();
+
+    // Right after `p.` on line 1 → the record's fields.
+    let col = u32::try_from(line1.rfind("p.").expect("field access") + 2).expect("offset fits u32");
+    let items = completion_items(
+        server
+            .completion(complete_at(&uri, 1, col))
+            .await
+            .expect("ok"),
+    );
+    let labels: Vec<String> = items.into_iter().map(|i| i.label).collect();
+    assert!(
+        labels.iter().any(|l| l == "x"),
+        "record member access should offer field `x`, got {labels:?}"
+    );
+    assert!(
+        labels.iter().any(|l| l == "y"),
+        "record member access should offer field `y`, got {labels:?}"
+    );
+}
+
 // ── Incremental: a didChange recompile reflects the buffer, not disk ───────────
 
 /// After `didOpen`, a `didChange` that replaces the body must update the retained

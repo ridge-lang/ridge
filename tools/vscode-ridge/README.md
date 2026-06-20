@@ -2,13 +2,16 @@
 
 Language support for [Ridge](https://github.com/ridge-lang/ridge), a typed
 functional language for the BEAM. Highlights `.ridge` source files and
-surfaces diagnostics from `ridge-lsp` as you type.
+connects to `ridge-lsp` for diagnostics, hover, go-to-definition, and
+completion as you type.
 
 ## Features
 
 - Syntax highlighting for `.ridge` files (TextMate grammar).
 - Live diagnostics from `ridge-lsp` — type errors, capability violations,
   parse errors — shown inline and in the **Problems** panel.
+- Hover for inferred types, go-to-definition across the workspace, and
+  identifier completion, all served by `ridge-lsp`.
 - Comment toggling with `--`.
 - Bracket matching and auto-closing for `()`, `[]`, `{}`, and `""`.
 
@@ -78,8 +81,9 @@ itself rarely helps for compiler-side issues.
   as plain identifiers. Distinguishing capability call-sites from
   same-named local variables requires LSP semantic tokens; tracked for a
   future release.
-- **Hover, completion, go-to-definition**: not yet provided by `ridge-lsp`.
-  Only diagnostics are surfaced today.
+- **Standard-library navigation**: go-to-definition and member completion
+  currently resolve workspace symbols; jumping into `std.*` definitions and
+  completing typeclass methods (e.g. after `Repo.`) is in progress.
 - **First open before `ridge-lsp` is installed**: the extension activates
   and registers the language, but diagnostics only appear once
   `ridge-lsp` is available and VS Code is reloaded.

@@ -21,7 +21,7 @@
 
 import std.data as Db
 import std.sql (SqlValue)
-import std.query (SortOrder, ascending, QueryPlan, planScan, planCombine, planRefine, planJoin, planProject, planAggregate, planGroup, planExists)
+import std.query (SortOrder, ascending, QueryPlan, planScan, planCombine, planRefine, planJoin, planProject, planAggregate, planGroup, planExists, planList)
 import std.map (fromList, toList)
 
 -- A repository: entity `e` stored in `table` through adapter `a`. Opaque, so it
@@ -424,6 +424,23 @@ pub class Groupable q p | q -> p =
 pub class Summarizable q =
     runGroups (src: q) (keyCol: Text) (keyLeaf: Int) (projTree: QExpr) (havingTree: QExpr) -> Result (List (Map Text SqlValue)) Error
 
+-- The set-operation builders (`union`/`unionAll`/`intersect`/`except`) that combine
+-- two queries, or two in-memory sequences, of the same row shape. A single parameter,
+-- the receiver `q`, with no functional dependency (like `Pageable`/`Countable`): each
+-- verb takes the other receiver and the piped receiver and answers a combined receiver,
+-- so there is no second parameter to determine. The piped receiver is the left branch
+-- and the argument the right, which matters for `except` (the left rows not in the
+-- right); `union`/`intersect` are symmetric. The result is the same receiver type, so it
+-- keeps composing — a further `orderBy`/`limit` or a terminal applies to the combined
+-- rows. The backend runs each as a set operation (`UNION`/`UNION ALL`/`INTERSECT`/
+-- `EXCEPT` on Postgres, an in-memory combine over the two evaluated row lists), one
+-- captured plan, one IR.
+pub class Combinable q =
+    union     (other: q) (x: q) -> q
+    unionAll  (other: q) (x: q) -> q
+    intersect (other: q) (x: q) -> q
+    except    (other: q) (x: q) -> q
+
 -- `limit`/`offset`/`distinct` over a query, an inner join, or a left join are the
 -- methods of the `Pageable q` class (declared above); the instances are defined
 -- below, next to the `Refinable`/`Orderable`/`Decodable` ones. The query instance
@@ -465,34 +482,25 @@ fn planOf (q: Query e a) -> QueryPlan =
 fn combineWith (op: Text) (other: Query e a) (q: Query e a) -> Query e a =
     Query { repo = q.repo, pred = keepAll (), orders = [], lim = 0 - 1, off = 0, dist = false, plan = Some (planCombine op (planOf q) (planOf other)) }
 
--- Set union of two queries — every row in either, with duplicates removed
--- (`UNION`). Reads as a pipeline: `active |> Repo.union admins`. The result is a
--- query, so it keeps composing — `active |> Repo.union admins |> Repo.orderBy Asc
--- (fn (u: User) -> u.name) |> Repo.limit 10 |> Repo.toList` — and runs the
--- operation in the backend (a SQL `UNION` on Postgres, an in-memory combine for the
--- memory store), not by fetching both sides and merging in the caller. Both
--- branches range over the same entity and adapter, so the column shapes line up
--- and the type pins which backend runs it.
-pub fn union (other: Query e a) (q: Query e a) -> Query e a =
-    combineWith "UNION" other q
-
--- Set union keeping duplicates — every row in either branch, repeats and all
--- (`UNION ALL`). The multiset counterpart of `union`: where `union` drops the
--- duplicate rows the two branches share, `unionAll` keeps every one.
-pub fn unionAll (other: Query e a) (q: Query e a) -> Query e a =
-    combineWith "UNION ALL" other q
-
--- Set intersection — the rows present in both queries, with duplicates removed
--- (`INTERSECT`): `active |> Repo.intersect admins` keeps the users who are both.
-pub fn intersect (other: Query e a) (q: Query e a) -> Query e a =
-    combineWith "INTERSECT" other q
-
--- Set difference — the rows in the left query that are not in the right, with
--- duplicates removed (`EXCEPT`): `active |> Repo.except admins` keeps the active
--- non-admins. Order matters here, unlike `union`/`intersect`: the piped-in query
--- is the left side, the argument the right.
-pub fn except (other: Query e a) (q: Query e a) -> Query e a =
-    combineWith "EXCEPT" other q
+-- The set operations over a query — every row in either branch (`union`), in either
+-- with repeats kept (`unionAll`), in both (`intersect`), or in the left and not the
+-- right (`except`). Each reads as a pipeline: `active |> Repo.union admins`, which keeps
+-- composing — `active |> Repo.union admins |> Repo.orderBy Asc (fn (u: User) -> u.name)
+-- |> Repo.limit 10 |> Repo.toList` — and runs the operation in the backend (a SQL
+-- `UNION`/`INTERSECT`/`EXCEPT` on Postgres, an in-memory combine for the memory store),
+-- not by fetching both sides and merging in the caller. Both branches range over the
+-- same entity and adapter, so the column shapes line up and the type pins which backend
+-- runs it. `union`/`intersect` are symmetric; `except` keeps the piped-in (left) rows
+-- absent from the argument (right).
+instance Combinable (Query e a) =
+    union (other: Query e a) (q: Query e a) -> Query e a =
+        combineWith "UNION" other q
+    unionAll (other: Query e a) (q: Query e a) -> Query e a =
+        combineWith "UNION ALL" other q
+    intersect (other: Query e a) (q: Query e a) -> Query e a =
+        combineWith "INTERSECT" other q
+    except (other: Query e a) (q: Query e a) -> Query e a =
+        combineWith "EXCEPT" other q
 
 -- Build an `Error` from a code and a message. A bare record literal cannot be
 -- coerced to the nominal `Error` type in a plain function (only an instance-method
@@ -1674,6 +1682,215 @@ instance Decodable (Query e a) where Adapter a, Row e =
                 match runPlan x.repo.adapter (planOf x)
                     Err err -> Err err
                     Ok rows -> firstDecoded rows
+
+-- An in-memory sequence of records lifted into the query world. `from` snapshots a
+-- `List a` as a `PlanList` and the sequence then accumulates the same builder state a
+-- database query does — a filter, an ordering, a page, and a `distinct` flag — over
+-- that inline source. The decode terminals materialise it into one `planRefine` and run
+-- it through the in-memory interpreter, reading the rows back. Opaque, built only
+-- through `from`. The element `a` is carried in the type (like `Query`'s entity), so
+-- `Rows (Seq a)` reduces to `a` and `toList` answers `List a`.
+--
+-- The fields mirror `Query`'s one-for-one (minus the repository, since the source is the
+-- inline rows): `pred` is the accumulated row predicate, `orders` the major-to-minor sort
+-- keys, `lim`/`off` the page (negative `lim` and non-positive `off` mean unbounded), and
+-- `dist` the distinct flag. Holding builder state — rather than nesting a fresh plan per
+-- verb — makes the in-memory page mean exactly what the database page does: `offset` then
+-- `limit` over the ordered rows, independent of the order the verbs were chained, so the
+-- same pipeline reads the same on a `Seq` and on a `Repo`.
+pub opaque type Seq a = { source: QueryPlan, pred: Quote (Map Text SqlValue -> Bool), orders: List (Bool, Text), lim: Int, off: Int, dist: Bool }
+
+-- Encode each record to a row, eagerly. The mirror of `decodeRows` on the way in.
+fn encodeRows (xs: List a) -> List (Map Text SqlValue) where Row a =
+    match xs
+        []        -> []
+        x :: rest -> toRow x :: encodeRows rest
+
+-- Evaluate a plan with no connection or keeper store, for the in-memory `Seq` source.
+-- The plan is rooted at a `PlanList` (rows inline), so it walks in process and cannot
+-- fail — hence a bare `List`, not a `Result`.
+@ffi("ridge_rt", "eval_plan_pure", 1)
+fn _evalPlanPure (plan: QueryPlan) -> List (Map Text SqlValue)
+
+-- The plan a sequence runs: one `planRefine` over its inline source carrying the whole
+-- accumulated builder state — filter, ordering, page, distinct — exactly as `planOf`
+-- builds a single-table query's `planScan`. One refine, applied bottom-up by the
+-- interpreter, so the page and ordering compose the way the database backend's do.
+fn seqPlan (x: Seq a) -> QueryPlan =
+    planRefine x.source x.pred.tree x.orders x.lim x.off x.dist
+
+-- Lift a plain in-memory list into the query world: snapshot it as the inline source,
+-- with an empty builder on top (keep every row, unordered, unpaged). The element type
+-- needs only `Row` (auto-synthesised for a record of SqlType fields) — no repository,
+-- table, or connection. `from xs |> toList` round-trips the list back.
+pub fn from (xs: List a) -> Seq a where Row a =
+    Seq { source = planList (encodeRows xs), pred = keepAll (), orders = [], lim = 0 - 1, off = 0, dist = false }
+
+-- An in-memory sequence runs the same `toList`/`first` the database path exposes:
+-- materialise its builder state into one plan, evaluate it through the in-memory
+-- interpreter, then decode the rows back into records. No connection is touched, so the
+-- instance carries only `Row a` — no `Adapter`.
+instance Decodable (Seq a) where Row a =
+    toList (x: Seq a) -> Result (List a) Error =
+        decodeRows (_evalPlanPure (seqPlan x))
+    first (x: Seq a) -> Result (Option a) Error =
+        firstDecoded (_evalPlanPure (seqPlan x))
+
+-- `filter` over an in-memory sequence ANDs the predicate into its accumulated filter,
+-- exactly as the same verb narrows a database query — one verb, one builder. The
+-- entity-typed predicate folds into the row-typed field through `quoteAnd` (whose second
+-- tree is free), and the terminal's one `planRefine` runs it through the interpreter,
+-- keeping only the rows it accepts.
+instance Refinable (Seq a) (fn a -> Bool) =
+    filter (pred: Quote (fn a -> Bool)) (x: Seq a) -> Seq a =
+        Seq { source = x.source, pred = quoteAnd x.pred pred, orders = x.orders, lim = x.lim, off = x.off, dist = x.dist }
+
+-- `orderBy` over an in-memory sequence appends the key as an ordering column, the same
+-- way a query's `orderBy` does — one verb, one builder. The key (`fn (u: User) -> u.age`)
+-- names a single column and the direction rides alongside it; keys order major-to-minor
+-- in the order added. The interpreter sorts the rows by these keys before paging, so the
+-- ordering means exactly what it does on the database path.
+instance Orderable (Seq a) (fn a -> k) =
+    orderBy (dir: SortOrder) (key: Quote (fn a -> k)) (x: Seq a) -> Seq a =
+        Seq { source = x.source, pred = x.pred, orders = snoc x.orders (ascending dir, orderColumn key), lim = x.lim, off = x.off, dist = x.dist }
+
+-- `limit`/`offset`/`distinct` over an in-memory sequence set the page and distinct flag
+-- on its builder, exactly as the same verbs do over a query — each returns the sequence,
+-- so they keep composing in a pipeline. The terminal's one `planRefine` carries them, so
+-- the interpreter pages with a single offset-then-limit over the ordered rows and drops
+-- duplicate result rows for `distinct`, the same semantics the database backend gives.
+instance Pageable (Seq a) =
+    limit (n: Int) (x: Seq a) -> Seq a =
+        Seq { source = x.source, pred = x.pred, orders = x.orders, lim = n, off = x.off, dist = x.dist }
+    offset (n: Int) (x: Seq a) -> Seq a =
+        Seq { source = x.source, pred = x.pred, orders = x.orders, lim = x.lim, off = n, dist = x.dist }
+    distinct (x: Seq a) -> Seq a =
+        Seq { source = x.source, pred = x.pred, orders = x.orders, lim = x.lim, off = x.off, dist = true }
+
+-- The plan a `select` over a sequence runs: project the filtered, ordered rows into the
+-- chosen shape, then page and dedupe the projected rows. The child `planRefine` carries
+-- the accumulated filter and ordering (no page or distinct), and the wrapping
+-- `planProject` carries the page and distinct — the same split the join `select` plans
+-- use, so a projected `distinct` dedupes the projected columns and the page applies to
+-- the projected result. The projection quote reifies directly to a `QProj` of unprefixed
+-- `(alias, column)` pairs, read straight off the inline rows.
+fn seqSelectPlan (x: Seq a) (proj: QExpr) (lim: Int) -> QueryPlan =
+    planProject proj (planRefine x.source x.pred.tree x.orders (0 - 1) 0 false) lim x.off x.dist
+
+-- `select` over an in-memory sequence projects each row into the named shape `s` and
+-- decodes it — the same verb that projects a database query, one plan IR. There is no
+-- adapter, so the instance carries only `Row s`: the projected shape decodes through its
+-- row codec with no connection. `select` returns the whole list; `selectFirst` pushes a
+-- one-row limit.
+instance Projectable (Seq a) (fn a -> s) where Row s =
+    select (proj: Quote (fn a -> s)) (x: Seq a) -> Result (List s) Error =
+        decodeRows (_evalPlanPure (seqSelectPlan x proj.tree x.lim))
+    selectFirst (proj: Quote (fn a -> s)) (x: Seq a) -> Result (Option s) Error =
+        firstDecoded (_evalPlanPure (seqSelectPlan x proj.tree 1))
+
+-- The plan a sequence's `count`/`exists` reduces over: its inline source carrying only the
+-- accumulated filter, with ordering, page, and distinct stripped (`[] (0 - 1) 0 false`) —
+-- exactly as a query's `countQuery` strips them, since these terminals answer the size of
+-- the matched row set, not a paged window of it. `exists` bounds `lim` to a single row;
+-- `count` leaves it unbounded.
+fn seqCountPlan (x: Seq a) (lim: Int) -> QueryPlan =
+    planRefine x.source x.pred.tree [] lim 0 false
+
+-- `count`/`exists` over an in-memory sequence: measure or probe the filtered rows through
+-- the in-memory interpreter — the same size-and-presence terminals the database path counts
+-- through its backend, one plan IR. Neither reaches a connection, so the instance carries no
+-- context (no `Adapter`, no `Row`): the filter alone bounds the answer, the way the database
+-- count does, and the in-memory evaluation cannot fail, so each result is an `Ok`.
+instance Countable (Seq a) =
+    count (x: Seq a) -> Result Int Error =
+        Ok (lengthOf (_evalPlanPure (seqCountPlan x (0 - 1))))
+    exists (x: Seq a) -> Result Bool Error =
+        Ok (nonEmpty (_evalPlanPure (seqCountPlan x 1)))
+
+-- `every` over an in-memory sequence: probe for one row the sequence keeps that violates
+-- the predicate, true exactly when none does — the same universal-predicate terminal the
+-- database path probes, one plan IR. The further predicate is AND-folded with the
+-- sequence's own filter wrapped `IS NOT TRUE` (`notTrue`), so the probe selects a kept row
+-- whose predicate is false (or, where a column is NULL, not true), bounded to one row; the
+-- ordering, page, and distinct are stripped, exactly as the database `every` folds its
+-- violator. The probe runs through the in-memory interpreter without a connection and never
+-- decodes — it only tests the rows empty — so the instance carries no context, and the
+-- evaluation cannot fail, so `emptyOk` reads the answer straight off the probed rows.
+instance Every (Seq a) (fn a -> Bool) =
+    every (pred: Quote (fn a -> Bool)) (x: Seq a) -> Result Bool Error =
+        let violator = quoteAnd x.pred (notTrue pred)
+        emptyOk (_evalPlanPure (planRefine x.source violator.tree [] 1 0 false))
+
+-- The scalar-aggregate plan a `sumOf`/`avgOf`/`minOf`/`maxOf` over a sequence runs: a
+-- `PlanAggregate` over the filtered inline rows, folding the column the accessor names
+-- (`aggColumn`). A single-leaf accessor names leaf 0, and the interpreter reads the bare
+-- column off the unprefixed rows. The child carries only the filter (`seqCountPlan`'s
+-- unbounded plan): ordering and paging do not bound an aggregate, exactly as a query's
+-- aggregate folds only its filtered rows.
+fn seqScalarPlan (x: Seq a) (func: Text) (col: Quote (fn a -> n)) -> QueryPlan =
+    planAggregate func (aggColumn col) (aggLeaf col) (seqCountPlan x (0 - 1))
+
+-- The scalar aggregates over an in-memory sequence: fold the column the one-row accessor
+-- names over the rows the sequence's filter selects, through the same `PlanAggregate` node
+-- the join aggregates use, one plan IR. `sumOf`/`minOf`/`maxOf` keep the column's own type
+-- (`Ret p` = `n`); `avgOf` is always a `Float`. There is no connection, so the instance
+-- carries only `SqlType n` (no `Adapter`) to decode the folded scalar; the in-memory fold
+-- cannot fail, so each reads its answer off the lone aggregate cell — `None` over an empty
+-- fold, the in-memory dual of a SQL aggregate of zero rows being NULL.
+instance Aggregable (Seq a) (fn a -> n) where SqlType n =
+    sumOf (col: Quote (fn a -> n)) (x: Seq a) -> Result (Option n) Error =
+        decodeScalar (firstAggCell (_evalPlanPure (seqScalarPlan x "SUM" col)))
+    avgOf (col: Quote (fn a -> n)) (x: Seq a) -> Result (Option Float) Error =
+        decodeFloatScalar (firstAggCell (_evalPlanPure (seqScalarPlan x "AVG" col)))
+    minOf (col: Quote (fn a -> n)) (x: Seq a) -> Result (Option n) Error =
+        decodeScalar (firstAggCell (_evalPlanPure (seqScalarPlan x "MIN" col)))
+    maxOf (col: Quote (fn a -> n)) (x: Seq a) -> Result (Option n) Error =
+        decodeScalar (firstAggCell (_evalPlanPure (seqScalarPlan x "MAX" col)))
+
+-- `groupBy` over an in-memory sequence: name the group-key column with the one-row accessor
+-- (`aggColumn`/`aggLeaf`), the same way a query's `groupBy` does, and wrap the sequence into
+-- the unified `Grouped` builder. `having`/`summarize` then range over the `Grouped (Seq a) p`
+-- handle exactly as they do over a query's, one builder vocabulary, no connection touched.
+instance Groupable (Seq a) (fn a -> k) =
+    groupBy (key: Quote (fn a -> k)) (x: Seq a) -> Grouped (Seq a) (fn a -> k) =
+        Grouped { source = x, keyCol = aggColumn key, keyLeaf = aggLeaf key, havingTree = keepAllTree () }
+
+-- An in-memory sequence's `summarize` seam: run the `GROUP BY` (and any `HAVING`) over the
+-- sequence's filtered rows through the same `PlanGroup` node the join `summarize` uses, one
+-- plan IR, and return the raw summarised rows for `summarize` to decode through `Row s`. The
+-- aggregate columns carry their leaf (`groupColsLeaf`); the interpreter reads them off the
+-- unprefixed single-leaf rows by their bare names. No connection is touched, so the instance
+-- carries no context, and the in-memory evaluation cannot fail, so the rows come back `Ok`.
+instance Summarizable (Seq a) =
+    runGroups (src: Seq a) (keyCol: Text) (keyLeaf: Int) (projTree: QExpr) (havingTree: QExpr) -> Result (List (Map Text SqlValue)) Error =
+        Ok (_evalPlanPure (planGroup keyCol keyLeaf (groupColsLeaf keyCol projTree) havingTree (seqCountPlan src (0 - 1))))
+
+-- Combine two in-memory sequences into one fresh sequence carrying the captured set-
+-- operation plan: each side is materialised through `seqPlan` (its own filter, ordering,
+-- page, and distinct folded in), then `planCombine` joins them — the piped sequence `x`
+-- as the left branch and `other` as the right, the same order the query's `combineWith`
+-- uses, so `except` keeps the left rows absent from the right. The result is a sequence
+-- with an empty builder over the combined plan, so a further `filter`/`orderBy`/`limit`
+-- or a terminal applies on top of the combination, exactly as it does over a query.
+fn seqCombine (op: Text) (other: Seq a) (x: Seq a) -> Seq a =
+    Seq { source = planCombine op (seqPlan x) (seqPlan other), pred = keepAll (), orders = [], lim = 0 - 1, off = 0, dist = false }
+
+-- The set operations over an in-memory sequence: combine two sequences of the same row
+-- shape through the same `PlanCombine` node the database path captures, one plan IR, and
+-- the in-memory interpreter applies the operation over the two evaluated row lists —
+-- `union`/`intersect`/`except` drop duplicate rows (set semantics), `unionAll` keeps
+-- every one — comparing rows by their full contents, the in-memory dual of SQL's
+-- `UNION`/`INTERSECT`/`EXCEPT`. No connection is touched, so the instance carries no
+-- context, like the query instance; the combined sequence keeps composing as any other.
+instance Combinable (Seq a) =
+    union (other: Seq a) (x: Seq a) -> Seq a =
+        seqCombine "UNION" other x
+    unionAll (other: Seq a) (x: Seq a) -> Seq a =
+        seqCombine "UNION ALL" other x
+    intersect (other: Seq a) (x: Seq a) -> Seq a =
+        seqCombine "INTERSECT" other x
+    except (other: Seq a) (x: Seq a) -> Seq a =
+        seqCombine "EXCEPT" other x
 
 -- A phantom `Option e` witness for `rowColumns`, drawn from a repository that
 -- already carries the entity type. `Row.rowColumns` answers an entity's columns

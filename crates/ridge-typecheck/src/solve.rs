@@ -894,6 +894,14 @@ fn discharge_concrete(
         Some(inst_info) => {
             let inst_info = inst_info.clone();
 
+            // A structurally-synthesised `Row` instance is registered for every
+            // eligible record but its dictionary IR is only emitted when used.
+            // Record that this module discharged `Row` for `tyconid` so the
+            // workspace driver pulls the stashed dictionary into the emitted set.
+            if class_name == ridge_ast::column_mirror::ROW_DERIVE {
+                ctx.demanded_rows.insert(tyconid);
+            }
+
             // For a parametric instance, resolve each context constraint's
             // sub-dictionary plan against the concrete type arguments. For a
             // non-parametric instance `head_var_positions` is empty, so this is
@@ -1156,6 +1164,17 @@ fn resolve_dict_plan(
                 });
                 return forward_placeholder();
             };
+            // A structurally-synthesised `Row` instance is emitted only when used.
+            // When `Row` is reached as a nested sub-dictionary — a `Projectable`/
+            // `Decodable` instance's `Row s` requirement, resolved through this plan
+            // path rather than `discharge_concrete` — the demand must still be
+            // recorded, or the workspace driver never pulls the stashed dictionary
+            // into the emitted set and lowering references an undefined `$inst_Row_*`.
+            if class_table.get(class).map(|info| info.name.as_str())
+                == Some(ridge_ast::column_mirror::ROW_DERIVE)
+            {
+                ctx.demanded_rows.insert(tyconid);
+            }
             let args = resolve_ctx_dict_args(
                 ctx,
                 instance_env,

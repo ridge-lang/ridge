@@ -833,6 +833,19 @@ fn reconciled_decls(b: &BuiltinTyCons, base: u32) -> Vec<TyConDecl> {
                             vec![],
                         )]),
                     },
+                    // `PlanList rows` — the in-memory `Seq` source: the rows `from`
+                    // snapshotted, carried inline. Mem-only; the interpreter returns them
+                    // as-is and the verbs wrap this leaf to refine it.
+                    UnionVariant {
+                        name: "PlanList".to_string(),
+                        kind: VariantPayload::Positional(vec![Type::Con(
+                            b.list,
+                            vec![Type::Con(
+                                b.map,
+                                vec![Type::Con(b.text, vec![]), Type::Con(b.sql_value, vec![])],
+                            )],
+                        )]),
+                    },
                 ],
             }),
             def_span: None,
@@ -1062,6 +1075,67 @@ fn reconciled_decls(b: &BuiltinTyCons, base: u32) -> Vec<TyConDecl> {
                                 caps: CapRow::Concrete(CapabilitySet::PURE),
                             }],
                         ),
+                    },
+                ],
+            )),
+            def_span: None,
+            def_module_raw: None,
+            opaque: true,
+            is_anon: false,
+        },
+        // `std.repo` — an in-memory sequence of records lifted into the query world
+        // by `from`. Opaque; mirrors `Query`'s builder fields one-for-one minus the
+        // repository: `source` is the inline `PlanList` of snapshotted rows, then the
+        // accumulated `pred`/`orders`/`lim`/`off`/`dist` a terminal materialises into one
+        // `planRefine`. The element `a` is phantom (carried in the type so `Rows (Seq a)`
+        // reduces to `a`), not stored. Field order mirrors the source so the consistency
+        // check holds. Interned after `FullJoined` so existing offsets are unchanged.
+        TyConDecl {
+            id: TyConId(base + 20),
+            name: "Seq".to_string(),
+            arity: 1,
+            kind: TyConKind::Record(RecordSchema::new(
+                vec![TyVid(0)],
+                vec![
+                    RecordField {
+                        name: "source".to_string(),
+                        ty: Type::Con(TyConId(base + 15), vec![]),
+                    },
+                    RecordField {
+                        name: "pred".to_string(),
+                        ty: Type::Con(
+                            b.quote,
+                            vec![Type::Fn {
+                                params: vec![Type::Con(
+                                    b.map,
+                                    vec![Type::Con(b.text, vec![]), Type::Con(b.sql_value, vec![])],
+                                )],
+                                ret: Box::new(Type::Con(b.bool, vec![])),
+                                caps: CapRow::Concrete(CapabilitySet::PURE),
+                            }],
+                        ),
+                    },
+                    RecordField {
+                        name: "orders".to_string(),
+                        ty: Type::Con(
+                            b.list,
+                            vec![Type::Tuple(vec![
+                                Type::Con(b.bool, vec![]),
+                                Type::Con(b.text, vec![]),
+                            ])],
+                        ),
+                    },
+                    RecordField {
+                        name: "lim".to_string(),
+                        ty: Type::Con(b.int, vec![]),
+                    },
+                    RecordField {
+                        name: "off".to_string(),
+                        ty: Type::Con(b.int, vec![]),
+                    },
+                    RecordField {
+                        name: "dist".to_string(),
+                        ty: Type::Con(b.bool, vec![]),
                     },
                 ],
             )),
@@ -1309,6 +1383,15 @@ fn reconciled_query_plan_fn_scheme(
         // QueryPlan -> QueryPlan, both: `optimize` is the renderer's plan-to-plan pre-pass,
         // `planExists` the existence-probe wrapper an `exists` terminal builds.
         "optimize" | "planExists" => Some(pure(vec![plan()])),
+        // planList : List (Map Text SqlValue) -> QueryPlan — the in-memory `Seq`
+        // source leaf, wrapping the rows `from` snapshotted inline.
+        "planList" => Some(pure(vec![Type::Con(
+            b.list,
+            vec![Type::Con(
+                b.map,
+                vec![Type::Con(b.text, vec![]), Type::Con(b.sql_value, vec![])],
+            )],
+        )])),
         // planToSql : QueryPlan -> (Sql, List SqlValue) — the renderer, lowering a
         // whole plan to one parameterized statement plus its ordered bind values.
         // Unlike the builders it does not return a `QueryPlan`, so its scheme is
@@ -1558,6 +1641,24 @@ fn reconciled_repo_fn_scheme(
             repo_app(),
             vec![],
         ),
+        // from : ∀e. List e -> Seq e where Row e — lift an in-memory list into the
+        // query world. The element `e` needs only `Row` (auto-synthesised for a
+        // record of SqlType fields); no adapter, since the rows are snapshotted in
+        // hand. Single-var scheme — there is no adapter `a`.
+        "from" => {
+            let seq_con = *reconciled.get("Seq")?;
+            Some(Scheme {
+                vars: vec![e],
+                cap_vars: vec![],
+                row_vars: vec![],
+                ty: Type::Fn {
+                    params: vec![Type::Con(b.list, vec![Type::Var(e)])],
+                    ret: Box::new(Type::Con(seq_con, vec![Type::Var(e)])),
+                    caps: pure(),
+                },
+                constraints: vec![Constraint::single(row, e)],
+            })
+        }
         // all : ∀e a. Repo e a -> Result (List e) Error where Adapter a, Row e
         "all" => method(vec![repo_app()], result(list_e()), with_adapter_row()),
         // findBy : ∀e a. Quote (e -> Bool) -> Repo e a
@@ -1749,13 +1850,15 @@ fn reconciled_repo_fn_scheme(
         // the instance. Returning `None` here (falling through to the final arm)
         // routes it through the class-method path rather than the old single-receiver
         // pub fn.
-        // union / unionAll / intersect / except : ∀e a. Query e a -> Query e a
-        //   -> Query e a — combine two queries with a set operation. Pure builders
-        // like `filter`: they capture a query plan, and a terminal runs it. Both
-        // branches share the entity `e` and adapter `a`, so the column shapes align.
-        "union" | "unionAll" | "intersect" | "except" => {
-            method(vec![query_app(), query_app()], query_app(), vec![])
-        }
+        // `union`/`unionAll`/`intersect`/`except` are no longer reconciled here: they
+        // became the methods of the `Combinable q` class (std.repo), one set of
+        // set-operation builders over a query or an in-memory sequence. A qualified
+        // `Repo.union` resolves to that class method, typed by the seeded `∀q. q -> q ->
+        // q where Combinable q` scheme (see `seed_combinable_scheme`), the single receiver
+        // parameter pinning the instance — so one binding serves a query and a `Seq`
+        // alike, and a `Seq` gains the same set operations the query path has. Omitting
+        // the arm routes them through the class-method path rather than the old
+        // single-receiver pub fns.
         // `limit` / `offset` are no longer reconciled here: they joined `distinct`
         // as methods of the `Pageable q` class (std.repo), typed by the seeded
         // `∀q. Int -> q -> q where Pageable q` scheme (see `seed_pageable_scheme`).

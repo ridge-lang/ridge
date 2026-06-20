@@ -37,6 +37,7 @@
     mem_migrations_applied/1, mem_record_migration/2,
     mem_raw_query/3, mem_raw_exec/3,
     mem_run_plan/2,
+    eval_plan_pure/1,
     quote_keep_all/1, quote_and/2, quote_not_true/1,
     mk_error/2,
     escript_main/1
@@ -1076,6 +1077,13 @@ mem_migration_name(Row) ->
 mem_run_plan(Id, Plan) ->
     mem_call({run_plan, Id, Plan}).
 
+%% eval_plan_pure/1 — interpret a plan with no keeper store, for the in-memory `Seq`
+%% query source. The plan is rooted at a `PlanList` (rows carried inline), so the empty
+%% state is never consulted; returns the rows directly (no Result — a pure in-memory
+%% walk over inline rows cannot fail).
+eval_plan_pure(Plan) ->
+    mem_eval_plan(#{}, 0, Plan).
+
 %% Internal: send a request to the keeper and await its reply.
 mem_call(Req) ->
     mem_ensure(),
@@ -1280,6 +1288,10 @@ mem_eval_plan(State, Id, {'PlanRefine', Inner, Pred, Orders, Lim, Off, Dist}) ->
     Rows = mem_eval_plan(State, Id, Inner),
     Matches = [R || R <- Rows, mem_pred(Pred, R)],
     mem_paginate(mem_distinct(Dist, mem_order(Orders, Matches)), Lim, Off);
+mem_eval_plan(_State, _Id, {'PlanList', Rows}) ->
+    %% The in-memory `Seq` source: the rows `from` snapshotted, carried inline in the
+    %% plan. No store lookup — they are returned as-is for the wrapping verbs to refine.
+    Rows;
 mem_eval_plan(State, Id, {'PlanExists', Child}) ->
     %% An existence probe: yield one trivial row when the sub-plan matches anything, none
     %% otherwise, so the caller's emptiness check answers the same Bool the SQL probe does.
@@ -1336,7 +1348,7 @@ mem_eval_plan(State, Id, {'PlanAggregate', <<"COUNT">>, _Column, _IsRight, Child
     [#{<<"agg">> => {'SqlInt', length(Rows)}}];
 mem_eval_plan(State, Id, {'PlanAggregate', Func, Column, Leaf, Child}) ->
     Rows = mem_eval_plan(State, Id, Child),
-    case mem_aggregate_value(Func, mem_agg_prefixed_col(Leaf, Column), Rows) of
+    case mem_aggregate_value(Func, mem_agg_col(Leaf, Column, Rows), Rows) of
         'SqlNull' -> [];
         Value     -> [#{<<"agg">> => Value}]
     end;
@@ -1352,17 +1364,42 @@ mem_eval_plan(State, Id, {'PlanGroup', KeyCol, KeyLeaf, Cols, Having, Child}) ->
 mem_agg_prefixed_col(Leaf, Column) ->
     <<"t", (integer_to_binary(Leaf))/binary, "$", Column/binary>>.
 
-%% Project a flat, source-prefixed join row through a projection tree into one row
-%% keyed by the projection's output aliases. A `QCol` names a left-source column
-%% (the t0$ prefix the join flattened the left side under), a `QColR` a right-source
-%% column (t1$), a `QColAt I` the I-th leaf of a multi-table composite (t<I>$); a
-%% missing column reads SQL NULL.
+%% The column a scalar `PlanAggregate` folds: the leaf-prefixed name when the child's
+%% rows carry it (a join's flat source-prefixed rows), or the bare column when none do
+%% (an unprefixed single-leaf `Seq` source). An outer join's unmatched rows can lack the
+%% folded leaf's columns, so it asks whether ANY row carries the prefixed key rather than
+%% probing one row — the first might be an unmatched outer row missing that leaf. A `Seq`
+%% row never carries a `t<n>$` prefix, so none match and the bare column is read; a join
+%% folding a side with no matched rows reads SqlNull either way. Mirrors how `mem_pcell`
+%% resolves a left-source projection cell.
+mem_agg_col(Leaf, Column, Rows) ->
+    Prefixed = mem_agg_prefixed_col(Leaf, Column),
+    case lists:any(fun(Row) -> maps:is_key(Prefixed, Row) end, Rows) of
+        true  -> Prefixed;
+        false -> Column
+    end.
+
+%% Project a row through a projection tree into one row keyed by the projection's
+%% output aliases. A `QCol` names a left-source column (the t0$ prefix a join
+%% flattens the left side under, or the bare column for an unprefixed single-leaf
+%% source like an in-memory `Seq`), a `QColR` a right-source column (t1$), a
+%% `QColAt I` the I-th leaf of a multi-table composite (t<I>$); a missing column
+%% reads SQL NULL.
 mem_project_prefixed({'QProj', Cols}, Row) ->
     maps:from_list([{Alias, mem_pcell(Col, Row)} || {Alias, Col} <- Cols]);
 mem_project_prefixed(_Other, _Row) ->
     #{}.
 
-mem_pcell({'QCol', C}, Row)     -> maps:get(<<"t0$", C/binary>>, Row, 'SqlNull');
+%% A left-source `QCol` resolves under the `t0$` join prefix when present, and
+%% falls back to the bare column name otherwise — a join row always carries the
+%% prefixed key, an unprefixed `Seq` row only the bare one, so one clause projects
+%% both. (`'SqlNull'` is a real stored value, so the sentinel for "absent" is
+%% `undefined`, kept distinct from a genuine NULL cell.)
+mem_pcell({'QCol', C}, Row)     ->
+    case maps:get(<<"t0$", C/binary>>, Row, undefined) of
+        undefined -> maps:get(C, Row, 'SqlNull');
+        Val       -> Val
+    end;
 mem_pcell({'QColR', C}, Row)    -> maps:get(<<"t1$", C/binary>>, Row, 'SqlNull');
 mem_pcell({'QColAt', I, C}, Row) -> maps:get(mem_agg_prefixed_col(I, C), Row, 'SqlNull');
 mem_pcell(_Other, _Row)         -> 'SqlNull'.
@@ -1538,16 +1575,16 @@ mem_agg_or_undef(Func, Col, GR) ->
 
 %% --- In-memory grouped join ---
 %%
-%% Group a join's flat, source-prefixed rows by a key column read off its leaf
-%% (`t<KeyLeaf>$KeyCol`), narrow the groups by a HAVING tree over the group
-%% aggregates, and summarise each surviving group. One interpreter for a binary or a
-%% deeper composite join: every join leaf prefixes its columns the same way (`t0$`
-%% for the first, `t1$` for a binary right, higher for a composite), so a grouped
-%% aggregate folds the leaf-prefixed column directly — an unmatched outer row simply
-%% lacks that leaf's columns, which read SqlNull and drop out of the fold, exactly as
-%% the composite scalar aggregates do.
+%% Group a source's rows by a key column, narrow the groups by a HAVING tree over the
+%% group aggregates, and summarise each surviving group. One interpreter for a binary or
+%% a deeper composite join — whose flat rows prefix every leaf's columns (`t0$` for the
+%% first, `t1$` for a binary right, higher for a composite) — and for a single-leaf
+%% in-memory `Seq`, whose rows are unprefixed: `mem_agg_col` resolves each column to its
+%% leaf-prefixed name when the rows carry it and the bare name otherwise, so the key and
+%% every grouped aggregate fold the right column either way. An unmatched outer row simply
+%% lacks that leaf's columns, which read SqlNull and drop out of the fold.
 mem_group_nary(Rows, KeyLeaf, KeyCol, Cols, Having) ->
-    KeyName = mem_agg_prefixed_col(KeyLeaf, KeyCol),
+    KeyName = mem_agg_col(KeyLeaf, KeyCol, Rows),
     Groups = mem_group_nary_by(KeyName, Rows),
     Kept = [{K, GR} || {K, GR} <- Groups, mem_having_nary(Having, K, GR)],
     Sorted = lists:sort(fun({KA, _}, {KB, _}) -> mem_order_cmp(KA, KB) =/= gt end, Kept),
@@ -1575,7 +1612,7 @@ mem_group_nary_row(Cols, Key, GR) ->
 mem_group_nary_value(<<"KEY">>, _Col, _Leaf, Key, _GR)   -> Key;
 mem_group_nary_value(<<"COUNT">>, _Col, _Leaf, _Key, GR) -> {'SqlInt', length(GR)};
 mem_group_nary_value(Func, Col, Leaf, _Key, GR) ->
-    mem_aggregate_value(Func, mem_agg_prefixed_col(Leaf, Col), GR).
+    mem_aggregate_value(Func, mem_agg_col(Leaf, Col, GR), GR).
 
 %% HAVING over a join group: as mem_having, but its scalar-aggregate leaves fold a
 %% leaf-prefixed column (`QCol`/`QColR`/`QColAt`) off the flat group rows.
@@ -1610,11 +1647,12 @@ mem_hscalar_nary({'QLitBool', B}, _Key, _GR)  -> {'SqlBool', B};
 mem_hscalar_nary({'QLitFloat', F}, _Key, _GR) -> {'SqlFloat', F};
 mem_hscalar_nary(_Other, _Key, _GR)           -> undefined.
 
-%% A scalar aggregate over a join group's leaf-prefixed column: the first leaf for a
-%% `QCol`, the second for a `QColR`, the i-th for a `QColAt`.
-mem_agg_node_nary(Func, {'QCol', C}, GR)      -> mem_agg_or_undef(Func, mem_agg_prefixed_col(0, C), GR);
-mem_agg_node_nary(Func, {'QColR', C}, GR)     -> mem_agg_or_undef(Func, mem_agg_prefixed_col(1, C), GR);
-mem_agg_node_nary(Func, {'QColAt', I, C}, GR) -> mem_agg_or_undef(Func, mem_agg_prefixed_col(I, C), GR);
+%% A scalar aggregate over a group's column: the first leaf for a `QCol`, the second for
+%% a `QColR`, the i-th for a `QColAt`. `mem_agg_col` reads the leaf-prefixed column off a
+%% join's flat rows or the bare column off an unprefixed `Seq` group.
+mem_agg_node_nary(Func, {'QCol', C}, GR)      -> mem_agg_or_undef(Func, mem_agg_col(0, C, GR), GR);
+mem_agg_node_nary(Func, {'QColR', C}, GR)     -> mem_agg_or_undef(Func, mem_agg_col(1, C, GR), GR);
+mem_agg_node_nary(Func, {'QColAt', I, C}, GR) -> mem_agg_or_undef(Func, mem_agg_col(I, C, GR), GR);
 mem_agg_node_nary(_Func, _Node, _GR)          -> undefined.
 
 %% Merge the Changes columns into every row matching the predicate tree, leaving

@@ -1528,6 +1528,56 @@ pub fn register_stdlib_classes(ct: &mut ClassTable) {
             def_module: None,
         },
     );
+
+    // `Combinable` from std.repo — the set-operation builders (`union`/`unionAll`/
+    // `intersect`/`except`) that combine two queries, or two in-memory sequences, of the
+    // same row shape. A single parameter, the receiver `q`, with no functional dependency
+    // (like `Pageable`/`Countable`): each verb takes the other receiver and the piped
+    // receiver and answers a combined receiver, so there is no second parameter to
+    // determine. The four method schemes are seeded directly (see `seed_combinable_scheme`
+    // in lib.rs) with no AST types, and the instances (`Query e a`, `Seq a`) are registered
+    // in `register_stdlib_instances`. Each verb takes the other receiver and the piped
+    // receiver (sig arity 2). Interned last so no existing class id shifts.
+    let combinable_id = ct.intern("Combinable");
+    ct.insert_with_id(
+        combinable_id,
+        ClassInfo {
+            name: "Combinable".to_string(),
+            arity: 1,
+            method_sigs: vec![
+                MethodSig {
+                    name: "union".to_string(),
+                    arity: 2,
+                    ast_param_types: vec![],
+                    ast_ret_type: None,
+                    class_ty_vars: Vec::new(),
+                },
+                MethodSig {
+                    name: "unionAll".to_string(),
+                    arity: 2,
+                    ast_param_types: vec![],
+                    ast_ret_type: None,
+                    class_ty_vars: Vec::new(),
+                },
+                MethodSig {
+                    name: "intersect".to_string(),
+                    arity: 2,
+                    ast_param_types: vec![],
+                    ast_ret_type: None,
+                    class_ty_vars: Vec::new(),
+                },
+                MethodSig {
+                    name: "except".to_string(),
+                    arity: 2,
+                    ast_param_types: vec![],
+                    ast_ret_type: None,
+                    class_ty_vars: Vec::new(),
+                },
+            ],
+            superclasses: vec![],
+            def_module: None,
+        },
+    );
 }
 
 /// Registers the base-type instances of stdlib-defined classes into `env`.
@@ -1692,6 +1742,15 @@ pub fn register_stdlib_instances(
                     .entry((refinable, smallvec![query, fn1]))
                     .or_insert_with(refinable_inst);
             }
+            // `Refinable (Seq a) (a -> Bool)` — the in-memory sequence's `filter`,
+            // keyed like a query (receiver + single-param predicate `Fn1`). It carries
+            // no context (filter only refines the plan), so the shared `refinable_inst`
+            // applies unchanged.
+            if let Some(&seq) = reconciled_tycon_names.get("Seq") {
+                env.instances
+                    .entry((refinable, smallvec![seq, fn1]))
+                    .or_insert_with(refinable_inst);
+            }
             if let Some(&left_join) = reconciled_tycon_names.get("LeftJoin") {
                 env.instances
                     .entry((refinable, smallvec![left_join, fn2]))
@@ -1761,6 +1820,31 @@ pub fn register_stdlib_instances(
                     .entry((projectable, smallvec![query, fn1]))
                     .or_insert_with(|| projectable_inst(vec![1, 3]));
             }
+            // `Projectable (Seq a) (fn a -> s) where Row s` — the in-memory sequence's
+            // `select`/`selectFirst`. Unlike a query it has no adapter, so its only
+            // context is `Row s`, the projected shape's row codec. Flattening
+            // `[Seq a, fn a -> s]` lists the receiver's `a@0` then the projection's
+            // `a@1`, `s@2`, so `s` sits at flattened position 2; a fresh inline
+            // `InstanceInfo` carries the single `Row` constraint there (the shared
+            // `projectable_inst` bakes in `Adapter a`, which a sequence lacks).
+            if let Some(&seq) = reconciled_tycon_names.get("Seq") {
+                env.instances
+                    .entry((projectable, smallvec![seq, fn1]))
+                    .or_insert_with(|| InstanceInfo {
+                        def_module: None,
+                        methods: vec![
+                            ("select".to_string(), String::new()),
+                            ("selectFirst".to_string(), String::new()),
+                        ],
+                        ctx_constraints: vec![ridge_types::Constraint::single(
+                            row,
+                            ridge_types::TyVid(0),
+                        )],
+                        head_var_positions: vec![2],
+                        origin: InstanceOrigin::Explicit,
+                        span: ds,
+                    });
+            }
             if let Some(&left_join) = reconciled_tycon_names.get("LeftJoin") {
                 env.instances
                     .entry((projectable, smallvec![left_join, fn2]))
@@ -1799,6 +1883,15 @@ pub fn register_stdlib_instances(
             if let Some(&query) = reconciled_tycon_names.get("Query") {
                 env.instances
                     .entry((orderable, smallvec![query, fn1]))
+                    .or_insert_with(orderable_inst);
+            }
+            // `Orderable (Seq a) (a -> k)` — the in-memory sequence's `orderBy`, keyed
+            // like a query (receiver + single-param key `Fn1`). It carries no context
+            // (orderBy only appends an ordering key), so the shared `orderable_inst`
+            // applies unchanged.
+            if let Some(&seq) = reconciled_tycon_names.get("Seq") {
+                env.instances
+                    .entry((orderable, smallvec![seq, fn1]))
                     .or_insert_with(orderable_inst);
             }
             if let Some(&left_join) = reconciled_tycon_names.get("LeftJoin") {
@@ -1872,6 +1965,39 @@ pub fn register_stdlib_instances(
                     .entry((aggregable, smallvec![full_join, fn2]))
                     .or_insert_with(|| aggregable_inst(vec![2, 5]));
             }
+        }
+    }
+
+    // `Aggregable (Seq a) (fn a -> n)` — the in-memory sequence's scalar aggregates. Keyed
+    // like `Projectable (Seq a)` (receiver tycon + accessor-arity tycon `Fn1`), but unlike
+    // the query and join instances it carries NO `Adapter`: the fold runs through the
+    // in-memory interpreter without a connection. It keeps the `SqlType n` that decodes the
+    // folded scalar, at `n`'s flattened head position — `n@2` in `[Seq a, fn a -> n]`
+    // (a@0, a@1, n@2), the single-leaf analogue of the query's `n@3`.
+    if let (Some(aggregable), Some(sqltype), Some(&seq)) = (
+        ct.id_by_name("Aggregable"),
+        ct.id_by_name("SqlType"),
+        reconciled_tycon_names.get("Seq"),
+    ) {
+        if let Some(fn1) = ridge_types::fn_tycon_id(1) {
+            env.instances
+                .entry((aggregable, smallvec![seq, fn1]))
+                .or_insert_with(|| InstanceInfo {
+                    def_module: None,
+                    methods: vec![
+                        ("sumOf".to_string(), String::new()),
+                        ("avgOf".to_string(), String::new()),
+                        ("minOf".to_string(), String::new()),
+                        ("maxOf".to_string(), String::new()),
+                    ],
+                    ctx_constraints: vec![ridge_types::Constraint::single(
+                        sqltype,
+                        ridge_types::TyVid(0),
+                    )],
+                    head_var_positions: vec![2],
+                    origin: InstanceOrigin::Explicit,
+                    span: ds,
+                });
         }
     }
 
@@ -2091,10 +2217,29 @@ pub fn register_stdlib_instances(
             origin: InstanceOrigin::Explicit,
             span: ds,
         };
+        // `Decodable (Seq a) where Row a` — the in-memory sequence's decode
+        // terminals. No adapter (the rows are already in hand), so a single
+        // `Row a` constraint at the receiver's sole arg position (`a@0`).
+        let seq_inst = || InstanceInfo {
+            def_module: None,
+            methods: vec![
+                ("toList".to_string(), String::new()),
+                ("first".to_string(), String::new()),
+            ],
+            ctx_constraints: vec![ridge_types::Constraint::single(row, ridge_types::TyVid(0))],
+            head_var_positions: vec![0],
+            origin: InstanceOrigin::Explicit,
+            span: ds,
+        };
         if let Some(&query) = reconciled_tycon_names.get("Query") {
             env.instances
                 .entry((decodable, smallvec![query]))
                 .or_insert_with(query_inst);
+        }
+        if let Some(&seq) = reconciled_tycon_names.get("Seq") {
+            env.instances
+                .entry((decodable, smallvec![seq]))
+                .or_insert_with(seq_inst);
         }
         if let Some(&left_join) = reconciled_tycon_names.get("LeftJoin") {
             env.instances
@@ -2481,6 +2626,14 @@ pub fn register_stdlib_instances(
                 .entry((pageable, smallvec![query]))
                 .or_insert_with(pageable_inst);
         }
+        // `Pageable (Seq a)` — the in-memory sequence's `limit`/`offset`/`distinct`.
+        // Single receiver parameter, no functional dependency (these verbs take no
+        // quoted argument), so it carries no context, like the query instance.
+        if let Some(&seq) = reconciled_tycon_names.get("Seq") {
+            env.instances
+                .entry((pageable, smallvec![seq]))
+                .or_insert_with(pageable_inst);
+        }
         if let Some(&left_join) = reconciled_tycon_names.get("LeftJoin") {
             env.instances
                 .entry((pageable, smallvec![left_join]))
@@ -2505,6 +2658,42 @@ pub fn register_stdlib_instances(
                     .entry((pageable, smallvec![tycon]))
                     .or_insert_with(pageable_inst);
             }
+        }
+    }
+
+    // `Combinable (Query e a)` and `Combinable (Seq a)` — the set-operation builders
+    // (`union`/`unionAll`/`intersect`/`except`) from std.repo. A single-parameter class,
+    // so each instance is keyed by the receiver tycon alone (no second atom). Like
+    // `Pageable`, the verbs combine two receivers into one captured set-operation plan and
+    // carry no context constraints: the combine records a `planCombine` over the two
+    // sources without reaching the store, so no `Adapter`/`Row` and no head-position
+    // augmentation. Set operations apply to a query or an in-memory sequence (not to a
+    // join), so only those two receivers are keyed. Inserted for user workspaces; a no-op
+    // during the stdlib's own build, where repo.ridge's source instances are collected
+    // directly.
+    if let Some(combinable) = ct.id_by_name("Combinable") {
+        let combinable_inst = || InstanceInfo {
+            def_module: None,
+            methods: vec![
+                ("union".to_string(), String::new()),
+                ("unionAll".to_string(), String::new()),
+                ("intersect".to_string(), String::new()),
+                ("except".to_string(), String::new()),
+            ],
+            ctx_constraints: vec![],
+            head_var_positions: vec![],
+            origin: InstanceOrigin::Explicit,
+            span: ds,
+        };
+        if let Some(&query) = reconciled_tycon_names.get("Query") {
+            env.instances
+                .entry((combinable, smallvec![query]))
+                .or_insert_with(combinable_inst);
+        }
+        if let Some(&seq) = reconciled_tycon_names.get("Seq") {
+            env.instances
+                .entry((combinable, smallvec![seq]))
+                .or_insert_with(combinable_inst);
         }
     }
 
@@ -2552,6 +2741,30 @@ pub fn register_stdlib_instances(
                 .entry((countable, smallvec![full_join]))
                 .or_insert_with(|| countable_inst(2));
         }
+    }
+
+    // `Countable (Seq a)` — the in-memory sequence's `count`/`exists`. Single receiver
+    // parameter, no functional dependency, and — unlike the query and join instances —
+    // no context: the terminals measure or probe the inline rows through the in-memory
+    // interpreter without reaching any store or decoding, so they carry neither `Adapter`
+    // nor `Row` and need no head-position augmentation, like `Pageable (Seq a)`.
+    if let (Some(countable), Some(&seq)) = (
+        ct.id_by_name("Countable"),
+        reconciled_tycon_names.get("Seq"),
+    ) {
+        env.instances
+            .entry((countable, smallvec![seq]))
+            .or_insert_with(|| InstanceInfo {
+                def_module: None,
+                methods: vec![
+                    ("count".to_string(), String::new()),
+                    ("exists".to_string(), String::new()),
+                ],
+                ctx_constraints: vec![],
+                head_var_positions: vec![],
+                origin: InstanceOrigin::Explicit,
+                span: ds,
+            });
     }
 
     // `Countable (Joined q f a)` and the three outer composites — the nested join's
@@ -2633,6 +2846,27 @@ pub fn register_stdlib_instances(
         }
     }
 
+    // `Every (Seq a) (fn a -> Bool)` — the in-memory sequence's `every`. Keyed like
+    // `Refinable (Seq a)` (receiver tycon + `Fn1` for the one-row predicate), the `q -> p`
+    // dependency fixing the arity. Unlike the query and join instances it carries no
+    // context: the violator probe runs through the in-memory interpreter without reaching a
+    // store and does not decode (it only tests the probe empty), so neither `Adapter` nor
+    // `Row`, and no head-position augmentation, like `Countable (Seq a)`.
+    if let (Some(every), Some(&seq)) = (ct.id_by_name("Every"), reconciled_tycon_names.get("Seq")) {
+        if let Some(fn1) = ridge_types::fn_tycon_id(1) {
+            env.instances
+                .entry((every, smallvec![seq, fn1]))
+                .or_insert_with(|| InstanceInfo {
+                    def_module: None,
+                    methods: vec![("every".to_string(), String::new())],
+                    ctx_constraints: vec![],
+                    head_var_positions: vec![],
+                    origin: InstanceOrigin::Explicit,
+                    span: ds,
+                });
+        }
+    }
+
     // `Every (Joined q f a)` and the three outer composites — the nested join's
     // `every`. A fundep terminal, so keyed by the RECEIVER ALONE (the predicate's leaf
     // arity grows with the join depth); discharge falls back to this receiver-only key,
@@ -2686,6 +2920,14 @@ pub fn register_stdlib_instances(
             if let Some(&query) = reconciled_tycon_names.get("Query") {
                 env.instances
                     .entry((groupable, smallvec![query, fn1]))
+                    .or_insert_with(groupable_inst);
+            }
+            // `Groupable (Seq a)` — the in-memory sequence's `groupBy`. Keyed on the
+            // receiver + the one-row key arity (`Fn1`); like the query instance it only
+            // builds the `Grouped` record and reaches no store, so it carries no context.
+            if let Some(&seq) = reconciled_tycon_names.get("Seq") {
+                env.instances
+                    .entry((groupable, smallvec![seq, fn1]))
                     .or_insert_with(groupable_inst);
             }
             if let Some(&left_join) = reconciled_tycon_names.get("LeftJoin") {
@@ -2746,6 +2988,27 @@ pub fn register_stdlib_instances(
                 .entry((summarizable, smallvec![full_join]))
                 .or_insert_with(|| summarizable_inst(2));
         }
+    }
+
+    // `Summarizable (Seq a)` — the in-memory sequence's `summarize` seam. Single receiver
+    // parameter, and — unlike the query and join instances — no context: `runGroups` runs
+    // the `PlanGroup` through the in-memory interpreter without a connection and hands back
+    // the raw rows for `summarize` to decode, so it carries no `Adapter`, like the sequence's
+    // `Pageable`/`Countable`.
+    if let (Some(summarizable), Some(&seq)) = (
+        ct.id_by_name("Summarizable"),
+        reconciled_tycon_names.get("Seq"),
+    ) {
+        env.instances
+            .entry((summarizable, smallvec![seq]))
+            .or_insert_with(|| InstanceInfo {
+                def_module: None,
+                methods: vec![("runGroups".to_string(), String::new())],
+                ctx_constraints: vec![],
+                head_var_positions: vec![],
+                origin: InstanceOrigin::Explicit,
+                span: ds,
+            });
     }
 }
 

@@ -67,7 +67,7 @@ use ridge_resolve::{ModuleId, NodeId, ResolvedWorkspace};
 use ridge_types::{
     AnonRecordTable, CapabilitySet, Scheme, TyConArena, TyConDecl, TyConId, TyVid, Type,
 };
-use rustc_hash::FxHashMap;
+use rustc_hash::{FxHashMap, FxHashSet};
 use std::sync::Arc;
 
 // ── Result types ──────────────────────────────────────────────────────────────
@@ -99,6 +99,12 @@ pub struct ModuleTypecheckResult {
     /// The workspace driver stores these so importing modules (checked later in
     /// dependency order) can seed them into their environment.
     pub name_schemes: FxHashMap<String, ridge_types::Scheme>,
+    /// Records whose `Row` instance this module demanded while solving.
+    ///
+    /// The workspace driver moves the matching stashed implicit `Row`
+    /// instances into the emitted `derived_instances` set, so an unused
+    /// implicit `Row` produces no IR.
+    pub demanded_rows: FxHashSet<ridge_types::TyConId>,
 }
 
 /// Result of incrementally type-checking a single edited module.
@@ -313,6 +319,10 @@ pub fn typecheck_workspace(ws: &ResolvedWorkspace) -> TypecheckResult {
     }
     let class_table = collect_result.class_table;
     let instance_env = collect_result.instance_env;
+    let mut derived_instances = collect_result.derived_instances;
+    // Stashed implicit `Row` instances, pulled into `derived_instances` as
+    // modules demand them in the loop below.
+    let mut implicit_row_instances = collect_result.implicit_row_instances;
 
     // Step 3: Type-check each module in dependency order (producers first).
     for &mid in &check_order {
@@ -386,6 +396,15 @@ pub fn typecheck_workspace(ws: &ResolvedWorkspace) -> TypecheckResult {
         // Expose this module's schemes to modules that import it (checked later).
         exported_schemes[rm.id.0 as usize] = result.name_schemes;
         typed_slots[rm.id.0 as usize] = Some(result.typed);
+        // Emit a dictionary only for the implicit `Row` instances this module
+        // actually demanded. A record that never touches the row machinery keeps
+        // its instance in `instance_env` but produces no IR. `remove` also dedups
+        // across modules that demand the same record.
+        for tycon in result.demanded_rows {
+            if let Some(inst) = implicit_row_instances.remove(&tycon) {
+                derived_instances.push(inst);
+            }
+        }
     }
 
     // Re-assemble typed modules in `ModuleId` order for downstream consumers.
@@ -410,7 +429,7 @@ pub fn typecheck_workspace(ws: &ResolvedWorkspace) -> TypecheckResult {
             anon_records: workspace_anon_records,
             class_table,
             instance_env,
-            derived_instances: collect_result.derived_instances,
+            derived_instances,
             stdlib_tycons: stdlib_tycon_names,
         },
         errors: all_errors,
@@ -439,6 +458,7 @@ fn empty_module_result(module_id: ModuleId) -> ModuleTypecheckResult {
         errors: Vec::new(),
         anon_records: AnonRecordTable::default(),
         name_schemes: FxHashMap::default(),
+        demanded_rows: FxHashSet::default(),
     }
 }
 
@@ -783,6 +803,7 @@ fn typecheck_module_inner(
         seed_decodable_scheme(&mut ctx, b, ct);
         seed_pageable_scheme(&mut ctx, b, ct);
         seed_countable_scheme(&mut ctx, b, ct);
+        seed_combinable_scheme(&mut ctx, ct);
         seed_every_scheme(&mut ctx, b, ct);
 
         // Wire the reconciled receiver ids the `Rows q` projection reduces against,
@@ -814,6 +835,9 @@ fn typecheck_module_inner(
         // seeds borrow `ctx` mutably, so the `receiver_id` closure's immutable
         // borrow has ended by the time the `RowsTycons` is built.
         let joined_id = receiver_id("Joined");
+        // `Seq` (the in-memory query source) resolved here too, before the seeds
+        // borrow `ctx` mutably, for the same `RowsTycons`-before-borrow reason.
+        let seq_id = receiver_id("Seq");
         // `LeftJoined` (the nested N-ary LEFT outer join) resolved here too, alongside
         // `Joined`, for the same `RowsTycons`-before-mutable-borrow reason.
         let left_joined_id = receiver_id("LeftJoined");
@@ -833,6 +857,7 @@ fn typecheck_module_inner(
         if let (Some(query), Some(join), Some(left_join)) = (query_id, join_id, left_join_id) {
             ctx.rows_tycons = Some(crate::ctx::RowsTycons {
                 query,
+                seq: seq_id,
                 join,
                 left_join,
                 // `RightJoin` lands alongside `LeftJoin` (both in std.repo); fall back
@@ -1036,6 +1061,7 @@ fn typecheck_module_inner(
         errors: ctx.errors,
         anon_records,
         name_schemes: ctx.name_schemes_accum,
+        demanded_rows: ctx.demanded_rows,
     }
 }
 
@@ -1703,6 +1729,48 @@ fn seed_countable_scheme(
                 row_vars: vec![],
                 ty: fn_ty,
                 constraints: vec![Constraint::new(countable, constraint_tys)],
+            },
+        );
+    }
+}
+
+/// Seed the env schemes for `Combinable`'s set-operation builders — std.repo's unified
+/// `union`/`unionAll`/`intersect`/`except` over a query or an in-memory sequence.
+/// Registered in Rust for the same reason as [`seed_pageable_scheme`]: the stdlib class
+/// carries no source AST, so the AST-driven [`seed_class_method_schemes`] path skips it.
+///
+/// Scheme (each of the four): `∀q. q -> q -> q where Combinable q`. The single receiver
+/// parameter pins the instance, so one binding serves a `Query` and a `Seq` alike — each
+/// verb takes the other receiver and the piped receiver and answers a combined receiver,
+/// with no functional dependency (like `Pageable`/`Countable`): no quoted argument, so no
+/// determined parameter and no argument-less ambiguity. The piped receiver is the left
+/// branch and the argument the right, which the backend honours for `except`.
+fn seed_combinable_scheme(
+    ctx: &mut crate::ctx::InferCtx,
+    class_table: &crate::class_env::ClassTable,
+) {
+    use ridge_types::{CapRow, CapabilitySet, Constraint, Scheme, Type};
+    let Some(combinable) = class_table.id_by_name("Combinable") else {
+        return;
+    };
+    // The two branches and the result share the receiver type `q`; the operation is
+    // captured into a plan a terminal runs, so the call itself is pure.
+    for name in ["union", "unionAll", "intersect", "except"] {
+        let q = ctx.fresh_tyvid();
+        let fn_ty = Type::Fn {
+            params: vec![Type::Var(q), Type::Var(q)],
+            ret: Box::new(Type::Var(q)),
+            caps: CapRow::Concrete(CapabilitySet::PURE),
+        };
+        let constraint_tys: smallvec::SmallVec<[ridge_types::TyVid; 1]> = smallvec::smallvec![q];
+        ctx.env.bind(
+            name.to_owned(),
+            Scheme {
+                vars: vec![q],
+                cap_vars: vec![],
+                row_vars: vec![],
+                ty: fn_ty,
+                constraints: vec![Constraint::new(combinable, constraint_tys)],
             },
         );
     }

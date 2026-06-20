@@ -427,6 +427,9 @@ const BASELINE_EXPORTS: &[(&str, &[&str])] = &[
             // The existence-probe wrapper: compiles a sub-plan to
             // `SELECT 1 FROM … LIMIT 1` for an `exists` terminal.
             "planExists",
+            // The in-memory source leaf: wraps the rows `from` snapshotted, so an
+            // in-memory `Seq` runs through the same plan/interpreter as a query.
+            "planList",
         ],
     ),
     (
@@ -515,6 +518,11 @@ const BASELINE_EXPORTS: &[(&str, &[&str])] = &[
             // `selectFirst` projections.
             "Query",
             "query",
+            // The in-memory query source: `from` lifts a `List a` into the query
+            // world as an opaque `Seq a`, read back by the same `toList`/`first`
+            // terminals. No repository, table, or adapter.
+            "Seq",
+            "from",
             // The unified `filter` is the method of the `Refinable q p | q -> p`
             // class, so one verb narrows a query (one-row predicate) and a join
             // (two-row predicate), the arity following the receiver.
@@ -632,9 +640,12 @@ const BASELINE_EXPORTS: &[(&str, &[&str])] = &[
             "summarize",
             "Summarizable",
             "runGroups",
-            // Set operations: combine two queries into one that runs the combined
-            // result, each returning a composable `Query` (a SQL `UNION`/`UNION
-            // ALL`/`INTERSECT`/`EXCEPT`).
+            // Set operations unified across a query and an in-memory sequence: the
+            // `Combinable` class's `union`/`unionAll`/`intersect`/`except` combine two
+            // receivers into one that runs the combined result, each returning a
+            // composable receiver (a SQL `UNION`/`UNION ALL`/`INTERSECT`/`EXCEPT`, or an
+            // in-memory combine over a `Seq`).
+            "Combinable",
             "union",
             "unionAll",
             "intersect",
@@ -705,6 +716,7 @@ const BASELINE_OPAQUE: &[(&str, &[&str])] = &[
             "FullJoined",
             "Setter",
             "Grouped",
+            "Seq",
         ],
     ),
     ("std.migrate", &["Column"]),

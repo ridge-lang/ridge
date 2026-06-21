@@ -16,9 +16,12 @@ whatever Ridge release is installed.
 ### Added
 
 - Go to Type Definition: from any value, jump to the `type` declaration of
-  its inferred type. Go-to-definition and find-references now also resolve
-  record fields, so a `record.field` use navigates to the field's
-  declaration and gathers every use of that field across the workspace.
+  its inferred type. Go-to-definition, find-references, rename, and document
+  highlight now also resolve record fields, so a `record.field` use
+  navigates to the field's declaration, gathers and renames every use of
+  that field across the workspace, and highlights its occurrences in the
+  current file. A field rename is scoped to its owner record, so a field of
+  the same name on a different record is left untouched.
 - Semantic highlighting from `ridge-lsp`, colouring identifiers the
   grammar cannot tell apart — function vs variable vs type vs constructor
   vs stdlib symbol — and surfacing capability annotations (`io`, `fs`,

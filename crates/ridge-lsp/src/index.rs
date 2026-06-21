@@ -990,6 +990,14 @@ impl WorkspaceIndex {
         let mid = *self.uri_to_module.get(uri)?;
         let mi = mid.0 as usize;
         let offset = self.line_indices.get(mi)?.utf16_to_byte(line, utf16_col);
+
+        // A record field carries no binding on its name node; it highlights
+        // through the base expression's type, like find-references restricted to
+        // this file.
+        if let Some(highlights) = self.field_highlights_at(mi, offset) {
+            return Some(highlights);
+        }
+
         let (target, name) = self.highlight_target_at(mid, offset)?;
         let view = self.modules.get(mi)?;
         let spatial = self.spatial.get(mi)?;
@@ -1134,11 +1142,12 @@ impl WorkspaceIndex {
     /// Returns the exact identifier range the editor should select plus its
     /// current text (the rename placeholder), or `None` when the cursor is not
     /// on a name this server can rename. Renameable: a local (parameter, `let`,
-    /// state field), a top-level `fn` / `const`, and a `type` (renaming a record
-    /// type also rewrites its `User { .. }` constructions and patterns). Not yet
-    /// renameable (returns `None`): a union constructor, an actor, a field
-    /// accessor, a stdlib symbol, a class method, or a module alias — see the
-    /// deferred follow-ups. Reads only this immutable snapshot.
+    /// state field), a top-level `fn` / `const`, a `type` (renaming a record
+    /// type also rewrites its `User { .. }` constructions and patterns), and a
+    /// record field (`user.age` and its declaration move together, scoped to the
+    /// field's owner record). Not yet renameable (returns `None`): a union
+    /// constructor, an actor, a stdlib symbol, a class method, or a module
+    /// alias — see the deferred follow-ups. Reads only this immutable snapshot.
     #[must_use]
     pub fn prepare_rename_at(
         &self,
@@ -1146,6 +1155,13 @@ impl WorkspaceIndex {
         line: u32,
         utf16_col: u32,
     ) -> Option<PrepareRenameResponse> {
+        // A record field carries no binding on its name node; it takes the
+        // type-directed path before the binding-keyed one.
+        if let Some((mi, offset)) = self.field_offset(uri, line, utf16_col) {
+            if let Some(resp) = self.field_prepare_rename_at(mi, offset) {
+                return Some(resp);
+            }
+        }
         let target = self.rename_target_at(uri, line, utf16_col)?;
         Some(PrepareRenameResponse::RangeWithPlaceholder {
             range: target.cursor_range,
@@ -1174,6 +1190,14 @@ impl WorkspaceIndex {
         utf16_col: u32,
         new_name: &str,
     ) -> Result<Option<WorkspaceEdit>, String> {
+        // A record field renames through the type-directed path: its name node
+        // carries no binding, and the edit set is scoped by the field's owner
+        // record so a same-named field on another record is left untouched.
+        if let Some((mi, offset)) = self.field_offset(uri, line, utf16_col) {
+            if let Some(result) = self.field_rename_at(mi, offset, new_name) {
+                return result.map(Some);
+            }
+        }
         let Some(target) = self.rename_target_at(uri, line, utf16_col) else {
             return Ok(None);
         };
@@ -1552,22 +1576,24 @@ impl WorkspaceIndex {
     /// the field's declaration in the owning `type`). `None` off any field name
     /// or when the base's type is structural, unresolved, or not a record.
     fn field_definition_at(&self, mi: usize, offset: u32) -> Option<Location> {
-        let (tycon, field) = self.field_access_at(mi, offset)?;
+        let (tycon, field, _field_span) = self.field_access_at(mi, offset)?;
         self.field_decl_location(tycon, &field)
     }
 
     /// The record field under the cursor as `(owner record TyConId raw, field
-    /// name)`. Walks this module's AST for the narrowest `base.field` access
-    /// whose field range covers `offset`, then reads the base expression's
-    /// inferred type and peels it to the nominal record it belongs to.
-    fn field_access_at(&self, mi: usize, offset: u32) -> Option<(u32, String)> {
+    /// name, field name span)`. Walks this module's AST for the narrowest
+    /// `base.field` access whose field range covers `offset`, then reads the base
+    /// expression's inferred type and peels it to the nominal record it belongs
+    /// to. The span is the field token under the cursor (used to select the
+    /// rename range and to highlight the use).
+    fn field_access_at(&self, mi: usize, offset: u32) -> Option<(u32, String, Span)> {
         let ast = self.modules.get(mi)?.ast.clone()?;
         let mut finder = FieldAccessFinder { offset, best: None };
         ridge_ast::visit::Visit::visit_module(&mut finder, &ast);
-        let (base_span, field) = finder.best?;
+        let (base_span, field_span, field) = finder.best?;
         let base_ty = self.type_of_base(mi, base_span)?;
         let tycon = record_tycon_of(base_ty, &self.tycons)?;
-        Some((tycon, field))
+        Some((tycon, field, field_span))
     }
 
     /// The inferred type stamped on the expression node spanning exactly
@@ -1608,43 +1634,14 @@ impl WorkspaceIndex {
         offset: u32,
         include_declaration: bool,
     ) -> Option<Vec<Location>> {
-        let (tycon, field) = self.field_target_at(mi, offset)?;
+        let (tycon, field, _) = self.field_target_at(mi, offset)?;
         let target_decl = self.field_decl_location(tycon, &field)?;
 
-        // Many use sites share an owner tycon; resolve each tycon's declaration
-        // once. A `None` entry records a tycon that does not declare the field.
-        let mut decl_of: HashMap<u32, Option<Location>> = HashMap::new();
-        let mut locations: Vec<Location> = Vec::new();
-        for smi in 0..self.modules.len() {
-            let Some(ast) = self.modules.get(smi).and_then(|v| v.ast.clone()) else {
-                continue;
-            };
-            let Ok(raw) = u32::try_from(smi) else {
-                continue;
-            };
-            let smid = ModuleId(raw);
-            let mut collector = FieldSiteCollector {
-                field: field.clone(),
-                sites: Vec::new(),
-            };
-            ridge_ast::visit::Visit::visit_module(&mut collector, &ast);
-            for (base_span, field_span) in collector.sites {
-                let Some(base_ty) = self.type_of_base(smi, base_span) else {
-                    continue;
-                };
-                let Some(use_tycon) = record_tycon_of(base_ty, &self.tycons) else {
-                    continue;
-                };
-                let decl = decl_of
-                    .entry(use_tycon)
-                    .or_insert_with(|| self.field_decl_location(use_tycon, &field));
-                if decl.as_ref() == Some(&target_decl) {
-                    if let Some(loc) = self.location_in(smid, field_span) {
-                        locations.push(loc);
-                    }
-                }
-            }
-        }
+        let mut locations: Vec<Location> = self
+            .field_use_sites(&field, &target_decl, None)
+            .into_iter()
+            .filter_map(|(smid, span)| self.location_in(smid, span))
+            .collect();
 
         // The declaration site: included on request, otherwise dropped (the use
         // scan never carries it, but the retain keeps the two paths symmetric).
@@ -1665,17 +1662,67 @@ impl WorkspaceIndex {
         Some(locations)
     }
 
-    /// The `(owner record TyConId raw, field name)` targeted by the cursor —
-    /// from a field use (`user.age`) or a field declaration inside a `type`
-    /// body. `None` when the cursor is on neither.
-    fn field_target_at(&self, mi: usize, offset: u32) -> Option<(u32, String)> {
+    /// Every `base.field` use whose base type resolves to the same declaration
+    /// as `target_decl`, as `(module, field-name span)`. Scans the whole
+    /// workspace, or a single module when `only` is set (the same-file
+    /// `documentHighlight` case). Keying on the resolved declaration — rather
+    /// than the raw `TyConId` — unifies the several tycon ids the type checker
+    /// may mint for one nominal record and keeps two records that share a field
+    /// name apart. Shared by find-references, rename, and documentHighlight.
+    fn field_use_sites(
+        &self,
+        field: &str,
+        target_decl: &Location,
+        only: Option<usize>,
+    ) -> Vec<(ModuleId, Span)> {
+        // Many use sites share an owner tycon; resolve each tycon's declaration
+        // once. A `None` entry records a tycon that does not declare the field.
+        let mut decl_of: HashMap<u32, Option<Location>> = HashMap::new();
+        let mut sites: Vec<(ModuleId, Span)> = Vec::new();
+        let (lo, hi) = only.map_or((0, self.modules.len()), |m| (m, m + 1));
+        for smi in lo..hi {
+            let Some(ast) = self.modules.get(smi).and_then(|v| v.ast.clone()) else {
+                continue;
+            };
+            let Ok(raw) = u32::try_from(smi) else {
+                continue;
+            };
+            let smid = ModuleId(raw);
+            let mut collector = FieldSiteCollector {
+                field: field.to_owned(),
+                sites: Vec::new(),
+            };
+            ridge_ast::visit::Visit::visit_module(&mut collector, &ast);
+            for (base_span, field_span) in collector.sites {
+                let Some(base_ty) = self.type_of_base(smi, base_span) else {
+                    continue;
+                };
+                let Some(use_tycon) = record_tycon_of(base_ty, &self.tycons) else {
+                    continue;
+                };
+                let decl = decl_of
+                    .entry(use_tycon)
+                    .or_insert_with(|| self.field_decl_location(use_tycon, field));
+                if decl.as_ref() == Some(target_decl) {
+                    sites.push((smid, field_span));
+                }
+            }
+        }
+        sites
+    }
+
+    /// The `(owner record TyConId raw, field name, field name span)` targeted by
+    /// the cursor — from a field use (`user.age`) or a field declaration inside a
+    /// `type` body. The span is the token under the cursor. `None` when the
+    /// cursor is on neither.
+    fn field_target_at(&self, mi: usize, offset: u32) -> Option<(u32, String, Span)> {
         self.field_access_at(mi, offset)
             .or_else(|| self.field_decl_target_at(mi, offset))
     }
 
-    /// The `(owner TyConId raw, field name)` when the cursor sits on a field
-    /// name in a record `type` declaration in module `mi`.
-    fn field_decl_target_at(&self, mi: usize, offset: u32) -> Option<(u32, String)> {
+    /// The `(owner TyConId raw, field name, field name span)` when the cursor
+    /// sits on a field name in a record `type` declaration in module `mi`.
+    fn field_decl_target_at(&self, mi: usize, offset: u32) -> Option<(u32, String, Span)> {
         let ast = self.modules.get(mi)?.ast.as_ref()?;
         for item in &ast.items {
             let ridge_ast::Item::Type(td) = item else {
@@ -1687,11 +1734,163 @@ impl WorkspaceIndex {
             for f in &rb.fields {
                 if f.name.span.start <= offset && offset < f.name.span.end {
                     let tycon = self.tycon_raw_for(mi, &td.name.text)?;
-                    return Some((tycon, f.name.text.clone()));
+                    return Some((tycon, f.name.text.clone(), f.name.span));
                 }
             }
         }
         None
+    }
+
+    /// Resolve an LSP `(line, utf16_col)` position to a `(module index, byte
+    /// offset)`, the form the record-field helpers work in. `None` when the URI
+    /// is not indexed.
+    fn field_offset(&self, uri: &Url, line: u32, utf16_col: u32) -> Option<(usize, u32)> {
+        let mid = *self.uri_to_module.get(uri)?;
+        let mi = mid.0 as usize;
+        let offset = self.line_indices.get(mi)?.utf16_to_byte(line, utf16_col);
+        Some((mi, offset))
+    }
+
+    /// `prepareRename` for a record field under the cursor: the field token's
+    /// range plus its current name. `None` when the cursor is not on a field
+    /// use or a field declaration, so the caller falls through to the
+    /// binding-keyed rename path.
+    fn field_prepare_rename_at(&self, mi: usize, offset: u32) -> Option<PrepareRenameResponse> {
+        let (_tycon, field, cursor_span) = self.field_target_at(mi, offset)?;
+        let mid = ModuleId(u32::try_from(mi).ok()?);
+        Some(PrepareRenameResponse::RangeWithPlaceholder {
+            range: self.range_in(mid, cursor_span)?,
+            placeholder: field,
+        })
+    }
+
+    /// Rename a record field under the cursor to `new_name`.
+    ///
+    /// Returns `None` when the cursor is not on a field (the caller then runs the
+    /// binding-keyed rename), `Some(Err(message))` when `new_name` is invalid (an
+    /// empty name, a keyword, a non-lowercase identifier, or a name the record
+    /// already uses for another field), and `Some(Ok(edit))` otherwise. The edit
+    /// rewrites the field's declaration and every use whose base type resolves to
+    /// it across the workspace — never a same-named field on a different record.
+    fn field_rename_at(
+        &self,
+        mi: usize,
+        offset: u32,
+        new_name: &str,
+    ) -> Option<Result<WorkspaceEdit, String>> {
+        let (tycon, field, _) = self.field_target_at(mi, offset)?;
+        let target_decl = self.field_decl_location(tycon, &field)?;
+        if let Err(message) = validate_new_name(new_name, &field) {
+            return Some(Err(message));
+        }
+        // Renaming onto an existing field name would collapse two fields into a
+        // duplicate; reject it before producing an edit.
+        if new_name != field && self.record_has_field(tycon, new_name) {
+            return Some(Err(format!(
+                "`{new_name}` is already a field of this record."
+            )));
+        }
+
+        let mut ranges: HashMap<Url, Vec<Range>> = HashMap::new();
+        for (smid, span) in self.field_use_sites(&field, &target_decl, None) {
+            if let Some(loc) = self.location_in(smid, span) {
+                ranges.entry(loc.uri).or_default().push(loc.range);
+            }
+        }
+        // The declaration name always moves with the field.
+        ranges
+            .entry(target_decl.uri.clone())
+            .or_default()
+            .push(target_decl.range);
+
+        let mut changes: HashMap<Url, Vec<TextEdit>> = HashMap::new();
+        for (edit_uri, mut rs) in ranges {
+            rs.sort_by(|a, b| {
+                (a.start.line, a.start.character, a.end.line, a.end.character).cmp(&(
+                    b.start.line,
+                    b.start.character,
+                    b.end.line,
+                    b.end.character,
+                ))
+            });
+            rs.dedup();
+            changes.insert(
+                edit_uri,
+                rs.into_iter()
+                    .map(|range| TextEdit {
+                        range,
+                        new_text: new_name.to_owned(),
+                    })
+                    .collect(),
+            );
+        }
+        Some(Ok(WorkspaceEdit {
+            changes: Some(changes),
+            document_changes: None,
+            change_annotations: None,
+        }))
+    }
+
+    /// `documentHighlight` for a record field under the cursor: every use of the
+    /// field *in this file* as a read, plus its declaration name as a write when
+    /// the declaring `type` lives in this file. `None` when the cursor is not on
+    /// a field, so the caller falls through to the binding-keyed path.
+    fn field_highlights_at(&self, mi: usize, offset: u32) -> Option<Vec<DocumentHighlight>> {
+        let (tycon, field, _) = self.field_target_at(mi, offset)?;
+        let target_decl = self.field_decl_location(tycon, &field)?;
+        let mid = ModuleId(u32::try_from(mi).ok()?);
+
+        // Keyed by byte span so an occurrence is emitted once.
+        let mut spots: HashMap<(u32, u32), DocumentHighlightKind> = HashMap::new();
+        for (_smid, span) in self.field_use_sites(&field, &target_decl, Some(mi)) {
+            spots
+                .entry((span.start, span.end))
+                .or_insert(DocumentHighlightKind::READ);
+        }
+        // The declaration token is the write site, but only when the `type` that
+        // declares the field sits in this file (highlights never leave it).
+        if let Some(decl) = self.tycons.iter().find(|d| d.id.0 == tycon) {
+            if decl.def_module_raw == Some(mid.0) {
+                if let Some(span) = self
+                    .modules
+                    .get(mi)
+                    .and_then(|m| m.ast.as_ref())
+                    .and_then(|ast| field_decl_span(ast, &decl.name, &field))
+                {
+                    spots.insert((span.start, span.end), DocumentHighlightKind::WRITE);
+                }
+            }
+        }
+        if spots.is_empty() {
+            return None;
+        }
+
+        let mut highlights: Vec<DocumentHighlight> = spots
+            .into_iter()
+            .filter_map(|((start, end), kind)| {
+                Some(DocumentHighlight {
+                    range: self.range_in(mid, Span::new(start, end))?,
+                    kind: Some(kind),
+                })
+            })
+            .collect();
+        highlights.sort_by(|a, b| {
+            (a.range.start.line, a.range.start.character)
+                .cmp(&(b.range.start.line, b.range.start.character))
+        });
+        Some(highlights)
+    }
+
+    /// True when the nominal record `tycon_raw` declares a field named `name`.
+    /// Used to reject a field rename that would duplicate an existing field.
+    fn record_has_field(&self, tycon_raw: u32, name: &str) -> bool {
+        self.tycons
+            .iter()
+            .find(|d| d.id.0 == tycon_raw)
+            .is_some_and(|d| match &d.kind {
+                TyConKind::Record(schema) => schema.record_fields().iter().any(|f| f.name == name),
+                _ => false,
+            })
     }
 
     /// Raw `TyConId` of the type named `name` declared in module `mi`.
@@ -2902,8 +3101,8 @@ fn type_decl_name_span(ast: &ridge_ast::Module, type_name: &str) -> Option<Span>
 /// go-to-definition and find-references on record fields.
 struct FieldAccessFinder {
     offset: u32,
-    /// `(base span, field name)` of the best match so far.
-    best: Option<(Span, String)>,
+    /// `(base span, field name span, field name)` of the best match so far.
+    best: Option<(Span, Span, String)>,
 }
 
 impl<'ast> ridge_ast::visit::Visit<'ast> for FieldAccessFinder {
@@ -2913,7 +3112,7 @@ impl<'ast> ridge_ast::visit::Visit<'ast> for FieldAccessFinder {
         if self.best.is_none() {
             if let ridge_ast::Expr::FieldAccess { base, field, .. } = e {
                 if field.span.start <= self.offset && self.offset < field.span.end {
-                    self.best = Some((base.span(), field.text.clone()));
+                    self.best = Some((base.span(), field.span, field.text.clone()));
                 }
             }
         }

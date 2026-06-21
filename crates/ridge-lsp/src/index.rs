@@ -22,11 +22,12 @@ use ridge_resolve::{
     LocalId, ModuleId, NodeId, NodeIdMap, NodeKind, ResolvedVisibility, ResolvedWorkspace,
     ScopeIndex, StdlibModuleId, SymbolKind, SymbolTable, BUILTINS,
 };
-use ridge_typecheck::{render_type_with, TypedWorkspace};
-use ridge_types::{TyConDecl, TyConKind, Type};
+use ridge_typecheck::{render_type_with, TypeError, TypedWorkspace};
+use ridge_types::{CapabilitySet, TyConDecl, TyConKind, Type};
 use tower_lsp::lsp_types::{
-    CompletionItemKind, DocumentHighlight, DocumentHighlightKind, Location, Position,
-    PrepareRenameResponse, Range, TextEdit, Url, WorkspaceEdit,
+    CompletionItemKind, DocumentHighlight, DocumentHighlightKind, DocumentSymbol, InlayHint,
+    InlayHintKind, InlayHintLabel, Location, Position, PrepareRenameResponse, Range,
+    SymbolInformation, SymbolKind as LspSymbolKind, TextEdit, Url, WorkspaceEdit,
 };
 
 use crate::completion::{detect_context, symbol_kind, CompletionItemData, Context, KEYWORDS};
@@ -113,6 +114,9 @@ struct ModuleView {
     scopes: ScopeIndex,
     /// This module's resolved imports.
     imports: Vec<ImportResolution>,
+    /// The module's typed AST, retained so inlay hints can walk `let`/`var`
+    /// bindings. `None` when the module was not type-checked.
+    ast: Option<Arc<ridge_ast::Module>>,
 }
 
 /// The full analysis result the server keeps between compiles.
@@ -140,6 +144,29 @@ pub struct WorkspaceIndex {
     /// Per-module document URI, indexed by `ModuleId.0` (for cross-file
     /// go-to-definition targets). `None` if the path had no valid URI.
     pub module_uris: Vec<Option<Url>>,
+    /// Quick-fixes for `T014 CapabilityNotDeclared` on capability-free
+    /// functions: each carries the edit that adds the inferred capabilities to
+    /// the signature. Populated after the compile (which holds the structured
+    /// type errors); empty otherwise.
+    pub capability_fixes: Vec<CapabilityFix>,
+}
+
+/// A ready-to-apply quick-fix that declares the inferred capabilities on a
+/// function flagged by `T014`. Spans are already resolved to LSP ranges.
+#[derive(Debug, Clone)]
+pub struct CapabilityFix {
+    /// The document the function lives in.
+    pub uri: Url,
+    /// The whole declaration, used to decide whether a code-action request
+    /// (which carries a cursor range) lands on this function.
+    pub decl_range: Range,
+    /// The empty range just before the function name where the capability
+    /// keywords are inserted.
+    pub edit_range: Range,
+    /// The text to insert (the capabilities plus a trailing space).
+    pub new_text: String,
+    /// The code-action title shown in the editor.
+    pub title: String,
 }
 
 impl WorkspaceIndex {
@@ -195,17 +222,18 @@ impl WorkspaceIndex {
             spatial.push(NodeSpatialIndex::from_node_ids(&rm.node_ids));
             // Clone the per-module query data out of the borrowed workspaces so
             // the index can outlive them.
-            let node_types = typed
-                .modules
-                .get(i)
+            let typed_mod = typed.modules.get(i);
+            let node_types = typed_mod
                 .map(|tm| tm.node_types.clone())
                 .unwrap_or_default();
+            let ast = typed_mod.map(|tm| Arc::clone(&tm.ast));
             modules.push(ModuleView {
                 node_types,
                 bindings: rm.bindings.clone(),
                 symbols: rm.symbols.clone(),
                 scopes: rm.scopes.clone(),
                 imports: rm.imports.clone(),
+                ast,
             });
         }
 
@@ -218,6 +246,7 @@ impl WorkspaceIndex {
             line_indices,
             module_text,
             module_uris,
+            capability_fixes: Vec::new(),
         }
     }
 
@@ -1036,6 +1065,291 @@ impl WorkspaceIndex {
         })
     }
 
+    /// Build the outline (`textDocument/documentSymbol`) for one document.
+    ///
+    /// Top-level `fn`/`const`/`type`/`actor` declarations become symbols in
+    /// source order. A type nests its union variants or record fields; an actor
+    /// nests its state fields and message handlers. Compiler-synthesised mirror
+    /// symbols (from `deriving (Table)`/`(Schema)`, which share the entity's
+    /// declaration span) are folded into the entity rather than listed
+    /// separately. `class`/`instance` declarations are not modelled by the
+    /// resolver yet, so they do not appear.
+    #[must_use]
+    pub fn document_symbols_at(&self, uri: &Url) -> Option<Vec<DocumentSymbol>> {
+        let mid = *self.uri_to_module.get(uri)?;
+        let entries = &self.modules.get(mid.0 as usize)?.symbols.entries;
+
+        let mut seen_spans: Vec<Span> = Vec::new();
+        let mut out: Vec<DocumentSymbol> = Vec::new();
+        for entry in entries {
+            // Members (constructors, field accessors) attach to their owning type
+            // below, not at the top level.
+            if matches!(
+                entry.kind,
+                SymbolKind::Constructor { .. } | SymbolKind::FieldAccessor { .. }
+            ) {
+                continue;
+            }
+            // Drop the synthesised mirror symbols that share their entity's span.
+            if seen_spans.contains(&entry.def_span) {
+                continue;
+            }
+            if let Some(sym) = self.document_symbol_for(mid, entry, entries) {
+                seen_spans.push(entry.def_span);
+                out.push(sym);
+            }
+        }
+        out.sort_by_key(|s| (s.range.start.line, s.range.start.character));
+        Some(out)
+    }
+
+    /// Build one [`DocumentSymbol`] for a top-level entry, attaching members.
+    fn document_symbol_for(
+        &self,
+        mid: ModuleId,
+        entry: &ridge_resolve::SymbolEntry,
+        entries: &[ridge_resolve::SymbolEntry],
+    ) -> Option<DocumentSymbol> {
+        let range = self.range_in(mid, entry.def_span)?;
+        let selection_range = self
+            .decl_name_span(mid, entry.def_span, &entry.name)
+            .and_then(|s| self.range_in(mid, s))
+            .unwrap_or(range);
+
+        let (kind, children) = match &entry.kind {
+            SymbolKind::Fn { .. } => (LspSymbolKind::FUNCTION, Vec::new()),
+            SymbolKind::Const => (LspSymbolKind::CONSTANT, Vec::new()),
+            SymbolKind::Type { .. } => {
+                let children = self.type_member_symbols(mid, entry.id, entries);
+                let kind = if children
+                    .iter()
+                    .any(|c| c.kind == LspSymbolKind::ENUM_MEMBER)
+                {
+                    LspSymbolKind::ENUM
+                } else {
+                    LspSymbolKind::STRUCT
+                };
+                (kind, children)
+            }
+            SymbolKind::Actor { state, handlers } => (
+                LspSymbolKind::CLASS,
+                self.actor_member_symbols(mid, state, handlers),
+            ),
+            _ => return None,
+        };
+
+        Some(Self::make_document_symbol(
+            entry.name.clone(),
+            kind,
+            range,
+            selection_range,
+            children,
+        ))
+    }
+
+    /// Union variants (as enum members) and record fields owned by `owner`.
+    fn type_member_symbols(
+        &self,
+        mid: ModuleId,
+        owner: ridge_resolve::SymbolId,
+        entries: &[ridge_resolve::SymbolEntry],
+    ) -> Vec<DocumentSymbol> {
+        entries
+            .iter()
+            .filter_map(|e| {
+                let (kind, name) = match &e.kind {
+                    SymbolKind::Constructor {
+                        owner_type,
+                        is_record: false,
+                        ..
+                    } if *owner_type == owner => (LspSymbolKind::ENUM_MEMBER, e.name.clone()),
+                    SymbolKind::FieldAccessor { owner_type, field } if *owner_type == owner => {
+                        (LspSymbolKind::FIELD, field.clone())
+                    }
+                    _ => return None,
+                };
+                let range = self.range_in(mid, e.def_span)?;
+                let selection_range = self
+                    .decl_name_span(mid, e.def_span, &name)
+                    .and_then(|s| self.range_in(mid, s))
+                    .unwrap_or(range);
+                Some(Self::make_document_symbol(
+                    name,
+                    kind,
+                    range,
+                    selection_range,
+                    Vec::new(),
+                ))
+            })
+            .collect()
+    }
+
+    /// State fields (as fields) and message handlers (as methods) of an actor.
+    fn actor_member_symbols(
+        &self,
+        mid: ModuleId,
+        state: &[ridge_resolve::StateField],
+        handlers: &[ridge_resolve::HandlerSig],
+    ) -> Vec<DocumentSymbol> {
+        let fields = state
+            .iter()
+            .map(|f| (LspSymbolKind::FIELD, &f.name, f.def_span));
+        let methods = handlers
+            .iter()
+            .map(|h| (LspSymbolKind::METHOD, &h.name, h.def_span));
+        fields
+            .chain(methods)
+            .filter_map(|(kind, name, def_span)| {
+                let range = self.range_in(mid, def_span)?;
+                let selection_range = self
+                    .decl_name_span(mid, def_span, name)
+                    .and_then(|s| self.range_in(mid, s))
+                    .unwrap_or(range);
+                Some(Self::make_document_symbol(
+                    name.clone(),
+                    kind,
+                    range,
+                    selection_range,
+                    Vec::new(),
+                ))
+            })
+            .collect()
+    }
+
+    #[allow(deprecated)] // `DocumentSymbol::deprecated` is deprecated; set to None.
+    fn make_document_symbol(
+        name: String,
+        kind: LspSymbolKind,
+        range: Range,
+        selection_range: Range,
+        children: Vec<DocumentSymbol>,
+    ) -> DocumentSymbol {
+        DocumentSymbol {
+            name,
+            detail: None,
+            kind,
+            tags: None,
+            deprecated: None,
+            range,
+            selection_range,
+            children: if children.is_empty() {
+                None
+            } else {
+                Some(children)
+            },
+        }
+    }
+
+    /// Answer a `workspace/symbol` request: top-level declarations across every
+    /// module whose name matches `query` (case-insensitive substring; an empty
+    /// query returns everything). Union variants are included; synthesised
+    /// members (record auto-constructors, field accessors) and mirror symbols
+    /// are not.
+    #[must_use]
+    #[allow(deprecated)] // `SymbolInformation::deprecated` is deprecated; set to None.
+    pub fn workspace_symbols(&self, query: &str) -> Vec<SymbolInformation> {
+        let needle = query.to_lowercase();
+        let mut out: Vec<SymbolInformation> = Vec::new();
+        for view in &self.modules {
+            let mid = view.symbols.module;
+            let Some(Some(uri)) = self.module_uris.get(mid.0 as usize) else {
+                continue;
+            };
+            let mut seen_spans: Vec<Span> = Vec::new();
+            for entry in &view.symbols.entries {
+                let kind = match &entry.kind {
+                    SymbolKind::Fn { .. } => LspSymbolKind::FUNCTION,
+                    SymbolKind::Const => LspSymbolKind::CONSTANT,
+                    SymbolKind::Type { .. } => LspSymbolKind::STRUCT,
+                    SymbolKind::Actor { .. } => LspSymbolKind::CLASS,
+                    SymbolKind::Constructor {
+                        is_record: false, ..
+                    } => LspSymbolKind::ENUM_MEMBER,
+                    // Record auto-constructors and field accessors are members.
+                    _ => continue,
+                };
+                if seen_spans.contains(&entry.def_span) {
+                    continue;
+                }
+                seen_spans.push(entry.def_span);
+                if !needle.is_empty() && !entry.name.to_lowercase().contains(&needle) {
+                    continue;
+                }
+                let Some(span) = self
+                    .decl_name_span(mid, entry.def_span, &entry.name)
+                    .or(Some(entry.def_span))
+                else {
+                    continue;
+                };
+                let Some(range) = self.range_in(mid, span) else {
+                    continue;
+                };
+                out.push(SymbolInformation {
+                    name: entry.name.clone(),
+                    kind,
+                    tags: None,
+                    deprecated: None,
+                    location: Location {
+                        uri: uri.clone(),
+                        range,
+                    },
+                    container_name: None,
+                });
+            }
+        }
+        out
+    }
+
+    /// Answer an inlay-hint request for the visible `range`.
+    ///
+    /// Shows the inferred type after each `let`/`var` binder that carries no
+    /// written annotation (`let total = ...` renders `total: Int`). The type is
+    /// read from the bound value expression's `node_types` entry. Destructuring
+    /// patterns are skipped — a single trailing type does not describe them.
+    /// Reads only this immutable snapshot; never triggers a compile.
+    #[must_use]
+    pub fn inlay_hints(&self, uri: &Url, range: Range) -> Option<Vec<InlayHint>> {
+        let mid = *self.uri_to_module.get(uri)?;
+        let mi = mid.0 as usize;
+        let ast = self.modules.get(mi)?.ast.as_ref()?;
+        let li = self.line_indices.get(mi)?;
+        let lo = li.utf16_to_byte(range.start.line, range.start.character);
+        let hi = li.utf16_to_byte(range.end.line, range.end.character);
+
+        let mut collector = InlayCollector {
+            index: self,
+            mid,
+            lo,
+            hi,
+            hints: Vec::new(),
+        };
+        ridge_ast::visit::Visit::visit_module(&mut collector, ast);
+        Some(collector.hints)
+    }
+
+    /// The inferred type stamped on the expression-like node whose span is
+    /// exactly `span` (the `value` of a `let`/`var`). `None` if there is no such
+    /// node, no type was inferred, or the type is the error sentinel.
+    fn expr_type_at(&self, mid: ModuleId, span: Span) -> Option<&ridge_types::Type> {
+        let mi = mid.0 as usize;
+        let nid = self
+            .spatial
+            .get(mi)?
+            .entries
+            .iter()
+            .find(|(s, k, _)| {
+                *s == span && matches!(k, NodeKind::Expr | NodeKind::Block | NodeKind::Try)
+            })
+            .map(|(_, _, nid)| *nid)?;
+        let ty = self
+            .modules
+            .get(mi)?
+            .node_types
+            .get(nid.0 as usize)?
+            .as_ref()?;
+        (!matches!(ty, ridge_types::Type::Error)).then_some(ty)
+    }
+
     /// Answer a completion request at an LSP `(line, utf16_col)` position.
     ///
     /// Returns the candidates (never errors, never `None`). Reads only this
@@ -1170,6 +1484,64 @@ impl WorkspaceIndex {
     }
 }
 
+/// Walks a module's AST collecting inlay hints for un-annotated `let`/`var`
+/// binders that fall inside the requested byte range `[lo, hi]`.
+struct InlayCollector<'a> {
+    index: &'a WorkspaceIndex,
+    mid: ModuleId,
+    lo: u32,
+    hi: u32,
+    hints: Vec<InlayHint>,
+}
+
+impl InlayCollector<'_> {
+    /// Push a `: <type>` hint after `name_span` if the binder is in range and the
+    /// `value` expression carries an inferred type.
+    fn try_hint(&mut self, name_span: Span, value_span: Span) {
+        if name_span.end < self.lo || name_span.start > self.hi {
+            return;
+        }
+        let Some(ty) = self.index.expr_type_at(self.mid, value_span) else {
+            return;
+        };
+        let rendered = render_type_with(ty, &self.index.tycons);
+        let Some(range) = self.index.range_in(self.mid, name_span) else {
+            return;
+        };
+        self.hints.push(InlayHint {
+            position: range.end,
+            label: InlayHintLabel::String(format!(": {rendered}")),
+            kind: Some(InlayHintKind::TYPE),
+            text_edits: None,
+            tooltip: None,
+            padding_left: Some(false),
+            padding_right: Some(false),
+            data: None,
+        });
+    }
+}
+
+impl<'ast> ridge_ast::visit::Visit<'ast> for InlayCollector<'_> {
+    fn visit_expr(&mut self, e: &'ast ridge_ast::Expr) {
+        match e {
+            ridge_ast::Expr::Let {
+                pat: ridge_ast::Pattern::Var { name, .. },
+                ty: None,
+                value,
+                ..
+            }
+            | ridge_ast::Expr::Var {
+                name,
+                ty: None,
+                value,
+                ..
+            } => self.try_hint(name.span, value.span()),
+            _ => {}
+        }
+        ridge_ast::visit::walk_expr(self, e);
+    }
+}
+
 /// Identity of the thing a [`Binding`] refers to, for grouping use-sites in
 /// find-references: two bindings denote the same definition exactly when their
 /// keys compare equal. `ModuleSymbol`, `ImportedSymbol`, and `ActorName` all
@@ -1242,6 +1614,105 @@ fn referent_key(binding: &Binding, module: ModuleId) -> Option<ReferentKey> {
         }
         _ => None,
     }
+}
+
+/// Build the capability quick-fixes for one compile.
+///
+/// Walks the structured `T014 CapabilityNotDeclared` errors and, for each one
+/// raised against a top-level `fn` that declares NO capabilities, produces an
+/// edit inserting the inferred capability keywords just before the function
+/// name. Functions that already declare some capabilities, message handlers,
+/// `init` blocks, and inner functions are left to a follow-up: inserting the
+/// full inferred set ahead of an existing annotation would duplicate it, and
+/// the others are not matched by the top-level decl span used here.
+#[must_use]
+pub fn collect_capability_fixes(
+    line_indices: &[LineIndex],
+    module_uris: &[Option<Url>],
+    typed: &TypedWorkspace,
+    type_errors: &[(ModuleId, TypeError)],
+) -> Vec<CapabilityFix> {
+    let mut out: Vec<CapabilityFix> = Vec::new();
+    for (mid, err) in type_errors {
+        let TypeError::CapabilityNotDeclared {
+            inferred,
+            missing: _,
+            span,
+            decl,
+            ..
+        } = err
+        else {
+            continue;
+        };
+        let mi = mid.0 as usize;
+        let (Some(module), Some(Some(uri)), Some(li)) = (
+            typed.modules.get(mi),
+            module_uris.get(mi),
+            line_indices.get(mi),
+        ) else {
+            continue;
+        };
+        // Match the whole-declaration span to a top-level `fn` with no written
+        // capability annotation.
+        let Some(name_start) = module.ast.items.iter().find_map(|item| match item {
+            ridge_ast::Item::Fn(f) if f.span == *span && f.caps.is_empty() => {
+                Some(f.name.span.start)
+            }
+            _ => None,
+        }) else {
+            continue;
+        };
+        let caps = render_caps(*inferred);
+        if caps.is_empty() {
+            continue;
+        }
+        let (pl, pc) = li.byte_to_utf16(name_start);
+        let pos = Position::new(pl, pc);
+        let (sl, sc) = li.byte_to_utf16(span.start);
+        let (el, ec) = li.byte_to_utf16(span.end);
+        let noun = if caps.contains(' ') {
+            "capabilities"
+        } else {
+            "capability"
+        };
+        out.push(CapabilityFix {
+            uri: uri.clone(),
+            decl_range: Range {
+                start: Position::new(sl, sc),
+                end: Position::new(el, ec),
+            },
+            edit_range: Range {
+                start: pos,
+                end: pos,
+            },
+            new_text: format!("{caps} "),
+            title: format!("Add {noun} `{caps}` to `{decl}`"),
+        });
+    }
+    out
+}
+
+/// Render a capability set as the space-separated keyword list used in a
+/// signature (e.g. `io fs`), in the canonical declaration order.
+fn render_caps(set: CapabilitySet) -> String {
+    use ridge_ast::Capability::{Db, Env, Ffi, Fs, Io, Net, Proc, Random, Spawn, Time};
+    [
+        (Io, "io"),
+        (Fs, "fs"),
+        (Net, "net"),
+        (Time, "time"),
+        (Random, "random"),
+        (Env, "env"),
+        (Proc, "proc"),
+        (Spawn, "spawn"),
+        (Ffi, "ffi"),
+        (Db, "db"),
+    ]
+    .into_iter()
+    .filter(|(cap, _)| set.contains(*cap))
+    .map(|(_, name)| name)
+    .collect::<Vec<_>>()
+    .join(" ")
 }
 
 /// Validate a rename's `new_name` against `old_name`.

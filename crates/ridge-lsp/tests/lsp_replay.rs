@@ -2458,3 +2458,443 @@ async fn test_rename_imported_type_across_files() {
         "the import clause and both annotations are rewritten"
     );
 }
+
+// ── Test 25: document formatting (textDocument/formatting) ─────────────────────
+
+/// Open a single in-memory document under a throwaway workspace root and return
+/// the service plus the document URI. Formatting reads the raw buffer, so no
+/// compile needs to finish first.
+async fn open_single_doc(
+    text: &str,
+) -> (
+    tower_lsp::LspService<RidgeLanguageServer>,
+    tower_lsp::ClientSocket,
+    Url,
+) {
+    let dir = tempfile::TempDir::new().expect("temp dir");
+    let root = dir.path().to_path_buf();
+    let root_uri = Url::from_file_path(&root).expect("root URI");
+    let file_uri = Url::from_file_path(root.join("main.ridge")).expect("file URI");
+    let (service, socket) = build_test_service();
+    {
+        let server = service.inner();
+        server
+            .initialize(InitializeParams {
+                root_uri: Some(root_uri),
+                capabilities: ClientCapabilities::default(),
+                ..InitializeParams::default()
+            })
+            .await
+            .expect("initialize");
+        server
+            .did_open(DidOpenTextDocumentParams {
+                text_document: TextDocumentItem {
+                    uri: file_uri.clone(),
+                    language_id: "ridge".to_owned(),
+                    version: 1,
+                    text: text.to_owned(),
+                },
+            })
+            .await;
+    }
+    std::mem::forget(dir);
+    (service, socket, file_uri)
+}
+
+fn format_params(uri: &Url) -> DocumentFormattingParams {
+    DocumentFormattingParams {
+        text_document: TextDocumentIdentifier { uri: uri.clone() },
+        options: FormattingOptions::default(),
+        work_done_progress_params: WorkDoneProgressParams::default(),
+    }
+}
+
+#[tokio::test]
+async fn test_formatting_reformats_messy_source() {
+    // Parseable but mis-spaced and over-indented, so the formatter has work.
+    let messy = "fn  add (x: Int) (y: Int) -> Int =\n        x+y\n";
+    let (service, _socket, uri) = open_single_doc(messy).await;
+    let server = service.inner();
+
+    let edits = server
+        .formatting(format_params(&uri))
+        .await
+        .expect("formatting ok")
+        .expect("a messy buffer yields an edit");
+
+    // A whole-document replacement is a single edit from the origin to the end
+    // of the buffer (the input has two lines plus a trailing newline).
+    assert_eq!(edits.len(), 1);
+    assert_eq!(edits[0].range.start, Position::new(0, 0));
+    assert_eq!(edits[0].range.end, Position::new(2, 0));
+    // The replacement is exactly what `ridge-fmt` produces — the server is a
+    // thin wrapper over the engine the CLI's `ridge fmt` already uses.
+    let expected = ridge_fmt::format_source(messy).expect("formats");
+    assert_eq!(edits[0].new_text, expected);
+    assert_ne!(edits[0].new_text, messy);
+}
+
+#[tokio::test]
+async fn test_formatting_noop_on_already_formatted() {
+    // Feed the formatter's own output back in: nothing is left to change.
+    let formatted = ridge_fmt::format_source("fn  add (x: Int) (y: Int) -> Int =\n        x+y\n")
+        .expect("formats");
+    let (service, _socket, uri) = open_single_doc(&formatted).await;
+    let server = service.inner();
+
+    let edits = server
+        .formatting(format_params(&uri))
+        .await
+        .expect("formatting ok");
+    assert!(
+        edits.is_none(),
+        "an already-formatted buffer yields no edits"
+    );
+}
+
+#[tokio::test]
+async fn test_formatting_skips_unparseable() {
+    let broken = "fn = = =\n";
+    // Precondition: the formatter rejects this buffer.
+    assert!(ridge_fmt::format_source(broken).is_err());
+    let (service, _socket, uri) = open_single_doc(broken).await;
+    let server = service.inner();
+
+    let edits = server
+        .formatting(format_params(&uri))
+        .await
+        .expect("formatting ok");
+    assert!(
+        edits.is_none(),
+        "a buffer the parser rejects is left untouched"
+    );
+}
+
+// ── Test 26: document & workspace symbols ─────────────────────────────────────
+
+const SYMBOL_SRC: &str = r"type Color = Red | Green | Blue
+type User = { name: Text, age: Int }
+const maxAge: Int = 120
+pub fn greet (u: User) -> Text = u.name
+actor Counter =
+    state count: Int = 0
+
+    on bump () -> Unit =
+        count <- count + 1
+";
+
+fn doc_symbol_params(uri: &Url) -> DocumentSymbolParams {
+    DocumentSymbolParams {
+        text_document: TextDocumentIdentifier { uri: uri.clone() },
+        work_done_progress_params: WorkDoneProgressParams::default(),
+        partial_result_params: PartialResultParams::default(),
+    }
+}
+
+fn child_names(sym: &DocumentSymbol) -> Vec<String> {
+    sym.children
+        .as_ref()
+        .map(|cs| cs.iter().map(|c| c.name.clone()).collect())
+        .unwrap_or_default()
+}
+
+#[tokio::test]
+async fn test_document_symbol_outline() {
+    let (service, _socket, uri) = hover_fixture(SYMBOL_SRC).await;
+    let server = service.inner();
+
+    let resp = server
+        .document_symbol(doc_symbol_params(&uri))
+        .await
+        .expect("documentSymbol ok")
+        .expect("an outline for a non-empty module");
+    let DocumentSymbolResponse::Nested(symbols) = resp else {
+        panic!("expected a nested outline");
+    };
+
+    // Top-level declarations, in source order.
+    let names: Vec<&str> = symbols.iter().map(|s| s.name.as_str()).collect();
+    assert_eq!(names, ["Color", "User", "maxAge", "greet", "Counter"]);
+
+    // A union is an enum whose variants are its members.
+    let color = &symbols[0];
+    assert_eq!(color.kind, SymbolKind::ENUM);
+    assert_eq!(child_names(color), ["Red", "Green", "Blue"]);
+
+    // A record is a struct whose fields are its members.
+    let user = &symbols[1];
+    assert_eq!(user.kind, SymbolKind::STRUCT);
+    assert_eq!(child_names(user), ["name", "age"]);
+
+    assert_eq!(symbols[2].kind, SymbolKind::CONSTANT);
+    assert_eq!(symbols[3].kind, SymbolKind::FUNCTION);
+
+    // An actor is a class holding its state fields and message handlers.
+    let counter = &symbols[4];
+    assert_eq!(counter.kind, SymbolKind::CLASS);
+    assert_eq!(child_names(counter), ["count", "bump"]);
+
+    // The selection range (the name) sits inside the full declaration range.
+    assert!(color.selection_range.start >= color.range.start);
+    assert!(color.selection_range.end <= color.range.end);
+}
+
+#[tokio::test]
+async fn test_workspace_symbol_query() {
+    let (service, _socket, _uri) = hover_fixture(SYMBOL_SRC).await;
+    let server = service.inner();
+
+    let query = |q: &str| {
+        let q = q.to_owned();
+        async {
+            server
+                .symbol(WorkspaceSymbolParams {
+                    query: q,
+                    work_done_progress_params: WorkDoneProgressParams::default(),
+                    partial_result_params: PartialResultParams::default(),
+                })
+                .await
+                .expect("symbol ok")
+                .unwrap_or_default()
+        }
+    };
+
+    // An empty query returns every top-level declaration plus union variants,
+    // but no record auto-constructor or field accessor.
+    let all = query("").await;
+    let mut names: Vec<&str> = all.iter().map(|s| s.name.as_str()).collect();
+    names.sort_unstable();
+    assert_eq!(
+        names,
+        ["Blue", "Color", "Counter", "Green", "Red", "User", "greet", "maxAge"]
+    );
+
+    // A substring query is case-insensitive.
+    let greet = query("GREET").await;
+    assert_eq!(greet.len(), 1);
+    assert_eq!(greet[0].name, "greet");
+    assert_eq!(greet[0].kind, SymbolKind::FUNCTION);
+
+    // A union variant resolves to an enum member.
+    let red = query("Red").await;
+    assert_eq!(red.len(), 1);
+    assert_eq!(red[0].kind, SymbolKind::ENUM_MEMBER);
+}
+
+// ── Test 27: inlay hints (textDocument/inlayHint) ─────────────────────────────
+
+const INLAY_SRC: &str = r#"pub fn demo () -> Int =
+    let count = 5
+    let label = "hi"
+    let annotated: Int = 9
+    count + annotated
+"#;
+
+fn inlay_label(h: &InlayHint) -> String {
+    match &h.label {
+        InlayHintLabel::String(s) => s.clone(),
+        InlayHintLabel::LabelParts(_) => String::new(),
+    }
+}
+
+#[tokio::test]
+async fn test_inlay_hints_for_unannotated_bindings() {
+    let (service, _socket, uri) = hover_fixture(INLAY_SRC).await;
+    let server = service.inner();
+
+    let hints = server
+        .inlay_hint(InlayHintParams {
+            text_document: TextDocumentIdentifier { uri: uri.clone() },
+            range: Range {
+                start: Position::new(0, 0),
+                end: Position::new(100, 0),
+            },
+            work_done_progress_params: WorkDoneProgressParams::default(),
+        })
+        .await
+        .expect("inlayHint ok")
+        .expect("a module with bindings yields hints");
+
+    // Two un-annotated lets get a hint; `annotated: Int` does not.
+    let rendered: Vec<(u32, u32, String)> = hints
+        .iter()
+        .map(|h| (h.position.line, h.position.character, inlay_label(h)))
+        .collect();
+    assert_eq!(
+        rendered,
+        vec![(1, 13, ": Int".to_owned()), (2, 13, ": Text".to_owned())],
+        "hints sit after the binder name and skip the annotated binding"
+    );
+    assert_eq!(hints[0].kind, Some(InlayHintKind::TYPE));
+}
+
+#[tokio::test]
+async fn test_inlay_hints_clip_to_range() {
+    let (service, _socket, uri) = hover_fixture(INLAY_SRC).await;
+    let server = service.inner();
+
+    // Ask only for line 2, so the line-1 binding's hint is clipped out.
+    let hints = server
+        .inlay_hint(InlayHintParams {
+            text_document: TextDocumentIdentifier { uri: uri.clone() },
+            range: Range {
+                start: Position::new(2, 0),
+                end: Position::new(2, 100),
+            },
+            work_done_progress_params: WorkDoneProgressParams::default(),
+        })
+        .await
+        .expect("inlayHint ok")
+        .expect("hints present");
+
+    assert_eq!(hints.len(), 1);
+    assert_eq!(hints[0].position, Position::new(2, 13));
+    assert_eq!(inlay_label(&hints[0]), ": Text");
+}
+
+// ── Test 28: capability code action (textDocument/codeAction) ─────────────────
+
+/// Build a hermetic single-file workspace whose manifest allows the `io`
+/// capability, open `main_src`, and return the service plus the index-held URI
+/// once a compile has produced an analysis index.
+async fn cap_workspace_fixture(
+    main_src: &str,
+) -> (
+    tower_lsp::LspService<RidgeLanguageServer>,
+    tower_lsp::ClientSocket,
+    Url,
+) {
+    let dir = tempfile::TempDir::new().expect("temp dir");
+    let root = dir.path().to_path_buf();
+    let app_src = root.join("app").join("src");
+    std::fs::create_dir_all(&app_src).expect("create temp workspace");
+    std::fs::write(
+        root.join("ridge.toml"),
+        "[workspace]\nname = \"cap-ws\"\nversion = \"0.1.0\"\nmembers = [\"app\"]\n",
+    )
+    .expect("workspace manifest");
+    std::fs::write(
+        root.join("app").join("ridge.toml"),
+        "[project]\nname = \"app\"\nversion = \"0.1.0\"\nkind = \"app\"\nentry = \"src/Main.ridge\"\n\n[capabilities]\nallow = [\"io\"]\n",
+    )
+    .expect("project manifest");
+    std::fs::write(app_src.join("Main.ridge"), main_src).expect("write source");
+
+    let (service, socket) = build_test_service();
+    let file_uri;
+    {
+        let server = service.inner();
+        let root_uri = Url::from_file_path(&root).expect("root URI");
+        server
+            .initialize(InitializeParams {
+                root_uri: Some(root_uri.clone()),
+                workspace_folders: Some(vec![WorkspaceFolder {
+                    uri: root_uri,
+                    name: "cap-ws".to_owned(),
+                }]),
+                capabilities: ClientCapabilities::default(),
+                ..InitializeParams::default()
+            })
+            .await
+            .expect("initialize");
+        server
+            .did_open(DidOpenTextDocumentParams {
+                text_document: TextDocumentItem {
+                    uri: Url::from_file_path(app_src.join("Main.ridge")).expect("file URI"),
+                    language_id: "ridge".to_owned(),
+                    version: 1,
+                    text: main_src.to_owned(),
+                },
+            })
+            .await;
+        let mut index = None;
+        for _ in 0..120 {
+            tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;
+            if let Some(idx) = server.workspace_index().await {
+                index = Some(idx);
+                break;
+            }
+        }
+        let index = index.expect("an index after compile");
+        file_uri = index
+            .uri_to_module
+            .keys()
+            .next()
+            .expect("one module in index")
+            .clone();
+    }
+    std::mem::forget(dir);
+    (service, socket, file_uri)
+}
+
+#[tokio::test]
+async fn test_code_action_adds_missing_capability() {
+    // `greet` calls `Io.println` (needs `io`) but declares no capabilities, so
+    // the type checker raises T014. A quick-fix offers to add `io`.
+    let src = "import std.io as Io\n\npub fn greet () -> Unit =\n    Io.println \"hi\"\n";
+    let (service, _socket, uri) = cap_workspace_fixture(src).await;
+    let server = service.inner();
+
+    let resp = server
+        .code_action(CodeActionParams {
+            text_document: TextDocumentIdentifier { uri: uri.clone() },
+            range: Range {
+                start: Position::new(2, 8),
+                end: Position::new(2, 8),
+            },
+            context: CodeActionContext::default(),
+            work_done_progress_params: WorkDoneProgressParams::default(),
+            partial_result_params: PartialResultParams::default(),
+        })
+        .await
+        .expect("code_action ok")
+        .expect("a quick-fix is offered on the flagged function");
+
+    assert_eq!(resp.len(), 1);
+    let CodeActionOrCommand::CodeAction(action) = &resp[0] else {
+        panic!("expected a CodeAction, got {:?}", resp[0]);
+    };
+    assert_eq!(action.title, "Add capability `io` to `greet`");
+    assert_eq!(action.kind, Some(CodeActionKind::QUICKFIX));
+
+    // The edit inserts `io ` immediately before the function name (`pub fn ` is
+    // seven columns).
+    let edits = action
+        .edit
+        .as_ref()
+        .and_then(|e| e.changes.as_ref())
+        .and_then(|c| c.get(&uri))
+        .expect("an edit for this document");
+    assert_eq!(edits.len(), 1);
+    assert_eq!(edits[0].new_text, "io ");
+    assert_eq!(edits[0].range.start, Position::new(2, 7));
+    assert_eq!(edits[0].range.end, Position::new(2, 7));
+}
+
+#[tokio::test]
+async fn test_code_action_none_when_clean() {
+    // A function that declares the capability it uses raises no T014, so there
+    // is no quick-fix.
+    let src = "import std.io as Io\n\npub fn io greet () -> Unit =\n    Io.println \"hi\"\n";
+    let (service, _socket, uri) = cap_workspace_fixture(src).await;
+    let server = service.inner();
+
+    let resp = server
+        .code_action(CodeActionParams {
+            text_document: TextDocumentIdentifier { uri: uri.clone() },
+            range: Range {
+                start: Position::new(2, 8),
+                end: Position::new(2, 8),
+            },
+            context: CodeActionContext::default(),
+            work_done_progress_params: WorkDoneProgressParams::default(),
+            partial_result_params: PartialResultParams::default(),
+        })
+        .await
+        .expect("code_action ok");
+
+    assert!(
+        resp.is_none(),
+        "no quick-fix on a correctly-annotated function"
+    );
+}

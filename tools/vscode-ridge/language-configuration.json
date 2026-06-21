@@ -18,5 +18,9 @@
     ["[", "]"],
     ["{", "}"],
     ["\"", "\""]
-  ]
+  ],
+  "indentationRules": {
+    "increaseIndentPattern": "(^|[^=!<>])=\\s*(--.*)?$|(->|<-)\\s*(--.*)?$|\\b(then|else|try)\\b\\s*(--.*)?$|(^|=)\\s*match\\b[^>]*$",
+    "decreaseIndentPattern": "^\\s*else\\s*(--.*)?$"
+  }
 }

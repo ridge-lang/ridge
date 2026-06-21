@@ -455,6 +455,7 @@ impl LanguageServer for RidgeLanguageServer {
                 document_formatting_provider: Some(OneOf::Left(true)),
                 document_symbol_provider: Some(OneOf::Left(true)),
                 workspace_symbol_provider: Some(OneOf::Left(true)),
+                inlay_hint_provider: Some(OneOf::Left(true)),
                 completion_provider: Some(CompletionOptions {
                     trigger_characters: Some(vec![".".to_owned()]),
                     resolve_provider: Some(false),
@@ -774,6 +775,22 @@ impl LanguageServer for RidgeLanguageServer {
             return Ok(None);
         };
         Ok(Some(index.workspace_symbols(&params.query)))
+    }
+
+    /// `textDocument/inlayHint` — inferred types after un-annotated `let`/`var`
+    /// binders within the requested range.
+    async fn inlay_hint(&self, params: InlayHintParams) -> LspResult<Option<Vec<InlayHint>>> {
+        let uri = params.text_document.uri;
+        let range = params.range;
+
+        let index = {
+            let snap = self.state.lock().await;
+            snap.index.clone()
+        };
+        let Some(index) = index else {
+            return Ok(None);
+        };
+        Ok(index.inlay_hints(&uri, range))
     }
 }
 

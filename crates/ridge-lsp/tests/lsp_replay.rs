@@ -2680,3 +2680,74 @@ async fn test_workspace_symbol_query() {
     assert_eq!(red.len(), 1);
     assert_eq!(red[0].kind, SymbolKind::ENUM_MEMBER);
 }
+
+// ── Test 27: inlay hints (textDocument/inlayHint) ─────────────────────────────
+
+const INLAY_SRC: &str = r#"pub fn demo () -> Int =
+    let count = 5
+    let label = "hi"
+    let annotated: Int = 9
+    count + annotated
+"#;
+
+fn inlay_label(h: &InlayHint) -> String {
+    match &h.label {
+        InlayHintLabel::String(s) => s.clone(),
+        InlayHintLabel::LabelParts(_) => String::new(),
+    }
+}
+
+#[tokio::test]
+async fn test_inlay_hints_for_unannotated_bindings() {
+    let (service, _socket, uri) = hover_fixture(INLAY_SRC).await;
+    let server = service.inner();
+
+    let hints = server
+        .inlay_hint(InlayHintParams {
+            text_document: TextDocumentIdentifier { uri: uri.clone() },
+            range: Range {
+                start: Position::new(0, 0),
+                end: Position::new(100, 0),
+            },
+            work_done_progress_params: WorkDoneProgressParams::default(),
+        })
+        .await
+        .expect("inlayHint ok")
+        .expect("a module with bindings yields hints");
+
+    // Two un-annotated lets get a hint; `annotated: Int` does not.
+    let rendered: Vec<(u32, u32, String)> = hints
+        .iter()
+        .map(|h| (h.position.line, h.position.character, inlay_label(h)))
+        .collect();
+    assert_eq!(
+        rendered,
+        vec![(1, 13, ": Int".to_owned()), (2, 13, ": Text".to_owned())],
+        "hints sit after the binder name and skip the annotated binding"
+    );
+    assert_eq!(hints[0].kind, Some(InlayHintKind::TYPE));
+}
+
+#[tokio::test]
+async fn test_inlay_hints_clip_to_range() {
+    let (service, _socket, uri) = hover_fixture(INLAY_SRC).await;
+    let server = service.inner();
+
+    // Ask only for line 2, so the line-1 binding's hint is clipped out.
+    let hints = server
+        .inlay_hint(InlayHintParams {
+            text_document: TextDocumentIdentifier { uri: uri.clone() },
+            range: Range {
+                start: Position::new(2, 0),
+                end: Position::new(2, 100),
+            },
+            work_done_progress_params: WorkDoneProgressParams::default(),
+        })
+        .await
+        .expect("inlayHint ok")
+        .expect("hints present");
+
+    assert_eq!(hints.len(), 1);
+    assert_eq!(hints[0].position, Position::new(2, 13));
+    assert_eq!(inlay_label(&hints[0]), ": Text");
+}

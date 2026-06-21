@@ -21,11 +21,14 @@
 //!   `suggestions: vec![]`.
 
 use ridge_ast::{
-    decl::{ActorDecl, ActorMember, FnDecl, InitDecl, OnHandler, Param, StateDecl},
+    decl::{
+        ActorDecl, ActorMember, Constructor, FnDecl, InitDecl, OnHandler, Param, StateDecl,
+        TypeBody, TypeDecl,
+    },
     expr::{FieldInit, LambdaParam, MatchArm, QualifiedName, RecordCtor},
     typeclass::InstanceDecl,
-    visit::{walk_block, walk_expr, walk_init_decl, walk_on_handler, Visit},
-    Block, Body, Expr, Ident, Item, ListPatElem, Module, Pattern,
+    visit::{walk_block, walk_expr, walk_init_decl, walk_on_handler, walk_type, Visit},
+    Block, Body, Expr, Ident, Item, ListPatElem, Module, Pattern, Type,
 };
 use ridge_lexer::Span;
 
@@ -225,6 +228,95 @@ impl ScopeWalker<'_> {
             .iter()
             .flat_map(|ir| &ir.effective_bindings)
             .find(|eb| eb.local_name == name)
+    }
+
+    /// Resolve a type-constructor name appearing in a type position and stamp
+    /// its binding on the name token.
+    ///
+    /// Only names that resolve to a `type` declaration — this module's or an
+    /// imported one — are stamped; a type variable, a primitive, or an
+    /// unresolved name is left without a binding. No diagnostic is emitted on a
+    /// miss: type-name resolution for error reporting belongs to the type
+    /// checker, so this stays purely additive (it feeds editor features such as
+    /// go-to-definition and rename without changing what compiles).
+    fn resolve_type_ref(&mut self, name: &Ident) {
+        if let Some(binding) = self.lookup_type_binding(&name.text) {
+            self.stamp(name.span, NodeKind::Ident, binding);
+        }
+    }
+
+    /// Resolve a bare name in type position to the binding of the `type` it
+    /// names, or `None` when it is not a known type. Locals never participate —
+    /// a value binding cannot stand in a type position — so only the module
+    /// symbol table and the import bindings are consulted.
+    fn lookup_type_binding(&self, name: &str) -> Option<Binding> {
+        if let Some(sym) = self.my_table.and_then(|t| t.lookup(name)) {
+            return matches!(sym.kind, SymbolKind::Type { .. }).then(|| Binding::ModuleSymbol {
+                module: self.module_id,
+                symbol: sym.id,
+            });
+        }
+        let eb = self.find_import_binding(name)?;
+        self.import_binding_is_type(&eb.binding)
+            .then(|| eb.binding.clone())
+    }
+
+    /// True when an import effective binding denotes a `type`: a workspace
+    /// symbol whose entry is a `Type`, or a stdlib symbol (a stdlib name that
+    /// reaches a type position is a type reference). Module aliases and value
+    /// symbols are rejected so they never masquerade as a type reference.
+    fn import_binding_is_type(&self, binding: &Binding) -> bool {
+        match binding {
+            Binding::ImportedSymbol { module, symbol, .. }
+            | Binding::ModuleSymbol { module, symbol } => self
+                .all_symbol_tables
+                .get(module.0 as usize)
+                .and_then(|t| t.entries.get(symbol.0 as usize))
+                .is_some_and(|e| matches!(e.kind, SymbolKind::Type { .. })),
+            Binding::StdlibSymbol { .. } => true,
+            _ => false,
+        }
+    }
+
+    /// Visit the type annotation of a parameter, if any. The parameter's own
+    /// binders are added separately by [`Self::add_param`]; this only stamps the
+    /// type references inside the annotation.
+    fn visit_param_type(&mut self, p: &Param) {
+        match p {
+            Param::Bare(_) => {}
+            Param::Annotated { ty, .. } | Param::PatternAnnotated { ty, .. } => self.visit_type(ty),
+        }
+    }
+
+    /// Stamp type references that appear inside a `type` declaration's body
+    /// (record field types, union constructor argument types, alias target).
+    /// The declared type name, its parameters, and its constructor names are
+    /// declarations, not references, so they are left to the symbol table.
+    fn visit_type_decl_refs(&mut self, d: &TypeDecl) {
+        match &d.body {
+            TypeBody::Record(rb) => {
+                for field in &rb.fields {
+                    self.visit_type(&field.ty);
+                }
+            }
+            TypeBody::Union(ub) => {
+                for alt in &ub.alternatives {
+                    match alt {
+                        Constructor::Positional { args, .. } => {
+                            for arg in args {
+                                self.visit_type(arg);
+                            }
+                        }
+                        Constructor::Record { body, .. } => {
+                            for field in &body.fields {
+                                self.visit_type(&field.ty);
+                            }
+                        }
+                    }
+                }
+            }
+            TypeBody::Alias(ty) => self.visit_type(ty),
+        }
     }
 
     /// Resolve whether `binding` names the construction or pattern-match of an
@@ -680,8 +772,9 @@ impl ScopeWalker<'_> {
     fn bind_lambda_param(&mut self, lp: &LambdaParam) {
         match lp {
             LambdaParam::Pattern(p) => self.bind_pattern(p, LocalKind::LambdaParam),
-            LambdaParam::Annotated { pat, .. } => {
+            LambdaParam::Annotated { pat, ty, .. } => {
                 self.bind_pattern(pat, LocalKind::LambdaParam);
+                self.visit_type(ty);
             }
         }
     }
@@ -703,15 +796,22 @@ impl<'ast> Visit<'ast> for ScopeWalker<'_> {
 
     fn visit_item(&mut self, i: &'ast Item) {
         match i {
-            // Imports, type declarations, and class declarations are handled by
-            // other passes; skip in the use-site resolver.
-            Item::Import(_) | Item::Type(_) | Item::ClassDecl(_) => {}
+            // Imports and class declarations are handled by other passes; skip
+            // in the use-site resolver.
+            Item::Import(_) | Item::ClassDecl(_) => {}
+            // A type declaration introduces no use-sites for the value resolver,
+            // but its body references other types (record field types, union
+            // constructor arguments, an alias target). Stamp those so type
+            // references inside type definitions are findable too.
+            Item::Type(d) => self.visit_type_decl_refs(d),
             // Instance method bodies are resolved so that use-sites inside them
             // (module fns, locals, prelude constructors, and — crucially for
             // parametric instances — bare class-method calls on the constrained
             // variable) bind correctly during lowering.
             Item::InstanceDecl(d) => self.visit_instance_decl(d),
             Item::Const(d) => {
+                // Const type annotation: stamp the type references it names.
+                self.visit_type(&d.ty);
                 // Const value: resolve use-sites in the value expression.
                 // The const name itself is a module symbol, not a local.
                 self.visit_expr(&d.value);
@@ -732,10 +832,17 @@ impl<'ast> Visit<'ast> for ScopeWalker<'_> {
         self.scope.push_with_start(ScopeKind::FnBody, d.span.start);
         for param in &d.params {
             self.add_param(param, LocalKind::FnParam);
+            self.visit_param_type(param);
         }
 
-        // Walk the body (the return type annotation has no scope implications).
-        // Body::Ffi has no expression child to walk — T3 handles its validation.
+        // Stamp type references in the return annotation (it has no scope
+        // implications, so the order relative to the body does not matter).
+        if let Some(ret) = &d.ret {
+            self.visit_type(ret);
+        }
+
+        // Walk the body. Body::Ffi has no expression child to walk — T3 handles
+        // its validation.
         if let Body::Expr(e) = &d.body {
             self.visit_expr(e);
         }
@@ -817,6 +924,8 @@ impl<'ast> Visit<'ast> for ScopeWalker<'_> {
     }
 
     fn visit_state_decl(&mut self, d: &'ast StateDecl) {
+        // Stamp type references in the state field's type annotation.
+        self.visit_type(&d.ty);
         // Walk the default expression if present.
         if let Some(default) = &d.default {
             self.visit_expr(default);
@@ -1044,6 +1153,10 @@ impl<'ast> Visit<'ast> for ScopeWalker<'_> {
                     .push_with_start(ScopeKind::FnBody, decl.span.start);
                 for param in &decl.params {
                     self.add_param(param, LocalKind::FnParam);
+                    self.visit_param_type(param);
+                }
+                if let Some(ret) = &decl.ret {
+                    self.visit_type(ret);
                 }
                 // Inner fns always have Body::Expr; Body::Ffi is only valid at
                 // module top-level (enforced in T3).
@@ -1053,9 +1166,11 @@ impl<'ast> Visit<'ast> for ScopeWalker<'_> {
                 self.scope.pop_into(decl.span.end);
             }
 
-            Expr::Let {
-                pat, ty: _, value, ..
-            } => {
+            Expr::Let { pat, ty, value, .. } => {
+                // Stamp type references in the optional annotation.
+                if let Some(t) = ty {
+                    self.visit_type(t);
+                }
                 // Walk the RHS first (before the pattern is in scope).
                 self.visit_expr(value);
                 // Bind pattern vars into the current scope.
@@ -1063,8 +1178,12 @@ impl<'ast> Visit<'ast> for ScopeWalker<'_> {
             }
 
             Expr::Var {
-                name, ty: _, value, ..
+                name, ty, value, ..
             } => {
+                // Stamp type references in the optional annotation.
+                if let Some(t) = ty {
+                    self.visit_type(t);
+                }
                 // Walk the RHS first.
                 self.visit_expr(value);
                 // Bind `name` into the current scope (R017 check included).
@@ -1121,6 +1240,43 @@ impl<'ast> Visit<'ast> for ScopeWalker<'_> {
         } else {
             // Shorthand `{ age }` — the field name is also a use-site Ident.
             self.resolve_ident(&fi.name);
+        }
+    }
+
+    // ── Type positions ────────────────────────────────────────────────────────
+
+    /// Stamp a binding on every type-constructor name in a type expression.
+    ///
+    /// Use-site type names (`User` in `x: User`, the head of `Map k v`, a record
+    /// field's type) resolve to the `type` they name; type variables and
+    /// primitives name no declaration and are skipped. Structural shapes (tuple,
+    /// list, function, parenthesised) carry no name of their own and recurse
+    /// into their children. The reachability of this method is what gives types
+    /// the same editor support as values: go-to-definition, find-references, and
+    /// document highlight all read the bindings stamped here.
+    fn visit_type(&mut self, t: &'ast Type) {
+        match t {
+            Type::Named { name, .. } => self.resolve_type_ref(name),
+            Type::App { head, args, .. } => {
+                self.resolve_type_ref(head);
+                for arg in args {
+                    self.visit_type(arg);
+                }
+            }
+            // Inline record: field names are labels and the row tail is a
+            // variable; only the field types carry references.
+            Type::Record { fields, .. } => {
+                for field in fields {
+                    self.visit_type(&field.ty);
+                }
+            }
+            // A type variable or a built-in primitive names no declaration.
+            Type::Var { .. } | Type::Primitive { .. } => {}
+            // Tuple, list, function, and parenthesised types have no head of
+            // their own — recurse into their component types.
+            Type::Tuple { .. } | Type::List { .. } | Type::Fn { .. } | Type::Paren { .. } => {
+                walk_type(self, t);
+            }
         }
     }
 
@@ -2522,6 +2678,132 @@ fn toJson (x: a) -> Text where Encode a =
         assert_eq!(
             gated, 0,
             "calling the `sql` factory must be allowed; {errors:?}"
+        );
+    }
+
+    // ── Type-position references ────────────────────────────────────────────────
+
+    /// The binding stamped at the `occurrence`-th (0-based) appearance of
+    /// `needle` in `src`, looked up as a `NodeKind::Ident`. `None` when that
+    /// position carries no binding.
+    fn type_binding_at(
+        src: &str,
+        bindings: &[Option<Binding>],
+        nid: &NodeIdMap,
+        needle: &str,
+        occurrence: usize,
+    ) -> Option<Binding> {
+        let mut start = 0usize;
+        let mut count = 0usize;
+        let offset = loop {
+            let rel = src[start..].find(needle)?;
+            let at = start + rel;
+            if count == occurrence {
+                break at;
+            }
+            count += 1;
+            start = at + needle.len();
+        };
+        let span = Span::new(
+            u32::try_from(offset).unwrap(),
+            u32::try_from(offset + needle.len()).unwrap(),
+        );
+        let id = nid.get(span, NodeKind::Ident)?;
+        bindings.get(id.0 as usize).cloned().flatten()
+    }
+
+    #[test]
+    fn type_ref_in_param_annotation_binds() {
+        // `Color` in `(c: Color)` (2nd "Color"; 1st is the declaration name).
+        let src = "type Color = Red | Green\nfn f (c: Color) = c\n";
+        let (bindings, errors, nid) = resolve_bare(src);
+        assert!(errors.is_empty(), "unexpected errors: {errors:?}");
+        let b = type_binding_at(src, &bindings, &nid, "Color", 1)
+            .expect("annotation `Color` should carry a binding");
+        assert!(
+            matches!(b, Binding::ModuleSymbol { .. }),
+            "expected ModuleSymbol for the type annotation, got {b:?}"
+        );
+    }
+
+    #[test]
+    fn type_ref_in_return_annotation_binds() {
+        // `Color` in `-> Color` (2nd "Color").
+        let src = "type Color = Red | Green\nfn pick -> Color = Red\n";
+        let (bindings, errors, nid) = resolve_bare(src);
+        assert!(errors.is_empty(), "unexpected errors: {errors:?}");
+        let b = type_binding_at(src, &bindings, &nid, "Color", 1)
+            .expect("return type `Color` should carry a binding");
+        assert!(matches!(b, Binding::ModuleSymbol { .. }), "got {b:?}");
+    }
+
+    #[test]
+    fn type_ref_in_record_field_binds_even_when_declared_later() {
+        // The field type `Color` is referenced before `Color` is declared;
+        // top-level collection is order-independent, so it still resolves.
+        let src = "type Wrapper = { inner: Color }\ntype Color = Red | Green\n";
+        let (bindings, errors, nid) = resolve_bare(src);
+        assert!(errors.is_empty(), "unexpected errors: {errors:?}");
+        // "Color" occurrences: field type (0), declaration name (1).
+        let b = type_binding_at(src, &bindings, &nid, "Color", 0)
+            .expect("record field type `Color` should carry a binding");
+        assert!(matches!(b, Binding::ModuleSymbol { .. }), "got {b:?}");
+    }
+
+    #[test]
+    fn type_variable_is_not_stamped() {
+        // The `a` in `(x: a)` is a type variable, not a type reference.
+        let src = "fn id (x: a) = x\n";
+        let (bindings, errors, nid) = resolve_bare(src);
+        assert!(errors.is_empty(), "unexpected errors: {errors:?}");
+        assert!(
+            type_binding_at(src, &bindings, &nid, "a", 0).is_none(),
+            "a type variable must not be stamped with a binding"
+        );
+    }
+
+    #[test]
+    fn unknown_type_ref_is_left_unstamped_without_error() {
+        // An unresolved type name carries no binding AND emits no diagnostic —
+        // type-name errors belong to the type checker, not this pass.
+        let src = "fn f (x: Bogus) = x\n";
+        let (bindings, errors, nid) = resolve_bare(src);
+        assert!(
+            errors.is_empty(),
+            "type-position miss must not emit a resolve error: {errors:?}"
+        );
+        assert!(
+            type_binding_at(src, &bindings, &nid, "Bogus", 0).is_none(),
+            "an unknown type name must be left without a binding"
+        );
+    }
+
+    #[test]
+    fn type_application_head_and_args_bind() {
+        // `Box User` — both the head `Box` and the argument `User` are types.
+        let src = "type User = { name: Text }\ntype Box a = Box a\nfn wrap (b: Box User) = b\n";
+        let (bindings, errors, nid) = resolve_bare(src);
+        assert!(errors.is_empty(), "unexpected errors: {errors:?}");
+        // "Box" in the annotation is the 2nd "Box" (decl name, then annotation).
+        let head = type_binding_at(src, &bindings, &nid, "Box", 1)
+            .expect("application head `Box` should bind");
+        assert!(matches!(head, Binding::ModuleSymbol { .. }), "got {head:?}");
+        // "User" in the annotation is the 2nd "User" (decl name, then argument).
+        let arg = type_binding_at(src, &bindings, &nid, "User", 1)
+            .expect("application argument `User` should bind");
+        assert!(matches!(arg, Binding::ModuleSymbol { .. }), "got {arg:?}");
+    }
+
+    #[test]
+    fn type_decl_name_itself_is_not_stamped() {
+        // The declaration name carries no binding here — it is resolved through
+        // the symbol table, mirroring how fn/const declaration names work.
+        let src = "type Color = Red | Green\nfn f (c: Color) = c\n";
+        let (bindings, errors, nid) = resolve_bare(src);
+        assert!(errors.is_empty(), "unexpected errors: {errors:?}");
+        assert!(
+            type_binding_at(src, &bindings, &nid, "Color", 0).is_none(),
+            "the `type Color` declaration name must not be stamped by this pass"
         );
     }
 }

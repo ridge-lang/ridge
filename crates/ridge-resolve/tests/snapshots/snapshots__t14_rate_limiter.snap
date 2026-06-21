@@ -5,12 +5,12 @@ expression: snap
 ResolvedSnapshot {
     errors: [],
     nid_count: 464,
-    stamped_bindings: 120,
+    stamped_bindings: 121,
     binding_kind_counts: {
         "ActorName": 3,
         "Local": 97,
         "ModuleSymbol": 1,
-        "StdlibSymbol": 19,
+        "StdlibSymbol": 20,
     },
     import_aliases: [
         "<bare> -> BuiltinStdlib(0)",

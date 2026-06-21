@@ -2001,3 +2001,210 @@ async fn test_highlight_none_on_keyword() {
         .expect("ok");
     assert!(hs.is_none(), "a keyword has no highlights");
 }
+
+// ── Test 23: type references (go-to-definition, references, highlight) ─────────
+
+// A `type` and two uses of it in annotations: the parameter type at column 16
+// and the return type at column 26 of line 1.
+const TYPE_REF_SRC: &str = "type Color = Red | Green\npub fn pick (c: Color) -> Color = c\n";
+
+#[tokio::test]
+async fn test_definition_on_type_reference() {
+    let (service, _socket, uri) = hover_fixture(TYPE_REF_SRC).await;
+    let server = service.inner();
+
+    // From the parameter annotation `Color`.
+    let resp = server
+        .goto_definition(goto_at(&uri, 1, 16))
+        .await
+        .expect("ok");
+    let loc = scalar_location(resp).expect("definition of the type `Color`");
+    assert_eq!(loc.uri, uri, "the type is declared in the same file");
+    assert_eq!(loc.range.start.line, 0, "`Color` is declared on line 0");
+
+    // From the return-type `Color` — the same definition.
+    let resp = server
+        .goto_definition(goto_at(&uri, 1, 26))
+        .await
+        .expect("ok");
+    let loc = scalar_location(resp).expect("definition from the return type");
+    assert_eq!(
+        loc.range.start.line, 0,
+        "both annotations resolve to the type"
+    );
+}
+
+#[tokio::test]
+async fn test_references_on_type() {
+    let (service, _socket, uri) = hover_fixture(TYPE_REF_SRC).await;
+    let server = service.inner();
+
+    // From a use, with the declaration: the decl (line 0) plus both
+    // type-position uses (line 1).
+    let with_decl = server
+        .references(references_at(&uri, 1, 16, true))
+        .await
+        .expect("ok")
+        .expect("references of `Color`");
+    assert_eq!(
+        ref_lines(&with_decl, &uri),
+        vec![0, 1, 1],
+        "the declaration plus both annotation uses"
+    );
+
+    // Without the declaration: only the two uses.
+    let without = server
+        .references(references_at(&uri, 1, 16, false))
+        .await
+        .expect("ok")
+        .expect("references of `Color`");
+    assert_eq!(
+        ref_lines(&without, &uri),
+        vec![1, 1],
+        "both uses, declaration dropped"
+    );
+}
+
+#[tokio::test]
+async fn test_highlight_on_type() {
+    let (service, _socket, uri) = hover_fixture(TYPE_REF_SRC).await;
+    let server = service.inner();
+
+    let expected = vec![
+        (0, 5, DocumentHighlightKind::WRITE),
+        (1, 16, DocumentHighlightKind::READ),
+        (1, 26, DocumentHighlightKind::READ),
+    ];
+
+    // From a use: the declaration name is the write, both annotations are reads.
+    let from_use = server
+        .document_highlight(highlight_at(&uri, 1, 16))
+        .await
+        .expect("ok")
+        .expect("highlights of `Color`");
+    assert_eq!(
+        highlight_spots(&from_use),
+        expected,
+        "the declaration name is the write site, the annotations are reads"
+    );
+
+    // From the declaration name itself: the same highlight set (cursor-on-decl
+    // is resolved through the symbol table).
+    let from_decl = server
+        .document_highlight(highlight_at(&uri, 0, 5))
+        .await
+        .expect("ok")
+        .expect("highlights from the type declaration");
+    assert_eq!(
+        highlight_spots(&from_decl),
+        expected,
+        "cursor on the type declaration highlights it and all its uses"
+    );
+}
+
+/// Build a two-member workspace whose library exports a `pub type` and whose
+/// app selectively imports it and uses it in an annotation. Returns the service
+/// plus the app and lib URIs.
+async fn imported_type_fixture() -> (
+    tower_lsp::LspService<RidgeLanguageServer>,
+    tower_lsp::ClientSocket,
+    Url,
+    Url,
+) {
+    let dir = tempfile::TempDir::new().expect("temp dir");
+    let root = dir.path().to_path_buf();
+    std::fs::create_dir_all(root.join("lib").join("src")).expect("lib src");
+    std::fs::create_dir_all(root.join("app").join("src")).expect("app src");
+    std::fs::write(
+        root.join("ridge.toml"),
+        "[workspace]\nname = \"type-ws\"\nversion = \"0.1.0\"\nmembers = [\"lib\", \"app\"]\n",
+    )
+    .expect("workspace manifest");
+    std::fs::write(
+        root.join("lib").join("ridge.toml"),
+        "[project]\nname = \"lib\"\nversion = \"0.1.0\"\nkind = \"library\"\n\n[capabilities]\nallow = []\n",
+    )
+    .expect("lib manifest");
+    std::fs::write(
+        root.join("lib").join("src").join("Lib.ridge"),
+        "pub type Color = Red | Green\n",
+    )
+    .expect("lib source");
+    std::fs::write(
+        root.join("app").join("ridge.toml"),
+        "[project]\nname = \"app\"\nversion = \"0.1.0\"\nkind = \"app\"\nentry = \"src/Main.ridge\"\n\n[capabilities]\nallow = []\n",
+    )
+    .expect("app manifest");
+    let app_text = "import lib.Lib (Color)\npub fn pick (c: Color) -> Color = c\n";
+    std::fs::write(root.join("app").join("src").join("Main.ridge"), app_text).expect("app source");
+
+    let (service, socket) = build_test_service();
+    let app_uri;
+    let lib_uri;
+    {
+        let server = service.inner();
+        let root_uri = Url::from_file_path(&root).expect("root URI");
+        server
+            .initialize(InitializeParams {
+                root_uri: Some(root_uri.clone()),
+                workspace_folders: Some(vec![WorkspaceFolder {
+                    uri: root_uri,
+                    name: "type-ws".to_owned(),
+                }]),
+                capabilities: ClientCapabilities::default(),
+                ..InitializeParams::default()
+            })
+            .await
+            .expect("initialize");
+        server
+            .did_open(DidOpenTextDocumentParams {
+                text_document: TextDocumentItem {
+                    uri: Url::from_file_path(root.join("app").join("src").join("Main.ridge"))
+                        .expect("app URI"),
+                    language_id: "ridge".to_owned(),
+                    version: 1,
+                    text: app_text.to_owned(),
+                },
+            })
+            .await;
+        let mut index = None;
+        for _ in 0..120 {
+            tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;
+            if let Some(idx) = server.workspace_index().await {
+                index = Some(idx);
+                break;
+            }
+        }
+        let index = index.expect("index installed");
+        app_uri = index
+            .uri_to_module
+            .keys()
+            .find(|u| u.path().ends_with("Main.ridge"))
+            .expect("app module")
+            .clone();
+        lib_uri = index
+            .uri_to_module
+            .keys()
+            .find(|u| u.path().ends_with("Lib.ridge"))
+            .expect("lib module — multi-member discovery")
+            .clone();
+    }
+    std::mem::forget(dir);
+    (service, socket, app_uri, lib_uri)
+}
+
+#[tokio::test]
+async fn test_definition_on_imported_type() {
+    let (service, _socket, app_uri, lib_uri) = imported_type_fixture().await;
+    let server = service.inner();
+
+    // Go-to-definition on the parameter annotation `Color` jumps across files to
+    // the `pub type Color` declaration in Lib.ridge.
+    let resp = server
+        .goto_definition(goto_at(&app_uri, 1, 16))
+        .await
+        .expect("ok");
+    let loc = scalar_location(resp).expect("definition of the imported type");
+    assert_eq!(loc.uri, lib_uri, "the type is declared in Lib.ridge");
+    assert_eq!(loc.range.start.line, 0, "`Color` is on line 0 of Lib.ridge");
+}

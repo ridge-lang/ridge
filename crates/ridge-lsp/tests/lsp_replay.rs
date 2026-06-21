@@ -2208,3 +2208,253 @@ async fn test_definition_on_imported_type() {
     assert_eq!(loc.uri, lib_uri, "the type is declared in Lib.ridge");
     assert_eq!(loc.range.start.line, 0, "`Color` is on line 0 of Lib.ridge");
 }
+
+// ── Test 24: type rename ──────────────────────────────────────────────────────
+
+// A union type and two type-position uses; the constructor `Red` shares no name
+// with the type, so renaming `Color` must leave it untouched.
+const UNION_RENAME_SRC: &str = "type Color = Red | Green\npub fn pick (c: Color) -> Color = Red\n";
+
+// A record type used in a construction (line 1), an annotation (line 2), and a
+// pattern (line 4). The construction and annotation key to the type symbol; the
+// pattern keys to the auto-constructor, so a complete rename needs both.
+const RECORD_RENAME_SRC: &str = "type User = { name: Text }\npub fn make = User { name = \"a\" }\npub fn greet (u: User) -> Text =\n    match u\n        User { name } -> name\n";
+
+/// The `(start.line, start.character)` of every edit a rename produced for `uri`.
+fn rename_sites(edit: Option<&WorkspaceEdit>, uri: &Url) -> Vec<(u32, u32)> {
+    let Some(changes) = edit.and_then(|e| e.changes.as_ref()) else {
+        return Vec::new();
+    };
+    let mut out: Vec<(u32, u32)> = changes
+        .get(uri)
+        .map(|edits| {
+            edits
+                .iter()
+                .map(|e| (e.range.start.line, e.range.start.character))
+                .collect()
+        })
+        .unwrap_or_default();
+    out.sort_unstable();
+    out
+}
+
+#[tokio::test]
+async fn test_prepare_rename_on_type() {
+    let (service, _socket, uri) = hover_fixture(UNION_RENAME_SRC).await;
+    let server = service.inner();
+
+    // From an annotation use.
+    let prep = server
+        .prepare_rename(prepare_rename_at(&uri, 1, 16))
+        .await
+        .expect("ok")
+        .expect("a type is renameable from a use");
+    match prep {
+        PrepareRenameResponse::RangeWithPlaceholder { placeholder, .. } => {
+            assert_eq!(placeholder, "Color", "placeholder is the current type name");
+        }
+        other => panic!("expected RangeWithPlaceholder, got {other:?}"),
+    }
+
+    // From the declaration name.
+    let prep = server
+        .prepare_rename(prepare_rename_at(&uri, 0, 5))
+        .await
+        .expect("ok")
+        .expect("a type is renameable from its declaration");
+    match prep {
+        PrepareRenameResponse::RangeWithPlaceholder { placeholder, .. } => {
+            assert_eq!(placeholder, "Color");
+        }
+        other => panic!("expected RangeWithPlaceholder, got {other:?}"),
+    }
+}
+
+#[tokio::test]
+async fn test_rename_union_type_leaves_constructors() {
+    let (service, _socket, uri) = hover_fixture(UNION_RENAME_SRC).await;
+    let server = service.inner();
+
+    let edit = server
+        .rename(rename_at(&uri, 1, 16, "Hue"))
+        .await
+        .expect("ok");
+    // The declaration (line 0) and both annotations (line 1) are rewritten; the
+    // constructor `Red` is a different name and is left alone.
+    assert_eq!(
+        rename_sites(edit.as_ref(), &uri),
+        vec![(0, 5), (1, 16), (1, 26)],
+        "declaration plus both type-position uses, not the constructor"
+    );
+    assert!(
+        rename_edits(edit.as_ref(), &uri)
+            .iter()
+            .all(|(_, t)| t == "Hue"),
+        "every edit rewrites to the new name"
+    );
+}
+
+#[tokio::test]
+async fn test_rename_record_type_includes_pattern_and_construction() {
+    let (service, _socket, uri) = hover_fixture(RECORD_RENAME_SRC).await;
+    let server = service.inner();
+
+    // Rename from the parameter annotation (line 2).
+    let edit = server
+        .rename(rename_at(&uri, 2, 17, "Person"))
+        .await
+        .expect("ok");
+    // Declaration (0,5), construction (1,14), annotation (2,17), and pattern
+    // (4,8) all move together — the pattern only because the constructor key is
+    // renamed alongside the type symbol.
+    assert_eq!(
+        rename_sites(edit.as_ref(), &uri),
+        vec![(0, 5), (1, 14), (2, 17), (4, 8)],
+        "a record rename covers the declaration, construction, annotation, and pattern"
+    );
+}
+
+#[tokio::test]
+async fn test_rename_record_type_from_pattern() {
+    let (service, _socket, uri) = hover_fixture(RECORD_RENAME_SRC).await;
+    let server = service.inner();
+
+    // Rename starting from the pattern `User { name }` (line 4) — the same
+    // complete edit set as starting from the annotation.
+    let edit = server
+        .rename(rename_at(&uri, 4, 8, "Person"))
+        .await
+        .expect("ok");
+    assert_eq!(
+        rename_sites(edit.as_ref(), &uri),
+        vec![(0, 5), (1, 14), (2, 17), (4, 8)],
+        "renaming from the pattern reaches the type and every use"
+    );
+}
+
+#[tokio::test]
+async fn test_rename_type_rejects_lowercase() {
+    let (service, _socket, uri) = hover_fixture(UNION_RENAME_SRC).await;
+    let server = service.inner();
+
+    // A type must stay an uppercase identifier.
+    let err = server.rename(rename_at(&uri, 1, 16, "hue")).await;
+    assert!(err.is_err(), "a type cannot be renamed to a lowercase name");
+}
+
+/// Build a two-member workspace from explicit library and app sources. Returns
+/// the service plus the app and lib URIs.
+async fn two_member_ws(
+    lib_src: &str,
+    app_src: &str,
+) -> (
+    tower_lsp::LspService<RidgeLanguageServer>,
+    tower_lsp::ClientSocket,
+    Url,
+    Url,
+) {
+    let dir = tempfile::TempDir::new().expect("temp dir");
+    let root = dir.path().to_path_buf();
+    std::fs::create_dir_all(root.join("lib").join("src")).expect("lib src");
+    std::fs::create_dir_all(root.join("app").join("src")).expect("app src");
+    std::fs::write(
+        root.join("ridge.toml"),
+        "[workspace]\nname = \"rename-ws\"\nversion = \"0.1.0\"\nmembers = [\"lib\", \"app\"]\n",
+    )
+    .expect("workspace manifest");
+    std::fs::write(
+        root.join("lib").join("ridge.toml"),
+        "[project]\nname = \"lib\"\nversion = \"0.1.0\"\nkind = \"library\"\n\n[capabilities]\nallow = []\n",
+    )
+    .expect("lib manifest");
+    std::fs::write(root.join("lib").join("src").join("Lib.ridge"), lib_src).expect("lib source");
+    std::fs::write(
+        root.join("app").join("ridge.toml"),
+        "[project]\nname = \"app\"\nversion = \"0.1.0\"\nkind = \"app\"\nentry = \"src/Main.ridge\"\n\n[capabilities]\nallow = []\n",
+    )
+    .expect("app manifest");
+    std::fs::write(root.join("app").join("src").join("Main.ridge"), app_src).expect("app source");
+
+    let (service, socket) = build_test_service();
+    let app_uri;
+    let lib_uri;
+    {
+        let server = service.inner();
+        let root_uri = Url::from_file_path(&root).expect("root URI");
+        server
+            .initialize(InitializeParams {
+                root_uri: Some(root_uri.clone()),
+                workspace_folders: Some(vec![WorkspaceFolder {
+                    uri: root_uri,
+                    name: "rename-ws".to_owned(),
+                }]),
+                capabilities: ClientCapabilities::default(),
+                ..InitializeParams::default()
+            })
+            .await
+            .expect("initialize");
+        server
+            .did_open(DidOpenTextDocumentParams {
+                text_document: TextDocumentItem {
+                    uri: Url::from_file_path(root.join("app").join("src").join("Main.ridge"))
+                        .expect("app URI"),
+                    language_id: "ridge".to_owned(),
+                    version: 1,
+                    text: app_src.to_owned(),
+                },
+            })
+            .await;
+        let mut index = None;
+        for _ in 0..120 {
+            tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;
+            if let Some(idx) = server.workspace_index().await {
+                index = Some(idx);
+                break;
+            }
+        }
+        let index = index.expect("index installed");
+        app_uri = index
+            .uri_to_module
+            .keys()
+            .find(|u| u.path().ends_with("Main.ridge"))
+            .expect("app module")
+            .clone();
+        lib_uri = index
+            .uri_to_module
+            .keys()
+            .find(|u| u.path().ends_with("Lib.ridge"))
+            .expect("lib module — multi-member discovery")
+            .clone();
+    }
+    std::mem::forget(dir);
+    (service, socket, app_uri, lib_uri)
+}
+
+#[tokio::test]
+async fn test_rename_imported_type_across_files() {
+    // A `pub type` in the library, selectively imported and used in two
+    // annotations in the app. Renaming it rewrites the declaration in the
+    // library, both annotations, and the import clause that names it.
+    let lib = "pub type User = { name: Text }\n";
+    let app = "import lib.Lib (User)\npub fn greet (u: User) -> User = u\n";
+    let (service, _socket, app_uri, lib_uri) = two_member_ws(lib, app).await;
+    let server = service.inner();
+
+    let edit = server
+        .rename(rename_at(&app_uri, 1, 17, "Person"))
+        .await
+        .expect("ok");
+
+    // The library declaration name (`pub type ` is 9 columns).
+    assert_eq!(
+        rename_sites(edit.as_ref(), &lib_uri),
+        vec![(0, 9)],
+        "the declaration in the library is rewritten"
+    );
+    // The import clause (line 0) plus both annotations (line 1) in the app.
+    assert_eq!(
+        rename_sites(edit.as_ref(), &app_uri),
+        vec![(0, 16), (1, 17), (1, 26)],
+        "the import clause and both annotations are rewritten"
+    );
+}

@@ -622,10 +622,11 @@ impl WorkspaceIndex {
     /// Returns the exact identifier range the editor should select plus its
     /// current text (the rename placeholder), or `None` when the cursor is not
     /// on a name this server can rename. Renameable: a local (parameter, `let`,
-    /// state field) and a top-level `fn` / `const`. Not yet renameable (returns
-    /// `None`): a type, constructor, actor, field accessor, stdlib symbol, class
-    /// method, or module alias — see the deferred follow-ups. Reads only this
-    /// immutable snapshot.
+    /// state field), a top-level `fn` / `const`, and a `type` (renaming a record
+    /// type also rewrites its `User { .. }` constructions and patterns). Not yet
+    /// renameable (returns `None`): a union constructor, an actor, a field
+    /// accessor, a stdlib symbol, a class method, or a module alias — see the
+    /// deferred follow-ups. Reads only this immutable snapshot.
     #[must_use]
     pub fn prepare_rename_at(
         &self,
@@ -679,7 +680,7 @@ impl WorkspaceIndex {
                     let Some(b) = view.bindings.get(nid.0 as usize).and_then(Option::as_ref) else {
                         continue;
                     };
-                    if referent_key(b, *module).as_ref() == Some(&target.key) {
+                    if referent_key(b, *module).is_some_and(|k| target.matches(&k)) {
                         sites.push((*module, self.final_ident_span(smi, *span)));
                     }
                 }
@@ -696,7 +697,7 @@ impl WorkspaceIndex {
                         else {
                             continue;
                         };
-                        if referent_key(b, smid).as_ref() == Some(&target.key) {
+                        if referent_key(b, smid).is_some_and(|k| target.matches(&k)) {
                             sites.push((smid, self.final_ident_span(smi, *span)));
                         }
                     }
@@ -709,8 +710,12 @@ impl WorkspaceIndex {
                     };
                     for item in items {
                         if let Some(b) = &item.resolved {
-                            if referent_key(b, smid).as_ref() == Some(&target.key) {
-                                sites.push((smid, item.span));
+                            if referent_key(b, smid).is_some_and(|k| target.matches(&k)) {
+                                if let Some(name_span) =
+                                    self.import_item_span(smid, item.span, &item.name)
+                                {
+                                    sites.push((smid, name_span));
+                                }
                             }
                         }
                     }
@@ -785,9 +790,11 @@ impl WorkspaceIndex {
             })
         {
             let key = self.renameable_referent(binding, mid)?;
+            let extra = self.record_ctor_key(&key);
             let name_span = self.final_ident_span(mi, span);
             return Some(RenameTarget {
                 key,
+                extra,
                 cursor_range: self.range_in(mid, name_span)?,
                 name: self.text_slice(mi, name_span).to_owned(),
             });
@@ -802,37 +809,78 @@ impl WorkspaceIndex {
             return None;
         }
         let key = self.symbol_decl_referent(mid, offset, name)?;
+        let extra = self.record_ctor_key(&key);
         Some(RenameTarget {
             key,
+            extra,
             cursor_range: self.range_in(mid, name_span)?,
             name: name.to_owned(),
         })
     }
 
     /// The [`ReferentKey`] a binding denotes, but only for the kinds this server
-    /// can rename completely: a local, or a top-level `fn` / `const`. A type is
-    /// excluded because its type-position uses carry no binding (the rename
-    /// would miss them); constructors, actors, field accessors, stdlib symbols,
-    /// class methods, and module aliases are deferred.
+    /// can rename completely: a local, or a top-level `fn` / `const` / `type`.
+    /// A record type reached through its shared-name constructor maps back to the
+    /// type symbol so a rename started on `User { .. }` renames the type too; the
+    /// constructor uses are then picked up via [`Self::record_ctor_key`]. Union
+    /// and other constructors, actors, field accessors, stdlib symbols, class
+    /// methods, and module aliases are deferred.
     fn renameable_referent(&self, binding: &Binding, module: ModuleId) -> Option<ReferentKey> {
         match binding {
             Binding::Local(id) => Some(ReferentKey::Local(module, *id)),
             Binding::ModuleSymbol { module, symbol }
             | Binding::ImportedSymbol { module, symbol, .. } => {
                 match self.symbol_kind(*module, *symbol)? {
-                    SymbolKind::Fn { .. } | SymbolKind::Const => {
+                    SymbolKind::Fn { .. } | SymbolKind::Const | SymbolKind::Type { .. } => {
                         Some(ReferentKey::Symbol(*module, *symbol))
                     }
                     _ => None,
                 }
             }
+            // A record type's auto-constructor shares the type's name (it is the
+            // only constructor flagged `is_record`); renaming from a `User { .. }`
+            // use renames the type and every reference together.
+            Binding::Constructor {
+                owner_module,
+                owner_type,
+                is_record: true,
+                ..
+            } => Some(ReferentKey::Symbol(*owner_module, *owner_type)),
             _ => None,
+        }
+    }
+
+    /// The additional referent keys a rename of `key` must rewrite. A record
+    /// type is the only case: its auto-constructor (variant 0) shares the type's
+    /// name, so the `User { .. }` constructions and patterns — which key to a
+    /// [`ReferentKey::Constructor`] — have to move with the type. Returns an
+    /// empty vec for a union, an alias, or any non-type symbol.
+    fn record_ctor_key(&self, key: &ReferentKey) -> Vec<ReferentKey> {
+        let ReferentKey::Symbol(module, symbol) = key else {
+            return Vec::new();
+        };
+        let Some(view) = self.modules.get(module.0 as usize) else {
+            return Vec::new();
+        };
+        let is_record_type = view.symbols.entries.iter().any(|e| {
+            matches!(
+                &e.kind,
+                SymbolKind::Constructor { owner_type, is_record: true, .. } if *owner_type == *symbol
+            )
+        });
+        if is_record_type {
+            vec![ReferentKey::Constructor(*module, *symbol, 0)]
+        } else {
+            Vec::new()
         }
     }
 
     /// Resolve a top-level declaration name at `offset` to a renameable
     /// referent: the symbol whose def span encloses the cursor and whose name
-    /// matches. Only `fn` / `const` declarations are renameable here.
+    /// matches. `fn`, `const`, and `type` declarations are renameable here. A
+    /// record type's name resolves to its `Type` entry (which is collected
+    /// before the auto-constructor), so a cursor on `type User` renames the type
+    /// and — via [`Self::record_ctor_key`] — its constructor uses.
     fn symbol_decl_referent(&self, mid: ModuleId, offset: u32, name: &str) -> Option<ReferentKey> {
         let entries = &self.modules.get(mid.0 as usize)?.symbols.entries;
         entries.iter().enumerate().find_map(|(i, e)| {
@@ -843,7 +891,7 @@ impl WorkspaceIndex {
                 return None;
             }
             match e.kind {
-                SymbolKind::Fn { .. } | SymbolKind::Const => {
+                SymbolKind::Fn { .. } | SymbolKind::Const | SymbolKind::Type { .. } => {
                     let raw = u32::try_from(i).ok()?;
                     Some(ReferentKey::Symbol(mid, ridge_resolve::SymbolId(raw)))
                 }
@@ -889,6 +937,28 @@ impl WorkspaceIndex {
             })
             .map(|(span, _, _)| *span)
             .min_by_key(|span| span.start)
+    }
+
+    /// The span of the import-list item named `name` inside the import whose
+    /// declaration span is `import_span`. A resolved import item carries the
+    /// whole-import span rather than the item-name token, so the token is
+    /// recovered as the *rightmost* matching `Ident`: the item list always
+    /// follows the module path and any `as` alias, so the last occurrence is the
+    /// clause item, never a path segment or alias of the same name.
+    fn import_item_span(&self, mid: ModuleId, import_span: Span, name: &str) -> Option<Span> {
+        let mi = mid.0 as usize;
+        self.spatial
+            .get(mi)?
+            .entries
+            .iter()
+            .filter(|(span, kind, _)| {
+                *kind == NodeKind::Ident
+                    && import_span.start <= span.start
+                    && span.end <= import_span.end
+                    && self.text_slice(mi, *span) == name
+            })
+            .map(|(span, _, _)| *span)
+            .max_by_key(|span| span.start)
     }
 
     /// Narrow a reference `span` in module `mi` to its trailing identifier run.
@@ -1121,10 +1191,24 @@ enum ReferentKey {
 
 /// The renameable thing under the cursor: what it denotes, the exact name range
 /// to select (the `prepareRename` result), and its current text.
+///
+/// `extra` holds additional referents that must be renamed in lockstep with
+/// `key`. The only case today is a record type, whose auto-constructor shares
+/// the type's name: renaming `type User` must also rewrite every `User { .. }`
+/// construction and pattern, which key to a [`ReferentKey::Constructor`] rather
+/// than the type's [`ReferentKey::Symbol`].
 struct RenameTarget {
     key: ReferentKey,
+    extra: Vec<ReferentKey>,
     cursor_range: Range,
     name: String,
+}
+
+impl RenameTarget {
+    /// True when `key` is one of the referents this rename rewrites.
+    fn matches(&self, key: &ReferentKey) -> bool {
+        self.key == *key || self.extra.iter().any(|k| k == key)
+    }
 }
 
 /// The referent a binding points at, as a value comparable across modules.
@@ -1162,10 +1246,12 @@ fn referent_key(binding: &Binding, module: ModuleId) -> Option<ReferentKey> {
 
 /// Validate a rename's `new_name` against `old_name`.
 ///
-/// A no-op rename (same name) is allowed. Otherwise the new name must be a
-/// non-empty lowercase identifier and not a reserved keyword — every name this
-/// server renames (a local, `fn`, or `const`) is a `LOWER_IDENT`. The `Err`
-/// message is surfaced to the editor.
+/// A no-op rename (same name) is allowed. Otherwise the new name must be
+/// non-empty, not a reserved keyword, and of the same identifier case class as
+/// the old name: a type (an `UPPER_IDENT`) stays an `UPPER_IDENT`, and a value —
+/// a local, `fn`, or `const`, all `LOWER_IDENT` — stays a `LOWER_IDENT`. Mixing
+/// the classes would produce code that no longer parses. The `Err` message is
+/// surfaced to the editor.
 fn validate_new_name(new_name: &str, old_name: &str) -> Result<(), String> {
     if new_name == old_name {
         return Ok(());
@@ -1176,7 +1262,18 @@ fn validate_new_name(new_name: &str, old_name: &str) -> Result<(), String> {
     if KEYWORDS.contains(&new_name) {
         return Err(format!("`{new_name}` is a reserved keyword."));
     }
-    if !is_lower_ident(new_name) {
+    let old_is_upper = old_name
+        .chars()
+        .next()
+        .is_some_and(|c| c.is_ascii_uppercase());
+    if old_is_upper {
+        if !is_upper_ident(new_name) {
+            return Err(format!(
+                "`{new_name}` is not a valid type name — use an uppercase identifier \
+                 (letters, digits and underscore, starting with a capital)."
+            ));
+        }
+    } else if !is_lower_ident(new_name) {
         return Err(format!(
             "`{new_name}` is not a valid name — use a lowercase identifier \
              (letters, digits and underscore, not starting with a digit or capital)."
@@ -1194,6 +1291,15 @@ fn is_lower_ident(s: &str) -> bool {
     let first_ok = first.is_ascii_lowercase()
         || (first == '_' && s.chars().nth(1).is_some_and(|c| c.is_ascii_alphanumeric()));
     first_ok && s.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')
+}
+
+/// True when `s` is a Ridge `UPPER_IDENT`: `[A-Z][a-zA-Z0-9_]*` — the spelling of
+/// every type, constructor, and actor name.
+fn is_upper_ident(s: &str) -> bool {
+    let Some(first) = s.chars().next() else {
+        return false;
+    };
+    first.is_ascii_uppercase() && s.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')
 }
 
 /// The workspace module an import `alias` resolves to, if any.

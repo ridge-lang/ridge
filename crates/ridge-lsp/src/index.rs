@@ -97,6 +97,30 @@ impl NodeSpatialIndex {
         hits.sort_by_key(|(_, _, span)| span.end - span.start);
         hits
     }
+
+    /// The id of a node of kind `kind` whose span is exactly `span`, or — when
+    /// none matches exactly — the widest such node contained within `span`.
+    ///
+    /// Used to recover the inferred type stamped on a specific sub-expression
+    /// (the base of a `base.field` access) whose span the AST hands us directly.
+    fn node_for_span_or_inner(&self, span: Span, kind: NodeKind) -> Option<NodeId> {
+        let mut widest: Option<(u32, NodeId)> = None;
+        for &(s, k, id) in &self.entries {
+            if k != kind {
+                continue;
+            }
+            if s == span {
+                return Some(id);
+            }
+            if s.start >= span.start && s.end <= span.end {
+                let width = s.end - s.start;
+                if widest.is_none_or(|(w, _)| width > w) {
+                    widest = Some((width, id));
+                }
+            }
+        }
+        widest.map(|(_, id)| id)
+    }
 }
 
 /// The per-module data the editor-query methods read.
@@ -353,6 +377,14 @@ impl WorkspaceIndex {
         let mi = mid.0 as usize;
         let offset = self.line_indices.get(mi)?.utf16_to_byte(line, utf16_col);
 
+        // A record field use (`user.age`) carries no binding on its name node;
+        // it resolves through the base expression's type to the field's
+        // declaration in the owning `type`. The cursor on the base (`user`)
+        // falls outside the field range, so this never shadows the binding path.
+        if let Some(loc) = self.field_definition_at(mi, offset) {
+            return Some(loc);
+        }
+
         // The binding sits on the narrowest name node that actually carries one:
         // for `Mod.item` the binding is on the whole `QualifiedName`, not the
         // segment ident under the cursor.
@@ -401,9 +433,44 @@ impl WorkspaceIndex {
                 crate::stdlib_defs::stdlib_class_method_location(class_name, method)
                     .or_else(|| self.workspace_class_method_location(class_name, method))
             }
-            // Field accessors and errors have no resolvable definition site.
+            // The bare `(.field)` accessor shorthand (owner type unknown) and
+            // errors have no resolvable definition site. A `base.field` access
+            // is handled earlier, through the base's type.
             _ => None,
         }
+    }
+
+    /// Answer a `textDocument/typeDefinition` request at an LSP `(line, col)`.
+    ///
+    /// Jumps from a value to the declaration of its type: the inferred type of
+    /// the narrowest expression under the cursor, resolved to the `type`
+    /// declaration that introduces it. Returns `None` for a built-in type (no
+    /// source), a function, a type variable, or whitespace. Reads only this
+    /// immutable snapshot; never triggers a compile.
+    #[must_use]
+    pub fn type_definition_at(&self, uri: &Url, line: u32, utf16_col: u32) -> Option<Location> {
+        let mid = *self.uri_to_module.get(uri)?;
+        let mi = mid.0 as usize;
+        let offset = self.line_indices.get(mi)?.utf16_to_byte(line, utf16_col);
+
+        let (_, type_node, _, _) = self.node_at(
+            uri,
+            offset,
+            &[
+                NodeKind::Expr,
+                NodeKind::Block,
+                NodeKind::Try,
+                NodeKind::Type,
+            ],
+        )?;
+        let ty = self
+            .modules
+            .get(mi)?
+            .node_types
+            .get(type_node.0 as usize)?
+            .as_ref()?;
+        let tycon = named_tycon_of(ty)?;
+        self.tycon_location(tycon)
     }
 
     /// Answer a `textDocument/signatureHelp` request at an LSP `(line, col)`.
@@ -829,6 +896,14 @@ impl WorkspaceIndex {
         let mid = *self.uri_to_module.get(uri)?;
         let mi = mid.0 as usize;
         let offset = self.line_indices.get(mi)?.utf16_to_byte(line, utf16_col);
+
+        // Record fields take a dedicated, type-directed path: the field name
+        // carries no binding, and a bare field name would conflate distinct
+        // records that happen to share it. Fires on a field use (`user.age`) or
+        // a field declaration in a `type` body.
+        if let Some(locs) = self.field_references_at(mi, offset, include_declaration) {
+            return Some(locs);
+        }
 
         // The binding under the cursor — same lookup as go-to-definition.
         let bindings = &self.modules.get(mi)?.bindings;
@@ -1471,6 +1546,177 @@ impl WorkspaceIndex {
                 character: end_char,
             },
         })
+    }
+
+    /// Go-to-definition for a record-field use under the cursor (`user.age` →
+    /// the field's declaration in the owning `type`). `None` off any field name
+    /// or when the base's type is structural, unresolved, or not a record.
+    fn field_definition_at(&self, mi: usize, offset: u32) -> Option<Location> {
+        let (tycon, field) = self.field_access_at(mi, offset)?;
+        self.field_decl_location(tycon, &field)
+    }
+
+    /// The record field under the cursor as `(owner record TyConId raw, field
+    /// name)`. Walks this module's AST for the narrowest `base.field` access
+    /// whose field range covers `offset`, then reads the base expression's
+    /// inferred type and peels it to the nominal record it belongs to.
+    fn field_access_at(&self, mi: usize, offset: u32) -> Option<(u32, String)> {
+        let ast = self.modules.get(mi)?.ast.clone()?;
+        let mut finder = FieldAccessFinder { offset, best: None };
+        ridge_ast::visit::Visit::visit_module(&mut finder, &ast);
+        let (base_span, field) = finder.best?;
+        let base_ty = self.type_of_base(mi, base_span)?;
+        let tycon = record_tycon_of(base_ty, &self.tycons)?;
+        Some((tycon, field))
+    }
+
+    /// The inferred type stamped on the expression node spanning exactly
+    /// `span` in module `mi` (or the widest node contained within it).
+    fn type_of_base(&self, mi: usize, span: Span) -> Option<&Type> {
+        let nid = self
+            .spatial
+            .get(mi)?
+            .node_for_span_or_inner(span, NodeKind::Expr)?;
+        self.modules
+            .get(mi)?
+            .node_types
+            .get(nid.0 as usize)?
+            .as_ref()
+    }
+
+    /// Location of the declaration of `field` on the nominal record `tycon`
+    /// (raw `TyConId`): the field name's span in the `type` that declares it.
+    fn field_decl_location(&self, tycon_raw: u32, field: &str) -> Option<Location> {
+        let decl = self.tycons.iter().find(|d| d.id.0 == tycon_raw)?;
+        let owner = ModuleId(decl.def_module_raw?);
+        let ast = self.modules.get(owner.0 as usize)?.ast.as_ref()?;
+        let span = field_decl_span(ast, &decl.name, field)?;
+        self.location_in(owner, span)
+    }
+
+    /// Find-references for the record field under the cursor. Returns `Some`
+    /// (possibly empty) when the cursor sits on a field use or a field
+    /// declaration, so the caller stops before the binding-keyed path; `None`
+    /// otherwise. Use sites are collected across every module and filtered by
+    /// the declaration their base type resolves to, so two records sharing a
+    /// field name never cross-contaminate. Keying on the declaration location —
+    /// rather than the raw `TyConId` — also unifies the several tycon ids the
+    /// type checker may mint for one nominal record.
+    fn field_references_at(
+        &self,
+        mi: usize,
+        offset: u32,
+        include_declaration: bool,
+    ) -> Option<Vec<Location>> {
+        let (tycon, field) = self.field_target_at(mi, offset)?;
+        let target_decl = self.field_decl_location(tycon, &field)?;
+
+        // Many use sites share an owner tycon; resolve each tycon's declaration
+        // once. A `None` entry records a tycon that does not declare the field.
+        let mut decl_of: HashMap<u32, Option<Location>> = HashMap::new();
+        let mut locations: Vec<Location> = Vec::new();
+        for smi in 0..self.modules.len() {
+            let Some(ast) = self.modules.get(smi).and_then(|v| v.ast.clone()) else {
+                continue;
+            };
+            let Ok(raw) = u32::try_from(smi) else {
+                continue;
+            };
+            let smid = ModuleId(raw);
+            let mut collector = FieldSiteCollector {
+                field: field.clone(),
+                sites: Vec::new(),
+            };
+            ridge_ast::visit::Visit::visit_module(&mut collector, &ast);
+            for (base_span, field_span) in collector.sites {
+                let Some(base_ty) = self.type_of_base(smi, base_span) else {
+                    continue;
+                };
+                let Some(use_tycon) = record_tycon_of(base_ty, &self.tycons) else {
+                    continue;
+                };
+                let decl = decl_of
+                    .entry(use_tycon)
+                    .or_insert_with(|| self.field_decl_location(use_tycon, &field));
+                if decl.as_ref() == Some(&target_decl) {
+                    if let Some(loc) = self.location_in(smid, field_span) {
+                        locations.push(loc);
+                    }
+                }
+            }
+        }
+
+        // The declaration site: included on request, otherwise dropped (the use
+        // scan never carries it, but the retain keeps the two paths symmetric).
+        if include_declaration {
+            locations.push(target_decl.clone());
+        } else {
+            locations.retain(|loc| *loc != target_decl);
+        }
+
+        locations.sort_by(|a, b| {
+            (a.uri.as_str(), a.range.start.line, a.range.start.character).cmp(&(
+                b.uri.as_str(),
+                b.range.start.line,
+                b.range.start.character,
+            ))
+        });
+        locations.dedup();
+        Some(locations)
+    }
+
+    /// The `(owner record TyConId raw, field name)` targeted by the cursor —
+    /// from a field use (`user.age`) or a field declaration inside a `type`
+    /// body. `None` when the cursor is on neither.
+    fn field_target_at(&self, mi: usize, offset: u32) -> Option<(u32, String)> {
+        self.field_access_at(mi, offset)
+            .or_else(|| self.field_decl_target_at(mi, offset))
+    }
+
+    /// The `(owner TyConId raw, field name)` when the cursor sits on a field
+    /// name in a record `type` declaration in module `mi`.
+    fn field_decl_target_at(&self, mi: usize, offset: u32) -> Option<(u32, String)> {
+        let ast = self.modules.get(mi)?.ast.as_ref()?;
+        for item in &ast.items {
+            let ridge_ast::Item::Type(td) = item else {
+                continue;
+            };
+            let ridge_ast::TypeBody::Record(rb) = &td.body else {
+                continue;
+            };
+            for f in &rb.fields {
+                if f.name.span.start <= offset && offset < f.name.span.end {
+                    let tycon = self.tycon_raw_for(mi, &td.name.text)?;
+                    return Some((tycon, f.name.text.clone()));
+                }
+            }
+        }
+        None
+    }
+
+    /// Raw `TyConId` of the type named `name` declared in module `mi`.
+    fn tycon_raw_for(&self, mi: usize, name: &str) -> Option<u32> {
+        let raw = u32::try_from(mi).ok()?;
+        self.tycons
+            .iter()
+            .find(|d| d.def_module_raw == Some(raw) && d.name == name)
+            .map(|d| d.id.0)
+    }
+
+    /// Location of the `type` declaration for tycon `raw` — its name span when
+    /// the declaring module's AST is available, else the whole-declaration
+    /// span. `None` for a built-in (no source span) or a type whose module
+    /// carries no URI.
+    fn tycon_location(&self, raw: u32) -> Option<Location> {
+        let decl = self.tycons.iter().find(|d| d.id.0 == raw)?;
+        let owner = ModuleId(decl.def_module_raw?);
+        let span = self
+            .modules
+            .get(owner.0 as usize)
+            .and_then(|m| m.ast.as_ref())
+            .and_then(|ast| type_decl_name_span(ast, &decl.name))
+            .or(decl.def_span)?;
+        self.location_in(owner, span)
     }
 
     /// Build the outline (`textDocument/documentSymbol`) for one document.
@@ -2588,6 +2834,108 @@ fn stdlib_export_kind(name: &str) -> CompletionItemKind {
         CompletionItemKind::CLASS
     } else {
         CompletionItemKind::FUNCTION
+    }
+}
+
+/// Raw `TyConId` of the nominal record a value of type `ty` belongs to,
+/// peeling alias wrappers. `None` for structural records (no nominal
+/// declaration to point at), functions, primitives, and unresolved types.
+fn record_tycon_of(ty: &Type, tycons: &[TyConDecl]) -> Option<u32> {
+    match ty {
+        Type::Con(id, _) => {
+            let decl = tycons.iter().find(|d| d.id.0 == id.0)?;
+            match &decl.kind {
+                TyConKind::Record(_) => Some(id.0),
+                TyConKind::Alias { body, .. } => record_tycon_of(body, tycons),
+                _ => None,
+            }
+        }
+        Type::Alias { body, .. } => record_tycon_of(body, tycons),
+        _ => None,
+    }
+}
+
+/// Raw `TyConId` of the named type a value of type `ty` carries, for
+/// go-to-type-definition. Unwraps an alias to its own declaration. `None` for
+/// functions, tuples, structural records, type variables, and errors — none of
+/// which name a `type` declaration to jump to.
+const fn named_tycon_of(ty: &Type) -> Option<u32> {
+    match ty {
+        Type::Con(id, _) => Some(id.0),
+        Type::Alias { name, .. } => Some(name.0),
+        _ => None,
+    }
+}
+
+/// Span of `field`'s name within the record `type type_name` of `ast`, or
+/// `None` if the type is absent, not a record, or has no such field.
+fn field_decl_span(ast: &ridge_ast::Module, type_name: &str, field: &str) -> Option<Span> {
+    for item in &ast.items {
+        let ridge_ast::Item::Type(td) = item else {
+            continue;
+        };
+        if td.name.text != type_name {
+            continue;
+        }
+        let ridge_ast::TypeBody::Record(rb) = &td.body else {
+            return None;
+        };
+        return rb
+            .fields
+            .iter()
+            .find(|f| f.name.text == field)
+            .map(|f| f.name.span);
+    }
+    None
+}
+
+/// Span of the name of the `type type_name` declaration in `ast`.
+fn type_decl_name_span(ast: &ridge_ast::Module, type_name: &str) -> Option<Span> {
+    ast.items.iter().find_map(|item| match item {
+        ridge_ast::Item::Type(td) if td.name.text == type_name => Some(td.name.span),
+        _ => None,
+    })
+}
+
+/// Finds the narrowest `base.field` access whose `field` name range covers the
+/// cursor, capturing the base expression's span and the field name. Powers
+/// go-to-definition and find-references on record fields.
+struct FieldAccessFinder {
+    offset: u32,
+    /// `(base span, field name)` of the best match so far.
+    best: Option<(Span, String)>,
+}
+
+impl<'ast> ridge_ast::visit::Visit<'ast> for FieldAccessFinder {
+    fn visit_expr(&mut self, e: &'ast ridge_ast::Expr) {
+        // Field name ranges are disjoint (a chain `a.b.c` has separate `b`/`c`
+        // idents), so at most one covers the cursor — the first wins.
+        if self.best.is_none() {
+            if let ridge_ast::Expr::FieldAccess { base, field, .. } = e {
+                if field.span.start <= self.offset && self.offset < field.span.end {
+                    self.best = Some((base.span(), field.text.clone()));
+                }
+            }
+        }
+        ridge_ast::visit::walk_expr(self, e);
+    }
+}
+
+/// Collects every `base.field` access whose field name equals `field`,
+/// recording `(base span, field name span)` for later type-based filtering.
+struct FieldSiteCollector {
+    field: String,
+    sites: Vec<(Span, Span)>,
+}
+
+impl<'ast> ridge_ast::visit::Visit<'ast> for FieldSiteCollector {
+    fn visit_expr(&mut self, e: &'ast ridge_ast::Expr) {
+        if let ridge_ast::Expr::FieldAccess { base, field, .. } = e {
+            if field.text == self.field {
+                self.sites.push((base.span(), field.span));
+            }
+        }
+        ridge_ast::visit::walk_expr(self, e);
     }
 }
 

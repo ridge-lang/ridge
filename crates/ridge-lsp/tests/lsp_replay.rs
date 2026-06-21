@@ -3264,3 +3264,287 @@ async fn test_semantic_tokens_no_overlap() {
         }
     }
 }
+
+// ── Record-field navigation + go-to-type-definition ───────────────────────────
+
+// Two records sharing the field name `age`, so a correct field query must key
+// on the owner type, not the bare name. Field-name columns:
+//   line 0  `User.age` decl  → col 18      `User.name` decl → col 28
+//   line 1  `Pet.age` decl   → col 17
+//   line 2  `userAge` uses `u.age`         → field at col 36
+//   line 3  `petAge` uses `p.age`          → field at col 34
+//   line 4  `twice` uses `u.age` twice     → fields at cols 34 and 42
+const FIELD_SRC: &str = "pub type User = { age: Int, name: Text }\n\
+pub type Pet = { age: Int }\n\
+pub fn userAge (u: User) -> Int = u.age\n\
+pub fn petAge (p: Pet) -> Int = p.age\n\
+pub fn twice (u: User) -> Int = u.age + u.age\n\
+pub fn one -> Int = 1\n";
+
+/// The `(line, character)` of every reference, sorted.
+fn ref_pairs(locs: &[Location], uri: &Url) -> Vec<(u32, u32)> {
+    let mut pairs: Vec<(u32, u32)> = locs
+        .iter()
+        .filter(|l| &l.uri == uri)
+        .map(|l| (l.range.start.line, l.range.start.character))
+        .collect();
+    pairs.sort_unstable();
+    pairs
+}
+
+#[tokio::test]
+async fn test_field_definition() {
+    let (service, _socket, uri) = hover_fixture(FIELD_SRC).await;
+    let server = service.inner();
+
+    // `u.age` in `userAge` (line 2, on the field) → the `age` field of `User`
+    // (line 0, col 18) — not the `age` field of `Pet`.
+    let resp = server
+        .goto_definition(goto_at(&uri, 2, 37))
+        .await
+        .expect("ok");
+    let loc = scalar_location(resp).expect("definition of field `age`");
+    assert_eq!(loc.uri, uri);
+    assert_eq!(
+        (loc.range.start.line, loc.range.start.character),
+        (0, 18),
+        "must point at User.age, the owner resolved through the base type"
+    );
+
+    // `p.age` in `petAge` (line 3) → the `age` field of `Pet` (line 1, col 17),
+    // proving the same field name resolves by owner type.
+    let resp = server
+        .goto_definition(goto_at(&uri, 3, 35))
+        .await
+        .expect("ok");
+    let loc = scalar_location(resp).expect("definition of field `age` on Pet");
+    assert_eq!(
+        (loc.range.start.line, loc.range.start.character),
+        (1, 17),
+        "Pet.age must resolve to its own declaration"
+    );
+}
+
+#[tokio::test]
+async fn test_field_references() {
+    let (service, _socket, uri) = hover_fixture(FIELD_SRC).await;
+    let server = service.inner();
+
+    // From a `User.age` use (line 2), with the declaration: the decl (line 0)
+    // plus all three `User.age` uses (lines 2 and 4×2) — never the `Pet.age`
+    // use on line 3.
+    let with_decl = server
+        .references(references_at(&uri, 2, 37, true))
+        .await
+        .expect("ok")
+        .expect("references of User.age");
+    assert_eq!(
+        ref_pairs(&with_decl, &uri),
+        vec![(0, 18), (2, 36), (4, 34), (4, 42)],
+        "User.age: declaration plus every use, excluding Pet.age"
+    );
+
+    // includeDeclaration=false drops the field declaration.
+    let without_decl = server
+        .references(references_at(&uri, 2, 37, false))
+        .await
+        .expect("ok")
+        .expect("references of User.age");
+    assert_eq!(
+        ref_pairs(&without_decl, &uri),
+        vec![(2, 36), (4, 34), (4, 42)],
+        "includeDeclaration=false drops the User.age declaration"
+    );
+
+    // The query also works from the field declaration itself (line 0, col 19).
+    let from_decl = server
+        .references(references_at(&uri, 0, 19, true))
+        .await
+        .expect("ok")
+        .expect("references from the User.age declaration");
+    assert_eq!(
+        ref_pairs(&from_decl, &uri),
+        vec![(0, 18), (2, 36), (4, 34), (4, 42)],
+        "a field declaration cursor finds the same set"
+    );
+
+    // `Pet.age` is a disjoint set: its declaration (line 1) plus its single use
+    // (line 3).
+    let pet = server
+        .references(references_at(&uri, 3, 35, true))
+        .await
+        .expect("ok")
+        .expect("references of Pet.age");
+    assert_eq!(
+        ref_pairs(&pet, &uri),
+        vec![(1, 17), (3, 34)],
+        "Pet.age must not collect User.age sites"
+    );
+}
+
+#[tokio::test]
+async fn test_type_definition() {
+    let (service, _socket, uri) = hover_fixture(FIELD_SRC).await;
+    let server = service.inner();
+
+    // The value `u` in `userAge` (line 2, col 34) has type `User`; jumping to
+    // its type lands on the `User` declaration name (line 0, col 9).
+    let resp = server
+        .goto_type_definition(goto_at(&uri, 2, 34))
+        .await
+        .expect("ok");
+    let loc = scalar_location(resp).expect("type definition of `u`");
+    assert_eq!(loc.uri, uri);
+    assert_eq!(
+        (loc.range.start.line, loc.range.start.character),
+        (0, 9),
+        "type definition must point at the `User` declaration name"
+    );
+
+    // A built-in type has no source declaration: the literal `1` (line 5, col
+    // 20) is an `Int`, so there is nothing to jump to.
+    let builtin = server
+        .goto_type_definition(goto_at(&uri, 5, 20))
+        .await
+        .expect("ok");
+    assert!(
+        scalar_location(builtin).is_none(),
+        "a built-in type yields no type definition"
+    );
+}
+
+/// A two-member workspace whose `lib` declares a record type used across the
+/// module boundary by `app`. Mirrors [`two_member_fixture`] with record-typed
+/// sources so field navigation and go-to-type-definition can be exercised
+/// cross-file.
+async fn record_ws_fixture() -> (
+    tower_lsp::LspService<RidgeLanguageServer>,
+    tower_lsp::ClientSocket,
+    Url,
+    Url,
+) {
+    let dir = tempfile::TempDir::new().expect("temp dir");
+    let root = dir.path().to_path_buf();
+    std::fs::create_dir_all(root.join("lib").join("src")).expect("lib src");
+    std::fs::create_dir_all(root.join("app").join("src")).expect("app src");
+    std::fs::write(
+        root.join("ridge.toml"),
+        "[workspace]\nname = \"rec-ws\"\nversion = \"0.1.0\"\nmembers = [\"lib\", \"app\"]\n",
+    )
+    .expect("workspace manifest");
+    std::fs::write(
+        root.join("lib").join("ridge.toml"),
+        "[project]\nname = \"lib\"\nversion = \"0.1.0\"\nkind = \"library\"\n\n[capabilities]\nallow = []\n",
+    )
+    .expect("lib manifest");
+    std::fs::write(
+        root.join("lib").join("src").join("Lib.ridge"),
+        "pub type User = { age: Int, name: Text }\n",
+    )
+    .expect("lib source");
+    std::fs::write(
+        root.join("app").join("ridge.toml"),
+        "[project]\nname = \"app\"\nversion = \"0.1.0\"\nkind = \"app\"\nentry = \"src/Main.ridge\"\n\n[capabilities]\nallow = []\n",
+    )
+    .expect("app manifest");
+    let app_text = "import lib.Lib (User)\npub fn ageOf (u: User) -> Int = u.age\n";
+    std::fs::write(root.join("app").join("src").join("Main.ridge"), app_text).expect("app source");
+
+    let (service, socket) = build_test_service();
+    let app_uri;
+    let lib_uri;
+    {
+        let server = service.inner();
+        let root_uri = Url::from_file_path(&root).expect("root URI");
+        server
+            .initialize(InitializeParams {
+                root_uri: Some(root_uri.clone()),
+                workspace_folders: Some(vec![WorkspaceFolder {
+                    uri: root_uri,
+                    name: "rec-ws".to_owned(),
+                }]),
+                capabilities: ClientCapabilities::default(),
+                ..InitializeParams::default()
+            })
+            .await
+            .expect("initialize");
+        server
+            .did_open(DidOpenTextDocumentParams {
+                text_document: TextDocumentItem {
+                    uri: Url::from_file_path(root.join("app").join("src").join("Main.ridge"))
+                        .expect("app URI"),
+                    language_id: "ridge".to_owned(),
+                    version: 1,
+                    text: app_text.to_owned(),
+                },
+            })
+            .await;
+        let mut index = None;
+        for _ in 0..120 {
+            tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;
+            if let Some(idx) = server.workspace_index().await {
+                index = Some(idx);
+                break;
+            }
+        }
+        let index = index.expect("index installed");
+        app_uri = index
+            .uri_to_module
+            .keys()
+            .find(|u| u.path().ends_with("Main.ridge"))
+            .expect("app module")
+            .clone();
+        lib_uri = index
+            .uri_to_module
+            .keys()
+            .find(|u| u.path().ends_with("Lib.ridge"))
+            .expect("lib module — multi-member discovery")
+            .clone();
+    }
+    std::mem::forget(dir);
+    (service, socket, app_uri, lib_uri)
+}
+
+#[tokio::test]
+async fn test_field_navigation_cross_module() {
+    let (service, _socket, app_uri, lib_uri) = record_ws_fixture().await;
+    let server = service.inner();
+
+    // Go-to-def on `u.age` in the app (line 1, col 35) → the `age` field of
+    // `User` declared in Lib.ridge (line 0, col 18).
+    let resp = server
+        .goto_definition(goto_at(&app_uri, 1, 35))
+        .await
+        .expect("ok");
+    let loc = scalar_location(resp).expect("cross-module field definition");
+    assert_eq!(loc.uri, lib_uri, "field decl lives in Lib.ridge");
+    assert_eq!((loc.range.start.line, loc.range.start.character), (0, 18));
+
+    // Find-references on the same field gathers the lib declaration and the app
+    // use across the two files.
+    let refs = server
+        .references(references_at(&app_uri, 1, 35, true))
+        .await
+        .expect("ok")
+        .expect("cross-module field references");
+    assert_eq!(
+        ref_pairs(&refs, &lib_uri),
+        vec![(0, 18)],
+        "the declaration in Lib.ridge"
+    );
+    assert_eq!(
+        ref_pairs(&refs, &app_uri),
+        vec![(1, 34)],
+        "the use in Main.ridge"
+    );
+
+    // Go-to-type-definition on the value `u` (line 1, col 32) → the `User`
+    // declaration name in Lib.ridge (line 0, col 9).
+    let ty = server
+        .goto_type_definition(goto_at(&app_uri, 1, 32))
+        .await
+        .expect("ok");
+    let loc = scalar_location(ty).expect("cross-module type definition");
+    assert_eq!(loc.uri, lib_uri, "type decl lives in Lib.ridge");
+    assert_eq!((loc.range.start.line, loc.range.start.character), (0, 9));
+}

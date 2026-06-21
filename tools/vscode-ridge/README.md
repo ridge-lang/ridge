@@ -11,9 +11,11 @@ completion as you type.
 - Live diagnostics from `ridge-lsp` — type errors, capability violations,
   parse errors — shown inline and in the **Problems** panel.
 - Hover for inferred types; go-to-definition across the workspace and into
-  the standard library; find-references, rename, signature help, document
-  formatting, document and workspace symbols, inlay hints, and identifier
-  completion — all served by `ridge-lsp`.
+  the standard library — including jumping from a `record.field` use to the
+  field's declaration; go-to-type-definition from a value to the `type` that
+  declares it; find-references, rename, signature help, document formatting,
+  document and workspace symbols, inlay hints, and identifier completion —
+  all served by `ridge-lsp`.
 - Semantic highlighting that colours identifiers the grammar cannot tell
   apart — function vs variable vs type vs constructor vs stdlib symbol — and
   surfaces capability annotations (`io`, `fs`, `net`, `db`, ...) as their own

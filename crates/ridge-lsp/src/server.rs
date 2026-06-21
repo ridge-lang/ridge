@@ -755,6 +755,27 @@ impl LanguageServer for RidgeLanguageServer {
         Ok(index.inlay_hints(&uri, range))
     }
 
+    /// `textDocument/signatureHelp` — parameter hints for the call being typed.
+    /// Resolves the callee of the enclosing call (or the bare function name just
+    /// typed) to a signature and marks the parameter the cursor is filling in.
+    /// Returns `None` away from any call so the popup stays quiet.
+    async fn signature_help(
+        &self,
+        params: SignatureHelpParams,
+    ) -> LspResult<Option<SignatureHelp>> {
+        let pos = params.text_document_position_params;
+        let uri = pos.text_document.uri;
+
+        let index = {
+            let snap = self.state.lock().await;
+            snap.index.clone()
+        };
+        let Some(index) = index else {
+            return Ok(None);
+        };
+        Ok(index.signature_help_at(&uri, pos.position.line, pos.position.character))
+    }
+
     /// `textDocument/codeAction` — quick-fixes. For a `T014` capability error
     /// on a function that declares no capabilities, offers an edit that adds the
     /// inferred capabilities to its signature: the annotation stays explicit and
@@ -844,6 +865,13 @@ fn server_capabilities() -> ServerCapabilities {
         workspace_symbol_provider: Some(OneOf::Left(true)),
         inlay_hint_provider: Some(OneOf::Left(true)),
         code_action_provider: Some(CodeActionProviderCapability::Simple(true)),
+        // Ridge calls are juxtaposition (`joinOn a b c`), so a space — not `(`
+        // or `,` — separates arguments. Trigger and re-trigger on it.
+        signature_help_provider: Some(SignatureHelpOptions {
+            trigger_characters: Some(vec![" ".to_owned()]),
+            retrigger_characters: Some(vec![" ".to_owned()]),
+            work_done_progress_options: WorkDoneProgressOptions::default(),
+        }),
         completion_provider: Some(CompletionOptions {
             trigger_characters: Some(vec![".".to_owned()]),
             resolve_provider: Some(false),

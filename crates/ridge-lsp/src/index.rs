@@ -26,8 +26,9 @@ use ridge_typecheck::{render_type_with, TypeError, TypedWorkspace};
 use ridge_types::{CapabilitySet, TyConDecl, TyConKind, Type};
 use tower_lsp::lsp_types::{
     CompletionItemKind, DocumentHighlight, DocumentHighlightKind, DocumentSymbol, InlayHint,
-    InlayHintKind, InlayHintLabel, Location, Position, PrepareRenameResponse, Range,
-    SymbolInformation, SymbolKind as LspSymbolKind, TextEdit, Url, WorkspaceEdit,
+    InlayHintKind, InlayHintLabel, Location, ParameterInformation, ParameterLabel, Position,
+    PrepareRenameResponse, Range, SignatureHelp, SignatureInformation, SymbolInformation,
+    SymbolKind as LspSymbolKind, TextEdit, Url, WorkspaceEdit,
 };
 
 use crate::completion::{detect_context, symbol_kind, CompletionItemData, Context, KEYWORDS};
@@ -393,13 +394,175 @@ impl WorkspaceIndex {
                 ..
             } => crate::stdlib_defs::stdlib_module_location(*id),
             Binding::ClassMethod { class_name, method } => {
+                // A stdlib verb (`filter`, `joinOn`, …) resolves into the
+                // materialised stdlib source; a class declared in the workspace
+                // resolves to the method signature in that `class` declaration.
                 crate::stdlib_defs::stdlib_class_method_location(class_name, method)
+                    .or_else(|| self.workspace_class_method_location(class_name, method))
             }
-            // Field accessors and errors have no resolvable definition site, and
-            // a class method declared in the workspace (rather than the stdlib)
-            // resolves to `None` above.
+            // Field accessors and errors have no resolvable definition site.
             _ => None,
         }
+    }
+
+    /// Answer a `textDocument/signatureHelp` request at an LSP `(line, col)`.
+    ///
+    /// Ridge calls are juxtaposition (`joinOn left right cond`), so the active
+    /// parameter is the count of argument atoms already written before the
+    /// cursor. Resolves the callee of the enclosing call — or, with no argument
+    /// typed yet, the function name under or just left of the cursor — to a
+    /// signature read from the stdlib source or the workspace declaration.
+    /// Returns `None` off any call so the editor popup stays quiet. Reads only
+    /// this immutable snapshot; never triggers a compile.
+    #[must_use]
+    pub fn signature_help_at(&self, uri: &Url, line: u32, utf16_col: u32) -> Option<SignatureHelp> {
+        let mid = *self.uri_to_module.get(uri)?;
+        let mi = mid.0 as usize;
+        let offset = self.line_indices.get(mi)?.utf16_to_byte(line, utf16_col);
+        let src = self.module_text.get(mi)?;
+
+        // The callee to describe and the argument spans already written, from the
+        // enclosing call; failing that, the bare name under or just left of the
+        // cursor (no arguments typed yet).
+        let (callee_span, arg_spans) = self
+            .enclosing_call(mi, offset, src)
+            .or_else(|| self.bare_callee(mi, offset, src).map(|s| (s, Vec::new())))?;
+
+        let binding = self.binding_at(mi, callee_span.start)?;
+        let sig = self.signature_for_binding(binding)?;
+        let active = active_param(&arg_spans, offset, sig.params.len());
+        Some(make_signature_help(sig, active))
+    }
+
+    /// The innermost call whose argument region the cursor sits in, as
+    /// `(callee span, argument spans)`. Includes the trailing whitespace right
+    /// after the last argument (you just typed a space to add the next one).
+    fn enclosing_call(&self, mi: usize, offset: u32, src: &str) -> Option<(Span, Vec<Span>)> {
+        let ast = self.modules.get(mi)?.ast.as_ref()?;
+        let mut finder = CallFinder {
+            offset,
+            src,
+            best: None,
+        };
+        ridge_ast::visit::Visit::visit_module(&mut finder, ast);
+        finder.best.map(|(callee, args, _)| (callee, args))
+    }
+
+    /// The span of a callable name under the cursor, or the nearest one ending
+    /// to its left across same-line whitespace. Used when no argument is typed
+    /// yet, so there is no call node to walk.
+    fn bare_callee(&self, mi: usize, offset: u32, src: &str) -> Option<Span> {
+        let spatial = self.spatial.get(mi)?;
+        if let Some((_, _, span)) =
+            spatial.narrowest_containing(offset, &[NodeKind::Ident, NodeKind::QualifiedName])
+        {
+            return Some(span);
+        }
+        let mut best: Option<Span> = None;
+        for (span, kind, _) in &spatial.entries {
+            if !matches!(kind, NodeKind::Ident | NodeKind::QualifiedName) || span.end > offset {
+                continue;
+            }
+            let Some(gap) = src.get(span.end as usize..offset as usize) else {
+                continue;
+            };
+            let reachable = !gap.is_empty() && gap.chars().all(|c| c == ' ' || c == '\t');
+            if reachable && best.is_none_or(|b| span.end > b.end) {
+                best = Some(*span);
+            }
+        }
+        best
+    }
+
+    /// The binding stamped on the name node enclosing `offset`, if any — the
+    /// shared name lookup behind go-to-definition, references, and signature
+    /// help.
+    fn binding_at(&self, mi: usize, offset: u32) -> Option<&Binding> {
+        let bindings = &self.modules.get(mi)?.bindings;
+        self.spatial
+            .get(mi)?
+            .enclosing(offset, &[NodeKind::Ident, NodeKind::QualifiedName])
+            .into_iter()
+            .find_map(|(nid, _, _)| bindings.get(nid.0 as usize).and_then(Option::as_ref))
+    }
+
+    /// The signature for the thing a call's callee binding refers to: a stdlib
+    /// function or class method (read from the materialised stdlib source) or a
+    /// workspace function or class method (read from its declaration).
+    fn signature_for_binding(&self, binding: &Binding) -> Option<SignatureSig> {
+        match binding {
+            Binding::StdlibSymbol { module, name } => {
+                crate::stdlib_defs::stdlib_fn_signature(*module, name)
+            }
+            Binding::ClassMethod { class_name, method } => {
+                crate::stdlib_defs::stdlib_class_method_signature(class_name, method)
+                    .or_else(|| self.workspace_class_method_signature(class_name, method))
+            }
+            Binding::ModuleSymbol { module, symbol }
+            | Binding::ImportedSymbol { module, symbol, .. } => {
+                self.workspace_fn_signature(*module, *symbol)
+            }
+            _ => None,
+        }
+    }
+
+    /// Build the signature of a workspace top-level `fn` from its declaration.
+    fn workspace_fn_signature(
+        &self,
+        module: ModuleId,
+        symbol: ridge_resolve::SymbolId,
+    ) -> Option<SignatureSig> {
+        let mi = module.0 as usize;
+        let view = self.modules.get(mi)?;
+        let name = &view.symbols.entries.get(symbol.0 as usize)?.name;
+        let src = self.module_text.get(mi)?;
+        view.ast.as_ref()?.items.iter().find_map(|item| match item {
+            ridge_ast::Item::Fn(decl) if decl.name.text == *name => Some(build_signature(
+                src,
+                &decl.name.text,
+                &decl.params,
+                decl.ret.as_ref(),
+            )),
+            _ => None,
+        })
+    }
+
+    /// Build the signature of a workspace `class` method from its declaration.
+    fn workspace_class_method_signature(&self, class: &str, method: &str) -> Option<SignatureSig> {
+        let (mi, m) = self.find_workspace_class_method(class, method)?;
+        let src = self.module_text.get(mi)?;
+        Some(build_signature(src, &m.name.text, &m.params, Some(&m.ret)))
+    }
+
+    /// The definition site of a workspace `class` method's name signature.
+    fn workspace_class_method_location(&self, class: &str, method: &str) -> Option<Location> {
+        let (mi, m) = self.find_workspace_class_method(class, method)?;
+        let mid = ModuleId(u32::try_from(mi).ok()?);
+        self.location_in(mid, m.name.span)
+    }
+
+    /// Locate a workspace `class` method declaration by class and method name,
+    /// scanning every module's top-level items.
+    fn find_workspace_class_method(
+        &self,
+        class: &str,
+        method: &str,
+    ) -> Option<(usize, &ridge_ast::MethodSig)> {
+        for (mi, view) in self.modules.iter().enumerate() {
+            let Some(ast) = view.ast.as_ref() else {
+                continue;
+            };
+            for item in &ast.items {
+                if let ridge_ast::Item::ClassDecl(decl) = item {
+                    if decl.name.text == class {
+                        if let Some(m) = decl.methods.iter().find(|m| m.name.text == method) {
+                            return Some((mi, m));
+                        }
+                    }
+                }
+            }
+        }
+        None
     }
 
     /// Answer a find-references request at an LSP `(line, utf16_col)` position.
@@ -1537,6 +1700,160 @@ impl<'ast> ridge_ast::visit::Visit<'ast> for InlayCollector<'_> {
                 ..
             } => self.try_hint(name.span, value.span()),
             _ => {}
+        }
+        ridge_ast::visit::walk_expr(self, e);
+    }
+}
+
+/// A function or method signature rendered for `textDocument/signatureHelp`.
+#[derive(Debug, Clone)]
+pub(crate) struct SignatureSig {
+    /// The whole signature on one line, e.g. `joinOn (left: …) (right: …) -> …`.
+    pub label: String,
+    /// `[start, end)` UTF-16 offsets into `label`, one per parameter, in order.
+    pub params: Vec<[u32; 2]>,
+}
+
+/// Build a one-line signature label from `src` and a declaration's pieces.
+///
+/// `name` is the callee display name; each parameter and the return type are
+/// sliced verbatim from `src` (whitespace squeezed to one space) so the label
+/// reads as written, with no type re-rendering. Returns the label plus the
+/// UTF-16 offset range of every parameter, for active-parameter highlighting.
+pub(crate) fn build_signature(
+    src: &str,
+    name: &str,
+    params: &[ridge_ast::Param],
+    ret: Option<&ridge_ast::Type>,
+) -> SignatureSig {
+    let mut label = name.to_owned();
+    let mut cursor = utf16_len(&label);
+    let mut ranges = Vec::with_capacity(params.len());
+    for p in params {
+        label.push(' ');
+        cursor += 1;
+        let frag = slice_span(src, p.span());
+        let start = cursor;
+        cursor += utf16_len(&frag);
+        label.push_str(&frag);
+        ranges.push([start, cursor]);
+    }
+    if let Some(ty) = ret {
+        let frag = slice_span(src, ty.span());
+        label.push_str(" -> ");
+        label.push_str(&frag);
+    }
+    SignatureSig {
+        label,
+        params: ranges,
+    }
+}
+
+/// The `src` text covered by `span`, with whitespace runs squeezed to one space.
+fn slice_span(src: &str, span: Span) -> String {
+    let raw = src
+        .get(span.start as usize..span.end as usize)
+        .unwrap_or_default();
+    squeeze_ws(raw)
+}
+
+/// Collapse every run of whitespace to a single space and trim the ends, so a
+/// multi-line source slice still reads as a one-line label.
+fn squeeze_ws(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    let mut prev_ws = false;
+    for ch in s.chars() {
+        if ch.is_whitespace() {
+            if !prev_ws {
+                out.push(' ');
+            }
+            prev_ws = true;
+        } else {
+            out.push(ch);
+            prev_ws = false;
+        }
+    }
+    out.trim().to_owned()
+}
+
+/// UTF-16 code-unit length of `s` (LSP parameter label offsets are UTF-16).
+fn utf16_len(s: &str) -> u32 {
+    u32::try_from(s.chars().map(char::len_utf16).sum::<usize>()).unwrap_or(u32::MAX)
+}
+
+/// The index of the parameter the cursor is filling in: the number of argument
+/// atoms already completed before it, clamped to the last parameter.
+fn active_param(arg_spans: &[Span], offset: u32, nparams: usize) -> u32 {
+    let done = arg_spans.iter().filter(|s| s.end <= offset).count();
+    let active = if nparams == 0 {
+        0
+    } else {
+        done.min(nparams - 1)
+    };
+    u32::try_from(active).unwrap_or(0)
+}
+
+/// Assemble the LSP [`SignatureHelp`] for one resolved signature, marking
+/// `active` as the parameter being filled in.
+fn make_signature_help(sig: SignatureSig, active: u32) -> SignatureHelp {
+    let parameters = sig
+        .params
+        .iter()
+        .map(|&offsets| ParameterInformation {
+            label: ParameterLabel::LabelOffsets(offsets),
+            documentation: None,
+        })
+        .collect();
+    SignatureHelp {
+        signatures: vec![SignatureInformation {
+            label: sig.label,
+            documentation: None,
+            parameters: Some(parameters),
+            active_parameter: Some(active),
+        }],
+        active_signature: Some(0),
+        active_parameter: Some(active),
+    }
+}
+
+/// Finds the innermost call whose argument region contains an offset, for
+/// signature help. Records the callee span, the argument spans, and the call
+/// span (the last drives the narrowest-enclosing tie-break).
+struct CallFinder<'a> {
+    offset: u32,
+    src: &'a str,
+    best: Option<(Span, Vec<Span>, Span)>,
+}
+
+impl CallFinder<'_> {
+    /// Whether `end..offset` is non-empty and only spaces/tabs — the cursor sits
+    /// in the trailing whitespace right after a call, on the same line.
+    fn trailing_gap(&self, end: u32) -> bool {
+        self.offset > end
+            && self
+                .src
+                .get(end as usize..self.offset as usize)
+                .is_some_and(|g| !g.is_empty() && g.chars().all(|c| c == ' ' || c == '\t'))
+    }
+}
+
+impl<'ast> ridge_ast::visit::Visit<'ast> for CallFinder<'_> {
+    fn visit_expr(&mut self, e: &'ast ridge_ast::Expr) {
+        if let ridge_ast::Expr::Call { callee, args, span } = e {
+            // The cursor is in the argument region (past the callee) and within
+            // the call, or in the same-line whitespace just past the last
+            // argument where the next one will go.
+            let in_args = span.start <= self.offset
+                && callee.span().end <= self.offset
+                && (self.offset <= span.end || self.trailing_gap(span.end));
+            let narrower = match &self.best {
+                None => true,
+                Some((_, _, prev)) => span.end - span.start <= prev.end - prev.start,
+            };
+            if in_args && narrower {
+                let arg_spans = args.iter().map(ridge_ast::Expr::span).collect();
+                self.best = Some((callee.span(), arg_spans, *span));
+            }
         }
         ridge_ast::visit::walk_expr(self, e);
     }

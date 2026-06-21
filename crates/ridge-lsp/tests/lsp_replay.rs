@@ -2898,3 +2898,203 @@ async fn test_code_action_none_when_clean() {
         "no quick-fix on a correctly-annotated function"
     );
 }
+
+// ── Test 29: signature help (textDocument/signatureHelp) ──────────────────────
+
+fn signature_at(uri: &Url, line: u32, character: u32) -> SignatureHelpParams {
+    SignatureHelpParams {
+        context: None,
+        text_document_position_params: TextDocumentPositionParams {
+            text_document: TextDocumentIdentifier { uri: uri.clone() },
+            position: Position { line, character },
+        },
+        work_done_progress_params: WorkDoneProgressParams::default(),
+    }
+}
+
+/// The single signature's label and active-parameter index.
+fn sig_label_active(help: Option<SignatureHelp>) -> Option<(String, u32)> {
+    let help = help?;
+    let active = help.active_parameter?;
+    let sig = help.signatures.into_iter().next()?;
+    Some((sig.label, active))
+}
+
+/// The `[start, end)` UTF-16 offsets of each parameter in the first signature.
+fn param_offsets(help: &SignatureHelp) -> Vec<(u32, u32)> {
+    help.signatures[0]
+        .parameters
+        .as_ref()
+        .expect("parameters present")
+        .iter()
+        .map(|p| match &p.label {
+            ParameterLabel::LabelOffsets([s, e]) => (*s, *e),
+            ParameterLabel::Simple(_) => panic!("expected label offsets, not a string label"),
+        })
+        .collect()
+}
+
+#[tokio::test]
+async fn test_signature_help_stdlib_fn() {
+    // `L.map` is a plain stdlib `fn`; its signature is read from the materialised
+    // `list.ridge`. The call has two argument atoms, so the active parameter
+    // follows which one the cursor sits in.
+    let src = "import std.list as L\npub fn run f xs = L.map f xs\n";
+    let (service, _socket, uri) = hover_fixture(src).await;
+    let server = service.inner();
+
+    // Line 1: `pub fn run f xs = L.map f xs`. The call starts at column 18; its
+    // arguments `f` and `xs` are at columns 24 and 26.
+    let help = server
+        .signature_help(signature_at(&uri, 1, 24))
+        .await
+        .expect("signature_help ok")
+        .expect("a signature for `L.map`");
+    assert_eq!(
+        help.signatures[0].label,
+        "map (f: fn a -> b) (xs: List a) -> List b"
+    );
+    // The parameter offsets bracket each parameter exactly inside the label.
+    assert_eq!(param_offsets(&help), vec![(4, 18), (19, 31)]);
+    let label = &help.signatures[0].label;
+    assert_eq!(&label[4..18], "(f: fn a -> b)");
+    assert_eq!(&label[19..31], "(xs: List a)");
+    assert_eq!(
+        help.active_parameter,
+        Some(0),
+        "cursor on the first argument"
+    );
+
+    // Cursor on the second argument `xs` (column 26).
+    let (_, active) = sig_label_active(
+        server
+            .signature_help(signature_at(&uri, 1, 26))
+            .await
+            .expect("ok"),
+    )
+    .expect("signature");
+    assert_eq!(active, 1, "cursor on the second argument");
+
+    // Cursor in the whitespace right after `f` (column 25): the next parameter
+    // is active.
+    let (_, active) = sig_label_active(
+        server
+            .signature_help(signature_at(&uri, 1, 25))
+            .await
+            .expect("ok"),
+    )
+    .expect("signature");
+    assert_eq!(active, 1, "the gap after an argument advances to the next");
+
+    // Cursor on the callee name `map` itself (column 21): the signature shows
+    // with the first parameter active, no argument attributed yet.
+    let (label, active) = sig_label_active(
+        server
+            .signature_help(signature_at(&uri, 1, 21))
+            .await
+            .expect("ok"),
+    )
+    .expect("a signature on the callee");
+    assert_eq!(label, "map (f: fn a -> b) (xs: List a) -> List b");
+    assert_eq!(active, 0);
+}
+
+#[tokio::test]
+async fn test_signature_help_stdlib_class_method() {
+    // A bare `filter` carries a `ClassMethod` binding for the stdlib `Refinable`
+    // class (redeclared so the resolver stamps it, the same trick the goto test
+    // uses). The signature is the verb's canonical one from `repo.ridge`, not the
+    // workspace redeclaration.
+    let src = concat!(
+        "pub class Refinable q p | q -> p =\n",
+        "  filter (pred: p) (x: q) -> q\n",
+        "pub fn run q p -> q = filter p q\n",
+    );
+    let (service, _socket, uri) = hover_fixture(src).await;
+    let server = service.inner();
+
+    // Line 2: `pub fn run q p -> q = filter p q`. The call `filter p q` starts at
+    // column 22; the arguments `p` and `q` are at columns 29 and 31.
+    let (label, active) = sig_label_active(
+        server
+            .signature_help(signature_at(&uri, 2, 29))
+            .await
+            .expect("ok"),
+    )
+    .expect("a stdlib class-method signature");
+    assert_eq!(label, "filter (pred: Quote p) (x: q) -> q");
+    assert_eq!(active, 0, "cursor on the first argument");
+
+    let (_, active) = sig_label_active(
+        server
+            .signature_help(signature_at(&uri, 2, 31))
+            .await
+            .expect("ok"),
+    )
+    .expect("signature");
+    assert_eq!(active, 1, "cursor on the second argument");
+}
+
+#[tokio::test]
+async fn test_signature_help_and_goto_workspace_class_method() {
+    // A class declared in the workspace with no stdlib counterpart. Its method
+    // call gets both a signature (read from the declaration) and go-to-definition
+    // onto the method-name signature — the workspace class-method path.
+    let src = concat!(
+        "pub class Greeter a =\n",
+        "  greetWith (greeting: Text) (subject: a) -> Text\n",
+        "pub fn run = greetWith \"hi\" 3\n",
+    );
+    let (service, _socket, uri) = hover_fixture(src).await;
+    let server = service.inner();
+
+    // Line 2: `pub fn run = greetWith "hi" 3`. `greetWith` spans columns 13..22;
+    // the arguments `"hi"` and `3` are at columns 23 and 28.
+    let (label, active) = sig_label_active(
+        server
+            .signature_help(signature_at(&uri, 2, 15))
+            .await
+            .expect("ok"),
+    )
+    .expect("a workspace class-method signature");
+    assert_eq!(label, "greetWith (greeting: Text) (subject: a) -> Text");
+    assert_eq!(active, 0, "cursor on the callee shows the first parameter");
+
+    let (_, active) = sig_label_active(
+        server
+            .signature_help(signature_at(&uri, 2, 28))
+            .await
+            .expect("ok"),
+    )
+    .expect("signature");
+    assert_eq!(active, 1, "cursor on the second argument");
+
+    // Go-to-definition on the same `greetWith` use lands on the method-name
+    // signature in the workspace class declaration (line 1, column 2).
+    let goto = server
+        .goto_definition(goto_at(&uri, 2, 15))
+        .await
+        .expect("ok");
+    let loc = scalar_location(goto).expect("workspace class-method definition");
+    assert_eq!(loc.uri, uri, "definition is in the same workspace file");
+    assert_eq!(
+        loc.range.start.line, 1,
+        "lands on the method signature line"
+    );
+    assert_eq!(loc.range.start.character, 2, "at the method name");
+}
+
+#[tokio::test]
+async fn test_signature_help_none_off_call() {
+    // Away from any call there is no signature to show.
+    let src = "import std.list as L\npub fn run f xs = L.map f xs\n";
+    let (service, _socket, uri) = hover_fixture(src).await;
+    let server = service.inner();
+
+    // The `fn` keyword on line 1 (column 4) is inside no call and is no name.
+    let off = server
+        .signature_help(signature_at(&uri, 1, 4))
+        .await
+        .expect("signature_help ok");
+    assert!(off.is_none(), "no signature help on a keyword");
+}

@@ -3548,3 +3548,181 @@ async fn test_field_navigation_cross_module() {
     assert_eq!(loc.uri, lib_uri, "type decl lives in Lib.ridge");
     assert_eq!((loc.range.start.line, loc.range.start.character), (0, 9));
 }
+
+#[tokio::test]
+async fn test_field_rename() {
+    let (service, _socket, uri) = hover_fixture(FIELD_SRC).await;
+    let server = service.inner();
+
+    // prepareRename on the `u.age` use (line 2) underlines just the field token
+    // (col 36) and offers its current name.
+    let prep = server
+        .prepare_rename(prepare_rename_at(&uri, 2, 37))
+        .await
+        .expect("ok")
+        .expect("a record field is renameable");
+    match prep {
+        PrepareRenameResponse::RangeWithPlaceholder { range, placeholder } => {
+            assert_eq!(
+                (range.start.line, range.start.character),
+                (2, 36),
+                "underlines the field token under the cursor"
+            );
+            assert_eq!(placeholder, "age", "placeholder is the field name");
+        }
+        other => panic!("expected RangeWithPlaceholder, got {other:?}"),
+    }
+
+    // Renaming `User.age` from a use rewrites the declaration (line 0) and every
+    // `User.age` use (lines 2 and 4×2) — never the `Pet.age` use on line 3.
+    let edit = server
+        .rename(rename_at(&uri, 2, 37, "years"))
+        .await
+        .expect("ok");
+    assert_eq!(
+        rename_sites(edit.as_ref(), &uri),
+        vec![(0, 18), (2, 36), (4, 34), (4, 42)],
+        "the declaration and every User.age use move together"
+    );
+    if let Some((_, text)) = rename_edits(edit.as_ref(), &uri).first() {
+        assert_eq!(text, "years", "edits carry the new name");
+    }
+
+    // The same rename works from the field declaration itself (line 0, col 19).
+    let from_decl = server
+        .rename(rename_at(&uri, 0, 19, "years"))
+        .await
+        .expect("ok");
+    assert_eq!(
+        rename_sites(from_decl.as_ref(), &uri),
+        vec![(0, 18), (2, 36), (4, 34), (4, 42)],
+        "a rename from the declaration covers the same sites"
+    );
+
+    // `Pet.age` is a disjoint rename: its declaration (line 1) and its one use
+    // (line 3), never a User.age site.
+    let pet = server
+        .rename(rename_at(&uri, 3, 35, "years"))
+        .await
+        .expect("ok");
+    assert_eq!(
+        rename_sites(pet.as_ref(), &uri),
+        vec![(1, 17), (3, 34)],
+        "Pet.age renames independently of User.age"
+    );
+}
+
+#[tokio::test]
+async fn test_field_rename_rejects_invalid_and_collision() {
+    let (service, _socket, uri) = hover_fixture(FIELD_SRC).await;
+    let server = service.inner();
+
+    // A reserved keyword and a capitalised name are both invalid for a field.
+    let kw = server.rename(rename_at(&uri, 2, 37, "if")).await;
+    assert!(kw.is_err(), "a field cannot be renamed to a keyword");
+    let upper = server.rename(rename_at(&uri, 2, 37, "Age")).await;
+    assert!(upper.is_err(), "a field must stay a lowercase identifier");
+
+    // `User` already has a `name` field, so renaming `age` onto it would create
+    // a duplicate — reject it.
+    let collision = server.rename(rename_at(&uri, 2, 37, "name")).await;
+    assert!(
+        collision.is_err(),
+        "renaming onto an existing field name is rejected"
+    );
+}
+
+#[tokio::test]
+async fn test_field_document_highlight() {
+    let (service, _socket, uri) = hover_fixture(FIELD_SRC).await;
+    let server = service.inner();
+
+    // From a `User.age` use (line 2): the declaration is the write, every
+    // User.age use is a read, and the Pet.age use on line 3 is excluded.
+    let from_use = server
+        .document_highlight(highlight_at(&uri, 2, 37))
+        .await
+        .expect("ok")
+        .expect("highlights of User.age");
+    assert_eq!(
+        highlight_spots(&from_use),
+        vec![
+            (0, 18, DocumentHighlightKind::WRITE),
+            (2, 36, DocumentHighlightKind::READ),
+            (4, 34, DocumentHighlightKind::READ),
+            (4, 42, DocumentHighlightKind::READ),
+        ],
+        "declaration writes, every User.age use reads"
+    );
+
+    // The same set from the declaration name itself (line 0, col 19).
+    let from_decl = server
+        .document_highlight(highlight_at(&uri, 0, 19))
+        .await
+        .expect("ok")
+        .expect("highlights from the User.age declaration");
+    assert_eq!(highlight_spots(&from_decl), highlight_spots(&from_use));
+
+    // `Pet.age` is a disjoint set: its declaration (write) and its one use.
+    let pet = server
+        .document_highlight(highlight_at(&uri, 3, 35))
+        .await
+        .expect("ok")
+        .expect("highlights of Pet.age");
+    assert_eq!(
+        highlight_spots(&pet),
+        vec![
+            (1, 17, DocumentHighlightKind::WRITE),
+            (3, 34, DocumentHighlightKind::READ),
+        ],
+        "Pet.age highlights independently of User.age"
+    );
+}
+
+#[tokio::test]
+async fn test_field_rename_and_highlight_cross_module() {
+    let (service, _socket, app_uri, lib_uri) = record_ws_fixture().await;
+    let server = service.inner();
+
+    // Renaming `u.age` from the app (line 1, col 35) rewrites both the use in
+    // Main.ridge and the declaration in Lib.ridge.
+    let edit = server
+        .rename(rename_at(&app_uri, 1, 35, "years"))
+        .await
+        .expect("ok");
+    assert_eq!(
+        rename_sites(edit.as_ref(), &lib_uri),
+        vec![(0, 18)],
+        "the field declaration in Lib.ridge is rewritten"
+    );
+    assert_eq!(
+        rename_sites(edit.as_ref(), &app_uri),
+        vec![(1, 34)],
+        "the use in Main.ridge is rewritten"
+    );
+
+    // documentHighlight never leaves the cursor's file: from the app use it
+    // marks only the use there; the declaration lives in Lib.ridge, so no write.
+    let app = server
+        .document_highlight(highlight_at(&app_uri, 1, 35))
+        .await
+        .expect("ok")
+        .expect("field highlights in the app");
+    assert_eq!(
+        highlight_spots(&app),
+        vec![(1, 34, DocumentHighlightKind::READ)],
+        "the app use only, no cross-file write"
+    );
+
+    // From the Lib declaration: the declaration is the write, with no app reads.
+    let lib = server
+        .document_highlight(highlight_at(&lib_uri, 0, 19))
+        .await
+        .expect("ok")
+        .expect("field highlights at the declaration");
+    assert_eq!(
+        highlight_spots(&lib),
+        vec![(0, 18, DocumentHighlightKind::WRITE)],
+        "the declaration write only, same file"
+    );
+}

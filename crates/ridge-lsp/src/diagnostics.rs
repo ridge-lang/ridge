@@ -44,6 +44,34 @@ pub fn source_id_to_uri(workspace_root: &Path, source_id: &str) -> Url {
     Url::from_file_path(workspace_root.join(source_id)).unwrap_or_else(|()| unknown_uri())
 }
 
+/// A normalization-stable key for a `file:` URI.
+///
+/// Editors disagree on how to spell the same path in a URI. On Windows in
+/// particular, VS Code sends a lower-case drive letter with a percent-encoded
+/// colon (`file:///c%3A/dir/x.ridge`), whereas a URI the server derives from an
+/// on-disk path carries an upper-case drive and a literal colon
+/// (`file:///C:/dir/x.ridge`). Comparing those two `Url`s directly then misses,
+/// so every position query (hover, definition, ...) returns nothing even though
+/// pushed diagnostics — which the client re-normalizes on its side — still land.
+///
+/// Folding both forms to the decoded filesystem path, lower-cased on Windows
+/// (whose filesystem is case-insensitive), yields a key that matches whichever
+/// spelling arrives. On case-sensitive platforms the path is returned as-is.
+#[must_use]
+pub fn uri_key(uri: &Url) -> String {
+    match uri.to_file_path() {
+        Ok(path) => {
+            let s = path.to_string_lossy();
+            if cfg!(windows) {
+                s.to_lowercase()
+            } else {
+                s.into_owned()
+            }
+        }
+        Err(()) => uri.as_str().to_owned(),
+    }
+}
+
 // ── Severity mapping ──────────────────────────────────────────────────────────
 
 /// Map a Ridge `Severity` to an LSP `DiagnosticSeverity`.
@@ -182,5 +210,22 @@ mod tests {
         let range = span_to_range(Span::new(3, 6), src);
         assert_eq!(range.start.character, 3);
         assert_eq!(range.end.character, 6);
+    }
+
+    #[test]
+    fn uri_key_is_stable_for_the_same_uri() {
+        let u = Url::parse("file:///home/u/app/src/Main.ridge").unwrap();
+        assert_eq!(uri_key(&u), uri_key(&u));
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn uri_key_folds_windows_drive_case_and_colon_encoding() {
+        // The two spellings of one path that a client (VS Code) and the server
+        // produce on Windows must resolve to the same key, or every position
+        // query misses the index while pushed diagnostics still land.
+        let from_client = Url::parse("file:///c%3A/Dir/App/src/Main.ridge").unwrap();
+        let from_server = Url::parse("file:///C:/Dir/App/src/Main.ridge").unwrap();
+        assert_eq!(uri_key(&from_client), uri_key(&from_server));
     }
 }

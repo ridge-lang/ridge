@@ -34,10 +34,12 @@ ridge-types      = { path = "../ridge-types" }
 ridge-stdlib     = { path = "../ridge-stdlib" }
 ridge-parser     = { path = "../ridge-parser" }
 ridge-ast        = { path = "../ridge-ast" }
+ridge-fmt        = { path = "../ridge-fmt" }
 
 [dev-dependencies]
 tempfile = "3"
 tokio    = { version = "1", features = ["rt-multi-thread", "macros", "io-std", "time", "sync"] }
+ridge-fmt = { path = "../ridge-fmt" }
 
 [lints]
 workspace = true

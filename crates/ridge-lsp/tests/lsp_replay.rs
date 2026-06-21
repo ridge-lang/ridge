@@ -2458,3 +2458,114 @@ async fn test_rename_imported_type_across_files() {
         "the import clause and both annotations are rewritten"
     );
 }
+
+// ── Test 25: document formatting (textDocument/formatting) ─────────────────────
+
+/// Open a single in-memory document under a throwaway workspace root and return
+/// the service plus the document URI. Formatting reads the raw buffer, so no
+/// compile needs to finish first.
+async fn open_single_doc(
+    text: &str,
+) -> (
+    tower_lsp::LspService<RidgeLanguageServer>,
+    tower_lsp::ClientSocket,
+    Url,
+) {
+    let dir = tempfile::TempDir::new().expect("temp dir");
+    let root = dir.path().to_path_buf();
+    let root_uri = Url::from_file_path(&root).expect("root URI");
+    let file_uri = Url::from_file_path(root.join("main.ridge")).expect("file URI");
+    let (service, socket) = build_test_service();
+    {
+        let server = service.inner();
+        server
+            .initialize(InitializeParams {
+                root_uri: Some(root_uri),
+                capabilities: ClientCapabilities::default(),
+                ..InitializeParams::default()
+            })
+            .await
+            .expect("initialize");
+        server
+            .did_open(DidOpenTextDocumentParams {
+                text_document: TextDocumentItem {
+                    uri: file_uri.clone(),
+                    language_id: "ridge".to_owned(),
+                    version: 1,
+                    text: text.to_owned(),
+                },
+            })
+            .await;
+    }
+    std::mem::forget(dir);
+    (service, socket, file_uri)
+}
+
+fn format_params(uri: &Url) -> DocumentFormattingParams {
+    DocumentFormattingParams {
+        text_document: TextDocumentIdentifier { uri: uri.clone() },
+        options: FormattingOptions::default(),
+        work_done_progress_params: WorkDoneProgressParams::default(),
+    }
+}
+
+#[tokio::test]
+async fn test_formatting_reformats_messy_source() {
+    // Parseable but mis-spaced and over-indented, so the formatter has work.
+    let messy = "fn  add (x: Int) (y: Int) -> Int =\n        x+y\n";
+    let (service, _socket, uri) = open_single_doc(messy).await;
+    let server = service.inner();
+
+    let edits = server
+        .formatting(format_params(&uri))
+        .await
+        .expect("formatting ok")
+        .expect("a messy buffer yields an edit");
+
+    // A whole-document replacement is a single edit from the origin to the end
+    // of the buffer (the input has two lines plus a trailing newline).
+    assert_eq!(edits.len(), 1);
+    assert_eq!(edits[0].range.start, Position::new(0, 0));
+    assert_eq!(edits[0].range.end, Position::new(2, 0));
+    // The replacement is exactly what `ridge-fmt` produces — the server is a
+    // thin wrapper over the engine the CLI's `ridge fmt` already uses.
+    let expected = ridge_fmt::format_source(messy).expect("formats");
+    assert_eq!(edits[0].new_text, expected);
+    assert_ne!(edits[0].new_text, messy);
+}
+
+#[tokio::test]
+async fn test_formatting_noop_on_already_formatted() {
+    // Feed the formatter's own output back in: nothing is left to change.
+    let formatted = ridge_fmt::format_source("fn  add (x: Int) (y: Int) -> Int =\n        x+y\n")
+        .expect("formats");
+    let (service, _socket, uri) = open_single_doc(&formatted).await;
+    let server = service.inner();
+
+    let edits = server
+        .formatting(format_params(&uri))
+        .await
+        .expect("formatting ok");
+    assert!(
+        edits.is_none(),
+        "an already-formatted buffer yields no edits"
+    );
+}
+
+#[tokio::test]
+async fn test_formatting_skips_unparseable() {
+    let broken = "fn = = =\n";
+    // Precondition: the formatter rejects this buffer.
+    assert!(ridge_fmt::format_source(broken).is_err());
+    let (service, _socket, uri) = open_single_doc(broken).await;
+    let server = service.inner();
+
+    let edits = server
+        .formatting(format_params(&uri))
+        .await
+        .expect("formatting ok");
+    assert!(
+        edits.is_none(),
+        "a buffer the parser rejects is left untouched"
+    );
+}

@@ -1673,6 +1673,7 @@ dependencies = [
  "ridge-ast",
  "ridge-diagnostics",
  "ridge-driver",
+ "ridge-fmt",
  "ridge-ir",
  "ridge-lexer",
  "ridge-manifest",

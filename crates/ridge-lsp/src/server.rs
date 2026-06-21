@@ -452,6 +452,7 @@ impl LanguageServer for RidgeLanguageServer {
                     work_done_progress_options: WorkDoneProgressOptions::default(),
                 })),
                 document_highlight_provider: Some(OneOf::Left(true)),
+                document_formatting_provider: Some(OneOf::Left(true)),
                 completion_provider: Some(CompletionOptions {
                     trigger_characters: Some(vec![".".to_owned()]),
                     resolve_provider: Some(false),
@@ -696,6 +697,45 @@ impl LanguageServer for RidgeLanguageServer {
             })
             .collect();
         Ok(Some(CompletionResponse::Array(items)))
+    }
+
+    /// `textDocument/formatting` — reformat the whole document with `ridge-fmt`.
+    ///
+    /// Emits a single full-document replacement when the formatter produces a
+    /// different string. A buffer the parser rejects (`FormatError`) yields no
+    /// edits — the parse diagnostics already flag it, and the formatter never
+    /// rewrites a broken file — and so does an already-formatted buffer.
+    async fn formatting(
+        &self,
+        params: DocumentFormattingParams,
+    ) -> LspResult<Option<Vec<TextEdit>>> {
+        let uri = params.text_document.uri;
+
+        let text = {
+            let snap = self.state.lock().await;
+            snap.open_docs.get(&uri).cloned()
+        };
+        let Some(text) = text else {
+            return Ok(None);
+        };
+
+        let Ok(formatted) = ridge_fmt::format_source(&text) else {
+            return Ok(None);
+        };
+        if formatted == text {
+            return Ok(None);
+        }
+
+        let index = LineIndex::new(&text);
+        let end_byte = u32::try_from(text.len()).unwrap_or(u32::MAX);
+        let (end_line, end_char) = index.byte_to_utf16(end_byte);
+        Ok(Some(vec![TextEdit {
+            range: Range {
+                start: Position::new(0, 0),
+                end: Position::new(end_line, end_char),
+            },
+            new_text: formatted,
+        }]))
     }
 }
 

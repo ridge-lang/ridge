@@ -10,8 +10,14 @@ completion as you type.
 - Syntax highlighting for `.ridge` files (TextMate grammar).
 - Live diagnostics from `ridge-lsp` — type errors, capability violations,
   parse errors — shown inline and in the **Problems** panel.
-- Hover for inferred types, go-to-definition across the workspace, and
-  identifier completion, all served by `ridge-lsp`.
+- Hover for inferred types; go-to-definition across the workspace and into
+  the standard library; find-references, rename, signature help, document
+  formatting, document and workspace symbols, inlay hints, and identifier
+  completion — all served by `ridge-lsp`.
+- Semantic highlighting that colours identifiers the grammar cannot tell
+  apart — function vs variable vs type vs constructor vs stdlib symbol — and
+  surfaces capability annotations (`io`, `fs`, `net`, `db`, ...) as their own
+  token type.
 - Comment toggling with `--`.
 - Bracket matching and auto-closing for `()`, `[]`, `{}`, and `""`.
 - Auto-indentation for the offside layout: blocks opened by `=`, `->`,
@@ -79,13 +85,6 @@ itself rarely helps for compiler-side issues.
 
 ## Known limitations
 
-- **Capability highlighting**: capabilities (`io`, `fs`, `net`, etc.) render
-  as plain identifiers. Distinguishing capability call-sites from
-  same-named local variables requires LSP semantic tokens; tracked for a
-  future release.
-- **Standard-library navigation**: go-to-definition and member completion
-  currently resolve workspace symbols; jumping into `std.*` definitions and
-  completing typeclass methods (e.g. after `Repo.`) is in progress.
 - **First open before `ridge-lsp` is installed**: the extension activates
   and registers the language, but diagnostics only appear once
   `ridge-lsp` is available and VS Code is reloaded.

@@ -776,6 +776,45 @@ impl LanguageServer for RidgeLanguageServer {
         Ok(index.signature_help_at(&uri, pos.position.line, pos.position.character))
     }
 
+    /// `textDocument/semanticTokens/full` — semantic highlighting for the whole
+    /// document.
+    async fn semantic_tokens_full(
+        &self,
+        params: SemanticTokensParams,
+    ) -> LspResult<Option<SemanticTokensResult>> {
+        let uri = params.text_document.uri;
+        let index = {
+            let snap = self.state.lock().await;
+            snap.index.clone()
+        };
+        let Some(index) = index else {
+            return Ok(None);
+        };
+        Ok(index
+            .semantic_tokens(&uri)
+            .map(SemanticTokensResult::Tokens))
+    }
+
+    /// `textDocument/semanticTokens/range` — semantic highlighting restricted to
+    /// the editor's visible region, for large files.
+    async fn semantic_tokens_range(
+        &self,
+        params: SemanticTokensRangeParams,
+    ) -> LspResult<Option<SemanticTokensRangeResult>> {
+        let uri = params.text_document.uri;
+        let range = params.range;
+        let index = {
+            let snap = self.state.lock().await;
+            snap.index.clone()
+        };
+        let Some(index) = index else {
+            return Ok(None);
+        };
+        Ok(index
+            .semantic_tokens_in_range(&uri, range)
+            .map(SemanticTokensRangeResult::Tokens))
+    }
+
     /// `textDocument/codeAction` — quick-fixes. For a `T014` capability error
     /// on a function that declares no capabilities, offers an edit that adds the
     /// inferred capabilities to its signature: the annotation stays explicit and
@@ -872,6 +911,20 @@ fn server_capabilities() -> ServerCapabilities {
             retrigger_characters: Some(vec![" ".to_owned()]),
             work_done_progress_options: WorkDoneProgressOptions::default(),
         }),
+        // Semantic highlighting over the resolved program: it colours
+        // identifiers the TextMate grammar can't disambiguate, and surfaces the
+        // capability annotations as their own token type.
+        semantic_tokens_provider: Some(SemanticTokensServerCapabilities::SemanticTokensOptions(
+            SemanticTokensOptions {
+                legend: SemanticTokensLegend {
+                    token_types: crate::index::SEMANTIC_TOKEN_TYPES.to_vec(),
+                    token_modifiers: crate::index::SEMANTIC_TOKEN_MODIFIERS.to_vec(),
+                },
+                full: Some(SemanticTokensFullOptions::Bool(true)),
+                range: Some(true),
+                work_done_progress_options: WorkDoneProgressOptions::default(),
+            },
+        )),
         completion_provider: Some(CompletionOptions {
             trigger_characters: Some(vec![".".to_owned()]),
             resolve_provider: Some(false),

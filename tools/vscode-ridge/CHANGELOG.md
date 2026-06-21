@@ -15,6 +15,11 @@ whatever Ridge release is installed.
 
 ### Added
 
+- Semantic highlighting from `ridge-lsp`, colouring identifiers the
+  grammar cannot tell apart — function vs variable vs type vs constructor
+  vs stdlib symbol — and surfacing capability annotations (`io`, `fs`,
+  `net`, `db`, ...) as their own token type, mapped to a `storage.modifier`
+  scope so default themes pick it up.
 - Auto-indentation for Ridge's offside layout. Pressing Enter after a
   line that opens a block — one ending in `=`, `->`, `<-`, `then`,
   `else`, or `try`, or a `match` head — indents the new line, and the

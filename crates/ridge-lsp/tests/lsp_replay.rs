@@ -3098,3 +3098,169 @@ async fn test_signature_help_none_off_call() {
         .expect("signature_help ok");
     assert!(off.is_none(), "no signature help on a keyword");
 }
+
+// ── Test 30: semantic tokens (textDocument/semanticTokens) ────────────────────
+
+const SEMANTIC_SRC: &str = concat!(
+    "import std.list as L\n",              // line 0
+    "type Color = Red | Green\n",          // line 1
+    "const maxAge: Int = 120\n",           // line 2
+    "pub fn io greet (n: Int) -> Int =\n", // line 3
+    "    L.map greet Red\n",               // line 4
+);
+
+fn semantic_params(uri: &Url) -> SemanticTokensParams {
+    SemanticTokensParams {
+        work_done_progress_params: WorkDoneProgressParams::default(),
+        partial_result_params: PartialResultParams::default(),
+        text_document: TextDocumentIdentifier { uri: uri.clone() },
+    }
+}
+
+fn semantic_range_params(uri: &Url, range: Range) -> SemanticTokensRangeParams {
+    SemanticTokensRangeParams {
+        work_done_progress_params: WorkDoneProgressParams::default(),
+        partial_result_params: PartialResultParams::default(),
+        text_document: TextDocumentIdentifier { uri: uri.clone() },
+        range,
+    }
+}
+
+/// Decode the relative token stream into `(line, char, len, type, [modifiers])`.
+fn decode_tokens(data: &[SemanticToken]) -> Vec<(u32, u32, u32, String, Vec<String>)> {
+    let types = ridge_lsp::index::SEMANTIC_TOKEN_TYPES;
+    let modifiers = ridge_lsp::index::SEMANTIC_TOKEN_MODIFIERS;
+    let mut out = Vec::new();
+    let mut line = 0u32;
+    let mut start = 0u32;
+    for t in data {
+        if t.delta_line == 0 {
+            start += t.delta_start;
+        } else {
+            line += t.delta_line;
+            start = t.delta_start;
+        }
+        let ty = types[t.token_type as usize].as_str().to_owned();
+        let mods = modifiers
+            .iter()
+            .enumerate()
+            .filter(|(i, _)| t.token_modifiers_bitset & (1u32 << i) != 0)
+            .map(|(_, m)| m.as_str().to_owned())
+            .collect();
+        out.push((line, start, t.length, ty, mods));
+    }
+    out
+}
+
+fn tokens_of(result: Option<SemanticTokensResult>) -> Vec<(u32, u32, u32, String, Vec<String>)> {
+    match result {
+        Some(SemanticTokensResult::Tokens(t)) => decode_tokens(&t.data),
+        _ => Vec::new(),
+    }
+}
+
+/// The (type, modifiers) of the token starting at `(line, char)`, if any.
+fn token_at(
+    toks: &[(u32, u32, u32, String, Vec<String>)],
+    line: u32,
+    char: u32,
+) -> Option<(String, Vec<String>)> {
+    toks.iter()
+        .find(|(l, c, _, _, _)| *l == line && *c == char)
+        .map(|(_, _, _, ty, mods)| (ty.clone(), mods.clone()))
+}
+
+#[tokio::test]
+async fn test_semantic_tokens_classifies_names_and_capabilities() {
+    let (service, _socket, uri) = hover_fixture(SEMANTIC_SRC).await;
+    let server = service.inner();
+
+    let toks = tokens_of(
+        server
+            .semantic_tokens_full(semantic_params(&uri))
+            .await
+            .expect("semantic_tokens ok"),
+    );
+
+    let expect = |line: u32, char: u32, ty: &str, mods: &[&str]| {
+        let got = token_at(&toks, line, char)
+            .unwrap_or_else(|| panic!("expected a token at ({line}, {char})"));
+        assert_eq!(got.0, ty, "type at ({line}, {char})");
+        assert_eq!(got.1, mods, "modifiers at ({line}, {char})");
+    };
+
+    // Declarations — their name nodes carry no binding, so the declaration pass
+    // is their only source.
+    expect(1, 5, "type", &["declaration"]); // type Color
+    expect(1, 13, "enumMember", &["declaration"]); // variant Red
+    expect(1, 19, "enumMember", &["declaration"]); // variant Green
+    expect(2, 6, "variable", &["declaration", "readonly"]); // const maxAge
+    expect(3, 10, "function", &["declaration"]); // fn greet
+                                                 // The capability annotation — the security-visible token type.
+    expect(3, 7, "capability", &[]); // io
+                                     // A parameter binder.
+    expect(3, 17, "parameter", &["declaration"]); // (n: Int)
+                                                  // A qualified stdlib call, coloured per segment.
+    expect(4, 4, "namespace", &["defaultLibrary"]); // L
+    expect(4, 6, "function", &["defaultLibrary"]); // map
+                                                   // Use sites carry no declaration modifier.
+    expect(4, 10, "function", &[]); // greet
+    expect(4, 16, "enumMember", &[]); // Red
+}
+
+#[tokio::test]
+async fn test_semantic_tokens_range_limits_to_region() {
+    let (service, _socket, uri) = hover_fixture(SEMANTIC_SRC).await;
+    let server = service.inner();
+
+    // Restrict to line 4 (the `L.map greet Red` call).
+    let range = Range {
+        start: Position::new(4, 0),
+        end: Position::new(4, 20),
+    };
+    let result = server
+        .semantic_tokens_range(semantic_range_params(&uri, range))
+        .await
+        .expect("semantic_tokens_range ok");
+    let toks = match result {
+        Some(SemanticTokensRangeResult::Tokens(t)) => decode_tokens(&t.data),
+        _ => Vec::new(),
+    };
+
+    assert!(!toks.is_empty(), "the range has tokens");
+    assert!(
+        toks.iter().all(|(line, ..)| *line == 4),
+        "only line-4 tokens are returned, got {toks:?}"
+    );
+    // The qualified call is still split into namespace + function.
+    assert_eq!(
+        token_at(&toks, 4, 4).map(|t| t.0),
+        Some("namespace".to_owned())
+    );
+    assert_eq!(
+        token_at(&toks, 4, 6).map(|t| t.0),
+        Some("function".to_owned())
+    );
+}
+
+#[tokio::test]
+async fn test_semantic_tokens_no_overlap() {
+    // Whatever the document, the emitted tokens must be strictly ordered and
+    // pairwise disjoint — the encoding the client decodes depends on it.
+    let (service, _socket, uri) = hover_fixture(SEMANTIC_SRC).await;
+    let server = service.inner();
+    let toks = tokens_of(
+        server
+            .semantic_tokens_full(semantic_params(&uri))
+            .await
+            .expect("ok"),
+    );
+    for win in toks.windows(2) {
+        let a = &win[0];
+        let b = &win[1];
+        assert!((a.0, a.1) < (b.0, b.1), "ordered: {a:?} then {b:?}");
+        if a.0 == b.0 {
+            assert!(a.1 + a.2 <= b.1, "no overlap on a line: {a:?} then {b:?}");
+        }
+    }
+}

@@ -22,8 +22,8 @@ use ridge_resolve::{
     LocalId, ModuleId, NodeId, NodeIdMap, NodeKind, ResolvedVisibility, ResolvedWorkspace,
     ScopeIndex, StdlibModuleId, SymbolKind, SymbolTable, BUILTINS,
 };
-use ridge_typecheck::{render_type_with, TypedWorkspace};
-use ridge_types::{TyConDecl, TyConKind, Type};
+use ridge_typecheck::{render_type_with, TypeError, TypedWorkspace};
+use ridge_types::{CapabilitySet, TyConDecl, TyConKind, Type};
 use tower_lsp::lsp_types::{
     CompletionItemKind, DocumentHighlight, DocumentHighlightKind, DocumentSymbol, InlayHint,
     InlayHintKind, InlayHintLabel, Location, Position, PrepareRenameResponse, Range,
@@ -144,6 +144,29 @@ pub struct WorkspaceIndex {
     /// Per-module document URI, indexed by `ModuleId.0` (for cross-file
     /// go-to-definition targets). `None` if the path had no valid URI.
     pub module_uris: Vec<Option<Url>>,
+    /// Quick-fixes for `T014 CapabilityNotDeclared` on capability-free
+    /// functions: each carries the edit that adds the inferred capabilities to
+    /// the signature. Populated after the compile (which holds the structured
+    /// type errors); empty otherwise.
+    pub capability_fixes: Vec<CapabilityFix>,
+}
+
+/// A ready-to-apply quick-fix that declares the inferred capabilities on a
+/// function flagged by `T014`. Spans are already resolved to LSP ranges.
+#[derive(Debug, Clone)]
+pub struct CapabilityFix {
+    /// The document the function lives in.
+    pub uri: Url,
+    /// The whole declaration, used to decide whether a code-action request
+    /// (which carries a cursor range) lands on this function.
+    pub decl_range: Range,
+    /// The empty range just before the function name where the capability
+    /// keywords are inserted.
+    pub edit_range: Range,
+    /// The text to insert (the capabilities plus a trailing space).
+    pub new_text: String,
+    /// The code-action title shown in the editor.
+    pub title: String,
 }
 
 impl WorkspaceIndex {
@@ -223,6 +246,7 @@ impl WorkspaceIndex {
             line_indices,
             module_text,
             module_uris,
+            capability_fixes: Vec::new(),
         }
     }
 
@@ -1590,6 +1614,105 @@ fn referent_key(binding: &Binding, module: ModuleId) -> Option<ReferentKey> {
         }
         _ => None,
     }
+}
+
+/// Build the capability quick-fixes for one compile.
+///
+/// Walks the structured `T014 CapabilityNotDeclared` errors and, for each one
+/// raised against a top-level `fn` that declares NO capabilities, produces an
+/// edit inserting the inferred capability keywords just before the function
+/// name. Functions that already declare some capabilities, message handlers,
+/// `init` blocks, and inner functions are left to a follow-up: inserting the
+/// full inferred set ahead of an existing annotation would duplicate it, and
+/// the others are not matched by the top-level decl span used here.
+#[must_use]
+pub fn collect_capability_fixes(
+    line_indices: &[LineIndex],
+    module_uris: &[Option<Url>],
+    typed: &TypedWorkspace,
+    type_errors: &[(ModuleId, TypeError)],
+) -> Vec<CapabilityFix> {
+    let mut out: Vec<CapabilityFix> = Vec::new();
+    for (mid, err) in type_errors {
+        let TypeError::CapabilityNotDeclared {
+            inferred,
+            missing: _,
+            span,
+            decl,
+            ..
+        } = err
+        else {
+            continue;
+        };
+        let mi = mid.0 as usize;
+        let (Some(module), Some(Some(uri)), Some(li)) = (
+            typed.modules.get(mi),
+            module_uris.get(mi),
+            line_indices.get(mi),
+        ) else {
+            continue;
+        };
+        // Match the whole-declaration span to a top-level `fn` with no written
+        // capability annotation.
+        let Some(name_start) = module.ast.items.iter().find_map(|item| match item {
+            ridge_ast::Item::Fn(f) if f.span == *span && f.caps.is_empty() => {
+                Some(f.name.span.start)
+            }
+            _ => None,
+        }) else {
+            continue;
+        };
+        let caps = render_caps(*inferred);
+        if caps.is_empty() {
+            continue;
+        }
+        let (pl, pc) = li.byte_to_utf16(name_start);
+        let pos = Position::new(pl, pc);
+        let (sl, sc) = li.byte_to_utf16(span.start);
+        let (el, ec) = li.byte_to_utf16(span.end);
+        let noun = if caps.contains(' ') {
+            "capabilities"
+        } else {
+            "capability"
+        };
+        out.push(CapabilityFix {
+            uri: uri.clone(),
+            decl_range: Range {
+                start: Position::new(sl, sc),
+                end: Position::new(el, ec),
+            },
+            edit_range: Range {
+                start: pos,
+                end: pos,
+            },
+            new_text: format!("{caps} "),
+            title: format!("Add {noun} `{caps}` to `{decl}`"),
+        });
+    }
+    out
+}
+
+/// Render a capability set as the space-separated keyword list used in a
+/// signature (e.g. `io fs`), in the canonical declaration order.
+fn render_caps(set: CapabilitySet) -> String {
+    use ridge_ast::Capability::{Db, Env, Ffi, Fs, Io, Net, Proc, Random, Spawn, Time};
+    [
+        (Io, "io"),
+        (Fs, "fs"),
+        (Net, "net"),
+        (Time, "time"),
+        (Random, "random"),
+        (Env, "env"),
+        (Proc, "proc"),
+        (Spawn, "spawn"),
+        (Ffi, "ffi"),
+        (Db, "db"),
+    ]
+    .into_iter()
+    .filter(|(cap, _)| set.contains(*cap))
+    .map(|(_, name)| name)
+    .collect::<Vec<_>>()
+    .join(" ")
 }
 
 /// Validate a rename's `new_name` against `old_name`.

@@ -52,7 +52,7 @@ use ridge_manifest::find_workspace_root;
 use ridge_resolve::ModuleId;
 
 use crate::diagnostics::{source_id_to_uri, to_lsp_diagnostic};
-use crate::index::WorkspaceIndex;
+use crate::index::{collect_capability_fixes, WorkspaceIndex};
 
 // ── WorkspaceSnapshot ─────────────────────────────────────────────────────────
 
@@ -321,12 +321,14 @@ fn compile_blocking(
         &state.type_errors,
         &sources,
     );
-    let index = Arc::new(WorkspaceIndex::build(
-        generation,
+    let mut index = WorkspaceIndex::build(generation, &state.typed, &state.resolved, &sources);
+    index.capability_fixes = collect_capability_fixes(
+        &index.line_indices,
+        &index.module_uris,
         &state.typed,
-        &state.resolved,
-        &sources,
-    ));
+        &state.type_errors,
+    );
+    let index = Arc::new(index);
 
     // Pre-populate every module's URI so a now-clean file gets its stale
     // diagnostics cleared, then bucket the current diagnostics by file.
@@ -439,47 +441,7 @@ impl LanguageServer for RidgeLanguageServer {
         }
 
         Ok(InitializeResult {
-            capabilities: ServerCapabilities {
-                // Positions are exchanged as UTF-16 code-unit offsets, the LSP
-                // default. Advertising it explicitly documents the contract; the
-                // server converts via `ridge_lexer::LineIndex`.
-                position_encoding: Some(PositionEncodingKind::UTF16),
-                hover_provider: Some(HoverProviderCapability::Simple(true)),
-                definition_provider: Some(OneOf::Left(true)),
-                references_provider: Some(OneOf::Left(true)),
-                rename_provider: Some(OneOf::Right(RenameOptions {
-                    prepare_provider: Some(true),
-                    work_done_progress_options: WorkDoneProgressOptions::default(),
-                })),
-                document_highlight_provider: Some(OneOf::Left(true)),
-                document_formatting_provider: Some(OneOf::Left(true)),
-                document_symbol_provider: Some(OneOf::Left(true)),
-                workspace_symbol_provider: Some(OneOf::Left(true)),
-                inlay_hint_provider: Some(OneOf::Left(true)),
-                completion_provider: Some(CompletionOptions {
-                    trigger_characters: Some(vec![".".to_owned()]),
-                    resolve_provider: Some(false),
-                    ..CompletionOptions::default()
-                }),
-                text_document_sync: Some(TextDocumentSyncCapability::Options(
-                    TextDocumentSyncOptions {
-                        open_close: Some(true),
-                        change: Some(TextDocumentSyncKind::INCREMENTAL),
-                        will_save: None,
-                        will_save_wait_until: None,
-                        save: Some(TextDocumentSyncSaveOptions::SaveOptions(SaveOptions {
-                            include_text: Some(false),
-                        })),
-                    },
-                )),
-                // Diagnostics are pushed via `client.publish_diagnostics(...)`
-                // from `trigger_compile`. The pull endpoint
-                // `textDocument/diagnostic` (LSP 3.17) is intentionally not
-                // advertised because no `diagnostic()` handler is implemented;
-                // advertising the capability made LSP 3.17 clients log
-                // `-32601 Method not found` errors on every document open.
-                ..ServerCapabilities::default()
-            },
+            capabilities: server_capabilities(),
             server_info: Some(ServerInfo {
                 name: "ridge-lsp".to_owned(),
                 version: Some(env!("CARGO_PKG_VERSION").to_owned()),
@@ -791,6 +753,119 @@ impl LanguageServer for RidgeLanguageServer {
             return Ok(None);
         };
         Ok(index.inlay_hints(&uri, range))
+    }
+
+    /// `textDocument/codeAction` — quick-fixes. For a `T014` capability error
+    /// on a function that declares no capabilities, offers an edit that adds the
+    /// inferred capabilities to its signature: the annotation stays explicit and
+    /// visible, you just don't have to type it out.
+    async fn code_action(&self, params: CodeActionParams) -> LspResult<Option<CodeActionResponse>> {
+        let uri = params.text_document.uri;
+        let range = params.range;
+
+        let index = {
+            let snap = self.state.lock().await;
+            snap.index.clone()
+        };
+        let Some(index) = index else {
+            return Ok(None);
+        };
+
+        let actions: Vec<CodeActionOrCommand> = index
+            .capability_fixes
+            .iter()
+            .filter(|fix| fix.uri == uri && ranges_overlap(fix.decl_range, range))
+            .map(|fix| {
+                let mut changes = HashMap::new();
+                changes.insert(
+                    uri.clone(),
+                    vec![TextEdit {
+                        range: fix.edit_range,
+                        new_text: fix.new_text.clone(),
+                    }],
+                );
+                let diagnostics: Vec<Diagnostic> = params
+                    .context
+                    .diagnostics
+                    .iter()
+                    .filter(|d| {
+                        d.code == Some(NumberOrString::String("T014".to_owned()))
+                            && ranges_overlap(d.range, fix.decl_range)
+                    })
+                    .cloned()
+                    .collect();
+                CodeActionOrCommand::CodeAction(CodeAction {
+                    title: fix.title.clone(),
+                    kind: Some(CodeActionKind::QUICKFIX),
+                    diagnostics: if diagnostics.is_empty() {
+                        None
+                    } else {
+                        Some(diagnostics)
+                    },
+                    edit: Some(WorkspaceEdit {
+                        changes: Some(changes),
+                        ..WorkspaceEdit::default()
+                    }),
+                    ..CodeAction::default()
+                })
+            })
+            .collect();
+
+        if actions.is_empty() {
+            Ok(None)
+        } else {
+            Ok(Some(actions))
+        }
+    }
+}
+
+/// Whether two LSP ranges intersect (touching counts as overlap).
+fn ranges_overlap(a: Range, b: Range) -> bool {
+    a.start <= b.end && b.start <= a.end
+}
+
+/// The static set of capabilities the server advertises at `initialize`.
+fn server_capabilities() -> ServerCapabilities {
+    ServerCapabilities {
+        // Positions are exchanged as UTF-16 code-unit offsets, the LSP default.
+        // Advertising it explicitly documents the contract; the server converts
+        // via `ridge_lexer::LineIndex`.
+        position_encoding: Some(PositionEncodingKind::UTF16),
+        hover_provider: Some(HoverProviderCapability::Simple(true)),
+        definition_provider: Some(OneOf::Left(true)),
+        references_provider: Some(OneOf::Left(true)),
+        rename_provider: Some(OneOf::Right(RenameOptions {
+            prepare_provider: Some(true),
+            work_done_progress_options: WorkDoneProgressOptions::default(),
+        })),
+        document_highlight_provider: Some(OneOf::Left(true)),
+        document_formatting_provider: Some(OneOf::Left(true)),
+        document_symbol_provider: Some(OneOf::Left(true)),
+        workspace_symbol_provider: Some(OneOf::Left(true)),
+        inlay_hint_provider: Some(OneOf::Left(true)),
+        code_action_provider: Some(CodeActionProviderCapability::Simple(true)),
+        completion_provider: Some(CompletionOptions {
+            trigger_characters: Some(vec![".".to_owned()]),
+            resolve_provider: Some(false),
+            ..CompletionOptions::default()
+        }),
+        text_document_sync: Some(TextDocumentSyncCapability::Options(
+            TextDocumentSyncOptions {
+                open_close: Some(true),
+                change: Some(TextDocumentSyncKind::INCREMENTAL),
+                will_save: None,
+                will_save_wait_until: None,
+                save: Some(TextDocumentSyncSaveOptions::SaveOptions(SaveOptions {
+                    include_text: Some(false),
+                })),
+            },
+        )),
+        // Diagnostics are pushed via `client.publish_diagnostics(...)` from
+        // `trigger_compile`. The pull endpoint `textDocument/diagnostic`
+        // (LSP 3.17) is intentionally not advertised because no `diagnostic()`
+        // handler is implemented; advertising the capability made LSP 3.17
+        // clients log `-32601 Method not found` errors on every document open.
+        ..ServerCapabilities::default()
     }
 }
 

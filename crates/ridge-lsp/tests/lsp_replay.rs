@@ -2751,3 +2751,150 @@ async fn test_inlay_hints_clip_to_range() {
     assert_eq!(hints[0].position, Position::new(2, 13));
     assert_eq!(inlay_label(&hints[0]), ": Text");
 }
+
+// ── Test 28: capability code action (textDocument/codeAction) ─────────────────
+
+/// Build a hermetic single-file workspace whose manifest allows the `io`
+/// capability, open `main_src`, and return the service plus the index-held URI
+/// once a compile has produced an analysis index.
+async fn cap_workspace_fixture(
+    main_src: &str,
+) -> (
+    tower_lsp::LspService<RidgeLanguageServer>,
+    tower_lsp::ClientSocket,
+    Url,
+) {
+    let dir = tempfile::TempDir::new().expect("temp dir");
+    let root = dir.path().to_path_buf();
+    let app_src = root.join("app").join("src");
+    std::fs::create_dir_all(&app_src).expect("create temp workspace");
+    std::fs::write(
+        root.join("ridge.toml"),
+        "[workspace]\nname = \"cap-ws\"\nversion = \"0.1.0\"\nmembers = [\"app\"]\n",
+    )
+    .expect("workspace manifest");
+    std::fs::write(
+        root.join("app").join("ridge.toml"),
+        "[project]\nname = \"app\"\nversion = \"0.1.0\"\nkind = \"app\"\nentry = \"src/Main.ridge\"\n\n[capabilities]\nallow = [\"io\"]\n",
+    )
+    .expect("project manifest");
+    std::fs::write(app_src.join("Main.ridge"), main_src).expect("write source");
+
+    let (service, socket) = build_test_service();
+    let file_uri;
+    {
+        let server = service.inner();
+        let root_uri = Url::from_file_path(&root).expect("root URI");
+        server
+            .initialize(InitializeParams {
+                root_uri: Some(root_uri.clone()),
+                workspace_folders: Some(vec![WorkspaceFolder {
+                    uri: root_uri,
+                    name: "cap-ws".to_owned(),
+                }]),
+                capabilities: ClientCapabilities::default(),
+                ..InitializeParams::default()
+            })
+            .await
+            .expect("initialize");
+        server
+            .did_open(DidOpenTextDocumentParams {
+                text_document: TextDocumentItem {
+                    uri: Url::from_file_path(app_src.join("Main.ridge")).expect("file URI"),
+                    language_id: "ridge".to_owned(),
+                    version: 1,
+                    text: main_src.to_owned(),
+                },
+            })
+            .await;
+        let mut index = None;
+        for _ in 0..120 {
+            tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;
+            if let Some(idx) = server.workspace_index().await {
+                index = Some(idx);
+                break;
+            }
+        }
+        let index = index.expect("an index after compile");
+        file_uri = index
+            .uri_to_module
+            .keys()
+            .next()
+            .expect("one module in index")
+            .clone();
+    }
+    std::mem::forget(dir);
+    (service, socket, file_uri)
+}
+
+#[tokio::test]
+async fn test_code_action_adds_missing_capability() {
+    // `greet` calls `Io.println` (needs `io`) but declares no capabilities, so
+    // the type checker raises T014. A quick-fix offers to add `io`.
+    let src = "import std.io as Io\n\npub fn greet () -> Unit =\n    Io.println \"hi\"\n";
+    let (service, _socket, uri) = cap_workspace_fixture(src).await;
+    let server = service.inner();
+
+    let resp = server
+        .code_action(CodeActionParams {
+            text_document: TextDocumentIdentifier { uri: uri.clone() },
+            range: Range {
+                start: Position::new(2, 8),
+                end: Position::new(2, 8),
+            },
+            context: CodeActionContext::default(),
+            work_done_progress_params: WorkDoneProgressParams::default(),
+            partial_result_params: PartialResultParams::default(),
+        })
+        .await
+        .expect("code_action ok")
+        .expect("a quick-fix is offered on the flagged function");
+
+    assert_eq!(resp.len(), 1);
+    let CodeActionOrCommand::CodeAction(action) = &resp[0] else {
+        panic!("expected a CodeAction, got {:?}", resp[0]);
+    };
+    assert_eq!(action.title, "Add capability `io` to `greet`");
+    assert_eq!(action.kind, Some(CodeActionKind::QUICKFIX));
+
+    // The edit inserts `io ` immediately before the function name (`pub fn ` is
+    // seven columns).
+    let edits = action
+        .edit
+        .as_ref()
+        .and_then(|e| e.changes.as_ref())
+        .and_then(|c| c.get(&uri))
+        .expect("an edit for this document");
+    assert_eq!(edits.len(), 1);
+    assert_eq!(edits[0].new_text, "io ");
+    assert_eq!(edits[0].range.start, Position::new(2, 7));
+    assert_eq!(edits[0].range.end, Position::new(2, 7));
+}
+
+#[tokio::test]
+async fn test_code_action_none_when_clean() {
+    // A function that declares the capability it uses raises no T014, so there
+    // is no quick-fix.
+    let src = "import std.io as Io\n\npub fn io greet () -> Unit =\n    Io.println \"hi\"\n";
+    let (service, _socket, uri) = cap_workspace_fixture(src).await;
+    let server = service.inner();
+
+    let resp = server
+        .code_action(CodeActionParams {
+            text_document: TextDocumentIdentifier { uri: uri.clone() },
+            range: Range {
+                start: Position::new(2, 8),
+                end: Position::new(2, 8),
+            },
+            context: CodeActionContext::default(),
+            work_done_progress_params: WorkDoneProgressParams::default(),
+            partial_result_params: PartialResultParams::default(),
+        })
+        .await
+        .expect("code_action ok");
+
+    assert!(
+        resp.is_none(),
+        "no quick-fix on a correctly-annotated function"
+    );
+}

@@ -33,7 +33,7 @@ use tower_lsp::lsp_types::{
 };
 
 use crate::completion::{detect_context, symbol_kind, CompletionItemData, Context, KEYWORDS};
-use crate::diagnostics::source_id_to_uri;
+use crate::diagnostics::{source_id_to_uri, uri_key};
 
 /// A position-indexed view of one module's stamped nodes.
 ///
@@ -161,6 +161,12 @@ pub struct WorkspaceIndex {
     /// Document URI → [`ModuleId`]. Keyed the same way diagnostics are published
     /// (workspace root joined with the source id), so an editor-sent URI matches.
     pub uri_to_module: HashMap<Url, ModuleId>,
+    /// Document URI → [`ModuleId`], keyed by a normalization-stable [`uri_key`]
+    /// so a client-sent URI resolves regardless of drive-letter case or colon
+    /// encoding (the Windows `file:///c%3A/…` vs `file:///C:/…` split). Every
+    /// position query routes through this map; `uri_to_module` above is kept for
+    /// publishing diagnostics under the exact URI the path round-trips to.
+    uri_key_to_module: HashMap<String, ModuleId>,
     /// Per-module spatial index, indexed by `ModuleId.0`.
     pub spatial: Vec<NodeSpatialIndex>,
     /// Per-module UTF-16 ↔ byte line index, indexed by `ModuleId.0`.
@@ -211,6 +217,7 @@ impl WorkspaceIndex {
         let root: &Path = &resolved.graph.root;
 
         let mut uri_to_module: HashMap<Url, ModuleId> = HashMap::new();
+        let mut uri_key_to_module: HashMap<String, ModuleId> = HashMap::new();
         // All per-module vecs are addressed by `ModuleId.0`; pre-size and fill by
         // id so iteration order over `graph.modules` (sorted by name) doesn't
         // matter.
@@ -229,6 +236,7 @@ impl WorkspaceIndex {
             let source_id = sources.id_for_module(module.id);
             let uri = source_id_to_uri(root, source_id.as_str());
             uri_to_module.insert(uri.clone(), module.id);
+            uri_key_to_module.insert(uri_key(&uri), module.id);
             module_uris[i] = Some(uri);
             if let Some(text) = sources.text(source_id.as_str()) {
                 module_text[i] = Arc::from(text);
@@ -268,12 +276,21 @@ impl WorkspaceIndex {
             tycons: typed.tycons.clone(),
             modules,
             uri_to_module,
+            uri_key_to_module,
             spatial,
             line_indices,
             module_text,
             module_uris,
             capability_fixes: Vec::new(),
         }
+    }
+
+    /// Resolve a document `uri` to its module, tolerant of how the client spelled
+    /// the path. Routes through [`uri_key`] so a VS Code URI (`file:///c%3A/…`)
+    /// matches a module keyed from the server's own path round-trip
+    /// (`file:///C:/…`) — without it, every position query misses on Windows.
+    fn module_id_for(&self, uri: &Url) -> Option<ModuleId> {
+        self.uri_key_to_module.get(&uri_key(uri)).copied()
     }
 
     /// Map an LSP document `uri` and a byte `offset` to the narrowest enclosing
@@ -290,7 +307,7 @@ impl WorkspaceIndex {
         offset: u32,
         prefer: &[NodeKind],
     ) -> Option<(ModuleId, NodeId, NodeKind, Span)> {
-        let mid = *self.uri_to_module.get(uri)?;
+        let mid = self.module_id_for(uri)?;
         let spatial = self.spatial.get(mid.0 as usize)?;
         let (nid, kind, span) = spatial.narrowest_containing(offset, prefer)?;
         Some((mid, nid, kind, span))
@@ -304,7 +321,7 @@ impl WorkspaceIndex {
     /// hover never triggers a compile.
     #[must_use]
     pub fn hover_at(&self, uri: &Url, line: u32, utf16_col: u32) -> Option<(String, Span)> {
-        let mid = *self.uri_to_module.get(uri)?;
+        let mid = self.module_id_for(uri)?;
         let mi = mid.0 as usize;
         let offset = self.line_indices.get(mi)?.utf16_to_byte(line, utf16_col);
 
@@ -360,7 +377,7 @@ impl WorkspaceIndex {
     /// Convert a byte `span` in `uri`'s module to an LSP UTF-16 [`Range`].
     #[must_use]
     pub fn span_to_range(&self, uri: &Url, span: Span) -> Option<Range> {
-        let mid = *self.uri_to_module.get(uri)?;
+        let mid = self.module_id_for(uri)?;
         self.range_in(mid, span)
     }
 
@@ -373,7 +390,7 @@ impl WorkspaceIndex {
     /// triggers a compile.
     #[must_use]
     pub fn definition_at(&self, uri: &Url, line: u32, utf16_col: u32) -> Option<Location> {
-        let mid = *self.uri_to_module.get(uri)?;
+        let mid = self.module_id_for(uri)?;
         let mi = mid.0 as usize;
         let offset = self.line_indices.get(mi)?.utf16_to_byte(line, utf16_col);
 
@@ -449,7 +466,7 @@ impl WorkspaceIndex {
     /// immutable snapshot; never triggers a compile.
     #[must_use]
     pub fn type_definition_at(&self, uri: &Url, line: u32, utf16_col: u32) -> Option<Location> {
-        let mid = *self.uri_to_module.get(uri)?;
+        let mid = self.module_id_for(uri)?;
         let mi = mid.0 as usize;
         let offset = self.line_indices.get(mi)?.utf16_to_byte(line, utf16_col);
 
@@ -484,7 +501,7 @@ impl WorkspaceIndex {
     /// this immutable snapshot; never triggers a compile.
     #[must_use]
     pub fn signature_help_at(&self, uri: &Url, line: u32, utf16_col: u32) -> Option<SignatureHelp> {
-        let mid = *self.uri_to_module.get(uri)?;
+        let mid = self.module_id_for(uri)?;
         let mi = mid.0 as usize;
         let offset = self.line_indices.get(mi)?.utf16_to_byte(line, utf16_col);
         let src = self.module_text.get(mi)?;
@@ -641,7 +658,7 @@ impl WorkspaceIndex {
     /// immutable snapshot; never triggers a compile.
     #[must_use]
     pub fn semantic_tokens(&self, uri: &Url) -> Option<SemanticTokens> {
-        let mid = *self.uri_to_module.get(uri)?;
+        let mid = self.module_id_for(uri)?;
         let tokens = self.collect_semantic_tokens(mid)?;
         Some(encode_tokens(&tokens))
     }
@@ -650,7 +667,7 @@ impl WorkspaceIndex {
     /// `range` — the request an editor makes for a large file's visible region.
     #[must_use]
     pub fn semantic_tokens_in_range(&self, uri: &Url, range: Range) -> Option<SemanticTokens> {
-        let mid = *self.uri_to_module.get(uri)?;
+        let mid = self.module_id_for(uri)?;
         let mut tokens = self.collect_semantic_tokens(mid)?;
         tokens.retain(|t| {
             let start = Position::new(t.line, t.start);
@@ -893,7 +910,7 @@ impl WorkspaceIndex {
         utf16_col: u32,
         include_declaration: bool,
     ) -> Option<Vec<Location>> {
-        let mid = *self.uri_to_module.get(uri)?;
+        let mid = self.module_id_for(uri)?;
         let mi = mid.0 as usize;
         let offset = self.line_indices.get(mi)?.utf16_to_byte(line, utf16_col);
 
@@ -987,7 +1004,7 @@ impl WorkspaceIndex {
         line: u32,
         utf16_col: u32,
     ) -> Option<Vec<DocumentHighlight>> {
-        let mid = *self.uri_to_module.get(uri)?;
+        let mid = self.module_id_for(uri)?;
         let mi = mid.0 as usize;
         let offset = self.line_indices.get(mi)?.utf16_to_byte(line, utf16_col);
 
@@ -1307,7 +1324,7 @@ impl WorkspaceIndex {
     /// declaration name (which carries no binding — resolved via the symbol
     /// table). `None` when the cursor is not on a renameable name.
     fn rename_target_at(&self, uri: &Url, line: u32, utf16_col: u32) -> Option<RenameTarget> {
-        let mid = *self.uri_to_module.get(uri)?;
+        let mid = self.module_id_for(uri)?;
         let mi = mid.0 as usize;
         let offset = self.line_indices.get(mi)?.utf16_to_byte(line, utf16_col);
         let spatial = self.spatial.get(mi)?;
@@ -1745,7 +1762,7 @@ impl WorkspaceIndex {
     /// offset)`, the form the record-field helpers work in. `None` when the URI
     /// is not indexed.
     fn field_offset(&self, uri: &Url, line: u32, utf16_col: u32) -> Option<(usize, u32)> {
-        let mid = *self.uri_to_module.get(uri)?;
+        let mid = self.module_id_for(uri)?;
         let mi = mid.0 as usize;
         let offset = self.line_indices.get(mi)?.utf16_to_byte(line, utf16_col);
         Some((mi, offset))
@@ -1929,7 +1946,7 @@ impl WorkspaceIndex {
     /// resolver yet, so they do not appear.
     #[must_use]
     pub fn document_symbols_at(&self, uri: &Url) -> Option<Vec<DocumentSymbol>> {
-        let mid = *self.uri_to_module.get(uri)?;
+        let mid = self.module_id_for(uri)?;
         let entries = &self.modules.get(mid.0 as usize)?.symbols.entries;
 
         let mut seen_spans: Vec<Span> = Vec::new();
@@ -2162,7 +2179,7 @@ impl WorkspaceIndex {
     /// Reads only this immutable snapshot; never triggers a compile.
     #[must_use]
     pub fn inlay_hints(&self, uri: &Url, range: Range) -> Option<Vec<InlayHint>> {
-        let mid = *self.uri_to_module.get(uri)?;
+        let mid = self.module_id_for(uri)?;
         let mi = mid.0 as usize;
         let ast = self.modules.get(mi)?.ast.as_ref()?;
         let li = self.line_indices.get(mi)?;
@@ -2219,7 +2236,7 @@ impl WorkspaceIndex {
         line: u32,
         utf16_col: u32,
     ) -> Option<Vec<CompletionItemData>> {
-        let mid = *self.uri_to_module.get(uri)?;
+        let mid = self.module_id_for(uri)?;
         let mi = mid.0 as usize;
         let byte = self.line_indices.get(mi)?.utf16_to_byte(line, utf16_col);
         let offset = byte as usize;

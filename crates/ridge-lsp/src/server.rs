@@ -51,7 +51,7 @@ use ridge_lexer::LineIndex;
 use ridge_manifest::find_workspace_root;
 use ridge_resolve::ModuleId;
 
-use crate::diagnostics::{source_id_to_uri, to_lsp_diagnostic};
+use crate::diagnostics::{source_id_to_uri, to_lsp_diagnostic, uri_key};
 use crate::index::{collect_capability_fixes, WorkspaceIndex};
 
 // ── WorkspaceSnapshot ─────────────────────────────────────────────────────────
@@ -352,14 +352,17 @@ fn compile_blocking(
     })
 }
 
-/// The workspace module a document URI maps to, keyed the same way the index and
-/// diagnostics are (workspace root joined with the source id).
+/// The workspace module a document URI maps to. Compares through [`uri_key`] so
+/// an edit routes to its module even when the client's URI spelling differs from
+/// the server's path round-trip (drive-letter case / colon encoding on Windows);
+/// a raw `Url` equality check misses there and the edit never recompiles.
 fn module_for_uri(state: &IncrementalState, uri: &Url) -> Option<ModuleId> {
     let sources = state.source_cache();
     let root = &state.resolved.graph.root;
+    let target = uri_key(uri);
     state.resolved.graph.modules.iter().find_map(|module| {
-        (source_id_to_uri(root, sources.id_for_module(module.id).as_str()) == *uri)
-            .then_some(module.id)
+        let module_uri = source_id_to_uri(root, sources.id_for_module(module.id).as_str());
+        (uri_key(&module_uri) == target).then_some(module.id)
     })
 }
 
@@ -841,6 +844,10 @@ impl LanguageServer for RidgeLanguageServer {
     async fn code_action(&self, params: CodeActionParams) -> LspResult<Option<CodeActionResponse>> {
         let uri = params.text_document.uri;
         let range = params.range;
+        // Match the request URI to a fix the same normalization-stable way the
+        // index resolves documents, so quick-fixes still surface on Windows
+        // (where the client's URI spelling differs from the server's).
+        let target_key = uri_key(&uri);
 
         let index = {
             let snap = self.state.lock().await;
@@ -853,7 +860,7 @@ impl LanguageServer for RidgeLanguageServer {
         let actions: Vec<CodeActionOrCommand> = index
             .capability_fixes
             .iter()
-            .filter(|fix| fix.uri == uri && ranges_overlap(fix.decl_range, range))
+            .filter(|fix| uri_key(&fix.uri) == target_key && ranges_overlap(fix.decl_range, range))
             .map(|fix| {
                 let mut changes = HashMap::new();
                 changes.insert(

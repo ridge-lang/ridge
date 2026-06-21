@@ -235,3 +235,75 @@ jobs:
         env:
           RIDGE_TEST_PG_URL: "postgres://postgres:postgres@localhost:5432/ridge_test?sslmode=require"
         run: cargo test -p ridge-codegen-erl -p ridge-driver -p ridge-cli --features beam-runtime --no-fail-fast --locked
+
+  # Drive the built ridge-lsp binary against a real LSP client (Neovim,
+  # headless) over stdio. The in-process replay tests cannot exercise the
+  # transport, the initialize handshake against a real client, position-encoding
+  # negotiation, or how a client applies what the server returns; this job does.
+  # The wire-level smoke test (tests/stdio_smoke.rs) rides the build-and-test
+  # job's `cargo test`, so it needs no separate step here.
+  lsp-acceptance:
+    name: LSP acceptance (Neovim)
+    runs-on: ubuntu-22.04
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Detect code changes
+        id: changes
+        uses: dorny/paths-filter@v4
+        with:
+          predicate-quantifier: 'every'
+          filters: |
+            code:
+              - '**'
+              - '!**.md'
+              - '!docs/**'
+              - '!assets/**'
+              - '!examples/**'
+              - '!dogfood/**'
+              - '!LICENSE'
+              - '!CHANGELOG.md'
+              - '!.github/ISSUE_TEMPLATE/**'
+              - '!.github/PULL_REQUEST_TEMPLATE.md'
+              - '!.github/FUNDING.yml'
+              - '!CODEOWNERS'
+
+      - name: No code paths touched (skip)
+        if: steps.changes.outputs.code != 'true'
+        run: echo "Docs/assets-only changeset; skipping LSP acceptance."
+
+      - name: Install Rust toolchain
+        if: steps.changes.outputs.code == 'true'
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: "1.88"
+
+      - name: Cache cargo registry
+        if: steps.changes.outputs.code == 'true'
+        uses: actions/cache@v5
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: ${{ runner.os }}-cargo-
+
+      - name: Build ridge-lsp
+        if: steps.changes.outputs.code == 'true'
+        run: cargo build -p ridge-lsp --locked
+
+      - name: Install Neovim
+        if: steps.changes.outputs.code == 'true'
+        uses: rhysd/action-setup-vim@v1
+        with:
+          neovim: true
+          version: stable
+
+      - name: Run acceptance suite
+        if: steps.changes.outputs.code == 'true'
+        env:
+          RIDGE_LSP: ${{ github.workspace }}/target/debug/ridge-lsp
+        run: bash tools/lsp-acceptance/run.sh

@@ -1,0 +1,4 @@
+-- A deliberate type error so the acceptance suite can assert that the server
+-- publishes a diagnostic to a real client. The body is `Text` where the
+-- signature promises `Int`.
+pub fn broken -> Int = "not an integer"

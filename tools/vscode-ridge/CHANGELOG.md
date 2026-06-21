@@ -15,6 +15,11 @@ whatever Ridge release is installed.
 
 ### Added
 
+- Auto-indentation for Ridge's offside layout. Pressing Enter after a
+  line that opens a block — one ending in `=`, `->`, `<-`, `then`,
+  `else`, or `try`, or a `match` head — indents the new line, and the
+  lone `else` of an `if ... then ... else` dedents to line up with the
+  `if`.
 - Syntax highlighting for the `opaque` keyword, raw string literals
   (`r"..."`, `r#"..."#`), and triple-quoted strings (`"""..."""`).
 

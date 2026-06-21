@@ -14,6 +14,8 @@ completion as you type.
   identifier completion, all served by `ridge-lsp`.
 - Comment toggling with `--`.
 - Bracket matching and auto-closing for `()`, `[]`, `{}`, and `""`.
+- Auto-indentation for the offside layout: blocks opened by `=`, `->`,
+  `<-`, `then`, `else`, `try`, or a `match` head indent the next line.
 
 ## Requirements
 

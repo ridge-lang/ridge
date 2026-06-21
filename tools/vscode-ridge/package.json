@@ -72,6 +72,7 @@
     "compile": "tsc -p ./",
     "watch": "tsc -watch -p ./",
     "bundle": "esbuild src/extension.ts --bundle --outfile=out/extension.js --external:vscode --format=cjs --platform=node --target=node18",
+    "test": "node test/indentation.test.mjs",
     "vscode:prepublish": "pnpm run bundle"
   },
   "packageManager": "pnpm@11.1.1",

@@ -572,6 +572,25 @@ impl LanguageServer for RidgeLanguageServer {
             .map(GotoDefinitionResponse::Scalar))
     }
 
+    async fn goto_type_definition(
+        &self,
+        params: GotoDefinitionParams,
+    ) -> LspResult<Option<GotoDefinitionResponse>> {
+        let uri = params.text_document_position_params.text_document.uri;
+        let pos = params.text_document_position_params.position;
+
+        let index = {
+            let snap = self.state.lock().await;
+            snap.index.clone()
+        };
+        let Some(index) = index else {
+            return Ok(None);
+        };
+        Ok(index
+            .type_definition_at(&uri, pos.line, pos.character)
+            .map(GotoDefinitionResponse::Scalar))
+    }
+
     async fn references(&self, params: ReferenceParams) -> LspResult<Option<Vec<Location>>> {
         let uri = params.text_document_position.text_document.uri;
         let pos = params.text_document_position.position;
@@ -893,6 +912,7 @@ fn server_capabilities() -> ServerCapabilities {
         position_encoding: Some(PositionEncodingKind::UTF16),
         hover_provider: Some(HoverProviderCapability::Simple(true)),
         definition_provider: Some(OneOf::Left(true)),
+        type_definition_provider: Some(TypeDefinitionProviderCapability::Simple(true)),
         references_provider: Some(OneOf::Left(true)),
         rename_provider: Some(OneOf::Right(RenameOptions {
             prepare_provider: Some(true),

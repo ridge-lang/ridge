@@ -1,7 +1,7 @@
 {
   "name": "vscode-ridge",
   "displayName": "Ridge",
-  "description": "Ridge language support for VS Code: syntax and semantic highlighting, diagnostics, hover, go-to-definition, find-references, rename, signature help, formatting, and completion from ridge-lsp.",
+  "description": "Ridge language support for VS Code: syntax and semantic highlighting, diagnostics, hover, go-to-definition, go-to-type-definition, find-references, rename, signature help, formatting, and completion from ridge-lsp.",
   "version": "0.2.1",
   "publisher": "ridge-lang",
   "icon": "images/icon.png",

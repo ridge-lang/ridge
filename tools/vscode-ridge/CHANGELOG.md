@@ -15,6 +15,10 @@ whatever Ridge release is installed.
 
 ### Added
 
+- Go to Type Definition: from any value, jump to the `type` declaration of
+  its inferred type. Go-to-definition and find-references now also resolve
+  record fields, so a `record.field` use navigates to the field's
+  declaration and gathers every use of that field across the workspace.
 - Semantic highlighting from `ridge-lsp`, colouring identifiers the
   grammar cannot tell apart — function vs variable vs type vs constructor
   vs stdlib symbol — and surfacing capability annotations (`io`, `fs`,

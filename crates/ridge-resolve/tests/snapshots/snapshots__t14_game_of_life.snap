@@ -5,11 +5,11 @@ expression: snap
 ResolvedSnapshot {
     errors: [],
     nid_count: 771,
-    stamped_bindings: 175,
+    stamped_bindings: 187,
     binding_kind_counts: {
         "Local": 120,
-        "ModuleSymbol": 15,
-        "StdlibSymbol": 40,
+        "ModuleSymbol": 26,
+        "StdlibSymbol": 41,
     },
     import_aliases: [
         "<bare> -> BuiltinStdlib(0)",

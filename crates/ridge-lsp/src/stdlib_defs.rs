@@ -34,6 +34,8 @@ use ridge_lexer::LineIndex;
 use ridge_resolve::{StdlibModuleId, BUILTINS};
 use tower_lsp::lsp_types::{Location, Position, Range, Url};
 
+use crate::index::{build_signature, SignatureSig};
+
 /// The materialised, parsed form of one stdlib module.
 struct StdlibModuleDef {
     /// `file://` URL of the materialised source on disk.
@@ -43,6 +45,19 @@ struct StdlibModuleDef {
     line_index: LineIndex,
     /// Top-level declaration name → its definition span.
     defs: HashMap<String, Span>,
+    /// Top-level function name → its rendered signature, for signature help.
+    fn_sigs: HashMap<String, SignatureSig>,
+}
+
+/// A stdlib class method located by `(class, method)`: its owning module, the
+/// method-name span (for go-to-definition) and the rendered signature.
+struct ClassMethodEntry {
+    /// Owning builtin module id (indexes [`BUILTINS`] and the per-module cache).
+    module: u32,
+    /// The method name's span inside the `class` declaration.
+    name_span: Span,
+    /// The method signature rendered for signature help.
+    sig: SignatureSig,
 }
 
 /// Process-global cache of parsed stdlib modules, keyed by [`StdlibModuleId.0`].
@@ -142,8 +157,9 @@ fn collect_defs(items: &[Item]) -> HashMap<String, Span> {
 /// materialised URI and line index later.
 fn collect_class_methods(
     module: StdlibModuleId,
+    source: &str,
     items: &[Item],
-    out: &mut HashMap<(String, String), (u32, Span)>,
+    out: &mut HashMap<(String, String), ClassMethodEntry>,
 ) {
     for item in items {
         if let Item::ClassDecl(decl) = item {
@@ -151,10 +167,32 @@ fn collect_class_methods(
                 // Keep the first declaration of a given `(class, method)`; a
                 // redeclaration is a resolver error and not this layer's concern.
                 out.entry((decl.name.text.clone(), method.name.text.clone()))
-                    .or_insert((module.0, method.name.span));
+                    .or_insert_with(|| ClassMethodEntry {
+                        module: module.0,
+                        name_span: method.name.span,
+                        sig: build_signature(
+                            source,
+                            &method.name.text,
+                            &method.params,
+                            Some(&method.ret),
+                        ),
+                    });
             }
         }
     }
+}
+
+/// Collect `fn name → signature` pairs for a module's top-level functions.
+fn collect_fn_sigs(source: &str, items: &[Item]) -> HashMap<String, SignatureSig> {
+    let mut sigs = HashMap::new();
+    for item in items {
+        if let Item::Fn(decl) = item {
+            sigs.entry(decl.name.text.clone()).or_insert_with(|| {
+                build_signature(source, &decl.name.text, &decl.params, decl.ret.as_ref())
+            });
+        }
+    }
+    sigs
 }
 
 /// Process-global index of stdlib class methods, keyed by `(class, method)`.
@@ -164,8 +202,8 @@ fn collect_class_methods(
 /// module. The index is built once by parsing all embedded sources and pairs
 /// each `(class, method)` with the owning module id and the method-name span,
 /// which together resolve to a [`Location`] through the per-module cache.
-fn class_method_index() -> &'static HashMap<(String, String), (u32, Span)> {
-    static INDEX: OnceLock<HashMap<(String, String), (u32, Span)>> = OnceLock::new();
+fn class_method_index() -> &'static HashMap<(String, String), ClassMethodEntry> {
+    static INDEX: OnceLock<HashMap<(String, String), ClassMethodEntry>> = OnceLock::new();
     INDEX.get_or_init(|| {
         let mut index = HashMap::new();
         for builtin in BUILTINS {
@@ -176,7 +214,7 @@ fn class_method_index() -> &'static HashMap<(String, String), (u32, Span)> {
                 continue;
             };
             let parsed = ridge_parser::parse_source(source);
-            collect_class_methods(builtin.id, &parsed.module.items, &mut index);
+            collect_class_methods(builtin.id, source, &parsed.module.items, &mut index);
         }
         index
     })
@@ -194,11 +232,13 @@ fn build_module_def(module: StdlibModuleId) -> Option<StdlibModuleDef> {
     let line_index = LineIndex::new(source);
     let parsed = ridge_parser::parse_source(source);
     let defs = collect_defs(&parsed.module.items);
+    let fn_sigs = collect_fn_sigs(source, &parsed.module.items);
 
     Some(StdlibModuleDef {
         uri,
         line_index,
         defs,
+        fn_sigs,
     })
 }
 
@@ -279,12 +319,33 @@ pub fn stdlib_module_location(module: StdlibModuleId) -> Option<Location> {
 /// resolve — so goto reports "no definition" rather than failing.
 #[must_use]
 pub fn stdlib_class_method_location(class_name: &str, method: &str) -> Option<Location> {
-    let &(module_id, span) =
-        class_method_index().get(&(class_name.to_owned(), method.to_owned()))?;
-    with_module_def(StdlibModuleId(module_id), |def| Location {
+    let entry = class_method_index().get(&(class_name.to_owned(), method.to_owned()))?;
+    with_module_def(StdlibModuleId(entry.module), |def| Location {
         uri: def.uri.clone(),
-        range: span_to_range(&def.line_index, span),
+        range: span_to_range(&def.line_index, entry.name_span),
     })
+}
+
+/// The signature of a stdlib top-level function for signature help.
+///
+/// Returns `None` when the module has no materialised source, the name is not a
+/// top-level function, or the cache is unavailable.
+#[must_use]
+pub(crate) fn stdlib_fn_signature(module: StdlibModuleId, name: &str) -> Option<SignatureSig> {
+    with_module_def(module, |def| def.fn_sigs.get(name).cloned()).flatten()
+}
+
+/// The signature of a stdlib class method (`filter`, `joinOn`, …) for signature
+/// help. Returns `None` when the pair is not a stdlib class method — for
+/// example a class declared in the workspace.
+#[must_use]
+pub(crate) fn stdlib_class_method_signature(
+    class_name: &str,
+    method: &str,
+) -> Option<SignatureSig> {
+    class_method_index()
+        .get(&(class_name.to_owned(), method.to_owned()))
+        .map(|entry| entry.sig.clone())
 }
 
 #[cfg(test)]

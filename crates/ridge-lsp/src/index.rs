@@ -19,15 +19,17 @@ use ridge_driver::WorkspaceSourceCache;
 use ridge_lexer::{LineIndex, Span};
 use ridge_resolve::imports::{Binding, ImportResolution, ImportTarget};
 use ridge_resolve::{
-    LocalId, ModuleId, NodeId, NodeIdMap, NodeKind, ResolvedVisibility, ResolvedWorkspace,
-    ScopeIndex, StdlibModuleId, SymbolKind, SymbolTable, BUILTINS,
+    LocalId, LocalKind, ModuleId, NodeId, NodeIdMap, NodeKind, ResolvedVisibility,
+    ResolvedWorkspace, ScopeIndex, StdlibModuleId, SymbolKind, SymbolTable, BUILTINS,
 };
 use ridge_typecheck::{render_type_with, TypeError, TypedWorkspace};
 use ridge_types::{CapabilitySet, TyConDecl, TyConKind, Type};
 use tower_lsp::lsp_types::{
     CompletionItemKind, DocumentHighlight, DocumentHighlightKind, DocumentSymbol, InlayHint,
-    InlayHintKind, InlayHintLabel, Location, Position, PrepareRenameResponse, Range,
-    SymbolInformation, SymbolKind as LspSymbolKind, TextEdit, Url, WorkspaceEdit,
+    InlayHintKind, InlayHintLabel, Location, ParameterInformation, ParameterLabel, Position,
+    PrepareRenameResponse, Range, SemanticToken, SemanticTokenModifier, SemanticTokenType,
+    SemanticTokens, SignatureHelp, SignatureInformation, SymbolInformation,
+    SymbolKind as LspSymbolKind, TextEdit, Url, WorkspaceEdit,
 };
 
 use crate::completion::{detect_context, symbol_kind, CompletionItemData, Context, KEYWORDS};
@@ -393,12 +395,418 @@ impl WorkspaceIndex {
                 ..
             } => crate::stdlib_defs::stdlib_module_location(*id),
             Binding::ClassMethod { class_name, method } => {
+                // A stdlib verb (`filter`, `joinOn`, …) resolves into the
+                // materialised stdlib source; a class declared in the workspace
+                // resolves to the method signature in that `class` declaration.
                 crate::stdlib_defs::stdlib_class_method_location(class_name, method)
+                    .or_else(|| self.workspace_class_method_location(class_name, method))
             }
-            // Field accessors and errors have no resolvable definition site, and
-            // a class method declared in the workspace (rather than the stdlib)
-            // resolves to `None` above.
+            // Field accessors and errors have no resolvable definition site.
             _ => None,
+        }
+    }
+
+    /// Answer a `textDocument/signatureHelp` request at an LSP `(line, col)`.
+    ///
+    /// Ridge calls are juxtaposition (`joinOn left right cond`), so the active
+    /// parameter is the count of argument atoms already written before the
+    /// cursor. Resolves the callee of the enclosing call — or, with no argument
+    /// typed yet, the function name under or just left of the cursor — to a
+    /// signature read from the stdlib source or the workspace declaration.
+    /// Returns `None` off any call so the editor popup stays quiet. Reads only
+    /// this immutable snapshot; never triggers a compile.
+    #[must_use]
+    pub fn signature_help_at(&self, uri: &Url, line: u32, utf16_col: u32) -> Option<SignatureHelp> {
+        let mid = *self.uri_to_module.get(uri)?;
+        let mi = mid.0 as usize;
+        let offset = self.line_indices.get(mi)?.utf16_to_byte(line, utf16_col);
+        let src = self.module_text.get(mi)?;
+
+        // The callee to describe and the argument spans already written, from the
+        // enclosing call; failing that, the bare name under or just left of the
+        // cursor (no arguments typed yet).
+        let (callee_span, arg_spans) = self
+            .enclosing_call(mi, offset, src)
+            .or_else(|| self.bare_callee(mi, offset, src).map(|s| (s, Vec::new())))?;
+
+        let binding = self.binding_at(mi, callee_span.start)?;
+        let sig = self.signature_for_binding(binding)?;
+        let active = active_param(&arg_spans, offset, sig.params.len());
+        Some(make_signature_help(sig, active))
+    }
+
+    /// The innermost call whose argument region the cursor sits in, as
+    /// `(callee span, argument spans)`. Includes the trailing whitespace right
+    /// after the last argument (you just typed a space to add the next one).
+    fn enclosing_call(&self, mi: usize, offset: u32, src: &str) -> Option<(Span, Vec<Span>)> {
+        let ast = self.modules.get(mi)?.ast.as_ref()?;
+        let mut finder = CallFinder {
+            offset,
+            src,
+            best: None,
+        };
+        ridge_ast::visit::Visit::visit_module(&mut finder, ast);
+        finder.best.map(|(callee, args, _)| (callee, args))
+    }
+
+    /// The span of a callable name under the cursor, or the nearest one ending
+    /// to its left across same-line whitespace. Used when no argument is typed
+    /// yet, so there is no call node to walk.
+    fn bare_callee(&self, mi: usize, offset: u32, src: &str) -> Option<Span> {
+        let spatial = self.spatial.get(mi)?;
+        if let Some((_, _, span)) =
+            spatial.narrowest_containing(offset, &[NodeKind::Ident, NodeKind::QualifiedName])
+        {
+            return Some(span);
+        }
+        let mut best: Option<Span> = None;
+        for (span, kind, _) in &spatial.entries {
+            if !matches!(kind, NodeKind::Ident | NodeKind::QualifiedName) || span.end > offset {
+                continue;
+            }
+            let Some(gap) = src.get(span.end as usize..offset as usize) else {
+                continue;
+            };
+            let reachable = !gap.is_empty() && gap.chars().all(|c| c == ' ' || c == '\t');
+            if reachable && best.is_none_or(|b| span.end > b.end) {
+                best = Some(*span);
+            }
+        }
+        best
+    }
+
+    /// The binding stamped on the name node enclosing `offset`, if any — the
+    /// shared name lookup behind go-to-definition, references, and signature
+    /// help.
+    fn binding_at(&self, mi: usize, offset: u32) -> Option<&Binding> {
+        let bindings = &self.modules.get(mi)?.bindings;
+        self.spatial
+            .get(mi)?
+            .enclosing(offset, &[NodeKind::Ident, NodeKind::QualifiedName])
+            .into_iter()
+            .find_map(|(nid, _, _)| bindings.get(nid.0 as usize).and_then(Option::as_ref))
+    }
+
+    /// The signature for the thing a call's callee binding refers to: a stdlib
+    /// function or class method (read from the materialised stdlib source) or a
+    /// workspace function or class method (read from its declaration).
+    fn signature_for_binding(&self, binding: &Binding) -> Option<SignatureSig> {
+        match binding {
+            Binding::StdlibSymbol { module, name } => {
+                crate::stdlib_defs::stdlib_fn_signature(*module, name)
+            }
+            Binding::ClassMethod { class_name, method } => {
+                crate::stdlib_defs::stdlib_class_method_signature(class_name, method)
+                    .or_else(|| self.workspace_class_method_signature(class_name, method))
+            }
+            Binding::ModuleSymbol { module, symbol }
+            | Binding::ImportedSymbol { module, symbol, .. } => {
+                self.workspace_fn_signature(*module, *symbol)
+            }
+            _ => None,
+        }
+    }
+
+    /// Build the signature of a workspace top-level `fn` from its declaration.
+    fn workspace_fn_signature(
+        &self,
+        module: ModuleId,
+        symbol: ridge_resolve::SymbolId,
+    ) -> Option<SignatureSig> {
+        let mi = module.0 as usize;
+        let view = self.modules.get(mi)?;
+        let name = &view.symbols.entries.get(symbol.0 as usize)?.name;
+        let src = self.module_text.get(mi)?;
+        view.ast.as_ref()?.items.iter().find_map(|item| match item {
+            ridge_ast::Item::Fn(decl) if decl.name.text == *name => Some(build_signature(
+                src,
+                &decl.name.text,
+                &decl.params,
+                decl.ret.as_ref(),
+            )),
+            _ => None,
+        })
+    }
+
+    /// Build the signature of a workspace `class` method from its declaration.
+    fn workspace_class_method_signature(&self, class: &str, method: &str) -> Option<SignatureSig> {
+        let (mi, m) = self.find_workspace_class_method(class, method)?;
+        let src = self.module_text.get(mi)?;
+        Some(build_signature(src, &m.name.text, &m.params, Some(&m.ret)))
+    }
+
+    /// The definition site of a workspace `class` method's name signature.
+    fn workspace_class_method_location(&self, class: &str, method: &str) -> Option<Location> {
+        let (mi, m) = self.find_workspace_class_method(class, method)?;
+        let mid = ModuleId(u32::try_from(mi).ok()?);
+        self.location_in(mid, m.name.span)
+    }
+
+    /// Locate a workspace `class` method declaration by class and method name,
+    /// scanning every module's top-level items.
+    fn find_workspace_class_method(
+        &self,
+        class: &str,
+        method: &str,
+    ) -> Option<(usize, &ridge_ast::MethodSig)> {
+        for (mi, view) in self.modules.iter().enumerate() {
+            let Some(ast) = view.ast.as_ref() else {
+                continue;
+            };
+            for item in &ast.items {
+                if let ridge_ast::Item::ClassDecl(decl) = item {
+                    if decl.name.text == class {
+                        if let Some(m) = decl.methods.iter().find(|m| m.name.text == method) {
+                            return Some((mi, m));
+                        }
+                    }
+                }
+            }
+        }
+        None
+    }
+
+    /// Answer a `textDocument/semanticTokens/full` request: classify every
+    /// resolved name and capability annotation in the document into a semantic
+    /// token, relative-encoded per the LSP spec. Supplements the `TextMate`
+    /// grammar — it colours identifiers the grammar cannot disambiguate
+    /// (function vs variable vs type vs stdlib vs capability). Reads only this
+    /// immutable snapshot; never triggers a compile.
+    #[must_use]
+    pub fn semantic_tokens(&self, uri: &Url) -> Option<SemanticTokens> {
+        let mid = *self.uri_to_module.get(uri)?;
+        let tokens = self.collect_semantic_tokens(mid)?;
+        Some(encode_tokens(&tokens))
+    }
+
+    /// As [`Self::semantic_tokens`], restricted to the tokens that intersect
+    /// `range` — the request an editor makes for a large file's visible region.
+    #[must_use]
+    pub fn semantic_tokens_in_range(&self, uri: &Url, range: Range) -> Option<SemanticTokens> {
+        let mid = *self.uri_to_module.get(uri)?;
+        let mut tokens = self.collect_semantic_tokens(mid)?;
+        tokens.retain(|t| {
+            let start = Position::new(t.line, t.start);
+            let end = Position::new(t.line, t.start + t.len);
+            start <= range.end && range.start <= end
+        });
+        Some(encode_tokens(&tokens))
+    }
+
+    /// Collect, sort, and de-overlap the document's semantic tokens.
+    ///
+    /// Three sources feed the list: every resolved name use (classified by its
+    /// binding), every top-level and member declaration name (so decls colour
+    /// too — their name nodes carry no binding), and every capability keyword.
+    fn collect_semantic_tokens(&self, mid: ModuleId) -> Option<Vec<RawToken>> {
+        let mi = mid.0 as usize;
+        let li = self.line_indices.get(mi)?;
+        let src = self.module_text.get(mi)?;
+        let spatial = self.spatial.get(mi)?;
+        let bindings = &self.modules.get(mi)?.bindings;
+
+        let mut out: Vec<RawToken> = Vec::new();
+        // (A) Use sites.
+        for (span, kind, nid) in &spatial.entries {
+            match kind {
+                NodeKind::Ident => {
+                    if let Some(b) = bindings.get(nid.0 as usize).and_then(Option::as_ref) {
+                        if let Some((ty, mods)) = self.classify_use(b, mi, *span) {
+                            push_raw(li, &mut out, span.start, span.end, ty, mods);
+                        }
+                    }
+                }
+                NodeKind::QualifiedName => {
+                    if let Some(b) = bindings.get(nid.0 as usize).and_then(Option::as_ref) {
+                        self.push_qualified(li, src, &mut out, *span, b, mi);
+                    }
+                }
+                _ => {}
+            }
+        }
+        // (B) Declaration sites.
+        self.collect_decl_tokens(mid, li, &mut out);
+        // (C) Capability annotations, scanned from the source: the resolver does
+        // not stamp them and the AST keeps no per-capability span.
+        if let Some(ast) = self.modules.get(mi).and_then(|m| m.ast.as_ref()) {
+            let mut caps = CapabilityCollector {
+                li,
+                src,
+                out: &mut out,
+            };
+            ridge_ast::visit::Visit::visit_module(&mut caps, ast);
+        }
+
+        // Sort by position; on a tie the widest span comes first so it wins the
+        // de-overlap that follows.
+        out.sort_by(|a, b| {
+            (a.line, a.start)
+                .cmp(&(b.line, b.start))
+                .then(b.len.cmp(&a.len))
+        });
+        // Semantic tokens must not overlap: keep a token only when it starts at
+        // or after the end of the last kept one (on the same line).
+        let mut kept: Vec<RawToken> = Vec::with_capacity(out.len());
+        let mut last_line = u32::MAX;
+        let mut last_end = 0u32;
+        for t in out {
+            if t.line != last_line || t.start >= last_end {
+                last_line = t.line;
+                last_end = t.start + t.len;
+                kept.push(t);
+            }
+        }
+        Some(kept)
+    }
+
+    /// The token type and modifier bitset for a name use carrying `binding`.
+    /// `span` is the use site, used to flag a local's own binder as a
+    /// declaration.
+    fn classify_use(&self, binding: &Binding, mi: usize, span: Span) -> Option<(u32, u32)> {
+        match binding {
+            Binding::Local(id) => {
+                let (kind, def_span) = self.local_info(mi, *id)?;
+                let ty = match kind {
+                    LocalKind::FnParam
+                    | LocalKind::LambdaParam
+                    | LocalKind::HandlerParam
+                    | LocalKind::InitParam => TT_PARAMETER,
+                    LocalKind::StateField => TT_PROPERTY,
+                    _ => TT_VARIABLE,
+                };
+                let mut mods = 0;
+                if matches!(kind, LocalKind::LetImmutable | LocalKind::StateField) {
+                    mods |= MOD_READONLY;
+                }
+                if def_span == span {
+                    mods |= MOD_DECLARATION;
+                }
+                Some((ty, mods))
+            }
+            Binding::ModuleSymbol { module, symbol }
+            | Binding::ImportedSymbol { module, symbol, .. } => {
+                let kind = &self
+                    .modules
+                    .get(module.0 as usize)?
+                    .symbols
+                    .entries
+                    .get(symbol.0 as usize)?
+                    .kind;
+                Some(symbol_token(kind))
+            }
+            Binding::StdlibSymbol { name, .. } => {
+                let ty = if name.chars().next().is_some_and(char::is_uppercase) {
+                    TT_TYPE
+                } else {
+                    TT_FUNCTION
+                };
+                Some((ty, MOD_DEFAULT_LIBRARY))
+            }
+            Binding::ClassMethod { class_name, method } => {
+                let stdlib =
+                    crate::stdlib_defs::stdlib_class_method_signature(class_name, method).is_some();
+                Some((TT_METHOD, if stdlib { MOD_DEFAULT_LIBRARY } else { 0 }))
+            }
+            Binding::FieldAccessor { .. } => Some((TT_PROPERTY, 0)),
+            Binding::ActorName { .. } => Some((TT_CLASS, 0)),
+            Binding::Constructor { .. } => Some((TT_ENUM_MEMBER, 0)),
+            Binding::ModuleAlias { target, .. } => {
+                let stdlib = matches!(target, ImportTarget::BuiltinStdlib(_));
+                Some((TT_NAMESPACE, if stdlib { MOD_DEFAULT_LIBRARY } else { 0 }))
+            }
+            _ => None,
+        }
+    }
+
+    /// The `LocalKind` and definition span of a local by id, searched across the
+    /// module's scopes (mirrors [`Self::find_local_def_span`]).
+    fn local_info(&self, mi: usize, id: LocalId) -> Option<(LocalKind, Span)> {
+        self.modules
+            .get(mi)?
+            .scopes
+            .nodes
+            .iter()
+            .flat_map(|node| &node.locals)
+            .find(|entry| entry.id == id)
+            .map(|entry| (entry.kind, entry.def_span))
+    }
+
+    /// Emit one token per segment of a qualified name. The leading segments are
+    /// the namespace (or the owning type for a constructor path); the final
+    /// segment carries the resolved binding's classification.
+    fn push_qualified(
+        &self,
+        li: &LineIndex,
+        src: &str,
+        out: &mut Vec<RawToken>,
+        span: Span,
+        binding: &Binding,
+        mi: usize,
+    ) {
+        let Some((last_ty, last_mods)) = self.classify_use(binding, mi, span) else {
+            return;
+        };
+        let head_ty = if matches!(binding, Binding::Constructor { .. }) {
+            TT_TYPE
+        } else {
+            TT_NAMESPACE
+        };
+        let head_mods = last_mods & MOD_DEFAULT_LIBRARY;
+        let segments = segment_byte_ranges(src, span);
+        let last = segments.len().saturating_sub(1);
+        for (i, (start, end)) in segments.into_iter().enumerate() {
+            let (ty, mods) = if i == last {
+                (last_ty, last_mods)
+            } else {
+                (head_ty, head_mods)
+            };
+            push_raw(li, out, start, end, ty, mods);
+        }
+    }
+
+    /// Emit a declaration token for every top-level and member declaration in
+    /// the module. Declaration names carry no binding, so this is their only
+    /// source; each is tagged with the `declaration` modifier.
+    fn collect_decl_tokens(&self, mid: ModuleId, li: &LineIndex, out: &mut Vec<RawToken>) {
+        let mi = mid.0 as usize;
+        let Some(view) = self.modules.get(mi) else {
+            return;
+        };
+        for entry in &view.symbols.entries {
+            let (ty, mods, name): (u32, u32, &str) = match &entry.kind {
+                SymbolKind::Fn { .. } => (TT_FUNCTION, MOD_DECLARATION, &entry.name),
+                SymbolKind::Const => (TT_VARIABLE, MOD_DECLARATION | MOD_READONLY, &entry.name),
+                SymbolKind::Type { .. } => (TT_TYPE, MOD_DECLARATION, &entry.name),
+                SymbolKind::Actor { .. } => (TT_CLASS, MOD_DECLARATION, &entry.name),
+                SymbolKind::Constructor {
+                    is_record: false, ..
+                } => (TT_ENUM_MEMBER, MOD_DECLARATION, &entry.name),
+                SymbolKind::FieldAccessor { field, .. } => (TT_PROPERTY, MOD_DECLARATION, field),
+                // Record auto-constructors share the type's name span; skip them.
+                _ => continue,
+            };
+            if let Some(name_span) = self.decl_name_span(mid, entry.def_span, name) {
+                push_raw(li, out, name_span.start, name_span.end, ty, mods);
+            }
+            if let SymbolKind::Actor { state, handlers } = &entry.kind {
+                for field in state {
+                    if let Some(s) = self.decl_name_span(mid, field.def_span, &field.name) {
+                        push_raw(
+                            li,
+                            out,
+                            s.start,
+                            s.end,
+                            TT_PROPERTY,
+                            MOD_DECLARATION | MOD_READONLY,
+                        );
+                    }
+                }
+                for handler in handlers {
+                    if let Some(s) = self.decl_name_span(mid, handler.def_span, &handler.name) {
+                        push_raw(li, out, s.start, s.end, TT_METHOD, MOD_DECLARATION);
+                    }
+                }
+            }
         }
     }
 
@@ -1537,6 +1945,375 @@ impl<'ast> ridge_ast::visit::Visit<'ast> for InlayCollector<'_> {
                 ..
             } => self.try_hint(name.span, value.span()),
             _ => {}
+        }
+        ridge_ast::visit::walk_expr(self, e);
+    }
+}
+
+/// The custom token type for an effect capability (`io`/`fs`/`net`/`db`/…) —
+/// the visible marker of Ridge's capability discipline. Standard token types
+/// are mapped by the editor automatically; this one the client theme maps.
+const CAPABILITY_TOKEN_TYPE: SemanticTokenType = SemanticTokenType::new("capability");
+
+/// The semantic-token types Ridge emits, in legend order. Each token's
+/// `token_type` field indexes into this slice.
+pub const SEMANTIC_TOKEN_TYPES: &[SemanticTokenType] = &[
+    SemanticTokenType::NAMESPACE,
+    SemanticTokenType::TYPE,
+    SemanticTokenType::CLASS,
+    SemanticTokenType::FUNCTION,
+    SemanticTokenType::METHOD,
+    SemanticTokenType::PROPERTY,
+    SemanticTokenType::VARIABLE,
+    SemanticTokenType::PARAMETER,
+    SemanticTokenType::ENUM_MEMBER,
+    CAPABILITY_TOKEN_TYPE,
+];
+
+/// The semantic-token modifiers Ridge emits, in legend order. A token's
+/// `token_modifiers_bitset` sets bit `i` to apply the `i`-th modifier here.
+pub const SEMANTIC_TOKEN_MODIFIERS: &[SemanticTokenModifier] = &[
+    SemanticTokenModifier::DECLARATION,
+    SemanticTokenModifier::READONLY,
+    SemanticTokenModifier::DEFAULT_LIBRARY,
+];
+
+// Token-type indices into `SEMANTIC_TOKEN_TYPES`.
+const TT_NAMESPACE: u32 = 0;
+const TT_TYPE: u32 = 1;
+const TT_CLASS: u32 = 2;
+const TT_FUNCTION: u32 = 3;
+const TT_METHOD: u32 = 4;
+const TT_PROPERTY: u32 = 5;
+const TT_VARIABLE: u32 = 6;
+const TT_PARAMETER: u32 = 7;
+const TT_ENUM_MEMBER: u32 = 8;
+const TT_CAPABILITY: u32 = 9;
+
+// Modifier bits into `SEMANTIC_TOKEN_MODIFIERS`.
+const MOD_DECLARATION: u32 = 1 << 0;
+const MOD_READONLY: u32 = 1 << 1;
+const MOD_DEFAULT_LIBRARY: u32 = 1 << 2;
+
+/// One classified token before relative encoding: an absolute UTF-16 position
+/// plus its type and modifier bitset.
+#[derive(Debug, Clone, Copy)]
+struct RawToken {
+    line: u32,
+    start: u32,
+    len: u32,
+    ty: u32,
+    mods: u32,
+}
+
+/// The token type and modifiers for a top-level symbol by its kind.
+const fn symbol_token(kind: &SymbolKind) -> (u32, u32) {
+    match kind {
+        SymbolKind::Fn { .. } => (TT_FUNCTION, 0),
+        SymbolKind::Const => (TT_VARIABLE, MOD_READONLY),
+        SymbolKind::Type { .. } => (TT_TYPE, 0),
+        SymbolKind::Actor { .. } => (TT_CLASS, 0),
+        SymbolKind::Constructor { .. } => (TT_ENUM_MEMBER, 0),
+        SymbolKind::FieldAccessor { .. } => (TT_PROPERTY, 0),
+        _ => (TT_VARIABLE, 0),
+    }
+}
+
+/// The byte range of each dot-separated segment within a qualified-name span.
+fn segment_byte_ranges(src: &str, span: Span) -> Vec<(u32, u32)> {
+    let start = span.start as usize;
+    let raw = src.get(start..span.end as usize).unwrap_or_default();
+    let mut ranges = Vec::new();
+    let mut seg_start = 0usize;
+    for (i, ch) in raw.char_indices() {
+        if ch == '.' {
+            ranges.push((to_u32(start + seg_start), to_u32(start + i)));
+            seg_start = i + ch.len_utf8();
+        }
+    }
+    ranges.push((to_u32(start + seg_start), span.end));
+    ranges
+}
+
+/// Convert a `usize` byte offset to `u32`, saturating (spans never exceed u32).
+fn to_u32(n: usize) -> u32 {
+    u32::try_from(n).unwrap_or(u32::MAX)
+}
+
+/// Convert a byte span to a single-line [`RawToken`] and push it, dropping an
+/// empty or multi-line span (a name never spans lines).
+fn push_raw(li: &LineIndex, out: &mut Vec<RawToken>, start: u32, end: u32, ty: u32, mods: u32) {
+    if end <= start {
+        return;
+    }
+    let (start_line, start_char) = li.byte_to_utf16(start);
+    let (end_line, end_char) = li.byte_to_utf16(end);
+    if start_line != end_line || end_char <= start_char {
+        return;
+    }
+    out.push(RawToken {
+        line: start_line,
+        start: start_char,
+        len: end_char - start_char,
+        ty,
+        mods,
+    });
+}
+
+/// Relative-encode sorted, non-overlapping tokens into the LSP wire format.
+fn encode_tokens(tokens: &[RawToken]) -> SemanticTokens {
+    let mut data = Vec::with_capacity(tokens.len());
+    let mut prev_line = 0u32;
+    let mut prev_start = 0u32;
+    for t in tokens {
+        let delta_line = t.line - prev_line;
+        let delta_start = if delta_line == 0 {
+            t.start - prev_start
+        } else {
+            t.start
+        };
+        data.push(SemanticToken {
+            delta_line,
+            delta_start,
+            length: t.len,
+            token_type: t.ty,
+            token_modifiers_bitset: t.mods,
+        });
+        prev_line = t.line;
+        prev_start = t.start;
+    }
+    SemanticTokens {
+        result_id: None,
+        data,
+    }
+}
+
+/// Whether `word` is one of Ridge's capability keywords.
+fn is_capability_keyword(word: &str) -> bool {
+    matches!(
+        word,
+        "io" | "fs" | "net" | "time" | "random" | "env" | "proc" | "spawn" | "ffi" | "db"
+    )
+}
+
+/// Walks `fn`/`on`/`init` declarations and emits a `capability` token for each
+/// capability keyword in the annotation region (between the introducing keyword
+/// and the declaration name). The resolver does not stamp capability positions
+/// and the AST keeps no per-capability span, so they are recovered from source.
+struct CapabilityCollector<'a> {
+    li: &'a LineIndex,
+    src: &'a str,
+    out: &'a mut Vec<RawToken>,
+}
+
+impl CapabilityCollector<'_> {
+    /// Emit a capability token for every capability keyword in `src[start..end)`.
+    fn scan(&mut self, start: u32, end: u32) {
+        let from = start as usize;
+        let to = (end as usize).min(self.src.len());
+        let Some(region) = self.src.get(from..to) else {
+            return;
+        };
+        let mut word_start: Option<usize> = None;
+        for (i, ch) in region.char_indices() {
+            if ch.is_alphanumeric() || ch == '_' {
+                word_start.get_or_insert(i);
+            } else if let Some(ws) = word_start.take() {
+                if is_capability_keyword(&region[ws..i]) {
+                    push_raw(
+                        self.li,
+                        self.out,
+                        to_u32(from + ws),
+                        to_u32(from + i),
+                        TT_CAPABILITY,
+                        0,
+                    );
+                }
+            }
+        }
+        if let Some(ws) = word_start {
+            if is_capability_keyword(&region[ws..]) {
+                let end = to_u32(from + region.len());
+                push_raw(self.li, self.out, to_u32(from + ws), end, TT_CAPABILITY, 0);
+            }
+        }
+    }
+}
+
+impl<'ast> ridge_ast::visit::Visit<'ast> for CapabilityCollector<'_> {
+    fn visit_fn_decl(&mut self, d: &'ast ridge_ast::FnDecl) {
+        if !d.caps.is_empty() {
+            self.scan(d.span.start, d.name.span.start);
+        }
+        ridge_ast::visit::walk_fn_decl(self, d);
+    }
+
+    fn visit_on_handler(&mut self, h: &'ast ridge_ast::OnHandler) {
+        if !h.caps.is_empty() {
+            self.scan(h.span.start, h.name.span.start);
+        }
+        ridge_ast::visit::walk_on_handler(self, h);
+    }
+
+    fn visit_init_decl(&mut self, d: &'ast ridge_ast::InitDecl) {
+        if !d.caps.is_empty() {
+            // `init` has no name; the capabilities sit before the parameter list.
+            let end = d.params.first().map_or(d.span.start, |p| p.span().start);
+            self.scan(d.span.start, end);
+        }
+        ridge_ast::visit::walk_init_decl(self, d);
+    }
+}
+
+/// A function or method signature rendered for `textDocument/signatureHelp`.
+#[derive(Debug, Clone)]
+pub(crate) struct SignatureSig {
+    /// The whole signature on one line, e.g. `joinOn (left: …) (right: …) -> …`.
+    pub label: String,
+    /// `[start, end)` UTF-16 offsets into `label`, one per parameter, in order.
+    pub params: Vec<[u32; 2]>,
+}
+
+/// Build a one-line signature label from `src` and a declaration's pieces.
+///
+/// `name` is the callee display name; each parameter and the return type are
+/// sliced verbatim from `src` (whitespace squeezed to one space) so the label
+/// reads as written, with no type re-rendering. Returns the label plus the
+/// UTF-16 offset range of every parameter, for active-parameter highlighting.
+pub(crate) fn build_signature(
+    src: &str,
+    name: &str,
+    params: &[ridge_ast::Param],
+    ret: Option<&ridge_ast::Type>,
+) -> SignatureSig {
+    let mut label = name.to_owned();
+    let mut cursor = utf16_len(&label);
+    let mut ranges = Vec::with_capacity(params.len());
+    for p in params {
+        label.push(' ');
+        cursor += 1;
+        let frag = slice_span(src, p.span());
+        let start = cursor;
+        cursor += utf16_len(&frag);
+        label.push_str(&frag);
+        ranges.push([start, cursor]);
+    }
+    if let Some(ty) = ret {
+        let frag = slice_span(src, ty.span());
+        label.push_str(" -> ");
+        label.push_str(&frag);
+    }
+    SignatureSig {
+        label,
+        params: ranges,
+    }
+}
+
+/// The `src` text covered by `span`, with whitespace runs squeezed to one space.
+fn slice_span(src: &str, span: Span) -> String {
+    let raw = src
+        .get(span.start as usize..span.end as usize)
+        .unwrap_or_default();
+    squeeze_ws(raw)
+}
+
+/// Collapse every run of whitespace to a single space and trim the ends, so a
+/// multi-line source slice still reads as a one-line label.
+fn squeeze_ws(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    let mut prev_ws = false;
+    for ch in s.chars() {
+        if ch.is_whitespace() {
+            if !prev_ws {
+                out.push(' ');
+            }
+            prev_ws = true;
+        } else {
+            out.push(ch);
+            prev_ws = false;
+        }
+    }
+    out.trim().to_owned()
+}
+
+/// UTF-16 code-unit length of `s` (LSP parameter label offsets are UTF-16).
+fn utf16_len(s: &str) -> u32 {
+    u32::try_from(s.chars().map(char::len_utf16).sum::<usize>()).unwrap_or(u32::MAX)
+}
+
+/// The index of the parameter the cursor is filling in: the number of argument
+/// atoms already completed before it, clamped to the last parameter.
+fn active_param(arg_spans: &[Span], offset: u32, nparams: usize) -> u32 {
+    let done = arg_spans.iter().filter(|s| s.end <= offset).count();
+    let active = if nparams == 0 {
+        0
+    } else {
+        done.min(nparams - 1)
+    };
+    u32::try_from(active).unwrap_or(0)
+}
+
+/// Assemble the LSP [`SignatureHelp`] for one resolved signature, marking
+/// `active` as the parameter being filled in.
+fn make_signature_help(sig: SignatureSig, active: u32) -> SignatureHelp {
+    let parameters = sig
+        .params
+        .iter()
+        .map(|&offsets| ParameterInformation {
+            label: ParameterLabel::LabelOffsets(offsets),
+            documentation: None,
+        })
+        .collect();
+    SignatureHelp {
+        signatures: vec![SignatureInformation {
+            label: sig.label,
+            documentation: None,
+            parameters: Some(parameters),
+            active_parameter: Some(active),
+        }],
+        active_signature: Some(0),
+        active_parameter: Some(active),
+    }
+}
+
+/// Finds the innermost call whose argument region contains an offset, for
+/// signature help. Records the callee span, the argument spans, and the call
+/// span (the last drives the narrowest-enclosing tie-break).
+struct CallFinder<'a> {
+    offset: u32,
+    src: &'a str,
+    best: Option<(Span, Vec<Span>, Span)>,
+}
+
+impl CallFinder<'_> {
+    /// Whether `end..offset` is non-empty and only spaces/tabs — the cursor sits
+    /// in the trailing whitespace right after a call, on the same line.
+    fn trailing_gap(&self, end: u32) -> bool {
+        self.offset > end
+            && self
+                .src
+                .get(end as usize..self.offset as usize)
+                .is_some_and(|g| !g.is_empty() && g.chars().all(|c| c == ' ' || c == '\t'))
+    }
+}
+
+impl<'ast> ridge_ast::visit::Visit<'ast> for CallFinder<'_> {
+    fn visit_expr(&mut self, e: &'ast ridge_ast::Expr) {
+        if let ridge_ast::Expr::Call { callee, args, span } = e {
+            // The cursor is in the argument region (past the callee) and within
+            // the call, or in the same-line whitespace just past the last
+            // argument where the next one will go.
+            let in_args = span.start <= self.offset
+                && callee.span().end <= self.offset
+                && (self.offset <= span.end || self.trailing_gap(span.end));
+            let narrower = match &self.best {
+                None => true,
+                Some((_, _, prev)) => span.end - span.start <= prev.end - prev.start,
+            };
+            if in_args && narrower {
+                let arg_spans = args.iter().map(ridge_ast::Expr::span).collect();
+                self.best = Some((callee.span(), arg_spans, *span));
+            }
         }
         ridge_ast::visit::walk_expr(self, e);
     }

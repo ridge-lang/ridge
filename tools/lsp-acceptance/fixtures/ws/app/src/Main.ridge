@@ -1,0 +1,7 @@
+pub type User = { age: Int, name: Text }
+
+pub fn ageOf (u: User) -> Int = u.age
+
+pub fn label (a: Text) (b: Int) -> Text = a
+
+pub fn caption (n: Int) -> Text = label "café" n

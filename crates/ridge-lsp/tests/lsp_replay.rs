@@ -2569,3 +2569,114 @@ async fn test_formatting_skips_unparseable() {
         "a buffer the parser rejects is left untouched"
     );
 }
+
+// ── Test 26: document & workspace symbols ─────────────────────────────────────
+
+const SYMBOL_SRC: &str = r"type Color = Red | Green | Blue
+type User = { name: Text, age: Int }
+const maxAge: Int = 120
+pub fn greet (u: User) -> Text = u.name
+actor Counter =
+    state count: Int = 0
+
+    on bump () -> Unit =
+        count <- count + 1
+";
+
+fn doc_symbol_params(uri: &Url) -> DocumentSymbolParams {
+    DocumentSymbolParams {
+        text_document: TextDocumentIdentifier { uri: uri.clone() },
+        work_done_progress_params: WorkDoneProgressParams::default(),
+        partial_result_params: PartialResultParams::default(),
+    }
+}
+
+fn child_names(sym: &DocumentSymbol) -> Vec<String> {
+    sym.children
+        .as_ref()
+        .map(|cs| cs.iter().map(|c| c.name.clone()).collect())
+        .unwrap_or_default()
+}
+
+#[tokio::test]
+async fn test_document_symbol_outline() {
+    let (service, _socket, uri) = hover_fixture(SYMBOL_SRC).await;
+    let server = service.inner();
+
+    let resp = server
+        .document_symbol(doc_symbol_params(&uri))
+        .await
+        .expect("documentSymbol ok")
+        .expect("an outline for a non-empty module");
+    let DocumentSymbolResponse::Nested(symbols) = resp else {
+        panic!("expected a nested outline");
+    };
+
+    // Top-level declarations, in source order.
+    let names: Vec<&str> = symbols.iter().map(|s| s.name.as_str()).collect();
+    assert_eq!(names, ["Color", "User", "maxAge", "greet", "Counter"]);
+
+    // A union is an enum whose variants are its members.
+    let color = &symbols[0];
+    assert_eq!(color.kind, SymbolKind::ENUM);
+    assert_eq!(child_names(color), ["Red", "Green", "Blue"]);
+
+    // A record is a struct whose fields are its members.
+    let user = &symbols[1];
+    assert_eq!(user.kind, SymbolKind::STRUCT);
+    assert_eq!(child_names(user), ["name", "age"]);
+
+    assert_eq!(symbols[2].kind, SymbolKind::CONSTANT);
+    assert_eq!(symbols[3].kind, SymbolKind::FUNCTION);
+
+    // An actor is a class holding its state fields and message handlers.
+    let counter = &symbols[4];
+    assert_eq!(counter.kind, SymbolKind::CLASS);
+    assert_eq!(child_names(counter), ["count", "bump"]);
+
+    // The selection range (the name) sits inside the full declaration range.
+    assert!(color.selection_range.start >= color.range.start);
+    assert!(color.selection_range.end <= color.range.end);
+}
+
+#[tokio::test]
+async fn test_workspace_symbol_query() {
+    let (service, _socket, _uri) = hover_fixture(SYMBOL_SRC).await;
+    let server = service.inner();
+
+    let query = |q: &str| {
+        let q = q.to_owned();
+        async {
+            server
+                .symbol(WorkspaceSymbolParams {
+                    query: q,
+                    work_done_progress_params: WorkDoneProgressParams::default(),
+                    partial_result_params: PartialResultParams::default(),
+                })
+                .await
+                .expect("symbol ok")
+                .unwrap_or_default()
+        }
+    };
+
+    // An empty query returns every top-level declaration plus union variants,
+    // but no record auto-constructor or field accessor.
+    let all = query("").await;
+    let mut names: Vec<&str> = all.iter().map(|s| s.name.as_str()).collect();
+    names.sort_unstable();
+    assert_eq!(
+        names,
+        ["Blue", "Color", "Counter", "Green", "Red", "User", "greet", "maxAge"]
+    );
+
+    // A substring query is case-insensitive.
+    let greet = query("GREET").await;
+    assert_eq!(greet.len(), 1);
+    assert_eq!(greet[0].name, "greet");
+    assert_eq!(greet[0].kind, SymbolKind::FUNCTION);
+
+    // A union variant resolves to an enum member.
+    let red = query("Red").await;
+    assert_eq!(red.len(), 1);
+    assert_eq!(red[0].kind, SymbolKind::ENUM_MEMBER);
+}

@@ -25,8 +25,9 @@ use ridge_resolve::{
 use ridge_typecheck::{render_type_with, TypedWorkspace};
 use ridge_types::{TyConDecl, TyConKind, Type};
 use tower_lsp::lsp_types::{
-    CompletionItemKind, DocumentHighlight, DocumentHighlightKind, Location, Position,
-    PrepareRenameResponse, Range, TextEdit, Url, WorkspaceEdit,
+    CompletionItemKind, DocumentHighlight, DocumentHighlightKind, DocumentSymbol, Location,
+    Position, PrepareRenameResponse, Range, SymbolInformation, SymbolKind as LspSymbolKind,
+    TextEdit, Url, WorkspaceEdit,
 };
 
 use crate::completion::{detect_context, symbol_kind, CompletionItemData, Context, KEYWORDS};
@@ -1034,6 +1035,241 @@ impl WorkspaceIndex {
                 character: end_char,
             },
         })
+    }
+
+    /// Build the outline (`textDocument/documentSymbol`) for one document.
+    ///
+    /// Top-level `fn`/`const`/`type`/`actor` declarations become symbols in
+    /// source order. A type nests its union variants or record fields; an actor
+    /// nests its state fields and message handlers. Compiler-synthesised mirror
+    /// symbols (from `deriving (Table)`/`(Schema)`, which share the entity's
+    /// declaration span) are folded into the entity rather than listed
+    /// separately. `class`/`instance` declarations are not modelled by the
+    /// resolver yet, so they do not appear.
+    #[must_use]
+    pub fn document_symbols_at(&self, uri: &Url) -> Option<Vec<DocumentSymbol>> {
+        let mid = *self.uri_to_module.get(uri)?;
+        let entries = &self.modules.get(mid.0 as usize)?.symbols.entries;
+
+        let mut seen_spans: Vec<Span> = Vec::new();
+        let mut out: Vec<DocumentSymbol> = Vec::new();
+        for entry in entries {
+            // Members (constructors, field accessors) attach to their owning type
+            // below, not at the top level.
+            if matches!(
+                entry.kind,
+                SymbolKind::Constructor { .. } | SymbolKind::FieldAccessor { .. }
+            ) {
+                continue;
+            }
+            // Drop the synthesised mirror symbols that share their entity's span.
+            if seen_spans.contains(&entry.def_span) {
+                continue;
+            }
+            if let Some(sym) = self.document_symbol_for(mid, entry, entries) {
+                seen_spans.push(entry.def_span);
+                out.push(sym);
+            }
+        }
+        out.sort_by_key(|s| (s.range.start.line, s.range.start.character));
+        Some(out)
+    }
+
+    /// Build one [`DocumentSymbol`] for a top-level entry, attaching members.
+    fn document_symbol_for(
+        &self,
+        mid: ModuleId,
+        entry: &ridge_resolve::SymbolEntry,
+        entries: &[ridge_resolve::SymbolEntry],
+    ) -> Option<DocumentSymbol> {
+        let range = self.range_in(mid, entry.def_span)?;
+        let selection_range = self
+            .decl_name_span(mid, entry.def_span, &entry.name)
+            .and_then(|s| self.range_in(mid, s))
+            .unwrap_or(range);
+
+        let (kind, children) = match &entry.kind {
+            SymbolKind::Fn { .. } => (LspSymbolKind::FUNCTION, Vec::new()),
+            SymbolKind::Const => (LspSymbolKind::CONSTANT, Vec::new()),
+            SymbolKind::Type { .. } => {
+                let children = self.type_member_symbols(mid, entry.id, entries);
+                let kind = if children
+                    .iter()
+                    .any(|c| c.kind == LspSymbolKind::ENUM_MEMBER)
+                {
+                    LspSymbolKind::ENUM
+                } else {
+                    LspSymbolKind::STRUCT
+                };
+                (kind, children)
+            }
+            SymbolKind::Actor { state, handlers } => (
+                LspSymbolKind::CLASS,
+                self.actor_member_symbols(mid, state, handlers),
+            ),
+            _ => return None,
+        };
+
+        Some(Self::make_document_symbol(
+            entry.name.clone(),
+            kind,
+            range,
+            selection_range,
+            children,
+        ))
+    }
+
+    /// Union variants (as enum members) and record fields owned by `owner`.
+    fn type_member_symbols(
+        &self,
+        mid: ModuleId,
+        owner: ridge_resolve::SymbolId,
+        entries: &[ridge_resolve::SymbolEntry],
+    ) -> Vec<DocumentSymbol> {
+        entries
+            .iter()
+            .filter_map(|e| {
+                let (kind, name) = match &e.kind {
+                    SymbolKind::Constructor {
+                        owner_type,
+                        is_record: false,
+                        ..
+                    } if *owner_type == owner => (LspSymbolKind::ENUM_MEMBER, e.name.clone()),
+                    SymbolKind::FieldAccessor { owner_type, field } if *owner_type == owner => {
+                        (LspSymbolKind::FIELD, field.clone())
+                    }
+                    _ => return None,
+                };
+                let range = self.range_in(mid, e.def_span)?;
+                let selection_range = self
+                    .decl_name_span(mid, e.def_span, &name)
+                    .and_then(|s| self.range_in(mid, s))
+                    .unwrap_or(range);
+                Some(Self::make_document_symbol(
+                    name,
+                    kind,
+                    range,
+                    selection_range,
+                    Vec::new(),
+                ))
+            })
+            .collect()
+    }
+
+    /// State fields (as fields) and message handlers (as methods) of an actor.
+    fn actor_member_symbols(
+        &self,
+        mid: ModuleId,
+        state: &[ridge_resolve::StateField],
+        handlers: &[ridge_resolve::HandlerSig],
+    ) -> Vec<DocumentSymbol> {
+        let fields = state
+            .iter()
+            .map(|f| (LspSymbolKind::FIELD, &f.name, f.def_span));
+        let methods = handlers
+            .iter()
+            .map(|h| (LspSymbolKind::METHOD, &h.name, h.def_span));
+        fields
+            .chain(methods)
+            .filter_map(|(kind, name, def_span)| {
+                let range = self.range_in(mid, def_span)?;
+                let selection_range = self
+                    .decl_name_span(mid, def_span, name)
+                    .and_then(|s| self.range_in(mid, s))
+                    .unwrap_or(range);
+                Some(Self::make_document_symbol(
+                    name.clone(),
+                    kind,
+                    range,
+                    selection_range,
+                    Vec::new(),
+                ))
+            })
+            .collect()
+    }
+
+    #[allow(deprecated)] // `DocumentSymbol::deprecated` is deprecated; set to None.
+    fn make_document_symbol(
+        name: String,
+        kind: LspSymbolKind,
+        range: Range,
+        selection_range: Range,
+        children: Vec<DocumentSymbol>,
+    ) -> DocumentSymbol {
+        DocumentSymbol {
+            name,
+            detail: None,
+            kind,
+            tags: None,
+            deprecated: None,
+            range,
+            selection_range,
+            children: if children.is_empty() {
+                None
+            } else {
+                Some(children)
+            },
+        }
+    }
+
+    /// Answer a `workspace/symbol` request: top-level declarations across every
+    /// module whose name matches `query` (case-insensitive substring; an empty
+    /// query returns everything). Union variants are included; synthesised
+    /// members (record auto-constructors, field accessors) and mirror symbols
+    /// are not.
+    #[must_use]
+    #[allow(deprecated)] // `SymbolInformation::deprecated` is deprecated; set to None.
+    pub fn workspace_symbols(&self, query: &str) -> Vec<SymbolInformation> {
+        let needle = query.to_lowercase();
+        let mut out: Vec<SymbolInformation> = Vec::new();
+        for view in &self.modules {
+            let mid = view.symbols.module;
+            let Some(Some(uri)) = self.module_uris.get(mid.0 as usize) else {
+                continue;
+            };
+            let mut seen_spans: Vec<Span> = Vec::new();
+            for entry in &view.symbols.entries {
+                let kind = match &entry.kind {
+                    SymbolKind::Fn { .. } => LspSymbolKind::FUNCTION,
+                    SymbolKind::Const => LspSymbolKind::CONSTANT,
+                    SymbolKind::Type { .. } => LspSymbolKind::STRUCT,
+                    SymbolKind::Actor { .. } => LspSymbolKind::CLASS,
+                    SymbolKind::Constructor {
+                        is_record: false, ..
+                    } => LspSymbolKind::ENUM_MEMBER,
+                    // Record auto-constructors and field accessors are members.
+                    _ => continue,
+                };
+                if seen_spans.contains(&entry.def_span) {
+                    continue;
+                }
+                seen_spans.push(entry.def_span);
+                if !needle.is_empty() && !entry.name.to_lowercase().contains(&needle) {
+                    continue;
+                }
+                let Some(span) = self
+                    .decl_name_span(mid, entry.def_span, &entry.name)
+                    .or(Some(entry.def_span))
+                else {
+                    continue;
+                };
+                let Some(range) = self.range_in(mid, span) else {
+                    continue;
+                };
+                out.push(SymbolInformation {
+                    name: entry.name.clone(),
+                    kind,
+                    tags: None,
+                    deprecated: None,
+                    location: Location {
+                        uri: uri.clone(),
+                        range,
+                    },
+                    container_name: None,
+                });
+            }
+        }
+        out
     }
 
     /// Answer a completion request at an LSP `(line, utf16_col)` position.

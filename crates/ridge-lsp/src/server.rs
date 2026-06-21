@@ -453,6 +453,8 @@ impl LanguageServer for RidgeLanguageServer {
                 })),
                 document_highlight_provider: Some(OneOf::Left(true)),
                 document_formatting_provider: Some(OneOf::Left(true)),
+                document_symbol_provider: Some(OneOf::Left(true)),
+                workspace_symbol_provider: Some(OneOf::Left(true)),
                 completion_provider: Some(CompletionOptions {
                     trigger_characters: Some(vec![".".to_owned()]),
                     resolve_provider: Some(false),
@@ -736,6 +738,42 @@ impl LanguageServer for RidgeLanguageServer {
             },
             new_text: formatted,
         }]))
+    }
+
+    /// `textDocument/documentSymbol` — the outline for one document (the
+    /// breadcrumb bar, the outline view, and `Ctrl-Shift-O`).
+    async fn document_symbol(
+        &self,
+        params: DocumentSymbolParams,
+    ) -> LspResult<Option<DocumentSymbolResponse>> {
+        let uri = params.text_document.uri;
+
+        let index = {
+            let snap = self.state.lock().await;
+            snap.index.clone()
+        };
+        let Some(index) = index else {
+            return Ok(None);
+        };
+        Ok(index
+            .document_symbols_at(&uri)
+            .map(DocumentSymbolResponse::Nested))
+    }
+
+    /// `workspace/symbol` — declarations across the workspace matching a query
+    /// (`Ctrl-T`).
+    async fn symbol(
+        &self,
+        params: WorkspaceSymbolParams,
+    ) -> LspResult<Option<Vec<SymbolInformation>>> {
+        let index = {
+            let snap = self.state.lock().await;
+            snap.index.clone()
+        };
+        let Some(index) = index else {
+            return Ok(None);
+        };
+        Ok(Some(index.workspace_symbols(&params.query)))
     }
 }
 

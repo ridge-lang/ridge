@@ -3904,3 +3904,62 @@ async fn test_standalone_folder_without_workspace_manifest_is_analysed() {
         "enriched signature, got: {md}"
     );
 }
+
+// ── textDocument/foldingRange (L15) ───────────────────────────────────────────
+
+fn folding_at(uri: &Url) -> FoldingRangeParams {
+    FoldingRangeParams {
+        text_document: TextDocumentIdentifier { uri: uri.clone() },
+        work_done_progress_params: WorkDoneProgressParams::default(),
+        partial_result_params: PartialResultParams::default(),
+    }
+}
+
+#[tokio::test]
+async fn test_folding_ranges_imports_and_declarations() {
+    // Two consecutive imports, a multi-line record, a multi-line function, and a
+    // single-line const. Lines (0-indexed):
+    //   0 import · 1 import · 2 blank · 3-6 type · 7 blank · 8-9 fn · 10 blank · 11 const
+    let src = "import std.list as L\nimport std.option as O\n\npub type Point = {\n  x: Int,\n  y: Int,\n}\n\npub fn area (p: Point) -> Int =\n  p.x\n\npub const ZERO : Int = 0\n";
+    let (service, _socket, uri) = hover_fixture(src).await;
+    let server = service.inner();
+
+    let folds = server
+        .folding_range(folding_at(&uri))
+        .await
+        .expect("folding ok")
+        .expect("folds present");
+
+    // The two consecutive imports collapse into one Imports-kind fold.
+    let imports: Vec<&FoldingRange> = folds
+        .iter()
+        .filter(|f| f.kind == Some(FoldingRangeKind::Imports))
+        .collect();
+    assert_eq!(imports.len(), 1, "exactly one import block, got {folds:?}");
+    assert_eq!(
+        (imports[0].start_line, imports[0].end_line),
+        (0, 1),
+        "import block spans lines 0..1"
+    );
+
+    // The multi-line record and function each fold as a region.
+    let regions: Vec<(u32, u32)> = folds
+        .iter()
+        .filter(|f| f.kind == Some(FoldingRangeKind::Region))
+        .map(|f| (f.start_line, f.end_line))
+        .collect();
+    assert!(
+        regions.contains(&(3, 6)),
+        "type Point folds 3..6, got {regions:?}"
+    );
+    assert!(
+        regions.contains(&(8, 9)),
+        "fn area folds 8..9, got {regions:?}"
+    );
+
+    // The single-line const on line 11 has nothing to fold.
+    assert!(
+        !folds.iter().any(|f| f.start_line == 11),
+        "single-line const must not fold, got {folds:?}"
+    );
+}

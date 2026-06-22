@@ -794,6 +794,24 @@ impl LanguageServer for RidgeLanguageServer {
             .map(DocumentSymbolResponse::Nested))
     }
 
+    /// `textDocument/foldingRange` — collapsible regions (declaration bodies and
+    /// blocks of consecutive imports).
+    async fn folding_range(
+        &self,
+        params: FoldingRangeParams,
+    ) -> LspResult<Option<Vec<FoldingRange>>> {
+        let uri = params.text_document.uri;
+
+        let index = {
+            let snap = self.state.lock().await;
+            snap.index.clone()
+        };
+        let Some(index) = index else {
+            return Ok(None);
+        };
+        Ok(index.folding_ranges_at(&uri))
+    }
+
     /// `workspace/symbol` — declarations across the workspace matching a query
     /// (`Ctrl-T`).
     async fn symbol(
@@ -977,6 +995,7 @@ fn server_capabilities() -> ServerCapabilities {
         document_highlight_provider: Some(OneOf::Left(true)),
         document_formatting_provider: Some(OneOf::Left(true)),
         document_symbol_provider: Some(OneOf::Left(true)),
+        folding_range_provider: Some(FoldingRangeProviderCapability::Simple(true)),
         workspace_symbol_provider: Some(OneOf::Left(true)),
         inlay_hint_provider: Some(OneOf::Left(true)),
         code_action_provider: Some(CodeActionProviderCapability::Simple(true)),

@@ -27,9 +27,9 @@ use ridge_types::{CapabilitySet, TyConDecl, TyConKind, Type};
 use tower_lsp::lsp_types::{
     CompletionItemKind, DocumentHighlight, DocumentHighlightKind, DocumentSymbol, FoldingRange,
     FoldingRangeKind, InlayHint, InlayHintKind, InlayHintLabel, Location, ParameterInformation,
-    ParameterLabel, Position, PrepareRenameResponse, Range, SemanticToken, SemanticTokenModifier,
-    SemanticTokenType, SemanticTokens, SignatureHelp, SignatureInformation, SymbolInformation,
-    SymbolKind as LspSymbolKind, TextEdit, Url, WorkspaceEdit,
+    ParameterLabel, Position, PrepareRenameResponse, Range, SelectionRange, SemanticToken,
+    SemanticTokenModifier, SemanticTokenType, SemanticTokens, SignatureHelp, SignatureInformation,
+    SymbolInformation, SymbolKind as LspSymbolKind, TextEdit, Url, WorkspaceEdit,
 };
 
 use crate::completion::{detect_context, symbol_kind, CompletionItemData, Context, KEYWORDS};
@@ -2122,15 +2122,7 @@ impl WorkspaceIndex {
         kind: &FoldingRangeKind,
     ) -> Option<FoldingRange> {
         let text: &str = self.module_text.get(mid.0 as usize).map_or("", |t| &**t);
-        let bytes = text.as_bytes();
-        let mut end = (span.end as usize).min(bytes.len());
-        while end > span.start as usize && bytes[end - 1].is_ascii_whitespace() {
-            end -= 1;
-        }
-        // `end` is now a UTF-8 boundary: it sits just past a non-whitespace byte,
-        // and Ridge's whitespace is ASCII, so trimming never splits a code point.
-        #[allow(clippy::cast_possible_truncation)]
-        let range = self.range_in(mid, Span::new(span.start, end as u32))?;
+        let range = self.range_in(mid, trim_trailing_ws(text, span))?;
         if range.end.line <= range.start.line {
             return None;
         }
@@ -2142,6 +2134,103 @@ impl WorkspaceIndex {
             kind: Some(kind.clone()),
             collapsed_text: None,
         })
+    }
+
+    /// Selection-range hierarchies for `textDocument/selectionRange` — the
+    /// editor's smart expand/shrink-selection command.
+    ///
+    /// For each requested position, returns the chain of progressively larger
+    /// source ranges the command steps through: the narrowest stamped node under
+    /// the cursor, then each enclosing node, the whole enclosing top-level
+    /// declaration, and finally the whole file. The result holds one entry per
+    /// input position, in order, as the protocol requires. Reads only this
+    /// immutable snapshot; never triggers a compile.
+    #[must_use]
+    pub fn selection_ranges_at(
+        &self,
+        uri: &Url,
+        positions: &[Position],
+    ) -> Option<Vec<SelectionRange>> {
+        let mid = self.module_id_for(uri)?;
+        let li = self.line_indices.get(mid.0 as usize)?;
+        let out = positions
+            .iter()
+            .map(|pos| self.selection_chain_at(mid, li.utf16_to_byte(pos.line, pos.character)))
+            .collect();
+        Some(out)
+    }
+
+    /// The nested [`SelectionRange`] for a single byte `offset` in module `mid`.
+    ///
+    /// Collects every level that brackets the offset — each stamped node, the
+    /// enclosing top-level declaration, and the whole file — then keeps only a
+    /// strictly-nesting chain (each level fully contains the previous one and is
+    /// strictly larger). Building from a strict chain tolerates sibling or
+    /// span-bled entries without ever emitting a parent that fails to contain
+    /// its child, which the protocol forbids.
+    fn selection_chain_at(&self, mid: ModuleId, offset: u32) -> SelectionRange {
+        let mi = mid.0 as usize;
+        let text: &str = self.module_text.get(mi).map_or("", |t| &**t);
+
+        // Every level that brackets the offset is a candidate. The end is
+        // inclusive so the cursor at the end of a token still selects it.
+        let brackets = |s: &Span| s.start <= offset && offset <= s.end;
+        let mut spans: Vec<Span> = Vec::new();
+        if let Some(spatial) = self.spatial.get(mi) {
+            spans.extend(
+                spatial
+                    .entries
+                    .iter()
+                    .filter(|(span, _, _)| brackets(span))
+                    .map(|(span, _, _)| *span),
+            );
+        }
+        // The enclosing top-level declaration adds an "expand to the whole
+        // item" step; trim its parser span-bleed first (see `trim_trailing_ws`).
+        if let Some(ast) = self.modules.get(mi).and_then(|m| m.ast.as_ref()) {
+            for item in &ast.items {
+                let s = item_span(item);
+                if brackets(&s) {
+                    spans.push(trim_trailing_ws(text, s));
+                }
+            }
+        }
+        // The whole file: the guaranteed outermost level, so expand-selection
+        // can always step out to the document.
+        spans.push(Span::new(0, u32::try_from(text.len()).unwrap_or(u32::MAX)));
+
+        // Narrowest first; on equal width prefer the span starting later (the one
+        // closer to the cursor from the left). Identical spans collapse.
+        spans.sort_by_key(|s| (s.end - s.start, std::cmp::Reverse(s.start)));
+        spans.dedup();
+
+        let mut chain: Vec<Span> = Vec::new();
+        for s in spans {
+            let keep = chain.last().is_none_or(|prev| {
+                s.start <= prev.start
+                    && prev.end <= s.end
+                    && (s.start < prev.start || s.end > prev.end)
+            });
+            if keep {
+                chain.push(s);
+            }
+        }
+
+        // Fold the chain outermost-inward so the returned (innermost) range
+        // carries the full parent chain.
+        let mut acc: Option<Box<SelectionRange>> = None;
+        for span in chain.iter().rev() {
+            if let Some(range) = self.range_in(mid, *span) {
+                acc = Some(Box::new(SelectionRange { range, parent: acc }));
+            }
+        }
+        acc.map_or_else(
+            || SelectionRange {
+                range: self.range_in(mid, Span::point(offset)).unwrap_or_default(),
+                parent: None,
+            },
+            |b| *b,
+        )
     }
 
     /// Build one [`DocumentSymbol`] for a top-level entry, attaching members.
@@ -3429,6 +3518,23 @@ fn workspace_symbol_of(binding: Option<&Binding>) -> Option<(ModuleId, ridge_res
 /// owns a symbol's definition site.
 const fn span_encloses(outer: Span, inner: Span) -> bool {
     outer.start <= inner.start && inner.end <= outer.end
+}
+
+/// Shrink `span` so it ends just past its last non-whitespace byte.
+///
+/// The parser closes a declaration span at the start of the *following* token,
+/// so a raw span trails into the blank lines (and the next item's first line)
+/// after the declaration. Trimming gives the span the editor expects — folding
+/// and selection should stop at the declaration's own last line of content.
+/// Ridge's whitespace is ASCII, so the trimmed end stays on a UTF-8 boundary.
+fn trim_trailing_ws(text: &str, span: Span) -> Span {
+    let bytes = text.as_bytes();
+    let mut end = (span.end as usize).min(bytes.len());
+    while end > span.start as usize && bytes[end - 1].is_ascii_whitespace() {
+        end -= 1;
+    }
+    #[allow(clippy::cast_possible_truncation)]
+    Span::new(span.start, end as u32)
 }
 
 /// The source span of a top-level item, covering its whole declaration.

@@ -5139,7 +5139,12 @@ async fn test_no_progress_for_incremental_compile() {
 /// files outlive the helper, matching the other on-disk workspace fixtures.
 fn write_mini_workspace(ws_name: &str, module: &str, src: &str) -> (PathBuf, Url) {
     let dir = tempfile::TempDir::new().expect("temp dir");
-    let root = dir.path().to_path_buf();
+    // Canonicalise so the test's query URIs match the module URIs the index
+    // builds: discovery canonicalises the workspace root, which expands Windows
+    // 8.3 short names (`RUNNER~1` → `runneradmin`) and resolves the macOS
+    // `/var` → `/private/var` symlink. `uri_key` normalises drive case and colon
+    // encoding but not those, so without this the query would miss off-Linux.
+    let root = std::fs::canonicalize(dir.path()).expect("canonicalize temp root");
     let app_src = root.join("app").join("src");
     std::fs::create_dir_all(&app_src).expect("create temp workspace");
     std::fs::write(

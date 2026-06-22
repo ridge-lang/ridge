@@ -1,0 +1,3 @@
+import app.math (add)
+
+pub fn result -> Int = add 1 2

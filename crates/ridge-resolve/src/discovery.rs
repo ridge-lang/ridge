@@ -603,8 +603,11 @@ fn walk_src_root_inner(
 ///
 /// `file_path.starts_with(src_root)` must hold.  This is guaranteed by
 /// [`walk_src_root_inner`], which only calls this function for files obtained
-/// from a recursive descent starting at `src_root`.
-fn derive_module_fqn(project_name: &str, src_root: &Path, file_path: &Path) -> String {
+/// from a recursive descent starting at `src_root`. Callers outside discovery
+/// (the LSP's file-rename import fixups) must enforce the same prefix relation;
+/// when it does not hold the function falls back to the bare project name.
+#[must_use]
+pub fn derive_module_fqn(project_name: &str, src_root: &Path, file_path: &Path) -> String {
     // strip_prefix is safe: the invariant above ensures file_path is always
     // under src_root (enforced by walk_src_root_inner).
     let Ok(rel) = file_path.strip_prefix(src_root) else {

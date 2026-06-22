@@ -17,6 +17,10 @@ pub struct CompletionItemData {
     pub sort_text: String,
     /// Optional one-line detail (e.g. a rendered type).
     pub detail: Option<String>,
+    /// Opaque payload echoed back on `completionItem/resolve`, identifying the
+    /// workspace symbol whose signature and doc are filled in lazily. `None` for
+    /// items with nothing more to resolve (locals, keywords, stdlib members).
+    pub data: Option<serde_json::Value>,
 }
 
 /// What the cursor position calls for.

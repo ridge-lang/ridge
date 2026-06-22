@@ -23,6 +23,7 @@
     clippy::panic,
     clippy::missing_docs_in_private_items,
     clippy::match_wildcard_for_single_variants,
+    clippy::similar_names,
     dead_code
 )]
 
@@ -5129,4 +5130,221 @@ async fn test_no_progress_for_incremental_compile() {
         created_after_open,
         "an incremental recompile must not create new progress"
     );
+}
+
+// ── Multi-root workspaces ─────────────────────────────────────────────────────
+
+/// Write a minimal single-module Ridge workspace into a fresh temp dir and
+/// return its root path plus the module's file URI. The dir is leaked so the
+/// files outlive the helper, matching the other on-disk workspace fixtures.
+fn write_mini_workspace(ws_name: &str, module: &str, src: &str) -> (PathBuf, Url) {
+    let dir = tempfile::TempDir::new().expect("temp dir");
+    let root = dir.path().to_path_buf();
+    let app_src = root.join("app").join("src");
+    std::fs::create_dir_all(&app_src).expect("create temp workspace");
+    std::fs::write(
+        root.join("ridge.toml"),
+        format!("[workspace]\nname = \"{ws_name}\"\nversion = \"0.1.0\"\nmembers = [\"app\"]\n"),
+    )
+    .expect("workspace manifest");
+    std::fs::write(
+        root.join("app").join("ridge.toml"),
+        "[project]\nname = \"app\"\nversion = \"0.1.0\"\nkind = \"library\"\n\n[capabilities]\nallow = []\n",
+    )
+    .expect("project manifest");
+    let file = app_src.join(module);
+    std::fs::write(&file, src).expect("write source");
+    let uri = Url::from_file_path(&file).expect("file URI");
+    std::mem::forget(dir);
+    (root, uri)
+}
+
+const WIDGET_A_SRC: &str = "pub fn widget_a -> Int = 1\n";
+const WIDGET_B_SRC: &str = "pub fn widget_b -> Int = 2\n";
+
+/// Initialise a server over two independent Ridge workspaces, each its own
+/// `[workspace]` manifest root, both passed as `workspaceFolders` the way a
+/// multi-folder editor window does. Opens one module from each and waits until
+/// both are indexed. Returns the service plus each module's file URI.
+async fn multi_root_workspace() -> (LspService<RidgeLanguageServer>, ClientSocket, Url, Url) {
+    let (root_a, uri_a) = write_mini_workspace("ws-a", "widget_a.ridge", WIDGET_A_SRC);
+    let (root_b, uri_b) = write_mini_workspace("ws-b", "widget_b.ridge", WIDGET_B_SRC);
+
+    let (service, socket) = build_test_service();
+    {
+        let server = service.inner();
+        let uri_root_a = Url::from_file_path(&root_a).expect("root A URI");
+        let uri_root_b = Url::from_file_path(&root_b).expect("root B URI");
+        server
+            .initialize(InitializeParams {
+                // A real client sets rootUri to the first folder and lists every
+                // opened folder in workspaceFolders; the duplicate dedups away.
+                root_uri: Some(uri_root_a.clone()),
+                workspace_folders: Some(vec![
+                    WorkspaceFolder {
+                        uri: uri_root_a,
+                        name: "ws-a".to_owned(),
+                    },
+                    WorkspaceFolder {
+                        uri: uri_root_b,
+                        name: "ws-b".to_owned(),
+                    },
+                ]),
+                capabilities: ClientCapabilities::default(),
+                ..InitializeParams::default()
+            })
+            .await
+            .expect("initialize");
+
+        for (uri, src) in [(&uri_a, WIDGET_A_SRC), (&uri_b, WIDGET_B_SRC)] {
+            server
+                .did_open(DidOpenTextDocumentParams {
+                    text_document: TextDocumentItem {
+                        uri: uri.clone(),
+                        language_id: "ridge".to_owned(),
+                        version: 1,
+                        text: src.to_owned(),
+                    },
+                })
+                .await;
+        }
+        wait_for_uri_indexed(server, &uri_a).await;
+        wait_for_uri_indexed(server, &uri_b).await;
+    }
+    (service, socket, uri_a, uri_b)
+}
+
+/// Poll until `uri` belongs to some workspace's index, or panic after ~6s.
+async fn wait_for_uri_indexed(server: &RidgeLanguageServer, uri: &Url) {
+    for _ in 0..120 {
+        tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;
+        if server.index_for_uri(uri).await.is_some() {
+            return;
+        }
+    }
+    panic!("uri never indexed: {uri}");
+}
+
+/// Poll until `uri`'s index has a generation past `baseline`, returning it, or
+/// panic after ~6s.
+async fn wait_for_index_generation_above(
+    server: &RidgeLanguageServer,
+    uri: &Url,
+    baseline: u64,
+) -> u64 {
+    for _ in 0..120 {
+        tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;
+        if let Some(idx) = server.index_for_uri(uri).await {
+            if idx.generation > baseline {
+                return idx.generation;
+            }
+        }
+    }
+    panic!("index for {uri} never recompiled past generation {baseline}");
+}
+
+#[tokio::test]
+async fn test_multi_root_routes_each_file_to_its_own_workspace() {
+    let (service, _socket, uri_a, uri_b) = multi_root_workspace().await;
+    let server = service.inner();
+
+    let idx_a = server
+        .index_for_uri(&uri_a)
+        .await
+        .expect("workspace A indexed");
+    let idx_b = server
+        .index_for_uri(&uri_b)
+        .await
+        .expect("workspace B indexed");
+
+    // Each file routes to the workspace that owns it, and to no other — names
+    // never leak between the two unrelated projects.
+    assert!(idx_a.contains_uri(&uri_a));
+    assert!(
+        !idx_a.contains_uri(&uri_b),
+        "workspace A must not own B's file"
+    );
+    assert!(idx_b.contains_uri(&uri_b));
+    assert!(
+        !idx_b.contains_uri(&uri_a),
+        "workspace B must not own A's file"
+    );
+
+    // Two independent indices, not one merged graph.
+    assert!(
+        !Arc::ptr_eq(&idx_a, &idx_b),
+        "the two workspaces share a single index"
+    );
+    assert_eq!(idx_a.uri_to_module.len(), 1);
+    assert_eq!(idx_b.uri_to_module.len(), 1);
+}
+
+#[tokio::test]
+async fn test_multi_root_workspace_symbol_spans_all_projects() {
+    let (service, _socket, _uri_a, _uri_b) = multi_root_workspace().await;
+    let server = service.inner();
+
+    // `Ctrl-T` reaches into every open project at once.
+    let symbols = server
+        .symbol(WorkspaceSymbolParams {
+            query: "widget".to_owned(),
+            work_done_progress_params: WorkDoneProgressParams::default(),
+            partial_result_params: PartialResultParams::default(),
+        })
+        .await
+        .expect("symbol ok")
+        .unwrap_or_default();
+
+    let names: Vec<&str> = symbols.iter().map(|s| s.name.as_str()).collect();
+    assert!(
+        names.contains(&"widget_a"),
+        "missing workspace A's symbol, got {names:?}"
+    );
+    assert!(
+        names.contains(&"widget_b"),
+        "missing workspace B's symbol, got {names:?}"
+    );
+}
+
+#[tokio::test]
+async fn test_multi_root_edit_recompiles_only_owning_workspace() {
+    let (service, _socket, uri_a, uri_b) = multi_root_workspace().await;
+    let server = service.inner();
+
+    let gen_a0 = server
+        .index_for_uri(&uri_a)
+        .await
+        .expect("a indexed")
+        .generation;
+    let gen_b0 = server
+        .index_for_uri(&uri_b)
+        .await
+        .expect("b indexed")
+        .generation;
+
+    // Typing in workspace A schedules a debounced incremental recompile, which
+    // must touch only A — workspace B is left untouched.
+    server
+        .did_change(DidChangeTextDocumentParams {
+            text_document: VersionedTextDocumentIdentifier {
+                uri: uri_a.clone(),
+                version: 2,
+            },
+            content_changes: vec![TextDocumentContentChangeEvent {
+                range: None,
+                range_length: None,
+                text: "pub fn widget_a -> Int = 42\n".to_owned(),
+            }],
+        })
+        .await;
+
+    let gen_a1 = wait_for_index_generation_above(server, &uri_a, gen_a0).await;
+    let gen_b1 = server
+        .index_for_uri(&uri_b)
+        .await
+        .expect("b still indexed")
+        .generation;
+
+    assert!(gen_a1 > gen_a0, "workspace A should have recompiled");
+    assert_eq!(gen_b1, gen_b0, "editing A must not recompile B");
 }

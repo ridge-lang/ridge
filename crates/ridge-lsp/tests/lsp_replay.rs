@@ -999,6 +999,63 @@ async fn test_hover_labels_class_method() {
     );
 }
 
+#[tokio::test]
+async fn test_hover_enriches_function_signature_and_doc() {
+    // Hovering a function use-site shows its written header — visibility, named
+    // parameters, return type — inside a `ridge` code fence, plus its doc.
+    let src = "---\nGreets a person by name.\n---\npub fn greet (name: Text) -> Text = name\npub fn run -> Text = greet \"x\"\n";
+    let (service, _socket, uri) = hover_fixture(src).await;
+    let server = service.inner();
+
+    // `greet` on line 4 (`pub fn run -> Text = greet "x"`).
+    let line4 = "pub fn run -> Text = greet \"x\"";
+    let col = u32::try_from(line4.find("greet").expect("greet use") + 1).expect("offset fits u32");
+    let h = server
+        .hover(hover_at(&uri, 4, col))
+        .await
+        .expect("hover ok");
+    let md = hover_markdown(h).expect("hover over a function returns markup");
+
+    assert!(
+        md.contains("```ridge"),
+        "function hover should be a ridge code fence, got {md:?}"
+    );
+    assert!(
+        md.contains("pub fn greet (name: Text) -> Text"),
+        "function hover should show the written signature, got {md:?}"
+    );
+    assert!(
+        md.contains("Greets a person by name."),
+        "function hover should include the doc comment, got {md:?}"
+    );
+}
+
+#[tokio::test]
+async fn test_hover_record_field_names_owner() {
+    // Hovering a record-field use shows its type and the record it belongs to.
+    let src = "pub type User = { age: Int, name: Text }\npub fn ageOf (u: User) -> Int = u.age\n";
+    let (service, _socket, uri) = hover_fixture(src).await;
+    let server = service.inner();
+
+    // `age` in `u.age` on line 1.
+    let line1 = "pub fn ageOf (u: User) -> Int = u.age";
+    let col = u32::try_from(line1.rfind("age").expect("field use") + 1).expect("offset fits u32");
+    let h = server
+        .hover(hover_at(&uri, 1, col))
+        .await
+        .expect("hover ok");
+    let md = hover_markdown(h).expect("hover over a record field returns markup");
+
+    assert!(
+        md.contains("age : Int"),
+        "field hover should show the field type, got {md:?}"
+    );
+    assert!(
+        md.contains("field of `User`"),
+        "field hover should name the owning record, got {md:?}"
+    );
+}
+
 // ── Test 17: textDocument/definition ──────────────────────────────────────────
 
 fn goto_at(uri: &Url, line: u32, character: u32) -> GotoDefinitionParams {

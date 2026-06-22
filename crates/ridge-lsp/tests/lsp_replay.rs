@@ -4721,3 +4721,175 @@ async fn test_capability_advertises_will_rename_files() {
         Some(FileOperationPatternKind::File)
     );
 }
+
+// ── workspace/didChangeWatchedFiles ──────────────────────────────────────────
+
+/// Build a hermetic temp workspace whose `app/src/` holds the given
+/// `(filename, contents)` files, initialize the server, drive the first compile
+/// by opening the first file, and wait until the index reflects every on-disk
+/// module. Returns the live service plus the workspace root (the `TempDir` is
+/// leaked so the path stays valid for the test).
+async fn watched_workspace(
+    files: &[(&str, &str)],
+) -> (LspService<RidgeLanguageServer>, ClientSocket, PathBuf) {
+    let dir = tempfile::TempDir::new().expect("temp dir");
+    let root = dir.path().to_path_buf();
+    let app_src = root.join("app").join("src");
+    std::fs::create_dir_all(&app_src).expect("create temp workspace");
+    std::fs::write(
+        root.join("ridge.toml"),
+        "[workspace]\nname = \"watch-ws\"\nversion = \"0.1.0\"\nmembers = [\"app\"]\n",
+    )
+    .expect("workspace manifest");
+    std::fs::write(
+        root.join("app").join("ridge.toml"),
+        "[project]\nname = \"app\"\nversion = \"0.1.0\"\nkind = \"library\"\n\n[capabilities]\nallow = []\n",
+    )
+    .expect("project manifest");
+    for (name, contents) in files {
+        std::fs::write(app_src.join(name), contents).expect("write source");
+    }
+
+    let (service, socket) = build_test_service();
+    {
+        let server = service.inner();
+        let root_uri = Url::from_file_path(&root).expect("root URI");
+        server
+            .initialize(InitializeParams {
+                root_uri: Some(root_uri.clone()),
+                workspace_folders: Some(vec![WorkspaceFolder {
+                    uri: root_uri,
+                    name: "watch-ws".to_owned(),
+                }]),
+                capabilities: ClientCapabilities::default(),
+                ..InitializeParams::default()
+            })
+            .await
+            .expect("initialize");
+
+        // Opening the first file drives the initial reseed compile, which
+        // discovers every on-disk module — opened or not.
+        let first = app_src.join(files[0].0);
+        server
+            .did_open(DidOpenTextDocumentParams {
+                text_document: TextDocumentItem {
+                    uri: Url::from_file_path(&first).expect("file URI"),
+                    language_id: "ridge".to_owned(),
+                    version: 1,
+                    text: files[0].1.to_owned(),
+                },
+            })
+            .await;
+        wait_for_module_count(server, files.len()).await;
+    }
+    std::mem::forget(dir);
+    (service, socket, root)
+}
+
+/// Poll the index until it holds exactly `n` modules, or panic after ~6s.
+async fn wait_for_module_count(server: &RidgeLanguageServer, n: usize) {
+    for _ in 0..120 {
+        tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;
+        if server
+            .workspace_index()
+            .await
+            .map(|idx| idx.uri_to_module.len())
+            == Some(n)
+        {
+            return;
+        }
+    }
+    let got = server
+        .workspace_index()
+        .await
+        .map(|idx| idx.uri_to_module.len());
+    panic!("expected {n} modules, got {got:?}");
+}
+
+#[tokio::test]
+async fn test_watched_file_created_is_indexed() {
+    let (service, _socket, root) =
+        watched_workspace(&[("main.ridge", "pub fn a -> Int = 1\n")]).await;
+    let server = service.inner();
+
+    // Create a second module on disk without opening it in the editor.
+    let extra = root.join("app").join("src").join("extra.ridge");
+    std::fs::write(&extra, "pub fn b -> Int = 2\n").expect("write new file");
+    server
+        .did_change_watched_files(DidChangeWatchedFilesParams {
+            changes: vec![FileEvent {
+                uri: Url::from_file_path(&extra).expect("uri"),
+                typ: FileChangeType::CREATED,
+            }],
+        })
+        .await;
+
+    wait_for_module_count(server, 2).await;
+    let idx = server.workspace_index().await.expect("index");
+    assert!(
+        idx.uri_to_module
+            .keys()
+            .any(|u| u.path().ends_with("extra.ridge")),
+        "the newly created module is now indexed"
+    );
+}
+
+#[tokio::test]
+async fn test_watched_file_deleted_drops_module() {
+    let (service, _socket, root) = watched_workspace(&[
+        ("main.ridge", "pub fn a -> Int = 1\n"),
+        ("extra.ridge", "pub fn b -> Int = 2\n"),
+    ])
+    .await;
+    let server = service.inner();
+
+    // Remove one module from disk, then report the deletion.
+    let extra = root.join("app").join("src").join("extra.ridge");
+    std::fs::remove_file(&extra).expect("delete file");
+    server
+        .did_change_watched_files(DidChangeWatchedFilesParams {
+            changes: vec![FileEvent {
+                uri: Url::from_file_path(&extra).expect("uri"),
+                typ: FileChangeType::DELETED,
+            }],
+        })
+        .await;
+
+    wait_for_module_count(server, 1).await;
+    let idx = server.workspace_index().await.expect("index");
+    assert!(
+        !idx.uri_to_module
+            .keys()
+            .any(|u| u.path().ends_with("extra.ridge")),
+        "the deleted module is gone from the index"
+    );
+}
+
+#[tokio::test]
+async fn test_watched_irrelevant_file_ignored() {
+    let (service, _socket, root) =
+        watched_workspace(&[("main.ridge", "pub fn a -> Int = 1\n")]).await;
+    let server = service.inner();
+
+    let gen_before = server.workspace_index().await.expect("index").generation;
+
+    // A non-Ridge file must not trigger a recompile.
+    let txt = root.join("notes.txt");
+    std::fs::write(&txt, "scratch").ok();
+    server
+        .did_change_watched_files(DidChangeWatchedFilesParams {
+            changes: vec![FileEvent {
+                uri: Url::from_file_path(&txt).expect("uri"),
+                typ: FileChangeType::CHANGED,
+            }],
+        })
+        .await;
+
+    // Give any (erroneous) recompile time to land, then confirm none happened.
+    tokio::time::sleep(tokio::time::Duration::from_millis(400)).await;
+    let gen_after = server.workspace_index().await.expect("index").generation;
+    assert_eq!(
+        gen_before, gen_after,
+        "an irrelevant watched file must not trigger a recompile"
+    );
+}

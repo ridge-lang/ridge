@@ -64,6 +64,10 @@ use crate::index::{collect_capability_fixes, WorkspaceIndex};
 ///
 /// Held behind `Arc<Mutex<…>>` and shared between the `initialize` handler and
 /// the compile task.
+// Each flag tracks an independent, orthogonal piece of session state (mode,
+// warn-once latches, client-capability gates); a struct of named bools is the
+// clearest representation.
+#[allow(clippy::struct_excessive_bools)]
 #[derive(Debug, Default)]
 struct WorkspaceSnapshot {
     /// Absolute path to the workspace root (the directory containing the
@@ -87,6 +91,11 @@ struct WorkspaceSnapshot {
     /// so `textDocument/prepareTypeHierarchy` is registered dynamically in
     /// `initialized` when — and only when — the client supports it.
     supports_type_hierarchy: bool,
+    /// True when the client advertised dynamic registration for file watching.
+    /// `workspace/didChangeWatchedFiles` is a client-driven watch the server
+    /// opts into via dynamic registration in `initialized`; without it the
+    /// client never reports on-disk changes to files that aren't open.
+    supports_watched_files: bool,
     /// The most recent completed analysis, if any. Replaced wholesale on each
     /// successful compile; reads clone the `Arc` and release the lock before
     /// querying. `None` until the first compile lands.
@@ -336,6 +345,23 @@ fn standalone_files(open_docs: &HashMap<Url, String>) -> Vec<PathBuf> {
     files
 }
 
+/// Whether a watched URI is one the server reacts to: a `.ridge` source or a
+/// `ridge.toml` manifest. Other paths the client may report are ignored.
+fn is_watched_ridge_path(uri: &Url) -> bool {
+    let Ok(path) = uri.to_file_path() else {
+        return false;
+    };
+    // `.ridge` is matched case-sensitively, per R003.
+    path.extension().is_some_and(|e| e == "ridge")
+        || path.file_name().is_some_and(|n| n == "ridge.toml")
+}
+
+/// Whether a watched URI is a `.ridge` source file (not a manifest).
+fn is_ridge_source(uri: &Url) -> bool {
+    uri.to_file_path()
+        .is_ok_and(|path| path.extension().is_some_and(|e| e == "ridge"))
+}
+
 /// Seed-or-reuse the engine, apply the buffer edits, and produce the index and
 /// diagnostics. Holds the engine mutex for the whole call, so concurrent
 /// compiles serialise on the shared engine; the generation is claimed inside
@@ -443,6 +469,15 @@ impl LanguageServer for RidgeLanguageServer {
             .and_then(|th| th.dynamic_registration)
             .unwrap_or(false);
 
+        // File watching is likewise opt-in via dynamic registration.
+        let supports_watched_files = params
+            .capabilities
+            .workspace
+            .as_ref()
+            .and_then(|ws| ws.did_change_watched_files.as_ref())
+            .and_then(|w| w.dynamic_registration)
+            .unwrap_or(false);
+
         // Determine the workspace root from rootUri or first workspaceFolders entry.
         let root_uri: Option<Url> = params.root_uri.or_else(|| {
             params
@@ -487,6 +522,7 @@ impl LanguageServer for RidgeLanguageServer {
             snap.workspace_root = manifest_root;
             snap.standalone = standalone;
             snap.supports_type_hierarchy = supports_type_hierarchy;
+            snap.supports_watched_files = supports_watched_files;
         }
         if standalone {
             tracing::info!(
@@ -532,6 +568,43 @@ impl LanguageServer for RidgeLanguageServer {
             };
             if let Err(err) = self.client.register_capability(vec![registration]).await {
                 tracing::warn!("failed to register type hierarchy capability: {err}");
+            }
+        }
+
+        // Watch `.ridge` sources and `ridge.toml` manifests so on-disk changes
+        // outside the open buffers (git checkout, external edits, files created
+        // or deleted in the explorer) refresh the index and diagnostics.
+        let supports_watched_files = {
+            let snap = self.state.lock().await;
+            snap.supports_watched_files
+        };
+        if supports_watched_files {
+            let options = DidChangeWatchedFilesRegistrationOptions {
+                watchers: vec![
+                    FileSystemWatcher {
+                        glob_pattern: GlobPattern::String("**/*.ridge".to_owned()),
+                        kind: None,
+                    },
+                    FileSystemWatcher {
+                        glob_pattern: GlobPattern::String("**/ridge.toml".to_owned()),
+                        kind: None,
+                    },
+                ],
+            };
+            match serde_json::to_value(options) {
+                Ok(register_options) => {
+                    let registration = Registration {
+                        id: "ridge-watched-files".to_owned(),
+                        method: "workspace/didChangeWatchedFiles".to_owned(),
+                        register_options: Some(register_options),
+                    };
+                    if let Err(err) = self.client.register_capability(vec![registration]).await {
+                        tracing::warn!("failed to register watched-files capability: {err}");
+                    }
+                }
+                Err(err) => {
+                    tracing::warn!("failed to encode watched-files registration: {err}");
+                }
             }
         }
     }
@@ -612,6 +685,40 @@ impl LanguageServer for RidgeLanguageServer {
         if standalone {
             self.trigger_compile().await;
         }
+    }
+
+    async fn did_change_watched_files(&self, params: DidChangeWatchedFilesParams) {
+        let mut relevant = false;
+        let mut deleted: Vec<Url> = Vec::new();
+        for change in &params.changes {
+            if !is_watched_ridge_path(&change.uri) {
+                continue;
+            }
+            relevant = true;
+            if change.typ == FileChangeType::DELETED && is_ridge_source(&change.uri) {
+                deleted.push(change.uri.clone());
+            }
+        }
+        if !relevant {
+            return;
+        }
+
+        // A reseed only publishes diagnostics for modules that still exist, so a
+        // deleted module's diagnostics must be cleared explicitly. Drop it from
+        // the open-doc overlay too, in case it was being edited.
+        if !deleted.is_empty() {
+            let mut snap = self.state.lock().await;
+            for uri in &deleted {
+                snap.open_docs.remove(uri);
+            }
+        }
+        for uri in deleted {
+            self.client.publish_diagnostics(uri, vec![], None).await;
+        }
+
+        // Reseed from disk: re-runs discovery so files created or deleted on disk
+        // and manifest edits are reflected, then recompiles against open buffers.
+        self.trigger_compile().await;
     }
 
     async fn hover(&self, params: HoverParams) -> LspResult<Option<Hover>> {

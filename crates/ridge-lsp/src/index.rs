@@ -584,6 +584,122 @@ impl WorkspaceIndex {
         self.tycon_location(tycon)
     }
 
+    /// Answer a `textDocument/implementation` request at an LSP `(line, col)`.
+    ///
+    /// Navigates from a typeclass abstraction to its concrete implementations.
+    /// On a `class` name (or the class name of an `instance` head) it returns
+    /// every `instance` of that class; on a class method — at a call site, in the
+    /// `class` signature, or in an `instance` body — it returns that method's
+    /// definition in each `instance`. Returns `None` off any class or instance
+    /// name. Reads only this immutable snapshot; never triggers a compile.
+    #[must_use]
+    pub fn implementations_at(
+        &self,
+        uri: &Url,
+        line: u32,
+        utf16_col: u32,
+    ) -> Option<Vec<Location>> {
+        let mid = self.module_id_for(uri)?;
+        let mi = mid.0 as usize;
+        let offset = self.line_indices.get(mi)?.utf16_to_byte(line, utf16_col);
+
+        // The class — and, for a method, its name — the cursor refers to. A class
+        // method call site already carries a `ClassMethod` binding; a class name,
+        // a method signature, or an instance method definition carry none, so
+        // those are recovered from the retained AST of the cursor's module.
+        let (class_name, method) = self
+            .class_method_use_at(mi, offset)
+            .or_else(|| self.class_target_in_ast(mi, offset))?;
+
+        let mut locations: Vec<Location> = Vec::new();
+        for (smi, view) in self.modules.iter().enumerate() {
+            let Some(ast) = view.ast.as_ref() else {
+                continue;
+            };
+            let Ok(raw) = u32::try_from(smi) else {
+                continue;
+            };
+            let smid = ModuleId(raw);
+            for item in &ast.items {
+                let ridge_ast::Item::InstanceDecl(decl) = item else {
+                    continue;
+                };
+                if decl.class.text != class_name {
+                    continue;
+                }
+                // A method target lands on the matching definition's name; a bare
+                // class target lands on the class name in the instance head.
+                let span = match &method {
+                    Some(name) => match decl.methods.iter().find(|d| d.name.text == *name) {
+                        Some(def) => def.name.span,
+                        None => continue,
+                    },
+                    None => decl.class.span,
+                };
+                if let Some(loc) = self.location_in(smid, span) {
+                    locations.push(loc);
+                }
+            }
+        }
+
+        if locations.is_empty() {
+            return None;
+        }
+        locations.sort_by(|a, b| {
+            (a.uri.as_str(), a.range.start.line, a.range.start.character).cmp(&(
+                b.uri.as_str(),
+                b.range.start.line,
+                b.range.start.character,
+            ))
+        });
+        locations.dedup();
+        Some(locations)
+    }
+
+    /// The `(class, method)` named by a class-method use site under `offset`,
+    /// when the cursor sits on a name bound to a `ClassMethod`.
+    fn class_method_use_at(&self, mi: usize, offset: u32) -> Option<(String, Option<String>)> {
+        match self.binding_at(mi, offset)? {
+            Binding::ClassMethod { class_name, method } => {
+                Some((class_name.clone(), Some(method.clone())))
+            }
+            _ => None,
+        }
+    }
+
+    /// The `(class, optional method)` named by a `class`/`instance` declaration
+    /// token under `offset`, scanning the cursor module's retained AST. A class
+    /// name in a `class` or `instance` head yields `(class, None)`; a method name
+    /// in a `class` signature or an `instance` body yields `(class, Some(name))`.
+    /// `class` and `instance` declarations carry no bindings, so the spans come
+    /// straight from the parsed items.
+    fn class_target_in_ast(&self, mi: usize, offset: u32) -> Option<(String, Option<String>)> {
+        let ast = self.modules.get(mi)?.ast.as_ref()?;
+        let here = |s: Span| s.start <= offset && offset <= s.end;
+        for item in &ast.items {
+            match item {
+                ridge_ast::Item::ClassDecl(decl) => {
+                    if here(decl.name.span) {
+                        return Some((decl.name.text.clone(), None));
+                    }
+                    if let Some(m) = decl.methods.iter().find(|m| here(m.name.span)) {
+                        return Some((decl.name.text.clone(), Some(m.name.text.clone())));
+                    }
+                }
+                ridge_ast::Item::InstanceDecl(decl) => {
+                    if here(decl.class.span) {
+                        return Some((decl.class.text.clone(), None));
+                    }
+                    if let Some(m) = decl.methods.iter().find(|m| here(m.name.span)) {
+                        return Some((decl.class.text.clone(), Some(m.name.text.clone())));
+                    }
+                }
+                _ => {}
+            }
+        }
+        None
+    }
+
     /// Answer a `textDocument/signatureHelp` request at an LSP `(line, col)`.
     ///
     /// Ridge calls are juxtaposition (`joinOn left right cond`), so the active

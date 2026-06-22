@@ -4029,3 +4029,130 @@ async fn test_folding_ranges_imports_and_declarations() {
         "single-line const must not fold, got {folds:?}"
     );
 }
+
+// ── textDocument/selectionRange ───────────────────────────────────────────────
+
+fn selection_at(uri: &Url, positions: Vec<Position>) -> SelectionRangeParams {
+    SelectionRangeParams {
+        text_document: TextDocumentIdentifier { uri: uri.clone() },
+        positions,
+        work_done_progress_params: WorkDoneProgressParams::default(),
+        partial_result_params: PartialResultParams::default(),
+    }
+}
+
+/// The selection-range hierarchy flattened innermost → outermost.
+fn chain_ranges(sr: &SelectionRange) -> Vec<Range> {
+    let mut out = vec![sr.range];
+    let mut cur = sr.parent.as_deref();
+    while let Some(parent) = cur {
+        out.push(parent.range);
+        cur = parent.parent.as_deref();
+    }
+    out
+}
+
+#[tokio::test]
+async fn test_selection_range_nests_from_token_to_file() {
+    // Cursor inside the `21` literal of the call `double 21`.
+    //   line 0: pub fn double (n: Int) -> Int = n
+    //   line 1: pub fn run -> Int =
+    //   line 2: ··double 21
+    let src = "pub fn double (n: Int) -> Int = n\npub fn run -> Int =\n  double 21\n";
+    let (service, _socket, uri) = hover_fixture(src).await;
+    let server = service.inner();
+
+    let ranges = server
+        .selection_range(selection_at(&uri, vec![Position::new(2, 10)]))
+        .await
+        .expect("selection ok")
+        .expect("a hierarchy is returned");
+    assert_eq!(ranges.len(), 1, "one hierarchy per requested position");
+    let chain = chain_ranges(&ranges[0]);
+
+    // Expanding steps through at least: the literal, the enclosing call, the
+    // declaration, and the whole file.
+    assert!(
+        chain.len() >= 3,
+        "expected a multi-level hierarchy, got {chain:?}"
+    );
+
+    // The innermost range starts on the cursor's line and brackets the cursor.
+    let inner = chain[0];
+    assert_eq!(inner.start.line, 2, "innermost is on the cursor line");
+    assert!(
+        inner.start <= Position::new(2, 10) && Position::new(2, 10) <= inner.end,
+        "innermost brackets the cursor, got {inner:?}"
+    );
+
+    // Each parent strictly contains its child.
+    for pair in chain.windows(2) {
+        let (child, parent) = (pair[0], pair[1]);
+        assert!(
+            parent.start <= child.start && child.end <= parent.end,
+            "parent {parent:?} must contain child {child:?}"
+        );
+        assert!(
+            parent.start < child.start || child.end < parent.end,
+            "parent {parent:?} must be strictly larger than child {child:?}"
+        );
+    }
+
+    // The outermost level is the whole file.
+    let outer = *chain.last().expect("non-empty chain");
+    assert_eq!(
+        outer.start,
+        Position::new(0, 0),
+        "outermost selection is the whole document"
+    );
+}
+
+#[tokio::test]
+async fn test_selection_range_one_result_per_position() {
+    let src = "pub fn double (n: Int) -> Int = n\npub fn run -> Int =\n  double 21\n";
+    let (service, _socket, uri) = hover_fixture(src).await;
+    let server = service.inner();
+
+    // Two positions: inside `21` and on the `double` callee.
+    let ranges = server
+        .selection_range(selection_at(
+            &uri,
+            vec![Position::new(2, 10), Position::new(2, 4)],
+        ))
+        .await
+        .expect("selection ok")
+        .expect("hierarchies returned");
+    assert_eq!(
+        ranges.len(),
+        2,
+        "result count and order match the input positions"
+    );
+    for sr in &ranges {
+        assert!(
+            chain_ranges(sr).len() >= 2,
+            "each position yields its own hierarchy"
+        );
+    }
+}
+
+#[tokio::test]
+async fn test_selection_range_outside_nodes_yields_file() {
+    // The cursor sits in the leading whitespace before `double`, off every
+    // stamped node. The declaration and the whole file still bracket it.
+    let src = "pub fn double (n: Int) -> Int = n\npub fn run -> Int =\n  double 21\n";
+    let (service, _socket, uri) = hover_fixture(src).await;
+    let server = service.inner();
+
+    let ranges = server
+        .selection_range(selection_at(&uri, vec![Position::new(2, 0)]))
+        .await
+        .expect("selection ok")
+        .expect("a hierarchy is returned");
+    let chain = chain_ranges(&ranges[0]);
+    let outer = *chain.last().expect("non-empty chain");
+    assert_eq!(
+        outer.start,
+        Position::new(0, 0),
+        "expand-selection always reaches the whole document"
+    );
+}

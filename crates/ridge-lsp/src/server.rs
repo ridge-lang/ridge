@@ -840,6 +840,24 @@ impl LanguageServer for RidgeLanguageServer {
         Ok(index.folding_ranges_at(&uri))
     }
 
+    /// `textDocument/selectionRange` — smart expand/shrink selection: the chain
+    /// of progressively larger source ranges around each requested position.
+    async fn selection_range(
+        &self,
+        params: SelectionRangeParams,
+    ) -> LspResult<Option<Vec<SelectionRange>>> {
+        let uri = params.text_document.uri;
+
+        let index = {
+            let snap = self.state.lock().await;
+            snap.index.clone()
+        };
+        let Some(index) = index else {
+            return Ok(None);
+        };
+        Ok(index.selection_ranges_at(&uri, &params.positions))
+    }
+
     /// `workspace/symbol` — declarations across the workspace matching a query
     /// (`Ctrl-T`).
     async fn symbol(
@@ -1024,6 +1042,7 @@ fn server_capabilities() -> ServerCapabilities {
         document_formatting_provider: Some(OneOf::Left(true)),
         document_symbol_provider: Some(OneOf::Left(true)),
         folding_range_provider: Some(FoldingRangeProviderCapability::Simple(true)),
+        selection_range_provider: Some(SelectionRangeProviderCapability::Simple(true)),
         workspace_symbol_provider: Some(OneOf::Left(true)),
         inlay_hint_provider: Some(OneOf::Left(true)),
         code_action_provider: Some(CodeActionProviderCapability::Simple(true)),

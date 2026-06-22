@@ -34,6 +34,7 @@ use tower_lsp::lsp_types::{
     WorkspaceEdit,
 };
 
+use crate::cancel::Cancel;
 use crate::completion::{detect_context, symbol_kind, CompletionItemData, Context, KEYWORDS};
 use crate::diagnostics::{source_id_to_uri, uri_key};
 
@@ -1310,6 +1311,7 @@ impl WorkspaceIndex {
         line: u32,
         utf16_col: u32,
         include_declaration: bool,
+        cancel: &Cancel,
     ) -> Option<Vec<Location>> {
         let mid = self.module_id_for(uri)?;
         let mi = mid.0 as usize;
@@ -1340,6 +1342,12 @@ impl WorkspaceIndex {
 
         let mut locations: Vec<Location> = Vec::new();
         for (smi, view) in self.modules.iter().enumerate() {
+            // Cooperative cancellation: bail between modules if the request was
+            // cancelled. The partial result is discarded — the handler future is
+            // already gone — so an early `None` is safe.
+            if cancel.is_cancelled() {
+                return None;
+            }
             if scan_self_only && smi != mi {
                 continue;
             }
@@ -1607,6 +1615,7 @@ impl WorkspaceIndex {
         line: u32,
         utf16_col: u32,
         new_name: &str,
+        cancel: &Cancel,
     ) -> Result<Option<WorkspaceEdit>, String> {
         // A record field renames through the type-directed path: its name node
         // carries no binding, and the edit set is scoped by the field's owner
@@ -1641,6 +1650,11 @@ impl WorkspaceIndex {
             }
         } else {
             for (smi, view) in self.modules.iter().enumerate() {
+                // Cooperative cancellation: bail between modules. A cancelled
+                // rename yields no edit; the handler future has already gone.
+                if cancel.is_cancelled() {
+                    return Ok(None);
+                }
                 let Ok(raw) = u32::try_from(smi) else {
                     continue;
                 };
@@ -2776,6 +2790,7 @@ impl WorkspaceIndex {
     pub fn incoming_calls(
         &self,
         data: &serde_json::Value,
+        cancel: &Cancel,
     ) -> Option<Vec<CallHierarchyIncomingCall>> {
         let (module, symbol) = decode_call_item(data)?;
         let target = ReferentKey::Symbol(module, symbol);
@@ -2783,6 +2798,10 @@ impl WorkspaceIndex {
         // caller (module.0, symbol.0) → the ranges it calls the target from.
         let mut groups: HashMap<(u32, u32), Vec<Range>> = HashMap::new();
         for (smi, view) in self.modules.iter().enumerate() {
+            // Cooperative cancellation: bail between modules.
+            if cancel.is_cancelled() {
+                return None;
+            }
             let Ok(raw) = u32::try_from(smi) else {
                 continue;
             };
@@ -3080,10 +3099,15 @@ impl WorkspaceIndex {
     /// are not.
     #[must_use]
     #[allow(deprecated)] // `SymbolInformation::deprecated` is deprecated; set to None.
-    pub fn workspace_symbols(&self, query: &str) -> Vec<SymbolInformation> {
+    pub fn workspace_symbols(&self, query: &str, cancel: &Cancel) -> Vec<SymbolInformation> {
         let needle = query.to_lowercase();
         let mut out: Vec<SymbolInformation> = Vec::new();
         for view in &self.modules {
+            // Cooperative cancellation: stop between modules and return what we
+            // have. Discarded by the handler when the request was cancelled.
+            if cancel.is_cancelled() {
+                break;
+            }
             let mid = view.symbols.module;
             let Some(Some(uri)) = self.module_uris.get(mid.0 as usize) else {
                 continue;

@@ -82,6 +82,11 @@ struct WorkspaceSnapshot {
     /// `.ridge` file on its own, so a loose file still gets diagnostics, hover,
     /// and navigation. Mutually exclusive with `workspace_root` being `Some`.
     standalone: bool,
+    /// True when the client advertised dynamic registration for type hierarchy.
+    /// lsp-types 0.94 has no static `typeHierarchyProvider` server capability,
+    /// so `textDocument/prepareTypeHierarchy` is registered dynamically in
+    /// `initialized` when — and only when — the client supports it.
+    supports_type_hierarchy: bool,
     /// The most recent completed analysis, if any. Replaced wholesale on each
     /// successful compile; reads clone the `Arc` and release the lock before
     /// querying. `None` until the first compile lands.
@@ -428,6 +433,16 @@ fn module_for_uri(state: &IncrementalState, uri: &Url) -> Option<ModuleId> {
 #[tower_lsp::async_trait]
 impl LanguageServer for RidgeLanguageServer {
     async fn initialize(&self, params: InitializeParams) -> LspResult<InitializeResult> {
+        // Type hierarchy has no static server capability in lsp-types 0.94, so it
+        // is registered dynamically later — but only if the client accepts that.
+        let supports_type_hierarchy = params
+            .capabilities
+            .text_document
+            .as_ref()
+            .and_then(|td| td.type_hierarchy.as_ref())
+            .and_then(|th| th.dynamic_registration)
+            .unwrap_or(false);
+
         // Determine the workspace root from rootUri or first workspaceFolders entry.
         let root_uri: Option<Url> = params.root_uri.or_else(|| {
             params
@@ -471,6 +486,7 @@ impl LanguageServer for RidgeLanguageServer {
             let mut snap = self.state.lock().await;
             snap.workspace_root = manifest_root;
             snap.standalone = standalone;
+            snap.supports_type_hierarchy = supports_type_hierarchy;
         }
         if standalone {
             tracing::info!(
@@ -499,6 +515,25 @@ impl LanguageServer for RidgeLanguageServer {
         self.client
             .log_message(MessageType::INFO, "ridge-lsp initialized")
             .await;
+
+        // lsp-types 0.94 cannot express the static `typeHierarchyProvider`
+        // capability, so register `textDocument/prepareTypeHierarchy` at runtime
+        // when the client supports dynamic registration. Without this the client
+        // never sends type-hierarchy requests.
+        let supports_type_hierarchy = {
+            let snap = self.state.lock().await;
+            snap.supports_type_hierarchy
+        };
+        if supports_type_hierarchy {
+            let registration = Registration {
+                id: "ridge-type-hierarchy".to_owned(),
+                method: "textDocument/prepareTypeHierarchy".to_owned(),
+                register_options: None,
+            };
+            if let Err(err) = self.client.register_capability(vec![registration]).await {
+                tracing::warn!("failed to register type hierarchy capability: {err}");
+            }
+        }
     }
 
     async fn shutdown(&self) -> LspResult<()> {
@@ -930,6 +965,60 @@ impl LanguageServer for RidgeLanguageServer {
             return Ok(None);
         };
         Ok(index.outgoing_calls(data))
+    }
+
+    async fn prepare_type_hierarchy(
+        &self,
+        params: TypeHierarchyPrepareParams,
+    ) -> LspResult<Option<Vec<TypeHierarchyItem>>> {
+        let pos = params.text_document_position_params;
+        let uri = pos.text_document.uri;
+
+        let index = {
+            let snap = self.state.lock().await;
+            snap.index.clone()
+        };
+        let Some(index) = index else {
+            return Ok(None);
+        };
+        Ok(index.prepare_type_hierarchy_at(&uri, pos.position.line, pos.position.character))
+    }
+
+    /// `typeHierarchy/supertypes` — the superclasses of a class, or the class an
+    /// instance implements.
+    async fn supertypes(
+        &self,
+        params: TypeHierarchySupertypesParams,
+    ) -> LspResult<Option<Vec<TypeHierarchyItem>>> {
+        let index = {
+            let snap = self.state.lock().await;
+            snap.index.clone()
+        };
+        let Some(index) = index else {
+            return Ok(None);
+        };
+        let Some(data) = params.item.data.as_ref() else {
+            return Ok(None);
+        };
+        Ok(index.type_supertypes(data))
+    }
+
+    /// `typeHierarchy/subtypes` — the subclasses and instances of a class.
+    async fn subtypes(
+        &self,
+        params: TypeHierarchySubtypesParams,
+    ) -> LspResult<Option<Vec<TypeHierarchyItem>>> {
+        let index = {
+            let snap = self.state.lock().await;
+            snap.index.clone()
+        };
+        let Some(index) = index else {
+            return Ok(None);
+        };
+        let Some(data) = params.item.data.as_ref() else {
+            return Ok(None);
+        };
+        Ok(index.type_subtypes(data))
     }
 
     /// `workspace/symbol` — declarations across the workspace matching a query

@@ -4373,3 +4373,154 @@ async fn test_implementation_none_off_class_or_instance() {
         "a plain function is not an implementation anchor"
     );
 }
+
+// ── textDocument/prepareTypeHierarchy + supertypes/subtypes ───────────────────
+
+/// A two-level class hierarchy (`Pet` requires `Animal`) with one instance of
+/// each, on `Int`. Lines (0-indexed):
+///   0  pub class Animal a =
+///   1    sound (x: a) -> Text
+///   2  pub class Pet a where Animal a =
+///   3    name (x: a) -> Text
+///   4  instance Animal Int =
+///   5    sound (x: Int) -> Text = "generic"
+///   6  instance Pet Int =
+///   7    name (x: Int) -> Text = "rex"
+const TYPE_HIER_SRC: &str = concat!(
+    "pub class Animal a =\n",
+    "  sound (x: a) -> Text\n",
+    "pub class Pet a where Animal a =\n",
+    "  name (x: a) -> Text\n",
+    "instance Animal Int =\n",
+    "  sound (x: Int) -> Text = \"generic\"\n",
+    "instance Pet Int =\n",
+    "  name (x: Int) -> Text = \"rex\"\n",
+);
+
+fn prepare_type_at(uri: &Url, line: u32, character: u32) -> TypeHierarchyPrepareParams {
+    TypeHierarchyPrepareParams {
+        text_document_position_params: TextDocumentPositionParams {
+            text_document: TextDocumentIdentifier { uri: uri.clone() },
+            position: Position { line, character },
+        },
+        work_done_progress_params: WorkDoneProgressParams::default(),
+    }
+}
+
+#[tokio::test]
+async fn test_type_hierarchy_prepare_on_class_name() {
+    let (service, _socket, uri) = hover_fixture(TYPE_HIER_SRC).await;
+    let server = service.inner();
+
+    // The class name `Pet` on line 2 (columns 10..13).
+    let items = server
+        .prepare_type_hierarchy(prepare_type_at(&uri, 2, 11))
+        .await
+        .expect("prepare ok")
+        .expect("an item under the cursor");
+    assert_eq!(items.len(), 1, "one item, got {items:?}");
+    assert_eq!(items[0].name, "Pet");
+    assert_eq!(items[0].kind, SymbolKind::INTERFACE);
+    assert_eq!(
+        items[0].selection_range.start.line, 2,
+        "selection range is the class name"
+    );
+}
+
+#[tokio::test]
+async fn test_type_hierarchy_supertypes() {
+    let (service, _socket, uri) = hover_fixture(TYPE_HIER_SRC).await;
+    let server = service.inner();
+
+    let items = server
+        .prepare_type_hierarchy(prepare_type_at(&uri, 2, 11))
+        .await
+        .expect("prepare ok")
+        .expect("item");
+
+    // `Pet` requires `Animal` (line 0).
+    let supers = server
+        .supertypes(TypeHierarchySupertypesParams {
+            item: items[0].clone(),
+            work_done_progress_params: WorkDoneProgressParams::default(),
+            partial_result_params: PartialResultParams::default(),
+        })
+        .await
+        .expect("supertypes ok")
+        .expect("supertypes present");
+    assert_eq!(supers.len(), 1, "one superclass, got {supers:?}");
+    assert_eq!(supers[0].name, "Animal");
+    assert_eq!(supers[0].selection_range.start.line, 0);
+}
+
+#[tokio::test]
+async fn test_type_hierarchy_subtypes_lists_subclasses_and_instances() {
+    let (service, _socket, uri) = hover_fixture(TYPE_HIER_SRC).await;
+    let server = service.inner();
+
+    // Prepare on `Animal` (line 0, columns 10..16).
+    let items = server
+        .prepare_type_hierarchy(prepare_type_at(&uri, 0, 12))
+        .await
+        .expect("prepare ok")
+        .expect("item");
+    assert_eq!(items[0].name, "Animal");
+
+    // `Animal`'s subtypes: the subclass `Pet` (line 2) and the instance
+    // `Animal Int` (line 4).
+    let subs = server
+        .subtypes(TypeHierarchySubtypesParams {
+            item: items[0].clone(),
+            work_done_progress_params: WorkDoneProgressParams::default(),
+            partial_result_params: PartialResultParams::default(),
+        })
+        .await
+        .expect("subtypes ok")
+        .expect("subtypes present");
+    let names: Vec<&str> = subs.iter().map(|i| i.name.as_str()).collect();
+    assert_eq!(subs.len(), 2, "subclass + instance, got {names:?}");
+    assert!(
+        subs.iter()
+            .any(|i| i.name == "Pet" && i.kind == SymbolKind::INTERFACE),
+        "the subclass Pet, got {names:?}"
+    );
+    assert!(
+        subs.iter()
+            .any(|i| i.name == "Animal Int" && i.kind == SymbolKind::OBJECT),
+        "the instance Animal Int, got {names:?}"
+    );
+}
+
+#[tokio::test]
+async fn test_type_hierarchy_prepare_on_instance_head_anchors_class() {
+    let (service, _socket, uri) = hover_fixture(TYPE_HIER_SRC).await;
+    let server = service.inner();
+
+    // The class name `Pet` inside the instance head on line 6 (columns 9..12).
+    let items = server
+        .prepare_type_hierarchy(prepare_type_at(&uri, 6, 10))
+        .await
+        .expect("prepare ok")
+        .expect("item");
+    assert_eq!(items[0].name, "Pet");
+    assert_eq!(
+        items[0].selection_range.start.line, 2,
+        "an instance-head anchor still points at the class declaration"
+    );
+}
+
+#[tokio::test]
+async fn test_type_hierarchy_prepare_none_off_class() {
+    let (service, _socket, uri) = hover_fixture(TYPE_HIER_SRC).await;
+    let server = service.inner();
+
+    // The method name `sound` (line 1, column 4) is not a class name.
+    let none = server
+        .prepare_type_hierarchy(prepare_type_at(&uri, 1, 4))
+        .await
+        .expect("prepare ok");
+    assert!(
+        none.is_none(),
+        "a method name is not a type-hierarchy anchor, got {none:?}"
+    );
+}

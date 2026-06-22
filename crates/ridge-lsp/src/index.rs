@@ -30,7 +30,7 @@ use tower_lsp::lsp_types::{
     InlayHint, InlayHintKind, InlayHintLabel, Location, ParameterInformation, ParameterLabel,
     Position, PrepareRenameResponse, Range, SelectionRange, SemanticToken, SemanticTokenModifier,
     SemanticTokenType, SemanticTokens, SignatureHelp, SignatureInformation, SymbolInformation,
-    SymbolKind as LspSymbolKind, TextEdit, Url, WorkspaceEdit,
+    SymbolKind as LspSymbolKind, TextEdit, TypeHierarchyItem, Url, WorkspaceEdit,
 };
 
 use crate::completion::{detect_context, symbol_kind, CompletionItemData, Context, KEYWORDS};
@@ -698,6 +698,172 @@ impl WorkspaceIndex {
             }
         }
         None
+    }
+
+    /// Answer a `textDocument/prepareTypeHierarchy` request at `(line, col)`.
+    ///
+    /// Anchors the type hierarchy on a typeclass: the cursor must sit on a class
+    /// name, either in a `class` declaration or in an `instance` head. The item
+    /// always points at the `class` declaration, so an instance-head anchor walks
+    /// up to its class. Returns `None` off a class name, or for a class with no
+    /// workspace declaration (a prelude/stdlib class). Reads only this immutable
+    /// snapshot; never triggers a compile.
+    #[must_use]
+    pub fn prepare_type_hierarchy_at(
+        &self,
+        uri: &Url,
+        line: u32,
+        utf16_col: u32,
+    ) -> Option<Vec<TypeHierarchyItem>> {
+        let mid = self.module_id_for(uri)?;
+        let mi = mid.0 as usize;
+        let offset = self.line_indices.get(mi)?.utf16_to_byte(line, utf16_col);
+
+        // Only a class-name token (in a `class` decl or an `instance` head) is an
+        // anchor; on a method name the scan returns `Some((_, Some(_)))`, which
+        // is rejected here.
+        let (class, None) = self.class_target_in_ast(mi, offset)? else {
+            return None;
+        };
+        let (cmi, decl) = self.find_workspace_class(&class)?;
+        Some(vec![self.class_hierarchy_item(cmi, decl)?])
+    }
+
+    /// Resolve a `typeHierarchy/supertypes` request from an item's `data`. A
+    /// class's supertypes are its superclasses (`where C a`); an instance's lone
+    /// supertype is the class it implements. Each resolves to a workspace `class`
+    /// declaration; superclasses with no workspace declaration are skipped.
+    #[must_use]
+    pub fn type_supertypes(&self, data: &serde_json::Value) -> Option<Vec<TypeHierarchyItem>> {
+        let (class, is_instance) = decode_type_item(data)?;
+        let mut items: Vec<TypeHierarchyItem> = Vec::new();
+        if is_instance {
+            if let Some((cmi, decl)) = self.find_workspace_class(&class) {
+                if let Some(item) = self.class_hierarchy_item(cmi, decl) {
+                    items.push(item);
+                }
+            }
+        } else {
+            let (_, decl) = self.find_workspace_class(&class)?;
+            for sup in &decl.superclasses {
+                if let Some((smi, sdecl)) = self.find_workspace_class(&sup.class.text) {
+                    if let Some(item) = self.class_hierarchy_item(smi, sdecl) {
+                        items.push(item);
+                    }
+                }
+            }
+        }
+        Some(sorted_dedup_items(items))
+    }
+
+    /// Resolve a `typeHierarchy/subtypes` request from an item's `data`. A
+    /// class's subtypes are its direct subclasses (classes that name it as a
+    /// superclass) and its instances; an instance has none.
+    #[must_use]
+    pub fn type_subtypes(&self, data: &serde_json::Value) -> Option<Vec<TypeHierarchyItem>> {
+        let (class, is_instance) = decode_type_item(data)?;
+        if is_instance {
+            return Some(Vec::new());
+        }
+        let mut items: Vec<TypeHierarchyItem> = Vec::new();
+        for (smi, view) in self.modules.iter().enumerate() {
+            let Some(ast) = view.ast.as_ref() else {
+                continue;
+            };
+            for item in &ast.items {
+                match item {
+                    ridge_ast::Item::ClassDecl(decl)
+                        if decl.superclasses.iter().any(|c| c.class.text == class) =>
+                    {
+                        if let Some(i) = self.class_hierarchy_item(smi, decl) {
+                            items.push(i);
+                        }
+                    }
+                    ridge_ast::Item::InstanceDecl(decl) if decl.class.text == class => {
+                        if let Some(i) = self.instance_hierarchy_item(smi, decl) {
+                            items.push(i);
+                        }
+                    }
+                    _ => {}
+                }
+            }
+        }
+        Some(sorted_dedup_items(items))
+    }
+
+    /// Locate a workspace `class` declaration by name, scanning every module's
+    /// top-level items.
+    fn find_workspace_class(&self, name: &str) -> Option<(usize, &ridge_ast::ClassDecl)> {
+        for (mi, view) in self.modules.iter().enumerate() {
+            let Some(ast) = view.ast.as_ref() else {
+                continue;
+            };
+            for item in &ast.items {
+                if let ridge_ast::Item::ClassDecl(decl) = item {
+                    if decl.name.text == name {
+                        return Some((mi, decl));
+                    }
+                }
+            }
+        }
+        None
+    }
+
+    /// Build a type-hierarchy item for a workspace `class` declaration. The range
+    /// is the whole declaration (trailing whitespace trimmed); the selection
+    /// range is the class name.
+    fn class_hierarchy_item(
+        &self,
+        mi: usize,
+        decl: &ridge_ast::ClassDecl,
+    ) -> Option<TypeHierarchyItem> {
+        let mid = ModuleId(u32::try_from(mi).ok()?);
+        let text: &str = self.module_text.get(mi).map_or("", |t| &**t);
+        let decl_loc = self.location_in(mid, trim_trailing_ws(text, decl.span))?;
+        let name_loc = self.location_in(mid, decl.name.span)?;
+        Some(TypeHierarchyItem {
+            name: decl.name.text.clone(),
+            kind: LspSymbolKind::INTERFACE,
+            tags: None,
+            detail: None,
+            uri: decl_loc.uri,
+            range: decl_loc.range,
+            selection_range: name_loc.range,
+            data: Some(serde_json::json!({ "name": decl.name.text, "kind": "class" })),
+        })
+    }
+
+    /// Build a type-hierarchy item for an `instance` declaration. The display
+    /// name is the instance head (`Class Head…`) as written; the data carries the
+    /// class name so the instance's lone supertype resolves back to it.
+    fn instance_hierarchy_item(
+        &self,
+        mi: usize,
+        decl: &ridge_ast::InstanceDecl,
+    ) -> Option<TypeHierarchyItem> {
+        let mid = ModuleId(u32::try_from(mi).ok()?);
+        let text: &str = self.module_text.get(mi).map_or("", |t| &**t);
+        let decl_loc = self.location_in(mid, trim_trailing_ws(text, decl.span))?;
+        let head_loc = self.location_in(mid, decl.class.span)?;
+        // The head as written: from the class name to the end of the last head
+        // type — e.g. `Greeter Int` or `Convert Celsius Fahrenheit`.
+        let head_end = decl
+            .head
+            .last()
+            .map_or(decl.class.span.end, |t| t.span().end);
+        let name = text
+            .get(decl.class.span.start as usize..head_end as usize)
+            .map_or_else(|| decl.class.text.clone(), squeeze_ws);
+        Some(TypeHierarchyItem {
+            name,
+            kind: LspSymbolKind::OBJECT,
+            tags: None,
+            detail: None,
+            uri: head_loc.uri,
+            range: decl_loc.range,
+            selection_range: head_loc.range,
+            data: Some(serde_json::json!({ "name": decl.class.text, "kind": "instance" })),
+        })
     }
 
     /// Answer a `textDocument/signatureHelp` request at an LSP `(line, col)`.
@@ -3926,6 +4092,27 @@ fn decode_call_item(data: &serde_json::Value) -> Option<(ModuleId, ridge_resolve
     let module = u32::try_from(data.get("module")?.as_u64()?).ok()?;
     let symbol = u32::try_from(data.get("symbol")?.as_u64()?).ok()?;
     Some((ModuleId(module), ridge_resolve::SymbolId(symbol)))
+}
+
+/// Decode a type-hierarchy item's `data` into its class name and whether the
+/// item is an instance (vs a class).
+fn decode_type_item(data: &serde_json::Value) -> Option<(String, bool)> {
+    let name = data.get("name")?.as_str()?.to_owned();
+    let is_instance = data.get("kind").and_then(serde_json::Value::as_str) == Some("instance");
+    Some((name, is_instance))
+}
+
+/// Order type-hierarchy items by source location and drop exact duplicates.
+fn sorted_dedup_items(mut items: Vec<TypeHierarchyItem>) -> Vec<TypeHierarchyItem> {
+    items.sort_by(|a, b| {
+        (a.uri.as_str(), a.range.start.line, a.range.start.character).cmp(&(
+            b.uri.as_str(),
+            b.range.start.line,
+            b.range.start.character,
+        ))
+    });
+    items.dedup();
+    items
 }
 
 /// The source span of a top-level item, covering its whole declaration.

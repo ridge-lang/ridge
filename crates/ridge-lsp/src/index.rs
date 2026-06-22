@@ -25,11 +25,12 @@ use ridge_resolve::{
 use ridge_typecheck::{render_type_with, TypeError, TypedWorkspace};
 use ridge_types::{CapabilitySet, TyConDecl, TyConKind, Type};
 use tower_lsp::lsp_types::{
-    CompletionItemKind, DocumentHighlight, DocumentHighlightKind, DocumentSymbol, FoldingRange,
-    FoldingRangeKind, InlayHint, InlayHintKind, InlayHintLabel, Location, ParameterInformation,
-    ParameterLabel, Position, PrepareRenameResponse, Range, SelectionRange, SemanticToken,
-    SemanticTokenModifier, SemanticTokenType, SemanticTokens, SignatureHelp, SignatureInformation,
-    SymbolInformation, SymbolKind as LspSymbolKind, TextEdit, Url, WorkspaceEdit,
+    CallHierarchyIncomingCall, CallHierarchyItem, CallHierarchyOutgoingCall, CompletionItemKind,
+    DocumentHighlight, DocumentHighlightKind, DocumentSymbol, FoldingRange, FoldingRangeKind,
+    InlayHint, InlayHintKind, InlayHintLabel, Location, ParameterInformation, ParameterLabel,
+    Position, PrepareRenameResponse, Range, SelectionRange, SemanticToken, SemanticTokenModifier,
+    SemanticTokenType, SemanticTokens, SignatureHelp, SignatureInformation, SymbolInformation,
+    SymbolKind as LspSymbolKind, TextEdit, Url, WorkspaceEdit,
 };
 
 use crate::completion::{detect_context, symbol_kind, CompletionItemData, Context, KEYWORDS};
@@ -2233,6 +2234,270 @@ impl WorkspaceIndex {
         )
     }
 
+    /// Answer `textDocument/prepareCallHierarchy` at an LSP `(line, col)`.
+    ///
+    /// Anchors a call-hierarchy session on the workspace `fn` under the cursor —
+    /// either a use of it or its own declaration name. The single returned item
+    /// carries the `(module, symbol)` identity in its `data`, which the
+    /// incoming/outgoing requests decode. `None` for anything that is not a
+    /// workspace function (a local, a stdlib symbol, a type, whitespace). Reads
+    /// only this immutable snapshot; never triggers a compile.
+    #[must_use]
+    pub fn prepare_call_hierarchy_at(
+        &self,
+        uri: &Url,
+        line: u32,
+        utf16_col: u32,
+    ) -> Option<Vec<CallHierarchyItem>> {
+        let mid = self.module_id_for(uri)?;
+        let mi = mid.0 as usize;
+        let offset = self.line_indices.get(mi)?.utf16_to_byte(line, utf16_col);
+        let (module, symbol) = self.callable_fn_at(mid, offset)?;
+        Some(vec![self.call_hierarchy_item(module, symbol)?])
+    }
+
+    /// The workspace `fn` denoted at `offset`: a use site whose binding resolves
+    /// to a top-level `fn`, or a `fn` declaration name (which carries no
+    /// binding, so it is matched against the symbol table directly).
+    fn callable_fn_at(
+        &self,
+        mid: ModuleId,
+        offset: u32,
+    ) -> Option<(ModuleId, ridge_resolve::SymbolId)> {
+        // Use site → follow the binding to its defining (module, symbol).
+        if let Some(binding) = self.binding_at(mid.0 as usize, offset) {
+            if let Some(ReferentKey::Symbol(m, s)) = referent_key(binding, mid) {
+                if matches!(self.symbol_kind(m, s), Some(SymbolKind::Fn { .. })) {
+                    return Some((m, s));
+                }
+            }
+            return None;
+        }
+        // Declaration name → the top-level `fn` whose name token sits here.
+        let spatial = self.spatial.get(mid.0 as usize)?;
+        let (_, _, name_span) = spatial.narrowest_containing(offset, &[NodeKind::Ident])?;
+        let name = self.text_slice(mid.0 as usize, name_span);
+        let entries = &self.modules.get(mid.0 as usize)?.symbols.entries;
+        entries.iter().enumerate().find_map(|(i, e)| {
+            (e.name == name
+                && matches!(e.kind, SymbolKind::Fn { .. })
+                && e.def_span.start <= offset
+                && offset < e.def_span.end)
+                .then(|| Some((mid, ridge_resolve::SymbolId(u32::try_from(i).ok()?))))
+                .flatten()
+        })
+    }
+
+    /// Build a [`CallHierarchyItem`] for a workspace declaration, embedding its
+    /// `(module, symbol)` identity in `data`. Only a `fn`, `const`, or actor is
+    /// emitted (the kinds that can contain or be a call); `None` otherwise.
+    fn call_hierarchy_item(
+        &self,
+        module: ModuleId,
+        symbol: ridge_resolve::SymbolId,
+    ) -> Option<CallHierarchyItem> {
+        let mi = module.0 as usize;
+        let entry = self
+            .modules
+            .get(mi)?
+            .symbols
+            .entries
+            .get(symbol.0 as usize)?;
+        let kind = match entry.kind {
+            SymbolKind::Fn { .. } => LspSymbolKind::FUNCTION,
+            SymbolKind::Const => LspSymbolKind::CONSTANT,
+            SymbolKind::Actor { .. } => LspSymbolKind::CLASS,
+            _ => return None,
+        };
+        let uri = self.module_uris.get(mi)?.clone()?;
+        let range = self.range_in(module, entry.def_span)?;
+        let name_span = self
+            .decl_name_span(module, entry.def_span, &entry.name)
+            .unwrap_or(entry.def_span);
+        let selection_range = self.range_in(module, name_span)?;
+        Some(CallHierarchyItem {
+            name: entry.name.clone(),
+            kind,
+            tags: None,
+            detail: None,
+            uri,
+            range,
+            selection_range,
+            data: Some(serde_json::json!({ "module": module.0, "symbol": symbol.0 })),
+        })
+    }
+
+    /// Answer `callHierarchy/incomingCalls` for a prepared item.
+    ///
+    /// Every call site of the item's `fn` across the workspace, grouped by the
+    /// top-level declaration (`fn`, `const`, or actor) that contains it: each
+    /// group is one caller plus the ranges it calls from. `None` when the item's
+    /// `data` does not decode to a workspace symbol. Reads only this immutable
+    /// snapshot.
+    #[must_use]
+    pub fn incoming_calls(
+        &self,
+        data: &serde_json::Value,
+    ) -> Option<Vec<CallHierarchyIncomingCall>> {
+        let (module, symbol) = decode_call_item(data)?;
+        let target = ReferentKey::Symbol(module, symbol);
+
+        // caller (module.0, symbol.0) → the ranges it calls the target from.
+        let mut groups: HashMap<(u32, u32), Vec<Range>> = HashMap::new();
+        for (smi, view) in self.modules.iter().enumerate() {
+            let Ok(raw) = u32::try_from(smi) else {
+                continue;
+            };
+            let smid = ModuleId(raw);
+            let Some(spatial) = self.spatial.get(smi) else {
+                continue;
+            };
+            for (span, _kind, nid) in &spatial.entries {
+                let Some(b) = view.bindings.get(nid.0 as usize).and_then(Option::as_ref) else {
+                    continue;
+                };
+                if referent_key(b, smid).as_ref() != Some(&target) {
+                    continue;
+                }
+                let Some((cm, cs)) = self.enclosing_caller(smid, span.start) else {
+                    continue;
+                };
+                if let Some(range) = self.range_in(smid, self.final_ident_span(smi, *span)) {
+                    groups.entry((cm.0, cs.0)).or_default().push(range);
+                }
+            }
+        }
+
+        Some(
+            self.sorted_call_items(groups)
+                .into_iter()
+                .map(|(from, from_ranges)| CallHierarchyIncomingCall { from, from_ranges })
+                .collect(),
+        )
+    }
+
+    /// Answer `callHierarchy/outgoingCalls` for a prepared item.
+    ///
+    /// Every workspace `fn` called from within the item's body, grouped by
+    /// callee with the call-site ranges (inside this item) for each. Stdlib and
+    /// class-method callees are not yet listed — see the deferred follow-up.
+    /// `None` when the item's `data` does not decode to a workspace symbol.
+    #[must_use]
+    pub fn outgoing_calls(
+        &self,
+        data: &serde_json::Value,
+    ) -> Option<Vec<CallHierarchyOutgoingCall>> {
+        let (module, symbol) = decode_call_item(data)?;
+        let mi = module.0 as usize;
+        let view = self.modules.get(mi)?;
+        let def_span = view.symbols.entries.get(symbol.0 as usize)?.def_span;
+        let body = self.clamp_to_next_decl(module, symbol.0 as usize, def_span);
+        let spatial = self.spatial.get(mi)?;
+
+        // callee (module.0, symbol.0) → the ranges this item calls it from.
+        let mut groups: HashMap<(u32, u32), Vec<Range>> = HashMap::new();
+        for (span, _kind, nid) in &spatial.entries {
+            if !(body.start <= span.start && span.end <= body.end) {
+                continue;
+            }
+            let Some(b) = view.bindings.get(nid.0 as usize).and_then(Option::as_ref) else {
+                continue;
+            };
+            let Some(ReferentKey::Symbol(cm, cs)) = referent_key(b, module) else {
+                continue;
+            };
+            if !matches!(self.symbol_kind(cm, cs), Some(SymbolKind::Fn { .. })) {
+                continue;
+            }
+            if let Some(range) = self.range_in(module, self.final_ident_span(mi, *span)) {
+                groups.entry((cm.0, cs.0)).or_default().push(range);
+            }
+        }
+
+        Some(
+            self.sorted_call_items(groups)
+                .into_iter()
+                .map(|(to, from_ranges)| CallHierarchyOutgoingCall { to, from_ranges })
+                .collect(),
+        )
+    }
+
+    /// The narrowest top-level declaration (`fn`, `const`, or actor) whose
+    /// `def_span` brackets `offset` — the caller a use site is attributed to.
+    fn enclosing_caller(
+        &self,
+        mid: ModuleId,
+        offset: u32,
+    ) -> Option<(ModuleId, ridge_resolve::SymbolId)> {
+        let entries = &self.modules.get(mid.0 as usize)?.symbols.entries;
+        let (i, _) = entries
+            .iter()
+            .enumerate()
+            .filter(|(_, e)| {
+                matches!(
+                    e.kind,
+                    SymbolKind::Fn { .. } | SymbolKind::Const | SymbolKind::Actor { .. }
+                ) && e.def_span.start <= offset
+                    && offset < e.def_span.end
+            })
+            .min_by_key(|(_, e)| e.def_span.end - e.def_span.start)?;
+        Some((mid, ridge_resolve::SymbolId(u32::try_from(i).ok()?)))
+    }
+
+    /// Shrink a declaration's `def_span` so it ends before the next top-level
+    /// declaration begins, guarding the body scan against the parser's
+    /// span-bleed pulling the following item's names into this one.
+    fn clamp_to_next_decl(&self, module: ModuleId, symbol_idx: usize, span: Span) -> Span {
+        let Some(view) = self.modules.get(module.0 as usize) else {
+            return span;
+        };
+        let next_start = view
+            .symbols
+            .entries
+            .iter()
+            .enumerate()
+            .filter(|(i, e)| *i != symbol_idx && e.def_span.start > span.start)
+            .map(|(_, e)| e.def_span.start)
+            .min();
+        match next_start {
+            Some(n) if n < span.end => Span::new(span.start, n),
+            _ => span,
+        }
+    }
+
+    /// Build sorted call-hierarchy items from grouped call sites.
+    ///
+    /// Each `(module, symbol)` key becomes one [`CallHierarchyItem`]; its ranges
+    /// are sorted and de-duplicated, and the groups themselves are ordered by
+    /// document then position so the result is deterministic.
+    fn sorted_call_items(
+        &self,
+        groups: HashMap<(u32, u32), Vec<Range>>,
+    ) -> Vec<(CallHierarchyItem, Vec<Range>)> {
+        let mut out: Vec<(CallHierarchyItem, Vec<Range>)> = groups
+            .into_iter()
+            .filter_map(|((m, s), mut ranges)| {
+                let item = self.call_hierarchy_item(ModuleId(m), ridge_resolve::SymbolId(s))?;
+                ranges.sort_by_key(|r| (r.start.line, r.start.character));
+                ranges.dedup();
+                Some((item, ranges))
+            })
+            .collect();
+        out.sort_by(|a, b| {
+            (
+                a.0.uri.as_str(),
+                a.0.range.start.line,
+                a.0.range.start.character,
+            )
+                .cmp(&(
+                    b.0.uri.as_str(),
+                    b.0.range.start.line,
+                    b.0.range.start.character,
+                ))
+        });
+        out
+    }
+
     /// Build one [`DocumentSymbol`] for a top-level entry, attaching members.
     fn document_symbol_for(
         &self,
@@ -3535,6 +3800,16 @@ fn trim_trailing_ws(text: &str, span: Span) -> Span {
     }
     #[allow(clippy::cast_possible_truncation)]
     Span::new(span.start, end as u32)
+}
+
+/// Decode a [`CallHierarchyItem`]'s `data` payload back to `(module, symbol)`.
+///
+/// The payload is the `{ "module", "symbol" }` object [`call_hierarchy_item`]
+/// stamps; a missing or malformed field yields `None`.
+fn decode_call_item(data: &serde_json::Value) -> Option<(ModuleId, ridge_resolve::SymbolId)> {
+    let module = u32::try_from(data.get("module")?.as_u64()?).ok()?;
+    let symbol = u32::try_from(data.get("symbol")?.as_u64()?).ok()?;
+    Some((ModuleId(module), ridge_resolve::SymbolId(symbol)))
 }
 
 /// The source span of a top-level item, covering its whole declaration.

@@ -1651,6 +1651,38 @@ async fn test_references_local() {
 }
 
 #[tokio::test]
+async fn test_references_honors_cancellation() {
+    use ridge_lsp::cancel::Cancel;
+
+    // Same fixture as the local case: `foo` binds `x`, used twice in the body.
+    let src = "pub fn foo x = x + x\n";
+    let (service, _socket, uri) = hover_fixture(src).await;
+    let index = service
+        .inner()
+        .workspace_index()
+        .await
+        .expect("index built");
+
+    // A live token returns the full reference set (binder plus both uses).
+    let live = Cancel::new();
+    let found = index
+        .references_at(&uri, 0, 15, true, &live)
+        .expect("references of local `x`");
+    assert_eq!(found.len(), 3, "binder and both uses with a live token");
+
+    // A cancelled token short-circuits the per-module scan before it collects
+    // anything: the same query yields nothing. This is the cooperative half of
+    // `$/cancelRequest` — the handler drops its guard, the flag flips, and the
+    // scan bails instead of finishing a result the client has discarded.
+    let cancelled = Cancel::new();
+    cancelled.cancel();
+    assert!(
+        index.references_at(&uri, 0, 15, true, &cancelled).is_none(),
+        "a cancelled scan yields no references"
+    );
+}
+
+#[tokio::test]
 async fn test_references_cross_module() {
     // `helper` is defined in Lib.ridge (line 0) and used as `Lib.helper` in the
     // app (line 1). A references query from the use-site must reach both files.

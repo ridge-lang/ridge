@@ -59,6 +59,7 @@ use ridge_lexer::LineIndex;
 use ridge_manifest::find_workspace_root;
 use ridge_resolve::ModuleId;
 
+use crate::cancel::{Cancel, CancelOnDrop};
 use crate::diagnostics::{source_id_to_uri, to_lsp_diagnostic, uri_key};
 use crate::index::{collect_capability_fixes, WorkspaceIndex};
 
@@ -676,6 +677,33 @@ fn module_for_uri(state: &IncrementalState, uri: &Url) -> Option<ModuleId> {
     })
 }
 
+/// Run a workspace-scale query on a blocking thread under a cooperative
+/// cancellation token.
+///
+/// The token is tripped if the returned future is dropped — exactly what
+/// tower-lsp does to a handler future on `$/cancelRequest` — so the blocking scan
+/// can poll the flag between modules and stop, freeing the CPU instead of
+/// finishing a result the client has already discarded. The guard lives across
+/// the `.await`, so the trip happens whether the future completes or is dropped
+/// mid-flight. Running off the request task also keeps a heavy scan from stalling
+/// the concurrent point queries (hover, completion) that share the server's
+/// bounded request concurrency.
+///
+/// Returns the closure's value on normal completion, or `None` if the blocking
+/// task was cancelled or panicked, in which case the handler yields no result.
+async fn run_cancellable<T, F>(f: F) -> Option<T>
+where
+    T: Send + 'static,
+    F: FnOnce(&Cancel) -> T + Send + 'static,
+{
+    let cancel = Cancel::new();
+    // Held across the await: dropped on normal completion (a no-op once the scan
+    // has returned) or when the future is aborted, which trips the flag the
+    // detached blocking task is still polling.
+    let _guard = CancelOnDrop::new(cancel.clone());
+    tokio::task::spawn_blocking(move || f(&cancel)).await.ok()
+}
+
 // ── LanguageServer impl ───────────────────────────────────────────────────────
 
 #[tower_lsp::async_trait]
@@ -1037,11 +1065,16 @@ impl LanguageServer for RidgeLanguageServer {
         let pos = params.text_document_position.position;
         let include_declaration = params.context.include_declaration;
 
-        let index = self.index_for_uri(&uri).await;
-        let Some(index) = index else {
+        let Some(index) = self.index_for_uri(&uri).await else {
             return Ok(None);
         };
-        Ok(index.references_at(&uri, pos.line, pos.character, include_declaration))
+        // A find-references scan spans every module, so run it off the request
+        // task and let `$/cancelRequest` stop it (see `run_cancellable`).
+        let result = run_cancellable(move |cancel| {
+            index.references_at(&uri, pos.line, pos.character, include_declaration, cancel)
+        })
+        .await;
+        Ok(result.flatten())
     }
 
     async fn document_highlight(
@@ -1077,13 +1110,20 @@ impl LanguageServer for RidgeLanguageServer {
         let pos = params.text_document_position.position;
         let new_name = params.new_name;
 
-        let index = self.index_for_uri(&uri).await;
-        let Some(index) = index else {
+        let Some(index) = self.index_for_uri(&uri).await else {
             return Ok(None);
         };
-        match index.rename_at(&uri, pos.line, pos.character, &new_name) {
-            Ok(edit) => Ok(edit),
-            Err(message) => Err(tower_lsp::jsonrpc::Error::invalid_params(message)),
+        // Rename scans the whole workspace for use sites; cancellable like
+        // find-references.
+        let result = run_cancellable(move |cancel| {
+            index.rename_at(&uri, pos.line, pos.character, &new_name, cancel)
+        })
+        .await;
+        match result {
+            Some(Ok(edit)) => Ok(edit),
+            Some(Err(message)) => Err(tower_lsp::jsonrpc::Error::invalid_params(message)),
+            // Cancelled or the blocking task failed: no edit to apply.
+            None => Ok(None),
         }
     }
 
@@ -1249,10 +1289,12 @@ impl LanguageServer for RidgeLanguageServer {
         let Some(index) = self.index_for_uri(&params.item.uri).await else {
             return Ok(None);
         };
-        let Some(data) = params.item.data.as_ref() else {
+        let Some(data) = params.item.data.clone() else {
             return Ok(None);
         };
-        Ok(index.incoming_calls(data))
+        // Finding callers scans every module; cancellable off the request task.
+        let result = run_cancellable(move |cancel| index.incoming_calls(&data, cancel)).await;
+        Ok(result.flatten())
     }
 
     /// `callHierarchy/outgoingCalls` — the functions a prepared item calls.
@@ -1350,11 +1392,23 @@ impl LanguageServer for RidgeLanguageServer {
         &self,
         params: WorkspaceSymbolParams,
     ) -> LspResult<Option<Vec<SymbolInformation>>> {
-        // `Ctrl-T` spans every open project: merge each workspace's matches.
-        let mut symbols = Vec::new();
-        for index in self.all_indices().await {
-            symbols.extend(index.workspace_symbols(&params.query));
-        }
+        // `Ctrl-T` spans every open project and every module within each, so run
+        // the merge off the request task and let `$/cancelRequest` stop it — a
+        // broad query as the user types should never stall a hover.
+        let indices = self.all_indices().await;
+        let query = params.query;
+        let symbols = run_cancellable(move |cancel| {
+            let mut symbols = Vec::new();
+            for index in &indices {
+                if cancel.is_cancelled() {
+                    break;
+                }
+                symbols.extend(index.workspace_symbols(&query, cancel));
+            }
+            symbols
+        })
+        .await
+        .unwrap_or_default();
         Ok(Some(symbols))
     }
 
@@ -1649,5 +1703,47 @@ mod tests {
             "gamma",
         );
         assert_eq!(doc, "alpha\ngamma");
+    }
+
+    #[tokio::test]
+    async fn run_cancellable_returns_value_when_not_cancelled() {
+        let out = run_cancellable(|cancel| {
+            assert!(!cancel.is_cancelled(), "a fresh request is not cancelled");
+            21 * 2
+        })
+        .await;
+        assert_eq!(out, Some(42));
+    }
+
+    // Proves the cooperative half of `$/cancelRequest`: dropping the handler
+    // future (what tower-lsp does on cancel) must stop the detached blocking
+    // scan, not just discard its result. The closure stands in for a workspace
+    // scan that polls the flag between modules.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn aborting_handler_cancels_the_blocking_scan() {
+        use std::time::Duration;
+
+        let (started_tx, started_rx) = tokio::sync::oneshot::channel();
+        let (done_tx, done_rx) = tokio::sync::oneshot::channel();
+
+        let task = tokio::spawn(run_cancellable(move |cancel| {
+            // Signal that the blocking scan is running, then poll the flag.
+            let _ = started_tx.send(());
+            while !cancel.is_cancelled() {
+                std::thread::sleep(Duration::from_millis(1));
+            }
+            let _ = done_tx.send(());
+        }));
+
+        // Once the scan is definitely running, abort the handler. Aborting drops
+        // its future and the `CancelOnDrop` guard, tripping the flag the still
+        // detached blocking task is polling.
+        started_rx.await.expect("scan started");
+        task.abort();
+
+        tokio::time::timeout(Duration::from_secs(5), done_rx)
+            .await
+            .expect("blocking scan was not cancelled within the timeout")
+            .expect("scan exited without signalling");
     }
 }

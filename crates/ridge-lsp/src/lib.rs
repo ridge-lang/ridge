@@ -25,6 +25,10 @@
 //! Recompilation is incremental and debounced (see the `didChange`/`didSave`
 //! notes), so edit-to-diagnostic latency stays flat as a workspace grows. With
 //! several folders open, only the workspace that owns an edited file recompiles.
+//! Workspace-scale queries — find-references, rename, `workspace/symbol`, call
+//! hierarchy — run on a blocking thread under a cooperative cancellation token
+//! (see [`cancel`]), so a `$/cancelRequest` actually stops the scan and a heavy
+//! query never stalls the point queries (hover, completion) typed alongside it.
 //! See `README.md` for documented behaviour and known limitations.
 
 #![warn(missing_docs)]
@@ -40,6 +44,7 @@
     )
 )]
 
+pub mod cancel;
 pub mod completion;
 pub mod diagnostics;
 pub mod index;

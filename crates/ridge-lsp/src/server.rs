@@ -7,11 +7,15 @@
 //!
 //! # Workspace lifecycle
 //!
-//! 1. `initialize`: read `rootUri` / first `workspaceFolders` entry → set workspace root.
-//!    Extra workspace folders trigger one-time `L802 LspMultiRootUnsupported` warn.
-//!    When no `[workspace]` manifest is found at or above the root — or no root is
-//!    given — the server enters standalone mode and type-checks each open
-//!    `.ridge` file on its own, so a loose file still gets full analysis.
+//! 1. `initialize`: read `rootUri` and every `workspaceFolders` entry, then walk
+//!    each up to its nearest `[workspace]` manifest. Distinct manifest roots
+//!    become one independent workspace apiece — its own retained engine and
+//!    analysis index — so a multi-folder window with several Ridge projects
+//!    analyses them all, routing each request to the workspace that owns the
+//!    document. When no `[workspace]` manifest is found at or above any folder —
+//!    or no folder is given — the server enters standalone mode and type-checks
+//!    each open `.ridge` file on its own, so a loose file still gets full
+//!    analysis.
 //! 2. `textDocument/didChange`: debounce 250 ms, then recompile the edited modules
 //!    against their editor buffers via the retained incremental engine.
 //! 3. `textDocument/didSave`: reseed the engine from disk (no debounce).
@@ -58,6 +62,15 @@ use ridge_resolve::ModuleId;
 use crate::diagnostics::{source_id_to_uri, to_lsp_diagnostic, uri_key};
 use crate::index::{collect_capability_fixes, WorkspaceIndex};
 
+/// A workspace's retained incremental engine, shared between the state snapshot
+/// and the `spawn_blocking` compile task that owns it for the compile's duration.
+type SharedEngine = Arc<StdMutex<Option<IncrementalState>>>;
+
+/// One unit of work for a compile pass: the target workspace's slot index (a
+/// stable handle into [`WorkspaceSnapshot::workspaces`]), its engine, and what to
+/// compile. Snapshotted under the state lock, then handed to a blocking thread.
+type CompileJob = (usize, SharedEngine, CompileTarget);
+
 // ── WorkspaceSnapshot ─────────────────────────────────────────────────────────
 
 /// In-memory state of the LSP workspace.
@@ -70,21 +83,24 @@ use crate::index::{collect_capability_fixes, WorkspaceIndex};
 #[allow(clippy::struct_excessive_bools)]
 #[derive(Debug, Default)]
 struct WorkspaceSnapshot {
-    /// Absolute path to the workspace root (the directory containing the
-    /// root `ridge.toml`).  `None` until `initialize` is handled.
-    workspace_root: Option<PathBuf>,
+    /// Every independent Ridge workspace the client opened — one per distinct
+    /// `[workspace]` manifest root — each with its own engine and analysis index.
+    /// In standalone mode this holds exactly one workspace whose root is `None`.
+    /// Empty until `initialize` is handled. Fixed for the session: the order and
+    /// membership never change after `initialize`, so a slot index is a stable
+    /// handle for installing a compile result.
+    workspaces: Vec<Workspace>,
     /// Open document contents keyed by `Url` (LSP file URI).
     open_docs: std::collections::HashMap<Url, String>,
     /// Set of file URIs for which we've already emitted the L803 orphan warning.
     /// Reserved for future use (0.2.0 orphan-file warn-once logic).
     #[allow(dead_code)]
     warned_orphan: HashSet<String>,
-    /// True if we've already emitted the L802 multi-root warning.
-    warned_multi_root: bool,
-    /// True when no `[workspace]` manifest was found at or above the root (or no
-    /// root was given at all). In this mode the server type-checks each open
-    /// `.ridge` file on its own, so a loose file still gets diagnostics, hover,
-    /// and navigation. Mutually exclusive with `workspace_root` being `Some`.
+    /// True when no `[workspace]` manifest was found at or above any opened
+    /// folder (or no folder was given at all). In this mode the single workspace
+    /// type-checks each open `.ridge` file on its own, so a loose file still gets
+    /// diagnostics, hover, and navigation. Mutually exclusive with a real
+    /// manifest root being present.
     standalone: bool,
     /// True when the client advertised dynamic registration for type hierarchy.
     /// lsp-types 0.94 has no static `typeHierarchyProvider` server capability,
@@ -101,13 +117,66 @@ struct WorkspaceSnapshot {
     /// around a reseed compile is gated on this; without it the server stays
     /// silent rather than emitting progress tokens the client would reject.
     supports_work_done_progress: bool,
-    /// The most recent completed analysis, if any. Replaced wholesale on each
-    /// successful compile; reads clone the `Arc` and release the lock before
-    /// querying. `None` until the first compile lands.
-    index: Option<Arc<WorkspaceIndex>>,
     /// File URIs edited since the last compile. Drained by the debounced
     /// incremental compile so a burst of edits across files is applied together.
     dirty: HashSet<Url>,
+}
+
+/// One independent Ridge workspace: a manifest root (or the synthetic standalone
+/// project), its retained incremental engine, and its latest analysis index.
+///
+/// A multi-folder window (e.g. VS Code "Add Folder to Workspace") with several
+/// Ridge projects gets one `Workspace` per `[workspace]` manifest root. Each
+/// compiles and is queried on its own, so names never leak between unrelated
+/// projects, and a request routes to the workspace that owns the document.
+struct Workspace {
+    /// The directory holding this workspace's root `ridge.toml` with a
+    /// `[workspace]` table. `None` in standalone mode, where the project is
+    /// synthesised from the open `.ridge` files instead.
+    root: Option<PathBuf>,
+    /// This workspace's retained incremental engine (see the note on
+    /// [`RidgeLanguageServer`]'s former single engine). Reseeded on a full
+    /// compile, recompiled in place on an edit; held behind a blocking mutex so
+    /// the `spawn_blocking` compile task owns it without moving it out.
+    engine: SharedEngine,
+    /// This workspace's most recent completed analysis, or `None` until its first
+    /// compile lands. Reads clone the `Arc` and release the lock before querying.
+    index: Option<Arc<WorkspaceIndex>>,
+}
+
+impl std::fmt::Debug for Workspace {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        // The engine is large and not `Debug`; report only the identifying bits.
+        f.debug_struct("Workspace")
+            .field("root", &self.root)
+            .field("has_index", &self.index.is_some())
+            .finish_non_exhaustive()
+    }
+}
+
+impl Workspace {
+    /// A fresh workspace for `root` (`None` for standalone), with an unseeded
+    /// engine and no analysis yet.
+    fn new(root: Option<PathBuf>) -> Self {
+        Self {
+            root,
+            engine: Arc::new(StdMutex::new(None)),
+            index: None,
+        }
+    }
+
+    /// The compile target for this workspace: a real manifest root, or the
+    /// standalone file set derived from the current open documents. Returns
+    /// `None` for a standalone workspace with no open `.ridge` files, where there
+    /// is nothing to analyse yet.
+    fn target(&self, open_docs: &HashMap<Url, String>) -> Option<CompileTarget> {
+        let Some(root) = &self.root else {
+            // Standalone: nothing to analyse until at least one `.ridge` is open.
+            let files = standalone_files(open_docs);
+            return (!files.is_empty()).then_some(CompileTarget::Standalone(files));
+        };
+        Some(CompileTarget::Workspace(root.clone()))
+    }
 }
 
 // ── RidgeLanguageServer ───────────────────────────────────────────────────────
@@ -127,12 +196,6 @@ pub struct RidgeLanguageServer {
     /// the installer only swaps in a result whose generation beats the one
     /// already stored, so a slow aborted compile cannot clobber a newer one.
     compile_generation: Arc<AtomicU64>,
-    /// The retained incremental engine. A full compile reseeds it; an edit
-    /// recompiles the affected modules in place. Held behind a blocking mutex so
-    /// the `spawn_blocking` compile task can own it without moving it out (and
-    /// thus never lose it to a task abort). Editor queries never touch it — they
-    /// read the derived `WorkspaceIndex` snapshot instead.
-    engine: Arc<StdMutex<Option<IncrementalState>>>,
     /// Monotonic counter for unique work-done progress tokens. Each reseed
     /// compile that reports progress claims a fresh token, so two compiles that
     /// briefly overlap (a newer one aborting an older) never share a token and
@@ -150,32 +213,72 @@ impl RidgeLanguageServer {
             compile_handle: Arc::new(Mutex::new(None)),
             debounce_handle: Arc::new(Mutex::new(None)),
             compile_generation: Arc::new(AtomicU64::new(0)),
-            engine: Arc::new(StdMutex::new(None)),
             progress_counter: Arc::new(AtomicU64::new(0)),
         }
     }
 
-    /// Return the most recent analysis index, if a compile has completed.
+    /// Return the analysis index of the first workspace that has compiled.
+    ///
+    /// With a single workspace open (the common case) this is that workspace's
+    /// index. It is the entry point for tests and any caller that has no specific
+    /// document in hand; document-keyed requests use [`index_for_uri`] instead so
+    /// they route to the workspace that actually owns the file.
     ///
     /// Clones the `Arc` under a short lock and releases the lock before
     /// returning, so a query never holds the state mutex while it reads the
-    /// index. This is the read-path primitive for hover, go-to-definition, and
-    /// completion.
+    /// index.
+    ///
+    /// [`index_for_uri`]: Self::index_for_uri
     #[must_use]
     pub async fn workspace_index(&self) -> Option<Arc<WorkspaceIndex>> {
         let snap = self.state.lock().await;
-        snap.index.clone()
+        snap.workspaces.iter().find_map(|ws| ws.index.clone())
     }
 
-    /// Run a workspace compile and publish diagnostics.
+    /// Return the analysis index of the workspace that owns `uri`, if any.
     ///
-    /// `reseed` forces a fresh full check from disk; otherwise the retained
+    /// Each open workspace has its own index; a document belongs to exactly one
+    /// of them. Routing through [`WorkspaceIndex::contains_uri`] keeps the
+    /// per-workspace `ModuleId` numbering honest — a request never resolves
+    /// against an index whose module ids mean something else. Returns `None` when
+    /// no compiled workspace owns the document (e.g. a freshly opened file before
+    /// its first compile), exactly as the single-index path did. This is the
+    /// read-path primitive for hover, go-to-definition, and completion.
+    pub async fn index_for_uri(&self, uri: &Url) -> Option<Arc<WorkspaceIndex>> {
+        let snap = self.state.lock().await;
+        snap.workspaces.iter().find_map(|ws| {
+            ws.index
+                .as_ref()
+                .filter(|idx| idx.contains_uri(uri))
+                .cloned()
+        })
+    }
+
+    /// Every compiled workspace's index, in workspace order. Used by the
+    /// workspace-wide requests (`workspace/symbol`, file renames) that span all
+    /// open projects rather than a single document.
+    async fn all_indices(&self) -> Vec<Arc<WorkspaceIndex>> {
+        let snap = self.state.lock().await;
+        snap.workspaces
+            .iter()
+            .filter_map(|ws| ws.index.clone())
+            .collect()
+    }
+
+    /// Run a compile across the open workspaces and publish diagnostics.
+    ///
+    /// `reseed` forces a fresh full check from disk; otherwise each retained
     /// incremental engine is reused (seeded on first use). `edits` are
-    /// `(uri, buffer)` pairs applied to the engine before the result is built,
-    /// so diagnostics and the analysis index reflect the editor's buffers rather
-    /// than stale disk text. The heavy work runs on a blocking thread; its index
-    /// and diagnostics install under the generation guard, so a slow compile
-    /// superseded by a newer one is discarded.
+    /// `(uri, buffer)` pairs applied before each result is built, so diagnostics
+    /// and the analysis index reflect the editor's buffers rather than stale disk
+    /// text; an edit is a no-op for a workspace that does not own its document.
+    ///
+    /// A reseed recompiles every workspace. An incremental compile only touches
+    /// the workspaces that currently own an edited document, so typing in one
+    /// project never recompiles an unrelated one. Each workspace's heavy work
+    /// runs on its own blocking thread and installs into its own slot under the
+    /// shared generation guard, so a slow compile superseded by a newer one is
+    /// discarded.
     async fn run_compile(&self, reseed: bool, edits: Vec<(Url, String)>) {
         let compile_handle_arc = Arc::clone(&self.compile_handle);
         {
@@ -185,20 +288,30 @@ impl RidgeLanguageServer {
             }
         }
 
-        let target = {
+        // Select the workspaces to compile and snapshot each one's engine and
+        // target. A reseed takes them all; an incremental compile takes only the
+        // ones whose current index owns an edited document.
+        let jobs: Vec<CompileJob> = {
             let snap = self.state.lock().await;
-            match snap.workspace_root.clone() {
-                Some(root) => CompileTarget::Workspace(root),
-                None if snap.standalone => {
-                    let files = standalone_files(&snap.open_docs);
-                    if files.is_empty() {
-                        return;
-                    }
-                    CompileTarget::Standalone(files)
-                }
-                None => return,
-            }
+            snap.workspaces
+                .iter()
+                .enumerate()
+                .filter(|(_, ws)| {
+                    reseed
+                        || ws
+                            .index
+                            .as_ref()
+                            .is_some_and(|idx| edits.iter().any(|(uri, _)| idx.contains_uri(uri)))
+                })
+                .filter_map(|(slot, ws)| {
+                    ws.target(&snap.open_docs)
+                        .map(|target| (slot, Arc::clone(&ws.engine), target))
+                })
+                .collect()
         };
+        if jobs.is_empty() {
+            return;
+        }
 
         // Surface a work-done progress indicator for reseed compiles (initial
         // load, save, on-disk refresh) when the client supports it. Incremental
@@ -219,49 +332,57 @@ impl RidgeLanguageServer {
             None
         };
 
-        let engine = Arc::clone(&self.engine);
         let gen_counter = Arc::clone(&self.compile_generation);
         let state_for_install = Arc::clone(&self.state);
         let client = self.client.clone();
+        // Shared across the per-workspace compiles, which each read but never
+        // mutate the buffer overlay.
+        let edits = Arc::new(edits);
 
         let handle = tokio::spawn(async move {
-            // Hold the progress guard for the whole compile: it ends the
-            // indicator on drop, so even when a newer compile aborts this task
-            // the client's spinner is cleared rather than left hanging.
+            // Hold the progress guard for the whole batch: it ends the indicator
+            // on drop, so even when a newer compile aborts this task mid-loop the
+            // client's spinner is cleared rather than left hanging.
             let _progress = match progress_token {
                 Some(token) => IndexingProgress::begin(client.clone(), token).await,
                 None => None,
             };
-            let result = tokio::task::spawn_blocking(move || {
-                compile_blocking(&engine, &gen_counter, &target, reseed, &edits)
-            })
-            .await;
 
-            match result {
-                Err(_join_err) => {} // aborted or panicked; discard
-                Ok(Err(check_err)) => {
-                    tracing::error!("L804 LspInternal: driver fatal error: {check_err}");
-                }
-                Ok(Ok(out)) => {
-                    // Install the index and publish diagnostics only if this
-                    // compile is still the newest — both are gated on the same
-                    // generation so a superseded result clobbers nothing.
-                    let install = {
-                        let mut snap = state_for_install.lock().await;
-                        if snap
-                            .index
-                            .as_ref()
-                            .is_none_or(|existing| out.generation > existing.generation)
-                        {
-                            snap.index = Some(Arc::clone(&out.index));
-                            true
-                        } else {
-                            false
-                        }
-                    };
-                    if install {
-                        for (uri, diags) in out.diagnostics_by_file {
-                            client.publish_diagnostics(uri, diags, None).await;
+            for (slot, engine, target) in jobs {
+                let gen_counter = Arc::clone(&gen_counter);
+                let edits = Arc::clone(&edits);
+                let result = tokio::task::spawn_blocking(move || {
+                    compile_blocking(&engine, &gen_counter, &target, reseed, edits.as_slice())
+                })
+                .await;
+
+                match result {
+                    Err(_join_err) => {} // aborted or panicked; discard
+                    Ok(Err(check_err)) => {
+                        tracing::error!("L804 LspInternal: driver fatal error: {check_err}");
+                    }
+                    Ok(Ok(out)) => {
+                        // Install into this workspace's slot and publish only if
+                        // the result is still the newest for that slot — gated on
+                        // the generation so a superseded result clobbers nothing.
+                        let install = {
+                            let mut snap = state_for_install.lock().await;
+                            match snap.workspaces.get_mut(slot) {
+                                Some(ws)
+                                    if ws.index.as_ref().is_none_or(|existing| {
+                                        out.generation > existing.generation
+                                    }) =>
+                                {
+                                    ws.index = Some(Arc::clone(&out.index));
+                                    true
+                                }
+                                _ => false,
+                            }
+                        };
+                        if install {
+                            for (uri, diags) in out.diagnostics_by_file {
+                                client.publish_diagnostics(uri, diags, None).await;
+                            }
                         }
                     }
                 }
@@ -322,7 +443,6 @@ impl RidgeLanguageServer {
             compile_handle: Arc::clone(&self.compile_handle),
             debounce_handle: Arc::clone(&debounce_arc),
             compile_generation: Arc::clone(&self.compile_generation),
-            engine: Arc::clone(&self.engine),
             progress_counter: Arc::clone(&self.progress_counter),
         };
 
@@ -589,48 +709,54 @@ impl LanguageServer for RidgeLanguageServer {
             .and_then(|w| w.work_done_progress)
             .unwrap_or(false);
 
-        // Determine the workspace root from rootUri or first workspaceFolders entry.
-        let root_uri: Option<Url> = params.root_uri.or_else(|| {
-            params
-                .workspace_folders
-                .as_ref()
-                .and_then(|folders| folders.first().map(|f| f.uri.clone()))
-        });
+        // Collect every folder the client opened — `rootUri` plus all
+        // `workspaceFolders` — and walk each up to its nearest `[workspace]`
+        // manifest. Distinct manifest roots become independent workspaces, so a
+        // multi-folder window with several Ridge projects analyses them all.
+        // `rootUri` usually duplicates the first folder, so dedup by the canonical
+        // path, which also collapses drive-letter-case spellings on Windows.
+        let mut folder_uris: Vec<Url> = Vec::new();
+        if let Some(root) = params.root_uri {
+            folder_uris.push(root);
+        }
+        if let Some(folders) = params.workspace_folders {
+            folder_uris.extend(folders.into_iter().map(|f| f.uri));
+        }
 
-        // Warn if multiple workspace roots were provided.
-        if let Some(folders) = &params.workspace_folders {
-            if folders.len() > 1 {
-                let mut snap = self.state.lock().await;
-                if !snap.warned_multi_root {
-                    snap.warned_multi_root = true;
-                    tracing::warn!(
-                        "L802 LspMultiRootUnsupported: multi-root workspace detected; \
-                         only the first root is supported in 0.1.0"
-                    );
-                    self.client
-                        .log_message(
-                            MessageType::WARNING,
-                            "ridge-lsp: L802 LspMultiRootUnsupported — multi-root workspace \
-                             not supported in 0.1.0; only the first root is used.",
-                        )
-                        .await;
-                }
+        let mut seen: HashSet<PathBuf> = HashSet::new();
+        let mut roots: Vec<PathBuf> = Vec::new();
+        for uri in &folder_uris {
+            let Ok(path) = uri.to_file_path() else {
+                continue;
+            };
+            let Some(root) = find_workspace_root(&path) else {
+                continue;
+            };
+            // Canonicalise only to compare identity; the original path is what the
+            // driver compiles, matching the long-standing single-root behaviour.
+            let key = std::fs::canonicalize(&root).unwrap_or_else(|_| root.clone());
+            if seen.insert(key) {
+                roots.push(root);
             }
         }
 
-        // Resolve the workspace root by walking up from the root path to the
-        // nearest `[workspace]` manifest. If none is found — or no usable root
-        // path was given at all — fall back to standalone mode, where each open
-        // `.ridge` file is type-checked on its own. That is strictly better than
-        // going dark, and it makes a loose file or a manifest-less folder usable.
-        let manifest_root = root_uri
-            .as_ref()
-            .and_then(|uri| uri.to_file_path().ok())
-            .and_then(|path| find_workspace_root(&path));
-        let standalone = manifest_root.is_none();
+        // With no manifest anywhere, fall back to standalone mode (one synthetic
+        // workspace over the open files). That is strictly better than going dark,
+        // and it makes a loose file or a manifest-less folder usable.
+        let standalone = roots.is_empty();
+        let workspaces: Vec<Workspace> = if standalone {
+            vec![Workspace::new(None)]
+        } else {
+            roots
+                .into_iter()
+                .map(|root| Workspace::new(Some(root)))
+                .collect()
+        };
+        let workspace_count = workspaces.len();
+
         {
             let mut snap = self.state.lock().await;
-            snap.workspace_root = manifest_root;
+            snap.workspaces = workspaces;
             snap.standalone = standalone;
             snap.supports_type_hierarchy = supports_type_hierarchy;
             snap.supports_watched_files = supports_watched_files;
@@ -638,7 +764,7 @@ impl LanguageServer for RidgeLanguageServer {
         }
         if standalone {
             tracing::info!(
-                "no [workspace] manifest found at or above the root; entering standalone mode"
+                "no [workspace] manifest found at or above any folder; entering standalone mode"
             );
             self.client
                 .log_message(
@@ -648,6 +774,8 @@ impl LanguageServer for RidgeLanguageServer {
                      cross-module analysis.",
                 )
                 .await;
+        } else if workspace_count > 1 {
+            tracing::info!("multi-root workspace: analyzing {workspace_count} Ridge projects");
         }
 
         Ok(InitializeResult {
@@ -788,7 +916,7 @@ impl LanguageServer for RidgeLanguageServer {
         let standalone = {
             let mut snap = self.state.lock().await;
             snap.open_docs.remove(&uri);
-            snap.workspace_root.is_none() && snap.standalone
+            snap.standalone
         };
         // Clear diagnostics for the closed file.
         self.client.publish_diagnostics(uri, vec![], None).await;
@@ -840,10 +968,7 @@ impl LanguageServer for RidgeLanguageServer {
         // Clone the snapshot Arc and release the lock before querying, so a
         // hover never blocks on (or triggers) a compile. A stale snapshot may
         // yield a stale type; that is acceptable and resolves on the next compile.
-        let index = {
-            let snap = self.state.lock().await;
-            snap.index.clone()
-        };
+        let index = self.index_for_uri(&uri).await;
         let Some(index) = index else {
             return Ok(None);
         };
@@ -866,10 +991,7 @@ impl LanguageServer for RidgeLanguageServer {
         let uri = params.text_document_position_params.text_document.uri;
         let pos = params.text_document_position_params.position;
 
-        let index = {
-            let snap = self.state.lock().await;
-            snap.index.clone()
-        };
+        let index = self.index_for_uri(&uri).await;
         let Some(index) = index else {
             return Ok(None);
         };
@@ -885,10 +1007,7 @@ impl LanguageServer for RidgeLanguageServer {
         let uri = params.text_document_position_params.text_document.uri;
         let pos = params.text_document_position_params.position;
 
-        let index = {
-            let snap = self.state.lock().await;
-            snap.index.clone()
-        };
+        let index = self.index_for_uri(&uri).await;
         let Some(index) = index else {
             return Ok(None);
         };
@@ -904,10 +1023,7 @@ impl LanguageServer for RidgeLanguageServer {
         let uri = params.text_document_position_params.text_document.uri;
         let pos = params.text_document_position_params.position;
 
-        let index = {
-            let snap = self.state.lock().await;
-            snap.index.clone()
-        };
+        let index = self.index_for_uri(&uri).await;
         let Some(index) = index else {
             return Ok(None);
         };
@@ -921,10 +1037,7 @@ impl LanguageServer for RidgeLanguageServer {
         let pos = params.text_document_position.position;
         let include_declaration = params.context.include_declaration;
 
-        let index = {
-            let snap = self.state.lock().await;
-            snap.index.clone()
-        };
+        let index = self.index_for_uri(&uri).await;
         let Some(index) = index else {
             return Ok(None);
         };
@@ -938,10 +1051,7 @@ impl LanguageServer for RidgeLanguageServer {
         let uri = params.text_document_position_params.text_document.uri;
         let pos = params.text_document_position_params.position;
 
-        let index = {
-            let snap = self.state.lock().await;
-            snap.index.clone()
-        };
+        let index = self.index_for_uri(&uri).await;
         let Some(index) = index else {
             return Ok(None);
         };
@@ -955,10 +1065,7 @@ impl LanguageServer for RidgeLanguageServer {
         let uri = params.text_document.uri;
         let pos = params.position;
 
-        let index = {
-            let snap = self.state.lock().await;
-            snap.index.clone()
-        };
+        let index = self.index_for_uri(&uri).await;
         let Some(index) = index else {
             return Ok(None);
         };
@@ -970,10 +1077,7 @@ impl LanguageServer for RidgeLanguageServer {
         let pos = params.text_document_position.position;
         let new_name = params.new_name;
 
-        let index = {
-            let snap = self.state.lock().await;
-            snap.index.clone()
-        };
+        let index = self.index_for_uri(&uri).await;
         let Some(index) = index else {
             return Ok(None);
         };
@@ -987,10 +1091,7 @@ impl LanguageServer for RidgeLanguageServer {
         let uri = params.text_document_position.text_document.uri;
         let pos = params.text_document_position.position;
 
-        let index = {
-            let snap = self.state.lock().await;
-            snap.index.clone()
-        };
+        let index = self.index_for_uri(&uri).await;
         let Some(index) = index else {
             return Ok(Some(CompletionResponse::Array(Vec::new())));
         };
@@ -1017,21 +1118,21 @@ impl LanguageServer for RidgeLanguageServer {
         let Some(data) = item.data.clone() else {
             return Ok(item);
         };
-        let index = {
-            let snap = self.state.lock().await;
-            snap.index.clone()
-        };
-        let Some(index) = index else {
-            return Ok(item);
-        };
-        if let Some((detail, doc)) = index.resolve_completion(&data) {
-            item.detail = Some(detail);
-            item.documentation = doc.map(|d| {
-                Documentation::MarkupContent(MarkupContent {
-                    kind: MarkupKind::Markdown,
-                    value: d,
-                })
-            });
+        // The completion's `data` carries the target module's URI and symbol
+        // name, so try each workspace until one resolves it; only the owning
+        // workspace's index will. A name+URI lookup never aliases a `ModuleId`,
+        // so scanning across workspaces is safe.
+        for index in self.all_indices().await {
+            if let Some((detail, doc)) = index.resolve_completion(&data) {
+                item.detail = Some(detail);
+                item.documentation = doc.map(|d| {
+                    Documentation::MarkupContent(MarkupContent {
+                        kind: MarkupKind::Markdown,
+                        value: d,
+                    })
+                });
+                break;
+            }
         }
         Ok(item)
     }
@@ -1083,10 +1184,7 @@ impl LanguageServer for RidgeLanguageServer {
     ) -> LspResult<Option<DocumentSymbolResponse>> {
         let uri = params.text_document.uri;
 
-        let index = {
-            let snap = self.state.lock().await;
-            snap.index.clone()
-        };
+        let index = self.index_for_uri(&uri).await;
         let Some(index) = index else {
             return Ok(None);
         };
@@ -1103,10 +1201,7 @@ impl LanguageServer for RidgeLanguageServer {
     ) -> LspResult<Option<Vec<FoldingRange>>> {
         let uri = params.text_document.uri;
 
-        let index = {
-            let snap = self.state.lock().await;
-            snap.index.clone()
-        };
+        let index = self.index_for_uri(&uri).await;
         let Some(index) = index else {
             return Ok(None);
         };
@@ -1121,10 +1216,7 @@ impl LanguageServer for RidgeLanguageServer {
     ) -> LspResult<Option<Vec<SelectionRange>>> {
         let uri = params.text_document.uri;
 
-        let index = {
-            let snap = self.state.lock().await;
-            snap.index.clone()
-        };
+        let index = self.index_for_uri(&uri).await;
         let Some(index) = index else {
             return Ok(None);
         };
@@ -1140,10 +1232,7 @@ impl LanguageServer for RidgeLanguageServer {
         let pos = params.text_document_position_params;
         let uri = pos.text_document.uri;
 
-        let index = {
-            let snap = self.state.lock().await;
-            snap.index.clone()
-        };
+        let index = self.index_for_uri(&uri).await;
         let Some(index) = index else {
             return Ok(None);
         };
@@ -1155,11 +1244,9 @@ impl LanguageServer for RidgeLanguageServer {
         &self,
         params: CallHierarchyIncomingCallsParams,
     ) -> LspResult<Option<Vec<CallHierarchyIncomingCall>>> {
-        let index = {
-            let snap = self.state.lock().await;
-            snap.index.clone()
-        };
-        let Some(index) = index else {
+        // Route to the workspace the prepared item lives in: its `data` holds
+        // per-workspace `ModuleId`s, so it must be read against that same index.
+        let Some(index) = self.index_for_uri(&params.item.uri).await else {
             return Ok(None);
         };
         let Some(data) = params.item.data.as_ref() else {
@@ -1173,11 +1260,7 @@ impl LanguageServer for RidgeLanguageServer {
         &self,
         params: CallHierarchyOutgoingCallsParams,
     ) -> LspResult<Option<Vec<CallHierarchyOutgoingCall>>> {
-        let index = {
-            let snap = self.state.lock().await;
-            snap.index.clone()
-        };
-        let Some(index) = index else {
+        let Some(index) = self.index_for_uri(&params.item.uri).await else {
             return Ok(None);
         };
         let Some(data) = params.item.data.as_ref() else {
@@ -1193,10 +1276,7 @@ impl LanguageServer for RidgeLanguageServer {
         let pos = params.text_document_position_params;
         let uri = pos.text_document.uri;
 
-        let index = {
-            let snap = self.state.lock().await;
-            snap.index.clone()
-        };
+        let index = self.index_for_uri(&uri).await;
         let Some(index) = index else {
             return Ok(None);
         };
@@ -1209,11 +1289,9 @@ impl LanguageServer for RidgeLanguageServer {
         &self,
         params: TypeHierarchySupertypesParams,
     ) -> LspResult<Option<Vec<TypeHierarchyItem>>> {
-        let index = {
-            let snap = self.state.lock().await;
-            snap.index.clone()
-        };
-        let Some(index) = index else {
+        // Route to the workspace the prepared item lives in: its `data` holds
+        // per-workspace `ModuleId`s, so it must be read against that same index.
+        let Some(index) = self.index_for_uri(&params.item.uri).await else {
             return Ok(None);
         };
         let Some(data) = params.item.data.as_ref() else {
@@ -1227,11 +1305,7 @@ impl LanguageServer for RidgeLanguageServer {
         &self,
         params: TypeHierarchySubtypesParams,
     ) -> LspResult<Option<Vec<TypeHierarchyItem>>> {
-        let index = {
-            let snap = self.state.lock().await;
-            snap.index.clone()
-        };
-        let Some(index) = index else {
+        let Some(index) = self.index_for_uri(&params.item.uri).await else {
             return Ok(None);
         };
         let Some(data) = params.item.data.as_ref() else {
@@ -1248,14 +1322,26 @@ impl LanguageServer for RidgeLanguageServer {
         &self,
         params: RenameFilesParams,
     ) -> LspResult<Option<WorkspaceEdit>> {
-        let index = {
-            let snap = self.state.lock().await;
-            snap.index.clone()
-        };
-        let Some(index) = index else {
-            return Ok(None);
-        };
-        Ok(index.rename_files_edit(&params.files))
+        // A renamed file belongs to one workspace; ask each index for the import
+        // fixes it owns and merge them. An importing module lives in exactly one
+        // workspace, so the per-file edit lists never collide across workspaces.
+        let mut changes: HashMap<Url, Vec<TextEdit>> = HashMap::new();
+        for index in self.all_indices().await {
+            let Some(edit) = index.rename_files_edit(&params.files) else {
+                continue;
+            };
+            for (uri, edits) in edit.changes.into_iter().flatten() {
+                changes.entry(uri).or_default().extend(edits);
+            }
+        }
+        if changes.is_empty() {
+            Ok(None)
+        } else {
+            Ok(Some(WorkspaceEdit {
+                changes: Some(changes),
+                ..WorkspaceEdit::default()
+            }))
+        }
     }
 
     /// `workspace/symbol` — declarations across the workspace matching a query
@@ -1264,14 +1350,12 @@ impl LanguageServer for RidgeLanguageServer {
         &self,
         params: WorkspaceSymbolParams,
     ) -> LspResult<Option<Vec<SymbolInformation>>> {
-        let index = {
-            let snap = self.state.lock().await;
-            snap.index.clone()
-        };
-        let Some(index) = index else {
-            return Ok(None);
-        };
-        Ok(Some(index.workspace_symbols(&params.query)))
+        // `Ctrl-T` spans every open project: merge each workspace's matches.
+        let mut symbols = Vec::new();
+        for index in self.all_indices().await {
+            symbols.extend(index.workspace_symbols(&params.query));
+        }
+        Ok(Some(symbols))
     }
 
     /// `textDocument/inlayHint` — inferred types after un-annotated `let`/`var`
@@ -1280,10 +1364,7 @@ impl LanguageServer for RidgeLanguageServer {
         let uri = params.text_document.uri;
         let range = params.range;
 
-        let index = {
-            let snap = self.state.lock().await;
-            snap.index.clone()
-        };
+        let index = self.index_for_uri(&uri).await;
         let Some(index) = index else {
             return Ok(None);
         };
@@ -1301,10 +1382,7 @@ impl LanguageServer for RidgeLanguageServer {
         let pos = params.text_document_position_params;
         let uri = pos.text_document.uri;
 
-        let index = {
-            let snap = self.state.lock().await;
-            snap.index.clone()
-        };
+        let index = self.index_for_uri(&uri).await;
         let Some(index) = index else {
             return Ok(None);
         };
@@ -1318,10 +1396,7 @@ impl LanguageServer for RidgeLanguageServer {
         params: SemanticTokensParams,
     ) -> LspResult<Option<SemanticTokensResult>> {
         let uri = params.text_document.uri;
-        let index = {
-            let snap = self.state.lock().await;
-            snap.index.clone()
-        };
+        let index = self.index_for_uri(&uri).await;
         let Some(index) = index else {
             return Ok(None);
         };
@@ -1338,10 +1413,7 @@ impl LanguageServer for RidgeLanguageServer {
     ) -> LspResult<Option<SemanticTokensRangeResult>> {
         let uri = params.text_document.uri;
         let range = params.range;
-        let index = {
-            let snap = self.state.lock().await;
-            snap.index.clone()
-        };
+        let index = self.index_for_uri(&uri).await;
         let Some(index) = index else {
             return Ok(None);
         };
@@ -1362,10 +1434,7 @@ impl LanguageServer for RidgeLanguageServer {
         // (where the client's URI spelling differs from the server's).
         let target_key = uri_key(&uri);
 
-        let index = {
-            let snap = self.state.lock().await;
-            snap.index.clone()
-        };
+        let index = self.index_for_uri(&uri).await;
         let Some(index) = index else {
             return Ok(None);
         };

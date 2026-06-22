@@ -11,20 +11,21 @@
 //!
 //! # Edge cases documented
 //!
-//! - No `[workspace]` manifest at or above the root → standalone mode: each open
-//!   `.ridge` file is type-checked on its own, so a loose file still gets full
-//!   single-file analysis (no cross-module imports across loose files).
-//! - Multi-root workspace → one-time `L802 LspMultiRootUnsupported` warning, single-root used.
+//! - No `[workspace]` manifest at or above any opened folder → standalone mode:
+//!   each open `.ridge` file is type-checked on its own, so a loose file still
+//!   gets full single-file analysis (no cross-module imports across loose files).
+//! - Multi-root window → each opened folder with a `[workspace]` manifest becomes
+//!   an independent workspace, analysed and queried on its own; a request routes
+//!   to the workspace that owns the document.
 //! - File outside any workspace member → one-time `L803 LspFileOrphan` warning, skipped.
 //! - Driver internal error → `tracing::error!` + `L804 LspInternal` surfaced as LSP error.
 //!
-//! # Limitations
+//! # Performance
 //!
-//! Single-root workspaces only; a multi-root window falls back to the first
-//! root with the `L802` warning above.  Recompilation is incremental and
-//! debounced (see the `didChange`/`didSave` notes), so edit-to-diagnostic
-//! latency stays flat as a workspace grows.  See `README.md` for documented
-//! behaviour and known limitations.
+//! Recompilation is incremental and debounced (see the `didChange`/`didSave`
+//! notes), so edit-to-diagnostic latency stays flat as a workspace grows. With
+//! several folders open, only the workspace that owns an edited file recompiles.
+//! See `README.md` for documented behaviour and known limitations.
 
 #![warn(missing_docs)]
 #![deny(clippy::unwrap_used, clippy::expect_used, clippy::panic)]

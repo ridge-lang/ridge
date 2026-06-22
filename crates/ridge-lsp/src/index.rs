@@ -311,6 +311,14 @@ impl WorkspaceIndex {
         self.uri_key_to_module.get(&uri_key(uri)).copied()
     }
 
+    /// Whether this index owns `uri` as one of its modules. Used to route a
+    /// request to the right workspace when several are open at once: each open
+    /// folder has its own index, and a document belongs to exactly one of them.
+    #[must_use]
+    pub fn contains_uri(&self, uri: &Url) -> bool {
+        self.module_id_for(uri).is_some()
+    }
+
     /// Map an LSP document `uri` and a byte `offset` to the narrowest enclosing
     /// node, restricted to the kinds in `prefer`.
     ///

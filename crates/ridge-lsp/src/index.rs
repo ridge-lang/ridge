@@ -2401,6 +2401,26 @@ impl WorkspaceIndex {
             .unwrap_or_default()
     }
 
+    /// Fill in a completion item's signature and documentation on demand
+    /// (`completionItem/resolve`).
+    ///
+    /// `data` is the `{ "uri", "name" }` payload the completion list attached to
+    /// a workspace-symbol item. Returns `(detail, documentation)` rendered from
+    /// the symbol's written header and doc comment — the same material hover
+    /// shows — or `None` when the payload names no resolvable declaration.
+    #[must_use]
+    pub fn resolve_completion(&self, data: &serde_json::Value) -> Option<(String, Option<String>)> {
+        let uri = Url::parse(data.get("uri")?.as_str()?).ok()?;
+        let name = data.get("name")?.as_str()?;
+        let mid = self.module_id_for(&uri)?;
+        let view = self.modules.get(mid.0 as usize)?;
+        view.symbols
+            .entries
+            .iter()
+            .filter(|e| e.name == name)
+            .find_map(|e| self.decl_header_and_doc(mid, e.id))
+    }
+
     fn try_completions(
         &self,
         uri: &Url,
@@ -2419,12 +2439,21 @@ impl WorkspaceIndex {
             Context::None => {}
             Context::Member { alias, prefix } => {
                 if let Some(target) = alias_target(&m.imports, &alias) {
+                    let target_uri = self
+                        .module_uris
+                        .get(target.0 as usize)
+                        .and_then(Option::as_ref);
                     if let Some(tm) = self.modules.get(target.0 as usize) {
                         for e in &tm.symbols.entries {
                             if e.visibility == ResolvedVisibility::Pub
                                 && e.name.starts_with(&prefix)
                             {
-                                out.push(item(e.name.clone(), symbol_kind(&e.kind), '0'));
+                                out.push(symbol_item(
+                                    e.name.clone(),
+                                    symbol_kind(&e.kind),
+                                    '0',
+                                    target_uri,
+                                ));
                             }
                         }
                     }
@@ -2457,9 +2486,15 @@ impl WorkspaceIndex {
                         out.push(item(local.name.clone(), CompletionItemKind::VARIABLE, '0'));
                     }
                 }
+                let self_uri = self.module_uris.get(mi).and_then(Option::as_ref);
                 for e in &m.symbols.entries {
                     if e.name.starts_with(&prefix) {
-                        out.push(item(e.name.clone(), symbol_kind(&e.kind), '1'));
+                        out.push(symbol_item(
+                            e.name.clone(),
+                            symbol_kind(&e.kind),
+                            '1',
+                            self_uri,
+                        ));
                     }
                 }
                 for imp in &m.imports {
@@ -3357,7 +3392,24 @@ fn item(label: String, kind: CompletionItemKind, group: char) -> CompletionItemD
         label,
         kind,
         detail: None,
+        data: None,
     }
+}
+
+/// A completion candidate for a workspace symbol, carrying the resolve payload
+/// (`{ "uri", "name" }`) so `completionItem/resolve` can fill in its signature
+/// and doc on demand. `owner_uri` is the module that declares the symbol.
+fn symbol_item(
+    name: String,
+    kind: CompletionItemKind,
+    group: char,
+    owner_uri: Option<&Url>,
+) -> CompletionItemData {
+    let mut it = item(name, kind, group);
+    if let Some(uri) = owner_uri {
+        it.data = Some(serde_json::json!({ "uri": uri.as_str(), "name": it.label }));
+    }
+    it
 }
 
 /// Resolve a binding to the `(module, symbol)` of a top-level workspace

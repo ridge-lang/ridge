@@ -3905,6 +3905,72 @@ async fn test_standalone_folder_without_workspace_manifest_is_analysed() {
     );
 }
 
+// ── completionItem/resolve (L17) ──────────────────────────────────────────────
+
+#[tokio::test]
+async fn test_completion_resolve_fills_signature_and_doc() {
+    // A documented function, and a second whose body starts referencing it, so
+    // the name is offered at an expression position with a `gr` prefix.
+    let src = "---\nGreets a person by name.\n---\npub fn greet (name: Text) -> Text = name\npub fn run -> Text = gr\n";
+    let (service, _socket, uri) = hover_fixture(src).await;
+    let server = service.inner();
+
+    // Complete at the end of `pub fn run -> Text = gr` (line 4, char 23).
+    let items = completion_items(
+        server
+            .completion(complete_at(&uri, 4, 23))
+            .await
+            .expect("ok"),
+    );
+    let greet = items
+        .into_iter()
+        .find(|i| i.label == "greet")
+        .expect("greet is offered");
+
+    // The list item carries a resolve payload, but detail and doc stay empty
+    // until the editor asks for them.
+    assert!(
+        greet.data.is_some(),
+        "a workspace symbol carries resolve data"
+    );
+    assert!(greet.detail.is_none(), "detail is filled only on resolve");
+    assert!(
+        greet.documentation.is_none(),
+        "doc is filled only on resolve"
+    );
+
+    let resolved = server.completion_resolve(greet).await.expect("resolve ok");
+    assert_eq!(
+        resolved.detail.as_deref(),
+        Some("pub fn greet (name: Text) -> Text"),
+        "resolve fills the written signature"
+    );
+    let doc = match resolved.documentation {
+        Some(Documentation::MarkupContent(m)) => m.value,
+        other => panic!("expected a markdown doc, got {other:?}"),
+    };
+    assert!(
+        doc.contains("Greets a person by name."),
+        "resolve fills the doc comment, got {doc}"
+    );
+}
+
+#[tokio::test]
+async fn test_completion_resolve_passes_through_items_without_data() {
+    // A keyword completion has no resolve payload, so resolve returns it as-is.
+    let item = CompletionItem {
+        label: "match".to_owned(),
+        kind: Some(CompletionItemKind::KEYWORD),
+        ..CompletionItem::default()
+    };
+    let (service, _socket, _uri) = hover_fixture("pub fn run -> Int = 1\n").await;
+    let server = service.inner();
+    let resolved = server.completion_resolve(item).await.expect("resolve ok");
+    assert_eq!(resolved.label, "match");
+    assert!(resolved.detail.is_none(), "no data means no enrichment");
+    assert!(resolved.documentation.is_none());
+}
+
 // ── textDocument/foldingRange (L15) ───────────────────────────────────────────
 
 fn folding_at(uri: &Url) -> FoldingRangeParams {

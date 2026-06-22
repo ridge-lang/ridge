@@ -729,10 +729,38 @@ impl LanguageServer for RidgeLanguageServer {
                 kind: Some(d.kind),
                 sort_text: Some(d.sort_text),
                 detail: d.detail,
+                data: d.data,
                 ..CompletionItem::default()
             })
             .collect();
         Ok(Some(CompletionResponse::Array(items)))
+    }
+
+    /// `completionItem/resolve` — fill in a workspace symbol's signature and doc
+    /// when the editor highlights it, so the completion list itself stays cheap.
+    /// Items without a `data` payload (locals, keywords, stdlib members) come
+    /// back unchanged.
+    async fn completion_resolve(&self, mut item: CompletionItem) -> LspResult<CompletionItem> {
+        let Some(data) = item.data.clone() else {
+            return Ok(item);
+        };
+        let index = {
+            let snap = self.state.lock().await;
+            snap.index.clone()
+        };
+        let Some(index) = index else {
+            return Ok(item);
+        };
+        if let Some((detail, doc)) = index.resolve_completion(&data) {
+            item.detail = Some(detail);
+            item.documentation = doc.map(|d| {
+                Documentation::MarkupContent(MarkupContent {
+                    kind: MarkupKind::Markdown,
+                    value: d,
+                })
+            });
+        }
+        Ok(item)
     }
 
     /// `textDocument/formatting` — reformat the whole document with `ridge-fmt`.
@@ -1022,7 +1050,7 @@ fn server_capabilities() -> ServerCapabilities {
         )),
         completion_provider: Some(CompletionOptions {
             trigger_characters: Some(vec![".".to_owned()]),
-            resolve_provider: Some(false),
+            resolve_provider: Some(true),
             ..CompletionOptions::default()
         }),
         text_document_sync: Some(TextDocumentSyncCapability::Options(

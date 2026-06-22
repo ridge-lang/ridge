@@ -96,6 +96,11 @@ struct WorkspaceSnapshot {
     /// opts into via dynamic registration in `initialized`; without it the
     /// client never reports on-disk changes to files that aren't open.
     supports_watched_files: bool,
+    /// True when the client advertised support for work-done progress
+    /// (`window.workDoneProgress`). Server-initiated `$/progress` reporting
+    /// around a reseed compile is gated on this; without it the server stays
+    /// silent rather than emitting progress tokens the client would reject.
+    supports_work_done_progress: bool,
     /// The most recent completed analysis, if any. Replaced wholesale on each
     /// successful compile; reads clone the `Arc` and release the lock before
     /// querying. `None` until the first compile lands.
@@ -128,6 +133,11 @@ pub struct RidgeLanguageServer {
     /// thus never lose it to a task abort). Editor queries never touch it — they
     /// read the derived `WorkspaceIndex` snapshot instead.
     engine: Arc<StdMutex<Option<IncrementalState>>>,
+    /// Monotonic counter for unique work-done progress tokens. Each reseed
+    /// compile that reports progress claims a fresh token, so two compiles that
+    /// briefly overlap (a newer one aborting an older) never share a token and
+    /// each `end` matches its own `begin`.
+    progress_counter: Arc<AtomicU64>,
 }
 
 impl RidgeLanguageServer {
@@ -141,6 +151,7 @@ impl RidgeLanguageServer {
             debounce_handle: Arc::new(Mutex::new(None)),
             compile_generation: Arc::new(AtomicU64::new(0)),
             engine: Arc::new(StdMutex::new(None)),
+            progress_counter: Arc::new(AtomicU64::new(0)),
         }
     }
 
@@ -189,12 +200,38 @@ impl RidgeLanguageServer {
             }
         };
 
+        // Surface a work-done progress indicator for reseed compiles (initial
+        // load, save, on-disk refresh) when the client supports it. Incremental
+        // recompiles while typing are fast and frequent, so they stay silent to
+        // keep a spinner from flickering on every keystroke.
+        let progress_token = if reseed {
+            let supports = {
+                let snap = self.state.lock().await;
+                snap.supports_work_done_progress
+            };
+            supports.then(|| {
+                ProgressToken::String(format!(
+                    "ridge/index/{}",
+                    self.progress_counter.fetch_add(1, Ordering::Relaxed)
+                ))
+            })
+        } else {
+            None
+        };
+
         let engine = Arc::clone(&self.engine);
         let gen_counter = Arc::clone(&self.compile_generation);
         let state_for_install = Arc::clone(&self.state);
         let client = self.client.clone();
 
         let handle = tokio::spawn(async move {
+            // Hold the progress guard for the whole compile: it ends the
+            // indicator on drop, so even when a newer compile aborts this task
+            // the client's spinner is cleared rather than left hanging.
+            let _progress = match progress_token {
+                Some(token) => IndexingProgress::begin(client.clone(), token).await,
+                None => None,
+            };
             let result = tokio::task::spawn_blocking(move || {
                 compile_blocking(&engine, &gen_counter, &target, reseed, &edits)
             })
@@ -286,6 +323,7 @@ impl RidgeLanguageServer {
             debounce_handle: Arc::clone(&debounce_arc),
             compile_generation: Arc::clone(&self.compile_generation),
             engine: Arc::clone(&self.engine),
+            progress_counter: Arc::clone(&self.progress_counter),
         };
 
         let handle = tokio::spawn(async move {
@@ -360,6 +398,70 @@ fn is_watched_ridge_path(uri: &Url) -> bool {
 fn is_ridge_source(uri: &Url) -> bool {
     uri.to_file_path()
         .is_ok_and(|path| path.extension().is_some_and(|e| e == "ridge"))
+}
+
+/// RAII reporter for one server-initiated work-done progress.
+///
+/// [`begin`](IndexingProgress::begin) asks the client to create the progress
+/// token (`window/workDoneProgress/create`) and sends the `begin` notification;
+/// it returns `None` if the client refuses the create request, so an unpaired
+/// `begin`/`end` is never emitted. The matching `end` is sent on drop — including
+/// when a newer compile aborts the task mid-flight — so the client's progress
+/// indicator always clears.
+struct IndexingProgress {
+    client: Client,
+    token: ProgressToken,
+}
+
+impl IndexingProgress {
+    /// Create the progress token and announce its start. Returns `None` when the
+    /// client rejects the create request, leaving nothing to end.
+    async fn begin(client: Client, token: ProgressToken) -> Option<Self> {
+        client
+            .send_request::<request::WorkDoneProgressCreate>(WorkDoneProgressCreateParams {
+                token: token.clone(),
+            })
+            .await
+            .ok()?;
+        client
+            .send_notification::<notification::Progress>(ProgressParams {
+                token: token.clone(),
+                value: ProgressParamsValue::WorkDone(WorkDoneProgress::Begin(
+                    WorkDoneProgressBegin {
+                        title: "Ridge: analyzing".to_owned(),
+                        cancellable: Some(false),
+                        message: None,
+                        percentage: None,
+                    },
+                )),
+            })
+            .await;
+        Some(Self { client, token })
+    }
+}
+
+impl Drop for IndexingProgress {
+    fn drop(&mut self) {
+        // `end` is async, but `Drop` is not; spawn it on the current runtime so
+        // the indicator clears even when the compile task is aborted. Use
+        // `try_current` rather than `tokio::spawn` so a drop outside a runtime
+        // (e.g. teardown) is a no-op instead of a panic.
+        let Ok(handle) = tokio::runtime::Handle::try_current() else {
+            return;
+        };
+        let client = self.client.clone();
+        let token = self.token.clone();
+        handle.spawn(async move {
+            client
+                .send_notification::<notification::Progress>(ProgressParams {
+                    token,
+                    value: ProgressParamsValue::WorkDone(WorkDoneProgress::End(
+                        WorkDoneProgressEnd { message: None },
+                    )),
+                })
+                .await;
+        });
+    }
 }
 
 /// Seed-or-reuse the engine, apply the buffer edits, and produce the index and
@@ -478,6 +580,15 @@ impl LanguageServer for RidgeLanguageServer {
             .and_then(|w| w.dynamic_registration)
             .unwrap_or(false);
 
+        // Work-done progress is server-initiated, so the client must opt in via
+        // `window.workDoneProgress` before we may create progress tokens.
+        let supports_work_done_progress = params
+            .capabilities
+            .window
+            .as_ref()
+            .and_then(|w| w.work_done_progress)
+            .unwrap_or(false);
+
         // Determine the workspace root from rootUri or first workspaceFolders entry.
         let root_uri: Option<Url> = params.root_uri.or_else(|| {
             params
@@ -523,6 +634,7 @@ impl LanguageServer for RidgeLanguageServer {
             snap.standalone = standalone;
             snap.supports_type_hierarchy = supports_type_hierarchy;
             snap.supports_watched_files = supports_watched_files;
+            snap.supports_work_done_progress = supports_work_done_progress;
         }
         if standalone {
             tracing::info!(

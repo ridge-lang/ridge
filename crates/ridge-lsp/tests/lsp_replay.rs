@@ -4893,3 +4893,240 @@ async fn test_watched_irrelevant_file_ignored() {
         "an irrelevant watched file must not trigger a recompile"
     );
 }
+
+// ── $/progress (work-done) during indexing ───────────────────────────────────
+
+use std::sync::{Arc, Mutex};
+
+use futures::{SinkExt, StreamExt};
+use tower::{Service, ServiceExt};
+use tower_lsp::jsonrpc::{Request, Response};
+
+/// The server-to-client work-done progress lifecycle observed by the test client.
+#[derive(Default)]
+struct ProgressLog {
+    /// Tokens from `window/workDoneProgress/create` requests.
+    created: Vec<ProgressToken>,
+    /// Tokens carried by `$/progress` `begin` notifications.
+    begun: Vec<ProgressToken>,
+    /// Tokens carried by `$/progress` `end` notifications.
+    ended: Vec<ProgressToken>,
+}
+
+/// Drive the client half of the in-process loopback.
+///
+/// Spawns a task that answers every server-to-client request (so the server
+/// never blocks waiting on a response) and records the work-done progress
+/// lifecycle for later assertions. Returns the shared log.
+fn drive_client(socket: ClientSocket) -> Arc<Mutex<ProgressLog>> {
+    let log = Arc::new(Mutex::new(ProgressLog::default()));
+    let sink = Arc::clone(&log);
+    let (mut requests, mut responses) = socket.split();
+    tokio::spawn(async move {
+        while let Some(req) = requests.next().await {
+            if req.method() == "window/workDoneProgress/create" {
+                if let Some(params) = req.params() {
+                    if let Ok(p) =
+                        serde_json::from_value::<WorkDoneProgressCreateParams>(params.clone())
+                    {
+                        sink.lock().unwrap().created.push(p.token);
+                    }
+                }
+            } else if req.method() == "$/progress" {
+                if let Some(params) = req.params() {
+                    if let Ok(p) = serde_json::from_value::<ProgressParams>(params.clone()) {
+                        let ProgressParamsValue::WorkDone(work) = p.value;
+                        match work {
+                            WorkDoneProgress::Begin(_) => sink.lock().unwrap().begun.push(p.token),
+                            WorkDoneProgress::End(_) => sink.lock().unwrap().ended.push(p.token),
+                            WorkDoneProgress::Report(_) => {}
+                        }
+                    }
+                }
+            }
+            // Answer anything that expects a reply so the server never blocks;
+            // notifications carry no id and need none.
+            if let Some(id) = req.id().cloned() {
+                let _ = responses
+                    .send(Response::from_parts(id, Ok(serde_json::Value::Null)))
+                    .await;
+            }
+        }
+    });
+    log
+}
+
+/// Build a hermetic temp workspace, drive the client loopback, initialize with
+/// the given `window.workDoneProgress` support, and open the first file (which
+/// triggers the initial reseed compile). Returns the service, the progress log,
+/// and the workspace root (the `TempDir` is leaked so the path stays valid).
+async fn progress_workspace(
+    files: &[(&str, &str)],
+    advertise_progress: bool,
+) -> (
+    LspService<RidgeLanguageServer>,
+    Arc<Mutex<ProgressLog>>,
+    PathBuf,
+) {
+    let dir = tempfile::TempDir::new().expect("temp dir");
+    let root = dir.path().to_path_buf();
+    let app_src = root.join("app").join("src");
+    std::fs::create_dir_all(&app_src).expect("create temp workspace");
+    std::fs::write(
+        root.join("ridge.toml"),
+        "[workspace]\nname = \"progress-ws\"\nversion = \"0.1.0\"\nmembers = [\"app\"]\n",
+    )
+    .expect("workspace manifest");
+    std::fs::write(
+        root.join("app").join("ridge.toml"),
+        "[project]\nname = \"app\"\nversion = \"0.1.0\"\nkind = \"library\"\n\n[capabilities]\nallow = []\n",
+    )
+    .expect("project manifest");
+    for (name, contents) in files {
+        std::fs::write(app_src.join(name), contents).expect("write source");
+    }
+
+    let (mut service, socket) = build_test_service();
+    let log = drive_client(socket);
+    {
+        let root_uri = Url::from_file_path(&root).expect("root URI");
+        let window = advertise_progress.then(|| WindowClientCapabilities {
+            work_done_progress: Some(true),
+            ..WindowClientCapabilities::default()
+        });
+        let init_params = InitializeParams {
+            root_uri: Some(root_uri.clone()),
+            workspace_folders: Some(vec![WorkspaceFolder {
+                uri: root_uri,
+                name: "progress-ws".to_owned(),
+            }]),
+            capabilities: ClientCapabilities {
+                window,
+                ..ClientCapabilities::default()
+            },
+            ..InitializeParams::default()
+        };
+        // Drive `initialize` through the service rather than the inner server so
+        // the framework flips its state to `Initialized`. Otherwise the client
+        // suppresses every server-to-client request and notification — including
+        // work-done progress — and the test would observe nothing.
+        let init_req = Request::build("initialize")
+            .id(1_i64)
+            .params(serde_json::to_value(init_params).expect("serialize init params"))
+            .finish();
+        {
+            let ready = ServiceExt::ready(&mut service)
+                .await
+                .expect("service ready");
+            ready.call(init_req).await.expect("initialize call");
+        }
+
+        let server = service.inner();
+        server.initialized(InitializedParams {}).await;
+
+        // Opening the first file drives the initial reseed compile.
+        let first = app_src.join(files[0].0);
+        server
+            .did_open(DidOpenTextDocumentParams {
+                text_document: TextDocumentItem {
+                    uri: Url::from_file_path(&first).expect("file URI"),
+                    language_id: "ridge".to_owned(),
+                    version: 1,
+                    text: files[0].1.to_owned(),
+                },
+            })
+            .await;
+        wait_for_module_count(server, files.len()).await;
+    }
+    std::mem::forget(dir);
+    (service, log, root)
+}
+
+/// Poll the progress log until an `end` notification arrives, or panic after ~6s.
+async fn wait_for_progress_end(log: &Arc<Mutex<ProgressLog>>) {
+    for _ in 0..120 {
+        if !log.lock().unwrap().ended.is_empty() {
+            return;
+        }
+        tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;
+    }
+    panic!("expected a work-done progress end notification");
+}
+
+#[tokio::test]
+async fn test_work_done_progress_reported_on_reseed() {
+    let (_service, log, _root) =
+        progress_workspace(&[("main.ridge", "pub fn a -> Int = 1\n")], true).await;
+    wait_for_progress_end(&log).await;
+
+    let (created, begun, ended) = {
+        let log = log.lock().unwrap();
+        (log.created.clone(), log.begun.clone(), log.ended.clone())
+    };
+    assert_eq!(
+        created.len(),
+        1,
+        "one progress token created for the reseed, got {created:?}"
+    );
+    assert_eq!(begun.len(), 1, "one begin, got {begun:?}");
+    assert_eq!(ended.len(), 1, "one end, got {ended:?}");
+    // begin and end ride the token the server asked the client to create.
+    assert_eq!(created[0], begun[0], "begin uses the created token");
+    assert_eq!(begun[0], ended[0], "end matches begin");
+}
+
+#[tokio::test]
+async fn test_no_progress_when_capability_absent() {
+    // The helper already waits for the reseed to finish, so any progress would
+    // have been emitted by now.
+    let (_service, log, _root) =
+        progress_workspace(&[("main.ridge", "pub fn a -> Int = 1\n")], false).await;
+    tokio::time::sleep(tokio::time::Duration::from_millis(200)).await;
+
+    let (created, begun, ended) = {
+        let log = log.lock().unwrap();
+        (log.created.clone(), log.begun.clone(), log.ended.clone())
+    };
+    assert!(
+        created.is_empty(),
+        "no token is created without window.workDoneProgress, got {created:?}"
+    );
+    assert!(begun.is_empty(), "no begin without the capability");
+    assert!(ended.is_empty(), "no end without the capability");
+}
+
+#[tokio::test]
+async fn test_no_progress_for_incremental_compile() {
+    let (service, log, root) =
+        progress_workspace(&[("main.ridge", "pub fn a -> Int = 1\n")], true).await;
+    let server = service.inner();
+
+    // The opening reseed reports progress; wait for it, then snapshot the count.
+    wait_for_progress_end(&log).await;
+    let created_after_open = log.lock().unwrap().created.len();
+
+    // A didChange schedules a debounced *incremental* recompile (reseed = false),
+    // which must stay silent — no spinner flicker on every keystroke.
+    let main = root.join("app").join("src").join("main.ridge");
+    server
+        .did_change(DidChangeTextDocumentParams {
+            text_document: VersionedTextDocumentIdentifier {
+                uri: Url::from_file_path(&main).expect("uri"),
+                version: 2,
+            },
+            content_changes: vec![TextDocumentContentChangeEvent {
+                range: None, // full replacement
+                range_length: None,
+                text: "pub fn a -> Int = 2\n".to_owned(),
+            }],
+        })
+        .await;
+
+    // Wait past the 250 ms debounce plus the incremental compile.
+    tokio::time::sleep(tokio::time::Duration::from_millis(500)).await;
+    assert_eq!(
+        log.lock().unwrap().created.len(),
+        created_after_open,
+        "an incremental recompile must not create new progress"
+    );
+}

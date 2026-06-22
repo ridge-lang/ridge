@@ -39,6 +39,8 @@ ridge-fmt        = { path = "../ridge-fmt" }
 [dev-dependencies]
 tempfile = "3"
 tokio    = { version = "1", features = ["rt-multi-thread", "macros", "io-std", "time", "sync"] }
+futures  = "0.3"
+tower    = "0.4"
 ridge-fmt = { path = "../ridge-fmt" }
 
 [lints]

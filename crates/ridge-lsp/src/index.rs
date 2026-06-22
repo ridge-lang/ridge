@@ -26,11 +26,12 @@ use ridge_typecheck::{render_type_with, TypeError, TypedWorkspace};
 use ridge_types::{CapabilitySet, TyConDecl, TyConKind, Type};
 use tower_lsp::lsp_types::{
     CallHierarchyIncomingCall, CallHierarchyItem, CallHierarchyOutgoingCall, CompletionItemKind,
-    DocumentHighlight, DocumentHighlightKind, DocumentSymbol, FoldingRange, FoldingRangeKind,
-    InlayHint, InlayHintKind, InlayHintLabel, Location, ParameterInformation, ParameterLabel,
-    Position, PrepareRenameResponse, Range, SelectionRange, SemanticToken, SemanticTokenModifier,
-    SemanticTokenType, SemanticTokens, SignatureHelp, SignatureInformation, SymbolInformation,
-    SymbolKind as LspSymbolKind, TextEdit, TypeHierarchyItem, Url, WorkspaceEdit,
+    DocumentHighlight, DocumentHighlightKind, DocumentSymbol, FileRename, FoldingRange,
+    FoldingRangeKind, InlayHint, InlayHintKind, InlayHintLabel, Location, ParameterInformation,
+    ParameterLabel, Position, PrepareRenameResponse, Range, SelectionRange, SemanticToken,
+    SemanticTokenModifier, SemanticTokenType, SemanticTokens, SignatureHelp, SignatureInformation,
+    SymbolInformation, SymbolKind as LspSymbolKind, TextEdit, TypeHierarchyItem, Url,
+    WorkspaceEdit,
 };
 
 use crate::completion::{detect_context, symbol_kind, CompletionItemData, Context, KEYWORDS};
@@ -177,6 +178,13 @@ pub struct WorkspaceIndex {
     /// Per-module document URI, indexed by `ModuleId.0` (for cross-file
     /// go-to-definition targets). `None` if the path had no valid URI.
     pub module_uris: Vec<Option<Url>>,
+    /// Per-module fully-qualified name, indexed by `ModuleId.0`. Used by the
+    /// file-rename import fixups to recover a moved module's path depth.
+    module_fqns: Vec<String>,
+    /// Per-module owning-project name, indexed by `ModuleId.0` (the FQN prefix,
+    /// which may itself contain dots). The new name a renamed module takes is
+    /// this project name plus its new path below the source root.
+    module_project_names: Vec<String>,
     /// Quick-fixes for `T014 CapabilityNotDeclared` on capability-free
     /// functions: each carries the edit that adds the inferred capabilities to
     /// the signature. Populated after the compile (which holds the structured
@@ -225,6 +233,8 @@ impl WorkspaceIndex {
         let mut module_text: Vec<Arc<str>> = vec![Arc::from(""); n];
         let mut line_indices: Vec<LineIndex> = (0..n).map(|_| LineIndex::new("")).collect();
         let mut module_uris: Vec<Option<Url>> = vec![None; n];
+        let mut module_fqns: Vec<String> = vec![String::new(); n];
+        let mut module_project_names: Vec<String> = vec![String::new(); n];
 
         for module in &resolved.graph.modules {
             let i = module.id.0 as usize;
@@ -239,6 +249,11 @@ impl WorkspaceIndex {
             uri_to_module.insert(uri.clone(), module.id);
             uri_key_to_module.insert(uri_key(&uri), module.id);
             module_uris[i] = Some(uri);
+            module_fqns[i].clone_from(&module.fully_qualified_name);
+            // `graph.projects` is indexed by `ProjectId.0`.
+            if let Some(project) = resolved.graph.projects.get(module.project.0 as usize) {
+                module_project_names[i].clone_from(&project.name);
+            }
             if let Some(text) = sources.text(source_id.as_str()) {
                 module_text[i] = Arc::from(text);
                 line_indices[i] = LineIndex::new(text);
@@ -282,6 +297,8 @@ impl WorkspaceIndex {
             line_indices,
             module_text,
             module_uris,
+            module_fqns,
+            module_project_names,
             capability_fixes: Vec::new(),
         }
     }
@@ -1963,6 +1980,137 @@ impl WorkspaceIndex {
                 character: end_char,
             },
         })
+    }
+
+    /// Answer `workspace/willRenameFiles`: when `.ridge` files move, rewrite the
+    /// `import` path of every other module that referenced them so the imports
+    /// still resolve after the move.
+    ///
+    /// Each renamed file is mapped to the new fully-qualified name it takes at
+    /// its destination; then every workspace import whose target is one of the
+    /// moved modules has its dotted path replaced (the `as`/item list is left
+    /// untouched). Returns `None` when no import needs to change — including the
+    /// common cases of renaming a leaf module nobody imports, standalone files,
+    /// or a move out of the project's source tree.
+    #[must_use]
+    pub fn rename_files_edit(&self, files: &[FileRename]) -> Option<WorkspaceEdit> {
+        // Resolve each rename to (moved module id, its new fully-qualified name).
+        let mut moved: Vec<(ModuleId, String)> = Vec::new();
+        for file in files {
+            let Ok(old_url) = Url::parse(&file.old_uri) else {
+                continue;
+            };
+            let Some(old_mid) = self.module_id_for(&old_url) else {
+                continue;
+            };
+            let (Ok(old_path), Ok(new_url)) = (old_url.to_file_path(), Url::parse(&file.new_uri))
+            else {
+                continue;
+            };
+            let Ok(new_path) = new_url.to_file_path() else {
+                continue;
+            };
+            if let Some(new_fqn) = self.renamed_module_fqn(old_mid, &old_path, &new_path) {
+                moved.push((old_mid, new_fqn));
+            }
+        }
+        if moved.is_empty() {
+            return None;
+        }
+
+        let mut changes: HashMap<Url, Vec<TextEdit>> = HashMap::new();
+        for (mi, view) in self.modules.iter().enumerate() {
+            let Some(ast) = view.ast.as_ref() else {
+                continue;
+            };
+            let Some(uri) = self.module_uris.get(mi).cloned().flatten() else {
+                continue;
+            };
+            let Ok(mid_raw) = u32::try_from(mi) else {
+                continue;
+            };
+            let mid = ModuleId(mid_raw);
+            for imp in &view.imports {
+                let ImportTarget::WorkspaceModule(target) = imp.target else {
+                    continue;
+                };
+                let Some((_, new_fqn)) = moved.iter().find(|(m, _)| *m == target) else {
+                    continue;
+                };
+                // Correlate the resolved import with its AST declaration by the
+                // full span both record, then rewrite only the dotted path. The
+                // path span runs from the first segment to the last — narrower
+                // than `ModulePath::span`, which the parser anchors back at the
+                // `import` keyword — so the `import ` prefix and any `as`/item
+                // list are left untouched.
+                let Some(path_span) = ast.items.iter().find_map(|item| match item {
+                    ridge_ast::Item::Import(decl) if decl.span == imp.span => {
+                        let segments = &decl.path.segments;
+                        match (segments.first(), segments.last()) {
+                            (Some(first), Some(last)) => Some(Span {
+                                start: first.span.start,
+                                end: last.span.end,
+                            }),
+                            _ => Some(decl.path.span),
+                        }
+                    }
+                    _ => None,
+                }) else {
+                    continue;
+                };
+                let Some(range) = self.range_in(mid, path_span) else {
+                    continue;
+                };
+                changes.entry(uri.clone()).or_default().push(TextEdit {
+                    range,
+                    new_text: new_fqn.clone(),
+                });
+            }
+        }
+        if changes.is_empty() {
+            return None;
+        }
+        Some(WorkspaceEdit {
+            changes: Some(changes),
+            document_changes: None,
+            change_annotations: None,
+        })
+    }
+
+    /// Compute the fully-qualified name a module takes when its file moves from
+    /// `old_path` to `new_path`.
+    ///
+    /// The work stays in the client's own path coordinates so it is immune to
+    /// the canonical-vs-client normalization gap on Windows (the same gap that
+    /// nulled every query before the URI-key fix): the project's source root is
+    /// recovered by trimming the module's path depth off `old_path`, never by
+    /// comparing against the canonical paths the workspace graph stores. The
+    /// depth is the number of dotted segments the module's name carries below
+    /// its project prefix (a file directly in `src/` has depth 1). `None` when
+    /// the move leaves the project's source tree — there is no name for it then.
+    fn renamed_module_fqn(
+        &self,
+        mid: ModuleId,
+        old_path: &Path,
+        new_path: &Path,
+    ) -> Option<String> {
+        let i = mid.0 as usize;
+        let project = self.module_project_names.get(i)?;
+        let fqn = self.module_fqns.get(i)?;
+        let tail = fqn
+            .strip_prefix(project.as_str())
+            .and_then(|t| t.strip_prefix('.'));
+        let depth = tail.map_or(1, |t| t.split('.').count());
+        let mut src_root = old_path;
+        for _ in 0..depth {
+            src_root = src_root.parent()?;
+        }
+        if !new_path.starts_with(src_root) {
+            return None;
+        }
+        Some(ridge_resolve::derive_module_fqn(
+            project, src_root, new_path,
+        ))
     }
 
     /// Go-to-definition for a record-field use under the cursor (`user.age` →

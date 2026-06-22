@@ -4524,3 +4524,200 @@ async fn test_type_hierarchy_prepare_none_off_class() {
         "a method name is not a type-hierarchy anchor, got {none:?}"
     );
 }
+
+// ── workspace/willRenameFiles ────────────────────────────────────────────────
+
+/// Open the two-file `rename_workspace` fixture — module `app.main` imports
+/// `app.math` — and return the live service once the workspace compile has
+/// installed an index. The service and socket must be kept alive by the caller.
+async fn rename_workspace_service() -> (LspService<RidgeLanguageServer>, ClientSocket) {
+    let (service, socket) = build_test_service();
+    {
+        let server = service.inner();
+        server
+            .initialize(make_init_params("rename_workspace"))
+            .await
+            .expect("initialize");
+
+        let root = fixtures_dir().join("rename_workspace");
+        for file in &["math.ridge", "main.ridge"] {
+            let path = root.join("app").join("src").join(file);
+            let uri = Url::from_file_path(&path).expect("file URI");
+            let text = std::fs::read_to_string(&path).expect("read fixture");
+            server
+                .did_open(DidOpenTextDocumentParams {
+                    text_document: TextDocumentItem {
+                        uri,
+                        language_id: "ridge".to_owned(),
+                        version: 1,
+                        text,
+                    },
+                })
+                .await;
+        }
+
+        let mut ready = false;
+        for _ in 0..120 {
+            tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;
+            if server.workspace_index().await.is_some() {
+                ready = true;
+                break;
+            }
+        }
+        assert!(ready, "the workspace compile must install an index");
+    }
+    (service, socket)
+}
+
+/// The `file://` URI the index actually holds for the module whose path ends
+/// with `suffix`. Querying against the index's own URI — rather than a freshly
+/// built path — keeps the rename requests in the same coordinate system the
+/// server keys modules by, regardless of Windows path canonicalization.
+async fn module_uri_ending(server: &RidgeLanguageServer, suffix: &str) -> Url {
+    let index = server.workspace_index().await.expect("index installed");
+    index
+        .uri_to_module
+        .keys()
+        .find(|u| u.path().ends_with(suffix))
+        .cloned()
+        .unwrap_or_else(|| {
+            let keys: Vec<_> = index.uri_to_module.keys().collect();
+            panic!("a module whose path ends with {suffix}; keys={keys:?}")
+        })
+}
+
+/// Replace the final path segment of `uri` with `new_rel` (which may itself
+/// contain `/` for a deeper destination), keeping the directory prefix.
+fn sibling_uri(uri: &Url, new_rel: &str) -> String {
+    let s = uri.to_string();
+    let cut = s.rfind('/').expect("a path separator in the URI");
+    format!("{}/{new_rel}", &s[..cut])
+}
+
+#[tokio::test]
+async fn test_will_rename_rewrites_dependent_import() {
+    let (service, _socket) = rename_workspace_service().await;
+    let server = service.inner();
+    let math = module_uri_ending(server, "math.ridge").await;
+
+    let edit = server
+        .will_rename_files(RenameFilesParams {
+            files: vec![FileRename {
+                old_uri: math.to_string(),
+                new_uri: sibling_uri(&math, "geometry.ridge"),
+            }],
+        })
+        .await
+        .expect("will_rename ok")
+        .expect("an edit when a dependent import exists");
+
+    let changes = edit.changes.expect("changes map");
+    assert_eq!(
+        changes.len(),
+        1,
+        "only the importer is edited, got {changes:?}"
+    );
+    let (uri, edits) = changes.iter().next().unwrap();
+    assert!(
+        uri.path().ends_with("main.ridge"),
+        "the importer main.ridge is edited, got {uri}"
+    );
+    assert_eq!(edits.len(), 1, "one import path rewritten, got {edits:?}");
+    // Only the dotted path changes; the `(add)` item list is preserved.
+    assert_eq!(edits[0].new_text, "app.geometry");
+    // The edit lands on `app.math`, the path right after `import ` on line 0.
+    assert_eq!(edits[0].range.start.line, 0);
+    assert_eq!(
+        edits[0].range.start.character, 7,
+        "edit should start at `app.math` (col 7), got {:?}",
+        edits[0].range
+    );
+}
+
+#[tokio::test]
+async fn test_will_rename_into_subdir_uses_new_path() {
+    let (service, _socket) = rename_workspace_service().await;
+    let server = service.inner();
+    let math = module_uri_ending(server, "math.ridge").await;
+
+    // Moving the module deeper changes its name to match the new path.
+    let edit = server
+        .will_rename_files(RenameFilesParams {
+            files: vec![FileRename {
+                old_uri: math.to_string(),
+                new_uri: sibling_uri(&math, "geo/shapes.ridge"),
+            }],
+        })
+        .await
+        .expect("will_rename ok")
+        .expect("edit");
+
+    let changes = edit.changes.expect("changes map");
+    let (_uri, edits) = changes.iter().next().unwrap();
+    assert_eq!(edits[0].new_text, "app.geo.shapes");
+}
+
+#[tokio::test]
+async fn test_will_rename_leaf_module_no_edit() {
+    let (service, _socket) = rename_workspace_service().await;
+    let server = service.inner();
+    let main = module_uri_ending(server, "main.ridge").await;
+
+    // Nothing imports `app.main`, so renaming it touches no other file.
+    let edit = server
+        .will_rename_files(RenameFilesParams {
+            files: vec![FileRename {
+                old_uri: main.to_string(),
+                new_uri: sibling_uri(&main, "entry.ridge"),
+            }],
+        })
+        .await
+        .expect("will_rename ok");
+    assert!(edit.is_none(), "no importer, so no edit, got {edit:?}");
+}
+
+#[tokio::test]
+async fn test_will_rename_unknown_file_no_edit() {
+    let (service, _socket) = rename_workspace_service().await;
+    let server = service.inner();
+    let math = module_uri_ending(server, "math.ridge").await;
+
+    // A path that is not a workspace module yields nothing.
+    let edit = server
+        .will_rename_files(RenameFilesParams {
+            files: vec![FileRename {
+                old_uri: sibling_uri(&math, "ghost.ridge"),
+                new_uri: sibling_uri(&math, "phantom.ridge"),
+            }],
+        })
+        .await
+        .expect("will_rename ok");
+    assert!(
+        edit.is_none(),
+        "an unknown file yields no edit, got {edit:?}"
+    );
+}
+
+#[tokio::test]
+async fn test_capability_advertises_will_rename_files() {
+    let (service, _socket) = build_test_service();
+    let server = service.inner();
+    let result = server
+        .initialize(make_init_params("ok_workspace"))
+        .await
+        .expect("initialize ok");
+
+    let file_ops = result
+        .capabilities
+        .workspace
+        .expect("workspace capabilities")
+        .file_operations
+        .expect("file-operation capabilities");
+    let will_rename = file_ops.will_rename.expect("willRename advertised");
+    assert_eq!(will_rename.filters.len(), 1);
+    assert_eq!(will_rename.filters[0].pattern.glob, "**/*.ridge");
+    assert_eq!(
+        will_rename.filters[0].pattern.matches,
+        Some(FileOperationPatternKind::File)
+    );
+}

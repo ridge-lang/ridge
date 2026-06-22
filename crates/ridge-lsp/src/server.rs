@@ -1021,6 +1021,24 @@ impl LanguageServer for RidgeLanguageServer {
         Ok(index.type_subtypes(data))
     }
 
+    /// `workspace/willRenameFiles` — when the user moves or renames `.ridge`
+    /// files, return the edits that keep every importing module pointing at the
+    /// moved module's new path. The client applies these atomically with the
+    /// rename, so imports never break on a move.
+    async fn will_rename_files(
+        &self,
+        params: RenameFilesParams,
+    ) -> LspResult<Option<WorkspaceEdit>> {
+        let index = {
+            let snap = self.state.lock().await;
+            snap.index.clone()
+        };
+        let Some(index) = index else {
+            return Ok(None);
+        };
+        Ok(index.rename_files_edit(&params.files))
+    }
+
     /// `workspace/symbol` — declarations across the workspace matching a query
     /// (`Ctrl-T`).
     async fn symbol(
@@ -1248,6 +1266,25 @@ fn server_capabilities() -> ServerCapabilities {
                 })),
             },
         )),
+        // File-operation support: react to `.ridge` file renames by fixing the
+        // imports that referenced the moved module. Only `willRename` is needed
+        // — it returns the edit the client applies together with the move.
+        workspace: Some(WorkspaceServerCapabilities {
+            workspace_folders: None,
+            file_operations: Some(WorkspaceFileOperationsServerCapabilities {
+                will_rename: Some(FileOperationRegistrationOptions {
+                    filters: vec![FileOperationFilter {
+                        scheme: Some("file".to_owned()),
+                        pattern: FileOperationPattern {
+                            glob: "**/*.ridge".to_owned(),
+                            matches: Some(FileOperationPatternKind::File),
+                            options: None,
+                        },
+                    }],
+                }),
+                ..WorkspaceFileOperationsServerCapabilities::default()
+            }),
+        }),
         // Diagnostics are pushed via `client.publish_diagnostics(...)` from
         // `trigger_compile`. The pull endpoint `textDocument/diagnostic`
         // (LSP 3.17) is intentionally not advertised because no `diagnostic()`

@@ -25,10 +25,10 @@ use ridge_resolve::{
 use ridge_typecheck::{render_type_with, TypeError, TypedWorkspace};
 use ridge_types::{CapabilitySet, TyConDecl, TyConKind, Type};
 use tower_lsp::lsp_types::{
-    CompletionItemKind, DocumentHighlight, DocumentHighlightKind, DocumentSymbol, InlayHint,
-    InlayHintKind, InlayHintLabel, Location, ParameterInformation, ParameterLabel, Position,
-    PrepareRenameResponse, Range, SemanticToken, SemanticTokenModifier, SemanticTokenType,
-    SemanticTokens, SignatureHelp, SignatureInformation, SymbolInformation,
+    CompletionItemKind, DocumentHighlight, DocumentHighlightKind, DocumentSymbol, FoldingRange,
+    FoldingRangeKind, InlayHint, InlayHintKind, InlayHintLabel, Location, ParameterInformation,
+    ParameterLabel, Position, PrepareRenameResponse, Range, SemanticToken, SemanticTokenModifier,
+    SemanticTokenType, SemanticTokens, SignatureHelp, SignatureInformation, SymbolInformation,
     SymbolKind as LspSymbolKind, TextEdit, Url, WorkspaceEdit,
 };
 
@@ -2066,6 +2066,84 @@ impl WorkspaceIndex {
         Some(out)
     }
 
+    /// Foldable regions for one document (`textDocument/foldingRange`).
+    ///
+    /// Two kinds of fold are produced from the retained AST: a run of one or more
+    /// consecutive `import` declarations collapses as a single `Imports` fold, and
+    /// every other top-level declaration (const, type, fn, actor, class, instance)
+    /// that spans more than one line collapses as a `Region` fold. Single-line
+    /// declarations yield nothing — there is nothing to hide. Finer-grained folds
+    /// (nested blocks, match arms) are intentionally left for a later cut.
+    #[must_use]
+    pub fn folding_ranges_at(&self, uri: &Url) -> Option<Vec<FoldingRange>> {
+        let mid = self.module_id_for(uri)?;
+        let ast = self.modules.get(mid.0 as usize)?.ast.as_ref()?;
+
+        let mut out: Vec<FoldingRange> = Vec::new();
+        let items = &ast.items;
+        let mut i = 0;
+        while i < items.len() {
+            if matches!(items[i], ridge_ast::Item::Import(_)) {
+                // Fold a maximal run of consecutive imports as one block.
+                let start = item_span(&items[i]).start;
+                let mut end = item_span(&items[i]).end;
+                while i < items.len() && matches!(items[i], ridge_ast::Item::Import(_)) {
+                    end = item_span(&items[i]).end;
+                    i += 1;
+                }
+                if let Some(fold) =
+                    self.folding_range_for(mid, Span::new(start, end), &FoldingRangeKind::Imports)
+                {
+                    out.push(fold);
+                }
+            } else {
+                if let Some(fold) =
+                    self.folding_range_for(mid, item_span(&items[i]), &FoldingRangeKind::Region)
+                {
+                    out.push(fold);
+                }
+                i += 1;
+            }
+        }
+        Some(out)
+    }
+
+    /// A line-level [`FoldingRange`] for `span`, or `None` when it does not cross
+    /// a line boundary (nothing to fold).
+    ///
+    /// The parser ends a declaration span at the start of the following token, so
+    /// the raw span trails into the blank lines (and the next item's first line)
+    /// after the declaration. Trailing whitespace is trimmed off the span first,
+    /// so the fold ends on the declaration's own last line of content.
+    fn folding_range_for(
+        &self,
+        mid: ModuleId,
+        span: Span,
+        kind: &FoldingRangeKind,
+    ) -> Option<FoldingRange> {
+        let text: &str = self.module_text.get(mid.0 as usize).map_or("", |t| &**t);
+        let bytes = text.as_bytes();
+        let mut end = (span.end as usize).min(bytes.len());
+        while end > span.start as usize && bytes[end - 1].is_ascii_whitespace() {
+            end -= 1;
+        }
+        // `end` is now a UTF-8 boundary: it sits just past a non-whitespace byte,
+        // and Ridge's whitespace is ASCII, so trimming never splits a code point.
+        #[allow(clippy::cast_possible_truncation)]
+        let range = self.range_in(mid, Span::new(span.start, end as u32))?;
+        if range.end.line <= range.start.line {
+            return None;
+        }
+        Some(FoldingRange {
+            start_line: range.start.line,
+            start_character: None,
+            end_line: range.end.line,
+            end_character: None,
+            kind: Some(kind.clone()),
+            collapsed_text: None,
+        })
+    }
+
     /// Build one [`DocumentSymbol`] for a top-level entry, attaching members.
     fn document_symbol_for(
         &self,
@@ -3299,6 +3377,19 @@ fn workspace_symbol_of(binding: Option<&Binding>) -> Option<(ModuleId, ridge_res
 /// owns a symbol's definition site.
 const fn span_encloses(outer: Span, inner: Span) -> bool {
     outer.start <= inner.start && inner.end <= outer.end
+}
+
+/// The source span of a top-level item, covering its whole declaration.
+const fn item_span(item: &ridge_ast::Item) -> Span {
+    match item {
+        ridge_ast::Item::Import(d) => d.span,
+        ridge_ast::Item::Const(d) => d.span,
+        ridge_ast::Item::Type(d) => d.span,
+        ridge_ast::Item::Fn(d) => d.span,
+        ridge_ast::Item::Actor(d) => d.span,
+        ridge_ast::Item::ClassDecl(d) => d.span,
+        ridge_ast::Item::InstanceDecl(d) => d.span,
+    }
 }
 
 /// Wrap a declaration head in a Ridge-highlighted markdown code fence.

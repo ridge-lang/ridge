@@ -11,7 +11,9 @@
 //!
 //! # Edge cases documented
 //!
-//! - Missing `ridge.toml` → `L801 LspWorkspaceMissing` workspace-level diagnostic.
+//! - No `[workspace]` manifest at or above the root → standalone mode: each open
+//!   `.ridge` file is type-checked on its own, so a loose file still gets full
+//!   single-file analysis (no cross-module imports across loose files).
 //! - Multi-root workspace → one-time `L802 LspMultiRootUnsupported` warning, single-root used.
 //! - File outside any workspace member → one-time `L803 LspFileOrphan` warning, skipped.
 //! - Driver internal error → `tracing::error!` + `L804 LspInternal` surfaced as LSP error.

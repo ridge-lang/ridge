@@ -36,7 +36,7 @@ The server advertises these capabilities in its `initialize` response:
 
 | Code | Name | Behaviour |
 |------|------|-----------|
-| `L801` | `LspWorkspaceMissing` | No `ridge.toml` found → workspace-level diagnostic, no further compilation |
+| — | Standalone mode | No `[workspace]` manifest at or above the root (or no root at all) → each open `.ridge` file is type-checked on its own, so a loose file still gets diagnostics, hover, and navigation |
 | `L802` | `LspMultiRootUnsupported` | Multi-root workspace → one-time warning; only the first root is used |
 | `L803` | `LspFileOrphan` | File outside any workspace member → one-time warn-once, skipped (reserved for 0.2.0) |
 | `L804` | `LspInternal` | Driver internal error → `tracing::error!`, single LSP error, server stays alive |

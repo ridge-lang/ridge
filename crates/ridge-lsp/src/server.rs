@@ -9,6 +9,9 @@
 //!
 //! 1. `initialize`: read `rootUri` / first `workspaceFolders` entry → set workspace root.
 //!    Extra workspace folders trigger one-time `L802 LspMultiRootUnsupported` warn.
+//!    When no `[workspace]` manifest is found at or above the root — or no root is
+//!    given — the server enters standalone mode and type-checks each open
+//!    `.ridge` file on its own, so a loose file still gets full analysis.
 //! 2. `textDocument/didChange`: debounce 250 ms, then recompile the edited modules
 //!    against their editor buffers via the retained incremental engine.
 //! 3. `textDocument/didSave`: reseed the engine from disk (no debounce).
@@ -45,7 +48,8 @@ use tower_lsp::lsp_types::*;
 use tower_lsp::{Client, LanguageServer};
 
 use ridge_driver::{
-    check_workspace_incremental, collect_diagnostics, CheckError, CheckOptions, IncrementalState,
+    check_standalone_incremental, check_workspace_incremental, collect_diagnostics, CheckError,
+    CheckOptions, IncrementalState,
 };
 use ridge_lexer::LineIndex;
 use ridge_manifest::find_workspace_root;
@@ -73,8 +77,11 @@ struct WorkspaceSnapshot {
     warned_orphan: HashSet<String>,
     /// True if we've already emitted the L802 multi-root warning.
     warned_multi_root: bool,
-    /// True if `workspace_root` was found to be missing `ridge.toml`.
-    missing_workspace: bool,
+    /// True when no `[workspace]` manifest was found at or above the root (or no
+    /// root was given at all). In this mode the server type-checks each open
+    /// `.ridge` file on its own, so a loose file still gets diagnostics, hover,
+    /// and navigation. Mutually exclusive with `workspace_root` being `Some`.
+    standalone: bool,
     /// The most recent completed analysis, if any. Replaced wholesale on each
     /// successful compile; reads clone the `Arc` and release the lock before
     /// querying. `None` until the first compile lands.
@@ -153,13 +160,17 @@ impl RidgeLanguageServer {
             }
         }
 
-        let workspace_root = {
+        let target = {
             let snap = self.state.lock().await;
-            if snap.missing_workspace {
-                return;
-            }
             match snap.workspace_root.clone() {
-                Some(root) => root,
+                Some(root) => CompileTarget::Workspace(root),
+                None if snap.standalone => {
+                    let files = standalone_files(&snap.open_docs);
+                    if files.is_empty() {
+                        return;
+                    }
+                    CompileTarget::Standalone(files)
+                }
                 None => return,
             }
         };
@@ -171,7 +182,7 @@ impl RidgeLanguageServer {
 
         let handle = tokio::spawn(async move {
             let result = tokio::task::spawn_blocking(move || {
-                compile_blocking(&engine, &gen_counter, &workspace_root, reseed, &edits)
+                compile_blocking(&engine, &gen_counter, &target, reseed, &edits)
             })
             .await;
 
@@ -283,6 +294,43 @@ struct CompileOutput {
     diagnostics_by_file: Vec<(Url, Vec<Diagnostic>)>,
 }
 
+/// What a compile analyses: a real on-disk workspace, or a set of standalone
+/// files that live outside any workspace manifest.
+enum CompileTarget {
+    /// The directory holding the root `ridge.toml` with a `[workspace]` table.
+    Workspace(PathBuf),
+    /// Open `.ridge` files analysed individually, each as its own project.
+    Standalone(Vec<PathBuf>),
+}
+
+impl CompileTarget {
+    /// A best-effort root path for error reporting when no engine is available.
+    fn root_hint(&self) -> PathBuf {
+        match self {
+            Self::Workspace(root) => root.clone(),
+            Self::Standalone(files) => files
+                .first()
+                .and_then(|f| f.parent())
+                .map_or_else(|| PathBuf::from("."), Path::to_owned),
+        }
+    }
+}
+
+/// The open `.ridge` documents, as a sorted, deduplicated list of file paths.
+///
+/// Sorted so the synthesised project/module ids stay stable across reseeds for
+/// the same file set; non-`file:` URIs and non-`.ridge` documents are dropped.
+fn standalone_files(open_docs: &HashMap<Url, String>) -> Vec<PathBuf> {
+    let mut files: Vec<PathBuf> = open_docs
+        .keys()
+        .filter_map(|uri| uri.to_file_path().ok())
+        .filter(|p| p.extension().is_some_and(|e| e == "ridge"))
+        .collect();
+    files.sort();
+    files.dedup();
+    files
+}
+
 /// Seed-or-reuse the engine, apply the buffer edits, and produce the index and
 /// diagnostics. Holds the engine mutex for the whole call, so concurrent
 /// compiles serialise on the shared engine; the generation is claimed inside
@@ -290,7 +338,7 @@ struct CompileOutput {
 fn compile_blocking(
     engine: &StdMutex<Option<IncrementalState>>,
     gen_counter: &AtomicU64,
-    workspace_root: &Path,
+    target: &CompileTarget,
     reseed: bool,
     edits: &[(Url, String)],
 ) -> Result<CompileOutput, CheckError> {
@@ -298,12 +346,18 @@ fn compile_blocking(
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
     if reseed || guard.is_none() {
-        let opts = CheckOptions::new(workspace_root.to_path_buf()).with_retain_indices(true);
-        *guard = Some(check_workspace_incremental(opts)?);
+        let seeded = match target {
+            CompileTarget::Workspace(root) => {
+                let opts = CheckOptions::new(root.clone()).with_retain_indices(true);
+                check_workspace_incremental(opts)?
+            }
+            CompileTarget::Standalone(files) => check_standalone_incremental(files),
+        };
+        *guard = Some(seeded);
     }
     let Some(state) = guard.as_mut() else {
         return Err(CheckError::NoWorkspaceRoot {
-            path: workspace_root.to_path_buf(),
+            path: target.root_hint(),
         });
     };
 
@@ -314,6 +368,9 @@ fn compile_blocking(
     }
 
     let generation = gen_counter.fetch_add(1, Ordering::SeqCst) + 1;
+    // Diagnostics' source ids resolve against the graph's own root — the
+    // workspace dir in workspace mode, or the synthetic root in standalone mode.
+    let workspace_root = state.resolved.graph.root.clone();
     let sources = state.source_cache();
     let structured = collect_diagnostics(
         &state.disc_resolve_errors,
@@ -339,7 +396,7 @@ fn compile_blocking(
         .collect();
     for diag in &structured {
         let source_key = diag.source_id.as_str();
-        let uri = source_id_to_uri(workspace_root, source_key);
+        let uri = source_id_to_uri(&workspace_root, source_key);
         let src_text = sources.text(source_key);
         let lsp_diag = to_lsp_diagnostic(diag, &uri, src_text);
         by_file.entry(uri).or_default().push(lsp_diag);
@@ -400,47 +457,33 @@ impl LanguageServer for RidgeLanguageServer {
             }
         }
 
-        if let Some(uri) = root_uri {
-            match uri.to_file_path() {
-                Ok(path) => {
-                    // Verify a ridge.toml exists at or above this path.
-                    let manifest_root = find_workspace_root(&path);
-                    let mut snap = self.state.lock().await;
-
-                    if manifest_root.is_none() {
-                        snap.missing_workspace = true;
-                        tracing::warn!(
-                            "L801 LspWorkspaceMissing: no ridge.toml found at or above {}",
-                            path.display()
-                        );
-                        // Publish a workspace-level diagnostic.
-                        let ws_uri = uri.clone();
-                        let diag = Diagnostic {
-                            range: Range::default(),
-                            severity: Some(DiagnosticSeverity::WARNING),
-                            code: Some(NumberOrString::String("L801".to_owned())),
-                            code_description: None,
-                            source: Some("ridge".to_owned()),
-                            message: format!(
-                                "L801 LspWorkspaceMissing: no ridge.toml found at or above {}",
-                                path.display()
-                            ),
-                            related_information: None,
-                            tags: None,
-                            data: None,
-                        };
-                        drop(snap);
-                        self.client
-                            .publish_diagnostics(ws_uri, vec![diag], None)
-                            .await;
-                    } else {
-                        snap.workspace_root = manifest_root;
-                    }
-                }
-                Err(()) => {
-                    tracing::warn!("initialize: rootUri is not a file URI; ignoring");
-                }
-            }
+        // Resolve the workspace root by walking up from the root path to the
+        // nearest `[workspace]` manifest. If none is found — or no usable root
+        // path was given at all — fall back to standalone mode, where each open
+        // `.ridge` file is type-checked on its own. That is strictly better than
+        // going dark, and it makes a loose file or a manifest-less folder usable.
+        let manifest_root = root_uri
+            .as_ref()
+            .and_then(|uri| uri.to_file_path().ok())
+            .and_then(|path| find_workspace_root(&path));
+        let standalone = manifest_root.is_none();
+        {
+            let mut snap = self.state.lock().await;
+            snap.workspace_root = manifest_root;
+            snap.standalone = standalone;
+        }
+        if standalone {
+            tracing::info!(
+                "no [workspace] manifest found at or above the root; entering standalone mode"
+            );
+            self.client
+                .log_message(
+                    MessageType::INFO,
+                    "ridge-lsp: no workspace manifest found; analyzing open files individually \
+                     (standalone mode). Add a ridge.toml with a [workspace] table for \
+                     cross-module analysis.",
+                )
+                .await;
         }
 
         Ok(InitializeResult {
@@ -522,12 +565,18 @@ impl LanguageServer for RidgeLanguageServer {
 
     async fn did_close(&self, params: DidCloseTextDocumentParams) {
         let uri = params.text_document.uri;
-        {
+        let standalone = {
             let mut snap = self.state.lock().await;
             snap.open_docs.remove(&uri);
-        }
+            snap.workspace_root.is_none() && snap.standalone
+        };
         // Clear diagnostics for the closed file.
         self.client.publish_diagnostics(uri, vec![], None).await;
+        // In standalone mode the closed file was a synthetic project member, so
+        // rebuild the graph from the remaining open files to drop it.
+        if standalone {
+            self.trigger_compile().await;
+        }
     }
 
     async fn hover(&self, params: HoverParams) -> LspResult<Option<Hover>> {

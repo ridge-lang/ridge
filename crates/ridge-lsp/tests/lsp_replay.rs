@@ -3783,3 +3783,124 @@ async fn test_field_rename_and_highlight_cross_module() {
         "the declaration write only, same file"
     );
 }
+
+// ── Standalone-file mode (L34) ────────────────────────────────────────────────
+
+/// Initialize the server, open a single `.ridge` file that has no workspace
+/// manifest, and return it once a compile has produced an index.
+///
+/// `with_root` selects which broken case is exercised: `true` passes a `rootUri`
+/// for a folder that holds no `[workspace]` manifest, `false` passes no root at
+/// all (a truly loose file). Both must fall back to standalone analysis.
+async fn standalone_fixture(
+    src: &'static str,
+    with_root: bool,
+) -> (
+    tower_lsp::LspService<RidgeLanguageServer>,
+    tower_lsp::ClientSocket,
+    Url,
+) {
+    let dir = tempfile::TempDir::new().expect("temp dir");
+    let root = dir.path().to_path_buf();
+    let file = root.join("scratch.ridge");
+    std::fs::write(&file, src).expect("write standalone file");
+
+    let (service, socket) = build_test_service();
+    let mut file_uri = Url::from_file_path(&file).expect("file URI");
+    {
+        let server = service.inner();
+        let root_uri = with_root.then(|| Url::from_file_path(&root).expect("root URI"));
+        server
+            .initialize(InitializeParams {
+                root_uri,
+                workspace_folders: None,
+                capabilities: ClientCapabilities::default(),
+                ..InitializeParams::default()
+            })
+            .await
+            .expect("initialize");
+        server
+            .did_open(DidOpenTextDocumentParams {
+                text_document: TextDocumentItem {
+                    uri: file_uri.clone(),
+                    language_id: "ridge".to_owned(),
+                    version: 1,
+                    text: src.to_owned(),
+                },
+            })
+            .await;
+        let mut index = None;
+        for _ in 0..120 {
+            tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;
+            if let Some(idx) = server.workspace_index().await {
+                index = Some(idx);
+                break;
+            }
+        }
+        let index = index.expect("an index must be installed in standalone mode");
+        // Use the URI the index actually holds (same scheme diagnostics use).
+        file_uri = index
+            .uri_to_module
+            .keys()
+            .next()
+            .expect("the standalone file is indexed as one module")
+            .clone();
+    }
+    std::mem::forget(dir);
+    (service, socket, file_uri)
+}
+
+#[tokio::test]
+async fn test_standalone_file_without_root_uri_is_analysed() {
+    // A loose file opened with no folder (rootUri = null) still type-checks and
+    // serves hover, rather than going dark for want of a workspace manifest. Same
+    // source as the workspace hover test, so the only variable is standalone mode.
+    let src = "---\nGreets a person by name.\n---\npub fn greet (name: Text) -> Text = name\npub fn run -> Text = greet \"x\"\n";
+    let (service, _socket, uri) = standalone_fixture(src, false).await;
+    let server = service.inner();
+
+    // Hover the `greet` use on line 4 — the enriched signature + doc proves the
+    // full pipeline ran on a file with no project on disk.
+    let line4 = "pub fn run -> Text = greet \"x\"";
+    let col = u32::try_from(line4.find("greet").expect("greet use") + 1).expect("u32");
+    let md = hover_markdown(
+        server
+            .hover(hover_at(&uri, 4, col))
+            .await
+            .expect("hover ok"),
+    )
+    .expect("hover returns markdown in standalone mode");
+    assert!(
+        md.contains("pub fn greet (name: Text) -> Text"),
+        "enriched signature, got: {md}"
+    );
+    assert!(
+        md.contains("Greets a person by name."),
+        "doc shown, got: {md}"
+    );
+}
+
+#[tokio::test]
+async fn test_standalone_folder_without_workspace_manifest_is_analysed() {
+    // A folder opened as the root but holding no `[workspace]` manifest also
+    // falls back to standalone mode — previously this published L801 and indexed
+    // nothing.
+    let src = "pub fn double (n: Int) -> Int = n\npub fn run -> Int = double 21\n";
+    let (service, _socket, uri) = standalone_fixture(src, true).await;
+    let server = service.inner();
+
+    // Hover the `double` use on line 1.
+    let line1 = "pub fn run -> Int = double 21";
+    let col = u32::try_from(line1.find("double").expect("double use") + 1).expect("u32");
+    let md = hover_markdown(
+        server
+            .hover(hover_at(&uri, 1, col))
+            .await
+            .expect("hover ok"),
+    )
+    .expect("hover works under a manifest-less folder");
+    assert!(
+        md.contains("pub fn double (n: Int) -> Int"),
+        "enriched signature, got: {md}"
+    );
+}

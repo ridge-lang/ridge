@@ -8,7 +8,8 @@ use std::sync::Arc;
 use ridge_diagnostics::Diagnostic;
 use ridge_manifest::find_workspace_root;
 use ridge_resolve::{
-    discover_workspace, resolve_workspace_with, ModuleId, ResolveError, ResolvedWorkspace,
+    discover_standalone, discover_workspace, resolve_workspace_with, ModuleId, ResolveError,
+    ResolvedWorkspace,
 };
 use ridge_typecheck::{typecheck_workspace, TypeError, TypedWorkspace};
 
@@ -256,4 +257,44 @@ pub fn check_workspace_incremental(options: CheckOptions) -> Result<IncrementalS
         IncrementalState::new(resolved, typecheck_result, disc_resolve_errors)
             .with_module_sources(module_sources),
     )
+}
+
+// ── check_standalone_incremental ──────────────────────────────────────────────
+
+/// Seed an [`IncrementalState`] from a set of standalone `.ridge` files that
+/// live outside any workspace manifest.
+///
+/// The twin of [`check_workspace_incremental`] for the language server's
+/// standalone mode: instead of discovering a workspace on disk, it synthesises a
+/// graph where each file is its own isolated single-module project (see
+/// [`discover_standalone`]), then runs the same `resolve → typecheck` pipeline.
+/// Each file type-checks against the built-in prelude, so a loose buffer with no
+/// project still gets diagnostics, hover, and navigation.
+///
+/// There is no workspace root to verify, so this is infallible; an empty `files`
+/// slice yields an empty but valid state.
+#[must_use]
+pub fn check_standalone_incremental(files: &[std::path::PathBuf]) -> IncrementalState {
+    let ws_graph = discover_standalone(files);
+
+    let resolved = resolve_workspace_with(ws_graph, true);
+    let typecheck_result = typecheck_workspace(&resolved);
+
+    let sources = WorkspaceSourceCache::from_workspace(&resolved.graph);
+    let mut module_sources: Vec<Arc<String>> = (0..resolved.modules.len())
+        .map(|_| Arc::new(String::new()))
+        .collect();
+    for module in &resolved.graph.modules {
+        let i = module.id.0 as usize;
+        if let (Some(slot), Some(text)) = (
+            module_sources.get_mut(i),
+            sources.text(sources.id_for_module(module.id).as_str()),
+        ) {
+            *slot = Arc::new(text.to_owned());
+        }
+    }
+
+    // Synthetic discovery produces no discovery-phase resolve errors.
+    IncrementalState::new(resolved, typecheck_result, Vec::new())
+        .with_module_sources(module_sources)
 }

@@ -195,6 +195,96 @@ pub fn discover_workspace(root: &Path) -> DiscoveryResult {
     }
 }
 
+/// Build a synthetic [`WorkspaceGraph`] for a set of standalone `.ridge` files
+/// that live outside any `[workspace]` manifest.
+///
+/// Each file becomes its own single-module project so the files stay isolated:
+/// a top-level name in one loose file is never visible from another (there are
+/// no import edges between them, and each project carries a distinct namespace).
+/// Every file still resolves against the built-in prelude, so a loose buffer
+/// type-checks as Ridge and powers hover, navigation, and diagnostics even with
+/// no project on disk.
+///
+/// Unlike [`discover_workspace`], this reads no manifest and walks no filesystem
+/// tree — the caller (the language server) supplies the exact file set, which is
+/// the set of open `.ridge` documents. The synthetic root is the first file's
+/// parent directory; it only anchors source-id resolution, and files elsewhere
+/// fall back to their absolute path, which round-trips just the same.
+///
+/// The graph is built in memory and never fails, so this returns the
+/// [`WorkspaceGraph`] directly rather than a [`DiscoveryResult`].
+#[must_use]
+pub fn discover_standalone(files: &[PathBuf]) -> WorkspaceGraph {
+    let root = files
+        .first()
+        .and_then(|f| f.parent())
+        .map_or_else(|| PathBuf::from("."), Path::to_owned);
+
+    let manifest = crate::manifest::WorkspaceManifest {
+        name: "standalone".to_owned(),
+        version: "0.0.0".to_owned(),
+        members_globs: Vec::new(),
+        dependencies: Vec::new(),
+        forbid_rules: Vec::new(),
+        capabilities_deny: Vec::new(),
+        source_path: root.join("ridge.toml"),
+    };
+
+    let mut projects = Vec::with_capacity(files.len());
+    let mut modules = Vec::with_capacity(files.len());
+
+    for (i, file) in files.iter().enumerate() {
+        // Project and module ids equal their Vec index, as elsewhere.
+        #[allow(clippy::cast_possible_truncation)]
+        let idx = i as u32;
+        let project_id = ProjectId(idx);
+
+        let stem = file
+            .file_stem()
+            .map_or_else(|| "main".to_owned(), |s| s.to_string_lossy().into_owned());
+        // A per-file project name keeps namespaces — and therefore the derived
+        // FQNs — unique even when two loose files share a stem.
+        let project_name = format!("standalone{i}");
+        let src_root = file.parent().map_or_else(|| root.clone(), Path::to_owned);
+
+        projects.push(crate::manifest::Project {
+            id: project_id,
+            name: project_name.clone(),
+            version: "0.0.0".to_owned(),
+            // Library imposes no entry-point requirement, the right default for
+            // a scratch file.
+            kind: crate::manifest::ProjectKind::Library,
+            manifest_path: src_root.join("ridge.toml"),
+            src_root,
+            exports_public: Vec::new(),
+            exports_internal: Vec::new(),
+            dependencies: Vec::new(),
+            // None = inherit (no project whitelist), so R016 never fires on a
+            // loose file — it may use any capability, like a minimal project.
+            capabilities_allow: None,
+            capabilities_deny: Vec::new(),
+        });
+
+        modules.push(ModuleMetadata {
+            id: ModuleId(idx),
+            project: project_id,
+            fully_qualified_name: format!("{project_name}.{stem}"),
+            file_path: file.clone(),
+            // Placeholder span; the module-graph pass sets 0..eof after reading.
+            span_within_file: Span::point(0),
+        });
+    }
+
+    WorkspaceGraph {
+        root,
+        manifest,
+        projects,
+        modules,
+        deps: vec![Vec::new(); files.len()],
+        is_stdlib: false,
+    }
+}
+
 // ── Step 1 helpers ────────────────────────────────────────────────────────────
 
 /// Walk upward from `start`, returning the first directory that contains a
@@ -611,6 +701,60 @@ kind = "library"
 root = "{src_root}"
 "#
         )
+    }
+
+    // ── discover_standalone synthesises isolated single-file projects ─────────
+
+    #[test]
+    fn discover_standalone_builds_isolated_single_file_projects() {
+        // Two loose files sharing the same stem in different directories. No disk
+        // access happens — discover_standalone only builds metadata.
+        let files = vec![
+            PathBuf::from("/scratch/a").join("foo.ridge"),
+            PathBuf::from("/scratch/b").join("foo.ridge"),
+        ];
+        let graph = discover_standalone(&files);
+
+        // One project and one module per file, each its own namespace.
+        assert_eq!(graph.projects.len(), 2);
+        assert_eq!(graph.modules.len(), 2);
+        assert_eq!(graph.deps, vec![vec![], vec![]], "no edges between files");
+        assert!(!graph.is_stdlib);
+
+        // The root anchors to the first file's parent directory.
+        assert_eq!(graph.root, PathBuf::from("/scratch/a"));
+
+        // File paths round-trip unchanged, and ids equal their index.
+        assert_eq!(graph.modules[0].file_path, files[0]);
+        assert_eq!(graph.modules[1].file_path, files[1]);
+        assert_eq!(graph.modules[0].id, ModuleId(0));
+        assert_eq!(graph.modules[1].id, ModuleId(1));
+
+        // FQNs stay distinct even though both stems are `foo`, so duplicate-FQN
+        // detection never fires across unrelated scratch files.
+        assert_ne!(
+            graph.modules[0].fully_qualified_name,
+            graph.modules[1].fully_qualified_name
+        );
+        // The file stem is preserved as the final dotted segment of the FQN.
+        assert_eq!(
+            graph.modules[0].fully_qualified_name.rsplit('.').next(),
+            Some("foo")
+        );
+
+        // No project declares a capability whitelist, so R016 never fires.
+        assert!(graph
+            .projects
+            .iter()
+            .all(|p| p.capabilities_allow.is_none()));
+    }
+
+    #[test]
+    fn discover_standalone_empty_yields_empty_graph() {
+        let graph = discover_standalone(&[]);
+        assert!(graph.modules.is_empty());
+        assert!(graph.projects.is_empty());
+        assert!(graph.deps.is_empty());
     }
 
     // ── find_workspace_root finds manifest in current dir ────────────────────

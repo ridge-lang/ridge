@@ -4156,3 +4156,103 @@ async fn test_selection_range_outside_nodes_yields_file() {
         "expand-selection always reaches the whole document"
     );
 }
+
+// ── call hierarchy: prepare / incoming / outgoing ─────────────────────────────
+
+/// Three functions where `helper` is called by both `caller_a` and `caller_b`,
+/// and `caller_b` calls both `helper` and `caller_a`.
+const CALL_GRAPH_SRC: &str = "pub fn helper (n: Int) -> Int = n\npub fn caller_a (x: Int) -> Int = helper x\npub fn caller_b (y: Int) -> Int = helper (caller_a y)\n";
+
+fn prepare_call_at(uri: &Url, line: u32, character: u32) -> CallHierarchyPrepareParams {
+    CallHierarchyPrepareParams {
+        text_document_position_params: TextDocumentPositionParams {
+            text_document: TextDocumentIdentifier { uri: uri.clone() },
+            position: Position { line, character },
+        },
+        work_done_progress_params: WorkDoneProgressParams::default(),
+    }
+}
+
+#[tokio::test]
+async fn test_call_hierarchy_incoming_calls() {
+    let (service, _socket, uri) = hover_fixture(CALL_GRAPH_SRC).await;
+    let server = service.inner();
+
+    // Prepare on the `helper` declaration name (line 0, inside `helper`).
+    let items = server
+        .prepare_call_hierarchy(prepare_call_at(&uri, 0, 9))
+        .await
+        .expect("prepare ok")
+        .expect("an item under the cursor");
+    assert_eq!(items.len(), 1, "one item, got {items:?}");
+    assert_eq!(items[0].name, "helper");
+    assert_eq!(items[0].kind, SymbolKind::FUNCTION);
+
+    let incoming = server
+        .incoming_calls(CallHierarchyIncomingCallsParams {
+            item: items[0].clone(),
+            work_done_progress_params: WorkDoneProgressParams::default(),
+            partial_result_params: PartialResultParams::default(),
+        })
+        .await
+        .expect("incoming ok")
+        .expect("calls present");
+
+    let callers: Vec<&str> = incoming.iter().map(|c| c.from.name.as_str()).collect();
+    assert_eq!(incoming.len(), 2, "exactly two callers, got {callers:?}");
+    assert!(callers.contains(&"caller_a"), "got {callers:?}");
+    assert!(callers.contains(&"caller_b"), "got {callers:?}");
+    for c in &incoming {
+        assert_eq!(
+            c.from_ranges.len(),
+            1,
+            "each caller calls helper once, {:?}",
+            c.from.name
+        );
+    }
+}
+
+#[tokio::test]
+async fn test_call_hierarchy_outgoing_calls() {
+    let (service, _socket, uri) = hover_fixture(CALL_GRAPH_SRC).await;
+    let server = service.inner();
+
+    // Prepare on the `caller_b` declaration name (line 2, inside `caller_b`).
+    let items = server
+        .prepare_call_hierarchy(prepare_call_at(&uri, 2, 9))
+        .await
+        .expect("prepare ok")
+        .expect("an item under the cursor");
+    assert_eq!(items[0].name, "caller_b");
+
+    let outgoing = server
+        .outgoing_calls(CallHierarchyOutgoingCallsParams {
+            item: items[0].clone(),
+            work_done_progress_params: WorkDoneProgressParams::default(),
+            partial_result_params: PartialResultParams::default(),
+        })
+        .await
+        .expect("outgoing ok")
+        .expect("calls present");
+
+    let callees: Vec<&str> = outgoing.iter().map(|c| c.to.name.as_str()).collect();
+    assert_eq!(outgoing.len(), 2, "exactly two callees, got {callees:?}");
+    assert!(callees.contains(&"helper"), "got {callees:?}");
+    assert!(callees.contains(&"caller_a"), "got {callees:?}");
+}
+
+#[tokio::test]
+async fn test_call_hierarchy_prepare_none_off_function() {
+    let (service, _socket, uri) = hover_fixture(CALL_GRAPH_SRC).await;
+    let server = service.inner();
+
+    // The parameter `n` (line 0, col 15) is a local, not a workspace function.
+    let none = server
+        .prepare_call_hierarchy(prepare_call_at(&uri, 0, 15))
+        .await
+        .expect("prepare ok");
+    assert!(
+        none.is_none(),
+        "a local parameter is not a call-hierarchy anchor, got {none:?}"
+    );
+}

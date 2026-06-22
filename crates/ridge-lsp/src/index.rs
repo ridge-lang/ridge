@@ -348,9 +348,9 @@ impl WorkspaceIndex {
         }
         let type_str = render_type_with(ty, &self.tycons);
 
-        // If an identifier covers the same offset, prefix with its role + name
-        // and underline the identifier; otherwise this is a literal/expression
-        // and we show the bare type over the expression span.
+        // If an identifier covers the same offset, build an enriched card over
+        // the identifier; otherwise this is a literal/expression and we show the
+        // bare type, fenced, over the expression span.
         if let Some((_, id_node, _, id_span)) =
             self.node_at(uri, offset, &[NodeKind::Ident, NodeKind::QualifiedName])
         {
@@ -360,11 +360,104 @@ impl WorkspaceIndex {
                 .get(mi)
                 .and_then(|m| m.bindings.get(id_node.0 as usize))
                 .and_then(Option::as_ref);
-            let label = binding_label(binding);
-            Some((format!("{label}{name} : {type_str}"), id_span))
+            Some((
+                self.hover_markdown(mi, offset, name, binding, &type_str),
+                id_span,
+            ))
         } else {
-            Some((type_str, expr_span))
+            Some((fenced_ridge(&type_str), expr_span))
         }
+    }
+
+    /// Assemble the markdown shown when hovering an identifier.
+    ///
+    /// Three tiers, most specific first:
+    /// 1. a record-field use renders `field : T` and names the record it
+    ///    belongs to;
+    /// 2. a name that resolves to a workspace declaration renders that
+    ///    declaration's written header — visibility, capabilities, named
+    ///    parameters, return type — followed by its doc comment, if any;
+    /// 3. anything else falls back to the role-labelled inferred type.
+    ///
+    /// Every tier wraps the signature in a `ridge` code fence so the editor
+    /// syntax-highlights it.
+    fn hover_markdown(
+        &self,
+        mi: usize,
+        offset: u32,
+        name: &str,
+        binding: Option<&Binding>,
+        inferred: &str,
+    ) -> String {
+        // Tier 1 — a record field's name node carries no binding; resolve it
+        // through the base expression's type to the owning record.
+        if binding.is_none() {
+            if let Some((tycon, field, _)) = self.field_access_at(mi, offset) {
+                let mut md = fenced_ridge(&format!("{field} : {inferred}"));
+                if let Some(owner) = self.tycon_display_name(tycon) {
+                    use std::fmt::Write as _;
+                    let _ = write!(md, "\n\nfield of `{owner}`");
+                }
+                return md;
+            }
+        }
+
+        // Tier 2 — a top-level fn/const/type/actor name: show its written header
+        // and doc comment, sourced from the declaring module's AST.
+        if let Some((module, symbol)) = workspace_symbol_of(binding) {
+            if let Some((header, doc)) = self.decl_header_and_doc(module, symbol) {
+                let mut md = fenced_ridge(&header);
+                if let Some(doc) = doc {
+                    md.push_str("\n\n");
+                    md.push_str(&doc);
+                }
+                return md;
+            }
+        }
+
+        // Tier 3 — role-labelled inferred type (locals, params, constructors,
+        // stdlib symbols, class methods, or any name without a reachable decl).
+        let label = binding_label(binding);
+        fenced_ridge(&format!("{label}{name} : {inferred}"))
+    }
+
+    /// The display name of the named type constructor `raw`, or `None` for an
+    /// anonymous inline-record tycon (which has no user-visible name).
+    fn tycon_display_name(&self, raw: u32) -> Option<String> {
+        self.tycons
+            .iter()
+            .find(|d| d.id.0 == raw && !d.is_anon)
+            .map(|d| d.name.clone())
+    }
+
+    /// The written header and doc comment of the workspace declaration named by
+    /// `symbol` in `module`. Picks the top-level item whose span encloses the
+    /// symbol's definition site. `None` when the module was not type-checked or
+    /// the symbol is not a `fn`/`const`/`type`/`actor` declaration.
+    fn decl_header_and_doc(
+        &self,
+        module: ModuleId,
+        symbol: ridge_resolve::SymbolId,
+    ) -> Option<(String, Option<String>)> {
+        let def_span = self.symbol_def_span(module, symbol)?;
+        let mi = module.0 as usize;
+        let ast = self.modules.get(mi)?.ast.as_ref()?;
+        let text: &str = self.module_text.get(mi).map_or("", |t| &**t);
+        ast.items.iter().find_map(|item| match item {
+            ridge_ast::Item::Fn(d) if span_encloses(d.span, def_span) => {
+                Some((fn_header(text, d), doc_text(d.doc.as_ref())))
+            }
+            ridge_ast::Item::Const(d) if span_encloses(d.span, def_span) => {
+                Some((const_header(text, d), doc_text(d.doc.as_ref())))
+            }
+            ridge_ast::Item::Type(d) if span_encloses(d.span, def_span) => {
+                Some((type_header(text, d), doc_text(d.doc.as_ref())))
+            }
+            ridge_ast::Item::Actor(d) if span_encloses(d.span, def_span) => {
+                Some((format!("actor {}", d.name.text), doc_text(d.doc.as_ref())))
+            }
+            _ => None,
+        })
     }
 
     /// Slice the source text of module `mi` over `span` (empty on out-of-range).
@@ -3187,6 +3280,111 @@ fn item(label: String, kind: CompletionItemKind, group: char) -> CompletionItemD
         kind,
         detail: None,
     }
+}
+
+/// Resolve a binding to the `(module, symbol)` of a top-level workspace
+/// declaration whose written header can be rendered. `None` for locals, fields,
+/// constructors, stdlib symbols, and class methods (which have no workspace
+/// `fn`/`const`/`type`/`actor` declaration to read).
+fn workspace_symbol_of(binding: Option<&Binding>) -> Option<(ModuleId, ridge_resolve::SymbolId)> {
+    match binding? {
+        Binding::ModuleSymbol { module, symbol }
+        | Binding::ImportedSymbol { module, symbol, .. } => Some((*module, *symbol)),
+        Binding::ActorName { module, actor } => Some((*module, *actor)),
+        _ => None,
+    }
+}
+
+/// Whether `outer` fully encloses `inner` — used to pick the top-level item that
+/// owns a symbol's definition site.
+const fn span_encloses(outer: Span, inner: Span) -> bool {
+    outer.start <= inner.start && inner.end <= outer.end
+}
+
+/// Wrap a declaration head in a Ridge-highlighted markdown code fence.
+fn fenced_ridge(sig: &str) -> String {
+    format!("```ridge\n{sig}\n```")
+}
+
+/// The visibility prefix (with a trailing space) for a declaration head.
+const fn vis_prefix(vis: ridge_ast::Visibility) -> &'static str {
+    match vis {
+        ridge_ast::Visibility::Pub => "pub ",
+        ridge_ast::Visibility::PubInternal => "pub(internal) ",
+        ridge_ast::Visibility::Private => "",
+    }
+}
+
+/// Capability keywords for a function head, space-separated in canonical order.
+fn render_caps_slice(caps: &[ridge_ast::Capability]) -> String {
+    use ridge_ast::Capability::{Db, Env, Ffi, Fs, Io, Net, Proc, Random, Spawn, Time};
+    [
+        (Io, "io"),
+        (Fs, "fs"),
+        (Net, "net"),
+        (Time, "time"),
+        (Random, "random"),
+        (Env, "env"),
+        (Proc, "proc"),
+        (Spawn, "spawn"),
+        (Ffi, "ffi"),
+        (Db, "db"),
+    ]
+    .into_iter()
+    .filter(|(cap, _)| caps.contains(cap))
+    .map(|(_, kw)| kw)
+    .collect::<Vec<_>>()
+    .join(" ")
+}
+
+/// The written header of a function: `pub fn io name (a: T) (b: U) -> R`.
+///
+/// Capabilities and visibility are reconstructed; parameter and return-type
+/// text is sliced from source so it reads exactly as written.
+fn fn_header(text: &str, d: &ridge_ast::decl::FnDecl) -> String {
+    let mut s = String::new();
+    s.push_str(vis_prefix(d.vis));
+    s.push_str("fn ");
+    let caps = render_caps_slice(&d.caps);
+    if !caps.is_empty() {
+        s.push_str(&caps);
+        s.push(' ');
+    }
+    s.push_str(&d.name.text);
+    for p in &d.params {
+        s.push(' ');
+        s.push_str(slice_span(text, p.span()).trim());
+    }
+    if let Some(ret) = &d.ret {
+        s.push_str(" -> ");
+        s.push_str(slice_span(text, ret.span()).trim());
+    }
+    s
+}
+
+/// The written header of a const: `pub const NAME: T`.
+fn const_header(text: &str, d: &ridge_ast::decl::ConstDecl) -> String {
+    format!(
+        "{}const {}: {}",
+        vis_prefix(d.vis),
+        d.name.text,
+        slice_span(text, d.ty.span()).trim()
+    )
+}
+
+/// The written head of a type declaration: `pub type Name a = body`, sliced from
+/// the name through the end of the declaration so params, body, and any
+/// `deriving` clause read exactly as written.
+fn type_header(text: &str, d: &ridge_ast::decl::TypeDecl) -> String {
+    let opaque = if d.opaque { "opaque " } else { "" };
+    let tail = slice_span(text, Span::new(d.name.span.start, d.span.end));
+    format!("{}{}type {}", vis_prefix(d.vis), opaque, tail.trim())
+}
+
+/// The doc-comment body, trimmed, or `None` when absent or empty.
+fn doc_text(doc: Option<&ridge_ast::DocComment>) -> Option<String> {
+    doc.map(|d| d.text.trim().to_owned())
+        .filter(|s| !s.is_empty())
 }
 
 /// Human-readable role prefix for a hovered binding (trailing space included).

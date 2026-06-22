@@ -4256,3 +4256,120 @@ async fn test_call_hierarchy_prepare_none_off_function() {
         "a local parameter is not a call-hierarchy anchor, got {none:?}"
     );
 }
+
+// ── textDocument/implementation ───────────────────────────────────────────────
+
+/// A class `Greeter` with one method, implemented by two instances, plus a call
+/// site of the method. Lines (0-indexed):
+///   0  pub class Greeter a =
+///   1    greetWith (greeting: Text) (subject: a) -> Text
+///   2  instance Greeter Int =
+///   3    greetWith (greeting: Text) (subject: Int) -> Text = greeting
+///   4  instance Greeter Text =
+///   5    greetWith (greeting: Text) (subject: Text) -> Text = greeting
+///   6  pub fn run = greetWith "hi" 3
+const IMPL_SRC: &str = concat!(
+    "pub class Greeter a =\n",
+    "  greetWith (greeting: Text) (subject: a) -> Text\n",
+    "instance Greeter Int =\n",
+    "  greetWith (greeting: Text) (subject: Int) -> Text = greeting\n",
+    "instance Greeter Text =\n",
+    "  greetWith (greeting: Text) (subject: Text) -> Text = greeting\n",
+    "pub fn run = greetWith \"hi\" 3\n",
+);
+
+/// The locations of a `goto_implementation` response, ignoring response shape.
+fn impl_locations(resp: Option<GotoDefinitionResponse>) -> Vec<Location> {
+    match resp {
+        Some(GotoDefinitionResponse::Array(locs)) => locs,
+        Some(GotoDefinitionResponse::Scalar(loc)) => vec![loc],
+        _ => Vec::new(),
+    }
+}
+
+/// The `(line, character)` start of each location, sorted — a stable shape to
+/// assert against.
+fn impl_starts(locs: &[Location]) -> Vec<(u32, u32)> {
+    locs.iter()
+        .map(|l| (l.range.start.line, l.range.start.character))
+        .collect()
+}
+
+#[tokio::test]
+async fn test_implementation_from_class_method_call_site() {
+    let (service, _socket, uri) = hover_fixture(IMPL_SRC).await;
+    let server = service.inner();
+
+    // The `greetWith` call on line 6 (columns 13..22): jump to both instance
+    // definitions of the method, each at column 2 of its instance body.
+    let locs = impl_locations(
+        server
+            .goto_implementation(goto_at(&uri, 6, 15))
+            .await
+            .expect("implementation ok"),
+    );
+    assert_eq!(
+        impl_starts(&locs),
+        vec![(3, 2), (5, 2)],
+        "both instance method definitions, got {locs:?}"
+    );
+    assert!(locs.iter().all(|l| l.uri == uri), "all in the same file");
+}
+
+#[tokio::test]
+async fn test_implementation_from_class_name_lists_instances() {
+    let (service, _socket, uri) = hover_fixture(IMPL_SRC).await;
+    let server = service.inner();
+
+    // The class name `Greeter` on line 0 (columns 10..17): jump to every
+    // instance head, each naming the class at column 9.
+    let locs = impl_locations(
+        server
+            .goto_implementation(goto_at(&uri, 0, 12))
+            .await
+            .expect("implementation ok"),
+    );
+    assert_eq!(
+        impl_starts(&locs),
+        vec![(2, 9), (4, 9)],
+        "both instance heads, got {locs:?}"
+    );
+}
+
+#[tokio::test]
+async fn test_implementation_from_class_method_signature() {
+    let (service, _socket, uri) = hover_fixture(IMPL_SRC).await;
+    let server = service.inner();
+
+    // The method signature `greetWith` in the class declaration (line 1, column
+    // 2) carries no binding, so the class/method is read from the AST. It still
+    // resolves to both instance definitions.
+    let locs = impl_locations(
+        server
+            .goto_implementation(goto_at(&uri, 1, 4))
+            .await
+            .expect("implementation ok"),
+    );
+    assert_eq!(
+        impl_starts(&locs),
+        vec![(3, 2), (5, 2)],
+        "both instance method definitions, got {locs:?}"
+    );
+}
+
+#[tokio::test]
+async fn test_implementation_none_off_class_or_instance() {
+    let (service, _socket, uri) = hover_fixture(IMPL_SRC).await;
+    let server = service.inner();
+
+    // The `run` function name (line 6, column 8) is an ordinary function, not a
+    // class, instance, or class method — no implementations to navigate to.
+    let none = server
+        .goto_implementation(goto_at(&uri, 6, 8))
+        .await
+        .expect("implementation ok");
+    assert!(
+        impl_locations(none).is_empty(),
+        "a plain function is not an implementation anchor"
+    );
+}

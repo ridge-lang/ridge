@@ -858,6 +858,61 @@ impl LanguageServer for RidgeLanguageServer {
         Ok(index.selection_ranges_at(&uri, &params.positions))
     }
 
+    /// `textDocument/prepareCallHierarchy` — anchor a call-hierarchy session on
+    /// the function under the cursor.
+    async fn prepare_call_hierarchy(
+        &self,
+        params: CallHierarchyPrepareParams,
+    ) -> LspResult<Option<Vec<CallHierarchyItem>>> {
+        let pos = params.text_document_position_params;
+        let uri = pos.text_document.uri;
+
+        let index = {
+            let snap = self.state.lock().await;
+            snap.index.clone()
+        };
+        let Some(index) = index else {
+            return Ok(None);
+        };
+        Ok(index.prepare_call_hierarchy_at(&uri, pos.position.line, pos.position.character))
+    }
+
+    /// `callHierarchy/incomingCalls` — the callers of a prepared item.
+    async fn incoming_calls(
+        &self,
+        params: CallHierarchyIncomingCallsParams,
+    ) -> LspResult<Option<Vec<CallHierarchyIncomingCall>>> {
+        let index = {
+            let snap = self.state.lock().await;
+            snap.index.clone()
+        };
+        let Some(index) = index else {
+            return Ok(None);
+        };
+        let Some(data) = params.item.data.as_ref() else {
+            return Ok(None);
+        };
+        Ok(index.incoming_calls(data))
+    }
+
+    /// `callHierarchy/outgoingCalls` — the functions a prepared item calls.
+    async fn outgoing_calls(
+        &self,
+        params: CallHierarchyOutgoingCallsParams,
+    ) -> LspResult<Option<Vec<CallHierarchyOutgoingCall>>> {
+        let index = {
+            let snap = self.state.lock().await;
+            snap.index.clone()
+        };
+        let Some(index) = index else {
+            return Ok(None);
+        };
+        let Some(data) = params.item.data.as_ref() else {
+            return Ok(None);
+        };
+        Ok(index.outgoing_calls(data))
+    }
+
     /// `workspace/symbol` — declarations across the workspace matching a query
     /// (`Ctrl-T`).
     async fn symbol(
@@ -1043,6 +1098,7 @@ fn server_capabilities() -> ServerCapabilities {
         document_symbol_provider: Some(OneOf::Left(true)),
         folding_range_provider: Some(FoldingRangeProviderCapability::Simple(true)),
         selection_range_provider: Some(SelectionRangeProviderCapability::Simple(true)),
+        call_hierarchy_provider: Some(CallHierarchyServerCapability::Simple(true)),
         workspace_symbol_provider: Some(OneOf::Left(true)),
         inlay_hint_provider: Some(OneOf::Left(true)),
         code_action_provider: Some(CodeActionProviderCapability::Simple(true)),

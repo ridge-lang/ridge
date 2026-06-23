@@ -29,8 +29,8 @@ use tower_lsp::lsp_types::{
     CompletionItemKind, DocumentHighlight, DocumentHighlightKind, DocumentSymbol, FileRename,
     FoldingRange, FoldingRangeKind, InlayHint, InlayHintKind, InlayHintLabel, Location,
     ParameterInformation, ParameterLabel, Position, PrepareRenameResponse, Range, SelectionRange,
-    SemanticToken, SemanticTokenModifier, SemanticTokenType, SemanticTokens, SignatureHelp,
-    SignatureInformation, SymbolInformation, SymbolKind as LspSymbolKind, TextEdit,
+    SemanticToken, SemanticTokenModifier, SemanticTokenType, SemanticTokens, SemanticTokensEdit,
+    SignatureHelp, SignatureInformation, SymbolInformation, SymbolKind as LspSymbolKind, TextEdit,
     TypeHierarchyItem, Url, WorkspaceEdit,
 };
 
@@ -1147,6 +1147,17 @@ impl WorkspaceIndex {
         let mid = self.module_id_for(uri)?;
         let tokens = self.collect_semantic_tokens(mid)?;
         Some(encode_tokens(&tokens))
+    }
+
+    /// The document's relative-encoded token stream without a `result_id`, the
+    /// raw material the server stamps and caches to answer a follow-up
+    /// `semantic_tokens/full/delta` against. Same tokens as
+    /// [`Self::semantic_tokens`], just the bare `data`.
+    #[must_use]
+    pub fn semantic_token_data(&self, uri: &Url) -> Option<Vec<SemanticToken>> {
+        let mid = self.module_id_for(uri)?;
+        let tokens = self.collect_semantic_tokens(mid)?;
+        Some(encode_token_data(&tokens))
     }
 
     /// As [`Self::semantic_tokens`], restricted to the tokens that intersect
@@ -3855,6 +3866,16 @@ fn push_raw(li: &LineIndex, out: &mut Vec<RawToken>, start: u32, end: u32, ty: u
 
 /// Relative-encode sorted, non-overlapping tokens into the LSP wire format.
 fn encode_tokens(tokens: &[RawToken]) -> SemanticTokens {
+    SemanticTokens {
+        result_id: None,
+        data: encode_token_data(tokens),
+    }
+}
+
+/// Relative-encode sorted, non-overlapping tokens into the flat token stream
+/// (each token carried as a 5-field [`SemanticToken`]). The wire `data` array
+/// and the delta cache both build on this.
+fn encode_token_data(tokens: &[RawToken]) -> Vec<SemanticToken> {
     let mut data = Vec::with_capacity(tokens.len());
     let mut prev_line = 0u32;
     let mut prev_start = 0u32;
@@ -3875,10 +3896,45 @@ fn encode_tokens(tokens: &[RawToken]) -> SemanticTokens {
         prev_line = t.line;
         prev_start = t.start;
     }
-    SemanticTokens {
-        result_id: None,
-        data,
+    data
+}
+
+/// Compute the minimal edit turning the previously returned token stream `old`
+/// into the freshly computed `new`, for `textDocument/semanticTokens/full/delta`.
+///
+/// Both arrays are already relative-encoded, so the edit is a pure splice: trim
+/// the longest common prefix and suffix and replace the differing middle band.
+/// Applying the result to `old` reproduces `new` exactly — no re-encoding, since
+/// the replacement tokens are lifted verbatim out of `new` and the shared prefix
+/// keeps the first changed token's relative anchor identical in both streams.
+///
+/// `start` and `delete_count` are in flat-integer units (five per token), per the
+/// LSP wire format; `data` is the slice of `new` that replaces the deleted band.
+/// An identical stream yields no edits.
+pub(crate) fn diff_tokens(old: &[SemanticToken], new: &[SemanticToken]) -> Vec<SemanticTokensEdit> {
+    let common = old.len().min(new.len());
+    let mut prefix = 0;
+    while prefix < common && old[prefix] == new[prefix] {
+        prefix += 1;
     }
+    let mut suffix = 0;
+    while suffix < common - prefix && old[old.len() - 1 - suffix] == new[new.len() - 1 - suffix] {
+        suffix += 1;
+    }
+    let deleted = old.len() - prefix - suffix;
+    let inserted = &new[prefix..new.len() - suffix];
+    if deleted == 0 && inserted.is_empty() {
+        return Vec::new();
+    }
+    vec![SemanticTokensEdit {
+        start: u32::try_from(prefix * 5).unwrap_or(u32::MAX),
+        delete_count: u32::try_from(deleted * 5).unwrap_or(u32::MAX),
+        data: if inserted.is_empty() {
+            None
+        } else {
+            Some(inserted.to_vec())
+        },
+    }]
 }
 
 /// Whether `word` is one of Ridge's capability keywords.
@@ -4816,6 +4872,116 @@ mod tests {
 
     fn byte_of(src: &str, needle: &str) -> u32 {
         u32::try_from(src.find(needle).expect("needle present")).expect("offset fits u32")
+    }
+
+    // ── semantic-token delta (diff_tokens) ────────────────────────────────────
+
+    /// A token whose fields double as an identity marker, so a diff that
+    /// preserves the wrong span is caught.
+    fn tok(delta_line: u32, delta_start: u32, length: u32) -> SemanticToken {
+        SemanticToken {
+            delta_line,
+            delta_start,
+            length,
+            token_type: 0,
+            token_modifiers_bitset: 0,
+        }
+    }
+
+    /// Apply a delta the way a client would: `start`/`delete_count` are flat
+    /// integer offsets (five per token), so divide by five to splice tokens.
+    fn apply(old: &[SemanticToken], edits: &[SemanticTokensEdit]) -> Vec<SemanticToken> {
+        let mut out = old.to_vec();
+        // A server emits at most one edit, but apply them right-to-left so
+        // multiple edits would compose without index drift either way.
+        for edit in edits.iter().rev() {
+            let start = (edit.start / 5) as usize;
+            let del = (edit.delete_count / 5) as usize;
+            let data = edit.data.clone().unwrap_or_default();
+            out.splice(start..start + del, data);
+        }
+        out
+    }
+
+    #[test]
+    fn diff_identical_streams_have_no_edits() {
+        let a = vec![tok(0, 0, 3), tok(0, 4, 2), tok(1, 0, 5)];
+        assert!(diff_tokens(&a, &a).is_empty());
+    }
+
+    #[test]
+    fn diff_pure_insert_in_the_middle() {
+        let old = vec![tok(0, 0, 3), tok(1, 0, 5)];
+        let new = vec![tok(0, 0, 3), tok(0, 4, 2), tok(1, 0, 5)];
+        let edits = diff_tokens(&old, &new);
+        assert_eq!(edits.len(), 1);
+        // One token of shared prefix → start at flat offset 5, deleting nothing.
+        assert_eq!(edits[0].start, 5);
+        assert_eq!(edits[0].delete_count, 0);
+        assert_eq!(apply(&old, &edits), new);
+    }
+
+    #[test]
+    fn diff_pure_delete_leaves_no_insertion() {
+        let old = vec![tok(0, 0, 3), tok(0, 4, 2), tok(1, 0, 5)];
+        let new = vec![tok(0, 0, 3), tok(1, 0, 5)];
+        let edits = diff_tokens(&old, &new);
+        assert_eq!(edits.len(), 1);
+        assert_eq!(edits[0].start, 5);
+        assert_eq!(edits[0].delete_count, 5);
+        assert!(edits[0].data.is_none());
+        assert_eq!(apply(&old, &edits), new);
+    }
+
+    #[test]
+    fn diff_replaces_only_the_changed_band() {
+        let old = vec![tok(0, 0, 3), tok(0, 4, 2), tok(0, 7, 4), tok(1, 0, 5)];
+        // Middle two tokens change length; first and last are untouched.
+        let new = vec![tok(0, 0, 3), tok(0, 4, 9), tok(0, 7, 1), tok(1, 0, 5)];
+        let edits = diff_tokens(&old, &new);
+        assert_eq!(edits.len(), 1);
+        assert_eq!(edits[0].start, 5); // one shared prefix token
+        assert_eq!(edits[0].delete_count, 10); // two tokens replaced
+        assert_eq!(apply(&old, &edits), new);
+    }
+
+    #[test]
+    fn diff_handles_empty_endpoints() {
+        let some = vec![tok(0, 0, 3), tok(0, 4, 2)];
+        let empty: Vec<SemanticToken> = Vec::new();
+        // Building a document from nothing.
+        let to_full = diff_tokens(&empty, &some);
+        assert_eq!(apply(&empty, &to_full), some);
+        // Clearing it back out.
+        let to_empty = diff_tokens(&some, &empty);
+        assert_eq!(apply(&some, &to_empty), empty);
+        assert!(diff_tokens(&empty, &empty).is_empty());
+    }
+
+    #[test]
+    fn diff_always_roundtrips() {
+        // A spread of prefix/suffix/middle shapes: applying the edit to `old`
+        // must reproduce `new` byte-for-byte every time.
+        let cases: &[(Vec<SemanticToken>, Vec<SemanticToken>)] = &[
+            (vec![tok(0, 0, 1)], vec![tok(0, 0, 1), tok(0, 2, 1)]),
+            (vec![tok(0, 0, 1), tok(0, 2, 1)], vec![tok(0, 0, 1)]),
+            (
+                vec![tok(0, 0, 1), tok(0, 2, 1), tok(0, 4, 1)],
+                vec![tok(0, 0, 9), tok(0, 2, 1), tok(0, 4, 9)],
+            ),
+            (
+                vec![tok(1, 0, 2), tok(2, 0, 2)],
+                vec![tok(1, 0, 2), tok(1, 3, 1), tok(2, 0, 2)],
+            ),
+        ];
+        for (old, new) in cases {
+            let edits = diff_tokens(old, new);
+            assert_eq!(
+                &apply(old, &edits),
+                new,
+                "roundtrip failed for {old:?} -> {new:?}"
+            );
+        }
     }
 
     #[test]

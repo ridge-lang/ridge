@@ -3778,6 +3778,121 @@ async fn test_semantic_tokens_no_overlap() {
     }
 }
 
+fn semantic_delta_params(uri: &Url, previous_result_id: &str) -> SemanticTokensDeltaParams {
+    SemanticTokensDeltaParams {
+        work_done_progress_params: WorkDoneProgressParams::default(),
+        partial_result_params: PartialResultParams::default(),
+        text_document: TextDocumentIdentifier { uri: uri.clone() },
+        previous_result_id: previous_result_id.to_owned(),
+    }
+}
+
+/// Run a full request and return its `resultId` together with the decoded tokens.
+async fn full_with_id(
+    server: &RidgeLanguageServer,
+    uri: &Url,
+) -> (String, Vec<(u32, u32, u32, String, Vec<String>)>) {
+    match server
+        .semantic_tokens_full(semantic_params(uri))
+        .await
+        .expect("semantic_tokens ok")
+    {
+        Some(SemanticTokensResult::Tokens(t)) => (
+            t.result_id.expect("a full result carries a resultId"),
+            decode_tokens(&t.data),
+        ),
+        _ => panic!("expected full tokens"),
+    }
+}
+
+#[tokio::test]
+async fn test_semantic_tokens_full_stamps_result_id() {
+    let (service, _socket, uri) = hover_fixture(SEMANTIC_SRC).await;
+    let server = service.inner();
+    let (id, toks) = full_with_id(server, &uri).await;
+    assert!(
+        !id.is_empty(),
+        "the resultId must be non-empty so the client can delta against it"
+    );
+    assert!(!toks.is_empty(), "the document has tokens");
+}
+
+#[tokio::test]
+async fn test_semantic_tokens_delta_with_no_edit_has_no_edits() {
+    let (service, _socket, uri) = hover_fixture(SEMANTIC_SRC).await;
+    let server = service.inner();
+    let (id, _) = full_with_id(server, &uri).await;
+
+    // No edit between the full request and the delta: the streams match, so the
+    // edit list is empty and the response advances the resultId.
+    let result = server
+        .semantic_tokens_full_delta(semantic_delta_params(&uri, &id))
+        .await
+        .expect("delta ok");
+    match result {
+        Some(SemanticTokensFullDeltaResult::TokensDelta(delta)) => {
+            assert!(
+                delta.edits.is_empty(),
+                "an unedited document yields no edits, got {:?}",
+                delta.edits
+            );
+            assert!(delta.result_id.is_some(), "the delta carries a resultId");
+            assert_ne!(
+                delta.result_id.as_deref(),
+                Some(id.as_str()),
+                "the delta stamps a fresh resultId"
+            );
+        }
+        other => panic!("expected a TokensDelta, got {other:?}"),
+    }
+}
+
+#[tokio::test]
+async fn test_semantic_tokens_delta_unknown_id_falls_back_to_full() {
+    let (service, _socket, uri) = hover_fixture(SEMANTIC_SRC).await;
+    let server = service.inner();
+    // The server never served a full result under this id, so it can't diff — it
+    // must return the whole stream rather than an edit list.
+    let result = server
+        .semantic_tokens_full_delta(semantic_delta_params(&uri, "does-not-exist"))
+        .await
+        .expect("delta ok");
+    match result {
+        Some(SemanticTokensFullDeltaResult::Tokens(t)) => {
+            assert!(
+                t.result_id.is_some(),
+                "the full fallback carries a resultId"
+            );
+            assert!(
+                !decode_tokens(&t.data).is_empty(),
+                "the fallback carries the whole token stream"
+            );
+        }
+        other => panic!("expected a full Tokens fallback, got {other:?}"),
+    }
+}
+
+#[tokio::test]
+async fn test_semantic_tokens_capability_advertises_delta() {
+    let (service, _socket) = build_test_service();
+    let server = service.inner();
+    let result = server
+        .initialize(make_init_params("ok_workspace"))
+        .await
+        .expect("initialize ok");
+    match result.capabilities.semantic_tokens_provider {
+        Some(SemanticTokensServerCapabilities::SemanticTokensOptions(opts)) => {
+            assert_eq!(
+                opts.full,
+                Some(SemanticTokensFullOptions::Delta { delta: Some(true) }),
+                "full must advertise delta support"
+            );
+            assert_eq!(opts.range, Some(true), "range support stays advertised");
+        }
+        other => panic!("expected SemanticTokensOptions, got {other:?}"),
+    }
+}
+
 // ── Record-field navigation + go-to-type-definition ───────────────────────────
 
 // Two records sharing the field name `age`, so a correct field query must key

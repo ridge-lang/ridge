@@ -1,0 +1,21 @@
+{
+  "name": "ridge",
+  "version": "0.1.0",
+  "engines": { "vscode": "*" },
+  "contributes": {
+    "languages": [
+      {
+        "id": "ridge",
+        "extensions": [".ridge"],
+        "configuration": "./language-configuration.json"
+      }
+    ],
+    "grammars": [
+      {
+        "language": "ridge",
+        "scopeName": "source.ridge",
+        "path": "./syntaxes/ridge.tmLanguage.json"
+      }
+    ]
+  }
+}

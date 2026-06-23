@@ -46,4 +46,19 @@
         </server>
         <fileNamePatternMapping patterns="*.ridge" serverId="ridge" languageId="ridge"/>
     </extensions>
+
+    <!-- Client-side handlers for the Run / Run-test code lenses. The action id
+         matches the LSP command id ridge-lsp emits, so LSP4IJ dispatches the
+         lens to it; the actions are not placed in any menu, only invoked by the
+         lens. -->
+    <actions>
+        <action id="ridge.run"
+                class="lang.ridge.intellij.RidgeRunCommandAction"
+                text="Run"
+                description="Run the Ridge app or service this entry point belongs to."/>
+        <action id="ridge.test"
+                class="lang.ridge.intellij.RidgeTestCommandAction"
+                text="Run Test"
+                description="Run this Ridge test."/>
+    </actions>
 </idea-plugin>

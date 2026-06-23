@@ -19,19 +19,19 @@ use ridge_driver::WorkspaceSourceCache;
 use ridge_lexer::{LineIndex, Span};
 use ridge_resolve::imports::{Binding, ImportResolution, ImportTarget};
 use ridge_resolve::{
-    LocalId, LocalKind, ModuleId, NodeId, NodeIdMap, NodeKind, ResolvedVisibility,
+    LocalId, LocalKind, ModuleId, NodeId, NodeIdMap, NodeKind, ProjectKind, ResolvedVisibility,
     ResolvedWorkspace, ScopeIndex, StdlibModuleId, SymbolKind, SymbolTable, BUILTINS,
 };
 use ridge_typecheck::{render_type_with, TypeError, TypedWorkspace};
 use ridge_types::{CapabilitySet, TyConDecl, TyConKind, Type};
 use tower_lsp::lsp_types::{
-    CallHierarchyIncomingCall, CallHierarchyItem, CallHierarchyOutgoingCall, CompletionItemKind,
-    DocumentHighlight, DocumentHighlightKind, DocumentSymbol, FileRename, FoldingRange,
-    FoldingRangeKind, InlayHint, InlayHintKind, InlayHintLabel, Location, ParameterInformation,
-    ParameterLabel, Position, PrepareRenameResponse, Range, SelectionRange, SemanticToken,
-    SemanticTokenModifier, SemanticTokenType, SemanticTokens, SignatureHelp, SignatureInformation,
-    SymbolInformation, SymbolKind as LspSymbolKind, TextEdit, TypeHierarchyItem, Url,
-    WorkspaceEdit,
+    CallHierarchyIncomingCall, CallHierarchyItem, CallHierarchyOutgoingCall, CodeLens, Command,
+    CompletionItemKind, DocumentHighlight, DocumentHighlightKind, DocumentSymbol, FileRename,
+    FoldingRange, FoldingRangeKind, InlayHint, InlayHintKind, InlayHintLabel, Location,
+    ParameterInformation, ParameterLabel, Position, PrepareRenameResponse, Range, SelectionRange,
+    SemanticToken, SemanticTokenModifier, SemanticTokenType, SemanticTokens, SignatureHelp,
+    SignatureInformation, SymbolInformation, SymbolKind as LspSymbolKind, TextEdit,
+    TypeHierarchyItem, Url, WorkspaceEdit,
 };
 
 use crate::cancel::Cancel;
@@ -186,6 +186,9 @@ pub struct WorkspaceIndex {
     /// which may itself contain dots). The new name a renamed module takes is
     /// this project name plus its new path below the source root.
     module_project_names: Vec<String>,
+    /// Per-module flag: is the module part of a runnable project (`app`/`service`)?
+    /// Indexed by `ModuleId.0`. Drives the "Run" code lens on a `fn main`.
+    module_runnable: Vec<bool>,
     /// Quick-fixes for `T014 CapabilityNotDeclared` on capability-free
     /// functions: each carries the edit that adds the inferred capabilities to
     /// the signature. Populated after the compile (which holds the structured
@@ -209,6 +212,44 @@ pub struct CapabilityFix {
     pub new_text: String,
     /// The code-action title shown in the editor.
     pub title: String,
+}
+
+/// Client command the "Run" code lens invokes. Argument: the project name.
+///
+/// Handled client-side (the editor extension opens a terminal and runs the CLI),
+/// so it is deliberately kept out of the server's `executeCommand` provider — a
+/// client-side handler does not fire if the server also claims the command id.
+pub const RUN_COMMAND: &str = "ridge.run";
+/// Client command the "Run test" code lens invokes. Arguments: project name and
+/// the test's `@test` display name. Client-side, like [`RUN_COMMAND`].
+pub const RUN_TEST_COMMAND: &str = "ridge.test";
+
+/// Which code lenses the client opted into via `initializationOptions.codeLens`.
+///
+/// Every kind defaults to off. A lens carries a command only the editor
+/// integrations register, so a client that does not opt in is served nothing
+/// rather than inert lenses it can't act on.
+// Four independent opt-in flags, one per lens kind; a struct of named bools is
+// the clearest representation.
+#[allow(clippy::struct_excessive_bools)]
+#[derive(Debug, Clone, Copy, Default)]
+pub struct CodeLensConfig {
+    /// "N references" above each referenceable top-level declaration.
+    pub references: bool,
+    /// "N implementations" above each `class` declaration.
+    pub implementations: bool,
+    /// "Run" above the `fn main` of an app/service project.
+    pub run: bool,
+    /// "Run test" above each `@test` function.
+    pub run_test: bool,
+}
+
+impl CodeLensConfig {
+    /// True when at least one lens kind is enabled.
+    #[must_use]
+    pub const fn any(self) -> bool {
+        self.references || self.implementations || self.run || self.run_test
+    }
 }
 
 impl WorkspaceIndex {
@@ -236,6 +277,7 @@ impl WorkspaceIndex {
         let mut module_uris: Vec<Option<Url>> = vec![None; n];
         let mut module_fqns: Vec<String> = vec![String::new(); n];
         let mut module_project_names: Vec<String> = vec![String::new(); n];
+        let mut module_runnable: Vec<bool> = vec![false; n];
 
         for module in &resolved.graph.modules {
             let i = module.id.0 as usize;
@@ -254,6 +296,8 @@ impl WorkspaceIndex {
             // `graph.projects` is indexed by `ProjectId.0`.
             if let Some(project) = resolved.graph.projects.get(module.project.0 as usize) {
                 module_project_names[i].clone_from(&project.name);
+                module_runnable[i] =
+                    matches!(project.kind, ProjectKind::App | ProjectKind::Service);
             }
             if let Some(text) = sources.text(source_id.as_str()) {
                 module_text[i] = Arc::from(text);
@@ -300,6 +344,7 @@ impl WorkspaceIndex {
             module_uris,
             module_fqns,
             module_project_names,
+            module_runnable,
             capability_fixes: Vec::new(),
         }
     }
@@ -1374,10 +1419,31 @@ impl WorkspaceIndex {
             .find_map(|(nid, _, _)| bindings.get(nid.0 as usize).and_then(Option::as_ref))?;
         let target = referent_key(binding, mid)?;
 
-        // Locals never escape their module, so a local search stays in the
-        // cursor's module. Everything else can be referenced from any module
-        // that imports it, so scan the whole workspace.
-        let scan_self_only = matches!(target, ReferentKey::Local(..));
+        self.references_to_key(&target, include_declaration, cancel)
+    }
+
+    /// Scan the whole workspace for every use of `target`, honouring
+    /// `include_declaration` and cooperative cancellation.
+    ///
+    /// Shared by [`references_at`](Self::references_at) and the "N references" code
+    /// lens. The lens needs this symbol-keyed entry point because a top-level
+    /// declaration's name node carries no binding, so the cursor path
+    /// `references_at` takes (binding under the offset) resolves only at use sites,
+    /// not on the declaration the lens sits above. Returns `None` only when the
+    /// scan was cancelled mid-flight.
+    fn references_to_key(
+        &self,
+        target: &ReferentKey,
+        include_declaration: bool,
+        cancel: &Cancel,
+    ) -> Option<Vec<Location>> {
+        // Locals never escape their module, so a local search stays in the target's
+        // own module; everything else can be referenced from any importer, so scan
+        // the whole workspace.
+        let (scan_self_only, self_mi) = match target {
+            ReferentKey::Local(module, _) => (true, module.0 as usize),
+            _ => (false, usize::MAX),
+        };
 
         let mut locations: Vec<Location> = Vec::new();
         for (smi, view) in self.modules.iter().enumerate() {
@@ -1387,7 +1453,7 @@ impl WorkspaceIndex {
             if cancel.is_cancelled() {
                 return None;
             }
-            if scan_self_only && smi != mi {
+            if scan_self_only && smi != self_mi {
                 continue;
             }
             let Ok(raw) = u32::try_from(smi) else {
@@ -1401,7 +1467,7 @@ impl WorkspaceIndex {
                 let Some(b) = view.bindings.get(nid.0 as usize).and_then(Option::as_ref) else {
                     continue;
                 };
-                if referent_key(b, smid).as_ref() != Some(&target) {
+                if referent_key(b, smid).as_ref() != Some(target) {
                     continue;
                 }
                 if let Some(loc) = self.location_in(smid, *span) {
@@ -1414,7 +1480,7 @@ impl WorkspaceIndex {
         // may already carry it — dedup below collapses the duplicate), dropped
         // otherwise. Moot for stdlib symbols and class methods, whose definition
         // lives outside the workspace.
-        if let Some(def) = self.referent_def_location(&target) {
+        if let Some(def) = self.referent_def_location(target) {
             if include_declaration {
                 locations.push(def);
             } else {
@@ -2583,6 +2649,183 @@ impl WorkspaceIndex {
         }
         out.sort_by_key(|s| (s.range.start.line, s.range.start.character));
         Some(out)
+    }
+
+    /// Build the code lenses (`textDocument/codeLens`) for one document, limited
+    /// to the kinds the client enabled in `cfg`.
+    ///
+    /// The list phase stays cheap: navigational lenses ("N references", "N
+    /// implementations") carry only their anchor and resolve their count lazily
+    /// in [`resolve_code_lens`](Self::resolve_code_lens), so the workspace-wide
+    /// scan runs only for the lenses the editor actually shows. The executable
+    /// lenses ("Run", "Run test") carry a ready command, since their target is
+    /// known without a scan. Reads only this immutable snapshot; never compiles.
+    #[must_use]
+    pub fn code_lenses_at(&self, uri: &Url, cfg: CodeLensConfig) -> Option<Vec<CodeLens>> {
+        let mid = self.module_id_for(uri)?;
+        let mi = mid.0 as usize;
+        let ast = self.modules.get(mi)?.ast.as_ref()?;
+        let runnable = self.module_runnable.get(mi).copied().unwrap_or(false);
+        let project = self.module_project_names.get(mi).map_or("", String::as_str);
+
+        let mut out: Vec<CodeLens> = Vec::new();
+        for item in &ast.items {
+            match item {
+                ridge_ast::Item::Fn(f) => {
+                    if cfg.run && runnable && f.name.text == "main" {
+                        if let Some(range) = self.range_in(mid, f.name.span) {
+                            out.push(command_code_lens(
+                                range,
+                                "Run",
+                                RUN_COMMAND,
+                                vec![serde_json::Value::String(project.to_owned())],
+                            ));
+                        }
+                    }
+                    if cfg.run_test {
+                        if let Some(name) = test_display_name(&f.attrs) {
+                            if let Some(range) = self.range_in(mid, f.name.span) {
+                                out.push(command_code_lens(
+                                    range,
+                                    "Run test",
+                                    RUN_TEST_COMMAND,
+                                    vec![
+                                        serde_json::Value::String(project.to_owned()),
+                                        serde_json::Value::String(name.to_owned()),
+                                    ],
+                                ));
+                            }
+                        }
+                    }
+                    if cfg.references {
+                        if let Some(lens) = self.reference_lens(uri, mid, &f.name.text, f.name.span)
+                        {
+                            out.push(lens);
+                        }
+                    }
+                }
+                ridge_ast::Item::Const(d) if cfg.references => {
+                    if let Some(lens) = self.reference_lens(uri, mid, &d.name.text, d.name.span) {
+                        out.push(lens);
+                    }
+                }
+                ridge_ast::Item::Type(d) if cfg.references => {
+                    if let Some(lens) = self.reference_lens(uri, mid, &d.name.text, d.name.span) {
+                        out.push(lens);
+                    }
+                }
+                ridge_ast::Item::Actor(d) if cfg.references => {
+                    if let Some(lens) = self.reference_lens(uri, mid, &d.name.text, d.name.span) {
+                        out.push(lens);
+                    }
+                }
+                ridge_ast::Item::ClassDecl(d) if cfg.implementations => {
+                    if let Some(range) = self.range_in(mid, d.name.span) {
+                        out.push(nav_code_lens(uri, range, "implementations"));
+                    }
+                }
+                _ => {}
+            }
+        }
+        Some(out)
+    }
+
+    /// Build the "N references" lens for a top-level declaration.
+    ///
+    /// The count is a workspace-wide scan, so it is left for `codeLens/resolve`;
+    /// the lens records the declaration's resolved symbol because the name node it
+    /// sits above carries no binding — the resolve step keys off `{module, symbol}`
+    /// rather than re-deriving the referent from the cursor (which only works at a
+    /// use site). `None` for a declaration whose uses don't key to a symbol.
+    fn reference_lens(
+        &self,
+        uri: &Url,
+        mid: ModuleId,
+        name: &str,
+        name_span: Span,
+    ) -> Option<CodeLens> {
+        let ReferentKey::Symbol(module, symbol) =
+            self.decl_referent_at(mid, name_span.start, name)?
+        else {
+            return None;
+        };
+        let range = self.range_in(mid, name_span)?;
+        Some(CodeLens {
+            range,
+            command: None,
+            data: Some(serde_json::json!({
+                "kind": "references",
+                "uri": uri.as_str(),
+                "line": range.start.line,
+                "character": range.start.character,
+                "module": module.0,
+                "symbol": symbol.0,
+            })),
+        })
+    }
+
+    /// Resolve a navigational code lens (`codeLens/resolve`): fill in the
+    /// reference / implementation count and the `editor.action.showReferences`
+    /// command that opens the peek. The workspace-wide scan runs here, lazily, so
+    /// only the lenses the editor actually shows pay for it. A lens that already
+    /// carries a command (the Run / Run-test lenses) or whose payload can't be read
+    /// is returned unchanged.
+    #[must_use]
+    pub fn resolve_code_lens(&self, mut lens: CodeLens, cancel: &Cancel) -> CodeLens {
+        if lens.command.is_some() {
+            return lens;
+        }
+        let Some(data) = lens.data.as_ref() else {
+            return lens;
+        };
+        let read_u32 = |key: &str| {
+            data.get(key)
+                .and_then(serde_json::Value::as_u64)
+                .and_then(|n| u32::try_from(n).ok())
+        };
+        let (Some(kind), Some(uri), Some(line), Some(character)) = (
+            data.get("kind").and_then(serde_json::Value::as_str),
+            data.get("uri")
+                .and_then(serde_json::Value::as_str)
+                .and_then(|s| Url::parse(s).ok()),
+            read_u32("line"),
+            read_u32("character"),
+        ) else {
+            return lens;
+        };
+
+        let (locations, noun) = match kind {
+            "references" => {
+                let (Some(module), Some(symbol)) = (read_u32("module"), read_u32("symbol")) else {
+                    return lens;
+                };
+                let key = ReferentKey::Symbol(ModuleId(module), ridge_resolve::SymbolId(symbol));
+                (
+                    self.references_to_key(&key, false, cancel)
+                        .unwrap_or_default(),
+                    "reference",
+                )
+            }
+            "implementations" => (
+                self.implementations_at(&uri, line, character)
+                    .unwrap_or_default(),
+                "implementation",
+            ),
+            _ => return lens,
+        };
+
+        let position = Position { line, character };
+        let arguments = vec![
+            serde_json::Value::String(uri.to_string()),
+            serde_json::to_value(position).unwrap_or(serde_json::Value::Null),
+            serde_json::to_value(&locations).unwrap_or(serde_json::Value::Null),
+        ];
+        lens.command = Some(Command {
+            title: pluralize(locations.len(), noun),
+            command: "editor.action.showReferences".to_owned(),
+            arguments: Some(arguments),
+        });
+        lens
     }
 
     /// Foldable regions for one document (`textDocument/foldingRange`).
@@ -4357,6 +4600,61 @@ fn trim_trailing_ws(text: &str, span: Span) -> Span {
     }
     #[allow(clippy::cast_possible_truncation)]
     Span::new(span.start, end as u32)
+}
+
+/// Build a navigational code lens whose count and command are filled in lazily
+/// by [`WorkspaceIndex::resolve_code_lens`]. `kind` is `"references"` or
+/// `"implementations"`; the anchor (the document URI and the name position) is
+/// carried in `data` so resolve can re-run the query for it.
+fn nav_code_lens(uri: &Url, range: Range, kind: &str) -> CodeLens {
+    CodeLens {
+        range,
+        command: None,
+        data: Some(serde_json::json!({
+            "kind": kind,
+            "uri": uri.as_str(),
+            "line": range.start.line,
+            "character": range.start.character,
+        })),
+    }
+}
+
+/// Build an executable code lens carrying a ready client command — no resolve
+/// round-trip, since the target is known up front.
+fn command_code_lens(
+    range: Range,
+    title: &str,
+    command: &str,
+    arguments: Vec<serde_json::Value>,
+) -> CodeLens {
+    CodeLens {
+        range,
+        command: Some(Command {
+            title: title.to_owned(),
+            command: command.to_owned(),
+            arguments: Some(arguments),
+        }),
+        data: None,
+    }
+}
+
+/// The display name of the function's first `@test` attribute, if any.
+fn test_display_name(attrs: &[ridge_ast::Attribute]) -> Option<&str> {
+    attrs
+        .iter()
+        .map(|attr| match attr {
+            ridge_ast::Attribute::Test { name, .. } => name.as_str(),
+        })
+        .next()
+}
+
+/// Render a code-lens count as `"1 reference"` / `"N references"`.
+fn pluralize(count: usize, noun: &str) -> String {
+    if count == 1 {
+        format!("1 {noun}")
+    } else {
+        format!("{count} {noun}s")
+    }
 }
 
 /// Decode a [`CallHierarchyItem`]'s `data` payload back to `(module, symbol)`.

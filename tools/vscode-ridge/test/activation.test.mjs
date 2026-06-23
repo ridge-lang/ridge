@@ -130,6 +130,26 @@ for (const entry of tokenScopes) {
   }
 }
 
+// --- contributed commands back the code-lens client commands ----------------
+const commands = pkg.contributes?.commands ?? [];
+const commandIds = new Set(commands.map((c) => c.command));
+for (const id of ["ridge.run", "ridge.test"]) {
+  check(
+    commandIds.has(id),
+    `package.json must contribute the "${id}" command the code lenses invoke`,
+  );
+}
+// Those commands are lens-only (they need arguments), so they are hidden from
+// the palette — a no-arg invocation would run the CLI without a target.
+const palette = pkg.contributes?.menus?.commandPalette ?? [];
+for (const id of ["ridge.run", "ridge.test"]) {
+  const entry = palette.find((m) => m.command === id);
+  check(
+    entry !== undefined && entry.when === "false",
+    `"${id}" must be hidden from the command palette (when: "false")`,
+  );
+}
+
 // --- load smoke: the bundled entry point still exports the hooks ------------
 const mainPath = resolve(root, pkg.main);
 if (!existsSync(mainPath)) {

@@ -1426,6 +1426,80 @@ impl LanguageServer for RidgeLanguageServer {
         }]))
     }
 
+    /// `textDocument/rangeFormatting` — reformat only the selected lines.
+    ///
+    /// The whole buffer is run through `ridge-fmt` (the one formatter the CLI and
+    /// `textDocument/formatting` share), then diffed against the original by line;
+    /// only the change hunks that overlap the requested range are returned, so a
+    /// "format selection" leaves the rest of the file alone. An unparseable buffer
+    /// or a selection already in formatted shape yields no edits.
+    async fn range_formatting(
+        &self,
+        params: DocumentRangeFormattingParams,
+    ) -> LspResult<Option<Vec<TextEdit>>> {
+        let uri = params.text_document.uri;
+
+        let text = {
+            let snap = self.state.lock().await;
+            snap.open_docs.get(&uri).cloned()
+        };
+        let Some(text) = text else {
+            return Ok(None);
+        };
+
+        let Ok(formatted) = ridge_fmt::format_source(&text) else {
+            return Ok(None);
+        };
+        if formatted == text {
+            return Ok(None);
+        }
+
+        let line_index = LineIndex::new(&text);
+        let edits = crate::format::range_format_edits(&text, &formatted, params.range, &line_index);
+        if edits.is_empty() {
+            Ok(None)
+        } else {
+            Ok(Some(edits))
+        }
+    }
+
+    /// `textDocument/onTypeFormatting` — auto-indent the line a newline opened.
+    ///
+    /// Registered only on `\n`. The fresh line's indentation is derived from the
+    /// offside structure of the preceding line (purely lexical, so it works on the
+    /// half-written buffer a full parse would reject). This gives every client the
+    /// same offside auto-indent the VS Code grammar already provides via
+    /// `increaseIndentPattern`.
+    async fn on_type_formatting(
+        &self,
+        params: DocumentOnTypeFormattingParams,
+    ) -> LspResult<Option<Vec<TextEdit>>> {
+        // Only the newline trigger is registered; ignore anything else.
+        if params.ch != "\n" {
+            return Ok(None);
+        }
+        let uri = params.text_document_position.text_document.uri;
+        let position = params.text_document_position.position;
+        // Indent with the same width the client uses for its own auto-indent, so
+        // the two never disagree.
+        let step = params.options.tab_size as usize;
+
+        let text = {
+            let snap = self.state.lock().await;
+            snap.open_docs.get(&uri).cloned()
+        };
+        let Some(text) = text else {
+            return Ok(None);
+        };
+
+        let edits = crate::format::on_type_newline_edits(&text, position, step);
+        if edits.is_empty() {
+            Ok(None)
+        } else {
+            Ok(Some(edits))
+        }
+    }
+
     /// `textDocument/documentSymbol` — the outline for one document (the
     /// breadcrumb bar, the outline view, and `Ctrl-Shift-O`).
     async fn document_symbol(
@@ -1924,6 +1998,13 @@ fn server_capabilities(pull_diagnostics: bool) -> ServerCapabilities {
         })),
         document_highlight_provider: Some(OneOf::Left(true)),
         document_formatting_provider: Some(OneOf::Left(true)),
+        document_range_formatting_provider: Some(OneOf::Left(true)),
+        // Auto-indent the line a newline opens, so non-VS-Code clients get the
+        // offside indentation the VS Code grammar supplies via its indent rules.
+        document_on_type_formatting_provider: Some(DocumentOnTypeFormattingOptions {
+            first_trigger_character: "\n".to_owned(),
+            more_trigger_character: None,
+        }),
         document_symbol_provider: Some(OneOf::Left(true)),
         folding_range_provider: Some(FoldingRangeProviderCapability::Simple(true)),
         selection_range_provider: Some(SelectionRangeProviderCapability::Simple(true)),

@@ -47,6 +47,7 @@
 pub mod cancel;
 pub mod completion;
 pub mod diagnostics;
+pub mod format;
 pub mod index;
 pub mod server;
 pub mod span_recovery;

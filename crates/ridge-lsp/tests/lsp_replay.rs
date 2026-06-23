@@ -2718,6 +2718,126 @@ async fn test_formatting_skips_unparseable() {
     );
 }
 
+// ── Test 25b: range formatting (textDocument/rangeFormatting) ─────────────────
+
+fn range_format_params(uri: &Url, range: Range) -> DocumentRangeFormattingParams {
+    DocumentRangeFormattingParams {
+        text_document: TextDocumentIdentifier { uri: uri.clone() },
+        range,
+        options: FormattingOptions::default(),
+        work_done_progress_params: WorkDoneProgressParams::default(),
+    }
+}
+
+#[tokio::test]
+async fn test_range_formatting_reformats_only_selection() {
+    // Both bodies have a tight `+`; the formatter would space both, but the
+    // selection covers only the second function's body (line 4).
+    let messy = "fn a (x: Int) -> Int =\n    x+1\n\nfn b (y: Int) -> Int =\n    y+2\n";
+    let (service, _socket, uri) = open_single_doc(messy).await;
+    let server = service.inner();
+
+    let range = Range {
+        start: Position::new(4, 0),
+        end: Position::new(4, 0),
+    };
+    let edits = server
+        .range_formatting(range_format_params(&uri, range))
+        .await
+        .expect("range formatting ok")
+        .expect("a messy selection yields an edit");
+
+    assert_eq!(edits.len(), 1, "only the selected line is reformatted");
+    assert_eq!(edits[0].new_text, "    y + 2\n");
+    // The first body (line 1) is left untouched by a selection on line 4.
+    assert_eq!(edits[0].range.start, Position::new(4, 0));
+}
+
+#[tokio::test]
+async fn test_range_formatting_noop_on_already_formatted() {
+    let formatted = ridge_fmt::format_source("fn a (x: Int) -> Int =\n    x+1\n").expect("formats");
+    let (service, _socket, uri) = open_single_doc(&formatted).await;
+    let server = service.inner();
+
+    let range = Range {
+        start: Position::new(0, 0),
+        end: Position::new(1, 0),
+    };
+    let edits = server
+        .range_formatting(range_format_params(&uri, range))
+        .await
+        .expect("range formatting ok");
+    assert!(
+        edits.is_none(),
+        "an already-formatted selection yields nothing"
+    );
+}
+
+#[tokio::test]
+async fn test_range_formatting_skips_unparseable() {
+    let broken = "fn = = =\n";
+    assert!(ridge_fmt::format_source(broken).is_err());
+    let (service, _socket, uri) = open_single_doc(broken).await;
+    let server = service.inner();
+
+    let range = Range {
+        start: Position::new(0, 0),
+        end: Position::new(0, 5),
+    };
+    let edits = server
+        .range_formatting(range_format_params(&uri, range))
+        .await
+        .expect("range formatting ok");
+    assert!(
+        edits.is_none(),
+        "a buffer the parser rejects is left untouched"
+    );
+}
+
+// ── Test 25c: on-type formatting (textDocument/onTypeFormatting) ──────────────
+
+fn on_type_params(uri: &Url, position: Position, ch: &str) -> DocumentOnTypeFormattingParams {
+    DocumentOnTypeFormattingParams {
+        text_document_position: TextDocumentPositionParams {
+            text_document: TextDocumentIdentifier { uri: uri.clone() },
+            position,
+        },
+        ch: ch.to_owned(),
+        options: FormattingOptions::default(),
+    }
+}
+
+#[tokio::test]
+async fn test_on_type_formatting_indents_after_opener() {
+    // A newline was just typed under `fn add x y =`, leaving a blank line 1.
+    let text = "fn add x y =\n\n";
+    let (service, _socket, uri) = open_single_doc(text).await;
+    let server = service.inner();
+
+    let edits = server
+        .on_type_formatting(on_type_params(&uri, Position::new(1, 0), "\n"))
+        .await
+        .expect("on-type formatting ok")
+        .expect("a newline under an opener indents the fresh line");
+
+    assert_eq!(edits.len(), 1);
+    assert_eq!(edits[0].new_text, "  ");
+    assert_eq!(edits[0].range.start, Position::new(1, 0));
+}
+
+#[tokio::test]
+async fn test_on_type_formatting_ignores_other_trigger() {
+    let text = "fn add x y =\n\n";
+    let (service, _socket, uri) = open_single_doc(text).await;
+    let server = service.inner();
+
+    let edits = server
+        .on_type_formatting(on_type_params(&uri, Position::new(1, 0), "x"))
+        .await
+        .expect("on-type formatting ok");
+    assert!(edits.is_none(), "only the newline trigger produces edits");
+}
+
 // ── Test 26: document & workspace symbols ─────────────────────────────────────
 
 const SYMBOL_SRC: &str = r"type Color = Red | Green | Blue

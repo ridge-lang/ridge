@@ -211,6 +211,16 @@ struct WorkspaceSnapshot {
     /// around a reseed compile is gated on this; without it the server stays
     /// silent rather than emitting progress tokens the client would reject.
     supports_work_done_progress: bool,
+    /// True when the client supports pull diagnostics (`textDocument.diagnostic`)
+    /// *and* a server-initiated refresh (`workspace.diagnostics.refreshSupport`).
+    /// In that mode the server advertises a diagnostic provider, answers
+    /// `textDocument/diagnostic` and `workspace/diagnostic` from `last_diagnostics`,
+    /// and asks the client to re-pull after each compile instead of pushing.
+    /// Refresh is required because pull mode stops pushing: a change the user did
+    /// not type into the focused file — an on-disk edit, or an error surfacing in
+    /// another module — would otherwise leave stale diagnostics on screen. A
+    /// client missing either half stays on the push model, which is unchanged.
+    supports_pull_diagnostics: bool,
     /// How the client wants individual responses encoded (Markdown, label
     /// offsets, hierarchical outline, action literals). Read once at `initialize`
     /// so handlers can fall back to a form a non-supporting client can render.
@@ -218,6 +228,11 @@ struct WorkspaceSnapshot {
     /// File URIs edited since the last compile. Drained by the debounced
     /// incremental compile so a burst of edits across files is applied together.
     dirty: HashSet<Url>,
+    /// The diagnostics from the most recent compile, keyed by document URI, so the
+    /// pull handlers can answer without recompiling. Only maintained in pull mode;
+    /// the push path delivers straight through `publish_diagnostics` and never
+    /// reads this map.
+    last_diagnostics: HashMap<Url, Vec<Diagnostic>>,
 }
 
 /// One independent Ridge workspace: a manifest root (or the synthetic standalone
@@ -453,6 +468,10 @@ impl RidgeLanguageServer {
                 None => None,
             };
 
+            // Accumulate every installed workspace's diagnostics and deliver them
+            // in one batch after the loop, so the pull model sends a single
+            // refresh for the whole compile rather than one per workspace.
+            let mut delivered: Vec<(Url, Vec<Diagnostic>)> = Vec::new();
             for (slot, engine, target) in jobs {
                 let gen_counter = Arc::clone(&gen_counter);
                 let edits = Arc::clone(&edits);
@@ -467,7 +486,7 @@ impl RidgeLanguageServer {
                         tracing::error!("L804 LspInternal: driver fatal error: {check_err}");
                     }
                     Ok(Ok(out)) => {
-                        // Install into this workspace's slot and publish only if
+                        // Install into this workspace's slot and deliver only if
                         // the result is still the newest for that slot — gated on
                         // the generation so a superseded result clobbers nothing.
                         let install = {
@@ -485,13 +504,12 @@ impl RidgeLanguageServer {
                             }
                         };
                         if install {
-                            for (uri, diags) in out.diagnostics_by_file {
-                                client.publish_diagnostics(uri, diags, None).await;
-                            }
+                            delivered.extend(out.diagnostics_by_file);
                         }
                     }
                 }
             }
+            deliver_diagnostics(&client, &state_for_install, delivered).await;
         });
 
         let mut ch = compile_handle_arc.lock().await;
@@ -841,6 +859,26 @@ impl LanguageServer for RidgeLanguageServer {
             .and_then(|w| w.work_done_progress)
             .unwrap_or(false);
 
+        // Pull diagnostics require both halves: the pull request itself and a
+        // server-initiated refresh, since pull mode replaces push entirely (see
+        // `WorkspaceSnapshot::supports_pull_diagnostics`).
+        let supports_pull_diagnostics = {
+            let pull = params
+                .capabilities
+                .text_document
+                .as_ref()
+                .and_then(|td| td.diagnostic.as_ref())
+                .is_some();
+            let refresh = params
+                .capabilities
+                .workspace
+                .as_ref()
+                .and_then(|ws| ws.diagnostic.as_ref())
+                .and_then(|d| d.refresh_support)
+                .unwrap_or(false);
+            pull && refresh
+        };
+
         // How the client wants each response encoded (see `ClientCaps`).
         let client_caps = negotiate_client_caps(&params.capabilities);
 
@@ -896,6 +934,7 @@ impl LanguageServer for RidgeLanguageServer {
             snap.supports_type_hierarchy = supports_type_hierarchy;
             snap.supports_watched_files = supports_watched_files;
             snap.supports_work_done_progress = supports_work_done_progress;
+            snap.supports_pull_diagnostics = supports_pull_diagnostics;
             snap.client_caps = client_caps;
         }
         if standalone {
@@ -915,7 +954,7 @@ impl LanguageServer for RidgeLanguageServer {
         }
 
         Ok(InitializeResult {
-            capabilities: server_capabilities(),
+            capabilities: server_capabilities(supports_pull_diagnostics),
             server_info: Some(ServerInfo {
                 name: "ridge-lsp".to_owned(),
                 version: Some(env!("CARGO_PKG_VERSION").to_owned()),
@@ -1055,7 +1094,7 @@ impl LanguageServer for RidgeLanguageServer {
             snap.standalone
         };
         // Clear diagnostics for the closed file.
-        self.client.publish_diagnostics(uri, vec![], None).await;
+        deliver_diagnostics(&self.client, &self.state, vec![(uri, Vec::new())]).await;
         // In standalone mode the closed file was a synthetic project member, so
         // rebuild the graph from the remaining open files to drop it.
         if standalone {
@@ -1088,13 +1127,69 @@ impl LanguageServer for RidgeLanguageServer {
                 snap.open_docs.remove(uri);
             }
         }
-        for uri in deleted {
-            self.client.publish_diagnostics(uri, vec![], None).await;
-        }
+        let cleared: Vec<(Url, Vec<Diagnostic>)> =
+            deleted.into_iter().map(|uri| (uri, Vec::new())).collect();
+        deliver_diagnostics(&self.client, &self.state, cleared).await;
 
         // Reseed from disk: re-runs discovery so files created or deleted on disk
         // and manifest edits are reflected, then recompiles against open buffers.
         self.trigger_compile().await;
+    }
+
+    /// Pull diagnostics for a single document (LSP 3.17). Served from the cache
+    /// the last compile left in `last_diagnostics`, so it never recompiles — the
+    /// client decides when to ask, and a background compile nudges it to re-ask
+    /// through `workspace/diagnostic/refresh`. Only reachable when the client put
+    /// the server in pull mode (`supports_pull_diagnostics`); a file with no cached
+    /// entry is simply clean. `result_id` is unused: the server always returns a
+    /// full report rather than tracking per-document result ids.
+    async fn diagnostic(
+        &self,
+        params: DocumentDiagnosticParams,
+    ) -> LspResult<DocumentDiagnosticReportResult> {
+        let uri = params.text_document.uri;
+        let items = {
+            let snap = self.state.lock().await;
+            snap.last_diagnostics.get(&uri).cloned().unwrap_or_default()
+        };
+        Ok(DocumentDiagnosticReportResult::Report(
+            DocumentDiagnosticReport::Full(RelatedFullDocumentDiagnosticReport {
+                related_documents: None,
+                full_document_diagnostic_report: FullDocumentDiagnosticReport {
+                    result_id: None,
+                    items,
+                },
+            }),
+        ))
+    }
+
+    /// Pull diagnostics for the whole workspace (LSP 3.17). Reports every file the
+    /// last compile produced diagnostics for, across all open projects, so a
+    /// pull-model client can populate its Problems view with errors in files it
+    /// never opened — the parity the push model gave by publishing every file.
+    async fn workspace_diagnostic(
+        &self,
+        _params: WorkspaceDiagnosticParams,
+    ) -> LspResult<WorkspaceDiagnosticReportResult> {
+        let items = {
+            let snap = self.state.lock().await;
+            snap.last_diagnostics
+                .iter()
+                .map(|(uri, diags)| {
+                    WorkspaceDocumentDiagnosticReport::Full(WorkspaceFullDocumentDiagnosticReport {
+                        uri: uri.clone(),
+                        version: None,
+                        full_document_diagnostic_report: FullDocumentDiagnosticReport {
+                            result_id: None,
+                            items: diags.clone(),
+                        },
+                    })
+                })
+                .collect()
+        };
+        Ok(WorkspaceDiagnosticReportResult::Report(
+            WorkspaceDiagnosticReport { items },
+        ))
     }
 
     async fn hover(&self, params: HoverParams) -> LspResult<Option<Hover>> {
@@ -1771,7 +1866,48 @@ fn markdown_to_plaintext(markdown: &str) -> String {
 }
 
 /// The static set of capabilities the server advertises at `initialize`.
-fn server_capabilities() -> ServerCapabilities {
+/// Deliver a batch of `(uri, diagnostics)` updates to the client.
+///
+/// On the push model each file is published immediately. On the pull model the
+/// server records the diagnostics in `last_diagnostics` and asks the client to
+/// re-pull (`workspace/diagnostic/refresh`) instead, so the same results reach
+/// the editor through the pull endpoints. Publishing in pull mode too would
+/// duplicate every diagnostic against the pulled set, so the two paths are
+/// mutually exclusive. An empty batch is a no-op.
+///
+/// Free function rather than a method so the detached compile task — which holds
+/// only clones of the client and state, not `&self` — can call it too.
+async fn deliver_diagnostics(
+    client: &Client,
+    state: &Mutex<WorkspaceSnapshot>,
+    updates: Vec<(Url, Vec<Diagnostic>)>,
+) {
+    if updates.is_empty() {
+        return;
+    }
+    let pull = {
+        let mut snap = state.lock().await;
+        if snap.supports_pull_diagnostics {
+            for (uri, diags) in &updates {
+                snap.last_diagnostics.insert(uri.clone(), diags.clone());
+            }
+            true
+        } else {
+            false
+        }
+    };
+    if pull {
+        if let Err(err) = client.workspace_diagnostic_refresh().await {
+            tracing::warn!("workspace/diagnostic/refresh was rejected: {err}");
+        }
+    } else {
+        for (uri, diags) in updates {
+            client.publish_diagnostics(uri, diags, None).await;
+        }
+    }
+}
+
+fn server_capabilities(pull_diagnostics: bool) -> ServerCapabilities {
     ServerCapabilities {
         // Positions are exchanged as UTF-16 code-unit offsets, the LSP default.
         // Advertising it explicitly documents the contract; the server converts
@@ -1858,11 +1994,21 @@ fn server_capabilities() -> ServerCapabilities {
                 ..WorkspaceFileOperationsServerCapabilities::default()
             }),
         }),
-        // Diagnostics are pushed via `client.publish_diagnostics(...)` from
-        // `trigger_compile`. The pull endpoint `textDocument/diagnostic`
-        // (LSP 3.17) is intentionally not advertised because no `diagnostic()`
-        // handler is implemented; advertising the capability made LSP 3.17
-        // clients log `-32601 Method not found` errors on every document open.
+        // Diagnostics are pushed via `client.publish_diagnostics(...)` for clients
+        // on the push model. A client that supports both pull and refresh moves to
+        // the pull model instead: advertise the provider and serve
+        // `textDocument/diagnostic` + `workspace/diagnostic`. The provider is gated
+        // on that support so a client without a pull engine never calls the
+        // endpoint and so never logs `-32601 Method not found` for it. Ridge has
+        // cross-module diagnostics, so `inter_file_dependencies` is set.
+        diagnostic_provider: pull_diagnostics.then(|| {
+            DiagnosticServerCapabilities::Options(DiagnosticOptions {
+                identifier: Some("ridge".to_owned()),
+                inter_file_dependencies: true,
+                workspace_diagnostics: true,
+                work_done_progress_options: WorkDoneProgressOptions::default(),
+            })
+        }),
         ..ServerCapabilities::default()
     }
 }

@@ -153,15 +153,14 @@ async fn test_initialize_initialized_roundtrip() {
         _ => panic!("textDocumentSync must be Options"),
     }
 
-    // diagnosticProvider must NOT be advertised: the server publishes
-    // diagnostics via `client.publish_diagnostics`, and no `diagnostic()`
-    // handler implements the LSP 3.17 pull endpoint. Advertising it caused
-    // 3.17 clients (vscode-languageclient 9+) to issue
-    // `textDocument/diagnostic` requests on every document open and log
-    // `-32601 Method not found` errors.
+    // This client (default capabilities) advertised neither pull diagnostics nor
+    // a refresh, so the server stays on the push model and must NOT advertise a
+    // diagnosticProvider. Advertising it to a client without a pull engine is what
+    // used to make 3.17 clients log `-32601 Method not found`. The provider is
+    // gated on pull support; see the dedicated pull tests for the opt-in path.
     assert!(
         result.capabilities.diagnostic_provider.is_none(),
-        "must not advertise diagnosticProvider — server is push-only"
+        "must not advertise diagnosticProvider to a push-only client"
     );
 
     // completionProvider, hoverProvider, definitionProvider are all advertised.
@@ -5246,6 +5245,9 @@ struct ProgressLog {
     begun: Vec<ProgressToken>,
     /// Tokens carried by `$/progress` `end` notifications.
     ended: Vec<ProgressToken>,
+    /// Count of `workspace/diagnostic/refresh` requests — the pull model's nudge
+    /// to re-pull after a compile.
+    refreshed: usize,
 }
 
 /// Drive the client half of the in-process loopback.
@@ -5278,6 +5280,8 @@ fn drive_client(socket: ClientSocket) -> Arc<Mutex<ProgressLog>> {
                         }
                     }
                 }
+            } else if req.method() == "workspace/diagnostic/refresh" {
+                sink.lock().unwrap().refreshed += 1;
             }
             // Answer anything that expects a reply so the server never blocks;
             // notifications carry no id and need none.
@@ -5686,4 +5690,209 @@ async fn test_multi_root_edit_recompiles_only_owning_workspace() {
 
     assert!(gen_a1 > gen_a0, "workspace A should have recompiled");
     assert_eq!(gen_b1, gen_b0, "editing A must not recompile B");
+}
+
+// ── pull diagnostics (LSP 3.17) ───────────────────────────────────────────────
+
+/// Capabilities that opt into pull diagnostics. `pull` advertises
+/// `textDocument.diagnostic`; `refresh` advertises
+/// `workspace.diagnostics.refreshSupport`. The server enters pull mode only when
+/// both are present.
+fn pull_caps(pull: bool, refresh: bool) -> ClientCapabilities {
+    ClientCapabilities {
+        text_document: Some(TextDocumentClientCapabilities {
+            diagnostic: pull.then(DiagnosticClientCapabilities::default),
+            ..Default::default()
+        }),
+        workspace: Some(WorkspaceClientCapabilities {
+            diagnostic: Some(DiagnosticWorkspaceClientCapabilities {
+                refresh_support: Some(refresh),
+            }),
+            ..Default::default()
+        }),
+        ..Default::default()
+    }
+}
+
+#[tokio::test]
+async fn test_diagnostic_provider_gated_on_pull_and_refresh() {
+    async fn provider_for(caps: ClientCapabilities) -> Option<DiagnosticServerCapabilities> {
+        let (service, _socket) = build_test_service();
+        let mut params = make_init_params("ok_workspace");
+        params.capabilities = caps;
+        service
+            .inner()
+            .initialize(params)
+            .await
+            .expect("initialize ok")
+            .capabilities
+            .diagnostic_provider
+    }
+
+    // Both halves present → pull mode, provider advertised with Ridge's options.
+    match provider_for(pull_caps(true, true)).await {
+        Some(DiagnosticServerCapabilities::Options(opts)) => {
+            assert!(
+                opts.inter_file_dependencies,
+                "Ridge has cross-module diagnostics"
+            );
+            assert!(opts.workspace_diagnostics, "workspace pull is served");
+            assert_eq!(opts.identifier.as_deref(), Some("ridge"));
+        }
+        other => panic!("expected DiagnosticOptions, got {other:?}"),
+    }
+
+    // Missing either half → push model, no provider.
+    assert!(
+        provider_for(pull_caps(true, false)).await.is_none(),
+        "pull without refresh stays on the push model"
+    );
+    assert!(
+        provider_for(pull_caps(false, true)).await.is_none(),
+        "refresh without pull stays on the push model"
+    );
+}
+
+/// Build a hermetic temp workspace, drive the client loopback, initialize as a
+/// pull-diagnostics client (pull + refresh), and open the first file (triggering
+/// the reseed compile). Returns the service and the client log; queries read the
+/// real document URIs back from the index so they match the compile's own keys.
+async fn pull_workspace(
+    files: &[(&str, &str)],
+) -> (LspService<RidgeLanguageServer>, Arc<Mutex<ProgressLog>>) {
+    let dir = tempfile::TempDir::new().expect("temp dir");
+    let root = dir.path().to_path_buf();
+    let app_src = root.join("app").join("src");
+    std::fs::create_dir_all(&app_src).expect("create temp workspace");
+    std::fs::write(
+        root.join("ridge.toml"),
+        "[workspace]\nname = \"pull-ws\"\nversion = \"0.1.0\"\nmembers = [\"app\"]\n",
+    )
+    .expect("workspace manifest");
+    std::fs::write(
+        root.join("app").join("ridge.toml"),
+        "[project]\nname = \"app\"\nversion = \"0.1.0\"\nkind = \"library\"\n\n[capabilities]\nallow = []\n",
+    )
+    .expect("project manifest");
+    for (name, contents) in files {
+        std::fs::write(app_src.join(name), contents).expect("write source");
+    }
+
+    let (mut service, socket) = build_test_service();
+    let log = drive_client(socket);
+    {
+        let root_uri = Url::from_file_path(&root).expect("root URI");
+        let init_params = InitializeParams {
+            root_uri: Some(root_uri.clone()),
+            workspace_folders: Some(vec![WorkspaceFolder {
+                uri: root_uri,
+                name: "pull-ws".to_owned(),
+            }]),
+            capabilities: pull_caps(true, true),
+            ..InitializeParams::default()
+        };
+        let init_req = Request::build("initialize")
+            .id(1_i64)
+            .params(serde_json::to_value(init_params).expect("serialize init params"))
+            .finish();
+        {
+            let ready = ServiceExt::ready(&mut service)
+                .await
+                .expect("service ready");
+            ready.call(init_req).await.expect("initialize call");
+        }
+        let server = service.inner();
+        server.initialized(InitializedParams {}).await;
+        let first = app_src.join(files[0].0);
+        server
+            .did_open(DidOpenTextDocumentParams {
+                text_document: TextDocumentItem {
+                    uri: Url::from_file_path(&first).expect("file URI"),
+                    language_id: "ridge".to_owned(),
+                    version: 1,
+                    text: files[0].1.to_owned(),
+                },
+            })
+            .await;
+        wait_for_module_count(server, files.len()).await;
+    }
+    std::mem::forget(dir);
+    (service, log)
+}
+
+/// Poll the client log until a `workspace/diagnostic/refresh` arrives (the pull
+/// model's post-compile nudge), or panic after ~6s. Returning guarantees the
+/// compile delivered, so the diagnostics cache is populated.
+async fn wait_for_refresh(log: &Arc<Mutex<ProgressLog>>) {
+    for _ in 0..120 {
+        if log.lock().unwrap().refreshed > 0 {
+            return;
+        }
+        tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;
+    }
+    panic!("expected a workspace/diagnostic/refresh request");
+}
+
+#[tokio::test]
+async fn test_pull_diagnostics_served_from_cache() {
+    // An unresolved name is guaranteed to produce a diagnostic.
+    let (service, log) = pull_workspace(&[("main.ridge", "pub fn a -> Int = nope\n")]).await;
+    let server = service.inner();
+    // The refresh fires only on the pull path, so observing it proves the server
+    // delivered via pull (not push) and the cache is ready to query.
+    wait_for_refresh(&log).await;
+
+    // Read the document URI back from the index so it matches the compile's keys.
+    let uri = {
+        let idx = server.workspace_index().await.expect("indexed");
+        idx.uri_to_module
+            .keys()
+            .next()
+            .expect("a module uri")
+            .clone()
+    };
+
+    // textDocument/diagnostic returns a full report carrying the file's errors.
+    let report = server
+        .diagnostic(DocumentDiagnosticParams {
+            text_document: TextDocumentIdentifier { uri: uri.clone() },
+            identifier: None,
+            previous_result_id: None,
+            work_done_progress_params: WorkDoneProgressParams::default(),
+            partial_result_params: PartialResultParams::default(),
+        })
+        .await
+        .expect("diagnostic ok");
+    let items = match report {
+        DocumentDiagnosticReportResult::Report(DocumentDiagnosticReport::Full(full)) => {
+            full.full_document_diagnostic_report.items
+        }
+        other => panic!("expected a full report, got {other:?}"),
+    };
+    assert!(
+        !items.is_empty(),
+        "the unresolved-name error must be reported via pull"
+    );
+
+    // workspace/diagnostic reports the same file among its items.
+    let ws_report = server
+        .workspace_diagnostic(WorkspaceDiagnosticParams {
+            identifier: None,
+            previous_result_ids: Vec::new(),
+            work_done_progress_params: WorkDoneProgressParams::default(),
+            partial_result_params: PartialResultParams::default(),
+        })
+        .await
+        .expect("workspace_diagnostic ok");
+    let ws_items = match ws_report {
+        WorkspaceDiagnosticReportResult::Report(r) => r.items,
+        other => panic!("expected a workspace report, got {other:?}"),
+    };
+    let found = ws_items.iter().any(|item| match item {
+        WorkspaceDocumentDiagnosticReport::Full(f) => {
+            f.uri == uri && !f.full_document_diagnostic_report.items.is_empty()
+        }
+        WorkspaceDocumentDiagnosticReport::Unchanged(_) => false,
+    });
+    assert!(found, "workspace pull must include the erroring file");
 }

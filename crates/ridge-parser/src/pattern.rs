@@ -36,7 +36,11 @@
 use ridge_ast::{pattern::ListPatElem, FieldPattern, Ident, Pattern};
 use ridge_lexer::Token;
 
-use crate::{cursor::Cursor, error::ParseError, expr::parse_literal};
+use crate::{
+    cursor::{Cursor, DepthGuard},
+    error::ParseError,
+    expr::parse_literal,
+};
 
 // ── parse_pattern ─────────────────────────────────────────────────────────────
 
@@ -54,6 +58,11 @@ use crate::{cursor::Cursor, error::ParseError, expr::parse_literal};
 /// 2. `::` — right-associative; the whole pattern (including possible `@`)
 ///    is the head.
 pub(crate) fn parse_pattern(cur: &mut Cursor<'_>) -> Result<Pattern, ParseError> {
+    // Bound the descent; `::` cons, `(…)`/`[…]` groups, and tuple elements all
+    // recurse back through here, so one guard at the entry caps the whole pattern.
+    let guard = DepthGuard::enter(cur)?;
+    let cur = &mut *guard.cur;
+
     // Parse the first atom.
     let mut left = parse_pattern_atom(cur)?;
 

@@ -35,7 +35,11 @@ use ridge_ast::{
 };
 use ridge_lexer::Token;
 
-use crate::{actor_ops, ctrl, cursor::Cursor, error::ParseError};
+use crate::{
+    actor_ops, ctrl,
+    cursor::{Cursor, DepthGuard},
+    error::ParseError,
+};
 
 // ── parse_literal ─────────────────────────────────────────────────────────────
 
@@ -167,49 +171,6 @@ pub(crate) fn parse_expr(cur: &mut Cursor<'_>) -> Result<Expr, ParseError> {
 ///   `match` arm).
 pub(crate) fn parse_expr_pratt(cur: &mut Cursor<'_>) -> Result<Expr, ParseError> {
     parse_expr_bp(cur, 0)
-}
-
-// ── Recursion-depth guard ───────────────────────────────────────────────────
-
-/// Maximum expression nesting depth the recursive-descent parser will follow.
-///
-/// The expression grammar is parsed by mutual recursion (`parse_expr_bp`
-/// recurses for operands and re-enters through parenthesised/list atoms), so
-/// deeply nested input — thousands of `(((…)))`, nested lists, or chained
-/// operators — would otherwise grow the native stack without bound and abort
-/// the process. 256 is far deeper than any hand-written or formatter-produced
-/// program nests, yet shallow enough to stop well short of a stack overflow.
-const MAX_EXPR_DEPTH: u32 = 256;
-
-/// RAII guard that increments [`Cursor::expr_depth`] on creation and decrements
-/// it on drop, so the counter is restored no matter which `?`/early-return path
-/// unwinds out of the Pratt core.
-struct DepthGuard<'a, 't> {
-    cur: &'a mut Cursor<'t>,
-}
-
-impl<'a, 't> DepthGuard<'a, 't> {
-    /// Enter one expression-recursion level.
-    ///
-    /// Returns `Err(P028 ExpressionTooDeep)` (without entering) when the limit
-    /// is already reached, so the caller stops descending gracefully instead of
-    /// recursing further.
-    fn enter(cur: &'a mut Cursor<'t>) -> Result<Self, ParseError> {
-        if cur.expr_depth >= MAX_EXPR_DEPTH {
-            return Err(ParseError::ExpressionTooDeep {
-                span: cur.span(),
-                limit: MAX_EXPR_DEPTH,
-            });
-        }
-        cur.expr_depth += 1;
-        Ok(Self { cur })
-    }
-}
-
-impl Drop for DepthGuard<'_, '_> {
-    fn drop(&mut self) {
-        self.cur.expr_depth -= 1;
-    }
 }
 
 // ── Pratt core ────────────────────────────────────────────────────────────────

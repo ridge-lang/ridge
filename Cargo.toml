@@ -24,6 +24,7 @@ rustc-hash = { version = "2" }
 globset   = { version = "0.4" }
 ena       = { version = "0.14" }
 smallvec  = { version = "1" }
+proptest  = { version = "1" }
 
 [workspace.lints.rust]
 # `deny` (not `forbid`) so individual call-sites can opt-in via

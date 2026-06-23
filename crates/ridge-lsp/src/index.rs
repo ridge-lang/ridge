@@ -902,7 +902,13 @@ impl WorkspaceIndex {
     /// Returns `None` off any call so the editor popup stays quiet. Reads only
     /// this immutable snapshot; never triggers a compile.
     #[must_use]
-    pub fn signature_help_at(&self, uri: &Url, line: u32, utf16_col: u32) -> Option<SignatureHelp> {
+    pub fn signature_help_at(
+        &self,
+        uri: &Url,
+        line: u32,
+        utf16_col: u32,
+        label_offsets: bool,
+    ) -> Option<SignatureHelp> {
         let mid = self.module_id_for(uri)?;
         let mi = mid.0 as usize;
         let offset = self.line_indices.get(mi)?.utf16_to_byte(line, utf16_col);
@@ -918,7 +924,7 @@ impl WorkspaceIndex {
         let binding = self.binding_at(mi, callee_span.start)?;
         let sig = self.signature_for_binding(binding)?;
         let active = active_param(&arg_spans, offset, sig.params.len());
-        Some(make_signature_help(sig, active))
+        Some(make_signature_help(sig, active, label_offsets))
     }
 
     /// The innermost call whose argument region the cursor sits in, as
@@ -3725,6 +3731,26 @@ fn utf16_len(s: &str) -> u32 {
     u32::try_from(s.chars().map(char::len_utf16).sum::<usize>()).unwrap_or(u32::MAX)
 }
 
+/// The substring of `s` spanning the `[start, end)` UTF-16 code-unit range, the
+/// inverse of the offsets [`build_signature`] records. Used to hand a parameter
+/// label as text to clients that don't support label offsets. A char straddling
+/// a boundary (only possible with malformed offsets) is excluded.
+fn utf16_slice(s: &str, start: u32, end: u32) -> String {
+    let mut col: u32 = 0;
+    let mut out = String::new();
+    for ch in s.chars() {
+        let next = col + u32::try_from(ch.len_utf16()).unwrap_or(0);
+        if col >= start && next <= end {
+            out.push(ch);
+        }
+        if next >= end {
+            break;
+        }
+        col = next;
+    }
+    out
+}
+
 /// The index of the parameter the cursor is filling in: the number of argument
 /// atoms already completed before it, clamped to the last parameter.
 fn active_param(arg_spans: &[Span], offset: u32, nparams: usize) -> u32 {
@@ -3739,12 +3765,21 @@ fn active_param(arg_spans: &[Span], offset: u32, nparams: usize) -> u32 {
 
 /// Assemble the LSP [`SignatureHelp`] for one resolved signature, marking
 /// `active` as the parameter being filled in.
-fn make_signature_help(sig: SignatureSig, active: u32) -> SignatureHelp {
+///
+/// `label_offsets` reflects the client's
+/// `parameterInformation.labelOffsetSupport`: when set, each parameter is given
+/// as `[start, end)` UTF-16 offsets into the label; otherwise as the substring it
+/// covers, which is all a client without offset support can match.
+fn make_signature_help(sig: SignatureSig, active: u32, label_offsets: bool) -> SignatureHelp {
     let parameters = sig
         .params
         .iter()
         .map(|&offsets| ParameterInformation {
-            label: ParameterLabel::LabelOffsets(offsets),
+            label: if label_offsets {
+                ParameterLabel::LabelOffsets(offsets)
+            } else {
+                ParameterLabel::Simple(utf16_slice(&sig.label, offsets[0], offsets[1]))
+            },
             documentation: None,
         })
         .collect();

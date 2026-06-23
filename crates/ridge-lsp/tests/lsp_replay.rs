@@ -58,6 +58,52 @@ fn make_init_params(workspace_name: &str) -> InitializeParams {
     }
 }
 
+/// The capabilities a modern client advertises: Markdown content, parameter
+/// label offsets, a hierarchical outline, and `CodeAction` literals. Used by the
+/// fixtures so the default test client exercises the richer response forms, the
+/// way mainstream editors do. Degradation tests pass narrower capabilities
+/// explicitly.
+fn full_capabilities() -> ClientCapabilities {
+    ClientCapabilities {
+        text_document: Some(TextDocumentClientCapabilities {
+            hover: Some(HoverClientCapabilities {
+                content_format: Some(vec![MarkupKind::Markdown, MarkupKind::PlainText]),
+                ..Default::default()
+            }),
+            completion: Some(CompletionClientCapabilities {
+                completion_item: Some(CompletionItemCapability {
+                    documentation_format: Some(vec![MarkupKind::Markdown, MarkupKind::PlainText]),
+                    ..Default::default()
+                }),
+                ..Default::default()
+            }),
+            signature_help: Some(SignatureHelpClientCapabilities {
+                signature_information: Some(SignatureInformationSettings {
+                    parameter_information: Some(ParameterInformationSettings {
+                        label_offset_support: Some(true),
+                    }),
+                    ..Default::default()
+                }),
+                ..Default::default()
+            }),
+            document_symbol: Some(DocumentSymbolClientCapabilities {
+                hierarchical_document_symbol_support: Some(true),
+                ..Default::default()
+            }),
+            code_action: Some(CodeActionClientCapabilities {
+                code_action_literal_support: Some(CodeActionLiteralSupport {
+                    code_action_kind: CodeActionKindLiteralSupport {
+                        value_set: vec![CodeActionKind::QUICKFIX.as_str().to_owned()],
+                    },
+                }),
+                ..Default::default()
+            }),
+            ..Default::default()
+        }),
+        ..Default::default()
+    }
+}
+
 // ── In-process service builder ────────────────────────────────────────────────
 
 use tower_lsp::ClientSocket;
@@ -858,6 +904,19 @@ async fn hover_fixture(
     tower_lsp::ClientSocket,
     Url,
 ) {
+    hover_fixture_with_caps(main_src, full_capabilities()).await
+}
+
+/// Like [`hover_fixture`] but with explicit client capabilities, for exercising
+/// the capability-degraded response encodings.
+async fn hover_fixture_with_caps(
+    main_src: &'static str,
+    caps: ClientCapabilities,
+) -> (
+    tower_lsp::LspService<RidgeLanguageServer>,
+    tower_lsp::ClientSocket,
+    Url,
+) {
     let dir = tempfile::TempDir::new().expect("temp dir");
     let root = dir.path().to_path_buf();
     let app_src = root.join("app").join("src");
@@ -886,7 +945,7 @@ async fn hover_fixture(
                     uri: root_uri,
                     name: "hover-ws".to_owned(),
                 }]),
-                capabilities: ClientCapabilities::default(),
+                capabilities: caps,
                 ..InitializeParams::default()
             })
             .await
@@ -2854,6 +2913,19 @@ async fn cap_workspace_fixture(
     tower_lsp::ClientSocket,
     Url,
 ) {
+    cap_workspace_fixture_with_caps(main_src, full_capabilities()).await
+}
+
+/// Like [`cap_workspace_fixture`] but with explicit client capabilities, for
+/// exercising the capability-degraded `codeAction` encoding.
+async fn cap_workspace_fixture_with_caps(
+    main_src: &str,
+    caps: ClientCapabilities,
+) -> (
+    tower_lsp::LspService<RidgeLanguageServer>,
+    tower_lsp::ClientSocket,
+    Url,
+) {
     let dir = tempfile::TempDir::new().expect("temp dir");
     let root = dir.path().to_path_buf();
     let app_src = root.join("app").join("src");
@@ -2882,7 +2954,7 @@ async fn cap_workspace_fixture(
                     uri: root_uri,
                     name: "cap-ws".to_owned(),
                 }]),
-                capabilities: ClientCapabilities::default(),
+                capabilities: caps,
                 ..InitializeParams::default()
             })
             .await
@@ -4002,6 +4074,236 @@ async fn test_completion_resolve_passes_through_items_without_data() {
     assert_eq!(resolved.label, "match");
     assert!(resolved.detail.is_none(), "no data means no enrichment");
     assert!(resolved.documentation.is_none());
+}
+
+// ── client-capability degradation ─────────────────────────────────────────────
+
+/// A client that advertises only plain text for hover and completion-doc content,
+/// so Markdown must be downgraded.
+fn plaintext_only_capabilities() -> ClientCapabilities {
+    ClientCapabilities {
+        text_document: Some(TextDocumentClientCapabilities {
+            hover: Some(HoverClientCapabilities {
+                content_format: Some(vec![MarkupKind::PlainText]),
+                ..Default::default()
+            }),
+            completion: Some(CompletionClientCapabilities {
+                completion_item: Some(CompletionItemCapability {
+                    documentation_format: Some(vec![MarkupKind::PlainText]),
+                    ..Default::default()
+                }),
+                ..Default::default()
+            }),
+            ..Default::default()
+        }),
+        ..Default::default()
+    }
+}
+
+#[tokio::test]
+async fn test_signature_help_degrades_to_simple_labels() {
+    // Without `labelOffsetSupport`, each parameter must be the substring it
+    // covers, not a `[start, end)` offset pair the client couldn't map.
+    let src = "import std.list as L\npub fn run f xs = L.map f xs\n";
+    let (service, _socket, uri) = hover_fixture_with_caps(src, ClientCapabilities::default()).await;
+    let server = service.inner();
+
+    let help = server
+        .signature_help(signature_at(&uri, 1, 24))
+        .await
+        .expect("signature_help ok")
+        .expect("a signature for `L.map`");
+
+    // The label itself is unchanged; only the parameter encoding degrades.
+    assert_eq!(
+        help.signatures[0].label,
+        "map (f: fn a -> b) (xs: List a) -> List b"
+    );
+    let labels: Vec<String> = help.signatures[0]
+        .parameters
+        .as_ref()
+        .expect("parameters present")
+        .iter()
+        .map(|p| match &p.label {
+            ParameterLabel::Simple(s) => s.clone(),
+            ParameterLabel::LabelOffsets(_) => {
+                panic!("expected substring labels when offsets are unsupported")
+            }
+        })
+        .collect();
+    assert_eq!(labels, ["(f: fn a -> b)", "(xs: List a)"]);
+}
+
+#[tokio::test]
+async fn test_document_symbol_flattens_without_hierarchical_support() {
+    let (service, _socket, uri) =
+        hover_fixture_with_caps(SYMBOL_SRC, ClientCapabilities::default()).await;
+    let server = service.inner();
+
+    let resp = server
+        .document_symbol(doc_symbol_params(&uri))
+        .await
+        .expect("documentSymbol ok")
+        .expect("an outline for a non-empty module");
+    let DocumentSymbolResponse::Flat(symbols) = resp else {
+        panic!("expected a flat outline without hierarchical support");
+    };
+
+    // Pre-order over the same tree the nested form returns: declarations with
+    // their members inlined right after them.
+    let names: Vec<&str> = symbols.iter().map(|s| s.name.as_str()).collect();
+    assert_eq!(
+        names,
+        [
+            "Color", "Red", "Green", "Blue", "User", "name", "age", "maxAge", "greet", "Counter",
+            "count", "bump"
+        ]
+    );
+
+    // Members carry their parent as the container; top-level decls have none.
+    let by_name = |n: &str| symbols.iter().find(|s| s.name == n).expect("present");
+    assert_eq!(by_name("Color").container_name, None);
+    assert_eq!(by_name("Red").container_name.as_deref(), Some("Color"));
+    assert_eq!(by_name("age").container_name.as_deref(), Some("User"));
+    assert_eq!(by_name("bump").container_name.as_deref(), Some("Counter"));
+}
+
+#[tokio::test]
+async fn test_code_action_uses_command_bridge_without_literal_support() {
+    // Without `codeActionLiteralSupport` the quick-fix can't be an inline
+    // `CodeAction`; it's delivered as a `Command` carrying the edit, which the
+    // client runs through `workspace/executeCommand`.
+    let src = "import std.io as Io\n\npub fn greet () -> Unit =\n    Io.println \"hi\"\n";
+    let (service, _socket, uri) =
+        cap_workspace_fixture_with_caps(src, ClientCapabilities::default()).await;
+    let server = service.inner();
+
+    let resp = server
+        .code_action(CodeActionParams {
+            text_document: TextDocumentIdentifier { uri: uri.clone() },
+            range: Range {
+                start: Position::new(2, 8),
+                end: Position::new(2, 8),
+            },
+            context: CodeActionContext::default(),
+            work_done_progress_params: WorkDoneProgressParams::default(),
+            partial_result_params: PartialResultParams::default(),
+        })
+        .await
+        .expect("code_action ok")
+        .expect("a quick-fix is offered on the flagged function");
+
+    assert_eq!(resp.len(), 1);
+    let CodeActionOrCommand::Command(cmd) = &resp[0] else {
+        panic!("expected a Command bridge, got {:?}", resp[0]);
+    };
+    assert_eq!(cmd.title, "Add capability `io` to `greet`");
+    assert_eq!(cmd.command, "ridge.applyWorkspaceEdit");
+
+    // The command's sole argument is the same edit the literal form would inline.
+    let arg = cmd
+        .arguments
+        .as_ref()
+        .and_then(|a| a.first())
+        .expect("the command carries the edit");
+    let edit: WorkspaceEdit =
+        serde_json::from_value(arg.clone()).expect("the argument is a WorkspaceEdit");
+    let edits = edit
+        .changes
+        .as_ref()
+        .and_then(|c| c.get(&uri))
+        .expect("an edit for this document");
+    assert_eq!(edits.len(), 1);
+    assert_eq!(edits[0].new_text, "io ");
+    assert_eq!(edits[0].range.start, Position::new(2, 7));
+}
+
+#[tokio::test]
+async fn test_execute_command_guards_unknown_and_malformed() {
+    let (service, _socket, _uri) = hover_fixture("pub fn run -> Int = 1\n").await;
+    let server = service.inner();
+
+    let run = |command: &str, arguments: Vec<serde_json::Value>| {
+        let command = command.to_owned();
+        async move {
+            server
+                .execute_command(ExecuteCommandParams {
+                    command,
+                    arguments,
+                    work_done_progress_params: WorkDoneProgressParams::default(),
+                })
+                .await
+                .expect("execute_command ok")
+        }
+    };
+
+    // An unknown command is ignored; the apply bridge with no/garbage argument
+    // applies nothing. None of these reaches `workspace/applyEdit`, so the test
+    // needs no client pump (the bridge payload itself is covered above).
+    assert!(run("something.else", vec![]).await.is_none());
+    assert!(run("ridge.applyWorkspaceEdit", vec![]).await.is_none());
+    assert!(run(
+        "ridge.applyWorkspaceEdit",
+        vec![serde_json::Value::String("nope".to_owned())]
+    )
+    .await
+    .is_none());
+}
+
+#[tokio::test]
+async fn test_hover_degrades_to_plaintext() {
+    // `maxAge` is a documented-by-type constant; hover normally fences it as
+    // Markdown. A plain-text-only client gets the same content without fences.
+    let src = "const maxAge: Int = 120\npub fn run -> Int = maxAge\n";
+    let (service, _socket, uri) = hover_fixture_with_caps(src, plaintext_only_capabilities()).await;
+    let server = service.inner();
+
+    let hover = server
+        .hover(hover_at(&uri, 1, 20))
+        .await
+        .expect("hover ok")
+        .expect("a hover on the `maxAge` reference");
+    let HoverContents::Markup(markup) = hover.contents else {
+        panic!("expected markup hover contents");
+    };
+    assert_eq!(markup.kind, MarkupKind::PlainText);
+    assert!(
+        !markup.value.contains("```"),
+        "plain-text hover must not contain code fences, got {:?}",
+        markup.value
+    );
+}
+
+#[tokio::test]
+async fn test_completion_doc_degrades_to_plaintext() {
+    let src = "---\nGreets a person by name.\n---\npub fn greet (name: Text) -> Text = name\npub fn run -> Text = gr\n";
+    let (service, _socket, uri) = hover_fixture_with_caps(src, plaintext_only_capabilities()).await;
+    let server = service.inner();
+
+    let items = completion_items(
+        server
+            .completion(complete_at(&uri, 4, 23))
+            .await
+            .expect("ok"),
+    );
+    let greet = items
+        .into_iter()
+        .find(|i| i.label == "greet")
+        .expect("greet is offered");
+    let resolved = server.completion_resolve(greet).await.expect("resolve ok");
+
+    let doc = match resolved.documentation {
+        Some(Documentation::MarkupContent(m)) => {
+            assert_eq!(m.kind, MarkupKind::PlainText);
+            m.value
+        }
+        other => panic!("expected plain-text documentation, got {other:?}"),
+    };
+    assert!(
+        doc.contains("Greets a person by name."),
+        "the doc text survives the downgrade, got {doc}"
+    );
+    assert!(!doc.contains("```"), "plain text must carry no code fences");
 }
 
 // ── textDocument/foldingRange (L15) ───────────────────────────────────────────

@@ -1,0 +1,49 @@
+<idea-plugin>
+    <id>lang.ridge.ide</id>
+    <name>Ridge</name>
+    <vendor url="https://github.com/ridge-lang/ridge">Ridge</vendor>
+
+    <description><![CDATA[
+        Ridge language support for JetBrains IDEs: syntax highlighting,
+        diagnostics, hover, go-to-definition and type-definition, find usages,
+        rename, signature help, formatting, completion, and call/type
+        hierarchy. The semantic features are served by <code>ridge-lsp</code>
+        through <a href="https://github.com/redhat-developer/lsp4ij">LSP4IJ</a>,
+        and the syntax colouring uses the same TextMate grammar as the VS Code
+        extension.
+        <br/><br/>
+        Install <code>ridge-lsp</code> (the install script puts it in
+        <code>~/.cargo/bin</code>) and open a <code>.ridge</code> file; the
+        server starts on its own. If the binary lives elsewhere, set its path
+        under <b>Settings | Languages &amp; Frameworks | Ridge</b>.
+    ]]></description>
+
+    <depends>com.intellij.modules.platform</depends>
+    <depends>com.redhat.devtools.lsp4ij</depends>
+    <depends optional="true" config-file="ridge-textmate.xml">org.jetbrains.plugins.textmate</depends>
+
+    <extensions defaultExtensionNs="com.intellij">
+        <fileIconProvider implementation="lang.ridge.intellij.RidgeFileIconProvider"/>
+        <applicationConfigurable
+            parentId="language"
+            instance="lang.ridge.intellij.RidgeSettingsConfigurable"
+            id="lang.ridge.settings"
+            displayName="Ridge"/>
+        <!-- Semantic-token colours that the stock schemes leave at the default
+             foreground (types, parameters, call-site functions). -->
+        <additionalTextAttributes scheme="Dark" file="colors/RidgeDark.xml"/>
+        <additionalTextAttributes scheme="Darcula" file="colors/RidgeDark.xml"/>
+        <additionalTextAttributes scheme="Light" file="colors/RidgeLight.xml"/>
+        <additionalTextAttributes scheme="IntelliJ Light" file="colors/RidgeLight.xml"/>
+    </extensions>
+
+    <extensions defaultExtensionNs="com.redhat.devtools.lsp4ij">
+        <server
+            id="ridge"
+            name="Ridge Language Server"
+            factoryClass="lang.ridge.intellij.RidgeLanguageServerFactory">
+            <description>Ridge language support backed by ridge-lsp.</description>
+        </server>
+        <fileNamePatternMapping patterns="*.ridge" serverId="ridge" languageId="ridge"/>
+    </extensions>
+</idea-plugin>

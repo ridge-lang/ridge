@@ -1,0 +1,8 @@
+<idea-plugin>
+    <!-- Loaded only when the bundled TextMate plugin is present (it is, in every
+         JetBrains IDE). Registers the Ridge grammar for lexical highlighting. -->
+    <extensions defaultExtensionNs="com.intellij">
+        <textmate.bundleProvider
+            implementation="lang.ridge.intellij.RidgeTextMateBundleProvider"/>
+    </extensions>
+</idea-plugin>

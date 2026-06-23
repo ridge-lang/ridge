@@ -1,0 +1,19 @@
+<?xml version='1.0'?>
+<!-- Semantic-token colours for light schemes, matching the VS Code Light+ palette. -->
+<list>
+    <option name="RIDGE_TYPE">
+        <value>
+            <option name="FOREGROUND" value="267F99" />
+        </value>
+    </option>
+    <option name="RIDGE_PARAMETER">
+        <value>
+            <option name="FOREGROUND" value="001080" />
+        </value>
+    </option>
+    <option name="RIDGE_FUNCTION">
+        <value>
+            <option name="FOREGROUND" value="795E26" />
+        </value>
+    </option>
+</list>

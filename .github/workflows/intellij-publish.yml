@@ -1,0 +1,141 @@
+name: JetBrains plugin
+
+on:
+  pull_request:
+    paths:
+      - 'tools/intellij-ridge/**'
+      - '.github/workflows/intellij-publish.yml'
+  workflow_dispatch:
+    inputs:
+      publish:
+        description: 'Publish to the JetBrains Marketplace (requires PUBLISH_TOKEN and the signing secrets).'
+        type: boolean
+        default: false
+
+# Serialize runs that target the same branch/tag so two dispatches against the
+# same ref do not race a Marketplace publish.
+concurrency:
+  group: intellij-publish-${{ github.head_ref || github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  build:
+    name: Build + verify
+    runs-on: ubuntu-22.04
+    permissions:
+      contents: read
+    outputs:
+      version: ${{ steps.meta.outputs.version }}
+      zip: ${{ steps.meta.outputs.zip }}
+    defaults:
+      run:
+        working-directory: tools/intellij-ridge
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Setup JDK
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          # 2024.2+ is compiled at Java 21; this satisfies the Gradle toolchain
+          # without the foojay download the local build uses.
+          java-version: '21'
+
+      - name: Setup Gradle
+        uses: gradle/actions/setup-gradle@v4
+
+      - name: Read version
+        id: meta
+        shell: bash
+        run: |
+          VERSION="$(sed -n 's/^version = "\(.*\)"/\1/p' build.gradle.kts | head -1)"
+          ZIP="intellij-ridge-${VERSION}.zip"
+          echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
+          echo "zip=${ZIP}" >> "$GITHUB_OUTPUT"
+          echo "Plugin version: ${VERSION}"
+
+      - name: Build plugin
+        run: ./gradlew buildPlugin
+
+      - name: Verify plugin structure
+        run: ./gradlew verifyPluginStructure
+
+      - name: Upload plugin artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: ${{ steps.meta.outputs.zip }}
+          path: tools/intellij-ridge/build/distributions/*.zip
+          if-no-files-found: error
+          retention-days: 30
+
+  publish:
+    name: Publish to JetBrains Marketplace
+    needs: build
+    # Only publish when dispatched manually with `publish` set to true. PRs and
+    # the default dispatch build the artifact but never push it.
+    if: github.event_name == 'workflow_dispatch' && inputs.publish == true
+    runs-on: ubuntu-22.04
+    permissions:
+      contents: write
+    defaults:
+      run:
+        working-directory: tools/intellij-ridge
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Setup JDK
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+
+      - name: Setup Gradle
+        uses: gradle/actions/setup-gradle@v4
+
+      - name: Verify publish secrets are configured
+        shell: bash
+        env:
+          PUBLISH_TOKEN: ${{ secrets.PUBLISH_TOKEN }}
+          CERTIFICATE_CHAIN: ${{ secrets.CERTIFICATE_CHAIN }}
+          PRIVATE_KEY: ${{ secrets.PRIVATE_KEY }}
+        run: |
+          missing=""
+          [ -z "${PUBLISH_TOKEN}" ] && missing="${missing} PUBLISH_TOKEN"
+          [ -z "${CERTIFICATE_CHAIN}" ] && missing="${missing} CERTIFICATE_CHAIN"
+          [ -z "${PRIVATE_KEY}" ] && missing="${missing} PRIVATE_KEY"
+          if [ -n "${missing}" ]; then
+            echo "::error::Missing required secrets:${missing}"
+            echo "Add them under Settings > Secrets and variables > Actions."
+            echo "PUBLISH_TOKEN comes from https://plugins.jetbrains.com/author/me/tokens."
+            echo "The signing key is generated per the Marketplace ZIP signing guide."
+            exit 1
+          fi
+
+      - name: Sign and publish
+        env:
+          PUBLISH_TOKEN: ${{ secrets.PUBLISH_TOKEN }}
+          CERTIFICATE_CHAIN: ${{ secrets.CERTIFICATE_CHAIN }}
+          PRIVATE_KEY: ${{ secrets.PRIVATE_KEY }}
+          PRIVATE_KEY_PASSWORD: ${{ secrets.PRIVATE_KEY_PASSWORD }}
+        run: |
+          ./gradlew publishPlugin
+          echo "Published lang.ridge.ide v${{ needs.build.outputs.version }}"
+
+      - name: Tag intellij-v<version>
+        env:
+          VERSION: ${{ needs.build.outputs.version }}
+        shell: bash
+        working-directory: ${{ github.workspace }}
+        run: |
+          TAG="intellij-v${VERSION}"
+          if git ls-remote --exit-code --tags origin "refs/tags/${TAG}" >/dev/null 2>&1; then
+            echo "Tag ${TAG} already exists on the remote; skipping."
+            exit 0
+          fi
+          git config user.name  "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git tag -a "${TAG}" -m "Ridge JetBrains plugin ${VERSION}"
+          git push origin "${TAG}"
+          echo "Pushed tag ${TAG}"

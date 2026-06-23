@@ -42,14 +42,17 @@ pub(crate) struct Cursor<'t> {
     /// we are inside at least one bracket, where the lexer emits NEWLINE (not
     /// INDENT/DEDENT) at statement boundaries.
     pub(crate) bracket_depth: u32,
-    /// Current expression-parser recursion depth.
+    /// Current recursive-descent depth, shared across expressions, types, and
+    /// patterns.
     ///
-    /// Incremented on entry to the Pratt core ([`crate::expr::parse_expr_bp`])
-    /// and decremented on exit, so it tracks how deeply nested the current
-    /// expression is.  When it would exceed the parser's fixed limit the
-    /// expression parser stops descending and reports `P028 ExpressionTooDeep`
-    /// instead of recursing further and overflowing the native stack.
-    pub(crate) expr_depth: u32,
+    /// Incremented at the head of every recursive entry point
+    /// ([`crate::expr::parse_expr_bp`], `parse_type`, `parse_pattern`) via
+    /// [`DepthGuard`] and decremented on exit. When it would exceed
+    /// [`MAX_PARSE_DEPTH`] the parser stops descending and reports `P028`
+    /// instead of recursing further and overflowing the native stack. One shared
+    /// budget is correct because the stack does not care which nonterminal
+    /// consumed the frame.
+    pub(crate) recursion_depth: u32,
     /// Line-map for column lookups in the nested-match offside rule (E2).
     ///
     /// Provided by [`ridge_lexer::LineMap`] when the cursor is constructed via
@@ -79,7 +82,7 @@ impl<'t> Cursor<'t> {
             pos: 0,
             no_layout_arm: false,
             bracket_depth: 0,
-            expr_depth: 0,
+            recursion_depth: 0,
             line_map: None,
         }
     }
@@ -98,7 +101,7 @@ impl<'t> Cursor<'t> {
             pos: 0,
             no_layout_arm: false,
             bracket_depth: 0,
-            expr_depth: 0,
+            recursion_depth: 0,
             line_map: Some(line_map),
         }
     }
@@ -229,6 +232,55 @@ impl<'t> Cursor<'t> {
                 }
             }
         }
+    }
+}
+
+// ── Recursion-depth guard ─────────────────────────────────────────────────────
+
+/// Maximum recursive-descent depth the parser will follow before it stops and
+/// reports `P028`.
+///
+/// Expressions, types, and patterns are each parsed by recursive descent
+/// (`parse_expr_bp`, `parse_type`, and `parse_pattern` re-enter themselves
+/// through nested forms), so deeply nested input — thousands of `(((…)))`,
+/// nested lists, chained operators, or `[[[…]]]` patterns — would otherwise grow
+/// the native stack without bound and abort the whole process. 256 is far deeper
+/// than any hand-written or formatter-produced source nests, yet shallow enough
+/// to stop well short of a stack overflow on a typical thread stack.
+pub(crate) const MAX_PARSE_DEPTH: u32 = 256;
+
+/// RAII guard that bounds parser recursion depth.
+///
+/// On creation it increments [`Cursor::recursion_depth`]; on drop it decrements
+/// it, so the counter is restored no matter which `?`/early-return path unwinds
+/// out of the descent. Placed at the head of every recursive entry point
+/// (`parse_expr_bp`, `parse_type`, `parse_pattern`) so all three share one
+/// budget.
+pub(crate) struct DepthGuard<'a, 't> {
+    pub(crate) cur: &'a mut Cursor<'t>,
+}
+
+impl<'a, 't> DepthGuard<'a, 't> {
+    /// Enter one recursion level.
+    ///
+    /// Returns `Err(P028 ExpressionTooDeep)` (without entering) when the limit
+    /// is already reached, so the caller stops descending gracefully instead of
+    /// recursing further and overflowing the native stack.
+    pub(crate) fn enter(cur: &'a mut Cursor<'t>) -> Result<Self, ParseError> {
+        if cur.recursion_depth >= MAX_PARSE_DEPTH {
+            return Err(ParseError::ExpressionTooDeep {
+                span: cur.span(),
+                limit: MAX_PARSE_DEPTH,
+            });
+        }
+        cur.recursion_depth += 1;
+        Ok(Self { cur })
+    }
+}
+
+impl Drop for DepthGuard<'_, '_> {
+    fn drop(&mut self) {
+        self.cur.recursion_depth -= 1;
     }
 }
 

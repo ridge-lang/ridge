@@ -299,15 +299,16 @@ pub enum ParseError {
         span: Span,
     },
 
-    /// P028 — an expression nested deeper than the parser's recursion limit.
+    /// P028 — syntax nested deeper than the parser's recursion limit.
     ///
-    /// The expression parser is recursive descent, so deeply nested input
-    /// (thousands of nested parentheses, lists, or operators) would otherwise
-    /// overflow the native stack and abort the whole compiler with no
-    /// diagnostic.  A fixed depth limit stops the descent and reports this
-    /// error instead.  No hand-written or formatter-produced program reaches
-    /// the limit; only pathological or adversarial input does.
-    #[error("expression nesting too deep (limit {limit})")]
+    /// Expressions, types, and patterns are all parsed by recursive descent, so
+    /// deeply nested input (thousands of nested parentheses, lists, operators,
+    /// arrow types, or list patterns) would otherwise overflow the native stack
+    /// and abort the whole compiler with no diagnostic.  A fixed depth limit,
+    /// shared across all three, stops the descent and reports this error
+    /// instead.  No hand-written or formatter-produced program reaches the
+    /// limit; only pathological or adversarial input does.
+    #[error("syntax nesting too deep (limit {limit})")]
     ExpressionTooDeep {
         /// Source location at which the limit was reached.
         span: Span,

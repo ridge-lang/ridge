@@ -49,7 +49,10 @@
 use ridge_ast::{Capability, FnType, Ident, PrimitiveType, RecordTypeField, Type};
 use ridge_lexer::Token;
 
-use crate::{cursor::Cursor, error::ParseError};
+use crate::{
+    cursor::{Cursor, DepthGuard},
+    error::ParseError,
+};
 
 // ── Public entry: parse_type ──────────────────────────────────────────────────
 
@@ -67,6 +70,11 @@ use crate::{cursor::Cursor, error::ParseError};
 /// Entry point for all type positions in the grammar (field types, return
 /// types, parameter annotations, etc.).
 pub(crate) fn parse_type(cur: &mut Cursor<'_>) -> Result<Type, ParseError> {
+    // Bound the descent before any work; nested `(…)`, `[…]`, and `->` forms all
+    // recurse back through here, so one guard at the entry caps the whole type.
+    let guard = DepthGuard::enter(cur)?;
+    let cur = &mut *guard.cur;
+
     // `fn` keyword opens a CapFunctionType; delegate to `parse_fn_type`.
     if cur.peek() == &Token::KwFn {
         return parse_fn_type(cur);

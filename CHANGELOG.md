@@ -63,6 +63,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Changed
 
 - The safe-SQL text wrapper `Sql` — with its `sql` factory and `sqlValue` accessor — moved from `std.net.http` to `std.sql`, where it sits next to `SqlValue` and the `SqlType` codec. `std.net.http` keeps the HTML and cookie hardening helpers. Import `Sql`/`sql` from `std.sql` going forward.
+- The language server now tailors each response to what the editor says it can render, rather than always sending the richest form. Hover and completion documentation fall back to plain text for a client that advertises only plain text; signature-help parameters are sent as label substrings when the client doesn't support label offsets; the document outline is flattened to a flat symbol list for a client that can't show a nested tree; and a quick-fix is delivered as a command the editor runs through `workspace/executeCommand` when it can't accept an inline code-action edit. Mainstream editors advertise all of these and see no change — the fallbacks are for the clients that don't, which previously received responses they couldn't display.
 
 ### Fixed
 

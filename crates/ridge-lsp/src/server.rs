@@ -72,6 +72,99 @@ type SharedEngine = Arc<StdMutex<Option<IncrementalState>>>;
 /// compile. Snapshotted under the state lock, then handed to a blocking thread.
 type CompileJob = (usize, SharedEngine, CompileTarget);
 
+/// Command id for the `workspace/executeCommand` bridge that applies a quick-fix
+/// edit on clients that can't accept a `CodeAction` literal (see [`ClientCaps`]).
+const APPLY_EDIT_COMMAND: &str = "ridge.applyWorkspaceEdit";
+
+// ── ClientCaps ────────────────────────────────────────────────────────────────
+
+/// The subset of client capabilities that decide how individual responses are
+/// encoded. The protocol lets a server send richer forms — Markdown content,
+/// parameter label offsets, a hierarchical outline, `CodeAction` literals — only
+/// when the client advertised support; otherwise the server must fall back to the
+/// plainer form the client can actually render. These gates are read once at
+/// `initialize` and consulted by the handlers that have a choice of encoding.
+//
+// Each gate is an independent, orthogonal capability, so a struct of named bools
+// is the clearest representation.
+#[allow(clippy::struct_excessive_bools)]
+#[derive(Debug, Clone, Copy)]
+struct ClientCaps {
+    /// `signatureHelp.signatureInformation.parameterInformation.labelOffsetSupport`.
+    /// When false, each parameter label is sent as the substring it covers rather
+    /// than the `[start, end)` offset pair the client could not map onto the label.
+    sig_label_offsets: bool,
+    /// `textDocument.documentSymbol.hierarchicalDocumentSymbolSupport`. When false,
+    /// the outline is flattened to `SymbolInformation[]` with each member's
+    /// container named, since the client cannot render a nested tree.
+    hierarchical_symbols: bool,
+    /// `textDocument.codeAction.codeActionLiteralSupport`. When false, a quick-fix
+    /// is delivered as a `Command` that applies its edit through
+    /// `workspace/executeCommand`, because the client cannot accept a `CodeAction`
+    /// literal carrying a `WorkspaceEdit`.
+    code_action_literals: bool,
+    /// Whether `textDocument.hover.contentFormat` admits Markdown. Defaults to
+    /// true: hover stays Markdown unless the client lists formats without it, in
+    /// which case the card is sent as plain text.
+    hover_markdown: bool,
+    /// Whether `textDocument.completion.completionItem.documentationFormat` admits
+    /// Markdown, with the same default and fallback as `hover_markdown`.
+    completion_doc_markdown: bool,
+}
+
+impl Default for ClientCaps {
+    fn default() -> Self {
+        // Conservative for the forms a non-supporting client would mis-render
+        // (offsets, nested outlines, action literals); lenient for Markdown, which
+        // every mainstream client renders and which only a client that explicitly
+        // asks for plain text turns off.
+        Self {
+            sig_label_offsets: false,
+            hierarchical_symbols: false,
+            code_action_literals: false,
+            hover_markdown: true,
+            completion_doc_markdown: true,
+        }
+    }
+}
+
+/// Read the response-shaping gates from the client's advertised capabilities.
+fn negotiate_client_caps(caps: &ClientCapabilities) -> ClientCaps {
+    let td = caps.text_document.as_ref();
+    // An explicit, non-empty content-format list that omits Markdown means plain
+    // text only; an absent or empty list keeps Markdown, which every mainstream
+    // client renders.
+    let admits_markdown = |formats: Option<&[MarkupKind]>| match formats {
+        Some(f) if !f.is_empty() => f.contains(&MarkupKind::Markdown),
+        _ => true,
+    };
+    ClientCaps {
+        sig_label_offsets: td
+            .and_then(|t| t.signature_help.as_ref())
+            .and_then(|s| s.signature_information.as_ref())
+            .and_then(|s| s.parameter_information.as_ref())
+            .and_then(|p| p.label_offset_support)
+            .unwrap_or(false),
+        hierarchical_symbols: td
+            .and_then(|t| t.document_symbol.as_ref())
+            .and_then(|d| d.hierarchical_document_symbol_support)
+            .unwrap_or(false),
+        code_action_literals: td
+            .and_then(|t| t.code_action.as_ref())
+            .and_then(|c| c.code_action_literal_support.as_ref())
+            .is_some(),
+        hover_markdown: admits_markdown(
+            td.and_then(|t| t.hover.as_ref())
+                .and_then(|h| h.content_format.as_deref()),
+        ),
+        completion_doc_markdown: admits_markdown(
+            td.and_then(|t| t.completion.as_ref())
+                .and_then(|c| c.completion_item.as_ref())
+                .and_then(|i| i.documentation_format.as_deref()),
+        ),
+    }
+}
+
 // ── WorkspaceSnapshot ─────────────────────────────────────────────────────────
 
 /// In-memory state of the LSP workspace.
@@ -118,6 +211,10 @@ struct WorkspaceSnapshot {
     /// around a reseed compile is gated on this; without it the server stays
     /// silent rather than emitting progress tokens the client would reject.
     supports_work_done_progress: bool,
+    /// How the client wants individual responses encoded (Markdown, label
+    /// offsets, hierarchical outline, action literals). Read once at `initialize`
+    /// so handlers can fall back to a form a non-supporting client can render.
+    client_caps: ClientCaps,
     /// File URIs edited since the last compile. Drained by the debounced
     /// incremental compile so a burst of edits across files is applied together.
     dirty: HashSet<Url>,
@@ -253,6 +350,13 @@ impl RidgeLanguageServer {
                 .filter(|idx| idx.contains_uri(uri))
                 .cloned()
         })
+    }
+
+    /// The negotiated client-capability gates (see [`ClientCaps`]). Copied out of
+    /// the snapshot so a handler can pick a response encoding without holding the
+    /// state lock across its own work.
+    async fn client_caps(&self) -> ClientCaps {
+        self.state.lock().await.client_caps
     }
 
     /// Every compiled workspace's index, in workspace order. Used by the
@@ -737,6 +841,9 @@ impl LanguageServer for RidgeLanguageServer {
             .and_then(|w| w.work_done_progress)
             .unwrap_or(false);
 
+        // How the client wants each response encoded (see `ClientCaps`).
+        let client_caps = negotiate_client_caps(&params.capabilities);
+
         // Collect every folder the client opened — `rootUri` plus all
         // `workspaceFolders` — and walk each up to its nearest `[workspace]`
         // manifest. Distinct manifest roots become independent workspaces, so a
@@ -789,6 +896,7 @@ impl LanguageServer for RidgeLanguageServer {
             snap.supports_type_hierarchy = supports_type_hierarchy;
             snap.supports_watched_files = supports_watched_files;
             snap.supports_work_done_progress = supports_work_done_progress;
+            snap.client_caps = client_caps;
         }
         if standalone {
             tracing::info!(
@@ -1003,11 +1111,15 @@ impl LanguageServer for RidgeLanguageServer {
         let Some((markdown, span)) = index.hover_at(&uri, pos.line, pos.character) else {
             return Ok(None);
         };
+        // Send the card as Markdown unless the client asked for plain text, in
+        // which case strip the fences so it still reads cleanly.
+        let (kind, value) = if self.client_caps().await.hover_markdown {
+            (MarkupKind::Markdown, markdown)
+        } else {
+            (MarkupKind::PlainText, markdown_to_plaintext(&markdown))
+        };
         Ok(Some(Hover {
-            contents: HoverContents::Markup(MarkupContent {
-                kind: MarkupKind::Markdown,
-                value: markdown,
-            }),
+            contents: HoverContents::Markup(MarkupContent { kind, value }),
             range: index.span_to_range(&uri, span),
         }))
     }
@@ -1158,6 +1270,7 @@ impl LanguageServer for RidgeLanguageServer {
         let Some(data) = item.data.clone() else {
             return Ok(item);
         };
+        let markdown = self.client_caps().await.completion_doc_markdown;
         // The completion's `data` carries the target module's URI and symbol
         // name, so try each workspace until one resolves it; only the owning
         // workspace's index will. A name+URI lookup never aliases a `ModuleId`,
@@ -1166,10 +1279,12 @@ impl LanguageServer for RidgeLanguageServer {
             if let Some((detail, doc)) = index.resolve_completion(&data) {
                 item.detail = Some(detail);
                 item.documentation = doc.map(|d| {
-                    Documentation::MarkupContent(MarkupContent {
-                        kind: MarkupKind::Markdown,
-                        value: d,
-                    })
+                    let (kind, value) = if markdown {
+                        (MarkupKind::Markdown, d)
+                    } else {
+                        (MarkupKind::PlainText, markdown_to_plaintext(&d))
+                    };
+                    Documentation::MarkupContent(MarkupContent { kind, value })
                 });
                 break;
             }
@@ -1228,9 +1343,19 @@ impl LanguageServer for RidgeLanguageServer {
         let Some(index) = index else {
             return Ok(None);
         };
-        Ok(index
-            .document_symbols_at(&uri)
-            .map(DocumentSymbolResponse::Nested))
+        let Some(symbols) = index.document_symbols_at(&uri) else {
+            return Ok(None);
+        };
+        // A client without hierarchical support can't render a nested tree, so
+        // flatten the outline to `SymbolInformation[]` with each member's
+        // container named; otherwise keep the richer nested form.
+        if self.client_caps().await.hierarchical_symbols {
+            Ok(Some(DocumentSymbolResponse::Nested(symbols)))
+        } else {
+            Ok(Some(DocumentSymbolResponse::Flat(flatten_symbols(
+                &uri, &symbols,
+            ))))
+        }
     }
 
     /// `textDocument/foldingRange` — collapsible regions (declaration bodies and
@@ -1440,7 +1565,15 @@ impl LanguageServer for RidgeLanguageServer {
         let Some(index) = index else {
             return Ok(None);
         };
-        Ok(index.signature_help_at(&uri, pos.position.line, pos.position.character))
+        // Clients that didn't advertise label-offset support get each parameter
+        // label as the substring it covers instead of an offset pair.
+        let label_offsets = self.client_caps().await.sig_label_offsets;
+        Ok(index.signature_help_at(
+            &uri,
+            pos.position.line,
+            pos.position.character,
+            label_offsets,
+        ))
     }
 
     /// `textDocument/semanticTokens/full` — semantic highlighting for the whole
@@ -1493,6 +1626,11 @@ impl LanguageServer for RidgeLanguageServer {
             return Ok(None);
         };
 
+        // A client that didn't advertise `CodeAction` literal support can't accept
+        // an inline `WorkspaceEdit`; for those, the fix is delivered as a `Command`
+        // that the `execute_command` handler applies via `workspace/applyEdit`.
+        let literals = self.client_caps().await.code_action_literals;
+
         let actions: Vec<CodeActionOrCommand> = index
             .capability_fixes
             .iter()
@@ -1506,6 +1644,19 @@ impl LanguageServer for RidgeLanguageServer {
                         new_text: fix.new_text.clone(),
                     }],
                 );
+                let edit = WorkspaceEdit {
+                    changes: Some(changes),
+                    ..WorkspaceEdit::default()
+                };
+                if !literals {
+                    return CodeActionOrCommand::Command(Command {
+                        title: fix.title.clone(),
+                        command: APPLY_EDIT_COMMAND.to_owned(),
+                        arguments: Some(vec![
+                            serde_json::to_value(&edit).unwrap_or(serde_json::Value::Null)
+                        ]),
+                    });
+                }
                 let diagnostics: Vec<Diagnostic> = params
                     .context
                     .diagnostics
@@ -1524,10 +1675,7 @@ impl LanguageServer for RidgeLanguageServer {
                     } else {
                         Some(diagnostics)
                     },
-                    edit: Some(WorkspaceEdit {
-                        changes: Some(changes),
-                        ..WorkspaceEdit::default()
-                    }),
+                    edit: Some(edit),
                     ..CodeAction::default()
                 })
             })
@@ -1539,11 +1687,87 @@ impl LanguageServer for RidgeLanguageServer {
             Ok(Some(actions))
         }
     }
+
+    /// `workspace/executeCommand` — applies a quick-fix edit for a client that
+    /// can't accept a `CodeAction` literal. The matching `code_action` `Command`
+    /// carries the `WorkspaceEdit` as its sole argument; here it is forwarded
+    /// straight back via `workspace/applyEdit`. Any other command is ignored.
+    async fn execute_command(
+        &self,
+        params: ExecuteCommandParams,
+    ) -> LspResult<Option<serde_json::Value>> {
+        if params.command != APPLY_EDIT_COMMAND {
+            return Ok(None);
+        }
+        let Some(arg) = params.arguments.into_iter().next() else {
+            return Ok(None);
+        };
+        let Ok(edit) = serde_json::from_value::<WorkspaceEdit>(arg) else {
+            return Ok(None);
+        };
+        if let Err(err) = self.client.apply_edit(edit).await {
+            tracing::warn!("workspace/applyEdit was rejected: {err}");
+        }
+        Ok(None)
+    }
 }
 
 /// Whether two LSP ranges intersect (touching counts as overlap).
 fn ranges_overlap(a: Range, b: Range) -> bool {
     a.start <= b.end && b.start <= a.end
+}
+
+/// Flatten a hierarchical outline into `SymbolInformation[]` for clients that
+/// don't support nested `DocumentSymbol`s. Each entry's `container_name` is its
+/// parent's name, so a union's variants still read as belonging to the union and
+/// a record's fields to the record.
+#[allow(deprecated)] // `SymbolInformation::deprecated` is deprecated; set to None.
+fn flatten_symbols(uri: &Url, symbols: &[DocumentSymbol]) -> Vec<SymbolInformation> {
+    fn walk(
+        uri: &Url,
+        symbols: &[DocumentSymbol],
+        container: Option<&str>,
+        out: &mut Vec<SymbolInformation>,
+    ) {
+        for sym in symbols {
+            out.push(SymbolInformation {
+                name: sym.name.clone(),
+                kind: sym.kind,
+                tags: sym.tags.clone(),
+                deprecated: None,
+                // The selection range points at the name, the best target for a
+                // "go to symbol" jump.
+                location: Location {
+                    uri: uri.clone(),
+                    range: sym.selection_range,
+                },
+                container_name: container.map(ToOwned::to_owned),
+            });
+            if let Some(children) = &sym.children {
+                walk(uri, children, Some(&sym.name), out);
+            }
+        }
+    }
+    let mut out = Vec::new();
+    walk(uri, symbols, None, &mut out);
+    out
+}
+
+/// Render a Markdown hover/documentation string as plain text for a client that
+/// only asked for `plaintext`: drop the code-fence delimiter lines and strip the
+/// backticks used for inline code, so the content reads cleanly without markup.
+fn markdown_to_plaintext(markdown: &str) -> String {
+    let mut out = String::with_capacity(markdown.len());
+    for line in markdown.lines() {
+        if line.trim_start().starts_with("```") {
+            continue;
+        }
+        if !out.is_empty() {
+            out.push('\n');
+        }
+        out.extend(line.chars().filter(|&c| c != '`'));
+    }
+    out
 }
 
 /// The static set of capabilities the server advertises at `initialize`.
@@ -1571,6 +1795,13 @@ fn server_capabilities() -> ServerCapabilities {
         workspace_symbol_provider: Some(OneOf::Left(true)),
         inlay_hint_provider: Some(OneOf::Left(true)),
         code_action_provider: Some(CodeActionProviderCapability::Simple(true)),
+        // Backs the quick-fix `Command` bridge for clients that can't accept a
+        // `CodeAction` literal: the command carries the `WorkspaceEdit` the server
+        // then asks the client to apply (see `code_action` / `execute_command`).
+        execute_command_provider: Some(ExecuteCommandOptions {
+            commands: vec![APPLY_EDIT_COMMAND.to_owned()],
+            work_done_progress_options: WorkDoneProgressOptions::default(),
+        }),
         // Ridge calls are juxtaposition (`joinOn a b c`), so a space — not `(`
         // or `,` — separates arguments. Trigger and re-trigger on it.
         signature_help_provider: Some(SignatureHelpOptions {

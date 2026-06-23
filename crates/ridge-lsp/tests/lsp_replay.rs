@@ -176,6 +176,10 @@ async fn test_initialize_initialized_roundtrip() {
         result.capabilities.definition_provider.is_some(),
         "must advertise definitionProvider"
     );
+    assert!(
+        result.capabilities.declaration_provider.is_some(),
+        "must advertise declarationProvider"
+    );
 
     // initialized() must not panic.
     server.initialized(InitializedParams {}).await;
@@ -1180,6 +1184,20 @@ async fn two_member_fixture() -> (
     Url,
     Url,
 ) {
+    two_member_fixture_with("import lib.Lib as Lib\npub fn run -> Int = Lib.helper\n").await
+}
+
+/// [`two_member_fixture`] with a caller-chosen `app` source, so a test can pick
+/// the import form — aliased `import lib.Lib as Lib` vs selective
+/// `import lib.Lib (helper)` — that exercises the binding it needs.
+async fn two_member_fixture_with(
+    app_text: &str,
+) -> (
+    tower_lsp::LspService<RidgeLanguageServer>,
+    tower_lsp::ClientSocket,
+    Url,
+    Url,
+) {
     let dir = tempfile::TempDir::new().expect("temp dir");
     let root = dir.path().to_path_buf();
     std::fs::create_dir_all(root.join("lib").join("src")).expect("lib src");
@@ -1204,7 +1222,6 @@ async fn two_member_fixture() -> (
         "[project]\nname = \"app\"\nversion = \"0.1.0\"\nkind = \"app\"\nentry = \"src/Main.ridge\"\n\n[capabilities]\nallow = []\n",
     )
     .expect("app manifest");
-    let app_text = "import lib.Lib as Lib\npub fn run -> Int = Lib.helper\n";
     std::fs::write(root.join("app").join("src").join("Main.ridge"), app_text).expect("app source");
 
     let (service, socket) = build_test_service();
@@ -1275,6 +1292,68 @@ async fn test_definition_cross_module() {
     let loc = scalar_location(resp).expect("cross-module definition");
     assert_eq!(loc.uri, lib_uri, "definition must land in Lib.ridge");
     assert_eq!(loc.range.start.line, 0, "helper is on line 1 of Lib.ridge");
+}
+
+#[tokio::test]
+async fn test_declaration_jumps_to_import_clause() {
+    // A selective import (`import lib.Lib (helper)`) binds `helper` locally, so
+    // a use of it has two distinct sites: the clause declares the name here, the
+    // `fn helper` in Lib.ridge defines it. Declaration and definition split.
+    let import_line = "import lib.Lib (helper)";
+    let use_line = "pub fn run -> Int = helper";
+    let app_text = format!("{import_line}\n{use_line}\n");
+    let (service, _socket, app_uri, lib_uri) = two_member_fixture_with(&app_text).await;
+    let server = service.inner();
+
+    let use_col =
+        u32::try_from(use_line.find("helper").expect("use of helper") + 1).expect("fits u32");
+
+    // Declaration → the import clause item, in the importing file itself.
+    let decl = server
+        .goto_declaration(goto_at(&app_uri, 1, use_col))
+        .await
+        .expect("ok");
+    let decl = scalar_location(decl).expect("declaration of imported `helper`");
+    assert_eq!(
+        decl.uri, app_uri,
+        "declaration stays in the importing file's clause"
+    );
+    assert_eq!(decl.range.start.line, 0, "the import clause is on line 1");
+    let clause_col =
+        u32::try_from(import_line.find("helper").expect("clause item")).expect("fits u32");
+    assert_eq!(
+        decl.range.start.character, clause_col,
+        "declaration lands on the clause item `helper`"
+    );
+
+    // Definition of the same use jumps past the import into Lib.ridge.
+    let def = server
+        .goto_definition(goto_at(&app_uri, 1, use_col))
+        .await
+        .expect("ok");
+    let def = scalar_location(def).expect("definition of imported `helper`");
+    assert_eq!(def.uri, lib_uri, "definition must land in Lib.ridge");
+    assert_eq!(def.range.start.line, 0, "helper is on line 1 of Lib.ridge");
+}
+
+#[tokio::test]
+async fn test_declaration_falls_back_to_definition() {
+    // The aliased fixture imports `import lib.Lib as Lib` with no selective
+    // clause, so an aliased use (`Lib.helper`) has no separate declaration site;
+    // go-to-declaration must mirror go-to-definition into Lib.ridge.
+    let (service, _socket, app_uri, lib_uri) = two_member_fixture().await;
+    let server = service.inner();
+
+    let decl = server
+        .goto_declaration(goto_at(&app_uri, 1, 26))
+        .await
+        .expect("ok");
+    let decl = scalar_location(decl).expect("declaration of aliased `helper`");
+    assert_eq!(
+        decl.uri, lib_uri,
+        "no import clause → declaration follows definition"
+    );
+    assert_eq!(decl.range.start.line, 0, "helper is on line 1 of Lib.ridge");
 }
 
 #[tokio::test]

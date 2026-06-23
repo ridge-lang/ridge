@@ -577,6 +577,39 @@ impl WorkspaceIndex {
         }
     }
 
+    /// Answer a `textDocument/declaration` request at an LSP `(line, utf16_col)`.
+    ///
+    /// Where a name enters this module through a selective import clause
+    /// (`import other (foo)`), this returns that clause item — the site that
+    /// *declares* the name in the current scope — whereas [`Self::definition_at`]
+    /// jumps past the import to the original `fn`/`type`/`const` in the owning
+    /// module. A name with no separate import site — a local, a same-module
+    /// symbol, an alias-qualified `Mod.item` use, a record field — has its
+    /// declaration and definition at one place, so this falls back to the
+    /// definition. Reads only this immutable snapshot; never triggers a compile.
+    #[must_use]
+    pub fn declaration_at(&self, uri: &Url, line: u32, utf16_col: u32) -> Option<Location> {
+        let mid = self.module_id_for(uri)?;
+        let mi = mid.0 as usize;
+        let offset = self.line_indices.get(mi)?.utf16_to_byte(line, utf16_col);
+
+        // The referent under the cursor, resolved exactly as go-to-definition
+        // picks its binding: the narrowest name node that carries one.
+        let bindings = &self.modules.get(mi)?.bindings;
+        let key = self
+            .spatial
+            .get(mi)?
+            .enclosing(offset, &[NodeKind::Ident, NodeKind::QualifiedName])
+            .into_iter()
+            .find_map(|(nid, _, _)| bindings.get(nid.0 as usize).and_then(Option::as_ref))
+            .and_then(|b| referent_key(b, mid));
+
+        // A referent brought in by a selective import declares locally at its
+        // clause item; jump there. Otherwise declaration and definition coincide.
+        key.and_then(|k| self.import_clause_location(mid, &k))
+            .or_else(|| self.definition_at(uri, line, utf16_col))
+    }
+
     /// Answer a `textDocument/typeDefinition` request at an LSP `(line, col)`.
     ///
     /// Jumps from a value to the declaration of its type: the inferred type of
@@ -1933,6 +1966,33 @@ impl WorkspaceIndex {
             })
             .map(|(span, _, _)| *span)
             .max_by_key(|span| span.start)
+    }
+
+    /// The selective-import clause item in module `mid` whose resolved binding
+    /// denotes `key` — the `import … (item)` site that introduces the referent
+    /// into this module. `None` when no selective import of this module brings
+    /// the referent in (it is local, same-module, alias-qualified, or
+    /// unresolved), so the caller falls back to the definition site.
+    fn import_clause_location(&self, mid: ModuleId, key: &ReferentKey) -> Option<Location> {
+        let imports = &self.modules.get(mid.0 as usize)?.imports;
+        for imp in imports {
+            let Some(items) = &imp.explicit_items else {
+                continue;
+            };
+            for item in items {
+                let denotes = item
+                    .resolved
+                    .as_ref()
+                    .and_then(|b| referent_key(b, mid))
+                    .is_some_and(|k| k == *key);
+                if denotes {
+                    if let Some(span) = self.import_item_span(mid, item.span, &item.name) {
+                        return self.location_in(mid, span);
+                    }
+                }
+            }
+        }
+        None
     }
 
     /// Narrow a reference `span` in module `mi` to its trailing identifier run.

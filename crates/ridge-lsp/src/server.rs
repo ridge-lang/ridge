@@ -1235,6 +1235,22 @@ impl LanguageServer for RidgeLanguageServer {
             .map(GotoDefinitionResponse::Scalar))
     }
 
+    async fn goto_declaration(
+        &self,
+        params: request::GotoDeclarationParams,
+    ) -> LspResult<Option<request::GotoDeclarationResponse>> {
+        let uri = params.text_document_position_params.text_document.uri;
+        let pos = params.text_document_position_params.position;
+
+        let index = self.index_for_uri(&uri).await;
+        let Some(index) = index else {
+            return Ok(None);
+        };
+        Ok(index
+            .declaration_at(&uri, pos.line, pos.character)
+            .map(request::GotoDeclarationResponse::Scalar))
+    }
+
     async fn goto_type_definition(
         &self,
         params: GotoDefinitionParams,
@@ -1989,6 +2005,10 @@ fn server_capabilities(pull_diagnostics: bool) -> ServerCapabilities {
         position_encoding: Some(PositionEncodingKind::UTF16),
         hover_provider: Some(HoverProviderCapability::Simple(true)),
         definition_provider: Some(OneOf::Left(true)),
+        // Go-to-declaration jumps to a name's import clause, where go-to-definition
+        // jumps past the import to the original `fn`/`type`/`const` (see
+        // `WorkspaceIndex::declaration_at`); the two coincide for everything else.
+        declaration_provider: Some(DeclarationCapability::Simple(true)),
         type_definition_provider: Some(TypeDefinitionProviderCapability::Simple(true)),
         implementation_provider: Some(ImplementationProviderCapability::Simple(true)),
         references_provider: Some(OneOf::Left(true)),

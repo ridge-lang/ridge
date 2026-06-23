@@ -61,7 +61,7 @@ use ridge_resolve::ModuleId;
 
 use crate::cancel::{Cancel, CancelOnDrop};
 use crate::diagnostics::{source_id_to_uri, to_lsp_diagnostic, uri_key};
-use crate::index::{collect_capability_fixes, WorkspaceIndex};
+use crate::index::{collect_capability_fixes, CodeLensConfig, WorkspaceIndex};
 
 /// A workspace's retained incremental engine, shared between the state snapshot
 /// and the `spawn_blocking` compile task that owns it for the compile's duration.
@@ -165,6 +165,27 @@ fn negotiate_client_caps(caps: &ClientCapabilities) -> ClientCaps {
     }
 }
 
+/// Read the opt-in code-lens flags from `initializationOptions.codeLens`.
+///
+/// Shape: `{ "codeLens": { "references": true, "implementations": true,
+/// "run": true, "runTest": true } }`. Each flag defaults to `false`, so a client
+/// that sends nothing — or doesn't register the lens commands — gets no lenses.
+fn parse_code_lens_config(options: Option<&serde_json::Value>) -> CodeLensConfig {
+    let code_lens = options.and_then(|v| v.get("codeLens"));
+    let flag = |name: &str| {
+        code_lens
+            .and_then(|v| v.get(name))
+            .and_then(serde_json::Value::as_bool)
+            .unwrap_or(false)
+    };
+    CodeLensConfig {
+        references: flag("references"),
+        implementations: flag("implementations"),
+        run: flag("run"),
+        run_test: flag("runTest"),
+    }
+}
+
 // ── WorkspaceSnapshot ─────────────────────────────────────────────────────────
 
 /// In-memory state of the LSP workspace.
@@ -233,6 +254,10 @@ struct WorkspaceSnapshot {
     /// the push path delivers straight through `publish_diagnostics` and never
     /// reads this map.
     last_diagnostics: HashMap<Url, Vec<Diagnostic>>,
+    /// Which code lenses the client opted into (`initializationOptions.codeLens`),
+    /// read once at `initialize`. All-off for a client that didn't opt in, so a
+    /// generic editor is served no lenses whose commands it couldn't act on.
+    code_lens_config: CodeLensConfig,
 }
 
 /// One independent Ridge workspace: a manifest root (or the synthetic standalone
@@ -830,6 +855,9 @@ where
 
 #[tower_lsp::async_trait]
 impl LanguageServer for RidgeLanguageServer {
+    // A linear sequence of capability negotiations and workspace discovery; the
+    // steps don't factor cleanly and read best in one place.
+    #[allow(clippy::too_many_lines)]
     async fn initialize(&self, params: InitializeParams) -> LspResult<InitializeResult> {
         // Type hierarchy has no static server capability in lsp-types 0.94, so it
         // is registered dynamically later — but only if the client accepts that.
@@ -881,6 +909,10 @@ impl LanguageServer for RidgeLanguageServer {
 
         // How the client wants each response encoded (see `ClientCaps`).
         let client_caps = negotiate_client_caps(&params.capabilities);
+
+        // Code lenses are opt-in via `initializationOptions.codeLens`, so a generic
+        // client is never served lenses whose commands it can't run.
+        let code_lens_config = parse_code_lens_config(params.initialization_options.as_ref());
 
         // Collect every folder the client opened — `rootUri` plus all
         // `workspaceFolders` — and walk each up to its nearest `[workspace]`
@@ -936,6 +968,7 @@ impl LanguageServer for RidgeLanguageServer {
             snap.supports_work_done_progress = supports_work_done_progress;
             snap.supports_pull_diagnostics = supports_pull_diagnostics;
             snap.client_caps = client_caps;
+            snap.code_lens_config = code_lens_config;
         }
         if standalone {
             tracing::info!(
@@ -954,7 +987,7 @@ impl LanguageServer for RidgeLanguageServer {
         }
 
         Ok(InitializeResult {
-            capabilities: server_capabilities(supports_pull_diagnostics),
+            capabilities: server_capabilities(supports_pull_diagnostics, code_lens_config.any()),
             server_info: Some(ServerInfo {
                 name: "ridge-lsp".to_owned(),
                 version: Some(env!("CARGO_PKG_VERSION").to_owned()),
@@ -1298,6 +1331,42 @@ impl LanguageServer for RidgeLanguageServer {
         })
         .await;
         Ok(result.flatten())
+    }
+
+    async fn code_lens(&self, params: CodeLensParams) -> LspResult<Option<Vec<CodeLens>>> {
+        let cfg = self.state.lock().await.code_lens_config;
+        if !cfg.any() {
+            return Ok(None);
+        }
+        let uri = params.text_document.uri;
+        let Some(index) = self.index_for_uri(&uri).await else {
+            return Ok(None);
+        };
+        Ok(index.code_lenses_at(&uri, cfg))
+    }
+
+    async fn code_lens_resolve(&self, params: CodeLens) -> LspResult<CodeLens> {
+        // The executable Run/Run-test lenses already carry their command; only the
+        // navigational lenses need a count, which is a workspace-wide scan — run it
+        // off the request task under cooperative cancellation, like `references`.
+        if params.command.is_some() {
+            return Ok(params);
+        }
+        let uri = params
+            .data
+            .as_ref()
+            .and_then(|d| d.get("uri"))
+            .and_then(serde_json::Value::as_str)
+            .and_then(|s| Url::parse(s).ok());
+        let Some(uri) = uri else {
+            return Ok(params);
+        };
+        let Some(index) = self.index_for_uri(&uri).await else {
+            return Ok(params);
+        };
+        let fallback = params.clone();
+        let resolved = run_cancellable(move |cancel| index.resolve_code_lens(params, cancel)).await;
+        Ok(resolved.unwrap_or(fallback))
     }
 
     async fn document_highlight(
@@ -1997,7 +2066,7 @@ async fn deliver_diagnostics(
     }
 }
 
-fn server_capabilities(pull_diagnostics: bool) -> ServerCapabilities {
+fn server_capabilities(pull_diagnostics: bool, code_lens: bool) -> ServerCapabilities {
     ServerCapabilities {
         // Positions are exchanged as UTF-16 code-unit offsets, the LSP default.
         // Advertising it explicitly documents the contract; the server converts
@@ -2038,6 +2107,16 @@ fn server_capabilities(pull_diagnostics: bool) -> ServerCapabilities {
         execute_command_provider: Some(ExecuteCommandOptions {
             commands: vec![APPLY_EDIT_COMMAND.to_owned()],
             work_done_progress_options: WorkDoneProgressOptions::default(),
+        }),
+        // Inline Run / Run-test / references / implementations lenses, gated on the
+        // client opting in via `initializationOptions.codeLens`. The reference and
+        // implementation counts are a workspace-wide scan, computed lazily in
+        // `codeLens/resolve` only for the lenses the editor shows, so the provider
+        // advertises `resolve_provider`. The Run/Run-test commands (`ridge.run` /
+        // `ridge.test`) are handled client-side and stay out of
+        // `execute_command_provider` on purpose (see `RUN_COMMAND`).
+        code_lens_provider: code_lens.then_some(CodeLensOptions {
+            resolve_provider: Some(true),
         }),
         // Ridge calls are juxtaposition (`joinOn a b c`), so a space — not `(`
         // or `,` — separates arguments. Trigger and re-trigger on it.

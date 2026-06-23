@@ -50,6 +50,30 @@
         "configuration": "./language-configuration.json"
       }
     ],
+    "commands": [
+      {
+        "command": "ridge.run",
+        "title": "Run",
+        "category": "Ridge"
+      },
+      {
+        "command": "ridge.test",
+        "title": "Run Test",
+        "category": "Ridge"
+      }
+    ],
+    "menus": {
+      "commandPalette": [
+        {
+          "command": "ridge.run",
+          "when": "false"
+        },
+        {
+          "command": "ridge.test",
+          "when": "false"
+        }
+      ]
+    },
     "configuration": {
       "title": "Ridge",
       "properties": {

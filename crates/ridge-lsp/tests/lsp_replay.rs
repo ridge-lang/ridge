@@ -1820,6 +1820,159 @@ async fn test_references_honors_cancellation() {
 }
 
 #[tokio::test]
+async fn test_code_lens_run_and_test() {
+    use ridge_lsp::index::{CodeLensConfig, RUN_COMMAND, RUN_TEST_COMMAND};
+
+    // An app project earns a Run lens on `fn main` and a Run-test lens on each
+    // `@test` function. Both carry a ready client command — no resolve round-trip.
+    let app_text = "pub fn main -> Int = 0\n@test \"adds one\"\nfn check_add -> Int = 1\n";
+    let (service, _socket, app_uri, _lib_uri) = two_member_fixture_with(app_text).await;
+    let index = service
+        .inner()
+        .workspace_index()
+        .await
+        .expect("index built");
+
+    let cfg = CodeLensConfig {
+        references: false,
+        implementations: false,
+        run: true,
+        run_test: true,
+    };
+    let lenses = index
+        .code_lenses_at(&app_uri, cfg)
+        .expect("lenses for the app module");
+
+    let run = lenses
+        .iter()
+        .find(|l| l.command.as_ref().is_some_and(|c| c.command == RUN_COMMAND))
+        .expect("a Run lens on `fn main`");
+    assert_eq!(run.range.start.line, 0, "Run lens sits on `fn main`");
+    let run_args = run
+        .command
+        .as_ref()
+        .unwrap()
+        .arguments
+        .as_ref()
+        .expect("Run carries arguments");
+    assert_eq!(
+        run_args[0].as_str(),
+        Some("app"),
+        "Run targets the app member"
+    );
+
+    let test = lenses
+        .iter()
+        .find(|l| {
+            l.command
+                .as_ref()
+                .is_some_and(|c| c.command == RUN_TEST_COMMAND)
+        })
+        .expect("a Run-test lens on the `@test` function");
+    assert_eq!(
+        test.range.start.line, 2,
+        "Run-test lens sits on the `@test` fn"
+    );
+    let test_args = test
+        .command
+        .as_ref()
+        .unwrap()
+        .arguments
+        .as_ref()
+        .expect("Run-test carries arguments");
+    assert_eq!(test_args[0].as_str(), Some("app"));
+    assert_eq!(
+        test_args[1].as_str(),
+        Some("adds one"),
+        "the test filter uses the @test display name"
+    );
+}
+
+#[tokio::test]
+async fn test_code_lens_references_resolve_counts_uses() {
+    use ridge_lsp::cancel::Cancel;
+    use ridge_lsp::index::CodeLensConfig;
+
+    // Default fixture: app's `run` calls `Lib.helper`, so `helper` has one use.
+    let (service, _socket, _app_uri, lib_uri) = two_member_fixture().await;
+    let index = service
+        .inner()
+        .workspace_index()
+        .await
+        .expect("index built");
+
+    let cfg = CodeLensConfig {
+        references: true,
+        implementations: false,
+        run: false,
+        run_test: false,
+    };
+    let mut lenses = index
+        .code_lenses_at(&lib_uri, cfg)
+        .expect("lenses for the lib module");
+    // Lib holds a single declaration (`fn helper`), so a single reference lens,
+    // and it carries no command until resolve fills in the count.
+    assert_eq!(lenses.len(), 1, "one reference lens on `fn helper`");
+    let lens = lenses.pop().unwrap();
+    assert!(
+        lens.command.is_none(),
+        "a navigational lens resolves lazily"
+    );
+
+    let resolved = index.resolve_code_lens(lens, &Cancel::new());
+    let command = resolved.command.expect("resolve fills in the command");
+    assert_eq!(command.command, "editor.action.showReferences");
+    assert_eq!(command.title, "1 reference", "`helper` is used once");
+    assert_eq!(
+        command.arguments.as_ref().map(Vec::len),
+        Some(3),
+        "showReferences takes (uri, position, locations)"
+    );
+}
+
+#[tokio::test]
+async fn test_code_lens_capability_gated_on_opt_in() {
+    // Without the opt-in the provider is absent, so a generic client is never
+    // served lenses whose commands it can't run.
+    let (service_off, _s1) = build_test_service();
+    let caps_off = service_off
+        .inner()
+        .initialize(InitializeParams::default())
+        .await
+        .expect("initialize")
+        .capabilities;
+    assert!(
+        caps_off.code_lens_provider.is_none(),
+        "no codeLens provider until the client opts in"
+    );
+
+    // Opting in via initializationOptions advertises the provider, with lazy
+    // resolve for the reference/implementation counts.
+    let (service_on, _s2) = build_test_service();
+    let options: serde_json::Value = serde_json::from_str(
+        r#"{"codeLens":{"references":true,"implementations":true,"run":true,"runTest":true}}"#,
+    )
+    .expect("valid options json");
+    let caps_on = service_on
+        .inner()
+        .initialize(InitializeParams {
+            initialization_options: Some(options),
+            ..InitializeParams::default()
+        })
+        .await
+        .expect("initialize")
+        .capabilities;
+    let provider = caps_on
+        .code_lens_provider
+        .expect("codeLens provider when opted in");
+    assert_eq!(
+        provider.resolve_provider,
+        Some(true),
+        "reference/implementation counts resolve lazily"
+    );
+}
+
+#[tokio::test]
 async fn test_references_cross_module() {
     // `helper` is defined in Lib.ridge (line 0) and used as `Lib.helper` in the
     // app (line 1). A references query from the use-site must reach both files.

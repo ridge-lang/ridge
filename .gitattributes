@@ -11,6 +11,11 @@
 *.toml text eol=lf
 *.sh   text eol=lf
 
+# The VS Code grammar snapshot is compared byte-for-byte against freshly
+# tokenized output (always LF); keep the checked-out file LF so the test does
+# not fail on a Windows checkout with core.autocrlf=true.
+tools/vscode-ridge/test/__snapshots__/*.txt text eol=lf
+
 # Exception: this fixture deliberately holds CRLF line endings — it is the
 # input that exercises ridge-fmt's CRLF→LF normalisation. Marking it as
 # binary prevents Git from rewriting its line endings on checkout.

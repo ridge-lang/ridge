@@ -27,8 +27,44 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
+  test:
+    name: Test (grammar + activation)
+    runs-on: ubuntu-22.04
+    permissions:
+      contents: read
+    defaults:
+      run:
+        working-directory: tools/vscode-ridge
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Setup Node
+        uses: actions/setup-node@v5
+        with:
+          # pnpm 11.1.1 (the packageManager pin in tools/vscode-ridge/package.json)
+          # requires Node >= 22.13; Node 20 fails to load with
+          # ERR_UNKNOWN_BUILTIN_MODULE: node:sqlite.
+          node-version: '22'
+
+      - name: Activate pnpm via corepack
+        shell: bash
+        run: |
+          corepack enable
+          corepack prepare pnpm@11.1.1 --activate
+          pnpm --version
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      # Bundles the extension and runs the TextMate grammar snapshot, the
+      # manifest/activation coherence checks, and the indentation rules.
+      - name: Run tests
+        run: pnpm test
+
   package:
     name: Bundle + package
+    needs: test
     runs-on: ubuntu-22.04
     permissions:
       contents: read

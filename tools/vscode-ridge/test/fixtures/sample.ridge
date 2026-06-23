@@ -1,0 +1,59 @@
+---
+Doc comment block: exercises the documentation scope.
+It spans several lines and closes on the fence below.
+---
+
+-- A line comment, distinct from the --- fence above.
+import std.io as Io
+
+pub type Level = Info | Warn | Error
+
+@ffi("erlang", "io", "format")
+fn logRaw (msg: Text) -> Unit
+
+pub class Encode a =
+    encode (x: a) -> Text
+
+instance Encode Level =
+    encode (l) -> Text =
+        match l
+            Info  -> "info"
+            Warn  -> "warn"
+            Error -> "error"
+
+fn env io main () -> Result Unit Text =
+    let count   = 42
+    let hexMask = 0xFF_FF
+    let bits    = 0b1010_0101
+    let perms   = 0o755
+    let ratio   = 3.14_15e-2
+    let raw     = r"C:\ridge\no\escapes"
+    let fenced  = r#"has "quotes" inside"#
+    let doc     = """
+        triple-quoted
+        spans lines
+        """
+    let name    = "caf\u{00e9}\n"
+    let greet   = $"hello, ${name}! (${count})"
+    let flag    = true
+    let off     = false
+    let piped   = [1, 2, 3] |> List.map (fn x -> x + 1)
+    let guarded = if count >= 10 && count != 0 then "many" else "few"
+    Io.println greet
+
+actor Counter =
+    state n: Int = 0
+    init () =
+        n <- 0
+    on time tick () -> Int =
+        n <- n + 1
+        return n
+
+fn ops () -> Unit =
+    let joined = [1] ++ [2]
+    let range  = 1 .. 10
+    let consed = 1 :: rest
+    let chain  = parse "x" ?> handle
+    let opt    = maybe?
+    let c      = spawn Counter
+    c ! tick ()

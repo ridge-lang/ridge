@@ -1,0 +1,290 @@
+  1  "---"  source.ridge comment.block.documentation.ridge
+  2  "Doc comment block: exercises the documentation scope."  source.ridge comment.block.documentation.ridge
+  3  "It spans several lines and closes on the fence below."  source.ridge comment.block.documentation.ridge
+  4  "---"  source.ridge comment.block.documentation.ridge
+  6  "-- A line comment, distinct from the --- fence above."  source.ridge comment.line.double-dash.ridge
+  7  "import"  source.ridge keyword.other.ridge
+  7  " std"  source.ridge
+  7  "."  source.ridge keyword.operator.ridge
+  7  "io "  source.ridge
+  7  "as"  source.ridge keyword.other.ridge
+  7  "Io"  source.ridge entity.name.type.ridge
+  9  "pub"  source.ridge keyword.other.ridge
+  9  "type"  source.ridge keyword.other.ridge
+  9  "Level"  source.ridge entity.name.type.ridge
+  9  "="  source.ridge keyword.operator.ridge
+  9  "Info"  source.ridge entity.name.type.ridge
+  9  "|"  source.ridge keyword.operator.ridge
+  9  "Warn"  source.ridge entity.name.type.ridge
+  9  "|"  source.ridge keyword.operator.ridge
+  9  "Error"  source.ridge entity.name.type.ridge
+ 11  "@ffi"  source.ridge entity.name.tag.ridge
+ 11  "("  source.ridge punctuation.bracket.ridge
+ 11  "\""  source.ridge string.quoted.double.ridge
+ 11  "erlang"  source.ridge string.quoted.double.ridge
+ 11  "\""  source.ridge string.quoted.double.ridge
+ 11  ","  source.ridge punctuation.separator.comma.ridge
+ 11  "\""  source.ridge string.quoted.double.ridge
+ 11  "io"  source.ridge string.quoted.double.ridge
+ 11  "\""  source.ridge string.quoted.double.ridge
+ 11  ","  source.ridge punctuation.separator.comma.ridge
+ 11  "\""  source.ridge string.quoted.double.ridge
+ 11  "format"  source.ridge string.quoted.double.ridge
+ 11  "\""  source.ridge string.quoted.double.ridge
+ 11  ")"  source.ridge punctuation.bracket.ridge
+ 12  "fn"  source.ridge keyword.other.ridge
+ 12  " logRaw "  source.ridge
+ 12  "("  source.ridge punctuation.bracket.ridge
+ 12  "msg"  source.ridge
+ 12  ":"  source.ridge punctuation.separator.colon.ridge
+ 12  "Text"  source.ridge entity.name.type.ridge
+ 12  ")"  source.ridge punctuation.bracket.ridge
+ 12  "->"  source.ridge keyword.operator.ridge
+ 12  "Unit"  source.ridge entity.name.type.ridge
+ 14  "pub"  source.ridge keyword.other.ridge
+ 14  "class"  source.ridge keyword.other.ridge
+ 14  "Encode"  source.ridge entity.name.type.ridge
+ 14  " a "  source.ridge
+ 14  "="  source.ridge keyword.operator.ridge
+ 15  "    encode "  source.ridge
+ 15  "("  source.ridge punctuation.bracket.ridge
+ 15  "x"  source.ridge
+ 15  ":"  source.ridge punctuation.separator.colon.ridge
+ 15  " a"  source.ridge
+ 15  ")"  source.ridge punctuation.bracket.ridge
+ 15  "->"  source.ridge keyword.operator.ridge
+ 15  "Text"  source.ridge entity.name.type.ridge
+ 17  "instance"  source.ridge keyword.other.ridge
+ 17  "Encode"  source.ridge entity.name.type.ridge
+ 17  "Level"  source.ridge entity.name.type.ridge
+ 17  "="  source.ridge keyword.operator.ridge
+ 18  "    encode "  source.ridge
+ 18  "("  source.ridge punctuation.bracket.ridge
+ 18  "l"  source.ridge
+ 18  ")"  source.ridge punctuation.bracket.ridge
+ 18  "->"  source.ridge keyword.operator.ridge
+ 18  "Text"  source.ridge entity.name.type.ridge
+ 18  "="  source.ridge keyword.operator.ridge
+ 19  "match"  source.ridge keyword.control.ridge
+ 19  " l"  source.ridge
+ 20  "Info"  source.ridge entity.name.type.ridge
+ 20  "->"  source.ridge keyword.operator.ridge
+ 20  "\""  source.ridge string.quoted.double.ridge
+ 20  "info"  source.ridge string.quoted.double.ridge
+ 20  "\""  source.ridge string.quoted.double.ridge
+ 21  "Warn"  source.ridge entity.name.type.ridge
+ 21  "->"  source.ridge keyword.operator.ridge
+ 21  "\""  source.ridge string.quoted.double.ridge
+ 21  "warn"  source.ridge string.quoted.double.ridge
+ 21  "\""  source.ridge string.quoted.double.ridge
+ 22  "Error"  source.ridge entity.name.type.ridge
+ 22  "->"  source.ridge keyword.operator.ridge
+ 22  "\""  source.ridge string.quoted.double.ridge
+ 22  "error"  source.ridge string.quoted.double.ridge
+ 22  "\""  source.ridge string.quoted.double.ridge
+ 24  "fn"  source.ridge keyword.other.ridge
+ 24  " env io main "  source.ridge
+ 24  "("  source.ridge punctuation.bracket.ridge
+ 24  ")"  source.ridge punctuation.bracket.ridge
+ 24  "->"  source.ridge keyword.operator.ridge
+ 24  "Result"  source.ridge entity.name.type.ridge
+ 24  "Unit"  source.ridge entity.name.type.ridge
+ 24  "Text"  source.ridge entity.name.type.ridge
+ 24  "="  source.ridge keyword.operator.ridge
+ 25  "let"  source.ridge keyword.other.ridge
+ 25  " count   "  source.ridge
+ 25  "="  source.ridge keyword.operator.ridge
+ 25  "42"  source.ridge constant.numeric.integer.decimal.ridge
+ 26  "let"  source.ridge keyword.other.ridge
+ 26  " hexMask "  source.ridge
+ 26  "="  source.ridge keyword.operator.ridge
+ 26  "0xFF_FF"  source.ridge constant.numeric.integer.hex.ridge
+ 27  "let"  source.ridge keyword.other.ridge
+ 27  " bits    "  source.ridge
+ 27  "="  source.ridge keyword.operator.ridge
+ 27  "0b1010_0101"  source.ridge constant.numeric.integer.binary.ridge
+ 28  "let"  source.ridge keyword.other.ridge
+ 28  " perms   "  source.ridge
+ 28  "="  source.ridge keyword.operator.ridge
+ 28  "0o755"  source.ridge constant.numeric.integer.octal.ridge
+ 29  "let"  source.ridge keyword.other.ridge
+ 29  " ratio   "  source.ridge
+ 29  "="  source.ridge keyword.operator.ridge
+ 29  "3.14_15e-2"  source.ridge constant.numeric.float.ridge
+ 30  "let"  source.ridge keyword.other.ridge
+ 30  " raw     "  source.ridge
+ 30  "="  source.ridge keyword.operator.ridge
+ 30  "r\""  source.ridge string.quoted.other.raw.ridge
+ 30  "C:\\ridge\\no\\escapes"  source.ridge string.quoted.other.raw.ridge
+ 30  "\""  source.ridge string.quoted.other.raw.ridge
+ 31  "let"  source.ridge keyword.other.ridge
+ 31  " fenced  "  source.ridge
+ 31  "="  source.ridge keyword.operator.ridge
+ 31  "r#\""  source.ridge string.quoted.other.raw.ridge
+ 31  "has \"quotes\" inside"  source.ridge string.quoted.other.raw.ridge
+ 31  "\"#"  source.ridge string.quoted.other.raw.ridge
+ 32  "let"  source.ridge keyword.other.ridge
+ 32  " doc     "  source.ridge
+ 32  "="  source.ridge keyword.operator.ridge
+ 32  "\"\"\""  source.ridge string.quoted.triple.ridge
+ 33  "        triple-quoted"  source.ridge string.quoted.triple.ridge
+ 34  "        spans lines"  source.ridge string.quoted.triple.ridge
+ 35  "\"\"\""  source.ridge string.quoted.triple.ridge
+ 36  "let"  source.ridge keyword.other.ridge
+ 36  " name    "  source.ridge
+ 36  "="  source.ridge keyword.operator.ridge
+ 36  "\""  source.ridge string.quoted.double.ridge
+ 36  "caf"  source.ridge string.quoted.double.ridge
+ 36  "\\u{00e9}"  source.ridge string.quoted.double.ridge constant.character.escape.ridge
+ 36  "\\n"  source.ridge string.quoted.double.ridge constant.character.escape.ridge
+ 36  "\""  source.ridge string.quoted.double.ridge
+ 37  "let"  source.ridge keyword.other.ridge
+ 37  " greet   "  source.ridge
+ 37  "="  source.ridge keyword.operator.ridge
+ 37  "$\""  source.ridge string.quoted.double.ridge
+ 37  "hello, "  source.ridge string.quoted.double.ridge
+ 37  "${"  source.ridge string.quoted.double.ridge punctuation.definition.template-expression.begin.ridge
+ 37  "name"  source.ridge string.quoted.double.ridge
+ 37  "}"  source.ridge string.quoted.double.ridge punctuation.definition.template-expression.end.ridge
+ 37  "! ("  source.ridge string.quoted.double.ridge
+ 37  "${"  source.ridge string.quoted.double.ridge punctuation.definition.template-expression.begin.ridge
+ 37  "count"  source.ridge string.quoted.double.ridge
+ 37  "}"  source.ridge string.quoted.double.ridge punctuation.definition.template-expression.end.ridge
+ 37  ")"  source.ridge string.quoted.double.ridge
+ 37  "\""  source.ridge string.quoted.double.ridge
+ 38  "let"  source.ridge keyword.other.ridge
+ 38  " flag    "  source.ridge
+ 38  "="  source.ridge keyword.operator.ridge
+ 38  "true"  source.ridge constant.language.boolean.ridge
+ 39  "let"  source.ridge keyword.other.ridge
+ 39  " off     "  source.ridge
+ 39  "="  source.ridge keyword.operator.ridge
+ 39  "false"  source.ridge constant.language.boolean.ridge
+ 40  "let"  source.ridge keyword.other.ridge
+ 40  " piped   "  source.ridge
+ 40  "="  source.ridge keyword.operator.ridge
+ 40  "["  source.ridge punctuation.bracket.ridge
+ 40  "1"  source.ridge constant.numeric.integer.decimal.ridge
+ 40  ","  source.ridge punctuation.separator.comma.ridge
+ 40  "2"  source.ridge constant.numeric.integer.decimal.ridge
+ 40  ","  source.ridge punctuation.separator.comma.ridge
+ 40  "3"  source.ridge constant.numeric.integer.decimal.ridge
+ 40  "]"  source.ridge punctuation.bracket.ridge
+ 40  "|>"  source.ridge keyword.operator.ridge
+ 40  "List"  source.ridge entity.name.type.ridge
+ 40  "."  source.ridge keyword.operator.ridge
+ 40  "map "  source.ridge
+ 40  "("  source.ridge punctuation.bracket.ridge
+ 40  "fn"  source.ridge keyword.other.ridge
+ 40  " x "  source.ridge
+ 40  "->"  source.ridge keyword.operator.ridge
+ 40  " x "  source.ridge
+ 40  "+"  source.ridge keyword.operator.ridge
+ 40  "1"  source.ridge constant.numeric.integer.decimal.ridge
+ 40  ")"  source.ridge punctuation.bracket.ridge
+ 41  "let"  source.ridge keyword.other.ridge
+ 41  " guarded "  source.ridge
+ 41  "="  source.ridge keyword.operator.ridge
+ 41  "if"  source.ridge keyword.control.ridge
+ 41  " count "  source.ridge
+ 41  ">="  source.ridge keyword.operator.ridge
+ 41  "10"  source.ridge constant.numeric.integer.decimal.ridge
+ 41  "&&"  source.ridge keyword.operator.ridge
+ 41  " count "  source.ridge
+ 41  "!"  source.ridge keyword.operator.ridge
+ 41  "="  source.ridge keyword.operator.ridge
+ 41  "0"  source.ridge constant.numeric.integer.decimal.ridge
+ 41  "then"  source.ridge keyword.control.ridge
+ 41  "\""  source.ridge string.quoted.double.ridge
+ 41  "many"  source.ridge string.quoted.double.ridge
+ 41  "\""  source.ridge string.quoted.double.ridge
+ 41  "else"  source.ridge keyword.control.ridge
+ 41  "\""  source.ridge string.quoted.double.ridge
+ 41  "few"  source.ridge string.quoted.double.ridge
+ 41  "\""  source.ridge string.quoted.double.ridge
+ 42  "Io"  source.ridge entity.name.type.ridge
+ 42  "."  source.ridge keyword.operator.ridge
+ 42  "println greet"  source.ridge
+ 44  "actor"  source.ridge keyword.other.ridge
+ 44  "Counter"  source.ridge entity.name.type.ridge
+ 44  "="  source.ridge keyword.operator.ridge
+ 45  "state"  source.ridge keyword.other.ridge
+ 45  " n"  source.ridge
+ 45  ":"  source.ridge punctuation.separator.colon.ridge
+ 45  "Int"  source.ridge entity.name.type.ridge
+ 45  "="  source.ridge keyword.operator.ridge
+ 45  "0"  source.ridge constant.numeric.integer.decimal.ridge
+ 46  "init"  source.ridge keyword.other.ridge
+ 46  "("  source.ridge punctuation.bracket.ridge
+ 46  ")"  source.ridge punctuation.bracket.ridge
+ 46  "="  source.ridge keyword.operator.ridge
+ 47  "        n "  source.ridge
+ 47  "<-"  source.ridge keyword.operator.ridge
+ 47  "0"  source.ridge constant.numeric.integer.decimal.ridge
+ 48  "on"  source.ridge keyword.control.ridge
+ 48  " time tick "  source.ridge
+ 48  "("  source.ridge punctuation.bracket.ridge
+ 48  ")"  source.ridge punctuation.bracket.ridge
+ 48  "->"  source.ridge keyword.operator.ridge
+ 48  "Int"  source.ridge entity.name.type.ridge
+ 48  "="  source.ridge keyword.operator.ridge
+ 49  "        n "  source.ridge
+ 49  "<-"  source.ridge keyword.operator.ridge
+ 49  " n "  source.ridge
+ 49  "+"  source.ridge keyword.operator.ridge
+ 49  "1"  source.ridge constant.numeric.integer.decimal.ridge
+ 50  "return"  source.ridge keyword.control.ridge
+ 50  " n"  source.ridge
+ 52  "fn"  source.ridge keyword.other.ridge
+ 52  " ops "  source.ridge
+ 52  "("  source.ridge punctuation.bracket.ridge
+ 52  ")"  source.ridge punctuation.bracket.ridge
+ 52  "->"  source.ridge keyword.operator.ridge
+ 52  "Unit"  source.ridge entity.name.type.ridge
+ 52  "="  source.ridge keyword.operator.ridge
+ 53  "let"  source.ridge keyword.other.ridge
+ 53  " joined "  source.ridge
+ 53  "="  source.ridge keyword.operator.ridge
+ 53  "["  source.ridge punctuation.bracket.ridge
+ 53  "1"  source.ridge constant.numeric.integer.decimal.ridge
+ 53  "]"  source.ridge punctuation.bracket.ridge
+ 53  "++"  source.ridge keyword.operator.ridge
+ 53  "["  source.ridge punctuation.bracket.ridge
+ 53  "2"  source.ridge constant.numeric.integer.decimal.ridge
+ 53  "]"  source.ridge punctuation.bracket.ridge
+ 54  "let"  source.ridge keyword.other.ridge
+ 54  " range  "  source.ridge
+ 54  "="  source.ridge keyword.operator.ridge
+ 54  "1"  source.ridge constant.numeric.integer.decimal.ridge
+ 54  ".."  source.ridge keyword.operator.ridge
+ 54  "10"  source.ridge constant.numeric.integer.decimal.ridge
+ 55  "let"  source.ridge keyword.other.ridge
+ 55  " consed "  source.ridge
+ 55  "="  source.ridge keyword.operator.ridge
+ 55  "1"  source.ridge constant.numeric.integer.decimal.ridge
+ 55  "::"  source.ridge keyword.operator.ridge
+ 55  " rest"  source.ridge
+ 56  "let"  source.ridge keyword.other.ridge
+ 56  " chain  "  source.ridge
+ 56  "="  source.ridge keyword.operator.ridge
+ 56  " parse "  source.ridge
+ 56  "\""  source.ridge string.quoted.double.ridge
+ 56  "x"  source.ridge string.quoted.double.ridge
+ 56  "\""  source.ridge string.quoted.double.ridge
+ 56  "?>"  source.ridge keyword.operator.ridge
+ 56  " handle"  source.ridge
+ 57  "let"  source.ridge keyword.other.ridge
+ 57  " opt    "  source.ridge
+ 57  "="  source.ridge keyword.operator.ridge
+ 57  " maybe"  source.ridge
+ 57  "?"  source.ridge keyword.operator.ridge
+ 58  "let"  source.ridge keyword.other.ridge
+ 58  " c      "  source.ridge
+ 58  "="  source.ridge keyword.operator.ridge
+ 58  "spawn"  source.ridge keyword.other.ridge
+ 58  "Counter"  source.ridge entity.name.type.ridge
+ 59  "    c "  source.ridge
+ 59  "!"  source.ridge keyword.operator.ridge
+ 59  " tick "  source.ridge
+ 59  "("  source.ridge punctuation.bracket.ridge
+ 59  ")"  source.ridge punctuation.bracket.ridge

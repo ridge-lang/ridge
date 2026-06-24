@@ -1646,19 +1646,19 @@ impl WorkspaceIndex {
         Some((key, name.to_owned()))
     }
 
-    /// The top-level symbol whose declaration name sits at `offset`, as a
-    /// [`ReferentKey::Symbol`]. Unlike [`Self::symbol_decl_referent`] (rename,
-    /// `fn` / `const` only) this accepts any declaration whose uses key to a
-    /// symbol — `fn`, `const`, `type`, actor — because a highlight is read-only
-    /// and same-file. A constructor's declaration is excluded: its uses key to
-    /// [`ReferentKey::Constructor`], so a symbol key would match nothing.
+    /// The top-level declaration whose name sits at `offset`. Unlike
+    /// [`Self::symbol_decl_referent`] this is read-only and same-file, so it
+    /// accepts any declaration whose uses are findable: `fn`, `const`, `type`,
+    /// and actor (keyed to a symbol), plus a union variant (keyed to its
+    /// constructor). A record auto-constructor is excluded — its name is the
+    /// type's, reached through the `Type` entry collected before it.
     fn decl_referent_at(&self, mid: ModuleId, offset: u32, name: &str) -> Option<ReferentKey> {
         let entries = &self.modules.get(mid.0 as usize)?.symbols.entries;
         entries.iter().enumerate().find_map(|(i, e)| {
             if e.name != name || !(e.def_span.start <= offset && offset < e.def_span.end) {
                 return None;
             }
-            match e.kind {
+            match &e.kind {
                 SymbolKind::Fn { .. }
                 | SymbolKind::Const
                 | SymbolKind::Type { .. }
@@ -1666,6 +1666,17 @@ impl WorkspaceIndex {
                     let raw = u32::try_from(i).ok()?;
                     Some(ReferentKey::Symbol(mid, ridge_resolve::SymbolId(raw)))
                 }
+                SymbolKind::Constructor {
+                    owner_type,
+                    variant,
+                    is_record: false,
+                    owner_module,
+                    ..
+                } => Some(ReferentKey::Constructor(
+                    *owner_module,
+                    *owner_type,
+                    *variant,
+                )),
                 _ => None,
             }
         })
@@ -1686,8 +1697,14 @@ impl WorkspaceIndex {
                 let span = self.symbol_def_span(*module, *symbol)?;
                 self.location_in(*module, span)
             }
-            ReferentKey::Constructor(owner_module, owner_type, _) => {
-                let span = self.symbol_def_span(*owner_module, *owner_type)?;
+            ReferentKey::Constructor(owner_module, owner_type, variant) => {
+                // A union variant's definition is its own name token; a record
+                // auto-constructor shares the type's name, so fall back to the
+                // whole type declaration when the variant name is not recoverable.
+                let span = self
+                    .constructor_name_span(*owner_module, *owner_type, *variant)
+                    .map(|(_, s)| s)
+                    .or_else(|| self.symbol_def_span(*owner_module, *owner_type))?;
                 self.location_in(*owner_module, span)
             }
             ReferentKey::Stdlib(..) | ReferentKey::ClassMethod(..) => None,
@@ -1700,11 +1717,12 @@ impl WorkspaceIndex {
     /// current text (the rename placeholder), or `None` when the cursor is not
     /// on a name this server can rename. Renameable: a local (parameter, `let`,
     /// state field), a top-level `fn` / `const`, a `type` (renaming a record
-    /// type also rewrites its `User { .. }` constructions and patterns), and a
+    /// type also rewrites its `User { .. }` constructions and patterns), a union
+    /// variant (`Red`, renamed independently of its type and sibling variants), a
     /// record field (`user.age` and its declaration move together, scoped to the
-    /// field's owner record). Not yet renameable (returns `None`): a union
-    /// constructor, an actor, a stdlib symbol, a class method, or a module
-    /// alias — see the deferred follow-ups. Reads only this immutable snapshot.
+    /// field's owner record), and an explicit module alias (`import lib as L`).
+    /// Not yet renameable (returns `None`): an actor, a stdlib symbol, or a class
+    /// method. Reads only this immutable snapshot.
     #[must_use]
     pub fn prepare_rename_at(
         &self,
@@ -1950,12 +1968,13 @@ impl WorkspaceIndex {
     }
 
     /// The [`ReferentKey`] a binding denotes, but only for the kinds this server
-    /// can rename completely: a local, or a top-level `fn` / `const` / `type`.
-    /// A record type reached through its shared-name constructor maps back to the
-    /// type symbol so a rename started on `User { .. }` renames the type too; the
-    /// constructor uses are then picked up via [`Self::record_ctor_key`]. Union
-    /// and other constructors, actors, field accessors, stdlib symbols, class
-    /// methods, and module aliases are deferred.
+    /// can rename completely: a local, a top-level `fn` / `const` / `type`, or a
+    /// union variant (which renames on its own, independently of its type and its
+    /// sibling variants). A record type reached through its shared-name
+    /// auto-constructor maps back to the type symbol, so a rename started on a
+    /// `User { .. }` use renames the type too; those constructor uses are then
+    /// picked up via [`Self::record_ctor_key`]. Actors, field accessors, stdlib
+    /// symbols, class methods, and module aliases are handled elsewhere or deferred.
     fn renameable_referent(&self, binding: &Binding, module: ModuleId) -> Option<ReferentKey> {
         match binding {
             Binding::Local(id) => Some(ReferentKey::Local(module, *id)),
@@ -1968,6 +1987,18 @@ impl WorkspaceIndex {
                     _ => None,
                 }
             }
+            // A union variant keys to its own constructor referent, so a rename
+            // started on a `Red` use or a `Red` pattern rewrites that variant alone.
+            Binding::Constructor {
+                owner_module,
+                owner_type,
+                variant,
+                is_record: false,
+            } => Some(ReferentKey::Constructor(
+                *owner_module,
+                *owner_type,
+                *variant,
+            )),
             // A record type's auto-constructor shares the type's name (it is the
             // only constructor flagged `is_record`); renaming from a `User { .. }`
             // use renames the type and every reference together.
@@ -2007,11 +2038,13 @@ impl WorkspaceIndex {
     }
 
     /// Resolve a top-level declaration name at `offset` to a renameable
-    /// referent: the symbol whose def span encloses the cursor and whose name
-    /// matches. `fn`, `const`, and `type` declarations are renameable here. A
-    /// record type's name resolves to its `Type` entry (which is collected
-    /// before the auto-constructor), so a cursor on `type User` renames the type
-    /// and — via [`Self::record_ctor_key`] — its constructor uses.
+    /// referent: the entry whose def span encloses the cursor and whose name
+    /// matches. `fn`, `const`, and `type` declarations rename to a symbol; a
+    /// union variant renames to its constructor. A record type's name resolves
+    /// to its `Type` entry (collected before the auto-constructor), so a cursor
+    /// on `type User` renames the type and — via [`Self::record_ctor_key`] — its
+    /// constructor uses; the record auto-constructor itself is excluded here, its
+    /// name being the type's.
     fn symbol_decl_referent(&self, mid: ModuleId, offset: u32, name: &str) -> Option<ReferentKey> {
         let entries = &self.modules.get(mid.0 as usize)?.symbols.entries;
         entries.iter().enumerate().find_map(|(i, e)| {
@@ -2021,11 +2054,22 @@ impl WorkspaceIndex {
             if !(e.def_span.start <= offset && offset < e.def_span.end) {
                 return None;
             }
-            match e.kind {
+            match &e.kind {
                 SymbolKind::Fn { .. } | SymbolKind::Const | SymbolKind::Type { .. } => {
                     let raw = u32::try_from(i).ok()?;
                     Some(ReferentKey::Symbol(mid, ridge_resolve::SymbolId(raw)))
                 }
+                SymbolKind::Constructor {
+                    owner_type,
+                    variant,
+                    is_record: false,
+                    owner_module,
+                    ..
+                } => Some(ReferentKey::Constructor(
+                    *owner_module,
+                    *owner_type,
+                    *variant,
+                )),
                 _ => None,
             }
         })
@@ -2048,8 +2092,37 @@ impl WorkspaceIndex {
                 let span = self.decl_name_span(*module, decl, name)?;
                 Some((*module, span))
             }
+            ReferentKey::Constructor(owner_module, owner_type, variant) => {
+                self.constructor_name_span(*owner_module, *owner_type, *variant)
+            }
             _ => None,
         }
+    }
+
+    /// The name-token span of a union variant identified by its referent key
+    /// `(owner_module, owner_type, variant)`.
+    ///
+    /// The constructor symbol's `def_span` covers the whole alternative
+    /// (`Node(Int, Tree)`), so the name is recovered as the leftmost stamped
+    /// `Ident` matching the variant name inside it. Returns `None` for a record
+    /// auto-constructor, whose name sits outside its body span — it is the type's
+    /// name, handled through the `Type` entry.
+    fn constructor_name_span(
+        &self,
+        owner_module: ModuleId,
+        owner_type: ridge_resolve::SymbolId,
+        variant: u32,
+    ) -> Option<(ModuleId, Span)> {
+        let entries = &self.modules.get(owner_module.0 as usize)?.symbols.entries;
+        let entry = entries.iter().find(|e| {
+            matches!(
+                &e.kind,
+                SymbolKind::Constructor { owner_type: ot, variant: v, .. }
+                    if *ot == owner_type && *v == variant
+            )
+        })?;
+        let span = self.decl_name_span(owner_module, entry.def_span, &entry.name)?;
+        Some((owner_module, span))
     }
 
     /// The leftmost stamped `Ident` span inside `decl_span` whose text equals

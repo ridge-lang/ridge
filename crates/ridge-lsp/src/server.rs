@@ -110,6 +110,9 @@ struct ClientCaps {
     /// Whether `textDocument.completion.completionItem.documentationFormat` admits
     /// Markdown, with the same default and fallback as `hover_markdown`.
     completion_doc_markdown: bool,
+    /// `textDocument.documentLink.tooltipSupport`. When false, document links are
+    /// sent without their tooltip, which only a supporting client would show.
+    document_link_tooltip: bool,
 }
 
 impl Default for ClientCaps {
@@ -124,6 +127,7 @@ impl Default for ClientCaps {
             code_action_literals: false,
             hover_markdown: true,
             completion_doc_markdown: true,
+            document_link_tooltip: false,
         }
     }
 }
@@ -162,6 +166,10 @@ fn negotiate_client_caps(caps: &ClientCapabilities) -> ClientCaps {
                 .and_then(|c| c.completion_item.as_ref())
                 .and_then(|i| i.documentation_format.as_deref()),
         ),
+        document_link_tooltip: td
+            .and_then(|t| t.document_link.as_ref())
+            .and_then(|d| d.tooltip_support)
+            .unwrap_or(false),
     }
 }
 
@@ -1680,6 +1688,31 @@ impl LanguageServer for RidgeLanguageServer {
         Ok(index.selection_ranges_at(&uri, &params.positions))
     }
 
+    /// `textDocument/documentLink` — turn each workspace-module import path into
+    /// a link to that module's source file.
+    async fn document_link(
+        &self,
+        params: DocumentLinkParams,
+    ) -> LspResult<Option<Vec<DocumentLink>>> {
+        let uri = params.text_document.uri;
+
+        let Some(index) = self.index_for_uri(&uri).await else {
+            return Ok(None);
+        };
+        let Some(mut links) = index.document_links_at(&uri) else {
+            return Ok(None);
+        };
+        // The tooltip is optional in the protocol and shown only by a client that
+        // advertises support; drop it otherwise so we never send a field the
+        // client asked us not to.
+        if !self.client_caps().await.document_link_tooltip {
+            for link in &mut links {
+                link.tooltip = None;
+            }
+        }
+        Ok(Some(links))
+    }
+
     /// `textDocument/prepareCallHierarchy` — anchor a call-hierarchy session on
     /// the function under the cursor.
     async fn prepare_call_hierarchy(
@@ -2187,6 +2220,12 @@ fn server_capabilities(pull_diagnostics: bool, code_lens: bool) -> ServerCapabil
             more_trigger_character: None,
         }),
         document_symbol_provider: Some(OneOf::Left(true)),
+        // Underline each `import` path as a link to the imported module's file.
+        // The target is resolved eagerly (it's a map lookup), so no resolve step.
+        document_link_provider: Some(DocumentLinkOptions {
+            resolve_provider: None,
+            work_done_progress_options: WorkDoneProgressOptions::default(),
+        }),
         folding_range_provider: Some(FoldingRangeProviderCapability::Simple(true)),
         selection_range_provider: Some(SelectionRangeProviderCapability::Simple(true)),
         call_hierarchy_provider: Some(CallHierarchyServerCapability::Simple(true)),

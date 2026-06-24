@@ -6444,7 +6444,12 @@ async fn progress_workspace(
     PathBuf,
 ) {
     let dir = tempfile::TempDir::new().expect("temp dir");
-    let root = dir.path().to_path_buf();
+    // Canonicalise so a query URI built from the returned root matches the module
+    // URIs the index derives: discovery canonicalises the workspace root, which
+    // expands Windows 8.3 short names (`RUNNER~1` → `runneradmin`) and resolves
+    // the macOS `/var` → `/private/var` symlink. Without this a find-references
+    // query off this root misses the index off-Linux.
+    let root = std::fs::canonicalize(dir.path()).expect("canonicalize temp root");
     let app_src = root.join("app").join("src");
     std::fs::create_dir_all(&app_src).expect("create temp workspace");
     std::fs::write(

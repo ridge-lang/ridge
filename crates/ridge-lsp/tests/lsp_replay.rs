@@ -6020,6 +6020,132 @@ async fn test_will_rename_unknown_file_no_edit() {
     );
 }
 
+/// Open the `rename_folder_workspace` fixture — module `app.main` imports
+/// `app.geo.shapes`, which lives in the `app/src/geo/` subfolder — and return
+/// the live service once the workspace compile has installed an index.
+async fn rename_folder_workspace_service() -> (LspService<RidgeLanguageServer>, ClientSocket) {
+    let (service, socket) = build_test_service();
+    {
+        let server = service.inner();
+        server
+            .initialize(make_init_params("rename_folder_workspace"))
+            .await
+            .expect("initialize");
+
+        let root = fixtures_dir().join("rename_folder_workspace");
+        for rel in &["main.ridge", "geo/shapes.ridge"] {
+            let path = root.join("app").join("src").join(rel);
+            let uri = Url::from_file_path(&path).expect("file URI");
+            let text = std::fs::read_to_string(&path).expect("read fixture");
+            server
+                .did_open(DidOpenTextDocumentParams {
+                    text_document: TextDocumentItem {
+                        uri,
+                        language_id: "ridge".to_owned(),
+                        version: 1,
+                        text,
+                    },
+                })
+                .await;
+        }
+
+        let mut ready = false;
+        for _ in 0..120 {
+            tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;
+            if server.workspace_index().await.is_some() {
+                ready = true;
+                break;
+            }
+        }
+        assert!(ready, "the workspace compile must install an index");
+    }
+    (service, socket)
+}
+
+/// The directory portion of `uri` — everything up to its final `/` segment.
+fn parent_uri(uri: &Url) -> String {
+    let s = uri.to_string();
+    let cut = s.rfind('/').expect("a path separator in the URI");
+    s[..cut].to_owned()
+}
+
+/// Replace the final segment of a folder URI string with `new_name`.
+fn rename_last_segment(folder: &str, new_name: &str) -> String {
+    let cut = folder
+        .rfind('/')
+        .expect("a path separator in the folder URI");
+    format!("{}/{new_name}", &folder[..cut])
+}
+
+#[tokio::test]
+async fn test_will_rename_folder_rewrites_child_imports() {
+    let (service, _socket) = rename_folder_workspace_service().await;
+    let server = service.inner();
+    let shapes = module_uri_ending(server, "geo/shapes.ridge").await;
+    let geo_dir = parent_uri(&shapes);
+    let geometry_dir = rename_last_segment(&geo_dir, "geometry");
+
+    // Renaming the folder `geo` to `geometry` moves `app.geo.shapes` to
+    // `app.geometry.shapes`; the importer's path must follow.
+    let edit = server
+        .will_rename_files(RenameFilesParams {
+            files: vec![FileRename {
+                old_uri: geo_dir,
+                new_uri: geometry_dir,
+            }],
+        })
+        .await
+        .expect("will_rename ok")
+        .expect("an edit when a folder holds an imported module");
+
+    let changes = edit.changes.expect("changes map");
+    assert_eq!(
+        changes.len(),
+        1,
+        "only the importer is edited, got {changes:?}"
+    );
+    let (uri, edits) = changes.iter().next().unwrap();
+    assert!(
+        uri.path().ends_with("main.ridge"),
+        "the importer main.ridge is edited, got {uri}"
+    );
+    assert_eq!(edits.len(), 1, "one import path rewritten, got {edits:?}");
+    // Only the dotted path changes; the `(area)` item list is preserved.
+    assert_eq!(edits[0].new_text, "app.geometry.shapes");
+    // The edit lands on `app.geo.shapes`, the path right after `import ` on line 0.
+    assert_eq!(edits[0].range.start.line, 0);
+    assert_eq!(
+        edits[0].range.start.character, 7,
+        "edit should start at `app.geo.shapes` (col 7), got {:?}",
+        edits[0].range
+    );
+}
+
+#[tokio::test]
+async fn test_will_rename_folder_without_modules_no_edit() {
+    let (service, _socket) = rename_folder_workspace_service().await;
+    let server = service.inner();
+    let shapes = module_uri_ending(server, "geo/shapes.ridge").await;
+    let geo_dir = parent_uri(&shapes);
+    // A sibling folder that holds no `.ridge` module under it.
+    let empty_dir = rename_last_segment(&geo_dir, "assets");
+    let renamed = rename_last_segment(&geo_dir, "static");
+
+    let edit = server
+        .will_rename_files(RenameFilesParams {
+            files: vec![FileRename {
+                old_uri: empty_dir,
+                new_uri: renamed,
+            }],
+        })
+        .await
+        .expect("will_rename ok");
+    assert!(
+        edit.is_none(),
+        "a folder with no modules beneath it yields no edit, got {edit:?}"
+    );
+}
+
 #[tokio::test]
 async fn test_capability_advertises_will_rename_files() {
     let (service, _socket) = build_test_service();
@@ -6036,11 +6162,18 @@ async fn test_capability_advertises_will_rename_files() {
         .file_operations
         .expect("file-operation capabilities");
     let will_rename = file_ops.will_rename.expect("willRename advertised");
-    assert_eq!(will_rename.filters.len(), 1);
+    // Two filters: `.ridge` files, and any folder (folder renames carry the
+    // modules beneath them, so imports must be fixed up there too).
+    assert_eq!(will_rename.filters.len(), 2);
     assert_eq!(will_rename.filters[0].pattern.glob, "**/*.ridge");
     assert_eq!(
         will_rename.filters[0].pattern.matches,
         Some(FileOperationPatternKind::File)
+    );
+    assert_eq!(will_rename.filters[1].pattern.glob, "**");
+    assert_eq!(
+        will_rename.filters[1].pattern.matches,
+        Some(FileOperationPatternKind::Folder)
     );
 }
 

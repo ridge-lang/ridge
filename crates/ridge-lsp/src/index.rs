@@ -12,7 +12,7 @@
 //! snapshot even while a newer compile is in flight.
 
 use std::collections::HashMap;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use ridge_driver::WorkspaceSourceCache;
@@ -2312,36 +2312,44 @@ impl WorkspaceIndex {
         Some(links)
     }
 
-    /// Answer `workspace/willRenameFiles`: when `.ridge` files move, rewrite the
-    /// `import` path of every other module that referenced them so the imports
-    /// still resolve after the move.
+    /// Answer `workspace/willRenameFiles`: when `.ridge` files or whole folders
+    /// move, rewrite the `import` path of every other module that referenced the
+    /// moved modules so the imports still resolve after the move.
     ///
-    /// Each renamed file is mapped to the new fully-qualified name it takes at
-    /// its destination; then every workspace import whose target is one of the
-    /// moved modules has its dotted path replaced (the `as`/item list is left
-    /// untouched). Returns `None` when no import needs to change — including the
-    /// common cases of renaming a leaf module nobody imports, standalone files,
-    /// or a move out of the project's source tree.
+    /// Each renamed `.ridge` file is mapped to the new fully-qualified name it
+    /// takes at its destination. A renamed folder expands to one such mapping per
+    /// `.ridge` module that lived beneath it, so moving `src/geo` to
+    /// `src/geometry` fixes up every importer of every module under it at once.
+    /// Then every workspace import whose target is one of the moved modules has
+    /// its dotted path replaced (the `as`/item list is left untouched). Returns
+    /// `None` when no import needs to change — including the common cases of
+    /// renaming a leaf module nobody imports, standalone files, an empty or
+    /// unrelated folder, or a move out of the project's source tree.
     #[must_use]
     pub fn rename_files_edit(&self, files: &[FileRename]) -> Option<WorkspaceEdit> {
-        // Resolve each rename to (moved module id, its new fully-qualified name).
+        // Resolve each rename to the (moved module id, new fully-qualified name)
+        // pairs it implies: a file rename is one pair, a folder rename is one per
+        // `.ridge` module beneath the folder.
         let mut moved: Vec<(ModuleId, String)> = Vec::new();
         for file in files {
-            let Ok(old_url) = Url::parse(&file.old_uri) else {
-                continue;
-            };
-            let Some(old_mid) = self.module_id_for(&old_url) else {
-                continue;
-            };
-            let (Ok(old_path), Ok(new_url)) = (old_url.to_file_path(), Url::parse(&file.new_uri))
+            let (Ok(old_url), Ok(new_url)) = (Url::parse(&file.old_uri), Url::parse(&file.new_uri))
             else {
                 continue;
             };
-            let Ok(new_path) = new_url.to_file_path() else {
+            let (Ok(old_path), Ok(new_path)) = (old_url.to_file_path(), new_url.to_file_path())
+            else {
                 continue;
             };
-            if let Some(new_fqn) = self.renamed_module_fqn(old_mid, &old_path, &new_path) {
-                moved.push((old_mid, new_fqn));
+            if let Some(old_mid) = self.module_id_for(&old_url) {
+                // A known module file moved.
+                if let Some(new_fqn) = self.renamed_module_fqn(old_mid, &old_path, &new_path) {
+                    moved.push((old_mid, new_fqn));
+                }
+            } else {
+                // Not a known file: treat it as a folder and remap every module
+                // whose path lives beneath it. A child the move carries out of
+                // its project's source tree is dropped by `renamed_module_fqn`.
+                self.collect_folder_moves(&old_url, &old_path, &new_path, &mut moved);
             }
         }
         if moved.is_empty() {
@@ -2426,6 +2434,57 @@ impl WorkspaceIndex {
         Some(ridge_resolve::derive_module_fqn(
             project, src_root, new_path,
         ))
+    }
+
+    /// Expand a folder rename into one `(module, new fqn)` pair per `.ridge`
+    /// module that lived beneath the folder, appending them to `moved`.
+    ///
+    /// Membership ("is this module under the renamed folder?") is decided in
+    /// normalized [`uri_key`] space so it survives the Windows drive-case /
+    /// colon-encoding gap that single-URL comparison trips on. The destination
+    /// path each child takes is then rebuilt from the client's own folder paths
+    /// (`old_dir`/`new_dir`) joined with the child's tail below the folder, which
+    /// keeps the fully-qualified-name computation inside one coordinate system —
+    /// the same discipline the single-file path follows. A child whose move would
+    /// leave its project's source tree is dropped by `renamed_module_fqn`.
+    fn collect_folder_moves(
+        &self,
+        old_dir_url: &Url,
+        old_dir: &Path,
+        new_dir: &Path,
+        moved: &mut Vec<(ModuleId, String)>,
+    ) {
+        let sep = std::path::MAIN_SEPARATOR;
+        let folder_key = uri_key(old_dir_url);
+        let prefix = format!("{}{sep}", folder_key.trim_end_matches(sep));
+        let folder_depth = old_dir.components().count();
+        for (i, slot) in self.module_uris.iter().enumerate() {
+            let Some(child_uri) = slot.as_ref() else {
+                continue;
+            };
+            if !uri_key(child_uri).starts_with(&prefix) {
+                continue;
+            }
+            let Ok(child_path) = child_uri.to_file_path() else {
+                continue;
+            };
+            // The child's path below the renamed folder, in its real on-disk case.
+            // Rejoining it onto the client's old/new folder paths keeps both sides
+            // of the move in the client's coordinate system.
+            let tail: PathBuf = child_path.components().skip(folder_depth).collect();
+            if tail.as_os_str().is_empty() {
+                continue;
+            }
+            let Ok(child_raw) = u32::try_from(i) else {
+                continue;
+            };
+            let child_mid = ModuleId(child_raw);
+            let child_old = old_dir.join(&tail);
+            let child_new = new_dir.join(&tail);
+            if let Some(new_fqn) = self.renamed_module_fqn(child_mid, &child_old, &child_new) {
+                moved.push((child_mid, new_fqn));
+            }
+        }
     }
 
     /// Go-to-definition for a record-field use under the cursor (`user.age` →

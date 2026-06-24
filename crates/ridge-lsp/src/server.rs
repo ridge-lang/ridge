@@ -2289,21 +2289,34 @@ fn server_capabilities(pull_diagnostics: bool, code_lens: bool) -> ServerCapabil
                 })),
             },
         )),
-        // File-operation support: react to `.ridge` file renames by fixing the
-        // imports that referenced the moved module. Only `willRename` is needed
-        // — it returns the edit the client applies together with the move.
+        // File-operation support: react to `.ridge` file renames — and to folder
+        // renames, which carry every `.ridge` module beneath them — by fixing the
+        // imports that referenced the moved modules. Only `willRename` is needed:
+        // it returns the edit the client applies together with the move. The
+        // folder filter is a bare `**` because a glob can't tell which folders
+        // hold `.ridge` files; the server returns no edit for one that doesn't.
         workspace: Some(WorkspaceServerCapabilities {
             workspace_folders: None,
             file_operations: Some(WorkspaceFileOperationsServerCapabilities {
                 will_rename: Some(FileOperationRegistrationOptions {
-                    filters: vec![FileOperationFilter {
-                        scheme: Some("file".to_owned()),
-                        pattern: FileOperationPattern {
-                            glob: "**/*.ridge".to_owned(),
-                            matches: Some(FileOperationPatternKind::File),
-                            options: None,
+                    filters: vec![
+                        FileOperationFilter {
+                            scheme: Some("file".to_owned()),
+                            pattern: FileOperationPattern {
+                                glob: "**/*.ridge".to_owned(),
+                                matches: Some(FileOperationPatternKind::File),
+                                options: None,
+                            },
                         },
-                    }],
+                        FileOperationFilter {
+                            scheme: Some("file".to_owned()),
+                            pattern: FileOperationPattern {
+                                glob: "**".to_owned(),
+                                matches: Some(FileOperationPatternKind::Folder),
+                                options: None,
+                            },
+                        },
+                    ],
                 }),
                 ..WorkspaceFileOperationsServerCapabilities::default()
             }),

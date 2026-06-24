@@ -1,0 +1,3 @@
+import app.geo.shapes (area)
+
+pub fn total -> Int = area 2 3

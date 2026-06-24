@@ -16,6 +16,7 @@
 //! cascade `R008`/`R009` errors are emitted for items requested via that
 //! import.  This suppresses noise when the root cause is a missing module.
 
+use ridge_ast::Ident;
 use ridge_lexer::Span;
 use rustc_hash::FxHashMap;
 
@@ -466,7 +467,7 @@ fn first_segment(name: &str) -> &str {
 fn compute_effective_bindings(
     target: &ImportTarget,
     alias: Option<&String>,
-    items: Option<&Vec<String>>,
+    items: Option<&Vec<Ident>>,
     path_dotted: &str,
     import_span: Span,
     symbol_tables: &[SymbolTable],
@@ -506,18 +507,18 @@ fn compute_effective_bindings(
         if matches!(target, ImportTarget::Unresolved) {
             let skipped: Vec<ImportedItem> = item_names
                 .iter()
-                .map(|name| ImportedItem {
-                    name: name.clone(),
-                    span: import_span,
+                .map(|item| ImportedItem {
+                    name: item.text.clone(),
+                    span: item.span,
                     resolved: None,
                 })
                 .collect();
             resolved_items = Some(skipped);
         } else {
             let mut ri: Vec<ImportedItem> = Vec::new();
-            for item_name in item_names {
+            for item in item_names {
                 let (binding, item_err) = resolve_item(
-                    item_name,
+                    &item.text,
                     import_span,
                     target,
                     path_dotted,
@@ -529,13 +530,13 @@ fn compute_effective_bindings(
                     errors.push(err);
                 }
                 ri.push(ImportedItem {
-                    name: item_name.clone(),
-                    span: import_span,
+                    name: item.text.clone(),
+                    span: item.span,
                     resolved: binding.clone(),
                 });
                 if let Some(b) = binding {
                     bindings.push(EffectiveBinding {
-                        local_name: item_name.clone(),
+                        local_name: item.text.clone(),
                         binding: b,
                     });
                 }
@@ -1222,6 +1223,34 @@ mod tests {
             .collect();
         assert!(names.contains(&"get"));
         assert!(names.contains(&"insert"));
+    }
+
+    // Each `import … (a, b)` item carries the span of its own name token, not
+    // the whole-import span. This lets the LSP point go-to-declaration and
+    // rename at the exact clause item.
+    #[test]
+    fn import_item_carries_its_own_name_span() {
+        let src = "import std.map (get, insert)\n";
+        let (_td, result) = resolve_single(src);
+        let res = &result.imports.first().expect("module 0")[0];
+        let items = res.explicit_items.as_ref().expect("explicit item list");
+        assert_eq!(items.len(), 2);
+
+        assert_eq!(
+            &src[items[0].span.start as usize..items[0].span.end as usize],
+            "get"
+        );
+        assert_eq!(
+            &src[items[1].span.start as usize..items[1].span.end as usize],
+            "insert"
+        );
+
+        // Each item span sits strictly inside the whole-import span. The bug
+        // this guards against gave every item the import's own span.
+        for item in items {
+            assert!(res.span.start <= item.span.start && item.span.end <= res.span.end);
+            assert!(item.span.end - item.span.start < res.span.end - res.span.start);
+        }
     }
 
     // Test 3: `import std.list (mapper)` → R008 (mapper not in stdlib exports)

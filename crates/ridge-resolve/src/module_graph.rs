@@ -9,7 +9,7 @@
 
 use std::sync::Arc;
 
-use ridge_ast::{Item, Module};
+use ridge_ast::{Ident, Item, Module};
 use ridge_lexer::{LexError, Span};
 use ridge_parser::ParseError;
 use rustc_hash::{FxHashMap, FxHashSet};
@@ -55,8 +55,11 @@ pub struct TentativeEdge {
     pub path_dotted: String,
     /// The `as Alias` rename, if present.
     pub alias: Option<String>,
-    /// Explicit item list from `import … (a, b)`; `None` for whole-module imports.
-    pub items: Option<Vec<String>>,
+    /// Explicit item list from `import … (a, b)`; `None` for whole-module
+    /// imports. Each `Ident` keeps the precise span of its name token, so the
+    /// resolved `ImportedItem` can point at the item itself rather than the
+    /// whole import declaration.
+    pub items: Option<Vec<Ident>>,
     /// Full span of the `ImportDecl`.
     pub span: Span,
 }
@@ -153,10 +156,7 @@ pub(crate) fn collect_import_edges(module_id: ModuleId, module: &Module) -> Vec<
 
             let alias = decl.alias.as_ref().map(|ident| ident.text.clone());
 
-            let items = decl
-                .items
-                .as_ref()
-                .map(|v| v.iter().map(|ident| ident.text.clone()).collect::<Vec<_>>());
+            let items = decl.items.clone();
 
             edges.push(TentativeEdge {
                 from: module_id,
@@ -518,7 +518,14 @@ mod tests {
         let e = &g.tentative_edges[0];
         assert_eq!(e.path_dotted, "std.map");
         assert!(e.alias.is_none());
-        assert_eq!(e.items, Some(vec!["get".to_owned(), "insert".to_owned()]));
+        let item_names: Vec<&str> = e
+            .items
+            .as_ref()
+            .expect("explicit items")
+            .iter()
+            .map(|i| i.text.as_str())
+            .collect();
+        assert_eq!(item_names, vec!["get", "insert"]);
     }
 
     // ── Test 5: multiple imports → edges in source order ─────────────────────

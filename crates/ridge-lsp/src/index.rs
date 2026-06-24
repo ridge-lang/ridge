@@ -443,16 +443,20 @@ impl WorkspaceIndex {
 
     /// Assemble the markdown shown when hovering an identifier.
     ///
-    /// Three tiers, most specific first:
-    /// 1. a record-field use renders `field : T` and names the record it
+    /// Most specific first:
+    /// 1. a record-field use renders `field : T`, kinded as the record it
     ///    belongs to;
     /// 2. a name that resolves to a workspace declaration renders that
     ///    declaration's written header — visibility, capabilities, named
-    ///    parameters, return type — followed by its doc comment, if any;
-    /// 3. anything else falls back to the role-labelled inferred type.
+    ///    parameters, return type — its kind, and its doc comment, if any;
+    /// 3. a stdlib symbol or class method renders the header and `--` doc lifted
+    ///    from the embedded stdlib source;
+    /// 4. anything else falls back to the kind-labelled inferred type, where a
+    ///    local is told apart as a parameter, a mutable variable, or a binding.
     ///
     /// Every tier wraps the signature in a `ridge` code fence so the editor
-    /// syntax-highlights it.
+    /// syntax-highlights it; the kind sits on an italic line below and the doc,
+    /// when present, follows a horizontal rule (see [`render_hover_card`]).
     fn hover_markdown(
         &self,
         mi: usize,
@@ -465,32 +469,69 @@ impl WorkspaceIndex {
         // through the base expression's type to the owning record.
         if binding.is_none() {
             if let Some((tycon, field, _)) = self.field_access_at(mi, offset) {
-                let mut md = fenced_ridge(&format!("{field} : {inferred}"));
-                if let Some(owner) = self.tycon_display_name(tycon) {
-                    use std::fmt::Write as _;
-                    let _ = write!(md, "\n\nfield of `{owner}`");
-                }
-                return md;
+                let kind = self
+                    .tycon_display_name(tycon)
+                    .map(|owner| format!("field of `{owner}`"));
+                return render_hover_card(&format!("{field} : {inferred}"), kind, None);
             }
         }
 
-        // Tier 2 — a top-level fn/const/type/actor name: show its written header
-        // and doc comment, sourced from the declaring module's AST.
+        // Tier 2 — a top-level fn/const/type/actor name: show its written header,
+        // kind, and doc comment, sourced from the declaring module's AST.
         if let Some((module, symbol)) = workspace_symbol_of(binding) {
-            if let Some((header, doc)) = self.decl_header_and_doc(module, symbol) {
-                let mut md = fenced_ridge(&header);
-                if let Some(doc) = doc {
-                    md.push_str("\n\n");
-                    md.push_str(&doc);
-                }
-                return md;
+            if let Some((header, kind, doc)) = self.decl_header_and_doc(module, symbol) {
+                return render_hover_card(&header, Some(kind.to_owned()), doc);
             }
         }
 
-        // Tier 3 — role-labelled inferred type (locals, params, constructors,
-        // stdlib symbols, class methods, or any name without a reachable decl).
-        let label = binding_label(binding);
-        fenced_ridge(&format!("{label}{name} : {inferred}"))
+        // Tier 3 — a stdlib symbol or class method: the header and `--` doc lifted
+        // from the embedded stdlib source. A workspace class method (no stdlib
+        // entry) still shows its written signature.
+        match binding {
+            Some(Binding::StdlibSymbol { module, name: sym }) => {
+                if let Some(card) = crate::stdlib_defs::stdlib_symbol_card(*module, sym) {
+                    return render_hover_card(
+                        &card.header,
+                        Some(format!("stdlib {}", card.kind)),
+                        card.doc,
+                    );
+                }
+            }
+            Some(Binding::ClassMethod { class_name, method }) => {
+                if let Some((header, doc)) =
+                    crate::stdlib_defs::stdlib_class_method_card(class_name, method)
+                {
+                    return render_hover_card(&header, Some("class method".to_owned()), doc);
+                }
+                if let Some(sig) = self.workspace_class_method_signature(class_name, method) {
+                    return render_hover_card(&sig.label, Some("class method".to_owned()), None);
+                }
+            }
+            _ => {}
+        }
+
+        // Tier 4 — kind-labelled inferred type (locals, params, constructors, or
+        // any name without a reachable decl).
+        let kind = self.binding_kind_label(binding, mi);
+        render_hover_card(&format!("{name} : {inferred}"), kind, None)
+    }
+
+    /// The kind label for a hovered binding in the fallback tier: a local told
+    /// apart by how it was introduced, a constructor, or — for a stdlib symbol or
+    /// class method whose card was missing — a coarse role. `None` (no kind line)
+    /// for module symbols and anything unrecognised, whose rendered type already
+    /// carries the information.
+    fn binding_kind_label(&self, binding: Option<&Binding>, mi: usize) -> Option<String> {
+        match binding? {
+            Binding::Local(id) => {
+                let kind = self.local_info(mi, *id).map(|(k, _)| k);
+                Some(local_role(kind).to_owned())
+            }
+            Binding::Constructor { .. } => Some("constructor".to_owned()),
+            Binding::StdlibSymbol { .. } => Some("stdlib".to_owned()),
+            Binding::ClassMethod { .. } => Some("class method".to_owned()),
+            _ => None,
+        }
     }
 
     /// The display name of the named type constructor `raw`, or `None` for an
@@ -502,32 +543,35 @@ impl WorkspaceIndex {
             .map(|d| d.name.clone())
     }
 
-    /// The written header and doc comment of the workspace declaration named by
-    /// `symbol` in `module`. Picks the top-level item whose span encloses the
-    /// symbol's definition site. `None` when the module was not type-checked or
-    /// the symbol is not a `fn`/`const`/`type`/`actor` declaration.
+    /// The written header, role label, and doc comment of the workspace
+    /// declaration named by `symbol` in `module`. Picks the top-level item whose
+    /// span encloses the symbol's definition site. `None` when the module was not
+    /// type-checked or the symbol is not a `fn`/`const`/`type`/`actor`
+    /// declaration.
     fn decl_header_and_doc(
         &self,
         module: ModuleId,
         symbol: ridge_resolve::SymbolId,
-    ) -> Option<(String, Option<String>)> {
+    ) -> Option<(String, &'static str, Option<String>)> {
         let def_span = self.symbol_def_span(module, symbol)?;
         let mi = module.0 as usize;
         let ast = self.modules.get(mi)?.ast.as_ref()?;
         let text: &str = self.module_text.get(mi).map_or("", |t| &**t);
         ast.items.iter().find_map(|item| match item {
             ridge_ast::Item::Fn(d) if span_encloses(d.span, def_span) => {
-                Some((fn_header(text, d), doc_text(d.doc.as_ref())))
+                Some((fn_header(text, d), "function", doc_text(d.doc.as_ref())))
             }
             ridge_ast::Item::Const(d) if span_encloses(d.span, def_span) => {
-                Some((const_header(text, d), doc_text(d.doc.as_ref())))
+                Some((const_header(text, d), "constant", doc_text(d.doc.as_ref())))
             }
             ridge_ast::Item::Type(d) if span_encloses(d.span, def_span) => {
-                Some((type_header(text, d), doc_text(d.doc.as_ref())))
+                Some((type_header(text, d), "type", doc_text(d.doc.as_ref())))
             }
-            ridge_ast::Item::Actor(d) if span_encloses(d.span, def_span) => {
-                Some((format!("actor {}", d.name.text), doc_text(d.doc.as_ref())))
-            }
+            ridge_ast::Item::Actor(d) if span_encloses(d.span, def_span) => Some((
+                format!("actor {}", d.name.text),
+                "actor",
+                doc_text(d.doc.as_ref()),
+            )),
             _ => None,
         })
     }
@@ -4215,7 +4259,10 @@ impl WorkspaceIndex {
             .entries
             .iter()
             .filter(|e| e.name == name)
-            .find_map(|e| self.decl_header_and_doc(mid, e.id))
+            .find_map(|e| {
+                self.decl_header_and_doc(mid, e.id)
+                    .map(|(header, _kind, doc)| (header, doc))
+            })
     }
 
     fn try_completions(
@@ -5556,7 +5603,7 @@ fn render_caps_slice(caps: &[ridge_ast::Capability]) -> String {
 ///
 /// Capabilities and visibility are reconstructed; parameter and return-type
 /// text is sliced from source so it reads exactly as written.
-fn fn_header(text: &str, d: &ridge_ast::decl::FnDecl) -> String {
+pub(crate) fn fn_header(text: &str, d: &ridge_ast::decl::FnDecl) -> String {
     let mut s = String::new();
     s.push_str(vis_prefix(d.vis));
     s.push_str("fn ");
@@ -5578,7 +5625,7 @@ fn fn_header(text: &str, d: &ridge_ast::decl::FnDecl) -> String {
 }
 
 /// The written header of a const: `pub const NAME: T`.
-fn const_header(text: &str, d: &ridge_ast::decl::ConstDecl) -> String {
+pub(crate) fn const_header(text: &str, d: &ridge_ast::decl::ConstDecl) -> String {
     format!(
         "{}const {}: {}",
         vis_prefix(d.vis),
@@ -5590,7 +5637,7 @@ fn const_header(text: &str, d: &ridge_ast::decl::ConstDecl) -> String {
 /// The written head of a type declaration: `pub type Name a = body`, sliced from
 /// the name through the end of the declaration so params, body, and any
 /// `deriving` clause read exactly as written.
-fn type_header(text: &str, d: &ridge_ast::decl::TypeDecl) -> String {
+pub(crate) fn type_header(text: &str, d: &ridge_ast::decl::TypeDecl) -> String {
     let opaque = if d.opaque { "opaque " } else { "" };
     let tail = slice_span(text, Span::new(d.name.span.start, d.span.end));
     format!("{}{}type {}", vis_prefix(d.vis), opaque, tail.trim())
@@ -5602,18 +5649,49 @@ fn doc_text(doc: Option<&ridge_ast::DocComment>) -> Option<String> {
         .filter(|s| !s.is_empty())
 }
 
-/// Human-readable role prefix for a hovered binding (trailing space included).
-///
-/// Top-level fns/consts and anything unrecognised get no prefix — the rendered
-/// type already carries the information.
-const fn binding_label(binding: Option<&Binding>) -> &'static str {
-    match binding {
-        Some(Binding::Local(_)) => "(local) ",
-        Some(Binding::Constructor { .. }) => "constructor ",
-        Some(Binding::StdlibSymbol { .. }) => "(stdlib) ",
-        Some(Binding::ClassMethod { .. }) => "(class method) ",
-        _ => "",
+/// The role label for a local, told apart by how it was introduced: a function,
+/// lambda, handler, or `init` parameter reads as a parameter; a `var` as a
+/// mutable variable; an actor state field as such; everything else (`let`,
+/// pattern bindings, `@`-aliases) as a plain local.
+const fn local_role(kind: Option<LocalKind>) -> &'static str {
+    match kind {
+        Some(
+            LocalKind::FnParam
+            | LocalKind::LambdaParam
+            | LocalKind::HandlerParam
+            | LocalKind::InitParam,
+        ) => "parameter",
+        Some(LocalKind::VarMutable) => "mutable variable",
+        Some(LocalKind::StateField) => "state field",
+        _ => "local",
     }
+}
+
+/// Render a hover card: the signature in a `ridge` fence, an italic kind line,
+/// and — when documented — a horizontal rule followed by the doc body.
+///
+/// ```text
+/// ```ridge
+/// pub fn map (f: fn a -> b) (xs: List a) -> List b
+/// ```
+/// *(stdlib function)*
+///
+/// ---
+///
+/// Apply a function to each element, returning a new list.
+/// ```
+fn render_hover_card(signature: &str, kind: Option<String>, doc: Option<String>) -> String {
+    let mut md = fenced_ridge(signature);
+    if let Some(kind) = kind.filter(|k| !k.is_empty()) {
+        md.push_str("\n\n*(");
+        md.push_str(&kind);
+        md.push_str(")*");
+    }
+    if let Some(doc) = doc {
+        md.push_str("\n\n---\n\n");
+        md.push_str(&doc);
+    }
+    md
 }
 
 #[cfg(test)]

@@ -34,7 +34,20 @@ use ridge_lexer::LineIndex;
 use ridge_resolve::{StdlibModuleId, BUILTINS};
 use tower_lsp::lsp_types::{Location, Position, Range, Url};
 
-use crate::index::{build_signature, SignatureSig};
+use crate::index::{build_signature, const_header, fn_header, type_header, SignatureSig};
+
+/// A hover card for a stdlib top-level symbol: its written header, the role to
+/// label it with, and the documentation lifted from the `--` comment block
+/// above the declaration.
+#[derive(Debug, Clone)]
+pub struct StdlibCard {
+    /// The written declaration head, e.g. `pub fn map (f: fn a -> b) (xs: List a) -> List b`.
+    pub header: String,
+    /// `function` / `constant` / `type` / `actor`, for the kind line.
+    pub kind: &'static str,
+    /// The doc block above the declaration, or `None` when undocumented.
+    pub doc: Option<String>,
+}
 
 /// The materialised, parsed form of one stdlib module.
 struct StdlibModuleDef {
@@ -47,10 +60,14 @@ struct StdlibModuleDef {
     defs: HashMap<String, Span>,
     /// Top-level function name → its rendered signature, for signature help.
     fn_sigs: HashMap<String, SignatureSig>,
+    /// Top-level declaration name → its rendered hover card (header + doc), for hover.
+    cards: HashMap<String, StdlibCard>,
 }
 
 /// A stdlib class method located by `(class, method)`: its owning module, the
-/// method-name span (for go-to-definition) and the rendered signature.
+/// method-name span (for go-to-definition), the rendered signature, and the doc
+/// lifted from the `--` block above the method — or, when the method has none of
+/// its own, the doc of the class it belongs to.
 struct ClassMethodEntry {
     /// Owning builtin module id (indexes [`BUILTINS`] and the per-module cache).
     module: u32,
@@ -58,6 +75,62 @@ struct ClassMethodEntry {
     name_span: Span,
     /// The method signature rendered for signature help.
     sig: SignatureSig,
+    /// The method's documentation, falling back to the owning class's doc.
+    doc: Option<String>,
+}
+
+/// How a single source line reads for the purpose of lifting a doc block.
+enum LineClass {
+    /// A `--` line comment; carries the text after the dashes, trimmed.
+    Comment(String),
+    /// An attribute line (`@ffi(...)`, `@test`, ...) sitting between a doc block
+    /// and the declaration it documents — skipped, not a block boundary.
+    Attr,
+    /// Blank or code — ends a doc block when walking upward.
+    Boundary,
+}
+
+/// Classify every line of `source` for doc-block extraction (index = 0-based line).
+fn classify_lines(source: &str) -> Vec<LineClass> {
+    source
+        .lines()
+        .map(|raw| {
+            let trimmed = raw.trim_start();
+            match trimmed.strip_prefix("--") {
+                Some(rest) => LineClass::Comment(rest.trim().to_owned()),
+                None if trimmed.starts_with('@') => LineClass::Attr,
+                None => LineClass::Boundary,
+            }
+        })
+        .collect()
+}
+
+/// The contiguous `--` comment block immediately above `line` (0-based).
+///
+/// Joined in source order. Attribute lines between the block and the declaration
+/// are skipped; a blank or code line ends the block. `None` when there is no
+/// comment.
+fn doc_above(line: u32, classes: &[LineClass]) -> Option<String> {
+    let mut collected: Vec<&str> = Vec::new();
+    let mut idx = line as usize;
+    while idx > 0 {
+        idx -= 1;
+        match classes.get(idx) {
+            Some(LineClass::Comment(text)) => collected.push(text),
+            Some(LineClass::Attr) => {}
+            _ => break,
+        }
+    }
+    if collected.is_empty() {
+        return None;
+    }
+    collected.reverse();
+    Some(collected.join("\n"))
+}
+
+/// The 0-based line a span starts on, via `line_index`.
+fn line_of(line_index: &LineIndex, span: Span) -> u32 {
+    line_index.byte_to_utf16(span.start).0
 }
 
 /// Process-global cache of parsed stdlib modules, keyed by [`StdlibModuleId.0`].
@@ -147,22 +220,69 @@ fn collect_defs(items: &[Item]) -> HashMap<String, Span> {
     defs
 }
 
-/// Collect `(class_name, method_name) → (module-id, method-name span)` pairs
-/// from a parsed module's `class` declarations.
+/// Collect `name → hover card` pairs for a module's top-level declarations.
+///
+/// Covers `fn`, `const`, `type`, and `actor` — the same set [`collect_defs`]
+/// locates. Each card pairs the written header (reusing the same renderers hover
+/// uses for workspace declarations) with the role label and the `--` doc block
+/// above the declaration, lifted from `classes`.
+fn collect_cards(
+    source: &str,
+    items: &[Item],
+    line_index: &LineIndex,
+    classes: &[LineClass],
+) -> HashMap<String, StdlibCard> {
+    let mut cards = HashMap::new();
+    for item in items {
+        let (name, header, kind, name_span) = match item {
+            Item::Fn(d) => (&d.name.text, fn_header(source, d), "function", d.name.span),
+            Item::Const(d) => (
+                &d.name.text,
+                const_header(source, d),
+                "constant",
+                d.name.span,
+            ),
+            Item::Type(d) => (&d.name.text, type_header(source, d), "type", d.name.span),
+            Item::Actor(d) => (
+                &d.name.text,
+                format!("actor {}", d.name.text),
+                "actor",
+                d.name.span,
+            ),
+            Item::Import(_) | Item::ClassDecl(_) | Item::InstanceDecl(_) => continue,
+        };
+        // Keep the first declaration of a given name; redeclarations are a
+        // resolver error and not this layer's concern.
+        cards.entry(name.clone()).or_insert_with(|| StdlibCard {
+            header,
+            kind,
+            doc: doc_above(line_of(line_index, name_span), classes),
+        });
+    }
+    cards
+}
+
+/// Collect `(class_name, method_name) → entry` pairs from a parsed module's
+/// `class` declarations.
 ///
 /// Only `class` declarations are walked; `instance` bodies are skipped, since
 /// goto targets the method signature in the class, not an instance's definition
 /// of it. The span used is the method name's identifier span. `module` is the
 /// owning builtin id, carried so the global index can recover the module's
-/// materialised URI and line index later.
+/// materialised URI and line index later. Each method's doc is the `--` block
+/// directly above it, or — since stdlib classes document the class rather than
+/// each method — the class's own doc block when the method has none.
 fn collect_class_methods(
     module: StdlibModuleId,
     source: &str,
     items: &[Item],
     out: &mut HashMap<(String, String), ClassMethodEntry>,
 ) {
+    let line_index = LineIndex::new(source);
+    let classes = classify_lines(source);
     for item in items {
         if let Item::ClassDecl(decl) = item {
+            let class_doc = doc_above(line_of(&line_index, decl.name.span), &classes);
             for method in &decl.methods {
                 // Keep the first declaration of a given `(class, method)`; a
                 // redeclaration is a resolver error and not this layer's concern.
@@ -176,6 +296,8 @@ fn collect_class_methods(
                             &method.params,
                             Some(&method.ret),
                         ),
+                        doc: doc_above(line_of(&line_index, method.name.span), &classes)
+                            .or_else(|| class_doc.clone()),
                     });
             }
         }
@@ -233,12 +355,15 @@ fn build_module_def(module: StdlibModuleId) -> Option<StdlibModuleDef> {
     let parsed = ridge_parser::parse_source(source);
     let defs = collect_defs(&parsed.module.items);
     let fn_sigs = collect_fn_sigs(source, &parsed.module.items);
+    let classes = classify_lines(source);
+    let cards = collect_cards(source, &parsed.module.items, &line_index, &classes);
 
     Some(StdlibModuleDef {
         uri,
         line_index,
         defs,
         fn_sigs,
+        cards,
     })
 }
 
@@ -289,6 +414,30 @@ pub fn stdlib_location(module: StdlibModuleId, name: &str) -> Option<Location> {
         })
     })
     .flatten()
+}
+
+/// The hover card (header + role + doc) of a stdlib symbol `name` in `module`.
+///
+/// `None` when the module has no materialised source or the name is not a
+/// top-level declaration.
+#[must_use]
+pub fn stdlib_symbol_card(module: StdlibModuleId, name: &str) -> Option<StdlibCard> {
+    with_module_def(module, |def| def.cards.get(name).cloned()).flatten()
+}
+
+/// The hover header and doc of a stdlib class method, by `(class, method)`.
+///
+/// The header is the method signature; the doc is the method's own `--` block
+/// or, failing that, its class's. `None` when the pair is not a stdlib class
+/// method — for example a class declared in the workspace.
+#[must_use]
+pub fn stdlib_class_method_card(
+    class_name: &str,
+    method: &str,
+) -> Option<(String, Option<String>)> {
+    class_method_index()
+        .get(&(class_name.to_owned(), method.to_owned()))
+        .map(|entry| (entry.sig.label.clone(), entry.doc.clone()))
 }
 
 /// Resolve a stdlib module alias to the start of its materialised source file.
@@ -439,5 +588,52 @@ mod tests {
         // miss the index.
         assert!(stdlib_class_method_location("Refinable", "definitelyNotAMethod").is_none());
         assert!(stdlib_class_method_location("NotAStdlibClass", "filter").is_none());
+    }
+
+    #[test]
+    fn symbol_card_carries_header_and_doc() {
+        // `map` is a documented `pub fn` of `std.list`, with an `@ffi` attribute
+        // between its `--` doc and the declaration — the doc lift skips it.
+        let card = stdlib_symbol_card(module_id("std.list"), "map")
+            .expect("std.list should expose a card for `map`");
+        assert_eq!(card.kind, "function");
+        assert!(
+            card.header.contains("pub fn map") && card.header.contains("-> List b"),
+            "header should be the written signature, got {:?}",
+            card.header
+        );
+        let doc = card.doc.expect("`map` is documented");
+        assert!(
+            doc.contains("Apply a function to each element"),
+            "doc should be lifted from the `--` block, got {doc:?}"
+        );
+    }
+
+    #[test]
+    fn symbol_card_unknown_name_is_none() {
+        assert!(stdlib_symbol_card(module_id("std.list"), "definitelyNotAStdlibName").is_none());
+    }
+
+    #[test]
+    fn class_method_card_falls_back_to_class_doc() {
+        // `Refinable` documents the class, not `filter`; the card lifts the class
+        // doc as the method's.
+        let (header, doc) = stdlib_class_method_card("Refinable", "filter")
+            .expect("Refinable.filter should expose a card");
+        assert!(
+            header.starts_with("filter"),
+            "header should be the method signature, got {header:?}"
+        );
+        let doc = doc.expect("Refinable.filter inherits the class doc");
+        assert!(
+            doc.contains("One `filter` for both a query and a join"),
+            "doc should fall back to the class block, got {doc:?}"
+        );
+    }
+
+    #[test]
+    fn class_method_card_unknown_is_none() {
+        assert!(stdlib_class_method_card("Refinable", "definitelyNotAMethod").is_none());
+        assert!(stdlib_class_method_card("NotAStdlibClass", "filter").is_none());
     }
 }

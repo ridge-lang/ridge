@@ -6369,6 +6369,10 @@ struct ProgressLog {
     /// Count of `workspace/diagnostic/refresh` requests — the pull model's nudge
     /// to re-pull after a compile.
     refreshed: usize,
+    /// Partial-result `$/progress` notifications, in arrival order. Each carries
+    /// the request's `partialResultToken` and the raw result array the client
+    /// appends to what it already has.
+    partial_chunks: Vec<(ProgressToken, serde_json::Value)>,
 }
 
 /// Drive the client half of the in-process loopback.
@@ -6398,6 +6402,17 @@ fn drive_client(socket: ClientSocket) -> Arc<Mutex<ProgressLog>> {
                             WorkDoneProgress::Begin(_) => sink.lock().unwrap().begun.push(p.token),
                             WorkDoneProgress::End(_) => sink.lock().unwrap().ended.push(p.token),
                             WorkDoneProgress::Report(_) => {}
+                        }
+                    } else if let (Some(token), Some(value)) =
+                        (params.get("token"), params.get("value"))
+                    {
+                        // A partial-result `$/progress` carries a raw array, which
+                        // the typed `ProgressParams` (work-done only) rejects.
+                        if let Ok(tok) = serde_json::from_value::<ProgressToken>(token.clone()) {
+                            sink.lock()
+                                .unwrap()
+                                .partial_chunks
+                                .push((tok, value.clone()));
                         }
                     }
                 }
@@ -6429,7 +6444,12 @@ async fn progress_workspace(
     PathBuf,
 ) {
     let dir = tempfile::TempDir::new().expect("temp dir");
-    let root = dir.path().to_path_buf();
+    // Canonicalise so a query URI built from the returned root matches the module
+    // URIs the index derives: discovery canonicalises the workspace root, which
+    // expands Windows 8.3 short names (`RUNNER~1` → `runneradmin`) and resolves
+    // the macOS `/var` → `/private/var` symlink. Without this a find-references
+    // query off this root misses the index off-Linux.
+    let root = std::fs::canonicalize(dir.path()).expect("canonicalize temp root");
     let app_src = root.join("app").join("src");
     std::fs::create_dir_all(&app_src).expect("create temp workspace");
     std::fs::write(
@@ -6588,6 +6608,190 @@ async fn test_no_progress_for_incremental_compile() {
         log.lock().unwrap().created.len(),
         created_after_open,
         "an incremental recompile must not create new progress"
+    );
+}
+
+// ── Partial-result streaming ($/progress) ─────────────────────────────────────
+
+/// A `references` request that opts into partial results under `token`.
+fn references_at_token(
+    uri: &Url,
+    line: u32,
+    character: u32,
+    include_declaration: bool,
+    token: ProgressToken,
+) -> ReferenceParams {
+    let mut params = references_at(uri, line, character, include_declaration);
+    params.partial_result_params.partial_result_token = Some(token);
+    params
+}
+
+/// A `workspace/symbol` request, optionally opting into partial results.
+fn workspace_symbol_params(query: &str, token: Option<ProgressToken>) -> WorkspaceSymbolParams {
+    WorkspaceSymbolParams {
+        query: query.to_owned(),
+        work_done_progress_params: WorkDoneProgressParams::default(),
+        partial_result_params: PartialResultParams {
+            partial_result_token: token,
+        },
+    }
+}
+
+/// Poll the progress log until the streamed chunks carry at least `expected`
+/// items in total, or panic after ~6s. Waiting on the item count rather than a
+/// chunk count avoids racing the tail chunk. Returns a snapshot in arrival order.
+async fn wait_for_partial_chunks(
+    log: &Arc<Mutex<ProgressLog>>,
+    expected: usize,
+) -> Vec<(ProgressToken, serde_json::Value)> {
+    for _ in 0..120 {
+        {
+            let guard = log.lock().unwrap();
+            let total: usize = guard
+                .partial_chunks
+                .iter()
+                .filter_map(|(_, value)| value.as_array().map(Vec::len))
+                .sum();
+            if total >= expected {
+                return guard.partial_chunks.clone();
+            }
+        }
+        tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;
+    }
+    panic!("expected streamed chunks totalling {expected} items");
+}
+
+/// Concatenate the locations carried by streamed `$/progress` chunks, in order.
+fn collect_streamed_locations(chunks: &[(ProgressToken, serde_json::Value)]) -> Vec<Location> {
+    let mut out = Vec::new();
+    for (_, value) in chunks {
+        let locs: Vec<Location> =
+            serde_json::from_value(value.clone()).expect("partial chunk is a Location array");
+        out.extend(locs);
+    }
+    out
+}
+
+/// The `(name, start line)` of each symbol, for order-preserving comparison that
+/// doesn't lean on `SymbolInformation`'s equality.
+fn symbol_keys(syms: &[SymbolInformation]) -> Vec<(String, u32)> {
+    syms.iter()
+        .map(|s| (s.name.clone(), s.location.range.start.line))
+        .collect()
+}
+
+/// A single module that defines `helper` and uses it `uses` times, enough to push
+/// a references/symbols result past one `$/progress` chunk.
+fn many_uses_source(uses: usize) -> String {
+    let mut src = String::from("pub fn helper -> Int = 1\n");
+    src.extend((0..uses).map(|i| format!("pub fn u{i} -> Int = helper\n")));
+    src
+}
+
+#[tokio::test]
+async fn test_references_streams_partial_results() {
+    // 150 use-sites plus the declaration is comfortably more than one chunk.
+    let src = many_uses_source(150);
+    let (service, log, root) = progress_workspace(&[("main.ridge", &src)], false).await;
+    let server = service.inner();
+    let uri = Url::from_file_path(root.join("app").join("src").join("main.ridge")).expect("uri");
+
+    // Cursor on the first `helper` use-site (line 1: `pub fn u0 -> Int = helper`).
+    let use_line = "pub fn u0 -> Int = helper";
+    let col = u32::try_from(use_line.find("helper").expect("use of helper") + 1)
+        .expect("offset fits u32");
+
+    // Baseline: without a token the whole list comes back in the response.
+    let full = server
+        .references(references_at(&uri, 1, col, true))
+        .await
+        .expect("ok")
+        .expect("references");
+    assert!(
+        full.len() > 64,
+        "fixture should exceed one chunk, got {} references",
+        full.len()
+    );
+
+    // With a token the response is empty and every location arrives via $/progress.
+    let token = ProgressToken::String("ridge/test/refs".to_owned());
+    let streamed = server
+        .references(references_at_token(&uri, 1, col, true, token.clone()))
+        .await
+        .expect("ok")
+        .expect("final response present");
+    assert!(
+        streamed.is_empty(),
+        "the final response is empty once results stream, got {streamed:?}"
+    );
+
+    let chunks = wait_for_partial_chunks(&log, full.len()).await;
+    assert!(
+        chunks.len() >= 2,
+        "a result past one chunk streams in several notifications, got {}",
+        chunks.len()
+    );
+    assert!(
+        chunks.iter().all(|(t, _)| *t == token),
+        "every partial result carries the request token"
+    );
+    assert_eq!(
+        collect_streamed_locations(&chunks),
+        full,
+        "streamed chunks concatenate to the same locations as the direct response"
+    );
+}
+
+#[tokio::test]
+async fn test_workspace_symbol_streams_partial_results() {
+    let src = many_uses_source(150);
+    let (service, log, _root) = progress_workspace(&[("main.ridge", &src)], false).await;
+    let server = service.inner();
+
+    // Baseline: an empty query returns every symbol in the response.
+    let full = server
+        .symbol(workspace_symbol_params("", None))
+        .await
+        .expect("ok")
+        .expect("symbols");
+    assert!(
+        full.len() > 64,
+        "fixture should exceed one chunk, got {} symbols",
+        full.len()
+    );
+
+    let token = ProgressToken::String("ridge/test/symbols".to_owned());
+    let streamed = server
+        .symbol(workspace_symbol_params("", Some(token.clone())))
+        .await
+        .expect("ok")
+        .expect("final response present");
+    assert!(
+        streamed.is_empty(),
+        "the final response is empty once results stream, got {streamed:?}"
+    );
+
+    let chunks = wait_for_partial_chunks(&log, full.len()).await;
+    assert!(
+        chunks.len() >= 2,
+        "a result past one chunk streams in several notifications, got {}",
+        chunks.len()
+    );
+    assert!(
+        chunks.iter().all(|(t, _)| *t == token),
+        "every partial result carries the request token"
+    );
+    let streamed_syms: Vec<SymbolInformation> = chunks
+        .iter()
+        .flat_map(|(_, value)| {
+            serde_json::from_value::<Vec<SymbolInformation>>(value.clone())
+                .expect("partial chunk is a SymbolInformation array")
+        })
+        .collect();
+    assert_eq!(
+        symbol_keys(&streamed_syms),
+        symbol_keys(&full),
+        "streamed chunks concatenate to the same symbols as the direct response"
     );
 }
 

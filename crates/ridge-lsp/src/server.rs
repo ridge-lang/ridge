@@ -775,6 +775,52 @@ impl Drop for IndexingProgress {
     }
 }
 
+/// `$/progress` notification carrying a partial result.
+///
+/// lsp-types' typed `$/progress` ([`notification::Progress`]) only models
+/// work-done progress, but partial results stream the raw result array — the
+/// value the client appends to what it already holds. This thin notification
+/// carries that free-form payload under the request's `partialResultToken`.
+enum PartialResultProgress {}
+
+impl notification::Notification for PartialResultProgress {
+    type Params = serde_json::Value;
+    const METHOD: &'static str = "$/progress";
+}
+
+/// Results per partial-result `$/progress` chunk. Small enough that a large
+/// find-references fills the panel in visible steps, large enough to keep the
+/// notification count modest.
+const PARTIAL_RESULT_CHUNK: usize = 64;
+
+/// Stream `values` to the client under `token` as partial-result `$/progress`
+/// notifications, [`PARTIAL_RESULT_CHUNK`] items at a time. Each notification is
+/// an array the client appends to the results it already has, so a large
+/// find-references or symbol search fills in progressively and no single message
+/// has to carry the whole set. Returns once every chunk is queued, so the empty
+/// final response the caller sends next lands after them on the wire.
+///
+/// The reference/symbol scans run entirely in memory, so this chunks the
+/// finished result rather than threading a sink through the index — the same
+/// wire behaviour with far less surface.
+async fn stream_partial_results(
+    client: &Client,
+    token: &ProgressToken,
+    values: &[serde_json::Value],
+) {
+    for chunk in values.chunks(PARTIAL_RESULT_CHUNK) {
+        let mut params = serde_json::Map::new();
+        params.insert(
+            "token".to_owned(),
+            serde_json::to_value(token).unwrap_or(serde_json::Value::Null),
+        );
+        params.insert("value".to_owned(), serde_json::Value::Array(chunk.to_vec()));
+        client
+            .send_notification::<PartialResultProgress>(serde_json::Value::Object(params))
+            .await;
+    }
+}
+
 /// Seed-or-reuse the engine, apply the buffer edits, and produce the index and
 /// diagnostics. Holds the engine mutex for the whole call, so concurrent
 /// compiles serialise on the shared engine; the generation is claimed inside
@@ -1363,6 +1409,7 @@ impl LanguageServer for RidgeLanguageServer {
     }
 
     async fn references(&self, params: ReferenceParams) -> LspResult<Option<Vec<Location>>> {
+        let partial_token = params.partial_result_params.partial_result_token;
         let uri = params.text_document_position.text_document.uri;
         let pos = params.text_document_position.position;
         let include_declaration = params.context.include_declaration;
@@ -1376,7 +1423,19 @@ impl LanguageServer for RidgeLanguageServer {
             index.references_at(&uri, pos.line, pos.character, include_declaration, cancel)
         })
         .await;
-        Ok(result.flatten())
+        let locations = result.flatten();
+        // A client that opted into partial results gets the locations streamed as
+        // `$/progress` chunks; the final response is then empty, since the client
+        // appends every chunk it received.
+        if let (Some(token), Some(locs)) = (partial_token, &locations) {
+            let values: Vec<serde_json::Value> = locs
+                .iter()
+                .filter_map(|loc| serde_json::to_value(loc).ok())
+                .collect();
+            stream_partial_results(&self.client, &token, &values).await;
+            return Ok(Some(Vec::new()));
+        }
+        Ok(locations)
     }
 
     async fn code_lens(&self, params: CodeLensParams) -> LspResult<Option<Vec<CodeLens>>> {
@@ -1845,6 +1904,7 @@ impl LanguageServer for RidgeLanguageServer {
         // `Ctrl-T` spans every open project and every module within each, so run
         // the merge off the request task and let `$/cancelRequest` stop it — a
         // broad query as the user types should never stall a hover.
+        let partial_token = params.partial_result_params.partial_result_token;
         let indices = self.all_indices().await;
         let query = params.query;
         let symbols = run_cancellable(move |cancel| {
@@ -1859,6 +1919,17 @@ impl LanguageServer for RidgeLanguageServer {
         })
         .await
         .unwrap_or_default();
+        // Stream the matches as `$/progress` chunks for a client that opted into
+        // partial results, then answer with an empty final response (see
+        // `references`).
+        if let Some(token) = partial_token {
+            let values: Vec<serde_json::Value> = symbols
+                .iter()
+                .filter_map(|sym| serde_json::to_value(sym).ok())
+                .collect();
+            stream_partial_results(&self.client, &token, &values).await;
+            return Ok(Some(Vec::new()));
+        }
         Ok(Some(symbols))
     }
 

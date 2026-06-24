@@ -1428,6 +1428,13 @@ impl WorkspaceIndex {
             return Some(locs);
         }
 
+        // A class name (in a `class`/`instance` head or a `where`-constraint)
+        // carries no binding either — the resolver defers typeclass passes — so
+        // it is resolved off the AST, workspace-wide like the class itself.
+        if let Some(locs) = self.class_references_at(mi, offset, include_declaration) {
+            return Some(locs);
+        }
+
         // The binding under the cursor — same lookup as go-to-definition.
         let bindings = &self.modules.get(mi)?.bindings;
         let binding = self
@@ -1552,6 +1559,13 @@ impl WorkspaceIndex {
         // head in this file; like a field, it carries no binding on the head
         // node, so it is resolved off the AST.
         if let Some(highlights) = self.alias_highlights_at(mi, offset) {
+            return Some(highlights);
+        }
+
+        // A class name highlights its declaration head plus every instance head
+        // and constraint that names it in this file; like a field or an alias it
+        // carries no binding, so it is resolved off the AST.
+        if let Some(highlights) = self.class_highlights_at(mi, offset) {
             return Some(highlights);
         }
 
@@ -1720,9 +1734,11 @@ impl WorkspaceIndex {
     /// type also rewrites its `User { .. }` constructions and patterns), a union
     /// variant (`Red`, renamed independently of its type and sibling variants), a
     /// record field (`user.age` and its declaration move together, scoped to the
-    /// field's owner record), and an explicit module alias (`import lib as L`).
-    /// Not yet renameable (returns `None`): an actor, a stdlib symbol, or a class
-    /// method. Reads only this immutable snapshot.
+    /// field's owner record), an explicit module alias (`import lib as L`), and a
+    /// workspace-declared class (`Show`, rewriting its `instance` heads and every
+    /// `where`-constraint that names it). Not yet renameable (returns `None`): an
+    /// actor, a stdlib symbol, a class method, or a prelude/stdlib class with no
+    /// workspace declaration. Reads only this immutable snapshot.
     #[must_use]
     pub fn prepare_rename_at(
         &self,
@@ -1747,6 +1763,17 @@ impl WorkspaceIndex {
                 return Some(PrepareRenameResponse::RangeWithPlaceholder {
                     range: self.range_in(mid, hit.cursor_span)?,
                     placeholder: hit.name,
+                });
+            }
+            // A class name is terminal here too: it renames only when the
+            // workspace declares it; a prelude/stdlib class (no `class` decl)
+            // declines outright (the `?`) rather than falling through.
+            if let Some((name, span)) = self.class_name_at(mi, offset) {
+                self.find_workspace_class(&name)?;
+                let mid = ModuleId(u32::try_from(mi).ok()?);
+                return Some(PrepareRenameResponse::RangeWithPlaceholder {
+                    range: self.range_in(mid, span)?,
+                    placeholder: name,
                 });
             }
         }
@@ -1894,9 +1921,9 @@ impl WorkspaceIndex {
     }
 
     /// The type/AST-directed rename paths that run before the binding-keyed one:
-    /// a record field or a module alias. Returns the finished rename result when
-    /// one of them owns the cursor, or `None` to fall through to the
-    /// binding-keyed path.
+    /// a record field, a module alias, or a class name. Returns the finished
+    /// rename result when one of them owns the cursor, or `None` to fall through
+    /// to the binding-keyed path.
     fn rename_special_at(
         &self,
         uri: &Url,
@@ -1909,6 +1936,9 @@ impl WorkspaceIndex {
             return Some(result.map(Some));
         }
         if let Some(result) = self.alias_rename_at(mi, offset, new_name) {
+            return Some(result.map(Some));
+        }
+        if let Some(result) = self.class_rename_at(mi, offset, new_name) {
             return Some(result.map(Some));
         }
         None
@@ -2956,6 +2986,233 @@ impl WorkspaceIndex {
                 .cmp(&(b.range.start.line, b.range.start.character))
         });
         Some(highlights)
+    }
+
+    /// The canonical class name under `offset` in module `mi`, when the cursor
+    /// sits on a class-name token — the `class` declaration head, a superclass
+    /// constraint, an `instance` head, an instance-context constraint, or a
+    /// function `where` clause. Returns the name and the exact name-token span.
+    ///
+    /// Class names carry no binding (the resolver defers typeclass passes), so
+    /// the spans come straight from the retained AST and the name is the
+    /// canonical one the parser stores (`Show` is recorded as `ToText`). A
+    /// method name is not a class-name token and yields `None`.
+    fn class_name_at(&self, mi: usize, offset: u32) -> Option<(String, Span)> {
+        let ast = self.modules.get(mi)?.ast.as_ref()?;
+        let here = |s: Span| s.start <= offset && offset <= s.end;
+        for item in &ast.items {
+            match item {
+                ridge_ast::Item::ClassDecl(decl) => {
+                    if here(decl.name.span) {
+                        return Some((decl.name.text.clone(), decl.name.span));
+                    }
+                    if let Some(sup) = decl.superclasses.iter().find(|s| here(s.class.span)) {
+                        return Some((sup.class.text.clone(), sup.class.span));
+                    }
+                }
+                ridge_ast::Item::InstanceDecl(decl) => {
+                    if here(decl.class.span) {
+                        return Some((decl.class.text.clone(), decl.class.span));
+                    }
+                    if let Some(c) = decl.constraints.iter().find(|c| here(c.class.span)) {
+                        return Some((c.class.text.clone(), c.class.span));
+                    }
+                }
+                ridge_ast::Item::Fn(decl) => {
+                    if let Some(c) = decl.constraints.iter().find(|c| here(c.class.span)) {
+                        return Some((c.class.text.clone(), c.class.span));
+                    }
+                }
+                _ => {}
+            }
+        }
+        None
+    }
+
+    /// Class-name occurrences within one module's items as `(name_span,
+    /// is_decl)`: the `class` declaration head (`is_decl`), every `instance`
+    /// head, and every superclass, instance-context, or function `where`
+    /// constraint that names `name`. Matches on the canonical class name, so the
+    /// sugar alias `Show` and its canonical `ToText` collapse to one class — the
+    /// same identity the compiler's name-interned class table uses.
+    fn class_sites_in_module(ast: &ridge_ast::Module, name: &str) -> Vec<(Span, bool)> {
+        let mut sites = Vec::new();
+        for item in &ast.items {
+            match item {
+                ridge_ast::Item::ClassDecl(decl) => {
+                    if decl.name.text == name {
+                        sites.push((decl.name.span, true));
+                    }
+                    for sup in &decl.superclasses {
+                        if sup.class.text == name {
+                            sites.push((sup.class.span, false));
+                        }
+                    }
+                }
+                ridge_ast::Item::InstanceDecl(decl) => {
+                    if decl.class.text == name {
+                        sites.push((decl.class.span, false));
+                    }
+                    for c in &decl.constraints {
+                        if c.class.text == name {
+                            sites.push((c.class.span, false));
+                        }
+                    }
+                }
+                ridge_ast::Item::Fn(decl) => {
+                    for c in &decl.constraints {
+                        if c.class.text == name {
+                            sites.push((c.class.span, false));
+                        }
+                    }
+                }
+                _ => {}
+            }
+        }
+        sites
+    }
+
+    /// Every occurrence of the class named `name` across the workspace, as
+    /// `(module_index, name_span, is_decl)`. The per-module collector keyed by
+    /// canonical name; class navigation is workspace-wide because a class
+    /// declared in one module is constrained and instantiated from any other.
+    fn class_name_sites(&self, name: &str) -> Vec<(usize, Span, bool)> {
+        let mut sites = Vec::new();
+        for (smi, view) in self.modules.iter().enumerate() {
+            let Some(ast) = view.ast.as_ref() else {
+                continue;
+            };
+            for (span, is_decl) in Self::class_sites_in_module(ast, name) {
+                sites.push((smi, span, is_decl));
+            }
+        }
+        sites
+    }
+
+    /// Find-references for a class name under the cursor: every class-name site
+    /// across the workspace (instance heads and constraints), plus the `class`
+    /// declaration head when `include_declaration` is set. `None` when the
+    /// cursor is not on a class name, so the caller falls through to the
+    /// binding-keyed path. A class with no workspace declaration (a prelude or
+    /// stdlib class) still reports its use sites.
+    fn class_references_at(
+        &self,
+        mi: usize,
+        offset: u32,
+        include_declaration: bool,
+    ) -> Option<Vec<Location>> {
+        let (name, _) = self.class_name_at(mi, offset)?;
+        let mut locations: Vec<Location> = self
+            .class_name_sites(&name)
+            .into_iter()
+            .filter(|(_, _, is_decl)| include_declaration || !is_decl)
+            .filter_map(|(smi, span, _)| {
+                let smid = ModuleId(u32::try_from(smi).ok()?);
+                self.location_in(smid, span)
+            })
+            .collect();
+        locations.sort_by(|a, b| {
+            (a.uri.as_str(), a.range.start.line, a.range.start.character).cmp(&(
+                b.uri.as_str(),
+                b.range.start.line,
+                b.range.start.character,
+            ))
+        });
+        locations.dedup();
+        Some(locations)
+    }
+
+    /// `documentHighlight` for a class name under the cursor: every class-name
+    /// occurrence in this file, the `class` declaration head as the write and
+    /// every instance head or constraint as a read. Scans only this module.
+    /// `None` when the cursor is not on a class name.
+    fn class_highlights_at(&self, mi: usize, offset: u32) -> Option<Vec<DocumentHighlight>> {
+        let (name, _) = self.class_name_at(mi, offset)?;
+        let mid = ModuleId(u32::try_from(mi).ok()?);
+        let ast = self.modules.get(mi)?.ast.as_ref()?;
+        let mut spots: HashMap<(u32, u32), DocumentHighlightKind> = HashMap::new();
+        for (span, is_decl) in Self::class_sites_in_module(ast, &name) {
+            let kind = if is_decl {
+                DocumentHighlightKind::WRITE
+            } else {
+                DocumentHighlightKind::READ
+            };
+            spots.insert((span.start, span.end), kind);
+        }
+        if spots.is_empty() {
+            return None;
+        }
+        let mut highlights: Vec<DocumentHighlight> = spots
+            .into_iter()
+            .filter_map(|((start, end), kind)| {
+                Some(DocumentHighlight {
+                    range: self.range_in(mid, Span::new(start, end))?,
+                    kind: Some(kind),
+                })
+            })
+            .collect();
+        highlights.sort_by(|a, b| {
+            (a.range.start.line, a.range.start.character)
+                .cmp(&(b.range.start.line, b.range.start.character))
+        });
+        Some(highlights)
+    }
+
+    /// Rename a class under the cursor to `new_name`, rewriting its declaration
+    /// head and every instance head and constraint that names it across the
+    /// workspace. `None` when the cursor is not on a class name; `Some(Err)`
+    /// when the class has no workspace declaration (a prelude/stdlib class) or
+    /// `new_name` is not a valid type name; `Some(Ok(edit))` otherwise.
+    fn class_rename_at(
+        &self,
+        mi: usize,
+        offset: u32,
+        new_name: &str,
+    ) -> Option<Result<WorkspaceEdit, String>> {
+        let (name, _) = self.class_name_at(mi, offset)?;
+        if self.find_workspace_class(&name).is_none() {
+            return Some(Err(format!(
+                "Cannot rename `{name}`: it is not declared in this workspace."
+            )));
+        }
+        if let Err(message) = validate_new_name(new_name, &name) {
+            return Some(Err(message));
+        }
+        let mut ranges: HashMap<Url, Vec<Range>> = HashMap::new();
+        for (smi, span, _) in self.class_name_sites(&name) {
+            let Ok(raw) = u32::try_from(smi) else {
+                continue;
+            };
+            if let Some(loc) = self.location_in(ModuleId(raw), span) {
+                ranges.entry(loc.uri).or_default().push(loc.range);
+            }
+        }
+        let mut changes: HashMap<Url, Vec<TextEdit>> = HashMap::new();
+        for (edit_uri, mut rs) in ranges {
+            rs.sort_by(|a, b| {
+                (a.start.line, a.start.character, a.end.line, a.end.character).cmp(&(
+                    b.start.line,
+                    b.start.character,
+                    b.end.line,
+                    b.end.character,
+                ))
+            });
+            rs.dedup();
+            changes.insert(
+                edit_uri,
+                rs.into_iter()
+                    .map(|range| TextEdit {
+                        range,
+                        new_text: new_name.to_owned(),
+                    })
+                    .collect(),
+            );
+        }
+        Some(Ok(WorkspaceEdit {
+            changes: Some(changes),
+            document_changes: None,
+            change_annotations: None,
+        }))
     }
 
     /// True when the nominal record `tycon_raw` declares a field named `name`.

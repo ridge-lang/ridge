@@ -2903,6 +2903,243 @@ async fn test_rename_type_rejects_lowercase() {
     assert!(err.is_err(), "a type cannot be renamed to a lowercase name");
 }
 
+// ── Class references / highlight / rename ─────────────────────────────────────
+
+// A class `Animal` with a method, a subclass `Pet` that requires it, two
+// instances of `Animal` (on `Int` and parametrically on `List a`), an instance
+// of `Pet`, and two generic functions constrained by a class. `Animal` is named
+// in every class-name position the server resolves — a `class` declaration head
+// (0,10), a superclass constraint (2,22), an `instance` head (4,9 and 6,9), an
+// instance-context constraint (6,31), and a function `where` clause (10,37) —
+// so a rename of `Animal` must move all six and leave `Pet` untouched. `ToText`
+// (11,35) is a prelude class with no workspace declaration: it is not renameable.
+// Lines (0-indexed):
+//   0  pub class Animal a =
+//   1    sound (x: a) -> Text
+//   2  pub class Pet a where Animal a =
+//   3    name (x: a) -> Text
+//   4  instance Animal Int =
+//   5    sound (x: Int) -> Text = "g"
+//   6  instance Animal (List a) where Animal a =
+//   7    sound (xs: List a) -> Text = "l"
+//   8  instance Pet Int =
+//   9    name (x: Int) -> Text = "p"
+//  10  pub fn describe (x: a) -> Text where Animal a = "d"
+//  11  pub fn render (x: a) -> Text where ToText a = "r"
+const CLASS_RENAME_SRC: &str = concat!(
+    "pub class Animal a =\n",
+    "  sound (x: a) -> Text\n",
+    "pub class Pet a where Animal a =\n",
+    "  name (x: a) -> Text\n",
+    "instance Animal Int =\n",
+    "  sound (x: Int) -> Text = \"g\"\n",
+    "instance Animal (List a) where Animal a =\n",
+    "  sound (xs: List a) -> Text = \"l\"\n",
+    "instance Pet Int =\n",
+    "  name (x: Int) -> Text = \"p\"\n",
+    "pub fn describe (x: a) -> Text where Animal a = \"d\"\n",
+    "pub fn render (x: a) -> Text where ToText a = \"r\"\n",
+);
+
+#[tokio::test]
+async fn test_references_class() {
+    let (service, _socket, uri) = hover_fixture(CLASS_RENAME_SRC).await;
+    let server = service.inner();
+
+    // From the superclass constraint `Animal` (2,22): the declaration plus every
+    // instance head and constraint that names the class — never a `Pet` site.
+    let with_decl = server
+        .references(references_at(&uri, 2, 22, true))
+        .await
+        .expect("ok")
+        .expect("references of class `Animal`");
+    assert_eq!(
+        ref_spots(&with_decl, &uri),
+        vec![(0, 10), (2, 22), (4, 9), (6, 9), (6, 31), (10, 37)],
+        "includeDeclaration=true returns the class head and every reference"
+    );
+    assert!(
+        with_decl.iter().all(|l| l.uri == uri),
+        "every reference lands in the source file"
+    );
+
+    // includeDeclaration=false drops the class head, leaving the references.
+    let without_decl = server
+        .references(references_at(&uri, 2, 22, false))
+        .await
+        .expect("ok")
+        .expect("references of class `Animal`");
+    assert_eq!(
+        ref_spots(&without_decl, &uri),
+        vec![(2, 22), (4, 9), (6, 9), (6, 31), (10, 37)],
+        "includeDeclaration=false returns only the references"
+    );
+}
+
+#[tokio::test]
+async fn test_highlight_class() {
+    let (service, _socket, uri) = hover_fixture(CLASS_RENAME_SRC).await;
+    let server = service.inner();
+
+    let expected = vec![
+        (0, 10, DocumentHighlightKind::WRITE),
+        (2, 22, DocumentHighlightKind::READ),
+        (4, 9, DocumentHighlightKind::READ),
+        (6, 9, DocumentHighlightKind::READ),
+        (6, 31, DocumentHighlightKind::READ),
+        (10, 37, DocumentHighlightKind::READ),
+    ];
+
+    // From an instance head.
+    let from_use = server
+        .document_highlight(highlight_at(&uri, 4, 9))
+        .await
+        .expect("ok")
+        .expect("highlights from a class use");
+    assert_eq!(
+        highlight_spots(&from_use),
+        expected,
+        "the declaration head is the write, every reference is a read"
+    );
+
+    // From the declaration name — same set.
+    let from_decl = server
+        .document_highlight(highlight_at(&uri, 0, 10))
+        .await
+        .expect("ok")
+        .expect("highlights from the class declaration");
+    assert_eq!(
+        highlight_spots(&from_decl),
+        expected,
+        "highlighting from the declaration reaches every reference"
+    );
+}
+
+#[tokio::test]
+async fn test_rename_class() {
+    let sites = vec![(0, 10), (2, 22), (4, 9), (6, 9), (6, 31), (10, 37)];
+
+    // From the function `where` clause (10,37).
+    let (service, _socket, uri) = hover_fixture(CLASS_RENAME_SRC).await;
+    let server = service.inner();
+    let edit = server
+        .rename(rename_at(&uri, 10, 37, "Creature"))
+        .await
+        .expect("ok");
+    assert_eq!(
+        rename_sites(edit.as_ref(), &uri),
+        sites,
+        "the declaration and every reference move; `Pet` does not"
+    );
+    assert!(
+        rename_edits(edit.as_ref(), &uri)
+            .iter()
+            .all(|(_, t)| t == "Creature"),
+        "every edit rewrites to the new name"
+    );
+
+    // From the declaration name (0,10) — same edit set.
+    let (service, _socket, uri) = hover_fixture(CLASS_RENAME_SRC).await;
+    let server = service.inner();
+    let edit = server
+        .rename(rename_at(&uri, 0, 10, "Creature"))
+        .await
+        .expect("ok");
+    assert_eq!(
+        rename_sites(edit.as_ref(), &uri),
+        sites,
+        "renaming from the declaration reaches the same sites"
+    );
+}
+
+#[tokio::test]
+async fn test_rename_class_sibling_isolated() {
+    let (service, _socket, uri) = hover_fixture(CLASS_RENAME_SRC).await;
+    let server = service.inner();
+
+    // Renaming `Pet` from its instance head (8,9) touches only the `Pet`
+    // declaration (2,10) and that instance head — never any `Animal` site.
+    let edit = server
+        .rename(rename_at(&uri, 8, 9, "Companion"))
+        .await
+        .expect("ok");
+    assert_eq!(
+        rename_sites(edit.as_ref(), &uri),
+        vec![(2, 10), (8, 9)],
+        "a class rename is scoped to that one class by name"
+    );
+}
+
+#[tokio::test]
+async fn test_prepare_rename_class() {
+    let (service, _socket, uri) = hover_fixture(CLASS_RENAME_SRC).await;
+    let server = service.inner();
+
+    // Both a use (instance head) and the declaration name offer the same range.
+    for (line, character) in [(4, 9), (0, 10)] {
+        let prep = server
+            .prepare_rename(prepare_rename_at(&uri, line, character))
+            .await
+            .expect("ok")
+            .expect("a workspace class is renameable");
+        match prep {
+            PrepareRenameResponse::RangeWithPlaceholder { placeholder, .. } => {
+                assert_eq!(
+                    placeholder, "Animal",
+                    "placeholder is the current class name"
+                );
+            }
+            other => panic!("expected RangeWithPlaceholder, got {other:?}"),
+        }
+    }
+}
+
+#[tokio::test]
+async fn test_rename_class_rejects_lowercase() {
+    let (service, _socket, uri) = hover_fixture(CLASS_RENAME_SRC).await;
+    let server = service.inner();
+
+    // A class is an uppercase name, so a lowercase target is rejected.
+    let err = server
+        .rename(rename_at(&uri, 4, 9, "creature"))
+        .await
+        .expect_err("a lowercase name is not a valid class");
+    assert!(
+        err.message.contains("uppercase"),
+        "the error explains the class must stay uppercase, got: {}",
+        err.message
+    );
+}
+
+#[tokio::test]
+async fn test_class_without_workspace_decl_not_renameable() {
+    let (service, _socket, uri) = hover_fixture(CLASS_RENAME_SRC).await;
+    let server = service.inner();
+
+    // `ToText` is a prelude class with no `class` declaration in the workspace,
+    // so prepareRename declines outright rather than offering a range.
+    let prep = server
+        .prepare_rename(prepare_rename_at(&uri, 11, 35))
+        .await
+        .expect("ok");
+    assert!(
+        prep.is_none(),
+        "a prelude class with no workspace declaration is not renameable"
+    );
+
+    // A rename attempted directly (a client that skips prepareRename) is refused
+    // with a message rather than silently editing prelude references.
+    let err = server
+        .rename(rename_at(&uri, 11, 35, "Display"))
+        .await
+        .expect_err("a prelude class cannot be renamed");
+    assert!(
+        err.message.contains("not declared in this workspace"),
+        "the error explains the class is not declared here, got: {}",
+        err.message
+    );
+}
+
 /// Build a two-member workspace from explicit library and app sources. Returns
 /// the service plus the app and lib URIs.
 async fn two_member_ws(

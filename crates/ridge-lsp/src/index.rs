@@ -1420,6 +1420,14 @@ impl WorkspaceIndex {
             return Some(locs);
         }
 
+        // A module alias (`import lib.Lib as Lib`, used as `Lib.helper`) is a
+        // module-local referent the binding-keyed scan misses: the whole `F.x`
+        // node carries the resolved member's binding, not the alias. It is
+        // resolved off the AST head segments, like a field.
+        if let Some(locs) = self.alias_references_at(mi, offset, include_declaration) {
+            return Some(locs);
+        }
+
         // The binding under the cursor — same lookup as go-to-definition.
         let bindings = &self.modules.get(mi)?.bindings;
         let binding = self
@@ -1537,6 +1545,13 @@ impl WorkspaceIndex {
         // through the base expression's type, like find-references restricted to
         // this file.
         if let Some(highlights) = self.field_highlights_at(mi, offset) {
+            return Some(highlights);
+        }
+
+        // A module alias highlights its `as F` declaration plus every `F.member`
+        // head in this file; like a field, it carries no binding on the head
+        // node, so it is resolved off the AST.
+        if let Some(highlights) = self.alias_highlights_at(mi, offset) {
             return Some(highlights);
         }
 
@@ -1703,6 +1718,19 @@ impl WorkspaceIndex {
             if let Some(resp) = self.field_prepare_rename_at(mi, offset) {
                 return Some(resp);
             }
+            // A module alias is terminal here: an explicit `as F` gives a rename
+            // range; a bare import's implicit alias declines outright (returning
+            // None) rather than falling through to rename the qualified member.
+            if let Some(hit) = self.alias_target_at(mi, offset) {
+                if !hit.explicit {
+                    return None;
+                }
+                let mid = ModuleId(u32::try_from(mi).ok()?);
+                return Some(PrepareRenameResponse::RangeWithPlaceholder {
+                    range: self.range_in(mid, hit.cursor_span)?,
+                    placeholder: hit.name,
+                });
+            }
         }
         let target = self.rename_target_at(uri, line, utf16_col)?;
         Some(PrepareRenameResponse::RangeWithPlaceholder {
@@ -1733,13 +1761,11 @@ impl WorkspaceIndex {
         new_name: &str,
         cancel: &Cancel,
     ) -> Result<Option<WorkspaceEdit>, String> {
-        // A record field renames through the type-directed path: its name node
-        // carries no binding, and the edit set is scoped by the field's owner
-        // record so a same-named field on another record is left untouched.
-        if let Some((mi, offset)) = self.field_offset(uri, line, utf16_col) {
-            if let Some(result) = self.field_rename_at(mi, offset, new_name) {
-                return result.map(Some);
-            }
+        // Record fields and module aliases rename through their own type/AST
+        // directed paths before the binding-keyed one (their name nodes carry no
+        // suitable binding); each owns the cursor terminally when it matches.
+        if let Some(result) = self.rename_special_at(uri, line, utf16_col, new_name) {
+            return result;
         }
         let Some(target) = self.rename_target_at(uri, line, utf16_col) else {
             return Ok(None);
@@ -1847,6 +1873,27 @@ impl WorkspaceIndex {
             document_changes: None,
             change_annotations: None,
         }))
+    }
+
+    /// The type/AST-directed rename paths that run before the binding-keyed one:
+    /// a record field or a module alias. Returns the finished rename result when
+    /// one of them owns the cursor, or `None` to fall through to the
+    /// binding-keyed path.
+    fn rename_special_at(
+        &self,
+        uri: &Url,
+        line: u32,
+        utf16_col: u32,
+        new_name: &str,
+    ) -> Option<Result<Option<WorkspaceEdit>, String>> {
+        let (mi, offset) = self.field_offset(uri, line, utf16_col)?;
+        if let Some(result) = self.field_rename_at(mi, offset, new_name) {
+            return Some(result.map(Some));
+        }
+        if let Some(result) = self.alias_rename_at(mi, offset, new_name) {
+            return Some(result.map(Some));
+        }
+        None
     }
 
     /// The renameable thing under the cursor: its referent, the exact name range
@@ -2597,6 +2644,231 @@ impl WorkspaceIndex {
             return None;
         }
 
+        let mut highlights: Vec<DocumentHighlight> = spots
+            .into_iter()
+            .filter_map(|((start, end), kind)| {
+                Some(DocumentHighlight {
+                    range: self.range_in(mid, Span::new(start, end))?,
+                    kind: Some(kind),
+                })
+            })
+            .collect();
+        highlights.sort_by(|a, b| {
+            (a.range.start.line, a.range.start.character)
+                .cmp(&(b.range.start.line, b.range.start.character))
+        });
+        Some(highlights)
+    }
+
+    /// Every module alias declared in module `mi`: its local name, the exact
+    /// span of the token that introduces it, and whether it is an explicit `as`
+    /// alias. A pure selective import (`import p (a, b)`) binds items, not an
+    /// alias, and is skipped; prelude-injected aliases (`List`, `Map`, …) have no
+    /// source `import` to correlate and are skipped too.
+    fn module_aliases(&self, mi: usize) -> Vec<AliasDecl> {
+        let Some(view) = self.modules.get(mi) else {
+            return Vec::new();
+        };
+        let Some(ast) = view.ast.as_ref() else {
+            return Vec::new();
+        };
+        let mut out: Vec<AliasDecl> = Vec::new();
+        for imp in &view.imports {
+            if !imp
+                .effective_bindings
+                .iter()
+                .any(|eb| matches!(eb.binding, Binding::ModuleAlias { .. }))
+            {
+                continue;
+            }
+            let Some((decl_span, explicit)) = import_alias_span(ast, imp.span) else {
+                continue;
+            };
+            out.push(AliasDecl {
+                name: self.text_slice(mi, decl_span).to_owned(),
+                decl_span,
+                explicit,
+            });
+        }
+        out
+    }
+
+    /// The module alias the cursor targets in module `mi`: its declaration token
+    /// (`as F`, or a bare import's last segment) or the head segment of a
+    /// qualified use (`F` in `F.member`). Returns the alias plus the exact token
+    /// span under the cursor, for the `prepareRename` range. `None` when the
+    /// cursor is on neither, so the caller falls through to the binding-keyed
+    /// path. A cursor on the member (`member` in `F.member`) is not on the head,
+    /// so it correctly falls through to the member's own referent.
+    fn alias_target_at(&self, mi: usize, offset: u32) -> Option<AliasHit> {
+        let aliases = self.module_aliases(mi);
+        if aliases.is_empty() {
+            return None;
+        }
+        if let Some(a) = aliases
+            .iter()
+            .find(|a| a.decl_span.start <= offset && offset < a.decl_span.end)
+        {
+            return Some(AliasHit {
+                name: a.name.clone(),
+                decl_span: a.decl_span,
+                explicit: a.explicit,
+                cursor_span: a.decl_span,
+            });
+        }
+        let ast = self.modules.get(mi)?.ast.as_ref()?;
+        let mut finder = AliasHeadFinder {
+            offset,
+            found: None,
+        };
+        ridge_ast::visit::Visit::visit_module(&mut finder, ast);
+        let (head_name, head_span) = finder.found?;
+        let a = aliases.into_iter().find(|a| a.name == head_name)?;
+        Some(AliasHit {
+            name: a.name,
+            decl_span: a.decl_span,
+            explicit: a.explicit,
+            cursor_span: head_span,
+        })
+    }
+
+    /// Every qualified-use head segment of alias `name` in module `mi` (`F` in
+    /// each `F.member`), as spans. The alias is module-local, so this never
+    /// leaves the module; the declaration token is added by callers that want it.
+    fn alias_use_sites(&self, mi: usize, name: &str) -> Vec<Span> {
+        let Some(ast) = self.modules.get(mi).and_then(|v| v.ast.clone()) else {
+            return Vec::new();
+        };
+        let mut collector = AliasHeadCollector {
+            name: name.to_owned(),
+            spans: Vec::new(),
+        };
+        ridge_ast::visit::Visit::visit_module(&mut collector, &ast);
+        collector.spans
+    }
+
+    /// Find-references for a module alias under the cursor: every `F.member` head
+    /// in this module, plus the `as F` declaration when `include_declaration` is
+    /// set. `None` when the cursor is not on an alias, so the caller falls
+    /// through to the binding-keyed path.
+    fn alias_references_at(
+        &self,
+        mi: usize,
+        offset: u32,
+        include_declaration: bool,
+    ) -> Option<Vec<Location>> {
+        let hit = self.alias_target_at(mi, offset)?;
+        let mid = ModuleId(u32::try_from(mi).ok()?);
+        let mut spans = self.alias_use_sites(mi, &hit.name);
+        if include_declaration {
+            spans.push(hit.decl_span);
+        }
+        let mut locations: Vec<Location> = spans
+            .into_iter()
+            .filter_map(|s| self.location_in(mid, s))
+            .collect();
+        locations.sort_by(|a, b| {
+            (a.range.start.line, a.range.start.character)
+                .cmp(&(b.range.start.line, b.range.start.character))
+        });
+        locations.dedup();
+        Some(locations)
+    }
+
+    /// Rename a module alias under the cursor to `new_name`, rewriting the `as F`
+    /// declaration and every `F.member` head in this module. `None` when the
+    /// cursor is not on an alias; `Some(Err)` when `new_name` is invalid or
+    /// already bound here; `Some(Ok(edit))` otherwise. Only explicit `as` aliases
+    /// rename (a bare import's implicit alias would require a structural edit).
+    fn alias_rename_at(
+        &self,
+        mi: usize,
+        offset: u32,
+        new_name: &str,
+    ) -> Option<Result<WorkspaceEdit, String>> {
+        let hit = self.alias_target_at(mi, offset)?;
+        if !hit.explicit {
+            return Some(Err(
+                "Cannot rename the implicit alias of a bare import; add an explicit `as` clause first."
+                    .to_owned(),
+            ));
+        }
+        if let Err(message) = validate_new_name(new_name, &hit.name) {
+            return Some(Err(message));
+        }
+        if new_name != hit.name && self.module_binds_name(mi, new_name) {
+            return Some(Err(format!(
+                "`{new_name}` is already in scope in this module."
+            )));
+        }
+        let mid = ModuleId(u32::try_from(mi).ok()?);
+        let mut spans = self.alias_use_sites(mi, &hit.name);
+        spans.push(hit.decl_span);
+
+        let mut ranges: HashMap<Url, Vec<Range>> = HashMap::new();
+        for s in spans {
+            if let Some(loc) = self.location_in(mid, s) {
+                ranges.entry(loc.uri).or_default().push(loc.range);
+            }
+        }
+        let mut changes: HashMap<Url, Vec<TextEdit>> = HashMap::new();
+        for (edit_uri, mut rs) in ranges {
+            rs.sort_by(|a, b| {
+                (a.start.line, a.start.character, a.end.line, a.end.character).cmp(&(
+                    b.start.line,
+                    b.start.character,
+                    b.end.line,
+                    b.end.character,
+                ))
+            });
+            rs.dedup();
+            changes.insert(
+                edit_uri,
+                rs.into_iter()
+                    .map(|range| TextEdit {
+                        range,
+                        new_text: new_name.to_owned(),
+                    })
+                    .collect(),
+            );
+        }
+        Some(Ok(WorkspaceEdit {
+            changes: Some(changes),
+            document_changes: None,
+            change_annotations: None,
+        }))
+    }
+
+    /// True when `name` is already bound in module `mi` — by another import
+    /// (an alias or a selective item) or a top-level symbol. Rejects an alias
+    /// rename that would shadow an existing name.
+    fn module_binds_name(&self, mi: usize, name: &str) -> bool {
+        let Some(view) = self.modules.get(mi) else {
+            return false;
+        };
+        view.imports.iter().any(|imp| {
+            imp.effective_bindings
+                .iter()
+                .any(|eb| eb.local_name == name)
+        }) || view.symbols.entries.iter().any(|e| e.name == name)
+    }
+
+    /// `documentHighlight` for a module alias under the cursor: every `F.member`
+    /// head in this file as a read, plus the `as F` declaration as the write.
+    /// `None` when the cursor is not on an alias.
+    fn alias_highlights_at(&self, mi: usize, offset: u32) -> Option<Vec<DocumentHighlight>> {
+        let hit = self.alias_target_at(mi, offset)?;
+        let mid = ModuleId(u32::try_from(mi).ok()?);
+        let mut spots: HashMap<(u32, u32), DocumentHighlightKind> = HashMap::new();
+        for s in self.alias_use_sites(mi, &hit.name) {
+            spots
+                .entry((s.start, s.end))
+                .or_insert(DocumentHighlightKind::READ);
+        }
+        spots.insert(
+            (hit.decl_span.start, hit.decl_span.end),
+            DocumentHighlightKind::WRITE,
+        );
         let mut highlights: Vec<DocumentHighlight> = spots
             .into_iter()
             .filter_map(|((start, end), kind)| {
@@ -4477,6 +4749,25 @@ fn import_path_span(ast: &ridge_ast::Module, import_span: Span) -> Option<Span> 
     })
 }
 
+/// The span of the token that names a module alias, recovered by correlating a
+/// resolved import with its AST `Item` through the full declaration span both
+/// record, plus whether it was written with an explicit `as`.
+///
+/// For `import a.b as F` it is the `F` token; for a bare `import a.b` it is the
+/// last path segment (`b`), the implicit alias. The explicit flag gates rename:
+/// only an `as` alias renames by rewriting one token (a bare import's alias is
+/// tied to its path).
+fn import_alias_span(ast: &ridge_ast::Module, import_span: Span) -> Option<(Span, bool)> {
+    ast.items.iter().find_map(|item| match item {
+        ridge_ast::Item::Import(decl) if decl.span == import_span => decl
+            .alias
+            .as_ref()
+            .map(|alias| (alias.span, true))
+            .or_else(|| decl.path.segments.last().map(|seg| (seg.span, false))),
+        _ => None,
+    })
+}
+
 /// The workspace module an import `alias` resolves to, if any.
 fn alias_target(imports: &[ImportResolution], alias: &str) -> Option<ModuleId> {
     imports
@@ -4604,6 +4895,62 @@ impl<'ast> ridge_ast::visit::Visit<'ast> for FieldAccessFinder {
 
 /// Collects every `base.field` access whose field name equals `field`,
 /// recording `(base span, field name span)` for later type-based filtering.
+/// A module alias declared in a module: its local name, the exact token span
+/// that introduces it (`as F`, or the last segment of a bare `import a.b`), and
+/// whether it was written with an explicit `as` (only those rename by a single
+/// token rewrite).
+struct AliasDecl {
+    name: String,
+    decl_span: Span,
+    explicit: bool,
+}
+
+/// The module alias the cursor landed on, plus the exact token span under the
+/// cursor (the declaration token, or a `F.member` head segment) for the
+/// `prepareRename` range.
+struct AliasHit {
+    name: String,
+    decl_span: Span,
+    explicit: bool,
+    cursor_span: Span,
+}
+
+/// Collects the head-segment span of every qualified name whose head is the
+/// alias `name` — the `F` in each `F.member` use.
+struct AliasHeadCollector {
+    name: String,
+    spans: Vec<Span>,
+}
+
+impl<'ast> ridge_ast::visit::Visit<'ast> for AliasHeadCollector {
+    fn visit_qualified_name(&mut self, q: &'ast ridge_ast::expr::QualifiedName) {
+        if let Some(head) = q.segments.first() {
+            if head.text == self.name {
+                self.spans.push(head.span);
+            }
+        }
+        ridge_ast::visit::walk_qualified_name(self, q);
+    }
+}
+
+/// Finds the head segment of the qualified name under a byte offset — recognises
+/// the cursor sitting on the alias head of `F.member`.
+struct AliasHeadFinder {
+    offset: u32,
+    found: Option<(String, Span)>,
+}
+
+impl<'ast> ridge_ast::visit::Visit<'ast> for AliasHeadFinder {
+    fn visit_qualified_name(&mut self, q: &'ast ridge_ast::expr::QualifiedName) {
+        if let Some(head) = q.segments.first() {
+            if head.span.start <= self.offset && self.offset < head.span.end {
+                self.found = Some((head.text.clone(), head.span));
+            }
+        }
+        ridge_ast::visit::walk_qualified_name(self, q);
+    }
+}
+
 struct FieldSiteCollector {
     field: String,
     sites: Vec<(Span, Span)>,

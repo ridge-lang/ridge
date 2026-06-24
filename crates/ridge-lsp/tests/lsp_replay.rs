@@ -6466,3 +6466,177 @@ async fn test_pull_diagnostics_served_from_cache() {
     });
     assert!(found, "workspace pull must include the erroring file");
 }
+
+// ── Module alias references / highlight / rename ──────────────────────────────
+
+/// An app module that aliases a workspace module (`import lib.Lib as M`) and
+/// uses it qualified twice. The unrelated `Thing` type exists only for the
+/// rename-collision check.
+const ALIAS_APP: &str =
+    "import lib.Lib as M\npub type Thing = Int\npub fn one -> Int = M.helper\npub fn two -> Int = M.helper\n";
+
+#[tokio::test]
+async fn test_references_module_alias() {
+    let (service, _socket, app_uri, _lib_uri) = two_member_fixture_with(ALIAS_APP).await;
+    let server = service.inner();
+
+    // From a use head (`M` on line 2), includeDeclaration finds the `as M`
+    // declaration (line 0) and both `M.helper` heads (lines 2 and 3).
+    let with_decl = server
+        .references(references_at(&app_uri, 2, 20, true))
+        .await
+        .expect("ok")
+        .expect("references of module alias `M`");
+    assert_eq!(
+        ref_lines(&with_decl, &app_uri),
+        vec![0, 2, 3],
+        "the declaration plus both qualified uses"
+    );
+
+    // Without the declaration, only the use heads remain.
+    let no_decl = server
+        .references(references_at(&app_uri, 2, 20, false))
+        .await
+        .expect("ok")
+        .expect("references of module alias `M`");
+    assert_eq!(
+        ref_lines(&no_decl, &app_uri),
+        vec![2, 3],
+        "uses only when the declaration is excluded"
+    );
+
+    // The same set resolves from the `as M` declaration token (line 0, col 18).
+    let from_decl = server
+        .references(references_at(&app_uri, 0, 18, true))
+        .await
+        .expect("ok")
+        .expect("references from the alias declaration");
+    assert_eq!(ref_lines(&from_decl, &app_uri), vec![0, 2, 3]);
+}
+
+#[tokio::test]
+async fn test_highlight_module_alias() {
+    let (service, _socket, app_uri, _lib_uri) = two_member_fixture_with(ALIAS_APP).await;
+    let server = service.inner();
+
+    // From a use head: the declaration is the write, each `M.helper` head a read.
+    let hs = server
+        .document_highlight(highlight_at(&app_uri, 2, 20))
+        .await
+        .expect("ok")
+        .expect("highlights of module alias `M`");
+    assert_eq!(
+        highlight_spots(&hs),
+        vec![
+            (0, 18, DocumentHighlightKind::WRITE),
+            (2, 20, DocumentHighlightKind::READ),
+            (3, 20, DocumentHighlightKind::READ),
+        ],
+        "the `as M` declaration is the write, both heads are reads"
+    );
+}
+
+#[tokio::test]
+async fn test_rename_module_alias() {
+    let (service, _socket, app_uri, _lib_uri) = two_member_fixture_with(ALIAS_APP).await;
+    let server = service.inner();
+
+    // prepareRename on a use head underlines just the `M` token and offers it.
+    let prep = server
+        .prepare_rename(prepare_rename_at(&app_uri, 2, 20))
+        .await
+        .expect("ok")
+        .expect("a module alias is renameable");
+    match prep {
+        PrepareRenameResponse::RangeWithPlaceholder { range, placeholder } => {
+            assert_eq!(
+                (range.start.line, range.start.character),
+                (2, 20),
+                "underlines the alias head under the cursor"
+            );
+            assert_eq!(placeholder, "M", "placeholder is the alias name");
+        }
+        other => panic!("expected RangeWithPlaceholder, got {other:?}"),
+    }
+
+    // Renaming `M` rewrites the declaration (line 0) and every qualified head
+    // (lines 2 and 3) together.
+    let edit = server
+        .rename(rename_at(&app_uri, 2, 20, "Mod"))
+        .await
+        .expect("ok");
+    assert_eq!(
+        rename_sites(edit.as_ref(), &app_uri),
+        vec![(0, 18), (2, 20), (3, 20)],
+        "the `as M` declaration and both `M.helper` heads move together"
+    );
+    if let Some((_, text)) = rename_edits(edit.as_ref(), &app_uri).first() {
+        assert_eq!(text, "Mod", "edits carry the new name");
+    }
+
+    // The same rename works from the declaration token (line 0, col 18).
+    let from_decl = server
+        .rename(rename_at(&app_uri, 0, 18, "Mod"))
+        .await
+        .expect("ok");
+    assert_eq!(
+        rename_sites(from_decl.as_ref(), &app_uri),
+        vec![(0, 18), (2, 20), (3, 20)],
+        "a rename from the declaration covers the same sites"
+    );
+}
+
+#[tokio::test]
+async fn test_rename_module_alias_rejects_invalid_and_collision() {
+    let (service, _socket, app_uri, _lib_uri) = two_member_fixture_with(ALIAS_APP).await;
+    let server = service.inner();
+
+    // A reserved keyword and a lowercase name are both invalid: an alias is an
+    // UPPER_IDENT.
+    let kw = server.rename(rename_at(&app_uri, 2, 20, "if")).await;
+    assert!(kw.is_err(), "an alias cannot be renamed to a keyword");
+    let lower = server.rename(rename_at(&app_uri, 2, 20, "mod")).await;
+    assert!(lower.is_err(), "an alias must stay an uppercase identifier");
+
+    // `Thing` is already a type in this module, so renaming `M` onto it would
+    // shadow an existing name — reject it.
+    let collision = server.rename(rename_at(&app_uri, 2, 20, "Thing")).await;
+    assert!(
+        collision.is_err(),
+        "renaming an alias onto an existing name is rejected"
+    );
+}
+
+#[tokio::test]
+async fn test_bare_import_alias_reads_but_does_not_rename() {
+    // A bare `import lib.Lib` binds the implicit alias `Lib` (the last path
+    // segment). Its references and highlights work, but it is not renameable —
+    // renaming would mean rewriting the path or adding an `as` clause.
+    let (service, _socket, app_uri, _lib_uri) =
+        two_member_fixture_with("import lib.Lib\npub fn run -> Int = Lib.helper\n").await;
+    let server = service.inner();
+
+    // References resolve through the implicit alias: the `import lib.Lib` segment
+    // (line 0) and the `Lib.helper` head (line 1).
+    let refs = server
+        .references(references_at(&app_uri, 1, 20, true))
+        .await
+        .expect("ok")
+        .expect("references of the implicit alias `Lib`");
+    assert_eq!(
+        ref_lines(&refs, &app_uri),
+        vec![0, 1],
+        "the bare import's path segment and the qualified head"
+    );
+
+    // prepareRename declines outright rather than falling through to rename the
+    // qualified member.
+    let prep = server
+        .prepare_rename(prepare_rename_at(&app_uri, 1, 20))
+        .await
+        .expect("ok");
+    assert!(
+        prep.is_none(),
+        "a bare import's implicit alias is not renameable"
+    );
+}

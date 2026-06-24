@@ -4245,12 +4245,22 @@ impl WorkspaceIndex {
     /// Fill in a completion item's signature and documentation on demand
     /// (`completionItem/resolve`).
     ///
-    /// `data` is the `{ "uri", "name" }` payload the completion list attached to
-    /// a workspace-symbol item. Returns `(detail, documentation)` rendered from
-    /// the symbol's written header and doc comment — the same material hover
-    /// shows — or `None` when the payload names no resolvable declaration.
+    /// `data` is the payload the completion list attached to a resolvable item:
+    /// `{ "uri", "name" }` for a workspace symbol, or `{ "stdlib", "name" }` for a
+    /// builtin stdlib export. Returns `(detail, documentation)` rendered from the
+    /// symbol's written header and doc comment — the same material hover shows — or
+    /// `None` when the payload names no resolvable declaration.
     #[must_use]
     pub fn resolve_completion(&self, data: &serde_json::Value) -> Option<(String, Option<String>)> {
+        // Stdlib export: the payload names a builtin module id and symbol name.
+        // The card comes from the process-global stdlib source cache, so it is
+        // identical across workspaces — the first index to be asked answers.
+        if let Some(id) = data.get("stdlib").and_then(serde_json::Value::as_u64) {
+            let name = data.get("name")?.as_str()?;
+            let module = StdlibModuleId(u32::try_from(id).ok()?);
+            let card = crate::stdlib_defs::stdlib_symbol_card(module, name)?;
+            return Some((card.header, card.doc));
+        }
         let uri = Url::parse(data.get("uri")?.as_str()?).ok()?;
         let name = data.get("name")?.as_str()?;
         let mid = self.module_id_for(&uri)?;
@@ -4306,7 +4316,7 @@ impl WorkspaceIndex {
                     // builtin module whose exported names live in `BUILTINS`.
                     for &name in stdlib_exports(sid) {
                         if name.starts_with(&prefix) {
-                            out.push(item(name.to_owned(), stdlib_export_kind(name), '0'));
+                            out.push(stdlib_item(name, sid));
                         }
                     }
                 } else {
@@ -5425,6 +5435,16 @@ fn symbol_item(
     if let Some(uri) = owner_uri {
         it.data = Some(serde_json::json!({ "uri": uri.as_str(), "name": it.label }));
     }
+    it
+}
+
+/// A completion candidate for a builtin stdlib export, carrying a resolve payload
+/// (`{ "stdlib", "name" }`) so `completionItem/resolve` can read the symbol's
+/// signature and doc from the materialised stdlib source on demand — the same
+/// material hover shows, kept out of the completion list itself.
+fn stdlib_item(name: &str, sid: StdlibModuleId) -> CompletionItemData {
+    let mut it = item(name.to_owned(), stdlib_export_kind(name), '0');
+    it.data = Some(serde_json::json!({ "stdlib": sid.0, "name": name }));
     it
 }
 

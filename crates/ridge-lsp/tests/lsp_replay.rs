@@ -5321,6 +5321,49 @@ async fn test_completion_resolve_passes_through_items_without_data() {
     assert!(resolved.documentation.is_none());
 }
 
+#[tokio::test]
+async fn test_completion_resolve_fills_stdlib_member_signature_and_doc() {
+    // A stdlib member completion (`L.map` after `import std.list as L`) carries a
+    // resolve payload pointing at the builtin module, so resolve fills the written
+    // signature and the `--` doc lifted from the stdlib source — the same material
+    // hover shows for the symbol.
+    let line1 = "pub fn run = L.map";
+    let (service, _socket, uri) = hover_fixture("import std.list as L\npub fn run = L.map\n").await;
+    let server = service.inner();
+
+    let col = u32::try_from(line1.find("L.").expect("alias use") + 2).expect("offset fits u32");
+    let items = completion_items(
+        server
+            .completion(complete_at(&uri, 1, col))
+            .await
+            .expect("ok"),
+    );
+    let map = items
+        .into_iter()
+        .find(|i| i.label == "map")
+        .expect("std.list member access offers `map`");
+
+    // The list item carries a payload but stays cheap until the editor resolves it.
+    assert!(map.data.is_some(), "a stdlib member carries resolve data");
+    assert!(map.detail.is_none(), "detail is filled only on resolve");
+    assert!(map.documentation.is_none(), "doc is filled only on resolve");
+
+    let resolved = server.completion_resolve(map).await.expect("resolve ok");
+    let detail = resolved.detail.expect("resolve fills the stdlib signature");
+    assert!(
+        detail.contains("pub fn map") && detail.contains("-> List b"),
+        "detail should be the written signature, got {detail:?}"
+    );
+    let doc = match resolved.documentation {
+        Some(Documentation::MarkupContent(m)) => m.value,
+        other => panic!("expected a markdown doc, got {other:?}"),
+    };
+    assert!(
+        doc.contains("Apply a function to each element"),
+        "resolve fills the stdlib doc, got {doc}"
+    );
+}
+
 // ── client-capability degradation ─────────────────────────────────────────────
 
 /// A client that advertises only plain text for hover and completion-doc content,

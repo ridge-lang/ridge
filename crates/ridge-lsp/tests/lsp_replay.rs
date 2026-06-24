@@ -2712,6 +2712,187 @@ async fn test_rename_record_type_from_pattern() {
     );
 }
 
+// ── Union variant references / highlight / rename ─────────────────────────────
+
+// A union with two variants. `Red` is declared (line 0), used as a constructor
+// expression (line 1), and matched as a pattern (line 4); `Green` is declared
+// (line 0) and matched (line 5). A rename of `Red` must move its three sites
+// and leave `Green` — a sibling variant of the same type — untouched.
+const VARIANT_RENAME_SRC: &str = "type Color = Red | Green\npub fn pick -> Color = Red\npub fn name (c: Color) -> Text =\n    match c\n        Red -> \"r\"\n        Green -> \"g\"\n";
+
+/// The `(start.line, start.character)` of every reference that lands in `uri`.
+fn ref_spots(locs: &[Location], uri: &Url) -> Vec<(u32, u32)> {
+    let mut out: Vec<(u32, u32)> = locs
+        .iter()
+        .filter(|l| &l.uri == uri)
+        .map(|l| (l.range.start.line, l.range.start.character))
+        .collect();
+    out.sort_unstable();
+    out
+}
+
+#[tokio::test]
+async fn test_references_union_variant() {
+    let (service, _socket, uri) = hover_fixture(VARIANT_RENAME_SRC).await;
+    let server = service.inner();
+
+    // From the constructor expression `Red` (1,23): the declaration (0,13), the
+    // expression, and the pattern (4,8) — never the sibling `Green`.
+    let with_decl = server
+        .references(references_at(&uri, 1, 23, true))
+        .await
+        .expect("ok")
+        .expect("references of variant `Red`");
+    assert_eq!(
+        ref_spots(&with_decl, &uri),
+        vec![(0, 13), (1, 23), (4, 8)],
+        "includeDeclaration=true returns the declaration and both uses"
+    );
+
+    // includeDeclaration=false drops the declaration name, leaving the two uses.
+    let without_decl = server
+        .references(references_at(&uri, 1, 23, false))
+        .await
+        .expect("ok")
+        .expect("references of variant `Red`");
+    assert_eq!(
+        ref_spots(&without_decl, &uri),
+        vec![(1, 23), (4, 8)],
+        "includeDeclaration=false returns only the uses"
+    );
+}
+
+#[tokio::test]
+async fn test_highlight_union_variant() {
+    let (service, _socket, uri) = hover_fixture(VARIANT_RENAME_SRC).await;
+    let server = service.inner();
+
+    let expected = vec![
+        (0, 13, DocumentHighlightKind::WRITE),
+        (1, 23, DocumentHighlightKind::READ),
+        (4, 8, DocumentHighlightKind::READ),
+    ];
+
+    // From the constructor expression use.
+    let from_use = server
+        .document_highlight(highlight_at(&uri, 1, 23))
+        .await
+        .expect("ok")
+        .expect("highlights from a variant use");
+    assert_eq!(
+        highlight_spots(&from_use),
+        expected,
+        "the declaration is the write, both uses are reads"
+    );
+
+    // From the declaration name — same set.
+    let from_decl = server
+        .document_highlight(highlight_at(&uri, 0, 13))
+        .await
+        .expect("ok")
+        .expect("highlights from the variant declaration");
+    assert_eq!(
+        highlight_spots(&from_decl),
+        expected,
+        "highlighting from the declaration reaches every use"
+    );
+}
+
+#[tokio::test]
+async fn test_rename_union_variant() {
+    let sites = vec![(0, 13), (1, 23), (4, 8)];
+
+    // From the pattern use (4,8).
+    let (service, _socket, uri) = hover_fixture(VARIANT_RENAME_SRC).await;
+    let server = service.inner();
+    let edit = server
+        .rename(rename_at(&uri, 4, 8, "Crimson"))
+        .await
+        .expect("ok");
+    assert_eq!(
+        rename_sites(edit.as_ref(), &uri),
+        sites,
+        "the declaration and both uses move; the sibling `Green` does not"
+    );
+    assert!(
+        rename_edits(edit.as_ref(), &uri)
+            .iter()
+            .all(|(_, t)| t == "Crimson"),
+        "every edit rewrites to the new name"
+    );
+
+    // From the declaration name (0,13) — same edit set.
+    let (service, _socket, uri) = hover_fixture(VARIANT_RENAME_SRC).await;
+    let server = service.inner();
+    let edit = server
+        .rename(rename_at(&uri, 0, 13, "Crimson"))
+        .await
+        .expect("ok");
+    assert_eq!(
+        rename_sites(edit.as_ref(), &uri),
+        sites,
+        "renaming from the declaration reaches the same sites"
+    );
+}
+
+#[tokio::test]
+async fn test_rename_union_variant_sibling_isolated() {
+    let (service, _socket, uri) = hover_fixture(VARIANT_RENAME_SRC).await;
+    let server = service.inner();
+
+    // Renaming `Green` from its pattern (5,8) touches only the `Green`
+    // declaration (0,19) and that pattern — never any `Red` site.
+    let edit = server
+        .rename(rename_at(&uri, 5, 8, "Lime"))
+        .await
+        .expect("ok");
+    assert_eq!(
+        rename_sites(edit.as_ref(), &uri),
+        vec![(0, 19), (5, 8)],
+        "a variant rename is scoped to that one variant"
+    );
+}
+
+#[tokio::test]
+async fn test_prepare_rename_union_variant() {
+    let (service, _socket, uri) = hover_fixture(VARIANT_RENAME_SRC).await;
+    let server = service.inner();
+
+    for (line, character) in [(1, 23), (0, 13)] {
+        let prep = server
+            .prepare_rename(prepare_rename_at(&uri, line, character))
+            .await
+            .expect("ok")
+            .expect("a union variant is renameable");
+        match prep {
+            PrepareRenameResponse::RangeWithPlaceholder { placeholder, .. } => {
+                assert_eq!(
+                    placeholder, "Red",
+                    "placeholder is the current variant name"
+                );
+            }
+            other => panic!("expected RangeWithPlaceholder, got {other:?}"),
+        }
+    }
+}
+
+#[tokio::test]
+async fn test_rename_union_variant_rejects_lowercase() {
+    let (service, _socket, uri) = hover_fixture(VARIANT_RENAME_SRC).await;
+    let server = service.inner();
+
+    // A variant is an uppercase name, so a lowercase target is rejected.
+    let err = server
+        .rename(rename_at(&uri, 4, 8, "crimson"))
+        .await
+        .expect_err("a lowercase name is not a valid variant");
+    assert!(
+        err.message.contains("uppercase"),
+        "the error explains the variant must stay uppercase, got: {}",
+        err.message
+    );
+}
+
 #[tokio::test]
 async fn test_rename_type_rejects_lowercase() {
     let (service, _socket, uri) = hover_fixture(UNION_RENAME_SRC).await;

@@ -1866,11 +1866,7 @@ impl WorkspaceIndex {
                     for item in items {
                         if let Some(b) = &item.resolved {
                             if referent_key(b, smid).is_some_and(|k| target.matches(&k)) {
-                                if let Some(name_span) =
-                                    self.import_item_span(smid, item.span, &item.name)
-                                {
-                                    sites.push((smid, name_span));
-                                }
+                                sites.push((smid, item.span));
                             }
                         }
                     }
@@ -2173,28 +2169,6 @@ impl WorkspaceIndex {
             .min_by_key(|span| span.start)
     }
 
-    /// The span of the import-list item named `name` inside the import whose
-    /// declaration span is `import_span`. A resolved import item carries the
-    /// whole-import span rather than the item-name token, so the token is
-    /// recovered as the *rightmost* matching `Ident`: the item list always
-    /// follows the module path and any `as` alias, so the last occurrence is the
-    /// clause item, never a path segment or alias of the same name.
-    fn import_item_span(&self, mid: ModuleId, import_span: Span, name: &str) -> Option<Span> {
-        let mi = mid.0 as usize;
-        self.spatial
-            .get(mi)?
-            .entries
-            .iter()
-            .filter(|(span, kind, _)| {
-                *kind == NodeKind::Ident
-                    && import_span.start <= span.start
-                    && span.end <= import_span.end
-                    && self.text_slice(mi, *span) == name
-            })
-            .map(|(span, _, _)| *span)
-            .max_by_key(|span| span.start)
-    }
-
     /// The selective-import clause item in module `mid` whose resolved binding
     /// denotes `key` — the `import … (item)` site that introduces the referent
     /// into this module. `None` when no selective import of this module brings
@@ -2213,8 +2187,8 @@ impl WorkspaceIndex {
                     .and_then(|b| referent_key(b, mid))
                     .is_some_and(|k| k == *key);
                 if denotes {
-                    if let Some(span) = self.import_item_span(mid, item.span, &item.name) {
-                        return self.location_in(mid, span);
+                    if let Some(loc) = self.location_in(mid, item.span) {
+                        return Some(loc);
                     }
                 }
             }

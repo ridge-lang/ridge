@@ -232,7 +232,7 @@ pub const RUN_TEST_COMMAND: &str = "ridge.test";
 // Four independent opt-in flags, one per lens kind; a struct of named bools is
 // the clearest representation.
 #[allow(clippy::struct_excessive_bools)]
-#[derive(Debug, Clone, Copy, Default)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct CodeLensConfig {
     /// "N references" above each referenceable top-level declaration.
     pub references: bool,

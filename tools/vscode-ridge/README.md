@@ -84,6 +84,12 @@ itself rarely helps for compiler-side issues.
 | Setting | Default | Purpose |
 |---|---|---|
 | `ridge.lspPath` | `""` | Absolute path to the `ridge-lsp` binary. Leave empty to auto-resolve (tries `~/.cargo/bin/ridge-lsp` first, then walks `PATH`). |
+| `ridge.codeLens.references` | `true` | Show a "N references" lens above each referenceable top-level declaration. |
+| `ridge.codeLens.implementations` | `true` | Show a "N implementations" lens above each class declaration. |
+| `ridge.codeLens.run` | `true` | Show a "Run" lens above the main function of an app or service project. |
+| `ridge.codeLens.runTest` | `true` | Show a "Run test" lens above each `@test` function. |
+
+Toggling any `ridge.codeLens.*` setting takes effect immediately — no reload.
 
 ## Known limitations
 

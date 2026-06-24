@@ -81,6 +81,26 @@
           "type": "string",
           "default": "",
           "description": "Absolute path to the ridge-lsp binary. Leave empty to auto-resolve (tries `~/.cargo/bin/ridge-lsp` first, then walks PATH). Set this when the binary lives in a non-standard location."
+        },
+        "ridge.codeLens.references": {
+          "type": "boolean",
+          "default": true,
+          "description": "Show a \"N references\" code lens above each referenceable top-level declaration."
+        },
+        "ridge.codeLens.implementations": {
+          "type": "boolean",
+          "default": true,
+          "description": "Show a \"N implementations\" code lens above each class declaration."
+        },
+        "ridge.codeLens.run": {
+          "type": "boolean",
+          "default": true,
+          "description": "Show a \"Run\" code lens above the main function of an app or service project."
+        },
+        "ridge.codeLens.runTest": {
+          "type": "boolean",
+          "default": true,
+          "description": "Show a \"Run test\" code lens above each @test function."
         }
       }
     },

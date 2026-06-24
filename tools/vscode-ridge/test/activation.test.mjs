@@ -150,6 +150,21 @@ for (const id of ["ridge.run", "ridge.test"]) {
   );
 }
 
+// --- code-lens settings let users toggle each lens kind ---------------------
+const configProps = pkg.contributes?.configuration?.properties ?? {};
+for (const id of [
+  "ridge.codeLens.references",
+  "ridge.codeLens.implementations",
+  "ridge.codeLens.run",
+  "ridge.codeLens.runTest",
+]) {
+  const prop = configProps[id];
+  check(
+    prop !== undefined && prop.type === "boolean" && prop.default === true,
+    `package.json must contribute the boolean setting "${id}" (default true)`,
+  );
+}
+
 // --- load smoke: the bundled entry point still exports the hooks ------------
 const mainPath = resolve(root, pkg.main);
 if (!existsSync(mainPath)) {

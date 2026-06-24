@@ -1973,6 +1973,207 @@ async fn test_code_lens_capability_gated_on_opt_in() {
 }
 
 #[tokio::test]
+async fn test_code_lens_capability_advertised_when_present_but_all_off() {
+    // The provider is gated on the client expressing interest — the `codeLens` key
+    // being present — not on a flag being on. That keeps the capability stable so a
+    // later `didChangeConfiguration` can turn an individual lens on and have the
+    // refresh actually land.
+    let (service, _s) = build_test_service();
+    let options: serde_json::Value = serde_json::from_str(r#"{"codeLens":{}}"#).expect("json");
+    let caps = service
+        .inner()
+        .initialize(InitializeParams {
+            initialization_options: Some(options),
+            ..InitializeParams::default()
+        })
+        .await
+        .expect("initialize")
+        .capabilities;
+    assert!(
+        caps.code_lens_provider.is_some(),
+        "codeLens provider advertised once the client opts in, even with all flags off"
+    );
+}
+
+/// A `textDocument/codeLens` request for `uri`.
+fn code_lens_params(uri: Url) -> CodeLensParams {
+    CodeLensParams {
+        text_document: TextDocumentIdentifier { uri },
+        work_done_progress_params: WorkDoneProgressParams::default(),
+        partial_result_params: PartialResultParams::default(),
+    }
+}
+
+/// A `workspace/didChangeConfiguration` carrying the four code-lens flags under a
+/// `ridge` section, the shape an editor that namespaces its settings sends.
+#[allow(clippy::fn_params_excessive_bools)] // one arg per code-lens flag, by design
+fn code_lens_config_change(
+    references: bool,
+    implementations: bool,
+    run: bool,
+    run_test: bool,
+) -> DidChangeConfigurationParams {
+    DidChangeConfigurationParams {
+        settings: serde_json::json!({
+            "ridge": {
+                "codeLens": {
+                    "references": references,
+                    "implementations": implementations,
+                    "run": run,
+                    "runTest": run_test,
+                }
+            }
+        }),
+    }
+}
+
+/// Poll the client log until a `workspace/codeLens/refresh` request arrives, or
+/// panic after ~6s.
+async fn wait_for_code_lens_refresh(log: &Arc<Mutex<ProgressLog>>) {
+    for _ in 0..120 {
+        if log.lock().unwrap().code_lens_refreshed > 0 {
+            return;
+        }
+        tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;
+    }
+    panic!("expected a workspace/codeLens/refresh request");
+}
+
+#[tokio::test]
+async fn test_did_change_configuration_toggles_code_lenses() {
+    // Open with the references lens on, refresh support advertised.
+    let init = serde_json::json!({
+        "codeLens": { "references": true, "implementations": false, "run": false, "runTest": false }
+    });
+    let (service, log, root) = init_test_workspace(
+        &[("Lib.ridge", "pub fn helper -> Int = 1\n")],
+        false,
+        Some(init),
+        true,
+    )
+    .await;
+    let server = service.inner();
+    let uri = Url::from_file_path(root.join("app").join("src").join("Lib.ridge")).expect("uri");
+
+    let before = server
+        .code_lens(code_lens_params(uri.clone()))
+        .await
+        .expect("code_lens");
+    assert_eq!(
+        before.as_ref().map(Vec::len),
+        Some(1),
+        "one reference lens on `helper` before the change"
+    );
+
+    // Turn every lens off at runtime.
+    server
+        .did_change_configuration(code_lens_config_change(false, false, false, false))
+        .await;
+
+    // The server asks the client to re-query, and the lens is now gone.
+    wait_for_code_lens_refresh(&log).await;
+    let after = server
+        .code_lens(code_lens_params(uri))
+        .await
+        .expect("code_lens");
+    assert!(
+        after.is_none(),
+        "no lenses once references is disabled, got {after:?}"
+    );
+}
+
+#[tokio::test]
+async fn test_did_change_configuration_ignores_unrelated_settings() {
+    let init = serde_json::json!({
+        "codeLens": { "references": true, "implementations": false, "run": false, "runTest": false }
+    });
+    let (service, log, root) = init_test_workspace(
+        &[("Lib.ridge", "pub fn helper -> Int = 1\n")],
+        false,
+        Some(init),
+        true,
+    )
+    .await;
+    let server = service.inner();
+    let uri = Url::from_file_path(root.join("app").join("src").join("Lib.ridge")).expect("uri");
+
+    // A pull-model nudge (`settings: null`) carries no `codeLens` object and must
+    // not be read as "all off".
+    server
+        .did_change_configuration(DidChangeConfigurationParams {
+            settings: serde_json::Value::Null,
+        })
+        .await;
+    // An unrelated section likewise leaves the config untouched.
+    server
+        .did_change_configuration(DidChangeConfigurationParams {
+            settings: serde_json::json!({ "ridge": { "lspPath": "/somewhere" } }),
+        })
+        .await;
+    // Re-sending the same flags is a no-op — no spurious refresh.
+    server
+        .did_change_configuration(code_lens_config_change(true, false, false, false))
+        .await;
+
+    tokio::time::sleep(tokio::time::Duration::from_millis(150)).await;
+    assert_eq!(
+        log.lock().unwrap().code_lens_refreshed,
+        0,
+        "no refresh for a no-op configuration change"
+    );
+
+    // The original lens is still served — nothing clobbered the config.
+    let lenses = server
+        .code_lens(code_lens_params(uri))
+        .await
+        .expect("code_lens");
+    assert_eq!(
+        lenses.as_ref().map(Vec::len),
+        Some(1),
+        "config unchanged, the reference lens is still present"
+    );
+}
+
+#[tokio::test]
+async fn test_did_change_configuration_refresh_gated_on_capability() {
+    // Same change, but the client never advertised refresh support.
+    let init = serde_json::json!({
+        "codeLens": { "references": true, "implementations": false, "run": false, "runTest": false }
+    });
+    let (service, log, root) = init_test_workspace(
+        &[("Lib.ridge", "pub fn helper -> Int = 1\n")],
+        false,
+        Some(init),
+        false,
+    )
+    .await;
+    let server = service.inner();
+    let uri = Url::from_file_path(root.join("app").join("src").join("Lib.ridge")).expect("uri");
+
+    server
+        .did_change_configuration(code_lens_config_change(false, false, false, false))
+        .await;
+
+    // The change still applies internally...
+    let after = server
+        .code_lens(code_lens_params(uri))
+        .await
+        .expect("code_lens");
+    assert!(
+        after.is_none(),
+        "the config change applies even without refresh support"
+    );
+
+    // ...but the server must not send a refresh the client can't handle.
+    tokio::time::sleep(tokio::time::Duration::from_millis(150)).await;
+    assert_eq!(
+        log.lock().unwrap().code_lens_refreshed,
+        0,
+        "no refresh request without workspace.codeLens.refreshSupport"
+    );
+}
+
+#[tokio::test]
 async fn test_references_cross_module() {
     // `helper` is defined in Lib.ridge (line 0) and used as `Lib.helper` in the
     // app (line 1). A references query from the use-site must reach both files.
@@ -6369,6 +6570,9 @@ struct ProgressLog {
     /// Count of `workspace/diagnostic/refresh` requests — the pull model's nudge
     /// to re-pull after a compile.
     refreshed: usize,
+    /// Count of `workspace/codeLens/refresh` requests — the nudge to re-query
+    /// lenses after a `didChangeConfiguration` flips a code-lens flag.
+    code_lens_refreshed: usize,
     /// Partial-result `$/progress` notifications, in arrival order. Each carries
     /// the request's `partialResultToken` and the raw result array the client
     /// appends to what it already has.
@@ -6418,6 +6622,8 @@ fn drive_client(socket: ClientSocket) -> Arc<Mutex<ProgressLog>> {
                 }
             } else if req.method() == "workspace/diagnostic/refresh" {
                 sink.lock().unwrap().refreshed += 1;
+            } else if req.method() == "workspace/codeLens/refresh" {
+                sink.lock().unwrap().code_lens_refreshed += 1;
             }
             // Answer anything that expects a reply so the server never blocks;
             // notifications carry no id and need none.
@@ -6438,6 +6644,22 @@ fn drive_client(socket: ClientSocket) -> Arc<Mutex<ProgressLog>> {
 async fn progress_workspace(
     files: &[(&str, &str)],
     advertise_progress: bool,
+) -> (
+    LspService<RidgeLanguageServer>,
+    Arc<Mutex<ProgressLog>>,
+    PathBuf,
+) {
+    init_test_workspace(files, advertise_progress, None, false).await
+}
+
+/// Like [`progress_workspace`], but lets a test pass `initializationOptions` (the
+/// `codeLens` opt-in) and advertise `workspace.codeLens.refreshSupport`, so the
+/// `workspace/didChangeConfiguration` path can be exercised end to end.
+async fn init_test_workspace(
+    files: &[(&str, &str)],
+    advertise_progress: bool,
+    init_options: Option<serde_json::Value>,
+    code_lens_refresh: bool,
 ) -> (
     LspService<RidgeLanguageServer>,
     Arc<Mutex<ProgressLog>>,
@@ -6474,6 +6696,12 @@ async fn progress_workspace(
             work_done_progress: Some(true),
             ..WindowClientCapabilities::default()
         });
+        let workspace = code_lens_refresh.then(|| WorkspaceClientCapabilities {
+            code_lens: Some(CodeLensWorkspaceClientCapabilities {
+                refresh_support: Some(true),
+            }),
+            ..WorkspaceClientCapabilities::default()
+        });
         let init_params = InitializeParams {
             root_uri: Some(root_uri.clone()),
             workspace_folders: Some(vec![WorkspaceFolder {
@@ -6482,8 +6710,10 @@ async fn progress_workspace(
             }]),
             capabilities: ClientCapabilities {
                 window,
+                workspace,
                 ..ClientCapabilities::default()
             },
+            initialization_options: init_options,
             ..InitializeParams::default()
         };
         // Drive `initialize` through the service rather than the inner server so

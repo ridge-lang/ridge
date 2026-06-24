@@ -61,7 +61,7 @@ use ridge_resolve::ModuleId;
 
 use crate::cancel::{Cancel, CancelOnDrop};
 use crate::diagnostics::{source_id_to_uri, to_lsp_diagnostic, uri_key};
-use crate::index::{collect_capability_fixes, CodeLensConfig, WorkspaceIndex};
+use crate::index::{collect_capability_fixes, diff_tokens, CodeLensConfig, WorkspaceIndex};
 
 /// A workspace's retained incremental engine, shared between the state snapshot
 /// and the `spawn_blocking` compile task that owns it for the compile's duration.
@@ -258,6 +258,24 @@ struct WorkspaceSnapshot {
     /// read once at `initialize`. All-off for a client that didn't opt in, so a
     /// generic editor is served no lenses whose commands it couldn't act on.
     code_lens_config: CodeLensConfig,
+    /// The most recent semantic-token stream returned per document, keyed by the
+    /// normalization-stable `uri_key`, together with the `result_id` stamped on
+    /// it. A follow-up `semanticTokens/full/delta` diffs the fresh stream against
+    /// the cached one when the client's `previousResultId` matches; a mismatch (a
+    /// closed document, a server that never served a full result) falls back to a
+    /// full reply. Only the latest result per document is kept — clients always
+    /// delta against the id they last received.
+    semantic_tokens: HashMap<String, CachedSemanticTokens>,
+    /// Monotonic source of semantic-token `result_id`s for the session.
+    semantic_tokens_seq: u64,
+}
+
+/// One document's last-served semantic-token stream and the id stamped on it,
+/// the base a `semanticTokens/full/delta` request computes its edits against.
+#[derive(Debug)]
+struct CachedSemanticTokens {
+    result_id: String,
+    data: Vec<SemanticToken>,
 }
 
 /// One independent Ridge workspace: a manifest root (or the synthetic standalone
@@ -397,6 +415,23 @@ impl RidgeLanguageServer {
     /// state lock across its own work.
     async fn client_caps(&self) -> ClientCaps {
         self.state.lock().await.client_caps
+    }
+
+    /// Stamp a fresh `result_id` on a document's semantic-token stream, cache the
+    /// stream under it so a later `semanticTokens/full/delta` can diff against it,
+    /// and return the id.
+    async fn cache_semantic_tokens(&self, uri: &Url, data: Vec<SemanticToken>) -> String {
+        let mut snap = self.state.lock().await;
+        snap.semantic_tokens_seq += 1;
+        let result_id = snap.semantic_tokens_seq.to_string();
+        snap.semantic_tokens.insert(
+            uri_key(uri),
+            CachedSemanticTokens {
+                result_id: result_id.clone(),
+                data,
+            },
+        );
+        result_id
     }
 
     /// Every compiled workspace's index, in workspace order. Used by the
@@ -1124,6 +1159,9 @@ impl LanguageServer for RidgeLanguageServer {
         let standalone = {
             let mut snap = self.state.lock().await;
             snap.open_docs.remove(&uri);
+            // Drop the document's cached token stream; a reopened file gets a
+            // fresh full result before it can delta again.
+            snap.semantic_tokens.remove(&uri_key(&uri));
             snap.standalone
         };
         // Clear diagnostics for the closed file.
@@ -1831,19 +1869,73 @@ impl LanguageServer for RidgeLanguageServer {
     }
 
     /// `textDocument/semanticTokens/full` — semantic highlighting for the whole
-    /// document.
+    /// document. The reply carries a `resultId` and the stream is cached under it,
+    /// so a client that then edits can ask for just the delta.
     async fn semantic_tokens_full(
         &self,
         params: SemanticTokensParams,
     ) -> LspResult<Option<SemanticTokensResult>> {
         let uri = params.text_document.uri;
-        let index = self.index_for_uri(&uri).await;
-        let Some(index) = index else {
+        let Some(index) = self.index_for_uri(&uri).await else {
             return Ok(None);
         };
-        Ok(index
-            .semantic_tokens(&uri)
-            .map(SemanticTokensResult::Tokens))
+        let Some(data) = index.semantic_token_data(&uri) else {
+            return Ok(None);
+        };
+        let result_id = self.cache_semantic_tokens(&uri, data.clone()).await;
+        Ok(Some(SemanticTokensResult::Tokens(SemanticTokens {
+            result_id: Some(result_id),
+            data,
+        })))
+    }
+
+    /// `textDocument/semanticTokens/full/delta` — re-highlight after an edit by
+    /// sending only the changed span. The fresh stream is diffed against the one
+    /// the client last received (matched by `previousResultId`); on a cache miss —
+    /// a stale id, or a document we never served a full result for — it falls back
+    /// to a full reply, which the protocol permits.
+    async fn semantic_tokens_full_delta(
+        &self,
+        params: SemanticTokensDeltaParams,
+    ) -> LspResult<Option<SemanticTokensFullDeltaResult>> {
+        let uri = params.text_document.uri;
+        let Some(index) = self.index_for_uri(&uri).await else {
+            return Ok(None);
+        };
+        let Some(new_data) = index.semantic_token_data(&uri) else {
+            return Ok(None);
+        };
+        // Read the cached base (only if its id is the one the client edited from)
+        // and install the fresh stream under a new id in one critical section.
+        let (result_id, previous) = {
+            let mut snap = self.state.lock().await;
+            let key = uri_key(&uri);
+            let previous = snap
+                .semantic_tokens
+                .get(&key)
+                .filter(|cached| cached.result_id == params.previous_result_id)
+                .map(|cached| cached.data.clone());
+            snap.semantic_tokens_seq += 1;
+            let result_id = snap.semantic_tokens_seq.to_string();
+            snap.semantic_tokens.insert(
+                key,
+                CachedSemanticTokens {
+                    result_id: result_id.clone(),
+                    data: new_data.clone(),
+                },
+            );
+            (result_id, previous)
+        };
+        Ok(Some(match previous {
+            Some(old) => SemanticTokensFullDeltaResult::TokensDelta(SemanticTokensDelta {
+                result_id: Some(result_id),
+                edits: diff_tokens(&old, &new_data),
+            }),
+            None => SemanticTokensFullDeltaResult::Tokens(SemanticTokens {
+                result_id: Some(result_id),
+                data: new_data,
+            }),
+        }))
     }
 
     /// `textDocument/semanticTokens/range` — semantic highlighting restricted to
@@ -2134,7 +2226,10 @@ fn server_capabilities(pull_diagnostics: bool, code_lens: bool) -> ServerCapabil
                     token_types: crate::index::SEMANTIC_TOKEN_TYPES.to_vec(),
                     token_modifiers: crate::index::SEMANTIC_TOKEN_MODIFIERS.to_vec(),
                 },
-                full: Some(SemanticTokensFullOptions::Bool(true)),
+                // Full results carry a `resultId`, so a client that edits can ask
+                // for `semanticTokens/full/delta` and we reply with just the
+                // changed span instead of the whole stream.
+                full: Some(SemanticTokensFullOptions::Delta { delta: Some(true) }),
                 range: Some(true),
                 work_done_progress_options: WorkDoneProgressOptions::default(),
             },

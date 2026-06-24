@@ -26,8 +26,8 @@ use ridge_typecheck::{render_type_with, TypeError, TypedWorkspace};
 use ridge_types::{CapabilitySet, TyConDecl, TyConKind, Type};
 use tower_lsp::lsp_types::{
     CallHierarchyIncomingCall, CallHierarchyItem, CallHierarchyOutgoingCall, CodeLens, Command,
-    CompletionItemKind, DocumentHighlight, DocumentHighlightKind, DocumentSymbol, FileRename,
-    FoldingRange, FoldingRangeKind, InlayHint, InlayHintKind, InlayHintLabel, Location,
+    CompletionItemKind, DocumentHighlight, DocumentHighlightKind, DocumentLink, DocumentSymbol,
+    FileRename, FoldingRange, FoldingRangeKind, InlayHint, InlayHintKind, InlayHintLabel, Location,
     ParameterInformation, ParameterLabel, Position, PrepareRenameResponse, Range, SelectionRange,
     SemanticToken, SemanticTokenModifier, SemanticTokenType, SemanticTokens, SemanticTokensEdit,
     SignatureHelp, SignatureInformation, SymbolInformation, SymbolKind as LspSymbolKind, TextEdit,
@@ -2147,6 +2147,47 @@ impl WorkspaceIndex {
         })
     }
 
+    /// Answer `textDocument/documentLink`: turn each `import` of a workspace
+    /// module into a link from its dotted path to that module's source file.
+    ///
+    /// Only workspace modules resolve to a file the editor can open; imports of
+    /// the standard library have no materialized source location and are left
+    /// unlinked (the same gap as cross-module go-to-definition into the stdlib).
+    /// The tooltip is always built here; the server strips it for a client that
+    /// did not advertise `documentLink.tooltipSupport`.
+    #[must_use]
+    pub fn document_links_at(&self, uri: &Url) -> Option<Vec<DocumentLink>> {
+        let mid = self.module_id_for(uri)?;
+        let view = self.modules.get(mid.0 as usize)?;
+        let ast = view.ast.as_ref()?;
+        let mut links = Vec::new();
+        for imp in &view.imports {
+            let ImportTarget::WorkspaceModule(target) = imp.target else {
+                continue;
+            };
+            let Some(Some(target_uri)) = self.module_uris.get(target.0 as usize).cloned() else {
+                continue;
+            };
+            let Some(path_span) = import_path_span(ast, imp.span) else {
+                continue;
+            };
+            let Some(range) = self.range_in(mid, path_span) else {
+                continue;
+            };
+            let tooltip = self
+                .module_fqns
+                .get(target.0 as usize)
+                .map(|fqn| format!("Go to module {fqn}"));
+            links.push(DocumentLink {
+                range,
+                target: Some(target_uri),
+                tooltip,
+                data: None,
+            });
+        }
+        Some(links)
+    }
+
     /// Answer `workspace/willRenameFiles`: when `.ridge` files move, rewrite the
     /// `import` path of every other module that referenced them so the imports
     /// still resolve after the move.
@@ -2202,25 +2243,10 @@ impl WorkspaceIndex {
                 let Some((_, new_fqn)) = moved.iter().find(|(m, _)| *m == target) else {
                     continue;
                 };
-                // Correlate the resolved import with its AST declaration by the
-                // full span both record, then rewrite only the dotted path. The
-                // path span runs from the first segment to the last — narrower
-                // than `ModulePath::span`, which the parser anchors back at the
-                // `import` keyword — so the `import ` prefix and any `as`/item
-                // list are left untouched.
-                let Some(path_span) = ast.items.iter().find_map(|item| match item {
-                    ridge_ast::Item::Import(decl) if decl.span == imp.span => {
-                        let segments = &decl.path.segments;
-                        match (segments.first(), segments.last()) {
-                            (Some(first), Some(last)) => Some(Span {
-                                start: first.span.start,
-                                end: last.span.end,
-                            }),
-                            _ => Some(decl.path.span),
-                        }
-                    }
-                    _ => None,
-                }) else {
+                // Rewrite only the dotted path; the `import ` prefix and any
+                // `as`/selective-item list are left untouched (see
+                // `import_path_span`).
+                let Some(path_span) = import_path_span(ast, imp.span) else {
                     continue;
                 };
                 let Some(range) = self.range_in(mid, path_span) else {
@@ -4426,6 +4452,29 @@ fn is_upper_ident(s: &str) -> bool {
         return false;
     };
     first.is_ascii_uppercase() && s.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')
+}
+
+/// The span of an import's dotted module path — from the first path segment to
+/// the last — recovered by correlating a resolved import with its AST `Item`
+/// through the full declaration span both record.
+///
+/// Narrower than `ridge_ast::ModulePath::span`, which the parser anchors back at
+/// the `import` keyword, so the result covers only the path text (`a.b.c`) and
+/// excludes the `import ` prefix and any trailing `as`/selective-item list.
+fn import_path_span(ast: &ridge_ast::Module, import_span: Span) -> Option<Span> {
+    ast.items.iter().find_map(|item| match item {
+        ridge_ast::Item::Import(decl) if decl.span == import_span => {
+            let segments = &decl.path.segments;
+            match (segments.first(), segments.last()) {
+                (Some(first), Some(last)) => Some(Span {
+                    start: first.span.start,
+                    end: last.span.end,
+                }),
+                _ => Some(decl.path.span),
+            }
+        }
+        _ => None,
+    })
 }
 
 /// The workspace module an import `alias` resolves to, if any.

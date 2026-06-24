@@ -3893,6 +3893,109 @@ async fn test_semantic_tokens_capability_advertises_delta() {
     }
 }
 
+// ── Document links (import path → module file) ────────────────────────────────
+
+/// A `documentLink` request for `uri` with default progress fields.
+fn document_link_params(uri: &Url) -> DocumentLinkParams {
+    DocumentLinkParams {
+        text_document: TextDocumentIdentifier { uri: uri.clone() },
+        work_done_progress_params: WorkDoneProgressParams::default(),
+        partial_result_params: PartialResultParams::default(),
+    }
+}
+
+#[tokio::test]
+async fn test_document_link_capability_advertised() {
+    let (service, _socket) = build_test_service();
+    let server = service.inner();
+    let result = server
+        .initialize(make_init_params("ok_workspace"))
+        .await
+        .expect("initialize ok");
+    let opts = result
+        .capabilities
+        .document_link_provider
+        .expect("document link provider advertised");
+    assert_eq!(
+        opts.resolve_provider, None,
+        "links resolve their target eagerly, so no resolve step is advertised"
+    );
+}
+
+#[tokio::test]
+async fn test_document_link_points_import_to_module_file() {
+    // The link covers the dotted path `lib.Lib` on line 0 and opens Lib.ridge.
+    let app_text = "import lib.Lib as Lib\npub fn run -> Int = Lib.helper\n";
+    let (service, _socket, app_uri, lib_uri) = two_member_fixture_with(app_text).await;
+    let server = service.inner();
+
+    let links = server
+        .document_link(document_link_params(&app_uri))
+        .await
+        .expect("document link ok")
+        .expect("a link list for an indexed file");
+    assert_eq!(
+        links.len(),
+        1,
+        "one workspace import → one link, got {links:?}"
+    );
+    let link = &links[0];
+    assert_eq!(link.target.as_ref(), Some(&lib_uri), "link opens Lib.ridge");
+    assert_eq!(link.range.start.line, 0, "the import is on line 0");
+    let path_start = u32::try_from(app_text.find("lib.Lib").expect("path")).expect("fits u32");
+    let path_end = path_start + u32::try_from("lib.Lib".len()).expect("fits u32");
+    assert_eq!(
+        link.range.start.character, path_start,
+        "link starts at the dotted path"
+    );
+    assert_eq!(
+        link.range.end.character, path_end,
+        "link ends at the dotted path, before ` as Lib`"
+    );
+    // The default fixture client advertises no tooltipSupport, so it is stripped.
+    assert_eq!(
+        link.tooltip, None,
+        "tooltip is withheld without client support"
+    );
+}
+
+#[tokio::test]
+async fn test_document_link_index_builds_tooltip() {
+    // The index always builds the tooltip; gating it on tooltipSupport is the
+    // server's job (verified stripped in the handler test above).
+    let (service, _socket, app_uri, _lib_uri) = two_member_fixture().await;
+    let server = service.inner();
+    let index = server.workspace_index().await.expect("index installed");
+    let links = index
+        .document_links_at(&app_uri)
+        .expect("a link list for an indexed file");
+    assert_eq!(links.len(), 1, "one workspace import → one link");
+    assert!(
+        links[0]
+            .tooltip
+            .as_deref()
+            .is_some_and(|t| t.contains("module")),
+        "the index attaches a module tooltip, got {:?}",
+        links[0].tooltip
+    );
+}
+
+#[tokio::test]
+async fn test_document_link_skips_stdlib_imports() {
+    // A stdlib import has no materialized source file, so it produces no link.
+    let (service, _socket, uri) = hover_fixture("import std.list as L\npub fn run = L.map\n").await;
+    let server = service.inner();
+    let links = server
+        .document_link(document_link_params(&uri))
+        .await
+        .expect("document link ok")
+        .expect("an empty link list for an indexed file");
+    assert!(
+        links.is_empty(),
+        "stdlib imports are not linked, got {links:?}"
+    );
+}
+
 // ── Record-field navigation + go-to-type-definition ───────────────────────────
 
 // Two records sharing the field name `age`, so a correct field query must key

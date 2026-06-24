@@ -15,6 +15,10 @@ whatever Ridge release is installed.
 
 ### Added
 
+- Per-lens settings `ridge.codeLens.references`, `ridge.codeLens.implementations`,
+  `ridge.codeLens.run`, and `ridge.codeLens.runTest` (all on by default) to turn
+  individual code lenses on or off. Changes are pushed to the server and applied
+  live — toggling a lens no longer needs a reload.
 - Go to Type Definition: from any value, jump to the `type` declaration of
   its inferred type. Go-to-definition, find-references, rename, and document
   highlight now also resolve record fields, so a `record.field` use

@@ -68,6 +68,25 @@ function runInTerminal(name: string, commandLine: string): void {
   terminal.sendText(commandLine);
 }
 
+// The code-lens flags the server reads, taken from the user's `ridge.codeLens.*`
+// settings (all default on). Flipping any of them pushes the new values through
+// `workspace/didChangeConfiguration` (see `synchronize` below), so lenses update
+// live without a reload.
+function codeLensConfig(): {
+  references: boolean;
+  implementations: boolean;
+  run: boolean;
+  runTest: boolean;
+} {
+  const cfg = vscode.workspace.getConfiguration("ridge");
+  return {
+    references: cfg.get<boolean>("codeLens.references", true),
+    implementations: cfg.get<boolean>("codeLens.implementations", true),
+    run: cfg.get<boolean>("codeLens.run", true),
+    runTest: cfg.get<boolean>("codeLens.runTest", true),
+  };
+}
+
 export function activate(context: vscode.ExtensionContext): void {
   const ridgeLsp = resolveRidgeLsp();
 
@@ -80,14 +99,17 @@ export function activate(context: vscode.ExtensionContext): void {
   const clientOptions: LanguageClientOptions = {
     documentSelector: [{ scheme: "file", language: "ridge" }],
     // Opt into code lenses. The server serves none unless a client asks, so
-    // editors that can't run the lens commands never see inert lenses.
+    // editors that can't run the lens commands never see inert lenses. Sending
+    // the `codeLens` object at all (even with every flag off) is what makes the
+    // server advertise the provider, so a later toggle-on actually takes effect.
     initializationOptions: {
-      codeLens: {
-        references: true,
-        implementations: true,
-        run: true,
-        runTest: true,
-      },
+      codeLens: codeLensConfig(),
+    },
+    // Push `ridge.*` setting changes to the server. Flipping a `ridge.codeLens.*`
+    // toggle then reaches the server as `workspace/didChangeConfiguration`, which
+    // re-queries the affected lenses without a reload.
+    synchronize: {
+      configurationSection: "ridge",
     },
     middleware: {
       // The navigational lenses ("N references" / "N implementations") carry the

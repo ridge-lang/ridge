@@ -173,16 +173,27 @@ fn negotiate_client_caps(caps: &ClientCapabilities) -> ClientCaps {
     }
 }
 
-/// Read the opt-in code-lens flags from `initializationOptions.codeLens`.
+/// Locate the `codeLens` settings object inside a client-supplied blob.
 ///
-/// Shape: `{ "codeLens": { "references": true, "implementations": true,
-/// "run": true, "runTest": true } }`. Each flag defaults to `false`, so a client
-/// that sends nothing — or doesn't register the lens commands — gets no lenses.
-fn parse_code_lens_config(options: Option<&serde_json::Value>) -> CodeLensConfig {
-    let code_lens = options.and_then(|v| v.get("codeLens"));
+/// Accepts it either at the root — matching `initializationOptions.codeLens` —
+/// or nested under a `ridge` section, which is how an editor that namespaces its
+/// settings delivers them in `workspace/didChangeConfiguration`. Returns `None`
+/// when neither is present, so a caller can tell "no opinion" apart from "all
+/// lenses off".
+fn locate_code_lens_settings(root: &serde_json::Value) -> Option<&serde_json::Value> {
+    root.get("codeLens")
+        .or_else(|| root.get("ridge").and_then(|r| r.get("codeLens")))
+}
+
+/// Read the opt-in code-lens flags from a `codeLens` settings object.
+///
+/// Shape: `{ "references": true, "implementations": true, "run": true,
+/// "runTest": true }`. Each flag defaults to `false`, so a flag the client omits
+/// — or a client that doesn't register the lens commands — is treated as off.
+fn parse_code_lens_flags(code_lens: &serde_json::Value) -> CodeLensConfig {
     let flag = |name: &str| {
         code_lens
-            .and_then(|v| v.get(name))
+            .get(name)
             .and_then(serde_json::Value::as_bool)
             .unwrap_or(false)
     };
@@ -250,6 +261,12 @@ struct WorkspaceSnapshot {
     /// another module — would otherwise leave stale diagnostics on screen. A
     /// client missing either half stays on the push model, which is unchanged.
     supports_pull_diagnostics: bool,
+    /// True when the client supports `workspace/codeLens/refresh`
+    /// (`workspace.codeLens.refreshSupport`). A live `workspace/didChangeConfiguration`
+    /// that flips a code-lens flag asks the client to re-query lenses through this;
+    /// without it the server updates its config silently and the change shows on
+    /// the next lens query the client makes on its own.
+    supports_code_lens_refresh: bool,
     /// How the client wants individual responses encoded (Markdown, label
     /// offsets, hierarchical outline, action literals). Read once at `initialize`
     /// so handlers can fall back to a form a non-supporting client can render.
@@ -262,9 +279,12 @@ struct WorkspaceSnapshot {
     /// the push path delivers straight through `publish_diagnostics` and never
     /// reads this map.
     last_diagnostics: HashMap<Url, Vec<Diagnostic>>,
-    /// Which code lenses the client opted into (`initializationOptions.codeLens`),
-    /// read once at `initialize`. All-off for a client that didn't opt in, so a
-    /// generic editor is served no lenses whose commands it couldn't act on.
+    /// Which code lenses the client wants shown. Seeded from
+    /// `initializationOptions.codeLens` and updated live by
+    /// `workspace/didChangeConfiguration`. All-off for a client that didn't opt
+    /// in, so a generic editor is served no lenses whose commands it couldn't act
+    /// on. Whether the provider is advertised at all is a separate, fixed decision
+    /// made at `initialize` (see `code_lens_opted_in` there).
     code_lens_config: CodeLensConfig,
     /// The most recent semantic-token stream returned per document, keyed by the
     /// normalization-stable `uri_key`, together with the `result_id` stamped on
@@ -996,12 +1016,34 @@ impl LanguageServer for RidgeLanguageServer {
             pull && refresh
         };
 
+        // Code-lens refresh lets the server nudge the client to re-query lenses
+        // after a runtime `workspace/didChangeConfiguration` flips a flag.
+        let supports_code_lens_refresh = params
+            .capabilities
+            .workspace
+            .as_ref()
+            .and_then(|ws| ws.code_lens.as_ref())
+            .and_then(|cl| cl.refresh_support)
+            .unwrap_or(false);
+
         // How the client wants each response encoded (see `ClientCaps`).
         let client_caps = negotiate_client_caps(&params.capabilities);
 
         // Code lenses are opt-in via `initializationOptions.codeLens`, so a generic
-        // client is never served lenses whose commands it can't run.
-        let code_lens_config = parse_code_lens_config(params.initialization_options.as_ref());
+        // client is never served lenses whose commands it can't run. Advertising
+        // the provider is gated on the client expressing interest at all (the
+        // `codeLens` key being present), not on a flag being on: that keeps the
+        // capability stable so a later `didChangeConfiguration` can toggle an
+        // individual lens on and have the refresh actually land. Which lenses are
+        // emitted is the per-flag config, which can change at runtime.
+        let code_lens_node = params
+            .initialization_options
+            .as_ref()
+            .and_then(locate_code_lens_settings);
+        let code_lens_opted_in = code_lens_node.is_some();
+        let code_lens_config = code_lens_node
+            .map(parse_code_lens_flags)
+            .unwrap_or_default();
 
         // Collect every folder the client opened — `rootUri` plus all
         // `workspaceFolders` — and walk each up to its nearest `[workspace]`
@@ -1056,6 +1098,7 @@ impl LanguageServer for RidgeLanguageServer {
             snap.supports_watched_files = supports_watched_files;
             snap.supports_work_done_progress = supports_work_done_progress;
             snap.supports_pull_diagnostics = supports_pull_diagnostics;
+            snap.supports_code_lens_refresh = supports_code_lens_refresh;
             snap.client_caps = client_caps;
             snap.code_lens_config = code_lens_config;
         }
@@ -1076,7 +1119,7 @@ impl LanguageServer for RidgeLanguageServer {
         }
 
         Ok(InitializeResult {
-            capabilities: server_capabilities(supports_pull_diagnostics, code_lens_config.any()),
+            capabilities: server_capabilities(supports_pull_diagnostics, code_lens_opted_in),
             server_info: Some(ServerInfo {
                 name: "ridge-lsp".to_owned(),
                 version: Some(env!("CARGO_PKG_VERSION").to_owned()),
@@ -1224,6 +1267,37 @@ impl LanguageServer for RidgeLanguageServer {
         // rebuild the graph from the remaining open files to drop it.
         if standalone {
             self.trigger_compile().await;
+        }
+    }
+
+    async fn did_change_configuration(&self, params: DidChangeConfigurationParams) {
+        // Apply a live change to which code lenses are shown. The settings blob is
+        // client-shaped and only sometimes carries our keys, so act solely when it
+        // actually contains a `codeLens` object: a pull-model notification
+        // (`settings: null`) or an unrelated change must never be read as "all
+        // lenses off" and silently wipe the config.
+        let Some(code_lens) = locate_code_lens_settings(&params.settings) else {
+            return;
+        };
+        let new_config = parse_code_lens_flags(code_lens);
+
+        let (changed, supports_refresh) = {
+            let mut snap = self.state.lock().await;
+            let changed = snap.code_lens_config != new_config;
+            if changed {
+                snap.code_lens_config = new_config;
+            }
+            (changed, snap.supports_code_lens_refresh)
+        };
+
+        // Nudge the client to re-query lenses so the change shows without a
+        // restart. Only when something actually changed (no spurious refresh on a
+        // no-op notification) and only when the client advertised refresh support
+        // (otherwise the request is unanswered noise).
+        if changed && supports_refresh {
+            if let Err(err) = self.client.code_lens_refresh().await {
+                tracing::warn!("workspace/codeLens/refresh was rejected: {err}");
+            }
         }
     }
 

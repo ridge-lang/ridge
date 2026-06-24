@@ -1019,12 +1019,12 @@ async fn test_hover_literal_and_local_and_misses() {
         "literal hover should mention Int, got {md:?}"
     );
 
-    // Body `x` use-site → a local with its type.
+    // Body `x` use-site → the parameter it binds, kinded and typed.
     let h = server.hover(hover_at(&uri, 1, 14)).await.expect("hover ok");
     let md = hover_markdown(h).expect("hover over local returns markup");
     assert!(
-        md.contains("(local) x"),
-        "local hover should label the binding, got {md:?}"
+        md.contains("x :") && md.contains("*(parameter)*"),
+        "param hover should show the type and a parameter kind line, got {md:?}"
     );
 
     // Whitespace between tokens → no hover.
@@ -1041,8 +1041,9 @@ async fn test_hover_literal_and_local_and_misses() {
 
 #[tokio::test]
 async fn test_hover_labels_class_method() {
-    // A user-defined class method used by its bare name hovers with the
-    // "(class method)" role label — the same way locals get "(local)".
+    // A user-defined class method used by its bare name hovers with its written
+    // signature and a "class method" kind line. No stdlib card backs a workspace
+    // class, so the signature comes from the workspace `class` declaration.
     let src = "pub class Show a =\n  render (x: a) -> Text\npub type T = { n: Int }\ninstance Show T =\n  render (x: T) -> Text = \"t\"\npub fn run -> Text = render (T { n = 1 })\n";
     let (service, _socket, uri) = hover_fixture(src).await;
     let server = service.inner();
@@ -1057,8 +1058,64 @@ async fn test_hover_labels_class_method() {
         .expect("hover ok");
     let md = hover_markdown(h).expect("hover over a class method returns markup");
     assert!(
-        md.contains("(class method) render"),
-        "class-method hover should label the binding, got {md:?}"
+        md.contains("render (x: a) -> Text") && md.contains("*(class method)*"),
+        "class-method hover should show the signature and kind line, got {md:?}"
+    );
+}
+
+#[tokio::test]
+async fn test_hover_distinguishes_param_from_local() {
+    // A function parameter and a `let` binding hover with different kind lines,
+    // even though both are `Binding::Local` under the hood.
+    let src = "pub fn f x =\n  let y = x\n  y\n";
+    let (service, _socket, uri) = hover_fixture(src).await;
+    let server = service.inner();
+
+    // `x` use on line 1 (`  let y = x`) → a parameter.
+    let h = server.hover(hover_at(&uri, 1, 10)).await.expect("hover ok");
+    let md = hover_markdown(h).expect("hover over a parameter returns markup");
+    assert!(
+        md.contains("*(parameter)*"),
+        "a parameter should be kinded as such, got {md:?}"
+    );
+
+    // `y` use on line 2 → a plain local.
+    let h = server.hover(hover_at(&uri, 2, 2)).await.expect("hover ok");
+    let md = hover_markdown(h).expect("hover over a local returns markup");
+    assert!(
+        md.contains("*(local)*"),
+        "a let binding should be kinded as a local, got {md:?}"
+    );
+}
+
+#[tokio::test]
+async fn test_hover_stdlib_symbol_shows_header_and_doc() {
+    // Hovering a stdlib symbol shows the header and `--` doc lifted from the
+    // embedded stdlib source — the same card workspace declarations get.
+    let src = "import std.list (length)\npub fn run (xs: List Int) -> Int = length xs\n";
+    let (service, _socket, uri) = hover_fixture(src).await;
+    let server = service.inner();
+
+    // The `length` use on line 1.
+    let line1 = "pub fn run (xs: List Int) -> Int = length xs";
+    let col =
+        u32::try_from(line1.find("length").expect("length use") + 1).expect("offset fits u32");
+    let h = server
+        .hover(hover_at(&uri, 1, col))
+        .await
+        .expect("hover ok");
+    let md = hover_markdown(h).expect("hover over a stdlib symbol returns markup");
+    assert!(
+        md.contains("pub fn length"),
+        "stdlib hover should show the written header, got {md:?}"
+    );
+    assert!(
+        md.contains("*(stdlib function)*"),
+        "stdlib hover should carry a stdlib kind line, got {md:?}"
+    );
+    assert!(
+        md.contains("Return the number of elements"),
+        "stdlib hover should include the `--` doc, got {md:?}"
     );
 }
 

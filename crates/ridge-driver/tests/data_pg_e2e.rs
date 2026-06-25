@@ -1824,19 +1824,38 @@ fn postgres_adapter_reads_a_real_table() {
         .expect("a user module")
         .to_owned();
 
-    // Drive the connection pool directly: open one handle with room for four
-    // connections, fire six reads at once, and confirm they all come back. This
-    // exercises concurrent checkout, the pool growing under load, and waiters
-    // reusing a connection once it frees — all against the live database.
+    // Drive the connection pool directly. First, with maintenance off, open one
+    // handle with room for four connections, fire six reads at once, and confirm
+    // they all come back — exercising concurrent checkout, the pool growing under
+    // load, and waiters reusing a connection once it frees. Then two maintenance
+    // probes: one with a short idle-timeout, max-lifetime, and health-check that
+    // confirms the pool evicts and recycles in the background and reopens on
+    // demand; one with only the health-check on that confirms idle connections
+    // are pinged and keep serving. All against the live database.
     let pool_probe = format!(
-        "{{ok, ProbeConn}} = ridge_pg:pg_connect(<<\"{host}\">>, {port}, <<\"{db}\">>, <<\"{user}\">>, <<\"{pass}\">>, <<\"{ssl}\">>, 4, 10000, 30000, 5000), \
+        "{{ok, ProbeConn}} = ridge_pg:pg_connect(<<\"{host}\">>, {port}, <<\"{db}\">>, <<\"{user}\">>, <<\"{pass}\">>, <<\"{ssl}\">>, 4, 10000, 30000, 5000, 0, 0, 0), \
          ProbeId = maps:get(id, ProbeConn), \
          ProbeSelf = self(), \
          [spawn(fun() -> ProbeSelf ! {{probe, ridge_pg:pg_all(ProbeId, <<\"ridge_pg_users\">>)}} end) || _ <- lists:seq(1, 6)], \
          ProbeRs = [receive {{probe, ProbeX}} -> ProbeX after 15000 -> timeout end || _ <- lists:seq(1, 6)], \
          ProbeOk = lists:all(fun(ProbeR) -> case ProbeR of {{ok, _}} -> true; _ -> false end end, ProbeRs), \
          io:format(\"concurrent=~p~n\", [ProbeOk]), \
-         ridge_pg:pg_close(ProbeId), ",
+         ridge_pg:pg_close(ProbeId), \
+         {{ok, MaintConn}} = ridge_pg:pg_connect(<<\"{host}\">>, {port}, <<\"{db}\">>, <<\"{user}\">>, <<\"{pass}\">>, <<\"{ssl}\">>, 2, 10000, 30000, 5000, 300, 600, 200), \
+         MaintId = maps:get(id, MaintConn), \
+         MaintBefore = ridge_pg:pg_all(MaintId, <<\"ridge_pg_users\">>), \
+         timer:sleep(1200), \
+         MaintAfter = ridge_pg:pg_all(MaintId, <<\"ridge_pg_users\">>), \
+         MaintOk = case {{MaintBefore, MaintAfter}} of {{{{ok, _}}, {{ok, _}}}} -> true; _ -> false end, \
+         io:format(\"maintHeals=~p~n\", [MaintOk]), \
+         ridge_pg:pg_close(MaintId), \
+         {{ok, PingConn}} = ridge_pg:pg_connect(<<\"{host}\">>, {port}, <<\"{db}\">>, <<\"{user}\">>, <<\"{pass}\">>, <<\"{ssl}\">>, 2, 10000, 30000, 5000, 0, 0, 200), \
+         PingId = maps:get(id, PingConn), \
+         _ = ridge_pg:pg_all(PingId, <<\"ridge_pg_users\">>), \
+         timer:sleep(800), \
+         PingAfter = ridge_pg:pg_all(PingId, <<\"ridge_pg_users\">>), \
+         io:format(\"pingHealthy=~p~n\", [case PingAfter of {{ok, _}} -> true; _ -> false end]), \
+         ridge_pg:pg_close(PingId), ",
         host = parts.host,
         port = parts.port,
         db = parts.database,
@@ -2321,6 +2340,14 @@ fn postgres_adapter_reads_a_real_table() {
         (
             "concurrent=true",
             "the pool serves six concurrent reads on one handle",
+        ),
+        (
+            "maintHeals=true",
+            "the maintenance sweep evicts idle and recycles aged connections in the background, and the pool reopens a fresh one on demand",
+        ),
+        (
+            "pingHealthy=true",
+            "the active health-check pings idle connections and the pool keeps serving",
         ),
     ] {
         assert!(

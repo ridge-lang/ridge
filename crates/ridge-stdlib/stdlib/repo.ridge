@@ -266,6 +266,14 @@ pub fn withConnection (conn: a) (body: fn a -> Result r Error) -> Result r Error
     match close conn
         _ -> outcome
 
+-- Close a connection, releasing its pool. The dual of `connect` for the
+-- long-running pattern: open once, reuse the handle across the application, and
+-- `disconnect` at shutdown. For a short-lived connection prefer `withConnection`,
+-- which closes on every path; a bare `connect`/`disconnect` pair leaks the handle
+-- on any path that skips the close. Closing is idempotent and best-effort.
+pub fn disconnect (conn: a) -> Result Unit Error where Adapter a =
+    close conn
+
 -- A query under construction over a repository: a filter, an ordering, a page
 -- (offset and limit), a `distinct` flag, and an optional set-operation `plan`
 -- accumulated before a terminal runs it. Opaque and threaded through the builder,

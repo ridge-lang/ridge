@@ -1619,6 +1619,13 @@ mod tests {
                             | "Postgres"
                             | "Config"
                             | "connect"
+                            | "PoolConfig"
+                            | "connectWith"
+                            | "defaultPool"
+                            | "withPoolSize"
+                            | "withConnectTimeoutMs"
+                            | "withQueryTimeoutMs"
+                            | "withCheckoutTimeoutMs"
                     )
                 {
                     continue;

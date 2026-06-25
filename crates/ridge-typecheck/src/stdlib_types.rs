@@ -183,10 +183,6 @@ fn reconciled_decls(b: &BuiltinTyCons, base: u32) -> Vec<TyConDecl> {
                         name: "sslMode".to_string(),
                         ty: Type::Con(b.text, vec![]),
                     },
-                    RecordField {
-                        name: "poolSize".to_string(),
-                        ty: Type::Con(b.int, vec![]),
-                    },
                 ],
             )),
             def_span: None,
@@ -1144,6 +1140,40 @@ fn reconciled_decls(b: &BuiltinTyCons, base: u32) -> Vec<TyConDecl> {
             opaque: true,
             is_anon: false,
         },
+        // `std.data` — pool tuning for `connectWith`. A plain (non-opaque) record
+        // built through `defaultPool`/`with*`; declared in Ridge
+        // (stdlib/data.ridge). Field order mirrors the source declaration so the
+        // consistency check holds.
+        TyConDecl {
+            id: TyConId(base + 21),
+            name: "PoolConfig".to_string(),
+            arity: 0,
+            kind: TyConKind::Record(RecordSchema::new(
+                vec![],
+                vec![
+                    RecordField {
+                        name: "size".to_string(),
+                        ty: Type::Con(b.int, vec![]),
+                    },
+                    RecordField {
+                        name: "connectTimeoutMs".to_string(),
+                        ty: Type::Con(b.int, vec![]),
+                    },
+                    RecordField {
+                        name: "queryTimeoutMs".to_string(),
+                        ty: Type::Con(b.int, vec![]),
+                    },
+                    RecordField {
+                        name: "checkoutTimeoutMs".to_string(),
+                        ty: Type::Con(b.int, vec![]),
+                    },
+                ],
+            )),
+            def_span: None,
+            def_module_raw: None,
+            opaque: false,
+            is_anon: false,
+        },
     ]
 }
 
@@ -1203,6 +1233,10 @@ pub(crate) fn reconciled_ctor_scheme(
 /// scheme. `classes` supplies the `Adapter`/`Row` class ids the repository
 /// methods are constrained over; it is `None` only in contexts without a class
 /// table, where those methods cannot be seeded and resolve to `None`.
+#[expect(
+    clippy::too_many_lines,
+    reason = "one match arm per reconciled stdlib function; the arms read best kept together"
+)]
 pub(crate) fn reconciled_fn_scheme(
     module: &str,
     name: &str,
@@ -1269,6 +1303,67 @@ pub(crate) fn reconciled_fn_scheme(
                         vec![Type::Con(postgres, vec![]), Type::Con(b.error, vec![])],
                     )),
                     caps: CapRow::Concrete(CapabilitySet::singleton(Capability::Db)),
+                },
+                constraints: vec![],
+            })
+        }
+        // std.data `connectWith : Config -> PoolConfig -> Result Postgres Error` —
+        // `connect` with an explicit pool. Names the reconciled `Config`,
+        // `PoolConfig`, and `Postgres`, so the hand-curated table cannot express it.
+        ("std.data", "connectWith") => {
+            let postgres = *reconciled.get("Postgres")?;
+            let config = *reconciled.get("Config")?;
+            let pool = *reconciled.get("PoolConfig")?;
+            Some(Scheme {
+                vars: vec![],
+                cap_vars: vec![],
+                row_vars: vec![],
+                ty: Type::Fn {
+                    params: vec![Type::Con(config, vec![]), Type::Con(pool, vec![])],
+                    ret: Box::new(Type::Con(
+                        b.result,
+                        vec![Type::Con(postgres, vec![]), Type::Con(b.error, vec![])],
+                    )),
+                    caps: CapRow::Concrete(CapabilitySet::singleton(Capability::Db)),
+                },
+                constraints: vec![],
+            })
+        }
+        // std.data `defaultPool : Unit -> PoolConfig` — the pure pool baseline.
+        // Returns the reconciled `PoolConfig`.
+        ("std.data", "defaultPool") => {
+            let pool = *reconciled.get("PoolConfig")?;
+            Some(Scheme {
+                vars: vec![],
+                cap_vars: vec![],
+                row_vars: vec![],
+                ty: Type::Fn {
+                    params: vec![Type::Con(b.unit, vec![])],
+                    ret: Box::new(Type::Con(pool, vec![])),
+                    caps: CapRow::Concrete(CapabilitySet::PURE),
+                },
+                constraints: vec![],
+            })
+        }
+        // std.data `with* : Int -> PoolConfig -> PoolConfig` — the pure pool-config
+        // setters (size and the millisecond timeouts). Each names the reconciled
+        // `PoolConfig` on both sides.
+        (
+            "std.data",
+            "withPoolSize"
+            | "withConnectTimeoutMs"
+            | "withQueryTimeoutMs"
+            | "withCheckoutTimeoutMs",
+        ) => {
+            let pool = *reconciled.get("PoolConfig")?;
+            Some(Scheme {
+                vars: vec![],
+                cap_vars: vec![],
+                row_vars: vec![],
+                ty: Type::Fn {
+                    params: vec![Type::Con(b.int, vec![]), Type::Con(pool, vec![])],
+                    ret: Box::new(Type::Con(pool, vec![])),
+                    caps: CapRow::Concrete(CapabilitySet::PURE),
                 },
                 constraints: vec![],
             })
@@ -1819,6 +1914,21 @@ fn reconciled_repo_fn_scheme(
                 constraints: with_adapter(),
             })
         }
+        // `disconnect` releases a connection — `close conn` over the `Adapter` seam.
+        // One argument, no body, answering `Result Unit Error`; `a` carries the
+        // `Adapter` dictionary `close` dispatches on. The handle is the proof of
+        // access, so releasing it is capability-free like the query methods.
+        "disconnect" => Some(Scheme {
+            vars: vec![a],
+            cap_vars: vec![],
+            row_vars: vec![],
+            ty: Type::Fn {
+                params: vec![Type::Var(a)],
+                ret: Box::new(result(Type::Con(b.unit, vec![]))),
+                caps: pure(),
+            },
+            constraints: with_adapter(),
+        }),
         // `sumOf` / `avgOf` / `minOf` / `maxOf` are no longer reconciled here: they
         // became the methods of the `Aggregable q p | q -> p` class (std.repo), one
         // set of scalar aggregates over a query, an inner join, or a left join. A

@@ -381,6 +381,27 @@ pub fn db withConnForgets () -> Text =
                 Err _    -> "after-err"
                 Ok after -> Text.concat "inside:" (Text.concat (Int.toText inside) (Text.concat ",after:" (Int.toText after)))
 
+-- disconnect: insert and count (sees 1), then release the handle with the qualified
+-- `Repo.disconnect`; a fresh repo on the same handle afterward sees the forgotten
+-- store (0) -> "inside:1,after:0". Proves the explicit release verb runs the full
+-- pipeline qualified and closes the connection like `withConnection` does.
+pub fn db disconnectForgets () -> Text =
+    let conn = memAdapter ()
+    let r = Repo.repo conn "users"
+    match Repo.insertRow (userRow 1 18 "ada") r
+        Err _ -> "insert-err"
+        Ok _  ->
+            match r |> Repo.query |> Repo.count
+                Err _     -> "count-err"
+                Ok inside ->
+                    match Repo.disconnect conn
+                        Err _ -> "disconnect-err"
+                        Ok _  ->
+                            let r2 = Repo.repo conn "users"
+                            match r2 |> Repo.query |> Repo.count
+                                Err _    -> "after-err"
+                                Ok after -> Text.concat "inside:" (Text.concat (Int.toText inside) (Text.concat ",after:" (Int.toText after)))
+
 -- findBy + decode: how many users are 25 or older? (lin 30, max 25) -> 2
 pub fn db adultsCount () -> Int =
     match setup ()
@@ -2306,6 +2327,7 @@ fn repo_surface_runs_on_beam() {
     let expr = format!(
         "io:format(\"countAll=~w~n\",[{module}:countAll()]), \
          io:format(\"withConnForgets=~s~n\",[{module}:withConnForgets()]), \
+         io:format(\"disconnectForgets=~s~n\",[{module}:disconnectForgets()]), \
          io:format(\"adultsCount=~w~n\",[{module}:adultsCount()]), \
          io:format(\"firstName=~s~n\",[{module}:firstName()]), \
          io:format(\"getName=~s~n\",[{module}:getName()]), \
@@ -2447,6 +2469,10 @@ fn repo_surface_runs_on_beam() {
         (
             "withConnForgets=inside:1,after:0",
             "withConnection runs the body (sees the row) then closes the adapter on the way out, so the store is forgotten afterward",
+        ),
+        (
+            "disconnectForgets=inside:1,after:0",
+            "the qualified Repo.disconnect releases the adapter (closing it), so a fresh repo on the same handle sees the forgotten store",
         ),
         ("adultsCount=2", "findBy keeps the two rows with age >= 25"),
         (

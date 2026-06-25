@@ -482,6 +482,16 @@ const BASELINE_EXPORTS: &[(&str, &[&str])] = &[
             "Postgres",
             "Config",
             "connect",
+            // Pool tuning: the `PoolConfig` record and the `connectWith` that takes
+            // one, the `defaultPool` baseline, and the `with*` setters that size the
+            // pool and set the millisecond timeouts.
+            "PoolConfig",
+            "connectWith",
+            "defaultPool",
+            "withPoolSize",
+            "withConnectTimeoutMs",
+            "withQueryTimeoutMs",
+            "withCheckoutTimeoutMs",
         ],
     ),
     (
@@ -513,6 +523,9 @@ const BASELINE_EXPORTS: &[(&str, &[&str])] = &[
             // Run a body with the connection, then close it on every path — the
             // leak-safe scoped-connection combinator.
             "withConnection",
+            // Release a connection, the dual of `connect` for the open-once,
+            // reuse, then disconnect-at-shutdown pattern.
+            "disconnect",
             // The query builder: the opaque `Query e a` and its pipeline verbs,
             // ending in the `toList`/`first` terminals and the `selectList`/
             // `selectFirst` projections.

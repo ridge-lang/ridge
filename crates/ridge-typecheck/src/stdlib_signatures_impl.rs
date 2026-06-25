@@ -1629,6 +1629,9 @@ mod tests {
                             | "withIdleTimeoutMs"
                             | "withMaxLifetimeMs"
                             | "withHealthCheckMs"
+                            | "withConnectRetries"
+                            | "withRetryBackoffMs"
+                            | "withMaxQueueDepth"
                     )
                 {
                     continue;

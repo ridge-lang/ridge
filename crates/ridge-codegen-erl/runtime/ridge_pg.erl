@@ -30,7 +30,7 @@
 -module(ridge_pg).
 
 -export([
-    pg_connect/13,
+    pg_connect/16,
     pg_insert/3,
     pg_all/2,
     pg_select/3,
@@ -68,19 +68,24 @@
 
 %% --- FFI surface (mirrors the MemAdapter verbs in ridge_rt.erl) ---
 
-%% pg_connect/13 — std.data.connect/connectWith. Open and authenticate one
+%% pg_connect/16 — std.data.connect/connectWith. Open and authenticate one
 %% connection from the config fields, then start a pool manager seeded with it and
 %% return the Ridge handle `#{id => Id}` (the same id-as-handle shape MemAdapter
 %% uses). The config — host/port/.../sslMode, the pool size, the connect, query,
-%% and checkout timeouts, and the idle, max-lifetime, and health-check maintenance
-%% windows, all in milliseconds — crosses the FFI boundary as positional scalars,
-%% not a record map, so it never depends on how a Ridge record lowers its keys. A
-%% zero maintenance window disables that maintenance. Opening one connection now
-%% means a bad host, password, or TLS mode is reported here rather than on the
-%% first query. Result Postgres Error.
+%% and checkout timeouts, the idle, max-lifetime, and health-check maintenance
+%% windows, the connection-retry count with its backoff, and the wait-queue depth
+%% — crosses the FFI boundary as positional scalars, not a record map, so it never
+%% depends on how a Ridge record lowers its keys. A zero maintenance window
+%% disables that maintenance, a zero retry count disables retries, and a zero queue
+%% depth leaves the wait queue unbounded. Opening one connection now means a bad
+%% host, password, or TLS mode is reported here rather than on the first query; a
+%% refused connect is retried up to the retry count, so a database not yet
+%% accepting connections at startup is waited out rather than failing the first
+%% call. Result Postgres Error.
 pg_connect(Host, Port, Database, User, Password, SslMode, PoolSize,
            ConnectTimeoutMs, QueryTimeoutMs, CheckoutTimeoutMs,
-           IdleTimeoutMs, MaxLifetimeMs, HealthCheckMs) ->
+           IdleTimeoutMs, MaxLifetimeMs, HealthCheckMs,
+           ConnectRetries, RetryBackoffMs, MaxQueueDepth) ->
     application:ensure_all_started(crypto),
     Config = #{host => Host, port => Port, database => Database,
                user => User, password => Password, ssl_mode => SslMode,
@@ -90,8 +95,11 @@ pg_connect(Host, Port, Database, User, Password, SslMode, PoolSize,
                checkout_timeout => clamp_timeout(CheckoutTimeoutMs, ?CHECKOUT_TIMEOUT),
                idle_timeout => maint_window(IdleTimeoutMs),
                max_lifetime => maint_window(MaxLifetimeMs),
-               health_check => maint_window(HealthCheckMs)},
-    case do_connect(Config) of
+               health_check => maint_window(HealthCheckMs),
+               connect_retries => clamp_count(ConnectRetries),
+               retry_backoff => clamp_count(RetryBackoffMs),
+               max_queue => clamp_count(MaxQueueDepth)},
+    case connect_with_retry(Config) of
         {ok, Conn} ->
             Worker = spawn(fun() -> pg_conn_loop(Conn) end),
             set_controlling(Conn, Worker),
@@ -363,6 +371,13 @@ clamp_timeout(_, Default)                               -> Default.
 maint_window(Ms) when is_integer(Ms), Ms > 0 -> Ms;
 maint_window(_)                              -> 0.
 
+%% A non-negative tunable count: the retry count, its backoff in milliseconds, and
+%% the wait-queue depth all clamp the same way — a positive integer is the value,
+%% and any non-positive or non-integer reads as 0, the disabled sentinel (no
+%% retries, no backoff, an unbounded queue).
+clamp_count(N) when is_integer(N), N > 0 -> N;
+clamp_count(_)                           -> 0.
+
 %% A monotonic millisecond clock for the pool's maintenance ages. Monotonic time
 %% never jumps with the wall clock, so a connection's measured idle span and
 %% lifetime are immune to clock changes.
@@ -578,8 +593,26 @@ handle_checkout(State, ReplyTo, Ref) ->
                             State#{idle := Rest}
                     end;
                 false ->
-                    enqueue_waiter(State#{idle := Rest}, ReplyTo, Ref)
+                    case queue_has_room(State) of
+                        true ->
+                            enqueue_waiter(State#{idle := Rest}, ReplyTo, Ref);
+                        false ->
+                            ReplyTo ! {Ref, {error, #{code => <<"db.pool.overloaded">>,
+                                                      message => <<"connection pool wait queue is full">>}}},
+                            State#{idle := Rest}
+                    end
             end
+    end.
+
+%% Whether a new caller may join the wait queue — the pool's backpressure. When
+%% max_queue is set and that many callers are already parked, a further checkout
+%% fails fast with db.pool.overloaded rather than growing the queue without bound.
+%% A zero max_queue (the default) leaves the queue unbounded, so every caller waits
+%% up to the checkout timeout.
+queue_has_room(#{waiters := Waiters, config := Config}) ->
+    case maps:get(max_queue, Config, 0) of
+        0   -> true;
+        Max -> queue:len(Waiters) < Max
     end.
 
 %% Return a borrowed connection. An unknown one (already dropped on its DOWN) is
@@ -1374,6 +1407,38 @@ to_float(Val) ->
     end.
 
 %% --- Connect, TLS upgrade, authentication ---
+
+%% Open one connection, retrying a refused connect up to the configured count.
+%% Only a refused connect — the database not yet reachable — is retried; an
+%% authentication, TLS, or SQL error is permanent and returned at once, so a
+%% misconfiguration still fails fast. This runs in the caller's process (the one
+%% awaiting `connect`), so the backoff sleep blocks only that caller, never the
+%% pool manager: pool growth opens its connections through `do_connect` directly,
+%% with no retry, so the manager is never parked on a backoff.
+connect_with_retry(Config) ->
+    connect_with_retry(Config, maps:get(connect_retries, Config, 0)).
+
+connect_with_retry(Config, Retries) ->
+    case do_connect(Config) of
+        {ok, Conn} ->
+            {ok, Conn};
+        {error, E} when Retries > 0 ->
+            case is_retryable_connect(E) of
+                true ->
+                    timer:sleep(maps:get(retry_backoff, Config, 0)),
+                    connect_with_retry(Config, Retries - 1);
+                false ->
+                    {error, E}
+            end;
+        {error, E} ->
+            {error, E}
+    end.
+
+%% A refused connect — the TCP layer could not reach a listening server — is the
+%% one transient connect failure worth retrying. Authentication, TLS, and SQL
+%% errors carry their own codes and are permanent, so they are never retried.
+is_retryable_connect(#{code := <<"db.connect.refused">>}) -> true;
+is_retryable_connect(_)                                   -> false.
 
 do_connect(Config) ->
     Host = binary_to_list(maps:get(host, Config)),

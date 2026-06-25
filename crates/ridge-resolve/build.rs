@@ -484,7 +484,8 @@ const BASELINE_EXPORTS: &[(&str, &[&str])] = &[
             "connect",
             // Pool tuning: the `PoolConfig` record and the `connectWith` that takes
             // one, the `defaultPool` baseline, and the `with*` setters that size the
-            // pool, set the millisecond timeouts, and tune the maintenance windows.
+            // pool, set the millisecond timeouts, tune the maintenance windows, and
+            // set the retry and backpressure knobs.
             "PoolConfig",
             "connectWith",
             "defaultPool",
@@ -495,6 +496,9 @@ const BASELINE_EXPORTS: &[(&str, &[&str])] = &[
             "withIdleTimeoutMs",
             "withMaxLifetimeMs",
             "withHealthCheckMs",
+            "withConnectRetries",
+            "withRetryBackoffMs",
+            "withMaxQueueDepth",
         ],
     ),
     (

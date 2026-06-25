@@ -1179,6 +1179,18 @@ fn reconciled_decls(b: &BuiltinTyCons, base: u32) -> Vec<TyConDecl> {
                         name: "healthCheckMs".to_string(),
                         ty: Type::Con(b.int, vec![]),
                     },
+                    RecordField {
+                        name: "connectRetries".to_string(),
+                        ty: Type::Con(b.int, vec![]),
+                    },
+                    RecordField {
+                        name: "retryBackoffMs".to_string(),
+                        ty: Type::Con(b.int, vec![]),
+                    },
+                    RecordField {
+                        name: "maxQueueDepth".to_string(),
+                        ty: Type::Con(b.int, vec![]),
+                    },
                 ],
             )),
             def_span: None,
@@ -1358,8 +1370,9 @@ pub(crate) fn reconciled_fn_scheme(
             })
         }
         // std.data `with* : Int -> PoolConfig -> PoolConfig` — the pure pool-config
-        // setters (size, the millisecond timeouts, and the maintenance windows).
-        // Each names the reconciled `PoolConfig` on both sides.
+        // setters (size, the millisecond timeouts, the maintenance windows, and the
+        // retry and backpressure knobs). Each names the reconciled `PoolConfig` on
+        // both sides.
         (
             "std.data",
             "withPoolSize"
@@ -1368,7 +1381,10 @@ pub(crate) fn reconciled_fn_scheme(
             | "withCheckoutTimeoutMs"
             | "withIdleTimeoutMs"
             | "withMaxLifetimeMs"
-            | "withHealthCheckMs",
+            | "withHealthCheckMs"
+            | "withConnectRetries"
+            | "withRetryBackoffMs"
+            | "withMaxQueueDepth",
         ) => {
             let pool = *reconciled.get("PoolConfig")?;
             Some(Scheme {

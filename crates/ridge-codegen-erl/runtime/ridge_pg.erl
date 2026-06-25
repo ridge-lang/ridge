@@ -68,11 +68,13 @@
 
 %% --- FFI surface (mirrors the MemAdapter verbs in ridge_rt.erl) ---
 
-%% pg_connect/7 — std.data.connect. Open and authenticate one connection from the
-%% config fields, then start a pool manager seeded with it and return the Ridge
-%% handle `#{id => Id}` (the same id-as-handle shape MemAdapter uses). The config
-%% crosses the FFI boundary as positional scalars, not a record map, so it never
-%% depends on how a Ridge record lowers its keys. Opening one connection now
+%% pg_connect/10 — std.data.connect/connectWith. Open and authenticate one
+%% connection from the config fields, then start a pool manager seeded with it and
+%% return the Ridge handle `#{id => Id}` (the same id-as-handle shape MemAdapter
+%% uses). The config — host/port/.../sslMode, the pool size, and the connect,
+%% query, and checkout timeouts in milliseconds — crosses the FFI boundary as
+%% positional scalars, not a record map, so it never depends on how a Ridge record
+%% lowers its keys. Opening one connection now
 %% means a bad host, password, or TLS mode is reported here rather than on the
 %% first query. Result Postgres Error.
 pg_connect(Host, Port, Database, User, Password, SslMode, PoolSize,

@@ -1829,7 +1829,7 @@ fn postgres_adapter_reads_a_real_table() {
     // exercises concurrent checkout, the pool growing under load, and waiters
     // reusing a connection once it frees — all against the live database.
     let pool_probe = format!(
-        "{{ok, ProbeConn}} = ridge_pg:pg_connect(<<\"{host}\">>, {port}, <<\"{db}\">>, <<\"{user}\">>, <<\"{pass}\">>, <<\"{ssl}\">>, 4), \
+        "{{ok, ProbeConn}} = ridge_pg:pg_connect(<<\"{host}\">>, {port}, <<\"{db}\">>, <<\"{user}\">>, <<\"{pass}\">>, <<\"{ssl}\">>, 4, 10000, 30000, 5000), \
          ProbeId = maps:get(id, ProbeConn), \
          ProbeSelf = self(), \
          [spawn(fun() -> ProbeSelf ! {{probe, ridge_pg:pg_all(ProbeId, <<\"ridge_pg_users\">>)}} end) || _ <- lists:seq(1, 6)], \

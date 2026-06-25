@@ -1122,6 +1122,29 @@ impl BuiltinTyCons {
                         name: "QNotTrue".to_string(),
                         kind: VariantPayload::Positional(vec![Type::Con(TyConId(25), vec![])]),
                     },
+                    // A `value LIKE pattern` test. The first operand is the column,
+                    // the second a `QLitText` carrying the SQL LIKE pattern (already
+                    // escaped and wrapped at reify time for the `contains`/`startsWith`/
+                    // `endsWith` forms, passed through verbatim for the raw `like`
+                    // form). Appended after `QNotTrue` so existing variant indices the
+                    // lowering pass hardcodes stay put.
+                    UnionVariant {
+                        name: "QLike".to_string(),
+                        kind: VariantPayload::Positional(vec![
+                            Type::Con(TyConId(25), vec![]),
+                            Type::Con(TyConId(25), vec![]),
+                        ]),
+                    },
+                    // A `value IN (e0, e1, …)` test. The first operand is the column,
+                    // the second a list of literal `QExpr` elements (the IN set). An
+                    // empty set renders as `FALSE` — nothing is a member of it.
+                    UnionVariant {
+                        name: "QIn".to_string(),
+                        kind: VariantPayload::Positional(vec![
+                            Type::Con(TyConId(25), vec![]),
+                            Type::Con(list, vec![Type::Con(TyConId(25), vec![])]),
+                        ]),
+                    },
                 ],
             }),
             def_span: None,

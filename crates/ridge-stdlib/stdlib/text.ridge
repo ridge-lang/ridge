@@ -145,6 +145,14 @@ fn _moreThanOne (xs: List a) -> Bool =
         _ :: []     -> false
         _ :: _ :: _ -> true
 
+-- Return true if the text matches the SQL LIKE pattern. `%` matches any run of
+-- characters (including none), `_` matches any single character, and `\` escapes
+-- the next pattern character so a literal `%`, `_`, or `\` can be matched. The same
+-- matcher backs a reified query predicate, so a filter evaluated in memory and one
+-- pushed to SQL agree on every row.
+@ffi("ridge_rt", "text_like", 2)
+pub fn like (s: Text) (pattern: Text) -> Bool
+
 -- Replace-all bridge via ridge_rt so we get binary:replace(_, _, _, [global]).
 -- The bare `binary:replace/4` Erlang BIF defaults to first-occurrence only when
 -- the options list is empty; the runtime wrapper hard-codes the `[global]`

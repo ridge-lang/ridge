@@ -960,6 +960,8 @@ pub fn prelude_resolutions() -> Vec<ImportResolution> {
                 query_binding("QAggAvg"),
                 query_binding("QAggMin"),
                 query_binding("QAggMax"),
+                query_binding("QLike"),
+                query_binding("QIn"),
                 // `Ret/1` — the return-type projection, in scope for query-builder
                 // signatures that name the element of a projection's result.
                 query_binding("Ret"),
@@ -2041,8 +2043,8 @@ mod tests {
             .map(|ir| ir.effective_bindings.len())
             .sum();
         assert_eq!(
-            total_bindings, 55,
-            "expected 55 total prelude bindings (6 option/result + 8 json + 33 quotation + 8 module aliases); got {total_bindings}"
+            total_bindings, 57,
+            "expected 57 total prelude bindings (6 option/result + 8 json + 35 quotation + 8 module aliases); got {total_bindings}"
         );
     }
 

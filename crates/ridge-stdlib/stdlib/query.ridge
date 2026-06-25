@@ -230,9 +230,16 @@ fn showExpr (e: QExpr) -> Text =
         QAggAvg c   -> aggShow "avg" c
         QAggMin c   -> aggShow "min" c
         QAggMax c   -> aggShow "max" c
+        QLike v p   -> binNode v " LIKE " p
+        QIn v items -> Text.join "" ["(", showExpr v, " IN (", Text.join ", " (showInList items), "))"]
 
 fn binNode (l: QExpr) (op: Text) (r: QExpr) -> Text =
     Text.concat "(" (Text.concat (showExpr l) (Text.concat op (Text.concat (showExpr r) ")")))
+
+fn showInList (items: List QExpr) -> List Text =
+    match items
+        []          -> []
+        x :: rest   -> showExpr x :: showInList rest
 
 fn aggShow (fnName: Text) (c: QExpr) -> Text =
     Text.concat fnName (Text.concat "(" (Text.concat (showExpr c) ")"))
@@ -276,10 +283,30 @@ fn compileExpr (e: QExpr) -> { text: Text, binds: List SqlValue } =
         QAggAvg c  -> aggSql "AVG" c
         QAggMin c  -> aggSql "MIN" c
         QAggMax c  -> aggSql "MAX" c
+        QLike v p  ->
+            let lv = compileExpr v
+            let lp = compileExpr p
+            { text = Text.join "" ["(", lv.text, " LIKE ", lp.text, ")"], binds = lv.binds ++ lp.binds }
+        QIn v items ->
+            match items
+                [] -> { text = "FALSE", binds = [] }
+                _  ->
+                    let lv = compileExpr v
+                    let inner = compileInList items
+                    { text = Text.join "" ["(", lv.text, " IN (", inner.text, "))"], binds = lv.binds ++ inner.binds }
 
 fn aggSql (fnName: Text) (c: QExpr) -> { text: Text, binds: List SqlValue } =
     let r = compileExpr c
     { text = Text.concat fnName (Text.concat "(" (Text.concat r.text ")")), binds = r.binds }
+
+fn compileInList (items: List QExpr) -> { text: Text, binds: List SqlValue } =
+    match items
+        []        -> { text = "", binds = [] }
+        x :: []   -> compileExpr x
+        x :: rest ->
+            let r1 = compileExpr x
+            let r2 = compileInList rest
+            { text = Text.join "" [r1.text, ", ", r2.text], binds = r1.binds ++ r2.binds }
 
 fn unaryNode (pre: Text) (x: QExpr) (post: Text) -> { text: Text, binds: List SqlValue } =
     let r = compileExpr x
@@ -430,6 +457,17 @@ fn renderPred (qualified: Bool) (e: QExpr) (n: Int) -> { text: Text, binds: List
         QGt l r -> cmpPred qualified l " > " r n
         QLe l r -> cmpPred qualified l " <= " r n
         QGe l r -> cmpPred qualified l " >= " r n
+        QLike v p ->
+            let lv = renderOperand qualified v n
+            let lp = renderOperand qualified p lv.next
+            { text = Text.join "" [lv.text, " LIKE ", lp.text], binds = lv.binds ++ lp.binds, next = lp.next }
+        QIn v items ->
+            match items
+                [] -> { text = "FALSE", binds = [], next = n }
+                _  ->
+                    let lv = renderOperand qualified v n
+                    let inner = renderInList qualified items lv.next
+                    { text = Text.join "" [lv.text, " IN (", inner.text, ")"], binds = lv.binds ++ inner.binds, next = inner.next }
         QCol c  -> { text = renderColRef qualified false c, binds = [], next = n }
         QColR c -> { text = renderColRef qualified true c, binds = [], next = n }
         QLitBool b -> { text = boolLit b, binds = [], next = n }
@@ -456,6 +494,17 @@ fn renderOperand (qualified: Bool) (e: QExpr) (n: Int) -> { text: Text, binds: L
         QLitBool v  -> { text = placeholder n, binds = [sqlBool v], next = n + 1 }
         QLitFloat v -> { text = placeholder n, binds = [sqlFloat v], next = n + 1 }
         _           -> { text = "NULL", binds = [], next = n }
+
+-- The comma-separated operands of an `IN (…)` list, each a `$N` placeholder
+-- binding its value, threaded left to right so the placeholders stay in order.
+fn renderInList (qualified: Bool) (items: List QExpr) (n: Int) -> { text: Text, binds: List SqlValue, next: Int } =
+    match items
+        []        -> { text = "", binds = [], next = n }
+        x :: []   -> renderOperand qualified x n
+        x :: rest ->
+            let r1 = renderOperand qualified x n
+            let r2 = renderInList qualified rest r1.next
+            { text = Text.join "" [r1.text, ", ", r2.text], binds = r1.binds ++ r2.binds, next = r2.next }
 
 fn renderColRef (qualified: Bool) (isRight: Bool) (c: Text) -> Text =
     if qualified then
@@ -671,6 +720,17 @@ fn renderQual (q0: Int) (e: QExpr) (n: Int) -> { text: Text, binds: List SqlValu
         QGt l r -> qualCmp q0 l " > " r n
         QLe l r -> qualCmp q0 l " <= " r n
         QGe l r -> qualCmp q0 l " >= " r n
+        QLike v p ->
+            let lv = qualOperand q0 v n
+            let lp = qualOperand q0 p lv.next
+            { text = Text.join "" [lv.text, " LIKE ", lp.text], binds = lv.binds ++ lp.binds, next = lp.next }
+        QIn v items ->
+            match items
+                [] -> { text = "FALSE", binds = [], next = n }
+                _  ->
+                    let lv = qualOperand q0 v n
+                    let inner = qualInList q0 items lv.next
+                    { text = Text.join "" [lv.text, " IN (", inner.text, ")"], binds = lv.binds ++ inner.binds, next = inner.next }
         QCol c     -> { text = naryColRef q0 c, binds = [], next = n }
         QColR c    -> { text = naryColRef 1 c, binds = [], next = n }
         QColAt i c -> { text = naryColRef i c, binds = [], next = n }
@@ -697,6 +757,17 @@ fn qualOperand (q0: Int) (e: QExpr) (n: Int) -> { text: Text, binds: List SqlVal
         QLitBool v  -> { text = placeholder n, binds = [sqlBool v], next = n + 1 }
         QLitFloat v -> { text = placeholder n, binds = [sqlFloat v], next = n + 1 }
         _           -> { text = "NULL", binds = [], next = n }
+
+-- The leaf-qualified dual of `renderInList`: an `IN (…)` list inside a composite
+-- join's WHERE, each element a `$N` placeholder threaded left to right.
+fn qualInList (q0: Int) (items: List QExpr) (n: Int) -> { text: Text, binds: List SqlValue, next: Int } =
+    match items
+        []        -> { text = "", binds = [], next = n }
+        x :: []   -> qualOperand q0 x n
+        x :: rest ->
+            let r1 = qualOperand q0 x n
+            let r2 = qualInList q0 rest r1.next
+            { text = Text.join "" [r1.text, ", ", r2.text], binds = r1.binds ++ r2.binds, next = r2.next }
 
 -- The flattened join spine: each leaf's (table, scan filter, columns) left to right,
 -- and the (kind, condition, post-join WHERE) that joins each leaf after the first.

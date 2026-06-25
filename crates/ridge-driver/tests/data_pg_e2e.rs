@@ -60,7 +60,8 @@ import std.sql (toSql, SqlValue)
 import std.map as Map
 import std.int as Int
 import std.float as Float
-import std.list (length)
+import std.list (length, contains)
+import std.text as Text
 
 pub type User = { id: Int, age: Int, name: Text } deriving (Row)
 
@@ -313,6 +314,74 @@ pub fn db adultsCount () -> Int =
         Err _ -> 0 - 1
         Ok r  ->
             match r |> Repo.findBy (fn (u: User) -> u.age >= 25)
+                Ok us -> listLen us
+                Err _ -> 0 - 2
+
+-- LIKE: how many names contain "a"? (ada, max) -> 2. Proves the backend compiles
+-- a `QLike` into a real `LIKE` and Postgres matches it.
+pub fn db likeCount () -> Int =
+    match setup ()
+        Err _ -> 0 - 1
+        Ok r  ->
+            match r |> Repo.findBy (fn (u: User) -> Text.contains u.name "a")
+                Ok us -> listLen us
+                Err _ -> 0 - 2
+
+-- startsWith: names beginning with "l" (lin) -> 1.
+pub fn db likeStarts () -> Int =
+    match setup ()
+        Err _ -> 0 - 1
+        Ok r  ->
+            match r |> Repo.findBy (fn (u: User) -> Text.startsWith u.name "l")
+                Ok us -> listLen us
+                Err _ -> 0 - 2
+
+-- raw LIKE with `_`: three-character names with "a" in the middle (max) -> 1.
+pub fn db likeRaw () -> Int =
+    match setup ()
+        Err _ -> 0 - 1
+        Ok r  ->
+            match r |> Repo.findBy (fn (u: User) -> Text.like u.name "_a_")
+                Ok us -> listLen us
+                Err _ -> 0 - 2
+
+-- escaping against real Postgres: `contains "%"` escapes the `%` to a literal, so
+-- it matches no seeded name -> 0. Were the `%` left as a wildcard it would match all
+-- three. Confirms the backend's default `\\` escape lines up with what the renderer
+-- emits.
+pub fn db likePercentEscaped () -> Int =
+    match setup ()
+        Err _ -> 0 - 1
+        Ok r  ->
+            match r |> Repo.findBy (fn (u: User) -> Text.contains u.name "%")
+                Ok us -> listLen us
+                Err _ -> 0 - 2
+
+-- the same for `_`: `contains "_"` escapes the `_` to a literal underscore, matching
+-- no seeded name -> 0 (an unescaped `_` would match every one-or-more-char name).
+pub fn db likeUnderscoreEscaped () -> Int =
+    match setup ()
+        Err _ -> 0 - 1
+        Ok r  ->
+            match r |> Repo.findBy (fn (u: User) -> Text.contains u.name "_")
+                Ok us -> listLen us
+                Err _ -> 0 - 2
+
+-- IN: users whose age is 18 or 30 (ada, lin) -> 2.
+pub fn db inCount () -> Int =
+    match setup ()
+        Err _ -> 0 - 1
+        Ok r  ->
+            match r |> Repo.findBy (fn (u: User) -> contains u.age [18, 30])
+                Ok us -> listLen us
+                Err _ -> 0 - 2
+
+-- an empty IN set matches nothing -> 0.
+pub fn db inEmpty () -> Int =
+    match setup ()
+        Err _ -> 0 - 1
+        Ok r  ->
+            match r |> Repo.findBy (fn (u: User) -> contains u.age [])
                 Ok us -> listLen us
                 Err _ -> 0 - 2
 
@@ -1882,6 +1951,13 @@ fn postgres_adapter_reads_a_real_table() {
          io:format(\"withConnRuns=~s~n\",[{module}:withConnRuns()]), \
          io:format(\"connectWithRuns=~s~n\",[{module}:connectWithRuns()]), \
          io:format(\"adultsCount=~w~n\",[{module}:adultsCount()]), \
+         io:format(\"likeCount=~w~n\",[{module}:likeCount()]), \
+         io:format(\"likeStarts=~w~n\",[{module}:likeStarts()]), \
+         io:format(\"likeRaw=~w~n\",[{module}:likeRaw()]), \
+         io:format(\"likePercentEscaped=~w~n\",[{module}:likePercentEscaped()]), \
+         io:format(\"likeUnderscoreEscaped=~w~n\",[{module}:likeUnderscoreEscaped()]), \
+         io:format(\"inCount=~w~n\",[{module}:inCount()]), \
+         io:format(\"inEmpty=~w~n\",[{module}:inEmpty()]), \
          io:format(\"firstName=~s~n\",[{module}:firstName()]), \
          io:format(\"getName=~s~n\",[{module}:getName()]), \
          io:format(\"afterDelete=~w~n\",[{module}:afterDelete()]), \
@@ -1999,6 +2075,19 @@ fn postgres_adapter_reads_a_real_table() {
             "connectWith opens with an explicit tuned pool over the real wire and disconnect releases the handle",
         ),
         ("adultsCount=2", "findBy keeps the two rows with age >= 25"),
+        ("likeCount=2", "LIKE compiles and matches the two names containing \"a\""),
+        ("likeStarts=1", "startsWith compiles to a prefix LIKE matching lin"),
+        ("likeRaw=1", "a raw LIKE with `_` matches the three-char name max"),
+        (
+            "likePercentEscaped=0",
+            "contains \"%\" escapes the percent to a literal, matching no seeded name",
+        ),
+        (
+            "likeUnderscoreEscaped=0",
+            "contains \"_\" escapes the underscore to a literal, matching no seeded name",
+        ),
+        ("inCount=2", "IN [18, 30] keeps ada and lin"),
+        ("inEmpty=0", "an empty IN set matches nothing"),
         (
             "firstName=lin",
             "find + deriving (Row) decodes the first row older than 28",

@@ -331,6 +331,19 @@ pub fn prelude_types(b: &BuiltinTyCons) -> (FxHashMap<String, Scheme>, FxHashMap
     for name in ["QAggSum", "QAggAvg", "QAggMin", "QAggMax"] {
         values.insert(name.to_string(), q_ctor(vec![qexpr_ty.clone()]));
     }
+    // QLike carries the column and a `QLitText` pattern; QIn the column and a list
+    // of literal `QExpr` elements.
+    values.insert(
+        "QLike".to_string(),
+        q_ctor(vec![qexpr_ty.clone(), qexpr_ty.clone()]),
+    );
+    values.insert(
+        "QIn".to_string(),
+        q_ctor(vec![
+            qexpr_ty.clone(),
+            ty_con(b.list, vec![qexpr_ty.clone()]),
+        ]),
+    );
 
     (values, tycons)
 }

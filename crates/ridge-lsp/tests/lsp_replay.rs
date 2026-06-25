@@ -2389,6 +2389,50 @@ async fn test_references_class_method() {
     );
 }
 
+#[tokio::test]
+async fn test_references_qualified_class_method() {
+    // A data verb used the idiomatic qualified way -- `Repo.filter` -- binds to a
+    // stdlib symbol, not the bare-form `ClassMethod` (`filter` is exported by
+    // `std.repo` though it is declared in a `class` body). Find-references must
+    // still reach every qualified use-site. The definition lives in the stdlib, so
+    // the result is the workspace use-sites whether or not the declaration is asked
+    // for -- the stdlib declaration is simply absent, never a use that gets dropped.
+    let line1 = "pub fn a (q: Int) -> Int = Repo.filter q";
+    let src = concat!(
+        "import std.repo as Repo\n",
+        "pub fn a (q: Int) -> Int = Repo.filter q\n",
+        "pub fn b (q: Int) -> Int = Repo.filter q\n",
+    );
+    let (service, _socket, uri) = hover_fixture(src).await;
+    let server = service.inner();
+
+    let col =
+        u32::try_from(line1.find("Repo.filter").expect("verb use") + 6).expect("offset fits u32");
+    let with_decl = server
+        .references(references_at(&uri, 1, col, true))
+        .await
+        .expect("ok")
+        .expect("references of qualified `Repo.filter`");
+    assert_eq!(
+        ref_lines(&with_decl, &uri),
+        vec![1, 2],
+        "both qualified `Repo.filter` use-sites are found"
+    );
+
+    // includeDeclaration=false changes nothing: there is no workspace declaration
+    // to drop, and no use-site is lost to the stdlib exemption.
+    let without_decl = server
+        .references(references_at(&uri, 1, col, false))
+        .await
+        .expect("ok")
+        .expect("references of qualified `Repo.filter`");
+    assert_eq!(
+        ref_lines(&without_decl, &uri),
+        vec![1, 2],
+        "the use-sites survive includeDeclaration=false"
+    );
+}
+
 // ── Test 21: textDocument/rename + prepareRename ──────────────────────────────
 
 fn prepare_rename_at(uri: &Url, line: u32, character: u32) -> TextDocumentPositionParams {
@@ -2688,6 +2732,39 @@ async fn test_highlight_stdlib_symbol_same_file() {
             (2, map_col, DocumentHighlightKind::READ),
         ],
         "both `map` uses are reads, narrowed to the final segment"
+    );
+}
+
+#[tokio::test]
+async fn test_highlight_qualified_class_method_same_file() {
+    // The companion to the qualified-`Repo.filter` references test: a same-file
+    // highlight on one use marks every use, narrowed to the `filter` segment. The
+    // verb is a class method exported by `std.repo`, so the qualified form binds to
+    // a stdlib symbol with no workspace declaration -- every hit is a read.
+    let line1 = "pub fn a (q: Int) -> Int = Repo.filter q";
+    let src = concat!(
+        "import std.repo as Repo\n",
+        "pub fn a (q: Int) -> Int = Repo.filter q\n",
+        "pub fn b (q: Int) -> Int = Repo.filter q\n",
+    );
+    let (service, _socket, uri) = hover_fixture(src).await;
+    let server = service.inner();
+
+    let cursor = u32::try_from(line1.find("Repo.filter").expect("verb use") + 6).expect("fits u32");
+    let filter_col =
+        u32::try_from(line1.find("Repo.filter").expect("verb use") + 5).expect("fits u32");
+    let hs = server
+        .document_highlight(highlight_at(&uri, 1, cursor))
+        .await
+        .expect("ok")
+        .expect("highlights of qualified `Repo.filter`");
+    assert_eq!(
+        highlight_spots(&hs),
+        vec![
+            (1, filter_col, DocumentHighlightKind::READ),
+            (2, filter_col, DocumentHighlightKind::READ),
+        ],
+        "both `Repo.filter` uses are reads, narrowed to the final segment"
     );
 }
 

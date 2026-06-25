@@ -300,6 +300,9 @@ fn signature_shape_consistency() {
                         | "withIdleTimeoutMs"
                         | "withMaxLifetimeMs"
                         | "withHealthCheckMs"
+                        | "withConnectRetries"
+                        | "withRetryBackoffMs"
+                        | "withMaxQueueDepth"
                 )
             {
                 continue;

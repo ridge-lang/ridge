@@ -562,11 +562,11 @@ fn connect_with_tuned_pool_and_disconnect_typecheck() {
     // exercises the reconciled `PoolConfig`, the `connectWith`/`defaultPool`/
     // `with*` schemes, and the generic `disconnect`.
     let main = r"
-import std.data (connectWith, defaultPool, withPoolSize, withQueryTimeoutMs, withConnectTimeoutMs, withCheckoutTimeoutMs, withIdleTimeoutMs, withMaxLifetimeMs, withHealthCheckMs, Config, PoolConfig, Postgres)
+import std.data (connectWith, defaultPool, withPoolSize, withQueryTimeoutMs, withConnectTimeoutMs, withCheckoutTimeoutMs, withIdleTimeoutMs, withMaxLifetimeMs, withHealthCheckMs, withConnectRetries, withRetryBackoffMs, withMaxQueueDepth, Config, PoolConfig, Postgres)
 import std.repo as Repo
 
 pub fn db openTuned (cfg: Config) -> Result Unit Error =
-    match connectWith cfg (defaultPool () |> withPoolSize 20 |> withQueryTimeoutMs 60000 |> withConnectTimeoutMs 8000 |> withCheckoutTimeoutMs 3000 |> withIdleTimeoutMs 300000 |> withMaxLifetimeMs 900000 |> withHealthCheckMs 30000)
+    match connectWith cfg (defaultPool () |> withPoolSize 20 |> withQueryTimeoutMs 60000 |> withConnectTimeoutMs 8000 |> withCheckoutTimeoutMs 3000 |> withIdleTimeoutMs 300000 |> withMaxLifetimeMs 900000 |> withHealthCheckMs 30000 |> withConnectRetries 5 |> withRetryBackoffMs 250 |> withMaxQueueDepth 64)
         Err e   -> Err e
         Ok conn -> Repo.disconnect conn
 ";
@@ -596,6 +596,27 @@ pub fn tunedIdle -> Int =
     assert!(
         errors.is_empty(),
         "qualified PoolConfig maintenance builders must typecheck clean; got {errors:?}"
+    );
+}
+
+#[test]
+fn tune_retry_and_backpressure_qualified_typecheck() {
+    // The retry and backpressure setters tuned through a qualified module alias.
+    // `Data.withConnectRetries` and friends resolve the same `Int -> PoolConfig ->
+    // PoolConfig` scheme as the maintenance setters; this builds a pool through the
+    // alias and reads back the queue-depth field, so the reconciled `PoolConfig`
+    // carries the new fields and the qualified setters resolve without a direct
+    // import.
+    let main = r"
+import std.data as Data
+
+pub fn tunedQueue -> Int =
+    (Data.defaultPool () |> Data.withConnectRetries 5 |> Data.withRetryBackoffMs 250 |> Data.withMaxQueueDepth 64).maxQueueDepth
+";
+    let errors = typecheck_one(main);
+    assert!(
+        errors.is_empty(),
+        "qualified PoolConfig retry/backpressure builders must typecheck clean; got {errors:?}"
     );
 }
 

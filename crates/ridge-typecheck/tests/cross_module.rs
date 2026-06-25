@@ -623,6 +623,49 @@ pub fn db hits () -> Result (List User) Error =
 }
 
 #[test]
+fn repo_findby_folded_like_in_probe_typechecks() {
+    // The exact shape of the Postgres e2e probe: one repository, several `findBy`
+    // checks over the text-match and `IN` helpers folded through `countOf` into a
+    // comma-joined string. The e2e source only compiles under a live database, so
+    // this locks the let-chain + `Int.toText` + `Text.join` shape here, over the
+    // in-memory adapter (the backend does not change how the predicate type-checks).
+    let main = r#"
+import std.data (memAdapter, MemAdapter)
+import std.repo as Repo
+import std.sql (SqlValue)
+import std.text as Text
+import std.list (contains)
+import std.int as Int
+
+pub type User = { id: Int, age: Int, name: Text } deriving (Row)
+
+fn listLen (us: List User) -> Int =
+    match us
+        []        -> 0
+        _ :: rest -> 1 + listLen rest
+
+fn countOf (res: Result (List User) Error) -> Int =
+    match res
+        Ok us -> listLen us
+        Err _ -> 0 - 1
+
+pub fn db checks () -> Text =
+    let r: Repo User MemAdapter = Repo.repo (memAdapter ()) "users"
+    let a = countOf (r |> Repo.findBy (fn (u: User) -> Text.contains u.name "a"))
+    let b = countOf (r |> Repo.findBy (fn (u: User) -> Text.startsWith u.name "l"))
+    let c = countOf (r |> Repo.findBy (fn (u: User) -> Text.like u.name "_a_"))
+    let d = countOf (r |> Repo.findBy (fn (u: User) -> contains u.age [18, 30]))
+    let e = countOf (r |> Repo.findBy (fn (u: User) -> contains u.age []))
+    Text.join "," [Int.toText a, Int.toText b, Int.toText c, Int.toText d, Int.toText e]
+"#;
+    let errors = typecheck_one(main);
+    assert!(
+        errors.is_empty(),
+        "the folded like/in probe shape must type-check clean; got {errors:?}"
+    );
+}
+
+#[test]
 fn repo_over_postgres_adapter_typechecks() {
     // The Postgres adapter resolves the same `Adapter` constraint as the
     // in-memory backend: `connect` (db-gated) builds a `Postgres` handle from a

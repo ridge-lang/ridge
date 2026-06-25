@@ -134,6 +134,7 @@ lines at ~72 characters.
 ### Ridge code (when writing stdlib or examples)
 
 - Follow the idioms in `docs/spec.md` §3.
+- Name things per [`docs/naming-conventions.md`](docs/naming-conventions.md).
 - File-level doc comment `---...---` describing the module's purpose.
 - Capability prefix lists on every function that needs them.
 - No `null`, no exceptions, no user-defined operators.

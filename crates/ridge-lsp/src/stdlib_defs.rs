@@ -342,6 +342,38 @@ fn class_method_index() -> &'static HashMap<(String, String), ClassMethodEntry> 
     })
 }
 
+/// Process-global `(module id, method name) → class name` index.
+///
+/// Derived from [`class_method_index`] with no extra parse: every stdlib class
+/// method keyed by the builtin module its `class` is declared in and the method
+/// name. It bridges the qualified form `Module.method`, which resolves to a
+/// `Binding::StdlibSymbol` because the method is listed in the module's exports —
+/// so the top-level def/card/signature lookups miss it (the method lives in a
+/// `class` body, not as a `pub fn`). The first class wins if two classes in one
+/// module ever declare a same-named method (none do today).
+fn module_method_class_index() -> &'static HashMap<(u32, String), String> {
+    static INDEX: OnceLock<HashMap<(u32, String), String>> = OnceLock::new();
+    INDEX.get_or_init(|| {
+        let mut index: HashMap<(u32, String), String> = HashMap::new();
+        for ((class, method), entry) in class_method_index() {
+            index
+                .entry((entry.module, method.clone()))
+                .or_insert_with(|| class.clone());
+        }
+        index
+    })
+}
+
+/// The class owning the stdlib method `name` declared in `module`, when `name`
+/// is a class method of a `class` declared in that builtin module. `None` for a
+/// top-level symbol or an unknown name. Lets the qualified `Module.method` form
+/// reuse the existing class-method card, location, and signature.
+fn class_of_module_method(module: StdlibModuleId, name: &str) -> Option<&'static str> {
+    module_method_class_index()
+        .get(&(module.0, name.to_owned()))
+        .map(String::as_str)
+}
+
 /// Build the [`StdlibModuleDef`] for a builtin module by parsing its embedded
 /// source. Returns `None` if the id is unknown, the name has no source path, or
 /// the source text is missing.
@@ -401,28 +433,51 @@ fn with_module_def<T>(module: StdlibModuleId, f: impl FnOnce(&StdlibModuleDef) -
 
 /// Resolve a stdlib symbol `name` exported by `module` to its definition site.
 ///
-/// Returns `None` when the module has no materialised source, the name is not a
-/// top-level declaration, or the cache is unavailable — goto then reports "no
-/// definition" rather than failing.
+/// Falls back to a class method declared in `module` when `name` is not a
+/// top-level declaration — the qualified `Module.method` form resolves to a
+/// stdlib symbol even though the method lives in a `class` body. Returns `None`
+/// when the module has no materialised source, `name` is neither a top-level
+/// declaration nor such a class method, or the cache is unavailable — goto then
+/// reports "no definition" rather than failing.
 #[must_use]
 pub fn stdlib_location(module: StdlibModuleId, name: &str) -> Option<Location> {
-    with_module_def(module, |def| {
+    let top_level = with_module_def(module, |def| {
         let span = *def.defs.get(name)?;
         Some(Location {
             uri: def.uri.clone(),
             range: span_to_range(&def.line_index, span),
         })
     })
-    .flatten()
+    .flatten();
+    if top_level.is_some() {
+        return top_level;
+    }
+    // Qualified class method (`Module.method`): jump to the method name in its
+    // `class` declaration, the same target the unqualified form reaches.
+    let class = class_of_module_method(module, name)?;
+    stdlib_class_method_location(class, name)
 }
 
 /// The hover card (header + role + doc) of a stdlib symbol `name` in `module`.
 ///
-/// `None` when the module has no materialised source or the name is not a
-/// top-level declaration.
+/// Falls back to a class method declared in `module` when `name` is not a
+/// top-level declaration, so the qualified `Module.method` form (which resolves
+/// to a stdlib symbol) shows the same signature and doc as the unqualified one.
+/// `None` when the module has no materialised source or `name` is neither.
 #[must_use]
 pub fn stdlib_symbol_card(module: StdlibModuleId, name: &str) -> Option<StdlibCard> {
-    with_module_def(module, |def| def.cards.get(name).cloned()).flatten()
+    if let Some(card) = with_module_def(module, |def| def.cards.get(name).cloned()).flatten() {
+        return Some(card);
+    }
+    // Qualified class method (`Module.method`): synthesise a card from the
+    // method's signature and doc.
+    let class = class_of_module_method(module, name)?;
+    let (header, doc) = stdlib_class_method_card(class, name)?;
+    Some(StdlibCard {
+        header,
+        kind: "class method",
+        doc,
+    })
 }
 
 /// The hover header and doc of a stdlib class method, by `(class, method)`.
@@ -477,11 +532,18 @@ pub fn stdlib_class_method_location(class_name: &str, method: &str) -> Option<Lo
 
 /// The signature of a stdlib top-level function for signature help.
 ///
-/// Returns `None` when the module has no materialised source, the name is not a
-/// top-level function, or the cache is unavailable.
+/// Falls back to a class method declared in `module` when `name` is not a
+/// top-level function, so signature help fires on the qualified `Module.method`
+/// call form. Returns `None` when the module has no materialised source, `name`
+/// is neither, or the cache is unavailable.
 #[must_use]
 pub(crate) fn stdlib_fn_signature(module: StdlibModuleId, name: &str) -> Option<SignatureSig> {
-    with_module_def(module, |def| def.fn_sigs.get(name).cloned()).flatten()
+    if let Some(sig) = with_module_def(module, |def| def.fn_sigs.get(name).cloned()).flatten() {
+        return Some(sig);
+    }
+    // Qualified class method (`Module.method`): its signature for signature help.
+    let class = class_of_module_method(module, name)?;
+    stdlib_class_method_signature(class, name)
 }
 
 /// The signature of a stdlib class method (`filter`, `joinOn`, …) for signature
@@ -635,5 +697,74 @@ mod tests {
     fn class_method_card_unknown_is_none() {
         assert!(stdlib_class_method_card("Refinable", "definitelyNotAMethod").is_none());
         assert!(stdlib_class_method_card("NotAStdlibClass", "filter").is_none());
+    }
+
+    #[test]
+    fn qualified_class_method_card_via_module() {
+        // The idiomatic `Repo.filter` resolves to a stdlib symbol of std.repo, not
+        // a class-method binding. `filter` is not a top-level decl there — it is a
+        // method of `Refinable` — so the card comes from the class-method fallback.
+        let card = stdlib_symbol_card(module_id("std.repo"), "filter")
+            .expect("Repo.filter should resolve to a class-method card");
+        assert_eq!(card.kind, "class method");
+        assert!(
+            card.header.starts_with("filter"),
+            "header should be the method signature, got {:?}",
+            card.header
+        );
+        let doc = card.doc.expect("filter inherits the Refinable class doc");
+        assert!(
+            doc.contains("One `filter` for both a query and a join"),
+            "doc should be the class block, got {doc:?}"
+        );
+    }
+
+    #[test]
+    fn qualified_class_method_location_via_module() {
+        // Goto on `Repo.filter` jumps into repo.ridge through the same fallback.
+        let loc = stdlib_location(module_id("std.repo"), "filter")
+            .expect("Repo.filter should be locatable through its class");
+        let path = loc.uri.to_file_path().expect("location uri is a file path");
+        assert!(path.ends_with("repo.ridge"), "got {path:?}");
+        assert!(
+            loc.range.start.line > 0 || loc.range.start.character > 0,
+            "expected a real method position, got {:?}",
+            loc.range.start
+        );
+    }
+
+    #[test]
+    fn qualified_class_method_signature_via_module() {
+        // Signature help fires on the qualified `Repo.filter (...)` call form.
+        let sig = stdlib_fn_signature(module_id("std.repo"), "filter")
+            .expect("Repo.filter should expose a signature through its class");
+        assert!(
+            sig.label.starts_with("filter"),
+            "expected the method signature, got {:?}",
+            sig.label
+        );
+    }
+
+    #[test]
+    fn top_level_symbol_takes_precedence_over_class_method() {
+        // `repo` is a top-level `pub fn`; it must resolve as a function, never via
+        // the class-method fallback.
+        let card = stdlib_symbol_card(module_id("std.repo"), "repo")
+            .expect("std.repo should expose a card for the `repo` constructor");
+        assert_eq!(card.kind, "function");
+        assert!(
+            card.header.contains("pub fn repo"),
+            "header should be the written signature, got {:?}",
+            card.header
+        );
+    }
+
+    #[test]
+    fn qualified_class_method_wrong_module_is_none() {
+        // `orderBy` is a std.repo class method; std.list neither exports it nor
+        // declares its class, so the fallback finds nothing there.
+        assert!(stdlib_symbol_card(module_id("std.list"), "orderBy").is_none());
+        assert!(stdlib_location(module_id("std.list"), "orderBy").is_none());
+        assert!(stdlib_fn_signature(module_id("std.list"), "orderBy").is_none());
     }
 }

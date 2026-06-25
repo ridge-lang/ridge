@@ -1120,6 +1120,38 @@ async fn test_hover_stdlib_symbol_shows_header_and_doc() {
 }
 
 #[tokio::test]
+async fn test_hover_qualified_stdlib_class_method() {
+    // `Repo.filter` is the idiomatic data form: the verb is a method of the
+    // `Refinable` class, but it is listed in std.repo's exports, so it resolves to
+    // a stdlib symbol rather than a class-method binding. The module-scoped
+    // class-method fallback gives the qualified form the same card as the bare one.
+    let src = "import std.repo as Repo\npub fn run (q: Int) -> Int = Repo.filter q\n";
+    let (service, _socket, uri) = hover_fixture(src).await;
+    let server = service.inner();
+
+    let line1 = "pub fn run (q: Int) -> Int = Repo.filter q";
+    let col =
+        u32::try_from(line1.find("filter").expect("filter use") + 1).expect("offset fits u32");
+    let h = server
+        .hover(hover_at(&uri, 1, col))
+        .await
+        .expect("hover ok");
+    let md = hover_markdown(h).expect("hover over a qualified class method returns markup");
+    assert!(
+        md.contains("filter"),
+        "qualified class-method hover should show the method signature, got {md:?}"
+    );
+    assert!(
+        md.contains("*(stdlib class method)*"),
+        "qualified class-method hover should carry the stdlib class-method kind line, got {md:?}"
+    );
+    assert!(
+        md.contains("for both a query and a join"),
+        "qualified class-method hover should include the class doc, got {md:?}"
+    );
+}
+
+#[tokio::test]
 async fn test_hover_enriches_function_signature_and_doc() {
     // Hovering a function use-site shows its written header — visibility, named
     // parameters, return type — inside a `ridge` code fence, plus its doc.
@@ -1441,6 +1473,39 @@ async fn test_definition_into_stdlib_symbol() {
     assert!(
         loc.range.start.line > 0 || loc.range.start.character > 0,
         "stdlib definition range must not be the file start, got {:?}",
+        loc.range.start
+    );
+}
+
+#[tokio::test]
+async fn test_definition_into_qualified_class_method() {
+    // `import std.repo as Repo` + a point-free `Repo.filter`: the verb is a method
+    // of `Refinable`, but it sits in std.repo's exports, so the qualified name
+    // binds as a stdlib symbol. Go-to-def must still land on the method in
+    // repo.ridge, through the module-scoped class-method fallback.
+    let line1 = "pub fn run = Repo.filter";
+    let (service, _socket, uri) =
+        hover_fixture("import std.repo as Repo\npub fn run = Repo.filter\n").await;
+    let server = service.inner();
+
+    let col =
+        u32::try_from(line1.find("Repo.filter").expect("alias use") + 6).expect("offset fits u32");
+    let resp = server
+        .goto_definition(goto_at(&uri, 1, col))
+        .await
+        .expect("ok");
+    let loc = scalar_location(resp).expect("definition of qualified `Repo.filter`");
+    let path = loc
+        .uri
+        .to_file_path()
+        .expect("definition uri is a file path");
+    assert!(
+        path.ends_with("repo.ridge"),
+        "qualified class-method definition must land in repo.ridge, got {path:?}"
+    );
+    assert!(
+        loc.range.start.line > 0 || loc.range.start.character > 0,
+        "definition range must not be the file start, got {:?}",
         loc.range.start
     );
 }
@@ -5361,6 +5426,51 @@ async fn test_completion_resolve_fills_stdlib_member_signature_and_doc() {
     assert!(
         doc.contains("Apply a function to each element"),
         "resolve fills the stdlib doc, got {doc}"
+    );
+}
+
+#[tokio::test]
+async fn test_completion_resolve_fills_qualified_class_method() {
+    // `Repo.` lists the data verbs from std.repo's exports, `filter` among them.
+    // Its resolve payload points at the builtin module; resolve fills the method
+    // signature and the class doc through the module-scoped class-method fallback,
+    // even though `filter` is a `Refinable` method, not a top-level declaration.
+    let line1 = "pub fn run = Repo.filter";
+    let (service, _socket, uri) =
+        hover_fixture("import std.repo as Repo\npub fn run = Repo.filter\n").await;
+    let server = service.inner();
+
+    let col = u32::try_from(line1.find("Repo.").expect("alias use") + 5).expect("offset fits u32");
+    let items = completion_items(
+        server
+            .completion(complete_at(&uri, 1, col))
+            .await
+            .expect("ok"),
+    );
+    let filter = items
+        .into_iter()
+        .find(|i| i.label == "filter")
+        .expect("std.repo member access offers `filter`");
+    assert!(
+        filter.data.is_some(),
+        "a stdlib member carries resolve data"
+    );
+
+    let resolved = server.completion_resolve(filter).await.expect("resolve ok");
+    let detail = resolved
+        .detail
+        .expect("resolve fills the class-method signature");
+    assert!(
+        detail.contains("filter"),
+        "detail should be the method signature, got {detail:?}"
+    );
+    let doc = match resolved.documentation {
+        Some(Documentation::MarkupContent(m)) => m.value,
+        other => panic!("expected a markdown doc, got {other:?}"),
+    };
+    assert!(
+        doc.contains("for both a query and a join"),
+        "resolve fills the class doc, got {doc}"
     );
 }
 

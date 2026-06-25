@@ -30,7 +30,7 @@
 -module(ridge_pg).
 
 -export([
-    pg_connect/7,
+    pg_connect/10,
     pg_insert/3,
     pg_all/2,
     pg_select/3,
@@ -75,11 +75,15 @@
 %% depends on how a Ridge record lowers its keys. Opening one connection now
 %% means a bad host, password, or TLS mode is reported here rather than on the
 %% first query. Result Postgres Error.
-pg_connect(Host, Port, Database, User, Password, SslMode, PoolSize) ->
+pg_connect(Host, Port, Database, User, Password, SslMode, PoolSize,
+           ConnectTimeoutMs, QueryTimeoutMs, CheckoutTimeoutMs) ->
     application:ensure_all_started(crypto),
     Config = #{host => Host, port => Port, database => Database,
                user => User, password => Password, ssl_mode => SslMode,
-               pool_size => clamp_pool(PoolSize)},
+               pool_size => clamp_pool(PoolSize),
+               connect_timeout => clamp_timeout(ConnectTimeoutMs, ?CONNECT_TIMEOUT),
+               query_timeout => clamp_timeout(QueryTimeoutMs, ?QUERY_TIMEOUT),
+               checkout_timeout => clamp_timeout(CheckoutTimeoutMs, ?CHECKOUT_TIMEOUT)},
     case do_connect(Config) of
         {ok, Conn} ->
             Worker = spawn(fun() -> pg_conn_loop(Conn) end),
@@ -166,10 +170,10 @@ pg_begin(Id) ->
             case pg_registry_call({lookup, Id}) of
                 {ok, Pool} ->
                     case pool_checkout(Pool) of
-                        {ok, Worker} ->
-                            case worker_request(Worker, {tx, <<"BEGIN">>}) of
+                        {ok, Worker, QueryTimeout} ->
+                            case worker_request(Worker, {tx, <<"BEGIN">>}, QueryTimeout) of
                                 {ok, _} ->
-                                    put({pg_pin, Id}, {Pool, Worker, 1}),
+                                    put({pg_pin, Id}, {Pool, Worker, 1, QueryTimeout}),
                                     {ok, ok};
                                 {error, E} ->
                                     pool_checkin(Pool, Worker),
@@ -182,10 +186,10 @@ pg_begin(Id) ->
                     {error, #{code => <<"db.conn.closed">>,
                               message => <<"connection handle not found">>}}
             end;
-        {Pool, Worker, Depth} ->
-            case worker_request(Worker, {tx, [<<"SAVEPOINT ">>, savepoint_name(Depth)]}) of
+        {Pool, Worker, Depth, QueryTimeout} ->
+            case worker_request(Worker, {tx, [<<"SAVEPOINT ">>, savepoint_name(Depth)]}, QueryTimeout) of
                 {ok, _} ->
-                    put({pg_pin, Id}, {Pool, Worker, Depth + 1}),
+                    put({pg_pin, Id}, {Pool, Worker, Depth + 1, QueryTimeout}),
                     {ok, ok};
                 {error, E} ->
                     {error, E}
@@ -197,14 +201,14 @@ pg_begin(Id) ->
 %% a nested commit is `RELEASE SAVEPOINT`. Result Unit Error.
 pg_commit(Id) ->
     case get({pg_pin, Id}) of
-        {Pool, Worker, 1} ->
-            R = worker_request(Worker, {tx, <<"COMMIT">>}),
+        {Pool, Worker, 1, QueryTimeout} ->
+            R = worker_request(Worker, {tx, <<"COMMIT">>}, QueryTimeout),
             pool_checkin(Pool, Worker),
             erase({pg_pin, Id}),
             tx_unit(R);
-        {Pool, Worker, Depth} when Depth > 1 ->
-            R = worker_request(Worker, {tx, [<<"RELEASE SAVEPOINT ">>, savepoint_name(Depth - 1)]}),
-            put({pg_pin, Id}, {Pool, Worker, Depth - 1}),
+        {Pool, Worker, Depth, QueryTimeout} when Depth > 1 ->
+            R = worker_request(Worker, {tx, [<<"RELEASE SAVEPOINT ">>, savepoint_name(Depth - 1)]}, QueryTimeout),
+            put({pg_pin, Id}, {Pool, Worker, Depth - 1, QueryTimeout}),
             tx_unit(R);
         _ ->
             {ok, ok}
@@ -215,14 +219,14 @@ pg_commit(Id) ->
 %% pool; a nested rollback is `ROLLBACK TO SAVEPOINT`. Result Unit Error.
 pg_rollback(Id) ->
     case get({pg_pin, Id}) of
-        {Pool, Worker, 1} ->
-            R = worker_request(Worker, {tx, <<"ROLLBACK">>}),
+        {Pool, Worker, 1, QueryTimeout} ->
+            R = worker_request(Worker, {tx, <<"ROLLBACK">>}, QueryTimeout),
             pool_checkin(Pool, Worker),
             erase({pg_pin, Id}),
             tx_unit(R);
-        {Pool, Worker, Depth} when Depth > 1 ->
-            R = worker_request(Worker, {tx, [<<"ROLLBACK TO SAVEPOINT ">>, savepoint_name(Depth - 1)]}),
-            put({pg_pin, Id}, {Pool, Worker, Depth - 1}),
+        {Pool, Worker, Depth, QueryTimeout} when Depth > 1 ->
+            R = worker_request(Worker, {tx, [<<"ROLLBACK TO SAVEPOINT ">>, savepoint_name(Depth - 1)]}, QueryTimeout),
+            put({pg_pin, Id}, {Pool, Worker, Depth - 1, QueryTimeout}),
             tx_unit(R);
         _ ->
             {ok, ok}
@@ -340,6 +344,11 @@ pg_close(Id) ->
 clamp_pool(N) when is_integer(N), N > 0 -> N;
 clamp_pool(_)                           -> 1.
 
+%% A timeout in milliseconds, falling back to Default when the caller passes a
+%% non-positive or non-integer value, so a sentinel like 0 keeps the built-in.
+clamp_timeout(Ms, _Default) when is_integer(Ms), Ms > 0 -> Ms;
+clamp_timeout(_, Default)                               -> Default.
+
 %% --- Verb dispatch: check out a connection, run, check it back in ---
 %%
 %% A verb resolves the handle to its pool, borrows a connection, sends the
@@ -349,18 +358,18 @@ clamp_pool(_)                           -> 1.
 
 pg_call(Id, Verb) ->
     case get({pg_pin, Id}) of
-        {_Pool, Worker, _Depth} ->
+        {_Pool, Worker, _Depth, QueryTimeout} ->
             %% A transaction is open on this handle in this process: run the verb
             %% on the pinned connection so every op between begin and the matching
             %% commit/rollback shares one session. No checkout/checkin — the
             %% connection stays borrowed for the transaction's whole span.
-            worker_request(Worker, Verb);
+            worker_request(Worker, Verb, QueryTimeout);
         undefined ->
             case pg_registry_call({lookup, Id}) of
                 {ok, Pool} ->
                     case pool_checkout(Pool) of
-                        {ok, Worker} ->
-                            Reply = worker_request(Worker, Verb),
+                        {ok, Worker, QueryTimeout} ->
+                            Reply = worker_request(Worker, Verb, QueryTimeout),
                             pool_checkin(Pool, Worker),
                             Reply;
                         {error, E} ->
@@ -375,15 +384,19 @@ pg_call(Id, Verb) ->
 %% Send a verb to a borrowed connection and await its reply. A connection that
 %% dies mid-request never answers; the timeout turns that into a structured
 %% error, and the pool independently drops the dead connection on its DOWN.
-worker_request(Worker, Verb) ->
+worker_request(Worker, Verb, QueryTimeout) ->
     Ref = make_ref(),
     Worker ! {Verb, self(), Ref},
     receive
         {Ref, Reply} -> Reply
-    after ?QUERY_TIMEOUT ->
+    after QueryTimeout ->
         {error, #{code => <<"db.timeout">>,
                   message => <<"postgres request timed out">>}}
     end.
+
+%% The configured per-statement timeout for a pool, read from its manager State.
+query_timeout(State) ->
+    maps:get(query_timeout, maps:get(config, State, #{}), ?QUERY_TIMEOUT).
 
 %% --- Handle registry ---
 %%
@@ -486,14 +499,14 @@ handle_checkout(State, ReplyTo, Ref) ->
     #{idle := Idle, busy := Busy, mons := Mons, max := Max} = State,
     case take_live(Idle) of
         {ok, Worker, Rest} ->
-            ReplyTo ! {Ref, {ok, Worker}},
+            ReplyTo ! {Ref, {ok, Worker, query_timeout(State)}},
             State#{idle := Rest, busy := Busy#{Worker => true}};
         {none, Rest} ->
             case maps:size(Mons) < Max of
                 true ->
                     case open_worker(State) of
                         {ok, Worker, Mon} ->
-                            ReplyTo ! {Ref, {ok, Worker}},
+                            ReplyTo ! {Ref, {ok, Worker, query_timeout(State)}},
                             State#{idle := Rest,
                                    busy := Busy#{Worker => true},
                                    mons := Mons#{Worker => Mon}};
@@ -522,7 +535,7 @@ handle_checkin(State, Worker) ->
                     case queue:out(Waiters) of
                         {{value, {Ref, ReplyTo, Timer}}, Waiters1} ->
                             erlang:cancel_timer(Timer),
-                            ReplyTo ! {Ref, {ok, Worker}},
+                            ReplyTo ! {Ref, {ok, Worker, query_timeout(State)}},
                             State#{waiters := Waiters1};
                         {empty, _} ->
                             State#{busy := maps:remove(Worker, Busy),
@@ -553,7 +566,7 @@ serve_waiter(State) ->
                     erlang:cancel_timer(Timer),
                     case open_worker(State) of
                         {ok, Worker, Mon} ->
-                            ReplyTo ! {Ref, {ok, Worker}},
+                            ReplyTo ! {Ref, {ok, Worker, query_timeout(State)}},
                             State#{waiters := Waiters1,
                                    busy := Busy#{Worker => true},
                                    mons := Mons#{Worker => Mon}};
@@ -575,8 +588,9 @@ take_live([Worker | Rest]) ->
     end.
 
 enqueue_waiter(State, ReplyTo, Ref) ->
-    #{waiters := Waiters} = State,
-    Timer = erlang:start_timer(?CHECKOUT_TIMEOUT, self(), {waiter_timeout, Ref}),
+    #{waiters := Waiters, config := Config} = State,
+    CheckoutTimeout = maps:get(checkout_timeout, Config, ?CHECKOUT_TIMEOUT),
+    Timer = erlang:start_timer(CheckoutTimeout, self(), {waiter_timeout, Ref}),
     State#{waiters := queue:in({Ref, ReplyTo, Timer}, Waiters)}.
 
 %% The manager-side checkout timer fired: drop the waiter and tell its caller.
@@ -645,15 +659,18 @@ close_all(State) ->
 
 pool_checkout(Pool) ->
     Ref = make_ref(),
+    Mon = erlang:monitor(process, Pool),
     Pool ! {checkout, self(), Ref},
+    %% The manager enforces the configured checkout timeout and always replies —
+    %% with a worker, or a structured timeout error when its waiter timer fires.
+    %% The monitor only guards against the manager process being gone entirely.
     receive
-        {Ref, Reply} -> Reply
-    after ?CHECKOUT_TIMEOUT + 1000 ->
-        %% Backstop only: the manager enforces ?CHECKOUT_TIMEOUT and replies
-        %% first. Cancel in case the reply was lost (a dead manager, say).
-        Pool ! {checkout_cancel, Ref},
-        {error, #{code => <<"db.pool.timeout">>,
-                  message => <<"connection pool checkout timed out">>}}
+        {Ref, Reply} ->
+            erlang:demonitor(Mon, [flush]),
+            Reply;
+        {'DOWN', Mon, process, _, _} ->
+            {error, #{code => <<"db.pool.timeout">>,
+                      message => <<"connection pool is unavailable">>}}
     end.
 
 pool_checkin(Pool, Worker) ->
@@ -1151,11 +1168,12 @@ do_connect(Config) ->
     Host = binary_to_list(maps:get(host, Config)),
     Port = maps:get(port, Config),
     SslMode = maps:get(ssl_mode, Config),
+    ConnectTimeout = maps:get(connect_timeout, Config, ?CONNECT_TIMEOUT),
     case gen_tcp:connect(Host, Port,
-                         [binary, {active, false}, {packet, raw}], ?CONNECT_TIMEOUT) of
+                         [binary, {active, false}, {packet, raw}], ConnectTimeout) of
         {ok, Sock} ->
             try
-                Conn = maybe_ssl({gen_tcp, Sock}, Host, SslMode),
+                Conn = maybe_ssl({gen_tcp, Sock}, Host, SslMode, ConnectTimeout),
                 startup(Conn, Config),
                 authenticate(Conn, Config),
                 wait_ready(Conn),
@@ -1172,16 +1190,16 @@ do_connect(Config) ->
             {error, #{code => <<"db.connect.refused">>, message => to_bin(Reason)}}
     end.
 
-maybe_ssl(Conn, _Host, <<"disable">>) ->
+maybe_ssl(Conn, _Host, <<"disable">>, _ConnectTimeout) ->
     Conn;
-maybe_ssl({gen_tcp, Sock} = Conn, Host, SslMode) ->
+maybe_ssl({gen_tcp, Sock} = Conn, Host, SslMode, ConnectTimeout) ->
     %% SSLRequest is a length-prefixed body with no type byte; the magic code
     %% 80877103 asks the server whether it will speak TLS.
     xsend(Conn, <<8:32, 80877103:32>>),
     case xrecv(Conn, 1) of
         <<$S>> ->
             application:ensure_all_started(ssl),
-            case ssl:connect(Sock, ssl_opts(SslMode, Host), ?CONNECT_TIMEOUT) of
+            case ssl:connect(Sock, ssl_opts(SslMode, Host), ConnectTimeout) of
                 {ok, SslSock} ->
                     {ssl, SslSock};
                 {error, Reason} ->

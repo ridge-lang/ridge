@@ -65,7 +65,7 @@ items:
                                   Local(n14): __enc_x
           -
             Construct(n15):
-              ctor: Ctor(Record:Box owner=71)
+              ctor: Ctor(Record:Box owner=72)
               fields:
                 val:
                   Lit(n16): Int(7)
@@ -178,7 +178,7 @@ items:
                                           fields:
                                             $0:
                                               Construct(n45):
-                                                ctor: Ctor(Record:Box owner=71)
+                                                ctor: Ctor(Record:Box owner=72)
                                                 fields:
                                                   val:
                                                     Local(n46): __dec_f_val_1

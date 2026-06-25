@@ -541,7 +541,7 @@ import std.sql (SqlValue)
 pub type User = { id: Int, age: Int, name: Text } deriving (Row)
 
 pub fn db loadUsers () -> Result (List User) Error =
-    match connect (Config { host = "localhost", port = 5432, database = "app", user = "u", password = "p", sslMode = "require", poolSize = 1 })
+    match connect (Config { host = "localhost", port = 5432, database = "app", user = "u", password = "p", sslMode = "require" })
         Err e   -> Err e
         Ok conn ->
             let users: Repo User Postgres = Repo.repo conn "users"
@@ -555,6 +555,29 @@ pub fn db loadUsers () -> Result (List User) Error =
 }
 
 #[test]
+fn connect_with_tuned_pool_and_disconnect_typecheck() {
+    // `connectWith` opens a Postgres connection with an explicit `PoolConfig`,
+    // built by piping `defaultPool ()` through the `with*` setters, and
+    // `disconnect` releases a connection on any adapter. Type-level wiring only:
+    // exercises the reconciled `PoolConfig`, the `connectWith`/`defaultPool`/
+    // `with*` schemes, and the generic `disconnect`.
+    let main = r"
+import std.data (connectWith, defaultPool, withPoolSize, withQueryTimeoutMs, withConnectTimeoutMs, withCheckoutTimeoutMs, Config, PoolConfig, Postgres)
+import std.repo (disconnect)
+
+pub fn db openTuned (cfg: Config) -> Result Unit Error =
+    match connectWith cfg (defaultPool () |> withPoolSize 20 |> withQueryTimeoutMs 60000 |> withConnectTimeoutMs 8000 |> withCheckoutTimeoutMs 3000)
+        Err e   -> Err e
+        Ok conn -> disconnect conn
+";
+    let errors = typecheck_one(main);
+    assert!(
+        errors.is_empty(),
+        "connectWith + PoolConfig builders + disconnect must typecheck clean; got {errors:?}"
+    );
+}
+
+#[test]
 fn connect_requires_the_db_capability() {
     // Opening a Postgres connection is the gated act: calling `connect` from a
     // pure function must be rejected, exactly as for `memAdapter`. (The handle's
@@ -563,7 +586,7 @@ fn connect_requires_the_db_capability() {
 import std.data (connect, Config, Postgres)
 
 pub fn openIt () -> Result Postgres Error =
-    connect (Config { host = "localhost", port = 5432, database = "app", user = "u", password = "p", sslMode = "disable", poolSize = 1 })
+    connect (Config { host = "localhost", port = 5432, database = "app", user = "u", password = "p", sslMode = "disable" })
 "#;
     let errors = typecheck_one(main);
     assert!(
@@ -918,7 +941,7 @@ import std.sql (SqlValue)
 pub type User = { id: Int, age: Int, name: Text } deriving (Row)
 
 pub fn db topAdults () -> Result (List User) Error =
-    match connect (Config { host = "localhost", port = 5432, database = "app", user = "u", password = "p", sslMode = "require", poolSize = 4 })
+    match connect (Config { host = "localhost", port = 5432, database = "app", user = "u", password = "p", sslMode = "require" })
         Err e   -> Err e
         Ok conn ->
             let users: Repo User Postgres = Repo.repo conn "users"
@@ -1011,7 +1034,7 @@ pub type User = { id: Int, age: Int, name: Text, signupYear: Int } deriving (Row
 pub type Summary = { name: Text, year: Int } deriving (Row)
 
 pub fn db summaries () -> Result (List Summary) Error =
-    match connect (Config { host = "localhost", port = 5432, database = "app", user = "u", password = "p", sslMode = "require", poolSize = 4 })
+    match connect (Config { host = "localhost", port = 5432, database = "app", user = "u", password = "p", sslMode = "require" })
         Err e   -> Err e
         Ok conn ->
             let users: Repo User Postgres = Repo.repo conn "users"
@@ -1534,7 +1557,7 @@ pub type Post = { id: Int, authorId: Int, title: Text } deriving (Row)
 pub type Line = { who: Text, title: Text } deriving (Row)
 
 pub fn db authorLines () -> Result (List Line) Error =
-    match connect (Config { host = "localhost", port = 5432, database = "app", user = "u", password = "p", sslMode = "require", poolSize = 4 })
+    match connect (Config { host = "localhost", port = 5432, database = "app", user = "u", password = "p", sslMode = "require" })
         Err e   -> Err e
         Ok conn ->
             let users: Repo User Postgres = Repo.repo conn "users"
@@ -1701,7 +1724,7 @@ pub type User = { id: Int, age: Int, name: Text } deriving (Row)
 pub type Post = { id: Int, authorId: Int, title: Text } deriving (Row)
 
 pub fn db authorPosts () -> Result (List (User, Option Post)) Error =
-    match connect (Config { host = "localhost", port = 5432, database = "app", user = "u", password = "p", sslMode = "require", poolSize = 4 })
+    match connect (Config { host = "localhost", port = 5432, database = "app", user = "u", password = "p", sslMode = "require" })
         Err e   -> Err e
         Ok conn ->
             let users: Repo User Postgres = Repo.repo conn "users"
@@ -1820,7 +1843,7 @@ pub type User = { id: Int, age: Int, name: Text } deriving (Row)
 pub type Post = { id: Int, authorId: Int, title: Text } deriving (Row)
 
 pub fn db postAuthors () -> Result (List (Option User, Post)) Error =
-    match connect (Config { host = "localhost", port = 5432, database = "app", user = "u", password = "p", sslMode = "require", poolSize = 4 })
+    match connect (Config { host = "localhost", port = 5432, database = "app", user = "u", password = "p", sslMode = "require" })
         Err e   -> Err e
         Ok conn ->
             let users: Repo User Postgres = Repo.repo conn "users"
@@ -1938,7 +1961,7 @@ pub type User = { id: Int, age: Int, name: Text } deriving (Row)
 pub type Post = { id: Int, authorId: Int, title: Text } deriving (Row)
 
 pub fn db everyone () -> Result (List (Option User, Option Post)) Error =
-    match connect (Config { host = "localhost", port = 5432, database = "app", user = "u", password = "p", sslMode = "require", poolSize = 4 })
+    match connect (Config { host = "localhost", port = 5432, database = "app", user = "u", password = "p", sslMode = "require" })
         Err e   -> Err e
         Ok conn ->
             let users: Repo User Postgres = Repo.repo conn "users"
@@ -2165,7 +2188,7 @@ pub type Post = { id: Int, authorId: Int, title: Text } deriving (Row)
 pub type Line = { who: Text, title: Option Text } deriving (Row)
 
 pub fn db authorLines () -> Result (List Line) Error =
-    match connect (Config { host = "localhost", port = 5432, database = "app", user = "u", password = "p", sslMode = "require", poolSize = 4 })
+    match connect (Config { host = "localhost", port = 5432, database = "app", user = "u", password = "p", sslMode = "require" })
         Err e   -> Err e
         Ok conn ->
             let users: Repo User Postgres = Repo.repo conn "users"
@@ -2342,7 +2365,7 @@ import std.sql (SqlValue)
 pub type User = { id: Int, age: Int, status: Text } deriving (Row)
 
 pub fn db promote () -> Result Int Error =
-    match connect (Config { host = "localhost", port = 5432, database = "app", user = "u", password = "p", sslMode = "require", poolSize = 4 })
+    match connect (Config { host = "localhost", port = 5432, database = "app", user = "u", password = "p", sslMode = "require" })
         Err e   -> Err e
         Ok conn ->
             let users: Repo User Postgres = Repo.repo conn "users"
@@ -3254,7 +3277,7 @@ import std.sql (SqlValue)
 pub type User = { id: Int, name: Text } deriving (Row)
 
 pub fn db seed () -> Result Unit Error =
-    match connect (Config { host = "localhost", port = 5432, database = "app", user = "u", password = "p", sslMode = "require", poolSize = 1 })
+    match connect (Config { host = "localhost", port = 5432, database = "app", user = "u", password = "p", sslMode = "require" })
         Err e   -> Err e
         Ok conn ->
             Repo.transaction conn (fn (tx) ->

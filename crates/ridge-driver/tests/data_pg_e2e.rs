@@ -50,7 +50,7 @@ use ridge_driver::{compile_workspace, CompileOptions, EmitArtefacts};
 /// The program source, with connection settings spliced in as sentinels so the
 /// Ridge record braces never collide with Rust string formatting.
 const SOURCE_TEMPLATE: &str = r#"
-import std.data (connect, Config, Postgres)
+import std.data (connect, connectWith, defaultPool, withPoolSize, withQueryTimeoutMs, withCheckoutTimeoutMs, Config, Postgres)
 import std.repo as Repo
 import std.migrate as Migrate
 import std.migrate (SchemaOp)
@@ -225,7 +225,7 @@ fn fullSel (cs: List FullCombo) -> Text =
     fullSelGo cs 0 0 0
 
 fn pgConfig () -> Config =
-    Config { host = "__PG_HOST__", port = __PG_PORT__, database = "__PG_DATABASE__", user = "__PG_USER__", password = "__PG_PASSWORD__", sslMode = "__PG_SSLMODE__", poolSize = 4 }
+    Config { host = "__PG_HOST__", port = __PG_PORT__, database = "__PG_DATABASE__", user = "__PG_USER__", password = "__PG_PASSWORD__", sslMode = "__PG_SSLMODE__" }
 
 pub fn userRow (uid: Int) (uage: Int) (uname: Text) -> Map Text SqlValue =
     Map.fromList [("id", toSql uid), ("age", toSql uage), ("name", toSql uname)]
@@ -278,6 +278,25 @@ pub fn db withConnRuns () -> Text =
                     match Repo.withConnection conn wcCountUsers
                         Err _ -> "wc-err"
                         Ok n  -> Text.concat "rows:" (Int.toText n)
+
+-- connectWith + disconnect: open with an explicit (tuned) pool, read the seeded
+-- count, then release the handle with `disconnect` (the dual of `connect`). Proves
+-- the tuned-pool entry point opens over the real wire and the manual disconnect
+-- releases it -> "rows:3".
+pub fn db connectWithRuns () -> Text =
+    match setup ()
+        Err _ -> "setup-err"
+        Ok _  ->
+            match connectWith (pgConfig ()) (defaultPool () |> withPoolSize 4 |> withQueryTimeoutMs 30000 |> withCheckoutTimeoutMs 5000)
+                Err _ -> "connect-err"
+                Ok conn ->
+                    match wcCountUsers conn
+                        Err _ ->
+                            match Repo.disconnect conn
+                                _ -> "count-err"
+                        Ok n  ->
+                            match Repo.disconnect conn
+                                _ -> Text.concat "rows:" (Int.toText n)
 
 -- count: the whole table -> 3
 pub fn db countAll () -> Int =
@@ -1828,6 +1847,7 @@ fn postgres_adapter_reads_a_real_table() {
     let expr = format!(
         "io:format(\"countAll=~w~n\",[{module}:countAll()]), \
          io:format(\"withConnRuns=~s~n\",[{module}:withConnRuns()]), \
+         io:format(\"connectWithRuns=~s~n\",[{module}:connectWithRuns()]), \
          io:format(\"adultsCount=~w~n\",[{module}:adultsCount()]), \
          io:format(\"firstName=~s~n\",[{module}:firstName()]), \
          io:format(\"getName=~s~n\",[{module}:getName()]), \
@@ -1940,6 +1960,10 @@ fn postgres_adapter_reads_a_real_table() {
         (
             "withConnRuns=rows:3",
             "withConnection runs the body over the real wire (counting the seeded rows) and closes the handle on the way out",
+        ),
+        (
+            "connectWithRuns=rows:3",
+            "connectWith opens with an explicit tuned pool over the real wire and disconnect releases the handle",
         ),
         ("adultsCount=2", "findBy keeps the two rows with age >= 25"),
         (

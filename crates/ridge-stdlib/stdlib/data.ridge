@@ -338,15 +338,45 @@ pub opaque type Postgres = { id: Int }
 
 -- Connection settings for `connect`. `sslMode` is "disable", "require" (encrypt
 -- without verifying the server certificate), or "verify-full" (encrypt and
--- verify the certificate chain and the host name). `poolSize` is accepted now so
--- the surface is stable; the pooled connection substrate honours it later.
-pub type Config = { host: Text, port: Int, database: Text, user: Text, password: Text, sslMode: Text, poolSize: Int }
+-- verify the certificate chain and the host name). Pool tuning lives separately
+-- in `PoolConfig`, so these settings stay the connection essentials.
+pub type Config = { host: Text, port: Int, database: Text, user: Text, password: Text, sslMode: Text }
+
+-- Pool tuning for a Postgres connection. `size` caps the connections the pool
+-- opens; the millisecond timeouts bound how long an operation waits before it
+-- fails — `connectTimeoutMs` the opening handshake, `queryTimeoutMs` a single
+-- statement, and `checkoutTimeoutMs` the wait to borrow a connection from a full
+-- pool. `connect` uses `defaultPool`; `connectWith` takes a tuned one, built by
+-- piping `defaultPool ()` through the `with*` setters:
+--   connectWith cfg (defaultPool () |> withPoolSize 20 |> withQueryTimeoutMs 60000)
+pub type PoolConfig = { size: Int, connectTimeoutMs: Int, queryTimeoutMs: Int, checkoutTimeoutMs: Int }
+
+-- The default pool: ten connections, a ten-second connect handshake, a
+-- thirty-second statement timeout, and a five-second wait to borrow a connection.
+pub fn defaultPool -> PoolConfig =
+    PoolConfig { size = 10, connectTimeoutMs = 10000, queryTimeoutMs = 30000, checkoutTimeoutMs = 5000 }
+
+-- Cap the number of connections the pool opens.
+pub fn withPoolSize (size: Int) (pool: PoolConfig) -> PoolConfig =
+    PoolConfig { size = size, connectTimeoutMs = pool.connectTimeoutMs, queryTimeoutMs = pool.queryTimeoutMs, checkoutTimeoutMs = pool.checkoutTimeoutMs }
+
+-- Set the connect-handshake timeout, in milliseconds.
+pub fn withConnectTimeoutMs (connectTimeoutMs: Int) (pool: PoolConfig) -> PoolConfig =
+    PoolConfig { size = pool.size, connectTimeoutMs = connectTimeoutMs, queryTimeoutMs = pool.queryTimeoutMs, checkoutTimeoutMs = pool.checkoutTimeoutMs }
+
+-- Set the per-statement timeout, in milliseconds.
+pub fn withQueryTimeoutMs (queryTimeoutMs: Int) (pool: PoolConfig) -> PoolConfig =
+    PoolConfig { size = pool.size, connectTimeoutMs = pool.connectTimeoutMs, queryTimeoutMs = queryTimeoutMs, checkoutTimeoutMs = pool.checkoutTimeoutMs }
+
+-- Set the timeout for borrowing a connection from a full pool, in milliseconds.
+pub fn withCheckoutTimeoutMs (checkoutTimeoutMs: Int) (pool: PoolConfig) -> PoolConfig =
+    PoolConfig { size = pool.size, connectTimeoutMs = pool.connectTimeoutMs, queryTimeoutMs = pool.queryTimeoutMs, checkoutTimeoutMs = checkoutTimeoutMs }
 
 -- Open a connection from the settings; the runtime speaks the Postgres wire
 -- protocol directly. Returns the connection handle, or an `Err` if the connect
 -- or authentication handshake fails.
-@ffi("ridge_pg", "pg_connect", 7)
-fn _pgConnect (host: Text) (port: Int) (database: Text) (user: Text) (password: Text) (sslMode: Text) (poolSize: Int) -> Result Postgres Error
+@ffi("ridge_pg", "pg_connect", 10)
+fn _pgConnect (host: Text) (port: Int) (database: Text) (user: Text) (password: Text) (sslMode: Text) (poolSize: Int) (connectTimeoutMs: Int) (queryTimeoutMs: Int) (checkoutTimeoutMs: Int) -> Result Postgres Error
 
 -- Append a row to a table on the connection identified by `id`.
 @ffi("ridge_pg", "pg_insert", 3)
@@ -464,11 +494,17 @@ fn _pgRawQuery (id: Int) (sql: Text) (params: List SqlValue) -> Result (List (Ma
 @ffi("ridge_pg", "pg_raw_exec", 3)
 fn _pgRawExec (id: Int) (sql: Text) (params: List SqlValue) -> Result Int Error
 
--- Open a Postgres connection with the given settings. Requires the `db`
+-- Open a Postgres connection with the default pool. Requires the `db`
 -- capability; the handle returned is the proof of access for every later call,
--- exactly like `memAdapter`. A failed connect or authentication is an `Err`.
+-- exactly like `memAdapter`. A failed connect or authentication is an `Err`. To
+-- size the pool or set timeouts, use `connectWith`.
 pub fn db connect (cfg: Config) -> Result Postgres Error =
-    _pgConnect cfg.host cfg.port cfg.database cfg.user cfg.password cfg.sslMode cfg.poolSize
+    connectWith cfg (defaultPool ())
+
+-- Open a Postgres connection with a tuned pool — the same as `connect` but taking
+-- an explicit `PoolConfig` (size and timeouts) in place of `defaultPool`.
+pub fn db connectWith (cfg: Config) (pool: PoolConfig) -> Result Postgres Error =
+    _pgConnect cfg.host cfg.port cfg.database cfg.user cfg.password cfg.sslMode pool.size pool.connectTimeoutMs pool.queryTimeoutMs pool.checkoutTimeoutMs
 
 instance Adapter Postgres =
     appendRow (conn: Postgres) (table: Text) (row: Map Text SqlValue) -> Result Unit Error =

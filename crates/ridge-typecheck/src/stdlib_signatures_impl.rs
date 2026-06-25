@@ -1626,6 +1626,9 @@ mod tests {
                             | "withConnectTimeoutMs"
                             | "withQueryTimeoutMs"
                             | "withCheckoutTimeoutMs"
+                            | "withIdleTimeoutMs"
+                            | "withMaxLifetimeMs"
+                            | "withHealthCheckMs"
                     )
                 {
                     continue;

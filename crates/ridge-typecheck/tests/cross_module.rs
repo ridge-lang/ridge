@@ -562,11 +562,11 @@ fn connect_with_tuned_pool_and_disconnect_typecheck() {
     // exercises the reconciled `PoolConfig`, the `connectWith`/`defaultPool`/
     // `with*` schemes, and the generic `disconnect`.
     let main = r"
-import std.data (connectWith, defaultPool, withPoolSize, withQueryTimeoutMs, withConnectTimeoutMs, withCheckoutTimeoutMs, Config, PoolConfig, Postgres)
+import std.data (connectWith, defaultPool, withPoolSize, withQueryTimeoutMs, withConnectTimeoutMs, withCheckoutTimeoutMs, withIdleTimeoutMs, withMaxLifetimeMs, withHealthCheckMs, Config, PoolConfig, Postgres)
 import std.repo as Repo
 
 pub fn db openTuned (cfg: Config) -> Result Unit Error =
-    match connectWith cfg (defaultPool () |> withPoolSize 20 |> withQueryTimeoutMs 60000 |> withConnectTimeoutMs 8000 |> withCheckoutTimeoutMs 3000)
+    match connectWith cfg (defaultPool () |> withPoolSize 20 |> withQueryTimeoutMs 60000 |> withConnectTimeoutMs 8000 |> withCheckoutTimeoutMs 3000 |> withIdleTimeoutMs 300000 |> withMaxLifetimeMs 900000 |> withHealthCheckMs 30000)
         Err e   -> Err e
         Ok conn -> Repo.disconnect conn
 ";
@@ -574,6 +574,28 @@ pub fn db openTuned (cfg: Config) -> Result Unit Error =
     assert!(
         errors.is_empty(),
         "connectWith + PoolConfig builders + disconnect must typecheck clean; got {errors:?}"
+    );
+}
+
+#[test]
+fn tune_maintenance_windows_qualified_typecheck() {
+    // The pool-maintenance setters tuned through a qualified module alias.
+    // `Data.withIdleTimeoutMs` and friends resolve the same `Int -> PoolConfig ->
+    // PoolConfig` scheme as the bare import, but the qualified `Module.verb` form
+    // takes a different resolution path that a direct-import test would not cover.
+    // Builds a pool through the alias and reads back a maintenance field, so the
+    // reconciled `PoolConfig` and the qualified setters are both exercised without
+    // a direct import.
+    let main = r"
+import std.data as Data
+
+pub fn tunedIdle -> Int =
+    (Data.defaultPool () |> Data.withIdleTimeoutMs 5000 |> Data.withMaxLifetimeMs 0 |> Data.withHealthCheckMs 100).idleTimeoutMs
+";
+    let errors = typecheck_one(main);
+    assert!(
+        errors.is_empty(),
+        "qualified PoolConfig maintenance builders must typecheck clean; got {errors:?}"
     );
 }
 

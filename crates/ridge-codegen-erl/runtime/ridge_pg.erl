@@ -30,7 +30,7 @@
 -module(ridge_pg).
 
 -export([
-    pg_connect/10,
+    pg_connect/13,
     pg_insert/3,
     pg_all/2,
     pg_select/3,
@@ -68,24 +68,29 @@
 
 %% --- FFI surface (mirrors the MemAdapter verbs in ridge_rt.erl) ---
 
-%% pg_connect/10 — std.data.connect/connectWith. Open and authenticate one
+%% pg_connect/13 — std.data.connect/connectWith. Open and authenticate one
 %% connection from the config fields, then start a pool manager seeded with it and
 %% return the Ridge handle `#{id => Id}` (the same id-as-handle shape MemAdapter
-%% uses). The config — host/port/.../sslMode, the pool size, and the connect,
-%% query, and checkout timeouts in milliseconds — crosses the FFI boundary as
-%% positional scalars, not a record map, so it never depends on how a Ridge record
-%% lowers its keys. Opening one connection now
+%% uses). The config — host/port/.../sslMode, the pool size, the connect, query,
+%% and checkout timeouts, and the idle, max-lifetime, and health-check maintenance
+%% windows, all in milliseconds — crosses the FFI boundary as positional scalars,
+%% not a record map, so it never depends on how a Ridge record lowers its keys. A
+%% zero maintenance window disables that maintenance. Opening one connection now
 %% means a bad host, password, or TLS mode is reported here rather than on the
 %% first query. Result Postgres Error.
 pg_connect(Host, Port, Database, User, Password, SslMode, PoolSize,
-           ConnectTimeoutMs, QueryTimeoutMs, CheckoutTimeoutMs) ->
+           ConnectTimeoutMs, QueryTimeoutMs, CheckoutTimeoutMs,
+           IdleTimeoutMs, MaxLifetimeMs, HealthCheckMs) ->
     application:ensure_all_started(crypto),
     Config = #{host => Host, port => Port, database => Database,
                user => User, password => Password, ssl_mode => SslMode,
                pool_size => clamp_pool(PoolSize),
                connect_timeout => clamp_timeout(ConnectTimeoutMs, ?CONNECT_TIMEOUT),
                query_timeout => clamp_timeout(QueryTimeoutMs, ?QUERY_TIMEOUT),
-               checkout_timeout => clamp_timeout(CheckoutTimeoutMs, ?CHECKOUT_TIMEOUT)},
+               checkout_timeout => clamp_timeout(CheckoutTimeoutMs, ?CHECKOUT_TIMEOUT),
+               idle_timeout => maint_window(IdleTimeoutMs),
+               max_lifetime => maint_window(MaxLifetimeMs),
+               health_check => maint_window(HealthCheckMs)},
     case do_connect(Config) of
         {ok, Conn} ->
             Worker = spawn(fun() -> pg_conn_loop(Conn) end),
@@ -351,6 +356,18 @@ clamp_pool(_)                           -> 1.
 clamp_timeout(Ms, _Default) when is_integer(Ms), Ms > 0 -> Ms;
 clamp_timeout(_, Default)                               -> Default.
 
+%% A maintenance window in milliseconds: a positive integer enables it, and any
+%% non-positive or non-integer value (notably the 0 sentinel) disables it. Unlike
+%% clamp_timeout there is no built-in fallback — a disabled window means the pool
+%% skips that maintenance entirely.
+maint_window(Ms) when is_integer(Ms), Ms > 0 -> Ms;
+maint_window(_)                              -> 0.
+
+%% A monotonic millisecond clock for the pool's maintenance ages. Monotonic time
+%% never jumps with the wall clock, so a connection's measured idle span and
+%% lifetime are immune to clock changes.
+now_ms() -> erlang:monotonic_time(millisecond).
+
 %% --- Verb dispatch: check out a connection, run, check it back in ---
 %%
 %% A verb resolves the handle to its pool, borrows a connection, sends the
@@ -456,27 +473,64 @@ pg_registry_loop(Map) ->
 %%
 %% One manager per handle owns the connection pool. It keeps the live
 %% connections partitioned into `idle` (ready to lend) and `busy` (lent out),
-%% monitors every one in `mons`, and queues `waiters` that arrived while the pool
-%% was at `max` with nothing free. The live count is map_size(mons), so the pool
-%% grows by opening a connection only when a checkout finds none idle and the
-%% count is still below max.
+%% monitors every one in `mons`, tracks each one's age and idle/check stamps in
+%% `meta`, holds the ones mid-health-check in `checking`, and queues `waiters`
+%% that arrived while the pool was at `max` with nothing free. The live count is
+%% map_size(mons), so the pool grows by opening a connection only when a checkout
+%% finds none idle and the count is still below max.
 %%
-%% Checkout/checkin and DOWN drive every transition:
+%% Checkout/checkin, DOWN, and the maintenance tick drive every transition:
 %%   - checkout: lend an idle connection, else open one if below max, else wait.
-%%   - checkin:  hand the connection to the oldest waiter, else return it to idle.
+%%   - checkin:  hand the connection to the oldest waiter; else recycle it if it
+%%               has outlived max-lifetime, otherwise return it to idle.
 %%   - DOWN:     forget the connection; if a waiter is parked, open a replacement.
+%%   - maint:    retire idle connections past idle-timeout or max-lifetime, and
+%%               health-check the ones whose last check has aged out.
 %% A parked waiter is bounded by a manager-side timer, so a caller never blocks
 %% past ?CHECKOUT_TIMEOUT and a connection is never lent to a caller that gave up.
 
 pool_init(Config, FirstWorker) ->
     Mon = erlang:monitor(process, FirstWorker),
-    State = #{config  => Config,
-              max     => maps:get(pool_size, Config, 1),
-              idle    => [FirstWorker],
-              busy    => #{},
-              mons    => #{FirstWorker => Mon},
-              waiters => queue:new()},
+    Now = now_ms(),
+    State = #{config   => Config,
+              max      => maps:get(pool_size, Config, 1),
+              idle     => [FirstWorker],
+              busy     => #{},
+              mons     => #{FirstWorker => Mon},
+              meta     => #{FirstWorker => fresh_meta(Now)},
+              checking => #{},
+              waiters  => queue:new()},
+    schedule_maintenance(State),
     pool_loop(State).
+
+%% The bookkeeping for a freshly opened connection: its birth time (for
+%% max-lifetime), and the idle and last-check stamps. `born` is fixed for the
+%% connection's whole life; `idle_since` and `last_check` advance as it is parked
+%% and health-checked.
+fresh_meta(Now) -> #{born => Now, idle_since => Now, last_check => Now}.
+
+%% Arm the next maintenance tick when any window is enabled. The tick reschedules
+%% itself, so this is called once at start and once per sweep. With every window
+%% disabled no timer runs at all, so an untuned pool pays nothing for maintenance.
+schedule_maintenance(State) ->
+    case maint_interval(State) of
+        0        -> ok;
+        Interval -> erlang:start_timer(Interval, self(), maintenance)
+    end.
+
+%% The sweep period: half the smallest enabled window, so a connection is caught
+%% within about one window of crossing it. Floored at 500 ms to avoid a hot loop
+%% on a tiny test window and capped at 30 s so a large window still sweeps often
+%% enough. Zero when no window is enabled, which arms no timer.
+maint_interval(#{config := Config}) ->
+    Windows = [W || W <- [maps:get(idle_timeout, Config, 0),
+                          maps:get(max_lifetime, Config, 0),
+                          maps:get(health_check, Config, 0)],
+                    W > 0],
+    case Windows of
+        [] -> 0;
+        _  -> min(30000, max(500, lists:min(Windows) div 2))
+    end.
 
 pool_loop(State) ->
     receive
@@ -490,6 +544,12 @@ pool_loop(State) ->
             pool_loop(handle_down(State, Worker));
         {timeout, _TimerRef, {waiter_timeout, Ref}} ->
             pool_loop(timeout_waiter(State, Ref));
+        {timeout, _TimerRef, maintenance} ->
+            State1 = run_maintenance(State),
+            schedule_maintenance(State1),
+            pool_loop(State1);
+        {ping_done, Ref, Worker, Result} ->
+            pool_loop(finish_ping(State, Ref, Worker, Result));
         {close, ReplyTo, Ref} ->
             close_all(State),
             ReplyTo ! {Ref, {ok, ok}}
@@ -498,7 +558,7 @@ pool_loop(State) ->
 %% Lend an idle connection if one is live; otherwise open a fresh one when the
 %% pool has headroom, and park the caller as a waiter when it does not.
 handle_checkout(State, ReplyTo, Ref) ->
-    #{idle := Idle, busy := Busy, mons := Mons, max := Max} = State,
+    #{idle := Idle, busy := Busy, mons := Mons, meta := Meta, max := Max} = State,
     case take_live(Idle) of
         {ok, Worker, Rest} ->
             ReplyTo ! {Ref, {ok, Worker, query_timeout(State)}},
@@ -511,7 +571,8 @@ handle_checkout(State, ReplyTo, Ref) ->
                             ReplyTo ! {Ref, {ok, Worker, query_timeout(State)}},
                             State#{idle := Rest,
                                    busy := Busy#{Worker => true},
-                                   mons := Mons#{Worker => Mon}};
+                                   mons := Mons#{Worker => Mon},
+                                   meta := Meta#{Worker => fresh_meta(now_ms())}};
                         {error, E} ->
                             ReplyTo ! {Ref, {error, E}},
                             State#{idle := Rest}
@@ -525,38 +586,80 @@ handle_checkout(State, ReplyTo, Ref) ->
 %% ignored, and a dead one is dropped rather than parked back in idle. A live one
 %% is handed to the oldest waiter if any, else parked as idle.
 handle_checkin(State, Worker) ->
-    #{busy := Busy, idle := Idle, waiters := Waiters} = State,
+    #{busy := Busy} = State,
     case maps:is_key(Worker, Busy) of
         false ->
             State;
         true ->
             case is_process_alive(Worker) of
-                false ->
-                    State#{busy := maps:remove(Worker, Busy)};
-                true ->
-                    case queue:out(Waiters) of
-                        {{value, {Ref, ReplyTo, Timer}}, Waiters1} ->
-                            erlang:cancel_timer(Timer),
-                            ReplyTo ! {Ref, {ok, Worker, query_timeout(State)}},
-                            State#{waiters := Waiters1};
-                        {empty, _} ->
-                            State#{busy := maps:remove(Worker, Busy),
-                                   idle := [Worker | Idle]}
-                    end
+                false -> drop_worker(State, Worker);
+                true  -> return_worker(State, Worker)
             end
     end.
+
+%% Hand a checked-in connection to the oldest waiter if one is parked; otherwise
+%% recycle it when it has outlived max-lifetime, or return it to idle with a fresh
+%% idle stamp. A waiter gets the connection as-is: max-lifetime is a soft cap
+%% applied when the connection next falls idle, never mid-handover.
+return_worker(State, Worker) ->
+    #{busy := Busy, idle := Idle, meta := Meta, waiters := Waiters, config := Config} = State,
+    case queue:out(Waiters) of
+        {{value, {Ref, ReplyTo, Timer}}, Waiters1} ->
+            erlang:cancel_timer(Timer),
+            ReplyTo ! {Ref, {ok, Worker, query_timeout(State)}},
+            State#{waiters := Waiters1};
+        {empty, _} ->
+            Now = now_ms(),
+            MaxLife = maps:get(max_lifetime, Config, 0),
+            M = maps:get(Worker, Meta, fresh_meta(Now)),
+            Born = maps:get(born, M, Now),
+            case MaxLife > 0 andalso (Now - Born) >= MaxLife of
+                true ->
+                    retire(State, Worker);
+                false ->
+                    State#{busy := maps:remove(Worker, Busy),
+                           idle := [Worker | Idle],
+                           meta := Meta#{Worker => M#{idle_since => Now}}}
+            end
+    end.
+
+%% Forget a connection found dead at check-in. Its monitor DOWN cleans `mons`
+%% (now or already); here we drop it from busy and its bookkeeping.
+drop_worker(State, Worker) ->
+    #{busy := Busy, meta := Meta} = State,
+    State#{busy := maps:remove(Worker, Busy), meta := maps:remove(Worker, Meta)}.
+
+%% Close a connection and forget it everywhere. Used to evict an idle connection
+%% past its idle-timeout, recycle one past max-lifetime, or drop one that failed a
+%% health-check. Demonitor before the exit so the deliberate shutdown is not
+%% handled again as a fault DOWN; the pool regrows lazily on the next checkout.
+retire(State, Worker) ->
+    #{idle := Idle, busy := Busy, mons := Mons, meta := Meta} = State,
+    case maps:find(Worker, Mons) of
+        {ok, Mon} ->
+            erlang:demonitor(Mon, [flush]),
+            exit(Worker, shutdown);
+        error ->
+            ok
+    end,
+    State#{idle := lists:delete(Worker, Idle),
+           busy := maps:remove(Worker, Busy),
+           mons := maps:remove(Worker, Mons),
+           meta := maps:remove(Worker, Meta)}.
 
 %% A connection died. Forget it everywhere; if a caller is parked and the pool
 %% now has headroom, open a replacement to serve the oldest waiter.
 handle_down(State, Worker) ->
-    #{idle := Idle, busy := Busy, mons := Mons} = State,
+    #{idle := Idle, busy := Busy, mons := Mons, meta := Meta, checking := Checking} = State,
     State1 = State#{mons := maps:remove(Worker, Mons),
                     idle := lists:delete(Worker, Idle),
-                    busy := maps:remove(Worker, Busy)},
+                    busy := maps:remove(Worker, Busy),
+                    meta := maps:remove(Worker, Meta),
+                    checking := maps:filter(fun(_Ref, W) -> W =/= Worker end, Checking)},
     serve_waiter(State1).
 
 serve_waiter(State) ->
-    #{waiters := Waiters, mons := Mons, busy := Busy, max := Max} = State,
+    #{waiters := Waiters, mons := Mons, busy := Busy, meta := Meta, max := Max} = State,
     case queue:out(Waiters) of
         {empty, _} ->
             State;
@@ -571,7 +674,8 @@ serve_waiter(State) ->
                             ReplyTo ! {Ref, {ok, Worker, query_timeout(State)}},
                             State#{waiters := Waiters1,
                                    busy := Busy#{Worker => true},
-                                   mons := Mons#{Worker => Mon}};
+                                   mons := Mons#{Worker => Mon},
+                                   meta := Meta#{Worker => fresh_meta(now_ms())}};
                         {error, E} ->
                             ReplyTo ! {Ref, {error, E}},
                             State#{waiters := Waiters1}
@@ -657,6 +761,107 @@ close_all(State) ->
         end, queue:to_list(Waiters)),
     ok.
 
+%% --- Pool maintenance (driven by the manager's maintenance timer) ---
+%%
+%% One sweep classifies every idle connection: one past max-lifetime or
+%% idle-timeout is retired; one whose last health check is older than the
+%% health-check window is pinged in the background; the rest stay idle. Busy
+%% connections are not touched here — a busy one past max-lifetime is recycled
+%% when it next falls idle (see return_worker). A pinged connection leaves the
+%% idle list for the `checking` set so it is never lent out mid-ping; it returns
+%% to idle, or is retired, on its ping_done.
+
+run_maintenance(State) ->
+    #{config := Config, idle := Idle, meta := Meta} = State,
+    Now = now_ms(),
+    IdleT = maps:get(idle_timeout, Config, 0),
+    LifeT = maps:get(max_lifetime, Config, 0),
+    HealthT = maps:get(health_check, Config, 0),
+    {Retire, Ping, Keep} =
+        lists:foldl(
+            fun(W, {R, P, K}) ->
+                M = maps:get(W, Meta, #{}),
+                Born = maps:get(born, M, Now),
+                IdleSince = maps:get(idle_since, M, Now),
+                LastCheck = maps:get(last_check, M, Now),
+                OverLife = LifeT > 0 andalso (Now - Born) >= LifeT,
+                OverIdle = IdleT > 0 andalso (Now - IdleSince) >= IdleT,
+                DuePing = HealthT > 0 andalso (Now - LastCheck) >= HealthT,
+                if
+                    OverLife orelse OverIdle -> {[W | R], P, K};
+                    DuePing -> {R, [W | P], K};
+                    true -> {R, P, [W | K]}
+                end
+            end,
+            {[], [], []},
+            Idle),
+    State1 = lists:foldl(fun(W, S) -> retire(S, W) end, State#{idle := Keep}, Retire),
+    start_pings(State1, Ping, Now).
+
+%% Fire a background health-check at each connection due for one. A short-lived
+%% helper process runs the `SELECT 1` so the manager never blocks on the round
+%% trip; it reports back as {ping_done, Ref, Worker, Result}. Each pinged
+%% connection has already left the idle list (it is in neither Keep nor Retire),
+%% and its check stamp is advanced now so a slow ping is not re-fired next sweep.
+start_pings(State, [], _Now) ->
+    State;
+start_pings(State, Workers, Now) ->
+    #{checking := Checking, meta := Meta, config := Config} = State,
+    QueryTimeout = maps:get(query_timeout, Config, ?QUERY_TIMEOUT),
+    Manager = self(),
+    {Checking1, Meta1} =
+        lists:foldl(
+            fun(W, {Ch, Me}) ->
+                Ref = make_ref(),
+                spawn(fun() ->
+                    Result = worker_request(W, ping, QueryTimeout),
+                    Manager ! {ping_done, Ref, W, Result}
+                end),
+                M = maps:get(W, Me, fresh_meta(Now)),
+                {Ch#{Ref => W}, Me#{W => M#{last_check => Now}}}
+            end,
+            {Checking, Meta},
+            Workers),
+    State#{checking := Checking1, meta := Meta1}.
+
+%% A background health-check finished. A healthy connection (Result {ok, _})
+%% returns to idle; a failed one (a timeout or transport error) is retired and any
+%% parked waiter is served with a replacement, mirroring a connection DOWN. A
+%% reply whose ref is no longer tracked raced a DOWN or a close and is ignored.
+finish_ping(State, Ref, Worker, Result) ->
+    #{checking := Checking} = State,
+    case maps:is_key(Ref, Checking) of
+        false ->
+            State;
+        true ->
+            State1 = State#{checking := maps:remove(Ref, Checking)},
+            case Result of
+                {ok, _} -> requeue_idle(State1, Worker);
+                _       -> serve_waiter(retire(State1, Worker))
+            end
+    end.
+
+%% Return a health-checked connection to service: hand it to the oldest waiter if
+%% one is parked (it left idle for the ping, so a waiter may have arrived
+%% meanwhile), otherwise park it back as idle. Only if it is still live and
+%% monitored — a DOWN handled while the ping was out already forgot it, and
+%% re-adding it would lend a dead connection.
+requeue_idle(State, Worker) ->
+    #{idle := Idle, busy := Busy, mons := Mons, waiters := Waiters} = State,
+    case maps:is_key(Worker, Mons) andalso is_process_alive(Worker) of
+        false ->
+            State;
+        true ->
+            case queue:out(Waiters) of
+                {{value, {Ref, ReplyTo, Timer}}, Waiters1} ->
+                    erlang:cancel_timer(Timer),
+                    ReplyTo ! {Ref, {ok, Worker, query_timeout(State)}},
+                    State#{waiters := Waiters1, busy := Busy#{Worker => true}};
+                {empty, _} ->
+                    State#{idle := [Worker | Idle]}
+            end
+    end.
+
 %% --- Pool client helpers (run in the calling process) ---
 
 pool_checkout(Pool) ->
@@ -701,6 +906,10 @@ pg_conn_loop(Conn) ->
             end
     end.
 
+%% A pool health-check: the lightest round trip that proves the socket and the
+%% server still answer. The result rows are ignored; only ok-vs-error matters.
+run_verb(Conn, ping) ->
+    run_query(Conn, <<"SELECT 1">>, []);
 run_verb(Conn, {tx, Sql}) ->
     do_exec(Conn, Sql, []);
 %% Raw SQL from std.raw: the user's statement text run with its `SqlValue` binds

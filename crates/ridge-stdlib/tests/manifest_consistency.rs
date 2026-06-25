@@ -297,6 +297,9 @@ fn signature_shape_consistency() {
                         | "withConnectTimeoutMs"
                         | "withQueryTimeoutMs"
                         | "withCheckoutTimeoutMs"
+                        | "withIdleTimeoutMs"
+                        | "withMaxLifetimeMs"
+                        | "withHealthCheckMs"
                 )
             {
                 continue;

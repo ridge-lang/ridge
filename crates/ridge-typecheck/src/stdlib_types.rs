@@ -1914,6 +1914,21 @@ fn reconciled_repo_fn_scheme(
                 constraints: with_adapter(),
             })
         }
+        // `disconnect` releases a connection — `close conn` over the `Adapter` seam.
+        // One argument, no body, answering `Result Unit Error`; `a` carries the
+        // `Adapter` dictionary `close` dispatches on. The handle is the proof of
+        // access, so releasing it is capability-free like the query methods.
+        "disconnect" => Some(Scheme {
+            vars: vec![a],
+            cap_vars: vec![],
+            row_vars: vec![],
+            ty: Type::Fn {
+                params: vec![Type::Var(a)],
+                ret: Box::new(result(Type::Con(b.unit, vec![]))),
+                caps: pure(),
+            },
+            constraints: with_adapter(),
+        }),
         // `sumOf` / `avgOf` / `minOf` / `maxOf` are no longer reconciled here: they
         // became the methods of the `Aggregable q p | q -> p` class (std.repo), one
         // set of scalar aggregates over a query, an inner join, or a left join. A

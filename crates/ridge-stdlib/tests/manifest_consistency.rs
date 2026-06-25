@@ -216,6 +216,10 @@ fn bidirectional_name_consistency() {
 /// Entries that return `Type::Error` are explicitly skipped (Phase-7 stubs).
 /// Failures panic with `T202 SignatureDrift { module, sym, reason }`.
 #[test]
+#[expect(
+    clippy::too_many_lines,
+    reason = "one skip-guard block per reconciled stdlib module, kept inline for readability"
+)]
 fn signature_shape_consistency() {
     let stdlib = stdlib_dir();
     let b = make_builtins();
@@ -278,11 +282,23 @@ fn signature_shape_consistency() {
             {
                 continue;
             }
-            // std.data `memAdapter`/`connect` return reconciled types
-            // (`MemAdapter`/`Postgres`), so they are seeded via
-            // `reconciled_fn_scheme`, not the `stdlib_signature` table this shape
-            // check covers.
-            if dotted == "std.data" && (*fn_name == "memAdapter" || *fn_name == "connect") {
+            // std.data `memAdapter`/`connect`/`connectWith` return reconciled types
+            // (`MemAdapter`/`Postgres`), and `defaultPool`/`with*` take or return the
+            // reconciled `PoolConfig`, so all are seeded via `reconciled_fn_scheme`,
+            // not the `stdlib_signature` table this shape check covers.
+            if dotted == "std.data"
+                && matches!(
+                    *fn_name,
+                    "memAdapter"
+                        | "connect"
+                        | "connectWith"
+                        | "defaultPool"
+                        | "withPoolSize"
+                        | "withConnectTimeoutMs"
+                        | "withQueryTimeoutMs"
+                        | "withCheckoutTimeoutMs"
+                )
+            {
                 continue;
             }
             // Every std.repo verb takes or returns the reconciled `Repo e a`, so

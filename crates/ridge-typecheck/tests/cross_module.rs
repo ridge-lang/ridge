@@ -563,12 +563,12 @@ fn connect_with_tuned_pool_and_disconnect_typecheck() {
     // `with*` schemes, and the generic `disconnect`.
     let main = r"
 import std.data (connectWith, defaultPool, withPoolSize, withQueryTimeoutMs, withConnectTimeoutMs, withCheckoutTimeoutMs, Config, PoolConfig, Postgres)
-import std.repo (disconnect)
+import std.repo as Repo
 
 pub fn db openTuned (cfg: Config) -> Result Unit Error =
     match connectWith cfg (defaultPool () |> withPoolSize 20 |> withQueryTimeoutMs 60000 |> withConnectTimeoutMs 8000 |> withCheckoutTimeoutMs 3000)
         Err e   -> Err e
-        Ok conn -> disconnect conn
+        Ok conn -> Repo.disconnect conn
 ";
     let errors = typecheck_one(main);
     assert!(

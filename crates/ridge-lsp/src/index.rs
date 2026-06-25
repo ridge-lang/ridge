@@ -420,20 +420,39 @@ impl WorkspaceIndex {
         }
         let type_str = render_type_with(ty, &self.tycons);
 
-        // If an identifier covers the same offset, build an enriched card over
-        // the identifier; otherwise this is a literal/expression and we show the
-        // bare type, fenced, over the expression span.
-        if let Some((_, id_node, _, id_span)) =
+        // The binding sits on the narrowest name node that carries one: for
+        // `Mod.item` (e.g. a qualified stdlib verb `Repo.filter`) that is the whole
+        // `QualifiedName`, not the segment ident under the cursor. Walk the
+        // enclosing name nodes outward — exactly as go-to-definition does — and
+        // card the first that is bound.
+        if let Some((binding, span)) = self.spatial.get(mi).and_then(|sp| {
+            sp.enclosing(offset, &[NodeKind::Ident, NodeKind::QualifiedName])
+                .into_iter()
+                .find_map(|(nid, _, span)| {
+                    self.modules
+                        .get(mi)?
+                        .bindings
+                        .get(nid.0 as usize)
+                        .and_then(Option::as_ref)
+                        .map(|binding| (binding, span))
+                })
+        }) {
+            let name = self.text_slice(mi, span);
+            return Some((
+                self.hover_markdown(mi, offset, name, Some(binding), &type_str),
+                span,
+            ));
+        }
+
+        // No binding on any enclosing name node: an identifier still cards through
+        // its type (a record field resolves via its base type in tier 1), and a
+        // literal/expression shows the bare fenced type over its span.
+        if let Some((_, _, _, id_span)) =
             self.node_at(uri, offset, &[NodeKind::Ident, NodeKind::QualifiedName])
         {
             let name = self.text_slice(mi, id_span);
-            let binding = self
-                .modules
-                .get(mi)
-                .and_then(|m| m.bindings.get(id_node.0 as usize))
-                .and_then(Option::as_ref);
             Some((
-                self.hover_markdown(mi, offset, name, binding, &type_str),
+                self.hover_markdown(mi, offset, name, None, &type_str),
                 id_span,
             ))
         } else {

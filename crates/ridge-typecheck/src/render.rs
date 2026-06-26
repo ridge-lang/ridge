@@ -741,10 +741,58 @@ pub fn emit_internal_strict(
 /// is what the language server shows on hover.
 #[must_use]
 pub fn render_type_with(ty: &ridge_types::Type, tycons: &[ridge_types::TyConDecl]) -> String {
-    render_at_depth(ty, tycons, 0)
+    let mut namer = VarNamer::default();
+    render_at_depth(ty, tycons, 0, &mut namer)
 }
 
-/// Stable, readable name for a type variable: `a`..`z`, then `a1`, `b1`, …
+/// Render an `expected`/`found` mismatch pair under one shared variable namer.
+///
+/// A variable that occurs in both halves is given the same letter in each, so
+/// `expected Foo a` / `found Bar a` reads as the same `a`, not two unrelated
+/// ones.
+#[must_use]
+pub fn render_type_pair_with(
+    expected: &ridge_types::Type,
+    found: &ridge_types::Type,
+    tycons: &[ridge_types::TyConDecl],
+) -> (String, String) {
+    let mut namer = VarNamer::default();
+    let e = render_at_depth(expected, tycons, 0, &mut namer);
+    let f = render_at_depth(found, tycons, 0, &mut namer);
+    (e, f)
+}
+
+/// Assigns readable letters to type variables in first-appearance order.
+///
+/// A rendered type then reads `Repo a b` regardless of the internal union-find
+/// ids its variables carry. Without it the same logical type prints differently
+/// from one inference run to the next — a variable that ended up with id 438
+/// would show as `w16`. One namer is shared across every variable in a single
+/// rendered type, and via [`render_type_pair_with`] across a related pair.
+#[derive(Default)]
+struct VarNamer {
+    /// `(raw union-find id, canonical index)` in first-appearance order.
+    seen: Vec<(u32, u32)>,
+    next: u32,
+}
+
+impl VarNamer {
+    fn name(&mut self, v: u32) -> String {
+        let idx = if let Some(&(_, i)) = self.seen.iter().find(|&&(raw, _)| raw == v) {
+            i
+        } else {
+            let i = self.next;
+            self.next += 1;
+            self.seen.push((v, i));
+            i
+        };
+        render_var(idx)
+    }
+}
+
+/// Stable, readable name for a canonical variable index: `a`..`z`, then `a1`,
+/// `b1`, … Callers pass the first-appearance index a [`VarNamer`] assigns, not
+/// the raw union-find id, so the sequence always starts at `a`.
 #[allow(
     clippy::cast_possible_truncation,
     reason = "v % 26 is in 0..26, always fits a u8"
@@ -824,7 +872,12 @@ fn flatten_join_spine<'a>(
     true
 }
 
-fn render_at_depth(ty: &ridge_types::Type, tycons: &[ridge_types::TyConDecl], depth: u8) -> String {
+fn render_at_depth(
+    ty: &ridge_types::Type,
+    tycons: &[ridge_types::TyConDecl],
+    depth: u8,
+    namer: &mut VarNamer,
+) -> String {
     use ridge_types::{TyConKind, Type};
 
     // Bound recursion so a pathological type cannot blow the hover budget.
@@ -843,7 +896,11 @@ fn render_at_depth(ty: &ridge_types::Type, tycons: &[ridge_types::TyConDecl], de
                         .record_fields()
                         .iter()
                         .map(|f| {
-                            format!("{}: {}", f.name, render_at_depth(&f.ty, tycons, depth + 1))
+                            format!(
+                                "{}: {}",
+                                f.name,
+                                render_at_depth(&f.ty, tycons, depth + 1, namer)
+                            )
                         })
                         .collect();
                     return format!("{{ {} }}", fields.join(", "));
@@ -864,7 +921,7 @@ fn render_at_depth(ty: &ridge_types::Type, tycons: &[ridge_types::TyConDecl], de
                     let tables: Vec<String> = leaves
                         .iter()
                         .map(|(leaf, optional)| {
-                            let rendered = render_at_depth(leaf, tycons, depth + 1);
+                            let rendered = render_at_depth(leaf, tycons, depth + 1, namer);
                             match (optional, rendered.contains(' ')) {
                                 (true, true) => format!("Option ({rendered})"),
                                 (true, false) => format!("Option {rendered}"),
@@ -872,7 +929,7 @@ fn render_at_depth(ty: &ridge_types::Type, tycons: &[ridge_types::TyConDecl], de
                             }
                         })
                         .collect();
-                    let adapter = render_at_depth(&args[2], tycons, depth + 1);
+                    let adapter = render_at_depth(&args[2], tycons, depth + 1, namer);
                     return format!("Join ({}) {adapter}", tables.join(", "));
                 }
             }
@@ -881,7 +938,7 @@ fn render_at_depth(ty: &ridge_types::Type, tycons: &[ridge_types::TyConDecl], de
             } else {
                 let parts: Vec<String> = args
                     .iter()
-                    .map(|a| render_at_depth(a, tycons, depth + 1))
+                    .map(|a| render_at_depth(a, tycons, depth + 1, namer))
                     .collect();
                 format!("{} {}", decl.name, parts.join(" "))
             }
@@ -889,25 +946,30 @@ fn render_at_depth(ty: &ridge_types::Type, tycons: &[ridge_types::TyConDecl], de
         Type::Tuple(ts) => {
             let parts: Vec<String> = ts
                 .iter()
-                .map(|t| render_at_depth(t, tycons, depth + 1))
+                .map(|t| render_at_depth(t, tycons, depth + 1, namer))
                 .collect();
             format!("({})", parts.join(", "))
         }
         Type::Fn { params, ret, .. } => {
             let ps: Vec<String> = params
                 .iter()
-                .map(|p| render_at_depth(p, tycons, depth + 1))
+                .map(|p| render_at_depth(p, tycons, depth + 1, namer))
                 .collect();
             format!(
                 "({}) -> {}",
                 ps.join(", "),
-                render_at_depth(ret, tycons, depth + 1)
+                render_at_depth(ret, tycons, depth + 1, namer)
             )
         }
         Type::Record { fields, tail } => {
             let parts: Vec<String> = fields
                 .iter()
-                .map(|(label, fty)| format!("{label}: {}", render_at_depth(fty, tycons, depth + 1)))
+                .map(|(label, fty)| {
+                    format!(
+                        "{label}: {}",
+                        render_at_depth(fty, tycons, depth + 1, namer)
+                    )
+                })
                 .collect();
             match tail {
                 // Open row renders with a trailing `..`.
@@ -917,7 +979,7 @@ fn render_at_depth(ty: &ridge_types::Type, tycons: &[ridge_types::TyConDecl], de
                 _ => format!("{{ {} }}", parts.join(", ")),
             }
         }
-        Type::Var(v) => render_var(v.0),
+        Type::Var(v) => namer.name(v.0),
         Type::Alias { name, .. } => tycons
             .get(name.0 as usize)
             .map_or_else(|| format!("?{}", name.0), |d| d.name.clone()),
@@ -949,6 +1011,41 @@ mod tests {
         use ridge_types::{TyVid, Type};
         let tup = Type::Tuple(vec![Type::Var(TyVid(0)), Type::Var(TyVid(1))]);
         assert_eq!(render_type_with(&tup, &[]), "(a, b)");
+    }
+
+    #[test]
+    fn render_canonicalises_high_var_ids() {
+        use ridge_types::{TyVid, Type};
+        // A deep inference run leaves variables with large union-find ids
+        // (438/439 would otherwise print as `w16 x16`). Canonicalisation maps
+        // them back to first-appearance letters, so the same logical type
+        // always reads `(a, b)`.
+        let tup = Type::Tuple(vec![Type::Var(TyVid(438)), Type::Var(TyVid(439))]);
+        assert_eq!(render_type_with(&tup, &[]), "(a, b)");
+    }
+
+    #[test]
+    fn render_reuses_one_letter_per_variable() {
+        use ridge_types::{TyVid, Type};
+        // A repeated variable keeps its letter; a fresh one advances.
+        let tup = Type::Tuple(vec![
+            Type::Var(TyVid(50)),
+            Type::Var(TyVid(50)),
+            Type::Var(TyVid(7)),
+        ]);
+        assert_eq!(render_type_with(&tup, &[]), "(a, a, b)");
+    }
+
+    #[test]
+    fn render_pair_shares_variable_letters() {
+        use ridge_types::{TyVid, Type};
+        // A variable shared by both halves of a mismatch reads as one letter in
+        // each; a half-only variable takes the next free one.
+        let expected = Type::Tuple(vec![Type::Var(TyVid(100)), Type::Var(TyVid(200))]);
+        let found = Type::Var(TyVid(200));
+        let (e, f) = render_type_pair_with(&expected, &found, &[]);
+        assert_eq!(e, "(a, b)");
+        assert_eq!(f, "b");
     }
 
     #[test]

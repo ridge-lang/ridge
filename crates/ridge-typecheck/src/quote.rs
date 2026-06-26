@@ -1003,29 +1003,39 @@ fn is_literal_zero(e: &Expr) -> bool {
     }
 }
 
+/// The outcome of checking a captured value used as the `items` of an `IN` test.
+enum InListCheck {
+    /// Not a captured list (not in scope, or not a `List`): the caller falls
+    /// through to the text-match family, so a captured text needle stays a
+    /// substring `LIKE`.
+    NotAList,
+    /// A captured list of the wrong shape; an error has been pushed.
+    Invalid,
+    /// A valid runtime `IN` set.
+    Valid,
+}
+
 /// Validate a value captured from the enclosing scope used as the `items` of an
 /// `IN` test (`List.contains col captured`). The captured value must be a
 /// `List <scalar>` whose element type is one of Int/Text/Bool/Float and matches
-/// the column. The three outcomes are kept distinct for the caller:
-///
-/// - `None` — `name` is not a captured list (not in scope, or not a `List`), so
-///   the caller falls through to the text-match family (a captured text needle
-///   stays a substring `LIKE`).
-/// - `Some(None)` — a captured list of the wrong shape; an error is pushed.
-/// - `Some(Some(QKind::Pred))` — a valid runtime `IN` set; the captured list's
-///   type is recorded for the reifier, since the quote walk never runs
-///   `infer_expr` to populate it.
+/// the column. A [`InListCheck::Valid`] result also records the captured list's
+/// type for the reifier, since the quote walk never runs `infer_expr` to
+/// populate it.
 fn check_captured_in_list(
     ctx: &mut InferCtx,
     b: &BuiltinTyCons,
     name: &str,
     span: Span,
     col_ty: &Type,
-) -> Option<Option<QKind>> {
-    let scheme = ctx.env.lookup(name).cloned()?;
+) -> InListCheck {
+    let Some(scheme) = ctx.env.lookup(name).cloned() else {
+        return InListCheck::NotAList;
+    };
     let inst = instantiate(ctx, &scheme);
     let ty = ctx.deep_resolve(&inst);
-    let elem = list_elem(b, &ty)?;
+    let Some(elem) = list_elem(b, &ty) else {
+        return InListCheck::NotAList;
+    };
     if !is_quote_scalar(b, elem) {
         let rendered = crate::render::render_type_with(&ty, &ctx.tycon_decls);
         ctx.errors.push(TypeError::QuoteUnsupportedExpr {
@@ -1035,17 +1045,17 @@ fn check_captured_in_list(
             ),
             span,
         });
-        return Some(None);
+        return InListCheck::Invalid;
     }
     if !same_value_type(elem, col_ty) {
         let left = crate::render::render_type_with(col_ty, &ctx.tycon_decls);
         let right = crate::render::render_type_with(elem, &ctx.tycon_decls);
         ctx.errors
             .push(TypeError::QuoteComparisonMismatch { left, right, span });
-        return Some(None);
+        return InListCheck::Invalid;
     }
     ctx.write_node_type(span, ridge_resolve::NodeKind::Expr, &ty);
-    Some(Some(QKind::Pred))
+    InListCheck::Valid
 }
 
 /// Checks a predicate-helper call inside a quote. The recognised helpers are the
@@ -1137,8 +1147,11 @@ fn check_predicate_call(
             return Some(QKind::Pred);
         }
         if let Expr::Ident(id) = other {
-            if let Some(result) = check_captured_in_list(ctx, b, &id.text, other.span(), &col_ty) {
-                return result;
+            match check_captured_in_list(ctx, b, &id.text, other.span(), &col_ty) {
+                InListCheck::Valid => return Some(QKind::Pred),
+                InListCheck::Invalid => return None,
+                // Not a captured list — fall through to the text-match family.
+                InListCheck::NotAList => {}
             }
         }
     }

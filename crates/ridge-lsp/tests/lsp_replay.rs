@@ -1064,6 +1064,31 @@ async fn test_hover_labels_class_method() {
 }
 
 #[tokio::test]
+async fn test_hover_captured_variable_in_quote() {
+    // A variable captured from the enclosing scope into a quoted predicate is an
+    // ordinary binding to the editor: hovering it at the use-site inside the quote
+    // resolves to the parameter it binds, typed. This rides the same `node_types`
+    // entry the lowering reifier reads, so accepting the capture also makes it
+    // hover-able.
+    let src = "type User = { age: Int }\nfn pred (q: Quote (User -> Bool)) -> Bool = true\nfn demo (minAge: Int) -> Bool = pred (fn u -> u.age >= minAge)\n";
+    let (service, _socket, uri) = hover_fixture(src).await;
+    let server = service.inner();
+
+    let line2 = "fn demo (minAge: Int) -> Bool = pred (fn u -> u.age >= minAge)";
+    let col = u32::try_from(line2.rfind("minAge").expect("captured use-site") + 1)
+        .expect("offset fits u32");
+    let h = server
+        .hover(hover_at(&uri, 2, col))
+        .await
+        .expect("hover ok");
+    let md = hover_markdown(h).expect("hover over a captured variable returns markup");
+    assert!(
+        md.contains("minAge :") && md.contains("Int"),
+        "a captured variable inside a quote should hover with its type, got {md:?}"
+    );
+}
+
+#[tokio::test]
 async fn test_hover_distinguishes_param_from_local() {
     // A function parameter and a `let` binding hover with different kind lines,
     // even though both are `Binding::Local` under the hood.

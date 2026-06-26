@@ -21,6 +21,7 @@ use ridge_types::{BuiltinTyCons, TyConId, TyConKind, Type};
 
 use crate::ctx::InferCtx;
 use crate::error::TypeError;
+use crate::instantiate::instantiate;
 
 /// What the lowering pass needs to reify a quoted lambda body.
 #[derive(Debug, Clone)]
@@ -677,19 +678,60 @@ fn check_node(ctx: &mut InferCtx, b: &BuiltinTyCons, e: &Expr, scope: &[Param]) 
         }
 
         Expr::Ident(id) => {
-            let detail = if scope.iter().any(|p| p.name == id.text) {
-                format!(
-                    "the row `{}` can only be used through a column access like `{}.field`",
-                    id.text, id.text
-                )
-            } else {
-                format!(
-                    "`{}` is a captured variable, which is not supported in a quoted predicate yet",
-                    id.text
-                )
-            };
+            // The row itself can only be read through a column access.
+            if scope.iter().any(|p| p.name == id.text) {
+                ctx.errors.push(TypeError::QuoteUnsupportedExpr {
+                    detail: format!(
+                        "the row `{}` can only be used through a column access like `{}.field`",
+                        id.text, id.text
+                    ),
+                    span: e.span(),
+                });
+                return None;
+            }
+            // A variable captured from the enclosing scope. A base scalar (Int,
+            // Text, Bool, Float) lowers to a `$N` bind, exactly as an inline
+            // literal would, so `filter (fn u -> u.age >= minAge)` reads a
+            // runtime `minAge` as a query parameter rather than forcing the value
+            // to be written inline.
+            if let Some(scheme) = ctx.env.lookup(&id.text).cloned() {
+                let inst = instantiate(ctx, &scheme);
+                let ty = ctx.deep_resolve(&inst);
+                if is_quote_scalar(b, &ty) {
+                    // The quote checker walks the body itself and never runs
+                    // `infer_expr`, so record the captured value's type here: the
+                    // lowering reifier reads it back to pick the matching `QLit*`
+                    // constructor for the runtime bind.
+                    ctx.write_node_type(e.span(), ridge_resolve::NodeKind::Expr, &ty);
+                    return Some(QKind::Scalar(ty));
+                }
+                let detail = if matches!(ty, Type::Var(_)) {
+                    format!(
+                        "the type of the captured variable `{}` is ambiguous here; annotate it \
+                         so it can be sent as a query parameter",
+                        id.text
+                    )
+                } else {
+                    let rendered = crate::render::render_type_with(&ty, &ctx.tycon_decls);
+                    format!(
+                        "`{}` has type `{rendered}`; a quote can capture only Int, Text, Bool, or \
+                         Float values from the enclosing scope",
+                        id.text
+                    )
+                };
+                ctx.errors.push(TypeError::QuoteUnsupportedExpr {
+                    detail,
+                    span: e.span(),
+                });
+                return None;
+            }
+            // Neither a column of the quote nor a value in scope.
             ctx.errors.push(TypeError::QuoteUnsupportedExpr {
-                detail,
+                detail: format!(
+                    "`{}` is not a column of the quote parameters ({}) or a value in scope",
+                    id.text,
+                    scope_names(scope)
+                ),
                 span: e.span(),
             });
             None
@@ -915,6 +957,14 @@ fn is_numeric(b: &BuiltinTyCons, ty: &Type) -> bool {
 /// Whether `ty` is the `Int` base type.
 fn is_int(b: &BuiltinTyCons, ty: &Type) -> bool {
     matches!(ty, Type::Con(id, _) if *id == b.int)
+}
+
+/// Whether `ty` is a base scalar a quote can capture from the enclosing scope as
+/// a runtime bind: Int, Text, Bool, or Float. These are exactly the types with a
+/// `QLit*` node and a `SqlValue` wrapper in both the SQL and in-memory backends.
+fn is_quote_scalar(b: &BuiltinTyCons, ty: &Type) -> bool {
+    matches!(ty, Type::Con(id, _)
+        if *id == b.int || *id == b.text || *id == b.bool || *id == b.float)
 }
 
 /// Whether `e` is a numeric literal whose value is zero, in any radix or as a

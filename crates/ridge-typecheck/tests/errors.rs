@@ -586,6 +586,35 @@ fn quoted_non_boolean_body_is_rejected() {
     );
 }
 
+/// A quote may capture a base scalar from the enclosing scope; it lowers to a
+/// query parameter rather than forcing the value to be inlined. A predicate that
+/// compares columns against captured Int, Bool, Text, and Float values type-checks
+/// cleanly — covering every scalar a `QLit*` node can bind.
+#[test]
+fn quoted_captured_scalars_typecheck() {
+    let src = "type User = { age: Int, active: Bool, name: Text, score: Float }\n\nfn pred (q: Quote (User -> Bool)) -> Bool = true\n\nfn demo (minAge: Int) (flag: Bool) (wanted: Text) (cut: Float) -> Bool = pred (fn u -> u.age >= minAge && u.active == flag && u.name == wanted && u.score >= cut)\n";
+    let errors = run_typecheck_on_source("quote_capture_ok", src);
+    let codes: Vec<&str> = errors.iter().map(TypeError::code).collect();
+    assert!(
+        codes.is_empty(),
+        "capturing scalar values into a quote must typecheck cleanly; got: {codes:?}"
+    );
+}
+
+/// Only base scalars can be captured. A captured value of a non-scalar type
+/// (here a record) is rejected (T040): there is no single query parameter to bind
+/// it to.
+#[test]
+fn quoted_captured_non_scalar_is_rejected() {
+    let src = "type User = { age: Int }\ntype Box = { n: Int }\n\nfn pred (q: Quote (User -> Bool)) -> Bool = true\n\nfn demo (b: Box) -> Bool = pred (fn u -> u.age >= b)\n";
+    let errors = run_typecheck_on_source("quote_capture_bad", src);
+    let codes: Vec<&str> = errors.iter().map(TypeError::code).collect();
+    assert!(
+        codes.contains(&"T040"),
+        "capturing a non-scalar value into a quote must be T040; got: {codes:?}"
+    );
+}
+
 // ── T001 message rendering: real type names, never `#N` ───────────────────────
 
 /// Pull the `(expected, found)` strings of the first `T001 TypeMismatch`.

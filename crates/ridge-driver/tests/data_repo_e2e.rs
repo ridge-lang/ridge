@@ -524,6 +524,31 @@ pub fn db firstAdultName () -> Text =
                 Ok None     -> "none"
                 Ok (Some u) -> u.name
 
+-- captured runtime variable: a `let`-bound threshold flows into the predicate as
+-- a `$N` bind rather than an inlined literal, ascending by age -> "max,lin"
+-- (ada 18 drops, max 25 and lin 30 stay). Proves a quote reads an Int from the
+-- enclosing scope.
+pub fn db capturedAdults () -> Text =
+    match setup ()
+        Err _ -> "setup-err"
+        Ok r  ->
+            let minAge = 25
+            match r |> Repo.query |> Repo.filter (fn (u: User) -> u.age >= minAge) |> Repo.orderBy Asc (fn (u: User) -> u.age) |> Repo.toList
+                Err _ -> "list-err"
+                Ok us -> joinNames us
+
+-- captured Text variable: the wanted name flows in as a bound parameter, so the
+-- equality compares against a `$N` placeholder -> "lin". Proves a quote captures
+-- a Text value, not only an Int.
+pub fn db capturedByName () -> Text =
+    match setup ()
+        Err _ -> "setup-err"
+        Ok r  ->
+            let wanted = "lin"
+            match r |> Repo.query |> Repo.filter (fn (u: User) -> u.name == wanted) |> Repo.toList
+                Err _ -> "list-err"
+                Ok us -> joinNames us
+
 -- projection: order by age descending, project into the renamed `Summary`, and
 -- join the `who` fields -> "lin,max,ada". Proves selectList pushes the
 -- select-list down and decodes the aliased columns into the named shape.
@@ -2440,6 +2465,8 @@ fn repo_surface_runs_on_beam() {
          io:format(\"orderedNames=~s~n\",[{module}:orderedNames()]), \
          io:format(\"pagedName=~s~n\",[{module}:pagedName()]), \
          io:format(\"firstAdultName=~s~n\",[{module}:firstAdultName()]), \
+         io:format(\"capturedAdults=~s~n\",[{module}:capturedAdults()]), \
+         io:format(\"capturedByName=~s~n\",[{module}:capturedByName()]), \
          io:format(\"summaryNames=~s~n\",[{module}:summaryNames()]), \
          io:format(\"topYears=~w~n\",[{module}:topYears()]), \
          io:format(\"taggedAges=~s~n\",[{module}:taggedAges()]), \
@@ -2603,6 +2630,14 @@ fn repo_surface_runs_on_beam() {
         (
             "firstAdultName=lin",
             "filter + orderBy + first yields the oldest adult",
+        ),
+        (
+            "capturedAdults=max,lin",
+            "a let-bound Int captured into the filter predicate keeps the adults, sent as a bind",
+        ),
+        (
+            "capturedByName=lin",
+            "a captured Text value drives the equality predicate as a bound parameter",
         ),
         (
             "summaryNames=lin,max,ada",

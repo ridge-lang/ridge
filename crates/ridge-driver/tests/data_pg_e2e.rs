@@ -454,6 +454,32 @@ pub fn db pagedName () -> Text =
                 Err _ -> "list-err"
                 Ok us -> joinNames us
 
+-- captured runtime variable against Postgres: a `let`-bound threshold flows into
+-- the predicate as a `$N` bind, so the WHERE compares against a placeholder
+-- rather than an inlined literal. Adults at or above the captured `minAge` (25),
+-- ascending -> "max,lin". Proves an Int captured from the enclosing scope reaches
+-- the real query as a parameter.
+pub fn db capturedAdults () -> Text =
+    match setup ()
+        Err _ -> "setup-err"
+        Ok r  ->
+            let minAge = 25
+            match r |> Repo.query |> Repo.filter (fn (u: User) -> u.age >= minAge) |> Repo.orderBy Asc (fn (u: User) -> u.age) |> Repo.toList
+                Err _ -> "list-err"
+                Ok us -> joinNames us
+
+-- captured Text variable against Postgres: the wanted name binds as a parameter,
+-- so the equality compares against a placeholder -> "lin". Proves a Text capture
+-- crosses to the real query, not only an Int.
+pub fn db capturedByName () -> Text =
+    match setup ()
+        Err _ -> "setup-err"
+        Ok r  ->
+            let wanted = "lin"
+            match r |> Repo.query |> Repo.filter (fn (u: User) -> u.name == wanted) |> Repo.toList
+                Err _ -> "list-err"
+                Ok us -> joinNames us
+
 -- projection: order by age descending, project into the renamed `Summary`, and
 -- join the `who` fields -> "lin,max,ada". Proves the backend compiles the
 -- select-list (`name AS who, age AS years`) and decodes the aliased columns.
@@ -1999,6 +2025,8 @@ fn postgres_adapter_reads_a_real_table() {
          io:format(\"afterDelete=~w~n\",[{module}:afterDelete()]), \
          io:format(\"orderedNames=~s~n\",[{module}:orderedNames()]), \
          io:format(\"pagedName=~s~n\",[{module}:pagedName()]), \
+         io:format(\"capturedAdults=~s~n\",[{module}:capturedAdults()]), \
+         io:format(\"capturedByName=~s~n\",[{module}:capturedByName()]), \
          io:format(\"summaryNames=~s~n\",[{module}:summaryNames()]), \
          io:format(\"topYears=~w~n\",[{module}:topYears()]), \
          io:format(\"joinedNames=~s~n\",[{module}:joinedNames()]), \
@@ -2149,6 +2177,14 @@ fn postgres_adapter_reads_a_real_table() {
         (
             "pagedName=max",
             "the builder compiles LIMIT and OFFSET into the query",
+        ),
+        (
+            "capturedAdults=max,lin",
+            "an Int captured from the enclosing scope reaches the real query as a bound parameter",
+        ),
+        (
+            "capturedByName=lin",
+            "a captured Text value drives the equality as a placeholder against Postgres",
         ),
         (
             "summaryNames=lin,max,ada",

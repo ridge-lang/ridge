@@ -937,6 +937,32 @@ fn qexpr_node(
     }
 }
 
+/// The resolved type of a captured identifier at `span`, peeled of aliases.
+/// `infer_expr` writes ident node types under `NodeKind::Expr`; the `Ident`
+/// fallback guards against any future wrapper-keying change.
+fn captured_ident_type(ctx: &LowerCtx<'_>, span: Span) -> Option<Type> {
+    let m = ctx.node_id_map.as_ref()?;
+    let nid = m
+        .get(span, NodeKind::Expr)
+        .or_else(|| m.get(span, NodeKind::Ident))?;
+    ctx.node_type(nid).cloned().map(|t| deep_peel_alias(&t))
+}
+
+/// The `QExpr` literal constructor (`name`, `variant`) for a captured scalar's
+/// resolved type. The quotation checker accepts only Int/Text/Bool/Float
+/// captures, so a `None` here is an internal invariant violation, not a user
+/// error.
+fn captured_scalar_qlit(ctx: &LowerCtx<'_>, ty: &Type) -> Option<(&'static str, u32)> {
+    let b = &ctx.workspace?.builtins;
+    match ty {
+        Type::Con(id, _) if *id == b.int => Some(("QLitInt", 1)),
+        Type::Con(id, _) if *id == b.float => Some(("QLitFloat", 4)),
+        Type::Con(id, _) if *id == b.bool => Some(("QLitBool", 3)),
+        Type::Con(id, _) if *id == b.text => Some(("QLitText", 2)),
+        _ => None,
+    }
+}
+
 /// Reify one node of a quoted predicate into a `QExpr` value.
 ///
 /// The shape was already validated by the quotation type-checker, so anything
@@ -1154,6 +1180,28 @@ fn reify_node(ctx: &mut LowerCtx<'_>, e: &Expr, params: &[String]) -> IrExpr {
                 span: *span,
             };
             qexpr_node(ctx, "QProj", 14, vec![list], *span)
+        }
+
+        // A variable captured from the enclosing scope → the matching `QLit*`
+        // node wrapping its runtime value, so it lands as a `$N` bind exactly
+        // like an inline literal. The quotation checker has already verified the
+        // variable is a base scalar (Int/Text/Bool/Float). `lower_expr` resolves
+        // the identifier to its local binding, so the value plugged into the node
+        // is the variable's value at the point the quote is built.
+        Expr::Ident(id) => {
+            let span = id.span;
+            if let Some((name, variant)) =
+                captured_ident_type(ctx, span).and_then(|ty| captured_scalar_qlit(ctx, &ty))
+            {
+                let value = lower_expr(ctx, e);
+                qexpr_node(ctx, name, variant, vec![value], span)
+            } else {
+                ctx.errors.push(LowerError::InternalLoweringError {
+                    span,
+                    message: "captured variable of unsupported type survived quote checking".into(),
+                });
+                unit_lit(ctx, span)
+            }
         }
 
         other => {

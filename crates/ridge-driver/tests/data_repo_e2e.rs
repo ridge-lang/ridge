@@ -1889,6 +1889,29 @@ pub fn db groupRanges () -> Text =
                 Err _   -> "group-err"
                 Ok rows -> rangeCells rows
 
+-- group + summarize over a COMPUTED aggregate: SUM(salary * 2) per dept ->
+-- "eng:600,ops:100,sales:1200". Proves a grouped fold evaluates an arithmetic
+-- expression over the column, the literal binding as a placeholder rather than
+-- reaching the SQL text.
+pub fn db groupComputedSum () -> Text =
+    match setupEmps ()
+        Err _ -> "setup-err"
+        Ok r  ->
+            match r |> Repo.query |> Repo.groupBy (fn (e: Emp) -> e.dept) |> Repo.summarize (fn g -> DeptSum { dept = g.key, total = g.sum (fn (e: Emp) -> e.salary * 2) })
+                Err _   -> "group-err"
+                Ok rows -> sumCells rows
+
+-- group + having on a COMPUTED aggregate: only depts whose doubled payroll is
+-- >= 1200 -> "sales:1200". Proves a computed expression folds inside a HAVING
+-- aggregate as well as a projected one.
+pub fn db groupComputedHaving () -> Text =
+    match setupEmps ()
+        Err _ -> "setup-err"
+        Ok r  ->
+            match r |> Repo.query |> Repo.groupBy (fn (e: Emp) -> e.dept) |> Repo.having (fn g -> g.sum (fn (e: Emp) -> e.salary * 2) >= 1200) |> Repo.summarize (fn g -> DeptSum { dept = g.key, total = g.sum (fn (e: Emp) -> e.salary * 2) })
+                Err _   -> "group-err"
+                Ok rows -> sumCells rows
+
 -- group + having on the count: only depts with more than one member -> "eng:2,sales:3".
 -- Proves HAVING filters groups by an aggregate (ops, a single member, drops out).
 pub fn db groupHavingCount () -> Text =
@@ -2515,6 +2538,8 @@ fn repo_surface_runs_on_beam() {
          io:format(\"groupSums=~s~n\",[{module}:groupSums()]), \
          io:format(\"groupAvgs=~s~n\",[{module}:groupAvgs()]), \
          io:format(\"groupRanges=~s~n\",[{module}:groupRanges()]), \
+         io:format(\"groupComputedSum=~s~n\",[{module}:groupComputedSum()]), \
+         io:format(\"groupComputedHaving=~s~n\",[{module}:groupComputedHaving()]), \
          io:format(\"groupHavingCount=~s~n\",[{module}:groupHavingCount()]), \
          io:format(\"groupHavingSum=~s~n\",[{module}:groupHavingSum()]), \
          io:format(\"groupFilteredHaving=~s~n\",[{module}:groupFilteredHaving()]), \
@@ -2952,6 +2977,14 @@ fn repo_surface_runs_on_beam() {
         (
             "groupRanges=eng:100-200,ops:50-50,sales:150-300",
             "min and max over one column compose in a single grouped projection",
+        ),
+        (
+            "groupComputedSum=eng:600,ops:100,sales:1200",
+            "summarize folds a computed expression (salary * 2) within each dept group",
+        ),
+        (
+            "groupComputedHaving=sales:1200",
+            "having thresholds a computed aggregate, keeping only the >= 1200 doubled payroll",
         ),
         (
             "groupHavingCount=eng:2,sales:3",

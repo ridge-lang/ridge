@@ -1118,25 +1118,17 @@ agg_expr(Func, Column, N, B) ->
 agg_cast(<<"AVG">>) -> "::float8";
 agg_cast(_)         -> "".
 
-%% The grouped-aggregate select/HAVING expression over a bare column name (the
-%% grouped path still folds plain columns): `FUNC("col")`, AVG cast to float8. The
-%% computed-key dual `agg_expr/4` serves the single-table scalar aggregate.
-agg_expr(<<"AVG">>, Column) -> ["AVG(", quote_ident(Column), ")::float8"];
-agg_expr(<<"SUM">>, Column) -> ["SUM(", quote_ident(Column), ")"];
-agg_expr(<<"MIN">>, Column) -> ["MIN(", quote_ident(Column), ")"];
-agg_expr(<<"MAX">>, Column) -> ["MAX(", quote_ident(Column), ")"];
-agg_expr(_Other, Column)    -> ["COUNT(", quote_ident(Column), ")"].
-
 %% SELECT <aggregates> FROM Table WHERE <Tree> GROUP BY <KeyCol> [HAVING <Having>]
-%% ORDER BY <KeyCol>. The WHERE binds take placeholders $1..$K; the HAVING binds
-%% continue at $K+1, seeded with the WHERE binds (held reversed, as `cw`/`ch`
-%% accumulate), so the two placeholder runs never collide. Each output row is keyed
-%% by the projection's aliases; the trailing ORDER BY makes the group order
-%% deterministic, matching the in-memory backend.
+%% ORDER BY <KeyCol>. The SELECT list is the first clause, so a computed fold's binds
+%% take placeholders $1..$J; the WHERE continues at $J+1, seeded with the SELECT binds
+%% (held reversed, as `cw`/`ch` accumulate), and the HAVING continues after it, so the
+%% three placeholder runs never collide. Each output row is keyed by the projection's
+%% aliases; the trailing ORDER BY makes the group order deterministic, matching the
+%% in-memory backend.
 do_group_summarize(Conn, Table, Tree, KeyCol, Cols, Having) ->
-    {WhereFrag, RevB1, N1} = cw(Tree, 1, []),
-    {HavingFrag, RevB2, _N2} = compile_having(Having, KeyCol, N1, RevB1),
-    SelectList = lists:join(", ", [group_select_term(C, KeyCol) || C <- Cols]),
+    {SelectList, RevB1, N1} = group_select_list(Cols, KeyCol, 1, []),
+    {WhereFrag, RevB2, N2} = cw(Tree, N1, RevB1),
+    {HavingFrag, RevB3, _N3} = compile_having(Having, KeyCol, N2, RevB2),
     HavingClause = case HavingFrag of
         [] -> [];
         _  -> [" HAVING ", HavingFrag]
@@ -1144,18 +1136,33 @@ do_group_summarize(Conn, Table, Tree, KeyCol, Cols, Having) ->
     Sql = ["SELECT ", SelectList, " FROM ", quote_ident(Table),
            " WHERE ", WhereFrag, " GROUP BY ", quote_ident(KeyCol),
            HavingClause, " ORDER BY ", quote_ident(KeyCol)],
-    run_query(Conn, Sql, lists:reverse(RevB2)).
+    run_query(Conn, Sql, lists:reverse(RevB3)).
 
-%% One select-list term for a group aggregate: the key column, COUNT(*), or a
-%% scalar aggregate, each aliased to the projection's output name. Func is matched
-%% against the whitelisted keywords; the column is quoted as an identifier, so
-%% neither is interpolated as raw SQL.
-group_select_term({Alias, <<"KEY">>, _Col, _IsRight}, KeyCol) ->
-    [quote_ident(KeyCol), " AS ", quote_ident(Alias)];
-group_select_term({Alias, <<"COUNT">>, _Col, _IsRight}, _KeyCol) ->
-    ["COUNT(*) AS ", quote_ident(Alias)];
-group_select_term({Alias, Func, Col, _IsRight}, _KeyCol) ->
-    [agg_expr(Func, Col), " AS ", quote_ident(Alias)].
+%% The grouped SELECT list, threaded left to right so a computed fold's literals
+%% bind in source order. Returns the comma-joined fragment, the reversed bind
+%% accumulator, and the next placeholder index.
+group_select_list(Cols, KeyCol, N, B) ->
+    {RevTerms, B1, N1} = lists:foldl(
+        fun(C, {Terms, Bn, Nn}) ->
+            {Frag, Bn1, Nn1} = group_select_term(C, KeyCol, Nn, Bn),
+            {[Frag | Terms], Bn1, Nn1}
+        end,
+        {[], B, N},
+        Cols),
+    {lists:join(", ", lists:reverse(RevTerms)), B1, N1}.
+
+%% One select-list term for a group aggregate: the key column, COUNT(*), or a scalar
+%% aggregate folding its captured value, each aliased to the projection's output name.
+%% Func is matched against the whitelisted keywords; the folded value is a `QExpr`
+%% compiled through `cw_operand`, so a literal in it binds as a `$N` placeholder rather
+%% than being interpolated as raw SQL.
+group_select_term({Alias, <<"KEY">>, _Col, _IsRight}, KeyCol, N, B) ->
+    {[quote_ident(KeyCol), " AS ", quote_ident(Alias)], B, N};
+group_select_term({Alias, <<"COUNT">>, _Col, _IsRight}, _KeyCol, N, B) ->
+    {["COUNT(*) AS ", quote_ident(Alias)], B, N};
+group_select_term({Alias, Func, Col, _IsRight}, _KeyCol, N, B) ->
+    {Frag, B1, N1} = agg_expr(Func, Col, N, B),
+    {[Frag, " AS ", quote_ident(Alias)], B1, N1}.
 
 %% --- QExpr -> parameterised HAVING clause ---
 %%
@@ -1199,10 +1206,10 @@ ch_cmp(Op, L, R, K, N, B) ->
 %% atoms; the scalar aggregates wrap their `QCol`.
 ch_operand('QAggCount', _K, N, B) -> {"COUNT(*)", B, N};
 ch_operand('QGroupKey', K, N, B)  -> {quote_ident(K), B, N};
-ch_operand({'QAggSum', {'QCol', C}}, _K, N, B) -> {agg_expr(<<"SUM">>, C), B, N};
-ch_operand({'QAggAvg', {'QCol', C}}, _K, N, B) -> {agg_expr(<<"AVG">>, C), B, N};
-ch_operand({'QAggMin', {'QCol', C}}, _K, N, B) -> {agg_expr(<<"MIN">>, C), B, N};
-ch_operand({'QAggMax', {'QCol', C}}, _K, N, B) -> {agg_expr(<<"MAX">>, C), B, N};
+ch_operand({'QAggSum', Col}, _K, N, B) -> agg_expr(<<"SUM">>, Col, N, B);
+ch_operand({'QAggAvg', Col}, _K, N, B) -> agg_expr(<<"AVG">>, Col, N, B);
+ch_operand({'QAggMin', Col}, _K, N, B) -> agg_expr(<<"MIN">>, Col, N, B);
+ch_operand({'QAggMax', Col}, _K, N, B) -> agg_expr(<<"MAX">>, Col, N, B);
 ch_operand({'QLitInt', V}, _K, N, B)   -> {[$$ | integer_to_list(N)], [{'SqlInt', V} | B], N + 1};
 ch_operand({'QLitText', V}, _K, N, B)  -> {[$$ | integer_to_list(N)], [{'SqlText', V} | B], N + 1};
 ch_operand({'QLitBool', V}, _K, N, B)  -> {[$$ | integer_to_list(N)], [{'SqlBool', V} | B], N + 1};

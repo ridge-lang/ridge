@@ -1382,6 +1382,28 @@ pub fn db groupRanges () -> Text =
                 Err _   -> "group-err"
                 Ok rows -> rangeCells rows
 
+-- group + summarize over a COMPUTED aggregate against Postgres: SUM(salary * 2) per
+-- dept -> "eng:600,ops:100,sales:1200". The fold compiles to `SUM(("salary" * $1))`,
+-- the literal bound as a parameter rather than spliced into the statement.
+pub fn db groupComputedSum () -> Text =
+    match setupEmps ()
+        Err _ -> "setup-err"
+        Ok r  ->
+            match r |> Repo.query |> Repo.groupBy (fn (e: Emp) -> e.dept) |> Repo.summarize (fn g -> DeptSum { dept = g.key, total = g.sum (fn (e: Emp) -> e.salary * 2) })
+                Err _   -> "group-err"
+                Ok rows -> sumCells rows
+
+-- group + having on a COMPUTED aggregate against Postgres: depts whose doubled
+-- payroll is >= 1200 -> "sales:1200". Proves a computed expression folds inside a
+-- HAVING aggregate, its literal bound alongside the SELECT's.
+pub fn db groupComputedHaving () -> Text =
+    match setupEmps ()
+        Err _ -> "setup-err"
+        Ok r  ->
+            match r |> Repo.query |> Repo.groupBy (fn (e: Emp) -> e.dept) |> Repo.having (fn g -> g.sum (fn (e: Emp) -> e.salary * 2) >= 1200) |> Repo.summarize (fn g -> DeptSum { dept = g.key, total = g.sum (fn (e: Emp) -> e.salary * 2) })
+                Err _   -> "group-err"
+                Ok rows -> sumCells rows
+
 -- group + having (COUNT) against Postgres: depts with more than one member ->
 -- "eng:2,sales:3". The HAVING re-renders COUNT(*) rather than an output alias.
 pub fn db groupHavingCount () -> Text =
@@ -2037,6 +2059,8 @@ fn postgres_adapter_reads_a_real_table() {
          io:format(\"groupSums=~s~n\",[{module}:groupSums()]), \
          io:format(\"groupAvgs=~s~n\",[{module}:groupAvgs()]), \
          io:format(\"groupRanges=~s~n\",[{module}:groupRanges()]), \
+         io:format(\"groupComputedSum=~s~n\",[{module}:groupComputedSum()]), \
+         io:format(\"groupComputedHaving=~s~n\",[{module}:groupComputedHaving()]), \
          io:format(\"groupHavingCount=~s~n\",[{module}:groupHavingCount()]), \
          io:format(\"groupHavingSum=~s~n\",[{module}:groupHavingSum()]), \
          io:format(\"groupFilteredHaving=~s~n\",[{module}:groupFilteredHaving()]), \
@@ -2356,6 +2380,14 @@ fn postgres_adapter_reads_a_real_table() {
         (
             "groupRanges=eng:100-200,ops:50-50,sales:150-300",
             "MIN and MAX over one column compose in a single grouped select-list",
+        ),
+        (
+            "groupComputedSum=eng:600,ops:100,sales:1200",
+            "SUM(salary * 2) folds a computed expression per group, the literal bound",
+        ),
+        (
+            "groupComputedHaving=sales:1200",
+            "HAVING SUM(salary * 2) >= 1200 keeps only sales, a computed aggregate threshold",
         ),
         (
             "groupHavingCount=eng:2,sales:3",

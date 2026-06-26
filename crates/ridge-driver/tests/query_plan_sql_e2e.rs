@@ -189,7 +189,7 @@ pub fn aggSql () -> Text =
     renderSql (planAggregate "AVG" (col2 (fn (u: User) (p: Post) -> p.author)) 1 (wrapJoin ()))
 
 pub fn groupSql () -> Text =
-    renderSql (planGroup "author" 1 [("author", "KEY", "", 1), ("n", "COUNT", "", 0)] (keepAllJoin ()) (wrapJoin ()))
+    renderSql (planGroup "author" 1 [("author", "KEY", keepAllJoin (), 1), ("n", "COUNT", keepAllJoin (), 0)] (keepAllJoin ()) (wrapJoin ()))
 
 pub fn inner3Sql () -> Text = renderSql (inner3 ())
 
@@ -379,9 +379,20 @@ pub fn projectFullMixSql () -> Text = renderSql (projectFullMix ())
 -- each aggregate independently over the flattened multi-way join, GROUP BY and ORDER BY
 -- carrying the same key expression, the base adult filter qualified to t0 ($1).
 fn groupThree () -> QueryPlan =
-    planGroup "title" 1 [("label", "KEY", "", 1), ("n", "COUNT", "", 0), ("ages", "SUM", "age", 0)] (keepAllJoin ()) (inner3 ())
+    planGroup "title" 1 [("label", "KEY", keepAllJoin (), 1), ("n", "COUNT", keepAllJoin (), 0), ("ages", "SUM", col3 (fn (u: User) (p: Post) (c: Comment) -> u.age), 0)] (keepAllJoin ()) (inner3 ())
 
 pub fn groupThreeSql () -> Text = renderSql (groupThree ())
+
+-- The same grouped composite, but the SUM folds a COMPUTED expression (user age
+-- doubled) rather than a bare column. The SELECT list renders first, so the literal
+-- 2 binds as $1 and the base adult filter shifts to $2 — proving a computed grouped
+-- aggregate parameterises its literals and threads them ahead of the WHERE.
+fn groupComputedThree () -> QueryPlan =
+    planGroup "title" 1 [("label", "KEY", keepAllJoin (), 1), ("n", "COUNT", keepAllJoin (), 0), ("ages", "SUM", col3 (fn (u: User) (p: Post) (c: Comment) -> u.age * 2), 0)] (keepAllJoin ()) (inner3 ())
+
+pub fn groupComputedThreeSql () -> Text = renderSql (groupComputedThree ())
+
+pub fn groupComputedThreeBinds () -> Text = renderBinds (groupComputedThree ())
 
 -- A grouped summary over an outer (mixed-shape) composite: the same leaf-qualified
 -- GROUP BY over a chain that joins the third table under a LEFT/RIGHT/FULL step. The
@@ -389,13 +400,13 @@ pub fn groupThreeSql () -> Text = renderSql (groupThree ())
 -- FROM the aggregates render). The LEFT case keys on a left leaf (t0), the RIGHT on the
 -- new leaf (t2), the FULL on a left leaf with the base scan riding inside its subquery.
 fn groupLeftMix () -> QueryPlan =
-    planGroup "name" 0 [("label", "KEY", "", 0), ("n", "COUNT", "", 0)] (keepAllJoin ()) (innerLeftMix ())
+    planGroup "name" 0 [("label", "KEY", keepAllJoin (), 0), ("n", "COUNT", keepAllJoin (), 0)] (keepAllJoin ()) (innerLeftMix ())
 
 fn groupRightMix () -> QueryPlan =
-    planGroup "body" 2 [("label", "KEY", "", 2), ("n", "COUNT", "", 0)] (keepAllJoin ()) (innerRightMix ())
+    planGroup "body" 2 [("label", "KEY", keepAllJoin (), 2), ("n", "COUNT", keepAllJoin (), 0)] (keepAllJoin ()) (innerRightMix ())
 
 fn groupFullMix () -> QueryPlan =
-    planGroup "name" 0 [("label", "KEY", "", 0), ("n", "COUNT", "", 0)] (keepAllJoin ()) (innerFullMix ())
+    planGroup "name" 0 [("label", "KEY", keepAllJoin (), 0), ("n", "COUNT", keepAllJoin (), 0)] (keepAllJoin ()) (innerFullMix ())
 
 pub fn groupLeftMixSql () -> Text = renderSql (groupLeftMix ())
 
@@ -577,7 +588,7 @@ fn query_plan_compiles_to_parameterized_sql() {
 
     let expr = format!(
         "F=fun(N)->io:format(\"~s=~s~n\",[N,{module}:N()])end, \
-         lists:foreach(F,['scanSql','scanBinds','foldSql','likeSql','likeBinds','inSql','inBinds','inEmptySql','inEmptyBinds','arithMulSql','arithMulBinds','arithColSql','arithModSql','combineSql','refineSql','innerSql','leftSql','rightSql','fullSql','fullBinds','projectSql','projectCalcSql','projectCalcBinds','projectCaseJoinSql','aggSql','groupSql','inner3Sql','inner3Binds','existsSql','existsThreeSql','existsThreeBinds','everyJoinSql','everyJoinBinds','innerLeftMixSql','innerRightMixSql','innerFullMixSql','innerFullMixBinds','adultLeftMixSql','adultLeftMixBinds','countAdultLeftMixSql','countThreeSql','countThreeBinds','countLeftMixSql','countLeftMixBinds','sumThreeSql','avgThreeSql','projectThreeSql','projectLeftMixSql','projectRightMixSql','projectFullMixSql','groupThreeSql','groupLeftMixSql','groupRightMixSql','groupFullMixSql','orderThreeSql','orderLeftMixSql','orderRightMixSql','orderFullMixSql','inner4Sql','sumFourSql','projectFourSql','orderFourSql']), halt()."
+         lists:foreach(F,['scanSql','scanBinds','foldSql','likeSql','likeBinds','inSql','inBinds','inEmptySql','inEmptyBinds','arithMulSql','arithMulBinds','arithColSql','arithModSql','combineSql','refineSql','innerSql','leftSql','rightSql','fullSql','fullBinds','projectSql','projectCalcSql','projectCalcBinds','projectCaseJoinSql','aggSql','groupSql','inner3Sql','inner3Binds','existsSql','existsThreeSql','existsThreeBinds','everyJoinSql','everyJoinBinds','innerLeftMixSql','innerRightMixSql','innerFullMixSql','innerFullMixBinds','adultLeftMixSql','adultLeftMixBinds','countAdultLeftMixSql','countThreeSql','countThreeBinds','countLeftMixSql','countLeftMixBinds','sumThreeSql','avgThreeSql','projectThreeSql','projectLeftMixSql','projectRightMixSql','projectFullMixSql','groupThreeSql','groupComputedThreeSql','groupComputedThreeBinds','groupLeftMixSql','groupRightMixSql','groupFullMixSql','orderThreeSql','orderLeftMixSql','orderRightMixSql','orderFullMixSql','inner4Sql','sumFourSql','projectFourSql','orderFourSql']), halt()."
     );
     let output = Command::new("erl")
         .arg("-noshell")
@@ -817,6 +828,15 @@ fn query_plan_compiles_to_parameterized_sql() {
     want(
         r#"groupThreeSql=SELECT t1."title" AS "label", COUNT(*) AS "n", SUM(t0."age") AS "ages" FROM "users" AS t0 JOIN "posts" AS t1 ON t0."id" = t1."author" JOIN "comments" AS t2 ON t1."id" = t2."post" WHERE (t0."age" >= $1) GROUP BY t1."title" ORDER BY t1."title""#,
     );
+
+    // The computed grouped fold: SUM over `t0."age" * 2`. The SELECT renders first, so
+    // the literal 2 binds as $1 and the base adult filter shifts to $2 — the literal is
+    // parameterised, never spliced into the statement, and the two placeholder runs
+    // stay in textual order.
+    want(
+        r#"groupComputedThreeSql=SELECT t1."title" AS "label", COUNT(*) AS "n", SUM((t0."age" * $1)) AS "ages" FROM "users" AS t0 JOIN "posts" AS t1 ON t0."id" = t1."author" JOIN "comments" AS t2 ON t1."id" = t2."post" WHERE (t0."age" >= $2) GROUP BY t1."title" ORDER BY t1."title""#,
+    );
+    want("groupComputedThreeBinds=2");
 
     // The same grouped summary over a mixed-shape composite renders the third leaf under
     // its own join kind and qualifies the key to whichever leaf names it — a left leaf (t0)

@@ -1503,16 +1503,11 @@ mem_set_op(_Op, L, _R)            -> L.
 %% (an all-integer sum stays an integer, a float anywhere makes it a float); AVG
 %% is always a float; MIN/MAX keep the values' own type, comparing numbers
 %% numerically and text lexicographically.
-%% Fold an aggregate over a resolved column NAME — the grouped path, which has
-%% already resolved each group aggregate's column to its (leaf-prefixed or bare)
-%% name. Reads the cell directly; the quoted-key dual is `mem_agg_value_q`.
-mem_aggregate_value(Func, Column, Rows) ->
-    Values = [V || R <- Rows, V <- [maps:get(Column, R, 'SqlNull')], V =/= 'SqlNull'],
-    mem_agg(Func, Values).
-
-%% Fold an aggregate over a quoted KEY (a `QExpr` — a column or a computed expression
-%% over the columns) — the single-table and join scalar-aggregate path, where the key
-%% is evaluated per row rather than read by a pre-resolved name.
+%% Fold an aggregate over a quoted value (a `QExpr` — a column or a computed
+%% expression over the columns) — the scalar-aggregate and grouped paths alike, where
+%% the value is evaluated per row rather than read by a pre-resolved name. A
+%% single-table or `Seq` row is read bare; a join's flat leaf-prefixed row resolves
+%% each column to its leaf.
 mem_agg_value_q(Func, Column, Rows) ->
     mem_agg(Func, mem_agg_values(Column, Rows)).
 
@@ -1619,7 +1614,7 @@ mem_group_row(Cols, Key, GroupRows) ->
 
 mem_group_value(<<"KEY">>, _Col, Key, _GR)   -> Key;
 mem_group_value(<<"COUNT">>, _Col, _Key, GR) -> {'SqlInt', length(GR)};
-mem_group_value(Func, Col, _Key, GR)         -> mem_aggregate_value(Func, Col, GR).
+mem_group_value(Func, Col, _Key, GR)         -> mem_agg_value_q(Func, Col, GR).
 
 %% Evaluate a HAVING predicate tree over one group (its key and rows). The leaves
 %% are aggregate nodes — `QGroupKey`, `QAggCount`, `QAgg{Sum,Avg,Min,Max}` — that
@@ -1649,20 +1644,21 @@ mem_hrelate(Op, L, R, Key, GR) ->
 %% as a bare atom; the scalar aggregates wrap their `QCol`.
 mem_hscalar('QGroupKey', Key, _GR) -> Key;
 mem_hscalar('QAggCount', _Key, GR) -> {'SqlInt', length(GR)};
-mem_hscalar({'QAggSum', {'QCol', C}}, _Key, GR) -> mem_agg_or_undef(<<"SUM">>, C, GR);
-mem_hscalar({'QAggAvg', {'QCol', C}}, _Key, GR) -> mem_agg_or_undef(<<"AVG">>, C, GR);
-mem_hscalar({'QAggMin', {'QCol', C}}, _Key, GR) -> mem_agg_or_undef(<<"MIN">>, C, GR);
-mem_hscalar({'QAggMax', {'QCol', C}}, _Key, GR) -> mem_agg_or_undef(<<"MAX">>, C, GR);
+mem_hscalar({'QAggSum', Col}, _Key, GR) -> mem_agg_q_or_undef(<<"SUM">>, Col, GR);
+mem_hscalar({'QAggAvg', Col}, _Key, GR) -> mem_agg_q_or_undef(<<"AVG">>, Col, GR);
+mem_hscalar({'QAggMin', Col}, _Key, GR) -> mem_agg_q_or_undef(<<"MIN">>, Col, GR);
+mem_hscalar({'QAggMax', Col}, _Key, GR) -> mem_agg_q_or_undef(<<"MAX">>, Col, GR);
 mem_hscalar({'QLitInt', N}, _Key, _GR)   -> {'SqlInt', N};
 mem_hscalar({'QLitText', S}, _Key, _GR)  -> {'SqlText', S};
 mem_hscalar({'QLitBool', B}, _Key, _GR)  -> {'SqlBool', B};
 mem_hscalar({'QLitFloat', F}, _Key, _GR) -> {'SqlFloat', F};
 mem_hscalar(_Other, _Key, _GR)           -> undefined.
 
-%% An aggregate over a group as a comparison operand: an all-NULL fold has no
-%% value, so the comparison fails rather than crashing.
-mem_agg_or_undef(Func, Col, GR) ->
-    case mem_aggregate_value(Func, Col, GR) of
+%% An aggregate over a group as a comparison operand: the folded value (a column or
+%% a computed expression, evaluated per row) reduced over the group rows. An all-NULL
+%% fold has no value, so the comparison fails rather than crashing.
+mem_agg_q_or_undef(Func, Col, GR) ->
+    case mem_agg_value_q(Func, Col, GR) of
         'SqlNull' -> undefined;
         V         -> V
     end.
@@ -1673,10 +1669,11 @@ mem_agg_or_undef(Func, Col, GR) ->
 %% group aggregates, and summarise each surviving group. One interpreter for a binary or
 %% a deeper composite join — whose flat rows prefix every leaf's columns (`t0$` for the
 %% first, `t1$` for a binary right, higher for a composite) — and for a single-leaf
-%% in-memory `Seq`, whose rows are unprefixed: `mem_agg_col` resolves each column to its
-%% leaf-prefixed name when the rows carry it and the bare name otherwise, so the key and
-%% every grouped aggregate fold the right column either way. An unmatched outer row simply
-%% lacks that leaf's columns, which read SqlNull and drop out of the fold.
+%% in-memory `Seq`, whose rows are unprefixed: `mem_agg_col` resolves the key column to
+%% its leaf-prefixed name when the rows carry it and the bare name otherwise, and each
+%% grouped aggregate folds its captured `QExpr` value through `mem_agg_value_q`, which
+%% reads each column off the right leaf. An unmatched outer row simply lacks that leaf's
+%% columns, which read SqlNull and drop out of the fold.
 mem_group_nary(Rows, KeyLeaf, KeyCol, Cols, Having) ->
     KeyName = mem_agg_col(KeyLeaf, KeyCol, Rows),
     Groups = mem_group_nary_by(KeyName, Rows),
@@ -1697,19 +1694,21 @@ mem_group_nary_by(KeyName, Rows) ->
         [],
         Rows).
 
-%% One output row per join group: each `{Alias, Func, Column, Leaf}` folds the
-%% leaf-prefixed column, COUNT counts the rows, KEY answers the group key.
+%% One output row per join group: each `{Alias, Func, Value, Leaf}` folds its captured
+%% `QExpr` value (a column or a computed expression, each column read off its leaf),
+%% COUNT counts the rows, KEY answers the group key.
 mem_group_nary_row(Cols, Key, GR) ->
     maps:from_list([{Alias, mem_group_nary_value(Func, Column, Leaf, Key, GR)}
                     || {Alias, Func, Column, Leaf} <- Cols]).
 
 mem_group_nary_value(<<"KEY">>, _Col, _Leaf, Key, _GR)   -> Key;
 mem_group_nary_value(<<"COUNT">>, _Col, _Leaf, _Key, GR) -> {'SqlInt', length(GR)};
-mem_group_nary_value(Func, Col, Leaf, _Key, GR) ->
-    mem_aggregate_value(Func, mem_agg_col(Leaf, Col, GR), GR).
+mem_group_nary_value(Func, Col, _Leaf, _Key, GR) ->
+    mem_agg_value_q(Func, Col, GR).
 
 %% HAVING over a join group: as mem_having, but its scalar-aggregate leaves fold a
-%% leaf-prefixed column (`QCol`/`QColR`/`QColAt`) off the flat group rows.
+%% captured value (a leaf-qualified column or a computed expression over the leaves)
+%% off the flat group rows.
 mem_having_nary({'QLitBool', true}, _Key, _GR) -> true;
 mem_having_nary({'QAnd', L, R}, Key, GR) -> mem_having_nary(L, Key, GR) andalso mem_having_nary(R, Key, GR);
 mem_having_nary({'QOr', L, R}, Key, GR)  -> mem_having_nary(L, Key, GR) orelse mem_having_nary(R, Key, GR);
@@ -1731,23 +1730,15 @@ mem_hrelate_nary(Op, L, R, Key, GR) ->
 
 mem_hscalar_nary('QGroupKey', Key, _GR) -> Key;
 mem_hscalar_nary('QAggCount', _Key, GR) -> {'SqlInt', length(GR)};
-mem_hscalar_nary({'QAggSum', Node}, _Key, GR) -> mem_agg_node_nary(<<"SUM">>, Node, GR);
-mem_hscalar_nary({'QAggAvg', Node}, _Key, GR) -> mem_agg_node_nary(<<"AVG">>, Node, GR);
-mem_hscalar_nary({'QAggMin', Node}, _Key, GR) -> mem_agg_node_nary(<<"MIN">>, Node, GR);
-mem_hscalar_nary({'QAggMax', Node}, _Key, GR) -> mem_agg_node_nary(<<"MAX">>, Node, GR);
+mem_hscalar_nary({'QAggSum', Node}, _Key, GR) -> mem_agg_q_or_undef(<<"SUM">>, Node, GR);
+mem_hscalar_nary({'QAggAvg', Node}, _Key, GR) -> mem_agg_q_or_undef(<<"AVG">>, Node, GR);
+mem_hscalar_nary({'QAggMin', Node}, _Key, GR) -> mem_agg_q_or_undef(<<"MIN">>, Node, GR);
+mem_hscalar_nary({'QAggMax', Node}, _Key, GR) -> mem_agg_q_or_undef(<<"MAX">>, Node, GR);
 mem_hscalar_nary({'QLitInt', N}, _Key, _GR)   -> {'SqlInt', N};
 mem_hscalar_nary({'QLitText', S}, _Key, _GR)  -> {'SqlText', S};
 mem_hscalar_nary({'QLitBool', B}, _Key, _GR)  -> {'SqlBool', B};
 mem_hscalar_nary({'QLitFloat', F}, _Key, _GR) -> {'SqlFloat', F};
 mem_hscalar_nary(_Other, _Key, _GR)           -> undefined.
-
-%% A scalar aggregate over a group's column: the first leaf for a `QCol`, the second for
-%% a `QColR`, the i-th for a `QColAt`. `mem_agg_col` reads the leaf-prefixed column off a
-%% join's flat rows or the bare column off an unprefixed `Seq` group.
-mem_agg_node_nary(Func, {'QCol', C}, GR)      -> mem_agg_or_undef(Func, mem_agg_col(0, C, GR), GR);
-mem_agg_node_nary(Func, {'QColR', C}, GR)     -> mem_agg_or_undef(Func, mem_agg_col(1, C, GR), GR);
-mem_agg_node_nary(Func, {'QColAt', I, C}, GR) -> mem_agg_or_undef(Func, mem_agg_col(I, C, GR), GR);
-mem_agg_node_nary(_Func, _Node, _GR)          -> undefined.
 
 %% Merge the Changes columns into every row matching the predicate tree, leaving
 %% the rest untouched; return `{UpdatedRows, ChangedCount}`. An empty Changes map

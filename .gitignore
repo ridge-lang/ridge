@@ -59,3 +59,4 @@ engram*
 
 # Dogfood — per-app ridge target/ caches.  Never check in.
 dogfood/*/target/
+**/target-test/*

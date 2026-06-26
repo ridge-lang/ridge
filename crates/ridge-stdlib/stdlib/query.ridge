@@ -232,6 +232,11 @@ fn showExpr (e: QExpr) -> Text =
         QAggMax c   -> aggShow "max" c
         QLike v p   -> binNode v " LIKE " p
         QIn v items -> Text.join "" ["(", showExpr v, " IN (", Text.join ", " (showInList items), "))"]
+        QAdd l r    -> binNode l " + " r
+        QSub l r    -> binNode l " - " r
+        QMul l r    -> binNode l " * " r
+        QDiv l r    -> binNode l " / " r
+        QMod l r    -> binNode l " % " r
 
 fn binNode (l: QExpr) (op: Text) (r: QExpr) -> Text =
     Text.concat "(" (Text.concat (showExpr l) (Text.concat op (Text.concat (showExpr r) ")")))
@@ -294,6 +299,11 @@ fn compileExpr (e: QExpr) -> { text: Text, binds: List SqlValue } =
                     let lv = compileExpr v
                     let inner = compileInList items
                     { text = Text.join "" ["(", lv.text, " IN (", inner.text, "))"], binds = lv.binds ++ inner.binds }
+        QAdd l r -> binNodeSql l " + " r
+        QSub l r -> binNodeSql l " - " r
+        QMul l r -> binNodeSql l " * " r
+        QDiv l r -> binNodeSql l " / " r
+        QMod l r -> binNodeSql l " % " r
 
 fn aggSql (fnName: Text) (c: QExpr) -> { text: Text, binds: List SqlValue } =
     let r = compileExpr c
@@ -493,7 +503,21 @@ fn renderOperand (qualified: Bool) (e: QExpr) (n: Int) -> { text: Text, binds: L
         QLitText v  -> { text = placeholder n, binds = [sqlText v], next = n + 1 }
         QLitBool v  -> { text = placeholder n, binds = [sqlBool v], next = n + 1 }
         QLitFloat v -> { text = placeholder n, binds = [sqlFloat v], next = n + 1 }
+        QAdd l r    -> arithOperand qualified l " + " r n
+        QSub l r    -> arithOperand qualified l " - " r n
+        QMul l r    -> arithOperand qualified l " * " r n
+        QDiv l r    -> arithOperand qualified l " / " r n
+        QMod l r    -> arithOperand qualified l " % " r n
         _           -> { text = "NULL", binds = [], next = n }
+
+-- An arithmetic operand: `(lhs OP rhs)`, each side rendered as an operand and
+-- wrapped in parentheses so the operator precedence is explicit. The placeholder
+-- counter threads left to right through both sides, so a literal in either side
+-- binds in source order.
+fn arithOperand (qualified: Bool) (l: QExpr) (op: Text) (r: QExpr) (n: Int) -> { text: Text, binds: List SqlValue, next: Int } =
+    let lr = renderOperand qualified l n
+    let rr = renderOperand qualified r lr.next
+    { text = Text.join "" ["(", lr.text, op, rr.text, ")"], binds = lr.binds ++ rr.binds, next = rr.next }
 
 -- The comma-separated operands of an `IN (…)` list, each a `$N` placeholder
 -- binding its value, threaded left to right so the placeholders stay in order.
@@ -756,7 +780,19 @@ fn qualOperand (q0: Int) (e: QExpr) (n: Int) -> { text: Text, binds: List SqlVal
         QLitText v  -> { text = placeholder n, binds = [sqlText v], next = n + 1 }
         QLitBool v  -> { text = placeholder n, binds = [sqlBool v], next = n + 1 }
         QLitFloat v -> { text = placeholder n, binds = [sqlFloat v], next = n + 1 }
+        QAdd l r    -> arithQual q0 l " + " r n
+        QSub l r    -> arithQual q0 l " - " r n
+        QMul l r    -> arithQual q0 l " * " r n
+        QDiv l r    -> arithQual q0 l " / " r n
+        QMod l r    -> arithQual q0 l " % " r n
         _           -> { text = "NULL", binds = [], next = n }
+
+-- The leaf-qualified dual of `arithOperand`: `(lhs OP rhs)` with each side a
+-- leaf-qualified operand, threaded left to right.
+fn arithQual (q0: Int) (l: QExpr) (op: Text) (r: QExpr) (n: Int) -> { text: Text, binds: List SqlValue, next: Int } =
+    let lr = qualOperand q0 l n
+    let rr = qualOperand q0 r lr.next
+    { text = Text.join "" ["(", lr.text, op, rr.text, ")"], binds = lr.binds ++ rr.binds, next = rr.next }
 
 -- The leaf-qualified dual of `renderInList`: an `IN (…)` list inside a composite
 -- join's WHERE, each element a `$N` placeholder threaded left to right.

@@ -1287,8 +1287,21 @@ cw_operand({'QLitBool', V}, N, B) ->
     {[$$ | integer_to_list(N)], [{'SqlBool', V} | B], N + 1};
 cw_operand({'QLitFloat', V}, N, B) ->
     {[$$ | integer_to_list(N)], [{'SqlFloat', V} | B], N + 1};
+%% Arithmetic value operands — `(lhs OP rhs)`, each side an operand, wrapped in
+%% parentheses so precedence is explicit. Both sides share one numeric type, so
+%% Postgres applies the same int/float arithmetic the in-memory backend does.
+cw_operand({'QAdd', L, R}, N, B) -> cw_arith(" + ", L, R, N, B);
+cw_operand({'QSub', L, R}, N, B) -> cw_arith(" - ", L, R, N, B);
+cw_operand({'QMul', L, R}, N, B) -> cw_arith(" * ", L, R, N, B);
+cw_operand({'QDiv', L, R}, N, B) -> cw_arith(" / ", L, R, N, B);
+cw_operand({'QMod', L, R}, N, B) -> cw_arith(" % ", L, R, N, B);
 cw_operand(_Other, N, B) ->
     {"NULL", B, N}.
+
+cw_arith(Op, L, R, N, B) ->
+    {FL, B1, N1} = cw_operand(L, N, B),
+    {FR, B2, N2} = cw_operand(R, N1, B1),
+    {["(", FL, Op, FR, ")"], B2, N2}.
 
 quote_ident(Name) ->
     Escaped = binary:replace(to_bin_text(Name), <<"\"">>, <<"\"\"">>, [global]),

@@ -366,12 +366,19 @@ pub(crate) fn check_quote(
     // body that is neither a predicate nor a projection nor a column is rejected
     // there with the same "must be a single column" diagnostic.
 
-    // The ordering key must be a single column (or a literal). Its type must
-    // match the quote's declared result type — except when that result type is
-    // an unbound variable (a polymorphic `orderBy` key, whose return is phantom),
-    // in which case any column is accepted and the variable is bound to it.
+    // The ordering key (or aggregate accessor) must be a single column, checked
+    // against the entity's schema — a computed expression (arithmetic) or a bare
+    // literal is rejected, so only a schema-validated column reaches the generated
+    // `ORDER BY` / `SUM(...)`. Arithmetic is a value usable as a *comparison
+    // operand*, never as an ordering key. The column's type must match the quote's
+    // declared result type — except when that result type is an unbound variable
+    // (a polymorphic key, whose return is phantom), in which case any column is
+    // accepted and the variable is bound to it.
     let want_ty = want.unwrap_or_else(|| Type::Con(b.bool, vec![]));
-    let col_ty = value_type(&qk).map(|vt| ctx.deep_resolve(vt));
+    let col_ty = match &qk {
+        QKind::Col(t) => Some(ctx.deep_resolve(t)),
+        _ => None,
+    };
     let accepts = match &col_ty {
         Some(vt) if matches!(want_ty, Type::Var(_)) => {
             let _ = crate::unify::unify(ctx, &want_ty, vt);
@@ -717,6 +724,55 @@ fn check_binary(
                 None
             }
         }
+        // Arithmetic: `a + b`, `a - b`, `a * b`, `a / b`, `a % b`. Both operands
+        // must share one numeric type (Int or Float, no implicit coercion), and
+        // the result is that type — a *value*, so it lands as a comparison operand
+        // (`u.price * u.qty > 100`), not as a predicate of its own.
+        BinOp::Add | BinOp::Sub | BinOp::Mul | BinOp::Div | BinOp::Mod => {
+            let l = check_node(ctx, b, lhs, scope)?;
+            let r = check_node(ctx, b, rhs, scope)?;
+            let (Some(lt), Some(rt)) = (value_type(&l), value_type(&r)) else {
+                ctx.errors.push(TypeError::QuoteUnsupportedExpr {
+                    detail: "an arithmetic operand must be a column or a literal".to_string(),
+                    span,
+                });
+                return None;
+            };
+            let lt = ctx.deep_resolve(lt);
+            let rt = ctx.deep_resolve(rt);
+            if !is_numeric(b, &lt) || !is_numeric(b, &rt) || !same_value_type(&lt, &rt) {
+                let left = crate::render::render_type_with(&lt, &ctx.tycon_decls);
+                let right = crate::render::render_type_with(&rt, &ctx.tycon_decls);
+                ctx.errors.push(TypeError::QuoteUnsupportedExpr {
+                    detail: format!(
+                        "arithmetic (`+ - * / %`) takes two operands of the same numeric type \
+                         (Int or Float), but found {left} and {right}"
+                    ),
+                    span,
+                });
+                return None;
+            }
+            // `%` (modulo) is Int-only — Postgres does not define it on Float, so
+            // the in-memory backend would have no matching operation either.
+            if matches!(op, BinOp::Mod) && !is_int(b, &lt) {
+                ctx.errors.push(TypeError::QuoteUnsupportedExpr {
+                    detail: "modulo (`%`) applies to Int operands".to_string(),
+                    span,
+                });
+                return None;
+            }
+            // A literal-zero divisor is a guaranteed error — reject it here, rather
+            // than at run time where Postgres aborts the query and the in-memory
+            // backend drops the row.
+            if matches!(op, BinOp::Div | BinOp::Mod) && is_literal_zero(peel_paren(rhs)) {
+                ctx.errors.push(TypeError::QuoteUnsupportedExpr {
+                    detail: "division by zero".to_string(),
+                    span,
+                });
+                return None;
+            }
+            Some(QKind::Scalar(lt))
+        }
         _ => {
             ctx.errors.push(TypeError::QuoteUnsupportedExpr {
                 detail: "this operator is not supported in a quoted predicate".to_string(),
@@ -757,6 +813,43 @@ fn is_scope_column(e: &Expr, scope: &[Param]) -> bool {
 /// Whether `ty` is the `Text` base type.
 fn is_text(b: &BuiltinTyCons, ty: &Type) -> bool {
     matches!(ty, Type::Con(id, _) if *id == b.text)
+}
+
+/// Whether `ty` is a numeric base type (`Int` or `Float`).
+fn is_numeric(b: &BuiltinTyCons, ty: &Type) -> bool {
+    matches!(ty, Type::Con(id, _) if *id == b.int || *id == b.float)
+}
+
+/// Whether `ty` is the `Int` base type.
+fn is_int(b: &BuiltinTyCons, ty: &Type) -> bool {
+    matches!(ty, Type::Con(id, _) if *id == b.int)
+}
+
+/// Whether `e` is a numeric literal whose value is zero, in any radix or as a
+/// float — the one statically-detectable division-by-zero divisor.
+fn is_literal_zero(e: &Expr) -> bool {
+    let Expr::Literal(lit) = e else {
+        return false;
+    };
+    match lit {
+        Literal::IntDec { raw, .. }
+        | Literal::IntBin { raw, .. }
+        | Literal::IntOct { raw, .. }
+        | Literal::IntHex { raw, .. } => {
+            let s = raw.replace('_', "");
+            let digits = s
+                .strip_prefix("0b")
+                .or_else(|| s.strip_prefix("0B"))
+                .or_else(|| s.strip_prefix("0o"))
+                .or_else(|| s.strip_prefix("0O"))
+                .or_else(|| s.strip_prefix("0x"))
+                .or_else(|| s.strip_prefix("0X"))
+                .unwrap_or(s.as_str());
+            !digits.is_empty() && digits.bytes().all(|c| c == b'0')
+        }
+        Literal::Float { raw, .. } => raw.replace('_', "").parse::<f64>().is_ok_and(|v| v == 0.0),
+        _ => false,
+    }
 }
 
 /// Checks a predicate-helper call inside a quote. The recognised helpers are the

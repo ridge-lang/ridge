@@ -1871,6 +1871,11 @@ mem_jscalar({'QLitInt', N}, _L, _R)   -> {'SqlInt', N};
 mem_jscalar({'QLitText', S}, _L, _R)  -> {'SqlText', S};
 mem_jscalar({'QLitBool', B}, _L, _R)  -> {'SqlBool', B};
 mem_jscalar({'QLitFloat', F}, _L, _R) -> {'SqlFloat', F};
+mem_jscalar({'QAdd', A, B}, L, R) -> mem_arith_apply('+', mem_jscalar(A, L, R), mem_jscalar(B, L, R));
+mem_jscalar({'QSub', A, B}, L, R) -> mem_arith_apply('-', mem_jscalar(A, L, R), mem_jscalar(B, L, R));
+mem_jscalar({'QMul', A, B}, L, R) -> mem_arith_apply('*', mem_jscalar(A, L, R), mem_jscalar(B, L, R));
+mem_jscalar({'QDiv', A, B}, L, R) -> mem_arith_apply('/', mem_jscalar(A, L, R), mem_jscalar(B, L, R));
+mem_jscalar({'QMod', A, B}, L, R) -> mem_arith_apply('%', mem_jscalar(A, L, R), mem_jscalar(B, L, R));
 mem_jscalar(_Other, _L, _R)           -> undefined.
 
 %% --- N-ary (3+ table) inner join evaluation ---
@@ -2036,6 +2041,11 @@ mem_nscalar({'QLitInt', N}, _Row)   -> {'SqlInt', N};
 mem_nscalar({'QLitText', S}, _Row)  -> {'SqlText', S};
 mem_nscalar({'QLitBool', B}, _Row)  -> {'SqlBool', B};
 mem_nscalar({'QLitFloat', F}, _Row) -> {'SqlFloat', F};
+mem_nscalar({'QAdd', A, B}, Row) -> mem_arith_apply('+', mem_nscalar(A, Row), mem_nscalar(B, Row));
+mem_nscalar({'QSub', A, B}, Row) -> mem_arith_apply('-', mem_nscalar(A, Row), mem_nscalar(B, Row));
+mem_nscalar({'QMul', A, B}, Row) -> mem_arith_apply('*', mem_nscalar(A, Row), mem_nscalar(B, Row));
+mem_nscalar({'QDiv', A, B}, Row) -> mem_arith_apply('/', mem_nscalar(A, Row), mem_nscalar(B, Row));
+mem_nscalar({'QMod', A, B}, Row) -> mem_arith_apply('%', mem_nscalar(A, Row), mem_nscalar(B, Row));
 mem_nscalar(_Other, _Row)           -> undefined.
 
 mem_ncell(Key, Row) ->
@@ -2102,7 +2112,41 @@ mem_scalar({'QLitInt', N}, _Row)   -> {'SqlInt', N};
 mem_scalar({'QLitText', S}, _Row)  -> {'SqlText', S};
 mem_scalar({'QLitBool', B}, _Row)  -> {'SqlBool', B};
 mem_scalar({'QLitFloat', F}, _Row) -> {'SqlFloat', F};
+mem_scalar({'QAdd', A, B}, Row) -> mem_arith_apply('+', mem_scalar(A, Row), mem_scalar(B, Row));
+mem_scalar({'QSub', A, B}, Row) -> mem_arith_apply('-', mem_scalar(A, Row), mem_scalar(B, Row));
+mem_scalar({'QMul', A, B}, Row) -> mem_arith_apply('*', mem_scalar(A, Row), mem_scalar(B, Row));
+mem_scalar({'QDiv', A, B}, Row) -> mem_arith_apply('/', mem_scalar(A, Row), mem_scalar(B, Row));
+mem_scalar({'QMod', A, B}, Row) -> mem_arith_apply('%', mem_scalar(A, Row), mem_scalar(B, Row));
 mem_scalar(_Other, _Row)           -> undefined.
+
+%% Apply an arithmetic operator to two evaluated operands. The quotation checker
+%% pins one numeric type for both sides (Int or Float; `%` is Int-only), so a
+%% well-typed tree only ever reaches the matching int/float clause. A missing
+%% operand (undefined / SqlNull) or a zero divisor yields `undefined` — which the
+%% enclosing comparison reads as no-match — rather than an exception: the keeper
+%% process holds every table's rows, so a runtime division by zero must drop the
+%% row, never crash and lose all in-memory state (Postgres aborts the query; the
+%% surface rejects a *literal* zero divisor at compile time, covering the common
+%% case). Any shape the checker would not have produced also falls through to
+%% `undefined`, keeping the evaluator total.
+mem_arith_apply(_Op, undefined, _) -> undefined;
+mem_arith_apply(_Op, _, undefined) -> undefined;
+mem_arith_apply(_Op, 'SqlNull', _) -> undefined;
+mem_arith_apply(_Op, _, 'SqlNull') -> undefined;
+mem_arith_apply('/', {'SqlInt', _}, {'SqlInt', 0}) -> undefined;
+mem_arith_apply('%', {'SqlInt', _}, {'SqlInt', 0}) -> undefined;
+mem_arith_apply('%', {'SqlFloat', _}, {'SqlFloat', _}) -> undefined;
+mem_arith_apply('/', {'SqlFloat', _}, {'SqlFloat', B}) when B == 0.0 -> undefined;
+mem_arith_apply('+', {'SqlInt', A}, {'SqlInt', B}) -> {'SqlInt', A + B};
+mem_arith_apply('-', {'SqlInt', A}, {'SqlInt', B}) -> {'SqlInt', A - B};
+mem_arith_apply('*', {'SqlInt', A}, {'SqlInt', B}) -> {'SqlInt', A * B};
+mem_arith_apply('/', {'SqlInt', A}, {'SqlInt', B}) -> {'SqlInt', A div B};
+mem_arith_apply('%', {'SqlInt', A}, {'SqlInt', B}) -> {'SqlInt', A rem B};
+mem_arith_apply('+', {'SqlFloat', A}, {'SqlFloat', B}) -> {'SqlFloat', A + B};
+mem_arith_apply('-', {'SqlFloat', A}, {'SqlFloat', B}) -> {'SqlFloat', A - B};
+mem_arith_apply('*', {'SqlFloat', A}, {'SqlFloat', B}) -> {'SqlFloat', A * B};
+mem_arith_apply('/', {'SqlFloat', A}, {'SqlFloat', B}) -> {'SqlFloat', A / B};
+mem_arith_apply(_Op, _, _) -> undefined.
 
 %% Equality is exact and type-aware (the tags must match); ordering is defined
 %% only for the ordered base types and answers `false` for anything else.

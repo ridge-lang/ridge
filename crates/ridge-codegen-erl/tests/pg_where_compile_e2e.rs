@@ -27,6 +27,9 @@ io:format("like="), F({'QLike', {'QCol', <<"name">>}, {'QLitText', <<"%a%">>}}),
 io:format("in="), F({'QIn', {'QCol', <<"age">>}, [{'QLitInt', 18}, {'QLitInt', 30}]}),
 io:format("inempty="), F({'QIn', {'QCol', <<"age">>}, []}),
 io:format("andmix="), F({'QAnd', {'QLike', {'QCol', <<"name">>}, {'QLitText', <<"%a%">>}}, {'QGe', {'QCol', <<"age">>}, {'QLitInt', 18}}}),
+io:format("arithmul="), F({'QGt', {'QMul', {'QCol', <<"age">>}, {'QLitInt', 2}}, {'QLitInt', 50}}),
+io:format("arithcol="), F({'QGt', {'QAdd', {'QCol', <<"age">>}, {'QCol', <<"id">>}}, {'QLitInt', 20}}),
+io:format("arithmod="), F({'QEq', {'QMod', {'QCol', <<"age">>}, {'QLitInt', 2}}, {'QLitInt', 0}}),
 halt().
 "#;
 
@@ -117,6 +120,18 @@ fn compile_where_renders_like_and_in() {
         (
             r#"andmix=("name" LIKE $1 AND "age" >= $2)|2"#,
             "LIKE combines with a comparison under AND, binds in order",
+        ),
+        (
+            r#"arithmul=("age" * $1) > $2|2"#,
+            "a column times a literal renders as a parenthesised operand, binds in order",
+        ),
+        (
+            r#"arithcol=("age" + "id") > $1|1"#,
+            "a column plus a column binds nothing of its own",
+        ),
+        (
+            r#"arithmod=("age" % $1) = $2|2"#,
+            "modulo renders with the divisor bound as a placeholder",
         ),
     ] {
         assert!(

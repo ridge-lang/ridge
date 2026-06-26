@@ -344,6 +344,13 @@ pub fn prelude_types(b: &BuiltinTyCons) -> (FxHashMap<String, Scheme>, FxHashMap
             ty_con(b.list, vec![qexpr_ty.clone()]),
         ]),
     );
+    // The arithmetic value nodes, each over two operand `QExpr`s.
+    for name in ["QAdd", "QSub", "QMul", "QDiv", "QMod"] {
+        values.insert(
+            name.to_string(),
+            q_ctor(vec![qexpr_ty.clone(), qexpr_ty.clone()]),
+        );
+    }
 
     (values, tycons)
 }

@@ -1208,6 +1208,37 @@ async fn test_hover_record_field_names_owner() {
     );
 }
 
+#[tokio::test]
+async fn test_hover_parametric_field_renders_canonical_vars() {
+    // Hovering a field whose type still mentions the record's type parameters
+    // shows them as canonical letters (`a`, `b`) — the same logical type reads
+    // the same regardless of the internal inference-variable ids it carries,
+    // and the source parameter names (`p`, `q`) are not echoed.
+    let src = "pub type Box p q = { left: p, right: q }\n\
+               pub type Wrap p q = { inner: Box p q, label: Text }\n\
+               pub fn innerOf (w: Wrap p q) -> Box p q = w.inner\n";
+    let (service, _socket, uri) = hover_fixture(src).await;
+    let server = service.inner();
+
+    // `inner` in `w.inner` on line 2.
+    let line2 = "pub fn innerOf (w: Wrap p q) -> Box p q = w.inner";
+    let col = u32::try_from(line2.rfind("inner").expect("field use") + 1).expect("offset fits u32");
+    let h = server
+        .hover(hover_at(&uri, 2, col))
+        .await
+        .expect("hover ok");
+    let md = hover_markdown(h).expect("hover over a parametric field returns markup");
+
+    assert!(
+        md.contains("inner : Box a b"),
+        "parametric field hover should canonicalise its variables, got {md:?}"
+    );
+    assert!(
+        md.contains("field of `Wrap`"),
+        "field hover should name the owning record, got {md:?}"
+    );
+}
+
 // ── Test 17: textDocument/definition ──────────────────────────────────────────
 
 fn goto_at(uri: &Url, line: u32, character: u32) -> GotoDefinitionParams {

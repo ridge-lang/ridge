@@ -577,9 +577,14 @@ pub fn typecheck_module_decls(
                         .unwrap_or_else(|| Span::point(0));
                     let expected_ty = ctx.deep_resolve(ret_ty_box);
                     let found_ty = ctx.deep_resolve(&body_ty);
+                    let (expected, found) = crate::render::render_type_pair_with(
+                        &expected_ty,
+                        &found_ty,
+                        &ctx.tycon_decls,
+                    );
                     ctx.errors.push(TypeError::TypeMismatch {
-                        expected: crate::render::render_type_with(&expected_ty, &ctx.tycon_decls),
-                        found: crate::render::render_type_with(&found_ty, &ctx.tycon_decls),
+                        expected,
+                        found,
                         span,
                     });
                 }
@@ -794,9 +799,11 @@ pub fn infer_instance_methods(
             if unify(ctx, &body_ty, &ret_ty).is_err() {
                 let expected_ty = ctx.deep_resolve(&ret_ty);
                 let found_ty = ctx.deep_resolve(&body_ty);
+                let (expected, found) =
+                    crate::render::render_type_pair_with(&expected_ty, &found_ty, &ctx.tycon_decls);
                 ctx.errors.push(TypeError::TypeMismatch {
-                    expected: crate::render::render_type_with(&expected_ty, &ctx.tycon_decls),
-                    found: crate::render::render_type_with(&found_ty, &ctx.tycon_decls),
+                    expected,
+                    found,
                     span: method.span,
                 });
             }

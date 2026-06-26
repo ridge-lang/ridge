@@ -622,9 +622,11 @@ fn row_mismatch(
 ) -> TypeError {
     let expected = ctx.deep_resolve(&Type::record(f1.to_vec(), t1.clone()));
     let found = ctx.deep_resolve(&Type::record(f2.to_vec(), t2.clone()));
+    let (expected, found) =
+        crate::render::render_type_pair_with(&expected, &found, &ctx.tycon_decls);
     TypeError::RowMismatch {
-        expected: crate::render::render_type_with(&expected, &ctx.tycon_decls),
-        found: crate::render::render_type_with(&found, &ctx.tycon_decls),
+        expected,
+        found,
         missing_fields: only1.iter().map(|(label, _)| label.clone()).collect(),
         extra_fields: only2.iter().map(|(label, _)| label.clone()).collect(),
         span: dummy_span(),
@@ -642,9 +644,11 @@ fn row_mismatch(
 fn mismatch(ctx: &mut InferCtx, expected: &Type, found: &Type) -> TypeError {
     let expected = ctx.deep_resolve(expected);
     let found = ctx.deep_resolve(found);
+    let (expected, found) =
+        crate::render::render_type_pair_with(&expected, &found, &ctx.tycon_decls);
     TypeError::TypeMismatch {
-        expected: crate::render::render_type_with(&expected, &ctx.tycon_decls),
-        found: crate::render::render_type_with(&found, &ctx.tycon_decls),
+        expected,
+        found,
         span: dummy_span(),
     }
 }

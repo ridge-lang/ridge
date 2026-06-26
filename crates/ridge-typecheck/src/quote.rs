@@ -637,7 +637,15 @@ fn check_node(ctx: &mut InferCtx, b: &BuiltinTyCons, e: &Expr, scope: &[Param]) 
             then_branch,
             else_branch,
             span,
-        } => check_if(ctx, b, cond, then_branch, else_branch.as_deref(), *span, scope),
+        } => check_if(
+            ctx,
+            b,
+            cond,
+            then_branch,
+            else_branch.as_deref(),
+            *span,
+            scope,
+        ),
 
         // A predicate helper: `Text.like`/`contains`/`startsWith`/`endsWith` for a
         // text match, `List.contains` for an `IN` test. One operand names a column

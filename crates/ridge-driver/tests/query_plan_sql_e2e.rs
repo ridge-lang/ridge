@@ -27,6 +27,7 @@ import std.query as Query (QueryPlan, planScan, planCombine, planRefine, planJoi
 import std.sql (Sql, SqlValue, sqlValue)
 import std.int as Int
 import std.list as List
+import std.text as Text
 
 pub type User = { id: Int, age: Int, name: Text } deriving (Row)
 pub type Post = { id: Int, author: Int, title: Text } deriving (Row)
@@ -107,6 +108,24 @@ pub fn scanBinds () -> Text = renderBinds (planScan "users" (pred1 (fn u -> u.ag
 -- filter carrying a redundant `&& true` compiles to the same SQL as the bare
 -- comparison — the always-true arm drops and no clause survives for it.
 pub fn foldSql () -> Text = renderSql (planScan "users" (pred1 (fn (u: User) -> u.age >= 18 && true)) [] (0 - 1) 0 false)
+
+-- A text match: `Text.contains u.name "ann"` reifies to `QLike`, rendered as a
+-- `LIKE` against a `$1`-bound pattern (`%ann%`, the needle wrapped and escaped).
+pub fn likeSql () -> Text = renderSql (planScan "users" (pred1 (fn u -> Text.contains u.name "ann")) [] (0 - 1) 0 false)
+
+pub fn likeBinds () -> Text = renderBinds (planScan "users" (pred1 (fn u -> Text.contains u.name "ann")) [] (0 - 1) 0 false)
+
+-- An `IN` test: `List.contains u.age [18, 21]` reifies to `QIn`, rendered as
+-- `IN (...)` over one `$N` placeholder per element, two binds.
+pub fn inSql () -> Text = renderSql (planScan "users" (pred1 (fn u -> List.contains u.age [18, 21])) [] (0 - 1) 0 false)
+
+pub fn inBinds () -> Text = renderBinds (planScan "users" (pred1 (fn u -> List.contains u.age [18, 21])) [] (0 - 1) 0 false)
+
+-- An empty `IN` set is unsatisfiable, so it renders as the constant `FALSE` rather
+-- than the syntactically invalid `IN ()`, and binds nothing.
+pub fn inEmptySql () -> Text = renderSql (planScan "users" (pred1 (fn u -> List.contains u.age [])) [] (0 - 1) 0 false)
+
+pub fn inEmptyBinds () -> Text = renderBinds (planScan "users" (pred1 (fn u -> List.contains u.age [])) [] (0 - 1) 0 false)
 
 pub fn combineSql () -> Text =
     renderSql (planCombine "UNION" (adultsScan ()) (usersScan ()))
@@ -519,7 +538,7 @@ fn query_plan_compiles_to_parameterized_sql() {
 
     let expr = format!(
         "F=fun(N)->io:format(\"~s=~s~n\",[N,{module}:N()])end, \
-         lists:foreach(F,['scanSql','scanBinds','foldSql','combineSql','refineSql','innerSql','leftSql','rightSql','fullSql','fullBinds','projectSql','aggSql','groupSql','inner3Sql','inner3Binds','existsSql','existsThreeSql','existsThreeBinds','everyJoinSql','everyJoinBinds','innerLeftMixSql','innerRightMixSql','innerFullMixSql','innerFullMixBinds','adultLeftMixSql','adultLeftMixBinds','countAdultLeftMixSql','countThreeSql','countThreeBinds','countLeftMixSql','countLeftMixBinds','sumThreeSql','avgThreeSql','projectThreeSql','projectLeftMixSql','projectRightMixSql','projectFullMixSql','groupThreeSql','groupLeftMixSql','groupRightMixSql','groupFullMixSql','orderThreeSql','orderLeftMixSql','orderRightMixSql','orderFullMixSql','inner4Sql','sumFourSql','projectFourSql','orderFourSql']), halt()."
+         lists:foreach(F,['scanSql','scanBinds','foldSql','likeSql','likeBinds','inSql','inBinds','inEmptySql','inEmptyBinds','combineSql','refineSql','innerSql','leftSql','rightSql','fullSql','fullBinds','projectSql','aggSql','groupSql','inner3Sql','inner3Binds','existsSql','existsThreeSql','existsThreeBinds','everyJoinSql','everyJoinBinds','innerLeftMixSql','innerRightMixSql','innerFullMixSql','innerFullMixBinds','adultLeftMixSql','adultLeftMixBinds','countAdultLeftMixSql','countThreeSql','countThreeBinds','countLeftMixSql','countLeftMixBinds','sumThreeSql','avgThreeSql','projectThreeSql','projectLeftMixSql','projectRightMixSql','projectFullMixSql','groupThreeSql','groupLeftMixSql','groupRightMixSql','groupFullMixSql','orderThreeSql','orderLeftMixSql','orderRightMixSql','orderFullMixSql','inner4Sql','sumFourSql','projectFourSql','orderFourSql']), halt()."
     );
     let output = Command::new("erl")
         .arg("-noshell")
@@ -542,6 +561,15 @@ fn query_plan_compiles_to_parameterized_sql() {
 
     // A single-table scan: a bare-quoted column, the literal as `$1`, one bind.
     want(r#"scanSql=SELECT * FROM "users" WHERE "age" >= $1"#);
+
+    // A text match renders to `LIKE` over a `$1`-bound pattern; an `IN` test to
+    // `IN (...)` over one placeholder per element; an empty `IN` to `FALSE`.
+    want(r#"likeSql=SELECT * FROM "users" WHERE "name" LIKE $1"#);
+    want("likeBinds=1");
+    want(r#"inSql=SELECT * FROM "users" WHERE "age" IN ($1, $2)"#);
+    want("inBinds=2");
+    want(r#"inEmptySql=SELECT * FROM "users" WHERE FALSE"#);
+    want("inEmptyBinds=0");
     want("scanBinds=1");
 
     // The optimizer folds the `&& true` away before rendering, so the filter compiles to

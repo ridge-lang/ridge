@@ -502,6 +502,78 @@ pub fn db bad () -> Result (List (Map Text SqlValue)) Error =
 }
 
 #[test]
+fn predicate_like_and_in_helpers_typecheck() {
+    // The text-match helpers (`Text.like`/`contains`/`startsWith`/`endsWith`) and
+    // the `IN` test (`List.contains col [literals]`) are recognised inside a quoted
+    // predicate and check against the column's type, combining with `&&` like any
+    // other comparison.
+    let main = r#"
+import std.data (memAdapter, selectRows)
+import std.sql (SqlValue)
+import std.text as Text
+import std.list as List
+
+pub type User = { id: Int, age: Int, name: Text }
+
+pub fn db matches () -> Result (List (Map Text SqlValue)) Error =
+    selectRows (memAdapter ()) "users"
+        (fn (u: User) ->
+            Text.contains u.name "a"
+            && Text.startsWith u.name "l"
+            && Text.endsWith u.name "n"
+            && Text.like u.name "%a_"
+            && List.contains u.age [18, 30, 25])
+"#;
+    let errors = typecheck_one(main);
+    assert!(
+        errors.is_empty(),
+        "like/in predicate helpers must type-check clean; got {errors:?}"
+    );
+}
+
+#[test]
+fn predicate_in_list_type_mismatch_is_rejected() {
+    // The `IN` set must match the column's type — a text literal against an Int
+    // column is a real error, not silently absorbed.
+    let main = r#"
+import std.data (memAdapter, selectRows)
+import std.sql (SqlValue)
+import std.list as List
+
+pub type User = { id: Int, age: Int }
+
+pub fn db bad () -> Result (List (Map Text SqlValue)) Error =
+    selectRows (memAdapter ()) "users" (fn (u: User) -> List.contains u.age ["x"])
+"#;
+    let errors = typecheck_one(main);
+    assert!(
+        !errors.is_empty(),
+        "an IN list whose elements mismatch the column type must be rejected; got no errors"
+    );
+}
+
+#[test]
+fn predicate_text_match_on_non_text_column_is_rejected() {
+    // A text match applies only to a Text column; using it on an Int column is a
+    // real error rather than being silently accepted.
+    let main = r#"
+import std.data (memAdapter, selectRows)
+import std.sql (SqlValue)
+import std.text as Text
+
+pub type User = { id: Int, age: Int }
+
+pub fn db bad () -> Result (List (Map Text SqlValue)) Error =
+    selectRows (memAdapter ()) "users" (fn (u: User) -> Text.contains u.age "1")
+"#;
+    let errors = typecheck_one(main);
+    assert!(
+        !errors.is_empty(),
+        "a text match on a non-Text column must be rejected; got no errors"
+    );
+}
+
+#[test]
 fn repo_all_auto_decodes_to_typed_list() {
     // A repository pinned to `User` decodes `all` straight into `List User`:
     // the reconciled `Repo e a` threads the adapter and the entity, the
@@ -522,6 +594,74 @@ pub fn db loadUsers () -> Result (List User) Error =
     assert!(
         errors.is_empty(),
         "Repo.all must auto-decode to List User clean; got {errors:?}"
+    );
+}
+
+#[test]
+fn repo_findby_with_like_and_in_helpers_typechecks() {
+    // The fluent `findBy` accepts a predicate built from the text-match helpers and
+    // the bare `contains` IN test, dispatched through the same quote machinery as a
+    // comparison — the path the Postgres e2e drives over the real wire.
+    let main = r#"
+import std.data (memAdapter, MemAdapter)
+import std.repo as Repo
+import std.sql (SqlValue)
+import std.text as Text
+import std.list (contains)
+
+pub type User = { id: Int, age: Int, name: Text } deriving (Row)
+
+pub fn db hits () -> Result (List User) Error =
+    let users: Repo User MemAdapter = Repo.repo (memAdapter ()) "users"
+    users |> Repo.findBy (fn (u: User) -> Text.contains u.name "a" && contains u.age [18, 30])
+"#;
+    let errors = typecheck_one(main);
+    assert!(
+        errors.is_empty(),
+        "findBy with like/in predicate helpers must type-check clean; got {errors:?}"
+    );
+}
+
+#[test]
+fn repo_findby_folded_like_in_probe_typechecks() {
+    // The exact shape of the Postgres e2e probe: one repository, several `findBy`
+    // checks over the text-match and `IN` helpers folded through `countOf` into a
+    // comma-joined string. The e2e source only compiles under a live database, so
+    // this locks the let-chain + `Int.toText` + `Text.join` shape here, over the
+    // in-memory adapter (the backend does not change how the predicate type-checks).
+    let main = r#"
+import std.data (memAdapter, MemAdapter)
+import std.repo as Repo
+import std.sql (SqlValue)
+import std.text as Text
+import std.list (contains)
+import std.int as Int
+
+pub type User = { id: Int, age: Int, name: Text } deriving (Row)
+
+fn listLen (us: List User) -> Int =
+    match us
+        []        -> 0
+        _ :: rest -> 1 + listLen rest
+
+fn countOf (res: Result (List User) Error) -> Int =
+    match res
+        Ok us -> listLen us
+        Err _ -> 0 - 1
+
+pub fn db checks () -> Text =
+    let r: Repo User MemAdapter = Repo.repo (memAdapter ()) "users"
+    let a = countOf (r |> Repo.findBy (fn (u: User) -> Text.contains u.name "a"))
+    let b = countOf (r |> Repo.findBy (fn (u: User) -> Text.startsWith u.name "l"))
+    let c = countOf (r |> Repo.findBy (fn (u: User) -> Text.like u.name "_a_"))
+    let d = countOf (r |> Repo.findBy (fn (u: User) -> contains u.age [18, 30]))
+    let e = countOf (r |> Repo.findBy (fn (u: User) -> contains u.age []))
+    Text.join "," [Int.toText a, Int.toText b, Int.toText c, Int.toText d, Int.toText e]
+"#;
+    let errors = typecheck_one(main);
+    assert!(
+        errors.is_empty(),
+        "the folded like/in probe shape must type-check clean; got {errors:?}"
     );
 }
 

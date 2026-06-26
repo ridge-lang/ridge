@@ -301,7 +301,7 @@ pub fn stdlib_signature(module: StdlibModuleId, name: &str, b: &BuiltinTyCons) -
         (STD_TEXT, "trim" | "toUpper" | "toLower") => {
             Some(mono(ty_fn_pure(vec![ty_text(b)], ty_text(b))))
         }
-        (STD_TEXT, "startsWith" | "endsWith" | "contains") => {
+        (STD_TEXT, "startsWith" | "endsWith" | "contains" | "like") => {
             Some(mono(ty_fn_pure(vec![ty_text(b), ty_text(b)], ty_bool(b))))
         }
         (STD_TEXT, "replace") => Some(mono(ty_fn_pure(

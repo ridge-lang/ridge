@@ -158,6 +158,7 @@ const BASELINE_EXPORTS: &[(&str, &[&str])] = &[
             "startsWith",
             "endsWith",
             "contains",
+            "like",
             "replace",
             "padLeft",
             "padRight",

@@ -14,6 +14,7 @@
     time_from_iso/1, time_since_ms/1, time_iso/1,
     int_parse/0, int_parse/1, float_parse/1, float_to_text/1, bool_to_text/1,
     text_split_all/2, text_replace_all/3, text_join/2, text_slice/3,
+    text_like/2,
     list_fold/3, list_sort_by/2,
     random_int/2, random_choice/1, random_float/1, random_alphanumeric/1, random_seed/1,
     env_get/1, env_all/1, env_set/2,
@@ -240,6 +241,33 @@ list_sort_by(Key, List) ->
 
 %% text_replace_all/3 — binary:replace with [global] option (From, To, Subject order matches Ridge FFI).
 text_replace_all(From, To, S) -> binary:replace(S, From, To, [global]).
+
+%% text_like/2 — SQL LIKE matching, the surface `Text.like s pattern`. `%` matches
+%% any run of characters (including empty), `_` any single character, and `\` escapes
+%% the next pattern character so a literal `%`/`_`/`\` can be matched. This is the
+%% Postgres default-escape semantics, so a `Repo.filter` reified to a `QLike` SQL
+%% `LIKE` and the in-memory `Seq` path agree byte for byte.
+text_like(S, Pattern) when is_binary(S), is_binary(Pattern) ->
+    rt_like_match(unicode:characters_to_list(S), unicode:characters_to_list(Pattern));
+text_like(_, _) -> false.
+
+%% Match a subject character list against a pattern character list.
+rt_like_match([], [])              -> true;
+rt_like_match(S,  [$% | PRest])    -> rt_like_pct(S, PRest);
+rt_like_match([C | SRest], [$\\, PC | PRest]) when C =:= PC -> rt_like_match(SRest, PRest);
+rt_like_match(_,  [$\\, _PC | _])  -> false;
+rt_like_match([_ | SRest], [$_ | PRest]) -> rt_like_match(SRest, PRest);
+rt_like_match([C | SRest], [C  | PRest]) -> rt_like_match(SRest, PRest);
+rt_like_match(_,  _)               -> false.
+
+%% `%` matches zero or more characters: succeed if the rest of the pattern matches at
+%% any suffix of the subject (including the empty one).
+rt_like_pct(S, PRest) ->
+    rt_like_match(S, PRest) orelse
+        case S of
+            []          -> false;
+            [_ | SRest] -> rt_like_pct(SRest, PRest)
+        end.
 
 %% text_join/2 — concatenate Xs with Sep between each element.
 %%
@@ -1815,6 +1843,8 @@ mem_jpred({'QLt', A, B}, L, R)     -> mem_jrelate(lt, A, B, L, R);
 mem_jpred({'QGt', A, B}, L, R)     -> mem_jrelate(lt, B, A, L, R);
 mem_jpred({'QLe', A, B}, L, R)     -> not mem_jrelate(lt, B, A, L, R);
 mem_jpred({'QGe', A, B}, L, R)     -> not mem_jrelate(lt, A, B, L, R);
+mem_jpred({'QLike', V, P}, L, R)   -> mem_like_pred(mem_jscalar(V, L, R), mem_jscalar(P, L, R));
+mem_jpred({'QIn', V, Items}, L, R) -> mem_in_pred(mem_jscalar(V, L, R), [mem_jscalar(I, L, R) || I <- Items]);
 mem_jpred({'QCol', C}, L, _R)      -> mem_truthy(maps:get(C, L, 'SqlNull'));
 mem_jpred({'QColR', C}, _L, R)     -> mem_truthy(maps:get(C, R, 'SqlNull'));
 mem_jpred({'QLitBool', B}, _L, _R) -> B;
@@ -1984,6 +2014,8 @@ mem_npred({'QLt', A, B}, Row)    -> mem_nrelate(lt, A, B, Row);
 mem_npred({'QGt', A, B}, Row)    -> mem_nrelate(lt, B, A, Row);
 mem_npred({'QLe', A, B}, Row)    -> not mem_nrelate(lt, B, A, Row);
 mem_npred({'QGe', A, B}, Row)    -> not mem_nrelate(lt, A, B, Row);
+mem_npred({'QLike', V, P}, Row)  -> mem_like_pred(mem_nscalar(V, Row), mem_nscalar(P, Row));
+mem_npred({'QIn', V, Items}, Row) -> mem_in_pred(mem_nscalar(V, Row), [mem_nscalar(I, Row) || I <- Items]);
 mem_npred({'QCol', C}, Row)      -> mem_truthy(maps:get(<<"t0$", C/binary>>, Row, 'SqlNull'));
 mem_npred({'QColR', C}, Row)     -> mem_truthy(maps:get(<<"t1$", C/binary>>, Row, 'SqlNull'));
 mem_npred({'QColAt', I, C}, Row) -> mem_truthy(maps:get(<<(mem_leaf_prefix(I))/binary, C/binary>>, Row, 'SqlNull'));
@@ -2032,10 +2064,23 @@ mem_pred({'QLt', L, R}, Row)  -> mem_relate(lt, L, R, Row);
 mem_pred({'QGt', L, R}, Row)  -> mem_relate(lt, R, L, Row);
 mem_pred({'QLe', L, R}, Row)  -> not mem_relate(lt, R, L, Row);
 mem_pred({'QGe', L, R}, Row)  -> not mem_relate(lt, L, R, Row);
+mem_pred({'QLike', V, P}, Row)  -> mem_like_pred(mem_scalar(V, Row), mem_scalar(P, Row));
+mem_pred({'QIn', V, Items}, Row) -> mem_in_pred(mem_scalar(V, Row), [mem_scalar(I, Row) || I <- Items]);
 %% A bare leaf in predicate position is a boolean column or literal.
 mem_pred({'QCol', C}, Row)      -> mem_truthy(maps:get(C, Row, 'SqlNull'));
 mem_pred({'QLitBool', B}, _Row) -> B;
 mem_pred(_Other, _Row)          -> false.
+
+%% A `QLike` test: both operands resolve to text, then the pattern matcher runs. A
+%% missing column or a non-text operand (a SQL NULL included) simply fails to match.
+mem_like_pred({'SqlText', S}, {'SqlText', P}) -> text_like(S, P);
+mem_like_pred(_, _)                           -> false.
+
+%% A `QIn` test: the value is a member of the list when it equals one of the resolved
+%% elements. A missing column (undefined) or a SQL NULL is never a member.
+mem_in_pred(undefined, _Items)  -> false;
+mem_in_pred('SqlNull', _Items)  -> false;
+mem_in_pred(V, Items)           -> lists:any(fun(I) -> I =/= undefined andalso V =:= I end, Items).
 
 %% Compare two operands resolved against the row. A node that is not a scalar
 %% (column or literal) has no value, so the comparison fails.

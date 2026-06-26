@@ -614,6 +614,36 @@ fn check_node(ctx: &mut InferCtx, b: &BuiltinTyCons, e: &Expr, scope: &[Param]) 
 
         Expr::Binary { op, lhs, rhs, span } => check_binary(ctx, b, *op, lhs, rhs, *span, scope),
 
+        // A predicate helper: `Text.like`/`contains`/`startsWith`/`endsWith` for a
+        // text match, `List.contains` for an `IN` test. One operand names a column
+        // of the quote, the other is a literal (or a literal list for `IN`).
+        Expr::Call { callee, args, span } => {
+            let arg_refs: Vec<&Expr> = args.iter().collect();
+            check_predicate_call(ctx, b, callee, &arg_refs, *span, scope)
+        }
+        // `value |> f rest` checks the same as `f rest value` — the piped value is
+        // the call's last argument.
+        Expr::Pipe { lhs, rhs, span } => {
+            let rhs_inner = peel_paren(rhs);
+            match rhs_inner {
+                Expr::Call { callee, args, .. } => {
+                    let mut arg_refs: Vec<&Expr> = args.iter().collect();
+                    arg_refs.push(lhs.as_ref());
+                    check_predicate_call(ctx, b, callee, &arg_refs, *span, scope)
+                }
+                Expr::Ident(_) | Expr::Qualified(_) => {
+                    check_predicate_call(ctx, b, rhs_inner, &[lhs.as_ref()], *span, scope)
+                }
+                _ => {
+                    ctx.errors.push(TypeError::QuoteUnsupportedExpr {
+                        detail: "this pipe is not supported in a quoted predicate".to_string(),
+                        span: *span,
+                    });
+                    None
+                }
+            }
+        }
+
         Expr::Ident(id) => {
             let detail = if scope.iter().any(|p| p.name == id.text) {
                 format!(
@@ -695,6 +725,152 @@ fn check_binary(
             None
         }
     }
+}
+
+/// Peel any number of parentheses from an expression.
+fn peel_paren(e: &Expr) -> &Expr {
+    match e {
+        Expr::Paren { inner, .. } => peel_paren(inner),
+        other => other,
+    }
+}
+
+/// The last segment of a call's callee — the function name, whether bare
+/// (`contains`) or qualified (`List.contains`).
+fn callee_last_name(callee: &Expr) -> Option<&str> {
+    match callee {
+        Expr::Ident(id) => Some(id.text.as_str()),
+        Expr::Qualified(qn) => qn.segments.last().map(|s| s.text.as_str()),
+        _ => None,
+    }
+}
+
+/// Whether `e` is a column access on one of the quote's parameters (`u.field`).
+fn is_scope_column(e: &Expr, scope: &[Param]) -> bool {
+    matches!(
+        peel_paren(e),
+        Expr::FieldAccess { base, .. }
+            if matches!(base.as_ref(), Expr::Ident(id) if scope.iter().any(|p| p.name == id.text))
+    )
+}
+
+/// Whether `ty` is the `Text` base type.
+fn is_text(b: &BuiltinTyCons, ty: &Type) -> bool {
+    matches!(ty, Type::Con(id, _) if *id == b.text)
+}
+
+/// Checks a predicate-helper call inside a quote. The recognised helpers are the
+/// text matches (`Text.like`/`contains`/`startsWith`/`endsWith`) and the `IN`
+/// membership test (`List.contains col [literals]`). One operand must name a column
+/// of the quote; the other must be a literal pattern (or a list of literals for
+/// `IN`) whose type matches the column. Returns `QKind::Pred` on success.
+fn check_predicate_call(
+    ctx: &mut InferCtx,
+    b: &BuiltinTyCons,
+    callee: &Expr,
+    args: &[&Expr],
+    span: Span,
+    scope: &[Param],
+) -> Option<QKind> {
+    let name = callee_last_name(callee);
+    if !matches!(name, Some("contains" | "startsWith" | "endsWith" | "like")) {
+        ctx.errors.push(TypeError::QuoteUnsupportedExpr {
+            detail: "this call is not supported in a quoted predicate; use a comparison, \
+                     `Text.like`/`contains`/`startsWith`/`endsWith`, or `List.contains` for `IN`"
+                .to_string(),
+            span,
+        });
+        return None;
+    }
+    if args.len() != 2 {
+        ctx.errors.push(TypeError::QuoteUnsupportedExpr {
+            detail: format!(
+                "`{}` takes a column and a literal in a quoted predicate",
+                name.unwrap_or("")
+            ),
+            span,
+        });
+        return None;
+    }
+    let (a0, a1) = (peel_paren(args[0]), peel_paren(args[1]));
+    let (col, other) = if is_scope_column(a0, scope) {
+        (a0, a1)
+    } else if is_scope_column(a1, scope) {
+        (a1, a0)
+    } else {
+        ctx.errors.push(TypeError::QuoteUnsupportedExpr {
+            detail: format!(
+                "a text or `IN` predicate must name a column of {}",
+                scope_names(scope)
+            ),
+            span,
+        });
+        return None;
+    };
+    let QKind::Col(col_ty) = check_node(ctx, b, col, scope)? else {
+        ctx.errors.push(TypeError::QuoteUnsupportedExpr {
+            detail: "the matched operand must be a column".to_string(),
+            span,
+        });
+        return None;
+    };
+    let col_ty = ctx.deep_resolve(&col_ty);
+
+    // `List.contains col [literals]` — the `IN` test. Every element must be a
+    // literal of the column's type.
+    if matches!(name, Some("contains")) {
+        if let Expr::List { elems, .. } = other {
+            for el in elems {
+                let el = peel_paren(el);
+                let Expr::Literal(lit) = el else {
+                    ctx.errors.push(TypeError::QuoteUnsupportedExpr {
+                        detail: "every element of an `IN` list must be a literal".to_string(),
+                        span: el.span(),
+                    });
+                    return None;
+                };
+                let elt = literal_type(b, lit);
+                if !same_value_type(&elt, &col_ty) {
+                    let left = crate::render::render_type_with(&col_ty, &ctx.tycon_decls);
+                    let right = crate::render::render_type_with(&elt, &ctx.tycon_decls);
+                    ctx.errors.push(TypeError::QuoteComparisonMismatch {
+                        left,
+                        right,
+                        span: el.span(),
+                    });
+                    return None;
+                }
+            }
+            return Some(QKind::Pred);
+        }
+    }
+
+    // The text-match family. The column must be `Text` and the pattern a text
+    // literal.
+    if !is_text(b, &col_ty) {
+        ctx.errors.push(TypeError::QuoteUnsupportedExpr {
+            detail: "a text match (`like`/`contains`/`startsWith`/`endsWith`) applies to a \
+                     Text column"
+                .to_string(),
+            span,
+        });
+        return None;
+    }
+    let Expr::Literal(lit) = other else {
+        ctx.errors.push(TypeError::QuoteUnsupportedExpr {
+            detail: "the pattern of a text match must be a text literal".to_string(),
+            span: other.span(),
+        });
+        return None;
+    };
+    if !is_text(b, &literal_type(b, lit)) {
+        ctx.errors.push(TypeError::QuoteUnsupportedExpr {
+            detail: "the pattern of a text match must be Text".to_string(),
+            span: other.span(),
+        });
+        return None;
+    }
+    Some(QKind::Pred)
 }
 
 // ── Grouped-aggregate quotes (`groupBy` → `having` / `summarize`) ────────────

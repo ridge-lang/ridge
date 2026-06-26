@@ -1051,6 +1051,39 @@ fn reify_node(ctx: &mut LowerCtx<'_>, e: &Expr, params: &[String]) -> IrExpr {
             qexpr_node(ctx, name, variant, vec![l, r], *span)
         }
 
+        // A predicate helper — `Text.like`/`contains`/`startsWith`/`endsWith` →
+        // `QLike`, `List.contains` → `QIn`. The quotation checker has already pinned
+        // which operand is the column and which the literal, so the column reifies
+        // through the same `QCol`/`QColR`/`QColAt` path as a comparison's and the
+        // literal supplies the pattern or the IN set.
+        Expr::Call { callee, args, span } => {
+            let arg_refs: Vec<&Expr> = args.iter().collect();
+            reify_predicate_call(ctx, callee, &arg_refs, *span, params)
+        }
+        // `value |> f rest` reifies the same as `f rest value`: the piped value is
+        // the call's last argument, mirroring the pipe desugaring, so a predicate
+        // helper reads the same written either way.
+        Expr::Pipe { lhs, rhs, span } => {
+            let rhs_inner = peel_paren(rhs);
+            match rhs_inner {
+                Expr::Call { callee, args, .. } => {
+                    let mut arg_refs: Vec<&Expr> = args.iter().collect();
+                    arg_refs.push(lhs.as_ref());
+                    reify_predicate_call(ctx, callee, &arg_refs, *span, params)
+                }
+                Expr::Ident(_) | Expr::Qualified(_) => {
+                    reify_predicate_call(ctx, rhs_inner, &[lhs.as_ref()], *span, params)
+                }
+                _ => {
+                    ctx.errors.push(LowerError::InternalLoweringError {
+                        span: *span,
+                        message: "unsupported pipe survived quote checking".into(),
+                    });
+                    unit_lit(ctx, *span)
+                }
+            }
+        }
+
         // `{ field = u.col, … }` (and the named `Shape { field = u.col, … }`,
         // whose constructor only names the decode target) → `QProj [(alias,
         // QCol "col"), …]` — a select-list. Each field's name is the output
@@ -1099,6 +1132,162 @@ fn reify_node(ctx: &mut LowerCtx<'_>, e: &Expr, params: &[String]) -> IrExpr {
             unit_lit(ctx, other.span())
         }
     }
+}
+
+/// How a recognised text predicate builds its SQL LIKE pattern.
+#[derive(Clone, Copy)]
+enum LikeMode {
+    /// `Text.like` — the literal is the pattern verbatim.
+    Raw,
+    /// `Text.contains` — `%needle%`, the needle's wildcards escaped.
+    Contains,
+    /// `Text.startsWith` — `needle%`.
+    Prefix,
+    /// `Text.endsWith` — `%needle`.
+    Suffix,
+}
+
+/// Peel any number of parentheses from an expression.
+fn peel_paren(e: &Expr) -> &Expr {
+    match e {
+        Expr::Paren { inner, .. } => peel_paren(inner),
+        other => other,
+    }
+}
+
+/// The last segment of a call's callee — the function name, whether written bare
+/// (`contains`) or qualified (`List.contains`).
+fn callee_last_name(callee: &Expr) -> Option<&str> {
+    match callee {
+        Expr::Ident(id) => Some(id.text.as_str()),
+        Expr::Qualified(qn) => qn.segments.last().map(|s| s.text.as_str()),
+        _ => None,
+    }
+}
+
+/// Whether `e` is a column access on one of the quote's parameters (`u.field`).
+fn is_param_column(e: &Expr, params: &[String]) -> bool {
+    matches!(
+        peel_paren(e),
+        Expr::FieldAccess { base, .. }
+            if matches!(base.as_ref(), Expr::Ident(id) if params.iter().any(|n| n == &id.text))
+    )
+}
+
+/// Reify a predicate-helper call into a `QLike` or `QIn` node. The checker has
+/// validated the operands, so one is a column of the quote and the other a literal
+/// (a text pattern, or a list of literals for `IN`).
+fn reify_predicate_call(
+    ctx: &mut LowerCtx<'_>,
+    callee: &Expr,
+    args: &[&Expr],
+    span: Span,
+    params: &[String],
+) -> IrExpr {
+    let internal = |ctx: &mut LowerCtx<'_>| -> IrExpr {
+        ctx.errors.push(LowerError::InternalLoweringError {
+            span,
+            message: "unsupported predicate helper survived quote checking".into(),
+        });
+        unit_lit(ctx, span)
+    };
+    if args.len() != 2 {
+        return internal(ctx);
+    }
+    let (a0, a1) = (peel_paren(args[0]), peel_paren(args[1]));
+    let (col, other) = if is_param_column(a0, params) {
+        (a0, a1)
+    } else if is_param_column(a1, params) {
+        (a1, a0)
+    } else {
+        return internal(ctx);
+    };
+    match callee_last_name(callee) {
+        Some("contains") => match other {
+            Expr::List { elems, .. } => reify_in(ctx, col, elems, span, params),
+            _ => reify_like(ctx, col, other, LikeMode::Contains, span, params),
+        },
+        Some("startsWith") => reify_like(ctx, col, other, LikeMode::Prefix, span, params),
+        Some("endsWith") => reify_like(ctx, col, other, LikeMode::Suffix, span, params),
+        Some("like") => reify_like(ctx, col, other, LikeMode::Raw, span, params),
+        _ => internal(ctx),
+    }
+}
+
+/// Build a `QLike (column, QLitText pattern)` node, wrapping and escaping the
+/// literal needle per `mode`.
+fn reify_like(
+    ctx: &mut LowerCtx<'_>,
+    col: &Expr,
+    pat: &Expr,
+    mode: LikeMode,
+    span: Span,
+    params: &[String],
+) -> IrExpr {
+    let col_ir = reify_node(ctx, col, params);
+    let needle = decoded_text(ctx, pat).unwrap_or_default();
+    let pattern = match mode {
+        LikeMode::Raw => needle,
+        LikeMode::Contains => format!("%{}%", escape_like(&needle)),
+        LikeMode::Prefix => format!("{}%", escape_like(&needle)),
+        LikeMode::Suffix => format!("%{}", escape_like(&needle)),
+    };
+    let pat_ir = build_qlit_text(ctx, pattern, span);
+    qexpr_node(ctx, "QLike", 24, vec![col_ir, pat_ir], span)
+}
+
+/// Build a `QIn (column, [elements])` node from a list literal of literals.
+fn reify_in(
+    ctx: &mut LowerCtx<'_>,
+    col: &Expr,
+    elems: &[Expr],
+    span: Span,
+    params: &[String],
+) -> IrExpr {
+    let col_ir = reify_node(ctx, col, params);
+    let items: Vec<IrExpr> = elems.iter().map(|el| reify_node(ctx, el, params)).collect();
+    let list_ir = IrExpr::ListLit {
+        id: ctx.fresh_id(None),
+        elems: items,
+        span,
+    };
+    qexpr_node(ctx, "QIn", 25, vec![col_ir, list_ir], span)
+}
+
+/// The decoded value of a text literal, read back from its lowered `IrLit::Text`
+/// so escape sequences are already resolved.
+fn decoded_text(ctx: &mut LowerCtx<'_>, e: &Expr) -> Option<String> {
+    match lower_expr(ctx, e) {
+        IrExpr::Lit {
+            value: IrLit::Text(s),
+            ..
+        } => Some(s),
+        _ => None,
+    }
+}
+
+/// Wrap a finished pattern string in a `QLitText` node.
+fn build_qlit_text(ctx: &mut LowerCtx<'_>, s: String, span: Span) -> IrExpr {
+    let lit = IrExpr::Lit {
+        id: ctx.fresh_id(None),
+        value: IrLit::Text(s),
+        span,
+    };
+    qexpr_node(ctx, "QLitText", 2, vec![lit], span)
+}
+
+/// Escape the SQL LIKE metacharacters in a literal needle so a `contains`/
+/// `startsWith`/`endsWith` match treats it as plain text. `\` is the escape
+/// character (Postgres' default), so it, `%`, and `_` each get a leading `\`.
+fn escape_like(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    for c in s.chars() {
+        if c == '\\' || c == '%' || c == '_' {
+            out.push('\\');
+        }
+        out.push(c);
+    }
+    out
 }
 
 // ── Grouped-aggregate quote reification ───────────────────────────────────────

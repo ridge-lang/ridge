@@ -1245,10 +1245,32 @@ cw({'QLt', L, R}, N, B) -> cw_cmp("<", L, R, N, B);
 cw({'QGt', L, R}, N, B) -> cw_cmp(">", L, R, N, B);
 cw({'QLe', L, R}, N, B) -> cw_cmp("<=", L, R, N, B);
 cw({'QGe', L, R}, N, B) -> cw_cmp(">=", L, R, N, B);
+%% `value LIKE pattern` — the pattern is a `$N`-bound `QLitText` the surface
+%% wrapped/escaped, so Postgres' default `\` escape matches it as written.
+cw({'QLike', V, P}, N, B) ->
+    {FV, B1, N1} = cw_operand(V, N, B),
+    {FP, B2, N2} = cw_operand(P, N1, B1),
+    {[FV, " LIKE ", FP], B2, N2};
+%% `value IN (...)` — one `$N` placeholder per element; an empty set is
+%% unsatisfiable, so it renders as the constant FALSE rather than `IN ()`.
+cw({'QIn', _V, []}, N, B) -> {"FALSE", B, N};
+cw({'QIn', V, Items}, N, B) ->
+    {FV, B1, N1} = cw_operand(V, N, B),
+    {FItems, B2, N2} = cw_in_list(Items, N1, B1),
+    {[FV, " IN (", FItems, ")"], B2, N2};
 cw({'QCol', C}, N, B) -> {quote_ident(C), B, N};
 cw({'QLitBool', true}, N, B) -> {"TRUE", B, N};
 cw({'QLitBool', false}, N, B) -> {"FALSE", B, N};
 cw(Other, N, B) -> cw_operand(Other, N, B).
+
+%% The comma-separated elements of an `IN (...)` list, each a `$N` placeholder,
+%% threaded left to right so the placeholders and binds stay in order.
+cw_in_list([X], N, B) ->
+    cw_operand(X, N, B);
+cw_in_list([X | Rest], N, B) ->
+    {FX, B1, N1} = cw_operand(X, N, B),
+    {FR, B2, N2} = cw_in_list(Rest, N1, B1),
+    {[FX, ", ", FR], B2, N2}.
 
 cw_cmp(Op, L, R, N, B) ->
     {FL, B1, N1} = cw_operand(L, N, B),

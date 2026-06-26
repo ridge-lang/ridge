@@ -60,7 +60,8 @@ import std.sql (toSql, SqlValue)
 import std.map as Map
 import std.int as Int
 import std.float as Float
-import std.list (length)
+import std.list (length, contains)
+import std.text as Text
 
 pub type User = { id: Int, age: Int, name: Text } deriving (Row)
 
@@ -315,6 +316,32 @@ pub fn db adultsCount () -> Int =
             match r |> Repo.findBy (fn (u: User) -> u.age >= 25)
                 Ok us -> listLen us
                 Err _ -> 0 - 2
+
+-- LIKE/IN against real Postgres, folded into one probe so it opens a single pooled
+-- connection rather than one per check (a fresh `setup` per check would inflate the
+-- run's open-connection peak). Each findBy reifies to a QLike/QIn the backend
+-- compiles into a real LIKE/IN. Against the seeded ada/lin/max: contains "a" -> 2,
+-- startsWith "l" -> 1, like "_a_" -> 1, contains "%" -> 0 and contains "_" -> 0
+-- (the escaped metacharacters match no name, confirming the default backslash escape
+-- lines up with the renderer), IN [18, 30] -> 2, IN [] -> 0 — joined as
+-- "2,1,1,0,0,2,0".
+fn countOf (res: Result (List User) Error) -> Int =
+    match res
+        Ok us -> listLen us
+        Err _ -> 0 - 1
+
+pub fn db likeInChecks () -> Text =
+    match setup ()
+        Err _ -> "setup-err"
+        Ok r  ->
+            let a = countOf (r |> Repo.findBy (fn (u: User) -> Text.contains u.name "a"))
+            let b = countOf (r |> Repo.findBy (fn (u: User) -> Text.startsWith u.name "l"))
+            let c = countOf (r |> Repo.findBy (fn (u: User) -> Text.like u.name "_a_"))
+            let d = countOf (r |> Repo.findBy (fn (u: User) -> Text.contains u.name "%"))
+            let e = countOf (r |> Repo.findBy (fn (u: User) -> Text.contains u.name "_"))
+            let f = countOf (r |> Repo.findBy (fn (u: User) -> contains u.age [18, 30]))
+            let g = countOf (r |> Repo.findBy (fn (u: User) -> contains u.age []))
+            Text.join "," [Int.toText a, Int.toText b, Int.toText c, Int.toText d, Int.toText e, Int.toText f, Int.toText g]
 
 -- find + decode: the name of the first user older than 28 -> "lin"
 pub fn db firstName () -> Text =
@@ -1882,6 +1909,7 @@ fn postgres_adapter_reads_a_real_table() {
          io:format(\"withConnRuns=~s~n\",[{module}:withConnRuns()]), \
          io:format(\"connectWithRuns=~s~n\",[{module}:connectWithRuns()]), \
          io:format(\"adultsCount=~w~n\",[{module}:adultsCount()]), \
+         io:format(\"likeInChecks=~s~n\",[{module}:likeInChecks()]), \
          io:format(\"firstName=~s~n\",[{module}:firstName()]), \
          io:format(\"getName=~s~n\",[{module}:getName()]), \
          io:format(\"afterDelete=~w~n\",[{module}:afterDelete()]), \
@@ -1999,6 +2027,11 @@ fn postgres_adapter_reads_a_real_table() {
             "connectWith opens with an explicit tuned pool over the real wire and disconnect releases the handle",
         ),
         ("adultsCount=2", "findBy keeps the two rows with age >= 25"),
+        (
+            "likeInChecks=2,1,1,0,0,2,0",
+            "LIKE/IN compile to real SQL: contains/startsWith/raw-LIKE, escaped %/_ \
+             matching nothing, IN over a set and the empty set",
+        ),
         (
             "firstName=lin",
             "find + deriving (Row) decodes the first row older than 28",

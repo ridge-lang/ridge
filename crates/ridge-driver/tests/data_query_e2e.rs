@@ -25,11 +25,18 @@ const SOURCE: &str = r#"
 import std.data (memAdapter, appendRow, selectRows, get, delete)
 import std.sql (toSql, fromRow, SqlValue)
 import std.map as Map
+import std.text as Text
+import std.list as List
 
 pub type User = { id: Int, age: Int, name: Text } deriving (Row)
 
+pub type Code = { id: Int, label: Text } deriving (Row)
+
 pub fn userRow (uid: Int) (uage: Int) (uname: Text) -> Map Text SqlValue =
     Map.fromList [("id", toSql uid), ("age", toSql uage), ("name", toSql uname)]
+
+pub fn codeRow (cid: Int) (clabel: Text) -> Map Text SqlValue =
+    Map.fromList [("id", toSql cid), ("label", toSql clabel)]
 
 -- Open a fresh store and seed three users; return the handle so each probe
 -- queries its own isolated data.
@@ -120,6 +127,65 @@ pub fn db afterDelete () -> Int =
                     match selectRows conn "users" (fn (u: User) -> u.age >= 0)
                         Ok rows -> lengthOf rows
                         Err _   -> 0 - 3
+
+-- like: how many names contain "a"? (ada, max) -> 2
+pub fn db likeContains () -> Int =
+    match setup ()
+        Err _ -> 0 - 1
+        Ok conn ->
+            match selectRows conn "users" (fn (u: User) -> Text.contains u.name "a")
+                Ok rows -> lengthOf rows
+                Err _   -> 0 - 2
+
+-- startsWith: how many names start with "l"? (lin) -> 1
+pub fn db likeStarts () -> Int =
+    match setup ()
+        Err _ -> 0 - 1
+        Ok conn ->
+            match selectRows conn "users" (fn (u: User) -> Text.startsWith u.name "l")
+                Ok rows -> lengthOf rows
+                Err _   -> 0 - 2
+
+-- raw LIKE with `_`: three-character names with "a" in the middle (max) -> 1
+pub fn db likeUnderscore () -> Int =
+    match setup ()
+        Err _ -> 0 - 1
+        Ok conn ->
+            match selectRows conn "users" (fn (u: User) -> Text.like u.name "_a_")
+                Ok rows -> lengthOf rows
+                Err _   -> 0 - 2
+
+-- IN over ages: rows whose age is 18 or 30 (ada, lin) -> 2
+pub fn db inAges () -> Int =
+    match setup ()
+        Err _ -> 0 - 1
+        Ok conn ->
+            match selectRows conn "users" (fn (u: User) -> List.contains u.age [18, 30])
+                Ok rows -> lengthOf rows
+                Err _   -> 0 - 2
+
+-- IN over an empty set is never satisfied -> 0
+pub fn db inEmpty () -> Int =
+    match setup ()
+        Err _ -> 0 - 1
+        Ok conn ->
+            match selectRows conn "users" (fn (u: User) -> List.contains u.age [])
+                Ok rows -> lengthOf rows
+                Err _   -> 0 - 2
+
+-- escaping: `contains "50%"` treats the `%` literally, matching only the
+-- literal-percent label, not "50Xoff" -> 1
+pub fn db escapeMatch () -> Int =
+    let conn = memAdapter ()
+    match appendRow conn "codes" (codeRow 1 "50%off")
+        Err _ -> 0 - 1
+        Ok _ ->
+            match appendRow conn "codes" (codeRow 2 "50Xoff")
+                Err _ -> 0 - 2
+                Ok _ ->
+                    match selectRows conn "codes" (fn (c: Code) -> Text.contains c.label "50%")
+                        Ok rows -> lengthOf rows
+                        Err _   -> 0 - 3
 "#;
 
 fn write_workspace(root: &std::path::Path) {
@@ -195,6 +261,12 @@ fn query_surface_runs_on_beam() {
          io:format(\"getMissing=~w~n\",[{module}:getMissing()]), \
          io:format(\"deleteCount=~w~n\",[{module}:deleteCount()]), \
          io:format(\"afterDelete=~w~n\",[{module}:afterDelete()]), \
+         io:format(\"likeContains=~w~n\",[{module}:likeContains()]), \
+         io:format(\"likeStarts=~w~n\",[{module}:likeStarts()]), \
+         io:format(\"likeUnderscore=~w~n\",[{module}:likeUnderscore()]), \
+         io:format(\"inAges=~w~n\",[{module}:inAges()]), \
+         io:format(\"inEmpty=~w~n\",[{module}:inEmpty()]), \
+         io:format(\"escapeMatch=~w~n\",[{module}:escapeMatch()]), \
          halt()."
     );
     let output = Command::new("erl")
@@ -219,6 +291,15 @@ fn query_surface_runs_on_beam() {
         ("getMissing=1", "get of a missing id is None"),
         ("deleteCount=1", "delete removes the one row under 25"),
         ("afterDelete=2", "two rows remain after the delete"),
+        ("likeContains=2", "contains \"a\" keeps ada and max"),
+        ("likeStarts=1", "startsWith \"l\" keeps lin"),
+        ("likeUnderscore=1", "like \"_a_\" keeps max"),
+        ("inAges=2", "IN [18, 30] keeps ada and lin"),
+        ("inEmpty=0", "IN [] keeps nothing"),
+        (
+            "escapeMatch=1",
+            "contains \"50%\" matches the literal-percent label only",
+        ),
     ] {
         assert!(
             stdout.contains(probe),

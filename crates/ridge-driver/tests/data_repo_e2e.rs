@@ -76,10 +76,20 @@ pub type Reaction = { id: Int, comment: Int, kind: Text } deriving (Row)
 -- so the decode proves the alias (`column AS alias`) and re-keying both work.
 pub type Summary = { who: Text, years: Int } deriving (Row)
 
+-- A computed projection shape: `label` is a CASE over `age`, `doubled` is
+-- arithmetic over `age`, so the decode proves the in-memory backend evaluates a
+-- select-list expression per row rather than only reading a stored column.
+pub type Tagged = { label: Text, doubled: Int } deriving (Row)
+
 -- The shape a join projection decodes into: a name from the left entity and a
 -- title from the right, so a `selectJoin` proves columns from both sides reach
 -- one named record.
 pub type Combo = { person: Text, post: Text } deriving (Row)
+
+-- A computed join projection shape: a left name plus an arithmetic column over a
+-- left-entity field, so a `select` over a join proves the in-memory backend
+-- evaluates a select-list expression against a join's flat source-prefixed row.
+pub type JoinCalc = { person: Text, code: Int } deriving (Row)
 
 -- The shape a left-join projection decodes into: the right-derived `post` is
 -- `Option Text`, so an unmatched left row projects it as `None`.
@@ -136,6 +146,27 @@ fn joinWho (ss: List Summary) -> Text =
         []        -> ""
         s :: []   -> s.who
         s :: rest -> Text.concat s.who (Text.concat "," (joinWho rest))
+
+-- Render each computed `Tagged` as `label:doubled`, comma-joined, so the
+-- per-row CASE and arithmetic the projection evaluates are observable as one
+-- string.
+fn joinTagged (ts: List Tagged) -> Text =
+    match ts
+        []        -> ""
+        t :: []   -> tagText t
+        t :: rest -> Text.concat (tagText t) (Text.concat "," (joinTagged rest))
+
+fn tagText (t: Tagged) -> Text = Text.concat t.label (Text.concat ":" (Int.toText t.doubled))
+
+-- Render each computed join projection `JoinCalc` as `person:code`, comma-joined,
+-- so the arithmetic the projection evaluates over a join's flat row is observable.
+fn joinCalc (cs: List JoinCalc) -> Text =
+    match cs
+        []        -> ""
+        c :: []   -> calcText c
+        c :: rest -> Text.concat (calcText c) (Text.concat "," (joinCalc rest))
+
+fn calcText (c: JoinCalc) -> Text = Text.concat c.person (Text.concat ":" (Int.toText c.code))
 
 -- Render each `(User, Post)` pair as `name:title`, comma-joined, so a join's
 -- decode of both entities and its row order are observable as one string.
@@ -515,6 +546,19 @@ pub fn db topYears () -> Int =
                 Ok None     -> 0 - 3
                 Ok (Some s) -> s.years
 
+-- computed projection: order by id ascending, project a CASE `label` and a
+-- doubled `age` per row -> "minor:36,adult:60,adult:50". ada(18) is below the
+-- threshold; lin(30) and max(25) are at or above it. Proves the in-memory
+-- backend evaluates arithmetic and a CASE in the select-list, not only bare
+-- columns.
+pub fn db taggedAges () -> Text =
+    match setup ()
+        Err _ -> "setup-err"
+        Ok r  ->
+            match r |> Repo.query |> Repo.orderBy Asc (fn (u: User) -> u.id) |> Repo.select (fn (u: User) -> Tagged { label = if u.age >= 25 then "adult" else "minor", doubled = u.age * 2 })
+                Err _ -> "list-err"
+                Ok ts -> joinTagged ts
+
 -- Open one store, bind a users and a posts repository to it (so the join sees
 -- both tables), and seed three users and three posts. Post `author` references a
 -- user id: lin (id 2) owns "hello" and "again", max (id 3) owns "world", ada
@@ -554,6 +598,18 @@ pub fn db joinedNames () -> Text =
             match users |> Repo.query |> Repo.orderBy Asc (fn (u: User) -> u.id) |> Repo.joinOn posts (fn (u: User) (p: Post) -> u.id == p.author) |> Repo.toList
                 Err _  -> "join-err"
                 Ok ps  -> joinPairs ps
+
+-- computed join projection: the same inner join, projecting a left name and an
+-- arithmetic column (`u.id * 10`) -> "lin:20,lin:20,max:30". Proves the in-memory
+-- backend evaluates a select-list expression against a join's flat
+-- source-prefixed row, not only reading a stored column.
+pub fn db joinCalcCodes () -> Text =
+    match setupJoin ()
+        Err _ -> "setup-err"
+        Ok (users, posts) ->
+            match users |> Repo.query |> Repo.orderBy Asc (fn (u: User) -> u.id) |> Repo.joinOn posts (fn (u: User) (p: Post) -> u.id == p.author) |> Repo.select (fn (u: User) (p: Post) -> JoinCalc { person = u.name, code = u.id * 10 })
+                Err _ -> "list-err"
+                Ok cs -> joinCalc cs
 
 -- join projection: the same join, projected into `Combo { person, post }` and
 -- rendered -> "lin:hello,lin:again,max:world". Proves selectJoin pushes a
@@ -2339,7 +2395,9 @@ fn repo_surface_runs_on_beam() {
          io:format(\"firstAdultName=~s~n\",[{module}:firstAdultName()]), \
          io:format(\"summaryNames=~s~n\",[{module}:summaryNames()]), \
          io:format(\"topYears=~w~n\",[{module}:topYears()]), \
+         io:format(\"taggedAges=~s~n\",[{module}:taggedAges()]), \
          io:format(\"joinedNames=~s~n\",[{module}:joinedNames()]), \
+         io:format(\"joinCalcCodes=~s~n\",[{module}:joinCalcCodes()]), \
          io:format(\"joinedTitles=~s~n\",[{module}:joinedTitles()]), \
          io:format(\"joinOrderByRight=~s~n\",[{module}:joinOrderByRight()]), \
          io:format(\"joined3=~s~n\",[{module}:joined3()]), \
@@ -2504,8 +2562,16 @@ fn repo_surface_runs_on_beam() {
             "selectFirst decodes the aliased `years` column of the oldest row",
         ),
         (
+            "taggedAges=minor:36,adult:60,adult:50",
+            "the in-memory backend evaluates a CASE and arithmetic per row in the select-list",
+        ),
+        (
             "joinedNames=lin:hello,lin:again,max:world",
             "toList inner-joins users to posts and decodes both entities in id order",
+        ),
+        (
+            "joinCalcCodes=lin:20,lin:20,max:30",
+            "the in-memory backend evaluates an arithmetic select-list column over a join's flat row",
         ),
         (
             "joinedTitles=lin:hello,lin:again,max:world",

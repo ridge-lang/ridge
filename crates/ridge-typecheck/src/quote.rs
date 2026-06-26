@@ -514,10 +514,13 @@ fn check_projection(
         let Some(qk) = check_node(ctx, b, value, scope) else {
             return false;
         };
-        let QKind::Col(col_ty) = qk else {
+        // A projection field is a column or a computed value (arithmetic, a
+        // CASE, a literal) — anything carrying a value type. A bare predicate
+        // (a raw comparison) is not a projectable value.
+        let (QKind::Col(col_ty) | QKind::Scalar(col_ty)) = qk else {
             ctx.errors.push(TypeError::QuoteUnsupportedExpr {
                 detail: format!(
-                    "projection field `{}` must be a column of one of {}",
+                    "projection field `{}` must be a column or a computed value over one of {}",
                     fi.name.text,
                     scope_names(scope)
                 ),
@@ -542,7 +545,7 @@ fn check_projection(
             let right = crate::render::render_type_with(&exp_ty, &ctx.tycon_decls);
             ctx.errors.push(TypeError::QuoteUnsupportedExpr {
                 detail: format!(
-                    "projection field `{}` is a column of type {left}, but the result \
+                    "projection field `{}` is of type {left}, but the result \
                      record declares {right}",
                     fi.name.text
                 ),
@@ -568,6 +571,10 @@ fn check_projection(
     true
 }
 
+#[allow(
+    clippy::too_many_lines,
+    reason = "one linear dispatch over the quoted-expression forms; splitting it would scatter the QKind mapping"
+)]
 fn check_node(ctx: &mut InferCtx, b: &BuiltinTyCons, e: &Expr, scope: &[Param]) -> Option<QKind> {
     match e {
         Expr::Paren { inner, .. } => check_node(ctx, b, inner, scope),
@@ -620,6 +627,17 @@ fn check_node(ctx: &mut InferCtx, b: &BuiltinTyCons, e: &Expr, scope: &[Param]) 
         }
 
         Expr::Binary { op, lhs, rhs, span } => check_binary(ctx, b, *op, lhs, rhs, *span, scope),
+
+        // A conditional — `if cond then a else b`. Checked in `check_if`: the
+        // condition must be boolean, an `else` is required, and the branches must
+        // agree as two values of one type (a value CASE) or two predicates (a
+        // boolean CASE).
+        Expr::If {
+            cond,
+            then_branch,
+            else_branch,
+            span,
+        } => check_if(ctx, b, cond, then_branch, else_branch.as_deref(), *span, scope),
 
         // A predicate helper: `Text.like`/`contains`/`startsWith`/`endsWith` for a
         // text match, `List.contains` for an `IN` test. One operand names a column
@@ -776,6 +794,73 @@ fn check_binary(
         _ => {
             ctx.errors.push(TypeError::QuoteUnsupportedExpr {
                 detail: "this operator is not supported in a quoted predicate".to_string(),
+                span,
+            });
+            None
+        }
+    }
+}
+
+/// Checks an `if`/`then`/`else` inside a quote. The condition must be boolean and
+/// an `else` is required (a CASE with no else has no value for the rows the
+/// condition does not match). The branches must agree, either as two values of one
+/// type — a value CASE, whose type is that shared type — or as two predicates, a
+/// boolean CASE usable wherever a predicate is. The value reading is preferred, so
+/// two boolean columns make a `Bool` value, not a predicate.
+fn check_if(
+    ctx: &mut InferCtx,
+    b: &BuiltinTyCons,
+    cond: &Expr,
+    then_branch: &Expr,
+    else_branch: Option<&Expr>,
+    span: Span,
+    scope: &[Param],
+) -> Option<QKind> {
+    let c = check_node(ctx, b, cond, scope)?;
+    if !as_predicate(b, &c) {
+        ctx.errors.push(TypeError::QuoteUnsupportedExpr {
+            detail: "the condition of an `if`/`then`/`else` in a quote must be boolean".to_string(),
+            span: cond.span(),
+        });
+        return None;
+    }
+    let Some(else_branch) = else_branch else {
+        ctx.errors.push(TypeError::QuoteUnsupportedExpr {
+            detail: "an `if`/`then`/`else` in a quote must have an `else` branch".to_string(),
+            span,
+        });
+        return None;
+    };
+    let t = check_node(ctx, b, then_branch, scope)?;
+    let e = check_node(ctx, b, else_branch, scope)?;
+    match (value_type(&t), value_type(&e)) {
+        // Both branches carry a value (column or scalar) → a value CASE. The
+        // branches must share one type, which the CASE then yields.
+        (Some(tt), Some(et)) => {
+            let tt = ctx.deep_resolve(tt);
+            let et = ctx.deep_resolve(et);
+            if same_value_type(&tt, &et) {
+                Some(QKind::Scalar(tt))
+            } else {
+                let left = crate::render::render_type_with(&tt, &ctx.tycon_decls);
+                let right = crate::render::render_type_with(&et, &ctx.tycon_decls);
+                ctx.errors.push(TypeError::QuoteUnsupportedExpr {
+                    detail: format!(
+                        "the branches of an `if`/`then`/`else` in a quote must have the same \
+                         type, but found {left} and {right}"
+                    ),
+                    span,
+                });
+                None
+            }
+        }
+        // Otherwise both branches must be predicates → a boolean CASE.
+        _ if as_predicate(b, &t) && as_predicate(b, &e) => Some(QKind::Pred),
+        _ => {
+            ctx.errors.push(TypeError::QuoteUnsupportedExpr {
+                detail: "the branches of an `if`/`then`/`else` in a quote must both be values \
+                         of the same type, or both be boolean"
+                    .to_string(),
                 span,
             });
             None

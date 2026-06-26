@@ -3038,13 +3038,16 @@ pub fn db bad () -> Result (List Line) Error =
 }
 
 #[test]
-fn query_builder_select_projection_is_column_only_no_injection() {
-    // Security: a projection's select-list can only name entity columns, each
-    // checked against the entity's schema. A field bound to a *literal* — the
-    // shape a raw-SQL injection payload would take — is rejected, so nothing but a
-    // schema-validated column reference ever reaches the generated `SELECT` list.
-    // The opaque `Sql`/quotation seam never sees user-authored SQL text.
-    let injection = r#"
+fn query_builder_select_projection_literal_is_a_bind_not_injection() {
+    // Security: a projection field can be a literal or a computed value, not only
+    // a bare column. That is safe because every literal compiles to a `$N` bind
+    // parameter, never interpolated SQL text — so the injection-shaped string
+    // below travels as a parameter VALUE, not as SQL. The quote sub-language has
+    // no raw-SQL node, so user-authored SQL text can never reach the `SELECT`
+    // list. The `$N`/bind parameterization itself is asserted in the SQL-compile
+    // e2e tests; here the literal field is accepted and stays typed against the
+    // declared shape.
+    let computed = r#"
 import std.data (memAdapter, MemAdapter)
 import std.repo as Repo
 import std.sql (SqlValue)
@@ -3052,14 +3055,167 @@ import std.sql (SqlValue)
 pub type User = { id: Int, name: Text } deriving (Row)
 pub type Summary = { name: Text } deriving (Row)
 
-pub fn db bad () -> Result (List Summary) Error =
+pub fn db ok () -> Result (List Summary) Error =
     let users: Repo User MemAdapter = Repo.repo (memAdapter ()) "users"
     users |> Repo.query |> Repo.select (fn (u: User) -> Summary { name = "x'; DROP TABLE users; --" })
 "#;
-    let errors = typecheck_one(injection);
+    let errors = typecheck_one(computed);
+    assert!(
+        errors.is_empty(),
+        "a literal projection field is accepted (it binds as a parameter, not SQL text); got {errors:?}"
+    );
+}
+
+#[test]
+fn query_builder_select_allows_computed_projection() {
+    // A projection field can be a computed value, not only a bare column —
+    // arithmetic over the entity's columns lands in the select-list.
+    let main = r#"
+import std.data (memAdapter, MemAdapter)
+import std.repo as Repo
+import std.sql (SqlValue)
+
+pub type Item = { id: Int, qty: Int, price: Int } deriving (Row)
+pub type Stat = { total: Int } deriving (Row)
+
+pub fn db ok () -> Result (List Stat) Error =
+    let items: Repo Item MemAdapter = Repo.repo (memAdapter ()) "items"
+    items |> Repo.query |> Repo.select (fn (i: Item) -> Stat { total = i.qty * i.price })
+"#;
+    let errors = typecheck_one(main);
+    assert!(
+        errors.is_empty(),
+        "a computed (arithmetic) projection field must typecheck; got {errors:?}"
+    );
+}
+
+#[test]
+fn query_builder_select_allows_case_projection() {
+    // A CASE (`if/then/else`) projects a value chosen per row; both branches share
+    // the declared field's type.
+    let main = r#"
+import std.data (memAdapter, MemAdapter)
+import std.repo as Repo
+import std.sql (SqlValue)
+
+pub type Item = { id: Int, spend: Int } deriving (Row)
+pub type Tier = { label: Text } deriving (Row)
+
+pub fn db ok () -> Result (List Tier) Error =
+    let items: Repo Item MemAdapter = Repo.repo (memAdapter ()) "items"
+    items |> Repo.query |> Repo.select (fn (i: Item) -> Tier { label = if i.spend > 100 then "gold" else "silver" })
+"#;
+    let errors = typecheck_one(main);
+    assert!(
+        errors.is_empty(),
+        "a CASE projection field must typecheck; got {errors:?}"
+    );
+}
+
+#[test]
+fn query_builder_filter_allows_case_predicate() {
+    // A CASE whose branches are predicates is itself a boolean, usable in `filter`.
+    let main = r#"
+import std.data (memAdapter, selectRows)
+import std.sql (SqlValue)
+
+pub type User = { id: Int, vip: Bool, spend: Int }
+
+pub fn db matches () -> Result (List (Map Text SqlValue)) Error =
+    selectRows (memAdapter ()) "users" (fn (u: User) -> if u.vip then u.spend > 100 else u.spend > 500)
+"#;
+    let errors = typecheck_one(main);
+    assert!(
+        errors.is_empty(),
+        "a boolean CASE predicate must typecheck; got {errors:?}"
+    );
+}
+
+#[test]
+fn query_builder_case_branch_type_mismatch_is_rejected() {
+    // The two branches of a value CASE must share one type — a Text branch and an
+    // Int branch is a real error.
+    let main = r#"
+import std.data (memAdapter, MemAdapter)
+import std.repo as Repo
+import std.sql (SqlValue)
+
+pub type Item = { id: Int, spend: Int } deriving (Row)
+pub type Tier = { label: Text } deriving (Row)
+
+pub fn db bad () -> Result (List Tier) Error =
+    let items: Repo Item MemAdapter = Repo.repo (memAdapter ()) "items"
+    items |> Repo.query |> Repo.select (fn (i: Item) -> Tier { label = if i.spend > 100 then "gold" else 0 })
+"#;
+    let errors = typecheck_one(main);
     assert!(
         !errors.is_empty(),
-        "a literal projection field (a SQL-injection vector) must be rejected; got no errors"
+        "a CASE with mismatched branch types must be rejected; got no errors"
+    );
+}
+
+#[test]
+fn query_builder_case_without_else_is_rejected() {
+    // A CASE in a quote must have an else branch — there is no value for the
+    // rows the condition does not match otherwise.
+    let main = r#"
+import std.data (memAdapter, selectRows)
+import std.sql (SqlValue)
+
+pub type User = { id: Int, vip: Bool, spend: Int }
+
+pub fn db bad () -> Result (List (Map Text SqlValue)) Error =
+    selectRows (memAdapter ()) "users" (fn (u: User) -> if u.vip then u.spend > 100)
+"#;
+    let errors = typecheck_one(main);
+    assert!(
+        !errors.is_empty(),
+        "a CASE without an else branch must be rejected; got no errors"
+    );
+}
+
+#[test]
+fn query_builder_case_non_boolean_condition_is_rejected() {
+    // A CASE condition must be boolean — an Int column is not a condition.
+    let main = r#"
+import std.data (memAdapter, MemAdapter)
+import std.repo as Repo
+import std.sql (SqlValue)
+
+pub type Item = { id: Int, spend: Int } deriving (Row)
+pub type Tier = { label: Text } deriving (Row)
+
+pub fn db bad () -> Result (List Tier) Error =
+    let items: Repo Item MemAdapter = Repo.repo (memAdapter ()) "items"
+    items |> Repo.query |> Repo.select (fn (i: Item) -> Tier { label = if i.spend then "gold" else "silver" })
+"#;
+    let errors = typecheck_one(main);
+    assert!(
+        !errors.is_empty(),
+        "a non-boolean CASE condition must be rejected; got no errors"
+    );
+}
+
+#[test]
+fn query_builder_select_computed_field_type_must_match_shape() {
+    // A computed projection field's type must match the declared result field — a
+    // Text field cannot be filled by an Int arithmetic expression.
+    let main = r#"
+import std.data (memAdapter, MemAdapter)
+import std.repo as Repo
+import std.sql (SqlValue)
+
+pub type Item = { id: Int, qty: Int, price: Int } deriving (Row)
+pub type Bad = { total: Text } deriving (Row)
+
+pub fn db bad () -> Result (List Bad) Error =
+    let items: Repo Item MemAdapter = Repo.repo (memAdapter ()) "items"
+    items |> Repo.query |> Repo.select (fn (i: Item) -> Bad { total = i.qty * i.price })
+"#;
+    let errors = typecheck_one(main);
+    assert!(
+        !errors.is_empty(),
+        "a computed field whose type differs from the declared shape must be rejected; got no errors"
     );
 }
 

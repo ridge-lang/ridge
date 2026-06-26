@@ -2668,20 +2668,17 @@ fn firstDecodedFullPrefixed (rows: List (Map Text SqlValue)) -> Result (Option (
                         Err err -> Err err
                         Ok optY -> Ok (Some (optX, optY))
 
--- The `(alias, column)` pairs a projection names. The projection quote captures
--- a `QProj` whose select-list is a list of `(alias, QCol column)`; anything else
--- contributes no columns. Generic over the quote's function type so it reads an
--- entity-typed projection (`fn e -> s`) and a row-map one alike — only the
--- captured `tree` matters.
-fn projColumns (proj: Quote p) -> List (Text, Text) =
+-- The `(alias, expr)` columns a projection names. The projection quote captures
+-- a `QProj` whose select-list is a list of `(alias, QExpr)` — a bare column or a
+-- computed value (arithmetic, a CASE) — which passes through unchanged for the
+-- adapter to compile to its backend. Anything that is not a projection names no
+-- columns. Generic over the quote's function type so it reads an entity-typed
+-- projection (`fn e -> s`) and a row-map one alike — only the captured `tree`
+-- matters.
+fn projColumns (proj: Quote p) -> List (Text, QExpr) =
     match proj.tree
-        QProj cols -> projPairs cols
+        QProj cols -> cols
         _          -> []
-
-fn projPairs (cols: List (Text, QExpr)) -> List (Text, Text) =
-    match cols
-        []                   -> []
-        (alias, col) :: rest -> (alias, qcolName col) :: projPairs rest
 
 fn qcolName (e: QExpr) -> Text =
     match e

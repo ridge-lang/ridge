@@ -35,13 +35,37 @@ fn orderKey (q: Quote (User -> Int)) -> Sql = Query.orderSql Desc q
 
 fn orderKeyAsc (q: Quote (User -> Int)) -> Sql = Query.orderSql Asc q
 
-fn selectCols (q: Quote (User -> { id: Int, signupYear: Int })) -> Sql = Query.selectSql q
+fn selectCols (q: Quote (User -> { id: Int, signupYear: Int })) -> (Sql, List SqlValue) = Query.selectSql q
 
-fn selectRenamed (q: Quote (User -> { year: Int })) -> Sql = Query.selectSql q
+fn selectRenamed (q: Quote (User -> { year: Int })) -> (Sql, List SqlValue) = Query.selectSql q
 
-pub fn projectCols () -> Text = sqlValue (selectCols (fn u -> { id = u.id, signupYear = u.signupYear }))
+fn selectDoubled (q: Quote (User -> { doubled: Int })) -> (Sql, List SqlValue) = Query.selectSql q
 
-pub fn projectRenamed () -> Text = sqlValue (selectRenamed (fn u -> { year = u.signupYear }))
+fn selectTier (q: Quote (User -> { tier: Text })) -> (Sql, List SqlValue) = Query.selectSql q
+
+pub fn projectCols () -> Text =
+    match selectCols (fn u -> { id = u.id, signupYear = u.signupYear })
+        (s, _) -> sqlValue s
+
+pub fn projectRenamed () -> Text =
+    match selectRenamed (fn u -> { year = u.signupYear })
+        (s, _) -> sqlValue s
+
+pub fn projectComputedSql () -> Text =
+    match selectDoubled (fn u -> { doubled = u.age * 2 })
+        (s, _) -> sqlValue s
+
+pub fn projectComputedBinds () -> Text =
+    match selectDoubled (fn u -> { doubled = u.age * 2 })
+        (_, ps) -> Int.toText (List.length ps)
+
+pub fn projectCaseSql () -> Text =
+    match selectTier (fn u -> { tier = if u.age >= 18 then "adult" else "minor" })
+        (s, _) -> sqlValue s
+
+pub fn projectCaseBinds () -> Text =
+    match selectTier (fn u -> { tier = if u.age >= 18 then "adult" else "minor" })
+        (_, ps) -> Int.toText (List.length ps)
 
 pub fn recentFirst () -> Text = sqlValue (orderKey (fn u -> u.signupYear))
 
@@ -133,7 +157,7 @@ fn quoted_predicate_compiles_to_parameterized_sql() {
 
     let expr = format!(
         "F=fun(N)->io:format(\"~s=~s~n\",[N,{module}:N()])end, \
-         lists:foreach(F,['adultSql','adultBinds','activeAdultSql','activeAdultBinds','recentSql','recentFirst','oldestFirst','projectCols','projectRenamed']), halt()."
+         lists:foreach(F,['adultSql','adultBinds','activeAdultSql','activeAdultBinds','recentSql','recentFirst','oldestFirst','projectCols','projectRenamed','projectComputedSql','projectComputedBinds','projectCaseSql','projectCaseBinds']), halt()."
     );
     let output = Command::new("erl")
         .arg("-noshell")
@@ -193,5 +217,27 @@ fn quoted_predicate_compiles_to_parameterized_sql() {
     assert!(
         stdout.contains("projectRenamed=signup_year AS year"),
         "expected `projectRenamed=signup_year AS year`\nstdout:\n{stdout}\nstderr:\n{stderr}"
+    );
+    // A computed projection field compiles to its expression aliased; the literal
+    // operand binds as a `?` placeholder rather than landing in the SQL text.
+    assert!(
+        stdout.contains("projectComputedSql=(age * ?) AS doubled"),
+        "expected `projectComputedSql=(age * ?) AS doubled`\nstdout:\n{stdout}\nstderr:\n{stderr}"
+    );
+    assert!(
+        stdout.contains("projectComputedBinds=1"),
+        "expected `projectComputedBinds=1`\nstdout:\n{stdout}\nstderr:\n{stderr}"
+    );
+    // A CASE projection compiles to `CASE WHEN … THEN … ELSE … END`; every literal
+    // — the condition bound and both branch values — binds as a `?`, so a string
+    // branch (an injection-shaped payload) never reaches the SQL text. Three binds:
+    // the threshold and the two labels.
+    assert!(
+        stdout.contains("projectCaseSql=CASE WHEN (age >= ?) THEN ? ELSE ? END AS tier"),
+        "expected `projectCaseSql=CASE WHEN (age >= ?) THEN ? ELSE ? END AS tier`\nstdout:\n{stdout}\nstderr:\n{stderr}"
+    );
+    assert!(
+        stdout.contains("projectCaseBinds=3"),
+        "expected `projectCaseBinds=3`\nstdout:\n{stdout}\nstderr:\n{stderr}"
     );
 }

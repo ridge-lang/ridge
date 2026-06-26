@@ -351,6 +351,11 @@ pub fn prelude_types(b: &BuiltinTyCons) -> (FxHashMap<String, Scheme>, FxHashMap
             q_ctor(vec![qexpr_ty.clone(), qexpr_ty.clone()]),
         );
     }
+    // QCase carries a boolean condition and its two branches.
+    values.insert(
+        "QCase".to_string(),
+        q_ctor(vec![qexpr_ty.clone(), qexpr_ty.clone(), qexpr_ty.clone()]),
+    );
 
     (values, tycons)
 }

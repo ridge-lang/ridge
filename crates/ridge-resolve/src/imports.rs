@@ -962,6 +962,11 @@ pub fn prelude_resolutions() -> Vec<ImportResolution> {
                 query_binding("QAggMax"),
                 query_binding("QLike"),
                 query_binding("QIn"),
+                query_binding("QAdd"),
+                query_binding("QSub"),
+                query_binding("QMul"),
+                query_binding("QDiv"),
+                query_binding("QMod"),
                 // `Ret/1` — the return-type projection, in scope for query-builder
                 // signatures that name the element of a projection's result.
                 query_binding("Ret"),
@@ -2023,11 +2028,11 @@ mod tests {
     }
 
     // Prelude test 5: 1-module workspace with NO user imports → 5 prelude IRs,
-    // 47 total bindings (6 from option/result prelude + 8 from json prelude +
-    // 25 from quotation prelude + 8 module aliases).
+    // 62 total bindings (6 from option/result prelude + 8 from json prelude +
+    // 40 from quotation prelude + 8 module aliases).
     #[test]
     fn prelude_injected_when_no_user_imports() {
-        // An empty module has no imports → all 47 prelude bindings should appear.
+        // An empty module has no imports → all 62 prelude bindings should appear.
         let (_td, result) = resolve_single("");
         let module_imports = result.imports.first().expect("module 0");
         // Exactly 5 prelude IRs (option + result + json + quotation constructors,
@@ -2043,8 +2048,8 @@ mod tests {
             .map(|ir| ir.effective_bindings.len())
             .sum();
         assert_eq!(
-            total_bindings, 57,
-            "expected 57 total prelude bindings (6 option/result + 8 json + 35 quotation + 8 module aliases); got {total_bindings}"
+            total_bindings, 62,
+            "expected 62 total prelude bindings (6 option/result + 8 json + 40 quotation + 8 module aliases); got {total_bindings}"
         );
     }
 

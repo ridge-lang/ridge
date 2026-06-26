@@ -574,6 +574,94 @@ pub fn db bad () -> Result (List (Map Text SqlValue)) Error =
 }
 
 #[test]
+fn predicate_arithmetic_typechecks() {
+    // Arithmetic (`+ - * / %`) is accepted as a comparison operand: a column with a
+    // literal, a column with a column, integer division and modulo — each combining
+    // with `&&` like any other comparison.
+    let main = r#"
+import std.data (memAdapter, selectRows)
+import std.sql (SqlValue)
+
+pub type User = { id: Int, age: Int, name: Text, score: Float }
+
+pub fn db matches () -> Result (List (Map Text SqlValue)) Error =
+    selectRows (memAdapter ()) "users"
+        (fn (u: User) ->
+            u.age * 2 > 50
+            && u.age + u.id <= 100
+            && u.age - 1 >= 0
+            && u.age / 10 == 2
+            && u.age % 2 == 0
+            && u.score * 1.5 > 0.0)
+"#;
+    let errors = typecheck_one(main);
+    assert!(
+        errors.is_empty(),
+        "arithmetic comparison operands must type-check clean; got {errors:?}"
+    );
+}
+
+#[test]
+fn predicate_arithmetic_type_mismatch_is_rejected() {
+    // Arithmetic operands must share one numeric type — an Int column plus a Text
+    // column is a real error, not a silently coerced expression.
+    let main = r#"
+import std.data (memAdapter, selectRows)
+import std.sql (SqlValue)
+
+pub type User = { id: Int, age: Int, name: Text }
+
+pub fn db bad () -> Result (List (Map Text SqlValue)) Error =
+    selectRows (memAdapter ()) "users" (fn (u: User) -> u.age + u.name > 0)
+"#;
+    let errors = typecheck_one(main);
+    assert!(
+        !errors.is_empty(),
+        "arithmetic over operands of different types must be rejected; got no errors"
+    );
+}
+
+#[test]
+fn predicate_modulo_on_float_is_rejected() {
+    // `%` (modulo) is Int-only — Postgres does not define it on Float, so a Float
+    // modulo is rejected rather than reaching a backend that cannot evaluate it.
+    let main = r#"
+import std.data (memAdapter, selectRows)
+import std.sql (SqlValue)
+
+pub type User = { id: Int, score: Float }
+
+pub fn db bad () -> Result (List (Map Text SqlValue)) Error =
+    selectRows (memAdapter ()) "users" (fn (u: User) -> u.score % 2.0 > 0.0)
+"#;
+    let errors = typecheck_one(main);
+    assert!(
+        !errors.is_empty(),
+        "modulo on a Float column must be rejected; got no errors"
+    );
+}
+
+#[test]
+fn predicate_division_by_literal_zero_is_rejected() {
+    // A literal-zero divisor is a guaranteed error, caught at compile time rather
+    // than left to abort the query (Postgres) or drop the row (in-memory) at run time.
+    let main = r#"
+import std.data (memAdapter, selectRows)
+import std.sql (SqlValue)
+
+pub type User = { id: Int, age: Int }
+
+pub fn db bad () -> Result (List (Map Text SqlValue)) Error =
+    selectRows (memAdapter ()) "users" (fn (u: User) -> u.age / 0 == 1)
+"#;
+    let errors = typecheck_one(main);
+    assert!(
+        !errors.is_empty(),
+        "division by a literal zero must be rejected; got no errors"
+    );
+}
+
+#[test]
 fn repo_all_auto_decodes_to_typed_list() {
     // A repository pinned to `User` decodes `all` straight into `List User`:
     // the reconciled `Repo e a` threads the adapter and the entity, the
@@ -662,6 +750,47 @@ pub fn db checks () -> Text =
     assert!(
         errors.is_empty(),
         "the folded like/in probe shape must type-check clean; got {errors:?}"
+    );
+}
+
+#[test]
+fn repo_findby_folded_arithmetic_probe_typechecks() {
+    // The shape of the Postgres e2e arithmetic probe: one repository, several
+    // `findBy` checks whose predicates carry arithmetic operands (column-with-literal,
+    // column-with-column, integer division and modulo) folded through `countOf` into a
+    // comma-joined string. The e2e source only compiles under a live database, so this
+    // locks the probe shape here over the in-memory adapter.
+    let main = r#"
+import std.data (memAdapter, MemAdapter)
+import std.repo as Repo
+import std.sql (SqlValue)
+import std.text as Text
+import std.int as Int
+
+pub type User = { id: Int, age: Int, name: Text } deriving (Row)
+
+fn listLen (us: List User) -> Int =
+    match us
+        []        -> 0
+        _ :: rest -> 1 + listLen rest
+
+fn countOf (res: Result (List User) Error) -> Int =
+    match res
+        Ok us -> listLen us
+        Err _ -> 0 - 1
+
+pub fn db checks () -> Text =
+    let r: Repo User MemAdapter = Repo.repo (memAdapter ()) "users"
+    let a = countOf (r |> Repo.findBy (fn (u: User) -> u.age * 2 > 50))
+    let b = countOf (r |> Repo.findBy (fn (u: User) -> u.age + u.id > 20))
+    let c = countOf (r |> Repo.findBy (fn (u: User) -> u.age / 10 == 2))
+    let d = countOf (r |> Repo.findBy (fn (u: User) -> u.age % 2 == 0))
+    Text.join "," [Int.toText a, Int.toText b, Int.toText c, Int.toText d]
+"#;
+    let errors = typecheck_one(main);
+    assert!(
+        errors.is_empty(),
+        "the folded arithmetic probe shape must type-check clean; got {errors:?}"
     );
 }
 

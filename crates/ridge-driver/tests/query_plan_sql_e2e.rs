@@ -127,6 +127,19 @@ pub fn inEmptySql () -> Text = renderSql (planScan "users" (pred1 (fn u -> List.
 
 pub fn inEmptyBinds () -> Text = renderBinds (planScan "users" (pred1 (fn u -> List.contains u.age [])) [] (0 - 1) 0 false)
 
+-- Arithmetic operands render as a parenthesised `(lhs OP rhs)` inside the
+-- comparison: a column times a `$1`-bound literal, with the comparison's own
+-- literal as `$2`; a column-plus-column with no bind of its own; modulo over a
+-- `$1`-bound divisor. The recursive operand renderer threads placeholders left
+-- to right, so a literal in either side binds in source order.
+pub fn arithMulSql () -> Text = renderSql (planScan "users" (pred1 (fn (u: User) -> u.age * 2 > 50)) [] (0 - 1) 0 false)
+
+pub fn arithMulBinds () -> Text = renderBinds (planScan "users" (pred1 (fn (u: User) -> u.age * 2 > 50)) [] (0 - 1) 0 false)
+
+pub fn arithColSql () -> Text = renderSql (planScan "users" (pred1 (fn (u: User) -> u.age + u.id > 20)) [] (0 - 1) 0 false)
+
+pub fn arithModSql () -> Text = renderSql (planScan "users" (pred1 (fn (u: User) -> u.age % 2 == 0)) [] (0 - 1) 0 false)
+
 pub fn combineSql () -> Text =
     renderSql (planCombine "UNION" (adultsScan ()) (usersScan ()))
 
@@ -538,7 +551,7 @@ fn query_plan_compiles_to_parameterized_sql() {
 
     let expr = format!(
         "F=fun(N)->io:format(\"~s=~s~n\",[N,{module}:N()])end, \
-         lists:foreach(F,['scanSql','scanBinds','foldSql','likeSql','likeBinds','inSql','inBinds','inEmptySql','inEmptyBinds','combineSql','refineSql','innerSql','leftSql','rightSql','fullSql','fullBinds','projectSql','aggSql','groupSql','inner3Sql','inner3Binds','existsSql','existsThreeSql','existsThreeBinds','everyJoinSql','everyJoinBinds','innerLeftMixSql','innerRightMixSql','innerFullMixSql','innerFullMixBinds','adultLeftMixSql','adultLeftMixBinds','countAdultLeftMixSql','countThreeSql','countThreeBinds','countLeftMixSql','countLeftMixBinds','sumThreeSql','avgThreeSql','projectThreeSql','projectLeftMixSql','projectRightMixSql','projectFullMixSql','groupThreeSql','groupLeftMixSql','groupRightMixSql','groupFullMixSql','orderThreeSql','orderLeftMixSql','orderRightMixSql','orderFullMixSql','inner4Sql','sumFourSql','projectFourSql','orderFourSql']), halt()."
+         lists:foreach(F,['scanSql','scanBinds','foldSql','likeSql','likeBinds','inSql','inBinds','inEmptySql','inEmptyBinds','arithMulSql','arithMulBinds','arithColSql','arithModSql','combineSql','refineSql','innerSql','leftSql','rightSql','fullSql','fullBinds','projectSql','aggSql','groupSql','inner3Sql','inner3Binds','existsSql','existsThreeSql','existsThreeBinds','everyJoinSql','everyJoinBinds','innerLeftMixSql','innerRightMixSql','innerFullMixSql','innerFullMixBinds','adultLeftMixSql','adultLeftMixBinds','countAdultLeftMixSql','countThreeSql','countThreeBinds','countLeftMixSql','countLeftMixBinds','sumThreeSql','avgThreeSql','projectThreeSql','projectLeftMixSql','projectRightMixSql','projectFullMixSql','groupThreeSql','groupLeftMixSql','groupRightMixSql','groupFullMixSql','orderThreeSql','orderLeftMixSql','orderRightMixSql','orderFullMixSql','inner4Sql','sumFourSql','projectFourSql','orderFourSql']), halt()."
     );
     let output = Command::new("erl")
         .arg("-noshell")
@@ -571,6 +584,13 @@ fn query_plan_compiles_to_parameterized_sql() {
     want(r#"inEmptySql=SELECT * FROM "users" WHERE FALSE"#);
     want("inEmptyBinds=0");
     want("scanBinds=1");
+
+    // Arithmetic operands render as a parenthesised `(lhs OP rhs)` inside the
+    // comparison; a literal in either side binds left to right.
+    want(r#"arithMulSql=SELECT * FROM "users" WHERE ("age" * $1) > $2"#);
+    want("arithMulBinds=2");
+    want(r#"arithColSql=SELECT * FROM "users" WHERE ("age" + "id") > $1"#);
+    want(r#"arithModSql=SELECT * FROM "users" WHERE ("age" % $1) = $2"#);
 
     // The optimizer folds the `&& true` away before rendering, so the filter compiles to
     // the same SQL as the bare comparison — no redundant `AND (TRUE)` survives.

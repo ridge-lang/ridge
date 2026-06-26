@@ -1145,6 +1145,49 @@ impl BuiltinTyCons {
                             Type::Con(list, vec![Type::Con(TyConId(25), vec![])]),
                         ]),
                     },
+                    // The arithmetic value nodes — `a + b`, `a - b`, `a * b`,
+                    // `a / b`, `a % b` — each over two operand `QExpr`s. Unlike the
+                    // comparison nodes these stand for a *value*, not a predicate:
+                    // they appear as an operand of a comparison (`price * qty > 100`),
+                    // recursively. Both operands share one numeric type (Int or
+                    // Float); `%` is Int-only, matching Postgres. Appended after
+                    // `QIn` so existing variant indices the lowering pass hardcodes
+                    // stay put.
+                    UnionVariant {
+                        name: "QAdd".to_string(),
+                        kind: VariantPayload::Positional(vec![
+                            Type::Con(TyConId(25), vec![]),
+                            Type::Con(TyConId(25), vec![]),
+                        ]),
+                    },
+                    UnionVariant {
+                        name: "QSub".to_string(),
+                        kind: VariantPayload::Positional(vec![
+                            Type::Con(TyConId(25), vec![]),
+                            Type::Con(TyConId(25), vec![]),
+                        ]),
+                    },
+                    UnionVariant {
+                        name: "QMul".to_string(),
+                        kind: VariantPayload::Positional(vec![
+                            Type::Con(TyConId(25), vec![]),
+                            Type::Con(TyConId(25), vec![]),
+                        ]),
+                    },
+                    UnionVariant {
+                        name: "QDiv".to_string(),
+                        kind: VariantPayload::Positional(vec![
+                            Type::Con(TyConId(25), vec![]),
+                            Type::Con(TyConId(25), vec![]),
+                        ]),
+                    },
+                    UnionVariant {
+                        name: "QMod".to_string(),
+                        kind: VariantPayload::Positional(vec![
+                            Type::Con(TyConId(25), vec![]),
+                            Type::Con(TyConId(25), vec![]),
+                        ]),
+                    },
                 ],
             }),
             def_span: None,

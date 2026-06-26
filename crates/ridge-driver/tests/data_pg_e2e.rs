@@ -343,6 +343,22 @@ pub fn db likeInChecks () -> Text =
             let g = countOf (r |> Repo.findBy (fn (u: User) -> contains u.age []))
             Text.join "," [Int.toText a, Int.toText b, Int.toText c, Int.toText d, Int.toText e, Int.toText f, Int.toText g]
 
+-- Arithmetic predicates against real Postgres, folded into one probe (one pooled
+-- connection) like the LIKE/IN checks. Each findBy reifies a QAdd/QSub/QMul/QDiv/QMod
+-- the backend compiles into real SQL arithmetic. Against the seeded ada(18,1)/lin(30,2)/
+-- max(25,3): age * 2 > 50 -> lin = 1; age + id > 20 -> lin,max = 2; age / 10 == 2 ->
+-- max = 1 (integer truncation, matching the in-memory backend); age % 2 == 0 -> ada,lin
+-- = 2 — joined as "1,2,1,2".
+pub fn db arithChecks () -> Text =
+    match setup ()
+        Err _ -> "setup-err"
+        Ok r  ->
+            let a = countOf (r |> Repo.findBy (fn (u: User) -> u.age * 2 > 50))
+            let b = countOf (r |> Repo.findBy (fn (u: User) -> u.age + u.id > 20))
+            let c = countOf (r |> Repo.findBy (fn (u: User) -> u.age / 10 == 2))
+            let d = countOf (r |> Repo.findBy (fn (u: User) -> u.age % 2 == 0))
+            Text.join "," [Int.toText a, Int.toText b, Int.toText c, Int.toText d]
+
 -- find + decode: the name of the first user older than 28 -> "lin"
 pub fn db firstName () -> Text =
     match setup ()
@@ -1910,6 +1926,7 @@ fn postgres_adapter_reads_a_real_table() {
          io:format(\"connectWithRuns=~s~n\",[{module}:connectWithRuns()]), \
          io:format(\"adultsCount=~w~n\",[{module}:adultsCount()]), \
          io:format(\"likeInChecks=~s~n\",[{module}:likeInChecks()]), \
+         io:format(\"arithChecks=~s~n\",[{module}:arithChecks()]), \
          io:format(\"firstName=~s~n\",[{module}:firstName()]), \
          io:format(\"getName=~s~n\",[{module}:getName()]), \
          io:format(\"afterDelete=~w~n\",[{module}:afterDelete()]), \
@@ -2031,6 +2048,11 @@ fn postgres_adapter_reads_a_real_table() {
             "likeInChecks=2,1,1,0,0,2,0",
             "LIKE/IN compile to real SQL: contains/startsWith/raw-LIKE, escaped %/_ \
              matching nothing, IN over a set and the empty set",
+        ),
+        (
+            "arithChecks=1,2,1,2",
+            "arithmetic compiles to real SQL: age*2>50, age+id>20, integer age/10==2, \
+             age%2==0",
         ),
         (
             "firstName=lin",

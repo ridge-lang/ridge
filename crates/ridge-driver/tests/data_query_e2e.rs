@@ -186,6 +186,51 @@ pub fn db escapeMatch () -> Int =
                     match selectRows conn "codes" (fn (c: Code) -> Text.contains c.label "50%")
                         Ok rows -> lengthOf rows
                         Err _   -> 0 - 3
+
+-- arithmetic `+` over two columns: age + id > 20 (lin 32, max 28) -> 2
+pub fn db arithAdd () -> Int =
+    match setup ()
+        Err _ -> 0 - 1
+        Ok conn ->
+            match selectRows conn "users" (fn (u: User) -> u.age + u.id > 20)
+                Ok rows -> lengthOf rows
+                Err _   -> 0 - 2
+
+-- arithmetic `-` with a literal: age - 5 >= 20 (lin 25, max 20) -> 2
+pub fn db arithSub () -> Int =
+    match setup ()
+        Err _ -> 0 - 1
+        Ok conn ->
+            match selectRows conn "users" (fn (u: User) -> u.age - 5 >= 20)
+                Ok rows -> lengthOf rows
+                Err _   -> 0 - 2
+
+-- arithmetic `*` with a literal: age * 2 > 50 (lin 60) -> 1
+pub fn db arithMul () -> Int =
+    match setup ()
+        Err _ -> 0 - 1
+        Ok conn ->
+            match selectRows conn "users" (fn (u: User) -> u.age * 2 > 50)
+                Ok rows -> lengthOf rows
+                Err _   -> 0 - 2
+
+-- integer `/` truncates toward zero: age / 10 == 2 (max 25/10 = 2) -> 1
+pub fn db arithDiv () -> Int =
+    match setup ()
+        Err _ -> 0 - 1
+        Ok conn ->
+            match selectRows conn "users" (fn (u: User) -> u.age / 10 == 2)
+                Ok rows -> lengthOf rows
+                Err _   -> 0 - 2
+
+-- modulo `%` (Int-only): even ages (ada 18, lin 30) -> 2
+pub fn db arithMod () -> Int =
+    match setup ()
+        Err _ -> 0 - 1
+        Ok conn ->
+            match selectRows conn "users" (fn (u: User) -> u.age % 2 == 0)
+                Ok rows -> lengthOf rows
+                Err _   -> 0 - 2
 "#;
 
 fn write_workspace(root: &std::path::Path) {
@@ -267,6 +312,11 @@ fn query_surface_runs_on_beam() {
          io:format(\"inAges=~w~n\",[{module}:inAges()]), \
          io:format(\"inEmpty=~w~n\",[{module}:inEmpty()]), \
          io:format(\"escapeMatch=~w~n\",[{module}:escapeMatch()]), \
+         io:format(\"arithAdd=~w~n\",[{module}:arithAdd()]), \
+         io:format(\"arithSub=~w~n\",[{module}:arithSub()]), \
+         io:format(\"arithMul=~w~n\",[{module}:arithMul()]), \
+         io:format(\"arithDiv=~w~n\",[{module}:arithDiv()]), \
+         io:format(\"arithMod=~w~n\",[{module}:arithMod()]), \
          halt()."
     );
     let output = Command::new("erl")
@@ -300,6 +350,11 @@ fn query_surface_runs_on_beam() {
             "escapeMatch=1",
             "contains \"50%\" matches the literal-percent label only",
         ),
+        ("arithAdd=2", "age + id > 20 keeps lin and max"),
+        ("arithSub=2", "age - 5 >= 20 keeps lin and max"),
+        ("arithMul=1", "age * 2 > 50 keeps lin"),
+        ("arithDiv=1", "age / 10 == 2 keeps max (integer truncation)"),
+        ("arithMod=2", "age % 2 == 0 keeps the even ages ada and lin"),
     ] {
         assert!(
             stdout.contains(probe),

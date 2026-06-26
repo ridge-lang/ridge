@@ -1038,6 +1038,13 @@ fn reify_node(ctx: &mut LowerCtx<'_>, e: &Expr, params: &[String]) -> IrExpr {
                 BinOp::Gt => ("QGt", 11),
                 BinOp::Le => ("QLe", 12),
                 BinOp::Ge => ("QGe", 13),
+                // Arithmetic value nodes — both operands reify recursively, so a
+                // nested `price * qty + 1` builds the matching `QAdd`/`QMul` tree.
+                BinOp::Add => ("QAdd", 26),
+                BinOp::Sub => ("QSub", 27),
+                BinOp::Mul => ("QMul", 28),
+                BinOp::Div => ("QDiv", 29),
+                BinOp::Mod => ("QMod", 30),
                 _ => {
                     ctx.errors.push(LowerError::InternalLoweringError {
                         span: *span,

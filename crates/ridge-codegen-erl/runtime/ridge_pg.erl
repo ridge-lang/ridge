@@ -984,10 +984,14 @@ run_verb(Conn, {delete, Table, Tree}) ->
 run_verb(Conn, {update, Table, Changes, Tree}) ->
     do_update(Conn, Table, Changes, Tree);
 run_verb(Conn, {fetch, Table, Tree, Orders, Lim, Off, Dist}) ->
-    {Where, Binds} = compile_where(Tree),
+    %% WHERE binds take $1..$K; a computed ORDER BY key continues at $K+1, seeded with
+    %% the WHERE binds (held reversed, as `cw` accumulates), so the two runs never
+    %% collide and the final list reads left to right: WHERE values first, then ORDER BY.
+    {Where, RevW, N1} = cw(Tree, 1, []),
+    {OrderFrag, RevAllBinds, _N2} = order_by_clause(Orders, N1, RevW),
     Sql = ["SELECT ", distinct_kw(Dist), "* FROM ", quote_ident(Table), " WHERE ", Where,
-           order_by_clause(Orders), limit_clause(Lim), offset_clause(Off)],
-    run_query(Conn, Sql, Binds);
+           OrderFrag, limit_clause(Lim), offset_clause(Off)],
+    run_query(Conn, Sql, lists:reverse(RevAllBinds));
 run_verb(Conn, {project, Table, Tree, Orders, Lim, Off, Cols, Dist}) ->
     %% A computed projection column may carry literals, so the select-list binds
     %% take $1..$K and the WHERE compiles from $K+1, seeded with the select binds
@@ -995,9 +999,10 @@ run_verb(Conn, {project, Table, Tree, Orders, Lim, Off, Cols, Dist}) ->
     %% never collide and the final list reads left to right: select-list values
     %% first, then WHERE. Mirrors the SET-before-WHERE threading in do_update.
     {SelectFrag, SelBindsRev, N1} = select_list(Cols, 1, []),
-    {Where, RevAllBinds, _N} = cw(Tree, N1, SelBindsRev),
+    {Where, RevW, N2} = cw(Tree, N1, SelBindsRev),
+    {OrderFrag, RevAllBinds, _N3} = order_by_clause(Orders, N2, RevW),
     Sql = ["SELECT ", distinct_kw(Dist), SelectFrag, " FROM ", quote_ident(Table), " WHERE ", Where,
-           order_by_clause(Orders), limit_clause(Lim), offset_clause(Off)],
+           OrderFrag, limit_clause(Lim), offset_clause(Off)],
     run_query(Conn, Sql, lists:reverse(RevAllBinds));
 run_verb(Conn, {count_where, Table, Tree}) ->
     do_count(Conn, Table, Tree);
@@ -1063,10 +1068,13 @@ do_count(Conn, Table, Tree) ->
 %% 'SqlNull'. Func is whitelisted to the four aggregate keywords and Column is
 %% quoted as an identifier, so neither is ever interpolated as raw SQL.
 do_aggregate(Conn, Table, Func, Column, Tree) ->
-    {Where, Binds} = compile_where(Tree),
-    Sql = ["SELECT ", agg_expr(Func, Column), " FROM ", quote_ident(Table),
-           " WHERE ", Where],
-    agg_result(run_query(Conn, Sql, Binds)).
+    %% The folded key is in the SELECT, so its binds take $1..$J and the WHERE
+    %% continues at $J+1, seeded with them (held reversed) — select-before-where
+    %% ordering, as the project verb threads its select-list.
+    {AggFrag, RevB1, N1} = agg_expr(Func, Column, 1, []),
+    {Where, RevB2, _N2} = cw(Tree, N1, RevB1),
+    Sql = ["SELECT ", AggFrag, " FROM ", quote_ident(Table), " WHERE ", Where],
+    agg_result(run_query(Conn, Sql, lists:reverse(RevB2))).
 
 %% Read the single scalar an aggregate SELECT returns, positionally (the result
 %% column's name is the aggregate keyword, which varies). An aggregate always
@@ -1098,6 +1106,21 @@ count_result({error, E}) -> {error, E}.
 %% falls back to COUNT, which the typed surface never produces. AVG is cast to
 %% float8 so an integer column's average crosses the wire as a float, matching the
 %% `Float` result the repository verb decodes.
+%% The folded key is a `QExpr` — a column or a computed expression over the columns
+%% (`SUM(price * qty)`) — compiled through `cw_operand`, the same operand compiler the
+%% WHERE clause uses, so a literal in it binds as a `$N` placeholder, never spliced as
+%% raw SQL. `Func` is one of the whitelisted keywords (SUM/AVG/MIN/MAX); `AVG` casts to
+%% float8 so an integer column averages to a float.
+agg_expr(Func, Column, N, B) ->
+    {CExpr, B1, N1} = cw_operand(Column, N, B),
+    {[Func, "(", CExpr, ")", agg_cast(Func)], B1, N1}.
+
+agg_cast(<<"AVG">>) -> "::float8";
+agg_cast(_)         -> "".
+
+%% The grouped-aggregate select/HAVING expression over a bare column name (the
+%% grouped path still folds plain columns): `FUNC("col")`, AVG cast to float8. The
+%% computed-key dual `agg_expr/4` serves the single-table scalar aggregate.
 agg_expr(<<"AVG">>, Column) -> ["AVG(", quote_ident(Column), ")::float8"];
 agg_expr(<<"SUM">>, Column) -> ["SUM(", quote_ident(Column), ")"];
 agg_expr(<<"MIN">>, Column) -> ["MIN(", quote_ident(Column), ")"];
@@ -1190,11 +1213,22 @@ ch_operand(_Other, _K, N, B) -> {"NULL", B, N}.
 %% offset are integers from the typed surface, so they render inline without a
 %% bind. An empty order list, a negative limit, or a non-positive offset each
 %% contributes nothing.
-order_by_clause([])     -> [];
-order_by_clause(Orders) -> [" ORDER BY ", lists:join(", ", [order_term(O) || O <- Orders])].
-
-%% Each order key carries `Asc` as the boolean `true`.
-order_term({Asc, Col}) -> [quote_ident(Col), " ", dir_keyword(Asc)].
+%% ORDER BY over quoted keys, threading the `$N` counter and bind accumulator (held
+%% reversed, as `cw` accumulates) so a computed key's literals bind in order, after
+%% the WHERE clause's. Each key is a `QExpr` — a column or a computed expression over
+%% the columns — compiled through `cw_operand`, the same operand compiler the WHERE
+%% clause uses. An empty list contributes nothing and leaves the counter untouched.
+order_by_clause([], N, B)     -> {[], B, N};
+order_by_clause(Orders, N, B) ->
+    {RevTerms, B1, N1} =
+        lists:foldl(
+            fun({Asc, Key}, {Terms, Bs, Nn}) ->
+                {Frag, Bs1, Nn1} = cw_operand(Key, Nn, Bs),
+                {[[Frag, " ", dir_keyword(Asc)] | Terms], Bs1, Nn1}
+            end,
+            {[], B, N},
+            Orders),
+    {[" ORDER BY ", lists:join(", ", lists:reverse(RevTerms))], B1, N1}.
 
 %% Projection select-list from `{Alias, QExpr}` columns, threading the `$N`
 %% counter and bind accumulator so a literal in a computed column binds in

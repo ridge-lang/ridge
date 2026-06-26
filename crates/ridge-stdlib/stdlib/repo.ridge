@@ -287,7 +287,7 @@ pub fn disconnect (conn: a) -> Result Unit Error where Adapter a =
 -- query plan the terminal runs in place of the single-table fetch, and the outer
 -- fields (filter, ordering, page, distinct) then apply on top of the combined
 -- result.
-pub opaque type Query e a = { repo: Repo e a, pred: Quote (Map Text SqlValue -> Bool), orders: List (Bool, Text), lim: Int, off: Int, dist: Bool, plan: Option QueryPlan }
+pub opaque type Query e a = { repo: Repo e a, pred: Quote (Map Text SqlValue -> Bool), orders: List (Bool, QExpr), lim: Int, off: Int, dist: Bool, plan: Option QueryPlan }
 
 -- Start a query over a repository: every row, unordered, unpaged.
 pub fn query (r: Repo e a) -> Query e a =
@@ -672,7 +672,7 @@ pub fn summarize (proj: Quote (Grouped q p -> s)) (g: Grouped q p) -> Result (Li
 --     |> Repo.toList
 -- The result decodes into a left-nested pair `((User, Post), Comment)`, one level
 -- of nesting per table past the first.
-pub opaque type Joined q f a = { source: q, right: Repo f a, cond: Quote (Map Text SqlValue -> Map Text SqlValue -> Bool), where2: Quote (Map Text SqlValue -> Map Text SqlValue -> Bool), orders: List (Bool, Int, Text), lim: Int, off: Int, dist: Bool }
+pub opaque type Joined q f a = { source: q, right: Repo f a, cond: Quote (Map Text SqlValue -> Map Text SqlValue -> Bool), where2: Quote (Map Text SqlValue -> Map Text SqlValue -> Bool), orders: List (Bool, Int, QExpr), lim: Int, off: Int, dist: Bool }
 
 -- A two-table inner join. Aliased to `Joined (Query e a) f a` so a query paired
 -- with one right repository through `joinOn` is the same shape the composite
@@ -695,7 +695,7 @@ pub type Join e f a = Joined (Query e a) f a
 --       |> Repo.toList
 --
 -- yields `List ((User, Post), Option Comment)`.
-pub opaque type LeftJoined q f a = { source: q, right: Repo f a, cond: Quote (Map Text SqlValue -> Map Text SqlValue -> Bool), where2: Quote (Map Text SqlValue -> Map Text SqlValue -> Bool), orders: List (Bool, Int, Text), lim: Int, off: Int, dist: Bool }
+pub opaque type LeftJoined q f a = { source: q, right: Repo f a, cond: Quote (Map Text SqlValue -> Map Text SqlValue -> Bool), where2: Quote (Map Text SqlValue -> Map Text SqlValue -> Bool), orders: List (Bool, Int, QExpr), lim: Int, off: Int, dist: Bool }
 
 -- A right outer join extending a composite of three or more tables, built by
 -- chaining `rightJoinOn` past the first join. The mirror of `LeftJoined`: the
@@ -711,7 +711,7 @@ pub opaque type LeftJoined q f a = { source: q, right: Repo f a, cond: Quote (Ma
 --       |> Repo.toList
 --
 -- yields `List (Option (User, Post), Comment)`.
-pub opaque type RightJoined q f a = { source: q, right: Repo f a, cond: Quote (Map Text SqlValue -> Map Text SqlValue -> Bool), where2: Quote (Map Text SqlValue -> Map Text SqlValue -> Bool), orders: List (Bool, Int, Text), lim: Int, off: Int, dist: Bool }
+pub opaque type RightJoined q f a = { source: q, right: Repo f a, cond: Quote (Map Text SqlValue -> Map Text SqlValue -> Bool), where2: Quote (Map Text SqlValue -> Map Text SqlValue -> Bool), orders: List (Bool, Int, QExpr), lim: Int, off: Int, dist: Bool }
 
 -- A full outer join extending a composite of three or more tables, built by
 -- chaining `fullJoinOn` past the first join. The union of a left and a right
@@ -726,7 +726,7 @@ pub opaque type RightJoined q f a = { source: q, right: Repo f a, cond: Quote (M
 --       |> Repo.toList
 --
 -- yields `List (Option (User, Post), Option Comment)`.
-pub opaque type FullJoined q f a = { source: q, right: Repo f a, cond: Quote (Map Text SqlValue -> Map Text SqlValue -> Bool), where2: Quote (Map Text SqlValue -> Map Text SqlValue -> Bool), orders: List (Bool, Int, Text), lim: Int, off: Int, dist: Bool }
+pub opaque type FullJoined q f a = { source: q, right: Repo f a, cond: Quote (Map Text SqlValue -> Map Text SqlValue -> Bool), where2: Quote (Map Text SqlValue -> Map Text SqlValue -> Bool), orders: List (Bool, Int, QExpr), lim: Int, off: Int, dist: Bool }
 
 -- Start or extend an inner join. One verb across every receiver: a query pairs
 -- with the right repository into a binary `Join`, and a join (binary or nested)
@@ -873,7 +873,7 @@ instance Decodable (Joined q f a) where Adapter a, JoinShape q, Row f =
 --     |> Repo.query
 --     |> Repo.leftJoinOn posts (fn (u: User) (p: Post) -> u.id == p.authorId)
 --     |> Repo.toList
-pub opaque type LeftJoin e f a = { left: Query e a, right: Repo f a, cond: Quote (Map Text SqlValue -> Map Text SqlValue -> Bool), where2: Quote (Map Text SqlValue -> Map Text SqlValue -> Bool), orders: List (Bool, Int, Text), lim: Int, off: Int, dist: Bool }
+pub opaque type LeftJoin e f a = { left: Query e a, right: Repo f a, cond: Quote (Map Text SqlValue -> Map Text SqlValue -> Bool), where2: Quote (Map Text SqlValue -> Map Text SqlValue -> Bool), orders: List (Bool, Int, QExpr), lim: Int, off: Int, dist: Bool }
 
 -- Start or extend a left outer join. One verb across every receiver, the LEFT
 -- dual of `joinOn`: a query pairs with the right repository into a binary
@@ -1012,7 +1012,7 @@ pub fn crossJoin (right: Repo f a) (q: Query e a) -> Join e f a =
 --     |> Repo.query
 --     |> Repo.rightJoinOn posts (fn (u: User) (p: Post) -> u.id == p.authorId)
 --     |> Repo.toList
-pub opaque type RightJoin e f a = { left: Query e a, right: Repo f a, cond: Quote (Map Text SqlValue -> Map Text SqlValue -> Bool), where2: Quote (Map Text SqlValue -> Map Text SqlValue -> Bool), orders: List (Bool, Int, Text), lim: Int, off: Int, dist: Bool }
+pub opaque type RightJoin e f a = { left: Query e a, right: Repo f a, cond: Quote (Map Text SqlValue -> Map Text SqlValue -> Bool), where2: Quote (Map Text SqlValue -> Map Text SqlValue -> Bool), orders: List (Bool, Int, QExpr), lim: Int, off: Int, dist: Bool }
 
 -- Start a right outer join from a query: pair it with a right repository on a quoted
 -- Start or extend a right outer join. One verb across every receiver, the RIGHT
@@ -1155,7 +1155,7 @@ instance Decodable (RightJoined q f a) where Adapter a, JoinShape q, Row f =
 --     |> Repo.query
 --     |> Repo.fullJoinOn posts (fn (u: User) (p: Post) -> u.id == p.authorId)
 --     |> Repo.toList
-pub opaque type FullJoin e f a = { left: Query e a, right: Repo f a, cond: Quote (Map Text SqlValue -> Map Text SqlValue -> Bool), where2: Quote (Map Text SqlValue -> Map Text SqlValue -> Bool), orders: List (Bool, Int, Text), lim: Int, off: Int, dist: Bool }
+pub opaque type FullJoin e f a = { left: Query e a, right: Repo f a, cond: Quote (Map Text SqlValue -> Map Text SqlValue -> Bool), where2: Quote (Map Text SqlValue -> Map Text SqlValue -> Bool), orders: List (Bool, Int, QExpr), lim: Int, off: Int, dist: Bool }
 
 -- Start a full outer join from a query: pair it with a right repository on a quoted
 -- condition over both entities. Unlike `leftJoinOn`/`rightJoinOn`, neither side is
@@ -1706,7 +1706,7 @@ instance Decodable (Query e a) where Adapter a, Row e =
 -- verb — makes the in-memory page mean exactly what the database page does: `offset` then
 -- `limit` over the ordered rows, independent of the order the verbs were chained, so the
 -- same pipeline reads the same on a `Seq` and on a `Repo`.
-pub opaque type Seq a = { source: QueryPlan, pred: Quote (Map Text SqlValue -> Bool), orders: List (Bool, Text), lim: Int, off: Int, dist: Bool }
+pub opaque type Seq a = { source: QueryPlan, pred: Quote (Map Text SqlValue -> Bool), orders: List (Bool, QExpr), lim: Int, off: Int, dist: Bool }
 
 -- Encode each record to a row, eagerly. The mirror of `decodeRows` on the way in.
 fn encodeRows (xs: List a) -> List (Map Text SqlValue) where Row a =
@@ -1861,7 +1861,7 @@ instance Aggregable (Seq a) (fn a -> n) where SqlType n =
 -- handle exactly as they do over a query's, one builder vocabulary, no connection touched.
 instance Groupable (Seq a) (fn a -> k) =
     groupBy (key: Quote (fn a -> k)) (x: Seq a) -> Grouped (Seq a) (fn a -> k) =
-        Grouped { source = x, keyCol = aggColumn key, keyLeaf = aggLeaf key, havingTree = keepAllTree () }
+        Grouped { source = x, keyCol = aggColumnName key, keyLeaf = aggLeaf key, havingTree = keepAllTree () }
 
 -- An in-memory sequence's `summarize` seam: run the `GROUP BY` (and any `HAVING`) over the
 -- sequence's filtered rows through the same `PlanGroup` node the join `summarize` uses, one
@@ -1961,17 +1961,17 @@ fn fullReduceJoin (x: FullJoin e f a) (where2: QExpr) (lim: Int) -> QueryPlan =
 -- count off its lone row — the outer-shape duals of `countJoinPlan`, shared by each
 -- shape's `count` and `every`.
 fn leftCountPlan (x: LeftJoin e f a) (where2: QExpr) -> Result Int Error where Adapter a =
-    match runPlan x.left.repo.adapter (planAggregate "COUNT" "" 0 (leftReduceJoin x where2 (0 - 1)))
+    match runPlan x.left.repo.adapter (planAggregate "COUNT" (keepAllTree ()) 0 (leftReduceJoin x where2 (0 - 1)))
         Err err -> Err err
         Ok rows -> aggCount rows
 
 fn rightCountPlan (x: RightJoin e f a) (where2: QExpr) -> Result Int Error where Adapter a =
-    match runPlan x.left.repo.adapter (planAggregate "COUNT" "" 0 (rightReduceJoin x where2 (0 - 1)))
+    match runPlan x.left.repo.adapter (planAggregate "COUNT" (keepAllTree ()) 0 (rightReduceJoin x where2 (0 - 1)))
         Err err -> Err err
         Ok rows -> aggCount rows
 
 fn fullCountPlan (x: FullJoin e f a) (where2: QExpr) -> Result Int Error where Adapter a =
-    match runPlan x.left.repo.adapter (planAggregate "COUNT" "" 0 (fullReduceJoin x where2 (0 - 1)))
+    match runPlan x.left.repo.adapter (planAggregate "COUNT" (keepAllTree ()) 0 (fullReduceJoin x where2 (0 - 1)))
         Err err -> Err err
         Ok rows -> aggCount rows
 
@@ -2038,7 +2038,7 @@ fn fullReducePlan (x: FullJoined q f a) (where2: QExpr) (lim: Int) -> QueryPlan 
 -- lone row, or probe the plan for a single row. Shared by every composite's `count`,
 -- `exists`, and `every` (which counts twice).
 fn compositeCount (conn: a) (plan: QueryPlan) -> Result Int Error where Adapter a =
-    match runPlan conn (planAggregate "COUNT" "" 0 plan)
+    match runPlan conn (planAggregate "COUNT" (keepAllTree ()) 0 plan)
         Err err -> Err err
         Ok rows -> aggCount rows
 
@@ -2077,7 +2077,7 @@ fn fullScalarComposite (x: FullJoined q f a) (func: Text) (col: Quote p) -> Quer
 -- runs them — pair, order, project, distinct, page. The projection tree is read against
 -- the flat, leaf-prefixed rows: a `QColAt i` cell names the i-th leaf's column. The
 -- left-nested source plan comes from `JoinShape`, the new leaf its scan and columns.
-fn compositeSelectPlan (kind: Text) (sourcePlan: QueryPlan) (rightTable: Text) (cond: QExpr) (where2: QExpr) (orders: List (Bool, Int, Text)) (rightCols: List Text) (proj: QExpr) (lim: Int) (off: Int) (dist: Bool) -> QueryPlan =
+fn compositeSelectPlan (kind: Text) (sourcePlan: QueryPlan) (rightTable: Text) (cond: QExpr) (where2: QExpr) (orders: List (Bool, Int, QExpr)) (rightCols: List Text) (proj: QExpr) (lim: Int) (off: Int) (dist: Bool) -> QueryPlan =
     planProject proj (planJoin kind sourcePlan (planScan rightTable (keepAllTree ()) [] (0 - 1) 0 false) cond where2 orders (0 - 1) 0 false [] rightCols) lim off dist
 
 -- The per-shape composite select-plan wrappers, one per composite. Each unpacks its
@@ -2427,7 +2427,7 @@ instance Every (FullJoined q f a) (Map Text SqlValue -> Map Text SqlValue -> Boo
 -- captured key; a query has no right table, so the side is always the left.
 instance Groupable (Query e a) (fn e -> k) =
     groupBy (key: Quote (fn e -> k)) (x: Query e a) -> Grouped (Query e a) (fn e -> k) =
-        Grouped { source = x, keyCol = aggColumn key, keyLeaf = aggLeaf key, havingTree = keepAllTree () }
+        Grouped { source = x, keyCol = aggColumnName key, keyLeaf = aggLeaf key, havingTree = keepAllTree () }
 
 -- A query's `summarize` seam: run the `GROUP BY` (and any `HAVING`) over the query's
 -- own filter through the `groupSummarize` push-down, returning one raw row per group
@@ -2441,21 +2441,21 @@ instance Summarizable (Query e a) where Adapter a =
 -- unmatched left rows under the NULL key the backend gives them.
 instance Groupable (LeftJoin e f a) (fn e f -> k) =
     groupBy (key: Quote (fn e f -> k)) (x: LeftJoin e f a) -> Grouped (LeftJoin e f a) (fn e f -> k) =
-        Grouped { source = x, keyCol = aggColumn key, keyLeaf = aggLeaf key, havingTree = keepAllTree () }
+        Grouped { source = x, keyCol = aggColumnName key, keyLeaf = aggLeaf key, havingTree = keepAllTree () }
 
 -- A right join's `groupBy`: the two-row dual over a `RightJoin`, both sides read as
 -- the plain entities `e`/`f` as in the right-join aggregates. A left-side key groups
 -- the unmatched right rows under the NULL key the backend gives them.
 instance Groupable (RightJoin e f a) (fn e f -> k) =
     groupBy (key: Quote (fn e f -> k)) (x: RightJoin e f a) -> Grouped (RightJoin e f a) (fn e f -> k) =
-        Grouped { source = x, keyCol = aggColumn key, keyLeaf = aggLeaf key, havingTree = keepAllTree () }
+        Grouped { source = x, keyCol = aggColumnName key, keyLeaf = aggLeaf key, havingTree = keepAllTree () }
 
 -- A full join's `groupBy`: the two-row dual over a `FullJoin`, both sides read as the
 -- plain entities `e`/`f` as in the full-join aggregates. A key over a side groups the
 -- rows unmatched on that side under the NULL key the backend gives them.
 instance Groupable (FullJoin e f a) (fn e f -> k) =
     groupBy (key: Quote (fn e f -> k)) (x: FullJoin e f a) -> Grouped (FullJoin e f a) (fn e f -> k) =
-        Grouped { source = x, keyCol = aggColumn key, keyLeaf = aggLeaf key, havingTree = keepAllTree () }
+        Grouped { source = x, keyCol = aggColumnName key, keyLeaf = aggLeaf key, havingTree = keepAllTree () }
 
 -- A left join's `summarize` seam: the dual over a `LeftJoin`, run through the
 -- `groupSummarizeLeftJoin` push-down. Every left row the post-join `WHERE` admits
@@ -2485,19 +2485,19 @@ instance Summarizable (FullJoin e f a) where Adapter a =
 -- `aggColumn`/`aggLeaf` read the column and its leaf off the captured key.
 instance Groupable (Joined q f a) (Map Text SqlValue -> k) =
     groupBy (key: Quote (Map Text SqlValue -> k)) (x: Joined q f a) -> Grouped (Joined q f a) (Map Text SqlValue -> k) =
-        Grouped { source = x, keyCol = aggColumn key, keyLeaf = aggLeaf key, havingTree = keepAllTree () }
+        Grouped { source = x, keyCol = aggColumnName key, keyLeaf = aggLeaf key, havingTree = keepAllTree () }
 
 instance Groupable (LeftJoined q f a) (Map Text SqlValue -> k) =
     groupBy (key: Quote (Map Text SqlValue -> k)) (x: LeftJoined q f a) -> Grouped (LeftJoined q f a) (Map Text SqlValue -> k) =
-        Grouped { source = x, keyCol = aggColumn key, keyLeaf = aggLeaf key, havingTree = keepAllTree () }
+        Grouped { source = x, keyCol = aggColumnName key, keyLeaf = aggLeaf key, havingTree = keepAllTree () }
 
 instance Groupable (RightJoined q f a) (Map Text SqlValue -> k) =
     groupBy (key: Quote (Map Text SqlValue -> k)) (x: RightJoined q f a) -> Grouped (RightJoined q f a) (Map Text SqlValue -> k) =
-        Grouped { source = x, keyCol = aggColumn key, keyLeaf = aggLeaf key, havingTree = keepAllTree () }
+        Grouped { source = x, keyCol = aggColumnName key, keyLeaf = aggLeaf key, havingTree = keepAllTree () }
 
 instance Groupable (FullJoined q f a) (Map Text SqlValue -> k) =
     groupBy (key: Quote (Map Text SqlValue -> k)) (x: FullJoined q f a) -> Grouped (FullJoined q f a) (Map Text SqlValue -> k) =
-        Grouped { source = x, keyCol = aggColumn key, keyLeaf = aggLeaf key, havingTree = keepAllTree () }
+        Grouped { source = x, keyCol = aggColumnName key, keyLeaf = aggLeaf key, havingTree = keepAllTree () }
 
 -- A composite's `summarize` seam: run the `GROUP BY` (and any `HAVING`) over the
 -- nested join's all-pairs reduction through a `PlanGroup`, leaf-qualifying the key and
@@ -2686,15 +2686,13 @@ fn qcolName (e: QExpr) -> Text =
         QColR c -> c
         _       -> ""
 
--- The column an ordering key names. The key quote captures a single column, so
--- its tree is a `QCol`; anything else contributes an empty key name. Generic over
--- the quote's function type (like `projColumns`) so it reads an entity-typed key
--- (`fn (u: User) -> u.age`, the unified `orderBy`'s shape) and a row-map one alike
--- — only the captured `tree` matters.
-fn orderColumn (key: Quote p) -> Text =
-    match key.tree
-        QCol c -> c
-        _      -> ""
+-- The captured tree of an ordering key — a column (`QCol`) or a computed
+-- expression over the columns (arithmetic, a CASE), threaded into the plan and
+-- rendered by the backend (a literal in it binding as a placeholder, never
+-- interpolated). Generic over the quote's function type (like `projColumns`) so it
+-- reads an entity-typed key (`fn (u: User) -> u.age`, the unified `orderBy`'s
+-- shape) and a row-map one alike — only the captured `tree` matters.
+fn orderColumn (key: Quote p) -> QExpr = key.tree
 
 -- Append one element to the end of a list. The ordering builders add each new key
 -- after the keys already accumulated, so the keys sort major-to-minor in the order
@@ -2703,39 +2701,29 @@ fn snoc (xs: List a) (x: a) -> List a =
     xs ++ [x]
 
 -- Lift a query's one-row ordering keys into a join's leaf-tagged ordering: a
--- query's keys all range over its (left) entity, so each `(ascending?, column)`
--- becomes `(ascending?, 0, column)` — the first leaf. The ordering a query
--- accumulated before it was joined carries into the join as first-leaf keys.
-fn liftOrders (os: List (Bool, Text)) -> List (Bool, Int, Text) =
+-- query's keys all range over its (left) entity, so each `(ascending?, key)`
+-- becomes `(ascending?, 0, key)` — the first leaf, where the key's columns live.
+-- The ordering a query accumulated before it was joined carries into the join as
+-- first-leaf keys.
+fn liftOrders (os: List (Bool, QExpr)) -> List (Bool, Int, QExpr) =
     match os
-        []               -> []
-        (asc, c) :: rest -> (asc, 0, c) :: liftOrders rest
+        []                 -> []
+        (asc, key) :: rest -> (asc, 0, key) :: liftOrders rest
 
--- A join ordering entry from a quoted key: the direction, the join leaf the column
--- belongs to, and the column name. A `QCol` is the first leaf (0, the left/single
--- table), a `QColR` the second (1, a binary join's right), and a `QColAt i` the
--- `i`-th leaf of a deeper composite — the same leaf indexing an aggregate accessor
--- uses. A key that does not name a single column contributes an empty first-leaf
--- entry, the inert shape `orderColumn` also falls back to.
-fn orderEntryLeaf (dir: SortOrder) (key: Quote p) -> (Bool, Int, Text) =
-    match key.tree
-        QCol c     -> (ascending dir, 0, c)
-        QColR c    -> (ascending dir, 1, c)
-        QColAt i c -> (ascending dir, i, c)
-        _          -> (ascending dir, 0, "")
+-- A join ordering entry from a quoted key: the direction, the base join leaf the
+-- key's bare columns qualify to (`QCol` leaf 0, `QColR` leaf 1, `QColAt i` leaf i —
+-- the same leaf an aggregate accessor uses, read here by `aggLeaf`), and the
+-- captured tree (a column or a computed expression over the joined sides, each of
+-- whose columns qualifies to its own leaf when rendered).
+fn orderEntryLeaf (dir: SortOrder) (key: Quote p) -> (Bool, Int, QExpr) =
+    (ascending dir, aggLeaf key, key.tree)
 
--- The column an aggregate accessor names. Like an ordering key, the accessor
--- quote captures a single column — a `QCol` on the left/single table or a `QColR`
--- on a join's right table — and anything else contributes an empty column name.
--- Generic over the quote's function type (like `orderColumn`) so it reads a
--- query's `fn e -> n` accessor and a join's `fn e f -> n` accessor alike — only
--- the captured `tree` matters.
-fn aggColumn (col: Quote p) -> Text =
-    match col.tree
-        QCol c      -> c
-        QColR c     -> c
-        QColAt _ c  -> c
-        _           -> ""
+-- The captured tree of an aggregate accessor — a column or a computed expression
+-- over the columns (`SUM(price * qty)`), folded by the backend. Generic over the
+-- quote's function type (like `orderColumn`) so it reads a query's `fn e -> n`
+-- accessor and a join's `fn e f -> n` accessor alike — only the captured `tree`
+-- matters; `aggLeaf` reads which side a bare column names.
+fn aggColumn (col: Quote p) -> QExpr = col.tree
 
 -- Which join leaf an aggregate accessor names: a `QCol` is the first leaf (0, the
 -- left/single table), a `QColR` the second (1, a binary join's right), and a
@@ -2747,6 +2735,17 @@ fn aggLeaf (col: Quote p) -> Int =
         QColR _    -> 1
         QColAt i _ -> i
         _          -> 0
+
+-- The bare column NAME an accessor quote captures — a `QCol`/`QColR`/`QColAt` over
+-- the column, anything else the empty name. The grouped path names its group key and
+-- folded columns by name (its plan carries `Text` columns), where the scalar
+-- aggregate path carries the whole `QExpr` (`aggColumn`); this is the name dual.
+fn aggColumnName (col: Quote p) -> Text =
+    match col.tree
+        QCol c      -> c
+        QColR c     -> c
+        QColAt _ c  -> c
+        _           -> ""
 
 -- An always-true `HAVING` tree — the group default before `having` narrows it. A
 -- `Quote`/`QExpr` literal cannot be written in Ridge source, so the always-true

@@ -1253,7 +1253,7 @@ mem_keeper_loop(State) ->
         {{aggregate, Id, Table, Tree, Func, Column}, From, Ref} ->
             Rows = maps:get({Id, Table}, State, []),
             Matches = [R || R <- Rows, mem_pred(Tree, R)],
-            Value = mem_aggregate_value(Func, Column, Matches),
+            Value = mem_agg_value_q(Func, Column, Matches),
             Wrapped = case Value of 'SqlNull' -> none; _ -> {some, Value} end,
             From ! {Ref, {ok, Wrapped}},
             mem_keeper_loop(State);
@@ -1380,9 +1380,9 @@ mem_eval_plan(State, Id, {'PlanProject', Proj, Child, Lim, Off, Dist}) ->
 mem_eval_plan(State, Id, {'PlanAggregate', <<"COUNT">>, _Column, _IsRight, Child}) ->
     Rows = mem_eval_plan(State, Id, Child),
     [#{<<"agg">> => {'SqlInt', length(Rows)}}];
-mem_eval_plan(State, Id, {'PlanAggregate', Func, Column, Leaf, Child}) ->
+mem_eval_plan(State, Id, {'PlanAggregate', Func, Column, _Leaf, Child}) ->
     Rows = mem_eval_plan(State, Id, Child),
-    case mem_aggregate_value(Func, mem_agg_col(Leaf, Column, Rows), Rows) of
+    case mem_agg_value_q(Func, Column, Rows) of
         'SqlNull' -> [];
         Value     -> [#{<<"agg">> => Value}]
     end;
@@ -1503,9 +1503,44 @@ mem_set_op(_Op, L, _R)            -> L.
 %% (an all-integer sum stays an integer, a float anywhere makes it a float); AVG
 %% is always a float; MIN/MAX keep the values' own type, comparing numbers
 %% numerically and text lexicographically.
+%% Fold an aggregate over a resolved column NAME — the grouped path, which has
+%% already resolved each group aggregate's column to its (leaf-prefixed or bare)
+%% name. Reads the cell directly; the quoted-key dual is `mem_agg_value_q`.
 mem_aggregate_value(Func, Column, Rows) ->
     Values = [V || R <- Rows, V <- [maps:get(Column, R, 'SqlNull')], V =/= 'SqlNull'],
     mem_agg(Func, Values).
+
+%% Fold an aggregate over a quoted KEY (a `QExpr` — a column or a computed expression
+%% over the columns) — the single-table and join scalar-aggregate path, where the key
+%% is evaluated per row rather than read by a pre-resolved name.
+mem_agg_value_q(Func, Column, Rows) ->
+    mem_agg(Func, mem_agg_values(Column, Rows)).
+
+%% The non-null folded values of an aggregate's quoted key over the rows. The key is
+%% a QExpr — a column or a computed expression over the columns — evaluated per row
+%% through `mem_nscalar` when the rows are a join's flat leaf-prefixed rows and
+%% through `mem_scalar` when they are a single table's or `Seq`'s bare rows, so a
+%% bare column resolves to the right cell either way. A row that yields no value (a
+%% missing column, a runtime divide-by-zero) drops out of the fold.
+mem_agg_values(Column, Rows) ->
+    Eval = case mem_rows_prefixed(Rows) of
+        true  -> fun(R) -> mem_nscalar(Column, R) end;
+        false -> fun(R) -> mem_scalar(Column, R) end
+    end,
+    [V || R <- Rows, V <- [Eval(R)], V =/= undefined, V =/= 'SqlNull'].
+
+%% Whether the rows are a join's flat leaf-prefixed rows (any key shaped `t<n>$...`)
+%% rather than a single table's or `Seq`'s bare rows — decides which scalar
+%% evaluator folds an aggregate's key.
+mem_rows_prefixed(Rows) ->
+    lists:any(fun(Row) -> lists:any(fun mem_is_leaf_key/1, maps:keys(Row)) end, Rows).
+
+mem_is_leaf_key(<<"t", Rest/binary>>) -> mem_leaf_key_tail(Rest);
+mem_is_leaf_key(_)                    -> false.
+
+mem_leaf_key_tail(<<C, Rest/binary>>) when C >= $0, C =< $9 -> mem_leaf_key_tail(Rest);
+mem_leaf_key_tail(<<"$", _/binary>>)                        -> true;
+mem_leaf_key_tail(_)                                        -> false.
 
 mem_agg(_Func, [])         -> 'SqlNull';
 mem_agg(<<"SUM">>, Values) -> mem_sum(Values);
@@ -1833,13 +1868,10 @@ mem_order_pairs(Orders, Pairs) ->
 %% right-side key over an unmatched left-join row reads as a missing value and keeps
 %% its place.
 mem_le_pair([], _A, _B) -> true;
-mem_le_pair([{Asc, Leaf, Col} | Rest], {LA, RA} = A, {LB, RB} = B) ->
-    {RowA, RowB} =
-        case Leaf of
-            0 -> {mem_left_row(LA), mem_left_row(LB)};
-            _ -> {mem_right_row(RA), mem_right_row(RB)}
-        end,
-    case mem_order_cmp(mem_scalar({'QCol', Col}, RowA), mem_scalar({'QCol', Col}, RowB)) of
+mem_le_pair([{Asc, _Leaf, Key} | Rest], {LA, RA} = A, {LB, RB} = B) ->
+    KA = mem_jscalar(Key, mem_left_row(LA), mem_right_row(RA)),
+    KB = mem_jscalar(Key, mem_left_row(LB), mem_right_row(RB)),
+    case mem_order_cmp(KA, KB) of
         eq -> mem_le_pair(Rest, A, B);
         lt -> Asc;
         gt -> not Asc
@@ -2039,9 +2071,8 @@ mem_order_nary(Orders, Rows) ->
     lists:sort(fun(A, B) -> mem_le_nary(Orders, A, B) end, Rows).
 
 mem_le_nary([], _A, _B) -> true;
-mem_le_nary([{Asc, Leaf, Col} | Rest], A, B) ->
-    Key = <<(mem_leaf_prefix(Leaf))/binary, Col/binary>>,
-    case mem_order_cmp(maps:get(Key, A, undefined), maps:get(Key, B, undefined)) of
+mem_le_nary([{Asc, _Leaf, Key} | Rest], A, B) ->
+    case mem_order_cmp(mem_nscalar(Key, A), mem_nscalar(Key, B)) of
         eq -> mem_le_nary(Rest, A, B);
         lt -> Asc;
         gt -> not Asc
@@ -2237,8 +2268,8 @@ mem_order(Orders, Rows) -> lists:sort(fun(A, B) -> mem_le(Orders, A, B) end, Row
 %% key carries `Asc` as the boolean `true`: A precedes B on `<` when ascending
 %% and on `>` when descending.
 mem_le([], _A, _B) -> true;
-mem_le([{Asc, Col} | Rest], A, B) ->
-    case mem_order_cmp(mem_scalar({'QCol', Col}, A), mem_scalar({'QCol', Col}, B)) of
+mem_le([{Asc, Key} | Rest], A, B) ->
+    case mem_order_cmp(mem_scalar(Key, A), mem_scalar(Key, B)) of
         eq -> mem_le(Rest, A, B);
         lt -> Asc;
         gt -> not Asc

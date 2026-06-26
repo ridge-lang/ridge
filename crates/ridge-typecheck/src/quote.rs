@@ -359,25 +359,22 @@ pub(crate) fn check_quote(
         return false;
     }
 
-    // A non-boolean scalar result is an ordering key: a single column to sort by.
-    // A one-parameter quote is a query's `orderBy`; a two-parameter quote is a
-    // join's, whose key may name a column from either side (`fn u p -> p.title`).
-    // The key must still be a single column, checked next, so a multi-parameter
-    // body that is neither a predicate nor a projection nor a column is rejected
-    // there with the same "must be a single column" diagnostic.
+    // A non-boolean scalar result is an ordering key or an aggregate accessor. A
+    // one-parameter quote is a query's `orderBy`/`sumOf`; a two-parameter quote a
+    // join's, naming a value from either side (`fn u p -> p.title`). The value's
+    // type must match the quote's declared result type, checked next.
 
-    // The ordering key (or aggregate accessor) must be a single column, checked
-    // against the entity's schema — a computed expression (arithmetic) or a bare
-    // literal is rejected, so only a schema-validated column reaches the generated
-    // `ORDER BY` / `SUM(...)`. Arithmetic is a value usable as a *comparison
-    // operand*, never as an ordering key. The column's type must match the quote's
-    // declared result type — except when that result type is an unbound variable
-    // (a polymorphic key, whose return is phantom), in which case any column is
-    // accepted and the variable is bound to it.
+    // The key may be a single column or a computed expression over the columns
+    // (arithmetic, a CASE), each checked against the entity's schema — the value
+    // and its type flow into the generated `ORDER BY` / `SUM(...)`, a literal in it
+    // binding as a placeholder rather than interpolated, never as raw SQL. The type
+    // must match the quote's declared result type — except when that result type is
+    // an unbound variable (a polymorphic key, whose return is phantom), in which
+    // case any value is accepted and the variable is bound to it.
     let want_ty = want.unwrap_or_else(|| Type::Con(b.bool, vec![]));
     let col_ty = match &qk {
-        QKind::Col(t) => Some(ctx.deep_resolve(t)),
-        _ => None,
+        QKind::Col(t) | QKind::Scalar(t) => Some(ctx.deep_resolve(t)),
+        QKind::Pred => None,
     };
     let accepts = match &col_ty {
         Some(vt) if matches!(want_ty, Type::Var(_)) => {
@@ -393,7 +390,9 @@ pub(crate) fn check_quote(
     }
     let want_rendered = crate::render::render_type_with(&want_ty, &ctx.tycon_decls);
     ctx.errors.push(TypeError::QuoteUnsupportedExpr {
-        detail: format!("a quoted ordering key must be a single column of type {want_rendered}"),
+        detail: format!(
+            "a quoted ordering key must be a column or computed value of type {want_rendered}"
+        ),
         span: body.span(),
     });
     false

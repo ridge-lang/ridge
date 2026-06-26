@@ -2309,7 +2309,7 @@ fn seed_sql_codec_schemes(
                 b.list,
                 vec![Type::Tuple(vec![
                     Type::Con(b.bool, vec![]),
-                    Type::Con(b.text, vec![]),
+                    Type::Con(b.q_expr, vec![]),
                 ])],
             );
             let fn_ty = Type::Fn {
@@ -2381,7 +2381,7 @@ fn seed_sql_codec_schemes(
                     Type::Con(b.text, vec![]),
                     quote_pred(e),
                     Type::Con(b.text, vec![]),
-                    Type::Con(b.text, vec![]),
+                    Type::Con(b.q_expr, vec![]),
                 ],
                 ret: Box::new(Type::Con(
                     b.result,
@@ -2415,7 +2415,7 @@ fn seed_sql_codec_schemes(
                 b.list,
                 vec![Type::Tuple(vec![
                     Type::Con(b.bool, vec![]),
-                    Type::Con(b.text, vec![]),
+                    Type::Con(b.q_expr, vec![]),
                 ])],
             );
             let cols = Type::Con(

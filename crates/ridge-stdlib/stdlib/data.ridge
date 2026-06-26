@@ -116,10 +116,10 @@ pub class Adapter a =
     get    (conn: a) (table: Text) (column: Text) (key: SqlValue) -> Result (Option (Map Text SqlValue)) Error
     delete (conn: a) (table: Text) (pred: Quote (Map Text SqlValue -> Bool)) -> Result Int Error
     updateRows (conn: a) (table: Text) (changes: Map Text SqlValue) (pred: Quote (Map Text SqlValue -> Bool)) -> Result Int Error
-    fetch  (conn: a) (table: Text) (pred: Quote (Map Text SqlValue -> Bool)) (orders: List (Bool, Text)) (lim: Int) (off: Int) (dist: Bool) -> Result (List (Map Text SqlValue)) Error
+    fetch  (conn: a) (table: Text) (pred: Quote (Map Text SqlValue -> Bool)) (orders: List (Bool, QExpr)) (lim: Int) (off: Int) (dist: Bool) -> Result (List (Map Text SqlValue)) Error
     countWhere (conn: a) (table: Text) (pred: Quote (Map Text SqlValue -> Bool)) -> Result Int Error
-    aggregate (conn: a) (table: Text) (pred: Quote (Map Text SqlValue -> Bool)) (func: Text) (column: Text) -> Result (Option SqlValue) Error
-    project (conn: a) (table: Text) (pred: Quote (Map Text SqlValue -> Bool)) (orders: List (Bool, Text)) (lim: Int) (off: Int) (cols: List (Text, QExpr)) (dist: Bool) -> Result (List (Map Text SqlValue)) Error
+    aggregate (conn: a) (table: Text) (pred: Quote (Map Text SqlValue -> Bool)) (func: Text) (column: QExpr) -> Result (Option SqlValue) Error
+    project (conn: a) (table: Text) (pred: Quote (Map Text SqlValue -> Bool)) (orders: List (Bool, QExpr)) (lim: Int) (off: Int) (cols: List (Text, QExpr)) (dist: Bool) -> Result (List (Map Text SqlValue)) Error
     groupSummarize (conn: a) (table: Text) (pred: Quote (Map Text SqlValue -> Bool)) (keyCol: Text) (cols: List (Text, Text, Text, Bool)) (having: QExpr) -> Result (List (Map Text SqlValue)) Error
     runPlan (conn: a) (plan: QueryPlan) -> Result (List (Map Text SqlValue)) Error
     begin    (conn: a) -> Result Unit Error
@@ -173,7 +173,7 @@ fn _memUpdate (id: Int) (table: Text) (changes: Map Text SqlValue) (tree: QExpr)
 -- Return the rows of a table that satisfy the predicate tree, ordered by the
 -- `(ascending?, column)` keys, then offset and limited.
 @ffi("ridge_rt", "mem_fetch", 7)
-fn _memFetch (id: Int) (table: Text) (tree: QExpr) (orders: List (Bool, Text)) (lim: Int) (off: Int) (dist: Bool) -> Result (List (Map Text SqlValue)) Error
+fn _memFetch (id: Int) (table: Text) (tree: QExpr) (orders: List (Bool, QExpr)) (lim: Int) (off: Int) (dist: Bool) -> Result (List (Map Text SqlValue)) Error
 
 -- Count the rows of a table that satisfy the predicate tree.
 @ffi("ridge_rt", "mem_count_where", 3)
@@ -184,13 +184,13 @@ fn _memCountWhere (id: Int) (table: Text) (tree: QExpr) -> Result Int Error
 -- wrapped in `Some`, or `None` when no row matches (an aggregate over zero rows
 -- is SQL NULL).
 @ffi("ridge_rt", "mem_aggregate", 5)
-fn _memAggregate (id: Int) (table: Text) (tree: QExpr) (func: Text) (column: Text) -> Result (Option SqlValue) Error
+fn _memAggregate (id: Int) (table: Text) (tree: QExpr) (func: Text) (column: QExpr) -> Result (Option SqlValue) Error
 
 -- Return the rows of a table that satisfy the predicate tree, ordered and paged
 -- as `mem_fetch`, then projected down to the `(alias, column)` columns: each row
 -- holds only those columns, re-keyed by alias.
 @ffi("ridge_rt", "mem_project", 8)
-fn _memProject (id: Int) (table: Text) (tree: QExpr) (orders: List (Bool, Text)) (lim: Int) (off: Int) (cols: List (Text, QExpr)) (dist: Bool) -> Result (List (Map Text SqlValue)) Error
+fn _memProject (id: Int) (table: Text) (tree: QExpr) (orders: List (Bool, QExpr)) (lim: Int) (off: Int) (cols: List (Text, QExpr)) (dist: Bool) -> Result (List (Map Text SqlValue)) Error
 
 -- Group the rows of a table that satisfy the predicate tree by the key column,
 -- summarize each group into the `(alias, func, column)` aggregates, keep the
@@ -286,13 +286,13 @@ instance Adapter MemAdapter =
         _memDelete conn.id table pred.tree
     updateRows (conn: MemAdapter) (table: Text) (changes: Map Text SqlValue) (pred: Quote (Map Text SqlValue -> Bool)) -> Result Int Error =
         _memUpdate conn.id table changes pred.tree
-    fetch (conn: MemAdapter) (table: Text) (pred: Quote (Map Text SqlValue -> Bool)) (orders: List (Bool, Text)) (lim: Int) (off: Int) (dist: Bool) -> Result (List (Map Text SqlValue)) Error =
+    fetch (conn: MemAdapter) (table: Text) (pred: Quote (Map Text SqlValue -> Bool)) (orders: List (Bool, QExpr)) (lim: Int) (off: Int) (dist: Bool) -> Result (List (Map Text SqlValue)) Error =
         _memFetch conn.id table pred.tree orders lim off dist
     countWhere (conn: MemAdapter) (table: Text) (pred: Quote (Map Text SqlValue -> Bool)) -> Result Int Error =
         _memCountWhere conn.id table pred.tree
-    aggregate (conn: MemAdapter) (table: Text) (pred: Quote (Map Text SqlValue -> Bool)) (func: Text) (column: Text) -> Result (Option SqlValue) Error =
+    aggregate (conn: MemAdapter) (table: Text) (pred: Quote (Map Text SqlValue -> Bool)) (func: Text) (column: QExpr) -> Result (Option SqlValue) Error =
         _memAggregate conn.id table pred.tree func column
-    project (conn: MemAdapter) (table: Text) (pred: Quote (Map Text SqlValue -> Bool)) (orders: List (Bool, Text)) (lim: Int) (off: Int) (cols: List (Text, QExpr)) (dist: Bool) -> Result (List (Map Text SqlValue)) Error =
+    project (conn: MemAdapter) (table: Text) (pred: Quote (Map Text SqlValue -> Bool)) (orders: List (Bool, QExpr)) (lim: Int) (off: Int) (cols: List (Text, QExpr)) (dist: Bool) -> Result (List (Map Text SqlValue)) Error =
         _memProject conn.id table pred.tree orders lim off cols dist
     groupSummarize (conn: MemAdapter) (table: Text) (pred: Quote (Map Text SqlValue -> Bool)) (keyCol: Text) (cols: List (Text, Text, Text, Bool)) (having: QExpr) -> Result (List (Map Text SqlValue)) Error =
         _memGroupSummarize conn.id table pred.tree keyCol cols having
@@ -467,7 +467,7 @@ fn _pgUpdate (id: Int) (table: Text) (changes: Map Text SqlValue) (tree: QExpr) 
 -- Return the rows of a table that satisfy the predicate tree, with ordering and
 -- paging compiled into the SQL (ORDER BY / LIMIT / OFFSET).
 @ffi("ridge_pg", "pg_fetch", 7)
-fn _pgFetch (id: Int) (table: Text) (tree: QExpr) (orders: List (Bool, Text)) (lim: Int) (off: Int) (dist: Bool) -> Result (List (Map Text SqlValue)) Error
+fn _pgFetch (id: Int) (table: Text) (tree: QExpr) (orders: List (Bool, QExpr)) (lim: Int) (off: Int) (dist: Bool) -> Result (List (Map Text SqlValue)) Error
 
 -- Count the rows of a table that satisfy the predicate tree via SELECT COUNT(*).
 @ffi("ridge_pg", "pg_count_where", 3)
@@ -477,13 +477,13 @@ fn _pgCountWhere (id: Int) (table: Text) (tree: QExpr) -> Result Int Error
 -- rows that satisfy the predicate tree, via SELECT func(column) … WHERE; answer
 -- the single scalar wrapped in `Some`, or `None` when no row matches.
 @ffi("ridge_pg", "pg_aggregate", 5)
-fn _pgAggregate (id: Int) (table: Text) (tree: QExpr) (func: Text) (column: Text) -> Result (Option SqlValue) Error
+fn _pgAggregate (id: Int) (table: Text) (tree: QExpr) (func: Text) (column: QExpr) -> Result (Option SqlValue) Error
 
 -- Return the rows of a table that satisfy the predicate tree, ordered and paged
 -- as `pg_fetch`, with the `(alias, column)` projection compiled into the
 -- select-list (`SELECT column AS alias …`); each row is keyed by alias.
 @ffi("ridge_pg", "pg_project", 8)
-fn _pgProject (id: Int) (table: Text) (tree: QExpr) (orders: List (Bool, Text)) (lim: Int) (off: Int) (cols: List (Text, QExpr)) (dist: Bool) -> Result (List (Map Text SqlValue)) Error
+fn _pgProject (id: Int) (table: Text) (tree: QExpr) (orders: List (Bool, QExpr)) (lim: Int) (off: Int) (cols: List (Text, QExpr)) (dist: Bool) -> Result (List (Map Text SqlValue)) Error
 
 -- Group the rows that satisfy the predicate tree by the key column, compiled into
 -- `SELECT <aggregates> FROM t WHERE <pred> GROUP BY <key> HAVING <having> ORDER BY
@@ -579,13 +579,13 @@ instance Adapter Postgres =
         _pgDelete conn.id table pred.tree
     updateRows (conn: Postgres) (table: Text) (changes: Map Text SqlValue) (pred: Quote (Map Text SqlValue -> Bool)) -> Result Int Error =
         _pgUpdate conn.id table changes pred.tree
-    fetch (conn: Postgres) (table: Text) (pred: Quote (Map Text SqlValue -> Bool)) (orders: List (Bool, Text)) (lim: Int) (off: Int) (dist: Bool) -> Result (List (Map Text SqlValue)) Error =
+    fetch (conn: Postgres) (table: Text) (pred: Quote (Map Text SqlValue -> Bool)) (orders: List (Bool, QExpr)) (lim: Int) (off: Int) (dist: Bool) -> Result (List (Map Text SqlValue)) Error =
         _pgFetch conn.id table pred.tree orders lim off dist
     countWhere (conn: Postgres) (table: Text) (pred: Quote (Map Text SqlValue -> Bool)) -> Result Int Error =
         _pgCountWhere conn.id table pred.tree
-    aggregate (conn: Postgres) (table: Text) (pred: Quote (Map Text SqlValue -> Bool)) (func: Text) (column: Text) -> Result (Option SqlValue) Error =
+    aggregate (conn: Postgres) (table: Text) (pred: Quote (Map Text SqlValue -> Bool)) (func: Text) (column: QExpr) -> Result (Option SqlValue) Error =
         _pgAggregate conn.id table pred.tree func column
-    project (conn: Postgres) (table: Text) (pred: Quote (Map Text SqlValue -> Bool)) (orders: List (Bool, Text)) (lim: Int) (off: Int) (cols: List (Text, QExpr)) (dist: Bool) -> Result (List (Map Text SqlValue)) Error =
+    project (conn: Postgres) (table: Text) (pred: Quote (Map Text SqlValue -> Bool)) (orders: List (Bool, QExpr)) (lim: Int) (off: Int) (cols: List (Text, QExpr)) (dist: Bool) -> Result (List (Map Text SqlValue)) Error =
         _pgProject conn.id table pred.tree orders lim off cols dist
     groupSummarize (conn: Postgres) (table: Text) (pred: Quote (Map Text SqlValue -> Bool)) (keyCol: Text) (cols: List (Text, Text, Text, Bool)) (having: QExpr) -> Result (List (Map Text SqlValue)) Error =
         _pgGroupSummarize conn.id table pred.tree keyCol cols having

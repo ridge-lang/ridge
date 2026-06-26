@@ -385,6 +385,23 @@ pub fn db projChecks () -> Text =
                 Err _ -> "list-err"
                 Ok ts -> joinTagged ts
 
+-- computed orderBy + aggregate on real Postgres, folded into one probe (one pooled
+-- connection). Order by `age - id * 10`: ada(8), lin(10), max(-5) -> ascending
+-- max,ada,lin; sum of `age * 2` -> 146. Proves the Postgres backend threads a
+-- computed ORDER BY key's literals as `$N` placeholders after the WHERE and a
+-- computed aggregate's in the SELECT, never interpolated as raw SQL.
+pub fn db orderAggChecks () -> Text =
+    match setup ()
+        Err _ -> "setup-err"
+        Ok r  ->
+            match r |> Repo.query |> Repo.orderBy Asc (fn (u: User) -> u.age - u.id * 10) |> Repo.toList
+                Err _ -> "order-err"
+                Ok us ->
+                    match r |> Repo.query |> Repo.sumOf (fn (u: User) -> u.age * 2)
+                        Err _       -> "sum-err"
+                        Ok None     -> "none"
+                        Ok (Some n) -> Text.join ":" [joinNames us, Int.toText n]
+
 -- find + decode: the name of the first user older than 28 -> "lin"
 pub fn db firstName () -> Text =
     match setup ()
@@ -1954,6 +1971,7 @@ fn postgres_adapter_reads_a_real_table() {
          io:format(\"likeInChecks=~s~n\",[{module}:likeInChecks()]), \
          io:format(\"arithChecks=~s~n\",[{module}:arithChecks()]), \
          io:format(\"projChecks=~s~n\",[{module}:projChecks()]), \
+         io:format(\"orderAggChecks=~s~n\",[{module}:orderAggChecks()]), \
          io:format(\"firstName=~s~n\",[{module}:firstName()]), \
          io:format(\"getName=~s~n\",[{module}:getName()]), \
          io:format(\"afterDelete=~w~n\",[{module}:afterDelete()]), \
@@ -2085,6 +2103,11 @@ fn postgres_adapter_reads_a_real_table() {
             "projChecks=minor:36,adult:60,adult:50",
             "a computed projection compiles to real SQL: a CASE label and a doubled \
              age, decoded per row",
+        ),
+        (
+            "orderAggChecks=max,ada,lin:146",
+            "a computed ORDER BY key and a computed aggregate compile to real SQL with \
+             their literals bound as placeholders",
         ),
         (
             "firstName=lin",

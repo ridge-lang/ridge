@@ -1269,8 +1269,10 @@ pub(crate) fn reconciled_fn_scheme(
     classes: Option<&ClassTable>,
 ) -> Option<Scheme> {
     match (module, name) {
-        // std.query `orderSql : ∀f. SortOrder -> Quote f -> Sql` — compiles a
-        // quoted ordering key plus a direction into an `ORDER BY` fragment.
+        // std.query `orderSql : ∀f. SortOrder -> Quote f -> (Sql, List SqlValue)`
+        // — compiles a quoted ordering key plus a direction into an `ORDER BY`
+        // fragment and its ordered bind values (a computed key may carry literals,
+        // each a placeholder rather than interpolated text).
         ("std.query", "orderSql") => {
             let sort_order = *reconciled.get("SortOrder")?;
             let f = TyVid(0);
@@ -1283,7 +1285,10 @@ pub(crate) fn reconciled_fn_scheme(
                         Type::Con(sort_order, vec![]),
                         Type::Con(b.quote, vec![Type::Var(f)]),
                     ],
-                    ret: Box::new(Type::Con(b.sql, vec![])),
+                    ret: Box::new(Type::Tuple(vec![
+                        Type::Con(b.sql, vec![]),
+                        Type::Con(b.list, vec![Type::Con(b.sql_value, vec![])]),
+                    ])),
                     caps: CapRow::Concrete(CapabilitySet::PURE),
                 },
                 constraints: vec![],
@@ -1449,11 +1454,13 @@ fn reconciled_query_plan_fn_scheme(
     let int = || Type::Con(b.int, vec![]);
     let bool_ = || Type::Con(b.bool, vec![]);
     let qexpr = || Type::Con(b.q_expr, vec![]);
-    // The ordering keys: `List (Bool, Text)` — the (ascending?, column) pairs.
-    let orders = || Type::Con(b.list, vec![Type::Tuple(vec![bool_(), text()])]);
-    // The leaf-tagged join ordering keys: `List (Bool, Int, Text)` — the
-    // (ascending?, leaf, column) triples.
-    let join_orders = || Type::Con(b.list, vec![Type::Tuple(vec![bool_(), int(), text()])]);
+    // The ordering keys: `List (Bool, QExpr)` — the (ascending?, key) pairs, the
+    // key a column or a computed expression over the columns.
+    let orders = || Type::Con(b.list, vec![Type::Tuple(vec![bool_(), qexpr()])]);
+    // The leaf-tagged join ordering keys: `List (Bool, Int, QExpr)` — the
+    // (ascending?, leaf, key) triples; the leaf is the base side a bare column
+    // names, while a computed key qualifies each of its columns to its own side.
+    let join_orders = || Type::Con(b.list, vec![Type::Tuple(vec![bool_(), int(), qexpr()])]);
     // A `List Text` — a join's per-source column names (`leftCols`/`rightCols`).
     let text_list = || Type::Con(b.list, vec![text()]);
     // The grouped-aggregate columns: `List (Text, Text, Text, Int)` — the
@@ -1477,14 +1484,14 @@ fn reconciled_query_plan_fn_scheme(
         constraints: vec![],
     };
     match name {
-        // planScan : Text -> QExpr -> List (Bool, Text) -> Int -> Int -> Bool -> QueryPlan
+        // planScan : Text -> QExpr -> List (Bool, QExpr) -> Int -> Int -> Bool -> QueryPlan
         "planScan" => Some(pure(vec![text(), qexpr(), orders(), int(), int(), bool_()])),
         // planCombine : Text -> QueryPlan -> QueryPlan -> QueryPlan
         "planCombine" => Some(pure(vec![text(), plan(), plan()])),
-        // planRefine : QueryPlan -> QExpr -> List (Bool, Text) -> Int -> Int -> Bool -> QueryPlan
+        // planRefine : QueryPlan -> QExpr -> List (Bool, QExpr) -> Int -> Int -> Bool -> QueryPlan
         "planRefine" => Some(pure(vec![plan(), qexpr(), orders(), int(), int(), bool_()])),
         // planJoin : Text -> QueryPlan -> QueryPlan -> QExpr -> QExpr ->
-        //            List (Bool, Int, Text) -> Int -> Int -> Bool ->
+        //            List (Bool, Int, QExpr) -> Int -> Int -> Bool ->
         //            List Text -> List Text -> QueryPlan
         "planJoin" => Some(pure(vec![
             text(),
@@ -1501,8 +1508,8 @@ fn reconciled_query_plan_fn_scheme(
         ])),
         // planProject : QExpr -> QueryPlan -> Int -> Int -> Bool -> QueryPlan
         "planProject" => Some(pure(vec![qexpr(), plan(), int(), int(), bool_()])),
-        // planAggregate : Text -> Text -> Int -> QueryPlan -> QueryPlan
-        "planAggregate" => Some(pure(vec![text(), text(), int(), plan()])),
+        // planAggregate : Text -> QExpr -> Int -> QueryPlan -> QueryPlan
+        "planAggregate" => Some(pure(vec![text(), qexpr(), int(), plan()])),
         // planGroup : Text -> Int -> List (Text, Text, Text, Int) -> QExpr ->
         //             QueryPlan -> QueryPlan
         "planGroup" => Some(pure(vec![text(), int(), group_cols(), qexpr(), plan()])),

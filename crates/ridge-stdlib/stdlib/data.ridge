@@ -62,11 +62,12 @@ import std.query (QueryPlan, planToSql)
 -- rest. The alias is the field name of the shape the caller decodes into.
 --
 -- `groupSummarize` is the grouped-aggregate seam: it groups the rows the
--- predicate keeps by `keyCol`, folds each group into the `(alias, func, column,
--- right?)` columns it carries, drops the groups the `having` tree rejects, and
+-- predicate keeps by `keyCol`, folds each group into the `(alias, func, value,
+-- right?)` columns it carries — where `value` is a `QExpr`, a column or a computed
+-- expression the fold evaluates — drops the groups the `having` tree rejects, and
 -- returns one row per surviving group keyed by alias. A backend pushes it into a
--- `SELECT … GROUP BY keyCol HAVING …`; the in-memory adapter buckets the rows by
--- key and folds each bucket.
+-- `SELECT … GROUP BY keyCol HAVING …` (a literal in a computed fold binding as a
+-- placeholder); the in-memory adapter buckets the rows by key and folds each bucket.
 --
 -- `runPlan` is the query-plan seam every multi-step read runs through. The caller
 -- hands it a `QueryPlan` — a tree of scans, set operations, joins, projections,
@@ -120,7 +121,7 @@ pub class Adapter a =
     countWhere (conn: a) (table: Text) (pred: Quote (Map Text SqlValue -> Bool)) -> Result Int Error
     aggregate (conn: a) (table: Text) (pred: Quote (Map Text SqlValue -> Bool)) (func: Text) (column: QExpr) -> Result (Option SqlValue) Error
     project (conn: a) (table: Text) (pred: Quote (Map Text SqlValue -> Bool)) (orders: List (Bool, QExpr)) (lim: Int) (off: Int) (cols: List (Text, QExpr)) (dist: Bool) -> Result (List (Map Text SqlValue)) Error
-    groupSummarize (conn: a) (table: Text) (pred: Quote (Map Text SqlValue -> Bool)) (keyCol: Text) (cols: List (Text, Text, Text, Bool)) (having: QExpr) -> Result (List (Map Text SqlValue)) Error
+    groupSummarize (conn: a) (table: Text) (pred: Quote (Map Text SqlValue -> Bool)) (keyCol: Text) (cols: List (Text, Text, QExpr, Bool)) (having: QExpr) -> Result (List (Map Text SqlValue)) Error
     runPlan (conn: a) (plan: QueryPlan) -> Result (List (Map Text SqlValue)) Error
     begin    (conn: a) -> Result Unit Error
     commit   (conn: a) -> Result Unit Error
@@ -198,7 +199,7 @@ fn _memProject (id: Int) (table: Text) (tree: QExpr) (orders: List (Bool, QExpr)
 -- ordered by the key. The in-memory dual of a `SELECT … GROUP BY … HAVING …`
 -- push-down.
 @ffi("ridge_rt", "mem_group_summarize", 6)
-fn _memGroupSummarize (id: Int) (table: Text) (tree: QExpr) (keyCol: Text) (cols: List (Text, Text, Text, Bool)) (having: QExpr) -> Result (List (Map Text SqlValue)) Error
+fn _memGroupSummarize (id: Int) (table: Text) (tree: QExpr) (keyCol: Text) (cols: List (Text, Text, QExpr, Bool)) (having: QExpr) -> Result (List (Map Text SqlValue)) Error
 
 -- Run a captured query plan (a set-operation tree) against the in-memory store,
 -- interpreting each `planScan`/`planCombine`/`planRefine` node, and return the
@@ -294,7 +295,7 @@ instance Adapter MemAdapter =
         _memAggregate conn.id table pred.tree func column
     project (conn: MemAdapter) (table: Text) (pred: Quote (Map Text SqlValue -> Bool)) (orders: List (Bool, QExpr)) (lim: Int) (off: Int) (cols: List (Text, QExpr)) (dist: Bool) -> Result (List (Map Text SqlValue)) Error =
         _memProject conn.id table pred.tree orders lim off cols dist
-    groupSummarize (conn: MemAdapter) (table: Text) (pred: Quote (Map Text SqlValue -> Bool)) (keyCol: Text) (cols: List (Text, Text, Text, Bool)) (having: QExpr) -> Result (List (Map Text SqlValue)) Error =
+    groupSummarize (conn: MemAdapter) (table: Text) (pred: Quote (Map Text SqlValue -> Bool)) (keyCol: Text) (cols: List (Text, Text, QExpr, Bool)) (having: QExpr) -> Result (List (Map Text SqlValue)) Error =
         _memGroupSummarize conn.id table pred.tree keyCol cols having
     runPlan (conn: MemAdapter) (plan: QueryPlan) -> Result (List (Map Text SqlValue)) Error =
         _memRunPlan conn.id plan
@@ -489,7 +490,7 @@ fn _pgProject (id: Int) (table: Text) (tree: QExpr) (orders: List (Bool, QExpr))
 -- `SELECT <aggregates> FROM t WHERE <pred> GROUP BY <key> HAVING <having> ORDER BY
 -- <key>`; each row comes back keyed by the projection's output aliases.
 @ffi("ridge_pg", "pg_group_summarize", 6)
-fn _pgGroupSummarize (id: Int) (table: Text) (tree: QExpr) (keyCol: Text) (cols: List (Text, Text, Text, Bool)) (having: QExpr) -> Result (List (Map Text SqlValue)) Error
+fn _pgGroupSummarize (id: Int) (table: Text) (tree: QExpr) (keyCol: Text) (cols: List (Text, Text, QExpr, Bool)) (having: QExpr) -> Result (List (Map Text SqlValue)) Error
 
 -- Begin a transaction on the connection identified by `id`, pinning one pooled
 -- connection for its span. A nested `begin` issues a `SAVEPOINT` on that same
@@ -587,7 +588,7 @@ instance Adapter Postgres =
         _pgAggregate conn.id table pred.tree func column
     project (conn: Postgres) (table: Text) (pred: Quote (Map Text SqlValue -> Bool)) (orders: List (Bool, QExpr)) (lim: Int) (off: Int) (cols: List (Text, QExpr)) (dist: Bool) -> Result (List (Map Text SqlValue)) Error =
         _pgProject conn.id table pred.tree orders lim off cols dist
-    groupSummarize (conn: Postgres) (table: Text) (pred: Quote (Map Text SqlValue -> Bool)) (keyCol: Text) (cols: List (Text, Text, Text, Bool)) (having: QExpr) -> Result (List (Map Text SqlValue)) Error =
+    groupSummarize (conn: Postgres) (table: Text) (pred: Quote (Map Text SqlValue -> Bool)) (keyCol: Text) (cols: List (Text, Text, QExpr, Bool)) (having: QExpr) -> Result (List (Map Text SqlValue)) Error =
         _pgGroupSummarize conn.id table pred.tree keyCol cols having
     runPlan (conn: Postgres) (plan: QueryPlan) -> Result (List (Map Text SqlValue)) Error =
         match planToSql plan

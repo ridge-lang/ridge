@@ -1492,10 +1492,11 @@ fn check_group_call(
     Some(QKind::Scalar(ty))
 }
 
-/// The column type a group aggregate folds: the inner lambda `fn (u: E) -> u.col`
-/// names a single column of `E`, whose declared type is the aggregate's type. The
-/// entity comes from the inner parameter's annotation (pinning `e_ty`), or from a
-/// concrete `e_ty` when the annotation is omitted.
+/// The value type a group aggregate folds: the inner lambda `fn (u: E) -> u.col`
+/// (or a computed `fn (u: E) -> u.price * u.qty`) reads columns of `E`, and its
+/// result type is the aggregate's type. The entity comes from the inner
+/// parameter's annotation (pinning `e_ty`), or from a concrete `e_ty` when the
+/// annotation is omitted; the body is checked as a `where`/`select` operand is.
 fn group_agg_col_type(
     ctx: &mut InferCtx,
     b: &BuiltinTyCons,
@@ -1527,7 +1528,7 @@ fn group_agg_col_type(
         });
         return None;
     }
-    let mut bindings: Vec<(String, TyConId)> = Vec::new();
+    let mut scope: Vec<Param> = Vec::with_capacity(params.len());
     for (i, param) in params.iter().enumerate() {
         let pname = match param {
             LambdaParam::Pattern(Pattern::Var { name, .. })
@@ -1549,63 +1550,35 @@ fn group_agg_col_type(
             let slot = Type::Var(ctx.fresh_tyvid());
             inner_lambda_entity(ctx, b, param, &slot, *span)?
         };
-        bindings.push((pname, entity));
-    }
-
-    let mut bd: &Expr = body;
-    while let Expr::Paren { inner: i, .. } = bd {
-        bd = i;
-    }
-    let Expr::FieldAccess {
-        base,
-        field,
-        span: fspan,
-    } = bd
-    else {
-        ctx.errors.push(TypeError::QuoteUnsupportedExpr {
-            detail: "a group aggregate's column must be a single column access, like `u.col`"
-                .to_string(),
-            span: body.span(),
-        });
-        return None;
-    };
-    let Expr::Ident(bid) = base.as_ref() else {
-        ctx.errors.push(TypeError::QuoteUnsupportedExpr {
-            detail: "a group aggregate's column must read one of the accessor's row parameters"
-                .to_string(),
-            span: *fspan,
-        });
-        return None;
-    };
-    let Some(&(_, entity)) = bindings.iter().find(|(n, _)| n == &bid.text) else {
-        let names = bindings
-            .iter()
-            .map(|(n, _)| format!("`{n}`"))
-            .collect::<Vec<_>>()
-            .join(" or ");
-        ctx.errors.push(TypeError::QuoteUnsupportedExpr {
-            detail: format!("a group aggregate's column must be a column of {names}"),
-            span: *fspan,
-        });
-        return None;
-    };
-    let fields = entity_fields(ctx, entity)?;
-    if let Some((_, ty)) = fields.iter().find(|(n, _)| n == &field.text) {
-        Some(ty.clone())
-    } else {
         let entity_name = ctx
             .tycon_decls
             .get(entity.0 as usize)
             .map_or_else(|| "?".to_string(), |d| d.name.clone());
-        let suggestions =
-            ridge_resolve::suggest::suggest(&field.text, fields.iter().map(|(n, _)| n.clone()));
-        ctx.errors.push(TypeError::QuoteUnknownColumn {
-            entity: entity_name,
-            column: field.text.clone(),
-            suggestions,
-            span: *fspan,
+        let fields = entity_fields(ctx, entity)?;
+        scope.push(Param {
+            name: pname,
+            entity,
+            entity_name,
+            fields,
+            nullable: false,
         });
-        None
+    }
+
+    // The folded value may be a single column or a computed expression over the
+    // group's columns (`g.sum (fn u -> u.price * u.qty)`), checked against the
+    // accessor's entities exactly as a `where`/`select` operand is — a literal in
+    // it binds as a placeholder, never reaching the generated SQL. A boolean
+    // predicate is not a foldable value, so it is rejected.
+    match check_node(ctx, b, body, &scope)? {
+        QKind::Col(ty) | QKind::Scalar(ty) => Some(ty),
+        QKind::Pred => {
+            ctx.errors.push(TypeError::QuoteUnsupportedExpr {
+                detail: "a group aggregate folds a column or computed value, not a predicate"
+                    .to_string(),
+                span: body.span(),
+            });
+            None
+        }
     }
 }
 

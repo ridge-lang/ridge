@@ -74,7 +74,7 @@ pub fn ascending (dir: SortOrder) -> Bool =
 -- `exists` terminal needs, leaner than fetching every column of a row it never reads. The
 -- backend returns one trivial row when the sub-plan matches and none when it does not, so
 -- the caller's emptiness check answers the same Bool as before.
-pub type QueryPlan = PlanScan Text QExpr (List (Bool, QExpr)) Int Int Bool | PlanCombine Text QueryPlan QueryPlan | PlanRefine QueryPlan QExpr (List (Bool, QExpr)) Int Int Bool | PlanJoin Text QueryPlan QueryPlan QExpr QExpr (List (Bool, Int, QExpr)) Int Int Bool (List Text) (List Text) | PlanProject QExpr QueryPlan Int Int Bool | PlanAggregate Text QExpr Int QueryPlan |PlanGroup Text Int (List (Text, Text, Text, Int)) QExpr QueryPlan | PlanExists QueryPlan | PlanList (List (Map Text SqlValue))
+pub type QueryPlan = PlanScan Text QExpr (List (Bool, QExpr)) Int Int Bool | PlanCombine Text QueryPlan QueryPlan | PlanRefine QueryPlan QExpr (List (Bool, QExpr)) Int Int Bool | PlanJoin Text QueryPlan QueryPlan QExpr QExpr (List (Bool, Int, QExpr)) Int Int Bool (List Text) (List Text) | PlanProject QExpr QueryPlan Int Int Bool | PlanAggregate Text QExpr Int QueryPlan |PlanGroup Text Int (List (Text, Text, QExpr, Int)) QExpr QueryPlan | PlanExists QueryPlan | PlanList (List (Map Text SqlValue))
 
 -- A single-table scan plan — the plan form of `fetch`.
 pub fn planScan (table: Text) (pred: QExpr) (orders: List (Bool, QExpr)) (lim: Int) (off: Int) (dist: Bool) -> QueryPlan =
@@ -112,10 +112,11 @@ pub fn planAggregate (func: Text) (column: QExpr) (leaf: Int) (child: QueryPlan)
     PlanAggregate func column leaf child
 
 -- Group a sub-plan's rows by `keyCol` (on the join leaf `keyLeaf`), summarise each
--- group into the `(alias, func, column, leaf)` aggregate columns, and keep the
--- groups the `having` tree admits. The result is one row per group keyed by alias,
--- ordered by the key.
-pub fn planGroup (keyCol: Text) (keyLeaf: Int) (cols: List (Text, Text, Text, Int)) (having: QExpr) (child: QueryPlan) -> QueryPlan =
+-- group into the `(alias, func, column, leaf)` aggregate columns — where `column`
+-- is the folded value, a column or a computed expression over the leaves — and keep
+-- the groups the `having` tree admits. The result is one row per group keyed by
+-- alias, ordered by the key.
+pub fn planGroup (keyCol: Text) (keyLeaf: Int) (cols: List (Text, Text, QExpr, Int)) (having: QExpr) (child: QueryPlan) -> QueryPlan =
     PlanGroup keyCol keyLeaf cols having child
 
 -- Wrap a plan in an existence probe — the plan form of `exists`. It compiles to a
@@ -1295,17 +1296,12 @@ fn naryAggregate (func: Text) (leaf: Int) (column: QExpr) (child: QueryPlan) (n:
                 let wh = mixedWhere f.leaves f.steps nulls from.next
                 { text = Text.join "" ["SELECT ", ax.text, " FROM ", from.text, wh.text], binds = ax.binds ++ from.binds ++ wh.binds, next = wh.next }
 
--- The aggregate expression over a composite join: `COUNT(*)` counts the joined rows; a
--- column-folding aggregate qualifies its column to the leaf alias `t<leaf>` (`AVG` casts
--- to `float8`, as the single-table and binary-join aggregates do).
-fn naryAggExpr (func: Text) (leaf: Int) (column: Text) -> Text =
-    if func == "COUNT" then "COUNT(*)"
-    else Text.join "" [func, "(", naryColRef leaf column, ")", avgCast func]
-
--- The scalar-aggregate expression over a composite join, the computed-key dual of
--- `naryAggExpr`: `COUNT(*)` or `FUNC(<expr>)`, the folded key (a column or a
--- computed expression over the leaves) rendered leaf-qualified, its literals
--- threaded as `$N` placeholders.
+-- The aggregate expression over a composite join: `COUNT(*)` counts the joined rows;
+-- a column-folding aggregate folds its captured value (a column or a computed
+-- expression over the leaves) rendered leaf-qualified (`t<leaf>`), its literals
+-- threaded as `$N` placeholders. `AVG` casts to `float8`, as the single-table and
+-- binary-join aggregates do. `leaf` is the default leaf a bare `QCol` qualifies to;
+-- a `QColR`/`QColAt` inside the value names its own.
 fn naryAggExprE (func: Text) (leaf: Int) (column: QExpr) (n: Int) -> { text: Text, binds: List SqlValue, next: Int } =
     if func == "COUNT" then { text = "COUNT(*)", binds = [], next = n }
     else
@@ -1316,21 +1312,10 @@ fn naryAggExprE (func: Text) (leaf: Int) (column: QExpr) (n: Int) -> { text: Tex
 -- the single-table and binary-join aggregate renderers; the other folds add nothing.
 fn avgCast (func: Text) -> Text = if func == "AVG" then "::float8" else ""
 
-fn aggExprJoin (func: Text) (isRight: Bool) (column: Text) -> Text =
-    if func == "COUNT" then "COUNT(*)"
-    else if func == "AVG" then Text.join "" ["AVG(", aggColJoin isRight column, ")::float8"]
-    else if func == "SUM" then Text.join "" ["SUM(", aggColJoin isRight column, ")"]
-    else if func == "MIN" then Text.join "" ["MIN(", aggColJoin isRight column, ")"]
-    else if func == "MAX" then Text.join "" ["MAX(", aggColJoin isRight column, ")"]
-    else "COUNT(*)"
-
-fn aggColJoin (isRight: Bool) (column: Text) -> Text =
-    if isRight then Text.concat "r." (quoteIdent column) else Text.concat "l." (quoteIdent column)
-
--- The scalar-aggregate expression over a binary join, the computed-key dual of
--- `aggExprJoin`: `COUNT(*)` or `FUNC(<expr>)`, the folded key (a column or a
--- computed expression over the two sides) rendered side-qualified (`l.`/`r.`), its
--- literals threaded as `$N` placeholders. `AVG` casts to float8.
+-- The scalar-aggregate expression over a binary join: `COUNT(*)`, or `FUNC(<expr>)`
+-- folding its captured value (a column or a computed expression over the two sides)
+-- rendered side-qualified (`l.`/`r.`), its literals threaded as `$N` placeholders.
+-- `AVG` casts to float8.
 fn aggExprJoinE (func: Text) (column: QExpr) (n: Int) -> { text: Text, binds: List SqlValue, next: Int } =
     if func == "COUNT" then { text = "COUNT(*)", binds = [], next = n }
     else
@@ -1340,30 +1325,40 @@ fn aggExprJoinE (func: Text) (column: QExpr) (n: Int) -> { text: Text, binds: Li
 -- A grouped join (`groupBy` + `summarize`): one row per group, keyed by the
 -- side-qualified group key and summarised into the aggregate columns, keeping the
 -- groups the HAVING admits, ordered by the key.
-fn renderGroup (keyCol: Text) (keyLeaf: Int) (cols: List (Text, Text, Text, Int)) (having: QExpr) (child: QueryPlan) (n: Int) -> { text: Text, binds: List SqlValue, next: Int } =
+fn renderGroup (keyCol: Text) (keyLeaf: Int) (cols: List (Text, Text, QExpr, Int)) (having: QExpr) (child: QueryPlan) (n: Int) -> { text: Text, binds: List SqlValue, next: Int } =
     match child
         PlanJoin kind left right cond where2 _ _ _ _ _ _ ->
             match left
                 PlanScan lt lp _ _ _ _ ->
                     match right
                         PlanScan rt _ _ _ _ _ ->
-                            let sk = joinSkeleton kind lt lp rt cond where2 false n
                             let keyExpr = renderColRef true (keyLeaf == 1) keyCol
+                            let cs = groupSelectTerms cols keyExpr n
+                            let sk = joinSkeleton kind lt lp rt cond where2 false cs.next
                             let h = renderHaving having (keyLeaf == 1) keyCol sk.next
-                            { text = Text.join "" ["SELECT ", Text.join ", " (groupSelectTerms cols keyExpr), " FROM ", sk.text, " GROUP BY ", keyExpr, h.text, " ORDER BY ", keyExpr], binds = sk.binds ++ h.binds, next = h.next }
+                            { text = Text.join "" ["SELECT ", cs.text, " FROM ", sk.text, " GROUP BY ", keyExpr, h.text, " ORDER BY ", keyExpr], binds = cs.binds ++ sk.binds ++ h.binds, next = h.next }
                         _ -> naryGroup keyCol keyLeaf cols having child n
                 _ -> naryGroup keyCol keyLeaf cols having child n
         _ -> emptyRender n
 
-fn groupSelectTerms (cols: List (Text, Text, Text, Int)) (keyExpr: Text) -> List Text =
+-- The grouped SELECT list of a binary join, the aggregate terms threaded left to
+-- right so a computed fold's literals bind in source order. Each term is the group
+-- key, or a scalar aggregate folding its captured value — a side-qualified column or
+-- a computed expression over the two sides (`COUNT(*)` carries no value).
+fn groupSelectTerms (cols: List (Text, Text, QExpr, Int)) (keyExpr: Text) (n: Int) -> { text: Text, binds: List SqlValue, next: Int } =
     match cols
-        []                               -> []
-        (alias, func, col, leaf) :: rest -> groupSelectTerm alias func col leaf keyExpr :: groupSelectTerms rest keyExpr
+        []                               -> { text = "", binds = [], next = n }
+        (alias, func, col, leaf) :: []   -> groupSelectTerm alias func col leaf keyExpr n
+        (alias, func, col, leaf) :: rest ->
+            let h = groupSelectTerm alias func col leaf keyExpr n
+            let t = groupSelectTerms rest keyExpr h.next
+            { text = Text.join "" [h.text, ", ", t.text], binds = h.binds ++ t.binds, next = t.next }
 
-fn groupSelectTerm (alias: Text) (func: Text) (col: Text) (leaf: Int) (keyExpr: Text) -> Text =
-    if func == "KEY" then Text.join "" [keyExpr, " AS ", quoteIdent alias]
-    else if func == "COUNT" then Text.join "" ["COUNT(*) AS ", quoteIdent alias]
-    else Text.join "" [aggExprJoin func (leaf == 1) col, " AS ", quoteIdent alias]
+fn groupSelectTerm (alias: Text) (func: Text) (col: QExpr) (leaf: Int) (keyExpr: Text) (n: Int) -> { text: Text, binds: List SqlValue, next: Int } =
+    if func == "KEY" then { text = Text.join "" [keyExpr, " AS ", quoteIdent alias], binds = [], next = n }
+    else
+        let a = aggExprJoinE func col n
+        { text = Text.join "" [a.text, " AS ", quoteIdent alias], binds = a.binds, next = a.next }
 
 -- A grouped composite (three-or-more table) join: the flattened spine as the `FROM`,
 -- one row per group keyed by the leaf-qualified group key and summarised into the
@@ -1372,32 +1367,42 @@ fn groupSelectTerm (alias: Text) (func: Text) (col: Text) (leaf: Int) (keyExpr: 
 -- multi-way join, a mixed-shape spine each step by its own kind with the presence
 -- markers a bare terminal needs left off (a grouped fold reads the null-extended NULLs
 -- directly). Each aggregate column folds `column` on its leaf alias `t<leaf>`.
-fn naryGroup (keyCol: Text) (keyLeaf: Int) (cols: List (Text, Text, Text, Int)) (having: QExpr) (child: QueryPlan) (n: Int) -> { text: Text, binds: List SqlValue, next: Int } =
+fn naryGroup (keyCol: Text) (keyLeaf: Int) (cols: List (Text, Text, QExpr, Int)) (having: QExpr) (child: QueryPlan) (n: Int) -> { text: Text, binds: List SqlValue, next: Int } =
     let f = flattenJoin child
     match f.leaves
         [] -> emptyRender n
         _  ->
             let keyExpr = naryColRef keyLeaf keyCol
+            let cs = naryGroupSelectTerms cols keyExpr n
             if allInnerSteps f.steps then
-                let from = naryFrom f.leaves f.steps n
+                let from = naryFrom f.leaves f.steps cs.next
                 let wh = naryWhere f.leaves f.steps from.next
                 let h = naryHaving having keyLeaf keyCol wh.next
-                { text = Text.join "" ["SELECT ", Text.join ", " (naryGroupSelectTerms cols keyExpr), " FROM ", from.text, wh.text, " GROUP BY ", keyExpr, h.text, " ORDER BY ", keyExpr], binds = from.binds ++ wh.binds ++ h.binds, next = h.next }
+                { text = Text.join "" ["SELECT ", cs.text, " FROM ", from.text, wh.text, " GROUP BY ", keyExpr, h.text, " ORDER BY ", keyExpr], binds = cs.binds ++ from.binds ++ wh.binds ++ h.binds, next = h.next }
             else
                 let nulls = nullableLeaves f.steps
-                let from = mixedFrom f.leaves f.steps nulls false n
+                let from = mixedFrom f.leaves f.steps nulls false cs.next
                 let wh = mixedWhere f.leaves f.steps nulls from.next
                 let h = naryHaving having keyLeaf keyCol wh.next
-                { text = Text.join "" ["SELECT ", Text.join ", " (naryGroupSelectTerms cols keyExpr), " FROM ", from.text, wh.text, " GROUP BY ", keyExpr, h.text, " ORDER BY ", keyExpr], binds = from.binds ++ wh.binds ++ h.binds, next = h.next }
+                { text = Text.join "" ["SELECT ", cs.text, " FROM ", from.text, wh.text, " GROUP BY ", keyExpr, h.text, " ORDER BY ", keyExpr], binds = cs.binds ++ from.binds ++ wh.binds ++ h.binds, next = h.next }
 
-fn naryGroupSelectTerms (cols: List (Text, Text, Text, Int)) (keyExpr: Text) -> List Text =
+-- The grouped SELECT list of a composite (three-or-more table) join, threaded left
+-- to right. Each term folds its captured value leaf-qualified (`t<leaf>`), a column
+-- or a computed expression over the leaves, its literals bound as `$N`.
+fn naryGroupSelectTerms (cols: List (Text, Text, QExpr, Int)) (keyExpr: Text) (n: Int) -> { text: Text, binds: List SqlValue, next: Int } =
     match cols
-        []                               -> []
-        (alias, func, col, leaf) :: rest -> naryGroupSelectTerm alias func col leaf keyExpr :: naryGroupSelectTerms rest keyExpr
+        []                               -> { text = "", binds = [], next = n }
+        (alias, func, col, leaf) :: []   -> naryGroupSelectTerm alias func col leaf keyExpr n
+        (alias, func, col, leaf) :: rest ->
+            let h = naryGroupSelectTerm alias func col leaf keyExpr n
+            let t = naryGroupSelectTerms rest keyExpr h.next
+            { text = Text.join "" [h.text, ", ", t.text], binds = h.binds ++ t.binds, next = t.next }
 
-fn naryGroupSelectTerm (alias: Text) (func: Text) (col: Text) (leaf: Int) (keyExpr: Text) -> Text =
-    if func == "KEY" then Text.join "" [keyExpr, " AS ", quoteIdent alias]
-    else Text.join "" [naryAggExpr func leaf col, " AS ", quoteIdent alias]
+fn naryGroupSelectTerm (alias: Text) (func: Text) (col: QExpr) (leaf: Int) (keyExpr: Text) (n: Int) -> { text: Text, binds: List SqlValue, next: Int } =
+    if func == "KEY" then { text = Text.join "" [keyExpr, " AS ", quoteIdent alias], binds = [], next = n }
+    else
+        let a = naryAggExprE func leaf col n
+        { text = Text.join "" [a.text, " AS ", quoteIdent alias], binds = a.binds, next = a.next }
 
 -- A composite-join HAVING fragment, the leaf-qualified dual of `renderHaving`: its
 -- aggregate operands fold a leaf-qualified column (`t<leaf>`) and its group-key
@@ -1441,22 +1446,15 @@ fn naryHavingOperand (e: QExpr) (keyLeaf: Int) (keyCol: Text) (n: Int) -> { text
     match e
         QAggCount    -> { text = "COUNT(*)", binds = [], next = n }
         QGroupKey    -> { text = naryColRef keyLeaf keyCol, binds = [], next = n }
-        QAggSum node -> { text = naryAggExprNode "SUM" node, binds = [], next = n }
-        QAggAvg node -> { text = naryAggExprNode "AVG" node, binds = [], next = n }
-        QAggMin node -> { text = naryAggExprNode "MIN" node, binds = [], next = n }
-        QAggMax node -> { text = naryAggExprNode "MAX" node, binds = [], next = n }
+        QAggSum node -> naryAggExprE "SUM" 0 node n
+        QAggAvg node -> naryAggExprE "AVG" 0 node n
+        QAggMin node -> naryAggExprE "MIN" 0 node n
+        QAggMax node -> naryAggExprE "MAX" 0 node n
         QLitInt v    -> { text = placeholder n, binds = [sqlInt v], next = n + 1 }
         QLitText v   -> { text = placeholder n, binds = [sqlText v], next = n + 1 }
         QLitBool v   -> { text = placeholder n, binds = [sqlBool v], next = n + 1 }
         QLitFloat v  -> { text = placeholder n, binds = [sqlFloat v], next = n + 1 }
         _            -> { text = "NULL", binds = [], next = n }
-
-fn naryAggExprNode (func: Text) (node: QExpr) -> Text =
-    match node
-        QCol c     -> naryAggExpr func 0 c
-        QColR c    -> naryAggExpr func 1 c
-        QColAt i c -> naryAggExpr func i c
-        _          -> "NULL"
 
 -- A join HAVING fragment, with the leading ` HAVING ` folded in — empty for the
 -- always-true default, so the clause is omitted. Structurally a predicate, but its
@@ -1501,18 +1499,12 @@ fn renderHavingOperand (e: QExpr) (keySide: Bool) (keyCol: Text) (n: Int) -> { t
     match e
         QAggCount    -> { text = "COUNT(*)", binds = [], next = n }
         QGroupKey    -> { text = renderColRef true keySide keyCol, binds = [], next = n }
-        QAggSum node -> { text = aggExprNode "SUM" node, binds = [], next = n }
-        QAggAvg node -> { text = aggExprNode "AVG" node, binds = [], next = n }
-        QAggMin node -> { text = aggExprNode "MIN" node, binds = [], next = n }
-        QAggMax node -> { text = aggExprNode "MAX" node, binds = [], next = n }
+        QAggSum node -> aggExprJoinE "SUM" node n
+        QAggAvg node -> aggExprJoinE "AVG" node n
+        QAggMin node -> aggExprJoinE "MIN" node n
+        QAggMax node -> aggExprJoinE "MAX" node n
         QLitInt v    -> { text = placeholder n, binds = [sqlInt v], next = n + 1 }
         QLitText v   -> { text = placeholder n, binds = [sqlText v], next = n + 1 }
         QLitBool v   -> { text = placeholder n, binds = [sqlBool v], next = n + 1 }
         QLitFloat v  -> { text = placeholder n, binds = [sqlFloat v], next = n + 1 }
         _            -> { text = "NULL", binds = [], next = n }
-
-fn aggExprNode (func: Text) (node: QExpr) -> Text =
-    match node
-        QCol c  -> aggExprJoin func false c
-        QColR c -> aggExprJoin func true c
-        _       -> "NULL"

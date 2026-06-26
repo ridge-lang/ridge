@@ -2680,12 +2680,6 @@ fn projColumns (proj: Quote p) -> List (Text, QExpr) =
         QProj cols -> cols
         _          -> []
 
-fn qcolName (e: QExpr) -> Text =
-    match e
-        QCol c  -> c
-        QColR c -> c
-        _       -> ""
-
 -- The captured tree of an ordering key — a column (`QCol`) or a computed
 -- expression over the columns (arithmetic, a CASE), threaded into the plan and
 -- rendered by the backend (a literal in it binding as a placeholder, never
@@ -2753,33 +2747,37 @@ fn aggColumnName (col: Quote p) -> Text =
 -- seeds an unfiltered query with.
 fn keepAllTree (_u: Unit) -> QExpr = (keepAll ()).tree
 
--- The `(alias, func, column)` triples a grouped projection names. The projection
--- tree is a `QProj` whose every entry pairs an output alias with a group aggregate
--- node; each maps to its SQL aggregate keyword and the column it folds — the key
--- column for `g.key`, none for `g.count`. Anything else contributes no columns.
-fn groupCols (keyCol: Text) (tree: QExpr) -> List (Text, Text, Text, Bool) =
+-- The `(alias, func, value, side)` quadruples a grouped projection names. The
+-- projection tree is a `QProj` whose every entry pairs an output alias with a group
+-- aggregate node; each maps to its SQL aggregate keyword and the value it folds — a
+-- column or a computed expression for `g.sum`/`avg`/`min`/`max`, an inert placeholder
+-- for `g.key`/`g.count` (the key is rendered from the separately-carried `keyCol`, a
+-- count counts rows). The group key column is passed to the seam directly, so the
+-- projected columns no longer carry it.
+fn groupCols (_keyCol: Text) (tree: QExpr) -> List (Text, Text, QExpr, Bool) =
     match tree
-        QProj cols -> groupColPairs keyCol cols
+        QProj cols -> groupColPairs cols
         _          -> []
 
-fn groupColPairs (keyCol: Text) (cols: List (Text, QExpr)) -> List (Text, Text, Text, Bool) =
+fn groupColPairs (cols: List (Text, QExpr)) -> List (Text, Text, QExpr, Bool) =
     match cols
         []                  -> []
-        (alias, ex) :: rest -> (alias, aggFunc ex, aggCol keyCol ex, aggColSide ex) :: groupColPairs keyCol rest
+        (alias, ex) :: rest -> (alias, aggFunc ex, aggColExpr ex, aggColSide ex) :: groupColPairs rest
 
 -- The leaf-indexed dual of `groupCols`, for a join or composite run through a
--- `PlanGroup`: each aggregate column carries the join leaf it folds (`0`/`1` for a
+-- `PlanGroup`: each aggregate value carries the join leaf it folds (`0`/`1` for a
 -- binary join's two sides, higher for a deeper composite) rather than a left/right
--- boolean, so the renderer and the in-memory backend qualify it to its leaf alias.
-fn groupColsLeaf (keyCol: Text) (tree: QExpr) -> List (Text, Text, Text, Int) =
+-- boolean, so the renderer and the in-memory backend qualify a bare column to its
+-- leaf alias.
+fn groupColsLeaf (_keyCol: Text) (tree: QExpr) -> List (Text, Text, QExpr, Int) =
     match tree
-        QProj cols -> groupColLeafPairs keyCol cols
+        QProj cols -> groupColLeafPairs cols
         _          -> []
 
-fn groupColLeafPairs (keyCol: Text) (cols: List (Text, QExpr)) -> List (Text, Text, Text, Int) =
+fn groupColLeafPairs (cols: List (Text, QExpr)) -> List (Text, Text, QExpr, Int) =
     match cols
         []                  -> []
-        (alias, ex) :: rest -> (alias, aggFunc ex, aggCol keyCol ex, aggColLeaf ex) :: groupColLeafPairs keyCol rest
+        (alias, ex) :: rest -> (alias, aggFunc ex, aggColExpr ex, aggColLeaf ex) :: groupColLeafPairs rest
 
 -- Which side of a join a group aggregate folds: a right-side column (`QColR`) inside
 -- a `g.sum`/`avg`/`min`/`max` node folds the right table. `g.key` and `g.count` fold
@@ -2827,13 +2825,16 @@ fn aggFunc (ex: QExpr) -> Text =
         QAggMax _ -> "MAX"
         _         -> ""
 
--- The column a group aggregate node folds: the key column for `g.key`, the named
--- column for the scalar aggregates, and none for `g.count`.
-fn aggCol (keyCol: Text) (ex: QExpr) -> Text =
+-- The value a group aggregate node folds, as a `QExpr`: the captured inner tree for
+-- a scalar aggregate (`g.sum (fn u -> u.price * u.qty)` folds the whole expression),
+-- and an inert placeholder for `g.key`/`g.count`, which fold no value of their own
+-- (the key is rendered from the separately-carried key column, a count counts rows).
+-- The grouped path now carries the folded value as a `QExpr` like the scalar
+-- aggregate path, so a computed fold's literals bind as placeholders.
+fn aggColExpr (ex: QExpr) -> QExpr =
     match ex
-        QGroupKey -> keyCol
-        QAggSum c -> qcolName c
-        QAggAvg c -> qcolName c
-        QAggMin c -> qcolName c
-        QAggMax c -> qcolName c
-        _         -> ""
+        QAggSum c -> c
+        QAggAvg c -> c
+        QAggMin c -> c
+        QAggMax c -> c
+        _         -> keepAllTree ()

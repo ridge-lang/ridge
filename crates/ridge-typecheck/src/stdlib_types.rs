@@ -1463,13 +1463,14 @@ fn reconciled_query_plan_fn_scheme(
     let join_orders = || Type::Con(b.list, vec![Type::Tuple(vec![bool_(), int(), qexpr()])]);
     // A `List Text` — a join's per-source column names (`leftCols`/`rightCols`).
     let text_list = || Type::Con(b.list, vec![text()]);
-    // The grouped-aggregate columns: `List (Text, Text, Text, Int)` — the
-    // (alias, func, column, leaf) quadruples a `GROUP BY` summary projects, the leaf
-    // index naming which join leaf each aggregate folds.
+    // The grouped-aggregate columns: `List (Text, Text, QExpr, Int)` — the
+    // (alias, func, value, leaf) quadruples a `GROUP BY` summary projects, where the
+    // value is a `QExpr` (a column or a computed expression the fold evaluates) and
+    // the leaf index names which join leaf a bare column folds.
     let group_cols = || {
         Type::Con(
             b.list,
-            vec![Type::Tuple(vec![text(), text(), text(), int()])],
+            vec![Type::Tuple(vec![text(), text(), qexpr(), int()])],
         )
     };
     let pure = |params: Vec<Type>| Scheme {
@@ -1510,7 +1511,7 @@ fn reconciled_query_plan_fn_scheme(
         "planProject" => Some(pure(vec![qexpr(), plan(), int(), int(), bool_()])),
         // planAggregate : Text -> QExpr -> Int -> QueryPlan -> QueryPlan
         "planAggregate" => Some(pure(vec![text(), qexpr(), int(), plan()])),
-        // planGroup : Text -> Int -> List (Text, Text, Text, Int) -> QExpr ->
+        // planGroup : Text -> Int -> List (Text, Text, QExpr, Int) -> QExpr ->
         //             QueryPlan -> QueryPlan
         "planGroup" => Some(pure(vec![text(), int(), group_cols(), qexpr(), plan()])),
         // QueryPlan -> QueryPlan, both: `optimize` is the renderer's plan-to-plan pre-pass,

@@ -133,6 +133,17 @@ pub fn inSql () -> Text = renderSql (planScan "users" (pred1 (fn u -> List.conta
 
 pub fn inBinds () -> Text = renderBinds (planScan "users" (pred1 (fn u -> List.contains u.age [18, 21])) [] (0 - 1) 0 false)
 
+-- The same `IN` test built from a list captured from the enclosing scope: `ages`
+-- is a `let`-bound runtime list, so `List.contains u.age ages` lowers through the
+-- same `QIn` path and renders to the identical `IN ($1, $2)` over two binds.
+pub fn inCapturedSql () -> Text =
+    let ages = [18, 21]
+    renderSql (planScan "users" (pred1 (fn u -> List.contains u.age ages)) [] (0 - 1) 0 false)
+
+pub fn inCapturedBinds () -> Text =
+    let ages = [18, 21]
+    renderBinds (planScan "users" (pred1 (fn u -> List.contains u.age ages)) [] (0 - 1) 0 false)
+
 -- An empty `IN` set is unsatisfiable, so it renders as the constant `FALSE` rather
 -- than the syntactically invalid `IN ()`, and binds nothing.
 pub fn inEmptySql () -> Text = renderSql (planScan "users" (pred1 (fn u -> List.contains u.age [])) [] (0 - 1) 0 false)
@@ -588,7 +599,7 @@ fn query_plan_compiles_to_parameterized_sql() {
 
     let expr = format!(
         "F=fun(N)->io:format(\"~s=~s~n\",[N,{module}:N()])end, \
-         lists:foreach(F,['scanSql','scanBinds','foldSql','likeSql','likeBinds','inSql','inBinds','inEmptySql','inEmptyBinds','arithMulSql','arithMulBinds','arithColSql','arithModSql','combineSql','refineSql','innerSql','leftSql','rightSql','fullSql','fullBinds','projectSql','projectCalcSql','projectCalcBinds','projectCaseJoinSql','aggSql','groupSql','inner3Sql','inner3Binds','existsSql','existsThreeSql','existsThreeBinds','everyJoinSql','everyJoinBinds','innerLeftMixSql','innerRightMixSql','innerFullMixSql','innerFullMixBinds','adultLeftMixSql','adultLeftMixBinds','countAdultLeftMixSql','countThreeSql','countThreeBinds','countLeftMixSql','countLeftMixBinds','sumThreeSql','avgThreeSql','projectThreeSql','projectLeftMixSql','projectRightMixSql','projectFullMixSql','groupThreeSql','groupComputedThreeSql','groupComputedThreeBinds','groupLeftMixSql','groupRightMixSql','groupFullMixSql','orderThreeSql','orderLeftMixSql','orderRightMixSql','orderFullMixSql','inner4Sql','sumFourSql','projectFourSql','orderFourSql']), halt()."
+         lists:foreach(F,['scanSql','scanBinds','foldSql','likeSql','likeBinds','inSql','inBinds','inCapturedSql','inCapturedBinds','inEmptySql','inEmptyBinds','arithMulSql','arithMulBinds','arithColSql','arithModSql','combineSql','refineSql','innerSql','leftSql','rightSql','fullSql','fullBinds','projectSql','projectCalcSql','projectCalcBinds','projectCaseJoinSql','aggSql','groupSql','inner3Sql','inner3Binds','existsSql','existsThreeSql','existsThreeBinds','everyJoinSql','everyJoinBinds','innerLeftMixSql','innerRightMixSql','innerFullMixSql','innerFullMixBinds','adultLeftMixSql','adultLeftMixBinds','countAdultLeftMixSql','countThreeSql','countThreeBinds','countLeftMixSql','countLeftMixBinds','sumThreeSql','avgThreeSql','projectThreeSql','projectLeftMixSql','projectRightMixSql','projectFullMixSql','groupThreeSql','groupComputedThreeSql','groupComputedThreeBinds','groupLeftMixSql','groupRightMixSql','groupFullMixSql','orderThreeSql','orderLeftMixSql','orderRightMixSql','orderFullMixSql','inner4Sql','sumFourSql','projectFourSql','orderFourSql']), halt()."
     );
     let output = Command::new("erl")
         .arg("-noshell")
@@ -618,6 +629,8 @@ fn query_plan_compiles_to_parameterized_sql() {
     want("likeBinds=1");
     want(r#"inSql=SELECT * FROM "users" WHERE "age" IN ($1, $2)"#);
     want("inBinds=2");
+    want(r#"inCapturedSql=SELECT * FROM "users" WHERE "age" IN ($1, $2)"#);
+    want("inCapturedBinds=2");
     want(r#"inEmptySql=SELECT * FROM "users" WHERE FALSE"#);
     want("inEmptyBinds=0");
     want("scanBinds=1");

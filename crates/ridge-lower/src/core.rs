@@ -1283,10 +1283,15 @@ fn reify_predicate_call(
         return internal(ctx);
     };
     match callee_last_name(callee) {
-        Some("contains") => match other {
-            Expr::List { elems, .. } => reify_in(ctx, col, elems, span, params),
-            _ => reify_like(ctx, col, other, LikeMode::Contains, span, params),
-        },
+        Some("contains") => {
+            if let Expr::List { elems, .. } = other {
+                reify_in(ctx, col, elems, span, params)
+            } else if let Some(node) = reify_in_runtime(ctx, col, other, span, params) {
+                node
+            } else {
+                reify_like(ctx, col, other, LikeMode::Contains, span, params)
+            }
+        }
         Some("startsWith") => reify_like(ctx, col, other, LikeMode::Prefix, span, params),
         Some("endsWith") => reify_like(ctx, col, other, LikeMode::Suffix, span, params),
         Some("like") => reify_like(ctx, col, other, LikeMode::Raw, span, params),
@@ -1332,6 +1337,87 @@ fn reify_in(
         span,
     };
     qexpr_node(ctx, "QIn", 25, vec![col_ir, list_ir], span)
+}
+
+/// Reify `List.contains col capturedList`, where `capturedList` is a value from the
+/// enclosing scope of type `List <scalar>`. Each element is wrapped at run time in
+/// its `QLit*` node, so the captured list renders through the same `QIn` path as a
+/// literal list — a runtime `IN (…)` with one `$N` bind per element, the parity of
+/// `ids.Contains(row.col)`. Returns `None` when `other` is not a captured scalar
+/// list, so a `contains` over a text needle still falls through to the substring
+/// `LIKE`.
+fn reify_in_runtime(
+    ctx: &mut LowerCtx<'_>,
+    col: &Expr,
+    other: &Expr,
+    span: Span,
+    params: &[String],
+) -> Option<IrExpr> {
+    let Expr::Ident(id) = peel_paren(other) else {
+        return None;
+    };
+    let list_ty = captured_ident_type(ctx, id.span)?;
+    let elem_ty = list_elem_type(ctx, &list_ty)?;
+    let (name, variant) = captured_scalar_qlit(ctx, &elem_ty)?;
+    let col_ir = reify_node(ctx, col, params);
+    let list_ir = lower_expr(ctx, other);
+    let items = map_to_qlit(ctx, name, variant, &elem_ty, list_ir, span);
+    Some(qexpr_node(ctx, "QIn", 25, vec![col_ir, items], span))
+}
+
+/// The element type of a `List a`, peeled of aliases. `None` for any other shape.
+fn list_elem_type(ctx: &LowerCtx<'_>, ty: &Type) -> Option<Type> {
+    let list = ctx.workspace?.builtins.list;
+    match ty {
+        Type::Con(id, args) if *id == list && args.len() == 1 => Some(deep_peel_alias(&args[0])),
+        _ => None,
+    }
+}
+
+/// Build `std.list.map (fn x -> QLit* x) list` — the runtime `List QExpr` of
+/// literal nodes a `QIn` consumes. The wrapping lambda is pure and `map` is
+/// capability-transparent, so the synthesised call stays pure.
+fn map_to_qlit(
+    ctx: &mut LowerCtx<'_>,
+    qlit_name: &str,
+    variant: u32,
+    elem_ty: &Type,
+    list_ir: IrExpr,
+    span: Span,
+) -> IrExpr {
+    let pname = ctx.fresh_local("__in");
+    let param = IrParam {
+        name: pname.clone(),
+        ty: elem_ty.clone(),
+        span,
+    };
+    let local = IrExpr::Local {
+        id: ctx.fresh_id(None),
+        name: pname,
+        span,
+    };
+    let body = qexpr_node(ctx, qlit_name, variant, vec![local], span);
+    let lambda = IrExpr::Lambda {
+        id: ctx.fresh_id(None),
+        params: vec![param],
+        body: Box::new(body),
+        caps: ridge_types::CapabilitySet::PURE,
+        span,
+    };
+    let map_sym = IrExpr::Symbol {
+        id: ctx.fresh_id(None),
+        sym: SymbolRef::Stdlib {
+            module: "std.list".into(),
+            name: "map".into(),
+        },
+        span,
+    };
+    IrExpr::Call {
+        id: ctx.fresh_id(None),
+        callee: Box::new(map_sym),
+        args: vec![lambda, list_ir],
+        span,
+    }
 }
 
 /// The decoded value of a text literal, read back from its lowered `IrLit::Text`

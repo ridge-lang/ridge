@@ -1058,6 +1058,31 @@ fn reify_node(ctx: &mut LowerCtx<'_>, e: &Expr, params: &[String]) -> IrExpr {
             qexpr_node(ctx, name, variant, vec![l, r], *span)
         }
 
+        // A conditional → `QCase <cond> <then> <else>`. The condition and both
+        // branches reify recursively. The quotation checker has guaranteed an
+        // else branch and that the branches agree — two values of one type, or
+        // two predicates — so the same node serves a value CASE and a boolean
+        // CASE alike.
+        Expr::If {
+            cond,
+            then_branch,
+            else_branch,
+            span,
+        } => {
+            let c = reify_node(ctx, cond, params);
+            let t = reify_node(ctx, then_branch, params);
+            let e = if let Some(eb) = else_branch {
+                reify_node(ctx, eb, params)
+            } else {
+                ctx.errors.push(LowerError::InternalLoweringError {
+                    span: *span,
+                    message: "if without else survived quote checking".into(),
+                });
+                unit_lit(ctx, *span)
+            };
+            qexpr_node(ctx, "QCase", 31, vec![c, t, e], *span)
+        }
+
         // A predicate helper — `Text.like`/`contains`/`startsWith`/`endsWith` →
         // `QLike`, `List.contains` → `QIn`. The quotation checker has already pinned
         // which operand is the column and which the literal, so the column reifies

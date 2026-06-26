@@ -208,6 +208,10 @@ jobs:
           # The official postgres image runs the server as uid 999; it refuses to
           # start unless it can read the key file, so hand both certs to that uid.
           sudo chown 999:999 "$RUNNER_TEMP/pgcerts/server.key" "$RUNNER_TEMP/pgcerts/server.crt"
+          # The adapter e2e opens an isolated pool per probe and the run holds them
+          # all open at once, peaking near a hundred connections; the default cap of
+          # 100 leaves no headroom, so a concurrency probe near the end intermittently
+          # hit "too many clients already". Raise the cap to give the suite room.
           docker run -d --name ridge-pg \
             -e POSTGRES_PASSWORD=postgres \
             -e POSTGRES_DB=ridge_test \
@@ -216,7 +220,8 @@ jobs:
             postgres:16 \
             -c ssl=on \
             -c ssl_cert_file=/certs/server.crt \
-            -c ssl_key_file=/certs/server.key
+            -c ssl_key_file=/certs/server.key \
+            -c max_connections=200
           for i in $(seq 1 30); do
             if docker exec ridge-pg pg_isready -U postgres >/dev/null 2>&1; then
               echo "postgres ready"; break

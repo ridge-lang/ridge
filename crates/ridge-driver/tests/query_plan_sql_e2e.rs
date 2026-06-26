@@ -36,6 +36,8 @@ pub type Reaction = { id: Int, comment: Int, kind: Text } deriving (Row)
 pub type Combo = { person: Text, post: Text } deriving (Row)
 pub type Trio = { who: Text, what: Text, note: Text } deriving (Row)
 pub type Quad = { who: Text, what: Text, note: Text, react: Text } deriving (Row)
+pub type Calc = { person: Text, score: Int } deriving (Row)
+pub type Caseo = { person: Text, band: Text } deriving (Row)
 
 -- A captured predicate's reified tree. `Quote` is a prelude record whose `tree`
 -- field is the `QExpr` the compiler built from the lambda. A single-table filter is
@@ -49,6 +51,8 @@ fn cond4 (q: Quote (fn User Post Comment Reaction -> Bool)) -> QExpr = q.tree
 fn proj2 (q: Quote (fn User Post -> Combo)) -> QExpr = q.tree
 fn proj3 (q: Quote (fn User Post Comment -> Trio)) -> QExpr = q.tree
 fn proj4 (q: Quote (fn User Post Comment Reaction -> Quad)) -> QExpr = q.tree
+fn projCalc (q: Quote (fn User Post -> Calc)) -> QExpr = q.tree
+fn projCaseo (q: Quote (fn User Post -> Caseo)) -> QExpr = q.tree
 
 -- An always-true tree, the "keep all" filter a scan or a join's WHERE defaults to.
 fn keepAll () -> QExpr = pred1 (fn (u: User) -> true)
@@ -158,6 +162,20 @@ pub fn fullBinds () -> Text = renderBinds (bareJoin "FULL" (adultsScan ()))
 
 pub fn projectSql () -> Text =
     renderSql (planProject (proj2 (fn (u: User) (p: Post) -> Combo { person = u.name, post = p.title })) (wrapJoin ()) (0 - 1) 0 false)
+
+-- A computed join projection: a bare left column plus an arithmetic right column
+-- with a literal. The select-list binds first (`$1`), ahead of the join's own
+-- placeholders, proving the select-list threads the counter through the join.
+pub fn projectCalcSql () -> Text =
+    renderSql (planProject (projCalc (fn (u: User) (p: Post) -> Calc { person = u.name, score = p.id + 1 })) (wrapJoin ()) (0 - 1) 0 false)
+
+pub fn projectCalcBinds () -> Text =
+    renderBinds (planProject (projCalc (fn (u: User) (p: Post) -> Calc { person = u.name, score = p.id + 1 })) (wrapJoin ()) (0 - 1) 0 false)
+
+-- A CASE join projection: a per-row label chosen by a condition over the left
+-- entity, both branch values bound as placeholders.
+pub fn projectCaseJoinSql () -> Text =
+    renderSql (planProject (projCaseo (fn (u: User) (p: Post) -> Caseo { person = u.name, band = if u.age >= 18 then "a" else "b" })) (wrapJoin ()) (0 - 1) 0 false)
 
 pub fn aggSql () -> Text =
     renderSql (planAggregate "AVG" "author" 1 (wrapJoin ()))
@@ -551,7 +569,7 @@ fn query_plan_compiles_to_parameterized_sql() {
 
     let expr = format!(
         "F=fun(N)->io:format(\"~s=~s~n\",[N,{module}:N()])end, \
-         lists:foreach(F,['scanSql','scanBinds','foldSql','likeSql','likeBinds','inSql','inBinds','inEmptySql','inEmptyBinds','arithMulSql','arithMulBinds','arithColSql','arithModSql','combineSql','refineSql','innerSql','leftSql','rightSql','fullSql','fullBinds','projectSql','aggSql','groupSql','inner3Sql','inner3Binds','existsSql','existsThreeSql','existsThreeBinds','everyJoinSql','everyJoinBinds','innerLeftMixSql','innerRightMixSql','innerFullMixSql','innerFullMixBinds','adultLeftMixSql','adultLeftMixBinds','countAdultLeftMixSql','countThreeSql','countThreeBinds','countLeftMixSql','countLeftMixBinds','sumThreeSql','avgThreeSql','projectThreeSql','projectLeftMixSql','projectRightMixSql','projectFullMixSql','groupThreeSql','groupLeftMixSql','groupRightMixSql','groupFullMixSql','orderThreeSql','orderLeftMixSql','orderRightMixSql','orderFullMixSql','inner4Sql','sumFourSql','projectFourSql','orderFourSql']), halt()."
+         lists:foreach(F,['scanSql','scanBinds','foldSql','likeSql','likeBinds','inSql','inBinds','inEmptySql','inEmptyBinds','arithMulSql','arithMulBinds','arithColSql','arithModSql','combineSql','refineSql','innerSql','leftSql','rightSql','fullSql','fullBinds','projectSql','projectCalcSql','projectCalcBinds','projectCaseJoinSql','aggSql','groupSql','inner3Sql','inner3Binds','existsSql','existsThreeSql','existsThreeBinds','everyJoinSql','everyJoinBinds','innerLeftMixSql','innerRightMixSql','innerFullMixSql','innerFullMixBinds','adultLeftMixSql','adultLeftMixBinds','countAdultLeftMixSql','countThreeSql','countThreeBinds','countLeftMixSql','countLeftMixBinds','sumThreeSql','avgThreeSql','projectThreeSql','projectLeftMixSql','projectRightMixSql','projectFullMixSql','groupThreeSql','groupLeftMixSql','groupRightMixSql','groupFullMixSql','orderThreeSql','orderLeftMixSql','orderRightMixSql','orderFullMixSql','inner4Sql','sumFourSql','projectFourSql','orderFourSql']), halt()."
     );
     let output = Command::new("erl")
         .arg("-noshell")
@@ -635,6 +653,19 @@ fn query_plan_compiles_to_parameterized_sql() {
     // A projected join: the projection's own aliased select-list, no prefixing.
     want(
         r#"projectSql=SELECT l."name" AS "person", r."title" AS "post" FROM "users" AS l JOIN "posts" AS r ON l."id" = r."author""#,
+    );
+
+    // A computed join projection: the arithmetic column renders side-qualified and
+    // binds its literal as `$1` in the select-list, ahead of the join's clauses.
+    want(
+        r#"projectCalcSql=SELECT l."name" AS "person", (r."id" + $1) AS "score" FROM "users" AS l JOIN "posts" AS r ON l."id" = r."author""#,
+    );
+    want("projectCalcBinds=1");
+
+    // A CASE join projection: the condition reads side-qualified, both branch values
+    // bind as placeholders, and the whole `CASE … END` is aliased.
+    want(
+        r#"projectCaseJoinSql=SELECT l."name" AS "person", CASE WHEN l."age" >= $1 THEN $2 ELSE $3 END AS "band" FROM "users" AS l JOIN "posts" AS r ON l."id" = r."author""#,
     );
 
     // A scalar aggregate over a join: the side-qualified column, AVG cast to float8.

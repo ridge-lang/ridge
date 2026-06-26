@@ -237,6 +237,7 @@ fn showExpr (e: QExpr) -> Text =
         QMul l r    -> binNode l " * " r
         QDiv l r    -> binNode l " / " r
         QMod l r    -> binNode l " % " r
+        QCase c t e -> Text.join "" ["(CASE WHEN ", showExpr c, " THEN ", showExpr t, " ELSE ", showExpr e, " END)"]
 
 fn binNode (l: QExpr) (op: Text) (r: QExpr) -> Text =
     Text.concat "(" (Text.concat (showExpr l) (Text.concat op (Text.concat (showExpr r) ")")))
@@ -281,7 +282,9 @@ fn compileExpr (e: QExpr) -> { text: Text, binds: List SqlValue } =
         QGt l r  -> binNodeSql l " > " r
         QLe l r  -> binNodeSql l " <= " r
         QGe l r  -> binNodeSql l " >= " r
-        QProj cols -> { text = Text.join ", " (projCols cols), binds = [] }
+        QProj cols ->
+            let r = projCols cols
+            { text = Text.join ", " r.texts, binds = r.binds }
         QGroupKey  -> { text = "", binds = [] }
         QAggCount  -> { text = "COUNT(*)", binds = [] }
         QAggSum c  -> aggSql "SUM" c
@@ -304,6 +307,11 @@ fn compileExpr (e: QExpr) -> { text: Text, binds: List SqlValue } =
         QMul l r -> binNodeSql l " * " r
         QDiv l r -> binNodeSql l " / " r
         QMod l r -> binNodeSql l " % " r
+        QCase c t e ->
+            let cc = compileExpr c
+            let ct = compileExpr t
+            let ce = compileExpr e
+            { text = Text.join "" ["CASE WHEN ", cc.text, " THEN ", ct.text, " ELSE ", ce.text, " END"], binds = cc.binds ++ ct.binds ++ ce.binds }
 
 fn aggSql (fnName: Text) (c: QExpr) -> { text: Text, binds: List SqlValue } =
     let r = compileExpr c
@@ -341,20 +349,22 @@ fn dirKeyword (dir: SortOrder) -> Text =
         Asc  -> "ASC"
         Desc -> "DESC"
 
--- Compile a quoted projection (a record of columns) into a SQL select-list,
--- e.g. `id, signup_year`. A field whose name differs from its source column is
--- emitted as `column AS alias`. A projection selects columns, so it carries no
--- bind values.
-pub fn selectSql (q: Quote f) -> Sql =
+-- Compile a quoted projection into a SQL select-list and its ordered bind
+-- values, e.g. `id, signup_year` or `(price * qty) AS total`. A field whose
+-- name differs from its source column is emitted as `column AS alias`; a
+-- computed field (arithmetic, a CASE) compiles to its expression with each
+-- literal collected as a `?` placeholder, left to right.
+pub fn selectSql (q: Quote f) -> (Sql, List SqlValue) =
     let r = compileExpr q.tree
-    sql r.text
+    (sql r.text, r.binds)
 
-fn projCols (cols: List (Text, QExpr)) -> List Text =
+fn projCols (cols: List (Text, QExpr)) -> { texts: List Text, binds: List SqlValue } =
     match cols
-        []                   -> []
+        []                   -> { texts = [], binds = [] }
         (alias, col) :: rest ->
             let r = compileExpr col
-            aliasedCol alias r.text :: projCols rest
+            let more = projCols rest
+            { texts = aliasedCol alias r.text :: more.texts, binds = r.binds ++ more.binds }
 
 fn aliasedCol (alias: Text) (colSql: Text) -> Text =
     if alias == colSql then colSql
@@ -481,6 +491,11 @@ fn renderPred (qualified: Bool) (e: QExpr) (n: Int) -> { text: Text, binds: List
         QCol c  -> { text = renderColRef qualified false c, binds = [], next = n }
         QColR c -> { text = renderColRef qualified true c, binds = [], next = n }
         QLitBool b -> { text = boolLit b, binds = [], next = n }
+        QCase c t e ->
+            let cc = renderPred qualified c n
+            let ct = renderPred qualified t cc.next
+            let ce = renderPred qualified e ct.next
+            { text = Text.join "" ["CASE WHEN ", cc.text, " THEN ", ct.text, " ELSE ", ce.text, " END"], binds = cc.binds ++ ct.binds ++ ce.binds, next = ce.next }
         _ -> renderOperand qualified e n
 
 fn cmpPred (qualified: Bool) (l: QExpr) (op: Text) (r: QExpr) (n: Int) -> { text: Text, binds: List SqlValue, next: Int } =
@@ -508,6 +523,11 @@ fn renderOperand (qualified: Bool) (e: QExpr) (n: Int) -> { text: Text, binds: L
         QMul l r    -> arithOperand qualified l " * " r n
         QDiv l r    -> arithOperand qualified l " / " r n
         QMod l r    -> arithOperand qualified l " % " r n
+        QCase c t e ->
+            let cc = renderPred qualified c n
+            let ct = renderOperand qualified t cc.next
+            let ce = renderOperand qualified e ct.next
+            { text = Text.join "" ["CASE WHEN ", cc.text, " THEN ", ct.text, " ELSE ", ce.text, " END"], binds = cc.binds ++ ct.binds ++ ce.binds, next = ce.next }
         _           -> { text = "NULL", binds = [], next = n }
 
 -- An arithmetic operand: `(lhs OP rhs)`, each side rendered as an operand and
@@ -759,6 +779,11 @@ fn renderQual (q0: Int) (e: QExpr) (n: Int) -> { text: Text, binds: List SqlValu
         QColR c    -> { text = naryColRef 1 c, binds = [], next = n }
         QColAt i c -> { text = naryColRef i c, binds = [], next = n }
         QLitBool b -> { text = boolLit b, binds = [], next = n }
+        QCase c t e ->
+            let cc = renderQual q0 c n
+            let ct = renderQual q0 t cc.next
+            let ce = renderQual q0 e ct.next
+            { text = Text.join "" ["CASE WHEN ", cc.text, " THEN ", ct.text, " ELSE ", ce.text, " END"], binds = cc.binds ++ ct.binds ++ ce.binds, next = ce.next }
         _ -> qualOperand q0 e n
 
 fn qualCmp (q0: Int) (l: QExpr) (op: Text) (r: QExpr) (n: Int) -> { text: Text, binds: List SqlValue, next: Int } =
@@ -785,6 +810,11 @@ fn qualOperand (q0: Int) (e: QExpr) (n: Int) -> { text: Text, binds: List SqlVal
         QMul l r    -> arithQual q0 l " * " r n
         QDiv l r    -> arithQual q0 l " / " r n
         QMod l r    -> arithQual q0 l " % " r n
+        QCase c t e ->
+            let cc = renderQual q0 c n
+            let ct = qualOperand q0 t cc.next
+            let ce = qualOperand q0 e ct.next
+            { text = Text.join "" ["CASE WHEN ", cc.text, " THEN ", ct.text, " ELSE ", ce.text, " END"], binds = cc.binds ++ ct.binds ++ ce.binds, next = ce.next }
         _           -> { text = "NULL", binds = [], next = n }
 
 -- The leaf-qualified dual of `arithOperand`: `(lhs OP rhs)` with each side a
@@ -1109,8 +1139,9 @@ fn renderProject (proj: QExpr) (child: QueryPlan) (lim: Int) (off: Int) (dist: B
                 PlanScan lt lp _ _ _ _ ->
                     match right
                         PlanScan rt _ _ _ _ _ ->
-                            let sk = joinSkeleton kind lt lp rt cond where2 false n
-                            { text = Text.join "" ["SELECT ", distinctKw dist, joinSelectList proj, " FROM ", sk.text, orderByClauseJoin joinOrders, limitClause lim, offsetClause off], binds = sk.binds, next = sk.next }
+                            let sel = joinSelectList proj n
+                            let sk = joinSkeleton kind lt lp rt cond where2 false sel.next
+                            { text = Text.join "" ["SELECT ", distinctKw dist, sel.text, " FROM ", sk.text, orderByClauseJoin joinOrders, limitClause lim, offsetClause off], binds = sel.binds ++ sk.binds, next = sk.next }
                         _ -> naryProject proj child joinOrders lim off dist n
                 _ -> naryProject proj child joinOrders lim off dist n
         _ -> emptyRender n
@@ -1127,50 +1158,69 @@ fn naryProject (proj: QExpr) (child: QueryPlan) (orders: List (Bool, Int, Text))
         [] -> emptyRender n
         _  ->
             if allInnerSteps f.steps then
-                let from = naryFrom f.leaves f.steps n
+                let sel = naryProjectList proj n
+                let from = naryFrom f.leaves f.steps sel.next
                 let wh = naryWhere f.leaves f.steps from.next
-                { text = Text.join "" ["SELECT ", distinctKw dist, naryProjectList proj, " FROM ", from.text, wh.text, naryOrderBy orders, limitClause lim, offsetClause off], binds = from.binds ++ wh.binds, next = wh.next }
+                { text = Text.join "" ["SELECT ", distinctKw dist, sel.text, " FROM ", from.text, wh.text, naryOrderBy orders, limitClause lim, offsetClause off], binds = sel.binds ++ from.binds ++ wh.binds, next = wh.next }
             else
                 let nulls = nullableLeaves f.steps
-                let from = mixedFrom f.leaves f.steps nulls false n
+                let sel = naryProjectList proj n
+                let from = mixedFrom f.leaves f.steps nulls false sel.next
                 let wh = mixedWhere f.leaves f.steps nulls from.next
-                { text = Text.join "" ["SELECT ", distinctKw dist, naryProjectList proj, " FROM ", from.text, wh.text, naryOrderBy orders, limitClause lim, offsetClause off], binds = from.binds ++ wh.binds, next = wh.next }
+                { text = Text.join "" ["SELECT ", distinctKw dist, sel.text, " FROM ", from.text, wh.text, naryOrderBy orders, limitClause lim, offsetClause off], binds = sel.binds ++ from.binds ++ wh.binds, next = wh.next }
 
 -- The projection's select-list over a flattened composite: each named column qualified
 -- to its leaf alias (`t<i>."col" AS "alias"`). A `QCol` names leaf 0, a `QColR` leaf 1,
 -- a `QColAt i` the i-th leaf of a deeper composite; a cell naming no column reads NULL.
-fn naryProjectList (proj: QExpr) -> Text =
+fn naryProjectList (proj: QExpr) (n: Int) -> { text: Text, binds: List SqlValue, next: Int } =
     match proj
-        QProj cols -> Text.join ", " (naryProjectTerms cols)
-        _          -> "*"
+        QProj cols -> naryProjectTerms cols n
+        _          -> { text = "*", binds = [], next = n }
 
-fn naryProjectTerms (cols: List (Text, QExpr)) -> List Text =
+fn naryProjectTerms (cols: List (Text, QExpr)) (n: Int) -> { text: Text, binds: List SqlValue, next: Int } =
     match cols
-        []                   -> []
-        (alias, col) :: rest -> naryProjectTerm alias col :: naryProjectTerms rest
+        []                 -> { text = "", binds = [], next = n }
+        (alias, col) :: [] -> naryProjectTerm alias col n
+        (alias, col) :: rest ->
+            let h = naryProjectTerm alias col n
+            let t = naryProjectTerms rest h.next
+            { text = Text.join "" [h.text, ", ", t.text], binds = h.binds ++ t.binds, next = t.next }
 
-fn naryProjectTerm (alias: Text) (col: QExpr) -> Text =
+fn naryProjectTerm (alias: Text) (col: QExpr) (n: Int) -> { text: Text, binds: List SqlValue, next: Int } =
     match col
-        QCol c     -> Text.join "" [naryColRef 0 c, " AS ", quoteIdent alias]
-        QColR c    -> Text.join "" [naryColRef 1 c, " AS ", quoteIdent alias]
-        QColAt i c -> Text.join "" [naryColRef i c, " AS ", quoteIdent alias]
-        _          -> Text.join "" ["NULL AS ", quoteIdent alias]
+        QCol c     -> { text = Text.join "" [naryColRef 0 c, " AS ", quoteIdent alias], binds = [], next = n }
+        QColR c    -> { text = Text.join "" [naryColRef 1 c, " AS ", quoteIdent alias], binds = [], next = n }
+        QColAt i c -> { text = Text.join "" [naryColRef i c, " AS ", quoteIdent alias], binds = [], next = n }
+        _          ->
+            let r = qualOperand 0 col n
+            { text = Text.join "" [r.text, " AS ", quoteIdent alias], binds = r.binds, next = r.next }
 
-fn joinSelectList (proj: QExpr) -> Text =
+-- The binary-join projection select-list, threading the `$N` counter so a
+-- literal in a computed column binds in source order ahead of the join's own
+-- ON/WHERE binds. A bare column reads side-qualified (`l."col"` / `r."col"`);
+-- a computed cell (arithmetic, a CASE) renders through `renderOperand`, which
+-- side-qualifies its own columns the same way.
+fn joinSelectList (proj: QExpr) (n: Int) -> { text: Text, binds: List SqlValue, next: Int } =
     match proj
-        QProj cols -> Text.join ", " (joinSelectTerms cols)
-        _          -> "*"
+        QProj cols -> joinSelectTerms cols n
+        _          -> { text = "*", binds = [], next = n }
 
-fn joinSelectTerms (cols: List (Text, QExpr)) -> List Text =
+fn joinSelectTerms (cols: List (Text, QExpr)) (n: Int) -> { text: Text, binds: List SqlValue, next: Int } =
     match cols
-        []                   -> []
-        (alias, col) :: rest -> joinSelectTerm alias col :: joinSelectTerms rest
+        []                 -> { text = "", binds = [], next = n }
+        (alias, col) :: [] -> joinSelectTerm alias col n
+        (alias, col) :: rest ->
+            let h = joinSelectTerm alias col n
+            let t = joinSelectTerms rest h.next
+            { text = Text.join "" [h.text, ", ", t.text], binds = h.binds ++ t.binds, next = t.next }
 
-fn joinSelectTerm (alias: Text) (col: QExpr) -> Text =
+fn joinSelectTerm (alias: Text) (col: QExpr) (n: Int) -> { text: Text, binds: List SqlValue, next: Int } =
     match col
-        QCol c  -> Text.join "" ["l.", quoteIdent c, " AS ", quoteIdent alias]
-        QColR c -> Text.join "" ["r.", quoteIdent c, " AS ", quoteIdent alias]
-        _       -> Text.join "" ["NULL AS ", quoteIdent alias]
+        QCol c  -> { text = Text.join "" ["l.", quoteIdent c, " AS ", quoteIdent alias], binds = [], next = n }
+        QColR c -> { text = Text.join "" ["r.", quoteIdent c, " AS ", quoteIdent alias], binds = [], next = n }
+        _       ->
+            let r = renderOperand true col n
+            { text = Text.join "" [r.text, " AS ", quoteIdent alias], binds = r.binds, next = r.next }
 
 -- A scalar aggregate over a join: the lone folded value, read off the first cell. A
 -- `COUNT` counts rows; the others fold a side-qualified column (`AVG` casts to

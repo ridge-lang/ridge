@@ -1280,11 +1280,17 @@ mem_keeper_loop(State) ->
             mem_keeper_loop(State)
     end.
 
-%% Build a projected row from `{Alias, Column}` pairs: each output column reads
-%% the source column from the row and is keyed by its alias. A missing source
-%% column reads as SQL NULL.
+%% Build a projected row from `{Alias, QExpr}` columns: each output column
+%% evaluates its expression against the row and is keyed by its alias. A bare
+%% column reads its stored value; a computed column (arithmetic, a CASE) folds
+%% via mem_scalar. A cell with no value — a missing column or a runtime division
+%% by zero — projects SQL NULL rather than dropping the row or crashing the
+%% keeper (Postgres aborts on /0; a *literal* zero divisor is a compile error).
 mem_project_row(Cols, Row) ->
-    maps:from_list([{Alias, maps:get(Col, Row, 'SqlNull')} || {Alias, Col} <- Cols]).
+    maps:from_list([{Alias, mem_proj_cell(mem_scalar(Col, Row))} || {Alias, Col} <- Cols]).
+
+mem_proj_cell(undefined) -> 'SqlNull';
+mem_proj_cell(Value)     -> Value.
 
 %% Drop duplicate rows, keeping the first occurrence of each so the result stays
 %% deterministic. Rows compare by full term equality, the same notion of equality
@@ -1430,7 +1436,32 @@ mem_pcell({'QCol', C}, Row)     ->
     end;
 mem_pcell({'QColR', C}, Row)    -> maps:get(<<"t1$", C/binary>>, Row, 'SqlNull');
 mem_pcell({'QColAt', I, C}, Row) -> maps:get(mem_agg_prefixed_col(I, C), Row, 'SqlNull');
+mem_pcell({'QLitInt', N}, _Row)   -> {'SqlInt', N};
+mem_pcell({'QLitText', S}, _Row)  -> {'SqlText', S};
+mem_pcell({'QLitBool', B}, _Row)  -> {'SqlBool', B};
+mem_pcell({'QLitFloat', F}, _Row) -> {'SqlFloat', F};
+%% Computed projection cells over a join's flat source-prefixed rows: arithmetic
+%% folds its operands (each resolved by the same prefix rules), a CASE picks a
+%% branch by its condition read as an N-ary predicate. A cell with no value — a
+%% missing column or a runtime division by zero — projects SQL NULL, never
+%% dropping the row or crashing the keeper.
+mem_pcell({'QAdd', A, B}, Row) -> mem_pcell_arith('+', A, B, Row);
+mem_pcell({'QSub', A, B}, Row) -> mem_pcell_arith('-', A, B, Row);
+mem_pcell({'QMul', A, B}, Row) -> mem_pcell_arith('*', A, B, Row);
+mem_pcell({'QDiv', A, B}, Row) -> mem_pcell_arith('/', A, B, Row);
+mem_pcell({'QMod', A, B}, Row) -> mem_pcell_arith('%', A, B, Row);
+mem_pcell({'QCase', C, T, E}, Row) ->
+    case mem_npred(C, Row) of
+        true -> mem_pcell(T, Row);
+        _    -> mem_pcell(E, Row)
+    end;
 mem_pcell(_Other, _Row)         -> 'SqlNull'.
+
+mem_pcell_arith(Op, A, B, Row) ->
+    case mem_arith_apply(Op, mem_pcell(A, Row), mem_pcell(B, Row)) of
+        undefined -> 'SqlNull';
+        Value     -> Value
+    end.
 
 %% Flatten a joined {LeftMap, RightMap} pair into one row map with each side's columns
 %% prefixed (t0$ for the left source, t1$ for the right) so the two sides never
@@ -1848,6 +1879,11 @@ mem_jpred({'QIn', V, Items}, L, R) -> mem_in_pred(mem_jscalar(V, L, R), [mem_jsc
 mem_jpred({'QCol', C}, L, _R)      -> mem_truthy(maps:get(C, L, 'SqlNull'));
 mem_jpred({'QColR', C}, _L, R)     -> mem_truthy(maps:get(C, R, 'SqlNull'));
 mem_jpred({'QLitBool', B}, _L, _R) -> B;
+mem_jpred({'QCase', C, T, E}, L, R) ->
+    case mem_jpred(C, L, R) of
+        true -> mem_jpred(T, L, R);
+        _    -> mem_jpred(E, L, R)
+    end;
 mem_jpred(_Other, _L, _R)          -> false.
 
 mem_jrelate(Op, A, B, L, R) ->
@@ -1876,6 +1912,11 @@ mem_jscalar({'QSub', A, B}, L, R) -> mem_arith_apply('-', mem_jscalar(A, L, R), 
 mem_jscalar({'QMul', A, B}, L, R) -> mem_arith_apply('*', mem_jscalar(A, L, R), mem_jscalar(B, L, R));
 mem_jscalar({'QDiv', A, B}, L, R) -> mem_arith_apply('/', mem_jscalar(A, L, R), mem_jscalar(B, L, R));
 mem_jscalar({'QMod', A, B}, L, R) -> mem_arith_apply('%', mem_jscalar(A, L, R), mem_jscalar(B, L, R));
+mem_jscalar({'QCase', C, T, E}, L, R) ->
+    case mem_jpred(C, L, R) of
+        true -> mem_jscalar(T, L, R);
+        _    -> mem_jscalar(E, L, R)
+    end;
 mem_jscalar(_Other, _L, _R)           -> undefined.
 
 %% --- N-ary (3+ table) inner join evaluation ---
@@ -2025,6 +2066,11 @@ mem_npred({'QCol', C}, Row)      -> mem_truthy(maps:get(<<"t0$", C/binary>>, Row
 mem_npred({'QColR', C}, Row)     -> mem_truthy(maps:get(<<"t1$", C/binary>>, Row, 'SqlNull'));
 mem_npred({'QColAt', I, C}, Row) -> mem_truthy(maps:get(<<(mem_leaf_prefix(I))/binary, C/binary>>, Row, 'SqlNull'));
 mem_npred({'QLitBool', B}, _Row) -> B;
+mem_npred({'QCase', C, T, E}, Row) ->
+    case mem_npred(C, Row) of
+        true -> mem_npred(T, Row);
+        _    -> mem_npred(E, Row)
+    end;
 mem_npred(_Other, _Row)          -> false.
 
 mem_nrelate(Op, A, B, Row) ->
@@ -2046,6 +2092,11 @@ mem_nscalar({'QSub', A, B}, Row) -> mem_arith_apply('-', mem_nscalar(A, Row), me
 mem_nscalar({'QMul', A, B}, Row) -> mem_arith_apply('*', mem_nscalar(A, Row), mem_nscalar(B, Row));
 mem_nscalar({'QDiv', A, B}, Row) -> mem_arith_apply('/', mem_nscalar(A, Row), mem_nscalar(B, Row));
 mem_nscalar({'QMod', A, B}, Row) -> mem_arith_apply('%', mem_nscalar(A, Row), mem_nscalar(B, Row));
+mem_nscalar({'QCase', C, T, E}, Row) ->
+    case mem_npred(C, Row) of
+        true -> mem_nscalar(T, Row);
+        _    -> mem_nscalar(E, Row)
+    end;
 mem_nscalar(_Other, _Row)           -> undefined.
 
 mem_ncell(Key, Row) ->
@@ -2079,6 +2130,11 @@ mem_pred({'QIn', V, Items}, Row) -> mem_in_pred(mem_scalar(V, Row), [mem_scalar(
 %% A bare leaf in predicate position is a boolean column or literal.
 mem_pred({'QCol', C}, Row)      -> mem_truthy(maps:get(C, Row, 'SqlNull'));
 mem_pred({'QLitBool', B}, _Row) -> B;
+mem_pred({'QCase', C, T, E}, Row) ->
+    case mem_pred(C, Row) of
+        true -> mem_pred(T, Row);
+        _    -> mem_pred(E, Row)
+    end;
 mem_pred(_Other, _Row)          -> false.
 
 %% A `QLike` test: both operands resolve to text, then the pattern matcher runs. A
@@ -2117,6 +2173,11 @@ mem_scalar({'QSub', A, B}, Row) -> mem_arith_apply('-', mem_scalar(A, Row), mem_
 mem_scalar({'QMul', A, B}, Row) -> mem_arith_apply('*', mem_scalar(A, Row), mem_scalar(B, Row));
 mem_scalar({'QDiv', A, B}, Row) -> mem_arith_apply('/', mem_scalar(A, Row), mem_scalar(B, Row));
 mem_scalar({'QMod', A, B}, Row) -> mem_arith_apply('%', mem_scalar(A, Row), mem_scalar(B, Row));
+mem_scalar({'QCase', C, T, E}, Row) ->
+    case mem_pred(C, Row) of
+        true -> mem_scalar(T, Row);
+        _    -> mem_scalar(E, Row)
+    end;
 mem_scalar(_Other, _Row)           -> undefined.
 
 %% Apply an arithmetic operator to two evaluated operands. The quotation checker

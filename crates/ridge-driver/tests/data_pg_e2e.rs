@@ -78,6 +78,11 @@ pub type Post = { id: Int, author: Int, title: Text } deriving (Row)
 -- the aliased columns back.
 pub type Summary = { who: Text, years: Int } deriving (Row)
 
+-- A computed projection shape: `label` is a CASE over `age`, `doubled` is
+-- arithmetic over `age`, so the decode proves Postgres compiles a select-list
+-- expression per row, not only a stored column.
+pub type Tagged = { label: Text, doubled: Int } deriving (Row)
+
 -- The shape a join projection decodes into: a name from the left entity and a
 -- title from the right.
 pub type Combo = { person: Text, post: Text } deriving (Row)
@@ -108,6 +113,14 @@ fn joinWho (ss: List Summary) -> Text =
         []        -> ""
         s :: []   -> s.who
         s :: rest -> Text.concat s.who (Text.concat "," (joinWho rest))
+
+fn joinTagged (ts: List Tagged) -> Text =
+    match ts
+        []        -> ""
+        t :: []   -> tagText t
+        t :: rest -> Text.concat (tagText t) (Text.concat "," (joinTagged rest))
+
+fn tagText (t: Tagged) -> Text = Text.concat t.label (Text.concat ":" (Int.toText t.doubled))
 
 -- Render each `(User, Post)` pair as `name:title`, comma-joined.
 fn joinPairs (ps: List (User, Post)) -> Text =
@@ -358,6 +371,19 @@ pub fn db arithChecks () -> Text =
             let c = countOf (r |> Repo.findBy (fn (u: User) -> u.age / 10 == 2))
             let d = countOf (r |> Repo.findBy (fn (u: User) -> u.age % 2 == 0))
             Text.join "," [Int.toText a, Int.toText b, Int.toText c, Int.toText d]
+
+-- computed projection on real Postgres: project a CASE `label` and a doubled
+-- `age` per row, ordered by id -> "minor:36,adult:60,adult:50". Proves the
+-- Postgres backend compiles a computed select-list (arithmetic + CASE) with its
+-- literals bound as placeholders and decodes the result. Folded under one
+-- connection (pooled probes share a handle).
+pub fn db projChecks () -> Text =
+    match setup ()
+        Err _ -> "setup-err"
+        Ok r  ->
+            match r |> Repo.query |> Repo.orderBy Asc (fn (u: User) -> u.id) |> Repo.select (fn (u: User) -> Tagged { label = if u.age >= 25 then "adult" else "minor", doubled = u.age * 2 })
+                Err _ -> "list-err"
+                Ok ts -> joinTagged ts
 
 -- find + decode: the name of the first user older than 28 -> "lin"
 pub fn db firstName () -> Text =
@@ -1927,6 +1953,7 @@ fn postgres_adapter_reads_a_real_table() {
          io:format(\"adultsCount=~w~n\",[{module}:adultsCount()]), \
          io:format(\"likeInChecks=~s~n\",[{module}:likeInChecks()]), \
          io:format(\"arithChecks=~s~n\",[{module}:arithChecks()]), \
+         io:format(\"projChecks=~s~n\",[{module}:projChecks()]), \
          io:format(\"firstName=~s~n\",[{module}:firstName()]), \
          io:format(\"getName=~s~n\",[{module}:getName()]), \
          io:format(\"afterDelete=~w~n\",[{module}:afterDelete()]), \
@@ -2053,6 +2080,11 @@ fn postgres_adapter_reads_a_real_table() {
             "arithChecks=1,2,1,2",
             "arithmetic compiles to real SQL: age*2>50, age+id>20, integer age/10==2, \
              age%2==0",
+        ),
+        (
+            "projChecks=minor:36,adult:60,adult:50",
+            "a computed projection compiles to real SQL: a CASE label and a doubled \
+             age, decoded per row",
         ),
         (
             "firstName=lin",

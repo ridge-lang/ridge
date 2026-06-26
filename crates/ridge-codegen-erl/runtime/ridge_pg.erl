@@ -989,10 +989,16 @@ run_verb(Conn, {fetch, Table, Tree, Orders, Lim, Off, Dist}) ->
            order_by_clause(Orders), limit_clause(Lim), offset_clause(Off)],
     run_query(Conn, Sql, Binds);
 run_verb(Conn, {project, Table, Tree, Orders, Lim, Off, Cols, Dist}) ->
-    {Where, Binds} = compile_where(Tree),
-    Sql = ["SELECT ", distinct_kw(Dist), select_list(Cols), " FROM ", quote_ident(Table), " WHERE ", Where,
+    %% A computed projection column may carry literals, so the select-list binds
+    %% take $1..$K and the WHERE compiles from $K+1, seeded with the select binds
+    %% (held reversed, the order `cw` accumulates), so the two placeholder runs
+    %% never collide and the final list reads left to right: select-list values
+    %% first, then WHERE. Mirrors the SET-before-WHERE threading in do_update.
+    {SelectFrag, SelBindsRev, N1} = select_list(Cols, 1, []),
+    {Where, RevAllBinds, _N} = cw(Tree, N1, SelBindsRev),
+    Sql = ["SELECT ", distinct_kw(Dist), SelectFrag, " FROM ", quote_ident(Table), " WHERE ", Where,
            order_by_clause(Orders), limit_clause(Lim), offset_clause(Off)],
-    run_query(Conn, Sql, Binds);
+    run_query(Conn, Sql, lists:reverse(RevAllBinds));
 run_verb(Conn, {count_where, Table, Tree}) ->
     do_count(Conn, Table, Tree);
 run_verb(Conn, {aggregate, Table, Tree, Func, Column}) ->
@@ -1190,14 +1196,29 @@ order_by_clause(Orders) -> [" ORDER BY ", lists:join(", ", [order_term(O) || O <
 %% Each order key carries `Asc` as the boolean `true`.
 order_term({Asc, Col}) -> [quote_ident(Col), " ", dir_keyword(Asc)].
 
-%% Projection select-list from `{Alias, Column}` pairs. A field whose alias
-%% matches its source column is emitted bare; otherwise as `column AS alias`. An
-%% empty list (a projection that captured no columns) falls back to `*`.
-select_list([])   -> "*";
-select_list(Cols) -> lists:join(", ", [select_term(C) || C <- Cols]).
+%% Projection select-list from `{Alias, QExpr}` columns, threading the `$N`
+%% counter and bind accumulator so a literal in a computed column binds in
+%% select-before-where order. A bare `QCol` whose name matches its alias emits
+%% just the quoted identifier; a renamed column emits `column AS alias`; any
+%% computed expression (arithmetic, a CASE) compiles through `cw` — the same
+%% operand compiler the WHERE clause uses — and is aliased. An empty list (a
+%% projection that captured no columns) falls back to `*`.
+select_list([], N, B) -> {"*", B, N};
+select_list(Cols, N, B) ->
+    {RevFrags, B1, N1} =
+        lists:foldl(
+            fun(Col, {Frags, Bs, Nn}) ->
+                {Frag, Bs1, Nn1} = select_term(Col, Nn, Bs),
+                {[Frag | Frags], Bs1, Nn1}
+            end,
+            {[], B, N},
+            Cols),
+    {lists:join(", ", lists:reverse(RevFrags)), B1, N1}.
 
-select_term({Alias, Col}) when Alias =:= Col -> quote_ident(Col);
-select_term({Alias, Col})                    -> [quote_ident(Col), " AS ", quote_ident(Alias)].
+select_term({Alias, {'QCol', C}}, N, B) when C =:= Alias -> {quote_ident(C), B, N};
+select_term({Alias, Col}, N, B) ->
+    {Frag, B1, N1} = cw(Col, N, B),
+    {[Frag, " AS ", quote_ident(Alias)], B1, N1}.
 
 dir_keyword(true)  -> "ASC";
 dir_keyword(false) -> "DESC";
@@ -1261,6 +1282,15 @@ cw({'QIn', V, Items}, N, B) ->
 cw({'QCol', C}, N, B) -> {quote_ident(C), B, N};
 cw({'QLitBool', true}, N, B) -> {"TRUE", B, N};
 cw({'QLitBool', false}, N, B) -> {"FALSE", B, N};
+%% `if cond then a else b` -> `CASE WHEN cond THEN a ELSE b END`. The condition
+%% and both branches compile through `cw`, so a value CASE (scalar branches) and
+%% a boolean CASE (predicate branches) render the same way; the counter threads
+%% left to right through condition, then, else.
+cw({'QCase', C, T, E}, N, B) ->
+    {FC, B1, N1} = cw(C, N, B),
+    {FT, B2, N2} = cw(T, N1, B1),
+    {FE, B3, N3} = cw(E, N2, B2),
+    {["CASE WHEN ", FC, " THEN ", FT, " ELSE ", FE, " END"], B3, N3};
 cw(Other, N, B) -> cw_operand(Other, N, B).
 
 %% The comma-separated elements of an `IN (...)` list, each a `$N` placeholder,
@@ -1295,6 +1325,9 @@ cw_operand({'QSub', L, R}, N, B) -> cw_arith(" - ", L, R, N, B);
 cw_operand({'QMul', L, R}, N, B) -> cw_arith(" * ", L, R, N, B);
 cw_operand({'QDiv', L, R}, N, B) -> cw_arith(" / ", L, R, N, B);
 cw_operand({'QMod', L, R}, N, B) -> cw_arith(" % ", L, R, N, B);
+%% A CASE used as a value operand (e.g. `(if c then 1 else 2) > x`) renders the
+%% same `CASE … END`; delegate to the predicate compiler's clause.
+cw_operand({'QCase', _, _, _} = Case, N, B) -> cw(Case, N, B);
 cw_operand(_Other, N, B) ->
     {"NULL", B, N}.
 

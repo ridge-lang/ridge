@@ -1188,6 +1188,22 @@ impl BuiltinTyCons {
                             Type::Con(TyConId(25), vec![]),
                         ]),
                     },
+                    // A conditional value — `if cond then a else b` → the SQL
+                    // `CASE WHEN cond THEN a ELSE b END`. The first child is the
+                    // boolean condition, the second and third its two branches.
+                    // The branches share one type — the value the whole CASE
+                    // yields — or are both predicates, making the CASE itself a
+                    // boolean usable in a WHERE. Appended after the arithmetic
+                    // nodes so existing variant indices the lowering pass
+                    // hardcodes stay put.
+                    UnionVariant {
+                        name: "QCase".to_string(),
+                        kind: VariantPayload::Positional(vec![
+                            Type::Con(TyConId(25), vec![]),
+                            Type::Con(TyConId(25), vec![]),
+                            Type::Con(TyConId(25), vec![]),
+                        ]),
+                    },
                 ],
             }),
             def_span: None,

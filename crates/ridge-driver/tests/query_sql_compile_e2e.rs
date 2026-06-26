@@ -31,9 +31,9 @@ pub type User = { id: Int, age: Int, active: Bool, signupYear: Int } deriving (T
 
 fn compiled (q: Quote (User -> Bool)) -> (Sql, List SqlValue) = Query.toSql q
 
-fn orderKey (q: Quote (User -> Int)) -> Sql = Query.orderSql Desc q
+fn orderKey (q: Quote (User -> Int)) -> (Sql, List SqlValue) = Query.orderSql Desc q
 
-fn orderKeyAsc (q: Quote (User -> Int)) -> Sql = Query.orderSql Asc q
+fn orderKeyAsc (q: Quote (User -> Int)) -> (Sql, List SqlValue) = Query.orderSql Asc q
 
 fn selectCols (q: Quote (User -> { id: Int, signupYear: Int })) -> (Sql, List SqlValue) = Query.selectSql q
 
@@ -67,9 +67,21 @@ pub fn projectCaseBinds () -> Text =
     match selectTier (fn u -> { tier = if u.age >= 18 then "adult" else "minor" })
         (_, ps) -> Int.toText (List.length ps)
 
-pub fn recentFirst () -> Text = sqlValue (orderKey (fn u -> u.signupYear))
+pub fn recentFirst () -> Text =
+    match orderKey (fn u -> u.signupYear)
+        (s, _) -> sqlValue s
 
-pub fn oldestFirst () -> Text = sqlValue (orderKeyAsc (fn u -> u.signupYear))
+pub fn oldestFirst () -> Text =
+    match orderKeyAsc (fn u -> u.signupYear)
+        (s, _) -> sqlValue s
+
+pub fn orderComputedSql () -> Text =
+    match orderKey (fn u -> u.age * 2)
+        (s, _) -> sqlValue s
+
+pub fn orderComputedBinds () -> Text =
+    match orderKey (fn u -> u.age * 2)
+        (_, ps) -> Int.toText (List.length ps)
 
 pub fn adultSql () -> Text =
     match compiled (fn u -> u.age >= 18)
@@ -157,7 +169,7 @@ fn quoted_predicate_compiles_to_parameterized_sql() {
 
     let expr = format!(
         "F=fun(N)->io:format(\"~s=~s~n\",[N,{module}:N()])end, \
-         lists:foreach(F,['adultSql','adultBinds','activeAdultSql','activeAdultBinds','recentSql','recentFirst','oldestFirst','projectCols','projectRenamed','projectComputedSql','projectComputedBinds','projectCaseSql','projectCaseBinds']), halt()."
+         lists:foreach(F,['adultSql','adultBinds','activeAdultSql','activeAdultBinds','recentSql','recentFirst','oldestFirst','orderComputedSql','orderComputedBinds','projectCols','projectRenamed','projectComputedSql','projectComputedBinds','projectCaseSql','projectCaseBinds']), halt()."
     );
     let output = Command::new("erl")
         .arg("-noshell")
@@ -205,6 +217,16 @@ fn quoted_predicate_compiles_to_parameterized_sql() {
     assert!(
         stdout.contains("oldestFirst=signup_year ASC"),
         "expected `oldestFirst=signup_year ASC`\nstdout:\n{stdout}\nstderr:\n{stderr}"
+    );
+    // A computed ordering key compiles to its expression with the direction; the
+    // literal operand binds as a `?` placeholder, never interpolated into the text.
+    assert!(
+        stdout.contains("orderComputedSql=(age * ?) DESC"),
+        "expected `orderComputedSql=(age * ?) DESC`\nstdout:\n{stdout}\nstderr:\n{stderr}"
+    );
+    assert!(
+        stdout.contains("orderComputedBinds=1"),
+        "expected `orderComputedBinds=1`\nstdout:\n{stdout}\nstderr:\n{stderr}"
     );
     // A projection compiles to a select-list. Each field's camelCase name
     // reifies to its snake_case column; a field that matches its source column

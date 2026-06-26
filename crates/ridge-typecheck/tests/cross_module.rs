@@ -2524,9 +2524,9 @@ fn qualified_reconciled_fn_resolves_clean() {
     // A qualified call must still find it in the env rather than fall through to
     // the T999 "qualified name unresolved" path.
     let main = "import std.query as Query (Asc)\n\
-                import std.sql (Sql)\n\
+                import std.sql (Sql, SqlValue)\n\
                 pub type Row = { age: Int }\n\
-                fn ord (q: Quote (Row -> Int)) -> Sql = Query.orderSql Asc q\n";
+                fn ord (q: Quote (Row -> Int)) -> (Sql, List SqlValue) = Query.orderSql Asc q\n";
     let errors = typecheck_two_modules(main, LIB_FN);
     assert_eq!(
         count_code(&errors, "T999"),
@@ -3394,12 +3394,13 @@ pub fn db bad () -> Result (List (User, Post)) Error =
 }
 
 #[test]
-fn query_builder_order_key_is_column_only_no_injection() {
-    // Security: an ordering key may only name a single column, checked against the
-    // entity's schema. A computed expression — the shape a raw-`ORDER BY` injection
-    // would take — is rejected, so nothing but a schema-validated column reference
-    // reaches the generated `ORDER BY`.
-    let injection = r#"
+fn query_builder_order_key_computed_is_a_bind_not_injection() {
+    // A computed ordering key (arithmetic, a CASE) is accepted and safe: it compiles
+    // to a parameterized `ORDER BY` whose literals bind as `$N` placeholders, never
+    // interpolated as raw SQL. The key's type is still checked against the entity's
+    // schema, so an unknown column or a type mismatch is still rejected — only the
+    // column-only restriction is lifted.
+    let computed = r#"
 import std.data (memAdapter, MemAdapter)
 import std.repo as Repo
 import std.query (SortOrder, Asc)
@@ -3407,17 +3408,17 @@ import std.sql (SqlValue)
 
 pub type User = { id: Int, age: Int, name: Text } deriving (Row)
 
-pub fn db bad () -> Result (List User) Error =
+pub fn db good () -> Result (List User) Error =
     let users: Repo User MemAdapter = Repo.repo (memAdapter ()) "users"
     users
       |> Repo.query
       |> Repo.orderBy Asc (fn (u: User) -> u.age + 1)
       |> Repo.toList
 "#;
-    let errors = typecheck_one(injection);
+    let errors = typecheck_one(computed);
     assert!(
-        !errors.is_empty(),
-        "a computed ordering key (a non-column expression) must be rejected; got no errors"
+        errors.is_empty(),
+        "a computed ordering key compiles to a parameterized ORDER BY (a bind, not injection); got {errors:?}"
     );
 }
 
@@ -3623,28 +3624,29 @@ pub fn db bad () -> Result (Option Int) Error =
 }
 
 #[test]
-fn query_builder_aggregate_accessor_is_column_only_no_injection() {
-    // Security: an aggregate accessor may only name a single column, checked
-    // against the entity's schema. A computed expression — the shape a raw-SQL
-    // injection would take — is rejected, so nothing but a schema-validated column
-    // reaches the generated `SUM(...)`.
-    let injection = r#"
+fn query_builder_aggregate_accessor_computed_is_a_bind_not_injection() {
+    // A computed aggregate accessor (`SUM(price * qty)`) is accepted and safe: it
+    // compiles to a parameterized aggregate whose literals bind as placeholders,
+    // never interpolated as raw SQL. The accessor's type is still checked against the
+    // entity's schema, so an unknown column or a type mismatch is still rejected —
+    // only the column-only restriction is lifted.
+    let computed = r#"
 import std.data (memAdapter, MemAdapter)
 import std.repo as Repo
 import std.sql (SqlValue)
 
 pub type User = { id: Int, age: Int, name: Text } deriving (Row)
 
-pub fn db bad () -> Result (Option Int) Error =
+pub fn db good () -> Result (Option Int) Error =
     let users: Repo User MemAdapter = Repo.repo (memAdapter ()) "users"
     users
       |> Repo.query
       |> Repo.sumOf (fn (u: User) -> u.age + 1)
 "#;
-    let errors = typecheck_one(injection);
+    let errors = typecheck_one(computed);
     assert!(
-        !errors.is_empty(),
-        "a computed aggregate accessor (a non-column expression) must be rejected; got no errors"
+        errors.is_empty(),
+        "a computed aggregate accessor compiles to a parameterized aggregate (a bind, not injection); got {errors:?}"
     );
 }
 

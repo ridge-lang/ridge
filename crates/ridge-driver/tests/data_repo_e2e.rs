@@ -559,6 +559,30 @@ pub fn db taggedAges () -> Text =
                 Err _ -> "list-err"
                 Ok ts -> joinTagged ts
 
+-- computed orderBy: sort by `age - id * 10`, a value distinct from every single
+-- column. ada(18 - 10 = 8), lin(30 - 20 = 10), max(25 - 30 = -5) -> ascending
+-- max,ada,lin. Proves the in-memory backend sorts by an arithmetic expression, not
+-- only a bare column.
+pub fn db computedOrder () -> Text =
+    match setup ()
+        Err _ -> "setup-err"
+        Ok r  ->
+            match r |> Repo.query |> Repo.orderBy Asc (fn (u: User) -> u.age - u.id * 10) |> Repo.toList
+                Err _ -> "list-err"
+                Ok us -> joinNames us
+
+-- computed aggregate: sum of `age * 2` over every row -> (18 + 30 + 25) * 2 = 146.
+-- Proves the in-memory backend folds an arithmetic expression in an aggregate, not
+-- only a bare column.
+pub fn db computedSum () -> Int =
+    match setup ()
+        Err _ -> 0 - 1
+        Ok r  ->
+            match r |> Repo.query |> Repo.sumOf (fn (u: User) -> u.age * 2)
+                Err _       -> 0 - 2
+                Ok None     -> 0 - 3
+                Ok (Some n) -> n
+
 -- Open one store, bind a users and a posts repository to it (so the join sees
 -- both tables), and seed three users and three posts. Post `author` references a
 -- user id: lin (id 2) owns "hello" and "again", max (id 3) owns "world", ada
@@ -2396,6 +2420,8 @@ fn repo_surface_runs_on_beam() {
          io:format(\"summaryNames=~s~n\",[{module}:summaryNames()]), \
          io:format(\"topYears=~w~n\",[{module}:topYears()]), \
          io:format(\"taggedAges=~s~n\",[{module}:taggedAges()]), \
+         io:format(\"computedOrder=~s~n\",[{module}:computedOrder()]), \
+         io:format(\"computedSum=~w~n\",[{module}:computedSum()]), \
          io:format(\"joinedNames=~s~n\",[{module}:joinedNames()]), \
          io:format(\"joinCalcCodes=~s~n\",[{module}:joinCalcCodes()]), \
          io:format(\"joinedTitles=~s~n\",[{module}:joinedTitles()]), \
@@ -2564,6 +2590,14 @@ fn repo_surface_runs_on_beam() {
         (
             "taggedAges=minor:36,adult:60,adult:50",
             "the in-memory backend evaluates a CASE and arithmetic per row in the select-list",
+        ),
+        (
+            "computedOrder=max,ada,lin",
+            "the in-memory backend sorts by an arithmetic expression, not only a bare column",
+        ),
+        (
+            "computedSum=146",
+            "the in-memory backend folds an arithmetic expression in an aggregate",
         ),
         (
             "joinedNames=lin:hello,lin:again,max:world",

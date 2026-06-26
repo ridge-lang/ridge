@@ -54,6 +54,14 @@ fn proj4 (q: Quote (fn User Post Comment Reaction -> Quad)) -> QExpr = q.tree
 fn projCalc (q: Quote (fn User Post -> Calc)) -> QExpr = q.tree
 fn projCaseo (q: Quote (fn User Post -> Caseo)) -> QExpr = q.tree
 
+-- A captured single-column accessor's tree, for an aggregate's folded column or a
+-- join ordering key (both now carry a `QExpr`, a column or a computed expression).
+-- Generic over the column type (phantom) and the join arity, so a leaf's column
+-- reifies to its side (`p.x` is `QColR`, `c.x` is `QColAt 2`, `r.x` is `QColAt 3`).
+fn col2 (q: Quote (fn User Post -> a)) -> QExpr = q.tree
+fn col3 (q: Quote (fn User Post Comment -> a)) -> QExpr = q.tree
+fn col4 (q: Quote (fn User Post Comment Reaction -> a)) -> QExpr = q.tree
+
 -- An always-true tree, the "keep all" filter a scan or a join's WHERE defaults to.
 fn keepAll () -> QExpr = pred1 (fn (u: User) -> true)
 fn keepAllJoin () -> QExpr = cond2 (fn (u: User) (p: Post) -> true)
@@ -178,7 +186,7 @@ pub fn projectCaseJoinSql () -> Text =
     renderSql (planProject (projCaseo (fn (u: User) (p: Post) -> Caseo { person = u.name, band = if u.age >= 18 then "a" else "b" })) (wrapJoin ()) (0 - 1) 0 false)
 
 pub fn aggSql () -> Text =
-    renderSql (planAggregate "AVG" "author" 1 (wrapJoin ()))
+    renderSql (planAggregate "AVG" (col2 (fn (u: User) (p: Post) -> p.author)) 1 (wrapJoin ()))
 
 pub fn groupSql () -> Text =
     renderSql (planGroup "author" 1 [("author", "KEY", "", 1), ("n", "COUNT", "", 0)] (keepAllJoin ()) (wrapJoin ()))
@@ -286,14 +294,14 @@ pub fn adultLeftMixBinds () -> Text = renderBinds (adultLeftMix ())
 -- presence markers, and the base `adults` leaf is never null-extended, so its filter lifts to
 -- the flat top-level WHERE rather than a `(SELECT * FROM "users" WHERE …)` subquery — the same
 -- "subquery only where it helps" lift the bare terminal makes, now through the aggregate path.
-fn countAdultLeftMix () -> QueryPlan = planAggregate "COUNT" "" 0 (adultLeftMix ())
+fn countAdultLeftMix () -> QueryPlan = planAggregate "COUNT" (keepAll ()) 0 (adultLeftMix ())
 
 pub fn countAdultLeftMixSql () -> Text = renderSql (countAdultLeftMix ())
 
 -- A count over the three-table inner composite: COUNT(*) over the flattened multi-way
 -- join, the base adult filter qualified to t0 binding $1. A reduction selects no leaf
 -- columns and reads no markers — just the count.
-fn countThree () -> QueryPlan = planAggregate "COUNT" "" 0 (inner3 ())
+fn countThree () -> QueryPlan = planAggregate "COUNT" (keepAll ()) 0 (inner3 ())
 
 pub fn countThreeSql () -> Text = renderSql (countThree ())
 
@@ -315,7 +323,7 @@ fn leftMixFiltered () -> QueryPlan =
         []
         (commentCols ())
 
-fn countLeftMix () -> QueryPlan = planAggregate "COUNT" "" 0 (leftMixFiltered ())
+fn countLeftMix () -> QueryPlan = planAggregate "COUNT" (keepAll ()) 0 (leftMixFiltered ())
 
 pub fn countLeftMixSql () -> Text = renderSql (countLeftMix ())
 
@@ -324,13 +332,13 @@ pub fn countLeftMixBinds () -> Text = renderBinds (countLeftMix ())
 -- A scalar SUM over the three-table inner composite, folding the deep leaf's column
 -- (`post`, leaf 2): `SUM(t2."post")` over the flattened multi-way join, the base adult
 -- filter qualified to t0 ($1).
-fn sumThree () -> QueryPlan = planAggregate "SUM" "post" 2 (inner3 ())
+fn sumThree () -> QueryPlan = planAggregate "SUM" (col3 (fn (u: User) (p: Post) (c: Comment) -> c.post)) 2 (inner3 ())
 
 pub fn sumThreeSql () -> Text = renderSql (sumThree ())
 
 -- An AVG over the same composite leaf, carrying the `::float8` cast so an integer column
 -- averages to a float, as the single-table and binary-join aggregates do.
-fn avgThree () -> QueryPlan = planAggregate "AVG" "post" 2 (inner3 ())
+fn avgThree () -> QueryPlan = planAggregate "AVG" (col3 (fn (u: User) (p: Post) (c: Comment) -> c.post)) 2 (inner3 ())
 
 pub fn avgThreeSql () -> Text = renderSql (avgThree ())
 
@@ -405,7 +413,7 @@ fn orderThree () -> QueryPlan =
         (commentsScan ())
         (joinCond2 ())
         (keepAllJoin ())
-        [(true, 2, "body")]
+        [(true, 2, col3 (fn (u: User) (p: Post) (c: Comment) -> c.body))]
         (0 - 1) 0 false
         []
         (commentCols ())
@@ -422,7 +430,7 @@ fn orderLeftMix () -> QueryPlan =
         (commentsScan ())
         (joinCond2 ())
         (keepAllJoin ())
-        [(false, 0, "name")]
+        [(false, 0, col2 (fn (u: User) (p: Post) -> u.name))]
         (0 - 1) 0 false
         []
         (commentCols ())
@@ -433,7 +441,7 @@ fn orderRightMix () -> QueryPlan =
         (commentsScan ())
         (joinCond2 ())
         (keepAllJoin ())
-        [(true, 2, "body")]
+        [(true, 2, col3 (fn (u: User) (p: Post) (c: Comment) -> c.body))]
         (0 - 1) 0 false
         []
         (commentCols ())
@@ -444,7 +452,7 @@ fn orderFullMix () -> QueryPlan =
         (commentsScan ())
         (joinCond2 ())
         (keepAllJoin ())
-        [(false, 1, "title")]
+        [(false, 1, col2 (fn (u: User) (p: Post) -> p.title))]
         (0 - 1) 0 false
         []
         (commentCols ())
@@ -477,7 +485,7 @@ pub fn inner4Sql () -> Text = renderSql (inner4 ())
 -- A scalar SUM over the four-table inner composite, folding the deepest leaf's column
 -- (`comment`, leaf 3): `SUM(t3."comment")` over the flattened four-way join, the base adult
 -- filter qualified to t0 ($1).
-fn sumFour () -> QueryPlan = planAggregate "SUM" "comment" 3 (inner4 ())
+fn sumFour () -> QueryPlan = planAggregate "SUM" (col4 (fn (u: User) (p: Post) (c: Comment) (r: Reaction) -> r.comment)) 3 (inner4 ())
 
 pub fn sumFourSql () -> Text = renderSql (sumFour ())
 
@@ -499,7 +507,7 @@ fn orderFour () -> QueryPlan =
         (reactionsScan ())
         (joinCond3 ())
         (keepAllJoin ())
-        [(true, 3, "kind")]
+        [(true, 3, col4 (fn (u: User) (p: Post) (c: Comment) (r: Reaction) -> r.kind))]
         (0 - 1) 0 false
         []
         (reactionCols ())

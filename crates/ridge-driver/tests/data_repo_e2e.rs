@@ -549,6 +549,31 @@ pub fn db capturedByName () -> Text =
                 Err _ -> "list-err"
                 Ok us -> joinNames us
 
+-- captured runtime list as an `IN` test: the `ages` list flows in and each element
+-- binds as its own `$N` parameter, so `List.contains u.age ages` renders to `age IN
+-- ($1, $2)` -> "max,lin" (ada 18 drops, max 25 and lin 30 match). Proves a captured
+-- `List Int` becomes a runtime `IN`, the parity of `ages.Contains(u.age)`.
+pub fn db capturedInList () -> Text =
+    match setup ()
+        Err _ -> "setup-err"
+        Ok r  ->
+            let ages = [25, 30]
+            match r |> Repo.query |> Repo.filter (fn (u: User) -> List.contains u.age ages) |> Repo.orderBy Asc (fn (u: User) -> u.age) |> Repo.toList
+                Err _ -> "list-err"
+                Ok us -> joinNames us
+
+-- captured runtime list of Text: the wanted names flow in as parameters, so
+-- `List.contains u.name names` renders to `name IN ($1, $2)` -> "ada,lin". Proves a
+-- captured `List Text` binds each element, not only a `List Int`.
+pub fn db capturedInTextList () -> Text =
+    match setup ()
+        Err _ -> "setup-err"
+        Ok r  ->
+            let names = ["ada", "lin"]
+            match r |> Repo.query |> Repo.filter (fn (u: User) -> List.contains u.name names) |> Repo.orderBy Asc (fn (u: User) -> u.age) |> Repo.toList
+                Err _ -> "list-err"
+                Ok us -> joinNames us
+
 -- projection: order by age descending, project into the renamed `Summary`, and
 -- join the `who` fields -> "lin,max,ada". Proves selectList pushes the
 -- select-list down and decodes the aliased columns into the named shape.
@@ -2467,6 +2492,8 @@ fn repo_surface_runs_on_beam() {
          io:format(\"firstAdultName=~s~n\",[{module}:firstAdultName()]), \
          io:format(\"capturedAdults=~s~n\",[{module}:capturedAdults()]), \
          io:format(\"capturedByName=~s~n\",[{module}:capturedByName()]), \
+         io:format(\"capturedInList=~s~n\",[{module}:capturedInList()]), \
+         io:format(\"capturedInTextList=~s~n\",[{module}:capturedInTextList()]), \
          io:format(\"summaryNames=~s~n\",[{module}:summaryNames()]), \
          io:format(\"topYears=~w~n\",[{module}:topYears()]), \
          io:format(\"taggedAges=~s~n\",[{module}:taggedAges()]), \
@@ -2638,6 +2665,14 @@ fn repo_surface_runs_on_beam() {
         (
             "capturedByName=lin",
             "a captured Text value drives the equality predicate as a bound parameter",
+        ),
+        (
+            "capturedInList=max,lin",
+            "a captured List Int becomes a runtime IN, binding each element as a parameter",
+        ),
+        (
+            "capturedInTextList=ada,lin",
+            "a captured List Text becomes a runtime IN over the name column",
         ),
         (
             "summaryNames=lin,max,ada",

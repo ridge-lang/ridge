@@ -1089,6 +1089,30 @@ async fn test_hover_captured_variable_in_quote() {
 }
 
 #[tokio::test]
+async fn test_hover_captured_in_list_in_quote() {
+    // A list captured into a quoted `IN` test hovers like any binding: the runtime
+    // `IN` list rides the same `node_types` entry the reifier reads to wrap each
+    // element, so accepting the captured list also makes it hover-able with its
+    // `List` type at the use-site inside the quote.
+    let src = "type User = { age: Int }\nfn pred (q: Quote (User -> Bool)) -> Bool = true\nfn demo (ages: List Int) -> Bool = pred (fn u -> List.contains u.age ages)\n";
+    let (service, _socket, uri) = hover_fixture(src).await;
+    let server = service.inner();
+
+    let line2 = "fn demo (ages: List Int) -> Bool = pred (fn u -> List.contains u.age ages)";
+    let col = u32::try_from(line2.rfind("ages").expect("captured use-site") + 1)
+        .expect("offset fits u32");
+    let h = server
+        .hover(hover_at(&uri, 2, col))
+        .await
+        .expect("hover ok");
+    let md = hover_markdown(h).expect("hover over a captured list returns markup");
+    assert!(
+        md.contains("ages :") && md.contains("List") && md.contains("Int"),
+        "a captured IN list inside a quote should hover with its List type, got {md:?}"
+    );
+}
+
+#[tokio::test]
 async fn test_hover_distinguishes_param_from_local() {
     // A function parameter and a `let` binding hover with different kind lines,
     // even though both are `Binding::Local` under the hood.

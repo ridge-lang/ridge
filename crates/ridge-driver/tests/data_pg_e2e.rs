@@ -480,6 +480,31 @@ pub fn db capturedByName () -> Text =
                 Err _ -> "list-err"
                 Ok us -> joinNames us
 
+-- captured runtime list against Postgres: the `ages` list flows in and each element
+-- binds as its own `$N`, so `List.contains u.age ages` compiles into `age IN ($1,
+-- $2)`. Ascending -> "max,lin" (ada 18 drops, max 25 and lin 30 match). Proves a
+-- captured `List Int` reaches the real query as an IN over bound parameters.
+pub fn db capturedInList () -> Text =
+    match setup ()
+        Err _ -> "setup-err"
+        Ok r  ->
+            let ages = [25, 30]
+            match r |> Repo.query |> Repo.filter (fn (u: User) -> List.contains u.age ages) |> Repo.orderBy Asc (fn (u: User) -> u.age) |> Repo.toList
+                Err _ -> "list-err"
+                Ok us -> joinNames us
+
+-- captured runtime list of Text against Postgres: the wanted names bind as
+-- parameters, so `List.contains u.name names` compiles into `name IN ($1, $2)` ->
+-- "ada,lin". Proves a captured `List Text` crosses to the real query, not only Int.
+pub fn db capturedInTextList () -> Text =
+    match setup ()
+        Err _ -> "setup-err"
+        Ok r  ->
+            let names = ["ada", "lin"]
+            match r |> Repo.query |> Repo.filter (fn (u: User) -> List.contains u.name names) |> Repo.orderBy Asc (fn (u: User) -> u.age) |> Repo.toList
+                Err _ -> "list-err"
+                Ok us -> joinNames us
+
 -- projection: order by age descending, project into the renamed `Summary`, and
 -- join the `who` fields -> "lin,max,ada". Proves the backend compiles the
 -- select-list (`name AS who, age AS years`) and decodes the aliased columns.
@@ -2027,6 +2052,8 @@ fn postgres_adapter_reads_a_real_table() {
          io:format(\"pagedName=~s~n\",[{module}:pagedName()]), \
          io:format(\"capturedAdults=~s~n\",[{module}:capturedAdults()]), \
          io:format(\"capturedByName=~s~n\",[{module}:capturedByName()]), \
+         io:format(\"capturedInList=~s~n\",[{module}:capturedInList()]), \
+         io:format(\"capturedInTextList=~s~n\",[{module}:capturedInTextList()]), \
          io:format(\"summaryNames=~s~n\",[{module}:summaryNames()]), \
          io:format(\"topYears=~w~n\",[{module}:topYears()]), \
          io:format(\"joinedNames=~s~n\",[{module}:joinedNames()]), \
@@ -2185,6 +2212,14 @@ fn postgres_adapter_reads_a_real_table() {
         (
             "capturedByName=lin",
             "a captured Text value drives the equality as a placeholder against Postgres",
+        ),
+        (
+            "capturedInList=max,lin",
+            "a captured List Int compiles into a real IN over bound parameters",
+        ),
+        (
+            "capturedInTextList=ada,lin",
+            "a captured List Text compiles into a real IN over the name column",
         ),
         (
             "summaryNames=lin,max,ada",

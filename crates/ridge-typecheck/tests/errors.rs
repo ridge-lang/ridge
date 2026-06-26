@@ -615,6 +615,45 @@ fn quoted_captured_non_scalar_is_rejected() {
     );
 }
 
+/// A captured `List <scalar>` is a runtime `IN` list: `List.contains u.age ages`
+/// with `ages: List Int` typechecks cleanly, the parity of `ages.Contains(u.Age)`.
+#[test]
+fn quoted_captured_in_list_typecheck() {
+    let src = "type User = { age: Int, name: Text }\n\nfn pred (q: Quote (User -> Bool)) -> Bool = true\n\nfn demo (ages: List Int) (names: List Text) -> Bool = pred (fn u -> List.contains u.age ages && List.contains u.name names)\n";
+    let errors = run_typecheck_on_source("quote_in_capture_ok", src);
+    let codes: Vec<&str> = errors.iter().map(TypeError::code).collect();
+    assert!(
+        codes.is_empty(),
+        "capturing a scalar list as an `IN` test must typecheck cleanly; got: {codes:?}"
+    );
+}
+
+/// A captured `IN` list must hold base scalars. A `List` of a record type is
+/// rejected (T040): a record has no single column value to bind per element.
+#[test]
+fn quoted_captured_in_list_non_scalar_is_rejected() {
+    let src = "type User = { age: Int }\ntype Box = { n: Int }\n\nfn pred (q: Quote (User -> Bool)) -> Bool = true\n\nfn demo (boxes: List Box) -> Bool = pred (fn u -> List.contains u.age boxes)\n";
+    let errors = run_typecheck_on_source("quote_in_capture_nonscalar", src);
+    let codes: Vec<&str> = errors.iter().map(TypeError::code).collect();
+    assert!(
+        codes.contains(&"T040"),
+        "capturing a non-scalar `IN` list must be T040; got: {codes:?}"
+    );
+}
+
+/// The element type of a captured `IN` list must match the column. A `List Text`
+/// tested against an `Int` column is a comparison mismatch (T041).
+#[test]
+fn quoted_captured_in_list_type_mismatch_is_rejected() {
+    let src = "type User = { age: Int }\n\nfn pred (q: Quote (User -> Bool)) -> Bool = true\n\nfn demo (names: List Text) -> Bool = pred (fn u -> List.contains u.age names)\n";
+    let errors = run_typecheck_on_source("quote_in_capture_mismatch", src);
+    let codes: Vec<&str> = errors.iter().map(TypeError::code).collect();
+    assert!(
+        codes.contains(&"T041"),
+        "a captured `IN` list whose element type differs from the column must be T041; got: {codes:?}"
+    );
+}
+
 // ── T001 message rendering: real type names, never `#N` ───────────────────────
 
 /// Pull the `(expected, found)` strings of the first `T001 TypeMismatch`.

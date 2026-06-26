@@ -967,6 +967,15 @@ fn is_quote_scalar(b: &BuiltinTyCons, ty: &Type) -> bool {
         if *id == b.int || *id == b.text || *id == b.bool || *id == b.float)
 }
 
+/// The element type of `ty` when it is a `List a`, for typing a captured `IN`
+/// list. Returns `None` for any other shape.
+fn list_elem<'a>(b: &BuiltinTyCons, ty: &'a Type) -> Option<&'a Type> {
+    match ty {
+        Type::Con(id, args) if *id == b.list && args.len() == 1 => Some(&args[0]),
+        _ => None,
+    }
+}
+
 /// Whether `e` is a numeric literal whose value is zero, in any radix or as a
 /// float — the one statically-detectable division-by-zero divisor.
 fn is_literal_zero(e: &Expr) -> bool {
@@ -994,11 +1003,67 @@ fn is_literal_zero(e: &Expr) -> bool {
     }
 }
 
+/// The outcome of checking a captured value used as the `items` of an `IN` test.
+enum InListCheck {
+    /// Not a captured list (not in scope, or not a `List`): the caller falls
+    /// through to the text-match family, so a captured text needle stays a
+    /// substring `LIKE`.
+    NotAList,
+    /// A captured list of the wrong shape; an error has been pushed.
+    Invalid,
+    /// A valid runtime `IN` set.
+    Valid,
+}
+
+/// Validate a value captured from the enclosing scope used as the `items` of an
+/// `IN` test (`List.contains col captured`). The captured value must be a
+/// `List <scalar>` whose element type is one of Int/Text/Bool/Float and matches
+/// the column. A [`InListCheck::Valid`] result also records the captured list's
+/// type for the reifier, since the quote walk never runs `infer_expr` to
+/// populate it.
+fn check_captured_in_list(
+    ctx: &mut InferCtx,
+    b: &BuiltinTyCons,
+    name: &str,
+    span: Span,
+    col_ty: &Type,
+) -> InListCheck {
+    let Some(scheme) = ctx.env.lookup(name).cloned() else {
+        return InListCheck::NotAList;
+    };
+    let inst = instantiate(ctx, &scheme);
+    let ty = ctx.deep_resolve(&inst);
+    let Some(elem) = list_elem(b, &ty) else {
+        return InListCheck::NotAList;
+    };
+    if !is_quote_scalar(b, elem) {
+        let rendered = crate::render::render_type_with(&ty, &ctx.tycon_decls);
+        ctx.errors.push(TypeError::QuoteUnsupportedExpr {
+            detail: format!(
+                "`{name}` has type `{rendered}`; an `IN` list captured from the \
+                 enclosing scope must be a List of Int, Text, Bool, or Float"
+            ),
+            span,
+        });
+        return InListCheck::Invalid;
+    }
+    if !same_value_type(elem, col_ty) {
+        let left = crate::render::render_type_with(col_ty, &ctx.tycon_decls);
+        let right = crate::render::render_type_with(elem, &ctx.tycon_decls);
+        ctx.errors
+            .push(TypeError::QuoteComparisonMismatch { left, right, span });
+        return InListCheck::Invalid;
+    }
+    ctx.write_node_type(span, ridge_resolve::NodeKind::Expr, &ty);
+    InListCheck::Valid
+}
+
 /// Checks a predicate-helper call inside a quote. The recognised helpers are the
 /// text matches (`Text.like`/`contains`/`startsWith`/`endsWith`) and the `IN`
-/// membership test (`List.contains col [literals]`). One operand must name a column
-/// of the quote; the other must be a literal pattern (or a list of literals for
-/// `IN`) whose type matches the column. Returns `QKind::Pred` on success.
+/// membership test (`List.contains col items`, where `items` is a literal list or
+/// a `List` captured from the enclosing scope). One operand must name a column of
+/// the quote; the other must be a literal pattern (or a list whose element type
+/// matches the column) — returns `QKind::Pred` on success.
 fn check_predicate_call(
     ctx: &mut InferCtx,
     b: &BuiltinTyCons,
@@ -1051,8 +1116,11 @@ fn check_predicate_call(
     };
     let col_ty = ctx.deep_resolve(&col_ty);
 
-    // `List.contains col [literals]` — the `IN` test. Every element must be a
-    // literal of the column's type.
+    // `List.contains col items` — the `IN` test. `items` is either a literal list
+    // (every element a literal of the column's type) or a value captured from the
+    // enclosing scope whose type is `List <column-type>`. A captured list binds
+    // each of its elements as a `$N` parameter at run time — the runtime dual of a
+    // literal `IN`, the parity of `ids.Contains(row.col)` over a runtime `ids`.
     if matches!(name, Some("contains")) {
         if let Expr::List { elems, .. } = other {
             for el in elems {
@@ -1077,6 +1145,14 @@ fn check_predicate_call(
                 }
             }
             return Some(QKind::Pred);
+        }
+        if let Expr::Ident(id) = other {
+            match check_captured_in_list(ctx, b, &id.text, other.span(), &col_ty) {
+                InListCheck::Valid => return Some(QKind::Pred),
+                InListCheck::Invalid => return None,
+                // Not a captured list — fall through to the text-match family.
+                InListCheck::NotAList => {}
+            }
         }
     }
 

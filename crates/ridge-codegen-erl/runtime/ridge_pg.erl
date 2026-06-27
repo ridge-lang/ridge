@@ -973,13 +973,13 @@ run_verb(Conn, {insert, Table, Row}) ->
 run_verb(Conn, {all, Table}) ->
     run_query(Conn, ["SELECT * FROM ", quote_ident(Table)], []);
 run_verb(Conn, {select, Table, Tree}) ->
-    {Where, Binds} = compile_where(Tree),
+    {Where, Binds} = compile_where(Tree, Table),
     run_query(Conn, ["SELECT * FROM ", quote_ident(Table), " WHERE ", Where], Binds);
 run_verb(Conn, {get_rows, Table, Column, Key}) ->
     Sql = ["SELECT * FROM ", quote_ident(Table), " WHERE ", quote_ident(Column), " = $1"],
     run_query(Conn, Sql, [Key]);
 run_verb(Conn, {delete, Table, Tree}) ->
-    {Where, Binds} = compile_where(Tree),
+    {Where, Binds} = compile_where(Tree, Table),
     do_exec(Conn, ["DELETE FROM ", quote_ident(Table), " WHERE ", Where], Binds);
 run_verb(Conn, {update, Table, Changes, Tree}) ->
     do_update(Conn, Table, Changes, Tree);
@@ -987,7 +987,7 @@ run_verb(Conn, {fetch, Table, Tree, Orders, Lim, Off, Dist}) ->
     %% WHERE binds take $1..$K; a computed ORDER BY key continues at $K+1, seeded with
     %% the WHERE binds (held reversed, as `cw` accumulates), so the two runs never
     %% collide and the final list reads left to right: WHERE values first, then ORDER BY.
-    {Where, RevW, N1} = cw(Tree, 1, []),
+    {Where, RevW, N1} = cw(Tree, {bare, Table}, 1, []),
     {OrderFrag, RevAllBinds, _N2} = order_by_clause(Orders, N1, RevW),
     Sql = ["SELECT ", distinct_kw(Dist), "* FROM ", quote_ident(Table), " WHERE ", Where,
            OrderFrag, limit_clause(Lim), offset_clause(Off)],
@@ -999,7 +999,7 @@ run_verb(Conn, {project, Table, Tree, Orders, Lim, Off, Cols, Dist}) ->
     %% never collide and the final list reads left to right: select-list values
     %% first, then WHERE. Mirrors the SET-before-WHERE threading in do_update.
     {SelectFrag, SelBindsRev, N1} = select_list(Cols, 1, []),
-    {Where, RevW, N2} = cw(Tree, N1, SelBindsRev),
+    {Where, RevW, N2} = cw(Tree, {bare, Table}, N1, SelBindsRev),
     {OrderFrag, RevAllBinds, _N3} = order_by_clause(Orders, N2, RevW),
     Sql = ["SELECT ", distinct_kw(Dist), SelectFrag, " FROM ", quote_ident(Table), " WHERE ", Where,
            OrderFrag, limit_clause(Lim), offset_clause(Off)],
@@ -1042,14 +1042,14 @@ do_update(Conn, Table, Changes, Tree) ->
             {[], [], 1},
             Pairs),
     SetClause = lists:join(", ", lists:reverse(SetFragsRev)),
-    {WhereFrag, RevAllBinds, _N} = cw(Tree, NextN, SetBindsRev),
+    {WhereFrag, RevAllBinds, _N} = cw(Tree, {bare, Table}, NextN, SetBindsRev),
     Sql = ["UPDATE ", quote_ident(Table), " SET ", SetClause, " WHERE ", WhereFrag],
     do_exec(Conn, Sql, lists:reverse(RevAllBinds)).
 
 %% SELECT COUNT(*) and read the single integer back out. The result is one row
 %% of one column; its name varies, so the value is taken positionally.
 do_count(Conn, Table, Tree) ->
-    {Where, Binds} = compile_where(Tree),
+    {Where, Binds} = compile_where(Tree, Table),
     Sql = ["SELECT COUNT(*) FROM ", quote_ident(Table), " WHERE ", Where],
     case run_query(Conn, Sql, Binds) of
         {ok, [Row | _]} ->
@@ -1072,7 +1072,7 @@ do_aggregate(Conn, Table, Func, Column, Tree) ->
     %% continues at $J+1, seeded with them (held reversed) — select-before-where
     %% ordering, as the project verb threads its select-list.
     {AggFrag, RevB1, N1} = agg_expr(Func, Column, 1, []),
-    {Where, RevB2, _N2} = cw(Tree, N1, RevB1),
+    {Where, RevB2, _N2} = cw(Tree, {bare, Table}, N1, RevB1),
     Sql = ["SELECT ", AggFrag, " FROM ", quote_ident(Table), " WHERE ", Where],
     agg_result(run_query(Conn, Sql, lists:reverse(RevB2))).
 
@@ -1127,7 +1127,7 @@ agg_cast(_)         -> "".
 %% in-memory backend.
 do_group_summarize(Conn, Table, Tree, KeyCol, Cols, Having) ->
     {SelectList, RevB1, N1} = group_select_list(Cols, KeyCol, 1, []),
-    {WhereFrag, RevB2, N2} = cw(Tree, N1, RevB1),
+    {WhereFrag, RevB2, N2} = cw(Tree, {bare, Table}, N1, RevB1),
     {HavingFrag, RevB3, _N3} = compile_having(Having, KeyCol, N2, RevB2),
     HavingClause = case HavingFrag of
         [] -> [];
@@ -1280,101 +1280,134 @@ distinct_kw(_)    -> "".
 %% identifier, a literal becomes a `$N` placeholder with its value pushed onto
 %% the ordered bind list, and the boolean/comparison nodes nest into a fragment.
 
-compile_where(Tree) ->
-    {Frag, RevBinds, _N} = cw(Tree, 1, []),
+%% Compile a WHERE tree to a parameterised fragment and ordered binds. `Table` is
+%% the outer table the predicate filters; a correlated `EXISTS` qualifies the outer
+%% row's columns by it (`"table"."col"`) so they stay apart from the subquery's own.
+compile_where(Tree, Table) ->
+    {Frag, RevBinds, _N} = cw(Tree, {bare, Table}, 1, []),
     {Frag, lists:reverse(RevBinds)}.
 
-cw({'QAnd', L, R}, N, B) ->
-    {FL, B1, N1} = cw(L, N, B),
-    {FR, B2, N2} = cw(R, N1, B1),
+%% Backwards-compatible arity: a bare WHERE with no outer table (no correlated
+%% EXISTS reaches it). The single-table read/write verbs call `cw/4` with their
+%% table so an EXISTS can correlate to it.
+cw(Tree, N, B) ->
+    cw(Tree, {bare, <<>>}, N, B).
+
+cw({'QAnd', L, R}, Q, N, B) ->
+    {FL, B1, N1} = cw(L, Q, N, B),
+    {FR, B2, N2} = cw(R, Q, N1, B1),
     {["(", FL, " AND ", FR, ")"], B2, N2};
-cw({'QOr', L, R}, N, B) ->
-    {FL, B1, N1} = cw(L, N, B),
-    {FR, B2, N2} = cw(R, N1, B1),
+cw({'QOr', L, R}, Q, N, B) ->
+    {FL, B1, N1} = cw(L, Q, N, B),
+    {FR, B2, N2} = cw(R, Q, N1, B1),
     {["(", FL, " OR ", FR, ")"], B2, N2};
-cw({'QNot', X}, N, B) ->
-    {FX, B1, N1} = cw(X, N, B),
+cw({'QNot', X}, Q, N, B) ->
+    {FX, B1, N1} = cw(X, Q, N, B),
     {["(NOT ", FX, ")"], B1, N1};
 %% `IS NOT TRUE` — std.repo's `every` folds its predicate as `notTrue` so a row
 %% the query keeps whose predicate is false (or NULL) counts as a violator. The
 %% three-valued test reads a NULL the same as FALSE, which `(NOT ...)` would not.
-cw({'QNotTrue', X}, N, B) ->
-    {FX, B1, N1} = cw(X, N, B),
+cw({'QNotTrue', X}, Q, N, B) ->
+    {FX, B1, N1} = cw(X, Q, N, B),
     {["(", FX, " IS NOT TRUE)"], B1, N1};
-cw({'QEq', L, R}, N, B) -> cw_cmp("=", L, R, N, B);
-cw({'QNe', L, R}, N, B) -> cw_cmp("<>", L, R, N, B);
-cw({'QLt', L, R}, N, B) -> cw_cmp("<", L, R, N, B);
-cw({'QGt', L, R}, N, B) -> cw_cmp(">", L, R, N, B);
-cw({'QLe', L, R}, N, B) -> cw_cmp("<=", L, R, N, B);
-cw({'QGe', L, R}, N, B) -> cw_cmp(">=", L, R, N, B);
+cw({'QEq', L, R}, Q, N, B) -> cw_cmp("=", L, R, Q, N, B);
+cw({'QNe', L, R}, Q, N, B) -> cw_cmp("<>", L, R, Q, N, B);
+cw({'QLt', L, R}, Q, N, B) -> cw_cmp("<", L, R, Q, N, B);
+cw({'QGt', L, R}, Q, N, B) -> cw_cmp(">", L, R, Q, N, B);
+cw({'QLe', L, R}, Q, N, B) -> cw_cmp("<=", L, R, Q, N, B);
+cw({'QGe', L, R}, Q, N, B) -> cw_cmp(">=", L, R, Q, N, B);
 %% `value LIKE pattern` — the pattern is a `$N`-bound `QLitText` the surface
 %% wrapped/escaped, so Postgres' default `\` escape matches it as written.
-cw({'QLike', V, P}, N, B) ->
-    {FV, B1, N1} = cw_operand(V, N, B),
-    {FP, B2, N2} = cw_operand(P, N1, B1),
+cw({'QLike', V, P}, Q, N, B) ->
+    {FV, B1, N1} = cw_operand(V, Q, N, B),
+    {FP, B2, N2} = cw_operand(P, Q, N1, B1),
     {[FV, " LIKE ", FP], B2, N2};
 %% `value IN (...)` — one `$N` placeholder per element; an empty set is
 %% unsatisfiable, so it renders as the constant FALSE rather than `IN ()`.
-cw({'QIn', _V, []}, N, B) -> {"FALSE", B, N};
-cw({'QIn', V, Items}, N, B) ->
-    {FV, B1, N1} = cw_operand(V, N, B),
-    {FItems, B2, N2} = cw_in_list(Items, N1, B1),
+cw({'QIn', _V, []}, _Q, N, B) -> {"FALSE", B, N};
+cw({'QIn', V, Items}, Q, N, B) ->
+    {FV, B1, N1} = cw_operand(V, Q, N, B),
+    {FItems, B2, N2} = cw_in_list(Items, Q, N1, B1),
     {[FV, " IN (", FItems, ")"], B2, N2};
-cw({'QCol', C}, N, B) -> {quote_ident(C), B, N};
-cw({'QLitBool', true}, N, B) -> {"TRUE", B, N};
-cw({'QLitBool', false}, N, B) -> {"FALSE", B, N};
+cw({'QCol', C}, Q, N, B) -> {cw_col(Q, false, C), B, N};
+cw({'QColR', C}, Q, N, B) -> {cw_col(Q, true, C), B, N};
+cw({'QLitBool', true}, _Q, N, B) -> {"TRUE", B, N};
+cw({'QLitBool', false}, _Q, N, B) -> {"FALSE", B, N};
 %% `if cond then a else b` -> `CASE WHEN cond THEN a ELSE b END`. The condition
 %% and both branches compile through `cw`, so a value CASE (scalar branches) and
 %% a boolean CASE (predicate branches) render the same way; the counter threads
 %% left to right through condition, then, else.
-cw({'QCase', C, T, E}, N, B) ->
-    {FC, B1, N1} = cw(C, N, B),
-    {FT, B2, N2} = cw(T, N1, B1),
-    {FE, B3, N3} = cw(E, N2, B2),
+cw({'QCase', C, T, E}, Q, N, B) ->
+    {FC, B1, N1} = cw(C, Q, N, B),
+    {FT, B2, N2} = cw(T, Q, N1, B1),
+    {FE, B3, N3} = cw(E, Q, N2, B2),
     {["CASE WHEN ", FC, " THEN ", FT, " ELSE ", FE, " END"], B3, N3};
-cw(Other, N, B) -> cw_operand(Other, N, B).
+%% A correlated `EXISTS (SELECT 1 FROM inner AS sub WHERE corr)` — probe the inner
+%% table for a row the correlated predicate admits. The inner table is aliased
+%% `sub`; the correlated predicate renders with the outer row's columns qualified
+%% by the outer table name and the inner row's by `sub`, so the two never collide
+%% and the subquery correlates to the enclosing query's row.
+cw({'QExists', Table, Corr}, {_Mode, OT}, N, B) ->
+    {FC, B1, N1} = cw(Corr, {corr, OT}, N, B),
+    {["EXISTS (SELECT 1 FROM ", quote_ident(Table), " AS sub WHERE ", FC, ")"], B1, N1};
+cw(Other, Q, N, B) -> cw_operand(Other, Q, N, B).
+
+%% Render a column reference per the qualification context: bare for a single-table
+%% WHERE, or qualified inside a correlated EXISTS — the outer row (`QCol`, IsRight
+%% false) by the outer table name, the inner row (`QColR`, IsRight true) by `sub`.
+cw_col({bare, _OT}, _IsRight, C) -> quote_ident(C);
+cw_col({corr, OT}, false, C)     -> [quote_ident(OT), ".", quote_ident(C)];
+cw_col({corr, _OT}, true, C)     -> ["sub.", quote_ident(C)].
 
 %% The comma-separated elements of an `IN (...)` list, each a `$N` placeholder,
 %% threaded left to right so the placeholders and binds stay in order.
-cw_in_list([X], N, B) ->
-    cw_operand(X, N, B);
-cw_in_list([X | Rest], N, B) ->
-    {FX, B1, N1} = cw_operand(X, N, B),
-    {FR, B2, N2} = cw_in_list(Rest, N1, B1),
+cw_in_list([X], Q, N, B) ->
+    cw_operand(X, Q, N, B);
+cw_in_list([X | Rest], Q, N, B) ->
+    {FX, B1, N1} = cw_operand(X, Q, N, B),
+    {FR, B2, N2} = cw_in_list(Rest, Q, N1, B1),
     {[FX, ", ", FR], B2, N2}.
 
-cw_cmp(Op, L, R, N, B) ->
-    {FL, B1, N1} = cw_operand(L, N, B),
-    {FR, B2, N2} = cw_operand(R, N1, B1),
+cw_cmp(Op, L, R, Q, N, B) ->
+    {FL, B1, N1} = cw_operand(L, Q, N, B),
+    {FR, B2, N2} = cw_operand(R, Q, N1, B1),
     {[FL, " ", Op, " ", FR], B2, N2}.
 
-cw_operand({'QCol', C}, N, B) ->
-    {quote_ident(C), B, N};
-cw_operand({'QLitInt', V}, N, B) ->
+%% Backwards-compatible arity: a bare operand with no qualification context, for the
+%% single-table callers (an aggregate column, a get-by key) that never carry a
+%% correlated column.
+cw_operand(E, N, B) ->
+    cw_operand(E, {bare, <<>>}, N, B).
+
+cw_operand({'QCol', C}, Q, N, B) ->
+    {cw_col(Q, false, C), B, N};
+cw_operand({'QColR', C}, Q, N, B) ->
+    {cw_col(Q, true, C), B, N};
+cw_operand({'QLitInt', V}, _Q, N, B) ->
     {[$$ | integer_to_list(N)], [{'SqlInt', V} | B], N + 1};
-cw_operand({'QLitText', V}, N, B) ->
+cw_operand({'QLitText', V}, _Q, N, B) ->
     {[$$ | integer_to_list(N)], [{'SqlText', V} | B], N + 1};
-cw_operand({'QLitBool', V}, N, B) ->
+cw_operand({'QLitBool', V}, _Q, N, B) ->
     {[$$ | integer_to_list(N)], [{'SqlBool', V} | B], N + 1};
-cw_operand({'QLitFloat', V}, N, B) ->
+cw_operand({'QLitFloat', V}, _Q, N, B) ->
     {[$$ | integer_to_list(N)], [{'SqlFloat', V} | B], N + 1};
 %% Arithmetic value operands — `(lhs OP rhs)`, each side an operand, wrapped in
 %% parentheses so precedence is explicit. Both sides share one numeric type, so
 %% Postgres applies the same int/float arithmetic the in-memory backend does.
-cw_operand({'QAdd', L, R}, N, B) -> cw_arith(" + ", L, R, N, B);
-cw_operand({'QSub', L, R}, N, B) -> cw_arith(" - ", L, R, N, B);
-cw_operand({'QMul', L, R}, N, B) -> cw_arith(" * ", L, R, N, B);
-cw_operand({'QDiv', L, R}, N, B) -> cw_arith(" / ", L, R, N, B);
-cw_operand({'QMod', L, R}, N, B) -> cw_arith(" % ", L, R, N, B);
+cw_operand({'QAdd', L, R}, Q, N, B) -> cw_arith(" + ", L, R, Q, N, B);
+cw_operand({'QSub', L, R}, Q, N, B) -> cw_arith(" - ", L, R, Q, N, B);
+cw_operand({'QMul', L, R}, Q, N, B) -> cw_arith(" * ", L, R, Q, N, B);
+cw_operand({'QDiv', L, R}, Q, N, B) -> cw_arith(" / ", L, R, Q, N, B);
+cw_operand({'QMod', L, R}, Q, N, B) -> cw_arith(" % ", L, R, Q, N, B);
 %% A CASE used as a value operand (e.g. `(if c then 1 else 2) > x`) renders the
 %% same `CASE … END`; delegate to the predicate compiler's clause.
-cw_operand({'QCase', _, _, _} = Case, N, B) -> cw(Case, N, B);
-cw_operand(_Other, N, B) ->
+cw_operand({'QCase', _, _, _} = Case, Q, N, B) -> cw(Case, Q, N, B);
+cw_operand(_Other, _Q, N, B) ->
     {"NULL", B, N}.
 
-cw_arith(Op, L, R, N, B) ->
-    {FL, B1, N1} = cw_operand(L, N, B),
-    {FR, B2, N2} = cw_operand(R, N1, B1),
+cw_arith(Op, L, R, Q, N, B) ->
+    {FL, B1, N1} = cw_operand(L, Q, N, B),
+    {FR, B2, N2} = cw_operand(R, Q, N1, B1),
     {["(", FL, Op, FR, ")"], B2, N2}.
 
 quote_ident(Name) ->

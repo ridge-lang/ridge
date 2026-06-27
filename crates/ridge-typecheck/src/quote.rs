@@ -38,6 +38,7 @@ pub struct QuoteInfo {
 }
 
 /// One parameter of a quote: the bound name and the record it ranges over.
+#[derive(Clone)]
 struct Param {
     /// The lambda parameter's name (the base of a `name.column` access).
     name: String,
@@ -648,10 +649,15 @@ fn check_node(ctx: &mut InferCtx, b: &BuiltinTyCons, e: &Expr, scope: &[Param]) 
         ),
 
         // A predicate helper: `Text.like`/`contains`/`startsWith`/`endsWith` for a
-        // text match, `List.contains` for an `IN` test. One operand names a column
-        // of the quote, the other is a literal (or a literal list for `IN`).
+        // text match, `List.contains` for an `IN` test, `exists`/`notExists` for a
+        // correlated subquery. One operand names a column of the quote, the other is
+        // a literal (or a literal list for `IN`); `exists` takes a captured table
+        // and a nested predicate instead.
         Expr::Call { callee, args, span } => {
             let arg_refs: Vec<&Expr> = args.iter().collect();
+            if is_exists_verb(callee_last_name(callee)) {
+                return check_exists(ctx, b, &arg_refs, *span, scope);
+            }
             check_predicate_call(ctx, b, callee, &arg_refs, *span, scope)
         }
         // `value |> f rest` checks the same as `f rest value` — the piped value is
@@ -662,6 +668,9 @@ fn check_node(ctx: &mut InferCtx, b: &BuiltinTyCons, e: &Expr, scope: &[Param]) 
                 Expr::Call { callee, args, .. } => {
                     let mut arg_refs: Vec<&Expr> = args.iter().collect();
                     arg_refs.push(lhs.as_ref());
+                    if is_exists_verb(callee_last_name(callee)) {
+                        return check_exists(ctx, b, &arg_refs, *span, scope);
+                    }
                     check_predicate_call(ctx, b, callee, &arg_refs, *span, scope)
                 }
                 Expr::Ident(_) | Expr::Qualified(_) => {
@@ -1182,6 +1191,199 @@ fn check_predicate_call(
         return None;
     }
     Some(QKind::Pred)
+}
+
+/// Whether a quoted call names the correlated-subquery verbs `exists`/`notExists`.
+fn is_exists_verb(name: Option<&str>) -> bool {
+    matches!(name, Some("exists" | "notExists"))
+}
+
+/// Whether `ty` is a `Repo _ _` — the table repository an `exists` probes.
+fn is_repo_type(ctx: &InferCtx, ty: &Type) -> bool {
+    matches!(ty, Type::Con(id, _)
+        if ctx.tycon_decls.get(id.0 as usize).is_some_and(|d| d.name == "Repo"))
+}
+
+/// The entity of an `exists` inner table: the repo's first type argument when
+/// concrete, else the lambda parameter's own annotation (`fn (p: Post) -> …`).
+fn exists_inner_entity(
+    ctx: &mut InferCtx,
+    b: &BuiltinTyCons,
+    repo_ty: &Type,
+    lambda: &Expr,
+) -> Option<TyConId> {
+    if let Type::Con(_, args) = repo_ty {
+        if let Some(a0) = args.first() {
+            if let Type::Con(entity, _) = ctx.deep_resolve(a0) {
+                return Some(entity);
+            }
+        }
+    }
+    if let Expr::Lambda { params, .. } = lambda {
+        if let Some(LambdaParam::Annotated { ty, .. }) = params.first() {
+            let ann_ty = crate::infer::ast_type_to_type(ctx, b, ty);
+            if let Type::Con(entity, _) = ctx.deep_resolve(&ann_ty) {
+                return Some(entity);
+            }
+        }
+    }
+    None
+}
+
+/// Checks an `exists`/`notExists` correlated subquery inside a quoted predicate:
+/// `exists inner (fn (p: Inner) -> <predicate over p and the outer row>)`. The
+/// `inner` operand is a `Repo` captured from the enclosing scope; the lambda binds
+/// the inner row, checked against `inner`'s entity with the outer row still in
+/// scope so the predicate can correlate the two. The result is a boolean test,
+/// usable anywhere a predicate is — so it returns `QKind::Pred` for both the plain
+/// and negated forms (the lowering pass wraps `notExists` in a `QNot`).
+#[expect(
+    clippy::too_many_lines,
+    reason = "one linear validation of the exists shape (operands, the captured repo, the inner-row parameter, the correlated predicate); splitting it would scatter the shared diagnostics"
+)]
+fn check_exists(
+    ctx: &mut InferCtx,
+    b: &BuiltinTyCons,
+    args: &[&Expr],
+    span: Span,
+    scope: &[Param],
+) -> Option<QKind> {
+    if args.len() != 2 {
+        ctx.errors.push(TypeError::QuoteUnsupportedExpr {
+            detail: "`exists`/`notExists` take a captured table and a predicate, e.g. \
+                     `exists posts (fn (p: Post) -> p.authorId == u.id)`"
+                .to_string(),
+            span,
+        });
+        return None;
+    }
+    // The two operands in either order — `exists repo (fn …)` or `repo |> exists (fn …)`.
+    let (a0, a1) = (peel_paren(args[0]), peel_paren(args[1]));
+    let (repo_expr, lambda) = if matches!(a1, Expr::Lambda { .. }) {
+        (a0, a1)
+    } else if matches!(a0, Expr::Lambda { .. }) {
+        (a1, a0)
+    } else {
+        ctx.errors.push(TypeError::QuoteUnsupportedExpr {
+            detail: "the predicate of `exists`/`notExists` must be a lambda \
+                     `fn (p: Inner) -> …`"
+                .to_string(),
+            span,
+        });
+        return None;
+    };
+    // The inner table is a `Repo` captured from the enclosing scope.
+    let Expr::Ident(repo_id) = repo_expr else {
+        ctx.errors.push(TypeError::QuoteUnsupportedExpr {
+            detail: "the inner table of `exists`/`notExists` must be a repository value \
+                     captured from the enclosing scope"
+                .to_string(),
+            span: repo_expr.span(),
+        });
+        return None;
+    };
+    let Some(scheme) = ctx.env.lookup(&repo_id.text).cloned() else {
+        ctx.errors.push(TypeError::QuoteUnsupportedExpr {
+            detail: format!("`{}` is not a value in scope", repo_id.text),
+            span: repo_expr.span(),
+        });
+        return None;
+    };
+    let inst = instantiate(ctx, &scheme);
+    let repo_ty = ctx.deep_resolve(&inst);
+    if !is_repo_type(ctx, &repo_ty) {
+        let rendered = crate::render::render_type_with(&repo_ty, &ctx.tycon_decls);
+        ctx.errors.push(TypeError::QuoteUnsupportedExpr {
+            detail: format!(
+                "`{}` has type `{rendered}`; `exists`/`notExists` take a table repository \
+                 (a `Repo`) as their inner table",
+                repo_id.text
+            ),
+            span: repo_expr.span(),
+        });
+        return None;
+    }
+    // Record the captured repo's type for the lowering reifier (which reads the
+    // table off it) and for LSP hover; the quote walk never runs `infer_expr`.
+    ctx.write_node_type(repo_expr.span(), ridge_resolve::NodeKind::Expr, &repo_ty);
+
+    // The predicate lambda binds the inner row. A correlated `exists` is supported
+    // inside a single-table outer filter, so the inner row is the second leaf of a
+    // two-row predicate.
+    let Expr::Lambda { params, body, .. } = lambda else {
+        return None;
+    };
+    if params.len() != 1 {
+        ctx.errors.push(TypeError::QuoteUnsupportedExpr {
+            detail: "the predicate of `exists`/`notExists` takes one inner-row parameter"
+                .to_string(),
+            span: lambda.span(),
+        });
+        return None;
+    }
+    if scope.len() != 1 {
+        ctx.errors.push(TypeError::QuoteUnsupportedExpr {
+            detail: "`exists`/`notExists` are supported inside a single-table filter".to_string(),
+            span,
+        });
+        return None;
+    }
+    let inner_name = match &params[0] {
+        LambdaParam::Pattern(Pattern::Var { name, .. })
+        | LambdaParam::Annotated {
+            pat: Pattern::Var { name, .. },
+            ..
+        } => name.text.clone(),
+        _ => {
+            ctx.errors.push(TypeError::QuoteUnsupportedExpr {
+                detail: "the inner-row parameter must be a plain name".to_string(),
+                span: lambda.span(),
+            });
+            return None;
+        }
+    };
+    let Some(entity) = exists_inner_entity(ctx, b, &repo_ty, lambda) else {
+        ctx.errors.push(TypeError::QuoteUnsupportedExpr {
+            detail: "the inner row's entity is unknown; annotate the parameter, e.g. \
+                     `fn (p: Post) -> …`"
+                .to_string(),
+            span: lambda.span(),
+        });
+        return None;
+    };
+    let entity_name = ctx
+        .tycon_decls
+        .get(entity.0 as usize)
+        .map_or_else(|| "?".to_string(), |d| d.name.clone());
+    let Some(fields) = entity_fields(ctx, entity) else {
+        ctx.errors.push(TypeError::QuoteUnsupportedExpr {
+            detail: format!("`{entity_name}` is not a record type, so it has no columns to quote"),
+            span: lambda.span(),
+        });
+        return None;
+    };
+    // Check the correlated predicate with the inner row appended after the outer
+    // row(s): column accesses resolve against either side, so the body can compare
+    // an inner column to an outer one.
+    let inner = Param {
+        name: inner_name,
+        entity,
+        entity_name,
+        fields,
+        nullable: false,
+    };
+    let mut inner_scope: Vec<Param> = scope.to_vec();
+    inner_scope.push(inner);
+    let qk = check_node(ctx, b, body, &inner_scope)?;
+    if as_predicate(b, &qk) {
+        Some(QKind::Pred)
+    } else {
+        ctx.errors.push(TypeError::QuoteUnsupportedExpr {
+            detail: "the body of `exists`/`notExists` must be a boolean predicate".to_string(),
+            span: body.span(),
+        });
+        None
+    }
 }
 
 // ── Grouped-aggregate quotes (`groupBy` → `having` / `summarize`) ────────────

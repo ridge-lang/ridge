@@ -1218,7 +1218,7 @@ mem_keeper_loop(State) ->
             mem_keeper_loop(State);
         {{select, Id, Table, Tree}, From, Ref} ->
             Rows = maps:get({Id, Table}, State, []),
-            Matches = [R || R <- Rows, mem_pred(Tree, R)],
+            Matches = [R || R <- Rows, mem_pred(State, Id, Tree, R)],
             From ! {Ref, {ok, Matches}},
             mem_keeper_loop(State);
         {{get_rows, Id, Table, Column, Key}, From, Ref} ->
@@ -1229,37 +1229,37 @@ mem_keeper_loop(State) ->
         {{delete, Id, Table, Tree}, From, Ref} ->
             Key  = {Id, Table},
             Rows = maps:get(Key, State, []),
-            Kept = [R || R <- Rows, not mem_pred(Tree, R)],
+            Kept = [R || R <- Rows, not mem_pred(State, Id, Tree, R)],
             Removed = length(Rows) - length(Kept),
             From ! {Ref, {ok, Removed}},
             mem_keeper_loop(State#{Key => Kept});
         {{update, Id, Table, Changes, Tree}, From, Ref} ->
             Key  = {Id, Table},
             Rows = maps:get(Key, State, []),
-            {Updated, Changed} = mem_update_rows(Changes, Tree, Rows),
+            {Updated, Changed} = mem_update_rows(State, Id, Changes, Tree, Rows),
             From ! {Ref, {ok, Changed}},
             mem_keeper_loop(State#{Key => Updated});
         {{fetch, Id, Table, Tree, Orders, Lim, Off, Dist}, From, Ref} ->
             Rows = maps:get({Id, Table}, State, []),
-            Matches = [R || R <- Rows, mem_pred(Tree, R)],
+            Matches = [R || R <- Rows, mem_pred(State, Id, Tree, R)],
             Page = mem_paginate(mem_distinct(Dist, mem_order(Orders, Matches)), Lim, Off),
             From ! {Ref, {ok, Page}},
             mem_keeper_loop(State);
         {{count_where, Id, Table, Tree}, From, Ref} ->
             Rows = maps:get({Id, Table}, State, []),
-            N = length([R || R <- Rows, mem_pred(Tree, R)]),
+            N = length([R || R <- Rows, mem_pred(State, Id, Tree, R)]),
             From ! {Ref, {ok, N}},
             mem_keeper_loop(State);
         {{aggregate, Id, Table, Tree, Func, Column}, From, Ref} ->
             Rows = maps:get({Id, Table}, State, []),
-            Matches = [R || R <- Rows, mem_pred(Tree, R)],
+            Matches = [R || R <- Rows, mem_pred(State, Id, Tree, R)],
             Value = mem_agg_value_q(Func, Column, Matches),
             Wrapped = case Value of 'SqlNull' -> none; _ -> {some, Value} end,
             From ! {Ref, {ok, Wrapped}},
             mem_keeper_loop(State);
         {{group_summarize, Id, Table, Tree, KeyCol, Cols, Having}, From, Ref} ->
             Rows = maps:get({Id, Table}, State, []),
-            Matches = [R || R <- Rows, mem_pred(Tree, R)],
+            Matches = [R || R <- Rows, mem_pred(State, Id, Tree, R)],
             Groups = mem_group_by(KeyCol, Matches),
             Kept = [{K, GR} || {K, GR} <- Groups, mem_having(Having, K, GR)],
             Sorted = lists:sort(fun({KA, _}, {KB, _}) -> mem_order_cmp(KA, KB) =/= gt end, Kept),
@@ -1272,7 +1272,7 @@ mem_keeper_loop(State) ->
             mem_keeper_loop(State);
         {{project, Id, Table, Tree, Orders, Lim, Off, Cols, Dist}, From, Ref} ->
             Rows = maps:get({Id, Table}, State, []),
-            Matches = [R || R <- Rows, mem_pred(Tree, R)],
+            Matches = [R || R <- Rows, mem_pred(State, Id, Tree, R)],
             Ordered = mem_order(Orders, Matches),
             Projected = [mem_project_row(Cols, R) || R <- Ordered],
             Page = mem_paginate(mem_distinct(Dist, Projected), Lim, Off),
@@ -1312,7 +1312,7 @@ mem_distinct(true, Rows) ->
 %% dedup, and page on a plan's result. Nested combines recurse.
 mem_eval_plan(State, Id, {'PlanScan', Table, Pred, Orders, Lim, Off, Dist}) ->
     Rows = maps:get({Id, Table}, State, []),
-    Matches = [R || R <- Rows, mem_pred(Pred, R)],
+    Matches = [R || R <- Rows, mem_pred(State, Id, Pred, R)],
     mem_paginate(mem_distinct(Dist, mem_order(Orders, Matches)), Lim, Off);
 mem_eval_plan(State, Id, {'PlanCombine', Op, Left, Right}) ->
     L = mem_eval_plan(State, Id, Left),
@@ -1320,7 +1320,7 @@ mem_eval_plan(State, Id, {'PlanCombine', Op, Left, Right}) ->
     mem_set_op(Op, L, R);
 mem_eval_plan(State, Id, {'PlanRefine', Inner, Pred, Orders, Lim, Off, Dist}) ->
     Rows = mem_eval_plan(State, Id, Inner),
-    Matches = [R || R <- Rows, mem_pred(Pred, R)],
+    Matches = [R || R <- Rows, mem_pred(State, Id, Pred, R)],
     mem_paginate(mem_distinct(Dist, mem_order(Orders, Matches)), Lim, Off);
 mem_eval_plan(_State, _Id, {'PlanList', Rows}) ->
     %% The in-memory `Seq` source: the rows `from` snapshotted, carried inline in the
@@ -1744,12 +1744,12 @@ mem_hscalar_nary(_Other, _Key, _GR)           -> undefined.
 %% the rest untouched; return `{UpdatedRows, ChangedCount}`. An empty Changes map
 %% is a no-op — nothing changes and the count is zero — matching the SQL backend,
 %% which cannot emit an empty SET.
-mem_update_rows(Changes, _Tree, Rows) when map_size(Changes) =:= 0 ->
+mem_update_rows(_State, _Id, Changes, _Tree, Rows) when map_size(Changes) =:= 0 ->
     {Rows, 0};
-mem_update_rows(Changes, Tree, Rows) ->
+mem_update_rows(State, Id, Changes, Tree, Rows) ->
     lists:mapfoldl(
         fun(R, Count) ->
-            case mem_pred(Tree, R) of
+            case mem_pred(State, Id, Tree, R) of
                 true  -> {maps:merge(R, Changes), Count + 1};
                 false -> {R, Count}
             end
@@ -2136,6 +2136,33 @@ mem_ncell(Key, Row) ->
 %% has already verified the operand types line up, so a missing column or a
 %% cross-type comparison just fails to match rather than crashing.
 
+%% Store-aware predicate evaluation — the dual of `mem_pred/2` that can resolve a
+%% correlated `QExists` against the store snapshot. The boolean connectives recurse
+%% with the store threaded so an `EXISTS` nested under `AND`/`OR`/`NOT`/`CASE` is
+%% reached; a `QExists` probes the inner table's rows (keyed by the same store id as
+%% the outer scan) for one the correlated predicate admits — the outer row is the
+%% left side and each inner row the right, the two-row shape `mem_jpred` evaluates.
+%% Every other node is a leaf comparison that cannot carry an `EXISTS`, so it
+%% delegates to the store-free path.
+mem_pred(State, Id, {'QAnd', L, R}, Row) ->
+    mem_pred(State, Id, L, Row) andalso mem_pred(State, Id, R, Row);
+mem_pred(State, Id, {'QOr', L, R}, Row) ->
+    mem_pred(State, Id, L, Row) orelse mem_pred(State, Id, R, Row);
+mem_pred(State, Id, {'QNot', X}, Row) ->
+    not mem_pred(State, Id, X, Row);
+mem_pred(State, Id, {'QNotTrue', X}, Row) ->
+    not mem_pred(State, Id, X, Row);
+mem_pred(State, Id, {'QCase', C, T, E}, Row) ->
+    case mem_pred(State, Id, C, Row) of
+        true -> mem_pred(State, Id, T, Row);
+        _    -> mem_pred(State, Id, E, Row)
+    end;
+mem_pred(State, Id, {'QExists', Table, Corr}, Row) ->
+    InnerRows = maps:get({Id, Table}, State, []),
+    lists:any(fun(Inner) -> mem_jpred(Corr, Row, Inner) end, InnerRows);
+mem_pred(_State, _Id, Other, Row) ->
+    mem_pred(Other, Row).
+
 %% Evaluate a predicate node against a row.
 mem_pred({'QAnd', L, R}, Row) -> mem_pred(L, Row) andalso mem_pred(R, Row);
 mem_pred({'QOr', L, R}, Row)  -> mem_pred(L, Row) orelse mem_pred(R, Row);
@@ -2157,6 +2184,13 @@ mem_pred({'QCase', C, T, E}, Row) ->
         true -> mem_pred(T, Row);
         _    -> mem_pred(E, Row)
     end;
+%% A correlated `QExists` needs the store snapshot to resolve its inner table, which
+%% the store-free path cannot reach. Every store-backed caller routes through
+%% `mem_pred/4`; reaching here means an `EXISTS` in a context that has no store
+%% (e.g. an in-memory `Seq` filter), which is unsupported — fail loudly rather than
+%% silently dropping the predicate.
+mem_pred({'QExists', _Table, _Corr}, _Row) ->
+    error(exists_requires_store);
 mem_pred(_Other, _Row)          -> false.
 
 %% A `QLike` test: both operands resolve to text, then the pattern matcher runs. A

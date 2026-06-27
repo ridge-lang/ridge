@@ -144,6 +144,23 @@ pub fn inCapturedBinds () -> Text =
     let ages = [18, 21]
     renderBinds (planScan "users" (pred1 (fn u -> List.contains u.age ages)) [] (0 - 1) 0 false)
 
+-- A correlated EXISTS: the scan aliases its table `l` so the subquery can name the
+-- outer row, the inner table is aliased `r`, and the correlated predicate reads the
+-- inner column `r."author"` against the outer `l."id"`. Built from the QExpr nodes
+-- directly — the `exists posts (fn p -> …)` surface needs a captured repo, which
+-- this adapter-free SQL test has none of; the surface path is covered end to end by
+-- the live-Postgres and in-memory oracles.
+pub fn corrExistsSql () -> Text =
+    renderSql (planScan "users" (QExists "posts" (QEq (QColR "author") (QCol "id"))) [] (0 - 1) 0 false)
+
+pub fn corrExistsBinds () -> Text =
+    renderBinds (planScan "users" (QExists "posts" (QEq (QColR "author") (QCol "id"))) [] (0 - 1) 0 false)
+
+-- The negated form `notExists` reifies to a `QNot` over the same probe, rendering
+-- `(NOT EXISTS (…))`; the scan is still aliased `l` since the tree carries an EXISTS.
+pub fn corrNotExistsSql () -> Text =
+    renderSql (planScan "users" (QNot (QExists "posts" (QEq (QColR "author") (QCol "id")))) [] (0 - 1) 0 false)
+
 -- An empty `IN` set is unsatisfiable, so it renders as the constant `FALSE` rather
 -- than the syntactically invalid `IN ()`, and binds nothing.
 pub fn inEmptySql () -> Text = renderSql (planScan "users" (pred1 (fn u -> List.contains u.age [])) [] (0 - 1) 0 false)
@@ -599,7 +616,7 @@ fn query_plan_compiles_to_parameterized_sql() {
 
     let expr = format!(
         "F=fun(N)->io:format(\"~s=~s~n\",[N,{module}:N()])end, \
-         lists:foreach(F,['scanSql','scanBinds','foldSql','likeSql','likeBinds','inSql','inBinds','inCapturedSql','inCapturedBinds','inEmptySql','inEmptyBinds','arithMulSql','arithMulBinds','arithColSql','arithModSql','combineSql','refineSql','innerSql','leftSql','rightSql','fullSql','fullBinds','projectSql','projectCalcSql','projectCalcBinds','projectCaseJoinSql','aggSql','groupSql','inner3Sql','inner3Binds','existsSql','existsThreeSql','existsThreeBinds','everyJoinSql','everyJoinBinds','innerLeftMixSql','innerRightMixSql','innerFullMixSql','innerFullMixBinds','adultLeftMixSql','adultLeftMixBinds','countAdultLeftMixSql','countThreeSql','countThreeBinds','countLeftMixSql','countLeftMixBinds','sumThreeSql','avgThreeSql','projectThreeSql','projectLeftMixSql','projectRightMixSql','projectFullMixSql','groupThreeSql','groupComputedThreeSql','groupComputedThreeBinds','groupLeftMixSql','groupRightMixSql','groupFullMixSql','orderThreeSql','orderLeftMixSql','orderRightMixSql','orderFullMixSql','inner4Sql','sumFourSql','projectFourSql','orderFourSql']), halt()."
+         lists:foreach(F,['scanSql','scanBinds','foldSql','likeSql','likeBinds','inSql','inBinds','inCapturedSql','inCapturedBinds','corrExistsSql','corrExistsBinds','corrNotExistsSql','inEmptySql','inEmptyBinds','arithMulSql','arithMulBinds','arithColSql','arithModSql','combineSql','refineSql','innerSql','leftSql','rightSql','fullSql','fullBinds','projectSql','projectCalcSql','projectCalcBinds','projectCaseJoinSql','aggSql','groupSql','inner3Sql','inner3Binds','existsSql','existsThreeSql','existsThreeBinds','everyJoinSql','everyJoinBinds','innerLeftMixSql','innerRightMixSql','innerFullMixSql','innerFullMixBinds','adultLeftMixSql','adultLeftMixBinds','countAdultLeftMixSql','countThreeSql','countThreeBinds','countLeftMixSql','countLeftMixBinds','sumThreeSql','avgThreeSql','projectThreeSql','projectLeftMixSql','projectRightMixSql','projectFullMixSql','groupThreeSql','groupComputedThreeSql','groupComputedThreeBinds','groupLeftMixSql','groupRightMixSql','groupFullMixSql','orderThreeSql','orderLeftMixSql','orderRightMixSql','orderFullMixSql','inner4Sql','sumFourSql','projectFourSql','orderFourSql']), halt()."
     );
     let output = Command::new("erl")
         .arg("-noshell")
@@ -631,6 +648,17 @@ fn query_plan_compiles_to_parameterized_sql() {
     want("inBinds=2");
     want(r#"inCapturedSql=SELECT * FROM "users" WHERE "age" IN ($1, $2)"#);
     want("inCapturedBinds=2");
+
+    // A correlated EXISTS aliases the scanned table `l` and the subquery's table `r`,
+    // qualifying the inner column to `r` and the correlated outer column to `l`; no
+    // binds. `notExists` wraps the same probe in `(NOT EXISTS (…))`.
+    want(
+        r#"corrExistsSql=SELECT * FROM "users" AS l WHERE EXISTS (SELECT 1 FROM "posts" AS r WHERE r."author" = l."id")"#,
+    );
+    want("corrExistsBinds=0");
+    want(
+        r#"corrNotExistsSql=SELECT * FROM "users" AS l WHERE (NOT EXISTS (SELECT 1 FROM "posts" AS r WHERE r."author" = l."id"))"#,
+    );
     want(r#"inEmptySql=SELECT * FROM "users" WHERE FALSE"#);
     want("inEmptyBinds=0");
     want("scanBinds=1");

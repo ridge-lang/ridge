@@ -239,6 +239,7 @@ fn showExpr (e: QExpr) -> Text =
         QDiv l r    -> binNode l " / " r
         QMod l r    -> binNode l " % " r
         QCase c t e -> Text.join "" ["(CASE WHEN ", showExpr c, " THEN ", showExpr t, " ELSE ", showExpr e, " END)"]
+        QExists t corr -> Text.join "" ["EXISTS (SELECT 1 FROM ", t, " WHERE ", showExpr corr, ")"]
 
 fn binNode (l: QExpr) (op: Text) (r: QExpr) -> Text =
     Text.concat "(" (Text.concat (showExpr l) (Text.concat op (Text.concat (showExpr r) ")")))
@@ -313,6 +314,13 @@ fn compileExpr (e: QExpr) -> { text: Text, binds: List SqlValue } =
             let ct = compileExpr t
             let ce = compileExpr e
             { text = Text.join "" ["CASE WHEN ", cc.text, " THEN ", ct.text, " ELSE ", ce.text, " END"], binds = cc.binds ++ ct.binds ++ ce.binds }
+        QExists t corr ->
+            -- `toSql` compiles a single-table predicate fragment; an `EXISTS` over a
+            -- captured table has no outer alias here, so the correlated columns read
+            -- bare. The parameterized plan path (`planToSql`) is the one that renders
+            -- the correlation with `l`/`r` aliases.
+            let cr = compileExpr corr
+            { text = Text.join "" ["EXISTS (SELECT 1 FROM ", quoteIdent t, " WHERE ", cr.text, ")"], binds = cr.binds }
 
 fn aggSql (fnName: Text) (c: QExpr) -> { text: Text, binds: List SqlValue } =
     let r = compileExpr c
@@ -393,12 +401,31 @@ pub fn planToSql (plan: QueryPlan) -> (Sql, List SqlValue) =
     let r = renderPlan (optimize plan) 1
     (sql r.text, r.binds)
 
+-- Whether a predicate tree carries a correlated `EXISTS` anywhere under its boolean
+-- connectives. A scan whose WHERE does is aliased (`FROM "t" AS l`) so the subquery's
+-- correlated columns can name the outer row as `l."col"` and stay apart from the
+-- inner table's own columns. An `EXISTS` only ever sits under `AND`/`OR`/`NOT`/`CASE`,
+-- never inside a comparison operand, so the walk stops at the leaves.
+fn containsExists (e: QExpr) -> Bool =
+    match e
+        QExists _ _ -> true
+        QAnd l r    -> containsExists l || containsExists r
+        QOr l r     -> containsExists l || containsExists r
+        QNot x      -> containsExists x
+        QNotTrue x  -> containsExists x
+        QCase c t e -> containsExists c || containsExists t || containsExists e
+        _           -> false
+
 fn renderPlan (plan: QueryPlan) (n: Int) -> { text: Text, binds: List SqlValue, next: Int } =
     match plan
         PlanScan table pred orders lim off dist ->
             let w = whereClause false pred n
             let ob = orderByClause orders w.next
-            { text = Text.join "" ["SELECT ", distinctKw dist, "* FROM ", quoteIdent table, w.text, ob.text, limitClause lim, offsetClause off], binds = w.binds ++ ob.binds, next = ob.next }
+            -- Alias the table `l` when the WHERE carries an `EXISTS`, so its subquery
+            -- can correlate to the outer row as `l."col"`. The outer columns stay
+            -- bare — unambiguous over the single aliased table.
+            let src = if containsExists pred then Text.concat (quoteIdent table) " AS l" else quoteIdent table
+            { text = Text.join "" ["SELECT ", distinctKw dist, "* FROM ", src, w.text, ob.text, limitClause lim, offsetClause off], binds = w.binds ++ ob.binds, next = ob.next }
         PlanCombine op left right ->
             let l = renderPlan left n
             let r = renderPlan right l.next
@@ -407,7 +434,10 @@ fn renderPlan (plan: QueryPlan) (n: Int) -> { text: Text, binds: List SqlValue, 
             let i = renderPlan inner n
             let w = whereClause false pred i.next
             let ob = orderByClause orders w.next
-            { text = Text.join "" ["SELECT ", distinctKw dist, "* FROM (", i.text, ") AS ridge_sub", w.text, ob.text, limitClause lim, offsetClause off], binds = i.binds ++ w.binds ++ ob.binds, next = ob.next }
+            -- Alias the sub-select `l` (rather than `ridge_sub`) when the refinement's
+            -- WHERE carries an `EXISTS`, so its subquery correlates to the outer row.
+            let alias = if containsExists pred then " AS l" else " AS ridge_sub"
+            { text = Text.join "" ["SELECT ", distinctKw dist, "* FROM (", i.text, ")", alias, w.text, ob.text, limitClause lim, offsetClause off], binds = i.binds ++ w.binds ++ ob.binds, next = ob.next }
         PlanJoin kind left right cond where2 orders lim off dist leftCols rightCols ->
             renderBareJoin kind left right cond where2 orders lim off dist leftCols rightCols n
         PlanProject proj child lim off dist ->
@@ -500,6 +530,14 @@ fn renderPred (qualified: Bool) (e: QExpr) (n: Int) -> { text: Text, binds: List
             let ct = renderPred qualified t cc.next
             let ce = renderPred qualified e ct.next
             { text = Text.join "" ["CASE WHEN ", cc.text, " THEN ", ct.text, " ELSE ", ce.text, " END"], binds = cc.binds ++ ct.binds ++ ce.binds, next = ce.next }
+        -- A correlated `EXISTS` subquery: probe the inner table for a row the
+        -- correlated predicate admits. The inner table is aliased `r` and the
+        -- predicate renders qualified, so the outer row's columns read `l."col"`
+        -- (the outer scan is aliased `l` whenever its WHERE carries an EXISTS) and
+        -- the inner row's `r."col"` — the same two sides a join condition names.
+        QExists t corr ->
+            let inner = renderPred true corr n
+            { text = Text.join "" ["EXISTS (SELECT 1 FROM ", quoteIdent t, " AS r WHERE ", inner.text, ")"], binds = inner.binds, next = inner.next }
         _ -> renderOperand qualified e n
 
 fn cmpPred (qualified: Bool) (l: QExpr) (op: Text) (r: QExpr) (n: Int) -> { text: Text, binds: List SqlValue, next: Int } =

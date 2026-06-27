@@ -1,5 +1,5 @@
-//! Verifies the Postgres WHERE compiler (`ridge_pg:compile_where/1`) renders the
-//! `QLike` and `QIn` predicate nodes to parameterised SQL.
+//! Verifies the Postgres WHERE compiler (`ridge_pg:compile_where/2`) renders the
+//! `QLike`, `QIn`, and correlated `QExists` predicate nodes to parameterised SQL.
 //!
 //! This is the renderer the single-table reads take — `findBy`, `selectRows`,
 //! `delete`, `countWhere` — and it is distinct from the plan renderer
@@ -8,7 +8,7 @@
 //! `query_plan_sql_e2e` locks the plan path.
 //!
 //! Method: compile the bundled `ridge_pg.erl` with `erlc +export_all` so the
-//! internal `compile_where/1` is reachable, then `erl -eval` it on a few `QExpr`
+//! internal `compile_where/2` is reachable, then `erl -eval` it on a few `QExpr`
 //! trees and assert the SQL fragment and bind count. Skips cleanly when
 //! `erlc`/`erl` are not on PATH.
 
@@ -22,8 +22,9 @@ const ERL_TIMEOUT_SECS: u64 = 30;
 
 // Render a handful of WHERE trees, each as `<key>=<sql>|<bind-count>`.
 const EVAL: &str = r#"
-F = fun(Tree) -> {Frag, Binds} = ridge_pg:compile_where(Tree), io:format("~s|~w~n", [Frag, length(Binds)]) end,
+F = fun(Tree) -> {Frag, Binds} = ridge_pg:compile_where(Tree, <<"users">>), io:format("~s|~w~n", [Frag, length(Binds)]) end,
 io:format("like="), F({'QLike', {'QCol', <<"name">>}, {'QLitText', <<"%a%">>}}),
+io:format("exists="), F({'QExists', <<"posts">>, {'QEq', {'QColR', <<"author">>}, {'QCol', <<"id">>}}}),
 io:format("in="), F({'QIn', {'QCol', <<"age">>}, [{'QLitInt', 18}, {'QLitInt', 30}]}),
 io:format("inempty="), F({'QIn', {'QCol', <<"age">>}, []}),
 io:format("andmix="), F({'QAnd', {'QLike', {'QCol', <<"name">>}, {'QLitText', <<"%a%">>}}, {'QGe', {'QCol', <<"age">>}, {'QLitInt', 18}}}),
@@ -94,7 +95,7 @@ fn compile_where_renders_like_and_in() {
     let td = tempdir().expect("tempdir");
     let beam_dir = td.path();
 
-    // `+export_all` exposes the internal `compile_where/1` without widening the
+    // `+export_all` exposes the internal `compile_where/2` without widening the
     // shipped module's API.
     let erlc_path = which::which("erlc").expect("erlc on PATH");
     let status = Command::new(&erlc_path)
@@ -116,6 +117,10 @@ fn compile_where_renders_like_and_in() {
         (
             r#"like="name" LIKE $1|1"#,
             "QLike renders a parameterised LIKE, one bind",
+        ),
+        (
+            r#"exists=EXISTS (SELECT 1 FROM "posts" AS sub WHERE sub."author" = "users"."id")|0"#,
+            "a correlated QExists renders a NOT-yet-negated EXISTS subquery, the inner row qualified by `sub` and the outer row by its table, no binds",
         ),
         (
             r#"in="age" IN ($1, $2)|2"#,

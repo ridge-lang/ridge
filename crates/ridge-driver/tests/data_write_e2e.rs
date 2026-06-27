@@ -5,6 +5,8 @@
 //! from the entity:
 //! - `insert` encodes a `User` through `deriving (Row)`'s `toRow` and appends it,
 //!   so a record goes in the way one comes out — no hand-built column map.
+//! - `insertMany` encodes a whole list of entities and appends the batch in one
+//!   multi-row statement; an empty list short-circuits to a no-op.
 //! - `update` overwrites every column of the rows matching a predicate with a typed
 //!   entity (again through `toRow`).
 //! - `updateWhere` sets only the columns named in a partial map, leaving the rest.
@@ -207,6 +209,30 @@ pub fn db appliedAge () -> Int =
                         Err _       -> 0 - 3
                         Ok None     -> 0 - 4
                         Ok (Some u) -> u.age
+
+-- typed bulk insert: seed three users in ONE `insertMany` call, then read them back
+-- in id order -> "ada,lin,max". Proves the batch lands every entity through a single
+-- multi-row statement, not a row per round-trip.
+pub fn db bulkNames () -> Text =
+    let r: Repo User MemAdapter = Repo.repo (memAdapter ()) "users"
+    match r |> Repo.insertMany [ User { id = 1, age = 18, name = "ada", nick = None }, User { id = 2, age = 30, name = "lin", nick = None }, User { id = 3, age = 25, name = "max", nick = None } ]
+        Err _ -> "insert-err"
+        Ok _  ->
+            match r |> Repo.query |> Repo.orderBy Asc (fn (u: User) -> u.id) |> Repo.toList
+                Err _ -> "list-err"
+                Ok us -> joinNames us
+
+-- empty bulk insert is a no-op that still succeeds: `insertMany []` writes nothing and
+-- returns Ok, so the store stays empty -> "". Proves the empty-list short-circuit keeps
+-- a malformed zero-row INSERT from ever reaching the backend.
+pub fn db bulkEmptyNames () -> Text =
+    let r: Repo User MemAdapter = Repo.repo (memAdapter ()) "users"
+    match r |> Repo.insertMany []
+        Err _ -> "insert-err"
+        Ok _  ->
+            match r |> Repo.query |> Repo.toList
+                Err _ -> "list-err"
+                Ok us -> joinNames us
 "#;
 
 fn write_workspace(root: &std::path::Path) {
@@ -288,6 +314,8 @@ fn write_path_runs_on_beam() {
          io:format(\"setWhereCount=~w~n\",[{module}:setWhereCount()]), \
          io:format(\"setMultiName=~s~n\",[{module}:setMultiName()]), \
          io:format(\"appliedAge=~w~n\",[{module}:appliedAge()]), \
+         io:format(\"bulkNames=~s~n\",[{module}:bulkNames()]), \
+         io:format(\"bulkEmptyNames=~s~n\",[{module}:bulkEmptyNames()]), \
          halt()."
     );
     let output = Command::new("erl")
@@ -344,6 +372,14 @@ fn write_path_runs_on_beam() {
         (
             "appliedAge=88",
             "applySet is the query-builder write terminal: the filter picks the row, the setter assigns it",
+        ),
+        (
+            "bulkNames=ada,lin,max",
+            "insertMany lands every entity of the batch through one multi-row statement",
+        ),
+        (
+            "bulkEmptyNames=\n",
+            "insertMany [] is a no-op that succeeds and writes nothing",
         ),
     ] {
         assert!(

@@ -159,6 +159,23 @@ pub fn insertRow (row: Map Text SqlValue) (r: Repo e a) -> Result Unit Error whe
 pub fn insert (entity: e) (r: Repo e a) -> Result Unit Error where Adapter a, Row e =
     insertRow (toRow entity) r
 
+-- Append many raw rows in one statement. Every row must carry the same columns —
+-- the first row fixes the column list and the rest line up against it. An empty
+-- list is a no-op. For typed entities reach for `insertMany`, which derives the rows.
+pub fn insertRows (rows: List (Map Text SqlValue)) (r: Repo e a) -> Result Unit Error where Adapter a =
+    match rows
+        []  -> Ok ()
+        _   ->
+            match runMutation r.adapter (planInsert r.table rows)
+                Ok _  -> Ok ()
+                Err e -> Err e
+
+-- Append many typed entities in one multi-row INSERT, each encoded through
+-- `deriving (Row)`'s `toRow`. The bulk dual of `insert`: one statement for the
+-- whole batch, not a row per round-trip. An empty list is a no-op.
+pub fn insertMany (entities: List e) (r: Repo e a) -> Result Unit Error where Adapter a, Row e =
+    insertRows (encodeRows entities) r
+
 -- Remove the rows matching a quoted predicate; answer how many were removed.
 pub fn deleteWhere (pred: Quote (Map Text SqlValue -> Bool)) (r: Repo e a) -> Result Int Error where Adapter a =
     runMutation r.adapter (planDelete r.table pred.tree)

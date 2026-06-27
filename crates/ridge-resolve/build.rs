@@ -532,6 +532,8 @@ const BASELINE_EXPORTS: &[(&str, &[&str])] = &[
             "getBy",
             "insertRow",
             "insert",
+            "insertRows",
+            "insertMany",
             "deleteWhere",
             "updateWhere",
             "update",

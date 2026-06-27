@@ -1960,6 +1960,22 @@ fn reconciled_repo_fn_scheme(
             result(Type::Con(b.unit, vec![])),
             with_adapter_row(),
         ),
+        // insertRows : ∀e a. List (Map Text SqlValue) -> Repo e a
+        //   -> Result Unit Error where Adapter a. The bulk dual of `insertRow`:
+        //   one multi-row INSERT over hand-built column maps that share the columns.
+        "insertRows" => method(
+            vec![Type::Con(b.list, vec![map_row()]), repo_app()],
+            result(Type::Con(b.unit, vec![])),
+            with_adapter(),
+        ),
+        // insertMany : ∀e a. List e -> Repo e a -> Result Unit Error
+        //   where Adapter a, Row e. The bulk dual of `insert`: encodes each entity
+        //   through `toRow` and appends the whole batch in one statement.
+        "insertMany" => method(
+            vec![list_e(), repo_app()],
+            result(Type::Con(b.unit, vec![])),
+            with_adapter_row(),
+        ),
         // updateWhere : ∀e a. Map Text SqlValue -> Quote (e -> Bool) -> Repo e a
         //   -> Result Int Error where Adapter a. Sets the columns of a partial map
         //   on the matching rows and answers how many changed.

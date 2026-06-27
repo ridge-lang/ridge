@@ -406,7 +406,7 @@ pub fn planToSql (plan: QueryPlan) -> (Sql, List SqlValue) =
 -- correlated columns can name the outer row as `l."col"` and stay apart from the
 -- inner table's own columns. An `EXISTS` only ever sits under `AND`/`OR`/`NOT`/`CASE`,
 -- never inside a comparison operand, so the walk stops at the leaves.
-pub fn containsExists (e: QExpr) -> Bool =
+fn containsExists (e: QExpr) -> Bool =
     match e
         QExists _ _ -> true
         QAnd l r    -> containsExists l || containsExists r

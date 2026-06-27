@@ -1116,6 +1116,9 @@ fn reify_node(ctx: &mut LowerCtx<'_>, e: &Expr, params: &[String]) -> IrExpr {
         // literal supplies the pattern or the IN set.
         Expr::Call { callee, args, span } => {
             let arg_refs: Vec<&Expr> = args.iter().collect();
+            if let Some(negated) = exists_verb_kind(callee_last_name(callee)) {
+                return reify_exists(ctx, &arg_refs, negated, *span, params);
+            }
             reify_predicate_call(ctx, callee, &arg_refs, *span, params)
         }
         // `value |> f rest` reifies the same as `f rest value`: the piped value is
@@ -1127,6 +1130,9 @@ fn reify_node(ctx: &mut LowerCtx<'_>, e: &Expr, params: &[String]) -> IrExpr {
                 Expr::Call { callee, args, .. } => {
                     let mut arg_refs: Vec<&Expr> = args.iter().collect();
                     arg_refs.push(lhs.as_ref());
+                    if let Some(negated) = exists_verb_kind(callee_last_name(callee)) {
+                        return reify_exists(ctx, &arg_refs, negated, *span, params);
+                    }
                     reify_predicate_call(ctx, callee, &arg_refs, *span, params)
                 }
                 Expr::Ident(_) | Expr::Qualified(_) => {
@@ -1296,6 +1302,78 @@ fn reify_predicate_call(
         Some("endsWith") => reify_like(ctx, col, other, LikeMode::Suffix, span, params),
         Some("like") => reify_like(ctx, col, other, LikeMode::Raw, span, params),
         _ => internal(ctx),
+    }
+}
+
+/// `exists` reifies to a bare `QExists`; `notExists` wraps it in a `QNot`. Any
+/// other name is not a correlated-subquery verb.
+fn exists_verb_kind(name: Option<&str>) -> Option<bool> {
+    match name {
+        Some("exists") => Some(false),
+        Some("notExists") => Some(true),
+        _ => None,
+    }
+}
+
+/// Reify `exists inner (fn p -> <corr>)` / `notExists …` into a `QExists` node.
+/// The inner table's name is read off the captured repo at run time (`repo.table`),
+/// so the node carries it as a runtime `Text` rather than a baked literal — the same
+/// runtime capture a scalar predicate parameter takes. The correlated predicate is
+/// reified over the outer row(s) followed by the inner row, so the outer columns
+/// keep their `QCol`/`QColR` leaf and the inner row becomes the next leaf (`QColR`
+/// for a single-table outer) — the two-row shape the backends' join-predicate path
+/// already evaluates. `notExists` wraps the probe in a `QNot`.
+fn reify_exists(
+    ctx: &mut LowerCtx<'_>,
+    args: &[&Expr],
+    negated: bool,
+    span: Span,
+    params: &[String],
+) -> IrExpr {
+    let internal = |ctx: &mut LowerCtx<'_>| -> IrExpr {
+        ctx.errors.push(LowerError::InternalLoweringError {
+            span,
+            message: "unsupported exists survived quote checking".into(),
+        });
+        unit_lit(ctx, span)
+    };
+    if args.len() != 2 {
+        return internal(ctx);
+    }
+    let (a0, a1) = (peel_paren(args[0]), peel_paren(args[1]));
+    let (repo_expr, lambda) = if matches!(a1, Expr::Lambda { .. }) {
+        (a0, a1)
+    } else if matches!(a0, Expr::Lambda { .. }) {
+        (a1, a0)
+    } else {
+        return internal(ctx);
+    };
+    let Expr::Lambda {
+        params: lam_params,
+        body,
+        ..
+    } = lambda
+    else {
+        return internal(ctx);
+    };
+    let Some(inner_name) = lambda_param_name(lam_params.first()) else {
+        return internal(ctx);
+    };
+    let mut inner_params: Vec<String> = params.to_vec();
+    inner_params.push(inner_name);
+    let corr = reify_node(ctx, body, &inner_params);
+    let repo_ir = lower_expr(ctx, repo_expr);
+    let table_ir = IrExpr::Field {
+        id: ctx.fresh_id(None),
+        base: Box::new(repo_ir),
+        field: "table".to_string(),
+        span,
+    };
+    let node = qexpr_node(ctx, "QExists", 32, vec![table_ir, corr], span);
+    if negated {
+        qexpr_node(ctx, "QNot", 7, vec![node], span)
+    } else {
+        node
     }
 }
 

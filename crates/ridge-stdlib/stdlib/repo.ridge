@@ -409,6 +409,15 @@ pub class Countable q =
 pub class Every q p | q -> p =
     every (pred: Quote p) (x: q) -> Result Bool Error
 
+-- The negation of `exists`: whether the receiver selects no rows at all. As a
+-- terminal it is the complement of `exists` over any `Countable` receiver; inside a
+-- quoted predicate, `notExists inner (fn p -> …)` reads as a correlated `NOT EXISTS`
+-- subquery, the dual of `exists inner (fn p -> …)`. (LINQ's `!….Any()`.)
+pub fn notExists (x: q) -> Result Bool Error where Countable q =
+    match exists x
+        Err e      -> Err e
+        Ok present -> Ok (if present then false else true)
+
 -- `groupBy` over a query, an inner join, or a left join. The key accessor's arity
 -- follows the receiver through the functional dependency `q -> p`, exactly as
 -- `orderBy` does — a `Query e a` takes a one-row `Quote (e -> k)`, a `Join e f a`/

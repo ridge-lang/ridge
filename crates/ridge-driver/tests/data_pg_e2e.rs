@@ -621,6 +621,37 @@ pub fn db joinOrderByRight () -> Text =
                 Err _  -> "join-order-err"
                 Ok ps  -> joinPairs ps
 
+-- correlated EXISTS on the real backend: keep the users who own at least one post by
+-- probing the captured `posts` table per row. Compiles to a `SELECT … FROM users AS l
+-- WHERE EXISTS (SELECT 1 FROM posts AS r WHERE r.author = l.id)`. lin (2) and max (3)
+-- own posts, ada (1) owns none -> "lin,max".
+pub fn db existsPosts () -> Text =
+    match setupJoin ()
+        Err _ -> "setup-err"
+        Ok (users, posts) ->
+            match users |> Repo.query |> Repo.filter (fn (u: User) -> Repo.exists posts (fn (p: Post) -> p.author == u.id)) |> Repo.orderBy Asc (fn (u: User) -> u.id) |> Repo.toList
+                Err _  -> "exists-err"
+                Ok us  -> joinNames us
+
+-- correlated NOT EXISTS: the complement — only ada (1) owns no post -> "ada".
+pub fn db notExistsPosts () -> Text =
+    match setupJoin ()
+        Err _ -> "setup-err"
+        Ok (users, posts) ->
+            match users |> Repo.query |> Repo.filter (fn (u: User) -> Repo.notExists posts (fn (p: Post) -> p.author == u.id)) |> Repo.orderBy Asc (fn (u: User) -> u.id) |> Repo.toList
+                Err _  -> "nexists-err"
+                Ok us  -> joinNames us
+
+-- count over a filter carrying a correlated EXISTS, exercising the direct count path
+-- (a `SELECT COUNT(*) … WHERE EXISTS (…)`) rather than the plan renderer -> 2.
+pub fn db existsPostsCount () -> Int =
+    match setupJoin ()
+        Err _ -> 0 - 1
+        Ok (users, posts) ->
+            match users |> Repo.query |> Repo.filter (fn (u: User) -> Repo.exists posts (fn (p: Post) -> p.author == u.id)) |> Repo.count
+                Ok n  -> n
+                Err _ -> 0 - 2
+
 -- cross join: pair every left row with every right row (the cartesian product).
 -- Narrow the left query to lin (id 2), cross with both posts, order by post id
 -- -> "lin:hello,lin:world". lin pairs with "world" (author 3) too — a post it
@@ -2059,6 +2090,9 @@ fn postgres_adapter_reads_a_real_table() {
          io:format(\"joinedNames=~s~n\",[{module}:joinedNames()]), \
          io:format(\"joinedTitles=~s~n\",[{module}:joinedTitles()]), \
          io:format(\"joinOrderByRight=~s~n\",[{module}:joinOrderByRight()]), \
+         io:format(\"existsPosts=~s~n\",[{module}:existsPosts()]), \
+         io:format(\"notExistsPosts=~s~n\",[{module}:notExistsPosts()]), \
+         io:format(\"existsPostsCount=~w~n\",[{module}:existsPostsCount()]), \
          io:format(\"crossJoined=~s~n\",[{module}:crossJoined()]), \
          io:format(\"crossCount=~w~n\",[{module}:crossCount()]), \
          io:format(\"rightJoinedNames=~s~n\",[{module}:rightJoinedNames()]), \
@@ -2240,6 +2274,18 @@ fn postgres_adapter_reads_a_real_table() {
         (
             "joinOrderByRight=max:world,lin:hello",
             "the unified orderBy qualifies the ORDER BY key to the right table (r.title DESC), reversing the id order",
+        ),
+        (
+            "existsPosts=lin,max",
+            "a correlated EXISTS compiles to a SELECT ... WHERE EXISTS (SELECT 1 FROM posts AS r WHERE r.author = l.id) and keeps the users who own a post",
+        ),
+        (
+            "notExistsPosts=ada",
+            "a correlated NOT EXISTS keeps the complement — the users who own no post",
+        ),
+        (
+            "existsPostsCount=2",
+            "count over a filter with a correlated EXISTS renders the subquery on the COUNT(*) path too",
         ),
         (
             "crossJoined=lin:hello,lin:world",

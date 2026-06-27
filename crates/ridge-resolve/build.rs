@@ -581,6 +581,9 @@ const BASELINE_EXPORTS: &[(&str, &[&str])] = &[
             "Countable",
             "count",
             "exists",
+            // The complement of `exists` — true when the receiver selects no rows —
+            // and, inside a quoted predicate, a correlated `NOT EXISTS` subquery.
+            "notExists",
             "Every",
             "every",
             // The unified projection verb is the method of `Projectable q p |

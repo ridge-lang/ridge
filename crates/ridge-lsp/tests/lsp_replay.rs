@@ -1113,6 +1113,30 @@ async fn test_hover_captured_in_list_in_quote() {
 }
 
 #[tokio::test]
+async fn test_hover_captured_repo_in_exists_quote() {
+    // The inner table of a correlated `exists` is a repository captured from the
+    // enclosing scope. The quote checker records its type on the use-site node (the
+    // same `node_types` entry the lowering reifier reads to pull the table off it),
+    // so hovering the captured repo inside the quote resolves to its `Repo` type.
+    let src = "import std.repo as Repo\ntype User = { id: Int }\ntype Post = { author: Int }\nfn pred (q: Quote (User -> Bool)) -> Bool = true\nfn demo (posts: Repo Post a) -> Bool = pred (fn u -> Repo.exists posts (fn (p: Post) -> p.author == u.id))\n";
+    let (service, _socket, uri) = hover_fixture(src).await;
+    let server = service.inner();
+
+    let line4 = "fn demo (posts: Repo Post a) -> Bool = pred (fn u -> Repo.exists posts (fn (p: Post) -> p.author == u.id))";
+    let col = u32::try_from(line4.rfind("posts").expect("captured use-site") + 1)
+        .expect("offset fits u32");
+    let h = server
+        .hover(hover_at(&uri, 4, col))
+        .await
+        .expect("hover ok");
+    let md = hover_markdown(h).expect("hover over a captured repo returns markup");
+    assert!(
+        md.contains("posts :") && md.contains("Repo") && md.contains("Post"),
+        "a captured exists table inside a quote should hover with its Repo type, got {md:?}"
+    );
+}
+
+#[tokio::test]
 async fn test_hover_distinguishes_param_from_local() {
     // A function parameter and a `let` binding hover with different kind lines,
     // even though both are `Binding::Local` under the hood.

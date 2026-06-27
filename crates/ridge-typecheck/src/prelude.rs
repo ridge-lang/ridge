@@ -356,6 +356,11 @@ pub fn prelude_types(b: &BuiltinTyCons) -> (FxHashMap<String, Scheme>, FxHashMap
         "QCase".to_string(),
         q_ctor(vec![qexpr_ty.clone(), qexpr_ty.clone(), qexpr_ty.clone()]),
     );
+    // QExists carries the inner table name and the correlated predicate.
+    values.insert(
+        "QExists".to_string(),
+        q_ctor(vec![ty_con(b.text, vec![]), qexpr_ty.clone()]),
+    );
 
     (values, tycons)
 }

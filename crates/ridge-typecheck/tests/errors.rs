@@ -641,6 +641,47 @@ fn quoted_captured_in_list_non_scalar_is_rejected() {
     );
 }
 
+/// A correlated `exists` over a captured repository typechecks cleanly: the inner
+/// row binds against the repo's entity and the predicate correlates it to the outer
+/// row — the parity of `db.Posts.Any(p => p.AuthorId == u.Id)`.
+#[test]
+fn quoted_exists_typecheck() {
+    let src = "import std.repo as Repo\n\ntype User = { id: Int }\ntype Post = { author: Int }\n\nfn pred (q: Quote (User -> Bool)) -> Bool = true\n\nfn demo (posts: Repo Post a) -> Bool = pred (fn u -> Repo.exists posts (fn (p: Post) -> p.author == u.id))\n";
+    let errors = run_typecheck_on_source("quote_exists_ok", src);
+    let codes: Vec<&str> = errors.iter().map(TypeError::code).collect();
+    assert!(
+        codes.is_empty(),
+        "a correlated exists over a captured repo must typecheck cleanly; got: {codes:?}"
+    );
+}
+
+/// The inner table of `exists` must be a `Repo`. A captured value of any other type
+/// is rejected (T040): there is no table to probe.
+#[test]
+fn quoted_exists_non_repo_is_rejected() {
+    let src = "import std.repo as Repo\n\ntype User = { id: Int }\ntype Post = { author: Int }\ntype Box = { n: Int }\n\nfn pred (q: Quote (User -> Bool)) -> Bool = true\n\nfn demo (b: Box) -> Bool = pred (fn u -> Repo.exists b (fn (p: Post) -> p.author == u.id))\n";
+    let errors = run_typecheck_on_source("quote_exists_non_repo", src);
+    let codes: Vec<&str> = errors.iter().map(TypeError::code).collect();
+    assert!(
+        codes.contains(&"T040"),
+        "an exists over a non-repo captured value must be T040; got: {codes:?}"
+    );
+}
+
+/// A correlated predicate that compares mismatched column types is rejected (T041),
+/// the same way an ordinary quoted comparison is — the inner and outer columns must
+/// line up.
+#[test]
+fn quoted_exists_type_mismatch_is_rejected() {
+    let src = "import std.repo as Repo\n\ntype User = { id: Int, name: Text }\ntype Post = { author: Int }\n\nfn pred (q: Quote (User -> Bool)) -> Bool = true\n\nfn demo (posts: Repo Post a) -> Bool = pred (fn u -> Repo.exists posts (fn (p: Post) -> p.author == u.name))\n";
+    let errors = run_typecheck_on_source("quote_exists_mismatch", src);
+    let codes: Vec<&str> = errors.iter().map(TypeError::code).collect();
+    assert!(
+        codes.contains(&"T041"),
+        "a correlated comparison of mismatched types must be T041; got: {codes:?}"
+    );
+}
+
 /// The element type of a captured `IN` list must match the column. A `List Text`
 /// tested against an `Int` column is a comparison mismatch (T041).
 #[test]

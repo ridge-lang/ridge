@@ -1204,6 +1204,22 @@ impl BuiltinTyCons {
                             Type::Con(TyConId(25), vec![]),
                         ]),
                     },
+                    // A correlated `EXISTS (SELECT 1 FROM <table> …)` subquery test,
+                    // the in-quote `exists inner (fn p -> …)` over a captured table.
+                    // The first operand is the inner table name (a runtime value read
+                    // off the captured repo), the second the correlated predicate over
+                    // the outer row (`QCol`) and the inner row (`QColR`) — the same two
+                    // sides a join condition names, so the backend probes it through
+                    // the existing two-row predicate path. `notExists` wraps it in a
+                    // `QNot`. Appended after `QCase` so existing variant indices the
+                    // lowering pass hardcodes stay put.
+                    UnionVariant {
+                        name: "QExists".to_string(),
+                        kind: VariantPayload::Positional(vec![
+                            Type::Con(text, vec![]),
+                            Type::Con(TyConId(25), vec![]),
+                        ]),
+                    },
                 ],
             }),
             def_span: None,

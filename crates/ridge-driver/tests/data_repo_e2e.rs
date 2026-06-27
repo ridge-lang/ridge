@@ -741,6 +741,72 @@ pub fn db existsPostsCount () -> Int =
                 Ok n  -> n
                 Err _ -> 0 - 2
 
+-- correlated EXISTS inside a binary join's post-join filter: inner-join users to
+-- their posts, then keep the pairs whose post has at least one comment, probing the
+-- captured `comments` table from inside the join filter (the inner row correlates to
+-- the right leaf `p`). Post 11 (lin's "world") is uncommented, so lin's pair drops ->
+-- "ada:hello,max:again". Proves EXISTS renders and evaluates inside a join's WHERE,
+-- the inner table taking the leaf after both join sides.
+pub fn db existsInJoinWhere () -> Text =
+    match setupLeftJoin3 ()
+        Err _ -> "setup-err"
+        Ok (users, posts, comments) ->
+            match users |> Repo.query |> Repo.orderBy Asc (fn (u: User) -> u.id) |> Repo.joinOn posts (fn (u: User) (p: Post) -> u.id == p.author) |> Repo.filter (fn (u: User) (p: Post) -> Repo.exists comments (fn (c: Comment) -> c.post == p.id)) |> Repo.toList
+                Err _  -> "exists-join-err"
+                Ok ps  -> joinPairs ps
+
+-- correlated EXISTS in a join filter that also reads the LEFT leaf inside the
+-- subquery: keep pairs whose post has a comment AND whose user is over 20. Every post
+-- is commented here, so the EXISTS reduces to the age test on the captured left row
+-- (`u.age`), proving an outer column from the first join side resolves inside the
+-- subquery -> "lin:world,max:again" (ada, 18, drops).
+pub fn db existsInJoinBothLeaves () -> Text =
+    match setupJoin3 ()
+        Err _ -> "setup-err"
+        Ok (users, posts, comments) ->
+            match users |> Repo.query |> Repo.orderBy Asc (fn (u: User) -> u.id) |> Repo.joinOn posts (fn (u: User) (p: Post) -> u.id == p.author) |> Repo.filter (fn (u: User) (p: Post) -> Repo.exists comments (fn (c: Comment) -> c.post == p.id && u.age > 20)) |> Repo.toList
+                Err _  -> "exists-both-err"
+                Ok ps  -> joinPairs ps
+
+-- correlated EXISTS inside a three-table join's post-join filter: join users to posts
+-- to comments, then keep the rows whose comment has an "up" reaction, probing the
+-- captured `reactions` table (the inner row correlates to the deepest leaf `c`). Only
+-- comment 100 ("nice") is up-voted -> "ada:hello:nice". Proves EXISTS in an N-ary join
+-- WHERE, the inner table taking the leaf past the three joined sides.
+pub fn db existsNaryJoin () -> Text =
+    match setupJoin4 ()
+        Err _ -> "setup-err"
+        Ok (users, posts, comments, reactions) ->
+            match users |> Repo.query |> Repo.orderBy Asc (fn (u: User) -> u.id) |> Repo.joinOn posts (fn (u: User) (p: Post) -> u.id == p.author) |> Repo.joinOn comments (fn (u: User) (p: Post) (c: Comment) -> p.id == c.post) |> Repo.filter (fn (u: User) (p: Post) (c: Comment) -> Repo.exists reactions (fn (r: Reaction) -> r.comment == c.id && r.kind == "up")) |> Repo.toList
+                Err _  -> "exists-nary-err"
+                Ok rs  -> join3Rows rs
+
+-- nested correlated EXISTS in a single-table filter: keep the users who own a post
+-- that itself has a comment. The outer EXISTS correlates a post to the user
+-- (`p.author == u.id`); the inner EXISTS, nested in the outer's predicate, correlates
+-- a comment to that post (`c.post == p.id`). lin's only post (11) is uncommented, so
+-- lin drops -> "ada,max". Proves an EXISTS nested inside another EXISTS climbs to a
+-- third correlated leaf.
+pub fn db nestedExists () -> Text =
+    match setupLeftJoin3 ()
+        Err _ -> "setup-err"
+        Ok (users, posts, comments) ->
+            match users |> Repo.query |> Repo.orderBy Asc (fn (u: User) -> u.id) |> Repo.filter (fn (u: User) -> Repo.exists posts (fn (p: Post) -> p.author == u.id && Repo.exists comments (fn (c: Comment) -> c.post == p.id))) |> Repo.toList
+                Err _  -> "nested-exists-err"
+                Ok us  -> joinNames us
+
+-- two sibling correlated EXISTS in one predicate: keep the users who own a post titled
+-- "hello" AND own any post at all. The two subqueries probe the same captured table
+-- independently, so their inner aliases never collide. Only ada owns "hello" -> "ada".
+-- Proves multiple EXISTS at the same level coexist.
+pub fn db siblingExists () -> Text =
+    match setupJoin3 ()
+        Err _ -> "setup-err"
+        Ok (users, posts, comments) ->
+            match users |> Repo.query |> Repo.orderBy Asc (fn (u: User) -> u.id) |> Repo.filter (fn (u: User) -> Repo.exists posts (fn (p: Post) -> p.author == u.id && p.title == "hello") && Repo.exists posts (fn (p: Post) -> p.author == u.id)) |> Repo.toList
+                Err _  -> "sibling-exists-err"
+                Ok us  -> joinNames us
+
 -- Open one store, bind a users, a posts, and a comments repository to it, and seed
 -- each so a three-table inner join has a clean one-to-one chain: every user owns
 -- one post (`p.author == u.id`) and every post has one comment (`c.post == p.id`).
@@ -2539,6 +2605,11 @@ fn repo_surface_runs_on_beam() {
          io:format(\"existsPosts=~s~n\",[{module}:existsPosts()]), \
          io:format(\"notExistsPosts=~s~n\",[{module}:notExistsPosts()]), \
          io:format(\"existsPostsCount=~w~n\",[{module}:existsPostsCount()]), \
+         io:format(\"existsInJoinWhere=~s~n\",[{module}:existsInJoinWhere()]), \
+         io:format(\"existsInJoinBothLeaves=~s~n\",[{module}:existsInJoinBothLeaves()]), \
+         io:format(\"existsNaryJoin=~s~n\",[{module}:existsNaryJoin()]), \
+         io:format(\"nestedExists=~s~n\",[{module}:nestedExists()]), \
+         io:format(\"siblingExists=~s~n\",[{module}:siblingExists()]), \
          io:format(\"joined3=~s~n\",[{module}:joined3()]), \
          io:format(\"joined3First=~s~n\",[{module}:joined3First()]), \
          io:format(\"filteredJoined3=~s~n\",[{module}:filteredJoined3()]), \
@@ -2757,6 +2828,26 @@ fn repo_surface_runs_on_beam() {
         (
             "existsPostsCount=2",
             "count over a filter carrying a correlated EXISTS renders the subquery on the direct count path too",
+        ),
+        (
+            "existsInJoinWhere=ada:hello,max:again",
+            "a correlated EXISTS inside a binary join's post-join filter keeps the pairs whose post has a comment, correlating the inner row to the right leaf",
+        ),
+        (
+            "existsInJoinBothLeaves=lin:world,max:again",
+            "a correlated EXISTS in a join filter reads the left leaf (u.age) inside the subquery alongside the right-leaf correlation",
+        ),
+        (
+            "existsNaryJoin=ada:hello:nice",
+            "a correlated EXISTS inside a three-table join's filter probes a fourth table, the inner row correlating to the deepest joined leaf",
+        ),
+        (
+            "nestedExists=ada,max",
+            "an EXISTS nested inside another EXISTS keeps the users who own a post that itself has a comment, climbing to a third correlated leaf",
+        ),
+        (
+            "siblingExists=ada",
+            "two sibling EXISTS over the same captured table in one predicate coexist without alias collision",
         ),
         (
             "joined3=ada:hello:nice,lin:world:wow,max:again:ok",

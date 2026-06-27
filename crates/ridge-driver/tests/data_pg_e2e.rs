@@ -652,6 +652,31 @@ pub fn db existsPostsCount () -> Int =
                 Ok n  -> n
                 Err _ -> 0 - 2
 
+-- correlated EXISTS inside a binary join's post-join WHERE: inner-join users to their
+-- posts, then keep the pairs whose user also owns a post titled "world" — the captured
+-- `posts` table is probed from inside the join filter, the inner row joining at the leaf
+-- past both join sides (`SELECT 1 FROM posts AS x2 WHERE x2.author = l.id AND ...`). Only
+-- max owns "world" -> "max:world".
+pub fn db existsInJoinWhere () -> Text =
+    match setupJoin ()
+        Err _ -> "setup-err"
+        Ok (users, posts) ->
+            match users |> Repo.query |> Repo.orderBy Asc (fn (u: User) -> u.id) |> Repo.joinOn posts (fn (u: User) (p: Post) -> u.id == p.author) |> Repo.filter (fn (u: User) (p: Post) -> Repo.exists posts (fn (p2: Post) -> p2.author == u.id && p2.title == "world")) |> Repo.toList
+                Err _  -> "exists-join-err"
+                Ok ps  -> joinPairs ps
+
+-- nested correlated EXISTS: keep the users who own a post titled "world", expressed as
+-- an outer EXISTS over the user's posts whose predicate carries an inner EXISTS
+-- correlating a second `posts` row to that post (`x2.id = x1.id AND x2.title = $1`). The
+-- subqueries nest, each correlating one leaf up. Only max owns "world" -> "max".
+pub fn db nestedExists () -> Text =
+    match setupJoin ()
+        Err _ -> "setup-err"
+        Ok (users, posts) ->
+            match users |> Repo.query |> Repo.orderBy Asc (fn (u: User) -> u.id) |> Repo.filter (fn (u: User) -> Repo.exists posts (fn (p: Post) -> p.author == u.id && Repo.exists posts (fn (p2: Post) -> p2.id == p.id && p2.title == "world"))) |> Repo.toList
+                Err _  -> "nested-exists-err"
+                Ok us  -> joinNames us
+
 -- cross join: pair every left row with every right row (the cartesian product).
 -- Narrow the left query to lin (id 2), cross with both posts, order by post id
 -- -> "lin:hello,lin:world". lin pairs with "world" (author 3) too — a post it
@@ -2093,6 +2118,8 @@ fn postgres_adapter_reads_a_real_table() {
          io:format(\"existsPosts=~s~n\",[{module}:existsPosts()]), \
          io:format(\"notExistsPosts=~s~n\",[{module}:notExistsPosts()]), \
          io:format(\"existsPostsCount=~w~n\",[{module}:existsPostsCount()]), \
+         io:format(\"existsInJoinWhere=~s~n\",[{module}:existsInJoinWhere()]), \
+         io:format(\"nestedExists=~s~n\",[{module}:nestedExists()]), \
          io:format(\"crossJoined=~s~n\",[{module}:crossJoined()]), \
          io:format(\"crossCount=~w~n\",[{module}:crossCount()]), \
          io:format(\"rightJoinedNames=~s~n\",[{module}:rightJoinedNames()]), \
@@ -2286,6 +2313,14 @@ fn postgres_adapter_reads_a_real_table() {
         (
             "existsPostsCount=2",
             "count over a filter with a correlated EXISTS renders the subquery on the COUNT(*) path too",
+        ),
+        (
+            "existsInJoinWhere=max:world",
+            "a correlated EXISTS inside a binary join's WHERE runs on Postgres, the inner table aliased x2 past both join sides and correlating to the left leaf",
+        ),
+        (
+            "nestedExists=max",
+            "an EXISTS nested inside another EXISTS runs on Postgres, the inner probe (x2) correlating to the outer probe's row (x1)",
         ),
         (
             "crossJoined=lin:hello,lin:world",

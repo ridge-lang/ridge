@@ -145,11 +145,11 @@ pub fn inCapturedBinds () -> Text =
     renderBinds (planScan "users" (pred1 (fn u -> List.contains u.age ages)) [] (0 - 1) 0 false)
 
 -- A correlated EXISTS: the scan aliases its table `l` so the subquery can name the
--- outer row, the inner table is aliased `r`, and the correlated predicate reads the
--- inner column `r."author"` against the outer `l."id"`. Built from the QExpr nodes
--- directly — the `exists posts (fn p -> …)` surface needs a captured repo, which
--- this adapter-free SQL test has none of; the surface path is covered end to end by
--- the live-Postgres and in-memory oracles.
+-- outer row, the inner table joins at the leaf past the base one (`x1`), and the
+-- correlated predicate reads the inner column `x1."author"` against the outer `l."id"`.
+-- Built from the QExpr nodes directly — the `exists posts (fn p -> …)` surface needs a
+-- captured repo, which this adapter-free SQL test has none of; the surface path is
+-- covered end to end by the live-Postgres and in-memory oracles.
 pub fn corrExistsSql () -> Text =
     renderSql (planScan "users" (QExists "posts" (QEq (QColR "author") (QCol "id"))) [] (0 - 1) 0 false)
 
@@ -160,6 +160,51 @@ pub fn corrExistsBinds () -> Text =
 -- `(NOT EXISTS (…))`; the scan is still aliased `l` since the tree carries an EXISTS.
 pub fn corrNotExistsSql () -> Text =
     renderSql (planScan "users" (QNot (QExists "posts" (QEq (QColR "author") (QCol "id")))) [] (0 - 1) 0 false)
+
+-- A correlated EXISTS inside a binary join's post-join WHERE: the inner table joins at
+-- the leaf after both join sides (`x2`), and its predicate names the right leaf as `r`
+-- (`r."id"`) and the inner row as `x2` (`x2."post"`) — three correlated sources in one
+-- subquery.
+fn joinExistsWhere () -> QueryPlan =
+    planJoin "INNER" (usersScan ()) (postsScan ()) (joinCond ()) (QExists "comments" (QEq (QColAt 2 "post") (QColR "id"))) [] (0 - 1) 0 false (leftCols ()) (rightCols ())
+
+pub fn joinExistsWhereSql () -> Text = renderSql (joinExistsWhere ())
+
+-- A correlated EXISTS inside a three-table join's WHERE: the spine flattens to `t0`/
+-- `t1`/`t2`, and the EXISTS inner table joins at the next leaf (`x3`), correlating to
+-- the deepest spine leaf (`t2."id"`).
+fn naryExistsWhere () -> QueryPlan =
+    planJoin "INNER"
+        (planJoin "INNER" (usersScan ()) (postsScan ()) (joinCond ()) (keepAllJoin ()) [] (0 - 1) 0 false (leftCols ()) (rightCols ()))
+        (commentsScan ())
+        (joinCond2 ())
+        (QExists "reactions" (QEq (QColAt 3 "comment") (QColAt 2 "id")))
+        []
+        (0 - 1) 0 false
+        []
+        (commentCols ())
+
+pub fn naryExistsWhereSql () -> Text = renderSql (naryExistsWhere ())
+
+-- An EXISTS nested inside another EXISTS's predicate: the outer probe aliases its table
+-- `x1`, and the inner probe — reached under the outer's `AND` — aliases its own table
+-- `x2`, correlating to the outer probe's row (`x1."id"`). Each level climbs one leaf.
+fn nestedExistsTree () -> QExpr =
+    QExists "posts" (QAnd (QEq (QColR "author") (QCol "id")) (QExists "comments" (QEq (QColAt 2 "post") (QColR "id"))))
+
+pub fn nestedExistsSql () -> Text = renderSql (planScan "users" (nestedExistsTree ()) [] (0 - 1) 0 false)
+
+-- A single-table scan whose filter nests one EXISTS inside another, with a literal
+-- in the innermost correlation and an ASC ordering on the outer leaf. This is what a
+-- `filter (fn u -> exists … (fn p -> … && exists … (fn p2 -> … == "world")))` read
+-- renders once it takes the plan path, so it locks the leaf aliasing (l / x1 / x2)
+-- and the single `$1` bind across the two nesting levels.
+fn pgNestedTree () -> QExpr =
+    QExists "posts" (QAnd (QEq (QColR "author") (QCol "id")) (QExists "posts" (QAnd (QEq (QColAt 2 "id") (QColR "id")) (QEq (QColAt 2 "title") (QLitText "world")))))
+
+pub fn pgNestedSql () -> Text = renderSql (planScan "users" (pgNestedTree ()) [(true, QCol "id")] (0 - 1) 0 false)
+
+pub fn pgNestedBinds () -> Text = renderBinds (planScan "users" (pgNestedTree ()) [(true, QCol "id")] (0 - 1) 0 false)
 
 -- An empty `IN` set is unsatisfiable, so it renders as the constant `FALSE` rather
 -- than the syntactically invalid `IN ()`, and binds nothing.
@@ -616,7 +661,7 @@ fn query_plan_compiles_to_parameterized_sql() {
 
     let expr = format!(
         "F=fun(N)->io:format(\"~s=~s~n\",[N,{module}:N()])end, \
-         lists:foreach(F,['scanSql','scanBinds','foldSql','likeSql','likeBinds','inSql','inBinds','inCapturedSql','inCapturedBinds','corrExistsSql','corrExistsBinds','corrNotExistsSql','inEmptySql','inEmptyBinds','arithMulSql','arithMulBinds','arithColSql','arithModSql','combineSql','refineSql','innerSql','leftSql','rightSql','fullSql','fullBinds','projectSql','projectCalcSql','projectCalcBinds','projectCaseJoinSql','aggSql','groupSql','inner3Sql','inner3Binds','existsSql','existsThreeSql','existsThreeBinds','everyJoinSql','everyJoinBinds','innerLeftMixSql','innerRightMixSql','innerFullMixSql','innerFullMixBinds','adultLeftMixSql','adultLeftMixBinds','countAdultLeftMixSql','countThreeSql','countThreeBinds','countLeftMixSql','countLeftMixBinds','sumThreeSql','avgThreeSql','projectThreeSql','projectLeftMixSql','projectRightMixSql','projectFullMixSql','groupThreeSql','groupComputedThreeSql','groupComputedThreeBinds','groupLeftMixSql','groupRightMixSql','groupFullMixSql','orderThreeSql','orderLeftMixSql','orderRightMixSql','orderFullMixSql','inner4Sql','sumFourSql','projectFourSql','orderFourSql']), halt()."
+         lists:foreach(F,['scanSql','scanBinds','foldSql','likeSql','likeBinds','inSql','inBinds','inCapturedSql','inCapturedBinds','corrExistsSql','corrExistsBinds','corrNotExistsSql','joinExistsWhereSql','naryExistsWhereSql','nestedExistsSql','pgNestedSql','pgNestedBinds','inEmptySql','inEmptyBinds','arithMulSql','arithMulBinds','arithColSql','arithModSql','combineSql','refineSql','innerSql','leftSql','rightSql','fullSql','fullBinds','projectSql','projectCalcSql','projectCalcBinds','projectCaseJoinSql','aggSql','groupSql','inner3Sql','inner3Binds','existsSql','existsThreeSql','existsThreeBinds','everyJoinSql','everyJoinBinds','innerLeftMixSql','innerRightMixSql','innerFullMixSql','innerFullMixBinds','adultLeftMixSql','adultLeftMixBinds','countAdultLeftMixSql','countThreeSql','countThreeBinds','countLeftMixSql','countLeftMixBinds','sumThreeSql','avgThreeSql','projectThreeSql','projectLeftMixSql','projectRightMixSql','projectFullMixSql','groupThreeSql','groupComputedThreeSql','groupComputedThreeBinds','groupLeftMixSql','groupRightMixSql','groupFullMixSql','orderThreeSql','orderLeftMixSql','orderRightMixSql','orderFullMixSql','inner4Sql','sumFourSql','projectFourSql','orderFourSql']), halt()."
     );
     let output = Command::new("erl")
         .arg("-noshell")
@@ -649,16 +694,38 @@ fn query_plan_compiles_to_parameterized_sql() {
     want(r#"inCapturedSql=SELECT * FROM "users" WHERE "age" IN ($1, $2)"#);
     want("inCapturedBinds=2");
 
-    // A correlated EXISTS aliases the scanned table `l` and the subquery's table `r`,
-    // qualifying the inner column to `r` and the correlated outer column to `l`; no
-    // binds. `notExists` wraps the same probe in `(NOT EXISTS (…))`.
+    // A correlated EXISTS aliases the scanned table `l` and the subquery's table `x1`
+    // (the leaf past the single base), qualifying the inner column to `x1` and the
+    // correlated outer column to `l`; no binds. `notExists` wraps it in `(NOT EXISTS (…))`.
     want(
-        r#"corrExistsSql=SELECT * FROM "users" AS l WHERE EXISTS (SELECT 1 FROM "posts" AS r WHERE r."author" = l."id")"#,
+        r#"corrExistsSql=SELECT * FROM "users" AS l WHERE EXISTS (SELECT 1 FROM "posts" AS x1 WHERE x1."author" = l."id")"#,
     );
     want("corrExistsBinds=0");
     want(
-        r#"corrNotExistsSql=SELECT * FROM "users" AS l WHERE (NOT EXISTS (SELECT 1 FROM "posts" AS r WHERE r."author" = l."id"))"#,
+        r#"corrNotExistsSql=SELECT * FROM "users" AS l WHERE (NOT EXISTS (SELECT 1 FROM "posts" AS x1 WHERE x1."author" = l."id"))"#,
     );
+
+    // An EXISTS inside a binary join's WHERE: the inner table joins at `x2` (past both
+    // join leaves), correlating to the right leaf `r` and its own row `x2`.
+    want(
+        r#"joinExistsWhereSql=SELECT l."id" AS "t0$id", l."age" AS "t0$age", l."name" AS "t0$name", r."id" AS "t1$id", r."author" AS "t1$author", r."title" AS "t1$title" FROM "users" AS l JOIN "posts" AS r ON l."id" = r."author" WHERE (EXISTS (SELECT 1 FROM "comments" AS x2 WHERE x2."post" = r."id"))"#,
+    );
+    // An EXISTS inside a three-table join's WHERE: the spine reads `t0`/`t1`/`t2`, and
+    // the inner table joins at `x3`, correlating to the deepest spine leaf `t2`.
+    want(
+        r#"naryExistsWhereSql=SELECT t0."id" AS "t0$id", t0."age" AS "t0$age", t0."name" AS "t0$name", t1."id" AS "t1$id", t1."author" AS "t1$author", t1."title" AS "t1$title", t2."id" AS "t2$id", t2."post" AS "t2$post", t2."body" AS "t2$body" FROM "users" AS t0 JOIN "posts" AS t1 ON t0."id" = t1."author" JOIN "comments" AS t2 ON t1."id" = t2."post" WHERE (EXISTS (SELECT 1 FROM "reactions" AS x3 WHERE x3."comment" = t2."id"))"#,
+    );
+    // An EXISTS nested in another EXISTS: the outer probe aliases `x1`, the inner `x2`,
+    // each correlating one leaf up (`x2."post" = x1."id"`, `x1."author" = l."id"`).
+    want(
+        r#"nestedExistsSql=SELECT * FROM "users" AS l WHERE EXISTS (SELECT 1 FROM "posts" AS x1 WHERE (x1."author" = l."id" AND EXISTS (SELECT 1 FROM "comments" AS x2 WHERE x2."post" = x1."id")))"#,
+    );
+    // A single-table read whose filter nests one EXISTS inside another: the base leaf
+    // aliases `l`, the outer probe `x1`, the inner `x2`, and the lone literal binds `$1`.
+    want(
+        r#"pgNestedSql=SELECT * FROM "users" AS l WHERE EXISTS (SELECT 1 FROM "posts" AS x1 WHERE (x1."author" = l."id" AND EXISTS (SELECT 1 FROM "posts" AS x2 WHERE (x2."id" = x1."id" AND x2."title" = $1)))) ORDER BY "id" ASC"#,
+    );
+    want("pgNestedBinds=1");
     want(r#"inEmptySql=SELECT * FROM "users" WHERE FALSE"#);
     want("inEmptyBinds=0");
     want("scanBinds=1");

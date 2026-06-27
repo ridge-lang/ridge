@@ -1345,32 +1345,32 @@ mem_eval_plan(State, Id, {'PlanJoin', _Kind, Left, _Right, _Cond, _Where2, Order
     %% accumulated composite as a unit, so its leaves all read absent together.
     {Leaves, Steps} = mem_flatten_join(Plan),
     LeafRows = [mem_eval_plan(State, Id, Leaf) || Leaf <- Leaves],
-    Flat = mem_nary_product(LeafRows, Steps),
+    Flat = mem_nary_product(State, Id, LeafRows, Steps),
     mem_paginate(mem_distinct(Dist, mem_order_nary(Orders, Flat)), Lim, Off);
 mem_eval_plan(State, Id, {'PlanJoin', <<"INNER">>, Left, Right, Cond, Where2, Orders, Lim, Off, Dist, _LeftCols, _RightCols}) ->
     LeftRows = mem_eval_plan(State, Id, Left),
     RightRows = mem_eval_plan(State, Id, Right),
     Pairs = [{L, R} || L <- LeftRows, R <- RightRows,
-                       mem_jpred(Cond, L, R), mem_jpred(Where2, L, R)],
+                       mem_jpred(Cond, L, R), mem_where2_pair(State, Id, Where2, L, R)],
     Flat = [mem_prefix_pair(L, R) || {L, R} <- mem_order_pairs(Orders, Pairs)],
     mem_paginate(mem_distinct(Dist, Flat), Lim, Off);
 mem_eval_plan(State, Id, {'PlanJoin', <<"LEFT">>, Left, Right, Cond, Where2, Orders, Lim, Off, Dist, _LeftCols, _RightCols}) ->
     LeftRows = mem_eval_plan(State, Id, Left),
     RightRows = mem_eval_plan(State, Id, Right),
-    Pairs = lists:append([mem_left_pairs_for(L, RightRows, Cond, Where2) || L <- LeftRows]),
+    Pairs = lists:append([mem_left_pairs_for(State, Id, L, RightRows, Cond, Where2) || L <- LeftRows]),
     Flat = [mem_prefix_left_pair(L, OptR) || {L, OptR} <- mem_order_pairs(Orders, Pairs)],
     mem_paginate(mem_distinct(Dist, Flat), Lim, Off);
 mem_eval_plan(State, Id, {'PlanJoin', <<"RIGHT">>, Left, Right, Cond, Where2, Orders, Lim, Off, Dist, _LeftCols, _RightCols}) ->
     LeftRows = mem_eval_plan(State, Id, Left),
     RightRows = mem_eval_plan(State, Id, Right),
-    Pairs = lists:append([mem_right_pairs_for(R, LeftRows, Cond, Where2) || R <- RightRows]),
+    Pairs = lists:append([mem_right_pairs_for(State, Id, R, LeftRows, Cond, Where2) || R <- RightRows]),
     Flat = [mem_prefix_right_pair(OptL, R) || {OptL, R} <- mem_order_pairs(Orders, Pairs)],
     mem_paginate(mem_distinct(Dist, Flat), Lim, Off);
 mem_eval_plan(State, Id, {'PlanJoin', <<"FULL">>, Left, Right, Cond, Where2, Orders, Lim, Off, Dist, _LeftCols, _RightCols}) ->
     LeftRows = mem_eval_plan(State, Id, Left),
     RightRows = mem_eval_plan(State, Id, Right),
-    LeftSide = lists:append([mem_full_left_pairs_for(L, RightRows, Cond, Where2) || L <- LeftRows]),
-    RightOnly = lists:append([mem_full_right_only_for(R, LeftRows, Cond, Where2) || R <- RightRows]),
+    LeftSide = lists:append([mem_full_left_pairs_for(State, Id, L, RightRows, Cond, Where2) || L <- LeftRows]),
+    RightOnly = lists:append([mem_full_right_only_for(State, Id, R, LeftRows, Cond, Where2) || R <- RightRows]),
     Flat = [mem_prefix_full_pair(OptL, OptR) || {OptL, OptR} <- mem_order_pairs(Orders, LeftSide ++ RightOnly)],
     mem_paginate(mem_distinct(Dist, Flat), Lim, Off);
 mem_eval_plan(State, Id, {'PlanProject', Proj, Child, Lim, Off, Dist}) ->
@@ -1774,14 +1774,14 @@ mem_update_rows(State, Id, Changes, Tree, Rows) ->
 %% kept only when Where2 holds with the right side read as NULL (the empty map) —
 %% so a Where2 over a right column drops the unmatched rows, mirroring SQL's
 %% three-valued `WHERE` after a left join.
-mem_left_pairs_for(L, RightRows, Cond, Where2) ->
+mem_left_pairs_for(State, Id, L, RightRows, Cond, Where2) ->
     case [R || R <- RightRows, mem_jpred(Cond, L, R)] of
         []      ->
-            case mem_jpred(Where2, L, #{}) of
+            case mem_where2_pair(State, Id, Where2, L, #{}) of
                 true  -> [{L, none}];
                 false -> []
             end;
-        Matches -> [{L, {some, R}} || R <- Matches, mem_jpred(Where2, L, R)]
+        Matches -> [{L, {some, R}} || R <- Matches, mem_where2_pair(State, Id, Where2, L, R)]
     end.
 
 %% --- In-memory right-outer join ---
@@ -1797,14 +1797,14 @@ mem_left_pairs_for(L, RightRows, Cond, Where2) ->
 %% right row with no match yields the single `{none, R}` row, kept when Where2 holds
 %% with the left side read as NULL (the empty map) — so a Where2 over a left column
 %% drops the unmatched rows, mirroring SQL's three-valued WHERE after a right join.
-mem_right_pairs_for(R, LeftMatches, Cond, Where2) ->
+mem_right_pairs_for(State, Id, R, LeftMatches, Cond, Where2) ->
     case [L || L <- LeftMatches, mem_jpred(Cond, L, R)] of
         []      ->
-            case mem_jpred(Where2, #{}, R) of
+            case mem_where2_pair(State, Id, Where2, #{}, R) of
                 true  -> [{none, R}];
                 false -> []
             end;
-        Matches -> [{{some, L}, R} || L <- Matches, mem_jpred(Where2, L, R)]
+        Matches -> [{{some, L}, R} || L <- Matches, mem_where2_pair(State, Id, Where2, L, R)]
     end.
 
 %% --- In-memory full-outer join ---
@@ -1821,24 +1821,24 @@ mem_right_pairs_for(R, LeftMatches, Cond, Where2) ->
 %% of mem_left_pairs_for with the right side wrapped: one `{{some, L}, {some, R}}` per
 %% condition match the post-join Where2 also keeps; or the single `{{some, L}, none}`
 %% (kept when Where2 holds with the right side read as NULL) when no right row matches.
-mem_full_left_pairs_for(L, RightRows, Cond, Where2) ->
+mem_full_left_pairs_for(State, Id, L, RightRows, Cond, Where2) ->
     case [R || R <- RightRows, mem_jpred(Cond, L, R)] of
         []      ->
-            case mem_jpred(Where2, L, #{}) of
+            case mem_where2_pair(State, Id, Where2, L, #{}) of
                 true  -> [{{some, L}, none}];
                 false -> []
             end;
-        Matches -> [{{some, L}, {some, R}} || R <- Matches, mem_jpred(Where2, L, R)]
+        Matches -> [{{some, L}, {some, R}} || R <- Matches, mem_where2_pair(State, Id, Where2, L, R)]
     end.
 
 %% The right-only pair a single right row contributes: `{none, {some, R}}` when no
 %% surviving left row matches the condition (and Where2 holds with the left side read
 %% as NULL). A right row that DID match a left row is already emitted by the left walk,
 %% so it contributes nothing here — that keeps a matched row from being counted twice.
-mem_full_right_only_for(R, LeftMatches, Cond, Where2) ->
+mem_full_right_only_for(State, Id, R, LeftMatches, Cond, Where2) ->
     case [L || L <- LeftMatches, mem_jpred(Cond, L, R)] of
         []      ->
-            case mem_jpred(Where2, #{}, R) of
+            case mem_where2_pair(State, Id, Where2, #{}, R) of
                 true  -> [{none, {some, R}}];
                 false -> []
             end;
@@ -1970,17 +1970,16 @@ mem_flatten_join({'PlanJoin', Kind, Left, Right, Cond, Where2, _O, _L, _Off, _D,
 
 %% Fold the per-leaf row lists left to right into flat rows. Leaf 0 seeds the
 %% accumulator under `t0$`; each later leaf is joined on by its step's kind.
-mem_nary_product([], _Steps) -> [];
-mem_nary_product([Rows0 | RestLeaves], Steps) ->
+mem_nary_product(_St, _Id, [], _Steps) -> [];
+mem_nary_product(St, Id, [Rows0 | RestLeaves], Steps) ->
     Acc0 = [mem_prefix_keys(<<"t0$">>, R) || R <- Rows0],
-    mem_nary_fold(Acc0, 1, RestLeaves, Steps).
+    mem_nary_fold(St, Id, Acc0, 1, RestLeaves, Steps).
 
-mem_nary_fold(Acc, _Idx, [], _Steps) -> Acc;
-mem_nary_fold(Acc, _Idx, _Leaves, []) -> Acc;
-mem_nary_fold(Acc, Idx, [LeafRows | RestLeaves], [{Kind, Cond, Where2} | RestSteps]) ->
-    Prefix = mem_leaf_prefix(Idx),
-    Acc2 = mem_join_step(Kind, Acc, LeafRows, Prefix, Cond, Where2),
-    mem_nary_fold(Acc2, Idx + 1, RestLeaves, RestSteps).
+mem_nary_fold(_St, _Id, Acc, _Idx, [], _Steps) -> Acc;
+mem_nary_fold(_St, _Id, Acc, _Idx, _Leaves, []) -> Acc;
+mem_nary_fold(St, Id, Acc, Idx, [LeafRows | RestLeaves], [{Kind, Cond, Where2} | RestSteps]) ->
+    Acc2 = mem_join_step(St, Id, Idx, Kind, Acc, LeafRows, Cond, Where2),
+    mem_nary_fold(St, Id, Acc2, Idx + 1, RestLeaves, RestSteps).
 
 %% One step of the fold: join the next leaf's rows onto the accumulated flat rows by
 %% the step's kind. An inner step keeps only the combinations the condition and
@@ -1989,20 +1988,21 @@ mem_nary_fold(Acc, Idx, [LeafRows | RestLeaves], [{Kind, Cond, Where2} | RestSte
 %% dropped as a unit, so its leaves all read absent together. The condition reads its
 %% sources by leaf index against the merged row (`QCol` leaf 0, `QColR` leaf 1,
 %% `QColAt i` leaf i), the same way the inner product does.
-mem_join_step(<<"INNER">>, Acc, LeafRows, Prefix, Cond, Where2) ->
+mem_join_step(St, Id, Idx, <<"INNER">>, Acc, LeafRows, Cond, Where2) ->
+    Prefix = mem_leaf_prefix(Idx),
     [Merged
      || AccRow <- Acc,
         Rk <- LeafRows,
         Merged <- [maps:merge(AccRow, mem_prefix_keys(Prefix, Rk))],
         mem_npred(Cond, Merged),
-        mem_npred(Where2, Merged)];
-mem_join_step(<<"LEFT">>, Acc, LeafRows, Prefix, Cond, Where2) ->
-    lists:append([mem_left_step(AccRow, LeafRows, Prefix, Cond, Where2) || AccRow <- Acc]);
-mem_join_step(<<"RIGHT">>, Acc, LeafRows, Prefix, Cond, Where2) ->
-    lists:append([mem_right_step(Rk, Acc, Prefix, Cond, Where2) || Rk <- LeafRows]);
-mem_join_step(<<"FULL">>, Acc, LeafRows, Prefix, Cond, Where2) ->
-    LeftSide  = lists:append([mem_left_step(AccRow, LeafRows, Prefix, Cond, Where2) || AccRow <- Acc]),
-    RightOnly = lists:append([mem_full_right_only_step(Rk, Acc, Prefix, Cond, Where2) || Rk <- LeafRows]),
+        mem_where2_flat(St, Id, Idx + 1, Where2, Merged)];
+mem_join_step(St, Id, Idx, <<"LEFT">>, Acc, LeafRows, Cond, Where2) ->
+    lists:append([mem_left_step(St, Id, Idx, AccRow, LeafRows, Cond, Where2) || AccRow <- Acc]);
+mem_join_step(St, Id, Idx, <<"RIGHT">>, Acc, LeafRows, Cond, Where2) ->
+    lists:append([mem_right_step(St, Id, Idx, Rk, Acc, Cond, Where2) || Rk <- LeafRows]);
+mem_join_step(St, Id, Idx, <<"FULL">>, Acc, LeafRows, Cond, Where2) ->
+    LeftSide  = lists:append([mem_left_step(St, Id, Idx, AccRow, LeafRows, Cond, Where2) || AccRow <- Acc]),
+    RightOnly = lists:append([mem_full_right_only_step(St, Id, Idx, Rk, Acc, Cond, Where2) || Rk <- LeafRows]),
     LeftSide ++ RightOnly.
 
 %% The rows an accumulated composite row contributes under a LEFT step (and the left
@@ -2010,15 +2010,16 @@ mem_join_step(<<"FULL">>, Acc, LeafRows, Prefix, Cond, Where2) ->
 %% accept, or the composite alone (the new leaf's columns absent) when no leaf row
 %% matches and the WHERE holds with that leaf read as absent — the N-ary dual of
 %% mem_left_pairs_for, the accumulated composite standing in for the single left row.
-mem_left_step(AccRow, LeafRows, Prefix, Cond, Where2) ->
+mem_left_step(St, Id, Idx, AccRow, LeafRows, Cond, Where2) ->
+    Prefix = mem_leaf_prefix(Idx),
     Merges = [maps:merge(AccRow, mem_prefix_keys(Prefix, Rk)) || Rk <- LeafRows],
     case [M || M <- Merges, mem_npred(Cond, M)] of
         []      ->
-            case mem_npred(Where2, AccRow) of
+            case mem_where2_flat(St, Id, Idx + 1, Where2, AccRow) of
                 true  -> [AccRow];
                 false -> []
             end;
-        Matches -> [M || M <- Matches, mem_npred(Where2, M)]
+        Matches -> [M || M <- Matches, mem_where2_flat(St, Id, Idx + 1, Where2, M)]
     end.
 
 %% The rows a new-leaf row contributes under a RIGHT step: one merged row per
@@ -2026,28 +2027,28 @@ mem_left_step(AccRow, LeafRows, Prefix, Cond, Where2) ->
 %% alone (the whole composite absent as a unit) when no composite row matches and the
 %% WHERE holds with the composite read as absent — the N-ary dual of
 %% mem_right_pairs_for, the accumulated composite standing in for the single left row.
-mem_right_step(Rk, Acc, Prefix, Cond, Where2) ->
-    LeafMap = mem_prefix_keys(Prefix, Rk),
+mem_right_step(St, Id, Idx, Rk, Acc, Cond, Where2) ->
+    LeafMap = mem_prefix_keys(mem_leaf_prefix(Idx), Rk),
     Merges = [maps:merge(AccRow, LeafMap) || AccRow <- Acc],
     case [M || M <- Merges, mem_npred(Cond, M)] of
         []      ->
-            case mem_npred(Where2, LeafMap) of
+            case mem_where2_flat(St, Id, Idx + 1, Where2, LeafMap) of
                 true  -> [LeafMap];
                 false -> []
             end;
-        Matches -> [M || M <- Matches, mem_npred(Where2, M)]
+        Matches -> [M || M <- Matches, mem_where2_flat(St, Id, Idx + 1, Where2, M)]
     end.
 
 %% The right-only rows of a FULL step: a new-leaf row that matched no composite row,
 %% kept when the WHERE holds with the composite absent. A leaf row that did match is
 %% already emitted by the left walk, so it contributes nothing here — that keeps a
 %% matched row from being counted twice, the N-ary dual of mem_full_right_only_for.
-mem_full_right_only_step(Rk, Acc, Prefix, Cond, Where2) ->
-    LeafMap = mem_prefix_keys(Prefix, Rk),
+mem_full_right_only_step(St, Id, Idx, Rk, Acc, Cond, Where2) ->
+    LeafMap = mem_prefix_keys(mem_leaf_prefix(Idx), Rk),
     Merges = [maps:merge(AccRow, LeafMap) || AccRow <- Acc],
     case [M || M <- Merges, mem_npred(Cond, M)] of
         []      ->
-            case mem_npred(Where2, LeafMap) of
+            case mem_where2_flat(St, Id, Idx + 1, Where2, LeafMap) of
                 true  -> [LeafMap];
                 false -> []
             end;
@@ -2157,11 +2158,77 @@ mem_pred(State, Id, {'QCase', C, T, E}, Row) ->
         true -> mem_pred(State, Id, T, Row);
         _    -> mem_pred(State, Id, E, Row)
     end;
-mem_pred(State, Id, {'QExists', Table, Corr}, Row) ->
-    InnerRows = maps:get({Id, Table}, State, []),
-    lists:any(fun(Inner) -> mem_jpred(Corr, Row, Inner) end, InnerRows);
+mem_pred(State, Id, {'QExists', _Table, _Corr} = Node, Row) ->
+    %% The single-table outer row is leaf 0; hand the probe to mem_corr with the row
+    %% flattened under `t0$` and the inner table taking leaf 1, so a nested EXISTS in
+    %% the correlated predicate keeps climbing leaves the same way.
+    mem_corr(State, Id, 1, Node, mem_prefix_keys(<<"t0$">>, Row));
 mem_pred(_State, _Id, Other, Row) ->
     mem_pred(Other, Row).
+
+%% Store-aware evaluation of a (possibly nested) correlated predicate against a flat,
+%% leaf-prefixed row — the dual of mem_npred that can resolve a `QExists`. The boolean
+%% connectives thread the store so an EXISTS under AND/OR/NOT/CASE is reached; a
+%% `QExists` probes the inner table (keyed by the outer scan's store id) for a row the
+%% deeper predicate admits, merging it under the next leaf's `t<i>$` prefix so its
+%% columns read as that leaf. `NextLeaf` is the index that inner table takes; a nested
+%% EXISTS inside it takes the one after. Leaf comparisons carry no EXISTS, so they
+%% delegate to the store-free `mem_npred` over the same flat row.
+mem_corr(St, Id, NextLeaf, {'QAnd', A, B}, Row) ->
+    mem_corr(St, Id, NextLeaf, A, Row) andalso mem_corr(St, Id, NextLeaf, B, Row);
+mem_corr(St, Id, NextLeaf, {'QOr', A, B}, Row) ->
+    mem_corr(St, Id, NextLeaf, A, Row) orelse mem_corr(St, Id, NextLeaf, B, Row);
+mem_corr(St, Id, NextLeaf, {'QNot', X}, Row) ->
+    not mem_corr(St, Id, NextLeaf, X, Row);
+mem_corr(St, Id, NextLeaf, {'QNotTrue', X}, Row) ->
+    not mem_corr(St, Id, NextLeaf, X, Row);
+mem_corr(St, Id, NextLeaf, {'QCase', C, T, E}, Row) ->
+    case mem_corr(St, Id, NextLeaf, C, Row) of
+        true -> mem_corr(St, Id, NextLeaf, T, Row);
+        _    -> mem_corr(St, Id, NextLeaf, E, Row)
+    end;
+mem_corr(St, Id, NextLeaf, {'QExists', Table, Corr}, Row) ->
+    InnerRows = maps:get({Id, Table}, St, []),
+    Prefix = mem_leaf_prefix(NextLeaf),
+    lists:any(
+        fun(Inner) ->
+            mem_corr(St, Id, NextLeaf + 1, Corr, maps:merge(Row, mem_prefix_keys(Prefix, Inner)))
+        end,
+        InnerRows);
+mem_corr(_St, _Id, _NextLeaf, Other, Row) ->
+    mem_npred(Other, Row).
+
+%% Whether a predicate tree carries a correlated `QExists` anywhere a connective can
+%% reach — the guard that decides whether a join's WHERE needs the store-aware path.
+mem_has_exists({'QExists', _, _})  -> true;
+mem_has_exists({'QAnd', A, B})     -> mem_has_exists(A) orelse mem_has_exists(B);
+mem_has_exists({'QOr', A, B})      -> mem_has_exists(A) orelse mem_has_exists(B);
+mem_has_exists({'QNot', X})        -> mem_has_exists(X);
+mem_has_exists({'QNotTrue', X})    -> mem_has_exists(X);
+mem_has_exists({'QCase', C, T, E}) -> mem_has_exists(C) orelse mem_has_exists(T) orelse mem_has_exists(E);
+mem_has_exists(_)                  -> false.
+
+%% A binary join's post-join WHERE over a (left, right) pair. A WHERE carrying a
+%% correlated EXISTS flattens the pair to the leaf-prefixed shape `mem_corr` reads
+%% (left = leaf 0, right = leaf 1, the next inner table = leaf 2); an EXISTS-free WHERE
+%% takes the fast store-free `mem_jpred` path unchanged.
+mem_where2_pair(St, Id, Where2, L, R) ->
+    case mem_has_exists(Where2) of
+        true ->
+            Flat = maps:merge(mem_prefix_keys(<<"t0$">>, L), mem_prefix_keys(<<"t1$">>, R)),
+            mem_corr(St, Id, 2, Where2, Flat);
+        false ->
+            mem_jpred(Where2, L, R)
+    end.
+
+%% An N-ary join's post-join WHERE over the already-flat composite row. A WHERE with a
+%% correlated EXISTS takes the store-aware path (the inner table joins at `NextLeaf`,
+%% one past the composite's leaves); an EXISTS-free WHERE stays on `mem_npred`.
+mem_where2_flat(St, Id, NextLeaf, Where2, Row) ->
+    case mem_has_exists(Where2) of
+        true  -> mem_corr(St, Id, NextLeaf, Where2, Row);
+        false -> mem_npred(Where2, Row)
+    end.
 
 %% Evaluate a predicate node against a row.
 mem_pred({'QAnd', L, R}, Row) -> mem_pred(L, Row) andalso mem_pred(R, Row);

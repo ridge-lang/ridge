@@ -1307,9 +1307,10 @@ fn check_exists(
     // table off it) and for LSP hover; the quote walk never runs `infer_expr`.
     ctx.write_node_type(repo_expr.span(), ridge_resolve::NodeKind::Expr, &repo_ty);
 
-    // The predicate lambda binds the inner row. A correlated `exists` is supported
-    // inside a single-table outer filter, so the inner row is the second leaf of a
-    // two-row predicate.
+    // The predicate lambda binds the inner row. The outer scope is whatever the
+    // enclosing filter ranges over — a single table, a join's leaves, or an outer
+    // row already inside another `exists` — so the inner row becomes the leaf after
+    // those, and the correlated predicate can compare it to any of them.
     let Expr::Lambda { params, body, .. } = lambda else {
         return None;
     };
@@ -1318,13 +1319,6 @@ fn check_exists(
             detail: "the predicate of `exists`/`notExists` takes one inner-row parameter"
                 .to_string(),
             span: lambda.span(),
-        });
-        return None;
-    }
-    if scope.len() != 1 {
-        ctx.errors.push(TypeError::QuoteUnsupportedExpr {
-            detail: "`exists`/`notExists` are supported inside a single-table filter".to_string(),
-            span,
         });
         return None;
     }

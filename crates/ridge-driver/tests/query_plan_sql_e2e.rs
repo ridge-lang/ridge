@@ -194,6 +194,18 @@ fn nestedExistsTree () -> QExpr =
 
 pub fn nestedExistsSql () -> Text = renderSql (planScan "users" (nestedExistsTree ()) [] (0 - 1) 0 false)
 
+-- A single-table scan whose filter nests one EXISTS inside another, with a literal
+-- in the innermost correlation and an ASC ordering on the outer leaf. This is what a
+-- `filter (fn u -> exists … (fn p -> … && exists … (fn p2 -> … == "world")))` read
+-- renders once it takes the plan path, so it locks the leaf aliasing (l / x1 / x2)
+-- and the single `$1` bind across the two nesting levels.
+fn pgNestedTree () -> QExpr =
+    QExists "posts" (QAnd (QEq (QColR "author") (QCol "id")) (QExists "posts" (QAnd (QEq (QColAt 2 "id") (QColR "id")) (QEq (QColAt 2 "title") (QLitText "world")))))
+
+pub fn pgNestedSql () -> Text = renderSql (planScan "users" (pgNestedTree ()) [(true, QCol "id")] (0 - 1) 0 false)
+
+pub fn pgNestedBinds () -> Text = renderBinds (planScan "users" (pgNestedTree ()) [(true, QCol "id")] (0 - 1) 0 false)
+
 -- An empty `IN` set is unsatisfiable, so it renders as the constant `FALSE` rather
 -- than the syntactically invalid `IN ()`, and binds nothing.
 pub fn inEmptySql () -> Text = renderSql (planScan "users" (pred1 (fn u -> List.contains u.age [])) [] (0 - 1) 0 false)
@@ -649,7 +661,7 @@ fn query_plan_compiles_to_parameterized_sql() {
 
     let expr = format!(
         "F=fun(N)->io:format(\"~s=~s~n\",[N,{module}:N()])end, \
-         lists:foreach(F,['scanSql','scanBinds','foldSql','likeSql','likeBinds','inSql','inBinds','inCapturedSql','inCapturedBinds','corrExistsSql','corrExistsBinds','corrNotExistsSql','joinExistsWhereSql','naryExistsWhereSql','nestedExistsSql','inEmptySql','inEmptyBinds','arithMulSql','arithMulBinds','arithColSql','arithModSql','combineSql','refineSql','innerSql','leftSql','rightSql','fullSql','fullBinds','projectSql','projectCalcSql','projectCalcBinds','projectCaseJoinSql','aggSql','groupSql','inner3Sql','inner3Binds','existsSql','existsThreeSql','existsThreeBinds','everyJoinSql','everyJoinBinds','innerLeftMixSql','innerRightMixSql','innerFullMixSql','innerFullMixBinds','adultLeftMixSql','adultLeftMixBinds','countAdultLeftMixSql','countThreeSql','countThreeBinds','countLeftMixSql','countLeftMixBinds','sumThreeSql','avgThreeSql','projectThreeSql','projectLeftMixSql','projectRightMixSql','projectFullMixSql','groupThreeSql','groupComputedThreeSql','groupComputedThreeBinds','groupLeftMixSql','groupRightMixSql','groupFullMixSql','orderThreeSql','orderLeftMixSql','orderRightMixSql','orderFullMixSql','inner4Sql','sumFourSql','projectFourSql','orderFourSql']), halt()."
+         lists:foreach(F,['scanSql','scanBinds','foldSql','likeSql','likeBinds','inSql','inBinds','inCapturedSql','inCapturedBinds','corrExistsSql','corrExistsBinds','corrNotExistsSql','joinExistsWhereSql','naryExistsWhereSql','nestedExistsSql','pgNestedSql','pgNestedBinds','inEmptySql','inEmptyBinds','arithMulSql','arithMulBinds','arithColSql','arithModSql','combineSql','refineSql','innerSql','leftSql','rightSql','fullSql','fullBinds','projectSql','projectCalcSql','projectCalcBinds','projectCaseJoinSql','aggSql','groupSql','inner3Sql','inner3Binds','existsSql','existsThreeSql','existsThreeBinds','everyJoinSql','everyJoinBinds','innerLeftMixSql','innerRightMixSql','innerFullMixSql','innerFullMixBinds','adultLeftMixSql','adultLeftMixBinds','countAdultLeftMixSql','countThreeSql','countThreeBinds','countLeftMixSql','countLeftMixBinds','sumThreeSql','avgThreeSql','projectThreeSql','projectLeftMixSql','projectRightMixSql','projectFullMixSql','groupThreeSql','groupComputedThreeSql','groupComputedThreeBinds','groupLeftMixSql','groupRightMixSql','groupFullMixSql','orderThreeSql','orderLeftMixSql','orderRightMixSql','orderFullMixSql','inner4Sql','sumFourSql','projectFourSql','orderFourSql']), halt()."
     );
     let output = Command::new("erl")
         .arg("-noshell")
@@ -708,6 +720,12 @@ fn query_plan_compiles_to_parameterized_sql() {
     want(
         r#"nestedExistsSql=SELECT * FROM "users" AS l WHERE EXISTS (SELECT 1 FROM "posts" AS x1 WHERE (x1."author" = l."id" AND EXISTS (SELECT 1 FROM "comments" AS x2 WHERE x2."post" = x1."id")))"#,
     );
+    // A single-table read whose filter nests one EXISTS inside another: the base leaf
+    // aliases `l`, the outer probe `x1`, the inner `x2`, and the lone literal binds `$1`.
+    want(
+        r#"pgNestedSql=SELECT * FROM "users" AS l WHERE EXISTS (SELECT 1 FROM "posts" AS x1 WHERE (x1."author" = l."id" AND EXISTS (SELECT 1 FROM "posts" AS x2 WHERE (x2."id" = x1."id" AND x2."title" = $1)))) ORDER BY "id" ASC"#,
+    );
+    want("pgNestedBinds=1");
     want(r#"inEmptySql=SELECT * FROM "users" WHERE FALSE"#);
     want("inEmptyBinds=0");
     want("scanBinds=1");

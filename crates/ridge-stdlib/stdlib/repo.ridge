@@ -21,7 +21,7 @@
 
 import std.data as Db
 import std.sql (SqlValue)
-import std.query (SortOrder, ascending, QueryPlan, planScan, planCombine, planRefine, planJoin, planProject, planAggregate, planGroup, planExists, planList)
+import std.query (SortOrder, ascending, QueryPlan, containsExists, planScan, planCombine, planRefine, planJoin, planProject, planAggregate, planGroup, planExists, planList)
 import std.map (fromList, toList)
 
 -- A repository: entity `e` stored in `table` through adapter `a`. Opaque, so it
@@ -467,9 +467,21 @@ pub class Combinable q =
 -- captured set-operation plan run through `runPlan` once `union`/`intersect`/
 -- `except` has combined two queries. Both answer the adapter-neutral row maps the
 -- terminals decode.
+-- A single-table read fetches its matching rows. A predicate that carries a
+-- correlated EXISTS renders through the query plan (`planToSql` on a backend, the
+-- store plan evaluator in memory), which qualifies each leaf and nests the
+-- subqueries; the direct WHERE builder resolves only a flat single table, so an
+-- EXISTS read takes the plan path. Every other predicate stays on the direct
+-- builder, unchanged.
+fn fetchRows (q: Query e a) (lim: Int) -> Result (List (Map Text SqlValue)) Error where Adapter a =
+    if containsExists q.pred.tree then
+        runPlan q.repo.adapter (planScan q.repo.table q.pred.tree q.orders lim q.off q.dist)
+    else
+        fetch q.repo.adapter q.repo.table q.pred q.orders lim q.off q.dist
+
 fn queryRows (q: Query e a) -> Result (List (Map Text SqlValue)) Error where Adapter a =
     match q.plan
-        None   -> fetch q.repo.adapter q.repo.table q.pred q.orders q.lim q.off q.dist
+        None   -> fetchRows q q.lim
         Some _ -> runPlan q.repo.adapter (planOf q)
 
 -- `toList` and `first` over a query are the methods of the `Decodable q p |
@@ -535,7 +547,7 @@ fn mkError (code: Text) (message: Text) -> Error
 -- The filter and offset still apply; an ordering does not change which single row
 -- is meant, only the error or the lone value. (LINQ's `SingleOrDefault`.)
 pub fn single (q: Query e a) -> Result (Option e) Error where Adapter a, Row e =
-    match fetch q.repo.adapter q.repo.table q.pred q.orders 2 q.off q.dist
+    match fetchRows q 2
         Err err -> Err err
         Ok rows ->
             match rows
@@ -555,7 +567,7 @@ pub fn single (q: Query e a) -> Result (Option e) Error where Adapter a, Row e =
 -- `single` it fetches a second row only to detect a non-unique result.
 -- (LINQ's `Single`.)
 pub fn singleOrError (q: Query e a) -> Result e Error where Adapter a, Row e =
-    match fetch q.repo.adapter q.repo.table q.pred q.orders 2 q.off q.dist
+    match fetchRows q 2
         Err err -> Err err
         Ok rows ->
             match rows

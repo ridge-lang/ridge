@@ -25,7 +25,7 @@
 -- every call site that threads the handle.
 
 import std.sql (SqlValue, sqlValue)
-import std.query (QueryPlan, planToSql)
+import std.query (QueryPlan, planToSql, MutationPlan, mutationToSql)
 
 -- The storage seam. `a` is the connection-handle type; each backend provides an
 -- instance. `appendRow` appends a row; `all` returns every row of a table;
@@ -123,6 +123,7 @@ pub class Adapter a =
     project (conn: a) (table: Text) (pred: Quote (Map Text SqlValue -> Bool)) (orders: List (Bool, QExpr)) (lim: Int) (off: Int) (cols: List (Text, QExpr)) (dist: Bool) -> Result (List (Map Text SqlValue)) Error
     groupSummarize (conn: a) (table: Text) (pred: Quote (Map Text SqlValue -> Bool)) (keyCol: Text) (cols: List (Text, Text, QExpr, Bool)) (having: QExpr) -> Result (List (Map Text SqlValue)) Error
     runPlan (conn: a) (plan: QueryPlan) -> Result (List (Map Text SqlValue)) Error
+    runMutation (conn: a) (plan: MutationPlan) -> Result Int Error
     begin    (conn: a) -> Result Unit Error
     commit   (conn: a) -> Result Unit Error
     rollback (conn: a) -> Result Unit Error
@@ -206,6 +207,13 @@ fn _memGroupSummarize (id: Int) (table: Text) (tree: QExpr) (keyCol: Text) (cols
 -- combined rows.
 @ffi("ridge_rt", "mem_run_plan", 2)
 fn _memRunPlan (id: Int) (plan: QueryPlan) -> Result (List (Map Text SqlValue)) Error
+
+-- Run a mutation plan against the store identified by `id`; answer the affected row
+-- count. The write-side counterpart of `mem_run_plan`: a backend without a SQL engine
+-- interprets the plan directly, threading an update's or delete's predicate through the
+-- same matcher reads use, so a correlated `EXISTS` in a mutation predicate works.
+@ffi("ridge_rt", "mem_run_mutation", 2)
+fn _memRunMutation (id: Int) (plan: MutationPlan) -> Result Int Error
 
 -- Open a transaction on the store identified by `id` — snapshot its tables onto
 -- a per-store stack. A nested `begin` snapshots again (a savepoint).
@@ -299,6 +307,8 @@ instance Adapter MemAdapter =
         _memGroupSummarize conn.id table pred.tree keyCol cols having
     runPlan (conn: MemAdapter) (plan: QueryPlan) -> Result (List (Map Text SqlValue)) Error =
         _memRunPlan conn.id plan
+    runMutation (conn: MemAdapter) (plan: MutationPlan) -> Result Int Error =
+        _memRunMutation conn.id plan
     begin (conn: MemAdapter) -> Result Unit Error =
         _memBegin conn.id
     commit (conn: MemAdapter) -> Result Unit Error =
@@ -593,6 +603,9 @@ instance Adapter Postgres =
     runPlan (conn: Postgres) (plan: QueryPlan) -> Result (List (Map Text SqlValue)) Error =
         match planToSql plan
             (s, binds) -> _pgRawQuery conn.id (sqlValue s) binds
+    runMutation (conn: Postgres) (plan: MutationPlan) -> Result Int Error =
+        match mutationToSql plan
+            (s, binds) -> _pgRawExec conn.id (sqlValue s) binds
     begin (conn: Postgres) -> Result Unit Error =
         _pgBegin conn.id
     commit (conn: Postgres) -> Result Unit Error =

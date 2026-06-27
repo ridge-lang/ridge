@@ -38,6 +38,7 @@
     mem_migrations_applied/1, mem_record_migration/2,
     mem_raw_query/3, mem_raw_exec/3,
     mem_run_plan/2,
+    mem_run_mutation/2,
     eval_plan_pure/1,
     quote_keep_all/1, quote_and/2, quote_not_true/1,
     mk_error/2,
@@ -1105,6 +1106,11 @@ mem_migration_name(Row) ->
 mem_run_plan(Id, Plan) ->
     mem_call({run_plan, Id, Plan}).
 
+%% mem_run_mutation/2 — run a MutationPlan against store Id; answer the affected
+%% row count. The write-side dual of mem_run_plan. Result Int Error.
+mem_run_mutation(Id, Plan) ->
+    mem_call({run_mutation, Id, Plan}).
+
 %% eval_plan_pure/1 — interpret a plan with no keeper store, for the in-memory `Seq`
 %% query source. The plan is rooted at a `PlanList` (rows carried inline), so the empty
 %% state is never consulted; returns the rows directly (no Result — a pure in-memory
@@ -1270,6 +1276,10 @@ mem_keeper_loop(State) ->
             Rows = mem_eval_plan(State, Id, Plan),
             From ! {Ref, {ok, Rows}},
             mem_keeper_loop(State);
+        {{run_mutation, Id, Plan}, From, Ref} ->
+            {State1, Count} = mem_apply_mutation(State, Id, Plan),
+            From ! {Ref, {ok, Count}},
+            mem_keeper_loop(State1);
         {{project, Id, Table, Tree, Orders, Lim, Off, Cols, Dist}, From, Ref} ->
             Rows = maps:get({Id, Table}, State, []),
             Matches = [R || R <- Rows, mem_pred(State, Id, Tree, R)],
@@ -1279,6 +1289,27 @@ mem_keeper_loop(State) ->
             From ! {Ref, {ok, Page}},
             mem_keeper_loop(State)
     end.
+
+%% mem_apply_mutation/3 — apply a MutationPlan to the store, returning the updated
+%% state and the affected row count. The write-side dual of mem_eval_plan: an insert
+%% appends its rows (one for `insert`, many for a bulk insert) to the table; an update
+%% merges its changes over the rows its predicate admits; a delete drops them. The
+%% predicate is the same QExpr a read walks (mem_pred), so a correlated EXISTS in a
+%% mutation predicate is evaluated identically to one in a query.
+mem_apply_mutation(State, Id, {'MutInsert', Table, Rows}) ->
+    Key = {Id, Table},
+    Existing = maps:get(Key, State, []),
+    {State#{Key => Existing ++ Rows}, length(Rows)};
+mem_apply_mutation(State, Id, {'MutUpdate', Table, Changes, Tree}) ->
+    Key = {Id, Table},
+    Rows = maps:get(Key, State, []),
+    {Updated, Changed} = mem_update_rows(State, Id, Changes, Tree, Rows),
+    {State#{Key => Updated}, Changed};
+mem_apply_mutation(State, Id, {'MutDelete', Table, Tree}) ->
+    Key = {Id, Table},
+    Rows = maps:get(Key, State, []),
+    Kept = [R || R <- Rows, not mem_pred(State, Id, Tree, R)],
+    {State#{Key => Kept}, length(Rows) - length(Kept)}.
 
 %% Build a projected row from `{Alias, QExpr}` columns: each output column
 %% evaluates its expression against the row and is keyed by its alias. A bare

@@ -431,6 +431,18 @@ const BASELINE_EXPORTS: &[(&str, &[&str])] = &[
             // The in-memory source leaf: wraps the rows `from` snapshotted, so an
             // in-memory `Seq` runs through the same plan/interpreter as a query.
             "planList",
+            // The mutation-plan tree, its three constructors, the builders that wrap
+            // them, and the write-side renderer. A write verb builds a `MutationPlan`
+            // and hands it to a backend's `runMutation`; `mutationToSql` lowers it to
+            // one parameterized statement, the write-side dual of `planToSql`.
+            "MutationPlan",
+            "MutInsert",
+            "MutUpdate",
+            "MutDelete",
+            "planInsert",
+            "planUpdate",
+            "planDelete",
+            "mutationToSql",
         ],
     ),
     (
@@ -452,6 +464,10 @@ const BASELINE_EXPORTS: &[(&str, &[&str])] = &[
             "project",
             "groupSummarize",
             "runPlan",
+            // The write seam: a write verb builds a `MutationPlan` and hands it here;
+            // a SQL backend renders it through `mutationToSql`, the in-memory one
+            // interprets it. Answers the affected row count.
+            "runMutation",
             // Transaction control: open, commit, and roll back a transaction
             // (nesting opens a savepoint). The `Repo.transaction` combinator runs
             // these around a body.

@@ -1198,6 +1198,58 @@ fn reconciled_decls(b: &BuiltinTyCons, base: u32) -> Vec<TyConDecl> {
             opaque: false,
             is_anon: false,
         },
+        // `std.query` — the mutation-plan tree (stdlib/query.ridge), the write-side
+        // counterpart of `QueryPlan`. `MutInsert table rows` appends one or more rows;
+        // `MutUpdate table changes pred` sets the given columns on the rows its
+        // predicate admits; `MutDelete table pred` removes them. `mutationToSql`
+        // renders it to one parameterized statement, sharing the predicate renderer
+        // with `planToSql`, so a correlated `EXISTS` in a mutation predicate compiles
+        // exactly as it does in a query.
+        TyConDecl {
+            id: TyConId(base + 22),
+            name: "MutationPlan".to_string(),
+            arity: 0,
+            kind: TyConKind::Union(UnionSchema {
+                params: vec![],
+                variants: vec![
+                    UnionVariant {
+                        name: "MutInsert".to_string(),
+                        kind: VariantPayload::Positional(vec![
+                            Type::Con(b.text, vec![]),
+                            Type::Con(
+                                b.list,
+                                vec![Type::Con(
+                                    b.map,
+                                    vec![Type::Con(b.text, vec![]), Type::Con(b.sql_value, vec![])],
+                                )],
+                            ),
+                        ]),
+                    },
+                    UnionVariant {
+                        name: "MutUpdate".to_string(),
+                        kind: VariantPayload::Positional(vec![
+                            Type::Con(b.text, vec![]),
+                            Type::Con(
+                                b.map,
+                                vec![Type::Con(b.text, vec![]), Type::Con(b.sql_value, vec![])],
+                            ),
+                            Type::Con(b.q_expr, vec![]),
+                        ]),
+                    },
+                    UnionVariant {
+                        name: "MutDelete".to_string(),
+                        kind: VariantPayload::Positional(vec![
+                            Type::Con(b.text, vec![]),
+                            Type::Con(b.q_expr, vec![]),
+                        ]),
+                    },
+                ],
+            }),
+            def_span: None,
+            def_module_raw: None,
+            opaque: false,
+            is_anon: false,
+        },
     ]
 }
 
@@ -1432,6 +1484,11 @@ pub(crate) fn reconciled_fn_scheme(
             "planScan" | "planCombine" | "planRefine" | "planJoin" | "planProject"
             | "planAggregate" | "planGroup" | "planToSql" | "optimize" | "planExists",
         ) => reconciled_query_plan_fn_scheme(name, reconciled, b),
+        // std.query mutation builders + the write-side renderer — the `MutationPlan`
+        // factories `planInsert`/`planUpdate`/`planDelete` and `mutationToSql`.
+        ("std.query", "planInsert" | "planUpdate" | "planDelete" | "mutationToSql") => {
+            reconciled_mutation_plan_fn_scheme(name, reconciled, b)
+        }
         ("std.repo", _) => reconciled_repo_fn_scheme(name, reconciled, b, classes?),
         ("std.migrate", _) => reconciled_migrate_fn_scheme(name, reconciled, b, classes?),
         ("std.raw", _) => reconciled_raw_fn_scheme(name, b, classes?),
@@ -1544,6 +1601,58 @@ fn reconciled_query_plan_fn_scheme(
             },
             constraints: vec![],
         }),
+        _ => None,
+    }
+}
+
+/// The `std.query` mutation-builder slice of [`reconciled_fn_scheme`]: `planInsert`/
+/// `planUpdate`/`planDelete` build a `MutationPlan` node, and `mutationToSql` lowers one
+/// to a parameterized statement plus its ordered bind values (the write-side dual of
+/// `planToSql`). The builders return the reconciled `MutationPlan`, so none is
+/// expressible in the hand-curated signature table.
+fn reconciled_mutation_plan_fn_scheme(
+    name: &str,
+    reconciled: &FxHashMap<String, TyConId>,
+    b: &BuiltinTyCons,
+) -> Option<Scheme> {
+    let mutation_plan = *reconciled.get("MutationPlan")?;
+    let plan = || Type::Con(mutation_plan, vec![]);
+    let text = || Type::Con(b.text, vec![]);
+    let qexpr = || Type::Con(b.q_expr, vec![]);
+    // A `Map Text SqlValue` — one row's columns, and the changes map of an update.
+    let row = || {
+        Type::Con(
+            b.map,
+            vec![Type::Con(b.text, vec![]), Type::Con(b.sql_value, vec![])],
+        )
+    };
+    let rows = || Type::Con(b.list, vec![row()]);
+    let pure = |params: Vec<Type>, ret: Type| Scheme {
+        vars: vec![],
+        cap_vars: vec![],
+        row_vars: vec![],
+        ty: Type::Fn {
+            params,
+            ret: Box::new(ret),
+            caps: CapRow::Concrete(CapabilitySet::PURE),
+        },
+        constraints: vec![],
+    };
+    match name {
+        // planInsert : Text -> List (Map Text SqlValue) -> MutationPlan
+        "planInsert" => Some(pure(vec![text(), rows()], plan())),
+        // planUpdate : Text -> Map Text SqlValue -> QExpr -> MutationPlan
+        "planUpdate" => Some(pure(vec![text(), row(), qexpr()], plan())),
+        // planDelete : Text -> QExpr -> MutationPlan
+        "planDelete" => Some(pure(vec![text(), qexpr()], plan())),
+        // mutationToSql : MutationPlan -> (Sql, List SqlValue)
+        "mutationToSql" => Some(pure(
+            vec![plan()],
+            Type::Tuple(vec![
+                Type::Con(b.sql, vec![]),
+                Type::Con(b.list, vec![Type::Con(b.sql_value, vec![])]),
+            ]),
+        )),
         _ => None,
     }
 }

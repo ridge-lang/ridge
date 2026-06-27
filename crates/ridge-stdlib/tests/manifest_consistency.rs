@@ -118,6 +118,11 @@ const CONSTRUCTOR_EXPORTS: &[(&str, &str)] = &[
     ("std.query", "PlanProject"),
     ("std.query", "PlanAggregate"),
     ("std.query", "PlanGroup"),
+    // The `MutationPlan` variants: exported so a write verb can build a plan, but
+    // surfaced by text extraction only through the type name `MutationPlan`.
+    ("std.query", "MutInsert"),
+    ("std.query", "MutUpdate"),
+    ("std.query", "MutDelete"),
 ];
 
 /// Return `true` if `(module, sym)` is a known exported union constructor that is
@@ -278,6 +283,10 @@ fn signature_shape_consistency() {
                         | "optimize"
                         | "planExists"
                         | "planList"
+                        | "planInsert"
+                        | "planUpdate"
+                        | "planDelete"
+                        | "mutationToSql"
                 )
             {
                 continue;

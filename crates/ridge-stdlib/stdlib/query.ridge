@@ -12,6 +12,7 @@
 
 import std.sql (Sql, sql, SqlValue, sqlInt, sqlText, sqlBool, sqlFloat)
 import std.int as Int
+import std.map as Map
 
 -- Sort direction for query ordering. A plain union declared in Ridge: importing
 -- modules can name `SortOrder` and build/match `Asc`/`Desc` directly.
@@ -131,6 +132,32 @@ pub fn planExists (child: QueryPlan) -> QueryPlan =
 -- table scan on the database path. Mem-only — it never reaches the SQL renderer.
 pub fn planList (rows: List (Map Text SqlValue)) -> QueryPlan =
     PlanList rows
+
+-- ── Mutation plans ────────────────────────────────────────────────────────────
+--
+-- A `MutationPlan` is the write-side counterpart of `QueryPlan`: the typed,
+-- backend-agnostic shape of an insert, update, or delete. `mutationToSql` renders it
+-- to one parameterized statement; a backend without a SQL engine interprets it
+-- directly. It sits beside `QueryPlan` because both compile through the same predicate
+-- renderer — an update or delete carries a `QExpr` WHERE that runs through `renderPred`,
+-- so a correlated `EXISTS` in a mutation predicate compiles exactly as it does in a query.
+--
+-- `MutInsert` appends rows to a table — one row for `insert`, many for a bulk insert,
+-- all sharing the same columns. `MutUpdate` sets the given columns on the rows its
+-- predicate admits. `MutDelete` removes the rows its predicate admits.
+pub type MutationPlan = MutInsert Text (List (Map Text SqlValue)) | MutUpdate Text (Map Text SqlValue) QExpr | MutDelete Text QExpr
+
+-- Append rows to a table. One row for `insert`, many for a bulk insert.
+pub fn planInsert (table: Text) (rows: List (Map Text SqlValue)) -> MutationPlan =
+    MutInsert table rows
+
+-- Set `changes` on every row of `table` the predicate admits.
+pub fn planUpdate (table: Text) (changes: Map Text SqlValue) (pred: QExpr) -> MutationPlan =
+    MutUpdate table changes pred
+
+-- Remove every row of `table` the predicate admits.
+pub fn planDelete (table: Text) (pred: QExpr) -> MutationPlan =
+    MutDelete table pred
 
 -- ── Plan optimization ─────────────────────────────────────────────────────────
 --
@@ -400,6 +427,90 @@ fn aliasedCol (alias: Text) (colSql: Text) -> Text =
 pub fn planToSql (plan: QueryPlan) -> (Sql, List SqlValue) =
     let r = renderPlan (optimize plan) 1
     (sql r.text, r.binds)
+
+-- Compile a mutation plan to one parameterized statement and its bind values — the
+-- write-side dual of `planToSql`. An insert binds its column values left to right; an
+-- update binds its SET assignments first and then its WHERE; a delete binds only its
+-- WHERE. Each value is a positional `$N` placeholder, never interpolated, so the
+-- statement is injection-safe by construction. The WHERE of an update or delete runs
+-- through the same `whereClause`/`renderPred` a query uses, so a correlated `EXISTS`
+-- compiles identically — the target table is aliased `l` then, so the subquery can name
+-- the row being changed.
+pub fn mutationToSql (plan: MutationPlan) -> (Sql, List SqlValue) =
+    match plan
+        MutInsert table rows ->
+            let r = renderInsert table rows
+            (sql r.text, r.binds)
+        MutUpdate table changes pred ->
+            let s = renderSet (Map.toList changes) 1
+            let w = mutationWhere pred s.next
+            (sql (Text.join "" ["UPDATE ", mutationTarget table pred, " SET ", s.text, w.text]), s.binds ++ w.binds)
+        MutDelete table pred ->
+            let w = mutationWhere pred 1
+            (sql (Text.join "" ["DELETE FROM ", mutationTarget table pred, w.text]), w.binds)
+
+-- The target-table clause of an update or delete. A predicate carrying a correlated
+-- `EXISTS` aliases the table `l`, so the subquery names the row being changed as
+-- `l."col"`; otherwise the bare table name, with unqualified column references.
+fn mutationTarget (table: Text) (pred: QExpr) -> Text =
+    if containsExists pred then Text.join "" [quoteIdent table, " AS l"]
+    else quoteIdent table
+
+-- The WHERE clause of an update or delete: EXISTS-aware (qualified to the single base
+-- leaf `l`) when the predicate carries a correlated subquery, plain otherwise. Both
+-- yield nothing for the always-true default, leaving the statement unfiltered.
+fn mutationWhere (pred: QExpr) (n: Int) -> { text: Text, binds: List SqlValue, next: Int } =
+    if containsExists pred then whereExistsClause true 1 pred n
+    else whereClause false pred n
+
+-- Render an `INSERT` over one or more rows sharing the same columns. The column list
+-- comes from the first row; each row contributes a parenthesised tuple of `$N`
+-- placeholders, the values collected left to right as binds.
+fn renderInsert (table: Text) (rows: List (Map Text SqlValue)) -> { text: Text, binds: List SqlValue } =
+    match rows
+        [] -> { text = "", binds = [] }
+        first :: _ ->
+            let header = insertColumns (Map.toList first)
+            let vr = valueRows rows 1
+            { text = Text.join "" ["INSERT INTO ", quoteIdent table, " (", header, ") VALUES ", vr.text], binds = vr.binds }
+
+-- The quoted, comma-separated column list of an insert, from a row's column/value pairs.
+fn insertColumns (pairs: List (Text, SqlValue)) -> Text =
+    match pairs
+        []             -> ""
+        (c, _) :: []   -> quoteIdent c
+        (c, _) :: rest -> Text.join "" [quoteIdent c, ", ", insertColumns rest]
+
+-- One parenthesised `VALUES` tuple per row, comma-separated, threading the `$N` counter.
+fn valueRows (rows: List (Map Text SqlValue)) (n: Int) -> { text: Text, binds: List SqlValue, next: Int } =
+    match rows
+        []           -> { text = "", binds = [], next = n }
+        row :: []    -> valueTuple (Map.toList row) n
+        row :: rest  ->
+            let t = valueTuple (Map.toList row) n
+            let r = valueRows rest t.next
+            { text = Text.join "" [t.text, ", ", r.text], binds = t.binds ++ r.binds, next = r.next }
+
+fn valueTuple (pairs: List (Text, SqlValue)) (n: Int) -> { text: Text, binds: List SqlValue, next: Int } =
+    let v = tupleVals pairs n
+    { text = Text.join "" ["(", v.text, ")"], binds = v.binds, next = v.next }
+
+fn tupleVals (pairs: List (Text, SqlValue)) (n: Int) -> { text: Text, binds: List SqlValue, next: Int } =
+    match pairs
+        []               -> { text = "", binds = [], next = n }
+        (_, val) :: []   -> { text = placeholder n, binds = [val], next = n + 1 }
+        (_, val) :: rest ->
+            let r = tupleVals rest (n + 1)
+            { text = Text.join "" [placeholder n, ", ", r.text], binds = val :: r.binds, next = r.next }
+
+-- The `SET` assignments of an update — `"col" = $N`, comma-separated, binds left to right.
+fn renderSet (pairs: List (Text, SqlValue)) (n: Int) -> { text: Text, binds: List SqlValue, next: Int } =
+    match pairs
+        []             -> { text = "", binds = [], next = n }
+        (c, val) :: [] -> { text = Text.join "" [quoteIdent c, " = ", placeholder n], binds = [val], next = n + 1 }
+        (c, val) :: rest ->
+            let r = renderSet rest (n + 1)
+            { text = Text.join "" [quoteIdent c, " = ", placeholder n, ", ", r.text], binds = val :: r.binds, next = r.next }
 
 -- Whether a predicate tree carries a correlated `EXISTS` anywhere under its boolean
 -- connectives. A scan whose WHERE does is aliased (`FROM "t" AS l`) so the subquery's

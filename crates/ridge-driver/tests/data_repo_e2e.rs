@@ -741,6 +741,22 @@ pub fn db existsPostsCount () -> Int =
                 Ok n  -> n
                 Err _ -> 0 - 2
 
+-- correlated EXISTS in a DELETE predicate: remove the users who own at least one
+-- post, then list who remains. lin (2) and max (3) own posts and go; ada (1) owns
+-- none and stays -> "ada". The write path shares the read path's predicate compiler,
+-- so the moment a delete renders through it a correlated EXISTS works in a mutation's
+-- WHERE exactly as in a query — no separate subquery support on the write side.
+pub fn db existsDelete () -> Text =
+    match setupJoin ()
+        Err _ -> "setup-err"
+        Ok (users, posts) ->
+            match users |> Repo.deleteWhere (fn (u: User) -> Repo.exists posts (fn (p: Post) -> p.author == u.id))
+                Err _ -> "del-err"
+                Ok _  ->
+                    match users |> Repo.query |> Repo.orderBy Asc (fn (u: User) -> u.id) |> Repo.toList
+                        Err _  -> "list-err"
+                        Ok us  -> joinNames us
+
 -- correlated EXISTS inside a binary join's post-join filter: inner-join users to
 -- their posts, then keep the pairs whose post has at least one comment, probing the
 -- captured `comments` table from inside the join filter (the inner row correlates to
@@ -2605,6 +2621,7 @@ fn repo_surface_runs_on_beam() {
          io:format(\"existsPosts=~s~n\",[{module}:existsPosts()]), \
          io:format(\"notExistsPosts=~s~n\",[{module}:notExistsPosts()]), \
          io:format(\"existsPostsCount=~w~n\",[{module}:existsPostsCount()]), \
+         io:format(\"existsDelete=~s~n\",[{module}:existsDelete()]), \
          io:format(\"existsInJoinWhere=~s~n\",[{module}:existsInJoinWhere()]), \
          io:format(\"existsInJoinBothLeaves=~s~n\",[{module}:existsInJoinBothLeaves()]), \
          io:format(\"existsNaryJoin=~s~n\",[{module}:existsNaryJoin()]), \
@@ -2828,6 +2845,10 @@ fn repo_surface_runs_on_beam() {
         (
             "existsPostsCount=2",
             "count over a filter carrying a correlated EXISTS renders the subquery on the direct count path too",
+        ),
+        (
+            "existsDelete=ada",
+            "a correlated EXISTS renders in a DELETE predicate through the typed mutation path, so the users who own a post are removed",
         ),
         (
             "existsInJoinWhere=ada:hello,max:again",

@@ -23,11 +23,12 @@ use std::process::Command;
 use ridge_driver::{compile_workspace, CompileOptions, EmitArtefacts};
 
 const SOURCE: &str = r#"
-import std.query as Query (QueryPlan, planScan, planCombine, planRefine, planJoin, planProject, planAggregate, planGroup, planToSql, planExists)
-import std.sql (Sql, SqlValue, sqlValue)
+import std.query as Query (QueryPlan, planScan, planCombine, planRefine, planJoin, planProject, planAggregate, planGroup, planToSql, planExists, MutationPlan, planInsert, planUpdate, planDelete, mutationToSql)
+import std.sql (Sql, SqlValue, sqlValue, sqlInt, sqlText)
 import std.int as Int
 import std.list as List
 import std.text as Text
+import std.map as Map
 
 pub type User = { id: Int, age: Int, name: Text } deriving (Row)
 pub type Post = { id: Int, author: Int, title: Text } deriving (Row)
@@ -111,6 +112,40 @@ fn renderSql (plan: QueryPlan) -> Text =
 fn renderBinds (plan: QueryPlan) -> Text =
     match planToSql plan
         (_, ps) -> Int.toText (List.length ps)
+
+-- The write-side renderer: a `MutationPlan` to its parameterized statement and bind
+-- count, the dual of `renderSql`/`renderBinds` over `mutationToSql`.
+fn renderMutSql (plan: MutationPlan) -> Text =
+    match mutationToSql plan
+        (s, _) -> sqlValue s
+
+fn renderMutBinds (plan: MutationPlan) -> Text =
+    match mutationToSql plan
+        (_, ps) -> Int.toText (List.length ps)
+
+-- A single-row INSERT: the column list comes from the row (in column-name order),
+-- each value a `$N` placeholder bound left to right.
+pub fn insertSql () -> Text = renderMutSql (planInsert "users" [Map.fromList [("id", sqlInt 1), ("name", sqlText "ada")]])
+pub fn insertBinds () -> Text = renderMutBinds (planInsert "users" [Map.fromList [("id", sqlInt 1), ("name", sqlText "ada")]])
+
+-- An UPDATE binds its SET assignment first ($1) and then its WHERE ($2).
+pub fn updateSql () -> Text = renderMutSql (planUpdate "users" (Map.fromList [("age", sqlInt 99)]) (pred1 (fn (u: User) -> u.id == 1)))
+pub fn updateBinds () -> Text = renderMutBinds (planUpdate "users" (Map.fromList [("age", sqlInt 99)]) (pred1 (fn (u: User) -> u.id == 1)))
+
+-- A DELETE binds only its WHERE.
+pub fn deleteSql () -> Text = renderMutSql (planDelete "users" (pred1 (fn (u: User) -> u.age < 18)))
+
+-- A correlated EXISTS in a DELETE predicate aliases the target table `l` so the
+-- subquery names the row being deleted, exactly as the read renderer aliases a scan —
+-- the write path shares `renderPred`, so no separate subquery support is needed.
+pub fn existsDeleteSql () -> Text = renderMutSql (planDelete "users" (QExists "posts" (QEq (QColR "author") (QCol "id"))))
+pub fn existsDeleteBinds () -> Text = renderMutBinds (planDelete "users" (QExists "posts" (QEq (QColR "author") (QCol "id"))))
+
+-- A correlated EXISTS in an UPDATE predicate: the target is aliased `l` too, the SET
+-- column stays bare ($1), and the EXISTS renders after it — locking the SET-before-WHERE
+-- bind order with a subquery in the WHERE.
+pub fn existsUpdateSql () -> Text = renderMutSql (planUpdate "users" (Map.fromList [("age", sqlInt 99)]) (QExists "posts" (QEq (QColR "author") (QCol "id"))))
+pub fn existsUpdateBinds () -> Text = renderMutBinds (planUpdate "users" (Map.fromList [("age", sqlInt 99)]) (QExists "posts" (QEq (QColR "author") (QCol "id"))))
 
 pub fn scanSql () -> Text = renderSql (planScan "users" (pred1 (fn u -> u.age >= 18)) [] (0 - 1) 0 false)
 
@@ -661,7 +696,7 @@ fn query_plan_compiles_to_parameterized_sql() {
 
     let expr = format!(
         "F=fun(N)->io:format(\"~s=~s~n\",[N,{module}:N()])end, \
-         lists:foreach(F,['scanSql','scanBinds','foldSql','likeSql','likeBinds','inSql','inBinds','inCapturedSql','inCapturedBinds','corrExistsSql','corrExistsBinds','corrNotExistsSql','joinExistsWhereSql','naryExistsWhereSql','nestedExistsSql','pgNestedSql','pgNestedBinds','inEmptySql','inEmptyBinds','arithMulSql','arithMulBinds','arithColSql','arithModSql','combineSql','refineSql','innerSql','leftSql','rightSql','fullSql','fullBinds','projectSql','projectCalcSql','projectCalcBinds','projectCaseJoinSql','aggSql','groupSql','inner3Sql','inner3Binds','existsSql','existsThreeSql','existsThreeBinds','everyJoinSql','everyJoinBinds','innerLeftMixSql','innerRightMixSql','innerFullMixSql','innerFullMixBinds','adultLeftMixSql','adultLeftMixBinds','countAdultLeftMixSql','countThreeSql','countThreeBinds','countLeftMixSql','countLeftMixBinds','sumThreeSql','avgThreeSql','projectThreeSql','projectLeftMixSql','projectRightMixSql','projectFullMixSql','groupThreeSql','groupComputedThreeSql','groupComputedThreeBinds','groupLeftMixSql','groupRightMixSql','groupFullMixSql','orderThreeSql','orderLeftMixSql','orderRightMixSql','orderFullMixSql','inner4Sql','sumFourSql','projectFourSql','orderFourSql']), halt()."
+         lists:foreach(F,['scanSql','scanBinds','foldSql','likeSql','likeBinds','inSql','inBinds','inCapturedSql','inCapturedBinds','corrExistsSql','corrExistsBinds','corrNotExistsSql','joinExistsWhereSql','naryExistsWhereSql','nestedExistsSql','pgNestedSql','pgNestedBinds','inEmptySql','inEmptyBinds','arithMulSql','arithMulBinds','arithColSql','arithModSql','combineSql','refineSql','innerSql','leftSql','rightSql','fullSql','fullBinds','projectSql','projectCalcSql','projectCalcBinds','projectCaseJoinSql','aggSql','groupSql','inner3Sql','inner3Binds','existsSql','existsThreeSql','existsThreeBinds','everyJoinSql','everyJoinBinds','innerLeftMixSql','innerRightMixSql','innerFullMixSql','innerFullMixBinds','adultLeftMixSql','adultLeftMixBinds','countAdultLeftMixSql','countThreeSql','countThreeBinds','countLeftMixSql','countLeftMixBinds','sumThreeSql','avgThreeSql','projectThreeSql','projectLeftMixSql','projectRightMixSql','projectFullMixSql','groupThreeSql','groupComputedThreeSql','groupComputedThreeBinds','groupLeftMixSql','groupRightMixSql','groupFullMixSql','orderThreeSql','orderLeftMixSql','orderRightMixSql','orderFullMixSql','inner4Sql','sumFourSql','projectFourSql','orderFourSql','insertSql','insertBinds','updateSql','updateBinds','deleteSql','existsDeleteSql','existsDeleteBinds','existsUpdateSql','existsUpdateBinds']), halt()."
     );
     let output = Command::new("erl")
         .arg("-noshell")
@@ -701,6 +736,27 @@ fn query_plan_compiles_to_parameterized_sql() {
         r#"corrExistsSql=SELECT * FROM "users" AS l WHERE EXISTS (SELECT 1 FROM "posts" AS x1 WHERE x1."author" = l."id")"#,
     );
     want("corrExistsBinds=0");
+
+    // The typed write renderer (`mutationToSql`): an INSERT lists its columns and binds
+    // each value; an UPDATE binds SET before WHERE; a DELETE binds only WHERE. A
+    // correlated EXISTS in an update or delete predicate aliases the target `l` and
+    // renders the subquery exactly as a read does — the write path shares `renderPred`,
+    // so EXISTS works in a mutation with no separate subquery support (the cw text
+    // builder it replaces could not nest a correlated subquery here).
+    want(r#"insertSql=INSERT INTO "users" ("id", "name") VALUES ($1, $2)"#);
+    want("insertBinds=2");
+    want(r#"updateSql=UPDATE "users" SET "age" = $1 WHERE "id" = $2"#);
+    want("updateBinds=2");
+    want(r#"deleteSql=DELETE FROM "users" WHERE "age" < $1"#);
+    want(
+        r#"existsDeleteSql=DELETE FROM "users" AS l WHERE EXISTS (SELECT 1 FROM "posts" AS x1 WHERE x1."author" = l."id")"#,
+    );
+    want("existsDeleteBinds=0");
+    want(
+        r#"existsUpdateSql=UPDATE "users" AS l SET "age" = $1 WHERE EXISTS (SELECT 1 FROM "posts" AS x1 WHERE x1."author" = l."id")"#,
+    );
+    want("existsUpdateBinds=1");
+
     want(
         r#"corrNotExistsSql=SELECT * FROM "users" AS l WHERE (NOT EXISTS (SELECT 1 FROM "posts" AS x1 WHERE x1."author" = l."id"))"#,
     );

@@ -21,7 +21,7 @@
 
 import std.data as Db
 import std.sql (SqlValue)
-import std.query (SortOrder, ascending, QueryPlan, planScan, planCombine, planRefine, planJoin, planProject, planAggregate, planGroup, planExists, planList)
+import std.query (SortOrder, ascending, QueryPlan, planScan, planCombine, planRefine, planJoin, planProject, planAggregate, planGroup, planExists, planList, planInsert, planUpdate, planDelete)
 import std.map (fromList, toList)
 
 -- A repository: entity `e` stored in `table` through adapter `a`. Opaque, so it
@@ -147,7 +147,9 @@ pub fn getBy (column: Text) (key: SqlValue) (r: Repo e a) -> Result (Option e) E
 -- Append a raw row to the table. The row is a column map built by hand through
 -- `SqlType.toSql`; for a typed entity reach for `insert`, which derives the row.
 pub fn insertRow (row: Map Text SqlValue) (r: Repo e a) -> Result Unit Error where Adapter a =
-    appendRow r.adapter r.table row
+    match runMutation r.adapter (planInsert r.table [row])
+        Ok _  -> Ok ()
+        Err e -> Err e
 
 -- Append a typed entity, encoding it to a row through `deriving (Row)`'s `toRow`.
 -- The repository's table holds entity `e`, so its `Row` instance names the columns
@@ -159,14 +161,16 @@ pub fn insert (entity: e) (r: Repo e a) -> Result Unit Error where Adapter a, Ro
 
 -- Remove the rows matching a quoted predicate; answer how many were removed.
 pub fn deleteWhere (pred: Quote (Map Text SqlValue -> Bool)) (r: Repo e a) -> Result Int Error where Adapter a =
-    delete r.adapter r.table pred
+    runMutation r.adapter (planDelete r.table pred.tree)
 
 -- Set the given columns on every row matching a quoted predicate; answer how many
 -- rows changed. The `changes` map is a partial column map built through
 -- `SqlType.toSql`, so one call can touch a subset of columns. To write a whole
 -- record back, use `update`.
 pub fn updateWhere (changes: Map Text SqlValue) (pred: Quote (Map Text SqlValue -> Bool)) (r: Repo e a) -> Result Int Error where Adapter a =
-    updateRows r.adapter r.table changes pred
+    match toList changes
+        []  -> Ok 0
+        _   -> runMutation r.adapter (planUpdate r.table changes pred.tree)
 
 -- Overwrite every column of the rows matching a quoted predicate with a typed
 -- entity, encoded through `toRow`. Reach for `updateWhere` when only some columns
@@ -217,7 +221,7 @@ fn settersToMap (setters: List (Setter e)) -> Map Text SqlValue =
 -- column, where `updateWhere` takes an unchecked `Map Text SqlValue`. Reach for
 -- `updateWhere` only to write a column map assembled by hand.
 pub fn setWhere (setters: List (Setter e)) (pred: Quote (Map Text SqlValue -> Bool)) (r: Repo e a) -> Result Int Error where Adapter a =
-    updateRows r.adapter r.table (settersToMap setters) pred
+    updateWhere (settersToMap setters) pred r
 
 -- Run `body` inside a database transaction on the connection. The body receives
 -- the same connection, so every repository built on it (`repo conn "..."`) runs
@@ -606,7 +610,7 @@ pub fn singleOrError (q: Query e a) -> Result e Error where Adapter a, Row e =
 -- columns. Only the filter is used — ordering and paging do not constrain an
 -- UPDATE — so it is the pipeline form of `setWhere`.
 pub fn applySet (setters: List (Setter e)) (q: Query e a) -> Result Int Error where Adapter a =
-    updateRows q.repo.adapter q.repo.table (settersToMap setters) q.pred
+    updateWhere (settersToMap setters) q.pred q.repo
 
 -- Decode the optional scalar a `SELECT func(col) …` aggregate returns into an
 -- optional typed value. An aggregate over zero matching rows is SQL NULL: the

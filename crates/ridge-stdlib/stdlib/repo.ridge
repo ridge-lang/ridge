@@ -2608,11 +2608,12 @@ instance Groupable (Query e a) (fn e -> k) =
         Grouped { source = x, keyCol = aggColumnName key, keyLeaf = aggLeaf key, havingTree = keepAllTree () }
 
 -- A query's `summarize` seam: run the `GROUP BY` (and any `HAVING`) over the query's
--- own filter through the `groupSummarize` push-down, returning one raw row per group
--- for `summarize` to decode. The key side is unused for a query (no right table).
+-- own filter through the same `PlanGroup` node the join and sequence `summarize` use,
+-- one plan IR, returning one raw row per group for `summarize` to decode. The key sits
+-- on the sole leaf, so the aggregate columns carry leaf 0 (`groupColsLeaf`).
 instance Summarizable (Query e a) where Adapter a =
     runGroups (src: Query e a) (keyCol: Text) (keyLeaf: Int) (projTree: QExpr) (havingTree: QExpr) -> Result (List (Map Text SqlValue)) Error =
-        groupSummarize src.repo.adapter src.repo.table src.pred keyCol (groupCols keyCol projTree) havingTree
+        runPlan src.repo.adapter (planGroup keyCol keyLeaf (groupColsLeaf keyCol projTree) havingTree (planScan src.repo.table src.pred.tree [] (0 - 1) 0 false))
 
 -- A left join's `groupBy`: the two-row dual over a `LeftJoin`, the right side read as
 -- the plain entity `f` as in the left-join aggregates. A right-side key groups the
@@ -2913,28 +2914,16 @@ fn aggColumnName (col: Quote p) -> Text =
 -- seeds an unfiltered query with.
 fn keepAllTree (_u: Unit) -> QExpr = (keepAll ()).tree
 
--- The `(alias, func, value, side)` quadruples a grouped projection names. The
--- projection tree is a `QProj` whose every entry pairs an output alias with a group
--- aggregate node; each maps to its SQL aggregate keyword and the value it folds — a
--- column or a computed expression for `g.sum`/`avg`/`min`/`max`, an inert placeholder
--- for `g.key`/`g.count` (the key is rendered from the separately-carried `keyCol`, a
--- count counts rows). The group key column is passed to the seam directly, so the
--- projected columns no longer carry it.
-fn groupCols (_keyCol: Text) (tree: QExpr) -> List (Text, Text, QExpr, Bool) =
-    match tree
-        QProj cols -> groupColPairs cols
-        _          -> []
-
-fn groupColPairs (cols: List (Text, QExpr)) -> List (Text, Text, QExpr, Bool) =
-    match cols
-        []                  -> []
-        (alias, ex) :: rest -> (alias, aggFunc ex, aggColExpr ex, aggColSide ex) :: groupColPairs rest
-
--- The leaf-indexed dual of `groupCols`, for a join or composite run through a
--- `PlanGroup`: each aggregate value carries the join leaf it folds (`0`/`1` for a
--- binary join's two sides, higher for a deeper composite) rather than a left/right
--- boolean, so the renderer and the in-memory backend qualify a bare column to its
--- leaf alias.
+-- The `(alias, func, value, leaf)` quadruples a grouped projection names, for a query,
+-- join, or composite run through a `PlanGroup`. The projection tree is a `QProj` whose
+-- every entry pairs an output alias with a group aggregate node; each maps to its SQL
+-- aggregate keyword and the value it folds — a column or a computed expression for
+-- `g.sum`/`avg`/`min`/`max`, an inert placeholder for `g.key`/`g.count` (the key is
+-- rendered from the separately-carried `keyCol`, a count counts rows). Each value
+-- carries the leaf it folds (`0` the sole or left source, `1` the second, higher for a
+-- deeper composite), so the renderer and the in-memory backend qualify a bare column
+-- to its leaf alias. The group key is passed to the seam directly, so the projected
+-- columns no longer carry it.
 fn groupColsLeaf (_keyCol: Text) (tree: QExpr) -> List (Text, Text, QExpr, Int) =
     match tree
         QProj cols -> groupColLeafPairs cols
@@ -2945,25 +2934,8 @@ fn groupColLeafPairs (cols: List (Text, QExpr)) -> List (Text, Text, QExpr, Int)
         []                  -> []
         (alias, ex) :: rest -> (alias, aggFunc ex, aggColExpr ex, aggColLeaf ex) :: groupColLeafPairs rest
 
--- Which side of a join a group aggregate folds: a right-side column (`QColR`) inside
--- a `g.sum`/`avg`/`min`/`max` node folds the right table. `g.key` and `g.count` fold
--- no column of their own — the key column is side-tagged on the grouped builder
--- (`keySide`) and a count names no column — so they default to the left.
-fn aggColSide (ex: QExpr) -> Bool =
-    match ex
-        QAggSum c -> aggNodeSide c
-        QAggAvg c -> aggNodeSide c
-        QAggMin c -> aggNodeSide c
-        QAggMax c -> aggNodeSide c
-        _         -> false
-
-fn aggNodeSide (c: QExpr) -> Bool =
-    match c
-        QColR _ -> true
-        _       -> false
-
--- Which join leaf a group aggregate folds: the leaf-indexed dual of `aggColSide`. A
--- column inside a `g.sum`/`avg`/`min`/`max` node names its leaf (`QCol` the first,
+-- Which leaf a group aggregate folds: a column inside a `g.sum`/`avg`/`min`/`max` node
+-- names its leaf (`QCol` the first,
 -- `QColR` the second, `QColAt i` the i-th); `g.key`/`g.count` fold no column of their
 -- own and default to the first leaf.
 fn aggColLeaf (ex: QExpr) -> Int =

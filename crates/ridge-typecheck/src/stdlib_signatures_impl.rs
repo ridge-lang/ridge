@@ -1598,7 +1598,7 @@ mod tests {
                     continue;
                 }
                 // std.data: the `Adapter` class and its methods (`appendRow`/`all`/
-                // `get`/`delete`/`updateRows`/`groupSummarize`/`runPlan`) are seeded
+                // `get`/`delete`/`updateRows`/`runPlan`) are seeded
                 // via `seed_sql_codec_schemes`;
                 // the `selectRows`/`fetch` read helpers are standalone functions seeded
                 // via `reconciled_fn_scheme` (their quoted predicate pins the entity);
@@ -1617,7 +1617,6 @@ mod tests {
                             | "delete"
                             | "updateRows"
                             | "fetch"
-                            | "groupSummarize"
                             | "runPlan"
                             | "runMutation"
                             | "runMutationReturning"

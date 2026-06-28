@@ -278,6 +278,22 @@ pub fn singleProjectExistsSql () -> Text =
 pub fn singleProjectPagedSql () -> Text =
     renderSql (planProject (projE1 (fn (u: User) -> Picked { name = u.name })) (planScan "users" (pred1 (fn (u: User) -> u.age >= 18)) [(true, QCol "age")] (0 - 1) 0 false) 10 5 true)
 
+-- Single-table grouped folds over the plan: a `PlanGroup` over a bare `PlanScan`. One
+-- row per group keyed by the group key, the aggregate columns folded bare (or
+-- `l.`-qualified when the scan's filter correlates an EXISTS), the groups a HAVING admits
+-- kept, ordered by the key. Every column carries leaf 0 — a single table has one source.
+pub fn singleGroupSql () -> Text =
+    renderSql (planGroup "name" 0 [("name", "KEY", keepAll (), 0), ("n", "COUNT", keepAll (), 0), ("total", "SUM", QCol "age", 0)] (keepAll ()) (adultsScan ()))
+
+pub fn singleGroupHavingSql () -> Text =
+    renderSql (planGroup "name" 0 [("name", "KEY", keepAll (), 0), ("n", "COUNT", keepAll (), 0)] (QGt QAggCount (QLitInt 1)) (adultsScan ()))
+
+pub fn singleGroupHavingBinds () -> Text =
+    renderBinds (planGroup "name" 0 [("name", "KEY", keepAll (), 0), ("n", "COUNT", keepAll (), 0)] (QGt QAggCount (QLitInt 1)) (adultsScan ()))
+
+pub fn singleGroupExistsSql () -> Text =
+    renderSql (planGroup "name" 0 [("name", "KEY", keepAll (), 0), ("n", "COUNT", keepAll (), 0)] (keepAll ()) (planScan "users" (QExists "posts" (QEq (QColR "author") (QCol "id"))) [] (0 - 1) 0 false))
+
 -- A correlated EXISTS inside a binary join's post-join WHERE: the inner table joins at
 -- the leaf after both join sides (`x2`), and its predicate names the right leaf as `r`
 -- (`r."id"`) and the inner row as `x2` (`x2."post"`) — three correlated sources in one
@@ -778,7 +794,7 @@ fn query_plan_compiles_to_parameterized_sql() {
 
     let expr = format!(
         "F=fun(N)->io:format(\"~s=~s~n\",[N,{module}:N()])end, \
-         lists:foreach(F,['scanSql','scanBinds','foldSql','likeSql','likeBinds','inSql','inBinds','inCapturedSql','inCapturedBinds','corrExistsSql','corrExistsBinds','corrNotExistsSql','singleCountSql','singleSumSql','singleAvgSql','singleCountExistsSql','singleProjectSql','singleProjectExistsSql','singleProjectPagedSql','joinExistsWhereSql','naryExistsWhereSql','nestedExistsSql','pgNestedSql','pgNestedBinds','inEmptySql','inEmptyBinds','arithMulSql','arithMulBinds','arithColSql','arithModSql','combineSql','refineSql','innerSql','leftSql','rightSql','fullSql','fullBinds','projectSql','projectCalcSql','projectCalcBinds','projectCaseJoinSql','aggSql','groupSql','inner3Sql','inner3Binds','existsSql','existsThreeSql','existsThreeBinds','everyJoinSql','everyJoinBinds','innerLeftMixSql','innerRightMixSql','innerFullMixSql','innerFullMixBinds','adultLeftMixSql','adultLeftMixBinds','countAdultLeftMixSql','countThreeSql','countThreeBinds','countLeftMixSql','countLeftMixBinds','sumThreeSql','avgThreeSql','projectThreeSql','projectLeftMixSql','projectRightMixSql','projectFullMixSql','groupThreeSql','groupComputedThreeSql','groupComputedThreeBinds','groupLeftMixSql','groupRightMixSql','groupFullMixSql','orderThreeSql','orderLeftMixSql','orderRightMixSql','orderFullMixSql','inner4Sql','sumFourSql','projectFourSql','orderFourSql','insertSql','insertBinds','insertManySql','insertManyBinds','updateSql','updateBinds','deleteSql','existsDeleteSql','existsDeleteBinds','existsUpdateSql','existsUpdateBinds','upsertSql','upsertBinds','insertOrIgnoreSql','upsertBareSql','insertReturningStarSql','insertReturningStarBinds','insertReturningColsSql','deleteReturningSql','updateReturningSql','upsertReturningSql']), halt()."
+         lists:foreach(F,['scanSql','scanBinds','foldSql','likeSql','likeBinds','inSql','inBinds','inCapturedSql','inCapturedBinds','corrExistsSql','corrExistsBinds','corrNotExistsSql','singleCountSql','singleSumSql','singleAvgSql','singleCountExistsSql','singleProjectSql','singleProjectExistsSql','singleProjectPagedSql','singleGroupSql','singleGroupHavingSql','singleGroupHavingBinds','singleGroupExistsSql','joinExistsWhereSql','naryExistsWhereSql','nestedExistsSql','pgNestedSql','pgNestedBinds','inEmptySql','inEmptyBinds','arithMulSql','arithMulBinds','arithColSql','arithModSql','combineSql','refineSql','innerSql','leftSql','rightSql','fullSql','fullBinds','projectSql','projectCalcSql','projectCalcBinds','projectCaseJoinSql','aggSql','groupSql','inner3Sql','inner3Binds','existsSql','existsThreeSql','existsThreeBinds','everyJoinSql','everyJoinBinds','innerLeftMixSql','innerRightMixSql','innerFullMixSql','innerFullMixBinds','adultLeftMixSql','adultLeftMixBinds','countAdultLeftMixSql','countThreeSql','countThreeBinds','countLeftMixSql','countLeftMixBinds','sumThreeSql','avgThreeSql','projectThreeSql','projectLeftMixSql','projectRightMixSql','projectFullMixSql','groupThreeSql','groupComputedThreeSql','groupComputedThreeBinds','groupLeftMixSql','groupRightMixSql','groupFullMixSql','orderThreeSql','orderLeftMixSql','orderRightMixSql','orderFullMixSql','inner4Sql','sumFourSql','projectFourSql','orderFourSql','insertSql','insertBinds','insertManySql','insertManyBinds','updateSql','updateBinds','deleteSql','existsDeleteSql','existsDeleteBinds','existsUpdateSql','existsUpdateBinds','upsertSql','upsertBinds','insertOrIgnoreSql','upsertBareSql','insertReturningStarSql','insertReturningStarBinds','insertReturningColsSql','deleteReturningSql','updateReturningSql','upsertReturningSql']), halt()."
     );
     let output = Command::new("erl")
         .arg("-noshell")
@@ -840,6 +856,20 @@ fn query_plan_compiles_to_parameterized_sql() {
     );
     want(
         r#"singleProjectPagedSql=SELECT DISTINCT "name" AS "name" FROM "users" WHERE "age" >= $1 ORDER BY "age" ASC LIMIT 10 OFFSET 5"#,
+    );
+
+    // Single-table grouped folds render through the same plan: the key and each fold in the
+    // select-list, GROUP BY and ORDER BY the key, a HAVING binding its literal after the
+    // WHERE, and a correlated EXISTS aliasing the scan `l` and qualifying the key and folds.
+    want(
+        r#"singleGroupSql=SELECT "name" AS "name", COUNT(*) AS "n", SUM("age") AS "total" FROM "users" WHERE "age" >= $1 GROUP BY "name" ORDER BY "name""#,
+    );
+    want(
+        r#"singleGroupHavingSql=SELECT "name" AS "name", COUNT(*) AS "n" FROM "users" WHERE "age" >= $1 GROUP BY "name" HAVING COUNT(*) > $2 ORDER BY "name""#,
+    );
+    want("singleGroupHavingBinds=2");
+    want(
+        r#"singleGroupExistsSql=SELECT l."name" AS "name", COUNT(*) AS "n" FROM "users" AS l WHERE EXISTS (SELECT 1 FROM "posts" AS x1 WHERE x1."author" = l."id") GROUP BY l."name" ORDER BY l."name""#,
     );
 
     // The typed write renderer (`mutationToSql`): an INSERT lists its columns and binds

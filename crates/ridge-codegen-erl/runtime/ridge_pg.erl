@@ -278,11 +278,17 @@ pg_ddl_index(Id, Name, Table, Cols, Unique) ->
 pg_migrations_applied(Id) ->
     pg_call(Id, migrations_init).
 
-%% pg_record_migration/2 — insert a migration name into the tracking table, reusing
-%% the insert verb so it runs on the migration's pinned connection. Result Unit
-%% Error.
+%% pg_record_migration/2 — record a migration name in the tracking table with a
+%% parameterised insert on the migration's pinned connection. The name is bound as
+%% $1, never spliced into the SQL; applied_at fills from its column default. Result
+%% Unit Error.
 pg_record_migration(Id, Name) ->
-    pg_call(Id, {insert, <<"_ridge_migrations">>, #{<<"name">> => {'SqlText', Name}}}).
+    Sql = ["INSERT INTO ", quote_ident(<<"_ridge_migrations">>),
+           " (", quote_ident(<<"name">>), ") VALUES ($1)"],
+    case pg_call(Id, {raw_exec, Sql, [{'SqlText', Name}]}) of
+        {ok, _} -> {ok, ok};
+        {error, E} -> {error, E}
+    end.
 
 %% CREATE TABLE with the column definitions compiled from the seam tuples.
 ddl_create_sql(Table, Cols) ->

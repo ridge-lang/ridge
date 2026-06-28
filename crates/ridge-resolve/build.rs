@@ -465,10 +465,6 @@ const BASELINE_EXPORTS: &[(&str, &[&str])] = &[
             "delete",
             "updateRows",
             "fetch",
-            "countWhere",
-            "aggregate",
-            "project",
-            "groupSummarize",
             "runPlan",
             // The write seam: a write verb builds a `MutationPlan` and hands it here;
             // a SQL backend renders it through `mutationToSql`, the in-memory one

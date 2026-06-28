@@ -1546,7 +1546,45 @@ fn renderProject (proj: QExpr) (child: QueryPlan) (lim: Int) (off: Int) (dist: B
                             { text = Text.join "" ["SELECT ", distinctKw dist, sel.text, " FROM ", sk.text, ob.text, limitClause lim, offsetClause off], binds = sel.binds ++ sk.binds ++ ob.binds, next = ob.next }
                         _ -> naryProject proj child joinOrders lim off dist n
                 _ -> naryProject proj child joinOrders lim off dist n
+        PlanScan table pred orders _ _ _ ->
+            -- A projected single table (`select` over a query): the projection's own
+            -- select-list over the table's filtered, ordered rows, paged and de-duplicated
+            -- by the projection. The scan's ordering rides on the scan; the page and
+            -- distinct come from the projection. An EXISTS in the filter aliases the scan
+            -- `l` so the subquery correlates, the same as a plain scan.
+            if containsExists pred then
+                let sel = singleSelectList true proj n
+                let w = whereExistsClause true 1 pred sel.next
+                let ob = orderByClause orders w.next
+                { text = Text.join "" ["SELECT ", distinctKw dist, sel.text, " FROM ", quoteIdent table, " AS l", w.text, ob.text, limitClause lim, offsetClause off], binds = sel.binds ++ w.binds ++ ob.binds, next = ob.next }
+            else
+                let sel = singleSelectList false proj n
+                let w = whereClause false pred sel.next
+                let ob = orderByClause orders w.next
+                { text = Text.join "" ["SELECT ", distinctKw dist, sel.text, " FROM ", quoteIdent table, w.text, ob.text, limitClause lim, offsetClause off], binds = sel.binds ++ w.binds ++ ob.binds, next = ob.next }
         _ -> emptyRender n
+
+-- The projection's select-list over a single table: each named column or computed
+-- value rendered bare (or base-qualified `l.` when the scan carries an EXISTS) as
+-- `<expr> AS "alias"`, threading the `$N` counter so a literal in a computed cell
+-- binds in source order. A projection naming no `QProj` selects every column.
+fn singleSelectList (qualified: Bool) (proj: QExpr) (n: Int) -> { text: Text, binds: List SqlValue, next: Int } =
+    match proj
+        QProj cols -> singleSelectTerms qualified cols n
+        _          -> { text = "*", binds = [], next = n }
+
+fn singleSelectTerms (qualified: Bool) (cols: List (Text, QExpr)) (n: Int) -> { text: Text, binds: List SqlValue, next: Int } =
+    match cols
+        []                 -> { text = "", binds = [], next = n }
+        (alias, col) :: [] -> singleSelectTerm qualified alias col n
+        (alias, col) :: rest ->
+            let h = singleSelectTerm qualified alias col n
+            let t = singleSelectTerms qualified rest h.next
+            { text = Text.join "" [h.text, ", ", t.text], binds = h.binds ++ t.binds, next = t.next }
+
+fn singleSelectTerm (qualified: Bool) (alias: Text) (col: QExpr) (n: Int) -> { text: Text, binds: List SqlValue, next: Int } =
+    let r = renderOperand qualified col n
+    { text = Text.join "" [r.text, " AS ", quoteIdent alias], binds = r.binds, next = r.next }
 
 -- A projected composite (`select` over a three-or-more table join): the projection's
 -- own select-list over the flattened spine, paged and de-duplicated by the projection.
@@ -1642,6 +1680,20 @@ fn renderAggregate (func: Text) (column: QExpr) (leaf: Int) (child: QueryPlan) (
                             { text = Text.join "" ["SELECT ", ax.text, " FROM ", sk.text], binds = ax.binds ++ sk.binds, next = sk.next }
                         _ -> naryAggregate func leaf column child n
                 _ -> naryAggregate func leaf column child n
+        PlanScan table pred _ _ _ _ ->
+            -- A scalar aggregate over a single table: fold over the table's filtered rows.
+            -- The WHERE compiles bare, or base-qualified (`FROM "t" AS l`) when it carries a
+            -- correlated EXISTS, so the subquery names the outer row as `l."col"` — the same
+            -- aliasing a plain `PlanScan` uses. No ordering or paging: an aggregate folds
+            -- every matched row.
+            if containsExists pred then
+                let ax = aggExprSingle true func column n
+                let w = whereExistsClause true 1 pred ax.next
+                { text = Text.join "" ["SELECT ", ax.text, " FROM ", quoteIdent table, " AS l", w.text], binds = ax.binds ++ w.binds, next = w.next }
+            else
+                let ax = aggExprSingle false func column n
+                let w = whereClause false pred ax.next
+                { text = Text.join "" ["SELECT ", ax.text, " FROM ", quoteIdent table, w.text], binds = ax.binds ++ w.binds, next = w.next }
         _ -> emptyRender n
 
 -- A scalar aggregate over a composite (three-or-more table) join: the flattened spine
@@ -1698,6 +1750,16 @@ fn aggExprJoinE (func: Text) (column: QExpr) (n: Int) -> { text: Text, binds: Li
         let c = renderOperand true column n
         { text = Text.join "" [func, "(", c.text, ")", avgCast func], binds = c.binds, next = c.next }
 
+-- The scalar-aggregate expression over a single table: `COUNT(*)`, or `FUNC(<expr>)`
+-- folding its captured value (a column or a computed expression), rendered bare or
+-- base-qualified (`l.`) when the scan's WHERE carries an EXISTS, its literals threaded
+-- as `$N` placeholders. `AVG` casts to float8, as the join aggregate renderers do.
+fn aggExprSingle (qualified: Bool) (func: Text) (column: QExpr) (n: Int) -> { text: Text, binds: List SqlValue, next: Int } =
+    if func == "COUNT" then { text = "COUNT(*)", binds = [], next = n }
+    else
+        let c = renderOperand qualified column n
+        { text = Text.join "" [func, "(", c.text, ")", avgCast func], binds = c.binds, next = c.next }
+
 -- A grouped join (`groupBy` + `summarize`): one row per group, keyed by the
 -- side-qualified group key and summarised into the aggregate columns, keeping the
 -- groups the HAVING admits, ordered by the key.
@@ -1715,6 +1777,23 @@ fn renderGroup (keyCol: Text) (keyLeaf: Int) (cols: List (Text, Text, QExpr, Int
                             { text = Text.join "" ["SELECT ", cs.text, " FROM ", sk.text, " GROUP BY ", keyExpr, h.text, " ORDER BY ", keyExpr], binds = cs.binds ++ sk.binds ++ h.binds, next = h.next }
                         _ -> naryGroup keyCol keyLeaf cols having child n
                 _ -> naryGroup keyCol keyLeaf cols having child n
+        PlanScan table pred _ _ _ _ ->
+            -- A single-table grouped fold: one row per group keyed by the group key,
+            -- summarised into the aggregate columns, the groups the HAVING admits kept,
+            -- ordered by the key. The key, the folds, and the HAVING render bare against
+            -- the table, or `l.`-qualified when the scan's filter correlates an EXISTS
+            -- and aliases the table `l`, the same as a plain scan.
+            let qualified = containsExists pred
+            let keyExpr = renderColRef qualified false keyCol
+            let cs = singleGroupSelectTerms cols keyExpr qualified n
+            if qualified then
+                let w = whereExistsClause true 1 pred cs.next
+                let h = singleHaving having qualified keyCol w.next
+                { text = Text.join "" ["SELECT ", cs.text, " FROM ", quoteIdent table, " AS l", w.text, " GROUP BY ", keyExpr, h.text, " ORDER BY ", keyExpr], binds = cs.binds ++ w.binds ++ h.binds, next = h.next }
+            else
+                let w = whereClause false pred cs.next
+                let h = singleHaving having qualified keyCol w.next
+                { text = Text.join "" ["SELECT ", cs.text, " FROM ", quoteIdent table, w.text, " GROUP BY ", keyExpr, h.text, " ORDER BY ", keyExpr], binds = cs.binds ++ w.binds ++ h.binds, next = h.next }
         _ -> emptyRender n
 
 -- The grouped SELECT list of a binary join, the aggregate terms threaded left to
@@ -1735,6 +1814,77 @@ fn groupSelectTerm (alias: Text) (func: Text) (col: QExpr) (leaf: Int) (keyExpr:
     else
         let a = aggExprJoinE func col n
         { text = Text.join "" [a.text, " AS ", quoteIdent alias], binds = a.binds, next = a.next }
+
+-- The grouped SELECT list of a single table: the group key, or a scalar aggregate
+-- folding a bare (or `l.`-qualified) column or computed value, threaded left to right
+-- so a computed fold's literals bind in source order. `COUNT(*)` carries no value.
+-- The leaf each column records is unused — a single table has the one source.
+fn singleGroupSelectTerms (cols: List (Text, Text, QExpr, Int)) (keyExpr: Text) (qualified: Bool) (n: Int) -> { text: Text, binds: List SqlValue, next: Int } =
+    match cols
+        []                                -> { text = "", binds = [], next = n }
+        (alias, func, col, _leaf) :: []   -> singleGroupSelectTerm alias func col keyExpr qualified n
+        (alias, func, col, _leaf) :: rest ->
+            let h = singleGroupSelectTerm alias func col keyExpr qualified n
+            let t = singleGroupSelectTerms rest keyExpr qualified h.next
+            { text = Text.join "" [h.text, ", ", t.text], binds = h.binds ++ t.binds, next = t.next }
+
+fn singleGroupSelectTerm (alias: Text) (func: Text) (col: QExpr) (keyExpr: Text) (qualified: Bool) (n: Int) -> { text: Text, binds: List SqlValue, next: Int } =
+    if func == "KEY" then { text = Text.join "" [keyExpr, " AS ", quoteIdent alias], binds = [], next = n }
+    else
+        let a = aggExprSingle qualified func col n
+        { text = Text.join "" [a.text, " AS ", quoteIdent alias], binds = a.binds, next = a.next }
+
+-- A single-table HAVING fragment, the bare (or `l.`-qualified) dual of `renderHaving`:
+-- its aggregate operands fold a bare column and its group-key operand reads the bare
+-- key, where the binary form side-qualifies each. The leading ` HAVING ` is folded in,
+-- and the clause is empty for the always-true default so it is omitted.
+fn singleHaving (having: QExpr) (qualified: Bool) (keyCol: Text) (n: Int) -> { text: Text, binds: List SqlValue, next: Int } =
+    match having
+        QLitBool b -> if b then { text = "", binds = [], next = n } else singleHavingClause having qualified keyCol n
+        _          -> singleHavingClause having qualified keyCol n
+
+fn singleHavingClause (having: QExpr) (qualified: Bool) (keyCol: Text) (n: Int) -> { text: Text, binds: List SqlValue, next: Int } =
+    let h = singleHavingExpr having qualified keyCol n
+    { text = Text.concat " HAVING " h.text, binds = h.binds, next = h.next }
+
+fn singleHavingExpr (e: QExpr) (qualified: Bool) (keyCol: Text) (n: Int) -> { text: Text, binds: List SqlValue, next: Int } =
+    match e
+        QAnd l r -> singleHavingBin l " AND " r qualified keyCol n
+        QOr l r  -> singleHavingBin l " OR " r qualified keyCol n
+        QNot x   ->
+            let r = singleHavingExpr x qualified keyCol n
+            { text = Text.join "" ["(NOT ", r.text, ")"], binds = r.binds, next = r.next }
+        QEq l r -> singleHavingCmp l " = " r qualified keyCol n
+        QNe l r -> singleHavingCmp l " <> " r qualified keyCol n
+        QLt l r -> singleHavingCmp l " < " r qualified keyCol n
+        QGt l r -> singleHavingCmp l " > " r qualified keyCol n
+        QLe l r -> singleHavingCmp l " <= " r qualified keyCol n
+        QGe l r -> singleHavingCmp l " >= " r qualified keyCol n
+        _       -> singleHavingOperand e qualified keyCol n
+
+fn singleHavingCmp (l: QExpr) (op: Text) (r: QExpr) (qualified: Bool) (keyCol: Text) (n: Int) -> { text: Text, binds: List SqlValue, next: Int } =
+    let lr = singleHavingOperand l qualified keyCol n
+    let rr = singleHavingOperand r qualified keyCol lr.next
+    { text = Text.join "" [lr.text, op, rr.text], binds = lr.binds ++ rr.binds, next = rr.next }
+
+fn singleHavingBin (l: QExpr) (op: Text) (r: QExpr) (qualified: Bool) (keyCol: Text) (n: Int) -> { text: Text, binds: List SqlValue, next: Int } =
+    let lr = singleHavingExpr l qualified keyCol n
+    let rr = singleHavingExpr r qualified keyCol lr.next
+    { text = Text.join "" ["(", lr.text, op, rr.text, ")"], binds = lr.binds ++ rr.binds, next = rr.next }
+
+fn singleHavingOperand (e: QExpr) (qualified: Bool) (keyCol: Text) (n: Int) -> { text: Text, binds: List SqlValue, next: Int } =
+    match e
+        QAggCount    -> { text = "COUNT(*)", binds = [], next = n }
+        QGroupKey    -> { text = renderColRef qualified false keyCol, binds = [], next = n }
+        QAggSum node -> aggExprSingle qualified "SUM" node n
+        QAggAvg node -> aggExprSingle qualified "AVG" node n
+        QAggMin node -> aggExprSingle qualified "MIN" node n
+        QAggMax node -> aggExprSingle qualified "MAX" node n
+        QLitInt v    -> { text = placeholder n, binds = [sqlInt v], next = n + 1 }
+        QLitText v   -> { text = placeholder n, binds = [sqlText v], next = n + 1 }
+        QLitBool v   -> { text = placeholder n, binds = [sqlBool v], next = n + 1 }
+        QLitFloat v  -> { text = placeholder n, binds = [sqlFloat v], next = n + 1 }
+        _            -> { text = "NULL", binds = [], next = n }
 
 -- A grouped composite (three-or-more table) join: the flattened spine as the `FROM`,
 -- one row per group keyed by the leaf-qualified group key and summarised into the

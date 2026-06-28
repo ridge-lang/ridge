@@ -1505,11 +1505,11 @@ instance Refinable (FullJoined q f a) (Map Text SqlValue -> Map Text SqlValue ->
 -- columns cross, in the query's order and page; `selectFirst` adds `LIMIT 1`.
 instance Projectable (Query e a) (fn e -> s) where Adapter a, Row s =
     select (proj: Quote (fn e -> s)) (x: Query e a) -> Result (List s) Error =
-        match project x.repo.adapter x.repo.table x.pred x.orders x.lim x.off (projColumns proj) x.dist
+        match runPlan x.repo.adapter (planProject proj.tree (planScan x.repo.table x.pred.tree x.orders (0 - 1) 0 false) x.lim x.off x.dist)
             Err err -> Err err
             Ok rows -> decodeRows rows
     selectFirst (proj: Quote (fn e -> s)) (x: Query e a) -> Result (Option s) Error =
-        match project x.repo.adapter x.repo.table x.pred x.orders 1 x.off (projColumns proj) x.dist
+        match runPlan x.repo.adapter (planProject proj.tree (planScan x.repo.table x.pred.tree x.orders (0 - 1) 0 false) 1 x.off x.dist)
             Err err -> Err err
             Ok rows -> firstDecoded rows
 
@@ -1664,28 +1664,34 @@ instance Orderable (FullJoined q f a) (Map Text SqlValue -> k) =
     orderBy (dir: SortOrder) (key: Quote (Map Text SqlValue -> k)) (x: FullJoined q f a) -> FullJoined q f a =
         FullJoined { source = x.source, right = x.right, cond = x.cond, where2 = x.where2, orders = snoc x.orders (orderEntryLeaf dir key), lim = x.lim, off = x.off, dist = x.dist }
 
+-- The scalar-aggregate plan a single-table `sumOf`/`avgOf`/`minOf`/`maxOf` runs: a
+-- `PlanAggregate` over the table's filtered scan, folding the named column. Leaf 0 —
+-- a single table has one source, and the renderer reads the column bare.
+fn queryScalarPlan (x: Query e a) (func: Text) (column: QExpr) -> QueryPlan =
+    planAggregate func column 0 (planScan x.repo.table x.pred.tree [] (0 - 1) 0 false)
+
 -- A query's scalar aggregates: fold the column the one-row accessor names over
--- the rows the query's filter selects, through the `aggregate` seam push-down.
--- The behaviour the single-receiver `sumOf`/`avgOf`/`minOf`/`maxOf` had before
--- they unified with the join form. `sumOf`/`minOf`/`maxOf` keep the column's own
--- type (`Ret p` = `n`); `avgOf` is always a `Float`.
+-- the rows the query's filter selects, through a `PlanAggregate` over the table's
+-- filtered scan. The behaviour the single-receiver `sumOf`/`avgOf`/`minOf`/`maxOf`
+-- had before they unified with the join form. `sumOf`/`minOf`/`maxOf` keep the
+-- column's own type (`Ret p` = `n`); `avgOf` is always a `Float`.
 instance Aggregable (Query e a) (fn e -> n) where Adapter a, SqlType n =
     sumOf (col: Quote (fn e -> n)) (x: Query e a) -> Result (Option n) Error =
-        match aggregate x.repo.adapter x.repo.table x.pred "SUM" (aggColumn col)
+        match runPlan x.repo.adapter (queryScalarPlan x "SUM" (aggColumn col))
             Err err -> Err err
-            Ok v    -> decodeScalar v
+            Ok rows -> decodeScalar (firstAggCell rows)
     avgOf (col: Quote (fn e -> n)) (x: Query e a) -> Result (Option Float) Error =
-        match aggregate x.repo.adapter x.repo.table x.pred "AVG" (aggColumn col)
+        match runPlan x.repo.adapter (queryScalarPlan x "AVG" (aggColumn col))
             Err err -> Err err
-            Ok v    -> decodeFloatScalar v
+            Ok rows -> decodeFloatScalar (firstAggCell rows)
     minOf (col: Quote (fn e -> n)) (x: Query e a) -> Result (Option n) Error =
-        match aggregate x.repo.adapter x.repo.table x.pred "MIN" (aggColumn col)
+        match runPlan x.repo.adapter (queryScalarPlan x "MIN" (aggColumn col))
             Err err -> Err err
-            Ok v    -> decodeScalar v
+            Ok rows -> decodeScalar (firstAggCell rows)
     maxOf (col: Quote (fn e -> n)) (x: Query e a) -> Result (Option n) Error =
-        match aggregate x.repo.adapter x.repo.table x.pred "MAX" (aggColumn col)
+        match runPlan x.repo.adapter (queryScalarPlan x "MAX" (aggColumn col))
             Err err -> Err err
-            Ok v    -> decodeScalar v
+            Ok rows -> decodeScalar (firstAggCell rows)
 
 -- A left join's scalar aggregates: the two-row dual over a `LeftJoin`, run through
 -- the `aggregateLeftJoin` seam. Unlike a left join's `select`/`orderBy` — whose
@@ -2399,7 +2405,7 @@ instance Pageable (Joined q f a) =
 -- not a paged window of it, the same rule the scalar aggregates follow.
 fn countQuery (x: Query e a) -> Result Int Error where Adapter a =
     match x.plan
-        None   -> countWhere x.repo.adapter x.repo.table x.pred
+        None   -> compositeCount x.repo.adapter (planScan x.repo.table x.pred.tree [] (0 - 1) 0 false)
         Some p ->
             match runPlan x.repo.adapter (planRefine p x.pred.tree [] (0 - 1) 0 false)
                 Err err -> Err err
@@ -2602,11 +2608,12 @@ instance Groupable (Query e a) (fn e -> k) =
         Grouped { source = x, keyCol = aggColumnName key, keyLeaf = aggLeaf key, havingTree = keepAllTree () }
 
 -- A query's `summarize` seam: run the `GROUP BY` (and any `HAVING`) over the query's
--- own filter through the `groupSummarize` push-down, returning one raw row per group
--- for `summarize` to decode. The key side is unused for a query (no right table).
+-- own filter through the same `PlanGroup` node the join and sequence `summarize` use,
+-- one plan IR, returning one raw row per group for `summarize` to decode. The key sits
+-- on the sole leaf, so the aggregate columns carry leaf 0 (`groupColsLeaf`).
 instance Summarizable (Query e a) where Adapter a =
     runGroups (src: Query e a) (keyCol: Text) (keyLeaf: Int) (projTree: QExpr) (havingTree: QExpr) -> Result (List (Map Text SqlValue)) Error =
-        groupSummarize src.repo.adapter src.repo.table src.pred keyCol (groupCols keyCol projTree) havingTree
+        runPlan src.repo.adapter (planGroup keyCol keyLeaf (groupColsLeaf keyCol projTree) havingTree (planScan src.repo.table src.pred.tree [] (0 - 1) 0 false))
 
 -- A left join's `groupBy`: the two-row dual over a `LeftJoin`, the right side read as
 -- the plain entity `f` as in the left-join aggregates. A right-side key groups the
@@ -2840,22 +2847,10 @@ fn firstDecodedFullPrefixed (rows: List (Map Text SqlValue)) -> Result (Option (
                         Err err -> Err err
                         Ok optY -> Ok (Some (optX, optY))
 
--- The `(alias, expr)` columns a projection names. The projection quote captures
--- a `QProj` whose select-list is a list of `(alias, QExpr)` — a bare column or a
--- computed value (arithmetic, a CASE) — which passes through unchanged for the
--- adapter to compile to its backend. Anything that is not a projection names no
--- columns. Generic over the quote's function type so it reads an entity-typed
--- projection (`fn e -> s`) and a row-map one alike — only the captured `tree`
--- matters.
-fn projColumns (proj: Quote p) -> List (Text, QExpr) =
-    match proj.tree
-        QProj cols -> cols
-        _          -> []
-
 -- The captured tree of an ordering key — a column (`QCol`) or a computed
 -- expression over the columns (arithmetic, a CASE), threaded into the plan and
 -- rendered by the backend (a literal in it binding as a placeholder, never
--- interpolated). Generic over the quote's function type (like `projColumns`) so it
+-- interpolated). Generic over the quote's function type so it
 -- reads an entity-typed key (`fn (u: User) -> u.age`, the unified `orderBy`'s
 -- shape) and a row-map one alike — only the captured `tree` matters.
 fn orderColumn (key: Quote p) -> QExpr = key.tree
@@ -2919,28 +2914,16 @@ fn aggColumnName (col: Quote p) -> Text =
 -- seeds an unfiltered query with.
 fn keepAllTree (_u: Unit) -> QExpr = (keepAll ()).tree
 
--- The `(alias, func, value, side)` quadruples a grouped projection names. The
--- projection tree is a `QProj` whose every entry pairs an output alias with a group
--- aggregate node; each maps to its SQL aggregate keyword and the value it folds — a
--- column or a computed expression for `g.sum`/`avg`/`min`/`max`, an inert placeholder
--- for `g.key`/`g.count` (the key is rendered from the separately-carried `keyCol`, a
--- count counts rows). The group key column is passed to the seam directly, so the
--- projected columns no longer carry it.
-fn groupCols (_keyCol: Text) (tree: QExpr) -> List (Text, Text, QExpr, Bool) =
-    match tree
-        QProj cols -> groupColPairs cols
-        _          -> []
-
-fn groupColPairs (cols: List (Text, QExpr)) -> List (Text, Text, QExpr, Bool) =
-    match cols
-        []                  -> []
-        (alias, ex) :: rest -> (alias, aggFunc ex, aggColExpr ex, aggColSide ex) :: groupColPairs rest
-
--- The leaf-indexed dual of `groupCols`, for a join or composite run through a
--- `PlanGroup`: each aggregate value carries the join leaf it folds (`0`/`1` for a
--- binary join's two sides, higher for a deeper composite) rather than a left/right
--- boolean, so the renderer and the in-memory backend qualify a bare column to its
--- leaf alias.
+-- The `(alias, func, value, leaf)` quadruples a grouped projection names, for a query,
+-- join, or composite run through a `PlanGroup`. The projection tree is a `QProj` whose
+-- every entry pairs an output alias with a group aggregate node; each maps to its SQL
+-- aggregate keyword and the value it folds — a column or a computed expression for
+-- `g.sum`/`avg`/`min`/`max`, an inert placeholder for `g.key`/`g.count` (the key is
+-- rendered from the separately-carried `keyCol`, a count counts rows). Each value
+-- carries the leaf it folds (`0` the sole or left source, `1` the second, higher for a
+-- deeper composite), so the renderer and the in-memory backend qualify a bare column
+-- to its leaf alias. The group key is passed to the seam directly, so the projected
+-- columns no longer carry it.
 fn groupColsLeaf (_keyCol: Text) (tree: QExpr) -> List (Text, Text, QExpr, Int) =
     match tree
         QProj cols -> groupColLeafPairs cols
@@ -2951,25 +2934,8 @@ fn groupColLeafPairs (cols: List (Text, QExpr)) -> List (Text, Text, QExpr, Int)
         []                  -> []
         (alias, ex) :: rest -> (alias, aggFunc ex, aggColExpr ex, aggColLeaf ex) :: groupColLeafPairs rest
 
--- Which side of a join a group aggregate folds: a right-side column (`QColR`) inside
--- a `g.sum`/`avg`/`min`/`max` node folds the right table. `g.key` and `g.count` fold
--- no column of their own — the key column is side-tagged on the grouped builder
--- (`keySide`) and a count names no column — so they default to the left.
-fn aggColSide (ex: QExpr) -> Bool =
-    match ex
-        QAggSum c -> aggNodeSide c
-        QAggAvg c -> aggNodeSide c
-        QAggMin c -> aggNodeSide c
-        QAggMax c -> aggNodeSide c
-        _         -> false
-
-fn aggNodeSide (c: QExpr) -> Bool =
-    match c
-        QColR _ -> true
-        _       -> false
-
--- Which join leaf a group aggregate folds: the leaf-indexed dual of `aggColSide`. A
--- column inside a `g.sum`/`avg`/`min`/`max` node names its leaf (`QCol` the first,
+-- Which leaf a group aggregate folds: a column inside a `g.sum`/`avg`/`min`/`max` node
+-- names its leaf (`QCol` the first,
 -- `QColR` the second, `QColAt i` the i-th); `g.key`/`g.count` fold no column of their
 -- own and default to the first leaf.
 fn aggColLeaf (ex: QExpr) -> Int =

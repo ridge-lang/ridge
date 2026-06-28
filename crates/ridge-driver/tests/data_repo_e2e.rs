@@ -731,8 +731,8 @@ pub fn db notExistsPosts () -> Text =
                 Ok us  -> joinNames us
 
 -- count over a filter carrying a correlated EXISTS: how many users own a post?
--- Exercises the direct count path (the in-memory `count_where`), so it locks the
--- EXISTS rendering on the non-plan compiler too -> 2.
+-- Exercises the single-table count through the query plan (a `PlanAggregate` over a
+-- `PlanScan`), so it locks the EXISTS rendering for an aggregate too -> 2.
 pub fn db existsPostsCount () -> Int =
     match setupJoin ()
         Err _ -> 0 - 1

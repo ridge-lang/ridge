@@ -30,8 +30,6 @@
     ask/3, send/2, send_op/2, send_fn/2, mailbox_size/1, spawn_actor/3,
     mem_new/1, mem_insert/3, mem_all/2,
     mem_delete/3, mem_update/4, mem_get_rows/4,
-    mem_count_where/3, mem_aggregate/5, mem_project/8,
-    mem_group_summarize/6,
     mem_begin/1, mem_commit/1, mem_rollback/1, mem_close/1,
     mem_ddl_create/3, mem_ddl_drop/2, mem_ddl_add_column/3,
     mem_ddl_drop_column/3, mem_ddl_index/5,
@@ -979,33 +977,6 @@ mem_delete(Id, Table, Tree) -> mem_call({delete, Id, Table, Tree}).
 %% over each matching row. Result Int Error.
 mem_update(Id, Table, Changes, Tree) -> mem_call({update, Id, Table, Changes, Tree}).
 
-%% mem_count_where/3 — how many rows of Table satisfy Tree, counted without
-%% returning them (the in-memory dual of SELECT COUNT(*)). Result Int Error.
-mem_count_where(Id, Table, Tree) -> mem_call({count_where, Id, Table, Tree}).
-
-%% mem_aggregate/5 — fold a scalar aggregate (Func is <<"SUM">>/<<"AVG">>/
-%% <<"MIN">>/<<"MAX">>) over Column across the rows of Table that satisfy Tree.
-%% The single scalar comes back as a SqlValue, or 'SqlNull' when no row matches
-%% (the in-memory dual of a SQL aggregate over an empty set). Result SqlValue
-%% Error.
-mem_aggregate(Id, Table, Tree, Func, Column) ->
-    mem_call({aggregate, Id, Table, Tree, Func, Column}).
-
-%% mem_project/7 — the rows of Table that satisfy Tree, ordered and paged as
-%% mem_fetch, then projected to the `{Alias, Column}` columns: each row keeps
-%% only those columns, re-keyed by alias. Result (List Row) Error.
-mem_project(Id, Table, Tree, Orders, Lim, Off, Cols, Dist) ->
-    mem_call({project, Id, Table, Tree, Orders, Lim, Off, Cols, Dist}).
-
-%% mem_group_summarize/6 — group the rows of Table that satisfy Tree by KeyCol,
-%% summarize each group into the `{Alias, Func, Column}` aggregates (Func is
-%% <<"KEY">>/<<"COUNT">>/<<"SUM">>/<<"AVG">>/<<"MIN">>/<<"MAX">>), keep the groups
-%% the Having tree admits, and return one row per group keyed by alias, ordered by
-%% the key. The in-memory dual of SELECT … GROUP BY … HAVING …. Result (List Row)
-%% Error.
-mem_group_summarize(Id, Table, Tree, KeyCol, Cols, Having) ->
-    mem_call({group_summarize, Id, Table, Tree, KeyCol, Cols, Having}).
-
 %% mem_begin/1 — open a transaction on store Id: snapshot its tables onto a
 %% per-store stack the keeper holds. A nested begin snapshots again (a savepoint).
 %% Result Unit Error.
@@ -1233,27 +1204,6 @@ mem_keeper_loop(State) ->
             {Updated, Changed} = mem_update_rows(State, Id, Changes, Tree, Rows),
             From ! {Ref, {ok, Changed}},
             mem_keeper_loop(State#{Key => Updated});
-        {{count_where, Id, Table, Tree}, From, Ref} ->
-            Rows = maps:get({Id, Table}, State, []),
-            N = length([R || R <- Rows, mem_pred(State, Id, Tree, R)]),
-            From ! {Ref, {ok, N}},
-            mem_keeper_loop(State);
-        {{aggregate, Id, Table, Tree, Func, Column}, From, Ref} ->
-            Rows = maps:get({Id, Table}, State, []),
-            Matches = [R || R <- Rows, mem_pred(State, Id, Tree, R)],
-            Value = mem_agg_value_q(Func, Column, Matches),
-            Wrapped = case Value of 'SqlNull' -> none; _ -> {some, Value} end,
-            From ! {Ref, {ok, Wrapped}},
-            mem_keeper_loop(State);
-        {{group_summarize, Id, Table, Tree, KeyCol, Cols, Having}, From, Ref} ->
-            Rows = maps:get({Id, Table}, State, []),
-            Matches = [R || R <- Rows, mem_pred(State, Id, Tree, R)],
-            Groups = mem_group_by(KeyCol, Matches),
-            Kept = [{K, GR} || {K, GR} <- Groups, mem_having(Having, K, GR)],
-            Sorted = lists:sort(fun({KA, _}, {KB, _}) -> mem_order_cmp(KA, KB) =/= gt end, Kept),
-            Result = [mem_group_row(Cols, K, GR) || {K, GR} <- Sorted],
-            From ! {Ref, {ok, Result}},
-            mem_keeper_loop(State);
         {{run_plan, Id, Plan}, From, Ref} ->
             Rows = mem_eval_plan(State, Id, Plan),
             From ! {Ref, {ok, Rows}},
@@ -1266,15 +1216,7 @@ mem_keeper_loop(State) ->
             {State1, Rows} = mem_mutation_affected(State, Id, Plan),
             Returned = [mem_returning_row(Cols, R) || R <- Rows],
             From ! {Ref, {ok, Returned}},
-            mem_keeper_loop(State1);
-        {{project, Id, Table, Tree, Orders, Lim, Off, Cols, Dist}, From, Ref} ->
-            Rows = maps:get({Id, Table}, State, []),
-            Matches = [R || R <- Rows, mem_pred(State, Id, Tree, R)],
-            Ordered = mem_order(Orders, Matches),
-            Projected = [mem_project_row(Cols, R) || R <- Ordered],
-            Page = mem_paginate(mem_distinct(Dist, Projected), Lim, Off),
-            From ! {Ref, {ok, Page}},
-            mem_keeper_loop(State)
+            mem_keeper_loop(State1)
     end.
 
 %% mem_apply_mutation/3 — apply a MutationPlan to the store, returning the updated state
@@ -1382,18 +1324,6 @@ mem_apply_excluded(OldRow, NewRow, UpdateCols) ->
                 error   -> Acc
             end
         end, OldRow, UpdateCols).
-
-%% Build a projected row from `{Alias, QExpr}` columns: each output column
-%% evaluates its expression against the row and is keyed by its alias. A bare
-%% column reads its stored value; a computed column (arithmetic, a CASE) folds
-%% via mem_scalar. A cell with no value — a missing column or a runtime division
-%% by zero — projects SQL NULL rather than dropping the row or crashing the
-%% keeper (Postgres aborts on /0; a *literal* zero divisor is a compile error).
-mem_project_row(Cols, Row) ->
-    maps:from_list([{Alias, mem_proj_cell(mem_scalar(Col, Row))} || {Alias, Col} <- Cols]).
-
-mem_proj_cell(undefined) -> 'SqlNull';
-mem_proj_cell(Value)     -> Value.
 
 %% Drop duplicate rows, keeping the first occurrence of each so the result stays
 %% deterministic. Rows compare by full term equality, the same notion of equality
@@ -1685,77 +1615,6 @@ mem_key({'SqlInt', N})   -> N;
 mem_key({'SqlFloat', F}) -> F;
 mem_key({'SqlText', S})  -> S;
 mem_key({'SqlBool', B})  -> B.
-
-%% --- In-memory GROUP BY / HAVING ---
-%%
-%% The nested-loop dual of a backend pushing GROUP BY into SQL. Partition the
-%% matching rows by the key column's value, summarize each group into its
-%% aggregates, drop the groups the HAVING tree rejects, and key each output row by
-%% the projection's aliases. The keeper sorts the surviving groups by key so the
-%% result is deterministic, matching the `ORDER BY <key>` the SQL backend appends.
-
-%% Partition rows by the key column's value, preserving first-seen key order.
-mem_group_by(KeyCol, Rows) ->
-    lists:foldl(
-        fun(R, Acc) ->
-            K = maps:get(KeyCol, R, 'SqlNull'),
-            case lists:keyfind(K, 1, Acc) of
-                {K, GR} -> lists:keyreplace(K, 1, Acc, {K, GR ++ [R]});
-                false   -> Acc ++ [{K, [R]}]
-            end
-        end,
-        [],
-        Rows).
-
-%% Build one output row for a group: each `{Alias, Func, Column, IsRight}` becomes
-%% `Alias => value`, where the value is the group key, its row count, or a scalar
-%% aggregate over the group's rows. `IsRight` tags a join column's side and is unused
-%% for a single-table group (every column is the left side).
-mem_group_row(Cols, Key, GroupRows) ->
-    maps:from_list([{Alias, mem_group_value(Func, Column, Key, GroupRows)}
-                    || {Alias, Func, Column, _IsRight} <- Cols]).
-
-mem_group_value(<<"KEY">>, _Col, Key, _GR)   -> Key;
-mem_group_value(<<"COUNT">>, _Col, _Key, GR) -> {'SqlInt', length(GR)};
-mem_group_value(Func, Col, _Key, GR)         -> mem_agg_value_q(Func, Col, GR).
-
-%% Evaluate a HAVING predicate tree over one group (its key and rows). The leaves
-%% are aggregate nodes — `QGroupKey`, `QAggCount`, `QAgg{Sum,Avg,Min,Max}` — that
-%% reduce the group; comparisons and connectives combine them. The always-true
-%% tree (the `keepAll` default) keeps every group.
-mem_having({'QLitBool', true}, _Key, _GR) -> true;
-mem_having({'QAnd', L, R}, Key, GR) -> mem_having(L, Key, GR) andalso mem_having(R, Key, GR);
-mem_having({'QOr', L, R}, Key, GR)  -> mem_having(L, Key, GR) orelse mem_having(R, Key, GR);
-mem_having({'QNot', X}, Key, GR)    -> not mem_having(X, Key, GR);
-mem_having({'QEq', L, R}, Key, GR)  -> mem_hrelate(eq, L, R, Key, GR);
-mem_having({'QNe', L, R}, Key, GR)  -> not mem_hrelate(eq, L, R, Key, GR);
-mem_having({'QLt', L, R}, Key, GR)  -> mem_hrelate(lt, L, R, Key, GR);
-mem_having({'QGt', L, R}, Key, GR)  -> mem_hrelate(lt, R, L, Key, GR);
-mem_having({'QLe', L, R}, Key, GR)  -> not mem_hrelate(lt, R, L, Key, GR);
-mem_having({'QGe', L, R}, Key, GR)  -> not mem_hrelate(lt, L, R, Key, GR);
-mem_having(_Other, _Key, _GR)       -> true.
-
-mem_hrelate(Op, L, R, Key, GR) ->
-    case {mem_hscalar(L, Key, GR), mem_hscalar(R, Key, GR)} of
-        {undefined, _} -> false;
-        {_, undefined} -> false;
-        {A, B}         -> mem_sql_cmp(Op, A, B)
-    end.
-
-%% Resolve a HAVING operand to a SqlValue: an aggregate over the group, the group
-%% key, or a literal. A nullary aggregate node (`QGroupKey`, `QAggCount`) arrives
-%% as a bare atom; the scalar aggregates wrap their `QCol`.
-mem_hscalar('QGroupKey', Key, _GR) -> Key;
-mem_hscalar('QAggCount', _Key, GR) -> {'SqlInt', length(GR)};
-mem_hscalar({'QAggSum', Col}, _Key, GR) -> mem_agg_q_or_undef(<<"SUM">>, Col, GR);
-mem_hscalar({'QAggAvg', Col}, _Key, GR) -> mem_agg_q_or_undef(<<"AVG">>, Col, GR);
-mem_hscalar({'QAggMin', Col}, _Key, GR) -> mem_agg_q_or_undef(<<"MIN">>, Col, GR);
-mem_hscalar({'QAggMax', Col}, _Key, GR) -> mem_agg_q_or_undef(<<"MAX">>, Col, GR);
-mem_hscalar({'QLitInt', N}, _Key, _GR)   -> {'SqlInt', N};
-mem_hscalar({'QLitText', S}, _Key, _GR)  -> {'SqlText', S};
-mem_hscalar({'QLitBool', B}, _Key, _GR)  -> {'SqlBool', B};
-mem_hscalar({'QLitFloat', F}, _Key, _GR) -> {'SqlFloat', F};
-mem_hscalar(_Other, _Key, _GR)           -> undefined.
 
 %% An aggregate over a group as a comparison operand: the folded value (a column or
 %% a computed expression, evaluated per row) reduced over the group rows. An all-NULL
@@ -2188,7 +2047,7 @@ mem_npred({'QLe', A, B}, Row)    -> not mem_nrelate(lt, B, A, Row);
 mem_npred({'QGe', A, B}, Row)    -> not mem_nrelate(lt, A, B, Row);
 mem_npred({'QLike', V, P}, Row)  -> mem_like_pred(mem_nscalar(V, Row), mem_nscalar(P, Row));
 mem_npred({'QIn', V, Items}, Row) -> mem_in_pred(mem_nscalar(V, Row), [mem_nscalar(I, Row) || I <- Items]);
-mem_npred({'QCol', C}, Row)      -> mem_truthy(maps:get(<<"t0$", C/binary>>, Row, 'SqlNull'));
+mem_npred({'QCol', C}, Row)      -> mem_truthy(mem_left_cell(C, Row));
 mem_npred({'QColR', C}, Row)     -> mem_truthy(maps:get(<<"t1$", C/binary>>, Row, 'SqlNull'));
 mem_npred({'QColAt', I, C}, Row) -> mem_truthy(maps:get(<<(mem_leaf_prefix(I))/binary, C/binary>>, Row, 'SqlNull'));
 mem_npred({'QLitBool', B}, _Row) -> B;
@@ -2206,7 +2065,7 @@ mem_nrelate(Op, A, B, Row) ->
         {X, Y}         -> mem_sql_cmp(Op, X, Y)
     end.
 
-mem_nscalar({'QCol', C}, Row)      -> mem_ncell(<<"t0$", C/binary>>, Row);
+mem_nscalar({'QCol', C}, Row)      -> mem_left_cell(C, Row);
 mem_nscalar({'QColR', C}, Row)     -> mem_ncell(<<"t1$", C/binary>>, Row);
 mem_nscalar({'QColAt', I, C}, Row) -> mem_ncell(<<(mem_leaf_prefix(I))/binary, C/binary>>, Row);
 mem_nscalar({'QLitInt', N}, _Row)   -> {'SqlInt', N};
@@ -2229,6 +2088,17 @@ mem_ncell(Key, Row) ->
     case maps:find(Key, Row) of
         {ok, V} -> V;
         error   -> undefined
+    end.
+
+%% A left/sole-entity column. A join row carries it under the `t0$` leaf prefix; a
+%% single-table or `Seq` row carries it under the bare name. Try the prefix, fall
+%% back to bare, so one resolver reads a `QCol` over both row shapes — the n-ary
+%% scalar and predicate evaluators run over a projection's bare scan rows as well
+%% as a join's prefixed ones.
+mem_left_cell(C, Row) ->
+    case mem_ncell(<<"t0$", C/binary>>, Row) of
+        undefined -> mem_ncell(C, Row);
+        Val       -> Val
     end.
 
 %% --- Quoted-predicate interpreter (the in-memory dual of Query.toSql) ---

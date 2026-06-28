@@ -32,9 +32,7 @@
 -export([
     pg_connect/16,
     pg_all/2,
-    pg_select/3,
     pg_get_rows/4,
-    pg_fetch/7,
     pg_count_where/3,
     pg_aggregate/5,
     pg_project/8,
@@ -110,20 +108,9 @@ pg_connect(Host, Port, Database, User, Password, SslMode, PoolSize,
 %% pg_all/2 — every row of Table. Result (List Row) Error.
 pg_all(Id, Table) -> pg_call(Id, {all, Table}).
 
-%% pg_select/3 — the rows of Table that satisfy the captured predicate Tree.
-%% Result (List Row) Error.
-pg_select(Id, Table, Tree) -> pg_call(Id, {select, Table, Tree}).
-
 %% pg_get_rows/4 — the rows of Table whose Column holds exactly Key. std.data's
 %% `get` takes the first. Result (List Row) Error.
 pg_get_rows(Id, Table, Column, Key) -> pg_call(Id, {get_rows, Table, Column, Key}).
-
-%% pg_fetch/6 — the rows of Table that satisfy Tree, ordered by Orders, then
-%% offset and limited, all pushed into the SQL. Orders is a list of `{Asc, Column}`
-%% where Asc is the boolean `true` for ascending. Lim < 0 means no LIMIT and
-%% Off =< 0 means no OFFSET. Result (List Row) Error.
-pg_fetch(Id, Table, Tree, Orders, Lim, Off, Dist) ->
-    pg_call(Id, {fetch, Table, Tree, Orders, Lim, Off, Dist}).
 
 %% pg_count_where/3 — how many rows of Table satisfy Tree, via SELECT COUNT(*)
 %% so no rows cross the wire. Result Int Error.
@@ -961,21 +948,9 @@ run_verb(Conn, migrations_init) ->
     end;
 run_verb(Conn, {all, Table}) ->
     run_query(Conn, ["SELECT * FROM ", quote_ident(Table)], []);
-run_verb(Conn, {select, Table, Tree}) ->
-    {Where, Binds} = compile_where(Tree, Table),
-    run_query(Conn, ["SELECT * FROM ", quote_ident(Table), " WHERE ", Where], Binds);
 run_verb(Conn, {get_rows, Table, Column, Key}) ->
     Sql = ["SELECT * FROM ", quote_ident(Table), " WHERE ", quote_ident(Column), " = $1"],
     run_query(Conn, Sql, [Key]);
-run_verb(Conn, {fetch, Table, Tree, Orders, Lim, Off, Dist}) ->
-    %% WHERE binds take $1..$K; a computed ORDER BY key continues at $K+1, seeded with
-    %% the WHERE binds (held reversed, as `cw` accumulates), so the two runs never
-    %% collide and the final list reads left to right: WHERE values first, then ORDER BY.
-    {Where, RevW, N1} = cw(Tree, {bare, Table}, 1, []),
-    {OrderFrag, RevAllBinds, _N2} = order_by_clause(Orders, N1, RevW),
-    Sql = ["SELECT ", distinct_kw(Dist), "* FROM ", quote_ident(Table), " WHERE ", Where,
-           OrderFrag, limit_clause(Lim), offset_clause(Off)],
-    run_query(Conn, Sql, lists:reverse(RevAllBinds));
 run_verb(Conn, {project, Table, Tree, Orders, Lim, Off, Cols, Dist}) ->
     %% A computed projection column may carry literals, so the select-list binds
     %% take $1..$K and the WHERE compiles from $K+1, seeded with the select binds

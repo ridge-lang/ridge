@@ -1537,6 +1537,7 @@ pub(crate) fn reconciled_fn_scheme(
             | "mutationToSql"
             | "mutationReturningToSql",
         ) => reconciled_mutation_plan_fn_scheme(name, reconciled, b),
+        ("std.data", "selectRows" | "fetch") => reconciled_data_fn_scheme(name, b, classes?),
         ("std.repo", _) => reconciled_repo_fn_scheme(name, reconciled, b, classes?),
         ("std.migrate", _) => reconciled_migrate_fn_scheme(name, reconciled, b, classes?),
         ("std.raw", _) => reconciled_raw_fn_scheme(name, b, classes?),
@@ -1861,6 +1862,97 @@ fn reconciled_raw_fn_scheme(name: &str, b: &BuiltinTyCons, classes: &ClassTable)
             },
             constraints: vec![Constraint::single(adapter, a)],
         }),
+        _ => None,
+    }
+}
+
+/// The `std.data` slice of [`reconciled_fn_scheme`]: the `selectRows`/`fetch` read
+/// helpers — standalone functions over the `Adapter` seam. Each takes a connection and
+/// a quoted predicate (`fetch` adds the ordering keys, the page bounds, and a distinct
+/// flag), builds a single-table scan, and answers the raw row maps, constrained over
+/// `Adapter a`. The predicate pins the entity `e` from the call-site lambda, so neither
+/// is expressible in the hand-curated signature table.
+fn reconciled_data_fn_scheme(
+    name: &str,
+    b: &BuiltinTyCons,
+    classes: &ClassTable,
+) -> Option<Scheme> {
+    let adapter = classes.id_by_name("Adapter")?;
+    // Scheme-level placeholder vars: entity `e` (in the predicate) and adapter `a`.
+    // Fresh copies are made on each instantiation, so the fixed ids here are dummies.
+    let e = TyVid(0);
+    let a = TyVid(1);
+    let pure = || CapRow::Concrete(CapabilitySet::PURE);
+    // A raw column map `Map Text SqlValue`, and the `Result (List …) Error` both verbs answer.
+    let map_row = || {
+        Type::Con(
+            b.map,
+            vec![Type::Con(b.text, vec![]), Type::Con(b.sql_value, vec![])],
+        )
+    };
+    let result_rows = || {
+        Type::Con(
+            b.result,
+            vec![
+                Type::Con(b.list, vec![map_row()]),
+                Type::Con(b.error, vec![]),
+            ],
+        )
+    };
+    // A quoted predicate `Quote (e -> Bool)`. The entity `e` is pinned from the
+    // predicate's parameter annotation when the lambda is captured at the call site.
+    let quote_pred = || {
+        Type::Con(
+            b.quote,
+            vec![Type::Fn {
+                params: vec![Type::Var(e)],
+                ret: Box::new(Type::Con(b.bool, vec![])),
+                caps: CapRow::Concrete(CapabilitySet::PURE),
+            }],
+        )
+    };
+    // Assemble a scheme `∀e a. params -> Result (List (Map Text SqlValue)) Error`,
+    // pure, constrained over `Adapter a` — the verbs touch only the adapter, no decode.
+    let scheme = |params: Vec<Type>| {
+        Some(Scheme {
+            vars: vec![e, a],
+            cap_vars: vec![],
+            row_vars: vec![],
+            ty: Type::Fn {
+                params,
+                ret: Box::new(result_rows()),
+                caps: pure(),
+            },
+            constraints: vec![Constraint::single(adapter, a)],
+        })
+    };
+    match name {
+        // selectRows : ∀e a. a -> Text -> Quote (e -> Bool)
+        //                  -> Result (List (Map Text SqlValue)) Error where Adapter a
+        "selectRows" => scheme(vec![Type::Var(a), Type::Con(b.text, vec![]), quote_pred()]),
+        // fetch : ∀e a. a -> Text -> Quote (e -> Bool) -> List (Bool, QExpr)
+        //              -> Int -> Int -> Bool
+        //              -> Result (List (Map Text SqlValue)) Error where Adapter a.
+        // The order keys are `(ascending?, column)` pairs; the two Ints are the limit
+        // (negative for none) and offset (non-positive for none); the Bool is `distinct`.
+        "fetch" => {
+            let orders = Type::Con(
+                b.list,
+                vec![Type::Tuple(vec![
+                    Type::Con(b.bool, vec![]),
+                    Type::Con(b.q_expr, vec![]),
+                ])],
+            );
+            scheme(vec![
+                Type::Var(a),
+                Type::Con(b.text, vec![]),
+                quote_pred(),
+                orders,
+                Type::Con(b.int, vec![]),
+                Type::Con(b.int, vec![]),
+                Type::Con(b.bool, vec![]),
+            ])
+        }
         _ => None,
     }
 }

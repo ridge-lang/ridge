@@ -295,15 +295,18 @@ fn signature_shape_consistency() {
                 continue;
             }
             // std.data `memAdapter`/`connect`/`connectWith` return reconciled types
-            // (`MemAdapter`/`Postgres`), and `defaultPool`/`with*` take or return the
-            // reconciled `PoolConfig`, so all are seeded via `reconciled_fn_scheme`,
-            // not the `stdlib_signature` table this shape check covers.
+            // (`MemAdapter`/`Postgres`), `defaultPool`/`with*` take or return the
+            // reconciled `PoolConfig`, and the `selectRows`/`fetch` read helpers carry a
+            // quoted predicate, so all are seeded via `reconciled_fn_scheme`, not the
+            // `stdlib_signature` table this shape check covers.
             if dotted == "std.data"
                 && matches!(
                     *fn_name,
                     "memAdapter"
                         | "connect"
                         | "connectWith"
+                        | "selectRows"
+                        | "fetch"
                         | "defaultPool"
                         | "withPoolSize"
                         | "withConnectTimeoutMs"

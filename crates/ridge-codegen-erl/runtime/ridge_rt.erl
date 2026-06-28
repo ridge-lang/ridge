@@ -29,8 +29,8 @@
     http_get/1, http_post/2, http_put/2, http_delete/1,
     ask/3, send/2, send_op/2, send_fn/2, mailbox_size/1, spawn_actor/3,
     mem_new/1, mem_insert/3, mem_all/2,
-    mem_select/3, mem_delete/3, mem_update/4, mem_get_rows/4,
-    mem_fetch/7, mem_count_where/3, mem_aggregate/5, mem_project/8,
+    mem_delete/3, mem_update/4, mem_get_rows/4,
+    mem_count_where/3, mem_aggregate/5, mem_project/8,
     mem_group_summarize/6,
     mem_begin/1, mem_commit/1, mem_rollback/1, mem_close/1,
     mem_ddl_create/3, mem_ddl_drop/2, mem_ddl_add_column/3,
@@ -966,11 +966,6 @@ quote_not_true(A) ->
 mk_error(Code, Message) ->
     #{code => Code, message => Message}.
 
-%% mem_select/3 — the rows of Table that satisfy the captured predicate Tree.
-%% The runtime walks the QExpr against each row (the in-memory dual of compiling
-%% it to a SQL WHERE clause). Result (List Row) Error.
-mem_select(Id, Table, Tree) -> mem_call({select, Id, Table, Tree}).
-
 %% mem_get_rows/4 — the rows of Table whose Column holds exactly Key. std.data's
 %% `get` takes the first. Result (List Row) Error.
 mem_get_rows(Id, Table, Column, Key) -> mem_call({get_rows, Id, Table, Column, Key}).
@@ -983,15 +978,6 @@ mem_delete(Id, Table, Tree) -> mem_call({delete, Id, Table, Tree}).
 %% answer how many rows changed. Changes is a `#{Column => SqlValue}` map merged
 %% over each matching row. Result Int Error.
 mem_update(Id, Table, Changes, Tree) -> mem_call({update, Id, Table, Changes, Tree}).
-
-%% mem_fetch/6 — the rows of Table that satisfy Tree, ordered by Orders, then
-%% offset and limited. Orders is a list of `{Asc, Column}` where Asc is the
-%% boolean `true` for ascending; sorting is stable and applied major-to-minor
-%% (the first key is the primary sort). Lim < 0 means no limit and Off =< 0 means
-%% no offset. This is the in-memory dual of a backend pushing ORDER BY / LIMIT /
-%% OFFSET into the query. Result (List Row) Error.
-mem_fetch(Id, Table, Tree, Orders, Lim, Off, Dist) ->
-    mem_call({fetch, Id, Table, Tree, Orders, Lim, Off, Dist}).
 
 %% mem_count_where/3 — how many rows of Table satisfy Tree, counted without
 %% returning them (the in-memory dual of SELECT COUNT(*)). Result Int Error.
@@ -1229,11 +1215,6 @@ mem_keeper_loop(State) ->
             Rows = maps:get({Id, Table}, State, []),
             From ! {Ref, {ok, Rows}},
             mem_keeper_loop(State);
-        {{select, Id, Table, Tree}, From, Ref} ->
-            Rows = maps:get({Id, Table}, State, []),
-            Matches = [R || R <- Rows, mem_pred(State, Id, Tree, R)],
-            From ! {Ref, {ok, Matches}},
-            mem_keeper_loop(State);
         {{get_rows, Id, Table, Column, Key}, From, Ref} ->
             Rows = maps:get({Id, Table}, State, []),
             Matches = [R || R <- Rows, maps:get(Column, R, 'SqlNull') =:= Key],
@@ -1252,12 +1233,6 @@ mem_keeper_loop(State) ->
             {Updated, Changed} = mem_update_rows(State, Id, Changes, Tree, Rows),
             From ! {Ref, {ok, Changed}},
             mem_keeper_loop(State#{Key => Updated});
-        {{fetch, Id, Table, Tree, Orders, Lim, Off, Dist}, From, Ref} ->
-            Rows = maps:get({Id, Table}, State, []),
-            Matches = [R || R <- Rows, mem_pred(State, Id, Tree, R)],
-            Page = mem_paginate(mem_distinct(Dist, mem_order(Orders, Matches)), Lim, Off),
-            From ! {Ref, {ok, Page}},
-            mem_keeper_loop(State);
         {{count_where, Id, Table, Tree}, From, Ref} ->
             Rows = maps:get({Id, Table}, State, []),
             N = length([R || R <- Rows, mem_pred(State, Id, Tree, R)]),

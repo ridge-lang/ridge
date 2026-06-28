@@ -952,13 +952,6 @@ pub fn register_stdlib_classes(ct: &mut ClassTable) {
                     class_ty_vars: Vec::new(),
                 },
                 MethodSig {
-                    name: "selectRows".to_string(),
-                    arity: 3,
-                    ast_param_types: vec![],
-                    ast_ret_type: None,
-                    class_ty_vars: Vec::new(),
-                },
-                MethodSig {
                     name: "get".to_string(),
                     arity: 4,
                     ast_param_types: vec![],
@@ -975,13 +968,6 @@ pub fn register_stdlib_classes(ct: &mut ClassTable) {
                 MethodSig {
                     name: "updateRows".to_string(),
                     arity: 4,
-                    ast_param_types: vec![],
-                    ast_ret_type: None,
-                    class_ty_vars: Vec::new(),
-                },
-                MethodSig {
-                    name: "fetch".to_string(),
-                    arity: 7,
                     ast_param_types: vec![],
                     ast_ret_type: None,
                     class_ty_vars: Vec::new(),
@@ -1673,11 +1659,9 @@ pub fn register_stdlib_instances(
         vec![
             ("appendRow".to_string(), String::new()),
             ("all".to_string(), String::new()),
-            ("select".to_string(), String::new()),
             ("get".to_string(), String::new()),
             ("delete".to_string(), String::new()),
             ("updateRows".to_string(), String::new()),
-            ("fetch".to_string(), String::new()),
             ("countWhere".to_string(), String::new()),
             ("aggregate".to_string(), String::new()),
             ("project".to_string(), String::new()),

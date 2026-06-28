@@ -19,7 +19,7 @@
 -- A predicate is quoted exactly as at the adapter seam: the parameter
 -- annotation pins the row type and the body is captured as a query tree.
 
-import std.data as Db
+import std.data as Db (selectRows, fetch)
 import std.sql (SqlValue)
 import std.query (SortOrder, ascending, QueryPlan, planScan, planCombine, planRefine, planJoin, planProject, planAggregate, planGroup, planExists, planList, planInsert, planUpsert, planUpdate, planDelete)
 import std.map (fromList, toList)
@@ -622,31 +622,13 @@ pub class Combinable q =
 -- captured set-operation plan run through `runPlan` once `union`/`intersect`/
 -- `except` has combined two queries. Both answer the adapter-neutral row maps the
 -- terminals decode.
--- Does a predicate carry a correlated EXISTS anywhere a connective can place one?
--- The renderer keeps the same walk privately; the read path needs the answer here to
--- pick its SQL builder, and `QExpr`'s constructors are prelude builtins, so this is a
--- local match rather than a cross-module export.
-fn predHasExists (e: QExpr) -> Bool =
-    match e
-        QExists _ _ -> true
-        QAnd l r    -> predHasExists l || predHasExists r
-        QOr l r     -> predHasExists l || predHasExists r
-        QNot x      -> predHasExists x
-        QNotTrue x  -> predHasExists x
-        QCase c t e -> predHasExists c || predHasExists t || predHasExists e
-        _           -> false
-
--- A single-table read fetches its matching rows. A predicate that carries a
--- correlated EXISTS renders through the query plan (`planToSql` on a backend, the
--- store plan evaluator in memory), which qualifies each leaf and nests the
--- subqueries; the direct WHERE builder resolves only a flat single table, so an
--- EXISTS read takes the plan path. Every other predicate stays on the direct
--- builder, unchanged.
+-- A single-table read fetches its matching rows through the query plan: it builds a
+-- `PlanScan` over the table with the query's filter, ordering, page, and distinct and
+-- runs it through `runPlan`, so a database renders it through `planToSql` and the
+-- in-memory store interprets it — one path for every predicate, a correlated EXISTS
+-- included.
 fn fetchRows (q: Query e a) (lim: Int) -> Result (List (Map Text SqlValue)) Error where Adapter a =
-    if predHasExists q.pred.tree then
-        runPlan q.repo.adapter (planScan q.repo.table q.pred.tree q.orders lim q.off q.dist)
-    else
-        fetch q.repo.adapter q.repo.table q.pred q.orders lim q.off q.dist
+    fetch q.repo.adapter q.repo.table q.pred q.orders lim q.off q.dist
 
 fn queryRows (q: Query e a) -> Result (List (Map Text SqlValue)) Error where Adapter a =
     match q.plan

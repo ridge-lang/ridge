@@ -9,7 +9,7 @@
 -- shape `deriving (Row)` decodes back into a record (see std.sql). A row is
 -- built through `SqlType.toSql` and read back through `fromRow`.
 --
--- `selectRows` and `delete` take a quoted predicate. A lambda passed where a `Quote`
+-- `delete` and `updateRows` take a quoted predicate. A lambda passed where a `Quote`
 -- is expected is captured by the compiler as a `QExpr` tree (see std.query)
 -- rather than a closure; the in-memory adapter hands that tree to the runtime,
 -- which walks it against each stored row, and a backend like Postgres compiles
@@ -25,14 +25,13 @@
 -- every call site that threads the handle.
 
 import std.sql (SqlValue, sqlValue)
-import std.query (QueryPlan, planToSql, MutationPlan, mutationToSql, mutationReturningToSql, planInsert, planUpdate, planDelete)
+import std.query (QueryPlan, planToSql, planScan, MutationPlan, mutationToSql, mutationReturningToSql, planInsert, planUpdate, planDelete)
 import std.map (toList)
 
 -- The storage seam. `a` is the connection-handle type; each backend provides an
 -- instance. `appendRow` appends a row; `all` returns every row of a table;
--- `selectRows` returns the rows matching a quoted predicate; `get` looks a single
--- row up by an exact column match; `delete` removes the rows matching a
--- predicate and answers how many went; `updateRows` sets the columns in a
+-- `get` looks a single row up by an exact column match; `delete` removes the rows
+-- matching a predicate and answers how many went; `updateRows` sets the columns in a
 -- `changes` map on every row matching a predicate and answers how many changed.
 -- Every method reports failure through
 -- `Result`, so a backend that can fail (a real database) and one that cannot
@@ -40,12 +39,8 @@ import std.map (toList)
 -- queried record at the call site (`fn (u: User) -> ...`); here it is the
 -- adapter-neutral row map the captured tree is evaluated against.
 --
--- `fetch` is `selectRows` with ordering and paging folded in: it returns the
--- matching rows ordered by a list of `(ascending?, column)` keys, then offset
--- and limited, so a backend pushes `ORDER BY`/`LIMIT`/`OFFSET` into one query
--- rather than the caller paging in memory. A negative `lim` means no limit and a
--- non-positive `off` means no offset. `countWhere` answers how many rows match
--- without returning them — a `COUNT(*)` push-down for the aggregate verbs.
+-- `countWhere` answers how many rows match without returning them — a `COUNT(*)`
+-- push-down for the aggregate verbs.
 --
 -- `aggregate` runs a scalar aggregate over the matching rows: `func` is the SQL
 -- aggregate keyword (`SUM`/`AVG`/`MIN`/`MAX`) and `column` the column it folds,
@@ -114,11 +109,9 @@ import std.map (toList)
 pub class Adapter a =
     appendRow (conn: a) (table: Text) (row: Map Text SqlValue) -> Result Unit Error
     all    (conn: a) (table: Text) -> Result (List (Map Text SqlValue)) Error
-    selectRows (conn: a) (table: Text) (pred: Quote (Map Text SqlValue -> Bool)) -> Result (List (Map Text SqlValue)) Error
     get    (conn: a) (table: Text) (column: Text) (key: SqlValue) -> Result (Option (Map Text SqlValue)) Error
     delete (conn: a) (table: Text) (pred: Quote (Map Text SqlValue -> Bool)) -> Result Int Error
     updateRows (conn: a) (table: Text) (changes: Map Text SqlValue) (pred: Quote (Map Text SqlValue -> Bool)) -> Result Int Error
-    fetch  (conn: a) (table: Text) (pred: Quote (Map Text SqlValue -> Bool)) (orders: List (Bool, QExpr)) (lim: Int) (off: Int) (dist: Bool) -> Result (List (Map Text SqlValue)) Error
     countWhere (conn: a) (table: Text) (pred: Quote (Map Text SqlValue -> Bool)) -> Result Int Error
     aggregate (conn: a) (table: Text) (pred: Quote (Map Text SqlValue -> Bool)) (func: Text) (column: QExpr) -> Result (Option SqlValue) Error
     project (conn: a) (table: Text) (pred: Quote (Map Text SqlValue -> Bool)) (orders: List (Bool, QExpr)) (lim: Int) (off: Int) (cols: List (Text, QExpr)) (dist: Bool) -> Result (List (Map Text SqlValue)) Error
@@ -140,6 +133,20 @@ pub class Adapter a =
     rawQuery (conn: a) (sql: Text) (params: List SqlValue) -> Result (List (Map Text SqlValue)) Error
     rawExec (conn: a) (sql: Text) (params: List SqlValue) -> Result Int Error
 
+-- `selectRows` and `fetch` are read helpers over the query-plan seam. Each builds a
+-- single-table `PlanScan` from its quoted predicate — and, for `fetch`, the ordering,
+-- page, and distinct flag — and runs it through `runPlan`, so one code path renders
+-- the read (`planToSql` on a database, the store interpreter in memory) rather than a
+-- second per-backend primitive. `selectRows` is the unordered, unpaged form; `fetch`
+-- folds ordering and paging in, with a negative `lim` meaning no limit and a
+-- non-positive `off` no offset. The predicate is written against the queried record at
+-- the call site (`fn (u: User) -> ...`); its captured tree is what the scan filters on.
+pub fn selectRows (conn: a) (table: Text) (pred: Quote (Map Text SqlValue -> Bool)) -> Result (List (Map Text SqlValue)) Error where Adapter a =
+    runPlan conn (planScan table pred.tree [] (0 - 1) 0 false)
+
+pub fn fetch (conn: a) (table: Text) (pred: Quote (Map Text SqlValue -> Bool)) (orders: List (Bool, QExpr)) (lim: Int) (off: Int) (dist: Bool) -> Result (List (Map Text SqlValue)) Error where Adapter a =
+    runPlan conn (planScan table pred.tree orders lim off dist)
+
 -- A handle to an in-memory store. Opaque: `memAdapter` is the only way to make
 -- one, and the `id` it carries selects this handle's private, isolated store,
 -- so independent adapters (one per test, say) never see each other's rows.
@@ -153,12 +160,6 @@ fn _memInsert (id: Int) (table: Text) (row: Map Text SqlValue) -> Result Unit Er
 -- order. An unknown table reads as empty.
 @ffi("ridge_rt", "mem_all", 2)
 fn _memAll (id: Int) (table: Text) -> Result (List (Map Text SqlValue)) Error
-
--- Return the rows of a table whose columns satisfy the captured predicate tree.
--- The runtime walks the `QExpr` against each row; this is the in-memory dual of
--- compiling the tree to a SQL `WHERE` clause.
-@ffi("ridge_rt", "mem_select", 3)
-fn _memSelect (id: Int) (table: Text) (tree: QExpr) -> Result (List (Map Text SqlValue)) Error
 
 -- Return the rows of a table whose `column` holds exactly `key`.
 @ffi("ridge_rt", "mem_get_rows", 4)
@@ -174,11 +175,6 @@ fn _memDelete (id: Int) (table: Text) (tree: QExpr) -> Result Int Error
 @ffi("ridge_rt", "mem_update", 4)
 fn _memUpdate (id: Int) (table: Text) (changes: Map Text SqlValue) (tree: QExpr) -> Result Int Error
 
--- Return the rows of a table that satisfy the predicate tree, ordered by the
--- `(ascending?, column)` keys, then offset and limited.
-@ffi("ridge_rt", "mem_fetch", 7)
-fn _memFetch (id: Int) (table: Text) (tree: QExpr) (orders: List (Bool, QExpr)) (lim: Int) (off: Int) (dist: Bool) -> Result (List (Map Text SqlValue)) Error
-
 -- Count the rows of a table that satisfy the predicate tree.
 @ffi("ridge_rt", "mem_count_where", 3)
 fn _memCountWhere (id: Int) (table: Text) (tree: QExpr) -> Result Int Error
@@ -190,8 +186,8 @@ fn _memCountWhere (id: Int) (table: Text) (tree: QExpr) -> Result Int Error
 @ffi("ridge_rt", "mem_aggregate", 5)
 fn _memAggregate (id: Int) (table: Text) (tree: QExpr) (func: Text) (column: QExpr) -> Result (Option SqlValue) Error
 
--- Return the rows of a table that satisfy the predicate tree, ordered and paged
--- as `mem_fetch`, then projected down to the `(alias, column)` columns: each row
+-- Return the rows of a table that satisfy the predicate tree, ordered and paged,
+-- then projected down to the `(alias, column)` columns: each row
 -- holds only those columns, re-keyed by alias.
 @ffi("ridge_rt", "mem_project", 8)
 fn _memProject (id: Int) (table: Text) (tree: QExpr) (orders: List (Bool, QExpr)) (lim: Int) (off: Int) (cols: List (Text, QExpr)) (dist: Bool) -> Result (List (Map Text SqlValue)) Error
@@ -294,8 +290,6 @@ instance Adapter MemAdapter =
         _memInsert conn.id table row
     all (conn: MemAdapter) (table: Text) -> Result (List (Map Text SqlValue)) Error =
         _memAll conn.id table
-    selectRows (conn: MemAdapter) (table: Text) (pred: Quote (Map Text SqlValue -> Bool)) -> Result (List (Map Text SqlValue)) Error =
-        _memSelect conn.id table pred.tree
     get (conn: MemAdapter) (table: Text) (column: Text) (key: SqlValue) -> Result (Option (Map Text SqlValue)) Error =
         match _memGetRows conn.id table column key
             Ok rows -> Ok (firstRow rows)
@@ -304,8 +298,6 @@ instance Adapter MemAdapter =
         _memDelete conn.id table pred.tree
     updateRows (conn: MemAdapter) (table: Text) (changes: Map Text SqlValue) (pred: Quote (Map Text SqlValue -> Bool)) -> Result Int Error =
         _memUpdate conn.id table changes pred.tree
-    fetch (conn: MemAdapter) (table: Text) (pred: Quote (Map Text SqlValue -> Bool)) (orders: List (Bool, QExpr)) (lim: Int) (off: Int) (dist: Bool) -> Result (List (Map Text SqlValue)) Error =
-        _memFetch conn.id table pred.tree orders lim off dist
     countWhere (conn: MemAdapter) (table: Text) (pred: Quote (Map Text SqlValue -> Bool)) -> Result Int Error =
         _memCountWhere conn.id table pred.tree
     aggregate (conn: MemAdapter) (table: Text) (pred: Quote (Map Text SqlValue -> Bool)) (func: Text) (column: QExpr) -> Result (Option SqlValue) Error =
@@ -462,19 +454,9 @@ fn _pgConnect (host: Text) (port: Int) (database: Text) (user: Text) (password: 
 @ffi("ridge_pg", "pg_all", 2)
 fn _pgAll (id: Int) (table: Text) -> Result (List (Map Text SqlValue)) Error
 
--- Return the rows of a table that satisfy the captured predicate tree, compiled
--- to a parameterised SQL `WHERE` clause.
-@ffi("ridge_pg", "pg_select", 3)
-fn _pgSelect (id: Int) (table: Text) (tree: QExpr) -> Result (List (Map Text SqlValue)) Error
-
 -- Return the rows of a table whose `column` holds exactly `key`.
 @ffi("ridge_pg", "pg_get_rows", 4)
 fn _pgGetRows (id: Int) (table: Text) (column: Text) (key: SqlValue) -> Result (List (Map Text SqlValue)) Error
-
--- Return the rows of a table that satisfy the predicate tree, with ordering and
--- paging compiled into the SQL (ORDER BY / LIMIT / OFFSET).
-@ffi("ridge_pg", "pg_fetch", 7)
-fn _pgFetch (id: Int) (table: Text) (tree: QExpr) (orders: List (Bool, QExpr)) (lim: Int) (off: Int) (dist: Bool) -> Result (List (Map Text SqlValue)) Error
 
 -- Count the rows of a table that satisfy the predicate tree via SELECT COUNT(*).
 @ffi("ridge_pg", "pg_count_where", 3)
@@ -486,8 +468,8 @@ fn _pgCountWhere (id: Int) (table: Text) (tree: QExpr) -> Result Int Error
 @ffi("ridge_pg", "pg_aggregate", 5)
 fn _pgAggregate (id: Int) (table: Text) (tree: QExpr) (func: Text) (column: QExpr) -> Result (Option SqlValue) Error
 
--- Return the rows of a table that satisfy the predicate tree, ordered and paged
--- as `pg_fetch`, with the `(alias, column)` projection compiled into the
+-- Return the rows of a table that satisfy the predicate tree, ordered and paged,
+-- with the `(alias, column)` projection compiled into the
 -- select-list (`SELECT column AS alias …`); each row is keyed by alias.
 @ffi("ridge_pg", "pg_project", 8)
 fn _pgProject (id: Int) (table: Text) (tree: QExpr) (orders: List (Bool, QExpr)) (lim: Int) (off: Int) (cols: List (Text, QExpr)) (dist: Bool) -> Result (List (Map Text SqlValue)) Error
@@ -580,8 +562,6 @@ instance Adapter Postgres =
                     Err e -> Err e
     all (conn: Postgres) (table: Text) -> Result (List (Map Text SqlValue)) Error =
         _pgAll conn.id table
-    selectRows (conn: Postgres) (table: Text) (pred: Quote (Map Text SqlValue -> Bool)) -> Result (List (Map Text SqlValue)) Error =
-        _pgSelect conn.id table pred.tree
     get (conn: Postgres) (table: Text) (column: Text) (key: SqlValue) -> Result (Option (Map Text SqlValue)) Error =
         match _pgGetRows conn.id table column key
             Ok rows -> Ok (firstRow rows)
@@ -595,8 +575,6 @@ instance Adapter Postgres =
             _   ->
                 match mutationToSql (planUpdate table changes pred.tree)
                     (s, binds) -> _pgRawExec conn.id (sqlValue s) binds
-    fetch (conn: Postgres) (table: Text) (pred: Quote (Map Text SqlValue -> Bool)) (orders: List (Bool, QExpr)) (lim: Int) (off: Int) (dist: Bool) -> Result (List (Map Text SqlValue)) Error =
-        _pgFetch conn.id table pred.tree orders lim off dist
     countWhere (conn: Postgres) (table: Text) (pred: Quote (Map Text SqlValue -> Bool)) -> Result Int Error =
         _pgCountWhere conn.id table pred.tree
     aggregate (conn: Postgres) (table: Text) (pred: Quote (Map Text SqlValue -> Bool)) (func: Text) (column: QExpr) -> Result (Option SqlValue) Error =

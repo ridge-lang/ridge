@@ -2185,33 +2185,6 @@ fn seed_sql_codec_schemes(
                 }],
             )
         };
-        // select :: ∀a e. a -> Text -> Quote (e -> Bool)
-        //                      -> Result (List (Map Text SqlValue)) Error where Adapter a
-        {
-            let a = ctx.fresh_tyvid();
-            let e = ctx.fresh_tyvid();
-            let fn_ty = Type::Fn {
-                params: vec![Type::Var(a), Type::Con(b.text, vec![]), quote_pred(e)],
-                ret: Box::new(Type::Con(
-                    b.result,
-                    vec![
-                        Type::Con(b.list, vec![map_row()]),
-                        Type::Con(b.error, vec![]),
-                    ],
-                )),
-                caps: CapRow::Concrete(CapabilitySet::PURE),
-            };
-            ctx.env.bind(
-                "selectRows".to_owned(),
-                Scheme {
-                    vars: vec![a, e],
-                    cap_vars: vec![],
-                    row_vars: vec![],
-                    ty: fn_ty,
-                    constraints: vec![Constraint::single(adapter, a)],
-                },
-            );
-        }
         // get :: ∀a. a -> Text -> Text -> SqlValue
         //                 -> Result (Option (Map Text SqlValue)) Error where Adapter a
         {
@@ -2287,52 +2260,6 @@ fn seed_sql_codec_schemes(
             };
             ctx.env.bind(
                 "updateRows".to_owned(),
-                Scheme {
-                    vars: vec![a, e],
-                    cap_vars: vec![],
-                    row_vars: vec![],
-                    ty: fn_ty,
-                    constraints: vec![Constraint::single(adapter, a)],
-                },
-            );
-        }
-        // fetch :: ∀a e. a -> Text -> Quote (e -> Bool) -> List (Bool, Text)
-        //                  -> Int -> Int -> Bool
-        //                  -> Result (List (Map Text SqlValue)) Error where Adapter a.
-        // The order keys are `(ascending?, column)` pairs; the two Ints are the
-        // limit (negative for none) and offset (non-positive for none); the Bool is
-        // the `distinct` flag (a `SELECT DISTINCT`).
-        {
-            let a = ctx.fresh_tyvid();
-            let e = ctx.fresh_tyvid();
-            let orders = Type::Con(
-                b.list,
-                vec![Type::Tuple(vec![
-                    Type::Con(b.bool, vec![]),
-                    Type::Con(b.q_expr, vec![]),
-                ])],
-            );
-            let fn_ty = Type::Fn {
-                params: vec![
-                    Type::Var(a),
-                    Type::Con(b.text, vec![]),
-                    quote_pred(e),
-                    orders,
-                    Type::Con(b.int, vec![]),
-                    Type::Con(b.int, vec![]),
-                    Type::Con(b.bool, vec![]),
-                ],
-                ret: Box::new(Type::Con(
-                    b.result,
-                    vec![
-                        Type::Con(b.list, vec![map_row()]),
-                        Type::Con(b.error, vec![]),
-                    ],
-                )),
-                caps: CapRow::Concrete(CapabilitySet::PURE),
-            };
-            ctx.env.bind(
-                "fetch".to_owned(),
                 Scheme {
                     vars: vec![a, e],
                     cap_vars: vec![],

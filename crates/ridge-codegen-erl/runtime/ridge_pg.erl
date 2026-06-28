@@ -31,12 +31,9 @@
 
 -export([
     pg_connect/16,
-    pg_insert/3,
     pg_all/2,
     pg_select/3,
     pg_get_rows/4,
-    pg_delete/3,
-    pg_update/4,
     pg_fetch/7,
     pg_count_where/3,
     pg_aggregate/5,
@@ -110,9 +107,6 @@ pg_connect(Host, Port, Database, User, Password, SslMode, PoolSize,
             {error, E}
     end.
 
-%% pg_insert/3 — append Row to Table. Result Unit Error.
-pg_insert(Id, Table, Row) -> pg_call(Id, {insert, Table, Row}).
-
 %% pg_all/2 — every row of Table. Result (List Row) Error.
 pg_all(Id, Table) -> pg_call(Id, {all, Table}).
 
@@ -123,15 +117,6 @@ pg_select(Id, Table, Tree) -> pg_call(Id, {select, Table, Tree}).
 %% pg_get_rows/4 — the rows of Table whose Column holds exactly Key. std.data's
 %% `get` takes the first. Result (List Row) Error.
 pg_get_rows(Id, Table, Column, Key) -> pg_call(Id, {get_rows, Table, Column, Key}).
-
-%% pg_delete/3 — remove the rows of Table that satisfy Tree; answer how many were
-%% removed. Result Int Error.
-pg_delete(Id, Table, Tree) -> pg_call(Id, {delete, Table, Tree}).
-
-%% pg_update/4 — set the Changes columns on the rows of Table that satisfy Tree;
-%% answer the affected row count. Changes is a `#{Column => SqlValue}` map.
-%% Result Int Error.
-pg_update(Id, Table, Changes, Tree) -> pg_call(Id, {update, Table, Changes, Tree}).
 
 %% pg_fetch/6 — the rows of Table that satisfy Tree, ordered by Orders, then
 %% offset and limited, all pushed into the SQL. Orders is a list of `{Asc, Column}`
@@ -293,11 +278,17 @@ pg_ddl_index(Id, Name, Table, Cols, Unique) ->
 pg_migrations_applied(Id) ->
     pg_call(Id, migrations_init).
 
-%% pg_record_migration/2 — insert a migration name into the tracking table, reusing
-%% the insert verb so it runs on the migration's pinned connection. Result Unit
-%% Error.
+%% pg_record_migration/2 — record a migration name in the tracking table with a
+%% parameterised insert on the migration's pinned connection. The name is bound as
+%% $1, never spliced into the SQL; applied_at fills from its column default. Result
+%% Unit Error.
 pg_record_migration(Id, Name) ->
-    pg_call(Id, {insert, <<"_ridge_migrations">>, #{<<"name">> => {'SqlText', Name}}}).
+    Sql = ["INSERT INTO ", quote_ident(<<"_ridge_migrations">>),
+           " (", quote_ident(<<"name">>), ") VALUES ($1)"],
+    case pg_call(Id, {raw_exec, Sql, [{'SqlText', Name}]}) of
+        {ok, _} -> {ok, ok};
+        {error, E} -> {error, E}
+    end.
 
 %% CREATE TABLE with the column definitions compiled from the seam tuples.
 ddl_create_sql(Table, Cols) ->
@@ -968,8 +959,6 @@ run_verb(Conn, migrations_init) ->
                 {error, E} -> {error, E}
             end
     end;
-run_verb(Conn, {insert, Table, Row}) ->
-    do_insert(Conn, Table, Row);
 run_verb(Conn, {all, Table}) ->
     run_query(Conn, ["SELECT * FROM ", quote_ident(Table)], []);
 run_verb(Conn, {select, Table, Tree}) ->
@@ -978,11 +967,6 @@ run_verb(Conn, {select, Table, Tree}) ->
 run_verb(Conn, {get_rows, Table, Column, Key}) ->
     Sql = ["SELECT * FROM ", quote_ident(Table), " WHERE ", quote_ident(Column), " = $1"],
     run_query(Conn, Sql, [Key]);
-run_verb(Conn, {delete, Table, Tree}) ->
-    {Where, Binds} = compile_where(Tree, Table),
-    do_exec(Conn, ["DELETE FROM ", quote_ident(Table), " WHERE ", Where], Binds);
-run_verb(Conn, {update, Table, Changes, Tree}) ->
-    do_update(Conn, Table, Changes, Tree);
 run_verb(Conn, {fetch, Table, Tree, Orders, Lim, Off, Dist}) ->
     %% WHERE binds take $1..$K; a computed ORDER BY key continues at $K+1, seeded with
     %% the WHERE binds (held reversed, as `cw` accumulates), so the two runs never
@@ -997,7 +981,7 @@ run_verb(Conn, {project, Table, Tree, Orders, Lim, Off, Cols, Dist}) ->
     %% take $1..$K and the WHERE compiles from $K+1, seeded with the select binds
     %% (held reversed, the order `cw` accumulates), so the two placeholder runs
     %% never collide and the final list reads left to right: select-list values
-    %% first, then WHERE. Mirrors the SET-before-WHERE threading in do_update.
+    %% first, then WHERE.
     {SelectFrag, SelBindsRev, N1} = select_list(Cols, 1, []),
     {Where, RevW, N2} = cw(Tree, {bare, Table}, N1, SelBindsRev),
     {OrderFrag, RevAllBinds, _N3} = order_by_clause(Orders, N2, RevW),
@@ -1010,41 +994,6 @@ run_verb(Conn, {aggregate, Table, Tree, Func, Column}) ->
     do_aggregate(Conn, Table, Func, Column, Tree);
 run_verb(Conn, {group_summarize, Table, Tree, KeyCol, Cols, Having}) ->
     do_group_summarize(Conn, Table, Tree, KeyCol, Cols, Having).
-
-do_insert(Conn, Table, Row) ->
-    Pairs = maps:to_list(Row),
-    Cols = lists:join(",", [quote_ident(C) || {C, _V} <- Pairs]),
-    {Placeholders, _} =
-        lists:mapfoldl(fun(_, N) -> {[$$ | integer_to_list(N)], N + 1} end, 1, Pairs),
-    Binds = [V || {_C, V} <- Pairs],
-    Sql = ["INSERT INTO ", quote_ident(Table), " (", Cols, ") VALUES (",
-           lists:join(",", Placeholders), ")"],
-    case do_exec(Conn, Sql, Binds) of
-        {ok, _Count} -> {ok, ok};
-        {error, E}   -> {error, E}
-    end.
-
-%% UPDATE Table SET col = $1, … WHERE <Tree>. The SET binds take placeholders
-%% $1..$K in column order; the WHERE clause is compiled starting at $K+1, seeded
-%% with the SET binds (held reversed, the order `cw` accumulates in), so the two
-%% placeholder runs never collide. An empty Changes map cannot form a valid SET,
-%% so it is a no-op reporting zero rows changed — matching the in-memory store.
-do_update(_Conn, _Table, Changes, _Tree) when map_size(Changes) =:= 0 ->
-    {ok, 0};
-do_update(Conn, Table, Changes, Tree) ->
-    Pairs = maps:to_list(Changes),
-    {SetFragsRev, SetBindsRev, NextN} =
-        lists:foldl(
-            fun({Col, Val}, {Frags, Binds, N}) ->
-                Frag = [quote_ident(Col), " = $", integer_to_list(N)],
-                {[Frag | Frags], [Val | Binds], N + 1}
-            end,
-            {[], [], 1},
-            Pairs),
-    SetClause = lists:join(", ", lists:reverse(SetFragsRev)),
-    {WhereFrag, RevAllBinds, _N} = cw(Tree, {bare, Table}, NextN, SetBindsRev),
-    Sql = ["UPDATE ", quote_ident(Table), " SET ", SetClause, " WHERE ", WhereFrag],
-    do_exec(Conn, Sql, lists:reverse(RevAllBinds)).
 
 %% SELECT COUNT(*) and read the single integer back out. The result is one row
 %% of one column; its name varies, so the value is taken positionally.

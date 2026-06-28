@@ -1578,6 +1578,21 @@ mod tests {
                             | "optimize"
                             | "planExists"
                             | "planList"
+                            // The reconciled `MutationPlan` tree, its constructors, the
+                            // builders, and the write-side renderer `mutationToSql` are
+                            // seeded via `reconciled_decls` / `reconciled_ctor_scheme` /
+                            // `reconciled_mutation_plan_fn_scheme`, not this table.
+                            | "MutationPlan"
+                            | "MutInsert"
+                            | "MutUpsert"
+                            | "MutUpdate"
+                            | "MutDelete"
+                            | "planInsert"
+                            | "planUpsert"
+                            | "planUpdate"
+                            | "planDelete"
+                            | "mutationToSql"
+                            | "mutationReturningToSql"
                     )
                 {
                     continue;
@@ -1606,6 +1621,8 @@ mod tests {
                             | "project"
                             | "groupSummarize"
                             | "runPlan"
+                            | "runMutation"
+                            | "runMutationReturning"
                             | "begin"
                             | "commit"
                             | "rollback"

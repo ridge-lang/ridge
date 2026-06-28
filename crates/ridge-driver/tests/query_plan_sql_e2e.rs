@@ -23,11 +23,12 @@ use std::process::Command;
 use ridge_driver::{compile_workspace, CompileOptions, EmitArtefacts};
 
 const SOURCE: &str = r#"
-import std.query as Query (QueryPlan, planScan, planCombine, planRefine, planJoin, planProject, planAggregate, planGroup, planToSql, planExists)
-import std.sql (Sql, SqlValue, sqlValue)
+import std.query as Query (QueryPlan, planScan, planCombine, planRefine, planJoin, planProject, planAggregate, planGroup, planToSql, planExists, MutationPlan, planInsert, planUpsert, planUpdate, planDelete, mutationToSql, mutationReturningToSql)
+import std.sql (Sql, SqlValue, sqlValue, sqlInt, sqlText)
 import std.int as Int
 import std.list as List
 import std.text as Text
+import std.map as Map
 
 pub type User = { id: Int, age: Int, name: Text } deriving (Row)
 pub type Post = { id: Int, author: Int, title: Text } deriving (Row)
@@ -111,6 +112,88 @@ fn renderSql (plan: QueryPlan) -> Text =
 fn renderBinds (plan: QueryPlan) -> Text =
     match planToSql plan
         (_, ps) -> Int.toText (List.length ps)
+
+-- The write-side renderer: a `MutationPlan` to its parameterized statement and bind
+-- count, the dual of `renderSql`/`renderBinds` over `mutationToSql`.
+fn renderMutSql (plan: MutationPlan) -> Text =
+    match mutationToSql plan
+        (s, _) -> sqlValue s
+
+fn renderMutBinds (plan: MutationPlan) -> Text =
+    match mutationToSql plan
+        (_, ps) -> Int.toText (List.length ps)
+
+-- A single-row INSERT: the column list comes from the row (in column-name order),
+-- each value a `$N` placeholder bound left to right.
+pub fn insertSql () -> Text = renderMutSql (planInsert "users" [Map.fromList [("id", sqlInt 1), ("name", sqlText "ada")]])
+pub fn insertBinds () -> Text = renderMutBinds (planInsert "users" [Map.fromList [("id", sqlInt 1), ("name", sqlText "ada")]])
+
+-- A bulk INSERT over two rows sharing the same columns: the column list (from the
+-- first row) renders once, then one parenthesised `$N` tuple per row, the binds
+-- threaded id,name,id,name across both rows — one statement for the whole batch.
+pub fn insertManySql () -> Text = renderMutSql (planInsert "users" [Map.fromList [("id", sqlInt 1), ("name", sqlText "ada")], Map.fromList [("id", sqlInt 2), ("name", sqlText "bob")]])
+pub fn insertManyBinds () -> Text = renderMutBinds (planInsert "users" [Map.fromList [("id", sqlInt 1), ("name", sqlText "ada")], Map.fromList [("id", sqlInt 2), ("name", sqlText "bob")]])
+
+-- An UPDATE binds its SET assignment first ($1) and then its WHERE ($2).
+pub fn updateSql () -> Text = renderMutSql (planUpdate "users" (Map.fromList [("age", sqlInt 99)]) (pred1 (fn (u: User) -> u.id == 1)))
+pub fn updateBinds () -> Text = renderMutBinds (planUpdate "users" (Map.fromList [("age", sqlInt 99)]) (pred1 (fn (u: User) -> u.id == 1)))
+
+-- A DELETE binds only its WHERE.
+pub fn deleteSql () -> Text = renderMutSql (planDelete "users" (pred1 (fn (u: User) -> u.age < 18)))
+
+-- A correlated EXISTS in a DELETE predicate aliases the target table `l` so the
+-- subquery names the row being deleted, exactly as the read renderer aliases a scan —
+-- the write path shares `renderPred`, so no separate subquery support is needed.
+pub fn existsDeleteSql () -> Text = renderMutSql (planDelete "users" (QExists "posts" (QEq (QColR "author") (QCol "id"))))
+pub fn existsDeleteBinds () -> Text = renderMutBinds (planDelete "users" (QExists "posts" (QEq (QColR "author") (QCol "id"))))
+
+-- A correlated EXISTS in an UPDATE predicate: the target is aliased `l` too, the SET
+-- column stays bare ($1), and the EXISTS renders after it — locking the SET-before-WHERE
+-- bind order with a subquery in the WHERE.
+pub fn existsUpdateSql () -> Text = renderMutSql (planUpdate "users" (Map.fromList [("age", sqlInt 99)]) (QExists "posts" (QEq (QColR "author") (QCol "id"))))
+pub fn existsUpdateBinds () -> Text = renderMutBinds (planUpdate "users" (Map.fromList [("age", sqlInt 99)]) (QExists "posts" (QEq (QColR "author") (QCol "id"))))
+
+-- An upsert: an INSERT with an `ON CONFLICT … DO UPDATE` tail. The values bind exactly as
+-- a plain insert ($1, $2); the conflict clause names the constraint column and sets the
+-- update column from `EXCLUDED`, carrying no binds of its own.
+pub fn upsertSql () -> Text = renderMutSql (planUpsert "users" [Map.fromList [("id", sqlInt 1), ("name", sqlText "ada")]] ["id"] ["name"])
+pub fn upsertBinds () -> Text = renderMutBinds (planUpsert "users" [Map.fromList [("id", sqlInt 1), ("name", sqlText "ada")]] ["id"] ["name"])
+
+-- No update columns is a `DO NOTHING` over the named conflict target.
+pub fn insertOrIgnoreSql () -> Text = renderMutSql (planUpsert "users" [Map.fromList [("id", sqlInt 1), ("name", sqlText "ada")]] ["id"] [])
+
+-- No conflict target and no update columns is a bare `ON CONFLICT DO NOTHING`.
+pub fn upsertBareSql () -> Text = renderMutSql (planUpsert "users" [Map.fromList [("id", sqlInt 1), ("name", sqlText "ada")]] [] [])
+
+-- The RETURNING renderer: the same statement with a `RETURNING <cols>` tail (`RETURNING *`
+-- for an empty column list), the bind count unchanged since RETURNING names columns, not
+-- values. The dual of `renderMutSql`/`renderMutBinds` over `mutationReturningToSql`.
+fn renderMutReturningSql (plan: MutationPlan) (cols: List Text) -> Text =
+    match mutationReturningToSql plan cols
+        (s, _) -> sqlValue s
+
+fn renderMutReturningBinds (plan: MutationPlan) (cols: List Text) -> Text =
+    match mutationReturningToSql plan cols
+        (_, ps) -> Int.toText (List.length ps)
+
+-- An INSERT with `RETURNING *`: the insert renders unchanged, the tail asks for every
+-- column of the inserted row, and the bind count stays at the two values.
+pub fn insertReturningStarSql () -> Text = renderMutReturningSql (planInsert "users" [Map.fromList [("id", sqlInt 1), ("name", sqlText "ada")]]) []
+pub fn insertReturningStarBinds () -> Text = renderMutReturningBinds (planInsert "users" [Map.fromList [("id", sqlInt 1), ("name", sqlText "ada")]]) []
+
+-- A named RETURNING projection quotes each column.
+pub fn insertReturningColsSql () -> Text = renderMutReturningSql (planInsert "users" [Map.fromList [("id", sqlInt 1), ("name", sqlText "ada")]]) ["id", "name"]
+
+-- A DELETE … RETURNING * hands back the removed rows; the WHERE still binds $1.
+pub fn deleteReturningSql () -> Text = renderMutReturningSql (planDelete "users" (pred1 (fn (u: User) -> u.age < 18))) []
+
+-- An UPDATE … RETURNING names the changed column; SET binds $1 and WHERE binds $2 as
+-- without the tail.
+pub fn updateReturningSql () -> Text = renderMutReturningSql (planUpdate "users" (Map.fromList [("age", sqlInt 99)]) (pred1 (fn (u: User) -> u.id == 1))) ["age"]
+
+-- An upsert with `RETURNING *`: the ON CONFLICT … DO UPDATE statement with the tail
+-- appended, the two insert values still its only binds.
+pub fn upsertReturningSql () -> Text = renderMutReturningSql (planUpsert "users" [Map.fromList [("id", sqlInt 1), ("name", sqlText "ada")]] ["id"] ["name"]) []
 
 pub fn scanSql () -> Text = renderSql (planScan "users" (pred1 (fn u -> u.age >= 18)) [] (0 - 1) 0 false)
 
@@ -661,7 +744,7 @@ fn query_plan_compiles_to_parameterized_sql() {
 
     let expr = format!(
         "F=fun(N)->io:format(\"~s=~s~n\",[N,{module}:N()])end, \
-         lists:foreach(F,['scanSql','scanBinds','foldSql','likeSql','likeBinds','inSql','inBinds','inCapturedSql','inCapturedBinds','corrExistsSql','corrExistsBinds','corrNotExistsSql','joinExistsWhereSql','naryExistsWhereSql','nestedExistsSql','pgNestedSql','pgNestedBinds','inEmptySql','inEmptyBinds','arithMulSql','arithMulBinds','arithColSql','arithModSql','combineSql','refineSql','innerSql','leftSql','rightSql','fullSql','fullBinds','projectSql','projectCalcSql','projectCalcBinds','projectCaseJoinSql','aggSql','groupSql','inner3Sql','inner3Binds','existsSql','existsThreeSql','existsThreeBinds','everyJoinSql','everyJoinBinds','innerLeftMixSql','innerRightMixSql','innerFullMixSql','innerFullMixBinds','adultLeftMixSql','adultLeftMixBinds','countAdultLeftMixSql','countThreeSql','countThreeBinds','countLeftMixSql','countLeftMixBinds','sumThreeSql','avgThreeSql','projectThreeSql','projectLeftMixSql','projectRightMixSql','projectFullMixSql','groupThreeSql','groupComputedThreeSql','groupComputedThreeBinds','groupLeftMixSql','groupRightMixSql','groupFullMixSql','orderThreeSql','orderLeftMixSql','orderRightMixSql','orderFullMixSql','inner4Sql','sumFourSql','projectFourSql','orderFourSql']), halt()."
+         lists:foreach(F,['scanSql','scanBinds','foldSql','likeSql','likeBinds','inSql','inBinds','inCapturedSql','inCapturedBinds','corrExistsSql','corrExistsBinds','corrNotExistsSql','joinExistsWhereSql','naryExistsWhereSql','nestedExistsSql','pgNestedSql','pgNestedBinds','inEmptySql','inEmptyBinds','arithMulSql','arithMulBinds','arithColSql','arithModSql','combineSql','refineSql','innerSql','leftSql','rightSql','fullSql','fullBinds','projectSql','projectCalcSql','projectCalcBinds','projectCaseJoinSql','aggSql','groupSql','inner3Sql','inner3Binds','existsSql','existsThreeSql','existsThreeBinds','everyJoinSql','everyJoinBinds','innerLeftMixSql','innerRightMixSql','innerFullMixSql','innerFullMixBinds','adultLeftMixSql','adultLeftMixBinds','countAdultLeftMixSql','countThreeSql','countThreeBinds','countLeftMixSql','countLeftMixBinds','sumThreeSql','avgThreeSql','projectThreeSql','projectLeftMixSql','projectRightMixSql','projectFullMixSql','groupThreeSql','groupComputedThreeSql','groupComputedThreeBinds','groupLeftMixSql','groupRightMixSql','groupFullMixSql','orderThreeSql','orderLeftMixSql','orderRightMixSql','orderFullMixSql','inner4Sql','sumFourSql','projectFourSql','orderFourSql','insertSql','insertBinds','insertManySql','insertManyBinds','updateSql','updateBinds','deleteSql','existsDeleteSql','existsDeleteBinds','existsUpdateSql','existsUpdateBinds','upsertSql','upsertBinds','insertOrIgnoreSql','upsertBareSql','insertReturningStarSql','insertReturningStarBinds','insertReturningColsSql','deleteReturningSql','updateReturningSql','upsertReturningSql']), halt()."
     );
     let output = Command::new("erl")
         .arg("-noshell")
@@ -701,6 +784,62 @@ fn query_plan_compiles_to_parameterized_sql() {
         r#"corrExistsSql=SELECT * FROM "users" AS l WHERE EXISTS (SELECT 1 FROM "posts" AS x1 WHERE x1."author" = l."id")"#,
     );
     want("corrExistsBinds=0");
+
+    // The typed write renderer (`mutationToSql`): an INSERT lists its columns and binds
+    // each value; an UPDATE binds SET before WHERE; a DELETE binds only WHERE. A
+    // correlated EXISTS in an update or delete predicate aliases the target `l` and
+    // renders the subquery exactly as a read does — the write path shares `renderPred`,
+    // so EXISTS works in a mutation with no separate subquery support (the cw text
+    // builder it replaces could not nest a correlated subquery here).
+    want(r#"insertSql=INSERT INTO "users" ("id", "name") VALUES ($1, $2)"#);
+    want("insertBinds=2");
+    // A bulk INSERT folds many same-shape rows into one statement: the shared column
+    // list once, then a parenthesised `$N` tuple per row, the binds threaded across rows.
+    want(r#"insertManySql=INSERT INTO "users" ("id", "name") VALUES ($1, $2), ($3, $4)"#);
+    want("insertManyBinds=4");
+    want(r#"updateSql=UPDATE "users" SET "age" = $1 WHERE "id" = $2"#);
+    want("updateBinds=2");
+    want(r#"deleteSql=DELETE FROM "users" WHERE "age" < $1"#);
+    want(
+        r#"existsDeleteSql=DELETE FROM "users" AS l WHERE EXISTS (SELECT 1 FROM "posts" AS x1 WHERE x1."author" = l."id")"#,
+    );
+    want("existsDeleteBinds=0");
+    want(
+        r#"existsUpdateSql=UPDATE "users" AS l SET "age" = $1 WHERE EXISTS (SELECT 1 FROM "posts" AS x1 WHERE x1."author" = l."id")"#,
+    );
+    want("existsUpdateBinds=1");
+
+    // An upsert renders the insert's columns and `$N` values, then an `ON CONFLICT` tail.
+    // With update columns it is a `DO UPDATE` setting each from `EXCLUDED` (no extra
+    // binds); with none it is a `DO NOTHING`, whose conflict target is optional — a bare
+    // `ON CONFLICT DO NOTHING` when no columns are named.
+    want(
+        r#"upsertSql=INSERT INTO "users" ("id", "name") VALUES ($1, $2) ON CONFLICT ("id") DO UPDATE SET "name" = EXCLUDED."name""#,
+    );
+    want("upsertBinds=2");
+    want(
+        r#"insertOrIgnoreSql=INSERT INTO "users" ("id", "name") VALUES ($1, $2) ON CONFLICT ("id") DO NOTHING"#,
+    );
+    want(
+        r#"upsertBareSql=INSERT INTO "users" ("id", "name") VALUES ($1, $2) ON CONFLICT DO NOTHING"#,
+    );
+
+    // RETURNING appends to whatever statement the mutation renders: `RETURNING *` for an
+    // empty column list, the quoted columns otherwise. It names columns, not values, so the
+    // bind count is the mutation's own — two for the insert.
+    want(
+        r#"insertReturningStarSql=INSERT INTO "users" ("id", "name") VALUES ($1, $2) RETURNING *"#,
+    );
+    want("insertReturningStarBinds=2");
+    want(
+        r#"insertReturningColsSql=INSERT INTO "users" ("id", "name") VALUES ($1, $2) RETURNING "id", "name""#,
+    );
+    want(r#"deleteReturningSql=DELETE FROM "users" WHERE "age" < $1 RETURNING *"#);
+    want(r#"updateReturningSql=UPDATE "users" SET "age" = $1 WHERE "id" = $2 RETURNING "age""#);
+    want(
+        r#"upsertReturningSql=INSERT INTO "users" ("id", "name") VALUES ($1, $2) ON CONFLICT ("id") DO UPDATE SET "name" = EXCLUDED."name" RETURNING *"#,
+    );
+
     want(
         r#"corrNotExistsSql=SELECT * FROM "users" AS l WHERE (NOT EXISTS (SELECT 1 FROM "posts" AS x1 WHERE x1."author" = l."id"))"#,
     );

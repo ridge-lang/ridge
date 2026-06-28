@@ -5,6 +5,8 @@
 //! from the entity:
 //! - `insert` encodes a `User` through `deriving (Row)`'s `toRow` and appends it,
 //!   so a record goes in the way one comes out — no hand-built column map.
+//! - `insertMany` encodes a whole list of entities and appends the batch in one
+//!   multi-row statement; an empty list short-circuits to a no-op.
 //! - `update` overwrites every column of the rows matching a predicate with a typed
 //!   entity (again through `toRow`).
 //! - `updateWhere` sets only the columns named in a partial map, leaving the rest.
@@ -207,6 +209,167 @@ pub fn db appliedAge () -> Int =
                         Err _       -> 0 - 3
                         Ok None     -> 0 - 4
                         Ok (Some u) -> u.age
+
+-- typed bulk insert: seed three users in ONE `insertMany` call, then read them back
+-- in id order -> "ada,lin,max". Proves the batch lands every entity through a single
+-- multi-row statement, not a row per round-trip.
+pub fn db bulkNames () -> Text =
+    let r: Repo User MemAdapter = Repo.repo (memAdapter ()) "users"
+    match r |> Repo.insertMany [ User { id = 1, age = 18, name = "ada", nick = None }, User { id = 2, age = 30, name = "lin", nick = None }, User { id = 3, age = 25, name = "max", nick = None } ]
+        Err _ -> "insert-err"
+        Ok _  ->
+            match r |> Repo.query |> Repo.orderBy Asc (fn (u: User) -> u.id) |> Repo.toList
+                Err _ -> "list-err"
+                Ok us -> joinNames us
+
+-- empty bulk insert is a no-op that still succeeds: `insertMany []` writes nothing and
+-- returns Ok, so the store stays empty -> "". Proves the empty-list short-circuit keeps
+-- a malformed zero-row INSERT from ever reaching the backend.
+pub fn db bulkEmptyNames () -> Text =
+    let r: Repo User MemAdapter = Repo.repo (memAdapter ()) "users"
+    match r |> Repo.insertMany []
+        Err _ -> "insert-err"
+        Ok _  ->
+            match r |> Repo.query |> Repo.toList
+                Err _ -> "list-err"
+                Ok us -> joinNames us
+
+-- upsert on a fresh key inserts: id 4 is not present, so the row is appended -> count 1.
+pub fn db upsertInsertCount () -> Int =
+    match setup ()
+        Err _ -> 0 - 1
+        Ok r  ->
+            match r |> Repo.upsert (User { id = 4, age = 50, name = "ito", nick = None }) [ Repo.onConflict (fn (u: User) -> u.id) ]
+                Ok n  -> n
+                Err _ -> 0 - 2
+
+-- upsert on an existing key overwrites every non-key column with the new entity's values:
+-- ada (id 1) upserts with name "neo" -> her name becomes "neo".
+pub fn db upsertUpdateName () -> Text =
+    match setup ()
+        Err _ -> "setup-err"
+        Ok r  ->
+            match r |> Repo.upsert (User { id = 1, age = 18, name = "neo", nick = Some "ace" }) [ Repo.onConflict (fn (u: User) -> u.id) ]
+                Err _ -> "upsert-err"
+                Ok _  ->
+                    match r |> Repo.getBy "id" (toSql 1)
+                        Err _       -> "get-err"
+                        Ok None     -> "none"
+                        Ok (Some u) -> u.name
+
+-- upsert on an existing key counts the update as one affected row.
+pub fn db upsertUpdateCount () -> Int =
+    match setup ()
+        Err _ -> 0 - 1
+        Ok r  ->
+            match r |> Repo.upsert (User { id = 1, age = 18, name = "neo", nick = None }) [ Repo.onConflict (fn (u: User) -> u.id) ]
+                Ok n  -> n
+                Err _ -> 0 - 2
+
+-- insertOrIgnore on an existing key does nothing: ada (id 1) keeps her name "ada".
+pub fn db ignoreExistingName () -> Text =
+    match setup ()
+        Err _ -> "setup-err"
+        Ok r  ->
+            match r |> Repo.insertOrIgnore (User { id = 1, age = 1, name = "zzz", nick = None }) [ Repo.onConflict (fn (u: User) -> u.id) ]
+                Err _ -> "ignore-err"
+                Ok _  ->
+                    match r |> Repo.getBy "id" (toSql 1)
+                        Err _       -> "get-err"
+                        Ok None     -> "none"
+                        Ok (Some u) -> u.name
+
+-- insertOrIgnore on an existing key affects zero rows -> count 0.
+pub fn db ignoreExistingCount () -> Int =
+    match setup ()
+        Err _ -> 0 - 1
+        Ok r  ->
+            match r |> Repo.insertOrIgnore (User { id = 1, age = 1, name = "zzz", nick = None }) [ Repo.onConflict (fn (u: User) -> u.id) ]
+                Ok n  -> n
+                Err _ -> 0 - 2
+
+-- insertOrIgnore on a fresh key inserts: id 6 is not present -> count 1.
+pub fn db ignoreNewCount () -> Int =
+    match setup ()
+        Err _ -> 0 - 1
+        Ok r  ->
+            match r |> Repo.insertOrIgnore (User { id = 6, age = 7, name = "rio", nick = None }) [ Repo.onConflict (fn (u: User) -> u.id) ]
+                Ok n  -> n
+                Err _ -> 0 - 2
+
+-- raw upsertRow updates only the named update columns: on the id-1 conflict it sets
+-- `age` from the hand-built row, leaving ada's name alone -> age 100.
+pub fn db upsertRowAge () -> Int =
+    match setup ()
+        Err _ -> 0 - 1
+        Ok r  ->
+            match r |> Repo.upsertRow ["id"] ["age"] (Map.fromList [("id", toSql 1), ("age", toSql 100)])
+                Err _ -> 0 - 2
+                Ok _  ->
+                    match r |> Repo.getBy "id" (toSql 1)
+                        Err _       -> 0 - 3
+                        Ok None     -> 0 - 4
+                        Ok (Some u) -> u.age
+
+-- insertReturning writes the entity and hands the stored row back, decoded: insert rex
+-- (id 7) into a fresh store and read the returned entity's name -> "rex". Proves the row
+-- round-trips out through `fromRow` on the way back, not just in through `toRow`.
+pub fn db insertReturningName () -> Text =
+    let r: Repo User MemAdapter = Repo.repo (memAdapter ()) "users"
+    match r |> Repo.insertReturning (User { id = 7, age = 9, name = "rex", nick = Some "rx" })
+        Err _ -> "insert-err"
+        Ok u  -> u.name
+
+-- insertManyReturning hands back every inserted row, decoded, in insert order ->
+-- "ada,lin". The bulk dual of `insertReturning`.
+pub fn db insertManyReturningNames () -> Text =
+    let r: Repo User MemAdapter = Repo.repo (memAdapter ()) "users"
+    match r |> Repo.insertManyReturning [ User { id = 1, age = 18, name = "ada", nick = None }, User { id = 2, age = 30, name = "lin", nick = None } ]
+        Err _ -> "insert-err"
+        Ok us -> joinNames us
+
+-- deleteReturning removes the matching rows and hands them back, decoded: delete lin
+-- (id 2) and read the removed entity's name -> "lin".
+pub fn db deleteReturningName () -> Text =
+    match setup ()
+        Err _ -> "setup-err"
+        Ok r  ->
+            match r |> Repo.deleteReturning (fn (u: User) -> u.id == 2)
+                Err _ -> "delete-err"
+                Ok us -> joinNames us
+
+-- the rows deleteReturning took are actually gone: after removing lin, the store holds
+-- ada and max -> "ada,max".
+pub fn db deleteReturningRemaining () -> Text =
+    match setup ()
+        Err _ -> "setup-err"
+        Ok r  ->
+            match r |> Repo.deleteReturning (fn (u: User) -> u.id == 2)
+                Err _ -> "delete-err"
+                Ok _  ->
+                    match r |> Repo.query |> Repo.orderBy Asc (fn (u: User) -> u.id) |> Repo.toList
+                        Err _ -> "list-err"
+                        Ok us -> joinNames us
+
+-- upsertReturning on an existing key overwrites the non-key columns and hands the merged
+-- row back, decoded: ada (id 1) upserts with name "neo" -> the returned entity is "neo".
+pub fn db upsertReturningName () -> Text =
+    match setup ()
+        Err _ -> "setup-err"
+        Ok r  ->
+            match r |> Repo.upsertReturning (User { id = 1, age = 18, name = "neo", nick = Some "ace" }) [ Repo.onConflict (fn (u: User) -> u.id) ]
+                Err _ -> "upsert-err"
+                Ok u  -> u.name
+
+-- upsertReturning on a fresh key inserts and hands the new row back: id 8 is absent, so
+-- the returned entity is the inserted "uma".
+pub fn db upsertReturningInsertName () -> Text =
+    match setup ()
+        Err _ -> "setup-err"
+        Ok r  ->
+            match r |> Repo.upsertReturning (User { id = 8, age = 8, name = "uma", nick = None }) [ Repo.onConflict (fn (u: User) -> u.id) ]
+                Err _ -> "upsert-err"
+                Ok u  -> u.name
 "#;
 
 fn write_workspace(root: &std::path::Path) {
@@ -288,6 +451,21 @@ fn write_path_runs_on_beam() {
          io:format(\"setWhereCount=~w~n\",[{module}:setWhereCount()]), \
          io:format(\"setMultiName=~s~n\",[{module}:setMultiName()]), \
          io:format(\"appliedAge=~w~n\",[{module}:appliedAge()]), \
+         io:format(\"bulkNames=~s~n\",[{module}:bulkNames()]), \
+         io:format(\"bulkEmptyNames=~s~n\",[{module}:bulkEmptyNames()]), \
+         io:format(\"upsertInsertCount=~w~n\",[{module}:upsertInsertCount()]), \
+         io:format(\"upsertUpdateName=~s~n\",[{module}:upsertUpdateName()]), \
+         io:format(\"upsertUpdateCount=~w~n\",[{module}:upsertUpdateCount()]), \
+         io:format(\"ignoreExistingName=~s~n\",[{module}:ignoreExistingName()]), \
+         io:format(\"ignoreExistingCount=~w~n\",[{module}:ignoreExistingCount()]), \
+         io:format(\"ignoreNewCount=~w~n\",[{module}:ignoreNewCount()]), \
+         io:format(\"upsertRowAge=~w~n\",[{module}:upsertRowAge()]), \
+         io:format(\"insertReturningName=~s~n\",[{module}:insertReturningName()]), \
+         io:format(\"insertManyReturningNames=~s~n\",[{module}:insertManyReturningNames()]), \
+         io:format(\"deleteReturningName=~s~n\",[{module}:deleteReturningName()]), \
+         io:format(\"deleteReturningRemaining=~s~n\",[{module}:deleteReturningRemaining()]), \
+         io:format(\"upsertReturningName=~s~n\",[{module}:upsertReturningName()]), \
+         io:format(\"upsertReturningInsertName=~s~n\",[{module}:upsertReturningInsertName()]), \
          halt()."
     );
     let output = Command::new("erl")
@@ -344,6 +522,66 @@ fn write_path_runs_on_beam() {
         (
             "appliedAge=88",
             "applySet is the query-builder write terminal: the filter picks the row, the setter assigns it",
+        ),
+        (
+            "bulkNames=ada,lin,max",
+            "insertMany lands every entity of the batch through one multi-row statement",
+        ),
+        (
+            "bulkEmptyNames=\n",
+            "insertMany [] is a no-op that succeeds and writes nothing",
+        ),
+        (
+            "upsertInsertCount=1",
+            "upsert on a fresh key inserts the row and counts it",
+        ),
+        (
+            "upsertUpdateName=neo",
+            "upsert on an existing key overwrites the non-key columns from the entity",
+        ),
+        (
+            "upsertUpdateCount=1",
+            "upsert on an existing key counts the update as one affected row",
+        ),
+        (
+            "ignoreExistingName=ada",
+            "insertOrIgnore on an existing key leaves the stored row untouched",
+        ),
+        (
+            "ignoreExistingCount=0",
+            "insertOrIgnore on an existing key affects no rows",
+        ),
+        (
+            "ignoreNewCount=1",
+            "insertOrIgnore on a fresh key inserts the row",
+        ),
+        (
+            "upsertRowAge=100",
+            "raw upsertRow updates only the named columns on a conflict",
+        ),
+        (
+            "insertReturningName=rex",
+            "insertReturning decodes the stored row back into the entity",
+        ),
+        (
+            "insertManyReturningNames=ada,lin",
+            "insertManyReturning hands back every inserted row, decoded, in order",
+        ),
+        (
+            "deleteReturningName=lin",
+            "deleteReturning hands back the removed row, decoded",
+        ),
+        (
+            "deleteReturningRemaining=ada,max",
+            "the rows deleteReturning took are gone from the store",
+        ),
+        (
+            "upsertReturningName=neo",
+            "upsertReturning on a conflict hands the merged row back, decoded",
+        ),
+        (
+            "upsertReturningInsertName=uma",
+            "upsertReturning on a fresh key inserts and hands the new row back",
         ),
     ] {
         assert!(

@@ -1,5 +1,6 @@
 ---
 source: crates/ridge-lower/tests/snapshots.rs
+assertion_line: 23
 expression: rendered
 ---
 module: m0
@@ -13,7 +14,7 @@ items:
     ret_ty: Con(0)
     params:
       - name: l
-        ty: Con(72)
+        ty: Con(74)
     body:
       Match(n0):
         scrutinee:
@@ -21,17 +22,17 @@ items:
         arms:
           -
             pat:
-              Ctor: Ctor(Variant:Info owner=72)
+              Ctor: Ctor(Variant:Info owner=74)
             body:
               Lit(n2): Int(0)
           -
             pat:
-              Ctor: Ctor(Variant:Warn owner=72)
+              Ctor: Ctor(Variant:Warn owner=74)
             body:
               Lit(n3): Int(1)
           -
             pat:
-              Ctor: Ctor(Variant:Error owner=72)
+              Ctor: Ctor(Variant:Error owner=74)
             body:
               Lit(n4): Int(2)
   - kind: fn
@@ -39,7 +40,7 @@ items:
     pub: false
     main: false
     caps: CapabilitySet(0)
-    ret_ty: Con(9) [Con(72)]
+    ret_ty: Con(9) [Con(74)]
     params:
       - name: s
         ty: Con(3)
@@ -58,7 +59,7 @@ items:
                 args:
                   -
                     Construct(n9):
-                      ctor: Ctor(Variant:Info owner=72)
+                      ctor: Ctor(Variant:Info owner=74)
                       fields: []
           -
             pat:
@@ -70,7 +71,7 @@ items:
                 args:
                   -
                     Construct(n12):
-                      ctor: Ctor(Variant:Warn owner=72)
+                      ctor: Ctor(Variant:Warn owner=74)
                       fields: []
           -
             pat:
@@ -82,7 +83,7 @@ items:
                 args:
                   -
                     Construct(n15):
-                      ctor: Ctor(Variant:Error owner=72)
+                      ctor: Ctor(Variant:Error owner=74)
                       fields: []
           -
             pat:
@@ -94,7 +95,7 @@ items:
     pub: false
     main: false
     caps: CapabilitySet(0)
-    ret_ty: Con(9) [Con(73)]
+    ret_ty: Con(9) [Con(75)]
     params:
       - name: raw
         ty: Con(3)
@@ -326,7 +327,7 @@ items:
                                         args:
                                           -
                                             Construct(n86):
-                                              ctor: Ctor(Record:LogEntry owner=73)
+                                              ctor: Ctor(Record:LogEntry owner=75)
                                               fields:
                                                 date:
                                                   Local(n87): date
@@ -375,9 +376,9 @@ items:
     ret_ty: Con(2)
     params:
       - name: threshold
-        ty: Con(72)
+        ty: Con(74)
       - name: entry
-        ty: Con(73)
+        ty: Con(75)
     body:
       Call(n102):
         callee:
@@ -455,7 +456,7 @@ items:
     ret_ty: Con(7) [Con(0), Con(0)]
     params:
       - name: entries
-        ty: Con(6) [Con(73)]
+        ty: Con(6) [Con(75)]
     body:
       Call(n127):
         callee:
@@ -468,7 +469,7 @@ items:
                 - name: acc
                   ty: Con(7) [Con(0), Con(0)]
                 - name: e
-                  ty: Con(73)
+                  ty: Con(75)
               body:
                 Call(n130):
                   callee:
@@ -799,7 +800,7 @@ items:
                                 args:
                                   -
                                     Construct(n244):
-                                      ctor: Ctor(Variant:Warn owner=72)
+                                      ctor: Ctor(Variant:Warn owner=74)
                                       fields: []
                                   -
                                     Call(n245):
@@ -855,7 +856,7 @@ items:
                                               caps: CapabilitySet(0)
                                               params:
                                                 - name: __pa_10
-                                                  ty: Con(73)
+                                                  ty: Con(75)
                                               body:
                                                 Call(n261):
                                                   callee:

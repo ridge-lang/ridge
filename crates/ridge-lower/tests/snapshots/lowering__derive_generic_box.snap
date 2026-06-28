@@ -1,5 +1,6 @@
 ---
 source: crates/ridge-lower/tests/lowering.rs
+assertion_line: 44
 expression: rendered
 ---
 module: m0
@@ -65,7 +66,7 @@ items:
                                   Local(n14): __enc_x
           -
             Construct(n15):
-              ctor: Ctor(Record:Box owner=72)
+              ctor: Ctor(Record:Box owner=74)
               fields:
                 val:
                   Lit(n16): Int(7)
@@ -178,7 +179,7 @@ items:
                                           fields:
                                             $0:
                                               Construct(n45):
-                                                ctor: Ctor(Record:Box owner=72)
+                                                ctor: Ctor(Record:Box owner=74)
                                                 fields:
                                                   val:
                                                     Local(n46): __dec_f_val_1

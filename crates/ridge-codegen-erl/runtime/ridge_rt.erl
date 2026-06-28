@@ -38,6 +38,8 @@
     mem_migrations_applied/1, mem_record_migration/2,
     mem_raw_query/3, mem_raw_exec/3,
     mem_run_plan/2,
+    mem_run_mutation/2,
+    mem_run_mutation_returning/3,
     eval_plan_pure/1,
     quote_keep_all/1, quote_and/2, quote_not_true/1,
     mk_error/2,
@@ -1105,6 +1107,17 @@ mem_migration_name(Row) ->
 mem_run_plan(Id, Plan) ->
     mem_call({run_plan, Id, Plan}).
 
+%% mem_run_mutation/2 — run a MutationPlan against store Id; answer the affected
+%% row count. The write-side dual of mem_run_plan. Result Int Error.
+mem_run_mutation(Id, Plan) ->
+    mem_call({run_mutation, Id, Plan}).
+
+%% mem_run_mutation_returning/3 — run a MutationPlan against store Id; answer the rows
+%% it touched, each projected to Cols (every column when Cols is empty). The in-memory
+%% dual of a RETURNING clause. Result (List Row) Error.
+mem_run_mutation_returning(Id, Plan, Cols) ->
+    mem_call({run_mutation_returning, Id, Plan, Cols}).
+
 %% eval_plan_pure/1 — interpret a plan with no keeper store, for the in-memory `Seq`
 %% query source. The plan is rooted at a `PlanList` (rows carried inline), so the empty
 %% state is never consulted; returns the rows directly (no Result — a pure in-memory
@@ -1270,6 +1283,15 @@ mem_keeper_loop(State) ->
             Rows = mem_eval_plan(State, Id, Plan),
             From ! {Ref, {ok, Rows}},
             mem_keeper_loop(State);
+        {{run_mutation, Id, Plan}, From, Ref} ->
+            {State1, Count} = mem_apply_mutation(State, Id, Plan),
+            From ! {Ref, {ok, Count}},
+            mem_keeper_loop(State1);
+        {{run_mutation_returning, Id, Plan, Cols}, From, Ref} ->
+            {State1, Rows} = mem_mutation_affected(State, Id, Plan),
+            Returned = [mem_returning_row(Cols, R) || R <- Rows],
+            From ! {Ref, {ok, Returned}},
+            mem_keeper_loop(State1);
         {{project, Id, Table, Tree, Orders, Lim, Off, Cols, Dist}, From, Ref} ->
             Rows = maps:get({Id, Table}, State, []),
             Matches = [R || R <- Rows, mem_pred(State, Id, Tree, R)],
@@ -1279,6 +1301,112 @@ mem_keeper_loop(State) ->
             From ! {Ref, {ok, Page}},
             mem_keeper_loop(State)
     end.
+
+%% mem_apply_mutation/3 — apply a MutationPlan to the store, returning the updated state
+%% and the affected row count. A thin wrapper over mem_mutation_affected: the count is the
+%% number of rows it touched, so the count path and the RETURNING path agree on what a
+%% write affected.
+mem_apply_mutation(State, Id, Plan) ->
+    {State1, Rows} = mem_mutation_affected(State, Id, Plan),
+    {State1, length(Rows)}.
+
+%% mem_mutation_affected/3 — apply a MutationPlan to the store, returning the updated state
+%% and the rows it touched: the inserted rows of an insert or upsert, the changed rows of
+%% an update, the removed rows of a delete. The write-side dual of mem_eval_plan; its row
+%% count is what mem_apply_mutation answers and its rows what the RETURNING path projects.
+%% The predicate is the same QExpr a read walks (mem_pred), so a correlated EXISTS in a
+%% mutation predicate is evaluated identically to one in a query.
+mem_mutation_affected(State, Id, {'MutInsert', Table, Rows}) ->
+    Key = {Id, Table},
+    Existing = maps:get(Key, State, []),
+    {State#{Key => Existing ++ Rows}, Rows};
+mem_mutation_affected(State, Id, {'MutUpsert', Table, Rows, ConflictCols, UpdateCols}) ->
+    Key = {Id, Table},
+    Existing = maps:get(Key, State, []),
+    {Final, AffRev} = lists:foldl(
+        fun(NewRow, {Acc, Aff}) -> mem_upsert_one(Acc, NewRow, ConflictCols, UpdateCols, Aff) end,
+        {Existing, []},
+        Rows),
+    {State#{Key => Final}, lists:reverse(AffRev)};
+mem_mutation_affected(State, Id, {'MutUpdate', Table, Changes, Tree}) ->
+    Key = {Id, Table},
+    Rows = maps:get(Key, State, []),
+    {Updated, Affected} = mem_update_rows_aff(State, Id, Changes, Tree, Rows),
+    {State#{Key => Updated}, Affected};
+mem_mutation_affected(State, Id, {'MutDelete', Table, Tree}) ->
+    Key = {Id, Table},
+    Rows = maps:get(Key, State, []),
+    {Removed, Kept} = lists:partition(fun(R) -> mem_pred(State, Id, Tree, R) end, Rows),
+    {State#{Key => Kept}, Removed}.
+
+%% Apply one upsert row against the rows accumulated so far, threading the rows it affected
+%% (newest first; the caller reverses). With no existing row conflicting on every conflict
+%% column, the new row is appended and recorded (an insert). With a conflict and update
+%% columns, the matching row's update columns are overwritten from the new row and the
+%% merged row is recorded (a DO UPDATE). With a conflict and no update columns, the existing
+%% row is left and nothing is recorded (a DO NOTHING) — matching Postgres's ON CONFLICT
+%% affected-row set.
+mem_upsert_one(Rows, NewRow, ConflictCols, UpdateCols, Aff) ->
+    {NewRows, Match} = lists:mapfoldl(
+        fun(R, none) ->
+                case mem_row_conflicts(R, NewRow, ConflictCols) of
+                    true when UpdateCols =:= [] -> {R, nothing};
+                    true  -> M = mem_apply_excluded(R, NewRow, UpdateCols), {M, {updated, M}};
+                    false -> {R, none}
+                end;
+           (R, Done) -> {R, Done}
+        end, none, Rows),
+    case Match of
+        none              -> {Rows ++ [NewRow], [NewRow | Aff]};
+        nothing           -> {NewRows, Aff};
+        {updated, Merged} -> {NewRows, [Merged | Aff]}
+    end.
+
+%% Like mem_update_rows, but returning the rows it changed (post-merge) rather than the
+%% changed count — the affected rows a RETURNING update hands back. An empty changes map
+%% touches nothing.
+mem_update_rows_aff(_State, _Id, Changes, _Tree, Rows) when map_size(Changes) =:= 0 ->
+    {Rows, []};
+mem_update_rows_aff(State, Id, Changes, Tree, Rows) ->
+    {Updated, AffRev} = lists:mapfoldl(
+        fun(R, Acc) ->
+            case mem_pred(State, Id, Tree, R) of
+                true  -> M = maps:merge(R, Changes), {M, [M | Acc]};
+                false -> {R, Acc}
+            end
+        end, [], Rows),
+    {Updated, lists:reverse(AffRev)}.
+
+%% Project a touched row to the RETURNING columns: every column when Cols is empty
+%% (RETURNING *), otherwise just the named columns (a column the row lacks is dropped,
+%% as a SELECT of it would read nothing).
+mem_returning_row([], Row) -> Row;
+mem_returning_row(Cols, Row) ->
+    maps:from_list([{C, maps:get(C, Row)} || C <- Cols, maps:is_key(C, Row)]).
+
+%% Whether an existing row conflicts with a new row on every conflict column — the
+%% in-memory reading of a unique constraint over those columns. An empty conflict target
+%% (a bare ON CONFLICT) never matches: the schemaless store carries no constraints, so it
+%% cannot know which rows a "any constraint" conflict would hit, and treats the upsert as
+%% a plain insert.
+mem_row_conflicts(_R, _NewRow, []) -> false;
+mem_row_conflicts(R, NewRow, ConflictCols) ->
+    lists:all(
+        fun(C) ->
+            maps:is_key(C, R) andalso maps:is_key(C, NewRow)
+                andalso maps:get(C, R) =:= maps:get(C, NewRow)
+        end, ConflictCols).
+
+%% Overwrite the named columns of an existing row with the new row's values — the
+%% in-memory `SET col = EXCLUDED.col` for each update column.
+mem_apply_excluded(OldRow, NewRow, UpdateCols) ->
+    lists:foldl(
+        fun(C, Acc) ->
+            case maps:find(C, NewRow) of
+                {ok, V} -> Acc#{C => V};
+                error   -> Acc
+            end
+        end, OldRow, UpdateCols).
 
 %% Build a projected row from `{Alias, QExpr}` columns: each output column
 %% evaluates its expression against the row and is keyed by its alias. A bare

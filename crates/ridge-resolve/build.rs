@@ -431,6 +431,24 @@ const BASELINE_EXPORTS: &[(&str, &[&str])] = &[
             // The in-memory source leaf: wraps the rows `from` snapshotted, so an
             // in-memory `Seq` runs through the same plan/interpreter as a query.
             "planList",
+            // The mutation-plan tree, its constructors, the builders that wrap them,
+            // and the write-side renderer. A write verb builds a `MutationPlan` and
+            // hands it to a backend's `runMutation`; `mutationToSql` lowers it to one
+            // parameterized statement, the write-side dual of `planToSql`. `MutUpsert`
+            // carries an `ON CONFLICT` clause built by `planUpsert`.
+            "MutationPlan",
+            "MutInsert",
+            "MutUpsert",
+            "MutUpdate",
+            "MutDelete",
+            "planInsert",
+            "planUpsert",
+            "planUpdate",
+            "planDelete",
+            "mutationToSql",
+            // The RETURNING renderer: the same statement, with a `RETURNING <cols>`
+            // tail so a backend hands back the affected rows.
+            "mutationReturningToSql",
         ],
     ),
     (
@@ -452,6 +470,13 @@ const BASELINE_EXPORTS: &[(&str, &[&str])] = &[
             "project",
             "groupSummarize",
             "runPlan",
+            // The write seam: a write verb builds a `MutationPlan` and hands it here;
+            // a SQL backend renders it through `mutationToSql`, the in-memory one
+            // interprets it. Answers the affected row count.
+            "runMutation",
+            // The RETURNING write seam: renders through `mutationReturningToSql` (to
+            // `_pgRawQuery`) or interprets, answering the rows the mutation touched.
+            "runMutationReturning",
             // Transaction control: open, commit, and roll back a transaction
             // (nesting opens a savepoint). The `Repo.transaction` combinator runs
             // these around a body.
@@ -516,6 +541,23 @@ const BASELINE_EXPORTS: &[(&str, &[&str])] = &[
             "getBy",
             "insertRow",
             "insert",
+            "insertRows",
+            "insertMany",
+            // Upsert: the opaque `Conflict e` key built by `onConflict`, the typed
+            // `upsert`/`insertOrIgnore` verbs that resolve a unique-constraint conflict
+            // (`ON CONFLICT … DO UPDATE`/`DO NOTHING`), and the raw `upsertRow` escape
+            // hatch that names the conflict and update columns explicitly.
+            "Conflict",
+            "onConflict",
+            "upsert",
+            "insertOrIgnore",
+            "upsertRow",
+            // RETURNING verbs: insert/upsert/delete the rows and read them back, decoded
+            // — the stored row after the write (a server-filled column populated).
+            "insertReturning",
+            "insertManyReturning",
+            "deleteReturning",
+            "upsertReturning",
             "deleteWhere",
             "updateWhere",
             "update",
@@ -739,6 +781,7 @@ const BASELINE_OPAQUE: &[(&str, &[&str])] = &[
             "RightJoined",
             "FullJoined",
             "Setter",
+            "Conflict",
             "Grouped",
             "Seq",
         ],

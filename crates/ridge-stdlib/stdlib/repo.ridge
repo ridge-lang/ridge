@@ -21,7 +21,7 @@
 
 import std.data as Db
 import std.sql (SqlValue)
-import std.query (SortOrder, ascending, QueryPlan, planScan, planCombine, planRefine, planJoin, planProject, planAggregate, planGroup, planExists, planList)
+import std.query (SortOrder, ascending, QueryPlan, planScan, planCombine, planRefine, planJoin, planProject, planAggregate, planGroup, planExists, planList, planInsert, planUpsert, planUpdate, planDelete)
 import std.map (fromList, toList)
 
 -- A repository: entity `e` stored in `table` through adapter `a`. Opaque, so it
@@ -147,7 +147,9 @@ pub fn getBy (column: Text) (key: SqlValue) (r: Repo e a) -> Result (Option e) E
 -- Append a raw row to the table. The row is a column map built by hand through
 -- `SqlType.toSql`; for a typed entity reach for `insert`, which derives the row.
 pub fn insertRow (row: Map Text SqlValue) (r: Repo e a) -> Result Unit Error where Adapter a =
-    appendRow r.adapter r.table row
+    match runMutation r.adapter (planInsert r.table [row])
+        Ok _  -> Ok ()
+        Err e -> Err e
 
 -- Append a typed entity, encoding it to a row through `deriving (Row)`'s `toRow`.
 -- The repository's table holds entity `e`, so its `Row` instance names the columns
@@ -157,16 +159,169 @@ pub fn insertRow (row: Map Text SqlValue) (r: Repo e a) -> Result Unit Error whe
 pub fn insert (entity: e) (r: Repo e a) -> Result Unit Error where Adapter a, Row e =
     insertRow (toRow entity) r
 
+-- Append many raw rows in one statement. Every row must carry the same columns —
+-- the first row fixes the column list and the rest line up against it. An empty
+-- list is a no-op. For typed entities reach for `insertMany`, which derives the rows.
+pub fn insertRows (rows: List (Map Text SqlValue)) (r: Repo e a) -> Result Unit Error where Adapter a =
+    match rows
+        []  -> Ok ()
+        _   ->
+            match runMutation r.adapter (planInsert r.table rows)
+                Ok _  -> Ok ()
+                Err e -> Err e
+
+-- Append many typed entities in one multi-row INSERT, each encoded through
+-- `deriving (Row)`'s `toRow`. The bulk dual of `insert`: one statement for the
+-- whole batch, not a row per round-trip. An empty list is a no-op.
+pub fn insertMany (entities: List e) (r: Repo e a) -> Result Unit Error where Adapter a, Row e =
+    insertRows (encodeRows entities) r
+
+-- A single conflict-key column, built by `onConflict`: the column an upsert matches an
+-- existing row on. The entity `e` is a phantom that ties the key to the record whose
+-- column the accessor named, exactly as `Setter` ties an assignment — so a
+-- `List (Conflict e)` cannot mix entities and must match the repository's `e`. Opaque, so
+-- user code builds one only through `onConflict`.
+pub opaque type Conflict e = { column: Text }
+
+-- Name a conflict-key column by a quoted accessor (`fn (u: User) -> u.email`), the
+-- write-side analogue of `set`'s target: the accessor pins the column, so a misspelled
+-- field is a compile error, not a silently wrong `ON CONFLICT` target. Several keys
+-- compose into the composite unique constraint an upsert matches on.
+pub fn onConflict (col: Quote (e -> v)) -> Conflict e =
+    Conflict { column = conflictColumn col }
+
+-- The column a conflict key's quoted accessor names — a `QCol`, like `setterColumn`.
+fn conflictColumn (col: Quote (e -> v)) -> Text =
+    match col.tree
+        QCol c -> c
+        _      -> ""
+
+-- The bare column names a list of conflict keys covers.
+fn conflictColumns (keys: List (Conflict e)) -> List Text =
+    match keys
+        []        -> []
+        c :: rest -> c.column :: conflictColumns rest
+
+-- Insert a typed entity, or on a unique-constraint conflict over the `keys` columns
+-- overwrite every other column with the entity's values; answer how many rows were
+-- written (one for an insert or an update). The entity is encoded through `deriving
+-- (Row)`'s `toRow`, and the columns updated on conflict are every encoded column except
+-- the conflict keys — the keys are matched on, not rewritten. The insert-or-replace verb,
+-- entity first like `update`, conflict keys after:
+-- `users |> Repo.upsert user [Repo.onConflict (fn (u: User) -> u.id)]`. To choose which
+-- columns the conflict updates, use the raw `upsertRow`.
+pub fn upsert (entity: e) (keys: List (Conflict e)) (r: Repo e a) -> Result Int Error where Adapter a, Row e =
+    let row = toRow entity
+    let conflictCols = conflictColumns keys
+    runMutation r.adapter (planUpsert r.table [row] conflictCols (nonKeyColumns row conflictCols))
+
+-- Insert a typed entity, or on a conflict over the `keys` columns do nothing; answer how
+-- many rows were written (one for an insert, zero when the row already existed). The
+-- insert-if-absent verb, the `DO NOTHING` companion of `upsert`. The body mirrors
+-- `upsert`'s shape (encode the row in a leading `let`, then `runMutation`) so the two
+-- generalise their `Adapter`/`Row` dictionaries in the same order.
+pub fn insertOrIgnore (entity: e) (keys: List (Conflict e)) (r: Repo e a) -> Result Int Error where Adapter a, Row e =
+    let row = toRow entity
+    let conflictCols = conflictColumns keys
+    runMutation r.adapter (planUpsert r.table [row] conflictCols [])
+
+-- Insert a raw row, or on a unique-constraint conflict over `conflictCols` overwrite
+-- `updateCols` with the incoming values; answer how many rows were written. The raw,
+-- explicit-control counterpart of `upsert`: the row is a hand-built column map and the
+-- caller names exactly which columns the conflict updates, where `upsert` derives both
+-- from a typed entity. An empty `updateCols` is a `DO NOTHING`.
+pub fn upsertRow (conflictCols: List Text) (updateCols: List Text) (row: Map Text SqlValue) (r: Repo e a) -> Result Int Error where Adapter a =
+    runMutation r.adapter (planUpsert r.table [row] conflictCols updateCols)
+
+-- The columns of a row to overwrite on an upsert conflict: every column the row carries
+-- except the conflict-key columns (those are matched on, not rewritten).
+fn nonKeyColumns (row: Map Text SqlValue) (conflictCols: List Text) -> List Text =
+    excludeColumns (columnNames (toList row)) conflictCols
+
+fn columnNames (pairs: List (Text, SqlValue)) -> List Text =
+    match pairs
+        []             -> []
+        (c, _) :: rest -> c :: columnNames rest
+
+fn excludeColumns (cols: List Text) (drop: List Text) -> List Text =
+    match cols
+        []        -> []
+        c :: rest ->
+            if columnMember c drop then excludeColumns rest drop
+            else c :: excludeColumns rest drop
+
+fn columnMember (c: Text) (cols: List Text) -> Bool =
+    match cols
+        []        -> false
+        x :: rest -> if x == c then true else columnMember c rest
+
+-- Insert a typed entity and read the stored row back, decoded into the entity — an
+-- `INSERT … RETURNING *`. The write-side dual of a `get`: the row the database actually
+-- holds after the insert, so a server-filled column (a serial id, a `DEFAULT`) comes back
+-- populated, where plain `insert` answers only `Ok ()`. Errors if no row returns (the
+-- in-memory and Postgres backends both return the inserted row, so this is the decode
+-- guard, not an expected path).
+pub fn insertReturning (entity: e) (r: Repo e a) -> Result e Error where Adapter a, Row e =
+    match runMutationReturning r.adapter (planInsert r.table [toRow entity]) []
+        Err err -> Err err
+        Ok rows ->
+            match rows
+                []       -> Err (mkError "repo.insertReturning.empty" "insert returned no row")
+                row :: _ ->
+                    match fromRow row
+                        Err err -> Err err
+                        Ok x    -> Ok x
+
+-- Insert many typed entities and read every stored row back, decoded — the bulk dual of
+-- `insertReturning` over one multi-row `INSERT … RETURNING *`. An empty list is a no-op
+-- that returns no rows.
+pub fn insertManyReturning (entities: List e) (r: Repo e a) -> Result (List e) Error where Adapter a, Row e =
+    match entities
+        [] -> Ok []
+        _  ->
+            match runMutationReturning r.adapter (planInsert r.table (encodeRows entities)) []
+                Err err -> Err err
+                Ok rows -> decodeRows rows
+
+-- Remove the rows matching a quoted predicate and read each removed row back, decoded —
+-- a `DELETE … RETURNING *`. The rows are gone from the store, but their last contents
+-- come back as entities, so a delete can report exactly what it took.
+pub fn deleteReturning (pred: Quote (Map Text SqlValue -> Bool)) (r: Repo e a) -> Result (List e) Error where Adapter a, Row e =
+    match runMutationReturning r.adapter (planDelete r.table pred.tree) []
+        Err err -> Err err
+        Ok rows -> decodeRows rows
+
+-- Upsert a typed entity and read the resulting row back, decoded — an
+-- `INSERT … ON CONFLICT … DO UPDATE … RETURNING *`. Whether the row was inserted or an
+-- existing one was overwritten, the stored row comes back as the entity (a server-filled
+-- column populated), so an upsert can answer with the row that won. Errors if no row
+-- returns — which happens only when every column is a conflict key, leaving nothing to
+-- update (a `DO NOTHING` that skips the conflicting row).
+pub fn upsertReturning (entity: e) (keys: List (Conflict e)) (r: Repo e a) -> Result e Error where Adapter a, Row e =
+    let row = toRow entity
+    let conflictCols = conflictColumns keys
+    match runMutationReturning r.adapter (planUpsert r.table [row] conflictCols (nonKeyColumns row conflictCols)) []
+        Err err -> Err err
+        Ok rows ->
+            match rows
+                []         -> Err (mkError "repo.upsertReturning.empty" "upsert returned no row")
+                stored :: _ ->
+                    match fromRow stored
+                        Err err -> Err err
+                        Ok x    -> Ok x
+
 -- Remove the rows matching a quoted predicate; answer how many were removed.
 pub fn deleteWhere (pred: Quote (Map Text SqlValue -> Bool)) (r: Repo e a) -> Result Int Error where Adapter a =
-    delete r.adapter r.table pred
+    runMutation r.adapter (planDelete r.table pred.tree)
 
 -- Set the given columns on every row matching a quoted predicate; answer how many
 -- rows changed. The `changes` map is a partial column map built through
 -- `SqlType.toSql`, so one call can touch a subset of columns. To write a whole
 -- record back, use `update`.
 pub fn updateWhere (changes: Map Text SqlValue) (pred: Quote (Map Text SqlValue -> Bool)) (r: Repo e a) -> Result Int Error where Adapter a =
-    updateRows r.adapter r.table changes pred
+    match toList changes
+        []  -> Ok 0
+        _   -> runMutation r.adapter (planUpdate r.table changes pred.tree)
 
 -- Overwrite every column of the rows matching a quoted predicate with a typed
 -- entity, encoded through `toRow`. Reach for `updateWhere` when only some columns
@@ -217,7 +372,7 @@ fn settersToMap (setters: List (Setter e)) -> Map Text SqlValue =
 -- column, where `updateWhere` takes an unchecked `Map Text SqlValue`. Reach for
 -- `updateWhere` only to write a column map assembled by hand.
 pub fn setWhere (setters: List (Setter e)) (pred: Quote (Map Text SqlValue -> Bool)) (r: Repo e a) -> Result Int Error where Adapter a =
-    updateRows r.adapter r.table (settersToMap setters) pred
+    updateWhere (settersToMap setters) pred r
 
 -- Run `body` inside a database transaction on the connection. The body receives
 -- the same connection, so every repository built on it (`repo conn "..."`) runs
@@ -606,7 +761,7 @@ pub fn singleOrError (q: Query e a) -> Result e Error where Adapter a, Row e =
 -- columns. Only the filter is used — ordering and paging do not constrain an
 -- UPDATE — so it is the pipeline form of `setWhere`.
 pub fn applySet (setters: List (Setter e)) (q: Query e a) -> Result Int Error where Adapter a =
-    updateRows q.repo.adapter q.repo.table (settersToMap setters) q.pred
+    updateWhere (settersToMap setters) q.pred q.repo
 
 -- Decode the optional scalar a `SELECT func(col) …` aggregate returns into an
 -- optional typed value. An aggregate over zero matching rows is SQL NULL: the

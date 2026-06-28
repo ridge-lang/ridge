@@ -1,5 +1,6 @@
 ---
 source: crates/ridge-lower/tests/lowering.rs
+assertion_line: 44
 expression: rendered
 ---
 module: m0
@@ -10,10 +11,10 @@ items:
     pub: false
     main: false
     caps: CapabilitySet(0)
-    ret_ty: Con(72)
+    ret_ty: Con(74)
     params:
       - name: p
-        ty: Con(72)
+        ty: Con(74)
     body:
       RecordUpdate(n0):
         base:

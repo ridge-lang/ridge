@@ -25,7 +25,8 @@
 -- every call site that threads the handle.
 
 import std.sql (SqlValue, sqlValue)
-import std.query (QueryPlan, planToSql)
+import std.query (QueryPlan, planToSql, MutationPlan, mutationToSql, mutationReturningToSql, planInsert, planUpdate, planDelete)
+import std.map (toList)
 
 -- The storage seam. `a` is the connection-handle type; each backend provides an
 -- instance. `appendRow` appends a row; `all` returns every row of a table;
@@ -123,6 +124,8 @@ pub class Adapter a =
     project (conn: a) (table: Text) (pred: Quote (Map Text SqlValue -> Bool)) (orders: List (Bool, QExpr)) (lim: Int) (off: Int) (cols: List (Text, QExpr)) (dist: Bool) -> Result (List (Map Text SqlValue)) Error
     groupSummarize (conn: a) (table: Text) (pred: Quote (Map Text SqlValue -> Bool)) (keyCol: Text) (cols: List (Text, Text, QExpr, Bool)) (having: QExpr) -> Result (List (Map Text SqlValue)) Error
     runPlan (conn: a) (plan: QueryPlan) -> Result (List (Map Text SqlValue)) Error
+    runMutation (conn: a) (plan: MutationPlan) -> Result Int Error
+    runMutationReturning (conn: a) (plan: MutationPlan) (cols: List Text) -> Result (List (Map Text SqlValue)) Error
     begin    (conn: a) -> Result Unit Error
     commit   (conn: a) -> Result Unit Error
     rollback (conn: a) -> Result Unit Error
@@ -206,6 +209,20 @@ fn _memGroupSummarize (id: Int) (table: Text) (tree: QExpr) (keyCol: Text) (cols
 -- combined rows.
 @ffi("ridge_rt", "mem_run_plan", 2)
 fn _memRunPlan (id: Int) (plan: QueryPlan) -> Result (List (Map Text SqlValue)) Error
+
+-- Run a mutation plan against the store identified by `id`; answer the affected row
+-- count. The write-side counterpart of `mem_run_plan`: a backend without a SQL engine
+-- interprets the plan directly, threading an update's or delete's predicate through the
+-- same matcher reads use, so a correlated `EXISTS` in a mutation predicate works.
+@ffi("ridge_rt", "mem_run_mutation", 2)
+fn _memRunMutation (id: Int) (plan: MutationPlan) -> Result Int Error
+
+-- Run a mutation plan and return the rows it touched, each projected to `cols` (every
+-- column when `cols` is empty) — the in-memory dual of a `RETURNING` clause. The
+-- write-side counterpart of `mem_run_plan`: an insert or upsert returns the rows it
+-- wrote, an update the rows it changed, a delete the rows it removed.
+@ffi("ridge_rt", "mem_run_mutation_returning", 3)
+fn _memRunMutationReturning (id: Int) (plan: MutationPlan) (cols: List Text) -> Result (List (Map Text SqlValue)) Error
 
 -- Open a transaction on the store identified by `id` — snapshot its tables onto
 -- a per-store stack. A nested `begin` snapshots again (a savepoint).
@@ -299,6 +316,10 @@ instance Adapter MemAdapter =
         _memGroupSummarize conn.id table pred.tree keyCol cols having
     runPlan (conn: MemAdapter) (plan: QueryPlan) -> Result (List (Map Text SqlValue)) Error =
         _memRunPlan conn.id plan
+    runMutation (conn: MemAdapter) (plan: MutationPlan) -> Result Int Error =
+        _memRunMutation conn.id plan
+    runMutationReturning (conn: MemAdapter) (plan: MutationPlan) (cols: List Text) -> Result (List (Map Text SqlValue)) Error =
+        _memRunMutationReturning conn.id plan cols
     begin (conn: MemAdapter) -> Result Unit Error =
         _memBegin conn.id
     commit (conn: MemAdapter) -> Result Unit Error =
@@ -437,10 +458,6 @@ pub fn withMaxQueueDepth (maxQueueDepth: Int) (pool: PoolConfig) -> PoolConfig =
 @ffi("ridge_pg", "pg_connect", 16)
 fn _pgConnect (host: Text) (port: Int) (database: Text) (user: Text) (password: Text) (sslMode: Text) (poolSize: Int) (connectTimeoutMs: Int) (queryTimeoutMs: Int) (checkoutTimeoutMs: Int) (idleTimeoutMs: Int) (maxLifetimeMs: Int) (healthCheckMs: Int) (connectRetries: Int) (retryBackoffMs: Int) (maxQueueDepth: Int) -> Result Postgres Error
 
--- Append a row to a table on the connection identified by `id`.
-@ffi("ridge_pg", "pg_insert", 3)
-fn _pgInsert (id: Int) (table: Text) (row: Map Text SqlValue) -> Result Unit Error
-
 -- Return every row of a table on the connection identified by `id`.
 @ffi("ridge_pg", "pg_all", 2)
 fn _pgAll (id: Int) (table: Text) -> Result (List (Map Text SqlValue)) Error
@@ -453,17 +470,6 @@ fn _pgSelect (id: Int) (table: Text) (tree: QExpr) -> Result (List (Map Text Sql
 -- Return the rows of a table whose `column` holds exactly `key`.
 @ffi("ridge_pg", "pg_get_rows", 4)
 fn _pgGetRows (id: Int) (table: Text) (column: Text) (key: SqlValue) -> Result (List (Map Text SqlValue)) Error
-
--- Remove the rows of a table that satisfy the predicate tree; answer how many
--- were removed.
-@ffi("ridge_pg", "pg_delete", 3)
-fn _pgDelete (id: Int) (table: Text) (tree: QExpr) -> Result Int Error
-
--- Set the `changes` columns on the rows of a table that satisfy the predicate
--- tree, compiled to a parameterised `UPDATE … SET … WHERE`; answer the affected
--- row count.
-@ffi("ridge_pg", "pg_update", 4)
-fn _pgUpdate (id: Int) (table: Text) (changes: Map Text SqlValue) (tree: QExpr) -> Result Int Error
 
 -- Return the rows of a table that satisfy the predicate tree, with ordering and
 -- paging compiled into the SQL (ORDER BY / LIMIT / OFFSET).
@@ -567,7 +573,11 @@ pub fn db connectWith (cfg: Config) (pool: PoolConfig) -> Result Postgres Error 
 
 instance Adapter Postgres =
     appendRow (conn: Postgres) (table: Text) (row: Map Text SqlValue) -> Result Unit Error =
-        _pgInsert conn.id table row
+        match mutationToSql (planInsert table [row])
+            (s, binds) ->
+                match _pgRawExec conn.id (sqlValue s) binds
+                    Ok _  -> Ok ()
+                    Err e -> Err e
     all (conn: Postgres) (table: Text) -> Result (List (Map Text SqlValue)) Error =
         _pgAll conn.id table
     selectRows (conn: Postgres) (table: Text) (pred: Quote (Map Text SqlValue -> Bool)) -> Result (List (Map Text SqlValue)) Error =
@@ -577,9 +587,14 @@ instance Adapter Postgres =
             Ok rows -> Ok (firstRow rows)
             Err e   -> Err e
     delete (conn: Postgres) (table: Text) (pred: Quote (Map Text SqlValue -> Bool)) -> Result Int Error =
-        _pgDelete conn.id table pred.tree
+        match mutationToSql (planDelete table pred.tree)
+            (s, binds) -> _pgRawExec conn.id (sqlValue s) binds
     updateRows (conn: Postgres) (table: Text) (changes: Map Text SqlValue) (pred: Quote (Map Text SqlValue -> Bool)) -> Result Int Error =
-        _pgUpdate conn.id table changes pred.tree
+        match toList changes
+            []  -> Ok 0
+            _   ->
+                match mutationToSql (planUpdate table changes pred.tree)
+                    (s, binds) -> _pgRawExec conn.id (sqlValue s) binds
     fetch (conn: Postgres) (table: Text) (pred: Quote (Map Text SqlValue -> Bool)) (orders: List (Bool, QExpr)) (lim: Int) (off: Int) (dist: Bool) -> Result (List (Map Text SqlValue)) Error =
         _pgFetch conn.id table pred.tree orders lim off dist
     countWhere (conn: Postgres) (table: Text) (pred: Quote (Map Text SqlValue -> Bool)) -> Result Int Error =
@@ -592,6 +607,12 @@ instance Adapter Postgres =
         _pgGroupSummarize conn.id table pred.tree keyCol cols having
     runPlan (conn: Postgres) (plan: QueryPlan) -> Result (List (Map Text SqlValue)) Error =
         match planToSql plan
+            (s, binds) -> _pgRawQuery conn.id (sqlValue s) binds
+    runMutation (conn: Postgres) (plan: MutationPlan) -> Result Int Error =
+        match mutationToSql plan
+            (s, binds) -> _pgRawExec conn.id (sqlValue s) binds
+    runMutationReturning (conn: Postgres) (plan: MutationPlan) (cols: List Text) -> Result (List (Map Text SqlValue)) Error =
+        match mutationReturningToSql plan cols
             (s, binds) -> _pgRawQuery conn.id (sqlValue s) binds
     begin (conn: Postgres) -> Result Unit Error =
         _pgBegin conn.id

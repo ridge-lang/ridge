@@ -25,7 +25,8 @@
 -- every call site that threads the handle.
 
 import std.sql (SqlValue, sqlValue)
-import std.query (QueryPlan, planToSql, MutationPlan, mutationToSql)
+import std.query (QueryPlan, planToSql, MutationPlan, mutationToSql, planInsert, planUpdate, planDelete)
+import std.map (toList)
 
 -- The storage seam. `a` is the connection-handle type; each backend provides an
 -- instance. `appendRow` appends a row; `all` returns every row of a table;
@@ -447,10 +448,6 @@ pub fn withMaxQueueDepth (maxQueueDepth: Int) (pool: PoolConfig) -> PoolConfig =
 @ffi("ridge_pg", "pg_connect", 16)
 fn _pgConnect (host: Text) (port: Int) (database: Text) (user: Text) (password: Text) (sslMode: Text) (poolSize: Int) (connectTimeoutMs: Int) (queryTimeoutMs: Int) (checkoutTimeoutMs: Int) (idleTimeoutMs: Int) (maxLifetimeMs: Int) (healthCheckMs: Int) (connectRetries: Int) (retryBackoffMs: Int) (maxQueueDepth: Int) -> Result Postgres Error
 
--- Append a row to a table on the connection identified by `id`.
-@ffi("ridge_pg", "pg_insert", 3)
-fn _pgInsert (id: Int) (table: Text) (row: Map Text SqlValue) -> Result Unit Error
-
 -- Return every row of a table on the connection identified by `id`.
 @ffi("ridge_pg", "pg_all", 2)
 fn _pgAll (id: Int) (table: Text) -> Result (List (Map Text SqlValue)) Error
@@ -463,17 +460,6 @@ fn _pgSelect (id: Int) (table: Text) (tree: QExpr) -> Result (List (Map Text Sql
 -- Return the rows of a table whose `column` holds exactly `key`.
 @ffi("ridge_pg", "pg_get_rows", 4)
 fn _pgGetRows (id: Int) (table: Text) (column: Text) (key: SqlValue) -> Result (List (Map Text SqlValue)) Error
-
--- Remove the rows of a table that satisfy the predicate tree; answer how many
--- were removed.
-@ffi("ridge_pg", "pg_delete", 3)
-fn _pgDelete (id: Int) (table: Text) (tree: QExpr) -> Result Int Error
-
--- Set the `changes` columns on the rows of a table that satisfy the predicate
--- tree, compiled to a parameterised `UPDATE … SET … WHERE`; answer the affected
--- row count.
-@ffi("ridge_pg", "pg_update", 4)
-fn _pgUpdate (id: Int) (table: Text) (changes: Map Text SqlValue) (tree: QExpr) -> Result Int Error
 
 -- Return the rows of a table that satisfy the predicate tree, with ordering and
 -- paging compiled into the SQL (ORDER BY / LIMIT / OFFSET).
@@ -577,7 +563,11 @@ pub fn db connectWith (cfg: Config) (pool: PoolConfig) -> Result Postgres Error 
 
 instance Adapter Postgres =
     appendRow (conn: Postgres) (table: Text) (row: Map Text SqlValue) -> Result Unit Error =
-        _pgInsert conn.id table row
+        match mutationToSql (planInsert table [row])
+            (s, binds) ->
+                match _pgRawExec conn.id (sqlValue s) binds
+                    Ok _  -> Ok ()
+                    Err e -> Err e
     all (conn: Postgres) (table: Text) -> Result (List (Map Text SqlValue)) Error =
         _pgAll conn.id table
     selectRows (conn: Postgres) (table: Text) (pred: Quote (Map Text SqlValue -> Bool)) -> Result (List (Map Text SqlValue)) Error =
@@ -587,9 +577,14 @@ instance Adapter Postgres =
             Ok rows -> Ok (firstRow rows)
             Err e   -> Err e
     delete (conn: Postgres) (table: Text) (pred: Quote (Map Text SqlValue -> Bool)) -> Result Int Error =
-        _pgDelete conn.id table pred.tree
+        match mutationToSql (planDelete table pred.tree)
+            (s, binds) -> _pgRawExec conn.id (sqlValue s) binds
     updateRows (conn: Postgres) (table: Text) (changes: Map Text SqlValue) (pred: Quote (Map Text SqlValue -> Bool)) -> Result Int Error =
-        _pgUpdate conn.id table changes pred.tree
+        match toList changes
+            []  -> Ok 0
+            _   ->
+                match mutationToSql (planUpdate table changes pred.tree)
+                    (s, binds) -> _pgRawExec conn.id (sqlValue s) binds
     fetch (conn: Postgres) (table: Text) (pred: Quote (Map Text SqlValue -> Bool)) (orders: List (Bool, QExpr)) (lim: Int) (off: Int) (dist: Bool) -> Result (List (Map Text SqlValue)) Error =
         _pgFetch conn.id table pred.tree orders lim off dist
     countWhere (conn: Postgres) (table: Text) (pred: Quote (Map Text SqlValue -> Bool)) -> Result Int Error =

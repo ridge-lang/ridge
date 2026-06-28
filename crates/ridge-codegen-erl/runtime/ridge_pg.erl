@@ -33,8 +33,6 @@
     pg_connect/16,
     pg_all/2,
     pg_get_rows/4,
-    pg_count_where/3,
-    pg_aggregate/5,
     pg_project/8,
     pg_group_summarize/6,
     pg_begin/1,
@@ -111,17 +109,6 @@ pg_all(Id, Table) -> pg_call(Id, {all, Table}).
 %% pg_get_rows/4 — the rows of Table whose Column holds exactly Key. std.data's
 %% `get` takes the first. Result (List Row) Error.
 pg_get_rows(Id, Table, Column, Key) -> pg_call(Id, {get_rows, Table, Column, Key}).
-
-%% pg_count_where/3 — how many rows of Table satisfy Tree, via SELECT COUNT(*)
-%% so no rows cross the wire. Result Int Error.
-pg_count_where(Id, Table, Tree) -> pg_call(Id, {count_where, Table, Tree}).
-
-%% pg_aggregate/5 — a scalar aggregate (Func is <<"SUM">>/<<"AVG">>/<<"MIN">>/
-%% <<"MAX">>) over Column across the rows of Table that satisfy Tree, via
-%% SELECT func(column) … WHERE so only the scalar crosses the wire. An aggregate
-%% over zero rows is SQL NULL, which decodes to 'SqlNull'. Result SqlValue Error.
-pg_aggregate(Id, Table, Tree, Func, Column) ->
-    pg_call(Id, {aggregate, Table, Tree, Func, Column}).
 
 %% pg_project/7 — the rows of Table that satisfy Tree, ordered and paged as
 %% pg_fetch, with the `{Alias, Column}` projection compiled into the select-list
@@ -963,67 +950,8 @@ run_verb(Conn, {project, Table, Tree, Orders, Lim, Off, Cols, Dist}) ->
     Sql = ["SELECT ", distinct_kw(Dist), SelectFrag, " FROM ", quote_ident(Table), " WHERE ", Where,
            OrderFrag, limit_clause(Lim), offset_clause(Off)],
     run_query(Conn, Sql, lists:reverse(RevAllBinds));
-run_verb(Conn, {count_where, Table, Tree}) ->
-    do_count(Conn, Table, Tree);
-run_verb(Conn, {aggregate, Table, Tree, Func, Column}) ->
-    do_aggregate(Conn, Table, Func, Column, Tree);
 run_verb(Conn, {group_summarize, Table, Tree, KeyCol, Cols, Having}) ->
     do_group_summarize(Conn, Table, Tree, KeyCol, Cols, Having).
-
-%% SELECT COUNT(*) and read the single integer back out. The result is one row
-%% of one column; its name varies, so the value is taken positionally.
-do_count(Conn, Table, Tree) ->
-    {Where, Binds} = compile_where(Tree, Table),
-    Sql = ["SELECT COUNT(*) FROM ", quote_ident(Table), " WHERE ", Where],
-    case run_query(Conn, Sql, Binds) of
-        {ok, [Row | _]} ->
-            case maps:values(Row) of
-                [{'SqlInt', N} | _]   -> {ok, N};
-                [{'SqlFloat', F} | _] -> {ok, trunc(F)};
-                _                     -> {ok, 0}
-            end;
-        {ok, []}   -> {ok, 0};
-        {error, E} -> {error, E}
-    end.
-
-%% SELECT func(col) … WHERE and read the single scalar back out positionally (its
-%% column name is the aggregate keyword, which varies). An aggregate always
-%% returns one row; over zero matching rows its single column is NULL, decoded to
-%% 'SqlNull'. Func is whitelisted to the four aggregate keywords and Column is
-%% quoted as an identifier, so neither is ever interpolated as raw SQL.
-do_aggregate(Conn, Table, Func, Column, Tree) ->
-    %% The folded key is in the SELECT, so its binds take $1..$J and the WHERE
-    %% continues at $J+1, seeded with them (held reversed) — select-before-where
-    %% ordering, as the project verb threads its select-list.
-    {AggFrag, RevB1, N1} = agg_expr(Func, Column, 1, []),
-    {Where, RevB2, _N2} = cw(Tree, {bare, Table}, N1, RevB1),
-    Sql = ["SELECT ", AggFrag, " FROM ", quote_ident(Table), " WHERE ", Where],
-    agg_result(run_query(Conn, Sql, lists:reverse(RevB2))).
-
-%% Read the single scalar an aggregate SELECT returns, positionally (the result
-%% column's name is the aggregate keyword, which varies). An aggregate always
-%% returns one row; over zero matching rows its single column is NULL, decoded to
-%% 'SqlNull' and reported as `none`. Shared by the single-table and join aggregates.
-agg_result({ok, [Row | _]}) ->
-    case maps:values(Row) of
-        ['SqlNull' | _] -> {ok, none};
-        [V | _]         -> {ok, {some, V}};
-        []              -> {ok, none}
-    end;
-agg_result({ok, []})   -> {ok, none};
-agg_result({error, E}) -> {error, E}.
-
-%% Read the integer a `SELECT COUNT(*)` returns, positionally — shared by the inner
-%% and left-outer join counts. A COUNT is never NULL (zero rows count 0), so an
-%% empty result decodes to 0. Mirrors the extraction in `do_count`.
-count_result({ok, [Row | _]}) ->
-    case maps:values(Row) of
-        [{'SqlInt', N} | _]   -> {ok, N};
-        [{'SqlFloat', F} | _] -> {ok, trunc(F)};
-        _                     -> {ok, 0}
-    end;
-count_result({ok, []})   -> {ok, 0};
-count_result({error, E}) -> {error, E}.
 
 %% The aggregate select expression. The function name is matched against the four
 %% supported keywords (never spliced from the caller's bytes); an unknown keyword

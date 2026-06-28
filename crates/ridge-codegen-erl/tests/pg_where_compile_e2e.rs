@@ -1,11 +1,11 @@
 //! Verifies the Postgres WHERE compiler (`ridge_pg:compile_where/2`) renders the
 //! `QLike`, `QIn`, and correlated `QExists` predicate nodes to parameterised SQL.
 //!
-//! This is the renderer the single-table reads take — `findBy`, `selectRows`,
-//! `delete`, `countWhere` — and it is distinct from the plan renderer
-//! (`query.ridge`'s `planToSql`) that the join/aggregate terminals use. The two
-//! must stay in lockstep on every `QExpr` node, so this locks the `cw` path the way
-//! `query_plan_sql_e2e` locks the plan path.
+//! This is the renderer the remaining `cw`-path reads take — `project` and
+//! `groupSummarize` — and it is distinct from the plan renderer (`query.ridge`'s
+//! `planToSql`) that every other read now uses. The two must stay in lockstep on
+//! every `QExpr` node, so this locks the `cw` path the way `query_plan_sql_e2e`
+//! locks the plan path.
 //!
 //! Method: compile the bundled `ridge_pg.erl` with `erlc +export_all` so the
 //! internal `compile_where/2` is reachable, then `erl -eval` it on a few `QExpr`

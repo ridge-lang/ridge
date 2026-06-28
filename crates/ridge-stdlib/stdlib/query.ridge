@@ -1642,6 +1642,20 @@ fn renderAggregate (func: Text) (column: QExpr) (leaf: Int) (child: QueryPlan) (
                             { text = Text.join "" ["SELECT ", ax.text, " FROM ", sk.text], binds = ax.binds ++ sk.binds, next = sk.next }
                         _ -> naryAggregate func leaf column child n
                 _ -> naryAggregate func leaf column child n
+        PlanScan table pred _ _ _ _ ->
+            -- A scalar aggregate over a single table: fold over the table's filtered rows.
+            -- The WHERE compiles bare, or base-qualified (`FROM "t" AS l`) when it carries a
+            -- correlated EXISTS, so the subquery names the outer row as `l."col"` — the same
+            -- aliasing a plain `PlanScan` uses. No ordering or paging: an aggregate folds
+            -- every matched row.
+            if containsExists pred then
+                let ax = aggExprSingle true func column n
+                let w = whereExistsClause true 1 pred ax.next
+                { text = Text.join "" ["SELECT ", ax.text, " FROM ", quoteIdent table, " AS l", w.text], binds = ax.binds ++ w.binds, next = w.next }
+            else
+                let ax = aggExprSingle false func column n
+                let w = whereClause false pred ax.next
+                { text = Text.join "" ["SELECT ", ax.text, " FROM ", quoteIdent table, w.text], binds = ax.binds ++ w.binds, next = w.next }
         _ -> emptyRender n
 
 -- A scalar aggregate over a composite (three-or-more table) join: the flattened spine
@@ -1696,6 +1710,16 @@ fn aggExprJoinE (func: Text) (column: QExpr) (n: Int) -> { text: Text, binds: Li
     if func == "COUNT" then { text = "COUNT(*)", binds = [], next = n }
     else
         let c = renderOperand true column n
+        { text = Text.join "" [func, "(", c.text, ")", avgCast func], binds = c.binds, next = c.next }
+
+-- The scalar-aggregate expression over a single table: `COUNT(*)`, or `FUNC(<expr>)`
+-- folding its captured value (a column or a computed expression), rendered bare or
+-- base-qualified (`l.`) when the scan's WHERE carries an EXISTS, its literals threaded
+-- as `$N` placeholders. `AVG` casts to float8, as the join aggregate renderers do.
+fn aggExprSingle (qualified: Bool) (func: Text) (column: QExpr) (n: Int) -> { text: Text, binds: List SqlValue, next: Int } =
+    if func == "COUNT" then { text = "COUNT(*)", binds = [], next = n }
+    else
+        let c = renderOperand qualified column n
         { text = Text.join "" [func, "(", c.text, ")", avgCast func], binds = c.binds, next = c.next }
 
 -- A grouped join (`groupBy` + `summarize`): one row per group, keyed by the

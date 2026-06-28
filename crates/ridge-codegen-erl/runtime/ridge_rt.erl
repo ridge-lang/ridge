@@ -30,7 +30,7 @@
     ask/3, send/2, send_op/2, send_fn/2, mailbox_size/1, spawn_actor/3,
     mem_new/1, mem_insert/3, mem_all/2,
     mem_delete/3, mem_update/4, mem_get_rows/4,
-    mem_count_where/3, mem_aggregate/5, mem_project/8,
+    mem_project/8,
     mem_group_summarize/6,
     mem_begin/1, mem_commit/1, mem_rollback/1, mem_close/1,
     mem_ddl_create/3, mem_ddl_drop/2, mem_ddl_add_column/3,
@@ -979,18 +979,6 @@ mem_delete(Id, Table, Tree) -> mem_call({delete, Id, Table, Tree}).
 %% over each matching row. Result Int Error.
 mem_update(Id, Table, Changes, Tree) -> mem_call({update, Id, Table, Changes, Tree}).
 
-%% mem_count_where/3 — how many rows of Table satisfy Tree, counted without
-%% returning them (the in-memory dual of SELECT COUNT(*)). Result Int Error.
-mem_count_where(Id, Table, Tree) -> mem_call({count_where, Id, Table, Tree}).
-
-%% mem_aggregate/5 — fold a scalar aggregate (Func is <<"SUM">>/<<"AVG">>/
-%% <<"MIN">>/<<"MAX">>) over Column across the rows of Table that satisfy Tree.
-%% The single scalar comes back as a SqlValue, or 'SqlNull' when no row matches
-%% (the in-memory dual of a SQL aggregate over an empty set). Result SqlValue
-%% Error.
-mem_aggregate(Id, Table, Tree, Func, Column) ->
-    mem_call({aggregate, Id, Table, Tree, Func, Column}).
-
 %% mem_project/7 — the rows of Table that satisfy Tree, ordered and paged as
 %% mem_fetch, then projected to the `{Alias, Column}` columns: each row keeps
 %% only those columns, re-keyed by alias. Result (List Row) Error.
@@ -1233,18 +1221,6 @@ mem_keeper_loop(State) ->
             {Updated, Changed} = mem_update_rows(State, Id, Changes, Tree, Rows),
             From ! {Ref, {ok, Changed}},
             mem_keeper_loop(State#{Key => Updated});
-        {{count_where, Id, Table, Tree}, From, Ref} ->
-            Rows = maps:get({Id, Table}, State, []),
-            N = length([R || R <- Rows, mem_pred(State, Id, Tree, R)]),
-            From ! {Ref, {ok, N}},
-            mem_keeper_loop(State);
-        {{aggregate, Id, Table, Tree, Func, Column}, From, Ref} ->
-            Rows = maps:get({Id, Table}, State, []),
-            Matches = [R || R <- Rows, mem_pred(State, Id, Tree, R)],
-            Value = mem_agg_value_q(Func, Column, Matches),
-            Wrapped = case Value of 'SqlNull' -> none; _ -> {some, Value} end,
-            From ! {Ref, {ok, Wrapped}},
-            mem_keeper_loop(State);
         {{group_summarize, Id, Table, Tree, KeyCol, Cols, Having}, From, Ref} ->
             Rows = maps:get({Id, Table}, State, []),
             Matches = [R || R <- Rows, mem_pred(State, Id, Tree, R)],

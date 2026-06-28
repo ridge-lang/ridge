@@ -465,8 +465,6 @@ const BASELINE_EXPORTS: &[(&str, &[&str])] = &[
             "delete",
             "updateRows",
             "fetch",
-            "countWhere",
-            "aggregate",
             "project",
             "groupSummarize",
             "runPlan",

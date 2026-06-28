@@ -244,6 +244,23 @@ pub fn corrExistsBinds () -> Text =
 pub fn corrNotExistsSql () -> Text =
     renderSql (planScan "users" (QNot (QExists "posts" (QEq (QColR "author") (QCol "id")))) [] (0 - 1) 0 false)
 
+-- Single-table aggregates over the plan: a `PlanAggregate` over a bare `PlanScan`.
+-- `COUNT(*)` counts the filtered rows; a column fold renders the bare column; `AVG`
+-- casts to `float8`. None is ordered or paged — an aggregate folds every matched row.
+pub fn singleCountSql () -> Text =
+    renderSql (planAggregate "COUNT" (keepAll ()) 0 (adultsScan ()))
+
+pub fn singleSumSql () -> Text =
+    renderSql (planAggregate "SUM" (QCol "age") 0 (adultsScan ()))
+
+pub fn singleAvgSql () -> Text =
+    renderSql (planAggregate "AVG" (QCol "age") 0 (adultsScan ()))
+
+-- A single-table aggregate whose filter carries a correlated EXISTS: the scan aliases
+-- its table `l` so the subquery names the outer row, exactly as a plain `PlanScan` does.
+pub fn singleCountExistsSql () -> Text =
+    renderSql (planAggregate "COUNT" (keepAll ()) 0 (planScan "users" (QExists "posts" (QEq (QColR "author") (QCol "id"))) [] (0 - 1) 0 false))
+
 -- A correlated EXISTS inside a binary join's post-join WHERE: the inner table joins at
 -- the leaf after both join sides (`x2`), and its predicate names the right leaf as `r`
 -- (`r."id"`) and the inner row as `x2` (`x2."post"`) — three correlated sources in one
@@ -744,7 +761,7 @@ fn query_plan_compiles_to_parameterized_sql() {
 
     let expr = format!(
         "F=fun(N)->io:format(\"~s=~s~n\",[N,{module}:N()])end, \
-         lists:foreach(F,['scanSql','scanBinds','foldSql','likeSql','likeBinds','inSql','inBinds','inCapturedSql','inCapturedBinds','corrExistsSql','corrExistsBinds','corrNotExistsSql','joinExistsWhereSql','naryExistsWhereSql','nestedExistsSql','pgNestedSql','pgNestedBinds','inEmptySql','inEmptyBinds','arithMulSql','arithMulBinds','arithColSql','arithModSql','combineSql','refineSql','innerSql','leftSql','rightSql','fullSql','fullBinds','projectSql','projectCalcSql','projectCalcBinds','projectCaseJoinSql','aggSql','groupSql','inner3Sql','inner3Binds','existsSql','existsThreeSql','existsThreeBinds','everyJoinSql','everyJoinBinds','innerLeftMixSql','innerRightMixSql','innerFullMixSql','innerFullMixBinds','adultLeftMixSql','adultLeftMixBinds','countAdultLeftMixSql','countThreeSql','countThreeBinds','countLeftMixSql','countLeftMixBinds','sumThreeSql','avgThreeSql','projectThreeSql','projectLeftMixSql','projectRightMixSql','projectFullMixSql','groupThreeSql','groupComputedThreeSql','groupComputedThreeBinds','groupLeftMixSql','groupRightMixSql','groupFullMixSql','orderThreeSql','orderLeftMixSql','orderRightMixSql','orderFullMixSql','inner4Sql','sumFourSql','projectFourSql','orderFourSql','insertSql','insertBinds','insertManySql','insertManyBinds','updateSql','updateBinds','deleteSql','existsDeleteSql','existsDeleteBinds','existsUpdateSql','existsUpdateBinds','upsertSql','upsertBinds','insertOrIgnoreSql','upsertBareSql','insertReturningStarSql','insertReturningStarBinds','insertReturningColsSql','deleteReturningSql','updateReturningSql','upsertReturningSql']), halt()."
+         lists:foreach(F,['scanSql','scanBinds','foldSql','likeSql','likeBinds','inSql','inBinds','inCapturedSql','inCapturedBinds','corrExistsSql','corrExistsBinds','corrNotExistsSql','singleCountSql','singleSumSql','singleAvgSql','singleCountExistsSql','joinExistsWhereSql','naryExistsWhereSql','nestedExistsSql','pgNestedSql','pgNestedBinds','inEmptySql','inEmptyBinds','arithMulSql','arithMulBinds','arithColSql','arithModSql','combineSql','refineSql','innerSql','leftSql','rightSql','fullSql','fullBinds','projectSql','projectCalcSql','projectCalcBinds','projectCaseJoinSql','aggSql','groupSql','inner3Sql','inner3Binds','existsSql','existsThreeSql','existsThreeBinds','everyJoinSql','everyJoinBinds','innerLeftMixSql','innerRightMixSql','innerFullMixSql','innerFullMixBinds','adultLeftMixSql','adultLeftMixBinds','countAdultLeftMixSql','countThreeSql','countThreeBinds','countLeftMixSql','countLeftMixBinds','sumThreeSql','avgThreeSql','projectThreeSql','projectLeftMixSql','projectRightMixSql','projectFullMixSql','groupThreeSql','groupComputedThreeSql','groupComputedThreeBinds','groupLeftMixSql','groupRightMixSql','groupFullMixSql','orderThreeSql','orderLeftMixSql','orderRightMixSql','orderFullMixSql','inner4Sql','sumFourSql','projectFourSql','orderFourSql','insertSql','insertBinds','insertManySql','insertManyBinds','updateSql','updateBinds','deleteSql','existsDeleteSql','existsDeleteBinds','existsUpdateSql','existsUpdateBinds','upsertSql','upsertBinds','insertOrIgnoreSql','upsertBareSql','insertReturningStarSql','insertReturningStarBinds','insertReturningColsSql','deleteReturningSql','updateReturningSql','upsertReturningSql']), halt()."
     );
     let output = Command::new("erl")
         .arg("-noshell")
@@ -784,6 +801,16 @@ fn query_plan_compiles_to_parameterized_sql() {
         r#"corrExistsSql=SELECT * FROM "users" AS l WHERE EXISTS (SELECT 1 FROM "posts" AS x1 WHERE x1."author" = l."id")"#,
     );
     want("corrExistsBinds=0");
+
+    // Single-table aggregates render through the plan, not a separate text builder:
+    // `COUNT(*)`, a bare-column fold, and an `AVG` that casts to float8. An EXISTS in
+    // the filter aliases the scan `l` so the subquery correlates, exactly as a plain scan.
+    want(r#"singleCountSql=SELECT COUNT(*) FROM "users" WHERE "age" >= $1"#);
+    want(r#"singleSumSql=SELECT SUM("age") FROM "users" WHERE "age" >= $1"#);
+    want(r#"singleAvgSql=SELECT AVG("age")::float8 FROM "users" WHERE "age" >= $1"#);
+    want(
+        r#"singleCountExistsSql=SELECT COUNT(*) FROM "users" AS l WHERE EXISTS (SELECT 1 FROM "posts" AS x1 WHERE x1."author" = l."id")"#,
+    );
 
     // The typed write renderer (`mutationToSql`): an INSERT lists its columns and binds
     // each value; an UPDATE binds SET before WHERE; a DELETE binds only WHERE. A

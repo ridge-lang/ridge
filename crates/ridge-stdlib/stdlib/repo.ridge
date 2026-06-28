@@ -1664,28 +1664,34 @@ instance Orderable (FullJoined q f a) (Map Text SqlValue -> k) =
     orderBy (dir: SortOrder) (key: Quote (Map Text SqlValue -> k)) (x: FullJoined q f a) -> FullJoined q f a =
         FullJoined { source = x.source, right = x.right, cond = x.cond, where2 = x.where2, orders = snoc x.orders (orderEntryLeaf dir key), lim = x.lim, off = x.off, dist = x.dist }
 
+-- The scalar-aggregate plan a single-table `sumOf`/`avgOf`/`minOf`/`maxOf` runs: a
+-- `PlanAggregate` over the table's filtered scan, folding the named column. Leaf 0 —
+-- a single table has one source, and the renderer reads the column bare.
+fn queryScalarPlan (x: Query e a) (func: Text) (column: QExpr) -> QueryPlan =
+    planAggregate func column 0 (planScan x.repo.table x.pred.tree [] (0 - 1) 0 false)
+
 -- A query's scalar aggregates: fold the column the one-row accessor names over
--- the rows the query's filter selects, through the `aggregate` seam push-down.
--- The behaviour the single-receiver `sumOf`/`avgOf`/`minOf`/`maxOf` had before
--- they unified with the join form. `sumOf`/`minOf`/`maxOf` keep the column's own
--- type (`Ret p` = `n`); `avgOf` is always a `Float`.
+-- the rows the query's filter selects, through a `PlanAggregate` over the table's
+-- filtered scan. The behaviour the single-receiver `sumOf`/`avgOf`/`minOf`/`maxOf`
+-- had before they unified with the join form. `sumOf`/`minOf`/`maxOf` keep the
+-- column's own type (`Ret p` = `n`); `avgOf` is always a `Float`.
 instance Aggregable (Query e a) (fn e -> n) where Adapter a, SqlType n =
     sumOf (col: Quote (fn e -> n)) (x: Query e a) -> Result (Option n) Error =
-        match aggregate x.repo.adapter x.repo.table x.pred "SUM" (aggColumn col)
+        match runPlan x.repo.adapter (queryScalarPlan x "SUM" (aggColumn col))
             Err err -> Err err
-            Ok v    -> decodeScalar v
+            Ok rows -> decodeScalar (firstAggCell rows)
     avgOf (col: Quote (fn e -> n)) (x: Query e a) -> Result (Option Float) Error =
-        match aggregate x.repo.adapter x.repo.table x.pred "AVG" (aggColumn col)
+        match runPlan x.repo.adapter (queryScalarPlan x "AVG" (aggColumn col))
             Err err -> Err err
-            Ok v    -> decodeFloatScalar v
+            Ok rows -> decodeFloatScalar (firstAggCell rows)
     minOf (col: Quote (fn e -> n)) (x: Query e a) -> Result (Option n) Error =
-        match aggregate x.repo.adapter x.repo.table x.pred "MIN" (aggColumn col)
+        match runPlan x.repo.adapter (queryScalarPlan x "MIN" (aggColumn col))
             Err err -> Err err
-            Ok v    -> decodeScalar v
+            Ok rows -> decodeScalar (firstAggCell rows)
     maxOf (col: Quote (fn e -> n)) (x: Query e a) -> Result (Option n) Error =
-        match aggregate x.repo.adapter x.repo.table x.pred "MAX" (aggColumn col)
+        match runPlan x.repo.adapter (queryScalarPlan x "MAX" (aggColumn col))
             Err err -> Err err
-            Ok v    -> decodeScalar v
+            Ok rows -> decodeScalar (firstAggCell rows)
 
 -- A left join's scalar aggregates: the two-row dual over a `LeftJoin`, run through
 -- the `aggregateLeftJoin` seam. Unlike a left join's `select`/`orderBy` — whose
@@ -2399,7 +2405,7 @@ instance Pageable (Joined q f a) =
 -- not a paged window of it, the same rule the scalar aggregates follow.
 fn countQuery (x: Query e a) -> Result Int Error where Adapter a =
     match x.plan
-        None   -> countWhere x.repo.adapter x.repo.table x.pred
+        None   -> compositeCount x.repo.adapter (planScan x.repo.table x.pred.tree [] (0 - 1) 0 false)
         Some p ->
             match runPlan x.repo.adapter (planRefine p x.pred.tree [] (0 - 1) 0 false)
                 Err err -> Err err

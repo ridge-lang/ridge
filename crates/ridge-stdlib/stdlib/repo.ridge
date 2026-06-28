@@ -1505,11 +1505,11 @@ instance Refinable (FullJoined q f a) (Map Text SqlValue -> Map Text SqlValue ->
 -- columns cross, in the query's order and page; `selectFirst` adds `LIMIT 1`.
 instance Projectable (Query e a) (fn e -> s) where Adapter a, Row s =
     select (proj: Quote (fn e -> s)) (x: Query e a) -> Result (List s) Error =
-        match project x.repo.adapter x.repo.table x.pred x.orders x.lim x.off (projColumns proj) x.dist
+        match runPlan x.repo.adapter (planProject proj.tree (planScan x.repo.table x.pred.tree x.orders (0 - 1) 0 false) x.lim x.off x.dist)
             Err err -> Err err
             Ok rows -> decodeRows rows
     selectFirst (proj: Quote (fn e -> s)) (x: Query e a) -> Result (Option s) Error =
-        match project x.repo.adapter x.repo.table x.pred x.orders 1 x.off (projColumns proj) x.dist
+        match runPlan x.repo.adapter (planProject proj.tree (planScan x.repo.table x.pred.tree x.orders (0 - 1) 0 false) 1 x.off x.dist)
             Err err -> Err err
             Ok rows -> firstDecoded rows
 
@@ -2846,22 +2846,10 @@ fn firstDecodedFullPrefixed (rows: List (Map Text SqlValue)) -> Result (Option (
                         Err err -> Err err
                         Ok optY -> Ok (Some (optX, optY))
 
--- The `(alias, expr)` columns a projection names. The projection quote captures
--- a `QProj` whose select-list is a list of `(alias, QExpr)` — a bare column or a
--- computed value (arithmetic, a CASE) — which passes through unchanged for the
--- adapter to compile to its backend. Anything that is not a projection names no
--- columns. Generic over the quote's function type so it reads an entity-typed
--- projection (`fn e -> s`) and a row-map one alike — only the captured `tree`
--- matters.
-fn projColumns (proj: Quote p) -> List (Text, QExpr) =
-    match proj.tree
-        QProj cols -> cols
-        _          -> []
-
 -- The captured tree of an ordering key — a column (`QCol`) or a computed
 -- expression over the columns (arithmetic, a CASE), threaded into the plan and
 -- rendered by the backend (a literal in it binding as a placeholder, never
--- interpolated). Generic over the quote's function type (like `projColumns`) so it
+-- interpolated). Generic over the quote's function type so it
 -- reads an entity-typed key (`fn (u: User) -> u.age`, the unified `orderBy`'s
 -- shape) and a row-map one alike — only the captured `tree` matters.
 fn orderColumn (key: Quote p) -> QExpr = key.tree

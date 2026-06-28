@@ -39,13 +39,6 @@ import std.map (toList)
 -- queried record at the call site (`fn (u: User) -> ...`); here it is the
 -- adapter-neutral row map the captured tree is evaluated against.
 --
--- `project` is `fetch` with a projection: `cols` is a list of `(alias, expr)`
--- columns where each `expr` is a captured `QExpr` — a bare column or a computed
--- value (arithmetic, a CASE) — and each returned row holds only those columns
--- keyed by their alias, so a backend pushes the select-list into the query
--- (`SELECT expr AS alias …`) rather than returning every column and dropping the
--- rest. The alias is the field name of the shape the caller decodes into.
---
 -- `groupSummarize` is the grouped-aggregate seam: it groups the rows the
 -- predicate keeps by `keyCol`, folds each group into the `(alias, func, value,
 -- right?)` columns it carries — where `value` is a `QExpr`, a column or a computed
@@ -101,7 +94,6 @@ pub class Adapter a =
     get    (conn: a) (table: Text) (column: Text) (key: SqlValue) -> Result (Option (Map Text SqlValue)) Error
     delete (conn: a) (table: Text) (pred: Quote (Map Text SqlValue -> Bool)) -> Result Int Error
     updateRows (conn: a) (table: Text) (changes: Map Text SqlValue) (pred: Quote (Map Text SqlValue -> Bool)) -> Result Int Error
-    project (conn: a) (table: Text) (pred: Quote (Map Text SqlValue -> Bool)) (orders: List (Bool, QExpr)) (lim: Int) (off: Int) (cols: List (Text, QExpr)) (dist: Bool) -> Result (List (Map Text SqlValue)) Error
     groupSummarize (conn: a) (table: Text) (pred: Quote (Map Text SqlValue -> Bool)) (keyCol: Text) (cols: List (Text, Text, QExpr, Bool)) (having: QExpr) -> Result (List (Map Text SqlValue)) Error
     runPlan (conn: a) (plan: QueryPlan) -> Result (List (Map Text SqlValue)) Error
     runMutation (conn: a) (plan: MutationPlan) -> Result Int Error
@@ -161,12 +153,6 @@ fn _memDelete (id: Int) (table: Text) (tree: QExpr) -> Result Int Error
 -- tree; answer how many were changed.
 @ffi("ridge_rt", "mem_update", 4)
 fn _memUpdate (id: Int) (table: Text) (changes: Map Text SqlValue) (tree: QExpr) -> Result Int Error
-
--- Return the rows of a table that satisfy the predicate tree, ordered and paged,
--- then projected down to the `(alias, column)` columns: each row
--- holds only those columns, re-keyed by alias.
-@ffi("ridge_rt", "mem_project", 8)
-fn _memProject (id: Int) (table: Text) (tree: QExpr) (orders: List (Bool, QExpr)) (lim: Int) (off: Int) (cols: List (Text, QExpr)) (dist: Bool) -> Result (List (Map Text SqlValue)) Error
 
 -- Group the rows of a table that satisfy the predicate tree by the key column,
 -- summarize each group into the `(alias, func, column)` aggregates, keep the
@@ -274,8 +260,6 @@ instance Adapter MemAdapter =
         _memDelete conn.id table pred.tree
     updateRows (conn: MemAdapter) (table: Text) (changes: Map Text SqlValue) (pred: Quote (Map Text SqlValue -> Bool)) -> Result Int Error =
         _memUpdate conn.id table changes pred.tree
-    project (conn: MemAdapter) (table: Text) (pred: Quote (Map Text SqlValue -> Bool)) (orders: List (Bool, QExpr)) (lim: Int) (off: Int) (cols: List (Text, QExpr)) (dist: Bool) -> Result (List (Map Text SqlValue)) Error =
-        _memProject conn.id table pred.tree orders lim off cols dist
     groupSummarize (conn: MemAdapter) (table: Text) (pred: Quote (Map Text SqlValue -> Bool)) (keyCol: Text) (cols: List (Text, Text, QExpr, Bool)) (having: QExpr) -> Result (List (Map Text SqlValue)) Error =
         _memGroupSummarize conn.id table pred.tree keyCol cols having
     runPlan (conn: MemAdapter) (plan: QueryPlan) -> Result (List (Map Text SqlValue)) Error =
@@ -430,12 +414,6 @@ fn _pgAll (id: Int) (table: Text) -> Result (List (Map Text SqlValue)) Error
 @ffi("ridge_pg", "pg_get_rows", 4)
 fn _pgGetRows (id: Int) (table: Text) (column: Text) (key: SqlValue) -> Result (List (Map Text SqlValue)) Error
 
--- Return the rows of a table that satisfy the predicate tree, ordered and paged,
--- with the `(alias, column)` projection compiled into the
--- select-list (`SELECT column AS alias …`); each row is keyed by alias.
-@ffi("ridge_pg", "pg_project", 8)
-fn _pgProject (id: Int) (table: Text) (tree: QExpr) (orders: List (Bool, QExpr)) (lim: Int) (off: Int) (cols: List (Text, QExpr)) (dist: Bool) -> Result (List (Map Text SqlValue)) Error
-
 -- Group the rows that satisfy the predicate tree by the key column, compiled into
 -- `SELECT <aggregates> FROM t WHERE <pred> GROUP BY <key> HAVING <having> ORDER BY
 -- <key>`; each row comes back keyed by the projection's output aliases.
@@ -537,8 +515,6 @@ instance Adapter Postgres =
             _   ->
                 match mutationToSql (planUpdate table changes pred.tree)
                     (s, binds) -> _pgRawExec conn.id (sqlValue s) binds
-    project (conn: Postgres) (table: Text) (pred: Quote (Map Text SqlValue -> Bool)) (orders: List (Bool, QExpr)) (lim: Int) (off: Int) (cols: List (Text, QExpr)) (dist: Bool) -> Result (List (Map Text SqlValue)) Error =
-        _pgProject conn.id table pred.tree orders lim off cols dist
     groupSummarize (conn: Postgres) (table: Text) (pred: Quote (Map Text SqlValue -> Bool)) (keyCol: Text) (cols: List (Text, Text, QExpr, Bool)) (having: QExpr) -> Result (List (Map Text SqlValue)) Error =
         _pgGroupSummarize conn.id table pred.tree keyCol cols having
     runPlan (conn: Postgres) (plan: QueryPlan) -> Result (List (Map Text SqlValue)) Error =

@@ -1546,7 +1546,45 @@ fn renderProject (proj: QExpr) (child: QueryPlan) (lim: Int) (off: Int) (dist: B
                             { text = Text.join "" ["SELECT ", distinctKw dist, sel.text, " FROM ", sk.text, ob.text, limitClause lim, offsetClause off], binds = sel.binds ++ sk.binds ++ ob.binds, next = ob.next }
                         _ -> naryProject proj child joinOrders lim off dist n
                 _ -> naryProject proj child joinOrders lim off dist n
+        PlanScan table pred orders _ _ _ ->
+            -- A projected single table (`select` over a query): the projection's own
+            -- select-list over the table's filtered, ordered rows, paged and de-duplicated
+            -- by the projection. The scan's ordering rides on the scan; the page and
+            -- distinct come from the projection. An EXISTS in the filter aliases the scan
+            -- `l` so the subquery correlates, the same as a plain scan.
+            if containsExists pred then
+                let sel = singleSelectList true proj n
+                let w = whereExistsClause true 1 pred sel.next
+                let ob = orderByClause orders w.next
+                { text = Text.join "" ["SELECT ", distinctKw dist, sel.text, " FROM ", quoteIdent table, " AS l", w.text, ob.text, limitClause lim, offsetClause off], binds = sel.binds ++ w.binds ++ ob.binds, next = ob.next }
+            else
+                let sel = singleSelectList false proj n
+                let w = whereClause false pred sel.next
+                let ob = orderByClause orders w.next
+                { text = Text.join "" ["SELECT ", distinctKw dist, sel.text, " FROM ", quoteIdent table, w.text, ob.text, limitClause lim, offsetClause off], binds = sel.binds ++ w.binds ++ ob.binds, next = ob.next }
         _ -> emptyRender n
+
+-- The projection's select-list over a single table: each named column or computed
+-- value rendered bare (or base-qualified `l.` when the scan carries an EXISTS) as
+-- `<expr> AS "alias"`, threading the `$N` counter so a literal in a computed cell
+-- binds in source order. A projection naming no `QProj` selects every column.
+fn singleSelectList (qualified: Bool) (proj: QExpr) (n: Int) -> { text: Text, binds: List SqlValue, next: Int } =
+    match proj
+        QProj cols -> singleSelectTerms qualified cols n
+        _          -> { text = "*", binds = [], next = n }
+
+fn singleSelectTerms (qualified: Bool) (cols: List (Text, QExpr)) (n: Int) -> { text: Text, binds: List SqlValue, next: Int } =
+    match cols
+        []                 -> { text = "", binds = [], next = n }
+        (alias, col) :: [] -> singleSelectTerm qualified alias col n
+        (alias, col) :: rest ->
+            let h = singleSelectTerm qualified alias col n
+            let t = singleSelectTerms qualified rest h.next
+            { text = Text.join "" [h.text, ", ", t.text], binds = h.binds ++ t.binds, next = t.next }
+
+fn singleSelectTerm (qualified: Bool) (alias: Text) (col: QExpr) (n: Int) -> { text: Text, binds: List SqlValue, next: Int } =
+    let r = renderOperand qualified col n
+    { text = Text.join "" [r.text, " AS ", quoteIdent alias], binds = r.binds, next = r.next }
 
 -- A projected composite (`select` over a three-or-more table join): the projection's
 -- own select-list over the flattened spine, paged and de-duplicated by the projection.

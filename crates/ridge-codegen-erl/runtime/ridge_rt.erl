@@ -30,7 +30,6 @@
     ask/3, send/2, send_op/2, send_fn/2, mailbox_size/1, spawn_actor/3,
     mem_new/1, mem_insert/3, mem_all/2,
     mem_delete/3, mem_update/4, mem_get_rows/4,
-    mem_project/8,
     mem_group_summarize/6,
     mem_begin/1, mem_commit/1, mem_rollback/1, mem_close/1,
     mem_ddl_create/3, mem_ddl_drop/2, mem_ddl_add_column/3,
@@ -979,12 +978,6 @@ mem_delete(Id, Table, Tree) -> mem_call({delete, Id, Table, Tree}).
 %% over each matching row. Result Int Error.
 mem_update(Id, Table, Changes, Tree) -> mem_call({update, Id, Table, Changes, Tree}).
 
-%% mem_project/7 — the rows of Table that satisfy Tree, ordered and paged as
-%% mem_fetch, then projected to the `{Alias, Column}` columns: each row keeps
-%% only those columns, re-keyed by alias. Result (List Row) Error.
-mem_project(Id, Table, Tree, Orders, Lim, Off, Cols, Dist) ->
-    mem_call({project, Id, Table, Tree, Orders, Lim, Off, Cols, Dist}).
-
 %% mem_group_summarize/6 — group the rows of Table that satisfy Tree by KeyCol,
 %% summarize each group into the `{Alias, Func, Column}` aggregates (Func is
 %% <<"KEY">>/<<"COUNT">>/<<"SUM">>/<<"AVG">>/<<"MIN">>/<<"MAX">>), keep the groups
@@ -1242,15 +1235,7 @@ mem_keeper_loop(State) ->
             {State1, Rows} = mem_mutation_affected(State, Id, Plan),
             Returned = [mem_returning_row(Cols, R) || R <- Rows],
             From ! {Ref, {ok, Returned}},
-            mem_keeper_loop(State1);
-        {{project, Id, Table, Tree, Orders, Lim, Off, Cols, Dist}, From, Ref} ->
-            Rows = maps:get({Id, Table}, State, []),
-            Matches = [R || R <- Rows, mem_pred(State, Id, Tree, R)],
-            Ordered = mem_order(Orders, Matches),
-            Projected = [mem_project_row(Cols, R) || R <- Ordered],
-            Page = mem_paginate(mem_distinct(Dist, Projected), Lim, Off),
-            From ! {Ref, {ok, Page}},
-            mem_keeper_loop(State)
+            mem_keeper_loop(State1)
     end.
 
 %% mem_apply_mutation/3 — apply a MutationPlan to the store, returning the updated state
@@ -1358,18 +1343,6 @@ mem_apply_excluded(OldRow, NewRow, UpdateCols) ->
                 error   -> Acc
             end
         end, OldRow, UpdateCols).
-
-%% Build a projected row from `{Alias, QExpr}` columns: each output column
-%% evaluates its expression against the row and is keyed by its alias. A bare
-%% column reads its stored value; a computed column (arithmetic, a CASE) folds
-%% via mem_scalar. A cell with no value — a missing column or a runtime division
-%% by zero — projects SQL NULL rather than dropping the row or crashing the
-%% keeper (Postgres aborts on /0; a *literal* zero divisor is a compile error).
-mem_project_row(Cols, Row) ->
-    maps:from_list([{Alias, mem_proj_cell(mem_scalar(Col, Row))} || {Alias, Col} <- Cols]).
-
-mem_proj_cell(undefined) -> 'SqlNull';
-mem_proj_cell(Value)     -> Value.
 
 %% Drop duplicate rows, keeping the first occurrence of each so the result stays
 %% deterministic. Rows compare by full term equality, the same notion of equality
@@ -2164,7 +2137,7 @@ mem_npred({'QLe', A, B}, Row)    -> not mem_nrelate(lt, B, A, Row);
 mem_npred({'QGe', A, B}, Row)    -> not mem_nrelate(lt, A, B, Row);
 mem_npred({'QLike', V, P}, Row)  -> mem_like_pred(mem_nscalar(V, Row), mem_nscalar(P, Row));
 mem_npred({'QIn', V, Items}, Row) -> mem_in_pred(mem_nscalar(V, Row), [mem_nscalar(I, Row) || I <- Items]);
-mem_npred({'QCol', C}, Row)      -> mem_truthy(maps:get(<<"t0$", C/binary>>, Row, 'SqlNull'));
+mem_npred({'QCol', C}, Row)      -> mem_truthy(mem_left_cell(C, Row));
 mem_npred({'QColR', C}, Row)     -> mem_truthy(maps:get(<<"t1$", C/binary>>, Row, 'SqlNull'));
 mem_npred({'QColAt', I, C}, Row) -> mem_truthy(maps:get(<<(mem_leaf_prefix(I))/binary, C/binary>>, Row, 'SqlNull'));
 mem_npred({'QLitBool', B}, _Row) -> B;
@@ -2182,7 +2155,7 @@ mem_nrelate(Op, A, B, Row) ->
         {X, Y}         -> mem_sql_cmp(Op, X, Y)
     end.
 
-mem_nscalar({'QCol', C}, Row)      -> mem_ncell(<<"t0$", C/binary>>, Row);
+mem_nscalar({'QCol', C}, Row)      -> mem_left_cell(C, Row);
 mem_nscalar({'QColR', C}, Row)     -> mem_ncell(<<"t1$", C/binary>>, Row);
 mem_nscalar({'QColAt', I, C}, Row) -> mem_ncell(<<(mem_leaf_prefix(I))/binary, C/binary>>, Row);
 mem_nscalar({'QLitInt', N}, _Row)   -> {'SqlInt', N};
@@ -2205,6 +2178,17 @@ mem_ncell(Key, Row) ->
     case maps:find(Key, Row) of
         {ok, V} -> V;
         error   -> undefined
+    end.
+
+%% A left/sole-entity column. A join row carries it under the `t0$` leaf prefix; a
+%% single-table or `Seq` row carries it under the bare name. Try the prefix, fall
+%% back to bare, so one resolver reads a `QCol` over both row shapes — the n-ary
+%% scalar and predicate evaluators run over a projection's bare scan rows as well
+%% as a join's prefixed ones.
+mem_left_cell(C, Row) ->
+    case mem_ncell(<<"t0$", C/binary>>, Row) of
+        undefined -> mem_ncell(C, Row);
+        Val       -> Val
     end.
 
 %% --- Quoted-predicate interpreter (the in-memory dual of Query.toSql) ---

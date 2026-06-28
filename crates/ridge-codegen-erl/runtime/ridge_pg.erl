@@ -33,7 +33,6 @@
     pg_connect/16,
     pg_all/2,
     pg_get_rows/4,
-    pg_project/8,
     pg_group_summarize/6,
     pg_begin/1,
     pg_commit/1,
@@ -109,13 +108,6 @@ pg_all(Id, Table) -> pg_call(Id, {all, Table}).
 %% pg_get_rows/4 — the rows of Table whose Column holds exactly Key. std.data's
 %% `get` takes the first. Result (List Row) Error.
 pg_get_rows(Id, Table, Column, Key) -> pg_call(Id, {get_rows, Table, Column, Key}).
-
-%% pg_project/7 — the rows of Table that satisfy Tree, ordered and paged as
-%% pg_fetch, with the `{Alias, Column}` projection compiled into the select-list
-%% (`SELECT column AS alias …`); each row comes back keyed by alias. Result
-%% (List Row) Error.
-pg_project(Id, Table, Tree, Orders, Lim, Off, Cols, Dist) ->
-    pg_call(Id, {project, Table, Tree, Orders, Lim, Off, Cols, Dist}).
 
 %% pg_group_summarize/6 — group the rows of Table that satisfy Tree by KeyCol,
 %% summarizing each group into the `{Alias, Func, Column}` aggregates, keeping the
@@ -938,18 +930,6 @@ run_verb(Conn, {all, Table}) ->
 run_verb(Conn, {get_rows, Table, Column, Key}) ->
     Sql = ["SELECT * FROM ", quote_ident(Table), " WHERE ", quote_ident(Column), " = $1"],
     run_query(Conn, Sql, [Key]);
-run_verb(Conn, {project, Table, Tree, Orders, Lim, Off, Cols, Dist}) ->
-    %% A computed projection column may carry literals, so the select-list binds
-    %% take $1..$K and the WHERE compiles from $K+1, seeded with the select binds
-    %% (held reversed, the order `cw` accumulates), so the two placeholder runs
-    %% never collide and the final list reads left to right: select-list values
-    %% first, then WHERE.
-    {SelectFrag, SelBindsRev, N1} = select_list(Cols, 1, []),
-    {Where, RevW, N2} = cw(Tree, {bare, Table}, N1, SelBindsRev),
-    {OrderFrag, RevAllBinds, _N3} = order_by_clause(Orders, N2, RevW),
-    Sql = ["SELECT ", distinct_kw(Dist), SelectFrag, " FROM ", quote_ident(Table), " WHERE ", Where,
-           OrderFrag, limit_clause(Lim), offset_clause(Off)],
-    run_query(Conn, Sql, lists:reverse(RevAllBinds));
 run_verb(Conn, {group_summarize, Table, Tree, KeyCol, Cols, Having}) ->
     do_group_summarize(Conn, Table, Tree, KeyCol, Cols, Having).
 
@@ -1068,64 +1048,6 @@ ch_operand({'QLitBool', V}, _K, N, B)  -> {[$$ | integer_to_list(N)], [{'SqlBool
 ch_operand({'QLitFloat', V}, _K, N, B) -> {[$$ | integer_to_list(N)], [{'SqlFloat', V} | B], N + 1};
 ch_operand(_Other, _K, N, B) -> {"NULL", B, N}.
 
-%% ORDER BY / LIMIT / OFFSET fragments. Identifiers are quoted; the limit and
-%% offset are integers from the typed surface, so they render inline without a
-%% bind. An empty order list, a negative limit, or a non-positive offset each
-%% contributes nothing.
-%% ORDER BY over quoted keys, threading the `$N` counter and bind accumulator (held
-%% reversed, as `cw` accumulates) so a computed key's literals bind in order, after
-%% the WHERE clause's. Each key is a `QExpr` — a column or a computed expression over
-%% the columns — compiled through `cw_operand`, the same operand compiler the WHERE
-%% clause uses. An empty list contributes nothing and leaves the counter untouched.
-order_by_clause([], N, B)     -> {[], B, N};
-order_by_clause(Orders, N, B) ->
-    {RevTerms, B1, N1} =
-        lists:foldl(
-            fun({Asc, Key}, {Terms, Bs, Nn}) ->
-                {Frag, Bs1, Nn1} = cw_operand(Key, Nn, Bs),
-                {[[Frag, " ", dir_keyword(Asc)] | Terms], Bs1, Nn1}
-            end,
-            {[], B, N},
-            Orders),
-    {[" ORDER BY ", lists:join(", ", lists:reverse(RevTerms))], B1, N1}.
-
-%% Projection select-list from `{Alias, QExpr}` columns, threading the `$N`
-%% counter and bind accumulator so a literal in a computed column binds in
-%% select-before-where order. A bare `QCol` whose name matches its alias emits
-%% just the quoted identifier; a renamed column emits `column AS alias`; any
-%% computed expression (arithmetic, a CASE) compiles through `cw` — the same
-%% operand compiler the WHERE clause uses — and is aliased. An empty list (a
-%% projection that captured no columns) falls back to `*`.
-select_list([], N, B) -> {"*", B, N};
-select_list(Cols, N, B) ->
-    {RevFrags, B1, N1} =
-        lists:foldl(
-            fun(Col, {Frags, Bs, Nn}) ->
-                {Frag, Bs1, Nn1} = select_term(Col, Nn, Bs),
-                {[Frag | Frags], Bs1, Nn1}
-            end,
-            {[], B, N},
-            Cols),
-    {lists:join(", ", lists:reverse(RevFrags)), B1, N1}.
-
-select_term({Alias, {'QCol', C}}, N, B) when C =:= Alias -> {quote_ident(C), B, N};
-select_term({Alias, Col}, N, B) ->
-    {Frag, B1, N1} = cw(Col, N, B),
-    {[Frag, " AS ", quote_ident(Alias)], B1, N1}.
-
-dir_keyword(true)  -> "ASC";
-dir_keyword(false) -> "DESC";
-dir_keyword(_)     -> "ASC".
-
-limit_clause(Lim) when is_integer(Lim), Lim >= 0 -> [" LIMIT ", integer_to_list(Lim)];
-limit_clause(_)                                  -> [].
-
-offset_clause(Off) when is_integer(Off), Off > 0 -> [" OFFSET ", integer_to_list(Off)];
-offset_clause(_)                                 -> [].
-
-distinct_kw(true) -> "DISTINCT ";
-distinct_kw(_)    -> "".
-
 %% --- QExpr -> parameterised WHERE clause ---
 %%
 %% The SQL dual of mem_pred/2 in ridge_rt.erl: a column becomes a quoted
@@ -1138,12 +1060,6 @@ distinct_kw(_)    -> "".
 compile_where(Tree, Table) ->
     {Frag, RevBinds, _N} = cw(Tree, {bare, Table}, 1, []),
     {Frag, lists:reverse(RevBinds)}.
-
-%% Backwards-compatible arity: a bare WHERE with no outer table (no correlated
-%% EXISTS reaches it). The single-table read/write verbs call `cw/4` with their
-%% table so an EXISTS can correlate to it.
-cw(Tree, N, B) ->
-    cw(Tree, {bare, <<>>}, N, B).
 
 cw({'QAnd', L, R}, Q, N, B) ->
     {FL, B1, N1} = cw(L, Q, N, B),

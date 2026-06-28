@@ -39,6 +39,8 @@ pub type Trio = { who: Text, what: Text, note: Text } deriving (Row)
 pub type Quad = { who: Text, what: Text, note: Text, react: Text } deriving (Row)
 pub type Calc = { person: Text, score: Int } deriving (Row)
 pub type Caseo = { person: Text, band: Text } deriving (Row)
+pub type Named = { name: Text, years: Int } deriving (Row)
+pub type Picked = { name: Text } deriving (Row)
 
 -- A captured predicate's reified tree. `Quote` is a prelude record whose `tree`
 -- field is the `QExpr` the compiler built from the lambda. A single-table filter is
@@ -54,6 +56,8 @@ fn proj3 (q: Quote (fn User Post Comment -> Trio)) -> QExpr = q.tree
 fn proj4 (q: Quote (fn User Post Comment Reaction -> Quad)) -> QExpr = q.tree
 fn projCalc (q: Quote (fn User Post -> Calc)) -> QExpr = q.tree
 fn projCaseo (q: Quote (fn User Post -> Caseo)) -> QExpr = q.tree
+fn projE (q: Quote (User -> Named)) -> QExpr = q.tree
+fn projE1 (q: Quote (User -> Picked)) -> QExpr = q.tree
 
 -- A captured single-column accessor's tree, for an aggregate's folded column or a
 -- join ordering key (both now carry a `QExpr`, a column or a computed expression).
@@ -260,6 +264,19 @@ pub fn singleAvgSql () -> Text =
 -- its table `l` so the subquery names the outer row, exactly as a plain `PlanScan` does.
 pub fn singleCountExistsSql () -> Text =
     renderSql (planAggregate "COUNT" (keepAll ()) 0 (planScan "users" (QExists "posts" (QEq (QColR "author") (QCol "id"))) [] (0 - 1) 0 false))
+
+-- Single-table projections over the plan: a `PlanProject` over a bare `PlanScan`. The
+-- projection's select-list renders each column as `<expr> AS "alias"` (bare, or
+-- `l.`-qualified when the scan's filter correlates an EXISTS); the scan carries the
+-- filter and ordering, the project carries the page and `DISTINCT`.
+pub fn singleProjectSql () -> Text =
+    renderSql (planProject (projE (fn (u: User) -> Named { name = u.name, years = u.age })) (adultsScan ()) (0 - 1) 0 false)
+
+pub fn singleProjectExistsSql () -> Text =
+    renderSql (planProject (projE1 (fn (u: User) -> Picked { name = u.name })) (planScan "users" (QExists "posts" (QEq (QColR "author") (QCol "id"))) [] (0 - 1) 0 false) (0 - 1) 0 false)
+
+pub fn singleProjectPagedSql () -> Text =
+    renderSql (planProject (projE1 (fn (u: User) -> Picked { name = u.name })) (planScan "users" (pred1 (fn (u: User) -> u.age >= 18)) [(true, QCol "age")] (0 - 1) 0 false) 10 5 true)
 
 -- A correlated EXISTS inside a binary join's post-join WHERE: the inner table joins at
 -- the leaf after both join sides (`x2`), and its predicate names the right leaf as `r`
@@ -761,7 +778,7 @@ fn query_plan_compiles_to_parameterized_sql() {
 
     let expr = format!(
         "F=fun(N)->io:format(\"~s=~s~n\",[N,{module}:N()])end, \
-         lists:foreach(F,['scanSql','scanBinds','foldSql','likeSql','likeBinds','inSql','inBinds','inCapturedSql','inCapturedBinds','corrExistsSql','corrExistsBinds','corrNotExistsSql','singleCountSql','singleSumSql','singleAvgSql','singleCountExistsSql','joinExistsWhereSql','naryExistsWhereSql','nestedExistsSql','pgNestedSql','pgNestedBinds','inEmptySql','inEmptyBinds','arithMulSql','arithMulBinds','arithColSql','arithModSql','combineSql','refineSql','innerSql','leftSql','rightSql','fullSql','fullBinds','projectSql','projectCalcSql','projectCalcBinds','projectCaseJoinSql','aggSql','groupSql','inner3Sql','inner3Binds','existsSql','existsThreeSql','existsThreeBinds','everyJoinSql','everyJoinBinds','innerLeftMixSql','innerRightMixSql','innerFullMixSql','innerFullMixBinds','adultLeftMixSql','adultLeftMixBinds','countAdultLeftMixSql','countThreeSql','countThreeBinds','countLeftMixSql','countLeftMixBinds','sumThreeSql','avgThreeSql','projectThreeSql','projectLeftMixSql','projectRightMixSql','projectFullMixSql','groupThreeSql','groupComputedThreeSql','groupComputedThreeBinds','groupLeftMixSql','groupRightMixSql','groupFullMixSql','orderThreeSql','orderLeftMixSql','orderRightMixSql','orderFullMixSql','inner4Sql','sumFourSql','projectFourSql','orderFourSql','insertSql','insertBinds','insertManySql','insertManyBinds','updateSql','updateBinds','deleteSql','existsDeleteSql','existsDeleteBinds','existsUpdateSql','existsUpdateBinds','upsertSql','upsertBinds','insertOrIgnoreSql','upsertBareSql','insertReturningStarSql','insertReturningStarBinds','insertReturningColsSql','deleteReturningSql','updateReturningSql','upsertReturningSql']), halt()."
+         lists:foreach(F,['scanSql','scanBinds','foldSql','likeSql','likeBinds','inSql','inBinds','inCapturedSql','inCapturedBinds','corrExistsSql','corrExistsBinds','corrNotExistsSql','singleCountSql','singleSumSql','singleAvgSql','singleCountExistsSql','singleProjectSql','singleProjectExistsSql','singleProjectPagedSql','joinExistsWhereSql','naryExistsWhereSql','nestedExistsSql','pgNestedSql','pgNestedBinds','inEmptySql','inEmptyBinds','arithMulSql','arithMulBinds','arithColSql','arithModSql','combineSql','refineSql','innerSql','leftSql','rightSql','fullSql','fullBinds','projectSql','projectCalcSql','projectCalcBinds','projectCaseJoinSql','aggSql','groupSql','inner3Sql','inner3Binds','existsSql','existsThreeSql','existsThreeBinds','everyJoinSql','everyJoinBinds','innerLeftMixSql','innerRightMixSql','innerFullMixSql','innerFullMixBinds','adultLeftMixSql','adultLeftMixBinds','countAdultLeftMixSql','countThreeSql','countThreeBinds','countLeftMixSql','countLeftMixBinds','sumThreeSql','avgThreeSql','projectThreeSql','projectLeftMixSql','projectRightMixSql','projectFullMixSql','groupThreeSql','groupComputedThreeSql','groupComputedThreeBinds','groupLeftMixSql','groupRightMixSql','groupFullMixSql','orderThreeSql','orderLeftMixSql','orderRightMixSql','orderFullMixSql','inner4Sql','sumFourSql','projectFourSql','orderFourSql','insertSql','insertBinds','insertManySql','insertManyBinds','updateSql','updateBinds','deleteSql','existsDeleteSql','existsDeleteBinds','existsUpdateSql','existsUpdateBinds','upsertSql','upsertBinds','insertOrIgnoreSql','upsertBareSql','insertReturningStarSql','insertReturningStarBinds','insertReturningColsSql','deleteReturningSql','updateReturningSql','upsertReturningSql']), halt()."
     );
     let output = Command::new("erl")
         .arg("-noshell")
@@ -810,6 +827,19 @@ fn query_plan_compiles_to_parameterized_sql() {
     want(r#"singleAvgSql=SELECT AVG("age")::float8 FROM "users" WHERE "age" >= $1"#);
     want(
         r#"singleCountExistsSql=SELECT COUNT(*) FROM "users" AS l WHERE EXISTS (SELECT 1 FROM "posts" AS x1 WHERE x1."author" = l."id")"#,
+    );
+
+    // Single-table projections render through the same plan: the select-list aliases each
+    // column, a correlated EXISTS aliases the scan `l` and qualifies the select-list, and
+    // the page (DISTINCT, ORDER BY, LIMIT, OFFSET) renders off the project and its scan.
+    want(
+        r#"singleProjectSql=SELECT "name" AS "name", "age" AS "years" FROM "users" WHERE "age" >= $1"#,
+    );
+    want(
+        r#"singleProjectExistsSql=SELECT l."name" AS "name" FROM "users" AS l WHERE EXISTS (SELECT 1 FROM "posts" AS x1 WHERE x1."author" = l."id")"#,
+    );
+    want(
+        r#"singleProjectPagedSql=SELECT DISTINCT "name" AS "name" FROM "users" WHERE "age" >= $1 ORDER BY "age" ASC LIMIT 10 OFFSET 5"#,
     );
 
     // The typed write renderer (`mutationToSql`): an INSERT lists its columns and binds

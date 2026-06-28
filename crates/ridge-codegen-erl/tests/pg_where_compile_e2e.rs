@@ -1,11 +1,10 @@
 //! Verifies the Postgres WHERE compiler (`ridge_pg:compile_where/2`) renders the
 //! `QLike`, `QIn`, and correlated `QExists` predicate nodes to parameterised SQL.
 //!
-//! This is the renderer the remaining `cw`-path reads take — `project` and
-//! `groupSummarize` — and it is distinct from the plan renderer (`query.ridge`'s
-//! `planToSql`) that every other read now uses. The two must stay in lockstep on
-//! every `QExpr` node, so this locks the `cw` path the way `query_plan_sql_e2e`
-//! locks the plan path.
+//! This is the renderer the last `cw`-path read takes — `groupSummarize` — and it
+//! is distinct from the plan renderer (`query.ridge`'s `planToSql`) that every other
+//! read now uses. The two must stay in lockstep on every `QExpr` node, so this locks
+//! the `cw` path the way `query_plan_sql_e2e` locks the plan path.
 //!
 //! Method: compile the bundled `ridge_pg.erl` with `erlc +export_all` so the
 //! internal `compile_where/2` is reachable, then `erl -eval` it on a few `QExpr`
@@ -32,13 +31,6 @@ io:format("arithmul="), F({'QGt', {'QMul', {'QCol', <<"age">>}, {'QLitInt', 2}},
 io:format("arithcol="), F({'QGt', {'QAdd', {'QCol', <<"age">>}, {'QCol', <<"id">>}}, {'QLitInt', 20}}),
 io:format("arithmod="), F({'QEq', {'QMod', {'QCol', <<"age">>}, {'QLitInt', 2}}, {'QLitInt', 0}}),
 io:format("casepred="), F({'QCase', {'QGe', {'QCol', <<"age">>}, {'QLitInt', 18}}, {'QLitBool', true}, {'QLitBool', false}}),
-SL = fun(Cols) -> {Frag, RevBinds, N} = ridge_pg:select_list(Cols, 1, []), io:format("~s|~w|~w~n", [Frag, length(RevBinds), N]) end,
-io:format("selbare="), SL([{<<"id">>, {'QCol', <<"id">>}}]),
-io:format("selrenamed="), SL([{<<"year">>, {'QCol', <<"signup_year">>}}]),
-io:format("selcomputed="), SL([{<<"doubled">>, {'QMul', {'QCol', <<"age">>}, {'QLitInt', 2}}}]),
-io:format("selcase="), SL([{<<"band">>, {'QCase', {'QGe', {'QCol', <<"age">>}, {'QLitInt', 18}}, {'QLitText', <<"a">>}, {'QLitText', <<"b">>}}}]),
-PW = fun(Cols, Tree) -> {SF, SBR, N1} = ridge_pg:select_list(Cols, 1, []), {WF, AllR, _} = ridge_pg:cw(Tree, N1, SBR), io:format("~s WHERE ~s|~w~n", [SF, WF, length(AllR)]) end,
-io:format("projwhere="), PW([{<<"doubled">>, {'QMul', {'QCol', <<"age">>}, {'QLitInt', 2}}}], {'QGt', {'QCol', <<"age">>}, {'QLitInt', 10}}),
 halt().
 "#;
 
@@ -149,26 +141,6 @@ fn compile_where_renders_like_and_in() {
         (
             r#"casepred=CASE WHEN "age" >= $1 THEN TRUE ELSE FALSE END|1"#,
             "a CASE used as a WHERE predicate renders CASE WHEN … END, binding its condition literal",
-        ),
-        (
-            r#"selbare="id"|0|1"#,
-            "a bare column whose name matches its alias emits just the quoted identifier, no bind",
-        ),
-        (
-            r#"selrenamed="signup_year" AS "year"|0|1"#,
-            "a renamed column emits `column AS alias`, no bind",
-        ),
-        (
-            r#"selcomputed=("age" * $1) AS "doubled"|1|2"#,
-            "a computed select-list column compiles via the operand compiler and aliases, one bind",
-        ),
-        (
-            r#"selcase=CASE WHEN "age" >= $1 THEN $2 ELSE $3 END AS "band"|3|4"#,
-            "a CASE select-list column renders CASE WHEN … END aliased, three binds threaded",
-        ),
-        (
-            r#"projwhere=("age" * $1) AS "doubled" WHERE "age" > $2|2"#,
-            "the select-list binds take $1 ahead of the WHERE's $2, proving select-before-where ordering",
         ),
     ] {
         assert!(

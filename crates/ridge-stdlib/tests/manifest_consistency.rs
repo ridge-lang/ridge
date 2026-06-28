@@ -289,6 +289,7 @@ fn signature_shape_consistency() {
                         | "planUpdate"
                         | "planDelete"
                         | "mutationToSql"
+                        | "mutationReturningToSql"
                 )
             {
                 continue;

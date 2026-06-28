@@ -446,6 +446,9 @@ const BASELINE_EXPORTS: &[(&str, &[&str])] = &[
             "planUpdate",
             "planDelete",
             "mutationToSql",
+            // The RETURNING renderer: the same statement, with a `RETURNING <cols>`
+            // tail so a backend hands back the affected rows.
+            "mutationReturningToSql",
         ],
     ),
     (
@@ -471,6 +474,9 @@ const BASELINE_EXPORTS: &[(&str, &[&str])] = &[
             // a SQL backend renders it through `mutationToSql`, the in-memory one
             // interprets it. Answers the affected row count.
             "runMutation",
+            // The RETURNING write seam: renders through `mutationReturningToSql` (to
+            // `_pgRawQuery`) or interprets, answering the rows the mutation touched.
+            "runMutationReturning",
             // Transaction control: open, commit, and roll back a transaction
             // (nesting opens a savepoint). The `Repo.transaction` combinator runs
             // these around a body.
@@ -546,6 +552,12 @@ const BASELINE_EXPORTS: &[(&str, &[&str])] = &[
             "upsert",
             "insertOrIgnore",
             "upsertRow",
+            // RETURNING verbs: insert/upsert/delete the rows and read them back, decoded
+            // — the stored row after the write (a server-filled column populated).
+            "insertReturning",
+            "insertManyReturning",
+            "deleteReturning",
+            "upsertReturning",
             "deleteWhere",
             "updateWhere",
             "update",

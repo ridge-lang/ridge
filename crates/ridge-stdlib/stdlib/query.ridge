@@ -446,6 +446,22 @@ pub fn mutationToSql (plan: MutationPlan) -> (Sql, List SqlValue) =
     let r = renderMutation plan
     (sql r.text, r.binds)
 
+-- Compile a mutation plus a `RETURNING` clause: the same statement `mutationToSql` builds,
+-- with `RETURNING <cols>` appended (`RETURNING *` when `cols` is empty) so the backend
+-- hands back the rows the mutation touched — the inserted rows of an insert or upsert, the
+-- changed rows of an update, the removed rows of a delete. The bind list is the mutation's
+-- own; `RETURNING` names columns, never values, so it adds no placeholder.
+pub fn mutationReturningToSql (plan: MutationPlan) (cols: List Text) -> (Sql, List SqlValue) =
+    let r = renderMutation plan
+    (sql (Text.join "" [r.text, " RETURNING ", returningList cols]), r.binds)
+
+-- The `RETURNING` projection: `*` for an empty column list (every column of the affected
+-- rows), the quoted, comma-separated columns otherwise.
+fn returningList (cols: List Text) -> Text =
+    match cols
+        [] -> "*"
+        _  -> quotedColumns cols
+
 -- The statement text and bind values of a mutation, shared by `mutationToSql` and the
 -- RETURNING variant. An insert binds its column values left to right; an upsert appends
 -- an `ON CONFLICT` clause to one; an update binds its SET assignments first and then its

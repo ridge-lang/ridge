@@ -1530,7 +1530,12 @@ pub(crate) fn reconciled_fn_scheme(
         // factories `planInsert`/`planUpsert`/`planUpdate`/`planDelete` and `mutationToSql`.
         (
             "std.query",
-            "planInsert" | "planUpsert" | "planUpdate" | "planDelete" | "mutationToSql",
+            "planInsert"
+            | "planUpsert"
+            | "planUpdate"
+            | "planDelete"
+            | "mutationToSql"
+            | "mutationReturningToSql",
         ) => reconciled_mutation_plan_fn_scheme(name, reconciled, b),
         ("std.repo", _) => reconciled_repo_fn_scheme(name, reconciled, b, classes?),
         ("std.migrate", _) => reconciled_migrate_fn_scheme(name, reconciled, b, classes?),
@@ -1695,6 +1700,14 @@ fn reconciled_mutation_plan_fn_scheme(
         // mutationToSql : MutationPlan -> (Sql, List SqlValue)
         "mutationToSql" => Some(pure(
             vec![plan()],
+            Type::Tuple(vec![
+                Type::Con(b.sql, vec![]),
+                Type::Con(b.list, vec![Type::Con(b.sql_value, vec![])]),
+            ]),
+        )),
+        // mutationReturningToSql : MutationPlan -> List Text -> (Sql, List SqlValue)
+        "mutationReturningToSql" => Some(pure(
+            vec![plan(), text_list()],
             Type::Tuple(vec![
                 Type::Con(b.sql, vec![]),
                 Type::Con(b.list, vec![Type::Con(b.sql_value, vec![])]),
@@ -1953,7 +1966,12 @@ fn reconciled_repo_fn_scheme(
         "all" => method(vec![repo_app()], result(list_e()), with_adapter_row()),
         // findBy : ∀e a. Quote (e -> Bool) -> Repo e a
         //               -> Result (List e) Error where Adapter a, Row e
-        "findBy" => method(
+        //
+        // `deleteReturning` shares this exact scheme — a quoted predicate over the repo
+        // answering a decoded list — and is reconciled here with it; only the SQL the two
+        // emit differs (a `SELECT` versus a `DELETE … RETURNING *`), which is the runtime
+        // body, not the type.
+        "findBy" | "deleteReturning" => method(
             vec![quote_pred(), repo_app()],
             result(list_e()),
             with_adapter_row(),
@@ -2023,6 +2041,46 @@ fn reconciled_repo_fn_scheme(
             result(Type::Con(b.unit, vec![])),
             with_adapter_row(),
         ),
+        // insertReturning : ∀e a. e -> Repo e a -> Result e Error where Adapter a, Row e.
+        //   Insert the entity and read the stored row back, decoded (an INSERT … RETURNING
+        //   *), so a server-filled column comes back populated. Same `[Row e, Adapter a]`
+        //   dict order as `insert` — no `List (Conflict e)` parameter to shift it, and the
+        //   body encodes the row inline as `insert` does.
+        "insertReturning" => method(
+            vec![Type::Var(e), repo_app()],
+            result(Type::Var(e)),
+            with_adapter_row(),
+        ),
+        // insertManyReturning : ∀e a. List e -> Repo e a -> Result (List e) Error
+        //   where Adapter a, Row e. The bulk dual of `insertReturning`; same dict order as
+        //   `insertMany`.
+        "insertManyReturning" => method(
+            vec![list_e(), repo_app()],
+            result(list_e()),
+            with_adapter_row(),
+        ),
+        // deleteReturning (∀e a. Quote (e -> Bool) -> Repo e a -> Result (List e) Error
+        //   where Adapter a, Row e — remove the matching rows and read each back, decoded,
+        //   a DELETE … RETURNING *) shares `findBy`'s scheme exactly and is reconciled in
+        //   that arm above.
+        // upsertReturning : ∀e a. e -> List (Conflict e) -> Repo e a -> Result e Error
+        //   where Adapter a, Row e. Upsert the entity and read the resulting row back,
+        //   decoded (INSERT … ON CONFLICT … DO UPDATE … RETURNING *). Unlike `upsert` —
+        //   which carries the same `List (Conflict e)` parameter yet generalises `[Adapter
+        //   a, Row e]` — this verb decodes the returned row with `fromRow` *after* the
+        //   adapter call, and that trailing `Row e` use makes the source generalise `e`
+        //   first, so it takes the ordinary `with_adapter_row` `[Row e, Adapter a]` order,
+        //   matching the other RETURNING verbs. Verified by the `data_write` BEAM e2e.
+        "upsertReturning" => {
+            let conflict_con = *reconciled.get("Conflict")?;
+            let list_conflict =
+                Type::Con(b.list, vec![Type::Con(conflict_con, vec![Type::Var(e)])]);
+            method(
+                vec![Type::Var(e), list_conflict, repo_app()],
+                result(Type::Var(e)),
+                with_adapter_row(),
+            )
+        }
         // onConflict : ∀e a v. Quote (e -> v) -> Conflict e. Builds a typed conflict key
         //   from an accessor quote, the upsert counterpart of `set`: the quote names a
         //   single column whose type `v` is read off the entity (phantom — only the

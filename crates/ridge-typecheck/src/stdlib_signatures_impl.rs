@@ -1592,6 +1592,7 @@ mod tests {
                             | "planUpdate"
                             | "planDelete"
                             | "mutationToSql"
+                            | "mutationReturningToSql"
                     )
                 {
                     continue;
@@ -1621,6 +1622,7 @@ mod tests {
                             | "groupSummarize"
                             | "runPlan"
                             | "runMutation"
+                            | "runMutationReturning"
                             | "begin"
                             | "commit"
                             | "rollback"

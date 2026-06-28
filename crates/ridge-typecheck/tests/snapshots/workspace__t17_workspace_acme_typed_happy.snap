@@ -1,9 +1,10 @@
 ---
 source: crates/ridge-typecheck/tests/workspace.rs
+assertion_line: 113
 expression: snap
 ---
 WorkspaceSnapshot {
     errors: [],
     module_count: 2,
-    tycon_count: 75,
+    tycon_count: 76,
 }

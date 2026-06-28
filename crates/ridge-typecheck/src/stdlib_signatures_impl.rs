@@ -1584,9 +1584,11 @@ mod tests {
                             // `reconciled_mutation_plan_fn_scheme`, not this table.
                             | "MutationPlan"
                             | "MutInsert"
+                            | "MutUpsert"
                             | "MutUpdate"
                             | "MutDelete"
                             | "planInsert"
+                            | "planUpsert"
                             | "planUpdate"
                             | "planDelete"
                             | "mutationToSql"

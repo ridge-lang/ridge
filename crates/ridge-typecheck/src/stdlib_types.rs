@@ -1200,8 +1200,11 @@ fn reconciled_decls(b: &BuiltinTyCons, base: u32) -> Vec<TyConDecl> {
         },
         // `std.query` — the mutation-plan tree (stdlib/query.ridge), the write-side
         // counterpart of `QueryPlan`. `MutInsert table rows` appends one or more rows;
-        // `MutUpdate table changes pred` sets the given columns on the rows its
-        // predicate admits; `MutDelete table pred` removes them. `mutationToSql`
+        // `MutUpsert table rows conflictCols updateCols` appends rows, resolving a
+        // unique-constraint conflict over `conflictCols` by overwriting `updateCols`
+        // (`ON CONFLICT … DO UPDATE`) or, with no update columns, leaving the row
+        // (`DO NOTHING`); `MutUpdate table changes pred` sets the given columns on the
+        // rows its predicate admits; `MutDelete table pred` removes them. `mutationToSql`
         // renders it to one parameterized statement, sharing the predicate renderer
         // with `planToSql`, so a correlated `EXISTS` in a mutation predicate compiles
         // exactly as it does in a query.
@@ -1223,6 +1226,22 @@ fn reconciled_decls(b: &BuiltinTyCons, base: u32) -> Vec<TyConDecl> {
                                     vec![Type::Con(b.text, vec![]), Type::Con(b.sql_value, vec![])],
                                 )],
                             ),
+                        ]),
+                    },
+                    UnionVariant {
+                        name: "MutUpsert".to_string(),
+                        kind: VariantPayload::Positional(vec![
+                            Type::Con(b.text, vec![]),
+                            Type::Con(
+                                b.list,
+                                vec![Type::Con(
+                                    b.map,
+                                    vec![Type::Con(b.text, vec![]), Type::Con(b.sql_value, vec![])],
+                                )],
+                            ),
+                            // conflictCols / updateCols: two `List Text`.
+                            Type::Con(b.list, vec![Type::Con(b.text, vec![])]),
+                            Type::Con(b.list, vec![Type::Con(b.text, vec![])]),
                         ]),
                     },
                     UnionVariant {
@@ -1248,6 +1267,29 @@ fn reconciled_decls(b: &BuiltinTyCons, base: u32) -> Vec<TyConDecl> {
             def_span: None,
             def_module_raw: None,
             opaque: false,
+            is_anon: false,
+        },
+        // `std.repo` — a single conflict-key column built by `onConflict`, the upsert
+        // counterpart of `Setter`. An opaque record `{ column: Text }` declared in Ridge
+        // (stdlib/repo.ridge). The entity `e` (param 0) is phantom — it ties the key to
+        // the record whose column the quoted accessor named, so a `List (Conflict e)`
+        // cannot mix entities and must match the repository's `e`. Opaque, so user code
+        // builds one only through `onConflict`. Kept last in the block so its id is the
+        // next free slot.
+        TyConDecl {
+            id: TyConId(base + 23),
+            name: "Conflict".to_string(),
+            arity: 1,
+            kind: TyConKind::Record(RecordSchema::new(
+                vec![TyVid(0)],
+                vec![RecordField {
+                    name: "column".to_string(),
+                    ty: Type::Con(b.text, vec![]),
+                }],
+            )),
+            def_span: None,
+            def_module_raw: None,
+            opaque: true,
             is_anon: false,
         },
     ]
@@ -1485,10 +1527,11 @@ pub(crate) fn reconciled_fn_scheme(
             | "planAggregate" | "planGroup" | "planToSql" | "optimize" | "planExists",
         ) => reconciled_query_plan_fn_scheme(name, reconciled, b),
         // std.query mutation builders + the write-side renderer — the `MutationPlan`
-        // factories `planInsert`/`planUpdate`/`planDelete` and `mutationToSql`.
-        ("std.query", "planInsert" | "planUpdate" | "planDelete" | "mutationToSql") => {
-            reconciled_mutation_plan_fn_scheme(name, reconciled, b)
-        }
+        // factories `planInsert`/`planUpsert`/`planUpdate`/`planDelete` and `mutationToSql`.
+        (
+            "std.query",
+            "planInsert" | "planUpsert" | "planUpdate" | "planDelete" | "mutationToSql",
+        ) => reconciled_mutation_plan_fn_scheme(name, reconciled, b),
         ("std.repo", _) => reconciled_repo_fn_scheme(name, reconciled, b, classes?),
         ("std.migrate", _) => reconciled_migrate_fn_scheme(name, reconciled, b, classes?),
         ("std.raw", _) => reconciled_raw_fn_scheme(name, b, classes?),
@@ -1606,9 +1649,9 @@ fn reconciled_query_plan_fn_scheme(
 }
 
 /// The `std.query` mutation-builder slice of [`reconciled_fn_scheme`]: `planInsert`/
-/// `planUpdate`/`planDelete` build a `MutationPlan` node, and `mutationToSql` lowers one
-/// to a parameterized statement plus its ordered bind values (the write-side dual of
-/// `planToSql`). The builders return the reconciled `MutationPlan`, so none is
+/// `planUpsert`/`planUpdate`/`planDelete` build a `MutationPlan` node, and `mutationToSql`
+/// lowers one to a parameterized statement plus its ordered bind values (the write-side
+/// dual of `planToSql`). The builders return the reconciled `MutationPlan`, so none is
 /// expressible in the hand-curated signature table.
 fn reconciled_mutation_plan_fn_scheme(
     name: &str,
@@ -1627,6 +1670,8 @@ fn reconciled_mutation_plan_fn_scheme(
         )
     };
     let rows = || Type::Con(b.list, vec![row()]);
+    // A `List Text` — an upsert's conflict and update column names.
+    let text_list = || Type::Con(b.list, vec![text()]);
     let pure = |params: Vec<Type>, ret: Type| Scheme {
         vars: vec![],
         cap_vars: vec![],
@@ -1641,6 +1686,8 @@ fn reconciled_mutation_plan_fn_scheme(
     match name {
         // planInsert : Text -> List (Map Text SqlValue) -> MutationPlan
         "planInsert" => Some(pure(vec![text(), rows()], plan())),
+        // planUpsert : Text -> List (Map Text SqlValue) -> List Text -> List Text -> MutationPlan
+        "planUpsert" => Some(pure(vec![text(), rows(), text_list(), text_list()], plan())),
         // planUpdate : Text -> Map Text SqlValue -> QExpr -> MutationPlan
         "planUpdate" => Some(pure(vec![text(), row(), qexpr()], plan())),
         // planDelete : Text -> QExpr -> MutationPlan
@@ -1975,6 +2022,84 @@ fn reconciled_repo_fn_scheme(
             vec![list_e(), repo_app()],
             result(Type::Con(b.unit, vec![])),
             with_adapter_row(),
+        ),
+        // onConflict : ∀e a v. Quote (e -> v) -> Conflict e. Builds a typed conflict key
+        //   from an accessor quote, the upsert counterpart of `set`: the quote names a
+        //   single column whose type `v` is read off the entity (phantom — only the
+        //   column name is kept). `a` is unused but kept so the quantifier shape lines up
+        //   with the other repository schemes. No constraint: a conflict key names a
+        //   column, it does not encode a value.
+        "onConflict" => {
+            let conflict_con = *reconciled.get("Conflict")?;
+            let v = TyVid(2);
+            let col_quote = Type::Con(
+                b.quote,
+                vec![Type::Fn {
+                    params: vec![Type::Var(e)],
+                    ret: Box::new(Type::Var(v)),
+                    caps: pure(),
+                }],
+            );
+            Some(Scheme {
+                vars: vec![e, a, v],
+                cap_vars: vec![],
+                row_vars: vec![],
+                ty: Type::Fn {
+                    params: vec![col_quote],
+                    ret: Box::new(Type::Con(conflict_con, vec![Type::Var(e)])),
+                    caps: pure(),
+                },
+                constraints: vec![],
+            })
+        }
+        // upsert : ∀e a. e -> List (Conflict e) -> Repo e a -> Result Int Error
+        //   where Adapter a, Row e. Insert the entity or, on a unique-constraint conflict
+        //   over the key columns, overwrite every other column with its values; answers
+        //   how many rows were written. Carries `Row e` because it derives the row.
+        //
+        //   Dict order is `[Adapter a, Row e]`, NOT `with_adapter_row` — the
+        //   `List (Conflict e)` parameter makes the source generalise `a` before `e`
+        //   (where `update`/`insert`, whose constrained params mention only `e` and
+        //   `Repo e a`, generalise `e` first). The lowering threads dicts in the source's
+        //   generalised-variable order, so this hand-written scheme must match it or the
+        //   `toRow`/`runMutation` dicts swap at the call boundary. Verified by the
+        //   `data_write` BEAM e2e (an entity round-trips through upsert).
+        "upsert" => {
+            let conflict_con = *reconciled.get("Conflict")?;
+            let list_conflict =
+                Type::Con(b.list, vec![Type::Con(conflict_con, vec![Type::Var(e)])]);
+            method(
+                vec![Type::Var(e), list_conflict, repo_app()],
+                result(Type::Con(b.int, vec![])),
+                vec![Constraint::single(adapter, a), Constraint::single(row, e)],
+            )
+        }
+        // insertOrIgnore : ∀e a. e -> List (Conflict e) -> Repo e a -> Result Int Error
+        //   where Adapter a, Row e. The `DO NOTHING` companion of `upsert`: insert the
+        //   entity or, on a conflict over the key columns, leave the existing row. Same
+        //   `[Adapter a, Row e]` dict order as `upsert` (same `List (Conflict e)` shape).
+        "insertOrIgnore" => {
+            let conflict_con = *reconciled.get("Conflict")?;
+            let list_conflict =
+                Type::Con(b.list, vec![Type::Con(conflict_con, vec![Type::Var(e)])]);
+            method(
+                vec![Type::Var(e), list_conflict, repo_app()],
+                result(Type::Con(b.int, vec![])),
+                vec![Constraint::single(adapter, a), Constraint::single(row, e)],
+            )
+        }
+        // upsertRow : ∀e a. List Text -> List Text -> Map Text SqlValue -> Repo e a
+        //   -> Result Int Error where Adapter a. The raw, explicit-control upsert: a
+        //   hand-built row, the conflict columns, and the update columns named directly.
+        "upsertRow" => method(
+            vec![
+                Type::Con(b.list, vec![Type::Con(b.text, vec![])]),
+                Type::Con(b.list, vec![Type::Con(b.text, vec![])]),
+                map_row(),
+                repo_app(),
+            ],
+            result(Type::Con(b.int, vec![])),
+            with_adapter(),
         ),
         // updateWhere : ∀e a. Map Text SqlValue -> Quote (e -> Bool) -> Repo e a
         //   -> Result Int Error where Adapter a. Sets the columns of a partial map

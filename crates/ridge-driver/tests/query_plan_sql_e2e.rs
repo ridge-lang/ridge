@@ -23,7 +23,7 @@ use std::process::Command;
 use ridge_driver::{compile_workspace, CompileOptions, EmitArtefacts};
 
 const SOURCE: &str = r#"
-import std.query as Query (QueryPlan, planScan, planCombine, planRefine, planJoin, planProject, planAggregate, planGroup, planToSql, planExists, MutationPlan, planInsert, planUpdate, planDelete, mutationToSql)
+import std.query as Query (QueryPlan, planScan, planCombine, planRefine, planJoin, planProject, planAggregate, planGroup, planToSql, planExists, MutationPlan, planInsert, planUpsert, planUpdate, planDelete, mutationToSql)
 import std.sql (Sql, SqlValue, sqlValue, sqlInt, sqlText)
 import std.int as Int
 import std.list as List
@@ -152,6 +152,18 @@ pub fn existsDeleteBinds () -> Text = renderMutBinds (planDelete "users" (QExist
 -- bind order with a subquery in the WHERE.
 pub fn existsUpdateSql () -> Text = renderMutSql (planUpdate "users" (Map.fromList [("age", sqlInt 99)]) (QExists "posts" (QEq (QColR "author") (QCol "id"))))
 pub fn existsUpdateBinds () -> Text = renderMutBinds (planUpdate "users" (Map.fromList [("age", sqlInt 99)]) (QExists "posts" (QEq (QColR "author") (QCol "id"))))
+
+-- An upsert: an INSERT with an `ON CONFLICT … DO UPDATE` tail. The values bind exactly as
+-- a plain insert ($1, $2); the conflict clause names the constraint column and sets the
+-- update column from `EXCLUDED`, carrying no binds of its own.
+pub fn upsertSql () -> Text = renderMutSql (planUpsert "users" [Map.fromList [("id", sqlInt 1), ("name", sqlText "ada")]] ["id"] ["name"])
+pub fn upsertBinds () -> Text = renderMutBinds (planUpsert "users" [Map.fromList [("id", sqlInt 1), ("name", sqlText "ada")]] ["id"] ["name"])
+
+-- No update columns is a `DO NOTHING` over the named conflict target.
+pub fn insertOrIgnoreSql () -> Text = renderMutSql (planUpsert "users" [Map.fromList [("id", sqlInt 1), ("name", sqlText "ada")]] ["id"] [])
+
+-- No conflict target and no update columns is a bare `ON CONFLICT DO NOTHING`.
+pub fn upsertBareSql () -> Text = renderMutSql (planUpsert "users" [Map.fromList [("id", sqlInt 1), ("name", sqlText "ada")]] [] [])
 
 pub fn scanSql () -> Text = renderSql (planScan "users" (pred1 (fn u -> u.age >= 18)) [] (0 - 1) 0 false)
 
@@ -702,7 +714,7 @@ fn query_plan_compiles_to_parameterized_sql() {
 
     let expr = format!(
         "F=fun(N)->io:format(\"~s=~s~n\",[N,{module}:N()])end, \
-         lists:foreach(F,['scanSql','scanBinds','foldSql','likeSql','likeBinds','inSql','inBinds','inCapturedSql','inCapturedBinds','corrExistsSql','corrExistsBinds','corrNotExistsSql','joinExistsWhereSql','naryExistsWhereSql','nestedExistsSql','pgNestedSql','pgNestedBinds','inEmptySql','inEmptyBinds','arithMulSql','arithMulBinds','arithColSql','arithModSql','combineSql','refineSql','innerSql','leftSql','rightSql','fullSql','fullBinds','projectSql','projectCalcSql','projectCalcBinds','projectCaseJoinSql','aggSql','groupSql','inner3Sql','inner3Binds','existsSql','existsThreeSql','existsThreeBinds','everyJoinSql','everyJoinBinds','innerLeftMixSql','innerRightMixSql','innerFullMixSql','innerFullMixBinds','adultLeftMixSql','adultLeftMixBinds','countAdultLeftMixSql','countThreeSql','countThreeBinds','countLeftMixSql','countLeftMixBinds','sumThreeSql','avgThreeSql','projectThreeSql','projectLeftMixSql','projectRightMixSql','projectFullMixSql','groupThreeSql','groupComputedThreeSql','groupComputedThreeBinds','groupLeftMixSql','groupRightMixSql','groupFullMixSql','orderThreeSql','orderLeftMixSql','orderRightMixSql','orderFullMixSql','inner4Sql','sumFourSql','projectFourSql','orderFourSql','insertSql','insertBinds','insertManySql','insertManyBinds','updateSql','updateBinds','deleteSql','existsDeleteSql','existsDeleteBinds','existsUpdateSql','existsUpdateBinds']), halt()."
+         lists:foreach(F,['scanSql','scanBinds','foldSql','likeSql','likeBinds','inSql','inBinds','inCapturedSql','inCapturedBinds','corrExistsSql','corrExistsBinds','corrNotExistsSql','joinExistsWhereSql','naryExistsWhereSql','nestedExistsSql','pgNestedSql','pgNestedBinds','inEmptySql','inEmptyBinds','arithMulSql','arithMulBinds','arithColSql','arithModSql','combineSql','refineSql','innerSql','leftSql','rightSql','fullSql','fullBinds','projectSql','projectCalcSql','projectCalcBinds','projectCaseJoinSql','aggSql','groupSql','inner3Sql','inner3Binds','existsSql','existsThreeSql','existsThreeBinds','everyJoinSql','everyJoinBinds','innerLeftMixSql','innerRightMixSql','innerFullMixSql','innerFullMixBinds','adultLeftMixSql','adultLeftMixBinds','countAdultLeftMixSql','countThreeSql','countThreeBinds','countLeftMixSql','countLeftMixBinds','sumThreeSql','avgThreeSql','projectThreeSql','projectLeftMixSql','projectRightMixSql','projectFullMixSql','groupThreeSql','groupComputedThreeSql','groupComputedThreeBinds','groupLeftMixSql','groupRightMixSql','groupFullMixSql','orderThreeSql','orderLeftMixSql','orderRightMixSql','orderFullMixSql','inner4Sql','sumFourSql','projectFourSql','orderFourSql','insertSql','insertBinds','insertManySql','insertManyBinds','updateSql','updateBinds','deleteSql','existsDeleteSql','existsDeleteBinds','existsUpdateSql','existsUpdateBinds','upsertSql','upsertBinds','insertOrIgnoreSql','upsertBareSql']), halt()."
     );
     let output = Command::new("erl")
         .arg("-noshell")
@@ -766,6 +778,21 @@ fn query_plan_compiles_to_parameterized_sql() {
         r#"existsUpdateSql=UPDATE "users" AS l SET "age" = $1 WHERE EXISTS (SELECT 1 FROM "posts" AS x1 WHERE x1."author" = l."id")"#,
     );
     want("existsUpdateBinds=1");
+
+    // An upsert renders the insert's columns and `$N` values, then an `ON CONFLICT` tail.
+    // With update columns it is a `DO UPDATE` setting each from `EXCLUDED` (no extra
+    // binds); with none it is a `DO NOTHING`, whose conflict target is optional — a bare
+    // `ON CONFLICT DO NOTHING` when no columns are named.
+    want(
+        r#"upsertSql=INSERT INTO "users" ("id", "name") VALUES ($1, $2) ON CONFLICT ("id") DO UPDATE SET "name" = EXCLUDED."name""#,
+    );
+    want("upsertBinds=2");
+    want(
+        r#"insertOrIgnoreSql=INSERT INTO "users" ("id", "name") VALUES ($1, $2) ON CONFLICT ("id") DO NOTHING"#,
+    );
+    want(
+        r#"upsertBareSql=INSERT INTO "users" ("id", "name") VALUES ($1, $2) ON CONFLICT DO NOTHING"#,
+    );
 
     want(
         r#"corrNotExistsSql=SELECT * FROM "users" AS l WHERE (NOT EXISTS (SELECT 1 FROM "posts" AS x1 WHERE x1."author" = l."id"))"#,

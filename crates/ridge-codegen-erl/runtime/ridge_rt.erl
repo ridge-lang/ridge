@@ -1292,14 +1292,24 @@ mem_keeper_loop(State) ->
 
 %% mem_apply_mutation/3 — apply a MutationPlan to the store, returning the updated
 %% state and the affected row count. The write-side dual of mem_eval_plan: an insert
-%% appends its rows (one for `insert`, many for a bulk insert) to the table; an update
-%% merges its changes over the rows its predicate admits; a delete drops them. The
-%% predicate is the same QExpr a read walks (mem_pred), so a correlated EXISTS in a
+%% appends its rows (one for `insert`, many for a bulk insert) to the table; an upsert
+%% appends a row or, when it conflicts with an existing one on the conflict columns,
+%% overwrites that row's update columns (or leaves it, with no update columns); an
+%% update merges its changes over the rows its predicate admits; a delete drops them.
+%% The predicate is the same QExpr a read walks (mem_pred), so a correlated EXISTS in a
 %% mutation predicate is evaluated identically to one in a query.
 mem_apply_mutation(State, Id, {'MutInsert', Table, Rows}) ->
     Key = {Id, Table},
     Existing = maps:get(Key, State, []),
     {State#{Key => Existing ++ Rows}, length(Rows)};
+mem_apply_mutation(State, Id, {'MutUpsert', Table, Rows, ConflictCols, UpdateCols}) ->
+    Key = {Id, Table},
+    Existing = maps:get(Key, State, []),
+    {Final, Count} = lists:foldl(
+        fun(NewRow, {Acc, C}) -> mem_upsert_one(Acc, NewRow, ConflictCols, UpdateCols, C) end,
+        {Existing, 0},
+        Rows),
+    {State#{Key => Final}, Count};
 mem_apply_mutation(State, Id, {'MutUpdate', Table, Changes, Tree}) ->
     Key = {Id, Table},
     Rows = maps:get(Key, State, []),
@@ -1310,6 +1320,52 @@ mem_apply_mutation(State, Id, {'MutDelete', Table, Tree}) ->
     Rows = maps:get(Key, State, []),
     Kept = [R || R <- Rows, not mem_pred(State, Id, Tree, R)],
     {State#{Key => Kept}, length(Rows) - length(Kept)}.
+
+%% Apply one upsert row against the rows accumulated so far. With no existing row
+%% conflicting on every conflict column, the new row is appended (an insert). With a
+%% conflict and update columns, the matching row's update columns are overwritten from
+%% the new row (a DO UPDATE); with a conflict and no update columns, the existing row is
+%% left as it was (a DO NOTHING). The count rises for an insert or an update, never for a
+%% skipped conflict — matching Postgres's ON CONFLICT row count.
+mem_upsert_one(Rows, NewRow, ConflictCols, UpdateCols, Count) ->
+    {NewRows, Matched} = lists:mapfoldl(
+        fun(R, false) ->
+                case mem_row_conflicts(R, NewRow, ConflictCols) of
+                    true when UpdateCols =:= [] -> {R, true};
+                    true  -> {mem_apply_excluded(R, NewRow, UpdateCols), true};
+                    false -> {R, false}
+                end;
+           (R, true) -> {R, true}
+        end, false, Rows),
+    case Matched of
+        false -> {Rows ++ [NewRow], Count + 1};
+        true when UpdateCols =:= [] -> {NewRows, Count};
+        true  -> {NewRows, Count + 1}
+    end.
+
+%% Whether an existing row conflicts with a new row on every conflict column — the
+%% in-memory reading of a unique constraint over those columns. An empty conflict target
+%% (a bare ON CONFLICT) never matches: the schemaless store carries no constraints, so it
+%% cannot know which rows a "any constraint" conflict would hit, and treats the upsert as
+%% a plain insert.
+mem_row_conflicts(_R, _NewRow, []) -> false;
+mem_row_conflicts(R, NewRow, ConflictCols) ->
+    lists:all(
+        fun(C) ->
+            maps:is_key(C, R) andalso maps:is_key(C, NewRow)
+                andalso maps:get(C, R) =:= maps:get(C, NewRow)
+        end, ConflictCols).
+
+%% Overwrite the named columns of an existing row with the new row's values — the
+%% in-memory `SET col = EXCLUDED.col` for each update column.
+mem_apply_excluded(OldRow, NewRow, UpdateCols) ->
+    lists:foldl(
+        fun(C, Acc) ->
+            case maps:find(C, NewRow) of
+                {ok, V} -> Acc#{C => V};
+                error   -> Acc
+            end
+        end, OldRow, UpdateCols).
 
 %% Build a projected row from `{Alias, QExpr}` columns: each output column
 %% evaluates its expression against the row and is keyed by its alias. A bare

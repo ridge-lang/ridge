@@ -121,6 +121,7 @@ const CONSTRUCTOR_EXPORTS: &[(&str, &str)] = &[
     // The `MutationPlan` variants: exported so a write verb can build a plan, but
     // surfaced by text extraction only through the type name `MutationPlan`.
     ("std.query", "MutInsert"),
+    ("std.query", "MutUpsert"),
     ("std.query", "MutUpdate"),
     ("std.query", "MutDelete"),
 ];
@@ -284,6 +285,7 @@ fn signature_shape_consistency() {
                         | "planExists"
                         | "planList"
                         | "planInsert"
+                        | "planUpsert"
                         | "planUpdate"
                         | "planDelete"
                         | "mutationToSql"

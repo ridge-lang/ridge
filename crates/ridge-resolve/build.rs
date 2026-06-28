@@ -431,15 +431,18 @@ const BASELINE_EXPORTS: &[(&str, &[&str])] = &[
             // The in-memory source leaf: wraps the rows `from` snapshotted, so an
             // in-memory `Seq` runs through the same plan/interpreter as a query.
             "planList",
-            // The mutation-plan tree, its three constructors, the builders that wrap
-            // them, and the write-side renderer. A write verb builds a `MutationPlan`
-            // and hands it to a backend's `runMutation`; `mutationToSql` lowers it to
-            // one parameterized statement, the write-side dual of `planToSql`.
+            // The mutation-plan tree, its constructors, the builders that wrap them,
+            // and the write-side renderer. A write verb builds a `MutationPlan` and
+            // hands it to a backend's `runMutation`; `mutationToSql` lowers it to one
+            // parameterized statement, the write-side dual of `planToSql`. `MutUpsert`
+            // carries an `ON CONFLICT` clause built by `planUpsert`.
             "MutationPlan",
             "MutInsert",
+            "MutUpsert",
             "MutUpdate",
             "MutDelete",
             "planInsert",
+            "planUpsert",
             "planUpdate",
             "planDelete",
             "mutationToSql",
@@ -534,6 +537,15 @@ const BASELINE_EXPORTS: &[(&str, &[&str])] = &[
             "insert",
             "insertRows",
             "insertMany",
+            // Upsert: the opaque `Conflict e` key built by `onConflict`, the typed
+            // `upsert`/`insertOrIgnore` verbs that resolve a unique-constraint conflict
+            // (`ON CONFLICT … DO UPDATE`/`DO NOTHING`), and the raw `upsertRow` escape
+            // hatch that names the conflict and update columns explicitly.
+            "Conflict",
+            "onConflict",
+            "upsert",
+            "insertOrIgnore",
+            "upsertRow",
             "deleteWhere",
             "updateWhere",
             "update",
@@ -757,6 +769,7 @@ const BASELINE_OPAQUE: &[(&str, &[&str])] = &[
             "RightJoined",
             "FullJoined",
             "Setter",
+            "Conflict",
             "Grouped",
             "Seq",
         ],

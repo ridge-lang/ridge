@@ -143,13 +143,24 @@ pub fn planList (rows: List (Map Text SqlValue)) -> QueryPlan =
 -- so a correlated `EXISTS` in a mutation predicate compiles exactly as it does in a query.
 --
 -- `MutInsert` appends rows to a table — one row for `insert`, many for a bulk insert,
--- all sharing the same columns. `MutUpdate` sets the given columns on the rows its
--- predicate admits. `MutDelete` removes the rows its predicate admits.
-pub type MutationPlan = MutInsert Text (List (Map Text SqlValue)) | MutUpdate Text (Map Text SqlValue) QExpr | MutDelete Text QExpr
+-- all sharing the same columns. `MutUpsert` is an insert that resolves a unique-
+-- constraint conflict over `conflictCols`: a non-empty `updateCols` overwrites those
+-- columns with the incoming values (`ON CONFLICT … DO UPDATE`), an empty one leaves the
+-- existing row untouched (`DO NOTHING`). `MutUpdate` sets the given columns on the rows
+-- its predicate admits. `MutDelete` removes the rows its predicate admits.
+pub type MutationPlan = MutInsert Text (List (Map Text SqlValue)) | MutUpsert Text (List (Map Text SqlValue)) (List Text) (List Text) | MutUpdate Text (Map Text SqlValue) QExpr | MutDelete Text QExpr
 
 -- Append rows to a table. One row for `insert`, many for a bulk insert.
 pub fn planInsert (table: Text) (rows: List (Map Text SqlValue)) -> MutationPlan =
     MutInsert table rows
+
+-- Append rows, resolving a unique-constraint conflict over `conflictCols`. A non-empty
+-- `updateCols` overwrites those columns with the incoming values (`ON CONFLICT … DO
+-- UPDATE SET col = EXCLUDED.col`); an empty `updateCols` is a `DO NOTHING` that keeps the
+-- existing row. The conflict columns are matched on, not rewritten, so the caller passes
+-- the columns to overwrite (typically every inserted column except the conflict keys).
+pub fn planUpsert (table: Text) (rows: List (Map Text SqlValue)) (conflictCols: List Text) (updateCols: List Text) -> MutationPlan =
+    MutUpsert table rows conflictCols updateCols
 
 -- Set `changes` on every row of `table` the predicate admits.
 pub fn planUpdate (table: Text) (changes: Map Text SqlValue) (pred: QExpr) -> MutationPlan =
@@ -429,25 +440,33 @@ pub fn planToSql (plan: QueryPlan) -> (Sql, List SqlValue) =
     (sql r.text, r.binds)
 
 -- Compile a mutation plan to one parameterized statement and its bind values — the
--- write-side dual of `planToSql`. An insert binds its column values left to right; an
--- update binds its SET assignments first and then its WHERE; a delete binds only its
--- WHERE. Each value is a positional `$N` placeholder, never interpolated, so the
--- statement is injection-safe by construction. The WHERE of an update or delete runs
--- through the same `whereClause`/`renderPred` a query uses, so a correlated `EXISTS`
--- compiles identically — the target table is aliased `l` then, so the subquery can name
--- the row being changed.
+-- write-side dual of `planToSql`. Renders through `renderMutation`, the shared
+-- statement builder, and wraps the text in the `Sql` taint type.
 pub fn mutationToSql (plan: MutationPlan) -> (Sql, List SqlValue) =
+    let r = renderMutation plan
+    (sql r.text, r.binds)
+
+-- The statement text and bind values of a mutation, shared by `mutationToSql` and the
+-- RETURNING variant. An insert binds its column values left to right; an upsert appends
+-- an `ON CONFLICT` clause to one; an update binds its SET assignments first and then its
+-- WHERE; a delete binds only its WHERE. Each value is a positional `$N` placeholder,
+-- never interpolated, so the statement is injection-safe by construction. The WHERE of an
+-- update or delete runs through the same `whereClause`/`renderPred` a query uses, so a
+-- correlated `EXISTS` compiles identically — the target table is aliased `l` then, so the
+-- subquery can name the row being changed.
+fn renderMutation (plan: MutationPlan) -> { text: Text, binds: List SqlValue } =
     match plan
         MutInsert table rows ->
-            let r = renderInsert table rows
-            (sql r.text, r.binds)
+            renderInsert table rows
+        MutUpsert table rows conflictCols updateCols ->
+            renderUpsert table rows conflictCols updateCols
         MutUpdate table changes pred ->
             let s = renderSet (Map.toList changes) 1
             let w = mutationWhere pred s.next
-            (sql (Text.join "" ["UPDATE ", mutationTarget table pred, " SET ", s.text, w.text]), s.binds ++ w.binds)
+            { text = Text.join "" ["UPDATE ", mutationTarget table pred, " SET ", s.text, w.text], binds = s.binds ++ w.binds }
         MutDelete table pred ->
             let w = mutationWhere pred 1
-            (sql (Text.join "" ["DELETE FROM ", mutationTarget table pred, w.text]), w.binds)
+            { text = Text.join "" ["DELETE FROM ", mutationTarget table pred, w.text], binds = w.binds }
 
 -- The target-table clause of an update or delete. A predicate carrying a correlated
 -- `EXISTS` aliases the table `l`, so the subquery names the row being changed as
@@ -502,6 +521,55 @@ fn tupleVals (pairs: List (Text, SqlValue)) (n: Int) -> { text: Text, binds: Lis
         (_, val) :: rest ->
             let r = tupleVals rest (n + 1)
             { text = Text.join "" [placeholder n, ", ", r.text], binds = val :: r.binds, next = r.next }
+
+-- Render an upsert: an `INSERT … VALUES …` followed by an `ON CONFLICT` clause. The
+-- value tuples and their binds are exactly an insert's; the conflict clause names the
+-- columns the unique constraint covers and, when `updateCols` is non-empty, sets each to
+-- the incoming row's value (`EXCLUDED."col"`) — a `DO UPDATE`. An empty `updateCols` is a
+-- `DO NOTHING`: a conflicting row is left as it was. The conflict clause carries no binds
+-- (it names columns, not values), so the placeholder counter is the insert's alone.
+fn renderUpsert (table: Text) (rows: List (Map Text SqlValue)) (conflictCols: List Text) (updateCols: List Text) -> { text: Text, binds: List SqlValue } =
+    match rows
+        [] -> { text = "", binds = [] }
+        first :: _ ->
+            let header = insertColumns (Map.toList first)
+            let vr = valueRows rows 1
+            { text = Text.join "" ["INSERT INTO ", quoteIdent table, " (", header, ") VALUES ", vr.text, conflictClause conflictCols updateCols], binds = vr.binds }
+
+-- The `ON CONFLICT …` tail of an upsert. With no columns to update it is a `DO NOTHING`
+-- whose conflict target is optional — a bare `ON CONFLICT DO NOTHING` catches any
+-- constraint — so an empty `conflictCols` still renders. With columns to update it is a
+-- `DO UPDATE SET …`, whose target Postgres requires, so the caller names the constraint
+-- columns there.
+fn conflictClause (conflictCols: List Text) (updateCols: List Text) -> Text =
+    match updateCols
+        [] -> Text.join "" [" ON CONFLICT", conflictTargetOpt conflictCols, " DO NOTHING"]
+        _  -> Text.join "" [" ON CONFLICT (", quotedColumns conflictCols, ") DO UPDATE SET ", excludedAssignments updateCols]
+
+-- The optional `(col, …)` conflict target of a `DO NOTHING`: empty for a bare
+-- `ON CONFLICT`, the parenthesised quoted list when columns are named.
+fn conflictTargetOpt (cols: List Text) -> Text =
+    match cols
+        [] -> ""
+        _  -> Text.join "" [" (", quotedColumns cols, ")"]
+
+-- `"col" = EXCLUDED."col"` assignments, comma-separated — each conflict-update column set
+-- to the value the insert proposed for it.
+fn excludedAssignments (cols: List Text) -> Text =
+    match cols
+        []        -> ""
+        c :: []   -> excludedSet c
+        c :: rest -> Text.join "" [excludedSet c, ", ", excludedAssignments rest]
+
+fn excludedSet (c: Text) -> Text =
+    Text.join "" [quoteIdent c, " = EXCLUDED.", quoteIdent c]
+
+-- A quoted, comma-separated column list from bare column names.
+fn quotedColumns (cols: List Text) -> Text =
+    match cols
+        []        -> ""
+        c :: []   -> quoteIdent c
+        c :: rest -> Text.join "" [quoteIdent c, ", ", quotedColumns rest]
 
 -- The `SET` assignments of an update — `"col" = $N`, comma-separated, binds left to right.
 fn renderSet (pairs: List (Text, SqlValue)) (n: Int) -> { text: Text, binds: List SqlValue, next: Int } =

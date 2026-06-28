@@ -21,7 +21,7 @@
 
 import std.data as Db
 import std.sql (SqlValue)
-import std.query (SortOrder, ascending, QueryPlan, planScan, planCombine, planRefine, planJoin, planProject, planAggregate, planGroup, planExists, planList, planInsert, planUpdate, planDelete)
+import std.query (SortOrder, ascending, QueryPlan, planScan, planCombine, planRefine, planJoin, planProject, planAggregate, planGroup, planExists, planList, planInsert, planUpsert, planUpdate, planDelete)
 import std.map (fromList, toList)
 
 -- A repository: entity `e` stored in `table` through adapter `a`. Opaque, so it
@@ -175,6 +175,85 @@ pub fn insertRows (rows: List (Map Text SqlValue)) (r: Repo e a) -> Result Unit 
 -- whole batch, not a row per round-trip. An empty list is a no-op.
 pub fn insertMany (entities: List e) (r: Repo e a) -> Result Unit Error where Adapter a, Row e =
     insertRows (encodeRows entities) r
+
+-- A single conflict-key column, built by `onConflict`: the column an upsert matches an
+-- existing row on. The entity `e` is a phantom that ties the key to the record whose
+-- column the accessor named, exactly as `Setter` ties an assignment — so a
+-- `List (Conflict e)` cannot mix entities and must match the repository's `e`. Opaque, so
+-- user code builds one only through `onConflict`.
+pub opaque type Conflict e = { column: Text }
+
+-- Name a conflict-key column by a quoted accessor (`fn (u: User) -> u.email`), the
+-- write-side analogue of `set`'s target: the accessor pins the column, so a misspelled
+-- field is a compile error, not a silently wrong `ON CONFLICT` target. Several keys
+-- compose into the composite unique constraint an upsert matches on.
+pub fn onConflict (col: Quote (e -> v)) -> Conflict e =
+    Conflict { column = conflictColumn col }
+
+-- The column a conflict key's quoted accessor names — a `QCol`, like `setterColumn`.
+fn conflictColumn (col: Quote (e -> v)) -> Text =
+    match col.tree
+        QCol c -> c
+        _      -> ""
+
+-- The bare column names a list of conflict keys covers.
+fn conflictColumns (keys: List (Conflict e)) -> List Text =
+    match keys
+        []        -> []
+        c :: rest -> c.column :: conflictColumns rest
+
+-- Insert a typed entity, or on a unique-constraint conflict over the `keys` columns
+-- overwrite every other column with the entity's values; answer how many rows were
+-- written (one for an insert or an update). The entity is encoded through `deriving
+-- (Row)`'s `toRow`, and the columns updated on conflict are every encoded column except
+-- the conflict keys — the keys are matched on, not rewritten. The insert-or-replace verb,
+-- entity first like `update`, conflict keys after:
+-- `users |> Repo.upsert user [Repo.onConflict (fn (u: User) -> u.id)]`. To choose which
+-- columns the conflict updates, use the raw `upsertRow`.
+pub fn upsert (entity: e) (keys: List (Conflict e)) (r: Repo e a) -> Result Int Error where Adapter a, Row e =
+    let row = toRow entity
+    let conflictCols = conflictColumns keys
+    runMutation r.adapter (planUpsert r.table [row] conflictCols (nonKeyColumns row conflictCols))
+
+-- Insert a typed entity, or on a conflict over the `keys` columns do nothing; answer how
+-- many rows were written (one for an insert, zero when the row already existed). The
+-- insert-if-absent verb, the `DO NOTHING` companion of `upsert`. The body mirrors
+-- `upsert`'s shape (encode the row in a leading `let`, then `runMutation`) so the two
+-- generalise their `Adapter`/`Row` dictionaries in the same order.
+pub fn insertOrIgnore (entity: e) (keys: List (Conflict e)) (r: Repo e a) -> Result Int Error where Adapter a, Row e =
+    let row = toRow entity
+    let conflictCols = conflictColumns keys
+    runMutation r.adapter (planUpsert r.table [row] conflictCols [])
+
+-- Insert a raw row, or on a unique-constraint conflict over `conflictCols` overwrite
+-- `updateCols` with the incoming values; answer how many rows were written. The raw,
+-- explicit-control counterpart of `upsert`: the row is a hand-built column map and the
+-- caller names exactly which columns the conflict updates, where `upsert` derives both
+-- from a typed entity. An empty `updateCols` is a `DO NOTHING`.
+pub fn upsertRow (conflictCols: List Text) (updateCols: List Text) (row: Map Text SqlValue) (r: Repo e a) -> Result Int Error where Adapter a =
+    runMutation r.adapter (planUpsert r.table [row] conflictCols updateCols)
+
+-- The columns of a row to overwrite on an upsert conflict: every column the row carries
+-- except the conflict-key columns (those are matched on, not rewritten).
+fn nonKeyColumns (row: Map Text SqlValue) (conflictCols: List Text) -> List Text =
+    excludeColumns (columnNames (toList row)) conflictCols
+
+fn columnNames (pairs: List (Text, SqlValue)) -> List Text =
+    match pairs
+        []             -> []
+        (c, _) :: rest -> c :: columnNames rest
+
+fn excludeColumns (cols: List Text) (drop: List Text) -> List Text =
+    match cols
+        []        -> []
+        c :: rest ->
+            if columnMember c drop then excludeColumns rest drop
+            else c :: excludeColumns rest drop
+
+fn columnMember (c: Text) (cols: List Text) -> Bool =
+    match cols
+        []        -> false
+        x :: rest -> if x == c then true else columnMember c rest
 
 -- Remove the rows matching a quoted predicate; answer how many were removed.
 pub fn deleteWhere (pred: Quote (Map Text SqlValue -> Bool)) (r: Repo e a) -> Result Int Error where Adapter a =

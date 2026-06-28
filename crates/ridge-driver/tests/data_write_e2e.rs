@@ -233,6 +233,83 @@ pub fn db bulkEmptyNames () -> Text =
             match r |> Repo.query |> Repo.toList
                 Err _ -> "list-err"
                 Ok us -> joinNames us
+
+-- upsert on a fresh key inserts: id 4 is not present, so the row is appended -> count 1.
+pub fn db upsertInsertCount () -> Int =
+    match setup ()
+        Err _ -> 0 - 1
+        Ok r  ->
+            match r |> Repo.upsert (User { id = 4, age = 50, name = "ito", nick = None }) [ Repo.onConflict (fn (u: User) -> u.id) ]
+                Ok n  -> n
+                Err _ -> 0 - 2
+
+-- upsert on an existing key overwrites every non-key column with the new entity's values:
+-- ada (id 1) upserts with name "neo" -> her name becomes "neo".
+pub fn db upsertUpdateName () -> Text =
+    match setup ()
+        Err _ -> "setup-err"
+        Ok r  ->
+            match r |> Repo.upsert (User { id = 1, age = 18, name = "neo", nick = Some "ace" }) [ Repo.onConflict (fn (u: User) -> u.id) ]
+                Err _ -> "upsert-err"
+                Ok _  ->
+                    match r |> Repo.getBy "id" (toSql 1)
+                        Err _       -> "get-err"
+                        Ok None     -> "none"
+                        Ok (Some u) -> u.name
+
+-- upsert on an existing key counts the update as one affected row.
+pub fn db upsertUpdateCount () -> Int =
+    match setup ()
+        Err _ -> 0 - 1
+        Ok r  ->
+            match r |> Repo.upsert (User { id = 1, age = 18, name = "neo", nick = None }) [ Repo.onConflict (fn (u: User) -> u.id) ]
+                Ok n  -> n
+                Err _ -> 0 - 2
+
+-- insertOrIgnore on an existing key does nothing: ada (id 1) keeps her name "ada".
+pub fn db ignoreExistingName () -> Text =
+    match setup ()
+        Err _ -> "setup-err"
+        Ok r  ->
+            match r |> Repo.insertOrIgnore (User { id = 1, age = 1, name = "zzz", nick = None }) [ Repo.onConflict (fn (u: User) -> u.id) ]
+                Err _ -> "ignore-err"
+                Ok _  ->
+                    match r |> Repo.getBy "id" (toSql 1)
+                        Err _       -> "get-err"
+                        Ok None     -> "none"
+                        Ok (Some u) -> u.name
+
+-- insertOrIgnore on an existing key affects zero rows -> count 0.
+pub fn db ignoreExistingCount () -> Int =
+    match setup ()
+        Err _ -> 0 - 1
+        Ok r  ->
+            match r |> Repo.insertOrIgnore (User { id = 1, age = 1, name = "zzz", nick = None }) [ Repo.onConflict (fn (u: User) -> u.id) ]
+                Ok n  -> n
+                Err _ -> 0 - 2
+
+-- insertOrIgnore on a fresh key inserts: id 6 is not present -> count 1.
+pub fn db ignoreNewCount () -> Int =
+    match setup ()
+        Err _ -> 0 - 1
+        Ok r  ->
+            match r |> Repo.insertOrIgnore (User { id = 6, age = 7, name = "rio", nick = None }) [ Repo.onConflict (fn (u: User) -> u.id) ]
+                Ok n  -> n
+                Err _ -> 0 - 2
+
+-- raw upsertRow updates only the named update columns: on the id-1 conflict it sets
+-- `age` from the hand-built row, leaving ada's name alone -> age 100.
+pub fn db upsertRowAge () -> Int =
+    match setup ()
+        Err _ -> 0 - 1
+        Ok r  ->
+            match r |> Repo.upsertRow ["id"] ["age"] (Map.fromList [("id", toSql 1), ("age", toSql 100)])
+                Err _ -> 0 - 2
+                Ok _  ->
+                    match r |> Repo.getBy "id" (toSql 1)
+                        Err _       -> 0 - 3
+                        Ok None     -> 0 - 4
+                        Ok (Some u) -> u.age
 "#;
 
 fn write_workspace(root: &std::path::Path) {
@@ -316,6 +393,13 @@ fn write_path_runs_on_beam() {
          io:format(\"appliedAge=~w~n\",[{module}:appliedAge()]), \
          io:format(\"bulkNames=~s~n\",[{module}:bulkNames()]), \
          io:format(\"bulkEmptyNames=~s~n\",[{module}:bulkEmptyNames()]), \
+         io:format(\"upsertInsertCount=~w~n\",[{module}:upsertInsertCount()]), \
+         io:format(\"upsertUpdateName=~s~n\",[{module}:upsertUpdateName()]), \
+         io:format(\"upsertUpdateCount=~w~n\",[{module}:upsertUpdateCount()]), \
+         io:format(\"ignoreExistingName=~s~n\",[{module}:ignoreExistingName()]), \
+         io:format(\"ignoreExistingCount=~w~n\",[{module}:ignoreExistingCount()]), \
+         io:format(\"ignoreNewCount=~w~n\",[{module}:ignoreNewCount()]), \
+         io:format(\"upsertRowAge=~w~n\",[{module}:upsertRowAge()]), \
          halt()."
     );
     let output = Command::new("erl")
@@ -380,6 +464,34 @@ fn write_path_runs_on_beam() {
         (
             "bulkEmptyNames=\n",
             "insertMany [] is a no-op that succeeds and writes nothing",
+        ),
+        (
+            "upsertInsertCount=1",
+            "upsert on a fresh key inserts the row and counts it",
+        ),
+        (
+            "upsertUpdateName=neo",
+            "upsert on an existing key overwrites the non-key columns from the entity",
+        ),
+        (
+            "upsertUpdateCount=1",
+            "upsert on an existing key counts the update as one affected row",
+        ),
+        (
+            "ignoreExistingName=ada",
+            "insertOrIgnore on an existing key leaves the stored row untouched",
+        ),
+        (
+            "ignoreExistingCount=0",
+            "insertOrIgnore on an existing key affects no rows",
+        ),
+        (
+            "ignoreNewCount=1",
+            "insertOrIgnore on a fresh key inserts the row",
+        ),
+        (
+            "upsertRowAge=100",
+            "raw upsertRow updates only the named columns on a conflict",
         ),
     ] {
         assert!(

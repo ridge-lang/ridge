@@ -241,6 +241,8 @@ const BASELINE_EXPORTS: &[(&str, &[&str])] = &[
             "map",
             "mapErr",
             "flatMap",
+            "traverse",
+            "sequence",
             "withDefault",
             "isOk",
             "isErr",
@@ -454,6 +456,22 @@ const BASELINE_EXPORTS: &[(&str, &[&str])] = &[
     (
         "std.data",
         &[
+            // Typed database errors: the `DbErrorKind` union and its variants, the
+            // classifier that reads a raw `Error`'s code into one, and the accessors
+            // for the constraint and column a backend named.
+            "DbErrorKind",
+            "UniqueViolation",
+            "ForeignKeyViolation",
+            "NotNullViolation",
+            "CheckViolation",
+            "ConnectionError",
+            "DecodeError",
+            "Unsupported",
+            "QueryError",
+            "dbErrorKind",
+            "dbErrorConstraint",
+            "dbErrorColumn",
+            "dbErrorTable",
             // The storage seam class and its methods, plus the in-memory adapter
             // (the opaque handle type and its `db`-gated constructor). The
             // Postgres adapter (later) implements the same `Adapter` class.

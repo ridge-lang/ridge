@@ -1,6 +1,5 @@
 ---
 source: crates/ridge-lower/tests/snapshots.rs
-assertion_line: 23
 expression: rendered
 ---
 module: m0
@@ -14,7 +13,7 @@ items:
     ret_ty: Con(2)
     params:
       - name: grid
-        ty: Con(74)
+        ty: Con(75)
       - name: r
         ty: Con(0)
       - name: c
@@ -139,7 +138,7 @@ items:
     ret_ty: Con(0)
     params:
       - name: grid
-        ty: Con(74)
+        ty: Con(75)
       - name: r
         ty: Con(0)
       - name: c
@@ -297,7 +296,7 @@ items:
     ret_ty: Con(2)
     params:
       - name: grid
-        ty: Con(74)
+        ty: Con(75)
       - name: r
         ty: Con(0)
       - name: c
@@ -364,10 +363,10 @@ items:
     pub: false
     main: false
     caps: CapabilitySet(0)
-    ret_ty: Con(74)
+    ret_ty: Con(75)
     params:
       - name: grid
-        ty: Con(74)
+        ty: Con(75)
     body:
       LetIn(n131):
         pat:
@@ -454,7 +453,7 @@ items:
     ret_ty: Con(4)
     params:
       - name: grid
-        ty: Con(74)
+        ty: Con(75)
     body:
       LetIn(n162):
         pat:
@@ -651,7 +650,7 @@ items:
     pub: false
     main: false
     caps: CapabilitySet(0)
-    ret_ty: Con(74)
+    ret_ty: Con(75)
     params:
       - name: r
         ty: Con(0)
@@ -685,7 +684,7 @@ items:
                       Local(n242): c
         body:
           Construct(n243):
-            ctor: Ctor(Record:Grid owner=74)
+            ctor: Ctor(Record:Grid owner=75)
             fields:
               rows:
                 Local(n244): r
@@ -718,14 +717,14 @@ items:
     pub: false
     main: false
     caps: CapabilitySet(0)
-    ret_ty: Con(74)
+    ret_ty: Con(75)
     params:
       - name: targetRow
         ty: Con(0)
       - name: targetCol
         ty: Con(0)
       - name: grid
-        ty: Con(74)
+        ty: Con(75)
     body:
       LetIn(n254):
         pat:
@@ -875,7 +874,7 @@ items:
     pub: false
     main: false
     caps: CapabilitySet(0)
-    ret_ty: Con(74)
+    ret_ty: Con(75)
     params:
       - name: rows
         ty: Con(0)
@@ -994,7 +993,7 @@ items:
                       - name: gen
                         ty: Con(0)
                       - name: grid
-                        ty: Con(74)
+                        ty: Con(75)
                     body:
                       Match(n345):
                         scrutinee:

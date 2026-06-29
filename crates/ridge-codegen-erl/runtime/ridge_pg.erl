@@ -1285,7 +1285,23 @@ decode_error(Payload) ->
             undefined -> <<"db.error">>;
             SqlState  -> <<"db.error.", SqlState/binary>>
         end,
-    #{code => Code, message => Message}.
+    add_error_detail(Fields, #{code => Code, message => Message}).
+
+%% Carry the constraint, table, and column a failing statement named, under the
+%% binary keys `error_field/2` reads. Only fields the server actually sent are
+%% added; absent ones fall back to "" at read time.
+add_error_detail(Fields, Map0) ->
+    Details = [{$n, <<"constraint">>}, {$t, <<"table">>}, {$c, <<"column">>}],
+    lists:foldl(
+        fun({FieldCode, Key}, Acc) ->
+            case maps:get(FieldCode, Fields, undefined) of
+                undefined -> Acc;
+                Value     -> Acc#{Key => Value}
+            end
+        end,
+        Map0,
+        Details
+    ).
 
 decode_error_fields(<<0>>, Acc) -> Acc;
 decode_error_fields(<<>>, Acc)  -> Acc;

@@ -39,6 +39,12 @@
 //! `UNION`/`UNION ALL`/`INTERSECT`/`EXCEPT` (each branch a subquery, the bind
 //! placeholders threaded across the statement), with an outer filter wrapping the
 //! combination in a subquery and nested unions nesting the parentheses.
+//!
+//! Typed errors run against the live database too: a duplicate insert into a named
+//! unique constraint classifies through `dbErrorKind` as a `UniqueViolation`, and
+//! `dbErrorConstraint` reads the constraint name; a NULL into a NOT NULL column
+//! classifies as a `NotNullViolation`, and `dbErrorColumn`/`dbErrorTable` read the
+//! column and its table — all out of the Postgres `ErrorResponse`.
 
 #![cfg(feature = "beam-runtime")]
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
@@ -50,7 +56,7 @@ use ridge_driver::{compile_workspace, CompileOptions, EmitArtefacts};
 /// The program source, with connection settings spliced in as sentinels so the
 /// Ridge record braces never collide with Rust string formatting.
 const SOURCE_TEMPLATE: &str = r#"
-import std.data (connect, connectWith, defaultPool, withPoolSize, withQueryTimeoutMs, withCheckoutTimeoutMs, Config, Postgres)
+import std.data (connect, connectWith, defaultPool, withPoolSize, withQueryTimeoutMs, withCheckoutTimeoutMs, Config, Postgres, dbErrorKind, dbErrorConstraint, dbErrorColumn, dbErrorTable, DbErrorKind, UniqueViolation, ForeignKeyViolation, NotNullViolation, CheckViolation, ConnectionError, DecodeError, Unsupported, QueryError)
 import std.repo as Repo
 import std.migrate as Migrate
 import std.migrate (SchemaOp)
@@ -240,6 +246,59 @@ fn fullSel (cs: List FullCombo) -> Text =
 
 fn pgConfig () -> Config =
     Config { host = "__PG_HOST__", port = __PG_PORT__, database = "__PG_DATABASE__", user = "__PG_USER__", password = "__PG_PASSWORD__", sslMode = "__PG_SSLMODE__" }
+
+-- Tag a classified error by its kind, so a probe can render the typed kind as text.
+fn tag (k: DbErrorKind) -> Text =
+    match k
+        UniqueViolation -> "unique"
+        ForeignKeyViolation -> "fk"
+        NotNullViolation -> "notnull"
+        CheckViolation -> "check"
+        ConnectionError -> "connection"
+        DecodeError -> "decode"
+        Unsupported -> "unsupported"
+        QueryError -> "query"
+
+-- A real unique violation against Postgres carries its constraint name in the
+-- ErrorResponse. Create a throwaway table with a named unique constraint, insert a
+-- duplicate, and classify the failure -> "unique:ridge_pg_uniq_id_key". Proves
+-- `dbErrorKind` reads SQLSTATE 23505 as `UniqueViolation` and `dbErrorConstraint`
+-- reads the constraint the backend named.
+pub fn db uniqueViolationKind () -> Text =
+    match connect (pgConfig ())
+        Err _ -> "connect-err"
+        Ok conn ->
+            match Raw.exec conn "DROP TABLE IF EXISTS ridge_pg_uniq" []
+                Err _ -> "drop-err"
+                Ok _ ->
+                    match Raw.exec conn "CREATE TABLE ridge_pg_uniq (id integer CONSTRAINT ridge_pg_uniq_id_key UNIQUE)" []
+                        Err _ -> "create-err"
+                        Ok _ ->
+                            match Raw.exec conn "INSERT INTO ridge_pg_uniq (id) VALUES (1)" []
+                                Err _ -> "insert1-err"
+                                Ok _ ->
+                                    match Raw.exec conn "INSERT INTO ridge_pg_uniq (id) VALUES (1)" []
+                                        Ok _ -> "unexpected-ok"
+                                        Err e -> Text.concat (tag (dbErrorKind e)) (Text.concat ":" (dbErrorConstraint e))
+
+-- A real not-null violation against Postgres carries the offending column and its
+-- table in the ErrorResponse. Insert a NULL into a NOT NULL column and classify the
+-- failure -> "notnull:val:ridge_pg_notnull". Proves `dbErrorKind` reads SQLSTATE
+-- 23502 as `NotNullViolation`, and `dbErrorColumn`/`dbErrorTable` read the column and
+-- table the backend named.
+pub fn db notNullViolationDetail () -> Text =
+    match connect (pgConfig ())
+        Err _ -> "connect-err"
+        Ok conn ->
+            match Raw.exec conn "DROP TABLE IF EXISTS ridge_pg_notnull" []
+                Err _ -> "drop-err"
+                Ok _ ->
+                    match Raw.exec conn "CREATE TABLE ridge_pg_notnull (val integer NOT NULL)" []
+                        Err _ -> "create-err"
+                        Ok _ ->
+                            match Raw.exec conn "INSERT INTO ridge_pg_notnull (val) VALUES (NULL)" []
+                                Ok _ -> "unexpected-ok"
+                                Err e -> Text.join ":" [tag (dbErrorKind e), dbErrorColumn e, dbErrorTable e]
 
 pub fn userRow (uid: Int) (uage: Int) (uname: Text) -> Map Text SqlValue =
     Map.fromList [("id", toSql uid), ("age", toSql uage), ("name", toSql uname)]
@@ -2203,6 +2262,8 @@ fn postgres_adapter_reads_a_real_table() {
          io:format(\"rawFirstName=~s~n\",[{module}:rawFirstName()]), \
          io:format(\"rawBumpCount=~w~n\",[{module}:rawBumpCount()]), \
          io:format(\"rawUserCount=~w~n\",[{module}:rawUserCount()]), \
+         io:format(\"uniqueViolationKind=~s~n\",[{module}:uniqueViolationKind()]), \
+         io:format(\"notNullViolationDetail=~s~n\",[{module}:notNullViolationDetail()]), \
          {pool_probe} \
          halt()."
     );
@@ -2644,6 +2705,14 @@ fn postgres_adapter_reads_a_real_table() {
         (
             "rawUserCount=3",
             "a raw scalar aliased to a record field decodes through Row (count(*) AS n)",
+        ),
+        (
+            "uniqueViolationKind=unique:ridge_pg_uniq_id_key",
+            "a real unique violation classifies to UniqueViolation (SQLSTATE 23505) and dbErrorConstraint reads the named constraint out of the ErrorResponse",
+        ),
+        (
+            "notNullViolationDetail=notnull:val:ridge_pg_notnull",
+            "a real not-null violation classifies to NotNullViolation (SQLSTATE 23502); dbErrorColumn reads the offending column and dbErrorTable its table out of the ErrorResponse",
         ),
         (
             "concurrent=true",

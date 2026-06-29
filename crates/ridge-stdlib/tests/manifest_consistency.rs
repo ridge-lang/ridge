@@ -124,6 +124,16 @@ const CONSTRUCTOR_EXPORTS: &[(&str, &str)] = &[
     ("std.query", "MutUpsert"),
     ("std.query", "MutUpdate"),
     ("std.query", "MutDelete"),
+    // The `DbError` variants: exported so a caller can match the kind of a typed
+    // database error, but surfaced by text extraction only through the type name.
+    ("std.data", "UniqueViolation"),
+    ("std.data", "ForeignKeyViolation"),
+    ("std.data", "NotNullViolation"),
+    ("std.data", "CheckViolation"),
+    ("std.data", "ConnectionError"),
+    ("std.data", "DecodeError"),
+    ("std.data", "Unsupported"),
+    ("std.data", "QueryError"),
 ];
 
 /// Return `true` if `(module, sym)` is a known exported union constructor that is
@@ -318,6 +328,17 @@ fn signature_shape_consistency() {
                         | "withConnectRetries"
                         | "withRetryBackoffMs"
                         | "withMaxQueueDepth"
+                )
+            {
+                continue;
+            }
+            // std.data's typed-error helpers are seeded via `reconciled_fn_scheme`
+            // (they read or return the reconciled `DbErrorKind`), not the
+            // `stdlib_signature` table this shape check covers.
+            if dotted == "std.data"
+                && matches!(
+                    *fn_name,
+                    "dbErrorKind" | "dbErrorConstraint" | "dbErrorColumn" | "dbErrorTable"
                 )
             {
                 continue;

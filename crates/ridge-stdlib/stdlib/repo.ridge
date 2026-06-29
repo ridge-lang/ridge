@@ -20,6 +20,7 @@
 -- annotation pins the row type and the body is captured as a query tree.
 
 import std.data as Db (selectRows, fetch)
+import std.result (traverse)
 import std.sql (SqlValue)
 import std.query (SortOrder, ascending, QueryPlan, planScan, planCombine, planRefine, planJoin, planProject, planAggregate, planGroup, planExists, planList, planInsert, planUpsert, planUpdate, planDelete)
 import std.map (fromList, toList)
@@ -35,15 +36,7 @@ pub fn repo (adapter: a) (table: Text) -> Repo e a =
 
 -- Decode a list of raw rows into entities, stopping at the first decode failure.
 fn decodeRows (rows: List (Map Text SqlValue)) -> Result (List e) Error where Row e =
-    match rows
-        []        -> Ok []
-        r :: rest ->
-            match fromRow r
-                Err err -> Err err
-                Ok x    ->
-                    match decodeRows rest
-                        Err err -> Err err
-                        Ok xs   -> Ok (x :: xs)
+    traverse fromRow rows
 
 -- The head of a row list, decoded; `None` when the list is empty. The single-
 -- result verbs (`find`, `get`) share it.

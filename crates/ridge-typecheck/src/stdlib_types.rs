@@ -1274,8 +1274,7 @@ fn reconciled_decls(b: &BuiltinTyCons, base: u32) -> Vec<TyConDecl> {
         // (stdlib/repo.ridge). The entity `e` (param 0) is phantom — it ties the key to
         // the record whose column the quoted accessor named, so a `List (Conflict e)`
         // cannot mix entities and must match the repository's `e`. Opaque, so user code
-        // builds one only through `onConflict`. Kept last in the block so its id is the
-        // next free slot.
+        // builds one only through `onConflict`.
         TyConDecl {
             id: TyConId(base + 23),
             name: "Conflict".to_string(),
@@ -1290,6 +1289,57 @@ fn reconciled_decls(b: &BuiltinTyCons, base: u32) -> Vec<TyConDecl> {
             def_span: None,
             def_module_raw: None,
             opaque: true,
+            is_anon: false,
+        },
+        // `std.data` — the typed kind of a database error. A plain nullary union
+        // declared in Ridge (stdlib/data.ridge); `dbErrorKind` classifies a raw
+        // `Error`'s code into one of these, so user code matches a failure's cause
+        // (a unique violation, a connection fault, …) rather than its code string.
+        // Kept last in the block so its id is the next free slot.
+        TyConDecl {
+            id: TyConId(base + 24),
+            name: "DbErrorKind".to_string(),
+            arity: 0,
+            kind: TyConKind::Union(UnionSchema {
+                params: vec![],
+                variants: vec![
+                    UnionVariant {
+                        name: "UniqueViolation".to_string(),
+                        kind: VariantPayload::Nullary,
+                    },
+                    UnionVariant {
+                        name: "ForeignKeyViolation".to_string(),
+                        kind: VariantPayload::Nullary,
+                    },
+                    UnionVariant {
+                        name: "NotNullViolation".to_string(),
+                        kind: VariantPayload::Nullary,
+                    },
+                    UnionVariant {
+                        name: "CheckViolation".to_string(),
+                        kind: VariantPayload::Nullary,
+                    },
+                    UnionVariant {
+                        name: "ConnectionError".to_string(),
+                        kind: VariantPayload::Nullary,
+                    },
+                    UnionVariant {
+                        name: "DecodeError".to_string(),
+                        kind: VariantPayload::Nullary,
+                    },
+                    UnionVariant {
+                        name: "Unsupported".to_string(),
+                        kind: VariantPayload::Nullary,
+                    },
+                    UnionVariant {
+                        name: "QueryError".to_string(),
+                        kind: VariantPayload::Nullary,
+                    },
+                ],
+            }),
+            def_span: None,
+            def_module_raw: None,
+            opaque: false,
             is_anon: false,
         },
     ]
@@ -1388,6 +1438,38 @@ pub(crate) fn reconciled_fn_scheme(
                 constraints: vec![],
             })
         }
+        // std.data `dbErrorKind : Error -> DbErrorKind` — classifies a raw storage
+        // error by its code into a typed kind. Its return type names the reconciled
+        // `DbErrorKind`, so the hand-curated signature table cannot express it.
+        ("std.data", "dbErrorKind") => {
+            let db_error_kind = *reconciled.get("DbErrorKind")?;
+            Some(Scheme {
+                vars: vec![],
+                cap_vars: vec![],
+                row_vars: vec![],
+                ty: Type::Fn {
+                    params: vec![Type::Con(b.error, vec![])],
+                    ret: Box::new(Type::Con(db_error_kind, vec![])),
+                    caps: CapRow::Concrete(CapabilitySet::PURE),
+                },
+                constraints: vec![],
+            })
+        }
+        // std.data `dbErrorConstraint`/`dbErrorColumn`/`dbErrorTable : Error -> Text`
+        // — read the constraint, column, or table a backend named on a raw error.
+        // Grouped with `dbErrorKind` as the typed-error reading of an `Error`; seeded
+        // here rather than the hand-curated table to keep that reading in one place.
+        ("std.data", "dbErrorConstraint" | "dbErrorColumn" | "dbErrorTable") => Some(Scheme {
+            vars: vec![],
+            cap_vars: vec![],
+            row_vars: vec![],
+            ty: Type::Fn {
+                params: vec![Type::Con(b.error, vec![])],
+                ret: Box::new(Type::Con(b.text, vec![])),
+                caps: CapRow::Concrete(CapabilitySet::PURE),
+            },
+            constraints: vec![],
+        }),
         // std.data `memAdapter : Unit -> MemAdapter` — opens a fresh in-memory
         // adapter. Requires the `db` capability (opening a store is the gated act;
         // the handle returned is the proof of access for the cap-free methods).

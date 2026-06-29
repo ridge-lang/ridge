@@ -996,6 +996,34 @@ pub fn stdlib_signature(module: StdlibModuleId, name: &str, b: &BuiltinTyCons) -
                 ),
             ))
         }
+        (STD_RESULT, "traverse") => {
+            // forall a b e c. (fn c (a -> Result b e)) -> List a -> Result (List b) e
+            Some(poly_cap(
+                vec![A, B_VAR, C_VAR],
+                vec![CAP_C],
+                ty_fn_pure(
+                    vec![
+                        ty_fn_cap_var(
+                            vec![Type::Var(A)],
+                            ty_result(b, Type::Var(B_VAR), Type::Var(C_VAR)),
+                            CAP_C,
+                        ),
+                        ty_list(b, Type::Var(A)),
+                    ],
+                    ty_result(b, ty_list(b, Type::Var(B_VAR)), Type::Var(C_VAR)),
+                ),
+            ))
+        }
+        (STD_RESULT, "sequence") => {
+            // forall a e. List (Result a e) -> Result (List a) e
+            Some(poly(
+                vec![A, B_VAR],
+                ty_fn_pure(
+                    vec![ty_list(b, ty_result(b, Type::Var(A), Type::Var(B_VAR)))],
+                    ty_result(b, ty_list(b, Type::Var(A)), Type::Var(B_VAR)),
+                ),
+            ))
+        }
         (STD_RESULT, "withDefault" | "unwrapOr") => {
             // forall a e. a -> Result a e -> a
             Some(poly(
@@ -1651,6 +1679,23 @@ mod tests {
                             | "withConnectRetries"
                             | "withRetryBackoffMs"
                             | "withMaxQueueDepth"
+                            // Typed database errors: the reconciled `DbErrorKind`
+                            // union, its variants, the classifier, and the accessors
+                            // are seeded via `reconciled_decls` / `reconciled_ctor_scheme`
+                            // / `reconciled_fn_scheme`, not this hand-curated table.
+                            | "DbErrorKind"
+                            | "UniqueViolation"
+                            | "ForeignKeyViolation"
+                            | "NotNullViolation"
+                            | "CheckViolation"
+                            | "ConnectionError"
+                            | "DecodeError"
+                            | "Unsupported"
+                            | "QueryError"
+                            | "dbErrorKind"
+                            | "dbErrorConstraint"
+                            | "dbErrorColumn"
+                            | "dbErrorTable"
                     )
                 {
                     continue;

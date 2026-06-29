@@ -46,8 +46,8 @@ pub type FkAction = NoAction | Restrict | Cascade | SetNull | SetDefault
 pub opaque type ForeignKey = { table: Text, column: Text, onDelete: FkAction, onUpdate: FkAction }
 
 -- Reference a target table's column with the default `NoAction` on both events.
-pub fn references (table: Text) (column: Text) -> ForeignKey =
-    ForeignKey { table = table, column = column, onDelete = NoAction, onUpdate = NoAction }
+pub fn references (table: Text) (col: Text) -> ForeignKey =
+    ForeignKey { table = table, column = col, onDelete = NoAction, onUpdate = NoAction }
 
 -- Set the on-delete action of a foreign-key reference.
 pub fn onDelete (action: FkAction) (fk: ForeignKey) -> ForeignKey =
@@ -69,12 +69,30 @@ pub opaque type ColumnSchema e = { name: Text, column: Text, ty: DbType, nullabl
 
 -- Build a column from explicit metadata: the record-field name, its SQL column
 -- name, its SQL type, and whether it admits NULL. The per-column steps refine it.
-pub fn mkColumn (name: Text) (column: Text) (ty: DbType) (nullable: Bool) -> ColumnSchema e =
-    ColumnSchema { name = name, column = column, ty = ty, nullable = nullable, generation = Supplied, primaryKey = false, unique = false, indexed = false, foreignKey = None, check = None }
+pub fn mkColumn (name: Text) (col: Text) (ty: DbType) (nullable: Bool) -> ColumnSchema e =
+    ColumnSchema { name = name, column = col, ty = ty, nullable = nullable, generation = Supplied, primaryKey = false, unique = false, indexed = false, foreignKey = None, check = None }
+
+-- Build a column from a quoted field accessor (`fn (u: User) -> u.email`) instead
+-- of a bare string — the typed alternative to `mkColumn`, reusing the same accessor
+-- capture `set` and `onConflict` read. The accessor pins the record field, so a
+-- misspelled field is a compile error and a rename retargets the column. The SQL
+-- column name defaults to the captured field name; `named` overrides it. The
+-- per-column steps refine the result exactly as they refine `mkColumn`'s.
+pub fn column (accessor: Quote (e -> v)) (ty: DbType) (nullable: Bool) -> ColumnSchema e =
+    let n = accessorColumn accessor
+    ColumnSchema { name = n, column = n, ty = ty, nullable = nullable, generation = Supplied, primaryKey = false, unique = false, indexed = false, foreignKey = None, check = None }
+
+-- The column a quoted accessor names — its tree is a `QCol`, the single-column
+-- capture `setterColumn`/`conflictColumn` read off their accessor. Anything else
+-- contributes no column name.
+fn accessorColumn (accessor: Quote (e -> v)) -> Text =
+    match accessor.tree
+        QCol c -> c
+        _      -> ""
 
 -- Override the SQL column name (the default is the snake-cased field).
-pub fn named (column: Text) (c: ColumnSchema e) -> ColumnSchema e =
-    ColumnSchema { name = c.name, column = column, ty = c.ty, nullable = c.nullable, generation = c.generation, primaryKey = c.primaryKey, unique = c.unique, indexed = c.indexed, foreignKey = c.foreignKey, check = c.check }
+pub fn named (col: Text) (c: ColumnSchema e) -> ColumnSchema e =
+    ColumnSchema { name = c.name, column = col, ty = c.ty, nullable = c.nullable, generation = c.generation, primaryKey = c.primaryKey, unique = c.unique, indexed = c.indexed, foreignKey = c.foreignKey, check = c.check }
 
 -- Override the SQL column type.
 pub fn columnType (ty: DbType) (c: ColumnSchema e) -> ColumnSchema e =
@@ -107,6 +125,15 @@ pub fn indexed (c: ColumnSchema e) -> ColumnSchema e =
 -- Point the column at another table's column as a foreign key.
 pub fn foreignKey (fk: ForeignKey) (c: ColumnSchema e) -> ColumnSchema e =
     ColumnSchema { name = c.name, column = c.column, ty = c.ty, nullable = c.nullable, generation = c.generation, primaryKey = c.primaryKey, unique = c.unique, indexed = c.indexed, foreignKey = Some fk, check = c.check }
+
+-- Attach a CHECK constraint to the column: a typed Ridge predicate over the entity
+-- (`fn (u: User) -> u.age >= 0`), captured as a `QExpr` and rendered to SQL by the
+-- same compiler the query `WHERE` uses — no stringly-typed SQL. The predicate ties
+-- to the column's entity `e`, so it can only read that entity's fields. The DDL
+-- renderer emits `CHECK (<predicate>)`; `DefaultRawSql` stays the hand-spelled
+-- escape hatch for a dialect-specific check.
+pub fn check (pred: Quote (e -> Bool)) (c: ColumnSchema e) -> ColumnSchema e =
+    ColumnSchema { name = c.name, column = c.column, ty = c.ty, nullable = c.nullable, generation = c.generation, primaryKey = c.primaryKey, unique = c.unique, indexed = c.indexed, foreignKey = c.foreignKey, check = Some pred.tree }
 
 -- ── Column read accessors ─────────────────────────────────────────────────────
 

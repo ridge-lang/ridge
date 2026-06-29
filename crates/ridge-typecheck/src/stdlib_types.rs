@@ -2073,6 +2073,10 @@ fn reconciled_mutation_plan_fn_scheme(
 /// monomorphic. All reference the reconciled `DbType`/`Generation`/`FkAction`/
 /// `ForeignKey`/`ColumnSchema`/`EntitySchema` types, so the hand-curated
 /// signature table (which only sees `BuiltinTyCons`) cannot express them.
+#[expect(
+    clippy::too_many_lines,
+    reason = "one scheme per schema-descriptor verb plus the shared type-builder closures; they read best kept together"
+)]
 fn reconciled_schema_fn_scheme(
     name: &str,
     reconciled: &FxHashMap<String, TyConId>,
@@ -2131,10 +2135,49 @@ fn reconciled_schema_fn_scheme(
         "onDelete" | "onUpdate" => mono(vec![fk_act_ty(), fk_ty()], fk_ty()),
         // Column constructor and refinement steps (∀e. … -> ColumnSchema e).
         "mkColumn" => poly1(vec![text(), text(), dbtype_ty(), boolean()], col_e()),
+        // column : ∀e v. Quote (e -> v) -> DbType -> Bool -> ColumnSchema e. Builds a
+        //   column from an accessor quote naming a single field of type `v` (phantom —
+        //   only the column name is kept), the same capture `onConflict`/`set` read.
+        "column" => {
+            let v = TyVid(1);
+            let accessor = Type::Con(
+                b.quote,
+                vec![Type::Fn {
+                    params: vec![Type::Var(e)],
+                    ret: Box::new(Type::Var(v)),
+                    caps: pure(),
+                }],
+            );
+            Some(Scheme {
+                vars: vec![e, v],
+                cap_vars: vec![],
+                row_vars: vec![],
+                ty: Type::Fn {
+                    params: vec![accessor, dbtype_ty(), boolean()],
+                    ret: Box::new(col_e()),
+                    caps: pure(),
+                },
+                constraints: vec![],
+            })
+        }
         "named" => poly1(vec![text(), col_e()], col_e()),
         "columnType" => poly1(vec![dbtype_ty(), col_e()], col_e()),
         "generated" => poly1(vec![gen_ty(), col_e()], col_e()),
         "foreignKey" => poly1(vec![fk_ty(), col_e()], col_e()),
+        // check : ∀e. Quote (e -> Bool) -> ColumnSchema e -> ColumnSchema e. Attaches a
+        //   CHECK constraint as a captured predicate over the column's own entity, so
+        //   the predicate can only read that entity's fields.
+        "check" => {
+            let pred = Type::Con(
+                b.quote,
+                vec![Type::Fn {
+                    params: vec![Type::Var(e)],
+                    ret: Box::new(boolean()),
+                    caps: pure(),
+                }],
+            );
+            poly1(vec![pred, col_e()], col_e())
+        }
         "nullable" | "required" | "primaryKey" | "unique" | "indexed" => {
             poly1(vec![col_e()], col_e())
         }

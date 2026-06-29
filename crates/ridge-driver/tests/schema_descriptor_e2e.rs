@@ -15,6 +15,12 @@
 //! `withColumn`'s list append, and the accessor reads (including `colGenerated`'s
 //! match on `Generation`).
 //!
+//! A second schema builds the same shape through quoted accessors — `column (fn (u:
+//! User) -> u.field)` instead of a string name — and a checked column (`check (fn (u:
+//! User) -> u.age >= 0)`). That proves the accessor capture lowers to a column
+//! reference and the predicate capture lowers to a stored `QExpr`, both round-tripping
+//! through the BEAM exactly as a `set`/`filter` quote does.
+//!
 //! Gated on `beam-runtime` (real OTP) plus a `which` guard for `erl`/`erlc`.
 
 #![cfg(feature = "beam-runtime")]
@@ -25,10 +31,11 @@ use std::process::Command;
 use ridge_driver::{compile_workspace, CompileOptions, EmitArtefacts};
 
 const SOURCE: &str = r#"
-import std.schema (DbType, DbBigInt, DbText, Generation, Identity, mkColumn, withColumn, schema, generated, primaryKey, unique, schemaName, schemaTable, generatedColumns)
+import std.schema (DbType, DbBigInt, DbText, DbInt, Generation, Identity, ColumnSchema, mkColumn, column, withColumn, schema, generated, primaryKey, unique, check, schemaName, schemaTable, schemaColumns, colColumn, colCheck, generatedColumns)
 import std.text as Text
 
--- A small two-column schema: an identity primary-key id and a unique email.
+-- A small two-column schema built from explicit strings: an identity primary-key
+-- id and a unique email.
 fn sampleSchema () =
     schema "User" "users"
       |> withColumn (mkColumn "id" "id" DbBigInt false |> generated Identity |> primaryKey)
@@ -43,6 +50,40 @@ pub fn schemaEntityName () -> Text = schemaName (sampleSchema ())
 -- The database-generated columns — only the identity `id`, since `email` is
 -- caller-supplied. Joined so the set is visible in the assertion.
 pub fn generatedCols () -> Text = Text.join "," (generatedColumns (sampleSchema ()))
+
+-- The domain record the typed schema below describes. Persistence-ignorant: the
+-- descriptor is its separate mapping companion.
+type User = { id: Int, email: Text, age: Int }
+
+-- The same shape built through quoted accessors rather than strings, plus a checked
+-- column: each `column` names a field with `fn (u: User) -> u.field` (the capture
+-- `set`/`onConflict` use), and `age` carries a CHECK predicate.
+fn typedSchema () =
+    schema "User" "users"
+      |> withColumn (column (fn (u: User) -> u.id) DbBigInt false |> generated Identity |> primaryKey)
+      |> withColumn (column (fn (u: User) -> u.email) DbText false |> unique)
+      |> withColumn (column (fn (u: User) -> u.age) DbInt false |> check (fn (u: User) -> u.age >= 0))
+
+-- The SQL column names the accessors captured, in declaration order — proves each
+-- `column` quote lowered to a column reference and ran.
+pub fn typedColumns () -> Text = Text.join "," (columnNames (schemaColumns (typedSchema ())))
+
+-- The columns carrying a CHECK constraint — proves the quoted predicate was
+-- captured, lowered to a `QExpr`, and stored on the column.
+pub fn checkedColumns () -> Text = Text.join "," (checkedNames (schemaColumns (typedSchema ())))
+
+fn columnNames (cols: List (ColumnSchema User)) -> List Text =
+    match cols
+        []        -> []
+        c :: rest -> colColumn c :: columnNames rest
+
+fn checkedNames (cols: List (ColumnSchema User)) -> List Text =
+    match cols
+        []        -> []
+        c :: rest ->
+            match colCheck c
+                Some _ -> colColumn c :: checkedNames rest
+                None   -> checkedNames rest
 "#;
 
 fn write_workspace(root: &std::path::Path) {
@@ -107,7 +148,8 @@ fn schema_descriptor_builds_and_reads_on_beam() {
 
     let expr = format!(
         "F=fun(N)->io:format(\"~s=~s~n\",[N,{module}:N()])end, \
-         lists:foreach(F,['schemaTableName','schemaEntityName','generatedCols']), halt()."
+         lists:foreach(F,['schemaTableName','schemaEntityName','generatedCols',\
+         'typedColumns','checkedColumns']), halt()."
     );
     let output = Command::new("erl")
         .arg("-noshell")
@@ -131,4 +173,6 @@ fn schema_descriptor_builds_and_reads_on_beam() {
     want("schemaTableName=users");
     want("schemaEntityName=User");
     want("generatedCols=id");
+    want("typedColumns=id,email,age");
+    want("checkedColumns=age");
 }

@@ -771,6 +771,7 @@ const BASELINE_EXPORTS: &[(&str, &[&str])] = &[
             // per-column refinement steps.
             "ColumnSchema",
             "mkColumn",
+            "column",
             "named",
             "columnType",
             "nullable",
@@ -780,6 +781,7 @@ const BASELINE_EXPORTS: &[(&str, &[&str])] = &[
             "unique",
             "indexed",
             "foreignKey",
+            "check",
             // The per-column read accessors.
             "colName",
             "colColumn",

@@ -27,6 +27,51 @@
 import std.sql (SqlValue, sqlValue)
 import std.query (QueryPlan, planToSql, planScan, MutationPlan, mutationToSql, mutationReturningToSql, planInsert, planUpdate, planDelete)
 import std.map (toList)
+import std.text (startsWith)
+
+-- ── Typed database errors ─────────────────────────────────────────────────────
+--
+-- The storage seam reports failure as a raw `Error`, the `code`/`message` pair a
+-- backend produces: Postgres maps its SQLSTATE to `db.error.<sqlstate>`, while the
+-- in-memory store and the codec layer use their own `db.*` and `sql.decode.*`
+-- codes. `dbErrorKind` reads that code into a typed `DbErrorKind`, so a caller
+-- matches the kind it cares about — recover from a `UniqueViolation`, retry a
+-- `ConnectionError` — rather than string-matching a code. The raw error keeps its
+-- `code` and `message` for a log line, and `dbErrorConstraint`/`dbErrorColumn` read
+-- the constraint or column a backend named when the failure refers to one.
+pub type DbErrorKind = UniqueViolation | ForeignKeyViolation | NotNullViolation | CheckViolation | ConnectionError | DecodeError | Unsupported | QueryError
+
+-- Read an extension field a backend attached to a raw error — the constraint,
+-- table, or column a Postgres `ErrorResponse` named — or empty when it reported
+-- none.
+@ffi("ridge_rt", "error_field", 2)
+fn errorField (key: Text) (e: Error) -> Text
+
+-- Sort a raw storage error into its typed kind. The Postgres SQLSTATE travels in
+-- the code as `db.error.<sqlstate>`, so the constraint classes match an exact code;
+-- a decode failure and the in-memory raw-SQL refusal carry their own prefixes; any
+-- other `db.error.*` is a general query error and any other `db.*` a connection
+-- fault.
+pub fn dbErrorKind (e: Error) -> DbErrorKind =
+    let code = e.code
+    if code == "db.error.23505" then UniqueViolation
+    else if code == "db.error.23503" then ForeignKeyViolation
+    else if code == "db.error.23502" then NotNullViolation
+    else if code == "db.error.23514" then CheckViolation
+    else if code == "raw.unsupported" then Unsupported
+    else if startsWith "sql.decode." code then DecodeError
+    else if startsWith "db.error." code then QueryError
+    else if startsWith "db." code then ConnectionError
+    else QueryError
+
+-- The constraint a unique, foreign-key, or check violation named, or empty when the
+-- backend reported none.
+pub fn dbErrorConstraint (e: Error) -> Text =
+    errorField "constraint" e
+
+-- The column a not-null violation named, or empty when the backend reported none.
+pub fn dbErrorColumn (e: Error) -> Text =
+    errorField "column" e
 
 -- The storage seam. `a` is the connection-handle type; each backend provides an
 -- instance. `appendRow` appends a row; `all` returns every row of a table;

@@ -35,6 +35,7 @@
     mem_ddl_drop_column/3, mem_ddl_index/5,
     mem_migrations_applied/1, mem_record_migration/2,
     mem_raw_query/3, mem_raw_exec/3,
+    error_field/2,
     mem_run_plan/2,
     mem_run_mutation/2,
     mem_run_mutation_returning/3,
@@ -1045,6 +1046,14 @@ mem_raw_exec(_Id, _Sql, _Params) -> {error, raw_unsupported_error()}.
 raw_unsupported_error() ->
     #{code => <<"raw.unsupported">>,
       message => <<"raw SQL needs a SQL backend; the in-memory adapter has none — run it against Postgres">>}.
+
+%% error_field/2 — read an extension field a backend attached to a raw error map,
+%% keyed by its binary name. Postgres records the constraint, table, and column a
+%% failing statement named (its ErrorResponse fields) under these keys; the
+%% in-memory and codec errors carry none, so the lookup answers an empty binary.
+error_field(Key, Err) when is_map(Err) ->
+    maps:get(Key, Err, <<"">>);
+error_field(_Key, _Err) -> <<"">>.
 
 %% The `name` text out of a tracking-table row.
 mem_migration_name(Row) ->

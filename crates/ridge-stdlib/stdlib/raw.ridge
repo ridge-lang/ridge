@@ -24,21 +24,14 @@
 -- either backend — only the raw call fails on the memory store.
 
 import std.data as Db
+import std.result (traverse)
 import std.sql (SqlValue)
 
 -- Decode a list of raw rows into entities, stopping at the first decode failure —
 -- the same row-by-row decode the repository runs, kept module-local so std.raw
 -- does not reach into std.repo's internals.
 fn decodeRows (rows: List (Map Text SqlValue)) -> Result (List e) Error where Row e =
-    match rows
-        []        -> Ok []
-        r :: rest ->
-            match fromRow r
-                Err err -> Err err
-                Ok x    ->
-                    match decodeRows rest
-                        Err err -> Err err
-                        Ok xs   -> Ok (x :: xs)
+    traverse fromRow rows
 
 -- The head of a raw-row list, decoded; `None` when the query returned nothing.
 fn firstDecoded (rows: List (Map Text SqlValue)) -> Result (Option e) Error where Row e =

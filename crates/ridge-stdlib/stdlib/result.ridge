@@ -22,6 +22,34 @@ pub fn flatMap (f: fn a -> Result b e) (r: Result a e) -> Result b e =
         Ok v  -> f v
         Err e -> Err e
 
+-- Run a Result-returning function over each element, collecting the Ok values in
+-- order; stop and return the first Err. The fallible dual of List.map: it threads
+-- the error outward, so a row-by-row decode reads as one call instead of a hand-
+-- folded match. `decodeRows = traverse fromRow rows`.
+pub fn traverse (f: fn a -> Result b e) (xs: List a) -> Result (List b) e =
+    match xs
+        []        -> Ok []
+        x :: rest ->
+            match f x
+                Err e -> Err e
+                Ok y  ->
+                    match traverse f rest
+                        Err e  -> Err e
+                        Ok ys  -> Ok (y :: ys)
+
+-- Turn a list of Results into a Result of a list: Ok with every value when all are
+-- Ok, otherwise the first Err. The identity case of traverse.
+pub fn sequence (xs: List (Result a e)) -> Result (List a) e =
+    match xs
+        []        -> Ok []
+        r :: rest ->
+            match r
+                Err e -> Err e
+                Ok x  ->
+                    match sequence rest
+                        Err e  -> Err e
+                        Ok xs2 -> Ok (x :: xs2)
+
 -- Return the Ok value, or the default if Err.
 pub fn withDefault (d: a) (r: Result a e) -> a =
     match r

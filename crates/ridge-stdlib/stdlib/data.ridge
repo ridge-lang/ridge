@@ -37,8 +37,9 @@ import std.text (startsWith)
 -- codes. `dbErrorKind` reads that code into a typed `DbErrorKind`, so a caller
 -- matches the kind it cares about — recover from a `UniqueViolation`, retry a
 -- `ConnectionError` — rather than string-matching a code. The raw error keeps its
--- `code` and `message` for a log line, and `dbErrorConstraint`/`dbErrorColumn` read
--- the constraint or column a backend named when the failure refers to one.
+-- `code` and `message` for a log line, and `dbErrorConstraint`/`dbErrorColumn`/
+-- `dbErrorTable` read the constraint, column, or table a backend named when the
+-- failure refers to one.
 pub type DbErrorKind = UniqueViolation | ForeignKeyViolation | NotNullViolation | CheckViolation | ConnectionError | DecodeError | Unsupported | QueryError
 
 -- Read an extension field a backend attached to a raw error — the constraint,
@@ -72,6 +73,11 @@ pub fn dbErrorConstraint (e: Error) -> Text =
 -- The column a not-null violation named, or empty when the backend reported none.
 pub fn dbErrorColumn (e: Error) -> Text =
     errorField "column" e
+
+-- The table a constraint or not-null violation named, or empty when the backend
+-- reported none.
+pub fn dbErrorTable (e: Error) -> Text =
+    errorField "table" e
 
 -- The storage seam. `a` is the connection-handle type; each backend provides an
 -- instance. `appendRow` appends a row; `all` returns every row of a table;

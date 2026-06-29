@@ -338,7 +338,7 @@ fn signature_shape_consistency() {
             if dotted == "std.data"
                 && matches!(
                     *fn_name,
-                    "dbErrorKind" | "dbErrorConstraint" | "dbErrorColumn"
+                    "dbErrorKind" | "dbErrorConstraint" | "dbErrorColumn" | "dbErrorTable"
                 )
             {
                 continue;

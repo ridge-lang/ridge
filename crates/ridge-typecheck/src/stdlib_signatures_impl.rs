@@ -1695,6 +1695,7 @@ mod tests {
                             | "dbErrorKind"
                             | "dbErrorConstraint"
                             | "dbErrorColumn"
+                            | "dbErrorTable"
                     )
                 {
                     continue;

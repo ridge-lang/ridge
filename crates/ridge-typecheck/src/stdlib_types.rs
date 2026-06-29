@@ -1455,11 +1455,11 @@ pub(crate) fn reconciled_fn_scheme(
                 constraints: vec![],
             })
         }
-        // std.data `dbErrorConstraint`/`dbErrorColumn : Error -> Text` — read the
-        // constraint or column a backend named on a raw error. Grouped with
-        // `dbErrorKind` as the typed-error reading of an `Error`; seeded here rather
-        // than the hand-curated table to keep that reading in one place.
-        ("std.data", "dbErrorConstraint" | "dbErrorColumn") => Some(Scheme {
+        // std.data `dbErrorConstraint`/`dbErrorColumn`/`dbErrorTable : Error -> Text`
+        // — read the constraint, column, or table a backend named on a raw error.
+        // Grouped with `dbErrorKind` as the typed-error reading of an `Error`; seeded
+        // here rather than the hand-curated table to keep that reading in one place.
+        ("std.data", "dbErrorConstraint" | "dbErrorColumn" | "dbErrorTable") => Some(Scheme {
             vars: vec![],
             cap_vars: vec![],
             row_vars: vec![],

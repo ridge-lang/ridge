@@ -471,6 +471,7 @@ const BASELINE_EXPORTS: &[(&str, &[&str])] = &[
             "dbErrorKind",
             "dbErrorConstraint",
             "dbErrorColumn",
+            "dbErrorTable",
             // The storage seam class and its methods, plus the in-memory adapter
             // (the opaque handle type and its `db`-gated constructor). The
             // Postgres adapter (later) implements the same `Adapter` class.

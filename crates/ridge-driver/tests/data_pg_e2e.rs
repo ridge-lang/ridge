@@ -43,8 +43,8 @@
 //! Typed errors run against the live database too: a duplicate insert into a named
 //! unique constraint classifies through `dbErrorKind` as a `UniqueViolation`, and
 //! `dbErrorConstraint` reads the constraint name; a NULL into a NOT NULL column
-//! classifies as a `NotNullViolation`, and `dbErrorColumn` reads the column — both
-//! out of the Postgres `ErrorResponse`.
+//! classifies as a `NotNullViolation`, and `dbErrorColumn`/`dbErrorTable` read the
+//! column and its table — all out of the Postgres `ErrorResponse`.
 
 #![cfg(feature = "beam-runtime")]
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
@@ -56,7 +56,7 @@ use ridge_driver::{compile_workspace, CompileOptions, EmitArtefacts};
 /// The program source, with connection settings spliced in as sentinels so the
 /// Ridge record braces never collide with Rust string formatting.
 const SOURCE_TEMPLATE: &str = r#"
-import std.data (connect, connectWith, defaultPool, withPoolSize, withQueryTimeoutMs, withCheckoutTimeoutMs, Config, Postgres, dbErrorKind, dbErrorConstraint, dbErrorColumn, DbErrorKind, UniqueViolation, ForeignKeyViolation, NotNullViolation, CheckViolation, ConnectionError, DecodeError, Unsupported, QueryError)
+import std.data (connect, connectWith, defaultPool, withPoolSize, withQueryTimeoutMs, withCheckoutTimeoutMs, Config, Postgres, dbErrorKind, dbErrorConstraint, dbErrorColumn, dbErrorTable, DbErrorKind, UniqueViolation, ForeignKeyViolation, NotNullViolation, CheckViolation, ConnectionError, DecodeError, Unsupported, QueryError)
 import std.repo as Repo
 import std.migrate as Migrate
 import std.migrate (SchemaOp)
@@ -281,11 +281,12 @@ pub fn db uniqueViolationKind () -> Text =
                                         Ok _ -> "unexpected-ok"
                                         Err e -> Text.concat (tag (dbErrorKind e)) (Text.concat ":" (dbErrorConstraint e))
 
--- A real not-null violation against Postgres carries the offending column in the
--- ErrorResponse. Insert a NULL into a NOT NULL column and classify the failure
--- -> "notnull:val". Proves `dbErrorKind` reads SQLSTATE 23502 as `NotNullViolation`
--- and `dbErrorColumn` reads the column the backend named.
-pub fn db notNullViolationColumn () -> Text =
+-- A real not-null violation against Postgres carries the offending column and its
+-- table in the ErrorResponse. Insert a NULL into a NOT NULL column and classify the
+-- failure -> "notnull:val:ridge_pg_notnull". Proves `dbErrorKind` reads SQLSTATE
+-- 23502 as `NotNullViolation`, and `dbErrorColumn`/`dbErrorTable` read the column and
+-- table the backend named.
+pub fn db notNullViolationDetail () -> Text =
     match connect (pgConfig ())
         Err _ -> "connect-err"
         Ok conn ->
@@ -297,7 +298,7 @@ pub fn db notNullViolationColumn () -> Text =
                         Ok _ ->
                             match Raw.exec conn "INSERT INTO ridge_pg_notnull (val) VALUES (NULL)" []
                                 Ok _ -> "unexpected-ok"
-                                Err e -> Text.concat (tag (dbErrorKind e)) (Text.concat ":" (dbErrorColumn e))
+                                Err e -> Text.join ":" [tag (dbErrorKind e), dbErrorColumn e, dbErrorTable e]
 
 pub fn userRow (uid: Int) (uage: Int) (uname: Text) -> Map Text SqlValue =
     Map.fromList [("id", toSql uid), ("age", toSql uage), ("name", toSql uname)]
@@ -2262,7 +2263,7 @@ fn postgres_adapter_reads_a_real_table() {
          io:format(\"rawBumpCount=~w~n\",[{module}:rawBumpCount()]), \
          io:format(\"rawUserCount=~w~n\",[{module}:rawUserCount()]), \
          io:format(\"uniqueViolationKind=~s~n\",[{module}:uniqueViolationKind()]), \
-         io:format(\"notNullViolationColumn=~s~n\",[{module}:notNullViolationColumn()]), \
+         io:format(\"notNullViolationDetail=~s~n\",[{module}:notNullViolationDetail()]), \
          {pool_probe} \
          halt()."
     );
@@ -2710,8 +2711,8 @@ fn postgres_adapter_reads_a_real_table() {
             "a real unique violation classifies to UniqueViolation (SQLSTATE 23505) and dbErrorConstraint reads the named constraint out of the ErrorResponse",
         ),
         (
-            "notNullViolationColumn=notnull:val",
-            "a real not-null violation classifies to NotNullViolation (SQLSTATE 23502) and dbErrorColumn reads the offending column out of the ErrorResponse",
+            "notNullViolationDetail=notnull:val:ridge_pg_notnull",
+            "a real not-null violation classifies to NotNullViolation (SQLSTATE 23502); dbErrorColumn reads the offending column and dbErrorTable its table out of the ErrorResponse",
         ),
         (
             "concurrent=true",

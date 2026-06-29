@@ -401,16 +401,24 @@ pub(crate) fn lower_expr_in_scope(
         IrExpr::Lit { value, span, .. } => lower_lit(value, *span).map(CErlExpr::Lit),
 
         // §4.2 — Local variable reference.
-        // If the name is registered in fn_arity (an inner recursive fn bound by
-        // letrec), emit LocalFnRef so Core Erlang resolves it correctly.
-        // Otherwise, if the name is in the scope (a `var`-bound local), resolve
-        // to the current SSA-suffixed variable; otherwise use the bare mangled name.
+        // A bare local resolves to a `LocalFnRef` ONLY when it names an active
+        // inner recursive fn — a `letrec` binding registered for the duration of
+        // its own lowering (see the `LetRec` path below and the actor variants in
+        // `init.rs`, which add the name to `letrec_locals`). Gating on
+        // `letrec_locals` rather than `fn_arity` alone is load-bearing: `fn_arity`
+        // is also seeded with every top-level module fn, so a parameter / `let` /
+        // `var` that happens to share a name with a top-level fn would otherwise be
+        // miscompiled into a reference to that fn (a curried `#Fun<...>`) instead of
+        // the bound variable. Otherwise, if the name is a `var`-bound local resolve
+        // to its current SSA-suffixed variable; else use the bare mangled name.
         IrExpr::Local { name, span, .. } => {
-            if let Some(&arity) = scope.fn_arity.get(name.as_str()) {
-                return Ok(CErlExpr::LocalFnRef {
-                    name: CErlAtom(name.clone()),
-                    arity,
-                });
+            if scope.letrec_locals.contains(name.as_str()) {
+                if let Some(&arity) = scope.fn_arity.get(name.as_str()) {
+                    return Ok(CErlExpr::LocalFnRef {
+                        name: CErlAtom(name.clone()),
+                        arity,
+                    });
+                }
             }
             let _ = span;
             // `__state` is the synthetic base local emitted by `lower_ident` for
@@ -497,15 +505,19 @@ pub(crate) fn lower_expr_in_scope(
                         // 1. Determine arity from the lambda params.
                         #[allow(clippy::cast_possible_truncation)]
                         let arity = lambda_params.len() as u32;
-                        // 2. Register the inner fn in fn_arity so that
-                        //    references to it inside the lambda body and in
-                        //    the letrec body emit LocalFnRef (not Var).
-                        //    fn_arity is Arc-shared; make_mut clones if needed.
+                        // 2. Register the inner fn in fn_arity (for arity) and
+                        //    letrec_locals (the active-local-fn marker the
+                        //    `IrExpr::Local` arm gates on) so that references to it
+                        //    inside the lambda body and in the letrec body emit
+                        //    LocalFnRef (not Var). Both are Arc-shared; make_mut
+                        //    clones if needed.
                         std::sync::Arc::make_mut(&mut scope.fn_arity).insert(name.clone(), arity);
+                        std::sync::Arc::make_mut(&mut scope.letrec_locals).insert(name.clone());
                         let lowered_lambda = lower_expr_in_scope(value, scope)?;
                         let lowered_body = lower_expr_in_scope(body, scope)?;
-                        // Remove from fn_arity to avoid leaking into outer scope.
+                        // Remove from both to avoid leaking into the outer scope.
                         std::sync::Arc::make_mut(&mut scope.fn_arity).remove(name.as_str());
+                        std::sync::Arc::make_mut(&mut scope.letrec_locals).remove(name.as_str());
                         return Ok(CErlExpr::LetRec {
                             defs: vec![(CErlAtom(name.clone()), arity, lowered_lambda)],
                             body: Box::new(lowered_body),

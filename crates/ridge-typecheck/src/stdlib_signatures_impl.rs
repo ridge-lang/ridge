@@ -57,7 +57,9 @@ const STD_CRYPTO: StdlibModuleId = StdlibModuleId(19);
 // std.sql is module 20; its codec schemes (SqlType/SqlValue) are seeded
 // separately, but the plain `sql`/`sqlValue` helpers are hand-curated below.
 const STD_SQL: StdlibModuleId = StdlibModuleId(20);
-const STD_QUERY: StdlibModuleId = StdlibModuleId(21);
+// std.schema (id 21) is fully reconciled — its schemes come from
+// `reconciled_ctor_scheme` / `reconciled_fn_scheme`, so it has no constant here.
+const STD_QUERY: StdlibModuleId = StdlibModuleId(22);
 
 // ── Type-building helpers ─────────────────────────────────────────────────────
 //
@@ -1718,6 +1720,13 @@ mod tests {
                 // (and `Row e` for the decoding ones), so they are seeded via
                 // `reconciled_fn_scheme`, not this hand-curated table.
                 if module.name == "std.raw" {
+                    continue;
+                }
+                // std.schema: its descriptor types, their constructors, and the
+                // builder/accessor functions are seeded from the reconciled arena
+                // block (`reconciled_ctor_scheme` / `reconciled_fn_scheme`), not this
+                // hand-curated table.
+                if module.name == "std.schema" {
                     continue;
                 }
                 let result = stdlib_signature(module.id, name, &b);

@@ -57,6 +57,7 @@ const MODULE_ORDER: &[&str] = &[
     "std.net.http",
     "std.crypto",
     "std.sql",
+    "std.schema",
     "std.query",
     "std.data",
     "std.repo",
@@ -733,6 +734,75 @@ const BASELINE_EXPORTS: &[(&str, &[&str])] = &[
         ],
     ),
     (
+        "std.schema",
+        &[
+            // The dialect-neutral column vocabulary: the SQL type, how a column's
+            // value originates, and the foreign-key referential actions.
+            "DbType",
+            "DbBoolean",
+            "DbInt",
+            "DbBigInt",
+            "DbFloat",
+            "DbDecimal",
+            "DbText",
+            "DbVarchar",
+            "DbUuid",
+            "DbTimestamp",
+            "DbTimestampTz",
+            "DbRaw",
+            "Generation",
+            "Supplied",
+            "Identity",
+            "DefaultNow",
+            "DefaultLit",
+            "DefaultRawSql",
+            "FkAction",
+            "NoAction",
+            "Restrict",
+            "Cascade",
+            "SetNull",
+            "SetDefault",
+            // The opaque foreign-key reference and its builders.
+            "ForeignKey",
+            "references",
+            "onDelete",
+            "onUpdate",
+            // The opaque per-column schema, its low-level constructor, and the
+            // per-column refinement steps.
+            "ColumnSchema",
+            "mkColumn",
+            "named",
+            "columnType",
+            "nullable",
+            "required",
+            "generated",
+            "primaryKey",
+            "unique",
+            "indexed",
+            "foreignKey",
+            // The per-column read accessors.
+            "colName",
+            "colColumn",
+            "colType",
+            "colNullable",
+            "colGeneration",
+            "colPrimaryKey",
+            "colUnique",
+            "colIndexed",
+            "colForeignKey",
+            "colCheck",
+            "colGenerated",
+            // The opaque entity schema, its builder, and its read accessors.
+            "EntitySchema",
+            "schema",
+            "withColumn",
+            "schemaName",
+            "schemaTable",
+            "schemaColumns",
+            "generatedColumns",
+        ],
+    ),
+    (
         "std.migrate",
         &[
             // The schema-DSL: the opaque `Column` and its typed declarators and
@@ -801,6 +871,10 @@ const BASELINE_OPAQUE: &[(&str, &[&str])] = &[
         ],
     ),
     ("std.migrate", &["Column"]),
+    (
+        "std.schema",
+        &["ForeignKey", "ColumnSchema", "EntitySchema"],
+    ),
 ];
 
 fn main() {

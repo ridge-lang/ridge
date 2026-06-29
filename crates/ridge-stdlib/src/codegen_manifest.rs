@@ -77,6 +77,7 @@ pub const STDLIB_MODULE_ORDER: &[&str] = &[
     // Tier 5 — security + data
     "std.crypto",
     "std.sql",
+    "std.schema",
     "std.query",
     "std.data",
     "std.repo",

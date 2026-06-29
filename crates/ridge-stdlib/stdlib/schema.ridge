@@ -1,0 +1,172 @@
+-- std.schema — the typed schema descriptor for a data entity.
+--
+-- A schema descriptor names, for one entity, the SQL table and the per-column
+-- mapping the data layer needs beyond what the row codec carries: the SQL column
+-- type, nullability, how each column's value originates (caller-supplied vs
+-- database-generated), and the table constraints (primary key, uniqueness,
+-- indexes, foreign keys, checks). It is the persistence-side companion to the
+-- domain record, kept separate so the entity stays a clean aggregate root —
+-- `deriving (Row)` handles values, this handles mapping.
+--
+-- A column is built from explicit metadata through `mkColumn` and refined with
+-- pipe-friendly steps, then collected into the entity schema with `withColumn`:
+--
+--   schema "User" "users"
+--     |> withColumn (mkColumn "id" "id" DbBigInt false |> generated Identity |> primaryKey)
+--     |> withColumn (mkColumn "email" "email" DbText false |> unique)
+--
+-- The dialect-neutral vocabulary below (`DbType`, `Generation`, `FkAction`) is
+-- turned into a backend's `CREATE TABLE` by the DDL renderer.
+
+import std.sql (SqlValue)
+
+-- ── Column vocabulary ─────────────────────────────────────────────────────────
+
+-- The SQL column type a field maps to. The Ridge field type drives a default
+-- (an `Int` field maps to `DbBigInt`, `Text` to `DbText`, and so on); a
+-- `columnType` step overrides it per column. `DbRaw` is the escape hatch for a
+-- dialect-specific type spelled by hand.
+pub type DbType = DbBoolean | DbInt | DbBigInt | DbFloat | DbDecimal Int Int | DbText | DbVarchar Int | DbUuid | DbTimestamp | DbTimestampTz | DbRaw Text
+
+-- How a column's value originates. `Supplied` (the default) means the caller
+-- provides the value on insert. The others mark the column database-generated or
+-- default-filled: a serial/identity column, a `DEFAULT now()` timestamp, a
+-- literal default, or a raw default expression. A non-`Supplied` column is the
+-- one the insert path later learns to omit (so the database fills it) and the
+-- one the compile-time insert shape later drops (so it cannot be set by hand).
+pub type Generation = Supplied | Identity | DefaultNow | DefaultLit SqlValue | DefaultRawSql Text
+
+-- The referential action a foreign key takes when its target row is deleted or
+-- updated, mirroring SQL's `ON DELETE` / `ON UPDATE`.
+pub type FkAction = NoAction | Restrict | Cascade | SetNull | SetDefault
+
+-- A foreign-key reference: the target table and column, and the on-delete /
+-- on-update actions. Opaque — built through `references` and refined with
+-- `onDelete` / `onUpdate`.
+pub opaque type ForeignKey = { table: Text, column: Text, onDelete: FkAction, onUpdate: FkAction }
+
+-- Reference a target table's column with the default `NoAction` on both events.
+pub fn references (table: Text) (column: Text) -> ForeignKey =
+    ForeignKey { table = table, column = column, onDelete = NoAction, onUpdate = NoAction }
+
+-- Set the on-delete action of a foreign-key reference.
+pub fn onDelete (action: FkAction) (fk: ForeignKey) -> ForeignKey =
+    ForeignKey { table = fk.table, column = fk.column, onDelete = action, onUpdate = fk.onUpdate }
+
+-- Set the on-update action of a foreign-key reference.
+pub fn onUpdate (action: FkAction) (fk: ForeignKey) -> ForeignKey =
+    ForeignKey { table = fk.table, column = fk.column, onDelete = fk.onDelete, onUpdate = action }
+
+-- ── Column schema ─────────────────────────────────────────────────────────────
+
+-- One column's schema: its record-field name, its SQL column name, the SQL type,
+-- nullability, how it is generated, and its constraints. The phantom `e` ties a
+-- column to the entity whose field it describes, so columns of different entities
+-- cannot mix. Opaque — a value is built through `mkColumn` and refined with the
+-- per-column steps below, so the defaults (a supplied, non-null, unconstrained
+-- column) hold until a step changes them.
+pub opaque type ColumnSchema e = { name: Text, column: Text, ty: DbType, nullable: Bool, generation: Generation, primaryKey: Bool, unique: Bool, indexed: Bool, foreignKey: Option ForeignKey, check: Option QExpr }
+
+-- Build a column from explicit metadata: the record-field name, its SQL column
+-- name, its SQL type, and whether it admits NULL. The per-column steps refine it.
+pub fn mkColumn (name: Text) (column: Text) (ty: DbType) (nullable: Bool) -> ColumnSchema e =
+    ColumnSchema { name = name, column = column, ty = ty, nullable = nullable, generation = Supplied, primaryKey = false, unique = false, indexed = false, foreignKey = None, check = None }
+
+-- Override the SQL column name (the default is the snake-cased field).
+pub fn named (column: Text) (c: ColumnSchema e) -> ColumnSchema e =
+    ColumnSchema { name = c.name, column = column, ty = c.ty, nullable = c.nullable, generation = c.generation, primaryKey = c.primaryKey, unique = c.unique, indexed = c.indexed, foreignKey = c.foreignKey, check = c.check }
+
+-- Override the SQL column type.
+pub fn columnType (ty: DbType) (c: ColumnSchema e) -> ColumnSchema e =
+    ColumnSchema { name = c.name, column = c.column, ty = ty, nullable = c.nullable, generation = c.generation, primaryKey = c.primaryKey, unique = c.unique, indexed = c.indexed, foreignKey = c.foreignKey, check = c.check }
+
+-- Let the column admit SQL NULL — the schema dual of an `Option` field.
+pub fn nullable (c: ColumnSchema e) -> ColumnSchema e =
+    ColumnSchema { name = c.name, column = c.column, ty = c.ty, nullable = true, generation = c.generation, primaryKey = c.primaryKey, unique = c.unique, indexed = c.indexed, foreignKey = c.foreignKey, check = c.check }
+
+-- Make the column non-null (the default; the inverse of `nullable`).
+pub fn required (c: ColumnSchema e) -> ColumnSchema e =
+    ColumnSchema { name = c.name, column = c.column, ty = c.ty, nullable = false, generation = c.generation, primaryKey = c.primaryKey, unique = c.unique, indexed = c.indexed, foreignKey = c.foreignKey, check = c.check }
+
+-- Set how the column's value originates (identity, default, raw default).
+pub fn generated (g: Generation) (c: ColumnSchema e) -> ColumnSchema e =
+    ColumnSchema { name = c.name, column = c.column, ty = c.ty, nullable = c.nullable, generation = g, primaryKey = c.primaryKey, unique = c.unique, indexed = c.indexed, foreignKey = c.foreignKey, check = c.check }
+
+-- Make the column the table's primary key.
+pub fn primaryKey (c: ColumnSchema e) -> ColumnSchema e =
+    ColumnSchema { name = c.name, column = c.column, ty = c.ty, nullable = c.nullable, generation = c.generation, primaryKey = true, unique = c.unique, indexed = c.indexed, foreignKey = c.foreignKey, check = c.check }
+
+-- Give the column a uniqueness constraint.
+pub fn unique (c: ColumnSchema e) -> ColumnSchema e =
+    ColumnSchema { name = c.name, column = c.column, ty = c.ty, nullable = c.nullable, generation = c.generation, primaryKey = c.primaryKey, unique = true, indexed = c.indexed, foreignKey = c.foreignKey, check = c.check }
+
+-- Give the column a (non-unique) index.
+pub fn indexed (c: ColumnSchema e) -> ColumnSchema e =
+    ColumnSchema { name = c.name, column = c.column, ty = c.ty, nullable = c.nullable, generation = c.generation, primaryKey = c.primaryKey, unique = c.unique, indexed = true, foreignKey = c.foreignKey, check = c.check }
+
+-- Point the column at another table's column as a foreign key.
+pub fn foreignKey (fk: ForeignKey) (c: ColumnSchema e) -> ColumnSchema e =
+    ColumnSchema { name = c.name, column = c.column, ty = c.ty, nullable = c.nullable, generation = c.generation, primaryKey = c.primaryKey, unique = c.unique, indexed = c.indexed, foreignKey = Some fk, check = c.check }
+
+-- ── Column read accessors ─────────────────────────────────────────────────────
+
+pub fn colName       (c: ColumnSchema e) -> Text              = c.name
+pub fn colColumn     (c: ColumnSchema e) -> Text              = c.column
+pub fn colType       (c: ColumnSchema e) -> DbType            = c.ty
+pub fn colNullable   (c: ColumnSchema e) -> Bool              = c.nullable
+pub fn colGeneration (c: ColumnSchema e) -> Generation        = c.generation
+pub fn colPrimaryKey (c: ColumnSchema e) -> Bool              = c.primaryKey
+pub fn colUnique     (c: ColumnSchema e) -> Bool              = c.unique
+pub fn colIndexed    (c: ColumnSchema e) -> Bool              = c.indexed
+pub fn colForeignKey (c: ColumnSchema e) -> Option ForeignKey = c.foreignKey
+pub fn colCheck      (c: ColumnSchema e) -> Option QExpr      = c.check
+
+-- Whether the column's value is database-generated rather than caller-supplied —
+-- the test the insert path uses to omit a column and the insert shape uses to
+-- drop it. Every non-`Supplied` generation counts as generated.
+pub fn colGenerated (c: ColumnSchema e) -> Bool =
+    match c.generation
+        Supplied -> false
+        _        -> true
+
+-- ── Entity schema ─────────────────────────────────────────────────────────────
+
+-- An entity's full schema: its name, its SQL table, and its columns in
+-- declaration order. The phantom `e` ties it to the entity. Opaque — produced by
+-- the convention instance `deriving (Schema)` synthesises, or built by hand
+-- through `schema` and `withColumn`, and read back through the accessors.
+pub opaque type EntitySchema e = { name: Text, table: Text, columns: List (ColumnSchema e) }
+
+-- Start an empty schema for entity `e`: its name and SQL table, no columns yet.
+-- Pipe `withColumn` steps onto it.
+pub fn schema (name: Text) (table: Text) -> EntitySchema e =
+    EntitySchema { name = name, table = table, columns = [] }
+
+-- Append a fully-built column to a schema.
+pub fn withColumn (c: ColumnSchema e) (s: EntitySchema e) -> EntitySchema e =
+    EntitySchema { name = s.name, table = s.table, columns = appendColumn s.columns c }
+
+-- ── Entity read accessors ─────────────────────────────────────────────────────
+
+pub fn schemaName (s: EntitySchema e) -> Text = s.name
+pub fn schemaTable (s: EntitySchema e) -> Text = s.table
+pub fn schemaColumns (s: EntitySchema e) -> List (ColumnSchema e) = s.columns
+
+-- The SQL column names whose value is database-generated — the omit-on-insert
+-- set the write path reads. Order follows declaration order.
+pub fn generatedColumns (s: EntitySchema e) -> List Text =
+    generatedNames s.columns
+
+-- ── Internal list helpers ─────────────────────────────────────────────────────
+
+fn appendColumn (cols: List (ColumnSchema e)) (c: ColumnSchema e) -> List (ColumnSchema e) =
+    match cols
+        []        -> [c]
+        x :: rest -> x :: appendColumn rest c
+
+fn generatedNames (cols: List (ColumnSchema e)) -> List Text =
+    match cols
+        []        -> []
+        c :: rest ->
+            if colGenerated c then c.column :: generatedNames rest
+            else generatedNames rest

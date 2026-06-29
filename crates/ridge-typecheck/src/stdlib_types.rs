@@ -1342,6 +1342,272 @@ fn reconciled_decls(b: &BuiltinTyCons, base: u32) -> Vec<TyConDecl> {
             opaque: false,
             is_anon: false,
         },
+        // `std.schema` — the dialect-neutral SQL column type. A union declared in
+        // Ridge (stdlib/schema.ridge); a `columnType` step overrides the default a
+        // field type implies, and `DbRaw` spells a dialect-specific type by hand.
+        // Variant order mirrors the source.
+        TyConDecl {
+            id: TyConId(base + 25),
+            name: "DbType".to_string(),
+            arity: 0,
+            kind: TyConKind::Union(UnionSchema {
+                params: vec![],
+                variants: vec![
+                    UnionVariant {
+                        name: "DbBoolean".to_string(),
+                        kind: VariantPayload::Nullary,
+                    },
+                    UnionVariant {
+                        name: "DbInt".to_string(),
+                        kind: VariantPayload::Nullary,
+                    },
+                    UnionVariant {
+                        name: "DbBigInt".to_string(),
+                        kind: VariantPayload::Nullary,
+                    },
+                    UnionVariant {
+                        name: "DbFloat".to_string(),
+                        kind: VariantPayload::Nullary,
+                    },
+                    UnionVariant {
+                        name: "DbDecimal".to_string(),
+                        kind: VariantPayload::Positional(vec![
+                            Type::Con(b.int, vec![]),
+                            Type::Con(b.int, vec![]),
+                        ]),
+                    },
+                    UnionVariant {
+                        name: "DbText".to_string(),
+                        kind: VariantPayload::Nullary,
+                    },
+                    UnionVariant {
+                        name: "DbVarchar".to_string(),
+                        kind: VariantPayload::Positional(vec![Type::Con(b.int, vec![])]),
+                    },
+                    UnionVariant {
+                        name: "DbUuid".to_string(),
+                        kind: VariantPayload::Nullary,
+                    },
+                    UnionVariant {
+                        name: "DbTimestamp".to_string(),
+                        kind: VariantPayload::Nullary,
+                    },
+                    UnionVariant {
+                        name: "DbTimestampTz".to_string(),
+                        kind: VariantPayload::Nullary,
+                    },
+                    UnionVariant {
+                        name: "DbRaw".to_string(),
+                        kind: VariantPayload::Positional(vec![Type::Con(b.text, vec![])]),
+                    },
+                ],
+            }),
+            def_span: None,
+            def_module_raw: None,
+            opaque: false,
+            is_anon: false,
+        },
+        // `std.schema` — how a column's value originates. A union declared in Ridge
+        // (stdlib/schema.ridge); a non-`Supplied` variant marks the column
+        // database-generated or default-filled, which drives omit-on-insert.
+        // Variant order mirrors the source.
+        TyConDecl {
+            id: TyConId(base + 26),
+            name: "Generation".to_string(),
+            arity: 0,
+            kind: TyConKind::Union(UnionSchema {
+                params: vec![],
+                variants: vec![
+                    UnionVariant {
+                        name: "Supplied".to_string(),
+                        kind: VariantPayload::Nullary,
+                    },
+                    UnionVariant {
+                        name: "Identity".to_string(),
+                        kind: VariantPayload::Nullary,
+                    },
+                    UnionVariant {
+                        name: "DefaultNow".to_string(),
+                        kind: VariantPayload::Nullary,
+                    },
+                    UnionVariant {
+                        name: "DefaultLit".to_string(),
+                        kind: VariantPayload::Positional(vec![Type::Con(b.sql_value, vec![])]),
+                    },
+                    UnionVariant {
+                        name: "DefaultRawSql".to_string(),
+                        kind: VariantPayload::Positional(vec![Type::Con(b.text, vec![])]),
+                    },
+                ],
+            }),
+            def_span: None,
+            def_module_raw: None,
+            opaque: false,
+            is_anon: false,
+        },
+        // `std.schema` — the referential action of a foreign key. A union declared
+        // in Ridge (stdlib/schema.ridge), mirroring SQL's `ON DELETE`/`ON UPDATE`.
+        // Variant order mirrors the source.
+        TyConDecl {
+            id: TyConId(base + 27),
+            name: "FkAction".to_string(),
+            arity: 0,
+            kind: TyConKind::Union(UnionSchema {
+                params: vec![],
+                variants: vec![
+                    UnionVariant {
+                        name: "NoAction".to_string(),
+                        kind: VariantPayload::Nullary,
+                    },
+                    UnionVariant {
+                        name: "Restrict".to_string(),
+                        kind: VariantPayload::Nullary,
+                    },
+                    UnionVariant {
+                        name: "Cascade".to_string(),
+                        kind: VariantPayload::Nullary,
+                    },
+                    UnionVariant {
+                        name: "SetNull".to_string(),
+                        kind: VariantPayload::Nullary,
+                    },
+                    UnionVariant {
+                        name: "SetDefault".to_string(),
+                        kind: VariantPayload::Nullary,
+                    },
+                ],
+            }),
+            def_span: None,
+            def_module_raw: None,
+            opaque: false,
+            is_anon: false,
+        },
+        // `std.schema` — a foreign-key reference. An opaque record declared in Ridge
+        // (stdlib/schema.ridge): the target table and column and the on-delete /
+        // on-update actions. Opaque, built only through `references` and refined
+        // with `onDelete`/`onUpdate`. Field order mirrors the source.
+        TyConDecl {
+            id: TyConId(base + 28),
+            name: "ForeignKey".to_string(),
+            arity: 0,
+            kind: TyConKind::Record(RecordSchema::new(
+                vec![],
+                vec![
+                    RecordField {
+                        name: "table".to_string(),
+                        ty: Type::Con(b.text, vec![]),
+                    },
+                    RecordField {
+                        name: "column".to_string(),
+                        ty: Type::Con(b.text, vec![]),
+                    },
+                    RecordField {
+                        name: "onDelete".to_string(),
+                        ty: Type::Con(TyConId(base + 27), vec![]),
+                    },
+                    RecordField {
+                        name: "onUpdate".to_string(),
+                        ty: Type::Con(TyConId(base + 27), vec![]),
+                    },
+                ],
+            )),
+            def_span: None,
+            def_module_raw: None,
+            opaque: true,
+            is_anon: false,
+        },
+        // `std.schema` — one column's schema. An opaque record declared in Ridge
+        // (stdlib/schema.ridge) with a phantom entity parameter `e` that ties a
+        // column to the entity it describes. Opaque, built through `mkColumn` and
+        // refined with the per-column steps. Field order mirrors the source.
+        TyConDecl {
+            id: TyConId(base + 29),
+            name: "ColumnSchema".to_string(),
+            arity: 1,
+            kind: TyConKind::Record(RecordSchema::new(
+                vec![TyVid(0)],
+                vec![
+                    RecordField {
+                        name: "name".to_string(),
+                        ty: Type::Con(b.text, vec![]),
+                    },
+                    RecordField {
+                        name: "column".to_string(),
+                        ty: Type::Con(b.text, vec![]),
+                    },
+                    RecordField {
+                        name: "ty".to_string(),
+                        ty: Type::Con(TyConId(base + 25), vec![]),
+                    },
+                    RecordField {
+                        name: "nullable".to_string(),
+                        ty: Type::Con(b.bool, vec![]),
+                    },
+                    RecordField {
+                        name: "generation".to_string(),
+                        ty: Type::Con(TyConId(base + 26), vec![]),
+                    },
+                    RecordField {
+                        name: "primaryKey".to_string(),
+                        ty: Type::Con(b.bool, vec![]),
+                    },
+                    RecordField {
+                        name: "unique".to_string(),
+                        ty: Type::Con(b.bool, vec![]),
+                    },
+                    RecordField {
+                        name: "indexed".to_string(),
+                        ty: Type::Con(b.bool, vec![]),
+                    },
+                    RecordField {
+                        name: "foreignKey".to_string(),
+                        ty: Type::Con(b.option, vec![Type::Con(TyConId(base + 28), vec![])]),
+                    },
+                    RecordField {
+                        name: "check".to_string(),
+                        ty: Type::Con(b.option, vec![Type::Con(b.q_expr, vec![])]),
+                    },
+                ],
+            )),
+            def_span: None,
+            def_module_raw: None,
+            opaque: true,
+            is_anon: false,
+        },
+        // `std.schema` — an entity's full schema. An opaque record declared in Ridge
+        // (stdlib/schema.ridge) with a phantom entity parameter `e`: the entity
+        // name, its SQL table, and its `ColumnSchema e` columns in declaration
+        // order. Opaque, built through `schema`/`withColumn`. Field order mirrors
+        // the source.
+        TyConDecl {
+            id: TyConId(base + 30),
+            name: "EntitySchema".to_string(),
+            arity: 1,
+            kind: TyConKind::Record(RecordSchema::new(
+                vec![TyVid(0)],
+                vec![
+                    RecordField {
+                        name: "name".to_string(),
+                        ty: Type::Con(b.text, vec![]),
+                    },
+                    RecordField {
+                        name: "table".to_string(),
+                        ty: Type::Con(b.text, vec![]),
+                    },
+                    RecordField {
+                        name: "columns".to_string(),
+                        ty: Type::Con(
+                            b.list,
+                            vec![Type::Con(TyConId(base + 29), vec![Type::Var(TyVid(0))])],
+                        ),
+                    },
+                ],
+            )),
+            def_span: None,
+            def_module_raw: None,
+            opaque: true,
+            is_anon: false,
+        },
     ]
 }
 
@@ -1623,6 +1889,7 @@ pub(crate) fn reconciled_fn_scheme(
         ("std.repo", _) => reconciled_repo_fn_scheme(name, reconciled, b, classes?),
         ("std.migrate", _) => reconciled_migrate_fn_scheme(name, reconciled, b, classes?),
         ("std.raw", _) => reconciled_raw_fn_scheme(name, b, classes?),
+        ("std.schema", _) => reconciled_schema_fn_scheme(name, reconciled, b),
         _ => None,
     }
 }
@@ -1796,6 +2063,96 @@ fn reconciled_mutation_plan_fn_scheme(
                 Type::Con(b.list, vec![Type::Con(b.sql_value, vec![])]),
             ]),
         )),
+        _ => None,
+    }
+}
+
+/// The `std.schema` slice of [`reconciled_fn_scheme`]: the schema-descriptor
+/// builders and read accessors. Every verb is pure; the column steps and entity
+/// builders are polymorphic in the phantom entity `e`, the foreign-key builders
+/// monomorphic. All reference the reconciled `DbType`/`Generation`/`FkAction`/
+/// `ForeignKey`/`ColumnSchema`/`EntitySchema` types, so the hand-curated
+/// signature table (which only sees `BuiltinTyCons`) cannot express them.
+fn reconciled_schema_fn_scheme(
+    name: &str,
+    reconciled: &FxHashMap<String, TyConId>,
+    b: &BuiltinTyCons,
+) -> Option<Scheme> {
+    let db_type = *reconciled.get("DbType")?;
+    let generation = *reconciled.get("Generation")?;
+    let fk_action = *reconciled.get("FkAction")?;
+    let foreign_key = *reconciled.get("ForeignKey")?;
+    let column_schema = *reconciled.get("ColumnSchema")?;
+    let entity_schema = *reconciled.get("EntitySchema")?;
+    let e = TyVid(0);
+    let text = || Type::Con(b.text, vec![]);
+    let boolean = || Type::Con(b.bool, vec![]);
+    let option = |x: Type| Type::Con(b.option, vec![x]);
+    let list = |x: Type| Type::Con(b.list, vec![x]);
+    let qexpr = || Type::Con(b.q_expr, vec![]);
+    let dbtype_ty = || Type::Con(db_type, vec![]);
+    let gen_ty = || Type::Con(generation, vec![]);
+    let fk_act_ty = || Type::Con(fk_action, vec![]);
+    let fk_ty = || Type::Con(foreign_key, vec![]);
+    let col_e = || Type::Con(column_schema, vec![Type::Var(e)]);
+    let ent_e = || Type::Con(entity_schema, vec![Type::Var(e)]);
+    let pure = || CapRow::Concrete(CapabilitySet::PURE);
+    // A monomorphic pure builder: `params -> ret`, no quantified vars.
+    let mono = |params: Vec<Type>, ret: Type| {
+        Some(Scheme {
+            vars: vec![],
+            cap_vars: vec![],
+            row_vars: vec![],
+            ty: Type::Fn {
+                params,
+                ret: Box::new(ret),
+                caps: pure(),
+            },
+            constraints: vec![],
+        })
+    };
+    // A pure builder polymorphic in the phantom entity `e`: `∀e. params -> ret`.
+    let poly1 = |params: Vec<Type>, ret: Type| {
+        Some(Scheme {
+            vars: vec![e],
+            cap_vars: vec![],
+            row_vars: vec![],
+            ty: Type::Fn {
+                params,
+                ret: Box::new(ret),
+                caps: pure(),
+            },
+            constraints: vec![],
+        })
+    };
+    match name {
+        // Foreign-key reference builders (monomorphic).
+        "references" => mono(vec![text(), text()], fk_ty()),
+        "onDelete" | "onUpdate" => mono(vec![fk_act_ty(), fk_ty()], fk_ty()),
+        // Column constructor and refinement steps (∀e. … -> ColumnSchema e).
+        "mkColumn" => poly1(vec![text(), text(), dbtype_ty(), boolean()], col_e()),
+        "named" => poly1(vec![text(), col_e()], col_e()),
+        "columnType" => poly1(vec![dbtype_ty(), col_e()], col_e()),
+        "generated" => poly1(vec![gen_ty(), col_e()], col_e()),
+        "foreignKey" => poly1(vec![fk_ty(), col_e()], col_e()),
+        "nullable" | "required" | "primaryKey" | "unique" | "indexed" => {
+            poly1(vec![col_e()], col_e())
+        }
+        // Column read accessors (∀e. ColumnSchema e -> …).
+        "colName" | "colColumn" => poly1(vec![col_e()], text()),
+        "colType" => poly1(vec![col_e()], dbtype_ty()),
+        "colGeneration" => poly1(vec![col_e()], gen_ty()),
+        "colNullable" | "colPrimaryKey" | "colUnique" | "colIndexed" | "colGenerated" => {
+            poly1(vec![col_e()], boolean())
+        }
+        "colForeignKey" => poly1(vec![col_e()], option(fk_ty())),
+        "colCheck" => poly1(vec![col_e()], option(qexpr())),
+        // Entity schema builders and read accessors (∀e. … over EntitySchema e).
+        "schema" => poly1(vec![text(), text()], ent_e()),
+        "withColumn" => poly1(vec![col_e(), ent_e()], ent_e()),
+        "schemaName" | "schemaTable" => poly1(vec![ent_e()], text()),
+        "schemaColumns" => poly1(vec![ent_e()], list(col_e())),
+        "generatedColumns" => poly1(vec![ent_e()], list(text())),
         _ => None,
     }
 }

@@ -15,7 +15,7 @@ ResolvedSnapshot {
     import_aliases: [
         "<bare> -> BuiltinStdlib(0)",
         "<bare> -> BuiltinStdlib(17)",
-        "<bare> -> BuiltinStdlib(21)",
+        "<bare> -> BuiltinStdlib(22)",
         "<bare> -> BuiltinStdlib(3)",
         "<bare> -> BuiltinStdlib(7)",
         "<bare> -> BuiltinStdlib(8)",

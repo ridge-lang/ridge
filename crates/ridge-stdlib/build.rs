@@ -169,6 +169,7 @@ const STDLIB_MODULES: &[&str] = &[
     // Tier 5
     "std.crypto",
     "std.sql",
+    "std.schema",
     "std.query",
     "std.data",
     "std.repo",

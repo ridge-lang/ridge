@@ -806,7 +806,7 @@ pub fn prelude_resolutions() -> Vec<ImportResolution> {
     let opt_id = StdlibModuleId(7); // std.option
     let res_id = StdlibModuleId(8); // std.result
     let json_id = StdlibModuleId(17); // std.json
-    let query_id = StdlibModuleId(21); // std.query
+    let query_id = StdlibModuleId(22); // std.query
 
     let opt_binding = |name: &str| EffectiveBinding {
         local_name: name.to_string(),

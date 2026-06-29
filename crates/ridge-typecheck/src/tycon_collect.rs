@@ -58,11 +58,16 @@ pub struct TyConCollectResult {
 ///    placeholder so that forward references in field types resolve correctly.
 /// 2. Second pass: build the real schema for each `TyCon` and replace the
 ///    placeholder.
+#[expect(
+    clippy::implicit_hasher,
+    reason = "FxHashMap is the canonical hasher for this crate; matches synth_table_mirrors and the rest of the typecheck API"
+)]
 pub fn collect_user_tycons(
     module: &Module,
     module_id: ridge_resolve::ModuleId,
     arena: &mut TyConArena,
     b: &BuiltinTyCons,
+    imported_tycons: &FxHashMap<String, TyConId>,
     ctx: &mut InferCtx,
 ) -> TyConCollectResult {
     // ── Pass 1: intern placeholders for every user type name ─────────────────
@@ -110,6 +115,26 @@ pub fn collect_user_tycons(
         }
     }
 
+    // Resolution view for pass 2: the local names plus this module's imported
+    // type names. A union variant or record field that references an imported
+    // type — `DefaultLit SqlValue`, say — must resolve to the producer's
+    // `TyConId` while constructor schemes are built here, not fall through to a
+    // fresh variable that only later inference can pin. A constructor that is
+    // declared but never applied in its own module (so no call site unifies that
+    // variable) would otherwise generalise with an unsolved variable. A local
+    // declaration of the same name still wins. The returned `user_tycon_names`
+    // stays local-only; imports are merged into `ctx.user_tycon_names` by the
+    // caller after this pass.
+    let resolve_names = if imported_tycons.is_empty() {
+        name_to_id.clone()
+    } else {
+        let mut merged = name_to_id.clone();
+        for (name, &tid) in imported_tycons {
+            merged.entry(name.clone()).or_insert(tid);
+        }
+        merged
+    };
+
     // ── Pass 2: build real schemas and write them back via `replace_kind`. ───
     //
     // Every name is already in `name_to_id`, so forward references resolve to
@@ -120,13 +145,13 @@ pub fn collect_user_tycons(
         match item {
             Item::Type(td) => {
                 let id = name_to_id[&td.name.text];
-                let kind = build_type_kind_fresh(td, b, ctx, &name_to_id, arena);
+                let kind = build_type_kind_fresh(td, b, ctx, &resolve_names, arena);
                 arena.replace_kind(id, kind);
-                bind_constructor_schemes(td, id, b, ctx, &name_to_id, arena);
+                bind_constructor_schemes(td, id, b, ctx, &resolve_names, arena);
             }
             Item::Actor(ad) => {
                 let id = name_to_id[&ad.name.text];
-                let kind = build_actor_kind_fresh(ad, b, ctx, &name_to_id, arena);
+                let kind = build_actor_kind_fresh(ad, b, ctx, &resolve_names, arena);
                 arena.replace_kind(id, kind);
             }
             _ => {}

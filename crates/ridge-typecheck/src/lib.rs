@@ -732,7 +732,7 @@ fn typecheck_module_inner(
     ctx.current_module_raw = Some(id.0);
 
     // Step A: Collect user TyCons and seed env with constructor schemes.
-    let tycon_result = collect_user_tycons(ast, id, arena, b, &mut ctx);
+    let tycon_result = collect_user_tycons(ast, id, arena, b, imported_tycons, &mut ctx);
     // Populate the user_tycon_names map for ast_type_to_type resolution.
     ctx.user_tycon_names = tycon_result.user_tycon_names;
     // Seed imported type names (cross-module): a local declaration of the same

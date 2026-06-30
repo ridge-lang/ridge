@@ -184,6 +184,20 @@ pub fn schemaColumns (s: EntitySchema e) -> List (ColumnSchema e) = s.columns
 pub fn generatedColumns (s: EntitySchema e) -> List Text =
     generatedNames s.columns
 
+-- ── Schema binding ────────────────────────────────────────────────────────────
+
+-- `HasSchema` binds an entity type to its schema descriptor, the way EF's
+-- `IEntityTypeConfiguration<T>` binds a type to its mapping. The single method
+-- answers the entity's `EntitySchema` from the type alone — there is no entity
+-- value to read it off — so it takes a phantom `Option e` witness that fixes `e`,
+-- the same dispatch `Row.rowColumns` uses. `deriving (Schema)` synthesises the
+-- instance from the record's fields and the naming conventions, so the user
+-- states only the deltas; a hand-written instance spells the mapping out. The
+-- write path and the DDL renderer reach the instance through a witness drawn from
+-- the repository, `schemaOf (entityWitness repo)`.
+pub class HasSchema e =
+    schemaOf (witness: Option e) -> EntitySchema e
+
 -- ── Internal list helpers ─────────────────────────────────────────────────────
 
 fn appendColumn (cols: List (ColumnSchema e)) (c: ColumnSchema e) -> List (ColumnSchema e) =

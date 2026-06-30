@@ -1889,7 +1889,7 @@ pub(crate) fn reconciled_fn_scheme(
         ("std.repo", _) => reconciled_repo_fn_scheme(name, reconciled, b, classes?),
         ("std.migrate", _) => reconciled_migrate_fn_scheme(name, reconciled, b, classes?),
         ("std.raw", _) => reconciled_raw_fn_scheme(name, b, classes?),
-        ("std.schema", _) => reconciled_schema_fn_scheme(name, reconciled, b),
+        ("std.schema", _) => reconciled_schema_fn_scheme(name, reconciled, b, classes?),
         _ => None,
     }
 }
@@ -2081,6 +2081,7 @@ fn reconciled_schema_fn_scheme(
     name: &str,
     reconciled: &FxHashMap<String, TyConId>,
     b: &BuiltinTyCons,
+    classes: &ClassTable,
 ) -> Option<Scheme> {
     let db_type = *reconciled.get("DbType")?;
     let generation = *reconciled.get("Generation")?;
@@ -2196,6 +2197,26 @@ fn reconciled_schema_fn_scheme(
         "schemaName" | "schemaTable" => poly1(vec![ent_e()], text()),
         "schemaColumns" => poly1(vec![ent_e()], list(col_e())),
         "generatedColumns" => poly1(vec![ent_e()], list(text())),
+        // schemaOf : ∀e. Option e -> EntitySchema e where HasSchema e. The single
+        // method of the `HasSchema` binding class, dispatched by a phantom
+        // `Option e` witness (the same shape `Row.rowColumns` uses). The
+        // `HasSchema e` constraint is what makes the lowering pass the instance
+        // dictionary — without it, a bare `schemaOf` is read as a plain stdlib
+        // symbol and codegen reports a missing bridge.
+        "schemaOf" => {
+            let has_schema = classes.id_by_name("HasSchema")?;
+            Some(Scheme {
+                vars: vec![e],
+                cap_vars: vec![],
+                row_vars: vec![],
+                ty: Type::Fn {
+                    params: vec![option(Type::Var(e))],
+                    ret: Box::new(ent_e()),
+                    caps: pure(),
+                },
+                constraints: vec![Constraint::single(has_schema, e)],
+            })
+        }
         _ => None,
     }
 }

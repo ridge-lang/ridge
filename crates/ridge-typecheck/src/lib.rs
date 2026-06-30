@@ -110,6 +110,13 @@ pub struct ModuleTypecheckResult {
     /// instances into the emitted `derived_instances` set, so an unused
     /// implicit `Row` produces no IR.
     pub demanded_rows: FxHashSet<ridge_types::TyConId>,
+    /// This module's own type names mapped to the `TyConId`s actually assigned
+    /// during its check — local declarations plus the types synthesized for it
+    /// (`deriving` mirrors, insert companions). The workspace driver records these
+    /// so a later importing module resolves a cross-module type to the producer's
+    /// real id, rather than the pre-check id prediction, which drifts whenever a
+    /// producer (or a module before it) synthesizes types the prediction cannot see.
+    pub tycon_names: FxHashMap<String, ridge_types::TyConId>,
 }
 
 /// Result of incrementally type-checking a single edited module.
@@ -308,6 +315,16 @@ pub fn typecheck_workspace(ws: &ResolvedWorkspace) -> TypecheckResult {
     let mut exported_schemes: Vec<FxHashMap<String, ridge_types::Scheme>> = (0..ws.modules.len())
         .map(|_| FxHashMap::default())
         .collect();
+    // Each module's actual type-name → `TyConId` map (by `ModuleId.0`), populated as
+    // the module is checked. A consumer module resolves its imported types against
+    // the producer's real ids here — `check_order` runs producers first, so every
+    // module a consumer imports is already recorded by the time it is checked. This
+    // supersedes the id prediction for import resolution; the prediction stays the
+    // seed for the pre-check instance-collection pass, which has no actual ids yet.
+    let mut actual_module_tycon_names: Vec<FxHashMap<String, ridge_types::TyConId>> =
+        (0..ws.modules.len())
+            .map(|_| FxHashMap::default())
+            .collect();
 
     // Run the workspace collect pass to build the class/instance registries.
     // This runs over all module ASTs before any module is type-checked so the
@@ -373,6 +390,7 @@ pub fn typecheck_workspace(ws: &ResolvedWorkspace) -> TypecheckResult {
         let imported_tycons = crate::cross_module::imported_tycon_names(
             &rm.imports,
             &symbol_tables,
+            &actual_module_tycon_names,
             &per_module_tycon_names,
             &stdlib_tycon_names,
             &b,
@@ -414,6 +432,8 @@ pub fn typecheck_workspace(ws: &ResolvedWorkspace) -> TypecheckResult {
         workspace_insert_companions.extend(result.insert_companions);
         // Expose this module's schemes to modules that import it (checked later).
         exported_schemes[rm.id.0 as usize] = result.name_schemes;
+        // Record this module's real type ids so later importers resolve against them.
+        actual_module_tycon_names[rm.id.0 as usize] = result.tycon_names;
         typed_slots[rm.id.0 as usize] = Some(result.typed);
         // Emit a dictionary only for the implicit `Row` instances this module
         // actually demanded. A record that never touches the row machinery keeps
@@ -480,6 +500,7 @@ fn empty_module_result(module_id: ModuleId) -> ModuleTypecheckResult {
         insert_companions: FxHashMap::default(),
         name_schemes: FxHashMap::default(),
         demanded_rows: FxHashSet::default(),
+        tycon_names: FxHashMap::default(),
     }
 }
 
@@ -1088,6 +1109,7 @@ fn typecheck_module_inner(
         insert_companions,
         name_schemes: ctx.name_schemes_accum,
         demanded_rows: ctx.demanded_rows,
+        tycon_names: ctx.user_tycon_names,
     }
 }
 

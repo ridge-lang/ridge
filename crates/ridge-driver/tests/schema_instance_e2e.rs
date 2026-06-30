@@ -26,6 +26,8 @@ use ridge_driver::{compile_workspace, CompileOptions, EmitArtefacts};
 const SOURCE: &str = r#"
 import std.schema (DbBigInt, DbText, DbInt, Identity, mkColumn, withColumn, schema, generated, primaryKey, unique, schemaName, schemaTable, generatedColumns, EntitySchema, HasSchema, schemaOf)
 import std.text as Text
+import std.map (fromList)
+import std.sql (toSql, SqlValue)
 
 -- Two persistence-ignorant domain records, each with its own mapping below.
 type User = { id: Int, email: Text, age: Int }
@@ -40,6 +42,7 @@ instance HasSchema User =
           |> withColumn (mkColumn "id" "id" DbBigInt false |> generated Identity |> primaryKey)
           |> withColumn (mkColumn "email" "email" DbText false |> unique)
           |> withColumn (mkColumn "age" "age" DbInt false)
+    toInsertRow (shape: InsertShape User) -> Map Text SqlValue = fromList [("email", toSql shape.email), ("age", toSql shape.age)]
 
 -- A second instance over a different table. Its presence proves the witness
 -- discriminates: `schemaOf` must route each call to the matching schema.
@@ -48,6 +51,7 @@ instance HasSchema Product =
         schema "Product" "products"
           |> withColumn (mkColumn "id" "id" DbBigInt false |> generated Identity |> primaryKey)
           |> withColumn (mkColumn "sku" "sku" DbText false |> unique)
+    toInsertRow (shape: InsertShape Product) -> Map Text SqlValue = fromList [("sku", toSql shape.sku)]
 
 -- A witness typed at each entity — the value a caller threads to select the
 -- instance, the same role `entityWitness` plays for `Row.rowColumns`.

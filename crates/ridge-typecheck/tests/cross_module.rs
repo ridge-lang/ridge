@@ -3696,9 +3696,9 @@ pub fn db seed () -> Result Unit Error =
     let conn = memAdapter ()
     Repo.transaction conn (fn (tx) ->
         let users: Repo User MemAdapter = Repo.repo tx "users"
-        match Repo.insert (User { id = 1, name = "ada" }) users
+        match Repo.insert (UserInsert { name = "ada" }) users
             Err e -> Err e
-            Ok _  -> Repo.insert (User { id = 2, name = "lin" }) users)
+            Ok _  -> Repo.insert (UserInsert { name = "lin" }) users)
 "#;
     let errors = typecheck_one(main);
     assert!(
@@ -3723,7 +3723,7 @@ pub fn db seededCount () -> Result Int Error =
     let conn = memAdapter ()
     Repo.transaction conn (fn (tx) ->
         let users: Repo User MemAdapter = Repo.repo tx "users"
-        match Repo.insert (User { id = 1, name = "ada" }) users
+        match Repo.insert (UserInsert { name = "ada" }) users
             Err e -> Err e
             Ok _  -> users |> Repo.query |> Repo.count)
 "#;
@@ -3752,7 +3752,7 @@ pub fn db seed () -> Result Unit Error =
         Ok conn ->
             Repo.transaction conn (fn (tx) ->
                 let users: Repo User Postgres = Repo.repo tx "users"
-                Repo.insert (User { id = 1, name = "ada" }) users)
+                Repo.insert (UserInsert { name = "ada" }) users)
 "#;
     let errors = typecheck_one(main);
     assert!(

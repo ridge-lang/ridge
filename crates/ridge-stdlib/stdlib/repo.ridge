@@ -24,7 +24,7 @@ import std.result (traverse)
 import std.sql (SqlValue)
 import std.query (SortOrder, ascending, QueryPlan, planScan, planCombine, planRefine, planJoin, planProject, planAggregate, planGroup, planExists, planList, planInsert, planUpsert, planUpdate, planDelete)
 import std.map (fromList, toList)
-import std.schema (generatedColumnsOf, identityColumnsOf)
+import std.schema (identityColumnsOfShape)
 
 -- A repository: entity `e` stored in `table` through adapter `a`. Opaque, so it
 -- is built only through `repo` and threaded as a handle, never destructured.
@@ -145,16 +145,16 @@ pub fn insertRow (row: Map Text SqlValue) (r: Repo e a) -> Result Unit Error whe
         Ok _  -> Ok ()
         Err e -> Err e
 
--- Append a typed entity, encoding it to a row through `deriving (Row)`'s `toRow`.
--- The repository's table holds entity `e`, so its `Row` instance names the columns
--- and runs each field through `SqlType.toSql` — a nullable `Option` field writes
--- `None` as SQL NULL. This is the write-side dual of the decode every read verb
--- runs, so a record goes in the way one comes out. The entity's `deriving (Schema)`
--- names the database-generated columns: those are dropped from the row before the
--- insert, so a serial/identity column is filled by the database (the in-memory store
--- assigns the next integer) rather than written from the record's placeholder value.
-pub fn insert (entity: e) (r: Repo e a) -> Result Unit Error where Adapter a, Row e, HasSchema e =
-    match runMutation r.adapter (planInsert r.table [omitColumns (generatedColumnsOf entity) (toRow entity)] (identityColumnsOf entity))
+-- Append a typed entity, encoding its insert shape to a row through `HasSchema`'s
+-- `toInsertRow`. The argument is the entity minus its database-generated columns —
+-- `deriving (Schema)` synthesises that shape — so a serial/identity column simply
+-- cannot be written by hand: it is absent from the value and absent from the row,
+-- left for the database to fill (the in-memory store assigns the next integer).
+-- `toInsertRow` names the remaining columns and runs each field through
+-- `SqlType.toSql`, a nullable `Option` field writing `None` as SQL NULL — the
+-- write-side dual of the decode every read verb runs.
+pub fn insert (entity: InsertShape e) (r: Repo e a) -> Result Unit Error where Adapter a, HasSchema e =
+    match runMutation r.adapter (planInsert r.table [toInsertRow entity] (identityColumnsOfShape entity))
         Ok _  -> Ok ()
         Err e -> Err e
 
@@ -169,38 +169,19 @@ pub fn insertRows (rows: List (Map Text SqlValue)) (r: Repo e a) -> Result Unit 
                 Ok _  -> Ok ()
                 Err e -> Err e
 
--- Append many typed entities in one multi-row INSERT, each encoded through
--- `deriving (Row)`'s `toRow`. The bulk dual of `insert`: one statement for the
--- whole batch, not a row per round-trip. The schema's database-generated columns are
--- dropped from every row, so the database fills each (the in-memory store assigns a
--- contiguous run of integers across the batch). An empty list is a no-op.
-pub fn insertMany (entities: List e) (r: Repo e a) -> Result Unit Error where Adapter a, Row e, HasSchema e =
+-- Append many typed entities in one multi-row INSERT, each insert shape encoded
+-- through `HasSchema`'s `toInsertRow`. The bulk dual of `insert`: one statement for
+-- the whole batch, not a row per round-trip. The database-generated columns are
+-- absent from every shape and every row, so the database fills each (the in-memory
+-- store assigns a contiguous run of integers across the batch). An empty list is a
+-- no-op.
+pub fn insertMany (entities: List (InsertShape e)) (r: Repo e a) -> Result Unit Error where Adapter a, HasSchema e =
     match entities
         []      -> Ok ()
         x :: _  ->
-            match runMutation r.adapter (planInsert r.table (omitRows (generatedColumnsOf x) (encodeRows entities)) (identityColumnsOf x))
+            match runMutation r.adapter (planInsert r.table (encodeInsertRows entities) (identityColumnsOfShape x))
                 Ok _  -> Ok ()
                 Err e -> Err e
-
--- Drop the database-generated columns from a row before an insert: a serial/identity or
--- DEFAULT column is filled by the database, not written from the record's placeholder.
--- A column the row never carried is simply absent, so an entity with no generated columns
--- passes through unchanged.
-fn omitColumns (drop: List Text) (row: Map Text SqlValue) -> Map Text SqlValue =
-    fromList (keepColumns (toList row) drop)
-
-fn keepColumns (pairs: List (Text, SqlValue)) (drop: List Text) -> List (Text, SqlValue) =
-    match pairs
-        []             -> []
-        (c, v) :: rest ->
-            if columnMember c drop then keepColumns rest drop
-            else (c, v) :: keepColumns rest drop
-
--- Drop the generated columns from every row of a bulk insert.
-fn omitRows (drop: List Text) (rows: List (Map Text SqlValue)) -> List (Map Text SqlValue) =
-    match rows
-        []          -> []
-        row :: rest -> omitColumns drop row :: omitRows drop rest
 
 -- A single conflict-key column, built by `onConflict`: the column an upsert matches an
 -- existing row on. The entity `e` is a phantom that ties the key to the record whose
@@ -287,8 +268,8 @@ fn columnMember (c: Text) (cols: List Text) -> Bool =
 -- populated, where plain `insert` answers only `Ok ()`. Errors if no row returns (the
 -- in-memory and Postgres backends both return the inserted row, so this is the decode
 -- guard, not an expected path).
-pub fn insertReturning (entity: e) (r: Repo e a) -> Result e Error where Adapter a, Row e, HasSchema e =
-    match runMutationReturning r.adapter (planInsert r.table [omitColumns (generatedColumnsOf entity) (toRow entity)] (identityColumnsOf entity)) []
+pub fn insertReturning (entity: InsertShape e) (r: Repo e a) -> Result e Error where Adapter a, Row e, HasSchema e =
+    match runMutationReturning r.adapter (planInsert r.table [toInsertRow entity] (identityColumnsOfShape entity)) []
         Err err -> Err err
         Ok rows ->
             match rows
@@ -301,11 +282,11 @@ pub fn insertReturning (entity: e) (r: Repo e a) -> Result e Error where Adapter
 -- Insert many typed entities and read every stored row back, decoded — the bulk dual of
 -- `insertReturning` over one multi-row `INSERT … RETURNING *`. An empty list is a no-op
 -- that returns no rows.
-pub fn insertManyReturning (entities: List e) (r: Repo e a) -> Result (List e) Error where Adapter a, Row e, HasSchema e =
+pub fn insertManyReturning (entities: List (InsertShape e)) (r: Repo e a) -> Result (List e) Error where Adapter a, Row e, HasSchema e =
     match entities
         []      -> Ok []
         x :: _  ->
-            match runMutationReturning r.adapter (planInsert r.table (omitRows (generatedColumnsOf x) (encodeRows entities)) (identityColumnsOf x)) []
+            match runMutationReturning r.adapter (planInsert r.table (encodeInsertRows entities) (identityColumnsOfShape x)) []
                 Err err -> Err err
                 Ok rows -> decodeRows rows
 
@@ -1917,6 +1898,14 @@ fn encodeRows (xs: List a) -> List (Map Text SqlValue) where Row a =
     match xs
         []        -> []
         x :: rest -> toRow x :: encodeRows rest
+
+-- Encode each insert shape to a row through `HasSchema`'s `toInsertRow`, eagerly — the
+-- bulk encoder behind `insertMany` and `insertManyReturning`. The write-side dual of
+-- `decodeRows`, but over the generated-column-free insert shape rather than the entity.
+fn encodeInsertRows (xs: List (InsertShape e)) -> List (Map Text SqlValue) where HasSchema e =
+    match xs
+        []        -> []
+        x :: rest -> toInsertRow x :: encodeInsertRows rest
 
 -- Evaluate a plan with no connection or keeper store, for the in-memory `Seq` source.
 -- The plan is rooted at a `PlanList` (rows inline), so it walks in process and cannot

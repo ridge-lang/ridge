@@ -4,8 +4,8 @@
 //! `deriving (Schema)` marks a non-null `Int` field named `id` an identity column by
 //! convention. The typed `insert`/`insertMany`/`insertReturning` verbs read that schema,
 //! drop the identity column from the row, and the in-memory store assigns the next
-//! integer in its place. So an entity inserted with a placeholder `id` reads back with a
-//! store-assigned one: a fresh store hands out 1, 2, 3 in insertion order, a bulk insert
+//! integer in its place. So an entity inserted through its `id`-less insert shape reads
+//! back with a store-assigned one: a fresh store hands out 1, 2, 3 in insertion order, a bulk insert
 //! a contiguous run, and `insertReturning` hands the generated id back.
 //!
 //! An entity with no `id` field names no generated column, so the insert omits nothing
@@ -30,7 +30,7 @@ import std.int as Int
 
 -- `id` is an identity column by the `deriving (Schema)` convention (a non-null `Int`
 -- named `id`), so the typed insert drops it and the in-memory store assigns the next
--- integer. The `id` in each literal below is a placeholder the store overwrites.
+-- integer. The insert shape below carries no `id` field, so the store assigns it.
 pub type User = { id: Int, name: Text } deriving (Row, Schema)
 
 -- An entity with no `id` field: the convention marks nothing identity, so the insert
@@ -45,26 +45,25 @@ fn idsOf (us: List User) -> Text =
         u :: []   -> Int.toText u.id
         u :: rest -> Text.concat (Int.toText u.id) (Text.concat "," (idsOf rest))
 
--- Two inserts with placeholder ids into a fresh store: the store drops each id and
--- assigns 1 then 2, so the round-trip reads "1,2". A non-omitting path would keep the
--- placeholder 0 and read "0,0".
+-- Two inserts through the `id`-less insert shape into a fresh store: the store assigns
+-- 1 then 2, so the round-trip reads "1,2".
 pub fn db assignedIds () -> Text =
     let r: Repo User MemAdapter = Repo.repo (memAdapter ()) "users"
-    match Repo.insert (User { id = 0, name = "ada" }) r
+    match Repo.insert (UserInsert { name = "ada" }) r
         Err _ -> "insert-err"
         Ok _  ->
-            match Repo.insert (User { id = 0, name = "lin" }) r
+            match Repo.insert (UserInsert { name = "lin" }) r
                 Err _ -> "insert-err"
                 Ok _  ->
                     match r |> Repo.query |> Repo.orderBy Asc (fn (u: User) -> u.id) |> Repo.toList
                         Err _ -> "list-err"
                         Ok us -> idsOf us
 
--- A bulk insert assigns a contiguous run across the batch: three placeholder ids become
+-- A bulk insert assigns a contiguous run across the batch: three id-less rows become
 -- "1,2,3" in one multi-row statement.
 pub fn db bulkIds () -> Text =
     let r: Repo User MemAdapter = Repo.repo (memAdapter ()) "users"
-    match r |> Repo.insertMany [ User { id = 0, name = "ada" }, User { id = 0, name = "lin" }, User { id = 0, name = "max" } ]
+    match r |> Repo.insertMany [ UserInsert { name = "ada" }, UserInsert { name = "lin" }, UserInsert { name = "max" } ]
         Err _ -> "insert-err"
         Ok _  ->
             match r |> Repo.query |> Repo.orderBy Asc (fn (u: User) -> u.id) |> Repo.toList
@@ -75,7 +74,7 @@ pub fn db bulkIds () -> Text =
 -- back populated: the first insert into a fresh store returns id 1.
 pub fn db returnedId () -> Int =
     let r: Repo User MemAdapter = Repo.repo (memAdapter ()) "users"
-    match r |> Repo.insertReturning (User { id = 0, name = "rex" })
+    match r |> Repo.insertReturning (UserInsert { name = "rex" })
         Err _ -> 0 - 1
         Ok u  -> u.id
 
@@ -84,10 +83,10 @@ pub fn db returnedId () -> Int =
 -- max — a later test could delete row 1 and still get 2.)
 pub fn db sequentialId () -> Int =
     let r: Repo User MemAdapter = Repo.repo (memAdapter ()) "users"
-    match Repo.insert (User { id = 0, name = "ada" }) r
+    match Repo.insert (UserInsert { name = "ada" }) r
         Err _ -> 0 - 1
         Ok _  ->
-            match r |> Repo.insertReturning (User { id = 0, name = "lin" })
+            match r |> Repo.insertReturning (UserInsert { name = "lin" })
                 Err _ -> 0 - 2
                 Ok u  -> u.id
 
@@ -193,7 +192,7 @@ fn identity_omit_runs_on_beam() {
     for (probe, why) in [
         (
             "assignedIds=1,2",
-            "the insert drops the placeholder id and the store assigns 1 then 2",
+            "the insert shape omits the id and the store assigns 1 then 2",
         ),
         (
             "bulkIds=1,2,3",
@@ -205,7 +204,7 @@ fn identity_omit_runs_on_beam() {
         ),
         (
             "sequentialId=2",
-            "the next id is one past the highest stored, not the placeholder",
+            "the next id is one past the highest stored, assigned by the store",
         ),
         (
             "nonIdentityWeight=42",

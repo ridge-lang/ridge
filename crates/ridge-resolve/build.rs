@@ -803,13 +803,16 @@ const BASELINE_EXPORTS: &[(&str, &[&str])] = &[
             "schemaColumns",
             "generatedColumns",
             "identityColumns",
-            // The `HasSchema` binding class and its method. `deriving (Schema)`
+            // The `HasSchema` binding class and its methods. `deriving (Schema)`
             // generates the instance; `schemaOf` answers an entity's schema from
-            // the type alone (a phantom `Option e` witness selects the instance).
+            // the type alone (a phantom `Option e` witness selects the instance),
+            // and `toInsertRow` encodes an insert shape to a row.
             "HasSchema",
             "schemaOf",
+            "toInsertRow",
             "generatedColumnsOf",
             "identityColumnsOf",
+            "identityColumnsOfShape",
         ],
     ),
     (

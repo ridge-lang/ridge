@@ -218,6 +218,11 @@ pub struct SchemaColumnSpec {
     /// The `Generation` constructor name when the column is database-generated
     /// (`Some("Identity")` for an integer `id`); `None` leaves it caller-supplied.
     pub generation: Option<String>,
+    /// The `SqlType` instance name used to encode this column in `toInsertRow`
+    /// (`"Int"`, `"Text"`, `"Bool"`, `"Float"`), or `None` when the field is not a
+    /// base `SqlType` — those columns are caller-supplied schema/DDL metadata only,
+    /// not part of the insert encoding, so `toInsertRow` leaves them out.
+    pub sql_type_tag: Option<String>,
 }
 
 /// How the wrapper type flows through one delegated argument position.
@@ -406,7 +411,10 @@ pub fn derive_instances(
                 Ok(body) => {
                     let info = InstanceInfo {
                         def_module: Some(module_id),
-                        methods: vec![("schemaOf".to_string(), String::new())],
+                        methods: vec![
+                            ("schemaOf".to_string(), String::new()),
+                            ("toInsertRow".to_string(), String::new()),
+                        ],
                         ctx_constraints: vec![],
                         head_var_positions: vec![],
                         origin: InstanceOrigin::Explicit,
@@ -1361,6 +1369,11 @@ fn generate_schema(
             } else {
                 None
             };
+            // `toInsertRow` encodes the same way `Row.toRow` does, so the SqlType
+            // tag comes from the same field classifier — `None` for a field that
+            // is not a base `SqlType` (those map to a column for DDL but carry no
+            // insert encoding).
+            let sql_type_tag = sql_row_field(&field.ty).map(|(_optional, tag)| tag);
             SchemaColumnSpec {
                 field_name: field.name.text.clone(),
                 column: cm::column_sql_name(&field.name.text),
@@ -1368,6 +1381,7 @@ fn generate_schema(
                 nullable,
                 primary_key: is_id,
                 generation,
+                sql_type_tag,
             }
         })
         .collect();

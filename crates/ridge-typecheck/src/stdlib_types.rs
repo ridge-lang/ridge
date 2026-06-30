@@ -2095,15 +2095,26 @@ fn reconciled_schema_fn_scheme(
     // dictionary-passing working in that self-build, where the later `?` guards would
     // otherwise short-circuit the whole function to `None`. The argument is a probe entity
     // (its value ignored) that pins the `HasSchema e` dictionary by its type.
-    if matches!(name, "generatedColumnsOf" | "identityColumnsOf") {
+    if matches!(
+        name,
+        "generatedColumnsOf" | "identityColumnsOf" | "identityColumnsOfShape"
+    ) {
         let has_schema = classes.id_by_name("HasSchema")?;
         let e = TyVid(0);
+        // `identityColumnsOfShape` reads the columns from an insert shape rather than a
+        // probe entity, so the typed insert verbs resolve them from the companion value
+        // they already hold; the other two take a probe entity `e`.
+        let arg = if name == "identityColumnsOfShape" {
+            Type::Con(b.insert_shape, vec![Type::Var(e)])
+        } else {
+            Type::Var(e)
+        };
         return Some(Scheme {
             vars: vec![e],
             cap_vars: vec![],
             row_vars: vec![],
             ty: Type::Fn {
-                params: vec![Type::Var(e)],
+                params: vec![arg],
                 ret: Box::new(Type::Con(b.list, vec![Type::Con(b.text, vec![])])),
                 caps: CapRow::Concrete(CapabilitySet::PURE),
             },
@@ -2239,6 +2250,29 @@ fn reconciled_schema_fn_scheme(
                 ty: Type::Fn {
                     params: vec![option(Type::Var(e))],
                     ret: Box::new(ent_e()),
+                    caps: pure(),
+                },
+                constraints: vec![Constraint::single(has_schema, e)],
+            })
+        }
+        // toInsertRow : ∀e. InsertShape e -> Map Text SqlValue where HasSchema e. The second
+        // `HasSchema` method: encodes the entity's insert shape — the entity minus its
+        // database-generated columns — to a row, so the write path turns a companion value into
+        // columns without ever encoding a generated key. The `HasSchema e` constraint passes the
+        // instance dictionary the same way `schemaOf` does.
+        "toInsertRow" => {
+            let has_schema = classes.id_by_name("HasSchema")?;
+            let map_row = Type::Con(
+                b.map,
+                vec![Type::Con(b.text, vec![]), Type::Con(b.sql_value, vec![])],
+            );
+            Some(Scheme {
+                vars: vec![e],
+                cap_vars: vec![],
+                row_vars: vec![],
+                ty: Type::Fn {
+                    params: vec![Type::Con(b.insert_shape, vec![Type::Var(e)])],
+                    ret: Box::new(map_row),
                     caps: pure(),
                 },
                 constraints: vec![Constraint::single(has_schema, e)],
@@ -2517,6 +2551,12 @@ fn reconciled_repo_fn_scheme(
     let list_e = || Type::Con(b.list, vec![Type::Var(e)]);
     // An optional decoded entity `Option e`.
     let option_e = || Type::Con(b.option, vec![Type::Var(e)]);
+    // The insert shape of entity `e` — `InsertShape e`, the entity minus its
+    // database-generated columns. The typed insert verbs take this rather than `e`,
+    // so a serial/identity column cannot be set by hand. It reduces to `e` itself
+    // when the entity has no generated column.
+    let insert_shape_e = || Type::Con(b.insert_shape, vec![Type::Var(e)]);
+    let list_insert_shape_e = || Type::Con(b.list, vec![insert_shape_e()]);
     // A raw column map `Map Text SqlValue`.
     let map_row = || {
         Type::Con(
@@ -2546,25 +2586,24 @@ fn reconciled_repo_fn_scheme(
     // callee (stdlib build) and the call site, so the two must agree.
     let with_adapter = || vec![Constraint::single(adapter, a)];
     let with_adapter_row = || vec![Constraint::single(row, e), Constraint::single(adapter, a)];
-    // The typed insert verbs additionally read the entity's schema to omit the
-    // database-generated columns, so they carry `HasSchema e` alongside `Row e` and
-    // `Adapter a`. The dict order is `[HasSchema e, Row e, Adapter a]`: the `e`-constrained
-    // dictionaries precede the `a`-constrained one, and within `e` the body reaches the
-    // schema (`generatedColumnsOf`) before it encodes the row (`toRow`), so `HasSchema`
-    // precedes `Row` — the order the stdlib build lowers the dictionaries, which the call
-    // site must match exactly.
-    let with_adapter_row_schema = || {
+    // The typed insert verbs encode the insert shape and read the entity's schema
+    // through `HasSchema e` — `toInsertRow` for the row and `identityColumnsOfShape`
+    // for the auto-increment columns — so the plain inserts carry only `HasSchema e`
+    // and `Adapter a`. The dict order is `[HasSchema e, Adapter a]`: the `e`-constrained
+    // dictionary precedes the `a`-constrained one, the order the stdlib build lowers
+    // the dictionaries, which the call site must match exactly.
+    let with_adapter_schema = || {
         vec![
             Constraint::single(has_schema, e),
-            Constraint::single(row, e),
             Constraint::single(adapter, a),
         ]
     };
-    // The RETURNING insert verbs decode the stored row back (`fromRow`/`decodeRows`) in
-    // addition to encoding and reading the schema, and that decode shifts `Row e` ahead of
-    // `HasSchema e` in the order the build lowers their dictionaries: `[Row e, HasSchema e,
-    // Adapter a]`. The plain (non-decoding) inserts use `with_adapter_row_schema` above; the
-    // two orders are not interchangeable, so each group takes the one its body produces.
+    // The RETURNING insert verbs also decode the stored row back (`fromRow`/`decodeRows`),
+    // so they carry `Row e` too. The build lowers their dictionaries in the order
+    // `[Row e, HasSchema e, Adapter a]` — `Row` ahead of `HasSchema`, the e-constrained
+    // dictionaries before the a-constrained one. The plain (non-decoding) inserts use
+    // `with_adapter_schema` above; the two orders are not interchangeable, so each group
+    // takes the one its body produces.
     let with_adapter_schema_returning = || {
         vec![
             Constraint::single(row, e),
@@ -2666,14 +2705,16 @@ fn reconciled_repo_fn_scheme(
             result(Type::Con(b.unit, vec![])),
             with_adapter(),
         ),
-        // insert : ∀e a. e -> Repo e a -> Result Unit Error where Adapter a, Row e, HasSchema e.
-        // The typed dual of `insertRow`: encodes the entity through `toRow`, omits the
-        // schema's database-generated columns, and appends it. Carries `Row e` because it
-        // derives the row and `HasSchema e` because it reads the entity's schema.
+        // insert : ∀e a. InsertShape e -> Repo e a -> Result Unit Error where Adapter a, HasSchema e.
+        // The typed dual of `insertRow`: takes the entity's insert shape — the entity minus its
+        // database-generated columns — encodes it through `HasSchema`'s `toInsertRow`, and appends
+        // it. Carries only `HasSchema e`: a serial/identity column is absent from the shape, so no
+        // `Row e` (the encode lives on the schema), and the column the in-memory store fills comes
+        // from `identityColumnsOfShape`.
         "insert" => method(
-            vec![Type::Var(e), repo_app()],
+            vec![insert_shape_e(), repo_app()],
             result(Type::Con(b.unit, vec![])),
-            with_adapter_row_schema(),
+            with_adapter_schema(),
         ),
         // insertRows : ∀e a. List (Map Text SqlValue) -> Repo e a
         //   -> Result Unit Error where Adapter a. The bulk dual of `insertRow`:
@@ -2683,31 +2724,30 @@ fn reconciled_repo_fn_scheme(
             result(Type::Con(b.unit, vec![])),
             with_adapter(),
         ),
-        // insertMany : ∀e a. List e -> Repo e a -> Result Unit Error
-        //   where Adapter a, Row e, HasSchema e. The bulk dual of `insert`: encodes each
-        //   entity through `toRow`, omits the generated columns, and appends the whole
-        //   batch in one statement.
+        // insertMany : ∀e a. List (InsertShape e) -> Repo e a -> Result Unit Error
+        //   where Adapter a, HasSchema e. The bulk dual of `insert`: encodes each insert
+        //   shape through `HasSchema`'s `toInsertRow` and appends the whole batch in one
+        //   statement.
         "insertMany" => method(
-            vec![list_e(), repo_app()],
+            vec![list_insert_shape_e(), repo_app()],
             result(Type::Con(b.unit, vec![])),
-            with_adapter_row_schema(),
+            with_adapter_schema(),
         ),
-        // insertReturning : ∀e a. e -> Repo e a -> Result e Error
-        //   where Adapter a, Row e, HasSchema e. Insert the entity and read the stored row
-        //   back, decoded (an INSERT … RETURNING *), so a server-filled column comes back
-        //   populated. Same `[HasSchema e, Row e, Adapter a]` dict order as `insert` — no
-        //   `List (Conflict e)` parameter to shift it, and the body omits and encodes the
-        //   row inline as `insert` does.
+        // insertReturning : ∀e a. InsertShape e -> Repo e a -> Result e Error
+        //   where Adapter a, Row e, HasSchema e. Insert the entity's insert shape and read the
+        //   stored row back, decoded (an INSERT … RETURNING *), so a server-filled column comes
+        //   back populated. Carries `Row e` for the decode on top of `HasSchema e` for the encode;
+        //   the dict order is `[Row e, HasSchema e, Adapter a]`.
         "insertReturning" => method(
-            vec![Type::Var(e), repo_app()],
+            vec![insert_shape_e(), repo_app()],
             result(Type::Var(e)),
             with_adapter_schema_returning(),
         ),
-        // insertManyReturning : ∀e a. List e -> Repo e a -> Result (List e) Error
-        //   where Adapter a, Row e, HasSchema e. The bulk dual of `insertReturning`; same
-        //   dict order as `insertMany`.
+        // insertManyReturning : ∀e a. List (InsertShape e) -> Repo e a -> Result (List e) Error
+        //   where Adapter a, Row e, HasSchema e. The bulk dual of `insertReturning`; same dict
+        //   order.
         "insertManyReturning" => method(
-            vec![list_e(), repo_app()],
+            vec![list_insert_shape_e(), repo_app()],
             result(list_e()),
             with_adapter_schema_returning(),
         ),

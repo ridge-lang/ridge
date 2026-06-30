@@ -195,16 +195,21 @@ pub fn identityColumns (s: EntitySchema e) -> List Text =
 -- ── Schema binding ────────────────────────────────────────────────────────────
 
 -- `HasSchema` binds an entity type to its schema descriptor, the way EF's
--- `IEntityTypeConfiguration<T>` binds a type to its mapping. The single method
--- answers the entity's `EntitySchema` from the type alone — there is no entity
--- value to read it off — so it takes a phantom `Option e` witness that fixes `e`,
--- the same dispatch `Row.rowColumns` uses. `deriving (Schema)` synthesises the
--- instance from the record's fields and the naming conventions, so the user
--- states only the deltas; a hand-written instance spells the mapping out. The
--- write path and the DDL renderer reach the instance through a witness drawn from
--- the repository, `schemaOf (entityWitness repo)`.
+-- `IEntityTypeConfiguration<T>` binds a type to its mapping. `schemaOf` answers
+-- the entity's `EntitySchema` from the type alone — there is no entity value to
+-- read it off — so it takes a phantom `Option e` witness that fixes `e`, the same
+-- dispatch `Row.rowColumns` uses. `toInsertRow` encodes an insert shape — the
+-- entity minus its database-generated columns — to a row, leaving those columns
+-- for the backend to fill; it is how the write path turns a typed insert value
+-- into columns without ever encoding a generated key. `deriving (Schema)`
+-- synthesises both from the record's fields and the naming conventions, so the
+-- user states only the deltas; a hand-written instance spells the mapping out.
+-- The write path and the DDL renderer reach the instance through a witness drawn
+-- from the repository, `schemaOf (entityWitness repo)`.
 pub class HasSchema e =
     schemaOf (witness: Option e) -> EntitySchema e
+    toInsertRow (shape: InsertShape e) -> Map Text SqlValue
+    toInsertRow (shape: InsertShape e) -> Map Text SqlValue
 
 -- The database-generated column set for entity `e`, reached by type through its
 -- `HasSchema` instance — the omit-on-insert set the write path reads without spelling
@@ -223,6 +228,17 @@ pub fn identityColumnsOf (probe: e) -> List Text where HasSchema e =
 -- A typed `None` witness from a probe value: ties `schemaOf`'s phantom `Option e` to the
 -- probe's entity, so the schema is selected by type while the value itself is ignored.
 fn probeWitness (_probe: e) -> Option e = None
+
+-- A typed `None` witness from an insert shape: the same trick as `probeWitness`, but
+-- pinned through the `InsertShape e` projection so the write path resolves the schema
+-- from a companion value (which has no generated key to read `e` off).
+fn shapeWitness (_shape: InsertShape e) -> Option e = None
+
+-- The identity column set reached from an insert shape — the auto-increment columns the
+-- in-memory store fills when an insert omits them. The shape variant of `identityColumnsOf`,
+-- used by the typed insert verbs whose argument is the companion rather than the entity.
+pub fn identityColumnsOfShape (shape: InsertShape e) -> List Text where HasSchema e =
+    identityColumns (schemaOf (shapeWitness shape))
 
 -- ── Internal list helpers ─────────────────────────────────────────────────────
 

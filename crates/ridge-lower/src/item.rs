@@ -803,10 +803,10 @@ pub fn lower_derived_instance(
         );
     }
 
-    // `Schema` derives the `HasSchema` instance — a single-method class whose
-    // `schemaOf` returns the entity's `EntitySchema`. The body is a `std.schema`
-    // builder chain over the columns, distinct from the structural single-method
-    // path that follows.
+    // `Schema` derives the `HasSchema` instance — `schemaOf` returns the entity's
+    // `EntitySchema` as a `std.schema` builder chain over the columns, and
+    // `toInsertRow` encodes the insert shape. Two methods and a two-field dict, so
+    // it has its own builder rather than the structural single-method path below.
     if let DerivedMethodBody::DerivedSchemaRecord {
         entity_name,
         table,
@@ -4610,7 +4610,23 @@ fn build_schema_instance(
     let fn_name = format!("HasSchema__{type_name}__schemaOf");
     push_row_method(ctx, &mut items, fn_name.clone(), "w", acc, sp);
 
-    // $inst_HasSchema_{Type} = #{ 'schemaOf' => fun schemaOfFn }
+    // toInsertRow (x: InsertShape T) -> Map Text SqlValue — encode the insert
+    // shape's columns (the entity minus its database-generated ones) the same way
+    // `Row.toRow` encodes a full entity, so the write path turns a companion value
+    // into columns without ever encoding a generated key.
+    let insert_body = build_to_insert_row_body(ctx, columns, sp);
+    let insert_fn_name = format!("HasSchema__{type_name}__toInsertRow");
+    push_row_method(
+        ctx,
+        &mut items,
+        insert_fn_name.clone(),
+        "x",
+        insert_body,
+        sp,
+    );
+
+    // $inst_HasSchema_{Type} = #{ 'schemaOf' => fun schemaOfFn,
+    //                             'toInsertRow' => fun toInsertRowFn }
     let dict_name = format!("$inst_HasSchema_{type_name}");
     let dict_value = IrExpr::Construct {
         id: ctx.fresh_id(None),
@@ -4620,17 +4636,30 @@ fn build_schema_instance(
             name: dict_name.clone(),
             variant: 0,
         },
-        fields: vec![(
-            "schemaOf".to_string(),
-            IrExpr::Symbol {
-                id: ctx.fresh_id(None),
-                sym: SymbolRef::Local {
-                    name: fn_name,
-                    module: ctx.module_id,
+        fields: vec![
+            (
+                "schemaOf".to_string(),
+                IrExpr::Symbol {
+                    id: ctx.fresh_id(None),
+                    sym: SymbolRef::Local {
+                        name: fn_name,
+                        module: ctx.module_id,
+                    },
+                    span: sp,
                 },
-                span: sp,
-            },
-        )],
+            ),
+            (
+                "toInsertRow".to_string(),
+                IrExpr::Symbol {
+                    id: ctx.fresh_id(None),
+                    sym: SymbolRef::Local {
+                        name: insert_fn_name,
+                        module: ctx.module_id,
+                    },
+                    span: sp,
+                },
+            ),
+        ],
         span: sp,
     };
     items.push(IrItem::Const(IrConst {
@@ -4758,6 +4787,81 @@ fn build_row_instance(
     }));
 
     items
+}
+
+/// Build the `toInsertRow` body for a derived `HasSchema` on a record: encode the
+/// insert shape's columns — every non-generated column that maps to a base
+/// `SqlType` — and assemble the `Map Text SqlValue` keyed by the snake-cased
+/// column name. It is `build_to_row_record_body` restricted to the insert shape:
+/// the database-generated columns are dropped (the backend fills them) and any
+/// column with no `SqlType` carries no insert encoding, so both are skipped.
+/// Reads `x.<field>` off the companion value, the same `x` parameter the other
+/// derived row methods bind.
+fn build_to_insert_row_body(
+    ctx: &mut LowerCtx<'_>,
+    columns: &[ridge_typecheck::SchemaColumnSpec],
+    sp: Span,
+) -> IrExpr {
+    let pairs: Vec<IrExpr> = columns
+        .iter()
+        .filter_map(|c| {
+            // Generated columns are filled by the backend; non-`SqlType` columns
+            // carry no insert encoding. Either way they are not in the row.
+            if c.generation.is_some() {
+                return None;
+            }
+            c.sql_type_tag.as_ref().map(|tag| (c, tag))
+        })
+        .map(|(c, type_tag)| {
+            let field_val = IrExpr::Field {
+                id: ctx.fresh_id(None),
+                base: Box::new(IrExpr::Local {
+                    id: ctx.fresh_id(None),
+                    name: "x".to_string(),
+                    span: sp,
+                }),
+                field: c.field_name.clone(),
+                span: sp,
+            };
+            let encoded = if c.nullable {
+                build_optional_to_sql_call(ctx, type_tag, field_val, sp)
+            } else {
+                build_to_sql_call(ctx, type_tag, field_val, sp)
+            };
+            IrExpr::Tuple {
+                id: ctx.fresh_id(None),
+                elems: vec![
+                    IrExpr::Lit {
+                        id: ctx.fresh_id(None),
+                        value: IrLit::Text(c.column.clone()),
+                        span: sp,
+                    },
+                    encoded,
+                ],
+                span: sp,
+            }
+        })
+        .collect();
+
+    let pairs_list = IrExpr::ListLit {
+        id: ctx.fresh_id(None),
+        elems: pairs,
+        span: sp,
+    };
+    // std.map.fromList(pairs_list) → the row map.
+    IrExpr::Call {
+        id: ctx.fresh_id(None),
+        callee: Box::new(IrExpr::Symbol {
+            id: ctx.fresh_id(None),
+            sym: SymbolRef::Stdlib {
+                module: "std.map".to_string(),
+                name: "fromList".to_string(),
+            },
+            span: sp,
+        }),
+        args: vec![pairs_list],
+        span: sp,
+    }
 }
 
 /// Build the `toRow` body for a derived `Row` on a record: encode each field

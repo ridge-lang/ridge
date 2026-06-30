@@ -60,9 +60,9 @@ fn alterAll (conn: MemAdapter) -> Result (List Text) Error =
     Migrate.run conn [ Migrate.migration "0003_alter" ops ]
 
 -- Insert one user into the migrated table.
-fn addUser (conn: MemAdapter) (uid: Int) (uname: Text) -> Result Unit Error =
+fn addUser (conn: MemAdapter) (_uid: Int) (uname: Text) -> Result Unit Error =
     let users: Repo User MemAdapter = Repo.repo conn "users"
-    Repo.insert (User { id = uid, name = uname }) users
+    Repo.insert (UserInsert { name = uname }) users
 
 -- How many users the migrated table holds, read back through the repository.
 fn countUsers (conn: MemAdapter) -> Int =

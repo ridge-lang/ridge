@@ -82,9 +82,11 @@ pub type Widget = { id: Int, name: Text } deriving (Row)
 -- generated columns: every column, the explicit id included, is written as given.
 instance HasSchema User =
     schemaOf (_w: Option User) -> EntitySchema User = schema "User" "ridge_pg_users"
+    toInsertRow (shape: InsertShape User) -> Map Text SqlValue = toRow shape
 
 instance HasSchema Widget =
     schemaOf (_w: Option Widget) -> EntitySchema Widget = schema "Widget" "ridge_mig_widgets"
+    toInsertRow (shape: InsertShape Widget) -> Map Text SqlValue = toRow shape
 
 -- A second entity for the join, in the `ridge_pg_posts` table; `author` holds the
 -- owning user's id.

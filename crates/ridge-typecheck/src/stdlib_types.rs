@@ -531,6 +531,17 @@ fn reconciled_decls(b: &BuiltinTyCons, base: u32) -> Vec<TyConDecl> {
                             Type::Con(b.bool, vec![]),
                         ]),
                     },
+                    // `CreateEntity` carries the entity-driven schema descriptor with its
+                    // phantom erased to `Unit` (`EntitySchema`, this block's `base + 30`),
+                    // so the backend renders the full `CREATE TABLE` rather than the
+                    // constraint-poor column tuple the other variants carry.
+                    UnionVariant {
+                        name: "CreateEntity".to_string(),
+                        kind: VariantPayload::Positional(vec![Type::Con(
+                            TyConId(base + 30),
+                            vec![Type::Con(b.unit, vec![])],
+                        )]),
+                    },
                 ],
             }),
             def_span: None,
@@ -2139,6 +2150,8 @@ fn reconciled_schema_fn_scheme(
     let fk_ty = || Type::Con(foreign_key, vec![]);
     let col_e = || Type::Con(column_schema, vec![Type::Var(e)]);
     let ent_e = || Type::Con(entity_schema, vec![Type::Var(e)]);
+    // `EntitySchema Unit` — the phantom-erased schema a migration step carries.
+    let ent_unit = || Type::Con(entity_schema, vec![Type::Con(b.unit, vec![])]);
     // The migration seam's column tuple `(Text, Text, Bool, Bool, Bool)` — the
     // `(name, base-type, nullable, primaryKey, unique)` the runner flattens a column to.
     let col_tuple = || Type::Tuple(vec![text(), text(), boolean(), boolean(), boolean()]);
@@ -2241,6 +2254,9 @@ fn reconciled_schema_fn_scheme(
         // generated-column readers.
         "schemaName" | "schemaTable" | "schemaToDdl" => poly1(vec![ent_e()], text()),
         "schemaColumns" => poly1(vec![ent_e()], list(col_e())),
+        // eraseSchema : ∀e. EntitySchema e -> EntitySchema Unit — drop the phantom
+        // entity so a non-parametric migration step can carry the descriptor.
+        "eraseSchema" => poly1(vec![ent_e()], ent_unit()),
         "generatedColumns" | "identityColumns" | "schemaIndexDdls" => {
             poly1(vec![ent_e()], list(text()))
         }
@@ -2311,16 +2327,33 @@ fn reconciled_migrate_fn_scheme(
     let column = *reconciled.get("Column")?;
     let schema_op = *reconciled.get("SchemaOp")?;
     let migration = *reconciled.get("Migration")?;
+    let entity_schema = *reconciled.get("EntitySchema")?;
     let text = || Type::Con(b.text, vec![]);
     let list = |x: Type| Type::Con(b.list, vec![x]);
     let pure = || CapRow::Concrete(CapabilitySet::PURE);
     let result = |ok: Type| Type::Con(b.result, vec![ok, Type::Con(b.error, vec![])]);
     let column_ty = || Type::Con(column, vec![]);
     let schema_op_ty = || Type::Con(schema_op, vec![]);
+    let e = TyVid(0);
+    let ent_e = || Type::Con(entity_schema, vec![Type::Var(e)]);
     // A monomorphic pure builder: `params -> ret`, no quantified vars or constraints.
     let mono = |params: Vec<Type>, ret: Type| {
         Some(Scheme {
             vars: vec![],
+            cap_vars: vec![],
+            row_vars: vec![],
+            ty: Type::Fn {
+                params,
+                ret: Box::new(ret),
+                caps: pure(),
+            },
+            constraints: vec![],
+        })
+    };
+    // A pure builder polymorphic in the phantom entity `e`: `∀e. params -> ret`.
+    let poly_e = |params: Vec<Type>, ret: Type| {
+        Some(Scheme {
+            vars: vec![e],
             cap_vars: vec![],
             row_vars: vec![],
             ty: Type::Fn {
@@ -2347,6 +2380,9 @@ fn reconciled_migrate_fn_scheme(
         "dropColumn" => mono(vec![text(), text()], schema_op_ty()),
         // createIndex / uniqueIndex : Text -> Text -> List Text -> SchemaOp
         "createIndex" | "uniqueIndex" => mono(vec![text(), text(), list(text())], schema_op_ty()),
+        // createSchema / dropSchema : ∀e. EntitySchema e -> SchemaOp — the entity-driven
+        // table create and drop, taking the schema descriptor in place of a column tuple.
+        "createSchema" | "dropSchema" => poly_e(vec![ent_e()], schema_op_ty()),
         // migration : Text -> List SchemaOp -> Migration
         "migration" => mono(
             vec![text(), list(schema_op_ty())],

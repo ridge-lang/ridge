@@ -1916,6 +1916,56 @@ pub fn db pgMigratedUsable () -> Int =
                                         Err _ -> 0 - 5
                                         Ok _  -> pgCountWidgets conn
 
+-- The entity-driven create against the live database: the migration builds the table
+-- from `deriving (Schema)` alone — no hand-written column list — and the descriptor's
+-- convention names the type's snake-plural table (`ridge_mig_gadgets`) and marks `id`
+-- an identity. So `createSchema` renders `CREATE TABLE ridge_mig_gadgets (id bigserial
+-- PRIMARY KEY, name text NOT NULL)`, the omitted id is assigned by the sequence on
+-- insert, and two rows count back.
+pub type RidgeMigGadget = { id: Int, name: Text } deriving (Row, Schema)
+
+fn gadgetWitness () -> Option RidgeMigGadget = None
+
+fn gadgetsSchema () -> SchemaOp =
+    Migrate.createSchema (schemaOf (gadgetWitness ()))
+
+fn runGadgets (conn: Postgres) -> Result (List Text) Error =
+    Migrate.run conn [ Migrate.migration "0001_gadgets" [ gadgetsSchema () ] ]
+
+fn pgClearGadgets (conn: Postgres) -> Result Int Error =
+    let r = Repo.repo conn "ridge_mig_gadgets"
+    Repo.deleteWhere (fn (g: RidgeMigGadget) -> g.id >= 0) r
+
+fn pgAddGadget (conn: Postgres) (gname: Text) -> Result Unit Error =
+    let r = Repo.repo conn "ridge_mig_gadgets"
+    Repo.insert (RidgeMigGadgetInsert { name = gname }) r
+
+fn pgCountGadgets (conn: Postgres) -> Int =
+    let r = Repo.repo conn "ridge_mig_gadgets"
+    match r |> Repo.query |> Repo.count
+        Ok n  -> n
+        Err _ -> 0 - 9
+
+-- The entity-driven create lands a real table with a `serial` identity column: the
+-- descriptor's CREATE TABLE runs, the omitted id is assigned on insert, and two rows
+-- count back -> 2. Clears the table first so the count is deterministic across runs.
+pub fn db pgEntityCreated () -> Int =
+    match connect (pgConfig ())
+        Err _ -> 0 - 1
+        Ok conn ->
+            match runGadgets conn
+                Err _ -> 0 - 2
+                Ok _  ->
+                    match pgClearGadgets conn
+                        Err _ -> 0 - 3
+                        Ok _  ->
+                            match pgAddGadget conn "alpha"
+                                Err _ -> 0 - 4
+                                Ok _  ->
+                                    match pgAddGadget conn "beta"
+                                        Err _ -> 0 - 5
+                                        Ok _  -> pgCountGadgets conn
+
 -- Raw-SQL escape hatch against the live database. Each probe seeds the users table
 -- through `setup` (clearing and inserting ada/lin/max), then opens a fresh
 -- connection and runs raw SQL over `ridge_pg_users`: a parameterised SELECT decoded
@@ -2271,6 +2321,7 @@ fn postgres_adapter_reads_a_real_table() {
          io:format(\"txSavepointCount=~w~n\",[{module}:txSavepointCount()]), \
          io:format(\"pgMigrateIdempotent=~w~n\",[{module}:pgMigrateIdempotent()]), \
          io:format(\"pgMigratedUsable=~w~n\",[{module}:pgMigratedUsable()]), \
+         io:format(\"pgEntityCreated=~w~n\",[{module}:pgEntityCreated()]), \
          io:format(\"rawAdults=~s~n\",[{module}:rawAdults()]), \
          io:format(\"rawFirstName=~s~n\",[{module}:rawFirstName()]), \
          io:format(\"rawBumpCount=~w~n\",[{module}:rawBumpCount()]), \
@@ -2702,6 +2753,10 @@ fn postgres_adapter_reads_a_real_table() {
         (
             "pgMigratedUsable=2",
             "a CREATE TABLE migration lands and the typed table accepts two inserts",
+        ),
+        (
+            "pgEntityCreated=2",
+            "an entity-driven createSchema renders the descriptor's CREATE TABLE with a serial id and the table accepts two inserts",
         ),
         (
             "rawAdults=lin,max",

@@ -26,6 +26,7 @@ import std.data (memAdapter, MemAdapter)
 import std.migrate as Migrate
 import std.migrate (SchemaOp)
 import std.repo as Repo
+import std.schema (schemaOf)
 import std.list (length)
 import std.sql (SqlValue)
 
@@ -33,6 +34,10 @@ import std.sql (SqlValue)
 -- `insert` omits it and the store assigns it; the probes count rows rather than
 -- assert a specific id.
 pub type User = { id: Int, name: Text } deriving (Row, Schema)
+
+-- A second entity used by the entity-driven migration probe: its table is created
+-- from `deriving (Schema)` alone, with no hand-written column list.
+pub type Account = { id: Int, label: Text } deriving (Row, Schema)
 
 -- Each table is built in its own helper (a statement-level `createTable` with its
 -- columns), and the schema list stays flat, so the entry points never name the
@@ -112,6 +117,42 @@ pub fn db altered () -> Int =
             match alterAll conn
                 Ok names -> length names
                 Err _    -> 0 - 2
+
+-- The entity-driven create: a migration builds the `accounts` table from the
+-- `Account` schema descriptor `deriving (Schema)` produced, with no hand-written
+-- column list. The phantom `Option Account` witness pins the schema by type.
+fn accountWitness () -> Option Account = None
+
+fn accountsSchema () -> SchemaOp =
+    Migrate.createSchema (schemaOf (accountWitness ()))
+
+fn applyAccounts (conn: MemAdapter) -> Result (List Text) Error =
+    Migrate.run conn [ Migrate.migration "0001_accounts" [ accountsSchema () ] ]
+
+fn addAccount (conn: MemAdapter) (alabel: Text) -> Result Unit Error =
+    let accounts: Repo Account MemAdapter = Repo.repo conn "accounts"
+    Repo.insert (AccountInsert { label = alabel }) accounts
+
+fn countAccounts (conn: MemAdapter) -> Int =
+    let accounts: Repo Account MemAdapter = Repo.repo conn "accounts"
+    match accounts |> Repo.query |> Repo.count
+        Ok n  -> n
+        Err _ -> 0 - 1
+
+-- An entity-driven migration creates a usable table straight from `deriving (Schema)`:
+-- the table materialises, its identity `id` is omitted on insert and assigned by the
+-- store, and two rows count back.
+pub fn db entityDriven () -> Int =
+    let conn = memAdapter ()
+    match applyAccounts conn
+        Err _ -> 0 - 1
+        Ok _  ->
+            match addAccount conn "ops"
+                Err _ -> 0 - 2
+                Ok _  ->
+                    match addAccount conn "eng"
+                        Err _ -> 0 - 3
+                        Ok _  -> countAccounts conn
 "#;
 
 // ── Workspace setup ───────────────────────────────────────────────────────────
@@ -191,6 +232,7 @@ fn migrations_apply_track_and_are_idempotent_on_beam() {
          io:format(\"idempotent=~w~n\",[{module}:idempotent()]), \
          io:format(\"usable=~w~n\",[{module}:usable()]), \
          io:format(\"altered=~w~n\",[{module}:altered()]), \
+         io:format(\"entityDriven=~w~n\",[{module}:entityDriven()]), \
          halt()."
     );
     let output = Command::new("erl")
@@ -224,5 +266,10 @@ fn migrations_apply_track_and_are_idempotent_on_beam() {
     assert!(
         stdout.contains("altered=1"),
         "expected `altered=1` — the alter migration's schema verbs should all run and commit\nstdout:\n{stdout}\nstderr:\n{stderr}"
+    );
+    // An entity-driven migration creates a usable table from `deriving (Schema)` alone.
+    assert!(
+        stdout.contains("entityDriven=2"),
+        "expected `entityDriven=2` — createSchema should build a usable table from the descriptor\nstdout:\n{stdout}\nstderr:\n{stderr}"
     );
 }

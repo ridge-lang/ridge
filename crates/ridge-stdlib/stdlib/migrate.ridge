@@ -41,6 +41,10 @@
 -- importing the module and called against the connection, the same way `std.repo`
 -- reaches the seam.
 import std.data as Db
+-- The rich schema descriptor an entity-driven migration step carries: `eraseSchema`
+-- drops its phantom entity so a non-parametric `SchemaOp` can hold it, and
+-- `schemaTable` names the table a drop targets.
+import std.schema (EntitySchema, eraseSchema, schemaTable)
 
 -- A column in a table definition: its name, its base type, and the three
 -- modifiers a schema cares about — whether it admits SQL NULL, whether it is the
@@ -89,7 +93,7 @@ pub fn unique (c: Column) -> Column =
 -- `uniqueIndex` factories and handed to `migration`, and the runner decomposes it
 -- onto the adapter's schema seam — so user code names the type but never the
 -- variants.
-pub type SchemaOp = CreateTable Text (List Column) | DropTable Text | AddColumn Text Column | DropColumn Text Text | CreateIndex Text Text (List Text) Bool
+pub type SchemaOp = CreateTable Text (List Column) | DropTable Text | AddColumn Text Column | DropColumn Text Text | CreateIndex Text Text (List Text) Bool | CreateEntity (EntitySchema Unit)
 
 -- Create a table with the given columns.
 pub fn createTable (table: Text) (cols: List Column) -> SchemaOp =
@@ -117,6 +121,26 @@ pub fn createIndex (name: Text) (table: Text) (cols: List Text) -> SchemaOp =
 -- as a uniqueness constraint across the named columns together.
 pub fn uniqueIndex (name: Text) (table: Text) (cols: List Text) -> SchemaOp =
     CreateIndex name table cols true
+
+-- Create a table from an entity's schema descriptor rather than a hand-written
+-- column list. The descriptor — the value `deriving (Schema)` builds, read back with
+-- `schemaOf` — carries the full column mapping (types, generation, foreign keys,
+-- checks, indexes) that the `createTable` tuple cannot express, so a migration
+-- creates a table that matches its entity without restating every column. The schema
+-- is selected by type through a phantom `Option e` witness:
+--   fn userWitness () -> Option User = None
+--   createSchema (schemaOf (userWitness ()))
+-- The backend renders the descriptor to its own `CREATE TABLE` (a Postgres identity
+-- column becomes `serial`, and so on); the in-memory store materialises the table by
+-- name. The phantom entity is dropped here so the step can sit in a `Migration`'s
+-- list alongside steps for other entities.
+pub fn createSchema (s: EntitySchema e) -> SchemaOp =
+    CreateEntity (eraseSchema s)
+
+-- Drop the table an entity's schema names — the entity-driven counterpart to
+-- `dropTable`, taking the descriptor instead of a bare table name.
+pub fn dropSchema (s: EntitySchema e) -> SchemaOp =
+    DropTable (schemaTable s)
 
 -- A named, ordered batch of schema changes. The name identifies the migration in
 -- the tracking table, so it must be stable and unique across a project's
@@ -150,6 +174,7 @@ fn runStep (conn: a) (op: SchemaOp) -> Result Unit Error where Adapter a =
         AddColumn table col         -> ddlAddColumn conn table (colTuple col)
         DropColumn table col        -> ddlDropColumn conn table col
         CreateIndex name table cols uniq -> ddlIndex conn name table cols uniq
+        CreateEntity schema         -> ddlCreateEntity conn schema
 
 -- Run a migration's steps in order, stopping at the first failure.
 fn runSteps (conn: a) (steps: List SchemaOp) -> Result Unit Error where Adapter a =

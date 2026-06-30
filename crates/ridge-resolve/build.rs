@@ -512,6 +512,7 @@ const BASELINE_EXPORTS: &[(&str, &[&str])] = &[
             "ddlAddColumn",
             "ddlDropColumn",
             "ddlIndex",
+            "ddlCreateEntity",
             "migrationsApplied",
             "recordMigration",
             // Raw-SQL escape hatch (typed front door in std.raw): a parameterised
@@ -804,6 +805,7 @@ const BASELINE_EXPORTS: &[(&str, &[&str])] = &[
             "schemaName",
             "schemaTable",
             "schemaColumns",
+            "eraseSchema",
             "generatedColumns",
             "identityColumns",
             // The Postgres DDL renderer: `schemaToDdl` renders an entity's
@@ -849,6 +851,8 @@ const BASELINE_EXPORTS: &[(&str, &[&str])] = &[
             "dropColumn",
             "createIndex",
             "uniqueIndex",
+            "createSchema",
+            "dropSchema",
             "Migration",
             "migration",
             // The migration runner: apply the pending migrations in order, each in

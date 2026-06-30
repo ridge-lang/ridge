@@ -181,6 +181,23 @@ pub fn schemaName (s: EntitySchema e) -> Text = s.name
 pub fn schemaTable (s: EntitySchema e) -> Text = s.table
 pub fn schemaColumns (s: EntitySchema e) -> List (ColumnSchema e) = s.columns
 
+-- Erase a schema's phantom entity, fixing it at `Unit`. The phantom is a
+-- build-time guard — it keeps columns of different entities from mixing while a
+-- schema is assembled — and describes no runtime data, so erasing it preserves the
+-- schema exactly. A migration step is a non-parametric value, so it cannot carry an
+-- `EntitySchema e` for an arbitrary `e`; `eraseSchema` gives it the one schema type
+-- a step can hold, and the storage adapter renders that to its dialect's DDL.
+pub fn eraseSchema (s: EntitySchema e) -> EntitySchema Unit =
+    EntitySchema { name = s.name, table = s.table, columns = eraseColumns s.columns }
+
+fn eraseColumns (cols: List (ColumnSchema e)) -> List (ColumnSchema Unit) =
+    match cols
+        []        -> []
+        c :: rest -> eraseColumn c :: eraseColumns rest
+
+fn eraseColumn (c: ColumnSchema e) -> ColumnSchema Unit =
+    ColumnSchema { name = c.name, column = c.column, ty = c.ty, nullable = c.nullable, generation = c.generation, primaryKey = c.primaryKey, unique = c.unique, indexed = c.indexed, foreignKey = c.foreignKey, check = c.check }
+
 -- The SQL column names whose value is database-generated — the omit-on-insert
 -- set the write path reads. Order follows declaration order.
 pub fn generatedColumns (s: EntitySchema e) -> List Text =

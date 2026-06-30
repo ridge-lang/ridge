@@ -1665,6 +1665,7 @@ mod tests {
                             | "ddlAddColumn"
                             | "ddlDropColumn"
                             | "ddlIndex"
+                            | "ddlCreateEntity"
                             | "migrationsApplied"
                             | "recordMigration"
                             | "rawQuery"

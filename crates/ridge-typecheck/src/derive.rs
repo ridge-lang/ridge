@@ -1353,9 +1353,10 @@ fn generate_schema(
             let db_type = cm::db_type_tag(&field.ty).to_string();
             // A non-null integer `id` is the conventional serial primary key —
             // identity-generated so the insert path can fill it. A non-integer or
-            // nullable `id` is still the key, but supplied by the caller. (The
-            // convention maps `Int` to `DbBigInt`, so that tag identifies it.)
-            let generation = if is_id && !nullable && db_type == "DbBigInt" {
+            // nullable `id` is still the key, but supplied by the caller. The same
+            // predicate decides which columns the insert companion drops, so both
+            // read it from `column_mirror`.
+            let generation = if cm::is_generated_field(&field.name.text, &field.ty) {
                 Some("Identity".to_string())
             } else {
                 None

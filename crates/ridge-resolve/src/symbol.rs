@@ -485,9 +485,62 @@ impl<'ast> Visit<'ast> for TopLevelCollector {
                             );
                         }
 
-                        // `deriving (Schema)` reserves no user-visible value name:
-                        // it derives a `HasSchema` instance (like `Row`), reached
-                        // by type through `schemaOf`, not a named descriptor const.
+                        // `deriving (Schema)` derives a `HasSchema` instance (like
+                        // `Row`), reached by type through `schemaOf`, so it reserves
+                        // no descriptor const. It DOES synthesize an insert companion
+                        // — the entity minus its database-generated columns — for an
+                        // entity that has any such column, so register that record's
+                        // name and auto-constructor here; the type and its `Row`
+                        // instance are synthesized later (type checking, then
+                        // lowering). The companion inherits the entity's visibility.
+                        // An entity with no generated column gets no companion (its
+                        // insert shape is the entity itself), so reserve nothing.
+                        if ridge_ast::column_mirror::has_schema_derive(&d.deriving)
+                            && rec.fields.iter().any(|f| {
+                                ridge_ast::column_mirror::is_generated_field(&f.name.text, &f.ty)
+                            })
+                        {
+                            let companion = ridge_ast::column_mirror::insert_companion_type_name(
+                                d.name.text.as_str(),
+                            );
+                            let companion_arity = rec
+                                .fields
+                                .iter()
+                                .filter(|f| {
+                                    !ridge_ast::column_mirror::is_generated_field(
+                                        &f.name.text,
+                                        &f.ty,
+                                    )
+                                })
+                                .count()
+                                .try_into()
+                                .unwrap_or(u32::MAX);
+                            if let Some(companion_type_id) = self.push(
+                                companion.clone(),
+                                SymbolKind::Type {
+                                    arity: 0,
+                                    opaque: false,
+                                },
+                                vis,
+                                d.span,
+                                true,
+                            ) {
+                                self.push(
+                                    companion,
+                                    SymbolKind::Constructor {
+                                        owner_type: companion_type_id,
+                                        variant: 0,
+                                        arity: companion_arity,
+                                        is_record: true,
+                                        owner_module,
+                                        opaque: false,
+                                    },
+                                    vis,
+                                    d.span,
+                                    false, // NOT in index — the type's name is already there
+                                );
+                            }
+                        }
                     }
                     ridge_ast::TypeBody::Union(union_body) => {
                         for (idx, alt) in union_body.alternatives.iter().enumerate() {

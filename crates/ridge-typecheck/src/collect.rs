@@ -970,6 +970,11 @@ fn builtin_tycon_id_by_name(name: &str) -> Option<TyConId> {
         // verb (`fullJoinOn`'s return); reduces during unification. Interned right
         // after `RightJoinResult/2` (see `ridge_types::FULLJOINRESULT_TYCON_ID`).
         "FullJoinResult" => Some(TyConId(ridge_types::FULLJOINRESULT_TYCON_ID)),
+        // `InsertShape/1` — the insert-input shape projection for the typed insert
+        // verbs (`InsertShape e`, the entity minus its database-generated columns);
+        // reduces during unification. Interned right after `FullJoinResult/2`
+        // (see `ridge_types::INSERTSHAPE_TYCON_ID`).
+        "InsertShape" => Some(TyConId(ridge_types::INSERTSHAPE_TYCON_ID)),
         _ => None,
     }
 }

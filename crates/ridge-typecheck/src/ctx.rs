@@ -393,6 +393,23 @@ pub struct InferCtx {
     /// reconciled stdlib names; `None` in scaffolding (or a workspace without the
     /// query builder), where the projection simply stays stuck.
     pub rows_tycons: Option<RowsTycons>,
+
+    /// The per-entity targets the `InsertShape e` projection reduces against:
+    /// each entity `e` deriving a schema maps to the record a typed insert accepts
+    /// for it — a synthesized `<Entity>Insert` companion when the schema marks
+    /// database-generated columns, or the entity itself when it marks none (so the
+    /// projection is the identity and an insert of that entity is unchanged).
+    /// Populated by [`crate::tycon_collect::synth_insert_shapes`] from the same
+    /// derive convention that seeds `HasSchema`; empty in a workspace with no such
+    /// entities, where `InsertShape e` simply stays stuck.
+    pub insert_shapes: FxHashMap<TyConId, TyConId>,
+
+    /// The inverse of [`Self::insert_shapes`] restricted to entities that DO have
+    /// a distinct companion: companion id → entity id. It lets the invertible
+    /// reduction recover the entity from a concrete companion, so a stuck
+    /// `InsertShape ?e` unified against a `<Entity>Insert` pins `?e` to `<Entity>`
+    /// regardless of which argument carries the entity first.
+    pub insert_shape_entities: FxHashMap<TyConId, TyConId>,
 }
 
 /// The reconciled tycon ids the `Rows q` projection reduces against. `Query`,
@@ -476,6 +493,8 @@ impl InferCtx {
             name_schemes_accum: FxHashMap::default(),
             quoted_lambdas_accum: FxHashMap::default(),
             rows_tycons: None,
+            insert_shapes: FxHashMap::default(),
+            insert_shape_entities: FxHashMap::default(),
         }
     }
 
@@ -696,6 +715,55 @@ impl InferCtx {
             ]));
         }
         None
+    }
+
+    /// Forward reduction for `InsertShape e`: the record a typed insert accepts.
+    ///
+    /// A concrete entity whose schema marks database-generated columns reduces to
+    /// its synthesized `<Entity>Insert` companion; any other concrete entity is
+    /// its own insert shape (no generated columns to drop), so the projection is
+    /// the identity there. Returns `None` only while `e` is still a variable,
+    /// leaving the projection stuck until the entity is pinned.
+    ///
+    /// The identity fallback is what lets an entity with no generated columns —
+    /// and one defined in another module without its mapping rebuilt locally — be
+    /// its own shape without a table entry; only entities that DO have a distinct
+    /// companion need to be listed.
+    #[must_use]
+    pub fn reduce_insert_shape_arg(&self, e: &Type) -> Option<Type> {
+        let Type::Con(eid, _) = e else {
+            return None;
+        };
+        Some(
+            self.insert_shapes
+                .get(eid)
+                .map_or_else(|| e.clone(), |shape| Type::Con(*shape, vec![])),
+        )
+    }
+
+    /// Inverse reduction for `InsertShape e`: recover the entity a concrete shape
+    /// belongs to, so a stuck `InsertShape ?e` unified against it pins `?e`.
+    ///
+    /// A `<Entity>Insert` companion recovers `<Entity>`; any other arity-0 type is
+    /// its own shape and recovers itself (the identity case for an entity with no
+    /// generated columns). Returns `None` for a variable or applied type.
+    ///
+    /// This pins the entity but does not by itself accept the unification: the
+    /// caller re-runs it, and the forward reduction then maps the pinned entity to
+    /// its real shape — so a full entity that HAS a distinct companion still
+    /// reduces to that companion and mismatches, keeping a hand-written generated
+    /// column a type error.
+    #[must_use]
+    pub fn insert_shape_inverse(&self, t: &Type) -> Option<Type> {
+        let Type::Con(tid, args) = t else {
+            return None;
+        };
+        if !args.is_empty() {
+            return None;
+        }
+        // A companion recovers its entity; anything else is its own insert shape.
+        let entity = self.insert_shape_entities.get(tid).copied().unwrap_or(*tid);
+        Some(Type::Con(entity, vec![]))
     }
 
     /// The ordered leaf entities a join receiver `q` carries, left to right — the
@@ -1009,6 +1077,15 @@ impl InferCtx {
                     if let Some(reduced) =
                         self.reduce_fulljoinresult_arg(&new_args[0], &new_args[1])
                     {
+                        return reduced;
+                    }
+                }
+                // `InsertShape e` normalises to the record a typed insert accepts —
+                // the `<Entity>Insert` companion when the entity's schema marks
+                // generated columns, the entity itself when it marks none. Stuck
+                // while `e` is a variable or carries no shape-table entry.
+                if id.0 == ridge_types::INSERTSHAPE_TYCON_ID && new_args.len() == 1 {
+                    if let Some(reduced) = self.reduce_insert_shape_arg(&new_args[0]) {
                         return reduced;
                     }
                 }

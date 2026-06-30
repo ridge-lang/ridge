@@ -26,7 +26,10 @@ import std.data (memAdapter, MemAdapter)
 import std.repo as Repo
 import std.sql (SqlValue)
 
-pub type User = { id: Int, name: Text } deriving (Row)
+-- `deriving (Schema)` makes `id` an identity column by convention, so the typed
+-- `insert` omits it and the store assigns it; the transaction probes count rows and
+-- never assert a specific id, so the database-assigned ids do not affect them.
+pub type User = { id: Int, name: Text } deriving (Row, Schema)
 
 fn mkUser (uid: Int) (uname: Text) -> User =
     User { id = uid, name = uname }

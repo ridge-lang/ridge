@@ -29,7 +29,10 @@ import std.repo as Repo
 import std.list (length)
 import std.sql (SqlValue)
 
-pub type User = { id: Int, name: Text } deriving (Row)
+-- `deriving (Schema)` makes `id` an identity column by convention, so the typed
+-- `insert` omits it and the store assigns it; the probes count rows rather than
+-- assert a specific id.
+pub type User = { id: Int, name: Text } deriving (Row, Schema)
 
 -- Each table is built in its own helper (a statement-level `createTable` with its
 -- columns), and the schema list stays flat, so the entry points never name the

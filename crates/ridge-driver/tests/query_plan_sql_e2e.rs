@@ -129,14 +129,14 @@ fn renderMutBinds (plan: MutationPlan) -> Text =
 
 -- A single-row INSERT: the column list comes from the row (in column-name order),
 -- each value a `$N` placeholder bound left to right.
-pub fn insertSql () -> Text = renderMutSql (planInsert "users" [Map.fromList [("id", sqlInt 1), ("name", sqlText "ada")]])
-pub fn insertBinds () -> Text = renderMutBinds (planInsert "users" [Map.fromList [("id", sqlInt 1), ("name", sqlText "ada")]])
+pub fn insertSql () -> Text = renderMutSql (planInsert "users" [Map.fromList [("id", sqlInt 1), ("name", sqlText "ada")]] [])
+pub fn insertBinds () -> Text = renderMutBinds (planInsert "users" [Map.fromList [("id", sqlInt 1), ("name", sqlText "ada")]] [])
 
 -- A bulk INSERT over two rows sharing the same columns: the column list (from the
 -- first row) renders once, then one parenthesised `$N` tuple per row, the binds
 -- threaded id,name,id,name across both rows — one statement for the whole batch.
-pub fn insertManySql () -> Text = renderMutSql (planInsert "users" [Map.fromList [("id", sqlInt 1), ("name", sqlText "ada")], Map.fromList [("id", sqlInt 2), ("name", sqlText "bob")]])
-pub fn insertManyBinds () -> Text = renderMutBinds (planInsert "users" [Map.fromList [("id", sqlInt 1), ("name", sqlText "ada")], Map.fromList [("id", sqlInt 2), ("name", sqlText "bob")]])
+pub fn insertManySql () -> Text = renderMutSql (planInsert "users" [Map.fromList [("id", sqlInt 1), ("name", sqlText "ada")], Map.fromList [("id", sqlInt 2), ("name", sqlText "bob")]] [])
+pub fn insertManyBinds () -> Text = renderMutBinds (planInsert "users" [Map.fromList [("id", sqlInt 1), ("name", sqlText "ada")], Map.fromList [("id", sqlInt 2), ("name", sqlText "bob")]] [])
 
 -- An UPDATE binds its SET assignment first ($1) and then its WHERE ($2).
 pub fn updateSql () -> Text = renderMutSql (planUpdate "users" (Map.fromList [("age", sqlInt 99)]) (pred1 (fn (u: User) -> u.id == 1)))
@@ -182,11 +182,11 @@ fn renderMutReturningBinds (plan: MutationPlan) (cols: List Text) -> Text =
 
 -- An INSERT with `RETURNING *`: the insert renders unchanged, the tail asks for every
 -- column of the inserted row, and the bind count stays at the two values.
-pub fn insertReturningStarSql () -> Text = renderMutReturningSql (planInsert "users" [Map.fromList [("id", sqlInt 1), ("name", sqlText "ada")]]) []
-pub fn insertReturningStarBinds () -> Text = renderMutReturningBinds (planInsert "users" [Map.fromList [("id", sqlInt 1), ("name", sqlText "ada")]]) []
+pub fn insertReturningStarSql () -> Text = renderMutReturningSql (planInsert "users" [Map.fromList [("id", sqlInt 1), ("name", sqlText "ada")]] []) []
+pub fn insertReturningStarBinds () -> Text = renderMutReturningBinds (planInsert "users" [Map.fromList [("id", sqlInt 1), ("name", sqlText "ada")]] []) []
 
 -- A named RETURNING projection quotes each column.
-pub fn insertReturningColsSql () -> Text = renderMutReturningSql (planInsert "users" [Map.fromList [("id", sqlInt 1), ("name", sqlText "ada")]]) ["id", "name"]
+pub fn insertReturningColsSql () -> Text = renderMutReturningSql (planInsert "users" [Map.fromList [("id", sqlInt 1), ("name", sqlText "ada")]] []) ["id", "name"]
 
 -- A DELETE … RETURNING * hands back the removed rows; the WHERE still binds $1.
 pub fn deleteReturningSql () -> Text = renderMutReturningSql (planDelete "users" (pred1 (fn (u: User) -> u.age < 18))) []

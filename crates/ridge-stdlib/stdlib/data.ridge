@@ -521,7 +521,7 @@ pub fn db connectWith (cfg: Config) (pool: PoolConfig) -> Result Postgres Error 
 
 instance Adapter Postgres =
     appendRow (conn: Postgres) (table: Text) (row: Map Text SqlValue) -> Result Unit Error =
-        match mutationToSql (planInsert table [row])
+        match mutationToSql (planInsert table [row] [])
             (s, binds) ->
                 match _pgRawExec conn.id (sqlValue s) binds
                     Ok _  -> Ok ()

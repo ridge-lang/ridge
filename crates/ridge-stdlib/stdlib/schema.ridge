@@ -184,6 +184,14 @@ pub fn schemaColumns (s: EntitySchema e) -> List (ColumnSchema e) = s.columns
 pub fn generatedColumns (s: EntitySchema e) -> List Text =
     generatedNames s.columns
 
+-- The SQL column names the database assigns as an identity/serial — a subset of
+-- `generatedColumns` (only `Identity`, not the `DefaultNow`/`DefaultLit`/
+-- `DefaultRawSql` forms). The write path hands this set to the insert plan so the
+-- in-memory store can fill the omitted column with the next integer, the way a
+-- serial default fills it on a real database. Order follows declaration order.
+pub fn identityColumns (s: EntitySchema e) -> List Text =
+    identityNames s.columns
+
 -- ── Schema binding ────────────────────────────────────────────────────────────
 
 -- `HasSchema` binds an entity type to its schema descriptor, the way EF's
@@ -198,6 +206,24 @@ pub fn generatedColumns (s: EntitySchema e) -> List Text =
 pub class HasSchema e =
     schemaOf (witness: Option e) -> EntitySchema e
 
+-- The database-generated column set for entity `e`, reached by type through its
+-- `HasSchema` instance — the omit-on-insert set the write path reads without spelling
+-- out the witness-and-`schemaOf` dance at every insert verb. It takes a probe value of
+-- the entity (its value ignored) so the dictionary is pinned by the argument's type, and
+-- answers the column names, so the caller never handles the opaque `EntitySchema` across
+-- a module boundary.
+pub fn generatedColumnsOf (probe: e) -> List Text where HasSchema e =
+    generatedColumns (schemaOf (probeWitness probe))
+
+-- The identity column set for entity `e`, reached the same way — the auto-increment set
+-- the in-memory store fills when an insert omits it.
+pub fn identityColumnsOf (probe: e) -> List Text where HasSchema e =
+    identityColumns (schemaOf (probeWitness probe))
+
+-- A typed `None` witness from a probe value: ties `schemaOf`'s phantom `Option e` to the
+-- probe's entity, so the schema is selected by type while the value itself is ignored.
+fn probeWitness (_probe: e) -> Option e = None
+
 -- ── Internal list helpers ─────────────────────────────────────────────────────
 
 fn appendColumn (cols: List (ColumnSchema e)) (c: ColumnSchema e) -> List (ColumnSchema e) =
@@ -211,3 +237,11 @@ fn generatedNames (cols: List (ColumnSchema e)) -> List Text =
         c :: rest ->
             if colGenerated c then c.column :: generatedNames rest
             else generatedNames rest
+
+fn identityNames (cols: List (ColumnSchema e)) -> List Text =
+    match cols
+        []        -> []
+        c :: rest ->
+            match c.generation
+                Identity -> c.column :: identityNames rest
+                _        -> identityNames rest

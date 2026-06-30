@@ -1199,7 +1199,8 @@ fn reconciled_decls(b: &BuiltinTyCons, base: u32) -> Vec<TyConDecl> {
             is_anon: false,
         },
         // `std.query` — the mutation-plan tree (stdlib/query.ridge), the write-side
-        // counterpart of `QueryPlan`. `MutInsert table rows` appends one or more rows;
+        // counterpart of `QueryPlan`. `MutInsert table rows identityCols` appends one or
+        // more rows, the backend filling the database-generated `identityCols` the rows omit;
         // `MutUpsert table rows conflictCols updateCols` appends rows, resolving a
         // unique-constraint conflict over `conflictCols` by overwriting `updateCols`
         // (`ON CONFLICT … DO UPDATE`) or, with no update columns, leaving the row
@@ -1226,6 +1227,9 @@ fn reconciled_decls(b: &BuiltinTyCons, base: u32) -> Vec<TyConDecl> {
                                     vec![Type::Con(b.text, vec![]), Type::Con(b.sql_value, vec![])],
                                 )],
                             ),
+                            // identityCols: the database-generated identity columns the
+                            // rows omit, a `List Text` the backend fills in their place.
+                            Type::Con(b.list, vec![Type::Con(b.text, vec![])]),
                         ]),
                     },
                     UnionVariant {
@@ -2039,8 +2043,8 @@ fn reconciled_mutation_plan_fn_scheme(
         constraints: vec![],
     };
     match name {
-        // planInsert : Text -> List (Map Text SqlValue) -> MutationPlan
-        "planInsert" => Some(pure(vec![text(), rows()], plan())),
+        // planInsert : Text -> List (Map Text SqlValue) -> List Text -> MutationPlan
+        "planInsert" => Some(pure(vec![text(), rows(), text_list()], plan())),
         // planUpsert : Text -> List (Map Text SqlValue) -> List Text -> List Text -> MutationPlan
         "planUpsert" => Some(pure(vec![text(), rows(), text_list(), text_list()], plan())),
         // planUpdate : Text -> Map Text SqlValue -> QExpr -> MutationPlan
@@ -2083,6 +2087,29 @@ fn reconciled_schema_fn_scheme(
     b: &BuiltinTyCons,
     classes: &ClassTable,
 ) -> Option<Scheme> {
+    // The probe-driven column-set readers `generatedColumnsOf`/`identityColumnsOf`:
+    // `∀e. e -> List Text where HasSchema e`. They reference no descriptor TyCon — only
+    // the `HasSchema` class and builtins — so they are resolved before the schema-type
+    // lookups below, which are absent while the stdlib bundle itself is being built (the
+    // reconciled type map is empty then). Resolving them up front keeps the write path's
+    // dictionary-passing working in that self-build, where the later `?` guards would
+    // otherwise short-circuit the whole function to `None`. The argument is a probe entity
+    // (its value ignored) that pins the `HasSchema e` dictionary by its type.
+    if matches!(name, "generatedColumnsOf" | "identityColumnsOf") {
+        let has_schema = classes.id_by_name("HasSchema")?;
+        let e = TyVid(0);
+        return Some(Scheme {
+            vars: vec![e],
+            cap_vars: vec![],
+            row_vars: vec![],
+            ty: Type::Fn {
+                params: vec![Type::Var(e)],
+                ret: Box::new(Type::Con(b.list, vec![Type::Con(b.text, vec![])])),
+                caps: CapRow::Concrete(CapabilitySet::PURE),
+            },
+            constraints: vec![Constraint::single(has_schema, e)],
+        });
+    }
     let db_type = *reconciled.get("DbType")?;
     let generation = *reconciled.get("Generation")?;
     let fk_action = *reconciled.get("FkAction")?;
@@ -2196,7 +2223,7 @@ fn reconciled_schema_fn_scheme(
         "withColumn" => poly1(vec![col_e(), ent_e()], ent_e()),
         "schemaName" | "schemaTable" => poly1(vec![ent_e()], text()),
         "schemaColumns" => poly1(vec![ent_e()], list(col_e())),
-        "generatedColumns" => poly1(vec![ent_e()], list(text())),
+        "generatedColumns" | "identityColumns" => poly1(vec![ent_e()], list(text())),
         // schemaOf : ∀e. Option e -> EntitySchema e where HasSchema e. The single
         // method of the `HasSchema` binding class, dispatched by a phantom
         // `Option e` witness (the same shape `Row.rowColumns` uses). The
@@ -2477,6 +2504,7 @@ fn reconciled_repo_fn_scheme(
     let query_con = *reconciled.get("Query")?;
     let adapter = classes.id_by_name("Adapter")?;
     let row = classes.id_by_name("Row")?;
+    let has_schema = classes.id_by_name("HasSchema")?;
     // Scheme-level placeholder vars: entity `e` and adapter `a`. Fresh copies
     // are made on each instantiation, so the fixed ids here are dummies.
     let e = TyVid(0);
@@ -2518,6 +2546,32 @@ fn reconciled_repo_fn_scheme(
     // callee (stdlib build) and the call site, so the two must agree.
     let with_adapter = || vec![Constraint::single(adapter, a)];
     let with_adapter_row = || vec![Constraint::single(row, e), Constraint::single(adapter, a)];
+    // The typed insert verbs additionally read the entity's schema to omit the
+    // database-generated columns, so they carry `HasSchema e` alongside `Row e` and
+    // `Adapter a`. The dict order is `[HasSchema e, Row e, Adapter a]`: the `e`-constrained
+    // dictionaries precede the `a`-constrained one, and within `e` the body reaches the
+    // schema (`generatedColumnsOf`) before it encodes the row (`toRow`), so `HasSchema`
+    // precedes `Row` — the order the stdlib build lowers the dictionaries, which the call
+    // site must match exactly.
+    let with_adapter_row_schema = || {
+        vec![
+            Constraint::single(has_schema, e),
+            Constraint::single(row, e),
+            Constraint::single(adapter, a),
+        ]
+    };
+    // The RETURNING insert verbs decode the stored row back (`fromRow`/`decodeRows`) in
+    // addition to encoding and reading the schema, and that decode shifts `Row e` ahead of
+    // `HasSchema e` in the order the build lowers their dictionaries: `[Row e, HasSchema e,
+    // Adapter a]`. The plain (non-decoding) inserts use `with_adapter_row_schema` above; the
+    // two orders are not interchangeable, so each group takes the one its body produces.
+    let with_adapter_schema_returning = || {
+        vec![
+            Constraint::single(row, e),
+            Constraint::single(has_schema, e),
+            Constraint::single(adapter, a),
+        ]
+    };
     // Assemble a method scheme: `∀e a. params -> ret`, pure, with `constraints`.
     let method = |params: Vec<Type>, ret: Type, constraints: Vec<Constraint>| {
         Some(Scheme {
@@ -2612,13 +2666,14 @@ fn reconciled_repo_fn_scheme(
             result(Type::Con(b.unit, vec![])),
             with_adapter(),
         ),
-        // insert : ∀e a. e -> Repo e a -> Result Unit Error where Adapter a, Row e.
-        // The typed dual of `insertRow`: encodes the entity through `toRow` and
-        // appends it. Carries `Row e` because it derives the row.
+        // insert : ∀e a. e -> Repo e a -> Result Unit Error where Adapter a, Row e, HasSchema e.
+        // The typed dual of `insertRow`: encodes the entity through `toRow`, omits the
+        // schema's database-generated columns, and appends it. Carries `Row e` because it
+        // derives the row and `HasSchema e` because it reads the entity's schema.
         "insert" => method(
             vec![Type::Var(e), repo_app()],
             result(Type::Con(b.unit, vec![])),
-            with_adapter_row(),
+            with_adapter_row_schema(),
         ),
         // insertRows : ∀e a. List (Map Text SqlValue) -> Repo e a
         //   -> Result Unit Error where Adapter a. The bulk dual of `insertRow`:
@@ -2629,30 +2684,32 @@ fn reconciled_repo_fn_scheme(
             with_adapter(),
         ),
         // insertMany : ∀e a. List e -> Repo e a -> Result Unit Error
-        //   where Adapter a, Row e. The bulk dual of `insert`: encodes each entity
-        //   through `toRow` and appends the whole batch in one statement.
+        //   where Adapter a, Row e, HasSchema e. The bulk dual of `insert`: encodes each
+        //   entity through `toRow`, omits the generated columns, and appends the whole
+        //   batch in one statement.
         "insertMany" => method(
             vec![list_e(), repo_app()],
             result(Type::Con(b.unit, vec![])),
-            with_adapter_row(),
+            with_adapter_row_schema(),
         ),
-        // insertReturning : ∀e a. e -> Repo e a -> Result e Error where Adapter a, Row e.
-        //   Insert the entity and read the stored row back, decoded (an INSERT … RETURNING
-        //   *), so a server-filled column comes back populated. Same `[Row e, Adapter a]`
-        //   dict order as `insert` — no `List (Conflict e)` parameter to shift it, and the
-        //   body encodes the row inline as `insert` does.
+        // insertReturning : ∀e a. e -> Repo e a -> Result e Error
+        //   where Adapter a, Row e, HasSchema e. Insert the entity and read the stored row
+        //   back, decoded (an INSERT … RETURNING *), so a server-filled column comes back
+        //   populated. Same `[HasSchema e, Row e, Adapter a]` dict order as `insert` — no
+        //   `List (Conflict e)` parameter to shift it, and the body omits and encodes the
+        //   row inline as `insert` does.
         "insertReturning" => method(
             vec![Type::Var(e), repo_app()],
             result(Type::Var(e)),
-            with_adapter_row(),
+            with_adapter_schema_returning(),
         ),
         // insertManyReturning : ∀e a. List e -> Repo e a -> Result (List e) Error
-        //   where Adapter a, Row e. The bulk dual of `insertReturning`; same dict order as
-        //   `insertMany`.
+        //   where Adapter a, Row e, HasSchema e. The bulk dual of `insertReturning`; same
+        //   dict order as `insertMany`.
         "insertManyReturning" => method(
             vec![list_e(), repo_app()],
             result(list_e()),
-            with_adapter_row(),
+            with_adapter_schema_returning(),
         ),
         // deleteReturning (∀e a. Quote (e -> Bool) -> Repo e a -> Result (List e) Error
         //   where Adapter a, Row e — remove the matching rows and read each back, decoded,

@@ -68,12 +68,23 @@ import std.int as Int
 import std.float as Float
 import std.list (length, contains)
 import std.text as Text
+import std.schema (HasSchema, schemaOf, schema, EntitySchema)
 
 pub type User = { id: Int, age: Int, name: Text } deriving (Row)
 
 -- A throwaway entity for the migration probes, in a table the probes themselves
 -- create via `Migrate.run` rather than one the CI harness sets up.
 pub type Widget = { id: Int, name: Text } deriving (Row)
+
+-- The typed `insert` reads an entity's `HasSchema` instance to learn which columns
+-- the database generates, then omits them. These Postgres tables are created with a
+-- caller-supplied integer id (no serial default yet), so the instances name no
+-- generated columns: every column, the explicit id included, is written as given.
+instance HasSchema User =
+    schemaOf (_w: Option User) -> EntitySchema User = schema "User" "ridge_pg_users"
+
+instance HasSchema Widget =
+    schemaOf (_w: Option Widget) -> EntitySchema Widget = schema "Widget" "ridge_mig_widgets"
 
 -- A second entity for the join, in the `ridge_pg_posts` table; `author` holds the
 -- owning user's id.

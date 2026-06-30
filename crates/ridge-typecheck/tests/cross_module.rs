@@ -3690,7 +3690,7 @@ import std.data (memAdapter, MemAdapter)
 import std.repo as Repo
 import std.sql (SqlValue)
 
-pub type User = { id: Int, name: Text } deriving (Row)
+pub type User = { id: Int, name: Text } deriving (Row, Schema)
 
 pub fn db seed () -> Result Unit Error =
     let conn = memAdapter ()
@@ -3717,7 +3717,7 @@ import std.data (memAdapter, MemAdapter)
 import std.repo as Repo
 import std.sql (SqlValue)
 
-pub type User = { id: Int, name: Text } deriving (Row)
+pub type User = { id: Int, name: Text } deriving (Row, Schema)
 
 pub fn db seededCount () -> Result Int Error =
     let conn = memAdapter ()
@@ -3744,7 +3744,7 @@ import std.data (connect, Config, Postgres)
 import std.repo as Repo
 import std.sql (SqlValue)
 
-pub type User = { id: Int, name: Text } deriving (Row)
+pub type User = { id: Int, name: Text } deriving (Row, Schema)
 
 pub fn db seed () -> Result Unit Error =
     match connect (Config { host = "localhost", port = 5432, database = "app", user = "u", password = "p", sslMode = "require" })

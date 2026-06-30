@@ -802,11 +802,14 @@ const BASELINE_EXPORTS: &[(&str, &[&str])] = &[
             "schemaTable",
             "schemaColumns",
             "generatedColumns",
+            "identityColumns",
             // The `HasSchema` binding class and its method. `deriving (Schema)`
             // generates the instance; `schemaOf` answers an entity's schema from
             // the type alone (a phantom `Option e` witness selects the instance).
             "HasSchema",
             "schemaOf",
+            "generatedColumnsOf",
+            "identityColumnsOf",
         ],
     ),
     (

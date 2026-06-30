@@ -33,7 +33,11 @@ import std.map as Map
 
 -- An entity with a nullable column, so the typed write path's NULL encoding
 -- (`None` -> SQL NULL via `toRow`) is exercised alongside the base types.
-pub type User = { id: Int, age: Int, name: Text, nick: Option Text } deriving (Row)
+-- `deriving (Schema)` marks `id` an identity column by convention, so the typed
+-- insert verbs drop it from the row and the store assigns the next integer — the
+-- `id` in each insert literal below is a placeholder the store overwrites, and the
+-- seeded rows land with ids 1, 2, 3 in insertion order.
+pub type User = { id: Int, age: Int, name: Text, nick: Option Text } deriving (Row, Schema)
 
 -- Comma-join the names of a user list, so a query's order is observable as one
 -- string the probe can assert on.

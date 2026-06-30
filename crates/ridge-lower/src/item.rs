@@ -116,14 +116,11 @@ pub fn lower_item_multi(ctx: &mut LowerCtx<'_>, item: &Item) -> Vec<IrItem> {
         Item::Actor(decl) => vec![IrItem::Actor(lower_actor(ctx, decl))],
         Item::Const(decl) => vec![IrItem::Const(lower_const(ctx, decl))],
         Item::InstanceDecl(decl) => lower_instance(ctx, decl),
-        // A `deriving (Table)` / `deriving (Schema)` record erases like any type,
-        // except it also emits its column-mirror values and/or schema descriptor
-        // (the type itself stays in the arena).
-        Item::Type(decl) => {
-            let mut items = lower_table_mirrors(ctx, decl);
-            items.extend(lower_schema_descriptor(ctx, decl));
-            items
-        }
+        // A `deriving (Table)` record erases like any type, except it also emits
+        // its column-mirror values (the type itself stays in the arena). A
+        // `deriving (Schema)` record instead derives a `HasSchema` instance,
+        // lowered from `TypedWorkspace.derived_instances` like every other derive.
+        Item::Type(decl) => lower_table_mirrors(ctx, decl),
         // Import and class declarations are erased at the IR level.
         // Class metadata lives in `TypedWorkspace.class_table`.
         Item::Import(_) | Item::ClassDecl(_) => vec![],
@@ -222,89 +219,6 @@ fn lower_table_mirrors(ctx: &mut LowerCtx<'_>, decl: &ridge_ast::TypeDecl) -> Ve
             is_pub,
         }),
     ]
-}
-
-/// Emit the schema-descriptor value for a `deriving (Schema)` record.
-///
-/// For `pub type User = { id: Int, … } deriving (Schema)` this produces one
-/// top-level constant:
-///
-/// - `userSchema = { name = "User", table = "users",
-///                   fields = [ { name = "id", column = "id", ty = "Int",
-///                                optional = false }, … ] }`
-///
-/// The descriptor is the introspection source the data/web layers map to an
-/// `OpenAPI` spec or a migration diff. Names and SQL spellings come from
-/// [`ridge_ast::column_mirror`]; the value is an `IrExpr::Construct` over the
-/// `Schema` / `FieldSchema` record ctors (codegen turns each into a `MapLit`).
-/// Returns `[]` for any type without `deriving (Schema)` or with a non-record
-/// body.
-fn lower_schema_descriptor(ctx: &mut LowerCtx<'_>, decl: &ridge_ast::TypeDecl) -> Vec<IrItem> {
-    use ridge_ast::column_mirror as cm;
-
-    if !cm::has_schema_derive(&decl.deriving) {
-        return vec![];
-    }
-    let ridge_ast::TypeBody::Record(rec) = &decl.body else {
-        return vec![];
-    };
-
-    let entity = decl.name.text.as_str();
-    let table = cm::table_sql_name(entity);
-    let span = decl.span;
-    let is_pub = matches!(decl.vis, Visibility::Pub);
-
-    // One FieldSchema record per entity field.
-    let field_records: Vec<IrExpr> = rec
-        .fields
-        .iter()
-        .map(|f| {
-            // Build the leaf values first so `ctx` is not borrowed twice in one
-            // call (argument evaluation would alias the `&mut`).
-            let name_v = synth_text(ctx, &f.name.text, span);
-            let column_v = synth_text(ctx, &cm::column_sql_name(&f.name.text), span);
-            let ty_v = synth_text(ctx, &cm::render_type_tag(&f.ty), span);
-            let optional_v = synth_bool(ctx, cm::is_optional_type(&f.ty), span);
-            synth_record(
-                ctx,
-                "FieldSchema",
-                vec![
-                    ("name".to_owned(), name_v),
-                    ("column".to_owned(), column_v),
-                    ("ty".to_owned(), ty_v),
-                    ("optional".to_owned(), optional_v),
-                ],
-                span,
-            )
-        })
-        .collect();
-    let fields_list = IrExpr::ListLit {
-        id: ctx.fresh_id(None),
-        elems: field_records,
-        span,
-    };
-
-    let name_v = synth_text(ctx, entity, span);
-    let table_v = synth_text(ctx, &table, span);
-    let schema_value = synth_record(
-        ctx,
-        "Schema",
-        vec![
-            ("name".to_owned(), name_v),
-            ("table".to_owned(), table_v),
-            ("fields".to_owned(), fields_list),
-        ],
-        span,
-    );
-
-    vec![IrItem::Const(IrConst {
-        name: cm::schema_value_name(entity),
-        ty: Type::Error, // untyped in IR — a plain record/map value
-        value: schema_value,
-        origin: NodeId(0),
-        span,
-        is_pub,
-    })]
 }
 
 /// Synthesize a `Text` literal IR expression.
@@ -889,6 +803,19 @@ pub fn lower_derived_instance(
         );
     }
 
+    // `Schema` derives the `HasSchema` instance — a single-method class whose
+    // `schemaOf` returns the entity's `EntitySchema`. The body is a `std.schema`
+    // builder chain over the columns, distinct from the structural single-method
+    // path that follows.
+    if let DerivedMethodBody::DerivedSchemaRecord {
+        entity_name,
+        table,
+        columns,
+    } = &derived.method_body
+    {
+        return build_schema_instance(ctx, type_name, entity_name, table, columns);
+    }
+
     let method_name = derived
         .instance_info
         .methods
@@ -1165,6 +1092,10 @@ pub fn lower_derived_instance(
 
         DerivedMethodBody::DerivedRowRecord { .. } => {
             unreachable!("DerivedRowRecord is handled by the early return above")
+        }
+
+        DerivedMethodBody::DerivedSchemaRecord { .. } => {
+            unreachable!("DerivedSchemaRecord is handled by the early return above")
         }
 
         DerivedMethodBody::DerivedDelegated { .. } => {
@@ -4583,6 +4514,135 @@ fn push_row_method(
         is_main: false,
         doc: None,
     }));
+}
+
+/// Build a `std.schema` builder call `<fn> <args…>` for the synthesized
+/// `schemaOf` body — a `SymbolRef::Stdlib` callee in `std.schema`.
+fn schema_builder_call(ctx: &mut LowerCtx<'_>, name: &str, args: Vec<IrExpr>, sp: Span) -> IrExpr {
+    IrExpr::Call {
+        id: ctx.fresh_id(None),
+        callee: Box::new(IrExpr::Symbol {
+            id: ctx.fresh_id(None),
+            sym: SymbolRef::Stdlib {
+                module: "std.schema".to_string(),
+                name: name.to_string(),
+            },
+            span: sp,
+        }),
+        args,
+        span: sp,
+    }
+}
+
+/// Build a nullary `std.schema` union value (a `DbType` or `Generation`
+/// constructor) for the synthesized body. Codegen lowers a zero-payload
+/// `UnionVariant` construct to a bare atom, so `owner_type`/`variant` are
+/// placeholders — the same convention the record-construct helpers use.
+fn schema_union_value(ctx: &mut LowerCtx<'_>, ctor: &str, sp: Span) -> IrExpr {
+    IrExpr::Construct {
+        id: ctx.fresh_id(None),
+        ctor: SymbolRef::Constructor {
+            ctor_kind: CtorKind::UnionVariant,
+            owner_type: ridge_types::TyConId(0),
+            name: ctor.to_string(),
+            variant: 0,
+        },
+        fields: vec![],
+        span: sp,
+    }
+}
+
+/// Lower a derived `Schema` instance: emit the `schemaOf` method fn and the
+/// `$inst_HasSchema_{Type}` dict that carries it. `schemaOf` ignores its witness
+/// argument and returns the entity's `EntitySchema`, assembled by the data-layer
+/// convention as a `std.schema` builder chain:
+///
+/// ```text
+/// schema "<Entity>" "<table>"
+///   |> withColumn (mkColumn "<field>" "<col>" <DbType> <nullable>
+///                    |> generated <Generation>   -- a database-generated column
+///                    |> primaryKey)              -- the key column
+///   |> …
+/// ```
+///
+/// The dict is looked up by type at a `schemaOf` call the same way `$inst_Row_*`
+/// is — both are derived instances registered in the entity's module.
+fn build_schema_instance(
+    ctx: &mut LowerCtx<'_>,
+    type_name: &str,
+    entity_name: &str,
+    table: &str,
+    columns: &[ridge_typecheck::SchemaColumnSpec],
+) -> Vec<IrItem> {
+    let sp = Span::point(0);
+    let mut items: Vec<IrItem> = Vec::new();
+
+    // schema "<Entity>" "<table>" — the empty schema the columns pipe onto.
+    let entity_v = synth_text(ctx, entity_name, sp);
+    let table_v = synth_text(ctx, table, sp);
+    let mut acc = schema_builder_call(ctx, "schema", vec![entity_v, table_v], sp);
+
+    for c in columns {
+        // mkColumn "<field>" "<col>" <DbType> <nullable>
+        let name_v = synth_text(ctx, &c.field_name, sp);
+        let col_v = synth_text(ctx, &c.column, sp);
+        let ty_v = schema_union_value(ctx, &c.db_type, sp);
+        let nullable_v = synth_bool(ctx, c.nullable, sp);
+        let mut col =
+            schema_builder_call(ctx, "mkColumn", vec![name_v, col_v, ty_v, nullable_v], sp);
+
+        // |> generated <Generation> — only for a database-generated column.
+        if let Some(gen) = &c.generation {
+            let gen_v = schema_union_value(ctx, gen, sp);
+            col = schema_builder_call(ctx, "generated", vec![gen_v, col], sp);
+        }
+        // |> primaryKey — only for the key column.
+        if c.primary_key {
+            col = schema_builder_call(ctx, "primaryKey", vec![col], sp);
+        }
+
+        // <acc> |> withColumn <col>  ==  withColumn <col> <acc>
+        acc = schema_builder_call(ctx, "withColumn", vec![col, acc], sp);
+    }
+
+    // schemaOf (w: Option T) -> EntitySchema T = <acc>. The witness `w` is
+    // ignored; only its type selected this instance.
+    let fn_name = format!("HasSchema__{type_name}__schemaOf");
+    push_row_method(ctx, &mut items, fn_name.clone(), "w", acc, sp);
+
+    // $inst_HasSchema_{Type} = #{ 'schemaOf' => fun schemaOfFn }
+    let dict_name = format!("$inst_HasSchema_{type_name}");
+    let dict_value = IrExpr::Construct {
+        id: ctx.fresh_id(None),
+        ctor: SymbolRef::Constructor {
+            ctor_kind: CtorKind::Record,
+            owner_type: ridge_types::TyConId(0),
+            name: dict_name.clone(),
+            variant: 0,
+        },
+        fields: vec![(
+            "schemaOf".to_string(),
+            IrExpr::Symbol {
+                id: ctx.fresh_id(None),
+                sym: SymbolRef::Local {
+                    name: fn_name,
+                    module: ctx.module_id,
+                },
+                span: sp,
+            },
+        )],
+        span: sp,
+    };
+    items.push(IrItem::Const(IrConst {
+        name: dict_name,
+        ty: Type::Error,
+        value: dict_value,
+        origin: NodeId(0),
+        span: sp,
+        is_pub: true,
+    }));
+
+    items
 }
 
 /// Lower a derived `Row` instance: emit the `fromRow`, `toRow`, and `rowColumns`

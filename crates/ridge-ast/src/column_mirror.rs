@@ -1,23 +1,26 @@
 //! Naming and recognition helpers for the data-layer `deriving` directives.
 //!
-//! `deriving (Table)` and `deriving (Schema)` are code-generation directives,
-//! not typeclasses. For a record entity they generate user-visible top-level
-//! declarations:
+//! For a record entity, `deriving (Table)` and `deriving (Schema)` generate the
+//! data-layer scaffolding:
 //!
 //! ```text
 //! pub type User = { id: Int, email: Text } deriving (Table, Schema)
-//! -- Table generates:
+//! -- Table generates a user-visible column mirror:
 //! type UserCols  = { id: Column User Int, email: Column User Text }
 //! let  userCols  : UserCols  = { id = .., email = .. }
 //! let  userTable : Table User = { name = "users", columns = ["id", "email"] }
-//! -- Schema generates:
-//! let  userSchema : Schema = { name = "User", table = "users", fields = [..] }
+//! -- Schema synthesizes a HasSchema instance (like Row), reached by type:
+//! instance HasSchema User =
+//!     schemaOf _ = schema "User" "users" |> withColumn (mkColumn "id" "id" ..) |> ..
 //! ```
 //!
-//! Three compiler phases each generate part of this: name resolution registers
-//! the names, type checking synthesizes the type and the value schemes, and
-//! lowering emits the values. They run in different crates and must agree on the
-//! exact generated names, so these helpers are the single source of truth.
+//! `Table` is a pure codegen directive: name resolution registers its names,
+//! type checking synthesizes the mirror type and value schemes, and lowering
+//! emits the values — three phases in different crates that must agree on the
+//! exact generated names, so these helpers are that shared source of truth.
+//! `Schema` is a typeclass derive: it synthesizes a `HasSchema` instance the way
+//! `Row` does, so it registers no user-visible value name; the column-naming and
+//! `DbType`-convention helpers below are what it shares with the `Table` path.
 
 use crate::ident::Ident;
 use crate::ty::Type;
@@ -53,17 +56,17 @@ pub fn table_value_name(entity: &str) -> String {
 /// The name used inside a `deriving (...)` clause to request a schema descriptor.
 pub const SCHEMA_DERIVE: &str = "Schema";
 
+/// The class `deriving (Schema)` synthesizes an instance of: `HasSchema`.
+///
+/// The derive name (`Schema`) and the class name (`HasSchema`, from
+/// `std.schema`) differ, so the derive resolves the class by this name rather
+/// than by the clause spelling.
+pub const SCHEMA_CLASS: &str = "HasSchema";
+
 /// Whether a `deriving` clause requests a schema descriptor (`deriving (Schema)`).
 #[must_use]
 pub fn has_schema_derive(deriving: &[Ident]) -> bool {
     deriving.iter().any(|d| d.text == SCHEMA_DERIVE)
-}
-
-/// Name of the generated schema-descriptor value for an entity: `User` →
-/// `userSchema`.
-#[must_use]
-pub fn schema_value_name(entity: &str) -> String {
-    format!("{}Schema", lower_first(entity))
 }
 
 /// The name used inside a `deriving (...)` clause to request a row decoder.
@@ -143,6 +146,35 @@ pub fn is_optional_type(ty: &Type) -> bool {
         Type::Named { name, .. } => name.text == "Option",
         Type::App { head, .. } => head.text == "Option",
         _ => false,
+    }
+}
+
+/// The default SQL column type for a field's declared type.
+///
+/// By the data-layer convention: `Int → DbBigInt`, `Text → DbText`,
+/// `Bool → DbBoolean`, `Float → DbFloat`, `Timestamp → DbTimestamp`. An
+/// `Option a` column takes its inner type's mapping — the nullability is recorded
+/// separately (see [`is_optional_type`]). Any other type (a user type, an `Id`, a
+/// container) falls back to `DbText`, the default a hand-written `HasSchema`
+/// instance overrides where the convention cannot infer the column type.
+///
+/// Returns the `std.schema` `DbType` constructor name; schema synthesis emits it
+/// as a nullary union value (a bare BEAM atom).
+#[must_use]
+pub fn db_type_tag(ty: &Type) -> &'static str {
+    match ty {
+        Type::Paren { inner, .. } => db_type_tag(inner),
+        Type::App { head, args, .. } if head.text == "Option" && !args.is_empty() => {
+            db_type_tag(&args[0])
+        }
+        Type::Primitive { name, .. } => match name {
+            PrimitiveType::Int => "DbBigInt",
+            PrimitiveType::Bool => "DbBoolean",
+            PrimitiveType::Float => "DbFloat",
+            PrimitiveType::Timestamp => "DbTimestamp",
+            PrimitiveType::Text | PrimitiveType::Unit => "DbText",
+        },
+        _ => "DbText",
     }
 }
 
@@ -305,9 +337,27 @@ mod tests {
     }
 
     #[test]
-    fn schema_value_names() {
-        assert_eq!(schema_value_name("User"), "userSchema");
-        assert_eq!(schema_value_name("BlogPost"), "blogPostSchema");
+    fn db_types_follow_the_convention() {
+        assert_eq!(db_type_tag(&prim(PrimitiveType::Int)), "DbBigInt");
+        assert_eq!(db_type_tag(&prim(PrimitiveType::Text)), "DbText");
+        assert_eq!(db_type_tag(&prim(PrimitiveType::Bool)), "DbBoolean");
+        assert_eq!(db_type_tag(&prim(PrimitiveType::Float)), "DbFloat");
+        assert_eq!(db_type_tag(&prim(PrimitiveType::Timestamp)), "DbTimestamp");
+        // An Option column takes its inner type's mapping.
+        assert_eq!(
+            db_type_tag(&app("Option", vec![prim(PrimitiveType::Int)])),
+            "DbBigInt"
+        );
+        assert_eq!(
+            db_type_tag(&Type::Paren {
+                inner: Box::new(app("Option", vec![prim(PrimitiveType::Text)])),
+                span: Span::point(0),
+            }),
+            "DbText"
+        );
+        // A user type the convention cannot infer falls back to DbText.
+        assert_eq!(db_type_tag(&named("Email")), "DbText");
+        assert_eq!(db_type_tag(&app("Id", vec![named("User")])), "DbText");
     }
 
     #[test]

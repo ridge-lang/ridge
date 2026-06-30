@@ -1,11 +1,18 @@
-//! Schema codegen — `deriving (Schema)` generates a structural descriptor.
+//! Schema codegen — `deriving (Schema)` synthesizes a `HasSchema` instance.
 //!
-//! For a record entity, `deriving (Schema)` emits one descriptor value
-//! (`<entity>Schema : Schema`) carrying the entity name, its SQL table name, and
-//! a per-field list of `{ name, column, ty, optional }` entries. It is the
-//! introspection source the data/web layers map to an `OpenAPI` spec or a
-//! migration diff. The type-level tests here prove the descriptor checks; the
-//! runtime test proves the generated value survives to the BEAM.
+//! For a record entity, `deriving (Schema)` derives a `HasSchema` instance (the
+//! way `deriving (Row)` derives a `Row` instance) whose `schemaOf` returns the
+//! entity's `EntitySchema`, built from the record fields by the data-layer
+//! convention: snake-cased columns, base-type `DbType`s, `Option` fields
+//! nullable, and a field named `id` taken as the identity primary key. The
+//! instance is reached by type through a phantom `Option e` witness, so reading
+//! the schema needs no descriptor value — `schemaOf (witness ())` answers it.
+//!
+//! The type-level tests prove the derived instance checks and dispatches; the
+//! runtime test proves the synthesized schema survives to the BEAM. A
+//! hand-written `HasSchema` instance (see `schema_instance_e2e`) states the
+//! deltas the convention cannot infer; deriving it and writing it by hand for the
+//! same entity is a coherence error.
 //!
 //! The runtime test is guarded on `erl`/`erlc` being on PATH.
 
@@ -20,23 +27,27 @@ mod common;
 use common::make_workspace;
 use ridge_driver::{check_workspace, CheckOptions};
 
-/// A `User` entity that derives its schema descriptor. No imports needed —
-/// `deriving (Schema)` synthesizes everything from compiler builtins. `Option`
-/// is a prelude type, so the nullable field needs no import either.
+/// A `User` entity that derives its schema. The witness fixes `e = User` so
+/// `schemaOf` selects the derived instance with no entity value in hand.
 const SCHEMA: &str = r"
+import std.schema (schemaOf, schemaName, schemaTable, schemaColumns, generatedColumns, colColumn, colType, colNullable, EntitySchema, DbType)
+import std.list as List
+
 pub type User = { id: Int, email: Text, nickname: Option Text } deriving (Schema)
+
+fn userWitness () -> Option User = None
+fn schemaOfUser () -> EntitySchema User = schemaOf (userWitness ())
 ";
 
-/// The generated descriptor type-checks: `userSchema.name` / `.table` are
-/// `Text`, and `.fields` is a `List FieldSchema` (so `List.length` accepts it).
+/// The derived instance checks and dispatches: `schemaName` / `schemaTable` are
+/// `Text` and `schemaColumns` is a `List` the stdlib `List.length` accepts.
 #[test]
-fn schema_descriptor_typechecks() {
+fn derived_schema_typechecks() {
     let source = format!(
-        "import std.list as List\n\
-         {SCHEMA}\n\
-         pub fn modelName () -> Text = userSchema.name\n\
-         pub fn tableName () -> Text = userSchema.table\n\
-         pub fn fieldCount () -> Int = List.length userSchema.fields\n"
+        "{SCHEMA}\n\
+         pub fn modelName () -> Text = schemaName (schemaOfUser ())\n\
+         pub fn tableName () -> Text = schemaTable (schemaOfUser ())\n\
+         pub fn columnCount () -> Int = List.length (schemaColumns (schemaOfUser ()))\n"
     );
     let tw = make_workspace("Models", &source);
     let result = check_workspace(CheckOptions::new(tw.path.clone())).expect("check ran");
@@ -47,15 +58,20 @@ fn schema_descriptor_typechecks() {
     );
 }
 
-/// `Table` and `Schema` coexist on one entity: both the column mirror and the
-/// descriptor are generated and check together.
+/// `Table` and `Schema` coexist on one entity: the column mirror and the derived
+/// `HasSchema` instance are both generated and check together.
 #[test]
 fn table_and_schema_coexist() {
     let source = "
+import std.schema (schemaOf, schemaName, EntitySchema)
+
 pub type Post = { id: Int, title: Text } deriving (Table, Schema)
+
+fn postWitness () -> Option Post = None
+
 pub fn tname () -> Text = postTable.name
-pub fn sname () -> Text = postSchema.name
 pub fn idCol () -> Text = postCols.id.name
+pub fn sname () -> Text = schemaName (schemaOf (postWitness ()))
 ";
     let tw = make_workspace("Models", source);
     let result = check_workspace(CheckOptions::new(tw.path.clone())).expect("check ran");
@@ -66,45 +82,52 @@ pub fn idCol () -> Text = postCols.id.name
     );
 }
 
-/// Reading a field that the descriptor record does not have is a compile error —
-/// the descriptor is a real typed record, not an untyped map.
+/// Deriving `Schema` and hand-writing a `HasSchema` instance for the same entity
+/// is a coherence error — the derived instance and the explicit one overlap, so
+/// the user must pick one.
 #[test]
-fn nonexistent_descriptor_field_is_compile_error() {
-    let source = format!("{SCHEMA}\npub fn bad () -> Text = userSchema.nope\n");
-    let tw = make_workspace("Models", &source);
+fn derived_and_hand_written_schema_conflict() {
+    let source = "
+import std.schema (schema, schemaOf, EntitySchema, HasSchema)
+
+pub type User = { id: Int, email: Text } deriving (Schema)
+
+instance HasSchema User =
+    schemaOf (_w: Option User) -> EntitySchema User = schema \"User\" \"users\"
+";
+    let tw = make_workspace("Models", source);
     let result = check_workspace(CheckOptions::new(tw.path.clone())).expect("check ran");
     assert!(
         !result.diagnostics.is_empty(),
-        "expected a type error for a nonexistent descriptor field, got a clean check"
+        "expected a coherence error for a derived + hand-written HasSchema, got a clean check"
     );
 }
 
-/// The generated descriptor survives to the BEAM: it carries the entity name,
-/// the SQL table name, and per-field entries with type tags and nullability.
+/// The synthesized schema survives to the BEAM: it carries the entity name, the
+/// SQL table name, snake-cased column names, base `DbType`s (with `Option`
+/// collapsed to the inner type and flagged nullable), and the identity `id` in
+/// the database-generated set.
 ///
 /// Gated on `beam-runtime` and a `which` guard for `erl`/`erlc`.
 #[cfg(feature = "beam-runtime")]
 #[test]
-fn schema_descriptor_roundtrip_survives_beam() {
+fn derived_schema_roundtrip_survives_beam() {
     use ridge_driver::{compile_workspace, CompileOptions, EmitArtefacts};
     use std::process::Command;
 
     if which::which("erlc").is_err() || which::which("erl").is_err() {
-        eprintln!("erl/erlc not on PATH — skipping schema_descriptor_roundtrip_survives_beam");
+        eprintln!("erl/erlc not on PATH — skipping derived_schema_roundtrip_survives_beam");
         return;
     }
 
-    // Project each field's descriptor out so the runtime can assert on the
-    // generated tags. `List.map` comes from the stdlib; the bare-param lambda's
-    // `f` unifies with `FieldSchema`, so `f.ty` resolves to the descriptor field.
     let source = format!(
-        "import std.list as List\n\
-         {SCHEMA}\n\
-         pub fn modelName () -> Text = userSchema.name\n\
-         pub fn tableName () -> Text = userSchema.table\n\
-         pub fn fieldNames () -> List Text = List.map (fn f -> f.name) userSchema.fields\n\
-         pub fn fieldTypes () -> List Text = List.map (fn f -> f.ty) userSchema.fields\n\
-         pub fn fieldOptional () -> List Bool = List.map (fn f -> f.optional) userSchema.fields\n"
+        "{SCHEMA}\n\
+         pub fn modelName () -> Text = schemaName (schemaOfUser ())\n\
+         pub fn tableName () -> Text = schemaTable (schemaOfUser ())\n\
+         pub fn columnNames () -> List Text = List.map (fn c -> colColumn c) (schemaColumns (schemaOfUser ()))\n\
+         pub fn columnTypes () -> List DbType = List.map (fn c -> colType c) (schemaColumns (schemaOfUser ()))\n\
+         pub fn columnNullable () -> List Bool = List.map (fn c -> colNullable c) (schemaColumns (schemaOfUser ()))\n\
+         pub fn genColumns () -> List Text = generatedColumns (schemaOfUser ())\n"
     );
     let tw = make_workspace("Models", &source);
     let cache = tempfile::Builder::new()
@@ -141,9 +164,10 @@ fn schema_descriptor_roundtrip_survives_beam() {
     let expr = format!(
         "io:format(\"mname=~s~n\",[{module}:modelName()]), \
          io:format(\"tname=~s~n\",[{module}:tableName()]), \
-         io:format(\"fnames=~p~n\",[{module}:fieldNames()]), \
-         io:format(\"ftypes=~p~n\",[{module}:fieldTypes()]), \
-         io:format(\"fopt=~p~n\",[{module}:fieldOptional()]), \
+         io:format(\"cnames=~p~n\",[{module}:columnNames()]), \
+         io:format(\"ctypes=~p~n\",[{module}:columnTypes()]), \
+         io:format(\"cnull=~p~n\",[{module}:columnNullable()]), \
+         io:format(\"gcols=~p~n\",[{module}:genColumns()]), \
          halt()."
     );
     let output = Command::new("erl")
@@ -160,22 +184,26 @@ fn schema_descriptor_roundtrip_survives_beam() {
 
     assert!(
         stdout.contains("mname=User"),
-        "descriptor should carry the entity name\nstdout:\n{stdout}\nstderr:\n{stderr}"
+        "schema should carry the entity name\nstdout:\n{stdout}\nstderr:\n{stderr}"
     );
     assert!(
         stdout.contains("tname=users"),
-        "descriptor should carry the SQL table name\nstdout:\n{stdout}\nstderr:\n{stderr}"
+        "schema should carry the SQL table name\nstdout:\n{stdout}\nstderr:\n{stderr}"
     );
     assert!(
-        stdout.contains("fnames=[<<\"id\">>,<<\"email\">>,<<\"nickname\">>]"),
-        "descriptor should list field names in order\nstdout:\n{stdout}\nstderr:\n{stderr}"
+        stdout.contains("cnames=[<<\"id\">>,<<\"email\">>,<<\"nickname\">>]"),
+        "schema should list snake-cased columns in order\nstdout:\n{stdout}\nstderr:\n{stderr}"
     );
     assert!(
-        stdout.contains("ftypes=[<<\"Int\">>,<<\"Text\">>,<<\"Option Text\">>]"),
-        "descriptor should carry the rendered type tags\nstdout:\n{stdout}\nstderr:\n{stderr}"
+        stdout.contains("ctypes=['DbBigInt','DbText','DbText']"),
+        "Int → DbBigInt, Text → DbText, Option Text → DbText by convention\nstdout:\n{stdout}\nstderr:\n{stderr}"
     );
     assert!(
-        stdout.contains("fopt=[false,false,true]"),
-        "descriptor should flag the Option field as optional\nstdout:\n{stdout}\nstderr:\n{stderr}"
+        stdout.contains("cnull=[false,false,true]"),
+        "the Option field should be the nullable column\nstdout:\n{stdout}\nstderr:\n{stderr}"
+    );
+    assert!(
+        stdout.contains("gcols=[<<\"id\">>]"),
+        "the identity id should be the lone database-generated column\nstdout:\n{stdout}\nstderr:\n{stderr}"
     );
 }

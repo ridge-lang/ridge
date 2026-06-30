@@ -51,7 +51,7 @@ pub use class_env::{
 pub use collect::{collect_workspace, CollectResult};
 pub use derive::{
     derive_instances, DelegArg, DelegResult, DelegatedMethod, DerivedInstance, DerivedMethodBody,
-    FieldShape,
+    FieldShape, SchemaColumnSpec,
 };
 pub use error::TypeError;
 pub use render::{emit_internal, emit_internal_strict, render_type_with};
@@ -746,10 +746,8 @@ fn typecheck_module_inner(
     // bodies that reference the values type-check. Runs after the import merge so
     // `Column`/`Table` from std.sql are resolvable.
     crate::tycon_collect::synth_table_mirrors(ast, id, arena, b, global_tycon_names, &mut ctx);
-    // Schema codegen: bind `<entity>Schema : Schema` for every `deriving (Schema)`
-    // record. The descriptor type is the `Schema` builtin (no per-entity type), so
-    // this only registers value schemes; lowering emits the values.
-    crate::tycon_collect::synth_schema_descriptors(ast, b, &mut ctx);
+    // `deriving (Schema)` no longer binds a descriptor value here; it derives a
+    // `HasSchema` instance (see `derive::generate_schema`), reached by type.
     // Snapshot all TyConDecls (builtins + user) for record/union inference.
     ctx.tycon_decls = arena.all().to_vec();
 

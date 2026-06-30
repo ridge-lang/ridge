@@ -678,6 +678,27 @@ pub enum TypeError {
         second_span: Span,
     },
 
+    // ── T047 ─────────────────────────────────────────────────────────────────
+    /// A full entity was supplied where a typed insert expects its insert
+    /// shape — the `<Entity>Insert` companion that drops database-generated
+    /// columns.
+    ///
+    /// `insert (User { id = 1, name = "ada" }) repo` fails this way: `insert`
+    /// takes `UserInsert`, the entity minus its generated `id`, so a
+    /// hand-written `id` is rejected before it can reach the database.
+    InsertShapeFullEntity {
+        /// Name of the entity that was supplied (e.g. `"User"`).
+        entity: String,
+        /// Name of the insert-shape companion expected instead (e.g.
+        /// `"UserInsert"`).
+        companion: String,
+        /// The database-generated columns the companion drops, in declaration
+        /// order — the fields the caller must omit.
+        omitted: Vec<String>,
+        /// Source span of the supplied entity expression.
+        span: Span,
+    },
+
     // ── T999 ─────────────────────────────────────────────────────────────────
     /// Internal type-checker invariant violation — should never reach users.
     ///
@@ -695,7 +716,7 @@ pub enum TypeError {
 impl TypeError {
     /// Returns the stable `T###` error code for this variant.
     ///
-    /// The codes are allocated in `T001..T037` and `T999` is the catch-all
+    /// The codes are allocated in `T001..T047` and `T999` is the catch-all
     /// internal error. No overlap with `R###`/`M###`.
     #[must_use]
     pub const fn code(&self) -> &'static str {
@@ -747,6 +768,7 @@ impl TypeError {
             Self::NotAConstructor { .. } => "T044",
             Self::UnknownFunDepVar { .. } => "T045",
             Self::ConflictingFunDep { .. } => "T046",
+            Self::InsertShapeFullEntity { .. } => "T047",
             Self::InternalTypeError { .. } => "T999",
         }
     }
@@ -975,6 +997,15 @@ mod tests {
         }
     }
 
+    fn t047() -> TypeError {
+        TypeError::InsertShapeFullEntity {
+            entity: "User".into(),
+            companion: "UserInsert".into(),
+            omitted: vec!["id".into()],
+            span: dummy_span(),
+        }
+    }
+
     fn t999() -> TypeError {
         TypeError::InternalTypeError {
             detail: "unexpected node kind".into(),
@@ -1112,6 +1143,20 @@ mod tests {
     #[test]
     fn code_t025() {
         assert_eq!(t025().code(), "T025");
+    }
+
+    #[test]
+    fn code_t047() {
+        assert_eq!(t047().code(), "T047");
+    }
+
+    #[test]
+    fn t047_message_names_companion_entity_and_omitted_column() {
+        let msg = t047().to_string();
+        assert!(msg.contains("T047"), "{msg}");
+        assert!(msg.contains("`UserInsert`"), "{msg}");
+        assert!(msg.contains("`User`"), "{msg}");
+        assert!(msg.contains("database-generated column `id`"), "{msg}");
     }
 
     #[test]

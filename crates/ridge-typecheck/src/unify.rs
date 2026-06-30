@@ -23,7 +23,7 @@
 use std::cmp::Ordering;
 
 use ridge_ast::Span;
-use ridge_types::{CapRow, Row, RowTail, RowVid, TyVid, Type};
+use ridge_types::{CapRow, Row, RowTail, RowVid, TyConDecl, TyConId, TyConKind, TyVid, Type};
 
 use crate::ctx::{CapValue, CapVidKey, InferCtx, RowValue, RowVidKey, TyValue, TyVidKey};
 use crate::error::TypeError;
@@ -703,6 +703,18 @@ fn row_mismatch(
 fn mismatch(ctx: &mut InferCtx, expected: &Type, found: &Type) -> TypeError {
     let expected = ctx.deep_resolve(expected);
     let found = ctx.deep_resolve(found);
+
+    // A full entity supplied where its insert shape is expected — `insert (User
+    // { id = 1, .. }) repo` — is a common mistake: the typed insert takes the
+    // `<Entity>Insert` companion, not the entity, so a hand-written generated
+    // column is rejected here. By this point `InsertShape User` has already
+    // reduced to `UserInsert`, so the failing pair is the companion against the
+    // entity. Detect it from the companion↔entity registry and emit the targeted
+    // T047, which names the generated columns to drop, instead of the bare T001.
+    if let Some(err) = insert_shape_full_entity(ctx, &expected, &found) {
+        return err;
+    }
+
     let (expected, found) =
         crate::render::render_type_pair_with(&expected, &found, &ctx.tycon_decls);
     TypeError::TypeMismatch {
@@ -710,6 +722,85 @@ fn mismatch(ctx: &mut InferCtx, expected: &Type, found: &Type) -> TypeError {
         found,
         span: dummy_span(),
     }
+}
+
+/// When a full entity (`found`) is supplied where its `<Entity>Insert` companion
+/// (`expected`) is wanted, build the targeted [`TypeError::InsertShapeFullEntity`].
+/// Both types are already deep-resolved. Returns `None` for any other pair,
+/// leaving the caller to emit the generic `T001 TypeMismatch`.
+///
+/// The expected side appears in two shapes depending on whether the entity was
+/// pinned before the failing unification:
+///   - already reduced to the companion record `Con(<Entity>Insert)`, or
+///   - a still-stuck `InsertShape ?e` whose entity could not be pinned precisely
+///     because the supplied entity has a distinct companion (so the invertible
+///     reduction declined it). Either way the entity is `found` and its companion
+///     is known from the registry.
+fn insert_shape_full_entity(ctx: &InferCtx, expected: &Type, found: &Type) -> Option<TypeError> {
+    // `found` must be a concrete, arity-0 entity.
+    let Type::Con(entity_id, ent_args) = found else {
+        return None;
+    };
+    if !ent_args.is_empty() {
+        return None;
+    }
+    let companion_id = match expected {
+        // Reduced: the registry maps this companion back to `found`.
+        Type::Con(cid, cargs)
+            if cargs.is_empty() && ctx.insert_shape_entities.get(cid) == Some(entity_id) =>
+        {
+            *cid
+        }
+        // Stuck: an unreduced `InsertShape e`. It only reaches here against a
+        // concrete entity that has a companion — a no-companion entity would have
+        // unified via the invertible reduction — so the entity drives the lookup.
+        Type::Con(pid, pargs) if pid.0 == ridge_types::INSERTSHAPE_TYCON_ID && pargs.len() == 1 => {
+            *ctx.insert_shapes.get(entity_id)?
+        }
+        _ => return None,
+    };
+    let entity = tycon_name(&ctx.tycon_decls, *entity_id)?;
+    let companion = tycon_name(&ctx.tycon_decls, companion_id)?;
+    let omitted = omitted_columns(&ctx.tycon_decls, *entity_id, companion_id);
+    Some(TypeError::InsertShapeFullEntity {
+        entity,
+        companion,
+        omitted,
+        span: dummy_span(),
+    })
+}
+
+/// The display name of a tycon by id, if present in `decls`.
+fn tycon_name(decls: &[TyConDecl], id: TyConId) -> Option<String> {
+    decls.iter().find(|d| d.id == id).map(|d| d.name.clone())
+}
+
+/// The record fields an entity carries that its insert companion drops — the
+/// database-generated columns — in the entity's declaration order. Empty when
+/// either tycon is missing or not a record (the companion is always a subset of
+/// the entity's fields, so this is exactly the generated columns).
+fn omitted_columns(decls: &[TyConDecl], entity_id: TyConId, companion_id: TyConId) -> Vec<String> {
+    let fields = |id: TyConId| -> Vec<String> {
+        decls
+            .iter()
+            .find(|d| d.id == id)
+            .and_then(|d| match &d.kind {
+                TyConKind::Record(schema) => Some(
+                    schema
+                        .record_fields()
+                        .iter()
+                        .map(|field| field.name.clone())
+                        .collect(),
+                ),
+                _ => None,
+            })
+            .unwrap_or_default()
+    };
+    let kept: rustc_hash::FxHashSet<String> = fields(companion_id).into_iter().collect();
+    fields(entity_id)
+        .into_iter()
+        .filter(|field| !kept.contains(field))
+        .collect()
 }
 
 /// A zero-offset dummy span used when no source location is available at the

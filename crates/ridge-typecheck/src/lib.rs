@@ -94,6 +94,11 @@ pub struct ModuleTypecheckResult {
     /// Merged into [`TypedWorkspace::anon_records`] by the workspace
     /// driver after all modules are checked.
     pub anon_records: AnonRecordTable,
+    /// Insert-shape companions synthesized in this module: the `<Entity>Insert`
+    /// companion's [`ridge_types::TyConId`] mapped to its entity's. Merged into
+    /// [`TypedWorkspace::insert_companions`] so the LSP can recognise a companion
+    /// and card it as the entity's insert shape rather than the entity itself.
+    pub insert_companions: FxHashMap<ridge_types::TyConId, ridge_types::TyConId>,
     /// Generalised top-level `fn`/`const` schemes for this module, keyed by name.
     ///
     /// The workspace driver stores these so importing modules (checked later in
@@ -142,6 +147,14 @@ pub struct TypedWorkspace {
     /// `Type::Record` AST nodes without re-interning.  Read-only after
     /// `typecheck_workspace` returns.
     pub anon_records: AnonRecordTable,
+    /// Insert-shape companion → entity map, merged across all modules.
+    ///
+    /// Each `<Entity>Insert` companion synthesized by `deriving (Schema)` maps to
+    /// the entity it shapes. Consumed by the LSP to card a hovered companion as
+    /// the entity's insert shape (and to name the generated columns it drops)
+    /// instead of collapsing onto the entity's own declaration, which they share
+    /// a source span with. Empty for workspaces with no such entities.
+    pub insert_companions: FxHashMap<ridge_types::TyConId, ridge_types::TyConId>,
     /// Workspace-level class registry (name → `ClassId` + metadata).
     ///
     /// Populated by the collect pass when class/instance declarations are
@@ -287,6 +300,9 @@ pub fn typecheck_workspace(ws: &ResolvedWorkspace) -> TypecheckResult {
     let mut typed_slots: Vec<Option<TypedModule>> = (0..ws.modules.len()).map(|_| None).collect();
     // Merged anonymous record table across all modules.
     let mut workspace_anon_records: AnonRecordTable = AnonRecordTable::default();
+    // Merged insert-shape companion → entity map across all modules.
+    let mut workspace_insert_companions: FxHashMap<ridge_types::TyConId, ridge_types::TyConId> =
+        FxHashMap::default();
     // Each module's exported fn/const schemes (by `ModuleId.0`), populated as the
     // module is checked so later (dependent) modules can seed them.
     let mut exported_schemes: Vec<FxHashMap<String, ridge_types::Scheme>> = (0..ws.modules.len())
@@ -393,6 +409,9 @@ pub fn typecheck_workspace(ws: &ResolvedWorkspace) -> TypecheckResult {
         // Merge this module's anon_records (last-write wins; same shapes share
         // the same TyConId workspace-wide because the arena is shared).
         workspace_anon_records.extend(result.anon_records);
+        // Merge this module's insert-shape companions (companion ids are global —
+        // the arena is shared — so a last-write merge is exact).
+        workspace_insert_companions.extend(result.insert_companions);
         // Expose this module's schemes to modules that import it (checked later).
         exported_schemes[rm.id.0 as usize] = result.name_schemes;
         typed_slots[rm.id.0 as usize] = Some(result.typed);
@@ -427,6 +446,7 @@ pub fn typecheck_workspace(ws: &ResolvedWorkspace) -> TypecheckResult {
             tycons,
             builtins: b,
             anon_records: workspace_anon_records,
+            insert_companions: workspace_insert_companions,
             class_table,
             instance_env,
             derived_instances,
@@ -457,6 +477,7 @@ fn empty_module_result(module_id: ModuleId) -> ModuleTypecheckResult {
         },
         errors: Vec::new(),
         anon_records: AnonRecordTable::default(),
+        insert_companions: FxHashMap::default(),
         name_schemes: FxHashMap::default(),
         demanded_rows: FxHashSet::default(),
     }
@@ -1057,11 +1078,14 @@ fn typecheck_module_inner(
 
     // Move the anon_records table out so the workspace driver can merge it.
     let anon_records = std::mem::take(&mut ctx.anon_records);
+    // Move the companion → entity map out for the same reason.
+    let insert_companions = std::mem::take(&mut ctx.insert_shape_entities);
 
     ModuleTypecheckResult {
         typed,
         errors: ctx.errors,
         anon_records,
+        insert_companions,
         name_schemes: ctx.name_schemes_accum,
         demanded_rows: ctx.demanded_rows,
     }

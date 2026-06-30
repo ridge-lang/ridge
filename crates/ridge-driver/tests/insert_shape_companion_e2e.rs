@@ -59,6 +59,29 @@ pub fn bad () -> UserInsert = UserInsert { id = 1, email = \"a@b.com\" }
     );
 }
 
+/// Passing the full entity where a typed insert expects its `<Entity>Insert`
+/// companion is the targeted `T047`, not a bare `T001`: the diagnostic names the
+/// companion and points at the generated column to drop.
+#[test]
+fn full_entity_to_insert_is_t047() {
+    let source = "
+import std.data (memAdapter, MemAdapter)
+import std.repo as Repo
+
+pub type User = { id: Int, email: Text } deriving (Row, Schema)
+
+pub fn seed (r: Repo User MemAdapter) -> Result Unit Error =
+    Repo.insert (User { id = 1, email = \"a@b.com\" }) r
+";
+    let tw = make_workspace("Models", source);
+    let result = check_workspace(CheckOptions::new(tw.path.clone())).expect("check ran");
+    assert!(
+        result.diagnostics.iter().any(|d| d.code == "T047"),
+        "expected T047 (full entity where the insert shape is expected); got {:?}",
+        result.diagnostics
+    );
+}
+
 /// An entity with no generated column gets no companion — its insert shape is the
 /// entity itself — so referencing `<Entity>Insert` is an unknown type.
 #[test]

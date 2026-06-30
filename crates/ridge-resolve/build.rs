@@ -386,6 +386,9 @@ const BASELINE_EXPORTS: &[(&str, &[&str])] = &[
             "Sql",
             "sql",
             "sqlValue",
+            // Render a SqlValue as an inline SQL literal — a DDL DEFAULT or CHECK
+            // position a bind parameter cannot fill.
+            "sqlLiteral",
         ],
     ),
     (
@@ -803,6 +806,16 @@ const BASELINE_EXPORTS: &[(&str, &[&str])] = &[
             "schemaColumns",
             "generatedColumns",
             "identityColumns",
+            // The Postgres DDL renderer: `schemaToDdl` renders an entity's
+            // `CREATE TABLE`, `schemaIndexDdls` its non-unique indexes, and the
+            // `*Ddl` family renders a `std.migrate` schema step from its seam tuple.
+            "schemaToDdl",
+            "schemaIndexDdls",
+            "createTableDdl",
+            "addColumnDdl",
+            "dropTableDdl",
+            "dropColumnDdl",
+            "indexDdl",
             // The `HasSchema` binding class and its methods. `deriving (Schema)`
             // generates the instance; `schemaOf` answers an entity's schema from
             // the type alone (a phantom `Option e` witness selects the instance),

@@ -13,6 +13,7 @@
     time_diff_ms/2, time_diff/2,
     time_from_iso/1, time_since_ms/1, time_iso/1,
     int_parse/0, int_parse/1, float_parse/1, float_to_text/1, bool_to_text/1,
+    sql_literal/1,
     text_split_all/2, text_replace_all/3, text_join/2, text_slice/3,
     text_like/2,
     list_fold/3, list_sort_by/2,
@@ -189,6 +190,16 @@ float_parse(B) ->
     end.
 
 float_to_text(F) -> iolist_to_binary(io_lib:format("~p", [F])).
+
+%% sql_literal/1 — render a SqlValue as an inline SQL literal for the DDL positions a
+%% bind parameter cannot fill (a column DEFAULT, a CHECK literal). A text value is
+%% single-quoted with embedded quotes doubled; the others spell their value bare.
+sql_literal({'SqlInt', N})      -> integer_to_binary(N);
+sql_literal({'SqlText', S})     -> <<"'", (binary:replace(S, <<"'">>, <<"''">>, [global]))/binary, "'">>;
+sql_literal({'SqlBool', true})  -> <<"TRUE">>;
+sql_literal({'SqlBool', false}) -> <<"FALSE">>;
+sql_literal({'SqlFloat', F})    -> float_to_text(F);
+sql_literal('SqlNull')          -> <<"NULL">>.
 
 %% text_split_all/2 — binary:split with [global] option (Sep, Subject order matches Ridge FFI).
 %%

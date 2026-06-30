@@ -18,7 +18,9 @@
 -- The dialect-neutral vocabulary below (`DbType`, `Generation`, `FkAction`) is
 -- turned into a backend's `CREATE TABLE` by the DDL renderer.
 
-import std.sql (SqlValue)
+import std.sql (SqlValue, sqlLiteral)
+import std.int as Int
+import std.float as Float
 
 -- ── Column vocabulary ─────────────────────────────────────────────────────────
 
@@ -261,3 +263,267 @@ fn identityNames (cols: List (ColumnSchema e)) -> List Text =
             match c.generation
                 Identity -> c.column :: identityNames rest
                 _        -> identityNames rest
+
+-- ── DDL renderer (Postgres) ───────────────────────────────────────────────────
+--
+-- Turn the dialect-neutral schema vocabulary into a backend's data-definition
+-- language. `schemaToDdl` renders an entity's `EntitySchema` to a Postgres
+-- `CREATE TABLE`, and the `createTableDdl`/`addColumnDdl`/`dropTableDdl`/
+-- `dropColumnDdl`/`indexDdl` family renders the migration runner's schema steps —
+-- all in Ridge, so the storage adapter only runs the statement rather than building
+-- it. Identifiers are double-quoted (any embedded quote doubled) and the few inline
+-- positions a bind parameter cannot fill — a column `DEFAULT`, a `CHECK` literal —
+-- are escaped, so the rendered text is injection-safe by construction.
+--
+-- A database-generated `Identity` column renders as Postgres' `serial`/`bigserial`
+-- pseudo-type, which carries its own sequence and is implicitly `NOT NULL`, so the
+-- insert path can omit it and let the database assign the key.
+
+-- Render an `EntitySchema` to a Postgres `CREATE TABLE` statement: each column with
+-- its type, nullability, default, and constraints (primary key, uniqueness, foreign
+-- key, check), in declaration order. Non-unique indexes are separate statements —
+-- see `schemaIndexDdls`.
+pub fn schemaToDdl (s: EntitySchema e) -> Text =
+    Text.join "" ["CREATE TABLE ", quoteIdent s.table, " (", Text.join ", " (columnFrags s.columns), ")"]
+
+-- The `CREATE INDEX` statements for the schema's `indexed` columns — the non-unique
+-- indexes that cannot ride inline in `CREATE TABLE` (a `unique` column already
+-- carries its constraint inline). One statement per indexed column, named
+-- `<table>_<column>_idx`, in declaration order.
+pub fn schemaIndexDdls (s: EntitySchema e) -> List Text =
+    indexDdlsOf s.table s.columns
+
+-- ── Migration step renderers ──────────────────────────────────────────────────
+--
+-- The DDL for the `std.migrate` schema steps, rendered from the seam tuple
+-- `(name, base-type, nullable, primaryKey, unique)` the runner flattens a column to.
+-- A tuple is the constraint-poor subset of a full column, lowered through the same
+-- column renderer `schemaToDdl` uses, so a migration's `CREATE TABLE` and an entity's
+-- agree on how a column is spelled.
+
+-- `CREATE TABLE` from the migration runner's column tuples.
+pub fn createTableDdl (table: Text) (cols: List (Text, Text, Bool, Bool, Bool)) -> Text =
+    Text.join "" ["CREATE TABLE ", quoteIdent table, " (", Text.join ", " (tupleFrags cols), ")"]
+
+-- `ALTER TABLE … ADD COLUMN` from a column tuple. A primary key cannot be added
+-- against existing rows this way, so the key flag is dropped here.
+pub fn addColumnDdl (table: Text) (col: (Text, Text, Bool, Bool, Bool)) -> Text =
+    Text.join "" ["ALTER TABLE ", quoteIdent table, " ADD COLUMN ", columnDdl (tupleColumnNoPk col)]
+
+-- `DROP TABLE`.
+pub fn dropTableDdl (table: Text) -> Text =
+    Text.concat "DROP TABLE " (quoteIdent table)
+
+-- `ALTER TABLE … DROP COLUMN`.
+pub fn dropColumnDdl (table: Text) (column: Text) -> Text =
+    Text.join "" ["ALTER TABLE ", quoteIdent table, " DROP COLUMN ", quoteIdent column]
+
+-- `CREATE [UNIQUE] INDEX name ON table (cols)`.
+pub fn indexDdl (name: Text) (table: Text) (cols: List Text) (unique: Bool) -> Text =
+    Text.join "" ["CREATE ", uniqueKw unique, "INDEX ", quoteIdent name, " ON ", quoteIdent table, " (", quotedCols cols, ")"]
+
+-- ── Column rendering ──────────────────────────────────────────────────────────
+
+-- One column's `CREATE TABLE` fragment: its quoted name, its SQL type (a `serial`
+-- pseudo-type for an identity column), then the modifiers it carries — nullability,
+-- default, primary key, uniqueness, foreign key, check — in that order.
+fn columnDdl (c: ColumnSchema e) -> Text =
+    Text.join "" [quoteIdent c.column, " ", colTypeSql c, nullSql c, defaultSql c.generation, pkSql c, uniqSql c, fkSql c.foreignKey, checkSql c.check]
+
+fn colTypeSql (c: ColumnSchema e) -> Text =
+    match c.generation
+        Identity -> serialType c.ty
+        _        -> pgColType c.ty
+
+-- An identity column's serial pseudo-type: `serial` for a 32-bit integer, otherwise
+-- `bigserial` (the default identity width).
+fn serialType (t: DbType) -> Text =
+    match t
+        DbInt -> "serial"
+        _     -> "bigserial"
+
+-- The concrete Postgres column type for a dialect-neutral `DbType`.
+fn pgColType (t: DbType) -> Text =
+    match t
+        DbBoolean     -> "boolean"
+        DbInt         -> "integer"
+        DbBigInt      -> "bigint"
+        DbFloat       -> "double precision"
+        DbDecimal p s -> Text.join "" ["numeric(", Int.toText p, ", ", Int.toText s, ")"]
+        DbText        -> "text"
+        DbVarchar n   -> Text.join "" ["varchar(", Int.toText n, ")"]
+        DbUuid        -> "uuid"
+        DbTimestamp   -> "timestamp"
+        DbTimestampTz -> "timestamptz"
+        DbRaw r       -> r
+
+-- ` NOT NULL` unless the column admits NULL. A serial column is implicitly non-null,
+-- so it carries no explicit clause.
+fn nullSql (c: ColumnSchema e) -> Text =
+    match c.generation
+        Identity -> ""
+        _        -> if c.nullable then "" else " NOT NULL"
+
+fn pkSql (c: ColumnSchema e) -> Text =
+    if c.primaryKey then " PRIMARY KEY" else ""
+
+fn uniqSql (c: ColumnSchema e) -> Text =
+    if c.unique then " UNIQUE" else ""
+
+-- The column's `DEFAULT` clause for the non-`Supplied` generations that fill a value
+-- without a serial sequence: `now()` for a timestamp default, an inline literal, or a
+-- raw default expression. `Supplied` and `Identity` carry no `DEFAULT` (an identity is
+-- a serial pseudo-type, not a default).
+fn defaultSql (g: Generation) -> Text =
+    match g
+        Supplied        -> ""
+        Identity        -> ""
+        DefaultNow      -> " DEFAULT now()"
+        DefaultLit v    -> Text.concat " DEFAULT " (sqlLiteral v)
+        DefaultRawSql r -> Text.concat " DEFAULT " r
+
+-- A column's `REFERENCES` clause: the target table and column, plus the `ON DELETE`
+-- and `ON UPDATE` actions when either is not the default `NO ACTION`.
+fn fkSql (fk: Option ForeignKey) -> Text =
+    match fk
+        None   -> ""
+        Some f -> Text.join "" [" REFERENCES ", quoteIdent f.table, " (", quoteIdent f.column, ")", onDeleteSql f.onDelete, onUpdateSql f.onUpdate]
+
+fn onDeleteSql (a: FkAction) -> Text =
+    match a
+        NoAction -> ""
+        _        -> Text.concat " ON DELETE " (fkActionSql a)
+
+fn onUpdateSql (a: FkAction) -> Text =
+    match a
+        NoAction -> ""
+        _        -> Text.concat " ON UPDATE " (fkActionSql a)
+
+fn fkActionSql (a: FkAction) -> Text =
+    match a
+        NoAction   -> "NO ACTION"
+        Restrict   -> "RESTRICT"
+        Cascade    -> "CASCADE"
+        SetNull    -> "SET NULL"
+        SetDefault -> "SET DEFAULT"
+
+-- A column's `CHECK` clause, the captured predicate rendered to SQL with its literals
+-- inline (a DDL check takes no bind parameters), the constraint dual of the predicate
+-- a query `WHERE` compiles.
+fn checkSql (ck: Option QExpr) -> Text =
+    match ck
+        None   -> ""
+        Some e -> Text.join "" [" CHECK (", ckExpr e, ")"]
+
+-- ── CHECK predicate → SQL ─────────────────────────────────────────────────────
+--
+-- The inline-literal dual of the query compiler's `compileExpr`: a `CHECK` constraint
+-- lives in DDL text, where a bind placeholder is not allowed, so each literal is
+-- spelled in place (a text literal single-quote-escaped) rather than collected as a
+-- parameter. Only the predicate-shaped nodes a `Quote (e -> Bool)` can hold are
+-- rendered; the query-shaped nodes (projection, aggregate, exists) cannot appear in a
+-- column check and fall through to empty.
+fn ckExpr (e: QExpr) -> Text =
+    match e
+        QCol c      -> quoteIdent c
+        QColR c     -> quoteIdent c
+        QColAt _ c  -> quoteIdent c
+        QLitInt n   -> Int.toText n
+        QLitText s  -> Text.join "" ["'", Text.replace "'" "''" s, "'"]
+        QLitBool b  -> if b then "TRUE" else "FALSE"
+        QLitFloat x -> Float.toText x
+        QNot x      -> Text.join "" ["(NOT ", ckExpr x, ")"]
+        QNotTrue x  -> Text.join "" ["(", ckExpr x, " IS NOT TRUE)"]
+        QAnd l r    -> ckBin l " AND " r
+        QOr l r     -> ckBin l " OR " r
+        QEq l r     -> ckBin l " = " r
+        QNe l r     -> ckBin l " <> " r
+        QLt l r     -> ckBin l " < " r
+        QGt l r     -> ckBin l " > " r
+        QLe l r     -> ckBin l " <= " r
+        QGe l r     -> ckBin l " >= " r
+        QAdd l r    -> ckBin l " + " r
+        QSub l r    -> ckBin l " - " r
+        QMul l r    -> ckBin l " * " r
+        QDiv l r    -> ckBin l " / " r
+        QMod l r    -> ckBin l " % " r
+        QLike v p   -> Text.join "" ["(", ckExpr v, " LIKE ", ckExpr p, ")"]
+        QIn v items -> ckIn v items
+        QCase c t f -> Text.join "" ["CASE WHEN ", ckExpr c, " THEN ", ckExpr t, " ELSE ", ckExpr f, " END"]
+        _           -> ""
+
+fn ckBin (l: QExpr) (op: Text) (r: QExpr) -> Text =
+    Text.join "" ["(", ckExpr l, op, ckExpr r, ")"]
+
+fn ckIn (v: QExpr) (items: List QExpr) -> Text =
+    match items
+        [] -> "FALSE"
+        _  -> Text.join "" ["(", ckExpr v, " IN (", ckInList items, "))"]
+
+fn ckInList (items: List QExpr) -> Text =
+    match items
+        []        -> ""
+        x :: []   -> ckExpr x
+        x :: rest -> Text.join "" [ckExpr x, ", ", ckInList rest]
+
+-- ── Shared rendering helpers ──────────────────────────────────────────────────
+
+fn columnFrags (cols: List (ColumnSchema e)) -> List Text =
+    match cols
+        []        -> []
+        c :: rest -> columnDdl c :: columnFrags rest
+
+fn tupleFrags (cols: List (Text, Text, Bool, Bool, Bool)) -> List Text =
+    match cols
+        []        -> []
+        t :: rest -> columnDdl (tupleColumn t) :: tupleFrags rest
+
+fn indexDdlsOf (table: Text) (cols: List (ColumnSchema e)) -> List Text =
+    match cols
+        []        -> []
+        c :: rest ->
+            if c.indexed then indexDdl (idxName table c.column) table [c.column] false :: indexDdlsOf table rest
+            else indexDdlsOf table rest
+
+fn idxName (table: Text) (col: Text) -> Text =
+    Text.join "" [table, "_", col, "_idx"]
+
+fn uniqueKw (unique: Bool) -> Text =
+    if unique then "UNIQUE " else ""
+
+fn quotedCols (cols: List Text) -> Text =
+    Text.join ", " (quoteEach cols)
+
+fn quoteEach (cols: List Text) -> List Text =
+    match cols
+        []        -> []
+        c :: rest -> quoteIdent c :: quoteEach rest
+
+-- Lower a migration column tuple into a full `ColumnSchema`, mapping the base-type
+-- name to a `DbType`, so the tuple path reuses the same column renderer the entity
+-- schema uses. The `NoPk` variant drops the primary-key flag for `ADD COLUMN`.
+fn tupleColumn (t: (Text, Text, Bool, Bool, Bool)) -> ColumnSchema e =
+    match t
+        (name, ty, nullable, pk, uniq) -> buildCol name ty nullable pk uniq
+
+fn tupleColumnNoPk (t: (Text, Text, Bool, Bool, Bool)) -> ColumnSchema e =
+    match t
+        (name, ty, nullable, _pk, uniq) -> buildCol name ty nullable false uniq
+
+fn buildCol (name: Text) (ty: Text) (nullable: Bool) (pk: Bool) (uniq: Bool) -> ColumnSchema e =
+    let base = mkColumn name name (dbTypeOfBaseName ty) nullable
+    let withPk = if pk then primaryKey base else base
+    if uniq then unique withPk else withPk
+
+-- Map the migration seam's base-type name (`int`/`text`/`bool`/`float`) to a
+-- `DbType`. `int` is a 64-bit `bigint`, matching the integer width the row codec
+-- moves; an unknown name falls back to `text`.
+fn dbTypeOfBaseName (ty: Text) -> DbType =
+    if ty == "int" then DbBigInt
+    else if ty == "text" then DbText
+    else if ty == "bool" then DbBoolean
+    else if ty == "float" then DbFloat
+    else DbText
+
+fn quoteIdent (name: Text) -> Text =
+    Text.join "" ["\"", Text.replace "\"" "\"\"" name, "\""]

@@ -1421,6 +1421,12 @@ pub fn stdlib_signature(module: StdlibModuleId, name: &str, b: &BuiltinTyCons) -
             vec![ty_float(b)],
             Type::Con(b.sql_value, vec![]),
         ))),
+        // Render a SqlValue as an inline SQL literal (a DDL DEFAULT / CHECK position
+        // a bind parameter cannot fill).
+        (STD_SQL, "sqlLiteral") => Some(mono(ty_fn_pure(
+            vec![Type::Con(b.sql_value, vec![])],
+            ty_text(b),
+        ))),
         (STD_NET_HTTP, "html") => Some(mono(ty_fn_pure(
             vec![ty_text(b)],
             Type::Con(b.html, vec![]),

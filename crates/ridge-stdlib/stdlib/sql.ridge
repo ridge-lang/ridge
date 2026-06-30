@@ -112,3 +112,14 @@ pub fn sql (raw: Text) -> Sql =
 -- the only way to reach the value from outside this module.
 pub fn sqlValue (s: Sql) -> Text =
     s.value
+
+-- Render a SqlValue as an inline SQL literal: an integer or float bare, a boolean
+-- as `TRUE`/`FALSE`, a text value single-quoted with embedded quotes doubled, and
+-- `NULL` for the absent value. Unlike a bind parameter this splices the value into
+-- the statement text, so it is for the positions a parameter cannot fill — a column
+-- `DEFAULT` or a `CHECK` literal in a `CREATE TABLE`, where Postgres does not accept
+-- a placeholder. Embedded single quotes are doubled, the same escape `sql` runs, so
+-- a text value is still safe to splice. The match over the SqlValue tag runs in the
+-- runtime, where the value already crosses the seam as a tagged tuple.
+@ffi("ridge_rt", "sql_literal", 1)
+pub fn sqlLiteral (v: SqlValue) -> Text

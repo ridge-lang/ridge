@@ -2139,6 +2139,9 @@ fn reconciled_schema_fn_scheme(
     let fk_ty = || Type::Con(foreign_key, vec![]);
     let col_e = || Type::Con(column_schema, vec![Type::Var(e)]);
     let ent_e = || Type::Con(entity_schema, vec![Type::Var(e)]);
+    // The migration seam's column tuple `(Text, Text, Bool, Bool, Bool)` — the
+    // `(name, base-type, nullable, primaryKey, unique)` the runner flattens a column to.
+    let col_tuple = || Type::Tuple(vec![text(), text(), boolean(), boolean(), boolean()]);
     let pure = || CapRow::Concrete(CapabilitySet::PURE);
     // A monomorphic pure builder: `params -> ret`, no quantified vars.
     let mono = |params: Vec<Type>, ret: Type| {
@@ -2232,9 +2235,22 @@ fn reconciled_schema_fn_scheme(
         // Entity schema builders and read accessors (∀e. … over EntitySchema e).
         "schema" => poly1(vec![text(), text()], ent_e()),
         "withColumn" => poly1(vec![col_e(), ent_e()], ent_e()),
-        "schemaName" | "schemaTable" => poly1(vec![ent_e()], text()),
+        // `schemaToDdl` renders an entity's `CREATE TABLE`; it shares the
+        // `EntitySchema e -> Text` shape with the name accessors. `schemaIndexDdls`
+        // renders its non-unique indexes, sharing the `-> List Text` shape with the
+        // generated-column readers.
+        "schemaName" | "schemaTable" | "schemaToDdl" => poly1(vec![ent_e()], text()),
         "schemaColumns" => poly1(vec![ent_e()], list(col_e())),
-        "generatedColumns" | "identityColumns" => poly1(vec![ent_e()], list(text())),
+        "generatedColumns" | "identityColumns" | "schemaIndexDdls" => {
+            poly1(vec![ent_e()], list(text()))
+        }
+        // The migration step renderers over the seam tuple `(name, base-type, nullable,
+        // primaryKey, unique)` — the DDL the retired Erlang builder produced.
+        "createTableDdl" => mono(vec![text(), list(col_tuple())], text()),
+        "addColumnDdl" => mono(vec![text(), col_tuple()], text()),
+        "dropTableDdl" => mono(vec![text()], text()),
+        "dropColumnDdl" => mono(vec![text(), text()], text()),
+        "indexDdl" => mono(vec![text(), text(), list(text()), boolean()], text()),
         // schemaOf : ∀e. Option e -> EntitySchema e where HasSchema e. The single
         // method of the `HasSchema` binding class, dispatched by a phantom
         // `Option e` witness (the same shape `Row.rowColumns` uses). The

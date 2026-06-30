@@ -28,6 +28,7 @@ import std.sql (SqlValue, sqlValue)
 import std.query (QueryPlan, planToSql, planScan, MutationPlan, mutationToSql, mutationReturningToSql, planInsert, planUpdate, planDelete)
 import std.map (toList)
 import std.text (startsWith)
+import std.schema (createTableDdl, addColumnDdl, dropTableDdl, dropColumnDdl, indexDdl)
 
 -- ── Typed database errors ─────────────────────────────────────────────────────
 --
@@ -469,26 +470,6 @@ fn _pgRollback (id: Int) -> Result Unit Error
 @ffi("ridge_pg", "pg_close", 1)
 fn _pgClose (id: Int) -> Result Unit Error
 
--- Compile a `CREATE TABLE` from the column tuples and run it on the connection.
-@ffi("ridge_pg", "pg_ddl_create", 3)
-fn _pgDdlCreate (id: Int) (table: Text) (cols: List (Text, Text, Bool, Bool, Bool)) -> Result Unit Error
-
--- Run a `DROP TABLE` on the connection.
-@ffi("ridge_pg", "pg_ddl_drop", 2)
-fn _pgDdlDrop (id: Int) (table: Text) -> Result Unit Error
-
--- Run an `ALTER TABLE … ADD COLUMN` from the column tuple on the connection.
-@ffi("ridge_pg", "pg_ddl_add_column", 3)
-fn _pgDdlAddColumn (id: Int) (table: Text) (col: (Text, Text, Bool, Bool, Bool)) -> Result Unit Error
-
--- Run an `ALTER TABLE … DROP COLUMN` on the connection.
-@ffi("ridge_pg", "pg_ddl_drop_column", 3)
-fn _pgDdlDropColumn (id: Int) (table: Text) (column: Text) -> Result Unit Error
-
--- Run a `CREATE [UNIQUE] INDEX … ON table (cols)` on the connection.
-@ffi("ridge_pg", "pg_ddl_index", 5)
-fn _pgDdlIndex (id: Int) (name: Text) (table: Text) (cols: List Text) (unique: Bool) -> Result Unit Error
-
 -- Create the tracking table if absent, then read the applied migration names back
 -- in order. Result (List Text) Error.
 @ffi("ridge_pg", "pg_migrations_applied", 1)
@@ -506,6 +487,15 @@ fn _pgRawQuery (id: Int) (sql: Text) (params: List SqlValue) -> Result (List (Ma
 -- Run a raw SQL statement with bound parameters; answer the affected row count.
 @ffi("ridge_pg", "pg_raw_exec", 3)
 fn _pgRawExec (id: Int) (sql: Text) (params: List SqlValue) -> Result Int Error
+
+-- Run a DDL statement built in Ridge on the connection, discarding the affected-row
+-- count. The schema verbs render their SQL with `std.schema`'s DDL renderer and run
+-- it through this raw-exec seam, which honors an open transaction's pinned connection,
+-- so a migration's schema changes still commit or roll back together with its record.
+fn pgExecUnit (id: Int) (sql: Text) -> Result Unit Error =
+    match _pgRawExec id sql []
+        Ok _  -> Ok ()
+        Err e -> Err e
 
 -- Open a Postgres connection with the default pool. Requires the `db`
 -- capability; the handle returned is the proof of access for every later call,
@@ -559,15 +549,15 @@ instance Adapter Postgres =
     close (conn: Postgres) -> Result Unit Error =
         _pgClose conn.id
     ddlCreate (conn: Postgres) (table: Text) (cols: List (Text, Text, Bool, Bool, Bool)) -> Result Unit Error =
-        _pgDdlCreate conn.id table cols
+        pgExecUnit conn.id (createTableDdl table cols)
     ddlDrop (conn: Postgres) (table: Text) -> Result Unit Error =
-        _pgDdlDrop conn.id table
+        pgExecUnit conn.id (dropTableDdl table)
     ddlAddColumn (conn: Postgres) (table: Text) (col: (Text, Text, Bool, Bool, Bool)) -> Result Unit Error =
-        _pgDdlAddColumn conn.id table col
+        pgExecUnit conn.id (addColumnDdl table col)
     ddlDropColumn (conn: Postgres) (table: Text) (column: Text) -> Result Unit Error =
-        _pgDdlDropColumn conn.id table column
+        pgExecUnit conn.id (dropColumnDdl table column)
     ddlIndex (conn: Postgres) (name: Text) (table: Text) (cols: List Text) (unique: Bool) -> Result Unit Error =
-        _pgDdlIndex conn.id name table cols unique
+        pgExecUnit conn.id (indexDdl name table cols unique)
     migrationsApplied (conn: Postgres) -> Result (List Text) Error =
         _pgMigrationsApplied conn.id
     recordMigration (conn: Postgres) (name: Text) -> Result Unit Error =

@@ -18,7 +18,7 @@
 -- The dialect-neutral vocabulary below (`DbType`, `Generation`, `FkAction`) is
 -- turned into a backend's `CREATE TABLE` by the DDL renderer.
 
-import std.sql (SqlValue, sqlLiteral)
+import std.sql (SqlValue, sqlLiteral, sqlValueSource)
 import std.int as Int
 import std.float as Float
 
@@ -727,17 +727,16 @@ fn dbTypeSource (t: DbType) -> Text =
         DbRaw r       -> Text.join "" ["(DbRaw ", sourceString r, ")"]
 
 -- The `Generation` constructor source. `DefaultLit` carries a `SqlValue` whose variants are
--- opaque outside `std.sql`; rendering it back to source needs a renderer that lives in
--- `std.sql`, and wiring one there drifts the reconciled `SqlValue` id (a known self-build
--- fragility), so a `DefaultLit` default renders a marker that fails to compile rather than
--- dropping the default. `deriving (Schema)` never produces a `DefaultLit`, so a derived model
--- never reaches here; a hand-written literal default is the follow-on.
+-- opaque outside `std.sql`, so its source is rebuilt through `sqlValueSource` (the runtime
+-- renderer that lives beside the value at the same seam as `sqlLiteral`): a `DefaultLit
+-- (sqlInt 0)` round-trips as its own factory call. `deriving (Schema)` never produces a
+-- `DefaultLit`, so only a hand-written literal default reaches this arm.
 fn generationSource (g: Generation) -> Text =
     match g
         Supplied        -> "Supplied"
         Identity        -> "Identity"
         DefaultNow      -> "DefaultNow"
-        DefaultLit _    -> "defaultLitSourceUnsupported"
+        DefaultLit v    -> Text.join "" ["(DefaultLit ", sqlValueSource v, ")"]
         DefaultRawSql r -> Text.join "" ["(DefaultRawSql ", sourceString r, ")"]
 
 -- A foreign key's source: `references "table" "column"` plus the `onDelete`/`onUpdate`

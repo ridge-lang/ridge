@@ -15,6 +15,10 @@ pub fn sqlInt (n: Int) -> SqlValue = SqlInt n
 pub fn sqlText (s: Text) -> SqlValue = SqlText s
 pub fn sqlBool (b: Bool) -> SqlValue = SqlBool b
 pub fn sqlFloat (x: Float) -> SqlValue = SqlFloat x
+-- The SQL NULL bind value. Completes the base-type factory set so a nullable
+-- default (`DefaultLit`) can be built and rendered back to source; a present
+-- value still rides `sqlInt`/`sqlText`/… as before.
+pub fn sqlNull () -> SqlValue = SqlNull
 
 pub class SqlType a =
     toSql   (x: a)        -> SqlValue
@@ -123,3 +127,14 @@ pub fn sqlValue (s: Sql) -> Text =
 -- runtime, where the value already crosses the seam as a tagged tuple.
 @ffi("ridge_rt", "sql_literal", 1)
 pub fn sqlLiteral (v: SqlValue) -> Text
+
+-- Render a SqlValue back to the Ridge *source* expression that rebuilds it — the
+-- factory call `sqlInt 42`, `sqlText "hi"`, `sqlBool true`, `sqlFloat 1.5`, or
+-- `sqlNull ()`, each parenthesised so it drops straight into an argument position.
+-- The source dual of `sqlLiteral` (which renders the SQL literal form). Because the
+-- variants are opaque outside this module, this lives here at the same runtime seam
+-- as `sqlLiteral`; the migration snapshot renderer uses it to write a `DefaultLit`
+-- default back into generated source. Text is escaped as a Ridge string literal
+-- (`\` and `"` doubled), matching the schema renderer's `sourceString`.
+@ffi("ridge_rt", "sql_value_source", 1)
+pub fn sqlValueSource (v: SqlValue) -> Text

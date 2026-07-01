@@ -1421,9 +1421,20 @@ pub fn stdlib_signature(module: StdlibModuleId, name: &str, b: &BuiltinTyCons) -
             vec![ty_float(b)],
             Type::Con(b.sql_value, vec![]),
         ))),
+        // The SQL NULL bind value — a nullary factory completing the set.
+        (STD_SQL, "sqlNull") => Some(mono(ty_fn_pure(
+            vec![],
+            Type::Con(b.sql_value, vec![]),
+        ))),
         // Render a SqlValue as an inline SQL literal (a DDL DEFAULT / CHECK position
         // a bind parameter cannot fill).
         (STD_SQL, "sqlLiteral") => Some(mono(ty_fn_pure(
+            vec![Type::Con(b.sql_value, vec![])],
+            ty_text(b),
+        ))),
+        // Render a SqlValue back to its Ridge source expression (the source dual of
+        // `sqlLiteral`) — the migration snapshot renderer's `DefaultLit` path.
+        (STD_SQL, "sqlValueSource") => Some(mono(ty_fn_pure(
             vec![Type::Con(b.sql_value, vec![])],
             ty_text(b),
         ))),

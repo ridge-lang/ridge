@@ -12,9 +12,10 @@
 //! and the real guarantee, that the rendered text is valid Ridge that rebuilds an equal
 //! value: a second module splices the rendered model and migration back in, compiles
 //! them, and re-renders — the render is a fixpoint, so the reconstructed value renders
-//! to the identical source. A checked or `DefaultLit` column is out of scope here (its
-//! predicate/literal cannot be rebuilt from a phantom-erased schema); `deriving (Schema)`
-//! never produces one, so a derived model round-trips in full.
+//! to the identical source. A checked column rebuilds through `checkRaw` over the
+//! reconstructed `QExpr` tree, and a `DefaultLit` default through `sqlValueSource` (the
+//! `SqlValue` rebuilt as its own factory call); both round-trip through the fixpoint even
+//! though the phantom-erased schema has lost the entity type the original quote closed over.
 //!
 //! Gated on `beam-runtime` (real OTP) plus a `which` guard for `erl`/`erlc`.
 
@@ -31,8 +32,9 @@ use ridge_driver::{compile_workspace, CompileOptions, EmitArtefacts};
 // and a drop-table — rendered both directly and, for the model and migration, through
 // the snapshot/migration writers.
 const RENDER_SRC: &str = r#"
-import std.schema (EntitySchema, DbBigInt, DbInt, DbText, DbVarchar, Identity, Cascade, mkColumn, withColumn, schema, generated, primaryKey, unique, indexed, foreignKey, references, onDelete, check, eraseSchema, columnToSource, schemaToSource)
+import std.schema (EntitySchema, DbBigInt, DbInt, DbText, DbVarchar, Identity, DefaultLit, Cascade, mkColumn, withColumn, schema, generated, primaryKey, unique, indexed, foreignKey, references, onDelete, check, eraseSchema, columnToSource, schemaToSource)
 import std.migrate as Migrate
+import std.sql (sqlInt)
 
 type Widget = { qty: Int }
 
@@ -41,6 +43,7 @@ fn userSchema () -> EntitySchema Unit =
       |> withColumn (mkColumn "id" "id" DbBigInt false |> generated Identity |> primaryKey)
       |> withColumn (mkColumn "email" "email" (DbVarchar 255) false |> unique)
       |> withColumn (mkColumn "bio" "bio" DbText true)
+      |> withColumn (mkColumn "logins" "logins" DbInt false |> generated (DefaultLit (sqlInt 0)))
 
 fn postSchema () -> EntitySchema Unit =
     schema "Post" "posts"
@@ -64,6 +67,7 @@ fn sampleMigration () =
 
 pub fn columnSrc () -> Text = columnToSource (mkColumn "email" "email" (DbVarchar 255) false |> unique)
 pub fn checkColSrc () -> Text = columnToSource (mkColumn "qty" "qty" DbInt false |> check (fn (w: Widget) -> w.qty >= 0))
+pub fn defaultColSrc () -> Text = columnToSource (mkColumn "logins" "logins" DbInt false |> generated (DefaultLit (sqlInt 0)))
 pub fn schemaSrc () -> Text = schemaToSource (userSchema ())
 pub fn modelSrc () -> Text = Migrate.modelToSource (model ())
 pub fn migrationSrc () -> Text = Migrate.migrationToSource (sampleMigration ())
@@ -75,8 +79,9 @@ pub fn migrationSrc () -> Text = Migrate.migrationToSource (sampleMigration ())
 fn build_roundtrip_source(model_src: &str, migration_src: &str) -> String {
     format!(
         r#"
-import std.schema (EntitySchema, DbBigInt, DbInt, DbText, DbVarchar, Identity, Cascade, mkColumn, withColumn, schema, generated, primaryKey, unique, indexed, foreignKey, references, onDelete, checkRaw)
+import std.schema (EntitySchema, DbBigInt, DbInt, DbText, DbVarchar, Identity, DefaultLit, Cascade, mkColumn, withColumn, schema, generated, primaryKey, unique, indexed, foreignKey, references, onDelete, checkRaw)
 import std.migrate (migration, createSchema, addEntityColumn, alterColumn, dropColumn, dropTable, modelToSource, migrationToSource)
+import std.sql (sqlInt)
 
 fn rebuiltModel () -> List (EntitySchema Unit) = (
 {model_src}
@@ -177,6 +182,7 @@ fn source_renderer_round_trips_on_beam() {
 
     let column_src = run_fun(&beam_dir, &module, "columnSrc");
     let check_col_src = run_fun(&beam_dir, &module, "checkColSrc");
+    let default_col_src = run_fun(&beam_dir, &module, "defaultColSrc");
     let schema_src = run_fun(&beam_dir, &module, "schemaSrc");
     let model_src = run_fun(&beam_dir, &module, "modelSrc");
     let migration_src = run_fun(&beam_dir, &module, "migrationSrc");
@@ -193,6 +199,13 @@ fn source_renderer_round_trips_on_beam() {
     assert!(
         check_col_src.contains(r#"|> checkRaw (QGe (QCol "qty") (QLitInt 0))"#),
         "check_col_src: {check_col_src}"
+    );
+
+    // A `DefaultLit` default renders through `sqlValueSource` — the SqlValue rebuilt as its
+    // own factory call, so `sqlInt 0` round-trips as `(DefaultLit (sqlInt 0))`.
+    assert_eq!(
+        default_col_src,
+        r#"mkColumn "logins" "logins" DbInt false |> generated (DefaultLit (sqlInt 0))"#
     );
 
     // A schema renders single-line: the `schema "Name" "table"` head, then a

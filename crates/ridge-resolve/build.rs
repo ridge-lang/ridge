@@ -381,6 +381,7 @@ const BASELINE_EXPORTS: &[(&str, &[&str])] = &[
             "sqlText",
             "sqlBool",
             "sqlFloat",
+            "sqlNull",
             // The safe SQL statement-text wrapper, its factory, and accessor —
             // a data-layer concern, declared in sql.ridge.
             "Sql",
@@ -389,6 +390,9 @@ const BASELINE_EXPORTS: &[(&str, &[&str])] = &[
             // Render a SqlValue as an inline SQL literal — a DDL DEFAULT or CHECK
             // position a bind parameter cannot fill.
             "sqlLiteral",
+            // Render a SqlValue back to its Ridge source expression — the migration
+            // snapshot renderer's `DefaultLit` path.
+            "sqlValueSource",
         ],
     ),
     (

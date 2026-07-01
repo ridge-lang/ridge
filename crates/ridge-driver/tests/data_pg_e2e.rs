@@ -62,7 +62,7 @@ import std.migrate as Migrate
 import std.migrate (SchemaOp)
 import std.raw as Raw
 import std.query (SortOrder, Asc, Desc)
-import std.sql (toSql, SqlValue)
+import std.sql (toSql, SqlValue, toRow)
 import std.map as Map
 import std.int as Int
 import std.float as Float

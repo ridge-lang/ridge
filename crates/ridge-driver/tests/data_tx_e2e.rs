@@ -31,8 +31,10 @@ import std.sql (SqlValue)
 -- never assert a specific id, so the database-assigned ids do not affect them.
 pub type User = { id: Int, name: Text } deriving (Row, Schema)
 
-fn mkUser (uid: Int) (uname: Text) -> User =
-    User { id = uid, name = uname }
+-- `id` is a `deriving (Schema)` identity column, so the insert shape drops it and
+-- the store assigns it; the probes only count rows, so a name is all they carry.
+fn mkUser (uname: Text) -> UserInsert =
+    UserInsert { name = uname }
 
 -- How many users the store holds, read back through the typed repository.
 fn countAll (conn: MemAdapter) -> Int =
@@ -51,26 +53,26 @@ fn forceFail (conn: MemAdapter) -> Result Unit Error =
         Ok _  -> Ok ()
 
 -- Insert one user, returning the result.
-fn addUser (conn: MemAdapter) (uid: Int) (uname: Text) -> Result Unit Error =
+fn addUser (conn: MemAdapter) (uname: Text) -> Result Unit Error =
     let users: Repo User MemAdapter = Repo.repo conn "users"
-    Repo.insert (mkUser uid uname) users
+    Repo.insert (mkUser uname) users
 
 -- A transaction body that inserts two rows and succeeds.
 fn insertTwo (tx: MemAdapter) -> Result Unit Error =
-    match addUser tx 1 "ada"
+    match addUser tx "ada"
         Err e -> Err e
-        Ok _  -> addUser tx 2 "lin"
+        Ok _  -> addUser tx "lin"
 
 -- A transaction body that inserts a row and then fails, so it rolls back.
 fn insertThenFail (tx: MemAdapter) -> Result Unit Error =
-    match addUser tx 2 "lin"
+    match addUser tx "lin"
         Err e -> Err e
         Ok _  -> forceFail tx
 
 -- A transaction body whose nested transaction inserts a row and then fails: the
 -- nested failure rewinds to its savepoint, and this body commits its own row.
 fn outerKeepsInnerRollsBack (tx: MemAdapter) -> Result Unit Error =
-    match addUser tx 1 "ada"
+    match addUser tx "ada"
         Err e -> Err e
         Ok _  ->
             let _inner = Repo.transaction tx insertThenFail
@@ -79,17 +81,17 @@ fn outerKeepsInnerRollsBack (tx: MemAdapter) -> Result Unit Error =
 -- A transaction body whose nested transaction inserts a row and commits (releasing
 -- its savepoint), and this body then fails: the outer rollback unwinds both rows.
 fn outerFailsAfterInnerCommit (tx: MemAdapter) -> Result Unit Error =
-    match addUser tx 1 "ada"
+    match addUser tx "ada"
         Err e -> Err e
         Ok _  ->
-            match Repo.transaction tx (insertOne 2 "lin")
+            match Repo.transaction tx (insertOne "lin")
                 Err e -> Err e
                 Ok _  -> forceFail tx
 
 -- A one-row insert body, the id and name fixed up front so it is a plain
 -- `MemAdapter -> Result Unit Error` the transaction combinator can run.
-fn insertOne (uid: Int) (uname: Text) (tx: MemAdapter) -> Result Unit Error =
-    addUser tx uid uname
+fn insertOne (uname: Text) (tx: MemAdapter) -> Result Unit Error =
+    addUser tx uname
 
 -- A successful transaction: insert two rows and commit. Both survive.
 pub fn db committed () -> Int =
@@ -102,7 +104,7 @@ pub fn db committed () -> Int =
 -- transaction's insert is rolled back.
 pub fn db rolledBack () -> Int =
     let conn = memAdapter ()
-    match addUser conn 1 "ada"
+    match addUser conn "ada"
         Err _ -> 0 - 2
         Ok _  ->
             match Repo.transaction conn insertThenFail

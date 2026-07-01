@@ -23,10 +23,12 @@ ridge-driver    = { path = "../ridge-driver" }
 ridge-codegen-erl = { path = "../ridge-codegen-erl" }
 ridge-fmt       = { path = "../ridge-fmt" }
 ridge-manifest  = { path = "../ridge-manifest" }
+ridge-resolve   = { path = "../ridge-resolve" }
 ridge-diagnostics = { path = "../ridge-diagnostics" }
 notify          = { version = "8", optional = true }
 which           = "8"
 dirs            = "6"
+tempfile        = "3"
 
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"
@@ -34,7 +36,6 @@ libc = "0.2"
 [dev-dependencies]
 assert_cmd  = "2"
 predicates  = "3"
-tempfile    = "3"
 
 [features]
 ## Gate for tests/features that require a real OTP installation.

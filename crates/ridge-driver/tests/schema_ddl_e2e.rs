@@ -23,7 +23,7 @@ use std::process::Command;
 use ridge_driver::{compile_workspace, CompileOptions, EmitArtefacts};
 
 const SOURCE: &str = r#"
-import std.schema (DbBigInt, DbInt, DbText, DbTimestampTz, Identity, DefaultNow, Cascade, mkColumn, withColumn, schema, generated, primaryKey, unique, indexed, foreignKey, references, onDelete, check, schemaToDdl, schemaIndexDdls, createTableDdl, addColumnDdl, addColumnSchemaDdl, dropTableDdl, dropColumnDdl, indexDdl)
+import std.schema (DbBigInt, DbInt, DbText, DbTimestampTz, Identity, DefaultNow, DefaultRawSql, Cascade, mkColumn, withColumn, schema, generated, primaryKey, unique, indexed, foreignKey, references, onDelete, check, schemaToDdl, schemaIndexDdls, createTableDdl, addColumnDdl, addColumnSchemaDdl, alterColumnDdl, dropTableDdl, dropColumnDdl, indexDdl)
 import std.text as Text
 
 -- The domain records the schemas below describe. Persistence-ignorant — the
@@ -72,6 +72,19 @@ pub fn migrateAddColDdl () -> Text = addColumnDdl "widgets" ("note", "text", tru
 -- (base types, no default) has no way to express.
 pub fn addEntityColDdl () -> Text =
     addColumnSchemaDdl "posts" (mkColumn "created_at" "created_at" DbTimestampTz false |> generated DefaultNow)
+
+-- The entity-driven ALTER COLUMN renders only the facet that changed: here the column's
+-- type went from `integer` to `bigint`, so a single `TYPE` action comes out — no spurious
+-- nullability or default clause, because the old descriptor pins them unchanged.
+pub fn alterTypeDdl () -> Text =
+    alterColumnDdl "metrics" (mkColumn "views" "views" DbInt false) (mkColumn "views" "views" DbBigInt false)
+
+-- Two facets change at once — the column becomes nullable and gains a default — so both
+-- actions render in one statement, in the fixed order (nullability before default) and with
+-- no `TYPE` action since the type held. Proves the multi-action join and the `DROP NOT NULL`
+-- / `SET DEFAULT` phrasings.
+pub fn alterNullDefaultDdl () -> Text =
+    alterColumnDdl "posts" (mkColumn "note" "note" DbText false) (mkColumn "note" "note" DbText true |> generated (DefaultRawSql "''"))
 
 pub fn migrateDropTableDdl () -> Text = dropTableDdl "widgets"
 
@@ -145,7 +158,8 @@ fn schema_ddl_renders_on_beam() {
     let expr = format!(
         "F=fun(N)->io:format(\"~s=~s~n\",[N,{module}:N()])end, \
          lists:foreach(F,['userDdl','postDdl','userIndexes','migrateCreateDdl',\
-         'migrateAddColDdl','addEntityColDdl','migrateDropTableDdl','migrateDropColDdl',\
+         'migrateAddColDdl','addEntityColDdl','alterTypeDdl','alterNullDefaultDdl',\
+         'migrateDropTableDdl','migrateDropColDdl',\
          'migrateIndexDdl','migrateUniqueIndexDdl']), halt()."
     );
     let output = Command::new("erl")
@@ -197,6 +211,13 @@ fn schema_ddl_renders_on_beam() {
     // and `DEFAULT now()` — that the tuple form above cannot carry.
     want(
         r#"addEntityColDdl=ALTER TABLE "posts" ADD COLUMN "created_at" timestamptz NOT NULL DEFAULT now()"#,
+    );
+    // The entity-driven ALTER COLUMN renders only the changed facet: a lone `TYPE` action
+    // when only the type moved, and both a `DROP NOT NULL` and a `SET DEFAULT` — in that
+    // order, comma-joined — when nullability and default moved but the type held.
+    want(r#"alterTypeDdl=ALTER TABLE "metrics" ALTER COLUMN "views" TYPE bigint"#);
+    want(
+        r#"alterNullDefaultDdl=ALTER TABLE "posts" ALTER COLUMN "note" DROP NOT NULL, ALTER COLUMN "note" SET DEFAULT ''"#,
     );
     want(r#"migrateDropTableDdl=DROP TABLE "widgets""#);
     want(r#"migrateDropColDdl=ALTER TABLE "widgets" DROP COLUMN "note""#);

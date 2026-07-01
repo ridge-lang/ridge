@@ -554,6 +554,19 @@ fn reconciled_decls(b: &BuiltinTyCons, base: u32) -> Vec<TyConDecl> {
                             Type::Con(TyConId(base + 29), vec![Type::Con(b.unit, vec![])]),
                         ]),
                     },
+                    // `AlterColumn` carries the table name and the old and new column
+                    // descriptors (`ColumnSchema`, this block's `base + 29`, phantom erased
+                    // to `Unit`) of a column present in both snapshots whose type,
+                    // nullability, or default changed, so the backend renders a minimal
+                    // `ALTER TABLE … ALTER COLUMN` from the difference between the two.
+                    UnionVariant {
+                        name: "AlterColumn".to_string(),
+                        kind: VariantPayload::Positional(vec![
+                            Type::Con(b.text, vec![]),
+                            Type::Con(TyConId(base + 29), vec![Type::Con(b.unit, vec![])]),
+                            Type::Con(TyConId(base + 29), vec![Type::Con(b.unit, vec![])]),
+                        ]),
+                    },
                 ],
             }),
             def_span: None,
@@ -2279,6 +2292,14 @@ fn reconciled_schema_fn_scheme(
         // addColumnSchemaDdl : ∀e. Text -> ColumnSchema e -> Text — the entity-driven
         // ADD COLUMN renderer, keeping the descriptor's type/default/constraints.
         "addColumnSchemaDdl" => poly1(vec![text(), col_e()], text()),
+        // alterColumnDdl : ∀e. Text -> ColumnSchema e -> ColumnSchema e -> Text — the
+        // entity-driven ALTER COLUMN renderer, taking a column's old and new descriptors and
+        // emitting the minimal statement for the facets (type, nullability, default) that differ.
+        "alterColumnDdl" => poly1(vec![text(), col_e(), col_e()], text()),
+        // columnAltered : ∀e. ColumnSchema e -> ColumnSchema e -> Bool — the snapshot-diff
+        // predicate: whether a column's type, nullability, or default changed (a serial/identity
+        // column is excluded), i.e. whether the diff emits an `AlterColumn` for it.
+        "columnAltered" => poly1(vec![col_e(), col_e()], boolean()),
         "dropTableDdl" => mono(vec![text()], text()),
         "dropColumnDdl" => mono(vec![text(), text()], text()),
         "indexDdl" => mono(vec![text(), text(), list(text()), boolean()], text()),

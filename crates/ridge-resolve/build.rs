@@ -514,6 +514,7 @@ const BASELINE_EXPORTS: &[(&str, &[&str])] = &[
             "ddlIndex",
             "ddlCreateEntity",
             "ddlAddEntityColumn",
+            "ddlAlterColumn",
             "migrationsApplied",
             "recordMigration",
             // Raw-SQL escape hatch (typed front door in std.raw): a parameterised
@@ -817,6 +818,8 @@ const BASELINE_EXPORTS: &[(&str, &[&str])] = &[
             "createTableDdl",
             "addColumnDdl",
             "addColumnSchemaDdl",
+            "alterColumnDdl",
+            "columnAltered",
             "dropTableDdl",
             "dropColumnDdl",
             "indexDdl",

@@ -200,6 +200,15 @@ fn thingV2 () -> EntitySchema Unit =
         |> withColumn (mkColumn "name" "name" DbText false)
         |> withColumn (mkColumn "email" "email" DbText true))
 
+-- v2 with the `email` column tightened from nullable to NOT NULL — same table, same
+-- columns, one facet changed. Diffing v2 against this is what the column-alter path must
+-- pick up (and diffing it against itself must not).
+fn thingV2b () -> EntitySchema Unit =
+    eraseSchema (schema "Thing" "things"
+        |> withColumn (mkColumn "id" "id" DbBigInt false)
+        |> withColumn (mkColumn "name" "name" DbText false)
+        |> withColumn (mkColumn "email" "email" DbText false))
+
 -- The diff descends into a table present in both snapshots: v1 -> v2 adds the email
 -- column (1 op), v2 -> v1 drops it (1 op), v1 -> v1 is unchanged (0). 1 + 1 + 0 = 2.
 pub fn db diffColumns () -> Int =
@@ -219,6 +228,29 @@ pub fn db diffColumnApplies () -> Int =
         Err _ -> 0 - 1
         Ok _  ->
             match Migrate.run conn [ Migrate.migration "0002_thing_email" (Migrate.diffSchemas [ thingV1 () ] [ thingV2 () ]) ]
+                Ok names -> length names
+                Err _    -> 0 - 2
+
+-- The diff descends into a matched column: v2 -> v2b tightens `email` to NOT NULL (1 alter
+-- op), v2b -> v2 relaxes it back (1 op), and v2 -> v2 leaves every column untouched (0, so
+-- no spurious alter). 1 + 1 + 0 = 2.
+pub fn db diffAlterColumns () -> Int =
+    let b = thingV2 ()
+    let c = thingV2b ()
+    let tighten = Migrate.diffSchemas [ b ] [ c ]
+    let relax   = Migrate.diffSchemas [ c ] [ b ]
+    let same    = Migrate.diffSchemas [ b ] [ b ]
+    length tighten + length relax + length same
+
+-- The column-alter step runs and commits: create the base table from v2, then apply the
+-- v2 -> v2b diff (one AlterColumn). The in-memory store enforces no column shape, so the
+-- alter is a no-op, but the migration must run and record — one name comes back.
+pub fn db diffAlterApplies () -> Int =
+    let conn = memAdapter ()
+    match Migrate.run conn [ Migrate.migration "0001_thing" (Migrate.diffSchemas [] [ thingV2 () ]) ]
+        Err _ -> 0 - 1
+        Ok _  ->
+            match Migrate.run conn [ Migrate.migration "0002_thing_email_nn" (Migrate.diffSchemas [ thingV2 () ] [ thingV2b () ]) ]
                 Ok names -> length names
                 Err _    -> 0 - 2
 "#;
@@ -305,6 +337,8 @@ fn migrations_apply_track_and_are_idempotent_on_beam() {
          io:format(\"diffCounts=~w~n\",[{module}:diffCounts()]), \
          io:format(\"diffColumns=~w~n\",[{module}:diffColumns()]), \
          io:format(\"diffColumnApplies=~w~n\",[{module}:diffColumnApplies()]), \
+         io:format(\"diffAlterColumns=~w~n\",[{module}:diffAlterColumns()]), \
+         io:format(\"diffAlterApplies=~w~n\",[{module}:diffAlterApplies()]), \
          halt()."
     );
     let output = Command::new("erl")
@@ -363,5 +397,16 @@ fn migrations_apply_track_and_are_idempotent_on_beam() {
     assert!(
         stdout.contains("diffColumnApplies=1"),
         "expected `diffColumnApplies=1` — the AddEntityColumn step from the diff should run and record one migration\nstdout:\n{stdout}\nstderr:\n{stderr}"
+    );
+    // The diff descends into a matched column: a tightened and a relaxed column are one
+    // alter step each, and an unchanged column is none.
+    assert!(
+        stdout.contains("diffAlterColumns=2"),
+        "expected `diffAlterColumns=2` — a column altered one way and back is one step each; an unchanged column is none\nstdout:\n{stdout}\nstderr:\n{stderr}"
+    );
+    // The diffed column-alter step runs and commits on the in-memory store.
+    assert!(
+        stdout.contains("diffAlterApplies=1"),
+        "expected `diffAlterApplies=1` — the AlterColumn step from the diff should run and record one migration\nstdout:\n{stdout}\nstderr:\n{stderr}"
     );
 }

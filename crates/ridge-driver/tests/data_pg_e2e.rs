@@ -2073,6 +2073,68 @@ pub fn db pgDiffAddedColumn () -> Int =
                                         Err _ -> 0 - 5
                                         Ok _  -> pgCountBolts conn
 
+-- The column-alter auto-diff against the live database: the `code` column starts NOT NULL
+-- and the model relaxes it to nullable, and `diffSchemas` turns that into an
+-- `ALTER TABLE … ALTER COLUMN … DROP NOT NULL` step that lands on the real table. Its own
+-- entity and table so the migrations never collide with the others.
+pub type RidgeMigGear = { id: Int, code: Text } deriving (Row, Schema)
+
+-- The gears table with `code` NOT NULL — the previous snapshot the diff compares against.
+-- Hand-built so it shares the table name with the relaxed version below, which is what makes
+-- the diff descend into the column rather than treat them as two tables.
+fn gearV1 () -> EntitySchema Unit =
+    eraseSchema (schema "RidgeMigGear" "ridge_mig_gears"
+        |> withColumn (mkColumn "id" "id" DbBigInt false |> generated Identity |> primaryKey)
+        |> withColumn (mkColumn "code" "code" DbText false))
+
+-- The same table with `code` relaxed to nullable — one facet changed, so the diff emits a
+-- single `ALTER COLUMN … DROP NOT NULL`.
+fn gearV2 () -> EntitySchema Unit =
+    eraseSchema (schema "RidgeMigGear" "ridge_mig_gears"
+        |> withColumn (mkColumn "id" "id" DbBigInt false |> generated Identity |> primaryKey)
+        |> withColumn (mkColumn "code" "code" DbText true))
+
+-- Create the table at v1 (code NOT NULL), then diff v1 -> v2 to relax `code`. The alter runs
+-- against the real table; if the rendered statement were invalid PG the migration would fail.
+fn runGearsAlterDiff (conn: Postgres) -> Result (List Text) Error =
+    let create = Migrate.migration "0005_gears" (Migrate.diffSchemas [] [ gearV1 () ])
+    let relax  = Migrate.migration "0006_gears_relax" (Migrate.diffSchemas [ gearV1 () ] [ gearV2 () ])
+    Migrate.run conn [ create, relax ]
+
+fn pgClearGears (conn: Postgres) -> Result Int Error =
+    let r = Repo.repo conn "ridge_mig_gears"
+    Repo.deleteWhere (fn (g: RidgeMigGear) -> g.id >= 0) r
+
+fn pgAddGear (conn: Postgres) (gcode: Text) -> Result Unit Error =
+    let r = Repo.repo conn "ridge_mig_gears"
+    Repo.insert (RidgeMigGearInsert { code = gcode }) r
+
+fn pgCountGears (conn: Postgres) -> Int =
+    let r = Repo.repo conn "ridge_mig_gears"
+    match r |> Repo.query |> Repo.count
+        Ok n  -> n
+        Err _ -> 0 - 9
+
+-- The diffed ALTER TABLE lands on the real table: after the create-then-relax migrations
+-- run, the table stays usable — two rows insert through the entity and count back -> 2.
+-- Clears first so the count is deterministic across runs.
+pub fn db pgDiffAlteredColumn () -> Int =
+    match connect (pgConfig ())
+        Err _ -> 0 - 1
+        Ok conn ->
+            match runGearsAlterDiff conn
+                Err _ -> 0 - 2
+                Ok _  ->
+                    match pgClearGears conn
+                        Err _ -> 0 - 3
+                        Ok _  ->
+                            match pgAddGear conn "a"
+                                Err _ -> 0 - 4
+                                Ok _  ->
+                                    match pgAddGear conn "b"
+                                        Err _ -> 0 - 5
+                                        Ok _  -> pgCountGears conn
+
 -- Raw-SQL escape hatch against the live database. Each probe seeds the users table
 -- through `setup` (clearing and inserting ada/lin/max), then opens a fresh
 -- connection and runs raw SQL over `ridge_pg_users`: a parameterised SELECT decoded
@@ -2431,6 +2493,7 @@ fn postgres_adapter_reads_a_real_table() {
          io:format(\"pgEntityCreated=~w~n\",[{module}:pgEntityCreated()]), \
          io:format(\"pgDiffCreated=~w~n\",[{module}:pgDiffCreated()]), \
          io:format(\"pgDiffAddedColumn=~w~n\",[{module}:pgDiffAddedColumn()]), \
+         io:format(\"pgDiffAlteredColumn=~w~n\",[{module}:pgDiffAlteredColumn()]), \
          io:format(\"rawAdults=~s~n\",[{module}:rawAdults()]), \
          io:format(\"rawFirstName=~s~n\",[{module}:rawFirstName()]), \
          io:format(\"rawBumpCount=~w~n\",[{module}:rawBumpCount()]), \
@@ -2874,6 +2937,10 @@ fn postgres_adapter_reads_a_real_table() {
         (
             "pgDiffAddedColumn=2",
             "the column-level auto-diff turns a new field into an ALTER TABLE ADD COLUMN that lands on the real table",
+        ),
+        (
+            "pgDiffAlteredColumn=2",
+            "the column-level auto-diff turns a relaxed NOT NULL into an ALTER TABLE ALTER COLUMN DROP NOT NULL that lands on the real table",
         ),
         (
             "rawAdults=lin,max",

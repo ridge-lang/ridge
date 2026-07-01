@@ -335,6 +335,28 @@ pub fn addColumnDdl (table: Text) (col: (Text, Text, Bool, Bool, Bool)) -> Text 
 pub fn addColumnSchemaDdl (table: Text) (c: ColumnSchema e) -> Text =
     Text.join "" ["ALTER TABLE ", quoteIdent table, " ADD COLUMN ", columnDdlNoPk c]
 
+-- `ALTER TABLE … ALTER COLUMN` from the old and new descriptors of a column present in
+-- both snapshots — the entity-driven counterpart to `addColumnSchemaDdl` for a change
+-- rather than an addition. Only the facets that differ render, each as its own
+-- `ALTER COLUMN` action in one statement (Postgres takes them comma-separated) and in a
+-- fixed order: the SQL type (`… TYPE t`), then nullability (`SET`/`DROP NOT NULL`), then
+-- the `DEFAULT` clause (`SET`/`DROP DEFAULT`). The old descriptor is what makes the output
+-- minimal — an unchanged facet emits nothing. Columns the diff never alters (a
+-- serial/identity transition, or a constraint-only change) never reach here; see
+-- `columnAltered`.
+pub fn alterColumnDdl (table: Text) (old: ColumnSchema e) (new: ColumnSchema e) -> Text =
+    Text.join "" ["ALTER TABLE ", quoteIdent table, " ", Text.join ", " (alterActions old new)]
+
+-- Whether the snapshot diff should emit an `AlterColumn` for a column present in both
+-- snapshots: true when its SQL type, nullability, or `DEFAULT`-style generation changed.
+-- A serial/identity column on either side is excluded — turning a column into or out of an
+-- identity is a table rewrite the plain `ALTER COLUMN` actions cannot express, so it stays
+-- a hand-written step. Constraint changes (primary key, uniqueness, foreign key, index,
+-- check) are likewise out of scope and left as they are.
+pub fn columnAltered (old: ColumnSchema e) (new: ColumnSchema e) -> Bool =
+    if isIdentity old.generation || isIdentity new.generation then false
+    else (old.ty != new.ty) || (old.nullable != new.nullable) || (old.generation != new.generation)
+
 -- `DROP TABLE`.
 pub fn dropTableDdl (table: Text) -> Text =
     Text.concat "DROP TABLE " (quoteIdent table)
@@ -359,6 +381,45 @@ fn columnDdl (c: ColumnSchema e) -> Text =
 -- a primary key cannot be added against a table's existing rows.
 fn columnDdlNoPk (c: ColumnSchema e) -> Text =
     Text.join "" [quoteIdent c.column, " ", colTypeSql c, nullSql c, defaultSql c.generation, uniqSql c, fkSql c.foreignKey, checkSql c.check]
+
+fn isIdentity (g: Generation) -> Bool =
+    match g
+        Identity -> true
+        _        -> false
+
+-- The `ALTER COLUMN` actions a change needs — one per facet that differs between the old
+-- and new descriptor, in the fixed order type, nullability, default — so a rendered alter
+-- reads predictably. Each action targets the new (target) shape; a facet left unchanged
+-- contributes nothing.
+fn alterActions (old: ColumnSchema e) (new: ColumnSchema e) -> List Text =
+    let typeAct = if old.ty != new.ty then [alterTypeAction new] else []
+    let nullAct = if old.nullable != new.nullable then [alterNullAction new] else []
+    let defAct  = if old.generation != new.generation then [alterDefaultAction new] else []
+    concatFrags typeAct (concatFrags nullAct defAct)
+
+fn alterTypeAction (c: ColumnSchema e) -> Text =
+    Text.join "" ["ALTER COLUMN ", quoteIdent c.column, " TYPE ", pgColType c.ty]
+
+fn alterNullAction (c: ColumnSchema e) -> Text =
+    if c.nullable then Text.join "" ["ALTER COLUMN ", quoteIdent c.column, " DROP NOT NULL"]
+    else Text.join "" ["ALTER COLUMN ", quoteIdent c.column, " SET NOT NULL"]
+
+-- The `ALTER COLUMN … DEFAULT` action for the target generation: drop the default when the
+-- column reverts to caller-supplied, or set it to `now()`, a literal, or a raw expression.
+-- `Identity` cannot occur — `columnAltered` excludes an identity column from alteration —
+-- and renders nothing.
+fn alterDefaultAction (c: ColumnSchema e) -> Text =
+    match c.generation
+        Supplied        -> Text.join "" ["ALTER COLUMN ", quoteIdent c.column, " DROP DEFAULT"]
+        Identity        -> ""
+        DefaultNow      -> Text.join "" ["ALTER COLUMN ", quoteIdent c.column, " SET DEFAULT now()"]
+        DefaultLit v    -> Text.join "" ["ALTER COLUMN ", quoteIdent c.column, " SET DEFAULT ", sqlLiteral v]
+        DefaultRawSql r -> Text.join "" ["ALTER COLUMN ", quoteIdent c.column, " SET DEFAULT ", r]
+
+fn concatFrags (a: List Text) (b: List Text) -> List Text =
+    match a
+        []        -> b
+        x :: rest -> x :: concatFrags rest b
 
 fn colTypeSql (c: ColumnSchema e) -> Text =
     match c.generation

@@ -44,7 +44,7 @@ import std.data as Db
 -- The rich schema descriptor an entity-driven migration step carries: `eraseSchema`
 -- drops its phantom entity so a non-parametric `SchemaOp` can hold it, and
 -- `schemaTable` names the table a drop targets.
-import std.schema (EntitySchema, ColumnSchema, eraseSchema, schemaTable, schemaColumns, colColumn)
+import std.schema (EntitySchema, ColumnSchema, eraseSchema, schemaTable, schemaColumns, colColumn, columnAltered)
 
 -- A column in a table definition: its name, its base type, and the three
 -- modifiers a schema cares about — whether it admits SQL NULL, whether it is the
@@ -93,7 +93,7 @@ pub fn unique (c: Column) -> Column =
 -- `uniqueIndex` factories and handed to `migration`, and the runner decomposes it
 -- onto the adapter's schema seam — so user code names the type but never the
 -- variants.
-pub type SchemaOp = CreateTable Text (List Column) | DropTable Text | AddColumn Text Column | DropColumn Text Text | CreateIndex Text Text (List Text) Bool | CreateEntity (EntitySchema Unit) | AddEntityColumn Text (ColumnSchema Unit)
+pub type SchemaOp = CreateTable Text (List Column) | DropTable Text | AddColumn Text Column | DropColumn Text Text | CreateIndex Text Text (List Text) Bool | CreateEntity (EntitySchema Unit) | AddEntityColumn Text (ColumnSchema Unit) | AlterColumn Text (ColumnSchema Unit) (ColumnSchema Unit)
 
 -- Create a table with the given columns.
 pub fn createTable (table: Text) (cols: List Column) -> SchemaOp =
@@ -173,11 +173,14 @@ pub fn migration (name: Text) (steps: List SchemaOp) -> Migration =
 -- `CREATE TABLE` from the descriptor); a table in `prev` absent from `next` becomes a
 -- drop. For a table in both, its columns are diffed: a column only in the new schema is
 -- added (`ALTER TABLE … ADD COLUMN`, keeping the descriptor's type, default, and
--- constraints), and a column only in the old one is dropped. The steps come out ordered
--- creates, then column changes, then drops — creates and column-adds in `next` order,
--- drops in `prev` order. A column present in both is left as it is: a retype or a
--- constraint change on an existing column is not yet diffed, so that still needs a
--- hand-written step.
+-- constraints), a column only in the old one is dropped, and a column in both whose SQL
+-- type, nullability, or default changed is altered (`ALTER TABLE … ALTER COLUMN`, only the
+-- facets that changed). Within a table the column steps come out adds, then alters, then
+-- drops; across tables the steps are ordered creates, then column changes, then drops —
+-- creates and column changes in `next` order, drops in `prev` order. What is still left to
+-- a hand-written step: a change to a column's constraints (primary key, uniqueness, foreign
+-- key, index, check) and a serial/identity transition, neither of which the plain column
+-- alter expresses.
 pub fn diffSchemas (prev: List (EntitySchema Unit)) (next: List (EntitySchema Unit)) -> List SchemaOp =
     appendOps (createdTables prev next) (appendOps (alteredTables prev next) (droppedTables prev next))
 
@@ -217,12 +220,13 @@ fn findTable (schemas: List (EntitySchema Unit)) (table: Text) -> Option (Entity
         []        -> None
         s :: rest -> if schemaTable s == table then Some s else findTable rest table
 
--- Reconcile one table's columns between its old and new schema: the columns to add
--- ahead of the columns to drop, both targeting the (shared) table name.
+-- Reconcile one table's columns between its old and new schema: the columns to add, then
+-- the columns to alter, then the columns to drop, all targeting the (shared) table name.
 fn columnDiff (old: EntitySchema Unit) (new: EntitySchema Unit) -> List SchemaOp =
-    appendOps
-        (addedColumns (schemaTable new) (schemaColumns old) (schemaColumns new))
-        (droppedColumns (schemaTable new) (schemaColumns old) (schemaColumns new))
+    let table = schemaTable new
+    let oldCols = schemaColumns old
+    let newCols = schemaColumns new
+    appendOps (addedColumns table oldCols newCols) (appendOps (alteredColumns table oldCols newCols) (droppedColumns table oldCols newCols))
 
 -- The columns to add: each column in `newCols` whose SQL name is absent from `oldCols`,
 -- as an `AddEntityColumn` step carrying the full descriptor, in new-declaration order.
@@ -232,6 +236,26 @@ fn addedColumns (table: Text) (oldCols: List (ColumnSchema Unit)) (newCols: List
         c :: rest ->
             if containsColumn oldCols (colColumn c) then addedColumns table oldCols rest
             else AddEntityColumn table c :: addedColumns table oldCols rest
+
+-- The columns to alter: each column present in both snapshots (matched by SQL name) whose
+-- type, nullability, or default changed, as an `AlterColumn` step carrying both the old and
+-- new descriptors, in new-declaration order. `columnAltered` decides what counts as a
+-- change and excludes what the plain alter cannot express.
+fn alteredColumns (table: Text) (oldCols: List (ColumnSchema Unit)) (newCols: List (ColumnSchema Unit)) -> List SchemaOp =
+    match newCols
+        []        -> []
+        c :: rest ->
+            match findColumn oldCols (colColumn c)
+                None     -> alteredColumns table oldCols rest
+                Some old ->
+                    if columnAltered old c then AlterColumn table old c :: alteredColumns table oldCols rest
+                    else alteredColumns table oldCols rest
+
+-- The descriptor for a column name, if the column list holds one.
+fn findColumn (cols: List (ColumnSchema Unit)) (name: Text) -> Option (ColumnSchema Unit) =
+    match cols
+        []        -> None
+        c :: rest -> if colColumn c == name then Some c else findColumn rest name
 
 -- The columns to drop: each column in `oldCols` whose SQL name is absent from `newCols`,
 -- as a `DropColumn` step, in old-declaration order.
@@ -282,6 +306,7 @@ fn runStep (conn: a) (op: SchemaOp) -> Result Unit Error where Adapter a =
         CreateIndex name table cols uniq -> ddlIndex conn name table cols uniq
         CreateEntity schema         -> ddlCreateEntity conn schema
         AddEntityColumn table col   -> ddlAddEntityColumn conn table col
+        AlterColumn table old new   -> ddlAlterColumn conn table old new
 
 -- Run a migration's steps in order, stopping at the first failure.
 fn runSteps (conn: a) (steps: List SchemaOp) -> Result Unit Error where Adapter a =

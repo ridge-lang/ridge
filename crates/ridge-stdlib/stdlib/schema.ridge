@@ -618,3 +618,142 @@ fn dbTypeOfBaseName (ty: Text) -> DbType =
 
 fn quoteIdent (name: Text) -> Text =
     Text.join "" ["\"", Text.replace "\"" "\"\"" name, "\""]
+
+-- ── Ridge-source renderer ─────────────────────────────────────────────────────
+--
+-- Render a schema descriptor back to the Ridge source that rebuilds it — the dual
+-- of the DDL renderer above. Where `schemaToDdl` emits a backend's `CREATE TABLE`,
+-- `schemaToSource` emits the `schema … |> withColumn …` builder chain a model
+-- snapshot is written as, and a generated migration freezes a created table into.
+-- Persisting the model as source (rather than a serialized blob) keeps a snapshot a
+-- plain, git-diffable Ridge module — regenerating the model is just compiling it —
+-- and lets a migration record a table's exact shape without pointing at the (later
+-- mutable) entity. A value round-trips: compiling the rendered text rebuilds a
+-- schema equal to the original.
+--
+-- A schema renders as a single-line expression — no layout-continuation lines
+-- inside it — so it drops into a list without indentation hazards; the snapshot and
+-- migration writers lay the list out one entity per line. Every rendered name is a
+-- quoted, escaped string literal, so an identifier carrying a quote or backslash
+-- stays faithful.
+
+-- Render a `ColumnSchema` to the `mkColumn … |> …` source that rebuilds it: the
+-- name, SQL column, type, and nullability, then the refinement steps it carries
+-- (generation, primary key, uniqueness, index, foreign key) in a fixed order, each
+-- omitted when it holds its default.
+pub fn columnToSource (c: ColumnSchema e) -> Text =
+    Text.join "" (mkColumnSource c :: columnStepFrags c)
+
+fn mkColumnSource (c: ColumnSchema e) -> Text =
+    Text.join "" ["mkColumn ", sourceString c.name, " ", sourceString c.column, " ", dbTypeSource c.ty, " ", sourceBool c.nullable]
+
+-- The refinement steps a column carries, each as a ` |> step` fragment and only when
+-- it differs from `mkColumn`'s default, in the order generation, primary key,
+-- uniqueness, index, foreign key, check. The steps bind to lets and join on one line —
+-- a nested join broken across continuation lines confuses the layout parser.
+fn columnStepFrags (c: ColumnSchema e) -> List Text =
+    let gen = genFrag c.generation
+    let pk = flagFrag c.primaryKey " |> primaryKey"
+    let uniq = flagFrag c.unique " |> unique"
+    let idx = flagFrag c.indexed " |> indexed"
+    let fk = fkFrag c.foreignKey
+    let ck = checkFrag c.check
+    concatFrags gen (concatFrags pk (concatFrags uniq (concatFrags idx (concatFrags fk ck))))
+
+-- A ` |> generated …` fragment for a non-default generation; `Supplied` is the
+-- default `mkColumn` sets, so it renders nothing.
+fn genFrag (g: Generation) -> List Text =
+    match g
+        Supplied -> []
+        _        -> [Text.join "" [" |> generated ", generationSource g]]
+
+fn flagFrag (keep: Bool) (step: Text) -> List Text =
+    match keep
+        true  -> [step]
+        false -> []
+
+fn fkFrag (fk: Option ForeignKey) -> List Text =
+    match fk
+        None   -> []
+        Some f -> [Text.join "" [" |> foreignKey (", fkSource f, ")"]]
+
+-- A ` |> check …` fragment. A CHECK is a predicate captured as a `Quote (e -> Bool)`,
+-- which cannot be rebuilt as source from a phantom-erased schema — the quote's entity
+-- is gone — so a checked column renders a marker that fails to compile rather than
+-- silently dropping the constraint. Rebuilding checks is a follow-on; `deriving (Schema)`
+-- never produces one, so a derived model never reaches here.
+fn checkFrag (ck: Option QExpr) -> List Text =
+    match ck
+        None   -> []
+        Some _ -> [" |> checkSourceUnsupported"]
+
+-- Render an `EntitySchema` to the `schema "Name" "table" |> withColumn (…) |> …`
+-- source that rebuilds it. Columns render in declaration order.
+pub fn schemaToSource (s: EntitySchema e) -> Text =
+    Text.join "" (Text.join "" ["schema ", sourceString s.name, " ", sourceString s.table] :: withColumnFrags s.columns)
+
+fn withColumnFrags (cols: List (ColumnSchema e)) -> List Text =
+    match cols
+        []        -> []
+        c :: rest -> Text.join "" [" |> withColumn (", columnToSource c, ")"] :: withColumnFrags rest
+
+-- ── Source rendering of the column vocabulary ─────────────────────────────────
+
+-- The `DbType` constructor source: a bare name for a nullary type, a parenthesised
+-- application for the ones carrying data, so the result drops into `mkColumn`'s type
+-- argument position directly.
+fn dbTypeSource (t: DbType) -> Text =
+    match t
+        DbBoolean     -> "DbBoolean"
+        DbInt         -> "DbInt"
+        DbBigInt      -> "DbBigInt"
+        DbFloat       -> "DbFloat"
+        DbDecimal p s -> Text.join "" ["(DbDecimal ", Int.toText p, " ", Int.toText s, ")"]
+        DbText        -> "DbText"
+        DbVarchar n   -> Text.join "" ["(DbVarchar ", Int.toText n, ")"]
+        DbUuid        -> "DbUuid"
+        DbTimestamp   -> "DbTimestamp"
+        DbTimestampTz -> "DbTimestampTz"
+        DbRaw r       -> Text.join "" ["(DbRaw ", sourceString r, ")"]
+
+-- The `Generation` constructor source. `DefaultLit` carries a `SqlValue`, which the
+-- source renderer does not yet spell out, so it renders a marker that fails to compile
+-- rather than dropping the default; it is a follow-on, and `deriving (Schema)` never
+-- produces it.
+fn generationSource (g: Generation) -> Text =
+    match g
+        Supplied        -> "Supplied"
+        Identity        -> "Identity"
+        DefaultNow      -> "DefaultNow"
+        DefaultLit _    -> "defaultLitSourceUnsupported"
+        DefaultRawSql r -> Text.join "" ["(DefaultRawSql ", sourceString r, ")"]
+
+-- A foreign key's source: `references "table" "column"` plus the `onDelete`/`onUpdate`
+-- steps for whichever action is not the default `NoAction`.
+fn fkSource (fk: ForeignKey) -> Text =
+    Text.join "" (Text.join "" ["references ", sourceString fk.table, " ", sourceString fk.column] :: fkStepFrags fk)
+
+fn fkStepFrags (fk: ForeignKey) -> List Text =
+    concatFrags (fkActionFrag " |> onDelete " fk.onDelete) (fkActionFrag " |> onUpdate " fk.onUpdate)
+
+fn fkActionFrag (step: Text) (a: FkAction) -> List Text =
+    match a
+        NoAction -> []
+        _        -> [Text.join "" [step, fkActionSource a]]
+
+fn fkActionSource (a: FkAction) -> Text =
+    match a
+        NoAction   -> "NoAction"
+        Restrict   -> "Restrict"
+        Cascade    -> "Cascade"
+        SetNull    -> "SetNull"
+        SetDefault -> "SetDefault"
+
+-- A `Bool` as its Ridge source literal.
+fn sourceBool (b: Bool) -> Text =
+    if b then "true" else "false"
+
+-- A `Text` as a Ridge string literal: wrapped in quotes with any backslash and quote
+-- escaped, so a name carrying either renders as valid, faithful source.
+fn sourceString (s: Text) -> Text =
+    Text.join "" ["\"", Text.replace "\"" "\\\"" (Text.replace "\\" "\\\\" s), "\""]

@@ -2261,8 +2261,10 @@ fn reconciled_schema_fn_scheme(
         "nullable" | "required" | "primaryKey" | "unique" | "indexed" => {
             poly1(vec![col_e()], col_e())
         }
-        // Column read accessors (∀e. ColumnSchema e -> …).
-        "colName" | "colColumn" => poly1(vec![col_e()], text()),
+        // Column read accessors (∀e. ColumnSchema e -> …). `columnToSource` shares the
+        // `ColumnSchema e -> Text` shape: it renders a column back to the `mkColumn … |> …`
+        // source that rebuilds it, the source dual of `columnDdl`.
+        "colName" | "colColumn" | "columnToSource" => poly1(vec![col_e()], text()),
         "colType" => poly1(vec![col_e()], dbtype_ty()),
         "colGeneration" => poly1(vec![col_e()], gen_ty()),
         "colNullable" | "colPrimaryKey" | "colUnique" | "colIndexed" | "colGenerated" => {
@@ -2277,7 +2279,12 @@ fn reconciled_schema_fn_scheme(
         // `EntitySchema e -> Text` shape with the name accessors. `schemaIndexDdls`
         // renders its non-unique indexes, sharing the `-> List Text` shape with the
         // generated-column readers.
-        "schemaName" | "schemaTable" | "schemaToDdl" => poly1(vec![ent_e()], text()),
+        // `schemaToSource` renders an entity's `schema … |> withColumn …` builder
+        // source; it shares the `EntitySchema e -> Text` shape with the name accessors
+        // and `schemaToDdl`.
+        "schemaName" | "schemaTable" | "schemaToDdl" | "schemaToSource" => {
+            poly1(vec![ent_e()], text())
+        }
         "schemaColumns" => poly1(vec![ent_e()], list(col_e())),
         // eraseSchema : ∀e. EntitySchema e -> EntitySchema Unit — drop the phantom
         // entity so a non-parametric migration step can carry the descriptor.
@@ -2364,6 +2371,7 @@ fn reconciled_migrate_fn_scheme(
     let schema_op = *reconciled.get("SchemaOp")?;
     let migration = *reconciled.get("Migration")?;
     let entity_schema = *reconciled.get("EntitySchema")?;
+    let column_schema = *reconciled.get("ColumnSchema")?;
     let text = || Type::Con(b.text, vec![]);
     let list = |x: Type| Type::Con(b.list, vec![x]);
     let pure = || CapRow::Concrete(CapabilitySet::PURE);
@@ -2373,6 +2381,8 @@ fn reconciled_migrate_fn_scheme(
     let e = TyVid(0);
     let ent_e = || Type::Con(entity_schema, vec![Type::Var(e)]);
     let ent_unit = || Type::Con(entity_schema, vec![Type::Con(b.unit, vec![])]);
+    // `ColumnSchema Unit` — the phantom-erased column an entity-driven step carries.
+    let col_unit = || Type::Con(column_schema, vec![Type::Con(b.unit, vec![])]);
     // A monomorphic pure builder: `params -> ret`, no quantified vars or constraints.
     let mono = |params: Vec<Type>, ret: Type| {
         Some(Scheme {
@@ -2420,6 +2430,13 @@ fn reconciled_migrate_fn_scheme(
         // createSchema / dropSchema : ∀e. EntitySchema e -> SchemaOp — the entity-driven
         // table create and drop, taking the schema descriptor in place of a column tuple.
         "createSchema" | "dropSchema" => poly_e(vec![ent_e()], schema_op_ty()),
+        // addEntityColumn : Text -> ColumnSchema Unit -> SchemaOp — the entity-driven ADD
+        // COLUMN factory (a phantom-erased descriptor); the diff's added-column step.
+        "addEntityColumn" => mono(vec![text(), col_unit()], schema_op_ty()),
+        // alterColumn : Text -> ColumnSchema Unit -> ColumnSchema Unit -> SchemaOp — the
+        // ALTER COLUMN factory carrying a column's old and new descriptors; the diff's
+        // altered-column step.
+        "alterColumn" => mono(vec![text(), col_unit(), col_unit()], schema_op_ty()),
         // diffSchemas : List (EntitySchema Unit) -> List (EntitySchema Unit) -> List SchemaOp —
         // the pure snapshot diff: the schema steps that turn the `prev` model into `next`.
         "diffSchemas" => mono(
@@ -2431,6 +2448,12 @@ fn reconciled_migrate_fn_scheme(
             vec![text(), list(schema_op_ty())],
             Type::Con(migration, vec![]),
         ),
+        // modelToSource : List (EntitySchema Unit) -> Text — render a model snapshot to
+        // the `[ schema … , … ]` source a snapshot module holds.
+        "modelToSource" => mono(vec![list(ent_unit())], text()),
+        // migrationToSource : Migration -> Text — render a migration to the
+        // `migration "name" [ … ]` source a generated migration module holds.
+        "migrationToSource" => mono(vec![Type::Con(migration, vec![])], text()),
         // run : ∀a. a -> List Migration -> Result (List Text) Error where Adapter a.
         // The runner reaches the schema seam through the `Adapter a` dictionary, the
         // same shape `transaction` carries; `a` is the only quantified variable.

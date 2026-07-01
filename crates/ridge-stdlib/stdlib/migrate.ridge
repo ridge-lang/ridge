@@ -44,7 +44,7 @@ import std.data as Db
 -- The rich schema descriptor an entity-driven migration step carries: `eraseSchema`
 -- drops its phantom entity so a non-parametric `SchemaOp` can hold it, and
 -- `schemaTable` names the table a drop targets.
-import std.schema (EntitySchema, ColumnSchema, eraseSchema, schemaTable, schemaColumns, colColumn, columnAltered)
+import std.schema (EntitySchema, ColumnSchema, eraseSchema, schemaTable, schemaColumns, colColumn, columnAltered, schemaToSource, columnToSource)
 
 -- A column in a table definition: its name, its base type, and the three
 -- modifiers a schema cares about — whether it admits SQL NULL, whether it is the
@@ -141,6 +141,25 @@ pub fn createSchema (s: EntitySchema e) -> SchemaOp =
 -- `dropTable`, taking the descriptor instead of a bare table name.
 pub fn dropSchema (s: EntitySchema e) -> SchemaOp =
     DropTable (schemaTable s)
+
+-- Add a column to a table from a full schema descriptor rather than a base-type
+-- tuple — the entity-driven counterpart to `addColumn`, keeping the type, default,
+-- and constraints the tuple cannot carry. This is the step the snapshot diff emits
+-- for a column present only in the new schema, exposed as a factory so a generated
+-- migration can be written as source and a hand-authored one can add an
+-- entity-shaped column. The descriptor is already phantom-erased (a `Column Unit`),
+-- the shape a non-parametric `SchemaOp` holds.
+pub fn addEntityColumn (table: Text) (c: ColumnSchema Unit) -> SchemaOp =
+    AddEntityColumn table c
+
+-- Alter a column in place from its old and new descriptors — the step the snapshot
+-- diff emits for a column whose SQL type, nullability, or default changed. Both
+-- descriptors ride along so the backend renders the minimal `ALTER COLUMN` for the
+-- facets that differ (and a reverse could restore the old shape). Exposed as a
+-- factory for the same reason as `addEntityColumn`: a generated migration is written
+-- as source.
+pub fn alterColumn (table: Text) (old: ColumnSchema Unit) (new: ColumnSchema Unit) -> SchemaOp =
+    AlterColumn table old new
 
 -- A named, ordered batch of schema changes. The name identifies the migration in
 -- the tracking table, so it must be stable and unique across a project's
@@ -378,3 +397,107 @@ pub fn run (conn: a) (migrations: List Migration) -> Result (List Text) Error wh
     match migrationsApplied conn
         Err e      -> Err e
         Ok applied -> runPending conn migrations applied
+
+-- ── Ridge-source renderer ─────────────────────────────────────────────────────
+--
+-- Render a model snapshot and a migration back to the Ridge source that rebuilds
+-- them — the writer side of the snapshot auto-diff. `modelToSource` renders the
+-- `List (EntitySchema Unit)` a project's model is, as the `[ schema … , schema … ]`
+-- a snapshot module holds; `migrationToSource` renders a `Migration` as the
+-- `migration "name" [ … ]` a generated migration module holds. Both compose the
+-- single-line schema and column expressions `std.schema` renders, laid out one entry
+-- per line (leading comma) so a snapshot reads and diffs cleanly in version control.
+-- A rendered value round-trips: compiling the text rebuilds a value equal to the
+-- original, so a snapshot regenerates the model and a generated migration reproduces
+-- its steps.
+
+-- Render a model snapshot to the `[ schema … , … ]` source that rebuilds it, one
+-- entity per line.
+pub fn modelToSource (model: List (EntitySchema Unit)) -> Text =
+    Text.join "" ["[ ", Text.join "\n, " (schemaSources model), "\n]"]
+
+fn schemaSources (model: List (EntitySchema Unit)) -> List Text =
+    match model
+        []        -> []
+        s :: rest -> schemaToSource s :: schemaSources rest
+
+-- Render a migration to the `migration "name" [ … ]` source that rebuilds it, one
+-- step per line.
+pub fn migrationToSource (m: Migration) -> Text =
+    Text.join "" ["migration ", sourceStr m.name, "\n  [ ", Text.join "\n  , " (opSources m.steps), "\n  ]"]
+
+fn opSources (steps: List SchemaOp) -> List Text =
+    match steps
+        []        -> []
+        s :: rest -> opToSource s :: opSources rest
+
+-- One schema step as the factory-call source that rebuilds it. The entity-driven
+-- steps delegate to `std.schema`'s `schemaToSource`/`columnToSource`; the tuple steps
+-- render their own `Column` and index arguments.
+fn opToSource (op: SchemaOp) -> Text =
+    match op
+        CreateTable table cols           -> Text.join "" ["createTable ", sourceStr table, " ", columnListSource cols]
+        DropTable table                  -> Text.join "" ["dropTable ", sourceStr table]
+        AddColumn table col              -> Text.join "" ["addColumn ", sourceStr table, " (", migrateColumnSource col, ")"]
+        DropColumn table col             -> Text.join "" ["dropColumn ", sourceStr table, " ", sourceStr col]
+        CreateIndex name table cols uniq -> indexOpSource name table cols uniq
+        CreateEntity s                   -> Text.join "" ["createSchema (", schemaToSource s, ")"]
+        AddEntityColumn table col        -> Text.join "" ["addEntityColumn ", sourceStr table, " (", columnToSource col, ")"]
+        AlterColumn table old new        -> Text.join "" ["alterColumn ", sourceStr table, " (", columnToSource old, ") (", columnToSource new, ")"]
+
+-- ── Source rendering of the tuple-DSL vocabulary ──────────────────────────────
+
+fn indexOpSource (name: Text) (table: Text) (cols: List Text) (uniq: Bool) -> Text =
+    Text.join "" [indexVerb uniq, " ", sourceStr name, " ", sourceStr table, " ", textListSource cols]
+
+fn indexVerb (uniq: Bool) -> Text =
+    if uniq then "uniqueIndex" else "createIndex"
+
+fn textListSource (items: List Text) -> Text =
+    Text.join "" ["[", Text.join ", " (quoteTexts items), "]"]
+
+fn quoteTexts (items: List Text) -> List Text =
+    match items
+        []        -> []
+        x :: rest -> sourceStr x :: quoteTexts rest
+
+fn columnListSource (cols: List Column) -> Text =
+    Text.join "" ["[ ", Text.join ", " (migrateColSources cols), " ]"]
+
+fn migrateColSources (cols: List Column) -> List Text =
+    match cols
+        []        -> []
+        c :: rest -> Text.join "" ["(", migrateColumnSource c, ")"] :: migrateColSources rest
+
+-- A tuple-DSL `Column` as its declarator-and-steps source: `intCol "id" |> primaryKey`.
+fn migrateColumnSource (c: Column) -> Text =
+    Text.join "" (Text.join "" [declarator c.ty, " ", sourceStr c.name] :: migrateColStepFrags c)
+
+fn declarator (ty: Text) -> Text =
+    if ty == "int" then "intCol"
+    else if ty == "text" then "textCol"
+    else if ty == "bool" then "boolCol"
+    else if ty == "float" then "floatCol"
+    else "textCol"
+
+fn migrateColStepFrags (c: Column) -> List Text =
+    let nul = flagText c.nullable " |> nullable"
+    let pk = flagText c.primaryKey " |> primaryKey"
+    let uniq = flagText c.unique " |> unique"
+    appendTexts nul (appendTexts pk uniq)
+
+fn flagText (keep: Bool) (step: Text) -> List Text =
+    match keep
+        true  -> [step]
+        false -> []
+
+fn appendTexts (a: List Text) (b: List Text) -> List Text =
+    match a
+        []        -> b
+        x :: rest -> x :: appendTexts rest b
+
+-- A `Text` as a Ridge string literal, backslash and quote escaped — the migrate-side
+-- counterpart to `std.schema`'s name renderer, so the two modules render string
+-- arguments the same way.
+fn sourceStr (s: Text) -> Text =
+    Text.join "" ["\"", Text.replace "\"" "\\\"" (Text.replace "\\" "\\\\" s), "\""]

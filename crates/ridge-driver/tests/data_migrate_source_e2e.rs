@@ -1,0 +1,279 @@
+//! End-to-end check for the `std.schema` / `std.migrate` Ridge-source renderer —
+//! running on the BEAM.
+//!
+//! `schemaToSource`/`columnToSource` render a schema descriptor back to the
+//! `schema … |> withColumn (mkColumn … |> …)` builder source it is written as, and
+//! `modelToSource`/`migrationToSource` lay a model snapshot and a migration out as the
+//! `[ schema … ]` and `migration "name" [ … ]` a generated module holds. This is the
+//! writer side of the snapshot auto-diff: a persisted snapshot is a plain Ridge module,
+//! and `migrate add` freezes a table's shape into a migration as source.
+//!
+//! Two things are proven. First, the exact rendered shape (the golden asserts). Second,
+//! and the real guarantee, that the rendered text is valid Ridge that rebuilds an equal
+//! value: a second module splices the rendered model and migration back in, compiles
+//! them, and re-renders — the render is a fixpoint, so the reconstructed value renders
+//! to the identical source. A checked or `DefaultLit` column is out of scope here (its
+//! predicate/literal cannot be rebuilt from a phantom-erased schema); `deriving (Schema)`
+//! never produces one, so a derived model round-trips in full.
+//!
+//! Gated on `beam-runtime` (real OTP) plus a `which` guard for `erl`/`erlc`.
+
+#![cfg(feature = "beam-runtime")]
+#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+
+use std::path::{Path, PathBuf};
+use std::process::Command;
+
+use ridge_driver::{compile_workspace, CompileOptions, EmitArtefacts};
+
+// A model of two entities and a migration touching every diff-produced step — an
+// entity-driven create, an entity-driven add-column, an in-place alter, a drop-column,
+// and a drop-table — rendered both directly and, for the model and migration, through
+// the snapshot/migration writers.
+const RENDER_SRC: &str = r#"
+import std.schema (EntitySchema, DbBigInt, DbText, DbVarchar, Identity, Cascade, mkColumn, withColumn, schema, generated, primaryKey, unique, indexed, foreignKey, references, onDelete, columnToSource, schemaToSource)
+import std.migrate as Migrate
+
+fn userSchema () -> EntitySchema Unit =
+    schema "User" "users"
+      |> withColumn (mkColumn "id" "id" DbBigInt false |> generated Identity |> primaryKey)
+      |> withColumn (mkColumn "email" "email" (DbVarchar 255) false |> unique)
+      |> withColumn (mkColumn "bio" "bio" DbText true)
+
+fn postSchema () -> EntitySchema Unit =
+    schema "Post" "posts"
+      |> withColumn (mkColumn "id" "id" DbBigInt false |> generated Identity |> primaryKey)
+      |> withColumn (mkColumn "author" "author" DbBigInt false |> foreignKey (references "users" "id" |> onDelete Cascade) |> indexed)
+
+fn model () -> List (EntitySchema Unit) = [ userSchema (), postSchema () ]
+
+fn sampleMigration () =
+    Migrate.migration "0002_evolve"
+      [ Migrate.createSchema (postSchema ())
+      , Migrate.addEntityColumn "users" (mkColumn "nickname" "nickname" DbText true)
+      , Migrate.alterColumn "users" (mkColumn "bio" "bio" DbText false) (mkColumn "bio" "bio" DbText true)
+      , Migrate.dropColumn "users" "legacy"
+      , Migrate.dropTable "old_widgets"
+      ]
+
+pub fn columnSrc () -> Text = columnToSource (mkColumn "email" "email" (DbVarchar 255) false |> unique)
+pub fn schemaSrc () -> Text = schemaToSource (userSchema ())
+pub fn modelSrc () -> Text = Migrate.modelToSource (model ())
+pub fn migrationSrc () -> Text = Migrate.migrationToSource (sampleMigration ())
+"#;
+
+// The round-trip module: the rendered model and migration spliced back in (parenthesised
+// so their internal layout cannot clash with the surrounding declaration), re-rendered so
+// the fixpoint can be checked.
+fn build_roundtrip_source(model_src: &str, migration_src: &str) -> String {
+    format!(
+        r#"
+import std.schema (EntitySchema, DbBigInt, DbText, DbVarchar, Identity, Cascade, mkColumn, withColumn, schema, generated, primaryKey, unique, indexed, foreignKey, references, onDelete)
+import std.migrate (migration, createSchema, addEntityColumn, alterColumn, dropColumn, dropTable, modelToSource, migrationToSource)
+
+fn rebuiltModel () -> List (EntitySchema Unit) = (
+{model_src}
+)
+
+fn rebuiltMigration () = (
+{migration_src}
+)
+
+pub fn modelReSrc () -> Text = modelToSource (rebuiltModel ())
+pub fn migrationReSrc () -> Text = migrationToSource (rebuiltMigration ())
+"#
+    )
+}
+
+fn write_workspace(root: &Path, source: &str) {
+    let app_src = root.join("app").join("src");
+    std::fs::create_dir_all(&app_src).expect("create workspace dirs");
+    std::fs::write(
+        root.join("ridge.toml"),
+        "[workspace]\nname = \"migrate-source-e2e\"\nversion = \"0.1.0\"\nmembers = [\"app\"]\n",
+    )
+    .expect("write workspace manifest");
+    std::fs::write(
+        root.join("app").join("ridge.toml"),
+        "[project]\nname = \"app\"\nversion = \"0.1.0\"\nkind = \"app\"\nentry = \"src/Main.ridge\"\n",
+    )
+    .expect("write project manifest");
+    std::fs::write(app_src.join("Main.ridge"), source).expect("write source");
+}
+
+fn compile(dir: &Path, cache: &Path) -> (PathBuf, String) {
+    let artefacts = compile_workspace(
+        CompileOptions::new(dir.to_path_buf())
+            .with_emit(EmitArtefacts::Beam)
+            .with_cache_root(cache.to_path_buf()),
+    )
+    .expect("compile to BEAM");
+    assert!(
+        artefacts.diagnostics.is_empty(),
+        "expected a clean compile, got diagnostics: {:?}",
+        artefacts.diagnostics
+    );
+    let beam_dir = artefacts
+        .beam_files
+        .iter()
+        .find_map(|p| p.parent())
+        .expect("at least one beam file")
+        .to_path_buf();
+    let module = artefacts
+        .beam_files
+        .iter()
+        .filter_map(|p| p.file_stem().and_then(|s| s.to_str()))
+        .find(|stem| stem.starts_with("ridge_module_"))
+        .expect("a user module")
+        .to_owned();
+    (beam_dir, module)
+}
+
+// Run one zero-arity `Text`-returning function and return its exact output — no name
+// prefix and no trailing newline, so the whole stdout is the rendered value.
+fn run_fun(beam_dir: &Path, module: &str, fun: &str) -> String {
+    let expr = format!("io:format(\"~s\", [{module}:{fun}()]), halt().");
+    let output = Command::new("erl")
+        .arg("-noshell")
+        .arg("-pa")
+        .arg(beam_dir)
+        .arg("-eval")
+        .arg(&expr)
+        .output()
+        .expect("run erl");
+    let stdout = String::from_utf8_lossy(&output.stdout).into_owned();
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        !stdout.is_empty(),
+        "`{fun}` produced no output; stderr:\n{stderr}"
+    );
+    stdout
+}
+
+#[test]
+fn source_renderer_round_trips_on_beam() {
+    if which::which("erlc").is_err() || which::which("erl").is_err() {
+        eprintln!("erl/erlc not on PATH — skipping source_renderer_round_trips_on_beam");
+        return;
+    }
+
+    let dir = tempfile::Builder::new()
+        .prefix("ridge-migrate-source-e2e-")
+        .tempdir()
+        .expect("temp dir");
+    let cache = tempfile::Builder::new()
+        .prefix("ridge-migrate-source-e2e-cache-")
+        .tempdir()
+        .expect("cache dir");
+    write_workspace(dir.path(), RENDER_SRC);
+    let (beam_dir, module) = compile(dir.path(), cache.path());
+
+    let column_src = run_fun(&beam_dir, &module, "columnSrc");
+    let schema_src = run_fun(&beam_dir, &module, "schemaSrc");
+    let model_src = run_fun(&beam_dir, &module, "modelSrc");
+    let migration_src = run_fun(&beam_dir, &module, "migrationSrc");
+
+    // A column renders as `mkColumn name column type nullable` plus the steps it carries,
+    // each omitted at its default; a parametric type renders parenthesised.
+    assert_eq!(
+        column_src,
+        r#"mkColumn "email" "email" (DbVarchar 255) false |> unique"#
+    );
+
+    // A schema renders single-line: the `schema "Name" "table"` head, then a
+    // `|> withColumn (…)` per column in declaration order, an identity primary key and a
+    // nullable column among them.
+    assert!(
+        schema_src.contains(
+            r#"schema "User" "users" |> withColumn (mkColumn "id" "id" DbBigInt false |> generated Identity |> primaryKey)"#
+        ),
+        "schema_src: {schema_src}"
+    );
+    assert!(
+        schema_src.contains(
+            r#"|> withColumn (mkColumn "email" "email" (DbVarchar 255) false |> unique)"#
+        ),
+        "schema_src email: {schema_src}"
+    );
+    assert!(
+        schema_src.contains(r#"|> withColumn (mkColumn "bio" "bio" DbText true)"#),
+        "schema_src bio: {schema_src}"
+    );
+
+    // A model renders one entity per line, leading comma, with a foreign key's
+    // `references … |> onDelete` and an index step preserved.
+    assert!(
+        model_src.starts_with("[ schema \"User\" \"users\""),
+        "model_src open: {model_src}"
+    );
+    assert!(
+        model_src.contains("\n, schema \"Post\" \"posts\""),
+        "model_src leading-comma: {model_src}"
+    );
+    assert!(
+        model_src
+            .contains(r#"|> indexed |> foreignKey (references "users" "id" |> onDelete Cascade))"#),
+        "model_src fk: {model_src}"
+    );
+    assert!(model_src.ends_with("\n]"), "model_src close: {model_src}");
+
+    // A migration renders `migration "name"` then one step per line, leading comma: an
+    // entity-driven create delegating to the schema renderer, an add-column, an in-place
+    // alter carrying both descriptors, a drop-column, and a drop-table.
+    assert!(
+        migration_src
+            .starts_with("migration \"0002_evolve\"\n  [ createSchema (schema \"Post\" \"posts\""),
+        "migration_src open: {migration_src}"
+    );
+    assert!(
+        migration_src.contains(
+            r#"  , addEntityColumn "users" (mkColumn "nickname" "nickname" DbText true)"#
+        ),
+        "migration_src add: {migration_src}"
+    );
+    assert!(
+        migration_src.contains(
+            r#"  , alterColumn "users" (mkColumn "bio" "bio" DbText false) (mkColumn "bio" "bio" DbText true)"#
+        ),
+        "migration_src alter: {migration_src}"
+    );
+    assert!(
+        migration_src.contains(r#"  , dropColumn "users" "legacy""#),
+        "migration_src drop-col: {migration_src}"
+    );
+    assert!(
+        migration_src.contains(r#"  , dropTable "old_widgets""#),
+        "migration_src drop-table: {migration_src}"
+    );
+    assert!(
+        migration_src.ends_with("\n  ]"),
+        "migration_src close: {migration_src}"
+    );
+
+    // The round-trip: compile the rendered model and migration back into a module and
+    // re-render them. A render fixpoint (re-render == original render) proves the text is
+    // valid Ridge that rebuilds an equal value — the property a snapshot depends on.
+    let rt_src = build_roundtrip_source(&model_src, &migration_src);
+    let rt_dir = tempfile::Builder::new()
+        .prefix("ridge-migrate-source-e2e-rt-")
+        .tempdir()
+        .expect("temp dir");
+    let rt_cache = tempfile::Builder::new()
+        .prefix("ridge-migrate-source-e2e-rt-cache-")
+        .tempdir()
+        .expect("cache dir");
+    write_workspace(rt_dir.path(), &rt_src);
+    let (rt_beam, rt_module) = compile(rt_dir.path(), rt_cache.path());
+
+    let model_resrc = run_fun(&rt_beam, &rt_module, "modelReSrc");
+    let migration_resrc = run_fun(&rt_beam, &rt_module, "migrationReSrc");
+
+    assert_eq!(
+        model_resrc, model_src,
+        "model source is not a render fixpoint"
+    );
+    assert_eq!(
+        migration_resrc, migration_src,
+        "migration source is not a render fixpoint"
+    );
+}

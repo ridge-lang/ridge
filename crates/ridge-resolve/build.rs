@@ -823,6 +823,11 @@ const BASELINE_EXPORTS: &[(&str, &[&str])] = &[
             "dropTableDdl",
             "dropColumnDdl",
             "indexDdl",
+            // The Ridge-source renderer: `columnToSource`/`schemaToSource` render a
+            // descriptor back to the builder-chain source a snapshot or generated
+            // migration is written as — the source dual of the DDL renderer.
+            "columnToSource",
+            "schemaToSource",
             // The `HasSchema` binding class and its methods. `deriving (Schema)`
             // generates the instance; `schemaOf` answers an entity's schema from
             // the type alone (a phantom `Option e` witness selects the instance),
@@ -858,9 +863,15 @@ const BASELINE_EXPORTS: &[(&str, &[&str])] = &[
             "uniqueIndex",
             "createSchema",
             "dropSchema",
+            "addEntityColumn",
+            "alterColumn",
             "Migration",
             "migration",
             "diffSchemas",
+            // The Ridge-source renderer: render a model snapshot and a migration back
+            // to the source that rebuilds them, the writer side of the snapshot diff.
+            "modelToSource",
+            "migrationToSource",
             // The migration runner: apply the pending migrations in order, each in
             // its own transaction, and answer the names applied.
             "run",

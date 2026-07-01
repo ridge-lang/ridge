@@ -788,6 +788,7 @@ const BASELINE_EXPORTS: &[(&str, &[&str])] = &[
             "indexed",
             "foreignKey",
             "check",
+            "checkRaw",
             // The per-column read accessors.
             "colName",
             "colColumn",

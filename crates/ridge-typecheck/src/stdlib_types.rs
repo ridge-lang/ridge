@@ -2258,6 +2258,10 @@ fn reconciled_schema_fn_scheme(
             );
             poly1(vec![pred, col_e()], col_e())
         }
+        // checkRaw : ∀e. QExpr -> ColumnSchema e -> ColumnSchema e. Attaches a CHECK from an
+        // already-built predicate tree (the escape hatch the source renderer rebuilds a check
+        // through, since a phantom-erased schema cannot restore the original quote).
+        "checkRaw" => poly1(vec![qexpr(), col_e()], col_e()),
         "nullable" | "required" | "primaryKey" | "unique" | "indexed" => {
             poly1(vec![col_e()], col_e())
         }

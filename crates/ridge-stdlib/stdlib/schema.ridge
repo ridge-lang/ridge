@@ -137,6 +137,16 @@ pub fn foreignKey (fk: ForeignKey) (c: ColumnSchema e) -> ColumnSchema e =
 pub fn check (pred: Quote (e -> Bool)) (c: ColumnSchema e) -> ColumnSchema e =
     ColumnSchema { name = c.name, column = c.column, ty = c.ty, nullable = c.nullable, generation = c.generation, primaryKey = c.primaryKey, unique = c.unique, indexed = c.indexed, foreignKey = c.foreignKey, check = Some pred.tree }
 
+-- Attach a CHECK constraint from an already-built predicate tree, the way `check`
+-- does from a quoted predicate. This is the lower-level door the source renderer
+-- reconstructs a check through: a phantom-erased schema (`ColumnSchema Unit`) has
+-- lost the entity type its `check` quote closed over, so the quote cannot be rebuilt
+-- as source — but the captured `QExpr` tree can, and `checkRaw` sets it back directly.
+-- Hand-written schemas should prefer `check` (type-checked against the entity's fields);
+-- `checkRaw` is the escape hatch generated migrations and snapshots use.
+pub fn checkRaw (tree: QExpr) (c: ColumnSchema e) -> ColumnSchema e =
+    ColumnSchema { name = c.name, column = c.column, ty = c.ty, nullable = c.nullable, generation = c.generation, primaryKey = c.primaryKey, unique = c.unique, indexed = c.indexed, foreignKey = c.foreignKey, check = Some tree }
+
 -- ── Column read accessors ─────────────────────────────────────────────────────
 
 pub fn colName       (c: ColumnSchema e) -> Text              = c.name
@@ -677,15 +687,15 @@ fn fkFrag (fk: Option ForeignKey) -> List Text =
         None   -> []
         Some f -> [Text.join "" [" |> foreignKey (", fkSource f, ")"]]
 
--- A ` |> check …` fragment. A CHECK is a predicate captured as a `Quote (e -> Bool)`,
--- which cannot be rebuilt as source from a phantom-erased schema — the quote's entity
--- is gone — so a checked column renders a marker that fails to compile rather than
--- silently dropping the constraint. Rebuilding checks is a follow-on; `deriving (Schema)`
--- never produces one, so a derived model never reaches here.
+-- A ` |> checkRaw …` fragment. A CHECK is captured as a `QExpr` tree; the phantom-erased
+-- schema has lost the entity type the original `check` quote closed over, so the quote
+-- cannot be rebuilt — but the tree can, rendered as `QExpr`-constructor source and set back
+-- through `checkRaw`. (`deriving (Schema)` never produces a check, so only a hand-written
+-- one reaches here.)
 fn checkFrag (ck: Option QExpr) -> List Text =
     match ck
         None   -> []
-        Some _ -> [" |> checkSourceUnsupported"]
+        Some e -> [Text.join "" [" |> checkRaw ", qexprSource e]]
 
 -- Render an `EntitySchema` to the `schema "Name" "table" |> withColumn (…) |> …`
 -- source that rebuilds it. Columns render in declaration order.
@@ -716,10 +726,12 @@ fn dbTypeSource (t: DbType) -> Text =
         DbTimestampTz -> "DbTimestampTz"
         DbRaw r       -> Text.join "" ["(DbRaw ", sourceString r, ")"]
 
--- The `Generation` constructor source. `DefaultLit` carries a `SqlValue`, which the
--- source renderer does not yet spell out, so it renders a marker that fails to compile
--- rather than dropping the default; it is a follow-on, and `deriving (Schema)` never
--- produces it.
+-- The `Generation` constructor source. `DefaultLit` carries a `SqlValue` whose variants are
+-- opaque outside `std.sql`; rendering it back to source needs a renderer that lives in
+-- `std.sql`, and wiring one there drifts the reconciled `SqlValue` id (a known self-build
+-- fragility), so a `DefaultLit` default renders a marker that fails to compile rather than
+-- dropping the default. `deriving (Schema)` never produces a `DefaultLit`, so a derived model
+-- never reaches here; a hand-written literal default is the follow-on.
 fn generationSource (g: Generation) -> Text =
     match g
         Supplied        -> "Supplied"
@@ -757,3 +769,48 @@ fn sourceBool (b: Bool) -> Text =
 -- escaped, so a name carrying either renders as valid, faithful source.
 fn sourceString (s: Text) -> Text =
     Text.join "" ["\"", Text.replace "\"" "\\\"" (Text.replace "\\" "\\\\" s), "\""]
+
+-- A CHECK predicate's `QExpr` tree as the constructor source that rebuilds it — the
+-- source dual of `ckExpr` (which renders the same tree to SQL). Only the predicate-shaped
+-- nodes a `Quote (e -> Bool)` can hold are rendered; a query-shaped node cannot occur in a
+-- column check and falls through to a marker (never reached by a valid check). `QExpr` and
+-- its constructors are prelude builtins, so the rendered source needs no import.
+fn qexprSource (e: QExpr) -> Text =
+    match e
+        QCol c      -> Text.join "" ["(QCol ", sourceString c, ")"]
+        QColR c     -> Text.join "" ["(QColR ", sourceString c, ")"]
+        QColAt n c  -> Text.join "" ["(QColAt ", Int.toText n, " ", sourceString c, ")"]
+        QLitInt n   -> Text.join "" ["(QLitInt ", Int.toText n, ")"]
+        QLitText s  -> Text.join "" ["(QLitText ", sourceString s, ")"]
+        QLitBool b  -> Text.join "" ["(QLitBool ", sourceBool b, ")"]
+        QLitFloat x -> Text.join "" ["(QLitFloat ", Float.toText x, ")"]
+        QNot x      -> Text.join "" ["(QNot ", qexprSource x, ")"]
+        QNotTrue x  -> Text.join "" ["(QNotTrue ", qexprSource x, ")"]
+        QAnd l r    -> qBinSource "QAnd" l r
+        QOr l r     -> qBinSource "QOr" l r
+        QEq l r     -> qBinSource "QEq" l r
+        QNe l r     -> qBinSource "QNe" l r
+        QLt l r     -> qBinSource "QLt" l r
+        QGt l r     -> qBinSource "QGt" l r
+        QLe l r     -> qBinSource "QLe" l r
+        QGe l r     -> qBinSource "QGe" l r
+        QAdd l r    -> qBinSource "QAdd" l r
+        QSub l r    -> qBinSource "QSub" l r
+        QMul l r    -> qBinSource "QMul" l r
+        QDiv l r    -> qBinSource "QDiv" l r
+        QMod l r    -> qBinSource "QMod" l r
+        QLike v p   -> qBinSource "QLike" v p
+        QIn v items -> Text.join "" ["(QIn ", qexprSource v, " ", qexprListSource items, ")"]
+        QCase c t f -> Text.join "" ["(QCase ", qexprSource c, " ", qexprSource t, " ", qexprSource f, ")"]
+        _           -> "unsupportedCheckExpr"
+
+fn qBinSource (ctor: Text) (l: QExpr) (r: QExpr) -> Text =
+    Text.join "" ["(", ctor, " ", qexprSource l, " ", qexprSource r, ")"]
+
+fn qexprListSource (items: List QExpr) -> Text =
+    Text.join "" ["[", Text.join ", " (qexprEach items), "]"]
+
+fn qexprEach (items: List QExpr) -> List Text =
+    match items
+        []        -> []
+        x :: rest -> qexprSource x :: qexprEach rest

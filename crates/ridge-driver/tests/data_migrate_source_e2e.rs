@@ -31,8 +31,10 @@ use ridge_driver::{compile_workspace, CompileOptions, EmitArtefacts};
 // and a drop-table — rendered both directly and, for the model and migration, through
 // the snapshot/migration writers.
 const RENDER_SRC: &str = r#"
-import std.schema (EntitySchema, DbBigInt, DbText, DbVarchar, Identity, Cascade, mkColumn, withColumn, schema, generated, primaryKey, unique, indexed, foreignKey, references, onDelete, columnToSource, schemaToSource)
+import std.schema (EntitySchema, DbBigInt, DbInt, DbText, DbVarchar, Identity, Cascade, mkColumn, withColumn, schema, generated, primaryKey, unique, indexed, foreignKey, references, onDelete, check, eraseSchema, columnToSource, schemaToSource)
 import std.migrate as Migrate
+
+type Widget = { qty: Int }
 
 fn userSchema () -> EntitySchema Unit =
     schema "User" "users"
@@ -45,7 +47,11 @@ fn postSchema () -> EntitySchema Unit =
       |> withColumn (mkColumn "id" "id" DbBigInt false |> generated Identity |> primaryKey)
       |> withColumn (mkColumn "author" "author" DbBigInt false |> foreignKey (references "users" "id" |> onDelete Cascade) |> indexed)
 
-fn model () -> List (EntitySchema Unit) = [ userSchema (), postSchema () ]
+fn widgetSchema () -> EntitySchema Widget =
+    schema "Widget" "widgets"
+      |> withColumn (mkColumn "qty" "qty" DbInt false |> check (fn (w: Widget) -> w.qty >= 0))
+
+fn model () -> List (EntitySchema Unit) = [ userSchema (), postSchema (), eraseSchema (widgetSchema ()) ]
 
 fn sampleMigration () =
     Migrate.migration "0002_evolve"
@@ -57,6 +63,7 @@ fn sampleMigration () =
       ]
 
 pub fn columnSrc () -> Text = columnToSource (mkColumn "email" "email" (DbVarchar 255) false |> unique)
+pub fn checkColSrc () -> Text = columnToSource (mkColumn "qty" "qty" DbInt false |> check (fn (w: Widget) -> w.qty >= 0))
 pub fn schemaSrc () -> Text = schemaToSource (userSchema ())
 pub fn modelSrc () -> Text = Migrate.modelToSource (model ())
 pub fn migrationSrc () -> Text = Migrate.migrationToSource (sampleMigration ())
@@ -68,7 +75,7 @@ pub fn migrationSrc () -> Text = Migrate.migrationToSource (sampleMigration ())
 fn build_roundtrip_source(model_src: &str, migration_src: &str) -> String {
     format!(
         r#"
-import std.schema (EntitySchema, DbBigInt, DbText, DbVarchar, Identity, Cascade, mkColumn, withColumn, schema, generated, primaryKey, unique, indexed, foreignKey, references, onDelete)
+import std.schema (EntitySchema, DbBigInt, DbInt, DbText, DbVarchar, Identity, Cascade, mkColumn, withColumn, schema, generated, primaryKey, unique, indexed, foreignKey, references, onDelete, checkRaw)
 import std.migrate (migration, createSchema, addEntityColumn, alterColumn, dropColumn, dropTable, modelToSource, migrationToSource)
 
 fn rebuiltModel () -> List (EntitySchema Unit) = (
@@ -169,6 +176,7 @@ fn source_renderer_round_trips_on_beam() {
     let (beam_dir, module) = compile(dir.path(), cache.path());
 
     let column_src = run_fun(&beam_dir, &module, "columnSrc");
+    let check_col_src = run_fun(&beam_dir, &module, "checkColSrc");
     let schema_src = run_fun(&beam_dir, &module, "schemaSrc");
     let model_src = run_fun(&beam_dir, &module, "modelSrc");
     let migration_src = run_fun(&beam_dir, &module, "migrationSrc");
@@ -178,6 +186,13 @@ fn source_renderer_round_trips_on_beam() {
     assert_eq!(
         column_src,
         r#"mkColumn "email" "email" (DbVarchar 255) false |> unique"#
+    );
+
+    // A CHECK renders through `checkRaw` over the reconstructed `QExpr` tree (the erased
+    // schema cannot rebuild the original quote); it round-trips through the fixpoint below.
+    assert!(
+        check_col_src.contains(r#"|> checkRaw (QGe (QCol "qty") (QLitInt 0))"#),
+        "check_col_src: {check_col_src}"
     );
 
     // A schema renders single-line: the `schema "Name" "table"` head, then a

@@ -531,7 +531,7 @@ fn migrationDoc () -> Text =
 -- rendered `mkColumn … |> …` source resolves; a name the particular model does not use
 -- is an unused import, which Ridge permits.
 fn schemaImports () -> Text =
-    "import std.schema (EntitySchema, DbBoolean, DbInt, DbBigInt, DbFloat, DbDecimal, DbText, DbVarchar, DbUuid, DbTimestamp, DbTimestampTz, DbRaw, Identity, DefaultNow, DefaultRawSql, Restrict, Cascade, SetNull, SetDefault, mkColumn, withColumn, schema, generated, primaryKey, unique, indexed, foreignKey, references, onDelete, onUpdate)"
+    "import std.schema (EntitySchema, DbBoolean, DbInt, DbBigInt, DbFloat, DbDecimal, DbText, DbVarchar, DbUuid, DbTimestamp, DbTimestampTz, DbRaw, Identity, DefaultNow, DefaultRawSql, Restrict, Cascade, SetNull, SetDefault, mkColumn, withColumn, schema, generated, primaryKey, unique, indexed, foreignKey, references, onDelete, onUpdate, checkRaw)"
 
 -- The `std.migrate` factories a diff-produced migration uses. The entity-driven steps
 -- only — a diff never emits the tuple DSL, whose `primaryKey`/`unique`/`nullable` would

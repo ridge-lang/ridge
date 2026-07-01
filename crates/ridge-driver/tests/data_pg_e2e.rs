@@ -68,7 +68,7 @@ import std.int as Int
 import std.float as Float
 import std.list (length, contains)
 import std.text as Text
-import std.schema (HasSchema, schemaOf, schema, EntitySchema)
+import std.schema (HasSchema, schemaOf, schema, eraseSchema, EntitySchema)
 
 pub type User = { id: Int, age: Int, name: Text } deriving (Row)
 
@@ -1966,6 +1966,55 @@ pub fn db pgEntityCreated () -> Int =
                                         Err _ -> 0 - 5
                                         Ok _  -> pgCountGadgets conn
 
+-- The auto-diff against the live database: `diffSchemas` compares an empty snapshot
+-- against a one-entity model and returns a create step, which lands a real table the
+-- same way a hand-written `createSchema` does. Uses its own table so the create never
+-- collides with the gadget migration, and its own migration name so the tracking table
+-- skips it on re-runs (the create runs once; later runs clear, insert, and count).
+pub type RidgeMigCog = { id: Int, label: Text } deriving (Row, Schema)
+
+fn cogWitness () -> Option RidgeMigCog = None
+
+fn cogErased () -> EntitySchema Unit =
+    eraseSchema (schemaOf (cogWitness ()))
+
+fn runCogsDiff (conn: Postgres) -> Result (List Text) Error =
+    Migrate.run conn [ Migrate.migration "0002_cogs" (Migrate.diffSchemas [] [ cogErased () ]) ]
+
+fn pgClearCogs (conn: Postgres) -> Result Int Error =
+    let r = Repo.repo conn "ridge_mig_cogs"
+    Repo.deleteWhere (fn (c: RidgeMigCog) -> c.id >= 0) r
+
+fn pgAddCog (conn: Postgres) (clabel: Text) -> Result Unit Error =
+    let r = Repo.repo conn "ridge_mig_cogs"
+    Repo.insert (RidgeMigCogInsert { label = clabel }) r
+
+fn pgCountCogs (conn: Postgres) -> Int =
+    let r = Repo.repo conn "ridge_mig_cogs"
+    match r |> Repo.query |> Repo.count
+        Ok n  -> n
+        Err _ -> 0 - 9
+
+-- A diff-driven create lands a real table: `diffSchemas` yields the create step, the
+-- migration runs it, the omitted identity id is assigned on insert, and two rows count
+-- back -> 2. Clears the table first so the count is deterministic across runs.
+pub fn db pgDiffCreated () -> Int =
+    match connect (pgConfig ())
+        Err _ -> 0 - 1
+        Ok conn ->
+            match runCogsDiff conn
+                Err _ -> 0 - 2
+                Ok _  ->
+                    match pgClearCogs conn
+                        Err _ -> 0 - 3
+                        Ok _  ->
+                            match pgAddCog conn "alpha"
+                                Err _ -> 0 - 4
+                                Ok _  ->
+                                    match pgAddCog conn "beta"
+                                        Err _ -> 0 - 5
+                                        Ok _  -> pgCountCogs conn
+
 -- Raw-SQL escape hatch against the live database. Each probe seeds the users table
 -- through `setup` (clearing and inserting ada/lin/max), then opens a fresh
 -- connection and runs raw SQL over `ridge_pg_users`: a parameterised SELECT decoded
@@ -2322,6 +2371,7 @@ fn postgres_adapter_reads_a_real_table() {
          io:format(\"pgMigrateIdempotent=~w~n\",[{module}:pgMigrateIdempotent()]), \
          io:format(\"pgMigratedUsable=~w~n\",[{module}:pgMigratedUsable()]), \
          io:format(\"pgEntityCreated=~w~n\",[{module}:pgEntityCreated()]), \
+         io:format(\"pgDiffCreated=~w~n\",[{module}:pgDiffCreated()]), \
          io:format(\"rawAdults=~s~n\",[{module}:rawAdults()]), \
          io:format(\"rawFirstName=~s~n\",[{module}:rawFirstName()]), \
          io:format(\"rawBumpCount=~w~n\",[{module}:rawBumpCount()]), \
@@ -2757,6 +2807,10 @@ fn postgres_adapter_reads_a_real_table() {
         (
             "pgEntityCreated=2",
             "an entity-driven createSchema renders the descriptor's CREATE TABLE with a serial id and the table accepts two inserts",
+        ),
+        (
+            "pgDiffCreated=2",
+            "the auto-diff turns a new entity into a create step that lands a real table accepting two inserts",
         ),
         (
             "rawAdults=lin,max",

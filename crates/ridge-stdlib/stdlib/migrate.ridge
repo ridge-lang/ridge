@@ -154,6 +154,59 @@ pub type Migration = { name: Text, steps: List SchemaOp }
 pub fn migration (name: Text) (steps: List SchemaOp) -> Migration =
     Migration { name = name, steps = steps }
 
+-- ── Schema diffing (snapshot auto-diff) ───────────────────────────────────────
+--
+-- Compute the schema changes that turn one model snapshot into another, the way EF's
+-- `Add-Migration` diffs the current model against the last snapshot instead of making
+-- you write each create and drop by hand. A snapshot is the list of entity schemas a
+-- project derives, each erased to `EntitySchema Unit` so entities of different types
+-- share one list:
+--   fn model () -> List (EntitySchema Unit) =
+--     [ eraseSchema (schemaOf (userWitness ())), eraseSchema (schemaOf (postWitness ())) ]
+-- The diff reads the descriptors alone — no database is consulted — so it is
+-- deterministic and runs the same offline as against a live connection. Feed its
+-- result straight to `migration`:
+--   migration "0002_add_posts" (diffSchemas oldModel newModel)
+--
+-- Changes are matched by table name: a table in `next` absent from `prev` becomes an
+-- entity-driven create (a full-fidelity `CREATE TABLE` from the descriptor), and a
+-- table in `prev` absent from `next` becomes a drop. Creates come first, in `next`
+-- declaration order, then drops in `prev` order. A table present in both is left as it
+-- is — a column added, dropped, or retyped inside an existing table is not yet diffed,
+-- so a change to an existing table's columns still needs a hand-written step.
+pub fn diffSchemas (prev: List (EntitySchema Unit)) (next: List (EntitySchema Unit)) -> List SchemaOp =
+    appendOps (createdTables prev next) (droppedTables prev next)
+
+-- The tables to create: each schema in `next` whose table name is absent from `prev`,
+-- as an entity-driven `CreateEntity` step, in `next` declaration order.
+fn createdTables (prev: List (EntitySchema Unit)) (next: List (EntitySchema Unit)) -> List SchemaOp =
+    match next
+        []        -> []
+        s :: rest ->
+            if containsTable prev (schemaTable s) then createdTables prev rest
+            else CreateEntity s :: createdTables prev rest
+
+-- The tables to drop: each schema in `prev` whose table name is absent from `next`, as
+-- a `DropTable` step, in `prev` declaration order.
+fn droppedTables (prev: List (EntitySchema Unit)) (next: List (EntitySchema Unit)) -> List SchemaOp =
+    match prev
+        []        -> []
+        s :: rest ->
+            if containsTable next (schemaTable s) then droppedTables rest next
+            else DropTable (schemaTable s) :: droppedTables rest next
+
+-- Whether a snapshot holds a schema for the named table.
+fn containsTable (schemas: List (EntitySchema Unit)) (table: Text) -> Bool =
+    match schemas
+        []        -> false
+        s :: rest -> if schemaTable s == table then true else containsTable rest table
+
+-- Append two schema-op lists — the created tables ahead of the dropped ones.
+fn appendOps (a: List SchemaOp) (b: List SchemaOp) -> List SchemaOp =
+    match a
+        []        -> b
+        x :: rest -> x :: appendOps rest b
+
 -- A column flattened to the tuple the schema seam takes: name, base-type name, and
 -- the three modifier flags. The seam stays untyped (primitives only), the same way
 -- the query seam takes `(ascending?, column)` tuples rather than a typed key.

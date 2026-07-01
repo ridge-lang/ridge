@@ -26,7 +26,7 @@ import std.data (memAdapter, MemAdapter)
 import std.migrate as Migrate
 import std.migrate (SchemaOp)
 import std.repo as Repo
-import std.schema (schemaOf)
+import std.schema (schemaOf, eraseSchema, EntitySchema)
 import std.list (length)
 import std.sql (SqlValue)
 
@@ -153,6 +153,37 @@ pub fn db entityDriven () -> Int =
                     match addAccount conn "eng"
                         Err _ -> 0 - 3
                         Ok _  -> countAccounts conn
+
+-- The `Account` schema erased to `EntitySchema Unit` — one entry of a model snapshot,
+-- the shape the auto-diff compares.
+fn accountErased () -> EntitySchema Unit =
+    eraseSchema (schemaOf (accountWitness ()))
+
+-- The auto-diff creates the table it finds only in the new model: diffing an empty
+-- snapshot against `[accounts]` yields one create step, which applies to a usable table
+-- that accepts two inserts and counts them back.
+pub fn db diffCreatesTable () -> Int =
+    let conn = memAdapter ()
+    let steps = Migrate.diffSchemas [] [ accountErased () ]
+    match Migrate.run conn [ Migrate.migration "0001_accounts" steps ]
+        Err _ -> 0 - 1
+        Ok _  ->
+            match addAccount conn "ops"
+                Err _ -> 0 - 2
+                Ok _  ->
+                    match addAccount conn "eng"
+                        Err _ -> 0 - 3
+                        Ok _  -> countAccounts conn
+
+-- The diff counts each table-level change once: an added table (empty -> [a]) is one
+-- step, a dropped table ([a] -> empty) is one step, and an unchanged table ([a] -> [a])
+-- is none, so the three runs together yield 1 + 1 + 0 = 2.
+pub fn db diffCounts () -> Int =
+    let a = accountErased ()
+    let added   = Migrate.diffSchemas [] [ a ]
+    let dropped = Migrate.diffSchemas [ a ] []
+    let same    = Migrate.diffSchemas [ a ] [ a ]
+    length added + length dropped + length same
 "#;
 
 // ── Workspace setup ───────────────────────────────────────────────────────────
@@ -233,6 +264,8 @@ fn migrations_apply_track_and_are_idempotent_on_beam() {
          io:format(\"usable=~w~n\",[{module}:usable()]), \
          io:format(\"altered=~w~n\",[{module}:altered()]), \
          io:format(\"entityDriven=~w~n\",[{module}:entityDriven()]), \
+         io:format(\"diffCreatesTable=~w~n\",[{module}:diffCreatesTable()]), \
+         io:format(\"diffCounts=~w~n\",[{module}:diffCounts()]), \
          halt()."
     );
     let output = Command::new("erl")
@@ -271,5 +304,15 @@ fn migrations_apply_track_and_are_idempotent_on_beam() {
     assert!(
         stdout.contains("entityDriven=2"),
         "expected `entityDriven=2` — createSchema should build a usable table from the descriptor\nstdout:\n{stdout}\nstderr:\n{stderr}"
+    );
+    // The auto-diff turns a new entity into a create step that applies to a usable table.
+    assert!(
+        stdout.contains("diffCreatesTable=2"),
+        "expected `diffCreatesTable=2` — diffSchemas should create the table only in the new model\nstdout:\n{stdout}\nstderr:\n{stderr}"
+    );
+    // The diff counts one step per table-level change: add + drop + no-change = 1 + 1 + 0.
+    assert!(
+        stdout.contains("diffCounts=2"),
+        "expected `diffCounts=2` — an added and a dropped table are one step each; an unchanged table is none\nstdout:\n{stdout}\nstderr:\n{stderr}"
     );
 }

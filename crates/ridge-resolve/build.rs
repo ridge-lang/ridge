@@ -855,6 +855,7 @@ const BASELINE_EXPORTS: &[(&str, &[&str])] = &[
             "dropSchema",
             "Migration",
             "migration",
+            "diffSchemas",
             // The migration runner: apply the pending migrations in order, each in
             // its own transaction, and answer the names applied.
             "run",

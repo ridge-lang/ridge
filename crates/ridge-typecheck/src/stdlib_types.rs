@@ -2336,6 +2336,7 @@ fn reconciled_migrate_fn_scheme(
     let schema_op_ty = || Type::Con(schema_op, vec![]);
     let e = TyVid(0);
     let ent_e = || Type::Con(entity_schema, vec![Type::Var(e)]);
+    let ent_unit = || Type::Con(entity_schema, vec![Type::Con(b.unit, vec![])]);
     // A monomorphic pure builder: `params -> ret`, no quantified vars or constraints.
     let mono = |params: Vec<Type>, ret: Type| {
         Some(Scheme {
@@ -2383,6 +2384,12 @@ fn reconciled_migrate_fn_scheme(
         // createSchema / dropSchema : ∀e. EntitySchema e -> SchemaOp — the entity-driven
         // table create and drop, taking the schema descriptor in place of a column tuple.
         "createSchema" | "dropSchema" => poly_e(vec![ent_e()], schema_op_ty()),
+        // diffSchemas : List (EntitySchema Unit) -> List (EntitySchema Unit) -> List SchemaOp —
+        // the pure snapshot diff: the schema steps that turn the `prev` model into `next`.
+        "diffSchemas" => mono(
+            vec![list(ent_unit()), list(ent_unit())],
+            list(schema_op_ty()),
+        ),
         // migration : Text -> List SchemaOp -> Migration
         "migration" => mono(
             vec![text(), list(schema_op_ty())],

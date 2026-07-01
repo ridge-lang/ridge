@@ -2448,12 +2448,14 @@ fn reconciled_migrate_fn_scheme(
             vec![text(), list(schema_op_ty())],
             Type::Con(migration, vec![]),
         ),
-        // modelToSource : List (EntitySchema Unit) -> Text — render a model snapshot to
-        // the `[ schema … , … ]` source a snapshot module holds.
-        "modelToSource" => mono(vec![list(ent_unit())], text()),
-        // migrationToSource : Migration -> Text — render a migration to the
-        // `migration "name" [ … ]` source a generated migration module holds.
-        "migrationToSource" => mono(vec![Type::Con(migration, vec![])], text()),
+        // modelToSource : List (EntitySchema Unit) -> Text renders a model snapshot to the
+        // `[ schema … , … ]` expression; snapshotModule wraps it in the whole `.ridge`
+        // snapshot module (imports + `model ()`). Same `List (EntitySchema Unit) -> Text`.
+        "modelToSource" | "snapshotModule" => mono(vec![list(ent_unit())], text()),
+        // migrationToSource : Migration -> Text renders a migration to the
+        // `migration "name" [ … ]` expression; migrationModule wraps it in the whole
+        // `.ridge` migration module (imports + `up ()`). Same `Migration -> Text`.
+        "migrationToSource" | "migrationModule" => mono(vec![Type::Con(migration, vec![])], text()),
         // run : ∀a. a -> List Migration -> Result (List Text) Error where Adapter a.
         // The runner reaches the schema seam through the `Adapter a` dictionary, the
         // same shape `transaction` carries; `a` is the only quantified variable.

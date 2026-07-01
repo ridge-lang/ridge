@@ -277,3 +277,150 @@ fn source_renderer_round_trips_on_beam() {
         "migration source is not a render fixpoint"
     );
 }
+
+// A model evolving from v1 (users + posts) to v2 (users with a swapped column + orders,
+// posts dropped), rendered into whole snapshot and migration modules through
+// `snapshotModule`/`migrationModule`.
+const RENDER_MODULE_SRC: &str = r#"
+import std.schema (EntitySchema, DbBigInt, DbText, Identity, mkColumn, withColumn, schema, generated, primaryKey)
+import std.migrate as Migrate
+
+fn userV1 () -> EntitySchema Unit =
+    schema "User" "users"
+      |> withColumn (mkColumn "id" "id" DbBigInt false |> generated Identity |> primaryKey)
+      |> withColumn (mkColumn "bio" "bio" DbText true)
+
+fn postV1 () -> EntitySchema Unit =
+    schema "Post" "posts"
+      |> withColumn (mkColumn "id" "id" DbBigInt false |> generated Identity |> primaryKey)
+
+fn modelV1 () -> List (EntitySchema Unit) = [ userV1 (), postV1 () ]
+
+fn userV2 () -> EntitySchema Unit =
+    schema "User" "users"
+      |> withColumn (mkColumn "id" "id" DbBigInt false |> generated Identity |> primaryKey)
+      |> withColumn (mkColumn "nickname" "nickname" DbText true)
+
+fn orderV2 () -> EntitySchema Unit =
+    schema "Order" "orders"
+      |> withColumn (mkColumn "id" "id" DbBigInt false |> generated Identity |> primaryKey)
+      |> withColumn (mkColumn "total" "total" DbBigInt false)
+
+fn modelV2 () -> List (EntitySchema Unit) = [ userV2 (), orderV2 () ]
+
+pub fn snapMod () -> Text = Migrate.snapshotModule (modelV1 ())
+pub fn migMod () -> Text = Migrate.migrationModule (Migrate.migration "0002_evolve" (Migrate.diffSchemas (modelV1 ()) (modelV2 ())))
+pub fn snapV2Mod () -> Text = Migrate.snapshotModule (modelV2 ())
+"#;
+
+// Run one zero-arity function and print its value with `~p`, so a non-`Text` result (a
+// model list, a migration record) can be inspected for the names it should carry.
+fn run_fun_term(beam_dir: &Path, module: &str, fun: &str) -> String {
+    let expr = format!("io:format(\"~p\", [{module}:{fun}()]), halt().");
+    let output = Command::new("erl")
+        .arg("-noshell")
+        .arg("-pa")
+        .arg(beam_dir)
+        .arg("-eval")
+        .arg(&expr)
+        .output()
+        .expect("run erl");
+    let stdout = String::from_utf8_lossy(&output.stdout).into_owned();
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        !stdout.is_empty(),
+        "`{fun}` produced no output; stderr:\n{stderr}"
+    );
+    stdout
+}
+
+// Compile a generated module on its own and run its entry point — proving the emitted
+// file is valid Ridge (imports resolve, layout parses, types check) and that the value it
+// exposes carries the expected name.
+fn check_generated_module(label: &str, source: &str, entry: &str, needle: &str) {
+    let dir = tempfile::Builder::new()
+        .prefix(&format!("ridge-migrate-module-e2e-{label}-"))
+        .tempdir()
+        .expect("temp dir");
+    let cache = tempfile::Builder::new()
+        .prefix(&format!("ridge-migrate-module-e2e-{label}-cache-"))
+        .tempdir()
+        .expect("cache dir");
+    write_workspace(dir.path(), source);
+    let (beam, module) = compile(dir.path(), cache.path());
+    let out = run_fun_term(&beam, &module, entry);
+    assert!(
+        out.contains(needle),
+        "generated `{label}` module `{entry}()` is missing `{needle}`\noutput: {out}\nsource:\n{source}"
+    );
+}
+
+#[test]
+fn generated_modules_compile_on_beam() {
+    if which::which("erlc").is_err() || which::which("erl").is_err() {
+        eprintln!("erl/erlc not on PATH — skipping generated_modules_compile_on_beam");
+        return;
+    }
+
+    let dir = tempfile::Builder::new()
+        .prefix("ridge-migrate-module-e2e-")
+        .tempdir()
+        .expect("temp dir");
+    let cache = tempfile::Builder::new()
+        .prefix("ridge-migrate-module-e2e-cache-")
+        .tempdir()
+        .expect("cache dir");
+    write_workspace(dir.path(), RENDER_MODULE_SRC);
+    let (beam_dir, module) = compile(dir.path(), cache.path());
+
+    let snap_mod = run_fun(&beam_dir, &module, "snapMod");
+    let mig_mod = run_fun(&beam_dir, &module, "migMod");
+    let snap_v2_mod = run_fun(&beam_dir, &module, "snapV2Mod");
+
+    // A snapshot module carries its doc line, the schema import, and a parenthesised
+    // `model ()`; a migration module adds the migrate import and a parenthesised `up ()`.
+    assert!(
+        snap_mod.starts_with("-- Generated model snapshot."),
+        "snap_mod doc: {snap_mod}"
+    );
+    assert!(
+        snap_mod.contains("import std.schema (EntitySchema,"),
+        "snap_mod schema import: {snap_mod}"
+    );
+    assert!(
+        snap_mod.contains(
+            "pub fn model () -> List (EntitySchema Unit) = (\n[ schema \"User\" \"users\""
+        ),
+        "snap_mod model fn: {snap_mod}"
+    );
+    assert!(
+        mig_mod.contains("import std.migrate (Migration, migration, createSchema,"),
+        "mig_mod migrate import: {mig_mod}"
+    );
+    assert!(
+        mig_mod.contains("pub fn up () -> Migration = (\nmigration \"0002_evolve\""),
+        "mig_mod up fn: {mig_mod}"
+    );
+    // The diff of v1 -> v2: create orders, add users.nickname, drop users.bio, drop posts.
+    assert!(
+        mig_mod.contains(r#"createSchema (schema "Order" "orders""#),
+        "mig_mod create: {mig_mod}"
+    );
+    assert!(
+        mig_mod.contains(r#"addEntityColumn "users" (mkColumn "nickname""#),
+        "mig_mod add: {mig_mod}"
+    );
+    assert!(
+        mig_mod.contains(r#"dropColumn "users" "bio""#),
+        "mig_mod drop-col: {mig_mod}"
+    );
+    assert!(
+        mig_mod.contains(r#"dropTable "posts""#),
+        "mig_mod drop-table: {mig_mod}"
+    );
+
+    // Each generated module compiles on its own and its entry point runs.
+    check_generated_module("snap", &snap_mod, "model", "users");
+    check_generated_module("mig", &mig_mod, "up", "0002_evolve");
+    check_generated_module("snapv2", &snap_v2_mod, "model", "orders");
+}

@@ -872,6 +872,10 @@ const BASELINE_EXPORTS: &[(&str, &[&str])] = &[
             // to the source that rebuilds them, the writer side of the snapshot diff.
             "modelToSource",
             "migrationToSource",
+            // The generated-module renderers: wrap the above into whole `.ridge` files —
+            // the snapshot and migration a project persists on disk.
+            "snapshotModule",
+            "migrationModule",
             // The migration runner: apply the pending migrations in order, each in
             // its own transaction, and answer the names applied.
             "run",

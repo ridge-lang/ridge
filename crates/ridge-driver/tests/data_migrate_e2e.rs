@@ -26,7 +26,7 @@ import std.data (memAdapter, MemAdapter)
 import std.migrate as Migrate
 import std.migrate (SchemaOp)
 import std.repo as Repo
-import std.schema (schemaOf, eraseSchema, EntitySchema)
+import std.schema (schemaOf, eraseSchema, EntitySchema, schema, withColumn, mkColumn, DbBigInt, DbText)
 import std.list (length)
 import std.sql (SqlValue)
 
@@ -184,6 +184,43 @@ pub fn db diffCounts () -> Int =
     let dropped = Migrate.diffSchemas [ a ] []
     let same    = Migrate.diffSchemas [ a ] [ a ]
     length added + length dropped + length same
+
+-- Two hand-built snapshots of the same table differing by one column: v1 has [id, name],
+-- v2 adds [email]. Built by hand (not derived) so the two versions share the table name,
+-- which is what makes the diff descend into the columns rather than treat them as two
+-- separate tables.
+fn thingV1 () -> EntitySchema Unit =
+    eraseSchema (schema "Thing" "things"
+        |> withColumn (mkColumn "id" "id" DbBigInt false)
+        |> withColumn (mkColumn "name" "name" DbText false))
+
+fn thingV2 () -> EntitySchema Unit =
+    eraseSchema (schema "Thing" "things"
+        |> withColumn (mkColumn "id" "id" DbBigInt false)
+        |> withColumn (mkColumn "name" "name" DbText false)
+        |> withColumn (mkColumn "email" "email" DbText true))
+
+-- The diff descends into a table present in both snapshots: v1 -> v2 adds the email
+-- column (1 op), v2 -> v1 drops it (1 op), v1 -> v1 is unchanged (0). 1 + 1 + 0 = 2.
+pub fn db diffColumns () -> Int =
+    let a = thingV1 ()
+    let b = thingV2 ()
+    let added   = Migrate.diffSchemas [ a ] [ b ]
+    let dropped = Migrate.diffSchemas [ b ] [ a ]
+    let same    = Migrate.diffSchemas [ a ] [ a ]
+    length added + length dropped + length same
+
+-- The column-add step runs and commits: create the base table from v1, then apply the
+-- v1 -> v2 diff (one AddEntityColumn). The in-memory store is schemaless so the add is a
+-- no-op, but the migration must run and record — one name comes back.
+pub fn db diffColumnApplies () -> Int =
+    let conn = memAdapter ()
+    match Migrate.run conn [ Migrate.migration "0001_thing" (Migrate.diffSchemas [] [ thingV1 () ]) ]
+        Err _ -> 0 - 1
+        Ok _  ->
+            match Migrate.run conn [ Migrate.migration "0002_thing_email" (Migrate.diffSchemas [ thingV1 () ] [ thingV2 () ]) ]
+                Ok names -> length names
+                Err _    -> 0 - 2
 "#;
 
 // ── Workspace setup ───────────────────────────────────────────────────────────
@@ -266,6 +303,8 @@ fn migrations_apply_track_and_are_idempotent_on_beam() {
          io:format(\"entityDriven=~w~n\",[{module}:entityDriven()]), \
          io:format(\"diffCreatesTable=~w~n\",[{module}:diffCreatesTable()]), \
          io:format(\"diffCounts=~w~n\",[{module}:diffCounts()]), \
+         io:format(\"diffColumns=~w~n\",[{module}:diffColumns()]), \
+         io:format(\"diffColumnApplies=~w~n\",[{module}:diffColumnApplies()]), \
          halt()."
     );
     let output = Command::new("erl")
@@ -314,5 +353,15 @@ fn migrations_apply_track_and_are_idempotent_on_beam() {
     assert!(
         stdout.contains("diffCounts=2"),
         "expected `diffCounts=2` — an added and a dropped table are one step each; an unchanged table is none\nstdout:\n{stdout}\nstderr:\n{stderr}"
+    );
+    // The diff descends into a matched table: an added and a dropped column are one step each.
+    assert!(
+        stdout.contains("diffColumns=2"),
+        "expected `diffColumns=2` — a column added and a column dropped inside an existing table are one step each\nstdout:\n{stdout}\nstderr:\n{stderr}"
+    );
+    // The diffed column-add step runs and commits on the in-memory store.
+    assert!(
+        stdout.contains("diffColumnApplies=1"),
+        "expected `diffColumnApplies=1` — the AddEntityColumn step from the diff should run and record one migration\nstdout:\n{stdout}\nstderr:\n{stderr}"
     );
 }

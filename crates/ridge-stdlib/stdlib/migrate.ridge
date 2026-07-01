@@ -44,7 +44,7 @@ import std.data as Db
 -- The rich schema descriptor an entity-driven migration step carries: `eraseSchema`
 -- drops its phantom entity so a non-parametric `SchemaOp` can hold it, and
 -- `schemaTable` names the table a drop targets.
-import std.schema (EntitySchema, eraseSchema, schemaTable)
+import std.schema (EntitySchema, ColumnSchema, eraseSchema, schemaTable, schemaColumns, colColumn)
 
 -- A column in a table definition: its name, its base type, and the three
 -- modifiers a schema cares about — whether it admits SQL NULL, whether it is the
@@ -93,7 +93,7 @@ pub fn unique (c: Column) -> Column =
 -- `uniqueIndex` factories and handed to `migration`, and the runner decomposes it
 -- onto the adapter's schema seam — so user code names the type but never the
 -- variants.
-pub type SchemaOp = CreateTable Text (List Column) | DropTable Text | AddColumn Text Column | DropColumn Text Text | CreateIndex Text Text (List Text) Bool | CreateEntity (EntitySchema Unit)
+pub type SchemaOp = CreateTable Text (List Column) | DropTable Text | AddColumn Text Column | DropColumn Text Text | CreateIndex Text Text (List Text) Bool | CreateEntity (EntitySchema Unit) | AddEntityColumn Text (ColumnSchema Unit)
 
 -- Create a table with the given columns.
 pub fn createTable (table: Text) (cols: List Column) -> SchemaOp =
@@ -168,14 +168,18 @@ pub fn migration (name: Text) (steps: List SchemaOp) -> Migration =
 -- result straight to `migration`:
 --   migration "0002_add_posts" (diffSchemas oldModel newModel)
 --
--- Changes are matched by table name: a table in `next` absent from `prev` becomes an
--- entity-driven create (a full-fidelity `CREATE TABLE` from the descriptor), and a
--- table in `prev` absent from `next` becomes a drop. Creates come first, in `next`
--- declaration order, then drops in `prev` order. A table present in both is left as it
--- is — a column added, dropped, or retyped inside an existing table is not yet diffed,
--- so a change to an existing table's columns still needs a hand-written step.
+-- Changes are matched by name — tables by table name, columns by SQL column name. A
+-- table in `next` absent from `prev` becomes an entity-driven create (a full-fidelity
+-- `CREATE TABLE` from the descriptor); a table in `prev` absent from `next` becomes a
+-- drop. For a table in both, its columns are diffed: a column only in the new schema is
+-- added (`ALTER TABLE … ADD COLUMN`, keeping the descriptor's type, default, and
+-- constraints), and a column only in the old one is dropped. The steps come out ordered
+-- creates, then column changes, then drops — creates and column-adds in `next` order,
+-- drops in `prev` order. A column present in both is left as it is: a retype or a
+-- constraint change on an existing column is not yet diffed, so that still needs a
+-- hand-written step.
 pub fn diffSchemas (prev: List (EntitySchema Unit)) (next: List (EntitySchema Unit)) -> List SchemaOp =
-    appendOps (createdTables prev next) (droppedTables prev next)
+    appendOps (createdTables prev next) (appendOps (alteredTables prev next) (droppedTables prev next))
 
 -- The tables to create: each schema in `next` whose table name is absent from `prev`,
 -- as an entity-driven `CreateEntity` step, in `next` declaration order.
@@ -194,6 +198,55 @@ fn droppedTables (prev: List (EntitySchema Unit)) (next: List (EntitySchema Unit
         s :: rest ->
             if containsTable next (schemaTable s) then droppedTables rest next
             else DropTable (schemaTable s) :: droppedTables rest next
+
+-- The column changes for the tables present in both snapshots: for each schema in
+-- `next` that `prev` also holds (matched by table name), the ops that reconcile its
+-- columns, in `next` table order. A table only in `next` is skipped here — it is a
+-- whole-table create handled by `createdTables`.
+fn alteredTables (prev: List (EntitySchema Unit)) (next: List (EntitySchema Unit)) -> List SchemaOp =
+    match next
+        []        -> []
+        s :: rest ->
+            match findTable prev (schemaTable s)
+                None     -> alteredTables prev rest
+                Some old -> appendOps (columnDiff old s) (alteredTables prev rest)
+
+-- The schema for a table name, if the snapshot holds one.
+fn findTable (schemas: List (EntitySchema Unit)) (table: Text) -> Option (EntitySchema Unit) =
+    match schemas
+        []        -> None
+        s :: rest -> if schemaTable s == table then Some s else findTable rest table
+
+-- Reconcile one table's columns between its old and new schema: the columns to add
+-- ahead of the columns to drop, both targeting the (shared) table name.
+fn columnDiff (old: EntitySchema Unit) (new: EntitySchema Unit) -> List SchemaOp =
+    appendOps
+        (addedColumns (schemaTable new) (schemaColumns old) (schemaColumns new))
+        (droppedColumns (schemaTable new) (schemaColumns old) (schemaColumns new))
+
+-- The columns to add: each column in `newCols` whose SQL name is absent from `oldCols`,
+-- as an `AddEntityColumn` step carrying the full descriptor, in new-declaration order.
+fn addedColumns (table: Text) (oldCols: List (ColumnSchema Unit)) (newCols: List (ColumnSchema Unit)) -> List SchemaOp =
+    match newCols
+        []        -> []
+        c :: rest ->
+            if containsColumn oldCols (colColumn c) then addedColumns table oldCols rest
+            else AddEntityColumn table c :: addedColumns table oldCols rest
+
+-- The columns to drop: each column in `oldCols` whose SQL name is absent from `newCols`,
+-- as a `DropColumn` step, in old-declaration order.
+fn droppedColumns (table: Text) (oldCols: List (ColumnSchema Unit)) (newCols: List (ColumnSchema Unit)) -> List SchemaOp =
+    match oldCols
+        []        -> []
+        c :: rest ->
+            if containsColumn newCols (colColumn c) then droppedColumns table rest newCols
+            else DropColumn table (colColumn c) :: droppedColumns table rest newCols
+
+-- Whether a column list holds a column with the given SQL name.
+fn containsColumn (cols: List (ColumnSchema Unit)) (name: Text) -> Bool =
+    match cols
+        []        -> false
+        c :: rest -> if colColumn c == name then true else containsColumn rest name
 
 -- Whether a snapshot holds a schema for the named table.
 fn containsTable (schemas: List (EntitySchema Unit)) (table: Text) -> Bool =
@@ -228,6 +281,7 @@ fn runStep (conn: a) (op: SchemaOp) -> Result Unit Error where Adapter a =
         DropColumn table col        -> ddlDropColumn conn table col
         CreateIndex name table cols uniq -> ddlIndex conn name table cols uniq
         CreateEntity schema         -> ddlCreateEntity conn schema
+        AddEntityColumn table col   -> ddlAddEntityColumn conn table col
 
 -- Run a migration's steps in order, stopping at the first failure.
 fn runSteps (conn: a) (steps: List SchemaOp) -> Result Unit Error where Adapter a =

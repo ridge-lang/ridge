@@ -542,6 +542,18 @@ fn reconciled_decls(b: &BuiltinTyCons, base: u32) -> Vec<TyConDecl> {
                             vec![Type::Con(b.unit, vec![])],
                         )]),
                     },
+                    // `AddEntityColumn` carries the table name and one full column
+                    // descriptor (`ColumnSchema`, this block's `base + 29`, phantom erased
+                    // to `Unit`), so the backend renders `ALTER TABLE … ADD COLUMN` with
+                    // the column's type, default, and constraints rather than the
+                    // constraint-poor tuple `AddColumn` carries.
+                    UnionVariant {
+                        name: "AddEntityColumn".to_string(),
+                        kind: VariantPayload::Positional(vec![
+                            Type::Con(b.text, vec![]),
+                            Type::Con(TyConId(base + 29), vec![Type::Con(b.unit, vec![])]),
+                        ]),
+                    },
                 ],
             }),
             def_span: None,
@@ -2264,6 +2276,9 @@ fn reconciled_schema_fn_scheme(
         // primaryKey, unique)` — the DDL the retired Erlang builder produced.
         "createTableDdl" => mono(vec![text(), list(col_tuple())], text()),
         "addColumnDdl" => mono(vec![text(), col_tuple()], text()),
+        // addColumnSchemaDdl : ∀e. Text -> ColumnSchema e -> Text — the entity-driven
+        // ADD COLUMN renderer, keeping the descriptor's type/default/constraints.
+        "addColumnSchemaDdl" => poly1(vec![text(), col_e()], text()),
         "dropTableDdl" => mono(vec![text()], text()),
         "dropColumnDdl" => mono(vec![text(), text()], text()),
         "indexDdl" => mono(vec![text(), text(), list(text()), boolean()], text()),

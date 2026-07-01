@@ -327,6 +327,14 @@ pub fn createTableDdl (table: Text) (cols: List (Text, Text, Bool, Bool, Bool)) 
 pub fn addColumnDdl (table: Text) (col: (Text, Text, Bool, Bool, Bool)) -> Text =
     Text.join "" ["ALTER TABLE ", quoteIdent table, " ADD COLUMN ", columnDdl (tupleColumnNoPk col)]
 
+-- `ALTER TABLE … ADD COLUMN` from a full column descriptor — the entity-driven
+-- counterpart to `addColumnDdl`, keeping the column's type, nullability, default,
+-- uniqueness, foreign key, and check, which the seam tuple cannot carry. A primary key
+-- cannot be added against a table's existing rows this way, so the key flag is dropped,
+-- the same as the tuple path.
+pub fn addColumnSchemaDdl (table: Text) (c: ColumnSchema e) -> Text =
+    Text.join "" ["ALTER TABLE ", quoteIdent table, " ADD COLUMN ", columnDdlNoPk c]
+
 -- `DROP TABLE`.
 pub fn dropTableDdl (table: Text) -> Text =
     Text.concat "DROP TABLE " (quoteIdent table)
@@ -346,6 +354,11 @@ pub fn indexDdl (name: Text) (table: Text) (cols: List Text) (unique: Bool) -> T
 -- default, primary key, uniqueness, foreign key, check — in that order.
 fn columnDdl (c: ColumnSchema e) -> Text =
     Text.join "" [quoteIdent c.column, " ", colTypeSql c, nullSql c, defaultSql c.generation, pkSql c, uniqSql c, fkSql c.foreignKey, checkSql c.check]
+
+-- The same fragment without the inline `PRIMARY KEY`, for `ALTER TABLE … ADD COLUMN`:
+-- a primary key cannot be added against a table's existing rows.
+fn columnDdlNoPk (c: ColumnSchema e) -> Text =
+    Text.join "" [quoteIdent c.column, " ", colTypeSql c, nullSql c, defaultSql c.generation, uniqSql c, fkSql c.foreignKey, checkSql c.check]
 
 fn colTypeSql (c: ColumnSchema e) -> Text =
     match c.generation

@@ -23,7 +23,7 @@ use std::process::Command;
 use ridge_driver::{compile_workspace, CompileOptions, EmitArtefacts};
 
 const SOURCE: &str = r#"
-import std.schema (DbBigInt, DbInt, DbText, DbTimestampTz, Identity, DefaultNow, Cascade, mkColumn, withColumn, schema, generated, primaryKey, unique, indexed, foreignKey, references, onDelete, check, schemaToDdl, schemaIndexDdls, createTableDdl, addColumnDdl, dropTableDdl, dropColumnDdl, indexDdl)
+import std.schema (DbBigInt, DbInt, DbText, DbTimestampTz, Identity, DefaultNow, Cascade, mkColumn, withColumn, schema, generated, primaryKey, unique, indexed, foreignKey, references, onDelete, check, schemaToDdl, schemaIndexDdls, createTableDdl, addColumnDdl, addColumnSchemaDdl, dropTableDdl, dropColumnDdl, indexDdl)
 import std.text as Text
 
 -- The domain records the schemas below describe. Persistence-ignorant — the
@@ -66,6 +66,12 @@ pub fn migrateCreateDdl () -> Text =
     createTableDdl "widgets" [("id", "int", false, true, false), ("name", "text", false, false, false)]
 
 pub fn migrateAddColDdl () -> Text = addColumnDdl "widgets" ("note", "text", true, false, false)
+
+-- The entity-driven ADD COLUMN renderer keeps what the seam tuple cannot: here the
+-- column's `timestamptz` type and its `DEFAULT now()` generation, which the tuple form
+-- (base types, no default) has no way to express.
+pub fn addEntityColDdl () -> Text =
+    addColumnSchemaDdl "posts" (mkColumn "created_at" "created_at" DbTimestampTz false |> generated DefaultNow)
 
 pub fn migrateDropTableDdl () -> Text = dropTableDdl "widgets"
 
@@ -139,8 +145,8 @@ fn schema_ddl_renders_on_beam() {
     let expr = format!(
         "F=fun(N)->io:format(\"~s=~s~n\",[N,{module}:N()])end, \
          lists:foreach(F,['userDdl','postDdl','userIndexes','migrateCreateDdl',\
-         'migrateAddColDdl','migrateDropTableDdl','migrateDropColDdl','migrateIndexDdl',\
-         'migrateUniqueIndexDdl']), halt()."
+         'migrateAddColDdl','addEntityColDdl','migrateDropTableDdl','migrateDropColDdl',\
+         'migrateIndexDdl','migrateUniqueIndexDdl']), halt()."
     );
     let output = Command::new("erl")
         .arg("-noshell")
@@ -187,6 +193,11 @@ fn schema_ddl_renders_on_beam() {
         r#"migrateCreateDdl=CREATE TABLE "widgets" ("id" bigint NOT NULL PRIMARY KEY, "name" text NOT NULL)"#,
     );
     want(r#"migrateAddColDdl=ALTER TABLE "widgets" ADD COLUMN "note" text"#);
+    // The entity-driven ADD COLUMN keeps the descriptor's type and default — `timestamptz`
+    // and `DEFAULT now()` — that the tuple form above cannot carry.
+    want(
+        r#"addEntityColDdl=ALTER TABLE "posts" ADD COLUMN "created_at" timestamptz NOT NULL DEFAULT now()"#,
+    );
     want(r#"migrateDropTableDdl=DROP TABLE "widgets""#);
     want(r#"migrateDropColDdl=ALTER TABLE "widgets" DROP COLUMN "note""#);
     want(r#"migrateIndexDdl=CREATE INDEX "widgets_name_idx" ON "widgets" ("name")"#);

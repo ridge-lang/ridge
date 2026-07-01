@@ -28,7 +28,7 @@ import std.sql (SqlValue, sqlValue)
 import std.query (QueryPlan, planToSql, planScan, MutationPlan, mutationToSql, mutationReturningToSql, planInsert, planUpdate, planDelete)
 import std.map (toList)
 import std.text (startsWith)
-import std.schema (EntitySchema, schemaToDdl, schemaIndexDdls, schemaTable, createTableDdl, addColumnDdl, dropTableDdl, dropColumnDdl, indexDdl)
+import std.schema (EntitySchema, ColumnSchema, schemaToDdl, schemaIndexDdls, schemaTable, createTableDdl, addColumnDdl, addColumnSchemaDdl, dropTableDdl, dropColumnDdl, indexDdl)
 
 -- ── Typed database errors ─────────────────────────────────────────────────────
 --
@@ -124,7 +124,11 @@ pub fn dbErrorTable (e: Error) -> Text =
 -- rather than the tuple, so a `CREATE TABLE` keeps the column's generation, foreign
 -- keys, and checks the tuple cannot carry. Postgres renders it with the descriptor's
 -- DDL renderer and runs the statement and its indexes; the in-memory adapter
--- materialises the table by name, the same as `ddlCreate`. `migrationsApplied`
+-- materialises the table by name, the same as `ddlCreate`. `ddlAddEntityColumn` is its
+-- add-column counterpart: it adds one column from a full descriptor rather than the
+-- tuple, so the added column keeps its type, default, and constraints on Postgres; the
+-- schemaless in-memory adapter takes it as a no-op, since a missing column already reads
+-- as NULL there. `migrationsApplied`
 -- answers the names of the migrations already
 -- applied (creating the tracking table on first use), and `recordMigration` marks
 -- one applied; the runner reads the first to skip applied migrations and writes the
@@ -157,6 +161,7 @@ pub class Adapter a =
     ddlDropColumn (conn: a) (table: Text) (column: Text) -> Result Unit Error
     ddlIndex (conn: a) (name: Text) (table: Text) (cols: List Text) (unique: Bool) -> Result Unit Error
     ddlCreateEntity (conn: a) (schema: EntitySchema Unit) -> Result Unit Error
+    ddlAddEntityColumn (conn: a) (table: Text) (col: ColumnSchema Unit) -> Result Unit Error
     migrationsApplied (conn: a) -> Result (List Text) Error
     recordMigration (conn: a) (name: Text) -> Result Unit Error
     rawQuery (conn: a) (sql: Text) (params: List SqlValue) -> Result (List (Map Text SqlValue)) Error
@@ -328,6 +333,8 @@ instance Adapter MemAdapter =
         _memDdlIndex conn.id name table cols unique
     ddlCreateEntity (conn: MemAdapter) (schema: EntitySchema Unit) -> Result Unit Error =
         _memDdlCreate conn.id (schemaTable schema) []
+    ddlAddEntityColumn (conn: MemAdapter) (table: Text) (col: ColumnSchema Unit) -> Result Unit Error =
+        Ok ()
     migrationsApplied (conn: MemAdapter) -> Result (List Text) Error =
         _memMigrationsApplied conn.id
     recordMigration (conn: MemAdapter) (name: Text) -> Result Unit Error =
@@ -581,6 +588,8 @@ instance Adapter Postgres =
         pgExecUnit conn.id (indexDdl name table cols unique)
     ddlCreateEntity (conn: Postgres) (schema: EntitySchema Unit) -> Result Unit Error =
         pgExecSeq conn.id (schemaToDdl schema :: schemaIndexDdls schema)
+    ddlAddEntityColumn (conn: Postgres) (table: Text) (col: ColumnSchema Unit) -> Result Unit Error =
+        pgExecUnit conn.id (addColumnSchemaDdl table col)
     migrationsApplied (conn: Postgres) -> Result (List Text) Error =
         _pgMigrationsApplied conn.id
     recordMigration (conn: Postgres) (name: Text) -> Result Unit Error =

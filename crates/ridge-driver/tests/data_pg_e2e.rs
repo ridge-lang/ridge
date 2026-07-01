@@ -68,7 +68,7 @@ import std.int as Int
 import std.float as Float
 import std.list (length, contains)
 import std.text as Text
-import std.schema (HasSchema, schemaOf, schema, eraseSchema, EntitySchema)
+import std.schema (HasSchema, schemaOf, schema, eraseSchema, EntitySchema, withColumn, mkColumn, generated, primaryKey, DbBigInt, DbText, Identity)
 
 pub type User = { id: Int, age: Int, name: Text } deriving (Row)
 
@@ -2015,6 +2015,64 @@ pub fn db pgDiffCreated () -> Int =
                                         Err _ -> 0 - 5
                                         Ok _  -> pgCountCogs conn
 
+-- The column-level auto-diff against the live database: the model gains a `note` field,
+-- and `diffSchemas` turns that into an `ALTER TABLE … ADD COLUMN` step that lands on the
+-- real table. Its own entity and table so the migrations never collide with the others.
+pub type RidgeMigBolt = { id: Int, code: Text, note: Text } deriving (Row, Schema)
+
+fn boltWitness () -> Option RidgeMigBolt = None
+
+-- The bolts table before the `note` column existed — id and code only, hand-built so it
+-- stands in as the previous snapshot the diff compares the current model against.
+fn boltV1 () -> EntitySchema Unit =
+    eraseSchema (schema "RidgeMigBolt" "ridge_mig_bolts"
+        |> withColumn (mkColumn "id" "id" DbBigInt false |> generated Identity |> primaryKey)
+        |> withColumn (mkColumn "code" "code" DbText false))
+
+fn boltFull () -> EntitySchema Unit =
+    eraseSchema (schemaOf (boltWitness ()))
+
+-- Create the table at v1 (id, code), then diff v1 -> the full model to add `note`. The
+-- add runs while the table is still empty, so the NOT NULL column lands cleanly.
+fn runBoltsColumnDiff (conn: Postgres) -> Result (List Text) Error =
+    let create  = Migrate.migration "0003_bolts" (Migrate.diffSchemas [] [ boltV1 () ])
+    let addNote = Migrate.migration "0004_bolts_note" (Migrate.diffSchemas [ boltV1 () ] [ boltFull () ])
+    Migrate.run conn [ create, addNote ]
+
+fn pgClearBolts (conn: Postgres) -> Result Int Error =
+    let r = Repo.repo conn "ridge_mig_bolts"
+    Repo.deleteWhere (fn (b: RidgeMigBolt) -> b.id >= 0) r
+
+fn pgAddBolt (conn: Postgres) (bcode: Text) (bnote: Text) -> Result Unit Error =
+    let r = Repo.repo conn "ridge_mig_bolts"
+    Repo.insert (RidgeMigBoltInsert { code = bcode, note = bnote }) r
+
+fn pgCountBolts (conn: Postgres) -> Int =
+    let r = Repo.repo conn "ridge_mig_bolts"
+    match r |> Repo.query |> Repo.count
+        Ok n  -> n
+        Err _ -> 0 - 9
+
+-- The diffed ALTER TABLE lands the `note` column on the real table: after the two
+-- migrations run, a row written through the full entity (code + note) inserts and counts
+-- back -> 2. Clears first so the count is deterministic across runs.
+pub fn db pgDiffAddedColumn () -> Int =
+    match connect (pgConfig ())
+        Err _ -> 0 - 1
+        Ok conn ->
+            match runBoltsColumnDiff conn
+                Err _ -> 0 - 2
+                Ok _  ->
+                    match pgClearBolts conn
+                        Err _ -> 0 - 3
+                        Ok _  ->
+                            match pgAddBolt conn "a" "first"
+                                Err _ -> 0 - 4
+                                Ok _  ->
+                                    match pgAddBolt conn "b" "second"
+                                        Err _ -> 0 - 5
+                                        Ok _  -> pgCountBolts conn
+
 -- Raw-SQL escape hatch against the live database. Each probe seeds the users table
 -- through `setup` (clearing and inserting ada/lin/max), then opens a fresh
 -- connection and runs raw SQL over `ridge_pg_users`: a parameterised SELECT decoded
@@ -2372,6 +2430,7 @@ fn postgres_adapter_reads_a_real_table() {
          io:format(\"pgMigratedUsable=~w~n\",[{module}:pgMigratedUsable()]), \
          io:format(\"pgEntityCreated=~w~n\",[{module}:pgEntityCreated()]), \
          io:format(\"pgDiffCreated=~w~n\",[{module}:pgDiffCreated()]), \
+         io:format(\"pgDiffAddedColumn=~w~n\",[{module}:pgDiffAddedColumn()]), \
          io:format(\"rawAdults=~s~n\",[{module}:rawAdults()]), \
          io:format(\"rawFirstName=~s~n\",[{module}:rawFirstName()]), \
          io:format(\"rawBumpCount=~w~n\",[{module}:rawBumpCount()]), \
@@ -2811,6 +2870,10 @@ fn postgres_adapter_reads_a_real_table() {
         (
             "pgDiffCreated=2",
             "the auto-diff turns a new entity into a create step that lands a real table accepting two inserts",
+        ),
+        (
+            "pgDiffAddedColumn=2",
+            "the column-level auto-diff turns a new field into an ALTER TABLE ADD COLUMN that lands on the real table",
         ),
         (
             "rawAdults=lin,max",

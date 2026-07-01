@@ -1144,6 +1144,9 @@ fn lower_lambda(
         .actor_parent
         .clone_from(&outer_scope.actor_parent);
     lambda_scope.letrec_locals = std::sync::Arc::clone(&outer_scope.letrec_locals);
+    // Inherited so a cross-module zero-arity call inside a lambda body keeps the
+    // callee-arity information the unit-paren shim needs.
+    lambda_scope.external_arity = std::sync::Arc::clone(&outer_scope.external_arity);
     let param_vars: Vec<CErlVar> = params
         .iter()
         .map(|p| CErlVar(name_to_erl_var(&p.name)))
@@ -1327,7 +1330,33 @@ fn lower_static_call(
         // matching the scheme `codegen_one_module` uses; the call arity is the
         // number of arguments.
         SymbolRef::External { name, module } => {
-            let lowered_args = args
+            // Unit-paren shim (cross-module): a zero-arity callee called as
+            // `f ()` carries a single Unit arg in the IR, but it compiles to
+            // arity 0 in its own module — so passing the Unit would emit an
+            // arity-1 call that is `undef` against the arity-0 callee. The
+            // workspace-wide arity table recovers the callee's arity across the
+            // module boundary; when it is zero, drop the `()` punctuation, the
+            // same shim the local-call path applies.
+            let callee_is_zero_arity = scope
+                .external_arity
+                .get(module)
+                .and_then(|names| names.get(name.as_str()))
+                .copied()
+                == Some(0);
+            let effective_args: &[IrExpr] = if callee_is_zero_arity
+                && args.len() == 1
+                && matches!(
+                    &args[0],
+                    IrExpr::Lit {
+                        value: ridge_ir::IrLit::Unit,
+                        ..
+                    }
+                ) {
+                &[]
+            } else {
+                args
+            };
+            let lowered_args = effective_args
                 .iter()
                 .map(|a| lower_expr_in_scope(a, scope))
                 .collect::<Result<Vec<_>, _>>()?;
@@ -3274,6 +3303,86 @@ mod tests {
                 );
             }
             other => panic!("expected IrShapeMalformed, got {other:?}"),
+        }
+    }
+
+    // ── Cross-module call arity (unit-paren shim over External callees) ───────
+
+    #[test]
+    fn call_external_zero_arity_drops_the_unit_paren() {
+        // `f ()` to a zero-arity fn in another module carries a single Unit arg
+        // in the IR, but the callee compiles to arity 0 in its own module — so
+        // the cross-module call must drop the `()` and emit an arity-0 qualified
+        // call, not an arity-1 call that would be `undef` against `f/0`.
+        let callee = ridge_ir::ModuleId(3);
+        let expr = IrExpr::Call {
+            id: node(),
+            callee: Box::new(IrExpr::Symbol {
+                id: node(),
+                sym: SymbolRef::External {
+                    module: callee,
+                    name: "getVal".into(),
+                },
+                span: sp(),
+            }),
+            args: vec![IrExpr::Lit {
+                id: node(),
+                value: IrLit::Unit,
+                span: sp(),
+            }],
+            span: sp(),
+        };
+        let mut scope = LocalScope::new();
+        let mut names = rustc_hash::FxHashMap::default();
+        names.insert("getVal".to_owned(), 0u32);
+        let mut table = rustc_hash::FxHashMap::default();
+        table.insert(callee, names);
+        scope.external_arity = std::sync::Arc::new(table);
+        match lower_expr_in_scope(&expr, &mut scope).expect("lowers") {
+            CErlExpr::Call { fn_name, args, .. } => {
+                assert_eq!(fn_name.0, "getVal");
+                assert!(
+                    args.is_empty(),
+                    "a 0-arity cross-module call must drop the unit paren, got {args:?}"
+                );
+            }
+            other => panic!("expected a qualified Call, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn call_external_unit_param_keeps_the_arg() {
+        // A cross-module callee that genuinely takes a Unit is arity 1 — the
+        // shim must NOT strip the argument.
+        let callee = ridge_ir::ModuleId(3);
+        let expr = IrExpr::Call {
+            id: node(),
+            callee: Box::new(IrExpr::Symbol {
+                id: node(),
+                sym: SymbolRef::External {
+                    module: callee,
+                    name: "sink".into(),
+                },
+                span: sp(),
+            }),
+            args: vec![IrExpr::Lit {
+                id: node(),
+                value: IrLit::Unit,
+                span: sp(),
+            }],
+            span: sp(),
+        };
+        let mut scope = LocalScope::new();
+        let mut names = rustc_hash::FxHashMap::default();
+        names.insert("sink".to_owned(), 1u32);
+        let mut table = rustc_hash::FxHashMap::default();
+        table.insert(callee, names);
+        scope.external_arity = std::sync::Arc::new(table);
+        match lower_expr_in_scope(&expr, &mut scope).expect("lowers") {
+            CErlExpr::Call { args, .. } => {
+                assert_eq!(args.len(), 1, "an arity-1 external call keeps its Unit arg");
+            }
+            other => panic!("expected a qualified Call, got {other:?}"),
         }
     }
 

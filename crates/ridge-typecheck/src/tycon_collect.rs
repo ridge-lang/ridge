@@ -58,11 +58,16 @@ pub struct TyConCollectResult {
 ///    placeholder so that forward references in field types resolve correctly.
 /// 2. Second pass: build the real schema for each `TyCon` and replace the
 ///    placeholder.
+#[expect(
+    clippy::implicit_hasher,
+    reason = "FxHashMap is the canonical hasher for this crate; matches synth_table_mirrors and the rest of the typecheck API"
+)]
 pub fn collect_user_tycons(
     module: &Module,
     module_id: ridge_resolve::ModuleId,
     arena: &mut TyConArena,
     b: &BuiltinTyCons,
+    imported_tycons: &FxHashMap<String, TyConId>,
     ctx: &mut InferCtx,
 ) -> TyConCollectResult {
     // ── Pass 1: intern placeholders for every user type name ─────────────────
@@ -110,6 +115,26 @@ pub fn collect_user_tycons(
         }
     }
 
+    // Resolution view for pass 2: the local names plus this module's imported
+    // type names. A union variant or record field that references an imported
+    // type — `DefaultLit SqlValue`, say — must resolve to the producer's
+    // `TyConId` while constructor schemes are built here, not fall through to a
+    // fresh variable that only later inference can pin. A constructor that is
+    // declared but never applied in its own module (so no call site unifies that
+    // variable) would otherwise generalise with an unsolved variable. A local
+    // declaration of the same name still wins. The returned `user_tycon_names`
+    // stays local-only; imports are merged into `ctx.user_tycon_names` by the
+    // caller after this pass.
+    let resolve_names = if imported_tycons.is_empty() {
+        name_to_id.clone()
+    } else {
+        let mut merged = name_to_id.clone();
+        for (name, &tid) in imported_tycons {
+            merged.entry(name.clone()).or_insert(tid);
+        }
+        merged
+    };
+
     // ── Pass 2: build real schemas and write them back via `replace_kind`. ───
     //
     // Every name is already in `name_to_id`, so forward references resolve to
@@ -120,13 +145,13 @@ pub fn collect_user_tycons(
         match item {
             Item::Type(td) => {
                 let id = name_to_id[&td.name.text];
-                let kind = build_type_kind_fresh(td, b, ctx, &name_to_id, arena);
+                let kind = build_type_kind_fresh(td, b, ctx, &resolve_names, arena);
                 arena.replace_kind(id, kind);
-                bind_constructor_schemes(td, id, b, ctx, &name_to_id, arena);
+                bind_constructor_schemes(td, id, b, ctx, &resolve_names, arena);
             }
             Item::Actor(ad) => {
                 let id = name_to_id[&ad.name.text];
-                let kind = build_actor_kind_fresh(ad, b, ctx, &name_to_id, arena);
+                let kind = build_actor_kind_fresh(ad, b, ctx, &resolve_names, arena);
                 arena.replace_kind(id, kind);
             }
             _ => {}
@@ -268,43 +293,108 @@ pub fn synth_table_mirrors(
     }
 }
 
-// ── Schema codegen: `deriving (Schema)` descriptors ───────────────────────────
+// ── Insert companions: `deriving (Schema)` insert shapes ───────────────────────
 
-/// Register the scheme for every `deriving (Schema)` descriptor value in
-/// `module`.
+/// Synthesize the insert companion for every `deriving (Schema)` record whose
+/// schema marks database-generated columns.
 ///
-/// For an entity `User`, this binds `userSchema : Schema` so user code
-/// referencing the descriptor type-checks. Unlike the column mirror, the
-/// descriptor type is uniform across entities (the `Schema` builtin), so no
-/// per-entity type is interned — only the value scheme is registered. Name
-/// resolution has already reserved the `userSchema` name (see
-/// [`ridge_ast::column_mirror`]); lowering emits the value.
+/// Records the per-entity targets the `InsertShape e` projection reduces against.
+/// For an entity `User { id: Int, email: Text }` whose `id` is a conventional
+/// serial key, this interns a `UserInsert { email: Text }` record — the entity
+/// minus its generated columns — so a typed `insert` accepts a value that simply
+/// has no field for the database-filled `id`, and writing one by hand is a type
+/// error. The entity then maps to that companion in [`InferCtx::insert_shapes`]
+/// (and the companion back to the entity in [`InferCtx::insert_shape_entities`]),
+/// which is what the `InsertShape` reduction reads. An entity with no generated
+/// column maps to itself, so the projection is the identity and an insert of that
+/// entity is unchanged.
 ///
-/// Idempotent: binding the same scheme on an incremental re-check overwrites
-/// rather than duplicating.
-pub fn synth_schema_descriptors(module: &Module, b: &BuiltinTyCons, ctx: &mut InferCtx) {
+/// Name resolution has already reserved the companion's type and auto-constructor
+/// names (see [`ridge_ast::column_mirror`] and the resolver's `deriving (Schema)`
+/// branch); this fills in the record schema. The companion's `Row` instance — the
+/// dual encode the insert body runs — is synthesized separately, alongside the
+/// verbs that consume it.
+///
+/// Idempotent: on an incremental re-check the companion already lives in the
+/// rebuilt arena, so its schema is replaced in place rather than duplicated.
+#[expect(
+    clippy::implicit_hasher,
+    reason = "FxHashMap is the canonical hasher for this crate; matches synth_table_mirrors and the rest of the typecheck API"
+)]
+pub fn synth_insert_shapes(
+    module: &Module,
+    module_id: ridge_resolve::ModuleId,
+    arena: &mut TyConArena,
+    global_tycon_names: &FxHashMap<String, TyConId>,
+    ctx: &mut InferCtx,
+) {
     use ridge_ast::column_mirror as cm;
-
-    let schema_scheme = Scheme {
-        vars: vec![],
-        cap_vars: vec![],
-        row_vars: vec![],
-        ty: Type::Con(b.schema, vec![]),
-        constraints: vec![],
-    };
 
     for item in &module.items {
         let Item::Type(td) = item else { continue };
         if !cm::has_schema_derive(&td.deriving) {
             continue;
         }
-        let TypeBody::Record(_) = &td.body else {
+        let TypeBody::Record(rec) = &td.body else {
             continue;
         };
-        let value = cm::schema_value_name(td.name.text.as_str());
-        ctx.name_schemes_accum
-            .insert(value.clone(), schema_scheme.clone());
-        ctx.env.bind(value, schema_scheme.clone());
+        let entity = td.name.text.as_str();
+        let Some(&entity_id) = ctx.user_tycon_names.get(entity) else {
+            continue;
+        };
+
+        // The generated columns the convention drops from the companion. Decided
+        // from the AST field (name + declared type), the single source of truth
+        // the schema derive also reads.
+        let generated: Vec<&str> = rec
+            .fields
+            .iter()
+            .filter(|f| cm::is_generated_field(&f.name.text, &f.ty))
+            .map(|f| f.name.text.as_str())
+            .collect();
+
+        if generated.is_empty() {
+            // No generated column → no companion. The reduction treats any entity
+            // without a table entry as its own insert shape, so nothing to record.
+            continue;
+        }
+
+        // Companion fields = the entity's record fields minus the generated ones,
+        // carried with the RESOLVED field types from the entity's arena schema
+        // (built in pass 2 of `collect_user_tycons`).
+        let companion_fields: Vec<RecordField> = {
+            let TyConKind::Record(schema) = &arena.get(entity_id).kind else {
+                continue;
+            };
+            schema
+                .record_fields()
+                .iter()
+                .filter(|f| !generated.iter().any(|g| *g == f.name))
+                .cloned()
+                .collect()
+        };
+
+        let companion_name = cm::insert_companion_type_name(entity);
+        let companion_kind = TyConKind::Record(RecordSchema::new(vec![], companion_fields));
+        let companion_id = if let Some(&existing) = global_tycon_names.get(&companion_name) {
+            // Incremental re-check: the companion is already in the rebuilt arena.
+            arena.replace_kind(existing, companion_kind);
+            existing
+        } else {
+            arena.intern(TyConDecl {
+                id: TyConId(0), // overwritten by intern
+                name: companion_name.clone(),
+                arity: 0,
+                kind: companion_kind,
+                def_span: Some(td.span),
+                def_module_raw: Some(module_id.0),
+                opaque: false,
+                is_anon: false,
+            })
+        };
+        ctx.user_tycon_names.insert(companion_name, companion_id);
+        ctx.insert_shapes.insert(entity_id, companion_id);
+        ctx.insert_shape_entities.insert(companion_id, entity_id);
     }
 }
 

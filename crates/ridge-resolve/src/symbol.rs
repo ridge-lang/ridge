@@ -485,19 +485,61 @@ impl<'ast> Visit<'ast> for TopLevelCollector {
                             );
                         }
 
-                        // Schema codegen: `deriving (Schema)` generates a single
-                        // user-visible descriptor value `<entity>Schema`. Register
-                        // its name here; its type is fixed (the `Schema` builtin)
-                        // and the value is emitted in lowering. See
-                        // `ridge_ast::column_mirror`.
-                        if ridge_ast::column_mirror::has_schema_derive(&d.deriving) {
-                            self.push(
-                                ridge_ast::column_mirror::schema_value_name(d.name.text.as_str()),
-                                SymbolKind::Const,
+                        // `deriving (Schema)` derives a `HasSchema` instance (like
+                        // `Row`), reached by type through `schemaOf`, so it reserves
+                        // no descriptor const. It DOES synthesize an insert companion
+                        // — the entity minus its database-generated columns — for an
+                        // entity that has any such column, so register that record's
+                        // name and auto-constructor here; the type and its `Row`
+                        // instance are synthesized later (type checking, then
+                        // lowering). The companion inherits the entity's visibility.
+                        // An entity with no generated column gets no companion (its
+                        // insert shape is the entity itself), so reserve nothing.
+                        if ridge_ast::column_mirror::has_schema_derive(&d.deriving)
+                            && rec.fields.iter().any(|f| {
+                                ridge_ast::column_mirror::is_generated_field(&f.name.text, &f.ty)
+                            })
+                        {
+                            let companion = ridge_ast::column_mirror::insert_companion_type_name(
+                                d.name.text.as_str(),
+                            );
+                            let companion_arity = rec
+                                .fields
+                                .iter()
+                                .filter(|f| {
+                                    !ridge_ast::column_mirror::is_generated_field(
+                                        &f.name.text,
+                                        &f.ty,
+                                    )
+                                })
+                                .count()
+                                .try_into()
+                                .unwrap_or(u32::MAX);
+                            if let Some(companion_type_id) = self.push(
+                                companion.clone(),
+                                SymbolKind::Type {
+                                    arity: 0,
+                                    opaque: false,
+                                },
                                 vis,
                                 d.span,
                                 true,
-                            );
+                            ) {
+                                self.push(
+                                    companion,
+                                    SymbolKind::Constructor {
+                                        owner_type: companion_type_id,
+                                        variant: 0,
+                                        arity: companion_arity,
+                                        is_record: true,
+                                        owner_module,
+                                        opaque: false,
+                                    },
+                                    vis,
+                                    d.span,
+                                    false, // NOT in index — the type's name is already there
+                                );
+                            }
                         }
                     }
                     ridge_ast::TypeBody::Union(union_body) => {
@@ -1136,10 +1178,10 @@ mod tests {
         assert!(table.lookup("userTable").is_none());
     }
 
-    // `deriving (Schema)` on a record registers the descriptor value name so
-    // user code can reference it; the value is synthesized downstream.
+    // `deriving (Schema)` registers no user-visible value name: it derives a
+    // `HasSchema` instance (like `Row`), reached by type, not a named descriptor.
     #[test]
-    fn record_deriving_schema_registers_descriptor_name() {
+    fn record_deriving_schema_registers_no_descriptor_name() {
         let m = module_with(vec![record_type_item_deriving(
             "User",
             Visibility::Pub,
@@ -1148,32 +1190,9 @@ mod tests {
         )]);
         let (table, errors) = collect_symbols(ModuleId(0), &m);
         assert!(errors.is_empty(), "errors: {errors:?}");
-        assert!(
-            matches!(
-                table.lookup("userSchema").map(|e| &e.kind),
-                Some(SymbolKind::Const)
-            ),
-            "userSchema should be a referenceable value"
-        );
-        assert_eq!(
-            table.lookup("userSchema").map(|e| e.visibility),
-            Some(ResolvedVisibility::Pub)
-        );
-        // Schema alone does not register the column-mirror names.
-        assert!(table.lookup("userCols").is_none());
-    }
-
-    // No `deriving (Schema)` → no descriptor name.
-    #[test]
-    fn record_without_schema_derive_has_no_descriptor() {
-        let m = module_with(vec![record_type_item_deriving(
-            "User",
-            Visibility::Pub,
-            vec!["id"],
-            vec!["Table"],
-        )]);
-        let (table, _errors) = collect_symbols(ModuleId(0), &m);
+        // No descriptor value, and Schema alone registers no column-mirror names.
         assert!(table.lookup("userSchema").is_none());
+        assert!(table.lookup("userCols").is_none());
     }
 
     // Test 8: generic record type `type List a = { items: List a, len: Int }` → arity = 1

@@ -806,7 +806,7 @@ pub fn prelude_resolutions() -> Vec<ImportResolution> {
     let opt_id = StdlibModuleId(7); // std.option
     let res_id = StdlibModuleId(8); // std.result
     let json_id = StdlibModuleId(17); // std.json
-    let query_id = StdlibModuleId(21); // std.query
+    let query_id = StdlibModuleId(22); // std.query
 
     let opt_binding = |name: &str| EffectiveBinding {
         local_name: name.to_string(),
@@ -987,6 +987,10 @@ pub fn prelude_resolutions() -> Vec<ImportResolution> {
                 query_binding("RightJoinResult"),
                 // `FullJoinResult/2` — the FULL outer-join verb's result projection.
                 query_binding("FullJoinResult"),
+                // `InsertShape/1` — the typed insert verbs' input-shape projection,
+                // in scope for the reconciled `insert`/`insertMany` schemes that name
+                // the entity minus its database-generated columns.
+                query_binding("InsertShape"),
             ],
             span: synth_span,
         },
@@ -2030,11 +2034,11 @@ mod tests {
     }
 
     // Prelude test 5: 1-module workspace with NO user imports → 5 prelude IRs,
-    // 64 total bindings (6 from option/result prelude + 8 from json prelude +
-    // 42 from quotation prelude + 8 module aliases).
+    // 65 total bindings (6 from option/result prelude + 8 from json prelude +
+    // 43 from quotation prelude + 8 module aliases).
     #[test]
     fn prelude_injected_when_no_user_imports() {
-        // An empty module has no imports → all 64 prelude bindings should appear.
+        // An empty module has no imports → all 65 prelude bindings should appear.
         let (_td, result) = resolve_single("");
         let module_imports = result.imports.first().expect("module 0");
         // Exactly 5 prelude IRs (option + result + json + quotation constructors,
@@ -2050,8 +2054,8 @@ mod tests {
             .map(|ir| ir.effective_bindings.len())
             .sum();
         assert_eq!(
-            total_bindings, 64,
-            "expected 64 total prelude bindings (6 option/result + 8 json + 42 quotation + 8 module aliases); got {total_bindings}"
+            total_bindings, 65,
+            "expected 65 total prelude bindings (6 option/result + 8 json + 43 quotation + 8 module aliases); got {total_bindings}"
         );
     }
 

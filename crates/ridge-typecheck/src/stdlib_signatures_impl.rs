@@ -57,7 +57,9 @@ const STD_CRYPTO: StdlibModuleId = StdlibModuleId(19);
 // std.sql is module 20; its codec schemes (SqlType/SqlValue) are seeded
 // separately, but the plain `sql`/`sqlValue` helpers are hand-curated below.
 const STD_SQL: StdlibModuleId = StdlibModuleId(20);
-const STD_QUERY: StdlibModuleId = StdlibModuleId(21);
+// std.schema (id 21) is fully reconciled — its schemes come from
+// `reconciled_ctor_scheme` / `reconciled_fn_scheme`, so it has no constant here.
+const STD_QUERY: StdlibModuleId = StdlibModuleId(22);
 
 // ── Type-building helpers ─────────────────────────────────────────────────────
 //
@@ -1419,6 +1421,23 @@ pub fn stdlib_signature(module: StdlibModuleId, name: &str, b: &BuiltinTyCons) -
             vec![ty_float(b)],
             Type::Con(b.sql_value, vec![]),
         ))),
+        // The SQL NULL bind value — a nullary factory completing the set.
+        (STD_SQL, "sqlNull") => Some(mono(ty_fn_pure(
+            vec![],
+            Type::Con(b.sql_value, vec![]),
+        ))),
+        // Render a SqlValue as an inline SQL literal (a DDL DEFAULT / CHECK position
+        // a bind parameter cannot fill).
+        (STD_SQL, "sqlLiteral") => Some(mono(ty_fn_pure(
+            vec![Type::Con(b.sql_value, vec![])],
+            ty_text(b),
+        ))),
+        // Render a SqlValue back to its Ridge source expression (the source dual of
+        // `sqlLiteral`) — the migration snapshot renderer's `DefaultLit` path.
+        (STD_SQL, "sqlValueSource") => Some(mono(ty_fn_pure(
+            vec![Type::Con(b.sql_value, vec![])],
+            ty_text(b),
+        ))),
         (STD_NET_HTTP, "html") => Some(mono(ty_fn_pure(
             vec![ty_text(b)],
             Type::Con(b.html, vec![]),
@@ -1657,6 +1676,9 @@ mod tests {
                             | "ddlAddColumn"
                             | "ddlDropColumn"
                             | "ddlIndex"
+                            | "ddlCreateEntity"
+                            | "ddlAddEntityColumn"
+                            | "ddlAlterColumn"
                             | "migrationsApplied"
                             | "recordMigration"
                             | "rawQuery"
@@ -1718,6 +1740,13 @@ mod tests {
                 // (and `Row e` for the decoding ones), so they are seeded via
                 // `reconciled_fn_scheme`, not this hand-curated table.
                 if module.name == "std.raw" {
+                    continue;
+                }
+                // std.schema: its descriptor types, their constructors, and the
+                // builder/accessor functions are seeded from the reconciled arena
+                // block (`reconciled_ctor_scheme` / `reconciled_fn_scheme`), not this
+                // hand-curated table.
+                if module.name == "std.schema" {
                     continue;
                 }
                 let result = stdlib_signature(module.id, name, &b);

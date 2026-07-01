@@ -159,6 +159,10 @@ pub struct WorkspaceIndex {
     /// All `TyCon` declarations (builtins + user). The per-module `node_types`
     /// index into this list when rendering hovered types.
     tycons: Vec<TyConDecl>,
+    /// Insert-shape companion → entity map (`<Entity>Insert`'s `TyConId` → the
+    /// entity's). Lets hover card a companion as the entity's insert shape rather
+    /// than collapse onto the entity declaration they share a source span with.
+    insert_companions: HashMap<ridge_types::TyConId, ridge_types::TyConId>,
     /// Per-module query data, indexed by `ModuleId.0`.
     modules: Vec<ModuleView>,
     /// Document URI → [`ModuleId`]. Keyed the same way diagnostics are published
@@ -335,6 +339,11 @@ impl WorkspaceIndex {
         Self {
             generation,
             tycons: typed.tycons.clone(),
+            insert_companions: typed
+                .insert_companions
+                .iter()
+                .map(|(&companion, &entity)| (companion, entity))
+                .collect(),
             modules,
             uri_to_module,
             uri_key_to_module,
@@ -419,6 +428,13 @@ impl WorkspaceIndex {
             return None;
         }
         let type_str = render_type_with(ty, &self.tycons);
+        // The head tycon of the hovered value, used to recognise an insert-shape
+        // companion (which shares its entity's source span, so the decl-based tier
+        // would otherwise card the entity).
+        let head_tycon = match ty {
+            ridge_types::Type::Con(id, _) => Some(*id),
+            _ => None,
+        };
 
         // The binding sits on the narrowest name node that carries one: for
         // `Mod.item` (e.g. a qualified stdlib verb `Repo.filter`) that is the whole
@@ -439,7 +455,7 @@ impl WorkspaceIndex {
         }) {
             let name = self.text_slice(mi, span);
             return Some((
-                self.hover_markdown(mi, offset, name, Some(binding), &type_str),
+                self.hover_markdown(mi, offset, name, Some(binding), &type_str, head_tycon),
                 span,
             ));
         }
@@ -452,7 +468,7 @@ impl WorkspaceIndex {
         {
             let name = self.text_slice(mi, id_span);
             Some((
-                self.hover_markdown(mi, offset, name, None, &type_str),
+                self.hover_markdown(mi, offset, name, None, &type_str, head_tycon),
                 id_span,
             ))
         } else {
@@ -483,6 +499,7 @@ impl WorkspaceIndex {
         name: &str,
         binding: Option<&Binding>,
         inferred: &str,
+        head_tycon: Option<ridge_types::TyConId>,
     ) -> String {
         // Tier 1 — a record field's name node carries no binding; resolve it
         // through the base expression's type to the owning record.
@@ -493,6 +510,14 @@ impl WorkspaceIndex {
                     .map(|owner| format!("field of `{owner}`"));
                 return render_hover_card(&format!("{field} : {inferred}"), kind, None);
             }
+        }
+
+        // Tier 1.5 — an insert-shape companion value: card it as the entity's
+        // insert shape, listing its insertable fields and the generated columns it
+        // drops, rather than letting tier 2 collapse onto the entity declaration it
+        // shares a source span with (which would show the very columns it forbids).
+        if let Some(card) = self.insert_companion_card(head_tycon) {
+            return card;
         }
 
         // Tier 2 — a top-level fn/const/type/actor name: show its written header,
@@ -560,6 +585,94 @@ impl WorkspaceIndex {
             .iter()
             .find(|d| d.id.0 == raw && !d.is_anon)
             .map(|d| d.name.clone())
+    }
+
+    /// When `head_tycon` is an insert-shape companion, the hover card presenting
+    /// it as the entity's insert shape: a fenced `Companion { field: T, … }`
+    /// signature over its insertable fields, an "insert shape of `Entity`" role,
+    /// and a note naming the database-generated columns it drops. `None` for any
+    /// non-companion type, so the caller falls through to the ordinary tiers.
+    fn insert_companion_card(&self, head_tycon: Option<ridge_types::TyConId>) -> Option<String> {
+        let companion_id = head_tycon?;
+        let entity_id = *self.insert_companions.get(&companion_id)?;
+        let companion = self.tycon_display_name(companion_id.0)?;
+        let entity = self.tycon_display_name(entity_id.0)?;
+
+        let fields = self.record_fields_rendered(companion_id);
+        let signature = if fields.is_empty() {
+            companion.clone()
+        } else {
+            format!("{companion} {{ {} }}", fields.join(", "))
+        };
+
+        let omitted = self.companion_omitted_columns(entity_id, companion_id);
+        let doc = (!omitted.is_empty()).then(|| {
+            let cols = omitted
+                .iter()
+                .map(|c| format!("`{c}`"))
+                .collect::<Vec<_>>()
+                .join(", ");
+            let (plural, them) = if omitted.len() == 1 {
+                ("", "it")
+            } else {
+                ("s", "them")
+            };
+            format!(
+                "The insert shape of `{entity}` — it drops the database-generated column{plural} {cols}, so build a `{companion}` and leave {them} to the database."
+            )
+        });
+
+        Some(render_hover_card(
+            &signature,
+            Some(format!("insert shape of `{entity}`")),
+            doc,
+        ))
+    }
+
+    /// `name: Type` for each field of a record tycon, in declaration order. Empty
+    /// for a missing or non-record id.
+    fn record_fields_rendered(&self, id: ridge_types::TyConId) -> Vec<String> {
+        self.tycons
+            .iter()
+            .find(|d| d.id == id)
+            .map(|d| match &d.kind {
+                TyConKind::Record(schema) => schema
+                    .record_fields()
+                    .iter()
+                    .map(|f| format!("{}: {}", f.name, render_type_with(&f.ty, &self.tycons)))
+                    .collect(),
+                _ => Vec::new(),
+            })
+            .unwrap_or_default()
+    }
+
+    /// The entity field names absent from its insert companion — the
+    /// database-generated columns the companion drops, in the entity's order.
+    fn companion_omitted_columns(
+        &self,
+        entity_id: ridge_types::TyConId,
+        companion_id: ridge_types::TyConId,
+    ) -> Vec<String> {
+        let field_names = |id: ridge_types::TyConId| -> Vec<String> {
+            self.tycons
+                .iter()
+                .find(|d| d.id == id)
+                .map(|d| match &d.kind {
+                    TyConKind::Record(schema) => schema
+                        .record_fields()
+                        .iter()
+                        .map(|f| f.name.clone())
+                        .collect(),
+                    _ => Vec::new(),
+                })
+                .unwrap_or_default()
+        };
+        let kept: std::collections::HashSet<String> =
+            field_names(companion_id).into_iter().collect();
+        field_names(entity_id)
+            .into_iter()
+            .filter(|n| !kept.contains(n))
+            .collect()
     }
 
     /// The written header, role label, and doc comment of the workspace

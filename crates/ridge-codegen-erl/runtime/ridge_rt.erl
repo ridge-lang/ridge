@@ -13,6 +13,7 @@
     time_diff_ms/2, time_diff/2,
     time_from_iso/1, time_since_ms/1, time_iso/1,
     int_parse/0, int_parse/1, float_parse/1, float_to_text/1, bool_to_text/1,
+    sql_literal/1, sql_value_source/1,
     text_split_all/2, text_replace_all/3, text_join/2, text_slice/3,
     text_like/2,
     list_fold/3, list_sort_by/2,
@@ -189,6 +190,38 @@ float_parse(B) ->
     end.
 
 float_to_text(F) -> iolist_to_binary(io_lib:format("~p", [F])).
+
+%% sql_literal/1 — render a SqlValue as an inline SQL literal for the DDL positions a
+%% bind parameter cannot fill (a column DEFAULT, a CHECK literal). A text value is
+%% single-quoted with embedded quotes doubled; the others spell their value bare.
+sql_literal({'SqlInt', N})      -> integer_to_binary(N);
+sql_literal({'SqlText', S})     -> <<"'", (binary:replace(S, <<"'">>, <<"''">>, [global]))/binary, "'">>;
+sql_literal({'SqlBool', true})  -> <<"TRUE">>;
+sql_literal({'SqlBool', false}) -> <<"FALSE">>;
+sql_literal({'SqlFloat', F})    -> float_to_text(F);
+sql_literal('SqlNull')          -> <<"NULL">>.
+
+%% sql_value_source/1 — render a SqlValue as the Ridge *source* expression that
+%% rebuilds it (the source dual of sql_literal). Each renders the matching factory
+%% call, parenthesised for an argument position. A text value is written as a Ridge
+%% string literal: wrapped in quotes with backslash then quote escaped, the same
+%% escape the schema renderer's `sourceString` runs, so a first render and a
+%% re-render agree byte for byte.
+sql_value_source({'SqlInt', N})      -> <<"(sqlInt ", (integer_to_binary(N))/binary, ")">>;
+sql_value_source({'SqlText', S})     -> <<"(sqlText ", (source_text_literal(S))/binary, ")">>;
+sql_value_source({'SqlBool', true})  -> <<"(sqlBool true)">>;
+sql_value_source({'SqlBool', false}) -> <<"(sqlBool false)">>;
+sql_value_source({'SqlFloat', F})    -> <<"(sqlFloat ", (float_to_text(F))/binary, ")">>;
+sql_value_source('SqlNull')          -> <<"(sqlNull ())">>.
+
+%% source_text_literal/1 — a Text as a Ridge string literal: backslash doubled
+%% first, then embedded quotes escaped, then wrapped in quotes. Matches
+%% schema.ridge's `sourceString` exactly.
+source_text_literal(S) ->
+    Escaped = binary:replace(
+        binary:replace(S, <<"\\">>, <<"\\\\">>, [global]),
+        <<"\"">>, <<"\\\"">>, [global]),
+    <<"\"", Escaped/binary, "\"">>.
 
 %% text_split_all/2 — binary:split with [global] option (Sep, Subject order matches Ridge FFI).
 %%
@@ -1242,10 +1275,11 @@ mem_apply_mutation(State, Id, Plan) ->
 %% count is what mem_apply_mutation answers and its rows what the RETURNING path projects.
 %% The predicate is the same QExpr a read walks (mem_pred), so a correlated EXISTS in a
 %% mutation predicate is evaluated identically to one in a query.
-mem_mutation_affected(State, Id, {'MutInsert', Table, Rows}) ->
+mem_mutation_affected(State, Id, {'MutInsert', Table, Rows, IdentityCols}) ->
     Key = {Id, Table},
     Existing = maps:get(Key, State, []),
-    {State#{Key => Existing ++ Rows}, Rows};
+    Filled = mem_fill_identity(Existing, Rows, IdentityCols),
+    {State#{Key => Existing ++ Filled}, Filled};
 mem_mutation_affected(State, Id, {'MutUpsert', Table, Rows, ConflictCols, UpdateCols}) ->
     Key = {Id, Table},
     Existing = maps:get(Key, State, []),
@@ -1264,6 +1298,42 @@ mem_mutation_affected(State, Id, {'MutDelete', Table, Tree}) ->
     Rows = maps:get(Key, State, []),
     {Removed, Kept} = lists:partition(fun(R) -> mem_pred(State, Id, Tree, R) end, Rows),
     {State#{Key => Kept}, Removed}.
+
+%% Fill the database-generated identity columns an insert omitted. For each identity
+%% column the store assigns the next integer — one past the highest value already stored in
+%% that column — threading the counter across the batch so a bulk insert gets a contiguous
+%% run. A row that already carries the column keeps its own value; a column the store has
+%% never seen starts at 1. With no identity columns the rows pass through untouched, which
+%% is the raw-insert path that carries every column itself.
+mem_fill_identity(_Existing, Rows, []) -> Rows;
+mem_fill_identity(Existing, Rows, IdentityCols) ->
+    Start = maps:from_list([{C, mem_next_id(Existing, C)} || C <- IdentityCols]),
+    {Filled, _} = lists:mapfoldl(
+        fun(Row, Counters) -> mem_fill_row_identity(Row, IdentityCols, Counters) end,
+        Start, Rows),
+    Filled.
+
+%% Fill one row's omitted identity columns from the per-column counters, advancing each
+%% counter it consumes. A column already present in the row is left as the caller set it.
+mem_fill_row_identity(Row, IdentityCols, Counters) ->
+    lists:foldl(
+        fun(C, {AccRow, AccCounters}) ->
+            case maps:is_key(C, AccRow) of
+                true  -> {AccRow, AccCounters};
+                false ->
+                    N = maps:get(C, AccCounters),
+                    {AccRow#{C => {'SqlInt', N}}, AccCounters#{C => N + 1}}
+            end
+        end, {Row, Counters}, IdentityCols).
+
+%% One past the highest integer already stored in a column — the next identity value. A
+%% column with no integer cells yet (an empty table) starts at 1.
+mem_next_id(Rows, Col) ->
+    Vals = [N || R <- Rows, {'SqlInt', N} <- [maps:get(Col, R, undefined)]],
+    case Vals of
+        [] -> 1;
+        _  -> lists:max(Vals) + 1
+    end.
 
 %% Apply one upsert row against the rows accumulated so far, threading the rows it affected
 %% (newest first; the caller reverses). With no existing row conflicting on every conflict

@@ -140,6 +140,24 @@ pub const RIGHTJOINRESULT_TYCON_ID: u32 = LEFTJOINRESULT_TYCON_ID + 1;
 /// syntax.
 pub const FULLJOINRESULT_TYCON_ID: u32 = RIGHTJOINRESULT_TYCON_ID + 1;
 
+/// `TyConId` of `InsertShape/1` — the insert-input shape extractor.
+///
+/// `InsertShape e` reduces to the record a typed insert accepts for entity `e`:
+/// the entity minus its database-generated columns. For an entity whose schema
+/// marks generated columns (a serial/identity `id`, a `DEFAULT` column) it
+/// reduces to a synthesized companion record `<Entity>Insert` carrying only the
+/// caller-supplied fields, so writing a generated column by hand is a
+/// compile-time type error; for an entity with none it reduces to the entity
+/// itself, so an insert of such an entity is unchanged (backward-compatible).
+/// Unlike the receiver-driven `Rows`/`JoinResult` projections, this one is
+/// **invertible**: a stuck `InsertShape ?e` unified against a concrete companion
+/// recovers and binds `?e` to that companion's entity, so the entity flows from
+/// the repository argument or the shaped value in either order. Reserved
+/// immediately after `FullJoinResult/2`; the reduction reads the per-entity
+/// shape table from the context and lives in unification and `deep_resolve`.
+/// Internal — never written in user surface syntax (the stdlib names it).
+pub const INSERTSHAPE_TYCON_ID: u32 = FULLJOINRESULT_TYCON_ID + 1;
+
 /// The arena/dictionary name of the synthetic `Fn/arity` constructor.
 ///
 /// Returns `"Fn0"`, `"Fn1"`, … . This name is the bridge that keeps the
@@ -308,6 +326,12 @@ pub struct BuiltinTyCons {
     /// query, the nested `FullJoined` from a composite). Internal; reads the
     /// reconciled receiver ids from the context. See [`FULLJOINRESULT_TYCON_ID`].
     pub full_joinresult: TyConId,
+    /// `InsertShape/1` — the insert-input shape extractor. `InsertShape e`
+    /// reduces to the record a typed insert accepts for `e` — the entity minus
+    /// its database-generated columns (a synthesized `<Entity>Insert` companion,
+    /// or `e` itself when none). Internal; the reduction reads the per-entity
+    /// shape table from the context and is invertible. See [`INSERTSHAPE_TYCON_ID`].
+    pub insert_shape: TyConId,
 }
 
 impl BuiltinTyCons {
@@ -357,6 +381,7 @@ impl BuiltinTyCons {
             left_joinresult: SENTINEL,
             right_joinresult: SENTINEL,
             full_joinresult: SENTINEL,
+            insert_shape: SENTINEL,
         }
     }
 
@@ -1381,6 +1406,22 @@ impl BuiltinTyCons {
             is_anon: false,
         });
 
+        // InsertShape/1 — the insert-input shape extractor, interned right after
+        // FullJoinResult/2 (INSERTSHAPE_TYCON_ID = 50). Applied as
+        // `Type::Con(insert_shape, [e])`; the reduction `InsertShape e -> <Entity>Insert`
+        // (or `-> e` when the entity has no generated columns) lives in the unifier
+        // and `deep_resolve`, keyed on the per-entity shape table, and is invertible.
+        let insert_shape = arena.intern(TyConDecl {
+            id: TyConId(0),
+            name: "InsertShape".to_string(),
+            arity: 1,
+            kind: TyConKind::Builtin,
+            def_span: None,
+            def_module_raw: None,
+            opaque: false,
+            is_anon: false,
+        });
+
         // Verify assignment order matches spec §4.1 indices 0..16.
         debug_assert_eq!(int.0, 0);
         debug_assert_eq!(float.0, 1);
@@ -1434,6 +1475,9 @@ impl BuiltinTyCons {
         // FullJoinResult/2 sits right after it (FULLJOINRESULT_TYCON_ID = 49).
         debug_assert_eq!(full_joinresult.0, FULLJOINRESULT_TYCON_ID);
         debug_assert_eq!(full_joinresult.0, 49);
+        // InsertShape/1 sits right after FullJoinResult/2 (INSERTSHAPE_TYCON_ID = 50).
+        debug_assert_eq!(insert_shape.0, INSERTSHAPE_TYCON_ID);
+        debug_assert_eq!(insert_shape.0, 50);
 
         // Suppress the "unused" lint — CapabilitySet is imported for future use
         // in T4 (actor schemas carry CapabilitySet).
@@ -1475,6 +1519,7 @@ impl BuiltinTyCons {
             left_joinresult,
             right_joinresult,
             full_joinresult,
+            insert_shape,
         }
     }
 }
@@ -1554,16 +1599,17 @@ mod tests {
     }
 
     #[test]
-    fn arena_len_is_45() {
+    fn arena_len_is_51() {
         // 15 original builtins + Ordering + JsonValue + the std.net.http taint
         // wrappers Sql / Html / SecureCookie + std.sql's SqlValue + the
         // column-codegen builtins Column / Table + the schema-codegen builtins
         // FieldSchema / Schema + the quotation builtins QExpr / Quote (27 total)
         // + the 16 synthetic function-type constructors Fn/0 … Fn/15 + Ret/1 +
-        // Rows/1 + JoinCond/2 + the four join-result extractors (Join/Left/Right/Full).
+        // Rows/1 + JoinCond/2 + the four join-result extractors (Join/Left/Right/Full)
+        // + InsertShape/1.
         let (arena, _) = make_arena_with_builtins();
-        assert_eq!(arena.len(), 27 + FN_ARITY_COUNT + 7);
-        assert_eq!(arena.len(), 50);
+        assert_eq!(arena.len(), 27 + FN_ARITY_COUNT + 8);
+        assert_eq!(arena.len(), 51);
     }
 
     #[test]

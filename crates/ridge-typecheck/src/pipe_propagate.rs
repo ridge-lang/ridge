@@ -309,6 +309,17 @@ fn attach_span(err: TypeError, span: Span) -> TypeError {
             hint,
         },
         TypeError::OccursCheck { var, ty, .. } => TypeError::OccursCheck { var, ty, span },
+        TypeError::InsertShapeFullEntity {
+            entity,
+            companion,
+            omitted,
+            ..
+        } => TypeError::InsertShapeFullEntity {
+            entity,
+            companion,
+            omitted,
+            span,
+        },
         other => other,
     }
 }

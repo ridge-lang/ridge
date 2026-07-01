@@ -1543,6 +1543,43 @@ pub fn register_stdlib_classes(ct: &mut ClassTable) {
             def_module: None,
         },
     );
+
+    // `HasSchema` from std.schema — binds an entity type to its `EntitySchema`
+    // descriptor, the EF `IEntityTypeConfiguration<T>` analogue. A single
+    // parameter `e`, no functional dependency. `schemaOf` answers the schema from
+    // the type alone via a phantom `Option e` witness, the same dispatch
+    // `Row.rowColumns` uses; `toInsertRow` encodes an insert shape to a row. Both
+    // schemes are provided through `reconciled_schema_fn_scheme` (with the
+    // `HasSchema e` constraint) rather than a `seed_*` helper. Instances come from
+    // `deriving (Schema)` or a
+    // hand-written `instance HasSchema E`, not the prelude, so none are registered
+    // in `register_stdlib_instances`.
+    let has_schema_id = ct.intern("HasSchema");
+    ct.insert_with_id(
+        has_schema_id,
+        ClassInfo {
+            name: "HasSchema".to_string(),
+            arity: 1,
+            method_sigs: vec![
+                MethodSig {
+                    name: "schemaOf".to_string(),
+                    arity: 1,
+                    ast_param_types: vec![],
+                    ast_ret_type: None,
+                    class_ty_vars: Vec::new(),
+                },
+                MethodSig {
+                    name: "toInsertRow".to_string(),
+                    arity: 1,
+                    ast_param_types: vec![],
+                    ast_ret_type: None,
+                    class_ty_vars: Vec::new(),
+                },
+            ],
+            superclasses: vec![],
+            def_module: None,
+        },
+    );
 }
 
 /// Registers the base-type instances of stdlib-defined classes into `env`.

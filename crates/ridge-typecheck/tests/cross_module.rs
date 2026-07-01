@@ -3690,15 +3690,15 @@ import std.data (memAdapter, MemAdapter)
 import std.repo as Repo
 import std.sql (SqlValue)
 
-pub type User = { id: Int, name: Text } deriving (Row)
+pub type User = { id: Int, name: Text } deriving (Row, Schema)
 
 pub fn db seed () -> Result Unit Error =
     let conn = memAdapter ()
     Repo.transaction conn (fn (tx) ->
         let users: Repo User MemAdapter = Repo.repo tx "users"
-        match Repo.insert (User { id = 1, name = "ada" }) users
+        match Repo.insert (UserInsert { name = "ada" }) users
             Err e -> Err e
-            Ok _  -> Repo.insert (User { id = 2, name = "lin" }) users)
+            Ok _  -> Repo.insert (UserInsert { name = "lin" }) users)
 "#;
     let errors = typecheck_one(main);
     assert!(
@@ -3717,13 +3717,13 @@ import std.data (memAdapter, MemAdapter)
 import std.repo as Repo
 import std.sql (SqlValue)
 
-pub type User = { id: Int, name: Text } deriving (Row)
+pub type User = { id: Int, name: Text } deriving (Row, Schema)
 
 pub fn db seededCount () -> Result Int Error =
     let conn = memAdapter ()
     Repo.transaction conn (fn (tx) ->
         let users: Repo User MemAdapter = Repo.repo tx "users"
-        match Repo.insert (User { id = 1, name = "ada" }) users
+        match Repo.insert (UserInsert { name = "ada" }) users
             Err e -> Err e
             Ok _  -> users |> Repo.query |> Repo.count)
 "#;
@@ -3744,7 +3744,7 @@ import std.data (connect, Config, Postgres)
 import std.repo as Repo
 import std.sql (SqlValue)
 
-pub type User = { id: Int, name: Text } deriving (Row)
+pub type User = { id: Int, name: Text } deriving (Row, Schema)
 
 pub fn db seed () -> Result Unit Error =
     match connect (Config { host = "localhost", port = 5432, database = "app", user = "u", password = "p", sslMode = "require" })
@@ -3752,7 +3752,7 @@ pub fn db seed () -> Result Unit Error =
         Ok conn ->
             Repo.transaction conn (fn (tx) ->
                 let users: Repo User Postgres = Repo.repo tx "users"
-                Repo.insert (User { id = 1, name = "ada" }) users)
+                Repo.insert (UserInsert { name = "ada" }) users)
 "#;
     let errors = typecheck_one(main);
     assert!(

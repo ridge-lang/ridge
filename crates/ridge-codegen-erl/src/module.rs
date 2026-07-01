@@ -24,6 +24,44 @@ use ridge_ir::{IrFfiFn, IrItem, LoweredModule, LoweredWorkspace};
 use ridge_resolve::ModuleId;
 use rustc_hash::FxHashMap;
 
+/// Build the workspace-wide arity table for cross-module symbol calls:
+/// `module_id → (name → arity)`.
+///
+/// Each module contributes its fns (arity = parameter count), consts (arity 0),
+/// and `@ffi` stubs (arity = parameter count) — the same shape the per-module
+/// local arity table uses. A `SymbolRef::External` call carries only its
+/// callee's module id and name; this table lets it recover the callee's arity
+/// across the module boundary so a zero-arity call written `f ()` drops the
+/// unit-paren punctuation instead of emitting an arity-1 call that would be
+/// `undef` against the arity-0 callee.
+pub(crate) fn build_external_arity(
+    ws: &LoweredWorkspace,
+) -> FxHashMap<ModuleId, FxHashMap<String, u32>> {
+    let mut table: FxHashMap<ModuleId, FxHashMap<String, u32>> = FxHashMap::default();
+    for slot in &ws.modules {
+        let Some(m) = slot else { continue };
+        let mut names: FxHashMap<String, u32> = FxHashMap::default();
+        for item in &m.items {
+            match item {
+                IrItem::Fn(fn_) => {
+                    #[allow(clippy::cast_possible_truncation)]
+                    names.insert(fn_.name.clone(), fn_.params.len() as u32);
+                }
+                IrItem::Const(c) => {
+                    names.insert(c.name.clone(), 0);
+                }
+                IrItem::Ffi(ffi) => {
+                    #[allow(clippy::cast_possible_truncation)]
+                    names.insert(ffi.name.clone(), ffi.params.len() as u32);
+                }
+                _ => {}
+            }
+        }
+        table.insert(m.id, names);
+    }
+    table
+}
+
 // ── Name mangling (plan line 405) ────────────────────────────────────────────
 
 /// The reserved BEAM module name that must not be produced by mangling.

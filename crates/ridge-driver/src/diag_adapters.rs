@@ -65,6 +65,27 @@ pub fn diag_from_typecheck(e: &TypeError, source_id: SourceId) -> Diagnostic {
                 });
             }
         }
+        TypeError::InsertShapeFullEntity {
+            companion, omitted, ..
+        } if !omitted.is_empty() => {
+            let cols = omitted
+                .iter()
+                .map(|c| format!("`{c}`"))
+                .collect::<Vec<_>>()
+                .join(", ");
+            let (plural, them) = if omitted.len() == 1 {
+                ("", "it")
+            } else {
+                ("s", "them")
+            };
+            diag.notes.push(DiagnosticNote {
+                span: primary_span,
+                message: format!(
+                    "`{companion}` drops the database-generated column{plural} {cols}; build a `{companion}` and leave {them} to the database"
+                ),
+                severity: NoteSeverity::Help,
+            });
+        }
         _ => {}
     }
 

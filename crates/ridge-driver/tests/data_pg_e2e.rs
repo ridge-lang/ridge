@@ -62,18 +62,31 @@ import std.migrate as Migrate
 import std.migrate (SchemaOp)
 import std.raw as Raw
 import std.query (SortOrder, Asc, Desc)
-import std.sql (toSql, SqlValue)
+import std.sql (toSql, SqlValue, toRow)
 import std.map as Map
 import std.int as Int
 import std.float as Float
 import std.list (length, contains)
 import std.text as Text
+import std.schema (HasSchema, schemaOf, schema, eraseSchema, EntitySchema, withColumn, mkColumn, generated, primaryKey, DbBigInt, DbText, Identity)
 
 pub type User = { id: Int, age: Int, name: Text } deriving (Row)
 
 -- A throwaway entity for the migration probes, in a table the probes themselves
 -- create via `Migrate.run` rather than one the CI harness sets up.
 pub type Widget = { id: Int, name: Text } deriving (Row)
+
+-- The typed `insert` reads an entity's `HasSchema` instance to learn which columns
+-- the database generates, then omits them. These Postgres tables are created with a
+-- caller-supplied integer id (no serial default yet), so the instances name no
+-- generated columns: every column, the explicit id included, is written as given.
+instance HasSchema User =
+    schemaOf (_w: Option User) -> EntitySchema User = schema "User" "ridge_pg_users"
+    toInsertRow (shape: InsertShape User) -> Map Text SqlValue = toRow shape
+
+instance HasSchema Widget =
+    schemaOf (_w: Option Widget) -> EntitySchema Widget = schema "Widget" "ridge_mig_widgets"
+    toInsertRow (shape: InsertShape Widget) -> Map Text SqlValue = toRow shape
 
 -- A second entity for the join, in the `ridge_pg_posts` table; `author` holds the
 -- owning user's id.
@@ -1903,6 +1916,225 @@ pub fn db pgMigratedUsable () -> Int =
                                         Err _ -> 0 - 5
                                         Ok _  -> pgCountWidgets conn
 
+-- The entity-driven create against the live database: the migration builds the table
+-- from `deriving (Schema)` alone — no hand-written column list — and the descriptor's
+-- convention names the type's snake-plural table (`ridge_mig_gadgets`) and marks `id`
+-- an identity. So `createSchema` renders `CREATE TABLE ridge_mig_gadgets (id bigserial
+-- PRIMARY KEY, name text NOT NULL)`, the omitted id is assigned by the sequence on
+-- insert, and two rows count back.
+pub type RidgeMigGadget = { id: Int, name: Text } deriving (Row, Schema)
+
+fn gadgetWitness () -> Option RidgeMigGadget = None
+
+fn gadgetsSchema () -> SchemaOp =
+    Migrate.createSchema (schemaOf (gadgetWitness ()))
+
+fn runGadgets (conn: Postgres) -> Result (List Text) Error =
+    Migrate.run conn [ Migrate.migration "0001_gadgets" [ gadgetsSchema () ] ]
+
+fn pgClearGadgets (conn: Postgres) -> Result Int Error =
+    let r = Repo.repo conn "ridge_mig_gadgets"
+    Repo.deleteWhere (fn (g: RidgeMigGadget) -> g.id >= 0) r
+
+fn pgAddGadget (conn: Postgres) (gname: Text) -> Result Unit Error =
+    let r = Repo.repo conn "ridge_mig_gadgets"
+    Repo.insert (RidgeMigGadgetInsert { name = gname }) r
+
+fn pgCountGadgets (conn: Postgres) -> Int =
+    let r = Repo.repo conn "ridge_mig_gadgets"
+    match r |> Repo.query |> Repo.count
+        Ok n  -> n
+        Err _ -> 0 - 9
+
+-- The entity-driven create lands a real table with a `serial` identity column: the
+-- descriptor's CREATE TABLE runs, the omitted id is assigned on insert, and two rows
+-- count back -> 2. Clears the table first so the count is deterministic across runs.
+pub fn db pgEntityCreated () -> Int =
+    match connect (pgConfig ())
+        Err _ -> 0 - 1
+        Ok conn ->
+            match runGadgets conn
+                Err _ -> 0 - 2
+                Ok _  ->
+                    match pgClearGadgets conn
+                        Err _ -> 0 - 3
+                        Ok _  ->
+                            match pgAddGadget conn "alpha"
+                                Err _ -> 0 - 4
+                                Ok _  ->
+                                    match pgAddGadget conn "beta"
+                                        Err _ -> 0 - 5
+                                        Ok _  -> pgCountGadgets conn
+
+-- The auto-diff against the live database: `diffSchemas` compares an empty snapshot
+-- against a one-entity model and returns a create step, which lands a real table the
+-- same way a hand-written `createSchema` does. Uses its own table so the create never
+-- collides with the gadget migration, and its own migration name so the tracking table
+-- skips it on re-runs (the create runs once; later runs clear, insert, and count).
+pub type RidgeMigCog = { id: Int, label: Text } deriving (Row, Schema)
+
+fn cogWitness () -> Option RidgeMigCog = None
+
+fn cogErased () -> EntitySchema Unit =
+    eraseSchema (schemaOf (cogWitness ()))
+
+fn runCogsDiff (conn: Postgres) -> Result (List Text) Error =
+    Migrate.run conn [ Migrate.migration "0002_cogs" (Migrate.diffSchemas [] [ cogErased () ]) ]
+
+fn pgClearCogs (conn: Postgres) -> Result Int Error =
+    let r = Repo.repo conn "ridge_mig_cogs"
+    Repo.deleteWhere (fn (c: RidgeMigCog) -> c.id >= 0) r
+
+fn pgAddCog (conn: Postgres) (clabel: Text) -> Result Unit Error =
+    let r = Repo.repo conn "ridge_mig_cogs"
+    Repo.insert (RidgeMigCogInsert { label = clabel }) r
+
+fn pgCountCogs (conn: Postgres) -> Int =
+    let r = Repo.repo conn "ridge_mig_cogs"
+    match r |> Repo.query |> Repo.count
+        Ok n  -> n
+        Err _ -> 0 - 9
+
+-- A diff-driven create lands a real table: `diffSchemas` yields the create step, the
+-- migration runs it, the omitted identity id is assigned on insert, and two rows count
+-- back -> 2. Clears the table first so the count is deterministic across runs.
+pub fn db pgDiffCreated () -> Int =
+    match connect (pgConfig ())
+        Err _ -> 0 - 1
+        Ok conn ->
+            match runCogsDiff conn
+                Err _ -> 0 - 2
+                Ok _  ->
+                    match pgClearCogs conn
+                        Err _ -> 0 - 3
+                        Ok _  ->
+                            match pgAddCog conn "alpha"
+                                Err _ -> 0 - 4
+                                Ok _  ->
+                                    match pgAddCog conn "beta"
+                                        Err _ -> 0 - 5
+                                        Ok _  -> pgCountCogs conn
+
+-- The column-level auto-diff against the live database: the model gains a `note` field,
+-- and `diffSchemas` turns that into an `ALTER TABLE … ADD COLUMN` step that lands on the
+-- real table. Its own entity and table so the migrations never collide with the others.
+pub type RidgeMigBolt = { id: Int, code: Text, note: Text } deriving (Row, Schema)
+
+fn boltWitness () -> Option RidgeMigBolt = None
+
+-- The bolts table before the `note` column existed — id and code only, hand-built so it
+-- stands in as the previous snapshot the diff compares the current model against.
+fn boltV1 () -> EntitySchema Unit =
+    eraseSchema (schema "RidgeMigBolt" "ridge_mig_bolts"
+        |> withColumn (mkColumn "id" "id" DbBigInt false |> generated Identity |> primaryKey)
+        |> withColumn (mkColumn "code" "code" DbText false))
+
+fn boltFull () -> EntitySchema Unit =
+    eraseSchema (schemaOf (boltWitness ()))
+
+-- Create the table at v1 (id, code), then diff v1 -> the full model to add `note`. The
+-- add runs while the table is still empty, so the NOT NULL column lands cleanly.
+fn runBoltsColumnDiff (conn: Postgres) -> Result (List Text) Error =
+    let create  = Migrate.migration "0003_bolts" (Migrate.diffSchemas [] [ boltV1 () ])
+    let addNote = Migrate.migration "0004_bolts_note" (Migrate.diffSchemas [ boltV1 () ] [ boltFull () ])
+    Migrate.run conn [ create, addNote ]
+
+fn pgClearBolts (conn: Postgres) -> Result Int Error =
+    let r = Repo.repo conn "ridge_mig_bolts"
+    Repo.deleteWhere (fn (b: RidgeMigBolt) -> b.id >= 0) r
+
+fn pgAddBolt (conn: Postgres) (bcode: Text) (bnote: Text) -> Result Unit Error =
+    let r = Repo.repo conn "ridge_mig_bolts"
+    Repo.insert (RidgeMigBoltInsert { code = bcode, note = bnote }) r
+
+fn pgCountBolts (conn: Postgres) -> Int =
+    let r = Repo.repo conn "ridge_mig_bolts"
+    match r |> Repo.query |> Repo.count
+        Ok n  -> n
+        Err _ -> 0 - 9
+
+-- The diffed ALTER TABLE lands the `note` column on the real table: after the two
+-- migrations run, a row written through the full entity (code + note) inserts and counts
+-- back -> 2. Clears first so the count is deterministic across runs.
+pub fn db pgDiffAddedColumn () -> Int =
+    match connect (pgConfig ())
+        Err _ -> 0 - 1
+        Ok conn ->
+            match runBoltsColumnDiff conn
+                Err _ -> 0 - 2
+                Ok _  ->
+                    match pgClearBolts conn
+                        Err _ -> 0 - 3
+                        Ok _  ->
+                            match pgAddBolt conn "a" "first"
+                                Err _ -> 0 - 4
+                                Ok _  ->
+                                    match pgAddBolt conn "b" "second"
+                                        Err _ -> 0 - 5
+                                        Ok _  -> pgCountBolts conn
+
+-- The column-alter auto-diff against the live database: the `code` column starts NOT NULL
+-- and the model relaxes it to nullable, and `diffSchemas` turns that into an
+-- `ALTER TABLE … ALTER COLUMN … DROP NOT NULL` step that lands on the real table. Its own
+-- entity and table so the migrations never collide with the others.
+pub type RidgeMigGear = { id: Int, code: Text } deriving (Row, Schema)
+
+-- The gears table with `code` NOT NULL — the previous snapshot the diff compares against.
+-- Hand-built so it shares the table name with the relaxed version below, which is what makes
+-- the diff descend into the column rather than treat them as two tables.
+fn gearV1 () -> EntitySchema Unit =
+    eraseSchema (schema "RidgeMigGear" "ridge_mig_gears"
+        |> withColumn (mkColumn "id" "id" DbBigInt false |> generated Identity |> primaryKey)
+        |> withColumn (mkColumn "code" "code" DbText false))
+
+-- The same table with `code` relaxed to nullable — one facet changed, so the diff emits a
+-- single `ALTER COLUMN … DROP NOT NULL`.
+fn gearV2 () -> EntitySchema Unit =
+    eraseSchema (schema "RidgeMigGear" "ridge_mig_gears"
+        |> withColumn (mkColumn "id" "id" DbBigInt false |> generated Identity |> primaryKey)
+        |> withColumn (mkColumn "code" "code" DbText true))
+
+-- Create the table at v1 (code NOT NULL), then diff v1 -> v2 to relax `code`. The alter runs
+-- against the real table; if the rendered statement were invalid PG the migration would fail.
+fn runGearsAlterDiff (conn: Postgres) -> Result (List Text) Error =
+    let create = Migrate.migration "0005_gears" (Migrate.diffSchemas [] [ gearV1 () ])
+    let relax  = Migrate.migration "0006_gears_relax" (Migrate.diffSchemas [ gearV1 () ] [ gearV2 () ])
+    Migrate.run conn [ create, relax ]
+
+fn pgClearGears (conn: Postgres) -> Result Int Error =
+    let r = Repo.repo conn "ridge_mig_gears"
+    Repo.deleteWhere (fn (g: RidgeMigGear) -> g.id >= 0) r
+
+fn pgAddGear (conn: Postgres) (gcode: Text) -> Result Unit Error =
+    let r = Repo.repo conn "ridge_mig_gears"
+    Repo.insert (RidgeMigGearInsert { code = gcode }) r
+
+fn pgCountGears (conn: Postgres) -> Int =
+    let r = Repo.repo conn "ridge_mig_gears"
+    match r |> Repo.query |> Repo.count
+        Ok n  -> n
+        Err _ -> 0 - 9
+
+-- The diffed ALTER TABLE lands on the real table: after the create-then-relax migrations
+-- run, the table stays usable — two rows insert through the entity and count back -> 2.
+-- Clears first so the count is deterministic across runs.
+pub fn db pgDiffAlteredColumn () -> Int =
+    match connect (pgConfig ())
+        Err _ -> 0 - 1
+        Ok conn ->
+            match runGearsAlterDiff conn
+                Err _ -> 0 - 2
+                Ok _  ->
+                    match pgClearGears conn
+                        Err _ -> 0 - 3
+                        Ok _  ->
+                            match pgAddGear conn "a"
+                                Err _ -> 0 - 4
+                                Ok _  ->
+                                    match pgAddGear conn "b"
+                                        Err _ -> 0 - 5
+                                        Ok _  -> pgCountGears conn
+
 -- Raw-SQL escape hatch against the live database. Each probe seeds the users table
 -- through `setup` (clearing and inserting ada/lin/max), then opens a fresh
 -- connection and runs raw SQL over `ridge_pg_users`: a parameterised SELECT decoded
@@ -2258,6 +2490,10 @@ fn postgres_adapter_reads_a_real_table() {
          io:format(\"txSavepointCount=~w~n\",[{module}:txSavepointCount()]), \
          io:format(\"pgMigrateIdempotent=~w~n\",[{module}:pgMigrateIdempotent()]), \
          io:format(\"pgMigratedUsable=~w~n\",[{module}:pgMigratedUsable()]), \
+         io:format(\"pgEntityCreated=~w~n\",[{module}:pgEntityCreated()]), \
+         io:format(\"pgDiffCreated=~w~n\",[{module}:pgDiffCreated()]), \
+         io:format(\"pgDiffAddedColumn=~w~n\",[{module}:pgDiffAddedColumn()]), \
+         io:format(\"pgDiffAlteredColumn=~w~n\",[{module}:pgDiffAlteredColumn()]), \
          io:format(\"rawAdults=~s~n\",[{module}:rawAdults()]), \
          io:format(\"rawFirstName=~s~n\",[{module}:rawFirstName()]), \
          io:format(\"rawBumpCount=~w~n\",[{module}:rawBumpCount()]), \
@@ -2689,6 +2925,22 @@ fn postgres_adapter_reads_a_real_table() {
         (
             "pgMigratedUsable=2",
             "a CREATE TABLE migration lands and the typed table accepts two inserts",
+        ),
+        (
+            "pgEntityCreated=2",
+            "an entity-driven createSchema renders the descriptor's CREATE TABLE with a serial id and the table accepts two inserts",
+        ),
+        (
+            "pgDiffCreated=2",
+            "the auto-diff turns a new entity into a create step that lands a real table accepting two inserts",
+        ),
+        (
+            "pgDiffAddedColumn=2",
+            "the column-level auto-diff turns a new field into an ALTER TABLE ADD COLUMN that lands on the real table",
+        ),
+        (
+            "pgDiffAlteredColumn=2",
+            "the column-level auto-diff turns a relaxed NOT NULL into an ALTER TABLE ALTER COLUMN DROP NOT NULL that lands on the real table",
         ),
         (
             "rawAdults=lin,max",

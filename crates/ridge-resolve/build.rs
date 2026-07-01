@@ -57,6 +57,7 @@ const MODULE_ORDER: &[&str] = &[
     "std.net.http",
     "std.crypto",
     "std.sql",
+    "std.schema",
     "std.query",
     "std.data",
     "std.repo",
@@ -380,11 +381,18 @@ const BASELINE_EXPORTS: &[(&str, &[&str])] = &[
             "sqlText",
             "sqlBool",
             "sqlFloat",
+            "sqlNull",
             // The safe SQL statement-text wrapper, its factory, and accessor —
             // a data-layer concern, declared in sql.ridge.
             "Sql",
             "sql",
             "sqlValue",
+            // Render a SqlValue as an inline SQL literal — a DDL DEFAULT or CHECK
+            // position a bind parameter cannot fill.
+            "sqlLiteral",
+            // Render a SqlValue back to its Ridge source expression — the migration
+            // snapshot renderer's `DefaultLit` path.
+            "sqlValueSource",
         ],
     ),
     (
@@ -508,6 +516,9 @@ const BASELINE_EXPORTS: &[(&str, &[&str])] = &[
             "ddlAddColumn",
             "ddlDropColumn",
             "ddlIndex",
+            "ddlCreateEntity",
+            "ddlAddEntityColumn",
+            "ddlAlterColumn",
             "migrationsApplied",
             "recordMigration",
             // Raw-SQL escape hatch (typed front door in std.raw): a parameterised
@@ -733,6 +744,108 @@ const BASELINE_EXPORTS: &[(&str, &[&str])] = &[
         ],
     ),
     (
+        "std.schema",
+        &[
+            // The dialect-neutral column vocabulary: the SQL type, how a column's
+            // value originates, and the foreign-key referential actions.
+            "DbType",
+            "DbBoolean",
+            "DbInt",
+            "DbBigInt",
+            "DbFloat",
+            "DbDecimal",
+            "DbText",
+            "DbVarchar",
+            "DbUuid",
+            "DbTimestamp",
+            "DbTimestampTz",
+            "DbRaw",
+            "Generation",
+            "Supplied",
+            "Identity",
+            "DefaultNow",
+            "DefaultLit",
+            "DefaultRawSql",
+            "FkAction",
+            "NoAction",
+            "Restrict",
+            "Cascade",
+            "SetNull",
+            "SetDefault",
+            // The opaque foreign-key reference and its builders.
+            "ForeignKey",
+            "references",
+            "onDelete",
+            "onUpdate",
+            // The opaque per-column schema, its low-level constructor, and the
+            // per-column refinement steps.
+            "ColumnSchema",
+            "mkColumn",
+            "column",
+            "named",
+            "columnType",
+            "nullable",
+            "required",
+            "generated",
+            "primaryKey",
+            "unique",
+            "indexed",
+            "foreignKey",
+            "check",
+            "checkRaw",
+            // The per-column read accessors.
+            "colName",
+            "colColumn",
+            "colType",
+            "colNullable",
+            "colGeneration",
+            "colPrimaryKey",
+            "colUnique",
+            "colIndexed",
+            "colForeignKey",
+            "colCheck",
+            "colGenerated",
+            // The opaque entity schema, its builder, and its read accessors.
+            "EntitySchema",
+            "schema",
+            "withColumn",
+            "schemaName",
+            "schemaTable",
+            "schemaColumns",
+            "eraseSchema",
+            "generatedColumns",
+            "identityColumns",
+            // The Postgres DDL renderer: `schemaToDdl` renders an entity's
+            // `CREATE TABLE`, `schemaIndexDdls` its non-unique indexes, and the
+            // `*Ddl` family renders a `std.migrate` schema step from its seam tuple.
+            "schemaToDdl",
+            "schemaIndexDdls",
+            "createTableDdl",
+            "addColumnDdl",
+            "addColumnSchemaDdl",
+            "alterColumnDdl",
+            "columnAltered",
+            "dropTableDdl",
+            "dropColumnDdl",
+            "indexDdl",
+            // The Ridge-source renderer: `columnToSource`/`schemaToSource` render a
+            // descriptor back to the builder-chain source a snapshot or generated
+            // migration is written as — the source dual of the DDL renderer.
+            "columnToSource",
+            "schemaToSource",
+            // The `HasSchema` binding class and its methods. `deriving (Schema)`
+            // generates the instance; `schemaOf` answers an entity's schema from
+            // the type alone (a phantom `Option e` witness selects the instance),
+            // and `toInsertRow` encodes an insert shape to a row.
+            "HasSchema",
+            "schemaOf",
+            "toInsertRow",
+            "generatedColumnsOf",
+            "identityColumnsOf",
+            "identityColumnsOfShape",
+        ],
+    ),
+    (
         "std.migrate",
         &[
             // The schema-DSL: the opaque `Column` and its typed declarators and
@@ -753,8 +866,21 @@ const BASELINE_EXPORTS: &[(&str, &[&str])] = &[
             "dropColumn",
             "createIndex",
             "uniqueIndex",
+            "createSchema",
+            "dropSchema",
+            "addEntityColumn",
+            "alterColumn",
             "Migration",
             "migration",
+            "diffSchemas",
+            // The Ridge-source renderer: render a model snapshot and a migration back
+            // to the source that rebuilds them, the writer side of the snapshot diff.
+            "modelToSource",
+            "migrationToSource",
+            // The generated-module renderers: wrap the above into whole `.ridge` files —
+            // the snapshot and migration a project persists on disk.
+            "snapshotModule",
+            "migrationModule",
             // The migration runner: apply the pending migrations in order, each in
             // its own transaction, and answer the names applied.
             "run",
@@ -801,6 +927,10 @@ const BASELINE_OPAQUE: &[(&str, &[&str])] = &[
         ],
     ),
     ("std.migrate", &["Column"]),
+    (
+        "std.schema",
+        &["ForeignKey", "ColumnSchema", "EntitySchema"],
+    ),
 ];
 
 fn main() {

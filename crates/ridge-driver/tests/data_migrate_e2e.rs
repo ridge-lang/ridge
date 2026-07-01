@@ -26,10 +26,18 @@ import std.data (memAdapter, MemAdapter)
 import std.migrate as Migrate
 import std.migrate (SchemaOp)
 import std.repo as Repo
+import std.schema (schemaOf, eraseSchema, EntitySchema, schema, withColumn, mkColumn, DbBigInt, DbText)
 import std.list (length)
 import std.sql (SqlValue)
 
-pub type User = { id: Int, name: Text } deriving (Row)
+-- `deriving (Schema)` makes `id` an identity column by convention, so the typed
+-- `insert` omits it and the store assigns it; the probes count rows rather than
+-- assert a specific id.
+pub type User = { id: Int, name: Text } deriving (Row, Schema)
+
+-- A second entity used by the entity-driven migration probe: its table is created
+-- from `deriving (Schema)` alone, with no hand-written column list.
+pub type Account = { id: Int, label: Text } deriving (Row, Schema)
 
 -- Each table is built in its own helper (a statement-level `createTable` with its
 -- columns), and the schema list stays flat, so the entry points never name the
@@ -57,9 +65,9 @@ fn alterAll (conn: MemAdapter) -> Result (List Text) Error =
     Migrate.run conn [ Migrate.migration "0003_alter" ops ]
 
 -- Insert one user into the migrated table.
-fn addUser (conn: MemAdapter) (uid: Int) (uname: Text) -> Result Unit Error =
+fn addUser (conn: MemAdapter) (_uid: Int) (uname: Text) -> Result Unit Error =
     let users: Repo User MemAdapter = Repo.repo conn "users"
-    Repo.insert (User { id = uid, name = uname }) users
+    Repo.insert (UserInsert { name = uname }) users
 
 -- How many users the migrated table holds, read back through the repository.
 fn countUsers (conn: MemAdapter) -> Int =
@@ -107,6 +115,142 @@ pub fn db altered () -> Int =
         Err _ -> 0 - 1
         Ok _  ->
             match alterAll conn
+                Ok names -> length names
+                Err _    -> 0 - 2
+
+-- The entity-driven create: a migration builds the `accounts` table from the
+-- `Account` schema descriptor `deriving (Schema)` produced, with no hand-written
+-- column list. The phantom `Option Account` witness pins the schema by type.
+fn accountWitness () -> Option Account = None
+
+fn accountsSchema () -> SchemaOp =
+    Migrate.createSchema (schemaOf (accountWitness ()))
+
+fn applyAccounts (conn: MemAdapter) -> Result (List Text) Error =
+    Migrate.run conn [ Migrate.migration "0001_accounts" [ accountsSchema () ] ]
+
+fn addAccount (conn: MemAdapter) (alabel: Text) -> Result Unit Error =
+    let accounts: Repo Account MemAdapter = Repo.repo conn "accounts"
+    Repo.insert (AccountInsert { label = alabel }) accounts
+
+fn countAccounts (conn: MemAdapter) -> Int =
+    let accounts: Repo Account MemAdapter = Repo.repo conn "accounts"
+    match accounts |> Repo.query |> Repo.count
+        Ok n  -> n
+        Err _ -> 0 - 1
+
+-- An entity-driven migration creates a usable table straight from `deriving (Schema)`:
+-- the table materialises, its identity `id` is omitted on insert and assigned by the
+-- store, and two rows count back.
+pub fn db entityDriven () -> Int =
+    let conn = memAdapter ()
+    match applyAccounts conn
+        Err _ -> 0 - 1
+        Ok _  ->
+            match addAccount conn "ops"
+                Err _ -> 0 - 2
+                Ok _  ->
+                    match addAccount conn "eng"
+                        Err _ -> 0 - 3
+                        Ok _  -> countAccounts conn
+
+-- The `Account` schema erased to `EntitySchema Unit` — one entry of a model snapshot,
+-- the shape the auto-diff compares.
+fn accountErased () -> EntitySchema Unit =
+    eraseSchema (schemaOf (accountWitness ()))
+
+-- The auto-diff creates the table it finds only in the new model: diffing an empty
+-- snapshot against `[accounts]` yields one create step, which applies to a usable table
+-- that accepts two inserts and counts them back.
+pub fn db diffCreatesTable () -> Int =
+    let conn = memAdapter ()
+    let steps = Migrate.diffSchemas [] [ accountErased () ]
+    match Migrate.run conn [ Migrate.migration "0001_accounts" steps ]
+        Err _ -> 0 - 1
+        Ok _  ->
+            match addAccount conn "ops"
+                Err _ -> 0 - 2
+                Ok _  ->
+                    match addAccount conn "eng"
+                        Err _ -> 0 - 3
+                        Ok _  -> countAccounts conn
+
+-- The diff counts each table-level change once: an added table (empty -> [a]) is one
+-- step, a dropped table ([a] -> empty) is one step, and an unchanged table ([a] -> [a])
+-- is none, so the three runs together yield 1 + 1 + 0 = 2.
+pub fn db diffCounts () -> Int =
+    let a = accountErased ()
+    let added   = Migrate.diffSchemas [] [ a ]
+    let dropped = Migrate.diffSchemas [ a ] []
+    let same    = Migrate.diffSchemas [ a ] [ a ]
+    length added + length dropped + length same
+
+-- Two hand-built snapshots of the same table differing by one column: v1 has [id, name],
+-- v2 adds [email]. Built by hand (not derived) so the two versions share the table name,
+-- which is what makes the diff descend into the columns rather than treat them as two
+-- separate tables.
+fn thingV1 () -> EntitySchema Unit =
+    eraseSchema (schema "Thing" "things"
+        |> withColumn (mkColumn "id" "id" DbBigInt false)
+        |> withColumn (mkColumn "name" "name" DbText false))
+
+fn thingV2 () -> EntitySchema Unit =
+    eraseSchema (schema "Thing" "things"
+        |> withColumn (mkColumn "id" "id" DbBigInt false)
+        |> withColumn (mkColumn "name" "name" DbText false)
+        |> withColumn (mkColumn "email" "email" DbText true))
+
+-- v2 with the `email` column tightened from nullable to NOT NULL — same table, same
+-- columns, one facet changed. Diffing v2 against this is what the column-alter path must
+-- pick up (and diffing it against itself must not).
+fn thingV2b () -> EntitySchema Unit =
+    eraseSchema (schema "Thing" "things"
+        |> withColumn (mkColumn "id" "id" DbBigInt false)
+        |> withColumn (mkColumn "name" "name" DbText false)
+        |> withColumn (mkColumn "email" "email" DbText false))
+
+-- The diff descends into a table present in both snapshots: v1 -> v2 adds the email
+-- column (1 op), v2 -> v1 drops it (1 op), v1 -> v1 is unchanged (0). 1 + 1 + 0 = 2.
+pub fn db diffColumns () -> Int =
+    let a = thingV1 ()
+    let b = thingV2 ()
+    let added   = Migrate.diffSchemas [ a ] [ b ]
+    let dropped = Migrate.diffSchemas [ b ] [ a ]
+    let same    = Migrate.diffSchemas [ a ] [ a ]
+    length added + length dropped + length same
+
+-- The column-add step runs and commits: create the base table from v1, then apply the
+-- v1 -> v2 diff (one AddEntityColumn). The in-memory store is schemaless so the add is a
+-- no-op, but the migration must run and record — one name comes back.
+pub fn db diffColumnApplies () -> Int =
+    let conn = memAdapter ()
+    match Migrate.run conn [ Migrate.migration "0001_thing" (Migrate.diffSchemas [] [ thingV1 () ]) ]
+        Err _ -> 0 - 1
+        Ok _  ->
+            match Migrate.run conn [ Migrate.migration "0002_thing_email" (Migrate.diffSchemas [ thingV1 () ] [ thingV2 () ]) ]
+                Ok names -> length names
+                Err _    -> 0 - 2
+
+-- The diff descends into a matched column: v2 -> v2b tightens `email` to NOT NULL (1 alter
+-- op), v2b -> v2 relaxes it back (1 op), and v2 -> v2 leaves every column untouched (0, so
+-- no spurious alter). 1 + 1 + 0 = 2.
+pub fn db diffAlterColumns () -> Int =
+    let b = thingV2 ()
+    let c = thingV2b ()
+    let tighten = Migrate.diffSchemas [ b ] [ c ]
+    let relax   = Migrate.diffSchemas [ c ] [ b ]
+    let same    = Migrate.diffSchemas [ b ] [ b ]
+    length tighten + length relax + length same
+
+-- The column-alter step runs and commits: create the base table from v2, then apply the
+-- v2 -> v2b diff (one AlterColumn). The in-memory store enforces no column shape, so the
+-- alter is a no-op, but the migration must run and record — one name comes back.
+pub fn db diffAlterApplies () -> Int =
+    let conn = memAdapter ()
+    match Migrate.run conn [ Migrate.migration "0001_thing" (Migrate.diffSchemas [] [ thingV2 () ]) ]
+        Err _ -> 0 - 1
+        Ok _  ->
+            match Migrate.run conn [ Migrate.migration "0002_thing_email_nn" (Migrate.diffSchemas [ thingV2 () ] [ thingV2b () ]) ]
                 Ok names -> length names
                 Err _    -> 0 - 2
 "#;
@@ -188,6 +332,13 @@ fn migrations_apply_track_and_are_idempotent_on_beam() {
          io:format(\"idempotent=~w~n\",[{module}:idempotent()]), \
          io:format(\"usable=~w~n\",[{module}:usable()]), \
          io:format(\"altered=~w~n\",[{module}:altered()]), \
+         io:format(\"entityDriven=~w~n\",[{module}:entityDriven()]), \
+         io:format(\"diffCreatesTable=~w~n\",[{module}:diffCreatesTable()]), \
+         io:format(\"diffCounts=~w~n\",[{module}:diffCounts()]), \
+         io:format(\"diffColumns=~w~n\",[{module}:diffColumns()]), \
+         io:format(\"diffColumnApplies=~w~n\",[{module}:diffColumnApplies()]), \
+         io:format(\"diffAlterColumns=~w~n\",[{module}:diffAlterColumns()]), \
+         io:format(\"diffAlterApplies=~w~n\",[{module}:diffAlterApplies()]), \
          halt()."
     );
     let output = Command::new("erl")
@@ -221,5 +372,41 @@ fn migrations_apply_track_and_are_idempotent_on_beam() {
     assert!(
         stdout.contains("altered=1"),
         "expected `altered=1` — the alter migration's schema verbs should all run and commit\nstdout:\n{stdout}\nstderr:\n{stderr}"
+    );
+    // An entity-driven migration creates a usable table from `deriving (Schema)` alone.
+    assert!(
+        stdout.contains("entityDriven=2"),
+        "expected `entityDriven=2` — createSchema should build a usable table from the descriptor\nstdout:\n{stdout}\nstderr:\n{stderr}"
+    );
+    // The auto-diff turns a new entity into a create step that applies to a usable table.
+    assert!(
+        stdout.contains("diffCreatesTable=2"),
+        "expected `diffCreatesTable=2` — diffSchemas should create the table only in the new model\nstdout:\n{stdout}\nstderr:\n{stderr}"
+    );
+    // The diff counts one step per table-level change: add + drop + no-change = 1 + 1 + 0.
+    assert!(
+        stdout.contains("diffCounts=2"),
+        "expected `diffCounts=2` — an added and a dropped table are one step each; an unchanged table is none\nstdout:\n{stdout}\nstderr:\n{stderr}"
+    );
+    // The diff descends into a matched table: an added and a dropped column are one step each.
+    assert!(
+        stdout.contains("diffColumns=2"),
+        "expected `diffColumns=2` — a column added and a column dropped inside an existing table are one step each\nstdout:\n{stdout}\nstderr:\n{stderr}"
+    );
+    // The diffed column-add step runs and commits on the in-memory store.
+    assert!(
+        stdout.contains("diffColumnApplies=1"),
+        "expected `diffColumnApplies=1` — the AddEntityColumn step from the diff should run and record one migration\nstdout:\n{stdout}\nstderr:\n{stderr}"
+    );
+    // The diff descends into a matched column: a tightened and a relaxed column are one
+    // alter step each, and an unchanged column is none.
+    assert!(
+        stdout.contains("diffAlterColumns=2"),
+        "expected `diffAlterColumns=2` — a column altered one way and back is one step each; an unchanged column is none\nstdout:\n{stdout}\nstderr:\n{stderr}"
+    );
+    // The diffed column-alter step runs and commits on the in-memory store.
+    assert!(
+        stdout.contains("diffAlterApplies=1"),
+        "expected `diffAlterApplies=1` — the AlterColumn step from the diff should run and record one migration\nstdout:\n{stdout}\nstderr:\n{stderr}"
     );
 }

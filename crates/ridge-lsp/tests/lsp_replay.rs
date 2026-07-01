@@ -1064,6 +1064,39 @@ async fn test_hover_labels_class_method() {
 }
 
 #[tokio::test]
+async fn test_hover_insert_companion_shows_insert_shape() {
+    // Hovering an `<Entity>Insert` companion cards it as the entity's insert
+    // shape — listing its insertable fields and naming the generated column it
+    // drops — rather than collapsing onto the `type User` declaration it shares a
+    // source span with (which would misleadingly show the very `id` it forbids).
+    let src = "pub type User = { id: Int, email: Text } deriving (Schema)\npub fn mk -> UserInsert = UserInsert { email = \"a@b.com\" }\n";
+    let (service, _socket, uri) = hover_fixture(src).await;
+    let server = service.inner();
+
+    // The body's record-literal constructor on line 1 carries the companion type.
+    let line1 = "pub fn mk -> UserInsert = UserInsert { email = \"a@b.com\" }";
+    let col = u32::try_from(line1.rfind("UserInsert").expect("body companion") + 1)
+        .expect("offset fits u32");
+    let h = server
+        .hover(hover_at(&uri, 1, col))
+        .await
+        .expect("hover ok");
+    let md = hover_markdown(h).expect("hover over an insert companion returns markup");
+    assert!(
+        md.contains("insert shape of `User`"),
+        "companion hover should label it the entity's insert shape, got {md:?}"
+    );
+    assert!(
+        md.contains("email"),
+        "companion hover should list its insertable fields, got {md:?}"
+    );
+    assert!(
+        md.contains("`id`"),
+        "companion hover should name the dropped generated column, got {md:?}"
+    );
+}
+
+#[tokio::test]
 async fn test_hover_captured_variable_in_quote() {
     // A variable captured from the enclosing scope into a quoted predicate is an
     // ordinary binding to the editor: hovering it at the use-site inside the quote

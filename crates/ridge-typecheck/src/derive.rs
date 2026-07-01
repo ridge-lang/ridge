@@ -163,6 +163,21 @@ pub enum DerivedMethodBody {
         optionals: Vec<bool>,
     },
 
+    /// `schemaOf` body for a record type (`deriving (Schema)`).  Returns the
+    /// entity's `EntitySchema`, built from the record fields by the data-layer
+    /// convention: snake-cased columns, base-type `DbType`s, `Option` fields
+    /// nullable, and a field named `id` taken as the primary key (an integer
+    /// `id` also marked identity-generated).  A hand-written `HasSchema` instance
+    /// spells out the deltas the convention cannot infer.
+    DerivedSchemaRecord {
+        /// The entity name the schema carries (`schema <name> <table>`).
+        entity_name: String,
+        /// The SQL table name — the snake-cased plural of the entity name.
+        table: String,
+        /// One spec per record field, in declaration order.
+        columns: Vec<SchemaColumnSpec>,
+    },
+
     /// Transparent delegation for an `opaque` single-field wrapper (a newtype).
     ///
     /// Each class method forwards to the inner type's instance: arguments of the
@@ -183,6 +198,31 @@ pub enum DerivedMethodBody {
         /// through it (which args to unwrap, whether to rewrap the result).
         methods: Vec<DelegatedMethod>,
     },
+}
+
+/// One column of a derived `HasSchema` instance: everything the synthesis needs
+/// to emit a `mkColumn … |> <refinements>` chain for a single record field.
+#[derive(Debug, Clone)]
+pub struct SchemaColumnSpec {
+    /// The record-field name (`mkColumn`'s first argument).
+    pub field_name: String,
+    /// The SQL column name — the snake-cased field (`mkColumn`'s second argument).
+    pub column: String,
+    /// The `std.schema` `DbType` constructor name for the column type
+    /// (`"DbBigInt"`, `"DbText"`, …); emitted as a nullary union value.
+    pub db_type: String,
+    /// Whether the column admits NULL (the field is `Option`-wrapped).
+    pub nullable: bool,
+    /// Whether the column is the table's primary key (the field is named `id`).
+    pub primary_key: bool,
+    /// The `Generation` constructor name when the column is database-generated
+    /// (`Some("Identity")` for an integer `id`); `None` leaves it caller-supplied.
+    pub generation: Option<String>,
+    /// The `SqlType` instance name used to encode this column in `toInsertRow`
+    /// (`"Int"`, `"Text"`, `"Bool"`, `"Float"`), or `None` when the field is not a
+    /// base `SqlType` — those columns are caller-supplied schema/DDL metadata only,
+    /// not part of the insert encoding, so `toInsertRow` leaves them out.
+    pub sql_type_tag: Option<String>,
 }
 
 /// How the wrapper type flows through one delegated argument position.
@@ -336,13 +376,67 @@ pub fn derive_instances(
         let class_name = &class_ident.text;
         let span = class_ident.span;
 
-        // `Table` and `Schema` are data-layer codegen directives, not
-        // typeclasses: they generate top-level declarations (a column mirror, a
-        // schema descriptor), synthesized in `tycon_collect`. Skip them here so
-        // the class lookup below does not flag them as unknown.
-        if class_name == ridge_ast::column_mirror::TABLE_DERIVE
-            || class_name == ridge_ast::column_mirror::SCHEMA_DERIVE
-        {
+        // `Table` is a data-layer codegen directive, not a typeclass: it
+        // generates a top-level column mirror, synthesized in `tycon_collect`.
+        // Skip it here so the class lookup below does not flag it as unknown.
+        if class_name == ridge_ast::column_mirror::TABLE_DERIVE {
+            continue;
+        }
+
+        // `Schema` is the data-layer schema-descriptor derive: like `Row`, it
+        // synthesizes a typeclass instance — `HasSchema`, whose single method
+        // `schemaOf` returns the entity's `EntitySchema` built from the record
+        // fields by convention. The derive name (`Schema`) and the class name
+        // (`HasSchema`) differ, so it is handled here, before the lookup that
+        // resolves a class by its clause spelling, and the class is resolved by
+        // `SCHEMA_CLASS` instead.
+        if class_name == ridge_ast::column_mirror::SCHEMA_DERIVE {
+            let Some(has_schema_id) =
+                class_table.id_by_name(ridge_ast::column_mirror::SCHEMA_CLASS)
+            else {
+                // `HasSchema` lives in std.schema; its absence is an internal
+                // wiring fault, surfaced as an unknown-class diagnostic.
+                errors.push(TypeError::NoInstance {
+                    class: ridge_ast::column_mirror::SCHEMA_CLASS.to_string(),
+                    ty: type_decl.name.text.clone(),
+                    span,
+                    fix_hint: "the `HasSchema` class is unavailable; `deriving \
+                               (Schema)` needs `std.schema` in scope"
+                        .to_string(),
+                });
+                continue;
+            };
+            match generate_schema(&type_decl.body, &type_decl.name, span) {
+                Err(e) => errors.push(e),
+                Ok(body) => {
+                    let info = InstanceInfo {
+                        def_module: Some(module_id),
+                        methods: vec![
+                            ("schemaOf".to_string(), String::new()),
+                            ("toInsertRow".to_string(), String::new()),
+                        ],
+                        ctx_constraints: vec![],
+                        head_var_positions: vec![],
+                        origin: InstanceOrigin::Explicit,
+                        span,
+                    };
+                    let key = (has_schema_id, tycon_id);
+                    let type_name = type_decl.name.text.clone();
+                    match instance_env.insert(
+                        key,
+                        info.clone(),
+                        ridge_ast::column_mirror::SCHEMA_CLASS,
+                        &type_name,
+                    ) {
+                        Ok(()) => generated.push(DerivedInstance {
+                            key,
+                            instance_info: info,
+                            method_body: body,
+                        }),
+                        Err(coherence_err) => errors.push(coherence_err.into_type_error()),
+                    }
+                }
+            }
             continue;
         }
 
@@ -1227,6 +1321,75 @@ fn generate_row(
         columns,
         field_type_names,
         optionals,
+    })
+}
+
+/// Synthesise the `schemaOf` body for `deriving (Schema)` on a record.
+///
+/// Walks the record fields and assigns each its conventional column metadata:
+/// the snake-cased column name, the base `DbType` for its declared type,
+/// nullability from an `Option` wrapper, and — for a field named `id` — the
+/// primary key (plus identity generation when that `id` is an integer, the usual
+/// serial key). Unlike `Row`, every field maps to a column regardless of its
+/// type: the convention falls back to `DbText` for what it cannot infer, and a
+/// hand-written instance states the rest. `deriving (Schema)` on a non-record
+/// type is rejected, the way `deriving (Row)` is.
+fn generate_schema(
+    body: &TypeBody,
+    type_name: &Ident,
+    span: Span,
+) -> Result<DerivedMethodBody, TypeError> {
+    use ridge_ast::column_mirror as cm;
+
+    let TypeBody::Record(r) = body else {
+        return Err(TypeError::NoInstance {
+            class: cm::SCHEMA_CLASS.to_string(),
+            ty: type_name.text.clone(),
+            span,
+            fix_hint: "`deriving (Schema)` is supported on record types only; a \
+                       schema maps record fields to table columns"
+                .to_string(),
+        });
+    };
+
+    let columns = r
+        .fields
+        .iter()
+        .map(|field| {
+            let is_id = field.name.text == "id";
+            let nullable = cm::is_optional_type(&field.ty);
+            let db_type = cm::db_type_tag(&field.ty).to_string();
+            // A non-null integer `id` is the conventional serial primary key —
+            // identity-generated so the insert path can fill it. A non-integer or
+            // nullable `id` is still the key, but supplied by the caller. The same
+            // predicate decides which columns the insert companion drops, so both
+            // read it from `column_mirror`.
+            let generation = if cm::is_generated_field(&field.name.text, &field.ty) {
+                Some("Identity".to_string())
+            } else {
+                None
+            };
+            // `toInsertRow` encodes the same way `Row.toRow` does, so the SqlType
+            // tag comes from the same field classifier — `None` for a field that
+            // is not a base `SqlType` (those map to a column for DDL but carry no
+            // insert encoding).
+            let sql_type_tag = sql_row_field(&field.ty).map(|(_optional, tag)| tag);
+            SchemaColumnSpec {
+                field_name: field.name.text.clone(),
+                column: cm::column_sql_name(&field.name.text),
+                db_type,
+                nullable,
+                primary_key: is_id,
+                generation,
+                sql_type_tag,
+            }
+        })
+        .collect();
+
+    Ok(DerivedMethodBody::DerivedSchemaRecord {
+        entity_name: type_name.text.clone(),
+        table: cm::table_sql_name(&type_name.text),
+        columns,
     })
 }
 

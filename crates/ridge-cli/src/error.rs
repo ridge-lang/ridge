@@ -127,9 +127,46 @@ pub enum CliError {
         /// The qualified name of the test function.
         qualified_name: String,
     },
+
+    /// `C401` — `<src_root>/migrations/Model.ridge` is missing.
+    MigrateModelMissing {
+        /// The path where `Model.ridge` was expected.
+        path: std::path::PathBuf,
+    },
+
+    /// `C402` — `erl` or `erlc` is not on `PATH`.
+    ///
+    /// `ridge migrate add` needs a real BEAM runtime to run the diff/render
+    /// pipeline that produces the migration and snapshot files.
+    MigrateErlangNotFound,
+
+    /// `C403` — the model failed to compile.
+    ///
+    /// The compile diagnostics have already been rendered to stderr before
+    /// this error is returned.
+    MigrateCompileFailed,
+
+    /// `C404` — an unexpected internal failure while generating the
+    /// migration (e.g. the generated driver module could not be located
+    /// after a clean compile, or the BEAM child process that runs it could
+    /// not be spawned or produced no output).
+    MigrateInternal {
+        /// A description of what went wrong.
+        message: String,
+    },
+
+    /// `C405` — the name given to `ridge migrate add` is not valid.
+    MigrateInvalidName {
+        /// The invalid name supplied by the user.
+        name: String,
+    },
 }
 
 impl fmt::Display for CliError {
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one match arm per error code; splitting it up would scatter the C-code registry"
+    )]
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::NoWorkspaceRoot => write!(
@@ -223,6 +260,28 @@ impl fmt::Display for CliError {
                 "C303 BoolTestDeprecated: '{qualified_name}' returns Bool (deprecated); \
                  -- migrate: change return type to Result Unit Text; \
                  replace 'true' with 'Ok ()' and 'false' with 'Err \"<reason>\"'"
+            ),
+            Self::MigrateModelMissing { path } => write!(
+                f,
+                "C401 MigrateModelMissing: '{}' was not found; \
+                 create it with `pub fn model () -> List (EntitySchema Unit) = ...`",
+                path.display()
+            ),
+            Self::MigrateErlangNotFound => write!(
+                f,
+                "C402 MigrateErlangNotFound: erl and erlc must be on PATH \
+                 to run `ridge migrate add` (install OTP 26+)"
+            ),
+            Self::MigrateCompileFailed => write!(
+                f,
+                "C403 MigrateCompileFailed: the model failed to compile; \
+                 see the diagnostics above"
+            ),
+            Self::MigrateInternal { message } => write!(f, "C404 MigrateInternal: {message}"),
+            Self::MigrateInvalidName { name } => write!(
+                f,
+                "C405 MigrateInvalidName: '{name}' is not a valid migration name; \
+                 use only ASCII letters, digits, '_', and '-'"
             ),
         }
     }

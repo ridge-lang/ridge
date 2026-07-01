@@ -143,16 +143,21 @@ pub fn planList (rows: List (Map Text SqlValue)) -> QueryPlan =
 -- so a correlated `EXISTS` in a mutation predicate compiles exactly as it does in a query.
 --
 -- `MutInsert` appends rows to a table — one row for `insert`, many for a bulk insert,
--- all sharing the same columns. `MutUpsert` is an insert that resolves a unique-
--- constraint conflict over `conflictCols`: a non-empty `updateCols` overwrites those
--- columns with the incoming values (`ON CONFLICT … DO UPDATE`), an empty one leaves the
--- existing row untouched (`DO NOTHING`). `MutUpdate` sets the given columns on the rows
--- its predicate admits. `MutDelete` removes the rows its predicate admits.
-pub type MutationPlan = MutInsert Text (List (Map Text SqlValue)) | MutUpsert Text (List (Map Text SqlValue)) (List Text) (List Text) | MutUpdate Text (Map Text SqlValue) QExpr | MutDelete Text QExpr
+-- all sharing the same columns. Its third field names the identity columns the rows
+-- omit: a backend that generates them (a serial default on a real database) fills them,
+-- and the in-memory store assigns the next integer in their place. It is empty for a
+-- raw row insert, which carries every column itself. `MutUpsert` is an insert that
+-- resolves a unique-constraint conflict over `conflictCols`: a non-empty `updateCols`
+-- overwrites those columns with the incoming values (`ON CONFLICT … DO UPDATE`), an empty
+-- one leaves the existing row untouched (`DO NOTHING`). `MutUpdate` sets the given columns
+-- on the rows its predicate admits. `MutDelete` removes the rows its predicate admits.
+pub type MutationPlan = MutInsert Text (List (Map Text SqlValue)) (List Text) | MutUpsert Text (List (Map Text SqlValue)) (List Text) (List Text) | MutUpdate Text (Map Text SqlValue) QExpr | MutDelete Text QExpr
 
--- Append rows to a table. One row for `insert`, many for a bulk insert.
-pub fn planInsert (table: Text) (rows: List (Map Text SqlValue)) -> MutationPlan =
-    MutInsert table rows
+-- Append rows to a table. One row for `insert`, many for a bulk insert. `identityCols`
+-- names the database-generated identity columns the rows omit, so a backend fills them in
+-- place of the caller; a raw row insert passes the empty list and carries every column.
+pub fn planInsert (table: Text) (rows: List (Map Text SqlValue)) (identityCols: List Text) -> MutationPlan =
+    MutInsert table rows identityCols
 
 -- Append rows, resolving a unique-constraint conflict over `conflictCols`. A non-empty
 -- `updateCols` overwrites those columns with the incoming values (`ON CONFLICT … DO
@@ -472,7 +477,7 @@ fn returningList (cols: List Text) -> Text =
 -- subquery can name the row being changed.
 fn renderMutation (plan: MutationPlan) -> { text: Text, binds: List SqlValue } =
     match plan
-        MutInsert table rows ->
+        MutInsert table rows _identityCols ->
             renderInsert table rows
         MutUpsert table rows conflictCols updateCols ->
             renderUpsert table rows conflictCols updateCols

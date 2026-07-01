@@ -574,6 +574,29 @@ impl fmt::Display for TypeError {
                 )
             }
 
+            // ── T047 ──────────────────────────────────────────────────────────
+            Self::InsertShapeFullEntity {
+                entity,
+                companion,
+                omitted,
+                ..
+            } => {
+                write!(
+                    f,
+                    "T047: insert expects the insert shape `{companion}`, not the full entity `{entity}`"
+                )?;
+                if !omitted.is_empty() {
+                    let cols = omitted.join("`, `");
+                    let plural = if omitted.len() == 1 { "" } else { "s" };
+                    write!(
+                        f,
+                        "\n  `{companion}` drops the database-generated column{plural} `{cols}`; build a `{companion}` and leave {them} to the database",
+                        them = if omitted.len() == 1 { "it" } else { "them" },
+                    )?;
+                }
+                Ok(())
+            }
+
             // ── T999 ──────────────────────────────────────────────────────────
             Self::InternalTypeError { detail, .. } => {
                 write!(f, "T999: internal type error\n  {detail}\n  This is a compiler bug. Please report it.")
@@ -645,6 +668,7 @@ impl HasErrorCode for TypeError {
             | Self::ConflictingFunDep {
                 second_span: span, ..
             }
+            | Self::InsertShapeFullEntity { span, .. }
             | Self::InternalTypeError { span, .. } => *span,
 
             // T034: uses `totext_span` (the explicit instance) as the primary span.

@@ -285,6 +285,10 @@ pub fn prelude_types(b: &BuiltinTyCons) -> (FxHashMap<String, Scheme>, FxHashMap
     tycons.insert("RightJoinResult".to_string(), b.right_joinresult);
     // `FullJoinResult/2` — the FULL outer-join verb's result projection.
     tycons.insert("FullJoinResult".to_string(), b.full_joinresult);
+    // `InsertShape/1` — the typed insert verbs' input-shape projection, a prelude
+    // builtin so the reconciled `insert`/`insertMany` schemes can name
+    // `InsertShape e` without an import; reduces during unification.
+    tycons.insert("InsertShape".to_string(), b.insert_shape);
 
     let qexpr_ty = ty_con(b.q_expr, vec![]);
     let q_ctor = |params: Vec<Type>| Scheme {

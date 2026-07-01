@@ -1,0 +1,815 @@
+-- std.schema — the typed schema descriptor for a data entity.
+--
+-- A schema descriptor names, for one entity, the SQL table and the per-column
+-- mapping the data layer needs beyond what the row codec carries: the SQL column
+-- type, nullability, how each column's value originates (caller-supplied vs
+-- database-generated), and the table constraints (primary key, uniqueness,
+-- indexes, foreign keys, checks). It is the persistence-side companion to the
+-- domain record, kept separate so the entity stays a clean aggregate root —
+-- `deriving (Row)` handles values, this handles mapping.
+--
+-- A column is built from explicit metadata through `mkColumn` and refined with
+-- pipe-friendly steps, then collected into the entity schema with `withColumn`:
+--
+--   schema "User" "users"
+--     |> withColumn (mkColumn "id" "id" DbBigInt false |> generated Identity |> primaryKey)
+--     |> withColumn (mkColumn "email" "email" DbText false |> unique)
+--
+-- The dialect-neutral vocabulary below (`DbType`, `Generation`, `FkAction`) is
+-- turned into a backend's `CREATE TABLE` by the DDL renderer.
+
+import std.sql (SqlValue, sqlLiteral, sqlValueSource)
+import std.int as Int
+import std.float as Float
+
+-- ── Column vocabulary ─────────────────────────────────────────────────────────
+
+-- The SQL column type a field maps to. The Ridge field type drives a default
+-- (an `Int` field maps to `DbBigInt`, `Text` to `DbText`, and so on); a
+-- `columnType` step overrides it per column. `DbRaw` is the escape hatch for a
+-- dialect-specific type spelled by hand.
+pub type DbType = DbBoolean | DbInt | DbBigInt | DbFloat | DbDecimal Int Int | DbText | DbVarchar Int | DbUuid | DbTimestamp | DbTimestampTz | DbRaw Text
+
+-- How a column's value originates. `Supplied` (the default) means the caller
+-- provides the value on insert. The others mark the column database-generated or
+-- default-filled: a serial/identity column, a `DEFAULT now()` timestamp, a
+-- literal default, or a raw default expression. A non-`Supplied` column is the
+-- one the insert path later learns to omit (so the database fills it) and the
+-- one the compile-time insert shape later drops (so it cannot be set by hand).
+pub type Generation = Supplied | Identity | DefaultNow | DefaultLit SqlValue | DefaultRawSql Text
+
+-- The referential action a foreign key takes when its target row is deleted or
+-- updated, mirroring SQL's `ON DELETE` / `ON UPDATE`.
+pub type FkAction = NoAction | Restrict | Cascade | SetNull | SetDefault
+
+-- A foreign-key reference: the target table and column, and the on-delete /
+-- on-update actions. Opaque — built through `references` and refined with
+-- `onDelete` / `onUpdate`.
+pub opaque type ForeignKey = { table: Text, column: Text, onDelete: FkAction, onUpdate: FkAction }
+
+-- Reference a target table's column with the default `NoAction` on both events.
+pub fn references (table: Text) (col: Text) -> ForeignKey =
+    ForeignKey { table = table, column = col, onDelete = NoAction, onUpdate = NoAction }
+
+-- Set the on-delete action of a foreign-key reference.
+pub fn onDelete (action: FkAction) (fk: ForeignKey) -> ForeignKey =
+    ForeignKey { table = fk.table, column = fk.column, onDelete = action, onUpdate = fk.onUpdate }
+
+-- Set the on-update action of a foreign-key reference.
+pub fn onUpdate (action: FkAction) (fk: ForeignKey) -> ForeignKey =
+    ForeignKey { table = fk.table, column = fk.column, onDelete = fk.onDelete, onUpdate = action }
+
+-- ── Column schema ─────────────────────────────────────────────────────────────
+
+-- One column's schema: its record-field name, its SQL column name, the SQL type,
+-- nullability, how it is generated, and its constraints. The phantom `e` ties a
+-- column to the entity whose field it describes, so columns of different entities
+-- cannot mix. Opaque — a value is built through `mkColumn` and refined with the
+-- per-column steps below, so the defaults (a supplied, non-null, unconstrained
+-- column) hold until a step changes them.
+pub opaque type ColumnSchema e = { name: Text, column: Text, ty: DbType, nullable: Bool, generation: Generation, primaryKey: Bool, unique: Bool, indexed: Bool, foreignKey: Option ForeignKey, check: Option QExpr }
+
+-- Build a column from explicit metadata: the record-field name, its SQL column
+-- name, its SQL type, and whether it admits NULL. The per-column steps refine it.
+pub fn mkColumn (name: Text) (col: Text) (ty: DbType) (nullable: Bool) -> ColumnSchema e =
+    ColumnSchema { name = name, column = col, ty = ty, nullable = nullable, generation = Supplied, primaryKey = false, unique = false, indexed = false, foreignKey = None, check = None }
+
+-- Build a column from a quoted field accessor (`fn (u: User) -> u.email`) instead
+-- of a bare string — the typed alternative to `mkColumn`, reusing the same accessor
+-- capture `set` and `onConflict` read. The accessor pins the record field, so a
+-- misspelled field is a compile error and a rename retargets the column. The SQL
+-- column name defaults to the captured field name; `named` overrides it. The
+-- per-column steps refine the result exactly as they refine `mkColumn`'s.
+pub fn column (accessor: Quote (e -> v)) (ty: DbType) (nullable: Bool) -> ColumnSchema e =
+    let n = accessorColumn accessor
+    ColumnSchema { name = n, column = n, ty = ty, nullable = nullable, generation = Supplied, primaryKey = false, unique = false, indexed = false, foreignKey = None, check = None }
+
+-- The column a quoted accessor names — its tree is a `QCol`, the single-column
+-- capture `setterColumn`/`conflictColumn` read off their accessor. Anything else
+-- contributes no column name.
+fn accessorColumn (accessor: Quote (e -> v)) -> Text =
+    match accessor.tree
+        QCol c -> c
+        _      -> ""
+
+-- Override the SQL column name (the default is the snake-cased field).
+pub fn named (col: Text) (c: ColumnSchema e) -> ColumnSchema e =
+    ColumnSchema { name = c.name, column = col, ty = c.ty, nullable = c.nullable, generation = c.generation, primaryKey = c.primaryKey, unique = c.unique, indexed = c.indexed, foreignKey = c.foreignKey, check = c.check }
+
+-- Override the SQL column type.
+pub fn columnType (ty: DbType) (c: ColumnSchema e) -> ColumnSchema e =
+    ColumnSchema { name = c.name, column = c.column, ty = ty, nullable = c.nullable, generation = c.generation, primaryKey = c.primaryKey, unique = c.unique, indexed = c.indexed, foreignKey = c.foreignKey, check = c.check }
+
+-- Let the column admit SQL NULL — the schema dual of an `Option` field.
+pub fn nullable (c: ColumnSchema e) -> ColumnSchema e =
+    ColumnSchema { name = c.name, column = c.column, ty = c.ty, nullable = true, generation = c.generation, primaryKey = c.primaryKey, unique = c.unique, indexed = c.indexed, foreignKey = c.foreignKey, check = c.check }
+
+-- Make the column non-null (the default; the inverse of `nullable`).
+pub fn required (c: ColumnSchema e) -> ColumnSchema e =
+    ColumnSchema { name = c.name, column = c.column, ty = c.ty, nullable = false, generation = c.generation, primaryKey = c.primaryKey, unique = c.unique, indexed = c.indexed, foreignKey = c.foreignKey, check = c.check }
+
+-- Set how the column's value originates (identity, default, raw default).
+pub fn generated (g: Generation) (c: ColumnSchema e) -> ColumnSchema e =
+    ColumnSchema { name = c.name, column = c.column, ty = c.ty, nullable = c.nullable, generation = g, primaryKey = c.primaryKey, unique = c.unique, indexed = c.indexed, foreignKey = c.foreignKey, check = c.check }
+
+-- Make the column the table's primary key.
+pub fn primaryKey (c: ColumnSchema e) -> ColumnSchema e =
+    ColumnSchema { name = c.name, column = c.column, ty = c.ty, nullable = c.nullable, generation = c.generation, primaryKey = true, unique = c.unique, indexed = c.indexed, foreignKey = c.foreignKey, check = c.check }
+
+-- Give the column a uniqueness constraint.
+pub fn unique (c: ColumnSchema e) -> ColumnSchema e =
+    ColumnSchema { name = c.name, column = c.column, ty = c.ty, nullable = c.nullable, generation = c.generation, primaryKey = c.primaryKey, unique = true, indexed = c.indexed, foreignKey = c.foreignKey, check = c.check }
+
+-- Give the column a (non-unique) index.
+pub fn indexed (c: ColumnSchema e) -> ColumnSchema e =
+    ColumnSchema { name = c.name, column = c.column, ty = c.ty, nullable = c.nullable, generation = c.generation, primaryKey = c.primaryKey, unique = c.unique, indexed = true, foreignKey = c.foreignKey, check = c.check }
+
+-- Point the column at another table's column as a foreign key.
+pub fn foreignKey (fk: ForeignKey) (c: ColumnSchema e) -> ColumnSchema e =
+    ColumnSchema { name = c.name, column = c.column, ty = c.ty, nullable = c.nullable, generation = c.generation, primaryKey = c.primaryKey, unique = c.unique, indexed = c.indexed, foreignKey = Some fk, check = c.check }
+
+-- Attach a CHECK constraint to the column: a typed Ridge predicate over the entity
+-- (`fn (u: User) -> u.age >= 0`), captured as a `QExpr` and rendered to SQL by the
+-- same compiler the query `WHERE` uses — no stringly-typed SQL. The predicate ties
+-- to the column's entity `e`, so it can only read that entity's fields. The DDL
+-- renderer emits `CHECK (<predicate>)`; `DefaultRawSql` stays the hand-spelled
+-- escape hatch for a dialect-specific check.
+pub fn check (pred: Quote (e -> Bool)) (c: ColumnSchema e) -> ColumnSchema e =
+    ColumnSchema { name = c.name, column = c.column, ty = c.ty, nullable = c.nullable, generation = c.generation, primaryKey = c.primaryKey, unique = c.unique, indexed = c.indexed, foreignKey = c.foreignKey, check = Some pred.tree }
+
+-- Attach a CHECK constraint from an already-built predicate tree, the way `check`
+-- does from a quoted predicate. This is the lower-level door the source renderer
+-- reconstructs a check through: a phantom-erased schema (`ColumnSchema Unit`) has
+-- lost the entity type its `check` quote closed over, so the quote cannot be rebuilt
+-- as source — but the captured `QExpr` tree can, and `checkRaw` sets it back directly.
+-- Hand-written schemas should prefer `check` (type-checked against the entity's fields);
+-- `checkRaw` is the escape hatch generated migrations and snapshots use.
+pub fn checkRaw (tree: QExpr) (c: ColumnSchema e) -> ColumnSchema e =
+    ColumnSchema { name = c.name, column = c.column, ty = c.ty, nullable = c.nullable, generation = c.generation, primaryKey = c.primaryKey, unique = c.unique, indexed = c.indexed, foreignKey = c.foreignKey, check = Some tree }
+
+-- ── Column read accessors ─────────────────────────────────────────────────────
+
+pub fn colName       (c: ColumnSchema e) -> Text              = c.name
+pub fn colColumn     (c: ColumnSchema e) -> Text              = c.column
+pub fn colType       (c: ColumnSchema e) -> DbType            = c.ty
+pub fn colNullable   (c: ColumnSchema e) -> Bool              = c.nullable
+pub fn colGeneration (c: ColumnSchema e) -> Generation        = c.generation
+pub fn colPrimaryKey (c: ColumnSchema e) -> Bool              = c.primaryKey
+pub fn colUnique     (c: ColumnSchema e) -> Bool              = c.unique
+pub fn colIndexed    (c: ColumnSchema e) -> Bool              = c.indexed
+pub fn colForeignKey (c: ColumnSchema e) -> Option ForeignKey = c.foreignKey
+pub fn colCheck      (c: ColumnSchema e) -> Option QExpr      = c.check
+
+-- Whether the column's value is database-generated rather than caller-supplied —
+-- the test the insert path uses to omit a column and the insert shape uses to
+-- drop it. Every non-`Supplied` generation counts as generated.
+pub fn colGenerated (c: ColumnSchema e) -> Bool =
+    match c.generation
+        Supplied -> false
+        _        -> true
+
+-- ── Entity schema ─────────────────────────────────────────────────────────────
+
+-- An entity's full schema: its name, its SQL table, and its columns in
+-- declaration order. The phantom `e` ties it to the entity. Opaque — produced by
+-- the convention instance `deriving (Schema)` synthesises, or built by hand
+-- through `schema` and `withColumn`, and read back through the accessors.
+pub opaque type EntitySchema e = { name: Text, table: Text, columns: List (ColumnSchema e) }
+
+-- Start an empty schema for entity `e`: its name and SQL table, no columns yet.
+-- Pipe `withColumn` steps onto it.
+pub fn schema (name: Text) (table: Text) -> EntitySchema e =
+    EntitySchema { name = name, table = table, columns = [] }
+
+-- Append a fully-built column to a schema.
+pub fn withColumn (c: ColumnSchema e) (s: EntitySchema e) -> EntitySchema e =
+    EntitySchema { name = s.name, table = s.table, columns = appendColumn s.columns c }
+
+-- ── Entity read accessors ─────────────────────────────────────────────────────
+
+pub fn schemaName (s: EntitySchema e) -> Text = s.name
+pub fn schemaTable (s: EntitySchema e) -> Text = s.table
+pub fn schemaColumns (s: EntitySchema e) -> List (ColumnSchema e) = s.columns
+
+-- Erase a schema's phantom entity, fixing it at `Unit`. The phantom is a
+-- build-time guard — it keeps columns of different entities from mixing while a
+-- schema is assembled — and describes no runtime data, so erasing it preserves the
+-- schema exactly. A migration step is a non-parametric value, so it cannot carry an
+-- `EntitySchema e` for an arbitrary `e`; `eraseSchema` gives it the one schema type
+-- a step can hold, and the storage adapter renders that to its dialect's DDL.
+pub fn eraseSchema (s: EntitySchema e) -> EntitySchema Unit =
+    EntitySchema { name = s.name, table = s.table, columns = eraseColumns s.columns }
+
+fn eraseColumns (cols: List (ColumnSchema e)) -> List (ColumnSchema Unit) =
+    match cols
+        []        -> []
+        c :: rest -> eraseColumn c :: eraseColumns rest
+
+fn eraseColumn (c: ColumnSchema e) -> ColumnSchema Unit =
+    ColumnSchema { name = c.name, column = c.column, ty = c.ty, nullable = c.nullable, generation = c.generation, primaryKey = c.primaryKey, unique = c.unique, indexed = c.indexed, foreignKey = c.foreignKey, check = c.check }
+
+-- The SQL column names whose value is database-generated — the omit-on-insert
+-- set the write path reads. Order follows declaration order.
+pub fn generatedColumns (s: EntitySchema e) -> List Text =
+    generatedNames s.columns
+
+-- The SQL column names the database assigns as an identity/serial — a subset of
+-- `generatedColumns` (only `Identity`, not the `DefaultNow`/`DefaultLit`/
+-- `DefaultRawSql` forms). The write path hands this set to the insert plan so the
+-- in-memory store can fill the omitted column with the next integer, the way a
+-- serial default fills it on a real database. Order follows declaration order.
+pub fn identityColumns (s: EntitySchema e) -> List Text =
+    identityNames s.columns
+
+-- ── Schema binding ────────────────────────────────────────────────────────────
+
+-- `HasSchema` binds an entity type to its schema descriptor, the way EF's
+-- `IEntityTypeConfiguration<T>` binds a type to its mapping. `schemaOf` answers
+-- the entity's `EntitySchema` from the type alone — there is no entity value to
+-- read it off — so it takes a phantom `Option e` witness that fixes `e`, the same
+-- dispatch `Row.rowColumns` uses. `toInsertRow` encodes an insert shape — the
+-- entity minus its database-generated columns — to a row, leaving those columns
+-- for the backend to fill; it is how the write path turns a typed insert value
+-- into columns without ever encoding a generated key. `deriving (Schema)`
+-- synthesises both from the record's fields and the naming conventions, so the
+-- user states only the deltas; a hand-written instance spells the mapping out.
+-- The write path and the DDL renderer reach the instance through a witness drawn
+-- from the repository, `schemaOf (entityWitness repo)`.
+pub class HasSchema e =
+    schemaOf (witness: Option e) -> EntitySchema e
+    toInsertRow (shape: InsertShape e) -> Map Text SqlValue
+    toInsertRow (shape: InsertShape e) -> Map Text SqlValue
+
+-- The database-generated column set for entity `e`, reached by type through its
+-- `HasSchema` instance — the omit-on-insert set the write path reads without spelling
+-- out the witness-and-`schemaOf` dance at every insert verb. It takes a probe value of
+-- the entity (its value ignored) so the dictionary is pinned by the argument's type, and
+-- answers the column names, so the caller never handles the opaque `EntitySchema` across
+-- a module boundary.
+pub fn generatedColumnsOf (probe: e) -> List Text where HasSchema e =
+    generatedColumns (schemaOf (probeWitness probe))
+
+-- The identity column set for entity `e`, reached the same way — the auto-increment set
+-- the in-memory store fills when an insert omits it.
+pub fn identityColumnsOf (probe: e) -> List Text where HasSchema e =
+    identityColumns (schemaOf (probeWitness probe))
+
+-- A typed `None` witness from a probe value: ties `schemaOf`'s phantom `Option e` to the
+-- probe's entity, so the schema is selected by type while the value itself is ignored.
+fn probeWitness (_probe: e) -> Option e = None
+
+-- A typed `None` witness from an insert shape: the same trick as `probeWitness`, but
+-- pinned through the `InsertShape e` projection so the write path resolves the schema
+-- from a companion value (which has no generated key to read `e` off).
+fn shapeWitness (_shape: InsertShape e) -> Option e = None
+
+-- The identity column set reached from an insert shape — the auto-increment columns the
+-- in-memory store fills when an insert omits them. The shape variant of `identityColumnsOf`,
+-- used by the typed insert verbs whose argument is the companion rather than the entity.
+pub fn identityColumnsOfShape (shape: InsertShape e) -> List Text where HasSchema e =
+    identityColumns (schemaOf (shapeWitness shape))
+
+-- ── Internal list helpers ─────────────────────────────────────────────────────
+
+fn appendColumn (cols: List (ColumnSchema e)) (c: ColumnSchema e) -> List (ColumnSchema e) =
+    match cols
+        []        -> [c]
+        x :: rest -> x :: appendColumn rest c
+
+fn generatedNames (cols: List (ColumnSchema e)) -> List Text =
+    match cols
+        []        -> []
+        c :: rest ->
+            if colGenerated c then c.column :: generatedNames rest
+            else generatedNames rest
+
+fn identityNames (cols: List (ColumnSchema e)) -> List Text =
+    match cols
+        []        -> []
+        c :: rest ->
+            match c.generation
+                Identity -> c.column :: identityNames rest
+                _        -> identityNames rest
+
+-- ── DDL renderer (Postgres) ───────────────────────────────────────────────────
+--
+-- Turn the dialect-neutral schema vocabulary into a backend's data-definition
+-- language. `schemaToDdl` renders an entity's `EntitySchema` to a Postgres
+-- `CREATE TABLE`, and the `createTableDdl`/`addColumnDdl`/`dropTableDdl`/
+-- `dropColumnDdl`/`indexDdl` family renders the migration runner's schema steps —
+-- all in Ridge, so the storage adapter only runs the statement rather than building
+-- it. Identifiers are double-quoted (any embedded quote doubled) and the few inline
+-- positions a bind parameter cannot fill — a column `DEFAULT`, a `CHECK` literal —
+-- are escaped, so the rendered text is injection-safe by construction.
+--
+-- A database-generated `Identity` column renders as Postgres' `serial`/`bigserial`
+-- pseudo-type, which carries its own sequence and is implicitly `NOT NULL`, so the
+-- insert path can omit it and let the database assign the key.
+
+-- Render an `EntitySchema` to a Postgres `CREATE TABLE` statement: each column with
+-- its type, nullability, default, and constraints (primary key, uniqueness, foreign
+-- key, check), in declaration order. Non-unique indexes are separate statements —
+-- see `schemaIndexDdls`.
+pub fn schemaToDdl (s: EntitySchema e) -> Text =
+    Text.join "" ["CREATE TABLE ", quoteIdent s.table, " (", Text.join ", " (columnFrags s.columns), ")"]
+
+-- The `CREATE INDEX` statements for the schema's `indexed` columns — the non-unique
+-- indexes that cannot ride inline in `CREATE TABLE` (a `unique` column already
+-- carries its constraint inline). One statement per indexed column, named
+-- `<table>_<column>_idx`, in declaration order.
+pub fn schemaIndexDdls (s: EntitySchema e) -> List Text =
+    indexDdlsOf s.table s.columns
+
+-- ── Migration step renderers ──────────────────────────────────────────────────
+--
+-- The DDL for the `std.migrate` schema steps, rendered from the seam tuple
+-- `(name, base-type, nullable, primaryKey, unique)` the runner flattens a column to.
+-- A tuple is the constraint-poor subset of a full column, lowered through the same
+-- column renderer `schemaToDdl` uses, so a migration's `CREATE TABLE` and an entity's
+-- agree on how a column is spelled.
+
+-- `CREATE TABLE` from the migration runner's column tuples.
+pub fn createTableDdl (table: Text) (cols: List (Text, Text, Bool, Bool, Bool)) -> Text =
+    Text.join "" ["CREATE TABLE ", quoteIdent table, " (", Text.join ", " (tupleFrags cols), ")"]
+
+-- `ALTER TABLE … ADD COLUMN` from a column tuple. A primary key cannot be added
+-- against existing rows this way, so the key flag is dropped here.
+pub fn addColumnDdl (table: Text) (col: (Text, Text, Bool, Bool, Bool)) -> Text =
+    Text.join "" ["ALTER TABLE ", quoteIdent table, " ADD COLUMN ", columnDdl (tupleColumnNoPk col)]
+
+-- `ALTER TABLE … ADD COLUMN` from a full column descriptor — the entity-driven
+-- counterpart to `addColumnDdl`, keeping the column's type, nullability, default,
+-- uniqueness, foreign key, and check, which the seam tuple cannot carry. A primary key
+-- cannot be added against a table's existing rows this way, so the key flag is dropped,
+-- the same as the tuple path.
+pub fn addColumnSchemaDdl (table: Text) (c: ColumnSchema e) -> Text =
+    Text.join "" ["ALTER TABLE ", quoteIdent table, " ADD COLUMN ", columnDdlNoPk c]
+
+-- `ALTER TABLE … ALTER COLUMN` from the old and new descriptors of a column present in
+-- both snapshots — the entity-driven counterpart to `addColumnSchemaDdl` for a change
+-- rather than an addition. Only the facets that differ render, each as its own
+-- `ALTER COLUMN` action in one statement (Postgres takes them comma-separated) and in a
+-- fixed order: the SQL type (`… TYPE t`), then nullability (`SET`/`DROP NOT NULL`), then
+-- the `DEFAULT` clause (`SET`/`DROP DEFAULT`). The old descriptor is what makes the output
+-- minimal — an unchanged facet emits nothing. Columns the diff never alters (a
+-- serial/identity transition, or a constraint-only change) never reach here; see
+-- `columnAltered`.
+pub fn alterColumnDdl (table: Text) (old: ColumnSchema e) (new: ColumnSchema e) -> Text =
+    Text.join "" ["ALTER TABLE ", quoteIdent table, " ", Text.join ", " (alterActions old new)]
+
+-- Whether the snapshot diff should emit an `AlterColumn` for a column present in both
+-- snapshots: true when its SQL type, nullability, or `DEFAULT`-style generation changed.
+-- A serial/identity column on either side is excluded — turning a column into or out of an
+-- identity is a table rewrite the plain `ALTER COLUMN` actions cannot express, so it stays
+-- a hand-written step. Constraint changes (primary key, uniqueness, foreign key, index,
+-- check) are likewise out of scope and left as they are.
+pub fn columnAltered (old: ColumnSchema e) (new: ColumnSchema e) -> Bool =
+    if isIdentity old.generation || isIdentity new.generation then false
+    else (old.ty != new.ty) || (old.nullable != new.nullable) || (old.generation != new.generation)
+
+-- `DROP TABLE`.
+pub fn dropTableDdl (table: Text) -> Text =
+    Text.concat "DROP TABLE " (quoteIdent table)
+
+-- `ALTER TABLE … DROP COLUMN`.
+pub fn dropColumnDdl (table: Text) (column: Text) -> Text =
+    Text.join "" ["ALTER TABLE ", quoteIdent table, " DROP COLUMN ", quoteIdent column]
+
+-- `CREATE [UNIQUE] INDEX name ON table (cols)`.
+pub fn indexDdl (name: Text) (table: Text) (cols: List Text) (unique: Bool) -> Text =
+    Text.join "" ["CREATE ", uniqueKw unique, "INDEX ", quoteIdent name, " ON ", quoteIdent table, " (", quotedCols cols, ")"]
+
+-- ── Column rendering ──────────────────────────────────────────────────────────
+
+-- One column's `CREATE TABLE` fragment: its quoted name, its SQL type (a `serial`
+-- pseudo-type for an identity column), then the modifiers it carries — nullability,
+-- default, primary key, uniqueness, foreign key, check — in that order.
+fn columnDdl (c: ColumnSchema e) -> Text =
+    Text.join "" [quoteIdent c.column, " ", colTypeSql c, nullSql c, defaultSql c.generation, pkSql c, uniqSql c, fkSql c.foreignKey, checkSql c.check]
+
+-- The same fragment without the inline `PRIMARY KEY`, for `ALTER TABLE … ADD COLUMN`:
+-- a primary key cannot be added against a table's existing rows.
+fn columnDdlNoPk (c: ColumnSchema e) -> Text =
+    Text.join "" [quoteIdent c.column, " ", colTypeSql c, nullSql c, defaultSql c.generation, uniqSql c, fkSql c.foreignKey, checkSql c.check]
+
+fn isIdentity (g: Generation) -> Bool =
+    match g
+        Identity -> true
+        _        -> false
+
+-- The `ALTER COLUMN` actions a change needs — one per facet that differs between the old
+-- and new descriptor, in the fixed order type, nullability, default — so a rendered alter
+-- reads predictably. Each action targets the new (target) shape; a facet left unchanged
+-- contributes nothing.
+fn alterActions (old: ColumnSchema e) (new: ColumnSchema e) -> List Text =
+    let typeAct = if old.ty != new.ty then [alterTypeAction new] else []
+    let nullAct = if old.nullable != new.nullable then [alterNullAction new] else []
+    let defAct  = if old.generation != new.generation then [alterDefaultAction new] else []
+    concatFrags typeAct (concatFrags nullAct defAct)
+
+fn alterTypeAction (c: ColumnSchema e) -> Text =
+    Text.join "" ["ALTER COLUMN ", quoteIdent c.column, " TYPE ", pgColType c.ty]
+
+fn alterNullAction (c: ColumnSchema e) -> Text =
+    if c.nullable then Text.join "" ["ALTER COLUMN ", quoteIdent c.column, " DROP NOT NULL"]
+    else Text.join "" ["ALTER COLUMN ", quoteIdent c.column, " SET NOT NULL"]
+
+-- The `ALTER COLUMN … DEFAULT` action for the target generation: drop the default when the
+-- column reverts to caller-supplied, or set it to `now()`, a literal, or a raw expression.
+-- `Identity` cannot occur — `columnAltered` excludes an identity column from alteration —
+-- and renders nothing.
+fn alterDefaultAction (c: ColumnSchema e) -> Text =
+    match c.generation
+        Supplied        -> Text.join "" ["ALTER COLUMN ", quoteIdent c.column, " DROP DEFAULT"]
+        Identity        -> ""
+        DefaultNow      -> Text.join "" ["ALTER COLUMN ", quoteIdent c.column, " SET DEFAULT now()"]
+        DefaultLit v    -> Text.join "" ["ALTER COLUMN ", quoteIdent c.column, " SET DEFAULT ", sqlLiteral v]
+        DefaultRawSql r -> Text.join "" ["ALTER COLUMN ", quoteIdent c.column, " SET DEFAULT ", r]
+
+fn concatFrags (a: List Text) (b: List Text) -> List Text =
+    match a
+        []        -> b
+        x :: rest -> x :: concatFrags rest b
+
+fn colTypeSql (c: ColumnSchema e) -> Text =
+    match c.generation
+        Identity -> serialType c.ty
+        _        -> pgColType c.ty
+
+-- An identity column's serial pseudo-type: `serial` for a 32-bit integer, otherwise
+-- `bigserial` (the default identity width).
+fn serialType (t: DbType) -> Text =
+    match t
+        DbInt -> "serial"
+        _     -> "bigserial"
+
+-- The concrete Postgres column type for a dialect-neutral `DbType`.
+fn pgColType (t: DbType) -> Text =
+    match t
+        DbBoolean     -> "boolean"
+        DbInt         -> "integer"
+        DbBigInt      -> "bigint"
+        DbFloat       -> "double precision"
+        DbDecimal p s -> Text.join "" ["numeric(", Int.toText p, ", ", Int.toText s, ")"]
+        DbText        -> "text"
+        DbVarchar n   -> Text.join "" ["varchar(", Int.toText n, ")"]
+        DbUuid        -> "uuid"
+        DbTimestamp   -> "timestamp"
+        DbTimestampTz -> "timestamptz"
+        DbRaw r       -> r
+
+-- ` NOT NULL` unless the column admits NULL. A serial column is implicitly non-null,
+-- so it carries no explicit clause.
+fn nullSql (c: ColumnSchema e) -> Text =
+    match c.generation
+        Identity -> ""
+        _        -> if c.nullable then "" else " NOT NULL"
+
+fn pkSql (c: ColumnSchema e) -> Text =
+    if c.primaryKey then " PRIMARY KEY" else ""
+
+fn uniqSql (c: ColumnSchema e) -> Text =
+    if c.unique then " UNIQUE" else ""
+
+-- The column's `DEFAULT` clause for the non-`Supplied` generations that fill a value
+-- without a serial sequence: `now()` for a timestamp default, an inline literal, or a
+-- raw default expression. `Supplied` and `Identity` carry no `DEFAULT` (an identity is
+-- a serial pseudo-type, not a default).
+fn defaultSql (g: Generation) -> Text =
+    match g
+        Supplied        -> ""
+        Identity        -> ""
+        DefaultNow      -> " DEFAULT now()"
+        DefaultLit v    -> Text.concat " DEFAULT " (sqlLiteral v)
+        DefaultRawSql r -> Text.concat " DEFAULT " r
+
+-- A column's `REFERENCES` clause: the target table and column, plus the `ON DELETE`
+-- and `ON UPDATE` actions when either is not the default `NO ACTION`.
+fn fkSql (fk: Option ForeignKey) -> Text =
+    match fk
+        None   -> ""
+        Some f -> Text.join "" [" REFERENCES ", quoteIdent f.table, " (", quoteIdent f.column, ")", onDeleteSql f.onDelete, onUpdateSql f.onUpdate]
+
+fn onDeleteSql (a: FkAction) -> Text =
+    match a
+        NoAction -> ""
+        _        -> Text.concat " ON DELETE " (fkActionSql a)
+
+fn onUpdateSql (a: FkAction) -> Text =
+    match a
+        NoAction -> ""
+        _        -> Text.concat " ON UPDATE " (fkActionSql a)
+
+fn fkActionSql (a: FkAction) -> Text =
+    match a
+        NoAction   -> "NO ACTION"
+        Restrict   -> "RESTRICT"
+        Cascade    -> "CASCADE"
+        SetNull    -> "SET NULL"
+        SetDefault -> "SET DEFAULT"
+
+-- A column's `CHECK` clause, the captured predicate rendered to SQL with its literals
+-- inline (a DDL check takes no bind parameters), the constraint dual of the predicate
+-- a query `WHERE` compiles.
+fn checkSql (ck: Option QExpr) -> Text =
+    match ck
+        None   -> ""
+        Some e -> Text.join "" [" CHECK (", ckExpr e, ")"]
+
+-- ── CHECK predicate → SQL ─────────────────────────────────────────────────────
+--
+-- The inline-literal dual of the query compiler's `compileExpr`: a `CHECK` constraint
+-- lives in DDL text, where a bind placeholder is not allowed, so each literal is
+-- spelled in place (a text literal single-quote-escaped) rather than collected as a
+-- parameter. Only the predicate-shaped nodes a `Quote (e -> Bool)` can hold are
+-- rendered; the query-shaped nodes (projection, aggregate, exists) cannot appear in a
+-- column check and fall through to empty.
+fn ckExpr (e: QExpr) -> Text =
+    match e
+        QCol c      -> quoteIdent c
+        QColR c     -> quoteIdent c
+        QColAt _ c  -> quoteIdent c
+        QLitInt n   -> Int.toText n
+        QLitText s  -> Text.join "" ["'", Text.replace "'" "''" s, "'"]
+        QLitBool b  -> if b then "TRUE" else "FALSE"
+        QLitFloat x -> Float.toText x
+        QNot x      -> Text.join "" ["(NOT ", ckExpr x, ")"]
+        QNotTrue x  -> Text.join "" ["(", ckExpr x, " IS NOT TRUE)"]
+        QAnd l r    -> ckBin l " AND " r
+        QOr l r     -> ckBin l " OR " r
+        QEq l r     -> ckBin l " = " r
+        QNe l r     -> ckBin l " <> " r
+        QLt l r     -> ckBin l " < " r
+        QGt l r     -> ckBin l " > " r
+        QLe l r     -> ckBin l " <= " r
+        QGe l r     -> ckBin l " >= " r
+        QAdd l r    -> ckBin l " + " r
+        QSub l r    -> ckBin l " - " r
+        QMul l r    -> ckBin l " * " r
+        QDiv l r    -> ckBin l " / " r
+        QMod l r    -> ckBin l " % " r
+        QLike v p   -> Text.join "" ["(", ckExpr v, " LIKE ", ckExpr p, ")"]
+        QIn v items -> ckIn v items
+        QCase c t f -> Text.join "" ["CASE WHEN ", ckExpr c, " THEN ", ckExpr t, " ELSE ", ckExpr f, " END"]
+        _           -> ""
+
+fn ckBin (l: QExpr) (op: Text) (r: QExpr) -> Text =
+    Text.join "" ["(", ckExpr l, op, ckExpr r, ")"]
+
+fn ckIn (v: QExpr) (items: List QExpr) -> Text =
+    match items
+        [] -> "FALSE"
+        _  -> Text.join "" ["(", ckExpr v, " IN (", ckInList items, "))"]
+
+fn ckInList (items: List QExpr) -> Text =
+    match items
+        []        -> ""
+        x :: []   -> ckExpr x
+        x :: rest -> Text.join "" [ckExpr x, ", ", ckInList rest]
+
+-- ── Shared rendering helpers ──────────────────────────────────────────────────
+
+fn columnFrags (cols: List (ColumnSchema e)) -> List Text =
+    match cols
+        []        -> []
+        c :: rest -> columnDdl c :: columnFrags rest
+
+fn tupleFrags (cols: List (Text, Text, Bool, Bool, Bool)) -> List Text =
+    match cols
+        []        -> []
+        t :: rest -> columnDdl (tupleColumn t) :: tupleFrags rest
+
+fn indexDdlsOf (table: Text) (cols: List (ColumnSchema e)) -> List Text =
+    match cols
+        []        -> []
+        c :: rest ->
+            if c.indexed then indexDdl (idxName table c.column) table [c.column] false :: indexDdlsOf table rest
+            else indexDdlsOf table rest
+
+fn idxName (table: Text) (col: Text) -> Text =
+    Text.join "" [table, "_", col, "_idx"]
+
+fn uniqueKw (unique: Bool) -> Text =
+    if unique then "UNIQUE " else ""
+
+fn quotedCols (cols: List Text) -> Text =
+    Text.join ", " (quoteEach cols)
+
+fn quoteEach (cols: List Text) -> List Text =
+    match cols
+        []        -> []
+        c :: rest -> quoteIdent c :: quoteEach rest
+
+-- Lower a migration column tuple into a full `ColumnSchema`, mapping the base-type
+-- name to a `DbType`, so the tuple path reuses the same column renderer the entity
+-- schema uses. The `NoPk` variant drops the primary-key flag for `ADD COLUMN`.
+fn tupleColumn (t: (Text, Text, Bool, Bool, Bool)) -> ColumnSchema e =
+    match t
+        (name, ty, nullable, pk, uniq) -> buildCol name ty nullable pk uniq
+
+fn tupleColumnNoPk (t: (Text, Text, Bool, Bool, Bool)) -> ColumnSchema e =
+    match t
+        (name, ty, nullable, _pk, uniq) -> buildCol name ty nullable false uniq
+
+fn buildCol (name: Text) (ty: Text) (nullable: Bool) (pk: Bool) (uniq: Bool) -> ColumnSchema e =
+    let base = mkColumn name name (dbTypeOfBaseName ty) nullable
+    let withPk = if pk then primaryKey base else base
+    if uniq then unique withPk else withPk
+
+-- Map the migration seam's base-type name (`int`/`text`/`bool`/`float`) to a
+-- `DbType`. `int` is a 64-bit `bigint`, matching the integer width the row codec
+-- moves; an unknown name falls back to `text`.
+fn dbTypeOfBaseName (ty: Text) -> DbType =
+    if ty == "int" then DbBigInt
+    else if ty == "text" then DbText
+    else if ty == "bool" then DbBoolean
+    else if ty == "float" then DbFloat
+    else DbText
+
+fn quoteIdent (name: Text) -> Text =
+    Text.join "" ["\"", Text.replace "\"" "\"\"" name, "\""]
+
+-- ── Ridge-source renderer ─────────────────────────────────────────────────────
+--
+-- Render a schema descriptor back to the Ridge source that rebuilds it — the dual
+-- of the DDL renderer above. Where `schemaToDdl` emits a backend's `CREATE TABLE`,
+-- `schemaToSource` emits the `schema … |> withColumn …` builder chain a model
+-- snapshot is written as, and a generated migration freezes a created table into.
+-- Persisting the model as source (rather than a serialized blob) keeps a snapshot a
+-- plain, git-diffable Ridge module — regenerating the model is just compiling it —
+-- and lets a migration record a table's exact shape without pointing at the (later
+-- mutable) entity. A value round-trips: compiling the rendered text rebuilds a
+-- schema equal to the original.
+--
+-- A schema renders as a single-line expression — no layout-continuation lines
+-- inside it — so it drops into a list without indentation hazards; the snapshot and
+-- migration writers lay the list out one entity per line. Every rendered name is a
+-- quoted, escaped string literal, so an identifier carrying a quote or backslash
+-- stays faithful.
+
+-- Render a `ColumnSchema` to the `mkColumn … |> …` source that rebuilds it: the
+-- name, SQL column, type, and nullability, then the refinement steps it carries
+-- (generation, primary key, uniqueness, index, foreign key) in a fixed order, each
+-- omitted when it holds its default.
+pub fn columnToSource (c: ColumnSchema e) -> Text =
+    Text.join "" (mkColumnSource c :: columnStepFrags c)
+
+fn mkColumnSource (c: ColumnSchema e) -> Text =
+    Text.join "" ["mkColumn ", sourceString c.name, " ", sourceString c.column, " ", dbTypeSource c.ty, " ", sourceBool c.nullable]
+
+-- The refinement steps a column carries, each as a ` |> step` fragment and only when
+-- it differs from `mkColumn`'s default, in the order generation, primary key,
+-- uniqueness, index, foreign key, check. The steps bind to lets and join on one line —
+-- a nested join broken across continuation lines confuses the layout parser.
+fn columnStepFrags (c: ColumnSchema e) -> List Text =
+    let gen = genFrag c.generation
+    let pk = flagFrag c.primaryKey " |> primaryKey"
+    let uniq = flagFrag c.unique " |> unique"
+    let idx = flagFrag c.indexed " |> indexed"
+    let fk = fkFrag c.foreignKey
+    let ck = checkFrag c.check
+    concatFrags gen (concatFrags pk (concatFrags uniq (concatFrags idx (concatFrags fk ck))))
+
+-- A ` |> generated …` fragment for a non-default generation; `Supplied` is the
+-- default `mkColumn` sets, so it renders nothing.
+fn genFrag (g: Generation) -> List Text =
+    match g
+        Supplied -> []
+        _        -> [Text.join "" [" |> generated ", generationSource g]]
+
+fn flagFrag (keep: Bool) (step: Text) -> List Text =
+    match keep
+        true  -> [step]
+        false -> []
+
+fn fkFrag (fk: Option ForeignKey) -> List Text =
+    match fk
+        None   -> []
+        Some f -> [Text.join "" [" |> foreignKey (", fkSource f, ")"]]
+
+-- A ` |> checkRaw …` fragment. A CHECK is captured as a `QExpr` tree; the phantom-erased
+-- schema has lost the entity type the original `check` quote closed over, so the quote
+-- cannot be rebuilt — but the tree can, rendered as `QExpr`-constructor source and set back
+-- through `checkRaw`. (`deriving (Schema)` never produces a check, so only a hand-written
+-- one reaches here.)
+fn checkFrag (ck: Option QExpr) -> List Text =
+    match ck
+        None   -> []
+        Some e -> [Text.join "" [" |> checkRaw ", qexprSource e]]
+
+-- Render an `EntitySchema` to the `schema "Name" "table" |> withColumn (…) |> …`
+-- source that rebuilds it. Columns render in declaration order.
+pub fn schemaToSource (s: EntitySchema e) -> Text =
+    Text.join "" (Text.join "" ["schema ", sourceString s.name, " ", sourceString s.table] :: withColumnFrags s.columns)
+
+fn withColumnFrags (cols: List (ColumnSchema e)) -> List Text =
+    match cols
+        []        -> []
+        c :: rest -> Text.join "" [" |> withColumn (", columnToSource c, ")"] :: withColumnFrags rest
+
+-- ── Source rendering of the column vocabulary ─────────────────────────────────
+
+-- The `DbType` constructor source: a bare name for a nullary type, a parenthesised
+-- application for the ones carrying data, so the result drops into `mkColumn`'s type
+-- argument position directly.
+fn dbTypeSource (t: DbType) -> Text =
+    match t
+        DbBoolean     -> "DbBoolean"
+        DbInt         -> "DbInt"
+        DbBigInt      -> "DbBigInt"
+        DbFloat       -> "DbFloat"
+        DbDecimal p s -> Text.join "" ["(DbDecimal ", Int.toText p, " ", Int.toText s, ")"]
+        DbText        -> "DbText"
+        DbVarchar n   -> Text.join "" ["(DbVarchar ", Int.toText n, ")"]
+        DbUuid        -> "DbUuid"
+        DbTimestamp   -> "DbTimestamp"
+        DbTimestampTz -> "DbTimestampTz"
+        DbRaw r       -> Text.join "" ["(DbRaw ", sourceString r, ")"]
+
+-- The `Generation` constructor source. `DefaultLit` carries a `SqlValue` whose variants are
+-- opaque outside `std.sql`, so its source is rebuilt through `sqlValueSource` (the runtime
+-- renderer that lives beside the value at the same seam as `sqlLiteral`): a `DefaultLit
+-- (sqlInt 0)` round-trips as its own factory call. `deriving (Schema)` never produces a
+-- `DefaultLit`, so only a hand-written literal default reaches this arm.
+fn generationSource (g: Generation) -> Text =
+    match g
+        Supplied        -> "Supplied"
+        Identity        -> "Identity"
+        DefaultNow      -> "DefaultNow"
+        DefaultLit v    -> Text.join "" ["(DefaultLit ", sqlValueSource v, ")"]
+        DefaultRawSql r -> Text.join "" ["(DefaultRawSql ", sourceString r, ")"]
+
+-- A foreign key's source: `references "table" "column"` plus the `onDelete`/`onUpdate`
+-- steps for whichever action is not the default `NoAction`.
+fn fkSource (fk: ForeignKey) -> Text =
+    Text.join "" (Text.join "" ["references ", sourceString fk.table, " ", sourceString fk.column] :: fkStepFrags fk)
+
+fn fkStepFrags (fk: ForeignKey) -> List Text =
+    concatFrags (fkActionFrag " |> onDelete " fk.onDelete) (fkActionFrag " |> onUpdate " fk.onUpdate)
+
+fn fkActionFrag (step: Text) (a: FkAction) -> List Text =
+    match a
+        NoAction -> []
+        _        -> [Text.join "" [step, fkActionSource a]]
+
+fn fkActionSource (a: FkAction) -> Text =
+    match a
+        NoAction   -> "NoAction"
+        Restrict   -> "Restrict"
+        Cascade    -> "Cascade"
+        SetNull    -> "SetNull"
+        SetDefault -> "SetDefault"
+
+-- A `Bool` as its Ridge source literal.
+fn sourceBool (b: Bool) -> Text =
+    if b then "true" else "false"
+
+-- A `Text` as a Ridge string literal: wrapped in quotes with any backslash and quote
+-- escaped, so a name carrying either renders as valid, faithful source.
+fn sourceString (s: Text) -> Text =
+    Text.join "" ["\"", Text.replace "\"" "\\\"" (Text.replace "\\" "\\\\" s), "\""]
+
+-- A CHECK predicate's `QExpr` tree as the constructor source that rebuilds it — the
+-- source dual of `ckExpr` (which renders the same tree to SQL). Only the predicate-shaped
+-- nodes a `Quote (e -> Bool)` can hold are rendered; a query-shaped node cannot occur in a
+-- column check and falls through to a marker (never reached by a valid check). `QExpr` and
+-- its constructors are prelude builtins, so the rendered source needs no import.
+fn qexprSource (e: QExpr) -> Text =
+    match e
+        QCol c      -> Text.join "" ["(QCol ", sourceString c, ")"]
+        QColR c     -> Text.join "" ["(QColR ", sourceString c, ")"]
+        QColAt n c  -> Text.join "" ["(QColAt ", Int.toText n, " ", sourceString c, ")"]
+        QLitInt n   -> Text.join "" ["(QLitInt ", Int.toText n, ")"]
+        QLitText s  -> Text.join "" ["(QLitText ", sourceString s, ")"]
+        QLitBool b  -> Text.join "" ["(QLitBool ", sourceBool b, ")"]
+        QLitFloat x -> Text.join "" ["(QLitFloat ", Float.toText x, ")"]
+        QNot x      -> Text.join "" ["(QNot ", qexprSource x, ")"]
+        QNotTrue x  -> Text.join "" ["(QNotTrue ", qexprSource x, ")"]
+        QAnd l r    -> qBinSource "QAnd" l r
+        QOr l r     -> qBinSource "QOr" l r
+        QEq l r     -> qBinSource "QEq" l r
+        QNe l r     -> qBinSource "QNe" l r
+        QLt l r     -> qBinSource "QLt" l r
+        QGt l r     -> qBinSource "QGt" l r
+        QLe l r     -> qBinSource "QLe" l r
+        QGe l r     -> qBinSource "QGe" l r
+        QAdd l r    -> qBinSource "QAdd" l r
+        QSub l r    -> qBinSource "QSub" l r
+        QMul l r    -> qBinSource "QMul" l r
+        QDiv l r    -> qBinSource "QDiv" l r
+        QMod l r    -> qBinSource "QMod" l r
+        QLike v p   -> qBinSource "QLike" v p
+        QIn v items -> Text.join "" ["(QIn ", qexprSource v, " ", qexprListSource items, ")"]
+        QCase c t f -> Text.join "" ["(QCase ", qexprSource c, " ", qexprSource t, " ", qexprSource f, ")"]
+        _           -> "unsupportedCheckExpr"
+
+fn qBinSource (ctor: Text) (l: QExpr) (r: QExpr) -> Text =
+    Text.join "" ["(", ctor, " ", qexprSource l, " ", qexprSource r, ")"]
+
+fn qexprListSource (items: List QExpr) -> Text =
+    Text.join "" ["[", Text.join ", " (qexprEach items), "]"]
+
+fn qexprEach (items: List QExpr) -> List Text =
+    match items
+        []        -> []
+        x :: rest -> qexprSource x :: qexprEach rest

@@ -62,6 +62,16 @@ pub(crate) struct LocalScope {
     /// Module-level fn/const arity table: `name → arity`.
     /// Shared (Arc) so that clone (e.g. for match arms, lambda scopes) is cheap.
     pub(crate) fn_arity: Arc<FxHashMap<String, u32>>,
+    /// Workspace-wide arity table for symbols in *other* modules:
+    /// `module_id → (name → arity)`.
+    ///
+    /// A `SymbolRef::External` call knows only its callee's module id and name,
+    /// not its arity, so it cannot tell whether a trailing `()` is a real
+    /// `Unit` argument or the punctuation of a zero-parameter call. This table
+    /// supplies the callee's arity across the module boundary, letting the
+    /// cross-module call apply the same unit-paren shim the local path uses.
+    /// Shared (Arc) so cloning a scope stays cheap.
+    pub(crate) external_arity: Arc<FxHashMap<ModuleId, FxHashMap<String, u32>>>,
     /// When lowering actor bodies: `(parent_module_id, parent_beam_name)`.
     ///
     /// Any `SymbolRef::Local { module: M }` where `M == parent_module_id` must be
@@ -112,6 +122,7 @@ impl LocalScope {
             letrec_locals: Arc::new(FxHashSet::default()),
             own_module_beam_name: None,
             actor_state_idx: 0,
+            external_arity: Arc::new(FxHashMap::default()),
         }
     }
 
@@ -127,6 +138,7 @@ impl LocalScope {
             letrec_locals: Arc::new(FxHashSet::default()),
             own_module_beam_name: None,
             actor_state_idx: 0,
+            external_arity: Arc::new(FxHashMap::default()),
         }
     }
 
@@ -146,6 +158,7 @@ impl LocalScope {
             letrec_locals: Arc::new(FxHashSet::default()),
             own_module_beam_name: Some(Arc::from(module_beam_name)),
             actor_state_idx: 0,
+            external_arity: Arc::new(FxHashMap::default()),
         }
     }
 
@@ -161,6 +174,7 @@ impl LocalScope {
             letrec_locals: Arc::new(FxHashSet::default()),
             own_module_beam_name: None,
             actor_state_idx: 0,
+            external_arity: Arc::new(FxHashMap::default()),
         }
     }
 
@@ -188,6 +202,7 @@ impl LocalScope {
             // runtime `undefined function ridge_actor_*:init/1` crash.
             own_module_beam_name: Some(Arc::from(parent_beam_name)),
             actor_state_idx: 0,
+            external_arity: Arc::new(FxHashMap::default()),
         }
     }
 

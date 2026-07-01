@@ -23,7 +23,7 @@
 use std::cmp::Ordering;
 
 use ridge_ast::Span;
-use ridge_types::{CapRow, Row, RowTail, RowVid, TyVid, Type};
+use ridge_types::{CapRow, Row, RowTail, RowVid, TyConDecl, TyConId, TyConKind, TyVid, Type};
 
 use crate::ctx::{CapValue, CapVidKey, InferCtx, RowValue, RowVidKey, TyValue, TyVidKey};
 use crate::error::TypeError;
@@ -165,6 +165,47 @@ pub fn unify(ctx: &mut InferCtx, a: &Type, b: &Type) -> Result<(), TypeError> {
         ctx.reduce_fulljoinresult_arg(&q, &f)
     }
 
+    // `InsertShape e` is the insert-input shape extractor: when its argument is a
+    // concrete entity it reduces to the record a typed insert accepts (the
+    // `<Entity>Insert` companion, or the entity itself when none of its columns are
+    // generated). Returns `None` for anything else — including `InsertShape ?e`
+    // whose entity is still a variable, which the invertible arm below handles.
+    fn reduce_insert_shape(ctx: &mut InferCtx, t: &Type) -> Option<Type> {
+        let Type::Con(id, args) = t else {
+            return None;
+        };
+        if id.0 != ridge_types::INSERTSHAPE_TYCON_ID || args.len() != 1 {
+            return None;
+        }
+        let e = ctx.shallow_resolve(&args[0]);
+        ctx.reduce_insert_shape_arg(&e)
+    }
+
+    // The invert half of `InsertShape e`: when `lhs` is a stuck shape projection
+    // (its entity still a variable) and `rhs` is a concrete shape — a companion
+    // record, or a no-generated-column entity — recover the entity `rhs` belongs
+    // to and bind the projection's variable to it. Returns `Some(())` after
+    // binding, so the caller retries and the now-reducible projection unifies; the
+    // entity thus flows from the shaped value or the repository argument in either
+    // order. An entity that HAS a distinct companion is not a valid shape, so it
+    // recovers nothing and a full such entity passed where a shape is expected
+    // stays a type error.
+    fn invert_insert_shape(ctx: &mut InferCtx, lhs: &Type, rhs: &Type) -> Option<()> {
+        let Type::Con(id, args) = lhs else {
+            return None;
+        };
+        if id.0 != ridge_types::INSERTSHAPE_TYCON_ID || args.len() != 1 {
+            return None;
+        }
+        if !matches!(ctx.shallow_resolve(&args[0]), Type::Var(_)) {
+            return None;
+        }
+        let entity = ctx.insert_shape_inverse(rhs)?;
+        let arg = args[0].clone();
+        unify(ctx, &arg, &entity).ok()?;
+        Some(())
+    }
+
     let a = ctx.shallow_resolve(a);
     let b = ctx.shallow_resolve(b);
 
@@ -220,6 +261,24 @@ pub fn unify(ctx: &mut InferCtx, a: &Type, b: &Type) -> Result<(), TypeError> {
     }
     if let Some(reduced) = reduce_fulljoinresult(ctx, &b) {
         return unify(ctx, &a, &reduced);
+    }
+
+    // Reduce a top-level `InsertShape` whose entity is concrete on either side,
+    // then retry. A stuck one (`InsertShape ?e`) is handled by the invertible arm
+    // next: if the other side is a concrete shape it pins `?e` and we retry,
+    // otherwise both fall through to the structural `Con/Con` arm where
+    // `InsertShape e ~ InsertShape e'` unifies the entities.
+    if let Some(reduced) = reduce_insert_shape(ctx, &a) {
+        return unify(ctx, &reduced, &b);
+    }
+    if let Some(reduced) = reduce_insert_shape(ctx, &b) {
+        return unify(ctx, &a, &reduced);
+    }
+    if invert_insert_shape(ctx, &a, &b).is_some() {
+        return unify(ctx, &a, &b);
+    }
+    if invert_insert_shape(ctx, &b, &a).is_some() {
+        return unify(ctx, &a, &b);
     }
 
     match (&a, &b) {
@@ -644,6 +703,18 @@ fn row_mismatch(
 fn mismatch(ctx: &mut InferCtx, expected: &Type, found: &Type) -> TypeError {
     let expected = ctx.deep_resolve(expected);
     let found = ctx.deep_resolve(found);
+
+    // A full entity supplied where its insert shape is expected — `insert (User
+    // { id = 1, .. }) repo` — is a common mistake: the typed insert takes the
+    // `<Entity>Insert` companion, not the entity, so a hand-written generated
+    // column is rejected here. By this point `InsertShape User` has already
+    // reduced to `UserInsert`, so the failing pair is the companion against the
+    // entity. Detect it from the companion↔entity registry and emit the targeted
+    // T047, which names the generated columns to drop, instead of the bare T001.
+    if let Some(err) = insert_shape_full_entity(ctx, &expected, &found) {
+        return err;
+    }
+
     let (expected, found) =
         crate::render::render_type_pair_with(&expected, &found, &ctx.tycon_decls);
     TypeError::TypeMismatch {
@@ -651,6 +722,85 @@ fn mismatch(ctx: &mut InferCtx, expected: &Type, found: &Type) -> TypeError {
         found,
         span: dummy_span(),
     }
+}
+
+/// When a full entity (`found`) is supplied where its `<Entity>Insert` companion
+/// (`expected`) is wanted, build the targeted [`TypeError::InsertShapeFullEntity`].
+/// Both types are already deep-resolved. Returns `None` for any other pair,
+/// leaving the caller to emit the generic `T001 TypeMismatch`.
+///
+/// The expected side appears in two shapes depending on whether the entity was
+/// pinned before the failing unification:
+///   - already reduced to the companion record `Con(<Entity>Insert)`, or
+///   - a still-stuck `InsertShape ?e` whose entity could not be pinned precisely
+///     because the supplied entity has a distinct companion (so the invertible
+///     reduction declined it). Either way the entity is `found` and its companion
+///     is known from the registry.
+fn insert_shape_full_entity(ctx: &InferCtx, expected: &Type, found: &Type) -> Option<TypeError> {
+    // `found` must be a concrete, arity-0 entity.
+    let Type::Con(entity_id, ent_args) = found else {
+        return None;
+    };
+    if !ent_args.is_empty() {
+        return None;
+    }
+    let companion_id = match expected {
+        // Reduced: the registry maps this companion back to `found`.
+        Type::Con(cid, cargs)
+            if cargs.is_empty() && ctx.insert_shape_entities.get(cid) == Some(entity_id) =>
+        {
+            *cid
+        }
+        // Stuck: an unreduced `InsertShape e`. It only reaches here against a
+        // concrete entity that has a companion — a no-companion entity would have
+        // unified via the invertible reduction — so the entity drives the lookup.
+        Type::Con(pid, pargs) if pid.0 == ridge_types::INSERTSHAPE_TYCON_ID && pargs.len() == 1 => {
+            *ctx.insert_shapes.get(entity_id)?
+        }
+        _ => return None,
+    };
+    let entity = tycon_name(&ctx.tycon_decls, *entity_id)?;
+    let companion = tycon_name(&ctx.tycon_decls, companion_id)?;
+    let omitted = omitted_columns(&ctx.tycon_decls, *entity_id, companion_id);
+    Some(TypeError::InsertShapeFullEntity {
+        entity,
+        companion,
+        omitted,
+        span: dummy_span(),
+    })
+}
+
+/// The display name of a tycon by id, if present in `decls`.
+fn tycon_name(decls: &[TyConDecl], id: TyConId) -> Option<String> {
+    decls.iter().find(|d| d.id == id).map(|d| d.name.clone())
+}
+
+/// The record fields an entity carries that its insert companion drops — the
+/// database-generated columns — in the entity's declaration order. Empty when
+/// either tycon is missing or not a record (the companion is always a subset of
+/// the entity's fields, so this is exactly the generated columns).
+fn omitted_columns(decls: &[TyConDecl], entity_id: TyConId, companion_id: TyConId) -> Vec<String> {
+    let fields = |id: TyConId| -> Vec<String> {
+        decls
+            .iter()
+            .find(|d| d.id == id)
+            .and_then(|d| match &d.kind {
+                TyConKind::Record(schema) => Some(
+                    schema
+                        .record_fields()
+                        .iter()
+                        .map(|field| field.name.clone())
+                        .collect(),
+                ),
+                _ => None,
+            })
+            .unwrap_or_default()
+    };
+    let kept: rustc_hash::FxHashSet<String> = fields(companion_id).into_iter().collect();
+    fields(entity_id)
+        .into_iter()
+        .filter(|field| !kept.contains(field))
+        .collect()
 }
 
 /// A zero-offset dummy span used when no source location is available at the
@@ -839,6 +989,113 @@ mod tests {
         unify(&mut ctx, &ret_of(proj), &Type::Var(r)).unwrap();
         let resolved = ctx.deep_resolve(&Type::Var(r));
         assert_eq!(format!("{resolved:?}"), format!("{summary:?}"));
+    }
+
+    // ─────────────────────────────────────────────────────────────────────────
+    // InsertShape/1 — the invertible insert-input shape extractor.
+    // ─────────────────────────────────────────────────────────────────────────
+
+    // A gen-column entity `User` (cid 100) whose companion is `UserInsert`
+    // (cid 200); a plain entity `Tag` (cid 150) with no generated columns.
+    fn make_shape_ctx() -> InferCtx {
+        let mut ctx = make_ctx();
+        ctx.insert_shapes.insert(cid(100), cid(200));
+        ctx.insert_shape_entities.insert(cid(200), cid(100));
+        ctx
+    }
+
+    fn insert_shape_of(arg: Type) -> Type {
+        Type::Con(cid(ridge_types::INSERTSHAPE_TYCON_ID), vec![arg])
+    }
+
+    /// `InsertShape User` reduces to the companion `UserInsert` — a gen-column
+    /// entity drops them, so the typed insert accepts the companion.
+    #[test]
+    fn insert_shape_of_gen_entity_reduces_to_companion() {
+        let mut ctx = make_shape_ctx();
+        let resolved = ctx.deep_resolve(&insert_shape_of(Type::Con(cid(100), vec![])));
+        assert_eq!(
+            format!("{resolved:?}"),
+            format!("{:?}", Type::Con(cid(200), vec![]))
+        );
+    }
+
+    /// `InsertShape Tag` is the identity for an entity with no generated columns —
+    /// it has no table entry, so its insert shape is itself.
+    #[test]
+    fn insert_shape_of_plain_entity_is_identity() {
+        let mut ctx = make_shape_ctx();
+        let resolved = ctx.deep_resolve(&insert_shape_of(Type::Con(cid(150), vec![])));
+        assert_eq!(
+            format!("{resolved:?}"),
+            format!("{:?}", Type::Con(cid(150), vec![]))
+        );
+    }
+
+    /// `InsertShape ?e` with `e` unbound stays a stuck projection, not an error —
+    /// it reduces once the entity is pinned.
+    #[test]
+    fn insert_shape_of_unpinned_var_stays_stuck() {
+        let mut ctx = make_shape_ctx();
+        let e = ctx.fresh_tyvid();
+        match ctx.deep_resolve(&insert_shape_of(Type::Var(e))) {
+            Type::Con(id, _) => assert_eq!(id.0, ridge_types::INSERTSHAPE_TYCON_ID),
+            other => panic!("expected InsertShape ?e to be carried, got {other:?}"),
+        }
+    }
+
+    /// The invertible half: `InsertShape ?e ~ UserInsert` pins `?e = User` from the
+    /// companion, so the entity flows from the shaped value regardless of argument
+    /// order, and the projection then unifies.
+    #[test]
+    fn insert_shape_inverts_against_companion() {
+        let mut ctx = make_shape_ctx();
+        let e = ctx.fresh_tyvid();
+        unify(
+            &mut ctx,
+            &insert_shape_of(Type::Var(e)),
+            &Type::Con(cid(200), vec![]),
+        )
+        .unwrap();
+        let resolved = ctx.deep_resolve(&Type::Var(e));
+        assert_eq!(
+            format!("{resolved:?}"),
+            format!("{:?}", Type::Con(cid(100), vec![]))
+        );
+    }
+
+    /// `InsertShape ?e ~ Tag` pins `?e = Tag` (a plain entity is its own shape).
+    #[test]
+    fn insert_shape_inverts_against_plain_entity() {
+        let mut ctx = make_shape_ctx();
+        let e = ctx.fresh_tyvid();
+        unify(
+            &mut ctx,
+            &insert_shape_of(Type::Var(e)),
+            &Type::Con(cid(150), vec![]),
+        )
+        .unwrap();
+        let resolved = ctx.deep_resolve(&Type::Var(e));
+        assert_eq!(
+            format!("{resolved:?}"),
+            format!("{:?}", Type::Con(cid(150), vec![]))
+        );
+    }
+
+    /// Passing the FULL gen-column entity where a shape is expected stays a type
+    /// error: `InsertShape ?e ~ User` pins `?e = User`, the forward reduction then
+    /// maps it to the companion `UserInsert`, and `UserInsert ~ User` mismatches.
+    #[test]
+    fn insert_shape_rejects_full_gen_entity() {
+        let mut ctx = make_shape_ctx();
+        let e = ctx.fresh_tyvid();
+        let err = unify(
+            &mut ctx,
+            &insert_shape_of(Type::Var(e)),
+            &Type::Con(cid(100), vec![]),
+        )
+        .unwrap_err();
+        assert_eq!(err.code(), "T001");
     }
 
     // ─────────────────────────────────────────────────────────────────────────

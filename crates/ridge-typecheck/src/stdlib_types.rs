@@ -531,6 +531,42 @@ fn reconciled_decls(b: &BuiltinTyCons, base: u32) -> Vec<TyConDecl> {
                             Type::Con(b.bool, vec![]),
                         ]),
                     },
+                    // `CreateEntity` carries the entity-driven schema descriptor with its
+                    // phantom erased to `Unit` (`EntitySchema`, this block's `base + 30`),
+                    // so the backend renders the full `CREATE TABLE` rather than the
+                    // constraint-poor column tuple the other variants carry.
+                    UnionVariant {
+                        name: "CreateEntity".to_string(),
+                        kind: VariantPayload::Positional(vec![Type::Con(
+                            TyConId(base + 30),
+                            vec![Type::Con(b.unit, vec![])],
+                        )]),
+                    },
+                    // `AddEntityColumn` carries the table name and one full column
+                    // descriptor (`ColumnSchema`, this block's `base + 29`, phantom erased
+                    // to `Unit`), so the backend renders `ALTER TABLE … ADD COLUMN` with
+                    // the column's type, default, and constraints rather than the
+                    // constraint-poor tuple `AddColumn` carries.
+                    UnionVariant {
+                        name: "AddEntityColumn".to_string(),
+                        kind: VariantPayload::Positional(vec![
+                            Type::Con(b.text, vec![]),
+                            Type::Con(TyConId(base + 29), vec![Type::Con(b.unit, vec![])]),
+                        ]),
+                    },
+                    // `AlterColumn` carries the table name and the old and new column
+                    // descriptors (`ColumnSchema`, this block's `base + 29`, phantom erased
+                    // to `Unit`) of a column present in both snapshots whose type,
+                    // nullability, or default changed, so the backend renders a minimal
+                    // `ALTER TABLE … ALTER COLUMN` from the difference between the two.
+                    UnionVariant {
+                        name: "AlterColumn".to_string(),
+                        kind: VariantPayload::Positional(vec![
+                            Type::Con(b.text, vec![]),
+                            Type::Con(TyConId(base + 29), vec![Type::Con(b.unit, vec![])]),
+                            Type::Con(TyConId(base + 29), vec![Type::Con(b.unit, vec![])]),
+                        ]),
+                    },
                 ],
             }),
             def_span: None,
@@ -1199,7 +1235,8 @@ fn reconciled_decls(b: &BuiltinTyCons, base: u32) -> Vec<TyConDecl> {
             is_anon: false,
         },
         // `std.query` — the mutation-plan tree (stdlib/query.ridge), the write-side
-        // counterpart of `QueryPlan`. `MutInsert table rows` appends one or more rows;
+        // counterpart of `QueryPlan`. `MutInsert table rows identityCols` appends one or
+        // more rows, the backend filling the database-generated `identityCols` the rows omit;
         // `MutUpsert table rows conflictCols updateCols` appends rows, resolving a
         // unique-constraint conflict over `conflictCols` by overwriting `updateCols`
         // (`ON CONFLICT … DO UPDATE`) or, with no update columns, leaving the row
@@ -1226,6 +1263,9 @@ fn reconciled_decls(b: &BuiltinTyCons, base: u32) -> Vec<TyConDecl> {
                                     vec![Type::Con(b.text, vec![]), Type::Con(b.sql_value, vec![])],
                                 )],
                             ),
+                            // identityCols: the database-generated identity columns the
+                            // rows omit, a `List Text` the backend fills in their place.
+                            Type::Con(b.list, vec![Type::Con(b.text, vec![])]),
                         ]),
                     },
                     UnionVariant {
@@ -1340,6 +1380,272 @@ fn reconciled_decls(b: &BuiltinTyCons, base: u32) -> Vec<TyConDecl> {
             def_span: None,
             def_module_raw: None,
             opaque: false,
+            is_anon: false,
+        },
+        // `std.schema` — the dialect-neutral SQL column type. A union declared in
+        // Ridge (stdlib/schema.ridge); a `columnType` step overrides the default a
+        // field type implies, and `DbRaw` spells a dialect-specific type by hand.
+        // Variant order mirrors the source.
+        TyConDecl {
+            id: TyConId(base + 25),
+            name: "DbType".to_string(),
+            arity: 0,
+            kind: TyConKind::Union(UnionSchema {
+                params: vec![],
+                variants: vec![
+                    UnionVariant {
+                        name: "DbBoolean".to_string(),
+                        kind: VariantPayload::Nullary,
+                    },
+                    UnionVariant {
+                        name: "DbInt".to_string(),
+                        kind: VariantPayload::Nullary,
+                    },
+                    UnionVariant {
+                        name: "DbBigInt".to_string(),
+                        kind: VariantPayload::Nullary,
+                    },
+                    UnionVariant {
+                        name: "DbFloat".to_string(),
+                        kind: VariantPayload::Nullary,
+                    },
+                    UnionVariant {
+                        name: "DbDecimal".to_string(),
+                        kind: VariantPayload::Positional(vec![
+                            Type::Con(b.int, vec![]),
+                            Type::Con(b.int, vec![]),
+                        ]),
+                    },
+                    UnionVariant {
+                        name: "DbText".to_string(),
+                        kind: VariantPayload::Nullary,
+                    },
+                    UnionVariant {
+                        name: "DbVarchar".to_string(),
+                        kind: VariantPayload::Positional(vec![Type::Con(b.int, vec![])]),
+                    },
+                    UnionVariant {
+                        name: "DbUuid".to_string(),
+                        kind: VariantPayload::Nullary,
+                    },
+                    UnionVariant {
+                        name: "DbTimestamp".to_string(),
+                        kind: VariantPayload::Nullary,
+                    },
+                    UnionVariant {
+                        name: "DbTimestampTz".to_string(),
+                        kind: VariantPayload::Nullary,
+                    },
+                    UnionVariant {
+                        name: "DbRaw".to_string(),
+                        kind: VariantPayload::Positional(vec![Type::Con(b.text, vec![])]),
+                    },
+                ],
+            }),
+            def_span: None,
+            def_module_raw: None,
+            opaque: false,
+            is_anon: false,
+        },
+        // `std.schema` — how a column's value originates. A union declared in Ridge
+        // (stdlib/schema.ridge); a non-`Supplied` variant marks the column
+        // database-generated or default-filled, which drives omit-on-insert.
+        // Variant order mirrors the source.
+        TyConDecl {
+            id: TyConId(base + 26),
+            name: "Generation".to_string(),
+            arity: 0,
+            kind: TyConKind::Union(UnionSchema {
+                params: vec![],
+                variants: vec![
+                    UnionVariant {
+                        name: "Supplied".to_string(),
+                        kind: VariantPayload::Nullary,
+                    },
+                    UnionVariant {
+                        name: "Identity".to_string(),
+                        kind: VariantPayload::Nullary,
+                    },
+                    UnionVariant {
+                        name: "DefaultNow".to_string(),
+                        kind: VariantPayload::Nullary,
+                    },
+                    UnionVariant {
+                        name: "DefaultLit".to_string(),
+                        kind: VariantPayload::Positional(vec![Type::Con(b.sql_value, vec![])]),
+                    },
+                    UnionVariant {
+                        name: "DefaultRawSql".to_string(),
+                        kind: VariantPayload::Positional(vec![Type::Con(b.text, vec![])]),
+                    },
+                ],
+            }),
+            def_span: None,
+            def_module_raw: None,
+            opaque: false,
+            is_anon: false,
+        },
+        // `std.schema` — the referential action of a foreign key. A union declared
+        // in Ridge (stdlib/schema.ridge), mirroring SQL's `ON DELETE`/`ON UPDATE`.
+        // Variant order mirrors the source.
+        TyConDecl {
+            id: TyConId(base + 27),
+            name: "FkAction".to_string(),
+            arity: 0,
+            kind: TyConKind::Union(UnionSchema {
+                params: vec![],
+                variants: vec![
+                    UnionVariant {
+                        name: "NoAction".to_string(),
+                        kind: VariantPayload::Nullary,
+                    },
+                    UnionVariant {
+                        name: "Restrict".to_string(),
+                        kind: VariantPayload::Nullary,
+                    },
+                    UnionVariant {
+                        name: "Cascade".to_string(),
+                        kind: VariantPayload::Nullary,
+                    },
+                    UnionVariant {
+                        name: "SetNull".to_string(),
+                        kind: VariantPayload::Nullary,
+                    },
+                    UnionVariant {
+                        name: "SetDefault".to_string(),
+                        kind: VariantPayload::Nullary,
+                    },
+                ],
+            }),
+            def_span: None,
+            def_module_raw: None,
+            opaque: false,
+            is_anon: false,
+        },
+        // `std.schema` — a foreign-key reference. An opaque record declared in Ridge
+        // (stdlib/schema.ridge): the target table and column and the on-delete /
+        // on-update actions. Opaque, built only through `references` and refined
+        // with `onDelete`/`onUpdate`. Field order mirrors the source.
+        TyConDecl {
+            id: TyConId(base + 28),
+            name: "ForeignKey".to_string(),
+            arity: 0,
+            kind: TyConKind::Record(RecordSchema::new(
+                vec![],
+                vec![
+                    RecordField {
+                        name: "table".to_string(),
+                        ty: Type::Con(b.text, vec![]),
+                    },
+                    RecordField {
+                        name: "column".to_string(),
+                        ty: Type::Con(b.text, vec![]),
+                    },
+                    RecordField {
+                        name: "onDelete".to_string(),
+                        ty: Type::Con(TyConId(base + 27), vec![]),
+                    },
+                    RecordField {
+                        name: "onUpdate".to_string(),
+                        ty: Type::Con(TyConId(base + 27), vec![]),
+                    },
+                ],
+            )),
+            def_span: None,
+            def_module_raw: None,
+            opaque: true,
+            is_anon: false,
+        },
+        // `std.schema` — one column's schema. An opaque record declared in Ridge
+        // (stdlib/schema.ridge) with a phantom entity parameter `e` that ties a
+        // column to the entity it describes. Opaque, built through `mkColumn` and
+        // refined with the per-column steps. Field order mirrors the source.
+        TyConDecl {
+            id: TyConId(base + 29),
+            name: "ColumnSchema".to_string(),
+            arity: 1,
+            kind: TyConKind::Record(RecordSchema::new(
+                vec![TyVid(0)],
+                vec![
+                    RecordField {
+                        name: "name".to_string(),
+                        ty: Type::Con(b.text, vec![]),
+                    },
+                    RecordField {
+                        name: "column".to_string(),
+                        ty: Type::Con(b.text, vec![]),
+                    },
+                    RecordField {
+                        name: "ty".to_string(),
+                        ty: Type::Con(TyConId(base + 25), vec![]),
+                    },
+                    RecordField {
+                        name: "nullable".to_string(),
+                        ty: Type::Con(b.bool, vec![]),
+                    },
+                    RecordField {
+                        name: "generation".to_string(),
+                        ty: Type::Con(TyConId(base + 26), vec![]),
+                    },
+                    RecordField {
+                        name: "primaryKey".to_string(),
+                        ty: Type::Con(b.bool, vec![]),
+                    },
+                    RecordField {
+                        name: "unique".to_string(),
+                        ty: Type::Con(b.bool, vec![]),
+                    },
+                    RecordField {
+                        name: "indexed".to_string(),
+                        ty: Type::Con(b.bool, vec![]),
+                    },
+                    RecordField {
+                        name: "foreignKey".to_string(),
+                        ty: Type::Con(b.option, vec![Type::Con(TyConId(base + 28), vec![])]),
+                    },
+                    RecordField {
+                        name: "check".to_string(),
+                        ty: Type::Con(b.option, vec![Type::Con(b.q_expr, vec![])]),
+                    },
+                ],
+            )),
+            def_span: None,
+            def_module_raw: None,
+            opaque: true,
+            is_anon: false,
+        },
+        // `std.schema` — an entity's full schema. An opaque record declared in Ridge
+        // (stdlib/schema.ridge) with a phantom entity parameter `e`: the entity
+        // name, its SQL table, and its `ColumnSchema e` columns in declaration
+        // order. Opaque, built through `schema`/`withColumn`. Field order mirrors
+        // the source.
+        TyConDecl {
+            id: TyConId(base + 30),
+            name: "EntitySchema".to_string(),
+            arity: 1,
+            kind: TyConKind::Record(RecordSchema::new(
+                vec![TyVid(0)],
+                vec![
+                    RecordField {
+                        name: "name".to_string(),
+                        ty: Type::Con(b.text, vec![]),
+                    },
+                    RecordField {
+                        name: "table".to_string(),
+                        ty: Type::Con(b.text, vec![]),
+                    },
+                    RecordField {
+                        name: "columns".to_string(),
+                        ty: Type::Con(
+                            b.list,
+                            vec![Type::Con(TyConId(base + 29), vec![Type::Var(TyVid(0))])],
+                        ),
+                    },
+                ],
+            )),
+            def_span: None,
+            def_module_raw: None,
+            opaque: true,
             is_anon: false,
         },
     ]
@@ -1623,6 +1929,7 @@ pub(crate) fn reconciled_fn_scheme(
         ("std.repo", _) => reconciled_repo_fn_scheme(name, reconciled, b, classes?),
         ("std.migrate", _) => reconciled_migrate_fn_scheme(name, reconciled, b, classes?),
         ("std.raw", _) => reconciled_raw_fn_scheme(name, b, classes?),
+        ("std.schema", _) => reconciled_schema_fn_scheme(name, reconciled, b, classes?),
         _ => None,
     }
 }
@@ -1772,8 +2079,8 @@ fn reconciled_mutation_plan_fn_scheme(
         constraints: vec![],
     };
     match name {
-        // planInsert : Text -> List (Map Text SqlValue) -> MutationPlan
-        "planInsert" => Some(pure(vec![text(), rows()], plan())),
+        // planInsert : Text -> List (Map Text SqlValue) -> List Text -> MutationPlan
+        "planInsert" => Some(pure(vec![text(), rows(), text_list()], plan())),
         // planUpsert : Text -> List (Map Text SqlValue) -> List Text -> List Text -> MutationPlan
         "planUpsert" => Some(pure(vec![text(), rows(), text_list(), text_list()], plan())),
         // planUpdate : Text -> Map Text SqlValue -> QExpr -> MutationPlan
@@ -1800,6 +2107,260 @@ fn reconciled_mutation_plan_fn_scheme(
     }
 }
 
+/// The `std.schema` slice of [`reconciled_fn_scheme`]: the schema-descriptor
+/// builders and read accessors. Every verb is pure; the column steps and entity
+/// builders are polymorphic in the phantom entity `e`, the foreign-key builders
+/// monomorphic. All reference the reconciled `DbType`/`Generation`/`FkAction`/
+/// `ForeignKey`/`ColumnSchema`/`EntitySchema` types, so the hand-curated
+/// signature table (which only sees `BuiltinTyCons`) cannot express them.
+#[expect(
+    clippy::too_many_lines,
+    reason = "one scheme per schema-descriptor verb plus the shared type-builder closures; they read best kept together"
+)]
+fn reconciled_schema_fn_scheme(
+    name: &str,
+    reconciled: &FxHashMap<String, TyConId>,
+    b: &BuiltinTyCons,
+    classes: &ClassTable,
+) -> Option<Scheme> {
+    // The probe-driven column-set readers `generatedColumnsOf`/`identityColumnsOf`:
+    // `∀e. e -> List Text where HasSchema e`. They reference no descriptor TyCon — only
+    // the `HasSchema` class and builtins — so they are resolved before the schema-type
+    // lookups below, which are absent while the stdlib bundle itself is being built (the
+    // reconciled type map is empty then). Resolving them up front keeps the write path's
+    // dictionary-passing working in that self-build, where the later `?` guards would
+    // otherwise short-circuit the whole function to `None`. The argument is a probe entity
+    // (its value ignored) that pins the `HasSchema e` dictionary by its type.
+    if matches!(
+        name,
+        "generatedColumnsOf" | "identityColumnsOf" | "identityColumnsOfShape"
+    ) {
+        let has_schema = classes.id_by_name("HasSchema")?;
+        let e = TyVid(0);
+        // `identityColumnsOfShape` reads the columns from an insert shape rather than a
+        // probe entity, so the typed insert verbs resolve them from the companion value
+        // they already hold; the other two take a probe entity `e`.
+        let arg = if name == "identityColumnsOfShape" {
+            Type::Con(b.insert_shape, vec![Type::Var(e)])
+        } else {
+            Type::Var(e)
+        };
+        return Some(Scheme {
+            vars: vec![e],
+            cap_vars: vec![],
+            row_vars: vec![],
+            ty: Type::Fn {
+                params: vec![arg],
+                ret: Box::new(Type::Con(b.list, vec![Type::Con(b.text, vec![])])),
+                caps: CapRow::Concrete(CapabilitySet::PURE),
+            },
+            constraints: vec![Constraint::single(has_schema, e)],
+        });
+    }
+    let db_type = *reconciled.get("DbType")?;
+    let generation = *reconciled.get("Generation")?;
+    let fk_action = *reconciled.get("FkAction")?;
+    let foreign_key = *reconciled.get("ForeignKey")?;
+    let column_schema = *reconciled.get("ColumnSchema")?;
+    let entity_schema = *reconciled.get("EntitySchema")?;
+    let e = TyVid(0);
+    let text = || Type::Con(b.text, vec![]);
+    let boolean = || Type::Con(b.bool, vec![]);
+    let option = |x: Type| Type::Con(b.option, vec![x]);
+    let list = |x: Type| Type::Con(b.list, vec![x]);
+    let qexpr = || Type::Con(b.q_expr, vec![]);
+    let dbtype_ty = || Type::Con(db_type, vec![]);
+    let gen_ty = || Type::Con(generation, vec![]);
+    let fk_act_ty = || Type::Con(fk_action, vec![]);
+    let fk_ty = || Type::Con(foreign_key, vec![]);
+    let col_e = || Type::Con(column_schema, vec![Type::Var(e)]);
+    let ent_e = || Type::Con(entity_schema, vec![Type::Var(e)]);
+    // `EntitySchema Unit` — the phantom-erased schema a migration step carries.
+    let ent_unit = || Type::Con(entity_schema, vec![Type::Con(b.unit, vec![])]);
+    // The migration seam's column tuple `(Text, Text, Bool, Bool, Bool)` — the
+    // `(name, base-type, nullable, primaryKey, unique)` the runner flattens a column to.
+    let col_tuple = || Type::Tuple(vec![text(), text(), boolean(), boolean(), boolean()]);
+    let pure = || CapRow::Concrete(CapabilitySet::PURE);
+    // A monomorphic pure builder: `params -> ret`, no quantified vars.
+    let mono = |params: Vec<Type>, ret: Type| {
+        Some(Scheme {
+            vars: vec![],
+            cap_vars: vec![],
+            row_vars: vec![],
+            ty: Type::Fn {
+                params,
+                ret: Box::new(ret),
+                caps: pure(),
+            },
+            constraints: vec![],
+        })
+    };
+    // A pure builder polymorphic in the phantom entity `e`: `∀e. params -> ret`.
+    let poly1 = |params: Vec<Type>, ret: Type| {
+        Some(Scheme {
+            vars: vec![e],
+            cap_vars: vec![],
+            row_vars: vec![],
+            ty: Type::Fn {
+                params,
+                ret: Box::new(ret),
+                caps: pure(),
+            },
+            constraints: vec![],
+        })
+    };
+    match name {
+        // Foreign-key reference builders (monomorphic).
+        "references" => mono(vec![text(), text()], fk_ty()),
+        "onDelete" | "onUpdate" => mono(vec![fk_act_ty(), fk_ty()], fk_ty()),
+        // Column constructor and refinement steps (∀e. … -> ColumnSchema e).
+        "mkColumn" => poly1(vec![text(), text(), dbtype_ty(), boolean()], col_e()),
+        // column : ∀e v. Quote (e -> v) -> DbType -> Bool -> ColumnSchema e. Builds a
+        //   column from an accessor quote naming a single field of type `v` (phantom —
+        //   only the column name is kept), the same capture `onConflict`/`set` read.
+        "column" => {
+            let v = TyVid(1);
+            let accessor = Type::Con(
+                b.quote,
+                vec![Type::Fn {
+                    params: vec![Type::Var(e)],
+                    ret: Box::new(Type::Var(v)),
+                    caps: pure(),
+                }],
+            );
+            Some(Scheme {
+                vars: vec![e, v],
+                cap_vars: vec![],
+                row_vars: vec![],
+                ty: Type::Fn {
+                    params: vec![accessor, dbtype_ty(), boolean()],
+                    ret: Box::new(col_e()),
+                    caps: pure(),
+                },
+                constraints: vec![],
+            })
+        }
+        "named" => poly1(vec![text(), col_e()], col_e()),
+        "columnType" => poly1(vec![dbtype_ty(), col_e()], col_e()),
+        "generated" => poly1(vec![gen_ty(), col_e()], col_e()),
+        "foreignKey" => poly1(vec![fk_ty(), col_e()], col_e()),
+        // check : ∀e. Quote (e -> Bool) -> ColumnSchema e -> ColumnSchema e. Attaches a
+        //   CHECK constraint as a captured predicate over the column's own entity, so
+        //   the predicate can only read that entity's fields.
+        "check" => {
+            let pred = Type::Con(
+                b.quote,
+                vec![Type::Fn {
+                    params: vec![Type::Var(e)],
+                    ret: Box::new(boolean()),
+                    caps: pure(),
+                }],
+            );
+            poly1(vec![pred, col_e()], col_e())
+        }
+        // checkRaw : ∀e. QExpr -> ColumnSchema e -> ColumnSchema e. Attaches a CHECK from an
+        // already-built predicate tree (the escape hatch the source renderer rebuilds a check
+        // through, since a phantom-erased schema cannot restore the original quote).
+        "checkRaw" => poly1(vec![qexpr(), col_e()], col_e()),
+        "nullable" | "required" | "primaryKey" | "unique" | "indexed" => {
+            poly1(vec![col_e()], col_e())
+        }
+        // Column read accessors (∀e. ColumnSchema e -> …). `columnToSource` shares the
+        // `ColumnSchema e -> Text` shape: it renders a column back to the `mkColumn … |> …`
+        // source that rebuilds it, the source dual of `columnDdl`.
+        "colName" | "colColumn" | "columnToSource" => poly1(vec![col_e()], text()),
+        "colType" => poly1(vec![col_e()], dbtype_ty()),
+        "colGeneration" => poly1(vec![col_e()], gen_ty()),
+        "colNullable" | "colPrimaryKey" | "colUnique" | "colIndexed" | "colGenerated" => {
+            poly1(vec![col_e()], boolean())
+        }
+        "colForeignKey" => poly1(vec![col_e()], option(fk_ty())),
+        "colCheck" => poly1(vec![col_e()], option(qexpr())),
+        // Entity schema builders and read accessors (∀e. … over EntitySchema e).
+        "schema" => poly1(vec![text(), text()], ent_e()),
+        "withColumn" => poly1(vec![col_e(), ent_e()], ent_e()),
+        // `schemaToDdl` renders an entity's `CREATE TABLE`; it shares the
+        // `EntitySchema e -> Text` shape with the name accessors. `schemaIndexDdls`
+        // renders its non-unique indexes, sharing the `-> List Text` shape with the
+        // generated-column readers.
+        // `schemaToSource` renders an entity's `schema … |> withColumn …` builder
+        // source; it shares the `EntitySchema e -> Text` shape with the name accessors
+        // and `schemaToDdl`.
+        "schemaName" | "schemaTable" | "schemaToDdl" | "schemaToSource" => {
+            poly1(vec![ent_e()], text())
+        }
+        "schemaColumns" => poly1(vec![ent_e()], list(col_e())),
+        // eraseSchema : ∀e. EntitySchema e -> EntitySchema Unit — drop the phantom
+        // entity so a non-parametric migration step can carry the descriptor.
+        "eraseSchema" => poly1(vec![ent_e()], ent_unit()),
+        "generatedColumns" | "identityColumns" | "schemaIndexDdls" => {
+            poly1(vec![ent_e()], list(text()))
+        }
+        // The migration step renderers over the seam tuple `(name, base-type, nullable,
+        // primaryKey, unique)` — the DDL the retired Erlang builder produced.
+        "createTableDdl" => mono(vec![text(), list(col_tuple())], text()),
+        "addColumnDdl" => mono(vec![text(), col_tuple()], text()),
+        // addColumnSchemaDdl : ∀e. Text -> ColumnSchema e -> Text — the entity-driven
+        // ADD COLUMN renderer, keeping the descriptor's type/default/constraints.
+        "addColumnSchemaDdl" => poly1(vec![text(), col_e()], text()),
+        // alterColumnDdl : ∀e. Text -> ColumnSchema e -> ColumnSchema e -> Text — the
+        // entity-driven ALTER COLUMN renderer, taking a column's old and new descriptors and
+        // emitting the minimal statement for the facets (type, nullability, default) that differ.
+        "alterColumnDdl" => poly1(vec![text(), col_e(), col_e()], text()),
+        // columnAltered : ∀e. ColumnSchema e -> ColumnSchema e -> Bool — the snapshot-diff
+        // predicate: whether a column's type, nullability, or default changed (a serial/identity
+        // column is excluded), i.e. whether the diff emits an `AlterColumn` for it.
+        "columnAltered" => poly1(vec![col_e(), col_e()], boolean()),
+        "dropTableDdl" => mono(vec![text()], text()),
+        "dropColumnDdl" => mono(vec![text(), text()], text()),
+        "indexDdl" => mono(vec![text(), text(), list(text()), boolean()], text()),
+        // schemaOf : ∀e. Option e -> EntitySchema e where HasSchema e. The single
+        // method of the `HasSchema` binding class, dispatched by a phantom
+        // `Option e` witness (the same shape `Row.rowColumns` uses). The
+        // `HasSchema e` constraint is what makes the lowering pass the instance
+        // dictionary — without it, a bare `schemaOf` is read as a plain stdlib
+        // symbol and codegen reports a missing bridge.
+        "schemaOf" => {
+            let has_schema = classes.id_by_name("HasSchema")?;
+            Some(Scheme {
+                vars: vec![e],
+                cap_vars: vec![],
+                row_vars: vec![],
+                ty: Type::Fn {
+                    params: vec![option(Type::Var(e))],
+                    ret: Box::new(ent_e()),
+                    caps: pure(),
+                },
+                constraints: vec![Constraint::single(has_schema, e)],
+            })
+        }
+        // toInsertRow : ∀e. InsertShape e -> Map Text SqlValue where HasSchema e. The second
+        // `HasSchema` method: encodes the entity's insert shape — the entity minus its
+        // database-generated columns — to a row, so the write path turns a companion value into
+        // columns without ever encoding a generated key. The `HasSchema e` constraint passes the
+        // instance dictionary the same way `schemaOf` does.
+        "toInsertRow" => {
+            let has_schema = classes.id_by_name("HasSchema")?;
+            let map_row = Type::Con(
+                b.map,
+                vec![Type::Con(b.text, vec![]), Type::Con(b.sql_value, vec![])],
+            );
+            Some(Scheme {
+                vars: vec![e],
+                cap_vars: vec![],
+                row_vars: vec![],
+                ty: Type::Fn {
+                    params: vec![Type::Con(b.insert_shape, vec![Type::Var(e)])],
+                    ret: Box::new(map_row),
+                    caps: pure(),
+                },
+                constraints: vec![Constraint::single(has_schema, e)],
+            })
+        }
+        _ => None,
+    }
+}
+
 /// The `std.migrate` slice of [`reconciled_fn_scheme`]: the schema-DSL builders and
 /// the migration runner. The builders are pure and reference the reconciled
 /// `Column`/`SchemaOp`/`Migration` types; `run` is the only constrained verb
@@ -1813,16 +2374,37 @@ fn reconciled_migrate_fn_scheme(
     let column = *reconciled.get("Column")?;
     let schema_op = *reconciled.get("SchemaOp")?;
     let migration = *reconciled.get("Migration")?;
+    let entity_schema = *reconciled.get("EntitySchema")?;
+    let column_schema = *reconciled.get("ColumnSchema")?;
     let text = || Type::Con(b.text, vec![]);
     let list = |x: Type| Type::Con(b.list, vec![x]);
     let pure = || CapRow::Concrete(CapabilitySet::PURE);
     let result = |ok: Type| Type::Con(b.result, vec![ok, Type::Con(b.error, vec![])]);
     let column_ty = || Type::Con(column, vec![]);
     let schema_op_ty = || Type::Con(schema_op, vec![]);
+    let e = TyVid(0);
+    let ent_e = || Type::Con(entity_schema, vec![Type::Var(e)]);
+    let ent_unit = || Type::Con(entity_schema, vec![Type::Con(b.unit, vec![])]);
+    // `ColumnSchema Unit` — the phantom-erased column an entity-driven step carries.
+    let col_unit = || Type::Con(column_schema, vec![Type::Con(b.unit, vec![])]);
     // A monomorphic pure builder: `params -> ret`, no quantified vars or constraints.
     let mono = |params: Vec<Type>, ret: Type| {
         Some(Scheme {
             vars: vec![],
+            cap_vars: vec![],
+            row_vars: vec![],
+            ty: Type::Fn {
+                params,
+                ret: Box::new(ret),
+                caps: pure(),
+            },
+            constraints: vec![],
+        })
+    };
+    // A pure builder polymorphic in the phantom entity `e`: `∀e. params -> ret`.
+    let poly_e = |params: Vec<Type>, ret: Type| {
+        Some(Scheme {
+            vars: vec![e],
             cap_vars: vec![],
             row_vars: vec![],
             ty: Type::Fn {
@@ -1849,11 +2431,35 @@ fn reconciled_migrate_fn_scheme(
         "dropColumn" => mono(vec![text(), text()], schema_op_ty()),
         // createIndex / uniqueIndex : Text -> Text -> List Text -> SchemaOp
         "createIndex" | "uniqueIndex" => mono(vec![text(), text(), list(text())], schema_op_ty()),
+        // createSchema / dropSchema : ∀e. EntitySchema e -> SchemaOp — the entity-driven
+        // table create and drop, taking the schema descriptor in place of a column tuple.
+        "createSchema" | "dropSchema" => poly_e(vec![ent_e()], schema_op_ty()),
+        // addEntityColumn : Text -> ColumnSchema Unit -> SchemaOp — the entity-driven ADD
+        // COLUMN factory (a phantom-erased descriptor); the diff's added-column step.
+        "addEntityColumn" => mono(vec![text(), col_unit()], schema_op_ty()),
+        // alterColumn : Text -> ColumnSchema Unit -> ColumnSchema Unit -> SchemaOp — the
+        // ALTER COLUMN factory carrying a column's old and new descriptors; the diff's
+        // altered-column step.
+        "alterColumn" => mono(vec![text(), col_unit(), col_unit()], schema_op_ty()),
+        // diffSchemas : List (EntitySchema Unit) -> List (EntitySchema Unit) -> List SchemaOp —
+        // the pure snapshot diff: the schema steps that turn the `prev` model into `next`.
+        "diffSchemas" => mono(
+            vec![list(ent_unit()), list(ent_unit())],
+            list(schema_op_ty()),
+        ),
         // migration : Text -> List SchemaOp -> Migration
         "migration" => mono(
             vec![text(), list(schema_op_ty())],
             Type::Con(migration, vec![]),
         ),
+        // modelToSource : List (EntitySchema Unit) -> Text renders a model snapshot to the
+        // `[ schema … , … ]` expression; snapshotModule wraps it in the whole `.ridge`
+        // snapshot module (imports + `model ()`). Same `List (EntitySchema Unit) -> Text`.
+        "modelToSource" | "snapshotModule" => mono(vec![list(ent_unit())], text()),
+        // migrationToSource : Migration -> Text renders a migration to the
+        // `migration "name" [ … ]` expression; migrationModule wraps it in the whole
+        // `.ridge` migration module (imports + `up ()`). Same `Migration -> Text`.
+        "migrationToSource" | "migrationModule" => mono(vec![Type::Con(migration, vec![])], text()),
         // run : ∀a. a -> List Migration -> Result (List Text) Error where Adapter a.
         // The runner reaches the schema seam through the `Adapter a` dictionary, the
         // same shape `transaction` carries; `a` is the only quantified variable.
@@ -2056,6 +2662,7 @@ fn reconciled_repo_fn_scheme(
     let query_con = *reconciled.get("Query")?;
     let adapter = classes.id_by_name("Adapter")?;
     let row = classes.id_by_name("Row")?;
+    let has_schema = classes.id_by_name("HasSchema")?;
     // Scheme-level placeholder vars: entity `e` and adapter `a`. Fresh copies
     // are made on each instantiation, so the fixed ids here are dummies.
     let e = TyVid(0);
@@ -2068,6 +2675,12 @@ fn reconciled_repo_fn_scheme(
     let list_e = || Type::Con(b.list, vec![Type::Var(e)]);
     // An optional decoded entity `Option e`.
     let option_e = || Type::Con(b.option, vec![Type::Var(e)]);
+    // The insert shape of entity `e` — `InsertShape e`, the entity minus its
+    // database-generated columns. The typed insert verbs take this rather than `e`,
+    // so a serial/identity column cannot be set by hand. It reduces to `e` itself
+    // when the entity has no generated column.
+    let insert_shape_e = || Type::Con(b.insert_shape, vec![Type::Var(e)]);
+    let list_insert_shape_e = || Type::Con(b.list, vec![insert_shape_e()]);
     // A raw column map `Map Text SqlValue`.
     let map_row = || {
         Type::Con(
@@ -2097,6 +2710,31 @@ fn reconciled_repo_fn_scheme(
     // callee (stdlib build) and the call site, so the two must agree.
     let with_adapter = || vec![Constraint::single(adapter, a)];
     let with_adapter_row = || vec![Constraint::single(row, e), Constraint::single(adapter, a)];
+    // The typed insert verbs encode the insert shape and read the entity's schema
+    // through `HasSchema e` — `toInsertRow` for the row and `identityColumnsOfShape`
+    // for the auto-increment columns — so the plain inserts carry only `HasSchema e`
+    // and `Adapter a`. The dict order is `[HasSchema e, Adapter a]`: the `e`-constrained
+    // dictionary precedes the `a`-constrained one, the order the stdlib build lowers
+    // the dictionaries, which the call site must match exactly.
+    let with_adapter_schema = || {
+        vec![
+            Constraint::single(has_schema, e),
+            Constraint::single(adapter, a),
+        ]
+    };
+    // The RETURNING insert verbs also decode the stored row back (`fromRow`/`decodeRows`),
+    // so they carry `Row e` too. The build lowers their dictionaries in the order
+    // `[Row e, HasSchema e, Adapter a]` — `Row` ahead of `HasSchema`, the e-constrained
+    // dictionaries before the a-constrained one. The plain (non-decoding) inserts use
+    // `with_adapter_schema` above; the two orders are not interchangeable, so each group
+    // takes the one its body produces.
+    let with_adapter_schema_returning = || {
+        vec![
+            Constraint::single(row, e),
+            Constraint::single(has_schema, e),
+            Constraint::single(adapter, a),
+        ]
+    };
     // Assemble a method scheme: `∀e a. params -> ret`, pure, with `constraints`.
     let method = |params: Vec<Type>, ret: Type, constraints: Vec<Constraint>| {
         Some(Scheme {
@@ -2191,13 +2829,16 @@ fn reconciled_repo_fn_scheme(
             result(Type::Con(b.unit, vec![])),
             with_adapter(),
         ),
-        // insert : ∀e a. e -> Repo e a -> Result Unit Error where Adapter a, Row e.
-        // The typed dual of `insertRow`: encodes the entity through `toRow` and
-        // appends it. Carries `Row e` because it derives the row.
+        // insert : ∀e a. InsertShape e -> Repo e a -> Result Unit Error where Adapter a, HasSchema e.
+        // The typed dual of `insertRow`: takes the entity's insert shape — the entity minus its
+        // database-generated columns — encodes it through `HasSchema`'s `toInsertRow`, and appends
+        // it. Carries only `HasSchema e`: a serial/identity column is absent from the shape, so no
+        // `Row e` (the encode lives on the schema), and the column the in-memory store fills comes
+        // from `identityColumnsOfShape`.
         "insert" => method(
-            vec![Type::Var(e), repo_app()],
+            vec![insert_shape_e(), repo_app()],
             result(Type::Con(b.unit, vec![])),
-            with_adapter_row(),
+            with_adapter_schema(),
         ),
         // insertRows : ∀e a. List (Map Text SqlValue) -> Repo e a
         //   -> Result Unit Error where Adapter a. The bulk dual of `insertRow`:
@@ -2207,31 +2848,32 @@ fn reconciled_repo_fn_scheme(
             result(Type::Con(b.unit, vec![])),
             with_adapter(),
         ),
-        // insertMany : ∀e a. List e -> Repo e a -> Result Unit Error
-        //   where Adapter a, Row e. The bulk dual of `insert`: encodes each entity
-        //   through `toRow` and appends the whole batch in one statement.
+        // insertMany : ∀e a. List (InsertShape e) -> Repo e a -> Result Unit Error
+        //   where Adapter a, HasSchema e. The bulk dual of `insert`: encodes each insert
+        //   shape through `HasSchema`'s `toInsertRow` and appends the whole batch in one
+        //   statement.
         "insertMany" => method(
-            vec![list_e(), repo_app()],
+            vec![list_insert_shape_e(), repo_app()],
             result(Type::Con(b.unit, vec![])),
-            with_adapter_row(),
+            with_adapter_schema(),
         ),
-        // insertReturning : ∀e a. e -> Repo e a -> Result e Error where Adapter a, Row e.
-        //   Insert the entity and read the stored row back, decoded (an INSERT … RETURNING
-        //   *), so a server-filled column comes back populated. Same `[Row e, Adapter a]`
-        //   dict order as `insert` — no `List (Conflict e)` parameter to shift it, and the
-        //   body encodes the row inline as `insert` does.
+        // insertReturning : ∀e a. InsertShape e -> Repo e a -> Result e Error
+        //   where Adapter a, Row e, HasSchema e. Insert the entity's insert shape and read the
+        //   stored row back, decoded (an INSERT … RETURNING *), so a server-filled column comes
+        //   back populated. Carries `Row e` for the decode on top of `HasSchema e` for the encode;
+        //   the dict order is `[Row e, HasSchema e, Adapter a]`.
         "insertReturning" => method(
-            vec![Type::Var(e), repo_app()],
+            vec![insert_shape_e(), repo_app()],
             result(Type::Var(e)),
-            with_adapter_row(),
+            with_adapter_schema_returning(),
         ),
-        // insertManyReturning : ∀e a. List e -> Repo e a -> Result (List e) Error
-        //   where Adapter a, Row e. The bulk dual of `insertReturning`; same dict order as
-        //   `insertMany`.
+        // insertManyReturning : ∀e a. List (InsertShape e) -> Repo e a -> Result (List e) Error
+        //   where Adapter a, Row e, HasSchema e. The bulk dual of `insertReturning`; same dict
+        //   order.
         "insertManyReturning" => method(
-            vec![list_e(), repo_app()],
+            vec![list_insert_shape_e(), repo_app()],
             result(list_e()),
-            with_adapter_row(),
+            with_adapter_schema_returning(),
         ),
         // deleteReturning (∀e a. Quote (e -> Bool) -> Repo e a -> Result (List e) Error
         //   where Adapter a, Row e — remove the matching rows and read each back, decoded,

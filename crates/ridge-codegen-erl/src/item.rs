@@ -57,7 +57,7 @@ pub(crate) fn lower_fn(
 /// so that `IrExpr::Spawn` can derive the correct actor BEAM module atom.
 pub(crate) fn lower_fn_with_module_name(
     fn_: &IrFn,
-    _ws: &LoweredWorkspace,
+    ws: &LoweredWorkspace,
     fn_arity: &FxHashMap<String, u32>,
     module_beam_name: Option<&str>,
 ) -> Result<CErlFn, CodegenError> {
@@ -86,6 +86,10 @@ pub(crate) fn lower_fn_with_module_name(
         || LocalScope::with_arity(fn_arity.clone()),
         |name| LocalScope::with_arity_and_module(fn_arity.clone(), name),
     );
+    // Seed the cross-module arity table so a `SymbolRef::External` call to a
+    // zero-arity fn in another module drops its unit-paren `()` instead of
+    // emitting an arity-1 call that would be `undef` against the arity-0 callee.
+    scope.external_arity = std::sync::Arc::new(crate::module::build_external_arity(ws));
     // §4.9 — Route through elide/wrap based on whether non-tail Returns exist.
     //
     // - Non-tail Returns present: lower as-is (Return nodes emit throws) then
@@ -159,10 +163,11 @@ pub(crate) fn lower_fn_with_module_name(
 /// that lowering is handled by the call lowering path (§4.27 note).
 pub(crate) fn lower_const(
     c: &IrConst,
-    _ws: &LoweredWorkspace,
+    ws: &LoweredWorkspace,
     fn_arity: &FxHashMap<String, u32>,
 ) -> Result<CErlFn, CodegenError> {
     let mut scope = LocalScope::with_arity(fn_arity.clone());
+    scope.external_arity = std::sync::Arc::new(crate::module::build_external_arity(ws));
     let lowered_value = lower_expr_in_scope(&c.value, &mut scope)?;
 
     // §4.27: `%% Const: <name>: <ty_metadata_only>` annotation.

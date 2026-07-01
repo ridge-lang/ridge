@@ -189,6 +189,9 @@ impl IncrementalState {
             let inc = typecheck_module_incremental(m, &self.resolved, &self.typed);
             self.typed.tycons = inc.tycons;
             self.typed.anon_records.extend(inc.result.anon_records);
+            self.typed
+                .insert_companions
+                .extend(inc.result.insert_companions);
             fresh_type_errors.extend(inc.result.errors.into_iter().map(|e| (m, e)));
             self.typed.modules[m.0 as usize] = inc.result.typed;
         }

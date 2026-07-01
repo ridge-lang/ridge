@@ -58,6 +58,12 @@ pub enum RidgeCommand {
     /// child process.  Reports pass / fail per test.  Exit code is 0 if all
     /// tests pass (or no tests found), 1 otherwise.
     Test(cmd::test::TestArgs),
+    /// Manage schema migrations generated from an entity model.
+    ///
+    /// `ridge migrate add <name>` is the Ridge analogue of EF Core's
+    /// `Add-Migration`: it diffs the model against the last snapshot and
+    /// writes a new migration file plus a refreshed snapshot.
+    Migrate(cmd::migrate::MigrateArgs),
     /// Start an interactive REPL session.
     ///
     /// Reads expressions from stdin, evaluates each one, and prints the result.

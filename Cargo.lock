@@ -1652,6 +1652,7 @@ dependencies = [
  "ridge-driver",
  "ridge-fmt",
  "ridge-manifest",
+ "ridge-resolve",
  "tempfile",
  "which",
 ]

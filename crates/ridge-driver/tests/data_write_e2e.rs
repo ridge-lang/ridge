@@ -3,8 +3,8 @@
 //! Where `data_repo_e2e` builds each row by hand (`Map.fromList [("col", toSql …)]`)
 //! and feeds it to `insertRow`, this exercises the typed verbs that derive the row
 //! from the entity:
-//! - `insert` encodes a `User` through `deriving (Row)`'s `toRow` and appends it,
-//!   so a record goes in the way one comes out — no hand-built column map.
+//! - `insert` encodes a user's insert shape through `deriving (Schema)`'s
+//!   `toInsertRow` and appends it — a typed value in, no hand-built column map.
 //! - `insertMany` encodes a whole list of entities and appends the batch in one
 //!   multi-row statement; an empty list short-circuits to a no-op.
 //! - `update` overwrites every column of the rows matching a predicate with a typed
@@ -32,8 +32,12 @@ import std.sql (toSql, SqlValue)
 import std.map as Map
 
 -- An entity with a nullable column, so the typed write path's NULL encoding
--- (`None` -> SQL NULL via `toRow`) is exercised alongside the base types.
-pub type User = { id: Int, age: Int, name: Text, nick: Option Text } deriving (Row)
+-- (`None` -> SQL NULL) is exercised alongside the base types. `deriving (Schema)`
+-- marks `id` an identity column by convention, so the insert shape `UserInsert`
+-- has no `id` field at all — the typed insert verbs take that shape and the store
+-- assigns the next integer, so the seeded rows land with ids 1, 2, 3 in insertion
+-- order.
+pub type User = { id: Int, age: Int, name: Text, nick: Option Text } deriving (Row, Schema)
 
 -- Comma-join the names of a user list, so a query's order is observable as one
 -- string the probe can assert on.
@@ -54,13 +58,13 @@ fn nickOf (o: Option Text) -> Text =
 -- others carry a value. Each probe seeds its own isolated store.
 pub fn db setup () -> Result (Repo User MemAdapter) Error =
     let r: Repo User MemAdapter = Repo.repo (memAdapter ()) "users"
-    match Repo.insert (User { id = 1, age = 18, name = "ada", nick = Some "ace" }) r
+    match Repo.insert (UserInsert { age = 18, name = "ada", nick = Some "ace" }) r
         Err e -> Err e
         Ok _  ->
-            match Repo.insert (User { id = 2, age = 30, name = "lin", nick = None }) r
+            match Repo.insert (UserInsert { age = 30, name = "lin", nick = None }) r
                 Err e -> Err e
                 Ok _  ->
-                    match Repo.insert (User { id = 3, age = 25, name = "max", nick = Some "mad" }) r
+                    match Repo.insert (UserInsert { age = 25, name = "max", nick = Some "mad" }) r
                         Err e -> Err e
                         Ok _  -> Ok r
 
@@ -215,7 +219,7 @@ pub fn db appliedAge () -> Int =
 -- multi-row statement, not a row per round-trip.
 pub fn db bulkNames () -> Text =
     let r: Repo User MemAdapter = Repo.repo (memAdapter ()) "users"
-    match r |> Repo.insertMany [ User { id = 1, age = 18, name = "ada", nick = None }, User { id = 2, age = 30, name = "lin", nick = None }, User { id = 3, age = 25, name = "max", nick = None } ]
+    match r |> Repo.insertMany [ UserInsert { age = 18, name = "ada", nick = None }, UserInsert { age = 30, name = "lin", nick = None }, UserInsert { age = 25, name = "max", nick = None } ]
         Err _ -> "insert-err"
         Ok _  ->
             match r |> Repo.query |> Repo.orderBy Asc (fn (u: User) -> u.id) |> Repo.toList
@@ -316,7 +320,7 @@ pub fn db upsertRowAge () -> Int =
 -- round-trips out through `fromRow` on the way back, not just in through `toRow`.
 pub fn db insertReturningName () -> Text =
     let r: Repo User MemAdapter = Repo.repo (memAdapter ()) "users"
-    match r |> Repo.insertReturning (User { id = 7, age = 9, name = "rex", nick = Some "rx" })
+    match r |> Repo.insertReturning (UserInsert { age = 9, name = "rex", nick = Some "rx" })
         Err _ -> "insert-err"
         Ok u  -> u.name
 
@@ -324,7 +328,7 @@ pub fn db insertReturningName () -> Text =
 -- "ada,lin". The bulk dual of `insertReturning`.
 pub fn db insertManyReturningNames () -> Text =
     let r: Repo User MemAdapter = Repo.repo (memAdapter ()) "users"
-    match r |> Repo.insertManyReturning [ User { id = 1, age = 18, name = "ada", nick = None }, User { id = 2, age = 30, name = "lin", nick = None } ]
+    match r |> Repo.insertManyReturning [ UserInsert { age = 18, name = "ada", nick = None }, UserInsert { age = 30, name = "lin", nick = None } ]
         Err _ -> "insert-err"
         Ok us -> joinNames us
 

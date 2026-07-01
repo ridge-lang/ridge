@@ -136,6 +136,7 @@ pub(crate) fn flatten_tycon_names(
 pub(crate) fn imported_tycon_names(
     imports: &[ImportResolution],
     symbol_tables: &[&SymbolTable],
+    actual_tycon_names: &[FxHashMap<String, TyConId>],
     per_module_tycon_names: &[FxHashMap<String, TyConId>],
     stdlib_tycon_names: &FxHashMap<String, TyConId>,
     b: &BuiltinTyCons,
@@ -158,10 +159,21 @@ pub(crate) fn imported_tycon_names(
                     ) {
                         continue;
                     }
-                    if let Some(&tid) = per_module_tycon_names
+                    // Prefer the producer's real id (recorded once it is checked, which
+                    // `check_order` guarantees for every module this one imports); fall
+                    // back to the pre-check prediction only if a producer is somehow not
+                    // yet recorded. The prediction drifts from the real id whenever the
+                    // producer or a module before it synthesizes types (`deriving`
+                    // mirrors, insert companions) the source-item count cannot see.
+                    let resolved = actual_tycon_names
                         .get(module.0 as usize)
                         .and_then(|m| m.get(&entry.name))
-                    {
+                        .or_else(|| {
+                            per_module_tycon_names
+                                .get(module.0 as usize)
+                                .and_then(|m| m.get(&entry.name))
+                        });
+                    if let Some(&tid) = resolved {
                         out.insert(eb.local_name.clone(), tid);
                     }
                 }

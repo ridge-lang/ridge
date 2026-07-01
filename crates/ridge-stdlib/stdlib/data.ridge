@@ -28,6 +28,7 @@ import std.sql (SqlValue, sqlValue)
 import std.query (QueryPlan, planToSql, planScan, MutationPlan, mutationToSql, mutationReturningToSql, planInsert, planUpdate, planDelete)
 import std.map (toList)
 import std.text (startsWith)
+import std.schema (EntitySchema, ColumnSchema, schemaToDdl, schemaIndexDdls, schemaTable, createTableDdl, addColumnDdl, addColumnSchemaDdl, alterColumnDdl, dropTableDdl, dropColumnDdl, indexDdl)
 
 -- ── Typed database errors ─────────────────────────────────────────────────────
 --
@@ -118,7 +119,20 @@ pub fn dbErrorTable (e: Error) -> Text =
 -- column type. Postgres compiles each to a `CREATE TABLE`/`ALTER TABLE`/`CREATE
 -- INDEX`; the in-memory adapter, which is schemaless, materialises an empty table
 -- for a create and forgets one on a drop, and treats the column and index changes
--- as no-ops. `migrationsApplied` answers the names of the migrations already
+-- as no-ops. `ddlCreateEntity` is the entity-driven create: it takes a full schema
+-- descriptor (`std.schema`'s `EntitySchema`, the source `deriving (Schema)` builds)
+-- rather than the tuple, so a `CREATE TABLE` keeps the column's generation, foreign
+-- keys, and checks the tuple cannot carry. Postgres renders it with the descriptor's
+-- DDL renderer and runs the statement and its indexes; the in-memory adapter
+-- materialises the table by name, the same as `ddlCreate`. `ddlAddEntityColumn` is its
+-- add-column counterpart: it adds one column from a full descriptor rather than the
+-- tuple, so the added column keeps its type, default, and constraints on Postgres; the
+-- schemaless in-memory adapter takes it as a no-op, since a missing column already reads
+-- as NULL there. `ddlAlterColumn` changes a column already present: it takes the column's
+-- old and new descriptors, and Postgres renders the minimal `ALTER TABLE … ALTER COLUMN`
+-- for the facets (type, nullability, default) that differ; the schemaless in-memory adapter
+-- takes it as a no-op, since it enforces none of them. `migrationsApplied`
+-- answers the names of the migrations already
 -- applied (creating the tracking table on first use), and `recordMigration` marks
 -- one applied; the runner reads the first to skip applied migrations and writes the
 -- second inside each migration's transaction, so the record and the schema change
@@ -149,6 +163,9 @@ pub class Adapter a =
     ddlAddColumn (conn: a) (table: Text) (col: (Text, Text, Bool, Bool, Bool)) -> Result Unit Error
     ddlDropColumn (conn: a) (table: Text) (column: Text) -> Result Unit Error
     ddlIndex (conn: a) (name: Text) (table: Text) (cols: List Text) (unique: Bool) -> Result Unit Error
+    ddlCreateEntity (conn: a) (schema: EntitySchema Unit) -> Result Unit Error
+    ddlAddEntityColumn (conn: a) (table: Text) (col: ColumnSchema Unit) -> Result Unit Error
+    ddlAlterColumn (conn: a) (table: Text) (old: ColumnSchema Unit) (new: ColumnSchema Unit) -> Result Unit Error
     migrationsApplied (conn: a) -> Result (List Text) Error
     recordMigration (conn: a) (name: Text) -> Result Unit Error
     rawQuery (conn: a) (sql: Text) (params: List SqlValue) -> Result (List (Map Text SqlValue)) Error
@@ -318,6 +335,12 @@ instance Adapter MemAdapter =
         _memDdlDropColumn conn.id table column
     ddlIndex (conn: MemAdapter) (name: Text) (table: Text) (cols: List Text) (unique: Bool) -> Result Unit Error =
         _memDdlIndex conn.id name table cols unique
+    ddlCreateEntity (conn: MemAdapter) (schema: EntitySchema Unit) -> Result Unit Error =
+        _memDdlCreate conn.id (schemaTable schema) []
+    ddlAddEntityColumn (conn: MemAdapter) (table: Text) (col: ColumnSchema Unit) -> Result Unit Error =
+        Ok ()
+    ddlAlterColumn (conn: MemAdapter) (table: Text) (old: ColumnSchema Unit) (new: ColumnSchema Unit) -> Result Unit Error =
+        Ok ()
     migrationsApplied (conn: MemAdapter) -> Result (List Text) Error =
         _memMigrationsApplied conn.id
     recordMigration (conn: MemAdapter) (name: Text) -> Result Unit Error =
@@ -469,26 +492,6 @@ fn _pgRollback (id: Int) -> Result Unit Error
 @ffi("ridge_pg", "pg_close", 1)
 fn _pgClose (id: Int) -> Result Unit Error
 
--- Compile a `CREATE TABLE` from the column tuples and run it on the connection.
-@ffi("ridge_pg", "pg_ddl_create", 3)
-fn _pgDdlCreate (id: Int) (table: Text) (cols: List (Text, Text, Bool, Bool, Bool)) -> Result Unit Error
-
--- Run a `DROP TABLE` on the connection.
-@ffi("ridge_pg", "pg_ddl_drop", 2)
-fn _pgDdlDrop (id: Int) (table: Text) -> Result Unit Error
-
--- Run an `ALTER TABLE … ADD COLUMN` from the column tuple on the connection.
-@ffi("ridge_pg", "pg_ddl_add_column", 3)
-fn _pgDdlAddColumn (id: Int) (table: Text) (col: (Text, Text, Bool, Bool, Bool)) -> Result Unit Error
-
--- Run an `ALTER TABLE … DROP COLUMN` on the connection.
-@ffi("ridge_pg", "pg_ddl_drop_column", 3)
-fn _pgDdlDropColumn (id: Int) (table: Text) (column: Text) -> Result Unit Error
-
--- Run a `CREATE [UNIQUE] INDEX … ON table (cols)` on the connection.
-@ffi("ridge_pg", "pg_ddl_index", 5)
-fn _pgDdlIndex (id: Int) (name: Text) (table: Text) (cols: List Text) (unique: Bool) -> Result Unit Error
-
 -- Create the tracking table if absent, then read the applied migration names back
 -- in order. Result (List Text) Error.
 @ffi("ridge_pg", "pg_migrations_applied", 1)
@@ -507,6 +510,27 @@ fn _pgRawQuery (id: Int) (sql: Text) (params: List SqlValue) -> Result (List (Ma
 @ffi("ridge_pg", "pg_raw_exec", 3)
 fn _pgRawExec (id: Int) (sql: Text) (params: List SqlValue) -> Result Int Error
 
+-- Run a DDL statement built in Ridge on the connection, discarding the affected-row
+-- count. The schema verbs render their SQL with `std.schema`'s DDL renderer and run
+-- it through this raw-exec seam, which honors an open transaction's pinned connection,
+-- so a migration's schema changes still commit or roll back together with its record.
+fn pgExecUnit (id: Int) (sql: Text) -> Result Unit Error =
+    match _pgRawExec id sql []
+        Ok _  -> Ok ()
+        Err e -> Err e
+
+-- Run a sequence of DDL statements on the connection, stopping at the first error.
+-- An entity-driven create renders to its `CREATE TABLE` plus a `CREATE INDEX` per
+-- non-unique index; they run in order on the transaction's pinned connection, so the
+-- table and its indexes land together or roll back together with the migration.
+fn pgExecSeq (id: Int) (stmts: List Text) -> Result Unit Error =
+    match stmts
+        []        -> Ok ()
+        s :: rest ->
+            match pgExecUnit id s
+                Err e -> Err e
+                Ok _  -> pgExecSeq id rest
+
 -- Open a Postgres connection with the default pool. Requires the `db`
 -- capability; the handle returned is the proof of access for every later call,
 -- exactly like `memAdapter`. A failed connect or authentication is an `Err`. To
@@ -521,7 +545,7 @@ pub fn db connectWith (cfg: Config) (pool: PoolConfig) -> Result Postgres Error 
 
 instance Adapter Postgres =
     appendRow (conn: Postgres) (table: Text) (row: Map Text SqlValue) -> Result Unit Error =
-        match mutationToSql (planInsert table [row])
+        match mutationToSql (planInsert table [row] [])
             (s, binds) ->
                 match _pgRawExec conn.id (sqlValue s) binds
                     Ok _  -> Ok ()
@@ -559,15 +583,21 @@ instance Adapter Postgres =
     close (conn: Postgres) -> Result Unit Error =
         _pgClose conn.id
     ddlCreate (conn: Postgres) (table: Text) (cols: List (Text, Text, Bool, Bool, Bool)) -> Result Unit Error =
-        _pgDdlCreate conn.id table cols
+        pgExecUnit conn.id (createTableDdl table cols)
     ddlDrop (conn: Postgres) (table: Text) -> Result Unit Error =
-        _pgDdlDrop conn.id table
+        pgExecUnit conn.id (dropTableDdl table)
     ddlAddColumn (conn: Postgres) (table: Text) (col: (Text, Text, Bool, Bool, Bool)) -> Result Unit Error =
-        _pgDdlAddColumn conn.id table col
+        pgExecUnit conn.id (addColumnDdl table col)
     ddlDropColumn (conn: Postgres) (table: Text) (column: Text) -> Result Unit Error =
-        _pgDdlDropColumn conn.id table column
+        pgExecUnit conn.id (dropColumnDdl table column)
     ddlIndex (conn: Postgres) (name: Text) (table: Text) (cols: List Text) (unique: Bool) -> Result Unit Error =
-        _pgDdlIndex conn.id name table cols unique
+        pgExecUnit conn.id (indexDdl name table cols unique)
+    ddlCreateEntity (conn: Postgres) (schema: EntitySchema Unit) -> Result Unit Error =
+        pgExecSeq conn.id (schemaToDdl schema :: schemaIndexDdls schema)
+    ddlAddEntityColumn (conn: Postgres) (table: Text) (col: ColumnSchema Unit) -> Result Unit Error =
+        pgExecUnit conn.id (addColumnSchemaDdl table col)
+    ddlAlterColumn (conn: Postgres) (table: Text) (old: ColumnSchema Unit) (new: ColumnSchema Unit) -> Result Unit Error =
+        pgExecUnit conn.id (alterColumnDdl table old new)
     migrationsApplied (conn: Postgres) -> Result (List Text) Error =
         _pgMigrationsApplied conn.id
     recordMigration (conn: Postgres) (name: Text) -> Result Unit Error =

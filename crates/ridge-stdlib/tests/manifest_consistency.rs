@@ -134,6 +134,30 @@ const CONSTRUCTOR_EXPORTS: &[(&str, &str)] = &[
     ("std.data", "DecodeError"),
     ("std.data", "Unsupported"),
     ("std.data", "QueryError"),
+    // The `std.schema` vocabulary unions: their constructors are exported so a
+    // descriptor can name a column type, generation, or foreign-key action, but
+    // text extraction surfaces them only through the type names.
+    ("std.schema", "DbBoolean"),
+    ("std.schema", "DbInt"),
+    ("std.schema", "DbBigInt"),
+    ("std.schema", "DbFloat"),
+    ("std.schema", "DbDecimal"),
+    ("std.schema", "DbText"),
+    ("std.schema", "DbVarchar"),
+    ("std.schema", "DbUuid"),
+    ("std.schema", "DbTimestamp"),
+    ("std.schema", "DbTimestampTz"),
+    ("std.schema", "DbRaw"),
+    ("std.schema", "Supplied"),
+    ("std.schema", "Identity"),
+    ("std.schema", "DefaultNow"),
+    ("std.schema", "DefaultLit"),
+    ("std.schema", "DefaultRawSql"),
+    ("std.schema", "NoAction"),
+    ("std.schema", "Restrict"),
+    ("std.schema", "Cascade"),
+    ("std.schema", "SetNull"),
+    ("std.schema", "SetDefault"),
 ];
 
 /// Return `true` if `(module, sym)` is a known exported union constructor that is
@@ -359,6 +383,13 @@ fn signature_shape_consistency() {
             // whole module is seeded via `reconciled_fn_scheme` rather than the
             // `stdlib_signature` table this shape check covers.
             if dotted == "std.raw" {
+                continue;
+            }
+            // Every std.schema builder/accessor references the reconciled descriptor
+            // types (`DbType`/`Generation`/`FkAction`/`ForeignKey`/`ColumnSchema`/
+            // `EntitySchema`), so the whole module is seeded via
+            // `reconciled_fn_scheme` rather than the `stdlib_signature` table.
+            if dotted == "std.schema" {
                 continue;
             }
             // 1. Signature must resolve to Some.

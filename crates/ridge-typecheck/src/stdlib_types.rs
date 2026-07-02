@@ -567,6 +567,13 @@ fn reconciled_decls(b: &BuiltinTyCons, base: u32) -> Vec<TyConDecl> {
                             Type::Con(TyConId(base + 29), vec![Type::Con(b.unit, vec![])]),
                         ]),
                     },
+                    // `DropIndex` carries the index name alone — the inverse of a
+                    // `CreateIndex`, run by a rollback. Only the name is needed to drop
+                    // an index, which is why a `DropIndex` cannot be auto-reversed.
+                    UnionVariant {
+                        name: "DropIndex".to_string(),
+                        kind: VariantPayload::Positional(vec![Type::Con(b.text, vec![])]),
+                    },
                 ],
             }),
             def_span: None,
@@ -576,8 +583,10 @@ fn reconciled_decls(b: &BuiltinTyCons, base: u32) -> Vec<TyConDecl> {
         },
         // `std.migrate` — a named, ordered batch of schema changes. A plain record
         // declared in Ridge (stdlib/migrate.ridge): the migration name (its key in
-        // the tracking table) and the ordered `SchemaOp` steps. Users construct it
-        // through `migration` or the record literal; field order mirrors the source.
+        // the tracking table), the ordered `SchemaOp` steps, and `down` — the explicit
+        // reverse steps (`Some`) or `None` to derive the reverse from `steps` at
+        // rollback. Users construct it through `migration`/`reversibleMigration` or the
+        // record literal; field order mirrors the source.
         TyConDecl {
             id: TyConId(base + 12),
             name: "Migration".to_string(),
@@ -592,6 +601,16 @@ fn reconciled_decls(b: &BuiltinTyCons, base: u32) -> Vec<TyConDecl> {
                     RecordField {
                         name: "steps".to_string(),
                         ty: Type::Con(b.list, vec![Type::Con(TyConId(base + 11), vec![])]),
+                    },
+                    RecordField {
+                        name: "down".to_string(),
+                        ty: Type::Con(
+                            b.option,
+                            vec![Type::Con(
+                                b.list,
+                                vec![Type::Con(TyConId(base + 11), vec![])],
+                            )],
+                        ),
                     },
                 ],
             )),
@@ -2311,7 +2330,9 @@ fn reconciled_schema_fn_scheme(
         // predicate: whether a column's type, nullability, or default changed (a serial/identity
         // column is excluded), i.e. whether the diff emits an `AlterColumn` for it.
         "columnAltered" => poly1(vec![col_e(), col_e()], boolean()),
-        "dropTableDdl" => mono(vec![text()], text()),
+        // dropTableDdl / dropIndexDdl : Text -> Text — a name-only `DROP TABLE` /
+        // `DROP INDEX IF EXISTS`; `dropIndexDdl` is the inverse of `indexDdl`.
+        "dropTableDdl" | "dropIndexDdl" => mono(vec![text()], text()),
         "dropColumnDdl" => mono(vec![text(), text()], text()),
         "indexDdl" => mono(vec![text(), text(), list(text()), boolean()], text()),
         // schemaOf : ∀e. Option e -> EntitySchema e where HasSchema e. The single
@@ -2419,6 +2440,26 @@ fn reconciled_migrate_fn_scheme(
             constraints: vec![],
         })
     };
+    // A pure builder over the `Adapter a` dictionary: `∀a. a -> rest -> ret where
+    // Adapter a`. The receiver `a` is prepended; `run`/`applied`/`rollback`/`revertTo`
+    // share this shape and differ only in the parameters after the receiver.
+    let adapter_scheme = |rest: Vec<Type>, ret: Type| -> Option<Scheme> {
+        let adapter = classes.id_by_name("Adapter")?;
+        let a = TyVid(0);
+        let mut params = vec![Type::Var(a)];
+        params.extend(rest);
+        Some(Scheme {
+            vars: vec![a],
+            cap_vars: vec![],
+            row_vars: vec![],
+            ty: Type::Fn {
+                params,
+                ret: Box::new(ret),
+                caps: pure(),
+            },
+            constraints: vec![Constraint::single(adapter, a)],
+        })
+    };
     match name {
         // intCol / textCol / boolCol / floatCol : Text -> Column — the typed column
         // declarators, each pinning the base type.
@@ -2427,8 +2468,8 @@ fn reconciled_migrate_fn_scheme(
         "nullable" | "primaryKey" | "unique" => mono(vec![column_ty()], column_ty()),
         // createTable : Text -> List Column -> SchemaOp
         "createTable" => mono(vec![text(), list(column_ty())], schema_op_ty()),
-        // dropTable : Text -> SchemaOp
-        "dropTable" => mono(vec![text()], schema_op_ty()),
+        // dropTable / dropIndex : Text -> SchemaOp — a name-only drop step.
+        "dropTable" | "dropIndex" => mono(vec![text()], schema_op_ty()),
         // addColumn : Text -> Column -> SchemaOp
         "addColumn" => mono(vec![text(), column_ty()], schema_op_ty()),
         // dropColumn : Text -> Text -> SchemaOp
@@ -2467,40 +2508,30 @@ fn reconciled_migrate_fn_scheme(
         // run : ∀a. a -> List Migration -> Result (List Text) Error where Adapter a.
         // The runner reaches the schema seam through the `Adapter a` dictionary, the
         // same shape `transaction` carries; `a` is the only quantified variable.
-        "run" => {
-            let adapter = classes.id_by_name("Adapter")?;
-            let a = TyVid(0);
-            Some(Scheme {
-                vars: vec![a],
-                cap_vars: vec![],
-                row_vars: vec![],
-                ty: Type::Fn {
-                    params: vec![Type::Var(a), list(Type::Con(migration, vec![]))],
-                    ret: Box::new(result(list(text()))),
-                    caps: pure(),
-                },
-                constraints: vec![Constraint::single(adapter, a)],
-            })
-        }
+        "run" => adapter_scheme(
+            vec![list(Type::Con(migration, vec![]))],
+            result(list(text())),
+        ),
         // applied : ∀a. a -> Result (List Text) Error where Adapter a. A plain
         // top-level re-export of the `Adapter` class method `migrationsApplied`,
         // for a caller that only wants the applied set (`ridge migrate status`)
         // without importing `std.data` or naming the class method directly.
-        "applied" => {
-            let adapter = classes.id_by_name("Adapter")?;
-            let a = TyVid(0);
-            Some(Scheme {
-                vars: vec![a],
-                cap_vars: vec![],
-                row_vars: vec![],
-                ty: Type::Fn {
-                    params: vec![Type::Var(a)],
-                    ret: Box::new(result(list(text()))),
-                    caps: pure(),
-                },
-                constraints: vec![Constraint::single(adapter, a)],
-            })
-        }
+        "applied" => adapter_scheme(vec![], result(list(text()))),
+        // reversibleMigration : Text -> List SchemaOp -> List SchemaOp -> Migration
+        "reversibleMigration" => mono(
+            vec![text(), list(schema_op_ty()), list(schema_op_ty())],
+            Type::Con(migration, vec![]),
+        ),
+        // rollback : ∀a. a -> List Migration -> Int -> Result (List Text) Error where Adapter a
+        "rollback" => adapter_scheme(
+            vec![list(Type::Con(migration, vec![])), Type::Con(b.int, vec![])],
+            result(list(text())),
+        ),
+        // revertTo : ∀a. a -> List Migration -> Text -> Result (List Text) Error where Adapter a
+        "revertTo" => adapter_scheme(
+            vec![list(Type::Con(migration, vec![])), text()],
+            result(list(text())),
+        ),
         _ => None,
     }
 }

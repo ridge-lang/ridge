@@ -151,6 +151,18 @@ fn migrate_add_generates_migration_and_snapshot_then_detects_no_changes() {
         migration_src.contains("pub fn up () -> Migration ="),
         "migration file missing `up`: {migration_src}"
     );
+    // The generated migration is reversible: its `up` is the forward diff and its
+    // `down` the reverse diff, so it renders through `reversibleMigration` with two
+    // bracketed step lists rather than the single-list `migration`.
+    assert!(
+        migration_src.contains("reversibleMigration"),
+        "generated migration should be reversible: {migration_src}"
+    );
+    assert_eq!(
+        migration_src.matches("\n  [ ").count(),
+        2,
+        "a reversible migration should render two step lists (up + down): {migration_src}"
+    );
     assert!(
         migration_src.contains(r#"createSchema (schema "User" "users""#),
         "migration file missing the User create step: {migration_src}"
@@ -158,6 +170,15 @@ fn migrate_add_generates_migration_and_snapshot_then_detects_no_changes() {
     assert!(
         migration_src.contains(r#"createSchema (schema "Post" "posts""#),
         "migration file missing the Post create step: {migration_src}"
+    );
+    // The `down` reverses the forward create by dropping the tables it made.
+    assert!(
+        migration_src.contains(r#"dropTable "users""#),
+        "migration `down` should drop the users table: {migration_src}"
+    );
+    assert!(
+        migration_src.contains(r#"dropTable "posts""#),
+        "migration `down` should drop the posts table: {migration_src}"
     );
 
     let snapshot_src = std::fs::read_to_string(&snapshot_path).expect("read snapshot file");
@@ -320,6 +341,80 @@ fn migrate_status_with_no_migrations_reports_a_friendly_message() {
     assert!(
         stdout.contains("No migrations found"),
         "expected a no-migrations notice, got stdout: {stdout}"
+    );
+}
+
+#[test]
+fn migrate_rollback_with_no_migrations_reports_a_friendly_message() {
+    // Like `apply`, no migrations to discover means no reason to probe erl/erlc
+    // or the environment, so this does not require a BEAM toolchain either.
+    let tw = make_workspace_without_migrations();
+
+    let output = ridge_cmd()
+        .arg("migrate")
+        .arg("rollback")
+        .current_dir(&tw.path)
+        .output()
+        .expect("ridge migrate rollback spawn failed");
+
+    let stdout = String::from_utf8_lossy(&output.stdout).into_owned();
+    let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
+    assert!(
+        output.status.success(),
+        "ridge migrate rollback failed.\nstdout: {stdout}\nstderr: {stderr}"
+    );
+    assert!(
+        stdout.contains("No migrations found"),
+        "expected a no-migrations notice, got stdout: {stdout}"
+    );
+}
+
+#[test]
+fn migrate_rollback_missing_required_env_vars_reports_c406() {
+    if which::which("erlc").is_err() || which::which("erl").is_err() {
+        eprintln!(
+            "erl/erlc not on PATH — skipping migrate_rollback_missing_required_env_vars_reports_c406"
+        );
+        return;
+    }
+
+    // Reaching the environment check requires at least one migration to be
+    // discovered first, so generate one with `add` before exercising `rollback`.
+    let tw = make_migrate_workspace();
+    let add_output = ridge_cmd()
+        .arg("migrate")
+        .arg("add")
+        .arg("init")
+        .current_dir(&tw.path)
+        .output()
+        .expect("ridge migrate add init spawn failed");
+    assert!(
+        add_output.status.success(),
+        "ridge migrate add init failed.\nstdout: {}\nstderr: {}",
+        String::from_utf8_lossy(&add_output.stdout),
+        String::from_utf8_lossy(&add_output.stderr)
+    );
+
+    // Clear the required variables so the test is deterministic regardless of the
+    // ambient shell environment.
+    let output = ridge_cmd()
+        .arg("migrate")
+        .arg("rollback")
+        .current_dir(&tw.path)
+        .env_remove("RIDGE_DB_DATABASE")
+        .env_remove("RIDGE_DB_USER")
+        .output()
+        .expect("ridge migrate rollback spawn failed");
+
+    assert!(!output.status.success(), "expected a non-zero exit code");
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("C406"),
+        "expected a C406 MigrateEnvMissing error, got stderr: {stderr}"
+    );
+    assert!(
+        stderr.contains("RIDGE_DB_DATABASE") && stderr.contains("RIDGE_DB_USER"),
+        "expected both missing variables to be named, got stderr: {stderr}"
     );
 }
 

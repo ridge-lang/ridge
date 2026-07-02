@@ -98,6 +98,8 @@ pub enum MigrateCommand {
     Apply(ApplyArgs),
     /// Report which migrations are applied and which are pending.
     Status(StatusArgs),
+    /// Roll back the most recently applied migrations, newest first.
+    Rollback(RollbackArgs),
 }
 
 /// Diff the model against the last snapshot and write a new migration.
@@ -129,6 +131,16 @@ pub struct ApplyArgs {}
 #[derive(Debug, Parser)]
 pub struct StatusArgs {}
 
+/// Roll back the most recently applied migrations, newest first.
+///
+/// Reads the same environment variables as `ridge migrate apply`.
+#[derive(Debug, Parser)]
+pub struct RollbackArgs {
+    /// How many migrations to roll back (most recent first).
+    #[arg(long, default_value_t = 1)]
+    pub steps: u32,
+}
+
 // ── Execute ───────────────────────────────────────────────────────────────────
 
 /// Execute `ridge migrate`.
@@ -143,6 +155,7 @@ pub fn execute(args: &MigrateArgs, cwd: &Path) -> Result<(), CliError> {
         MigrateCommand::Add(add_args) => execute_add(add_args, cwd),
         MigrateCommand::Apply(_) => execute_apply(cwd),
         MigrateCommand::Status(_) => execute_status(cwd),
+        MigrateCommand::Rollback(a) => execute_rollback(a, cwd),
     }
 }
 
@@ -352,6 +365,69 @@ fn run_status(
     Ok(())
 }
 
+/// Execute `ridge migrate rollback`.
+fn execute_rollback(args: &RollbackArgs, cwd: &Path) -> Result<(), CliError> {
+    // ── 1. Locate workspace root and target member ───────────────────────────
+    let workspace_root = find_workspace_root(cwd).ok_or(CliError::NoWorkspaceRoot)?;
+    let project = resolve_target_project(&workspace_root)?;
+
+    // ── 2. Discover the migration modules ─────────────────────────────────────
+    let migrations_dir = project.src_root.join("migrations");
+    let stems = discover_migration_stems(&migrations_dir);
+    if stems.is_empty() {
+        println!("No migrations found. Run `ridge migrate add <name>` to create one.");
+        return Ok(());
+    }
+
+    // ── 3. Validate the connection environment up front ──────────────────────
+    validate_required_env_vars()?;
+
+    // ── 4. Probe the BEAM toolchain ────────────────────────────────────────────
+    let erl_path = which::which("erl").map_err(|_| CliError::MigrateErlangNotFound)?;
+    which::which("erlc").map_err(|_| CliError::MigrateErlangNotFound)?;
+
+    // ── 5. Write the temporary driver module ─────────────────────────────────
+    let driver_path = migrations_dir.join("__migrate_driver.ridge");
+    let driver_source = build_rollback_driver_source(&project.name, &stems, args.steps);
+    std::fs::write(&driver_path, &driver_source).map_err(|e| CliError::MigrateInternal {
+        message: format!("could not write '{}': {e}", driver_path.display()),
+    })?;
+
+    // ── 6. Compile, run, and report ────────────────────────────────────────────
+    // The temporary driver module must not linger — clean it up on every path.
+    let result = run_rollback(&workspace_root, &erl_path, &project.name);
+    let _ = std::fs::remove_file(&driver_path);
+
+    result
+}
+
+/// Compile the workspace, locate the driver module, run its `rollbackOut`, and
+/// report the outcome.
+fn run_rollback(
+    workspace_root: &Path,
+    erl_path: &Path,
+    project_name: &str,
+) -> Result<(), CliError> {
+    let (_cache_dir, beam_dir, driver_beam_module) =
+        compile_and_locate_driver(workspace_root, project_name)?;
+
+    let raw = run_beam_text_fn(erl_path, &beam_dir, &driver_beam_module, "rollbackOut")?;
+    let rolled =
+        parse_ok_err(&raw).map_err(|message| CliError::MigrateRollbackFailed { message })?;
+
+    if rolled.is_empty() {
+        println!("Nothing to roll back.");
+    } else {
+        println!(
+            "Rolled back {} migration(s): {}",
+            rolled.len(),
+            rolled.join(", ")
+        );
+    }
+
+    Ok(())
+}
+
 // ── Member resolution ─────────────────────────────────────────────────────────
 
 /// Resolve the workspace's target member project for `ridge migrate`.
@@ -521,7 +597,9 @@ fn migration_file_stem(stamp: &str, name: &str) -> String {
 /// It exposes three zero-arity functions the caller runs on the BEAM:
 /// `changeCount` (how many steps the diff produced), `migrationOut` (the
 /// rendered migration module), and `snapshotOut` (the rendered, refreshed
-/// snapshot module).
+/// snapshot module). The migration is rendered reversible: its `up` is the
+/// forward diff (previous model to current) and its `down` the reverse diff
+/// (current back to previous), so the generated migration rolls back for free.
 fn build_driver_source(project_name: &str, has_snapshot: bool, migration_name: &str) -> String {
     let prev_expr = if has_snapshot {
         "(Snap.model ())"
@@ -540,7 +618,7 @@ fn build_driver_source(project_name: &str, has_snapshot: bool, migration_name: &
         "pub fn changeCount () -> Int = List.length (Migrate.diffSchemas {prev_expr} (model ()))"
     ));
     lines.push(format!(
-        "pub fn migrationOut () -> Text = Migrate.migrationModule (Migrate.migration \"{migration_name}\" (Migrate.diffSchemas {prev_expr} (model ())))"
+        "pub fn migrationOut () -> Text = Migrate.migrationModule (Migrate.reversibleMigration \"{migration_name}\" (Migrate.diffSchemas {prev_expr} (model ())) (Migrate.diffSchemas (model ()) {prev_expr}))"
     ));
     lines.push("pub fn snapshotOut () -> Text = Migrate.snapshotModule (model ())".to_owned());
     lines.push(String::new());
@@ -630,6 +708,40 @@ fn build_apply_driver_source(project_name: &str, stems: &[String]) -> String {
     lines.push(format!(
         "pub fn db env applyOut () -> Text =\n    match connect (cfg ())\n        Err e -> Text.join \"\" [\"err:\", e.message]\n        Ok conn ->\n            match Migrate.run conn [ {} ]\n                Ok applied -> Text.join \"\" [\"ok:\", Text.join \",\" applied]\n                Err e      -> Text.join \"\" [\"err:\", e.message]",
         ups.join(", ")
+    ));
+    lines.push(String::new());
+
+    lines.join("\n")
+}
+
+/// Build the source of the temporary driver module for `ridge migrate rollback`.
+///
+/// The same shape as the `apply` driver — every migration module imported under
+/// its own alias (`M0`, `M1`, ...) so `std.migrate`'s `rollback` can look up each
+/// migration's reverse steps by name — but its entry point calls `rollback` with
+/// the requested step count in place of `run`. Exposes one zero-arity function,
+/// `rollbackOut`, that connects, rolls back the most recent `steps` migrations, and
+/// renders the `Result` as `ok:<comma-separated rolled-back names>` or
+/// `err:<message>`.
+fn build_rollback_driver_source(project_name: &str, stems: &[String], count: u32) -> String {
+    let mut lines = Vec::new();
+    for (i, stem) in stems.iter().enumerate() {
+        lines.push(format!("import {project_name}.migrations.{stem} as M{i}"));
+    }
+    lines.push("import std.migrate as Migrate".to_owned());
+    lines.push("import std.data (Config, connect)".to_owned());
+    lines.push("import std.env as Env".to_owned());
+    lines.push("import std.int as Int".to_owned());
+    lines.push("import std.text as Text".to_owned());
+    lines.push(String::new());
+    lines.push(config_helpers_source());
+    lines.push(String::new());
+
+    let ups: Vec<String> = (0..stems.len()).map(|i| format!("M{i}.up ()")).collect();
+    lines.push(format!(
+        "pub fn db env rollbackOut () -> Text =\n    match connect (cfg ())\n        Err e -> Text.join \"\" [\"err:\", e.message]\n        Ok conn ->\n            match Migrate.rollback conn [ {} ] {}\n                Ok rolled -> Text.join \"\" [\"ok:\", Text.join \",\" rolled]\n                Err e      -> Text.join \"\" [\"err:\", e.message]",
+        ups.join(", "),
+        count
     ));
     lines.push(String::new());
 
@@ -861,9 +973,9 @@ fn civil_from_days(z: i64) -> (i64, u32, u32) {
 #[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod tests {
     use super::{
-        build_apply_driver_source, build_status_driver_source, discover_migration_stems,
-        format_utc_timestamp, migration_file_stem, missing_required_vars, parse_ok_err,
-        validate_migration_name,
+        build_apply_driver_source, build_rollback_driver_source, build_status_driver_source,
+        discover_migration_stems, format_utc_timestamp, migration_file_stem, missing_required_vars,
+        parse_ok_err, validate_migration_name,
     };
 
     #[test]
@@ -995,6 +1107,32 @@ mod tests {
         // the actual password value.
         assert!(src.contains("Env.get \"RIDGE_DB_PASSWORD\""));
         assert!(src.contains("Env.get \"RIDGE_DB_HOST\""));
+    }
+
+    #[test]
+    fn build_rollback_driver_source_aliases_each_migration_and_rolls_back_n_steps() {
+        let src = build_rollback_driver_source(
+            "demo",
+            &["m1_init".to_owned(), "m2_second".to_owned()],
+            2,
+        );
+
+        assert!(src.contains("import demo.migrations.m1_init as M0"));
+        assert!(src.contains("import demo.migrations.m2_second as M1"));
+        // Every migration is passed so `rollback` can find each one's reverse steps
+        // by name, and the requested step count is spliced in as the integer argument.
+        assert!(src.contains("Migrate.rollback conn [ M0.up (), M1.up () ] 2"));
+        assert!(src.contains("pub fn db env rollbackOut () -> Text"));
+        // Connection settings are still read at runtime through `std.env`, never
+        // spliced into the generated source.
+        assert!(src.contains("Env.get \"RIDGE_DB_PASSWORD\""));
+        assert!(src.contains("Env.get \"RIDGE_DB_HOST\""));
+    }
+
+    #[test]
+    fn build_rollback_driver_source_defaults_to_a_single_step() {
+        let src = build_rollback_driver_source("demo", &["m1_init".to_owned()], 1);
+        assert!(src.contains("Migrate.rollback conn [ M0.up () ] 1"));
     }
 
     #[test]

@@ -28,7 +28,7 @@ import std.sql (SqlValue, sqlValue)
 import std.query (QueryPlan, planToSql, planScan, MutationPlan, mutationToSql, mutationReturningToSql, planInsert, planUpdate, planDelete)
 import std.map (toList)
 import std.text (startsWith)
-import std.schema (EntitySchema, ColumnSchema, schemaToDdl, schemaIndexDdls, schemaTable, createTableDdl, addColumnDdl, addColumnSchemaDdl, alterColumnDdl, dropTableDdl, dropColumnDdl, indexDdl)
+import std.schema (EntitySchema, ColumnSchema, schemaToDdl, schemaIndexDdls, schemaTable, createTableDdl, addColumnDdl, addColumnSchemaDdl, alterColumnDdl, dropTableDdl, dropColumnDdl, indexDdl, dropIndexDdl)
 
 -- ── Typed database errors ─────────────────────────────────────────────────────
 --
@@ -136,7 +136,10 @@ pub fn dbErrorTable (e: Error) -> Text =
 -- applied (creating the tracking table on first use), and `recordMigration` marks
 -- one applied; the runner reads the first to skip applied migrations and writes the
 -- second inside each migration's transaction, so the record and the schema change
--- commit or roll back together.
+-- commit or roll back together. `ddlDropIndex` drops an index by name — the inverse
+-- of `ddlIndex` — and `unrecordMigration` removes a name from the tracking table —
+-- the inverse of `recordMigration` — the two seam operations a rollback runs to undo
+-- an index and forget a reverted migration's record.
 --
 -- `rawQuery` and `rawExec` are the raw-SQL escape hatch (the typed front door is
 -- std.raw): `rawQuery` runs a statement that returns rows and answers them as
@@ -163,11 +166,13 @@ pub class Adapter a =
     ddlAddColumn (conn: a) (table: Text) (col: (Text, Text, Bool, Bool, Bool)) -> Result Unit Error
     ddlDropColumn (conn: a) (table: Text) (column: Text) -> Result Unit Error
     ddlIndex (conn: a) (name: Text) (table: Text) (cols: List Text) (unique: Bool) -> Result Unit Error
+    ddlDropIndex (conn: a) (name: Text) -> Result Unit Error
     ddlCreateEntity (conn: a) (schema: EntitySchema Unit) -> Result Unit Error
     ddlAddEntityColumn (conn: a) (table: Text) (col: ColumnSchema Unit) -> Result Unit Error
     ddlAlterColumn (conn: a) (table: Text) (old: ColumnSchema Unit) (new: ColumnSchema Unit) -> Result Unit Error
     migrationsApplied (conn: a) -> Result (List Text) Error
     recordMigration (conn: a) (name: Text) -> Result Unit Error
+    unrecordMigration (conn: a) (name: Text) -> Result Unit Error
     rawQuery (conn: a) (sql: Text) (params: List SqlValue) -> Result (List (Map Text SqlValue)) Error
     rawExec (conn: a) (sql: Text) (params: List SqlValue) -> Result Int Error
 
@@ -285,6 +290,15 @@ fn _memMigrationsApplied (id: Int) -> Result (List Text) Error
 @ffi("ridge_rt", "mem_record_migration", 2)
 fn _memRecordMigration (id: Int) (name: Text) -> Result Unit Error
 
+-- A no-op on the schemaless store: the in-memory adapter has no indexes.
+@ffi("ridge_rt", "mem_ddl_drop_index", 2)
+fn _memDdlDropIndex (id: Int) (name: Text) -> Result Unit Error
+
+-- Remove a migration name from the tracking table — the inverse of
+-- `mem_record_migration`, so a later `migrationsApplied` no longer reports it.
+@ffi("ridge_rt", "mem_unrecord_migration", 2)
+fn _memUnrecordMigration (id: Int) (name: Text) -> Result Unit Error
+
 -- Raw SQL has no meaning on the schemaless in-memory store (no SQL engine), so
 -- both raw verbs report a clear error rather than silently doing nothing.
 @ffi("ridge_rt", "mem_raw_query", 3)
@@ -335,6 +349,8 @@ instance Adapter MemAdapter =
         _memDdlDropColumn conn.id table column
     ddlIndex (conn: MemAdapter) (name: Text) (table: Text) (cols: List Text) (unique: Bool) -> Result Unit Error =
         _memDdlIndex conn.id name table cols unique
+    ddlDropIndex (conn: MemAdapter) (name: Text) -> Result Unit Error =
+        _memDdlDropIndex conn.id name
     ddlCreateEntity (conn: MemAdapter) (schema: EntitySchema Unit) -> Result Unit Error =
         _memDdlCreate conn.id (schemaTable schema) []
     ddlAddEntityColumn (conn: MemAdapter) (table: Text) (col: ColumnSchema Unit) -> Result Unit Error =
@@ -345,6 +361,8 @@ instance Adapter MemAdapter =
         _memMigrationsApplied conn.id
     recordMigration (conn: MemAdapter) (name: Text) -> Result Unit Error =
         _memRecordMigration conn.id name
+    unrecordMigration (conn: MemAdapter) (name: Text) -> Result Unit Error =
+        _memUnrecordMigration conn.id name
     rawQuery (conn: MemAdapter) (sql: Text) (params: List SqlValue) -> Result (List (Map Text SqlValue)) Error =
         _memRawQuery conn.id sql params
     rawExec (conn: MemAdapter) (sql: Text) (params: List SqlValue) -> Result Int Error =
@@ -501,6 +519,11 @@ fn _pgMigrationsApplied (id: Int) -> Result (List Text) Error
 @ffi("ridge_pg", "pg_record_migration", 2)
 fn _pgRecordMigration (id: Int) (name: Text) -> Result Unit Error
 
+-- Delete a migration name from the tracking table — the inverse of
+-- `pg_record_migration`, run by a rollback to forget a reverted migration.
+@ffi("ridge_pg", "pg_unrecord_migration", 2)
+fn _pgUnrecordMigration (id: Int) (name: Text) -> Result Unit Error
+
 -- Run a raw SQL query with positional `$N` parameters bound from `params`,
 -- returning the rows as column maps. Result (List Row) Error.
 @ffi("ridge_pg", "pg_raw_query", 3)
@@ -592,6 +615,8 @@ instance Adapter Postgres =
         pgExecUnit conn.id (dropColumnDdl table column)
     ddlIndex (conn: Postgres) (name: Text) (table: Text) (cols: List Text) (unique: Bool) -> Result Unit Error =
         pgExecUnit conn.id (indexDdl name table cols unique)
+    ddlDropIndex (conn: Postgres) (name: Text) -> Result Unit Error =
+        pgExecUnit conn.id (dropIndexDdl name)
     ddlCreateEntity (conn: Postgres) (schema: EntitySchema Unit) -> Result Unit Error =
         pgExecSeq conn.id (schemaToDdl schema :: schemaIndexDdls schema)
     ddlAddEntityColumn (conn: Postgres) (table: Text) (col: ColumnSchema Unit) -> Result Unit Error =
@@ -602,6 +627,8 @@ instance Adapter Postgres =
         _pgMigrationsApplied conn.id
     recordMigration (conn: Postgres) (name: Text) -> Result Unit Error =
         _pgRecordMigration conn.id name
+    unrecordMigration (conn: Postgres) (name: Text) -> Result Unit Error =
+        _pgUnrecordMigration conn.id name
     rawQuery (conn: Postgres) (sql: Text) (params: List SqlValue) -> Result (List (Map Text SqlValue)) Error =
         _pgRawQuery conn.id sql params
     rawExec (conn: Postgres) (sql: Text) (params: List SqlValue) -> Result Int Error =

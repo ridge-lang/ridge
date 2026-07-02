@@ -445,16 +445,19 @@ const BASELINE_EXPORTS: &[(&str, &[&str])] = &[
             // and the write-side renderer. A write verb builds a `MutationPlan` and
             // hands it to a backend's `runMutation`; `mutationToSql` lowers it to one
             // parameterized statement, the write-side dual of `planToSql`. `MutUpsert`
-            // carries an `ON CONFLICT` clause built by `planUpsert`.
+            // carries an `ON CONFLICT` clause built by `planUpsert`; `MutDeleteKeys`
+            // removes rows by their key columns, the reverse a seed rollback runs.
             "MutationPlan",
             "MutInsert",
             "MutUpsert",
             "MutUpdate",
             "MutDelete",
+            "MutDeleteKeys",
             "planInsert",
             "planUpsert",
             "planUpdate",
             "planDelete",
+            "planDeleteKeys",
             "mutationToSql",
             // The RETURNING renderer: the same statement, with a `RETURNING <cols>`
             // tail so a backend hands back the affected rows.

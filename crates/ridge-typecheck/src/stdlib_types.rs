@@ -1260,10 +1260,11 @@ fn reconciled_decls(b: &BuiltinTyCons, base: u32) -> Vec<TyConDecl> {
         // unique-constraint conflict over `conflictCols` by overwriting `updateCols`
         // (`ON CONFLICT … DO UPDATE`) or, with no update columns, leaving the row
         // (`DO NOTHING`); `MutUpdate table changes pred` sets the given columns on the
-        // rows its predicate admits; `MutDelete table pred` removes them. `mutationToSql`
-        // renders it to one parameterized statement, sharing the predicate renderer
-        // with `planToSql`, so a correlated `EXISTS` in a mutation predicate compiles
-        // exactly as it does in a query.
+        // rows its predicate admits; `MutDelete table pred` removes them; `MutDeleteKeys
+        // table keyCols rows` removes the rows whose `keyCols` match one of `rows`, a
+        // value-keyed delete a seed rollback runs. `mutationToSql` renders it to one
+        // parameterized statement, sharing the predicate renderer with `planToSql`, so a
+        // correlated `EXISTS` in a mutation predicate compiles exactly as it does in a query.
         TyConDecl {
             id: TyConId(base + 22),
             name: "MutationPlan".to_string(),
@@ -1319,6 +1320,22 @@ fn reconciled_decls(b: &BuiltinTyCons, base: u32) -> Vec<TyConDecl> {
                         kind: VariantPayload::Positional(vec![
                             Type::Con(b.text, vec![]),
                             Type::Con(b.q_expr, vec![]),
+                        ]),
+                    },
+                    UnionVariant {
+                        name: "MutDeleteKeys".to_string(),
+                        kind: VariantPayload::Positional(vec![
+                            Type::Con(b.text, vec![]),
+                            // keyCols: the columns the delete matches each stored row on.
+                            Type::Con(b.list, vec![Type::Con(b.text, vec![])]),
+                            // rows: the key-carrying rows to remove, matched by `keyCols`.
+                            Type::Con(
+                                b.list,
+                                vec![Type::Con(
+                                    b.map,
+                                    vec![Type::Con(b.text, vec![]), Type::Con(b.sql_value, vec![])],
+                                )],
+                            ),
                         ]),
                     },
                 ],
@@ -2106,6 +2123,8 @@ fn reconciled_mutation_plan_fn_scheme(
         "planUpdate" => Some(pure(vec![text(), row(), qexpr()], plan())),
         // planDelete : Text -> QExpr -> MutationPlan
         "planDelete" => Some(pure(vec![text(), qexpr()], plan())),
+        // planDeleteKeys : Text -> List Text -> List (Map Text SqlValue) -> MutationPlan
+        "planDeleteKeys" => Some(pure(vec![text(), text_list(), rows()], plan())),
         // mutationToSql : MutationPlan -> (Sql, List SqlValue)
         "mutationToSql" => Some(pure(
             vec![plan()],

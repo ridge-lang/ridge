@@ -1634,10 +1634,12 @@ mod tests {
                             | "MutUpsert"
                             | "MutUpdate"
                             | "MutDelete"
+                            | "MutDeleteKeys"
                             | "planInsert"
                             | "planUpsert"
                             | "planUpdate"
                             | "planDelete"
+                            | "planDeleteKeys"
                             | "mutationToSql"
                             | "mutationReturningToSql"
                     )

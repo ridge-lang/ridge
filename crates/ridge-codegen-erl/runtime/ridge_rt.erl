@@ -1315,6 +1315,12 @@ mem_mutation_affected(State, Id, {'MutDelete', Table, Tree}) ->
     Key = {Id, Table},
     Rows = maps:get(Key, State, []),
     {Removed, Kept} = lists:partition(fun(R) -> mem_pred(State, Id, Tree, R) end, Rows),
+    {State#{Key => Kept}, Removed};
+mem_mutation_affected(State, Id, {'MutDeleteKeys', Table, KeyCols, SeedRows}) ->
+    Key = {Id, Table},
+    Rows = maps:get(Key, State, []),
+    Matches = fun(R) -> lists:any(fun(Seed) -> mem_row_conflicts(R, Seed, KeyCols) end, SeedRows) end,
+    {Removed, Kept} = lists:partition(Matches, Rows),
     {State#{Key => Kept}, Removed}.
 
 %% Fill the database-generated identity columns an insert omitted. For each identity

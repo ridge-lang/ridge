@@ -3770,16 +3770,16 @@ fn migrate_run_over_schema_typechecks() {
     let main = r#"
 import std.data (memAdapter, MemAdapter)
 import std.migrate as Migrate
-import std.migrate (SchemaOp)
+import std.migrate (MigrationOp)
 
-fn usersTable () -> SchemaOp =
+fn usersTable () -> MigrationOp =
     Migrate.createTable "users"
         [ Migrate.intCol  "id"    |> Migrate.primaryKey
         , Migrate.textCol "name"
         , Migrate.textCol "email" |> Migrate.unique
         , Migrate.textCol "bio"   |> Migrate.nullable ]
 
-fn postsTable () -> SchemaOp =
+fn postsTable () -> MigrationOp =
     Migrate.createTable "posts"
         [ Migrate.intCol   "id"     |> Migrate.primaryKey
         , Migrate.intCol   "author"
@@ -3799,9 +3799,9 @@ pub fn db setup () -> Result (List Text) Error =
 }
 
 #[test]
-fn migrate_full_schema_op_surface_typechecks() {
+fn migrate_full_migration_op_surface_typechecks() {
     // The rest of the schema verbs — `addColumn`, `dropColumn`, `uniqueIndex`,
-    // `dropTable` — all build `SchemaOp` values the `migration` builder and runner
+    // `dropTable` — all build `MigrationOp` values the `migration` builder and runner
     // accept.
     let main = r#"
 import std.data (memAdapter, MemAdapter)
@@ -3828,9 +3828,9 @@ fn migrate_run_over_postgres_typechecks() {
     let main = r#"
 import std.data (Postgres)
 import std.migrate as Migrate
-import std.migrate (SchemaOp)
+import std.migrate (MigrationOp)
 
-fn usersTable () -> SchemaOp =
+fn usersTable () -> MigrationOp =
     Migrate.createTable "users"
         [ Migrate.intCol  "id"   |> Migrate.primaryKey
         , Migrate.textCol "name" ]

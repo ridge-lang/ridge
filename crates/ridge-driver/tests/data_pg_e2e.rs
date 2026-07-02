@@ -59,7 +59,7 @@ const SOURCE_TEMPLATE: &str = r#"
 import std.data (connect, connectWith, defaultPool, withPoolSize, withQueryTimeoutMs, withCheckoutTimeoutMs, Config, Postgres, dbErrorKind, dbErrorConstraint, dbErrorColumn, dbErrorTable, DbErrorKind, UniqueViolation, ForeignKeyViolation, NotNullViolation, CheckViolation, ConnectionError, DecodeError, Unsupported, QueryError)
 import std.repo as Repo
 import std.migrate as Migrate
-import std.migrate (SchemaOp)
+import std.migrate (MigrationOp)
 import std.raw as Raw
 import std.query (SortOrder, Asc, Desc)
 import std.sql (toSql, SqlValue, toRow)
@@ -1860,7 +1860,7 @@ pub fn db txSavepointCount () -> Int =
 -- recorded in the `_ridge_migrations` tracking table. Applying the same schema again
 -- is a no-op, so the probes stay deterministic against the persistent test database
 -- (the tracking table outlives any one probe).
-fn widgetsTable () -> SchemaOp =
+fn widgetsTable () -> MigrationOp =
     Migrate.createTable "ridge_mig_widgets"
         [ Migrate.intCol  "id"   |> Migrate.primaryKey
         , Migrate.textCol "name" ]
@@ -1926,7 +1926,7 @@ pub type RidgeMigGadget = { id: Int, name: Text } deriving (Row, Schema)
 
 fn gadgetWitness () -> Option RidgeMigGadget = None
 
-fn gadgetsSchema () -> SchemaOp =
+fn gadgetsSchema () -> MigrationOp =
     Migrate.createSchema (schemaOf (gadgetWitness ()))
 
 fn runGadgets (conn: Postgres) -> Result (List Text) Error =

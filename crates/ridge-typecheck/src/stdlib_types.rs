@@ -492,7 +492,7 @@ fn reconciled_decls(b: &BuiltinTyCons, base: u32) -> Vec<TyConDecl> {
         // source.
         TyConDecl {
             id: TyConId(base + 11),
-            name: "SchemaOp".to_string(),
+            name: "MigrationOp".to_string(),
             arity: 0,
             kind: TyConKind::Union(UnionSchema {
                 params: vec![],
@@ -583,7 +583,7 @@ fn reconciled_decls(b: &BuiltinTyCons, base: u32) -> Vec<TyConDecl> {
         },
         // `std.migrate` — a named, ordered batch of schema changes. A plain record
         // declared in Ridge (stdlib/migrate.ridge): the migration name (its key in
-        // the tracking table), the ordered `SchemaOp` steps, and `down` — the explicit
+        // the tracking table), the ordered `MigrationOp` steps, and `down` — the explicit
         // reverse steps (`Some`) or `None` to derive the reverse from `steps` at
         // rollback. Users construct it through `migration`/`reversibleMigration` or the
         // record literal; field order mirrors the source.
@@ -2384,7 +2384,7 @@ fn reconciled_schema_fn_scheme(
 
 /// The `std.migrate` slice of [`reconciled_fn_scheme`]: the schema-DSL builders and
 /// the migration runner. The builders are pure and reference the reconciled
-/// `Column`/`SchemaOp`/`Migration` types; `run` and `applied` are the constrained
+/// `Column`/`MigrationOp`/`Migration` types; `run` and `applied` are the constrained
 /// verbs (`where Adapter a`, to reach the schema seam) — `applied` touches no
 /// reconciled type itself, but every `std.migrate` export is dispatched through
 /// this table (see the `("std.migrate", _)` arm in [`reconciled_fn_scheme`]), and
@@ -2397,7 +2397,7 @@ fn reconciled_migrate_fn_scheme(
     classes: &ClassTable,
 ) -> Option<Scheme> {
     let column = *reconciled.get("Column")?;
-    let schema_op = *reconciled.get("SchemaOp")?;
+    let migration_op = *reconciled.get("MigrationOp")?;
     let migration = *reconciled.get("Migration")?;
     let entity_schema = *reconciled.get("EntitySchema")?;
     let column_schema = *reconciled.get("ColumnSchema")?;
@@ -2406,7 +2406,7 @@ fn reconciled_migrate_fn_scheme(
     let pure = || CapRow::Concrete(CapabilitySet::PURE);
     let result = |ok: Type| Type::Con(b.result, vec![ok, Type::Con(b.error, vec![])]);
     let column_ty = || Type::Con(column, vec![]);
-    let schema_op_ty = || Type::Con(schema_op, vec![]);
+    let migration_op_ty = || Type::Con(migration_op, vec![]);
     let e = TyVid(0);
     let ent_e = || Type::Con(entity_schema, vec![Type::Var(e)]);
     let ent_unit = || Type::Con(entity_schema, vec![Type::Con(b.unit, vec![])]);
@@ -2466,35 +2466,37 @@ fn reconciled_migrate_fn_scheme(
         "intCol" | "textCol" | "boolCol" | "floatCol" => mono(vec![text()], column_ty()),
         // nullable / primaryKey / unique : Column -> Column
         "nullable" | "primaryKey" | "unique" => mono(vec![column_ty()], column_ty()),
-        // createTable : Text -> List Column -> SchemaOp
-        "createTable" => mono(vec![text(), list(column_ty())], schema_op_ty()),
-        // dropTable / dropIndex : Text -> SchemaOp — a name-only drop step.
-        "dropTable" | "dropIndex" => mono(vec![text()], schema_op_ty()),
-        // addColumn : Text -> Column -> SchemaOp
-        "addColumn" => mono(vec![text(), column_ty()], schema_op_ty()),
-        // dropColumn : Text -> Text -> SchemaOp
-        "dropColumn" => mono(vec![text(), text()], schema_op_ty()),
-        // createIndex / uniqueIndex : Text -> Text -> List Text -> SchemaOp
-        "createIndex" | "uniqueIndex" => mono(vec![text(), text(), list(text())], schema_op_ty()),
-        // createSchema / dropSchema : ∀e. EntitySchema e -> SchemaOp — the entity-driven
+        // createTable : Text -> List Column -> MigrationOp
+        "createTable" => mono(vec![text(), list(column_ty())], migration_op_ty()),
+        // dropTable / dropIndex : Text -> MigrationOp — a name-only drop step.
+        "dropTable" | "dropIndex" => mono(vec![text()], migration_op_ty()),
+        // addColumn : Text -> Column -> MigrationOp
+        "addColumn" => mono(vec![text(), column_ty()], migration_op_ty()),
+        // dropColumn : Text -> Text -> MigrationOp
+        "dropColumn" => mono(vec![text(), text()], migration_op_ty()),
+        // createIndex / uniqueIndex : Text -> Text -> List Text -> MigrationOp
+        "createIndex" | "uniqueIndex" => {
+            mono(vec![text(), text(), list(text())], migration_op_ty())
+        }
+        // createSchema / dropSchema : ∀e. EntitySchema e -> MigrationOp — the entity-driven
         // table create and drop, taking the schema descriptor in place of a column tuple.
-        "createSchema" | "dropSchema" => poly_e(vec![ent_e()], schema_op_ty()),
-        // addEntityColumn : Text -> ColumnSchema Unit -> SchemaOp — the entity-driven ADD
+        "createSchema" | "dropSchema" => poly_e(vec![ent_e()], migration_op_ty()),
+        // addEntityColumn : Text -> ColumnSchema Unit -> MigrationOp — the entity-driven ADD
         // COLUMN factory (a phantom-erased descriptor); the diff's added-column step.
-        "addEntityColumn" => mono(vec![text(), col_unit()], schema_op_ty()),
-        // alterColumn : Text -> ColumnSchema Unit -> ColumnSchema Unit -> SchemaOp — the
+        "addEntityColumn" => mono(vec![text(), col_unit()], migration_op_ty()),
+        // alterColumn : Text -> ColumnSchema Unit -> ColumnSchema Unit -> MigrationOp — the
         // ALTER COLUMN factory carrying a column's old and new descriptors; the diff's
         // altered-column step.
-        "alterColumn" => mono(vec![text(), col_unit(), col_unit()], schema_op_ty()),
-        // diffSchemas : List (EntitySchema Unit) -> List (EntitySchema Unit) -> List SchemaOp —
+        "alterColumn" => mono(vec![text(), col_unit(), col_unit()], migration_op_ty()),
+        // diffSchemas : List (EntitySchema Unit) -> List (EntitySchema Unit) -> List MigrationOp —
         // the pure snapshot diff: the schema steps that turn the `prev` model into `next`.
         "diffSchemas" => mono(
             vec![list(ent_unit()), list(ent_unit())],
-            list(schema_op_ty()),
+            list(migration_op_ty()),
         ),
-        // migration : Text -> List SchemaOp -> Migration
+        // migration : Text -> List MigrationOp -> Migration
         "migration" => mono(
-            vec![text(), list(schema_op_ty())],
+            vec![text(), list(migration_op_ty())],
             Type::Con(migration, vec![]),
         ),
         // modelToSource : List (EntitySchema Unit) -> Text renders a model snapshot to the
@@ -2517,9 +2519,9 @@ fn reconciled_migrate_fn_scheme(
         // for a caller that only wants the applied set (`ridge migrate status`)
         // without importing `std.data` or naming the class method directly.
         "applied" => adapter_scheme(vec![], result(list(text()))),
-        // reversibleMigration : Text -> List SchemaOp -> List SchemaOp -> Migration
+        // reversibleMigration : Text -> List MigrationOp -> List MigrationOp -> Migration
         "reversibleMigration" => mono(
-            vec![text(), list(schema_op_ty()), list(schema_op_ty())],
+            vec![text(), list(migration_op_ty()), list(migration_op_ty())],
             Type::Con(migration, vec![]),
         ),
         // rollback : ∀a. a -> List Migration -> Int -> Result (List Text) Error where Adapter a

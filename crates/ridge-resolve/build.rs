@@ -852,7 +852,7 @@ const BASELINE_EXPORTS: &[(&str, &[&str])] = &[
         "std.migrate",
         &[
             // The schema-DSL: the opaque `Column` and its typed declarators and
-            // modifiers, the opaque `SchemaOp` and its factories, and the
+            // modifiers, the opaque `MigrationOp` and its factories, and the
             // `Migration` batch and its `migration` builder.
             "Column",
             "intCol",
@@ -862,7 +862,7 @@ const BASELINE_EXPORTS: &[(&str, &[&str])] = &[
             "nullable",
             "primaryKey",
             "unique",
-            "SchemaOp",
+            "MigrationOp",
             "createTable",
             "dropTable",
             "addColumn",

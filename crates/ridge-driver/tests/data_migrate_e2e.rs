@@ -24,7 +24,7 @@ use ridge_driver::{compile_workspace, CompileOptions, EmitArtefacts};
 const SOURCE: &str = r#"
 import std.data (memAdapter, MemAdapter)
 import std.migrate as Migrate
-import std.migrate (SchemaOp)
+import std.migrate (MigrationOp)
 import std.repo as Repo
 import std.schema (schemaOf, eraseSchema, EntitySchema, schema, withColumn, mkColumn, DbBigInt, DbText)
 import std.list (length)
@@ -42,12 +42,12 @@ pub type Account = { id: Int, label: Text } deriving (Row, Schema)
 -- Each table is built in its own helper (a statement-level `createTable` with its
 -- columns), and the schema list stays flat, so the entry points never name the
 -- `Migration` type and the nested literal never spans lines.
-fn usersTable () -> SchemaOp =
+fn usersTable () -> MigrationOp =
     Migrate.createTable "users"
         [ Migrate.intCol  "id"   |> Migrate.primaryKey
         , Migrate.textCol "name" ]
 
-fn postsTable () -> SchemaOp =
+fn postsTable () -> MigrationOp =
     Migrate.createTable "posts"
         [ Migrate.intCol "id"     |> Migrate.primaryKey
         , Migrate.intCol "author" ]
@@ -123,7 +123,7 @@ pub fn db altered () -> Int =
 -- column list. The phantom `Option Account` witness pins the schema by type.
 fn accountWitness () -> Option Account = None
 
-fn accountsSchema () -> SchemaOp =
+fn accountsSchema () -> MigrationOp =
     Migrate.createSchema (schemaOf (accountWitness ()))
 
 fn applyAccounts (conn: MemAdapter) -> Result (List Text) Error =

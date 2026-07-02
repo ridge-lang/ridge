@@ -20,7 +20,7 @@
 --
 -- A typical project defines each table in its own helper and keeps the schema as
 -- one growing list of migrations, run on startup:
---   fn usersTable () -> SchemaOp =
+--   fn usersTable () -> MigrationOp =
 --     createTable "users"
 --       [ intCol  "id"    |> primaryKey
 --       , textCol "name"
@@ -45,7 +45,7 @@
 -- to reach it unambiguously.
 import std.data as Db
 -- The rich schema descriptor an entity-driven migration step carries: `eraseSchema`
--- drops its phantom entity so a non-parametric `SchemaOp` can hold it, and
+-- drops its phantom entity so a non-parametric `MigrationOp` can hold it, and
 -- `schemaTable` names the table a drop targets.
 import std.schema (EntitySchema, ColumnSchema, eraseSchema, schemaTable, schemaColumns, colColumn, columnAltered, schemaToSource, columnToSource)
 
@@ -96,39 +96,39 @@ pub fn unique (c: Column) -> Column =
 -- `uniqueIndex` factories and handed to `migration`, and the runner decomposes it
 -- onto the adapter's schema seam — so user code names the type but never the
 -- variants.
-pub type SchemaOp = CreateTable Text (List Column) | DropTable Text | AddColumn Text Column | DropColumn Text Text | CreateIndex Text Text (List Text) Bool | CreateEntity (EntitySchema Unit) | AddEntityColumn Text (ColumnSchema Unit) | AlterColumn Text (ColumnSchema Unit) (ColumnSchema Unit) | DropIndex Text
+pub type MigrationOp = CreateTable Text (List Column) | DropTable Text | AddColumn Text Column | DropColumn Text Text | CreateIndex Text Text (List Text) Bool | CreateEntity (EntitySchema Unit) | AddEntityColumn Text (ColumnSchema Unit) | AlterColumn Text (ColumnSchema Unit) (ColumnSchema Unit) | DropIndex Text
 
 -- Create a table with the given columns.
-pub fn createTable (table: Text) (cols: List Column) -> SchemaOp =
+pub fn createTable (table: Text) (cols: List Column) -> MigrationOp =
     CreateTable table cols
 
 -- Drop a table.
-pub fn dropTable (table: Text) -> SchemaOp =
+pub fn dropTable (table: Text) -> MigrationOp =
     DropTable table
 
 -- Add a column to an existing table. A non-null column added to a table that
 -- already holds rows needs a value for them, so add it `nullable` (or seed the
 -- rows in the same migration).
-pub fn addColumn (table: Text) (col: Column) -> SchemaOp =
+pub fn addColumn (table: Text) (col: Column) -> MigrationOp =
     AddColumn table col
 
 -- Drop a column from a table, named by its text.
-pub fn dropColumn (table: Text) (col: Text) -> SchemaOp =
+pub fn dropColumn (table: Text) (col: Text) -> MigrationOp =
     DropColumn table col
 
 -- Create an index over one or more columns of a table.
-pub fn createIndex (name: Text) (table: Text) (cols: List Text) -> SchemaOp =
+pub fn createIndex (name: Text) (table: Text) (cols: List Text) -> MigrationOp =
     CreateIndex name table cols false
 
 -- Create a unique index over one or more columns of a table — the index doubles
 -- as a uniqueness constraint across the named columns together.
-pub fn uniqueIndex (name: Text) (table: Text) (cols: List Text) -> SchemaOp =
+pub fn uniqueIndex (name: Text) (table: Text) (cols: List Text) -> MigrationOp =
     CreateIndex name table cols true
 
 -- Drop an index by name — the inverse of `createIndex`/`uniqueIndex`. The name
 -- alone identifies the index, so a rollback that recreated it would need the
 -- columns back; a hand-written `dropIndex` is therefore not auto-reversible.
-pub fn dropIndex (name: Text) -> SchemaOp =
+pub fn dropIndex (name: Text) -> MigrationOp =
     DropIndex name
 
 -- Create a table from an entity's schema descriptor rather than a hand-written
@@ -143,12 +143,12 @@ pub fn dropIndex (name: Text) -> SchemaOp =
 -- column becomes `serial`, and so on); the in-memory store materialises the table by
 -- name. The phantom entity is dropped here so the step can sit in a `Migration`'s
 -- list alongside steps for other entities.
-pub fn createSchema (s: EntitySchema e) -> SchemaOp =
+pub fn createSchema (s: EntitySchema e) -> MigrationOp =
     CreateEntity (eraseSchema s)
 
 -- Drop the table an entity's schema names — the entity-driven counterpart to
 -- `dropTable`, taking the descriptor instead of a bare table name.
-pub fn dropSchema (s: EntitySchema e) -> SchemaOp =
+pub fn dropSchema (s: EntitySchema e) -> MigrationOp =
     DropTable (schemaTable s)
 
 -- Add a column to a table from a full schema descriptor rather than a base-type
@@ -157,8 +157,8 @@ pub fn dropSchema (s: EntitySchema e) -> SchemaOp =
 -- for a column present only in the new schema, exposed as a factory so a generated
 -- migration can be written as source and a hand-authored one can add an
 -- entity-shaped column. The descriptor is already phantom-erased (a `Column Unit`),
--- the shape a non-parametric `SchemaOp` holds.
-pub fn addEntityColumn (table: Text) (c: ColumnSchema Unit) -> SchemaOp =
+-- the shape a non-parametric `MigrationOp` holds.
+pub fn addEntityColumn (table: Text) (c: ColumnSchema Unit) -> MigrationOp =
     AddEntityColumn table c
 
 -- Alter a column in place from its old and new descriptors — the step the snapshot
@@ -167,7 +167,7 @@ pub fn addEntityColumn (table: Text) (c: ColumnSchema Unit) -> SchemaOp =
 -- facets that differ (and a reverse could restore the old shape). Exposed as a
 -- factory for the same reason as `addEntityColumn`: a generated migration is written
 -- as source.
-pub fn alterColumn (table: Text) (old: ColumnSchema Unit) (new: ColumnSchema Unit) -> SchemaOp =
+pub fn alterColumn (table: Text) (old: ColumnSchema Unit) (new: ColumnSchema Unit) -> MigrationOp =
     AlterColumn table old new
 
 -- A named, ordered batch of schema changes. The name identifies the migration in
@@ -178,7 +178,7 @@ pub fn alterColumn (table: Text) (old: ColumnSchema Unit) (new: ColumnSchema Uni
 -- `None` asks a rollback to derive the reverse from `steps` — which succeeds only
 -- when every step is reversible, and fails for a lossy drop that a `Some down`
 -- must instead recover by hand.
-pub type Migration = { name: Text, steps: List SchemaOp, down: Option (List SchemaOp) }
+pub type Migration = { name: Text, steps: List MigrationOp, down: Option (List MigrationOp) }
 
 -- Build a migration from a name and its ordered steps. The ergonomic front door
 -- to the `Migration` record:
@@ -186,7 +186,7 @@ pub type Migration = { name: Text, steps: List SchemaOp, down: Option (List Sche
 -- Its reverse is derived from `steps` at rollback, so a migration whose steps are
 -- all reversible needs nothing more; one containing a lossy drop needs
 -- `reversibleMigration` instead.
-pub fn migration (name: Text) (steps: List SchemaOp) -> Migration =
+pub fn migration (name: Text) (steps: List MigrationOp) -> Migration =
     Migration { name = name, steps = steps, down = None }
 
 -- Build a migration with an explicit `down`: the steps that reverse it, in the
@@ -196,7 +196,7 @@ pub fn migration (name: Text) (steps: List SchemaOp) -> Migration =
 -- out (recreate the table, re-add the column). A migration built with `migration`
 -- instead derives its reverse from `steps` and is rejected at rollback if any
 -- step is one of those lossy drops.
-pub fn reversibleMigration (name: Text) (steps: List SchemaOp) (down: List SchemaOp) -> Migration =
+pub fn reversibleMigration (name: Text) (steps: List MigrationOp) (down: List MigrationOp) -> Migration =
     Migration { name = name, steps = steps, down = Some down }
 
 -- ── Schema diffing (snapshot auto-diff) ───────────────────────────────────────
@@ -226,12 +226,12 @@ pub fn reversibleMigration (name: Text) (steps: List SchemaOp) (down: List Schem
 -- a hand-written step: a change to a column's constraints (primary key, uniqueness, foreign
 -- key, index, check) and a serial/identity transition, neither of which the plain column
 -- alter expresses.
-pub fn diffSchemas (prev: List (EntitySchema Unit)) (next: List (EntitySchema Unit)) -> List SchemaOp =
+pub fn diffSchemas (prev: List (EntitySchema Unit)) (next: List (EntitySchema Unit)) -> List MigrationOp =
     appendOps (createdTables prev next) (appendOps (alteredTables prev next) (droppedTables prev next))
 
 -- The tables to create: each schema in `next` whose table name is absent from `prev`,
 -- as an entity-driven `CreateEntity` step, in `next` declaration order.
-fn createdTables (prev: List (EntitySchema Unit)) (next: List (EntitySchema Unit)) -> List SchemaOp =
+fn createdTables (prev: List (EntitySchema Unit)) (next: List (EntitySchema Unit)) -> List MigrationOp =
     match next
         []        -> []
         s :: rest ->
@@ -240,7 +240,7 @@ fn createdTables (prev: List (EntitySchema Unit)) (next: List (EntitySchema Unit
 
 -- The tables to drop: each schema in `prev` whose table name is absent from `next`, as
 -- a `DropTable` step, in `prev` declaration order.
-fn droppedTables (prev: List (EntitySchema Unit)) (next: List (EntitySchema Unit)) -> List SchemaOp =
+fn droppedTables (prev: List (EntitySchema Unit)) (next: List (EntitySchema Unit)) -> List MigrationOp =
     match prev
         []        -> []
         s :: rest ->
@@ -251,7 +251,7 @@ fn droppedTables (prev: List (EntitySchema Unit)) (next: List (EntitySchema Unit
 -- `next` that `prev` also holds (matched by table name), the ops that reconcile its
 -- columns, in `next` table order. A table only in `next` is skipped here — it is a
 -- whole-table create handled by `createdTables`.
-fn alteredTables (prev: List (EntitySchema Unit)) (next: List (EntitySchema Unit)) -> List SchemaOp =
+fn alteredTables (prev: List (EntitySchema Unit)) (next: List (EntitySchema Unit)) -> List MigrationOp =
     match next
         []        -> []
         s :: rest ->
@@ -267,7 +267,7 @@ fn findTable (schemas: List (EntitySchema Unit)) (table: Text) -> Option (Entity
 
 -- Reconcile one table's columns between its old and new schema: the columns to add, then
 -- the columns to alter, then the columns to drop, all targeting the (shared) table name.
-fn columnDiff (old: EntitySchema Unit) (new: EntitySchema Unit) -> List SchemaOp =
+fn columnDiff (old: EntitySchema Unit) (new: EntitySchema Unit) -> List MigrationOp =
     let table = schemaTable new
     let oldCols = schemaColumns old
     let newCols = schemaColumns new
@@ -275,7 +275,7 @@ fn columnDiff (old: EntitySchema Unit) (new: EntitySchema Unit) -> List SchemaOp
 
 -- The columns to add: each column in `newCols` whose SQL name is absent from `oldCols`,
 -- as an `AddEntityColumn` step carrying the full descriptor, in new-declaration order.
-fn addedColumns (table: Text) (oldCols: List (ColumnSchema Unit)) (newCols: List (ColumnSchema Unit)) -> List SchemaOp =
+fn addedColumns (table: Text) (oldCols: List (ColumnSchema Unit)) (newCols: List (ColumnSchema Unit)) -> List MigrationOp =
     match newCols
         []        -> []
         c :: rest ->
@@ -286,7 +286,7 @@ fn addedColumns (table: Text) (oldCols: List (ColumnSchema Unit)) (newCols: List
 -- type, nullability, or default changed, as an `AlterColumn` step carrying both the old and
 -- new descriptors, in new-declaration order. `columnAltered` decides what counts as a
 -- change and excludes what the plain alter cannot express.
-fn alteredColumns (table: Text) (oldCols: List (ColumnSchema Unit)) (newCols: List (ColumnSchema Unit)) -> List SchemaOp =
+fn alteredColumns (table: Text) (oldCols: List (ColumnSchema Unit)) (newCols: List (ColumnSchema Unit)) -> List MigrationOp =
     match newCols
         []        -> []
         c :: rest ->
@@ -304,7 +304,7 @@ fn findColumn (cols: List (ColumnSchema Unit)) (name: Text) -> Option (ColumnSch
 
 -- The columns to drop: each column in `oldCols` whose SQL name is absent from `newCols`,
 -- as a `DropColumn` step, in old-declaration order.
-fn droppedColumns (table: Text) (oldCols: List (ColumnSchema Unit)) (newCols: List (ColumnSchema Unit)) -> List SchemaOp =
+fn droppedColumns (table: Text) (oldCols: List (ColumnSchema Unit)) (newCols: List (ColumnSchema Unit)) -> List MigrationOp =
     match oldCols
         []        -> []
         c :: rest ->
@@ -324,7 +324,7 @@ fn containsTable (schemas: List (EntitySchema Unit)) (table: Text) -> Bool =
         s :: rest -> if schemaTable s == table then true else containsTable rest table
 
 -- Append two schema-op lists — the created tables ahead of the dropped ones.
-fn appendOps (a: List SchemaOp) (b: List SchemaOp) -> List SchemaOp =
+fn appendOps (a: List MigrationOp) (b: List MigrationOp) -> List MigrationOp =
     match a
         []        -> b
         x :: rest -> x :: appendOps rest b
@@ -342,7 +342,7 @@ fn colTuples (cols: List Column) -> List (Text, Text, Bool, Bool, Bool) =
         c :: rest -> colTuple c :: colTuples rest
 
 -- Run one schema change against the adapter's schema seam, dispatching on its kind.
-fn runStep (conn: a) (op: SchemaOp) -> Result Unit Error where Adapter a =
+fn runStep (conn: a) (op: MigrationOp) -> Result Unit Error where Adapter a =
     match op
         CreateTable table cols      -> ddlCreate conn table (colTuples cols)
         DropTable table             -> ddlDrop conn table
@@ -355,7 +355,7 @@ fn runStep (conn: a) (op: SchemaOp) -> Result Unit Error where Adapter a =
         DropIndex name              -> ddlDropIndex conn name
 
 -- Run a migration's steps in order, stopping at the first failure.
-fn runSteps (conn: a) (steps: List SchemaOp) -> Result Unit Error where Adapter a =
+fn runSteps (conn: a) (steps: List MigrationOp) -> Result Unit Error where Adapter a =
     match steps
         []        -> Ok ()
         s :: rest ->
@@ -448,7 +448,7 @@ fn mkError (code: Text) (message: Text) -> Error
 -- matching drop, an add-column to a drop-column, an alter to the swapped alter. A
 -- drop is information-losing — the columns or index definition are gone — so it has
 -- no derivable inverse and must be reversed by an explicit `down`.
-fn invert (op: SchemaOp) -> Result SchemaOp Error =
+fn invert (op: MigrationOp) -> Result MigrationOp Error =
     match op
         CreateTable table _         -> Ok (DropTable table)
         AddColumn table col         -> Ok (DropColumn table col.name)
@@ -467,7 +467,7 @@ fn irreversibleMessage (verb: Text) (subject: Text) -> Text =
 
 -- Invert each step and reverse the order (a migration is undone last step first),
 -- stopping at the first step that has no derivable inverse.
-fn invertReversed (steps: List SchemaOp) (acc: List SchemaOp) -> Result (List SchemaOp) Error =
+fn invertReversed (steps: List MigrationOp) (acc: List MigrationOp) -> Result (List MigrationOp) Error =
     match steps
         []        -> Ok acc
         s :: rest ->
@@ -477,7 +477,7 @@ fn invertReversed (steps: List SchemaOp) (acc: List SchemaOp) -> Result (List Sc
 
 -- The steps that reverse a migration: its explicit `down` if it has one, otherwise
 -- the derived inverse of its `steps`.
-fn downSteps (m: Migration) -> Result (List SchemaOp) Error =
+fn downSteps (m: Migration) -> Result (List MigrationOp) Error =
     match m.down
         Some d -> Ok d
         None   -> invertReversed m.steps []
@@ -599,10 +599,10 @@ pub fn migrationToSource (m: Migration) -> Text =
 
 -- One step list as its `[ step\n  , step … ]` source, one step per line with a
 -- leading comma — shared by a migration's `steps` and its explicit `down`.
-fn stepListSource (steps: List SchemaOp) -> Text =
+fn stepListSource (steps: List MigrationOp) -> Text =
     Text.join "" ["[ ", Text.join "\n  , " (opSources steps), "\n  ]"]
 
-fn opSources (steps: List SchemaOp) -> List Text =
+fn opSources (steps: List MigrationOp) -> List Text =
     match steps
         []        -> []
         s :: rest -> opToSource s :: opSources rest
@@ -610,7 +610,7 @@ fn opSources (steps: List SchemaOp) -> List Text =
 -- One schema step as the factory-call source that rebuilds it. The entity-driven
 -- steps delegate to `std.schema`'s `schemaToSource`/`columnToSource`; the tuple steps
 -- render their own `Column` and index arguments.
-fn opToSource (op: SchemaOp) -> Text =
+fn opToSource (op: MigrationOp) -> Text =
     match op
         CreateTable table cols           -> Text.join "" ["createTable ", sourceStr table, " ", columnListSource cols]
         DropTable table                  -> Text.join "" ["dropTable ", sourceStr table]

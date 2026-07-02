@@ -2363,8 +2363,12 @@ fn reconciled_schema_fn_scheme(
 
 /// The `std.migrate` slice of [`reconciled_fn_scheme`]: the schema-DSL builders and
 /// the migration runner. The builders are pure and reference the reconciled
-/// `Column`/`SchemaOp`/`Migration` types; `run` is the only constrained verb
-/// (`where Adapter a`, to reach the schema seam).
+/// `Column`/`SchemaOp`/`Migration` types; `run` and `applied` are the constrained
+/// verbs (`where Adapter a`, to reach the schema seam) — `applied` touches no
+/// reconciled type itself, but every `std.migrate` export is dispatched through
+/// this table (see the `("std.migrate", _)` arm in [`reconciled_fn_scheme`]), and
+/// a typeclass-constrained cross-module scheme needs the same hand-built
+/// `Constraint`/`ClassTable` wiring `run` does.
 fn reconciled_migrate_fn_scheme(
     name: &str,
     reconciled: &FxHashMap<String, TyConId>,
@@ -2472,6 +2476,25 @@ fn reconciled_migrate_fn_scheme(
                 row_vars: vec![],
                 ty: Type::Fn {
                     params: vec![Type::Var(a), list(Type::Con(migration, vec![]))],
+                    ret: Box::new(result(list(text()))),
+                    caps: pure(),
+                },
+                constraints: vec![Constraint::single(adapter, a)],
+            })
+        }
+        // applied : ∀a. a -> Result (List Text) Error where Adapter a. A plain
+        // top-level re-export of the `Adapter` class method `migrationsApplied`,
+        // for a caller that only wants the applied set (`ridge migrate status`)
+        // without importing `std.data` or naming the class method directly.
+        "applied" => {
+            let adapter = classes.id_by_name("Adapter")?;
+            let a = TyVid(0);
+            Some(Scheme {
+                vars: vec![a],
+                cap_vars: vec![],
+                row_vars: vec![],
+                ty: Type::Fn {
+                    params: vec![Type::Var(a)],
                     ret: Box::new(result(list(text()))),
                     caps: pure(),
                 },

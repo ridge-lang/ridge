@@ -4,6 +4,8 @@
 //!
 //! ```text
 //! ridge migrate add <name>
+//! ridge migrate apply
+//! ridge migrate status
 //! ```
 //!
 //! `ridge migrate add <name>` is the Ridge analogue of EF Core's
@@ -13,7 +15,19 @@
 //! captures the difference, and refreshes the snapshot so the next `migrate
 //! add` diffs from the model's current shape.
 //!
-//! ## Algorithm
+//! `ridge migrate apply` is the analogue of `Update-Database`: it runs every
+//! migration under `<src_root>/migrations/` that has not yet been recorded
+//! against the target database, in chronological order. `ridge migrate
+//! status` reports which of those migrations are already applied and which
+//! are still pending. Both read the connection settings from the environment
+//! — `RIDGE_DB_HOST`, `RIDGE_DB_PORT`, `RIDGE_DB_DATABASE`, `RIDGE_DB_USER`,
+//! `RIDGE_DB_PASSWORD`, `RIDGE_DB_SSLMODE` — with `RIDGE_DB_DATABASE` and
+//! `RIDGE_DB_USER` required; the rest default the same way `std.data`'s
+//! `Config` would. Neither command touches the workspace's manifest, so the
+//! target project must already declare `[capabilities] allow = ["db",
+//! "env"]` for the generated driver to compile.
+//!
+//! ## Algorithm (`add`)
 //!
 //! 1. Locate the workspace root and the target member (the workspace's `app`
 //!    or `service` member — the one whose `entry` makes it executable).
@@ -31,6 +45,28 @@
 //!    invoke its functions through a throwaway `erl` process.
 //! 6. If the diff is empty, report "no changes" and stop.  Otherwise write
 //!    the migration file and refresh the snapshot.
+//! 7. Always delete the temporary driver module, on every exit path.
+//!
+//! ## Algorithm (`apply` / `status`)
+//!
+//! 1. Locate the workspace root and target member, the same as `add`.
+//! 2. Discover the migration modules under `<src_root>/migrations/` — every
+//!    `.ridge` file there except `Model.ridge`, `Snapshot.ridge`, and the
+//!    temporary driver, sorted lexically (which is chronological, since each
+//!    file stem is `m<YYYYMMDDHHMMSS>_<name>`). If there are none, report that
+//!    and stop — neither command touches the database in that case.
+//! 3. Validate that the required environment variables are set.
+//! 4. Generate a temporary driver module the same way `add` does. `apply`'s
+//!    driver imports every migration module, each under its own alias (`M0`,
+//!    `M1`, ...) since they all expose `up`, and calls `std.migrate`'s `run`
+//!    with the list built from those aliases in order. `status`'s driver only
+//!    needs the connection and `std.migrate`'s `applied`. Both build the
+//!    connection `Config` from the environment at runtime inside the driver
+//!    (via `std.env`), so no connection setting — least of all the password —
+//!    is ever written to the generated `.ridge` file.
+//! 5. Compile, locate the driver module, and run it, exactly like `add`.
+//! 6. Render the driver's `Result` as `ok:<comma-separated names>` or
+//!    `err:<message>` and parse that back on the CLI side.
 //! 7. Always delete the temporary driver module, on every exit path.
 
 use std::path::{Path, PathBuf};
@@ -58,11 +94,15 @@ pub struct MigrateArgs {
 pub enum MigrateCommand {
     /// Diff the current model against the last snapshot and write a migration.
     Add(AddArgs),
+    /// Apply every pending migration to the target database, in order.
+    Apply(ApplyArgs),
+    /// Report which migrations are applied and which are pending.
+    Status(StatusArgs),
 }
 
 /// Diff the model against the last snapshot and write a new migration.
 ///
-/// Writes `<src_root>/migrations/<STAMP>_<name>.ridge` and refreshes
+/// Writes `<src_root>/migrations/m<STAMP>_<name>.ridge` and refreshes
 /// `<src_root>/migrations/Snapshot.ridge`, where `<STAMP>` is a
 /// `YYYYMMDDHHMMSS` UTC timestamp.  If the model has not changed since the
 /// last snapshot, no files are written.
@@ -71,6 +111,23 @@ pub struct AddArgs {
     /// Descriptive name for the migration (combined with a UTC timestamp).
     pub name: String,
 }
+
+/// Apply every migration under `<src_root>/migrations/` that has not yet
+/// been recorded against the target database, in chronological order.
+///
+/// Connection settings come from the environment: `RIDGE_DB_HOST` (default
+/// `localhost`), `RIDGE_DB_PORT` (default `5432`), `RIDGE_DB_DATABASE`
+/// (required), `RIDGE_DB_USER` (required), `RIDGE_DB_PASSWORD` (default
+/// empty), and `RIDGE_DB_SSLMODE` (default `disable`).
+#[derive(Debug, Parser)]
+pub struct ApplyArgs {}
+
+/// Report which migrations under `<src_root>/migrations/` are already
+/// applied to the target database and which are still pending.
+///
+/// Reads the same environment variables as `ridge migrate apply`.
+#[derive(Debug, Parser)]
+pub struct StatusArgs {}
 
 // ── Execute ───────────────────────────────────────────────────────────────────
 
@@ -84,6 +141,8 @@ pub struct AddArgs {
 pub fn execute(args: &MigrateArgs, cwd: &Path) -> Result<(), CliError> {
     match &args.command {
         MigrateCommand::Add(add_args) => execute_add(add_args, cwd),
+        MigrateCommand::Apply(_) => execute_apply(cwd),
+        MigrateCommand::Status(_) => execute_status(cwd),
     }
 }
 
@@ -109,7 +168,7 @@ fn execute_add(args: &AddArgs, cwd: &Path) -> Result<(), CliError> {
 
     // ── 4. Write the temporary driver module ─────────────────────────────────
     let stamp = utc_timestamp_now();
-    let migration_name = format!("{stamp}_{}", args.name);
+    let migration_name = migration_file_stem(&stamp, &args.name);
     let driver_path = migrations_dir.join("__migrate_driver.ridge");
     let driver_source = build_driver_source(&project.name, has_snapshot, &migration_name);
 
@@ -141,53 +200,8 @@ fn run_diff_and_write(
     migrations_dir: &Path,
     migration_name: &str,
 ) -> Result<(), CliError> {
-    // Discover the driver module's BEAM atom before compiling.  This runs the
-    // exact same discovery pass `compile_workspace` runs internally, over the
-    // same on-disk files, so the FQN-sorted module list — and therefore the
-    // assigned module id — is identical.
-    let disc = discover_workspace(workspace_root);
-    let graph = disc.graph.ok_or_else(|| CliError::MigrateInternal {
-        message: "workspace discovery failed while resolving the migration driver module"
-            .to_owned(),
-    })?;
-    let driver_fqn = format!("{project_name}.migrations.__migrate_driver");
-    let driver_module = graph
-        .modules
-        .iter()
-        .find(|m| m.fully_qualified_name == driver_fqn)
-        .ok_or_else(|| CliError::MigrateInternal {
-            message: format!("could not find the generated driver module '{driver_fqn}'"),
-        })?;
-    let driver_beam_module = format!("ridge_module_{}", driver_module.id.0);
-
-    // Compile in a throwaway package cache so this does not pollute the
-    // user's global Ridge package cache.
-    let cache_dir = tempfile::TempDir::new().map_err(|e| CliError::MigrateInternal {
-        message: format!("could not create a temporary package cache: {e}"),
-    })?;
-
-    let compile_opts = CompileOptions::new(workspace_root.to_owned())
-        .with_emit(EmitArtefacts::Beam)
-        .with_cache_root(cache_dir.path().to_owned());
-    let artefacts = compile_workspace(compile_opts).map_err(|e| CliError::MigrateInternal {
-        message: format!("compile failed: {e}"),
-    })?;
-
-    if !artefacts.diagnostics.is_empty() {
-        render_diagnostics(&artefacts.diagnostics, &artefacts.sources);
-        return Err(CliError::MigrateCompileFailed);
-    }
-    if artefacts.beam_files.is_empty() {
-        return Err(CliError::MigrateInternal {
-            message: "compile produced no .beam files".to_owned(),
-        });
-    }
-
-    let beam_dir = artefacts
-        .beam_files
-        .first()
-        .and_then(|p| p.parent())
-        .map_or_else(|| PathBuf::from("."), Path::to_owned);
+    let (_cache_dir, beam_dir, driver_beam_module) =
+        compile_and_locate_driver(workspace_root, project_name)?;
 
     // ── Run the driver's changeCount () -> Int first ─────────────────────────
     let change_count = run_beam_int_fn(erl_path, &beam_dir, &driver_beam_module, "changeCount")?;
@@ -213,6 +227,127 @@ fn run_diff_and_write(
 
     println!("Wrote migration: {}", migration_path.display());
     println!("Updated snapshot: {}", snapshot_path.display());
+
+    Ok(())
+}
+
+/// Execute `ridge migrate apply`.
+fn execute_apply(cwd: &Path) -> Result<(), CliError> {
+    // ── 1. Locate workspace root and target member ───────────────────────────
+    let workspace_root = find_workspace_root(cwd).ok_or(CliError::NoWorkspaceRoot)?;
+    let project = resolve_target_project(&workspace_root)?;
+
+    // ── 2. Discover the migration modules ─────────────────────────────────────
+    let migrations_dir = project.src_root.join("migrations");
+    let stems = discover_migration_stems(&migrations_dir);
+    if stems.is_empty() {
+        println!("No migrations found. Run `ridge migrate add <name>` to create one.");
+        return Ok(());
+    }
+
+    // ── 3. Validate the connection environment up front ──────────────────────
+    validate_required_env_vars()?;
+
+    // ── 4. Probe the BEAM toolchain ────────────────────────────────────────────
+    let erl_path = which::which("erl").map_err(|_| CliError::MigrateErlangNotFound)?;
+    which::which("erlc").map_err(|_| CliError::MigrateErlangNotFound)?;
+
+    // ── 5. Write the temporary driver module ─────────────────────────────────
+    let driver_path = migrations_dir.join("__migrate_driver.ridge");
+    let driver_source = build_apply_driver_source(&project.name, &stems);
+    std::fs::write(&driver_path, &driver_source).map_err(|e| CliError::MigrateInternal {
+        message: format!("could not write '{}': {e}", driver_path.display()),
+    })?;
+
+    // ── 6. Compile, run, and report ────────────────────────────────────────────
+    // The temporary driver module must not linger — clean it up on every path.
+    let result = run_apply(&workspace_root, &erl_path, &project.name);
+    let _ = std::fs::remove_file(&driver_path);
+
+    result
+}
+
+/// Compile the workspace, locate the driver module, run its `applyOut`, and
+/// report the outcome.
+fn run_apply(workspace_root: &Path, erl_path: &Path, project_name: &str) -> Result<(), CliError> {
+    let (_cache_dir, beam_dir, driver_beam_module) =
+        compile_and_locate_driver(workspace_root, project_name)?;
+
+    let raw = run_beam_text_fn(erl_path, &beam_dir, &driver_beam_module, "applyOut")?;
+    let applied = parse_ok_err(&raw).map_err(|message| CliError::MigrateApplyFailed { message })?;
+
+    if applied.is_empty() {
+        println!("Already up to date.");
+    } else {
+        println!(
+            "Applied {} migration(s): {}",
+            applied.len(),
+            applied.join(", ")
+        );
+    }
+
+    Ok(())
+}
+
+/// Execute `ridge migrate status`.
+fn execute_status(cwd: &Path) -> Result<(), CliError> {
+    // ── 1. Locate workspace root and target member ───────────────────────────
+    let workspace_root = find_workspace_root(cwd).ok_or(CliError::NoWorkspaceRoot)?;
+    let project = resolve_target_project(&workspace_root)?;
+
+    // ── 2. Discover the migration modules ─────────────────────────────────────
+    let migrations_dir = project.src_root.join("migrations");
+    let stems = discover_migration_stems(&migrations_dir);
+    if stems.is_empty() {
+        println!("No migrations found. Run `ridge migrate add <name>` to create one.");
+        return Ok(());
+    }
+
+    // ── 3. Validate the connection environment up front ──────────────────────
+    validate_required_env_vars()?;
+
+    // ── 4. Probe the BEAM toolchain ────────────────────────────────────────────
+    let erl_path = which::which("erl").map_err(|_| CliError::MigrateErlangNotFound)?;
+    which::which("erlc").map_err(|_| CliError::MigrateErlangNotFound)?;
+
+    // ── 5. Write the temporary driver module ─────────────────────────────────
+    let driver_path = migrations_dir.join("__migrate_driver.ridge");
+    let driver_source = build_status_driver_source();
+    std::fs::write(&driver_path, &driver_source).map_err(|e| CliError::MigrateInternal {
+        message: format!("could not write '{}': {e}", driver_path.display()),
+    })?;
+
+    // ── 6. Compile, run, and report ────────────────────────────────────────────
+    // The temporary driver module must not linger — clean it up on every path.
+    let result = run_status(&workspace_root, &erl_path, &project.name, &stems);
+    let _ = std::fs::remove_file(&driver_path);
+
+    result
+}
+
+/// Compile the workspace, locate the driver module, run its `statusOut`, and
+/// print each discovered migration in order, marking the ones not in the
+/// applied set as `(pending)`.
+fn run_status(
+    workspace_root: &Path,
+    erl_path: &Path,
+    project_name: &str,
+    stems: &[String],
+) -> Result<(), CliError> {
+    let (_cache_dir, beam_dir, driver_beam_module) =
+        compile_and_locate_driver(workspace_root, project_name)?;
+
+    let raw = run_beam_text_fn(erl_path, &beam_dir, &driver_beam_module, "statusOut")?;
+    let applied =
+        parse_ok_err(&raw).map_err(|message| CliError::MigrateStatusFailed { message })?;
+
+    for stem in stems {
+        if applied.iter().any(|a| a == stem) {
+            println!("{stem}");
+        } else {
+            println!("{stem} (pending)");
+        }
+    }
 
     Ok(())
 }
@@ -267,6 +402,77 @@ fn resolve_target_project(workspace_root: &Path) -> Result<Project, CliError> {
     Ok(candidates.remove(0))
 }
 
+// ── Migration discovery (shared by apply/status) ──────────────────────────────
+
+/// Discover the migration module stems under `migrations_dir`, sorted
+/// chronologically.
+///
+/// A migration file is any `.ridge` file directly in the directory except
+/// `Model.ridge`, `Snapshot.ridge`, and the temporary driver module. Sorting
+/// lexically is sorting chronologically, since every stem is
+/// `m<YYYYMMDDHHMMSS>_<name>` — a fixed-width numeric stamp right after the
+/// same one-character prefix. A missing or unreadable directory reads as no
+/// migrations at all, the same as an empty one.
+fn discover_migration_stems(migrations_dir: &Path) -> Vec<String> {
+    let Ok(entries) = std::fs::read_dir(migrations_dir) else {
+        return Vec::new();
+    };
+
+    let mut stems: Vec<String> = entries
+        .flatten()
+        .filter_map(|entry| {
+            let path = entry.path();
+            if path.extension().and_then(std::ffi::OsStr::to_str) != Some("ridge") {
+                return None;
+            }
+            let stem = path.file_stem()?.to_str()?.to_owned();
+            match stem.as_str() {
+                "Model" | "Snapshot" | "__migrate_driver" => None,
+                _ => Some(stem),
+            }
+        })
+        .collect();
+
+    stems.sort();
+    stems
+}
+
+// ── Environment-variable validation (apply/status) ────────────────────────────
+
+/// The environment variables `ridge migrate apply`/`ridge migrate status`
+/// require to be set (and non-empty) before a connection is even attempted.
+/// `RIDGE_DB_HOST`, `RIDGE_DB_PORT`, `RIDGE_DB_PASSWORD`, and
+/// `RIDGE_DB_SSLMODE` all default sensibly and so are not required.
+const REQUIRED_ENV_VARS: [&str; 2] = ["RIDGE_DB_DATABASE", "RIDGE_DB_USER"];
+
+/// Which of [`REQUIRED_ENV_VARS`] are missing or empty, per `lookup`.
+///
+/// Takes a lookup function rather than reading `std::env` directly so the
+/// check can be exercised against a fake environment in a test without
+/// touching real process-global state.
+fn missing_required_vars(lookup: impl Fn(&str) -> Option<String>) -> Vec<String> {
+    let mut missing = Vec::new();
+    for name in REQUIRED_ENV_VARS {
+        if lookup(name).is_none_or(|v| v.is_empty()) {
+            missing.push(name.to_owned());
+        }
+    }
+    missing
+}
+
+/// Validate that every required connection environment variable is set and
+/// non-empty. Reads the environment only to check presence — the values
+/// themselves are never captured or written anywhere; the generated driver
+/// reads them itself, at runtime, via `std.env`.
+fn validate_required_env_vars() -> Result<(), CliError> {
+    let missing = missing_required_vars(|name| std::env::var(name).ok());
+    if missing.is_empty() {
+        Ok(())
+    } else {
+        Err(CliError::MigrateEnvMissing { vars: missing })
+    }
+}
+
 // ── Migration-name validation ──────────────────────────────────────────────────
 
 /// Validate the name given to `ridge migrate add <name>`.
@@ -286,6 +492,21 @@ fn validate_migration_name(name: &str) -> Result<(), CliError> {
             name: name.to_owned(),
         })
     }
+}
+
+/// The file stem (and tracked migration name) for a migration created at
+/// `stamp` with the given descriptive `name`: `m<stamp>_<name>`.
+///
+/// The leading `m` makes the stem import-safe — a Ridge module segment must
+/// start with a lowercase letter (`ridge-lexer`'s `LowerIdent` token is
+/// `[a-z][a-zA-Z0-9_]*`), and `stamp` starts with a digit. Without the
+/// prefix, `<stamp>_<name>.ridge` would compile to a module whose own
+/// migrations could never be imported — exactly the module `apply`/`status`
+/// need to reach. The same string is both the file stem and the name passed
+/// to `Migrate.migration`, so `apply`/`status` correlate a file with its
+/// tracking-table row by one value.
+fn migration_file_stem(stamp: &str, name: &str) -> String {
+    format!("m{stamp}_{name}")
 }
 
 // ── Driver module generation ──────────────────────────────────────────────────
@@ -327,7 +548,205 @@ fn build_driver_source(project_name: &str, has_snapshot: bool, migration_name: &
     lines.join("\n")
 }
 
+/// The `Config`-building helpers every `apply`/`status` driver shares: one
+/// function per `Config` field, each reading its own `RIDGE_DB_*` variable
+/// through `std.env` and falling back to the documented default, plus `cfg`,
+/// which assembles them into the record `connect` takes.
+///
+/// Read entirely at runtime, inside the compiled driver — no environment
+/// value, connection setting, or secret ever appears in the generated
+/// `.ridge` source itself.
+fn config_helpers_source() -> String {
+    // Every helper here needs `env` declared on its own signature, not just
+    // on the driver's entry point: a capability is required on each function
+    // that calls a capability-gated primitive (directly or transitively),
+    // not only on the top-level caller — `Env.get` gates `cfgHost`, and
+    // `cfg`, which calls `cfgHost`, needs `env` in turn.
+    [
+        "fn env cfgHost () -> Text =",
+        "    match Env.get \"RIDGE_DB_HOST\"",
+        "        Some v -> v",
+        "        None   -> \"localhost\"",
+        "",
+        "fn env cfgPort () -> Int =",
+        "    match Env.get \"RIDGE_DB_PORT\"",
+        "        Some v ->",
+        "            match Int.parse v",
+        "                Some n -> n",
+        "                None   -> 5432",
+        "        None   -> 5432",
+        "",
+        "fn env cfgDatabase () -> Text =",
+        "    match Env.get \"RIDGE_DB_DATABASE\"",
+        "        Some v -> v",
+        "        None   -> \"\"",
+        "",
+        "fn env cfgUser () -> Text =",
+        "    match Env.get \"RIDGE_DB_USER\"",
+        "        Some v -> v",
+        "        None   -> \"\"",
+        "",
+        "fn env cfgPassword () -> Text =",
+        "    match Env.get \"RIDGE_DB_PASSWORD\"",
+        "        Some v -> v",
+        "        None   -> \"\"",
+        "",
+        "fn env cfgSslMode () -> Text =",
+        "    match Env.get \"RIDGE_DB_SSLMODE\"",
+        "        Some v -> v",
+        "        None   -> \"disable\"",
+        "",
+        "fn env cfg () -> Config =",
+        "    Config { host = cfgHost (), port = cfgPort (), database = cfgDatabase (), user = cfgUser (), password = cfgPassword (), sslMode = cfgSslMode () }",
+    ]
+    .join("\n")
+}
+
+/// Build the source of the temporary driver module for `ridge migrate apply`.
+///
+/// Imports every migration module in `stems` under its own alias (`M0`,
+/// `M1`, ...) — they all expose `up`, so a shared unqualified import would
+/// collide — and calls `std.migrate`'s `run` with the aliased calls in
+/// chronological order. Exposes one zero-arity function, `applyOut`, that
+/// connects (building `Config` from the environment), runs the migrations,
+/// and renders the `Result` as `ok:<comma-separated applied names>` or
+/// `err:<message>` — a connect failure renders through the same `err:`
+/// branch, so the caller does not need to distinguish the two.
+fn build_apply_driver_source(project_name: &str, stems: &[String]) -> String {
+    let mut lines = Vec::new();
+    for (i, stem) in stems.iter().enumerate() {
+        lines.push(format!("import {project_name}.migrations.{stem} as M{i}"));
+    }
+    lines.push("import std.migrate as Migrate".to_owned());
+    lines.push("import std.data (Config, connect)".to_owned());
+    lines.push("import std.env as Env".to_owned());
+    lines.push("import std.int as Int".to_owned());
+    lines.push("import std.text as Text".to_owned());
+    lines.push(String::new());
+    lines.push(config_helpers_source());
+    lines.push(String::new());
+
+    let ups: Vec<String> = (0..stems.len()).map(|i| format!("M{i}.up ()")).collect();
+    lines.push(format!(
+        "pub fn db env applyOut () -> Text =\n    match connect (cfg ())\n        Err e -> Text.join \"\" [\"err:\", e.message]\n        Ok conn ->\n            match Migrate.run conn [ {} ]\n                Ok applied -> Text.join \"\" [\"ok:\", Text.join \",\" applied]\n                Err e      -> Text.join \"\" [\"err:\", e.message]",
+        ups.join(", ")
+    ));
+    lines.push(String::new());
+
+    lines.join("\n")
+}
+
+/// Build the source of the temporary driver module for `ridge migrate
+/// status`.
+///
+/// Needs no migration modules — only the connection and `std.migrate`'s
+/// `applied`. `applied` is a plain re-export of the `Adapter` class method
+/// `migrationsApplied`; calling that class method directly, unqualified,
+/// from outside `std.data` compiles and type-checks but fails at codegen
+/// (`E002: no stdlib bridge`) — class methods are not bridged for direct
+/// external use the way a module's own top-level functions are. Exposes one
+/// zero-arity function, `statusOut`, rendered the same `ok:`/`err:` way
+/// `applyOut` is.
+fn build_status_driver_source() -> String {
+    let lines = vec![
+        "import std.data (Config, connect)".to_owned(),
+        "import std.migrate as Migrate".to_owned(),
+        "import std.env as Env".to_owned(),
+        "import std.int as Int".to_owned(),
+        "import std.text as Text".to_owned(),
+        String::new(),
+        config_helpers_source(),
+        String::new(),
+        "pub fn db env statusOut () -> Text =\n    match connect (cfg ())\n        Err e -> Text.join \"\" [\"err:\", e.message]\n        Ok conn ->\n            match Migrate.applied conn\n                Err e      -> Text.join \"\" [\"err:\", e.message]\n                Ok applied -> Text.join \"\" [\"ok:\", Text.join \",\" applied]".to_owned(),
+        String::new(),
+    ];
+
+    lines.join("\n")
+}
+
+// ── Driver output parsing (apply/status) ──────────────────────────────────────
+
+/// Parse the `ok:<comma-separated names>` / `err:<message>` protocol
+/// `applyOut`/`statusOut` render their `Result` as.
+///
+/// An `ok:` with nothing after it is zero names, not one empty name — split
+/// only when there is something to split.
+fn parse_ok_err(raw: &str) -> Result<Vec<String>, String> {
+    if let Some(rest) = raw.strip_prefix("ok:") {
+        if rest.is_empty() {
+            return Ok(Vec::new());
+        }
+        return Ok(rest.split(',').map(str::to_owned).collect());
+    }
+    if let Some(rest) = raw.strip_prefix("err:") {
+        return Err(rest.to_owned());
+    }
+    Err(format!("unrecognized driver output: {raw:?}"))
+}
+
 // ── BEAM execution ────────────────────────────────────────────────────────────
+
+/// Compile the workspace and locate the generated driver module's BEAM atom
+/// and containing directory.
+///
+/// Shared by `add`, `apply`, and `status`: each writes its own
+/// `__migrate_driver.ridge` first, then calls this to compile and find it.
+/// Discovers the driver module's BEAM atom before compiling — this runs the
+/// exact same discovery pass `compile_workspace` runs internally, over the
+/// same on-disk files, so the FQN-sorted module list — and therefore the
+/// assigned module id — is identical. Compiles in a throwaway package cache
+/// so this does not pollute the user's global Ridge package cache; the
+/// returned [`tempfile::TempDir`] must be kept alive by the caller for as
+/// long as the `.beam` files it holds are still needed (dropping it removes
+/// the directory).
+fn compile_and_locate_driver(
+    workspace_root: &Path,
+    project_name: &str,
+) -> Result<(tempfile::TempDir, PathBuf, String), CliError> {
+    let disc = discover_workspace(workspace_root);
+    let graph = disc.graph.ok_or_else(|| CliError::MigrateInternal {
+        message: "workspace discovery failed while resolving the migration driver module"
+            .to_owned(),
+    })?;
+    let driver_fqn = format!("{project_name}.migrations.__migrate_driver");
+    let driver_module = graph
+        .modules
+        .iter()
+        .find(|m| m.fully_qualified_name == driver_fqn)
+        .ok_or_else(|| CliError::MigrateInternal {
+            message: format!("could not find the generated driver module '{driver_fqn}'"),
+        })?;
+    let driver_beam_module = format!("ridge_module_{}", driver_module.id.0);
+
+    let cache_dir = tempfile::TempDir::new().map_err(|e| CliError::MigrateInternal {
+        message: format!("could not create a temporary package cache: {e}"),
+    })?;
+
+    let compile_opts = CompileOptions::new(workspace_root.to_owned())
+        .with_emit(EmitArtefacts::Beam)
+        .with_cache_root(cache_dir.path().to_owned());
+    let artefacts = compile_workspace(compile_opts).map_err(|e| CliError::MigrateInternal {
+        message: format!("compile failed: {e}"),
+    })?;
+
+    if !artefacts.diagnostics.is_empty() {
+        render_diagnostics(&artefacts.diagnostics, &artefacts.sources);
+        return Err(CliError::MigrateCompileFailed);
+    }
+    if artefacts.beam_files.is_empty() {
+        return Err(CliError::MigrateInternal {
+            message: "compile produced no .beam files".to_owned(),
+        });
+    }
+
+    let beam_dir = artefacts
+        .beam_files
+        .first()
+        .and_then(|p| p.parent())
+        .map_or_else(|| PathBuf::from("."), Path::to_owned);
+
+    Ok((cache_dir, beam_dir, driver_beam_module))
+}
 
 /// Run a zero-arity `Text`-returning driver function and return its exact
 /// output (no trailing newline is added or stripped — the whole stdout is
@@ -441,7 +860,11 @@ fn civil_from_days(z: i64) -> (i64, u32, u32) {
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod tests {
-    use super::{format_utc_timestamp, validate_migration_name};
+    use super::{
+        build_apply_driver_source, build_status_driver_source, discover_migration_stems,
+        format_utc_timestamp, migration_file_stem, missing_required_vars, parse_ok_err,
+        validate_migration_name,
+    };
 
     #[test]
     fn format_utc_timestamp_epoch_zero() {
@@ -472,5 +895,136 @@ mod tests {
         assert!(validate_migration_name("has space").is_err());
         assert!(validate_migration_name("has\"quote").is_err());
         assert!(validate_migration_name("has/slash").is_err());
+    }
+
+    // ── migration_file_stem (the import-safe naming fix) ──────────────────────
+
+    #[test]
+    fn migration_file_stem_prefixes_the_stamp_with_a_lowercase_letter() {
+        let stem = migration_file_stem("20260701120000", "init");
+        assert_eq!(stem, "m20260701120000_init");
+        assert!(stem.chars().next().unwrap().is_ascii_lowercase());
+    }
+
+    // ── discover_migration_stems ───────────────────────────────────────────────
+
+    #[test]
+    fn discover_migration_stems_excludes_model_snapshot_and_driver() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        std::fs::write(tmp.path().join("Model.ridge"), "").unwrap();
+        std::fs::write(tmp.path().join("Snapshot.ridge"), "").unwrap();
+        std::fs::write(tmp.path().join("__migrate_driver.ridge"), "").unwrap();
+        std::fs::write(tmp.path().join("m20260101000000_init.ridge"), "").unwrap();
+        std::fs::write(tmp.path().join("m20260102000000_second.ridge"), "").unwrap();
+
+        let stems = discover_migration_stems(tmp.path());
+
+        assert_eq!(
+            stems,
+            vec!["m20260101000000_init", "m20260102000000_second"]
+        );
+    }
+
+    #[test]
+    fn discover_migration_stems_sorts_chronologically_regardless_of_write_order() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        std::fs::write(tmp.path().join("m20260102000000_second.ridge"), "").unwrap();
+        std::fs::write(tmp.path().join("m20260101000000_first.ridge"), "").unwrap();
+
+        let stems = discover_migration_stems(tmp.path());
+
+        assert_eq!(
+            stems,
+            vec!["m20260101000000_first", "m20260102000000_second"]
+        );
+    }
+
+    #[test]
+    fn discover_migration_stems_empty_dir_returns_empty() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        assert!(discover_migration_stems(tmp.path()).is_empty());
+    }
+
+    #[test]
+    fn discover_migration_stems_missing_dir_returns_empty() {
+        let missing = std::path::Path::new("this/does/not/exist/ridge-migrate-test");
+        assert!(discover_migration_stems(missing).is_empty());
+    }
+
+    // ── missing_required_vars (env -> Config validation) ──────────────────────
+
+    #[test]
+    fn missing_required_vars_reports_both_when_unset() {
+        let missing = missing_required_vars(|_name| None);
+        assert_eq!(missing, vec!["RIDGE_DB_DATABASE", "RIDGE_DB_USER"]);
+    }
+
+    #[test]
+    fn missing_required_vars_empty_when_both_present() {
+        let missing = missing_required_vars(|name| match name {
+            "RIDGE_DB_DATABASE" => Some("app".to_owned()),
+            "RIDGE_DB_USER" => Some("app_user".to_owned()),
+            _ => None,
+        });
+        assert!(missing.is_empty());
+    }
+
+    #[test]
+    fn missing_required_vars_rejects_an_empty_value() {
+        let missing = missing_required_vars(|name| match name {
+            "RIDGE_DB_DATABASE" => Some(String::new()),
+            "RIDGE_DB_USER" => Some("app_user".to_owned()),
+            _ => None,
+        });
+        assert_eq!(missing, vec!["RIDGE_DB_DATABASE"]);
+    }
+
+    // ── driver-source builders ─────────────────────────────────────────────────
+
+    #[test]
+    fn build_apply_driver_source_aliases_each_migration_and_runs_them_in_order() {
+        let src =
+            build_apply_driver_source("demo", &["m1_init".to_owned(), "m2_second".to_owned()]);
+
+        assert!(src.contains("import demo.migrations.m1_init as M0"));
+        assert!(src.contains("import demo.migrations.m2_second as M1"));
+        assert!(src.contains("Migrate.run conn [ M0.up (), M1.up () ]"));
+        assert!(src.contains("pub fn db env applyOut () -> Text"));
+        // Every connection setting is read at runtime through `std.env`, not
+        // spliced in as a literal — `cfgPassword` in particular never touches
+        // the actual password value.
+        assert!(src.contains("Env.get \"RIDGE_DB_PASSWORD\""));
+        assert!(src.contains("Env.get \"RIDGE_DB_HOST\""));
+    }
+
+    #[test]
+    fn build_status_driver_source_needs_no_migration_imports() {
+        let src = build_status_driver_source();
+
+        assert!(src.contains("import std.data (Config, connect)"));
+        assert!(src.contains("import std.migrate as Migrate"));
+        assert!(src.contains("Migrate.applied conn"));
+        assert!(src.contains("pub fn db env statusOut () -> Text"));
+        assert!(!src.contains(".migrations."));
+    }
+
+    // ── parse_ok_err (the driver output protocol) ──────────────────────────────
+
+    #[test]
+    fn parse_ok_err_reads_applied_names() {
+        assert_eq!(parse_ok_err("ok:m1,m2").unwrap(), vec!["m1", "m2"]);
+    }
+
+    #[test]
+    fn parse_ok_err_reads_an_empty_applied_set_as_zero_names() {
+        assert_eq!(parse_ok_err("ok:").unwrap(), Vec::<String>::new());
+    }
+
+    #[test]
+    fn parse_ok_err_reads_the_error_message() {
+        assert_eq!(
+            parse_ok_err("err:connection refused").unwrap_err(),
+            "connection refused"
+        );
     }
 }

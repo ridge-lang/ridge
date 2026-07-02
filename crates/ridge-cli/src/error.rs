@@ -160,6 +160,28 @@ pub enum CliError {
         /// The invalid name supplied by the user.
         name: String,
     },
+
+    /// `C406` — `ridge migrate apply`/`ridge migrate status` needs a database
+    /// to connect to, and one or more required environment variables
+    /// (`RIDGE_DB_DATABASE`, `RIDGE_DB_USER`) are missing or empty.
+    MigrateEnvMissing {
+        /// The required variable names that are missing or empty.
+        vars: Vec<String>,
+    },
+
+    /// `C407` — `ridge migrate apply` reached the database but the migration
+    /// run itself failed (a bad connection, or a migration step that failed).
+    MigrateApplyFailed {
+        /// The error message the driver reported.
+        message: String,
+    },
+
+    /// `C408` — `ridge migrate status` could not read the set of applied
+    /// migrations (a bad connection, or the tracking table could not be read).
+    MigrateStatusFailed {
+        /// The error message the driver reported.
+        message: String,
+    },
 }
 
 impl fmt::Display for CliError {
@@ -283,6 +305,18 @@ impl fmt::Display for CliError {
                 "C405 MigrateInvalidName: '{name}' is not a valid migration name; \
                  use only ASCII letters, digits, '_', and '-'"
             ),
+            Self::MigrateEnvMissing { vars } => write!(
+                f,
+                "C406 MigrateEnvMissing: missing required environment variable(s): {}; \
+                 ridge migrate apply/status needs these to connect to the database",
+                vars.join(", ")
+            ),
+            Self::MigrateApplyFailed { message } => {
+                write!(f, "C407 MigrateApplyFailed: {message}")
+            }
+            Self::MigrateStatusFailed { message } => {
+                write!(f, "C408 MigrateStatusFailed: {message}")
+            }
         }
     }
 }

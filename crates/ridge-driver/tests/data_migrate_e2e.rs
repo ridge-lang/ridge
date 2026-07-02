@@ -253,6 +253,101 @@ pub fn db diffAlterApplies () -> Int =
             match Migrate.run conn [ Migrate.migration "0002_thing_email_nn" (Migrate.diffSchemas [ thingV2 () ] [ thingV2b () ]) ]
                 Ok names -> length names
                 Err _    -> 0 - 2
+
+-- A single-element list holds exactly `want` and nothing else.
+fn isOnly (names: List Text) (want: Text) -> Bool =
+    match names
+        n :: rest ->
+            match rest
+                [] -> n == want
+                _  -> false
+        [] -> false
+
+-- Apply the base two-migration schema, then roll the most recent one back. The
+-- auto-derived reverse of `0002_posts` (drop its index, then its table) runs and
+-- the tracking record is removed, so `rollback 1` answers ["0002_posts"] and the
+-- applied set falls back to ["0001_users"].
+pub fn db reversibleRollback () -> Int =
+    let conn = memAdapter ()
+    let sch = [ Migrate.migration "0001_users" [ usersTable () ], Migrate.migration "0002_posts" [ postsTable (), Migrate.createIndex "posts_author_idx" "posts" ["author"] ] ]
+    match Migrate.run conn sch
+        Err _ -> 0 - 1
+        Ok _  ->
+            match Migrate.rollback conn sch 1
+                Err _     -> 0 - 2
+                Ok rolled ->
+                    match isOnly rolled "0002_posts"
+                        false -> 0 - 5
+                        true  ->
+                            match Migrate.applied conn
+                                Err _      -> 0 - 3
+                                Ok applied -> if isOnly applied "0001_users" then 1 else 0 - 4
+
+-- A rolled-back migration re-applies: after rolling `0002_posts` back, running the
+-- same schema again re-applies just that migration.
+pub fn db rollbackThenReapply () -> Int =
+    let conn = memAdapter ()
+    let sch = [ Migrate.migration "0001_users" [ usersTable () ], Migrate.migration "0002_posts" [ postsTable (), Migrate.createIndex "posts_author_idx" "posts" ["author"] ] ]
+    match Migrate.run conn sch
+        Err _ -> 0 - 1
+        Ok _  ->
+            match Migrate.rollback conn sch 1
+                Err _ -> 0 - 2
+                Ok _  ->
+                    match Migrate.run conn sch
+                        Err _    -> 0 - 3
+                        Ok names -> if isOnly names "0002_posts" then 1 else 0 - 4
+
+-- `revertTo` rolls back every migration applied after a target: applying three
+-- migrations then reverting to "0001_users" leaves only "0001_users" applied.
+pub fn db revertToProbe () -> Int =
+    let conn = memAdapter ()
+    let sch = [ Migrate.migration "0001_users" [ usersTable () ], Migrate.migration "0002_posts" [ postsTable () ], Migrate.migration "0003_tags" [ Migrate.createTable "tags" [ Migrate.intCol "id" ] ] ]
+    match Migrate.run conn sch
+        Err _ -> 0 - 1
+        Ok _  ->
+            match Migrate.revertTo conn sch "0001_users"
+                Err _ -> 0 - 2
+                Ok _  ->
+                    match Migrate.applied conn
+                        Err _      -> 0 - 3
+                        Ok applied -> if isOnly applied "0001_users" then 1 else 0 - 4
+
+-- A plain `migration` whose only step is a `dropTable` has no derivable reverse, so
+-- rolling it back fails with a `migrate.irreversible` error before any transaction.
+pub fn db irreversibleProbe () -> Int =
+    let conn = memAdapter ()
+    let sch = [ Migrate.migration "0001_droptemp" [ Migrate.dropTable "temp" ] ]
+    match Migrate.run conn sch
+        Err _ -> 0 - 1
+        Ok _  ->
+            match Migrate.rollback conn sch 1
+                Err e -> if e.code == "migrate.irreversible" then 1 else 0 - 2
+                Ok _  -> 0 - 3
+
+-- An explicit `down` reverses an otherwise-irreversible migration: dropping a table
+-- is lossy, but a `reversibleMigration` that spells the recreate out rolls back.
+pub fn db explicitDownProbe () -> Int =
+    let conn = memAdapter ()
+    let sch = [ Migrate.migration "0001_temp" [ Migrate.createTable "temp" [ Migrate.intCol "id" ] ], Migrate.reversibleMigration "0009_droptemp" [ Migrate.dropTable "temp" ] [ Migrate.createTable "temp" [ Migrate.intCol "id" ] ] ]
+    match Migrate.run conn sch
+        Err _ -> 0 - 1
+        Ok _  ->
+            match Migrate.rollback conn sch 1
+                Err _     -> 0 - 2
+                Ok rolled -> if isOnly rolled "0009_droptemp" then 1 else 0 - 3
+
+-- A `createIndex` auto-inverts to a `dropIndex`: rolling back a migration that made
+-- an index runs the derived drop (a no-op on the in-memory store) and succeeds.
+pub fn db dropIndexProbe () -> Int =
+    let conn = memAdapter ()
+    let sch = [ Migrate.migration "0001_idx" [ Migrate.createTable "widgets" [ Migrate.intCol "id" ], Migrate.createIndex "widgets_id_idx" "widgets" ["id"] ] ]
+    match Migrate.run conn sch
+        Err _ -> 0 - 1
+        Ok _  ->
+            match Migrate.rollback conn sch 1
+                Err _     -> 0 - 2
+                Ok rolled -> if isOnly rolled "0001_idx" then 1 else 0 - 3
 "#;
 
 // ── Workspace setup ───────────────────────────────────────────────────────────
@@ -339,6 +434,12 @@ fn migrations_apply_track_and_are_idempotent_on_beam() {
          io:format(\"diffColumnApplies=~w~n\",[{module}:diffColumnApplies()]), \
          io:format(\"diffAlterColumns=~w~n\",[{module}:diffAlterColumns()]), \
          io:format(\"diffAlterApplies=~w~n\",[{module}:diffAlterApplies()]), \
+         io:format(\"reversibleRollback=~w~n\",[{module}:reversibleRollback()]), \
+         io:format(\"rollbackThenReapply=~w~n\",[{module}:rollbackThenReapply()]), \
+         io:format(\"revertToProbe=~w~n\",[{module}:revertToProbe()]), \
+         io:format(\"irreversibleProbe=~w~n\",[{module}:irreversibleProbe()]), \
+         io:format(\"explicitDownProbe=~w~n\",[{module}:explicitDownProbe()]), \
+         io:format(\"dropIndexProbe=~w~n\",[{module}:dropIndexProbe()]), \
          halt()."
     );
     let output = Command::new("erl")
@@ -408,5 +509,36 @@ fn migrations_apply_track_and_are_idempotent_on_beam() {
     assert!(
         stdout.contains("diffAlterApplies=1"),
         "expected `diffAlterApplies=1` — the AlterColumn step from the diff should run and record one migration\nstdout:\n{stdout}\nstderr:\n{stderr}"
+    );
+    // A reversible migration rolls back: its auto-derived reverse runs and its record
+    // is removed, so the applied set falls back to the earlier migration.
+    assert!(
+        stdout.contains("reversibleRollback=1"),
+        "expected `reversibleRollback=1` — rollback should reverse the last migration and forget its record\nstdout:\n{stdout}\nstderr:\n{stderr}"
+    );
+    // A rolled-back migration re-applies on the next run.
+    assert!(
+        stdout.contains("rollbackThenReapply=1"),
+        "expected `rollbackThenReapply=1` — a rolled-back migration should re-apply\nstdout:\n{stdout}\nstderr:\n{stderr}"
+    );
+    // `revertTo` rolls every migration back down to the chosen target.
+    assert!(
+        stdout.contains("revertToProbe=1"),
+        "expected `revertToProbe=1` — revertTo should roll back to the target version\nstdout:\n{stdout}\nstderr:\n{stderr}"
+    );
+    // A lossy drop with no explicit down has no derivable reverse and is rejected.
+    assert!(
+        stdout.contains("irreversibleProbe=1"),
+        "expected `irreversibleProbe=1` — a bare dropTable migration should fail rollback with migrate.irreversible\nstdout:\n{stdout}\nstderr:\n{stderr}"
+    );
+    // An explicit down reverses an otherwise-irreversible migration.
+    assert!(
+        stdout.contains("explicitDownProbe=1"),
+        "expected `explicitDownProbe=1` — an explicit down should let a dropTable migration roll back\nstdout:\n{stdout}\nstderr:\n{stderr}"
+    );
+    // A createIndex auto-inverts to a dropIndex on rollback.
+    assert!(
+        stdout.contains("dropIndexProbe=1"),
+        "expected `dropIndexProbe=1` — a createIndex should auto-invert to a dropIndex on rollback\nstdout:\n{stdout}\nstderr:\n{stderr}"
     );
 }

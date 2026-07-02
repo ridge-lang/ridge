@@ -379,6 +379,11 @@ pub fn dropColumnDdl (table: Text) (column: Text) -> Text =
 pub fn indexDdl (name: Text) (table: Text) (cols: List Text) (unique: Bool) -> Text =
     Text.join "" ["CREATE ", uniqueKw unique, "INDEX ", quoteIdent name, " ON ", quoteIdent table, " (", quotedCols cols, ")"]
 
+-- `DROP INDEX IF EXISTS name` — the inverse of `indexDdl`. Only the name is needed
+-- to drop an index; `IF EXISTS` makes a rollback that runs it idempotent.
+pub fn dropIndexDdl (name: Text) -> Text =
+    Text.concat "DROP INDEX IF EXISTS " (quoteIdent name)
+
 -- ── Column rendering ──────────────────────────────────────────────────────────
 
 -- One column's `CREATE TABLE` fragment: its quoted name, its SQL type (a `serial`

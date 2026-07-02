@@ -33,8 +33,8 @@
     mem_delete/3, mem_update/4, mem_get_rows/4,
     mem_begin/1, mem_commit/1, mem_rollback/1, mem_close/1,
     mem_ddl_create/3, mem_ddl_drop/2, mem_ddl_add_column/3,
-    mem_ddl_drop_column/3, mem_ddl_index/5,
-    mem_migrations_applied/1, mem_record_migration/2,
+    mem_ddl_drop_column/3, mem_ddl_index/5, mem_ddl_drop_index/2,
+    mem_migrations_applied/1, mem_record_migration/2, mem_unrecord_migration/2,
     mem_raw_query/3, mem_raw_exec/3,
     error_field/2,
     mem_run_plan/2,
@@ -1051,6 +1051,10 @@ mem_ddl_drop_column(_Id, _Table, _Column) -> {ok, ok}.
 %% mem_ddl_index/5 — no-op on the schemaless store. Result Unit Error.
 mem_ddl_index(_Id, _Name, _Table, _Cols, _Unique) -> {ok, ok}.
 
+%% mem_ddl_drop_index/2 — no-op on the schemaless store (there are no indexes).
+%% Result Unit Error.
+mem_ddl_drop_index(_Id, _Name) -> {ok, ok}.
+
 %% mem_migrations_applied/1 — the names already recorded in store Id's tracking
 %% table, oldest first; an absent table reads as empty. Result (List Text) Error.
 mem_migrations_applied(Id) ->
@@ -1063,6 +1067,11 @@ mem_migrations_applied(Id) ->
 %% row shape a `name text` column holds. Result Unit Error.
 mem_record_migration(Id, Name) ->
     mem_insert(Id, <<"_ridge_migrations">>, #{<<"name">> => {'SqlText', Name}}).
+
+%% mem_unrecord_migration/2 — remove Name from store Id's tracking table, the
+%% inverse of mem_record_migration/2 (a rollback forgetting a reverted migration).
+%% Result Unit Error.
+mem_unrecord_migration(Id, Name) -> mem_call({unrecord_migration, Id, Name}).
 
 %% --- raw SQL ---
 %% The in-memory store has no SQL engine, so the raw-SQL escape hatch cannot run
@@ -1239,6 +1248,15 @@ mem_keeper_loop(State) ->
             Kept = [R || R <- Rows, not mem_pred(State, Id, Tree, R)],
             Removed = length(Rows) - length(Kept),
             From ! {Ref, {ok, Removed}},
+            mem_keeper_loop(State#{Key => Kept});
+        {{unrecord_migration, Id, Name}, From, Ref} ->
+            %% Remove every tracking-table row whose `name` is Name, mutating the
+            %% current tables the same way `delete` does so a transaction snapshot
+            %% still restores it on rollback.
+            Key  = {Id, <<"_ridge_migrations">>},
+            Rows = maps:get(Key, State, []),
+            Kept = [R || R <- Rows, maps:get(<<"name">>, R, 'SqlNull') =/= {'SqlText', Name}],
+            From ! {Ref, {ok, ok}},
             mem_keeper_loop(State#{Key => Kept});
         {{update, Id, Table, Changes, Tree}, From, Ref} ->
             Key  = {Id, Table},

@@ -516,11 +516,13 @@ const BASELINE_EXPORTS: &[(&str, &[&str])] = &[
             "ddlAddColumn",
             "ddlDropColumn",
             "ddlIndex",
+            "ddlDropIndex",
             "ddlCreateEntity",
             "ddlAddEntityColumn",
             "ddlAlterColumn",
             "migrationsApplied",
             "recordMigration",
+            "unrecordMigration",
             // Raw-SQL escape hatch (typed front door in std.raw): a parameterised
             // query returning rows, and a statement returning an affected count.
             "rawQuery",
@@ -828,6 +830,7 @@ const BASELINE_EXPORTS: &[(&str, &[&str])] = &[
             "dropTableDdl",
             "dropColumnDdl",
             "indexDdl",
+            "dropIndexDdl",
             // The Ridge-source renderer: `columnToSource`/`schemaToSource` render a
             // descriptor back to the builder-chain source a snapshot or generated
             // migration is written as — the source dual of the DDL renderer.
@@ -866,12 +869,14 @@ const BASELINE_EXPORTS: &[(&str, &[&str])] = &[
             "dropColumn",
             "createIndex",
             "uniqueIndex",
+            "dropIndex",
             "createSchema",
             "dropSchema",
             "addEntityColumn",
             "alterColumn",
             "Migration",
             "migration",
+            "reversibleMigration",
             "diffSchemas",
             // The Ridge-source renderer: render a model snapshot and a migration back
             // to the source that rebuilds them, the writer side of the snapshot diff.
@@ -888,6 +893,11 @@ const BASELINE_EXPORTS: &[(&str, &[&str])] = &[
             // for a caller that only wants the applied set without running
             // anything (`ridge migrate status`).
             "applied",
+            // Reversible migrations: roll back the last `n` applied migrations
+            // (`rollback`) or every migration applied after a target version
+            // (`revertTo`), each in its own transaction.
+            "rollback",
+            "revertTo",
         ],
     ),
     (

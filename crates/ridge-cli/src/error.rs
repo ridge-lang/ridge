@@ -182,6 +182,14 @@ pub enum CliError {
         /// The error message the driver reported.
         message: String,
     },
+
+    /// `C409` — `ridge migrate rollback` reached the database but the rollback
+    /// run itself failed (a bad connection, or a migration with no derivable
+    /// reverse and no explicit down).
+    MigrateRollbackFailed {
+        /// The error message the driver reported.
+        message: String,
+    },
 }
 
 impl fmt::Display for CliError {
@@ -316,6 +324,9 @@ impl fmt::Display for CliError {
             }
             Self::MigrateStatusFailed { message } => {
                 write!(f, "C408 MigrateStatusFailed: {message}")
+            }
+            Self::MigrateRollbackFailed { message } => {
+                write!(f, "C409 MigrateRollbackFailed: {message}")
             }
         }
     }

@@ -36,10 +36,13 @@
 --     Err e      -> ...
 
 -- The schema seam (`ddlCreate`/`ddlDrop`/`ddlAddColumn`/`ddlDropColumn`/`ddlIndex`/
--- `migrationsApplied`/`recordMigration`) and the transaction primitives
--- (`begin`/`commit`/`rollback`) are `Adapter` class methods, brought into scope by
--- importing the module and called against the connection, the same way `std.repo`
--- reaches the seam.
+-- `ddlDropIndex`/`migrationsApplied`/`recordMigration`/`unrecordMigration`) and the
+-- transaction primitives (`begin`/`commit`/`rollback`) are `Adapter` class methods,
+-- brought into scope by importing the module and called against the connection, the
+-- same way `std.repo` reaches the seam. This module's own `rollback` (below, the
+-- migration-history verb `ridge migrate rollback` drives) shares that bare name, so
+-- the one internal call to the transaction primitive is qualified as `Db.rollback`
+-- to reach it unambiguously.
 import std.data as Db
 -- The rich schema descriptor an entity-driven migration step carries: `eraseSchema`
 -- drops its phantom entity so a non-parametric `SchemaOp` can hold it, and
@@ -93,7 +96,7 @@ pub fn unique (c: Column) -> Column =
 -- `uniqueIndex` factories and handed to `migration`, and the runner decomposes it
 -- onto the adapter's schema seam — so user code names the type but never the
 -- variants.
-pub type SchemaOp = CreateTable Text (List Column) | DropTable Text | AddColumn Text Column | DropColumn Text Text | CreateIndex Text Text (List Text) Bool | CreateEntity (EntitySchema Unit) | AddEntityColumn Text (ColumnSchema Unit) | AlterColumn Text (ColumnSchema Unit) (ColumnSchema Unit)
+pub type SchemaOp = CreateTable Text (List Column) | DropTable Text | AddColumn Text Column | DropColumn Text Text | CreateIndex Text Text (List Text) Bool | CreateEntity (EntitySchema Unit) | AddEntityColumn Text (ColumnSchema Unit) | AlterColumn Text (ColumnSchema Unit) (ColumnSchema Unit) | DropIndex Text
 
 -- Create a table with the given columns.
 pub fn createTable (table: Text) (cols: List Column) -> SchemaOp =
@@ -121,6 +124,12 @@ pub fn createIndex (name: Text) (table: Text) (cols: List Text) -> SchemaOp =
 -- as a uniqueness constraint across the named columns together.
 pub fn uniqueIndex (name: Text) (table: Text) (cols: List Text) -> SchemaOp =
     CreateIndex name table cols true
+
+-- Drop an index by name — the inverse of `createIndex`/`uniqueIndex`. The name
+-- alone identifies the index, so a rollback that recreated it would need the
+-- columns back; a hand-written `dropIndex` is therefore not auto-reversible.
+pub fn dropIndex (name: Text) -> SchemaOp =
+    DropIndex name
 
 -- Create a table from an entity's schema descriptor rather than a hand-written
 -- column list. The descriptor — the value `deriving (Schema)` builds, read back with
@@ -164,14 +173,31 @@ pub fn alterColumn (table: Text) (old: ColumnSchema Unit) (new: ColumnSchema Uni
 -- A named, ordered batch of schema changes. The name identifies the migration in
 -- the tracking table, so it must be stable and unique across a project's
 -- migrations (a zero-padded ordinal prefix keeps them sorted, e.g.
--- "0001_users"); `steps` are applied in order.
-pub type Migration = { name: Text, steps: List SchemaOp }
+-- "0001_users"); `steps` are applied in order. `down` is how a rollback reverses
+-- the migration: `Some` steps spell the reverse out (run in the order given), and
+-- `None` asks a rollback to derive the reverse from `steps` — which succeeds only
+-- when every step is reversible, and fails for a lossy drop that a `Some down`
+-- must instead recover by hand.
+pub type Migration = { name: Text, steps: List SchemaOp, down: Option (List SchemaOp) }
 
 -- Build a migration from a name and its ordered steps. The ergonomic front door
 -- to the `Migration` record:
 --   migration "0001_users" [ createTable "users" [ ... ] ]
+-- Its reverse is derived from `steps` at rollback, so a migration whose steps are
+-- all reversible needs nothing more; one containing a lossy drop needs
+-- `reversibleMigration` instead.
 pub fn migration (name: Text) (steps: List SchemaOp) -> Migration =
-    Migration { name = name, steps = steps }
+    Migration { name = name, steps = steps, down = None }
+
+-- Build a migration with an explicit `down`: the steps that reverse it, in the
+-- order they should run. Use this when a migration contains a step that cannot
+-- be auto-reversed — a `dropTable`, `dropColumn`, or `dropIndex` loses the
+-- information needed to rebuild what it removed, so the reverse must be spelled
+-- out (recreate the table, re-add the column). A migration built with `migration`
+-- instead derives its reverse from `steps` and is rejected at rollback if any
+-- step is one of those lossy drops.
+pub fn reversibleMigration (name: Text) (steps: List SchemaOp) (down: List SchemaOp) -> Migration =
+    Migration { name = name, steps = steps, down = Some down }
 
 -- ── Schema diffing (snapshot auto-diff) ───────────────────────────────────────
 --
@@ -326,6 +352,7 @@ fn runStep (conn: a) (op: SchemaOp) -> Result Unit Error where Adapter a =
         CreateEntity schema         -> ddlCreateEntity conn schema
         AddEntityColumn table col   -> ddlAddEntityColumn conn table col
         AlterColumn table old new   -> ddlAlterColumn conn table old new
+        DropIndex name              -> ddlDropIndex conn name
 
 -- Run a migration's steps in order, stopping at the first failure.
 fn runSteps (conn: a) (steps: List SchemaOp) -> Result Unit Error where Adapter a =
@@ -356,8 +383,11 @@ fn applyOne (conn: a) (m: Migration) -> Result Unit Error where Adapter a =
 
 -- Roll the open transaction back and report the original error, preferring a
 -- rollback failure (a dropped connection, say) if one happens.
+-- Qualified as `Db.rollback` (the `Adapter` transaction primitive) rather than
+-- the bare name: this module's own `rollback` (the migration-history verb below)
+-- would otherwise shadow it.
 fn abort (conn: a) (orig: Error) -> Result Unit Error where Adapter a =
-    match rollback conn
+    match Db.rollback conn
         Ok _   -> Err orig
         Err e2 -> Err e2
 
@@ -405,6 +435,136 @@ pub fn run (conn: a) (migrations: List Migration) -> Result (List Text) Error wh
 pub fn applied (conn: a) -> Result (List Text) Error where Adapter a =
     migrationsApplied conn
 
+-- ── Rollback engine ───────────────────────────────────────────────────────────
+
+-- Build an `Error` from a code and a message. A bare record literal cannot be
+-- coerced to the nominal `Error` type in a plain function (only an instance-method
+-- body, as the `SqlType` decoders are), so the rollback engine tags its errors
+-- through this runtime helper, the same one `std.repo`'s unique-row terminals use.
+@ffi("ridge_rt", "mk_error", 2)
+fn mkError (code: Text) (message: Text) -> Error
+
+-- The reverse of one schema step, when it can be derived. A create inverts to the
+-- matching drop, an add-column to a drop-column, an alter to the swapped alter. A
+-- drop is information-losing — the columns or index definition are gone — so it has
+-- no derivable inverse and must be reversed by an explicit `down`.
+fn invert (op: SchemaOp) -> Result SchemaOp Error =
+    match op
+        CreateTable table _         -> Ok (DropTable table)
+        AddColumn table col         -> Ok (DropColumn table col.name)
+        CreateIndex name _ _ _      -> Ok (DropIndex name)
+        CreateEntity s              -> Ok (DropTable (schemaTable s))
+        AddEntityColumn table col   -> Ok (DropColumn table (colColumn col))
+        AlterColumn table old new   -> Ok (AlterColumn table new old)
+        DropTable table             -> Err (mkError "migrate.irreversible" (irreversibleMessage "dropTable" table))
+        DropColumn table col        -> Err (mkError "migrate.irreversible" (irreversibleMessage "dropColumn" (Text.join "" [table, ".", col])))
+        DropIndex name              -> Err (mkError "migrate.irreversible" (irreversibleMessage "dropIndex" name))
+
+-- The message an irreversible-step `Error` reports: the verb that has no derivable
+-- inverse and the table (or table.column, or index name) it acted on.
+fn irreversibleMessage (verb: Text) (subject: Text) -> Text =
+    Text.join "" ["cannot auto-reverse ", verb, " on ", subject, "; give the migration an explicit down with reversibleMigration"]
+
+-- Invert each step and reverse the order (a migration is undone last step first),
+-- stopping at the first step that has no derivable inverse.
+fn invertReversed (steps: List SchemaOp) (acc: List SchemaOp) -> Result (List SchemaOp) Error =
+    match steps
+        []        -> Ok acc
+        s :: rest ->
+            match invert s
+                Err e  -> Err e
+                Ok inv -> invertReversed rest (inv :: acc)
+
+-- The steps that reverse a migration: its explicit `down` if it has one, otherwise
+-- the derived inverse of its `steps`.
+fn downSteps (m: Migration) -> Result (List SchemaOp) Error =
+    match m.down
+        Some d -> Ok d
+        None   -> invertReversed m.steps []
+
+-- Roll one migration back inside a transaction: its reverse steps run and the
+-- tracking record is removed together, or roll back together on any failure —
+-- the mirror of `applyOne`. A migration with no derivable reverse and no explicit
+-- down fails here before the transaction opens.
+fn rollbackOne (conn: a) (m: Migration) -> Result Unit Error where Adapter a =
+    match downSteps m
+        Err e    -> Err e
+        Ok steps ->
+            match begin conn
+                Err e -> Err e
+                Ok _  ->
+                    match runSteps conn steps
+                        Err e -> abort conn e
+                        Ok _  ->
+                            match unrecordMigration conn m.name
+                                Err e -> abort conn e
+                                Ok _  ->
+                                    match commit conn
+                                        Ok _  -> Ok ()
+                                        Err e -> Err e
+
+fn findMigration (migrations: List Migration) (name: Text) -> Option Migration =
+    match migrations
+        []        -> None
+        m :: rest -> if m.name == name then Some m else findMigration rest name
+
+fn reverseNames (names: List Text) (acc: List Text) -> List Text =
+    match names
+        []        -> acc
+        n :: rest -> reverseNames rest (n :: acc)
+
+fn takeNames (names: List Text) (n: Int) -> List Text =
+    match names
+        []        -> []
+        x :: rest -> if n <= 0 then [] else x :: takeNames rest (n - 1)
+
+-- The names applied strictly after `target`, in applied order (oldest first).
+fn namesAfter (applied: List Text) (target: Text) -> List Text =
+    match applied
+        []        -> []
+        n :: rest -> if n == target then rest else namesAfter rest target
+
+-- Roll back the named migrations in the order given, looking each up in the
+-- provided list for its reverse steps. A name with no matching migration in the
+-- list stops the run — its reverse is unknown.
+fn rollbackNames (conn: a) (migrations: List Migration) (names: List Text) -> Result (List Text) Error where Adapter a =
+    match names
+        []        -> Ok []
+        nm :: rest ->
+            match findMigration migrations nm
+                None   -> Err (mkError "migrate.notfound" (Text.join "" ["cannot roll back \"", nm, "\": no migration with that name is in the list"]))
+                Some m ->
+                    match rollbackOne conn m
+                        Err e -> Err e
+                        Ok _  ->
+                            match rollbackNames conn migrations rest
+                                Err e   -> Err e
+                                Ok more -> Ok (nm :: more)
+
+-- Roll back the last `n` applied migrations, newest first, each in its own
+-- transaction, and answer the names rolled back (newest first). Reads the tracking
+-- table for what is applied and reverses the most recent `n` of them; a non-positive
+-- `n` rolls back nothing. Each migration reversed must be present in `migrations`
+-- so its reverse steps are known, and must be reversible (derivable inverse or an
+-- explicit down) — otherwise the run stops at that migration and returns its error,
+-- with the ones already reversed committed.
+pub fn rollback (conn: a) (migrations: List Migration) (n: Int) -> Result (List Text) Error where Adapter a =
+    match migrationsApplied conn
+        Err e      -> Err e
+        Ok applied -> rollbackNames conn migrations (takeNames (reverseNames applied []) n)
+
+-- Roll back every migration applied after `target`, newest first, leaving `target`
+-- and everything before it applied — the analogue of migrating a database down to a
+-- chosen version. Answers the names rolled back (newest first). A `target` that is
+-- not currently applied is an error.
+pub fn revertTo (conn: a) (migrations: List Migration) (target: Text) -> Result (List Text) Error where Adapter a =
+    match migrationsApplied conn
+        Err e      -> Err e
+        Ok applied ->
+            match alreadyApplied target applied
+                true  -> rollbackNames conn migrations (reverseNames (namesAfter applied target) [])
+                false -> Err (mkError "migrate.notapplied" (Text.join "" ["cannot revert to \"", target, "\": it is not applied"]))
+
 -- ── Ridge-source renderer ─────────────────────────────────────────────────────
 --
 -- Render a model snapshot and a migration back to the Ridge source that rebuilds
@@ -428,10 +588,19 @@ fn schemaSources (model: List (EntitySchema Unit)) -> List Text =
         []        -> []
         s :: rest -> schemaToSource s :: schemaSources rest
 
--- Render a migration to the `migration "name" [ … ]` source that rebuilds it, one
--- step per line.
+-- Render a migration to the source that rebuilds it, one step per line. A migration
+-- with no explicit `down` renders as `migration "name" [ … ]`; one with an explicit
+-- reverse renders as `reversibleMigration "name" [ ups ] [ downs ]`, both step lists
+-- laid out the same way.
 pub fn migrationToSource (m: Migration) -> Text =
-    Text.join "" ["migration ", sourceStr m.name, "\n  [ ", Text.join "\n  , " (opSources m.steps), "\n  ]"]
+    match m.down
+        None   -> Text.join "" ["migration ", sourceStr m.name, "\n  ", stepListSource m.steps]
+        Some d -> Text.join "" ["reversibleMigration ", sourceStr m.name, "\n  ", stepListSource m.steps, "\n  ", stepListSource d]
+
+-- One step list as its `[ step\n  , step … ]` source, one step per line with a
+-- leading comma — shared by a migration's `steps` and its explicit `down`.
+fn stepListSource (steps: List SchemaOp) -> Text =
+    Text.join "" ["[ ", Text.join "\n  , " (opSources steps), "\n  ]"]
 
 fn opSources (steps: List SchemaOp) -> List Text =
     match steps
@@ -451,6 +620,7 @@ fn opToSource (op: SchemaOp) -> Text =
         CreateEntity s                   -> Text.join "" ["createSchema (", schemaToSource s, ")"]
         AddEntityColumn table col        -> Text.join "" ["addEntityColumn ", sourceStr table, " (", columnToSource col, ")"]
         AlterColumn table old new        -> Text.join "" ["alterColumn ", sourceStr table, " (", columnToSource old, ") (", columnToSource new, ")"]
+        DropIndex name                   -> Text.join "" ["dropIndex ", sourceStr name]
 
 -- ── Source rendering of the tuple-DSL vocabulary ──────────────────────────────
 
@@ -544,4 +714,4 @@ fn schemaImports () -> Text =
 -- only — a diff never emits the tuple DSL, whose `primaryKey`/`unique`/`nullable` would
 -- collide with the `std.schema` names above.
 fn migrateImports () -> Text =
-    "import std.migrate (Migration, migration, createSchema, addEntityColumn, alterColumn, dropColumn, dropTable)"
+    "import std.migrate (Migration, migration, createSchema, addEntityColumn, alterColumn, dropColumn, dropTable, reversibleMigration)"

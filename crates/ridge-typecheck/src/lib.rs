@@ -2317,6 +2317,31 @@ fn seed_sql_codec_schemes(
                 },
             );
         }
+        // ddlDropIndex / unrecordMigration :: ∀a. a -> Text -> Result Unit Error where
+        // Adapter a. The two rollback-side schema-seam operations — dropping an index by
+        // name and removing a migration from the tracking table — seeded so a bare call
+        // type-checks, the same `a -> Text -> Result Unit Error` shape.
+        for method in ["ddlDropIndex", "unrecordMigration"] {
+            let a = ctx.fresh_tyvid();
+            let fn_ty = Type::Fn {
+                params: vec![Type::Var(a), Type::Con(b.text, vec![])],
+                ret: Box::new(Type::Con(
+                    b.result,
+                    vec![Type::Con(b.unit, vec![]), Type::Con(b.error, vec![])],
+                )),
+                caps: CapRow::Concrete(CapabilitySet::PURE),
+            };
+            ctx.env.bind(
+                method.to_owned(),
+                Scheme {
+                    vars: vec![a],
+                    cap_vars: vec![],
+                    row_vars: vec![],
+                    ty: fn_ty,
+                    constraints: vec![Constraint::single(adapter, a)],
+                },
+            );
+        }
     }
 }
 

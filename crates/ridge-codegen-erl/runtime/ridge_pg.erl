@@ -38,6 +38,7 @@
     pg_rollback/1,
     pg_migrations_applied/1,
     pg_record_migration/2,
+    pg_unrecord_migration/2,
     pg_raw_query/3,
     pg_raw_exec/3,
     pg_close/1
@@ -213,6 +214,18 @@ pg_migrations_applied(Id) ->
 pg_record_migration(Id, Name) ->
     Sql = ["INSERT INTO ", quote_ident(<<"_ridge_migrations">>),
            " (", quote_ident(<<"name">>), ") VALUES ($1)"],
+    case pg_call(Id, {raw_exec, Sql, [{'SqlText', Name}]}) of
+        {ok, _} -> {ok, ok};
+        {error, E} -> {error, E}
+    end.
+
+%% pg_unrecord_migration/2 — remove a migration name from the tracking table with
+%% a parameterised delete on the migration's pinned connection. The name is bound
+%% as $1, never spliced into the SQL. The inverse of pg_record_migration/2, run by
+%% a rollback to forget a reverted migration. Result Unit Error.
+pg_unrecord_migration(Id, Name) ->
+    Sql = ["DELETE FROM ", quote_ident(<<"_ridge_migrations">>),
+           " WHERE ", quote_ident(<<"name">>), " = $1"],
     case pg_call(Id, {raw_exec, Sql, [{'SqlText', Name}]}) of
         {ok, _} -> {ok, ok};
         {error, E} -> {error, E}

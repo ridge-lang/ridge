@@ -236,4 +236,82 @@ fn migrate_apply_and_status_against_a_real_database() {
         !status_stdout.contains("(pending)"),
         "expected the migration to be reported as applied, not pending: {status_stdout}"
     );
+
+    // ── ridge migrate rollback: reverse the one applied migration ────────────
+    let rollback_output = ridge_cmd()
+        .arg("migrate")
+        .arg("rollback")
+        .arg("--steps")
+        .arg("1")
+        .current_dir(&tw.path)
+        .env("RIDGE_DB_HOST", &parts.host)
+        .env("RIDGE_DB_PORT", &parts.port)
+        .env("RIDGE_DB_DATABASE", &parts.database)
+        .env("RIDGE_DB_USER", &parts.user)
+        .env("RIDGE_DB_PASSWORD", &parts.password)
+        .env("RIDGE_DB_SSLMODE", &parts.sslmode)
+        .output()
+        .expect("ridge migrate rollback spawn failed");
+    let rollback_stdout = String::from_utf8_lossy(&rollback_output.stdout).into_owned();
+    assert!(
+        rollback_output.status.success(),
+        "ridge migrate rollback failed.\nstdout: {rollback_stdout}\nstderr: {}",
+        String::from_utf8_lossy(&rollback_output.stderr)
+    );
+    assert!(
+        rollback_stdout.contains("Rolled back 1 migration(s):"),
+        "expected exactly one migration rolled back, got stdout: {rollback_stdout}"
+    );
+    assert!(
+        rollback_stdout.contains("_init"),
+        "expected the rolled-back migration name to be reported: {rollback_stdout}"
+    );
+
+    // ── status now reports the migration as pending again ────────────────────
+    let status_after = ridge_cmd()
+        .arg("migrate")
+        .arg("status")
+        .current_dir(&tw.path)
+        .env("RIDGE_DB_HOST", &parts.host)
+        .env("RIDGE_DB_PORT", &parts.port)
+        .env("RIDGE_DB_DATABASE", &parts.database)
+        .env("RIDGE_DB_USER", &parts.user)
+        .env("RIDGE_DB_PASSWORD", &parts.password)
+        .env("RIDGE_DB_SSLMODE", &parts.sslmode)
+        .output()
+        .expect("ridge migrate status spawn failed");
+    let status_after_stdout = String::from_utf8_lossy(&status_after.stdout).into_owned();
+    assert!(
+        status_after.status.success(),
+        "ridge migrate status failed after rollback.\nstdout: {status_after_stdout}\nstderr: {}",
+        String::from_utf8_lossy(&status_after.stderr)
+    );
+    assert!(
+        status_after_stdout.contains("(pending)"),
+        "expected the migration to read as pending after rollback: {status_after_stdout}"
+    );
+
+    // ── re-apply lands it again: rollback left a clean, re-runnable state ─────
+    let reapply_output = ridge_cmd()
+        .arg("migrate")
+        .arg("apply")
+        .current_dir(&tw.path)
+        .env("RIDGE_DB_HOST", &parts.host)
+        .env("RIDGE_DB_PORT", &parts.port)
+        .env("RIDGE_DB_DATABASE", &parts.database)
+        .env("RIDGE_DB_USER", &parts.user)
+        .env("RIDGE_DB_PASSWORD", &parts.password)
+        .env("RIDGE_DB_SSLMODE", &parts.sslmode)
+        .output()
+        .expect("ridge migrate re-apply spawn failed");
+    let reapply_stdout = String::from_utf8_lossy(&reapply_output.stdout).into_owned();
+    assert!(
+        reapply_output.status.success(),
+        "ridge migrate apply after rollback failed.\nstdout: {reapply_stdout}\nstderr: {}",
+        String::from_utf8_lossy(&reapply_output.stderr)
+    );
+    assert!(
+        reapply_stdout.contains("Applied 1 migration(s):"),
+        "expected the rolled-back migration to re-apply, got stdout: {reapply_stdout}"
+    );
 }

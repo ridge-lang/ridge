@@ -1,9 +1,15 @@
-//! Integration tests for `ridge migrate add`.
+//! Integration tests for `ridge migrate add`, `ridge migrate apply`, and
+//! `ridge migrate status`.
 //!
-//! Requires a real BEAM runtime (`erl`/`erlc` on PATH) since the command
-//! compiles the workspace and runs the generated driver module.  Gated
+//! Requires a real BEAM runtime (`erl`/`erlc` on PATH) since the commands
+//! compile the workspace and run the generated driver module.  Gated
 //! behind `#[cfg(feature = "beam-runtime")]`, following the pattern in
 //! `tests/run.rs`.
+//!
+//! The `apply`/`status` tests here cover the paths that do not need a real
+//! database — no migrations found, and a missing required environment
+//! variable. The path that does need one (`ridge migrate apply` actually
+//! running against Postgres) is `tests/migrate_pg_e2e.rs`.
 //!
 //! Run with:
 //! ```text
@@ -125,6 +131,21 @@ fn migrate_add_generates_migration_and_snapshot_then_detects_no_changes() {
     let migration_path = find_migration_file(&migrations_dir, "_init.ridge").unwrap_or_else(|| {
         panic!("no <stamp>_init.ridge migration file found in {migrations_dir:?}")
     });
+
+    // The generated file stem must be import-safe: a Ridge module segment
+    // has to start with a lowercase letter, and a bare UTC timestamp starts
+    // with a digit, so the stem is prefixed with `m` (`m<stamp>_init`, not
+    // `<stamp>_init`). Without this, apply/status could never import the
+    // migration module they need to run.
+    let migration_stem = migration_path
+        .file_stem()
+        .and_then(|s| s.to_str())
+        .expect("migration file has a stem");
+    assert!(
+        migration_stem.chars().next().is_some_and(|c| c.is_ascii_lowercase()),
+        "migration module name must start with a lowercase letter so it can be imported: {migration_stem}"
+    );
+
     let migration_src = std::fs::read_to_string(&migration_path).expect("read migration file");
     assert!(
         migration_src.contains("pub fn up () -> Migration ="),
@@ -228,5 +249,126 @@ fn migrate_add_missing_model_reports_c401() {
     assert!(
         stderr.contains("C401"),
         "expected a C401 MigrateModelMissing error, got stderr: {stderr}"
+    );
+}
+
+/// Build a workspace with no migrations at all under `src/migrations/` (not
+/// even `Model.ridge`) — `apply`/`status` should report that and stop
+/// without ever probing the BEAM toolchain or the environment.
+fn make_workspace_without_migrations() -> TempWorkspace {
+    let tw = TempWorkspace::new();
+    write_file(
+        &tw.path,
+        "ridge.toml",
+        "[workspace]\nname = \"migrate-cli-no-migrations-e2e\"\nversion = \"0.1.0\"\nmembers = [\"apps/*\"]\n",
+    );
+    write_file(
+        &tw.path,
+        "apps/app/ridge.toml",
+        "[project]\nname = \"app\"\nversion = \"0.1.0\"\nkind = \"app\"\nentry = \"src/Main.ridge\"\n",
+    );
+    write_file(
+        &tw.path,
+        "apps/app/src/Main.ridge",
+        "pub fn main -> Int = 0\n",
+    );
+    tw
+}
+
+#[test]
+fn migrate_apply_with_no_migrations_reports_a_friendly_message() {
+    // No migrations to discover means no reason to probe erl/erlc or the
+    // environment, so this does not require a BEAM toolchain either.
+    let tw = make_workspace_without_migrations();
+
+    let output = ridge_cmd()
+        .arg("migrate")
+        .arg("apply")
+        .current_dir(&tw.path)
+        .output()
+        .expect("ridge migrate apply spawn failed");
+
+    let stdout = String::from_utf8_lossy(&output.stdout).into_owned();
+    let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
+    assert!(
+        output.status.success(),
+        "ridge migrate apply failed.\nstdout: {stdout}\nstderr: {stderr}"
+    );
+    assert!(
+        stdout.contains("No migrations found"),
+        "expected a no-migrations notice, got stdout: {stdout}"
+    );
+}
+
+#[test]
+fn migrate_status_with_no_migrations_reports_a_friendly_message() {
+    let tw = make_workspace_without_migrations();
+
+    let output = ridge_cmd()
+        .arg("migrate")
+        .arg("status")
+        .current_dir(&tw.path)
+        .output()
+        .expect("ridge migrate status spawn failed");
+
+    let stdout = String::from_utf8_lossy(&output.stdout).into_owned();
+    let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
+    assert!(
+        output.status.success(),
+        "ridge migrate status failed.\nstdout: {stdout}\nstderr: {stderr}"
+    );
+    assert!(
+        stdout.contains("No migrations found"),
+        "expected a no-migrations notice, got stdout: {stdout}"
+    );
+}
+
+#[test]
+fn migrate_apply_missing_required_env_vars_reports_c406() {
+    if which::which("erlc").is_err() || which::which("erl").is_err() {
+        eprintln!(
+            "erl/erlc not on PATH — skipping migrate_apply_missing_required_env_vars_reports_c406"
+        );
+        return;
+    }
+
+    // Reaching the environment check requires at least one migration to be
+    // discovered first (an empty migrations dir short-circuits earlier), so
+    // generate one with `add` before exercising `apply`.
+    let tw = make_migrate_workspace();
+    let add_output = ridge_cmd()
+        .arg("migrate")
+        .arg("add")
+        .arg("init")
+        .current_dir(&tw.path)
+        .output()
+        .expect("ridge migrate add init spawn failed");
+    assert!(
+        add_output.status.success(),
+        "ridge migrate add init failed.\nstdout: {}\nstderr: {}",
+        String::from_utf8_lossy(&add_output.stdout),
+        String::from_utf8_lossy(&add_output.stderr)
+    );
+
+    // Clear the required variables so the test is deterministic regardless
+    // of what the ambient shell environment happens to hold.
+    let output = ridge_cmd()
+        .arg("migrate")
+        .arg("apply")
+        .current_dir(&tw.path)
+        .env_remove("RIDGE_DB_DATABASE")
+        .env_remove("RIDGE_DB_USER")
+        .output()
+        .expect("ridge migrate apply spawn failed");
+
+    assert!(!output.status.success(), "expected a non-zero exit code");
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("C406"),
+        "expected a C406 MigrateEnvMissing error, got stderr: {stderr}"
+    );
+    assert!(
+        stderr.contains("RIDGE_DB_DATABASE") && stderr.contains("RIDGE_DB_USER"),
+        "expected both missing variables to be named, got stderr: {stderr}"
     );
 }

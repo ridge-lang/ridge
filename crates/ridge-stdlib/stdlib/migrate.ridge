@@ -398,6 +398,13 @@ pub fn run (conn: a) (migrations: List Migration) -> Result (List Text) Error wh
         Err e      -> Err e
         Ok applied -> runPending conn migrations applied
 
+-- The names of the migrations already applied to the connection, oldest first —
+-- a plain top-level re-export of the `Adapter` class method `migrationsApplied`,
+-- for callers (such as `ridge migrate status`) that only need to read the
+-- tracking table without running anything.
+pub fn applied (conn: a) -> Result (List Text) Error where Adapter a =
+    migrationsApplied conn
+
 -- ── Ridge-source renderer ─────────────────────────────────────────────────────
 --
 -- Render a model snapshot and a migration back to the Ridge source that rebuilds

@@ -884,6 +884,10 @@ const BASELINE_EXPORTS: &[(&str, &[&str])] = &[
             // The migration runner: apply the pending migrations in order, each in
             // its own transaction, and answer the names applied.
             "run",
+            // A plain re-export of the `Adapter` class method `migrationsApplied`,
+            // for a caller that only wants the applied set without running
+            // anything (`ridge migrate status`).
+            "applied",
         ],
     ),
     (

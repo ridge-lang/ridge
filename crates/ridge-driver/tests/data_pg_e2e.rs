@@ -2137,10 +2137,16 @@ pub fn db pgDiffAlteredColumn () -> Int =
 
 -- A seed step against the live database. The migration creates the table and seeds two
 -- rows through a real `INSERT ... ON CONFLICT ("id") DO UPDATE`, keyed on the primary key;
--- rolling the seed migration back runs a real `DELETE ... WHERE ("id") IN ((...))` and
--- untracks it. So each CI run re-seeds then re-deletes and the probe converges: the seed
--- inserts two rows (guarded — a wrong count short-circuits to -4), the rollback removes
--- exactly them by key, and zero rows count back -> 0.
+-- rolling the seed migration back runs a real keyed `DELETE ... WHERE "id" IN ($1, $2)`
+-- and untracks it. The probe applies, checks the two rows landed (a wrong count short-
+-- circuits to -4), rolls the seed back, and counts zero rows back -> 0.
+--
+-- `_ridge_migrations` is shared across every e2e binary pointed at this database, and
+-- rollback picks what to reverse from it ordered by name. Another binary can leave a
+-- migration whose name sorts after ours but whose steps we do not hold — rollback would
+-- select it and fail to resolve. Drop our own migration state first so this apply/rollback
+-- cycle stays self-contained no matter what else shares the database (or lingers from a
+-- prior local run against a reused container).
 pub type RidgeMigLabel = { id: Int, name: Text } deriving (Row, Schema)
 
 fn labelWitness () -> Option RidgeMigLabel = None
@@ -2162,6 +2168,8 @@ pub fn db pgSeedRollback () -> Int =
     match connect (pgConfig ())
         Err _ -> 0 - 1
         Ok conn ->
+            let _ = Raw.exec conn "DROP TABLE IF EXISTS _ridge_migrations" []
+            let _ = Raw.exec conn "DROP TABLE IF EXISTS ridge_mig_labels" []
             match Migrate.run conn migs
                 Err _ -> 0 - 2
                 Ok _  ->

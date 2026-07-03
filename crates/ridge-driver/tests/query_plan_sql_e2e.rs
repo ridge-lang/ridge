@@ -23,7 +23,7 @@ use std::process::Command;
 use ridge_driver::{compile_workspace, CompileOptions, EmitArtefacts};
 
 const SOURCE: &str = r#"
-import std.query as Query (QueryPlan, planScan, planCombine, planRefine, planJoin, planProject, planAggregate, planGroup, planToSql, planExists, MutationPlan, planInsert, planUpsert, planUpdate, planDelete, mutationToSql, mutationReturningToSql)
+import std.query as Query (QueryPlan, planScan, planCombine, planRefine, planJoin, planProject, planAggregate, planGroup, planToSql, planExists, MutationPlan, planInsert, planUpsert, planUpdate, planDelete, planDeleteKeys, mutationToSql, mutationReturningToSql)
 import std.sql (Sql, SqlValue, sqlValue, sqlInt, sqlText)
 import std.int as Int
 import std.list as List
@@ -150,6 +150,16 @@ pub fn deleteSql () -> Text = renderMutSql (planDelete "users" (pred1 (fn (u: Us
 -- the write path shares `renderPred`, so no separate subquery support is needed.
 pub fn existsDeleteSql () -> Text = renderMutSql (planDelete "users" (QExists "posts" (QEq (QColR "author") (QCol "id"))))
 pub fn existsDeleteBinds () -> Text = renderMutBinds (planDelete "users" (QExists "posts" (QEq (QColR "author") (QCol "id"))))
+
+-- A keyed delete matches each stored row on the key columns of the rows to remove, the
+-- key values carried as binds ($1 per value) — the reverse a seed rollback runs. A single
+-- key column renders a plain scalar `IN`, so Postgres infers each bind's type from the
+-- column (a one-element row constructor would not).
+pub fn deleteKeysSql () -> Text = renderMutSql (planDeleteKeys "users" ["id"] [Map.fromList [("id", sqlInt 1)], Map.fromList [("id", sqlInt 2)]])
+pub fn deleteKeysBinds () -> Text = renderMutBinds (planDeleteKeys "users" ["id"] [Map.fromList [("id", sqlInt 1)], Map.fromList [("id", sqlInt 2)]])
+
+-- A composite key renders a tuple `IN` over both columns, in the key-column order given.
+pub fn deleteKeysCompositeSql () -> Text = renderMutSql (planDeleteKeys "memberships" ["org", "user"] [Map.fromList [("org", sqlInt 7), ("user", sqlInt 3)]])
 
 -- A correlated EXISTS in an UPDATE predicate: the target is aliased `l` too, the SET
 -- column stays bare ($1), and the EXISTS renders after it — locking the SET-before-WHERE
@@ -794,7 +804,7 @@ fn query_plan_compiles_to_parameterized_sql() {
 
     let expr = format!(
         "F=fun(N)->io:format(\"~s=~s~n\",[N,{module}:N()])end, \
-         lists:foreach(F,['scanSql','scanBinds','foldSql','likeSql','likeBinds','inSql','inBinds','inCapturedSql','inCapturedBinds','corrExistsSql','corrExistsBinds','corrNotExistsSql','singleCountSql','singleSumSql','singleAvgSql','singleCountExistsSql','singleProjectSql','singleProjectExistsSql','singleProjectPagedSql','singleGroupSql','singleGroupHavingSql','singleGroupHavingBinds','singleGroupExistsSql','joinExistsWhereSql','naryExistsWhereSql','nestedExistsSql','pgNestedSql','pgNestedBinds','inEmptySql','inEmptyBinds','arithMulSql','arithMulBinds','arithColSql','arithModSql','combineSql','refineSql','innerSql','leftSql','rightSql','fullSql','fullBinds','projectSql','projectCalcSql','projectCalcBinds','projectCaseJoinSql','aggSql','groupSql','inner3Sql','inner3Binds','existsSql','existsThreeSql','existsThreeBinds','everyJoinSql','everyJoinBinds','innerLeftMixSql','innerRightMixSql','innerFullMixSql','innerFullMixBinds','adultLeftMixSql','adultLeftMixBinds','countAdultLeftMixSql','countThreeSql','countThreeBinds','countLeftMixSql','countLeftMixBinds','sumThreeSql','avgThreeSql','projectThreeSql','projectLeftMixSql','projectRightMixSql','projectFullMixSql','groupThreeSql','groupComputedThreeSql','groupComputedThreeBinds','groupLeftMixSql','groupRightMixSql','groupFullMixSql','orderThreeSql','orderLeftMixSql','orderRightMixSql','orderFullMixSql','inner4Sql','sumFourSql','projectFourSql','orderFourSql','insertSql','insertBinds','insertManySql','insertManyBinds','updateSql','updateBinds','deleteSql','existsDeleteSql','existsDeleteBinds','existsUpdateSql','existsUpdateBinds','upsertSql','upsertBinds','insertOrIgnoreSql','upsertBareSql','insertReturningStarSql','insertReturningStarBinds','insertReturningColsSql','deleteReturningSql','updateReturningSql','upsertReturningSql']), halt()."
+         lists:foreach(F,['scanSql','scanBinds','foldSql','likeSql','likeBinds','inSql','inBinds','inCapturedSql','inCapturedBinds','corrExistsSql','corrExistsBinds','corrNotExistsSql','singleCountSql','singleSumSql','singleAvgSql','singleCountExistsSql','singleProjectSql','singleProjectExistsSql','singleProjectPagedSql','singleGroupSql','singleGroupHavingSql','singleGroupHavingBinds','singleGroupExistsSql','joinExistsWhereSql','naryExistsWhereSql','nestedExistsSql','pgNestedSql','pgNestedBinds','inEmptySql','inEmptyBinds','arithMulSql','arithMulBinds','arithColSql','arithModSql','combineSql','refineSql','innerSql','leftSql','rightSql','fullSql','fullBinds','projectSql','projectCalcSql','projectCalcBinds','projectCaseJoinSql','aggSql','groupSql','inner3Sql','inner3Binds','existsSql','existsThreeSql','existsThreeBinds','everyJoinSql','everyJoinBinds','innerLeftMixSql','innerRightMixSql','innerFullMixSql','innerFullMixBinds','adultLeftMixSql','adultLeftMixBinds','countAdultLeftMixSql','countThreeSql','countThreeBinds','countLeftMixSql','countLeftMixBinds','sumThreeSql','avgThreeSql','projectThreeSql','projectLeftMixSql','projectRightMixSql','projectFullMixSql','groupThreeSql','groupComputedThreeSql','groupComputedThreeBinds','groupLeftMixSql','groupRightMixSql','groupFullMixSql','orderThreeSql','orderLeftMixSql','orderRightMixSql','orderFullMixSql','inner4Sql','sumFourSql','projectFourSql','orderFourSql','insertSql','insertBinds','insertManySql','insertManyBinds','updateSql','updateBinds','deleteSql','existsDeleteSql','existsDeleteBinds','deleteKeysSql','deleteKeysBinds','deleteKeysCompositeSql','existsUpdateSql','existsUpdateBinds','upsertSql','upsertBinds','insertOrIgnoreSql','upsertBareSql','insertReturningStarSql','insertReturningStarBinds','insertReturningColsSql','deleteReturningSql','updateReturningSql','upsertReturningSql']), halt()."
     );
     let output = Command::new("erl")
         .arg("-noshell")
@@ -891,6 +901,12 @@ fn query_plan_compiles_to_parameterized_sql() {
         r#"existsDeleteSql=DELETE FROM "users" AS l WHERE EXISTS (SELECT 1 FROM "posts" AS x1 WHERE x1."author" = l."id")"#,
     );
     want("existsDeleteBinds=0");
+    // A keyed delete matches the stored rows on the key columns of the rows to remove, the
+    // key values bound left to right. A single key renders a one-element row tuple; a
+    // composite key renders the columns and values as parallel tuples.
+    want(r#"deleteKeysSql=DELETE FROM "users" WHERE "id" IN ($1, $2)"#);
+    want("deleteKeysBinds=2");
+    want(r#"deleteKeysCompositeSql=DELETE FROM "memberships" WHERE ("org", "user") IN (($1, $2))"#);
     want(
         r#"existsUpdateSql=UPDATE "users" AS l SET "age" = $1 WHERE EXISTS (SELECT 1 FROM "posts" AS x1 WHERE x1."author" = l."id")"#,
     );

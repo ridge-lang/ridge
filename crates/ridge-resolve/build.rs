@@ -445,16 +445,19 @@ const BASELINE_EXPORTS: &[(&str, &[&str])] = &[
             // and the write-side renderer. A write verb builds a `MutationPlan` and
             // hands it to a backend's `runMutation`; `mutationToSql` lowers it to one
             // parameterized statement, the write-side dual of `planToSql`. `MutUpsert`
-            // carries an `ON CONFLICT` clause built by `planUpsert`.
+            // carries an `ON CONFLICT` clause built by `planUpsert`; `MutDeleteKeys`
+            // removes rows by their key columns, the reverse a seed rollback runs.
             "MutationPlan",
             "MutInsert",
             "MutUpsert",
             "MutUpdate",
             "MutDelete",
+            "MutDeleteKeys",
             "planInsert",
             "planUpsert",
             "planUpdate",
             "planDelete",
+            "planDeleteKeys",
             "mutationToSql",
             // The RETURNING renderer: the same statement, with a `RETURNING <cols>`
             // tail so a backend hands back the affected rows.
@@ -852,7 +855,7 @@ const BASELINE_EXPORTS: &[(&str, &[&str])] = &[
         "std.migrate",
         &[
             // The schema-DSL: the opaque `Column` and its typed declarators and
-            // modifiers, the opaque `SchemaOp` and its factories, and the
+            // modifiers, the opaque `MigrationOp` and its factories, and the
             // `Migration` batch and its `migration` builder.
             "Column",
             "intCol",
@@ -862,7 +865,7 @@ const BASELINE_EXPORTS: &[(&str, &[&str])] = &[
             "nullable",
             "primaryKey",
             "unique",
-            "SchemaOp",
+            "MigrationOp",
             "createTable",
             "dropTable",
             "addColumn",
@@ -874,6 +877,11 @@ const BASELINE_EXPORTS: &[(&str, &[&str])] = &[
             "dropSchema",
             "addEntityColumn",
             "alterColumn",
+            // The data-step factories: seed reference rows into a table as an idempotent,
+            // reversible upsert — `seed` from a typed entity (keyed on its primary key),
+            // `seedRows` from hand-built rows (keyed on the given columns).
+            "seed",
+            "seedRows",
             "Migration",
             "migration",
             "reversibleMigration",

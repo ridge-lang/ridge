@@ -124,6 +124,7 @@ const CONSTRUCTOR_EXPORTS: &[(&str, &str)] = &[
     ("std.query", "MutUpsert"),
     ("std.query", "MutUpdate"),
     ("std.query", "MutDelete"),
+    ("std.query", "MutDeleteKeys"),
     // The `DbError` variants: exported so a caller can match the kind of a typed
     // database error, but surfaced by text extraction only through the type name.
     ("std.data", "UniqueViolation"),
@@ -322,6 +323,7 @@ fn signature_shape_consistency() {
                         | "planUpsert"
                         | "planUpdate"
                         | "planDelete"
+                        | "planDeleteKeys"
                         | "mutationToSql"
                         | "mutationReturningToSql"
                 )
@@ -374,7 +376,7 @@ fn signature_shape_consistency() {
                 continue;
             }
             // Every std.migrate builder/runner references the reconciled
-            // `Column`/`SchemaOp`/`Migration` block, so the whole module is seeded
+            // `Column`/`MigrationOp`/`Migration` block, so the whole module is seeded
             // via `reconciled_fn_scheme` rather than the `stdlib_signature` table.
             if dotted == "std.migrate" {
                 continue;

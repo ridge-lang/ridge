@@ -59,7 +59,7 @@ const SOURCE_TEMPLATE: &str = r#"
 import std.data (connect, connectWith, defaultPool, withPoolSize, withQueryTimeoutMs, withCheckoutTimeoutMs, Config, Postgres, dbErrorKind, dbErrorConstraint, dbErrorColumn, dbErrorTable, DbErrorKind, UniqueViolation, ForeignKeyViolation, NotNullViolation, CheckViolation, ConnectionError, DecodeError, Unsupported, QueryError)
 import std.repo as Repo
 import std.migrate as Migrate
-import std.migrate (SchemaOp)
+import std.migrate (MigrationOp)
 import std.raw as Raw
 import std.query (SortOrder, Asc, Desc)
 import std.sql (toSql, SqlValue, toRow)
@@ -1860,7 +1860,7 @@ pub fn db txSavepointCount () -> Int =
 -- recorded in the `_ridge_migrations` tracking table. Applying the same schema again
 -- is a no-op, so the probes stay deterministic against the persistent test database
 -- (the tracking table outlives any one probe).
-fn widgetsTable () -> SchemaOp =
+fn widgetsTable () -> MigrationOp =
     Migrate.createTable "ridge_mig_widgets"
         [ Migrate.intCol  "id"   |> Migrate.primaryKey
         , Migrate.textCol "name" ]
@@ -1926,7 +1926,7 @@ pub type RidgeMigGadget = { id: Int, name: Text } deriving (Row, Schema)
 
 fn gadgetWitness () -> Option RidgeMigGadget = None
 
-fn gadgetsSchema () -> SchemaOp =
+fn gadgetsSchema () -> MigrationOp =
     Migrate.createSchema (schemaOf (gadgetWitness ()))
 
 fn runGadgets (conn: Postgres) -> Result (List Text) Error =
@@ -2134,6 +2134,50 @@ pub fn db pgDiffAlteredColumn () -> Int =
                                     match pgAddGear conn "b"
                                         Err _ -> 0 - 5
                                         Ok _  -> pgCountGears conn
+
+-- A seed step against the live database. The migration creates the table and seeds two
+-- rows through a real `INSERT ... ON CONFLICT ("id") DO UPDATE`, keyed on the primary key;
+-- rolling the seed migration back runs a real keyed `DELETE ... WHERE "id" IN ($1, $2)`
+-- and untracks it. The probe applies, checks the two rows landed (a wrong count short-
+-- circuits to -4), rolls the seed back, and counts zero rows back -> 0.
+--
+-- `_ridge_migrations` is shared across every e2e binary pointed at this database, and
+-- rollback picks what to reverse from it ordered by name. Another binary can leave a
+-- migration whose name sorts after ours but whose steps we do not hold — rollback would
+-- select it and fail to resolve. Drop our own migration state first so this apply/rollback
+-- cycle stays self-contained no matter what else shares the database (or lingers from a
+-- prior local run against a reused container).
+pub type RidgeMigLabel = { id: Int, name: Text } deriving (Row, Schema)
+
+fn labelWitness () -> Option RidgeMigLabel = None
+
+fn labelSchema () -> MigrationOp =
+    Migrate.createSchema (schemaOf (labelWitness ()))
+
+fn seedLabels () -> MigrationOp =
+    Migrate.seed [ RidgeMigLabel { id = 1, name = "one" }, RidgeMigLabel { id = 2, name = "two" } ]
+
+fn pgCountLabels (conn: Postgres) -> Int =
+    let r = Repo.repo conn "ridge_mig_labels"
+    match r |> Repo.query |> Repo.count
+        Ok n  -> n
+        Err _ -> 0 - 9
+
+pub fn db pgSeedRollback () -> Int =
+    let migs = [ Migrate.migration "0007_labels" [ labelSchema () ], Migrate.migration "0008_labels_seed" [ seedLabels () ] ]
+    match connect (pgConfig ())
+        Err _ -> 0 - 1
+        Ok conn ->
+            let _ = Raw.exec conn "DROP TABLE IF EXISTS _ridge_migrations" []
+            let _ = Raw.exec conn "DROP TABLE IF EXISTS ridge_mig_labels" []
+            match Migrate.run conn migs
+                Err _ -> 0 - 2
+                Ok _  ->
+                    if pgCountLabels conn == 2 then
+                        match Migrate.rollback conn migs 1
+                            Err _ -> 0 - 3
+                            Ok _  -> pgCountLabels conn
+                    else 0 - 4
 
 -- Raw-SQL escape hatch against the live database. Each probe seeds the users table
 -- through `setup` (clearing and inserting ada/lin/max), then opens a fresh
@@ -2494,6 +2538,7 @@ fn postgres_adapter_reads_a_real_table() {
          io:format(\"pgDiffCreated=~w~n\",[{module}:pgDiffCreated()]), \
          io:format(\"pgDiffAddedColumn=~w~n\",[{module}:pgDiffAddedColumn()]), \
          io:format(\"pgDiffAlteredColumn=~w~n\",[{module}:pgDiffAlteredColumn()]), \
+         io:format(\"pgSeedRollback=~w~n\",[{module}:pgSeedRollback()]), \
          io:format(\"rawAdults=~s~n\",[{module}:rawAdults()]), \
          io:format(\"rawFirstName=~s~n\",[{module}:rawFirstName()]), \
          io:format(\"rawBumpCount=~w~n\",[{module}:rawBumpCount()]), \
@@ -2941,6 +2986,10 @@ fn postgres_adapter_reads_a_real_table() {
         (
             "pgDiffAlteredColumn=2",
             "the column-level auto-diff turns a relaxed NOT NULL into an ALTER TABLE ALTER COLUMN DROP NOT NULL that lands on the real table",
+        ),
+        (
+            "pgSeedRollback=0",
+            "a seed step runs a real INSERT ... ON CONFLICT DO UPDATE (two rows), and rolling it back runs a real keyed DELETE that removes exactly them",
         ),
         (
             "rawAdults=lin,max",

@@ -1634,10 +1634,12 @@ mod tests {
                             | "MutUpsert"
                             | "MutUpdate"
                             | "MutDelete"
+                            | "MutDeleteKeys"
                             | "planInsert"
                             | "planUpsert"
                             | "planUpdate"
                             | "planDelete"
+                            | "planDeleteKeys"
                             | "mutationToSql"
                             | "mutationReturningToSql"
                     )
@@ -1732,7 +1734,7 @@ mod tests {
                     continue;
                 }
                 // std.migrate: its DSL types and builders/runner reference the
-                // reconciled `Column`/`SchemaOp`/`Migration` block and are seeded
+                // reconciled `Column`/`MigrationOp`/`Migration` block and are seeded
                 // via `reconciled_ctor_scheme` / `reconciled_fn_scheme`, not this
                 // hand-curated table.
                 if module.name == "std.migrate" {

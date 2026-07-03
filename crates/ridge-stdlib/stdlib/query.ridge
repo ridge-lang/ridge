@@ -10,7 +10,7 @@
 -- module walks it back, either rendering it to a readable string (`debugShow`)
 -- or compiling it to parameterized SQL plus its bind values (`toSql`).
 
-import std.sql (Sql, sql, SqlValue, sqlInt, sqlText, sqlBool, sqlFloat)
+import std.sql (Sql, sql, SqlValue, sqlInt, sqlText, sqlBool, sqlFloat, sqlNull)
 import std.int as Int
 import std.map as Map
 
@@ -151,7 +151,12 @@ pub fn planList (rows: List (Map Text SqlValue)) -> QueryPlan =
 -- overwrites those columns with the incoming values (`ON CONFLICT … DO UPDATE`), an empty
 -- one leaves the existing row untouched (`DO NOTHING`). `MutUpdate` sets the given columns
 -- on the rows its predicate admits. `MutDelete` removes the rows its predicate admits.
-pub type MutationPlan = MutInsert Text (List (Map Text SqlValue)) (List Text) | MutUpsert Text (List (Map Text SqlValue)) (List Text) (List Text) | MutUpdate Text (Map Text SqlValue) QExpr | MutDelete Text QExpr
+-- `MutDeleteKeys table keyCols rows` removes the rows whose `keyCols` match one of `rows`
+-- — the key-driven delete a seed rollback needs, matching each stored row against the key
+-- columns of the rows it seeded, with the key values carried as binds exactly as an insert
+-- carries its row values, so no `QExpr` predicate is built and the statement stays
+-- injection-safe by construction.
+pub type MutationPlan = MutInsert Text (List (Map Text SqlValue)) (List Text) | MutUpsert Text (List (Map Text SqlValue)) (List Text) (List Text) | MutUpdate Text (Map Text SqlValue) QExpr | MutDelete Text QExpr | MutDeleteKeys Text (List Text) (List (Map Text SqlValue))
 
 -- Append rows to a table. One row for `insert`, many for a bulk insert. `identityCols`
 -- names the database-generated identity columns the rows omit, so a backend fills them in
@@ -174,6 +179,14 @@ pub fn planUpdate (table: Text) (changes: Map Text SqlValue) (pred: QExpr) -> Mu
 -- Remove every row of `table` the predicate admits.
 pub fn planDelete (table: Text) (pred: QExpr) -> MutationPlan =
     MutDelete table pred
+
+-- Remove the rows of `table` whose `keyCols` match one of `rows` — a delete keyed by
+-- value rather than by a predicate. Each row contributes its key-column values, matched
+-- as a tuple against the stored rows, so the plan removes exactly the rows a seed wrote
+-- and nothing else. The key values ride as binds (an insert-shaped `List (Map Text
+-- SqlValue)`), never interpolated. This is the reverse a reversible seed step runs.
+pub fn planDeleteKeys (table: Text) (keyCols: List Text) (rows: List (Map Text SqlValue)) -> MutationPlan =
+    MutDeleteKeys table keyCols rows
 
 -- ── Plan optimization ─────────────────────────────────────────────────────────
 --
@@ -488,6 +501,8 @@ fn renderMutation (plan: MutationPlan) -> { text: Text, binds: List SqlValue } =
         MutDelete table pred ->
             let w = mutationWhere pred 1
             { text = Text.join "" ["DELETE FROM ", mutationTarget table pred, w.text], binds = w.binds }
+        MutDeleteKeys table keyCols rows ->
+            renderDeleteKeys table keyCols rows
 
 -- The target-table clause of an update or delete. A predicate carrying a correlated
 -- `EXISTS` aliases the table `l`, so the subquery names the row being changed as
@@ -591,6 +606,69 @@ fn quotedColumns (cols: List Text) -> Text =
         []        -> ""
         c :: []   -> quoteIdent c
         c :: rest -> Text.join "" [quoteIdent c, ", ", quotedColumns rest]
+
+-- Render a keyed delete. The `WHERE` matches each stored row's key columns against the
+-- key values of every row to remove, so the statement deletes exactly the seeded rows by
+-- their keys; the values are collected left to right as binds, never interpolated. A
+-- single key column renders a plain scalar `IN` — `"id" IN ($1, $2)` — the same shape a
+-- captured `inList` compiles to, so Postgres infers each parameter's type from the column.
+-- A composite key renders a row-value `IN` — `("a", "b") IN (($1, $2), ($3, $4))`. (A
+-- single-element row constructor `("id") IN (($1))` would instead force row-comparison
+-- semantics, under which Postgres cannot infer a bare parameter's type.) An empty row list
+-- is a no-op with no statement.
+fn renderDeleteKeys (table: Text) (keyCols: List Text) (rows: List (Map Text SqlValue)) -> { text: Text, binds: List SqlValue } =
+    match rows
+        [] -> { text = "", binds = [] }
+        _  ->
+            match keyCols
+                col :: [] ->
+                    let vs = singleKeyVals col rows 1
+                    { text = Text.join "" ["DELETE FROM ", quoteIdent table, " WHERE ", quoteIdent col, " IN (", vs.text, ")"], binds = vs.binds }
+                _ ->
+                    let tuples = keyTuples keyCols rows 1
+                    { text = Text.join "" ["DELETE FROM ", quoteIdent table, " WHERE (", quotedColumns keyCols, ") IN (", tuples.text, ")"], binds = tuples.binds }
+
+-- The single-column key values as a flat `$N` list — `$1, $2, …` — for the scalar `IN`.
+fn singleKeyVals (col: Text) (rows: List (Map Text SqlValue)) (n: Int) -> { text: Text, binds: List SqlValue, next: Int } =
+    match rows
+        []          -> { text = "", binds = [], next = n }
+        row :: []   -> { text = placeholder n, binds = [keyValueOf col row], next = n + 1 }
+        row :: rest ->
+            let r = singleKeyVals col rest (n + 1)
+            { text = Text.join "" [placeholder n, ", ", r.text], binds = keyValueOf col row :: r.binds, next = r.next }
+
+-- One parenthesised key tuple per row, comma-separated, threading the `$N` counter — the
+-- right-hand side of the `IN`.
+fn keyTuples (keyCols: List Text) (rows: List (Map Text SqlValue)) (n: Int) -> { text: Text, binds: List SqlValue, next: Int } =
+    match rows
+        []          -> { text = "", binds = [], next = n }
+        row :: []   -> keyTuple keyCols row n
+        row :: rest ->
+            let t = keyTuple keyCols row n
+            let r = keyTuples keyCols rest t.next
+            { text = Text.join "" [t.text, ", ", r.text], binds = t.binds ++ r.binds, next = r.next }
+
+fn keyTuple (keyCols: List Text) (row: Map Text SqlValue) (n: Int) -> { text: Text, binds: List SqlValue, next: Int } =
+    let v = keyVals keyCols row n
+    { text = Text.join "" ["(", v.text, ")"], binds = v.binds, next = v.next }
+
+-- The key-column values of one row, in `keyCols` order — a placeholder each, the value
+-- looked up from the row and collected as a bind.
+fn keyVals (keyCols: List Text) (row: Map Text SqlValue) (n: Int) -> { text: Text, binds: List SqlValue, next: Int } =
+    match keyCols
+        []        -> { text = "", binds = [], next = n }
+        c :: []   -> { text = placeholder n, binds = [keyValueOf c row], next = n + 1 }
+        c :: rest ->
+            let r = keyVals rest row (n + 1)
+            { text = Text.join "" [placeholder n, ", ", r.text], binds = keyValueOf c row :: r.binds, next = r.next }
+
+-- The value a row carries for a key column. A seeded row always carries its key columns,
+-- so the lookup resolves; the SQL-NULL fallback keeps the function total for a row that
+-- somehow omits one, matching nothing rather than crashing.
+fn keyValueOf (col: Text) (row: Map Text SqlValue) -> SqlValue =
+    match Map.get col row
+        Some v -> v
+        None   -> sqlNull ()
 
 -- The `SET` assignments of an update — `"col" = $N`, comma-separated, binds left to right.
 fn renderSet (pairs: List (Text, SqlValue)) (n: Int) -> { text: Text, binds: List SqlValue, next: Int } =

@@ -452,3 +452,146 @@ fn generated_modules_compile_on_beam() {
     check_generated_module("mig", &mig_mod, "up", "0002_evolve");
     check_generated_module("snapv2", &snap_v2_mod, "model", "orders");
 }
+
+// A model declared child-before-parent on purpose: `orders` carries a foreign key to
+// `users` yet is listed first, and `tags` is independent. The diff must reorder the creates
+// so `users` precedes `orders` (a `CREATE TABLE` renders the reference inline, so the target
+// must already exist), while the independent `tags` keeps its declaration position.
+const RENDER_FK_ORDER_SRC: &str = r#"
+import std.schema (EntitySchema, DbBigInt, Identity, Cascade, mkColumn, withColumn, schema, generated, primaryKey, foreignKey, references, onDelete)
+import std.migrate as Migrate
+
+fn usersT () -> EntitySchema Unit =
+    schema "User" "users"
+      |> withColumn (mkColumn "id" "id" DbBigInt false |> generated Identity |> primaryKey)
+
+fn ordersT () -> EntitySchema Unit =
+    schema "Order" "orders"
+      |> withColumn (mkColumn "id" "id" DbBigInt false |> generated Identity |> primaryKey)
+      |> withColumn (mkColumn "user_id" "user_id" DbBigInt false |> foreignKey (references "users" "id" |> onDelete Cascade))
+
+fn tagsT () -> EntitySchema Unit =
+    schema "Tag" "tags"
+      |> withColumn (mkColumn "id" "id" DbBigInt false |> generated Identity |> primaryKey)
+
+fn emptyModel () -> List (EntitySchema Unit) = []
+fn nextModel () -> List (EntitySchema Unit) = [ ordersT (), usersT (), tagsT () ]
+
+pub fn fkDiffSrc () -> Text = Migrate.migrationToSource (Migrate.migration "0003_fk" (Migrate.diffSchemas (emptyModel ()) (nextModel ())))
+"#;
+
+#[test]
+fn fk_creates_are_topologically_ordered() {
+    if which::which("erlc").is_err() || which::which("erl").is_err() {
+        eprintln!("erl/erlc not on PATH — skipping fk_creates_are_topologically_ordered");
+        return;
+    }
+
+    let dir = tempfile::Builder::new()
+        .prefix("ridge-migrate-fk-order-e2e-")
+        .tempdir()
+        .expect("temp dir");
+    let cache = tempfile::Builder::new()
+        .prefix("ridge-migrate-fk-order-e2e-cache-")
+        .tempdir()
+        .expect("cache dir");
+    write_workspace(dir.path(), RENDER_FK_ORDER_SRC);
+    let (beam_dir, module) = compile(dir.path(), cache.path());
+
+    let fk_src = run_fun(&beam_dir, &module, "fkDiffSrc");
+
+    let users_at = fk_src
+        .find(r#"createSchema (schema "User" "users""#)
+        .unwrap_or_else(|| panic!("no users create in:\n{fk_src}"));
+    let orders_at = fk_src
+        .find(r#"createSchema (schema "Order" "orders""#)
+        .unwrap_or_else(|| panic!("no orders create in:\n{fk_src}"));
+    let tags_at = fk_src
+        .find(r#"createSchema (schema "Tag" "tags""#)
+        .unwrap_or_else(|| panic!("no tags create in:\n{fk_src}"));
+
+    // The referenced table is created before the table referencing it, even though it was
+    // declared second; the independent table keeps its trailing declaration position.
+    assert!(
+        users_at < orders_at,
+        "users must be created before orders:\n{fk_src}"
+    );
+    assert!(
+        orders_at < tags_at,
+        "independent tags must keep its declaration position:\n{fk_src}"
+    );
+}
+
+// A table `items` evolving so its non-unique indexes are reconciled: `sku` gains an index,
+// `kind` loses one, and a new `owner` column arrives already indexed. The diff must emit a
+// `createIndex` for `sku` and `owner`, a `dropIndex` for `kind`, and the index steps must fall
+// after the add-column and before nothing that drops the column.
+const RENDER_INDEX_DIFF_SRC: &str = r#"
+import std.schema (EntitySchema, DbBigInt, DbText, Identity, mkColumn, withColumn, schema, generated, primaryKey, indexed)
+import std.migrate as Migrate
+
+fn itemsV1 () -> EntitySchema Unit =
+    schema "Item" "items"
+      |> withColumn (mkColumn "id" "id" DbBigInt false |> generated Identity |> primaryKey)
+      |> withColumn (mkColumn "sku" "sku" DbText false)
+      |> withColumn (mkColumn "kind" "kind" DbText false |> indexed)
+
+fn itemsV2 () -> EntitySchema Unit =
+    schema "Item" "items"
+      |> withColumn (mkColumn "id" "id" DbBigInt false |> generated Identity |> primaryKey)
+      |> withColumn (mkColumn "sku" "sku" DbText false |> indexed)
+      |> withColumn (mkColumn "kind" "kind" DbText false)
+      |> withColumn (mkColumn "owner" "owner" DbText false |> indexed)
+
+fn modelV1 () -> List (EntitySchema Unit) = [ itemsV1 () ]
+fn modelV2 () -> List (EntitySchema Unit) = [ itemsV2 () ]
+
+pub fn idxDiffSrc () -> Text = Migrate.migrationToSource (Migrate.migration "0004_idx" (Migrate.diffSchemas (modelV1 ()) (modelV2 ())))
+"#;
+
+#[test]
+fn index_flag_flips_diff_to_create_and_drop_index() {
+    if which::which("erlc").is_err() || which::which("erl").is_err() {
+        eprintln!("erl/erlc not on PATH — skipping index_flag_flips_diff_to_create_and_drop_index");
+        return;
+    }
+
+    let dir = tempfile::Builder::new()
+        .prefix("ridge-migrate-idx-diff-e2e-")
+        .tempdir()
+        .expect("temp dir");
+    let cache = tempfile::Builder::new()
+        .prefix("ridge-migrate-idx-diff-e2e-cache-")
+        .tempdir()
+        .expect("cache dir");
+    write_workspace(dir.path(), RENDER_INDEX_DIFF_SRC);
+    let (beam_dir, module) = compile(dir.path(), cache.path());
+
+    let idx_src = run_fun(&beam_dir, &module, "idxDiffSrc");
+
+    // The new indexed column is added, then indexes are created for the column that turned on
+    // and the new one, and the index for the column that turned off is dropped — each named by
+    // the shared `<table>_<column>_idx` convention.
+    let add_owner = idx_src
+        .find(r#"addEntityColumn "items" (mkColumn "owner""#)
+        .unwrap_or_else(|| panic!("no owner add in:\n{idx_src}"));
+    let create_sku = idx_src
+        .find(r#"createIndex "items_sku_idx" "items" ["sku"]"#)
+        .unwrap_or_else(|| panic!("no sku index create in:\n{idx_src}"));
+    let create_owner = idx_src
+        .find(r#"createIndex "items_owner_idx" "items" ["owner"]"#)
+        .unwrap_or_else(|| panic!("no owner index create in:\n{idx_src}"));
+    let drop_kind = idx_src
+        .find(r#"dropIndex "items_kind_idx""#)
+        .unwrap_or_else(|| panic!("no kind index drop in:\n{idx_src}"));
+
+    // The new column is added before its index is created, and index creates precede the drop.
+    assert!(
+        add_owner < create_owner,
+        "owner must be added before its index is created:\n{idx_src}"
+    );
+    assert!(
+        create_sku < drop_kind && create_owner < drop_kind,
+        "index creates must precede the drop:\n{idx_src}"
+    );
+}

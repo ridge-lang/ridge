@@ -777,11 +777,12 @@ const BASELINE_EXPORTS: &[(&str, &[&str])] = &[
             "Cascade",
             "SetNull",
             "SetDefault",
-            // The opaque foreign-key reference and its builders.
+            // The opaque foreign-key reference, its builders, and its target-table reader.
             "ForeignKey",
             "references",
             "onDelete",
             "onUpdate",
+            "fkTable",
             // The opaque per-column schema, its low-level constructor, and the
             // per-column refinement steps.
             "ColumnSchema",
@@ -834,6 +835,7 @@ const BASELINE_EXPORTS: &[(&str, &[&str])] = &[
             "dropColumnDdl",
             "indexDdl",
             "dropIndexDdl",
+            "indexName",
             // The Ridge-source renderer: `columnToSource`/`schemaToSource` render a
             // descriptor back to the builder-chain source a snapshot or generated
             // migration is written as — the source dual of the DDL renderer.

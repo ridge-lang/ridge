@@ -68,7 +68,7 @@ import std.int as Int
 import std.float as Float
 import std.list (length, contains)
 import std.text as Text
-import std.schema (HasSchema, schemaOf, schema, eraseSchema, EntitySchema, withColumn, mkColumn, generated, primaryKey, DbBigInt, DbText, Identity)
+import std.schema (HasSchema, schemaOf, schema, eraseSchema, EntitySchema, withColumn, mkColumn, generated, primaryKey, indexed, foreignKey, references, DbBigInt, DbText, Identity)
 
 pub type User = { id: Int, age: Int, name: Text } deriving (Row)
 
@@ -2199,6 +2199,16 @@ fn pgTableCount (conn: Postgres) (name: Text) -> Int =
                 []     -> 0 - 8
                 c :: _ -> c.n
 
+-- Count the indexes matching a name in the catalog — 0 once an index has been dropped.
+fn pgIndexCount (conn: Postgres) (name: Text) -> Int =
+    let q: Result (List RawCount) Error = Raw.query conn "SELECT count(*) AS n FROM pg_indexes WHERE indexname = $1" [toSql name]
+    match q
+        Err _ -> 0 - 9
+        Ok rows ->
+            match rows
+                []     -> 0 - 8
+                c :: _ -> c.n
+
 -- A `runSql` CREATE runs verbatim and leaves a usable table: applying the migration then
 -- inserting a row succeeds (affected 1), which it could not if the CREATE had not run.
 pub fn db pgRunSqlApply () -> Int =
@@ -2246,6 +2256,73 @@ pub fn db pgRunSqlReversible () -> Int =
                     match Migrate.rollback conn migs 1
                         Err _ -> 0 - 3
                         Ok _  -> pgTableCount conn "ridge_mig_gadget3"
+
+-- The snapshot diff orders `CREATE TABLE`s so a referenced table precedes its referrer.
+-- `child` is declared before `parent` yet carries a foreign key to it, so the migration
+-- applies only because the create for `parent` is emitted first; a wrong order would make
+-- Postgres reject the child's inline `REFERENCES` (the target would not yet exist). The probe
+-- returns the catalog count for `child`, 1 once the create has run.
+fn fkTopoParent () -> EntitySchema Unit =
+    schema "Parent" "ridge_mig_parent"
+      |> withColumn (mkColumn "id" "id" DbBigInt false |> primaryKey)
+
+fn fkTopoChild () -> EntitySchema Unit =
+    schema "Child" "ridge_mig_child"
+      |> withColumn (mkColumn "id" "id" DbBigInt false |> primaryKey)
+      |> withColumn (mkColumn "parent_id" "parent_id" DbBigInt false |> foreignKey (references "ridge_mig_parent" "id"))
+
+fn fkTopoEmpty () -> List (EntitySchema Unit) = []
+fn fkTopoModel () -> List (EntitySchema Unit) = [ fkTopoChild (), fkTopoParent () ]
+
+pub fn db pgFkTopoApply () -> Int =
+    let migs = [ Migrate.migration "0013_fk_topo" (Migrate.diffSchemas (fkTopoEmpty ()) (fkTopoModel ())) ]
+    match connect (pgConfig ())
+        Err _ -> 0 - 1
+        Ok conn ->
+            let _ = Raw.exec conn "DROP TABLE IF EXISTS ridge_mig_child" []
+            let _ = Raw.exec conn "DROP TABLE IF EXISTS ridge_mig_parent" []
+            let _ = Raw.exec conn "DROP TABLE IF EXISTS _ridge_migrations" []
+            match Migrate.run conn migs
+                Err _ -> 0 - 2
+                Ok _  -> pgTableCount conn "ridge_mig_child"
+
+-- The column-level auto-diff reconciles non-unique indexes: a column whose `indexed` flag turns
+-- on gets a CREATE INDEX, one whose flag turns off a DROP INDEX. `v1` gives `kind` an index;
+-- the `v1 -> v2` diff adds an indexed `owner`, turns `sku`'s index on and `kind`'s off. After
+-- both migrations `ridge_mig_idx_sku_idx` exists and `ridge_mig_idx_kind_idx` is gone, so the
+-- created count minus the dropped count is 1.
+fn idxEmpty () -> List (EntitySchema Unit) = []
+
+fn idxV1 () -> EntitySchema Unit =
+    schema "Idx" "ridge_mig_idx"
+      |> withColumn (mkColumn "id" "id" DbBigInt false |> primaryKey)
+      |> withColumn (mkColumn "sku" "sku" DbText false)
+      |> withColumn (mkColumn "kind" "kind" DbText false |> indexed)
+
+fn idxV2 () -> EntitySchema Unit =
+    schema "Idx" "ridge_mig_idx"
+      |> withColumn (mkColumn "id" "id" DbBigInt false |> primaryKey)
+      |> withColumn (mkColumn "sku" "sku" DbText false |> indexed)
+      |> withColumn (mkColumn "kind" "kind" DbText false)
+      |> withColumn (mkColumn "owner" "owner" DbText false |> indexed)
+
+fn idxModelV1 () -> List (EntitySchema Unit) = [ idxV1 () ]
+fn idxModelV2 () -> List (EntitySchema Unit) = [ idxV2 () ]
+
+pub fn db pgIndexDiff () -> Int =
+    let migs = [ Migrate.migration "0014_idx_v1" (Migrate.diffSchemas (idxEmpty ()) (idxModelV1 ()))
+               , Migrate.migration "0015_idx_v2" (Migrate.diffSchemas (idxModelV1 ()) (idxModelV2 ())) ]
+    match connect (pgConfig ())
+        Err _ -> 0 - 1
+        Ok conn ->
+            let _ = Raw.exec conn "DROP TABLE IF EXISTS ridge_mig_idx" []
+            let _ = Raw.exec conn "DROP TABLE IF EXISTS _ridge_migrations" []
+            match Migrate.run conn migs
+                Err _ -> 0 - 2
+                Ok _  ->
+                    let created = pgIndexCount conn "ridge_mig_idx_sku_idx"
+                    let dropped = pgIndexCount conn "ridge_mig_idx_kind_idx"
+                    created - dropped
 
 -- Raw-SQL escape hatch against the live database. Each probe seeds the users table
 -- through `setup` (clearing and inserting ada/lin/max), then opens a fresh
@@ -2610,6 +2687,8 @@ fn postgres_adapter_reads_a_real_table() {
          io:format(\"pgRunSqlApply=~w~n\",[{module}:pgRunSqlApply()]), \
          io:format(\"pgRunSqlIrreversible=~w~n\",[{module}:pgRunSqlIrreversible()]), \
          io:format(\"pgRunSqlReversible=~w~n\",[{module}:pgRunSqlReversible()]), \
+         io:format(\"pgFkTopoApply=~w~n\",[{module}:pgFkTopoApply()]), \
+         io:format(\"pgIndexDiff=~w~n\",[{module}:pgIndexDiff()]), \
          io:format(\"rawAdults=~s~n\",[{module}:rawAdults()]), \
          io:format(\"rawFirstName=~s~n\",[{module}:rawFirstName()]), \
          io:format(\"rawBumpCount=~w~n\",[{module}:rawBumpCount()]), \
@@ -3073,6 +3152,14 @@ fn postgres_adapter_reads_a_real_table() {
         (
             "pgRunSqlReversible=0",
             "a reversibleMigration whose down is a runSql DROP reverses cleanly, so the table is gone from the catalog afterwards",
+        ),
+        (
+            "pgFkTopoApply=1",
+            "the snapshot diff orders creates topologically, so a child table declared before its parent still applies because the parent's create is emitted first",
+        ),
+        (
+            "pgIndexDiff=1",
+            "the column-level auto-diff turns an indexed flag on into a real CREATE INDEX and off into a real DROP INDEX",
         ),
         (
             "rawAdults=lin,max",

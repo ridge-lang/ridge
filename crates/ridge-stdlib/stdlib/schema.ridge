@@ -59,6 +59,10 @@ pub fn onDelete (action: FkAction) (fk: ForeignKey) -> ForeignKey =
 pub fn onUpdate (action: FkAction) (fk: ForeignKey) -> ForeignKey =
     ForeignKey { table = fk.table, column = fk.column, onDelete = fk.onDelete, onUpdate = action }
 
+-- The target table a foreign key points at. The snapshot diff reads it to order the
+-- `CREATE TABLE`s so a referenced table is created before the table that references it.
+pub fn fkTable (fk: ForeignKey) -> Text = fk.table
+
 -- ── Column schema ─────────────────────────────────────────────────────────────
 
 -- One column's schema: its record-field name, its SQL column name, the SQL type,

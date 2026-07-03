@@ -452,3 +452,72 @@ fn generated_modules_compile_on_beam() {
     check_generated_module("mig", &mig_mod, "up", "0002_evolve");
     check_generated_module("snapv2", &snap_v2_mod, "model", "orders");
 }
+
+// A model declared child-before-parent on purpose: `orders` carries a foreign key to
+// `users` yet is listed first, and `tags` is independent. The diff must reorder the creates
+// so `users` precedes `orders` (a `CREATE TABLE` renders the reference inline, so the target
+// must already exist), while the independent `tags` keeps its declaration position.
+const RENDER_FK_ORDER_SRC: &str = r#"
+import std.schema (EntitySchema, DbBigInt, Identity, Cascade, mkColumn, withColumn, schema, generated, primaryKey, foreignKey, references, onDelete)
+import std.migrate as Migrate
+
+fn usersT () -> EntitySchema Unit =
+    schema "User" "users"
+      |> withColumn (mkColumn "id" "id" DbBigInt false |> generated Identity |> primaryKey)
+
+fn ordersT () -> EntitySchema Unit =
+    schema "Order" "orders"
+      |> withColumn (mkColumn "id" "id" DbBigInt false |> generated Identity |> primaryKey)
+      |> withColumn (mkColumn "user_id" "user_id" DbBigInt false |> foreignKey (references "users" "id" |> onDelete Cascade))
+
+fn tagsT () -> EntitySchema Unit =
+    schema "Tag" "tags"
+      |> withColumn (mkColumn "id" "id" DbBigInt false |> generated Identity |> primaryKey)
+
+fn emptyModel () -> List (EntitySchema Unit) = []
+fn nextModel () -> List (EntitySchema Unit) = [ ordersT (), usersT (), tagsT () ]
+
+pub fn fkDiffSrc () -> Text = Migrate.migrationToSource (Migrate.migration "0003_fk" (Migrate.diffSchemas (emptyModel ()) (nextModel ())))
+"#;
+
+#[test]
+fn fk_creates_are_topologically_ordered() {
+    if which::which("erlc").is_err() || which::which("erl").is_err() {
+        eprintln!("erl/erlc not on PATH — skipping fk_creates_are_topologically_ordered");
+        return;
+    }
+
+    let dir = tempfile::Builder::new()
+        .prefix("ridge-migrate-fk-order-e2e-")
+        .tempdir()
+        .expect("temp dir");
+    let cache = tempfile::Builder::new()
+        .prefix("ridge-migrate-fk-order-e2e-cache-")
+        .tempdir()
+        .expect("cache dir");
+    write_workspace(dir.path(), RENDER_FK_ORDER_SRC);
+    let (beam_dir, module) = compile(dir.path(), cache.path());
+
+    let fk_src = run_fun(&beam_dir, &module, "fkDiffSrc");
+
+    let users_at = fk_src
+        .find(r#"createSchema (schema "User" "users""#)
+        .unwrap_or_else(|| panic!("no users create in:\n{fk_src}"));
+    let orders_at = fk_src
+        .find(r#"createSchema (schema "Order" "orders""#)
+        .unwrap_or_else(|| panic!("no orders create in:\n{fk_src}"));
+    let tags_at = fk_src
+        .find(r#"createSchema (schema "Tag" "tags""#)
+        .unwrap_or_else(|| panic!("no tags create in:\n{fk_src}"));
+
+    // The referenced table is created before the table referencing it, even though it was
+    // declared second; the independent table keeps its trailing declaration position.
+    assert!(
+        users_at < orders_at,
+        "users must be created before orders:\n{fk_src}"
+    );
+    assert!(
+        orders_at < tags_at,
+        "independent tags must keep its declaration position:\n{fk_src}"
+    );
+}

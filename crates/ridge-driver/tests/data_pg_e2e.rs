@@ -68,7 +68,7 @@ import std.int as Int
 import std.float as Float
 import std.list (length, contains)
 import std.text as Text
-import std.schema (HasSchema, schemaOf, schema, eraseSchema, EntitySchema, withColumn, mkColumn, generated, primaryKey, DbBigInt, DbText, Identity)
+import std.schema (HasSchema, schemaOf, schema, eraseSchema, EntitySchema, withColumn, mkColumn, generated, primaryKey, foreignKey, references, DbBigInt, DbText, Identity)
 
 pub type User = { id: Int, age: Int, name: Text } deriving (Row)
 
@@ -2247,6 +2247,35 @@ pub fn db pgRunSqlReversible () -> Int =
                         Err _ -> 0 - 3
                         Ok _  -> pgTableCount conn "ridge_mig_gadget3"
 
+-- The snapshot diff orders `CREATE TABLE`s so a referenced table precedes its referrer.
+-- `child` is declared before `parent` yet carries a foreign key to it, so the migration
+-- applies only because the create for `parent` is emitted first; a wrong order would make
+-- Postgres reject the child's inline `REFERENCES` (the target would not yet exist). The probe
+-- returns the catalog count for `child`, 1 once the create has run.
+fn fkTopoParent () -> EntitySchema Unit =
+    schema "Parent" "ridge_mig_parent"
+      |> withColumn (mkColumn "id" "id" DbBigInt false |> primaryKey)
+
+fn fkTopoChild () -> EntitySchema Unit =
+    schema "Child" "ridge_mig_child"
+      |> withColumn (mkColumn "id" "id" DbBigInt false |> primaryKey)
+      |> withColumn (mkColumn "parent_id" "parent_id" DbBigInt false |> foreignKey (references "ridge_mig_parent" "id"))
+
+fn fkTopoEmpty () -> List (EntitySchema Unit) = []
+fn fkTopoModel () -> List (EntitySchema Unit) = [ fkTopoChild (), fkTopoParent () ]
+
+pub fn db pgFkTopoApply () -> Int =
+    let migs = [ Migrate.migration "0013_fk_topo" (Migrate.diffSchemas (fkTopoEmpty ()) (fkTopoModel ())) ]
+    match connect (pgConfig ())
+        Err _ -> 0 - 1
+        Ok conn ->
+            let _ = Raw.exec conn "DROP TABLE IF EXISTS ridge_mig_child" []
+            let _ = Raw.exec conn "DROP TABLE IF EXISTS ridge_mig_parent" []
+            let _ = Raw.exec conn "DROP TABLE IF EXISTS _ridge_migrations" []
+            match Migrate.run conn migs
+                Err _ -> 0 - 2
+                Ok _  -> pgTableCount conn "ridge_mig_child"
+
 -- Raw-SQL escape hatch against the live database. Each probe seeds the users table
 -- through `setup` (clearing and inserting ada/lin/max), then opens a fresh
 -- connection and runs raw SQL over `ridge_pg_users`: a parameterised SELECT decoded
@@ -2610,6 +2639,7 @@ fn postgres_adapter_reads_a_real_table() {
          io:format(\"pgRunSqlApply=~w~n\",[{module}:pgRunSqlApply()]), \
          io:format(\"pgRunSqlIrreversible=~w~n\",[{module}:pgRunSqlIrreversible()]), \
          io:format(\"pgRunSqlReversible=~w~n\",[{module}:pgRunSqlReversible()]), \
+         io:format(\"pgFkTopoApply=~w~n\",[{module}:pgFkTopoApply()]), \
          io:format(\"rawAdults=~s~n\",[{module}:rawAdults()]), \
          io:format(\"rawFirstName=~s~n\",[{module}:rawFirstName()]), \
          io:format(\"rawBumpCount=~w~n\",[{module}:rawBumpCount()]), \
@@ -3073,6 +3103,10 @@ fn postgres_adapter_reads_a_real_table() {
         (
             "pgRunSqlReversible=0",
             "a reversibleMigration whose down is a runSql DROP reverses cleanly, so the table is gone from the catalog afterwards",
+        ),
+        (
+            "pgFkTopoApply=1",
+            "the snapshot diff orders creates topologically, so a child table declared before its parent still applies because the parent's create is emitted first",
         ),
         (
             "rawAdults=lin,max",

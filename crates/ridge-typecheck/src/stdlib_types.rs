@@ -2354,6 +2354,9 @@ fn reconciled_schema_fn_scheme(
             poly1(vec![col_e()], boolean())
         }
         "colForeignKey" => poly1(vec![col_e()], option(fk_ty())),
+        // fkTable : ForeignKey -> Text — the reference's target table, read by the snapshot
+        // diff to order `CREATE TABLE`s topologically (a referenced table before its referrer).
+        "fkTable" => mono(vec![fk_ty()], text()),
         "colCheck" => poly1(vec![col_e()], option(qexpr())),
         // Entity schema builders and read accessors (∀e. … over EntitySchema e).
         "schema" => poly1(vec![text(), text()], ent_e()),

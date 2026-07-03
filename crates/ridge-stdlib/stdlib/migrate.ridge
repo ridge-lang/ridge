@@ -48,7 +48,7 @@ import std.data as Db
 -- drops its phantom entity so a non-parametric `MigrationOp` can hold it, and
 -- `schemaTable` names the table a drop targets. `colPrimaryKey` reads which columns a
 -- seed keys its idempotent upsert on.
-import std.schema (EntitySchema, ColumnSchema, eraseSchema, schemaTable, schemaColumns, colColumn, colPrimaryKey, columnAltered, schemaToSource, columnToSource)
+import std.schema (EntitySchema, ColumnSchema, eraseSchema, schemaTable, schemaColumns, colColumn, colPrimaryKey, colForeignKey, fkTable, columnAltered, schemaToSource, columnToSource)
 -- The write-side plan builders a data step runs through the `Adapter`'s `runMutation`:
 -- `planUpsert` for the idempotent seed, `planDeleteKeys` for its keyed reverse.
 import std.query (planUpsert, planDeleteKeys)
@@ -286,22 +286,110 @@ pub fn reversibleMigration (name: Text) (steps: List MigrationOp) (down: List Mi
 -- constraints), a column only in the old one is dropped, and a column in both whose SQL
 -- type, nullability, or default changed is altered (`ALTER TABLE … ALTER COLUMN`, only the
 -- facets that changed). Within a table the column steps come out adds, then alters, then
--- drops; across tables the steps are ordered creates, then column changes, then drops —
--- creates and column changes in `next` order, drops in `prev` order. What is still left to
+-- drops; across tables the steps are ordered creates, then column changes, then drops.
+-- Creates are ordered so a table a foreign key points at is created before the table that
+-- references it — a topological sort over the new tables, with independent tables kept in
+-- `next` order; column changes come in `next` order, drops in `prev` order. What is still left to
 -- a hand-written step: a change to a column's constraints (primary key, uniqueness, foreign
 -- key, index, check) and a serial/identity transition, neither of which the plain column
 -- alter expresses.
 pub fn diffSchemas (prev: List (EntitySchema Unit)) (next: List (EntitySchema Unit)) -> List MigrationOp =
     appendOps (createdTables prev next) (appendOps (alteredTables prev next) (droppedTables prev next))
 
--- The tables to create: each schema in `next` whose table name is absent from `prev`,
--- as an entity-driven `CreateEntity` step, in `next` declaration order.
+-- The tables to create: each schema in `next` whose table name is absent from `prev`, as an
+-- entity-driven `CreateEntity` step. The steps are ordered so a table a foreign key points at
+-- is created before the table that references it — `CREATE TABLE` renders the reference inline,
+-- so Postgres needs the target to already exist. References to tables that already exist do not
+-- constrain the order; independent new tables keep `next` declaration order. A reference cycle
+-- among new tables, which no single create order satisfies, falls back to declaration order for
+-- the tables still tangled — their mutual keys need a hand-written split.
 fn createdTables (prev: List (EntitySchema Unit)) (next: List (EntitySchema Unit)) -> List MigrationOp =
+    createEntities (orderByForeignKey (newSchemas prev next))
+
+-- The schemas to create: those in `next` whose table is absent from `prev`, in `next` order.
+fn newSchemas (prev: List (EntitySchema Unit)) (next: List (EntitySchema Unit)) -> List (EntitySchema Unit) =
     match next
         []        -> []
         s :: rest ->
-            if containsTable prev (schemaTable s) then createdTables prev rest
-            else CreateEntity s :: createdTables prev rest
+            if containsTable prev (schemaTable s) then newSchemas prev rest
+            else s :: newSchemas prev rest
+
+-- Wrap each schema as a `CreateEntity` step, preserving the order it is given in.
+fn createEntities (schemas: List (EntitySchema Unit)) -> List MigrationOp =
+    match schemas
+        []        -> []
+        s :: rest -> CreateEntity s :: createEntities rest
+
+-- Order the to-create schemas so each table's in-set foreign-key targets precede it — a
+-- Kahn-style stable topological sort. It repeatedly takes the first schema whose in-set targets
+-- are all already placed; if none qualifies (a reference cycle), it takes the head in
+-- declaration order to keep progress and stay total.
+fn orderByForeignKey (schemas: List (EntitySchema Unit)) -> List (EntitySchema Unit) =
+    emitReady schemas (tableNamesOf schemas) []
+
+fn emitReady (remaining: List (EntitySchema Unit)) (createNames: List Text) (placed: List Text) -> List (EntitySchema Unit) =
+    match remaining
+        []        -> []
+        h :: rest ->
+            match pickReady remaining createNames placed
+                Some s -> s :: emitReady (removeSchema remaining (schemaTable s)) createNames (schemaTable s :: placed)
+                None   -> h :: emitReady rest createNames (schemaTable h :: placed)
+
+-- The first schema whose in-set foreign-key targets are all placed, if any qualifies.
+fn pickReady (schemas: List (EntitySchema Unit)) (createNames: List Text) (placed: List Text) -> Option (EntitySchema Unit) =
+    match schemas
+        []        -> None
+        s :: rest ->
+            if allIn (foreignKeyTargetsInSet s createNames) placed then Some s
+            else pickReady rest createNames placed
+
+-- The tables this schema references that are themselves being created — its ordering
+-- dependencies. A reference to a table that already exists, or a self-reference the create
+-- statement satisfies inline, does not constrain the order.
+fn foreignKeyTargetsInSet (s: EntitySchema Unit) (createNames: List Text) -> List Text =
+    keepTargets (columnTargets (schemaColumns s)) createNames (schemaTable s)
+
+-- The foreign-key target table of each column that carries one, in column order.
+fn columnTargets (cols: List (ColumnSchema Unit)) -> List Text =
+    match cols
+        []        -> []
+        c :: rest ->
+            match colForeignKey c
+                None    -> columnTargets rest
+                Some fk -> fkTable fk :: columnTargets rest
+
+-- Keep the targets that name another table in the create set, dropping the self-table.
+fn keepTargets (targets: List Text) (createNames: List Text) (selfTable: Text) -> List Text =
+    match targets
+        []        -> []
+        t :: rest ->
+            if t == selfTable then keepTargets rest createNames selfTable
+            else if listContainsText createNames t then t :: keepTargets rest createNames selfTable
+            else keepTargets rest createNames selfTable
+
+-- Whether every name in the first list is present in the second.
+fn allIn (names: List Text) (pool: List Text) -> Bool =
+    match names
+        []        -> true
+        n :: rest -> if listContainsText pool n then allIn rest pool else false
+
+-- Remove the first schema whose table matches the name.
+fn removeSchema (schemas: List (EntitySchema Unit)) (table: Text) -> List (EntitySchema Unit) =
+    match schemas
+        []        -> []
+        s :: rest -> if schemaTable s == table then rest else s :: removeSchema rest table
+
+-- The table name of each schema, in order.
+fn tableNamesOf (schemas: List (EntitySchema Unit)) -> List Text =
+    match schemas
+        []        -> []
+        s :: rest -> schemaTable s :: tableNamesOf rest
+
+-- Whether a text list holds the given value.
+fn listContainsText (xs: List Text) (x: Text) -> Bool =
+    match xs
+        []        -> false
+        h :: rest -> if h == x then true else listContainsText rest x
 
 -- The tables to drop: each schema in `prev` whose table name is absent from `next`, as
 -- a `DropTable` step, in `prev` declaration order.

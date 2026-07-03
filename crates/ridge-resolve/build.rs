@@ -777,11 +777,12 @@ const BASELINE_EXPORTS: &[(&str, &[&str])] = &[
             "Cascade",
             "SetNull",
             "SetDefault",
-            // The opaque foreign-key reference and its builders.
+            // The opaque foreign-key reference, its builders, and its target-table reader.
             "ForeignKey",
             "references",
             "onDelete",
             "onUpdate",
+            "fkTable",
             // The opaque per-column schema, its low-level constructor, and the
             // per-column refinement steps.
             "ColumnSchema",

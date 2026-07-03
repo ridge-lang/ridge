@@ -882,6 +882,9 @@ const BASELINE_EXPORTS: &[(&str, &[&str])] = &[
             // `seedRows` from hand-built rows (keyed on the given columns).
             "seed",
             "seedRows",
+            // The raw-SQL escape hatch: a statement run verbatim, for a schema change the
+            // typed DSL cannot express.
+            "runSql",
             "Migration",
             "migration",
             "reversibleMigration",

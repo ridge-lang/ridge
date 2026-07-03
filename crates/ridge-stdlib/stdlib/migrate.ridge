@@ -106,8 +106,11 @@ pub fn unique (c: Column) -> Column =
 -- seam — so user code names the type but never the variants. `SeedRows table keyCols
 -- rows` writes reference rows as an idempotent upsert keyed on `keyCols`; `UnseedRows`
 -- is its reverse, deleting those rows by the same keys, so the two are mutual inverses
--- and a seed step auto-reverses like a create.
-pub type MigrationOp = CreateTable Text (List Column) | DropTable Text | AddColumn Text Column | DropColumn Text Text | CreateIndex Text Text (List Text) Bool | CreateEntity (EntitySchema Unit) | AddEntityColumn Text (ColumnSchema Unit) | AlterColumn Text (ColumnSchema Unit) (ColumnSchema Unit) | DropIndex Text | SeedRows Text (List Text) (List (Map Text SqlValue)) | UnseedRows Text (List Text) (List (Map Text SqlValue))
+-- and a seed step auto-reverses like a create. `RunSql sql` runs a raw SQL statement
+-- verbatim through the `rawExec` seam — the escape hatch for what the typed DSL cannot
+-- express — and, like a lossy drop, has no derivable inverse, so a migration that uses it
+-- spells its reverse out with `reversibleMigration`.
+pub type MigrationOp = CreateTable Text (List Column) | DropTable Text | AddColumn Text Column | DropColumn Text Text | CreateIndex Text Text (List Text) Bool | CreateEntity (EntitySchema Unit) | AddEntityColumn Text (ColumnSchema Unit) | AlterColumn Text (ColumnSchema Unit) (ColumnSchema Unit) | DropIndex Text | SeedRows Text (List Text) (List (Map Text SqlValue)) | UnseedRows Text (List Text) (List (Map Text SqlValue)) | RunSql Text
 
 -- Create a table with the given columns.
 pub fn createTable (table: Text) (cols: List Column) -> MigrationOp =
@@ -199,6 +202,18 @@ pub fn seed (entities: List e) -> MigrationOp where Row e, HasSchema e =
 -- the idempotent upsert and its reverse, exactly as `seed`'s primary key does.
 pub fn seedRows (table: Text) (keyCols: List Text) (rows: List (Map Text SqlValue)) -> MigrationOp =
     SeedRows table keyCols rows
+
+-- Run a raw SQL statement as a migration step — the escape hatch for a schema change the
+-- typed DSL cannot express: a vendor extension, a trigger, a hand-tuned backfill. The SQL
+-- runs verbatim through the same `rawExec` seam `std.raw` uses, so it lands on Postgres and
+-- reports a clear error on the in-memory adapter. Raw SQL has no derivable reverse, so a
+-- migration that uses `runSql` gives its `down` explicitly with `reversibleMigration`,
+-- putting the reverse statement there — the same shape as EF's `Up`/`Down` `Sql` calls:
+--   reversibleMigration "0007_uuid_ext"
+--     [ runSql "CREATE EXTENSION IF NOT EXISTS \"uuid-ossp\"" ]
+--     [ runSql "DROP EXTENSION IF EXISTS \"uuid-ossp\"" ]
+pub fn runSql (sql: Text) -> MigrationOp =
+    RunSql sql
 
 -- A phantom witness that pins the seed's entity type from the rows given, so `schemaOf`
 -- selects the descriptor by type without a value to probe (the list may be empty).
@@ -411,6 +426,7 @@ fn runStep (conn: a) (op: MigrationOp) -> Result Unit Error where Adapter a =
             match rows
                 [] -> Ok ()
                 _  -> resultUnit (runMutation conn (planDeleteKeys table keyCols rows))
+        RunSql sql -> resultUnit (rawExec conn sql [])
 
 -- Run a migration's steps in order, stopping at the first failure.
 fn runSteps (conn: a) (steps: List MigrationOp) -> Result Unit Error where Adapter a =
@@ -546,6 +562,7 @@ fn invert (op: MigrationOp) -> Result MigrationOp Error =
         DropTable table             -> Err (mkError "migrate.irreversible" (irreversibleMessage "dropTable" table))
         DropColumn table col        -> Err (mkError "migrate.irreversible" (irreversibleMessage "dropColumn" (Text.join "" [table, ".", col])))
         DropIndex name              -> Err (mkError "migrate.irreversible" (irreversibleMessage "dropIndex" name))
+        RunSql _                    -> Err (mkError "migrate.irreversible" (irreversibleMessage "runSql" "a raw statement"))
 
 -- The message an irreversible-step `Error` reports: the verb that has no derivable
 -- inverse and the table (or table.column, or index name) it acted on.
@@ -710,6 +727,7 @@ fn opToSource (op: MigrationOp) -> Text =
         DropIndex name                   -> Text.join "" ["dropIndex ", sourceStr name]
         SeedRows table _ _               -> seedStepSourceUnsupported table
         UnseedRows table _ _             -> seedStepSourceUnsupported table
+        RunSql sql                       -> Text.join "" ["runSql ", sourceStr sql]
 
 -- A seed step has no generated-source form: the snapshot diff never emits one (seeds are
 -- authored by hand, not derived from a model), so rendering a migration back to source

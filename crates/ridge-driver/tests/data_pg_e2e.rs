@@ -2179,6 +2179,74 @@ pub fn db pgSeedRollback () -> Int =
                             Ok _  -> pgCountLabels conn
                     else 0 - 4
 
+-- ── runSql migration op against the live database ─────────────────────────────
+--
+-- The raw-SQL escape hatch as a migration step. On the schemaless in-memory store a
+-- `runSql` step reports `raw.unsupported` (proven in the mem migrate e2e); here it runs
+-- for real, so these probes exercise the half that only a SQL backend can: a `runSql`
+-- CREATE lands a usable table, a plain `runSql` migration is irreversible (raw SQL has no
+-- derivable inverse), and a `reversibleMigration` whose `down` is a `runSql` DROP reverses
+-- cleanly. Each probe drops its own migration state first, for the shared-`_ridge_migrations`
+-- reason spelled out on `pgSeedRollback` above.
+
+-- Count the tables matching a name in the catalog — 0 once a table has been dropped.
+fn pgTableCount (conn: Postgres) (name: Text) -> Int =
+    let q: Result (List RawCount) Error = Raw.query conn "SELECT count(*) AS n FROM information_schema.tables WHERE table_name = $1" [toSql name]
+    match q
+        Err _ -> 0 - 9
+        Ok rows ->
+            match rows
+                []     -> 0 - 8
+                c :: _ -> c.n
+
+-- A `runSql` CREATE runs verbatim and leaves a usable table: applying the migration then
+-- inserting a row succeeds (affected 1), which it could not if the CREATE had not run.
+pub fn db pgRunSqlApply () -> Int =
+    let migs = [ Migrate.migration "0010_gadget" [ Migrate.runSql "CREATE TABLE ridge_mig_gadget (id bigint PRIMARY KEY, label text)" ] ]
+    match connect (pgConfig ())
+        Err _ -> 0 - 1
+        Ok conn ->
+            let _ = Raw.exec conn "DROP TABLE IF EXISTS _ridge_migrations" []
+            let _ = Raw.exec conn "DROP TABLE IF EXISTS ridge_mig_gadget" []
+            match Migrate.run conn migs
+                Err _ -> 0 - 2
+                Ok _  ->
+                    match Raw.exec conn "INSERT INTO ridge_mig_gadget (id, label) VALUES (1, 'alpha')" []
+                        Err _ -> 0 - 3
+                        Ok n  -> n
+
+-- A plain `migration` whose step is a `runSql` has no derivable reverse, so rolling it
+-- back fails with `migrate.irreversible` — the same contract a lossy `dropTable` reports.
+pub fn db pgRunSqlIrreversible () -> Int =
+    let migs = [ Migrate.migration "0011_gadget2" [ Migrate.runSql "CREATE TABLE ridge_mig_gadget2 (id bigint PRIMARY KEY)" ] ]
+    match connect (pgConfig ())
+        Err _ -> 0 - 1
+        Ok conn ->
+            let _ = Raw.exec conn "DROP TABLE IF EXISTS _ridge_migrations" []
+            let _ = Raw.exec conn "DROP TABLE IF EXISTS ridge_mig_gadget2" []
+            match Migrate.run conn migs
+                Err _ -> 0 - 2
+                Ok _  ->
+                    match Migrate.rollback conn migs 1
+                        Err e -> if e.code == "migrate.irreversible" then 1 else 0 - 3
+                        Ok _  -> 0 - 4
+
+-- A `reversibleMigration` whose `down` is a `runSql` DROP reverses cleanly: after rollback
+-- the table is gone, so the catalog count for it is 0 — the `Up`/`Down` `Sql` pattern.
+pub fn db pgRunSqlReversible () -> Int =
+    let migs = [ Migrate.reversibleMigration "0012_gadget3" [ Migrate.runSql "CREATE TABLE ridge_mig_gadget3 (id bigint PRIMARY KEY)" ] [ Migrate.runSql "DROP TABLE ridge_mig_gadget3" ] ]
+    match connect (pgConfig ())
+        Err _ -> 0 - 1
+        Ok conn ->
+            let _ = Raw.exec conn "DROP TABLE IF EXISTS _ridge_migrations" []
+            let _ = Raw.exec conn "DROP TABLE IF EXISTS ridge_mig_gadget3" []
+            match Migrate.run conn migs
+                Err _ -> 0 - 2
+                Ok _  ->
+                    match Migrate.rollback conn migs 1
+                        Err _ -> 0 - 3
+                        Ok _  -> pgTableCount conn "ridge_mig_gadget3"
+
 -- Raw-SQL escape hatch against the live database. Each probe seeds the users table
 -- through `setup` (clearing and inserting ada/lin/max), then opens a fresh
 -- connection and runs raw SQL over `ridge_pg_users`: a parameterised SELECT decoded
@@ -2539,6 +2607,9 @@ fn postgres_adapter_reads_a_real_table() {
          io:format(\"pgDiffAddedColumn=~w~n\",[{module}:pgDiffAddedColumn()]), \
          io:format(\"pgDiffAlteredColumn=~w~n\",[{module}:pgDiffAlteredColumn()]), \
          io:format(\"pgSeedRollback=~w~n\",[{module}:pgSeedRollback()]), \
+         io:format(\"pgRunSqlApply=~w~n\",[{module}:pgRunSqlApply()]), \
+         io:format(\"pgRunSqlIrreversible=~w~n\",[{module}:pgRunSqlIrreversible()]), \
+         io:format(\"pgRunSqlReversible=~w~n\",[{module}:pgRunSqlReversible()]), \
          io:format(\"rawAdults=~s~n\",[{module}:rawAdults()]), \
          io:format(\"rawFirstName=~s~n\",[{module}:rawFirstName()]), \
          io:format(\"rawBumpCount=~w~n\",[{module}:rawBumpCount()]), \
@@ -2990,6 +3061,18 @@ fn postgres_adapter_reads_a_real_table() {
         (
             "pgSeedRollback=0",
             "a seed step runs a real INSERT ... ON CONFLICT DO UPDATE (two rows), and rolling it back runs a real keyed DELETE that removes exactly them",
+        ),
+        (
+            "pgRunSqlApply=1",
+            "a runSql CREATE runs verbatim against the real database, leaving a table a follow-up INSERT lands one row into",
+        ),
+        (
+            "pgRunSqlIrreversible=1",
+            "a plain runSql migration has no derivable reverse, so rolling it back fails with migrate.irreversible",
+        ),
+        (
+            "pgRunSqlReversible=0",
+            "a reversibleMigration whose down is a runSql DROP reverses cleanly, so the table is gone from the catalog afterwards",
         ),
         (
             "rawAdults=lin,max",

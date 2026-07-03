@@ -592,10 +592,13 @@ fn indexDdlsOf (table: Text) (cols: List (ColumnSchema e)) -> List Text =
     match cols
         []        -> []
         c :: rest ->
-            if c.indexed then indexDdl (idxName table c.column) table [c.column] false :: indexDdlsOf table rest
+            if c.indexed then indexDdl (indexName table c.column) table [c.column] false :: indexDdlsOf table rest
             else indexDdlsOf table rest
 
-fn idxName (table: Text) (col: Text) -> Text =
+-- The conventional name of a column's non-unique index, `<table>_<column>_idx`. The single
+-- source of the naming, shared by the entity-driven create (`schemaIndexDdls`) and the
+-- snapshot diff, so a generated `DROP INDEX` names the same object the create made.
+pub fn indexName (table: Text) (col: Text) -> Text =
     Text.join "" [table, "_", col, "_idx"]
 
 fn uniqueKw (unique: Bool) -> Text =

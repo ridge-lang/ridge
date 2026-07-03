@@ -48,7 +48,7 @@ import std.data as Db
 -- drops its phantom entity so a non-parametric `MigrationOp` can hold it, and
 -- `schemaTable` names the table a drop targets. `colPrimaryKey` reads which columns a
 -- seed keys its idempotent upsert on.
-import std.schema (EntitySchema, ColumnSchema, eraseSchema, schemaTable, schemaColumns, colColumn, colPrimaryKey, colForeignKey, fkTable, columnAltered, schemaToSource, columnToSource)
+import std.schema (EntitySchema, ColumnSchema, eraseSchema, schemaTable, schemaColumns, colColumn, colIndexed, colPrimaryKey, colForeignKey, fkTable, indexName, columnAltered, schemaToSource, columnToSource)
 -- The write-side plan builders a data step runs through the `Adapter`'s `runMutation`:
 -- `planUpsert` for the idempotent seed, `planDeleteKeys` for its keyed reverse.
 import std.query (planUpsert, planDeleteKeys)
@@ -285,14 +285,16 @@ pub fn reversibleMigration (name: Text) (steps: List MigrationOp) (down: List Mi
 -- added (`ALTER TABLE … ADD COLUMN`, keeping the descriptor's type, default, and
 -- constraints), a column only in the old one is dropped, and a column in both whose SQL
 -- type, nullability, or default changed is altered (`ALTER TABLE … ALTER COLUMN`, only the
--- facets that changed). Within a table the column steps come out adds, then alters, then
--- drops; across tables the steps are ordered creates, then column changes, then drops.
--- Creates are ordered so a table a foreign key points at is created before the table that
--- references it — a topological sort over the new tables, with independent tables kept in
--- `next` order; column changes come in `next` order, drops in `prev` order. What is still left to
--- a hand-written step: a change to a column's constraints (primary key, uniqueness, foreign
--- key, index, check) and a serial/identity transition, neither of which the plain column
--- alter expresses.
+-- facets that changed). A column whose non-unique `indexed` flag turned on gets a
+-- `CREATE INDEX` (a newly-added indexed column too), and one whose flag turned off a
+-- `DROP INDEX`. Within a table the steps come out adds, then alters, then index creates and
+-- drops, then column drops; across tables the steps are ordered creates, then column changes,
+-- then drops. Creates are ordered so a table a foreign key points at is created before the
+-- table that references it — a topological sort over the new tables, with independent tables
+-- kept in `next` order; column changes come in `next` order, drops in `prev` order. What is
+-- still left to a hand-written step: a change to a column's other constraints (primary key,
+-- uniqueness, foreign key, check) and a serial/identity transition, neither of which the
+-- plain column alter expresses.
 pub fn diffSchemas (prev: List (EntitySchema Unit)) (next: List (EntitySchema Unit)) -> List MigrationOp =
     appendOps (createdTables prev next) (appendOps (alteredTables prev next) (droppedTables prev next))
 
@@ -418,13 +420,21 @@ fn findTable (schemas: List (EntitySchema Unit)) (table: Text) -> Option (Entity
         []        -> None
         s :: rest -> if schemaTable s == table then Some s else findTable rest table
 
--- Reconcile one table's columns between its old and new schema: the columns to add, then
--- the columns to alter, then the columns to drop, all targeting the (shared) table name.
+-- Reconcile one table's columns between its old and new schema: the columns to add, then the
+-- columns to alter, then the indexes to create and to drop, then the columns to drop — all
+-- targeting the (shared) table name. Index steps come after the column they cover exists (a
+-- create follows the add-column that introduced it) and before the column drops (a dropped
+-- column cascades its own index).
 fn columnDiff (old: EntitySchema Unit) (new: EntitySchema Unit) -> List MigrationOp =
     let table = schemaTable new
     let oldCols = schemaColumns old
     let newCols = schemaColumns new
-    appendOps (addedColumns table oldCols newCols) (appendOps (alteredColumns table oldCols newCols) (droppedColumns table oldCols newCols))
+    let adds = addedColumns table oldCols newCols
+    let alters = alteredColumns table oldCols newCols
+    let indexCreates = createdIndexes table oldCols newCols
+    let indexDrops = droppedIndexes table oldCols newCols
+    let drops = droppedColumns table oldCols newCols
+    appendOps adds (appendOps alters (appendOps indexCreates (appendOps indexDrops drops)))
 
 -- The columns to add: each column in `newCols` whose SQL name is absent from `oldCols`,
 -- as an `AddEntityColumn` step carrying the full descriptor, in new-declaration order.
@@ -463,6 +473,50 @@ fn droppedColumns (table: Text) (oldCols: List (ColumnSchema Unit)) (newCols: Li
         c :: rest ->
             if containsColumn newCols (colColumn c) then droppedColumns table rest newCols
             else DropColumn table (colColumn c) :: droppedColumns table rest newCols
+
+-- The indexes to create: for each column in `newCols` carrying a non-unique index its old
+-- counterpart did not — a newly-added indexed column, or one whose `indexed` flag turned on —
+-- a `CreateIndex` on that column. A new table's indexes ride with its entity-driven create, so
+-- this only reconciles a table present in both snapshots. The name follows `std.schema`'s
+-- convention, so a later `DROP INDEX` names the same object.
+fn createdIndexes (table: Text) (oldCols: List (ColumnSchema Unit)) (newCols: List (ColumnSchema Unit)) -> List MigrationOp =
+    match newCols
+        []        -> []
+        c :: rest ->
+            if newlyIndexed oldCols c then CreateIndex (indexName table (colColumn c)) table [colColumn c] false :: createdIndexes table oldCols rest
+            else createdIndexes table oldCols rest
+
+-- Whether a new column needs an index created: it carries a non-unique index and its old
+-- counterpart did not (an absent old column counts as not indexed).
+fn newlyIndexed (oldCols: List (ColumnSchema Unit)) (c: ColumnSchema Unit) -> Bool =
+    if colIndexed c then wasNotIndexed oldCols (colColumn c)
+    else false
+
+fn wasNotIndexed (oldCols: List (ColumnSchema Unit)) (name: Text) -> Bool =
+    match findColumn oldCols name
+        None    -> true
+        Some oc -> if colIndexed oc then false else true
+
+-- The indexes to drop: for each column present in both snapshots whose non-unique index was
+-- removed (`indexed` turned off), a `DropIndex` on the index for that column. A column dropped
+-- from `next` is skipped — dropping the column cascades its index.
+fn droppedIndexes (table: Text) (oldCols: List (ColumnSchema Unit)) (newCols: List (ColumnSchema Unit)) -> List MigrationOp =
+    match oldCols
+        []        -> []
+        c :: rest ->
+            if indexRemoved newCols c then DropIndex (indexName table (colColumn c)) :: droppedIndexes table rest newCols
+            else droppedIndexes table rest newCols
+
+-- Whether an old column's index needs dropping: it carried a non-unique index and its new
+-- counterpart is present but no longer indexed. A column absent from `next` is skipped.
+fn indexRemoved (newCols: List (ColumnSchema Unit)) (c: ColumnSchema Unit) -> Bool =
+    if colIndexed c then stillPresentUnindexed newCols (colColumn c)
+    else false
+
+fn stillPresentUnindexed (newCols: List (ColumnSchema Unit)) (name: Text) -> Bool =
+    match findColumn newCols name
+        None    -> false
+        Some nc -> if colIndexed nc then false else true
 
 -- Whether a column list holds a column with the given SQL name.
 fn containsColumn (cols: List (ColumnSchema Unit)) (name: Text) -> Bool =

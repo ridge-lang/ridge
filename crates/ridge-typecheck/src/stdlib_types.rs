@@ -607,6 +607,14 @@ fn reconciled_decls(b: &BuiltinTyCons, base: u32) -> Vec<TyConDecl> {
                             ),
                         ]),
                     },
+                    // `RunSql` carries a raw SQL statement run verbatim against the
+                    // backend through the `rawExec` seam — the escape hatch for what the
+                    // typed DSL cannot express. Like a lossy drop it has no derivable
+                    // inverse, so a migration that uses it must supply an explicit `down`.
+                    UnionVariant {
+                        name: "RunSql".to_string(),
+                        kind: VariantPayload::Positional(vec![Type::Con(b.text, vec![])]),
+                    },
                 ],
             }),
             def_span: None,
@@ -2532,8 +2540,10 @@ fn reconciled_migrate_fn_scheme(
         "nullable" | "primaryKey" | "unique" => mono(vec![column_ty()], column_ty()),
         // createTable : Text -> List Column -> MigrationOp
         "createTable" => mono(vec![text(), list(column_ty())], migration_op_ty()),
-        // dropTable / dropIndex : Text -> MigrationOp — a name-only drop step.
-        "dropTable" | "dropIndex" => mono(vec![text()], migration_op_ty()),
+        // dropTable / dropIndex / runSql : Text -> MigrationOp — the name-only drop steps
+        // and the raw-SQL escape hatch (a statement run verbatim through the `rawExec` seam
+        // for a schema change the typed DSL cannot express); all three take a single `Text`.
+        "dropTable" | "dropIndex" | "runSql" => mono(vec![text()], migration_op_ty()),
         // addColumn : Text -> Column -> MigrationOp
         "addColumn" => mono(vec![text(), column_ty()], migration_op_ty()),
         // dropColumn : Text -> Text -> MigrationOp

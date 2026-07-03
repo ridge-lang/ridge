@@ -397,6 +397,18 @@ pub fn db seedRollback () -> Int =
             match Migrate.rollback conn sch 1
                 Err _ -> 0 - 2
                 Ok _  -> countWidgets conn
+
+-- Raw SQL has no meaning on the schemaless in-memory store, so a `runSql` step run
+-- against the memory adapter fails with the raw backend's clear error rather than
+-- silently doing nothing — the same contract `std.raw` reports. On Postgres the same
+-- step runs (see the migrate Postgres e2e); here the point is the wiring and the honest
+-- error: the step reaches `rawExec`, which the memory adapter answers with `raw.unsupported`.
+pub fn db runSqlMemUnsupported () -> Int =
+    let conn = memAdapter ()
+    let sch = [ Migrate.migration "0001_raw" [ Migrate.runSql "CREATE TABLE gadget (id bigint)" ] ]
+    match Migrate.run conn sch
+        Err e -> if e.code == "raw.unsupported" then 1 else 0 - 2
+        Ok _  -> 0 - 3
 "#;
 
 // ── Workspace setup ───────────────────────────────────────────────────────────
@@ -492,6 +504,7 @@ fn migrations_apply_track_and_are_idempotent_on_beam() {
          io:format(\"seedUsable=~w~n\",[{module}:seedUsable()]), \
          io:format(\"seedIdempotent=~w~n\",[{module}:seedIdempotent()]), \
          io:format(\"seedRollback=~w~n\",[{module}:seedRollback()]), \
+         io:format(\"runSqlMemUnsupported=~w~n\",[{module}:runSqlMemUnsupported()]), \
          halt()."
     );
     let output = Command::new("erl")
@@ -607,5 +620,11 @@ fn migrations_apply_track_and_are_idempotent_on_beam() {
     assert!(
         stdout.contains("seedRollback=0"),
         "expected `seedRollback=0` — rolling back a seed should delete the rows it wrote\nstdout:\n{stdout}\nstderr:\n{stderr}"
+    );
+    // Raw SQL needs a SQL backend: a runSql step on the memory adapter fails with the
+    // clear `raw.unsupported` error rather than silently doing nothing.
+    assert!(
+        stdout.contains("runSqlMemUnsupported=1"),
+        "expected `runSqlMemUnsupported=1` — a runSql step on the in-memory adapter should fail with raw.unsupported\nstdout:\n{stdout}\nstderr:\n{stderr}"
     );
 }

@@ -348,6 +348,55 @@ pub fn db dropIndexProbe () -> Int =
             match Migrate.rollback conn sch 1
                 Err _     -> 0 - 2
                 Ok rolled -> if isOnly rolled "0001_idx" then 1 else 0 - 3
+
+-- A reference entity seeded as part of a migration. `deriving (Schema)` makes `id` the
+-- primary key by convention, so a seed keys its idempotent upsert on `id`.
+pub type Widget = { id: Int, name: Text } deriving (Row, Schema)
+
+fn widgetWitness () -> Option Widget = None
+
+fn widgetsSchema () -> MigrationOp =
+    Migrate.createSchema (schemaOf (widgetWitness ()))
+
+fn seedWidgets () -> MigrationOp =
+    Migrate.seed [ Widget { id = 1, name = "alpha" }, Widget { id = 2, name = "beta" } ]
+
+fn countWidgets (conn: MemAdapter) -> Int =
+    let widgets: Repo Widget MemAdapter = Repo.repo conn "widgets"
+    match widgets |> Repo.query |> Repo.count
+        Ok n  -> n
+        Err _ -> 0 - 1
+
+-- A seed step inserts its rows: create the table and seed two widgets in one migration,
+-- and the table holds both.
+pub fn db seedUsable () -> Int =
+    let conn = memAdapter ()
+    let sch = [ Migrate.migration "0001_widgets" [ widgetsSchema (), seedWidgets () ] ]
+    match Migrate.run conn sch
+        Err _ -> 0 - 1
+        Ok _  -> countWidgets conn
+
+-- Seeding is idempotent at the row level: a second migration seeds the same two rows
+-- again, and the upsert on the primary key leaves the table with two rows, not four.
+pub fn db seedIdempotent () -> Int =
+    let conn = memAdapter ()
+    let sch = [ Migrate.migration "0001_widgets" [ widgetsSchema (), seedWidgets () ], Migrate.migration "0002_reseed" [ seedWidgets () ] ]
+    match Migrate.run conn sch
+        Err _ -> 0 - 1
+        Ok _  -> countWidgets conn
+
+-- A seed step auto-reverses: create the table in one migration and seed in the next, then
+-- roll the seed back. Its derived reverse deletes the seeded rows by key, leaving the table
+-- empty but present — the create migration is untouched.
+pub fn db seedRollback () -> Int =
+    let conn = memAdapter ()
+    let sch = [ Migrate.migration "0001_widgets" [ widgetsSchema () ], Migrate.migration "0002_seed" [ seedWidgets () ] ]
+    match Migrate.run conn sch
+        Err _ -> 0 - 1
+        Ok _  ->
+            match Migrate.rollback conn sch 1
+                Err _ -> 0 - 2
+                Ok _  -> countWidgets conn
 "#;
 
 // ── Workspace setup ───────────────────────────────────────────────────────────
@@ -440,6 +489,9 @@ fn migrations_apply_track_and_are_idempotent_on_beam() {
          io:format(\"irreversibleProbe=~w~n\",[{module}:irreversibleProbe()]), \
          io:format(\"explicitDownProbe=~w~n\",[{module}:explicitDownProbe()]), \
          io:format(\"dropIndexProbe=~w~n\",[{module}:dropIndexProbe()]), \
+         io:format(\"seedUsable=~w~n\",[{module}:seedUsable()]), \
+         io:format(\"seedIdempotent=~w~n\",[{module}:seedIdempotent()]), \
+         io:format(\"seedRollback=~w~n\",[{module}:seedRollback()]), \
          halt()."
     );
     let output = Command::new("erl")
@@ -540,5 +592,20 @@ fn migrations_apply_track_and_are_idempotent_on_beam() {
     assert!(
         stdout.contains("dropIndexProbe=1"),
         "expected `dropIndexProbe=1` — a createIndex should auto-invert to a dropIndex on rollback\nstdout:\n{stdout}\nstderr:\n{stderr}"
+    );
+    // A seed step inserts its rows into the created table.
+    assert!(
+        stdout.contains("seedUsable=2"),
+        "expected `seedUsable=2` — the seed step should insert its two rows\nstdout:\n{stdout}\nstderr:\n{stderr}"
+    );
+    // Re-seeding the same rows is idempotent: the upsert on the primary key adds no duplicates.
+    assert!(
+        stdout.contains("seedIdempotent=2"),
+        "expected `seedIdempotent=2` — re-seeding the same keys must not duplicate rows\nstdout:\n{stdout}\nstderr:\n{stderr}"
+    );
+    // A seed step auto-reverses: rolling it back deletes exactly the seeded rows by key.
+    assert!(
+        stdout.contains("seedRollback=0"),
+        "expected `seedRollback=0` — rolling back a seed should delete the rows it wrote\nstdout:\n{stdout}\nstderr:\n{stderr}"
     );
 }

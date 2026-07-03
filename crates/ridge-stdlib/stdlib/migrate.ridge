@@ -46,8 +46,16 @@
 import std.data as Db
 -- The rich schema descriptor an entity-driven migration step carries: `eraseSchema`
 -- drops its phantom entity so a non-parametric `MigrationOp` can hold it, and
--- `schemaTable` names the table a drop targets.
-import std.schema (EntitySchema, ColumnSchema, eraseSchema, schemaTable, schemaColumns, colColumn, columnAltered, schemaToSource, columnToSource)
+-- `schemaTable` names the table a drop targets. `colPrimaryKey` reads which columns a
+-- seed keys its idempotent upsert on.
+import std.schema (EntitySchema, ColumnSchema, eraseSchema, schemaTable, schemaColumns, colColumn, colPrimaryKey, columnAltered, schemaToSource, columnToSource)
+-- The write-side plan builders a data step runs through the `Adapter`'s `runMutation`:
+-- `planUpsert` for the idempotent seed, `planDeleteKeys` for its keyed reverse.
+import std.query (planUpsert, planDeleteKeys)
+-- `SqlValue` names the cells a seed row carries; the `Row` class's `toRow` (used bare)
+-- encodes a typed entity to one.
+import std.sql (SqlValue)
+import std.map (toList)
 
 -- A column in a table definition: its name, its base type, and the three
 -- modifiers a schema cares about — whether it admits SQL NULL, whether it is the
@@ -91,12 +99,15 @@ pub fn primaryKey (c: Column) -> Column =
 pub fn unique (c: Column) -> Column =
     Column { name = c.name, ty = c.ty, nullable = c.nullable, primaryKey = c.primaryKey, unique = true }
 
--- A single schema change. Its constructors are not exported — a value is built
--- only through the `createTable`/`dropTable`/`addColumn`/`dropColumn`/`createIndex`/
--- `uniqueIndex` factories and handed to `migration`, and the runner decomposes it
--- onto the adapter's schema seam — so user code names the type but never the
--- variants.
-pub type MigrationOp = CreateTable Text (List Column) | DropTable Text | AddColumn Text Column | DropColumn Text Text | CreateIndex Text Text (List Text) Bool | CreateEntity (EntitySchema Unit) | AddEntityColumn Text (ColumnSchema Unit) | AlterColumn Text (ColumnSchema Unit) (ColumnSchema Unit) | DropIndex Text
+-- A single migration step. Most are schema changes; `SeedRows`/`UnseedRows` are data
+-- steps. Its constructors are not exported — a value is built only through the
+-- `createTable`/`dropTable`/`addColumn`/`dropColumn`/`createIndex`/`uniqueIndex`/`seed`
+-- factories and handed to `migration`, and the runner decomposes it onto the adapter's
+-- seam — so user code names the type but never the variants. `SeedRows table keyCols
+-- rows` writes reference rows as an idempotent upsert keyed on `keyCols`; `UnseedRows`
+-- is its reverse, deleting those rows by the same keys, so the two are mutual inverses
+-- and a seed step auto-reverses like a create.
+pub type MigrationOp = CreateTable Text (List Column) | DropTable Text | AddColumn Text Column | DropColumn Text Text | CreateIndex Text Text (List Text) Bool | CreateEntity (EntitySchema Unit) | AddEntityColumn Text (ColumnSchema Unit) | AlterColumn Text (ColumnSchema Unit) (ColumnSchema Unit) | DropIndex Text | SeedRows Text (List Text) (List (Map Text SqlValue)) | UnseedRows Text (List Text) (List (Map Text SqlValue))
 
 -- Create a table with the given columns.
 pub fn createTable (table: Text) (cols: List Column) -> MigrationOp =
@@ -169,6 +180,45 @@ pub fn addEntityColumn (table: Text) (c: ColumnSchema Unit) -> MigrationOp =
 -- as source.
 pub fn alterColumn (table: Text) (old: ColumnSchema Unit) (new: ColumnSchema Unit) -> MigrationOp =
     AlterColumn table old new
+
+-- Seed a table with reference rows as part of a migration, keyed on the entity's primary
+-- key. The rows are written as an idempotent upsert — applied twice, the table holds each
+-- once — so re-running the migration, or seeding a row that already exists, converges
+-- rather than duplicating. Reversing the migration deletes exactly these rows by their
+-- keys, so a seed step is auto-reversible like a create:
+--   seed [ Currency { code = "USD", name = "US Dollar" }
+--        , Currency { code = "EUR", name = "Euro" } ]
+-- The entity is encoded through `deriving (Row)`, and its table and key columns read from
+-- `deriving (Schema)`, so a seed follows the very descriptor the table was created from.
+pub fn seed (entities: List e) -> MigrationOp where Row e, HasSchema e =
+    let s = schemaOf (seedWitness entities)
+    SeedRows (schemaTable s) (primaryKeyColumns s) (encodeSeedRows entities)
+
+-- Seed raw rows into a named table, keyed on the given columns — the hand-built dual of
+-- `seed` for a table with no typed entity. Each row is a column map; the key columns drive
+-- the idempotent upsert and its reverse, exactly as `seed`'s primary key does.
+pub fn seedRows (table: Text) (keyCols: List Text) (rows: List (Map Text SqlValue)) -> MigrationOp =
+    SeedRows table keyCols rows
+
+-- A phantom witness that pins the seed's entity type from the rows given, so `schemaOf`
+-- selects the descriptor by type without a value to probe (the list may be empty).
+fn seedWitness (xs: List e) -> Option e = None
+
+-- The primary-key columns of a schema, in declaration order — a seed's idempotency key.
+fn primaryKeyColumns (s: EntitySchema e) -> List Text =
+    pkColumns (schemaColumns s)
+
+fn pkColumns (cols: List (ColumnSchema e)) -> List Text =
+    match cols
+        []        -> []
+        c :: rest -> if colPrimaryKey c then colColumn c :: pkColumns rest else pkColumns rest
+
+-- Encode each entity to its row through `deriving (Row)`'s `toRow` — the full column map,
+-- primary key included, since a seed writes complete rows it also deletes by key.
+fn encodeSeedRows (entities: List e) -> List (Map Text SqlValue) where Row e =
+    match entities
+        []        -> []
+        x :: rest -> toRow x :: encodeSeedRows rest
 
 -- A named, ordered batch of schema changes. The name identifies the migration in
 -- the tracking table, so it must be stable and unique across a project's
@@ -353,6 +403,14 @@ fn runStep (conn: a) (op: MigrationOp) -> Result Unit Error where Adapter a =
         AddEntityColumn table col   -> ddlAddEntityColumn conn table col
         AlterColumn table old new   -> ddlAlterColumn conn table old new
         DropIndex name              -> ddlDropIndex conn name
+        SeedRows table keyCols rows ->
+            match rows
+                []         -> Ok ()
+                first :: _ -> resultUnit (runMutation conn (planUpsert table rows keyCols (nonSeedKeyColumns first keyCols)))
+        UnseedRows table keyCols rows ->
+            match rows
+                [] -> Ok ()
+                _  -> resultUnit (runMutation conn (planDeleteKeys table keyCols rows))
 
 -- Run a migration's steps in order, stopping at the first failure.
 fn runSteps (conn: a) (steps: List MigrationOp) -> Result Unit Error where Adapter a =
@@ -362,6 +420,33 @@ fn runSteps (conn: a) (steps: List MigrationOp) -> Result Unit Error where Adapt
             match runStep conn s
                 Err e -> Err e
                 Ok _  -> runSteps conn rest
+
+-- Collapse a mutation's affected-row count to Unit: a seed step reports success or its
+-- error, not the count, matching the schema steps' `Result Unit Error`.
+fn resultUnit (r: Result Int Error) -> Result Unit Error =
+    match r
+        Ok _  -> Ok ()
+        Err e -> Err e
+
+-- The columns of a seed row to overwrite on an upsert conflict: every column except the
+-- key columns, which are matched on, not rewritten. Read from one row (all share columns).
+fn nonSeedKeyColumns (row: Map Text SqlValue) (keyCols: List Text) -> List Text =
+    dropColumns (rowColumnNames (toList row)) keyCols
+
+fn rowColumnNames (pairs: List (Text, SqlValue)) -> List Text =
+    match pairs
+        []             -> []
+        (c, _) :: rest -> c :: rowColumnNames rest
+
+fn dropColumns (cols: List Text) (drop: List Text) -> List Text =
+    match cols
+        []        -> []
+        c :: rest -> if memberText c drop then dropColumns rest drop else c :: dropColumns rest drop
+
+fn memberText (x: Text) (xs: List Text) -> Bool =
+    match xs
+        []        -> false
+        y :: rest -> if x == y then true else memberText x rest
 
 -- Apply one migration inside a transaction: its steps and the record that it ran
 -- commit together, or roll back together on any failure. A `rollback` that itself
@@ -456,6 +541,8 @@ fn invert (op: MigrationOp) -> Result MigrationOp Error =
         CreateEntity s              -> Ok (DropTable (schemaTable s))
         AddEntityColumn table col   -> Ok (DropColumn table (colColumn col))
         AlterColumn table old new   -> Ok (AlterColumn table new old)
+        SeedRows table keyCols rows   -> Ok (UnseedRows table keyCols rows)
+        UnseedRows table keyCols rows -> Ok (SeedRows table keyCols rows)
         DropTable table             -> Err (mkError "migrate.irreversible" (irreversibleMessage "dropTable" table))
         DropColumn table col        -> Err (mkError "migrate.irreversible" (irreversibleMessage "dropColumn" (Text.join "" [table, ".", col])))
         DropIndex name              -> Err (mkError "migrate.irreversible" (irreversibleMessage "dropIndex" name))
@@ -621,6 +708,16 @@ fn opToSource (op: MigrationOp) -> Text =
         AddEntityColumn table col        -> Text.join "" ["addEntityColumn ", sourceStr table, " (", columnToSource col, ")"]
         AlterColumn table old new        -> Text.join "" ["alterColumn ", sourceStr table, " (", columnToSource old, ") (", columnToSource new, ")"]
         DropIndex name                   -> Text.join "" ["dropIndex ", sourceStr name]
+        SeedRows table _ _               -> seedStepSourceUnsupported table
+        UnseedRows table _ _             -> seedStepSourceUnsupported table
+
+-- A seed step has no generated-source form: the snapshot diff never emits one (seeds are
+-- authored by hand, not derived from a model), so rendering a migration back to source
+-- never meets one. The marker keeps `opToSource` total and, were a seed step ever routed
+-- here, fails loudly at compile rather than emitting a silently wrong step. A generated
+-- seed round-trip belongs with the model-carried seed data a later change introduces.
+fn seedStepSourceUnsupported (table: Text) -> Text =
+    Text.join "" ["seedStepSourceUnsupported ", sourceStr table]
 
 -- ── Source rendering of the tuple-DSL vocabulary ──────────────────────────────
 

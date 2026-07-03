@@ -2135,6 +2135,42 @@ pub fn db pgDiffAlteredColumn () -> Int =
                                         Err _ -> 0 - 5
                                         Ok _  -> pgCountGears conn
 
+-- A seed step against the live database. The migration creates the table and seeds two
+-- rows through a real `INSERT ... ON CONFLICT ("id") DO UPDATE`, keyed on the primary key;
+-- rolling the seed migration back runs a real `DELETE ... WHERE ("id") IN ((...))` and
+-- untracks it. So each CI run re-seeds then re-deletes and the probe converges: the seed
+-- inserts two rows (guarded — a wrong count short-circuits to -4), the rollback removes
+-- exactly them by key, and zero rows count back -> 0.
+pub type RidgeMigLabel = { id: Int, name: Text } deriving (Row, Schema)
+
+fn labelWitness () -> Option RidgeMigLabel = None
+
+fn labelSchema () -> MigrationOp =
+    Migrate.createSchema (schemaOf (labelWitness ()))
+
+fn seedLabels () -> MigrationOp =
+    Migrate.seed [ RidgeMigLabel { id = 1, name = "one" }, RidgeMigLabel { id = 2, name = "two" } ]
+
+fn pgCountLabels (conn: Postgres) -> Int =
+    let r = Repo.repo conn "ridge_mig_labels"
+    match r |> Repo.query |> Repo.count
+        Ok n  -> n
+        Err _ -> 0 - 9
+
+pub fn db pgSeedRollback () -> Int =
+    let migs = [ Migrate.migration "0007_labels" [ labelSchema () ], Migrate.migration "0008_labels_seed" [ seedLabels () ] ]
+    match connect (pgConfig ())
+        Err _ -> 0 - 1
+        Ok conn ->
+            match Migrate.run conn migs
+                Err _ -> 0 - 2
+                Ok _  ->
+                    if pgCountLabels conn == 2 then
+                        match Migrate.rollback conn migs 1
+                            Err _ -> 0 - 3
+                            Ok _  -> pgCountLabels conn
+                    else 0 - 4
+
 -- Raw-SQL escape hatch against the live database. Each probe seeds the users table
 -- through `setup` (clearing and inserting ada/lin/max), then opens a fresh
 -- connection and runs raw SQL over `ridge_pg_users`: a parameterised SELECT decoded
@@ -2494,6 +2530,7 @@ fn postgres_adapter_reads_a_real_table() {
          io:format(\"pgDiffCreated=~w~n\",[{module}:pgDiffCreated()]), \
          io:format(\"pgDiffAddedColumn=~w~n\",[{module}:pgDiffAddedColumn()]), \
          io:format(\"pgDiffAlteredColumn=~w~n\",[{module}:pgDiffAlteredColumn()]), \
+         io:format(\"pgSeedRollback=~w~n\",[{module}:pgSeedRollback()]), \
          io:format(\"rawAdults=~s~n\",[{module}:rawAdults()]), \
          io:format(\"rawFirstName=~s~n\",[{module}:rawFirstName()]), \
          io:format(\"rawBumpCount=~w~n\",[{module}:rawBumpCount()]), \
@@ -2941,6 +2978,10 @@ fn postgres_adapter_reads_a_real_table() {
         (
             "pgDiffAlteredColumn=2",
             "the column-level auto-diff turns a relaxed NOT NULL into an ALTER TABLE ALTER COLUMN DROP NOT NULL that lands on the real table",
+        ),
+        (
+            "pgSeedRollback=0",
+            "a seed step runs a real INSERT ... ON CONFLICT DO UPDATE (two rows), and rolling it back runs a real keyed DELETE that removes exactly them",
         ),
         (
             "rawAdults=lin,max",

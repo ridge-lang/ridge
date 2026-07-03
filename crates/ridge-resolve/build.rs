@@ -877,6 +877,11 @@ const BASELINE_EXPORTS: &[(&str, &[&str])] = &[
             "dropSchema",
             "addEntityColumn",
             "alterColumn",
+            // The data-step factories: seed reference rows into a table as an idempotent,
+            // reversible upsert — `seed` from a typed entity (keyed on its primary key),
+            // `seedRows` from hand-built rows (keyed on the given columns).
+            "seed",
+            "seedRows",
             "Migration",
             "migration",
             "reversibleMigration",

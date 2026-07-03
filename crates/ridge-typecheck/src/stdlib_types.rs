@@ -574,6 +574,39 @@ fn reconciled_decls(b: &BuiltinTyCons, base: u32) -> Vec<TyConDecl> {
                         name: "DropIndex".to_string(),
                         kind: VariantPayload::Positional(vec![Type::Con(b.text, vec![])]),
                     },
+                    // `SeedRows`/`UnseedRows` carry a table, its key columns, and the rows
+                    // to seed (a `List (Map Text SqlValue)`). `SeedRows` writes them as an
+                    // idempotent upsert keyed on the columns; `UnseedRows` is its reverse,
+                    // deleting the same rows by key, so a seed step auto-reverses like a
+                    // create. Data steps, unlike the schema variants above.
+                    UnionVariant {
+                        name: "SeedRows".to_string(),
+                        kind: VariantPayload::Positional(vec![
+                            Type::Con(b.text, vec![]),
+                            Type::Con(b.list, vec![Type::Con(b.text, vec![])]),
+                            Type::Con(
+                                b.list,
+                                vec![Type::Con(
+                                    b.map,
+                                    vec![Type::Con(b.text, vec![]), Type::Con(b.sql_value, vec![])],
+                                )],
+                            ),
+                        ]),
+                    },
+                    UnionVariant {
+                        name: "UnseedRows".to_string(),
+                        kind: VariantPayload::Positional(vec![
+                            Type::Con(b.text, vec![]),
+                            Type::Con(b.list, vec![Type::Con(b.text, vec![])]),
+                            Type::Con(
+                                b.list,
+                                vec![Type::Con(
+                                    b.map,
+                                    vec![Type::Con(b.text, vec![]), Type::Con(b.sql_value, vec![])],
+                                )],
+                            ),
+                        ]),
+                    },
                 ],
             }),
             def_span: None,
@@ -2409,6 +2442,10 @@ fn reconciled_schema_fn_scheme(
 /// this table (see the `("std.migrate", _)` arm in [`reconciled_fn_scheme`]), and
 /// a typeclass-constrained cross-module scheme needs the same hand-built
 /// `Constraint`/`ClassTable` wiring `run` does.
+#[expect(
+    clippy::too_many_lines,
+    reason = "one scheme per std.migrate verb plus the shared type-builder closures; they read best kept together"
+)]
 fn reconciled_migrate_fn_scheme(
     name: &str,
     reconciled: &FxHashMap<String, TyConId>,
@@ -2431,6 +2468,14 @@ fn reconciled_migrate_fn_scheme(
     let ent_unit = || Type::Con(entity_schema, vec![Type::Con(b.unit, vec![])]);
     // `ColumnSchema Unit` — the phantom-erased column an entity-driven step carries.
     let col_unit = || Type::Con(column_schema, vec![Type::Con(b.unit, vec![])]);
+    // `List (Map Text SqlValue)` — the seed rows a data step carries, the same erased
+    // row shape the mutation plan carries.
+    let rows = || {
+        list(Type::Con(
+            b.map,
+            vec![text(), Type::Con(b.sql_value, vec![])],
+        ))
+    };
     // A monomorphic pure builder: `params -> ret`, no quantified vars or constraints.
     let mono = |params: Vec<Type>, ret: Type| {
         Some(Scheme {
@@ -2507,6 +2552,34 @@ fn reconciled_migrate_fn_scheme(
         // ALTER COLUMN factory carrying a column's old and new descriptors; the diff's
         // altered-column step.
         "alterColumn" => mono(vec![text(), col_unit(), col_unit()], migration_op_ty()),
+        // seed : ∀e. List e -> MigrationOp where Row e, HasSchema e — the typed data step.
+        // The entity is encoded to a row through `Row` and its table and key columns read
+        // from `HasSchema`, then erased into a `SeedRows` op. Constraint order is [Row,
+        // HasSchema] to match the dictionary order the body threads (the row encode takes
+        // the first dictionary, `schemaOf` the second); the reconciled order must equal the
+        // self-built body's or the runtime reads a method from the wrong dictionary.
+        "seed" => {
+            let row = classes.id_by_name("Row")?;
+            let has_schema = classes.id_by_name("HasSchema")?;
+            Some(Scheme {
+                vars: vec![e],
+                cap_vars: vec![],
+                row_vars: vec![],
+                ty: Type::Fn {
+                    params: vec![list(Type::Var(e))],
+                    ret: Box::new(migration_op_ty()),
+                    caps: pure(),
+                },
+                constraints: vec![
+                    Constraint::single(row, e),
+                    Constraint::single(has_schema, e),
+                ],
+            })
+        }
+        // seedRows : Text -> List Text -> List (Map Text SqlValue) -> MigrationOp — the raw
+        // data step: a table, its key columns, and hand-built rows, for a table with no
+        // typed entity.
+        "seedRows" => mono(vec![text(), list(text()), rows()], migration_op_ty()),
         // diffSchemas : List (EntitySchema Unit) -> List (EntitySchema Unit) -> List MigrationOp —
         // the pure snapshot diff: the schema steps that turn the `prev` model into `next`.
         "diffSchemas" => mono(

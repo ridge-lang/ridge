@@ -2396,11 +2396,11 @@ fn reconciled_schema_fn_scheme(
         // dropTableDdl / dropIndexDdl : Text -> Text — a name-only `DROP TABLE` /
         // `DROP INDEX IF EXISTS`; `dropIndexDdl` is the inverse of `indexDdl`.
         "dropTableDdl" | "dropIndexDdl" => mono(vec![text()], text()),
-        "dropColumnDdl" => mono(vec![text(), text()], text()),
+        // dropColumnDdl / indexName : Text -> Text -> Text — a two-name `DROP COLUMN` renderer
+        // (table, column) and the conventional `<table>_<column>_idx` index name (the single
+        // naming source the entity create and the snapshot diff share); both take two texts.
+        "dropColumnDdl" | "indexName" => mono(vec![text(), text()], text()),
         "indexDdl" => mono(vec![text(), text(), list(text()), boolean()], text()),
-        // indexName : Text -> Text -> Text — the conventional `<table>_<column>_idx` name, the
-        // single naming source the entity create and the snapshot diff share.
-        "indexName" => mono(vec![text(), text()], text()),
         // schemaOf : ∀e. Option e -> EntitySchema e where HasSchema e. The single
         // method of the `HasSchema` binding class, dispatched by a phantom
         // `Option e` witness (the same shape `Row.rowColumns` uses). The

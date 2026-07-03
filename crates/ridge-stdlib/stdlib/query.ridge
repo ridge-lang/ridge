@@ -607,17 +607,35 @@ fn quotedColumns (cols: List Text) -> Text =
         c :: []   -> quoteIdent c
         c :: rest -> Text.join "" [quoteIdent c, ", ", quotedColumns rest]
 
--- Render a keyed delete: `DELETE FROM "t" WHERE ("k1", "k2") IN (($1, $2), ($3, $4))`.
--- The `WHERE` matches each stored row's key columns against the key-column tuple of every
--- row to remove, so the statement deletes exactly the seeded rows by their keys. The key
--- values are collected left to right as binds, one placeholder each, never interpolated.
--- An empty row list is a no-op with no statement.
+-- Render a keyed delete. The `WHERE` matches each stored row's key columns against the
+-- key values of every row to remove, so the statement deletes exactly the seeded rows by
+-- their keys; the values are collected left to right as binds, never interpolated. A
+-- single key column renders a plain scalar `IN` — `"id" IN ($1, $2)` — the same shape a
+-- captured `inList` compiles to, so Postgres infers each parameter's type from the column.
+-- A composite key renders a row-value `IN` — `("a", "b") IN (($1, $2), ($3, $4))`. (A
+-- single-element row constructor `("id") IN (($1))` would instead force row-comparison
+-- semantics, under which Postgres cannot infer a bare parameter's type.) An empty row list
+-- is a no-op with no statement.
 fn renderDeleteKeys (table: Text) (keyCols: List Text) (rows: List (Map Text SqlValue)) -> { text: Text, binds: List SqlValue } =
     match rows
         [] -> { text = "", binds = [] }
         _  ->
-            let tuples = keyTuples keyCols rows 1
-            { text = Text.join "" ["DELETE FROM ", quoteIdent table, " WHERE (", quotedColumns keyCols, ") IN (", tuples.text, ")"], binds = tuples.binds }
+            match keyCols
+                col :: [] ->
+                    let vs = singleKeyVals col rows 1
+                    { text = Text.join "" ["DELETE FROM ", quoteIdent table, " WHERE ", quoteIdent col, " IN (", vs.text, ")"], binds = vs.binds }
+                _ ->
+                    let tuples = keyTuples keyCols rows 1
+                    { text = Text.join "" ["DELETE FROM ", quoteIdent table, " WHERE (", quotedColumns keyCols, ") IN (", tuples.text, ")"], binds = tuples.binds }
+
+-- The single-column key values as a flat `$N` list — `$1, $2, …` — for the scalar `IN`.
+fn singleKeyVals (col: Text) (rows: List (Map Text SqlValue)) (n: Int) -> { text: Text, binds: List SqlValue, next: Int } =
+    match rows
+        []          -> { text = "", binds = [], next = n }
+        row :: []   -> { text = placeholder n, binds = [keyValueOf col row], next = n + 1 }
+        row :: rest ->
+            let r = singleKeyVals col rest (n + 1)
+            { text = Text.join "" [placeholder n, ", ", r.text], binds = keyValueOf col row :: r.binds, next = r.next }
 
 -- One parenthesised key tuple per row, comma-separated, threading the `$N` counter — the
 -- right-hand side of the `IN`.

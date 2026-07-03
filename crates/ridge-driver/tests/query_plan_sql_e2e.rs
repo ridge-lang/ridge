@@ -153,7 +153,8 @@ pub fn existsDeleteBinds () -> Text = renderMutBinds (planDelete "users" (QExist
 
 -- A keyed delete matches each stored row on the key columns of the rows to remove, the
 -- key values carried as binds ($1 per value) — the reverse a seed rollback runs. A single
--- key column renders a one-element tuple `IN`.
+-- key column renders a plain scalar `IN`, so Postgres infers each bind's type from the
+-- column (a one-element row constructor would not).
 pub fn deleteKeysSql () -> Text = renderMutSql (planDeleteKeys "users" ["id"] [Map.fromList [("id", sqlInt 1)], Map.fromList [("id", sqlInt 2)]])
 pub fn deleteKeysBinds () -> Text = renderMutBinds (planDeleteKeys "users" ["id"] [Map.fromList [("id", sqlInt 1)], Map.fromList [("id", sqlInt 2)]])
 
@@ -903,7 +904,7 @@ fn query_plan_compiles_to_parameterized_sql() {
     // A keyed delete matches the stored rows on the key columns of the rows to remove, the
     // key values bound left to right. A single key renders a one-element row tuple; a
     // composite key renders the columns and values as parallel tuples.
-    want(r#"deleteKeysSql=DELETE FROM "users" WHERE ("id") IN (($1), ($2))"#);
+    want(r#"deleteKeysSql=DELETE FROM "users" WHERE "id" IN ($1, $2)"#);
     want("deleteKeysBinds=2");
     want(r#"deleteKeysCompositeSql=DELETE FROM "memberships" WHERE ("org", "user") IN (($1, $2))"#);
     want(

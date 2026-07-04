@@ -547,7 +547,19 @@ fn count_param_groups(rest: &str, fn_name: &str) -> u32 {
         match ch {
             '(' => {
                 if depth == 0 {
-                    count += 1;
+                    // An empty top-level group `()` is the unit parameter list — zero
+                    // params, matching how codegen compiles `fn f ()` to a 0-arity BEAM
+                    // function; a non-empty group is one param group. Counting `()` as a
+                    // param made a nullary stdlib fn's `ffi_targets` arity 1, so the
+                    // Unit-paren call shim never dropped the `()` and a cross-module
+                    // `f ()` compiled to an arity-1 call that was `undef`. Skip whitespace
+                    // to the group's first char; only a non-`)` char is a real parameter.
+                    while matches!(chars.peek(), Some(c) if c.is_whitespace()) {
+                        chars.next();
+                    }
+                    if chars.peek() != Some(&')') {
+                        count += 1;
+                    }
                 }
                 depth += 1;
             }
